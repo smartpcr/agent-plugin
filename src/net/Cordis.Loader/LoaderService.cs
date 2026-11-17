@@ -1,121 +1,14 @@
-using System.Reflection;
-using System.Text.Json;
-using System.Text.Json.Serialization;
+﻿// -----------------------------------------------------------------------
+// <copyright file="LoaderService.cs" company="Microsoft Corp.">
+//     Copyright (c) Microsoft Corp. All rights reserved.
+// </copyright>
+// -----------------------------------------------------------------------
 
 namespace Cordis.Loading;
 
-/// <summary>Declarative description of one component instance in the config file.</summary>
-public sealed class EntryOptions
-{
-    public string Id { get; set; } = "";
-
-    /// <summary>Component identifier handed to the <see cref="IComponentResolver"/>.</summary>
-    public string Name { get; set; } = "";
-
-    public JsonElement? Config { get; set; }
-
-    /// <summary>A group is a context node: it loads no component but scopes its children.</summary>
-    public bool Group { get; set; }
-
-    public bool Disabled { get; set; }
-
-    public string[]? Inject { get; set; }
-
-    /// <summary>
-    /// Service name to realm label. Entries sharing a label share the realm for that service;
-    /// <c>"true"</c> makes a realm private to this entry. Any other string, including the empty
-    /// string, is an ordinary shared label.
-    /// </summary>
-    public Dictionary<string, string>? Isolate { get; set; }
-
-    public List<EntryOptions>? Children { get; set; }
-
-    public EntryOptions Clone() => new()
-    {
-        Id = Id,
-        Name = Name,
-        Config = Config,
-        Group = Group,
-        Disabled = Disabled,
-        Inject = Inject?.ToArray(),
-        Isolate = Isolate is null ? null : new Dictionary<string, string>(Isolate),
-        Children = Children?.Select(child => child.Clone()).ToList(),
-    };
-
-    public bool SameShape(EntryOptions other)
-        => Name == other.Name
-        && Group == other.Group
-        && Disabled == other.Disabled
-        && (Inject ?? []).SequenceEqual(other.Inject ?? [])
-        && IsolateEquals(Isolate, other.Isolate);
-
-    private static bool IsolateEquals(Dictionary<string, string>? left, Dictionary<string, string>? right)
-    {
-        if (left is null || left.Count == 0) return right is null || right.Count == 0;
-        if (right is null || left.Count != right.Count) return false;
-        return left.All(pair => right.TryGetValue(pair.Key, out string? value) && value == pair.Value);
-    }
-}
-
-public interface IComponentResolver
-{
-    Type? Resolve(string name);
-}
-
-/// <summary>Resolves assembly-qualified or short type names against the loaded assemblies.</summary>
-public sealed class TypeComponentResolver : IComponentResolver
-{
-    private readonly List<Assembly> _assemblies = [];
-
-    public TypeComponentResolver(params Assembly[] assemblies) => _assemblies.AddRange(assemblies);
-
-    public IComponentResolver Add(Assembly assembly)
-    {
-        _assemblies.Add(assembly);
-        return this;
-    }
-
-    public Type? Resolve(string name)
-    {
-        var type = Type.GetType(name, throwOnError: false);
-        if (type is not null) return type;
-
-        List<Assembly> candidates = _assemblies.Count > 0 ? _assemblies : [.. AppDomain.CurrentDomain.GetAssemblies()];
-        foreach (Assembly assembly in candidates)
-        {
-            type = assembly.GetType(name, throwOnError: false);
-            if (type is not null) return type;
-            type = assembly.GetTypes().FirstOrDefault(candidate => candidate.Name == name);
-            if (type is not null) return type;
-        }
-        return null;
-    }
-}
-
-public sealed class Entry(string id, string? parentId)
-{
-    /// <summary>Composite id: the ids of the enclosing groups and this entry, joined by <c>:</c>.</summary>
-    public string Id { get; } = id;
-
-    /// <summary>Composite id of the enclosing group entry, or <c>null</c> at the top level.</summary>
-    public string? ParentId { get; } = parentId;
-
-    public EntryOptions Options { get; internal set; } = new() { Id = id };
-
-    public Fiber? Fiber { get; internal set; }
-
-    /// <summary>Context children of a group entry are created on; <c>null</c> unless the group is loaded.</summary>
-    public Context? Scope { get; internal set; }
-
-    public bool IsActive => Fiber is { State: FiberState.Active };
-
-    internal int Order { get; set; }
-
-    /// <summary>The config the live fiber was last given, to detect config-only edits.</summary>
-    internal JsonElement? AppliedConfig { get; set; }
-
-    public override string ToString() => $"Entry {Id} ({Options.Name})";
-}
+using System.Reflection;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 /// <summary>
 /// Turns a declarative entry list into a live component tree and keeps them in sync.
@@ -125,12 +18,23 @@ public sealed class Entry(string id, string? parentId)
 /// A group's children are created by the group's own body, on the group's context. They load
 /// only while the group is loaded, and a group that is disabled, pending on its <c>Inject</c>,
 /// or rebuilt takes its children down with it and recreates them when it loads again.
+/// <para>
+/// An invalid entry (an id containing <see cref="Separator"/>, a missing name, or a duplicate id)
+/// is logged and skipped together with its subtree; its siblings still load. Each
+/// <see cref="EntryOptions.Isolate"/> label maps to one realm per service, shared by every entry
+/// that uses the same label.
+/// </para>
 /// </remarks>
 [ServiceName("loader")]
 public sealed class LoaderService : Service
 {
+    /// <summary>The character that joins entry ids into a composite id, such as <c>group:child</c>.</summary>
     public const char Separator = ':';
 
+    /// <summary>
+    /// The JSON options used to read and write entry trees and bind component configs: web
+    /// defaults, case-insensitive names, nulls omitted, indented output.
+    /// </summary>
     public static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNameCaseInsensitive = true,
@@ -138,76 +42,125 @@ public sealed class LoaderService : Service
         WriteIndented = true,
     };
 
-    private readonly Dictionary<string, Entry> _entries = new(StringComparer.Ordinal);
-    private readonly Dictionary<Fiber, Entry> _byFiber = [];
-    private readonly Dictionary<string, IsolateKey> _realms = new(StringComparer.Ordinal);
-    private readonly SemaphoreSlim _apply = new(1, 1);
-    private List<EntryOptions> _current = [];
+    private readonly Dictionary<string, Entry> entries = new(StringComparer.Ordinal);
+    private readonly Dictionary<Fiber, Entry> byFiber = [];
+    private readonly Dictionary<string, IsolateKey> realms = new(StringComparer.Ordinal);
+    private readonly SemaphoreSlim apply = new(1, 1);
+    private List<EntryOptions> current = [];
 
-    public LoaderService(Context ctx) : base(ctx, "loader")
+    /// <summary>Initializes a new instance of the <see cref="LoaderService"/> class.</summary>
+    /// <param name="ctx">
+    /// The context the service and top-level entries are created on. Config commits of entry
+    /// fibers are tracked for as long as this context's fiber is loaded.
+    /// </param>
+    public LoaderService(Context ctx)
+        : base(ctx, "loader")
     {
-        Resolver = new TypeComponentResolver();
-        ctx.Internal.Committing += OnCommitting;
-        ctx.Effect(() => () => ctx.Internal.Committing -= OnCommitting, "loader/committing");
+        this.Resolver = new TypeComponentResolver();
+        ctx.Internal.Committing += this.OnCommitting;
+        ctx.Effect(() => () => ctx.Internal.Committing -= this.OnCommitting, "loader/committing");
     }
-
-    public IComponentResolver Resolver { get; set; }
 
     /// <summary>Raised after a fiber commits a config change, so a file source can persist it.</summary>
     public event Action? ConfigChanged;
 
+    /// <summary>
+    /// Gets or sets the resolver that maps <see cref="EntryOptions.Name"/> to a component type.
+    /// Defaults to a <see cref="TypeComponentResolver"/> over the loaded assemblies.
+    /// </summary>
+    public IComponentResolver Resolver { get; set; }
+
+    /// <summary>Gets a snapshot of the live entries, including those that are currently not loaded.</summary>
     public IReadOnlyCollection<Entry> Entries
     {
-        get { lock (_entries) return [.. _entries.Values]; }
+        get
+        {
+            lock (this.entries)
+            {
+                return [.. this.entries.Values];
+            }
+        }
     }
 
+    /// <summary>Finds a live entry by composite id.</summary>
+    /// <param name="id">The composite id, such as <c>group:child</c>.</param>
+    /// <returns>The entry, or <c>null</c> if no entry has that id.</returns>
     public Entry? Find(string id)
     {
-        lock (_entries) return _entries.GetValueOrDefault(id);
+        lock (this.entries)
+        {
+            return this.entries.GetValueOrDefault(id);
+        }
     }
 
-    /// <summary>Current entry tree, as it would be written back to disk.</summary>
+    /// <summary>Returns the current entry tree, as it would be written back to disk.</summary>
+    /// <returns>A deep copy of the last applied tree, including config committed at runtime since.</returns>
     public IReadOnlyList<EntryOptions> Snapshot()
     {
-        lock (_entries) return _current.Select(options => options.Clone()).ToList();
+        lock (this.entries)
+        {
+            return this.current.Select(options => options.Clone()).ToList();
+        }
     }
 
     /// <summary>
-    /// Diff the desired tree against the live one and reconcile. Applies are serialised. An
+    /// Diffs the desired tree against the live one and reconciles. Applies are serialised. An
     /// invalid or failing entry is logged and skipped; it never stops its siblings.
     /// </summary>
+    /// <remarks>
+    /// Entries missing from <paramref name="desired"/> are disposed. Entries whose shape changed
+    /// (see <see cref="EntryOptions.SameShape(EntryOptions)"/>) are rebuilt; a config-only edit is
+    /// pushed to the live fiber. Children of a group are created by the group itself once it loads.
+    /// </remarks>
+    /// <param name="desired">The desired entry tree. It is copied; the caller's objects are not retained.</param>
+    /// <returns>A task that completes when the tree has been reconciled and every entry's fiber has settled.</returns>
     public async Task ApplyAsync(IReadOnlyList<EntryOptions> desired)
     {
-        await _apply.WaitAsync().ConfigureAwait(false);
+        await this.apply.WaitAsync().ConfigureAwait(false);
         try
         {
             var tree = desired.Select(options => options.Clone()).ToList();
             var flattened = new Dictionary<string, (EntryOptions Options, string? ParentId, int Order)>(StringComparer.Ordinal);
-            int order = 0;
-            Flatten(tree, null, flattened, ref order);
+            var order = 0;
+            this.Flatten(tree, null, flattened, ref order);
 
             string[] removed;
-            lock (_entries) removed = [.. _entries.Keys.Where(id => !flattened.ContainsKey(id))];
-            foreach (string id in removed) await RemoveAsync(id).ConfigureAwait(false);
+            lock (this.entries)
+            {
+                removed = [.. this.entries.Keys.Where(id => !flattened.ContainsKey(id))];
+            }
 
-            string[] sequence = flattened.OrderBy(pair => pair.Value.Order).Select(pair => pair.Key).ToArray();
+            foreach (var id in removed)
+            {
+                await this.RemoveAsync(id).ConfigureAwait(false);
+            }
+
+            var sequence = flattened.OrderBy(pair => pair.Value.Order).Select(pair => pair.Key).ToArray();
 
             // 1. records: rebuild entries whose shape changed, so step 2 recreates them
-            foreach (string? id in sequence)
+            foreach (var id in sequence)
             {
-                (EntryOptions? options, string? parentId, int position) = flattened[id];
+                (var options, var parentId, var position) = flattened[id];
                 Entry? entry;
-                lock (_entries) entry = _entries.GetValueOrDefault(id);
+                lock (this.entries)
+                {
+                    entry = this.entries.GetValueOrDefault(id);
+                }
+
                 if (entry is null)
                 {
                     entry = new Entry(id, parentId);
-                    lock (_entries) _entries[id] = entry;
+                    lock (this.entries)
+                    {
+                        this.entries[id] = entry;
+                    }
                 }
                 else if (!entry.Options.SameShape(options))
                 {
-                    await DisposeFiberAsync(entry).ConfigureAwait(false);
+                    await this.DisposeFiberAsync(entry).ConfigureAwait(false);
                 }
-                lock (_entries)
+
+                lock (this.entries)
                 {
                     entry.Options = WithoutChildren(options);
                     entry.Order = position;
@@ -216,108 +169,206 @@ public sealed class LoaderService : Service
 
             // 2. materialise, parents first; children of unloaded groups wait for their group
             var updates = new List<Task>();
-            foreach (string? id in sequence)
+            foreach (var id in sequence)
             {
-                Entry? entry = Find(id);
-                if (entry is null) continue;
+                var entry = this.Find(id);
+                if (entry is null)
+                {
+                    continue;
+                }
+
                 try
                 {
-                    if (Ensure(entry) is { } update) updates.Add(update);
+                    if (this.Ensure(entry) is { } update)
+                    {
+                        updates.Add(update);
+                    }
                 }
                 catch (Exception error)
                 {
-                    Ctx.Logger.Error(error);
+                    this.Ctx.Logger.Error(error);
                 }
             }
+
             await Task.WhenAll(updates).ConfigureAwait(false);
 
-            lock (_entries) _current = tree;
+            lock (this.entries)
+            {
+                this.current = tree;
+            }
         }
         finally
         {
-            _apply.Release();
+            this.apply.Release();
         }
 
-        await WaitAllAsync().ConfigureAwait(false);
+        await this.WaitAllAsync().ConfigureAwait(false);
     }
 
-    /// <summary>Wait until every entry's fiber settles. Failures are reported by the fibers themselves.</summary>
+    /// <summary>Waits until every entry's fiber settles. Failures are reported by the fibers themselves.</summary>
+    /// <returns>A task that completes when every current entry fiber has settled; it never faults for a failed fiber.</returns>
     public async Task WaitAllAsync()
     {
-        foreach (Entry entry in Entries)
+        foreach (var entry in this.Entries)
         {
-            if (entry.Fiber is null) continue;
-            try { await entry.Fiber.WaitAsync().ConfigureAwait(false); }
-            catch { /* reported by the fiber */ }
-        }
-    }
-
-    public async Task SetDisabledAsync(string id, bool disabled)
-    {
-        Entry entry = Find(id) ?? throw new CordisException($"unknown entry \"{id}\"");
-        var tree = Snapshot().ToList();
-        EntryOptions options = entry.Options.Clone();
-        options.Disabled = disabled;
-        Patch(tree, id, options);
-        await ApplyAsync(tree).ConfigureAwait(false);
-        ConfigChanged?.Invoke();
-    }
-
-    // ---------------------------------------------------------------- internals
-
-    private void Flatten(
-        List<EntryOptions> entries,
-        string? parentId,
-        Dictionary<string, (EntryOptions, string?, int)> sink,
-        ref int order)
-    {
-        foreach (EntryOptions options in entries)
-        {
-            if (string.IsNullOrEmpty(options.Id)) options.Id = Guid.NewGuid().ToString("n")[..8];
-
-            // An invalid entry is reported on its own: it and its subtree are skipped, so a live
-            // entry with that id is disposed, and its siblings still load.
-            string? issue = null;
-            if (options.Id.Contains(Separator)) issue = $"entry id \"{options.Id}\" must not contain \"{Separator}\"";
-            else if (!options.Group && string.IsNullOrWhiteSpace(options.Name)) issue = $"entry \"{options.Id}\" requires a name";
-
-            string id = parentId is null ? options.Id : $"{parentId}{Separator}{options.Id}";
-            if (issue is null && sink.ContainsKey(id)) issue = $"duplicate entry id \"{id}\"";
-            if (issue is not null)
+            if (entry.Fiber is null)
             {
-                Ctx.Logger.Error(new CordisException(issue));
                 continue;
             }
 
-            sink[id] = (options, parentId, order++);
-            if (options.Children is { Count: > 0 }) Flatten(options.Children, id, sink, ref order);
+            try
+            {
+                await entry.Fiber.WaitAsync().ConfigureAwait(false);
+            }
+            catch
+            { /* reported by the fiber */
+            }
         }
+    }
+
+    /// <summary>
+    /// Enables or disables one entry, reapplies the tree, and raises <see cref="ConfigChanged"/>
+    /// so a file source can persist the change. Disabling a group also unloads its children.
+    /// </summary>
+    /// <param name="id">The composite id of the entry.</param>
+    /// <param name="disabled"><c>true</c> to disable the entry; <c>false</c> to enable it.</param>
+    /// <returns>A task that completes when the updated tree has been applied and every entry has settled.</returns>
+    /// <exception cref="CordisException">No entry has the id <paramref name="id"/>.</exception>
+    public async Task SetDisabledAsync(string id, bool disabled)
+    {
+        var entry = this.Find(id) ?? throw new CordisException($"unknown entry \"{id}\"");
+        var tree = this.Snapshot().ToList();
+        var options = entry.Options.Clone();
+        options.Disabled = disabled;
+        Patch(tree, id, options);
+        await this.ApplyAsync(tree).ConfigureAwait(false);
+        this.ConfigChanged?.Invoke();
+    }
+
+    /// <summary>
+    /// Binds raw JSON to the component's config type, discovered from its static
+    /// <c>Schema</c> property or from the second constructor parameter.
+    /// </summary>
+    /// <param name="componentType">The component type whose config type is bound.</param>
+    /// <param name="json">The raw config, or <c>null</c> for none.</param>
+    /// <returns>The bound config, or <c>null</c> if there is no JSON or no config type.</returns>
+    internal static object? BindConfig(Type componentType, JsonElement? json)
+    {
+        if (json is null)
+        {
+            return null;
+        }
+
+        var configType = ConfigTypeOf(componentType);
+        return configType is null ? null : json.Value.Deserialize(configType, JsonOptions);
+    }
+
+    internal static Type? ConfigTypeOf(Type componentType)
+    {
+        var property = componentType.GetProperty("Schema", BindingFlags.Public | BindingFlags.Static | BindingFlags.FlattenHierarchy);
+        if (property?.GetValue(null) is IConfigSchema fromProperty)
+        {
+            return fromProperty.ConfigType;
+        }
+
+        var field = componentType.GetField("Schema", BindingFlags.Public | BindingFlags.Static | BindingFlags.FlattenHierarchy);
+        if (field?.GetValue(null) is IConfigSchema fromField)
+        {
+            return fromField.ConfigType;
+        }
+
+        var ctor = componentType.GetConstructors()
+            .FirstOrDefault(candidate => candidate.GetParameters() is { Length: 2 } parameters
+                && parameters[0].ParameterType == typeof(Context));
+        return ctor?.GetParameters()[1].ParameterType;
     }
 
     private static EntryOptions WithoutChildren(EntryOptions options)
     {
-        EntryOptions copy = options.Clone();
+        var copy = options.Clone();
         copy.Children = null;
         return copy;
     }
 
     private static bool Patch(List<EntryOptions> entries, string id, EntryOptions replacement)
     {
-        string[] segments = id.Split(Separator);
-        List<EntryOptions> cursor = entries;
-        for (int i = 0; i < segments.Length; i++)
+        var segments = id.Split(Separator);
+        var cursor = entries;
+        for (var i = 0; i < segments.Length; i++)
         {
-            int index = cursor.FindIndex(options => options.Id == segments[i]);
-            if (index < 0) return false;
+            var index = cursor.FindIndex(options => options.Id == segments[i]);
+            if (index < 0)
+            {
+                return false;
+            }
+
             if (i == segments.Length - 1)
             {
                 replacement.Children = cursor[index].Children;
                 cursor[index] = replacement;
                 return true;
             }
+
             cursor = cursor[index].Children ?? [];
         }
+
         return false;
+    }
+
+    private static bool JsonEquals(JsonElement? left, JsonElement? right)
+    {
+        if (left is null || right is null)
+        {
+            return left is null && right is null;
+        }
+
+        return left.Value.GetRawText() == right.Value.GetRawText();
+    }
+
+    // ---------------------------------------------------------------- internals
+    private void Flatten(
+        List<EntryOptions> entries,
+        string? parentId,
+        Dictionary<string, (EntryOptions Options, string? ParentId, int Order)> sink,
+        ref int order)
+    {
+        foreach (var options in entries)
+        {
+            if (string.IsNullOrEmpty(options.Id))
+            {
+                options.Id = Guid.NewGuid().ToString("n")[..8];
+            }
+
+            // An invalid entry is reported on its own: it and its subtree are skipped, so a live
+            // entry with that id is disposed, and its siblings still load.
+            string? issue = null;
+            if (options.Id.Contains(Separator, StringComparison.Ordinal))
+            {
+                issue = $"entry id \"{options.Id}\" must not contain \"{Separator}\"";
+            }
+            else if (!options.Group && string.IsNullOrWhiteSpace(options.Name))
+            {
+                issue = $"entry \"{options.Id}\" requires a name";
+            }
+
+            var id = parentId is null ? options.Id : $"{parentId}{Separator}{options.Id}";
+            if (issue is null && sink.ContainsKey(id))
+            {
+                issue = $"duplicate entry id \"{id}\"";
+            }
+
+            if (issue is not null)
+            {
+                this.Ctx.Logger.Error(new CordisException(issue));
+                continue;
+            }
+
+            sink[id] = (options, parentId, order++);
+            if (options.Children is { Count: > 0 })
+            {
+                this.Flatten(options.Children, id, sink, ref order);
+            }
+        }
     }
 
     /// <summary>
@@ -326,17 +377,20 @@ public sealed class LoaderService : Service
     /// </summary>
     private Task? Ensure(Entry entry)
     {
-        lock (_entries)
+        lock (this.entries)
         {
-            EntryOptions options = entry.Options;
-            if (options.Disabled) return null;
+            var options = entry.Options;
+            if (options.Disabled)
+            {
+                return null;
+            }
 
             Context scope;
             if (entry.ParentId is null)
             {
-                scope = Ctx;
+                scope = this.Ctx;
             }
-            else if (_entries.GetValueOrDefault(entry.ParentId)?.Scope is { } parentScope)
+            else if (this.entries.GetValueOrDefault(entry.ParentId)?.Scope is { } parentScope)
             {
                 scope = parentScope;
             }
@@ -347,31 +401,39 @@ public sealed class LoaderService : Service
 
             if (entry.Fiber is { Uid: not null } fiber)
             {
-                if (JsonEquals(entry.AppliedConfig, options.Config)) return null;
+                if (JsonEquals(entry.AppliedConfig, options.Config))
+                {
+                    return null;
+                }
+
                 entry.AppliedConfig = options.Config;
-                if (options.Group) return null;
-                return UpdateFiberAsync(fiber, BindConfig(Resolve(options.Name), options.Config));
+                if (options.Group)
+                {
+                    return null;
+                }
+
+                return this.UpdateFiberAsync(fiber, BindConfig(this.Resolve(options.Name), options.Config));
             }
 
-            foreach ((string? name, string? realm) in options.Isolate ?? [])
+            foreach ((var name, var realm) in options.Isolate ?? [])
             {
-                scope = scope.Isolate(name, RealmKey(name, realm, entry.Id));
+                scope = scope.Isolate(name, this.RealmKey(name, realm, entry.Id));
             }
 
             Fiber created;
             if (options.Group)
             {
-                created = scope.Apply($"group:{options.Id}", groupCtx => LoadGroup(entry, groupCtx), options.Inject ?? []);
+                created = scope.Apply($"group:{options.Id}", groupCtx => this.LoadGroup(entry, groupCtx), options.Inject ?? []);
             }
             else
             {
-                Type type = Resolve(options.Name);
+                var type = this.Resolve(options.Name);
                 created = scope.Use(type, BindConfig(type, options.Config), options.Inject);
             }
 
             entry.Fiber = created;
             entry.AppliedConfig = options.Config;
-            _byFiber[created] = entry;
+            this.byFiber[created] = entry;
             return null;
         }
     }
@@ -380,31 +442,43 @@ public sealed class LoaderService : Service
     private void LoadGroup(Entry group, Context groupCtx)
     {
         Entry[] children;
-        lock (_entries)
+        lock (this.entries)
         {
             group.Scope = groupCtx;
-            children = [.. _entries.Values.Where(entry => entry.ParentId == group.Id).OrderBy(entry => entry.Order)];
+            children = [.. this.entries.Values.Where(entry => entry.ParentId == group.Id).OrderBy(entry => entry.Order)];
         }
 
         // registered first, so it runs last: after the children (effects of this fiber) are gone
-        groupCtx.Effect(() => () =>
-        {
-            lock (_entries)
+        groupCtx.Effect(
+            () => () =>
             {
-                group.Scope = null;
-                foreach (Entry? child in _entries.Values.Where(entry => entry.ParentId == group.Id))
+                lock (this.entries)
                 {
-                    if (child.Fiber is not { Uid: null } disposed) continue;
-                    _byFiber.Remove(disposed);
-                    child.Fiber = null;
-                }
-            }
-        }, "loader/group");
+                    group.Scope = null;
+                    foreach (var child in this.entries.Values.Where(entry => entry.ParentId == group.Id))
+                    {
+                        if (child.Fiber is not { Uid: null } disposed)
+                        {
+                            continue;
+                        }
 
-        foreach (Entry child in children)
+                        this.byFiber.Remove(disposed);
+                        child.Fiber = null;
+                    }
+                }
+            },
+            "loader/group");
+
+        foreach (var child in children)
         {
-            try { Ensure(child); }
-            catch (Exception error) { Ctx.Logger.Error(error); }
+            try
+            {
+                this.Ensure(child);
+            }
+            catch (Exception error)
+            {
+                this.Ctx.Logger.Error(error);
+            }
         }
     }
 
@@ -416,7 +490,7 @@ public sealed class LoaderService : Service
         }
         catch (Exception error) when (fiber.State != FiberState.Failed)
         {
-            Ctx.Logger.Error(error); // e.g. rejected by the schema before anything changed
+            this.Ctx.Logger.Error(error); // e.g. rejected by the schema before anything changed
         }
         catch
         {
@@ -427,24 +501,35 @@ public sealed class LoaderService : Service
     private async Task DisposeFiberAsync(Entry entry)
     {
         Fiber? fiber;
-        lock (_entries)
+        lock (this.entries)
         {
             fiber = entry.Fiber;
             entry.Fiber = null;
             entry.Scope = null;
-            if (fiber is not null) _byFiber.Remove(fiber);
+            if (fiber is not null)
+            {
+                this.byFiber.Remove(fiber);
+            }
         }
-        if (fiber is not null) await fiber.DisposeAsync().ConfigureAwait(false);
+
+        if (fiber is not null)
+        {
+            await fiber.DisposeAsync().ConfigureAwait(false);
+        }
     }
 
     private async Task RemoveAsync(string id)
     {
         Entry? entry;
-        lock (_entries)
+        lock (this.entries)
         {
-            if (!_entries.Remove(id, out entry)) return;
+            if (!this.entries.Remove(id, out entry))
+            {
+                return;
+            }
         }
-        await DisposeFiberAsync(entry).ConfigureAwait(false);
+
+        await this.DisposeFiberAsync(entry).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -453,61 +538,39 @@ public sealed class LoaderService : Service
     /// </summary>
     private IsolateKey RealmKey(string service, string realm, string entryId)
     {
-        string label = realm == "true" ? $"{service}#{entryId}" : $"{service}@{realm}";
-        lock (_realms)
+        var label = realm == "true" ? $"{service}#{entryId}" : $"{service}@{realm}";
+        lock (this.realms)
         {
-            if (!_realms.TryGetValue(label, out IsolateKey? key)) _realms[label] = key = new IsolateKey(label);
+            if (!this.realms.TryGetValue(label, out var key))
+            {
+                this.realms[label] = key = new IsolateKey(label);
+            }
+
             return key;
         }
     }
 
     private Type Resolve(string name)
-        => Resolver.Resolve(name) ?? throw new CordisException($"cannot resolve component \"{name}\"");
+        => this.Resolver.Resolve(name) ?? throw new CordisException($"cannot resolve component \"{name}\"");
 
     private void OnCommitting(Fiber fiber, object? config)
     {
-        lock (_entries)
+        lock (this.entries)
         {
-            if (!_byFiber.TryGetValue(fiber, out Entry? entry)) return;
-            EntryOptions options = entry.Options.Clone();
+            if (!this.byFiber.TryGetValue(fiber, out var entry))
+            {
+                return;
+            }
+
+            var options = entry.Options.Clone();
             options.Config = config is null
                 ? null
                 : JsonSerializer.SerializeToElement(config, config.GetType(), JsonOptions);
             entry.Options = options;
             entry.AppliedConfig = options.Config;
-            Patch(_current, entry.Id, options.Clone());
+            Patch(this.current, entry.Id, options.Clone());
         }
-        ConfigChanged?.Invoke();
-    }
 
-    private static bool JsonEquals(JsonElement? left, JsonElement? right)
-    {
-        if (left is null || right is null) return left is null && right is null;
-        return left.Value.GetRawText() == right.Value.GetRawText();
-    }
-
-    /// <summary>
-    /// Binds raw JSON to the component's config type, discovered from its static
-    /// <c>Schema</c> property or from the second constructor parameter.
-    /// </summary>
-    internal static object? BindConfig(Type componentType, JsonElement? json)
-    {
-        if (json is null) return null;
-        Type? configType = ConfigTypeOf(componentType);
-        return configType is null ? null : json.Value.Deserialize(configType, JsonOptions);
-    }
-
-    internal static Type? ConfigTypeOf(Type componentType)
-    {
-        PropertyInfo? property = componentType.GetProperty("Schema", BindingFlags.Public | BindingFlags.Static | BindingFlags.FlattenHierarchy);
-        if (property?.GetValue(null) is IConfigSchema fromProperty) return fromProperty.ConfigType;
-
-        FieldInfo? field = componentType.GetField("Schema", BindingFlags.Public | BindingFlags.Static | BindingFlags.FlattenHierarchy);
-        if (field?.GetValue(null) is IConfigSchema fromField) return fromField.ConfigType;
-
-        ConstructorInfo? ctor = componentType.GetConstructors()
-            .FirstOrDefault(candidate => candidate.GetParameters() is { Length: 2 } parameters
-                && parameters[0].ParameterType == typeof(Context));
-        return ctor?.GetParameters()[1].ParameterType;
+        this.ConfigChanged?.Invoke();
     }
 }

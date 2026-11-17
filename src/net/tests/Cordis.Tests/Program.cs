@@ -1,3 +1,9 @@
+﻿// -----------------------------------------------------------------------
+// <copyright file="Program.cs" company="Microsoft Corp.">
+//     Copyright (c) Microsoft Corp. All rights reserved.
+// </copyright>
+// -----------------------------------------------------------------------
+
 using System.Text.Json;
 using Cordis;
 using Cordis.Loading;
@@ -5,16 +11,23 @@ using Cordis.Tests;
 using Cordis.Timers;
 
 // ------------------------------------------------------------------- tests
-
 Harness.Case("effects dispose in reverse order", async () =>
 {
     var root = new Context();
     var log = new List<string>();
 
-    Fiber fiber = root.Apply("p", ctx =>
+    var fiber = root.Apply("p", ctx =>
     {
-        ctx.Effect(() => { log.Add("a"); return () => log.Add("~a"); });
-        ctx.Effect(() => { log.Add("b"); return () => log.Add("~b"); });
+        ctx.Effect(() =>
+        {
+            log.Add("a");
+            return () => log.Add("~a");
+        });
+        ctx.Effect(() =>
+        {
+            log.Add("b");
+            return () => log.Add("~b");
+        });
     });
 
     await fiber;
@@ -29,7 +42,7 @@ Harness.Case("generator effects nest and unwind together", async () =>
     var root = new Context();
     var log = new List<string>();
 
-    Fiber fiber = root.Apply("p", ctx =>
+    var fiber = root.Apply("p", ctx =>
     {
         ctx.EffectMany(Setup, "resources");
 
@@ -37,9 +50,17 @@ Harness.Case("generator effects nest and unwind together", async () =>
         {
             await Task.Yield();
             log.Add("open:1");
-            yield return () => { log.Add("close:1"); return default; };
+            yield return () =>
+            {
+                log.Add("close:1");
+                return default;
+            };
             log.Add("open:2");
-            yield return ctx.Effect(() => { log.Add("open:3"); return () => log.Add("close:3"); }).ToDisposer();
+            yield return ctx.Effect(() =>
+            {
+                log.Add("open:3");
+                return () => log.Add("close:3");
+            }).ToDisposer();
         }
     });
 
@@ -62,8 +83,14 @@ Harness.Case("undeclared service access is rejected", async () =>
     {
         // root provisions are reachable from every fiber, like upstream's locate()
         global = ctx.Get("global");
-        try { ctx.Get("secret"); }
-        catch (Exception error) { captured = error; }
+        try
+        {
+            ctx.Get("secret");
+        }
+        catch (Exception error)
+        {
+            captured = error;
+        }
     });
 
     Assert.Equal(1, global);
@@ -74,10 +101,10 @@ Harness.Case("undeclared service access is rejected", async () =>
 Harness.Case("dependents load and unload with their provider", async () =>
 {
     var root = new Context();
-    int loads = 0;
-    int unloads = 0;
+    var loads = 0;
+    var unloads = 0;
 
-    Fiber consumer = root.Inject(["counter"], ctx =>
+    var consumer = root.Inject(["counter"], ctx =>
     {
         loads++;
         ctx.Effect(() => () => unloads++);
@@ -87,7 +114,7 @@ Harness.Case("dependents load and unload with their provider", async () =>
     Assert.Equal(FiberState.Pending, consumer.State);
     Assert.Equal(0, loads);
 
-    Fiber provider = await root.Use<CounterService>();
+    var provider = await root.Use<CounterService>();
     await consumer;
     Assert.Equal(FiberState.Active, consumer.State);
     Assert.Equal(1, loads);
@@ -105,9 +132,9 @@ Harness.Case("dependents load and unload with their provider", async () =>
 Harness.Case("provider identity change reloads dependents", async () =>
 {
     var root = new Context();
-    int loads = 0;
-    EffectHandle handle = root.Provide("thing", 1);
-    Fiber consumer = root.Inject(["thing"], _ => loads++);
+    var loads = 0;
+    var handle = root.Provide("thing", 1);
+    var consumer = root.Inject(["thing"], _ => loads++);
     await consumer;
     Assert.Equal(1, loads);
 
@@ -120,10 +147,10 @@ Harness.Case("provider identity change reloads dependents", async () =>
 Harness.Case("IAsyncInit gates dependents", async () =>
 {
     var root = new Context();
-    bool loaded = false;
+    var loaded = false;
 
-    Fiber provider = root.Use<GatedService>();
-    Fiber consumer = root.Inject(["gated"], _ => loaded = true);
+    var provider = root.Use<GatedService>();
+    var consumer = root.Inject(["gated"], _ => loaded = true);
 
     await consumer;
     Assert.True(!loaded, "dependent ran before init completed");
@@ -140,7 +167,7 @@ Harness.Case("isolate creates a private realm", async () =>
     var root = new Context();
     root.Provide("db", "shared");
 
-    Context isolated = root.Isolate("db");
+    var isolated = root.Isolate("db");
     isolated.Provide("db", "private");
 
     string? outer = null;
@@ -155,8 +182,8 @@ Harness.Case("isolate creates a private realm", async () =>
 Harness.Case("intercept layers config down the chain", async () =>
 {
     var root = new Context();
-    Context scoped = root.Intercept(LoggerService.ServiceName, new LoggerConfig { Level = LogLevel.Debug });
-    Context deeper = scoped.Intercept(LoggerService.ServiceName, new LoggerConfig { Level = LogLevel.Silent });
+    var scoped = root.Intercept(LoggerService.ServiceName, new LoggerConfig { Level = LogLevel.Debug });
+    var deeper = scoped.Intercept(LoggerService.ServiceName, new LoggerConfig { Level = LogLevel.Silent });
 
     Assert.True(root.GetInterceptConfig<LoggerConfig>(LoggerService.ServiceName) is null);
     Assert.Equal(LogLevel.Debug, scoped.GetInterceptConfig<LoggerConfig>(LoggerService.ServiceName)!.Level);
@@ -168,9 +195,9 @@ Harness.Case("intercept layers config down the chain", async () =>
 Harness.Case("listeners unregister when their fiber unloads", async () =>
 {
     var root = new Context();
-    int seen = 0;
+    var seen = 0;
 
-    Fiber fiber = root.Apply("p", ctx => ctx.On(TestEvents.Tick, (_, n) => { seen += n; }));
+    var fiber = root.Apply("p", ctx => ctx.On(TestEvents.Tick, (_, n) => { seen += n; }));
     await fiber;
 
     await root.EmitAsync(TestEvents.Tick, 2);
@@ -197,7 +224,7 @@ Harness.Case("waterfall composes middleware around a terminal", async () =>
     await root.Apply("outer", ctx => ctx.On(TestEvents.Transform, async (_, value, next) => "[" + await next(value) + "]"));
     await root.Apply("inner", ctx => ctx.On(TestEvents.Transform, async (_, value, next) => await next(value + "!")));
 
-    string result = await root.WaterfallAsync(TestEvents.Transform, "x", value => new ValueTask<string>(value.ToUpperInvariant()));
+    var result = await root.WaterfallAsync(TestEvents.Transform, "x", value => new ValueTask<string>(value.ToUpperInvariant()));
     Assert.Equal("[X!]", result);
 });
 
@@ -206,12 +233,12 @@ Harness.Case("config is validated before the plugin body runs", async () =>
     var root = new Context();
     EchoPlugin.Log.Clear();
 
-    Fiber bad = root.Use<EchoPlugin>(new EchoPlugin.Options { Times = 99, Text = "no" });
+    var bad = root.Use<EchoPlugin>(new EchoPlugin.Options { Times = 99, Text = "no" });
     await Assert.ThrowsAsync<ConfigValidationException>(() => bad.WaitAsync());
     Assert.Equal(FiberState.Failed, bad.State);
     Assert.Equal(0, EchoPlugin.Log.Count);
 
-    Fiber good = await root.Use<EchoPlugin>(new EchoPlugin.Options { Times = 2, Text = "hi" });
+    var good = await root.Use<EchoPlugin>(new EchoPlugin.Options { Times = 2, Text = "hi" });
     Assert.Equal("+hi hi", EchoPlugin.Log[0]);
 
     await good.UpdateAsync(new EchoPlugin.Options { Times = 1, Text = "bye" });
@@ -224,14 +251,14 @@ Harness.Case("timers are owned by the calling fiber", async () =>
     var root = new Context();
     await root.Use<TimerService>();
 
-    int ticks = 0;
-    Fiber fiber = await root.Inject(["timer"], ctx =>
+    var ticks = 0;
+    var fiber = await root.Inject(["timer"], ctx =>
         ctx.Get<TimerService>().Interval(() => Interlocked.Increment(ref ticks), TimeSpan.FromMilliseconds(10)));
 
     await Assert.Eventually(() => Volatile.Read(ref ticks) > 2, "interval never fired");
     await fiber.DisposeAsync();
 
-    int settled = Volatile.Read(ref ticks);
+    var settled = Volatile.Read(ref ticks);
     await Task.Delay(60);
     Assert.Equal(settled, Volatile.Read(ref ticks), "timer kept firing after its owner unloaded");
 });
@@ -241,7 +268,7 @@ Harness.Case("nested plugin trees unload from the leaves up", async () =>
     var root = new Context();
     var log = new List<string>();
 
-    Fiber outer = root.Apply("outer", ctx =>
+    var outer = root.Apply("outer", ctx =>
     {
         ctx.Effect(() => () => log.Add("~outer"));
         ctx.Apply("inner", inner =>
@@ -261,8 +288,8 @@ Harness.Case("loader materialises an entry tree", async () =>
 {
     var root = new Context();
     EchoPlugin.Log.Clear();
-    Fiber loader = await root.Use<LoaderService>();
-    LoaderService service = root.Get<LoaderService>();
+    var loader = await root.Use<LoaderService>();
+    var service = root.Get<LoaderService>();
 
     var entries = new List<EntryOptions>
     {
@@ -306,26 +333,27 @@ Harness.Case("loader materialises an entry tree", async () =>
 
 Harness.Case("loader reads and rewrites a json file", async () =>
 {
-    DirectoryInfo directory = Directory.CreateTempSubdirectory("cordis-loader");
-    string path = Path.Combine(directory.FullName, "cordis.json");
+    var directory = Directory.CreateTempSubdirectory("cordis-loader");
+    var path = Path.Combine(directory.FullName, "cordis.json");
     EchoPlugin.Log.Clear();
 
-    await File.WriteAllTextAsync(path, """
+    var json = """
     [
       { "id": "echo", "name": "EchoPlugin", "config": { "times": 1, "text": "file" } }
     ]
-    """);
+    """;
+    await File.WriteAllTextAsync(path, json);
 
     var root = new Context();
     await root.Use<LoaderService>();
     await root.Use<JsonConfigFile>(new JsonConfigFile.Options { Path = path, Watch = false });
 
-    LoaderService service = root.Get<LoaderService>();
+    var service = root.Get<LoaderService>();
     Assert.True(service.Find("echo")!.IsActive, "entry from file is not active");
     Assert.Equal("+file", EchoPlugin.Log[0]);
 
     await service.Find("echo")!.Fiber!.UpdateAsync(new EchoPlugin.Options { Times = 2, Text = "file" });
-    await Assert.Eventually(() => File.ReadAllText(path).Contains("\"times\": 2"), "config was not written back");
+    await Assert.Eventually(() => File.ReadAllText(path).Contains("\"times\": 2", StringComparison.Ordinal), "config was not written back");
 
     await root.DisposeAsync();
     directory.Delete(recursive: true);

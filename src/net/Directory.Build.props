@@ -9,9 +9,24 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <!-- Enforce .editorconfig code style at build time (IDE* rules at warning severity). -->
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
-    <!-- Required for IDE0005 (unnecessary usings) to run during build. -->
+    <!--
+      Documentation is required on public and protected members: generating the XML file turns
+      on CS1591 and the StyleCop SA16xx rules (errors in CodeAnalysis/*.ruleset). It also lets
+      IDE0005 (unnecessary usings) run during build. Internal members are exempt (stylecop.json).
+    -->
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <!-- NU1507: several machine-level feeds without source mapping. Add a repo nuget.config to clear it. -->
     <WarningsNotAsErrors>$(WarningsNotAsErrors);NU1507</WarningsNotAsErrors>
   </PropertyGroup>
+
+  <!-- Static analysis, as in ASZ-UpdateService: StyleCop.Analyzers plus the CodeAnalysis rulesets. -->
+  <PropertyGroup>
+    <IsCordisTestProject>$(MSBuildProjectName.EndsWith('.Tests'))</IsCordisTestProject>
+    <CodeAnalysisRuleSet Condition="'$(IsCordisTestProject)' != 'true'">$(MSBuildThisFileDirectory)CodeAnalysis\Settings.ruleset</CodeAnalysisRuleSet>
+    <CodeAnalysisRuleSet Condition="'$(IsCordisTestProject)' == 'true'">$(MSBuildThisFileDirectory)CodeAnalysis\TestSettings.ruleset</CodeAnalysisRuleSet>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="StyleCop.Analyzers" PrivateAssets="all" IncludeAssets="runtime; build; native; contentfiles; analyzers" />
+    <AdditionalFiles Include="$(MSBuildThisFileDirectory)stylecop.json" Link="stylecop.json" />
+  </ItemGroup>
 </Project>

@@ -1,18 +1,26 @@
-using Cordis.Timers;
+﻿// -----------------------------------------------------------------------
+// <copyright file="TimerTests.cs" company="Microsoft Corp.">
+//     Copyright (c) Microsoft Corp. All rights reserved.
+// </copyright>
+// -----------------------------------------------------------------------
 
 namespace Cordis.Tests;
 
+using Cordis.Timers;
+
+/// <summary>Tests for the <see cref="TimerService"/> throttle and debounce helpers.</summary>
 public static class TimerTests
 {
+    /// <summary>Registers the timer test cases with the <see cref="Harness"/>.</summary>
     public static void Register()
     {
         Harness.Case("throttle runs the first call and one trailing call per window", async () =>
         {
             var root = new Context();
             await root.Use<TimerService>();
-            int calls = 0;
+            var calls = 0;
             Action? throttled = null;
-            Fiber fiber = await root.Inject(["timer"], ctx =>
+            var fiber = await root.Inject(["timer"], ctx =>
                 throttled = ctx.Get<TimerService>().Throttle(() => Interlocked.Increment(ref calls), TimeSpan.FromMilliseconds(80)));
 
             throttled!();
@@ -29,7 +37,7 @@ public static class TimerTests
         {
             var root = new Context();
             await root.Use<TimerService>();
-            int calls = 0;
+            var calls = 0;
             Action? throttled = null;
             await root.Inject(["timer"], ctx =>
                 throttled = ctx.Get<TimerService>().Throttle(() => Interlocked.Increment(ref calls), TimeSpan.FromMilliseconds(50), noTrailing: true));
@@ -44,12 +52,12 @@ public static class TimerTests
         {
             var root = new Context();
             await root.Use<TimerService>();
-            int calls = 0;
+            var calls = 0;
             Action? throttled = null;
             Action<int>? debounced = null;
-            Fiber fiber = await root.Inject(["timer"], ctx =>
+            var fiber = await root.Inject(["timer"], ctx =>
             {
-                TimerService timer = ctx.Get<TimerService>();
+                var timer = ctx.Get<TimerService>();
                 throttled = timer.Throttle(() => Interlocked.Increment(ref calls), TimeSpan.FromMilliseconds(40));
                 debounced = timer.Debounce<int>(_ => Interlocked.Increment(ref calls), TimeSpan.FromMilliseconds(40));
             });
@@ -68,13 +76,18 @@ public static class TimerTests
         {
             var root = new Context();
             await root.Use<TimerService>();
-            int calls = 0;
+            var calls = 0;
             Action? throttled = null;
             await root.Inject(["timer"], ctx =>
-                throttled = ctx.Get<TimerService>().Throttle(() =>
-                {
-                    if (Interlocked.Increment(ref calls) == 1) throttled!(); // re-enter inside the window
-                }, TimeSpan.FromMilliseconds(40)));
+                throttled = ctx.Get<TimerService>().Throttle(
+                    () =>
+                    {
+                        if (Interlocked.Increment(ref calls) == 1)
+                        {
+                            throttled!(); // re-enter inside the window
+                        }
+                    },
+                    TimeSpan.FromMilliseconds(40)));
 
             throttled!();
             await Assert.Eventually(() => Volatile.Read(ref calls) == 2, "re-entrant trailing call was lost");

@@ -18,14 +18,14 @@ Paths below are relative to `src/net/`, where `Cordis.slnx` lives.
 Cordis                core: Context, Fiber, effects, services, registry, events, logger
 Cordis.Timer          TimerService — timers owned by the calling fiber
 Cordis.Loader         LoaderService + JsonConfigFile — declarative, hot-reloading entry tree
-tests/Cordis.Tests    47 behavioural tests (no external test framework)
+tests/Cordis.Tests    48 behavioural tests (no external test framework)
 samples/Cordis.Sample runnable end-to-end demo
 ```
 
 ```bash
 cd src/net
 dotnet build Cordis.slnx
-dotnet run --project tests/Cordis.Tests    # 47 tests, custom runner
+dotnet run --project tests/Cordis.Tests    # 48 tests, custom runner
 dotnet run --project samples/Cordis.Sample
 dotnet format Cordis.slnx                  # apply the enforced code style
 ```
@@ -36,9 +36,26 @@ dotnet format Cordis.slnx                  # apply the enforced code style
 | --- | --- |
 | `global.json` | Pins the .NET 10 SDK (`10.0.100`, rolling forward to later 10.0 feature bands only). |
 | `Cordis.slnx` | XML solution file. |
-| `Directory.Build.props` | Shared settings: `net10.0`, nullable, implicit usings, warnings as errors, code style enforced at build. |
-| `Directory.Packages.props` | Central package management. There are no NuGet dependencies yet; add versions here, never in a `.csproj`. |
-| `.editorconfig` | The dotnet/runtime coding style, with its suggestions raised to warnings, so a style violation fails the build. |
+| `Directory.Build.props` | Shared settings: `net10.0`, nullable, implicit usings, warnings as errors, XML documentation, code style and StyleCop enforced at build. |
+| `Directory.Packages.props` | Central package management. The only package is `StyleCop.Analyzers` (build-time only); add versions here, never in a `.csproj`. |
+| `.editorconfig`, `stylecop.json`, `CodeAnalysis/*.ruleset` | The ASZ-UpdateService coding style and analysis rules (StyleCop SA rules and selected CA/CS rules as errors). |
+
+### Code style
+
+The style is taken from the ASZ-UpdateService repository, adapted only to keep LF line
+endings. Every rule below is an error, so a violation fails `dotnet build`:
+
+- every file starts with the Microsoft copyright header (with its file name);
+- `using` directives go inside the namespace; one type per file, named after the type
+  (`ChainMap{TValue}.cs` for generics);
+- instance members are always qualified with `this.`; private fields are camelCase without an
+  underscore, and private static readonly fields PascalCase;
+- members are ordered by kind, then access, then static-ness, as StyleCop requires;
+- public and protected members carry complete XML documentation (`<summary>`, every
+  `<param>`, `<typeparam>` and `<returns>`); internal and private members are exempt;
+- C# files are UTF-8 with a byte order mark.
+
+Most violations are fixed by `dotnet format Cordis.slnx`; documentation is written by hand.
 
 The build treats `NU1507` (several machine-level NuGet feeds without source mapping) as a
 plain warning. A repository `nuget.config` with `<clear />` and package source mapping

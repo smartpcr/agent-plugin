@@ -1,33 +1,28 @@
+﻿// -----------------------------------------------------------------------
+// <copyright file="CoreTests.cs" company="Microsoft Corp.">
+//     Copyright (c) Microsoft Corp. All rights reserved.
+// </copyright>
+// -----------------------------------------------------------------------
+
 namespace Cordis.Tests;
 
 /// <summary>Ports of the upstream core behaviour added since the initial port (see README "Upstream sync").</summary>
 public static class CoreTests
 {
-    private static TaskCompletionSource Gate() => new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-    private static (Context Root, MemoryExporter Logs) Quiet()
-    {
-        var root = new Context();
-        root.Loggers.ClearExporters();
-        var logs = new MemoryExporter();
-        root.Loggers.AddExporter(logs);
-        return (root, logs);
-    }
-
+    /// <summary>Registers the core behaviour test cases with the <see cref="Harness"/>.</summary>
     public static void Register()
     {
         // ------------------------------------------------------------ fiber lifecycle
-
         Harness.Case("failed fiber does not reload when a provider changes (#98)", async () =>
         {
-            (Context? root, MemoryExporter _) = Quiet();
-            int loads = 0;
-            Fiber fiber = root.Inject(["thing"], _ =>
+            (var root, var _) = Quiet();
+            var loads = 0;
+            var fiber = root.Inject(["thing"], _ =>
             {
                 loads++;
                 throw new InvalidOperationException("boom");
             });
-            EffectHandle first = root.Provide("thing", 1);
+            var first = root.Provide("thing", 1);
             await Assert.ThrowsAsync<InvalidOperationException>(() => fiber.WaitAsync());
             Assert.Equal(FiberState.Failed, fiber.State);
 
@@ -41,10 +36,10 @@ public static class CoreTests
         Harness.Case("restart while loading is not lost (#189)", async () =>
         {
             var root = new Context();
-            TaskCompletionSource started = Gate();
-            TaskCompletionSource release = Gate();
-            int applied = 0;
-            Fiber fiber = root.ApplyAsync("p", async _ =>
+            var started = Gate();
+            var release = Gate();
+            var applied = 0;
+            var fiber = root.ApplyAsync("p", async _ =>
             {
                 if (Interlocked.Increment(ref applied) == 1)
                 {
@@ -54,7 +49,7 @@ public static class CoreTests
             });
 
             await started.Task;
-            Task restart = fiber.RestartAsync();
+            var restart = fiber.RestartAsync();
             release.SetResult();
             await restart;
             Assert.Equal(2, applied);
@@ -65,12 +60,12 @@ public static class CoreTests
         {
             var root = new Context();
             GatedValue.Reset();
-            Fiber fiber = await root.Use<GatedValue>(new GatedValue.Options { Value = 0 });
+            var fiber = await root.Use<GatedValue>(new GatedValue.Options { Value = 0 });
 
-            Task first = fiber.UpdateAsync(new GatedValue.Options { Value = 1 });
+            var first = fiber.UpdateAsync(new GatedValue.Options { Value = 1 });
             await GatedValue.Started.Task;
-            Task second = fiber.UpdateAsync(new GatedValue.Options { Value = 2 });
-            Task third = fiber.UpdateAsync(new GatedValue.Options { Value = 3 });
+            var second = fiber.UpdateAsync(new GatedValue.Options { Value = 2 });
+            var third = fiber.UpdateAsync(new GatedValue.Options { Value = 3 });
             GatedValue.Release.SetResult();
             await Task.WhenAll(first, second, third);
 
@@ -84,20 +79,24 @@ public static class CoreTests
 
         Harness.Case("superseded load failure does not fail the latest update", async () =>
         {
-            (Context? root, MemoryExporter? logs) = Quiet();
-            TaskCompletionSource started = Gate();
-            TaskCompletionSource release = Gate();
-            int calls = 0;
-            Fiber fiber = root.ApplyAsync("p", async _ =>
+            (var root, var logs) = Quiet();
+            var started = Gate();
+            var release = Gate();
+            var calls = 0;
+            var fiber = root.ApplyAsync("p", async _ =>
             {
-                if (Interlocked.Increment(ref calls) != 1) return;
+                if (Interlocked.Increment(ref calls) != 1)
+                {
+                    return;
+                }
+
                 started.SetResult();
                 await release.Task;
                 throw new InvalidOperationException("superseded load");
             });
 
             await started.Task;
-            Task updating = fiber.UpdateAsync(null);
+            var updating = fiber.UpdateAsync(null);
             release.SetResult();
             await updating;
             Assert.Equal(FiberState.Active, fiber.State);
@@ -107,9 +106,9 @@ public static class CoreTests
         Harness.Case("update hook accepts a config in place and dies with the fiber (#56)", async () =>
         {
             var root = new Context();
-            int applied = 0;
+            var applied = 0;
             var received = new List<int>();
-            Fiber fiber = await root.Use<ValueComponent>(new ValueComponent.Options { Value = 1 });
+            var fiber = await root.Use<ValueComponent>(new ValueComponent.Options { Value = 1 });
             ValueComponent.OnApply = _ => applied++;
             fiber.Ctx.OnUpdate<ValueComponent.Options>(options => received.Add(options.Value));
 
@@ -131,7 +130,7 @@ public static class CoreTests
             var root = new Context();
             var committed = new List<object?>();
             root.Internal.Committing += (_, config) => committed.Add(config);
-            Fiber fiber = await root.Use<EchoPlugin>(new EchoPlugin.Options { Times = 1, Text = "a" });
+            var fiber = await root.Use<EchoPlugin>(new EchoPlugin.Options { Times = 1, Text = "a" });
 
             var invalid = new EchoPlugin.Options { Times = 99 };
             await Assert.ThrowsAsync<ConfigValidationException>(() => fiber.UpdateAsync(invalid));
@@ -148,11 +147,24 @@ public static class CoreTests
 
         Harness.Case("disposed fiber settles to Disposed and reports it (#133)", async () =>
         {
-            (Context? root, MemoryExporter _) = Quiet();
+            (var root, var _) = Quiet();
             var states = new List<FiberState>();
-            Fiber fiber = root.Apply("p", _ => throw new InvalidOperationException("boom"));
-            try { await fiber; } catch (InvalidOperationException) { }
-            root.Internal.StatusChanged += (changed, _) => { if (ReferenceEquals(changed, fiber)) states.Add(changed.State); };
+            var fiber = root.Apply("p", _ => throw new InvalidOperationException("boom"));
+            try
+            {
+                await fiber;
+            }
+            catch (InvalidOperationException)
+            {
+            }
+
+            root.Internal.StatusChanged += (changed, _) =>
+            {
+                if (ReferenceEquals(changed, fiber))
+                {
+                    states.Add(changed.State);
+                }
+            };
 
             await fiber.DisposeAsync();
             Assert.Equal(FiberState.Disposed, fiber.State);
@@ -162,11 +174,12 @@ public static class CoreTests
         Harness.Case("generator effect stops advancing once disposed and runs its finally (#268)", async () =>
         {
             var root = new Context();
-            TaskCompletionSource release = Gate();
+            var release = Gate();
             var events = new List<string>();
             EffectHandle? handle = null;
+
             // the generator keeps the fiber loading until it finishes, so do not await the fiber
-            Fiber fiber = root.Apply("p", ctx =>
+            var fiber = root.Apply("p", ctx =>
             {
                 handle = ctx.EffectMany(Steps);
 
@@ -174,9 +187,17 @@ public static class CoreTests
                 {
                     try
                     {
-                        yield return () => { events.Add("dispose 1"); return default; };
+                        yield return () =>
+                        {
+                            events.Add("dispose 1");
+                            return default;
+                        };
                         await release.Task;
-                        yield return () => { events.Add("dispose 2"); return default; };
+                        yield return () =>
+                        {
+                            events.Add("dispose 2");
+                            return default;
+                        };
                         events.Add("outdated continuation");
                     }
                     finally
@@ -187,7 +208,7 @@ public static class CoreTests
             });
 
             await Assert.Eventually(() => Volatile.Read(ref handle) is not null, "effect never started");
-            Task disposing = handle!.DisposeAsync().AsTask();
+            var disposing = handle!.DisposeAsync().AsTask();
             release.SetResult();
             await disposing;
             Assert.Equal("dispose 2,finally,dispose 1", string.Join(',', events));
@@ -195,17 +216,29 @@ public static class CoreTests
         });
 
         // ---------------------------------------------------------- service disposal (#196)
-
         Harness.Case("provider effects outlive a dependent's async cleanup", async () =>
         {
             var root = new Context();
-            TaskCompletionSource gate = Gate();
+            var gate = Gate();
             var timeline = new List<string>();
-            Fiber provider = await root.Apply("provider", ctx =>
+            var provider = await root.Apply("provider", ctx =>
             {
-                bool closed = false;
-                ctx.Provide("foo", new Action(() => { lock (timeline) timeline.Add($"read: {(closed ? "closed" : "open")}"); }));
-                ctx.Effect(() => () => { closed = true; lock (timeline) timeline.Add("provider closed"); });
+                var closed = false;
+                ctx.Provide("foo", new Action(() =>
+                {
+                    lock (timeline)
+                    {
+                        timeline.Add($"read: {(closed ? "closed" : "open")}");
+                    }
+                }));
+                ctx.Effect(() => () =>
+                {
+                    closed = true;
+                    lock (timeline)
+                    {
+                        timeline.Add("provider closed");
+                    }
+                });
             });
             await root.Inject(["foo"], ctx =>
             {
@@ -217,9 +250,9 @@ public static class CoreTests
                 }));
             });
 
-            Task task = provider.DisposeAsync().AsTask();
+            var task = provider.DisposeAsync().AsTask();
             await Task.Delay(30);
-            bool closedDuringDrain = timeline.Contains("provider closed");
+            var closedDuringDrain = timeline.Contains("provider closed");
             gate.SetResult();
             await task;
             Assert.True(!closedDuringDrain, "provider closed before its dependent finished");
@@ -229,21 +262,30 @@ public static class CoreTests
         Harness.Case("withdrawing a service waits for a disposing consumer", async () =>
         {
             var root = new Context();
-            TaskCompletionSource gate = Gate();
+            var gate = Gate();
             var timeline = new List<string>();
-            Fiber provider = await root.Apply("provider", _ => { });
-            EffectHandle withdraw = provider.Ctx.Provide("foo", new object());
-            Fiber consumer = await root.Inject(["foo"], ctx =>
+            var provider = await root.Apply("provider", _ => { });
+            var withdraw = provider.Ctx.Provide("foo", new object());
+            var consumer = await root.Inject(["foo"], ctx =>
                 ctx.EffectAsync(() => new ValueTask<Disposer?>(async () =>
                 {
                     await gate.Task;
-                    lock (timeline) timeline.Add("consumer finished");
+                    lock (timeline)
+                    {
+                        timeline.Add("consumer finished");
+                    }
                 })));
 
-            Task disposing = consumer.DisposeAsync().AsTask();
-            Task withdrawing = withdraw.DisposeAsync().AsTask().ContinueWith(_ => { lock (timeline) timeline.Add("withdrawn"); });
+            var disposing = consumer.DisposeAsync().AsTask();
+            var withdrawing = withdraw.DisposeAsync().AsTask().ContinueWith(_ =>
+            {
+                lock (timeline)
+                {
+                    timeline.Add("withdrawn");
+                }
+            });
             await Task.Delay(30);
-            bool early = withdrawing.IsCompleted;
+            var early = withdrawing.IsCompleted;
             gate.SetResult();
             await Task.WhenAll(disposing, withdrawing);
             Assert.True(!early, "withdrawn while the consumer was still cleaning up");
@@ -253,13 +295,13 @@ public static class CoreTests
         Harness.Case("child of a provider that injects the parent service is drained first", async () =>
         {
             var root = new Context();
-            TaskCompletionSource gate = Gate();
+            var gate = Gate();
             var timeline = new List<string>();
-            Fiber provider = await root.Use<OpenCloseService>();
+            var provider = await root.Use<OpenCloseService>();
             OpenCloseService.Timeline = timeline;
-            Fiber child = provider.Ctx.Inject([OpenCloseService.Key], ctx =>
+            var child = provider.Ctx.Inject([OpenCloseService.Key], ctx =>
             {
-                OpenCloseService service = ctx.Get<OpenCloseService>();
+                var service = ctx.Get<OpenCloseService>();
                 ctx.EffectAsync(() => new ValueTask<Disposer?>(async () =>
                 {
                     await gate.Task;
@@ -268,7 +310,7 @@ public static class CoreTests
             });
             await child;
 
-            Task task = provider.DisposeAsync().AsTask();
+            var task = provider.DisposeAsync().AsTask();
             await Task.Delay(30);
             gate.SetResult();
             await task;
@@ -276,7 +318,6 @@ public static class CoreTests
         });
 
         // -------------------------------------------------------------- lookup (#209)
-
         Harness.Case("lookup stops at an isolation boundary inside a component", async () =>
         {
             var root = new Context();
@@ -286,8 +327,14 @@ public static class CoreTests
             await root.Inject(["db"], ctx =>
             {
                 outer = ctx.Get("db");
-                try { ctx.Isolate("db").Get("db"); }
-                catch (Exception error) { inner = error; }
+                try
+                {
+                    ctx.Isolate("db").Get("db");
+                }
+                catch (Exception error)
+                {
+                    inner = error;
+                }
             });
 
             Assert.Equal("shared", outer);
@@ -300,9 +347,9 @@ public static class CoreTests
             root.Provide("foo", "outer");
             object? seenOuter = null;
             object? seenInner = null;
-            Fiber consumer = await root.Inject(["foo"], ctx =>
+            var consumer = await root.Inject(["foo"], ctx =>
             {
-                Context isolated = ctx.Isolate("foo");
+                var isolated = ctx.Isolate("foo");
                 isolated.Provide("foo", $"wraps {ctx.Get("foo")}");
                 seenOuter = ctx.Get("foo");
                 seenInner = isolated.Get("foo");
@@ -314,7 +361,6 @@ public static class CoreTests
         });
 
         // --------------------------------------------------------- intercepts (#206)
-
         Harness.Case("context intercepts take priority over inject metadata", async () =>
         {
             var root = new Context();
@@ -331,13 +377,12 @@ public static class CoreTests
         });
 
         // ------------------------------------------------------------ replace (#266)
-
         Harness.Case("registry.Replace swaps the implementation behind a fiber in place", async () =>
         {
             var root = new Context();
             ReplaceV1.Loads = ReplaceV2.Loads = 0;
-            Fiber fiber = await root.Use<ReplaceV1>(new ReplaceV1.Options { Text = "kept" });
-            IReadOnlyList<Fiber> moved = root.Registry.Replace(typeof(ReplaceV1), typeof(ReplaceV2));
+            var fiber = await root.Use<ReplaceV1>(new ReplaceV1.Options { Text = "kept" });
+            var moved = root.Registry.Replace(typeof(ReplaceV1), typeof(ReplaceV2));
             Assert.Equal(1, moved.Count);
             await fiber;
 
@@ -347,16 +392,23 @@ public static class CoreTests
             Assert.Equal(1, ReplaceV2.Loads);
 
             // the old component is forwarded
-            Fiber forwarded = await root.Use<ReplaceV1>();
+            var forwarded = await root.Use<ReplaceV1>();
             Assert.True(forwarded.Instance is ReplaceV2, "old component was not forwarded");
             Assert.True(ReferenceEquals(root.Registry.Get(typeof(ReplaceV1))?.Key, typeof(ReplaceV2)), "registry lookup is not forwarded");
         });
 
         Harness.Case("registry.Replace takes the dependencies of the new component and restarts a failed fiber", async () =>
         {
-            (Context? root, MemoryExporter _) = Quiet();
-            Fiber fiber = root.Use<FailingComponent>();
-            try { await fiber; } catch (InvalidOperationException) { }
+            (var root, var _) = Quiet();
+            var fiber = root.Use<FailingComponent>();
+            try
+            {
+                await fiber;
+            }
+            catch (InvalidOperationException)
+            {
+            }
+
             Assert.Equal(FiberState.Failed, fiber.State);
 
             root.Registry.Replace(typeof(FailingComponent), typeof(NeedsCounter));
@@ -369,7 +421,6 @@ public static class CoreTests
         });
 
         // ---------------------------------------------------------------- events
-
         Harness.Case("a listener removed mid-dispatch is skipped (#242)", async () =>
         {
             var root = new Context();
@@ -395,19 +446,19 @@ public static class CoreTests
                 return await next(value);
             }));
 
-            InvalidOperationException error = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
                 await root.WaterfallAsync(TestEvents.Transform, "x", value => new ValueTask<string>(value)));
             Assert.Equal("next() called multiple times", error.Message);
         });
 
         Harness.Case("parallel failures name the event and flatten in the logger (#205, #222)", async () =>
         {
-            (Context? root, MemoryExporter? logs) = Quiet();
+            (var root, var logs) = Quiet();
             await root.Apply("a", ctx => ctx.On(TestEvents.Tick, (Action<Context, int>)((_, _) => throw new InvalidOperationException("first"))));
             await root.Apply("b", ctx => ctx.On(TestEvents.Tick, (Action<Context, int>)((_, _) => throw new InvalidOperationException("second"))));
 
-            AggregateError error = await Assert.ThrowsAsync<AggregateError>(async () => await root.ParallelAsync(TestEvents.Tick, 1));
-            Assert.True(error.Message.StartsWith("one or more listeners of event \"tick\" failed"), error.Message);
+            var error = await Assert.ThrowsAsync<AggregateError>(async () => await root.ParallelAsync(TestEvents.Tick, 1));
+            Assert.True(error.Message.StartsWith("one or more listeners of event \"tick\" failed", StringComparison.Ordinal), error.Message);
             Assert.Equal(2, error.InnerExceptions.Count);
 
             root.Logger.Error(error);
@@ -415,119 +466,15 @@ public static class CoreTests
             Assert.Equal("first,second,empty", string.Join(',', logs.Messages.Select(m => m.Text)));
         });
     }
-}
 
-/// <summary>Records loads and disposals; a load with Value = 1 waits for <see cref="Release"/>.</summary>
-public sealed class GatedValue : IAsyncInit, IDisposable
-{
-    public sealed class Options
+    private static TaskCompletionSource Gate() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private static (Context Root, MemoryExporter Logs) Quiet()
     {
-        public int Value { get; set; }
+        var root = new Context();
+        root.Loggers.ClearExporters();
+        var logs = new MemoryExporter();
+        root.Loggers.AddExporter(logs);
+        return (root, logs);
     }
-
-    public static List<int> Applied = [];
-    public static List<int> Disposed = [];
-    public static TaskCompletionSource Started = new();
-    public static TaskCompletionSource Release = new();
-
-    private readonly int _value;
-
-    public GatedValue(Context ctx, Options config)
-    {
-        _value = config.Value;
-        lock (Applied) Applied.Add(_value);
-    }
-
-    public static void Reset()
-    {
-        Applied = [];
-        Disposed = [];
-        Started = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        Release = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    }
-
-    public async ValueTask InitAsync()
-    {
-        if (_value != 1) return;
-        Started.SetResult();
-        await Release.Task;
-    }
-
-    public void Dispose()
-    {
-        lock (Disposed) Disposed.Add(_value);
-    }
-}
-
-public sealed class ValueComponent
-{
-    public sealed class Options
-    {
-        public int Value { get; set; }
-    }
-
-    public static Action<int>? OnApply;
-
-    public ValueComponent(Context ctx, Options config) => OnApply?.Invoke(config.Value);
-}
-
-[ServiceName(Key)]
-public sealed class OpenCloseService : Service, IAsyncInit
-{
-    public const string Key = "open-close";
-
-    public static List<string> Timeline = [];
-
-    private bool _closed;
-
-    public OpenCloseService(Context ctx) : base(ctx, Key) { }
-
-    public ValueTask InitAsync()
-    {
-        Ctx.Effect(() => () => { _closed = true; lock (Timeline) Timeline.Add("closed"); }, "connection");
-        return default;
-    }
-
-    public void Read()
-    {
-        lock (Timeline) Timeline.Add($"read: {(_closed ? "closed" : "open")}");
-    }
-}
-
-[Inject("labelled", Config = "from-inject")]
-public sealed class MetadataComponent
-{
-    public static string? Seen;
-
-    public MetadataComponent(Context ctx) => Seen = ctx.GetInterceptConfig<string>("labelled");
-}
-
-public sealed class ReplaceV1
-{
-    public sealed class Options
-    {
-        public string Text { get; set; } = "";
-    }
-
-    public static int Loads;
-
-    public ReplaceV1(Context ctx, Options config) => Loads++;
-}
-
-public sealed class ReplaceV2
-{
-    public static int Loads;
-
-    public ReplaceV2(Context ctx, ReplaceV1.Options config)
-    {
-        Loads++;
-        Text = config.Text;
-    }
-
-    public string Text { get; }
-}
-
-public sealed class FailingComponent
-{
-    public FailingComponent(Context ctx) => throw new InvalidOperationException("failed");
 }

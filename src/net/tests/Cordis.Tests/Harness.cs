@@ -1,15 +1,27 @@
+﻿// -----------------------------------------------------------------------
+// <copyright file="Harness.cs" company="Microsoft Corp.">
+//     Copyright (c) Microsoft Corp. All rights reserved.
+// </copyright>
+// -----------------------------------------------------------------------
+
 namespace Cordis.Tests;
 
+/// <summary>Minimal test runner: cases are registered with <see cref="Case"/> and executed by <see cref="RunAsync"/>.</summary>
 public static class Harness
 {
-    private static readonly List<(string Name, Func<Task> Body)> s_cases = [];
+    private static readonly List<(string Name, Func<Task> Body)> SCases = [];
 
-    public static void Case(string name, Func<Task> body) => s_cases.Add((name, body));
+    /// <summary>Registers a test case to run later.</summary>
+    /// <param name="name">The case name printed in the results.</param>
+    /// <param name="body">The asynchronous test body; it fails by throwing.</param>
+    public static void Case(string name, Func<Task> body) => SCases.Add((name, body));
 
+    /// <summary>Runs every registered case in order, each with a 10 second timeout, and prints a pass/fail report.</summary>
+    /// <returns>A task whose result is the process exit code: 0 when every case passed, otherwise 1.</returns>
     public static async Task<int> RunAsync()
     {
-        int failed = 0;
-        foreach ((string? name, Func<Task>? body) in s_cases)
+        var failed = 0;
+        foreach ((var name, var body) in SCases)
         {
             try
             {
@@ -29,52 +41,7 @@ public static class Harness
         }
 
         Console.WriteLine();
-        Console.WriteLine(failed == 0 ? $"{s_cases.Count} passed" : $"{s_cases.Count - failed} passed, {failed} failed");
+        Console.WriteLine(failed == 0 ? $"{SCases.Count} passed" : $"{SCases.Count - failed} passed, {failed} failed");
         return failed == 0 ? 0 : 1;
-    }
-}
-
-public static class Assert
-{
-    public static void True(bool condition, string message = "expected true")
-    {
-        if (!condition) throw new InvalidOperationException(message);
-    }
-
-    public static void Equal<T>(T expected, T actual, string? message = null)
-    {
-        if (!EqualityComparer<T>.Default.Equals(expected, actual))
-        {
-            throw new InvalidOperationException(message ?? $"expected <{expected}>, got <{actual}>");
-        }
-    }
-
-    public static async Task<TException> ThrowsAsync<TException>(Func<Task> body) where TException : Exception
-    {
-        try
-        {
-            await body();
-        }
-        catch (TException error)
-        {
-            return error;
-        }
-        catch (Exception error)
-        {
-            throw new InvalidOperationException($"expected {typeof(TException).Name}, got {error.GetType().Name}");
-        }
-        throw new InvalidOperationException($"expected {typeof(TException).Name}, nothing thrown");
-    }
-
-    /// <summary>Spin until a condition holds, so tests never depend on a fixed sleep.</summary>
-    public static async Task Eventually(Func<bool> condition, string message = "condition never held", int timeoutMs = 2000)
-    {
-        DateTime deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
-        while (DateTime.UtcNow < deadline)
-        {
-            if (condition()) return;
-            await Task.Delay(5);
-        }
-        throw new InvalidOperationException(message);
     }
 }

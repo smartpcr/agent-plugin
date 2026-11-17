@@ -1,69 +1,22 @@
-using System.ComponentModel.DataAnnotations;
+﻿// -----------------------------------------------------------------------
+// <copyright file="Program.cs" company="Microsoft Corp.">
+//     Copyright (c) Microsoft Corp. All rights reserved.
+// </copyright>
+// -----------------------------------------------------------------------
+
 using System.Text.Json;
 using Cordis;
 using Cordis.Loading;
 using Cordis.Timers;
 
-// ------------------------------------------------------------------ services
-
-[ServiceName("database")]
-public sealed class DatabaseService(Context ctx) : Service(ctx, "database"), IAsyncInit, IAsyncDisposable
-{
-    private readonly Dictionary<string, string> _rows = [];
-
-    public async ValueTask InitAsync()
-    {
-        await Task.Delay(50); // pretend to open a connection
-        _rows["greeting"] = "hello from the database";
-        Ctx.Logger.Info("connected");
-    }
-
-    public string? Read(string key) => _rows.GetValueOrDefault(key);
-
-    public ValueTask DisposeAsync()
-    {
-        Ctx.Logger.Info("disconnected");
-        _rows.Clear();
-        return default;
-    }
-}
-
-// ------------------------------------------------------------------- plugins
-
-[Inject("database")]
-[Inject("timer")]
-public sealed class HeartbeatPlugin
-{
-    public sealed class Options
-    {
-        [Range(10, 60_000)]
-        public int IntervalMs { get; set; } = 250;
-    }
-
-    public static readonly IConfigSchema Schema = DataAnnotationsSchema<Options>.Instance;
-
-    public HeartbeatPlugin(Context ctx, Options config)
-    {
-        DatabaseService database = ctx.Get<DatabaseService>();
-        TimerService timer = ctx.Get<TimerService>();
-
-        // The interval is owned by *this* fiber: unloading the plugin stops it.
-        timer.Interval(
-            () => ctx.Logger.Info($"beat: {database.Read("greeting")}"),
-            TimeSpan.FromMilliseconds(config.IntervalMs));
-
-        ctx.Effect(() =>
-        {
-            ctx.Logger.Info($"heartbeat every {config.IntervalMs}ms");
-            return () => ctx.Logger.Info("heartbeat stopped");
-        }, "heartbeat");
-    }
-}
-
-// ---------------------------------------------------------------------- host
-
+/// <summary>
+/// Sample host that demonstrates imperative composition, live reconfiguration, dependency removal and
+/// restoration, and declarative composition through the loader.
+/// </summary>
 public static class Program
 {
+    /// <summary>Runs the sample scenario and then disposes the root context.</summary>
+    /// <returns>A task that completes when the scenario has finished and the root context is disposed.</returns>
     public static async Task Main()
     {
         var root = new Context();
@@ -71,11 +24,11 @@ public static class Program
 
         // 1. imperative composition
         await root.Use<TimerService>();
-        Fiber database = root.Use<DatabaseService>();
+        var database = root.Use<DatabaseService>();
 
         // The heartbeat is registered before the database exists; it stays PENDING and
         // starts by itself once the database finishes InitAsync.
-        Fiber heartbeat = root.Use<HeartbeatPlugin>(new HeartbeatPlugin.Options { IntervalMs = 200 });
+        var heartbeat = root.Use<HeartbeatPlugin>(new HeartbeatPlugin.Options { IntervalMs = 200 });
         Console.WriteLine($"heartbeat before database: {heartbeat.State}");
 
         await database;
@@ -97,16 +50,18 @@ public static class Program
         await Task.Delay(300);
 
         // 4. declarative composition through the loader
-        string configPath = Path.Combine(Path.GetTempPath(), "cordis-sample.json");
-        await File.WriteAllTextAsync(configPath, JsonSerializer.Serialize(new[]
-        {
-            new EntryOptions
+        var configPath = Path.Combine(Path.GetTempPath(), "cordis-sample.json");
+        await File.WriteAllTextAsync(configPath, JsonSerializer.Serialize(
+            new[]
             {
-                Id = "beat2",
-                Name = nameof(HeartbeatPlugin),
-                Config = JsonSerializer.SerializeToElement(new { intervalMs = 150 }),
+                new EntryOptions
+                {
+                    Id = "beat2",
+                    Name = nameof(HeartbeatPlugin),
+                    Config = JsonSerializer.SerializeToElement(new { intervalMs = 150 }),
+                },
             },
-        }, LoaderService.JsonOptions));
+            LoaderService.JsonOptions));
 
         await root.Use<LoaderService>();
         await root.Use<JsonConfigFile>(new JsonConfigFile.Options { Path = configPath, Watch = true });
