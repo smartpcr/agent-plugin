@@ -32,6 +32,7 @@
     <PackageProjectUrl>https://github.com/smartpcr/agent-plugin</PackageProjectUrl>
     <RepositoryUrl>https://github.com/smartpcr/agent-plugin</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageTags>cordis;plugin;dependency-injection;agents;lifecycle</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <IncludeSymbols>true</IncludeSymbols>

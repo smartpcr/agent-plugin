@@ -48,3 +48,8 @@ on the tagged commit:
 The workflow needs the repository secret `NUGET_API_KEY`. Go versions must keep increasing past
 the existing `src/go/v0.1.x` tags. The e2e Go binding pins a released `src/go`; bump its
 `go.mod` after a release to test the new version.
+
+## License
+
+[MIT](LICENSE). Both ports are derived from [cordiverse/cordis](https://github.com/cordiverse/cordis),
+also MIT, whose copyright notice is kept in [LICENSE](LICENSE).
