@@ -3,7 +3,8 @@
 # src/go is a library, consumed with `go get github.com/smartpcr/agent-plugin/src/go@vX.Y.Z`
 # through the src/go/vX.Y.Z tag the release workflow creates. GoReleaser publishes the GitHub
 # release: the changelog, the sample program for each platform, and checksums. The NuGet
-# packages of the .NET port are attached to the same release by the workflow.
+# packages of the .NET port go to the smartpcr GitHub Packages feed and are attached to the
+# same release by the workflow.
 #
 # Try it locally without publishing:  goreleaser release --snapshot --clean
 version: 2
@@ -58,4 +59,4 @@ release:
   footer: |
     **Go:** `go get github.com/smartpcr/agent-plugin/src/go@{{ .Tag }}`
 
-    **.NET:** `dotnet add package Smartpcr.AgentPlugin --version {{ .Version }}` (also `Smartpcr.AgentPlugin.Timer`, `Smartpcr.AgentPlugin.Loader`)
+    **.NET:** `dotnet add package Smartpcr.AgentPlugin --version {{ .Version }}` (also `Smartpcr.AgentPlugin.Timer`, `Smartpcr.AgentPlugin.Loader`), from the feed `https://nuget.pkg.github.com/smartpcr/index.json`; the packages are also attached below

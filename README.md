@@ -43,11 +43,20 @@ on the tagged commit:
 | Port | Published as |
 | --- | --- |
 | Go | the module tag `src/go/vX.Y.Z` (`go get github.com/smartpcr/agent-plugin/src/go@vX.Y.Z`), and a GitHub release made by [GoReleaser](.goreleaser.yaml) with the sample program for each platform |
-| .NET | `Smartpcr.AgentPlugin`, `Smartpcr.AgentPlugin.Timer` and `Smartpcr.AgentPlugin.Loader` on nuget.org, also attached to the GitHub release |
+| .NET | `Smartpcr.AgentPlugin`, `Smartpcr.AgentPlugin.Timer` and `Smartpcr.AgentPlugin.Loader` on the smartpcr GitHub Packages feed, also attached (with symbols) to the GitHub release |
 
-The workflow needs the repository secret `NUGET_API_KEY`. Go versions must keep increasing past
+The workflow needs the repository secret `NUGET_API_KEY`: a GitHub personal access token with
+the `write:packages` scope. Go versions must keep increasing past
 the existing `src/go/v0.1.x` tags. The e2e Go binding pins a released `src/go`; bump its
 `go.mod` after a release to test the new version.
+
+To use the .NET packages, add the feed once. GitHub Packages asks for a token even for public
+packages; a personal access token with `read:packages` is enough:
+
+```bash
+dotnet nuget add source https://nuget.pkg.github.com/smartpcr/index.json --name smartpcr --username <github-user> --password <token> --store-password-in-clear-text
+dotnet add package Smartpcr.AgentPlugin
+```
 
 ## License
 

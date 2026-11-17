@@ -4,11 +4,12 @@
 #   go-module-tag  creates src/go/vX.Y.Z on the same commit, so `go get .../src/go@vX.Y.Z`
 #                  resolves (a module in a subdirectory is versioned by prefixed tags)
 #   goreleaser     the GitHub release: changelog, the Go sample for each platform, checksums
-#   nuget          packs Smartpcr.AgentPlugin, .Timer and .Loader at X.Y.Z, pushes them to
-#                  nuget.org and attaches them to the GitHub release
+#   nuget          packs Smartpcr.AgentPlugin, .Timer and .Loader at X.Y.Z, pushes them to the
+#                  smartpcr GitHub Packages feed (https://nuget.pkg.github.com/smartpcr/index.json)
+#                  and attaches them, with their symbol packages, to the GitHub release
 #
-# Needs the repository secret NUGET_API_KEY (a nuget.org API key allowed to push the
-# Smartpcr.AgentPlugin* packages). Nothing is published unless ci passes.
+# Needs the repository secret NUGET_API_KEY: a GitHub personal access token with the
+# write:packages scope. Nothing is published unless ci passes.
 name: release
 
 on:
@@ -85,21 +86,26 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           global-json-file: src/net/global.json
-      - name: Check the API key
+      - name: Check the token
         env:
           NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
         run: |
           if [ -z "$NUGET_API_KEY" ]; then
-            echo "::error::The repository secret NUGET_API_KEY is not set."
+            echo "::error::The repository secret NUGET_API_KEY (a GitHub PAT with write:packages) is not set."
             exit 1
           fi
       - name: Pack
         run: dotnet pack src/net/Cordis.slnx -c Release -p:Version="${GITHUB_REF_NAME#v}" -o out
-      - name: Push to nuget.org
+      - name: Push to the smartpcr GitHub Packages feed
         env:
           NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
-        # The .snupkg symbol packages beside each .nupkg are pushed with it.
-        run: dotnet nuget push "out/*.nupkg" --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
+        # GitHub Packages takes no .snupkg symbol packages; they are attached to the release instead.
+        run: >-
+          dotnet nuget push "out/*.nupkg"
+          --source https://nuget.pkg.github.com/smartpcr/index.json
+          --api-key "$NUGET_API_KEY"
+          --skip-duplicate
+          --no-symbols
       - name: Attach to the GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
