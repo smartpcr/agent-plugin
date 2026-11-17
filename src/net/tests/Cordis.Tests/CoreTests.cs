@@ -13,6 +13,26 @@ public static class CoreTests
     public static void Register()
     {
         // ------------------------------------------------------------ fiber lifecycle
+        Harness.Case("a dependent created while its provider activates still loads", async () =>
+        {
+            // The dependent reads its providers and joins the set that provider notifications
+            // reach in one step, so no activation can fall between the two.
+            for (var i = 0; i < 300; i++)
+            {
+                var root = new Context();
+                var creating = new[]
+                {
+                    Task.Run(() => root.Use<CounterService>()),
+                    Task.Run(() => root.Use<NeedsCounter>()),
+                };
+                var fibers = await Task.WhenAll(creating);
+                await fibers[0];
+                await fibers[1];
+                Assert.Equal(FiberState.Active, fibers[1].State, $"iteration {i}");
+                await root.DisposeAsync();
+            }
+        });
+
         Harness.Case("failed fiber does not reload when a provider changes (#98)", async () =>
         {
             (var root, var _) = Quiet();

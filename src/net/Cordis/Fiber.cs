@@ -62,22 +62,22 @@ public sealed class Fiber : IAsyncDisposable
 
         parent.Internal.RaisePluginChanged(this);
 
-        lock (this.Gate)
-        {
-            foreach (var name in this.inject.Keys)
-            {
-                this.CheckImpl(name);
-            }
-        }
-
         this.anchor = parent.Fiber.EffectSync(
             () =>
             {
-                runtime.Attach(this);
                 try
                 {
+                    // Joining the runtime (where provider notifications reach the fiber) and
+                    // reading the providers happen under one lock, so a provider that activates
+                    // in between cannot be missed.
                     lock (this.Gate)
                     {
+                        runtime.Attach(this);
+                        foreach (var name in this.inject.Keys)
+                        {
+                            this.CheckImpl(name);
+                        }
+
                         this.Refresh();
                     }
                 }

@@ -106,14 +106,17 @@ func newFiber(parent *Context, runtime *Runtime, config any, inject []Dependency
 	f.runtime.Store(runtime)
 	f.ctx = parent.derive(f, nil, nil)
 	t.internal.raisePlugin(f)
-	for _, dependency := range f.inject {
-		f.checkImplLocked(dependency.Name)
-	}
 	t.unlock()
 
 	anchor, err := parent.fiber.effect("ctx.Use()", func() (Disposer, error) {
 		t.lock()
+		// Joining the runtime (where provider notifications reach the fiber) and reading
+		// the providers happen under one lock, so a provider that activates in between
+		// cannot be missed.
 		f.runtime.Load().attachLocked(f)
+		for _, dependency := range f.inject {
+			f.checkImplLocked(dependency.Name)
+		}
 		f.refreshLocked()
 		t.unlock()
 		return f.disposeAnchor, nil
