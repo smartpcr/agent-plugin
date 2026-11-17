@@ -8,6 +8,7 @@ the services they need, load when those services appear, and unload when they go
 | Path | Language | Description |
 | --- | --- | --- |
 | [src/net](src/net/README.md) | C# / .NET 10 | Cordis.NET, a port of [cordiverse/cordis](https://github.com/cordiverse/cordis), with samples and tests |
+| [src/go](src/go/README.md) | Go 1.24+ | cordis for Go, a port of the same upstream revision, with a sample and tests |
 
 ## Quick start (.NET)
 
@@ -16,4 +17,12 @@ cd src/net
 dotnet build Cordis.sln
 dotnet run --project tests/Cordis.Tests
 dotnet run --project samples/Cordis.Sample
+```
+
+## Quick start (Go)
+
+```bash
+cd src/go
+go test -race ./...
+go run ./cmd/cordis-sample
 ```
