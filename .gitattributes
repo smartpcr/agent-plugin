@@ -1,0 +1,9 @@
+# Text files are stored and checked out with LF on every OS, as .editorconfig requires
+# (end_of_line = lf) and the .NET build enforces; without this, Windows checkouts get CRLF.
+* text=auto eol=lf
+
+# Binary
+*.nupkg binary
+*.snupkg binary
+*.png binary
+*.ico binary

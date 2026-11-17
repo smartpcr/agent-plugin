@@ -1,0 +1,116 @@
+# Builds and tests both ports of cordis and runs the behaviour suites against each.
+#
+#   dotnet  src/net: style-enforced build, dotnet format check, the behavioural tests
+#   go      src/go:  gofmt, go vet, go test (with the race detector on Linux)
+#   e2e     test/e2e: builds the C# and Go bindings and runs every suite with each
+#           (test/e2e/Invoke-E2E.ps1); results are uploaded as NUnit XML
+#
+# The three jobs are independent and run in parallel, on Linux and Windows. The Go
+# binding builds against the released src/go module (its go.mod pins a version), so
+# an src/go change reaches e2e only after a new src/go/vX.Y.Z tag.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: "true"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "true"
+
+jobs:
+  dotnet:
+    name: dotnet (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: src/net
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: src/net/global.json
+      - name: Build (StyleCop and code style are errors)
+        run: dotnet build Cordis.slnx
+      - name: Check formatting
+        if: runner.os == 'Linux'
+        run: dotnet format Cordis.slnx --verify-no-changes
+      - name: Test
+        run: dotnet run --project tests/Cordis.Tests --no-build
+      - name: Sample
+        run: dotnet run --project samples/Cordis.Sample --no-build
+
+  go:
+    name: go (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: src/go
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: src/go/go.mod
+          cache: false # the module has no dependencies
+      - name: gofmt
+        if: runner.os == 'Linux'
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "not gofmt-formatted:"; echo "$unformatted"; exit 1
+          fi
+      - name: go vet
+        run: go vet ./...
+      - name: Test (race detector)
+        if: runner.os == 'Linux'
+        run: go test -race -count=1 ./...
+      - name: Test
+        if: runner.os != 'Linux'
+        run: go test -count=1 ./...
+      - name: Sample
+        run: go run ./cmd/cordis-sample
+
+  e2e:
+    name: e2e (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: test/e2e/bindings/dotnet/global.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: test/e2e/bindings/go/go.mod
+          cache-dependency-path: test/e2e/bindings/go/go.sum
+      - name: Run the suites with both bindings
+        shell: pwsh
+        run: ./test/e2e/Invoke-E2E.ps1 -Binding all
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-results-${{ matrix.os }}
+          path: artifacts/e2e/*.xml
+          if-no-files-found: warn

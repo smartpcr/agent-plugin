@@ -1,0 +1,8 @@
+{
+  // bdd-suite extension: the suites under test/e2e run with the C# and Go bindings
+  // (test/e2e/schema/actions.catalog.yaml declares `bindings: [csharp, go]`). Without
+  // these the extension targets its default "powershell" binding, which this repository
+  // does not have, so every action is painted as not implemented.
+  "bddSuite.targetBinding": "csharp",
+  "bddSuite.lintTool": "csharp"
+}

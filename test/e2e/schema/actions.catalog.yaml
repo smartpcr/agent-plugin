@@ -191,7 +191,7 @@ actions:
     interruptible: true
     params:
       - { name: id, type: string, required: true }
-    captures: &fiberState
+    captures:
       type: object
       additionalProperties: false
       properties:
@@ -208,7 +208,16 @@ actions:
     interruptible: true
     params:
       - { name: id, type: string, required: true }
-    captures: *fiberState
+    captures:
+      type: object
+      additionalProperties: false
+      properties:
+        id: { type: string }
+        state: { type: string, description: 'Pending, Loading, Active, Failed, Disposed or Unloading.' }
+        loads: { type: integer, description: How many times the body has run. }
+        value: { type: integer, description: The config value the fiber holds. }
+        implementation: { type: string }
+        error: { type: string, description: The failure message, or null. }
 
   - name: component.update
     summary: Update a fiber's config value and wait for it to settle.
@@ -235,7 +244,16 @@ actions:
     params:
       - { name: id, type: string, required: true }
       - { name: wait, type: boolean, default: true, description: Wait for the fiber to settle; when false, only start the restart. }
-    captures: *fiberState
+    captures:
+      type: object
+      additionalProperties: false
+      properties:
+        id: { type: string }
+        state: { type: string, description: 'Pending, Loading, Active, Failed, Disposed or Unloading.' }
+        loads: { type: integer, description: How many times the body has run. }
+        value: { type: integer, description: The config value the fiber holds. }
+        implementation: { type: string }
+        error: { type: string, description: The failure message, or null. }
 
   - name: component.dispose
     summary: Dispose a fiber and, unless told not to, wait until it has unloaded.
@@ -244,7 +262,16 @@ actions:
     params:
       - { name: id, type: string, required: true }
       - { name: wait, type: boolean, default: true }
-    captures: *fiberState
+    captures:
+      type: object
+      additionalProperties: false
+      properties:
+        id: { type: string }
+        state: { type: string, description: 'Pending, Loading, Active, Failed, Disposed or Unloading.' }
+        loads: { type: integer, description: How many times the body has run. }
+        value: { type: integer, description: The config value the fiber holds. }
+        implementation: { type: string }
+        error: { type: string, description: The failure message, or null. }
 
   - name: component.replace
     summary: Replace one component implementation with another behind every live fiber.
