@@ -1,0 +1,80 @@
+# Timers belong to the component that scheduled them and go inert when it
+# unloads. Motivated by deepseek-harness (scripts/cordis-timer.spec.ts:
+# interval, throttle and debounce are inert after disposal; HMR debounces
+# reloads through the timer service) and by dsh-superagent (retry timers that
+# must never fire after the plugin stops: src/executor/dsh.ts:577-582,
+# tests/runtime-concurrency.spec.ts:245).
+suite: timers
+description: Timers fire for live owners and never after their owner unloads.
+tags: [AR-O-2, AR-O-4]
+beforeEach:
+  - action: host.start
+  - action: component.use
+    id: worker
+  - action: host.settle
+afterEach:
+  - action: host.dispose
+tests:
+  - name: a-timer-owned-by-a-live-component-fires
+    description: The baseline the next case depends on, so its silence means something.
+    tags: [deepseek-harness]
+    steps:
+      - given: a worker schedules a retry
+        action: timer.schedule
+        owner: worker
+        label: retry
+        kind: timeout
+        delayMs: 100
+        captureAs: scheduled
+      - when: the delay passes
+        action: host.waitFor
+        marker: 'worker:timer retry'
+        timeoutSec: 10
+        captureAs: fired
+      - then: the retry fired
+        action: core.noop
+        asserts:
+          - var: scheduled.label
+            equals: retry
+          - var: fired.found
+            isTrue: true
+
+  - name: pending-timers-never-fire-after-their-owner-unloads
+    description: deepseek-harness scripts/cordis-timer.spec.ts; dsh-superagent tests/passes.spec.ts:47 and runtime-concurrency.spec.ts:245.
+    tags: [deepseek-harness, dsh-superagent]
+    examples:
+      - { kind: timeout, calls: 1, fired: 0 }
+      - { kind: interval, calls: 1, fired: 0 }
+      - { kind: debounce, calls: 3, fired: 0 }
+      - { kind: throttle, calls: 3, fired: 1 }
+    steps:
+      - given: the worker schedules a ${row.kind} timer
+        why: a throttle runs its first call at once, so only its trailing call is pending
+        action: timer.schedule
+        owner: worker
+        label: pending
+        kind: ${row.kind}
+        delayMs: 200
+        calls: ${row.calls}
+        captureAs: scheduled
+      - when: the worker unloads before the timer is due
+        action: component.dispose
+        id: worker
+        captureAs: disposed
+      - and: well past the delay
+        action: core.sleep
+        seconds: 0.6
+        captureAs: slept
+      - then: only what ran before the unload is in the trace
+        action: host.trace
+        contains: 'timer pending'
+        captureAs: trace
+        asserts:
+          - var: scheduled.label
+            equals: pending
+          - var: disposed.state
+            equals: Disposed
+          - var: slept.sleptSec
+            gte: 0.5
+          - var: trace.count
+            equals: ${row.fired}

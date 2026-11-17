@@ -1,0 +1,362 @@
+# A live component is reconfigured, restarted or given a new implementation
+# without restarting the host. Motivated by dsh-superagent (volatile config
+# fields applied in place, stateDir changes remount the plugin, the plugin
+# restarts itself after a settings save: src/index.ts:18-22,
+# src/deployment.ts:14-23) and by deepseek-harness (loader volatile updates,
+# schema rejection keeps the previous config, the latest update wins while a
+# load runs, a failed plugin recovers only through an explicit update, HMR
+# re-plugging an implementation through the registry).
+suite: reconfiguration
+description: Updates, restarts and replacements of live components.
+tags: [AR-O-5]
+beforeEach:
+  - action: host.start
+afterEach:
+  - action: host.dispose
+tests:
+  - name: an-accepted-update-changes-config-without-a-restart
+    description: dsh-superagent src/deployment.ts:14-23 marks fields volatile; deepseek-harness emits loader/volatile-update instead of remounting.
+    tags: [dsh-superagent, deepseek-harness]
+    setup:
+      - action: component.use
+        id: settings
+        acceptUpdates: true
+        value: 1
+      - action: host.settle
+    steps:
+      - given: a component that applies config updates in place
+        action: component.state
+        id: settings
+        captureAs: before
+        asserts:
+          - var: before.value
+            equals: 1
+      - when: its config value changes
+        action: component.update
+        id: settings
+        value: 2
+        captureAs: updated
+      - then: the new value is applied and the body did not run again
+        action: component.state
+        id: settings
+        captureAs: after
+        asserts:
+          - var: updated.accepted
+            isTrue: true
+          - var: after.value
+            equals: 2
+          - var: after.loads
+            equals: 1
+      - and: the component saw the new value
+        action: host.trace
+        prefix: 'settings:'
+        captureAs: trace
+        asserts:
+          - var: trace.joined
+            equals: 'settings:load,settings:accepted 2'
+
+  - name: an-ordinary-update-remounts-the-component
+    description: dsh-superagent src/deployment.ts:14, changing stateDir remounts the plugin.
+    tags: [dsh-superagent]
+    setup:
+      - action: component.use
+        id: dsh-superagent
+        effects: [state-store]
+        value: 1
+      - action: host.settle
+    steps:
+      - given: the plugin is running with its first state directory
+        action: component.state
+        id: dsh-superagent
+        captureAs: before
+        asserts:
+          - var: before.loads
+            equals: 1
+      - when: its config changes
+        action: component.update
+        id: dsh-superagent
+        value: 2
+        captureAs: updated
+      - then: the old instance closed its store and a new one loaded with the new value
+        action: host.trace
+        prefix: 'dsh-superagent:'
+        captureAs: trace
+        asserts:
+          - var: updated.accepted
+            isTrue: true
+          - var: updated.loads
+            equals: 2
+          - var: trace.joined
+            equals: 'dsh-superagent:load,dsh-superagent:+state-store,dsh-superagent:-state-store,dsh-superagent:unload,dsh-superagent:load,dsh-superagent:+state-store'
+
+  - name: a-rejected-config-keeps-the-running-instance
+    description: deepseek-harness packages/boot/app-boot/tests/config-reload.spec.ts:232, schema rejection keeps the previous instance and config.
+    tags: [deepseek-harness]
+    setup:
+      - action: component.use
+        id: webserver
+        maxValue: 10
+        value: 1
+      - action: host.settle
+    steps:
+      - given: a component whose schema allows values up to ten
+        action: component.state
+        id: webserver
+        captureAs: before
+        asserts:
+          - var: before.state
+            equals: Active
+      - when: it is updated with a value the schema rejects
+        action: component.update
+        id: webserver
+        value: 99
+        captureAs: rejected
+      - then: the update is refused and nothing changed
+        action: component.state
+        id: webserver
+        captureAs: after
+        asserts:
+          - var: rejected.accepted
+            isFalse: true
+          - var: rejected.error
+            isNotNull: true
+          - var: after.state
+            equals: Active
+          - var: after.value
+            equals: 1
+          - var: after.loads
+            equals: 1
+
+  - name: a-self-restart-finishes-the-old-cleanup-before-the-new-load
+    description: dsh-superagent src/index.ts:18-22 restarts its own fiber; the old runtime.stop() must finish before the new apply.
+    tags: [dsh-superagent]
+    setup:
+      - action: component.use
+        id: dsh-superagent
+        cleanupGate: runtime-stopped
+      - action: host.settle
+    steps:
+      - given: the plugin is running
+        action: component.state
+        id: dsh-superagent
+        captureAs: before
+        asserts:
+          - var: before.loads
+            equals: 1
+      - when: it restarts itself after a settings save
+        action: component.restart
+        id: dsh-superagent
+        wait: false
+        captureAs: restarting
+      - and: the old runtime finishes stopping
+        action: gate.open
+        name: runtime-stopped
+        captureAs: stopped
+      - and: the tree settles
+        action: host.settle
+        captureAs: settled
+      - then: the new instance loaded only after the old one had stopped
+        action: host.trace
+        prefix: 'dsh-superagent:'
+        captureAs: trace
+        asserts:
+          - var: restarting.id
+            equals: dsh-superagent
+          - var: stopped.name
+            equals: runtime-stopped
+          - var: settled.ok
+            isTrue: true
+          - var: trace.joined
+            equals: 'dsh-superagent:load,dsh-superagent:cleanup-start,dsh-superagent:cleanup-done,dsh-superagent:unload,dsh-superagent:load'
+
+  - name: concurrent-updates-settle-on-the-latest-config
+    description: deepseek-harness scripts/cordis-core-lifecycle.spec.ts, the latest update wins while a load is running.
+    tags: [deepseek-harness]
+    setup:
+      - action: component.use
+        id: agent-loop
+        initGate: first-load
+        value: 0
+      - action: host.waitFor
+        marker: 'agent-loop:init-start'
+        timeoutSec: 10
+    steps:
+      - given: the first load is still running
+        action: component.state
+        id: agent-loop
+        captureAs: loading
+        asserts:
+          - var: loading.state
+            equals: Loading
+      - when: three updates arrive while it loads
+        action: component.update
+        id: agent-loop
+        value: 1
+        wait: false
+        captureAs: first
+      - and: the second update arrives
+        action: component.update
+        id: agent-loop
+        value: 2
+        wait: false
+        captureAs: second
+      - and: the third update arrives
+        action: component.update
+        id: agent-loop
+        value: 3
+        wait: false
+        captureAs: third
+      - and: the first load finishes
+        action: gate.open
+        name: first-load
+        captureAs: opened
+      - and: the tree settles
+        action: host.settle
+        captureAs: settled
+      - then: the fiber holds the last value and loaded only once more
+        action: component.state
+        id: agent-loop
+        captureAs: after
+        asserts:
+          - var: first.state
+            isNotNull: true
+          - var: second.state
+            isNotNull: true
+          - var: third.state
+            isNotNull: true
+          - var: opened.name
+            equals: first-load
+          - var: settled.ok
+            isTrue: true
+          - var: after.state
+            equals: Active
+          - var: after.value
+            equals: 3
+          - var: after.loads
+            equals: 2
+
+  - name: a-failed-component-is-not-reloaded-by-a-provider-change
+    description: deepseek-harness vendor change V25, a failed fiber comes back only after an explicit update.
+    tags: [deepseek-harness]
+    setup:
+      - action: service.provide
+        name: llm
+      - action: component.use
+        id: llm-deepseek
+        inject: [llm]
+        fail: body
+      - action: host.settle
+    steps:
+      - given: a component failed while loading against the model service
+        action: component.state
+        id: llm-deepseek
+        captureAs: failed
+        asserts:
+          - var: failed.state
+            equals: Failed
+          - var: failed.loads
+            equals: 1
+      - when: the model service is withdrawn
+        action: service.withdraw
+        name: llm
+        captureAs: withdrawn
+      - and: it is provided again
+        action: service.provide
+        name: llm
+        captureAs: returned
+      - and: the tree settles
+        action: host.settle
+        captureAs: settled
+      - then: the component stays failed and its body did not run again
+        action: component.state
+        id: llm-deepseek
+        captureAs: after
+        asserts:
+          - var: withdrawn.done
+            isTrue: true
+          - var: returned.name
+            equals: llm
+          - var: settled.ok
+            isTrue: true
+          - var: after.state
+            equals: Failed
+          - var: after.loads
+            equals: 1
+
+  - name: an-update-retries-a-failed-component
+    description: The explicit retry that the previous case withholds; deepseek-harness V25.
+    tags: [deepseek-harness]
+    setup:
+      - action: component.use
+        id: mcp-client
+        fail: body
+        failWhileValueBelow: 1
+        value: 0
+      - action: host.settle
+    steps:
+      - given: the component failed
+        action: component.state
+        id: mcp-client
+        captureAs: failed
+        asserts:
+          - var: failed.state
+            equals: Failed
+      - when: it is updated with a config that works
+        action: component.update
+        id: mcp-client
+        value: 1
+        captureAs: retried
+      - then: it loads and becomes active
+        action: component.state
+        id: mcp-client
+        captureAs: after
+        asserts:
+          - var: retried.accepted
+            isTrue: true
+          - var: after.state
+            equals: Active
+          - var: after.value
+            equals: 1
+
+  - name: replacing-an-implementation-keeps-the-fiber-and-its-config
+    description: deepseek-harness packages/boot/hmr/src/index.ts:684 re-plugs a new implementation through the registry.
+    tags: [deepseek-harness]
+    setup:
+      - action: component.use
+        id: planner
+        implementation: planner-v1
+        value: 7
+      - action: host.settle
+    steps:
+      - given: the planner runs the first implementation
+        action: component.state
+        id: planner
+        captureAs: before
+        asserts:
+          - var: before.implementation
+            equals: planner-v1
+      - when: the implementation is replaced
+        action: component.replace
+        from: planner-v1
+        to: planner-v2
+        captureAs: replaced
+      - and: the tree settles
+        action: host.settle
+        captureAs: settled
+      - then: the same fiber runs the new implementation with its old config
+        action: component.state
+        id: planner
+        captureAs: after
+        asserts:
+          - var: replaced.moved
+            equals: 1
+          - var: settled.ok
+            isTrue: true
+          - var: after.implementation
+            equals: planner-v2
+          - var: after.value
+            equals: 7
+          - var: after.state
+            equals: Active
+          - var: after.loads
+            equals: 2

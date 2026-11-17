@@ -1,6 +1,6 @@
 ﻿// -----------------------------------------------------------------------
-// <copyright file="NeedsCounter.cs" company="Microsoft Corp.">
-//     Copyright (c) Microsoft Corp. All rights reserved.
+// <copyright file="NeedsCounter.cs" company="Smartpcr">
+//     Copyright (c) Smartpcr. All rights reserved.
 // </copyright>
 // -----------------------------------------------------------------------
 

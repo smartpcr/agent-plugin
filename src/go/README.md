@@ -41,6 +41,7 @@ gofmt -l .                    # must print nothing
 | `new Context()` | `cordis.New()` | one tree: store, registry, events, logger |
 | `Context` + `Proxy` get-trap | `ctx.Get(name)`, `ServiceKey[T].Get(ctx)` | explicit resolution; errors wrap `ErrNotInjected` / `ErrUnavailable` |
 | `locate()` | `store.locateLocked` | stops at a context that isolates the name again |
+| `ctx.get(name)` (unchecked, optional) | `ctx.Lookup(name)`, `ServiceKey[T].Lookup(ctx)` | the active provider in the caller's realm, or `ok == false`; no inject check, never fails |
 | `Object.create(parent)` chains | `chainMap[V]` | lookups fall through, writes stay local |
 | `Symbol(name)` isolate keys | `*IsolateKey` (pointer identity) | |
 | `Fiber` + epoch + inertia | `*Fiber`, same algorithm | transitions run on their own goroutine |

@@ -1,0 +1,178 @@
+# Same-named services kept apart by isolate realms. Motivated by
+# dsh-superagent's cordis.patch.yml (worker and router presets each isolate
+# `shell`, `compaction` and `workflowEngine`) and by deepseek-harness (preset
+# services must live in isolate realms; a second MCP client with the same
+# server name is rejected in one scope and allowed in another).
+suite: realms
+description: Isolate realms give each subtree its own provider of a service name.
+tags: [AR-O-4]
+beforeEach:
+  - action: host.start
+afterEach:
+  - action: host.dispose
+tests:
+  - name: two-isolated-groups-each-get-their-own-shell
+    description: dsh-superagent cordis.patch.yml isolates shell in each agent preset; deepseek-harness tests/config-reload.spec.ts:264.
+    tags: [dsh-superagent, deepseek-harness]
+    setup:
+      - action: component.use
+        id: worker-shell
+        isolate: { shell: worker }
+        provides: [shell]
+      - action: component.use
+        id: worker-tool
+        isolate: { shell: worker }
+        inject: [shell]
+      - action: component.use
+        id: router-shell
+        isolate: { shell: router }
+        provides: [shell]
+      - action: component.use
+        id: router-tool
+        isolate: { shell: router }
+        inject: [shell]
+      - action: host.settle
+    steps:
+      - given: both groups provide a shell, with no duplicate-service failure
+        action: component.state
+        id: router-shell
+        captureAs: router
+        asserts:
+          - var: router.state
+            equals: Active
+      - when: the worker's tool looks its shell up
+        action: service.lookup
+        from: worker-tool
+        name: shell
+        captureAs: workerShell
+      - and: the router's tool looks its shell up
+        action: service.lookup
+        from: router-tool
+        name: shell
+        captureAs: routerShell
+      - and: the root looks for a shell
+        action: service.lookup
+        name: shell
+        optional: true
+        captureAs: rootShell
+      - then: each tool sees its own group's shell and the root sees none
+        action: core.noop
+        asserts:
+          - var: workerShell.value
+            equals: worker-shell
+          - var: routerShell.value
+            equals: router-shell
+          - var: rootShell.found
+            isFalse: true
+
+  - name: a-second-provider-in-the-same-realm-fails-and-the-first-keeps-serving
+    description: deepseek-harness mcp-client tests/apply.spec.ts:242, a duplicate serverName fails and leaves the first intact.
+    tags: [deepseek-harness]
+    setup:
+      - action: component.use
+        id: docs-first
+        provides: [docs-server]
+      - action: host.settle
+    steps:
+      - given: a server named docs is registered
+        action: component.state
+        id: docs-first
+        captureAs: first
+        asserts:
+          - var: first.state
+            equals: Active
+      - when: a second component registers the same name in the same realm
+        action: component.use
+        id: docs-second
+        provides: [docs-server]
+        captureAs: used
+      - and: its load settles
+        action: component.wait
+        id: ${capture.used.id}
+        captureAs: second
+      - then: the second fails and the first still serves
+        action: service.lookup
+        name: docs-server
+        captureAs: docs
+        asserts:
+          - var: second.state
+            equals: Failed
+          - var: docs.value
+            equals: docs-first
+      - and: the first was not reloaded
+        action: component.state
+        id: docs-first
+        captureAs: firstAfter
+        asserts:
+          - var: firstAfter.state
+            equals: Active
+          - var: firstAfter.loads
+            equals: 1
+
+  - name: the-same-name-in-separate-realms-is-allowed
+    description: deepseek-harness mcp-client tests/apply.spec.ts:273, the same serverName in two different scopes both succeed.
+    tags: [deepseek-harness]
+    steps:
+      - given: a docs server in the first agent's realm
+        action: component.use
+        id: docs-a
+        isolate: { docs-server: agent-a }
+        provides: [docs-server]
+        captureAs: first
+      - and: a docs server in the second agent's realm
+        action: component.use
+        id: docs-b
+        isolate: { docs-server: agent-b }
+        provides: [docs-server]
+        captureAs: second
+      - when: the tree settles
+        action: host.settle
+        captureAs: settled
+      - then: both are active
+        action: component.state
+        id: ${capture.first.id}
+        captureAs: a
+        asserts:
+          - var: settled.ok
+            isTrue: true
+          - var: a.state
+            equals: Active
+      - and: the second is active too
+        action: component.state
+        id: ${capture.second.id}
+        captureAs: b
+        asserts:
+          - var: b.state
+            equals: Active
+
+  - name: an-isolated-subtree-does-not-leak-its-service-to-the-root
+    description: deepseek-harness agent-preset-registry/src/mount.ts:213 rejects preset services published into the root realm; a realm keeps them private.
+    tags: [deepseek-harness]
+    setup:
+      - action: component.use
+        id: plan-mode
+        isolate: { planMode: preset }
+        provides: [planMode]
+      - action: component.use
+        id: outsider
+        inject: [planMode]
+      - action: host.settle
+    steps:
+      - given: a preset provides planMode in its own realm
+        action: component.state
+        id: plan-mode
+        captureAs: preset
+        asserts:
+          - var: preset.state
+            equals: Active
+      - when: a component outside the realm requires planMode
+        action: component.state
+        id: outsider
+        captureAs: outsider
+      - then: it stays pending, because the root realm has no planMode
+        action: core.noop
+        asserts:
+          - var: outsider.state
+            equals: Pending
+          - var: outsider.loads
+            equals: 0

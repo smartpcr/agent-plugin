@@ -1,6 +1,6 @@
 ﻿// -----------------------------------------------------------------------
-// <copyright file="BailKey{TArgs,TResult}.cs" company="Microsoft Corp.">
-//     Copyright (c) Microsoft Corp. All rights reserved.
+// <copyright file="BailKey{TArgs,TResult}.cs" company="Smartpcr">
+//     Copyright (c) Smartpcr. All rights reserved.
 // </copyright>
 // -----------------------------------------------------------------------
 

@@ -1,0 +1,43 @@
+<Project>
+  <!--
+    The C# binding of the behaviour suites in test/e2e/suites. It does not inherit src/net's
+    Directory.Build.props (so its output stays under artifacts/ beside this file, where the
+    VS Code extension looks for suiterun by default), but it follows the same code style:
+    the rules below reuse src/net's stylecop.json and CodeAnalysis rulesets in place, and
+    .editorconfig here is a copy of src/net/.editorconfig. A violation fails the build.
+    Fix most of them with:  dotnet format Suite.Cli/Suite.Cli.csproj
+  -->
+  <PropertyGroup>
+    <CordisNetDirectory>$(MSBuildThisFileDirectory)..\..\..\..\src\net\</CordisNetDirectory>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Deterministic>true</Deterministic>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <IsPackable>false</IsPackable>
+    <BaseOutputPath>$(MSBuildThisFileDirectory)artifacts\bin\$(MSBuildProjectName)\</BaseOutputPath>
+    <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)artifacts\obj\$(MSBuildProjectName)\</BaseIntermediateOutputPath>
+    <!-- Smartpcr.BddSuite comes from the GitHub release; Get-BddSuitePackage.ps1 fills ./feed. -->
+    <RestoreAdditionalProjectSources>$(MSBuildThisFileDirectory)feed</RestoreAdditionalProjectSources>
+    <!-- NU1507: several machine-level feeds without source mapping, as in src/net. -->
+    <WarningsNotAsErrors>$(WarningsNotAsErrors);NU1507</WarningsNotAsErrors>
+  </PropertyGroup>
+
+  <!-- Code style, as in src/net/Directory.Build.props. -->
+  <PropertyGroup>
+    <!-- Enforce .editorconfig code style at build time (IDE* rules at warning severity). -->
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <!-- Turns on CS1591 and the StyleCop SA16xx documentation rules for public members. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- This is test code: src/net's test ruleset applies. -->
+    <CodeAnalysisRuleSet>$(CordisNetDirectory)CodeAnalysis\TestSettings.ruleset</CodeAnalysisRuleSet>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="StyleCop.Analyzers" PrivateAssets="all" IncludeAssets="runtime; build; native; contentfiles; analyzers" />
+    <AdditionalFiles Include="$(CordisNetDirectory)stylecop.json" Link="stylecop.json" />
+  </ItemGroup>
+</Project>

@@ -1,6 +1,6 @@
 ﻿// -----------------------------------------------------------------------
-// <copyright file="ServiceNameAttribute.cs" company="Microsoft Corp.">
-//     Copyright (c) Microsoft Corp. All rights reserved.
+// <copyright file="ServiceNameAttribute.cs" company="Smartpcr">
+//     Copyright (c) Smartpcr. All rights reserved.
 // </copyright>
 // -----------------------------------------------------------------------
 

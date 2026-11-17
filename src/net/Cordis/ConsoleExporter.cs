@@ -1,6 +1,6 @@
 ﻿// -----------------------------------------------------------------------
-// <copyright file="ConsoleExporter.cs" company="Microsoft Corp.">
-//     Copyright (c) Microsoft Corp. All rights reserved.
+// <copyright file="ConsoleExporter.cs" company="Smartpcr">
+//     Copyright (c) Smartpcr. All rights reserved.
 // </copyright>
 // -----------------------------------------------------------------------
 

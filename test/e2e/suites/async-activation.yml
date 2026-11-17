@@ -1,0 +1,235 @@
+# A component whose activation is asynchronous: its services become visible
+# only when it is done, a failed activation releases what it acquired, and a
+# component disposed mid-activation still closes what it opened. Motivated by
+# deepseek-harness's MCP client (packages/mcp/mcp-client/src/index.ts:258-264,
+# tests/apply.spec.ts) and agent presets (an async-generator Service.init),
+# and by dsh-superagent's failed construction (src/app/runtime.ts:167-171).
+suite: async-activation
+description: Asynchronous init gates dependents; failures and early disposal release everything.
+tags: [AR-O-1, AR-O-2]
+beforeEach:
+  - action: host.start
+afterEach:
+  - action: host.dispose
+tests:
+  - name: dependents-wait-for-an-async-init-to-finish
+    description: An MCP manager publishes its service only after discovery; a consumer loads after that, never before.
+    tags: [deepseek-harness]
+    setup:
+      - action: component.use
+        id: mcp-manager
+        provides: [mcp]
+        initGate: discovery
+      - action: component.use
+        id: consumer
+        inject: [mcp]
+      - action: host.waitFor
+        marker: 'mcp-manager:init-start'
+        timeoutSec: 10
+    steps:
+      - given: the manager is still discovering servers
+        action: component.state
+        id: mcp-manager
+        captureAs: manager
+        asserts:
+          - var: manager.state
+            equals: Loading
+      - and: the consumer has not loaded
+        action: component.state
+        id: consumer
+        captureAs: waiting
+        asserts:
+          - var: waiting.state
+            equals: Pending
+      - when: discovery finishes
+        action: gate.open
+        name: discovery
+        captureAs: opened
+      - and: the tree settles
+        action: host.settle
+        captureAs: settled
+      - then: the consumer loaded only after the manager's init was done
+        action: host.trace
+        captureAs: trace
+        asserts:
+          - var: opened.name
+            equals: discovery
+          - var: settled.ok
+            isTrue: true
+          - var: trace.joined
+            matches: 'mcp-manager:init-done.*consumer:load'
+
+  - name: a-failing-async-init-fails-the-load-and-releases-what-it-acquired
+    description: mcp-client throws from its activation when failOnStartupError is set; nothing it opened may survive.
+    tags: [deepseek-harness]
+    steps:
+      - given: an MCP client that opens a transport, publishes its tools, then fails its init
+        action: component.use
+        id: mcp-client
+        provides: [mcp-tools]
+        effects: [transport]
+        fail: init
+        captureAs: used
+      - when: its load settles
+        action: component.wait
+        id: ${capture.used.id}
+        captureAs: failed
+      - then: the client is failed with an error
+        action: core.noop
+        asserts:
+          - var: failed.state
+            equals: Failed
+          - var: failed.error
+            isNotNull: true
+      - and: the transport and the service resource were released, newest first
+        action: host.trace
+        prefix: 'mcp-client:'
+        captureAs: trace
+        asserts:
+          - var: trace.joined
+            equals: 'mcp-client:load,mcp-client:+mcp-tools.resource,mcp-client:+transport,mcp-client:init-start,mcp-client:-transport,mcp-client:-mcp-tools.resource,mcp-client:unload'
+      - and: its tools service is not visible
+        action: service.lookup
+        name: mcp-tools
+        optional: true
+        captureAs: tools
+        asserts:
+          - var: tools.found
+            isFalse: true
+
+  - name: disposing-during-activation-closes-what-was-opened
+    description: deepseek-harness mcp-client tests/apply.spec.ts:250, unload while connecting closes the transport.
+    tags: [deepseek-harness]
+    setup:
+      - action: component.use
+        id: mcp-client
+        effects: [transport]
+        initGate: connect
+      - action: host.waitFor
+        marker: 'mcp-client:init-start'
+        timeoutSec: 10
+    steps:
+      - given: the client is connecting
+        action: component.state
+        id: mcp-client
+        captureAs: connecting
+        asserts:
+          - var: connecting.state
+            equals: Loading
+      - when: it is disposed before the connection completes
+        action: component.dispose
+        id: mcp-client
+        wait: false
+        captureAs: disposing
+      - and: the connection attempt then completes
+        action: gate.open
+        name: connect
+        captureAs: opened
+      - and: the tree settles
+        action: host.settle
+        captureAs: settled
+      - then: the client is disposed and its transport closed
+        action: component.state
+        id: mcp-client
+        captureAs: after
+        asserts:
+          - var: disposing.id
+            equals: mcp-client
+          - var: opened.name
+            equals: connect
+          - var: settled.ok
+            isTrue: true
+          - var: after.state
+            equals: Disposed
+      - and: the transport was released exactly once
+        action: host.trace
+        contains: '-transport'
+        captureAs: released
+        asserts:
+          - var: released.count
+            equals: 1
+
+  - name: a-failed-component-does-not-stop-its-siblings
+    description: deepseek-harness boot tolerates a failed optional plugin; dsh-superagent's apply failure leaves the host running.
+    tags: [deepseek-harness, dsh-superagent]
+    steps:
+      - given: a component whose body throws
+        action: component.use
+        id: broken
+        effects: [half-open]
+        fail: body
+        captureAs: broken
+      - and: a healthy sibling
+        action: component.use
+        id: healthy
+        effects: [work]
+        captureAs: healthy
+      - when: the tree settles
+        action: host.settle
+        captureAs: settled
+      - then: only the broken one failed
+        action: component.state
+        id: ${capture.broken.id}
+        captureAs: brokenState
+        asserts:
+          - var: settled.ok
+            isTrue: true
+          - var: brokenState.state
+            equals: Failed
+      - and: the sibling is active
+        action: component.state
+        id: ${capture.healthy.id}
+        captureAs: healthyState
+        asserts:
+          - var: healthyState.state
+            equals: Active
+      - and: the failed body's partial work was released
+        action: host.trace
+        prefix: 'broken:'
+        captureAs: trace
+        asserts:
+          - var: trace.joined
+            equals: 'broken:load,broken:+half-open,broken:-half-open,broken:unload'
+
+  - name: a-failed-start-can-be-retried-in-the-same-process
+    description: dsh-superagent src/app/runtime.ts:167-171 releases its lock when construction fails, so a second start succeeds.
+    tags: [dsh-superagent]
+    setup:
+      - action: component.use
+        id: runtime
+        effects: [state-lock]
+        fail: body
+        failWhileValueBelow: 1
+        value: 0
+      - action: host.settle
+    steps:
+      - given: the first start failed after taking its lock
+        action: component.state
+        id: runtime
+        captureAs: first
+        asserts:
+          - var: first.state
+            equals: Failed
+      - when: it is started again with a config that works
+        action: component.update
+        id: runtime
+        value: 1
+        captureAs: retried
+      - then: the second start succeeds
+        action: component.state
+        id: runtime
+        captureAs: second
+        asserts:
+          - var: retried.accepted
+            isTrue: true
+          - var: second.state
+            equals: Active
+          - var: second.loads
+            equals: 2
+      - and: the lock was released before it was taken again
+        action: host.trace
+        contains: 'state-lock'
+        captureAs: lock
+        asserts:
+          - var: lock.joined
+            equals: 'runtime:+state-lock,runtime:-state-lock,runtime:+state-lock'

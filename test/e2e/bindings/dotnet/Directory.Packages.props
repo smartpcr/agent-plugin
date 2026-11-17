@@ -1,0 +1,16 @@
+<Project>
+  <!--
+    Central package management, as in src/net: projects reference packages without a
+    version (<PackageReference Include="X" />) and the version lives here.
+  -->
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Build-time analyzers (see Directory.Build.props); keep in step with src/net/Directory.Packages.props. -->
+    <PackageVersion Include="StyleCop.Analyzers" Version="1.2.0-beta.556" />
+    <!-- The bdd-suite runtime, from ./feed (Get-BddSuitePackage.ps1). -->
+    <PackageVersion Include="Smartpcr.BddSuite" Version="0.8.1" />
+  </ItemGroup>
+</Project>

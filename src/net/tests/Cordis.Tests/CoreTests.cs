@@ -1,6 +1,6 @@
 ﻿// -----------------------------------------------------------------------
-// <copyright file="CoreTests.cs" company="Microsoft Corp.">
-//     Copyright (c) Microsoft Corp. All rights reserved.
+// <copyright file="CoreTests.cs" company="Smartpcr">
+//     Copyright (c) Smartpcr. All rights reserved.
 // </copyright>
 // -----------------------------------------------------------------------
 
@@ -315,6 +315,50 @@ public static class CoreTests
             gate.SetResult();
             await task;
             Assert.Equal("read: open,closed", string.Join(',', timeline));
+        });
+
+        // ------------------------------------------------------- optional lookup
+        // Upstream's ctx.get(name): optional and unchecked. deepseek-harness and
+        // dsh-superagent probe for services they do not depend on this way.
+        Harness.Case("optional lookup is unchecked and never fails", async () =>
+        {
+            var root = new Context();
+            await root.Apply("provider", ctx => ctx.Provide("secret", "s3cr3t"));
+
+            // a provider that has published its service but is still loading
+            var published = Gate();
+            var release = Gate();
+            var loading = root.ApplyAsync("loading", async ctx =>
+            {
+                ctx.Provide("idle-service", "x");
+                published.SetResult();
+                await release.Task;
+            });
+            await published.Task;
+
+            object? secret = null;
+            object? missing = "unset";
+            object? isolated = "unset";
+            object? inactive = "unset";
+            object? typed = "unset";
+            await root.Apply("p", ctx =>
+            {
+                secret = ctx.Lookup("secret"); // not declared, still reachable
+                missing = ctx.Lookup("jobs");
+                isolated = ctx.Isolate("secret").Lookup("secret");
+                inactive = ctx.Lookup("idle-service");
+                typed = ctx.Lookup<CounterService>();
+            });
+
+            Assert.Equal("s3cr3t", secret);
+            Assert.True(missing is null, "a missing service was found");
+            Assert.True(isolated is null, "the lookup crossed into another realm");
+            Assert.True(inactive is null, "a provider that is not active was found");
+            Assert.True(typed is null, "a typed lookup found a service that is not provided");
+
+            release.SetResult();
+            await loading;
+            Assert.Equal("x", root.Lookup("idle-service"));
         });
 
         // -------------------------------------------------------------- lookup (#209)

@@ -1,6 +1,6 @@
 ﻿// -----------------------------------------------------------------------
-// <copyright file="ServiceStore.cs" company="Microsoft Corp.">
-//     Copyright (c) Microsoft Corp. All rights reserved.
+// <copyright file="ServiceStore.cs" company="Smartpcr">
+//     Copyright (c) Smartpcr. All rights reserved.
 // </copyright>
 // -----------------------------------------------------------------------
 
@@ -179,6 +179,19 @@ public sealed class ServiceStore(Context root)
             }
         }
     }
+
+    /// <summary>
+    /// The optional, unchecked lookup: upstream's <c>ctx.get(name)</c>. Returns the value of
+    /// the active provider of <paramref name="name"/> in <paramref name="ctx"/>'s realm, or
+    /// <see langword="null"/> when there is none. It never checks inject declarations and never
+    /// throws. A value implementing <see cref="IContextScoped"/> is rebound to
+    /// <paramref name="ctx"/>, as <see cref="Resolve"/> does.
+    /// </summary>
+    /// <param name="ctx">The context making the access.</param>
+    /// <param name="name">The service name.</param>
+    /// <returns>The service value, or <see langword="null"/> when no active provider exists.</returns>
+    public object? Lookup(Context ctx, string name)
+        => this.GetImpl(ctx, name) is { } impl ? Scope(ctx, impl.Value) : null;
 
     /// <summary>
     /// Resolve a service for <paramref name="ctx"/>. A component context reaches only what some

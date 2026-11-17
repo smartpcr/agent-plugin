@@ -200,6 +200,25 @@ func (s *store) resolve(ctx *Context, name string) (any, error) {
 	return value, nil
 }
 
+// lookup is upstream's unchecked ctx.get(name): the active provider of name in ctx's
+// realm, with no inject check and no walk. ok is false when there is none.
+func (s *store) lookup(ctx *Context, name string) (any, bool) {
+	s.t.lock()
+	impl := s.getImplLocked(ctx, name, true)
+	var value any
+	if impl != nil {
+		value = impl.value
+	}
+	s.t.unlockQuiet()
+	if impl == nil {
+		return nil, false
+	}
+	if scoped, ok := value.(Scoped); ok {
+		return scoped.ForContext(ctx), true
+	}
+	return value, true
+}
+
 func (s *store) getImplLocked(ctx *Context, name string, strict bool) *serviceImpl {
 	impl := s.byKey[ctx.keyForLocked(name)]
 	if impl == nil {

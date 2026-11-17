@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- suiterun for the cordis behaviour suites: the bdd-suite runtime plus the probe-host actions. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>suiterun</AssemblyName>
+    <RootNamespace>Cordis.E2E</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Smartpcr.BddSuite" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\..\..\src\net\Cordis\Cordis.csproj" />
+    <ProjectReference Include="..\..\..\..\..\src\net\Cordis.Timer\Cordis.Timer.csproj" />
+    <ProjectReference Include="..\..\..\..\..\src\net\Cordis.Loader\Cordis.Loader.csproj" />
+  </ItemGroup>
+</Project>

@@ -23,7 +23,7 @@ dotnet_sort_system_directives_first = true
 csharp_using_directive_placement = inside_namespace:warning
 
 # file header
-file_header_template = -----------------------------------------------------------------------\n<copyright file="{fileName}" company="Microsoft Corp.">\n    Copyright (c) Microsoft Corp. All rights reserved.\n</copyright>\n-----------------------------------------------------------------------
+file_header_template = -----------------------------------------------------------------------\n<copyright file="{fileName}" company="Smartpcr">\n    Copyright (c) Smartpcr. All rights reserved.\n</copyright>\n-----------------------------------------------------------------------
 
 # JSON files
 [*.{sh,bash}]

@@ -45,7 +45,7 @@ dotnet format Cordis.slnx                  # apply the enforced code style
 The style is taken from the ASZ-UpdateService repository, adapted only to keep LF line
 endings. Every rule below is an error, so a violation fails `dotnet build`:
 
-- every file starts with the Microsoft copyright header (with its file name);
+- every file starts with the Smartpcr copyright header (with its file name);
 - `using` directives go inside the namespace; one type per file, named after the type
   (`ChainMap{TValue}.cs` for generics);
 - instance members are always qualified with `this.`; private fields are camelCase without an
@@ -67,6 +67,7 @@ would remove it.
 | --- | --- | --- |
 | `Context` + `Proxy` get-trap | `Context` + `ServiceStore.Resolve` | explicit resolution; no proxies |
 | `locate()` (fiber walk to the declaring fiber) | `ServiceStore.Locate` | stops at a context that isolates the name again |
+| `ctx.get(name)` (unchecked, optional) | `ctx.Lookup(name)` / `ctx.Lookup<T>()` | the active provider in the caller's realm, or `null`; no inject check, never throws |
 | `Object.create(parent)` chain | `ChainMap<T>` + parent links | lookups fall through, writes stay local |
 | `Symbol(name)` isolate keys | `IsolateKey` (reference identity) | |
 | `Fiber` + epoch + inertia | `Fiber`, same algorithm | epoch = reload revision + binding uids |
@@ -233,7 +234,10 @@ dropped (extension methods cover that ground in C#).
 like upstream's `locate()`. A service is reachable when a fiber on the walk declares it in
 `Inject`, or provides it itself in the same realm. Services provided directly on the root
 are reachable from every fiber. The walk stops at a context that isolates the name again,
-so `ctx.Isolate("db").Get("db")` never returns the outer `db`.
+so `ctx.Isolate("db").Get("db")` never returns the outer `db`. To probe for a service a
+component does not depend on, use `ctx.Lookup(name)` (upstream's `ctx.get`): it reads the
+active provider in the caller's realm, returns `null` when there is none, and checks no
+`Inject`. It does not make the component reload with the service; declare it for that.
 
 **Providers outlive their dependents.** Every fiber that loaded against a binding is recorded
 as its dependent. A provider that unloads first notifies its dependents, then waits for

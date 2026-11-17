@@ -1,0 +1,380 @@
+# A host composed from a declarative entry tree and a config file. Motivated
+# by deepseek-harness (boot mounts everything through the loader; config
+# reloads restart only what changed; a malformed file keeps the last good
+# tree; file and runtime edits are merged) and by dsh-superagent's
+# cordis.patch.yml (a disabled feishu source, agent presets as groups with
+# isolate realms, a profile layer that enables or reconfigures entries by id).
+#
+# Not covered, because the ports do not implement them (docs/architecture.md
+# AR-ADR-17): YAML patch layers and `insert`, `!!js` expressions in config and
+# disabled, includes, and HMR of module code.
+suite: loader
+description: Reconciling entries, groups and realms, and syncing with a JSON config file.
+tags: [AR-O-6]
+beforeEach:
+  - action: host.start
+afterEach:
+  - action: host.dispose
+tests:
+  - name: an-entry-whose-config-changed-restarts-alone
+    description: deepseek-harness config reload remounts only the edited entry; dsh-superagent's profile layer reconfigures one entry by id.
+    tags: [deepseek-harness, dsh-superagent]
+    setup:
+      - action: loader.apply
+        entries:
+          - { id: webserver, name: probe, config: { value: 1 } }
+          - { id: sessions, name: probe, config: { value: 1 } }
+    steps:
+      - given: two entries are running
+        action: loader.entry
+        id: sessions
+        captureAs: before
+        asserts:
+          - var: before.loads
+            equals: 1
+      - when: only the webserver's config changes
+        action: loader.apply
+        entries:
+          - { id: webserver, name: probe, config: { value: 2 } }
+          - { id: sessions, name: probe, config: { value: 1 } }
+        captureAs: applied
+      - then: the webserver reloaded with the new value
+        action: loader.entry
+        id: webserver
+        captureAs: webserver
+        asserts:
+          - var: applied.entries
+            equals: 2
+          - var: webserver.loads
+            equals: 2
+          - var: webserver.value
+            equals: 2
+      - and: the sessions entry kept its instance
+        action: loader.entry
+        id: sessions
+        captureAs: sessions
+        asserts:
+          - var: sessions.loads
+            equals: 1
+
+  - name: a-disabled-entry-is-not-started-until-enabled
+    description: dsh-superagent cordis.patch.yml ships dsh-superagent-feishu with disabled true; a profile enables it.
+    tags: [dsh-superagent]
+    setup:
+      - action: loader.apply
+        entries:
+          - { id: feishu-watch, name: probe, disabled: true }
+    steps:
+      - given: the feishu source is disabled
+        action: loader.entry
+        id: feishu-watch
+        captureAs: disabled
+        asserts:
+          - var: disabled.exists
+            isTrue: true
+          - var: disabled.hasFiber
+            isFalse: true
+      - when: it is enabled
+        action: loader.setDisabled
+        id: feishu-watch
+        disabled: false
+        captureAs: enabled
+      - then: it starts
+        action: loader.entry
+        id: feishu-watch
+        captureAs: started
+        asserts:
+          - var: enabled.ok
+            isTrue: true
+          - var: started.state
+            equals: Active
+          - var: started.loads
+            equals: 1
+
+  - name: two-preset-groups-may-each-provide-the-same-service-in-their-own-realm
+    description: dsh-superagent cordis.patch.yml mounts worker and router presets, each a group with isolate shell.
+    tags: [dsh-superagent, deepseek-harness]
+    setup:
+      - action: loader.apply
+        entries:
+          - id: worker
+            name: group
+            group: true
+            isolate: { shell: worker }
+            children:
+              - { id: bash, name: probe, config: { provides: [shell] } }
+              - { id: tool, name: probe, inject: [shell] }
+          - id: router
+            name: group
+            group: true
+            isolate: { shell: router }
+            children:
+              - { id: bash, name: probe, config: { provides: [shell] } }
+              - { id: tool, name: probe, inject: [shell] }
+    steps:
+      - given: both presets loaded without a duplicate-service failure
+        action: loader.entry
+        id: 'router:bash'
+        captureAs: routerBash
+        asserts:
+          - var: routerBash.state
+            equals: Active
+      - when: the worker preset's tool looks its shell up
+        action: service.lookup
+        from: 'worker:tool'
+        name: shell
+        captureAs: workerShell
+      - and: the router preset's tool looks its shell up
+        action: service.lookup
+        from: 'router:tool'
+        name: shell
+        captureAs: routerShell
+      - then: each sees the shell of its own preset
+        action: core.noop
+        asserts:
+          - var: workerShell.value
+            equals: 'worker:bash'
+          - var: routerShell.value
+            equals: 'router:bash'
+
+  - name: a-failing-entry-does-not-stop-its-siblings
+    description: deepseek-harness boot keeps healthy siblings of a failed optional plugin; an unknown component name is reported, not fatal.
+    tags: [deepseek-harness]
+    steps:
+      - given: a tree with a failing entry, an unknown component and a healthy entry
+        action: core.set
+        value: three entries
+        captureAs: shape
+      - when: the loader applies it
+        action: loader.apply
+        entries:
+          - { id: broken, name: probe, config: { fail: body } }
+          - { id: unknown, name: no-such-component }
+          - { id: healthy, name: probe }
+        captureAs: applied
+      - then: the healthy entry is active
+        action: loader.entry
+        id: healthy
+        captureAs: healthy
+        asserts:
+          - var: shape
+            equals: three entries
+          - var: applied.entries
+            equals: 3
+          - var: healthy.state
+            equals: Active
+      - and: the failing entry is failed
+        action: loader.entry
+        id: broken
+        captureAs: broken
+        asserts:
+          - var: broken.state
+            equals: Failed
+      - and: the unknown entry has no fiber
+        action: loader.entry
+        id: unknown
+        captureAs: unknown
+        asserts:
+          - var: unknown.hasFiber
+            isFalse: true
+
+  - name: an-entry-that-injects-a-service-waits-for-it
+    description: deepseek-harness packages/bundle/headless/cordis.patch.yml:17-24 injects headlessStartup on the entry itself.
+    tags: [deepseek-harness]
+    setup:
+      - action: loader.apply
+        entries:
+          - { id: headless-runner, name: probe, inject: [headlessStartup] }
+    steps:
+      - given: the runner entry is waiting for the startup service
+        action: loader.entry
+        id: headless-runner
+        captureAs: waiting
+        asserts:
+          - var: waiting.state
+            equals: Pending
+      - when: the startup service is provided
+        action: service.provide
+        name: headlessStartup
+        captureAs: provided
+      - and: the tree settles
+        action: host.settle
+        captureAs: settled
+      - then: the runner starts
+        action: loader.entry
+        id: headless-runner
+        captureAs: started
+        asserts:
+          - var: provided.name
+            equals: headlessStartup
+          - var: settled.ok
+            isTrue: true
+          - var: started.state
+            equals: Active
+
+  - name: a-group-holds-its-children-back-until-its-service-exists
+    description: A preset group that injects a service mounts its plugins only once that service exists.
+    tags: [deepseek-harness, dsh-superagent]
+    setup:
+      - action: loader.apply
+        entries:
+          - id: worker-preset
+            name: group
+            group: true
+            inject: [agentPresets]
+            children:
+              - { id: shell, name: probe, config: { effects: [pty] } }
+    steps:
+      - given: the preset group waits for the preset registry
+        action: loader.entry
+        id: 'worker-preset:shell'
+        captureAs: held
+        asserts:
+          - var: held.hasFiber
+            isFalse: true
+      - when: the preset registry is provided
+        action: service.provide
+        name: agentPresets
+        captureAs: provided
+      - and: the tree settles
+        action: host.settle
+        captureAs: settled
+      - then: the group's child starts
+        action: loader.entry
+        id: 'worker-preset:shell'
+        captureAs: started
+        asserts:
+          - var: provided.name
+            equals: agentPresets
+          - var: settled.ok
+            isTrue: true
+          - var: started.state
+            equals: Active
+
+  - name: a-malformed-config-file-keeps-the-last-good-tree
+    description: deepseek-harness packages/boot/app-boot/tests/config-reload.spec.ts:63, a malformed file changes nothing.
+    tags: [deepseek-harness]
+    setup:
+      - action: configFile.open
+        entries:
+          - { id: webserver, name: probe, config: { value: 1 } }
+    steps:
+      - given: the tree was loaded from the file
+        action: loader.entry
+        id: webserver
+        captureAs: before
+        asserts:
+          - var: before.state
+            equals: Active
+      - when: someone saves a malformed file
+        action: configFile.write
+        text: '{ not json'
+        captureAs: written
+      - and: the file is re-read
+        action: configFile.sync
+        captureAs: synced
+      - then: the entry is still running its old instance
+        action: loader.entry
+        id: webserver
+        captureAs: after
+        asserts:
+          - var: written.ok
+            isTrue: true
+          - var: synced.ok
+            isTrue: true
+          - var: after.state
+            equals: Active
+          - var: after.loads
+            equals: 1
+      - and: the malformed file was not overwritten
+        action: configFile.read
+        captureAs: file
+        asserts:
+          - var: file.text
+            equals: '{ not json'
+
+  - name: file-edits-and-runtime-edits-are-both-kept
+    description: deepseek-harness scripts/cordis-include-journal.spec.ts merges file edits with runtime edits; the file wins only a true conflict.
+    tags: [deepseek-harness]
+    setup:
+      - action: configFile.open
+        entries:
+          - { id: webserver, name: probe, config: { value: 1 } }
+          - { id: sessions, name: probe, config: { value: 1 } }
+    steps:
+      - given: someone edits the sessions entry in the file
+        action: configFile.write
+        entries:
+          - { id: webserver, name: probe, config: { value: 1 } }
+          - { id: sessions, name: probe, config: { value: 5 } }
+        captureAs: edited
+      - when: the runtime updates the webserver before the file is re-read
+        action: component.update
+        id: webserver
+        value: 2
+        captureAs: updated
+      - and: the file is re-read
+        action: configFile.sync
+        captureAs: synced
+      - then: both edits are live
+        action: loader.entry
+        id: sessions
+        captureAs: sessions
+        asserts:
+          - var: edited.ok
+            isTrue: true
+          - var: updated.accepted
+            isTrue: true
+          - var: synced.ok
+            isTrue: true
+          - var: sessions.value
+            equals: 5
+      - and: the webserver keeps the runtime edit
+        action: loader.entry
+        id: webserver
+        captureAs: webserver
+        asserts:
+          - var: webserver.value
+            equals: 2
+
+  - name: watching-survives-editor-style-saves
+    description: Upstream include tests/watch.spec.ts, a watched file keeps being read after rename-based saves.
+    tags: [deepseek-harness]
+    setup:
+      - action: configFile.open
+        watch: true
+        entries:
+          - { id: webserver, name: probe, config: { value: 1 } }
+    steps:
+      - given: the loader watches its config file
+        action: loader.entry
+        id: webserver
+        captureAs: before
+        asserts:
+          - var: before.value
+            equals: 1
+      - when: an editor saves a new value by renaming a temporary file over it
+        action: configFile.write
+        byRename: true
+        entries:
+          - { id: webserver, name: probe, config: { value: 3 } }
+        captureAs: saved
+      - then: the entry picks the new value up by itself
+        action: wait
+        intervalSec: 1
+        timeoutSec: 15
+        forStep:
+          action: loader.entry
+          id: webserver
+          captureAs: polled
+        until:
+          var: polled.value
+          equals: 3
+        captureAs: waited
+        asserts:
+          - var: saved.ok
+            isTrue: true
+          - var: waited.waited
+            isTrue: true
+          - var: polled.value
+            equals: 3

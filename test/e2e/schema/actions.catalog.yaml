@@ -1,0 +1,474 @@
+# Action catalog for the cordis behaviour suites (test/e2e/suites).
+#
+# The suites describe how the two production users of cordis rely on it,
+# deepseek-ai/deepseek-harness ("Everything is a Plugin") and
+# deepseek-ai/dsh-superagent-prototype, in framework-neutral terms, so that one
+# suite runs against both ports in this repository: the .NET port (src/net,
+# binding `csharp`) and the Go port (src/go, binding `go`).
+#
+# Every action drives a *probe host*: one cordis tree per case, plus a library
+# of configurable probe components that record what happens to them in an
+# ordered trace. A binding implements these actions once, on top of its port.
+# Nothing here needs a network, a model or a lab: the behaviour under test is
+# the framework's, and the probe only makes it observable.
+#
+# The probe component (used by component.use, and by a loader entry whose
+# name is `probe`, through the entry's config) is described by these keys:
+#
+#   provides       service names it provides; a lookup of one returns the
+#                  provider's fiber id, and a read during a dependent's cleanup
+#                  sees "open" until the provider releases the resource behind
+#                  it, then "closed"
+#   inject         service names it requires (it loads only while all exist); for a
+#                  loader entry this is the entry's own `inject`, not a config key
+#   optional       service names it watches optionally (a child scope that is
+#                  live only while the service exists)
+#   effects        effect names acquired in this order and released in reverse
+#   initGate       a gate its asynchronous init waits on (it stays Loading)
+#   cleanupGate    a gate its asynchronous cleanup waits on
+#   readOnCleanup  a service it reads during that cleanup
+#   fail           none | body | init: where its load throws
+#   failWhileValueBelow  fail only while the config value is below this (always when absent)
+#   acceptUpdates  accept config updates in place instead of restarting
+#   maxValue       its schema rejects a config value above this
+#   value          its config value
+#   children       child probe specs it creates under itself (each with an id)
+#
+# Trace markers, all prefixed by the fiber id (a loader entry's composite id):
+#   <id>:load            the body ran (one per load)
+#   <id>:unload          the load was released (after all its effects)
+#   <id>:+<effect>       an effect was acquired;  <id>:-<effect> released
+#   <id>:+<svc>.resource the resource behind a provided service was acquired;
+#                        <id>:-<svc>.resource released (the handle now reads closed)
+#   <id>:init-start      async init began;        <id>:init-done   it finished
+#   <id>:cleanup-start   async cleanup began;     <id>:cleanup-done it finished
+#   <id>:read <svc>=<v>  the service was read during cleanup (open, closed or missing)
+#   <id>:optional+<svc>  the optional scope for svc loaded; <id>:optional-<svc> released
+#   <id>:accepted <v>    a config update was accepted in place
+#   <id>:listener <label> a listener ran;  <id>:timer <label> a timer fired
+#   <from>:terminal      a waterfall reached its terminal (`root` when dispatched from the root)
+#
+# The order inside one load: load, then each provided service and its
+# resource, then the effects, then the children, then the async init. Release
+# runs in reverse, after every dependent has unloaded, and ends with unload.
+#
+# The component.* actions also accept a loader entry's composite id, so a
+# loader-created fiber can be read, updated or disposed like any other.
+#
+# Regenerate suite.schema.json and suite.schema.md beside this file with the
+# bdd-suite spec's Build-Schema.ps1 -Catalog test/e2e/schema/actions.catalog.yaml.
+catalogVersion: 1
+imports:
+  - bdd-suite:core
+bindings: [csharp, go]
+
+actions:
+  # ------------------------------------------------------------------ host
+
+  - name: host.start
+    summary: Start a new probe host (a root context with the loader and timer services) for this case.
+    bindings: [csharp, go]
+    interruptible: true
+    notes: >-
+      One host per case. The root provides the logger, timer and loader
+      services; nothing else is loaded. The trace starts empty.
+    params:
+      - { name: loader, type: boolean, default: true, description: Load the loader service on the root. }
+      - { name: timer, type: boolean, default: true, description: Load the timer service on the root. }
+    captures:
+      type: object
+      additionalProperties: false
+      properties:
+        ok: { type: boolean }
+
+  - name: host.dispose
+    summary: Dispose the host's root, which unloads the whole tree from the leaves up, and wait for it.
+    bindings: [csharp, go]
+    interruptible: false
+    captures:
+      type: object
+      additionalProperties: false
+      properties:
+        ok: { type: boolean }
+
+  - name: host.trace
+    summary: Read the ordered trace the probes recorded, optionally only markers that start with a prefix.
+    bindings: [csharp, go]
+    interruptible: true
+    params:
+      - { name: prefix, type: string, description: Keep only markers that start with this text. }
+      - { name: contains, type: string, description: Keep only markers that contain this text. }
+    captures:
+      type: object
+      additionalProperties: false
+      properties:
+        events:
+          type: array
+          items: { type: string }
+        joined: { type: string, description: The markers joined by commas, in order. }
+        count: { type: integer }
+
+  - name: host.settle
+    summary: Wait until no fiber in the tree has a load or unload running.
+    bindings: [csharp, go]
+    interruptible: true
+    notes: Bounded by the step's timeoutSec. A fiber waiting on a closed gate never settles, so do not settle across one.
+    captures:
+      type: object
+      additionalProperties: false
+      properties:
+        ok: { type: boolean }
+
+  - name: host.waitFor
+    summary: Wait until a trace marker that contains the given text has been recorded.
+    bindings: [csharp, go]
+    interruptible: true
+    notes: Bounded by the step's timeoutSec; fails the step if the marker never appears.
+    params:
+      - { name: marker, type: string, required: true }
+    captures:
+      type: object
+      additionalProperties: false
+      properties:
+        found: { type: boolean }
+        joined: { type: string, description: The whole trace when the marker was seen. }
+
+  - name: gate.open
+    summary: Open a named gate, releasing every async init or cleanup waiting on it.
+    bindings: [csharp, go]
+    interruptible: true
+    params:
+      - { name: name, type: string, required: true }
+    captures:
+      type: object
+      additionalProperties: false
+      properties:
+        name: { type: string }
+
+  # ------------------------------------------------------------- components
+
+  - name: component.use
+    summary: Use a probe component under the root, a parent fiber or an isolated scope.
+    bindings: [csharp, go]
+    interruptible: true
+    notes: >-
+      Returns at once, as Use does; the load runs asynchronously. Wait with
+      component.wait before asserting a settled state. The probe's keys are
+      described at the top of this catalog.
+    params:
+      - { name: id, type: string, required: true, description: The fiber id that names this instance in the trace. }
+      - { name: parent, type: string, description: Fiber id to create this component under; the root when absent. }
+      - name: isolate
+        type: object
+        description: Service name to realm label for the scope it is created on; one label is one shared realm per service.
+      - { name: implementation, type: string, default: probe, description: The component identity; distinct names are distinct components (for component.replace). }
+      - { name: provides, type: array, items: { type: string } }
+      - { name: inject, type: array, items: { type: string } }
+      - { name: optional, type: array, items: { type: string } }
+      - { name: effects, type: array, items: { type: string } }
+      - { name: initGate, type: string }
+      - { name: cleanupGate, type: string }
+      - { name: readOnCleanup, type: string }
+      - { name: fail, type: string, enum: [none, body, init], default: none }
+      - { name: failWhileValueBelow, type: integer }
+      - { name: acceptUpdates, type: boolean, default: false }
+      - { name: maxValue, type: integer }
+      - { name: value, type: integer, default: 0 }
+      - name: children
+        type: array
+        items: { type: object }
+        description: Child probe specs, each with an id, that the body creates under itself.
+    captures:
+      type: object
+      additionalProperties: false
+      properties:
+        id: { type: string }
+        state: { type: string }
+
+  - name: component.wait
+    summary: Wait until a fiber settles (no load or unload running) and report its state.
+    bindings: [csharp, go]
+    interruptible: true
+    params:
+      - { name: id, type: string, required: true }
+    captures: &fiberState
+      type: object
+      additionalProperties: false
+      properties:
+        id: { type: string }
+        state: { type: string, description: 'Pending, Loading, Active, Failed, Disposed or Unloading.' }
+        loads: { type: integer, description: How many times the body has run. }
+        value: { type: integer, description: The config value the fiber holds. }
+        implementation: { type: string }
+        error: { type: string, description: The failure message, or null. }
+
+  - name: component.state
+    summary: Read a fiber's state without waiting.
+    bindings: [csharp, go]
+    interruptible: true
+    params:
+      - { name: id, type: string, required: true }
+    captures: *fiberState
+
+  - name: component.update
+    summary: Update a fiber's config value and wait for it to settle.
+    bindings: [csharp, go]
+    interruptible: true
+    notes: A value the schema rejects fails the update (captured, not thrown) and changes nothing.
+    params:
+      - { name: id, type: string, required: true }
+      - { name: value, type: integer, required: true }
+      - { name: wait, type: boolean, default: true, description: Wait for the fiber to settle; when false, only start the update. }
+    captures:
+      type: object
+      additionalProperties: false
+      properties:
+        accepted: { type: boolean, description: The update was applied. }
+        error: { type: string }
+        state: { type: string }
+        loads: { type: integer }
+
+  - name: component.restart
+    summary: Restart a fiber with its current config and wait for it to settle.
+    bindings: [csharp, go]
+    interruptible: true
+    params:
+      - { name: id, type: string, required: true }
+      - { name: wait, type: boolean, default: true, description: Wait for the fiber to settle; when false, only start the restart. }
+    captures: *fiberState
+
+  - name: component.dispose
+    summary: Dispose a fiber and, unless told not to, wait until it has unloaded.
+    bindings: [csharp, go]
+    interruptible: true
+    params:
+      - { name: id, type: string, required: true }
+      - { name: wait, type: boolean, default: true }
+    captures: *fiberState
+
+  - name: component.replace
+    summary: Replace one component implementation with another behind every live fiber.
+    bindings: [csharp, go]
+    interruptible: true
+    params:
+      - { name: from, type: string, required: true, description: The implementation being replaced. }
+      - { name: to, type: string, required: true, description: The implementation that takes over. }
+      - { name: inject, type: array, items: { type: string }, description: The services the new implementation requires. }
+    captures:
+      type: object
+      additionalProperties: false
+      properties:
+        moved: { type: integer, description: How many fibers were moved. }
+
+  # --------------------------------------------------------------- services
+
+  - name: service.provide
+    summary: Provide a plain-value service on the root (or a root realm), outside any component.
+    bindings: [csharp, go]
+    interruptible: true
+    params:
+      - { name: name, type: string, required: true }
+      - { name: value, type: string, description: The value; the name when absent. }
+      - { name: realm, type: string, description: Provide it in this realm label instead of the root realm. }
+    captures:
+      type: object
+      additionalProperties: false
+      properties:
+        name: { type: string }
+
+  - name: service.withdraw
+    summary: Withdraw a service provided with service.provide, and wait for its dependents to let go.
+    bindings: [csharp, go]
+    interruptible: true
+    params:
+      - { name: name, type: string, required: true }
+      - { name: wait, type: boolean, default: true }
+    captures:
+      type: object
+      additionalProperties: false
+      properties:
+        done: { type: boolean, description: The withdrawal has completed. }
+
+  - name: service.lookup
+    summary: Look a service up from a fiber's context (or the root), as a required or optional access.
+    bindings: [csharp, go]
+    interruptible: true
+    params:
+      - { name: name, type: string, required: true }
+      - { name: from, type: string, description: Fiber id whose context performs the lookup; the root when absent. }
+      - { name: optional, type: boolean, default: false, description: 'An optional lookup is the unchecked Lookup (upstream ctx.get): no inject check, and nothing found is not a failure.' }
+    captures:
+      type: object
+      additionalProperties: false
+      properties:
+        found: { type: boolean }
+        value: { type: string, description: 'The provider fiber id for a probe service, the value for service.provide.' }
+        error: { type: string, description: 'not-injected, unavailable, or null.' }
+
+  # ----------------------------------------------------------------- events
+
+  - name: events.listen
+    summary: Register a probe listener on a fiber's context for one event.
+    bindings: [csharp, go]
+    interruptible: true
+    params:
+      - { name: owner, type: string, required: true, description: Fiber id that owns the listener. }
+      - { name: event, type: string, required: true }
+      - { name: mode, type: string, required: true, enum: [emit, parallel, bail, waterfall] }
+      - { name: label, type: string, required: true }
+      - name: behaviour
+        type: string
+        enum: [record, throw, answer, veto, callNextTwice, delay]
+        default: record
+        description: >-
+          record: note it ran and continue. throw: fail. answer: return `answer`
+          (bail) or rewrite the value (waterfall). veto: return `answer` without
+          calling next. callNextTwice: call next twice. delay: wait delayMs
+          asynchronously, then record and continue.
+      - { name: answer, type: string }
+      - { name: delayMs, type: integer, default: 100 }
+      - { name: prepend, type: boolean, default: false }
+    captures:
+      type: object
+      additionalProperties: false
+      properties:
+        label: { type: string }
+
+  - name: events.dispatch
+    summary: Dispatch an event from the root (or a fiber) in one mode and capture the outcome.
+    bindings: [csharp, go]
+    interruptible: true
+    notes: >-
+      For waterfall, the terminal returns the value unchanged and records
+      `<from>:terminal`. A failure is captured, not thrown.
+    params:
+      - { name: event, type: string, required: true }
+      - { name: mode, type: string, required: true, enum: [emit, parallel, bail, waterfall] }
+      - { name: from, type: string, description: Fiber id to dispatch from; the root when absent. }
+      - { name: value, type: string, default: '', description: The payload (the waterfall's starting value). }
+    captures:
+      type: object
+      additionalProperties: false
+      properties:
+        result: { type: string, description: The bail answer or the waterfall result, or null. }
+        error: { type: string }
+        errors: { type: integer, description: How many listener failures were aggregated. }
+
+  # ----------------------------------------------------------------- timers
+
+  - name: timer.schedule
+    summary: Schedule a timer owned by a fiber, through the timer service.
+    bindings: [csharp, go]
+    interruptible: true
+    params:
+      - { name: owner, type: string, required: true }
+      - { name: label, type: string, required: true }
+      - { name: kind, type: string, required: true, enum: [timeout, interval, debounce, throttle] }
+      - { name: delayMs, type: integer, required: true }
+      - { name: calls, type: integer, default: 1, description: How many times a debounced or throttled function is called now. }
+    captures:
+      type: object
+      additionalProperties: false
+      properties:
+        label: { type: string }
+
+  # ----------------------------------------------------------------- loader
+
+  - name: loader.apply
+    summary: Reconcile the loader with a list of entries and wait until every entry settles.
+    bindings: [csharp, go]
+    interruptible: true
+    notes: >-
+      Entry keys: id, name (probe or group), config (the probe keys), disabled,
+      group, inject, isolate (service to realm label), children.
+    params:
+      - name: entries
+        type: array
+        required: true
+        items: { type: object }
+    captures:
+      type: object
+      additionalProperties: false
+      properties:
+        entries: { type: integer, description: How many entries the loader holds. }
+
+  - name: loader.entry
+    summary: Read one loader entry by its composite id.
+    bindings: [csharp, go]
+    interruptible: true
+    params:
+      - { name: id, type: string, required: true }
+    captures:
+      type: object
+      additionalProperties: false
+      properties:
+        exists: { type: boolean }
+        hasFiber: { type: boolean }
+        state: { type: string }
+        loads: { type: integer, description: How many times this entry's body has run. }
+        value: { type: integer }
+
+  - name: loader.setDisabled
+    summary: Enable or disable one loader entry and wait for the tree to settle.
+    bindings: [csharp, go]
+    interruptible: true
+    params:
+      - { name: id, type: string, required: true }
+      - { name: disabled, type: boolean, required: true }
+    captures:
+      type: object
+      additionalProperties: false
+      properties:
+        ok: { type: boolean }
+
+  - name: configFile.open
+    summary: Back the loader with a JSON config file in a fresh temporary folder, seeded with entries.
+    bindings: [csharp, go]
+    interruptible: true
+    params:
+      - name: entries
+        type: array
+        required: true
+        items: { type: object }
+      - { name: watch, type: boolean, default: false }
+    captures:
+      type: object
+      additionalProperties: false
+      properties:
+        path: { type: string }
+
+  - name: configFile.write
+    summary: Write the config file as another program would, either as entries or as raw text.
+    bindings: [csharp, go]
+    interruptible: true
+    params:
+      - name: entries
+        type: array
+        items: { type: object }
+      - { name: text, type: string, description: Raw file content, for a malformed file. }
+      - { name: byRename, type: boolean, default: false, description: Write a temporary file and rename it over the config, as editors do. }
+    captures:
+      type: object
+      additionalProperties: false
+      properties:
+        ok: { type: boolean }
+
+  - name: configFile.sync
+    summary: Make the config file component re-read the file now and wait for the reconcile.
+    bindings: [csharp, go]
+    interruptible: true
+    captures:
+      type: object
+      additionalProperties: false
+      properties:
+        ok: { type: boolean }
+
+  - name: configFile.read
+    summary: Read the config file as it is on disk.
+    bindings: [csharp, go]
+    interruptible: true
+    captures:
+      type: object
+      additionalProperties: false
+      properties:
+        text: { type: string }

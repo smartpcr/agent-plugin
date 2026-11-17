@@ -166,6 +166,53 @@ func TestUndeclaredServiceAccessIsRejected(t *testing.T) {
 	Equal(t, any(42), secret)
 }
 
+// Upstream's ctx.get(name): optional and unchecked. deepseek-harness and dsh-superagent
+// probe for services they do not depend on this way (ctx.get('jobs')?.…).
+func TestOptionalLookupIsUncheckedAndNeverFails(t *testing.T) {
+	root := cordis.New()
+	MustWait(t, Must(root.Apply("provider", func(ctx *cordis.Context) error {
+		_, err := ctx.Provide("secret", 42)
+		return err
+	})))
+	// a provider that has published its service but is still loading
+	published := make(chan struct{})
+	release := make(chan struct{})
+	loading := Must(root.Apply("loading", func(ctx *cordis.Context) error {
+		if _, err := ctx.Provide("idle-service", "x"); err != nil {
+			return err
+		}
+		close(published)
+		<-release
+		return nil
+	}))
+	<-published
+
+	var secret, missing, isolated, inactive any
+	var foundSecret, foundMissing, foundIsolated, foundInactive bool
+	var typed int
+	var typedOK bool
+	MustWait(t, Must(root.Apply("p", func(ctx *cordis.Context) error {
+		secret, foundSecret = ctx.Lookup("secret") // not declared, still reachable
+		missing, foundMissing = ctx.Lookup("jobs")
+		isolated, foundIsolated = ctx.Isolate("secret").Lookup("secret")
+		inactive, foundInactive = ctx.Lookup("idle-service")
+		typed, typedOK = cordis.NewServiceKey[int]("secret").Lookup(ctx)
+		return nil
+	})))
+
+	True(t, foundSecret, "an undeclared service was not found")
+	Equal(t, any(42), secret)
+	True(t, !foundMissing && missing == nil, "a missing service was found")
+	True(t, !foundIsolated && isolated == nil, "the lookup crossed into another realm")
+	True(t, !foundInactive && inactive == nil, "a provider that is not active was found")
+	True(t, typedOK && typed == 42, "the typed lookup failed")
+
+	close(release)
+	MustWait(t, loading)
+	value, found := root.Lookup("idle-service")
+	True(t, found && value == "x", "the service was not found once its provider was active")
+}
+
 func TestDependentsLoadAndUnloadWithTheirProvider(t *testing.T) {
 	root := cordis.New()
 	var loads, unloads atomic.Int32

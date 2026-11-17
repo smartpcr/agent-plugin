@@ -1,6 +1,6 @@
 ﻿// -----------------------------------------------------------------------
-// <copyright file="Context.cs" company="Microsoft Corp.">
-//     Copyright (c) Microsoft Corp. All rights reserved.
+// <copyright file="Context.cs" company="Smartpcr">
+//     Copyright (c) Smartpcr. All rights reserved.
 // </copyright>
 // -----------------------------------------------------------------------
 
@@ -262,6 +262,27 @@ public sealed class Context : IAsyncDisposable
     public TService Get<TService>()
         where TService : class
         => (TService)this.Reflect.Resolve(this, ServiceNames.For<TService>(), true)!;
+
+    /// <summary>
+    /// Looks a service up optionally and without checking inject declarations: upstream's
+    /// <c>ctx.get(name)</c>. Returns the value of the active provider of <paramref name="name"/>
+    /// in this context's realm, or <see langword="null"/> when there is none; it never throws.
+    /// Use it to probe for a service a component does not depend on. Declare the service in
+    /// <c>Inject</c> instead when the component must reload with it.
+    /// </summary>
+    /// <param name="name">The service name.</param>
+    /// <returns>The service value, or <see langword="null"/> when no active provider exists.</returns>
+    public object? Lookup(string name) => this.Reflect.Lookup(this, name);
+
+    /// <summary>
+    /// Looks the service <typeparamref name="TService"/> up optionally and without checking
+    /// inject declarations. See <see cref="Lookup(string)"/>.
+    /// </summary>
+    /// <typeparam name="TService">The service type; its name comes from <see cref="ServiceNames.For{T}"/>.</typeparam>
+    /// <returns>The service value, or <see langword="null"/> when no active provider exists or it is not a <typeparamref name="TService"/>.</returns>
+    public TService? Lookup<TService>()
+        where TService : class
+        => this.Reflect.Lookup(this, ServiceNames.For<TService>()) as TService;
 
     /// <summary>
     /// Resolves the service <typeparamref name="TService"/> if it is currently available.

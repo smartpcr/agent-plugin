@@ -1,0 +1,329 @@
+# A component runs only while the services it requires exist, and follows
+# optional ones without failing. Motivated by deepseek-harness (an MCP client
+# requires `tools`; boot reports pending plugins as "waiting for X") and by
+# dsh-superagent (its main plugin requires eleven host services and watches
+# optional ones such as agentPresets and settings).
+suite: dependency-gating
+description: Required services gate a component's load; optional services never fail it.
+tags: [AR-O-1, AR-O-4]
+beforeEach:
+  - action: host.start
+afterEach:
+  - action: host.dispose
+tests:
+  - name: a-tool-server-stays-pending-until-the-tools-service-exists
+    description: deepseek-harness packages/mcp/mcp-client/src/index.ts:42 declares inject ['tools']; packages/boot/app-boot/src/index.ts:1086 reports it as waiting.
+    tags: [deepseek-harness]
+    steps:
+      - given: an MCP client that requires the tools service and opens a transport
+        action: component.use
+        id: mcp-client
+        inject: [tools]
+        effects: [transport]
+        captureAs: used
+      - when: the tree settles with no tools service
+        action: host.settle
+        captureAs: settled
+      - then: the client is pending and its body never ran
+        action: component.state
+        id: ${capture.used.id}
+        captureAs: pending
+        asserts:
+          - var: settled.ok
+            isTrue: true
+          - var: pending.state
+            equals: Pending
+          - var: pending.loads
+            equals: 0
+      - and: no transport was opened
+        action: host.trace
+        prefix: 'mcp-client:'
+        captureAs: trace
+        asserts:
+          - var: trace.count
+            equals: 0
+
+  - name: a-pending-tool-server-loads-by-itself-when-tools-appear
+    description: The same client loads once a provider of tools appears, with nothing calling it.
+    tags: [deepseek-harness]
+    setup:
+      - action: component.use
+        id: mcp-client
+        inject: [tools]
+        effects: [transport]
+      - action: host.settle
+    steps:
+      - given: the client is waiting for tools
+        action: component.state
+        id: mcp-client
+        captureAs: before
+        asserts:
+          - var: before.state
+            equals: Pending
+      - when: the tools service is provided
+        action: service.provide
+        name: tools
+        captureAs: provided
+      - and: the tree settles
+        action: host.settle
+        captureAs: settled
+      - then: the client is active, loaded once, and opened its transport
+        action: component.state
+        id: mcp-client
+        captureAs: after
+        asserts:
+          - var: provided.name
+            equals: tools
+          - var: settled.ok
+            isTrue: true
+          - var: after.state
+            equals: Active
+          - var: after.loads
+            equals: 1
+      - and: the trace shows the load and the transport
+        action: host.trace
+        prefix: 'mcp-client:'
+        captureAs: trace
+        asserts:
+          - var: trace.joined
+            equals: 'mcp-client:load,mcp-client:+transport'
+
+  - name: losing-a-required-service-unloads-the-client-and-its-return-reloads-it
+    description: A dependency that disappears unloads its dependent, which reloads by itself when the dependency returns.
+    tags: [deepseek-harness]
+    setup:
+      - action: service.provide
+        name: tools
+      - action: component.use
+        id: mcp-client
+        inject: [tools]
+        effects: [transport]
+      - action: host.settle
+    steps:
+      - given: the client is active against the tools service
+        action: component.state
+        id: mcp-client
+        captureAs: before
+        asserts:
+          - var: before.state
+            equals: Active
+      - when: the tools service is withdrawn
+        action: service.withdraw
+        name: tools
+        captureAs: withdrawn
+      - and: it is provided again
+        action: service.provide
+        name: tools
+        captureAs: returned
+      - and: the tree settles
+        action: host.settle
+        captureAs: settled
+      - then: the client unloaded, closed its transport, and loaded a second time
+        action: component.state
+        id: mcp-client
+        captureAs: after
+        asserts:
+          - var: withdrawn.done
+            isTrue: true
+          - var: returned.name
+            equals: tools
+          - var: settled.ok
+            isTrue: true
+          - var: after.state
+            equals: Active
+          - var: after.loads
+            equals: 2
+      - and: the transport was released before the second load
+        action: host.trace
+        prefix: 'mcp-client:'
+        captureAs: trace
+        asserts:
+          - var: trace.joined
+            equals: 'mcp-client:load,mcp-client:+transport,mcp-client:-transport,mcp-client:unload,mcp-client:load,mcp-client:+transport'
+
+  - name: the-lead-plugin-loads-once-when-the-last-of-its-services-appears
+    description: dsh-superagent src/index.ts:8 injects eleven host services; its apply must run once, only when all exist.
+    tags: [dsh-superagent]
+    setup:
+      - action: service.provide
+        name: agents
+      - action: service.provide
+        name: llm
+      - action: component.use
+        id: dsh-superagent
+        inject: [agents, llm, sessionController]
+      - action: host.settle
+    steps:
+      - given: two of its three required services exist
+        action: component.state
+        id: dsh-superagent
+        captureAs: before
+        asserts:
+          - var: before.state
+            equals: Pending
+          - var: before.loads
+            equals: 0
+      - when: the last one is provided
+        action: service.provide
+        name: sessionController
+        captureAs: provided
+      - and: the tree settles
+        action: host.settle
+        captureAs: settled
+      - then: the plugin applied exactly once
+        action: component.state
+        id: dsh-superagent
+        captureAs: after
+        asserts:
+          - var: provided.name
+            equals: sessionController
+          - var: settled.ok
+            isTrue: true
+          - var: after.state
+            equals: Active
+          - var: after.loads
+            equals: 1
+
+  - name: an-optional-dependency-scope-follows-its-service
+    description: dsh-superagent src/app/sessions.ts:124 runs ctx.inject(['agentPresets'], ...); deepseek-harness uses the same pattern 93 times.
+    tags: [dsh-superagent, deepseek-harness]
+    setup:
+      - action: component.use
+        id: sessions
+        optional: [agentPresets]
+      - action: host.settle
+    steps:
+      - given: the sessions component is active without any preset registry
+        action: component.state
+        id: sessions
+        captureAs: before
+        asserts:
+          - var: before.state
+            equals: Active
+      - when: the preset registry appears
+        action: service.provide
+        name: agentPresets
+        captureAs: provided
+      - and: its optional scope has loaded
+        action: host.waitFor
+        marker: 'sessions:optional+agentPresets'
+        timeoutSec: 10
+        captureAs: loaded
+      - and: the preset registry goes away again
+        action: service.withdraw
+        name: agentPresets
+        captureAs: withdrawn
+      - then: the optional scope loaded and was released with its service
+        action: host.trace
+        prefix: 'sessions:optional'
+        captureAs: trace
+        asserts:
+          - var: provided.name
+            equals: agentPresets
+          - var: loaded.found
+            isTrue: true
+          - var: withdrawn.done
+            isTrue: true
+          - var: trace.joined
+            equals: 'sessions:optional+agentPresets,sessions:optional-agentPresets'
+      - and: the sessions component itself never reloaded
+        action: component.state
+        id: sessions
+        captureAs: after
+        asserts:
+          - var: after.state
+            equals: Active
+          - var: after.loads
+            equals: 1
+
+  - name: an-optional-lookup-of-a-missing-service-returns-nothing
+    description: dsh-superagent src/executor/background.ts:29 reads ctx.get('jobs') and treats absence as no background work; deepseek-harness does so 376 times. Both ports provide it as Lookup.
+    tags: [dsh-superagent, deepseek-harness]
+    setup:
+      - action: component.use
+        id: worker
+      - action: host.settle
+    steps:
+      - given: a worker that declares no jobs service, and none exists
+        action: component.state
+        id: worker
+        captureAs: worker
+        asserts:
+          - var: worker.state
+            equals: Active
+      - when: the worker looks the jobs service up optionally
+        action: service.lookup
+        from: worker
+        name: jobs
+        optional: true
+        captureAs: jobs
+      - then: nothing is found and nothing fails
+        action: core.noop
+        asserts:
+          - var: jobs.found
+            isFalse: true
+          - var: jobs.error
+            isNull: true
+
+  - name: an-optional-lookup-finds-a-service-that-exists
+    description: The same optional lookup returns the service once it is there.
+    tags: [dsh-superagent]
+    setup:
+      - action: service.provide
+        name: jobs
+        value: job-runner
+      - action: component.use
+        id: worker
+      - action: host.settle
+    steps:
+      - given: the jobs service exists on the root
+        action: component.state
+        id: worker
+        captureAs: worker
+        asserts:
+          - var: worker.state
+            equals: Active
+      - when: the worker looks it up optionally
+        action: service.lookup
+        from: worker
+        name: jobs
+        optional: true
+        captureAs: jobs
+      - then: it is found
+        action: core.noop
+        asserts:
+          - var: jobs.found
+            isTrue: true
+          - var: jobs.value
+            equals: job-runner
+
+  - name: a-required-lookup-of-an-undeclared-service-is-rejected
+    description: A component reaches only what it declared, plus root services; another component's service is off limits.
+    tags: [deepseek-harness]
+    setup:
+      - action: component.use
+        id: vault
+        provides: [secrets]
+      - action: component.use
+        id: reporter
+      - action: host.settle
+    steps:
+      - given: a vault component provides secrets and the reporter does not declare them
+        action: component.state
+        id: reporter
+        captureAs: reporter
+        asserts:
+          - var: reporter.state
+            equals: Active
+      - when: the reporter reads secrets as a required access
+        action: service.lookup
+        from: reporter
+        name: secrets
+        captureAs: secrets
+      - then: the access fails as not injected
+        action: core.noop
+        asserts:
+          - var: secrets.found
+            isFalse: true
+          - var: secrets.error
+            equals: not-injected

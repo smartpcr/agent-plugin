@@ -1,0 +1,263 @@
+# What a component acquired is released exactly once, newest first, children
+# before their parent, and a provider's resources outlive every dependent's
+# cleanup. Motivated by deepseek-harness (registrations returned as effect
+# disposers, mcp-manager owning one client per server, the subagent manager
+# owning its children, ordered agent teardown) and by dsh-superagent (source
+# plugins that await their watch loops on dispose, ticket stop releasing a
+# worker's jobs, the ordered host shutdown in src/app/runtime.ts:229-253).
+suite: teardown-order
+description: Cleanup order, ownership, and providers that outlive their dependents.
+tags: [AR-O-2, AR-O-3]
+beforeEach:
+  - action: host.start
+afterEach:
+  - action: host.dispose
+tests:
+  - name: a-dependent-finishes-its-cleanup-before-its-provider-closes
+    description: dsh-superagent src/sources/github.ts:111-121 awaits its watch loop on dispose, using the orchestrator it injects.
+    tags: [dsh-superagent, deepseek-harness]
+    setup:
+      - action: component.use
+        id: orchestrator
+        provides: [orchestrator]
+      - action: component.use
+        id: github-watch
+        inject: [orchestrator]
+        cleanupGate: loop-ended
+        readOnCleanup: orchestrator
+      - action: host.settle
+    steps:
+      - given: a source plugin is watching through the orchestrator
+        action: component.state
+        id: github-watch
+        captureAs: watching
+        asserts:
+          - var: watching.state
+            equals: Active
+      - when: the orchestrator is disposed
+        action: component.dispose
+        id: orchestrator
+        wait: false
+        captureAs: disposing
+      - and: the watch loop ends a moment later
+        action: gate.open
+        name: loop-ended
+        captureAs: ended
+      - and: the tree settles
+        action: host.settle
+        captureAs: settled
+      - then: the source read an open orchestrator during its cleanup
+        action: host.trace
+        captureAs: trace
+        asserts:
+          - var: disposing.id
+            equals: orchestrator
+          - var: ended.name
+            equals: loop-ended
+          - var: settled.ok
+            isTrue: true
+          - var: trace.joined
+            contains: 'github-watch:read orchestrator=open'
+          - var: trace.joined
+            matches: 'github-watch:cleanup-done.*github-watch:unload.*orchestrator:-orchestrator.resource'
+
+  - name: a-registration-effect-is-undone-on-unload-and-redone-on-reload
+    description: dsh-superagent registers its source kind as an effect (src/sources/github.ts:113); the reload must not hit a duplicate.
+    tags: [dsh-superagent, deepseek-harness]
+    setup:
+      - action: component.use
+        id: github-watch
+        effects: [source-kind]
+      - action: host.settle
+    steps:
+      - given: the source kind is registered
+        action: component.state
+        id: github-watch
+        captureAs: before
+        asserts:
+          - var: before.loads
+            equals: 1
+      - when: the plugin restarts
+        action: component.restart
+        id: github-watch
+        captureAs: restarted
+      - then: the kind was unregistered before it was registered again
+        action: host.trace
+        prefix: 'github-watch:'
+        captureAs: trace
+        asserts:
+          - var: restarted.state
+            equals: Active
+          - var: restarted.loads
+            equals: 2
+          - var: trace.joined
+            equals: 'github-watch:load,github-watch:+source-kind,github-watch:-source-kind,github-watch:unload,github-watch:load,github-watch:+source-kind'
+
+  - name: effects-are-released-in-reverse-order-of-acquisition
+    description: deepseek-harness packages/subagent/src/manager.ts:183 yields scope.dispose then drain, relying on the exact order.
+    tags: [deepseek-harness]
+    setup:
+      - action: component.use
+        id: subagent-manager
+        effects: [owner-scope, drain]
+      - action: host.settle
+    steps:
+      - given: a manager that acquired its scope, then its drain
+        action: component.state
+        id: subagent-manager
+        captureAs: manager
+        asserts:
+          - var: manager.state
+            equals: Active
+      - when: it is disposed
+        action: component.dispose
+        id: subagent-manager
+        captureAs: disposed
+      - then: the drain runs before the scope is released
+        action: host.trace
+        prefix: 'subagent-manager:'
+        captureAs: trace
+        asserts:
+          - var: disposed.state
+            equals: Disposed
+          - var: trace.joined
+            equals: 'subagent-manager:load,subagent-manager:+owner-scope,subagent-manager:+drain,subagent-manager:-drain,subagent-manager:-owner-scope,subagent-manager:unload'
+
+  - name: child-components-unwind-before-their-manager
+    description: deepseek-harness packages/mcp/mcp-manager/src/index.ts:500 mounts one client per server under its own context.
+    tags: [deepseek-harness]
+    setup:
+      - action: component.use
+        id: mcp-manager
+        effects: [registry]
+        children:
+          - { id: client-a, effects: [transport] }
+          - { id: client-b, effects: [transport] }
+      - action: host.settle
+    steps:
+      - given: the manager has two clients
+        action: component.state
+        id: client-b
+        captureAs: client
+        asserts:
+          - var: client.state
+            equals: Active
+      - when: the manager is disposed
+        action: component.dispose
+        id: mcp-manager
+        captureAs: disposed
+      - then: both clients unloaded, newest first, before the manager's registry closed
+        action: host.trace
+        contains: 'unload'
+        captureAs: unloads
+        asserts:
+          - var: disposed.state
+            equals: Disposed
+          - var: unloads.joined
+            equals: 'client-b:unload,client-a:unload,mcp-manager:unload'
+      - and: the manager's own registry outlived its clients
+        action: host.trace
+        captureAs: trace
+        asserts:
+          - var: trace.joined
+            matches: 'client-a:-transport.*client-a:unload.*mcp-manager:-registry'
+
+  - name: cancelling-a-subagent-releases-only-its-resources
+    description: dsh-superagent src/executor/dsh.ts:357-370 stops one ticket's worker, its jobs and subagents, and nothing else.
+    tags: [dsh-superagent, deepseek-harness]
+    setup:
+      - action: component.use
+        id: lead
+        effects: [session]
+      - action: component.use
+        id: worker-1
+        parent: lead
+        effects: [job, shell]
+      - action: component.use
+        id: worker-2
+        parent: lead
+        effects: [job]
+      - action: host.settle
+    steps:
+      - given: a lead agent with two workers
+        action: component.state
+        id: worker-1
+        captureAs: worker
+        asserts:
+          - var: worker.state
+            equals: Active
+      - when: the first worker's ticket is cancelled
+        action: component.dispose
+        id: worker-1
+        captureAs: cancelled
+      - then: that worker's shell and job were released
+        action: host.trace
+        prefix: 'worker-1:'
+        captureAs: trace
+        asserts:
+          - var: cancelled.state
+            equals: Disposed
+          - var: trace.joined
+            equals: 'worker-1:load,worker-1:+job,worker-1:+shell,worker-1:-shell,worker-1:-job,worker-1:unload'
+      - and: the lead was not reloaded
+        action: component.state
+        id: lead
+        captureAs: lead
+        asserts:
+          - var: lead.state
+            equals: Active
+          - var: lead.loads
+            equals: 1
+      - and: the other worker keeps running
+        action: component.state
+        id: worker-2
+        captureAs: other
+        asserts:
+          - var: other.state
+            equals: Active
+
+  - name: the-host-shuts-down-from-the-leaves-up-with-providers-last
+    description: dsh-superagent stops workers, then registrations, then the store (src/app/runtime.ts:229-253); deepseek-harness disposes its whole tree on a fatal boot error.
+    tags: [dsh-superagent, deepseek-harness]
+    setup:
+      - action: component.use
+        id: llm
+        provides: [llm]
+      - action: component.use
+        id: agent-loop
+        inject: [llm]
+        effects: [machine]
+        children:
+          - { id: worker, effects: [job] }
+      - action: host.settle
+    steps:
+      - given: a model provider, an agent loop that uses it, and a worker under the loop
+        action: component.state
+        id: worker
+        captureAs: worker
+        asserts:
+          - var: worker.state
+            equals: Active
+      - when: the host is shut down
+        action: host.dispose
+        captureAs: shutdown
+      - and: it is shut down a second time
+        action: host.dispose
+        captureAs: again
+      - then: the worker went first, the loop next, and the model provider last
+        action: host.trace
+        captureAs: trace
+        asserts:
+          - var: shutdown.ok
+            isTrue: true
+          - var: again.ok
+            isTrue: true
+          - var: trace.joined
+            matches: 'worker:unload.*agent-loop:-machine.*agent-loop:unload.*llm:-llm.resource.*llm:unload'
+      - and: each component unloaded exactly once
+        action: host.trace
+        contains: ':unload'
+        captureAs: unloads
+        asserts:
+          - var: unloads.count
+            equals: 3

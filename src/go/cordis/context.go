@@ -179,6 +179,14 @@ func (c *Context) Set(name string, value any) error { return c.t.store.set(c, na
 // The error wraps ErrNotInjected or ErrUnavailable.
 func (c *Context) Get(name string) (any, error) { return c.t.store.resolve(c, name) }
 
+// Lookup is the optional, unchecked lookup (upstream's ctx.get(name)): the value of
+// the active provider of name in this context's realm, or ok=false when there is
+// none. Unlike Get it does not check inject declarations and never fails, so a
+// component can probe for a service it does not depend on. A Scoped value is
+// specialised for this context, as Get does. Declare a dependency (inject) when the
+// component must reload with the service; Lookup only reads the current binding.
+func (c *Context) Lookup(name string) (any, bool) { return c.t.store.lookup(c, name) }
+
 // Has reports whether name currently has an active provider in this context's realm.
 func (c *Context) Has(name string) bool {
 	c.t.lock()

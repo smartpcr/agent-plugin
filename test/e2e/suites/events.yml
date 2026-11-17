@@ -1,0 +1,299 @@
+# Typed events with owned listeners. Motivated by deepseek-harness's event
+# catalogue (tools/pre-execute and agent/pre-step are waterfalls that may
+# veto; agent/created is serial; session/flush is parallel; webserver/authorize
+# is bail) and by dsh-superagent (prepended agent/request middleware in
+# src/app/role-models.ts:25-36, listeners that die with their plugin or agent
+# scope in src/app/sessions.ts:108-135).
+suite: events
+description: Waterfall vetoes, ordering, serial awaiting, failure containment and owned listeners.
+tags: [AR-O-7]
+beforeEach:
+  - action: host.start
+  - action: component.use
+    id: tools-host
+  - action: component.use
+    id: policy
+  - action: component.use
+    id: audit
+  - action: host.settle
+afterEach:
+  - action: host.dispose
+tests:
+  - name: a-policy-listener-vetoes-a-tool-call
+    description: deepseek-harness packages/core/tools/src/pipeline.ts:199 dispatches tools/pre-execute; a deny that does not call next stops the call.
+    tags: [deepseek-harness]
+    setup:
+      - action: events.listen
+        owner: policy
+        event: tools/pre-execute
+        mode: waterfall
+        label: deny-archived
+        behaviour: veto
+        answer: deny
+      - action: events.listen
+        owner: audit
+        event: tools/pre-execute
+        mode: waterfall
+        label: audit
+    steps:
+      - given: a policy listener ahead of an audit listener
+        action: core.set
+        value: allow
+        captureAs: request
+      - when: a tool call is checked
+        action: events.dispatch
+        event: tools/pre-execute
+        mode: waterfall
+        from: tools-host
+        value: ${capture.request}
+        captureAs: decision
+      - then: the decision is deny
+        action: core.noop
+        asserts:
+          - var: decision.result
+            equals: deny
+          - var: decision.error
+            isNull: true
+      - and: neither the audit listener nor the tool body ran
+        action: host.trace
+        captureAs: trace
+        asserts:
+          - var: trace.joined
+            contains: 'policy:listener deny-archived'
+          - var: trace.joined
+            notContains: 'audit:listener audit'
+          - var: trace.joined
+            notContains: 'tools-host:terminal'
+
+  - name: a-prepended-middleware-wraps-the-others
+    description: dsh-superagent src/app/role-models.ts:25-36 registers agent/request middleware with prepend so it wraps next().
+    tags: [dsh-superagent, deepseek-harness]
+    setup:
+      - action: events.listen
+        owner: audit
+        event: agent/request
+        mode: waterfall
+        label: request-log
+      - action: events.listen
+        owner: policy
+        event: agent/request
+        mode: waterfall
+        label: role-models
+        prepend: true
+    steps:
+      - given: a middleware registered later but with prepend
+        action: core.set
+        value: request
+        captureAs: payload
+      - when: a model request passes through the chain
+        action: events.dispatch
+        event: agent/request
+        mode: waterfall
+        value: ${capture.payload}
+        captureAs: outcome
+      - then: the prepended middleware ran first, then the other, then the terminal
+        action: host.trace
+        captureAs: trace
+        asserts:
+          - var: outcome.error
+            isNull: true
+          - var: trace.joined
+            endsWith: 'policy:listener role-models,audit:listener request-log,root:terminal'
+
+  - name: calling-next-twice-is-an-error
+    description: deepseek-harness scripts/cordis-core-lifecycle.spec.ts:178, a middleware that calls next twice is rejected.
+    tags: [deepseek-harness]
+    setup:
+      - action: events.listen
+        owner: policy
+        event: tools/execute
+        mode: waterfall
+        label: double
+        behaviour: callNextTwice
+    steps:
+      - given: a middleware that calls next twice
+        action: core.set
+        value: call
+        captureAs: payload
+      - when: a tool executes through it
+        action: events.dispatch
+        event: tools/execute
+        mode: waterfall
+        value: ${capture.payload}
+        captureAs: outcome
+      - then: the dispatch fails and says why
+        action: core.noop
+        asserts:
+          - var: outcome.error
+            contains: next
+
+  - name: an-async-creation-listener-is-awaited-in-order-before-the-dispatch-completes
+    description: deepseek-harness emits agent/created serially (packages/core/agent/src/index.ts:564); dsh-superagent's async listener installs scoped registrations (src/app/sessions.ts:121).
+    tags: [deepseek-harness, dsh-superagent]
+    setup:
+      - action: events.listen
+        owner: policy
+        event: agent/created
+        mode: emit
+        label: install-registrations
+        behaviour: delay
+        delayMs: 200
+      - action: events.listen
+        owner: audit
+        event: agent/created
+        mode: emit
+        label: announce
+    steps:
+      - given: a slow async listener ahead of a quick one
+        action: core.set
+        value: agent-1
+        captureAs: agent
+      - when: an agent is created
+        action: events.dispatch
+        event: agent/created
+        mode: emit
+        value: ${capture.agent}
+        captureAs: created
+      - then: by the time the dispatch returns both listeners ran, the slow one first
+        action: host.trace
+        contains: ':listener'
+        captureAs: trace
+        asserts:
+          - var: created.error
+            isNull: true
+          - var: trace.joined
+            equals: 'policy:listener install-registrations,audit:listener announce'
+
+  - name: listeners-die-with-their-component
+    description: dsh-superagent src/app/delivery.ts:34 keeps no disposer and relies on fiber disposal; deepseek-harness scope-lifecycle.spec.ts:258.
+    tags: [dsh-superagent, deepseek-harness]
+    setup:
+      - action: component.use
+        id: delivery
+      - action: host.settle
+      - action: events.listen
+        owner: delivery
+        event: session/event
+        mode: emit
+        label: relay
+    steps:
+      - given: a delivery component listens for session events
+        action: component.state
+        id: delivery
+        captureAs: delivery
+        asserts:
+          - var: delivery.state
+            equals: Active
+      - when: the component is disposed
+        action: component.dispose
+        id: delivery
+        captureAs: disposed
+      - and: a session event is emitted
+        action: events.dispatch
+        event: session/event
+        mode: emit
+        value: message
+        captureAs: emitted
+      - then: the listener no longer runs
+        action: host.trace
+        contains: 'listener relay'
+        captureAs: trace
+        asserts:
+          - var: disposed.state
+            equals: Disposed
+          - var: emitted.error
+            isNull: true
+          - var: trace.count
+            equals: 0
+
+  - name: one-failing-observer-does-not-stop-the-others-in-a-parallel-dispatch
+    description: deepseek-harness dispatches session/flush in parallel and contains each observer's failure (packages/core/session/src/index.ts:897-906).
+    tags: [deepseek-harness]
+    setup:
+      - action: events.listen
+        owner: tools-host
+        event: session/flush
+        mode: parallel
+        label: journal
+      - action: events.listen
+        owner: policy
+        event: session/flush
+        mode: parallel
+        label: broken
+        behaviour: throw
+      - action: events.listen
+        owner: audit
+        event: session/flush
+        mode: parallel
+        label: archive
+    steps:
+      - given: three flush observers, the second of which throws
+        action: core.set
+        value: flush
+        captureAs: payload
+      - when: the session is flushed
+        action: events.dispatch
+        event: session/flush
+        mode: parallel
+        value: ${capture.payload}
+        captureAs: flushed
+      - then: one failure is reported, naming the event
+        action: core.noop
+        asserts:
+          - var: flushed.errors
+            equals: 1
+          - var: flushed.error
+            contains: session/flush
+      - and: the other two observers still ran
+        action: host.trace
+        contains: ':listener'
+        captureAs: trace
+        asserts:
+          - var: trace.joined
+            contains: 'tools-host:listener journal'
+          - var: trace.joined
+            contains: 'audit:listener archive'
+
+  - name: the-first-authorizer-to-answer-wins
+    description: deepseek-harness packages/host/webserver/src/index.ts:787 asks webserver/authorize with bail.
+    tags: [deepseek-harness]
+    setup:
+      - action: events.listen
+        owner: tools-host
+        event: webserver/authorize
+        mode: bail
+        label: no-opinion
+      - action: events.listen
+        owner: policy
+        event: webserver/authorize
+        mode: bail
+        label: token
+        behaviour: answer
+        answer: token-user
+      - action: events.listen
+        owner: audit
+        event: webserver/authorize
+        mode: bail
+        label: fallback
+        behaviour: answer
+        answer: anonymous
+    steps:
+      - given: an authorizer with no opinion, then a token check, then a fallback
+        action: core.set
+        value: request
+        captureAs: payload
+      - when: a request is authorized
+        action: events.dispatch
+        event: webserver/authorize
+        mode: bail
+        value: ${capture.payload}
+        captureAs: authorized
+      - then: the token check answers and the fallback never runs
+        action: host.trace
+        contains: ':listener'
+        captureAs: trace
+        asserts:
+          - var: authorized.result
+            equals: token-user
+          - var: trace.joined
+            equals: 'tools-host:listener no-opinion,policy:listener token'

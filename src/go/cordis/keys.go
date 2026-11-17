@@ -40,6 +40,21 @@ func (k ServiceKey[T]) Get(ctx *Context) (T, error) {
 	return typed, nil
 }
 
+// Lookup reads the service optionally, as Context.Lookup does. ok is false when there
+// is no active provider, or when its value is not a T.
+func (k ServiceKey[T]) Lookup(ctx *Context) (T, bool) {
+	var zero T
+	value, ok := ctx.Lookup(k.name)
+	if !ok {
+		return zero, false
+	}
+	typed, ok := value.(T)
+	if !ok {
+		return zero, false
+	}
+	return typed, true
+}
+
 // Provide registers value as the service, as an effect of ctx's fiber.
 func (k ServiceKey[T]) Provide(ctx *Context, value T) (*EffectHandle, error) {
 	return ctx.Provide(k.name, value)
