@@ -2,6 +2,9 @@
 
   <PropertyGroup>
     <RootNamespace>Cordis.Loading</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <PackageId>Smartpcr.AgentPlugin.Loader</PackageId>
+    <Description>The loader for Smartpcr.AgentPlugin: materialises a declarative entry tree into components and keeps it in sync with a hot-reloading JSON config file.</Description>
   </PropertyGroup>
 
   <ItemGroup>

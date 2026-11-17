@@ -1,0 +1,106 @@
+# Releases both ports from one tag. Push vX.Y.Z (or vX.Y.Z-suffix for a prerelease):
+#
+#   ci             the whole CI workflow (build, tests, e2e) on the tagged commit
+#   go-module-tag  creates src/go/vX.Y.Z on the same commit, so `go get .../src/go@vX.Y.Z`
+#                  resolves (a module in a subdirectory is versioned by prefixed tags)
+#   goreleaser     the GitHub release: changelog, the Go sample for each platform, checksums
+#   nuget          packs Smartpcr.AgentPlugin, .Timer and .Loader at X.Y.Z, pushes them to
+#                  nuget.org and attaches them to the GitHub release
+#
+# Needs the repository secret NUGET_API_KEY (a nuget.org API key allowed to push the
+# Smartpcr.AgentPlugin* packages). Nothing is published unless ci passes.
+name: release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DOTNET_NOLOGO: "true"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "true"
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  go-module-tag:
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag the Go module
+        env:
+          TAG: src/go/${{ github.ref_name }}
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" > /dev/null; then
+            echo "$TAG already exists"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Go module ${GITHUB_REF_NAME}" "$GITHUB_SHA"
+          git push origin "refs/tags/$TAG"
+
+  goreleaser:
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the changelog needs the history and the previous tag
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: src/go/go.mod
+          cache: false
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The src/go/vX.Y.Z tag may already sit on this commit; the release tag is this one.
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
+
+  nuget:
+    needs: goreleaser # the GitHub release must exist to attach the packages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: src/net/global.json
+      - name: Check the API key
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: |
+          if [ -z "$NUGET_API_KEY" ]; then
+            echo "::error::The repository secret NUGET_API_KEY is not set."
+            exit 1
+          fi
+      - name: Pack
+        run: dotnet pack src/net/Cordis.slnx -c Release -p:Version="${GITHUB_REF_NAME#v}" -o out
+      - name: Push to nuget.org
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        # The .snupkg symbol packages beside each .nupkg are pushed with it.
+        run: dotnet nuget push "out/*.nupkg" --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
+      - name: Attach to the GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$GITHUB_REF_NAME" out/*.nupkg out/*.snupkg --clobber

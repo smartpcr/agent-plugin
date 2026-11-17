@@ -2,6 +2,9 @@
 
   <PropertyGroup>
     <RootNamespace>Cordis.Timers</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <PackageId>Smartpcr.AgentPlugin.Timer</PackageId>
+    <Description>The "timer" service for Smartpcr.AgentPlugin: timeouts, intervals, delays, debounce and throttle owned by the calling component, so no scheduled call runs after its owner unloads.</Description>
   </PropertyGroup>
 
   <ItemGroup>

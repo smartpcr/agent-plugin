@@ -33,3 +33,18 @@ cd src/go
 go test -race ./...
 go run ./cmd/cordis-sample
 ```
+
+## Releasing
+
+Push one tag, `vX.Y.Z` (or `vX.Y.Z-suffix` for a prerelease), and
+[release.yml](.github/workflows/release.yml) releases both ports at that version once CI passes
+on the tagged commit:
+
+| Port | Published as |
+| --- | --- |
+| Go | the module tag `src/go/vX.Y.Z` (`go get github.com/smartpcr/agent-plugin/src/go@vX.Y.Z`), and a GitHub release made by [GoReleaser](.goreleaser.yaml) with the sample program for each platform |
+| .NET | `Smartpcr.AgentPlugin`, `Smartpcr.AgentPlugin.Timer` and `Smartpcr.AgentPlugin.Loader` on nuget.org, also attached to the GitHub release |
+
+The workflow needs the repository secret `NUGET_API_KEY`. Go versions must keep increasing past
+the existing `src/go/v0.1.x` tags. The e2e Go binding pins a released `src/go`; bump its
+`go.mod` after a release to test the new version.

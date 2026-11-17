@@ -13,3 +13,6 @@ artifacts/
 
 # NuGet
 *.nupkg
+
+# GoReleaser output
+dist/

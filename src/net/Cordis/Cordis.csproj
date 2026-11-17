@@ -2,6 +2,9 @@
 
   <PropertyGroup>
     <RootNamespace>Cordis</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <PackageId>Smartpcr.AgentPlugin</PackageId>
+    <Description>Cordis for .NET: a dynamic dependency-injection container in which service availability changes over time. Components declare the services they need, load when those appear and unload, releasing everything they acquired, when they go away. A port of cordiverse/cordis.</Description>
   </PropertyGroup>
 
 </Project>
