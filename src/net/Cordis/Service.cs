@@ -13,8 +13,12 @@ public abstract class Service : IContextScoped
         Ctx.Provide(name, this, CheckAvailable);
     }
 
-    protected Service(Context ctx) : this(ctx, ServiceNames.For(ctx is null ? typeof(object) : ctx.GetType()))
+    /// <summary>Derives the service name from the concrete type (<see cref="ServiceNameAttribute"/> or full name).</summary>
+    protected Service(Context ctx)
     {
+        Ctx = ctx;
+        Name = ServiceNames.For(GetType());
+        Ctx.Provide(Name, this, CheckAvailable);
     }
 
     /// <summary>The context this instance is bound to. Rebound per caller by <see cref="ForContext"/>.</summary>

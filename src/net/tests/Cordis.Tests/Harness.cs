@@ -2,14 +2,14 @@ namespace Cordis.Tests;
 
 public static class Harness
 {
-    private static readonly List<(string Name, Func<Task> Body)> Cases = [];
+    private static readonly List<(string Name, Func<Task> Body)> s_cases = [];
 
-    public static void Case(string name, Func<Task> body) => Cases.Add((name, body));
+    public static void Case(string name, Func<Task> body) => s_cases.Add((name, body));
 
     public static async Task<int> RunAsync()
     {
-        var failed = 0;
-        foreach (var (name, body) in Cases)
+        int failed = 0;
+        foreach ((string? name, Func<Task>? body) in s_cases)
         {
             try
             {
@@ -29,7 +29,7 @@ public static class Harness
         }
 
         Console.WriteLine();
-        Console.WriteLine(failed == 0 ? $"{Cases.Count} passed" : $"{Cases.Count - failed} passed, {failed} failed");
+        Console.WriteLine(failed == 0 ? $"{s_cases.Count} passed" : $"{s_cases.Count - failed} passed, {failed} failed");
         return failed == 0 ? 0 : 1;
     }
 }
@@ -69,7 +69,7 @@ public static class Assert
     /// <summary>Spin until a condition holds, so tests never depend on a fixed sleep.</summary>
     public static async Task Eventually(Func<bool> condition, string message = "condition never held", int timeoutMs = 2000)
     {
-        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+        DateTime deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
         while (DateTime.UtcNow < deadline)
         {
             if (condition()) return;

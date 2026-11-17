@@ -26,6 +26,9 @@ internal sealed class Hook(Context ctx, Delegate callback, bool global)
     public Context Ctx { get; } = ctx;
     public Delegate Callback { get; } = callback;
     public bool Global { get; } = global;
+
+    /// <summary>Set on unregistration, so a dispatch already in progress skips the hook.</summary>
+    public volatile bool Removed;
 }
 
 public sealed class EventsService(Context root)
@@ -73,14 +76,15 @@ public sealed class EventsService(Context root)
             var hook = new Hook(ctx, handler, global);
             lock (root.SyncRoot)
             {
-                if (!_hooks.TryGetValue(key, out var list)) _hooks[key] = list = [];
+                if (!_hooks.TryGetValue(key, out List<Hook>? list)) _hooks[key] = list = [];
                 if (prepend) list.Insert(0, hook); else list.Add(hook);
             }
             return () =>
             {
                 lock (root.SyncRoot)
                 {
-                    if (_hooks.TryGetValue(key, out var list)) list.Remove(hook);
+                    hook.Removed = true;
+                    if (_hooks.TryGetValue(key, out List<Hook>? list) && list.Remove(hook) && list.Count == 0) _hooks.Remove(key);
                 }
                 return default;
             };
@@ -91,7 +95,7 @@ public sealed class EventsService(Context root)
     {
         lock (root.SyncRoot)
         {
-            if (!_hooks.TryGetValue(key, out var list)) return [];
+            if (!_hooks.TryGetValue(key, out List<Hook>? list)) return [];
             if (filter is null) return [.. list];
             return [.. list.Where(hook => hook.Global || filter(hook.Ctx))];
         }
@@ -102,8 +106,9 @@ public sealed class EventsService(Context root)
     /// <summary>Sequential dispatch; the first failure propagates.</summary>
     public async ValueTask EmitAsync<TArgs>(EventKey<TArgs> key, TArgs args, Func<Context, bool>? filter = null)
     {
-        foreach (var hook in Snapshot(key, filter))
+        foreach (Hook hook in Snapshot(key, filter))
         {
+            if (hook.Removed) continue;
             await ((Func<Context, TArgs, ValueTask>)hook.Callback)(hook.Ctx, args).ConfigureAwait(false);
         }
     }
@@ -111,8 +116,10 @@ public sealed class EventsService(Context root)
     /// <summary>Concurrent dispatch; failures are aggregated.</summary>
     public async ValueTask ParallelAsync<TArgs>(EventKey<TArgs> key, TArgs args, Func<Context, bool>? filter = null)
     {
-        var tasks = Snapshot(key, filter)
-            .Select(hook => ((Func<Context, TArgs, ValueTask>)hook.Callback)(hook.Ctx, args).AsTask())
+        Task[] tasks = Snapshot(key, filter)
+            .Select(hook => hook.Removed
+                ? Task.CompletedTask
+                : Invoke((Func<Context, TArgs, ValueTask>)hook.Callback, hook.Ctx, args))
             .ToArray();
         if (tasks.Length == 0) return;
 
@@ -122,43 +129,61 @@ public sealed class EventsService(Context root)
         }
         catch
         {
-            var errors = tasks.Where(t => t.IsFaulted).Select(t => (Exception)t.Exception!).ToArray();
-            throw new AggregateError(errors);
+            Exception[] errors = tasks
+                .Where(task => task.IsFaulted)
+                .SelectMany(task => task.Exception!.InnerExceptions)
+                .ToArray();
+            throw new AggregateError($"one or more listeners of event \"{key.Name}\" failed", errors);
         }
+
+        // a synchronous throw becomes a faulted task, like an async one
+        static async Task Invoke(Func<Context, TArgs, ValueTask> callback, Context ctx, TArgs args)
+            => await callback(ctx, args).ConfigureAwait(false);
     }
 
     /// <summary>Returns the first non-null result.</summary>
     public async ValueTask<TResult?> BailAsync<TArgs, TResult>(
         BailKey<TArgs, TResult> key, TArgs args, Func<Context, bool>? filter = null)
     {
-        foreach (var hook in Snapshot(key, filter))
+        foreach (Hook hook in Snapshot(key, filter))
         {
-            var result = await ((Func<Context, TArgs, ValueTask<TResult?>>)hook.Callback)(hook.Ctx, args).ConfigureAwait(false);
+            if (hook.Removed) continue;
+            TResult? result = await ((Func<Context, TArgs, ValueTask<TResult?>>)hook.Callback)(hook.Ctx, args).ConfigureAwait(false);
             if (result is not null) return result;
         }
         return default;
     }
 
-    /// <summary>Middleware chain terminated by <paramref name="terminal"/>.</summary>
+    /// <summary>
+    /// Middleware chain terminated by <paramref name="terminal"/>. Each handler may call its
+    /// <c>next</c> at most once; removed handlers are skipped even mid-dispatch.
+    /// </summary>
     public ValueTask<TArgs> WaterfallAsync<TArgs>(
         WaterfallKey<TArgs> key, TArgs args, Func<TArgs, ValueTask<TArgs>> terminal, Func<Context, bool>? filter = null)
     {
-        var hooks = Snapshot(key, filter);
-        var index = 0;
-        return Next(args);
+        List<Hook> hooks = Snapshot(key, filter);
+        int index = 0;
+        return Dispatch(args);
 
-        ValueTask<TArgs> Next(TArgs value)
+        ValueTask<TArgs> Dispatch(TArgs value)
         {
+            while (index < hooks.Count && hooks[index].Removed) index++;
             if (index >= hooks.Count) return terminal(value);
-            var hook = hooks[index++];
+            Hook hook = hooks[index++];
             var callback = (Func<Context, TArgs, Func<TArgs, ValueTask<TArgs>>, ValueTask<TArgs>>)hook.Callback;
-            return callback(hook.Ctx, value, Next);
+            bool called = false;
+            return callback(hook.Ctx, value, next =>
+            {
+                if (called) throw new InvalidOperationException("next() called multiple times");
+                called = true;
+                return Dispatch(next);
+            });
         }
     }
 }
 
-public sealed class AggregateError(IReadOnlyList<Exception> errors)
-    : AggregateException("one or more event handlers failed", errors);
+public sealed class AggregateError(string message, IReadOnlyList<Exception> errors)
+    : AggregateException(message, errors);
 
 /// <summary>
 /// Synchronous lifecycle notifications used by the framework and by the loader.
@@ -173,8 +198,14 @@ public sealed class InternalEvents
 
     public event Action<string, object?>? ServiceChanged;
 
-    /// <summary>Raised before a fiber applies a new config; handlers may rewrite or persist it.</summary>
-    public event Action<FiberUpdate>? Updating;
+    /// <summary>
+    /// Raised by <see cref="Fiber.UpdateAsync"/> (unless <c>noSave</c>) with the original,
+    /// unvalidated config, so a loader can persist it. Analogue of <c>internal/commit</c>.
+    /// </summary>
+    public event Action<Fiber, object?>? Committing;
+
+    /// <summary>A fiber was moved to a new component by <see cref="RegistryService.Replace"/>.</summary>
+    public event Action<Fiber>? Replaced;
 
     internal void RaisePluginChanged(Fiber fiber) => PluginChanged?.Invoke(fiber);
 
@@ -182,5 +213,7 @@ public sealed class InternalEvents
 
     internal void RaiseServiceChanged(string name, object? value) => ServiceChanged?.Invoke(name, value);
 
-    internal void RaiseUpdating(FiberUpdate update) => Updating?.Invoke(update);
+    internal void RaiseCommitting(Fiber fiber, object? config) => Committing?.Invoke(fiber, config);
+
+    internal void RaiseReplaced(Fiber fiber) => Replaced?.Invoke(fiber);
 }

@@ -1,9 +1,5 @@
 using System.ComponentModel.DataAnnotations;
-using System.Text.Json;
 using Cordis;
-using Cordis.Loading;
-using Cordis.Tests;
-using Cordis.Timers;
 
 // ---------------------------------------------------------------- fixtures
 
@@ -39,7 +35,7 @@ public sealed class EchoPlugin(Context ctx, EchoPlugin.Options config)
 
     private readonly EffectHandle _handle = ctx.Effect(() =>
     {
-        var line = string.Join(' ', Enumerable.Repeat(config.Text, config.Times));
+        string line = string.Join(' ', Enumerable.Repeat(config.Text, config.Times));
         Log.Add($"+{line}");
         return () => Log.Add($"-{line}");
     }, "echo");

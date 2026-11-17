@@ -6,8 +6,6 @@ namespace Cordis;
 /// </summary>
 public sealed class Context : IAsyncDisposable
 {
-    private Logger? _logger;
-
     public Context()
     {
         SyncRoot = new object();
@@ -21,6 +19,7 @@ public sealed class Context : IAsyncDisposable
         Reflect = new ServiceStore(this);
         Registry = new RegistryService(this);
         Events = new EventsService(this);
+        Reflect.Provide(this, LoggerService.ServiceName, Loggers);
     }
 
     private Context(Context parent, Fiber fiber, ChainMap<IsolateKey>? isolate, ChainMap<object>? intercept)
@@ -60,28 +59,18 @@ public sealed class Context : IAsyncDisposable
 
     public InternalEvents Internal { get; }
 
-    public Logger Logger => _logger ??= Loggers.For(this);
+    public Logger Logger => field ??= Loggers.For(this);
 
     public override string ToString() => $"Context <{Fiber.Name}>";
 
     // ------------------------------------------------------------- scoping
 
-    internal Context ExtendForFiber(Fiber fiber, IReadOnlyDictionary<string, object?> injectConfigs)
-    {
-        ChainMap<object>? intercept = null;
-        foreach (var (name, config) in injectConfigs)
-        {
-            if (config is null) continue;
-            intercept ??= InterceptMap.Extend();
-            intercept.Set(name, config);
-        }
-        return new Context(this, fiber, null, intercept);
-    }
+    internal Context ExtendForFiber(Fiber fiber) => new(this, fiber, null, null);
 
     /// <summary>A child context where <paramref name="name"/> resolves in a fresh realm.</summary>
     public Context Isolate(string name, IsolateKey? key = null)
     {
-        var map = IsolateMap.Extend();
+        ChainMap<IsolateKey> map = IsolateMap.Extend();
         map.Set(name, key ?? new IsolateKey(name));
         return new Context(this, Fiber, map, null);
     }
@@ -91,23 +80,31 @@ public sealed class Context : IAsyncDisposable
     /// <summary>A child context carrying an extra config layer for <paramref name="name"/>.</summary>
     public Context Intercept(string name, object config)
     {
-        var map = InterceptMap.Extend();
+        ChainMap<object> map = InterceptMap.Extend();
         map.Set(name, config);
         return new Context(this, Fiber, null, map);
     }
 
     public Context Intercept<TService>(object config) => Intercept(ServiceNames.For<TService>(), config);
 
+    /// <summary>The highest-priority config for <paramref name="name"/>; see <see cref="InterceptChain{TConfig}"/>.</summary>
     public TConfig? GetInterceptConfig<TConfig>(string name) where TConfig : class
-        => InterceptMap.Chain(name).OfType<TConfig>().FirstOrDefault();
+        => InterceptChain<TConfig>(name).FirstOrDefault();
 
-    /// <summary>All intercept configs bound to <paramref name="name"/>, nearest first.</summary>
+    /// <summary>
+    /// All configs that apply to <paramref name="name"/>, highest priority first: context
+    /// intercepts nearest first, then the metadata of the <c>[Inject]</c> declaration that admits
+    /// the access. Analogue of cordis' <c>Service.resolveIntercept</c>; merge them as needed.
+    /// </summary>
     public IEnumerable<TConfig> InterceptChain<TConfig>(string name)
-        => InterceptMap.Chain(name).OfType<TConfig>();
+    {
+        foreach (TConfig? config in InterceptMap.Chain(name).OfType<TConfig>()) yield return config;
+        if (Reflect.Locate(this, name)?.Fiber?.Inject.GetValueOrDefault(name) is TConfig metadata) yield return metadata;
+    }
 
     internal IsolateKey KeyFor(string name)
     {
-        if (IsolateMap.TryGet(name, out var key)) return key;
+        if (IsolateMap.TryGet(name, out IsolateKey? key)) return key;
         lock (SyncRoot)
         {
             if (!Root.IsolateMap.TryGet(name, out key))
@@ -142,38 +139,35 @@ public sealed class Context : IAsyncDisposable
 
     public bool Has(string name) => Reflect.GetImpl(this, name) is not null;
 
-    // ------------------------------------------------------------- plugins
+    // ---------------------------------------------------------- components
 
-    public Fiber Plugin(Type type, object? config = null, IEnumerable<string>? inject = null)
-    {
-        var runtime = Registry.GetOrAdd(type, () => PluginFactory.ForType(type));
-        var dependencies = PluginFactory.InjectOf(type);
-        if (inject is not null)
-        {
-            foreach (var name in inject) dependencies.TryAdd(name, null);
-        }
-        return CreateFiber(runtime, config, dependencies);
-    }
+    /// <summary>Use a component type. Analogue of <c>ctx.use()</c>.</summary>
+    public Fiber Use(Type type, object? config = null, IEnumerable<string>? inject = null)
+        => Registry.Use(this, ComponentSource.ForType(type), config, inject);
 
-    public Fiber Plugin<TPlugin>(object? config = null) => Plugin(typeof(TPlugin), config);
+    public Fiber Use<TComponent>(object? config = null) => Use(typeof(TComponent), config);
 
-    public Fiber Plugin(IPlugin plugin, object? config = null)
-    {
-        var runtime = Registry.GetOrAdd(plugin, () => PluginFactory.ForInstance(plugin));
-        var inject = PluginFactory.InjectOf(plugin.Inject);
-        foreach (var (name, value) in PluginFactory.InjectOf(plugin.GetType())) inject[name] = value;
-        return CreateFiber(runtime, config, inject);
-    }
+    public Fiber Use(IComponent component, object? config = null)
+        => Registry.Use(this, ComponentSource.ForInstance(component), config);
 
-    /// <summary>Register an inline plugin body.</summary>
+    public Fiber Use(ComponentSource source, object? config = null, IEnumerable<string>? inject = null)
+        => Registry.Use(this, source, config, inject);
+
+    [Obsolete("Use ctx.Use() instead.")]
+    public Fiber Plugin(Type type, object? config = null, IEnumerable<string>? inject = null) => Use(type, config, inject);
+
+    [Obsolete("Use ctx.Use() instead.")]
+    public Fiber Plugin<TComponent>(object? config = null) => Use<TComponent>(config);
+
+    [Obsolete("Use ctx.Use() instead.")]
+    public Fiber Plugin(IComponent component, object? config = null) => Use(component, config);
+
+    /// <summary>Register an inline component body.</summary>
     public Fiber Apply(string name, Action<Context> apply, params string[] inject)
         => ApplyAsync(name, ctx => { apply(ctx); return default; }, inject);
 
     public Fiber ApplyAsync(string name, Func<Context, ValueTask> apply, params string[] inject)
-    {
-        var runtime = Registry.GetOrAdd(apply, () => PluginFactory.ForDelegate(apply, name, apply));
-        return CreateFiber(runtime, null, PluginFactory.InjectOf(inject));
-    }
+        => Registry.Use(this, ComponentSource.ForDelegate(name, apply, inject));
 
     /// <summary>Run a body only while every named service is available. Analogue of <c>ctx.inject()</c>.</summary>
     public Fiber Inject(string[] names, Action<Context> apply)
@@ -182,11 +176,16 @@ public sealed class Context : IAsyncDisposable
     public Fiber InjectAsync(string[] names, Func<Context, ValueTask> apply)
         => ApplyAsync(apply.Method.Name, apply, names);
 
-    private Fiber CreateFiber(PluginRuntime runtime, object? config, Dictionary<string, object?> inject)
-    {
-        Fiber.AssertActive();
-        return new Fiber(this, runtime, config, inject);
-    }
+    /// <summary>
+    /// Handle config updates of this context's fiber. Call <c>next</c> to let the update proceed
+    /// (restarting the fiber); return without calling it to accept the new config in place.
+    /// The hook is removed when the fiber unloads. Analogue of <c>ctx.on('internal/update')</c>.
+    /// </summary>
+    public EffectHandle OnUpdate(UpdateHandler handler, bool prepend = false) => Fiber.AddUpdateHook(handler, prepend);
+
+    /// <summary>Accept config updates in place: the fiber is not restarted.</summary>
+    public EffectHandle OnUpdate<TConfig>(Action<TConfig> accept, bool prepend = false)
+        => Fiber.AddUpdateHook((config, _) => { accept((TConfig)config!); return Task.CompletedTask; }, prepend);
 
     // -------------------------------------------------------------- effects
 

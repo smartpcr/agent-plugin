@@ -1,12 +1,50 @@
 namespace Cordis;
 
-public sealed class ServiceImpl(string name, Fiber fiber, object? value, Func<bool>? check)
+/// <summary>
+/// One registered binding of a service name in one isolate realm. Mirrors cordis' <c>Impl</c>:
+/// each <c>Provide</c> call creates a fresh binding with its own <see cref="Uid"/>, so dependents
+/// can tell a re-provided service apart from the one they loaded against.
+/// </summary>
+public sealed class ServiceImpl
 {
-    public string Name { get; } = name;
-    public Fiber Fiber { get; } = fiber;
-    public object? Value { get; internal set; } = value;
-    public Func<bool>? Check { get; } = check;
+    internal ServiceImpl(int uid, string name, Context ctx, object? value, Func<bool>? check, IsolateKey isolate)
+    {
+        Uid = uid;
+        Name = name;
+        Ctx = ctx;
+        Value = value;
+        Check = check;
+        Isolate = isolate;
+    }
+
+    /// <summary>Identity of this binding. Part of every dependent's epoch.</summary>
+    public int Uid { get; }
+
+    public string Name { get; }
+
+    /// <summary>The context that provided this binding.</summary>
+    public Context Ctx { get; }
+
+    public Fiber Fiber => Ctx.Fiber;
+
+    public object? Value { get; internal set; }
+
+    public Func<bool>? Check { get; }
+
+    /// <summary>The realm this binding is registered under.</summary>
+    public IsolateKey Isolate { get; }
+
+    /// <summary>Fibers that loaded against this binding and have not finished unloading.</summary>
+    internal HashSet<Fiber> Dependents { get; } = [];
+
+    /// <summary>Completed when the last dependent has unloaded after this binding was withdrawn.</summary>
+    internal TaskCompletionSource? Release { get; set; }
 }
+
+/// <summary>Where an access to a service name lands. See <see cref="ServiceStore.Locate"/>.</summary>
+/// <param name="Fiber">The fiber whose declaration admits the access; <c>null</c> for an own provision.</param>
+/// <param name="Impl">The binding the access reaches; <c>null</c> if the declaring fiber is inactive.</param>
+public readonly record struct ServiceLocation(Fiber? Fiber, ServiceImpl? Impl);
 
 /// <summary>
 /// The registry of service implementations, keyed by isolate realm. Replaces cordis'
@@ -16,39 +54,52 @@ public sealed class ServiceImpl(string name, Fiber fiber, object? value, Func<bo
 public sealed class ServiceStore(Context root)
 {
     private readonly Dictionary<IsolateKey, ServiceImpl> _store = [];
+    private int _implCounter;
 
-    /// <summary>Register a provider owned by the calling fiber. Unregistered on fiber unload.</summary>
+    /// <summary>
+    /// Register a provider owned by the calling fiber. Withdrawing it (or unloading the fiber)
+    /// waits until every fiber that loaded against it has finished its own cleanup.
+    /// </summary>
     public EffectHandle Provide(Context ctx, string name, object? value = null, Func<bool>? check = null)
     {
         return ctx.Fiber.EffectSync(() =>
         {
-            var key = ctx.KeyFor(name);
+            IsolateKey key = ctx.KeyFor(name);
+            ServiceImpl impl;
             lock (root.SyncRoot)
             {
-                if (_store.TryGetValue(key, out var existing))
+                if (_store.TryGetValue(key, out ServiceImpl? existing))
                 {
                     throw new CordisException($"service \"{name}\" is already registered at <{existing.Fiber.Name}>");
                 }
-                var impl = new ServiceImpl(name, ctx.Fiber, value, check);
+                impl = new ServiceImpl(++_implCounter, name, ctx, value, check, key);
                 _store[key] = impl;
-                ctx.Fiber.AddOwnService(name, impl);
-                if (ctx.Fiber.State == FiberState.Active) Notify(ctx, [name]);
+                ctx.Fiber.AddProvision(impl);
+                if (ctx.Fiber.State == FiberState.Active) Notify(name, key);
             }
 
             return async () =>
             {
-                IReadOnlyList<Fiber> affected;
+                var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 lock (root.SyncRoot)
                 {
-                    _store.Remove(key);
-                    affected = Notify(ctx, [name]);
+                    if (IsCurrent(impl)) _store.Remove(impl.Isolate);
+                    Notify(name, impl.Isolate);
+                    impl.Release = release;
+                    if (impl.Dependents.Count == 0) release.TrySetResult();
                 }
-                foreach (var fiber in affected)
+
+                // A withdrawn binding gains no new dependents; wait only for the existing ones to
+                // finish cleanup. Yield even without dependents, so that child cleanup can still
+                // reach the inherited service before the provision is removed.
+                await Task.Yield();
+                await release.Task.ConfigureAwait(false);
+
+                lock (root.SyncRoot)
                 {
-                    try { await fiber.WaitAsync().ConfigureAwait(false); }
-                    catch { /* dependent failures are logged by their own fiber */ }
+                    impl.Release = null;
+                    ctx.Fiber.RemoveProvision(impl);
                 }
-                ctx.Fiber.RemoveOwnService(name);
             };
         }, $"ctx.Provide(\"{name}\")");
     }
@@ -58,8 +109,8 @@ public sealed class ServiceStore(Context root)
     {
         lock (root.SyncRoot)
         {
-            var key = ctx.KeyFor(name);
-            if (!_store.TryGetValue(key, out var impl))
+            IsolateKey key = ctx.KeyFor(name);
+            if (!_store.TryGetValue(key, out ServiceImpl? impl))
             {
                 throw new CordisException($"cannot set service \"{name}\" without Provide");
             }
@@ -68,7 +119,7 @@ public sealed class ServiceStore(Context root)
                 throw new CordisException($"cannot set service \"{name}\" owned by <{impl.Fiber.Name}>");
             }
             impl.Value = value;
-            Notify(ctx, [name]);
+            Notify(name, key);
         }
     }
 
@@ -76,88 +127,100 @@ public sealed class ServiceStore(Context root)
     {
         lock (root.SyncRoot)
         {
-            var key = ctx.KeyFor(name);
-            if (!_store.TryGetValue(key, out var impl)) return null;
+            IsolateKey key = ctx.KeyFor(name);
+            if (!_store.TryGetValue(key, out ServiceImpl? impl)) return null;
             if (strict && impl.Fiber.State != FiberState.Active) return null;
             return impl;
         }
     }
 
+    internal bool IsCurrent(ServiceImpl impl)
+    {
+        lock (root.SyncRoot)
+        {
+            return _store.TryGetValue(impl.Isolate, out ServiceImpl? current) && ReferenceEquals(current, impl);
+        }
+    }
+
     /// <summary>
-    /// Resolve a service for <paramref name="ctx"/>. Plugin contexts may only reach services they
-    /// declared in <c>Inject</c>; the root context is unrestricted.
+    /// Resolve an access to <paramref name="name"/> from <paramref name="ctx"/> by walking up its
+    /// fibers. Analogue of cordis' <c>locate()</c>. Returns:
+    /// <list type="bullet">
+    /// <item>an own provision of a fiber on the walk, in the same realm (<c>Fiber</c> is null);</item>
+    /// <item>the binding a declaring fiber loaded against (<c>Fiber</c> and <c>Impl</c> set);</item>
+    /// <item>a declaring fiber that is inactive (<c>Impl</c> is null);</item>
+    /// <item><c>null</c> if nothing declares it, or the walk crosses a context that isolates the name again.</item>
+    /// </list>
+    /// </summary>
+    public ServiceLocation? Locate(Context ctx, string name)
+    {
+        lock (root.SyncRoot)
+        {
+            IsolateKey key = ctx.KeyFor(name);
+            ChainMap<IsolateKey>? table = ctx.IsolateMap;
+            Fiber fiber = ctx.Fiber;
+            while (true)
+            {
+                ServiceImpl? impl = null;
+                foreach (ServiceImpl provision in fiber.ProvisionsUnsafe)
+                {
+                    if (provision.Name == name && ReferenceEquals(provision.Isolate, key)) impl = provision;
+                }
+                if (impl is not null) return new ServiceLocation(null, impl);
+
+                while (!ReferenceEquals(table, fiber.Ctx.IsolateMap))
+                {
+                    if (table is null || table.HasOwn(name)) return null;
+                    table = table.Parent;
+                }
+
+                if (fiber.Committed is { } committed && committed.TryGetValue(name, out impl)) return new ServiceLocation(fiber, impl);
+                if (fiber.Inject.ContainsKey(name)) return new ServiceLocation(fiber, null);
+                if (fiber.Runtime is null) return null;
+                fiber = fiber.Parent.Fiber;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Resolve a service for <paramref name="ctx"/>. A component context reaches only what some
+    /// fiber on its chain declared in <c>Inject</c> or provides itself; the root context is
+    /// unrestricted.
     /// </summary>
     public object? Resolve(Context ctx, string name, bool required = true)
     {
-        var fiber = ctx.Fiber;
-
-        if (fiber.Runtime is null)
+        if (ctx.Fiber.Runtime is null)
         {
-            var impl = GetImpl(ctx, name);
+            ServiceImpl? impl = GetImpl(ctx, name);
             if (impl is not null) return Scope(ctx, impl.Value);
             return required ? throw new ServiceUnavailableException(name) : null;
         }
 
-        if (!fiber.Inject.ContainsKey(name)) throw new ServiceNotInjectedException(name);
-
-        var key = ctx.KeyFor(name);
-        while (true)
-        {
-            if (fiber.TryGetService(name, out var impl)) return Scope(ctx, impl.Value);
-            if (fiber.Inject.ContainsKey(name)) break;              // declared but not loaded
-            if (fiber.Runtime is null) break;                       // reached the root
-            if (!ReferenceEquals(fiber.Parent.KeyFor(name), key)) break; // realm boundary
-            fiber = fiber.Parent.Fiber;
-        }
-
+        ServiceLocation location = Locate(ctx, name) ?? throw new ServiceNotInjectedException(name);
+        if (location.Impl is not null) return Scope(ctx, location.Impl.Value);
         return required ? throw new ServiceUnavailableException(name) : null;
     }
 
     private static object? Scope(Context ctx, object? value)
         => value is IContextScoped scoped ? scoped.ForContext(ctx) : value;
 
-    internal IReadOnlyList<string> NamesProvidedBy(Fiber fiber)
+    /// <summary>Re-evaluate every fiber that injects <paramref name="name"/> in realm <paramref name="key"/>.</summary>
+    internal void Notify(string name, IsolateKey key)
     {
         lock (root.SyncRoot)
         {
-            List<string>? names = null;
-            foreach (var impl in _store.Values)
+            foreach (ComponentRuntime runtime in root.Registry.Runtimes)
             {
-                if (!ReferenceEquals(impl.Fiber, fiber)) continue;
-                (names ??= []).Add(impl.Name);
-            }
-            return (IReadOnlyList<string>?)names ?? [];
-        }
-    }
-
-    /// <summary>Re-evaluate every fiber that injects one of <paramref name="names"/>.</summary>
-    internal IReadOnlyList<Fiber> Notify(Context ctx, IReadOnlyList<string> names)
-    {
-        var affected = new List<Fiber>();
-
-        foreach (var runtime in root.Registry.Runtimes)
-        {
-            foreach (var fiber in runtime.Fibers)
-            {
-                var touched = false;
-                foreach (var name in names)
+                foreach (Fiber fiber in runtime.Fibers)
                 {
                     if (!fiber.Inject.ContainsKey(name)) continue;
-                    if (!ReferenceEquals(fiber.Ctx.KeyFor(name), ctx.KeyFor(name))) continue;
-                    touched = true;
+                    if (!ReferenceEquals(fiber.Ctx.KeyFor(name), key)) continue;
                     fiber.CheckImpl(name);
+                    fiber.Refresh();
                 }
-                if (!touched) continue;
-                fiber.Refresh();
-                affected.Add(fiber);
             }
-        }
 
-        foreach (var name in names)
-        {
-            root.Internal.RaiseServiceChanged(name, GetImpl(ctx, name, strict: false)?.Value);
+            root.Internal.RaiseServiceChanged(name, _store.TryGetValue(key, out ServiceImpl? impl) ? impl.Value : null);
         }
-
-        return affected;
     }
 }

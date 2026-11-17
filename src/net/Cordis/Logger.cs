@@ -20,7 +20,7 @@ public sealed class ConsoleExporter : ILogExporter
 {
     public void Export(LogMessage message)
     {
-        var writer = message.Level <= LogLevel.Warn ? Console.Error : Console.Out;
+        TextWriter writer = message.Level <= LogLevel.Warn ? Console.Error : Console.Out;
         writer.WriteLine($"{message.Timestamp:HH:mm:ss} [{message.Level.ToString()[0]}] {message.Name} {message.Text}");
         if (message.Error is not null) writer.WriteLine(message.Error);
     }
@@ -47,6 +47,8 @@ public sealed class LoggerConfig
     public LogLevel Level { get; set; } = LogLevel.Info;
 }
 
+/// <summary>Provided on the root context as the <c>logger</c> service.</summary>
+[ServiceName(ServiceName)]
 public sealed class LoggerService
 {
     public const string ServiceName = "logger";
@@ -77,7 +79,7 @@ public sealed class LoggerService
 
     internal void Export(LogMessage message)
     {
-        foreach (var exporter in Exporters)
+        foreach (ILogExporter exporter in Exporters)
         {
             try { exporter.Export(message); }
             catch { /* an exporter must never break the caller */ }
@@ -93,7 +95,10 @@ public sealed class LoggerService
     }
 }
 
-/// <summary>A named logger bound to a context; the level comes from the context's intercept chain.</summary>
+/// <summary>
+/// A named logger bound to a context. The level comes from the nearest <see cref="LoggerConfig"/>
+/// intercept, falling back to <c>[Inject("logger")]</c> metadata, then the service default.
+/// </summary>
 public sealed class Logger(LoggerService service, Context ctx, string name)
 {
     public string Name => name;
@@ -101,7 +106,19 @@ public sealed class Logger(LoggerService service, Context ctx, string name)
     private LogLevel Threshold =>
         ctx.GetInterceptConfig<LoggerConfig>(LoggerService.ServiceName)?.Level ?? service.Level;
 
-    public void Error(Exception error) => Write(LogLevel.Error, error.Message, error);
+    /// <summary>
+    /// Logs an error. An <see cref="AggregateException"/> with members is flattened into one
+    /// entry per member; one with no members is logged as itself.
+    /// </summary>
+    public void Error(Exception error)
+    {
+        if (error is AggregateException { InnerExceptions.Count: > 0 } aggregate)
+        {
+            foreach (Exception inner in aggregate.InnerExceptions) Error(inner);
+            return;
+        }
+        Write(LogLevel.Error, error.Message, error);
+    }
 
     public void Error(string text) => Write(LogLevel.Error, text, null);
 

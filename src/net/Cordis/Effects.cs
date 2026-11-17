@@ -12,7 +12,6 @@ public sealed class EffectHandle : IAsyncDisposable
     private readonly List<Disposer> _disposers = [];
     private readonly List<EffectHandle> _children = [];
     private Task? _pending;
-    private bool _alive = true;
 
     internal EffectHandle(Fiber fiber, string label)
     {
@@ -24,7 +23,7 @@ public sealed class EffectHandle : IAsyncDisposable
 
     public Fiber Fiber { get; }
 
-    public bool IsAlive => _alive;
+    public bool IsAlive { get; private set; } = true;
 
     /// <summary>Nested effects that were collected by this one.</summary>
     public IReadOnlyList<EffectHandle> Children => _children;
@@ -34,7 +33,7 @@ public sealed class EffectHandle : IAsyncDisposable
         if (disposer is null) return;
         lock (Fiber.Gate)
         {
-            if (!_alive)
+            if (!IsAlive)
             {
                 _ = disposer();
                 return;
@@ -60,8 +59,8 @@ public sealed class EffectHandle : IAsyncDisposable
         Task? pending;
         lock (Fiber.Gate)
         {
-            if (!_alive) return;
-            _alive = false;
+            if (!IsAlive) return;
+            IsAlive = false;
             pending = _pending;
         }
 
@@ -80,7 +79,7 @@ public sealed class EffectHandle : IAsyncDisposable
             _disposers.Clear();
         }
 
-        for (var i = disposers.Length - 1; i >= 0; i--)
+        for (int i = disposers.Length - 1; i >= 0; i--)
         {
             try { await disposers[i]().ConfigureAwait(false); }
             catch (Exception error) { Fiber.Ctx.Logger.Error(error); }

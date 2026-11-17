@@ -21,10 +21,8 @@ public interface IConfigSchema
 {
     Type ConfigType { get; }
 
+    /// <summary>Called on every load (and on update of a loaded fiber) with the original config.</summary>
     object? Validate(object? input);
-
-    /// <summary>Reverse transform, used by the loader when writing config back to disk.</summary>
-    object? Simplify(object? value) => value;
 }
 
 /// <summary>Validates a POCO with <c>System.ComponentModel.DataAnnotations</c> attributes.</summary>
@@ -36,7 +34,7 @@ public sealed class DataAnnotationsSchema<T> : IConfigSchema where T : class, ne
 
     public object? Validate(object? input)
     {
-        var value = input switch
+        T value = input switch
         {
             null => new T(),
             T typed => typed,
@@ -49,7 +47,7 @@ public sealed class DataAnnotationsSchema<T> : IConfigSchema where T : class, ne
             return value;
         }
 
-        var issues = results
+        ConfigIssue[] issues = results
             .Select(r => new ConfigIssue(r.ErrorMessage ?? "invalid value", r.MemberNames.FirstOrDefault()))
             .ToArray();
         throw new ConfigValidationException(issues);
@@ -57,11 +55,9 @@ public sealed class DataAnnotationsSchema<T> : IConfigSchema where T : class, ne
 }
 
 /// <summary>Schema built from a delegate. Use for hand-rolled validation or normalisation.</summary>
-public sealed class DelegateSchema<T>(Func<object?, T> validate, Func<T, object?>? simplify = null) : IConfigSchema
+public sealed class DelegateSchema<T>(Func<object?, T> validate) : IConfigSchema
 {
     public Type ConfigType => typeof(T);
 
     public object? Validate(object? input) => validate(input);
-
-    public object? Simplify(object? value) => simplify is null || value is not T typed ? value : simplify(typed);
 }

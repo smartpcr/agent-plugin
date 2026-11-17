@@ -22,7 +22,7 @@ public sealed class ChainMap<TValue>(ChainMap<TValue>? parent = null)
 
     public bool TryGet(string key, out TValue value)
     {
-        for (var map = this; map is not null; map = map.Parent)
+        for (ChainMap<TValue>? map = this; map is not null; map = map.Parent)
         {
             if (map._own.TryGetValue(key, out value!)) return true;
         }
@@ -30,7 +30,7 @@ public sealed class ChainMap<TValue>(ChainMap<TValue>? parent = null)
         return false;
     }
 
-    public TValue? Get(string key) => TryGet(key, out var value) ? value : default;
+    public TValue? Get(string key) => TryGet(key, out TValue? value) ? value : default;
 
     public bool HasOwn(string key) => _own.ContainsKey(key);
 
@@ -39,9 +39,9 @@ public sealed class ChainMap<TValue>(ChainMap<TValue>? parent = null)
     /// <summary>All values bound to <paramref name="key"/>, nearest first.</summary>
     public IEnumerable<TValue> Chain(string key)
     {
-        for (var map = this; map is not null; map = map.Parent)
+        for (ChainMap<TValue>? map = this; map is not null; map = map.Parent)
         {
-            if (map._own.TryGetValue(key, out var value)) yield return value;
+            if (map._own.TryGetValue(key, out TValue? value)) yield return value;
         }
     }
 
@@ -96,10 +96,10 @@ public sealed class InjectAttribute : Attribute
 
 public static class ServiceNames
 {
-    private static readonly ConcurrentDictionary<Type, string> Cache = new();
+    private static readonly ConcurrentDictionary<Type, string> s_cache = new();
 
     public static string For<T>() => For(typeof(T));
 
-    public static string For(Type type) => Cache.GetOrAdd(type, static t =>
+    public static string For(Type type) => s_cache.GetOrAdd(type, static t =>
         t.GetCustomAttribute<ServiceNameAttribute>(inherit: false)?.Name ?? t.FullName ?? t.Name);
 }

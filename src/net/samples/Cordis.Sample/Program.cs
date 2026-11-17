@@ -44,8 +44,8 @@ public sealed class HeartbeatPlugin
 
     public HeartbeatPlugin(Context ctx, Options config)
     {
-        var database = ctx.Get<DatabaseService>();
-        var timer = ctx.Get<TimerService>();
+        DatabaseService database = ctx.Get<DatabaseService>();
+        TimerService timer = ctx.Get<TimerService>();
 
         // The interval is owned by *this* fiber: unloading the plugin stops it.
         timer.Interval(
@@ -70,12 +70,12 @@ public static class Program
         root.Loggers.Level = LogLevel.Debug;
 
         // 1. imperative composition
-        await root.Plugin<TimerService>();
-        var database = root.Plugin<DatabaseService>();
+        await root.Use<TimerService>();
+        Fiber database = root.Use<DatabaseService>();
 
         // The heartbeat is registered before the database exists; it stays PENDING and
         // starts by itself once the database finishes InitAsync.
-        var heartbeat = root.Plugin<HeartbeatPlugin>(new HeartbeatPlugin.Options { IntervalMs = 200 });
+        Fiber heartbeat = root.Use<HeartbeatPlugin>(new HeartbeatPlugin.Options { IntervalMs = 200 });
         Console.WriteLine($"heartbeat before database: {heartbeat.State}");
 
         await database;
@@ -91,13 +91,13 @@ public static class Program
         // 3. pull the dependency: every dependent unloads, then comes back
         await database.DisposeAsync();
         Console.WriteLine($"heartbeat without database: {heartbeat.State}");
-        await root.Plugin<DatabaseService>();
+        await root.Use<DatabaseService>();
         await heartbeat;
         Console.WriteLine($"heartbeat restored:         {heartbeat.State}");
         await Task.Delay(300);
 
         // 4. declarative composition through the loader
-        var configPath = Path.Combine(Path.GetTempPath(), "cordis-sample.json");
+        string configPath = Path.Combine(Path.GetTempPath(), "cordis-sample.json");
         await File.WriteAllTextAsync(configPath, JsonSerializer.Serialize(new[]
         {
             new EntryOptions
@@ -108,8 +108,8 @@ public static class Program
             },
         }, LoaderService.JsonOptions));
 
-        await root.Plugin<LoaderService>();
-        await root.Plugin<JsonConfigFile>(new JsonConfigFile.Options { Path = configPath, Watch = true });
+        await root.Use<LoaderService>();
+        await root.Use<JsonConfigFile>(new JsonConfigFile.Options { Path = configPath, Watch = true });
         Console.WriteLine("loaded from file; edit it and watch it reload");
         await Task.Delay(500);
 
