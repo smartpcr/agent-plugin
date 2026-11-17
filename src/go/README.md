@@ -60,7 +60,7 @@ gofmt -l .                    # must print nothing
 | traceable proxy (caller attribution) | `Scoped.ForContext(ctx)` | opt-in; the timer uses it |
 | `Service.resolveIntercept` | `ctx.InterceptChain(name)`, `cordis.GetIntercept[T]` | context intercepts first, inject config last |
 | `ctx.isolate(name)` / `ctx.intercept(name, cfg)` | `ctx.Isolate(name)` / `ctx.Intercept(name, cfg)` | |
-| `emit / parallel / bail / waterfall` | `EventKey[A].Emit / Parallel`, `BailKey[A,R].Bail`, `WaterfallKey[A].Waterfall` | one key type per mode, so listeners stay typed |
+| `emit / parallel / bail / waterfall` | `EventKey[A].Emit / Parallel`, `BailKey[A,R].Bail`, `WaterfallKey[A].Waterfall` | one key type per mode, so listeners stay typed; `On` appends a listener and `Prepend` puts it first, on every key type |
 | `ctx.on('internal/update', …)` | `ctx.OnUpdate(handler, prepend)`, `cordis.AcceptUpdate[C]` | per fiber; accept in place or call `next` |
 | `internal/commit` | `ctx.Internal().OnCommit` | carries the original config, for write-back |
 | other `internal/*` events | `ctx.Internal().OnPlugin / OnStatus / OnService / OnReplace` | delivered in order, outside the tree lock |

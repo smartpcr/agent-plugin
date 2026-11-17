@@ -878,6 +878,34 @@ func TestWaterfallComposesMiddlewareAroundATerminal(t *testing.T) {
 	Equal(t, "[X!]", result)
 }
 
+func TestPrependedBailAndWaterfallListenersRunFirst(t *testing.T) {
+	root := cordis.New()
+	MustWait(t, Must(root.Apply("first", func(ctx *cordis.Context) error {
+		if _, err := transform.On(ctx, func(_ *cordis.Context, value string, next func(string) (string, error)) (string, error) {
+			return next(value + "b")
+		}); err != nil {
+			return err
+		}
+		_, err := resolve.On(ctx, func(*cordis.Context, string) (string, bool, error) { return "first", true, nil })
+		return err
+	})))
+	MustWait(t, Must(root.Apply("later", func(ctx *cordis.Context) error {
+		if _, err := transform.Prepend(ctx, func(_ *cordis.Context, value string, next func(string) (string, error)) (string, error) {
+			return next(value + "a")
+		}); err != nil {
+			return err
+		}
+		_, err := resolve.Prepend(ctx, func(*cordis.Context, string) (string, bool, error) { return "later", true, nil })
+		return err
+	})))
+
+	result := Must(transform.Waterfall(root, "x", func(value string) (string, error) { return value, nil }))
+	Equal(t, "xab", result)
+	answer, ok, err := resolve.Bail(root, "q")
+	True(t, ok && err == nil, "no answer")
+	Equal(t, "later", answer)
+}
+
 func TestWaterfallRejectsCallingNextTwice(t *testing.T) { // #44
 	root := cordis.New()
 	MustWait(t, Must(root.Apply("twice", func(ctx *cordis.Context) error {

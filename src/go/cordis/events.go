@@ -182,6 +182,11 @@ func (k *BailKey[A, R]) On(ctx *Context, listener func(ctx *Context, args A) (re
 	return ctx.t.events.register(ctx, k, k.name, listener, false)
 }
 
+// Prepend registers a listener that is asked before those already registered.
+func (k *BailKey[A, R]) Prepend(ctx *Context, listener func(ctx *Context, args A) (result R, ok bool, err error)) (*EffectHandle, error) {
+	return ctx.t.events.register(ctx, k, k.name, listener, true)
+}
+
 // Bail asks the listeners in order and returns the first answer. ok is false when no
 // listener answered; an error stops the dispatch.
 func (k *BailKey[A, R]) Bail(ctx *Context, args A) (result R, ok bool, err error) {
@@ -215,6 +220,11 @@ func (k *WaterfallKey[A]) Name() string { return k.name }
 // On registers a middleware listener.
 func (k *WaterfallKey[A]) On(ctx *Context, listener func(ctx *Context, value A, next func(A) (A, error)) (A, error)) (*EffectHandle, error) {
 	return ctx.t.events.register(ctx, k, k.name, listener, false)
+}
+
+// Prepend registers a middleware listener that wraps those already registered.
+func (k *WaterfallKey[A]) Prepend(ctx *Context, listener func(ctx *Context, value A, next func(A) (A, error)) (A, error)) (*EffectHandle, error) {
+	return ctx.t.events.register(ctx, k, k.name, listener, true)
 }
 
 // Waterfall runs the listeners as a middleware chain around terminal. A listener that
