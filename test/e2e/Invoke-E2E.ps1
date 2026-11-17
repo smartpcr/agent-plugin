@@ -30,14 +30,17 @@ New-Item -ItemType Directory -Force -Path $results | Out-Null
 $exe = if ($IsWindows) { '.exe' } else { '' }
 
 function Invoke-Binding([string] $label, [string] $suiterun) {
-    $arguments = @('run', '--path', $Path, '--results', (Join-Path $results "$label.xml"))
-    if ($Name) { $arguments += @('--name', $Name) }
-    Write-Host "== ${label}: $suiterun $($arguments -join ' ')"
+    # --path is one glob that suiterun expands itself. It is always passed quoted: on Linux
+    # and macOS, PowerShell expands an unquoted wildcard argument of a native command into
+    # one argument per file, which suiterun rejects.
+    $rest = @('--results', (Join-Path $results "$label.xml"))
+    if ($Name) { $rest += @('--name', $Name) }
+    Write-Host "== ${label}: $suiterun run --path $Path $($rest -join ' ')"
     Push-Location $root
     try {
-        & $suiterun lint --path $Path | Out-Host
+        & $suiterun lint --path "$Path" | Out-Host
         if ($LASTEXITCODE -ne 0) { return $LASTEXITCODE }
-        & $suiterun @arguments | Out-Host
+        & $suiterun run --path "$Path" @rest | Out-Host
         return $LASTEXITCODE
     }
     finally {
