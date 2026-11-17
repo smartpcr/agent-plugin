@@ -5,11 +5,11 @@ VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{4BE838A4-9F2B-493A-8EF5-6CBCAAC94E0C}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Cordis", "src\Cordis\Cordis.csproj", "{1B2732A0-811C-4716-9EC3-5C1C071C49EE}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Cordis", "Cordis\Cordis.csproj", "{1B2732A0-811C-4716-9EC3-5C1C071C49EE}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Cordis.Timer", "src\Cordis.Timer\Cordis.Timer.csproj", "{4300BBDF-278A-4C39-8EAA-AC84A50CB708}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Cordis.Timer", "Cordis.Timer\Cordis.Timer.csproj", "{4300BBDF-278A-4C39-8EAA-AC84A50CB708}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Cordis.Loader", "src\Cordis.Loader\Cordis.Loader.csproj", "{E68C0D22-14B1-4A7B-B7A7-8BC33425D048}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Cordis.Loader", "Cordis.Loader\Cordis.Loader.csproj", "{E68C0D22-14B1-4A7B-B7A7-8BC33425D048}"
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{63518A25-9249-4F71-B4ED-6C90CC1BF913}"
 EndProject
