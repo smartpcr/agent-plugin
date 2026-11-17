@@ -86,8 +86,11 @@ public static class LoaderTests
             ]);
 
             Assert.True(loader.Find("timer")!.IsActive && loader.Find("counter")!.IsActive, "two services under one label collided");
-            Assert.True(loader.Find("a")!.IsActive, "first entry in the \"\" realm did not load");
-            Assert.Equal(FiberState.Failed, loader.Find("b")!.Fiber!.State); // same realm: already registered
+
+            // Same realm: exactly one provides "counter", the other fails as already registered.
+            // Siblings load concurrently, so which one wins is not specified.
+            var states = $"{loader.Find("a")!.Fiber!.State} {loader.Find("b")!.Fiber!.State}";
+            Assert.True(states is "Active Failed" or "Failed Active", $"entries in the \"\" realm did not share it: {states}");
             await root.DisposeAsync();
         });
 
