@@ -3,7 +3,7 @@ module github.com/smartpcr/agent-plugin/test/e2e/bindings/go
 go 1.24
 
 require (
-	github.com/smartpcr/agent-plugin/src/go v0.1.0
+	github.com/smartpcr/agent-plugin/src/go v0.1.1
 	github.com/smartpcr/bdd-code-extension/runtimes/go v0.8.1
 )
 
