@@ -4,5 +4,20 @@
   // these the extension targets its default "powershell" binding, which this repository
   // does not have, so every action is painted as not implemented.
   "bddSuite.targetBinding": "csharp",
-  "bddSuite.lintTool": "csharp"
+  "bddSuite.lintTool": "csharp",
+  // Every action in the catalog drives an in-process cordis tree, so no suite here needs a
+  // lab. The extension treats any action outside this list as a lab action and prompts
+  // for the lab's API URL, id and connection file before running.
+  "bddSuite.offlineActions": [
+    "core.*",
+    "wait",
+    "host.*",
+    "component.*",
+    "service.*",
+    "events.*",
+    "gate.*",
+    "timer.*",
+    "loader.*",
+    "configFile.*"
+  ]
 }
