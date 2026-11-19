@@ -1,0 +1,12 @@
+{"go":"DH-ADR-PERSISTENCE-1","kind":"decision","title":"Keep the append-only session log as the single source of truth","spec":"upstream/session-and-persistence.md"}
+{"go":"DH-ADR-PERSISTENCE-2","kind":"decision","title":"A registered event vocabulary with a small, stable envelope","spec":"upstream/session-and-persistence.md"}
+{"go":"DH-ADR-PERSISTENCE-3","kind":"decision","title":"One SQLite database per harness home is the session store, behind a narrow interface","spec":"upstream/session-and-persistence.md"}
+{"go":"DH-ADR-PERSISTENCE-4","kind":"decision","title":"Crash safety from transactions, durability from an explicit flush barrier","spec":"upstream/session-and-persistence.md"}
+{"go":"DH-ADR-PERSISTENCE-5","kind":"decision","title":"Do not read upstream format generations; no migration chain","spec":"upstream/session-and-persistence.md"}
+{"go":"DH-ADR-PERSISTENCE-6","kind":"decision","title":"Evolve the schema per event type, not per log","spec":"upstream/session-and-persistence.md"}
+{"go":"DH-ADR-PERSISTENCE-7","kind":"decision","title":"Projections are registered pure folds whose checkpoints commit with the events they reflect","spec":"upstream/session-and-persistence.md"}
+{"go":"DH-ADR-PERSISTENCE-8","kind":"decision","title":"Full-text search is SQLite FTS5 in the same database","spec":"upstream/session-and-persistence.md"}
+{"go":"DH-ADR-PERSISTENCE-9","kind":"decision","title":"Machine state in tables, blobs in files, user configuration in files","spec":"upstream/session-and-persistence.md"}
+{"go":"DH-ADR-PERSISTENCE-10","kind":"decision","title":"The store never repairs meaning; the resuming writer closes an interrupted turn; deletion is added","spec":"upstream/session-and-persistence.md"}
+{"go":"DH-ADR-PERSISTENCE-11","kind":"decision","title":"Immutability by ownership and copying, not by freezing","spec":"upstream/session-and-persistence.md"}
+{"go":"DH-ADR-PERSISTENCE-12","kind":"decision","title":"A line-per-event export format for portability, not for live storage","spec":"upstream/session-and-persistence.md"}

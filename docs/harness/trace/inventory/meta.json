@@ -1,0 +1,16 @@
+{
+  "upstream": "https://github.com/deepseek-ai/deepseek-harness",
+  "commit": "2e39e70496aa02986ca6a820c5d497e816b69d7e",
+  "counts": {
+    "CFG": 174,
+    "CLI": 7,
+    "DEBT": 1881,
+    "DEC": 464,
+    "DEP": 242,
+    "EVT": 111,
+    "PERSIST": 64,
+    "PKG": 420,
+    "SVC": 119,
+    "TOOL": 77
+  }
+}

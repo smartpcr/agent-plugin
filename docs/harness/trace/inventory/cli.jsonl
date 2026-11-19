@@ -1,0 +1,7 @@
+{"id":"UP-CLI-dsh","type":"CLI","name":"dsh","path":"apps/cli","attrs":{"catalog":"docs/cli-help.md"}}
+{"id":"UP-CLI-dsh.acp","type":"CLI","name":"dsh acp","path":"apps/cli","attrs":{"catalog":"docs/cli-help.md"}}
+{"id":"UP-CLI-dsh.headless","type":"CLI","name":"dsh headless","path":"apps/cli","attrs":{"catalog":"docs/cli-help.md"}}
+{"id":"UP-CLI-dsh.plugin","type":"CLI","name":"dsh plugin","path":"apps/cli","attrs":{"catalog":"docs/cli-help.md"}}
+{"id":"UP-CLI-dsh.sdk","type":"CLI","name":"dsh sdk","path":"apps/cli","attrs":{"catalog":"docs/cli-help.md"}}
+{"id":"UP-CLI-dsh.sdk-minimal","type":"CLI","name":"dsh sdk-minimal","path":"apps/cli","attrs":{"catalog":"docs/cli-help.md"}}
+{"id":"UP-CLI-dsh.web","type":"CLI","name":"dsh web","path":"apps/cli","attrs":{"catalog":"docs/cli-help.md"}}

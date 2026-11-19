@@ -1,0 +1,12 @@
+{"go":"DH-ADR-WIRE-1","kind":"decision","title":"The UI's HTTP surface is resource routes that return HTML; there is no RPC gateway","spec":"upstream/wire-and-api.md"}
+{"go":"DH-ADR-WIRE-2","kind":"decision","title":"Live updates use one server-sent-events connection per tab; a WebSocket is used only where bytes flow up","spec":"upstream/wire-and-api.md"}
+{"go":"DH-ADR-WIRE-3","kind":"decision","title":"A session stream resumes by durable sequence number; everything else restarts from a baseline","spec":"upstream/wire-and-api.md"}
+{"go":"DH-ADR-WIRE-4","kind":"decision","title":"One interaction registry; the UI, the SDK and ACP are three ways to answer it","spec":"upstream/wire-and-api.md"}
+{"go":"DH-ADR-WIRE-5","kind":"decision","title":"The SDK protocol is versioned NDJSON JSON-RPC 2.0 on stdio, with cancel, close, history and scoped notifications","spec":"upstream/wire-and-api.md"}
+{"go":"DH-ADR-WIRE-6","kind":"decision","title":"Python and TypeScript consumers get thin clients generated from one protocol schema, and the Go binary ships in the Python wheel","spec":"upstream/wire-and-api.md"}
+{"go":"DH-ADR-WIRE-7","kind":"decision","title":"ACP stays an automation-only agent on stdio, built on a Go ACP library behind our own interface","spec":"upstream/wire-and-api.md"}
+{"go":"DH-ADR-WIRE-8","kind":"decision","title":"MCP uses the official Go SDK in both roles; the host owns the child process","spec":"upstream/wire-and-api.md"}
+{"go":"DH-ADR-WIRE-9","kind":"decision","title":"The plugin protocol is bidirectional NDJSON JSON-RPC 2.0 on the plugin's stdin and stdout","spec":"upstream/wire-and-api.md"}
+{"go":"DH-ADR-WIRE-10","kind":"decision","title":"Web authentication keeps upstream's model: source check, then a signed cookie from a launch token, then an access check","spec":"upstream/wire-and-api.md"}
+{"go":"DH-ADR-WIRE-11","kind":"decision","title":"Withdrawn: there is no desktop shell, and the UI has one client path (overruled by DH-ADR-18)","spec":"upstream/wire-and-api.md"}
+{"go":"DH-ADR-WIRE-12","kind":"decision","title":"Webhooks keep upstream's ingress contract on a listener separate from the UI","spec":"upstream/wire-and-api.md"}
