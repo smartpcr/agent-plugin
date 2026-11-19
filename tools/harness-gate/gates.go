@@ -415,8 +415,8 @@ var keptGoVars = []string{"GOROOT", "GOPATH", "GOMODCACHE", "GOCACHE", "GOTMPDIR
 // BudgetEnv derives a budget child's environment from parent: every DSH_* and GO*
 // variable is removed except the locations of keptGoVars, then the workspace is
 // turned off, the user's go env file is ignored (GOENV=off, so persisted
-// `go env -w` settings such as GOFLAGS cannot reach the budget build) and the
-// running toolchain is pinned.
+// `go env -w` settings such as GOFLAGS cannot reach the budget build), GOFLAGS is
+// set empty explicitly and the running toolchain is pinned.
 func BudgetEnv(parent []string) []string {
 	env := slices.DeleteFunc(slices.Clone(parent), func(kv string) bool {
 		key := envKey(kv)
@@ -425,7 +425,7 @@ func BudgetEnv(parent []string) []string {
 		}
 		return strings.HasPrefix(key, "GO") && !slices.Contains(keptGoVars, key)
 	})
-	return append(env, "GOENV=off", "GOWORK=off", "GOTOOLCHAIN=local")
+	return append(env, "GOENV=off", "GOFLAGS=", "GOWORK=off", "GOTOOLCHAIN=local")
 }
 
 // crossCompileGate builds cmd/dsh for every target with CGO_ENABLED=0 and the
