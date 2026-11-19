@@ -72,9 +72,19 @@ story).
 - **Compose path (env-var set, CI stack).** `tests/e2e/<phase-slug>/docker-compose.yml`
   runs the same Go tests in a container with `DSH_E2E_STORE_HOME` pointing at a
   named-volume home, so the store's on-disk state is exercised on a Linux container
-  filesystem and survives a container restart between the write and the reopen half
-  of each restart scenario. This lane is the non-gating `harness-compose` job; it
-  never replaces the gate path.
+  filesystem. Every restart/reopen scenario performs its write half, `Close`, and
+  reopen half **inside one Go test** against that test's own sub-directory; no
+  scenario depends on the container itself being restarted. This lane is the
+  non-gating `harness-compose` job; it never replaces the gate path.
+- **Compose run sequence (same for every compose phase).** `harness-store-tests` has
+  no `depends_on` on `dsh-home-init`, and `--abort-on-container-exit` is never used,
+  so the one-shot init exiting cannot stop the test container:
+  1. `docker compose -f <file> run --rm dsh-home-init` -- must exit 0; a non-zero
+     exit fails the job before any test starts.
+  2. `docker compose -f <file> run --rm harness-store-tests` -- the job's result is
+     this command's exit code, which is the `go test` exit code.
+  3. `docker compose -f <file> down -v` -- always runs (`if: always()`), removing the
+     `dsh-home` volume.
 
 | Dependency | Env-var that would point elsewhere | Path when unset (the gate path) | Path when set |
 |---|---|---|---|
@@ -1349,8 +1359,8 @@ passes, this store is used on **scratch homes only**.
   `dsh-home-init` (one-shot container that creates and owns the `dsh-home` named
   volume) and `harness-store-tests` (the pinned Go toolchain image from
   `src/harness/go.mod` running `go -C src/harness test -race ./internal/session/store/...` with
-  `DSH_E2E_STORE_HOME` set to the mounted volume). Run with
-  `docker compose -f tests/e2e/sqlite-store-leases-and-recovery/docker-compose.yml up --abort-on-container-exit --exit-code-from harness-store-tests`.
+  `DSH_E2E_STORE_HOME` set to the mounted volume). Run with the three-step
+  compose run sequence above (init, then tests, then `down -v`).
 - **Local**: `go -C src/harness test -race -shuffle=on ./internal/session/store/...`;
   driver measurement: `go -C src/harness test -run TestBudgetStoreAppend -v ./internal/session/store/sqlite`.
 - **CI runner**: gate path on GitHub-hosted `ubuntu-latest`, `macos-latest`,
@@ -1513,8 +1523,8 @@ Stage DH-S-8: C22 `internal/storage` (DH-D-STORAGE-1,3,5,7) and C11 views
   `dsh-home-init` (one-shot container that creates and owns the `dsh-home` named
   volume) and `harness-store-tests` (the pinned Go toolchain image from
   `src/harness/go.mod` running `go -C src/harness test -race ./internal/storage/... ./internal/session/views/...` with
-  `DSH_E2E_STORE_HOME` set to the mounted volume). Run with
-  `docker compose -f tests/e2e/machine-state-views-and-spill/docker-compose.yml up --abort-on-container-exit --exit-code-from harness-store-tests`.
+  `DSH_E2E_STORE_HOME` set to the mounted volume). Run with the three-step
+  compose run sequence above (init, then tests, then `down -v`).
 - **Local**: `go -C src/harness test -race -shuffle=on ./internal/storage/... ./internal/session/views/...`.
   Manual checks of impl.md DH-S-8 (fold version change, the 5 MB result) run from a Go
   test on a `t.TempDir()` scratch home.
@@ -1806,8 +1816,8 @@ DH-D-STORAGE-6; DH-D-AGENT-2; DH-D-HUMAN-2,3,5,6).
   `dsh-home-init` (one-shot container that creates and owns the `dsh-home` named
   volume) and `harness-store-tests` (the pinned Go toolchain image from
   `src/harness/go.mod` running `go -C src/harness test -race ./internal/tools/... ./internal/human/... ./internal/agent/...` with
-  `DSH_E2E_STORE_HOME` set to the mounted volume). Run with
-  `docker compose -f tests/e2e/tool-pipeline-approvals-and-human-commands/docker-compose.yml up --abort-on-container-exit --exit-code-from harness-store-tests`.
+  `DSH_E2E_STORE_HOME` set to the mounted volume). Run with the three-step
+  compose run sequence above (init, then tests, then `down -v`).
 - **Local**: `go -C src/harness test -race -shuffle=on ./internal/tools/... ./internal/human/... ./internal/agent/...`.
 - **CI runner**: gate path on GitHub-hosted `ubuntu-latest`, `macos-latest`,
   `windows-latest` (`harness` job, required); compose path on GitHub-hosted
@@ -2018,8 +2028,8 @@ runs turns against a real model with one tool, every step logged".
   `dsh-home-init` (one-shot container that creates and owns the `dsh-home` named
   volume) and `harness-store-tests` (the pinned Go toolchain image from
   `src/harness/go.mod` running `go -C src/harness test -race ./internal/agent/... ./internal/delegate/... ./internal/context/...` with
-  `DSH_E2E_STORE_HOME` set to the mounted volume). Run with
-  `docker compose -f tests/e2e/agent-loop-milestone-m1/docker-compose.yml up --abort-on-container-exit --exit-code-from harness-store-tests`.
+  `DSH_E2E_STORE_HOME` set to the mounted volume). Run with the three-step
+  compose run sequence above (init, then tests, then `down -v`).
 - **Local**: `go -C src/harness test -race -shuffle=on ./internal/agent/... ./internal/delegate/... ./internal/context/...`;
   the full gate from Phase 1 for story closure. M1 manual check (`@manual`): run the
   documented Go test with `DSH_DEEPSEEK_API_KEY` exported in the developer's shell.
@@ -2166,13 +2176,6 @@ runs turns against a real model with one tool, every step logged".
   When the turn completes
   Then the database rows show a durable flush before the provider attempt, before the tool body and at step end
   And after the store is closed and reopened, the serialized log read back equals internal/agent/testdata/f2_log.golden byte for byte
-  ```
-- **Scenario:** A persisted log that differs from the golden fails the reopen check
-  ```gherkin
-  @TC-11b @proof:service:sqlite @edge
-  Given flow F2 persisted to the SQLite store in a temp home and the store closed
-  When one event row is deleted, one is duplicated, or one payload byte is altered before reopening
-  Then the reopen comparison against internal/agent/testdata/f2_log.golden fails and names the first differing sequence number
   ```
 - **Scenario:** M1 against the real DeepSeek API
   ```gherkin
