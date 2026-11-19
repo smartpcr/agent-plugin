@@ -272,7 +272,7 @@ func TestBudgetEnv(t *testing.T) {
 	parent := []string{"PATH=/bin", "DSH_X=1", "GOGC=off", "GOMAXPROCS=1", "GOFLAGS=-v", "GOWORK=/w", "GOTOOLCHAIN=go1.99",
 		"GOCACHE=/c", "GOMODCACHE=/m", "GOPATH=/p", "GOROOT=/r", "CGO_ENABLED=1"}
 	got := BudgetEnv(parent)
-	want := []string{"PATH=/bin", "GOCACHE=/c", "GOMODCACHE=/m", "GOPATH=/p", "GOROOT=/r", "CGO_ENABLED=1", "GOWORK=off", "GOTOOLCHAIN=local"}
+	want := []string{"PATH=/bin", "GOCACHE=/c", "GOMODCACHE=/m", "GOPATH=/p", "GOROOT=/r", "CGO_ENABLED=1", "GOENV=off", "GOFLAGS=", "GOWORK=off", "GOTOOLCHAIN=local"}
 	if !slices.Equal(got, want) {
 		t.Errorf("BudgetEnv = %v\nwant        %v", got, want)
 	}
