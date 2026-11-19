@@ -55,6 +55,10 @@ GOWORK=off go -C src/harness get github.com/smartpcr/agent-plugin/src/go@<commit
 Until `internal/` imports both modules, `go mod tidy` would drop the requirements, so
 do not run it here; `DH-T-TOOLCHAIN-11` fails on a missing or placeholder pin.
 
+`github.com/cucumber/godog` is required only by the `e2e`-tagged acceptance suite
+under `test/e2e/harness-DSH` (`go -C src/harness test -tags e2e ./test/...`); no
+package of `cmd/dsh` or `internal/` imports it.
+
 ## Module pin tests
 
 `DH-T-TOOLCHAIN-11` (three modules, one `go` floor, no `replace`) and `DH-T-SDK-17`
