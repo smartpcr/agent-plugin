@@ -114,7 +114,7 @@ A tool that throws, an unknown tool and a denial all become an error result; the
 
 ## 5. Tech debt and its resolution
 
-Six rows are **carried**: limits the Go design keeps, each by a recorded decision and with the reason stated. Their ledger rows name stage [DH-S-47](../implementation-plan.md#dh-s-47), which records the known limits and scope boundaries of the core areas. They are listed again in [§10](#10-open-questions-and-limitations).
+Six rows are **carried**: limits the Go design keeps, each by a recorded decision and with the reason stated. Their ledger rows name stage [DH-S-47](../impl.md#dh-s-47), which records the known limits and scope boundaries of the core areas. They are listed again in [§10](#10-open-questions-and-limitations).
 
 | Debt ID | What it is | Evidence | Resolution in Go |
 |---|---|---|---|
@@ -530,7 +530,7 @@ Nothing here has been run. A scenario that is missing, skipped or blocked is ope
 1. **Can a confined command open the endpoint socket?** [sandbox-ssh.md §6.1](sandbox-ssh.md#61-shape) states, per backend, how `EndpointDir()` is admitted; that is as far as a document can go. It is unverified until `DH-E-TOOLS-2` passes on a backend, and until then script calling is `unavailable` there.
 2. **Unix domain sockets on Windows.** This design uses the standard library's Unix sockets on Windows to avoid a new module. Whether a restricted-token process can connect needs a run. The fallback is a loopback TCP port, where the token is the only gate and "only the same user can open it" no longer holds; choosing it would be a new decision record here.
 
-**Carried limits (six ledger rows, stage [DH-S-47](../implementation-plan.md#dh-s-47)).** An in-process body cannot be killed ([DH-ADR-TOOLS-5](#dh-adr-tools-5)). Logged arguments cannot be rewritten ([DH-ADR-TOOLS-3](#dh-adr-tools-3)). Repeat chains are per session ([DH-ADR-TOOLS-9](#dh-adr-tools-9)). The todo list is single-owner, minimal and whole-list ([DH-ADR-TOOLS-10](#dh-adr-tools-10)).
+**Carried limits (six ledger rows, stage [DH-S-47](../impl.md#dh-s-47)).** An in-process body cannot be killed ([DH-ADR-TOOLS-5](#dh-adr-tools-5)). Logged arguments cannot be rewritten ([DH-ADR-TOOLS-3](#dh-adr-tools-3)). Repeat chains are per session ([DH-ADR-TOOLS-9](#dh-adr-tools-9)). The todo list is single-owner, minimal and whole-list ([DH-ADR-TOOLS-10](#dh-adr-tools-10)).
 
 **Limitations.** A goroutine cannot be killed, so a first-party body that ignores cancellation leaks until the host exits; the design bounds the harm and reports it. A detached body may act after its call was reported as unknown. What a script does directly, without `dsh tool call`, is recorded only as the outer command's output. Canonical tool values are not in the log, so replay reproduces what the model saw, not what a script received. All defaults in [§6.2](#62-contracts) are recommended defaults, not confirmed by the owner, and no measurement backs them; the cost of one process start per nested call is unmeasured.
 

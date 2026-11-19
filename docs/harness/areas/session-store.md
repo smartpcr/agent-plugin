@@ -159,7 +159,7 @@ Unit IDs are shortened: `limit.<package>.<n>` stands for `UP-DEBT-limit.packages
 | `UP-DEBT-found.A05.1` | An "implemented" note says the SQLite backend is absent while the package exists and the CLI depends on it. | §3.3 | Resolved: one store, and the persisted catalogue is generated from the running registry, so a document cannot disagree with the code ([DH-D-STORE-5](#dh-d-store-5)). |
 | `UP-DEBT-found.A05.2` | The lease and the Windows binding are copied into both backends. | `packages/session/session-persistence-sqlite/src/lease.ts:30-31` | Resolved: one implementation ([DH-D-STORE-3](#dh-d-store-3)). |
 
-The carried rows (five in the ledger as the debt review left it; the sixth, the oversized upload event, is resolved by the elision record of [DH-ADR-STORE-10](#dh-adr-store-10)) name stage [DH-S-47](../implementation-plan.md#dh-s-47), the known limits and scope boundaries of the core areas.
+The carried rows (five in the ledger as the debt review left it; the sixth, the oversized upload event, is resolved by the elision record of [DH-ADR-STORE-10](#dh-adr-store-10)) name stage [DH-S-47](../impl.md#dh-s-47), the known limits and scope boundaries of the core areas.
 
 ## 6. Go design
 

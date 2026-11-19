@@ -117,7 +117,7 @@ All 35 units are bullets under "Known Limitations and Deferred Work" in the pack
 | Inventory snapshot (3) | `host.plugin-inventory.1` to `.3` | No history or subscription; no layer attribution; presets absent, not empty | Resolved: a change event and a bounded history; the supplying layer per entry; presets always present with an explicit availability ([DH-D-HOST-10](#dh-d-host-10)) |
 | Telemetry left to callers (7) | `telemetry.otel.1` to `.3`, `host.product-telemetry-otel.1` to `.4` | Consent, field selection and redaction are the caller's; count-only batching; memory-only queue | Six resolved: a channel needs a permit; records come from a closed typed catalog; every channel is byte-bounded; each batch reports its outcome so a consumer with a durable source can resume. `product-telemetry-otel.2` **carried**: analytics stays best effort on purpose ([DH-ADR-HOST-7](#dh-adr-host-7)) |
 
-Totals: 31 resolved, 1 not applicable, 3 carried, each a scope boundary owned by stage `DH-S-47` of [../implementation-plan.md](../implementation-plan.md#dh-s-47). Since the audit, `open-in-app.2` is resolved by the Spotlight query of [DH-ADR-HOST-9](#dh-adr-host-9) (finding Q3-11); its ledger row is the debt reviewers' to re-issue.
+Totals: 31 resolved, 1 not applicable, 3 carried, each a scope boundary owned by stage `DH-S-47` of [../impl.md](../impl.md#dh-s-47). Since the audit, `open-in-app.2` is resolved by the Spotlight query of [DH-ADR-HOST-9](#dh-adr-host-9) (finding Q3-11); its ledger row is the debt reviewers' to re-issue.
 
 ## 6. Go design
 

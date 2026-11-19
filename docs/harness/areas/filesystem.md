@@ -574,7 +574,7 @@ Nothing here has been run. A scenario that is missing, skipped or blocked is ope
 
 ## 10. Open questions and limitations
 
-1. **Carried limits** are listed in [DH-ADR-FS-11](#dh-adr-fs-11). Each is a scope boundary of that record, owned by stage `DH-S-47` of [../implementation-plan.md](../implementation-plan.md#dh-s-47).
+1. **Carried limits** are listed in [DH-ADR-FS-11](#dh-adr-fs-11). Each is a scope boundary of that record, owned by stage `DH-S-47` of [../impl.md](../impl.md#dh-s-47).
 2. **`os.Root` and absolute links.** That re-entering a root for an absolute link is safe on every platform is reasoning from the `os.Root` documentation, not a tested fact; `DH-T-FS-10` and `DH-E-FS-1` decide. If it fails, absolute links are refused under `workspace-write`, which some workspaces will notice.
 3. **Minimum Go version** is at least 1.25 for this area ([../design.md](../design.md) CF-4 is still open).
 4. **Windows.** How `Root.Rename` behaves while another program holds the target open, and whether the access-control list survives a rooted replacement, are untested (`DH-T-NODEFS-1`, `DH-T-KOFFI-5`).

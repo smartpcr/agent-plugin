@@ -388,7 +388,7 @@ func runVerify(c config, partial bool) (bool, error) {
 	}
 
 	// Go-side items are well formed and anchored in their document.
-	plan := ds.text["implementation-plan.md"]
+	plan := ds.text["impl.md"]
 	outcomeUsed := map[string]bool{}
 	for _, id := range sortedKeys(led.Go) {
 		g := led.Go[id]
@@ -447,7 +447,7 @@ func runVerify(c config, partial bool) (bool, error) {
 
 	// Stages stay small enough to review.
 	if plan == "" {
-		rep.fail("stage problems", "implementation-plan.md does not exist")
+		rep.fail("stage problems", "impl.md does not exist")
 	} else {
 		stage, steps := "", 0
 		flush := func() {

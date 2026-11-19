@@ -102,7 +102,7 @@ A failed first MCP connection is logged and the harness starts without that serv
 
 ## 5. Tech debt and its resolution
 
-There are 83 inventoried units and two this area found. They are grouped by cause; each unit's own reason is in its ledger row. The rows still **carried** are owned by stage `DH-S-47` of [../implementation-plan.md](../implementation-plan.md#dh-s-47); they are listed again in [§10](#10-open-questions-and-limitations).
+There are 83 inventoried units and two this area found. They are grouped by cause; each unit's own reason is in its ledger row. The rows still **carried** are owned by stage `DH-S-47` of [../impl.md](../impl.md#dh-s-47); they are listed again in [§10](#10-open-questions-and-limitations).
 
 **Found by this area.** `UP-DEBT-found.A15.1`: a stdio MCP server runs with the host user's full authority; only its environment is scrubbed (`packages/mcp/mcp-client/README.md:187`). `UP-DEBT-found.A15.2`: a server's tool descriptions and schemas enter every request with no size bound; one hosted server's definitions total about 214,500 characters (`.agents/notes/implemented/feature/2026-10-08-mcp-on-demand-tool-loading.md:9`).
 

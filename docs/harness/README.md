@@ -19,7 +19,7 @@ is done. Nothing has been built, run or tested.
 | Status | State | Where it is tracked |
 |---|---|---|
 | Design | **Done**, for owner review; the owner's decisions are fixed in [design.md §7.1](design.md#71-decisions-fixed-by-the-owner) | [design.md](design.md), the specifications below |
-| Implementation | Not started | [implementation-plan.md](implementation-plan.md), stage by stage |
+| Implementation | Not started | [impl.md](impl.md), stage by stage |
 | Test authoring | Not started | The `DH-T` and `DH-E` items of each specification |
 | Local passes | Not started | The evidence record of each stage in the plan |
 | Real-environment acceptance | Not started | The acceptance stages of the plan; a skipped or missing scenario stays open |
@@ -38,14 +38,14 @@ For a first reading, in this order:
    security model with its stated limits.
 3. [design.md](design.md) §7 and §9: the owner's decisions, the recommended defaults
    the owner may overturn, and what is still open.
-4. [implementation-plan.md](implementation-plan.md): stages, order, priorities and the
+4. [impl.md](impl.md): stages, order, priorities and the
    evidence that closes each stage.
 5. The specification of the area or library you work on, from the table below.
 
 | Document | What it holds |
 |---|---|
 | [design.md](design.md) | The spine: outcomes, architecture, global decisions, owner decisions, limitations |
-| [implementation-plan.md](implementation-plan.md) | Every deliverable scheduled in stages, with order, priority and how completion is proven |
+| [impl.md](impl.md) | Every deliverable scheduled in stages, with order, priority and how completion is proven |
 | [areas/](areas/) | One specification per area of the product (39); keys in [design.md §2](design.md#area-keys) |
 | [libs/](libs/README.md) | One specification per upstream dependency: what it does upstream and the Go choice |
 | [upstream/](upstream/) | The foundation documents: upstream's architecture, persistence, wire protocols, security and toolchain, with recommended Go decisions |
@@ -98,7 +98,7 @@ disposition (100%):
 
 **Go side.** 577 decisions, 395 deliverables, 152 library items, 1,231 local tests and
 246 real-environment scenarios, scheduled in the 59 stages of
-[implementation-plan.md](implementation-plan.md).
+[impl.md](impl.md).
 
 `tools/harness-trace verify` checks that every unit has a disposition, that every link
 resolves, and that every deliverable has an outcome, a proof and a stage. It checks that

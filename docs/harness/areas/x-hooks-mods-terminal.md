@@ -85,7 +85,7 @@ Without this area a user loses nothing a first product needs, but cannot reuse e
 
 ## 5. Tech debt and its resolution
 
-All 80 units are bullets under "Known Limitations and Deferred Work" in the fifteen READMEs, plus six `TODO` markers. They are grouped by cause; each unit has its own row, with its own reason, in the ledger fragment. Carried rows name stage [DH-S-59](../implementation-plan.md#dh-s-59).
+All 80 units are bullets under "Known Limitations and Deferred Work" in the fifteen READMEs, plus six `TODO` markers. They are grouped by cause; each unit has its own row, with its own reason, in the ledger fragment. Carried rows name stage [DH-S-59](../impl.md#dh-s-59).
 
 | Group (cause) | Units | How the Go design answers it | Result |
 |---|---|---|---|

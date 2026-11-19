@@ -120,7 +120,7 @@ The first 12 rows are the decision notes handed to this area, named by file unde
 
 ## 5. Tech debt and its resolution
 
-All 76 units are grouped by cause; each unit's own reason is in its ledger row. `L:` stands for `UP-DEBT-limit.packages.client.`. Carried rows name stage [DH-S-59](../implementation-plan.md#dh-s-59), where the known limits and scope boundaries of this part of the product are stated and checked.
+All 76 units are grouped by cause; each unit's own reason is in its ledger row. `L:` stands for `UP-DEBT-limit.packages.client.`. Carried rows name stage [DH-S-59](../impl.md#dh-s-59), where the known limits and scope boundaries of this part of the product are stated and checked.
 
 | Group (cause) | Units | How the Go design answers it |
 |---|---|---|

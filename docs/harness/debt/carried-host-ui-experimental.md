@@ -1023,7 +1023,7 @@ and no other unit in these areas records it.
   documentation. The statement in section 4.3 that the PDF bitmap cap equals mobile
   Safari's per-canvas limit is the reviewer's recollection and should be checked before
   it is relied on.
-- **Stages.** Every limit and boundary row names [DH-S-59](../implementation-plan.md#dh-s-59),
+- **Stages.** Every limit and boundary row names [DH-S-59](../impl.md#dh-s-59),
   the plan's stage for the known limits of these areas. After the final re-check no row
   is unresolved, so every carried row names it.
 - **The final re-check** read each new "Scope boundary of this record" sentence against

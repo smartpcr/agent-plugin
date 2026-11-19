@@ -97,7 +97,7 @@ Notes are under `.agents/notes/implemented/architecture/`. The long reasoning fo
 
 ## 5. Tech debt and its resolution
 
-Eighty-six units, grouped by cause: 51 resolved, 3 not applicable, 32 carried. Each unit's own reason is in its ledger row. A carried row names stage [DH-S-59](../implementation-plan.md#dh-s-59), where the known limits and scope boundaries of this part of the product are stated and checked.
+Eighty-six units, grouped by cause: 51 resolved, 3 not applicable, 32 carried. Each unit's own reason is in its ledger row. A carried row names stage [DH-S-59](../impl.md#dh-s-59), where the known limits and scope boundaries of this part of the product are stated and checked.
 
 | Group (units) | Cause | How the Go design answers it |
 |---|---|---|

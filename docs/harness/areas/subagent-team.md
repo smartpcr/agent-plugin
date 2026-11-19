@@ -622,7 +622,7 @@ Rows are in `trace/fragments/A12.jsonl`.
 | Unit type | Count | Dispositions |
 |---|---|---|
 | `UP-PKG` | 11 | 10 ported, 1 replaced |
-| `UP-DEBT` | 63 (62 assigned, 1 found) | 36 resolved, 26 carried, 1 not applicable (as the debt review re-issued them; carried rows name stage [DH-S-47](../implementation-plan.md#dh-s-47)) |
+| `UP-DEBT` | 63 (62 assigned, 1 found) | 36 resolved, 26 carried, 1 not applicable (as the debt review re-issued them; carried rows name stage [DH-S-47](../impl.md#dh-s-47)) |
 | `UP-TOOL` | 10 | 10 ported |
 | `UP-EVT` | 4 | 2 ported, 2 merged |
 | `UP-CFG` | 11 | 11 ported |

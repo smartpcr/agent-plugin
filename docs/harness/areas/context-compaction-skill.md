@@ -146,7 +146,7 @@ The first twelve rows are the notes handed to this area (paths under `.agents/no
 | **F. Deliberate boundaries, kept on purpose** (21) | `agent-instructions` 3, 8; `time-context` 2, 3, 5; `tmux-context` 1, 2, 3, 5; `file-reference` 2; `session-reference` 4, 5; `compaction` 1; image offload 1, 3; pruner 2; `skill-filesystem` 1; `skill-office` 1 to 3; `tool-skill` 4 | Each is a guarantee or a scope limit the Go design keeps: no `@path` imports in instruction files, no model-written compression of instructions, no model-facing compaction tool, snapshots not live links, sibling panes never read, offloaded images never silently return, no installing of libraries. 21 carried, each with its justification in the ledger and a test that pins the behaviour where one applies. |
 | **G. Limits of packages that are not built** (8) | `harness-dev-context` 1 to 6; `tool-workspace-dependencies` 1, 2 | [ADR-3](#dh-adr-context-3). 5 resolved (no earlier-format sessions, no such sections); 1 carried (a release that changes prompt text still starts a new request series on routes without in-history updates, a rule owned by A02); 2 not applicable (they describe upstream's payload build). |
 
-Carried rows name stage [DH-S-47](../implementation-plan.md#dh-s-47), the known limits and scope boundaries of the core areas.
+Carried rows name stage [DH-S-47](../impl.md#dh-s-47), the known limits and scope boundaries of the core areas.
 
 ## 6. Go design
 

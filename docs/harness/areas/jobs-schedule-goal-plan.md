@@ -135,7 +135,7 @@ The 53 units are 51 README limits and 2 `FIXME` markers. They are grouped by cau
 | **`/goal` is text only and web only** (4: `command-goal.1` to `.4`) | A generic command registry and one adapter | Resolved: goal operations are service calls reachable from a server-rendered panel, the SDK protocol and the command line ([DH-D-JOBS-7](#dh-d-jobs-7)) |
 | **Plan mode restrains by text and forgets** (5: `plan.1` to `.5`) | Soft guidance; pending selections in memory; no creation option; one renderer; the review needs a person | Resolved: enforced read-only, immediate append, inheritance and a creation option, a typed review interaction. `.4` **carried**, deliberately: a subagent returns its plan to the parent that asked ([DH-ADR-JOBS-11](#dh-adr-jobs-11)) |
 
-Thirteen rows are `carried`; their ledger rows name stage [DH-S-47](../implementation-plan.md#dh-s-47), the known limits and scope boundaries of the core areas.
+Thirteen rows are `carried`; their ledger rows name stage [DH-S-47](../impl.md#dh-s-47), the known limits and scope boundaries of the core areas.
 
 ## 6. Go design
 

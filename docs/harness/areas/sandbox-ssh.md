@@ -146,7 +146,7 @@ directory its unit ID names; `...` abbreviates that directory.
 
 Unit IDs are `UP-DEBT-limit.packages.sandbox.<row>` and `UP-DEBT-limit.packages.ssh.<row>`. "Carried" means
 the limit is still true in the Go design; each carried row says why no design removes it and what the user
-is told. Carried rows are owned by stage `DH-S-47` of [../implementation-plan.md](../implementation-plan.md#dh-s-47).
+is told. Carried rows are owned by stage `DH-S-47` of [../impl.md](../impl.md#dh-s-47).
 
 | Debt ID | What it is | Evidence | Resolution in Go |
 |---|---|---|---|
@@ -611,7 +611,7 @@ Nothing here has been run. A scenario that is missing, skipped or blocked is ope
 
 ## 10. Open questions and limitations
 
-1. **Stage for carried debt.** The carried rows are owned by stage `DH-S-47` of [../implementation-plan.md](../implementation-plan.md#dh-s-47).
+1. **Stage for carried debt.** The carried rows are owned by stage `DH-S-47` of [../impl.md](../impl.md#dh-s-47).
 2. **Recommended defaults, not confirmed by the owner.** (a) The multiplexer is `yamux`, MPL-2.0, a file-level copyleft licence; if the owner declines it, `smux` (MIT) is the verified substitute and the design does not change. (b) Under `danger-full-access` a command may also change the harness's own home; the preset's label says that commands can take over the harness and read stored keys, and no "full access except the harness home" mode is built. (c) A backend that cannot stop a command from asking a same-user service to run a program is reported `partial`, naming `delegated-execution`; upstream reports the same backends as `full`.
 3. **To be learned by running, each tied to a scenario.** Descriptor passing through `bwrap` and `sandbox-exec`; the Seatbelt rules for the network, for a Unix-socket connection and against handing a job to `launchd`; whether connecting to a path socket works on a read-only bind and is outside Landlock's rules on the reference kernel; whether a Windows mandatory label stops a Low token from reading a directory and opening a socket in it, and whether that token can connect to a Unix socket at all; whether a confined Windows process can use the task scheduler or start an out-of-process COM server; tool-endpoint reachability under each backend; the 160-bit identifier form; binary-clean standard streams through the Windows OpenSSH client; PowerShell's language mode with a scratch. Until its scenario has run, each cell marked "Inference" in §6.1 is a plan, and the start-up probe, not this document, decides what a machine reports.
 4. **Limits kept.** Reads are unconfined everywhere; Windows is always `partial`; Landlock on a desktop and Seatbelt are `partial` while `delegated-execution` is not governed; macOS depends on a deprecated tool; the remote host is trusted; the shared `/tmp` is writable under Landlock; a remote world has no `dsh tool call`. If Go's standard library gains a Landlock field for child processes ([node-addon-system.md](../libs/node-addon-system.md) §7), the stage is still needed for the canary and the two-phase exchange.

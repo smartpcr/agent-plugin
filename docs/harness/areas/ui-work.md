@@ -110,7 +110,7 @@ No decision note was handed to this area. The rows are decisions visible in READ
 
 ## 5. Tech debt and its resolution
 
-All 27 units are bullets from the eight READMEs' "Known Limitations". They are grouped by cause; each unit's own reason is in its ledger row. `L:` stands for `UP-DEBT-limit.packages.client.`. "Carried" rows keep a limit on purpose and name stage [DH-S-59](../implementation-plan.md#dh-s-59).
+All 27 units are bullets from the eight READMEs' "Known Limitations". They are grouped by cause; each unit's own reason is in its ledger row. `L:` stands for `UP-DEBT-limit.packages.client.`. "Carried" rows keep a limit on purpose and name stage [DH-S-59](../impl.md#dh-s-59).
 
 | Group (cause) | Units | How the Go design answers it |
 |---|---|---|

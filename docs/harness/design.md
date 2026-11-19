@@ -1,7 +1,7 @@
 # deepseek-harness in Go: design
 
 > **Status: design draft for owner review. No harness code exists; nothing is built,
-> run or tested.** The implementation plan, [implementation-plan.md](implementation-plan.md),
+> run or tested.** The implementation plan, [impl.md](impl.md),
 > schedules every deliverable this design and the area specifications name; its stages
 > are not started. Ten library specifications report observations from throwaway
 > programs run during research; they are marked there as unverified research notes, to
@@ -242,7 +242,7 @@ reworded to match them. Inference: the "Areas" column is this document's mapping
 outcomes to the area keys of [§2](#area-keys) and to the foundation and library documents
 by name; an area may serve further outcomes. The full list of deliverables and proofs per
 outcome is in the ledger (`outcomes` field of each `go` row) and in the implementation
-plan, [implementation-plan.md](implementation-plan.md) section 2.
+plan, [impl.md](impl.md) section 2.
 
 | ID | Outcome (observable behaviour) | Areas |
 |---|---|---|
@@ -1674,7 +1674,7 @@ Where to find things:
 | One specification per area of the product (39) | [areas/](areas/); the key of each (`A01`, `C3`, `X2`) is in [§2, Area keys](#area-keys) |
 | Status, coverage, debt and audit figures in one place | [README.md](README.md) |
 | The three audits of the finished documents | [audit/q1-consistency.md](audit/q1-consistency.md), [audit/q2-accuracy.md](audit/q2-accuracy.md), [audit/q3-debt.md](audit/q3-debt.md) |
-| The schedule of every deliverable | [implementation-plan.md](implementation-plan.md) |
+| The schedule of every deliverable | [impl.md](impl.md) |
 | Every library the design names: what it replaces, the Go choice, module, version and licence | [libs/README.md](libs/README.md) (152 rows) |
 | The complete list of changes to the cordis port in `src/go` | [libs/cordis.md](libs/cordis.md) §6.1 |
 | What upstream does, with `path:line` evidence, and the 84 foundation decisions | [upstream/](upstream/) |

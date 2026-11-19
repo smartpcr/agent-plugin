@@ -91,7 +91,7 @@ disposition row like any other unit.
 `<KEY>` is upper-case letters and digits. Area agents use the `idKey` from
 `clusters.json`; a library spec uses a key derived from the library name. Global items
 (`DH-O-n`, `DH-ADR-n`, `DH-S-n`) are defined by anchors in
-[../design.md](../design.md) and [../implementation-plan.md](../implementation-plan.md).
+[../design.md](../design.md) and [../impl.md](../impl.md).
 Every Go item must be written, by ID, in its `spec` document.
 
 ## Who wins when two agents write a row for the same unit

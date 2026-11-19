@@ -15,7 +15,7 @@ Given / When / Then / Cleanup and kept apart from local tests; no claim that any
 ran; a skipped scenario never a pass.
 
 **What was read in full.** `design.md` sections 1 to 4, 7.1, 9, 10 and 11;
-`implementation-plan.md` sections 1 to 5 and 7 to 10 and sixteen stages (1, 2, 6, 7, 8,
+`impl.md` sections 1 to 5 and 7 to 10 and sixteen stages (1, 2, 6, 7, 8,
 9, 16, 17, 18, 23, 24, 27, 28, 46, 47, 48; also 29, 34 and 59 where a finding led
 there); the owner's decisions; the five integration question files `I1` to `I5`; both
 debt registers' summaries and their sections on unresolved entries and boundaries.
@@ -108,7 +108,7 @@ file was removed in the next command. No project file was touched.
   preparation and journal behaviour that belongs to `DH-D-SANDBOX-6` (stage 27).
   `DH-E-BOOT-2` in stage 16 changes a probe "through the configuration command", and
   the `dsh config` commands are part of `DH-D-CLI-7` (stage 38).
-- **Fix.** `implementation-plan.md`, sections 6, 7.4, 7.5 and 10.4: read the Given and
+- **Fix.** `impl.md`, sections 6, 7.4, 7.5 and 10.4: read the Given and
   When of all 235 scenarios and re-index each to the first stage where everything it
   names exists. Where a scenario proves parts of different priority, the owning
   specification should split it (for example `DH-E-BOOT-3` without step 8, and a second
@@ -141,7 +141,7 @@ file was removed in the next command. No project file was touched.
   copy and `<home>/plugins/attached`, the same class as the guarded `DH-E-BOOT-3`);
   `DH-E-HUMAN-3` (writes and removes an item in the user's operating-system keychain);
   `DH-E-CONNECT-3` (creates and revokes an authorisation at a hosted service).
-- **Fix.** `implementation-plan.md` section 7.4: add `DH-E-CLI-1`, `DH-E-CLI-2` and
+- **Fix.** `impl.md` section 7.4: add `DH-E-CLI-1`, `DH-E-CLI-2` and
   `DH-E-STORE-2`; correct the sentence about specifications; decide the four
   candidates. `areas/session-store.md`: split `DH-E-STORE-1` into a lease and takeover
   scenario (P0, run in stage 16) and a request-table scenario (stage 23). Until then
@@ -258,7 +258,7 @@ file was removed in the next command. No project file was touched.
   elision record, the system proxy) state what the specification holds.
 - **Fix.** `design.md` section 9.2: correct the question-tool row, add the five rows,
   replace the two catch-all rows with one row per decision, renumber the register
-  references; `implementation-plan.md` section 9.1 and stage 47 follow.
+  references; `impl.md` section 9.1 and stage 47 follow.
 
 #### Q1-8 Leftovers that contradict `DH-ADR-28` (no signing secret) and `DH-ADR-18` (no desktop shell)
 
@@ -477,7 +477,7 @@ asks for working links. Link each to its row in section 7.2.
   file"); the `!expr` and `Required` sentences of 4.9. Each is correct detail; a
   one-line plain statement before the detail would be enough.
 
-`implementation-plan.md` sections 1 to 3:
+`impl.md` sections 1 to 3:
 
 - "ledger", "gate runner", "scenario helper", "test kit", "keyless replay", "egress",
   "spill": used in 1.2 to 3.2 before the stage that introduces them; the vocabulary

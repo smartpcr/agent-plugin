@@ -603,6 +603,6 @@ The client name and version is decided ([DH-ADR-32](../design.md#dh-adr-32), [DH
 | `UP-SVC` | 3 | 3 replaced by Go service keys |
 | `UP-DEC` (handed over) | 19 | 15 ported, 3 replaced, 1 not-applicable |
 
-The four `carried` rows name their stage in the ledger: three name [DH-S-47](../implementation-plan.md#dh-s-47) (known limits and scope boundaries of the core areas) and one names [DH-S-35](../implementation-plan.md#dh-s-35) (keychain, vendor account and vendor services).
+The four `carried` rows name their stage in the ledger: three name [DH-S-47](../impl.md#dh-s-47) (known limits and scope boundaries of the core areas) and one names [DH-S-35](../impl.md#dh-s-35) (keychain, vendor account and vendor services).
 
 Rows are in [../trace/fragments/A04.jsonl](../trace/fragments/A04.jsonl). Go items declared: `DH-ADR-LLM-1` to `-9`, `DH-D-LLM-1` to `-11`, `DH-T-LLM-1` to `-17`, `DH-E-LLM-1` to `-10`.
