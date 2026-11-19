@@ -1,0 +1,587 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/smartpcr/agent-plugin/tools/harness-gate/modcheck"
+)
+
+// vetToolEnv, set to "1" in the environment of "go vet -vettool", makes this binary
+// act as the vet tool that runs the project's own analyzers.
+const vetToolEnv = "HARNESS_GATE_VETTOOL"
+
+// budgetPattern selects the performance-budget tests (QG-7). The test gate runs
+// them with every other test under -race, so a race in a budget test is caught; the
+// coverage gate leaves them out, and the budget gate runs them alone without race
+// or coverage instrumentation so a compiled-in budget measures the real code.
+const budgetPattern = "^TestBudget"
+
+// Targets are the GOOS/GOARCH pairs cmd/dsh must build for with CGO_ENABLED=0 (QG-8).
+var Targets = []struct{ GOOS, GOARCH string }{
+	{"linux", "amd64"}, {"linux", "arm64"},
+	{"darwin", "amd64"}, {"darwin", "arm64"},
+	{"windows", "amd64"}, {"windows", "arm64"},
+}
+
+// Config is what the gates run against.
+type Config struct {
+	Root    string   // repository root, or a single module's directory
+	Modules []string // absolute module directories the per-module gates run in
+	Go      string   // the go command
+	VetTool string   // this binary, run by "go vet -vettool"
+	Environ []string // the parent environment the children's environments derive from
+
+	// RacePreflight checks that -race can run on this lane; nil selects
+	// cCompilerPreflight. A lane where it fails fails the test gate (QG-4).
+	RacePreflight func(ctx context.Context, c *Config) error
+
+	// CrossOut, when set, keeps the cross-compiled binaries there; otherwise they go
+	// to a temporary directory that is removed afterwards.
+	CrossOut string
+
+	// TestTimeout bounds every coverage test binary the gate runs directly (zero
+	// selects DefaultTestTimeout, go test's own default): a blocked test fails the
+	// coverage gate, named, instead of hanging the runner.
+	TestTimeout time.Duration
+}
+
+// DefaultTestTimeout is the per-binary timeout of the coverage gate when
+// Config.TestTimeout is zero.
+const DefaultTestTimeout = 10 * time.Minute
+
+func (c *Config) testTimeout() time.Duration {
+	if c.TestTimeout > 0 {
+		return c.TestTimeout
+	}
+	return DefaultTestTimeout
+}
+
+// NewConfig returns the configuration for root: the module at root when root holds a
+// go.mod, otherwise the three product modules of RM-1 under root.
+func NewConfig(root string) (*Config, error) {
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return nil, err
+	}
+	modules, err := discoverModules(root)
+	if err != nil {
+		return nil, err
+	}
+	gobin, err := exec.LookPath("go")
+	if err != nil {
+		return nil, fmt.Errorf("the go command is required: %w", err)
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	return &Config{Root: root, Modules: modules, Go: gobin, VetTool: self, Environ: os.Environ()}, nil
+}
+
+func discoverModules(root string) ([]string, error) {
+	if isFile(filepath.Join(root, "go.mod")) {
+		return []string{root}, nil
+	}
+	var modules []string
+	for _, m := range modcheck.Modules {
+		dir := filepath.Join(root, filepath.FromSlash(m.Dir))
+		if !isFile(filepath.Join(dir, "go.mod")) {
+			return nil, fmt.Errorf("%s: product module %s has no go.mod (RM-1)", root, m.Dir)
+		}
+		modules = append(modules, dir)
+	}
+	return modules, nil
+}
+
+// Gates is the fixed, ordered gate list (QG-1, DH-ADR-TOOLCHAIN-9). Nothing reorders,
+// skips or adds to it at run time.
+func Gates(c *Config) []Gate {
+	return []Gate{
+		{Name: "gofmt", Title: "every Go file is gofmt-formatted", Run: c.gofmtGate},
+		{Name: "vet", Title: "go vet and the project's own analyzers (nosleep, onespawn, cleanup)", Run: c.vetGate},
+		{Name: "test", Title: "go test -race -shuffle=on -count=1 per module, CGO_ENABLED=1", Run: c.testGate},
+		{Name: "coverage", Title: fmt.Sprintf("coverage merged across processes, %d%% of statements per package", CoverageFloor), Run: c.coverageGate},
+		{Name: "trace", Title: "tools/harness-trace verify", Run: c.traceGate},
+		{Name: "budget", Title: "performance budgets (TestBudget*) with DSH_* and GO* overrides cleared", Run: c.budgetGate},
+		{Name: "cross-compile", Title: "cmd/dsh for linux, darwin, windows on amd64 and arm64 with CGO_ENABLED=0", Run: c.crossCompileGate},
+	}
+}
+
+// gofmtGate fails when any Go file of a module is not gofmt-formatted. testdata,
+// vendor, hidden and nested-module directories are not part of a module's build
+// and are not checked.
+func (c *Config) gofmtGate(ctx context.Context, w io.Writer) error {
+	gofmt, err := c.gofmtPath(ctx)
+	if err != nil {
+		return err
+	}
+	var files []string
+	for _, mod := range c.Modules {
+		found, err := goFiles(mod)
+		if err != nil {
+			return err
+		}
+		files = append(files, found...)
+	}
+	var unformatted []string
+	for batch := range slices.Chunk(files, 100) {
+		out, err := c.command(ctx, c.Root, c.env(), gofmt, append([]string{"-l"}, batch...)...)
+		if err != nil {
+			return fmt.Errorf("gofmt -l: %w\n%s", err, out)
+		}
+		for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+			if line = strings.TrimSpace(line); line != "" {
+				unformatted = append(unformatted, c.rel(line))
+			}
+		}
+	}
+	fmt.Fprintf(w, "gofmt: %d files checked\n", len(files))
+	if len(unformatted) > 0 {
+		return fmt.Errorf("not gofmt-formatted:\n  %s", strings.Join(unformatted, "\n  "))
+	}
+	return nil
+}
+
+func (c *Config) gofmtPath(ctx context.Context) (string, error) {
+	out, err := c.command(ctx, c.Root, c.env(), c.Go, "env", "GOROOT")
+	if err != nil {
+		return "", fmt.Errorf("go env GOROOT: %w\n%s", err, out)
+	}
+	gofmt := filepath.Join(strings.TrimSpace(out), "bin", "gofmt")
+	if runtime.GOOS == "windows" {
+		gofmt += ".exe"
+	}
+	return gofmt, nil
+}
+
+// goFiles lists the .go files of the module rooted at mod.
+func goFiles(mod string) ([]string, error) {
+	var files []string
+	err := filepath.WalkDir(mod, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			name := d.Name()
+			if p != mod && (name == "testdata" || name == "vendor" || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") || isFile(filepath.Join(p, "go.mod"))) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if strings.HasSuffix(p, ".go") {
+			files = append(files, p)
+		}
+		return nil
+	})
+	return files, err
+}
+
+// vetGate runs the standard go vet checks, then the project's own analyzers through
+// "go vet -vettool" (QG-2). No baseline or suppression file is read.
+func (c *Config) vetGate(ctx context.Context, w io.Writer) error {
+	var errs []error
+	for _, mod := range c.Modules {
+		if err := c.goStep(ctx, w, mod, c.env(), "vet", "./..."); err != nil {
+			errs = append(errs, err)
+		}
+		if err := c.goStep(ctx, w, mod, c.env(vetToolEnv+"=1"), "vet", "-vettool="+c.VetTool, "./..."); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// testGate runs every test package with the race detector, in shuffled order, once
+// (QG-4). A lane where -race cannot run fails here; it is never skipped.
+func (c *Config) testGate(ctx context.Context, w io.Writer) error {
+	preflight := c.RacePreflight
+	if preflight == nil {
+		preflight = cCompilerPreflight
+	}
+	if err := preflight(ctx, c); err != nil {
+		return err
+	}
+	var errs []error
+	for _, mod := range c.Modules {
+		err := c.goStep(ctx, w, mod, c.env("CGO_ENABLED=1"), "test", "-race", "-shuffle=on", "-count=1", "./...")
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// cCompilerPreflight fails when the C compiler that cgo, and so -race, needs is not
+// on PATH (EN-6).
+func cCompilerPreflight(ctx context.Context, c *Config) error {
+	out, err := c.command(ctx, c.Root, c.env("CGO_ENABLED=1"), c.Go, "env", "CC")
+	if err != nil {
+		return fmt.Errorf("race: go env CC: %w\n%s", err, out)
+	}
+	fields := strings.Fields(out)
+	if len(fields) == 0 {
+		return errors.New("race: no C compiler (go env CC is empty)")
+	}
+	if _, err := exec.LookPath(fields[0]); err != nil {
+		return fmt.Errorf("race: no C compiler (CC=%s): %w", fields[0], err)
+	}
+	return nil
+}
+
+// coverageGate runs the tests with coverage, collects the profiles of the test
+// processes and of every child they re-execute (GOCOVERDIR), merges them and fails
+// every package under the floor (QG-3).
+func (c *Config) coverageGate(ctx context.Context, w io.Writer) error {
+	var errs []error
+	for _, mod := range c.Modules {
+		cov, err := c.moduleCoverage(ctx, w, mod)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		for _, pc := range cov {
+			fmt.Fprintf(w, "coverage: %s %s%%\n", pc.Package, formatPercent(pc.Percent()))
+		}
+		if err := CheckFloor(cov, CoverageFloor); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// moduleCoverage returns the merged statement coverage of every package of mod.
+//
+// Every package with tests is compiled once with "go test -c -cover
+// -covermode=set -coverpkg=./..." and its test binary is run in the package
+// directory with GOCOVERDIR and -test.gocoverdir both set to one directory the gate
+// owns. Every child the tests start inherits that GOCOVERDIR: a binary built with
+// -cover writes its counters there on exit, and a re-executed test binary writes
+// there when started with -test.gocoverdir=$GOCOVERDIR (README.md). The directory
+// is then merged with "go tool covdata textfmt", which joins the profiles of
+// different binaries package by package (go test's own report keeps only the
+// profiles of the test binary itself). A package without test files gets its 0%
+// entries from "go test -cover -coverprofile", so no package escapes the floor.
+func (c *Config) moduleCoverage(ctx context.Context, w io.Writer, mod string) ([]PackageCoverage, error) {
+	tmp, err := os.MkdirTemp("", "harness-gate-cover-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(tmp)
+	covdir, bindir := filepath.Join(tmp, "covdata"), filepath.Join(tmp, "bin")
+	for _, d := range []string{covdir, bindir} {
+		if err := os.Mkdir(d, 0o755); err != nil {
+			return nil, err
+		}
+	}
+	pkgs, err := c.listPackages(ctx, mod)
+	if err != nil {
+		return nil, err
+	}
+	var untested []string
+	var errs []error
+	for i, pkg := range pkgs {
+		if !pkg.HasTests {
+			untested = append(untested, pkg.ImportPath)
+			continue
+		}
+		bin := filepath.Join(bindir, fmt.Sprintf("pkg%d.test", i))
+		if runtime.GOOS == "windows" {
+			bin += ".exe"
+		}
+		if err := c.goStep(ctx, w, mod, c.env(), "test", "-c", "-cover", "-covermode=set", "-coverpkg=./...", "-o", bin, pkg.ImportPath); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		env := c.env("GOCOVERDIR=" + covdir)
+		label := pkg.ImportPath + ".test"
+		// -test.timeout makes the binary panic with every goroutine's stack and name the
+		// running test; the context deadline backs it up should the binary not exit.
+		timeout := c.testTimeout()
+		runCtx, cancel := context.WithTimeout(ctx, timeout+time.Minute)
+		err := c.step(runCtx, w, pkg.Dir, env, label, bin, "-test.count=1", "-test.timeout="+timeout.String(), "-test.skip="+budgetPattern, "-test.gocoverdir="+covdir)
+		cancel()
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return nil, err
+	}
+
+	var profiles []*Profile
+	merged := filepath.Join(tmp, "covdata.out")
+	if err := c.goStep(ctx, w, mod, c.env(), "tool", "covdata", "textfmt", "-i="+covdir, "-o="+merged); err != nil {
+		return nil, err
+	}
+	if p, err := readProfile(merged); err != nil {
+		return nil, err
+	} else {
+		profiles = append(profiles, p)
+	}
+	if len(untested) > 0 {
+		zero := filepath.Join(tmp, "untested.out")
+		args := append([]string{"test", "-cover", "-covermode=set", "-coverprofile=" + zero}, untested...)
+		if err := c.goStep(ctx, w, mod, c.env(), args...); err != nil {
+			return nil, err
+		}
+		p, err := readProfile(zero)
+		if err != nil {
+			return nil, err
+		}
+		profiles = append(profiles, p)
+	}
+	return Coverage(profiles...), nil
+}
+
+// goPackage is one package of a module as "go list" reports it.
+type goPackage struct {
+	ImportPath, Dir string
+	HasTests        bool
+}
+
+// listPackages lists the packages of mod.
+func (c *Config) listPackages(ctx context.Context, mod string) ([]goPackage, error) {
+	const format = `{{.ImportPath}}{{"\t"}}{{.Dir}}{{"\t"}}{{len .TestGoFiles}}{{"\t"}}{{len .XTestGoFiles}}`
+	out, err := c.command(ctx, mod, c.env(), c.Go, "list", "-f", format, "./...")
+	if err != nil {
+		return nil, fmt.Errorf("%s: go list: %w\n%s", c.rel(mod), err, out)
+	}
+	var pkgs []goPackage
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		f := strings.Split(strings.TrimSpace(line), "\t")
+		if len(f) != 4 {
+			return nil, fmt.Errorf("%s: go list: unexpected line %q", c.rel(mod), line)
+		}
+		pkgs = append(pkgs, goPackage{ImportPath: f[0], Dir: f[1], HasTests: f[2] != "0" || f[3] != "0"})
+	}
+	return pkgs, nil
+}
+
+// readProfile parses the text coverage profile at path.
+func readProfile(path string) (*Profile, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return ParseProfile(bytes.NewReader(data))
+}
+
+// traceGate runs the traceability check (QG-9). A root without the tool fails: the
+// check cannot be skipped.
+func (c *Config) traceGate(ctx context.Context, w io.Writer) error {
+	dir := filepath.Join(c.Root, "tools", "harness-trace")
+	if !isFile(filepath.Join(dir, "go.mod")) {
+		return fmt.Errorf("tools/harness-trace not found under %s: the traceability check cannot run (QG-9)", c.Root)
+	}
+	out, err := c.command(ctx, dir, c.env(), c.Go, "run", ".", "verify", "-repo", c.Root)
+	if err != nil {
+		return fmt.Errorf("tools/harness-trace verify: %w\n%s", err, out)
+	}
+	fmt.Fprintf(w, "trace: %s\n", lastLine(out))
+	return nil
+}
+
+// budgetGate runs the performance-budget tests. Their budgets are compiled in; the
+// child environment has every DSH_* and GO* variable removed, so no override can
+// relax them (QG-7).
+func (c *Config) budgetGate(ctx context.Context, w io.Writer) error {
+	env := BudgetEnv(c.Environ)
+	var errs []error
+	for _, mod := range c.Modules {
+		if err := c.goStep(ctx, w, mod, env, "test", "-count=1", "-run", budgetPattern, "./..."); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// keptGoVars are the GO* variables a budget child keeps: where the toolchain and
+// its caches live. None of them changes how the code under test runs.
+var keptGoVars = []string{"GOROOT", "GOPATH", "GOMODCACHE", "GOCACHE", "GOTMPDIR"}
+
+// BudgetEnv derives a budget child's environment from parent: every DSH_* and GO*
+// variable is removed except the locations of keptGoVars, then the workspace is
+// turned off, the user's go env file is ignored (GOENV=off, so persisted
+// `go env -w` settings such as GOFLAGS cannot reach the budget build), GOFLAGS is
+// set empty explicitly and the running toolchain is pinned.
+func BudgetEnv(parent []string) []string {
+	env := slices.DeleteFunc(slices.Clone(parent), func(kv string) bool {
+		key := envKey(kv)
+		if strings.HasPrefix(key, "DSH_") {
+			return true
+		}
+		return strings.HasPrefix(key, "GO") && !slices.Contains(keptGoVars, key)
+	})
+	return append(env, "GOENV=off", "GOFLAGS=", "GOWORK=off", "GOTOOLCHAIN=local")
+}
+
+// crossCompileGate builds cmd/dsh for every target with CGO_ENABLED=0 and the
+// workspace off (QG-8). Every target is attempted; each failure names its target.
+func (c *Config) crossCompileGate(ctx context.Context, w io.Writer) error {
+	var mod string
+	for _, m := range c.Modules {
+		if isDir(filepath.Join(m, "cmd", "dsh")) {
+			mod = m
+			break
+		}
+	}
+	if mod == "" {
+		return fmt.Errorf("no module under %s holds cmd/dsh (QG-8)", c.Root)
+	}
+	out := c.CrossOut
+	if out == "" {
+		tmp, err := os.MkdirTemp("", "harness-gate-cross-")
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(tmp)
+		out = tmp
+	}
+	var errs []error
+	for _, t := range Targets {
+		bin := filepath.Join(out, "dsh-"+t.GOOS+"-"+t.GOARCH)
+		if t.GOOS == "windows" {
+			bin += ".exe"
+		}
+		env := c.env("CGO_ENABLED=0", "GOOS="+t.GOOS, "GOARCH="+t.GOARCH)
+		if err := c.goStep(ctx, w, mod, env, "build", "-o", bin, "./cmd/dsh"); err != nil {
+			errs = append(errs, fmt.Errorf("%s/%s: %w", t.GOOS, t.GOARCH, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// env is the parent environment with the workspace off (every per-module command
+// resolves its module from its own go.mod) and kv set.
+func (c *Config) env(kv ...string) []string {
+	return setEnv(c.Environ, append([]string{"GOWORK=off"}, kv...)...)
+}
+
+// goStep runs "go args..." in dir. It prints one line when the step passes and the
+// output when it fails; the error names the module, the command and any failing
+// test.
+func (c *Config) goStep(ctx context.Context, w io.Writer, dir string, env []string, args ...string) error {
+	return c.step(ctx, w, dir, env, "go "+strings.Join(args, " "), c.Go, args...)
+}
+
+// step runs name with args in dir and env as one logged step called label; see
+// goStep.
+func (c *Config) step(ctx context.Context, w io.Writer, dir string, env []string, label, name string, args ...string) error {
+	out, err := c.command(ctx, dir, env, name, args...)
+	step := label
+	if err == nil {
+		fmt.Fprintf(w, "ok   %s: %s\n", c.rel(dir), step)
+		return nil
+	}
+	fmt.Fprintf(w, "FAIL %s: %s\n%s", c.rel(dir), step, out)
+	detail := ""
+	if tests := failedTests(out); len(tests) > 0 {
+		detail = "; failing tests: " + strings.Join(tests, ", ")
+	}
+	if strings.Contains(out, "WARNING: DATA RACE") {
+		detail += "; data race detected"
+	}
+	if strings.Contains(out, "panic: test timed out") {
+		detail += "; test timed out"
+		if running := timedOutTests(out); len(running) > 0 {
+			detail += ": " + strings.Join(running, ", ")
+		}
+	}
+	if ctx.Err() != nil {
+		detail += "; killed: " + ctx.Err().Error()
+	}
+	return fmt.Errorf("%s: %s: %w%s", c.rel(dir), step, err, detail)
+}
+
+var runningPattern = regexp.MustCompile(`(?m)^\t\t(\S+) \(\S+\)\r?$`)
+
+// timedOutTests returns the tests a test binary listed as running when its
+// -test.timeout fired.
+func timedOutTests(out string) []string {
+	_, after, ok := strings.Cut(out, "running tests:")
+	if !ok {
+		return nil
+	}
+	var names []string
+	for _, m := range runningPattern.FindAllStringSubmatch(after, -1) {
+		names = append(names, m[1])
+	}
+	return names
+}
+
+// command runs name with args in dir and env and returns its combined output.
+func (c *Config) command(ctx context.Context, dir string, env []string, name string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+var failPattern = regexp.MustCompile(`(?m)^\s*--- FAIL: (\S+)`)
+
+// failedTests returns the names of the failed tests in go test output, in order.
+func failedTests(out string) []string {
+	var names []string
+	for _, m := range failPattern.FindAllStringSubmatch(out, -1) {
+		if !slices.Contains(names, m[1]) {
+			names = append(names, m[1])
+		}
+	}
+	return names
+}
+
+// setEnv returns env with each "KEY=value" of kv replacing any earlier KEY.
+func setEnv(env []string, kv ...string) []string {
+	out := slices.Clone(env)
+	for _, pair := range kv {
+		key := envKey(pair)
+		out = slices.DeleteFunc(out, func(e string) bool { return envKey(e) == key })
+		out = append(out, pair)
+	}
+	return out
+}
+
+// envKey is the variable name of "KEY=value"; on Windows names are case-insensitive.
+func envKey(kv string) string {
+	key, _, _ := strings.Cut(kv, "=")
+	if runtime.GOOS == "windows" {
+		key = strings.ToUpper(key)
+	}
+	return key
+}
+
+func (c *Config) rel(p string) string {
+	if r, err := filepath.Rel(c.Root, p); err == nil && !strings.HasPrefix(r, "..") {
+		return filepath.ToSlash(r)
+	}
+	return p
+}
+
+func lastLine(s string) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	return strings.TrimSpace(lines[len(lines)-1])
+}
+
+func isFile(p string) bool {
+	info, err := os.Stat(p)
+	return err == nil && info.Mode().IsRegular()
+}
+
+func isDir(p string) bool {
+	info, err := os.Stat(p)
+	return err == nil && info.IsDir()
+}

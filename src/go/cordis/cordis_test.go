@@ -8,7 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
+	"testing/synctest"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	. "github.com/smartpcr/agent-plugin/src/go/internal/testkit"
@@ -108,6 +108,7 @@ func TestGeneratorEffectStopsAdvancingOnceDisposed(t *testing.T) { // #268
 	Eventually(t, func() bool { return handle.Load() != nil }, "effect never started")
 	h := handle.Load()
 	disposed := make(chan struct{})
+	t.Cleanup(func() { Within(t, "dispose goroutine", func() { <-disposed }) })
 	go func() {
 		h.Dispose()
 		close(disposed)
@@ -343,93 +344,99 @@ func TestAFiberInjectsAndReProvidesTheSameNameInAnotherRealm(t *testing.T) {
 // --------------------------------------------------------- service disposal
 
 func TestProviderEffectsOutliveADependentsAsyncCleanup(t *testing.T) { // #196
-	root := cordis.New()
-	gate := make(chan struct{})
-	timeline := &Log{}
-	provider := MustWait(t, Must(root.Apply("provider", func(ctx *cordis.Context) error {
-		var closed atomic.Bool
-		read := func() {
-			state := "open"
-			if closed.Load() {
-				state = "closed"
+	synctest.Test(t, func(t *testing.T) {
+		root := cordis.New()
+		gate := make(chan struct{})
+		timeline := &Log{}
+		provider := MustWait(t, Must(root.Apply("provider", func(ctx *cordis.Context) error {
+			var closed atomic.Bool
+			read := func() {
+				state := "open"
+				if closed.Load() {
+					state = "closed"
+				}
+				timeline.Add("read: " + state)
 			}
-			timeline.Add("read: " + state)
-		}
-		if _, err := ctx.Provide("foo", read); err != nil {
+			if _, err := ctx.Provide("foo", read); err != nil {
+				return err
+			}
+			_, err := ctx.Effect("", func() (cordis.Disposer, error) {
+				return func() error {
+					closed.Store(true)
+					timeline.Add("provider closed")
+					return nil
+				}, nil
+			})
 			return err
-		}
-		_, err := ctx.Effect("", func() (cordis.Disposer, error) {
-			return func() error {
-				closed.Store(true)
-				timeline.Add("provider closed")
-				return nil
-			}, nil
-		})
-		return err
-	})))
-	MustWait(t, Must(root.Inject([]string{"foo"}, func(ctx *cordis.Context) error {
-		value, err := ctx.Get("foo")
-		if err != nil {
+		})))
+		MustWait(t, Must(root.Inject([]string{"foo"}, func(ctx *cordis.Context) error {
+			value, err := ctx.Get("foo")
+			if err != nil {
+				return err
+			}
+			read := value.(func())
+			_, err = ctx.Effect("", func() (cordis.Disposer, error) {
+				return func() error {
+					<-gate
+					read()
+					return nil
+				}, nil
+			})
 			return err
-		}
-		read := value.(func())
-		_, err = ctx.Effect("", func() (cordis.Disposer, error) {
-			return func() error {
-				<-gate
-				read()
-				return nil
-			}, nil
-		})
-		return err
-	})))
+		})))
 
-	disposed := make(chan struct{})
-	go func() {
-		provider.Dispose()
-		close(disposed)
-	}()
-	time.Sleep(30 * time.Millisecond)
-	closedDuringDrain := timeline.Contains("provider closed")
-	close(gate)
-	Within(t, "dispose", func() { <-disposed })
-	True(t, !closedDuringDrain, "provider closed before its dependent finished")
-	Equal(t, "read: open,provider closed", timeline.String())
+		disposed := make(chan struct{})
+		t.Cleanup(func() { Within(t, "dispose goroutine", func() { <-disposed }) })
+		go func() {
+			provider.Dispose()
+			close(disposed)
+		}()
+		synctest.Wait()
+		closedDuringDrain := timeline.Contains("provider closed")
+		close(gate)
+		Within(t, "dispose", func() { <-disposed })
+		True(t, !closedDuringDrain, "provider closed before its dependent finished")
+		Equal(t, "read: open,provider closed", timeline.String())
+	})
 }
 
 func TestWithdrawingAServiceWaitsForADisposingConsumer(t *testing.T) {
-	root := cordis.New()
-	gate := make(chan struct{})
-	timeline := &Log{}
-	provider := MustWait(t, Must(root.Apply("provider", func(*cordis.Context) error { return nil })))
-	withdraw := Must(provider.Ctx().Provide("foo", new(int)))
-	consumer := MustWait(t, Must(root.Inject([]string{"foo"}, func(ctx *cordis.Context) error {
-		_, err := ctx.Effect("", func() (cordis.Disposer, error) {
-			return func() error {
-				<-gate
-				timeline.Add("consumer finished")
-				return nil
-			}, nil
-		})
-		return err
-	})))
+	synctest.Test(t, func(t *testing.T) {
+		root := cordis.New()
+		gate := make(chan struct{})
+		timeline := &Log{}
+		provider := MustWait(t, Must(root.Apply("provider", func(*cordis.Context) error { return nil })))
+		withdraw := Must(provider.Ctx().Provide("foo", new(int)))
+		consumer := MustWait(t, Must(root.Inject([]string{"foo"}, func(ctx *cordis.Context) error {
+			_, err := ctx.Effect("", func() (cordis.Disposer, error) {
+				return func() error {
+					<-gate
+					timeline.Add("consumer finished")
+					return nil
+				}, nil
+			})
+			return err
+		})))
 
-	disposing := make(chan struct{})
-	withdrawing := make(chan struct{})
-	go func() {
-		consumer.Dispose()
-		close(disposing)
-	}()
-	go func() {
-		withdraw.Dispose()
-		timeline.Add("withdrawn")
-		close(withdrawing)
-	}()
-	time.Sleep(30 * time.Millisecond)
-	early := timeline.Contains("withdrawn")
-	close(gate)
-	Within(t, "dispose", func() { <-disposing; <-withdrawing })
-	True(t, !early, "withdrawn while the consumer was still cleaning up")
-	Equal(t, "consumer finished,withdrawn", timeline.String())
+		disposing := make(chan struct{})
+		withdrawing := make(chan struct{})
+		t.Cleanup(func() { Within(t, "dispose goroutines", func() { <-disposing; <-withdrawing }) })
+		go func() {
+			consumer.Dispose()
+			close(disposing)
+		}()
+		go func() {
+			withdraw.Dispose()
+			timeline.Add("withdrawn")
+			close(withdrawing)
+		}()
+		synctest.Wait()
+		early := timeline.Contains("withdrawn")
+		close(gate)
+		Within(t, "dispose", func() { <-disposing; <-withdrawing })
+		True(t, !early, "withdrawn while the consumer was still cleaning up")
+		Equal(t, "consumer finished,withdrawn", timeline.String())
+	})
 }
 
 type openCloseService struct {
@@ -458,41 +465,44 @@ func (s *openCloseService) Read() {
 }
 
 func TestChildOfAProviderThatInjectsTheParentServiceIsDrainedFirst(t *testing.T) {
-	root := cordis.New()
-	gate := make(chan struct{})
-	timeline := &Log{}
-	key := cordis.NewServiceKey[*openCloseService]("open-close")
-	component := cordis.Construct("OpenCloseService", func(ctx *cordis.Context, _ cordis.None) (*openCloseService, error) {
-		service := &openCloseService{ctx: ctx, timeline: timeline}
-		_, err := key.Provide(ctx, service)
-		return service, err
-	})
-	provider := MustWait(t, Must(root.Use(component, nil)))
-	child := Must(provider.Ctx().Inject([]string{key.Name()}, func(ctx *cordis.Context) error {
-		service, err := key.Get(ctx)
-		if err != nil {
-			return err
-		}
-		_, err = ctx.Effect("", func() (cordis.Disposer, error) {
-			return func() error {
-				<-gate
-				service.Read()
-				return nil
-			}, nil
+	synctest.Test(t, func(t *testing.T) {
+		root := cordis.New()
+		gate := make(chan struct{})
+		timeline := &Log{}
+		key := cordis.NewServiceKey[*openCloseService]("open-close")
+		component := cordis.Construct("OpenCloseService", func(ctx *cordis.Context, _ cordis.None) (*openCloseService, error) {
+			service := &openCloseService{ctx: ctx, timeline: timeline}
+			_, err := key.Provide(ctx, service)
+			return service, err
 		})
-		return err
-	}))
-	MustWait(t, child)
+		provider := MustWait(t, Must(root.Use(component, nil)))
+		child := Must(provider.Ctx().Inject([]string{key.Name()}, func(ctx *cordis.Context) error {
+			service, err := key.Get(ctx)
+			if err != nil {
+				return err
+			}
+			_, err = ctx.Effect("", func() (cordis.Disposer, error) {
+				return func() error {
+					<-gate
+					service.Read()
+					return nil
+				}, nil
+			})
+			return err
+		}))
+		MustWait(t, child)
 
-	disposed := make(chan struct{})
-	go func() {
-		provider.Dispose()
-		close(disposed)
-	}()
-	time.Sleep(30 * time.Millisecond)
-	close(gate)
-	Within(t, "dispose", func() { <-disposed })
-	Equal(t, "read: open,closed", timeline.String())
+		disposed := make(chan struct{})
+		t.Cleanup(func() { Within(t, "dispose goroutine", func() { <-disposed }) })
+		go func() {
+			provider.Dispose()
+			close(disposed)
+		}()
+		synctest.Wait()
+		close(gate)
+		Within(t, "dispose", func() { <-disposed })
+		Equal(t, "read: open,closed", timeline.String())
+	})
 }
 
 // ------------------------------------------------------------- intercepts
@@ -636,47 +646,56 @@ func TestUpdateHookAcceptsAConfigInPlaceAndDiesWithTheFiber(t *testing.T) { // #
 // -------------------------------------------------------------- lifecycle
 
 func TestFailedFiberDoesNotReloadWhenAProviderChanges(t *testing.T) { // #98
-	root, _ := Quiet()
-	var loads atomic.Int32
-	fiber := Must(root.Inject([]string{"thing"}, func(*cordis.Context) error {
-		loads.Add(1)
-		return errors.New("boom")
-	}))
-	first := Must(root.Provide("thing", 1))
-	True(t, Wait(t, fiber) != nil, "load did not fail")
-	Equal(t, cordis.Failed, fiber.State())
+	synctest.Test(t, func(t *testing.T) {
+		root, _ := Quiet()
+		var loads atomic.Int32
+		fiber := Must(root.Inject([]string{"thing"}, func(*cordis.Context) error {
+			loads.Add(1)
+			return errors.New("boom")
+		}))
+		first := Must(root.Provide("thing", 1))
+		True(t, Wait(t, fiber) != nil, "load did not fail")
+		Equal(t, cordis.Failed, fiber.State())
 
-	Within(t, "withdraw", first.Dispose)
-	Must(root.Provide("thing", 2))
-	time.Sleep(20 * time.Millisecond)
-	Equal(t, int32(1), loads.Load())
-	Equal(t, cordis.Failed, fiber.State())
+		Within(t, "withdraw", first.Dispose)
+		Must(root.Provide("thing", 2))
+		synctest.Wait()
+		Equal(t, int32(1), loads.Load())
+		Equal(t, cordis.Failed, fiber.State())
+	})
 }
 
 func TestRestartWhileLoadingIsNotLost(t *testing.T) { // #189
-	root := cordis.New()
-	started := make(chan struct{})
-	release := make(chan struct{})
-	var applied atomic.Int32
-	fiber := Must(root.Apply("p", func(*cordis.Context) error {
-		if applied.Add(1) == 1 {
-			close(started)
-			<-release
-		}
-		return nil
-	}))
-	<-started
-	restarted := make(chan error, 1)
-	go func() { restarted <- fiber.Restart() }()
-	time.Sleep(10 * time.Millisecond) // let the restart bump the revision
-	close(release)
-	Within(t, "restart", func() {
-		if err := <-restarted; err != nil {
-			t.Error(err)
-		}
+	synctest.Test(t, func(t *testing.T) {
+		root := cordis.New()
+		started := make(chan struct{})
+		release := make(chan struct{})
+		var applied atomic.Int32
+		fiber := Must(root.Apply("p", func(*cordis.Context) error {
+			if applied.Add(1) == 1 {
+				close(started)
+				<-release
+			}
+			return nil
+		}))
+		<-started
+		restarted := make(chan error, 1)
+		done := make(chan struct{})
+		t.Cleanup(func() { Within(t, "restart goroutine", func() { <-done }) })
+		go func() {
+			defer close(done)
+			restarted <- fiber.Restart()
+		}()
+		synctest.Wait() // let the restart bump the revision
+		close(release)
+		Within(t, "restart", func() {
+			if err := <-restarted; err != nil {
+				t.Error(err)
+			}
+		})
+		Equal(t, int32(2), applied.Load())
+		Equal(t, cordis.Active, fiber.State())
 	})
-	Equal(t, int32(2), applied.Load())
-	Equal(t, cordis.Active, fiber.State())
 }
 
 type gatedValue struct {
@@ -711,6 +730,7 @@ func TestConcurrentUpdatesSettleOnTheLatestConfig(t *testing.T) {
 	fiber := MustWait(t, Must(root.Use(component, valueOptions{Value: 0})))
 
 	var wg sync.WaitGroup
+	t.Cleanup(func() { Within(t, "update goroutines", wg.Wait) })
 	update := func(value int) {
 		wg.Add(1)
 		go func() {
@@ -737,30 +757,37 @@ func TestConcurrentUpdatesSettleOnTheLatestConfig(t *testing.T) {
 }
 
 func TestSupersededLoadFailureDoesNotFailTheLatestUpdate(t *testing.T) {
-	root, logs := Quiet()
-	started := make(chan struct{})
-	release := make(chan struct{})
-	var calls atomic.Int32
-	fiber := Must(root.Apply("p", func(*cordis.Context) error {
-		if calls.Add(1) != 1 {
-			return nil
-		}
-		close(started)
-		<-release
-		return errors.New("superseded load")
-	}))
-	<-started
-	updated := make(chan error, 1)
-	go func() { updated <- fiber.Update(nil, false) }()
-	time.Sleep(10 * time.Millisecond) // let the update bump the revision
-	close(release)
-	Within(t, "update", func() {
-		if err := <-updated; err != nil {
-			t.Error(err)
-		}
+	synctest.Test(t, func(t *testing.T) {
+		root, logs := Quiet()
+		started := make(chan struct{})
+		release := make(chan struct{})
+		var calls atomic.Int32
+		fiber := Must(root.Apply("p", func(*cordis.Context) error {
+			if calls.Add(1) != 1 {
+				return nil
+			}
+			close(started)
+			<-release
+			return errors.New("superseded load")
+		}))
+		<-started
+		updated := make(chan error, 1)
+		done := make(chan struct{})
+		t.Cleanup(func() { Within(t, "update goroutine", func() { <-done }) })
+		go func() {
+			defer close(done)
+			updated <- fiber.Update(nil, false)
+		}()
+		synctest.Wait() // let the update bump the revision
+		close(release)
+		Within(t, "update", func() {
+			if err := <-updated; err != nil {
+				t.Error(err)
+			}
+		})
+		Equal(t, cordis.Active, fiber.State())
+		Equal(t, 1, Count(logs, cordis.LevelError))
 	})
-	Equal(t, cordis.Active, fiber.State())
-	Equal(t, 1, Count(logs, cordis.LevelError))
 }
 
 func TestDisposedFiberSettlesToDisposedAndReportsIt(t *testing.T) { // #133

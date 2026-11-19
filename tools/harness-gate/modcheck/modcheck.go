@@ -3,7 +3,7 @@
 // src/sdk that requires nothing (RM-1..RM-4; DH-T-TOOLCHAIN-11, DH-T-SDK-17).
 //
 // go.mod and go.work files are read with a small line parser of their own, so the
-// gate stays standard-library only and checks the exact committed bytes.
+// package stays standard-library only and checks the exact committed bytes.
 package modcheck
 
 import (

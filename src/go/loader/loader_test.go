@@ -268,11 +268,15 @@ func TestConfigFileWatchingSurvivesRenameBasedSaves(t *testing.T) {
 	h := start(t)
 	useFile(t, h, loader.ConfigFileOptions{Path: path, Watch: true, PollInterval: 20e6})
 
-	// an editor-style save: write a temporary file, then rename it over the config
+	// an editor-style save: write a temporary file, then rename it over the config. On
+	// Windows the rename is refused while the watcher's poll has the file open, so it
+	// is retried, as editors (and the component's own write-back) do.
 	saveByRename := func(text string) {
 		temp := filepath.Join(directory, "cordis.json."+text+".tmp")
 		writeFile(t, temp, echoFile([2]string{"a", text}))
-		NoError(t, os.Rename(temp, path))
+		var err error
+		Eventually(t, func() bool { err = os.Rename(temp, path); return err == nil }, "rename-based save kept failing")
+		NoError(t, err)
 	}
 
 	saveByRename("v2")
