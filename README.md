@@ -8,7 +8,7 @@ the services they need, load when those services appear, and unload when they go
 | Path | Language | Description |
 | --- | --- | --- |
 | [src/net](src/net/README.md) | C# / .NET 10 | Cordis.NET, a port of [cordiverse/cordis](https://github.com/cordiverse/cordis), with samples and tests |
-| [src/go](src/go/README.md) | Go 1.24+ | cordis for Go, a port of the same upstream revision, with a sample and tests |
+| [src/go](src/go/README.md) | Go 1.26+ | cordis for Go, a port of the same upstream revision, with a sample and tests |
 
 ## Design docs
 
