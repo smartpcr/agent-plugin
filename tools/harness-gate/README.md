@@ -91,7 +91,7 @@ tests, runs
 
 ```sh
 go test -c -cover -covermode=set -coverpkg=./... -o <tmp>/bin/pkgN.test <pkg>
-GOCOVERDIR=<tmp>/covdata <tmp>/bin/pkgN.test -test.count=1 -test.skip='^TestBudget' -test.gocoverdir=<tmp>/covdata   # in the package directory
+GOCOVERDIR=<tmp>/covdata <tmp>/bin/pkgN.test -test.count=1 -test.timeout=10m -test.skip='^TestBudget' -test.gocoverdir=<tmp>/covdata   # in the package directory
 ```
 
 then merges everything in that directory with
@@ -106,6 +106,13 @@ binary, every re-executed copy of it and every separately built `-cover` helper.
 binary's statements would be lost.) A package without test files gets its 0%
 entries from `go test -cover -coverprofile`, so none escapes the floor. Every
 package under 85% of statements fails the gate; there is no exemption list.
+
+A test binary run directly has no default timeout (only `go test` applies one), so
+the gate passes `-test.timeout` (`Config.TestTimeout`, default 10m, `go test`'s own
+default) and backs it with a process deadline one minute later. A blocked test
+fails the `coverage` gate naming the test that was running
+(`test timed out: TestBlocked`, `testdata/coverage-blocked`) instead of hanging the
+runner.
 
 Children every test process starts inherit `GOCOVERDIR`. For their counters to be
 collected:
@@ -131,6 +138,7 @@ uninstrumented, with every `DSH_*` and `GO*` variable removed from the child
 environment (only the locations `GOROOT`, `GOPATH`, `GOMODCACHE`, `GOCACHE`,
 `GOTMPDIR` are kept, and `GOWORK=off`, `GOTOOLCHAIN=local` are set), so no
 override can relax a budget.
+
 ## Seeded-violation modules (`testdata/`)
 
 | module | fails at |
@@ -139,6 +147,7 @@ override can relax a budget.
 | `budget-race` | `test` (a data race inside `TestBudgetRacy`) |
 | `unformatted-file` | `gofmt` (`add.go` is deliberately unformatted) |
 | `coverage-40pct` | `coverage` (`example.com/cov40/p` at 40%) |
+| `coverage-blocked` | `coverage` (`TestBlocked` never returns; the binary's `-test.timeout` fires) |
 | `coverage-child` | passes `coverage` only with both child processes' profiles merged |
 | `budget-exceeded` | `budget` (`TestBudgetX` honours `DSH_BUDGET_RELAX` unless cleared) |
 | `cross-broken` | `cross-compile` (`windows/arm64` only) |

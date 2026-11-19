@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/smartpcr/agent-plugin/tools/harness-gate/modcheck"
 )
@@ -50,6 +51,22 @@ type Config struct {
 	// CrossOut, when set, keeps the cross-compiled binaries there; otherwise they go
 	// to a temporary directory that is removed afterwards.
 	CrossOut string
+
+	// TestTimeout bounds every coverage test binary the gate runs directly (zero
+	// selects DefaultTestTimeout, go test's own default): a blocked test fails the
+	// coverage gate, named, instead of hanging the runner.
+	TestTimeout time.Duration
+}
+
+// DefaultTestTimeout is the per-binary timeout of the coverage gate when
+// Config.TestTimeout is zero.
+const DefaultTestTimeout = 10 * time.Minute
+
+func (c *Config) testTimeout() time.Duration {
+	if c.TestTimeout > 0 {
+		return c.TestTimeout
+	}
+	return DefaultTestTimeout
 }
 
 // NewConfig returns the configuration for root: the module at root when root holds a
@@ -290,7 +307,13 @@ func (c *Config) moduleCoverage(ctx context.Context, w io.Writer, mod string) ([
 		}
 		env := c.env("GOCOVERDIR=" + covdir)
 		label := pkg.ImportPath + ".test"
-		if err := c.step(ctx, w, pkg.Dir, env, label, bin, "-test.count=1", "-test.skip="+budgetPattern, "-test.gocoverdir="+covdir); err != nil {
+		// -test.timeout makes the binary panic with every goroutine's stack and name the
+		// running test; the context deadline backs it up should the binary not exit.
+		timeout := c.testTimeout()
+		runCtx, cancel := context.WithTimeout(ctx, timeout+time.Minute)
+		err := c.step(runCtx, w, pkg.Dir, env, label, bin, "-test.count=1", "-test.timeout="+timeout.String(), "-test.skip="+budgetPattern, "-test.gocoverdir="+covdir)
+		cancel()
+		if err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -469,7 +492,32 @@ func (c *Config) step(ctx context.Context, w io.Writer, dir string, env []string
 	if strings.Contains(out, "WARNING: DATA RACE") {
 		detail += "; data race detected"
 	}
+	if strings.Contains(out, "panic: test timed out") {
+		detail += "; test timed out"
+		if running := timedOutTests(out); len(running) > 0 {
+			detail += ": " + strings.Join(running, ", ")
+		}
+	}
+	if ctx.Err() != nil {
+		detail += "; killed: " + ctx.Err().Error()
+	}
 	return fmt.Errorf("%s: %s: %w%s", c.rel(dir), step, err, detail)
+}
+
+var runningPattern = regexp.MustCompile(`(?m)^\t\t(\S+) \(\S+\)\r?$`)
+
+// timedOutTests returns the tests a test binary listed as running when its
+// -test.timeout fired.
+func timedOutTests(out string) []string {
+	_, after, ok := strings.Cut(out, "running tests:")
+	if !ok {
+		return nil
+	}
+	var names []string
+	for _, m := range runningPattern.FindAllStringSubmatch(after, -1) {
+		names = append(names, m[1])
+	}
+	return names
 }
 
 // command runs name with args in dir and env and returns its combined output.

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // gateBinary is harness-gate built once for the end-to-end tests (TC-01b): the vet
@@ -179,6 +180,26 @@ func TestCoverageMergesChildProcesses(t *testing.T) {
 	}
 }
 
+// TestCoverageBinaryIsBounded runs the coverage gate on a test that never returns:
+// the binary's -test.timeout fails the gate and names the test instead of hanging.
+func TestCoverageBinaryIsBounded(t *testing.T) {
+	cfg := newTestConfig(t, scratch(t, "coverage-blocked"))
+	cfg.TestTimeout = 3 * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	var out bytes.Buffer
+	err := cfg.coverageGate(ctx, &out)
+	if err == nil {
+		t.Fatalf("coverage gate passed a blocked test:\n%s", out.String())
+	}
+	if !strings.Contains(err.Error(), "test timed out: TestBlocked") {
+		t.Errorf("error = %v, want it to name the timed-out TestBlocked\n%s", err, out.String())
+	}
+	if ctx.Err() != nil {
+		t.Errorf("gate returned only after the outer deadline: %v", ctx.Err())
+	}
+}
+
 // TestNoExemptionFileIsHonoured writes every plausible baseline, suppression and
 // exemption file listing p next to the under-floor module; the gate still fails p
 // (QG-2; DH-T-TOOLCHAIN-8).
@@ -282,16 +303,19 @@ func TestCCompilerPreflightNamesMissingCompiler(t *testing.T) {
 	}
 }
 
-// TestRepositoryIsCleanUnderGofmtAndOwnAnalyzers runs the gofmt and vet gates, with
-// the built binary as the vet tool, on the repository's product modules: an
-// analyzer joins the required set only while the tree is clean under it.
-func TestRepositoryIsCleanUnderGofmtAndOwnAnalyzers(t *testing.T) {
-	cfg := newTestConfig(t, filepath.Join("..", ".."))
-	cfg.VetTool = buildGate(t)
-	var out bytes.Buffer
-	results := Run(context.Background(), &out, Gates(cfg)[:2])
-	if ExitCode(results) != 0 {
-		t.Fatalf("repository fails gofmt/vet:\n%s", out.String())
+// TestRepositoryPassesEveryGate runs the built harness-gate binary on the repository
+// root, exactly as the documented command does: every gate, in order, must pass on
+// the product modules (an analyzer or floor joins the required set only while the
+// tree is clean under it).
+func TestRepositoryPassesEveryGate(t *testing.T) {
+	out, code := runGate(t, filepath.Join("..", ".."))
+	if code != 0 || !strings.Contains(out, "PASSED all 7 gates") {
+		t.Fatalf("repository gate exited %d:\n%s", code, out)
+	}
+	for _, gate := range Gates(&Config{}) {
+		if !strings.Contains(out, "PASS "+gate.Name+" (") {
+			t.Errorf("gate %s did not report PASS:\n%s", gate.Name, out)
+		}
 	}
 }
 
