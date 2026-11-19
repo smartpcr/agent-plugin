@@ -42,6 +42,19 @@ GOWORK=off go -C src/harness build -ldflags "-X main.version=v0.1.0" -o dsh ./cm
 `dsh` prints `dsh <version>` and exits 0. The version is the one set with
 `-X main.version`, else the module version the go command recorded, else `(devel)`.
 
+## Pins
+
+`src/harness/go.mod` pins `src/go` and `src/sdk` at pseudo-versions of a real commit
+(today `a647d4984790`, the first commit containing `src/sdk`), recorded in `go.sum`.
+Re-pin with:
+
+```bash
+GOWORK=off go -C src/harness get github.com/smartpcr/agent-plugin/src/go@<commit> github.com/smartpcr/agent-plugin/src/sdk@<commit>
+```
+
+Until `internal/` imports both modules, `go mod tidy` would drop the requirements, so
+do not run it here; `DH-T-TOOLCHAIN-11` fails on a missing or placeholder pin.
+
 ## Module pin tests
 
 `DH-T-TOOLCHAIN-11` (three modules, one `go` floor, no `replace`) and `DH-T-SDK-17`

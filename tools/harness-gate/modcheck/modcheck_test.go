@@ -24,8 +24,8 @@ go 1.26.0
 go 1.26.0
 
 require (
-	github.com/smartpcr/agent-plugin/src/go v0.0.0-00010101000000-000000000000
-	github.com/smartpcr/agent-plugin/src/sdk v0.0.0-00010101000000-000000000000
+	github.com/smartpcr/agent-plugin/src/go v0.1.5-0.20261119220503-a647d4984790
+	github.com/smartpcr/agent-plugin/src/sdk v0.0.0-20261119220503-a647d4984790
 )
 `
 	fixtureWork = `go 1.26.0
@@ -36,7 +36,13 @@ use (
 	./src/harness
 )
 `
+	fixtureSum = `github.com/smartpcr/agent-plugin/src/go v0.1.5-0.20261119220503-a647d4984790 h1:+X0ZYjvm5RUr2KmO3O7ABnaCY97cmq0vqKT8KwIwjlQ=
+github.com/smartpcr/agent-plugin/src/go v0.1.5-0.20261119220503-a647d4984790/go.mod h1:9fSA8rmSzLayjvwnUR39P59YsFDRRAKsiPPKeLMvziE=
+github.com/smartpcr/agent-plugin/src/sdk v0.0.0-20261119220503-a647d4984790 h1:ljeRlsuM1I7uEd5F/5wK3FhJGv2ldFD4+/Tq69pD2W8=
+github.com/smartpcr/agent-plugin/src/sdk v0.0.0-20261119220503-a647d4984790/go.mod h1:4ZWs5LPwRFeD4uSXHCeFrLPSYskVsh8X1oOB/0SDEbk=
+`
 	replaceLine = "replace github.com/smartpcr/agent-plugin/src/go => ../go"
+	zeroPin     = "v0.0.0-00010101000000-000000000000"
 )
 
 func fixtureRepo() Repo {
@@ -47,6 +53,7 @@ func fixtureRepo() Repo {
 			"src/sdk":     []byte(fixtureSDK),
 			"src/harness": []byte(fixtureHarness),
 		},
+		HarnessSum: []byte(fixtureSum),
 	}
 }
 
@@ -126,7 +133,7 @@ func TestToolchain11RejectsWorkspaceDrift(t *testing.T) {
 func TestToolchain11RejectsMissingRequire(t *testing.T) {
 	repo := fixtureRepo()
 	repo.Mods["src/harness"] = []byte(strings.Replace(fixtureHarness,
-		"\tgithub.com/smartpcr/agent-plugin/src/sdk v0.0.0-00010101000000-000000000000\n", "", 1))
+		"\tgithub.com/smartpcr/agent-plugin/src/sdk v0.0.0-20261119220503-a647d4984790\n", "", 1))
 	wantFailure(t, CheckToolchain11(repo), "does not require github.com/smartpcr/agent-plugin/src/sdk")
 }
 
@@ -156,5 +163,58 @@ func TestParseRejectsMalformed(t *testing.T) {
 	}
 	if _, err := Parse("go.mod", []byte("module\n")); err == nil || !strings.Contains(err.Error(), "go.mod:1") {
 		t.Errorf("bare verb: %v", err)
+	}
+}
+
+func TestPinsRejectZeroPlaceholder(t *testing.T) {
+	repo := fixtureRepo()
+	repo.Mods["src/harness"] = []byte(strings.Replace(fixtureHarness, "v0.1.5-0.20261119220503-a647d4984790", zeroPin, 1))
+	wantFailure(t, CheckToolchain11(repo),
+		"src/harness/go.mod:6: require github.com/smartpcr/agent-plugin/src/go "+zeroPin, "names no revision")
+
+	repo = fixtureRepo()
+	repo.Mods["src/harness"] = []byte(strings.Replace(fixtureHarness, "v0.0.0-20261119220503-a647d4984790", "latest", 1))
+	wantFailure(t, CheckToolchain11(repo), "src/harness/go.mod:7:", "latest is not a pseudo-version")
+}
+
+func TestPinsRequireGoSumLines(t *testing.T) {
+	repo := fixtureRepo()
+	var kept []string
+	for _, line := range strings.SplitAfter(fixtureSum, "\n") {
+		if !strings.Contains(line, "src/sdk v0.0.0-20261119220503-a647d4984790/go.mod") {
+			kept = append(kept, line)
+		}
+	}
+	repo.HarnessSum = []byte(strings.Join(kept, ""))
+	wantFailure(t, CheckToolchain11(repo),
+		"go.sum has no line for github.com/smartpcr/agent-plugin/src/sdk v0.0.0-20261119220503-a647d4984790/go.mod")
+
+	repo.HarnessSum = nil
+	wantFailure(t, CheckToolchain11(repo), "go.sum has no line for github.com/smartpcr/agent-plugin/src/go")
+}
+
+func TestParsePseudoForms(t *testing.T) {
+	for version, rev := range map[string]string{
+		"v0.0.0-20261119220503-a647d4984790":        "a647d4984790",
+		"v0.1.5-0.20261119220503-a647d4984790":      "a647d4984790",
+		"v1.2.0-rc.1.0.20261119220503-a647d4984790": "a647d4984790",
+	} {
+		pseudo, err := ParsePseudo(version)
+		if err != nil || pseudo.Rev != rev || pseudo.Time.Format("20060102150405") != "20261119220503" {
+			t.Errorf("ParsePseudo(%s) = %+v, %v", version, pseudo, err)
+		}
+	}
+	for _, version := range []string{zeroPin, "v0.1.4", "v0.0.0-2026111922050-a647d4984790", "v0.0.0-20261119220503-A647D4984790"} {
+		if _, err := ParsePseudo(version); err == nil {
+			t.Errorf("ParsePseudo(%s) succeeded", version)
+		}
+	}
+}
+
+func TestGoModHashMatchesGoSum(t *testing.T) {
+	sdkMod := "module github.com/smartpcr/agent-plugin/src/sdk\n\ngo 1.26.0\n"
+	want := "h1:4ZWs5LPwRFeD4uSXHCeFrLPSYskVsh8X1oOB/0SDEbk="
+	if got := GoModHash([]byte(sdkMod)); got != want {
+		t.Errorf("GoModHash = %s, want %s (the go.sum line written by go get)", got, want)
 	}
 }

@@ -10,8 +10,9 @@ import (
 
 // CheckToolchain11 is DH-T-TOOLCHAIN-11: the checkout has exactly the three product
 // modules of RM-1, go.work uses exactly those three, every one of them (and go.work)
-// states the go floor (RM-2), src/harness requires src/go and src/sdk, and no file
-// carries a replace directive (RM-4). Every violation is reported, each naming its
+// states the go floor (RM-2), src/harness requires src/go and src/sdk at real
+// revisions recorded in its go.sum (CheckPins), and no file carries a replace
+// directive (RM-4). Every violation is reported, each naming its
 // file and line.
 func CheckToolchain11(repo Repo) error {
 	var errs []error
@@ -114,6 +115,9 @@ func CheckToolchain11(repo Repo) error {
 			if !required[m.Path] {
 				fail("src/harness/go.mod does not require %s (RM-4)", m.Path)
 			}
+		}
+		if err := CheckPins(repo.Mods["src/harness"], repo.HarnessSum); err != nil {
+			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)

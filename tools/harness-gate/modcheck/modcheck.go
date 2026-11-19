@@ -9,6 +9,7 @@ package modcheck
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -103,11 +104,12 @@ func (f *File) All(verb string) []Directive {
 	return out
 }
 
-// Repo is the module files of a checkout: the root go.work and every go.mod under
-// src/, keyed by slash-separated module directory.
+// Repo is the module files of a checkout: the root go.work, every go.mod under src/
+// keyed by slash-separated module directory, and src/harness/go.sum.
 type Repo struct {
-	Work []byte
-	Mods map[string][]byte
+	Work       []byte
+	Mods       map[string][]byte
+	HarnessSum []byte
 }
 
 // Load reads go.work and every go.mod below src/ of the checkout at root.
@@ -118,6 +120,11 @@ func Load(root string) (Repo, error) {
 		return repo, err
 	}
 	repo.Work = work
+	sum, err := os.ReadFile(filepath.Join(root, "src", "harness", "go.sum"))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return repo, err
+	}
+	repo.HarnessSum = sum
 	err = filepath.WalkDir(filepath.Join(root, "src"), func(p string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
