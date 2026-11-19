@@ -26,9 +26,9 @@ does not restate them; it names them.
 
 | Kind | What it is | Run in this story? |
 |---|---|---|
-| **Gate scenario** (every `- **Scenario:**` below unless tagged `@manual` or `@authored-only`) | A Go test (unit, composition, golden, two-process, loopback) proving one `TC-xx` row | **Yes.** Part of `tools/harness-gate` on Linux, macOS and Windows; may not skip |
+| **Gate scenario** (every `- **Scenario:**` below unless tagged `@manual`; this includes the index and `-tags scenario` vet checks that prove each authored `DH-E-*` file exists) | A Go test (unit, composition, golden, two-process, loopback) proving one `TC-xx` row | **Yes.** Part of `tools/harness-gate` on Linux, macOS and Windows; may not skip |
 | **Manual check** (`@manual`) | The two real-DeepSeek-API checks impl.md requires at DH-S-9 and DH-S-11 | Yes, by hand, recorded in `docs/stories/harness-DSH/evidence/DH-S-<n>.md`; never a gate criterion (EV-6) |
-| **Real-environment scenario** (`DH-E-*`, `@authored-only`) | impl.md's acceptance scenarios, written as `//go:build scenario` files | **Authored here; executed at the stage impl.md assigns; none executed in this story** (contract rule 2) |
+| **Real-environment scenario** (`DH-E-*`; listed only in the schedule table below, never as a `- **Scenario:**` bullet, so no gate check is excluded by its tag) | impl.md's acceptance scenarios, written as `//go:build scenario` files | **Authored here; executed at the stage impl.md assigns; none executed in this story** (contract rule 2) |
 
 ### Conventions
 
@@ -56,10 +56,25 @@ does not restate them; it names them.
 
 ### Gate provisioning in one table
 
-All eleven phases are Setup type **`inline`**. No phase is `compose` (the gate host
-has no docker) and no phase is `lab-*` (architecture TC-X2: physical/hardware proof is
-none in this story). Every dependency is self-provisioned in-process by the test that
-needs it, so no required scenario may skip for a missing dependency.
+Setup types: Phases 1-6 and 9 are **`inline`** (pure in-process, filesystem,
+re-exec or loopback proofs; no persisted service). Phases 7, 8, 10 and 11 are
+**`compose`** because their required scenarios prove persisted state in the
+`service:sqlite` store (implementation-plan.md marks them `proof: service:sqlite`).
+No phase is `lab-*` (architecture TC-X2: physical/hardware proof is none in this
+story).
+
+`compose` here keeps two paths, and the gate never needs the second:
+
+- **Gate path (env-var unset, the default).** `DSH_E2E_STORE_HOME` is unset, so the
+  test kit self-provisions the store in-process: embedded `modernc.org/sqlite` in the
+  test binary, `dsh.db` migrated inside a `t.TempDir()` home. No docker, no server,
+  no DSN; every required scenario runs and none may skip.
+- **Compose path (env-var set, CI stack).** `tests/e2e/<phase-slug>/docker-compose.yml`
+  runs the same Go tests in a container with `DSH_E2E_STORE_HOME` pointing at a
+  named-volume home, so the store's on-disk state is exercised on a Linux container
+  filesystem and survives a container restart between the write and the reopen half
+  of each restart scenario. This lane is the non-gating `harness-compose` job; it
+  never replaces the gate path.
 
 | Dependency | Env-var that would point elsewhere | Path when unset (the gate path) | Path when set |
 |---|---|---|---|
@@ -67,6 +82,7 @@ needs it, so no required scenario may skip for a missing dependency.
 | SQLite engine | none (embedded, no DSN exists) | `modernc.org/sqlite` linked into the test binary | n/a |
 | Model endpoint | `DSH_DEEPSEEK_API_KEY` | Fake transport (in-memory) or `httptest` loopback serving committed SSE fixtures | Used only by the `@manual` checks of Phases 9 and 11, run by hand; never by the gate |
 | Child processes | none | Test binary re-exec | n/a |
+| Store home for `compose` phases (7, 8, 10, 11) | `DSH_E2E_STORE_HOME` | Test kit creates a `t.TempDir()` home and migrates an embedded `dsh.db` in it (the gate path) | Set only inside the compose `harness-store-tests` container to the mounted `dsh-home` volume; the test kit still creates a fresh per-test sub-directory under it |
 | Required-scenario list | `DSH_REQUIRE_SCENARIOS` | Empty for this story; preflight passes | Only the credentialed `harness-scenarios.yml` workflow sets it, at later acceptance stages |
 
 ### Authored real-environment scenarios (schedule kept from impl.md)
@@ -356,7 +372,7 @@ and the three-module layout (`src/go`, `src/sdk`, `src/harness`, root `go.work`)
   ```
 - **Scenario:** Acceptance index and scenario files agree
   ```gherkin
-  @TC-01b @proof:service:go-toolchain @authored-only
+  @TC-01b @proof:service:go-toolchain
   Given toolchain_rehearsal_scenario_test.go and test/harness/acceptance-index.yaml
   When the gate's index check and "go -C src/harness vet -tags scenario ./..." run
   Then DH-E-TOOLCHAIN-2 appears in exactly one entry (DH-S-18) and has exactly one file
@@ -888,7 +904,7 @@ import-direction test.
   ```
 - **Scenario:** DH-S-4 scenarios are authored and indexed, not executed
   ```gherkin
-  @TC-01b @proof:service:go-toolchain @authored-only
+  @TC-01b @proof:service:go-toolchain
   Given the file, search and watcher scenario files impl.md sec. 7.5 assigns to DH-S-4
   When the index check and "go -C src/harness vet -tags scenario ./..." run
   Then each has one file and one DH-S-18 entry, vet exits 0, and the default gate runs none
@@ -1303,7 +1319,7 @@ C20 test kit.
   ```
 - **Scenario:** DH-S-6 scenarios are authored and indexed, not executed
   ```gherkin
-  @TC-01b @proof:service:go-toolchain @authored-only
+  @TC-01b @proof:service:go-toolchain
   Given the scenario files under src/harness/internal/testkit/scenarios/ and acceptance-index.yaml
   When the index check and "go -C src/harness vet -tags scenario ./..." run
   Then DH-E-EXEC-1 and DH-E-HOST-4 sit under DH-S-18, DH-E-BOOT-1 under DH-S-22,
@@ -1328,11 +1344,18 @@ Stage DH-S-7: C21 `internal/session/store/sqlite` (DH-D-STORE-2,3,4,6,7,8). Fact
 passes, this store is used on **scratch homes only**.
 
 ### Setup
-- **Type**: inline
+- **Type**: compose
+- **Compose file**: `tests/e2e/sqlite-store-leases-and-recovery/docker-compose.yml`, starting
+  `dsh-home-init` (one-shot container that creates and owns the `dsh-home` named
+  volume) and `harness-store-tests` (the pinned Go toolchain image from
+  `src/harness/go.mod` running `go -C src/harness test -race ./internal/session/store/...` with
+  `DSH_E2E_STORE_HOME` set to the mounted volume). Run with
+  `docker compose -f tests/e2e/sqlite-store-leases-and-recovery/docker-compose.yml up --abort-on-container-exit --exit-code-from harness-store-tests`.
 - **Local**: `go -C src/harness test -race -shuffle=on ./internal/session/store/...`;
   driver measurement: `go -C src/harness test -run TestBudgetStoreAppend -v ./internal/session/store/sqlite`.
-- **CI runner**: GitHub-hosted `ubuntu-latest`, `macos-latest`, `windows-latest`
-  (`harness` job).
+- **CI runner**: gate path on GitHub-hosted `ubuntu-latest`, `macos-latest`,
+  `windows-latest` (`harness` job, required); compose path on GitHub-hosted
+  `ubuntu-latest` (`harness-compose` job, non-gating, docker preinstalled on the image).
 - **Secrets**: none.
 - **Pre-test bootstrap**: none -- `modernc.org/sqlite` (pinned with `modernc.org/libc`
   in `src/harness/go.mod`) is fetched by the normal module download of the gate's
@@ -1340,7 +1363,7 @@ passes, this store is used on **scratch homes only**.
 - **Gate provisioning**: `service:sqlite` is **embedded and ephemeral**: the pure-Go
   engine is compiled into the test binary and `dsh.db` is created by the numbered
   migrations inside a test-kit temp home under `t.TempDir()`. There is no DSN and no
-  connection env-var; `DSH_HOME` is cleared from children so the developer's real
+  connection env-var in the gate (`DSH_E2E_STORE_HOME` unset selects this embedded path); `DSH_HOME` is cleared from children so the developer's real
   home is never opened. Two-process lease, follow and crash-injection scenarios
   re-execute the test binary against the same temp home (`service:os-process`). No
   scenario skips.
@@ -1470,7 +1493,7 @@ passes, this store is used on **scratch homes only**.
   ```
 - **Scenario:** DH-S-7 scenarios are authored and indexed, not executed
   ```gherkin
-  @TC-01b @proof:service:go-toolchain @authored-only
+  @TC-01b @proof:service:go-toolchain
   Given the scenario files for DH-E-STORE-1, DH-E-STORE-2, DH-E-STORE-6 and DH-E-STORE-5
   When the index check and the scenario-tag vet run
   Then the first three sit under guarded step 16.8 and DH-E-STORE-5 under step 35.7
@@ -1485,17 +1508,24 @@ Stage DH-S-8: C22 `internal/storage` (DH-D-STORAGE-1,3,5,7) and C11 views
 (DH-D-VIEW-2,3,5), in the same `dsh.db` and the home's `spill/` and `blobs/`.
 
 ### Setup
-- **Type**: inline
+- **Type**: compose
+- **Compose file**: `tests/e2e/machine-state-views-and-spill/docker-compose.yml`, starting
+  `dsh-home-init` (one-shot container that creates and owns the `dsh-home` named
+  volume) and `harness-store-tests` (the pinned Go toolchain image from
+  `src/harness/go.mod` running `go -C src/harness test -race ./internal/storage/... ./internal/session/views/...` with
+  `DSH_E2E_STORE_HOME` set to the mounted volume). Run with
+  `docker compose -f tests/e2e/machine-state-views-and-spill/docker-compose.yml up --abort-on-container-exit --exit-code-from harness-store-tests`.
 - **Local**: `go -C src/harness test -race -shuffle=on ./internal/storage/... ./internal/session/views/...`.
   Manual checks of impl.md DH-S-8 (fold version change, the 5 MB result) run from a Go
   test on a `t.TempDir()` scratch home.
-- **CI runner**: GitHub-hosted `ubuntu-latest`, `macos-latest`, `windows-latest`
-  (`harness` job).
+- **CI runner**: gate path on GitHub-hosted `ubuntu-latest`, `macos-latest`,
+  `windows-latest` (`harness` job, required); compose path on GitHub-hosted
+  `ubuntu-latest` (`harness-compose` job, non-gating, docker preinstalled on the image).
 - **Secrets**: none.
 - **Pre-test bootstrap**: none.
 - **Gate provisioning**: same embedded provision as Phase 7 -- `modernc.org/sqlite`
   in the test binary, `dsh.db`, `spill/` and `blobs/` under a test-kit temp home
-  (`service:sqlite` + `service:filesystem`). No DSN, no connection env-var;
+  (`service:sqlite` + `service:filesystem`) whenever `DSH_E2E_STORE_HOME` is unset. No DSN;
   `DSH_HOME` cleared. The hidden-session scenario is zero-I/O on `memstore` with a fake
   agent. Nothing skips.
 
@@ -1588,7 +1618,7 @@ Stage DH-S-8: C22 `internal/storage` (DH-D-STORAGE-1,3,5,7) and C11 views
   ```
 - **Scenario:** DH-S-8 scenarios are authored and indexed, not executed
   ```gherkin
-  @TC-01b @proof:service:go-toolchain @authored-only
+  @TC-01b @proof:service:go-toolchain
   Given the scenario files for DH-E-STORAGE-1, DH-E-STORAGE-2 and DH-E-STORAGE-3
   When the index check and the scenario-tag vet run
   Then they sit under DH-S-19 (19.7), DH-S-23 (23.14) and DH-S-39 (39.8) respectively
@@ -1755,7 +1785,7 @@ format; the key reaches it only through C18 (secret store) and C19 (egress).
   ```
 - **Scenario:** DH-S-9 scenarios are authored before DH-S-9 closes
   ```gherkin
-  @TC-01b @proof:service:go-toolchain @authored-only
+  @TC-01b @proof:service:go-toolchain
   Given the files for DH-E-LLM-1, DH-E-LLM-3 and DH-E-VIEW-1 at the DH-S-9 closing commit
   When the index check and "go -C src/harness vet -tags scenario ./..." run
   Then each has one file and one DH-S-17 entry with authoring stage DH-S-9 and requires [DH-S-11, DH-S-16]
@@ -1771,17 +1801,25 @@ Stage DH-S-10: C25 tools, C26 approvals and grants, C28 inbox (DH-D-TOOLS-1,2,3,
 DH-D-STORAGE-6; DH-D-AGENT-2; DH-D-HUMAN-2,3,5,6).
 
 ### Setup
-- **Type**: inline
+- **Type**: compose
+- **Compose file**: `tests/e2e/tool-pipeline-approvals-and-human-commands/docker-compose.yml`, starting
+  `dsh-home-init` (one-shot container that creates and owns the `dsh-home` named
+  volume) and `harness-store-tests` (the pinned Go toolchain image from
+  `src/harness/go.mod` running `go -C src/harness test -race ./internal/tools/... ./internal/human/... ./internal/agent/...` with
+  `DSH_E2E_STORE_HOME` set to the mounted volume). Run with
+  `docker compose -f tests/e2e/tool-pipeline-approvals-and-human-commands/docker-compose.yml up --abort-on-container-exit --exit-code-from harness-store-tests`.
 - **Local**: `go -C src/harness test -race -shuffle=on ./internal/tools/... ./internal/human/... ./internal/agent/...`.
-- **CI runner**: GitHub-hosted `ubuntu-latest`, `macos-latest`, `windows-latest`
-  (`harness` job).
+- **CI runner**: gate path on GitHub-hosted `ubuntu-latest`, `macos-latest`,
+  `windows-latest` (`harness` job, required); compose path on GitHub-hosted
+  `ubuntu-latest` (`harness-compose` job, non-gating, docker preinstalled on the image).
 - **Secrets**: none.
 - **Pre-test bootstrap**: none.
 - **Gate provisioning**: TC-10a runs on the test kit with `memstore`, the virtual
   clock and a fake answerer (zero I/O). TC-10b is **unconditional**: the embedded
   SQLite store is always composed in a test-kit temp home, results over
   `maxResultBytes` spill into that home, and durability is checked from a second
-  connection. No connection env-var; `DSH_HOME` cleared; nothing skips.
+  connection. `DSH_E2E_STORE_HOME` unset in the gate selects this embedded path;
+  `DSH_HOME` cleared; nothing skips.
 
 ### Scenarios
 
@@ -1959,7 +1997,7 @@ DH-D-STORAGE-6; DH-D-AGENT-2; DH-D-HUMAN-2,3,5,6).
   ```
 - **Scenario:** DH-S-10 scenarios are authored and indexed, not executed
   ```gherkin
-  @TC-01b @proof:service:go-toolchain @authored-only
+  @TC-01b @proof:service:go-toolchain
   Given the files for DH-E-TOOLS-1, DH-E-TOOLS-3 and DH-E-HUMAN-6
   When the index check and the scenario-tag vet run
   Then they sit under DH-S-17 (17.5), DH-S-39 (39.7) and DH-S-22 (22.10) respectively
@@ -1975,12 +2013,19 @@ Stage DH-S-11: C27 driver, C29 delegation seam, C30 context pipeline
 runs turns against a real model with one tool, every step logged".
 
 ### Setup
-- **Type**: inline
+- **Type**: compose
+- **Compose file**: `tests/e2e/agent-loop-milestone-m1/docker-compose.yml`, starting
+  `dsh-home-init` (one-shot container that creates and owns the `dsh-home` named
+  volume) and `harness-store-tests` (the pinned Go toolchain image from
+  `src/harness/go.mod` running `go -C src/harness test -race ./internal/agent/... ./internal/delegate/... ./internal/context/...` with
+  `DSH_E2E_STORE_HOME` set to the mounted volume). Run with
+  `docker compose -f tests/e2e/agent-loop-milestone-m1/docker-compose.yml up --abort-on-container-exit --exit-code-from harness-store-tests`.
 - **Local**: `go -C src/harness test -race -shuffle=on ./internal/agent/... ./internal/delegate/... ./internal/context/...`;
   the full gate from Phase 1 for story closure. M1 manual check (`@manual`): run the
   documented Go test with `DSH_DEEPSEEK_API_KEY` exported in the developer's shell.
-- **CI runner**: GitHub-hosted `ubuntu-latest`, `macos-latest`, `windows-latest`
-  (`harness` job). The M1 manual check never runs in CI.
+- **CI runner**: gate path on GitHub-hosted `ubuntu-latest`, `macos-latest`,
+  `windows-latest` (`harness` job, required); compose path on GitHub-hosted
+  `ubuntu-latest` (`harness-compose` job, non-gating, docker preinstalled on the image). The M1 manual check never runs in CI.
 - **Secrets**: none for the gate; the manual check reads `DSH_DEEPSEEK_API_KEY` from
   the developer's environment only.
 - **Pre-test bootstrap**: none.
@@ -1988,7 +2033,8 @@ runs turns against a real model with one tool, every step logged".
   and the virtual clock (zero I/O). TC-11b composes the embedded SQLite store in a
   temp home and reads checkpoint order from database rows. With
   `DSH_DEEPSEEK_API_KEY` unset (always, in the gate) the model is scripted; the real
-  model is a manual check only. No connection env-var; nothing skips.
+  model is a manual check only. `DSH_E2E_STORE_HOME` unset in the gate selects the
+  embedded store; nothing skips.
 
 ### Scenarios
 
@@ -2119,6 +2165,14 @@ runs turns against a real model with one tool, every step logged".
   Given flow F2 against the SQLite store in a temp home
   When the turn completes
   Then the database rows show a durable flush before the provider attempt, before the tool body and at step end
+  And after the store is closed and reopened, the serialized log read back equals internal/agent/testdata/f2_log.golden byte for byte
+  ```
+- **Scenario:** A persisted log that differs from the golden fails the reopen check
+  ```gherkin
+  @TC-11b @proof:service:sqlite @edge
+  Given flow F2 persisted to the SQLite store in a temp home and the store closed
+  When one event row is deleted, one is duplicated, or one payload byte is altered before reopening
+  Then the reopen comparison against internal/agent/testdata/f2_log.golden fails and names the first differing sequence number
   ```
 - **Scenario:** M1 against the real DeepSeek API
   ```gherkin
@@ -2131,7 +2185,7 @@ runs turns against a real model with one tool, every step logged".
   ```
 - **Scenario:** Every DH-E scenario of DH-S-1..11 has a file and an index entry
   ```gherkin
-  @TC-01b @proof:service:go-toolchain @authored-only
+  @TC-01b @proof:service:go-toolchain
   Given DH-E-SESSION-1, DH-E-SESSION-2, DH-E-AGENT-1..4 and DH-E-TOOLCHAIN-1 authored in this phase
   When the index check and "go -C src/harness vet -tags scenario ./..." run
   Then each sits under DH-S-17 with exactly one file
