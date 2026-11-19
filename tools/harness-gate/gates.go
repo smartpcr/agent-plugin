@@ -22,9 +22,10 @@ import (
 // act as the vet tool that runs the project's own analyzers.
 const vetToolEnv = "HARNESS_GATE_VETTOOL"
 
-// budgetPattern selects the performance-budget tests (QG-7). The test and coverage
-// gates leave them to the budget gate, which runs them without race or coverage
-// instrumentation so a compiled-in budget measures the real code.
+// budgetPattern selects the performance-budget tests (QG-7). The test gate runs
+// them with every other test under -race, so a race in a budget test is caught; the
+// coverage gate leaves them out, and the budget gate runs them alone without race
+// or coverage instrumentation so a compiled-in budget measures the real code.
 const budgetPattern = "^TestBudget"
 
 // Targets are the GOOS/GOARCH pairs cmd/dsh must build for with CGO_ENABLED=0 (QG-8).
@@ -198,7 +199,7 @@ func (c *Config) testGate(ctx context.Context, w io.Writer) error {
 	}
 	var errs []error
 	for _, mod := range c.Modules {
-		err := c.goStep(ctx, w, mod, c.env("CGO_ENABLED=1"), "test", "-race", "-shuffle=on", "-count=1", "-skip", budgetPattern, "./...")
+		err := c.goStep(ctx, w, mod, c.env("CGO_ENABLED=1"), "test", "-race", "-shuffle=on", "-count=1", "./...")
 		if err != nil {
 			errs = append(errs, err)
 		}
@@ -246,33 +247,113 @@ func (c *Config) coverageGate(ctx context.Context, w io.Writer) error {
 
 // moduleCoverage returns the merged statement coverage of every package of mod.
 //
-// "go test -cover" gives every test process a GOCOVERDIR, which every child it
-// starts inherits: a binary built with -cover writes its counters there on exit,
-// and a re-executed test binary writes there when started with
-// -test.gocoverdir=$GOCOVERDIR (README.md). The go command merges each directory
-// (covdata format) into the -coverprofile, which with -coverpkg=./... also lists
-// every package without test files at 0%, so no package escapes the floor. The
-// per-package profiles are then merged block by block (Merge) before the floor is
-// applied.
+// Every package with tests is compiled once with "go test -c -cover
+// -covermode=set -coverpkg=./..." and its test binary is run in the package
+// directory with GOCOVERDIR and -test.gocoverdir both set to one directory the gate
+// owns. Every child the tests start inherits that GOCOVERDIR: a binary built with
+// -cover writes its counters there on exit, and a re-executed test binary writes
+// there when started with -test.gocoverdir=$GOCOVERDIR (README.md). The directory
+// is then merged with "go tool covdata textfmt", which joins the profiles of
+// different binaries package by package (go test's own report keeps only the
+// profiles of the test binary itself). A package without test files gets its 0%
+// entries from "go test -cover -coverprofile", so no package escapes the floor.
 func (c *Config) moduleCoverage(ctx context.Context, w io.Writer, mod string) ([]PackageCoverage, error) {
 	tmp, err := os.MkdirTemp("", "harness-gate-cover-")
 	if err != nil {
 		return nil, err
 	}
 	defer os.RemoveAll(tmp)
-	profile := filepath.Join(tmp, "cover.out")
-	if err := c.goStep(ctx, w, mod, c.env(), "test", "-cover", "-covermode=set", "-coverpkg=./...", "-count=1", "-skip", budgetPattern, "-coverprofile="+profile, "./..."); err != nil {
-		return nil, err
+	covdir, bindir := filepath.Join(tmp, "covdata"), filepath.Join(tmp, "bin")
+	for _, d := range []string{covdir, bindir} {
+		if err := os.Mkdir(d, 0o755); err != nil {
+			return nil, err
+		}
 	}
-	data, err := os.ReadFile(profile)
+	pkgs, err := c.listPackages(ctx, mod)
 	if err != nil {
 		return nil, err
 	}
-	p, err := ParseProfile(bytes.NewReader(data))
+	var untested []string
+	var errs []error
+	for i, pkg := range pkgs {
+		if !pkg.HasTests {
+			untested = append(untested, pkg.ImportPath)
+			continue
+		}
+		bin := filepath.Join(bindir, fmt.Sprintf("pkg%d.test", i))
+		if runtime.GOOS == "windows" {
+			bin += ".exe"
+		}
+		if err := c.goStep(ctx, w, mod, c.env(), "test", "-c", "-cover", "-covermode=set", "-coverpkg=./...", "-o", bin, pkg.ImportPath); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		env := c.env("GOCOVERDIR=" + covdir)
+		label := pkg.ImportPath + ".test"
+		if err := c.step(ctx, w, pkg.Dir, env, label, bin, "-test.count=1", "-test.skip="+budgetPattern, "-test.gocoverdir="+covdir); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return nil, err
+	}
+
+	var profiles []*Profile
+	merged := filepath.Join(tmp, "covdata.out")
+	if err := c.goStep(ctx, w, mod, c.env(), "tool", "covdata", "textfmt", "-i="+covdir, "-o="+merged); err != nil {
+		return nil, err
+	}
+	if p, err := readProfile(merged); err != nil {
+		return nil, err
+	} else {
+		profiles = append(profiles, p)
+	}
+	if len(untested) > 0 {
+		zero := filepath.Join(tmp, "untested.out")
+		args := append([]string{"test", "-cover", "-covermode=set", "-coverprofile=" + zero}, untested...)
+		if err := c.goStep(ctx, w, mod, c.env(), args...); err != nil {
+			return nil, err
+		}
+		p, err := readProfile(zero)
+		if err != nil {
+			return nil, err
+		}
+		profiles = append(profiles, p)
+	}
+	return Coverage(profiles...), nil
+}
+
+// goPackage is one package of a module as "go list" reports it.
+type goPackage struct {
+	ImportPath, Dir string
+	HasTests        bool
+}
+
+// listPackages lists the packages of mod.
+func (c *Config) listPackages(ctx context.Context, mod string) ([]goPackage, error) {
+	const format = `{{.ImportPath}}{{"\t"}}{{.Dir}}{{"\t"}}{{len .TestGoFiles}}{{"\t"}}{{len .XTestGoFiles}}`
+	out, err := c.command(ctx, mod, c.env(), c.Go, "list", "-f", format, "./...")
+	if err != nil {
+		return nil, fmt.Errorf("%s: go list: %w\n%s", c.rel(mod), err, out)
+	}
+	var pkgs []goPackage
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		f := strings.Split(strings.TrimSpace(line), "\t")
+		if len(f) != 4 {
+			return nil, fmt.Errorf("%s: go list: unexpected line %q", c.rel(mod), line)
+		}
+		pkgs = append(pkgs, goPackage{ImportPath: f[0], Dir: f[1], HasTests: f[2] != "0" || f[3] != "0"})
+	}
+	return pkgs, nil
+}
+
+// readProfile parses the text coverage profile at path.
+func readProfile(path string) (*Profile, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	return Coverage(p), nil
+	return ParseProfile(bytes.NewReader(data))
 }
 
 // traceGate runs the traceability check (QG-9). A root without the tool fails: the
@@ -368,8 +449,14 @@ func (c *Config) env(kv ...string) []string {
 // output when it fails; the error names the module, the command and any failing
 // test.
 func (c *Config) goStep(ctx context.Context, w io.Writer, dir string, env []string, args ...string) error {
-	out, err := c.command(ctx, dir, env, c.Go, args...)
-	step := "go " + strings.Join(args, " ")
+	return c.step(ctx, w, dir, env, "go "+strings.Join(args, " "), c.Go, args...)
+}
+
+// step runs name with args in dir and env as one logged step called label; see
+// goStep.
+func (c *Config) step(ctx context.Context, w io.Writer, dir string, env []string, label, name string, args ...string) error {
+	out, err := c.command(ctx, dir, env, name, args...)
+	step := label
 	if err == nil {
 		fmt.Fprintf(w, "ok   %s: %s\n", c.rel(dir), step)
 		return nil

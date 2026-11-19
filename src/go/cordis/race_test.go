@@ -17,6 +17,7 @@ func TestADependentCreatedWhileItsProviderActivatesStillLoads(t *testing.T) {
 		var provider, consumer *cordis.Fiber
 		var wg sync.WaitGroup
 		wg.Add(2)
+		t.Cleanup(func() { Within(t, "use goroutines", wg.Wait) })
 		go func() { defer wg.Done(); provider = Must(root.Use(Counter, nil)) }()
 		go func() { defer wg.Done(); consumer = Must(root.Use(NeedsCounter, nil)) }()
 		Within(t, "use", wg.Wait)

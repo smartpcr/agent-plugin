@@ -3,7 +3,7 @@ package analyzers
 import (
 	"go/ast"
 	"go/types"
-	"path/filepath"
+	"path"
 	"strings"
 )
 
@@ -22,7 +22,9 @@ func OneSpawnFindings(filename string, file *ast.File, _ *types.Info) []Finding 
 	if isTestFile(filename) {
 		return nil
 	}
-	dir := "/" + strings.Trim(filepath.ToSlash(filepath.Dir(filename)), "/") + "/"
+	// Both separators are accepted on every host, so the verdict for a path does
+	// not depend on the platform the analyzer runs on.
+	dir := "/" + strings.Trim(path.Dir(strings.ReplaceAll(filename, `\`, "/")), "/") + "/"
 	if strings.HasSuffix(dir, "/"+SpawnPackage+"/") {
 		return nil
 	}

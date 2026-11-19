@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
@@ -67,6 +68,14 @@ func Eventually(t testing.TB, condition func() bool, message string) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
+}
+
+// Advance moves the virtual clock of the calling testing/synctest bubble forward by
+// d, then returns once every goroutine of the bubble is durably blocked again. It
+// panics outside a bubble, so a test cannot use it to wait on the wall clock.
+func Advance(d time.Duration) {
+	<-time.After(d)
+	synctest.Wait()
 }
 
 // Equal fails the test when got differs from want.

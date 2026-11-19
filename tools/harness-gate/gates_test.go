@@ -128,6 +128,7 @@ func TestSeededViolationFailsNamedGate(t *testing.T) {
 		module, gate, detail string
 	}{
 		{"race-seeded", "test", "data race detected"},
+		{"budget-race", "test", "failing tests: TestBudgetRacy; data race detected"},
 		{"unformatted-file", "gofmt", "add.go"},
 		{"coverage-40pct", "coverage", "example.com/cov40/p: 40% < 85%"},
 	}
@@ -137,6 +138,42 @@ func TestSeededViolationFailsNamedGate(t *testing.T) {
 			assertStoppedAt(t, out, code, tt.gate)
 			if !strings.Contains(out, tt.detail) {
 				t.Errorf("output lacks %q:\n%s", tt.detail, out)
+			}
+		})
+	}
+}
+
+// TestCoverageMergesChildProcesses runs the coverage gate on a package whose
+// statements are split between the test process, a re-executed test binary and a
+// separately built -cover helper binary. Only with both children's GOCOVERDIR
+// profiles merged by go tool covdata does p reach the floor; dropping either child
+// leaves p at 70%.
+func TestCoverageMergesChildProcesses(t *testing.T) {
+	tests := []struct {
+		name, env, fail string
+	}{
+		{"both children", "", ""},
+		{"no re-executed child", "COVCHILD_NO_REEXEC=1", "example.com/covchild/p: 70% < 85%"},
+		{"no helper binary", "COVCHILD_NO_HELPER=1", "example.com/covchild/p: 70% < 85%"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := newTestConfig(t, scratch(t, "coverage-child"))
+			if tt.env != "" {
+				cfg.Environ = setEnv(cfg.Environ, tt.env)
+			}
+			var out bytes.Buffer
+			err := cfg.coverageGate(context.Background(), &out)
+			switch {
+			case tt.fail == "" && err != nil:
+				t.Fatalf("coverage gate: %v\n%s", err, out.String())
+			case tt.fail == "" && !strings.Contains(out.String(), "coverage: example.com/covchild/p 100%"):
+				t.Errorf("p is not at 100%%:\n%s", out.String())
+			case tt.fail != "" && (err == nil || !strings.Contains(err.Error(), tt.fail)):
+				t.Errorf("coverage gate = %v, want %q\n%s", err, tt.fail, out.String())
+			}
+			if !strings.Contains(out.String(), "go tool covdata textfmt") {
+				t.Errorf("profiles were not merged with go tool covdata:\n%s", out.String())
 			}
 		})
 	}
@@ -242,6 +279,19 @@ func TestCCompilerPreflightNamesMissingCompiler(t *testing.T) {
 	err := cCompilerPreflight(context.Background(), cfg)
 	if err == nil || !strings.Contains(err.Error(), "race: no C compiler") {
 		t.Errorf("preflight = %v, want race: no C compiler", err)
+	}
+}
+
+// TestRepositoryIsCleanUnderGofmtAndOwnAnalyzers runs the gofmt and vet gates, with
+// the built binary as the vet tool, on the repository's product modules: an
+// analyzer joins the required set only while the tree is clean under it.
+func TestRepositoryIsCleanUnderGofmtAndOwnAnalyzers(t *testing.T) {
+	cfg := newTestConfig(t, filepath.Join("..", ".."))
+	cfg.VetTool = buildGate(t)
+	var out bytes.Buffer
+	results := Run(context.Background(), &out, Gates(cfg)[:2])
+	if ExitCode(results) != 0 {
+		t.Fatalf("repository fails gofmt/vet:\n%s", out.String())
 	}
 }
 

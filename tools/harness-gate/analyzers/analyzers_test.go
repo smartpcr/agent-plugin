@@ -66,6 +66,7 @@ func TestPredicatesOnInMemorySource(t *testing.T) {
 		{"onespawn outside", OneSpawnFindings, "internal/tools/a.go", "package tools\nimport \"os/exec\"", 1},
 		{"onespawn inside", OneSpawnFindings, "internal/world/subprocess/a.go", "package subprocess\nimport \"os/exec\"", 0},
 		{"onespawn windows path", OneSpawnFindings, `C:\repo\src\harness\internal\world\subprocess\a.go`, "package subprocess\nimport \"os/exec\"", 0},
+		{"onespawn windows path outside", OneSpawnFindings, `C:\repo\src\harness\internal\tools\a.go`, "package tools\nimport \"os/exec\"", 1},
 		{"onespawn lookalike", OneSpawnFindings, "internal/world/subprocessx/a.go", "package subprocessx\nimport \"os/exec\"", 1},
 		{"cleanup missing", CleanupFindings, "y_test.go", "package y\nimport \"testing\"\nfunc TestY(t *testing.T){ go func(){}() }", 1},
 		{"cleanup registered", CleanupFindings, "y_test.go", "package y\nimport \"testing\"\nfunc TestY(t *testing.T){ t.Cleanup(func(){}); go func(){}() }", 0},

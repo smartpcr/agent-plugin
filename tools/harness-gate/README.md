@@ -86,38 +86,60 @@ The convention:
 
 ## Coverage across processes (QG-3)
 
-The coverage gate runs, per module,
+The coverage gate owns one `GOCOVERDIR` per module and, for every package with
+tests, runs
 
 ```sh
-go test -cover -covermode=set -coverpkg=./... -count=1 -skip '^TestBudget' -coverprofile=<tmp> ./...
+go test -c -cover -covermode=set -coverpkg=./... -o <tmp>/bin/pkgN.test <pkg>
+GOCOVERDIR=<tmp>/covdata <tmp>/bin/pkgN.test -test.count=1 -test.skip='^TestBudget' -test.gocoverdir=<tmp>/covdata   # in the package directory
 ```
 
-`go test -cover` gives every test process a `GOCOVERDIR`, inherited by every child
-the test starts. The go command merges each such directory (the `go tool covdata`
-format) into the `-coverprofile`; `harness-gate` then merges the per-package
-sections block by block and applies the 85% floor to every package. With
-`-coverpkg=./...` a package without tests appears at 0%, so none escapes the floor.
+then merges everything in that directory with
 
-A test that re-executes its own binary as a child must run the child through
-`m.Run` and pass `-test.gocoverdir=` + `os.Getenv("GOCOVERDIR")`, so the child's
-counters land in the same directory; a separately built helper binary must be
-built with `-cover`. Without that the child's statements count as uncovered.
+```sh
+go tool covdata textfmt -i=<tmp>/covdata -o=<tmp>/covdata.out
+```
+
+`covdata` joins the profiles of *different* binaries package by package — the test
+binary, every re-executed copy of it and every separately built `-cover` helper.
+(`go test -cover`'s own report keeps only the test binary's profiles, so a helper
+binary's statements would be lost.) A package without test files gets its 0%
+entries from `go test -cover -coverprofile`, so none escapes the floor. Every
+package under 85% of statements fails the gate; there is no exemption list.
+
+Children every test process starts inherit `GOCOVERDIR`. For their counters to be
+collected:
+
+- a test that re-executes its own binary runs the child through `m.Run` and passes
+  `-test.gocoverdir=` + `os.Getenv("GOCOVERDIR")` (a test binary writes no counters
+  on a bare `os.Exit`);
+- a separately built helper binary is built with `go build -cover -covermode=set`
+  (the mode must match for `covdata` to merge) and writes its counters on exit.
+
+`testdata/coverage-child` exercises both: its package reaches 100% only with both
+children merged, and 70% without either (`TestCoverageMergesChildProcesses`).
 
 ## Performance budgets (QG-7)
 
 Budget tests are named `TestBudget*` and their budgets are constants compiled into
-the test. The test and coverage gates skip them; the `budget` gate runs them alone
-with every `DSH_*` and `GO*` variable removed from the child environment (only the
-locations `GOROOT`, `GOPATH`, `GOMODCACHE`, `GOCACHE`, `GOTMPDIR` are kept, and
-`GOWORK=off`, `GOTOOLCHAIN=local` are set), so no override can relax a budget.
-
+the test. The `test` gate runs them under `-race` with every other test, so a race
+in a budget test fails there (`testdata/budget-race`); a budget test must therefore
+also pass under the race detector (skip only the *measurement* assertion when
+built with `-race`, e.g. through a `//go:build race` constant, never the code
+path). The `coverage` gate leaves them out. The `budget` gate runs them alone,
+uninstrumented, with every `DSH_*` and `GO*` variable removed from the child
+environment (only the locations `GOROOT`, `GOPATH`, `GOMODCACHE`, `GOCACHE`,
+`GOTMPDIR` are kept, and `GOWORK=off`, `GOTOOLCHAIN=local` are set), so no
+override can relax a budget.
 ## Seeded-violation modules (`testdata/`)
 
 | module | fails at |
 |--------|----------|
 | `race-seeded` | `test` (a data race) |
+| `budget-race` | `test` (a data race inside `TestBudgetRacy`) |
 | `unformatted-file` | `gofmt` (`add.go` is deliberately unformatted) |
 | `coverage-40pct` | `coverage` (`example.com/cov40/p` at 40%) |
+| `coverage-child` | passes `coverage` only with both child processes' profiles merged |
 | `budget-exceeded` | `budget` (`TestBudgetX` honours `DSH_BUDGET_RELAX` unless cleared) |
 | `cross-broken` | `cross-compile` (`windows/arm64` only) |
 
