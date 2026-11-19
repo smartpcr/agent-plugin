@@ -11,6 +11,8 @@
 //	go -C tools/harness-trace run . verify      check coverage and links (exit 1 on failure)
 //	go -C tools/harness-trace run . render      write traceability.md and the matrices
 //
+// The module is not part of the root go.work, so run it with GOWORK=off.
+//
 // The tool only reads the upstream checkout. It uses the standard library only.
 package main
 

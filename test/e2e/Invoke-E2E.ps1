@@ -63,11 +63,15 @@ if ($Binding -in 'go', 'all') {
     $go = Join-Path $root 'test/e2e/bindings/go'
     $suiterun = Join-Path $results "go/suiterun$exe"
     Push-Location $go
+    $gowork = $env:GOWORK
     try {
+        # the binding is its own module, outside the root go.work
+        $env:GOWORK = 'off'
         go build -o $suiterun ./cmd/suiterun
         if ($LASTEXITCODE -ne 0) { throw 'the Go binding did not build' }
     }
     finally {
+        $env:GOWORK = $gowork
         Pop-Location
     }
     if ((Invoke-Binding 'go' $suiterun) -ne 0) { $failed += 'go' }

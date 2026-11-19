@@ -1,0 +1,31 @@
+heartbeat before database:   Pending
+[Info] DatabaseService connected
+[Info] HeartbeatPlugin heartbeat every 200ms
+heartbeat after database:    Active
+[Info] HeartbeatPlugin beat: hello from the database
+[Info] HeartbeatPlugin beat: hello from the database
+[Info] HeartbeatPlugin heartbeat stopped
+[Info] HeartbeatPlugin heartbeat every 100ms
+[Info] HeartbeatPlugin beat: hello from the database
+[Info] HeartbeatPlugin beat: hello from the database
+[Info] HeartbeatPlugin heartbeat stopped
+[Info] DatabaseService disconnected
+heartbeat without database:  Pending
+[Info] DatabaseService connected
+[Info] HeartbeatPlugin heartbeat every 100ms
+heartbeat restored:          Active
+[Info] HeartbeatPlugin beat: hello from the database
+[Info] HeartbeatPlugin beat: hello from the database
+[Info] HeartbeatPlugin heartbeat every 150ms
+loaded from <TMP>/cordis-sample.json - edit it and watch it reload
+[Info] HeartbeatPlugin beat: hello from the database
+[Info] HeartbeatPlugin beat: hello from the database
+[Info] HeartbeatPlugin beat: hello from the database
+[Info] HeartbeatPlugin beat: hello from the database
+[Info] HeartbeatPlugin beat: hello from the database
+[Info] HeartbeatPlugin beat: hello from the database
+[Info] HeartbeatPlugin beat: hello from the database
+[Info] HeartbeatPlugin beat: hello from the database
+[Info] HeartbeatPlugin heartbeat stopped
+[Info] HeartbeatPlugin heartbeat stopped
+[Info] DatabaseService disconnected

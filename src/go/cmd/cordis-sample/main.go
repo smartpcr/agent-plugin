@@ -6,6 +6,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -108,22 +109,42 @@ func init() {
 	loader.Register("HeartbeatPlugin", Heartbeat)
 }
 
+// sampleEnv is everything run takes from its surroundings, so a test can run the
+// walkthrough on a virtual clock with deterministic output.
+type sampleEnv struct {
+	Out      io.Writer           // where the walkthrough prints
+	TempDir  string              // where the loader's JSON file is written
+	Exporter cordis.Exporter     // replaces the root's log exporters
+	Pause    func(time.Duration) // waits between the walkthrough's windows
+	Settle   func()              // called after each lifecycle call and before each print
+}
+
 func main() {
-	if err := run(); err != nil {
+	env := sampleEnv{
+		Out:      os.Stdout,
+		TempDir:  os.TempDir(),
+		Exporter: cordis.NewConsoleExporter(os.Stdout, os.Stderr),
+		Pause:    time.Sleep,
+		Settle:   func() {},
+	}
+	if err := run(env); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
+func run(env sampleEnv) error {
 	root := cordis.New()
 	root.Loggers().SetLevel(cordis.LevelDebug)
+	root.Loggers().ClearExporters()
+	root.Loggers().AddExporter(env.Exporter)
 
 	// 1. imperative composition
-	if err := use(root, timer.Component, nil); err != nil {
+	if err := use(env, root, timer.Component, nil); err != nil {
 		return err
 	}
 	database, err := root.Use(DatabaseComponent, nil)
+	env.Settle()
 	if err != nil {
 		return err
 	}
@@ -131,62 +152,81 @@ func run() error {
 	// The heartbeat is created before the database is ready; it stays Pending and
 	// starts by itself once the database finishes Init.
 	heartbeat, err := root.Use(Heartbeat, HeartbeatOptions{IntervalMs: 200})
+	env.Settle()
 	if err != nil {
 		return err
 	}
-	fmt.Println("heartbeat before database:  ", heartbeat.State())
-	if err := database.Wait(); err != nil {
+	env.Settle()
+	fmt.Fprintln(env.Out, "heartbeat before database:  ", heartbeat.State())
+	err = database.Wait()
+	env.Settle()
+	if err != nil {
 		return err
 	}
-	if err := heartbeat.Wait(); err != nil {
+	err = heartbeat.Wait()
+	env.Settle()
+	if err != nil {
 		return err
 	}
-	fmt.Println("heartbeat after database:   ", heartbeat.State())
-	time.Sleep(500 * time.Millisecond)
+	env.Settle()
+	fmt.Fprintln(env.Out, "heartbeat after database:   ", heartbeat.State())
+	env.Pause(500 * time.Millisecond)
 
 	// 2. live reconfiguration: the component unloads and reloads with the new config
-	if err := heartbeat.Update(HeartbeatOptions{IntervalMs: 100}, false); err != nil {
+	err = heartbeat.Update(HeartbeatOptions{IntervalMs: 100}, false)
+	env.Settle()
+	if err != nil {
 		return err
 	}
-	time.Sleep(300 * time.Millisecond)
+	env.Pause(300 * time.Millisecond)
 
 	// 3. pull the dependency: every dependent unloads first, then comes back
 	database.Dispose()
-	fmt.Println("heartbeat without database: ", heartbeat.State())
-	if err := use(root, DatabaseComponent, nil); err != nil {
+	env.Settle()
+	env.Settle()
+	fmt.Fprintln(env.Out, "heartbeat without database: ", heartbeat.State())
+	if err := use(env, root, DatabaseComponent, nil); err != nil {
 		return err
 	}
-	if err := heartbeat.Wait(); err != nil {
+	err = heartbeat.Wait()
+	env.Settle()
+	if err != nil {
 		return err
 	}
-	fmt.Println("heartbeat restored:         ", heartbeat.State())
-	time.Sleep(300 * time.Millisecond)
+	env.Settle()
+	fmt.Fprintln(env.Out, "heartbeat restored:         ", heartbeat.State())
+	env.Pause(300 * time.Millisecond)
 
 	// 4. declarative composition through the loader
-	path := filepath.Join(os.TempDir(), "cordis-sample.json")
+	path := filepath.Join(env.TempDir, "cordis-sample.json")
 	config, _ := json.Marshal(HeartbeatOptions{IntervalMs: 150})
 	entries, _ := json.MarshalIndent([]loader.EntryOptions{{ID: "beat2", Name: "HeartbeatPlugin", Config: config}}, "", "  ")
 	if err := os.WriteFile(path, entries, 0o644); err != nil {
 		return err
 	}
 	defer os.Remove(path)
-	if err := use(root, loader.Component, nil); err != nil {
+	if err := use(env, root, loader.Component, nil); err != nil {
 		return err
 	}
-	if err := use(root, loader.ConfigFileComponent, loader.ConfigFileOptions{Path: path, Watch: true}); err != nil {
+	if err := use(env, root, loader.ConfigFileComponent, loader.ConfigFileOptions{Path: path, Watch: true}); err != nil {
 		return err
 	}
-	fmt.Println("loaded from", path, "- edit it and watch it reload")
-	time.Sleep(500 * time.Millisecond)
+	env.Settle()
+	fmt.Fprintln(env.Out, "loaded from", path, "- edit it and watch it reload")
+	env.Pause(500 * time.Millisecond)
 
 	root.Dispose()
+	env.Settle()
 	return nil
 }
 
-func use(ctx *cordis.Context, component *cordis.Component, config any) error {
+func use(env sampleEnv, ctx *cordis.Context, component *cordis.Component, config any) error {
 	fiber, err := ctx.Use(component, config)
+	env.Settle()
 	if err != nil {
 		return err
 	}
-	return fiber.Wait()
+	err = fiber.Wait()
+	env.Settle()
+	return err
 }
