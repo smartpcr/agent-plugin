@@ -405,6 +405,30 @@ func (w *threeModuleWorkspace) goldenCommittedBeforeTheFirstDHS2Edit() error {
 	if !bytes.Equal(normalize(committed), normalize(data)) {
 		return fmt.Errorf("%s differs from its committed bytes; the golden must not be re-recorded", goldenRel)
 	}
+	// The golden must have exactly one commit in its history -- the one that
+	// added it -- so any later re-recording (a modifying commit) fails here.
+	gitLog := func(extra ...string) ([]string, error) {
+		args := append([]string{"log", "--format=%H"}, extra...)
+		args = append(args, "--", goldenRel)
+		c := exec.Command(gitbin, args...)
+		c.Dir = w.root
+		out, err := c.Output()
+		if err != nil {
+			return nil, err
+		}
+		return strings.Fields(string(out)), nil
+	}
+	touching, err := gitLog()
+	if err != nil {
+		return fmt.Errorf("cannot read the history of %s: %w", goldenRel, err)
+	}
+	added, err := gitLog("--diff-filter=A")
+	if err != nil {
+		return fmt.Errorf("cannot read the history of %s: %w", goldenRel, err)
+	}
+	if len(touching) != 1 || len(added) != 1 || touching[0] != added[0] {
+		return fmt.Errorf("%s must be touched only by the commit that introduced it; history %v, introduced by %v: the golden was re-recorded", goldenRel, touching, added)
+	}
 	if bytes.Contains(data, []byte(`\`)) || !bytes.Contains(data, []byte("<TMP>/cordis-sample.json")) {
 		return fmt.Errorf("%s is not normalized (<TMP> path, / separators)", goldenRel)
 	}
