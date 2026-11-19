@@ -103,7 +103,7 @@ SQLite store built here is used on **scratch homes only**.
        |-- cmd/dsh               C16  main only
        `-- internal/
              |-- schema          C06  derive / validate / fingerprint shapes
-             |-- llm/vocab       C07  Message, Block, Request (leaf)
+             |-- llm/vocab       C07  Message, Block, tool schema, Controls (leaf; no request type)
              |-- util/...        C08  herr, ident, homedir, mediatype, watch,
              |                        fsx, search, textdiff
              |-- util/egress     C19  outbound policy + permits
@@ -165,7 +165,7 @@ drive the tree from Go through the test kit (C20) and the agent contract (C13).
 | C04 | JSON-RPC codec | `src/sdk/jsonrpc` | Bounded line framing, one `<domain>/<reason>` error table | S-4 | areas/sdk-acp-typert.md |
 | C05 | SDK protocol | `src/sdk/protocol` | Go types, method table, derived embedded schema file | S-4 | areas/sdk-acp-typert.md |
 | C06 | schema | `internal/schema` | One description of data shapes: derive JSON Schema, validate, fingerprint | S-4 | libs/zod.md |
-| C07 | model vocabulary | `internal/llm/vocab` | `Message`, `Block`, `Request`, canonical JSON for digests | S-4 | areas/llm.md (DH-D-LLM-11) |
+| C07 | model vocabulary | `internal/llm/vocab` | Leaf vocabulary only: `Message`, `Block`, sources, tool schema, `Controls`, route id, failure, canonical encoding for digests. Holds **no request type** (the one request type is C09's opaque `session.Request`) | S-4 | areas/llm.md (DH-D-LLM-11) |
 | C08 | leaf helpers | `internal/util/*`, `internal/boot/{yamlx,expr,catalog}` | errors, ids, home path, media types, file primitives, diff, search, watcher, YAML dialect, expressions, logging component, component catalog | S-4, S-6 | areas/util-test-support.md, areas/filesystem.md, areas/boot.md |
 | C09 | session core | `internal/session` | Typed versioned event registry; live session with ordered once-only delivery; brackets checked on append and closed on failure; folds for history / request header / tool history; opaque `session.Request` built by `NextRequest` (loop) and `RequestFrom(seq)` (auxiliary) | S-5 | areas/core-session.md |
 | C10 | store contract | `internal/session/store` (+ in-memory reference) | `Store` interface, conformance suite, persisted-type inventory | S-5 | areas/session-store.md |
@@ -248,7 +248,7 @@ declaration panics. `session/end-seed` and the surface flag are reserved to the 
 | `assistant/message` | surface; settlement | blocks, `requestAsOf`, `requestDigest`, `usage`, timing (start, first token, end) |
 | `assistant/attempt` | log-only; settlement of a failed attempt | failure class, `requestAsOf`, `requestDigest`, timing |
 | `request/header` | log-only | model, settings, tool schemas of a request |
-| `turn/start`, `turn/end` | log-only bracket | turn number; end reason (`completed`, `cancelled{cause}`, `interrupted`, `budget{limit,value}`, `refusal`, `blocked{by,reason}`) |
+| `turn/start`, `turn/end` | log-only bracket | turn number; end reason, one closed set (areas/agent-loop.md sec. 6.2): `completed`, `max-tokens` (sticky across later steps), `blocked{by, reason}`, `aborted{cause}` (cause: user, parent, extension, disposed, budget), `error{failure}` (incl. `extension/failed` with listener name), `refusal{failure}` (`llm/content-refused`), `budget{limit, value}`; `interrupted` is written only by the session core when it closes a turn at open/recovery |
 | `step/start`, `step/end` | log-only bracket | step number |
 | `tool/call` | log-only | call id, tool name, raw argument string as the model produced it |
 | `tool/result` | surface | call id, content blocks, error code (`tools/...`), optional spill reference |
@@ -625,13 +625,27 @@ driver -> hooks: agent.AttemptFailed(AttemptFailure{..., Attempt 1, Failure, Pol
                  AttemptsLeft}) ; llm.retry listener checks class + step cap:
         [log] llm/retry{attempt 1, delay, failure, policy} --> Retry{After 2s}
 driver: waits on the step context and the (virtual) clock; [log] llm/retry-started
-driver: back to point 7 in the SAME step (no re-assembly, no PreStep, no re-admit);
-        NextRequest at the same cut -> same digest -> Stream --> [log] assistant/message
+driver: back to point 7 in the SAME step: Prepare (bind) again, then point 8 admission
+        and the point 9 checkpoint run again. NOT repeated: prompt assembly, PreStep,
+        and admission of the user messages (first attempt only).
+        - nothing changed since the failed attempt: admission appends nothing new;
+          Flush; NextRequest at the committed cut; Stream
+        - an AttemptFailed listener appended a surface replacement (e.g. image offload,
+          compaction): admission logs a NEW request/header (new request series) and
+          any changed request/context; Flush; NextRequest at the NEW committed cut
+          (new requestAsOf, new requestDigest); Stream
+        --> [log] assistant/message{requestAsOf, requestDigest}
 auth failure: not retryable -> [log] llm/retry-abandoned{not retryable} -> GiveUp{};
         one assistant/attempt, no llm/retry; turn/end{error{failure}}.
-policy exhausted: [log] llm/retry-abandoned{exhausted} -> GiveUp{}; turn/end{error}.
-listener error or panic: turn/end{error{extension/failed}}.
+policy exhausted: [log] llm/retry-abandoned{exhausted} -> GiveUp{};
+        turn/end{error{failure}}.
+content refused: turn/end{refusal{failure llm/content-refused}} (no retry).
+listener error or panic: turn/end{error{failure extension/failed, listener}}.
 ```
+
+Each attempt's settlement records its own `requestAsOf` and `requestDigest`; the F2
+proof (digest at transport equals `surface.Rebuild` at `requestAsOf`) holds per
+attempt whether or not the cut moved between attempts.
 
 ### 6.4 F4 -- Cancellation with a cause, scope and inbox choice (DH-S-11, DH-ADR-AGENT-5)
 
@@ -735,8 +749,8 @@ it exists, an integration row (`b`) naming every external dependency.
 
 | ID | Acceptance area | Proof strategy | Dependency | How the gate provides it |
 |---|---|---|---|---|
-| TC-01a | Gate-runner logic (DH-S-1): gate ordering, first-failure reporting, coverage-floor arithmetic, analyzer rules | `in-process` | none | Table tests over in-memory gate results and `analysistest` fixtures loaded from memory |
-| TC-01b | Gate runner end to end, CI matrix, cross-compile, release rehearsal (DH-S-1) | `service:go-toolchain` + `service:filesystem` + `service:os-process` | Go toolchain; scratch modules; `go test` subprocesses | Seeded violations (a data race, an unformatted file, a package under the floor) written as modules in `t.TempDir()`; the gate launches `go vet`/`go test -race` on them as child processes; `GOOS`/`GOARCH` cross-compile of `cmd/dsh` into the temp dir |
+| TC-01a | Gate-runner logic (DH-S-1): gate ordering, first-failure reporting, coverage-floor arithmetic, coverage-profile merge, analyzer decision functions | `in-process` | none | Table tests over in-memory gate results, in-memory coverage profiles, and analyzer predicates called on ASTs parsed from in-memory source strings (`go/parser.ParseFile` with a `src` argument); no package loading, no `analysistest` |
+| TC-01b | Gate runner end to end, CI matrix, cross-compile, release rehearsal (DH-S-1) | `service:go-toolchain` + `service:filesystem` + `service:os-process` | Go toolchain; scratch modules; `go test` subprocesses | Seeded violations (a data race, an unformatted file, a package under the floor) written as modules in `t.TempDir()`; the gate launches `go vet`/`go test -race` on them as child processes; `GOOS`/`GOARCH` cross-compile of `cmd/dsh` into the temp dir; own analyzers proved with `golang.org/x/tools/go/analysis/analysistest`, which loads fixture packages from committed `testdata/` directories through the toolchain's package loader |
 | TC-02a | cordis changes (DH-S-2) | `in-process` | none | Race tests named by DH-T-CORDIS on in-memory contexts; the existing `src/go/cordis` tests keep passing |
 | TC-02b | cordis behavior preserved (DH-S-2) | `golden` | committed golden | A golden of `cmd/cordis-sample` output, committed BEFORE the first DH-S-2 edit and compared after each change (only intended diffs are re-recorded, with the one update switch) |
 | TC-03a | loader merge, ownership, diagnostics logic (DH-S-3) | `in-process` + `golden` | committed goldens | Layer documents parsed from in-memory bytes; golden diagnostics (file:line:col) |
