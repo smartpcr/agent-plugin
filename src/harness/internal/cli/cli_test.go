@@ -85,7 +85,7 @@ func TestVersion(t *testing.T) {
 
 func TestHelpIsStatus0OnStdout(t *testing.T) {
 	for _, args := range [][]string{{"--help"}, {"-h"}, {"help"}, {"help", "catalog", "commands"}, {"catalog", "commands", "-h"},
-		{"catalog"}, {"catalog", "--help"}, {"help", "web"}} {
+		{"catalog", "--help"}, {"help", "web"}} {
 		r := dispatch(t, nil, args...)
 		if r.status != 0 || !strings.HasPrefix(r.stdout, "Usage: dsh") || r.stderr != "" {
 			t.Errorf("dsh %v = %+v", args, r)
@@ -166,6 +166,19 @@ func TestJSONUsageErrorWritesErrorDocument(t *testing.T) {
 	}
 }
 
+// A bare group lacks its required <command>: its help goes to standard error and the
+// run is a usage error, status 2.
+func TestBareGroupIsUsageError(t *testing.T) {
+	r := dispatch(t, nil, "catalog")
+	if r.status != output.Usage || r.stdout != "" {
+		t.Fatalf("dsh catalog = %+v", r)
+	}
+	if !strings.HasPrefix(r.stderr, "Usage: dsh catalog") ||
+		!strings.HasSuffix(r.stderr, "dsh catalog: cli/usage: missing <command>\n"+output.HelpHint+"\n") {
+		t.Errorf("dsh catalog stderr = %q", r.stderr)
+	}
+}
+
 type closedWriter struct{}
 
 func (closedWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
@@ -173,7 +186,7 @@ func (closedWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
 // Help printed by any route goes through the result writer: a closed stdout is
 // cli/output-closed, not a silent success.
 func TestHelpToClosedStdoutFails(t *testing.T) {
-	for _, args := range [][]string{{"--help"}, {"help"}, {"help", "web"}, {"catalog"}, {"catalog", "--help"}, {"catalog", "commands", "-h"}, {"help", "catalog"}} {
+	for _, args := range [][]string{{"--help"}, {"help"}, {"help", "web"}, {"catalog", "--help"}, {"catalog", "commands", "-h"}, {"help", "catalog"}} {
 		var errOut bytes.Buffer
 		env := Env{Request: launch.Request{Args: append([]string{"dsh"}, args...)}, Stdout: closedWriter{}, Stderr: &errOut}
 		status := Main(context.Background(), env)
