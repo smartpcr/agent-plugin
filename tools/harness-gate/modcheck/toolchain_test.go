@@ -70,19 +70,19 @@ func TestReleaseBuildIgnoresWorkspace(t *testing.T) {
 	}
 	goTool(t, harness, "off", "build", "-o", binary, "./cmd/dsh")
 
-	out, err := exec.Command(binary).CombinedOutput()
+	out, err := exec.Command(binary, "--version").CombinedOutput()
 	if err != nil {
-		t.Fatalf("dsh: %v\n%s", err, out)
+		t.Fatalf("dsh --version: %v\n%s", err, out)
 	}
 	fields := strings.Fields(string(out))
-	if len(fields) != 2 || fields[0] != "dsh" || fields[1] == "" {
-		t.Errorf("dsh printed %q, want \"dsh <version>\"", out)
+	if len(fields) < 2 || fields[0] != "dsh" || fields[1] == "" {
+		t.Errorf("dsh --version printed %q, want \"dsh <version> (...)\"", out)
 	}
 
 	versioned := filepath.Join(t.TempDir(), filepath.Base(binary))
 	goTool(t, harness, "off", "build", "-ldflags", "-X main.version=v1.2.3", "-o", versioned, "./cmd/dsh")
-	out, err = exec.Command(versioned).CombinedOutput()
-	if err != nil || strings.TrimSpace(string(out)) != "dsh v1.2.3" {
+	out, err = exec.Command(versioned, "--version").CombinedOutput()
+	if err != nil || !strings.HasPrefix(string(out), "dsh v1.2.3 (") {
 		t.Errorf("dsh built with -X main.version=v1.2.3 printed %q (err %v)", out, err)
 	}
 }

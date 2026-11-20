@@ -260,13 +260,13 @@ func (w *threeModuleWorkspace) theBuildSucceedsWithoutAnyReplaceDirective() erro
 }
 
 func (w *threeModuleWorkspace) theBinaryPrintsItsVersionAndExits0() error {
-	out, err := exec.Command(w.binary).CombinedOutput()
+	out, err := exec.Command(w.binary, "--version").CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("dsh exited with %v\n%s", err, out)
+		return fmt.Errorf("dsh --version exited with %v\n%s", err, out)
 	}
 	fields := strings.Fields(string(out))
-	if len(fields) != 2 || fields[0] != "dsh" || fields[1] == "" {
-		return fmt.Errorf("dsh printed %q, want \"dsh <version>\"", out)
+	if len(fields) < 2 || fields[0] != "dsh" || fields[1] == "" {
+		return fmt.Errorf("dsh --version printed %q, want \"dsh <version> (...)\"", out)
 	}
 	return nil
 }

@@ -1,11 +1,13 @@
 // Command dsh is the harness binary. It holds main only; every implementation
-// package lives under src/harness/internal (RM-5).
+// package lives under src/harness/internal (RM-5), the command tree in
+// internal/cli (DH-D-CLI-1).
 package main
 
 import (
-	"fmt"
+	"context"
 	"os"
-	"runtime/debug"
+
+	"github.com/smartpcr/agent-plugin/src/harness/internal/cli"
 
 	// The zone database is embedded so that zone names resolve the same on every
 	// host, a Windows host without Go installed included (DH-T-TEMPORAL-5).
@@ -16,13 +18,9 @@ import (
 // the module version recorded by the go command is used.
 var version string
 
+// exit is os.Exit; a test replaces it.
+var exit = os.Exit
+
 func main() {
-	v := version
-	if v == "" {
-		v = "(devel)"
-		if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" {
-			v = info.Main.Version
-		}
-	}
-	fmt.Fprintln(os.Stdout, "dsh", v)
+	exit(cli.Main(context.Background(), cli.ProcessEnv(version)))
 }
