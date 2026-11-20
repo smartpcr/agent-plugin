@@ -435,33 +435,38 @@ func (s *live) RequestFrom(seq event.Seq) (Request, error) {
 		defer s.mu.Unlock()
 		return Request{}, s.closedErr()
 	}
-	if seq >= s.st.Len() {
-		defer s.mu.Unlock()
-		return Request{}, errorf(CodeNotCommitted, "seq %d is not a committed event; the log ends at %d", seq, s.st.Len())
+	n := s.st.Len()
+	s.mu.Unlock()
+	if seq >= n {
+		return Request{}, errorf(CodeNotCommitted, "seq %d is not a committed event; the log ends at %d", seq, n)
 	}
+	// The storage read runs outside the append lock so a slow store cannot
+	// stall Append, Flush or the fold accessors.
 	recs, err := s.w.ReadSeqs(ctx, []event.Seq{seq}, store.ReadOptions{WithAux: true})
 	if err != nil {
-		s.mu.Unlock()
 		return Request{}, err
 	}
 	if len(recs) != 1 || recs[0].Seq != seq {
-		s.mu.Unlock()
 		return Request{}, brokenStore(s.id, "a read of seq %d returned %d records", seq, len(recs))
 	}
 	rec := recs[0]
 	if !surface.HasBuilder(rec.Type) {
-		s.mu.Unlock()
 		return Request{}, errorf(CodeNoBuilder, "type %q at seq %d declares no request builder", rec.Type, seq)
 	}
-	if seq+1 == s.st.Len() {
-		defer s.mu.Unlock()
-		b, err := surface.BuildFrom(s.st, string(s.id), rec)
-		if err != nil {
-			return Request{}, err
+	if seq+1 == n {
+		s.mu.Lock()
+		// The live folds describe the cut after seq only if nothing was
+		// appended while the lock was released; otherwise rebuild from the log.
+		if !s.closed && s.st.Len() == n {
+			b, err := surface.BuildFrom(s.st, string(s.id), rec)
+			s.mu.Unlock()
+			if err != nil {
+				return Request{}, err
+			}
+			return Request{b: b}, nil
 		}
-		return Request{b: b}, nil
+		s.mu.Unlock()
 	}
-	s.mu.Unlock()
 	b, err := surface.RebuildFrom(ctx, s.reg(), readFunc(s.w), string(s.id), seq)
 	if err != nil {
 		return Request{}, err
