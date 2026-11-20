@@ -205,6 +205,11 @@ func (t *Type) Decode(raw []byte, dst any) Issues {
 	if issues := t.check(inst); len(issues) > 0 {
 		return issues
 	}
+	if t.open {
+		if issues := t.foldedKeys(inst); len(issues) > 0 {
+			return issues
+		}
+	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	if !t.open {
 		dec.DisallowUnknownFields()
@@ -222,6 +227,30 @@ func (t *Type) Decode(raw []byte, dst any) Issues {
 		}
 	}
 	return nil
+}
+
+// foldedKeys refuses unknown root keys that encoding/json would still match to a
+// declared property, since it matches names case-insensitively: on an Open shape
+// such a key escapes validation yet overwrites the validated field.
+func (t *Type) foldedKeys(inst any) Issues {
+	obj, ok := inst.(map[string]any)
+	if !ok {
+		return nil
+	}
+	var issues Issues
+	for k := range obj {
+		if _, declared := t.schema.Properties[k]; declared {
+			continue
+		}
+		for p := range t.schema.Properties {
+			if strings.EqualFold(k, p) || strings.ToUpper(k) == strings.ToUpper(p) {
+				issues = append(issues, Issue{Path: pointer("", k), Message: fmt.Sprintf("differs from the field %q only in case", p)})
+				break
+			}
+		}
+	}
+	sort.Slice(issues, func(i, j int) bool { return issues[i].Path < issues[j].Path })
+	return issues
 }
 
 // Issue is one violation: a JSON Pointer to the offending value and what is wrong.
