@@ -180,20 +180,24 @@ func (st *state) cobraTree() *cobra.Command {
 		cc := &cobra.Command{Use: c.word(), Short: c.spec.Summary}
 		if len(c.children) > 0 {
 			cc.Args = cobra.NoArgs
-			cc.RunE = func(*cobra.Command, []string) error { return ran(c.help(st.env.Stdout)) }
+			cc.RunE = func(*cobra.Command, []string) error { return ran(st.printHelp(c.help)) }
 		} else {
 			cc.DisableFlagParsing = true
 			cc.RunE = func(cc *cobra.Command, args []string) error {
 				st.command = strings.TrimPrefix(cc.CommandPath(), "dsh ")
+				useJSON := func() { st.res = output.New(st.env.Stdout, st.env.Stderr, output.JSON) }
 				v, err := cmdline.Parse(c.spec, args)
 				if err != nil {
+					if cmdline.Given(c.spec, args, "json") {
+						useJSON()
+					}
 					return ran(err)
 				}
 				if v.Help() {
-					return ran(c.help(st.env.Stdout))
+					return ran(st.printHelp(c.help))
 				}
-				if slices.ContainsFunc(c.spec.Options, func(o cmdline.Option) bool { return o.Name == "json" }) && v.Bool("json") {
-					st.res = output.New(st.env.Stdout, st.env.Stderr, output.JSON)
+				if v.Bool("json") {
+					useJSON()
 				}
 				return ran(c.run(st, v))
 			}
@@ -212,10 +216,10 @@ func (st *state) cobraTree() *cobra.Command {
 	}
 	root.SetHelpFunc(func(cc *cobra.Command, _ []string) {
 		if c := byPath[cc.CommandPath()]; c != nil {
-			_ = c.help(st.env.Stdout)
+			st.helpErr = st.printHelp(c.help)
 			return
 		}
-		_ = st.launcherHelp(st.env.Stdout)
+		st.helpErr = st.printHelp(st.launcherHelp)
 	})
 	return root
 }
@@ -236,20 +240,20 @@ func (st *state) runCommand(words []string) error {
 		}
 		return cmdline.Usagef(st.command, "%s", err.Error())
 	}
-	return nil
+	return st.helpErr
 }
 
 func runHelp(st *state, v *cmdline.Values) error {
 	path := v.Args()
 	if len(path) == 0 {
-		return st.launcherHelp(st.env.Stdout)
+		return st.printHelp(st.launcherHelp)
 	}
 	if c := st.tree.find(path); c != nil {
-		return c.help(st.env.Stdout)
+		return st.printHelp(c.help)
 	}
 	if len(path) == 1 {
 		if d, err := profile.Lookup(path[0]); err == nil {
-			return profileHelp(st.env.Stdout, d)
+			return st.printHelp(func(w io.Writer) error { return profileHelp(w, d) })
 		}
 	}
 	return cmdline.Usagef("dsh help", "no command or profile %q", strings.Join(path, " "))

@@ -55,6 +55,45 @@ func TestParseStopAtArgs(t *testing.T) {
 	}
 }
 
+func TestParseEnds(t *testing.T) {
+	spec := Spec{Name: "dsh", Options: []Option{
+		{Name: "profile", Short: "p", Kind: String, Ends: true}, {Name: "safe", Short: "s", Kind: Bool},
+	}, Args: Args{Max: -1}}
+	for _, words := range [][]string{
+		{"-s", "--profile", "sdk", "--safe", "-h", "--", "x"},
+		{"--safe", "--profile=sdk", "--safe", "-h", "--", "x"},
+		{"-sp", "sdk", "--safe", "-h", "--", "x"},
+		{"-spsdk", "--safe", "-h", "--", "x"},
+	} {
+		v, err := Parse(spec, words)
+		if err != nil || v.Help() || !v.Bool("safe") || v.String("profile") != "sdk" ||
+			!slices.Equal(v.Args(), []string{"--safe", "-h", "--", "x"}) {
+			t.Errorf("Parse(%q) = %+v, %v", words, v, err)
+		}
+	}
+}
+
+func TestGiven(t *testing.T) {
+	for words, want := range map[string]bool{
+		"--json --nope":         true,
+		"--nope --json=true":    true,
+		"--json=false --nope":   false,
+		"--json=bogus":          false,
+		"--layer --json":        false,
+		"-- --json":             false,
+		"task --nope --json":    true,
+		"--port 8 --json extra": true,
+	} {
+		if got := Given(app, strings.Fields(words), "json"); got != want {
+			t.Errorf("Given(%q) = %v, want %v", words, got, want)
+		}
+	}
+	launcher := Spec{Name: "dsh", StopAtArgs: true, Options: []Option{{Name: "safe", Kind: Bool}}, Args: Args{Max: -1}}
+	if Given(launcher, []string{"web", "--safe"}, "safe") {
+		t.Error("Given read past the first free word of a StopAtArgs spec")
+	}
+}
+
 func TestParseUsageErrors(t *testing.T) {
 	_, err := Parse(app, []string{"--nope"})
 	usage(t, err, "unknown flag: --nope")

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"slices"
 	"strings"
 	"testing"
@@ -111,6 +112,74 @@ func TestProfileLaunch(t *testing.T) {
 	r = dispatch(t, fn, "--profile", "sdk", "version")
 	if r.status != 0 || got.Profile.Name != profile.SDK || !slices.Equal(got.Request.Words, []string{"version"}) {
 		t.Errorf("--profile sdk version = %+v, %+v", r, got.Request)
+	}
+}
+
+// app-cli.md §6.2.1: after --profile <name> every remaining word is an app word,
+// even one that is also a launcher option.
+func TestExplicitProfileEndsLauncherOptions(t *testing.T) {
+	for _, tc := range []struct {
+		args  []string
+		home  string
+		words []string
+	}{
+		{[]string{"--profile", "headless", "--json"}, "", []string{"--json"}},
+		{[]string{"--profile=sdk", "--help"}, "", []string{"--help"}},
+		{[]string{"--profile", "sdk", "-h"}, "", []string{"-h"}},
+		{[]string{"--home", "h", "--profile=headless", "--home", "app", "--profile", "web", "--version", "--layer", "x", "--"},
+			"h", []string{"--home", "app", "--profile", "web", "--version", "--layer", "x", "--"}},
+		{[]string{"--profile", "web"}, "", nil},
+	} {
+		var got Launch
+		fn := func(_ context.Context, l Launch) error { got = l; return nil }
+		r := dispatch(t, fn, tc.args...)
+		if r.status != 0 || r.stdout != "" || r.stderr != "" {
+			t.Errorf("dsh %q = %+v", tc.args, r)
+			continue
+		}
+		if got.Request.Home != tc.home || !slices.Equal(got.Request.Words, tc.words) {
+			t.Errorf("dsh %q launched home %q words %q, want %q %q", tc.args, got.Request.Home, got.Request.Words, tc.home, tc.words)
+		}
+	}
+	if r := dispatch(t, nil, "--profile"); r.status != output.Usage {
+		t.Errorf("--profile without a name = %+v", r)
+	}
+}
+
+// app-cli.md §6.2.3: under --json a usage error also ends the result stream with the
+// error document.
+func TestJSONUsageErrorWritesErrorDocument(t *testing.T) {
+	for _, args := range [][]string{{"version", "--json", "--nope"}, {"version", "--nope", "--json=true"}, {"catalog", "commands", "--json", "extra"}} {
+		r := dispatch(t, nil, args...)
+		var doc struct {
+			Error struct{ Code, Message string }
+		}
+		if err := json.Unmarshal([]byte(r.stdout), &doc); err != nil || doc.Error.Code != "cli/usage" || doc.Error.Message == "" {
+			t.Errorf("dsh %q stdout = %q (%v)", args, r.stdout, err)
+		}
+		if r.status != output.Usage || !strings.HasSuffix(r.stderr, output.HelpHint+"\n") {
+			t.Errorf("dsh %q = %+v", args, r)
+		}
+	}
+	if r := dispatch(t, nil, "version", "--json=false", "--nope"); r.status != output.Usage || r.stdout != "" {
+		t.Errorf("--json=false usage error = %+v", r)
+	}
+}
+
+type closedWriter struct{}
+
+func (closedWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
+
+// Help printed by any route goes through the result writer: a closed stdout is
+// cli/output-closed, not a silent success.
+func TestHelpToClosedStdoutFails(t *testing.T) {
+	for _, args := range [][]string{{"--help"}, {"help"}, {"help", "web"}, {"catalog"}, {"catalog", "--help"}, {"catalog", "commands", "-h"}, {"help", "catalog"}} {
+		var errOut bytes.Buffer
+		env := Env{Request: launch.Request{Args: append([]string{"dsh"}, args...)}, Stdout: closedWriter{}, Stderr: &errOut}
+		status := Main(context.Background(), env)
+		if status != output.Failed || !strings.Contains(errOut.String(), "cli/output-closed") {
+			t.Errorf("dsh %q to a closed stdout: status %d, stderr %q", args, status, errOut.String())
+		}
 	}
 }
 

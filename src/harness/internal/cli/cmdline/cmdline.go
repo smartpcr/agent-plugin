@@ -54,6 +54,9 @@ type Option struct {
 	Help string
 	// Hidden keeps the option out of help.
 	Hidden bool
+	// Ends ends the options after this option's value: every later word is a free
+	// word, passed on unchanged even when it looks like an option of the Spec.
+	Ends bool
 }
 
 // RuleKind is the kind of a rule between options.
@@ -216,11 +219,15 @@ func Parse(spec Spec, words []string) (*Values, error) {
 			fs.VarP(c, o.Name, o.Short, o.Help)
 		}
 	}
-	if err := fs.Parse(words); err != nil {
+	head, tail := words, []string(nil)
+	if cut := endOfOptions(spec, words); cut < len(words) {
+		head, tail = words[:cut], words[cut:]
+	}
+	if err := fs.Parse(head); err != nil {
 		return nil, usageFromFlag(spec.Name, err)
 	}
 	v := &Values{set: map[string]bool{}, values: map[string]string{}, lists: map[string][]string{},
-		args: fs.Args(), help: help, options: options}
+		args: append(fs.Args(), tail...), help: help, options: options}
 	if help {
 		return v, nil
 	}
@@ -304,4 +311,94 @@ func usageFromFlag(command string, err error) *UsageError {
 		ue.Option = missing.GetFlag().Name
 	}
 	return ue
+}
+
+// scan walks the options of words as Parse reads them, calling visit with the index
+// past each option (and its value) and the option's inline value, if any. It stops
+// at "--", at the first free word under StopAtArgs, or when visit returns false.
+// Unknown options are passed over: Parse reports them.
+func scan(spec Spec, words []string, visit func(next int, o Option, value string, inline bool) bool) {
+	long := map[string]Option{}
+	short := map[string]Option{}
+	for _, o := range append(slices.Clone(spec.Options), HelpOption) {
+		long[o.Name] = o
+		if o.Short != "" {
+			short[o.Short] = o
+		}
+	}
+	for i := 0; i < len(words); i++ {
+		w := words[i]
+		if w == "--" {
+			return
+		}
+		if len(w) < 2 || w[0] != '-' {
+			if spec.StopAtArgs {
+				return
+			}
+			continue
+		}
+		if strings.HasPrefix(w, "--") {
+			name, value, inline := strings.Cut(w[2:], "=")
+			o, ok := long[name]
+			if !ok {
+				continue
+			}
+			if o.Kind != Bool && !inline {
+				i++
+			}
+			if !visit(i+1, o, value, inline) {
+				return
+			}
+			continue
+		}
+		for j, r := range w[1:] {
+			o, ok := short[string(r)]
+			if !ok {
+				break
+			}
+			if o.Kind != Bool {
+				rest := w[2+j:]
+				if rest == "" {
+					i++
+				}
+				if !visit(i+1, o, rest, rest != "") {
+					return
+				}
+				break
+			}
+			if !visit(i+1, o, "", false) {
+				return
+			}
+		}
+	}
+}
+
+// endOfOptions returns the index of the first word after an Ends option's value, or
+// len(words) when no Ends option is given.
+func endOfOptions(spec Spec, words []string) int {
+	end := len(words)
+	scan(spec, words, func(next int, o Option, _ string, _ bool) bool {
+		if o.Ends {
+			end = min(next, len(words))
+			return false
+		}
+		return true
+	})
+	return end
+}
+
+// Given reports whether the Bool option name is switched on in words, read as Parse
+// reads them. It answers even when Parse fails, so a caller can honour a switch such
+// as --json while it reports the usage error.
+func Given(spec Spec, words []string, name string) bool {
+	on := false
+	words = words[:endOfOptions(spec, words)]
+	scan(spec, words, func(_ int, o Option, value string, inline bool) bool {
+		if o.Name == name && o.Kind == Bool {
+			b, err := strconv.ParseBool(value)
+			on = !inline || err == nil && b
+		}
+		return true
+	})
+	return on
 }

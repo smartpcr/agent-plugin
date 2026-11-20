@@ -10,7 +10,7 @@ Usage: dsh [options] [profile|command...]
 The DeepSeek harness: launch a profile or run a fixed command.
 
 Launcher options come before the profile or command name. Every word after a
-profile name belongs to the profile's app, --help included.
+profile name, or after --profile <name>, belongs to the profile's app, --help included.
 
 Commands:
   help        Show the help of a command or a profile
@@ -27,7 +27,7 @@ Profiles:
 
 Options:
       --home <dir>      Harness home (default $DSH_HOME, then ~/.dsh)
-      --profile <name>  Profile to launch; every free word goes to its app
+      --profile <name>  Profile to launch; every later word goes to its app
       --layer <file>    Add a config layer above the user layer (repeatable)
       --safe            Start with optional bundles and plugins off
   -V, --version         Print the version and exit

@@ -15,6 +15,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -78,10 +79,10 @@ func launcherSpec() cmdline.Spec {
 		Name:    "dsh",
 		Summary: "The DeepSeek harness: launch a profile or run a fixed command.",
 		Description: "Launcher options come before the profile or command name. Every word after a\n" +
-			"profile name belongs to the profile's app, --help included.",
+			"profile name, or after --profile <name>, belongs to the profile's app, --help included.",
 		Options: []cmdline.Option{
 			{Name: "home", Kind: cmdline.String, Value: "dir", Help: "Harness home (default $DSH_HOME, then ~/.dsh)"},
-			{Name: "profile", Kind: cmdline.String, Value: "name", Help: "Profile to launch; every free word goes to its app"},
+			{Name: "profile", Kind: cmdline.String, Value: "name", Ends: true, Help: "Profile to launch; every later word goes to its app"},
 			{Name: "layer", Kind: cmdline.Strings, Value: "file", Help: "Add a config layer above the user layer"},
 			{Name: "safe", Kind: cmdline.Bool, Help: "Start with optional bundles and plugins off"},
 			{Name: "version", Short: "V", Kind: cmdline.Bool, Help: "Print the version and exit"},
@@ -104,6 +105,9 @@ type state struct {
 	res     *output.Result
 	command string
 	tree    *tree
+	// helpErr is the failure of help printed by cobra's help func, which cannot
+	// return it.
+	helpErr error
 }
 
 // Main runs one command line and returns its exit status. It never exits the
@@ -139,7 +143,7 @@ func (st *state) run(args []string) error {
 		return err
 	}
 	if v.Help() {
-		return st.launcherHelp(st.env.Stdout)
+		return st.printHelp(st.launcherHelp)
 	}
 	if v.Bool("version") {
 		if len(v.Args()) > 0 {
@@ -200,6 +204,16 @@ func versionLine(b launch.BuildIdentity) string {
 // built-in profiles.
 func (st *state) launcherHelp(w io.Writer) error {
 	return cmdline.Help(w, launcherSpec(), st.tree.commandSection(), profileSection())
+}
+
+// printHelp renders help through the result writer, so a failed write to stdout is
+// ReasonClosed like any other result.
+func (st *state) printHelp(render func(io.Writer) error) error {
+	var buf bytes.Buffer
+	if err := render(&buf); err != nil {
+		return err
+	}
+	return st.res.Text(buf.String())
 }
 
 func profileSection() cmdline.Section {
