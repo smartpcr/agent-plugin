@@ -131,3 +131,18 @@ func TestApplyInvertsLines(t *testing.T) {
 		}
 	}
 }
+
+// TestEqualAboveLimits: identical inputs are unchanged even past MaxLines or
+// MaxBytes, where unequal inputs get a coarse whole-text hunk.
+func TestEqualAboveLimits(t *testing.T) {
+	s := "one\ntwo\nthree\n"
+	for _, lim := range []Limits{{MaxLines: 1}, {MaxBytes: 4}} {
+		r := Lines(s, s, DefaultContext, lim)
+		if r.Changed() || r.Coarse || len(r.Hunks) != 0 || r.Added+r.Deleted != 0 {
+			t.Errorf("%+v: equal inputs gave %+v", lim, r)
+		}
+		if r := Lines(s, s+"four\n", DefaultContext, lim); !r.Changed() || !r.Coarse {
+			t.Errorf("%+v: unequal inputs gave %+v", lim, r)
+		}
+	}
+}

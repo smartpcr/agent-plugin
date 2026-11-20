@@ -23,6 +23,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/smartpcr/agent-plugin/src/harness/internal/util/fsx"
 )
 
 // Mode is how a watch learns of changes.
@@ -94,6 +96,7 @@ type Service struct {
 	n       Notifier
 	nErr    error // why there is no notifier
 	dirs    map[string]map[*watch]struct{}
+	ids     map[string]fsx.FileID // identity of each directory when it was added
 	watches map[*watch]struct{}
 	closed  bool
 
@@ -119,6 +122,7 @@ func New(opt Options) *Service {
 	s := &Service{
 		opt:     opt,
 		dirs:    map[string]map[*watch]struct{}{},
+		ids:     map[string]fsx.FileID{},
 		watches: map[*watch]struct{}{},
 		stop:    make(chan struct{}),
 		stopped: make(chan struct{}),
@@ -212,8 +216,12 @@ func (s *Service) Watch(ctx context.Context, t Target, changed func(err error)) 
 }
 
 // subscribe registers w for events in dir, adding dir to the notifier for its
-// first subscriber.
+// first subscriber. A directory is registered by name but the kernel watches the
+// directory itself, so its identity is kept: when dir now names a different
+// directory (deleted and recreated, perhaps within one settle window, so no
+// event marked the change), the dead registration is dropped and dir re-added.
 func (s *Service) subscribe(w *watch, dir string) error {
+	id, idErr := fsx.ID(dir)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.n == nil {
@@ -223,12 +231,20 @@ func (s *Service) subscribe(w *watch, dir string) error {
 		return ErrClosed
 	}
 	subs := s.dirs[dir]
+	if subs != nil && idErr == nil && s.ids[dir] != id {
+		_ = s.n.Remove(dir) // the old registration may be gone already
+		if err := s.n.Add(dir); err != nil {
+			return fmt.Errorf("%w: watching %s: %v", ErrDegraded, dir, err)
+		}
+		s.ids[dir] = id
+	}
 	if subs == nil {
 		if err := s.n.Add(dir); err != nil {
 			return fmt.Errorf("%w: watching %s: %v", ErrDegraded, dir, err)
 		}
 		subs = map[*watch]struct{}{}
 		s.dirs[dir] = subs
+		s.ids[dir] = id
 	}
 	subs[w] = struct{}{}
 	return nil
@@ -244,6 +260,7 @@ func (s *Service) unsubscribe(w *watch, dir string) {
 	delete(subs, w)
 	if len(subs) == 0 {
 		delete(s.dirs, dir)
+		delete(s.ids, dir)
 		if s.n != nil {
 			_ = s.n.Remove(dir) // the directory may be gone already
 		}

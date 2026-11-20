@@ -101,6 +101,10 @@ func Diff(before, after string) Result {
 func Lines(before, after string, context int, limits Limits) Result {
 	limits = limits.withDefaults()
 	context = max(context, 0)
+	if before == after {
+		// Equal texts have no change at any size, so Changed holds above the limits.
+		return Result{}
+	}
 	a, b := split(before), split(after)
 	var res Result
 	if len(before)+len(after) > limits.MaxBytes || max(len(a), len(b)) > limits.MaxLines {

@@ -105,6 +105,7 @@ func TestRoundTrip(t *testing.T) {
 		{"repeated lines", "x\nx\nx\nx\nx\nx\nx\nx\n", "x\nx\nx\nx\nx\nx\nx\ny\n"},
 		{"repeated blocks", strings.Repeat("{\n  a\n}\n", 6), strings.Repeat("{\n  a\n}\n", 5) + "{\n  b\n}\n"},
 		{"crlf", "a\r\nb\r\nc\r\n", "a\r\nB\r\nc\r\n"},
+		{"add final newline", "a\nb", "a\nb\n"},
 		{"blank lines", "a\n\n\nb\n", "a\n\nb\n\n"},
 		{"many hunks", numbered(40, nil), numbered(40, map[int]string{3: "x", 20: "y", 37: "z"})},
 		{"indentation", "if x:\n    a\n    b\n", "if x:\n  a\n    b\n"},
@@ -145,16 +146,24 @@ func numbered(n int, change map[int]string) string {
 }
 
 func TestMakeLimits(t *testing.T) {
-	// The format cannot remove a final newline; the result keeps one.
-	text, err := Make("f", "a\n", "a")
-	if err != nil {
-		t.Fatal(err)
+	// Every case is a byte change the format cannot carry: Make refuses it rather
+	// than returning a patch whose result differs from the requested text.
+	for _, c := range []struct{ name, a, b string }{
+		{"drop final newline", "a\n", "a"},
+		{"drop final newline with edit", "a\nb\n", "a\nc"},
+		{"LF to CRLF", "a\nb\n", "a\r\nb\r\n"},
+		{"CRLF to LF", "a\r\nb\r\n", "a\nb\n"},
+		{"LF to CRLF with edit", "a\nb\n", "a\r\nc\r\n"},
+		{"lone CR", "a\n", "b\r"},
+	} {
+		if text, err := Make("f", c.a, c.b); !errors.Is(err, ErrInexpressible) {
+			t.Errorf("%s: err %v, patch:\n%s", c.name, err, text)
+		}
 	}
-	if p, _ := Parse(text); len(p.Hunks) != 0 {
-		t.Fatalf("a newline-only change made hunks:\n%s", text)
-	}
-	// A lone carriage return at the end of a line the parser strips.
-	if _, err := Make("f", "a\n", "b\r"); !errors.Is(err, ErrInexpressible) {
-		t.Fatalf("lone CR: %v", err)
+	// Equal texts need no change, whatever their endings.
+	for _, s := range []string{"", "a", "a\r\nb\r\n"} {
+		if _, err := Make("f", s, s); err != nil {
+			t.Errorf("equal %q: %v", s, err)
+		}
 	}
 }

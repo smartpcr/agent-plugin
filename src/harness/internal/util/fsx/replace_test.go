@@ -369,3 +369,65 @@ func TestLock(t *testing.T) {
 		t.Fatalf("lock in a missing directory: %v", err)
 	}
 }
+
+// TestRootedDurable: a durable rooted publication runs the durability step for the
+// published name and, when that step fails, reports ErrDurabilityUnknown with the
+// content in place rather than success; a non-durable one skips it.
+func TestRootedDurable(t *testing.T) {
+	dir := t.TempDir()
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { root.Close() })
+	saved := rootedSync
+	t.Cleanup(func() { rootedSync = saved })
+	var synced []string
+	rootedSync = func(r *os.Root, d, name string) error {
+		synced = append(synced, name)
+		return saved(r, d, name)
+	}
+	if err := ReplaceIn(root, "a", Bytes([]byte("1")), Options{Perm: 0o644, Durable: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := CreateIfAbsentIn(root, "b", Bytes([]byte("1")), Options{Perm: 0o644, Durable: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ReplaceIn(root, "a", Bytes([]byte("2")), Options{Perm: 0o644}); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"a", "b"}; !slicesEqual(synced, want) {
+		t.Fatalf("synced %v, want %v", synced, want)
+	}
+
+	boom := errors.New("flush failed")
+	rootedSync = func(*os.Root, string, string) error { return boom }
+	err = ReplaceIn(root, "a", Bytes([]byte("3")), Options{Perm: 0o644, Durable: true})
+	if !errors.Is(err, ErrDurabilityUnknown) || !errors.Is(err, boom) {
+		t.Fatalf("failed durability step: %v", err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "a")); string(got) != "3" {
+		t.Fatalf("content %q", got)
+	}
+
+	// The real step on a read-only result: Windows cannot open it to flush, so the
+	// outcome is ErrDurabilityUnknown, never a silent success.
+	rootedSync = saved
+	err = ReplaceIn(root, "ro", Bytes([]byte("x")), Options{Perm: 0o444, Durable: true})
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(dir, "ro"), 0o644) })
+	if runtime.GOOS == "windows" && !errors.Is(err, ErrDurabilityUnknown) || runtime.GOOS != "windows" && err != nil {
+		t.Fatalf("read-only durable publish on %s: %v", runtime.GOOS, err)
+	}
+}
+
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}

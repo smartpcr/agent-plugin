@@ -248,3 +248,42 @@ func TestBadTargets(t *testing.T) {
 		t.Error("Mode.String")
 	}
 }
+
+// TestRecreatedParentWithinSettle: the watched directory is deleted and recreated
+// inside one settle window, so the kernel registration dies with no settled notice
+// in between. The watch must re-register the new directory: later saves are still
+// reported in Notify mode, not missed for ever.
+func TestRecreatedParentWithinSettle(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "p")
+	f := filepath.Join(p, "f.txt")
+	if err := os.Mkdir(p, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, f, "0")
+	_, r := start(t, service(t, watch.Options{}), watch.Target{Path: f, Mode: watch.Notify, Settle: 400 * time.Millisecond})
+	if err := os.RemoveAll(p); err != nil {
+		t.Fatal(err)
+	}
+	// Windows may hold the deleted name until the notifier lets go of it.
+	for stop := time.Now().Add(deadline); ; {
+		err := os.Mkdir(p, 0o755)
+		if err == nil {
+			break
+		}
+		if time.Now().After(stop) {
+			t.Fatal(err)
+		}
+		<-time.After(5 * time.Millisecond)
+	}
+	write(t, f, "1")
+	if err := r.one(t, "recreated"); err != nil {
+		t.Fatalf("recreated: %v", err)
+	}
+	for i := range 2 {
+		write(t, f, "after "+strconv.Itoa(i))
+		if err := r.one(t, "save after recreation "+strconv.Itoa(i)); err != nil {
+			t.Fatalf("save %d: %v", i, err)
+		}
+	}
+}

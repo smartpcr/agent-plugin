@@ -29,6 +29,10 @@ func CreateIfAbsentIn(root *os.Root, name string, write func(io.Writer) error, o
 // rootLink links within a root; tests replace it to take the no-link path.
 var rootLink = (*os.Root).Link
 
+// rootedSync is the durability step after a rooted publication; tests replace it
+// to observe or fail it.
+var rootedSync = syncPublishedIn
+
 func publishIn(root *os.Root, name string, write func(io.Writer) error, opt Options, exclusive bool) error {
 	name = filepath.ToSlash(filepath.Clean(name))
 	mode, keepACL, err := resultMode(root.Lstat, name, opt, exclusive)
@@ -65,7 +69,7 @@ func publishIn(root *os.Root, name string, write func(io.Writer) error, opt Opti
 	}
 	published = true
 	if opt.Durable {
-		if err := syncRootDir(root, dir); err != nil {
+		if err := rootedSync(root, dir, name); err != nil {
 			return fmt.Errorf("%w: %s: %w", ErrDurabilityUnknown, name, err)
 		}
 	}

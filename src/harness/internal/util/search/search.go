@@ -37,6 +37,7 @@ const (
 	CutFiles      = "limit: files"
 	CutBytes      = "limit: bytes"
 	CutUnreadable = "unreadable"
+	CutLongLine   = "limit: line length" // a line over 1 MiB was not searched
 	CutStopped    = "stopped by caller"
 	CutAborted    = "aborted"
 )

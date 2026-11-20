@@ -135,7 +135,20 @@ func renameNoReplace(stage, target string, durable bool) error {
 // Windows cannot flush a directory handle.
 func syncDir(string) error { return nil }
 
-func syncRootDir(*os.Root, string) error { return nil }
+// syncPublishedIn makes the name just published in root durable. Root.Rename and
+// Root.Link cannot take MOVEFILE_WRITE_THROUGH, and Windows cannot flush a
+// directory handle, so the published file is opened by its new name through the
+// root and its buffers, metadata included, flushed — the same step posixRename
+// takes. A file that cannot be opened for writing (read-only) returns the error,
+// which the caller reports as ErrDurabilityUnknown rather than success.
+func syncPublishedIn(root *os.Root, _ string, name string) error {
+	f, err := root.OpenFile(name, os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return f.Sync()
+}
 
 // copyACL gives to the discretionary access-control list of from, so replacing a
 // file does not silently widen or narrow who may read it (DH-LIB-NODEFS-T3).

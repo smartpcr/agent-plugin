@@ -18,7 +18,10 @@
 //   - ReplaceIn and CreateIfAbsentIn do the same by name inside an os.Root. The
 //     rooted create-if-absent links the staged file to the name (Root.Link); where
 //     linking is refused it reserves the name with an exclusive create and renames
-//     the staged file over the reservation.
+//     the staged file over the reservation. When Durable, POSIX syncs the
+//     directory through the root; Windows, whose rooted rename cannot write
+//     through, opens the published name through the root and flushes it, and
+//     reports ErrDurabilityUnknown when it cannot (a read-only result).
 //   - Lock and TryLock take an operating-system lock on a lock file (flock,
 //     LockFileEx); the kernel releases it when the holder dies.
 //   - ID names a file by device and inode (POSIX) or volume serial and file index

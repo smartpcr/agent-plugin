@@ -75,22 +75,21 @@ func Delete(path string) Hunk { return Hunk{Op: OpDelete, Path: path} }
 // carriage return, which the parser drops, is such a case).
 var ErrInexpressible = errors.New("patch: the change cannot be expressed as a patch")
 
-// Update is the update hunk that turns before into after: one chunk per diff hunk,
-// with three lines of context and "*** End of File" on a chunk that reaches the end.
-// The hunk is checked by applying it; when the matcher would place a chunk
-// elsewhere (repeated lines), a single chunk replacing the whole file is returned
-// instead. Line endings of both texts are normalised to LF first; Apply restores
-// before's style.
+// Update is the update hunk that turns before into after, byte for byte: one chunk
+// per diff hunk, with three lines of context and "*** End of File" on a chunk that
+// reaches the end. The hunk is checked by writing it as patch text, parsing it and
+// applying it to before; when the matcher would place a chunk elsewhere (repeated
+// lines), a single chunk replacing the whole file is tried instead. When neither
+// gives exactly after, Update returns ErrInexpressible rather than a patch with a
+// different result: Apply always ends the last line with a terminator and keeps
+// before's line-ending style, so removing a final newline or changing the
+// line-ending style cannot be expressed.
 func Update(path, before, after string) (Hunk, error) {
-	a, b := fsx.NormalizeEOL(before), fsx.NormalizeEOL(after)
-	want := b
-	if want != "" && !strings.HasSuffix(want, "\n") {
-		want += "\n"
-	}
 	h := Hunk{Op: OpUpdate, Path: path}
-	if a == want {
+	if before == after {
 		return h, nil
 	}
+	a, b := fsx.NormalizeEOL(before), fsx.NormalizeEOL(after)
 	oldLines := len(splitContents(a))
 	unbounded := textdiff.Limits{MaxBytes: math.MaxInt, MaxLines: math.MaxInt, HunkMaxBytes: math.MaxInt}
 	for _, dh := range textdiff.Lines(a, b, textdiff.DefaultContext, unbounded).Hunks {
@@ -110,7 +109,7 @@ func Update(path, before, after string) (Hunk, error) {
 		c.EOF = len(c.Old) > 0 && from+dh.OldLines == oldLines
 		h.Chunks = append(h.Chunks, c)
 	}
-	if roundTrips(h, a, want) {
+	if len(h.Chunks) > 0 && roundTrips(h, before, after) {
 		return h, nil
 	}
 	whole := Hunk{Op: OpUpdate, Path: path, Chunks: []Chunk{{
@@ -118,24 +117,20 @@ func Update(path, before, after string) (Hunk, error) {
 		New: splitContents(b),
 		EOF: a != "",
 	}}}
-	if roundTrips(whole, a, want) {
+	if roundTrips(whole, before, after) {
 		return whole, nil
 	}
 	return Hunk{}, ErrInexpressible
 }
 
-// roundTrips reports whether h, written as patch text and parsed back, turns a into
-// want.
-func roundTrips(h Hunk, a, want string) bool {
-	if len(h.Chunks) == 0 {
-		got, err := h.Apply(a)
-		return err == nil && got == want
-	}
+// roundTrips reports whether h, written as patch text and parsed back, turns before
+// into exactly want.
+func roundTrips(h Hunk, before, want string) bool {
 	p, err := Parse(Format(h))
 	if err != nil || len(p.Hunks) != 1 {
 		return false
 	}
-	got, err := p.Hunks[0].Apply(a)
+	got, err := p.Hunks[0].Apply(before)
 	return err == nil && got == want
 }
 

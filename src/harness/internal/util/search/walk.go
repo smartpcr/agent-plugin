@@ -19,6 +19,9 @@ type walkOptions struct {
 	noIgnore bool     // do not read ignore files
 	exclude  []string // base-name globs never listed nor descended into
 	maxFiles int      // 0: no bound
+	// enter reports whether a directory (a path from the source root) can hold a
+	// file the query wants; nil enters every directory.
+	enter func(dir string) bool
 }
 
 // walker visits the files below a root in name order.
@@ -106,6 +109,9 @@ func (w *walker) dir(dir string, entries []fs.DirEntry, stack ignores, visit fun
 			continue
 		}
 		if isDir {
+			if w.opt.enter != nil && !w.opt.enter(p) {
+				continue
+			}
 			sub, err := w.src.ReadDir(p)
 			if err != nil {
 				w.sum.cut(CutUnreadable)
@@ -196,4 +202,51 @@ func (g *globMatcher) match(rel string) bool {
 	}
 	ok, _ := doublestar.Match(g.pattern, rel)
 	return ok
+}
+
+// mayContain returns the walk's directory filter for a walk from root: a
+// directory is entered only when some path the glob matches can lie under it,
+// so a walk for "src/**/*.ts" starts at src and never lists unrelated
+// directories. It returns nil (enter everything) for a base-name glob.
+func (g *globMatcher) mayContain(root string) func(dir string) bool {
+	if g == nil || g.base || braceSpansSlash(g.pattern) {
+		return nil
+	}
+	segs := strings.Split(g.pattern, "/")
+	return func(dir string) bool {
+		for i, d := range strings.Split(relTo(root, dir), "/") {
+			if i < len(segs) && segs[i] == "**" {
+				return true
+			}
+			// The last segment names the file, so a directory needs one more.
+			if i >= len(segs)-1 {
+				return false
+			}
+			if ok, _ := doublestar.Match(segs[i], d); !ok {
+				return false
+			}
+		}
+		return true
+	}
+}
+
+// braceSpansSlash reports whether an alternation in pattern holds a slash, as in
+// "{a,b/c}/x": its segments cannot then be matched one directory at a time.
+func braceSpansSlash(pattern string) bool {
+	depth := 0
+	for i := 0; i < len(pattern); i++ {
+		switch pattern[i] {
+		case '\\':
+			i++
+		case '{':
+			depth++
+		case '}':
+			depth = max(depth-1, 0)
+		case '/':
+			if depth > 0 {
+				return true
+			}
+		}
+	}
+	return false
 }

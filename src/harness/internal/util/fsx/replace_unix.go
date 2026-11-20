@@ -21,7 +21,9 @@ func syncDir(dir string) error {
 	return d.Sync()
 }
 
-func syncRootDir(root *os.Root, dir string) error {
+// syncPublishedIn makes the name just published in root durable: on POSIX, by
+// syncing its directory.
+func syncPublishedIn(root *os.Root, dir, _ string) error {
 	d, err := root.Open(dir)
 	if err != nil {
 		return err

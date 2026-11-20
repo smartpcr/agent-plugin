@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"path"
 	"strings"
+	"sync"
 
 	"github.com/bmatcuk/doublestar/v4"
 )
@@ -179,4 +180,61 @@ func join(dir, name string) string {
 		return name
 	}
 	return dir + "/" + name
+}
+
+// Matcher answers whether a path is ignored by the ignore files of a Source, using
+// the same rules as a listing, without walking the tree or running git. Levels are
+// read on first use and cached; a Matcher does not see later edits to ignore
+// files. It is safe for concurrent use.
+type Matcher struct {
+	src    Source
+	mu     sync.Mutex
+	levels map[string]*level // nil value: the directory has no ignore files
+}
+
+// NewMatcher returns a Matcher over src.
+func NewMatcher(src Source) *Matcher {
+	return &Matcher{src: src, levels: map[string]*level{}}
+}
+
+// Ignored reports whether p (a slash or backslash path from the source root) is
+// ignored: by a rule, by lying under an ignored directory, or by lying in a
+// version-control directory. isDir says whether p names a directory.
+func (m *Matcher) Ignored(p string, isDir bool) bool {
+	p = clean(p)
+	if p == "." {
+		return false
+	}
+	parts := strings.Split(p, "/")
+	var stack ignores
+	dir := "."
+	for i, part := range parts {
+		last := i == len(parts)-1
+		if (!last || isDir) && vcsDirs[part] {
+			return true
+		}
+		if l := m.level(dir); l != nil {
+			stack = append(stack, l)
+		}
+		sub := join(dir, part)
+		if stack.ignored(sub, !last || isDir) {
+			return true
+		}
+		dir = sub
+	}
+	return false
+}
+
+func (m *Matcher) level(dir string) *level {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if l, ok := m.levels[dir]; ok {
+		return l
+	}
+	var l *level
+	if entries, err := m.src.ReadDir(dir); err == nil {
+		l = loadLevel(m.src, dir, entries)
+	}
+	m.levels[dir] = l
+	return l
 }

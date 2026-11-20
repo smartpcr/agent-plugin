@@ -141,7 +141,7 @@ func (w *watch) start() {
 			w.startErr = err
 		}
 	}
-	if cur := w.snapshot(); cur != w.last {
+	if cur := w.snapshot(); !cur.same(w.last) {
 		w.last, w.pending = cur, true
 	}
 }
@@ -208,9 +208,8 @@ func (w *watch) sync(entries int) error {
 		}
 	}
 	for _, d := range slices.Sorted(maps.Keys(want)) {
-		if w.dirs[d] {
-			continue
-		}
+		// Subscribe even when already registered: the service re-adds a directory
+		// deleted and recreated since, whose kernel registration died with it.
 		if err := w.s.subscribe(w, d); err != nil {
 			return err
 		}
@@ -303,7 +302,7 @@ func (w *watch) run(ctx context.Context) {
 		case <-tick:
 			// Debounce on what the previous tick saw, so a change settles once
 			// the target stops moving.
-			if cur := w.snapshot(); cur != seen {
+			if cur := w.snapshot(); !cur.same(seen) {
 				seen = cur
 				settle.Reset(w.t.Settle)
 			}
@@ -315,7 +314,7 @@ func (w *watch) run(ctx context.Context) {
 				}
 			}
 			cur := w.snapshot()
-			moved := cur != w.last
+			moved := !cur.same(w.last)
 			w.last, seen = cur, cur
 			retick()
 			switch {
@@ -346,6 +345,17 @@ type snap struct {
 	v           fsx.Version
 	n           int
 	sum         uint64
+}
+
+// same reports whether two snapshots show no change. A file snapshot taken while
+// the file could not be opened (a scanner or writer holding it) has no identity;
+// against it only size and modification time are compared, so a transient open
+// failure is not itself a change.
+func (a snap) same(b snap) bool {
+	if a.exists && b.exists && !a.dir && !b.dir && (a.v.ID == fsx.FileID{} || b.v.ID == fsx.FileID{}) {
+		return a.v.Size == b.v.Size && a.v.ModNs == b.v.ModNs
+	}
+	return a == b
 }
 
 func (w *watch) snapshot() snap {
