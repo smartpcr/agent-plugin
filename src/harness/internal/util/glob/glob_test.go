@@ -5,28 +5,50 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"unicode"
+	"unicode/utf8"
+
+	"github.com/bmatcuk/doublestar/v4"
 )
 
-// TestFoldIsSimpleFolding checks fold's key is constant on every simple-fold
-// orbit and never leaves it, so equal keys mean simple-fold equivalent runes.
+// TestFoldIsSimpleFolding checks FoldCase against its definition: a name rune
+// matches a folded pattern exactly when some member of its simple-fold orbit
+// matches the pattern as written. Classes keep the membership they were written
+// with, ranges and negations included.
 func TestFoldIsSimpleFolding(t *testing.T) {
-	for r := rune(0); r <= unicode.MaxRune; r++ {
-		k := foldRune(r)
-		inOrbit := k == r
-		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
-			if foldRune(f) != k {
-				t.Fatalf("%U and %U fold to different keys", r, f)
+	patterns := []string{
+		"k", "\u212a", "\u03c3", "\u0130", "\u0131", "\\K",
+		"[\u00df-\u00ff]", "[\u00e0-\u00ff]", "[!\u00e0-\u00ff]", "[^a-z]", "[A-C]", "[a\\-z]",
+		"[\\]-\u00e0]", "[-k]", "[k-]", "[\u0400-\u042f]", "[!\u03c3]", "[\u1e00-\u1eff]",
+	}
+	for _, p := range patterns {
+		plain, folded := MustCompile(p), MustCompile(p, FoldCase())
+		for r := rune(0); r <= 0x2200; r++ {
+			if r == '/' || !utf8.ValidRune(r) {
+				continue
 			}
-			inOrbit = inOrbit || f == k
-		}
-		if !inOrbit {
-			t.Fatalf("%U folds to %U, outside its orbit", r, k)
+			want := false
+			for _, o := range orbit(r) {
+				want = want || plain.Match(string(o))
+			}
+			if !strings.HasPrefix(p, "[!") && !strings.HasPrefix(p, "[^") {
+				if got := folded.Match(string(r)); got != want {
+					t.Fatalf("%q with FoldCase on %U: %v, want %v", p, r, got, want)
+				}
+				continue
+			}
+			// A negated class refuses a rune when it lists any orbit member.
+			want = true
+			for _, o := range orbit(r) {
+				want = want && plain.Match(string(o))
+			}
+			if got := folded.Match(string(r)); got != want {
+				t.Fatalf("%q with FoldCase on %U: %v, want %v", p, r, got, want)
+			}
 		}
 	}
 	for _, r := range `*?[]{},!^-/\` {
-		if foldRune(r) != r {
-			t.Fatalf("glob syntax %q changes under folding", r)
+		if len(orbit(r)) != 1 {
+			t.Fatalf("glob syntax %q has fold partners", r)
 		}
 	}
 }
@@ -138,6 +160,21 @@ func TestOptions(t *testing.T) {
 		// Folding is not transliteration: ß does not fold to ss.
 		{"stra\u00dfe", []Option{FoldCase()}, "STRASSE", false},
 		{"\u212a*", nil, "kilo", false},
+		// A class keeps the membership it was written with: à is inside ß-ÿ;
+		// the multiplication sign is not inside à-ÿ though its neighbours fold there.
+		{"[\u00df-\u00ff]", []Option{FoldCase()}, "\u00e0", true},
+		{"[\u00df-\u00ff]", []Option{FoldCase()}, "\u00c0", true},
+		{"[\u00e0-\u00ff]", []Option{FoldCase()}, "\u00d7", false},
+		{"[\u00e0-\u00ff]", []Option{FoldCase()}, "\u00c9", true},
+		{"[\u00e0-\u00ff]", []Option{FoldCase()}, "\u0178", true},
+		// Negated ranges refuse every fold partner of what they list.
+		{"[!\u00e0-\u00ff]", []Option{FoldCase()}, "\u00d7", true},
+		{"[!\u00e0-\u00ff]", []Option{FoldCase()}, "\u00c0", false},
+		{"[^a-z]x", []Option{FoldCase()}, "Kx", false},
+		{"[^a-z]x", []Option{FoldCase()}, "\u212ax", false},
+		{"[^a-z]x", []Option{FoldCase()}, "1X", true},
+		{"[a\\-z]", []Option{FoldCase()}, "Z", true},
+		{"[a\\-z]", []Option{FoldCase()}, "m", false},
 		// A pattern with a `/` is matched against the whole name even with BaseName.
 		{"b/*.md", []Option{BaseName()}, "a/b/x.md", false},
 		{"a/b/*.md", []Option{BaseName()}, "a/b/x.md", true},
@@ -237,6 +274,14 @@ func FuzzCompile(f *testing.F) {
 			return
 		}
 		m.Match(name)
+		if !doublestar.ValidatePattern(foldPattern(p)) {
+			t.Fatalf("foldPattern(%q) = %q is not a valid pattern", p, foldPattern(p))
+		}
+		// Folding only widens a pattern without negated classes.
+		negated := strings.Contains(p, "[!") || strings.Contains(p, "[^")
+		if !negated && m.Match(name) && !MustCompile(p, FoldCase()).Match(name) {
+			t.Fatalf("%q matches %q but not with FoldCase", p, name)
+		}
 		if f, err := Compile(p, FoldCase(), BaseName()); err == nil {
 			f.Match(name)
 		}

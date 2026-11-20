@@ -26,7 +26,9 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/bmatcuk/doublestar/v4"
 )
@@ -70,9 +72,8 @@ type Matcher interface {
 }
 
 type pattern struct {
-	text string // as compiled: folded when fold is set
-	fold bool
-	base bool // the pattern has no "/" and BaseName was asked for
+	text string // as compiled: with FoldCase, every letter and class closed under folding
+	base bool   // the pattern has no "/" and BaseName was asked for
 }
 
 // Compile checks pattern and returns its matcher.
@@ -107,9 +108,9 @@ func compile(p string, o options) (*pattern, error) {
 	}
 	text := p
 	if o.fold {
-		text = fold(p)
+		text = foldPattern(p)
 	}
-	return &pattern{text: text, fold: o.fold, base: o.base && !strings.Contains(p, "/")}, nil
+	return &pattern{text: text, base: o.base && !strings.Contains(p, "/")}, nil
 }
 
 func (p *pattern) Match(name string) bool {
@@ -118,9 +119,6 @@ func (p *pattern) Match(name string) bool {
 	}
 	if p.base {
 		name = path.Base(name)
-	}
-	if p.fold {
-		name = fold(name)
 	}
 	return doublestar.MatchUnvalidated(p.text, name)
 }
@@ -174,19 +172,137 @@ func (s *set) Match(name string) bool {
 // FromOS converts a file-system path to the `/`-separated form patterns match.
 func FromOS(p string) string { return filepath.ToSlash(p) }
 
-// fold maps every rune to one member of its Unicode simple-fold orbit (the
-// least), so two strings fold equal exactly when they are equal under simple
-// case folding: K, k and the Kelvin sign meet; σ, ς and Σ meet; I and dotless ı
-// do not. Glob syntax is ASCII punctuation, which has no fold partners, so a
-// folded pattern keeps its meaning.
-func fold(s string) string { return strings.Map(foldRune, s) }
-
-func foldRune(r rune) rune {
-	least := r
+// orbit returns r's Unicode simple-fold orbit, r first: K, k and the Kelvin
+// sign are one orbit; σ, ς and Σ are one; I and dotless ı are not.
+func orbit(r rune) []rune {
+	out := []rune{r}
 	for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
-		least = min(least, f)
+		out = append(out, f)
 	}
-	return least
+	return out
+}
+
+var foldables = sync.OnceValue(func() []rune {
+	var out []rune
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		if unicode.SimpleFold(r) != r {
+			out = append(out, r)
+		}
+	}
+	return out
+})
+
+// foldPattern rewrites a validated pattern so that matching it exactly is
+// matching p under simple folding: a name rune matches where any member of its
+// orbit matched p. A literal letter becomes the class of its orbit; a class gains
+// every orbit partner of its members, so a range keeps the membership it was
+// written with (folding endpoints would not: folding is not order-preserving), and
+// a negated class still refuses every partner of what it lists.
+func foldPattern(p string) string {
+	var b strings.Builder
+	for i := 0; i < len(p); {
+		r, n := utf8.DecodeRuneInString(p[i:])
+		switch r {
+		case '\\':
+			e, m := utf8.DecodeRuneInString(p[i+n:])
+			if len(orbit(e)) > 1 {
+				writeOrbit(&b, e)
+			} else {
+				b.WriteString(p[i : i+n+m])
+			}
+			i += n + m
+		case '[':
+			i += n + foldClass(&b, p[i+n:])
+		default:
+			if len(orbit(r)) > 1 {
+				writeOrbit(&b, r)
+			} else {
+				b.WriteString(p[i : i+n])
+			}
+			i += n
+		}
+	}
+	return b.String()
+}
+
+func writeOrbit(b *strings.Builder, r rune) {
+	b.WriteByte('[')
+	for _, o := range orbit(r) {
+		b.WriteRune(o)
+	}
+	b.WriteByte(']')
+}
+
+type interval struct{ lo, hi rune }
+
+// foldClass writes the closed form of the class whose body starts s (just after
+// its '[') and returns the bytes of s it consumed, through the closing ']'. It
+// reads the class as doublestar does.
+func foldClass(b *strings.Builder, s string) int {
+	i := 0
+	b.WriteByte('[')
+	if s[0] == '!' || s[0] == '^' {
+		b.WriteByte(s[0])
+		i++
+	}
+	var set []interval
+	have := false
+	for s[i] != ']' {
+		r, n := utf8.DecodeRuneInString(s[i:])
+		i += n
+		if have && r == '-' && s[i] != ']' {
+			if s[i] == '\\' {
+				i++
+			}
+			hi, m := utf8.DecodeRuneInString(s[i:])
+			i += m
+			set[len(set)-1].hi = hi
+			have = false
+			continue
+		}
+		if r == '\\' {
+			r, n = utf8.DecodeRuneInString(s[i:])
+			i += n
+		}
+		set = append(set, interval{r, r})
+		have = true
+	}
+	in := func(r rune) bool {
+		for _, iv := range set {
+			if iv.lo <= r && r <= iv.hi {
+				return true
+			}
+		}
+		return false
+	}
+	for _, iv := range set {
+		writeClassRune(b, iv.lo)
+		if iv.hi != iv.lo {
+			b.WriteByte('-')
+			writeClassRune(b, iv.hi)
+		}
+	}
+	for _, f := range foldables() {
+		if in(f) {
+			for _, o := range orbit(f)[1:] {
+				if !in(o) {
+					set = append(set, interval{o, o})
+					writeClassRune(b, o)
+				}
+			}
+		}
+	}
+	b.WriteByte(']')
+	return i + 1
+}
+
+// writeClassRune writes r as one class member; ASCII punctuation is escaped so
+// it never reads as a range, a negation or the end of the class.
+func writeClassRune(b *strings.Builder, r rune) {
+	if r < utf8.RuneSelf && !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+		b.WriteByte('\\')
+	}
+	b.WriteRune(r)
 }
 
 // expansions counts the literal patterns the `{}` groups of p multiply out to,
