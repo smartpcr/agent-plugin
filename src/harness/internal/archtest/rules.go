@@ -68,13 +68,42 @@ var Rules = []Rule{
 	{HarnessModule, "harness implementation packages are under internal/", implementationInternal},
 	{HarnessModule, "internal/llm/vocab imports no harness package but internal/schema (DH-T-LLM-1)", importsOnly(VocabPackage, SchemaPackage)},
 	{HarnessModule, "cmd/dsh embeds the zone database through time/tzdata (DH-T-TEMPORAL-5)", mustImport(HarnessModule+"/cmd/dsh", "time/tzdata")},
+	{HarnessModule, "only internal/boot/yamlx imports the YAML module (DH-T-YAML-1)", onlyImporter(YAMLModule, YAMLXPackage)},
+	{HarnessModule, "only internal/boot/expr imports the expression module (DH-D-LOADER-5)", onlyImporter(ExprModule, ExprPackage)},
 }
 
 // Packages the rules name.
 const (
 	VocabPackage  = HarnessModule + "/internal/llm/vocab"
 	SchemaPackage = HarnessModule + "/internal/schema"
+	YAMLXPackage  = HarnessModule + "/internal/boot/yamlx"
+	ExprPackage   = HarnessModule + "/internal/boot/expr"
 )
+
+// Third-party modules with a single importer.
+const (
+	YAMLModule = "go.yaml.in/yaml/v4"
+	ExprModule = "github.com/expr-lang/expr"
+)
+
+// onlyImporter fails every harness package other than owner that directly imports a
+// package of module.
+func onlyImporter(module, owner string) func([]Package) []string {
+	return func(pkgs []Package) []string {
+		var bad []string
+		for _, p := range pkgs {
+			if p.ImportPath == owner || !within(p.ImportPath, HarnessModule) {
+				continue
+			}
+			for _, imp := range p.Imports {
+				if within(imp, module) {
+					bad = append(bad, fmt.Sprintf("%s imports %s; only %s may", p.ImportPath, imp, owner))
+				}
+			}
+		}
+		return bad
+	}
+}
 
 // importsOnly fails pkg when it directly imports a package of the three modules
 // other than allowed. Standard and third-party imports are not its concern.

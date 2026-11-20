@@ -34,4 +34,16 @@ stages:
   DH-S-18:
     - id: DH-E-TOOLCHAIN-2
       authored: DH-S-1
+    # The watcher, search and durable-replace scenarios of the leaf packages built in
+    # DH-S-4 (impl.md steps 18.7, 18.8, 18.11).
+    - id: DH-E-CHOKIDAR-1
+      authored: DH-S-4
+    - id: DH-E-CHOKIDAR-2
+      authored: DH-S-4
+    - id: DH-E-NODEFS-1
+      authored: DH-S-4
+    - id: DH-E-RIPGREP-1
+      authored: DH-S-4
+    - id: DH-E-RIPGREP-2
+      authored: DH-S-4
   DH-S-22: []
