@@ -30,7 +30,8 @@ still passes unchanged. Re-checked again after the third iteration (acquisition-
 notification delivery, root `Unloading`/`Disposed` state) and the fourth (notification
 dispatcher with a delivery barrier in `Wait`/`Dispose`) and the fifth (serialised
 dispatcher, caller-delivering barrier) and the sixth (creation notification starts the
-load, bounded barrier): still passes unchanged.
+load, bounded barrier) and the seventh (barriers deliver on fresh goroutines, creation-order
+announcement): still passes unchanged.
 
 ### Tests
 
@@ -46,6 +47,6 @@ ok  github.com/smartpcr/agent-plugin/src/go/timer
 | --- | --- |
 | `DH-T-CORDIS-1` | `TestCleanupCannotRegisterWhileItsFiberUnloads`, `TestRootDisposeIsFinalAndExclusive`, `TestRootLifecycleHandlersCannotBlockTeardown`, `TestHandlerWaitingForALoadThatWaitsForAChild`, `TestDisposeDeliversItsNotificationsPastABlockedHandler`, `TestBarrierIgnoresNotificationsPastItsTarget` (`tree_internal_test.go`) |
 | TC-02a | `TestConcurrentDisposeWaitsForEveryCleanup` |
-| `DH-T-CORDIS-2` | `TestRunningCleanupHoldsBackSecondDisposeAndProvider`, `TestDependentUnloadsBeforeItsProvider`, `TestUnloadWaitsForInFlightAcquisition`, `TestNotificationHandlerCanDisposeTheAcquiringFiber` |
+| `DH-T-CORDIS-2` | `TestRunningCleanupHoldsBackSecondDisposeAndProvider`, `TestDependentUnloadsBeforeItsProvider`, `TestUnloadWaitsForInFlightAcquisition`, `TestNotificationHandlerCanDisposeTheAcquiringFiber`, `TestAcquisitionBarrierDoesNotRunHandlersOnItsStack` |
 | `DH-T-CORDIS-3` | `TestPendingFiberReleasesEffectsAndCreationHandlerCanDispose`, `TestCreationHandlerRunsBeforeLoadUnderConcurrentDelivery`, `TestBlockedCreationHandlerHoldsTheLoadAgainstOtherDelivery` |
 | `DH-T-CORDIS-4` | `TestFiberLifetimeIsCancelledByUnload` |

@@ -346,7 +346,7 @@ func (f *Fiber) Wait() error {
 	t := f.t
 	lo := t.mark()
 	t.lock()
-	announced, created, seq := f.announced || f.disposed, f.createdSeq, f.announceSeq
+	announced, created, seq := f.announced, f.createdSeq, f.announceSeq
 	t.unlockQuiet()
 	if !announced {
 		// Wait for the creation handlers too, so they still run before the load.

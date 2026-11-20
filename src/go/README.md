@@ -305,12 +305,15 @@ upstream; tests in `cordis/unload_test.go`):
   teardown). `Fiber.Wait` and `Fiber.Dispose` return only once the notifications raised
   during the call have been delivered: when the dispatcher is busy with a handler that
   started before the call (the one the caller runs inside, or an unrelated blocked
-  one), the caller delivers the queued notifications itself, in order. So a handler may
+  one), the caller starts the queued notifications, in order, each on a fresh goroutine,
+  never on its own stack, which may be inside an effect acquisition. So a handler may
   dispose or wait for the fiber that raised it, or wait for a load that creates and
   waits for children, and an unrelated `Dispose` is not held up by a blocked handler.
-  Such a delivery can re-enter the handler that called `Wait` or `Dispose` (as
-  upstream's synchronous emit does), so handlers guard one-shot work with a flag
-  rather than `sync.Once`. A barrier waits only for its own target notifications, never
+  Such a delivery can run a handler concurrently with the handler that called `Wait` or
+  `Dispose`, so handlers guard one-shot work with a flag rather than `sync.Once`; a
+  handler of a notification raised by a `Wait`/`Dispose` call must not wait for that
+  call's caller. Fibers are announced in creation order, so a creation handler must not
+  wait for the load of a fiber created after it. A barrier waits only for its own target notifications, never
   for a later one that is still running.
   Disposing the root is
   final in the same way: the root refuses new effects and child fibers, its state is

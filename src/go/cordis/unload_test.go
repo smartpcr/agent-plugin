@@ -243,7 +243,7 @@ func TestPendingFiberReleasesEffectsAndCreationHandlerCanDispose(t *testing.T) {
 		var ran, otherCalled, disposing atomic.Bool
 		root.Internal().OnPlugin(func(*cordis.Fiber) { panic("handler failure") })
 		root.Internal().OnPlugin(func(f *cordis.Fiber) {
-			// Dispose delivers its own notifications, so this handler is re-entered.
+			// Dispose delivers its own notifications, so this handler runs again.
 			if f.Name() == "doomed" && disposing.CompareAndSwap(false, true) {
 				f.Dispose()
 			}
@@ -691,4 +691,46 @@ func TestBlockedCreationHandlerHoldsTheLoadAgainstOtherDelivery(t *testing.T) {
 	Within(t, "wait", func() { NoError(t, doomed.Wait()) })
 	Equal(t, cordis.Disposed, doomed.State())
 	True(t, !ran.Load(), "the body of a fiber disposed on creation ran")
+}
+
+// A barrier inside an effect acquisition never runs a handler on the acquisition's
+// stack: a handler it lets through can dispose the root, which waits for that
+// acquisition, even while an unrelated handler blocks the dispatcher.
+func TestAcquisitionBarrierDoesNotRunHandlersOnItsStack(t *testing.T) {
+	root, _ := Quiet()
+	sibling := MustWait(t, Must(root.Apply("sibling", func(*cordis.Context) error { return nil })))
+	blocking, gate := make(chan struct{}), make(chan struct{})
+	defer close(gate)
+	var blocked, claimed atomic.Bool
+	root.Internal().OnStatus(func(f *cordis.Fiber, _, _ cordis.FiberState) {
+		if f.Name() == "blocker" && blocked.CompareAndSwap(false, true) {
+			close(blocking)
+			<-gate
+		}
+	})
+	handled := make(chan struct{})
+	root.Internal().OnService(func(name string, value any) {
+		if name == "svc" && value != nil && claimed.CompareAndSwap(false, true) {
+			root.Dispose()
+			close(handled)
+		}
+	})
+	go func() { _, _ = root.Apply("blocker", func(*cordis.Context) error { return nil }) }()
+	Within(t, "dispatcher blocked", func() { <-blocking })
+
+	var cleaned atomic.Bool
+	Within(t, "effect", func() {
+		_, _ = root.Effect("acquire", func() (cordis.Disposer, error) {
+			if _, err := root.Provide("svc", 1); err != nil {
+				return nil, err
+			}
+			if err := sibling.Wait(); err != nil {
+				return nil, err
+			}
+			return func() error { cleaned.Store(true); return nil }, nil
+		})
+	})
+	Within(t, "handler", func() { <-handled })
+	Equal(t, cordis.Disposed, root.Fiber().State())
+	True(t, cleaned.Load(), "the acquisition's cleanup did not run")
 }
