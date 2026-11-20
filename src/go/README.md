@@ -38,7 +38,7 @@ gofmt -l .                    # must print nothing
 
 | cordis (TypeScript) | Go | Notes |
 | --- | --- | --- |
-| `new Context()` | `cordis.New()` | one tree: store, registry, events, logger |
+| `new Context()` | `cordis.New(options...)` | one tree: store, registry, events, logger; `WithExporters`, `WithStrictConfig` |
 | `Context` + `Proxy` get-trap | `ctx.Get(name)`, `ServiceKey[T].Get(ctx)` | explicit resolution; errors wrap `ErrNotInjected` / `ErrUnavailable` |
 | `locate()` | `store.locateLocked` | stops at a context that isolates the name again |
 | `ctx.get(name)` (unchecked, optional) | `ctx.Lookup(name)`, `ServiceKey[T].Lookup(ctx)` | the active provider in the caller's realm, or `ok == false`; no inject check, never fails |
@@ -54,6 +54,8 @@ gofmt -l .                    # must print nothing
 | class component | `cordis.Construct[C, T](name, func(*Context, C) (T, error), options...)` | instance `Init() error` and `io.Closer` are honoured |
 | `static inject = [...]` | `cordis.WithInject(names...)`, `cordis.WithInjectConfig(name, cfg)` | |
 | Standard Schema `Config` | `Validate() error` on the config type, or `cordis.WithSchema` | resolved on every load |
+| `fiber.rawConfig`, `fiber.effectiveConfig`, `fiber.resolveConfig(candidate)` (patch V15) | `fiber.Config()`, `fiber.EffectiveConfig()`, `fiber.ResolveConfig(candidate)`, `fiber.RetainConfig(raw)` | three distinct views; resolving a candidate stores nothing |
+| `ctx.on('internal/config', …)` | `ctx.OnConfig(hook)` | tree-wide, owned by the registering fiber; transforms or rejects a raw candidate before the schema |
 | `ctx.inject(deps, fn)` | `ctx.Inject(names, body)` / `ctx.Apply(name, body, inject...)` | |
 | `registry.replace(old, next)` | `ctx.Registry().Replace(old, next)` | later uses of `old` are forwarded |
 | `Service.init` | `Initializer.Init()` | gates dependents |
@@ -144,6 +146,39 @@ root.Dispose()                                                // whole tree, lea
 cordis.AcceptUpdate(ctx, func(next HeartbeatOptions) { interval.Store(next.IntervalMs) })
 ```
 
+### Config views and config hooks
+
+```go
+fiber.Config()                   // raw: as handed in, kept for the next load
+fiber.EffectiveConfig()          // what the running instance holds; ok == false until it loads
+fiber.ResolveConfig(candidate)   // hooks, then schema; changes neither view
+fiber.RetainConfig(raw)          // store a raw config without an update
+
+// A hook sees every fiber's raw candidate before its schema, and ends with its owner.
+ctx.OnConfig(func(fiber *cordis.Fiber, candidate any) (any, error) {
+    return expand(candidate) // transform, or return an error to reject it
+})
+```
+
+An `Update` accepted in place becomes the effective config only if no later update,
+restart or disposal happened while the update hooks ran.
+
+### Tree options
+
+```go
+root := cordis.New(
+    cordis.WithExporters(bootExporter), // exactly these exporters; none with no argument
+    cordis.WithStrictConfig(),          // an unknown JSON key or trailing data fails the load
+)
+```
+
+`cordis.New()` with no option keeps the console exporter on the standard streams. The
+tree never closes the exporters its creator passed. In a strict tree, JSON config
+(`json.RawMessage`, `[]byte` or `map[string]any`) is decoded with unknown keys refused
+and nothing allowed after the first value; the `ConfigError` names the key (or the
+field of a type mismatch) in its issue's `Path`. A component declared with
+`cordis.LenientConfig()` is exempt, and a typed Go config is unaffected.
+
 ### Inline bodies and events
 
 ```go
@@ -226,9 +261,11 @@ Go port never runs component code while it holds a tree's lock. Lifecycle notifi
 to an ordered outbox while the lock is held. Whichever goroutine releases the lock next
 delivers them, one deliverer at a time, so a handler may call back into the context.
 Read-only calls (`State`, `Get`, `Has`, …) release the lock without delivering, so reading
-state never runs handlers on the caller's goroutine. Two callbacks do run under the
-lock: `Checker.Available` and a component's schema. They must be quick and must not
-call into the context.
+state never runs handlers on the caller's goroutine. One callback does run under the
+lock: `Checker.Available`. It must be quick and must not call into the context. Config
+is resolved outside the lock, at the start of each load once the fiber's injections are
+active, so config hooks (`ctx.OnConfig`) and a component's schema run unlocked; a schema
+still must not call into the context.
 
 **Goroutines instead of `Task.Yield`.** Each load or unload runs on its own goroutine,
 started from inside the lock, so a component body never runs inside `ctx.Use()`. A body

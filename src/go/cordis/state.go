@@ -1,6 +1,13 @@
 package cordis
 
 // FiberState is the lifecycle state of a fiber.
+//
+// A fiber's config has three views (DH-D-CORDIS-5): the raw config kept for the next
+// load (Fiber.Config), in every state; the effective config the running instance
+// holds (Fiber.EffectiveConfig), from the moment a load resolves it until the fiber
+// unloads, so never while Pending, after a failed load or once Disposed; and a
+// candidate checked without being applied (Fiber.ResolveConfig), which changes
+// neither.
 type FiberState int
 
 const (

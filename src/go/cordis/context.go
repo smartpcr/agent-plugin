@@ -32,9 +32,16 @@ type Context struct {
 }
 
 // New creates a root context: a new tree with its own service store, registry, event
-// bus and logger. The logger is provided as the "logger" service.
-func New() *Context {
-	t := &tree{}
+// bus and logger. The logger is provided as the "logger" service. With no option the
+// logger writes to the process's standard streams through a console exporter;
+// WithExporters chooses its exporters instead, and WithStrictConfig makes JSON config
+// decoding strict.
+func New(options ...TreeOption) *Context {
+	var settings treeOptions
+	for _, option := range options {
+		option(&settings)
+	}
+	t := &tree{strict: settings.strict}
 	root := &Context{
 		t:         t,
 		isolate:   newChainMap[*IsolateKey](nil),
@@ -43,7 +50,11 @@ func New() *Context {
 	root.root = root
 	t.root = root
 	t.internal = &Internal{t: t}
-	t.loggers = newLoggerService()
+	if settings.setExporters {
+		t.loggers = newLoggerServiceWith(settings.exporters)
+	} else {
+		t.loggers = newLoggerService()
+	}
 	t.store = &store{t: t, byKey: map[*IsolateKey]*serviceImpl{}}
 	t.registry = &Registry{t: t, runtimes: map[*Component]*Runtime{}, aliases: map[*Component]*Component{}}
 	t.events = &eventHub{t: t, hooks: map[any][]*hook{}}
@@ -328,6 +339,16 @@ func (c *Context) Inject(names []string, body func(ctx *Context) error) (*Fiber,
 // dropped when the fiber unloads.
 func (c *Context) OnUpdate(handler UpdateHandler, prepend bool) (*EffectHandle, error) {
 	return c.fiber.addUpdateHook(handler, prepend)
+}
+
+// OnConfig registers a config hook, owned by this context's fiber, that sees the raw
+// config candidate of every fiber of the tree before its schema runs: on each load,
+// each Update and each Fiber.ResolveConfig. Hooks run in registration order, each
+// receiving the candidate the previous one returned; one may transform the candidate
+// or reject it with an error, and a panic rejects it. The raw config is never changed
+// by a hook. The hook is removed when its owner unloads.
+func (c *Context) OnConfig(hook ConfigHook) (*EffectHandle, error) {
+	return c.fiber.addConfigHook(hook)
 }
 
 // AcceptUpdate registers an update hook that accepts every config of type C in place,

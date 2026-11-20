@@ -3,9 +3,12 @@ package cordis
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"reflect"
 	"slices"
+	"strings"
 )
 
 // None is the config type of a component that takes no config.
@@ -39,8 +42,9 @@ type Component struct {
 	inject   []Dependency
 	schema   Schema
 	defaults any // func() C
+	lenient  bool
 	apply    func(ctx *Context, config any) (any, error)
-	resolve  func(config any) (any, error)
+	resolve  func(config any, strict bool) (any, error)
 }
 
 // Option configures a component.
@@ -65,6 +69,12 @@ func WithInjectConfig(name string, config any) Option {
 // WithSchema replaces the default schema (which calls Validator.Validate).
 func WithSchema(schema Schema) Option {
 	return func(c *Component) { c.schema = schema }
+}
+
+// LenientConfig exempts the component from WithStrictConfig: unknown keys in its JSON
+// config are ignored, as in a tree without the option.
+func LenientConfig() Option {
+	return func(c *Component) { c.lenient = true }
 }
 
 // WithDefaults supplies the config used when none is given, and the base that JSON
@@ -129,8 +139,9 @@ func newComponent[C any](name string, options []Option) *Component {
 		defaults = typed
 	}
 	schema := c.schema
-	c.resolve = func(input any) (any, error) {
-		value, err := convertConfig(input, defaults)
+	lenient := c.lenient
+	c.resolve = func(input any, strict bool) (any, error) {
+		value, err := convertConfig(input, defaults, strict && !lenient)
 		if err != nil {
 			return nil, err
 		}
@@ -152,8 +163,9 @@ func newComponent[C any](name string, options []Option) *Component {
 	return c
 }
 
-// convertConfig turns a config as handed in (nil, a C, a *C, or JSON) into C.
-func convertConfig[C any](input any, defaults func() C) (C, error) {
+// convertConfig turns a config as handed in (nil, a C, a *C, or JSON) into C. With
+// strict set, JSON with an unknown key or trailing data is rejected.
+func convertConfig[C any](input any, defaults func() C, strict bool) (C, error) {
 	var zero C
 	switch value := input.(type) {
 	case nil:
@@ -166,30 +178,80 @@ func convertConfig[C any](input any, defaults func() C) (C, error) {
 		}
 		return *value, nil
 	case json.RawMessage:
-		return decodeConfig(value, defaults)
+		return decodeConfig(value, defaults, strict)
 	case []byte:
-		return decodeConfig(value, defaults)
+		return decodeConfig(value, defaults, strict)
 	case map[string]any:
 		raw, err := json.Marshal(value)
 		if err != nil {
 			return zero, &ConfigError{Issues: []ConfigIssue{{Message: err.Error()}}}
 		}
-		return decodeConfig(raw, defaults)
+		return decodeConfig(raw, defaults, strict)
 	}
 	return zero, &ConfigError{Issues: []ConfigIssue{{Message: fmt.Sprintf("expected %T, got %T", zero, input)}}}
 }
 
-func decodeConfig[C any](raw []byte, defaults func() C) (C, error) {
+func decodeConfig[C any](raw []byte, defaults func() C, strict bool) (C, error) {
 	value := defaults()
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
 		return value, nil
 	}
-	if err := json.Unmarshal(trimmed, &value); err != nil {
-		var zero C
-		return zero, &ConfigError{Issues: []ConfigIssue{{Message: err.Error()}}}
+	var zero C
+	if !strict {
+		if err := json.Unmarshal(trimmed, &value); err != nil {
+			return zero, decodeError(err)
+		}
+		return value, nil
+	}
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&value); err != nil {
+		return zero, decodeError(err)
+	}
+	end := decoder.InputOffset()
+	var extra json.RawMessage
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		return zero, &ConfigError{Issues: []ConfigIssue{{
+			Message: fmt.Sprintf("trailing data after the config at offset %d: %q", end, trailing(trimmed, end)),
+		}}}
 	}
 	return value, nil
+}
+
+// decodeError turns a JSON decoding error into a ConfigError whose issue carries the
+// path of the offending field: the unknown key, or the field of a type mismatch.
+func decodeError(err error) error {
+	issue := ConfigIssue{Message: err.Error()}
+	var typeError *json.UnmarshalTypeError
+	switch {
+	case errors.As(err, &typeError):
+		issue.Path = typeError.Field
+	case strings.HasPrefix(err.Error(), unknownFieldPrefix):
+		name := strings.TrimPrefix(err.Error(), unknownFieldPrefix)
+		if end := strings.IndexByte(name, '"'); end >= 0 {
+			name = name[:end]
+		}
+		issue.Message = "unknown key"
+		issue.Path = name
+	}
+	return &ConfigError{Issues: []ConfigIssue{issue}}
+}
+
+// unknownFieldPrefix starts the error json.Decoder reports for an unknown key; the
+// standard library has no typed error for it.
+const unknownFieldPrefix = `json: unknown field "`
+
+// trailing returns a short excerpt of data from offset, for an error message.
+func trailing(data []byte, offset int64) string {
+	if offset < 0 || offset > int64(len(data)) {
+		offset = int64(len(data))
+	}
+	rest := bytes.TrimSpace(data[offset:])
+	if len(rest) > 32 {
+		rest = append(slices.Clone(rest[:32]), "..."...)
+	}
+	return string(rest)
 }
 
 // zeroConfig returns the zero C, allocating it when C is a pointer type.
