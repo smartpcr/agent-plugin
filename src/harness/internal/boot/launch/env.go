@@ -257,7 +257,12 @@ func readEnvFile(read ReadFile, path string, from Source, goos string) (map[stri
 				"%s:%d sets %s, a proxy or endpoint name; set it in the home's config/.env or the process environment",
 				homedir.Display(path), v.Line, v.Name)
 		}
-		m[key(v.Name, goos)] = entry{name: v.Name, value: v.Value, from: from}
+		// ParseDotenv's check is exact; on Windows Foo and FOO are one variable.
+		k := key(v.Name, goos)
+		if _, dup := m[k]; dup {
+			return nil, &ParseError{File: homedir.Display(path), Line: v.Line, Name: v.Name, Msg: "assigned twice"}
+		}
+		m[k] = entry{name: v.Name, value: v.Value, from: from}
 	}
 	return m, nil
 }
