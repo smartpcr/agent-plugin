@@ -6,7 +6,7 @@
 //	os                  "windows", "linux" or "darwin"
 //	cwd                 working directory
 //	home(part, ...)     path under the harness home (a pure join)
-//	launch.<key>        profile, home, cwd, version, tty, safe
+//	launch.<key>        profile, home, cwd, version, os, tty, safe
 //	use.<service>.<f>   declared data view of an injected service; config only
 //
 // Expressions are compiled against a typed environment, so an unknown name fails
@@ -39,6 +39,7 @@ type Launch struct {
 	Home    string `expr:"home"`
 	Cwd     string `expr:"cwd"`
 	Version string `expr:"version"`
+	OS      string `expr:"os"`
 	TTY     bool   `expr:"tty"`
 	Safe    bool   `expr:"safe"`
 }

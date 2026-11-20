@@ -160,7 +160,7 @@ type Item struct {
 func Build(sets ...[]Item) (*Catalog, error) // duplicate or malformed name, nil component: error
 
 // launch: fixed before the tree exists.
-type Data struct{ Profile, Home, Cwd, Version string; TTY, Safe bool; Overlays, Words []string }
+type Data struct{ Profile, Home, Cwd, Version, OS, User string; Build BuildIdentity; Args []string; TTY, Safe bool; Overlays, Words []string }
 type Env interface{ Lookup(name string) (value string, from Source, ok bool) } // Source: process | project-file | home-file | system (proxy names only, lowest precedence)
 type Reason int // Completed | Interrupted | Terminated | InputClosed | ClientStalled | Requested | Fatal
 type App interface {
@@ -268,7 +268,7 @@ The service key of a component is a Go identifier (`kv.Key`) and is not a config
 
 | Name | Content |
 |---|---|
-| `launch.profile`, `launch.home`, `launch.cwd`, `launch.version`, `launch.tty`, `launch.safe` | The fields of `launch.Data` except `Words` and `Overlays`. `launch.profile` is the profile's name. The app's words are parsed by the app's own start-up component and reach config only as that component's view |
+| `launch.profile`, `launch.home`, `launch.cwd`, `launch.version`, `launch.os`, `launch.tty`, `launch.safe` | The fields of `launch.Data` except `Args`, `Words`, `Overlays`, `User` and `Build`. `launch.profile` is the profile's name. The app's words are parsed by the app's own start-up component and reach config only as that component's view |
 | `env.NAME` | The launch environment. A name on A17's list of secret names is refused when the expression is checked |
 | `use.<service>.<field>` | The `View` type the providing component declares in the catalogue: plain data fixed for the life of the provider. A component declares one only when a shipped layer reads it: in the first build that is A18's web launch values alone; the headless, SDK and ACP carriers declare none |
 
