@@ -190,8 +190,16 @@ func check(argv []string) error {
 	return nil
 }
 
+// isBatch reports whether Windows would run path through cmd.exe. Win32 path
+// normalisation drops an alternate data stream suffix (":...") and trailing dots
+// and spaces, so `run.bat `, `run.bat.` and `run.cmd::$DATA` are batch files too.
 func isBatch(path string) bool {
-	ext := strings.ToLower(filepath.Ext(path))
+	base := path[strings.LastIndexAny(path, `\/`)+1:]
+	if i := strings.IndexByte(base, ':'); i >= 0 {
+		base = base[:i]
+	}
+	base = strings.TrimRight(base, ". ")
+	ext := strings.ToLower(filepath.Ext(base))
 	return ext == ".bat" || ext == ".cmd"
 }
 
