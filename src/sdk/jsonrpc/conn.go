@@ -1,6 +1,7 @@
 package jsonrpc
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -284,23 +285,28 @@ func (c *Conn) writeLoop() {
 
 func (c *Conn) readLoop() {
 	for {
-		f, err := c.rd.Read()
+		line, err := c.rd.ReadLine()
 		select {
 		case <-c.done:
 			return
 		default:
 		}
 		if err != nil {
-			switch {
-			case HasReason(err, ReasonLineTooLong):
+			if HasReason(err, ReasonLineTooLong) {
 				c.answerAndClose(err)
 				return
-			case HasReason(err, ReasonParseError), HasReason(err, ReasonInvalidRequest):
-				c.respond(ID{}, nil, err)
-				continue
 			}
 			c.closeWith(newError(ReasonClosed, "the peer's input ended: "+err.Error()))
 			return
+		}
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		f, err := Decode(line)
+		if err != nil {
+			// The decode error is a parse-error or invalid-request.
+			c.respond(requestID(line), nil, err)
+			continue
 		}
 		switch f := f.(type) {
 		case *Request:
@@ -311,6 +317,48 @@ func (c *Conn) readLoop() {
 			c.settle(f)
 		}
 	}
+}
+
+// requestID recovers the id of a request frame that Decode refused, so the error
+// reaches the peer's pending call rather than the null id. It answers the null id
+// when the id cannot be detected: the line is not one JSON object, it has no
+// "method" (an answer to a malformed response would land in the peer's own id
+// space), "id" is absent, repeated or not a valid non-null id.
+func requestID(line []byte) ID {
+	if !json.Valid(line) {
+		return ID{}
+	}
+	dec := json.NewDecoder(bytes.NewReader(line))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return ID{}
+	}
+	var raw json.RawMessage
+	ids, method := 0, false
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return ID{}
+		}
+		var v json.RawMessage
+		if err := dec.Decode(&v); err != nil {
+			return ID{}
+		}
+		switch tok {
+		case "id":
+			ids++
+			raw = v
+		case "method":
+			method = true
+		}
+	}
+	if !method || ids != 1 {
+		return ID{}
+	}
+	id, ok := parseID(raw)
+	if !ok {
+		return ID{}
+	}
+	return id
 }
 
 // answerAndClose writes one error frame for a fatal read fault, then ends the
