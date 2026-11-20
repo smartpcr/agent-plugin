@@ -24,7 +24,7 @@ The module has its own `go.mod` and is not part of the root `go.work`; run it wi
 |---|------|---------------|
 | 1 | `gofmt` | any `.go` file not `gofmt`-formatted (`testdata/`, `vendor/`, nested modules skipped) |
 | 2 | `vet` | `go vet ./...`, then the own analyzers through `go vet -vettool=<harness-gate>` (QG-2) |
-| 3 | `test` | `go test -race -shuffle=on -count=1 ./...` per module with `CGO_ENABLED=1` (QG-4) |
+| 3 | `test` | `go test -tags= -race -shuffle=on -count=1 ./...` per module with `CGO_ENABLED=1` (QG-4); the `replay` and `scenario` layers are excluded |
 | 4 | `coverage` | any package under 85% of statements, profiles merged across processes (QG-3) |
 | 5 | `trace` | `tools/harness-trace verify` (QG-9); a root without the tool fails |
 | 6 | `budget` | a `TestBudget*` test over its compiled-in budget (QG-7) |
@@ -40,10 +40,28 @@ file: a finding is fixed in the code, not listed away (QG-2, QG-3, DH-ADR-14).
 | `nosleep` | no reference to `time.Sleep` in a `_test.go` file |
 | `onespawn` | no `os/exec` import outside `internal/world/subprocess` (SP-12); `_test.go` files are exempt |
 | `cleanup` | a test that starts a goroutine, a listener (`net.Listen*`, `httptest.New*Server`) or a child process (`os.StartProcess`, `(*exec.Cmd).Start`) registers `t.Cleanup` (QG-5) |
+| `fuzzcheck` | a package with a `//dsh:untrusted-parser` line in a non-test file has a `func FuzzXxx(f *testing.F)` in its own test files, a `seeds_test.go` (no `os` / `io/ioutil` import), every target seeds the `f` it receives through `f.Add` in `seeds_test.go` (directly or via the seeded parameter of a helper there, never through a local that shadows it), and every `f.Add` argument is compiled in -- literals of unnamed types, embed bytes, `seeds_test.go` data and pure stdlib calls (`bytes`, `strings`, `strconv`, ...; not `fmt`), never a call such as `readSeed()`, a write through a local or package-level alias (`alias := b; copy(alias, readSeed())`, `var alias = seed`, also through multi-hop chains in other test files; read-only chains, number/string copies and same-named variables of other scopes are fine) or a shadowed `true`/`nil` (QG-6, DH-ADR-TOOLCHAIN-3; rules in `analyzers/fuzzseeds.go` and `src/harness/internal/testkit/README.md`) |
 
 The same binary is the vet tool: started with `HARNESS_GATE_VETTOOL=1` it runs
 `unitchecker.Main` over the analyzers. Their fixtures live in
 `analyzers/testdata/src` and are checked with `analysistest`.
+
+`fuzzcheck` decides over a whole package: `go vet` hands it a package together
+with its in-package `_test.go` files. A loader that also yields the package without
+its tests (`go/packages` with `Tests`, as `analysistest` uses) is skipped for that
+variant when test files of the package exist on disk, and the test variant is
+judged instead. `TestFuzzCheckRunsInVetGate` proves the rule through the real
+`go vet -vettool` path.
+
+## Test layers and build tags (DH-ADR-TOOLCHAIN-4)
+
+The `replay` and `scenario` build tags (`LayerTags`) mark the layers the keyless
+gate never runs: `*_replay_test.go` and `*_scenario_test.go` files carry
+`//go:build replay` / `//go:build scenario`. The `test` and `coverage` gates (and
+the `go list` the coverage gate plans with) pass `-tags=`, an explicit empty tag
+list that overrides any `-tags` in `GOFLAGS`, so neither layer can run in, fail or
+pass the default gate. `testdata/layer-tagged` holds an always-failing test of each
+layer; the gate passes on it, and `go test -tags scenario` (or `replay`) fails.
 
 ## Race detector (QG-4)
 
@@ -90,7 +108,7 @@ The coverage gate owns one `GOCOVERDIR` per module and, for every package with
 tests, runs
 
 ```sh
-go test -c -cover -covermode=set -coverpkg=./... -o <tmp>/bin/pkgN.test <pkg>
+go test -c -tags= -cover -covermode=set -coverpkg=./... -o <tmp>/bin/pkgN.test <pkg>
 GOCOVERDIR=<tmp>/covdata <tmp>/bin/pkgN.test -test.count=1 -test.timeout=10m -test.skip='^TestBudget' -test.gocoverdir=<tmp>/covdata   # in the package directory
 ```
 
@@ -151,6 +169,7 @@ override can relax a budget.
 | `coverage-child` | passes `coverage` only with both child processes' profiles merged |
 | `budget-exceeded` | `budget` (`TestBudgetX` honours `DSH_BUDGET_RELAX` unless cleared) |
 | `cross-broken` | `cross-compile` (`windows/arm64` only) |
+| `layer-tagged` | passes `test` and `coverage`: its always-failing `replay` and `scenario` tests are excluded |
 
 `gates_test.go` copies each into `t.TempDir()`, runs a freshly built
 `harness-gate` against it and checks the named gate, the non-zero exit and that no

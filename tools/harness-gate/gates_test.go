@@ -249,6 +249,79 @@ func newTestConfig(t *testing.T, root string) *Config {
 	return cfg
 }
 
+// TestLayerTaggedTestsAreExcludedFromDefaultGate: replay- and scenario-tagged tests
+// that always fail leave the test and coverage gates passing, even when GOFLAGS asks
+// for the tags; built with -tags scenario (or replay) they fail (DH-ADR-TOOLCHAIN-4;
+// DH-T-TOOLCHAIN-4).
+func TestLayerTaggedTestsAreExcludedFromDefaultGate(t *testing.T) {
+	root := scratch(t, "layer-tagged")
+	for _, goflags := range []string{"", "-tags=" + strings.Join(LayerTags, ",")} {
+		t.Run("GOFLAGS="+goflags, func(t *testing.T) {
+			cfg := newTestConfig(t, root)
+			cfg.Environ = setEnv(cfg.Environ, "GOFLAGS="+goflags)
+			for _, gate := range []Gate{Gates(cfg)[2], Gates(cfg)[3]} {
+				var out bytes.Buffer
+				if err := gate.Run(context.Background(), &out); err != nil {
+					t.Errorf("%s gate: %v\n%s", gate.Name, err, out.String())
+				}
+				if strings.Contains(out.String(), "AlwaysFails") {
+					t.Errorf("%s gate ran a layer test:\n%s", gate.Name, out.String())
+				}
+			}
+		})
+	}
+	for tag, test := range map[string]string{"scenario": "TestScenarioAlwaysFails", "replay": "TestReplayAlwaysFails"} {
+		cfg := newTestConfig(t, root)
+		err := cfg.goStep(context.Background(), &bytes.Buffer{}, root, cfg.env(), "test", "-tags", tag, "-count=1", "./...")
+		if err == nil || !strings.Contains(err.Error(), "failing tests: "+test) {
+			t.Errorf("go test -tags %s = %v, want %s to fail", tag, err, test)
+		}
+	}
+}
+
+// TestFuzzCheckRunsInVetGate runs the vet gate, through the built vet tool, on a
+// marked package whose test files go vet analyzes with it: seeded, it passes;
+// without seeds_test.go, the fuzzcheck finding fails the gate.
+func TestFuzzCheckRunsInVetGate(t *testing.T) {
+	root := t.TempDir()
+	files := map[string]string{
+		"go.mod":        "module example.com/fuzzseeded\n\ngo 1.26.0\n",
+		"p.go":          "// Package p decodes untrusted frames.\npackage p\n\n//dsh:untrusted-parser\n\n// Decode returns the frame length.\nfunc Decode(b []byte) int { return len(b) }\n",
+		"p_test.go":     "package p\n\nimport \"testing\"\n\nfunc TestDecode(t *testing.T) {\n\tif Decode(nil) != 0 {\n\t\tt.Fatal(\"Decode\")\n\t}\n}\n",
+		"seeds_test.go": "package p\n\nimport \"testing\"\n\nvar seeds = [][]byte{[]byte(\"{}\")}\n\nfunc FuzzDecode(f *testing.F) {\n\tfor _, s := range seeds {\n\t\tf.Add(s)\n\t}\n\tf.Fuzz(func(t *testing.T, b []byte) { Decode(b) })\n}\n",
+	}
+	for name, src := range files {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := newTestConfig(t, root)
+	cfg.VetTool = buildGate(t)
+	var out bytes.Buffer
+	if err := cfg.vetGate(context.Background(), &out); err != nil {
+		t.Fatalf("seeded package: vet gate = %v\n%s", err, out.String())
+	}
+
+	if err := os.Rename(filepath.Join(root, "seeds_test.go"), filepath.Join(root, "fuzz_test.go")); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	err := cfg.vetGate(context.Background(), &out)
+	if err == nil || !strings.Contains(out.String(), "has no seeds_test.go") {
+		t.Errorf("without seeds_test.go: vet gate = %v, want the fuzzcheck finding\n%s", err, out.String())
+	}
+
+	// p_test.go remains: go vet judges the package with its tests, and still reports.
+	if err := os.Remove(filepath.Join(root, "fuzz_test.go")); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	err = cfg.vetGate(context.Background(), &out)
+	if err == nil || !strings.Contains(out.String(), "p.go:4:1: package is marked //dsh:untrusted-parser but has no fuzz target") {
+		t.Errorf("without a fuzz target: vet gate = %v, want the fuzzcheck finding at the marker\n%s", err, out.String())
+	}
+}
+
 // TestBudgetGateClearsOverrides runs the budget gate with DSH_* and GO* overrides in
 // the parent environment; the budget test would relax itself if one reached it.
 func TestBudgetGateClearsOverrides(t *testing.T) {

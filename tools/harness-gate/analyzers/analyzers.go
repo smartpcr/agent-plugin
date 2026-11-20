@@ -5,10 +5,13 @@
 //   - onespawn: no os/exec import outside internal/world/subprocess (SP-12)
 //   - cleanup:  a test that starts a goroutine, listener or child process registers
 //     its release with t.Cleanup (QG-5)
+//   - fuzzcheck: a package marked //dsh:untrusted-parser has a Fuzz* target whose
+//     seeds are registered from seeds_test.go (QG-6, DH-ADR-TOOLCHAIN-3)
 //
-// Each analyzer is a thin wrapper over a predicate that takes one parsed file, so the
-// decision can be tested on an AST parsed from an in-memory string. A predicate uses
-// type information when it is given and falls back to import names when it is not.
+// Each analyzer is a thin wrapper over a predicate that takes one parsed file (one
+// package's files for fuzzcheck), so the decision can be tested on ASTs parsed from
+// in-memory strings. A predicate uses type information when it is given and falls
+// back to import names when it is not.
 //
 // There is no baseline, no suppression comment and no exemption file: every finding
 // is reported, from the first commit (QG-2).
@@ -27,7 +30,7 @@ import (
 )
 
 // All is the fixed list of the project's own analyzers, in the order they report.
-var All = []*analysis.Analyzer{NoSleep, OneSpawn, Cleanup}
+var All = []*analysis.Analyzer{NoSleep, OneSpawn, Cleanup, FuzzCheck}
 
 // Finding is one diagnostic of a predicate.
 type Finding struct {

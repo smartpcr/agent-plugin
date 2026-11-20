@@ -29,6 +29,26 @@ const vetToolEnv = "HARNESS_GATE_VETTOOL"
 // or coverage instrumentation so a compiled-in budget measures the real code.
 const budgetPattern = "^TestBudget"
 
+// LayerTags are the build tags of the test layers the keyless gate never runs
+// (DH-ADR-TOOLCHAIN-4; DH-T-TOOLCHAIN-4):
+//
+//   - replay:   keyless replay of recorded model traffic (the helpers of DH-S-16);
+//   - scenario: DH-E-* scenarios against the real environment, authored as
+//     *_scenario_test.go files with //go:build scenario and run only by the
+//     credentialed scenario workflow.
+//
+// A file of either layer is excluded from every go test of the gate: the test and
+// coverage gates pass an explicit empty tag list (noTags), which overrides any
+// -tags a GOFLAGS setting would add. The vet gate still compiles and analyzes them
+// (layerTags), so their findings are reported without credentials (QG-2).
+var LayerTags = []string{"replay", "scenario"}
+
+// noTags is the build-tag flag of the gate's go test runs; see LayerTags.
+const noTags = "-tags="
+
+// layerTags is the build-tag flag that selects every LayerTags file for go vet.
+var layerTags = "-tags=" + strings.Join(LayerTags, ",")
+
 // Targets are the GOOS/GOARCH pairs cmd/dsh must build for with CGO_ENABLED=0 (QG-8).
 var Targets = []struct{ GOOS, GOARCH string }{
 	{"linux", "amd64"}, {"linux", "arm64"},
@@ -111,7 +131,7 @@ func discoverModules(root string) ([]string, error) {
 func Gates(c *Config) []Gate {
 	return []Gate{
 		{Name: "gofmt", Title: "every Go file is gofmt-formatted", Run: c.gofmtGate},
-		{Name: "vet", Title: "go vet and the project's own analyzers (nosleep, onespawn, cleanup)", Run: c.vetGate},
+		{Name: "vet", Title: "go vet and the project's own analyzers (nosleep, onespawn, cleanup, fuzzcheck)", Run: c.vetGate},
 		{Name: "test", Title: "go test -race -shuffle=on -count=1 per module, CGO_ENABLED=1", Run: c.testGate},
 		{Name: "coverage", Title: fmt.Sprintf("coverage merged across processes, %d%% of statements per package", CoverageFloor), Run: c.coverageGate},
 		{Name: "trace", Title: "tools/harness-trace verify", Run: c.traceGate},
@@ -190,22 +210,28 @@ func goFiles(mod string) ([]string, error) {
 }
 
 // vetGate runs the standard go vet checks, then the project's own analyzers through
-// "go vet -vettool" (QG-2). No baseline or suppression file is read.
+// "go vet -vettool" (QG-2). No baseline or suppression file is read. Each runs twice:
+// without build tags, and with every LayerTags tag, so replay- and scenario-tagged
+// files are compiled and analyzed even though the gate never runs them. Vetting needs
+// no credentials.
 func (c *Config) vetGate(ctx context.Context, w io.Writer) error {
 	var errs []error
 	for _, mod := range c.Modules {
-		if err := c.goStep(ctx, w, mod, c.env(), "vet", "./..."); err != nil {
-			errs = append(errs, err)
-		}
-		if err := c.goStep(ctx, w, mod, c.env(vetToolEnv+"=1"), "vet", "-vettool="+c.VetTool, "./..."); err != nil {
-			errs = append(errs, err)
+		for _, tags := range []string{noTags, layerTags} {
+			if err := c.goStep(ctx, w, mod, c.env(), "vet", tags, "./..."); err != nil {
+				errs = append(errs, err)
+			}
+			if err := c.goStep(ctx, w, mod, c.env(vetToolEnv+"=1"), "vet", tags, "-vettool="+c.VetTool, "./..."); err != nil {
+				errs = append(errs, err)
+			}
 		}
 	}
 	return errors.Join(errs...)
 }
 
 // testGate runs every test package with the race detector, in shuffled order, once
-// (QG-4). A lane where -race cannot run fails here; it is never skipped.
+// (QG-4), without the replay and scenario layers (LayerTags). A lane where -race
+// cannot run fails here; it is never skipped.
 func (c *Config) testGate(ctx context.Context, w io.Writer) error {
 	preflight := c.RacePreflight
 	if preflight == nil {
@@ -216,7 +242,7 @@ func (c *Config) testGate(ctx context.Context, w io.Writer) error {
 	}
 	var errs []error
 	for _, mod := range c.Modules {
-		err := c.goStep(ctx, w, mod, c.env("CGO_ENABLED=1"), "test", "-race", "-shuffle=on", "-count=1", "./...")
+		err := c.goStep(ctx, w, mod, c.env("CGO_ENABLED=1"), "test", noTags, "-race", "-shuffle=on", "-count=1", "./...")
 		if err != nil {
 			errs = append(errs, err)
 		}
@@ -301,7 +327,7 @@ func (c *Config) moduleCoverage(ctx context.Context, w io.Writer, mod string) ([
 		if runtime.GOOS == "windows" {
 			bin += ".exe"
 		}
-		if err := c.goStep(ctx, w, mod, c.env(), "test", "-c", "-cover", "-covermode=set", "-coverpkg=./...", "-o", bin, pkg.ImportPath); err != nil {
+		if err := c.goStep(ctx, w, mod, c.env(), "test", "-c", noTags, "-cover", "-covermode=set", "-coverpkg=./...", "-o", bin, pkg.ImportPath); err != nil {
 			errs = append(errs, err)
 			continue
 		}
@@ -333,7 +359,7 @@ func (c *Config) moduleCoverage(ctx context.Context, w io.Writer, mod string) ([
 	}
 	if len(untested) > 0 {
 		zero := filepath.Join(tmp, "untested.out")
-		args := append([]string{"test", "-cover", "-covermode=set", "-coverprofile=" + zero}, untested...)
+		args := append([]string{"test", noTags, "-cover", "-covermode=set", "-coverprofile=" + zero}, untested...)
 		if err := c.goStep(ctx, w, mod, c.env(), args...); err != nil {
 			return nil, err
 		}
@@ -355,7 +381,7 @@ type goPackage struct {
 // listPackages lists the packages of mod.
 func (c *Config) listPackages(ctx context.Context, mod string) ([]goPackage, error) {
 	const format = `{{.ImportPath}}{{"\t"}}{{.Dir}}{{"\t"}}{{len .TestGoFiles}}{{"\t"}}{{len .XTestGoFiles}}`
-	out, err := c.command(ctx, mod, c.env(), c.Go, "list", "-f", format, "./...")
+	out, err := c.command(ctx, mod, c.env(), c.Go, "list", noTags, "-f", format, "./...")
 	if err != nil {
 		return nil, fmt.Errorf("%s: go list: %w\n%s", c.rel(mod), err, out)
 	}
