@@ -1,0 +1,26 @@
+This package contains rules derived from OpenAI Codex
+(https://github.com/openai/codex), codex-rs/apply-patch at tag rust-v0.158.0:
+the patch grammar and its parser rules (parser.rs), the matching passes of
+seek_sequence (seek_sequence.rs), and the replacement rules of
+compute_replacements (lib.rs), together with the messages they report.
+
+Copyright 2025 OpenAI
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use these files except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+Changes from upstream: ported to Go; the parser is fed one line at a time and
+keeps input line numbers on every error; an end-of-file chunk that overlaps an
+earlier chunk is reported as a mismatch instead of being spliced; a trailing
+empty line keeps its terminator, so a file's final blank line survives an edit;
+line endings are normalised before matching and the dominant style restored
+afterwards.

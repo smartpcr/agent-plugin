@@ -10,6 +10,19 @@ require (
 	github.com/google/jsonschema-go v0.4.3
 	github.com/smartpcr/agent-plugin/src/go v0.1.5-0.20261119220503-a647d4984790
 	github.com/smartpcr/agent-plugin/src/sdk v0.0.0-20261119220503-a647d4984790
+	// Line diffs for internal/util/textdiff (DH-D-FS-2): chosen by
+	// docs/harness/libs/diff.md; BSD-3-Clause and MIT, no requirements.
+	github.com/aymanbagabas/go-udiff v0.4.2
+	// Globs for internal/util/search (DH-D-FS-3): chosen by
+	// docs/harness/libs/vscode-ripgrep.md and picomatch.md; MIT, no requirements, no cgo.
+	github.com/bmatcuk/doublestar/v4 v4.10.4
+	// Change notifications for internal/util/watch (DH-D-UTIL-3): chosen by
+	// docs/harness/libs/chokidar.md DH-ADR-CHOKIDAR-1; BSD-3-Clause, requires only
+	// golang.org/x/sys.
+	github.com/fsnotify/fsnotify v1.10.1
+	// File identity, locks, POSIX rename and filesystem type for internal/util/fsx
+	// (DH-D-FS-1): docs/harness/libs/node-fs-path-os-zlib.md; BSD-3-Clause.
+	golang.org/x/sys v0.50.0
 )
 
 require (
