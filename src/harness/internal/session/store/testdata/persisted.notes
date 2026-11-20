@@ -1,0 +1,19 @@
+# Upgrade notes (DH-D-STORE-5): <type> <from>-><to> <fingerprint> <reason>.
+# A same-version line must say "compatible" and why an older binary still reads the shape.
+tool/result 0->1 - initial shape; field "id" named the call (no longer declared; upcast by the 1->2 upgrade)
+@envelope 0->1 sha256:7cc92720d16d4933ba26ccb7de37892e4d4a06e434acdaeb57a8b3d4452a4754 initial shape
+@header 0->1 sha256:228a5ee7a7efaae3c6b6574653d093f649783882366431b4fc9bca39e853118c initial shape
+assistant/attempt 0->1 sha256:849484f325da542bbf74f9c95380b662c28e65f83846d9ebf88d2783c51b8ecb initial shape
+assistant/message 0->1 sha256:16ea79ef1d4b4b6b28cd32d80cad086435a1106568affadcb6619025933ea209 initial shape
+developer/message 0->1 sha256:0a45a9cc3ab72f1b017f35613329a2dd89d875f94110b3a21ff27c26958bf4ed initial shape
+request/context 0->1 sha256:9f5b246881c61862d6112eed368e1e427444a31a7e9b2ee6ea8d19d8801213ad initial shape
+request/header 0->1 sha256:f0fe72b42bd5a4df2293afc2d4a6cd5a6d8c9ce7c3a84fa3b38cc50ba3eb0228 initial shape
+session/end-seed 0->1 sha256:195c10bf93e2ff493dd9bf52803cb4f3159d3dc90ecb67bcf90a0d1d641bbca1 initial shape
+step/end 0->1 sha256:febf2e23826b30ae309db16be41bdafaeb156993a2efa8b0ba190e510d6f9241 initial shape
+step/start 0->1 sha256:febf2e23826b30ae309db16be41bdafaeb156993a2efa8b0ba190e510d6f9241 initial shape
+system/message 0->1 sha256:0a45a9cc3ab72f1b017f35613329a2dd89d875f94110b3a21ff27c26958bf4ed initial shape
+tool/call 0->1 sha256:d255258e30899141861c2d8e8d0cd803d8a59af63d4c4998f7342a95f75e0b36 initial shape
+tool/result 1->2 sha256:f8d2367c143c96f8012f9e3bab8d0feb3139a111cdd17b355df8d73d9b187760 field "id" renamed "call_id"; spill added; upgrade 1 rewrites the payload
+turn/end 0->1 sha256:5a774ded67038e4dcb3b99c3ecb41f7edff8825d04f797e6c1a4f3d4df515f14 initial shape
+turn/start 0->1 sha256:e76b840e621a2c94959cd6e174161d9e8b74f916cf0ce1198b10b23a55cc8883 initial shape
+user/message 0->1 sha256:e13a040cc2bd93d7d6e2ebdeda222e9a63a8058c10c423065528995800cfc28e initial shape

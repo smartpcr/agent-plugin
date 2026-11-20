@@ -277,10 +277,10 @@ storyId: "harness:DSH"
 ## Stage 5.1: Event Vocabulary and Store Contract
 
 ### Implementation Steps
-- [ ] impl.md step 5.1 / DH-D-SESSION-1: implement the typed, versioned event registry in `src/harness/internal/session` (event type name, version, schema from `internal/schema`, codec); unknown or newer versions are surfaced, never guessed (`DH-T-SESSION-1`, `-2`).
-- [ ] impl.md step 5.2 / DH-D-SESSION-8: per-agent and per-preset registrations with one owner and no borrowed authority (`DH-T-SESSION-17`, `-18`).
-- [ ] impl.md step 5.3 / DH-D-STORE-1: define the `Store` interface in `src/harness/internal/session/store`, the reusable conformance suite `storetest.Run(t, factory)`, and the in-memory reference `memstore` (`DH-T-STORE-1` on `memstore`) (C10).
-- [ ] impl.md step 5.4 / DH-D-STORE-5: each event type evolves by itself; a persisted-type inventory file `internal/session/store/testdata/persisted.golden` lists type, version and schema fingerprint, and a test fails when a fingerprint changes without a version bump and an upgrade note (`DH-T-STORE-10`).
+- [x] impl.md step 5.1 / DH-D-SESSION-1: implement the typed, versioned event registry in `src/harness/internal/session` (event type name, version, schema from `internal/schema`, codec); unknown or newer versions are surfaced, never guessed (`DH-T-SESSION-1`, `-2`).
+- [x] impl.md step 5.2 / DH-D-SESSION-8: per-agent and per-preset registrations with one owner and no borrowed authority (`DH-T-SESSION-17`, `-18`).
+- [x] impl.md step 5.3 / DH-D-STORE-1: define the `Store` interface in `src/harness/internal/session/store`, the reusable conformance suite `storetest.Run(t, factory)`, and the in-memory reference `memstore` (`DH-T-STORE-1` on `memstore`) (C10).
+- [x] impl.md step 5.4 / DH-D-STORE-5: each event type evolves by itself; a persisted-type inventory file `internal/session/store/testdata/persisted.golden` lists type, version and schema fingerprint, and a test fails when a fingerprint changes without a version bump and an upgrade note (`DH-T-STORE-10`).
 
 ### Dependencies
 - phase-sdk-codec-schema-and-leaf-packages/stage-model-vocabulary-and-value-meanings
