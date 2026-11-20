@@ -180,31 +180,57 @@ func Run(ctx context.Context, o Options) (status int) {
 		s.fatal("boot", herr.Wrap(ReasonHost, err, "host preparation failed"))
 		return s.shutdown(output.Fatal, s.limits().FatalReleaseTimeout)
 	}
-	if ctx.Err() != nil {
-		s.App.Stop(launch.Interrupted, output.Interrupted)
-		return s.shutdown(output.Interrupted, s.limits().ShutdownTimeout)
+	// A stop during start-up (a component's App.Stop, the fatal path's release, the
+	// context's end) skips the audit and readiness.
+	if s.stopRequested(ctx) {
+		return s.shutdownStopped()
 	}
 	if err := steps.Audit(ctx, s); err != nil {
+		if s.stopRequested(ctx) {
+			return s.shutdownStopped()
+		}
 		// The tree is unloaded first, so the report is the last word.
 		forced := s.shutdown(output.Status(err), s.limits().ShutdownTimeout)
 		s.fatal("boot", err)
 		return forced
 	}
+	// Step 8: ready, unless a stop came first; MarkReady refuses then.
+	if s.stopRequested(ctx) || !s.App.MarkReady() {
+		return s.shutdownStopped()
+	}
 	s.printAudit()
-	// Step 8: ready.
-	s.App.MarkReady()
 	// Step 9: run until the first stop.
 	select {
 	case <-s.App.Stopping():
 	case <-ctx.Done():
 		s.App.Stop(launch.Interrupted, output.Interrupted)
 	}
+	// Step 10: bounded shutdown.
+	return s.shutdownStopped()
+}
+
+// stopRequested reports whether the app is stopping; the context's end is an
+// Interrupted stop.
+func (s *State) stopRequested(ctx context.Context) bool {
+	if ctx.Err() != nil {
+		s.App.Stop(launch.Interrupted, output.Interrupted)
+	}
+	select {
+	case <-s.App.Stopping():
+		return true
+	default:
+		return false
+	}
+}
+
+// shutdownStopped runs the bounded shutdown with the first stop's status; a fatal
+// stop has FatalReleaseTimeout, any other ShutdownTimeout.
+func (s *State) shutdownStopped() int {
 	reason, code, _ := s.App.Result()
 	budget := s.limits().ShutdownTimeout
 	if reason == launch.Fatal {
 		budget = s.limits().FatalReleaseTimeout
 	}
-	// Step 10: bounded shutdown.
 	return s.shutdown(code, budget)
 }
 

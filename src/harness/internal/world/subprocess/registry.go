@@ -3,7 +3,10 @@ package subprocess
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -44,9 +47,17 @@ func (r *Registry) Live() []*Process {
 }
 
 // StopAll stops every registered tree with the grace given, in parallel, and
-// returns the joined failures. Each tree is removed once it is gone.
+// returns the joined failures. Each tree is removed once it is gone. With no grace
+// every tree is killed first, even one whose StopTree another caller is running.
+// StopAll returns by ctx's end in any case: trees still stopping then are killed
+// once more and reported, and their stops go on in the background.
 func (r *Registry) StopAll(ctx context.Context, grace time.Duration) error {
 	procs := r.Live()
+	if grace <= 0 {
+		for _, p := range procs {
+			_ = p.Kill()
+		}
+	}
 	errs := make([]error, len(procs))
 	var wg sync.WaitGroup
 	for i, p := range procs {
@@ -62,6 +73,25 @@ func (r *Registry) StopAll(ctx context.Context, grace time.Duration) error {
 			}
 		}()
 	}
-	wg.Wait()
-	return errors.Join(errs...)
+	all := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(all)
+	}()
+	select {
+	case <-all:
+		return errors.Join(errs...)
+	case <-ctx.Done():
+	}
+	var waiting []string
+	for _, p := range r.Live() {
+		if slices.Contains(procs, p) {
+			_ = p.Kill()
+			waiting = append(waiting, strconv.Itoa(p.Pid()))
+		}
+	}
+	if len(waiting) == 0 {
+		return nil
+	}
+	return fmt.Errorf("process trees %s still stopping: %w", strings.Join(waiting, ", "), context.Cause(ctx))
 }

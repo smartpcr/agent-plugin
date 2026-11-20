@@ -214,3 +214,21 @@ func TestClosedResultStream(t *testing.T) {
 		t.Errorf("second write: %v after %d writes", err, w.writes)
 	}
 }
+
+// An Exit status maps back to its status, wrapped or not, and Fail prints nothing
+// for it: the launch printed its own diagnostics.
+func TestExitStatusIsNotPrintedAgain(t *testing.T) {
+	if Exit(OK) != nil {
+		t.Error("Exit(0) is not nil")
+	}
+	var out, diag bytes.Buffer
+	r := New(&out, &diag, JSON)
+	for _, err := range []error{Exit(Forced), fmt.Errorf("launch: %w", Exit(Forced))} {
+		if got := r.Fail("web", err); got != Forced {
+			t.Errorf("Fail(%v) = %d, want %d", err, got, Forced)
+		}
+	}
+	if out.Len() != 0 || diag.Len() != 0 {
+		t.Errorf("Fail printed %q and %q for an Exit status", out.String(), diag.String())
+	}
+}

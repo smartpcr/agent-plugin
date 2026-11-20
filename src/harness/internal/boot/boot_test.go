@@ -21,6 +21,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/launch"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/profile"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/cli/output"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/host/diag"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/clock"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess/subprocesstest"
@@ -280,7 +281,9 @@ func TestShutdownOverrunExits124(t *testing.T) {
 		t.Fatalf("Run returned %d before the bound passed", status)
 	default:
 	}
-	clk.Advance(profile.DefaultLimits().ShutdownTimeout)
+	// The forced stop starts a reserve before the bound and needs no more clock.
+	budget := profile.DefaultLimits().ShutdownTimeout
+	clk.Advance(budget - forceReserve(budget))
 	select {
 	case status := <-done:
 		if status != output.Forced {
@@ -300,7 +303,169 @@ func TestShutdownOverrunExits124(t *testing.T) {
 		}
 	}
 	out := stderr.String()
-	if !strings.Contains(out, "shutdown exceeded 20s") || !strings.Contains(out, "worker (x.tree): child tree") {
+	if !strings.Contains(out, "shutdown not done 15s into its 20s bound") || !strings.Contains(out, "worker (x.tree): child tree") ||
+		strings.Contains(out, "bound 20s passed") {
 		t.Errorf("stderr does not list the stuck cleanup:\n%s", out)
+	}
+}
+
+// hungSteps fake every step; the tree's unload never returns and its registry
+// holds a stubborn process tree.
+type hungSteps struct {
+	fakeSteps
+	release chan struct{}
+	procs   *subprocess.Registry
+}
+
+func (h *hungSteps) Tree(_ context.Context, s *State) error {
+	h.record(s, "tree")
+	s.Host = &hungHost{release: h.release, procs: h.procs}
+	return nil
+}
+
+type hungHost struct {
+	release chan struct{}
+	procs   *subprocess.Registry
+}
+
+func (h *hungHost) Unload()                         { <-h.release }
+func (h *hungHost) Stuck() []string                 { return []string{"hung (x.hung): never returns"} }
+func (h *hungHost) Processes() *subprocess.Registry { return h.procs }
+
+// A fatal stop whose shutdown overruns exits 124 within its one bound: the forced
+// stop starts a reserve before it, kills a tree whose graceful StopTree is still
+// running, and Run returns at the bound although the unload never ends.
+func TestFatalShutdownOverrunIsBounded(t *testing.T) {
+	p := subprocesstest.Start(t, subprocesstest.Spec(t, subprocesstest.RoleStubborn))
+	gctx, cancelGrace := context.WithCancel(context.Background())
+	t.Cleanup(cancelGrace)
+	graceful := make(chan error, 1)
+	go func() { graceful <- p.StopTree(gctx, time.Hour) }()
+	procs := subprocess.NewRegistry()
+	procs.Add(p)
+	steps := &hungSteps{release: make(chan struct{}), procs: procs}
+	t.Cleanup(func() { close(steps.release) })
+	clk := clock.NewManual(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
+	app := launch.NewApp()
+	var stderr syncBuffer
+	done := make(chan int, 1)
+	go func() {
+		done <- Run(context.Background(), Options{Profile: profile.Definition{Name: "fake"}, Stderr: &stderr, App: app, Clock: clk, Steps: steps})
+	}()
+	select {
+	case <-app.Ready():
+	case <-time.After(10 * time.Second):
+		t.Fatal("never ready")
+	}
+	pending := clk.Waiters()
+	app.Stop(launch.Fatal, output.Fatal)
+	budget := profile.DefaultLimits().FatalReleaseTimeout
+	reserve := forceReserve(budget)
+	if !clk.BlockUntil(pending+1, 10*time.Second) {
+		t.Fatal("shutdown never started its bound")
+	}
+	clk.Advance(budget - reserve)
+	// The forced stop kills the tree although the graceful stop holds it.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := p.TreeGone(ctx); err != nil {
+		t.Fatalf("tree not killed past a running StopTree: %v", err)
+	}
+	if !clk.BlockUntil(pending+1, 10*time.Second) {
+		t.Fatal("the forced stop is not bounded by the clock")
+	}
+	select {
+	case status := <-done:
+		t.Fatalf("Run returned %d before the bound with the unload still running", status)
+	case <-time.After(50 * time.Millisecond):
+	}
+	clk.Advance(reserve)
+	select {
+	case status := <-done:
+		if status != output.Forced {
+			t.Errorf("status = %d, want %d", status, output.Forced)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return at the bound")
+	}
+	if got := clk.Now().Sub(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)); got != budget {
+		t.Errorf("shutdown took %s on the clock, want the %s bound", got, budget)
+	}
+	out := stderr.String()
+	for _, want := range []string{"hung (x.hung): never returns", "shutdown bound 2s passed"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stderr lacks %q:\n%s", want, out)
+		}
+	}
+}
+
+// stopper is a component that stops the app, or reports a fatal error, while it
+// initialises.
+func stopper(name string, fatal bool) catalog.Item {
+	return catalog.Item{Name: name, Component: cordis.Define(name, func(ctx *cordis.Context, _ struct{}) error {
+		if fatal {
+			d, err := diag.Key.Get(ctx)
+			if err != nil {
+				return err
+			}
+			d.Fatal(name, errors.New("cannot continue"))
+			return nil
+		}
+		app, err := launch.AppKey.Get(ctx)
+		if err != nil {
+			return err
+		}
+		app.Stop(launch.Completed, output.Failed)
+		return nil
+	})}
+}
+
+// A stop during start-up, ordinary or fatal, ends the settle wait, skips the
+// audit and readiness, and exits with the stop's status.
+func TestStopDuringStartupIsNeverReady(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		fatal  bool
+		status int
+	}{{"ordinary", false, output.Failed}, {"fatal", true, output.Fatal}} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts, homeDir := fixture(t, "- insert:\n    - id: stopper\n      name: x.stop\n", "stopper")
+			cat, err := catalog.Build(append(builtin.Sets(), []catalog.Item{stopper("x.stop", tc.fatal)})...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			app := launch.NewApp()
+			var stderr syncBuffer
+			// The manual clock never reaches StartupTimeout: only the stop ends the wait.
+			opts.Catalog, opts.Stderr, opts.App = cat, &stderr, app
+			opts.Clock = clock.NewManual(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
+			done := make(chan int, 1)
+			go func() { done <- Run(context.Background(), opts) }()
+			select {
+			case status := <-done:
+				if status != tc.status {
+					t.Errorf("status = %d, want %d", status, tc.status)
+				}
+			case <-time.After(30 * time.Second):
+				t.Fatal("Run kept waiting after a stop during start-up")
+			}
+			select {
+			case <-app.Ready():
+				t.Error("Ready closed after a stop during start-up")
+			default:
+			}
+			out := stderr.String()
+			if strings.Contains(out, "outbound permits") {
+				t.Errorf("the audit ran after a stop during start-up:\n%s", out)
+			}
+			entries, _ := os.ReadDir(filepath.Join(homeDir, "reports"))
+			want := 0
+			if tc.fatal {
+				want = 1
+			}
+			if n := strings.Count(out, "dsh: fatal:"); n != want || len(entries) != want {
+				t.Errorf("%d fatal messages and %d reports, want %d:\n%s", n, len(entries), want, out)
+			}
+		})
 	}
 }

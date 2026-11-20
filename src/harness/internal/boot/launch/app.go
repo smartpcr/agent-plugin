@@ -81,14 +81,17 @@ func (c *Control) Stop(r Reason, status int) {
 	}
 }
 
-// MarkReady closes Ready; later calls do nothing.
-func (c *Control) MarkReady() {
+// MarkReady closes Ready and reports whether it is closed; later calls do nothing.
+// Once a stop was asked Ready never closes: a launch that stops during start-up
+// is never announced.
+func (c *Control) MarkReady() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if !c.isReady {
+	if !c.isReady && !c.stopped {
 		c.isReady = true
 		close(c.ready)
 	}
+	return c.isReady
 }
 
 // Urgent closes when an Interrupted stop arrives after the first stop.

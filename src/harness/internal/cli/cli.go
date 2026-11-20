@@ -24,6 +24,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/smartpcr/agent-plugin/src/harness/internal/boot"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/launch"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/profile"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/cli/cmdline"
@@ -40,6 +41,8 @@ type Launch struct {
 	Profile profile.Definition
 	// Result is the launch's result writer; the app prints through it.
 	Result *output.Result
+	// Stderr is the diagnostic stream boot prints to.
+	Stderr io.Writer
 }
 
 // LaunchFunc runs a profile launch to its end; its error is mapped to the exit
@@ -70,7 +73,14 @@ func ProcessEnv(version string) Env {
 	if version != "" {
 		req.Build.Version = version
 	}
-	return Env{Request: req, Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr, probeErr: err}
+	return Env{Request: req, Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr, Launch: Boot, probeErr: err}
+}
+
+// Boot is the LaunchFunc of the process: boot.Process runs the launch with the
+// process's stop signals, and its status passes through output.Exit, as boot
+// already printed the launch's diagnostics.
+func Boot(ctx context.Context, l Launch) error {
+	return output.Exit(boot.Process(ctx, boot.Options{Request: l.Request, Profile: l.Profile, Stderr: l.Stderr}))
 }
 
 // launcherSpec is the launcher's own command line.
@@ -182,7 +192,7 @@ func (st *state) run(args []string) error {
 	req.Args = slices.Clone(req.Args)
 	req.Home, req.Profile, req.Safe = v.String("home"), name, v.Bool("safe")
 	req.Overlays, req.Words = v.Strings("layer"), words
-	return st.env.Launch(st.ctx, Launch{Request: req, Profile: def, Result: st.res})
+	return st.env.Launch(st.ctx, Launch{Request: req, Profile: def, Result: st.res, Stderr: st.env.Stderr})
 }
 
 // versionLine is "dsh <version> (<revision>; <go>; <os>/<arch>)".

@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -252,5 +254,48 @@ func TestReferenceIsCurrent(t *testing.T) {
 	var doc ReferenceDocument
 	if err := json.Unmarshal([]byte(r.stdout), &doc); err != nil || len(doc.Commands) == 0 || len(doc.Statuses) == 0 {
 		t.Errorf("catalog commands --json: %v %+v", err, r)
+	}
+}
+
+// processRun runs one command line through the process's Env, the launcher
+// cmd/dsh runs, with captured streams and ctx.
+func processRun(t *testing.T, ctx context.Context, args ...string) run {
+	t.Helper()
+	env := ProcessEnv("v1.2.3")
+	var out, errOut bytes.Buffer
+	env.Request.Args = append([]string{"dsh"}, args...)
+	env.Stdin, env.Stdout, env.Stderr = strings.NewReader(""), &out, &errOut
+	status := Main(ctx, env)
+	return run{status, out.String(), errOut.String()}
+}
+
+// The process launches a profile through boot.Run: a broken layer is boot's one
+// line and status 78, which the launcher does not print again.
+func TestProcessLaunchRunsBoot(t *testing.T) {
+	home := t.TempDir()
+	r := processRun(t, context.Background(), "--home", home, "--layer", filepath.Join(home, "missing.yml"), "web")
+	if r.status != output.Config {
+		t.Errorf("status = %d, want %d: %+v", r.status, output.Config, r)
+	}
+	if lines := strings.Split(strings.TrimSuffix(r.stderr, "\n"), "\n"); len(lines) != 1 || !strings.HasPrefix(lines[0], "dsh web: profile/bad-layer: ") {
+		t.Errorf("stderr = %q, want boot's one line", r.stderr)
+	}
+}
+
+// A launch that boots and is interrupted exits 130 through the launcher with
+// boot's diagnostics only: the home is prepared, nothing is reported as a failure.
+func TestProcessLaunchInterrupted(t *testing.T) {
+	home := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r := processRun(t, ctx, "--home", home, "web")
+	if r.status != output.Interrupted {
+		t.Errorf("status = %d, want %d: %+v", r.status, output.Interrupted, r)
+	}
+	if strings.Contains(r.stderr, "dsh web:") || strings.Contains(r.stderr, "exit status") {
+		t.Errorf("the launcher printed boot's status again:\n%s", r.stderr)
+	}
+	if _, err := os.Stat(filepath.Join(home, "reports")); err != nil {
+		t.Errorf("boot did not prepare the home: %v", err)
 	}
 }

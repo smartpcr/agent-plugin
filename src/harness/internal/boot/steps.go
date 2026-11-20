@@ -150,7 +150,7 @@ func (Real) Tree(_ context.Context, s *State) error {
 }
 
 // Settle applies the composition and waits until no entry is loading, at most
-// StartupTimeout on the clock.
+// StartupTimeout on the clock; a stop asked meanwhile ends the wait.
 func (Real) Settle(ctx context.Context, s *State) error {
 	if s.Service == nil {
 		return errors.New("no loader")
@@ -165,6 +165,8 @@ func (Real) Settle(ctx context.Context, s *State) error {
 		}
 	case <-s.Clock.After(s.limits().StartupTimeout):
 		_, _ = fmt.Fprintf(s.Ring, "boot: entries still loading after %s\n", s.limits().StartupTimeout)
+	case <-s.App.Stopping():
+		_, _ = fmt.Fprintln(s.Ring, "boot: stop requested during start-up")
 	case <-ctx.Done():
 	}
 	return nil
