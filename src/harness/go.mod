@@ -13,6 +13,17 @@ require (
 )
 
 require (
+	// One semantic-version dialect for internal/util/version (DH-D-UTIL-4): chosen by
+	// docs/harness/libs/semver.md DH-ADR-SEMVER-1 for npm-style ranges with
+	// prereleases on request; MIT, no dependencies (RM-10).
+	github.com/Masterminds/semver/v3 v3.5.0
+	// One glob dialect for internal/util/glob (DH-D-UTIL-4): chosen by
+	// docs/harness/libs/picomatch.md DH-ADR-PICOMATCH-1 for `**` and `{a,b}`; MIT,
+	// no dependencies (RM-10).
+	github.com/bmatcuk/doublestar/v4 v4.10.4
+)
+
+require (
 	github.com/cucumber/gherkin/go/v42 v42.0.0 // indirect
 	github.com/cucumber/messages/go/v34 v34.2.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect

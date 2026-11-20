@@ -90,6 +90,25 @@ func TestDocument(t *testing.T) {
 	}
 }
 
+func TestRawMessageIsAnyJSON(t *testing.T) {
+	type carrier struct {
+		Data json.RawMessage `json:"data,omitempty"`
+	}
+	typ := MustOf[carrier]()
+	for _, raw := range []string{`{"data":{"x":[1,"a"]}}`, `{"data":"text"}`, `{"data":3}`, `{}`} {
+		if is := typ.Validate(json.RawMessage(raw)); is != nil {
+			t.Errorf("Validate(%s) = %v, want nil", raw, is)
+		}
+		var c carrier
+		if is := typ.Decode([]byte(raw), &c); is != nil {
+			t.Errorf("Decode(%s) = %v, want nil", raw, is)
+		}
+	}
+	if doc := string(typ.JSONSchema()); !strings.Contains(doc, `"data":true`) {
+		t.Fatalf("json.RawMessage derived as %s, want any value", doc)
+	}
+}
+
 func TestFingerprint(t *testing.T) {
 	base := MustOf[sample]().Fingerprint()
 	if got := MustOf[reordered]().Fingerprint(); got != base {

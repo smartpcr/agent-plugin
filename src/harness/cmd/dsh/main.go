@@ -6,6 +6,10 @@ import (
 	"fmt"
 	"os"
 	"runtime/debug"
+
+	// The zone database is embedded so that zone names resolve the same on every
+	// host, a Windows host without Go installed included (DH-T-TEMPORAL-5).
+	_ "time/tzdata"
 )
 
 // version is set at release time with -ldflags "-X main.version=<v>". When empty,

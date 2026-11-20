@@ -48,6 +48,13 @@ type cacheKey struct {
 
 var cache sync.Map // cacheKey -> *Type
 
+// typeSchemas overrides the module's derivation where it does not follow
+// encoding/json: json.RawMessage is any JSON value on the wire, not an array of
+// bytes.
+var typeSchemas = map[reflect.Type]*jsonschema.Schema{
+	reflect.TypeFor[json.RawMessage](): {},
+}
+
 // Of derives the shape of T. The result is cached per type and options; deriving
 // twice returns the same *Type, so documents and fingerprints are byte-identical.
 func Of[T any](opts ...Option) (*Type, error) {
@@ -64,7 +71,7 @@ func ForType(t reflect.Type, opts ...Option) (*Type, error) {
 	if v, ok := cache.Load(key); ok {
 		return v.(*Type), nil
 	}
-	s, err := jsonschema.ForType(t, &jsonschema.ForOptions{})
+	s, err := jsonschema.ForType(t, &jsonschema.ForOptions{TypeSchemas: typeSchemas})
 	if err != nil {
 		return nil, fmt.Errorf("schema: deriving %s: %w", t, err)
 	}
