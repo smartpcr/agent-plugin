@@ -442,6 +442,38 @@ func TestFromJSONOutsideSubset(t *testing.T) {
 	if _, err := FromJSON([]byte(`{"propertyNames":{"maxLength":3},"default":9007199254740993}`)); err != nil {
 		t.Fatal(err)
 	}
+	// An annotation keyword is skipped only as a keyword of a schema: a property
+	// named after one, or a key inside a literal, is still checked.
+	for _, doc := range []string{
+		`{"type":"object","properties":{"default":{"minimum":9007199254740993}},"propertyNames":{"maxLength":20}}`,
+		`{"propertyNames":{"maxLength":20},"$defs":{"description":{"maximum":9007199254740993}}}`,
+		`{"propertyNames":{"maxLength":20},"patternProperties":{"^title$":{"multipleOf":9007199254740993}}}`,
+		`{"propertyNames":{"maxLength":20},"const":{"default":9007199254740993}}`,
+		`{"propertyNames":{"maxLength":20},"enum":[{"examples":[9007199254740993]}]}`,
+		`{"propertyNames":{"maxLength":20},"allOf":[{"properties":{"title":{"const":9007199254740993}}}]}`,
+		`{"propertyNames":{"maxLength":20},"items":[{"default":1},{"maximum":9007199254740993}]}`,
+		`{"propertyNames":{"maxLength":20},"x-limit":{"description":9007199254740993}}`,
+	} {
+		if _, err := FromJSON([]byte(doc)); err == nil || !strings.Contains(err.Error(), "cannot hold exactly") {
+			t.Errorf("FromJSON(%s) = %v, want a refusal", doc, err)
+		}
+	}
+	for _, doc := range []string{
+		`{"propertyNames":{"maxLength":20},"properties":{"a":{"description":"x","default":9007199254740993,"examples":[9007199254740993]}}}`,
+		`{"propertyNames":{"maxLength":20},"properties":{"default":{"minimum":1}}}`,
+	} {
+		if _, err := FromJSON([]byte(doc)); err != nil {
+			t.Errorf("FromJSON(%s) = %v", doc, err)
+		}
+	}
+	// The evaluator's case, end to end: an exact bound on a property named default.
+	named, err := FromJSON([]byte(`{"type":"object","properties":{"default":{"minimum":9007199254740992}},"propertyNames":{"maxLength":20}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if is := named.Validate([]byte(`{"default":9007199254740991}`)); len(is) != 1 {
+		t.Fatalf("issues = %v", is)
+	}
 }
 
 // TestLocalRefs: a $ref into the document's own $defs or definitions, or to its

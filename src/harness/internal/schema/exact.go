@@ -172,10 +172,74 @@ func collectExact(s *jsonschema.Schema, g any, t exactTable) error {
 	return nil
 }
 
-// inexactDeclaration returns the first number a document declares that float64
-// would round, outside annotations. The module's validator would compare against
-// the rounded value, so such a document is refused rather than weakened.
+// Keywords whose value is a schema, a list of schemas, or a map from names to
+// schemas. Every other keyword's value is a literal.
+var (
+	schemaKeywords = map[string]bool{
+		"items": true, "additionalItems": true, "additionalProperties": true, "not": true,
+		"if": true, "then": true, "else": true, "contains": true, "propertyNames": true,
+		"unevaluatedItems": true, "unevaluatedProperties": true, "contentSchema": true,
+	}
+	schemaListKeywords = map[string]bool{"allOf": true, "anyOf": true, "oneOf": true, "prefixItems": true}
+	schemaMapKeywords  = map[string]bool{
+		"properties": true, "patternProperties": true, "$defs": true, "definitions": true,
+		"dependentSchemas": true, "dependencies": true,
+	}
+)
+
+// inexactDeclaration returns the first number a schema document declares that
+// float64 would round. It walks the document as a schema: an annotation keyword is
+// skipped only where it is a keyword of a schema, never as a property name or as a
+// key inside an enum, const or other literal. The module's validator would compare
+// against the rounded value, so such a document is refused rather than weakened.
 func inexactDeclaration(g any, path string) (string, string, bool) {
+	obj, ok := g.(map[string]any)
+	if !ok {
+		if arr, ok := g.([]any); ok {
+			// items in its array form, or a literal where a schema was expected.
+			for i, e := range arr {
+				if p, n, bad := inexactDeclaration(e, pointer(path, strconv.Itoa(i))); bad {
+					return p, n, true
+				}
+			}
+			return "", "", false
+		}
+		return inexactLiteral(g, path)
+	}
+	for _, k := range sortedKeys(obj) {
+		v, p := obj[k], pointer(path, k)
+		var at string
+		var n string
+		var bad bool
+		switch {
+		case annotationKeys[k]:
+			continue
+		case schemaKeywords[k] || schemaListKeywords[k]:
+			at, n, bad = inexactDeclaration(v, p)
+		case schemaMapKeywords[k]:
+			named, ok := v.(map[string]any)
+			if !ok {
+				at, n, bad = inexactLiteral(v, p)
+				break
+			}
+			for _, name := range sortedKeys(named) {
+				if at, n, bad = inexactDeclaration(named[name], pointer(p, name)); bad {
+					break
+				}
+			}
+		default:
+			at, n, bad = inexactLiteral(v, p)
+		}
+		if bad {
+			return at, n, true
+		}
+	}
+	return "", "", false
+}
+
+// inexactLiteral returns the first number anywhere in a literal value that float64
+// would round; every key of a literal is data.
+func inexactLiteral(g any, path string) (string, string, bool) {
 	switch x := g.(type) {
 	case json.Number:
 		if !floatExact(string(x)) {
@@ -183,16 +247,13 @@ func inexactDeclaration(g any, path string) (string, string, bool) {
 		}
 	case []any:
 		for i, e := range x {
-			if p, n, ok := inexactDeclaration(e, pointer(path, strconv.Itoa(i))); ok {
+			if p, n, ok := inexactLiteral(e, pointer(path, strconv.Itoa(i))); ok {
 				return p, n, true
 			}
 		}
 	case map[string]any:
 		for _, k := range sortedKeys(x) {
-			if annotationKeys[k] {
-				continue
-			}
-			if p, n, ok := inexactDeclaration(x[k], pointer(path, k)); ok {
+			if p, n, ok := inexactLiteral(x[k], pointer(path, k)); ok {
 				return p, n, true
 			}
 		}
