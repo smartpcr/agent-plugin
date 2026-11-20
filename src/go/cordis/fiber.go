@@ -52,6 +52,18 @@ type updateHook struct {
 	removed bool
 }
 
+// ConfigHook is a hook registered with Context.OnConfig. It sees every raw config
+// candidate of the tree's fibers before the component's schema runs: fiber is the
+// fiber whose candidate is being checked. It returns the candidate to hand on, which
+// may be transformed, or an error that rejects it. It runs outside the tree lock.
+type ConfigHook func(fiber *Fiber, candidate any) (any, error)
+
+type configHook struct {
+	owner   *Fiber
+	hook    ConfigHook
+	removed bool
+}
+
 // Fiber is one live instantiation of a component. It owns the effects the component
 // created, tracks the identity of every injected provider as an epoch, and reloads or
 // unloads itself whenever that epoch changes. Transitions run on their own goroutine;
@@ -85,6 +97,14 @@ type Fiber struct {
 	loadTasks   []*task
 	updateHooks []*updateHook
 	anchor      *EffectHandle
+
+	// effective is the resolved config the running instance holds, valid while
+	// hasEffective; updateRev counts the Updates, so a later one supersedes an in-place one;
+	// loads counts the loads started, so an in-place update raced by a reload is stale.
+	effective    any
+	hasEffective bool
+	updateRev    int
+	loads        int
 
 	// announced is set once the fiber's creation handlers have returned: the creation
 	// notification, posted with sequence announceSeq, announces the fiber after running
@@ -300,12 +320,51 @@ func (f *Fiber) Err() error {
 	return f.err
 }
 
-// Config returns the config as it was handed in, before resolution. It is resolved
-// through the component's schema on every load.
+// Config returns the raw config: the config as it was handed in, before resolution,
+// kept for the next load. It is resolved through the tree's config hooks and the
+// component's schema on every load.
 func (f *Fiber) Config() any {
 	f.t.lock()
 	defer f.t.unlockQuiet()
 	return f.config
+}
+
+// EffectiveConfig returns the resolved config the running instance holds: the value
+// its last load passed to the component, or the config of a later Update accepted in
+// place. ok is false while no instance holds one: before the first load, while the
+// fiber is pending or failed, and once it has unloaded.
+func (f *Fiber) EffectiveConfig() (config any, ok bool) {
+	f.t.lock()
+	defer f.t.unlockQuiet()
+	return f.effective, f.hasEffective
+}
+
+// ResolveConfig checks candidate as a load would, without applying it: it runs the
+// tree's config hooks and then the component's schema, and returns the config the
+// component would receive. It stores nothing: the raw and effective config are
+// unchanged whether the candidate is accepted or rejected. A rejection is a
+// ConfigError.
+func (f *Fiber) ResolveConfig(candidate any) (any, error) {
+	if f.isRoot {
+		return nil, ErrRootFiber
+	}
+	return f.resolveConfig(candidate)
+}
+
+// RetainConfig stores config as the raw config without triggering an update: the
+// running instance keeps its effective config, and the next load resolves config.
+// Commit subscribers are not told.
+func (f *Fiber) RetainConfig(config any) error {
+	if f.isRoot {
+		return ErrRootFiber
+	}
+	f.t.lock()
+	defer f.t.unlockQuiet()
+	if f.disposed {
+		return ErrInactive
+	}
+	f.config = config
+	return nil
 }
 
 // Instance returns the value the component's constructor returned on its last load,
@@ -404,7 +463,9 @@ func (f *Fiber) Restart() error {
 
 // Update replaces the config. On a loaded fiber the new config is resolved first (a
 // rejected config returns its error and changes nothing), then offered to the fiber's
-// update hooks, which may accept it in place; otherwise the fiber restarts. Unless
+// update hooks, which may accept it in place; otherwise the fiber restarts. A config
+// accepted in place becomes the effective config only if no restart, later update or
+// disposal happened while the hooks ran. Unless
 // noSave is set, commit subscribers (Internal.OnCommit) see the original config so a
 // loader can persist it. Update clears a previous load error.
 func (f *Fiber) Update(config any, noSave bool) error {
@@ -433,16 +494,37 @@ func (f *Fiber) Update(config any, noSave bool) error {
 
 	t.lock()
 	f.config = config
+	f.updateRev++
+	rev, epoch, loads := f.updateRev, f.epoch, f.loads
 	f.err = nil
 	if f.inertia == nil {
 		f.updateStateLocked(nil) // a cleared error changes the state even without a reload
 	}
 	t.unlock()
 
-	if loaded {
-		return f.runUpdateHooks(resolved, f.Restart)
+	if !loaded {
+		return f.Restart()
 	}
-	return f.Restart()
+	restarted := false
+	err := f.runUpdateHooks(resolved, func() error {
+		restarted = true
+		return f.Restart()
+	})
+	if err == nil && !restarted {
+		f.publishInPlace(resolved, rev, epoch, loads)
+	}
+	return err
+}
+
+// publishInPlace makes resolved the effective config of an update accepted in place,
+// unless a later update, a reload or a disposal superseded it.
+func (f *Fiber) publishInPlace(resolved any, rev int, epoch string, loads int) {
+	f.t.lock()
+	defer f.t.unlockQuiet()
+	if f.disposed || !f.hasEffective || f.updateRev != rev || f.epoch != epoch || f.loads != loads {
+		return
+	}
+	f.effective = resolved
 }
 
 // Dispose disposes the fiber. A component fiber is removed from its parent: it
@@ -698,6 +780,58 @@ func (f *Fiber) hookRemoved(hook *updateHook) bool {
 	return hook.removed
 }
 
+// ----------------------------------------------------------- config hooks
+
+func (f *Fiber) addConfigHook(hook ConfigHook) (*EffectHandle, error) {
+	return f.effect("ctx.OnConfig()", func() (Disposer, error) {
+		entry := &configHook{owner: f, hook: hook}
+		f.t.lock()
+		f.t.configHooks = append(f.t.configHooks, entry)
+		f.t.unlockQuiet()
+		return func() error {
+			f.t.lock()
+			entry.removed = true
+			if i := slices.Index(f.t.configHooks, entry); i >= 0 {
+				f.t.configHooks = slices.Delete(f.t.configHooks, i, i+1)
+			}
+			f.t.unlockQuiet()
+			return nil
+		}, nil
+	})
+}
+
+// runConfigHooks hands candidate through the tree's config hooks in registration
+// order. A hook removed meanwhile is skipped. A hook's error or panic rejects the
+// candidate as a ConfigError.
+func (f *Fiber) runConfigHooks(candidate any) (any, error) {
+	f.t.lock()
+	hooks := slices.Clone(f.t.configHooks)
+	f.t.unlockQuiet()
+	for _, entry := range hooks {
+		f.t.lock()
+		removed := entry.removed
+		f.t.unlockQuiet()
+		if removed {
+			continue
+		}
+		var next any
+		if err := protect(func() (err error) {
+			next, err = entry.hook(f, candidate)
+			return err
+		}); err != nil {
+			var configError *ConfigError
+			if errors.As(err, &configError) {
+				return nil, err
+			}
+			return nil, &ConfigError{Issues: []ConfigIssue{{
+				Message: fmt.Sprintf("config hook of %s: %v", entry.owner.Name(), err),
+			}}}
+		}
+		candidate = next
+	}
+	return candidate, nil
+}
+
 // ------------------------------------------------------- dependency graph
 
 func (f *Fiber) hasInjectLocked(name string) bool {
@@ -910,6 +1044,8 @@ func (f *Fiber) reload(done chan struct{}, epoch string) {
 			// a superseded load still needs cleanup, but cannot fail the new target
 			if f.epoch == epoch {
 				f.err = err
+				// a failed load holds no effective config, even before its unload runs
+				f.effective, f.hasEffective = nil, false
 				f.epoch = inactiveEpoch
 				f.cancelLifetimeLocked()
 			}
@@ -984,6 +1120,7 @@ func (f *Fiber) unload(done chan struct{}) {
 	}
 	f.committed = nil
 	f.instance = nil
+	f.effective, f.hasEffective = nil, false
 	f.updateStateLocked(func() (FiberState, bool) {
 		if f.epoch == inactiveEpoch {
 			f.inertia = nil
@@ -996,14 +1133,21 @@ func (f *Fiber) unload(done chan struct{}) {
 	close(done)
 }
 
+// resolveConfig runs the tree's config hooks and then the component's schema on a
+// copy of a raw config, so neither can change the caller's value or a stored view. It
+// stores nothing.
 func (f *Fiber) resolveConfig(config any) (any, error) {
+	config, err := f.runConfigHooks(cloneConfig(config))
+	if err != nil {
+		return nil, err
+	}
 	runtime := f.runtime.Load()
 	if runtime == nil || runtime.component.resolve == nil {
 		return config, nil
 	}
 	var resolved any
-	err := protect(func() (err error) {
-		resolved, err = runtime.component.resolve(config)
+	err = protect(func() (err error) {
+		resolved, err = runtime.component.resolve(config, f.t.strict)
 		return err
 	})
 	return resolved, err
@@ -1016,12 +1160,16 @@ func (f *Fiber) execute() error {
 	t.lock()
 	config := f.config
 	runtime := f.runtime.Load()
+	f.loads++
 	t.unlock()
 
 	resolved, err := f.resolveConfig(config)
 	if err != nil {
 		return err
 	}
+	t.lock()
+	f.effective, f.hasEffective = resolved, true
+	t.unlock()
 	var instance any
 	if err := protect(func() (err error) {
 		instance, err = runtime.component.apply(f.ctx, resolved)

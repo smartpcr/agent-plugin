@@ -46,6 +46,38 @@ type tree struct {
 	events   *eventHub
 	loggers  *LoggerService
 	internal *Internal
+
+	// strict is set by WithStrictConfig: JSON config is decoded strictly.
+	strict bool
+	// configHooks are the tree's OnConfig hooks in registration order; guarded by mu.
+	configHooks []*configHook
+}
+
+// TreeOption configures a tree created by New.
+type TreeOption func(*treeOptions)
+
+type treeOptions struct {
+	strict       bool
+	exporters    []Exporter
+	setExporters bool
+}
+
+// WithStrictConfig makes the tree decode JSON config strictly: a key the component's
+// config type does not have, or data after the first JSON value, fails the load with
+// a ConfigError naming it. A component declared with LenientConfig is exempt. Config
+// handed in as a typed Go value is unaffected.
+func WithStrictConfig() TreeOption {
+	return func(o *treeOptions) { o.strict = true }
+}
+
+// WithExporters creates the tree's logger with exactly the given exporters, and with
+// none when none is given, in place of the default console exporter. The tree never
+// closes them: the creator owns the exporters it passes.
+func WithExporters(exporters ...Exporter) TreeOption {
+	return func(o *treeOptions) {
+		o.exporters = append(o.exporters, exporters...)
+		o.setExporters = true
+	}
 }
 
 type notification struct {

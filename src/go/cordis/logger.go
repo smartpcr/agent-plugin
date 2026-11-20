@@ -86,11 +86,21 @@ type LoggerService struct {
 
 type exporterEntry struct{ exporter Exporter }
 
+// newLoggerService returns the default logger service of a tree created without
+// WithExporters: one console exporter on the process's standard streams.
 func newLoggerService() *LoggerService {
-	return &LoggerService{
-		level:     LevelInfo,
-		exporters: []*exporterEntry{{exporter: NewConsoleExporter(os.Stdout, os.Stderr)}},
+	return newLoggerServiceWith([]Exporter{NewConsoleExporter(os.Stdout, os.Stderr)})
+}
+
+// newLoggerServiceWith returns a logger service starting with exactly exporters.
+func newLoggerServiceWith(exporters []Exporter) *LoggerService {
+	service := &LoggerService{level: LevelInfo}
+	for _, exporter := range exporters {
+		if exporter != nil {
+			service.exporters = append(service.exporters, &exporterEntry{exporter: exporter})
+		}
 	}
+	return service
 }
 
 // Level returns the default threshold.
