@@ -315,6 +315,9 @@ func (s *Service) reconcileHeld(tree []EntryOptions, extra []LifecycleEvent, iss
 		events = append(events, LifecycleEvent{Kind: EntryRemoved, ID: entry.id, Before: &before})
 		removedIDs = append(removedIDs, entry.id)
 	}
+	// events are numbered and logged as they are reconciled, under the locks, so the
+	// log keeps the order of the mutations; only the fan-out is deferred
+	s.appendLocked(events)
 	s.mu.Unlock()
 	for _, entry := range removed {
 		s.remove(entry.id)
@@ -347,15 +350,25 @@ func (s *Service) reconcileHeld(tree []EntryOptions, extra []LifecycleEvent, iss
 		entry.options = options
 		entry.order = position
 		after := options.Clone()
-		s.mu.Unlock()
+		var event []LifecycleEvent
 		switch {
 		case added:
-			events = append(events, LifecycleEvent{Kind: EntryAdded, ID: id, After: &after})
+			event = []LifecycleEvent{{Kind: EntryAdded, ID: id, After: &after}}
 			created = append(created, id)
 		case !sameOptions(before, after):
-			events = append(events, LifecycleEvent{Kind: EntryUpdated, ID: id, Before: &before, After: &after})
+			event = []LifecycleEvent{{Kind: EntryUpdated, ID: id, Before: &before, After: &after}}
 			changed = append(changed, id)
 		}
+		s.appendLocked(event)
+		s.mu.Unlock()
+		events = append(events, event...)
+	}
+	if len(extra) > 0 {
+		extra = slices.Clone(extra)
+		s.mu.Lock()
+		s.appendLocked(extra)
+		s.mu.Unlock()
+		events = append(events, extra...)
 	}
 
 	// 2. materialise, parents first; children of unloaded groups wait for their group
@@ -423,7 +436,6 @@ func (s *Service) reconcileHeld(tree []EntryOptions, extra []LifecycleEvent, iss
 			}
 		}
 	}
-	events = append(events, extra...)
 	return func() { s.publish(events, notice) }, nil
 }
 
@@ -731,6 +743,10 @@ func (s *Service) Restart(id string) error {
 	}
 	s.disposeFiber(entry)
 	_, err := s.ensure(entry)
+	events := []LifecycleEvent{{Kind: EntryRestarted, ID: id}}
+	s.mu.Lock()
+	s.appendLocked(events)
+	s.mu.Unlock()
 	s.apply.Unlock()
 	if err == nil {
 		if fiber := s.Fiber(entry); fiber != nil {
@@ -750,7 +766,7 @@ func (s *Service) Restart(id string) error {
 	if err != nil {
 		notice.Issues = issuesOf(id, err)
 	}
-	s.publish([]LifecycleEvent{{Kind: EntryRestarted, ID: id}}, notice)
+	s.publish(events, notice)
 	return err
 }
 
@@ -787,8 +803,10 @@ func (s *Service) Lifecycle() []LifecycleEvent {
 	return slices.Clone(s.lifecycle)
 }
 
-// OnLifecycle subscribes to lifecycle events as they are recorded: an Apply's after
-// its fibers settle, a runtime Update of an entry's fiber when it is committed. It
+// OnLifecycle subscribes to lifecycle events. Events are numbered (Seq) and logged
+// when the mutation is made; observers are told after: an Apply's once its fibers
+// settle, a runtime Update of an entry's fiber when it is committed. Deliveries of
+// concurrent operations may interleave; Seq gives the order of the mutations. It
 // returns a function that removes the subscription.
 func (s *Service) OnLifecycle(fn func(LifecycleEvent)) (remove func()) { return s.observers.add(fn) }
 
@@ -809,9 +827,10 @@ type ReloadNotice struct {
 // reaches only listeners registered at or below its owner.
 var Reloaded = cordis.NewEvent[ReloadNotice]("loader/reloaded")
 
-// publish records events in the lifecycle log, tells the observers and emits notice.
+// publish tells the observers about events, already in the lifecycle log
+// (appendLocked), and emits notice.
 func (s *Service) publish(events []LifecycleEvent, notice ReloadNotice) {
-	s.record(events)
+	s.raise(events)
 	notice.Loader = s
 	if s.nested {
 		Reloaded.NotifyScoped(s.ctx, s.ctx.Fiber(), notice)
@@ -820,11 +839,13 @@ func (s *Service) publish(events []LifecycleEvent, notice ReloadNotice) {
 	}
 }
 
-func (s *Service) record(events []LifecycleEvent) {
+// appendLocked numbers events, in place, and appends them to the lifecycle log; s.mu
+// is held. It is called at the moment the mutation is made, so Seq follows the order
+// of the mutations even when the fan-out (raise) is deferred.
+func (s *Service) appendLocked(events []LifecycleEvent) {
 	if len(events) == 0 {
 		return
 	}
-	s.mu.Lock()
 	for i := range events {
 		s.seq++
 		events[i].Seq = s.seq
@@ -833,7 +854,10 @@ func (s *Service) record(events []LifecycleEvent) {
 	if extra := len(s.lifecycle) - lifecycleCap; extra > 0 {
 		s.lifecycle = slices.Delete(s.lifecycle, 0, extra)
 	}
-	s.mu.Unlock()
+}
+
+// raise tells the observers about events already logged by appendLocked.
+func (s *Service) raise(events []LifecycleEvent) {
 	for _, event := range events {
 		s.observers.raise(event)
 	}
@@ -1209,10 +1233,11 @@ func (s *Service) onCommit(fiber *cordis.Fiber, config any) {
 	if s.committed != nil {
 		s.committed[entry.id] = true
 	}
-	id := entry.id
-	s.mu.Unlock()
 	after := options.Clone()
-	s.record([]LifecycleEvent{{Kind: EntryUpdated, ID: id, Before: &before, After: &after}})
+	events := []LifecycleEvent{{Kind: EntryUpdated, ID: entry.id, Before: &before, After: &after}}
+	s.appendLocked(events)
+	s.mu.Unlock()
+	s.raise(events)
 	s.changed.raise()
 }
 
