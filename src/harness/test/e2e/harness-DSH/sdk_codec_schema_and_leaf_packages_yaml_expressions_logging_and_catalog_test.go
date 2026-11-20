@@ -443,6 +443,10 @@ func (w *yelcWorld) callsRejected(list string) error {
 		if err == nil {
 			return fmt.Errorf("%s is callable", name)
 		}
+		// Only an unavailable-function rejection counts; a parse, type or scope error does not.
+		if want := "function " + name + " is not available"; !strings.Contains(err.Error(), want) {
+			return fmt.Errorf("%s: error %q is not a rejection of the call (want %q)", name, err, want)
+		}
 	}
 	return nil
 }
