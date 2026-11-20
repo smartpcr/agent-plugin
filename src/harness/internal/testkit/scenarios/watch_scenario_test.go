@@ -52,7 +52,7 @@ func offsets(times []time.Time, at time.Time) []time.Duration {
 //
 //dsh:scenario DH-E-CHOKIDAR-1
 func TestWatchRealEditorSaves(t *testing.T) {
-	editors := items(need(t, "DSH_SCENARIO_EDITORS", "the editor save commands, ';'-separated, with {file} and {marker}"))
+	editors := needList(t, "DSH_SCENARIO_EDITORS", "the editor save commands, ';'-separated, with {file} and {marker}")
 	svc := watch.New(watch.Options{})
 	t.Cleanup(func() { _ = svc.Close() })
 
@@ -130,7 +130,7 @@ func TestWatchRealEditorSaves(t *testing.T) {
 //
 //dsh:scenario DH-E-CHOKIDAR-2
 func TestWatchRemoteFilesystemsPoll(t *testing.T) {
-	dirs := items(need(t, "DSH_SCENARIO_REMOTE_DIRS", "directories on SMB, NFS and a WSL-crossed mount, ';'-separated"))
+	dirs := needList(t, "DSH_SCENARIO_REMOTE_DIRS", "directories on SMB, NFS and a WSL-crossed mount, ';'-separated")
 	change := need(t, "DSH_SCENARIO_REMOTE_CHANGE", "command changing {name} in {dir} from the other machine or side")
 	const poll = 250 * time.Millisecond
 	svc := watch.New(watch.Options{FilePoll: poll})

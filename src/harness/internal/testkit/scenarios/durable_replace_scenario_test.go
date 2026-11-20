@@ -62,7 +62,7 @@ func TestDurableReplaceSurvivesPowerLoss(t *testing.T) {
 		nodefsWriter(t)
 		return
 	}
-	vms := items(need(t, "DSH_SCENARIO_VMS", "the virtual machines, ';'-separated"))
+	vms := needList(t, "DSH_SCENARIO_VMS", "the virtual machines, ';'-separated")
 	listen := need(t, "DSH_SCENARIO_NODEFS_LISTEN", "address the writers' acknowledgements arrive at")
 	start := need(t, "DSH_SCENARIO_NODEFS_START", "command starting the writer role in {vm} in the background")
 	powerOff := need(t, "DSH_SCENARIO_NODEFS_POWEROFF", "command cutting the power of {vm}")

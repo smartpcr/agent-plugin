@@ -24,13 +24,19 @@ func need(t *testing.T, name, what string) string {
 	return v
 }
 
-// items splits a list input on ";" and drops empty items.
-func items(v string) []string {
+// needList is need for a list input: it splits the value on ";", drops empty items,
+// and fails the scenario when no item is left (a value such as ";" would otherwise
+// run the scenario against no target at all and pass).
+func needList(t *testing.T, name, what string) []string {
+	t.Helper()
 	var out []string
-	for _, item := range strings.Split(v, ";") {
+	for _, item := range strings.Split(need(t, name, what), ";") {
 		if item = strings.TrimSpace(item); item != "" {
 			out = append(out, item)
 		}
+	}
+	if len(out) == 0 {
+		t.Fatalf("%s lists no item: %s", name, what)
 	}
 	return out
 }

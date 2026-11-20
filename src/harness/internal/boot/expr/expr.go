@@ -337,8 +337,8 @@ func (e *Evaluator) home(params ...any) (any, error) {
 // fields are plain data (booleans, numbers, strings, and slices, arrays, maps with
 // string keys and structs of those), never a pointer, function, interface or channel,
 // and never a field marked secret (`dsh:"secret"`), at any depth (DH-ADR-BOOT-5). A
-// type that contains itself (through a slice or a map) is checked once and accepted
-// if its fields are plain.
+// type that contains itself (through a struct, slice, array or map) is checked once
+// and accepted if what it holds is plain.
 func CheckView(t reflect.Type) error {
 	if t == nil || t.Kind() != reflect.Struct {
 		return fmt.Errorf("a view must be a struct, got %v", t)
@@ -347,6 +347,15 @@ func CheckView(t reflect.Type) error {
 }
 
 func plain(t reflect.Type, path string, seen map[reflect.Type]bool) error {
+	switch t.Kind() {
+	case reflect.Slice, reflect.Array, reflect.Map, reflect.Struct:
+		// Every composite type is checked once: a named type can contain itself
+		// through any of them (type Loop []Loop, type Dict map[string]Dict).
+		if seen[t] {
+			return nil // being checked further up, or already checked
+		}
+		seen[t] = true
+	}
 	switch t.Kind() {
 	case reflect.Bool, reflect.String,
 		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
@@ -361,10 +370,6 @@ func plain(t reflect.Type, path string, seen map[reflect.Type]bool) error {
 		}
 		return plain(t.Elem(), path+"[]", seen)
 	case reflect.Struct:
-		if seen[t] {
-			return nil // being checked further up, or already checked
-		}
-		seen[t] = true
 		for i := 0; i < t.NumField(); i++ {
 			f := t.Field(i)
 			if !f.IsExported() {

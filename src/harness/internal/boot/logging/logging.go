@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
 )
@@ -115,8 +116,11 @@ func (c Config) open() (io.Writer, func() error, error) {
 // The tree's default threshold drops a message before any exporter sees it, so a
 // level more verbose than the current threshold (debug, under the default info)
 // raises the threshold to it while the component is loaded. It never lowers the
-// threshold, which would silence another exporter, and on unload it restores the
-// previous threshold unless someone has changed it since. A context's own logger
+// threshold, which would silence another exporter. The loaded components of one
+// tree share the threshold: it is the most verbose any of them needs, so unloading
+// one keeps the level another still needs, and once the last is unloaded the
+// threshold goes back to what it was, unless someone has changed it since, which
+// is kept. A context's own logger
 // intercept (cordis.LoggerConfig) still decides for the loggers below it.
 var Component = cordis.Define(Name, func(ctx *cordis.Context, config Config) error {
 	_, err := ctx.Effect("log exporter", func() (cordis.Disposer, error) {
@@ -135,18 +139,68 @@ var Component = cordis.Define(Name, func(ctx *cordis.Context, config Config) err
 		}
 		loggers := ctx.Loggers()
 		remove := loggers.AddExporter(cordis.SlogExporter{Handler: handler})
-		previous := loggers.Level()
-		raised := threshold > previous
-		if raised {
-			loggers.SetLevel(threshold)
-		}
+		release := require(loggers, threshold)
 		return func() error {
-			if raised && loggers.Level() == threshold {
-				loggers.SetLevel(previous)
-			}
+			release()
 			remove()
 			return closeFn()
 		}, nil
 	})
 	return err
 })
+
+// thresholds coordinates the threshold of each logger service among the loaded
+// logging components, so that unloading one never silences another that is still
+// loaded, whatever the order.
+var thresholds = struct {
+	sync.Mutex
+	services map[*cordis.LoggerService]*demand
+}{services: map[*cordis.LoggerService]*demand{}}
+
+// demand is what the loaded components of one logger service need. base is the
+// threshold the service would have without them: the one found when the first was
+// loaded, or the one someone else has set since (set records the last threshold
+// the components set, so a different current threshold is someone else's).
+type demand struct {
+	base, set cordis.LogLevel
+	wants     map[*int]cordis.LogLevel
+}
+
+// require adds a component's need for threshold on loggers and returns the
+// function that withdraws it. Each change sets the threshold to the most verbose of
+// base and the remaining needs.
+func require(loggers *cordis.LoggerService, threshold cordis.LogLevel) func() {
+	thresholds.Lock()
+	defer thresholds.Unlock()
+	d := thresholds.services[loggers]
+	if d == nil {
+		d = &demand{base: loggers.Level(), set: loggers.Level(), wants: map[*int]cordis.LogLevel{}}
+		thresholds.services[loggers] = d
+	}
+	key := new(int)
+	d.wants[key] = threshold
+	d.apply(loggers)
+	return func() {
+		thresholds.Lock()
+		defer thresholds.Unlock()
+		delete(d.wants, key)
+		d.apply(loggers)
+		if len(d.wants) == 0 {
+			delete(thresholds.services, loggers)
+		}
+	}
+}
+
+func (d *demand) apply(loggers *cordis.LoggerService) {
+	if current := loggers.Level(); current != d.set {
+		d.base = current
+	}
+	target := d.base
+	for _, want := range d.wants {
+		target = max(target, want)
+	}
+	if target != loggers.Level() {
+		loggers.SetLevel(target)
+	}
+	d.set = target
+}

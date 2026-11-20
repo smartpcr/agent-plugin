@@ -147,6 +147,58 @@ func TestDebugLevelReachesTheDestination(t *testing.T) {
 	}
 }
 
+// Two loaded debug loggers share the threshold: unloading either first leaves the
+// other receiving debug records, and unloading both restores the tree's threshold.
+func TestOverlappingDebugLoggers(t *testing.T) {
+	for _, firstOut := range []int{0, 1} {
+		dir := t.TempDir()
+		paths := []string{filepath.Join(dir, "a.log"), filepath.Join(dir, "b.log")}
+		root := cordis.New(cordis.WithExporters())
+		var fibers []*cordis.Fiber
+		for _, path := range paths {
+			f, err := load(t, root, Config{Destination: File, Path: path, Level: "debug"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			fibers = append(fibers, f)
+		}
+		// A warn-level logger in between neither lowers nor holds the threshold.
+		warn, err := load(t, root, Config{Destination: File, Path: filepath.Join(dir, "w.log"), Level: "warn"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		warn.Dispose()
+		fibers[firstOut].Dispose()
+		if got := root.Loggers().Level(); got != cordis.LevelDebug {
+			t.Fatalf("order %d: threshold with one debug logger left = %v", firstOut, got)
+		}
+		root.Logger().Debugf("still here")
+		fibers[1-firstOut].Dispose()
+		if got := root.Loggers().Level(); got != cordis.LevelInfo {
+			t.Fatalf("order %d: threshold after both unloaded = %v, want Info", firstOut, got)
+		}
+		data, err := os.ReadFile(paths[1-firstOut])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), "still here") {
+			t.Fatalf("order %d: remaining logger lost its debug record: %q", firstOut, data)
+		}
+		gone, err := os.ReadFile(paths[firstOut])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(gone), "still here") {
+			t.Fatalf("order %d: unloaded logger still received records", firstOut)
+		}
+	}
+	thresholds.Lock()
+	defer thresholds.Unlock()
+	if len(thresholds.services) != 0 {
+		t.Fatalf("%d logger services still tracked", len(thresholds.services))
+	}
+}
+
 func TestStderrDestination(t *testing.T) {
 	buf := &syncBuffer{}
 	saved := stderr

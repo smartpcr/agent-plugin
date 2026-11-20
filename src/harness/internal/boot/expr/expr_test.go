@@ -180,8 +180,15 @@ func TestUseUnresolved(t *testing.T) {
 }
 
 // tree and forest contain themselves; badTree does and has a pointer; secretTree has
-// a secret only below the first level.
+// a secret only below the first level. loop and dict contain themselves without a
+// struct in between; badDict does and holds a function.
 type (
+	loop    []loop
+	dict    map[string]dict
+	badDict map[string]struct {
+		D badDict
+		F func()
+	}
 	tree struct {
 		Name     string
 		Children []tree
@@ -214,6 +221,10 @@ func TestCheckView(t *testing.T) {
 		F [2]float64
 		U uint8
 	}](), reflect.TypeFor[tree](), reflect.TypeFor[forest](), reflect.TypeFor[struct {
+		L  loop
+		D  dict
+		Ls []loop
+	}](), reflect.TypeFor[struct {
 		S string `dsh:"pattern=secret,x"`
 		L string `dsh:"live"`
 	}]()}
@@ -224,7 +235,11 @@ func TestCheckView(t *testing.T) {
 	}
 	bad := []reflect.Type{nil, reflect.TypeFor[int](), reflect.TypeFor[struct{ P *int }](),
 		reflect.TypeFor[struct{ F func() }](), reflect.TypeFor[struct{ M map[int]string }](),
-		reflect.TypeFor[struct{ I any }](), reflect.TypeFor[unexported](), reflect.TypeFor[badTree]()}
+		reflect.TypeFor[struct{ I any }](), reflect.TypeFor[unexported](), reflect.TypeFor[badTree](),
+		reflect.TypeFor[struct{ B badDict }](), reflect.TypeFor[struct {
+			L []loop
+			P *int
+		}]()}
 	for _, typ := range bad {
 		if err := CheckView(typ); err == nil {
 			t.Fatalf("%v accepted", typ)

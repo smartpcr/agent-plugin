@@ -51,7 +51,7 @@ var searchSet = []string{
 //
 //dsh:scenario DH-E-RIPGREP-1
 func TestSearchMeetsBudget(t *testing.T) {
-	repos := items(need(t, "DSH_SCENARIO_REPOS", "real checkouts: small, medium and very large, ';'-separated"))
+	repos := needList(t, "DSH_SCENARIO_REPOS", "real checkouts: small, medium and very large, ';'-separated")
 	budget, err := time.ParseDuration(need(t, "DSH_SCENARIO_SEARCH_BUDGET", "the agreed budget per search, e.g. 2s"))
 	if err != nil {
 		t.Fatal(err)
@@ -118,7 +118,7 @@ func TestSearchMeetsBudget(t *testing.T) {
 //
 //dsh:scenario DH-E-RIPGREP-2
 func TestFileListingMatchesGit(t *testing.T) {
-	repos := items(need(t, "DSH_SCENARIO_REPOS", "real Git checkouts, ';'-separated"))
+	repos := needList(t, "DSH_SCENARIO_REPOS", "real Git checkouts, ';'-separated")
 	explained := map[string]bool{}
 	if path := os.Getenv("DSH_SCENARIO_LISTING_EXPLAINED"); path != "" {
 		data, err := os.ReadFile(path)
