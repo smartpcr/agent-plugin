@@ -440,33 +440,76 @@ func (w *configViewsWorld) onlyListedReRecordings() error {
 	if !strings.Contains(section, "TC-02b") || !strings.Contains(section, "output.golden") {
 		return errors.New("Stage 2.3 evidence has no TC-02b golden record")
 	}
-	if !strings.Contains(section, "was not re-recorded") {
-		// Re-recordings are listed in the evidence; the passing run above proves them.
+	notReRecorded := strings.Contains(section, "was not re-recorded")
+
+	// Every change to the golden since the Stage 2.3 base must be accounted for
+	// by the evidence. Missing history is a failure, never a silent pass.
+	base, err := w.stageBase()
+	if err != nil {
+		return err
+	}
+	dirty, err := w.git("diff", "--name-only", "HEAD", "--", w.goldenRel)
+	if err != nil {
+		return fmt.Errorf("git diff: %v: %s", err, dirty)
+	}
+	if dirty != "" {
+		return fmt.Errorf("golden has uncommitted changes the evidence cannot list: %s", dirty)
+	}
+	changed, err := w.git("diff", "--name-only", base, "HEAD", "--", w.goldenRel)
+	if err != nil {
+		return fmt.Errorf("git diff %s HEAD: %v: %s", base, err, changed)
+	}
+	if notReRecorded {
+		if changed != "" {
+			return fmt.Errorf("golden differs from the Stage 2.3 base %s, but the evidence says it was not re-recorded", base)
+		}
 		return nil
 	}
 
-	// The record says "not re-recorded": the golden must be byte-identical to the
-	// committed version, and no Stage 2.3 commit may have changed it.
-	diff, err := w.git("diff", "--name-only", "HEAD", "--", w.goldenRel)
+	// Re-recordings are listed: each commit that touched the golden since the
+	// base must be named (by short or full hash) in the Stage 2.3 evidence.
+	commits, err := w.git("log", "--format=%H", base+"..HEAD", "--", w.goldenRel)
 	if err != nil {
-		return fmt.Errorf("git diff: %v: %s", err, diff)
+		return fmt.Errorf("git log: %v: %s", err, commits)
 	}
-	if diff != "" {
-		return fmt.Errorf("golden has uncommitted changes the evidence does not list: %s", diff)
+	if changed != "" && strings.TrimSpace(commits) == "" {
+		return fmt.Errorf("golden differs from the Stage 2.3 base %s, but no commit since the base touched it", base)
 	}
-	if shallow, err := w.git("rev-parse", "--is-shallow-repository"); err == nil && shallow == "true" {
-		return nil
-	}
-	subjects, err := w.git("log", "--format=%s", "--", w.goldenRel)
-	if err != nil {
-		return fmt.Errorf("git log: %v: %s", err, subjects)
-	}
-	for _, subject := range strings.Split(subjects, "\n") {
-		if strings.Contains(subject, "Config Views and Strict Decoding") {
-			return fmt.Errorf("commit %q re-recorded the golden, but the evidence says it was not re-recorded", subject)
+	var unlisted []string
+	for _, full := range strings.Fields(commits) {
+		if !strings.Contains(section, full[:7]) {
+			unlisted = append(unlisted, full[:12])
 		}
 	}
+	if len(unlisted) > 0 {
+		return fmt.Errorf("golden re-recordings not listed in the Stage 2.3 evidence: %s", strings.Join(unlisted, ", "))
+	}
 	return nil
+}
+
+// stageBase returns the commit the Stage 2.3 work started from: CORDIS_STAGE_BASE
+// when set, otherwise the parent of the oldest "Config Views and Strict Decoding"
+// commit. It fails when that history is not available (for example a shallow clone).
+func (w *configViewsWorld) stageBase() (string, error) {
+	if base := strings.TrimSpace(os.Getenv("CORDIS_STAGE_BASE")); base != "" {
+		if out, err := w.git("rev-parse", "--verify", base+"^{commit}"); err != nil {
+			return "", fmt.Errorf("CORDIS_STAGE_BASE %q is not a commit: %s", base, out)
+		}
+		return base, nil
+	}
+	out, err := w.git("log", "--format=%H", "--reverse", "--fixed-strings", "--grep", "Config Views and Strict Decoding", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("git log: %v: %s", err, out)
+	}
+	first := strings.Fields(out)
+	if len(first) == 0 {
+		return "", errors.New("cannot locate the Stage 2.3 base: no \"Config Views and Strict Decoding\" commit in history; set CORDIS_STAGE_BASE")
+	}
+	base := first[0] + "^"
+	if out, err := w.git("rev-parse", "--verify", base+"{commit}"); err != nil {
+		return "", fmt.Errorf("Stage 2.3 base %s is not in local history (shallow clone?); fetch full history or set CORDIS_STAGE_BASE: %s", base, out)
+	}
+	return base, nil
 }
 
 func InitializeScenario_cordis_port_guarantees_config_views_and_strict_decoding(ctx *godog.ScenarioContext) {
