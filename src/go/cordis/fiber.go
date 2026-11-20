@@ -85,9 +85,10 @@ type Fiber struct {
 	updateHooks []*updateHook
 	anchor      *EffectHandle
 
-	// announced is set once the fiber's creation notification has been delivered, by
-	// the marker posted with sequence announceSeq; the fiber does not load before that.
-	// createdSeq is the last sequence posted before the creation notification.
+	// announced is set once the fiber's creation handlers have returned: the creation
+	// notification, posted with sequence announceSeq, announces the fiber after running
+	// them, and the fiber does not load before that. createdSeq is the last sequence
+	// posted before it.
 	announced   bool
 	createdSeq  uint64
 	announceSeq uint64
@@ -142,9 +143,9 @@ func newFiber(parent *Context, runtime *Runtime, config any, inject []Dependency
 	t.unlock()
 
 	// The anchor is owned by the parent before the fiber is announced, so a creation
-	// handler that disposes the fiber removes it. The load starts from a marker queued
-	// behind the creation notification, so it waits for every creation handler even
-	// when another goroutine is delivering notifications. The acquisition does not
+	// handler that disposes the fiber removes it. The creation notification starts the
+	// load itself after its handlers return, so the load waits for every creation
+	// handler whichever goroutine delivers it. The acquisition does not
 	// deliver notifications itself: a handler may dispose the fiber, which waits for
 	// the acquisition.
 	_, err := parent.fiber.run("ctx.Use()", func(anchor *EffectHandle) (*task, error) {
@@ -158,8 +159,7 @@ func newFiber(parent *Context, runtime *Runtime, config any, inject []Dependency
 		f.anchor = anchor
 		f.runtime.Load().attachLocked(f)
 		f.createdSeq = t.mark()
-		t.internal.raisePlugin(f)
-		f.announceSeq = t.post(f.announce)
+		f.announceSeq = t.internal.announcePlugin(f, f.announce)
 		return nil, nil
 	})
 	if err != nil {
@@ -173,7 +173,7 @@ func newFiber(parent *Context, runtime *Runtime, config any, inject []Dependency
 	return f, nil
 }
 
-// announce runs from the outbox once the fiber's creation handlers have returned, and
+// announce runs at the end of the creation notification, after its handlers, and
 // starts its first load unless a handler disposed it.
 func (f *Fiber) announce() {
 	t := f.t

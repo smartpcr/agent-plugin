@@ -29,7 +29,8 @@ after the second iteration (root teardown, acquisition tracking, creation orderi
 still passes unchanged. Re-checked again after the third iteration (acquisition-safe
 notification delivery, root `Unloading`/`Disposed` state) and the fourth (notification
 dispatcher with a delivery barrier in `Wait`/`Dispose`) and the fifth (serialised
-dispatcher, caller-delivering barrier): still passes unchanged.
+dispatcher, caller-delivering barrier) and the sixth (creation notification starts the
+load, bounded barrier): still passes unchanged.
 
 ### Tests
 
@@ -43,8 +44,8 @@ ok  github.com/smartpcr/agent-plugin/src/go/timer
 
 | Test | In `src/go/cordis/unload_test.go` |
 | --- | --- |
-| `DH-T-CORDIS-1` | `TestCleanupCannotRegisterWhileItsFiberUnloads`, `TestRootDisposeIsFinalAndExclusive`, `TestRootLifecycleHandlersCannotBlockTeardown`, `TestHandlerWaitingForALoadThatWaitsForAChild`, `TestDisposeDeliversItsNotificationsPastABlockedHandler` |
+| `DH-T-CORDIS-1` | `TestCleanupCannotRegisterWhileItsFiberUnloads`, `TestRootDisposeIsFinalAndExclusive`, `TestRootLifecycleHandlersCannotBlockTeardown`, `TestHandlerWaitingForALoadThatWaitsForAChild`, `TestDisposeDeliversItsNotificationsPastABlockedHandler`, `TestBarrierIgnoresNotificationsPastItsTarget` (`tree_internal_test.go`) |
 | TC-02a | `TestConcurrentDisposeWaitsForEveryCleanup` |
 | `DH-T-CORDIS-2` | `TestRunningCleanupHoldsBackSecondDisposeAndProvider`, `TestDependentUnloadsBeforeItsProvider`, `TestUnloadWaitsForInFlightAcquisition`, `TestNotificationHandlerCanDisposeTheAcquiringFiber` |
-| `DH-T-CORDIS-3` | `TestPendingFiberReleasesEffectsAndCreationHandlerCanDispose`, `TestCreationHandlerRunsBeforeLoadUnderConcurrentDelivery` |
+| `DH-T-CORDIS-3` | `TestPendingFiberReleasesEffectsAndCreationHandlerCanDispose`, `TestCreationHandlerRunsBeforeLoadUnderConcurrentDelivery`, `TestBlockedCreationHandlerHoldsTheLoadAgainstOtherDelivery` |
 | `DH-T-CORDIS-4` | `TestFiberLifetimeIsCancelledByUnload` |

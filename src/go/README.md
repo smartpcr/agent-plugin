@@ -310,13 +310,14 @@ upstream; tests in `cordis/unload_test.go`):
   waits for children, and an unrelated `Dispose` is not held up by a blocked handler.
   Such a delivery can re-enter the handler that called `Wait` or `Dispose` (as
   upstream's synchronous emit does), so handlers guard one-shot work with a flag
-  rather than `sync.Once`.
+  rather than `sync.Once`. A barrier waits only for its own target notifications, never
+  for a later one that is still running.
   Disposing the root is
   final in the same way: the root refuses new effects and child fibers, its state is
   `Unloading` then `Disposed`, and an overlapping `root.Dispose()` or
   `root.Fiber().Wait()` returns only after the teardown. A fiber loads only after its
-  `Internal.OnPlugin` creation notification has been delivered (a marker queued behind
-  it starts the load), so a creation handler that disposes it stops it before its body
+  `Internal.OnPlugin` creation handlers have returned (the creation notification starts
+  the load itself after running them, whichever goroutine delivers it), so a creation handler that disposes it stops it before its body
   runs, even while another goroutine is delivering notifications. `Fiber.Wait` on a new
   fiber delivers its creation notification first if the dispatcher has not, and waits
   for its creation handlers, so a creation handler must not wait for the fiber it

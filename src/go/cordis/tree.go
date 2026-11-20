@@ -110,7 +110,7 @@ func (t *tree) barrier(lo, hi uint64) {
 	t.outboxMu.Lock()
 	defer t.outboxMu.Unlock()
 	for {
-		busy := t.runningAfterLocked(lo)
+		busy := t.runningLocked(lo, hi)
 		if !busy && len(t.outbox) > 0 && t.outbox[0].seq <= hi {
 			t.deliverHeadLocked()
 			continue
@@ -122,10 +122,11 @@ func (t *tree) barrier(lo, hi uint64) {
 	}
 }
 
-// runningAfterLocked reports whether a notification posted after lo is being delivered.
-func (t *tree) runningAfterLocked(lo uint64) bool {
+// runningLocked reports whether a notification posted after lo and up to hi is being
+// delivered. Later notifications never hold a barrier back: they are not its target.
+func (t *tree) runningLocked(lo, hi uint64) bool {
 	for seq := range t.running {
-		if seq > lo {
+		if seq > lo && seq <= hi {
 			return true
 		}
 	}
@@ -244,6 +245,22 @@ func (i *Internal) raisePlugin(fiber *Fiber) {
 	for _, fn := range i.plugin.snapshot() {
 		i.t.post(func() { fn(fiber) })
 	}
+}
+
+// announcePlugin posts the creation notification of fiber as one delivery that runs
+// every creation handler, each guarded on its own, and then then, and returns its
+// sequence number. then therefore runs only once every handler has returned, on
+// whichever goroutine delivers the notification.
+func (i *Internal) announcePlugin(fiber *Fiber, then func()) uint64 {
+	handlers := i.plugin.snapshot()
+	return i.t.post(func() {
+		for _, fn := range handlers {
+			if err := protect(func() error { fn(fiber); return nil }); err != nil {
+				i.t.root.Logger().Error(err)
+			}
+		}
+		then()
+	})
 }
 
 func (i *Internal) raiseStatus(fiber *Fiber, old, next FiberState) {

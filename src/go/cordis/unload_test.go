@@ -663,3 +663,32 @@ func TestDisposeDeliversItsNotificationsPastABlockedHandler(t *testing.T) {
 	defer mu.Unlock()
 	True(t, len(states) > 0 && states[len(states)-1] == cordis.Disposed, fmt.Sprint(states))
 }
+
+// A fiber does not load while one of its creation handlers is blocked, even when an
+// unrelated Wait delivers the queued notifications behind that handler.
+func TestBlockedCreationHandlerHoldsTheLoadAgainstOtherDelivery(t *testing.T) {
+	root, _ := Quiet()
+	blocking, gate, handled := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var claimed atomic.Bool
+	root.Internal().OnPlugin(func(f *cordis.Fiber) {
+		if f.Name() == "doomed" && claimed.CompareAndSwap(false, true) {
+			close(blocking)
+			<-gate
+			f.Dispose()
+			close(handled)
+		}
+	})
+	var ran atomic.Bool
+	doomed := Must(root.Apply("doomed", func(*cordis.Context) error {
+		ran.Store(true)
+		return nil
+	}))
+	Within(t, "handler blocked", func() { <-blocking })
+	Within(t, "unrelated wait", func() { NoError(t, root.Fiber().Wait()) })
+	True(t, !ran.Load(), "the fiber loaded while its creation handler was blocked")
+	close(gate)
+	Within(t, "handler", func() { <-handled })
+	Within(t, "wait", func() { NoError(t, doomed.Wait()) })
+	Equal(t, cordis.Disposed, doomed.State())
+	True(t, !ran.Load(), "the body of a fiber disposed on creation ran")
+}
