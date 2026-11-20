@@ -76,6 +76,11 @@ var codes = map[herr.Reason]int{
 	"boot/host-preparation": Fatal,
 	"boot/panic":            Fatal,
 
+	"config/busy":         Busy,
+	"config/not-writable": Config,
+	"config/rejected":     Config,
+	"config/stale":        Busy,
+
 	"home/io":            Failed,
 	"home/not-directory": Invalid,
 	"home/not-private":   Denied,
@@ -93,6 +98,10 @@ var codes = map[herr.Reason]int{
 	"secret/not-configured": Unavailable,
 	"secret/source":         Unavailable,
 	"secret/use-failed":     Failed,
+
+	"settings/not-live":   Invalid,
+	"settings/overridden": Busy,
+	"settings/unsaved":    Failed,
 
 	"subprocess/bad-argument":     Invalid,
 	"subprocess/batch-refused":    Denied,

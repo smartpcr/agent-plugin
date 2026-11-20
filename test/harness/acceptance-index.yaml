@@ -31,6 +31,10 @@ stages:
     # the file is written by the DH-S-11 authoring step (impl.md DH-S-1 Scenarios).
     - id: DH-E-TOOLCHAIN-1
       authored: DH-S-11
+    # A running harness following an edit to its profile patch (impl.md step 17.7);
+    # authored with the validated reload of DH-S-6 (step 6.13).
+    - id: DH-E-LOADER-1
+      authored: DH-S-6
   DH-S-18:
     - id: DH-E-TOOLCHAIN-2
       authored: DH-S-1
@@ -46,4 +50,8 @@ stages:
       authored: DH-S-4
     - id: DH-E-RIPGREP-2
       authored: DH-S-4
+  DH-S-21:
+    # Two processes on one home and one profile; guarded (impl.md step 21.13).
+    - id: DH-E-BOOT-2
+      authored: DH-S-6
   DH-S-22: []
