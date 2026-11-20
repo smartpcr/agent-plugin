@@ -298,6 +298,13 @@ func Encode(f Frame) ([]byte, error) {
 			if f.Result != nil {
 				return nil, invalid(`a response carries exactly one of "result" and "error"`)
 			}
+			// Mirror decodeError: a data object, once present, must name a valid reason.
+			if f.Error.Reason == "" && len(f.Error.Details) > 0 {
+				return nil, invalid(`an error with "details" must carry a "<domain>/<reason>" reason`)
+			}
+			if f.Error.Reason != "" && !ValidReason(f.Error.Reason) {
+				return nil, invalid(`an error reason must be "<domain>/<reason>"`)
+			}
 			raw, err := json.Marshal(f.Error)
 			if err != nil {
 				return nil, err
