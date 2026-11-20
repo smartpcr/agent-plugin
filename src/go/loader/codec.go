@@ -314,13 +314,23 @@ type jsonParser struct {
 	i         int
 	line      int
 	lineStart int
+	// colAt and colRunes cache the rune count from lineStart to colAt, so
+	// pos() only counts the bytes consumed since its previous call and a
+	// single-line document stays linear.
+	colAt    int
+	colRunes int
 }
 
 func (p *jsonParser) pos() Position {
+	if p.colAt < p.lineStart || p.colAt > p.i {
+		p.colAt, p.colRunes = p.lineStart, 0
+	}
+	p.colRunes += utf8.RuneCount(p.data[p.colAt:p.i])
+	p.colAt = p.i
 	return Position{
 		File:   p.file,
 		Line:   p.line,
-		Column: utf8.RuneCount(p.data[p.lineStart:p.i]) + 1,
+		Column: p.colRunes + 1,
 		Offset: p.i,
 	}
 }
