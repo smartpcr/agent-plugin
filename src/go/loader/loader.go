@@ -394,10 +394,15 @@ func (s *Service) reconcileHeld(tree []EntryOptions, extra []LifecycleEvent, iss
 	s.WaitAll()
 
 	notice := ReloadNotice{Created: created, Removed: removedIDs, Issues: issues}
-	for _, id := range changed {
+	for _, id := range sequence {
+		// a refused update (e.g. by the schema) leaves the old config running; it is
+		// reported whether this edit changed the entry or retried a refused config
 		if err, ok := rejected[id]; ok {
-			// the update was refused (e.g. by the schema) and the old config still runs
 			notice.Issues = append(notice.Issues, issuesOf(id, err)...)
+		}
+	}
+	for _, id := range changed {
+		if _, ok := rejected[id]; ok {
 			continue
 		}
 		if entry := s.Find(id); rebuilt[id] && entry != nil && s.Fiber(entry) != nil {
@@ -981,7 +986,17 @@ func (s *Service) ensure(entry *Entry) (func() error, error) {
 			if stale {
 				return nil
 			}
-			return s.updateFiber(fiber, config)
+			err := s.updateFiber(fiber, config)
+			if err != nil {
+				// refused: the old config still runs, so the same config is tried (and
+				// reported) again by the next Apply instead of being taken as applied
+				s.mu.Lock()
+				if jsonEqual(entry.applied, config) {
+					entry.applied = applied
+				}
+				s.mu.Unlock()
+			}
+			return err
 		}, nil
 	}
 

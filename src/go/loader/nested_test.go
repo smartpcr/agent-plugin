@@ -450,6 +450,37 @@ func TestARejectedConfigUpdateIsAnIssueNotAnUpdate(t *testing.T) {
 		"the refused update is not an issue of the notice")
 	True(t, h.active("a"), "the old config of a stopped running")
 	Equal(t, 1, constructs(h.echo, "a"))
+
+	// the refused config was not taken as applied: applying it again is refused again
+	h.apply(t, rejected, echo("b", "b!"))
+	all = heard.all()
+	Equal(t, 2, len(all))
+	True(t, slices.ContainsFunc(all[1].Issues, func(issue loader.Issue) bool { return issue.Path == "a" }),
+		"a refused config applied twice is not reported the second time")
+	Equal(t, 0, len(all[1].Updated)+len(all[1].Restarted))
+	Equal(t, 1, constructs(h.echo, "a"))
+}
+
+func TestAReloadListenerCanSaveTheConfigFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tree.json")
+	writeFile(t, path, `[`+echoJSON("a", "a")+`]`)
+	h := start(t)
+	file := useFile(t, h, loader.ConfigFileOptions{Path: path})
+	var once atomic.Bool
+	saved := make(chan struct{})
+	Must(loader.Reloaded.On(h.root, func(_ *cordis.Context, _ loader.ReloadNotice) error {
+		if once.CompareAndSwap(false, true) {
+			file.Save() // synchronous: must not wait for the drain delivering this notice
+			close(saved)
+		}
+		return nil
+	}))
+
+	writeFile(t, path, `[`+echoJSON("a", "a!")+`]`)
+	Within(t, "reload with a listener saving the file", file.Reload)
+	Within(t, "the listener's save", func() { <-saved })
+	Equal(t, 2, constructs(h.echo, "a"))
 }
 
 func TestALayerFilesCompositionIssuesReachTheNotice(t *testing.T) {

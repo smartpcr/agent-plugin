@@ -27,7 +27,7 @@ cmd/cordis-sample   runnable end-to-end demo
 cd src/go
 go build ./...
 go vet ./...
-go test -race ./...           # 161 tests: cordis 92, timer 7, loader 62
+go test -race ./...           # 162 tests: cordis 92, timer 7, loader 63
 go run ./cmd/cordis-sample
 gofmt -l .                    # must print nothing
 ```
