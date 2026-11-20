@@ -67,6 +67,9 @@ type ConfigFile struct {
 	dirtyWrite  bool
 	disposed    bool
 	tempCounter int
+	// pending publishes the reconciliations of the current drain; the drain loop
+	// runs it once it has stopped. Guarded by mu.
+	pending func()
 
 	// accessed by Init, then only by the drain loop
 	known       *string
@@ -130,7 +133,8 @@ func (f *ConfigFile) Init() error {
 	}
 
 	assignStableIDs(entries, "", nil)
-	if err := f.loader.Apply(entries); err != nil {
+	publish, err := f.loader.applyDeferred(entries, nil)
+	if err != nil {
 		return err
 	}
 	f.mu.Lock()
@@ -138,6 +142,7 @@ func (f *ConfigFile) Init() error {
 	f.base = cloneAll(entries)
 	f.document = document
 	f.mu.Unlock()
+	publish() // after the state is committed, so a listener sees it
 
 	if f.options.Watch {
 		return f.watch()
@@ -193,7 +198,15 @@ func (f *ConfigFile) drainLoop(done chan struct{}) {
 		f.mu.Lock()
 		if !f.dirtyRead && !f.dirtyWrite {
 			f.running = false
+			publish := f.pending
+			f.pending = nil
 			f.mu.Unlock()
+			// the loop is no longer running, so a listener calling Save or Reload
+			// starts a drain of its own instead of waiting for this one; done closes
+			// after the notices, so Reload and Save still return once they are out
+			if publish != nil {
+				publish()
+			}
 			close(done)
 			return
 		}
@@ -261,7 +274,8 @@ func (f *ConfigFile) readStep() error {
 	for _, id := range conflicts {
 		f.ctx.Logger().Errorf("entry %q was changed both in %q and at runtime; the file wins", id, f.path)
 	}
-	if err := f.loader.Apply(merged); err != nil {
+	publish, err := f.loader.applyDeferred(merged, nil)
+	if err != nil {
 		return err
 	}
 	f.mu.Lock()
@@ -275,6 +289,7 @@ func (f *ConfigFile) readStep() error {
 	if mergedErr != nil || theirsErr != nil || mergedText != theirsText {
 		f.dirtyWrite = true
 	}
+	f.pending = chain(f.pending, publish)
 	f.mu.Unlock()
 	return nil
 }
@@ -357,7 +372,12 @@ func (f *ConfigFile) adoptWritten(text string, entries []EntryOptions) error {
 	if disposed {
 		return nil // the final flush: the tree is being unloaded, positions no longer matter
 	}
-	return f.loader.Apply(merged)
+	// Only positions differ from the live tree (sameOptions ignores them), so this
+	// reconciliation is not a reload of its own: the edit that scheduled the write
+	// already emitted its Reloaded notice, and publishing here would send a second,
+	// empty one per edit.
+	_, err = f.loader.applyDeferred(merged, nil)
+	return err
 }
 
 // ------------------------------------------------------------ file access

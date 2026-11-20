@@ -522,15 +522,15 @@ points need the settled-reload announcement.
 
 **Steps.**
 
-- [ ] **3.1** [DH-D-LOADER-1](libs/cordis-loader.md#dh-d-loader-1) Codec seam and source positions.
-- [ ] **3.2** [DH-D-LOADER-3](libs/cordis-loader.md#dh-d-loader-3) Entry schema and full validation.
-- [ ] **3.3** [DH-D-LOADER-4](libs/cordis-loader.md#dh-d-loader-4) Expression seam in the loader.
-- [ ] **3.4** [DH-D-LOADER-6](libs/cordis-loader.md#dh-d-loader-6) Layer composition and ownership index.
-- [ ] **3.5** [DH-D-LOADER-7](libs/cordis-loader.md#dh-d-loader-7) Layered source with write-back to one layer.
-- [ ] **3.6** [DH-D-LOADER-10](libs/cordis-loader.md#dh-d-loader-10) A component can run a loader of its own under its context.
-- [ ] **3.7** [DH-D-LOADER-8](libs/cordis-loader.md#dh-d-loader-8) Mutation, lookup and lifecycle log API (P1, pulled forward).
-- [ ] **3.8** [DH-D-LOADER-11](libs/cordis-plugins.md#dh-d-loader-11) Restart one entry, and announce a settled reload (P1, pulled forward).
-- [ ] **3.9** [DH-D-LOADER-13](libs/cordis-loader.md#dh-d-loader-13) A write guard on the layer source (P1, pulled forward).
+- [x] **3.1** [DH-D-LOADER-1](libs/cordis-loader.md#dh-d-loader-1) Codec seam and source positions.
+- [x] **3.2** [DH-D-LOADER-3](libs/cordis-loader.md#dh-d-loader-3) Entry schema and full validation.
+- [x] **3.3** [DH-D-LOADER-4](libs/cordis-loader.md#dh-d-loader-4) Expression seam in the loader.
+- [x] **3.4** [DH-D-LOADER-6](libs/cordis-loader.md#dh-d-loader-6) Layer composition and ownership index.
+- [x] **3.5** [DH-D-LOADER-7](libs/cordis-loader.md#dh-d-loader-7) Layered source with write-back to one layer.
+- [x] **3.6** [DH-D-LOADER-10](libs/cordis-loader.md#dh-d-loader-10) A component can run a loader of its own under its context.
+- [x] **3.7** [DH-D-LOADER-8](libs/cordis-loader.md#dh-d-loader-8) Mutation, lookup and lifecycle log API (P1, pulled forward).
+- [x] **3.8** [DH-D-LOADER-11](libs/cordis-plugins.md#dh-d-loader-11) Restart one entry, and announce a settled reload (P1, pulled forward).
+- [x] **3.9** [DH-D-LOADER-13](libs/cordis-loader.md#dh-d-loader-13) A write guard on the layer source (P1, pulled forward).
 
 **Manual checks.** Compose two small layer files by hand, break one, and record the
 diagnostic's file, line and column; `manual`.

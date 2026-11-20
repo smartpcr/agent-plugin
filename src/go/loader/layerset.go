@@ -115,6 +115,10 @@ type LayerSetOptions struct {
 	Watch bool `json:"watch"`
 	// PollInterval is how often watched files are checked; 100ms when zero.
 	PollInterval time.Duration `json:"pollInterval,omitempty"`
+	// Debounce, when positive, waits until the layer files have been quiet that long
+	// before reloading, so a burst of saves (an editor writing a file in steps, a
+	// script editing several layers) is one reload and one Reloaded notice.
+	Debounce time.Duration `json:"debounce,omitempty"`
 	// Codec reads and writes every layer file. Nil picks the codec registered for each
 	// file's extension (CodecFor). The writable layer's codec must be a LayerCodec.
 	Codec Codec `json:"-"`
@@ -179,6 +183,9 @@ type LayerSet struct {
 
 	// serial orders every read and write: the layer set's serial loop
 	serial sync.Mutex
+	// pending publishes the reconciliations applied under serial; unlockSerial runs
+	// it after releasing serial. Guarded by serial.
+	pending func()
 	// guarded by serial
 	base  []EntryOptions
 	lower []EntryOptions
@@ -271,11 +278,12 @@ func (s *LayerSet) Init() error {
 	s.report(issues)
 	assignStableIDs(tree, "", nil)
 	s.lower = s.composeLower(tree)
-	err := s.loader.Apply(tree)
+	publish, err := s.loader.applyDeferred(tree, issues)
 	if err == nil {
 		s.base, s.index = cloneAll(tree), index
+		s.pending = publish
 	}
-	s.serial.Unlock()
+	s.unlockSerial()
 	if err != nil {
 		return err
 	}
@@ -291,7 +299,7 @@ func (s *LayerSet) Init() error {
 // error, if any.
 func (s *LayerSet) Reload() error {
 	s.serial.Lock()
-	defer s.serial.Unlock()
+	defer s.unlockSerial()
 	if !s.readLocked() {
 		return nil
 	}
@@ -304,7 +312,7 @@ func (s *LayerSet) Reload() error {
 // unknown.
 func (s *LayerSet) Flush() error {
 	s.serial.Lock()
-	defer s.serial.Unlock()
+	defer s.unlockSerial()
 	return s.writeLocked()
 }
 
@@ -416,13 +424,34 @@ func (s *LayerSet) readLocked() bool {
 	for _, id := range conflicts {
 		s.ctx.Logger().Errorf("entry %q was changed both in a layer file and at runtime; the file wins", id)
 	}
-	if err := s.loader.Apply(merged); err != nil {
+	publish, err := s.loader.applyDeferred(merged, issues)
+	if err != nil {
 		s.ctx.Logger().Error(err)
 		return false
 	}
 	s.base, s.index = cloneAll(theirs), index
+	s.pending = chain(s.pending, publish)
 	s.lower = s.composeLower(theirs)
 	return !sameTree(merged, theirs)
+}
+
+// unlockSerial releases serial, then publishes what the reconciliations made under
+// it applied, so a Reloaded or lifecycle listener may call back into the set.
+func (s *LayerSet) unlockSerial() {
+	publish := s.pending
+	s.pending = nil
+	s.serial.Unlock()
+	if publish != nil {
+		publish()
+	}
+}
+
+// chain returns a function calling first, then second; first may be nil.
+func chain(first, second func()) func() {
+	if first == nil {
+		return second
+	}
+	return func() { first(); second() }
 }
 
 // composeLower composes every layer but the writable one, with the ids of anonymous
@@ -1015,10 +1044,20 @@ func (s *LayerSet) watch() error {
 			defer close(done)
 			ticker := time.NewTicker(s.options.PollInterval)
 			defer ticker.Stop()
+			var settle *time.Timer
+			var settled <-chan time.Time
+			defer func() {
+				if settle != nil {
+					settle.Stop()
+				}
+			}()
 			for {
 				select {
 				case <-stop:
 					return
+				case <-settled:
+					settled = nil
+					s.queueRead()
 				case <-ticker.C:
 					changed := false
 					for path, previous := range last {
@@ -1031,8 +1070,16 @@ func (s *LayerSet) watch() error {
 							changed = true
 						}
 					}
-					if changed {
+					switch {
+					case !changed:
+					case s.options.Debounce <= 0:
 						s.queueRead()
+					case settle == nil:
+						settle = time.NewTimer(s.options.Debounce)
+						settled = settle.C
+					default:
+						settle.Reset(s.options.Debounce)
+						settled = settle.C
 					}
 				}
 			}
