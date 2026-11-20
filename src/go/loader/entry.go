@@ -359,14 +359,22 @@ func decodeEntry(node *Node, path string) EntryOptions {
 				break
 			}
 			o.Isolate = map[string]string{}
+			members := map[string]bool{}
 			for _, member := range value.Fields {
+				memberPath := joinPath(key, member.Key)
+				if members[member.Key] {
+					fault(member.Value, memberPath, "duplicate key")
+					continue
+				}
+				members[member.Key] = true
+				o.source.values[memberPath] = member.Value.Pos
 				switch {
 				case member.Value.Kind == StringNode:
 					o.Isolate[member.Key] = member.Value.Text
 				case member.Value.Kind == BoolNode && member.Value.Bool:
 					o.Isolate[member.Key] = "true"
 				default:
-					wrongType(member.Value, "isolate."+member.Key, "a realm label or true")
+					wrongType(member.Value, memberPath, "a realm label or true")
 				}
 			}
 		case "intercept":
@@ -375,8 +383,16 @@ func decodeEntry(node *Node, path string) EntryOptions {
 				break
 			}
 			o.Intercept = map[string]json.RawMessage{}
+			members := map[string]bool{}
 			for _, member := range value.Fields {
+				memberPath := joinPath(key, member.Key)
+				if members[member.Key] {
+					fault(member.Value, memberPath, "duplicate key")
+					continue
+				}
+				members[member.Key] = true
 				o.Intercept[member.Key] = member.Value.JSON()
+				recordPositions(member.Value, memberPath, o.source.values)
 			}
 		case "children":
 			if value.Kind != ArrayNode {
