@@ -35,7 +35,28 @@ const (
 	// ReasonTwoDocuments: a command tried to write a second JSON value outside JSON
 	// Lines mode; a defect of the command (status 70).
 	ReasonTwoDocuments herr.Reason = "cli/two-documents"
+	// ReasonCancelled: an uncoded failure that is a cancelled context (status 8).
+	ReasonCancelled herr.Reason = "cli/cancelled"
+	// ReasonLimit: an uncoded failure that is an expired deadline (status 7).
+	ReasonLimit herr.Reason = "cli/limit"
 )
+
+func init() {
+	codes[ReasonCancelled] = Cancelled
+	codes[ReasonLimit] = Limit
+}
+
+// uncoded names the code Fail gives an error without one, so that the reported
+// code always maps to the same status as the error itself.
+func uncoded(status int) herr.Reason {
+	switch status {
+	case Cancelled:
+		return ReasonCancelled
+	case Limit:
+		return ReasonLimit
+	}
+	return ReasonFailed
+}
 
 // HelpHint is the one line a usage error adds after its own.
 const HelpHint = "Run 'dsh --help' for usage."
@@ -140,7 +161,7 @@ func (r *Result) Fail(command string, err error) int {
 	}
 	status := Status(err)
 	if _, ok := herr.ReasonOf(err); !ok {
-		err = herr.Wrap(ReasonFailed, err, "")
+		err = herr.Wrap(uncoded(status), err, "")
 	}
 	code := herr.Kind(err)
 	prefix := "dsh"
