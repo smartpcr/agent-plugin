@@ -131,14 +131,14 @@ func TestUnidentifiedDeliveryIsNeverParked(t *testing.T) {
 	}
 }
 
-// A delivery whose identity is already registered to another delivery does not take it
-// over, so a park on that identity keeps attributing to the first.
-func TestDuplicateGoroutineIdentityIsNotShared(t *testing.T) {
+// An identity claimed by two running deliveries attributes neither: the second
+// delivery's park changes no delivery's parked count, the first one's included, and
+// the identity stays unregistered until both have returned.
+func TestDuplicateGoroutineIdentityParksNeitherDelivery(t *testing.T) {
 	setGoroutineID(t, func() (uint64, bool) { return 7, true })
 	tr, _ := quietTree()
 	gate := make(chan struct{})
 	var first *delivery
-	var owner *delivery
 	tr.post(func() {
 		tr.outboxMu.Lock()
 		first = tr.byGoroutine[7]
@@ -146,11 +146,24 @@ func TestDuplicateGoroutineIdentityIsNotShared(t *testing.T) {
 		tr.await(gate)
 	})
 	second := make(chan struct{})
+	var registered bool
+	var before, after, own int
 	tr.post(func() {
+		defer close(second)
 		tr.outboxMu.Lock()
-		owner = tr.byGoroutine[7]
+		_, registered = tr.byGoroutine[7]
+		before = first.parked
 		tr.outboxMu.Unlock()
-		close(second)
+		unpark := tr.park()
+		tr.outboxMu.Lock()
+		after = first.parked
+		for _, d := range tr.running {
+			if d != first {
+				own = d.parked
+			}
+		}
+		tr.outboxMu.Unlock()
+		unpark()
 	})
 	tr.flush()
 	select {
@@ -160,7 +173,18 @@ func TestDuplicateGoroutineIdentityIsNotShared(t *testing.T) {
 	}
 	close(gate)
 	tr.barrierReturned(0, tr.mark())
-	if first == nil || owner != first {
-		t.Fatalf("identity owned by %p during the second delivery; first %p", owner, first)
+	if first == nil {
+		t.Fatal("the first delivery was not registered")
+	}
+	if registered {
+		t.Fatal("the ambiguous identity stayed registered")
+	}
+	if before != 1 || after != 1 || own != 0 {
+		t.Fatalf("first parked %d then %d, second parked %d", before, after, own)
+	}
+	tr.outboxMu.Lock()
+	defer tr.outboxMu.Unlock()
+	if len(tr.byGoroutine) != 0 || len(tr.claims) != 0 {
+		t.Fatalf("left %d registrations, %d claims", len(tr.byGoroutine), len(tr.claims))
 	}
 }

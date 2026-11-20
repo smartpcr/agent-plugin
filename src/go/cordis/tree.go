@@ -29,6 +29,7 @@ type tree struct {
 	posted      uint64               // sequence number of the last posted notification
 	running     map[uint64]*delivery // notifications being delivered, by sequence
 	byGoroutine map[uint64]*delivery // the same deliveries, by the goroutine running them
+	claims      map[uint64]int       // running deliveries claiming each goroutine identity
 	dispatching bool                 // the dispatcher goroutine is running
 	changed     sync.Cond            // signalled on outboxMu when a delivery returns or parks
 
@@ -112,6 +113,7 @@ func (t *tree) dispatch() {
 		if t.running == nil {
 			t.running = map[uint64]*delivery{}
 			t.byGoroutine = map[uint64]*delivery{}
+			t.claims = map[uint64]int{}
 		}
 		d := &delivery{seq: n.seq}
 		t.running[n.seq] = d
@@ -128,17 +130,14 @@ func (t *tree) dispatch() {
 
 // deliver runs a notification. It registers the delivery under its goroutine's
 // identity so a lifecycle wait of the handler parks it. A delivery whose identity is
-// unavailable, or already taken, is left unregistered rather than share one: its
-// handler's waits then never park it, which keeps the order of delivery but holds back
-// later notifications while the handler waits.
+// unavailable is not registered. An identity claimed by two running deliveries is
+// ambiguous: it is unregistered for both until every claimant has returned, so neither
+// can park the other. A handler's waits then never park its delivery, which keeps the
+// order of delivery but holds back later notifications while the handler waits.
 func (t *tree) deliver(n notification, d *delivery, started chan<- struct{}) {
-	g, attributed := goroutineID()
+	g, identified := goroutineID()
 	t.outboxMu.Lock()
-	if attributed && t.byGoroutine[g] == nil {
-		t.byGoroutine[g] = d
-	} else {
-		attributed = false
-	}
+	attributed := identified && t.claimLocked(g, d)
 	t.outboxMu.Unlock()
 	close(started)
 	if !attributed && t.unattributed.CompareAndSwap(false, true) {
@@ -149,12 +148,34 @@ func (t *tree) deliver(n notification, d *delivery, started chan<- struct{}) {
 		t.root.Logger().Error(err)
 	}
 	t.outboxMu.Lock()
-	if attributed {
-		delete(t.byGoroutine, g)
+	if identified {
+		t.releaseClaimLocked(g)
 	}
 	delete(t.running, n.seq)
 	t.condLocked().Broadcast()
 	t.outboxMu.Unlock()
+}
+
+// claimLocked claims identity g for delivery d and reports whether d is attributed to
+// it, that is whether d is its only claimant. A second claimant withdraws the
+// registration of the first.
+func (t *tree) claimLocked(g uint64, d *delivery) bool {
+	t.claims[g]++
+	if t.claims[g] > 1 {
+		delete(t.byGoroutine, g)
+		return false
+	}
+	t.byGoroutine[g] = d
+	return true
+}
+
+// releaseClaimLocked drops a claim on identity g. An identity that was ambiguous stays
+// unregistered until its last claimant has released it.
+func (t *tree) releaseClaimLocked(g uint64) {
+	if t.claims[g]--; t.claims[g] == 0 {
+		delete(t.claims, g)
+		delete(t.byGoroutine, g)
+	}
 }
 
 // busyLocked reports whether a notification posted after lo and up to hi is being
