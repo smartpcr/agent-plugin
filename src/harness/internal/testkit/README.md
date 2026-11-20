@@ -119,7 +119,10 @@ then requires, in the package's own (not `_test`-suffixed) test files:
    of a flat `[]byte`, `len(b)`, `string(b)`) stay independent, and so do copies of
    numbers and strings (`copied := seed` of an `int` or `string`). Another test file
    may alias a seed through any chain (`var a = seed; var b = a`) as long as no
-   member of the chain is written; such a variable is still never a seed source. `nil`, `true`,
+   member of the chain is written; such a variable is still never a seed source.
+   Names follow Go's block scopes: a variable of the same name declared in another
+   scope (the `b` parameter of the `f.Fuzz` callback next to a seed loop's `b`) is a
+   different variable, while a seed the callback captures and writes is still caught. `nil`, `true`,
    `false` and `iota` are trusted only when no declaration in the package or function
    renames them.
 

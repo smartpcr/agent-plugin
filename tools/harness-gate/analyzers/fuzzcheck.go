@@ -111,7 +111,7 @@ func FuzzCheckFindings(files []PackageFile) []Finding {
 		}
 		sf := seedFunc{fn: fn, env: prov.collectEnv(seeds.File, fn), params: testingFParams(seeds.File, fn)}
 		for _, p := range sf.params {
-			for _, call := range addCalls(fn.Body, p.name) {
+			for _, call := range addCalls(fn.Body, p.name, sf.env) {
 				for _, arg := range call.Args {
 					if bad, why := prov.check(arg, sf.env); bad != nil {
 						out = append(out, Finding{Pos: arg.Pos(), Message: p.name + ".Add argument " + types.ExprString(arg) +
@@ -132,8 +132,9 @@ func FuzzCheckFindings(files []PackageFile) []Finding {
 		}
 		for _, decl := range pf.File.Decls {
 			if fn, ok := decl.(*ast.FuncDecl); ok && fn.Body != nil {
+				env := prov.collectEnv(pf.File, fn)
 				for _, p := range testingFParams(pf.File, fn) {
-					for _, call := range addCalls(fn.Body, p.name) {
+					for _, call := range addCalls(fn.Body, p.name, env) {
 						out = append(out, Finding{Pos: call.Pos(), Message: p.name + ".Add outside " + SeedsFile +
 							": register every fuzz seed in " + SeedsFile + " (QG-6)"})
 					}
@@ -146,7 +147,7 @@ func FuzzCheckFindings(files []PackageFile) []Finding {
 		env := prov.collectEnv(tg.file.File, tg.fn)
 		if tg.fn.Body != nil && !reassigned(env, tg.param) {
 			inSeeds := tg.file.Name == seeds.Name
-			if (inSeeds && len(addCalls(tg.fn.Body, tg.param)) > 0) || passesToSeeder(tg.fn.Body, tg.param, seeders, env) {
+			if (inSeeds && len(addCalls(tg.fn.Body, tg.param, env)) > 0) || passesToSeeder(tg.fn.Body, tg.param, seeders, env) {
 				continue
 			}
 		}
@@ -177,7 +178,7 @@ func seederParams(funcs []seedFunc) map[string]map[int]bool {
 				if seeders[name][p.index] || reassigned(sf.env, p.name) {
 					continue
 				}
-				if len(addCalls(sf.fn.Body, p.name)) > 0 || passesToSeeder(sf.fn.Body, p.name, seeders, sf.env) {
+				if len(addCalls(sf.fn.Body, p.name, sf.env)) > 0 || passesToSeeder(sf.fn.Body, p.name, seeders, sf.env) {
 					if seeders[name] == nil {
 						seeders[name] = map[int]bool{}
 					}
@@ -283,8 +284,9 @@ func isTestingF(file *ast.File, expr ast.Expr) bool {
 	return false
 }
 
-// addCalls returns body's calls of param.Add.
-func addCalls(body *ast.BlockStmt, param string) []*ast.CallExpr {
+// addCalls returns body's calls of param.Add, param being the parameter env knows
+// by that name rather than a variable of the same name in a nested scope.
+func addCalls(body *ast.BlockStmt, param string, env *seedEnv) []*ast.CallExpr {
 	if param == "_" {
 		return nil
 	}
@@ -292,7 +294,7 @@ func addCalls(body *ast.BlockStmt, param string) []*ast.CallExpr {
 	ast.Inspect(body, func(n ast.Node) bool {
 		if call, ok := n.(*ast.CallExpr); ok {
 			if sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr); ok && sel.Sel.Name == "Add" {
-				if id, ok := ast.Unparen(sel.X).(*ast.Ident); ok && id.Name == param {
+				if id, ok := ast.Unparen(sel.X).(*ast.Ident); ok && env.ident(id) == param {
 					calls = append(calls, call)
 				}
 			}
@@ -313,9 +315,9 @@ func passesToSeeder(body *ast.BlockStmt, param string, seeders map[string]map[in
 	found := false
 	ast.Inspect(body, func(n ast.Node) bool {
 		if call, ok := n.(*ast.CallExpr); ok {
-			if fn, ok := ast.Unparen(call.Fun).(*ast.Ident); ok && !env.declared[fn.Name] {
+			if fn, ok := ast.Unparen(call.Fun).(*ast.Ident); ok && !env.declared[env.ident(fn)] {
 				for i, arg := range call.Args {
-					if id, ok := ast.Unparen(arg).(*ast.Ident); ok && id.Name == param && seeders[fn.Name][i] {
+					if id, ok := ast.Unparen(arg).(*ast.Ident); ok && env.ident(id) == param && seeders[env.ident(fn)][i] {
 						found = true
 					}
 				}

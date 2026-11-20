@@ -271,6 +271,15 @@ func TestFuzzCheckSeedProvenance(t *testing.T) {
 		{"scalar and string value copies are no aliases", []string{"seeds_test.go", fuzz("seed := 1\ncopied := seed\n_ = &copied\n"+
 			"s := \"x\"\nt2 := s\n_ = &t2\nc := limit\n_ = &c\nm := num\n_ = &m\nvar z int\nzc := z\n_ = &zc\nf.Add([]byte(s), seed, limit, num, z)") +
 			"var num = 7\n"}, nil},
+		{"same name in another scope is another variable", []string{"seeds_test.go", fuzz(
+			"for _, b := range decodeSeeds { f.Add(b) }\nf.Fuzz(func(t *testing.T, b []byte) { b[0] = 1; _ = &b })\n" +
+				"s := []byte(\"x\")\nf.Add(s)\n{ s := readSeed(); _ = &s }\n{ decodeSeeds := readSeed(); _ = decodeSeeds }\nf.Add(decodeSeeds[0])"),
+			"read_test.go", readSeed}, nil},
+		{"a captured seed written in the callback", []string{"seeds_test.go", fuzz(
+			"b := []byte(\"x\")\nf.Add(b)\nf.Fuzz(func(t *testing.T, in []byte) { copy(b, readSeed()) })"), "read_test.go", readSeed},
+			[]string{"f.Add argument b is not compiled in (calls readSeed)"}},
+		{"an inner f is not the target's f", []string{"seeds_test.go", fuzz(
+			"g := func(f *testing.F) { f.Add([]byte(\"x\")) }\n_ = g")}, []string{"FuzzDecode registers no seeds"}},
 		{"slice copies stay aliases", []string{"seeds_test.go", fuzz("b := []byte(\"x\")\nc := b\n_ = &c\nf.Add(b)")},
 			[]string{"(the address of c is taken)"}},
 		{"multi-hop package alias only read", []string{"seeds_test.go", fuzz("f.Add(seed)") + "var seed = []byte(\"x\")\n", "other_test.go",

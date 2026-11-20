@@ -105,8 +105,30 @@ type seedDef struct {
 type seedEnv struct {
 	locals   map[string][]seedDef
 	declared map[string]bool
-	alias    map[string]string // union-find parent of the names that may share storage
-	prov     *provenance       // resolves package-level names, or nil
+	alias    map[string]string     // union-find parent of the names that may share storage
+	prov     *provenance           // resolves package-level names, or nil
+	names    map[*ast.Ident]string // the variable each identifier denotes, see resolveNames
+	shadows  map[string]bool       // every name a local declaration hides, in any scope
+}
+
+// ident returns the key of the variable id denotes in e: id.Name, or a distinct key
+// when another variable of the same name is declared in a different scope.
+func (e *seedEnv) ident(id *ast.Ident) string {
+	if e != nil {
+		if n, ok := e.names[id]; ok {
+			return n
+		}
+	}
+	return id.Name
+}
+
+// root returns the key of the variable an assignable expression writes to, as
+// rootName finds it, or "".
+func (e *seedEnv) root(x ast.Expr) string {
+	if id := rootIdent(x); id != nil {
+		return e.ident(id)
+	}
+	return ""
 }
 
 func newSeedEnv() *seedEnv {
@@ -534,22 +556,23 @@ func (p *provenance) checkName(id *ast.Ident, env *seedEnv) (ast.Node, string) {
 	}
 	var defs []seedDef
 	found := false
-	if env != nil && env.declared[id.Name] {
-		defs, found = append(append([]seedDef(nil), env.locals[id.Name]...), p.aliasDefs(env, id.Name)...), true
+	name := env.ident(id)
+	if env != nil && env.declared[name] {
+		defs, found = append(append([]seedDef(nil), env.locals[name]...), p.aliasDefs(env, name)...), true
 	}
-	if pd, ok := p.pkg[id.Name]; ok {
+	if pd, ok := p.pkg[name]; ok {
 		for _, d := range pd {
-			if d.env == nil || d.env != env || !env.declared[id.Name] {
+			if d.env == nil || d.env != env || !env.declared[name] {
 				defs = append(defs, d)
 			}
 		}
-		defs = append(defs, p.pkgAliasDefs(id.Name)...)
+		defs = append(defs, p.pkgAliasDefs(name)...)
 		found = true
 	}
 	if !found {
 		return id, id.Name + " is not declared in " + SeedsFile
 	}
-	key := seedKey{env, id.Name}
+	key := seedKey{env, name}
 	if p.visiting[key] {
 		return nil, "" // every definition on the cycle is checked where it is first reached
 	}
@@ -621,7 +644,7 @@ func importPath(file *ast.File, name string) string {
 // shadowed reports whether name is declared in env or at package level in any file
 // of the package, hiding a predeclared or imported name.
 func (p *provenance) shadowed(name string, env *seedEnv) bool {
-	return p.global[name] || (env != nil && env.declared[name])
+	return p.global[name] || (env != nil && (env.declared[name] || env.shadows[name]))
 }
 
 // writes returns the assignments env records, by name; definitions are left out.
@@ -668,6 +691,7 @@ func (p *provenance) collectEnv(file *ast.File, node ast.Node) *seedEnv {
 func collectEnvIn(file *ast.File, node ast.Node, prov *provenance) *seedEnv {
 	env := newSeedEnv()
 	env.prov = prov
+	env.names, env.shadows = resolveNames(node)
 	type aliasEdge struct { // name may share storage with x, or with only x's elements
 		name  string
 		x     ast.Expr
@@ -694,7 +718,7 @@ func collectEnvIn(file *ast.File, node ast.Node, prov *provenance) *seedEnv {
 			}
 			for _, field := range fl.List {
 				for _, n := range field.Names {
-					add(n.Name, seedDef{kind: defOpaque, why: n.Name + " is a parameter"}, true)
+					add(env.ident(n), seedDef{kind: defOpaque, why: n.Name + " is a parameter"}, true)
 				}
 			}
 		}
@@ -712,13 +736,13 @@ func collectEnvIn(file *ast.File, node ast.Node, prov *provenance) *seedEnv {
 					d = seedDef{kind: defExpr, x: n.Rhs[i]}
 				}
 				if id, ok := l.(*ast.Ident); ok && n.Tok == token.DEFINE {
-					add(id.Name, d, true)
+					add(env.ident(id), d, true)
 				} else {
-					add(rootName(l), d, false)
+					add(env.root(l), d, false)
 				}
 				for j, r := range n.Rhs {
 					if len(n.Lhs) != len(n.Rhs) || i == j {
-						edge(rootName(l), r, false)
+						edge(env.root(l), r, false)
 					}
 				}
 			}
@@ -729,12 +753,12 @@ func collectEnvIn(file *ast.File, node ast.Node, prov *provenance) *seedEnv {
 				}
 				d := seedDef{kind: defExpr, x: n.X, elem: l == n.Value, key: l == n.Key}
 				if id, ok := l.(*ast.Ident); ok && n.Tok == token.DEFINE {
-					add(id.Name, d, true)
+					add(env.ident(id), d, true)
 				} else {
-					add(rootName(l), d, false)
+					add(env.root(l), d, false)
 				}
 				if l == n.Value { // the key is an index or a map key
-					edge(rootName(l), n.X, true)
+					edge(env.root(l), n.X, true)
 				}
 			}
 		case *ast.DeclStmt:
@@ -744,7 +768,8 @@ func collectEnvIn(file *ast.File, node ast.Node, prov *provenance) *seedEnv {
 			}
 			for _, spec := range gd.Specs {
 				vs := spec.(*ast.ValueSpec)
-				for i, id := range vs.Names {
+				for i, ident := range vs.Names {
+					id := &ast.Ident{Name: env.ident(ident)}
 					switch {
 					case gd.Tok == token.VAR && len(vs.Values) == 0 && vs.Type != nil:
 						add(id.Name, seedDef{kind: defType, x: vs.Type, why: id.Name + " has type " + types.ExprString(vs.Type)}, true)
@@ -760,18 +785,18 @@ func collectEnvIn(file *ast.File, node ast.Node, prov *provenance) *seedEnv {
 			}
 		case *ast.UnaryExpr:
 			if n.Op == token.AND {
-				name := rootName(n.X)
+				name := env.root(n.X)
 				add(name, seedDef{kind: defOpaque, why: "the address of " + name + " is taken"}, false)
 			}
 		case *ast.CallExpr:
 			if id, ok := ast.Unparen(n.Fun).(*ast.Ident); ok && id.Name == "copy" && len(n.Args) == 2 {
-				add(rootName(n.Args[0]), seedDef{kind: defExpr, x: n.Args[1]}, false)
-				edge(rootName(n.Args[0]), n.Args[1], true)
+				add(env.root(n.Args[0]), seedDef{kind: defExpr, x: n.Args[1]}, false)
+				edge(env.root(n.Args[0]), n.Args[1], true)
 				break
 			}
 			if id, ok := ast.Unparen(n.Fun).(*ast.Ident); ok && id.Name == "append" && len(n.Args) > 0 {
 				for j, a := range n.Args[1:] { // the first operand's array receives the others
-					edge(rootName(n.Args[0]), a, n.Ellipsis.IsValid() && j == len(n.Args)-2)
+					edge(env.root(n.Args[0]), a, n.Ellipsis.IsValid() && j == len(n.Args)-2)
 				}
 			}
 			fun := types.ExprString(n.Fun)
@@ -786,14 +811,14 @@ func collectEnvIn(file *ast.File, node ast.Node, prov *provenance) *seedEnv {
 					pure = true
 					break
 				}
-				recv := rootName(fn.X)
+				recv := env.root(fn.X)
 				add(recv, seedDef{kind: defOpaque, pass: true, why: "method " + fun + " is called on " + recv}, false)
 				if fn.Sel.Name == "Add" {
 					return true // a seed registration reads its arguments
 				}
 			}
 			for _, a := range n.Args {
-				name := rootName(a)
+				name := env.root(a)
 				if pure {
 					add(name, seedDef{kind: defExpr, x: n, call: true}, false)
 				} else {
@@ -837,7 +862,7 @@ func storageRoots(file *ast.File, env *seedEnv, x ast.Expr, elems bool) []string
 		if scalar(file, env, x, map[seedKey]bool{}) {
 			return nil // a copy of a number or a string shares nothing
 		}
-		return []string{x.Name}
+		return []string{env.ident(x)}
 	case *ast.ParenExpr:
 		return storageRoots(file, env, x.X, elems)
 	case *ast.SliceExpr:
@@ -947,7 +972,7 @@ func flat(file *ast.File, env *seedEnv, x ast.Expr, seen map[seedKey]bool) bool 
 			}
 		}
 	case *ast.Ident:
-		return everyDef(env, x.Name, seen, func(d seedDef, denv *seedEnv) bool {
+		return everyDef(env, env.ident(x), seen, func(d seedDef, denv *seedEnv) bool {
 			switch d.kind {
 			case defOpaque:
 				return false
@@ -993,7 +1018,7 @@ func scalar(file *ast.File, env *seedEnv, x ast.Expr, seen map[seedKey]bool) boo
 			}
 		}
 	case *ast.Ident:
-		ok := everyDef(env, x.Name, seen, func(d seedDef, denv *seedEnv) bool {
+		ok := everyDef(env, env.ident(x), seen, func(d seedDef, denv *seedEnv) bool {
 			switch d.kind {
 			case defZero:
 				return d.cnst
@@ -1014,7 +1039,7 @@ func scalar(file *ast.File, env *seedEnv, x ast.Expr, seen map[seedKey]bool) boo
 		if ok {
 			return true
 		}
-		if _, found := identDefs(env, x.Name); !found {
+		if _, found := identDefs(env, env.ident(x)); !found {
 			switch x.Name {
 			case "true", "false", "iota":
 				return true
@@ -1135,13 +1160,13 @@ func flatType(t ast.Expr) bool {
 	return false
 }
 
-// rootName returns the variable an assignable expression writes to: x for x, x[i],
-// x.f, *x and their combinations, or "" when there is none.
-func rootName(x ast.Expr) string {
+// rootIdent returns the variable an assignable expression writes to: x for x, x[i],
+// x.f, *x and their combinations, or nil when there is none.
+func rootIdent(x ast.Expr) *ast.Ident {
 	for {
 		switch e := x.(type) {
 		case *ast.Ident:
-			return e.Name
+			return e
 		case *ast.IndexExpr:
 			x = e.X
 		case *ast.SelectorExpr:
@@ -1153,7 +1178,7 @@ func rootName(x ast.Expr) string {
 		case *ast.ParenExpr:
 			x = e.X
 		default:
-			return ""
+			return nil
 		}
 	}
 }
