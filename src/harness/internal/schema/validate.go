@@ -213,6 +213,65 @@ func norm(v any) any {
 
 func equal(a, b any) bool { return reflect.DeepEqual(norm(a), norm(b)) }
 
+// itemKey writes an encoding of v under which two values are equal exactly when
+// equal reports them so: numbers become their exact decimal and object keys are
+// sorted. Every variable-length part is length-prefixed, so no two distinct values
+// share an encoding.
+func itemKey(b *strings.Builder, v any) {
+	if d, ok := toDecimal(v); ok {
+		b.WriteByte('d')
+		if d.neg {
+			b.WriteByte('-')
+		}
+		b.WriteString(d.digits)
+		b.WriteByte('e')
+		b.WriteString(d.exp)
+		b.WriteByte(';')
+		return
+	}
+	str := func(s string) {
+		b.WriteString(strconv.Itoa(len(s)))
+		b.WriteByte(':')
+		b.WriteString(s)
+	}
+	switch x := v.(type) {
+	case nil:
+		b.WriteByte('n')
+	case bool:
+		if x {
+			b.WriteByte('t')
+		} else {
+			b.WriteByte('f')
+		}
+	case string:
+		b.WriteByte('s')
+		str(x)
+	case []any:
+		b.WriteByte('a')
+		b.WriteString(strconv.Itoa(len(x)))
+		b.WriteByte(':')
+		for _, e := range x {
+			itemKey(b, e)
+		}
+	case map[string]any:
+		keys := make([]string, 0, len(x))
+		for k := range x {
+			keys = append(keys, k)
+		}
+		slices.Sort(keys)
+		b.WriteByte('o')
+		b.WriteString(strconv.Itoa(len(keys)))
+		b.WriteByte(':')
+		for _, k := range keys {
+			str(k)
+			itemKey(b, x[k])
+		}
+	default:
+		b.WriteByte('?')
+		str(fmt.Sprintf("%T:%#v", x, x))
+	}
+}
+
 func (v *validator) check(s *jsonschema.Schema, inst any, path string) {
 	if s == nil {
 		return
@@ -367,10 +426,19 @@ func (v *validator) checkArray(s *jsonschema.Schema, arr []any, path string) {
 		v.add(path, "must have at most %d items", *s.MaxItems)
 	}
 	if s.UniqueItems {
-		for i := range arr {
-			if slices.ContainsFunc(arr[:i], func(e any) bool { return equal(e, arr[i]) }) {
+		// Keying each item by its canonical encoding finds repeats in one pass over
+		// the value; a pairwise scan is quadratic in an untrusted array's length.
+		seen := make(map[string]struct{}, len(arr))
+		var b strings.Builder
+		for i, e := range arr {
+			b.Reset()
+			itemKey(&b, e)
+			k := b.String()
+			if _, dup := seen[k]; dup {
 				v.add(pointer(path, strconv.Itoa(i)), "repeats an earlier item")
+				continue
 			}
+			seen[k] = struct{}{}
 		}
 	}
 	for i, e := range arr {
