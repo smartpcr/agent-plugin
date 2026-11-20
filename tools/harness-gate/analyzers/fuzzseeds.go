@@ -14,21 +14,26 @@ import (
 // conservative: an argument is compiled in when it is built only from
 //
 //   - literals, nil, true, false and iota;
-//   - composite literals, operators, indexing and slicing of compiled-in values;
-//   - conversions to predeclared types and slices of them ([]byte(...)), the builtins
-//     of pureBuiltins, and calls and selectors of the stdlib packages of pureStd;
+//   - composite literals of seedTypes (slices, arrays and maps of predeclared
+//     types; never a named type, so no String, MarshalJSON or other method can run
+//     on a seed), operators, indexing and slicing of compiled-in values;
+//   - conversions to seedTypes ([]byte(...)), the builtins of pureBuiltins, and
+//     calls and selectors of the stdlib packages of pureStd, whose operands are in
+//     turn compiled in;
 //   - package-level constants and variables of seeds_test.go whose initializer is
-//     compiled in, variables with a //go:embed directive, and zero-valued variables;
-//   - locals of the same function whose every definition and assignment is compiled
-//     in (a range variable is compiled in when the ranged value is).
+//     compiled in, variables with a //go:embed directive, and zero-valued variables
+//     of a seedType;
+//   - locals of the same function whose every definition and write is compiled in
+//     (a range variable is compiled in when the ranged value is; a variable passed
+//     to a pureStd call is written from that call, so its operands are checked).
 //
-// Anything else is not compiled in: any other call (so a helper of another file that
-// reads the disk cannot hide behind a call), a parameter, a name not declared in
-// seeds_test.go, a variable whose address is taken or that is passed to such a call,
-// and a seeds_test.go variable that another test file assigns, takes the address of
-// or copies into. A local of the same name as a package variable is checked
-// together with it. Not tracked: a seed variable mutated through a call made from
-// another test file, e.g. readInto(seedVar).
+// Anything else is not compiled in: any other call or method call (so a helper of
+// another file that reads the disk cannot hide behind a call), a parameter, a name
+// not declared in seeds_test.go, a variable whose address is taken, that is passed
+// to such a call or whose method is called, and a seeds_test.go variable that
+// another test file writes, takes the address of or passes to any call. A
+// predeclared or imported name declared anywhere in the package or the function is
+// not trusted.
 
 // pureBuiltins are the builtins an argument may call; none reads outside its operands.
 var pureBuiltins = map[string]bool{
@@ -46,9 +51,11 @@ var predeclaredTypes = map[string]bool{
 
 // pureStd are the stdlib packages whose functions, constants and types an argument
 // may use: they compute only from their operands and read no file or environment.
+// fmt and encoding/json are left out: they dispatch to String, Format and
+// MarshalJSON methods of their operands.
 var pureStd = map[string]bool{
-	"bytes": true, "encoding/base64": true, "encoding/binary": true, "encoding/hex": true,
-	"encoding/json": true, "fmt": true, "math": true, "strconv": true, "strings": true,
+	"bytes": true, "encoding/base64": true, "encoding/hex": true,
+	"math": true, "strconv": true, "strings": true,
 	"unicode/utf16": true, "unicode/utf8": true,
 }
 
@@ -58,6 +65,7 @@ const (
 	defExpr   defKind = iota // assigned the value of x
 	defZero                  // a zero value, a constant or //go:embed bytes
 	defOpaque                // not known at compile time; why says what it is
+	defType                  // the zero value of type x
 )
 
 // seedDef is one definition of or assignment to a name; x is resolved in env (nil
@@ -69,6 +77,7 @@ type seedDef struct {
 	why  string
 	decl bool // a declaration (parameter, :=, var, range :=) rather than a write
 	pass bool // the variable is passed to a call that may write through it
+	call bool // the variable is an operand of x, a builtin, conversion or pureStd call
 }
 
 // seedEnv holds the definitions of the names one function declares and assigns.
@@ -86,13 +95,14 @@ type seedKey struct {
 type provenance struct {
 	file     *ast.File
 	pkg      map[string][]seedDef
+	global   map[string]bool // every package-level name, of every file
 	visiting map[seedKey]bool
 }
 
 // newProvenance collects the package-level names of seeds and every write to them,
 // from seeds itself and from the other test files of the package.
 func newProvenance(seeds *PackageFile, files []PackageFile) *provenance {
-	p := &provenance{file: seeds.File, pkg: map[string][]seedDef{}, visiting: map[seedKey]bool{}}
+	p := &provenance{file: seeds.File, pkg: map[string][]seedDef{}, global: packageNames(files), visiting: map[seedKey]bool{}}
 	for _, decl := range seeds.File.Decls {
 		gd, ok := decl.(*ast.GenDecl)
 		if !ok || (gd.Tok != token.VAR && gd.Tok != token.CONST) {
@@ -103,6 +113,8 @@ func newProvenance(seeds *PackageFile, files []PackageFile) *provenance {
 			embedded := gd.Tok == token.VAR && (hasEmbed(gd.Doc) || hasEmbed(vs.Doc))
 			for i, n := range vs.Names {
 				switch {
+				case gd.Tok == token.VAR && !embedded && vs.Type != nil && !p.seedType(vs.Type, nil):
+					p.pkg[n.Name] = append(p.pkg[n.Name], seedDef{kind: defOpaque, why: n.Name + " has type " + types.ExprString(vs.Type)})
 				case gd.Tok == token.CONST || embedded || len(vs.Values) == 0:
 					p.pkg[n.Name] = append(p.pkg[n.Name], seedDef{kind: defZero})
 				case len(vs.Values) == len(vs.Names):
@@ -119,21 +131,90 @@ func newProvenance(seeds *PackageFile, files []PackageFile) *provenance {
 		}
 		inSeeds := pf.Name == seeds.Name
 		for _, decl := range pf.File.Decls {
-			env := collectEnv(decl)
+			env := collectEnv(pf.File, decl)
 			for name, defs := range env.writes() {
 				if _, ok := p.pkg[name]; !ok {
 					continue
 				}
 				if inSeeds {
 					p.pkg[name] = append(p.pkg[name], defs...)
-				} else if !env.declared[name] {
-					p.pkg[name] = append(p.pkg[name], seedDef{kind: defOpaque,
-						why: name + " is written in " + path.Base(strings.ReplaceAll(pf.Name, `\`, "/"))})
+					continue
+				}
+				if env.declared[name] {
+					continue // a local of the same name
+				}
+				for _, d := range defs {
+					if !p.onlyReads(d, env) {
+						p.pkg[name] = append(p.pkg[name], seedDef{kind: defOpaque,
+							why: name + " is written in " + path.Base(strings.ReplaceAll(pf.Name, `\`, "/"))})
+						break
+					}
 				}
 			}
 		}
 	}
 	return p
+}
+
+// onlyReads reports whether d is a variable's use as the operand of len, cap or a
+// conversion that no declaration of the package or of env renames.
+func (p *provenance) onlyReads(d seedDef, env *seedEnv) bool {
+	call, ok := d.x.(*ast.CallExpr)
+	if !ok || !d.call {
+		return false
+	}
+	switch fn := ast.Unparen(call.Fun).(type) {
+	case *ast.ArrayType:
+		return fn.Len == nil && p.seedType(fn, env)
+	case *ast.Ident:
+		return (fn.Name == "len" || fn.Name == "cap" || predeclaredTypes[fn.Name]) && !p.shadowed(fn.Name, env)
+	}
+	return false
+}
+
+// packageNames returns the names every file of the package declares at package
+// level; such a name hides a predeclared one throughout the package.
+func packageNames(files []PackageFile) map[string]bool {
+	names := map[string]bool{}
+	for _, pf := range files {
+		for _, decl := range pf.File.Decls {
+			switch d := decl.(type) {
+			case *ast.FuncDecl:
+				if d.Recv == nil {
+					names[d.Name.Name] = true
+				}
+			case *ast.GenDecl:
+				for _, spec := range d.Specs {
+					switch s := spec.(type) {
+					case *ast.TypeSpec:
+						names[s.Name.Name] = true
+					case *ast.ValueSpec:
+						for _, n := range s.Names {
+							names[n.Name] = true
+						}
+					}
+				}
+			}
+		}
+	}
+	return names
+}
+
+// seedType reports whether t is a predeclared type, or a slice, array or map of
+// seedTypes: a type without methods.
+func (p *provenance) seedType(t ast.Expr, env *seedEnv) bool {
+	switch t := ast.Unparen(t).(type) {
+	case *ast.Ident:
+		return predeclaredTypes[t.Name] && !p.shadowed(t.Name, env)
+	case *ast.ArrayType:
+		switch t.Len.(type) {
+		case nil, *ast.BasicLit, *ast.Ellipsis:
+			return p.seedType(t.Elt, env)
+		}
+	case *ast.MapType:
+		return p.seedType(t.Key, env) && p.seedType(t.Value, env)
+	}
+	return false
 }
 
 // hasEmbed reports whether cg holds a //go:embed directive.
@@ -152,19 +233,25 @@ func hasEmbed(cg *ast.CommentGroup) bool {
 // check returns the first part of x that is not compiled in and why, or nil.
 func (p *provenance) check(x ast.Expr, env *seedEnv) (ast.Node, string) {
 	switch x := x.(type) {
-	case *ast.BasicLit, *ast.ArrayType, *ast.MapType: // a type is an operand only of make
+	case *ast.BasicLit:
 		return nil, ""
+	case *ast.ArrayType, *ast.MapType: // a type is an operand only of make
+		if p.seedType(x, env) {
+			return nil, ""
+		}
+		return x, "uses type " + types.ExprString(x)
 	case *ast.Ident:
 		return p.checkName(x, env)
 	case *ast.ParenExpr:
 		return p.check(x.X, env)
 	case *ast.CompositeLit:
+		if x.Type != nil && !p.seedType(x.Type, env) {
+			return x, "a " + types.ExprString(x.Type) + " literal: seeds are built from predeclared types, slices, arrays and maps of them"
+		}
 		for _, e := range x.Elts {
 			if kv, ok := e.(*ast.KeyValueExpr); ok {
-				if id, ok := kv.Key.(*ast.Ident); !ok || p.shadowed(id.Name, env) { // else a field name
-					if bad, why := p.check(kv.Key, env); bad != nil {
-						return bad, why
-					}
+				if bad, why := p.check(kv.Key, env); bad != nil { // an index or a map key
+					return bad, why
 				}
 				e = kv.Value
 			}
@@ -252,6 +339,10 @@ func (p *provenance) checkName(id *ast.Ident, env *seedEnv) (ast.Node, string) {
 		switch d.kind {
 		case defOpaque:
 			return id, d.why
+		case defType:
+			if !p.seedType(d.x, d.env) {
+				return id, d.why
+			}
 		case defExpr:
 			if bad, why := p.check(d.x, d.env); bad != nil {
 				return bad, why
@@ -266,8 +357,7 @@ func (p *provenance) checkName(id *ast.Ident, env *seedEnv) (ast.Node, string) {
 func (p *provenance) pureCall(call *ast.CallExpr, env *seedEnv) bool {
 	switch fn := ast.Unparen(call.Fun).(type) {
 	case *ast.ArrayType:
-		id, ok := fn.Elt.(*ast.Ident)
-		return fn.Len == nil && ok && predeclaredTypes[id.Name]
+		return fn.Len == nil && p.seedType(fn, env)
 	case *ast.Ident:
 		if p.shadowed(fn.Name, env) {
 			return false
@@ -282,30 +372,31 @@ func (p *provenance) pureCall(call *ast.CallExpr, env *seedEnv) bool {
 // pureSelector reports whether sel names a member of a pureStd import.
 func (p *provenance) pureSelector(sel *ast.SelectorExpr, env *seedEnv) bool {
 	id, ok := sel.X.(*ast.Ident)
-	if !ok || p.shadowed(id.Name, env) {
-		return false
-	}
-	for _, imp := range p.file.Imports {
+	return ok && !p.shadowed(id.Name, env) && pureImport(p.file, id.Name)
+}
+
+// pureImport reports whether name is the name file imports a pureStd package as.
+func pureImport(file *ast.File, name string) bool {
+	for _, imp := range file.Imports {
 		ip, err := strconv.Unquote(imp.Path.Value)
 		if err != nil || !pureStd[ip] {
 			continue
 		}
-		name := path.Base(ip)
+		n := path.Base(ip)
 		if imp.Name != nil {
-			name = imp.Name.Name
+			n = imp.Name.Name
 		}
-		if name == id.Name {
+		if n == name {
 			return true
 		}
 	}
 	return false
 }
 
-// shadowed reports whether name is declared in env or at package level in
-// seeds_test.go, hiding a predeclared or imported name.
+// shadowed reports whether name is declared in env or at package level in any file
+// of the package, hiding a predeclared or imported name.
 func (p *provenance) shadowed(name string, env *seedEnv) bool {
-	_, pkg := p.pkg[name]
-	return pkg || (env != nil && env.declared[name])
+	return p.global[name] || (env != nil && env.declared[name])
 }
 
 // writes returns the assignments env records, by name; definitions are left out.
@@ -333,10 +424,13 @@ func reassigned(env *seedEnv, name string) bool {
 }
 
 // collectEnv records every definition of and write to a name inside node: parameters,
-// :=, var declarations, range variables, assignments (also through an index, a field
-// or a pointer), copy destinations, taken addresses, and variables passed to a call
-// that is not pure or an Add.
-func collectEnv(node ast.Node) *seedEnv {
+// :=, var declarations, range variables, assignments (also through an index, a slice,
+// a field or a pointer), copy destinations, taken addresses, and every variable passed
+// to a call or whose method is called. A variable passed to a builtin, a conversion
+// or a call of a pureStd package of file is written from that call, so the call's
+// operands are checked with it; any other call makes it opaque. len, cap and
+// conversions only read their operand, and f.Add only reads its arguments.
+func collectEnv(file *ast.File, node ast.Node) *seedEnv {
 	env := &seedEnv{locals: map[string][]seedDef{}, declared: map[string]bool{}}
 	add := func(name string, d seedDef, declare bool) {
 		if name == "" || name == "_" {
@@ -398,6 +492,8 @@ func collectEnv(node ast.Node) *seedEnv {
 				vs := spec.(*ast.ValueSpec)
 				for i, id := range vs.Names {
 					switch {
+					case gd.Tok == token.VAR && len(vs.Values) == 0 && vs.Type != nil:
+						add(id.Name, seedDef{kind: defType, x: vs.Type, why: id.Name + " has type " + types.ExprString(vs.Type)}, true)
 					case gd.Tok == token.CONST || len(vs.Values) == 0:
 						add(id.Name, seedDef{kind: defZero}, true)
 					case len(vs.Values) == len(vs.Names):
@@ -417,18 +513,30 @@ func collectEnv(node ast.Node) *seedEnv {
 				add(rootName(n.Args[0]), seedDef{kind: defExpr, x: n.Args[1]}, false)
 				break
 			}
-			if sel, ok := ast.Unparen(n.Fun).(*ast.SelectorExpr); ok && sel.Sel.Name == "Add" {
-				break
-			}
-			if id, ok := ast.Unparen(n.Fun).(*ast.Ident); ok && (pureBuiltins[id.Name] || predeclaredTypes[id.Name]) {
-				break
-			}
-			if _, ok := ast.Unparen(n.Fun).(*ast.ArrayType); ok {
-				break
+			fun := types.ExprString(n.Fun)
+			pure := false // a builtin, a conversion or a pureStd call: check decides
+			switch fn := ast.Unparen(n.Fun).(type) {
+			case *ast.ArrayType:
+				pure = true
+			case *ast.Ident:
+				pure = pureBuiltins[fn.Name] || predeclaredTypes[fn.Name] || fn.Name == "len" || fn.Name == "cap"
+			case *ast.SelectorExpr:
+				if id, ok := ast.Unparen(fn.X).(*ast.Ident); ok && pureImport(file, id.Name) {
+					pure = true
+					break
+				}
+				recv := rootName(fn.X)
+				add(recv, seedDef{kind: defOpaque, pass: true, why: "method " + fun + " is called on " + recv}, false)
+				if fn.Sel.Name == "Add" {
+					return true // a seed registration reads its arguments
+				}
 			}
 			for _, a := range n.Args {
-				if id, ok := ast.Unparen(a).(*ast.Ident); ok {
-					add(id.Name, seedDef{kind: defOpaque, pass: true, why: id.Name + " is passed to " + types.ExprString(n.Fun)}, false)
+				name := rootName(a)
+				if pure {
+					add(name, seedDef{kind: defExpr, x: n, call: true}, false)
+				} else {
+					add(name, seedDef{kind: defOpaque, pass: true, why: name + " is passed to " + fun}, false)
 				}
 			}
 		}
@@ -449,6 +557,8 @@ func rootName(x ast.Expr) string {
 		case *ast.SelectorExpr:
 			x = e.X
 		case *ast.StarExpr:
+			x = e.X
+		case *ast.SliceExpr:
 			x = e.X
 		case *ast.ParenExpr:
 			x = e.X

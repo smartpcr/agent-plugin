@@ -201,7 +201,11 @@ func TestFuzzCheckRules(t *testing.T) {
 // the argument.
 func TestFuzzCheckSeedProvenance(t *testing.T) {
 	const (
-		head     = "package p\nimport (\"testing\"; \"strings\"; \"math\"; _ \"embed\")\nvar _ = strings.Repeat\nvar _ = math.Pi\n"
+		head = "package p\nimport (\"testing\"; \"bytes\"; \"fmt\"; \"strconv\"; \"strings\"; \"math\"; _ \"embed\")\n" +
+			"var _, _, _, _ = bytes.Clone, fmt.Sprint, strconv.Quote, strings.Repeat\nvar _ = math.Pi\n"
+		stringer = "package p\nimport \"os\"\ntype seedText struct{}\nfunc (seedText) String() string { b, _ := os.ReadFile(\"seed\"); return string(b) }\n"
+		bytesOut = "package p\nfunc init() { _ = len(decodeSeeds); _ = cap(decodeSeeds) }\n"
+		shadowFn = "package p\nfunc string(b []byte) []byte { return b }\n"
 		readSeed = "package p\nimport \"os\"\nfunc readSeed() []byte { b, _ := os.ReadFile(\"seed\"); return b }\n"
 		fillSeed = "package p\nfunc init() { decodeSeeds = [][]byte{readSeed()} }\nfunc readSeed() []byte { return nil }\n"
 		addrSeed = "package p\nfunc init() { p := &decodeSeeds; _ = p }\n"
@@ -220,6 +224,20 @@ func TestFuzzCheckSeedProvenance(t *testing.T) {
 		{"literal, slice, embed, const and pure std", []string{"seeds_test.go", fuzz(
 			"f.Add([]byte(\"x\"), 1)\nfor _, s := range decodeSeeds { f.Add(s, limit) }\nf.Add(embedded[:2], len(embedded))\n" +
 				"b := []byte(strings.Repeat(\"a\", 64))\nb = append(b, '}')\nf.Add(b, math.MaxInt8)\nvar z []byte\nf.Add(z, -1)")}, nil},
+		{"pure std call on range and local variables", []string{"seeds_test.go", fuzz(
+			"for _, s := range decodeSeeds { f.Add(bytes.Clone(s)) }\nb := []byte(\"x\")\nf.Add(bytes.Clone(b))\n" +
+				"for _, q := range []string{\"a\", \"b\"} { f.Add([]byte(strconv.Quote(q))) }\nw := \"w\"\nf.Add([]byte(strconv.Quote(w)))")}, nil},
+		{"len and cap elsewhere are not writes", []string{"seeds_test.go", fuzz("f.Add(decodeSeeds[0])"), "len_test.go", bytesOut}, nil},
+		{"fmt dispatches to a Stringer that reads the disk", []string{"seeds_test.go", fuzz("f.Add(fmt.Sprint(seedText{}))"), "text_test.go", stringer},
+			[]string{"f.Add argument fmt.Sprint(seedText{}) is not compiled in"}},
+		{"named composite literal", []string{"seeds_test.go", fuzz("f.Add([]byte(strings.Repeat(seedText{}.String(), 1)))"), "text_test.go", stringer},
+			[]string{"is not compiled in"}},
+		{"zero value of a named type", []string{"seeds_test.go", fuzz("var s seedText\nf.Add([]byte(s.String()))"), "text_test.go", stringer},
+			[]string{"is not compiled in"}},
+		{"pure call overwritten by a helper", []string{"seeds_test.go", fuzz("b := []byte(\"x\")\nb = append(b[:0], readSeed()...)\nf.Add(b)"), "read_test.go", readSeed},
+			[]string{"(calls readSeed)"}},
+		{"conversion shadowed in another file", []string{"seeds_test.go", fuzz("f.Add(string(nil))"), "shadow_test.go", shadowFn},
+			[]string{"is not compiled in"}},
 		{"helper of another file reads the disk", []string{"seeds_test.go", fuzz("f.Add(readSeed())"), "read_test.go", readSeed},
 			[]string{"f.Add argument readSeed() is not compiled in (calls readSeed)"}},
 		{"local assigned from a helper", []string{"seeds_test.go", fuzz("b := []byte(\"x\")\nb = readSeed()\nf.Add(b)"), "read_test.go", readSeed},
@@ -284,6 +302,9 @@ func TestFuzzCheckSeederBinding(t *testing.T) {
 		{"f through a chain of seeders", "chain(f)", nil},
 		{"helper reassigns its parameter", "reset(f)", []string{"FuzzDecode registers no seeds"}},
 		{"target reassigns f", "f = new(testing.F); addSeeds(nil, f)", []string{"FuzzDecode registers no seeds"}},
+		{"local helper shadows the seeder", "addSeeds := func(_, _ *testing.F) {}; addSeeds(nil, f); f.Fuzz(func(t *testing.T, b []byte) {})",
+			[]string{"FuzzDecode registers no seeds"}},
+		{"local variable shadows the seeder", "var chain func(*testing.F); chain(f)", []string{"FuzzDecode registers no seeds"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

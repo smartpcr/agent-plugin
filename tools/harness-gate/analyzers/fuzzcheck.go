@@ -109,7 +109,7 @@ func FuzzCheckFindings(files []PackageFile) []Finding {
 		if !ok || fn.Body == nil {
 			continue
 		}
-		sf := seedFunc{fn: fn, env: collectEnv(fn), params: testingFParams(seeds.File, fn)}
+		sf := seedFunc{fn: fn, env: collectEnv(seeds.File, fn), params: testingFParams(seeds.File, fn)}
 		for _, p := range sf.params {
 			for _, call := range addCalls(fn.Body, p.name) {
 				for _, arg := range call.Args {
@@ -143,9 +143,10 @@ func FuzzCheckFindings(files []PackageFile) []Finding {
 	}
 
 	for _, tg := range targets {
-		if tg.fn.Body != nil && !reassigned(collectEnv(tg.fn), tg.param) {
+		env := collectEnv(tg.file.File, tg.fn)
+		if tg.fn.Body != nil && !reassigned(env, tg.param) {
 			inSeeds := tg.file.Name == seeds.Name
-			if (inSeeds && len(addCalls(tg.fn.Body, tg.param)) > 0) || passesToSeeder(tg.fn.Body, tg.param, seeders) {
+			if (inSeeds && len(addCalls(tg.fn.Body, tg.param)) > 0) || passesToSeeder(tg.fn.Body, tg.param, seeders, env) {
 				continue
 			}
 		}
@@ -176,7 +177,7 @@ func seederParams(funcs []seedFunc) map[string]map[int]bool {
 				if seeders[name][p.index] || reassigned(sf.env, p.name) {
 					continue
 				}
-				if len(addCalls(sf.fn.Body, p.name)) > 0 || passesToSeeder(sf.fn.Body, p.name, seeders) {
+				if len(addCalls(sf.fn.Body, p.name)) > 0 || passesToSeeder(sf.fn.Body, p.name, seeders, sf.env) {
 					if seeders[name] == nil {
 						seeders[name] = map[int]bool{}
 					}
@@ -302,15 +303,17 @@ func addCalls(body *ast.BlockStmt, param string) []*ast.CallExpr {
 }
 
 // passesToSeeder reports whether body calls a seeder with param at a position that
-// seeder seeds.
-func passesToSeeder(body *ast.BlockStmt, param string, seeders map[string]map[int]bool) bool {
+// seeder seeds. A call through a name the function itself declares (a local
+// addSeeds := func(*testing.F) {} shadowing the seeds_test.go helper) is not a call
+// of the seeder.
+func passesToSeeder(body *ast.BlockStmt, param string, seeders map[string]map[int]bool, env *seedEnv) bool {
 	if param == "_" {
 		return false
 	}
 	found := false
 	ast.Inspect(body, func(n ast.Node) bool {
 		if call, ok := n.(*ast.CallExpr); ok {
-			if fn, ok := ast.Unparen(call.Fun).(*ast.Ident); ok {
+			if fn, ok := ast.Unparen(call.Fun).(*ast.Ident); ok && !env.declared[fn.Name] {
 				for i, arg := range call.Args {
 					if id, ok := ast.Unparen(arg).(*ast.Ident); ok && id.Name == param && seeders[fn.Name][i] {
 						found = true

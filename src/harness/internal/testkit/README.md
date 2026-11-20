@@ -96,15 +96,21 @@ then requires, in the package's own (not `_test`-suffixed) test files:
    and calls `f.Add`, or it passes `f` to a `seeds_test.go` function that calls
    `Add` on the parameter `f` is passed as (a helper `add(unused, seeded *testing.F)`
    seeds only through `seeded`; helpers may chain). A function that reassigns its
-   `*testing.F` seeds nothing, and `f.Add` outside `seeds_test.go` is reported;
+   `*testing.F` seeds nothing, a call through a name the function declares itself
+   (`addSeeds := func(*testing.F) {}`) is not a call of the helper, and `f.Add`
+   outside `seeds_test.go` is reported;
 4. every `f.Add` argument is **compiled in**: built from literals, composite
-   literals, conversions to predeclared types (`[]byte("...")`), the builtins
+   literals of unnamed types (`[][]byte{...}`, never `seedText{}`), conversions to
+   predeclared or unnamed slice types (`[]byte("...")`), the builtins
    `append`/`len`/`make`/..., the pure stdlib packages `strings`, `bytes`, `strconv`,
-   `fmt`, `math`, `encoding/*` (hex, base64, binary, json) and `unicode/utf8`/`utf16`,
+   `math`, `encoding/hex`, `encoding/base64` and `unicode/utf8`/`utf16` (not `fmt` or
+   `encoding/json`, which dispatch to user `String`/`MarshalJSON` methods),
    constants and variables declared in `seeds_test.go` (initialised the same way, or
-   `//go:embed`), and locals derived from them. `f.Add(readSeed())`, a local filled by
-   a helper, a variable of another file, or a `seeds_test.go` variable that another
-   test file assigns, copies into or takes the address of is reported at the argument.
+   `//go:embed`), and locals derived from them. `f.Add(readSeed())`,
+   `f.Add(fmt.Sprint(v))`, a value of a named type, a local filled by a helper, a
+   variable of another file, a predeclared name another file redeclares, or a
+   `seeds_test.go` variable that another test file assigns, copies into or takes the
+   address of is reported at the argument (`len`/`cap`/conversions elsewhere only read).
 
 ```go
 // seeds_test.go
