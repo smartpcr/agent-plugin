@@ -146,6 +146,17 @@ func (o EntryOptions) intact() bool {
 	return err == nil && string(canonical) == o.fingerprint
 }
 
+// decodeIssues returns the faults found while decoding the entry, or nil once an
+// exported field (or a child's) was changed since: an edited entry is revalidated
+// from its fields. Read issues through it, never directly, so a caller that did not
+// clone the entry does not report stale faults.
+func (o EntryOptions) decodeIssues() []Issue {
+	if !o.intact() {
+		return nil
+	}
+	return slices.Clone(o.issues)
+}
+
 // canonical encodes the exported fields in file form for comparison with the
 // fingerprint. The generated id of an anonymous entry is left out, and an intact
 // child stands for its raw text, as it is written.
