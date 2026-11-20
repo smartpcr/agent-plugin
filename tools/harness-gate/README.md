@@ -27,12 +27,53 @@ The module has its own `go.mod` and is not part of the root `go.work`; run it wi
 | 3 | `test` | `go test -tags= -race -shuffle=on -count=1 ./...` per module with `CGO_ENABLED=1` (QG-4); the `replay` and `scenario` layers are excluded |
 | 4 | `coverage` | any package under 85% of statements, profiles merged across processes (QG-3) |
 | 5 | `trace` | `tools/harness-trace verify` (QG-9); a root without the tool fails |
-| 6 | `budget` | a `TestBudget*` test over its compiled-in budget (QG-7) |
-| 7 | `cross-compile` | `GOWORK=off CGO_ENABLED=0 go build ./cmd/dsh` for linux, darwin, windows × amd64, arm64 (QG-8) |
+| 6 | `scenario-index` | `test/harness/acceptance-index.yaml` missing or malformed; a `*_scenario_test.go` ID not indexed, indexed twice or bound to two tests; an indexed ID authored at or before `built-through` without a file (DH-ADR-TOOLCHAIN-12) |
+| 7 | `budget` | a `TestBudget*` test over its compiled-in budget (QG-7) |
+| 8 | `cross-compile` | `GOWORK=off CGO_ENABLED=0 go build ./cmd/dsh` for linux, darwin, windows × amd64, arm64 (QG-8) |
 
 There is no "skipped" state. Nothing reads a baseline, suppression or exemption
 file: a finding is fixed in the code, not listed away (QG-2, QG-3, DH-ADR-14).
 
+## Subcommands
+
+```sh
+GOWORK=off go -C tools/harness-gate run . rehearse  --root ../.. [--out DIR]
+GOWORK=off go -C tools/harness-gate run . require   --root ../.. --stage DH-S-18
+GOWORK=off go -C tools/harness-gate run . preflight --root ../..
+```
+
+- `rehearse` (DH-D-TOOLCHAIN-5, DH-ADR-TOOLCHAIN-13) builds `cmd/dsh` with
+  `GOWORK=off CGO_ENABLED=0 GOFLAGS= go build -trimpath` for linux, darwin,
+  windows × amd64, arm64 into `--out` (a removed temp directory by default) and
+  prints one line per binary: `<sha256>  <name>  version=… vcs.revision=…
+  vcs.modified=…`, read from the binary's embedded build info. It publishes
+  nothing: no tag, no upload, no network beyond the module cache. CI runs it in
+  the `harness` job on Linux; `release.yml` and `.goreleaser.yaml` are unchanged.
+- `require` prints the comma-separated `DH-E-*` IDs of one stage entry of the
+  acceptance index (empty for no `--stage`); an unknown stage is an error. The
+  scenario workflow uses it to derive `DSH_REQUIRE_SCENARIOS`.
+- `preflight` (DH-ADR-TOOLCHAIN-6, -12) reads `DSH_DEEPSEEK_API_KEY` and
+  `DSH_REQUIRE_SCENARIOS` from the environment and fails -- starting nothing --
+  when the key is absent or blank, when a required ID has no scenario test, or when
+  the `scenario-index` check fails. On success it appends `count=`, `run=` (a
+  `go test -run` expression) and `tests=` to `$GITHUB_OUTPUT`.
+
+## Acceptance index (`test/harness/acceptance-index.yaml`)
+
+Keyed by executing stage; each entry lists the authored `DH-E-*` IDs with their
+authoring stage. `built-through` is the last closed story: IDs authored at or
+before it must have a file. Scenario files bind an ID to a test with a
+`//dsh:scenario <ID>` line in the doc comment of a top-level `TestXxx`. The parser
+(`acceptance/`) accepts only this shape, so no YAML dependency is needed:
+
+```yaml
+built-through: DH-S-1
+stages:
+  DH-S-16: []
+  DH-S-18:
+    - id: DH-E-TOOLCHAIN-2
+      authored: DH-S-1
+```
 ## Own analyzers (`analyzers/`)
 
 | analyzer | rule |

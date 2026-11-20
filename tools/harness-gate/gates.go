@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/smartpcr/agent-plugin/tools/harness-gate/acceptance"
 	"github.com/smartpcr/agent-plugin/tools/harness-gate/modcheck"
 )
 
@@ -135,6 +136,7 @@ func Gates(c *Config) []Gate {
 		{Name: "test", Title: "go test -race -shuffle=on -count=1 per module, CGO_ENABLED=1", Run: c.testGate},
 		{Name: "coverage", Title: fmt.Sprintf("coverage merged across processes, %d%% of statements per package", CoverageFloor), Run: c.coverageGate},
 		{Name: "trace", Title: "tools/harness-trace verify", Run: c.traceGate},
+		{Name: "scenario-index", Title: "every authored DH-E-* scenario test is in " + acceptance.IndexPath + " exactly once, and every indexed one authored so far has its test", Run: c.scenarioIndexGate},
 		{Name: "budget", Title: "performance budgets (TestBudget*) with DSH_* and GO* overrides cleared", Run: c.budgetGate},
 		{Name: "cross-compile", Title: "cmd/dsh for linux, darwin, windows on amd64 and arm64 with CGO_ENABLED=0", Run: c.crossCompileGate},
 	}
@@ -420,6 +422,41 @@ func (c *Config) traceGate(ctx context.Context, w io.Writer) error {
 	return nil
 }
 
+// scenarioIndexGate checks the acceptance index against the authored scenario tests
+// of the modules (DH-ADR-TOOLCHAIN-6, EV-4): an authored scenario the index misses,
+// or an indexed one that should be authored by now and is not, fails here, keylessly,
+// long before the credentialed preflight of its acceptance stage. A root without the
+// index fails: the check cannot be skipped.
+func (c *Config) scenarioIndexGate(_ context.Context, w io.Writer) error {
+	x, scenarios, err := c.acceptance()
+	if err != nil {
+		return err
+	}
+	if err := acceptance.Check(x, scenarios); err != nil {
+		return err
+	}
+	indexed := 0
+	for _, s := range x.Stages {
+		indexed += len(s.Scenarios)
+	}
+	fmt.Fprintf(w, "scenario-index: %d scenario tests authored, %d scenarios indexed in %d stages, built through %s\n",
+		len(scenarios), indexed, len(x.Stages), x.BuiltThrough)
+	return nil
+}
+
+// acceptance reads the index under the root and scans the modules' scenario tests.
+func (c *Config) acceptance() (*acceptance.Index, []acceptance.Scenario, error) {
+	x, err := acceptance.ReadIndex(c.Root)
+	if err != nil {
+		return nil, nil, err
+	}
+	scenarios, err := acceptance.ScanScenarios(c.Root, c.Modules)
+	if err != nil {
+		return nil, nil, err
+	}
+	return x, scenarios, nil
+}
+
 // budgetGate runs the performance-budget tests. Their budgets are compiled in; the
 // child environment has every DSH_* and GO* variable removed, so no override can
 // relax them (QG-7).
@@ -457,15 +494,9 @@ func BudgetEnv(parent []string) []string {
 // crossCompileGate builds cmd/dsh for every target with CGO_ENABLED=0 and the
 // workspace off (QG-8). Every target is attempted; each failure names its target.
 func (c *Config) crossCompileGate(ctx context.Context, w io.Writer) error {
-	var mod string
-	for _, m := range c.Modules {
-		if isDir(filepath.Join(m, "cmd", "dsh")) {
-			mod = m
-			break
-		}
-	}
-	if mod == "" {
-		return fmt.Errorf("no module under %s holds cmd/dsh (QG-8)", c.Root)
+	mod, err := c.dshModule()
+	if err != nil {
+		return err
 	}
 	out := c.CrossOut
 	if out == "" {

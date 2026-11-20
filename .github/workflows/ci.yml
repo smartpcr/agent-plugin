@@ -4,8 +4,13 @@
 #   go      src/go:  gofmt, go vet, go test (with the race detector on Linux)
 #   e2e     test/e2e: builds the C# and Go bindings and runs every suite with each
 #           (test/e2e/Invoke-E2E.ps1); results are uploaded as NUnit XML
+#   harness the dsh harness quality gate (tools/harness-gate, DH-D-TOOLCHAIN-4) on
+#           Linux, macOS and Windows with cgo on for -race, plus the keyless release
+#           rehearsal (DH-D-TOOLCHAIN-5) on Linux; the gate output is uploaded as
+#           evidence. No secret is used; credentialed scenarios live in
+#           harness-scenarios.yml.
 #
-# The three jobs are independent and run in parallel, on Linux and Windows. The Go
+# The jobs are independent and run in parallel. The Go
 # binding builds against the released src/go module (its go.mod pins a version), so
 # an src/go change reaches e2e only after a new src/go/vX.Y.Z tag.
 name: ci
@@ -115,4 +120,60 @@ jobs:
         with:
           name: e2e-results-${{ matrix.os }}
           path: artifacts/e2e/*.xml
+          if-no-files-found: warn
+
+  harness:
+    name: harness (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      # -race needs cgo and a C compiler on every lane (QG-4).
+      CGO_ENABLED: "1"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: src/harness/go.mod
+          cache-dependency-path: |
+            src/harness/go.sum
+            tools/harness-gate/go.sum
+      - name: Provision a C compiler (Windows)
+        if: runner.os == 'Windows'
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          install: mingw-w64-ucrt-x86_64-gcc
+          path-type: inherit
+      - name: Put gcc on PATH (Windows)
+        if: runner.os == 'Windows'
+        run: cygpath -w '${{ steps.msys2.outputs.msys2-location }}/ucrt64/bin' >> "$GITHUB_PATH"
+      - name: Verify the C compiler
+        run: |
+          cc="$(go env CC)"
+          echo "go env CC = $cc"
+          "$cc" --version
+      - name: Quality gate
+        run: |
+          set -o pipefail
+          mkdir -p artifacts/harness
+          go version | tee artifacts/harness/gate-${{ runner.os }}.txt
+          GOWORK=off go -C tools/harness-gate run . --root ../.. 2>&1 | tee -a artifacts/harness/gate-${{ runner.os }}.txt
+      - name: Release rehearsal (publishes nothing)
+        if: runner.os == 'Linux'
+        run: |
+          set -o pipefail
+          GOWORK=off go -C tools/harness-gate run . rehearse --root ../.. 2>&1 | tee artifacts/harness/rehearse.txt
+      - name: Upload gate evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: harness-gate-${{ matrix.os }}
+          path: artifacts/harness/
           if-no-files-found: warn

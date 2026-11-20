@@ -1,0 +1,37 @@
+# Acceptance index of the authored real-environment scenarios (DH-E-*).
+#
+# Keyed by the stage that EXECUTES a scenario (impl.md sec. 7.5 governs the
+# placement); each entry lists the authored scenario IDs with the stage that
+# authors their test. Read by tools/harness-gate:
+#
+#   - the scenario-index gate (keyless, every commit): every *_scenario_test.go
+#     ID (//dsh:scenario directive) is listed here exactly once, and every ID
+#     authored at or before built-through has its scenario test;
+#   - "harness-gate require --stage DH-S-n" derives DSH_REQUIRE_SCENARIOS for the
+#     acceptance run of that stage (.github/workflows/harness-scenarios.yml);
+#   - "harness-gate preflight" fails that run when the secret is missing, this
+#     index and the scenario tests disagree, or a required ID has no test.
+#
+# A stage adds its scenarios here in the same change that authors them, and
+# raises built-through when it closes. Shape (strict; no other YAML is read):
+#
+#   built-through: DH-S-<n>
+#   stages:
+#     DH-S-<n>: []            # no scenario authored for this stage yet
+#     DH-S-<n>:
+#       - id: DH-E-<AREA>-<n>
+#         authored: DH-S-<n>
+
+built-through: DH-S-1
+
+stages:
+  DH-S-16: []
+  DH-S-17:
+    # Its subjects (the model runtime, the replay helpers) exist from Phase 11;
+    # the file is written by the DH-S-11 authoring step (impl.md DH-S-1 Scenarios).
+    - id: DH-E-TOOLCHAIN-1
+      authored: DH-S-11
+  DH-S-18:
+    - id: DH-E-TOOLCHAIN-2
+      authored: DH-S-1
+  DH-S-22: []

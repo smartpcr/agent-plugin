@@ -7,12 +7,25 @@
 //
 // The gates, in order: gofmt, vet (go vet and the project's own analyzers), test
 // (race, shuffle), coverage (merged across processes, 85% per package),
-// trace (tools/harness-trace verify), budget (performance budgets) and
+// trace (tools/harness-trace verify), scenario-index (test/harness/acceptance-index.yaml
+// against the authored *_scenario_test.go files), budget (performance budgets) and
 // cross-compile (cmd/dsh for six targets). See README.md.
 //
 // When --root holds a go.mod, the gates run on that one module (the seeded-violation
 // modules of testdata/ are run this way); otherwise they run on the three product
 // modules src/go, src/sdk and src/harness.
+//
+// Subcommands, each with --root:
+//
+//	rehearse [--out dir]   the release rehearsal: cmd/dsh for six targets, pure Go,
+//	                       -trimpath, SHA-256 and embedded version printed, nothing
+//	                       published (DH-D-TOOLCHAIN-5)
+//	preflight              the credentialed scenario workflow's first step: fails when
+//	                       DSH_DEEPSEEK_API_KEY is absent, the index disagrees with the
+//	                       scenario tests, or an ID of DSH_REQUIRE_SCENARIOS has no
+//	                       scenario test (DH-D-TOOLCHAIN-4)
+//	require --stage DH-S-n prints the index entry of the stage being accepted, the
+//	                       value of DSH_REQUIRE_SCENARIOS
 package main
 
 import (
@@ -22,9 +35,12 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 
 	"golang.org/x/tools/go/analysis/unitchecker"
 
+	"github.com/smartpcr/agent-plugin/tools/harness-gate/acceptance"
 	"github.com/smartpcr/agent-plugin/tools/harness-gate/analyzers"
 )
 
@@ -39,9 +55,19 @@ func main() {
 	os.Exit(code)
 }
 
-// run parses args, runs the gates and returns the exit status: 0 when every gate
-// passed, 1 when one failed, 2 on a usage or setup error.
+// run parses args, runs the gates (or a subcommand) and returns the exit status: 0
+// when every gate passed, 1 when one failed, 2 on a usage or setup error.
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 {
+		switch args[0] {
+		case "rehearse":
+			return runRehearse(ctx, args[1:], stdout, stderr)
+		case "preflight":
+			return runPreflight(args[1:], stdout, stderr)
+		case "require":
+			return runRequire(args[1:], stdout, stderr)
+		}
+	}
 	flags := flag.NewFlagSet("harness-gate", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	root := flags.String("root", ".", "repository root, or the directory of a single module to gate")
@@ -58,4 +84,146 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	return ExitCode(Run(ctx, stdout, Gates(cfg)))
+}
+
+// subcommandFlags parses the flags of subcommand name: --root and those add
+// registers.
+func subcommandFlags(name string, args []string, stderr io.Writer, add func(*flag.FlagSet)) (root string, ok bool) {
+	flags := flag.NewFlagSet("harness-gate "+name, flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	r := flags.String("root", ".", "repository root")
+	if add != nil {
+		add(flags)
+	}
+	if err := flags.Parse(args); err != nil {
+		return "", false
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintf(stderr, "harness-gate %s: unexpected arguments %q\n", name, flags.Args())
+		return "", false
+	}
+	return *r, true
+}
+
+// runRehearse is "harness-gate rehearse [--root dir] [--out dir]": the release
+// rehearsal of DH-D-TOOLCHAIN-5. Without --out the binaries go to a temporary
+// directory that is removed afterwards.
+func runRehearse(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	var out string
+	root, ok := subcommandFlags("rehearse", args, stderr, func(f *flag.FlagSet) {
+		f.StringVar(&out, "out", "", "directory for the binaries (default: a temporary directory, removed afterwards)")
+	})
+	if !ok {
+		return 2
+	}
+	cfg, err := NewConfig(root)
+	if err != nil {
+		fmt.Fprintf(stderr, "harness-gate rehearse: %v\n", err)
+		return 2
+	}
+	if out == "" {
+		tmp, err := os.MkdirTemp("", "harness-gate-rehearse-")
+		if err != nil {
+			fmt.Fprintf(stderr, "harness-gate rehearse: %v\n", err)
+			return 2
+		}
+		defer os.RemoveAll(tmp)
+		out = tmp
+	} else if out, err = filepath.Abs(out); err != nil {
+		fmt.Fprintf(stderr, "harness-gate rehearse: %v\n", err)
+		return 2
+	}
+	if _, err := cfg.Rehearse(ctx, stdout, out); err != nil {
+		fmt.Fprintf(stdout, "harness-gate rehearse: FAILED: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+// runPreflight is "harness-gate preflight [--root dir]", the first job of the
+// credentialed scenario workflow (DH-ADR-TOOLCHAIN-6, -12). It decides from the
+// process environment through acceptance.Preflight and starts nothing. When
+// GITHUB_OUTPUT is set it appends count=, run= (the go test -run expression) and
+// tests= (the test names) for the scenario job.
+func runPreflight(args []string, stdout, stderr io.Writer) int {
+	root, ok := subcommandFlags("preflight", args, stderr, nil)
+	if !ok {
+		return 2
+	}
+	x, scenarios, err := readAcceptance(root)
+	if err != nil {
+		fmt.Fprintf(stderr, "harness-gate preflight: %v\n", err)
+		return 2
+	}
+	plan, err := acceptance.Preflight(acceptance.Environ(os.Environ()), x, scenarios)
+	if err != nil {
+		fmt.Fprintf(stdout, "harness-gate preflight: FAILED, no scenario is started:\n%v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "harness-gate preflight: passed; %s is set; %d required scenarios", acceptance.SecretEnv, len(plan.Scenarios))
+	for _, s := range plan.Scenarios {
+		fmt.Fprintf(stdout, "\n  %s  %s (%s)", s.ID, s.Test, s.File)
+	}
+	fmt.Fprintln(stdout)
+	if path := os.Getenv("GITHUB_OUTPUT"); path != "" {
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if err != nil {
+			fmt.Fprintf(stderr, "harness-gate preflight: %v\n", err)
+			return 2
+		}
+		_, err = fmt.Fprintf(f, "count=%d\nrun=%s\ntests=%s\n", len(plan.Scenarios), plan.RunPattern(), strings.Join(plan.Tests(), " "))
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+		if err != nil {
+			fmt.Fprintf(stderr, "harness-gate preflight: %v\n", err)
+			return 2
+		}
+	}
+	return 0
+}
+
+// runRequire is "harness-gate require [--root dir] --stage DH-S-n": it prints the
+// comma-separated scenario IDs of the index entry of the stage being accepted, the
+// value of DSH_REQUIRE_SCENARIOS for that run. An empty --stage prints an empty
+// line; a stage the index does not list fails.
+func runRequire(args []string, stdout, stderr io.Writer) int {
+	var stage string
+	root, ok := subcommandFlags("require", args, stderr, func(f *flag.FlagSet) {
+		f.StringVar(&stage, "stage", "", "the acceptance stage being run, e.g. DH-S-18")
+	})
+	if !ok {
+		return 2
+	}
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		fmt.Fprintf(stderr, "harness-gate require: %v\n", err)
+		return 2
+	}
+	x, err := acceptance.ReadIndex(abs)
+	if err != nil {
+		fmt.Fprintf(stderr, "harness-gate require: %v\n", err)
+		return 2
+	}
+	ids, err := x.Required(strings.TrimSpace(stage))
+	if err != nil {
+		fmt.Fprintf(stderr, "harness-gate require: %v\n", err)
+		return 1
+	}
+	fmt.Fprintln(stdout, strings.Join(ids, ","))
+	return 0
+}
+
+// readAcceptance reads the index and the scenario tests of the product modules
+// under root; it needs no go command.
+func readAcceptance(root string) (*acceptance.Index, []acceptance.Scenario, error) {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return nil, nil, err
+	}
+	modules, err := discoverModules(abs)
+	if err != nil {
+		return nil, nil, err
+	}
+	return (&Config{Root: abs, Modules: modules}).acceptance()
 }
