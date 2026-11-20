@@ -122,12 +122,6 @@ func (o *cgroupOwner) start(build func() *exec.Cmd) (*exec.Cmd, error) {
 	}
 	defer syscall.Close(fd)
 	cmd := build()
-	// Program and directory errors are the caller's, not the control group's;
-	// they are returned unchanged and never retried under a process group.
-	if err := preflight(cmd); err != nil {
-		_ = os.Remove(dir)
-		return nil, err
-	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setpgid:     true,
 		UseCgroupFD: true,
@@ -135,9 +129,8 @@ func (o *cgroupOwner) start(build func() *exec.Cmd) (*exec.Cmd, error) {
 		Pdeathsig:   syscall.SIGKILL,
 	}
 	if err := startLocked(cmd); err != nil {
-		cgroupFault := isCgroupStartError(err, dir)
 		_ = os.Remove(dir)
-		if !cgroupFault {
+		if !cgroupStartError(cmd, err) {
 			return nil, err
 		}
 		return o.fallBack(build, err)
@@ -147,49 +140,11 @@ func (o *cgroupOwner) start(build func() *exec.Cmd) (*exec.Cmd, error) {
 	return cmd, nil
 }
 
-// preflight reports exec errors (missing or non-executable program, bad working
-// directory) before the child is cloned, so a start error that remains can be
-// attributed to the control group.
-func preflight(cmd *exec.Cmd) error {
-	if cmd.Err != nil {
-		return cmd.Err
-	}
-	st, err := os.Stat(cmd.Path)
-	if err != nil {
-		return &os.PathError{Op: "fork/exec", Path: cmd.Path, Err: underlying(err)}
-	}
-	if st.IsDir() {
-		return &os.PathError{Op: "fork/exec", Path: cmd.Path, Err: syscall.EACCES}
-	}
-	if err := syscall.Access(cmd.Path, 1 /* X_OK */); err != nil {
-		return &os.PathError{Op: "fork/exec", Path: cmd.Path, Err: err}
-	}
-	if cmd.Dir != "" {
-		st, err := os.Stat(cmd.Dir)
-		if err != nil {
-			return &os.PathError{Op: "chdir", Path: cmd.Dir, Err: underlying(err)}
-		}
-		if !st.IsDir() {
-			return &os.PathError{Op: "chdir", Path: cmd.Dir, Err: syscall.ENOTDIR}
-		}
-		if err := syscall.Access(cmd.Dir, 1 /* X_OK */); err != nil {
-			return &os.PathError{Op: "chdir", Path: cmd.Dir, Err: err}
-		}
-	}
-	return nil
-}
-
-func underlying(err error) error {
-	var pe *os.PathError
-	if errors.As(err, &pe) {
-		return pe.Err
-	}
-	return err
-}
-
-// isCgroupStartError reports whether a start error comes from CLONE_INTO_CGROUP
-// or the control group itself rather than from exec.
-func isCgroupStartError(err error, dir string) bool {
+// cgroupStartError reports whether a failed start is due to CLONE_INTO_CGROUP or
+// the new control group rather than the program, its directory or its arguments.
+// Only those failures may fall back to a process group; every other error is the
+// caller's start failure and must not be retried or recorded as a fallback.
+func cgroupStartError(cmd *exec.Cmd, err error) bool {
 	var errno syscall.Errno
 	if !errors.As(err, &errno) {
 		return false
@@ -198,21 +153,35 @@ func isCgroupStartError(err error, dir string) bool {
 	case syscall.ENOSYS, syscall.EOPNOTSUPP, syscall.EBUSY, syscall.E2BIG:
 		return true
 	case syscall.EACCES, syscall.EPERM:
-		// Exec can also fail with these (for example a noexec mount); blame the
-		// control group only when its process list is not writable.
-		return syscall.Access(filepath.Join(dir, "cgroup.procs"), 2 /* W_OK */) != nil
+		// The same errnos come from exec or chdir in the child; blame the control
+		// group only when the program and directory are themselves usable.
+		return execUsable(cmd)
 	}
 	return false
 }
 
-func (o *cgroupOwner) fallBack(build func() *exec.Cmd, cause error) (*exec.Cmd, error) {
-	cmd, err := o.group.start(build)
-	if err != nil {
-		return nil, err
+func execUsable(cmd *exec.Cmd) bool {
+	if cmd.Dir != "" {
+		st, err := os.Stat(cmd.Dir)
+		if err != nil || !st.IsDir() || syscall.Access(cmd.Dir, 0x1) != nil {
+			return false
+		}
 	}
+	path := cmd.Path
+	if !filepath.IsAbs(path) && cmd.Dir != "" {
+		path = filepath.Join(cmd.Dir, path)
+	}
+	st, err := os.Stat(path)
+	if err != nil || !st.Mode().IsRegular() {
+		return false
+	}
+	return syscall.Access(path, 0x1) == nil
+}
+
+func (o *cgroupOwner) fallBack(build func() *exec.Cmd, cause error) (*exec.Cmd, error) {
 	o.fell = true
 	o.group.fallback = fallbackNoCgroup + ": " + cause.Error()
-	return cmd, nil
+	return o.group.start(build)
 }
 
 // startLocked starts cmd from one goroutine locked to its OS thread; Pdeathsig
