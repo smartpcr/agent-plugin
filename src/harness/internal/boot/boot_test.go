@@ -214,6 +214,8 @@ func TestShutdownOverrunExits124(t *testing.T) {
 		child, grandchild int
 	}
 	got := make(chan started, 1)
+	// entered closes when the worker's cleanup starts, so the bound passes while it runs.
+	entered := make(chan struct{})
 	worker := cordis.Define("x.tree", func(ctx *cordis.Context, _ struct{}) error {
 		procs, err := launch.ProcessesKey.Get(ctx)
 		if err != nil {
@@ -239,6 +241,7 @@ func TestShutdownOverrunExits124(t *testing.T) {
 			// A cleanup that never stops its tree: it waits for an exit that only
 			// the forced stop brings.
 			return func() error {
+				close(entered)
 				<-p.Exited()
 				remove()
 				return nil
@@ -275,6 +278,11 @@ func TestShutdownOverrunExits124(t *testing.T) {
 	app.Stop(launch.Terminated, output.OK)
 	if !clk.BlockUntil(pending+1, 10*time.Second) {
 		t.Fatal("shutdown never started its bound")
+	}
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the worker's cleanup never started")
 	}
 	select {
 	case status := <-done:
