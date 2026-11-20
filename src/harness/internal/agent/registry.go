@@ -177,12 +177,22 @@ func (r *registry) Resolve(ref Ref) (Agent, error) {
 	if ref.IsZero() {
 		return nil, errorf(CodeNotFound, "the zero reference names no agent")
 	}
-	if inst, ok := r.live(ref.Session); ok && inst.Ref() == ref {
-		return view{inst}, nil
-	}
 	r.mu.Lock()
+	e, ok := r.entries[ref.Session]
+	var inst Instance
+	if ok {
+		inst = e.inst
+	}
+	// A reserved entry with this ref is still being built: not yet live, not stale.
+	creating := ok && inst == nil && e.ref == ref
 	known := ref.Incarnation > 0 && ref.Incarnation <= r.inc[ref.Session]
 	r.mu.Unlock()
+	if inst != nil && inst.Ref() == ref {
+		return view{inst}, nil
+	}
+	if creating {
+		return nil, errorf(CodeNotFound, "%s is still being created", ref)
+	}
 	if known {
 		return nil, errorf(CodeStale, "%s was disposed or replaced", ref)
 	}
