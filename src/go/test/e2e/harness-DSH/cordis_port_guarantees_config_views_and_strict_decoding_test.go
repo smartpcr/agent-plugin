@@ -533,7 +533,7 @@ func InitializeScenario_cordis_port_guarantees_config_views_and_strict_decoding(
 		return c, nil
 	})
 
-	ctx.Step(`^a component with effective config n=(\d+) whose schema accepts only n=1$`, w.componentWithEffective)
+	ctx.Step(`^a component with effective config n=(\d+) whose schema accepts only n=1$`, func(n int) error { return w.componentWithEffective(n) })
 	ctx.Step(`^a candidate with n=2 is validated and rejected$`, func() error { return w.candidateRejected() })
 	ctx.Step(`^the raw config still reads n=(\d+)$`, func(n int) error { return w.rawIs(n) })
 	ctx.Step(`^the effective config still reads n=(\d+)$`, func(n int) error { return w.effectiveIs(n) })
