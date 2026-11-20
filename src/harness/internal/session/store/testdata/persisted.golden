@@ -1,7 +1,7 @@
 # Persisted-type inventory (DH-D-STORE-5): <type> <version> <fingerprint>.
 # Re-record with -update only together with a line in persisted.notes.
-@envelope 0 sha256:7cc92720d16d4933ba26ccb7de37892e4d4a06e434acdaeb57a8b3d4452a4754
-@header 0 sha256:228a5ee7a7efaae3c6b6574653d093f649783882366431b4fc9bca39e853118c
+@envelope 1 sha256:7cc92720d16d4933ba26ccb7de37892e4d4a06e434acdaeb57a8b3d4452a4754
+@header 1 sha256:228a5ee7a7efaae3c6b6574653d093f649783882366431b4fc9bca39e853118c
 assistant/attempt 1 sha256:849484f325da542bbf74f9c95380b662c28e65f83846d9ebf88d2783c51b8ecb
 assistant/message 1 sha256:16ea79ef1d4b4b6b28cd32d80cad086435a1106568affadcb6619025933ea209
 developer/message 1 sha256:0a45a9cc3ab72f1b017f35613329a2dd89d875f94110b3a21ff27c26958bf4ed

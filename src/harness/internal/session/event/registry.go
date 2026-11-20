@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"reflect"
 	"regexp"
 	"slices"
@@ -260,6 +261,9 @@ func (d *decl[T]) Decode(rec Record) (T, error) {
 	if rec.Version < 1 {
 		return zero, errorf(CodeInvalidEvent, "type %q at seq %d has payload version %d", rec.Type, rec.Seq, rec.Version)
 	}
+	if !isObject(rec.Payload) {
+		return zero, errorf(CodeInvalidEvent, "type %q at seq %d: the payload is not a JSON object", rec.Type, rec.Seq)
+	}
 	raw, err := d.merge(rec)
 	if err != nil {
 		return zero, err
@@ -268,6 +272,9 @@ func (d *decl[T]) Decode(rec Record) (T, error) {
 		if raw, err = d.spec.Upgrades[v](raw); err != nil {
 			return zero, errorf(CodeInvalidEvent, "type %q at seq %d: upgrading version %d: %v", rec.Type, rec.Seq, v, err)
 		}
+	}
+	if !isObject(string(raw)) {
+		return zero, errorf(CodeInvalidEvent, "type %q at seq %d: the upgraded payload is not a JSON object", rec.Type, rec.Seq)
 	}
 	var out T
 	if err := json.Unmarshal(raw, &out); err != nil {
@@ -292,8 +299,20 @@ func (d *decl[T]) merge(rec Record) (json.RawMessage, error) {
 	if err := json.Unmarshal([]byte(rec.Payload), &m); err != nil {
 		return nil, errorf(CodeInvalidEvent, "type %q at seq %d: payload with a cold part is not an object: %v", rec.Type, rec.Seq, err)
 	}
+	if m == nil {
+		return nil, errorf(CodeInvalidEvent, "type %q at seq %d: payload with a cold part is not an object", rec.Type, rec.Seq)
+	}
+	if !json.Valid([]byte(rec.Cold)) {
+		return nil, errorf(CodeInvalidEvent, "type %q at seq %d: the cold part is not JSON", rec.Type, rec.Seq)
+	}
 	m[d.info.Cold] = json.RawMessage(rec.Cold)
 	return json.Marshal(m)
+}
+
+// isObject reports whether s is a syntactically valid JSON object.
+func isObject(s string) bool {
+	t := strings.TrimLeft(s, " \t\r\n")
+	return strings.HasPrefix(t, "{") && json.Valid([]byte(s))
 }
 
 // encode validates v and returns its canonical hot and cold parts.
@@ -420,6 +439,8 @@ func define[T any](r *Registry, s Spec[T], o declOpts) (*decl[T], error) {
 	bad := func(format string, args ...any) error {
 		return errorf(CodeInvalidDeclaration, "type %q: "+format, append([]any{s.Name}, args...)...)
 	}
+	// The registry owns its codec: later changes to the caller's map must not reach it.
+	s.Upgrades = maps.Clone(s.Upgrades)
 	switch {
 	case !namePattern.MatchString(s.Name):
 		return nil, bad("the name is not lower-case segments separated by '/'")

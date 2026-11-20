@@ -95,7 +95,7 @@ func (s *Store) Create(ctx context.Context, h store.Header, o store.CreateOption
 		if !ok {
 			return nil, store.Errorf(store.CodeNotFound, "fork parent %q", f.ID)
 		}
-		if int(f.Through) >= len(p.records) {
+		if f.Through >= store.Seq(len(p.records)) {
 			return nil, store.Errorf(store.CodeInvalidBoundary, "fork of %q through seq %d, which has %d records", f.ID, f.Through, len(p.records))
 		}
 		for _, r := range p.records[:f.Through+1] {
@@ -324,6 +324,36 @@ func (s *Store) Crash() {
 	s.instance += "+"
 }
 
+// Seed stores a durable, unheld session holding recs as they are, without the
+// admission rule an Append applies: it stands in for rows another build wrote, so
+// a test can prove an open judges them (storetest.Seeder). It is for fixtures.
+func (s *Store) Seed(ctx context.Context, h store.Header, recs []store.Record) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if h.ID == "" {
+		return store.Errorf(store.CodeInvalidBatch, "a session needs an id")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.sessions[h.ID]; ok {
+		return store.Errorf(store.CodeExists, "session %q exists", h.ID)
+	}
+	if h.CreatedAt.IsZero() {
+		h.CreatedAt = s.now()
+	}
+	ss := &session{header: h, checkpoints: map[ckKey]store.Checkpoint{}, durableCk: map[ckKey]store.Checkpoint{}}
+	for _, r := range recs {
+		ss.records = append(ss.records, r.Clone())
+	}
+	ss.durable = len(ss.records)
+	if n := len(recs); n > 0 && recs[n-1].Time > 0 {
+		ss.lastEventAt = time.UnixMilli(recs[n-1].Time)
+	}
+	s.sessions[h.ID] = ss
+	return nil
+}
+
 func maps(m map[ckKey]store.Checkpoint) map[ckKey]store.Checkpoint {
 	out := make(map[ckKey]store.Checkpoint, len(m))
 	for k, v := range m {
@@ -375,14 +405,14 @@ func (r *reader) Read(ctx context.Context, from store.Seq, limit int, o store.Re
 	if err != nil {
 		return nil, err
 	}
-	if int(from) >= len(ss.records) {
+	if from >= store.Seq(len(ss.records)) {
 		return nil, nil
 	}
-	end := len(ss.records)
-	if limit > 0 && int(from)+limit < end {
-		end = int(from) + limit
+	start, end := int(from), len(ss.records)
+	if limit > 0 && limit < end-start {
+		end = start + limit
 	}
-	out := make([]store.Record, 0, end-int(from))
+	out := make([]store.Record, 0, end-start)
 	for _, rec := range ss.records[from:end] {
 		out = append(out, view(rec, o))
 	}
@@ -401,7 +431,7 @@ func (r *reader) ReadSeqs(ctx context.Context, seqs []store.Seq, o store.ReadOpt
 	}
 	out := make([]store.Record, 0, len(seqs))
 	for _, q := range seqs {
-		if int(q) >= len(ss.records) {
+		if q >= store.Seq(len(ss.records)) {
 			return nil, store.Errorf(store.CodeInvalidBoundary, "session %q has no seq %d", r.id, q)
 		}
 		out = append(out, view(ss.records[q], o))
@@ -472,7 +502,7 @@ func (w *writer) Append(ctx context.Context, b store.Batch) error {
 	if err != nil {
 		return err
 	}
-	if int(b.First) != len(ss.records) {
+	if b.First != store.Seq(len(ss.records)) {
 		return store.Errorf(store.CodeSeqConflict, "session %q: batch starts at %d, next seq is %d", w.id, b.First, len(ss.records))
 	}
 	last := int64(0)
@@ -486,6 +516,9 @@ func (w *writer) Append(ctx context.Context, b store.Batch) error {
 		if rec.Type == "" {
 			return store.Errorf(store.CodeInvalidBatch, "session %q: record at seq %d has no type", w.id, rec.Seq)
 		}
+		if err := store.Admit(w.s.reg, rec); err != nil {
+			return err
+		}
 		if rec.Time < last {
 			return store.Errorf(store.CodeInvalidBatch, "session %q: record at seq %d goes back in time", w.id, rec.Seq)
 		}
@@ -493,7 +526,7 @@ func (w *writer) Append(ctx context.Context, b store.Batch) error {
 	}
 	total := len(ss.records) + len(b.Records)
 	for _, c := range b.Checkpoints {
-		if c.Key == "" || int(c.Seq) >= total {
+		if c.Key == "" || c.Seq >= store.Seq(total) {
 			return store.Errorf(store.CodeInvalidBatch, "session %q: checkpoint %q at seq %d is outside the log", w.id, c.Key, c.Seq)
 		}
 	}

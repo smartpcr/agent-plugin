@@ -73,14 +73,19 @@ func TestCrashLosesUndurable(t *testing.T) {
 	}
 }
 
-// WithRegistry judges opens against another registry.
+// WithRegistry judges appends and opens against another registry.
 func TestWithRegistry(t *testing.T) {
 	ctx := context.Background()
 	s := memstore.New(memstore.WithRegistry(event.NewRegistry()))
 	w, _ := s.Create(ctx, store.Header{ID: "s"}, store.CreateOptions{})
-	_ = w.Append(ctx, store.Batch{Records: []event.Record{rec(t, 0)}})
+	if err := w.Append(ctx, store.Batch{Records: []event.Record{rec(t, 0)}}); !errors.Is(err, event.ErrUnknownType) {
+		t.Fatalf("Append against an empty registry = %v", err)
+	}
 	_ = w.Close(ctx)
-	if _, err := s.OpenRead(ctx, "s"); !errors.Is(err, event.ErrUnknownType) {
+	if err := s.Seed(ctx, store.Header{ID: "seeded"}, []event.Record{rec(t, 0)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.OpenRead(ctx, "seeded"); !errors.Is(err, event.ErrUnknownType) {
 		t.Fatalf("OpenRead against an empty registry = %v", err)
 	}
 }

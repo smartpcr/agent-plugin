@@ -16,6 +16,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -204,7 +205,12 @@ const (
 type Error struct {
 	Code Code
 	Msg  string
+	// Err is the underlying cause, when there is one.
+	Err error
 }
+
+// Unwrap is the cause.
+func (e *Error) Unwrap() error { return e.Err }
 
 func (e *Error) Error() string {
 	if e.Msg == "" {
@@ -251,11 +257,39 @@ func (e *OwnedError) Error() string {
 // Is matches ErrOwned.
 func (e *OwnedError) Is(target error) bool { return target == ErrOwned }
 
+// Admit is the structural admission rule of one record (session-store.md §6.2):
+// a valid envelope, a registered or ignorable type, a known payload version (or an
+// ignorable newer one) and, for a type and version this build declares, bytes that
+// decode. An unknown type or newer version is returned as event's typed error; any
+// other refusal matches ErrInvalidBatch and wraps event's error.
+func Admit(reg *event.Registry, rec Record) error {
+	if err := reg.Validate(rec); err != nil {
+		return &Error{Code: CodeInvalidBatch, Msg: err.Error(), Err: err}
+	}
+	if err := reg.Classify(rec); err != nil {
+		var unknown *event.UnknownTypeError
+		var newer *event.NewerPayloadError
+		if errors.As(err, &unknown) || errors.As(err, &newer) {
+			return err
+		}
+		return &Error{Code: CodeInvalidBatch, Msg: err.Error(), Err: err}
+	}
+	info, ok := reg.Lookup(rec.Type)
+	if !ok || rec.Version > info.Version {
+		return nil // ignorable, kept as its raw strings
+	}
+	if _, err := reg.DecodeAny(rec); err != nil {
+		return &Error{Code: CodeInvalidBatch, Msg: err.Error(), Err: err}
+	}
+	return nil
+}
+
 // CheckOpen judges every record of a session against reg before an open, as the
-// read rule of §6.2 requires: the first refusal is returned.
+// read rule of §6.2 requires: the first refusal is returned. It applies Admit, so
+// rows another build wrote are held to the same rule as appended ones.
 func CheckOpen(reg *event.Registry, recs []Record) error {
 	for _, r := range recs {
-		if err := reg.Classify(r); err != nil {
+		if err := Admit(reg, r); err != nil {
 			return err
 		}
 	}

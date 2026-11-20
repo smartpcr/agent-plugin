@@ -1,8 +1,8 @@
 # Upgrade notes (DH-D-STORE-5): <type> <from>-><to> <fingerprint> <reason>.
 # A same-version line must say "compatible" and why an older binary still reads the shape.
 tool/result 0->1 - initial shape; field "id" named the call (no longer declared; upcast by the 1->2 upgrade)
-@envelope 0->0 sha256:7cc92720d16d4933ba26ccb7de37892e4d4a06e434acdaeb57a8b3d4452a4754 initial shape
-@header 0->0 sha256:228a5ee7a7efaae3c6b6574653d093f649783882366431b4fc9bca39e853118c initial shape
+@envelope 0->1 sha256:7cc92720d16d4933ba26ccb7de37892e4d4a06e434acdaeb57a8b3d4452a4754 initial shape
+@header 0->1 sha256:228a5ee7a7efaae3c6b6574653d093f649783882366431b4fc9bca39e853118c initial shape
 assistant/attempt 0->1 sha256:849484f325da542bbf74f9c95380b662c28e65f83846d9ebf88d2783c51b8ecb initial shape
 assistant/message 0->1 sha256:16ea79ef1d4b4b6b28cd32d80cad086435a1106568affadcb6619025933ea209 initial shape
 developer/message 0->1 sha256:0a45a9cc3ab72f1b017f35613329a2dd89d875f94110b3a21ff27c26958bf4ed initial shape

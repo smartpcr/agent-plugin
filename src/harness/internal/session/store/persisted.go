@@ -56,11 +56,11 @@ func Inventory(reg *event.Registry) ([]InventoryEntry, error) {
 	for _, info := range reg.Types() {
 		out = append(out, InventoryEntry{Type: info.Name, Version: info.Version, Fingerprint: info.Fingerprint()})
 	}
-	env, err := EntryOf[event.Record](InventoryEnvelope, 0)
+	env, err := EntryOf[event.Record](InventoryEnvelope, 1)
 	if err != nil {
 		return nil, err
 	}
-	hdr, err := EntryOf[Header](InventoryHeader, 0)
+	hdr, err := EntryOf[Header](InventoryHeader, 1)
 	if err != nil {
 		return nil, err
 	}
@@ -148,19 +148,24 @@ func ParseNotes(text string) ([]InventoryNote, error) {
 //   - a version went down;
 //   - a committed type is no longer declared (a persisted type cannot vanish).
 //
-// A problem names the type first.
+// The notes are checked by CheckNotes too. A problem names the type first.
 func CheckInventory(current, committed []InventoryEntry, notes []InventoryNote) []string {
 	var problems []string
 	was := map[string]InventoryEntry{}
 	for _, e := range committed {
 		was[e.Type] = e
 	}
+	problems = append(problems, CheckNotes(notes)...)
+	// A same-version note counts only when it says why the change is compatible,
+	// whether or not the committed inventory still shows the old fingerprint: the
+	// check holds against the pre-update golden and after it was re-recorded.
 	noted := func(e InventoryEntry, sameVersion bool) bool {
 		for _, n := range notes {
 			if n.Type != e.Type || n.To != e.Version || n.Fingerprint != e.Fingerprint {
 				continue
 			}
-			if !sameVersion || (n.From == n.To && strings.Contains(n.Reason, "compatible")) {
+			compatible := n.From == n.To && isCompatible(n)
+			if compatible || (!sameVersion && n.From < n.To) {
 				return true
 			}
 		}
@@ -191,6 +196,35 @@ func CheckInventory(current, committed []InventoryEntry, notes []InventoryNote) 
 	for _, e := range committed {
 		if !seen[e.Type] {
 			problems = append(problems, fmt.Sprintf("%s: persisted type is no longer declared; stored rows of it would refuse to open", e.Type))
+		}
+	}
+	return problems
+}
+
+func isCompatible(n InventoryNote) bool { return strings.Contains(n.Reason, "compatible") }
+
+// CheckNotes judges the notes by themselves, so a re-recorded golden cannot hide
+// an unexplained change: a same-version note must say "compatible" and why; a
+// version is reached by at most one bump, so a second "<from>-><to>" line for it
+// cannot launder a new shape; versions start at 1.
+func CheckNotes(notes []InventoryNote) []string {
+	var problems []string
+	type tv struct {
+		typ string
+		to  int
+	}
+	bumps := map[tv]int{}
+	for _, n := range notes {
+		switch {
+		case n.To < 1:
+			problems = append(problems, fmt.Sprintf("%s: note %d->%d: versions start at 1", n.Type, n.From, n.To))
+		case n.From == n.To && !isCompatible(n):
+			problems = append(problems, fmt.Sprintf("%s: note %d->%d (%s) keeps the version but does not say %q and why", n.Type, n.From, n.To, n.Fingerprint, "compatible"))
+		case n.From < n.To:
+			bumps[tv{n.Type, n.To}]++
+			if bumps[tv{n.Type, n.To}] == 2 {
+				problems = append(problems, fmt.Sprintf("%s: version %d is reached by more than one bump note; a new shape at the same version needs a %q note", n.Type, n.To, "compatible"))
+			}
 		}
 	}
 	return problems

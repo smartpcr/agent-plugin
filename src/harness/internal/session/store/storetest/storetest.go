@@ -30,6 +30,14 @@ import (
 // Factory returns a new, empty store for one case.
 type Factory func(t *testing.T) store.Store
 
+// Seeder is the fixture hook every provider's store implements for the suite: Seed
+// stores a durable, unheld session holding recs byte for byte, without the
+// admission rule Append applies, as rows another build wrote would be. The suite
+// uses it only to prove that an open judges such rows.
+type Seeder interface {
+	Seed(ctx context.Context, h store.Header, recs []store.Record) error
+}
+
 // Run runs every case of the suite against stores from factory, each case on a
 // fresh store.
 func Run(t *testing.T, factory Factory) {
@@ -50,6 +58,8 @@ func Run(t *testing.T, factory Factory) {
 		{"List", testList},
 		{"Delete", testDelete},
 		{"OpenRefusals", testOpenRefusals},
+		{"AppendAdmission", testAdmission},
+		{"UnsignedBoundaries", testBoundaries},
 		{"IgnorableKeptByteIdentical", testIgnorable},
 		{"ClosedHandles", testClosed},
 		{"Fork", testFork},
@@ -581,10 +591,21 @@ func testDelete(t *testing.T, s store.Store) {
 	wantErr(t, "old reader after re-create", err, store.ErrDeleted)
 }
 
+// seed stores recs through the provider's Seeder, as another build wrote them.
+func seed(t *testing.T, s store.Store, id string, recs ...store.Record) {
+	t.Helper()
+	sd, ok := s.(Seeder)
+	if !ok {
+		t.Fatalf("%T does not implement storetest.Seeder", s)
+	}
+	if err := sd.Seed(bg, header(id), recs); err != nil {
+		t.Fatalf("Seed(%s): %v", id, err)
+	}
+}
+
 func testOpenRefusals(t *testing.T, s store.Store) {
 	// An undeclared required type: refused by name and first position.
-	w := create(t, s, "unknown", call(t, 0), raw(1, "future/thing", 1, false, `{}`), raw(2, "future/thing", 1, false, `{}`))
-	closeOK(t, w)
+	seed(t, s, "unknown", call(t, 0), raw(1, "future/thing", 1, false, `{}`), raw(2, "future/thing", 1, false, `{}`))
 	_, err := s.OpenRead(bg, "unknown")
 	var unknown *event.UnknownTypeError
 	if !errors.As(err, &unknown) || unknown.Type != "future/thing" || unknown.Seq != 1 {
@@ -596,8 +617,7 @@ func testOpenRefusals(t *testing.T, s store.Store) {
 	// A newer payload version: refused with the direction "upgrade".
 	newer := raw(0, "tool/result", event.ToolResult.Version()+1, false, `{"call_id":"c","message":{}}`)
 	newer.Op = event.OpAppend
-	w = create(t, s, "newer", newer)
-	closeOK(t, w)
+	seed(t, s, "newer", newer)
 	_, err = s.OpenRead(bg, "newer")
 	var np *event.NewerPayloadError
 	if !errors.As(err, &np) || np.Type != "tool/result" || np.Version != event.ToolResult.Version()+1 || np.Known != event.ToolResult.Version() {
@@ -607,6 +627,89 @@ func testOpenRefusals(t *testing.T, s store.Store) {
 	wantErr(t, "OpenWrite(newer)", err, event.ErrNewerPayload)
 	if sum := stat(t, s, "newer"); sum.Holder != nil {
 		t.Fatal("a refused open took the lease")
+	}
+
+	// Bytes of a known type and version that do not decode.
+	for name, rec := range map[string]store.Record{
+		"not JSON":       raw(1, "tool/call", 1, false, `{"call_id":`),
+		"not an object":  raw(1, "tool/call", 1, false, `null`),
+		"wrong shape":    raw(1, "tool/call", 1, false, `{"call_id":5}`),
+		"bad envelope":   func() store.Record { r := raw(1, "tool/call", 1, false, `{}`); r.Op = event.OpAppend; return r }(),
+		"cold not JSON":  func() store.Record { r := assistant(t, 1); r.Cold = `[{`; return r }(),
+		"null with cold": func() store.Record { r := assistant(t, 1); r.Payload = `null`; return r }(),
+	} {
+		id := "malformed " + name
+		seed(t, s, id, call(t, 0), rec)
+		_, err := s.OpenRead(bg, id)
+		wantErr(t, "OpenRead("+id+")", err, store.ErrInvalidBatch)
+		_, err = s.OpenWrite(bg, id, store.OpenOptions{})
+		wantErr(t, "OpenWrite("+id+")", err, store.ErrInvalidBatch)
+	}
+}
+
+// testAdmission: Append applies the structural admission rule to every record and
+// refuses a batch atomically.
+func testAdmission(t *testing.T, s store.Store) {
+	w := create(t, s, "s1", call(t, 0))
+	defer closeOK(t, w)
+	logOp := func(r store.Record) store.Record { r.Op = event.OpAppend; return r }
+	for _, tc := range []struct {
+		name string
+		rec  store.Record
+		want error
+	}{
+		{"undeclared required type", raw(2, "future/thing", 1, false, `{}`), event.ErrUnknownType},
+		{"newer required version", raw(2, "tool/call", 2, false, `{}`), event.ErrNewerPayload},
+		{"payload not JSON", raw(2, "tool/call", 1, false, `{"call_id":`), store.ErrInvalidBatch},
+		{"payload not an object", raw(2, "tool/call", 1, false, `[1]`), store.ErrInvalidBatch},
+		{"payload of the wrong shape", raw(2, "tool/call", 1, false, `{"name":["x"]}`), store.ErrInvalidBatch},
+		{"version 0 of a declared type", raw(2, "tool/call", 0, false, `{}`), store.ErrInvalidBatch},
+		{"log-only type with an operation", logOp(raw(2, "tool/call", 1, false, `{}`)), store.ErrInvalidBatch},
+		{"source not earlier", func() store.Record { r := call(t, 2); r.Sources = []store.Seq{2}; return r }(), store.ErrInvalidBatch},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			good := call(t, 1)
+			bad := tc.rec
+			bad.Time = good.Time
+			err := w.Append(bg, store.Batch{First: 1, Records: []store.Record{good, bad}})
+			wantErr(t, "Append", err, tc.want)
+			if sum := stat(t, s, "s1"); sum.NextSeq != 1 {
+				t.Fatalf("a refused batch left NextSeq %d; the batch must be all or nothing", sum.NextSeq)
+			}
+		})
+	}
+	appendOK(t, w, call(t, 1))
+}
+
+// testBoundaries: positions are unsigned; the largest values are refused or read
+// as past the end, never wrapped.
+func testBoundaries(t *testing.T, s store.Store) {
+	const top = store.Seq(^uint64(0))
+	all := calls(t, 0, 3)
+	w := create(t, s, "s1", all...)
+	defer closeOK(t, w)
+	for _, from := range []store.Seq{3, top, top / 2, 1 << 63} {
+		got, err := w.Read(bg, from, 0, store.ReadOptions{})
+		if err != nil || len(got) != 0 {
+			t.Fatalf("Read(%d) = %d records, %v; want none", from, len(got), err)
+		}
+	}
+	got, err := w.Read(bg, 1, int(^uint(0)>>1), store.ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sameRecords(t, "Read with the largest limit", got, all[1:])
+	for _, q := range []store.Seq{top, 1 << 63} {
+		_, err = w.ReadSeqs(bg, []store.Seq{0, q}, store.ReadOptions{})
+		wantErr(t, fmt.Sprintf("ReadSeqs(%d)", q), err, store.ErrInvalidBoundary)
+	}
+	_, err = s.Create(bg, header("fork"), store.CreateOptions{ForkOf: &store.ForkOf{ID: "s1", Through: top}})
+	wantErr(t, "fork through the largest seq", err, store.ErrInvalidBoundary)
+	wantErr(t, "Append at the largest seq", w.Append(bg, store.Batch{First: top, Records: []store.Record{call(t, top)}}), store.ErrSeqConflict)
+	wantErr(t, "checkpoint at the largest seq", w.Append(bg, store.Batch{First: 3, Records: calls(t, 3, 1),
+		Checkpoints: []store.Checkpoint{{Key: "core/x", Seq: top, State: "{}"}}}), store.ErrInvalidBatch)
+	if sum := stat(t, s, "s1"); sum.NextSeq != 3 {
+		t.Fatalf("NextSeq = %d after refusals", sum.NextSeq)
 	}
 }
 

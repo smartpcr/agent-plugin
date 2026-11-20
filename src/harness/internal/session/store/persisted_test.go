@@ -43,17 +43,62 @@ func TestInventory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	golden.Assert(t, "persisted", store.RenderInventory(cur))
-
+	// The baseline is read before golden.Assert, which under -update rewrites the
+	// file: an update is judged against the inventory it replaces.
 	was, notes := committed(t)
 	if problems := store.CheckInventory(cur, was, notes); len(problems) > 0 {
 		t.Fatalf("persisted types changed without a version bump and note:\n%s", strings.Join(problems, "\n"))
 	}
-	// Every committed line needs its own note, so a type cannot slip in by
+	// Every current line needs its own note, so a type cannot slip in by
 	// re-recording the golden alone.
 	if problems := store.CheckInventory(cur, nil, notes); len(problems) > 0 {
 		t.Fatalf("persisted types without a note:\n%s", strings.Join(problems, "\n"))
 	}
+	golden.Assert(t, "persisted", store.RenderInventory(cur))
+}
+
+// TestInventoryUpdatePath is the -update path of DH-T-STORE-10: a same-version
+// shape change with a note that does not say "compatible" is refused both against
+// the golden it would replace and after the golden was re-recorded, and so is a
+// second bump note laundering a new shape at an existing version.
+func TestInventoryUpdatePath(t *testing.T) {
+	was, notes := committed(t)
+	cur, err := store.Inventory(event.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed, err := store.EntryOf[changedToolCall]("tool/call", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cur = slicesReplace(cur, changed)
+	rerecorded, err := store.ParseInventory(store.RenderInventory(cur))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, extra := range map[string]store.InventoryNote{
+		"vague same-version note": {Type: "tool/call", From: 1, To: 1, Fingerprint: changed.Fingerprint, Reason: "timeout added"},
+		"second bump note":        {Type: "tool/call", From: 0, To: 1, Fingerprint: changed.Fingerprint, Reason: "initial shape"},
+	} {
+		withNote := append(slicesClone(notes), extra)
+		for baseline, committed := range map[string][]store.InventoryEntry{"before update": was, "after update": rerecorded, "no baseline": nil} {
+			p := store.CheckInventory(cur, committed, withNote)
+			if len(p) == 0 || !strings.HasPrefix(p[0], "tool/call: ") {
+				t.Errorf("%s, %s: problems = %q, want one naming tool/call", name, baseline, p)
+			}
+		}
+	}
+	ok := append(slicesClone(notes), store.InventoryNote{Type: "tool/call", From: 1, To: 1, Fingerprint: changed.Fingerprint,
+		Reason: "compatible: optional field an older binary ignores"})
+	for baseline, committed := range map[string][]store.InventoryEntry{"before update": was, "after update": rerecorded, "no baseline": nil} {
+		if p := store.CheckInventory(cur, committed, ok); len(p) != 0 {
+			t.Errorf("compatible note, %s: %q", baseline, p)
+		}
+	}
+}
+
+func slicesClone(n []store.InventoryNote) []store.InventoryNote {
+	return append([]store.InventoryNote(nil), n...)
 }
 
 // changedToolCall is tool/call with one added field and no version bump.
@@ -115,7 +160,7 @@ func TestInventoryCatchesUnbumpedChange(t *testing.T) {
 	// A same-version note clears it only when it says why it is compatible.
 	cur2 := slicesReplace(cur, changed)
 	vague := append(notes, store.InventoryNote{Type: "tool/call", From: 1, To: 1, Fingerprint: changed.Fingerprint, Reason: "timeout added"})
-	if p := store.CheckInventory(cur2, was, vague); len(p) != 1 {
+	if p := store.CheckInventory(cur2, was, vague); len(p) == 0 || !strings.HasPrefix(p[0], "tool/call: ") {
 		t.Fatalf("vague same-version note accepted: %q", p)
 	}
 	ok := append(notes, store.InventoryNote{Type: "tool/call", From: 1, To: 1, Fingerprint: changed.Fingerprint, Reason: "compatible: optional field an older binary ignores"})

@@ -333,3 +333,62 @@ func TestEventCopies(t *testing.T) {
 		t.Fatalf("Sources = %v", got)
 	}
 }
+
+// A payload that is not a JSON object is refused with a typed error, even when a
+// cold part would be merged into it; no value is fabricated.
+func TestNonObjectPayloadRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		payload, cold string
+	}{
+		{"null with cold", "null", "[]"},
+		{"null", "null", ""},
+		{"array with cold", "[1]", "[]"},
+		{"string", `"x"`, ""},
+		{"number", "1", ""},
+		{"object with bad cold", `{"message":{}}`, "[{"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := event.Record{Seq: 3, Type: "assistant/message", Version: 1, Op: event.OpAppend, Payload: tc.payload, Cold: tc.cold}
+			got, err := event.AssistantMessage.Decode(rec)
+			if !errors.Is(err, event.ErrInvalidEvent) {
+				t.Fatalf("Decode = %v, want ErrInvalidEvent", err)
+			}
+			if got.Stream != nil || got.RequestDigest != "" || got.Usage != nil {
+				t.Fatalf("a value was fabricated: %+v", got)
+			}
+			if v, err := event.Default().DecodeAny(rec); v != nil || !errors.Is(err, event.ErrInvalidEvent) {
+				t.Fatalf("DecodeAny = %v, %v", v, err)
+			}
+		})
+	}
+}
+
+// The registry snapshots a declaration's upgrade chain: changing the caller's map
+// after Define, even concurrently, cannot change a sealed registry's codec.
+func TestUpgradesSnapshotted(t *testing.T) {
+	r := event.NewRegistry()
+	ups := map[int]event.Upgrade{1: func(raw json.RawMessage) (json.RawMessage, error) {
+		return json.RawMessage(strings.Replace(string(raw), `"old"`, `"text"`, 1)), nil
+	}}
+	typ, err := event.Define(r, event.Spec[note]{Name: "ext/renamed", Version: 2, Upgrades: ups})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Seal()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 1000; i++ {
+			delete(ups, 1)
+			ups[1] = nil
+		}
+	}()
+	for i := 0; i < 1000; i++ {
+		got, err := typ.Decode(event.Record{Type: "ext/renamed", Version: 1, Payload: `{"old":"hi"}`})
+		if err != nil || got.Text != "hi" {
+			t.Fatalf("decode after the caller changed its map: %+v, %v", got, err)
+		}
+	}
+	<-done
+}
