@@ -18,7 +18,10 @@ func build() { sink = make([]byte, 1<<10) }
 
 func TestBudgetX(t *testing.T) {
 	for _, kv := range os.Environ() {
-		key, _, _ := strings.Cut(kv, "=")
+		key, value, _ := strings.Cut(kv, "=")
+		if value == "" {
+			continue // a cleared variable is not an override
+		}
 		key = strings.ToUpper(key)
 		if strings.HasPrefix(key, "DSH_") || key == "GOGC" || key == "GOMAXPROCS" || key == "GODEBUG" || key == "GOFLAGS" {
 			t.Logf("override leaked into the budget child: %s", kv)
