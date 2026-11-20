@@ -136,7 +136,18 @@ func NewFailure(code Code, message string) (*Failure, error) {
 	if !ok {
 		return nil, fmt.Errorf("vocab: failure code %q is not in the closed table", code)
 	}
-	return &Failure{Code: code, Class: cl, Message: message}, nil
+	status, _ := httpStatus(code)
+	return &Failure{Code: code, Class: cl, Message: message, Status: status}, nil
+}
+
+// httpStatus is the status an llm/http-<status> code carries.
+func httpStatus(c Code) (int, bool) {
+	digits, ok := strings.CutPrefix(string(c), httpPrefix)
+	if !ok {
+		return 0, false
+	}
+	status, err := strconv.Atoi(digits)
+	return status, err == nil
 }
 
 func (f *Failure) Error() string {
@@ -146,7 +157,8 @@ func (f *Failure) Error() string {
 	return string(f.Code) + ": " + f.Message
 }
 
-// Validate checks that the code is known and its class is the code's.
+// Validate checks that the code is known, its class is the code's, and an
+// llm/http-<status> code records that status. Status is 0 (none) or 100..599.
 func (f Failure) Validate() error {
 	cl, ok := ClassOf(f.Code)
 	switch {
@@ -154,8 +166,11 @@ func (f Failure) Validate() error {
 		return fmt.Errorf("vocab: failure code %q is not in the closed table", f.Code)
 	case cl != f.Class:
 		return fmt.Errorf("vocab: failure %s has class %q; the code's class is %q", f.Code, f.Class, cl)
-	case f.Status < 0 || f.Status > 599 || f.RetryAfter < 0:
+	case (f.Status != 0 && f.Status < 100) || f.Status > 599 || f.RetryAfter < 0:
 		return fmt.Errorf("vocab: failure %s has status %d or retry-after %v out of range", f.Code, f.Status, f.RetryAfter)
+	}
+	if status, ok := httpStatus(f.Code); ok && f.Status != status {
+		return fmt.Errorf("vocab: failure %s has status %d; the code's status is %d", f.Code, f.Status, status)
 	}
 	return nil
 }
