@@ -336,6 +336,27 @@ upstream; tests in `cordis/unload_test.go`):
   dependents or runs cleanups. `context.Cause` is `ErrInactive` for a disposed fiber and
   `ErrUnloading` otherwise; a fiber that is not loaded returns an already-cancelled
   context. The root's lifetime ends with `root.Dispose()`.
+- **Context values and scoped dispatch** (`DH-D-CORDIS-3`; `cordis/scope_test.go`).
+  `ctx.WithValue(key, v)` derives a context on the same fiber whose value `Value(key)`
+  finds by walking the parent chain, so its derived contexts and the fibers loaded from
+  them see it and its parent and siblings do not; `ValueKey[T]` is the typed form.
+  `ctx.WithFilter(admit)` derives a context to dispatch from: every verb (`Emit`,
+  `Notify`, `Parallel`, `Bail`, `Waterfall`, `Around`) skips a listener whose
+  registering context `admit` rejects, unless it was registered with `cordis.Global()`.
+  Nested filters must all admit; fibers loaded from a filtered context do not inherit
+  it; a panicking filter rejects and is logged once per dispatch. `ctx.ScopeTo(fiber)`
+  admits only listeners from that fiber's subtree (`Context.Within`), and
+  `EmitScoped`/`NotifyScoped` dispatch through it. `On` and `Prepend` take a variadic
+  `ListenOption`, so existing calls compile unchanged.
+- **Contained notification** (`DH-D-CORDIS-4`). `EventKey.Notify` calls every admitted
+  listener in order; an error or panic is logged on that listener's own logger and
+  reaches neither the caller nor the later listeners. It returns nothing. `Emit` still
+  stops on, and returns, the first error.
+- **Around key** (`DH-D-CORDIS-7`). `AroundKey[Req, Res]` is middleware whose result type
+  differs from its request's. Listeners wrap one another outermost first in
+  registration order; one that does not call `next` short-circuits; an error reaches the
+  caller unchanged; a panic in a listener or the terminal is returned as an error naming
+  the fiber and wrapping a `*PanicError`. `WaterfallKey` is unchanged.
 
 ## Upstream
 

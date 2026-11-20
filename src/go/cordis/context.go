@@ -2,6 +2,8 @@ package cordis
 
 import (
 	"context"
+	"fmt"
+	"reflect"
 	"sync"
 )
 
@@ -18,6 +20,12 @@ type Context struct {
 	fiber     *Fiber
 	isolate   *chainMap[*IsolateKey]
 	intercept *chainMap[any]
+
+	// value is the one value this context adds, set by WithValue; Value walks the
+	// parent chain for the rest. filter is the dispatch filter chain, kept only by
+	// contexts derived on the same fiber. Both are immutable once published.
+	value  *contextValue
+	filter *dispatchFilter
 
 	loggerOnce sync.Once
 	logger     *Logger
@@ -53,7 +61,7 @@ func (c *Context) derive(fiber *Fiber, isolate *chainMap[*IsolateKey], intercept
 	if intercept == nil {
 		intercept = c.intercept
 	}
-	return &Context{
+	derived := &Context{
 		t:         c.t,
 		root:      c.root,
 		parent:    c,
@@ -61,6 +69,10 @@ func (c *Context) derive(fiber *Fiber, isolate *chainMap[*IsolateKey], intercept
 		isolate:   isolate,
 		intercept: intercept,
 	}
+	if fiber == c.fiber {
+		derived.filter = c.filter
+	}
+	return derived
 }
 
 // Root returns the root context of the tree.
@@ -142,6 +154,99 @@ func GetIntercept[T any](ctx *Context, name string) (T, bool) {
 	}
 	var zero T
 	return zero, false
+}
+
+// ------------------------------------------------------------------- values
+
+type contextValue struct {
+	key, value any
+}
+
+// WithValue returns a context on the same fiber that carries value under key. Every
+// context derived from it, including the contexts of fibers loaded from it, reads the
+// value through Value; the parent and its other descendants do not. A nearer
+// WithValue of the same key shadows an outer one. As with context.WithValue, key must
+// be non-nil and comparable, and should be of an unexported type (or a *ValueKey) so
+// that packages cannot collide.
+func (c *Context) WithValue(key, value any) *Context {
+	if key == nil {
+		panic("cordis: WithValue with a nil key")
+	}
+	if !reflect.TypeOf(key).Comparable() {
+		panic(fmt.Sprintf("cordis: WithValue key of type %T is not comparable", key))
+	}
+	derived := c.derive(c.fiber, nil, nil)
+	derived.value = &contextValue{key: key, value: value}
+	return derived
+}
+
+// Value returns the value the nearest WithValue on this context's parent chain
+// associated with key, or nil when there is none.
+func (c *Context) Value(key any) any {
+	for cursor := c; cursor != nil; cursor = cursor.parent {
+		if cursor.value != nil && cursor.value.key == key {
+			return cursor.value.value
+		}
+	}
+	return nil
+}
+
+// Within reports whether this context belongs to scope's subtree: it is a context of
+// scope or of a fiber loaded, directly or not, under scope.
+func (c *Context) Within(scope *Fiber) bool {
+	if scope == nil {
+		return false
+	}
+	for cursor := c; cursor != nil; cursor = cursor.parent {
+		if cursor.fiber == scope {
+			return true
+		}
+	}
+	return false
+}
+
+// dispatchFilter is one link of a filter chain; a listener is admitted only when
+// every link admits it.
+type dispatchFilter struct {
+	admit  func(listener *Context) bool
+	parent *dispatchFilter
+}
+
+// WithFilter returns a context, on the same fiber, to dispatch events from: every
+// dispatch verb called with it (Emit, Notify, Parallel, Bail, Waterfall, Around)
+// skips a listener whose registering context admit rejects, unless the listener was
+// registered with Global. Filters on contexts derived from it combine: all must admit.
+// The filter is not inherited by fibers loaded from the context. A filter that panics
+// rejects the listener and is logged once per dispatch.
+func (c *Context) WithFilter(admit func(listener *Context) bool) *Context {
+	if admit == nil {
+		panic("cordis: WithFilter with a nil filter")
+	}
+	derived := c.derive(c.fiber, nil, nil)
+	derived.filter = &dispatchFilter{admit: admit, parent: c.filter}
+	return derived
+}
+
+// ScopeTo returns a context whose dispatches reach only listeners registered from
+// scope's subtree (see Within), plus Global listeners: an event about one agent is
+// dispatched through its scope.
+func (c *Context) ScopeTo(scope *Fiber) *Context {
+	return c.WithFilter(func(listener *Context) bool { return listener.Within(scope) })
+}
+
+// admits runs the filter chain on listener. A panic rejects the listener and is
+// returned so that the dispatch can log it.
+func (c *Context) admits(listener *Context) (admitted bool, err error) {
+	for link := c.filter; link != nil; link = link.parent {
+		ok := false
+		if err := protect(func() error { ok = link.admit(listener); return nil }); err != nil {
+			return false, err
+		}
+		if !ok {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // keyForLocked returns the realm key name resolves to from c, allocating the root
