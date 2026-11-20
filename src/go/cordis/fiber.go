@@ -2,6 +2,7 @@ package cordis
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"slices"
@@ -339,8 +340,9 @@ func (f *Fiber) String() string { return fmt.Sprintf("Fiber <%s> (%s)", f.Name()
 // Pending with a nil error. A fiber that was just created first waits for its creation
 // handlers, which run before it loads. Wait returns once the notifications raised
 // during the call have been delivered; called from a handler, it parks that handler's
-// delivery meanwhile. A creation handler must not wait for the fiber it announces:
-// that fiber loads only after the handler returns.
+// delivery meanwhile. A creation handler cannot wait for the fiber it announces: that
+// fiber loads only after the handler returns, so Wait returns ErrWaitInCreation at
+// once instead of blocking forever.
 func (f *Fiber) Wait() error {
 	t := f.t
 	lo := t.mark()
@@ -348,12 +350,38 @@ func (f *Fiber) Wait() error {
 	announced, created, seq := f.announced, f.createdSeq, f.announceSeq
 	t.unlockQuiet()
 	if !announced {
+		// The creation notification would wait for itself to return.
+		if t.callerDelivering(created, seq) {
+			t.root.Logger().Warnf("%s: a creation handler waited for the fiber it announces", f.Name())
+			return ErrWaitInCreation
+		}
 		// Wait for the creation handlers too, so they still run before the load.
 		t.barrierReturned(created, seq)
 	}
 	f.waitInertia()
 	t.barrier(lo, t.mark())
 	return f.Err()
+}
+
+// ErrWaitInCreation is returned by Fiber.Wait called from a creation handler
+// (Internal.OnPlugin) for the fiber that handler announces, which cannot load before
+// the handler returns.
+var ErrWaitInCreation = errors.New("cordis: a creation handler cannot wait for the fiber it announces")
+
+// callerDelivering reports whether the calling goroutine is delivering a notification
+// posted after lo and up to hi. An unattributed delivery is not detected.
+func (t *tree) callerDelivering(lo, hi uint64) bool {
+	t.outboxMu.Lock()
+	defer t.outboxMu.Unlock()
+	if len(t.byGoroutine) == 0 {
+		return false
+	}
+	g, ok := goroutineID()
+	if !ok {
+		return false
+	}
+	d := t.byGoroutine[g]
+	return d != nil && d.seq > lo && d.seq <= hi
 }
 
 // Restart reloads the component with its current config, and waits for the fiber to
