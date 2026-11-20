@@ -121,7 +121,12 @@ func (f *ConfigFile) Init() error {
 		if text, err = f.render(entries); err != nil {
 			return err
 		}
-		f.writeAtomic(text, nil)
+		if f.writeAtomic(text, nil) {
+			// read the seeded file back, so its entries carry their place in it
+			if seeded, seededDocument, err := parse(f.codec, f.path, text); err == nil {
+				entries, document = seeded, seededDocument
+			}
+		}
 	}
 
 	assignStableIDs(entries, "", nil)
@@ -318,13 +323,41 @@ func (f *ConfigFile) writeStep() error {
 	if exists {
 		expected = &onDisk
 	}
-	if f.writeAtomic(text, expected) {
+	if !f.writeAtomic(text, expected) {
+		return nil
+	}
+	return f.adoptWritten(text, entries)
+}
+
+// adoptWritten makes text, just written from entries, the synchronized baseline. The
+// write may have moved entries in the file, so the text is parsed again: the parsed
+// document is what the codec encodes against next, and its positions replace the
+// stale ones on the baseline and on every live entry not edited since the snapshot,
+// so later issues still name the entry's place in the file.
+func (f *ConfigFile) adoptWritten(text string, entries []EntryOptions) error {
+	written, document, err := parse(f.codec, f.path, text)
+	if err != nil {
+		// cannot happen for a codec that reads what it writes; keep the old positions
 		f.mu.Lock()
 		f.known = &text
 		f.base = cloneAll(entries)
 		f.mu.Unlock()
+		return fmt.Errorf("loader: config file %q cannot be read back after writing it: %w", f.path, err)
 	}
-	return nil
+	assignStableIDs(written, "", entries)
+	// unchanged entries take the re-parsed version; runtime edits made since the
+	// snapshot are kept and written by the write step they scheduled
+	merged, _ := merge(entries, f.loader.Snapshot(), written)
+	f.mu.Lock()
+	f.known = &text
+	f.base = cloneAll(written)
+	f.document = document
+	disposed := f.disposed
+	f.mu.Unlock()
+	if disposed {
+		return nil // the final flush: the tree is being unloaded, positions no longer matter
+	}
+	return f.loader.Apply(merged)
 }
 
 // ------------------------------------------------------------ file access
