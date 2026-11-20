@@ -218,6 +218,11 @@ func (e *Event[A]) Emit(ctx *cordis.Context, k Key, args A) error {
 	return e.k.Emit(ctx.WithFilter(admit(k)), args)
 }
 
+// Filter is the listener filter of a dispatch about scope k, for keys other than
+// Event (an around key): pass ctx.WithFilter(Filter(k)). It admits listeners
+// registered untagged, through k or a scope enclosing k.
+func Filter(k Key) func(listener *cordis.Context) bool { return admit(k) }
+
 func admit(k Key) func(*cordis.Context) bool {
 	return func(listener *cordis.Context) bool { return visible(Of(listener), k) }
 }

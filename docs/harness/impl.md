@@ -612,19 +612,19 @@ contracts ([§3.2](#32-why-the-order-inside-the-foundations-looks-unusual)).
 
 **Steps.**
 
-- [ ] **5.1** [DH-D-SESSION-1](areas/core-session.md#dh-d-session-1) A typed, versioned event vocabulary.
-- [ ] **5.2** [DH-D-SESSION-8](areas/core-session.md#dh-d-session-8) Per-agent and per-preset registrations with one owner.
-- [ ] **5.3** [DH-D-STORE-1](areas/session-store.md#dh-d-store-1) A store contract with a conformance suite and an in-memory reference.
-- [ ] **5.4** [DH-D-STORE-5](areas/session-store.md#dh-d-store-5) Each event type evolves by itself; a persisted type cannot change unnoticed.
+- [x] **5.1** [DH-D-SESSION-1](areas/core-session.md#dh-d-session-1) A typed, versioned event vocabulary.
+- [x] **5.2** [DH-D-SESSION-8](areas/core-session.md#dh-d-session-8) Per-agent and per-preset registrations with one owner.
+- [x] **5.3** [DH-D-STORE-1](areas/session-store.md#dh-d-store-1) A store contract with a conformance suite and an in-memory reference.
+- [x] **5.4** [DH-D-STORE-5](areas/session-store.md#dh-d-store-5) Each event type evolves by itself; a persisted type cannot change unnoticed.
 - [x] **5.5** [DH-D-SESSION-2](areas/core-session.md#dh-d-session-2) A live session that accepts events in order and delivers them once.
 - [x] **5.6** [DH-D-SESSION-3](areas/core-session.md#dh-d-session-3) Model history, the request header and the tool history are computed from the log.
 - [x] **5.7** [DH-D-SESSION-4](areas/core-session.md#dh-d-session-4) A model request can only come from the log and can be rebuilt from it.
 - [x] **5.8** [DH-D-SESSION-5](areas/core-session.md#dh-d-session-5) Brackets always balance: checked on append, closed on failure.
-- [ ] **5.9** [DH-D-LLM-1](areas/llm.md#dh-d-llm-1) One vocabulary and one runtime for every model call.
-- [ ] **5.10** [DH-D-AGENT-1](areas/agent-loop.md#dh-d-agent-1) Any component can find, address and own agents through one contract.
-- [ ] **5.11** [DH-D-AGENT-4](areas/agent-loop.md#dh-d-agent-4) Extensions steer a turn through three typed points.
-- [ ] **5.12** [DH-D-HUMAN-1](areas/interaction-credentials.md#dh-d-human-1) A pending approval or question lives in one registry.
-- [ ] **5.13** [DH-D-VIEW-1](areas/session-views.md#dh-d-view-1) Folds are registered once and read at one cut.
+- [x] **5.9** [DH-D-LLM-1](areas/llm.md#dh-d-llm-1) One vocabulary and one runtime for every model call.
+- [x] **5.10** [DH-D-AGENT-1](areas/agent-loop.md#dh-d-agent-1) Any component can find, address and own agents through one contract.
+- [x] **5.11** [DH-D-AGENT-4](areas/agent-loop.md#dh-d-agent-4) Extensions steer a turn through three typed points.
+- [x] **5.12** [DH-D-HUMAN-1](areas/interaction-credentials.md#dh-d-human-1) A pending approval or question lives in one registry.
+- [x] **5.13** [DH-D-VIEW-1](areas/session-views.md#dh-d-view-1) Folds are registered once and read at one cut.
 
 **Manual checks.** Append a short hand-written event sequence to an in-memory session
 and record that the rebuilt request equals the expected one; `manual`.
