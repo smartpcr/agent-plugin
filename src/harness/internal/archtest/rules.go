@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 )
 
@@ -65,6 +66,45 @@ var Rules = []Rule{
 	{SDKModule, "src/sdk imports neither src/go nor src/harness", noneUnder(GoModule, HarnessModule)},
 	{GoModule, "src/go imports neither src/sdk nor src/harness", noneUnder(SDKModule, HarnessModule)},
 	{HarnessModule, "harness implementation packages are under internal/", implementationInternal},
+	{HarnessModule, "internal/llm/vocab imports no harness package but internal/schema (DH-T-LLM-1)", importsOnly(VocabPackage, SchemaPackage)},
+	{HarnessModule, "cmd/dsh embeds the zone database through time/tzdata (DH-T-TEMPORAL-5)", mustImport(HarnessModule+"/cmd/dsh", "time/tzdata")},
+}
+
+// Packages the rules name.
+const (
+	VocabPackage  = HarnessModule + "/internal/llm/vocab"
+	SchemaPackage = HarnessModule + "/internal/schema"
+)
+
+// importsOnly fails pkg when it directly imports a package of the three modules
+// other than allowed. Standard and third-party imports are not its concern.
+func importsOnly(pkg string, allowed ...string) func([]Package) []string {
+	return func(pkgs []Package) []string {
+		var bad []string
+		for _, p := range pkgs {
+			if p.ImportPath != pkg {
+				continue
+			}
+			for _, imp := range p.Imports {
+				if strings.HasPrefix(imp, Root) && !slices.Contains(allowed, imp) {
+					bad = append(bad, fmt.Sprintf("%s imports %s", pkg, imp))
+				}
+			}
+		}
+		return bad
+	}
+}
+
+// mustImport fails pkg, when it is listed, unless it directly imports imp.
+func mustImport(pkg, imp string) func([]Package) []string {
+	return func(pkgs []Package) []string {
+		for _, p := range pkgs {
+			if p.ImportPath == pkg && !slices.Contains(p.Imports, imp) {
+				return []string{fmt.Sprintf("%s does not import %s", pkg, imp)}
+			}
+		}
+		return nil
+	}
 }
 
 // within reports whether path is module or a package below it.

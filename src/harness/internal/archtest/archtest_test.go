@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 )
 
 // moduleDirs maps each module path to its directory, relative to this package.
@@ -79,6 +80,8 @@ func TestRulesCatchViolations(t *testing.T) {
 	pkg := func(path, name string, depOnly bool, files ...string) Package {
 		return Package{ImportPath: path, Name: name, DepOnly: depOnly, GoFiles: files}
 	}
+	imports := func(p Package, imps ...string) Package { p.Imports = imps; return p }
+	dsh := imports(pkg(HarnessModule+"/cmd/dsh", "main", false, "main.go"), "time/tzdata")
 	check := func(module string, pkgs ...Package) []string {
 		var all []string
 		for _, r := range Rules {
@@ -102,7 +105,8 @@ func TestRulesCatchViolations(t *testing.T) {
 		{"harness layout clean", HarnessModule, []Package{
 			pkg(HarnessModule+"/internal", "internal", false, "doc.go"),
 			pkg(HarnessModule+"/internal/schema", "schema", false, "a.go"),
-			pkg(HarnessModule+"/cmd/dsh", "main", false, "main.go"),
+			dsh,
+			imports(pkg(VocabPackage, "vocab", false, "a.go"), "encoding/json", SchemaPackage, "github.com/google/jsonschema-go/jsonschema"),
 			pkg(HarnessModule+"/test/e2e", "e2e", false),
 			pkg(SDKModule+"/protocol", "protocol", true, "a.go"),
 			pkg(HarnessModule+"/elsewhere", "elsewhere", true, "a.go"),
@@ -110,11 +114,50 @@ func TestRulesCatchViolations(t *testing.T) {
 		{"harness public package", HarnessModule, []Package{pkg(HarnessModule+"/engine", "engine", false, "a.go")}, 1},
 		{"harness non-main under cmd", HarnessModule, []Package{pkg(HarnessModule+"/cmd/lib", "lib", false, "a.go")}, 1},
 		{"harness internalx is not internal", HarnessModule, []Package{pkg(HarnessModule+"/internalx", "x", false, "a.go")}, 1},
+		{"vocab imports an area package", HarnessModule, []Package{
+			imports(pkg(VocabPackage, "vocab", false, "a.go"), SchemaPackage, HarnessModule+"/internal/session", HarnessModule+"/internal/llm"),
+		}, 2},
+		{"vocab imports another module", HarnessModule, []Package{imports(pkg(VocabPackage, "vocab", false, "a.go"), GoModule+"/cordis")}, 1},
+		{"cmd/dsh without tzdata", HarnessModule, []Package{pkg(HarnessModule+"/cmd/dsh", "main", false, "main.go")}, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := check(tc.module, tc.pkgs...); len(got) != tc.bad {
 				t.Fatalf("violations = %q, want %d", got, tc.bad)
 			}
 		})
+	}
+}
+
+// TestRequestTypes proves the TC-05 predicate finds a request type under either
+// shape and ignores what is not one.
+func TestRequestTypes(t *testing.T) {
+	file := func(src string) *fstest.MapFile { return &fstest.MapFile{Data: []byte("package vocab\n" + src)} }
+	for _, tc := range []struct {
+		name  string
+		files fstest.MapFS
+		found int
+	}{
+		{"clean", fstest.MapFS{"a.go": file("type Message struct{}\ntype Controls struct{}\ntype Meta struct{ Session string }")}, 0},
+		{"named Request", fstest.MapFS{"a.go": file("type Request struct{}")}, 1},
+		{"named Request, not a struct", fstest.MapFS{"a.go": file("type Request = string")}, 1},
+		{"messages and controls", fstest.MapFS{"a.go": file("type Call struct{ M []Message; C Controls }")}, 1},
+		{"pointers and qualified names", fstest.MapFS{"a.go": file("type Call struct{ M *[]vocab.Message; C *vocab.Controls }")}, 1},
+		{"nested in a function", fstest.MapFS{"a.go": file("func f() { type q struct{ M []Message; C Controls }; _ = q{} }")}, 1},
+		{"messages alone", fstest.MapFS{"a.go": file("type Turn struct{ M []Message }")}, 0},
+		{"an array is not a slice", fstest.MapFS{"a.go": file("type Pair struct{ M [2]Message; C Controls }")}, 0},
+		{"test files are skipped", fstest.MapFS{"a.go": file(""), "a_test.go": file("type Request struct{}")}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			found, err := RequestTypes(tc.files)
+			if err != nil || len(found) != tc.found {
+				t.Fatalf("RequestTypes = %q, %v; want %d", found, err, tc.found)
+			}
+		})
+	}
+	if _, err := RequestTypes(fstest.MapFS{"a.go": file("type (")}); err == nil {
+		t.Fatal("a file that does not parse was accepted")
+	}
+	if _, err := RequestTypes(fstest.MapFS{}); err == nil {
+		t.Fatal("an empty tree passed")
 	}
 }
