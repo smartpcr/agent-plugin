@@ -91,6 +91,11 @@ func (k *ValueKey[T]) With(ctx *Context, value T) *Context { return ctx.WithValu
 func (k *ValueKey[T]) Get(ctx *Context) (value T, ok bool) {
 	for cursor := ctx; cursor != nil; cursor = cursor.parent {
 		if cursor.value != nil && cursor.value.key == any(k) {
+			// A nil interface/pointer/map/func T is stored as an untyped nil, which
+			// fails the assertion; the key is still present and shadows outer values.
+			if cursor.value.value == nil {
+				return value, true
+			}
 			typed, ok := cursor.value.value.(T)
 			return typed, ok
 		}
