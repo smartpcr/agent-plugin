@@ -78,6 +78,9 @@ var Rules = []Rule{
 	{HarnessModule, "nothing outside internal/agent/driver imports it (DH-T-AGENT-27)", onlyImporter(DriverPackage, DriverPackage)},
 	{HarnessModule, "internal/session and its packages import no llm runtime, agent or interaction registry (DH-D-LLM-1, DH-D-AGENT-1)", importsNone(SessionPackage, LLMPackage, AgentPackage, HumanPackage)},
 	{HarnessModule, "internal/llm imports no agent, interaction or view package: the runtime holds no session writer (DH-D-LLM-1)", importsNone(LLMPackage, AgentPackage, HumanPackage, ViewsPackage)},
+	{HarnessModule, "only internal/world/subprocess imports os/exec: the one place a program starts (DH-D-EXEC-1, onespawn)", onlyImporter(ExecPackage, SubprocessPackage)},
+	{HarnessModule, "no non-test package imports subprocesstest (DH-D-EXEC-1)", noImporter(SubprocesstestPackage)},
+	{HarnessModule, "internal/util/herr and internal/util/ident import the standard library only (RM-6, DH-D-UTIL-5)", stdlibOnly(HerrPackage, IdentPackage)},
 }
 
 // Packages the rules name.
@@ -100,6 +103,12 @@ const (
 	AgentPackage     = HarnessModule + "/internal/agent"
 	DriverPackage    = AgentPackage + "/driver"
 	HumanPackage     = HarnessModule + "/internal/human"
+
+	SubprocessPackage     = HarnessModule + "/internal/world/subprocess"
+	SubprocesstestPackage = SubprocessPackage + "/subprocesstest"
+	HerrPackage           = HarnessModule + "/internal/util/herr"
+	IdentPackage          = HarnessModule + "/internal/util/ident"
+	ExecPackage           = "os/exec"
 )
 
 // Third-party modules with a single importer.
@@ -186,6 +195,26 @@ func noImporter(pkgs ...string) func([]Package) []string {
 			for _, imp := range p.Imports {
 				if slices.Contains(pkgs, imp) {
 					bad = append(bad, fmt.Sprintf("%s imports %s; only tests may", p.ImportPath, imp))
+				}
+			}
+		}
+		return bad
+	}
+}
+
+// stdlibOnly fails each of pkgs that directly imports a package outside the standard
+// library, whose import paths have no dot in their first element.
+func stdlibOnly(pkgs ...string) func([]Package) []string {
+	return func(list []Package) []string {
+		var bad []string
+		for _, p := range list {
+			if !slices.Contains(pkgs, p.ImportPath) {
+				continue
+			}
+			for _, imp := range p.Imports {
+				first, _, _ := strings.Cut(imp, "/")
+				if strings.Contains(first, ".") {
+					bad = append(bad, fmt.Sprintf("%s imports %s; it may import the standard library only", p.ImportPath, imp))
 				}
 			}
 		}
