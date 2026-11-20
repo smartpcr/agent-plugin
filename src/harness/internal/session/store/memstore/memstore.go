@@ -98,11 +98,26 @@ func (s *Store) Create(ctx context.Context, h store.Header, o store.CreateOption
 		if f.Through >= store.Seq(len(p.records)) {
 			return nil, store.Errorf(store.CodeInvalidBoundary, "fork of %q through seq %d, which has %d records", f.ID, f.Through, len(p.records))
 		}
-		for _, r := range p.records[:f.Through+1] {
+		inherited := p.records[:f.Through+1]
+		if err := store.CheckOpen(s.reg, inherited); err != nil {
+			return nil, err
+		}
+		// The child's copy is durable, so the parent's inherited prefix must be
+		// too: otherwise a crash or takeover could drop those seqs from the parent
+		// and let it rewrite them, and the child would no longer match its
+		// ForkSource/ForkThrough. A store may make records durable early.
+		if n := len(inherited); p.durable < n {
+			p.durable = n
+		}
+		for _, r := range inherited {
 			ss.records = append(ss.records, r.Clone())
 		}
 		ss.durable = len(ss.records)
-		ss.lastEventAt = p.lastEventAt
+		if ms := inherited[len(inherited)-1].Time; ms > 0 {
+			ss.lastEventAt = time.UnixMilli(ms)
+		} else {
+			ss.lastEventAt = p.lastEventAt
+		}
 		h.ForkSource, h.ForkThrough, h.InheritedCount = f.ID, f.Through, len(ss.records)
 	}
 	ss.header = h
