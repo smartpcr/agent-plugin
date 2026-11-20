@@ -1044,6 +1044,8 @@ func (f *Fiber) reload(done chan struct{}, epoch string) {
 			// a superseded load still needs cleanup, but cannot fail the new target
 			if f.epoch == epoch {
 				f.err = err
+				// a failed load holds no effective config, even before its unload runs
+				f.effective, f.hasEffective = nil, false
 				f.epoch = inactiveEpoch
 				f.cancelLifetimeLocked()
 			}
