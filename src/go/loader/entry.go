@@ -50,6 +50,13 @@ type EntryOptions struct {
 	// raw is the entry's text when it has decoding issues, so writing it back does
 	// not lose what could not be decoded.
 	raw json.RawMessage
+	// fingerprint is the canonical form of the exported fields as decoded, kept with
+	// raw. raw and issues describe the entry only while it still matches; an edit
+	// makes them stale (see intact).
+	fingerprint string
+	// anonymous records that the entry was decoded without an id, so the id the
+	// loader generates for it is not taken for an edit.
+	anonymous bool
 }
 
 // entrySource records where an entry and its values are in a document.
@@ -104,9 +111,14 @@ func parentPath(path string) string {
 	return ""
 }
 
-// Clone returns a deep copy.
+// Clone returns a deep copy. Decoding issues and the raw text are kept only while
+// the entry still matches what was decoded, so an edited entry is revalidated and
+// written from its fields.
 func (o EntryOptions) Clone() EntryOptions {
 	clone := o
+	if !o.intact() {
+		clone.issues, clone.raw, clone.fingerprint = nil, nil, ""
+	}
 	clone.Config = slices.Clone(o.Config)
 	clone.Inject = slices.Clone(o.Inject)
 	if o.Isolate != nil {
@@ -119,9 +131,46 @@ func (o EntryOptions) Clone() EntryOptions {
 		}
 	}
 	clone.Children = cloneAll(o.Children)
-	clone.issues = slices.Clone(o.issues)
-	clone.raw = slices.Clone(o.raw)
+	clone.issues = slices.Clone(clone.issues)
+	clone.raw = slices.Clone(clone.raw)
 	return clone
+}
+
+// intact reports whether the entry has decoding issues and raw text that still
+// describe it: its exported fields, and its children's, are unchanged since decoding.
+func (o EntryOptions) intact() bool {
+	if len(o.issues) == 0 || len(o.raw) == 0 || o.fingerprint == "" {
+		return false
+	}
+	canonical, err := o.canonical()
+	return err == nil && string(canonical) == o.fingerprint
+}
+
+// canonical encodes the exported fields in file form for comparison with the
+// fingerprint. The generated id of an anonymous entry is left out, and an intact
+// child stands for its raw text, as it is written.
+func (o EntryOptions) canonical() ([]byte, error) {
+	id := o.ID
+	if o.anonymous {
+		id = ""
+	}
+	var children []json.RawMessage
+	for _, child := range o.Children {
+		if child.intact() {
+			children = append(children, child.raw)
+			continue
+		}
+		encoded, err := child.canonical()
+		if err != nil {
+			return nil, err
+		}
+		children = append(children, encoded)
+	}
+	var list any
+	if len(children) > 0 {
+		list = children
+	}
+	return o.fileForm(id, list)
 }
 
 // sameShape reports whether a live fiber for o can be kept for other: everything but
@@ -146,16 +195,25 @@ type entryJSON struct {
 	Inject    []string                   `json:"inject,omitempty"`
 	Isolate   map[string]any             `json:"isolate,omitempty"`
 	Intercept map[string]json.RawMessage `json:"intercept,omitempty"`
-	Children  []EntryOptions             `json:"children,omitempty"`
+	Children  any                        `json:"children,omitempty"`
 }
 
 // MarshalJSON writes the entry in its file form. An entry that had decoding issues is
-// written as it was read.
+// written as it was read, unless it was changed since.
 func (o EntryOptions) MarshalJSON() ([]byte, error) {
-	if len(o.issues) > 0 && len(o.raw) > 0 {
+	if o.intact() {
 		return slices.Clone(o.raw), nil
 	}
-	out := entryJSON{ID: o.ID, Name: o.Name, Config: o.Config, Group: o.Group, Inject: o.Inject, Intercept: o.Intercept, Children: o.Children}
+	var children any
+	if len(o.Children) > 0 {
+		children = o.Children
+	}
+	return o.fileForm(o.ID, children)
+}
+
+// fileForm encodes the exported fields with the given id and children.
+func (o EntryOptions) fileForm(id string, children any) ([]byte, error) {
+	out := entryJSON{ID: id, Name: o.Name, Config: o.Config, Group: o.Group, Inject: o.Inject, Intercept: o.Intercept, Children: children}
 	switch {
 	case o.DisabledExpr != "":
 		out.Disabled = map[string]string{exprKey: o.DisabledExpr}
@@ -223,7 +281,9 @@ func decodeEntry(node *Node, path string) EntryOptions {
 	}
 	if node.Kind != ObjectNode {
 		wrongType(node, "", "an object")
+		o.anonymous = true
 		o.raw = node.JSON()
+		o.fingerprint = o.decodedFingerprint()
 		return o
 	}
 	seen := map[string]bool{}
@@ -317,10 +377,22 @@ func decodeEntry(node *Node, path string) EntryOptions {
 			o.issues = append(o.issues, Issue{Pos: field.KeyPos, Path: joinPath(path, key), Message: "unknown key"})
 		}
 	}
+	o.anonymous = o.ID == ""
 	if len(o.issues) > 0 {
 		o.raw = node.JSON()
+		o.fingerprint = o.decodedFingerprint()
 	}
 	return o
+}
+
+// decodedFingerprint is the canonical form of a freshly decoded entry; "" (never
+// intact) if it cannot be encoded.
+func (o EntryOptions) decodedFingerprint() string {
+	canonical, err := o.canonical()
+	if err != nil {
+		return ""
+	}
+	return string(canonical)
 }
 
 // recordPositions records the position of node and of every value inside it.
