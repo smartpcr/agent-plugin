@@ -98,6 +98,13 @@ func TestSafeName(t *testing.T) {
 		{"", "application/zip", "", "download.zip"},
 		{"blob", "x/unknown", "bin", "blob.bin"},
 		{"blob.dat", "x/unknown", "", "blob.dat"},
+		{"report", "application/pdf", "exe", "report.pdf"},
+		{"report", "application/pdf", ".PDF", "report.pdf"},
+		{"report", "x/unknown", "../evil", "report"},
+		{"report", "x/unknown", `a\b`, "report"},
+		{"report", "x/unknown", ".", "report"},
+		{"report", "x/unknown", "BIN", "report.bin"},
+		{"report", "text/plain", "sh/x", "report.txt"},
 	} {
 		if got := SafeName(tc.name, tc.typ, tc.ext); got != tc.want {
 			t.Errorf("SafeName(%q, %q, %q) = %q, want %q", tc.name, tc.typ, tc.ext, got, tc.want)
@@ -106,5 +113,18 @@ func TestSafeName(t *testing.T) {
 	got := SafeName(long, "text/plain", "")
 	if len(got) > maxNameBytes || !utf8.ValidString(got) || !strings.HasSuffix(got, ".txt") {
 		t.Errorf("long name: %d bytes, valid %v, %q", len(got), utf8.ValidString(got), got[len(got)-8:])
+	}
+	// An oversized "extension" is part of the stem, so the whole name is bounded.
+	for _, tc := range []struct{ name, typ, ext string }{
+		{"x." + strings.Repeat("a", 300), "x/unknown", ""},
+		{"x." + strings.Repeat("a", 300), "text/plain", ""},
+		{strings.Repeat("b", 300), "x/unknown", "bin"},
+		{"con." + strings.Repeat("c", 300), "x/unknown", ""},
+		{strings.Repeat("d", 254) + ". .", "x/unknown", ""},
+	} {
+		got := SafeName(tc.name, tc.typ, tc.ext)
+		if len(got) > maxNameBytes || got == "" || strings.HasSuffix(got, ".") || strings.HasSuffix(got, " ") {
+			t.Errorf("SafeName(%d-byte name, %q, %q) = %d bytes %q", len(tc.name), tc.typ, tc.ext, len(got), got)
+		}
 	}
 }

@@ -36,6 +36,9 @@ const (
 	// RoleStubborn ignores the polite stop signal, prints "ready <pid>" and waits
 	// to be killed.
 	RoleStubborn = "stubborn"
+	// RoleOrphan starts a RoleStubborn grandchild with standard streams of its own,
+	// prints "orphan <grandchild pid>" and exits, leaving the grandchild running.
+	RoleOrphan = "orphan"
 	// RoleExit exits with the code given as its first argument.
 	RoleExit = "exit"
 )
@@ -64,6 +67,8 @@ func run(role string, args []string, out io.Writer) int {
 		}
 	case RoleTree:
 		return tree(out)
+	case RoleOrphan:
+		return orphan(out)
 	case RoleStubborn:
 		ignoreStop()
 		fmt.Fprintf(out, "ready %d\n", os.Getpid())
@@ -108,6 +113,27 @@ func tree(out io.Writer) int {
 	}
 	fmt.Fprintf(out, "tree %d %d\n", os.Getpid(), g.Pid)
 	park()
+	return 0
+}
+
+// orphan starts the grandchild without sharing the child's streams, so nothing
+// ties the child's exit to it, then exits.
+func orphan(out io.Writer) int {
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	g, err := os.StartProcess(exe, []string{exe}, &os.ProcAttr{
+		Env:   []string{RoleEnv + "=" + RoleStubborn},
+		Files: []*os.File{nil, nil, nil},
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	fmt.Fprintf(out, "orphan %d\n", g.Pid)
+	_ = g.Release()
 	return 0
 }
 

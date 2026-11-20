@@ -91,10 +91,16 @@ type Process struct {
 	stopped bool
 	stopErr error
 
-	// ownerMu serialises calls on owner; released is set once its handles close.
-	ownerMu  sync.Mutex
-	released bool
+	// ownerMu serialises calls on owner; released is set, and releasedC closed,
+	// once the whole tree has left and the owner's handles are closed.
+	ownerMu   sync.Mutex
+	released  bool
+	releasedC chan struct{}
 }
+
+// watchEvery is how often the context watcher looks for the end of a tree whose
+// direct child has already exited.
+const watchEvery = 250 * time.Millisecond
 
 // Start validates spec, starts the program inside a new tree owner and returns its
 // handle. When ctx ends, the tree is stopped with spec.Grace. The caller must call
@@ -123,21 +129,40 @@ func Start(ctx context.Context, spec Spec) (*Process, error) {
 		owner.release()
 		return nil, herr.Wrap(ReasonStartFailed, err, "start "+filepath.Base(spec.Argv[0]))
 	}
-	p := &Process{cmd: cmd, owner: owner, report: owner.report(), exited: make(chan struct{})}
+	p := &Process{cmd: cmd, owner: owner, report: owner.report(), exited: make(chan struct{}), releasedC: make(chan struct{})}
 	go func() {
 		p.waitErr = cmd.Wait()
 		close(p.exited)
 	}()
 	if ctx.Done() != nil {
-		go func() {
-			select {
-			case <-ctx.Done():
-				_ = p.StopTree(context.WithoutCancel(ctx), spec.Grace)
-			case <-p.exited:
-			}
-		}()
+		go p.watch(ctx, spec.Grace)
 	}
 	return p, nil
+}
+
+// watch stops the tree when ctx ends. The direct child exiting does not end the
+// watch: descendants it left behind are still the tree's, so the watch lasts until
+// the owner is empty and released.
+func (p *Process) watch(ctx context.Context, grace time.Duration) {
+	exited := p.exited
+	var tick <-chan time.Time
+	for {
+		select {
+		case <-ctx.Done():
+			_ = p.StopTree(context.WithoutCancel(ctx), grace)
+			return
+		case <-p.releasedC:
+			return
+		case <-exited:
+			exited = nil
+			t := time.NewTicker(watchEvery)
+			defer t.Stop()
+			tick = t.C
+			p.releaseOwner()
+		case <-tick:
+			p.releaseOwner()
+		}
+	}
 }
 
 // check applies the argv rules that hold on every system, then the Windows ones.
@@ -280,11 +305,15 @@ const pollEvery = 10 * time.Millisecond
 func (p *Process) await(ctx context.Context) error {
 	t := time.NewTicker(pollEvery)
 	defer t.Stop()
+	// exited wakes the loop once when the direct child exits; after that only the
+	// ticker and ctx do, so a closed channel cannot spin the loop.
+	exited := p.exited
 	for !p.gone() {
 		select {
 		case <-ctx.Done():
 			return context.Cause(ctx)
-		case <-p.exited:
+		case <-exited:
+			exited = nil
 		case <-t.C:
 		}
 	}
@@ -314,6 +343,7 @@ func (p *Process) releaseOwner() {
 	if !p.released {
 		p.owner.release()
 		p.released = true
+		close(p.releasedC)
 	}
 }
 

@@ -153,12 +153,18 @@ func init() {
 	}
 }
 
+// maxExtBytes bounds an extension, its dot included; a longer "extension" is part
+// of the stem.
+const maxExtBytes = 16
+
 // SafeName returns a download name for name: characters no file system accepts
 // are replaced with "_", a reserved Windows device name is prefixed with "_",
-// trailing dots and spaces are dropped, the result fits in 255 bytes without
-// splitting a character, and it ends in an extension typ allows (ext, or the
-// type's preferred one, is appended when it does not). An empty result is
-// "download".
+// trailing dots and spaces are dropped, the whole result fits in 255 bytes
+// without splitting a character, and it ends in an extension typ allows. When
+// name's own extension is not allowed, ext is appended if typ allows it (or, for
+// an unknown typ, if it is a well-formed extension), else the type's preferred
+// one. An extension is a dot and 1-15 ASCII letters, digits, "+", "-" or "_".
+// An empty stem is "download".
 func SafeName(name, typ, ext string) string {
 	var b strings.Builder
 	for _, r := range path.Base(slash(name)) {
@@ -173,17 +179,22 @@ func SafeName(name, typ, ext string) string {
 		n = "download"
 	}
 	allowed := Extensions(typ)
-	cur := path.Ext(n)
-	ok := cur != "" && (len(allowed) == 0 || slices.Contains(allowed, strings.ToLower(cur)))
-	stem, suffix := strings.TrimSuffix(n, cur), cur
-	if !ok {
-		if ext == "" {
-			ext, _ = PreferredExtension(typ)
-		}
+	fits := func(e string) bool {
+		e = strings.ToLower(e)
+		return wellFormedExt(e) && (len(allowed) == 0 || slices.Contains(allowed, e))
+	}
+	stem, suffix := n, ""
+	if cur := path.Ext(n); cur != "" && cur != n && fits(cur) {
+		stem, suffix = strings.TrimSuffix(n, cur), cur
+	} else {
 		if ext != "" && !strings.HasPrefix(ext, ".") {
 			ext = "." + ext
 		}
-		stem, suffix = n, ext
+		if ext != "" && fits(ext) {
+			suffix = strings.ToLower(ext)
+		} else if pref, ok := PreferredExtension(typ); ok {
+			suffix = pref
+		}
 	}
 	if first, _, _ := strings.Cut(stem, "."); reserved[strings.ToLower(first)] {
 		stem = "_" + stem
@@ -192,8 +203,25 @@ func SafeName(name, typ, ext string) string {
 		_, size := utf8.DecodeLastRuneInString(stem)
 		stem = stem[:len(stem)-size]
 	}
+	if suffix == "" {
+		stem = strings.TrimRight(stem, ". ")
+	}
 	if stem == "" {
 		stem = "download"
 	}
 	return stem + suffix
+}
+
+// wellFormedExt reports whether e is a dot and 1 to maxExtBytes-1 ASCII letters,
+// digits, "+", "-" or "_".
+func wellFormedExt(e string) bool {
+	if len(e) < 2 || len(e) > maxExtBytes || e[0] != '.' {
+		return false
+	}
+	for _, c := range []byte(e[1:]) {
+		if !('a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || c == '+' || c == '-' || c == '_') {
+			return false
+		}
+	}
+	return true
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -100,6 +101,40 @@ func TestContextEndStopsTheTree(t *testing.T) {
 	defer wcancel()
 	if err := p.TreeGone(wctx); err != nil {
 		t.Fatalf("tree survived the context: %v", err)
+	}
+}
+
+// A context that ends after the direct child exited still stops the descendants
+// it left behind.
+func TestContextEndStopsDescendantsAfterChildExit(t *testing.T) {
+	spec := subprocesstest.Spec(t, subprocesstest.RoleOrphan)
+	var out strings.Builder
+	spec.Stdout = &out
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p, err := subprocess.Start(ctx, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.StopTree(context.Background(), 0) })
+	if err := p.Wait(); err != nil {
+		t.Fatalf("orphan child: %v", err)
+	}
+	var grandchild int
+	if _, err := fmt.Sscanf(out.String(), "orphan %d", &grandchild); err != nil {
+		t.Fatalf("orphan child said %q: %v", out.String(), err)
+	}
+	if !subprocesstest.Alive(grandchild) {
+		t.Fatalf("grandchild %d is not running after the child exited", grandchild)
+	}
+	cancel()
+	wctx, wcancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer wcancel()
+	if err := p.TreeGone(wctx); err != nil {
+		t.Fatalf("descendant survived the context: %v", err)
+	}
+	if subprocesstest.Alive(grandchild) {
+		t.Fatalf("grandchild %d alive after TreeGone", grandchild)
 	}
 }
 
