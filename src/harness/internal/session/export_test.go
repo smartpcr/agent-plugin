@@ -1,18 +1,18 @@
 package session
 
-// SetFingerprintWindow sets the ring size of sessions created after the call and
+// SetAnchorLimit sets how many anchors sessions keep for their deliverer and
 // returns the restore.
-func SetFingerprintWindow(n int) func() {
-	old := fpWindow
-	fpWindow = n
-	return func() { fpWindow = old }
+func SetAnchorLimit(n int) func() {
+	old := anchorLimit
+	anchorLimit = n
+	return func() { anchorLimit = old }
 }
 
-// HeldFingerprints is how many fingerprints s holds for its deliverer, and the
-// ring's size.
-func HeldFingerprints(s Session) (held, size int) {
+// DeliveryState is how many anchors s holds for its deliverer (the appender's
+// and the deliverer's own splits) and the appender's limit.
+func DeliveryState(s Session) (anchors, refine, limit int) {
 	l := s.(*live)
 	l.dmu.Lock()
 	defer l.dmu.Unlock()
-	return int(l.target - l.fpFrom), len(l.fps)
+	return len(l.anchors), len(l.refine), anchorLimit
 }

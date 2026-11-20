@@ -3,7 +3,6 @@ package session
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -44,34 +43,67 @@ type live struct {
 	dcond  *sync.Cond
 	target event.Seq // the next seq once committed; the deliverer's goal
 	next   event.Seq // the deliverer's cursor
-	// fps is a fixed ring of the fingerprints of committed records that are
-	// neither delivered nor verified, seqs [fpFrom, target), at seq % len(fps).
-	// When delivery lags a full ring, the appender verifies the oldest against
-	// storage and forgets them, so a slow listener never grows the session.
-	fps      []string
-	fpFrom   event.Seq
+	// The deliverer checks every record it delivers against a hash chain over
+	// the records this session committed, link(h, r) = sha256(h || r's hot
+	// fields), so the session's state stays a fixed size however far delivery
+	// lags. The appender keeps the chain's head and leaves an anchor, the
+	// chain's value at a seq, per append, thinning them to anchorLimit. Before
+	// delivering anything below an anchor the deliverer re-derives the chain
+	// from storage up to it; a segment longer than a page is first scanned
+	// whole and split with anchors of its own (refine), each derived from a
+	// scan that matched the anchor above it. No read is trusted unless it
+	// itself re-derived an anchor.
+	head     [32]byte // the chain at target; the appender's, under mu
+	anchors  []anchor // ascending, the last at target; under dmu
+	refine   []anchor // the deliverer's splits, ascending; under dmu
+	at       [32]byte // the chain at next; the deliverer's
 	stop     int
 	finished chan struct{}
 }
 
-// fpWindow is the size of the fingerprint ring.
-var fpWindow = 4096
+// anchor is the chain's value over the records below seq.
+type anchor struct {
+	seq event.Seq
+	h   [32]byte
+}
+
+// anchorLimit bounds the appender's anchors; refineFanout is how many anchors
+// one scan of a long segment leaves.
+var (
+	anchorLimit  = 64
+	refineFanout = 16
+)
 
 func newLive(v *service, id ID, h Header, key scope.Key, w store.Writer, st *surface.State, cursor, durable event.Seq) *live {
 	s := &live{svc: v, id: id, header: h, key: key, w: w, st: st,
-		target: st.Len(), next: cursor, fps: make([]string, fpWindow), fpFrom: st.Len(), finished: make(chan struct{})}
+		target: st.Len(), next: cursor, finished: make(chan struct{})}
+	s.head = sha256.Sum256([]byte(id))
+	s.at = s.head
 	s.dcond = sync.NewCond(&s.dmu)
 	s.durable.Store(uint64(durable))
 	return s
 }
 
-// fingerprint identifies a committed record by its hot fields, as the deliverer
+// link extends the chain by one record, by its hot fields as the deliverer
 // reads it back without the cold part.
-func fingerprint(r event.Record) string {
+func link(h [32]byte, r event.Record) [32]byte {
 	r.Cold = ""
 	b, _ := json.Marshal(r)
-	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:])
+	d := sha256.New()
+	d.Write(h[:])
+	d.Write(b)
+	var out [32]byte
+	d.Sum(out[:0])
+	return out
+}
+
+// thin drops every other anchor, keeping the last.
+func thin(as []anchor) []anchor {
+	out := as[:0]
+	for i := (len(as) - 1) % 2; i < len(as); i += 2 {
+		out = append(out, as[i])
+	}
+	return out
 }
 
 func (s *live) ID() ID               { return s.id }
@@ -230,9 +262,6 @@ func (s *live) appendLocked(ctx context.Context, ds []event.Draft, byCore, reuse
 		return nil, err
 	}
 	cfg := s.svc.cfg
-	if err := s.makeRoom(ctx, len(ds)); err != nil {
-		return nil, err
-	}
 	checkpoint := cfg.CheckpointEvery > 0 && s.sinceCP+len(ds) >= cfg.CheckpointEvery
 	cloned := len(ds) > 1 || checkpoint || cfg.Folder != nil
 	st := s.st
@@ -300,97 +329,22 @@ func (s *live) appendLocked(ctx context.Context, ds []event.Draft, byCore, reuse
 	for i, r := range recs {
 		out[i] = event.Receipt{Seq: r.Seq, Time: r.Time}
 	}
-	// A group larger than the ring is verified past its last len(fps) records
-	// at once; only those are held for the deliverer.
-	held := recs
-	if over := len(recs) - len(s.fps); over > 0 {
-		if err := s.verify(ctx, first, recs[over].Seq, func(q event.Seq) string { return fingerprint(recs[q-first]) }); err != nil {
-			s.failLocked(err)
-			return nil, err
-		}
-		held = recs[over:]
+	// Nothing after the store accepted the batch can fail: the chain is
+	// extended in memory and the deliverer woken.
+	h := s.head
+	for _, r := range recs {
+		h = link(h, r)
 	}
+	s.head = h
 	s.dmu.Lock()
-	if len(held) < len(recs) {
-		s.forgetLocked(held[0].Seq)
-	}
-	for _, r := range held {
-		s.fps[int(r.Seq)%len(s.fps)] = fingerprint(r)
+	s.anchors = append(s.anchors, anchor{seq: last + 1, h: h})
+	if len(s.anchors) > anchorLimit {
+		s.anchors = thin(s.anchors)
 	}
 	s.target = s.st.Len()
 	s.dcond.Broadcast()
 	s.dmu.Unlock()
 	return out, nil
-}
-
-// makeRoom makes the ring hold room for k more fingerprints: when it would
-// overflow, the oldest held records are read back from storage, checked, and
-// forgotten, down to half the ring. The caller holds s.mu, so the ring's slots
-// change only here and in appendLocked.
-func (s *live) makeRoom(ctx context.Context, k int) error {
-	n := event.Seq(len(s.fps))
-	s.dmu.Lock()
-	from, end := s.fpFrom, s.target
-	held := end - from
-	if held+event.Seq(min(k, len(s.fps))) <= n {
-		s.dmu.Unlock()
-		return nil
-	}
-	keep := event.Seq(min(int(held), max(0, len(s.fps)/2-k)))
-	upTo := end - keep
-	// The deliverer clears slots as it delivers, so check against a copy.
-	want := make([]string, upTo-from)
-	for q := from; q < upTo; q++ {
-		want[q-from] = s.fps[int(q)%len(s.fps)]
-	}
-	s.dmu.Unlock()
-	if err := s.verify(ctx, from, upTo, func(q event.Seq) string { return want[q-from] }); err != nil {
-		s.failLocked(err)
-		return err
-	}
-	s.dmu.Lock()
-	s.forgetLocked(upTo)
-	s.dmu.Unlock()
-	return nil
-}
-
-// forgetLocked drops the fingerprints below seq, delivered or verified, and
-// frees their slots. The caller holds s.dmu.
-func (s *live) forgetLocked(seq event.Seq) {
-	for q := s.fpFrom; q < seq && q < s.fpFrom+event.Seq(len(s.fps)); q++ {
-		s.fps[int(q)%len(s.fps)] = ""
-	}
-	if s.fpFrom < seq {
-		s.fpFrom = seq
-	}
-}
-
-// verify reads [from, upTo) back from storage and checks each record against
-// want: the clauses the deliverer checks, ahead of delivery.
-func (s *live) verify(ctx context.Context, from, upTo event.Seq, want func(event.Seq) string) error {
-	for pos := from; pos < upTo; {
-		recs, err := s.w.Read(ctx, pos, min(1024, int(upTo-pos)), store.ReadOptions{})
-		if err == nil && len(recs) == 0 {
-			err = brokenStore(s.id, "a read from %d returned nothing although %d records are committed (a stale tail)", pos, upTo)
-		}
-		for i := 0; err == nil && i < len(recs); i++ {
-			switch r := recs[i]; {
-			case r.Seq != pos:
-				err = brokenStore(s.id, "a read has a gap or a wrong first seq: seq %d where %d was expected", r.Seq, pos)
-			case fingerprint(r) != want(r.Seq):
-				err = brokenStore(s.id, "the record at seq %d is not the one this session committed", r.Seq)
-			default:
-				pos++
-			}
-			if pos >= upTo {
-				break
-			}
-		}
-		if err != nil {
-			return s.classify(ctx, err)
-		}
-	}
-	return nil
 }
 
 // classify prefers a lost lease or a deleted session over a broken-store
@@ -552,9 +506,10 @@ func (s *live) Close(ctx context.Context) error {
 
 // deliver is the deliverer: it reads committed records forward from storage in
 // pages and hands each to the Committed listeners once, in order, outside the
-// append lock. Before delivering a page it checks the storage clauses the core
-// relies on; a broken one closes the session with a classified error and
-// nothing of the bad page is delivered.
+// append lock. It delivers a segment only after re-deriving the chain over it
+// from the very read it delivers and matching the anchor that ends it; a
+// broken clause or a mismatch closes the session with a classified error and
+// nothing of the bad segment is delivered.
 func (s *live) deliver() {
 	defer s.finish()
 	ctx := context.Background()
@@ -569,25 +524,31 @@ func (s *live) deliver() {
 			return
 		}
 		from, target := s.next, s.target
+		a := s.anchors[0]
+		if len(s.refine) > 0 && s.refine[0].seq < a.seq {
+			a = s.refine[0]
+		}
 		s.dmu.Unlock()
 
-		recs, err := s.w.Read(ctx, from, min(page, int(target-from)), store.ReadOptions{})
-		if err == nil {
-			err = s.check(from, target, recs)
+		if int(a.seq-from) > page {
+			marks, err := s.split(ctx, from, target, a, page)
+			if err != nil {
+				s.fail(ctx, err)
+				return
+			}
+			s.dmu.Lock()
+			s.refine = append(marks, s.refine...)
+			s.dmu.Unlock()
+			continue
 		}
+		recs, err := s.scan(ctx, from, target, a, 0, true, nil)
 		if err != nil {
-			err = s.classify(ctx, err)
-			s.mu.Lock()
-			s.failLocked(err)
-			s.mu.Unlock()
+			s.fail(ctx, err)
 			return
 		}
 		for _, r := range recs {
 			Committed.Notify(s.svc.base, s.key, CommittedArgs{Session: s, Event: event.Of(r)})
 			s.dmu.Lock()
-			if s.fpFrom <= r.Seq {
-				s.forgetLocked(r.Seq + 1)
-			}
 			s.next = r.Seq + 1
 			stop := s.stop == stopNow
 			s.dmu.Unlock()
@@ -595,32 +556,82 @@ func (s *live) deliver() {
 				return
 			}
 		}
+		s.at = a.h
+		s.dmu.Lock()
+		s.anchors = dropThrough(s.anchors, a.seq)
+		s.refine = dropThrough(s.refine, a.seq)
+		s.dmu.Unlock()
 	}
 }
 
-// check is the clauses of one feed read: it starts at from, has no gap, is not
-// short, and each record is the one this session committed.
-func (s *live) check(from, target event.Seq, recs []event.Record) error {
-	if len(recs) == 0 {
-		return brokenStore(s.id, "a read from %d returned nothing although %d records are committed (a stale tail)", from, target)
-	}
-	s.dmu.Lock()
-	defer s.dmu.Unlock()
-	for i, r := range recs {
-		want := from + event.Seq(i)
-		switch {
-		case i == 0 && r.Seq != want:
-			return brokenStore(s.id, "a read from %d began at seq %d", from, r.Seq)
-		case r.Seq != want:
-			return brokenStore(s.id, "a read has a gap: seq %d where %d was expected", r.Seq, want)
-		case r.Seq >= target:
-			return brokenStore(s.id, "a read returned seq %d, past the committed end %d", r.Seq, target)
-		case r.Seq >= s.fpFrom && fingerprint(r) != s.fps[int(r.Seq)%len(s.fps)]:
-			// Below fpFrom the appender already verified the record.
-			return brokenStore(s.id, "the record at seq %d is not the one this session committed", r.Seq)
+// split scans the long segment [from, a.seq) without keeping it and returns
+// anchors at most refineFanout apart; they hold only if the scan matched a.
+func (s *live) split(ctx context.Context, from, target event.Seq, a anchor, page int) ([]anchor, error) {
+	stride := max(event.Seq(page), (a.seq-from+event.Seq(refineFanout)-1)/event.Seq(refineFanout))
+	var marks []anchor
+	_, err := s.scan(ctx, from, target, a, stride, false, func(m anchor) { marks = append(marks, m) })
+	return marks, err
+}
+
+// scan reads [from, a.seq) page by page, checks the storage clauses, and
+// re-derives the chain from s.at; it fails unless the chain matches a. With
+// keep it returns the records; with stride it reports the chain every stride
+// records to mark.
+func (s *live) scan(ctx context.Context, from, target event.Seq, a anchor, stride event.Seq, keep bool, mark func(anchor)) ([]event.Record, error) {
+	var out []event.Record
+	h := s.at
+	page := s.svc.cfg.FeedPage
+	for pos := from; pos < a.seq; {
+		recs, err := s.w.Read(ctx, pos, min(page, int(a.seq-pos)), store.ReadOptions{})
+		if err != nil {
+			return nil, err
+		}
+		if len(recs) == 0 {
+			return nil, brokenStore(s.id, "a read from %d returned nothing although %d records are committed (a stale tail)", pos, target)
+		}
+		for i, r := range recs {
+			if pos >= a.seq {
+				break // more than asked for
+			}
+			switch {
+			case r.Seq >= target:
+				return nil, brokenStore(s.id, "a read returned seq %d, past the committed end %d", r.Seq, target)
+			case i == 0 && r.Seq != pos:
+				return nil, brokenStore(s.id, "a read from %d began at seq %d", pos, r.Seq)
+			case r.Seq != pos:
+				return nil, brokenStore(s.id, "a read has a gap: seq %d where %d was expected", r.Seq, pos)
+			}
+			h = link(h, r)
+			pos++
+			if keep {
+				out = append(out, r)
+			}
+			if mark != nil && pos < a.seq && (pos-from)%stride == 0 {
+				mark(anchor{seq: pos, h: h})
+			}
 		}
 	}
-	return nil
+	if h != a.h {
+		return nil, brokenStore(s.id, "the records in [%d, %d) are not the ones this session committed", from, a.seq)
+	}
+	return out, nil
+}
+
+// dropThrough drops the anchors at or below seq.
+func dropThrough(as []anchor, seq event.Seq) []anchor {
+	i := 0
+	for i < len(as) && as[i].seq <= seq {
+		i++
+	}
+	return as[i:]
+}
+
+// fail closes the session from the deliverer with err, classified.
+func (s *live) fail(ctx context.Context, err error) {
+	err = s.classify(ctx, err)
+	s.mu.Lock()
+	s.failLocked(err)
+	s.mu.Unlock()
 }
 
 // finish completes a close: the lease is released, the session leaves the

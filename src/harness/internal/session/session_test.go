@@ -232,6 +232,12 @@ type faultStore struct {
 	mu      sync.Mutex
 	writers []*faultWriter
 	mode    string
+	// foreignAt is the seq "foreign-late" corrupts from its second read on;
+	// reads counts the reads that returned it.
+	foreignAt store.Seq
+	reads     int
+	// cancel is what "cancel-after-append" and "cancel-in-append" call.
+	cancel context.CancelFunc
 }
 
 func (f *faultStore) wrap(w store.Writer, err error) (store.Writer, error) {
@@ -273,13 +279,21 @@ type faultWriter struct {
 }
 
 func (w *faultWriter) Append(ctx context.Context, b store.Batch) error {
-	if w.f.getMode() == "append-fails" {
+	switch w.f.getMode() {
+	case "append-fails":
 		return errors.New("injected: disk full")
+	case "cancel-in-append":
+		w.f.cancel()
+		return ctx.Err()
 	}
 	w.mu.Lock()
 	w.appends++
 	w.mu.Unlock()
-	return w.Writer.Append(ctx, b)
+	err := w.Writer.Append(ctx, b)
+	if err == nil && w.f.getMode() == "cancel-after-append" {
+		w.f.cancel()
+	}
+	return err
 }
 
 func (w *faultWriter) Close(ctx context.Context) error {
@@ -307,6 +321,20 @@ func (w *faultWriter) Read(ctx context.Context, from store.Seq, limit int, o sto
 		return w.Writer.Read(ctx, from+1, limit, o)
 	case "foreign":
 		recs[0].Payload = `{"key":"k","value":"from another session"}`
+	case "foreign-late":
+		for i, r := range recs {
+			if r.Seq != w.f.foreignAt {
+				continue
+			}
+			w.f.mu.Lock()
+			w.f.reads++
+			late := w.f.reads > 1
+			w.f.mu.Unlock()
+			if late {
+				recs = append([]store.Record(nil), recs...)
+				recs[i].Payload = `{"key":"k","value":"from another session"}`
+			}
+		}
 	}
 	return recs, nil
 }
