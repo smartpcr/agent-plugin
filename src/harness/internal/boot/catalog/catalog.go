@@ -77,7 +77,7 @@ func BuildFor(goos string, sets ...[]Item) (*Catalog, error) {
 	}
 	c := &Catalog{goos: goos, index: map[string]int{}}
 	var errs []error
-	views := map[string]string{}
+	views := map[string][]Item{}
 	for _, set := range sets {
 		for _, item := range set {
 			if err := check(item); err != nil {
@@ -89,11 +89,15 @@ func BuildFor(goos string, sets ...[]Item) (*Catalog, error) {
 				continue
 			}
 			if item.View != nil {
+				// Checked across every platform, not only goos, so a catalogue
+				// valid here is valid everywhere it is built.
 				for _, service := range item.Provides {
-					if other, dup := views[service]; dup {
-						errs = append(errs, fmt.Errorf("catalog: %s and %s both declare a view of %s", other, item.Name, service))
+					for _, other := range views[service] {
+						if overlap(other.Platforms, item.Platforms) {
+							errs = append(errs, fmt.Errorf("catalog: %s and %s both declare a view of %s on a shared platform", other.Name, item.Name, service))
+						}
 					}
-					views[service] = item.Name
+					views[service] = append(views[service], item)
 				}
 			}
 			c.index[item.Name] = -1
@@ -139,6 +143,20 @@ func check(item Item) error {
 		}
 	}
 	return nil
+}
+
+// overlap reports whether two platform sets share a platform; an empty set
+// means every platform.
+func overlap(a, b []string) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return true
+	}
+	for _, p := range a {
+		if slices.Contains(b, p) {
+			return true
+		}
+	}
+	return false
 }
 
 func freeze(item Item) Item {
