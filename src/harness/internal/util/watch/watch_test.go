@@ -3,6 +3,7 @@ package watch_test
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -331,9 +332,7 @@ func TestDirectoryAtomicReplaceSameMeta(t *testing.T) {
 			}
 			_, r := start(t, service(t, pollFast), watch.Target{Path: dir, Mode: mode})
 			r.none(t, "before any change")
-			if err := os.Rename(next, f); err != nil {
-				t.Fatal(err)
-			}
+			publish(t, next, f)
 			if after, err := os.Stat(f); err != nil || after.Size() != info.Size() || !after.ModTime().Equal(info.ModTime()) {
 				t.Fatalf("replacement does not keep size and time: %v %v", after, err)
 			}
@@ -341,5 +340,24 @@ func TestDirectoryAtomicReplaceSameMeta(t *testing.T) {
 				t.Fatalf("notice carried %v", err)
 			}
 		})
+	}
+}
+
+// publish renames from over to, retrying for a bounded time while the target is
+// transiently held: on Windows a rename over a file another process (or this
+// poller) has open without delete sharing fails with access denied. The swap is
+// still one rename, so the replaced entry keeps the prepared size and mtime.
+func publish(t *testing.T, from, to string) {
+	t.Helper()
+	give := time.Now().Add(deadline)
+	for {
+		err := os.Rename(from, to)
+		if err == nil {
+			return
+		}
+		if !errors.Is(err, fs.ErrPermission) || time.Now().After(give) {
+			t.Fatal(err)
+		}
+		<-time.After(5 * time.Millisecond)
 	}
 }

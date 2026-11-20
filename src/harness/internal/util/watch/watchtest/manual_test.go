@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/watch"
@@ -198,5 +199,33 @@ func TestManualProvide(t *testing.T) {
 	p.Dispose()
 	if n := m.Fire(path); n != 0 || len(m.Watching()) != 0 {
 		t.Fatalf("watches survived the provider: %d", n)
+	}
+}
+
+// TestManualCallbackReentry: a callback may ask its watch for its mode, during
+// a change and during a degradation, without blocking.
+func TestManualCallbackReentry(t *testing.T) {
+	_, ctx := owner(t)
+	m := watchtest.NewManual()
+	path := filepath.Join(t.TempDir(), "f")
+	var w watch.Watch
+	var modes []watch.Mode
+	w, err := m.Watch(ctx, watch.Target{Path: path}, func(error) { modes = append(modes, w.Mode()) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		m.Fire(path)
+		m.Degrade(path, errors.New("lost"))
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("callback calling Mode blocked")
+	}
+	if !slices.Equal(modes, []watch.Mode{watch.Notify, watch.Poll}) {
+		t.Fatalf("modes seen in callbacks %v", modes)
 	}
 }

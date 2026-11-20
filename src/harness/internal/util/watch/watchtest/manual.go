@@ -145,18 +145,25 @@ func (e engine) Watch(ctx context.Context, t watch.Target, changed func(err erro
 		mode = watch.Poll
 	}
 	w := &manualWatch{m: e.m, t: t, changed: changed, mode: mode}
-	w.stop = context.AfterFunc(ctx, func() { w.Close() })
 	e.m.mu.Lock()
-	defer e.m.mu.Unlock()
 	if e.m.closed {
-		w.stop()
+		e.m.mu.Unlock()
 		return nil, watch.ErrClosed
 	}
+	e.m.watches[w] = struct{}{}
+	e.m.mu.Unlock()
+	// Registered first, so a cancellation that fires at once finds the watch to
+	// remove. The stop function is published under w.mu, which Close also reads
+	// it under: the AfterFunc callback may run before AfterFunc returns.
+	stop := context.AfterFunc(ctx, func() { w.Close() })
 	w.mu.Lock()
-	ended := w.closed // ctx ended meanwhile
+	closed := w.closed
+	if !closed {
+		w.stop = stop
+	}
 	w.mu.Unlock()
-	if !ended {
-		e.m.watches[w] = struct{}{}
+	if closed {
+		stop()
 	}
 	return w, nil
 }
@@ -166,11 +173,16 @@ type manualWatch struct {
 	m       *Manual
 	t       watch.Target
 	changed func(error)
-	stop    func() bool
 
-	mu     sync.Mutex // held while the callback runs
+	// calling is held while the callback runs: callbacks never overlap, and
+	// Close waits for one in flight. It is never held with mu, so a callback may
+	// call Mode.
+	calling sync.Mutex
+
+	mu     sync.Mutex // guards mode, closed and stop
 	mode   watch.Mode
 	closed bool
+	stop   func() bool
 }
 
 func (w *manualWatch) Mode() watch.Mode {
@@ -179,27 +191,37 @@ func (w *manualWatch) Mode() watch.Mode {
 	return w.mode
 }
 
-// Close stops the watch; it returns after the callback can no longer run.
+// Close stops the watch; it returns after the callback can no longer run. It
+// must not be called from inside the callback, as with the real service.
 func (w *manualWatch) Close() error {
 	w.mu.Lock()
 	w.closed = true
+	stop := w.stop
+	w.stop = nil
 	w.mu.Unlock()
 	w.m.mu.Lock()
 	delete(w.m.watches, w)
 	w.m.mu.Unlock()
-	w.stop()
+	if stop != nil {
+		stop()
+	}
+	w.calling.Lock()
+	w.calling.Unlock() // only waits for a callback in flight
 	return nil
 }
 
 func (w *manualWatch) deliver(err error) bool {
+	w.calling.Lock()
+	defer w.calling.Unlock()
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	if w.closed {
+		w.mu.Unlock()
 		return false
 	}
 	if err != nil {
 		w.mode = watch.Poll
 	}
+	w.mu.Unlock()
 	w.changed(err)
 	return true
 }
