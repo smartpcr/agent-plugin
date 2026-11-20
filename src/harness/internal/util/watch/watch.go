@@ -5,7 +5,10 @@
 // (fsnotify) are hints: an event that names the target restarts the watch's settle
 // timer, and when the timer fires the service compares the target's identity, size
 // and times (for a directory, its entries) with what it last saw and calls back only
-// if something differs. Directories are watched, never files, so a save by rename
+// if something differs, and only once a check finds the target unchanged since the
+// previous one: a target still moving when the timer fires waits another settle
+// window (bounded, so a target that never stops is still reported). Directories
+// are watched, never files, so a save by rename
 // is seen. Where notifications fail, overflow, are not delivered (network and
 // virtual filesystems) or would cost too much (a directory above the entry cap),
 // the watch polls instead, says so through Mode, and keeps working.
@@ -14,6 +17,10 @@
 // moves down as the path appears, and back up when it disappears. Trees are not
 // watched: a directory target covers its entries (Depth 0) or one level below
 // (Depth 1).
+//
+// Ownership in a component tree (each watch an effect on the fiber that asked,
+// closable only by it; the service owned by its own fiber) is the job of package
+// watchfiber, so this package has no cordis dependency.
 package watch
 
 import (

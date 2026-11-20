@@ -13,10 +13,13 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/watch"
 )
 
+// settle is long against on-access scanners, which can stall a single write by a
+// few hundred milliseconds: a stall longer than settle is a genuinely settled
+// state, and would rightly be reported as a second change.
 const (
-	settle   = 100 * time.Millisecond
-	deadline = 5 * time.Second        // a notice must arrive within this
-	quiet    = 500 * time.Millisecond // and no second one within this after it
+	settle   = 500 * time.Millisecond
+	deadline = 5 * time.Second         // a notice must arrive within this
+	quiet    = 1200 * time.Millisecond // and no second one within this after it
 )
 
 // recorder collects callbacks.
@@ -68,9 +71,28 @@ func start(t *testing.T, s *watch.Service, target watch.Target) (watch.Watch, re
 	return w, r
 }
 
+// write makes one save of body at path, so the watcher has exactly one change to
+// settle on. A new file appears whole (atomic replace): os.WriteFile creates it
+// empty first, and on-access scanners can hold the create for longer than a
+// settle window, which is a genuinely settled empty file and a second save. An
+// existing file is written in place without truncating first, for the same reason.
 func write(t *testing.T, path, body string) {
 	t.Helper()
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+	f, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if errors.Is(err, os.ErrNotExist) {
+		if err := fsx.WriteFile(path, []byte(body), fsx.Options{Perm: 0o644}); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.WriteAt([]byte(body), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(int64(len(body))); err != nil {
 		t.Fatal(err)
 	}
 }

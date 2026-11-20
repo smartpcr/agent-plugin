@@ -39,7 +39,9 @@ const (
 // posixRename renames with POSIX semantics (Windows 10 1709 and later, NTFS): the
 // name is swapped even while readers hold the old file open with delete sharing,
 // which is how every reader through Open holds it. When durable, the file's
-// buffers, its new name included, are flushed before returning.
+// buffers, its new name included, are flushed before returning; when that flush
+// cannot be done after the swap (a read-only file, a failed flush) the error is an
+// *unflushedError, which the caller reports as published with ErrDurabilityUnknown.
 func posixRename(from, to string, replace, durable bool) error {
 	src, err := windows.UTF16PtrFromString(from)
 	if err != nil {
@@ -63,10 +65,11 @@ func posixRename(from, to string, replace, durable bool) error {
 			nil, windows.OPEN_EXISTING, windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
 	}
 	h, err := open()
+	flushable := durable
 	if durable && errors.Is(err, windows.ERROR_ACCESS_DENIED) {
-		// A read-only file cannot be opened for writing; its content was synced
-		// before it was closed, so only the name's flush is forgone.
-		durable, access = false, windows.DELETE|windows.SYNCHRONIZE
+		// A read-only file cannot be opened for writing, so its new name cannot be
+		// flushed. Publish anyway and report that, never a silent success.
+		flushable, access = false, windows.DELETE|windows.SYNCHRONIZE
 		h, err = open()
 	}
 	if err != nil {
@@ -85,8 +88,13 @@ func posixRename(from, to string, replace, durable bool) error {
 	if err := windows.SetFileInformationByHandle(h, windows.FileRenameInfoEx, (*byte)(unsafe.Pointer(info)), uint32(size)); err != nil {
 		return err
 	}
-	if durable {
-		return windows.FlushFileBuffers(h)
+	switch {
+	case flushable:
+		if err := windows.FlushFileBuffers(h); err != nil {
+			return &unflushedError{cause: err}
+		}
+	case durable:
+		return &unflushedError{cause: windows.ERROR_ACCESS_DENIED}
 	}
 	return nil
 }

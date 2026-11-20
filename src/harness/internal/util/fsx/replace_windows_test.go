@@ -98,17 +98,37 @@ func TestMoveFileExFallback(t *testing.T) {
 	assertNoStaged(t, dir)
 }
 
+// TestDurableReadOnlyReplace: a durable publication of a read-only result cannot
+// flush its new name after a POSIX rename (that needs a writable handle), so it
+// reports ErrDurabilityUnknown with the content in place and no stage left behind;
+// the MoveFileEx path writes the rename through and succeeds.
 func TestDurableReadOnlyReplace(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "ro")
-	if err := WriteFile(path, []byte("x"), Options{Perm: 0o444, Durable: true}); err != nil {
-		t.Fatal(err)
-	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ro")
 	t.Cleanup(func() { os.Chmod(path, 0o644) })
+	err := WriteFile(path, []byte("x"), Options{Perm: 0o444, Durable: true})
+	if !errors.Is(err, ErrDurabilityUnknown) || !errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+		t.Fatalf("read-only durable publish: %v", err)
+	}
 	if got, _ := ReadFile(path); string(got) != "x" {
 		t.Fatalf("content %q", got)
 	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
+		t.Fatalf("left behind: %v", entries)
+	}
 	if _, err := ReadFile(path + ".none"); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("missing file: %v", err)
+	}
+
+	usePOSIXRename = false
+	t.Cleanup(func() { usePOSIXRename = true })
+	other := filepath.Join(dir, "ro2")
+	t.Cleanup(func() { os.Chmod(other, 0o644) })
+	if err := WriteFile(other, []byte("y"), Options{Perm: 0o444, Durable: true}); err != nil {
+		t.Fatalf("write-through publish: %v", err)
+	}
+	if got, _ := ReadFile(other); string(got) != "y" {
+		t.Fatalf("content %q", got)
 	}
 }
 

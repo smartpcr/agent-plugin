@@ -14,8 +14,9 @@ var (
 	ErrInUse = errors.New("fsx: file in use")
 	// ErrCrossDevice: the source and destination are on different volumes.
 	ErrCrossDevice = errors.New("fsx: different volumes")
-	// ErrDurabilityUnknown: the new content is in place but syncing its directory
-	// failed, so whether it survives power loss is unknown.
+	// ErrDurabilityUnknown: the new content is in place but the step making its
+	// publication durable (a directory sync, a flush of the new name) failed or
+	// could not be taken, so whether it survives power loss is unknown.
 	ErrDurabilityUnknown = errors.New("fsx: content in place, durability unknown")
 	// ErrPermRequired: the target does not exist and the options state no mode.
 	ErrPermRequired = errors.New("fsx: a mode is required to create a file")

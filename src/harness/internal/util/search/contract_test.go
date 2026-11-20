@@ -2,6 +2,7 @@ package search
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // TestGrepNoPhantomEOFLine: the empty read after a final terminator is not a line,
@@ -287,5 +289,64 @@ func TestMatcher(t *testing.T) {
 		if got := m.Ignored(tc.path, tc.isDir); got != tc.want {
 			t.Errorf("Ignored(%q) = %v, want %v", tc.path, got, tc.want)
 		}
+	}
+}
+
+// stalled is a Source whose file reads block until released, then fail as an
+// interrupted read would.
+type stalled struct {
+	Source
+	opened  chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *stalled) Open(name string) (io.ReadCloser, error) {
+	f, err := s.Source.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	s.once.Do(func() { close(s.opened) })
+	return stalledFile{f, s.release}, nil
+}
+
+type stalledFile struct {
+	io.ReadCloser
+	release chan struct{}
+}
+
+func (f stalledFile) Read([]byte) (int, error) {
+	<-f.release
+	return 0, errors.New("read interrupted")
+}
+
+// TestGrepCancelAfterWalk: the walk has finished and only a scan is still running
+// when the caller cancels. The search is aborted, not complete.
+func TestGrepCancelAfterWalk(t *testing.T) {
+	src := &stalled{Source: tree(t, map[string]string{"a.txt": "needle\n"}), opened: make(chan struct{}), release: make(chan struct{})}
+	ctx, cancel := context.WithCancel(t.Context())
+	type out struct {
+		sum Summary
+		err error
+	}
+	done := make(chan out, 1)
+	go func() {
+		sum, err := Local{Workers: 1}.Grep(ctx, GrepQuery{From: src, Pattern: "needle"}, func(Match) bool { return true })
+		done <- out{sum, err}
+	}()
+	t.Cleanup(func() { cancel(); close(src.release); <-done })
+	<-src.opened
+	// One file: once it is being scanned the walk has nothing left to list.
+	<-time.After(50 * time.Millisecond)
+	cancel()
+	src.release <- struct{}{}
+	got := <-done
+	done <- got
+	var e *Error
+	if !errors.As(got.err, &e) || e.Reason() != ReasonAborted || !errors.Is(got.err, context.Canceled) {
+		t.Errorf("error %v, want aborted", got.err)
+	}
+	if !got.sum.Incomplete || got.sum.Reason != CutAborted {
+		t.Errorf("summary %+v, want aborted", got.sum)
 	}
 }

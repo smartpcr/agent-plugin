@@ -244,6 +244,10 @@ func (w *watch) interval() time.Duration {
 	return 0
 }
 
+// maxHold bounds, in settle windows, how long a still-moving target defers its
+// notice.
+const maxHold = 20
+
 func (w *watch) run(ctx context.Context) {
 	defer close(w.exited)
 	defer w.s.forget(w)
@@ -276,6 +280,7 @@ func (w *watch) run(ctx context.Context) {
 	}()
 	retick()
 	seen := w.last
+	var held time.Time
 
 	switch {
 	case w.startErr != nil:
@@ -307,13 +312,25 @@ func (w *watch) run(ctx context.Context) {
 				settle.Reset(w.t.Settle)
 			}
 		case <-settle.C:
+			// A change has settled only when the target looks the same as at the
+			// previous check: if it still moved, wait another settle window (up to
+			// maxHold, so a target that never stops is still reported).
+			cur := w.snapshot()
+			if !cur.same(seen) && (held.IsZero() || time.Since(held) < maxHold*w.t.Settle) {
+				if held.IsZero() {
+					held = time.Now()
+				}
+				seen = cur
+				settle.Reset(w.t.Settle)
+				continue
+			}
+			held = time.Time{}
 			var err error
 			if w.Mode() != Poll {
-				if err = w.sync(w.snapshot().n); err != nil {
+				if err = w.sync(cur.n); err != nil {
 					w.toPoll()
 				}
 			}
-			cur := w.snapshot()
 			moved := !cur.same(w.last)
 			w.last, seen = cur, cur
 			retick()
@@ -395,7 +412,13 @@ func (w *watch) snapshot() snap {
 				continue
 			}
 			h.Write([]byte{0, 'f'})
-			if fi, err := e.Info(); err == nil {
+			// Stat the entry itself: on Windows the directory listing's sizes and
+			// times are updated lazily, so they can move after a change settled.
+			fi, err := os.Lstat(filepath.Join(dir, e.Name()))
+			if err != nil {
+				fi, err = e.Info()
+			}
+			if err == nil {
 				h.Write(strconv.AppendInt(nil, fi.Size(), 10))
 				h.Write([]byte{':'})
 				h.Write(strconv.AppendInt(nil, fi.ModTime().UnixNano(), 10))

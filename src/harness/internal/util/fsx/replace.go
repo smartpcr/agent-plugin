@@ -113,6 +113,12 @@ func publish(path string, write func(io.Writer) error, opt Options, exclusive bo
 		err = renameReplace(stage, path, opt.Durable)
 	}
 	if err != nil {
+		var u *unflushedError
+		if errors.As(err, &u) {
+			// The name was swapped but its flush could not be done.
+			published = true
+			return fmt.Errorf("%w: %s: %w", ErrDurabilityUnknown, path, u.cause)
+		}
 		return &os.LinkError{Op: "publish", Old: stage, New: path, Err: kind(err)}
 	}
 	published = true
@@ -123,6 +129,13 @@ func publish(path string, write func(io.Writer) error, opt Options, exclusive bo
 	}
 	return nil
 }
+
+// unflushedError is a durable rename that published the new name but could not
+// make it durable. It deliberately does not unwrap: nothing that inspects a
+// failed rename (retry, fallback, error kinds) may mistake it for one.
+type unflushedError struct{ cause error }
+
+func (e *unflushedError) Error() string { return "published, not flushed: " + e.cause.Error() }
 
 // fill runs write on the staged file, sets its final mode, syncs it when durable and
 // closes it.

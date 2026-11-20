@@ -127,12 +127,14 @@ func (l Local) Grep(ctx context.Context, q GrepQuery, emit func(Match) bool) (Su
 			select {
 			case ordered <- j:
 			case <-ctx.Done():
+				s.cut.Store(true)
 				return false
 			}
 			select {
 			case jobs <- j:
 				return true
 			case <-ctx.Done():
+				s.cut.Store(true)
 				j.res <- result{}
 				return false
 			}
@@ -193,6 +195,12 @@ func (l Local) Grep(ctx context.Context, q GrepQuery, emit func(Match) bool) (Su
 			walkErr = nil
 		}
 	}
+	if stopped == "" && walkErr == nil && s.cut.Load() && parent.Err() != nil {
+		// The walk finished but the caller cancelled while files were still being
+		// scanned: the result is as aborted as one cut short mid-walk.
+		sum.Incomplete, sum.Reason = true, CutAborted
+		walkErr = &Error{reason: ReasonAborted, Msg: "search cancelled", Err: parent.Err()}
+	}
 	return sum, walkErr
 }
 
@@ -223,24 +231,26 @@ type scanner struct {
 	ctx     context.Context
 	output  Output
 	read    atomic.Int64
+	// cut is set when cancellation ended a scan early, so the file was not
+	// fully searched.
+	cut atomic.Bool
 }
 
 func (s *scanner) scan(path string) result {
 	var r result
 	if s.ctx.Err() != nil {
+		s.cut.Store(true)
 		return r
 	}
 	f, err := s.src.Open(path)
 	if err != nil {
-		r.unreadable = true
-		return r
+		return s.failed(r)
 	}
 	defer f.Close()
 	br := bufio.NewReaderSize(f, 64<<10)
 	head, err := br.Peek(sniffBytes)
 	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, bufio.ErrBufferFull) {
-		r.unreadable = true
-		return r
+		return s.failed(r)
 	}
 	if fsx.IsBinarySniff(head) {
 		return r
@@ -248,16 +258,14 @@ func (s *scanner) scan(path string) result {
 	var line []byte
 	for n := 1; ; n++ {
 		if n%ctxEvery == 0 && s.ctx.Err() != nil {
+			s.cut.Store(true)
 			return r
 		}
 		ln, err := s.readLine(br, line[:0])
 		line = ln.text
 		switch {
-		case err != nil && s.ctx.Err() != nil:
-			return r
 		case err != nil:
-			r.unreadable = true
-			return r
+			return s.failed(r)
 		case ln.overBytes:
 			r.overBytes = true
 			return r
@@ -278,6 +286,17 @@ func (s *scanner) scan(path string) result {
 			return r
 		}
 	}
+}
+
+// failed records a read error: a file that could not be read, unless the search
+// was cancelled meanwhile, which is what interrupted it.
+func (s *scanner) failed(r result) result {
+	if s.ctx.Err() != nil {
+		s.cut.Store(true)
+	} else {
+		r.unreadable = true
+	}
+	return r
 }
 
 func (s *scanner) wanted(line []byte) bool {
