@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -245,9 +246,15 @@ func (s *testLayers) goldenTestFailsWithDiff(want, got string) error {
 	if s.exitCode == 0 || !strings.Contains(s.output, "--- FAIL: TestE2EGoldenDrift") {
 		return fmt.Errorf("want the golden test to fail; exit %d:\n%s", s.exitCode, s.output)
 	}
-	for _, frag := range []string{"differs", "--- want", "+++ got", "-" + want, "+" + got} {
-		if !strings.Contains(s.output, frag) {
-			return fmt.Errorf("failure output lacks %q:\n%s", frag, s.output)
+	if !strings.Contains(s.output, "differs") {
+		return fmt.Errorf("failure output lacks %q:\n%s", "differs", s.output)
+	}
+	// Each diff line must appear as a whole line; go test indents the
+	// continuation lines of a t.Errorf message, so leading blanks are allowed.
+	for _, line := range []string{"--- want", "+++ got", "-" + want, "+" + got} {
+		re := regexp.MustCompile(`(?m)^[ \t]*` + regexp.QuoteMeta(line) + `\r?$`)
+		if !re.MatchString(s.output) {
+			return fmt.Errorf("failure output lacks the diff line %q:\n%s", line, s.output)
 		}
 	}
 	return nil
