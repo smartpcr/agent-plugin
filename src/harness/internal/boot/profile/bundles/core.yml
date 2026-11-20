@@ -1,0 +1,8 @@
+# core: the entries every profile starts with (DH-ADR-BOOT-2). The full content is
+# DH-D-BUNDLE-1's; this layer is parsed by the YAML codec like any other layer.
+- insert:
+    - id: logging
+      name: boot.logging
+      config:
+        destination: stderr
+        level: info

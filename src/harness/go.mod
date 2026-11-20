@@ -30,6 +30,13 @@ require (
 	github.com/google/jsonschema-go v0.4.3
 	github.com/smartpcr/agent-plugin/src/go v0.1.5-0.20261120142542-a7caf0f79ab0
 	github.com/smartpcr/agent-plugin/src/sdk v0.0.0-20261119220503-a647d4984790
+	// The fixed command tree, help routing and completion scripts of internal/cli
+	// (DH-D-CLI-1): chosen by docs/harness/libs/commander.md section 5
+	// (DH-LIB-COMMANDER); Apache-2.0, links pflag and, on Windows only, mousetrap.
+	github.com/spf13/cobra v1.10.2
+	// Option parsing of internal/cli/cmdline in both stages (DH-ADR-COMMANDER-1):
+	// chosen by docs/harness/libs/commander.md section 5; BSD-3-Clause, no requirements.
+	github.com/spf13/pflag v1.0.10
 	// The one YAML dialect, imported only by internal/boot/yamlx (DH-D-BOOT-4,
 	// DH-D-LOADER-2): chosen by docs/harness/libs/yaml.md DH-ADR-YAML-1 for comments
 	// on nodes and positions; Apache-2.0 and MIT, no dependencies (RM-10).
@@ -46,5 +53,5 @@ require (
 	github.com/hashicorp/go-immutable-radix v1.3.1 // indirect
 	github.com/hashicorp/go-memdb v1.3.5 // indirect
 	github.com/hashicorp/golang-lru v0.5.4 // indirect
-	github.com/spf13/pflag v1.0.10 // indirect
+	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 )

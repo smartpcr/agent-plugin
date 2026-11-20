@@ -7,17 +7,20 @@ import (
 	"testing"
 )
 
-// runMain runs main with os.Stdout redirected to a file and returns what it printed.
-func runMain(t *testing.T) string {
+// runMain runs main as `dsh <args...>` with os.Stdout redirected to a file and
+// returns what it printed and the status it exited with.
+func runMain(t *testing.T, args ...string) (string, int) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "stdout")
 	file, err := os.Create(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	stdout := os.Stdout
-	os.Stdout = file
-	defer func() { os.Stdout = stdout }()
+	stdout, savedArgs, savedExit := os.Stdout, os.Args, exit
+	status := -1
+	os.Stdout, os.Args = file, append([]string{"dsh"}, args...)
+	exit = func(code int) { status = code }
+	defer func() { os.Stdout, os.Args, exit = stdout, savedArgs, savedExit }()
 	main()
 	if err := file.Close(); err != nil {
 		t.Fatal(err)
@@ -26,15 +29,16 @@ func runMain(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return string(out)
+	return string(out), status
 }
 
 func TestMainPrintsReleaseVersion(t *testing.T) {
 	saved := version
 	t.Cleanup(func() { version = saved })
 	version = "v1.2.3"
-	if got := runMain(t); got != "dsh v1.2.3\n" {
-		t.Errorf("main printed %q, want %q", got, "dsh v1.2.3\n")
+	got, status := runMain(t, "--version")
+	if status != 0 || !strings.HasPrefix(got, "dsh v1.2.3 (") {
+		t.Errorf("main printed %q with status %d, want \"dsh v1.2.3 (...)\" and 0", got, status)
 	}
 }
 
@@ -42,9 +46,9 @@ func TestMainFallsBackToBuildVersion(t *testing.T) {
 	saved := version
 	t.Cleanup(func() { version = saved })
 	version = ""
-	got := runMain(t)
+	got, status := runMain(t, "version")
 	v, ok := strings.CutPrefix(strings.TrimSuffix(got, "\n"), "dsh ")
-	if !ok || v == "" || strings.ContainsAny(v, " \n") {
-		t.Errorf("main printed %q, want \"dsh <module version>\"", got)
+	if status != 0 || !ok || v == "" || strings.Contains(v, "\n") || strings.HasPrefix(v, " ") {
+		t.Errorf("main printed %q with status %d, want \"dsh <module version> (...)\"", got, status)
 	}
 }

@@ -1,0 +1,151 @@
+# dsh command reference
+
+Generated from the command tree by `dsh catalog commands`. Do not edit by hand.
+
+## dsh
+
+```text
+Usage: dsh [options] [profile|command...]
+
+The DeepSeek harness: launch a profile or run a fixed command.
+
+Launcher options come before the profile or command name. Every word after a
+profile name belongs to the profile's app, --help included.
+
+Commands:
+  help        Show the help of a command or a profile
+  version     Print the version of this build
+  catalog     Print the generated catalogs of this build
+  completion  Print a shell completion script
+
+Profiles:
+  web          Start the host and open the web UI
+  headless     Run one task without a UI and print the answer
+  sdk          Serve the SDK protocol on standard input and output
+  sdk-minimal  Serve the SDK protocol with the minimal agent preset
+  acp          Serve the Agent Client Protocol on standard input and output
+
+Options:
+      --home <dir>      Harness home (default $DSH_HOME, then ~/.dsh)
+      --profile <name>  Profile to launch; every free word goes to its app
+      --layer <file>    Add a config layer above the user layer (repeatable)
+      --safe            Start with optional bundles and plugins off
+  -V, --version         Print the version and exit
+  -h, --help            Show this help
+
+Examples:
+  dsh web
+      Start the host and open the web UI
+  dsh --home ./h --layer extra.yml headless "run the tests" --json
+  dsh --profile sdk
+      How programs start the SDK protocol
+```
+
+## dsh help
+
+```text
+Usage: dsh help [options] [command...]
+
+Show the help of a command or a profile
+
+Arguments:
+  command  A command path or a profile name
+
+Options:
+  -h, --help  Show this help
+
+Examples:
+  dsh help catalog commands
+```
+
+## dsh version
+
+```text
+Usage: dsh version [options]
+
+Print the version of this build
+
+Options:
+      --json  Print the result as one JSON value
+  -h, --help  Show this help
+```
+
+## dsh catalog
+
+```text
+Usage: dsh catalog [options] <command>...
+
+Print the generated catalogs of this build
+
+Commands:
+  commands  Print the command reference
+
+Options:
+  -h, --help  Show this help
+```
+
+## dsh catalog commands
+
+```text
+Usage: dsh catalog commands [options]
+
+Print the command reference
+
+Options:
+      --json  Print the result as one JSON value
+  -h, --help  Show this help
+
+Examples:
+  dsh catalog commands > reference.md
+```
+
+## dsh completion
+
+```text
+Usage: dsh completion [options] <shell>
+
+Print a shell completion script
+
+Arguments:
+  shell  bash, zsh, fish, powershell
+
+Options:
+  -h, --help  Show this help
+
+Examples:
+  dsh completion bash > /etc/bash_completion.d/dsh
+  dsh completion powershell | Out-String | Invoke-Expression
+```
+
+## Profiles
+
+| Profile | Bundles | Summary |
+|---|---|---|
+| `web` | core, web | Start the host and open the web UI |
+| `headless` | core, headless | Run one task without a UI and print the answer |
+| `sdk` | core, sdk | Serve the SDK protocol on standard input and output |
+| `sdk-minimal` | core, minimal, sdk | Serve the SDK protocol with the minimal agent preset |
+| `acp` | core, acp | Serve the Agent Client Protocol on standard input and output |
+
+## Exit statuses
+
+| Status | Name | Meaning |
+|---|---|---|
+| 0 | ok | Success; also help and version |
+| 1 | failed | The thing asked for ran and failed |
+| 2 | usage | Usage error: unknown command or flag, a broken rule between flags, a missing argument |
+| 3 | denied | Denied by policy, a guard or a person |
+| 4 | unavailable | Unavailable: no host, no endpoint, a capability that is missing |
+| 5 | invalid | Invalid input or not found: an unknown session, tool or profile |
+| 6 | busy | Busy or conflict |
+| 7 | limit | A limit or a timeout ended the work |
+| 8 | cancelled | Cancelled, or the outcome is unknown |
+| 70 | fatal | Fatal error with a report written |
+| 78 | config | The configuration cannot be composed, or a required entry failed to load |
+| 124 | forced | Forced exit: the exit deadline passed during shutdown |
+| 125 | stalled | A stdio client stopped reading |
+| 130 | interrupted | Interrupted by Ctrl-C |
+
+## Reserved words
+
+No profile may be called: `__complete`, `__completeNoDesc`, `catalog`, `completion`, `help`, `sandbox-launch`, `ssh-helper`, `version`.
