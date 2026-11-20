@@ -136,11 +136,7 @@ func (g *Registration) Replace(routes ...Route) error {
 		if _, dup := next[r.ID]; dup {
 			return fmt.Errorf("%w: route %q is listed twice by %q", ErrDuplicateRoute, r.ID, g.owner)
 		}
-		e := &entry{route: r.clone(), reg: g}
-		if r.MaxConcurrent > 0 {
-			e.slots = make(chan struct{}, r.MaxConcurrent)
-		}
-		next[r.ID] = e
+		next[r.ID] = &entry{route: r.clone(), reg: g}
 	}
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
@@ -150,6 +146,19 @@ func (g *Registration) Replace(routes ...Route) error {
 	for id := range next {
 		if cur, ok := rt.routes[id]; ok && cur.reg != g {
 			return fmt.Errorf("%w: route %q is already served by %q", ErrDuplicateRoute, id, cur.reg.owner)
+		}
+	}
+	// A route this registration keeps with the same cap keeps its slots, so
+	// attempts in flight across the Replace still count against the cap.
+	for id, e := range next {
+		n := e.route.MaxConcurrent
+		if n == 0 {
+			continue
+		}
+		if cur, ok := rt.routes[id]; ok && cur.slots != nil && cap(cur.slots) == n {
+			e.slots = cur.slots
+		} else {
+			e.slots = make(chan struct{}, n)
 		}
 	}
 	for _, id := range g.ids {
