@@ -11,31 +11,41 @@ import (
 )
 
 // Process runs a launch of the running process: Run, with the process's stop
-// signals. The first interrupt or termination signal ends the context, an
-// Interrupted stop (status 130); a second one, during shutdown, ends the shutdown
-// wait at once (status 124).
+// signals. A first SIGINT ends the context, an Interrupted stop (status 130); a
+// first SIGTERM or SIGHUP is the supervisor's ordinary stop, a Terminated stop
+// (status 0 inside the shutdown bound). A second signal of any kind, during
+// shutdown, ends the shutdown wait at once (status 124).
 func Process(ctx context.Context, o Options) int {
+	sigs := make(chan os.Signal, 2)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(sigs)
+	return runSignals(ctx, o, sigs)
+}
+
+// runSignals is Run, with each signal read from sigs turned into a stop.
+func runSignals(ctx context.Context, o Options, sigs <-chan os.Signal) int {
 	if o.App == nil {
 		o.App = launch.NewApp()
 	}
-	sigs := make(chan os.Signal, 2)
-	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
-	defer signal.Stop(sigs)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	quit := make(chan struct{})
 	defer close(quit)
 	go func() {
 		for first := true; ; first = false {
+			var sig os.Signal
 			select {
-			case <-sigs:
+			case sig = <-sigs:
 			case <-quit:
 				return
 			}
-			if first {
-				cancel()
-			} else {
+			switch {
+			case !first:
 				o.App.Stop(launch.Interrupted, output.Interrupted)
+			case sig == os.Interrupt:
+				cancel()
+			default:
+				o.App.Stop(launch.Terminated, output.OK)
 			}
 		}
 	}()
