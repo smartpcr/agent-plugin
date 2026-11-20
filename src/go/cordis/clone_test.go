@@ -29,3 +29,16 @@ func TestCloneConfigCopiesReferencesAndKeepsCycles(t *testing.T) {
 		t.Fatal("nil config was not kept as nil")
 	}
 }
+
+func TestCloneConfigKeepsDefinedPointerTypes(t *testing.T) {
+	type value struct{ N int }
+	type valuePtr *value
+	original := valuePtr(&value{N: 1})
+	clone, ok := cloneConfig(original).(valuePtr)
+	if !ok {
+		t.Fatalf("want a valuePtr, got %T", cloneConfig(original))
+	}
+	if clone == original || (*clone).N != 1 {
+		t.Fatalf("want a distinct copy of N=1, got %p (original %p)", clone, original)
+	}
+}

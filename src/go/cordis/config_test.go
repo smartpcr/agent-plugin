@@ -259,6 +259,28 @@ func TestResolutionCannotMutateStoredConfigViews(t *testing.T) {
 		NoError(t, err)
 		Equal(t, 10, effective(t, fiber).(*sized).N, "resolving the effective config changed it")
 	})
+
+	t.Run("defined pointer", func(t *testing.T) {
+		type sizedPtr *sized
+		raw := sizedPtr(&sized{N: 3})
+		var hooked any
+		Must(root.OnConfig(func(fiber *cordis.Fiber, candidate any) (any, error) {
+			if fiber.Name() == "defined" {
+				hooked = candidate
+			}
+			return candidate, nil
+		}))
+		var got sizedPtr
+		fiber := MustWait(t, Must(root.Use(cordis.Define("defined", func(_ *cordis.Context, config sizedPtr) error {
+			got = config
+			return nil
+		}), raw)))
+		_, isDefined := hooked.(sizedPtr)
+		True(t, isDefined, fmt.Sprintf("the hook received %T, not sizedPtr", hooked))
+		True(t, got != nil && got != raw, "the body did not receive a copy of the defined pointer")
+		Equal(t, 3, (*got).N, "the body's config")
+		Equal(t, 3, (*effective(t, fiber).(sizedPtr)).N, "effective")
+	})
 }
 
 func TestConfigHookTransformsEffectiveViewOnly(t *testing.T) {

@@ -33,7 +33,8 @@ func cloneValue(v reflect.Value, seen map[cloneKey]reflect.Value) reflect.Value 
 		if done, ok := seen[key]; ok {
 			return done
 		}
-		clone := reflect.New(v.Type().Elem())
+		// Convert keeps a defined pointer type (type P *T) rather than a plain *T.
+		clone := reflect.New(v.Type().Elem()).Convert(v.Type())
 		seen[key] = clone
 		clone.Elem().Set(cloneValue(v.Elem(), seen))
 		return clone
