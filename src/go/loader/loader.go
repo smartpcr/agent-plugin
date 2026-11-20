@@ -8,8 +8,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -24,7 +24,11 @@ var Key = cordis.NewServiceKey[*Service]("loader")
 // Options configures the loader.
 type Options struct {
 	// Resolver maps entry names to components. Nil uses Registered.
-	Resolver Resolver
+	Resolver Resolver `json:"-"`
+	// Evaluator computes the expressions in entries. Nil rejects every entry that
+	// holds an expression; src/go ships none. Options is deep-copied like any
+	// config, so an evaluator keeps shared state behind unexported pointer fields.
+	Evaluator Evaluator `json:"-"`
 }
 
 // Component provides the loader service.
@@ -38,18 +42,24 @@ var Component = cordis.Construct("LoaderService", newService)
 // cordis notifications; ensureMu serialises the check-and-create of each entry; apply
 // serialises whole reconciliations.
 type Service struct {
-	ctx      *cordis.Context
-	resolver Resolver
-	changed  listenerList
+	ctx       *cordis.Context
+	resolver  Resolver
+	evaluator Evaluator
+	changed   listenerList
 
 	apply    sync.Mutex
 	ensureMu sync.Mutex
+	// useGate is held while an entry's fiber is created and registered, so the config
+	// hook of its first load finds it in byFiber
+	useGate sync.RWMutex
 
 	mu      sync.Mutex
 	entries map[string]*Entry
 	byFiber map[*cordis.Fiber]*Entry
 	realms  map[string]*cordis.IsolateKey
-	current []EntryOptions
+	// live fibers holding each shared realm key; a key is dropped at zero
+	realmUsers map[string]int
+	current    []EntryOptions
 	// entries committed at runtime while an Apply runs; their config wins over it
 	committed map[string]bool
 }
@@ -60,11 +70,13 @@ func newService(ctx *cordis.Context, options Options) (*Service, error) {
 		resolver = Registered
 	}
 	s := &Service{
-		ctx:      ctx,
-		resolver: resolver,
-		entries:  map[string]*Entry{},
-		byFiber:  map[*cordis.Fiber]*Entry{},
-		realms:   map[string]*cordis.IsolateKey{},
+		ctx:        ctx,
+		resolver:   resolver,
+		evaluator:  options.Evaluator,
+		entries:    map[string]*Entry{},
+		byFiber:    map[*cordis.Fiber]*Entry{},
+		realms:     map[string]*cordis.IsolateKey{},
+		realmUsers: map[string]int{},
 	}
 	if _, err := Key.Provide(ctx, s); err != nil {
 		return nil, err
@@ -73,6 +85,9 @@ func newService(ctx *cordis.Context, options Options) (*Service, error) {
 		remove := ctx.Internal().OnCommit(s.onCommit)
 		return func() error { remove(); return nil }, nil
 	}); err != nil {
+		return nil, err
+	}
+	if _, err := ctx.OnConfig(s.configHook); err != nil {
 		return nil, err
 	}
 	return s, nil
@@ -235,6 +250,7 @@ func (s *Service) SetDisabled(id string, disabled bool) error {
 	tree := s.Snapshot()
 	options := s.Options(entry)
 	options.Disabled = disabled
+	options.DisabledExpr = ""
 	patch(tree, id, options)
 	if err := s.Apply(tree); err != nil {
 		return err
@@ -249,27 +265,23 @@ type flatEntry struct {
 }
 
 // flatten indexes the tree by tree id, assigning ids to anonymous entries in place.
-// An invalid entry is reported on its own and skipped with its subtree, so a live
-// entry with that id is disposed, and its siblings still load.
+// Every entry is validated; an invalid entry is reported once with all of its issues
+// and skipped with its subtree, so a live entry with that id is disposed, and its
+// siblings still load.
 func (s *Service) flatten(entries []EntryOptions, parentID string, sink map[string]flatEntry, sequence *[]string) {
 	for i := range entries {
 		options := &entries[i]
 		if options.ID == "" {
 			options.ID = newID()
 		}
-		var issue string
-		switch {
-		case strings.Contains(options.ID, Separator):
-			issue = fmt.Sprintf("entry id %q must not contain %q", options.ID, Separator)
-		case !options.Group && strings.TrimSpace(options.Name) == "":
-			issue = fmt.Sprintf("entry %q requires a name", options.ID)
-		}
 		id := compose(parentID, options.ID)
-		if _, dup := sink[id]; issue == "" && dup {
-			issue = fmt.Sprintf("duplicate entry id %q", id)
-		}
-		if issue != "" {
-			s.ctx.Logger().Error(errors.New("loader: " + issue))
+		_, dup := sink[id]
+		if issues := s.check(*options, id, dup); len(issues) > 0 {
+			s.ctx.Logger().Error(&EntryError{ID: id, Issues: issues})
+			// the subtree is not loaded, but its own faults are still reported
+			s.walkChecks(options.Children, id, map[string]bool{}, func(id string, issues []Issue) {
+				s.ctx.Logger().Error(&EntryError{ID: id, Issues: issues})
+			})
 			continue
 		}
 		sink[id] = flatEntry{options: *options, parentID: parentID}
@@ -280,29 +292,97 @@ func (s *Service) flatten(entries []EntryOptions, parentID string, sink map[stri
 	}
 }
 
+// Validate checks every entry of the tree, children included, without applying it,
+// and returns all issues in document order: decoding faults, ids, names, duplicates,
+// unresolvable components and rejected expressions. An issue of an entry decoded by
+// Parse carries the file, line and column of the value at fault.
+func (s *Service) Validate(entries []EntryOptions) []Issue {
+	var issues []Issue
+	s.walkChecks(entries, "", map[string]bool{}, func(_ string, found []Issue) {
+		issues = append(issues, found...)
+	})
+	return issues
+}
+
+// walkChecks checks level and its descendants in document order without changing
+// them, and calls report with the issues of each faulty entry. An anonymous entry gets
+// a traversal-only identity from its index, so the children of two anonymous groups
+// never collide; seen holds the tree ids met so far, for duplicates.
+func (s *Service) walkChecks(level []EntryOptions, parentID string, seen map[string]bool, report func(id string, issues []Issue)) {
+	for i, options := range level {
+		var id string
+		duplicate := false
+		if options.ID == "" {
+			// Separator cannot occur in a valid id, so this cannot match one
+			id = compose(parentID, fmt.Sprintf("%s#%d", Separator, i))
+		} else {
+			id = compose(parentID, options.ID)
+			duplicate = seen[id]
+			seen[id] = true
+		}
+		if issues := s.check(options, id, duplicate); len(issues) > 0 {
+			report(id, issues)
+		}
+		s.walkChecks(options.Children, id, seen, report)
+	}
+}
+
+// check returns every issue of one entry (not of its children).
+func (s *Service) check(options EntryOptions, id string, duplicate bool) []Issue {
+	issues := slices.Clone(options.issues)
+	faulty := func(relative string) bool {
+		_, path := options.position(relative)
+		return slices.ContainsFunc(issues, func(issue Issue) bool { return path != "" && issue.Path == path })
+	}
+	add := func(relative, message string) {
+		pos, path := options.position(relative)
+		issues = append(issues, Issue{Pos: pos, Path: path, Message: message})
+	}
+	if strings.Contains(options.ID, Separator) {
+		add("id", fmt.Sprintf("entry id %q must not contain %q", options.ID, Separator))
+	} else if duplicate {
+		add("id", fmt.Sprintf("duplicate entry id %q", id))
+	}
+	if !options.Group && !faulty("name") {
+		if strings.TrimSpace(options.Name) == "" {
+			add("name", fmt.Sprintf("entry %q requires a name", options.ID))
+		} else if _, ok := s.resolver.Resolve(options.Name); !ok {
+			add("name", fmt.Sprintf("cannot resolve component %q", options.Name))
+		}
+	}
+	return append(issues, s.checkExprs(options)...)
+}
+
 // ensure creates the entry's fiber if it can load now, or returns an update to run
 // for a live fiber whose config changed.
 func (s *Service) ensure(entry *Entry) (func(), error) {
+	// a disabled expression is evaluated before taking any lock
+	s.mu.Lock()
+	options := entry.options.Clone()
+	scope, held := s.scopeLocked(entry)
+	s.mu.Unlock()
+	if held {
+		return nil, nil
+	}
+	disabled, err := s.evalDisabled(options, entry.id, scope)
+	if disabled || err != nil {
+		if s.Fiber(entry) != nil {
+			s.disposeFiber(entry)
+		}
+		return nil, err
+	}
+
 	s.ensureMu.Lock()
 	defer s.ensureMu.Unlock()
 
 	s.mu.Lock()
-	options := entry.options.Clone()
+	options = entry.options.Clone()
 	fiber := entry.fiber
 	applied := entry.applied
-	scope := s.ctx
-	held := false
-	if entry.parentID != "" {
-		parent := s.entries[entry.parentID]
-		if parent == nil || parent.scope == nil {
-			held = true // the enclosing group is disabled, pending or reloading
-		} else {
-			scope = parent.scope
-		}
-	}
+	scope, held = s.scopeLocked(entry)
 	s.mu.Unlock()
 
-	if options.Disabled || held {
+	if held || (options.DisabledExpr == "" && options.Disabled) {
 		return nil, nil
 	}
 
@@ -327,44 +407,66 @@ func (s *Service) ensure(entry *Entry) (func(), error) {
 		}, nil
 	}
 
-	names := slices.Sorted(func(yield func(string) bool) {
-		for name := range options.Isolate {
-			if !yield(name) {
-				return
-			}
-		}
-	})
+	names := slices.Sorted(maps.Keys(options.Isolate))
+	var labels []string
 	for _, name := range names {
-		scope = scope.IsolateWith(name, s.realmKey(name, options.Isolate[name], entry.id))
+		label, key := s.acquireRealm(name, options.Isolate[name], entry.id)
+		labels = append(labels, label)
+		scope = scope.IsolateWith(name, key)
+	}
+	for _, name := range slices.Sorted(maps.Keys(options.Intercept)) {
+		scope = scope.Intercept(name, slices.Clone(options.Intercept[name]))
 	}
 
 	var created *cordis.Fiber
-	var err error
 	if options.Group {
+		s.useGate.Lock()
 		created, err = scope.Apply("group:"+options.ID, func(groupCtx *cordis.Context) error {
 			return s.loadGroup(entry, groupCtx)
 		}, options.Inject...)
 	} else {
 		component, ok := s.resolver.Resolve(options.Name)
 		if !ok {
-			return nil, fmt.Errorf("loader: cannot resolve component %q", options.Name)
+			s.releaseRealms(labels)
+			pos, path := options.position("name")
+			return nil, &EntryError{ID: entry.id, Issues: []Issue{{Pos: pos, Path: path, Message: fmt.Sprintf("cannot resolve component %q", options.Name)}}}
 		}
 		var config any
 		if len(options.Config) > 0 {
 			config = options.Config
 		}
+		s.useGate.Lock()
 		created, err = scope.Use(component, config, options.Inject...)
 	}
 	if err != nil {
+		s.useGate.Unlock()
+		s.releaseRealms(labels)
 		return nil, err
 	}
 
 	s.mu.Lock()
 	entry.fiber = created
 	entry.applied = options.Config
+	stale := entry.realms
+	entry.realms = labels
 	s.byFiber[created] = entry
 	s.mu.Unlock()
+	s.useGate.Unlock()
+	s.releaseRealms(stale)
 	return nil, nil
+}
+
+// scopeLocked returns the context the entry loads in; held is true while its
+// enclosing group is disabled, pending or reloading.
+func (s *Service) scopeLocked(entry *Entry) (scope *cordis.Context, held bool) {
+	if entry.parentID == "" {
+		return s.ctx, false
+	}
+	parent := s.entries[entry.parentID]
+	if parent == nil || parent.scope == nil {
+		return nil, true
+	}
+	return parent.scope, false
 }
 
 // loadGroup is the body of a group entry: it records the group's scope and creates
@@ -382,6 +484,8 @@ func (s *Service) loadGroup(group *Entry, groupCtx *cordis.Context) error {
 				}
 				delete(s.byFiber, child.fiber)
 				child.fiber = nil
+				s.releaseRealmsLocked(child.realms)
+				child.realms = nil
 			}
 			return nil
 		}, nil
@@ -426,10 +530,13 @@ func (s *Service) disposeFiber(entry *Entry) {
 	if fiber != nil {
 		delete(s.byFiber, fiber)
 	}
+	realms := entry.realms
+	entry.realms = nil
 	s.mu.Unlock()
 	if fiber != nil {
 		fiber.Dispose()
 	}
+	s.releaseRealms(realms)
 }
 
 func (s *Service) remove(id string) {
@@ -442,7 +549,8 @@ func (s *Service) remove(id string) {
 	}
 }
 
-func (s *Service) realmKey(service, realm, entryID string) *cordis.IsolateKey {
+// acquireRealm returns the shared realm key of the label, counting the entry as a user.
+func (s *Service) acquireRealm(service, realm, entryID string) (string, *cordis.IsolateKey) {
 	label := service + "@" + realm
 	if realm == "true" {
 		label = service + "#" + entryID
@@ -454,7 +562,27 @@ func (s *Service) realmKey(service, realm, entryID string) *cordis.IsolateKey {
 		key = cordis.NewIsolateKey(label)
 		s.realms[label] = key
 	}
-	return key
+	s.realmUsers[label]++
+	return label, key
+}
+
+// releaseRealms drops one use of each label; a key with no users left is deleted.
+func (s *Service) releaseRealms(labels []string) {
+	if len(labels) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.releaseRealmsLocked(labels)
+}
+
+func (s *Service) releaseRealmsLocked(labels []string) {
+	for _, label := range labels {
+		if s.realmUsers[label]--; s.realmUsers[label] <= 0 {
+			delete(s.realmUsers, label)
+			delete(s.realms, label)
+		}
+	}
 }
 
 // onCommit records a runtime Update of an entry's fiber in the desired tree.

@@ -1,0 +1,2 @@
+base.json:4:9: [0].id: must be a string, got number
+base.json:8:11: [1].name: cannot resolve component "NoSuchComponent"
