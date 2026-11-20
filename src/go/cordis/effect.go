@@ -13,11 +13,17 @@ type EffectSeq func(yield func(Disposer) bool) error
 type EffectHandle struct {
 	fiber *Fiber
 	label string
+	// released is closed once the handle's last cleanup has returned.
+	released chan struct{}
 
 	// guarded by the tree lock
 	alive     bool
 	disposers []Disposer
 	pending   *task
+}
+
+func newEffectHandle(f *Fiber, label string) *EffectHandle {
+	return &EffectHandle{fiber: f, label: label, alive: true, released: make(chan struct{})}
 }
 
 // Label returns the label the effect was created with.
@@ -43,13 +49,15 @@ func (h *EffectHandle) Disposer() Disposer {
 }
 
 // Dispose releases the effect: it waits for a pending asynchronous acquisition, then
-// runs the collected cleanups in reverse order, logging their failures. Disposing a
-// disposed effect does nothing.
+// runs the collected cleanups in reverse order, logging their failures. A second
+// caller, concurrent or later, waits until the first caller's cleanups have returned.
+// A cleanup must not dispose its own handle, or wait for something that does.
 func (h *EffectHandle) Dispose() {
 	t := h.fiber.t
 	t.lock()
 	if !h.alive {
 		t.unlock()
+		<-h.released
 		return
 	}
 	h.alive = false
@@ -69,6 +77,11 @@ func (h *EffectHandle) Dispose() {
 	for i := len(disposers) - 1; i >= 0; i-- {
 		h.release(disposers[i])
 	}
+
+	t.lock()
+	h.fiber.settleLocked(h)
+	t.unlock()
+	close(h.released)
 }
 
 func (h *EffectHandle) String() string { return "Effect <" + h.label + ">" }

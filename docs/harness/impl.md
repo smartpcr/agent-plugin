@@ -482,8 +482,8 @@ The three P1 and P2 changes of this package wait for [DH-S-38](#dh-s-38) and
 
 **Steps.**
 
-- [ ] **2.1** [DH-D-CORDIS-1](libs/cordis.md#dh-d-cordis-1) Unload is complete, exclusive and final.
-- [ ] **2.2** [DH-D-CORDIS-2](libs/cordis.md#dh-d-cordis-2) A cancellation context for every loaded fiber.
+- [x] **2.1** [DH-D-CORDIS-1](libs/cordis.md#dh-d-cordis-1) Unload is complete, exclusive and final.
+- [x] **2.2** [DH-D-CORDIS-2](libs/cordis.md#dh-d-cordis-2) A cancellation context for every loaded fiber.
 - [ ] **2.3** [DH-D-CORDIS-3](libs/cordis.md#dh-d-cordis-3) Context values and scoped dispatch.
 - [ ] **2.4** [DH-D-CORDIS-4](libs/cordis.md#dh-d-cordis-4) Contained notification (`Notify`).
 - [ ] **2.5** [DH-D-CORDIS-7](libs/cordis.md#dh-d-cordis-7) An around key with separate request and result types.

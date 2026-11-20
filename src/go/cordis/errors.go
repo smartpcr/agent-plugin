@@ -8,8 +8,14 @@ import (
 )
 
 // ErrInactive is returned when an effect, service or component is created on a
-// context whose fiber has been disposed.
+// context whose fiber has been disposed or is unloading. It is also the lifetime
+// cause of a disposed fiber.
 var ErrInactive = errors.New("cordis: cannot create effect on inactive context")
+
+// ErrUnloading is the cause of a fiber lifetime cancelled because the fiber is leaving
+// its load (a restart, a provider withdrawn, a failed load, a parent unloading) without
+// being disposed; a disposed fiber's lifetime is cancelled with ErrInactive.
+var ErrUnloading = errors.New("cordis: fiber is unloading")
 
 // ErrNotInjected is wrapped by a ServiceError for a service the calling fiber did not
 // declare (and that no fiber on its walk to the root provides).

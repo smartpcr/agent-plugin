@@ -236,7 +236,7 @@ may block (it is the Go form of an async body); the fiber stays `Loading` meanwh
 `fiber.Wait()` blocks until no transition is in flight.
 
 **Errors and panics.** Calls that can fail return an `error` instead of throwing:
-`ErrInactive` for an effect on a disposed fiber, a `*ServiceError` for a failed lookup, a
+`ErrInactive` for an effect on a disposed or unloading fiber, a `*ServiceError` for a failed lookup, a
 `*ConfigError` for a rejected config. A panic in a body, `Init`, an effect or a cleanup
 is recovered as a `*PanicError` and treated like any other load or cleanup failure, so one
 faulty component cannot take the process down. Listener panics in `Emit`, `Bail` and
@@ -288,6 +288,25 @@ Ported against upstream `86f59e4`, the revision the .NET port tracks. Every beha
 the .NET port's [upstream sync table](../net/README.md#upstream-sync) is ported, and every
 .NET test has a Go counterpart named after it; the upstream issue number is in a comment
 after the test name.
+
+Changes made for the harness, beyond upstream and the .NET port (harness requirement, not
+upstream; tests in `cordis/unload_test.go`):
+
+- **Final unload** (`DH-D-CORDIS-1`). A fiber that is unloading refuses new effects,
+  services, listeners and child fibers with `ErrInactive`, so a cleanup cannot register
+  something that outlives the unload. A second `EffectHandle.Dispose` or `Fiber.Dispose`
+  caller waits until the first caller's cleanups have returned, and an unload waits for
+  handles another goroutine is releasing before it releases its providers. Disposing a
+  fiber that never loaded still releases effects created on its context. A fiber is
+  announced to `Internal.OnPlugin` only once its parent owns it, so a creation handler
+  that disposes it stops it before its body runs. A cleanup must not dispose its own
+  handle or wait for its own fiber's unload.
+- **Fiber lifetime** (`DH-D-CORDIS-2`). `Fiber.Lifetime()` / `Context.Lifetime()` is a
+  `context.Context` derived from the parent fiber's, fresh for each load, and cancelled
+  as soon as the fiber is asked to leave the load, before the unload waits for
+  dependents or runs cleanups. `context.Cause` is `ErrInactive` for a disposed fiber and
+  `ErrUnloading` otherwise; a fiber that is not loaded returns an already-cancelled
+  context. The root's lifetime ends with `root.Dispose()`.
 
 ## Upstream
 

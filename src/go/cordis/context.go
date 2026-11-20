@@ -1,6 +1,7 @@
 package cordis
 
 import (
+	"context"
 	"sync"
 )
 
@@ -265,3 +266,8 @@ func (c *Context) EffectIter(label string, seq EffectSeq) (*EffectHandle, error)
 
 // Dispose disposes this context's fiber; see Fiber.Dispose.
 func (c *Context) Dispose() { c.fiber.Dispose() }
+
+// Lifetime returns the cancellation context of this context's fiber's current load;
+// see Fiber.Lifetime. Contexts derived by Isolate and Intercept share it. A component
+// passes it to every blocking call, so leaving the load interrupts them.
+func (c *Context) Lifetime() context.Context { return c.fiber.Lifetime() }
