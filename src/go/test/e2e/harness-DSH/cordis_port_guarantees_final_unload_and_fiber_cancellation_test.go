@@ -66,6 +66,8 @@ type finalUnloadWorld struct {
 	// cancellation scenario
 	cancelFiber   *cordis.Fiber
 	effectExited  chan struct{}
+	effectGate    chan struct{}
+	waitDone      chan error
 	effectCause   atomic.Pointer[error]
 	effectReturns atomic.Int64
 	waitReturns   atomic.Int64
@@ -298,14 +300,18 @@ func (w *finalUnloadWorld) aRanAfterB() error {
 func (w *finalUnloadWorld) loadedFiberWithBlockingEffect() error {
 	w.newRoot()
 	w.effectExited = make(chan struct{})
+	w.effectGate = make(chan struct{})
 	fiber, err := w.root.Apply("watcher", func(ctx *cordis.Context) error {
 		life := ctx.Lifetime()
 		_, err := ctx.Effect("watch", func() (cordis.Disposer, error) {
-			exited := w.effectExited
+			exited, gate := w.effectExited, w.effectGate
 			go func() {
 				<-life.Done()
 				cause := context.Cause(life)
 				w.effectCause.Store(&cause)
+				// Held after cancellation so a concurrent Wait has a window in which
+				// it could wrongly return before the effect does.
+				<-gate
 				w.effectReturns.Store(w.seq.Add(1))
 				close(exited)
 			}()
@@ -334,8 +340,46 @@ func (w *finalUnloadWorld) loadedFiberWithBlockingEffect() error {
 	}
 }
 
+// fiberUnloaded starts the unload and, once it is in flight (the lifetime is
+// cancelled in the same critical section that starts the unload transition),
+// starts a concurrent Wait while the effect is still held, then lets the effect
+// return and waits for Dispose.
 func (w *finalUnloadWorld) fiberUnloaded() error {
-	return fuWithin("dispose", w.cancelFiber.Dispose)
+	fiber := w.cancelFiber
+	life := fiber.Lifetime()
+	disposed := make(chan struct{})
+	go func() {
+		defer close(disposed)
+		fiber.Dispose()
+	}()
+	select {
+	case <-life.Done():
+	case <-time.After(fuTimeout):
+		close(w.effectGate)
+		return fmt.Errorf("fiber lifetime was not cancelled within %s of unload", fuTimeout)
+	}
+	w.waitDone = make(chan error, 1)
+	go func() {
+		err := fiber.Wait()
+		w.waitReturns.Store(w.seq.Add(1))
+		w.waitDone <- err
+	}()
+	select {
+	case <-w.waitDone:
+		close(w.effectGate)
+		return errors.New("Wait returned while the effect was still blocked")
+	case <-disposed:
+		close(w.effectGate)
+		return errors.New("Dispose returned while the effect was still blocked")
+	case <-time.After(fuSettle):
+	}
+	close(w.effectGate)
+	select {
+	case <-disposed:
+		return nil
+	case <-time.After(fuTimeout):
+		return fmt.Errorf("dispose did not finish within %s", fuTimeout)
+	}
 }
 
 func (w *finalUnloadWorld) blockedEffectReturns() error {
@@ -362,10 +406,17 @@ func (w *finalUnloadWorld) causeIsUnloadCause() error {
 }
 
 func (w *finalUnloadWorld) waitReturnsAfterEffect() error {
-	if err := fuWait(w.cancelFiber); err != nil {
-		return fmt.Errorf("Wait: %w", err)
+	if w.waitDone == nil {
+		return errors.New("no concurrent Wait was started during the unload")
 	}
-	w.waitReturns.Store(w.seq.Add(1))
+	select {
+	case err := <-w.waitDone:
+		if err != nil {
+			return fmt.Errorf("Wait: %w", err)
+		}
+	case <-time.After(fuTimeout):
+		return fmt.Errorf("Wait did not return within %s", fuTimeout)
+	}
 	e, r := w.effectReturns.Load(), w.waitReturns.Load()
 	if e == 0 || r <= e {
 		return fmt.Errorf("Wait returned (seq %d) before the effect returned (seq %d)", r, e)
