@@ -1,0 +1,1503 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "dsh SDK protocol",
+  "version": 1,
+  "methods": [
+    {
+      "name": "initialize",
+      "direction": "client-to-host",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/InitializeParams"
+      },
+      "result": {
+        "$ref": "#/$defs/InitializeResult"
+      },
+      "since": 1
+    },
+    {
+      "name": "session/create",
+      "direction": "client-to-host",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/SessionCreateParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SessionCreateResult"
+      },
+      "since": 1
+    },
+    {
+      "name": "session/resume",
+      "direction": "client-to-host",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/SessionResumeParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SessionResumeResult"
+      },
+      "since": 1
+    },
+    {
+      "name": "session/list",
+      "direction": "client-to-host",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/SessionListParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SessionListResult"
+      },
+      "since": 1
+    },
+    {
+      "name": "session/prompt",
+      "direction": "client-to-host",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/SessionPromptParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SessionPromptResult"
+      },
+      "since": 1
+    },
+    {
+      "name": "session/query",
+      "direction": "client-to-host",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/SessionQueryParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SessionQueryResult"
+      },
+      "since": 1
+    },
+    {
+      "name": "session/wait",
+      "direction": "client-to-host",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/SessionRef"
+      },
+      "result": {
+        "$ref": "#/$defs/LastSeqResult"
+      },
+      "since": 1
+    },
+    {
+      "name": "session/cancel",
+      "direction": "client-to-host",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/SessionCancelParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SessionCancelResult"
+      },
+      "since": 1
+    },
+    {
+      "name": "session/close",
+      "direction": "client-to-host",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/SessionRef"
+      },
+      "result": {
+        "$ref": "#/$defs/LastSeqResult"
+      },
+      "since": 1
+    },
+    {
+      "name": "session/history",
+      "direction": "client-to-host",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/SessionHistoryParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SessionHistoryResult"
+      },
+      "since": 1
+    },
+    {
+      "name": "session/model/set",
+      "direction": "client-to-host",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/ModelSetParams"
+      },
+      "result": {
+        "$ref": "#/$defs/ModelSetResult"
+      },
+      "since": 1
+    },
+    {
+      "name": "session/working-directory/get",
+      "direction": "client-to-host",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/SessionRef"
+      },
+      "result": {
+        "$ref": "#/$defs/WorkingDirectoryResult"
+      },
+      "since": 1
+    },
+    {
+      "name": "session/working-directory/set",
+      "direction": "client-to-host",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/WorkingDirectorySetParams"
+      },
+      "result": {
+        "$ref": "#/$defs/WorkingDirectoryResult"
+      },
+      "since": 1
+    },
+    {
+      "name": "shutdown",
+      "direction": "client-to-host",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/Empty"
+      },
+      "result": {
+        "$ref": "#/$defs/Empty"
+      },
+      "since": 1
+    },
+    {
+      "name": "$/cancel",
+      "direction": "both",
+      "kind": "notification",
+      "params": {
+        "$ref": "#/$defs/CancelParams"
+      },
+      "since": 1
+    },
+    {
+      "name": "approval/request",
+      "direction": "host-to-client",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/ApprovalRequest"
+      },
+      "result": {
+        "$ref": "#/$defs/ApprovalResult"
+      },
+      "capability": "approvals",
+      "since": 1
+    },
+    {
+      "name": "question/ask",
+      "direction": "host-to-client",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/QuestionRequest"
+      },
+      "result": {
+        "$ref": "#/$defs/QuestionResult"
+      },
+      "capability": "questions",
+      "since": 1
+    },
+    {
+      "name": "tool/call",
+      "direction": "host-to-client",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/ToolCallParams"
+      },
+      "result": {
+        "$ref": "#/$defs/ToolCallResult"
+      },
+      "capability": "tools",
+      "since": 1
+    },
+    {
+      "name": "session.event",
+      "direction": "host-to-client",
+      "kind": "notification",
+      "params": {
+        "$ref": "#/$defs/SessionEventNotification"
+      },
+      "since": 1
+    },
+    {
+      "name": "session.status",
+      "direction": "host-to-client",
+      "kind": "notification",
+      "params": {
+        "$ref": "#/$defs/SessionStatusNotification"
+      },
+      "since": 1
+    },
+    {
+      "name": "session.run.completed",
+      "direction": "host-to-client",
+      "kind": "notification",
+      "params": {
+        "$ref": "#/$defs/RunCompletedNotification"
+      },
+      "since": 1
+    },
+    {
+      "name": "session.stream",
+      "direction": "host-to-client",
+      "kind": "notification",
+      "params": {
+        "$ref": "#/$defs/StreamNotification"
+      },
+      "capability": "stream",
+      "since": 1
+    },
+    {
+      "name": "session.closed",
+      "direction": "host-to-client",
+      "kind": "notification",
+      "params": {
+        "$ref": "#/$defs/SessionClosedNotification"
+      },
+      "since": 1
+    },
+    {
+      "name": "subagent.started",
+      "direction": "host-to-client",
+      "kind": "notification",
+      "params": {
+        "$ref": "#/$defs/SubagentStartedNotification"
+      },
+      "since": 1
+    },
+    {
+      "name": "subagent.finished",
+      "direction": "host-to-client",
+      "kind": "notification",
+      "params": {
+        "$ref": "#/$defs/SubagentFinishedNotification"
+      },
+      "since": 1
+    }
+  ],
+  "errors": [
+    {
+      "reason": "jsonrpc/parse-error",
+      "code": -32700,
+      "when": "a line is not one JSON object; the connection continues"
+    },
+    {
+      "reason": "jsonrpc/invalid-request",
+      "code": -32600,
+      "when": "a wrong envelope or a batch; the connection continues"
+    },
+    {
+      "reason": "jsonrpc/method-not-found",
+      "code": -32601,
+      "when": "the method is not in the allow-list"
+    },
+    {
+      "reason": "jsonrpc/invalid-params",
+      "code": -32602,
+      "when": "the parameters do not decode"
+    },
+    {
+      "reason": "jsonrpc/internal",
+      "code": -32603,
+      "when": "an unclassified failure; no internal text crosses the wire"
+    },
+    {
+      "reason": "jsonrpc/cancelled",
+      "code": -32800,
+      "when": "the request was cancelled by $/cancel"
+    },
+    {
+      "reason": "jsonrpc/busy",
+      "code": -32000,
+      "when": "too many requests in flight"
+    },
+    {
+      "reason": "jsonrpc/line-too-long",
+      "code": -32000,
+      "when": "a line over the line bound; the connection is then closed"
+    },
+    {
+      "reason": "jsonrpc/too-many-pending",
+      "code": -32000,
+      "when": "a call over the bound of pending outbound requests"
+    },
+    {
+      "reason": "jsonrpc/closed",
+      "code": -32000,
+      "when": "the connection is closed; every pending call fails with it once"
+    },
+    {
+      "reason": "jsonrpc/unknown-response",
+      "code": -32000,
+      "when": "a response names no pending request"
+    },
+    {
+      "reason": "sdk/not-initialized",
+      "code": -32000,
+      "when": "a request other than initialize came first"
+    },
+    {
+      "reason": "sdk/already-initialized",
+      "code": -32000,
+      "when": "initialize was sent twice"
+    },
+    {
+      "reason": "sdk/version-unsupported",
+      "code": -32000,
+      "when": "no offered protocol version is supported; details list the host's"
+    },
+    {
+      "reason": "sdk/session-not-owned",
+      "code": -32000,
+      "when": "the session is not owned by this connection"
+    },
+    {
+      "reason": "sdk/session-live",
+      "code": -32000,
+      "when": "the session is live in this process"
+    },
+    {
+      "reason": "sdk/subagent-session",
+      "code": -32000,
+      "when": "the session is a subagent's and cannot be resumed"
+    },
+    {
+      "reason": "sdk/invalid-content",
+      "code": -32000,
+      "when": "a content block is malformed or not admitted"
+    },
+    {
+      "reason": "sdk/shutting-down",
+      "code": -32000,
+      "when": "the host is shutting down"
+    }
+  ],
+  "$defs": {
+    "Answer": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "selected": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "custom": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "selected"
+      ],
+      "additionalProperties": false
+    },
+    "ApprovalRequest": {
+      "type": "object",
+      "properties": {
+        "interactionId": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "rootSessionId": {
+          "type": "string"
+        },
+        "toolName": {
+          "type": "string"
+        },
+        "callId": {
+          "type": "string"
+        },
+        "origin": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "interactionId",
+        "sessionId",
+        "rootSessionId",
+        "toolName",
+        "origin"
+      ],
+      "additionalProperties": false
+    },
+    "ApprovalResult": {
+      "type": "object",
+      "properties": {
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "allowed-once",
+            "rejected",
+            "cancelled"
+          ]
+        }
+      },
+      "required": [
+        "outcome"
+      ],
+      "additionalProperties": false
+    },
+    "CancelParams": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "the id of the request to cancel, a number or a string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "ClientCapabilities": {
+      "type": "object",
+      "properties": {
+        "approvals": {
+          "type": "boolean"
+        },
+        "questions": {
+          "type": "boolean"
+        },
+        "stream": {
+          "type": "boolean"
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ToolDeclaration"
+          }
+        }
+      },
+      "required": [
+        "approvals",
+        "questions",
+        "stream"
+      ],
+      "additionalProperties": false
+    },
+    "ContentBlock": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "text",
+            "image",
+            "reference"
+          ]
+        },
+        "text": {
+          "type": "string"
+        },
+        "data": {
+          "type": "string",
+          "description": "base64 image bytes"
+        },
+        "mimeType": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "attachmentId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "additionalProperties": false
+    },
+    "Defaults": {
+      "type": "object",
+      "properties": {
+        "cwd": {
+          "type": "string"
+        },
+        "model": {
+          "$ref": "#/$defs/ModelRoute"
+        },
+        "agentPreset": {
+          "type": "string"
+        },
+        "permissionMode": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Empty": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "Event": {
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer"
+        },
+        "time": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        },
+        "version": {
+          "type": "integer"
+        },
+        "ignorable": {
+          "type": "boolean"
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "data": {}
+      },
+      "required": [
+        "seq",
+        "time",
+        "type",
+        "version",
+        "ignorable",
+        "data"
+      ],
+      "additionalProperties": false
+    },
+    "HostCapabilities": {
+      "type": "object",
+      "properties": {
+        "images": {
+          "type": "boolean"
+        },
+        "commands": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "clientTools": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "images",
+        "commands",
+        "clientTools"
+      ],
+      "additionalProperties": false
+    },
+    "Implementation": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "additionalProperties": false
+    },
+    "InitializeParams": {
+      "type": "object",
+      "properties": {
+        "protocolVersions": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        "clientInfo": {
+          "$ref": "#/$defs/Implementation"
+        },
+        "timeZone": {
+          "type": "string",
+          "description": "the user's IANA zone name for this connection's sessions"
+        },
+        "capabilities": {
+          "$ref": "#/$defs/ClientCapabilities"
+        },
+        "defaults": {
+          "$ref": "#/$defs/Defaults"
+        }
+      },
+      "required": [
+        "protocolVersions",
+        "clientInfo",
+        "capabilities"
+      ],
+      "additionalProperties": false
+    },
+    "InitializeResult": {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "type": "integer"
+        },
+        "serverInfo": {
+          "$ref": "#/$defs/Implementation"
+        },
+        "capabilities": {
+          "$ref": "#/$defs/HostCapabilities"
+        },
+        "limits": {
+          "$ref": "#/$defs/Limits"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "serverInfo",
+        "capabilities",
+        "limits"
+      ],
+      "additionalProperties": false
+    },
+    "LastSeqResult": {
+      "type": "object",
+      "properties": {
+        "lastSeq": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "lastSeq"
+      ],
+      "additionalProperties": false
+    },
+    "Limits": {
+      "type": "object",
+      "properties": {
+        "maxFrameBytes": {
+          "type": "integer"
+        },
+        "maxInlineBytes": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "maxFrameBytes",
+        "maxInlineBytes"
+      ],
+      "additionalProperties": false
+    },
+    "ModelRoute": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "reasoningEffort": {
+          "type": "string"
+        },
+        "maxOutputTokens": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "provider",
+        "model"
+      ],
+      "additionalProperties": false
+    },
+    "ModelSetParams": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "model": {
+          "$ref": "#/$defs/ModelRoute"
+        }
+      },
+      "required": [
+        "sessionId",
+        "model"
+      ],
+      "additionalProperties": false
+    },
+    "ModelSetResult": {
+      "type": "object",
+      "properties": {
+        "model": {
+          "$ref": "#/$defs/ModelRoute"
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "additionalProperties": false
+    },
+    "Question": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/QuestionOption"
+          }
+        },
+        "multiple": {
+          "type": "boolean"
+        },
+        "allowCustom": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "text"
+      ],
+      "additionalProperties": false
+    },
+    "QuestionOption": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label"
+      ],
+      "additionalProperties": false
+    },
+    "QuestionRequest": {
+      "type": "object",
+      "properties": {
+        "interactionId": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "rootSessionId": {
+          "type": "string"
+        },
+        "questions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Question"
+          }
+        }
+      },
+      "required": [
+        "interactionId",
+        "sessionId",
+        "rootSessionId",
+        "questions"
+      ],
+      "additionalProperties": false
+    },
+    "QuestionResult": {
+      "type": "object",
+      "properties": {
+        "answers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Answer"
+          }
+        },
+        "dismissed": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "RunCompletedNotification": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "rootSessionId": {
+          "type": "string"
+        },
+        "parentSessionId": {
+          "type": "string"
+        },
+        "run": {
+          "$ref": "#/$defs/RunRef"
+        },
+        "turn": {
+          "type": "integer"
+        },
+        "finishReason": {
+          "type": "string"
+        },
+        "finalResponse": {
+          "type": "string"
+        },
+        "firstSeq": {
+          "type": "integer"
+        },
+        "lastSeq": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sessionId",
+        "rootSessionId",
+        "run",
+        "finishReason",
+        "finalResponse",
+        "firstSeq",
+        "lastSeq"
+      ],
+      "additionalProperties": false
+    },
+    "RunRef": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "prompt",
+            "command"
+          ]
+        },
+        "messageId": {
+          "type": "string"
+        },
+        "commandId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false
+    },
+    "SessionCancelParams": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "turn",
+            "step"
+          ]
+        },
+        "inbox": {
+          "type": "string",
+          "enum": [
+            "keep",
+            "discard"
+          ]
+        }
+      },
+      "required": [
+        "sessionId",
+        "inbox"
+      ],
+      "additionalProperties": false
+    },
+    "SessionCancelResult": {
+      "type": "object",
+      "properties": {
+        "cancelled": {
+          "type": "boolean"
+        },
+        "lastSeq": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "cancelled",
+        "lastSeq"
+      ],
+      "additionalProperties": false
+    },
+    "SessionClosedNotification": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "rootSessionId": {
+          "type": "string"
+        },
+        "parentSessionId": {
+          "type": "string"
+        },
+        "cause": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "rootSessionId",
+        "cause"
+      ],
+      "additionalProperties": false
+    },
+    "SessionCreateParams": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "model": {
+          "$ref": "#/$defs/ModelRoute"
+        },
+        "agentPreset": {
+          "type": "string"
+        },
+        "permissionMode": {
+          "type": "string"
+        },
+        "timeZone": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "SessionCreateResult": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "lastSeq": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sessionId",
+        "cwd",
+        "lastSeq"
+      ],
+      "additionalProperties": false
+    },
+    "SessionEventNotification": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "rootSessionId": {
+          "type": "string"
+        },
+        "parentSessionId": {
+          "type": "string"
+        },
+        "event": {
+          "$ref": "#/$defs/Event"
+        }
+      },
+      "required": [
+        "sessionId",
+        "rootSessionId",
+        "event"
+      ],
+      "additionalProperties": false
+    },
+    "SessionHistoryParams": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "afterSeq": {
+          "type": "integer"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5000
+        },
+        "types": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "additionalProperties": false
+    },
+    "SessionHistoryResult": {
+      "type": "object",
+      "properties": {
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Event"
+          }
+        },
+        "lastSeq": {
+          "type": "integer"
+        },
+        "more": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "events",
+        "lastSeq",
+        "more"
+      ],
+      "additionalProperties": false
+    },
+    "SessionListParams": {
+      "type": "object",
+      "properties": {
+        "cwd": {
+          "type": "string"
+        },
+        "cursor": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "SessionListResult": {
+      "type": "object",
+      "properties": {
+        "sessions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SessionSummary"
+          }
+        },
+        "nextCursor": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessions"
+      ],
+      "additionalProperties": false
+    },
+    "SessionPromptParams": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "content": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ContentBlock"
+          }
+        },
+        "delivery": {
+          "type": "string",
+          "enum": [
+            "follow-up",
+            "steer"
+          ]
+        },
+        "messageId": {
+          "type": "string",
+          "description": "unique over the session's history; a repeat appends nothing"
+        }
+      },
+      "required": [
+        "sessionId",
+        "content"
+      ],
+      "additionalProperties": false
+    },
+    "SessionPromptResult": {
+      "type": "object",
+      "properties": {
+        "messageId": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "messageId",
+        "seq"
+      ],
+      "additionalProperties": false
+    },
+    "SessionQueryParams": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "content": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ContentBlock"
+          }
+        }
+      },
+      "required": [
+        "sessionId",
+        "content"
+      ],
+      "additionalProperties": false
+    },
+    "SessionQueryResult": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "prompt",
+            "command"
+          ]
+        },
+        "messageId": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "commandId": {
+          "type": "string"
+        },
+        "result": {}
+      },
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false
+    },
+    "SessionRef": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "additionalProperties": false
+    },
+    "SessionResumeParams": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "permissionMode": {
+          "type": "string"
+        },
+        "model": {
+          "$ref": "#/$defs/ModelRoute"
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "additionalProperties": false
+    },
+    "SessionResumeResult": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "lastSeq": {
+          "type": "integer"
+        },
+        "closedInterruptedTurn": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "sessionId",
+        "cwd",
+        "lastSeq",
+        "closedInterruptedTurn"
+      ],
+      "additionalProperties": false
+    },
+    "SessionStatusNotification": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "rootSessionId": {
+          "type": "string"
+        },
+        "parentSessionId": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "idle",
+            "running"
+          ]
+        }
+      },
+      "required": [
+        "sessionId",
+        "rootSessionId",
+        "status"
+      ],
+      "additionalProperties": false
+    },
+    "SessionSummary": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "RFC 3339 time of the last event"
+        }
+      },
+      "required": [
+        "sessionId",
+        "cwd",
+        "updatedAt"
+      ],
+      "additionalProperties": false
+    },
+    "StreamNotification": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "rootSessionId": {
+          "type": "string"
+        },
+        "parentSessionId": {
+          "type": "string"
+        },
+        "turn": {
+          "type": "integer"
+        },
+        "step": {
+          "type": "integer"
+        },
+        "attempt": {
+          "type": "integer"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "start",
+            "chunk",
+            "end"
+          ]
+        },
+        "index": {
+          "type": "integer"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "rootSessionId",
+        "turn",
+        "step",
+        "attempt",
+        "kind",
+        "index"
+      ],
+      "additionalProperties": false
+    },
+    "SubagentFinishedNotification": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "rootSessionId": {
+          "type": "string"
+        },
+        "parentSessionId": {
+          "type": "string"
+        },
+        "stopReason": {
+          "type": "string"
+        },
+        "lastAssistantMessage": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "rootSessionId",
+        "stopReason"
+      ],
+      "additionalProperties": false
+    },
+    "SubagentStartedNotification": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "rootSessionId": {
+          "type": "string"
+        },
+        "parentSessionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "rootSessionId"
+      ],
+      "additionalProperties": false
+    },
+    "ToolCallParams": {
+      "type": "object",
+      "properties": {
+        "callId": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "rootSessionId": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "arguments": {}
+      },
+      "required": [
+        "callId",
+        "sessionId",
+        "rootSessionId",
+        "name",
+        "arguments"
+      ],
+      "additionalProperties": false
+    },
+    "ToolCallResult": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ContentBlock"
+          }
+        },
+        "isError": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "content"
+      ],
+      "additionalProperties": false
+    },
+    "ToolDeclaration": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "inputSchema": {}
+      },
+      "required": [
+        "name",
+        "description",
+        "inputSchema"
+      ],
+      "additionalProperties": false
+    },
+    "WorkingDirectoryResult": {
+      "type": "object",
+      "properties": {
+        "cwd": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "cwd"
+      ],
+      "additionalProperties": false
+    },
+    "WorkingDirectorySetParams": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "path"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

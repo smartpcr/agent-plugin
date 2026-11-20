@@ -114,7 +114,7 @@ Totals for the 31 inventory units: 13 resolved, 5 carried, 13 not applicable.
 
 | Import in `src/sdk` | Holds | Who imports it |
 |---|---|---|
-| `.../src/sdk/jsonrpc` | The codec: `Conn`, `Error`, framing, limits, the `rpc/*` reasons, a fake-peer test kit in `jsonrpc/jsonrpctest` | In `src/harness`: `wire/stdio`, `wire/sdkserver`, the plugin protocol host (`wire/plugin`, A22), the tool endpoint and the `dsh tool` client (A03, A24), the SSH helper stream (A10), the control endpoint (A18). Outside: Go drivers, and a plugin author who writes a plugin in Go |
+| `.../src/sdk/jsonrpc` | The codec: `Conn`, `Error`, framing, limits, the `jsonrpc/*` reasons, a fake-peer test kit in `jsonrpc/jsonrpctest` | In `src/harness`: `wire/stdio`, `wire/sdkserver`, the plugin protocol host (`wire/plugin`, A22), the tool endpoint and the `dsh tool` client (A03, A24), the SSH helper stream (A10), the control endpoint (A18). Outside: Go drivers, and a plugin author who writes a plugin in Go |
 | `.../src/sdk/protocol` | The SDK protocol: message structs, the method table `Methods`, `Version`, the `sdk/*` reasons, the embedded schema file | `wire/sdkserver` and `wire/protoschema` in `src/harness`; the client package; Go drivers |
 | `.../src/sdk` (package `sdk`) | The Go client: `Start`, `Connect`, `Harness`, `Session`, `Handlers` | Go drivers; in `src/harness` only the subprocess subagent backend of A12 (through `Connect`) and the scenarios |
 
@@ -138,7 +138,7 @@ Totals for the 31 inventory units: 13 resolved, 5 carried, 13 not applicable.
 // package jsonrpc
 type Options struct {
     MaxFrameBytes, MaxQueuedBytes int; WriteStall time.Duration; MaxInFlight int
-    Methods  map[string]Handler            // closed allow-list; anything else is rpc/method-not-found
+    Methods  map[string]Handler            // closed allow-list; anything else is jsonrpc/method-not-found
     OnNotify func(method string, params json.RawMessage)
     Log      *slog.Logger
 }
@@ -194,7 +194,7 @@ func (s *Session) Events(buffer int) *Subscription             // bounded; overf
 | `session/model/set` | `sessionId`, `model` | `model` | `Model().Select`; applies from the next step |
 | `session/working-directory/get`, `/set` | `sessionId`, (`path`) | `cwd` | `workdir.Service`; never creates a session |
 | `shutdown` | none | `{}` | Replied first; then the tree unloads and the process exits 0 |
-| `$/cancel` (notification, both ways) | `id` | n/a | The receiver answers request `id` with `rpc/cancelled` |
+| `$/cancel` (notification, both ways) | `id` | n/a | The receiver answers request `id` with `jsonrpc/cancelled` |
 
 **Requests from the host**, each sent only if its capability was advertised:
 
@@ -239,7 +239,7 @@ sequenceDiagram
   Note over H: unloads the tree, flushes, exits 0
 ```
 
-**The user's time zone (debt entry U-K2-5).** An embedding program often runs the host in a container whose own zone is UTC, so "today" and a schedule created in the session would be wrong by hours. `initialize.timeZone` gives the user's zone for every session of the connection, and `session/create.timeZone` overrides it for one session. The host validates the name against its embedded zone data and refuses an unknown one with `rpc/invalid-params` naming the field; nothing is guessed. The carrier puts the zone into the client record of every message it sends for those sessions, which is where the clock context of area A14 reads the user's zone ([context-compaction-skill.md](context-compaction-skill.md), DH-D-CONTEXT-3); the clock context says "the user's time zone is unavailable" only when none was given; it never presents the host process's zone as the user's. The Go and Python clients expose it as an option and send nothing by default. The field is additive and optional inside protocol version 1. ACP has no such field, so a session driven over ACP keeps the limit: its clock context says "unavailable".
+**The user's time zone (debt entry U-K2-5).** An embedding program often runs the host in a container whose own zone is UTC, so "today" and a schedule created in the session would be wrong by hours. `initialize.timeZone` gives the user's zone for every session of the connection, and `session/create.timeZone` overrides it for one session. The host validates the name against its embedded zone data and refuses an unknown one with `jsonrpc/invalid-params` naming the field; nothing is guessed. The carrier puts the zone into the client record of every message it sends for those sessions, which is where the clock context of area A14 reads the user's zone ([context-compaction-skill.md](context-compaction-skill.md), DH-D-CONTEXT-3); the clock context says "the user's time zone is unavailable" only when none was given; it never presents the host process's zone as the user's. The Go and Python clients expose it as an option and send nothing by default. The field is additive and optional inside protocol version 1. ACP has no such field, so a session driven over ACP keeps the limit: its clock context says "unavailable".
 
 **Prompt content** is a list of blocks: `text`, an inline `image{data, mimeType, name?}` (raster types only, admitted into the attachment store of area A07 before the message is queued), and a `reference` to an attachment already stored. Inline bytes never reach the session log.
 
@@ -247,13 +247,13 @@ sequenceDiagram
 
 | JSON-RPC code | `data.code` | When |
 |---|---|---|
-| `-32700` (null id) | `rpc/parse-error` | A line is not a JSON object. A line on stderr records it; the connection continues |
-| `-32600` | `rpc/invalid-request` | Wrong envelope, or a batch |
-| `-32601` | `rpc/method-not-found` | Not in the allow-list, or its capability was not advertised |
-| `-32602` | `rpc/invalid-params` | Strict decoding failed; `data.details.issues[]` lists every path ([DH-LIB-ZOD](../libs/zod.md) R5) |
-| `-32603` | `rpc/internal` | Unclassified failure; `data.details.ref` names the stderr log entry; no internal text crosses the wire |
-| `-32800` | `rpc/cancelled` | The request was cancelled by `$/cancel` |
-| `-32000` | `rpc/busy`, `rpc/frame-too-large` | Too many requests in flight; a line over `maxFrameBytes` (then the connection is closed) |
+| `-32700` (null id) | `jsonrpc/parse-error` | A line is not a JSON object. A line on stderr records it; the connection continues |
+| `-32600` | `jsonrpc/invalid-request` | Wrong envelope, or a batch |
+| `-32601` | `jsonrpc/method-not-found` | Not in the allow-list, or its capability was not advertised |
+| `-32602` | `jsonrpc/invalid-params` | Strict decoding failed; `data.details.issues[]` lists every path ([DH-LIB-ZOD](../libs/zod.md) R5) |
+| `-32603` | `jsonrpc/internal` | Unclassified failure; `data.details.ref` names the stderr log entry; no internal text crosses the wire |
+| `-32800` | `jsonrpc/cancelled` | The request was cancelled by `$/cancel` |
+| `-32000` | `jsonrpc/busy`, `jsonrpc/line-too-long`, `jsonrpc/too-many-pending`, `jsonrpc/closed`, `jsonrpc/unknown-response` | Too many requests in flight; a line over `maxFrameBytes` (then the connection is closed); a call over the bound of pending outbound requests; the connection is closed (every pending call fails with it once); a response that names no pending request |
 | `-32000` | `sdk/not-initialized`, `sdk/already-initialized`, `sdk/version-unsupported`, `sdk/session-not-owned`, `sdk/session-live`, `sdk/subagent-session`, `sdk/invalid-content`, `sdk/shutting-down` | This area's reasons. `sdk/version-unsupported` carries the host's supported versions |
 | `-32000` | the owner's reason, unchanged | For example `session/not-found`, `session/owned`, `store/busy`, `agent/closing`, `approval/unavailable` |
 
@@ -306,7 +306,7 @@ sequenceDiagram
 
 | Situation | What happens | Undone, and what stays uncertain |
 |---|---|---|
-| A line is not JSON, or is too long | `rpc/parse-error` with a null id and a stderr line; a line over the limit closes the connection | Nothing ran |
+| A line is not JSON, or is too long | `jsonrpc/parse-error` with a null id and a stderr line; a line over the limit is `jsonrpc/line-too-long` with a null id, then the connection is closed | Nothing ran |
 | `session/create` or ACP `session/new` fails half-way | The agent's `Setup` is rolled back by [agent-loop.md §6.3](agent-loop.md): scope, grants and MCP mounts are released before the error is returned | No session on disk. An image already stored stays as an unreferenced blob that retention collects |
 | A prompt's reply is lost | The client resends with the same `messageId`; the inbox recognises the id and returns the first receipt, whether the first message is pending, claimed or discarded | At most one turn per message ([DH-O-3](../design.md#dh-o-3)) |
 | The client answers a host request badly, late, or not at all | A malformed answer, an error reply or an answer after `$/cancel` is a refusal (`approval/unavailable`, a failed question). Nothing is granted | The turn continues with a denial |
@@ -490,12 +490,12 @@ Unit and composition tests with in-memory pipes and fakes for the model, the sto
 | Test ID | Proves | What is asserted |
 |---|---|---|
 | `DH-T-SDK-1` | DH-D-SDK-1 | Framing: request, response and notification round-trip; a frame with `id` and `method` never settles a call; a batch, a wrong envelope and a non-JSON line each give the tabled error and the connection continues |
-| `DH-T-SDK-2` | DH-D-SDK-1 | Limits: a line over `MaxFrameBytes` closes the connection after one error frame; over `MaxInFlight` is `rpc/busy`; a method outside the allow-list never reaches a handler; nothing is dispatched after close |
-| `DH-T-SDK-3` | DH-D-SDK-1 | Cancellation and close: cancelling a caller's context sends `$/cancel` and returns; an incoming `$/cancel` ends the handler's context and answers `rpc/cancelled`; closing fails every pending call exactly once |
+| `DH-T-SDK-2` | DH-D-SDK-1 | Limits: a line over `MaxFrameBytes` closes the connection after one error frame; over `MaxInFlight` is `jsonrpc/busy`; a method outside the allow-list never reaches a handler; nothing is dispatched after close |
+| `DH-T-SDK-3` | DH-D-SDK-1 | Cancellation and close: cancelling a caller's context sends `$/cancel` and returns; an incoming `$/cancel` ends the handler's context and answers `jsonrpc/cancelled`; closing fails every pending call exactly once |
 | `DH-T-SDK-4` | DH-D-SDK-1 | Ordering and stall: frames appear in enqueue order under concurrent writers; `Barrier` returns only after earlier frames are written; a writer that accepts nothing for `WriteStall` ends the connection with the stall error (virtual time) |
 | `DH-T-SDK-5` | DH-D-SDK-2 | The derived document equals the checked-in schema file; every protocol type derives without error; the tree has no generated schema code |
-| `DH-T-SDK-6` | DH-D-SDK-2 | Every table row has a handler of the row's types and every handler has a row; every `sdk/*` and `rpc/*` reason in the file is a declared constant |
-| `DH-T-SDK-7` | DH-D-SDK-2 | Negotiation: highest common version chosen; none in common is `sdk/version-unsupported` with the host's list; a request before `initialize` and a second `initialize` are refused; an unknown request field is `rpc/invalid-params` with its path |
+| `DH-T-SDK-6` | DH-D-SDK-2 | Every table row has a handler of the row's types and every handler has a row; every `sdk/*` and `jsonrpc/*` reason in the file is a declared constant |
+| `DH-T-SDK-7` | DH-D-SDK-2 | Negotiation: highest common version chosen; none in common is `sdk/version-unsupported` with the host's list; a request before `initialize` and a second `initialize` are refused; an unknown request field is `jsonrpc/invalid-params` with its path |
 | `DH-T-SDK-8` | DH-D-SDK-4 | Explicit lifecycle: a prompt for an unknown or unowned id creates nothing; create with a bad route fails and leaves no session; resume of a held session is `session/owned`; a subagent session is refused; close releases the lease and a second resume succeeds |
 | `DH-T-SDK-9` | DH-D-SDK-4 | Watermark: for prompt, cancel, close, wait and resume, the response is written after `session.event` for its `lastSeq`; events arrive in `seq` order with no gap or duplicate while turns run |
 | `DH-T-SDK-10` | DH-D-SDK-5 | Run result: two queued prompts give two completions naming different turns; the text is the last assistant message inside the bracket; a steer during the turn belongs to it; a discarded message completes as `discarded`; work of a later turn is never included |
@@ -514,7 +514,7 @@ Unit and composition tests with in-memory pipes and fakes for the model, the sto
 | `DH-T-SDK-23` | DH-D-SDK-7 | Client tools: a declared tool is visible only to that connection's sessions, passes validation, policy and approval before `tool/call` is sent, and settles as `tools/outcome-unknown` when the pipe closes mid-call; a schema outside the subset fails `initialize` |
 | `DH-T-SDK-24` | DH-D-SDK-10 | The reference page is regenerated from the schema file and equals the checked-in copy; every method, type and error reason of the file appears on it |
 | `DH-T-SDK-26` | DH-D-SDK-11 | The TypeScript declarations and stubs are regenerated from the schema file and equal the checked-in copies; a method added to the table without regenerating fails |
-| `DH-T-SDK-25` | DH-D-SDK-4, DH-D-SDK-8 | Time zone (U-K2-5): `initialize.timeZone` reaches the clock context of every session of the connection; `session/create.timeZone` overrides it for one session; an unknown zone name is `rpc/invalid-params` naming the field and creates nothing; with no zone the clock context says "unavailable" and never the host process's zone; the Go client sends the field only when its option is set |
+| `DH-T-SDK-25` | DH-D-SDK-4, DH-D-SDK-8 | Time zone (U-K2-5): `initialize.timeZone` reaches the clock context of every session of the connection; `session/create.timeZone` overrides it for one session; an unknown zone name is `jsonrpc/invalid-params` naming the field and creates nothing; with no zone the clock context says "unavailable" and never the host process's zone; the Go client sends the field only when its option is set |
 
 ### 9.2 Real-environment scenarios
 
