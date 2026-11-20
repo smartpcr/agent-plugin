@@ -108,10 +108,16 @@ func cfgIssue(err error) (cordis.ConfigIssue, error) {
 
 // --- Scenario: Candidate config does not leak into effective config ---
 
-func (w *configViewsWorld) componentWithEffectiveOne() error {
+// cfgAcceptedN is the only n the scenario's schema accepts ("whose schema accepts only n=1").
+const cfgAcceptedN = 1
+
+func (w *configViewsWorld) componentWithEffective(n int) error {
+	if n != cfgAcceptedN {
+		return fmt.Errorf("step asks for effective n=%d, but the schema accepts only n=%d", n, cfgAcceptedN)
+	}
 	root := w.track(cordis.New(cordis.WithExporters()))
 	onlyOne := cordis.WithSchema(cordis.SchemaFunc(func(config any) (any, error) {
-		if config.(cfgSized).N != 1 {
+		if config.(cfgSized).N != cfgAcceptedN {
 			return nil, &cordis.ConfigError{Issues: []cordis.ConfigIssue{{Message: "must be 1", Path: "n"}}}
 		}
 		return config, nil
@@ -125,7 +131,7 @@ func (w *configViewsWorld) componentWithEffectiveOne() error {
 		})
 		return err
 	}, onlyOne)
-	fiber, err := root.Use(component, cfgSized{N: 1})
+	fiber, err := root.Use(component, cfgSized{N: n})
 	if err != nil {
 		return fmt.Errorf("use: %w", err)
 	}
@@ -133,7 +139,7 @@ func (w *configViewsWorld) componentWithEffectiveOne() error {
 		return fmt.Errorf("load: %w", err)
 	}
 	w.fiber = fiber
-	return w.effectiveIs(1)
+	return w.effectiveIs(n)
 }
 
 func (w *configViewsWorld) candidateRejected() error {
@@ -527,7 +533,7 @@ func InitializeScenario_cordis_port_guarantees_config_views_and_strict_decoding(
 		return c, nil
 	})
 
-	ctx.Step(`^a component with effective config n=(\d+) whose schema accepts only n=1$`, func(int) error { return w.componentWithEffectiveOne() })
+	ctx.Step(`^a component with effective config n=(\d+) whose schema accepts only n=1$`, w.componentWithEffective)
 	ctx.Step(`^a candidate with n=2 is validated and rejected$`, func() error { return w.candidateRejected() })
 	ctx.Step(`^the raw config still reads n=(\d+)$`, func(n int) error { return w.rawIs(n) })
 	ctx.Step(`^the effective config still reads n=(\d+)$`, func(n int) error { return w.effectiveIs(n) })
