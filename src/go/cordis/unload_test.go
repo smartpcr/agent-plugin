@@ -385,19 +385,22 @@ func TestRootDisposeIsFinalAndExclusive(t *testing.T) {
 		}, nil
 	}))
 
-	results := make(chan bool, 2)
+	results := make(chan bool, 3)
 	go func() { root.Dispose(); results <- released.Load() }()
 	Within(t, "first cleanup", func() { <-entered })
+	Equal(t, cordis.Unloading, root.Fiber().State())
 	go func() { root.Dispose(); results <- released.Load() }()
+	go func() { _ = root.Fiber().Wait(); results <- released.Load() }()
 	select {
 	case <-results:
-		t.Fatal("a root Dispose returned while its cleanup was blocked")
+		t.Fatal("a root Dispose or Wait returned while its cleanup was blocked")
 	case <-time.After(settle):
 	}
 	close(release)
-	for range 2 {
-		Within(t, "dispose", func() { True(t, <-results, "a root Dispose returned before the cleanup") })
+	for range 3 {
+		Within(t, "dispose", func() { True(t, <-results, "a root Dispose or Wait returned before the cleanup") })
 	}
+	Equal(t, cordis.Disposed, root.Fiber().State())
 	for i, err := range refused {
 		True(t, isInactive(err), "root cleanup registration "+[]string{"Effect", "Use", "Provide"}[i]+" was not refused: "+errString(err))
 	}
@@ -496,4 +499,62 @@ func TestCreationHandlerRunsBeforeLoadUnderConcurrentDelivery(t *testing.T) {
 	Within(t, "wait", func() { NoError(t, doomed.Wait()) })
 	Equal(t, cordis.Disposed, doomed.State())
 	True(t, !ran.Load(), "the body of a fiber disposed on creation ran")
+}
+
+// A notification raised while an effect is acquired is not delivered on the
+// acquisition's stack, so a handler can dispose the effect's fiber without waiting
+// for itself, and an acquisition can still wait for notification-driven work.
+func TestNotificationHandlerCanDisposeTheAcquiringFiber(t *testing.T) {
+	t.Run("root provide", func(t *testing.T) {
+		root, _ := Quiet()
+		var once sync.Once
+		root.Internal().OnService(func(name string, value any) {
+			if name == "svc" && value != nil {
+				once.Do(root.Dispose)
+			}
+		})
+		Within(t, "provide", func() { _, _ = root.Provide("svc", 1) })
+		Within(t, "wait", func() { _ = root.Fiber().Wait() })
+		Equal(t, cordis.Disposed, root.Fiber().State())
+		True(t, !root.Has("svc"), "the service outlived the root")
+	})
+
+	t.Run("nested provide", func(t *testing.T) {
+		root, _ := Quiet()
+		var released atomic.Int32
+		fiber := MustWait(t, Must(root.Apply("owner", func(*cordis.Context) error { return nil })))
+		var once sync.Once
+		root.Internal().OnService(func(name string, value any) {
+			if name == "inner" && value != nil {
+				once.Do(fiber.Dispose)
+			}
+		})
+		Within(t, "effect", func() {
+			_, _ = fiber.Ctx().Effect("outer", func() (cordis.Disposer, error) {
+				if _, err := fiber.Ctx().Provide("inner", 1); err != nil {
+					return nil, err
+				}
+				return func() error { released.Add(1); return nil }, nil
+			})
+		})
+		Within(t, "wait", func() { NoError(t, fiber.Wait()) })
+		Equal(t, cordis.Disposed, fiber.State())
+		Equal(t, int32(1), released.Load(), "outer cleanup runs")
+	})
+
+	t.Run("use and wait inside an acquisition", func(t *testing.T) {
+		root, _ := Quiet()
+		var child *cordis.Fiber
+		Within(t, "effect", func() {
+			Must(root.Effect("spawner", func() (cordis.Disposer, error) {
+				var err error
+				if child, err = root.Apply("child", func(*cordis.Context) error { return nil }); err != nil {
+					return nil, err
+				}
+				return nil, child.Wait()
+			}))
+		})
+		Equal(t, cordis.Active, child.State())
+		Within(t, "dispose", root.Dispose)
+	})
 }

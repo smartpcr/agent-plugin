@@ -440,7 +440,12 @@ func (f *Fiber) Dispose() {
 		<-f.rootDone
 		return
 	}
+	// The teardown is the root's transition: Wait follows it and the state reports
+	// Unloading, then Disposed. The root's services are withdrawn by their own
+	// cleanups, in reverse order, so leaving Active notifies no dependents here.
 	f.disposed = true
+	f.inertia = f.rootDone
+	f.setRootStateLocked(Unloading)
 	f.cancelLifetimeLocked()
 	effects := f.effects
 	f.effects = nil
@@ -449,7 +454,17 @@ func (f *Fiber) Dispose() {
 		effects[i].Dispose()
 	}
 	f.waitReleasing()
+	f.t.lock()
+	f.inertia = nil
+	f.setRootStateLocked(Disposed)
+	f.t.unlock()
 	close(f.rootDone)
+}
+
+func (f *Fiber) setRootStateLocked(next FiberState) {
+	old := f.state
+	f.state = next
+	f.t.internal.raiseStatus(f, old, next)
 }
 
 // ---------------------------------------------------------------- effects
@@ -479,9 +494,11 @@ func (f *Fiber) run(name string, body func(h *EffectHandle) (*task, error)) (*Ef
 		return nil, ErrInactive
 	}
 	f.effects = append(f.effects, h)
-	t.unlock()
+	t.unlockQuiet() // the acquisition is already pending: deliver only once it ends
 
-	pending, err := body(h)
+	var pending *task
+	var err error
+	t.acquire(func() { pending, err = body(h) })
 	if pending == nil {
 		acquisition.finish(nil) // a synchronous failure is returned, not reported
 	}

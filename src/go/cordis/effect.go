@@ -88,12 +88,14 @@ func (h *EffectHandle) Dispose() {
 func (h *EffectHandle) String() string { return "Effect <" + h.label + ">" }
 
 // collect adds a cleanup to the effect. On a disposed effect the cleanup runs at once.
-// It reports whether the effect is still alive.
+// It reports whether the effect is still alive. It runs on the acquisition's stack, so
+// it never delivers notifications: a handler that disposes the effect would wait for
+// the acquisition it is running in. run and spawn deliver once the acquisition ends.
 func (h *EffectHandle) collect(dispose Disposer) bool {
 	t := h.fiber.t
 	t.lock()
 	if !h.alive {
-		t.unlock()
+		t.unlockQuiet()
 		if dispose != nil {
 			h.release(dispose)
 		}
@@ -102,7 +104,7 @@ func (h *EffectHandle) collect(dispose Disposer) bool {
 	if dispose != nil {
 		h.disposers = append(h.disposers, dispose)
 	}
-	t.unlock()
+	t.unlockQuiet()
 	return true
 }
 
@@ -116,7 +118,12 @@ func (h *EffectHandle) release(dispose Disposer) {
 // attached to the handle before publishing it.
 func (h *EffectHandle) spawn(fn func() error) *task {
 	pending := h.pending
-	go func() { pending.finish(protect(fn)) }()
+	go func() {
+		var err error
+		h.fiber.t.acquire(func() { err = protect(fn) })
+		pending.finish(err)
+		h.fiber.t.flush() // deliver what the acquisition raised, now that it is complete
+	}()
 	return pending
 }
 

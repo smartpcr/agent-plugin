@@ -299,9 +299,13 @@ upstream; tests in `cordis/unload_test.go`):
   handles another goroutine is releasing before it releases its providers. Disposing a
   fiber that never loaded still releases effects created on its context. An unload also
   waits for an effect whose acquisition is still running on another goroutine, so the
-  cleanup it collects runs before the providers are released. Disposing the root is
-  final in the same way: the root refuses new effects and child fibers, and an
-  overlapping `root.Dispose()` waits for the first. A fiber loads only after its
+  cleanup it collects runs before the providers are released. Notifications raised
+  while an effect is acquired are never delivered on the acquisition's goroutine (it
+  hands delivery to another goroutine), so a handler may dispose the acquiring fiber.
+  Disposing the root is
+  final in the same way: the root refuses new effects and child fibers, its state is
+  `Unloading` then `Disposed`, and an overlapping `root.Dispose()` or
+  `root.Fiber().Wait()` returns only after the teardown. A fiber loads only after its
   `Internal.OnPlugin` creation notification has been delivered (a marker queued behind
   it starts the load), so a creation handler that disposes it stops it before its body
   runs, even while another goroutine is delivering notifications; for the same reason

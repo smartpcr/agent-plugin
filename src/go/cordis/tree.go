@@ -1,6 +1,9 @@
 package cordis
 
-import "sync"
+import (
+	"runtime"
+	"sync"
+)
 
 // tree is the state shared by every context of one root.
 //
@@ -14,6 +17,9 @@ type tree struct {
 	outboxMu   sync.Mutex
 	outbox     []func()
 	delivering bool
+	// acquiring counts the effect acquisitions running on each goroutine (by id);
+	// guarded by outboxMu. Such a goroutine never delivers notifications itself.
+	acquiring map[uint64]int
 
 	fiberUID int
 
@@ -49,10 +55,22 @@ func (t *tree) post(fn func()) {
 // flush delivers queued notifications. Only one goroutine delivers at a time, so
 // notifications posted while a handler runs are delivered after it returns rather
 // than re-entering it. It must not be called with the tree lock held.
+//
+// A goroutine running an effect acquisition hands delivery to a new goroutine: a
+// handler may dispose the effect's fiber, which waits for that acquisition, so it must
+// not run on the acquisition's stack.
 func (t *tree) flush() {
 	t.outboxMu.Lock()
 	if t.delivering {
 		t.outboxMu.Unlock()
+		return
+	}
+	if len(t.acquiring) > 0 && t.acquiring[goid()] > 0 {
+		pending := len(t.outbox) > 0
+		t.outboxMu.Unlock()
+		if pending {
+			go t.flush()
+		}
 		return
 	}
 	t.delivering = true
@@ -69,6 +87,40 @@ func (t *tree) flush() {
 	t.outbox = nil
 	t.delivering = false
 	t.outboxMu.Unlock()
+}
+
+// acquire runs fn as an effect acquisition on the calling goroutine; see flush.
+func (t *tree) acquire(fn func()) {
+	id := goid()
+	t.outboxMu.Lock()
+	if t.acquiring == nil {
+		t.acquiring = map[uint64]int{}
+	}
+	t.acquiring[id]++
+	t.outboxMu.Unlock()
+	defer func() {
+		t.outboxMu.Lock()
+		if t.acquiring[id]--; t.acquiring[id] == 0 {
+			delete(t.acquiring, id)
+		}
+		t.outboxMu.Unlock()
+	}()
+	fn()
+}
+
+// goid returns the id of the calling goroutine, from the header of its stack trace
+// ("goroutine 123 [running]:").
+func goid() uint64 {
+	var buf [32]byte
+	n := runtime.Stack(buf[:], false)
+	var id uint64
+	for _, c := range buf[len("goroutine "):n] {
+		if c < '0' || c > '9' {
+			break
+		}
+		id = id*10 + uint64(c-'0')
+	}
+	return id
 }
 
 // listeners is a small, ordered, thread-safe subscriber list.
