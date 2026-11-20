@@ -58,7 +58,7 @@ func (h *EffectHandle) Dispose() {
 	t.lock()
 	if !h.alive {
 		t.unlock()
-		<-h.released
+		t.await(h.released)
 		return
 	}
 	h.alive = false
@@ -67,7 +67,7 @@ func (h *EffectHandle) Dispose() {
 	t.unlock()
 
 	if pending != nil {
-		<-pending.done // a failure is reported by the runner
+		t.await(pending.done) // a failure is reported by the runner
 	}
 
 	t.lock()

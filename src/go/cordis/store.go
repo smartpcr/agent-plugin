@@ -101,7 +101,7 @@ func (s *store) provide(ctx *Context, name string, value any) (*EffectHandle, er
 			}
 			t.unlock()
 
-			<-release
+			t.await(release)
 
 			t.lock()
 			impl.release = nil

@@ -148,7 +148,9 @@ func (k *EventKey[A]) Parallel(ctx *Context, args A) error {
 			errs[i] = protect(func() error { return h.fn.(func(*Context, A) error)(h.ctx, args) })
 		}()
 	}
+	unpark := ctx.t.park()
 	wg.Wait()
+	unpark()
 	var failed []error
 	for _, err := range errs {
 		if err != nil {

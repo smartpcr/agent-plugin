@@ -336,12 +336,11 @@ func (f *Fiber) String() string { return fmt.Sprintf("Fiber <%s> (%s)", f.Name()
 
 // Wait blocks until the fiber settles (no load or unload is in flight) and returns
 // the error of a failed load. A fiber still waiting for dependencies settles as
-// Pending with a nil error. A fiber that was just created first has its creation
-// notification delivered, on the calling goroutine if the dispatcher has not reached
-// it, so its creation handlers run before it loads without Wait depending on the
-// dispatcher. Wait returns once the notifications raised during the call have been
-// delivered. A creation handler must not wait for the fiber it announces: that fiber
-// loads only after the handler returns.
+// Pending with a nil error. A fiber that was just created first waits for its creation
+// handlers, which run before it loads. Wait returns once the notifications raised
+// during the call have been delivered; called from a handler, it parks that handler's
+// delivery meanwhile. A creation handler must not wait for the fiber it announces:
+// that fiber loads only after the handler returns.
 func (f *Fiber) Wait() error {
 	t := f.t
 	lo := t.mark()
@@ -350,7 +349,7 @@ func (f *Fiber) Wait() error {
 	t.unlockQuiet()
 	if !announced {
 		// Wait for the creation handlers too, so they still run before the load.
-		t.barrier(created, seq)
+		t.barrierReturned(created, seq)
 	}
 	f.waitInertia()
 	t.barrier(lo, t.mark())
@@ -427,8 +426,8 @@ func (f *Fiber) Update(config any, noSave bool) error {
 // another goroutine started the disposal. Failures are logged, not returned.
 //
 // Dispose returns once the notifications raised during the call have been delivered:
-// queued ones are delivered on the calling goroutine once the lifecycle work is done,
-// so a handler may wait for or dispose the fiber whose transition raised it.
+// called from a handler, it parks that handler's delivery while it waits, so a handler
+// may wait for or dispose the fiber whose transition raised it.
 func (f *Fiber) Dispose() {
 	lo := f.t.mark()
 	defer func() { f.t.barrier(lo, f.t.mark()) }()
@@ -444,7 +443,7 @@ func (f *Fiber) Dispose() {
 	f.t.lock()
 	if f.disposed {
 		f.t.unlockQuiet()
-		<-f.rootDone
+		f.t.await(f.rootDone)
 		return
 	}
 	// The teardown is the root's transition: Wait follows it and the state reports
@@ -609,7 +608,7 @@ func (f *Fiber) waitReleasing() {
 		}
 		h := f.releasing[0]
 		f.t.unlockQuiet()
-		<-h.released
+		f.t.await(h.released)
 	}
 }
 
@@ -798,7 +797,7 @@ func (f *Fiber) waitInertia() {
 		if inertia == nil {
 			return
 		}
-		<-inertia
+		f.t.await(inertia)
 	}
 }
 
@@ -925,7 +924,7 @@ func (f *Fiber) unload(done chan struct{}) {
 		release := make(chan struct{})
 		f.release = release
 		t.unlock()
-		<-release
+		t.await(release)
 	}
 
 	t.lock()
@@ -1027,7 +1026,7 @@ func (f *Fiber) execute() error {
 			return first
 		}
 		for _, task := range pending {
-			<-task.done
+			t.await(task.done)
 			if task.err != nil && first == nil {
 				first = task.err
 			}

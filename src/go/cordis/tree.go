@@ -1,6 +1,11 @@
 package cordis
 
-import "sync"
+import (
+	"bytes"
+	"runtime"
+	"strconv"
+	"sync"
+)
 
 // tree is the state shared by every context of one root.
 //
@@ -9,29 +14,27 @@ import "sync"
 // state is being changed (internal notifications, log lines) is posted to an ordered
 // outbox and delivered after mu is released.
 //
-// Delivery is owned by the tree's dispatcher, a goroutine started on demand, so the
-// goroutine doing lifecycle work (an acquisition, an unload, the root's teardown)
-// never runs a handler as a side effect, and it delivers one notification at a time. A
-// lifecycle call that must observe delivery (Fiber.Wait, Fiber.Dispose) uses a barrier
-// instead: while only handlers that started before the call are running, it starts
-// queued notifications up to its target, in order, each on a fresh goroutine, so it
-// never waits behind a handler that is blocked, possibly on that very call, and never
-// runs a handler on its own stack. It waits only for a delivery of a notification
-// raised during its own call.
+// Delivery is owned by the tree's dispatcher, a goroutine started on demand. It runs
+// each notification on a fresh goroutine, never on the goroutine doing lifecycle work
+// (an acquisition, an unload, the root's teardown), and starts a notification only
+// once every earlier one has returned or is parked: blocked in a lifecycle wait of
+// this tree (Fiber.Wait, Fiber.Dispose, an unload or acquisition it waits for). So
+// handlers run one at a time, in order, and a handler that waits for lifecycle work
+// never holds back the notifications that work raises. A lifecycle call that must
+// observe delivery (Fiber.Wait, Fiber.Dispose) waits, through barrier, until the
+// notifications raised during the call have returned or parked.
 type tree struct {
 	mu sync.Mutex
 
 	outboxMu    sync.Mutex
 	outbox      []notification
-	posted      uint64              // sequence number of the last posted notification
-	running     map[uint64]struct{} // notifications being delivered, by sequence
-	dispatching bool                // the dispatcher goroutine is running
-	delivered   sync.Cond           // signalled on outboxMu when a delivery returns
+	posted      uint64               // sequence number of the last posted notification
+	running     map[uint64]*delivery // notifications being delivered, by sequence
+	byGoroutine map[uint64]*delivery // the same deliveries, by the goroutine running them
+	dispatching bool                 // the dispatcher goroutine is running
+	changed     sync.Cond            // signalled on outboxMu when a delivery returns or parks
 
 	fiberUID int
-	// lastAnnounced is closed once the latest creation notification has announced its
-	// fiber; the next one waits for it, so fibers are announced in creation order.
-	lastAnnounced chan struct{}
 
 	root     *Context
 	store    *store
@@ -44,6 +47,13 @@ type tree struct {
 type notification struct {
 	seq uint64
 	fn  func()
+}
+
+// delivery is a notification being run; parked counts the lifecycle waits its
+// goroutine is blocked in.
+type delivery struct {
+	seq    uint64
+	parked int
 }
 
 func (t *tree) lock() { t.mu.Lock() }
@@ -88,53 +98,118 @@ func (t *tree) flush() {
 	go t.dispatch()
 }
 
-// dispatch delivers queued notifications one at a time: it starts the next only once
-// no delivery is running, so handlers never overlap on its account.
 func (t *tree) dispatch() {
 	t.outboxMu.Lock()
 	defer t.outboxMu.Unlock()
 	for len(t.outbox) > 0 {
-		if len(t.running) > 0 {
+		if t.busyLocked(0, ^uint64(0)) {
 			t.condLocked().Wait()
 			continue
 		}
-		t.deliverHeadLocked()
+		n := t.outbox[0]
+		t.outbox[0] = notification{}
+		t.outbox = t.outbox[1:]
+		if t.running == nil {
+			t.running = map[uint64]*delivery{}
+			t.byGoroutine = map[uint64]*delivery{}
+		}
+		d := &delivery{seq: n.seq}
+		t.running[n.seq] = d
+		started := make(chan struct{})
+		go t.deliver(n, d, started)
+		// Wait until the delivery is registered under its goroutine, so a park on it
+		// is never missed.
+		t.outboxMu.Unlock()
+		<-started
+		t.outboxMu.Lock()
 	}
 	t.dispatching = false
 }
 
-// barrier returns once every notification posted up to hi has started, and every one
-// posted after lo has also returned. A caller passes as lo the sequence number
-// observed when its call began. While every running delivery started before that
-// (the handler the caller may be running inside, or an unrelated handler that is
-// blocked), the caller starts the next queued notification up to hi on a goroutine of
-// its own, in order, so it never waits behind a handler that may be waiting for it.
-// Otherwise it waits for the running delivery to return. The caller never runs a
-// handler itself: it may be inside an acquisition that a handler waits for. It must
-// not be called with the tree lock held.
-func (t *tree) barrier(lo, hi uint64) {
+func (t *tree) deliver(n notification, d *delivery, started chan<- struct{}) {
+	g := goid()
+	t.outboxMu.Lock()
+	t.byGoroutine[g] = d
+	t.outboxMu.Unlock()
+	close(started)
+	if err := protect(func() error { n.fn(); return nil }); err != nil {
+		t.root.Logger().Error(err)
+	}
+	t.outboxMu.Lock()
+	delete(t.byGoroutine, g)
+	delete(t.running, n.seq)
+	t.condLocked().Broadcast()
+	t.outboxMu.Unlock()
+}
+
+// busyLocked reports whether a notification posted after lo and up to hi is being
+// delivered and not parked.
+func (t *tree) busyLocked(lo, hi uint64) bool {
+	for seq, d := range t.running {
+		if seq > lo && seq <= hi && d.parked == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// barrier returns once every notification posted after lo and up to hi has started,
+// and has returned or parked. A caller passes as lo the sequence number observed when
+// its call began, and as hi the one observed once its lifecycle work is done. The
+// wait parks the caller's own delivery, if it runs in a handler, so the dispatcher
+// can deliver the notifications waited for. It must not be called with the tree lock
+// held.
+func (t *tree) barrier(lo, hi uint64) { t.settle(lo, hi, false) }
+
+// barrierReturned is barrier, except that it also waits for parked notifications to
+// return.
+func (t *tree) barrierReturned(lo, hi uint64) { t.settle(lo, hi, true) }
+
+func (t *tree) settle(lo, hi uint64, returned bool) {
+	if hi <= lo {
+		return
+	}
+	defer t.park()()
 	t.outboxMu.Lock()
 	defer t.outboxMu.Unlock()
-	for {
-		busy := t.runningLocked(lo, hi)
-		if !busy && len(t.outbox) > 0 && t.outbox[0].seq <= hi {
-			n := t.takeHeadLocked()
-			go func() {
-				t.outboxMu.Lock()
-				defer t.outboxMu.Unlock()
-				t.deliverLocked(n)
-			}()
-			continue
-		}
-		if !busy && (len(t.outbox) == 0 || t.outbox[0].seq > hi) {
-			return
-		}
+	for (len(t.outbox) > 0 && t.outbox[0].seq <= hi) || t.busyLocked(lo, hi) || (returned && t.runningLocked(lo, hi)) {
 		t.condLocked().Wait()
 	}
 }
 
-// runningLocked reports whether a notification posted after lo and up to hi is being
-// delivered. Later notifications never hold a barrier back: they are not its target.
+// park marks the calling goroutine's delivery, if it is running one, as blocked in a
+// lifecycle wait until the returned function is called, so the dispatcher can start
+// the next notification meanwhile.
+func (t *tree) park() (unpark func()) {
+	t.outboxMu.Lock()
+	defer t.outboxMu.Unlock()
+	if len(t.byGoroutine) == 0 {
+		return func() {}
+	}
+	d := t.byGoroutine[goid()]
+	if d == nil {
+		return func() {}
+	}
+	d.parked++
+	t.condLocked().Broadcast()
+	return func() {
+		t.outboxMu.Lock()
+		d.parked--
+		t.outboxMu.Unlock()
+	}
+}
+
+// await blocks until ch is closed, parking the calling goroutine's delivery meanwhile.
+func (t *tree) await(ch <-chan struct{}) {
+	select {
+	case <-ch:
+		return
+	default:
+	}
+	defer t.park()()
+	<-ch
+}
+
 func (t *tree) runningLocked(lo, hi uint64) bool {
 	for seq := range t.running {
 		if seq > lo && seq <= hi {
@@ -145,36 +220,23 @@ func (t *tree) runningLocked(lo, hi uint64) bool {
 }
 
 func (t *tree) condLocked() *sync.Cond {
-	if t.delivered.L == nil {
-		t.delivered.L = &t.outboxMu
+	if t.changed.L == nil {
+		t.changed.L = &t.outboxMu
 	}
-	return &t.delivered
+	return &t.changed
 }
 
-// deliverHeadLocked runs the oldest queued notification with outboxMu released.
-func (t *tree) deliverHeadLocked() { t.deliverLocked(t.takeHeadLocked()) }
-
-// takeHeadLocked removes the oldest queued notification and marks it running.
-func (t *tree) takeHeadLocked() notification {
-	n := t.outbox[0]
-	t.outbox[0] = notification{}
-	t.outbox = t.outbox[1:]
-	if t.running == nil {
-		t.running = map[uint64]struct{}{}
+// goid returns the calling goroutine's id. It is read only to attribute a lifecycle
+// wait to the delivery that made it, when deliveries are running.
+func goid() uint64 {
+	var buf [64]byte
+	b := buf[:runtime.Stack(buf[:], false)]
+	b = bytes.TrimPrefix(b, []byte("goroutine "))
+	if i := bytes.IndexByte(b, ' '); i >= 0 {
+		b = b[:i]
 	}
-	t.running[n.seq] = struct{}{}
-	return n
-}
-
-// deliverLocked runs a notification taken by takeHeadLocked with outboxMu released.
-func (t *tree) deliverLocked(n notification) {
-	t.outboxMu.Unlock()
-	if err := protect(func() error { n.fn(); return nil }); err != nil {
-		t.root.Logger().Error(err)
-	}
-	t.outboxMu.Lock()
-	delete(t.running, n.seq)
-	t.condLocked().Broadcast()
+	id, _ := strconv.ParseUint(string(b), 10, 64)
+	return id
 }
 
 // listeners is a small, ordered, thread-safe subscriber list.
@@ -221,15 +283,14 @@ func (l *listeners[F]) snapshot() []F {
 // events). Each On method returns a function that removes the subscription.
 //
 // Plugin, status, service and replace notifications are delivered after the tree lock
-// is released, in the order they happened, by the tree's dispatcher goroutine, one at a
-// time. Fiber.Wait and Fiber.Dispose return once the notifications raised during the
-// call have been delivered, starting queued ones on fresh goroutines when the
-// dispatcher is busy with a handler that started before the call, so a handler may
-// dispose or wait for the fiber that raised it, or for a load that creates and waits
-// for children, and no handler runs on the stack of a lifecycle call. Such a delivery
-// can run a handler concurrently with the one that called Wait or Dispose. A handler
-// of a notification raised by a Wait or Dispose call must not wait for that call's
-// caller to return.
+// is released, in the order they happened, by the tree's dispatcher, never on the
+// stack of a lifecycle call. A notification starts once every earlier one has returned
+// or is parked in a lifecycle wait (Fiber.Wait, Fiber.Dispose, EffectHandle.Dispose),
+// so a handler may dispose or wait for the fiber that raised it, or for work that
+// raises further notifications. A parked handler resumes concurrently with later ones.
+// A handler blocked outside cordis holds back every later notification. Fiber.Wait and
+// Fiber.Dispose return once the notifications raised during the call have returned or
+// parked.
 // Commit notifications are delivered synchronously from Fiber.Update.
 type Internal struct {
 	t       *tree
@@ -272,18 +333,10 @@ func (i *Internal) raisePlugin(fiber *Fiber) {
 // announcePlugin posts the creation notification of fiber as one delivery that runs
 // every creation handler, each guarded on its own, and then then, and returns its
 // sequence number. then therefore runs only once every handler has returned, on
-// whichever goroutine delivers the notification. It waits for the creation
-// notification posted before it first, so fibers are announced in creation order even
-// when barriers deliver notifications concurrently. It is called with the tree lock held.
+// whichever goroutine delivers the notification.
 func (i *Internal) announcePlugin(fiber *Fiber, then func()) uint64 {
 	handlers := i.plugin.snapshot()
-	prev, done := i.t.lastAnnounced, make(chan struct{})
-	i.t.lastAnnounced = done
 	return i.t.post(func() {
-		defer close(done)
-		if prev != nil {
-			<-prev
-		}
 		for _, fn := range handlers {
 			if err := protect(func() error { fn(fiber); return nil }); err != nil {
 				i.t.root.Logger().Error(err)
