@@ -65,9 +65,14 @@ func (p *prepared) run(ctx context.Context, req session.Request, yield func(voca
 	if err := ctx.Err(); err != nil {
 		return outcome{finish: vocab.Finish{Reason: vocab.FinishAborted, Failure: abortedBy(ctx)}, yield: true}, asm
 	}
+	// actx is the attempt's own context: a served stream and the provider both
+	// run under it, and it is cancelled when run returns (the attempt settles,
+	// the consumer stopped, or ctx ended).
+	actx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	// StreamAround may substitute the stream; the route stays p.route either way.
 	src := p.call.Attempt
-	served, by, f := p.intercept(ctx, req)
+	served, by, f := p.intercept(actx, req)
 	switch {
 	case f != nil:
 		return fail(f)
@@ -91,8 +96,6 @@ func (p *prepared) run(ctx context.Context, req session.Request, yield func(voca
 		}
 	}
 
-	actx, cancel := context.WithCancel(ctx)
-	defer cancel()
 	ch := make(chan item)
 	done := make(chan struct{})
 	defer close(done)

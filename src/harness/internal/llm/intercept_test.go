@@ -6,6 +6,7 @@ import (
 	"iter"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm"
@@ -24,7 +25,7 @@ func intercepted(t *testing.T, fa, fb *fake) (*llm.Runtime, *cordis.Context) {
 	return rt, root
 }
 
-type listener = func(*cordis.Context, llm.StreamRequest, func(llm.StreamRequest) (llm.StreamDecision, error)) (llm.StreamDecision, error)
+type listener = llm.StreamListener
 
 func listen(t *testing.T, root *cordis.Context, l listener) {
 	t.Helper()
@@ -54,7 +55,7 @@ func TestStreamAroundServesASubstitutedStream(t *testing.T) {
 	fa, fb := &fake{}, &fake{}
 	rt, root := intercepted(t, fa, fb)
 	var seen llm.StreamRequest
-	listen(t, root, func(_ *cordis.Context, r llm.StreamRequest, _ func(llm.StreamRequest) (llm.StreamDecision, error)) (llm.StreamDecision, error) {
+	listen(t, root, func(_ *cordis.Context, r llm.StreamRequest, _ func() (llm.StreamDecision, error)) (llm.StreamDecision, error) {
 		seen = r
 		return llm.Serve{Stream: served(chunks(append(text("replayed"), vocab.Finish{Reason: vocab.FinishStop})...)), ServedBy: "replay"}, nil
 	})
@@ -97,7 +98,7 @@ func TestStreamAroundServedStreamIsNormalised(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			fa := &fake{}
 			rt, root := intercepted(t, fa, &fake{})
-			listen(t, root, func(*cordis.Context, llm.StreamRequest, func(llm.StreamRequest) (llm.StreamDecision, error)) (llm.StreamDecision, error) {
+			listen(t, root, func(*cordis.Context, llm.StreamRequest, func() (llm.StreamDecision, error)) (llm.StreamDecision, error) {
 				return llm.Serve{Stream: served(c.s), ServedBy: "replay"}, nil
 			})
 			_, fins, rec := one(t, rt)
@@ -114,40 +115,98 @@ func TestStreamAroundServedStreamIsNormalised(t *testing.T) {
 	}
 }
 
-// DH-T-LLM-4: StreamAround cannot change the route. A listener that hands next
-// another route, model or request is refused; one that swallows the refusal and
-// proceeds still runs on the prepared route; Proceed reaches the provider with
-// no served-by.
+// DH-T-LLM-4: StreamAround cannot change the route or the request. An outer
+// listener that edits its copy (route, model, controls, request) and calls next
+// changes nothing: the inner listener sees the original, and with no inner
+// listener the attempt runs on the prepared route.
 func TestStreamAroundCannotReroute(t *testing.T) {
 	ok := chunks(append(text("ok"), vocab.Finish{Reason: vocab.FinishStop})...)
-	for _, change := range []func(*llm.StreamRequest){
-		func(r *llm.StreamRequest) { r.Route = "r/b" },
-		func(r *llm.StreamRequest) { r.Model = "other" },
-		func(r *llm.StreamRequest) { r.Config.Controls.MaxOutputTokens = 7 },
-		func(r *llm.StreamRequest) { r.Request = must(newSession(t).NextRequest()) },
-	} {
-		fa, fb := &fake{scripts: []script{ok}}, &fake{scripts: []script{ok}}
+	other := must(newSession(t).NextRequest())
+	edit := func(r *llm.StreamRequest) {
+		r.Route, r.Model, r.Request = "r/b", "other", other
+		r.Config.Controls.MaxOutputTokens = 7
+		r.Config.Controls.Stop = append(r.Config.Controls.Stop, "x")
+	}
+	unchanged := func(t *testing.T, r llm.StreamRequest, digest string) {
+		t.Helper()
+		if r.Route != "r/a" || r.Model != "m1" || r.Request.Digest() != digest || r.Config.Controls.MaxOutputTokens != 0 || r.Config.Controls.Stop != nil {
+			t.Fatalf("a downstream listener saw an edited request: %+v", r)
+		}
+	}
+
+	t.Run("outer edits, inner serves without next", func(t *testing.T) {
+		fa, fb := &fake{}, &fake{}
 		rt, root := intercepted(t, fa, fb)
-		var refused error
-		swallow := false
-		listen(t, root, func(_ *cordis.Context, r llm.StreamRequest, next func(llm.StreamRequest) (llm.StreamDecision, error)) (llm.StreamDecision, error) {
-			change(&r)
-			d, err := next(r)
-			refused = err
-			if swallow {
-				return llm.Proceed{}, nil
-			}
-			return d, err
+		var outerRan bool
+		var inner llm.StreamRequest
+		listen(t, root, func(_ *cordis.Context, r llm.StreamRequest, next func() (llm.StreamDecision, error)) (llm.StreamDecision, error) {
+			outerRan = true
+			edit(&r)
+			return next()
+		})
+		listen(t, root, func(_ *cordis.Context, r llm.StreamRequest, _ func() (llm.StreamDecision, error)) (llm.StreamDecision, error) {
+			inner = r
+			return llm.Serve{Stream: served(chunks(append(text("inner"), vocab.Finish{Reason: vocab.FinishStop})...)), ServedBy: "inner"}, nil
 		})
 		_, _, rec := one(t, rt)
-		if refused == nil || rec.Finish.Failure == nil || rec.Finish.Failure.Code != vocab.CodeInvalidRequest || fa.attempts.Load()+fb.attempts.Load() != 0 {
-			t.Fatalf("a changed request was not refused: %v, %+v", refused, rec.Finish)
+		if !outerRan || !rec.Succeeded() || rec.ServedBy != "inner" || rec.Route != "r/a" {
+			t.Fatalf("outer ran %v; record %+v", outerRan, rec)
 		}
-		swallow = true
-		_, _, rec = one(t, rt)
+		unchanged(t, inner, rec.RequestDigest)
+		if fa.attempts.Load()+fb.attempts.Load() != 0 {
+			t.Fatal("a served attempt reached a provider")
+		}
+	})
+
+	t.Run("outer edits, inner edits, terminal proceeds", func(t *testing.T) {
+		fa, fb := &fake{scripts: []script{ok}}, &fake{scripts: []script{ok}}
+		rt, root := intercepted(t, fa, fb)
+		var inner llm.StreamRequest
+		for range 2 {
+			listen(t, root, func(_ *cordis.Context, r llm.StreamRequest, next func() (llm.StreamDecision, error)) (llm.StreamDecision, error) {
+				inner = r
+				edit(&r)
+				return next()
+			})
+		}
+		_, _, rec := one(t, rt)
+		unchanged(t, inner, rec.RequestDigest)
 		if !rec.Succeeded() || rec.Route != "r/a" || rec.ServedBy != "" || fa.attempts.Load() != 1 || fb.attempts.Load() != 0 {
-			t.Fatalf("after a swallowed refusal: %+v; r/a %d, r/b %d attempts", rec, fa.attempts.Load(), fb.attempts.Load())
+			t.Fatalf("record %+v; r/a %d, r/b %d attempts", rec, fa.attempts.Load(), fb.attempts.Load())
 		}
+		if got := fa.reqs[0]; got != rec.RequestDigest {
+			t.Fatalf("the provider received request %s, the record names %s", got, rec.RequestDigest)
+		}
+	})
+}
+
+// The served stream runs under the attempt's own context: when a consumer on a
+// background context stops early, the iterator waiting on StreamRequest.Ctx
+// exits and exactly one aborted record settles.
+func TestStreamAroundServedStreamEndsWithTheAttempt(t *testing.T) {
+	rt, root := intercepted(t, &fake{}, &fake{})
+	exited := make(chan struct{})
+	listen(t, root, func(_ *cordis.Context, r llm.StreamRequest, _ func() (llm.StreamDecision, error)) (llm.StreamDecision, error) {
+		return llm.Serve{ServedBy: "replay", Stream: func(y func(vocab.Chunk, error) bool) {
+			defer close(exited)
+			if !y(vocab.BlockStart{Index: 0, Kind: vocab.KindText}, nil) {
+				return
+			}
+			<-r.Ctx.Done()
+		}}, nil
+	})
+	var recs []llm.Attempt
+	p := must(rt.Prepare(bg, "r/a", "", vocab.Controls{}))
+	for range p.Stream(bg, must(newSession(t).NextRequest()), llm.AttemptSinkFunc(func(a llm.Attempt) error { recs = append(recs, a); return nil })) {
+		break // the consumer stops after the first chunk
+	}
+	select {
+	case <-exited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the served iterator is still blocked after the attempt settled")
+	}
+	if len(recs) != 1 || recs[0].Finish.Reason != vocab.FinishAborted || recs[0].ServedBy != "replay" {
+		t.Fatalf("records = %+v, want one aborted", recs)
 	}
 }
 
@@ -155,19 +214,19 @@ func TestStreamAroundCannotReroute(t *testing.T) {
 // attempt as llm/invalid-request before any provider I/O.
 func TestStreamAroundListenerFailures(t *testing.T) {
 	for name, l := range map[string]listener{
-		"error": func(*cordis.Context, llm.StreamRequest, func(llm.StreamRequest) (llm.StreamDecision, error)) (llm.StreamDecision, error) {
+		"error": func(*cordis.Context, llm.StreamRequest, func() (llm.StreamDecision, error)) (llm.StreamDecision, error) {
 			return nil, errors.New("boom")
 		},
-		"panic": func(*cordis.Context, llm.StreamRequest, func(llm.StreamRequest) (llm.StreamDecision, error)) (llm.StreamDecision, error) {
+		"panic": func(*cordis.Context, llm.StreamRequest, func() (llm.StreamDecision, error)) (llm.StreamDecision, error) {
 			panic("boom")
 		},
-		"nil": func(*cordis.Context, llm.StreamRequest, func(llm.StreamRequest) (llm.StreamDecision, error)) (llm.StreamDecision, error) {
+		"nil": func(*cordis.Context, llm.StreamRequest, func() (llm.StreamDecision, error)) (llm.StreamDecision, error) {
 			return nil, nil
 		},
-		"no stream": func(*cordis.Context, llm.StreamRequest, func(llm.StreamRequest) (llm.StreamDecision, error)) (llm.StreamDecision, error) {
+		"no stream": func(*cordis.Context, llm.StreamRequest, func() (llm.StreamDecision, error)) (llm.StreamDecision, error) {
 			return llm.Serve{ServedBy: "replay"}, nil
 		},
-		"no served-by": func(*cordis.Context, llm.StreamRequest, func(llm.StreamRequest) (llm.StreamDecision, error)) (llm.StreamDecision, error) {
+		"no served-by": func(*cordis.Context, llm.StreamRequest, func() (llm.StreamDecision, error)) (llm.StreamDecision, error) {
 			return llm.Serve{Stream: served(chunks(vocab.Finish{Reason: vocab.FinishStop}))}, nil
 		},
 	} {
@@ -200,11 +259,11 @@ func TestStreamAroundServedTakesNoSlot(t *testing.T) {
 	rt := llm.New(llm.WithInterception(root))
 	must(rt.Register("a", llm.Route{ID: "r/a", Models: []llm.Model{{Name: "m1"}}, Adapter: fa, MaxConcurrent: 1}))
 	serve := false
-	listen(t, root, func(_ *cordis.Context, r llm.StreamRequest, next func(llm.StreamRequest) (llm.StreamDecision, error)) (llm.StreamDecision, error) {
+	listen(t, root, func(_ *cordis.Context, r llm.StreamRequest, next func() (llm.StreamDecision, error)) (llm.StreamDecision, error) {
 		if serve {
 			return llm.Serve{Stream: served(chunks(append(text("r"), vocab.Finish{Reason: vocab.FinishStop})...)), ServedBy: "replay"}, nil
 		}
-		return next(r)
+		return next()
 	})
 	done := make(chan llm.Attempt, 1)
 	go func() { _, _, rec := one(t, rt); done <- rec }()

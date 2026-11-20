@@ -14,8 +14,11 @@
 // listener answers Proceed or Serve{Stream, ServedBy}: a served stream replaces
 // the provider (replay), is normalised and settled exactly like a provider's,
 // takes no route slot, and its record names ServedBy. No decision carries a
-// route, and a listener that hands next a changed route, model, configuration or
-// request is refused, so interception cannot reroute (DH-T-LLM-4).
+// route, and next takes no request: each listener gets its own copy of the one
+// original request, so no listener can change what an inner listener or the
+// provider sees, and interception cannot reroute (DH-T-LLM-4). StreamRequest.Ctx
+// is the attempt's own context, cancelled when the attempt settles (including a
+// consumer that stops early), so a served stream ends with its attempt.
 //
 // The runtime holds no session writer (SP-1, SP-2). The Attempt record goes to
 // the caller's AttemptSink, and the caller (the driver for a loop step, the
