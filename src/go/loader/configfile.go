@@ -372,14 +372,12 @@ func (f *ConfigFile) adoptWritten(text string, entries []EntryOptions) error {
 	if disposed {
 		return nil // the final flush: the tree is being unloaded, positions no longer matter
 	}
-	publish, err := f.loader.applyDeferred(merged, nil)
-	if err != nil {
-		return err
-	}
-	f.mu.Lock()
-	f.pending = chain(f.pending, publish)
-	f.mu.Unlock()
-	return nil
+	// Only positions differ from the live tree (sameOptions ignores them), so this
+	// reconciliation is not a reload of its own: the edit that scheduled the write
+	// already emitted its Reloaded notice, and publishing here would send a second,
+	// empty one per edit.
+	_, err = f.loader.applyDeferred(merged, nil)
+	return err
 }
 
 // ------------------------------------------------------------ file access
