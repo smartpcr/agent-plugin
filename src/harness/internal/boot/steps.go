@@ -13,6 +13,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/profile"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/cli/output"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/host/diag"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/host/sharing"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human/secret"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess"
@@ -172,10 +173,14 @@ func (Real) Settle(ctx context.Context, s *State) error {
 	return nil
 }
 
-// Audit checks the required entries and lists the outbound permits. No egress is
-// configured yet, so every kind is denied.
+// Audit checks the required entries and lists every outbound kind as the sharing
+// gate decides it. No kind is configured yet, so every kind is off; the gate reads
+// DSH_SHARING_OFF from the launch environment.
 func (Real) Audit(_ context.Context, s *State) error {
-	s.Audit.Permits = Permits(nil)
+	if s.Sharing == nil {
+		s.Sharing = sharing.New(sharing.Config{}, s.Env.Func())
+	}
+	s.Audit.FromGate(s.Sharing)
 	if s.Service == nil {
 		return errors.New("no loader")
 	}
