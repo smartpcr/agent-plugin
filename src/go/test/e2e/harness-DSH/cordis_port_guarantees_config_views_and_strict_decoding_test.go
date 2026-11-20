@@ -83,10 +83,11 @@ type configViewsWorld struct {
 	globalSlog     string
 
 	// golden
-	moduleDir string
-	goldenRel string
-	goldenOut string
-	goldenErr error
+	moduleDir   string
+	goldenRel   string
+	goldenOut   string
+	goldenErr   error
+	goldenCount int
 }
 
 func (w *configViewsWorld) track(root *cordis.Context) *cordis.Context {
@@ -377,7 +378,8 @@ func cfgRaceSupported() bool {
 }
 
 func (w *configViewsWorld) goldenRuns(count int) error {
-	args := []string{"test"}
+	w.goldenCount = count
+	args := []string{"test", "-v"}
 	if cfgRaceSupported() {
 		args = append(args, "-race")
 	}
@@ -393,6 +395,19 @@ func (w *configViewsWorld) goldenRuns(count int) error {
 func (w *configViewsWorld) sampleMatchesGolden() error {
 	if w.goldenErr != nil {
 		return fmt.Errorf("cordis-sample output differs from %s: %v\n%s", w.goldenRel, w.goldenErr, w.goldenOut)
+	}
+	if strings.Contains(w.goldenOut, "no tests to run") {
+		return fmt.Errorf("golden comparison ran no tests (TestOutputMatchesGolden missing?):\n%s", w.goldenOut)
+	}
+	// Count only top-level (unindented) PASS lines so subtests are not counted.
+	passes := 0
+	for _, line := range strings.Split(w.goldenOut, "\n") {
+		if strings.HasPrefix(strings.TrimRight(line, "\r"), "--- PASS: TestOutputMatchesGolden ") {
+			passes++
+		}
+	}
+	if passes != w.goldenCount {
+		return fmt.Errorf("golden comparison reported %d passes of TestOutputMatchesGolden, want %d:\n%s", passes, w.goldenCount, w.goldenOut)
 	}
 	if !strings.Contains(w.goldenOut, "ok") || !strings.Contains(w.goldenOut, "cmd/cordis-sample") {
 		return fmt.Errorf("golden comparison did not report ok:\n%s", w.goldenOut)
