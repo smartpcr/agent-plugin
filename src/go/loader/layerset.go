@@ -1008,6 +1008,9 @@ func (s *LayerSet) watch() error {
 				last[layer.Path], _ = os.ReadFile(layer.Path)
 			}
 		}
+		// a file changed between Init's read and the baseline above would look already
+		// seen; one read now picks it up (it is a no-op when the hashes are unchanged)
+		s.queueRead()
 		go func() {
 			defer close(done)
 			ticker := time.NewTicker(s.options.PollInterval)
