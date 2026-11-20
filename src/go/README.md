@@ -27,7 +27,7 @@ cmd/cordis-sample   runnable end-to-end demo
 cd src/go
 go build ./...
 go vet ./...
-go test -race ./...           # 55 tests: cordis 37, timer 7, loader 11
+go test -race ./...           # 157 tests: cordis 92, timer 7, loader 58
 go run ./cmd/cordis-sample
 gofmt -l .                    # must print nothing
 ```
@@ -311,7 +311,20 @@ operations (`insert`, override by `id`, `merge` into config, `remove`), and
 value. Runtime edits are written to the one `Writable` layer only, edited in place so
 comments survive; the write is refused with `loader.ErrStaleLayer` when the file's
 content hash changed since it was read, and with `loader.ErrMaskedEdit` when a later layer overrides the edited value (nothing is written either way); a layer file that disappears keeps its last operations. An optional `WriteGuard` (e.g. a
-cross-process lock) wraps every write.
+cross-process lock) wraps every write. `Debounce` makes a burst of watched saves one
+reload.
+
+**Editing, restarting and nesting.** `Create`, `Update`, `Set`, `Move` and `Remove`
+validate an edit before applying it (an invalid one changes nothing) and report it for
+persistence; `Lookup(path)` reads the desired tree and `EntryOf(fiber)` finds the entry
+that loaded a fiber. `Lifecycle()` / `OnLifecycle` record `add`, `update`, `move`,
+`remove` and `restart` per entry. `Restart(id)` reloads one entry and leaves its
+siblings and every file alone. After each apply, edit or restart has settled, the
+loader emits one `loader.Reloaded` notice listing the created, updated, restarted and
+removed ids and the issues found. `loader.New(ctx, options, layers...)` runs a
+read-only loader of a component's own: its entries are private to that component's
+context and unload with it, and `ApplyLayers` with a new layer list restarts only the
+entries that changed.
 
 ## Not ported
 

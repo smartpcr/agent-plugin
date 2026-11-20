@@ -115,6 +115,10 @@ type LayerSetOptions struct {
 	Watch bool `json:"watch"`
 	// PollInterval is how often watched files are checked; 100ms when zero.
 	PollInterval time.Duration `json:"pollInterval,omitempty"`
+	// Debounce, when positive, waits until the layer files have been quiet that long
+	// before reloading, so a burst of saves (an editor writing a file in steps, a
+	// script editing several layers) is one reload and one Reloaded notice.
+	Debounce time.Duration `json:"debounce,omitempty"`
 	// Codec reads and writes every layer file. Nil picks the codec registered for each
 	// file's extension (CodecFor). The writable layer's codec must be a LayerCodec.
 	Codec Codec `json:"-"`
@@ -1015,10 +1019,20 @@ func (s *LayerSet) watch() error {
 			defer close(done)
 			ticker := time.NewTicker(s.options.PollInterval)
 			defer ticker.Stop()
+			var settle *time.Timer
+			var settled <-chan time.Time
+			defer func() {
+				if settle != nil {
+					settle.Stop()
+				}
+			}()
 			for {
 				select {
 				case <-stop:
 					return
+				case <-settled:
+					settled = nil
+					s.queueRead()
 				case <-ticker.C:
 					changed := false
 					for path, previous := range last {
@@ -1031,8 +1045,16 @@ func (s *LayerSet) watch() error {
 							changed = true
 						}
 					}
-					if changed {
+					switch {
+					case !changed:
+					case s.options.Debounce <= 0:
 						s.queueRead()
+					case settle == nil:
+						settle = time.NewTimer(s.options.Debounce)
+						settled = settle.C
+					default:
+						settle.Reset(s.options.Debounce)
+						settled = settle.C
 					}
 				}
 			}
