@@ -116,7 +116,10 @@ then requires, in the package's own (not `_test`-suffixed) test files:
    `copy(alias, readSeed())` taints `b` too; package-level `var alias = seed` and
    writes to it in any test file count the same way. Fresh allocations, scalars,
    strings and detached copies (`[]byte("y")`, `bytes.Clone(b)`, `copy(scratch, b)`
-   of a flat `[]byte`, `len(b)`, `string(b)`) stay independent. `nil`, `true`,
+   of a flat `[]byte`, `len(b)`, `string(b)`) stay independent, and so do copies of
+   numbers and strings (`copied := seed` of an `int` or `string`). Another test file
+   may alias a seed through any chain (`var a = seed; var b = a`) as long as no
+   member of the chain is written; such a variable is still never a seed source. `nil`, `true`,
    `false` and `iota` are trusted only when no declaration in the package or function
    renames them.
 

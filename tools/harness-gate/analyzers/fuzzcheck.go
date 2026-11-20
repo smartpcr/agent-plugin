@@ -109,7 +109,7 @@ func FuzzCheckFindings(files []PackageFile) []Finding {
 		if !ok || fn.Body == nil {
 			continue
 		}
-		sf := seedFunc{fn: fn, env: collectEnv(seeds.File, fn), params: testingFParams(seeds.File, fn)}
+		sf := seedFunc{fn: fn, env: prov.collectEnv(seeds.File, fn), params: testingFParams(seeds.File, fn)}
 		for _, p := range sf.params {
 			for _, call := range addCalls(fn.Body, p.name) {
 				for _, arg := range call.Args {
@@ -143,7 +143,7 @@ func FuzzCheckFindings(files []PackageFile) []Finding {
 	}
 
 	for _, tg := range targets {
-		env := collectEnv(tg.file.File, tg.fn)
+		env := prov.collectEnv(tg.file.File, tg.fn)
 		if tg.fn.Body != nil && !reassigned(env, tg.param) {
 			inSeeds := tg.file.Name == seeds.Name
 			if (inSeeds && len(addCalls(tg.fn.Body, tg.param)) > 0) || passesToSeeder(tg.fn.Body, tg.param, seeders, env) {
