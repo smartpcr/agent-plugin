@@ -294,10 +294,10 @@ storyId: "harness:DSH"
 ## Stage 5.2: Live Session History and Brackets
 
 ### Implementation Steps
-- [ ] impl.md step 5.5 / DH-D-SESSION-2: a live session over a `Store` that accepts events in order, assigns sequence numbers, delivers each event once to subscribers and holds no history of its own (`DH-T-SESSION-3`..`-8`, `-19` under `-race`).
-- [ ] impl.md step 5.6 / DH-D-SESSION-3: folds that compute model history, the request header and tool history from the log (`DH-T-SESSION-9`, `-10`, `-11`, `-14`).
-- [ ] impl.md step 5.7 / DH-D-SESSION-4: the opaque `session.Request` built only by `NextRequest` (loop) and `RequestFrom(seq)` (auxiliary, from one committed builder event), with `Digest()`, and `surface.Rebuild` recomputing a request from the log prefix ending at `requestAsOf`; no other package can construct one (SP-1; `DH-T-SESSION-12`).
-- [ ] impl.md step 5.8 / DH-D-SESSION-5: bracket checking on append (`turn/start`..`turn/end`, `step/start`..`step/end`) and closers on failure; `interrupted` is written only by the session core (SP-3; `DH-T-SESSION-13`).
+- [x] impl.md step 5.5 / DH-D-SESSION-2: a live session over a `Store` that accepts events in order, assigns sequence numbers, delivers each event once to subscribers and holds no history of its own (`DH-T-SESSION-3`..`-8`, `-19` under `-race`).
+- [x] impl.md step 5.6 / DH-D-SESSION-3: folds that compute model history, the request header and tool history from the log (`DH-T-SESSION-9`, `-10`, `-11`, `-14`).
+- [x] impl.md step 5.7 / DH-D-SESSION-4: the opaque `session.Request` built only by `NextRequest` (loop) and `RequestFrom(seq)` (auxiliary, from one committed builder event), with `Digest()`, and `surface.Rebuild` recomputing a request from the log prefix ending at `requestAsOf`; no other package can construct one (SP-1; `DH-T-SESSION-12`).
+- [x] impl.md step 5.8 / DH-D-SESSION-5: bracket checking on append (`turn/start`..`turn/end`, `step/start`..`step/end`) and closers on failure; `interrupted` is written only by the session core (SP-3; `DH-T-SESSION-13`).
 
 ### Dependencies
 - phase-session-core-contracts/stage-event-vocabulary-and-store-contract
