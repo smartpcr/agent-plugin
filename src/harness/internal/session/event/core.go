@@ -222,12 +222,12 @@ var (
 	EndSeed = mustCore(Spec[EndSeedPayload]{Name: "session/end-seed", Version: 1, NoSources: true})
 )
 
-// upgradeToolResultV1 converts tool/result version 1, which named the call "id"
-// and had no spill reference, to version 2.
 // upgradeAddedServedBy is the identity: version 2 only adds the optional
 // served_by, and a version-1 payload, which has none, was served by the provider.
 func upgradeAddedServedBy(raw json.RawMessage) (json.RawMessage, error) { return raw, nil }
 
+// upgradeToolResultV1 converts tool/result version 1, which named the call "id"
+// and had no spill reference, to version 2.
 func upgradeToolResultV1(raw json.RawMessage) (json.RawMessage, error) {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &m); err != nil {
