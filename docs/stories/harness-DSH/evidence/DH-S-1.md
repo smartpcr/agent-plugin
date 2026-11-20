@@ -53,6 +53,7 @@ edit, and passes `go -C src/go test -count=20 ./cmd/cordis-sample`.
 | Field | Value |
 | --- | --- |
 | Kind | `automated` (unit, composition with the go toolchain) |
+| Commit | `38969de44615ffbba94bab6dcda0d11e0816572e` (stage-1.3 PR head at the time of the run; clean tracked tree) |
 | Toolchain | `go version go1.27.4 windows/amd64` |
 | Date | 2026-11-20 |
 
@@ -79,9 +80,13 @@ written, skipped or marked failed here.
 | step 1.6 part 2 (fuzz-target convention) | `tools/harness-gate/analyzers`: `TestFuzzCheckMissingTargetIsReported`, `TestFuzzCheckRules`, the `fuzzcheck/...` analysistest fixtures; `tools/harness-gate`: `TestFuzzCheckRunsInVetGate` (real `go vet -vettool`) |
 | step 1.6 part 3 (`replay`/`scenario` excluded from the default gate) | `tools/harness-gate`: `TestLayerTaggedTestsAreExcludedFromDefaultGate` over `testdata/layer-tagged` (gate passes; `go test -tags scenario` / `-tags replay` fails) |
 
+Both commands were run from the repository root of commit `38969de` and exited 0:
+
 ```text
 $ go -C src/harness test -race -shuffle=on -count=1 -cover ./internal/testkit/golden
-ok  github.com/smartpcr/agent-plugin/src/harness/internal/testkit/golden  coverage: 100.0% of statements
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/testkit/golden	2.868s	coverage: 100.0% of statements
 $ GOWORK=off go -C tools/harness-gate test -count=1 ./...
-ok  (see the command log of the stage-1.3 PR)
+ok  	github.com/smartpcr/agent-plugin/tools/harness-gate	338.966s
+ok  	github.com/smartpcr/agent-plugin/tools/harness-gate/analyzers	20.794s
+ok  	github.com/smartpcr/agent-plugin/tools/harness-gate/modcheck	17.238s
 ```
