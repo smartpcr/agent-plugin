@@ -1,11 +1,14 @@
 package vocab
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"slices"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/schema"
@@ -143,21 +146,128 @@ type ToolSchema struct {
 	Parameters  json.RawMessage `json:"parameters"`
 }
 
-// Validate checks the name and that Parameters is a usable object schema.
+// Validate checks the name and that Parameters is an object schema inside the
+// model-facing subset (llm.md, "Tool schemas sent to the model"); the error names
+// every offending path (DH-LIB-ZOD-R3). Nothing outside the subset is weakened
+// into it.
 func (t ToolSchema) Validate() error {
 	if t.Name == "" || strings.ContainsAny(t.Name, " \t\r\n") {
 		return fmt.Errorf("vocab: tool name %q is blank or holds white space", t.Name)
 	}
-	var root struct {
-		Type string `json:"type"`
-	}
-	if err := json.Unmarshal(t.Parameters, &root); err != nil || root.Type != "object" {
+	dec := json.NewDecoder(bytes.NewReader(t.Parameters))
+	dec.UseNumber()
+	var doc any
+	if err := dec.Decode(&doc); err != nil {
 		return fmt.Errorf("vocab: the parameters of tool %s are not an object schema", t.Name)
+	}
+	if root, _ := doc.(map[string]any); root == nil || root["type"] != "object" {
+		return fmt.Errorf("vocab: the parameters of tool %s are not an object schema", t.Name)
+	}
+	var bad []string
+	modelSubset(doc, "", &bad)
+	if len(bad) > 0 {
+		sort.Strings(bad)
+		return fmt.Errorf("vocab: tool %s: the parameters leave the model-facing subset: %s", t.Name, strings.Join(bad, "; "))
 	}
 	if _, err := schema.FromJSON(t.Parameters); err != nil {
 		return fmt.Errorf("vocab: tool %s: %w", t.Name, err)
 	}
 	return nil
+}
+
+// modelKeywords is the model-facing subset: upstream's keywords
+// (packages/core/tools/src/json-schema.ts:1-11) plus the constraints a dsh tag
+// derives. $ref, allOf, anyOf, not, if/then/else, format and every other keyword
+// are outside it.
+var modelKeywords = map[string]bool{
+	"type": true, "properties": true, "required": true, "additionalProperties": true,
+	"items": true, "enum": true, "const": true, "oneOf": true,
+	"description": true, "title": true, "default": true, "examples": true,
+	"minimum": true, "maximum": true, "pattern": true,
+	"minLength": true, "maxLength": true, "minItems": true, "maxItems": true,
+	"minProperties": true, "maxProperties": true,
+}
+
+// modelSubset appends "<pointer>: <reason>" for every violation under node.
+func modelSubset(node any, path string, bad *[]string) {
+	at := func(p string) string {
+		if p == "" {
+			return "/"
+		}
+		return p
+	}
+	obj, ok := node.(map[string]any)
+	if !ok {
+		*bad = append(*bad, at(path)+": a schema must be an object")
+		return
+	}
+	for k, v := range obj {
+		p := path + "/" + strings.NewReplacer("~", "~0", "/", "~1").Replace(k)
+		if !modelKeywords[k] {
+			*bad = append(*bad, p+": the keyword is not admitted")
+			continue
+		}
+		switch k {
+		case "type":
+			if _, ok := v.(string); !ok {
+				*bad = append(*bad, p+": must be one type name")
+			}
+		case "additionalProperties":
+			if _, ok := v.(bool); !ok {
+				*bad = append(*bad, p+": must be true or false")
+			}
+		case "required":
+			list, ok := v.([]any)
+			for _, e := range list {
+				if _, s := e.(string); !s {
+					ok = false
+				}
+			}
+			if !ok {
+				*bad = append(*bad, p+": must be a list of names")
+			}
+		case "enum":
+			list, ok := v.([]any)
+			for _, e := range list {
+				ok = ok && scalar(e)
+			}
+			if !ok {
+				*bad = append(*bad, p+": must be a list of scalars")
+			}
+		case "const":
+			if !scalar(v) {
+				*bad = append(*bad, p+": must be a scalar")
+			}
+		case "properties":
+			props, ok := v.(map[string]any)
+			if !ok {
+				*bad = append(*bad, p+": must map names to schemas")
+				continue
+			}
+			for name, sub := range props {
+				modelSubset(sub, p+"/"+strings.NewReplacer("~", "~0", "/", "~1").Replace(name), bad)
+			}
+		case "items":
+			modelSubset(v, p, bad)
+		case "oneOf":
+			list, ok := v.([]any)
+			if !ok {
+				*bad = append(*bad, p+": must be a list of schemas")
+				continue
+			}
+			for i, sub := range list {
+				modelSubset(sub, p+"/"+strconv.Itoa(i), bad)
+			}
+		}
+	}
+}
+
+func scalar(v any) bool {
+	switch v.(type) {
+	case nil, bool, string, json.Number:
+		return true
+	}
+	return false
 }
 
 // Usage is disjoint token counts: uncached input, cache read, cache write and

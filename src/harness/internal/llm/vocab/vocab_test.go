@@ -135,13 +135,13 @@ func TestReencode(t *testing.T) {
 }
 
 // persisted lists every vocabulary type that is written to a log or table,
-// under the name its golden line carries; Message is fingerprinted through its
-// persisted shape.
+// under the name its golden line carries. Each is derived through the
+// production path; Message reaches its wire shape through schema.Shaper.
 var persisted = []struct {
 	name string
 	typ  reflect.Type
 }{
-	{"vocab.Message", reflect.TypeFor[messageJSON]()},
+	{"vocab.Message", reflect.TypeFor[Message]()},
 	{"vocab.Block", reflect.TypeFor[Block]()},
 	{"vocab.Source", reflect.TypeFor[Source]()},
 	{"vocab.ToolSchema", reflect.TypeFor[ToolSchema]()},
@@ -177,9 +177,6 @@ func TestSchemasAcceptValues(t *testing.T) {
 	}
 	for _, v := range values(t) {
 		typ := reflect.TypeOf(v).Elem()
-		if typ == reflect.TypeFor[Message]() {
-			typ = reflect.TypeFor[messageJSON]()
-		}
 		s, ok := byType[typ]
 		if !ok {
 			t.Fatalf("%v is persisted but has no fingerprint line", typ)
@@ -187,6 +184,49 @@ func TestSchemasAcceptValues(t *testing.T) {
 		if issues := s.Validate(json.RawMessage(must(Encode(v)))); len(issues) > 0 {
 			t.Errorf("%v: %v", typ, issues)
 		}
+	}
+}
+
+// TestMessageSchema derives Message through the production path, at the root
+// and nested in another payload: it is its wire shape, not its unexported
+// fields.
+func TestMessageSchema(t *testing.T) {
+	direct := must(schema.Of[Message]())
+	if want := must(schema.Of[messageJSON]()).Fingerprint(); direct.Fingerprint() != want {
+		t.Fatalf("Message fingerprint %s, its wire shape %s", direct.Fingerprint(), want)
+	}
+	m := must(NewMessage(RoleUser, TextBlock("hi")))
+	if issues := direct.Validate(m); len(issues) > 0 {
+		t.Fatalf("a real message: %v", issues)
+	}
+	for _, bad := range []string{
+		`{}`,
+		`{"id":"msg_1","role":"boss","blocks":[]}`,
+		`{"id":"msg_1","role":"user","blocks":[],"extra":1}`,
+		`{"id":"msg_1","role":"user","blocks":[{"kind":"text","text":{"text":1}}]}`,
+	} {
+		if len(direct.Validate(json.RawMessage(bad))) == 0 {
+			t.Errorf("Message schema accepts %s", bad)
+		}
+	}
+
+	type transcript struct {
+		Messages []Message          `json:"messages"`
+		Last     *Message           `json:"last,omitempty"`
+		ByID     map[string]Message `json:"by_id"`
+	}
+	nested := must(schema.Of[transcript]())
+	payload := transcript{Messages: []Message{m}, Last: &m, ByID: map[string]Message{m.ID(): m}}
+	if issues := nested.Validate(payload); len(issues) > 0 {
+		t.Fatalf("a payload of real messages: %v", issues)
+	}
+	var back transcript
+	if issues := nested.Decode(must(json.Marshal(payload)), &back); len(issues) > 0 || back.Messages[0].ID() != m.ID() {
+		t.Fatalf("decode: %v %+v", issues, back)
+	}
+	bad := `{"messages":[{"id":"msg_1","role":"boss","blocks":[]}],"by_id":{}}`
+	if issues := nested.Validate(json.RawMessage(bad)); len(issues) == 0 || issues[0].Path != "/messages/0/role" {
+		t.Fatalf("nested role violation reported as %v", issues)
 	}
 }
 
@@ -269,6 +309,50 @@ func TestMessageConstructors(t *testing.T) {
 		if tc.err() == nil {
 			t.Errorf("%s: accepted", tc.name)
 		}
+	}
+}
+
+// TestToolSchemaSubset is llm.md's model-facing subset (DH-LIB-ZOD-R3): every
+// keyword outside it fails, at any depth, and the error lists every path.
+func TestToolSchemaSubset(t *testing.T) {
+	tool := func(doc string) ToolSchema {
+		return ToolSchema{Name: "t", Parameters: json.RawMessage(doc)}
+	}
+	for _, ok := range []string{
+		`{"type":"object","properties":{"path":{"type":"string","pattern":"^/","maxLength":9}},"required":["path"],"additionalProperties":false}`,
+		`{"type":"object","properties":{"n":{"type":"integer","minimum":0,"maximum":5,"default":1,"examples":[2]}}}`,
+		`{"type":"object","properties":{"mode":{"type":"string","enum":["a","b"]},"k":{"const":"x"}}}`,
+		`{"type":"object","properties":{"xs":{"type":"array","items":{"type":"string"},"maxItems":3}}}`,
+		`{"type":"object","title":"T","description":"d","properties":{"v":{"oneOf":[{"type":"string"},{"type":"number"}]}}}`,
+	} {
+		if err := tool(ok).Validate(); err != nil {
+			t.Errorf("%s: %v", ok, err)
+		}
+	}
+	for _, tc := range []struct{ doc, path string }{
+		{`{"type":"object","allOf":[{"type":"object"}]}`, "/allOf"},
+		{`{"type":"object","anyOf":[{"type":"object"}]}`, "/anyOf"},
+		{`{"type":"object","not":{"required":["a"]}}`, "/not"},
+		{`{"type":"object","$ref":"#"}`, "/$ref"},
+		{`{"type":"object","$defs":{"a":{"type":"string"}}}`, "/$defs"},
+		{`{"type":"object","if":{"required":["a"]},"then":{"required":["b"]}}`, "/if"},
+		{`{"type":"object","properties":{"at":{"type":"string","format":"date-time"}}}`, "/properties/at/format"},
+		{`{"type":"object","properties":{"xs":{"type":"array","items":{"not":{}}}}}`, "/properties/xs/items/not"},
+		{`{"type":"object","properties":{"v":{"oneOf":[{"type":"string"},{"format":"uri"}]}}}`, "/properties/v/oneOf/1/format"},
+		{`{"type":"object","additionalProperties":{"type":"string"}}`, "/additionalProperties"},
+		{`{"type":"object","properties":{"v":{"type":["string","null"]}}}`, "/properties/v/type"},
+		{`{"type":"object","properties":{"v":{"enum":[{"a":1}]}}}`, "/properties/v/enum"},
+		{`{"type":"object","properties":{"a/b":{"type":"string","format":"email"}}}`, "/properties/a~1b/format"},
+		{`{"type":"object","properties":{"v":true}}`, "/properties/v"},
+	} {
+		err := tool(tc.doc).Validate()
+		if err == nil || !strings.Contains(err.Error(), tc.path+":") {
+			t.Errorf("%s: %v, want a rejection naming %s", tc.doc, err, tc.path)
+		}
+	}
+	err := tool(`{"type":"object","not":{},"properties":{"a":{"format":"uri"}}}`).Validate()
+	if err == nil || !strings.Contains(err.Error(), "/not:") || !strings.Contains(err.Error(), "/properties/a/format:") {
+		t.Errorf("every offending path is not listed: %v", err)
 	}
 }
 

@@ -118,6 +118,12 @@ func TestParse(t *testing.T) {
 		{s + "FREQ=MONTHLY;BYDAY=MO;BYSETPOS=" + strings.Repeat("1,", 31) + "1", Syntax},
 		{s + "FREQ=MONTHLY;BYDAY=MO,TU;BYSETPOS=1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32", Density},
 		{s + "FREQ=MONTHLY;BYDAY=MO;BYSETPOS=6", Density},
+		// One calendar year holds ISO week 1 of 2018 (Jan 1-7) and the first day of
+		// week 1 of 2019 (Dec 31): 8 days of 1,440 minutes is 11,520 candidates.
+		{"DTSTART:20180101T000000Z\nRRULE:FREQ=YEARLY;BYWEEKNO=1;BYDAY=MO,TU,WE,TH,FR,SA,SU;" +
+			"BYHOUR=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23;" +
+			"BYMINUTE=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59;" +
+			"BYSECOND=0", Density},
 	}
 	for _, tc := range rejected {
 		_, rej := Parse(tc.text, false)
@@ -299,6 +305,25 @@ func TestBoundedWork(t *testing.T) {
 }
 
 // TestElapsedSpacing is DH-T-RRULE-6 (DH-ADR-RRULE-2).
+// TestWeekNoBound checks DH-LIB-RRULE-R3's bound dominates what a yearly period
+// really holds for week numbers at the calendar edges, where one period meets an
+// adjacent ISO year's week of the same number.
+func TestWeekNoBound(t *testing.T) {
+	for _, weeks := range []string{"1", "52", "53", "-1", "1,53", "1,52,53", "-1,1", "2,51"} {
+		for _, wkst := range []string{"MO", "SU", "TH"} {
+			r := mustParse(t, "DTSTART:20000101T000000Z\nRRULE:FREQ=YEARLY;BYWEEKNO="+weeks+
+				";BYDAY=MO,TU,WE,TH,FR,SA,SU;WKST="+wkst)
+			bound := r.candidateBound()
+			for p := range 40 {
+				got, _ := r.period(p)
+				if len(got) > bound {
+					t.Errorf("BYWEEKNO=%s WKST=%s year %d: %d candidates, bound %d", weeks, wkst, 2000+p, len(got), bound)
+				}
+			}
+		}
+	}
+}
+
 func TestElapsedSpacing(t *testing.T) {
 	r := mustParse(t, "DTSTART;TZID=America/New_York:20210101T000000\nRRULE:FREQ=MINUTELY;INTERVAL=5")
 	for _, around := range []time.Time{ny(t, "2021-03-14T01:00"), ny(t, "2021-11-07T00:30")} {

@@ -704,3 +704,64 @@ func TestPointerEscapes(t *testing.T) {
 		t.Fatalf("paths = %v", got)
 	}
 }
+
+// opaque keeps its fields unexported and encodes as opaqueWire.
+type opaque struct{ level int }
+
+type opaqueWire struct {
+	Level int `json:"level" dsh:"min=1,max=3"`
+}
+
+func (opaque) SchemaShape() reflect.Type { return reflect.TypeFor[opaqueWire]() }
+
+func (o opaque) MarshalJSON() ([]byte, error) { return json.Marshal(opaqueWire{o.level}) }
+
+// selfShaped's shape holds itself.
+type selfShaped struct{}
+
+type selfWire struct {
+	Next []selfShaped `json:"next"`
+}
+
+func (selfShaped) SchemaShape() reflect.Type { return reflect.TypeFor[selfWire]() }
+
+func TestShaper(t *testing.T) {
+	direct, err := Of[opaque]()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire, err := Of[opaqueWire]()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if direct.Fingerprint() != wire.Fingerprint() {
+		t.Fatalf("shaped fingerprint %s, wire %s", direct.Fingerprint(), wire.Fingerprint())
+	}
+	if issues := direct.Validate(opaque{2}); len(issues) > 0 {
+		t.Fatal(issues)
+	}
+	if issues := direct.Validate(opaque{7}); len(issues) != 1 || issues[0].Path != "/level" {
+		t.Fatalf("the shape's dsh tag is not applied: %v", issues)
+	}
+
+	type holder struct {
+		Many []opaque          `json:"many"`
+		One  *opaque           `json:"one"`
+		ByID map[string]opaque `json:"by_id"`
+	}
+	h, err := Of[holder]()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if issues := h.Validate(holder{Many: []opaque{{1}}, One: &opaque{2}, ByID: map[string]opaque{"a": {3}}}); len(issues) > 0 {
+		t.Fatal(issues)
+	}
+	issues := h.Validate(holder{Many: []opaque{{1}, {9}}, ByID: map[string]opaque{"a": {0}}})
+	if got := issues.Error(); !strings.Contains(got, "/many/1/level") || !strings.Contains(got, "/by_id/a/level") {
+		t.Fatalf("nested shape violations: %v", issues)
+	}
+
+	if _, err := Of[selfShaped](); err == nil || !strings.Contains(err.Error(), "reaches") {
+		t.Fatalf("a shape that reaches itself: %v", err)
+	}
+}

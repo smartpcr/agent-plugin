@@ -5,7 +5,31 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 )
+
+// TestFoldIsSimpleFolding checks fold's key is constant on every simple-fold
+// orbit and never leaves it, so equal keys mean simple-fold equivalent runes.
+func TestFoldIsSimpleFolding(t *testing.T) {
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		k := foldRune(r)
+		inOrbit := k == r
+		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+			if foldRune(f) != k {
+				t.Fatalf("%U and %U fold to different keys", r, f)
+			}
+			inOrbit = inOrbit || f == k
+		}
+		if !inOrbit {
+			t.Fatalf("%U folds to %U, outside its orbit", r, k)
+		}
+	}
+	for _, r := range `*?[]{},!^-/\` {
+		if foldRune(r) != r {
+			t.Fatalf("glob syntax %q changes under folding", r)
+		}
+	}
+}
 
 // TestDialect is DH-T-PICOMATCH-1 and the stage scenario "Glob meaning is single":
 // the answers are a pure function of the two strings, so they are the same on every
@@ -95,6 +119,25 @@ func TestOptions(t *testing.T) {
 		{"*.MD", []Option{FoldCase()}, "readme.md", true},
 		{"ÄRGER.txt", []Option{FoldCase()}, "ärger.TXT", true},
 		{"[A-C]*", []Option{FoldCase()}, "bravo", true},
+		// Unicode simple folding, in both directions: the Kelvin sign is k, long s
+		// is s, and final, small and capital sigma are one letter.
+		{"\u212a*", []Option{FoldCase()}, "kilo", true},
+		{"k*", []Option{FoldCase()}, "\u212ailo", true},
+		{"[j-l]ilo", []Option{FoldCase()}, "\u212ailo", true},
+		{"\u017fun", []Option{FoldCase()}, "SUN", true},
+		{"ΣΟΦΟΣ", []Option{FoldCase()}, "σοφος", true},
+		{"σοφος", []Option{FoldCase()}, "ΣΟΦΟς", true},
+		{"{ΣΟΦΟΣ,x}.md", []Option{FoldCase()}, "σοφος.MD", true},
+		// Dotted and dotless i are not simple-fold partners of ASCII I and i.
+		{"I*", []Option{FoldCase()}, "\u0131ndex", false},
+		{"\u0131*", []Option{FoldCase()}, "Index", false},
+		{"i*", []Option{FoldCase()}, "\u0130ndex", false},
+		{"\u0130*", []Option{FoldCase()}, "index", false},
+		{"\u0130*", []Option{FoldCase()}, "\u0130NDEX", true},
+		{"\u0131*", []Option{FoldCase()}, "\u0131ndex", true},
+		// Folding is not transliteration: ß does not fold to ss.
+		{"stra\u00dfe", []Option{FoldCase()}, "STRASSE", false},
+		{"\u212a*", nil, "kilo", false},
 		// A pattern with a `/` is matched against the whole name even with BaseName.
 		{"b/*.md", []Option{BaseName()}, "a/b/x.md", false},
 		{"a/b/*.md", []Option{BaseName()}, "a/b/x.md", true},

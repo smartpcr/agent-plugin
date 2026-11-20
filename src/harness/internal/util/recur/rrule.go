@@ -432,7 +432,10 @@ func (r *rrule) candidateBound() int {
 			days = min(days, len(r.yearDays))
 		}
 		if r.weekNos != nil {
-			days = min(days, 7*len(r.weekNos))
+			// Each number holds the seven days of its own week, but a period may
+			// also hold the edge of an adjacent ISO year's week of the same
+			// number: at most three days at each end of the calendar year.
+			days = min(days, 7*len(r.weekNos)+6)
 		}
 		if r.days != nil {
 			n := 0

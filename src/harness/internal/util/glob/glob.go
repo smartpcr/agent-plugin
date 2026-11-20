@@ -26,6 +26,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"unicode"
 
 	"github.com/bmatcuk/doublestar/v4"
 )
@@ -173,7 +174,20 @@ func (s *set) Match(name string) bool {
 // FromOS converts a file-system path to the `/`-separated form patterns match.
 func FromOS(p string) string { return filepath.ToSlash(p) }
 
-func fold(s string) string { return strings.ToLower(strings.ToUpper(s)) }
+// fold maps every rune to one member of its Unicode simple-fold orbit (the
+// least), so two strings fold equal exactly when they are equal under simple
+// case folding: K, k and the Kelvin sign meet; σ, ς and Σ meet; I and dotless ı
+// do not. Glob syntax is ASCII punctuation, which has no fold partners, so a
+// folded pattern keeps its meaning.
+func fold(s string) string { return strings.Map(foldRune, s) }
+
+func foldRune(r rune) rune {
+	least := r
+	for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+		least = min(least, f)
+	}
+	return least
+}
 
 // expansions counts the literal patterns the `{}` groups of p multiply out to,
 // saturating above MaxExpansions. p has been validated.

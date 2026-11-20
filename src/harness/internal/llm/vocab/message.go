@@ -7,9 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
+
+	"github.com/smartpcr/agent-plugin/src/harness/internal/schema"
 )
+
+var _ schema.Shaper = Message{}
 
 // Role is who a message is from; the set is closed.
 type Role string
@@ -146,14 +151,18 @@ func (m Message) Validate() error {
 	return nil
 }
 
-// messageJSON is the persisted shape of a Message; its fingerprint is the
-// message's (testdata/fingerprints.golden).
+// messageJSON is the persisted shape of a Message: SchemaShape hands it to the
+// schema package, so a Message is derived, validated and fingerprinted as this
+// struct at the root and when nested (testdata/fingerprints.golden).
 type messageJSON struct {
 	ID     string  `json:"id"`
 	Role   Role    `json:"role" dsh:"enum=system|developer|user|assistant|tool"`
 	Blocks []Block `json:"blocks"`
 	Source *Source `json:"source,omitempty"`
 }
+
+// SchemaShape implements schema.Shaper: a Message's wire form is messageJSON.
+func (Message) SchemaShape() reflect.Type { return reflect.TypeFor[messageJSON]() }
 
 // MarshalJSON encodes the persisted shape.
 func (m Message) MarshalJSON() ([]byte, error) {
