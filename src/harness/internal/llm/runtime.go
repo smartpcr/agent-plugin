@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"iter"
 	"slices"
+	"sync/atomic"
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
@@ -47,7 +48,11 @@ type Prepared interface {
 	Model() string
 	// Config is the effective controls, the adapter's defaults materialised.
 	Config() vocab.CallConfig
-	// Stream runs one attempt. It always ends with exactly one Finish chunk
+	// Stream runs the call's one attempt; a prepared call is single-use, so a
+	// second Stream (sequential or concurrent) is refused with
+	// llm/invalid-request before any provider I/O, as is a request whose
+	// controls, with the route's defaults materialised, differ from Config. It
+	// always ends with exactly one Finish chunk
 	// (unless the consumer stops reading first) and hands exactly one Attempt
 	// record to sink after it; an adapter error, panic, missing finish or a
 	// cancellation becomes that Finish and record. A sink error is the sink's own:
@@ -62,6 +67,7 @@ type prepared struct {
 	model string
 	cfg   vocab.CallConfig
 	call  Call
+	used  atomic.Bool // set by the first Stream: a prepared call runs once
 }
 
 func (p *prepared) Route() vocab.RouteID { return p.route.ID }
@@ -126,6 +132,13 @@ func callPrepare(ctx context.Context, route Route, model string, cfg vocab.CallC
 		}
 	}()
 	return route.Adapter.Prepare(ctx, route.ID, model, vocab.CallConfig{Controls: cfg.Controls.Clone(), Defaulted: slices.Clone(cfg.Defaulted)})
+}
+
+// sameControls reports whether a and b set the same controls to the same values.
+func sameControls(a, b vocab.Controls) bool {
+	samePtr := func(x, y *float64) bool { return x == nil && y == nil || x != nil && y != nil && *x == *y }
+	return a.Effort == b.Effort && samePtr(a.Temperature, b.Temperature) && samePtr(a.TopP, b.TopP) &&
+		a.MaxOutputTokens == b.MaxOutputTokens && slices.Equal(a.Stop, b.Stop) && a.ToolChoice == b.ToolChoice
 }
 
 // materialise fills every unset control of c from d and names what it filled.

@@ -111,23 +111,35 @@ func (r *registry) Ask(ctx context.Context, it Item) (Answer, Actor, error) {
 		r.mu.Unlock()
 		return unavailable("no-answerer")
 	}
-	r.seq++
 	if it.ID == "" {
-		it.ID = ID("int-" + strconv.FormatUint(r.seq, 10))
+		// A minted id must not collide with a caller-supplied one, pending or settled.
+		for {
+			r.seq++
+			it.ID = ID("int-" + strconv.FormatUint(r.seq, 10))
+			if _, dup := r.items[it.ID]; !dup && !r.isSettled(it.ID) {
+				break
+			}
+		}
 	} else if _, dup := r.items[it.ID]; dup || r.isSettled(it.ID) {
 		r.mu.Unlock()
 		return Answer{}, Actor{}, errorf(CodeInvalid, "item %q is already used", it.ID)
+	} else {
+		r.seq++
 	}
-	x := &item{it: it, seq: r.seq, channel: ch, ans: a.a, ansGen: a.gen, path: path, done: make(chan struct{})}
-	r.items[it.ID] = x
-	r.mu.Unlock()
-
 	if !it.Deadline.IsZero() {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithDeadline(ctx, it.Deadline)
 		defer cancel()
 	}
-	if err := deliver(ctx, a.a, it); err != nil {
+	// The answerer's context is the item's own: settling the item by any path
+	// (answer, unbind, answerer unload, Close, cancellation) cancels it.
+	dctx, dcancel := context.WithCancel(ctx)
+	defer dcancel()
+	x := &item{it: it, seq: r.seq, channel: ch, ans: a.a, ansGen: a.gen, path: path, done: make(chan struct{}), cancel: dcancel}
+	r.items[it.ID] = x
+	r.mu.Unlock()
+
+	if err := deliver(dctx, a.a, it); err != nil {
 		r.settle(x, Answer{Outcome: OutcomeUnavailable, Detail: "answerer-failed: " + err.Error()}, Actor{})
 	}
 	select {
@@ -166,6 +178,7 @@ func (r *registry) settle(x *item, a Answer, by Actor) bool {
 	}
 	r.mu.Unlock()
 	close(x.done)
+	x.cancel()
 	withdraw(x.ans, x.it.ID, Reason(a.Outcome))
 	return true
 }

@@ -172,10 +172,11 @@ type item struct {
 	ansGen  uint64
 	path    []agent.Ref // the agent, then each Via up to the root
 
-	state atomic.Int32
-	done  chan struct{}
-	res   Answer
-	by    Actor
+	state  atomic.Int32
+	done   chan struct{}
+	cancel context.CancelFunc // cancels the context Deliver was given; called when x settles
+	res    Answer
+	by     Actor
 }
 
 type binding struct {

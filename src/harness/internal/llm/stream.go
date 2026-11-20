@@ -53,18 +53,25 @@ func (p *prepared) run(ctx context.Context, req session.Request, yield func(voca
 		return outcome{finish: vocab.Finish{Reason: vocab.FinishError, Failure: f}, yield: true}, asm
 	}
 	switch {
+	case !p.used.CompareAndSwap(false, true):
+		return fail(failure(vocab.CodeInvalidRequest, "the prepared call has already run; prepare one per attempt"))
 	case req.IsZero():
 		return fail(failure(vocab.CodeInvalidRequest, "the request was never built"))
 	case req.Route() != p.route.ID:
 		return fail(failure(vocab.CodeInvalidRequest, "the request is for route %q, the call for %q", req.Route(), p.route.ID))
+	case !sameControls(materialise(req.Controls().Clone(), p.route.Defaults).Controls, p.cfg.Controls):
+		return fail(failure(vocab.CodeInvalidRequest, "the request's controls differ from the prepared call's configuration"))
 	}
 	if err := ctx.Err(); err != nil {
 		return outcome{finish: vocab.Finish{Reason: vocab.FinishAborted, Failure: abortedBy(ctx)}, yield: true}, asm
 	}
+	// The slot is released when the provider attempt exits (the pump returns),
+	// not when the record settles: a cancelled attempt still unwinding holds it.
+	release := func() {}
 	if p.slots != nil {
 		select {
 		case p.slots <- struct{}{}:
-			defer func() { <-p.slots }()
+			release = func() { <-p.slots }
 		case <-ctx.Done():
 			return outcome{finish: vocab.Finish{Reason: vocab.FinishAborted, Failure: abortedBy(ctx)}, yield: true}, asm
 		}
@@ -75,7 +82,7 @@ func (p *prepared) run(ctx context.Context, req session.Request, yield func(voca
 	ch := make(chan item)
 	done := make(chan struct{})
 	defer close(done)
-	go p.pump(actx, req, ch, done)
+	go p.pump(actx, req, ch, done, release)
 
 	for {
 		select {
@@ -117,7 +124,8 @@ func (p *prepared) run(ctx context.Context, req session.Request, yield func(voca
 
 // pump runs the adapter's iterator on its own goroutine so a cancellation or a
 // stalled provider never holds the normaliser; a panic is a malformed response.
-func (p *prepared) pump(ctx context.Context, req session.Request, ch chan<- item, done <-chan struct{}) {
+func (p *prepared) pump(ctx context.Context, req session.Request, ch chan<- item, done <-chan struct{}, release func()) {
+	defer release()
 	send := func(it item) bool {
 		select {
 		case ch <- it:

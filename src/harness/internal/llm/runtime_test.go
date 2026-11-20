@@ -179,12 +179,12 @@ func TestStreamOneAttemptOneSettlement(t *testing.T) {
 	}}
 	rt := newRuntime(t, f)
 	sink := &recordingSink{h: h}
-	p := must(rt.Prepare(bg, "r/a", "", vocab.Controls{}))
-	if f.attempts.Load() != 0 {
-		t.Fatal("Prepare did I/O")
-	}
 	start := h.Len()
 	for attempt := 1; attempt <= 2; attempt++ {
+		p := must(rt.Prepare(bg, "r/a", "", vocab.Controls{})) // one prepared call per attempt
+		if f.attempts.Load() != int32(attempt-1) {
+			t.Fatal("Prepare did I/O")
+		}
 		req := must(h.NextRequest())
 		_, fins := drain(p.Stream(bg, req, sink))
 		if len(fins) != 1 {
@@ -393,6 +393,13 @@ func TestStreamAssemblesBlocks(t *testing.T) {
 	if rec := run(append(withText, vocab.Finish{Reason: vocab.FinishError, Failure: overloaded()})...); rec.Succeeded() || len(rec.Message.Blocks()) != 1 {
 		t.Fatalf("an interrupted attempt kept a call: %+v", rec.Message.Blocks())
 	}
+	endedCall := append(withText, vocab.BlockEnd{Index: 1, Block: vocab.ToolUseBlock("c1", "search", json.RawMessage(`{"q":1}`))})
+	for _, fin := range []vocab.Finish{{Reason: vocab.FinishError, Failure: overloaded()}, {Reason: vocab.FinishAborted}} {
+		rec := run(append(endedCall, fin)...)
+		if bs := rec.Message.Blocks(); rec.Succeeded() || len(bs) != 1 || bs[0].Text == nil || bs[0].Text.Text != "let me look" {
+			t.Fatalf("%s: an interrupted attempt kept an ended call: %+v", fin.Reason, bs)
+		}
+	}
 	bad := []vocab.Chunk{vocab.ToolCallDelta{Index: 0, ID: "c1", Name: "search", ArgsDelta: `[1]`}, vocab.Finish{Reason: vocab.FinishToolCalls}}
 	if rec := run(bad...); rec.Succeeded() || rec.Finish.Failure.Code != vocab.CodeMalformedResponse {
 		t.Fatalf("a malformed call: %+v", rec.Finish)
@@ -486,16 +493,16 @@ func TestRouteConcurrencyCap(t *testing.T) {
 	must(rt.Register("cap", llm.Route{ID: "r/a", Adapter: f, MaxConcurrent: 1}))
 	h := newSession(t)
 	req := must(h.NextRequest())
-	p := must(rt.Prepare(bg, "r/a", "m", vocab.Controls{}))
+	prep := func() llm.Prepared { return must(rt.Prepare(bg, "r/a", "m", vocab.Controls{})) }
 	var wg sync.WaitGroup
 	recs := make(chan llm.Attempt, 3)
 	sink := llm.AttemptSinkFunc(func(a llm.Attempt) error { recs <- a; return nil })
 	wg.Add(1)
-	go func() { defer wg.Done(); drain(p.Stream(bg, req, sink)) }()
+	go func() { defer wg.Done(); drain(prep().Stream(bg, req, sink)) }()
 	<-started
 	ctx, cancel := context.WithTimeout(bg, 20*time.Millisecond)
 	defer cancel()
-	drain(p.Stream(ctx, req, sink))
+	drain(prep().Stream(ctx, req, sink))
 	if a := <-recs; a.Finish.Failure == nil || a.Finish.Failure.Code != vocab.CodeAborted {
 		t.Fatalf("a waiter past the cap: %+v", a.Finish)
 	}
@@ -506,5 +513,122 @@ func TestRouteConcurrencyCap(t *testing.T) {
 	wg.Wait()
 	if a := <-recs; !a.Succeeded() {
 		t.Fatalf("the admitted attempt: %+v", a.Finish)
+	}
+}
+
+// DH-T-LLM-3: a prepared call runs once. A second Stream, sequential or
+// concurrent, is refused with llm/invalid-request and one record, before any
+// provider I/O.
+func TestPreparedCallIsSingleUse(t *testing.T) {
+	ok := chunks(append(text("ok"), vocab.Finish{Reason: vocab.FinishStop})...)
+	f := &fake{scripts: []script{ok}}
+	rt := newRuntime(t, f)
+	h := newSession(t)
+	p := must(rt.Prepare(bg, "r/a", "", vocab.Controls{}))
+	var recs []llm.Attempt
+	sink := llm.AttemptSinkFunc(func(a llm.Attempt) error { recs = append(recs, a); return nil })
+	drain(p.Stream(bg, must(h.NextRequest()), sink))
+	_, fins := drain(p.Stream(bg, must(h.NextRequest()), sink))
+	if len(fins) != 1 || len(recs) != 2 || !recs[0].Succeeded() || recs[1].Finish.Failure == nil ||
+		recs[1].Finish.Failure.Code != vocab.CodeInvalidRequest || f.attempts.Load() != 1 {
+		t.Fatalf("sequential reuse: %d finishes, records %+v, %d attempts", len(fins), recs, f.attempts.Load())
+	}
+
+	const n = 8
+	f2 := &fake{scripts: []script{ok}}
+	rt2 := newRuntime(t, f2)
+	p2 := must(rt2.Prepare(bg, "r/a", "", vocab.Controls{}))
+	req := must(h.NextRequest())
+	out := make(chan llm.Attempt, n)
+	var wg sync.WaitGroup
+	for range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			drain(p2.Stream(bg, req, llm.AttemptSinkFunc(func(a llm.Attempt) error { out <- a; return nil })))
+		}()
+	}
+	wg.Wait()
+	close(out)
+	var won, refused int
+	for a := range out {
+		switch {
+		case a.Succeeded():
+			won++
+		case a.Finish.Failure != nil && a.Finish.Failure.Code == vocab.CodeInvalidRequest:
+			refused++
+		}
+	}
+	if won != 1 || refused != n-1 || f2.attempts.Load() != 1 {
+		t.Fatalf("concurrent reuse: %d ran, %d refused, %d provider attempts", won, refused, f2.attempts.Load())
+	}
+}
+
+// DH-T-LLM-3: a request whose controls differ from the prepared configuration
+// is refused before the adapter runs; one with exactly the prepared controls,
+// defaults materialised either way, runs.
+func TestStreamRefusesAConfigMismatch(t *testing.T) {
+	half := 0.5
+	ok := chunks(append(text("ok"), vocab.Finish{Reason: vocab.FinishStop})...)
+	f := &fake{scripts: []script{ok}}
+	rt := llm.New()
+	must(rt.Register("cfg", llm.Route{ID: "r/a", Adapter: f, Defaults: vocab.Controls{Temperature: &half}}))
+	h := newSession(t) // its request header sets no controls
+	var recs []llm.Attempt
+	sink := llm.AttemptSinkFunc(func(a llm.Attempt) error { recs = append(recs, a); return nil })
+
+	drain(must(rt.Prepare(bg, "r/a", "m", vocab.Controls{MaxOutputTokens: 32})).Stream(bg, must(h.NextRequest()), sink))
+	if len(recs) != 1 || recs[0].Finish.Failure == nil || recs[0].Finish.Failure.Code != vocab.CodeInvalidRequest || f.attempts.Load() != 0 {
+		t.Fatalf("a mismatched request ran: %+v, %d attempts", recs, f.attempts.Load())
+	}
+	drain(must(rt.Prepare(bg, "r/a", "m", vocab.Controls{Temperature: &half})).Stream(bg, must(h.NextRequest()), sink))
+	if len(recs) != 2 || !recs[1].Succeeded() || f.attempts.Load() != 1 {
+		t.Fatalf("a request matching the materialised config was refused: %+v", recs[1].Finish)
+	}
+}
+
+// A route's slot is held until the provider attempt exits: a cancelled
+// attempt settles at once, but while its iterator is still unwinding no
+// second attempt is admitted under MaxConcurrent=1.
+func TestSlotHeldUntilTheProviderExits(t *testing.T) {
+	unwind := make(chan struct{})
+	started := make(chan struct{}, 3)
+	slow := func(ctx context.Context, y func(vocab.Chunk, error) bool) {
+		started <- struct{}{}
+		<-ctx.Done()
+		<-unwind // the provider ignores cancellation for a while
+	}
+	ok := func(_ context.Context, y func(vocab.Chunk, error) bool) {
+		started <- struct{}{}
+		for _, c := range append(text("ok"), vocab.Finish{Reason: vocab.FinishStop}) {
+			y(c, nil)
+		}
+	}
+	f := &fake{scripts: []script{slow, ok}}
+	rt := llm.New()
+	must(rt.Register("cap", llm.Route{ID: "r/a", Adapter: f, MaxConcurrent: 1}))
+	req := must(newSession(t).NextRequest())
+	prep := func() llm.Prepared { return must(rt.Prepare(bg, "r/a", "m", vocab.Controls{})) }
+	var recs []llm.Attempt
+	sink := llm.AttemptSinkFunc(func(a llm.Attempt) error { recs = append(recs, a); return nil })
+
+	ctx, cancel := context.WithCancel(bg)
+	go func() { <-started; cancel() }()
+	drain(prep().Stream(ctx, req, sink)) // returns while the provider is still unwinding
+	if len(recs) != 1 || recs[0].Finish.Reason != vocab.FinishAborted {
+		t.Fatalf("the cancelled attempt did not settle promptly: %+v", recs)
+	}
+
+	wctx, wcancel := context.WithTimeout(bg, 50*time.Millisecond)
+	defer wcancel()
+	drain(prep().Stream(wctx, req, sink))
+	if len(recs) != 2 || recs[1].Finish.Reason != vocab.FinishAborted || f.attempts.Load() != 1 {
+		t.Fatalf("a second attempt overlapped the unwinding one: %+v, %d attempts", recs[1].Finish, f.attempts.Load())
+	}
+
+	close(unwind)
+	drain(prep().Stream(bg, req, sink)) // blocks until the slot frees, then runs
+	if len(recs) != 3 || !recs[2].Succeeded() || f.attempts.Load() != 2 {
+		t.Fatalf("after the provider exited: %+v", recs[2].Finish)
 	}
 }

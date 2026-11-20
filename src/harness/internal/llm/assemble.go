@@ -82,7 +82,7 @@ func (a *assembler) add(c vocab.Chunk) (content bool) {
 // blocks is the message content in index order. complete is true for a finish
 // that ended the turn normally: unended text and reasoning are closed and an
 // unended tool call is kept when its arguments parse. Otherwise (interrupted)
-// text and reasoning are kept as a prefix and every unended tool call is
+// text and reasoning are kept as a prefix and every tool call, ended or not, is
 // dropped. dropCalls drops every tool call, ended or not (max_tokens: the call
 // list may be cut short). ok is false when a kept tool call is malformed.
 func (a *assembler) blocks(complete, dropCalls bool) (out []vocab.Block, ok bool) {
@@ -94,7 +94,7 @@ func (a *assembler) blocks(complete, dropCalls bool) (out []vocab.Block, ok bool
 	for _, i := range idx {
 		p := a.parts[i]
 		if p.ended {
-			if dropCalls && p.block.Kind == vocab.KindToolUse {
+			if (dropCalls || !complete) && p.block.Kind == vocab.KindToolUse {
 				continue
 			}
 			out = append(out, p.block)
