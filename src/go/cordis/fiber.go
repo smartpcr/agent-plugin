@@ -99,11 +99,11 @@ type Fiber struct {
 	anchor      *EffectHandle
 
 	// effective is the resolved config the running instance holds, valid while
-	// hasEffective; configRev counts the raw configs stored by Update and RetainConfig;
+	// hasEffective; updateRev counts the Updates, so a later one supersedes an in-place one;
 	// loads counts the loads started, so an in-place update raced by a reload is stale.
 	effective    any
 	hasEffective bool
-	configRev    int
+	updateRev    int
 	loads        int
 
 	// announced is set once the fiber's creation handlers have returned: the creation
@@ -364,7 +364,6 @@ func (f *Fiber) RetainConfig(config any) error {
 		return ErrInactive
 	}
 	f.config = config
-	f.configRev++
 	return nil
 }
 
@@ -495,8 +494,8 @@ func (f *Fiber) Update(config any, noSave bool) error {
 
 	t.lock()
 	f.config = config
-	f.configRev++
-	rev, epoch, loads := f.configRev, f.epoch, f.loads
+	f.updateRev++
+	rev, epoch, loads := f.updateRev, f.epoch, f.loads
 	f.err = nil
 	if f.inertia == nil {
 		f.updateStateLocked(nil) // a cleared error changes the state even without a reload
@@ -522,7 +521,7 @@ func (f *Fiber) Update(config any, noSave bool) error {
 func (f *Fiber) publishInPlace(resolved any, rev int, epoch string, loads int) {
 	f.t.lock()
 	defer f.t.unlockQuiet()
-	if f.disposed || !f.hasEffective || f.configRev != rev || f.epoch != epoch || f.loads != loads {
+	if f.disposed || !f.hasEffective || f.updateRev != rev || f.epoch != epoch || f.loads != loads {
 		return
 	}
 	f.effective = resolved
