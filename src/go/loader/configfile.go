@@ -130,7 +130,8 @@ func (f *ConfigFile) Init() error {
 	}
 
 	assignStableIDs(entries, "", nil)
-	if err := f.loader.Apply(entries); err != nil {
+	publish, err := f.loader.applyDeferred(entries, nil)
+	if err != nil {
 		return err
 	}
 	f.mu.Lock()
@@ -138,6 +139,7 @@ func (f *ConfigFile) Init() error {
 	f.base = cloneAll(entries)
 	f.document = document
 	f.mu.Unlock()
+	publish() // after the state is committed, so a listener sees it
 
 	if f.options.Watch {
 		return f.watch()
@@ -261,7 +263,8 @@ func (f *ConfigFile) readStep() error {
 	for _, id := range conflicts {
 		f.ctx.Logger().Errorf("entry %q was changed both in %q and at runtime; the file wins", id, f.path)
 	}
-	if err := f.loader.Apply(merged); err != nil {
+	publish, err := f.loader.applyDeferred(merged, nil)
+	if err != nil {
 		return err
 	}
 	f.mu.Lock()
@@ -276,6 +279,7 @@ func (f *ConfigFile) readStep() error {
 		f.dirtyWrite = true
 	}
 	f.mu.Unlock()
+	publish()
 	return nil
 }
 

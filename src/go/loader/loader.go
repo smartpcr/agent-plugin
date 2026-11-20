@@ -258,17 +258,38 @@ func (s *Service) ApplyLayers(layers []Layer) error {
 	return s.reconcileLocked(tree, nil, issues)
 }
 
-// reconcileLocked is Apply over a tree the caller owns, with s.apply held; it
+// applyDeferred is Apply for a layer source. issues are the source's own faults
+// (composition issues), reported in the notice. Instead of publishing the lifecycle
+// events and the Reloaded notice, it returns the publication, so the source can
+// commit its state and release its lock first: a listener may then call back into
+// the source without deadlocking or seeing the state from before the reload.
+func (s *Service) applyDeferred(desired []EntryOptions, issues []Issue) (publish func(), err error) {
+	s.apply.Lock()
+	return s.reconcileHeld(cloneAll(desired), nil, issues)
+}
+
+// reconcileLocked is reconcileHeld followed by its publication.
+func (s *Service) reconcileLocked(tree []EntryOptions, extra []LifecycleEvent, issues []Issue) error {
+	publish, err := s.reconcileHeld(tree, extra, issues)
+	if err != nil {
+		return err
+	}
+	publish()
+	return nil
+}
+
+// reconcileHeld is Apply over a tree the caller owns, with s.apply held; it
 // releases s.apply before waiting for the fibers to settle. extra are lifecycle
 // events of the edit that the diff cannot see (a move among siblings), and issues
-// are faults found before the tree was built; both are published with the result.
-func (s *Service) reconcileLocked(tree []EntryOptions, extra []LifecycleEvent, issues []Issue) error {
+// are faults found before the tree was built; both are in the returned publication,
+// which records the events and emits the one Reloaded notice.
+func (s *Service) reconcileHeld(tree []EntryOptions, extra []LifecycleEvent, issues []Issue) (func(), error) {
 	s.mu.Lock()
 	closed := s.closed
 	s.mu.Unlock()
 	if closed {
 		s.apply.Unlock()
-		return ErrClosed
+		return nil, ErrClosed
 	}
 	issues = slices.Clone(issues)
 	flattened := map[string]flatEntry{}
@@ -339,6 +360,8 @@ func (s *Service) reconcileLocked(tree []EntryOptions, extra []LifecycleEvent, i
 
 	// 2. materialise, parents first; children of unloaded groups wait for their group
 	var updates sync.WaitGroup
+	var rejectedMu sync.Mutex
+	rejected := map[string]error{}
 	for _, id := range sequence {
 		entry := s.Find(id)
 		if entry == nil {
@@ -353,7 +376,11 @@ func (s *Service) reconcileLocked(tree []EntryOptions, extra []LifecycleEvent, i
 			updates.Add(1)
 			go func() {
 				defer updates.Done()
-				update()
+				if err := update(); err != nil {
+					rejectedMu.Lock()
+					rejected[id] = err
+					rejectedMu.Unlock()
+				}
 			}()
 		}
 	}
@@ -368,6 +395,11 @@ func (s *Service) reconcileLocked(tree []EntryOptions, extra []LifecycleEvent, i
 
 	notice := ReloadNotice{Created: created, Removed: removedIDs, Issues: issues}
 	for _, id := range changed {
+		if err, ok := rejected[id]; ok {
+			// the update was refused (e.g. by the schema) and the old config still runs
+			notice.Issues = append(notice.Issues, issuesOf(id, err)...)
+			continue
+		}
 		if entry := s.Find(id); rebuilt[id] && entry != nil && s.Fiber(entry) != nil {
 			notice.Restarted = append(notice.Restarted, id)
 		} else {
@@ -375,6 +407,9 @@ func (s *Service) reconcileLocked(tree []EntryOptions, extra []LifecycleEvent, i
 		}
 	}
 	for _, id := range append(slices.Clone(created), changed...) {
+		if _, ok := rejected[id]; ok {
+			continue
+		}
 		if entry := s.Find(id); entry != nil {
 			if fiber := s.Fiber(entry); fiber != nil {
 				if err := fiber.Wait(); err != nil {
@@ -383,8 +418,8 @@ func (s *Service) reconcileLocked(tree []EntryOptions, extra []LifecycleEvent, i
 			}
 		}
 	}
-	s.publish(append(events, extra...), notice)
-	return nil
+	events = append(events, extra...)
+	return func() { s.publish(events, notice) }, nil
 }
 
 // sameOptions reports whether two entry records hold the same options (children
@@ -465,23 +500,9 @@ func (s *Service) EntryOf(fiber *cordis.Fiber) *Entry {
 func (s *Service) Create(parentID string, index int, options EntryOptions) (string, error) {
 	var id string
 	err := s.edit(func(tree []EntryOptions) ([]EntryOptions, []LifecycleEvent, error) {
-		options := options.Clone()
-		if options.ID == "" {
-			options.ID = newID()
-		}
-		siblings, err := s.siblings(&tree, parentID)
-		if err != nil {
-			return nil, nil, err
-		}
-		if err := s.validateAt(parentID, options, *siblings, ""); err != nil {
-			return nil, nil, err
-		}
-		if index < 0 || index > len(*siblings) {
-			index = len(*siblings)
-		}
-		*siblings = slices.Insert(*siblings, index, options)
-		id = compose(parentID, options.ID)
-		return tree, nil, nil
+		var err error
+		id, err = s.createIn(&tree, parentID, index, options)
+		return tree, nil, err
 	})
 	return id, err
 }
@@ -491,32 +512,14 @@ func (s *Service) Create(parentID string, index int, options EntryOptions) (stri
 // entry changes nothing.
 func (s *Service) Update(id string, options EntryOptions) error {
 	return s.edit(func(tree []EntryOptions) ([]EntryOptions, []LifecycleEvent, error) {
-		parentID, own := splitID(id)
-		target := locate(&tree, id)
-		if target == nil {
-			return nil, nil, fmt.Errorf("%w: %q", ErrNotFound, id)
-		}
-		options := options.Clone()
-		if options.ID == "" {
-			options.ID = own
-		} else if options.ID != own {
-			return nil, nil, fmt.Errorf("loader: Update cannot change the id of %q to %q; use Move", id, options.ID)
-		}
-		options.Children = cloneAll(target.Children)
-		siblings, err := s.siblings(&tree, parentID)
-		if err != nil {
-			return nil, nil, err
-		}
-		if err := s.validateAt(parentID, options, *siblings, own); err != nil {
-			return nil, nil, err
-		}
-		patch(tree, id, options)
-		return tree, nil, nil
+		return tree, nil, s.updateIn(&tree, id, options)
 	})
 }
 
 // Set creates the entry at the tree id path, appended to its group, or updates it
-// when it exists. An id in options must match the path's last segment.
+// when it exists; the check and the change are one edit, so concurrent Set, Create
+// and Remove calls cannot make it fail halfway. An id in options must match the
+// path's last segment.
 func (s *Service) Set(path string, options EntryOptions) error {
 	if path == "" {
 		return fmt.Errorf("loader: Set needs a tree id")
@@ -525,12 +528,60 @@ func (s *Service) Set(path string, options EntryOptions) error {
 	if options.ID != "" && options.ID != own {
 		return fmt.Errorf("loader: entry id %q does not match path %q", options.ID, path)
 	}
-	if _, ok := s.Lookup(path); ok {
-		return s.Update(path, options)
+	return s.edit(func(tree []EntryOptions) ([]EntryOptions, []LifecycleEvent, error) {
+		if locate(&tree, path) != nil {
+			return tree, nil, s.updateIn(&tree, path, options)
+		}
+		options := options
+		options.ID = own
+		_, err := s.createIn(&tree, parentID, -1, options)
+		return tree, nil, err
+	})
+}
+
+// createIn is Create's change to tree.
+func (s *Service) createIn(tree *[]EntryOptions, parentID string, index int, options EntryOptions) (string, error) {
+	options = options.Clone()
+	if options.ID == "" {
+		options.ID = newID()
 	}
-	options.ID = own
-	_, err := s.Create(parentID, -1, options)
-	return err
+	siblings, err := s.siblings(tree, parentID)
+	if err != nil {
+		return "", err
+	}
+	if err := s.validateAt(parentID, options, *siblings, ""); err != nil {
+		return "", err
+	}
+	if index < 0 || index > len(*siblings) {
+		index = len(*siblings)
+	}
+	*siblings = slices.Insert(*siblings, index, options)
+	return compose(parentID, options.ID), nil
+}
+
+// updateIn is Update's change to tree.
+func (s *Service) updateIn(tree *[]EntryOptions, id string, options EntryOptions) error {
+	parentID, own := splitID(id)
+	target := locate(tree, id)
+	if target == nil {
+		return fmt.Errorf("%w: %q", ErrNotFound, id)
+	}
+	options = options.Clone()
+	if options.ID == "" {
+		options.ID = own
+	} else if options.ID != own {
+		return fmt.Errorf("loader: Update cannot change the id of %q to %q; use Move", id, options.ID)
+	}
+	options.Children = cloneAll(target.Children)
+	siblings, err := s.siblings(tree, parentID)
+	if err != nil {
+		return err
+	}
+	if err := s.validateAt(parentID, options, *siblings, own); err != nil {
+		return err
+	}
+	patch(*tree, id, options)
+	return nil
 }
 
 // Move moves the entry id, with its children, to the group parentID ("" for the top
@@ -881,7 +932,7 @@ func (s *Service) check(options EntryOptions, id string, duplicate bool) []Issue
 
 // ensure creates the entry's fiber if it can load now, or returns an update to run
 // for a live fiber whose config changed.
-func (s *Service) ensure(entry *Entry) (func(), error) {
+func (s *Service) ensure(entry *Entry) (func() error, error) {
 	// a disabled expression is evaluated before taking any lock
 	s.mu.Lock()
 	options := entry.options.Clone()
@@ -923,13 +974,14 @@ func (s *Service) ensure(entry *Entry) (func(), error) {
 			return nil, nil
 		}
 		config := options.Config
-		return func() {
+		return func() error {
 			s.mu.Lock()
 			stale := !jsonEqual(entry.applied, config) // a runtime commit came in since
 			s.mu.Unlock()
-			if !stale {
-				s.updateFiber(fiber, config)
+			if stale {
+				return nil
 			}
+			return s.updateFiber(fiber, config)
 		}, nil
 	}
 
@@ -1038,14 +1090,19 @@ func (s *Service) loadGroup(group *Entry, groupCtx *cordis.Context) error {
 	return nil
 }
 
-func (s *Service) updateFiber(fiber *cordis.Fiber, config json.RawMessage) {
+// updateFiber passes config to the running fiber. It returns the error of an update
+// that was refused before anything changed (e.g. by the schema), so the old config
+// still runs; a reload that failed is reported by the fiber itself.
+func (s *Service) updateFiber(fiber *cordis.Fiber, config json.RawMessage) error {
 	var value any
 	if len(config) > 0 {
 		value = config
 	}
 	if err := fiber.Update(value, true); err != nil && fiber.State() != cordis.Failed {
-		s.ctx.Logger().Error(err) // e.g. rejected by the schema before anything changed
+		s.ctx.Logger().Error(err)
+		return err
 	}
+	return nil
 }
 
 func (s *Service) disposeFiber(entry *Entry) {

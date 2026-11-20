@@ -39,6 +39,10 @@ $ go test ./loader/ -race -count=1 -v -run 'Nested|Restart|ConfigEdit|Debounce|L
 --- PASS: TestMutationsReportTheChangeAndASelfDisposedEntryIsNotDisabled (0.00s)
 --- PASS: TestNestedLoaderEvaluatesItsOwnExpressions (0.00s)
 --- PASS: TestRestartWritesNoFileAndANoticeListsTheChangedIDs (0.01s)
+--- PASS: TestAReloadListenerCanCallBackIntoTheLayerSet (0.01s)
+--- PASS: TestARejectedConfigUpdateIsAnIssueNotAnUpdate (0.00s)
+--- PASS: TestALayerFilesCompositionIssuesReachTheNotice (0.01s)
+--- PASS: TestConcurrentSetsOfOneAbsentPathAllSucceed (0.01s)
 ok  github.com/smartpcr/agent-plugin/src/go/loader
 ```
 
@@ -63,8 +67,8 @@ runs on virtual time (`testing/synctest`), so it does not sleep.
 | 3.5 | `DH-T-LOADER-8` | `TestLayerSetWriteBackTouchesOneLayerFileOnly`, `TestLayerSetARuntimeEditOfALowerValueBecomesAWritableOp`, `TestLayerSetAnEditMaskedByALaterLayerIsRefused`, `TestLayerSetAMaskedEditTheWritableFileAlreadyHoldsIsRefused`, `TestLayerSetAVanishedLayerKeepsTheRunningTree`, `TestLayerSetAReadOnlyLayerFailsTheWriteUntilItIsWritable`, `TestLayerSetOptionsAllowOneWritableLayer` (`layers_test.go`) |
 | 3.5 | `DH-T-LOADER-14` | `TestLayerSetEditingALayerRestartsOnlyTheChangedEntry` (`layers_test.go`), `TestConfigFileAnonymousEntriesSurviveAnEditToANeighbour` (`loader_test.go`) |
 | 3.6 | `DH-T-LOADER-11` | `TestNestedLoaderUnloadsWithItsOwner`, `TestNestedLoaderIsPrivateToItsOwnerAndReadOnly`, `TestNestedLoaderEvaluatesItsOwnExpressions`, `TestNestedLoaderANewLayerListRestartsOnlyWhatChanged` (`nested_test.go`) |
-| 3.7 | `DH-T-LOADER-9` | `TestLifecycleLogRecordsMutationsInOrder`, `TestMutationsValidateAndSetUpserts`, `TestMutationAndRestartErrorsChangeNothing`, `TestMutationsReportTheChangeAndASelfDisposedEntryIsNotDisabled`, and `EntryOf` of a nested fiber in `TestNestedLoaderIsPrivateToItsOwnerAndReadOnly` (`nested_test.go`) |
-| 3.8 | `DH-T-LOADER-12` | `TestRestartOneEntryLeavesItsSiblingsAlone`, `TestRestartWritesNoFileAndANoticeListsTheChangedIDs`, `TestWatchedLayersDebounceABurstOfSavesIntoOneReload`, `TestAConfigEditRestartsOnlyTheChangedEntryWithOneNotice` (`nested_test.go`) |
+| 3.7 | `DH-T-LOADER-9` | `TestLifecycleLogRecordsMutationsInOrder`, `TestMutationsValidateAndSetUpserts`, `TestMutationAndRestartErrorsChangeNothing`, `TestMutationsReportTheChangeAndASelfDisposedEntryIsNotDisabled`, `TestConcurrentSetsOfOneAbsentPathAllSucceed` (`Set` is one atomic upsert), and `EntryOf` of a nested fiber in `TestNestedLoaderIsPrivateToItsOwnerAndReadOnly` (`nested_test.go`) |
+| 3.8 | `DH-T-LOADER-12` | `TestRestartOneEntryLeavesItsSiblingsAlone`, `TestRestartWritesNoFileAndANoticeListsTheChangedIDs`, `TestWatchedLayersDebounceABurstOfSavesIntoOneReload`, `TestAConfigEditRestartsOnlyTheChangedEntryWithOneNotice`, `TestAReloadListenerCanCallBackIntoTheLayerSet` (the notice is published after the layer source commits and unlocks), `TestARejectedConfigUpdateIsAnIssueNotAnUpdate`, `TestALayerFilesCompositionIssuesReachTheNotice` (`nested_test.go`) |
 | 3.9 | `DH-T-LOADER-15` | `TestLayerSetWriteGuardRefusesAStaleWrite`, `TestLayerSetWriteGuardWrapsEveryWrite`, `TestLayerSetAGuardThatPanicsOrSkipsTheWriteFailsIt` (`layers_test.go`) |
 
 `DH-T-LOADER-2`, `-6`, `-10`, `-13` and `-16` verify deliverables outside DH-S-3

@@ -183,6 +183,9 @@ type LayerSet struct {
 
 	// serial orders every read and write: the layer set's serial loop
 	serial sync.Mutex
+	// pending publishes the reconciliations applied under serial; unlockSerial runs
+	// it after releasing serial. Guarded by serial.
+	pending func()
 	// guarded by serial
 	base  []EntryOptions
 	lower []EntryOptions
@@ -275,11 +278,12 @@ func (s *LayerSet) Init() error {
 	s.report(issues)
 	assignStableIDs(tree, "", nil)
 	s.lower = s.composeLower(tree)
-	err := s.loader.Apply(tree)
+	publish, err := s.loader.applyDeferred(tree, issues)
 	if err == nil {
 		s.base, s.index = cloneAll(tree), index
+		s.pending = publish
 	}
-	s.serial.Unlock()
+	s.unlockSerial()
 	if err != nil {
 		return err
 	}
@@ -295,7 +299,7 @@ func (s *LayerSet) Init() error {
 // error, if any.
 func (s *LayerSet) Reload() error {
 	s.serial.Lock()
-	defer s.serial.Unlock()
+	defer s.unlockSerial()
 	if !s.readLocked() {
 		return nil
 	}
@@ -308,7 +312,7 @@ func (s *LayerSet) Reload() error {
 // unknown.
 func (s *LayerSet) Flush() error {
 	s.serial.Lock()
-	defer s.serial.Unlock()
+	defer s.unlockSerial()
 	return s.writeLocked()
 }
 
@@ -420,13 +424,34 @@ func (s *LayerSet) readLocked() bool {
 	for _, id := range conflicts {
 		s.ctx.Logger().Errorf("entry %q was changed both in a layer file and at runtime; the file wins", id)
 	}
-	if err := s.loader.Apply(merged); err != nil {
+	publish, err := s.loader.applyDeferred(merged, issues)
+	if err != nil {
 		s.ctx.Logger().Error(err)
 		return false
 	}
 	s.base, s.index = cloneAll(theirs), index
+	s.pending = chain(s.pending, publish)
 	s.lower = s.composeLower(theirs)
 	return !sameTree(merged, theirs)
+}
+
+// unlockSerial releases serial, then publishes what the reconciliations made under
+// it applied, so a Reloaded or lifecycle listener may call back into the set.
+func (s *LayerSet) unlockSerial() {
+	publish := s.pending
+	s.pending = nil
+	s.serial.Unlock()
+	if publish != nil {
+		publish()
+	}
+}
+
+// chain returns a function calling first, then second; first may be nil.
+func chain(first, second func()) func() {
+	if first == nil {
+		return second
+	}
+	return func() { first(); second() }
 }
 
 // composeLower composes every layer but the writable one, with the ids of anonymous

@@ -1,12 +1,14 @@
 package loader_test
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -399,4 +401,99 @@ func topIDs(tree []loader.EntryOptions) []string {
 		ids = append(ids, entry.ID)
 	}
 	return ids
+}
+
+// ------------------------------------------------------------ settled notices
+
+func TestAReloadListenerCanCallBackIntoTheLayerSet(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "user.json")
+	writeFile(t, path, `[{"insert":[`+echoJSON("a", "a")+`]}]`)
+	h := start(t)
+	var set atomic.Pointer[loader.LayerSet]
+	seen := make(chan []string, 4)
+	Must(loader.Reloaded.On(h.root, func(_ *cordis.Context, _ loader.ReloadNotice) error {
+		if s := set.Load(); s != nil {
+			_ = s.Layers()
+			var owned []string
+			for _, id := range []string{"a", "b"} {
+				if _, ok := s.Index().Owner(id, ""); ok {
+					owned = append(owned, id)
+				}
+			}
+			seen <- owned
+		}
+		return nil
+	}))
+	set.Store(MustWait(t, Must(h.root.Use(loader.LayerSetComponent, loader.LayerSetOptions{
+		Layers: []loader.Layer{{Label: "user", Path: path, Writable: true}},
+	}))).Instance().(*loader.LayerSet))
+
+	writeFile(t, path, `[{"insert":[`+echoJSON("a", "a")+`,`+echoJSON("b", "b")+`]}]`)
+	Within(t, "reload with a listener reading the set", func() { NoError(t, set.Load().Reload()) })
+	Within(t, "flush", func() { NoError(t, set.Load().Flush()) })
+	Equal(t, "a,b", strings.Join(<-seen, ","), "the listener saw the index from before the reload")
+}
+
+func TestARejectedConfigUpdateIsAnIssueNotAnUpdate(t *testing.T) {
+	h := start(t)
+	h.apply(t, echo("a", "a"), echo("b", "b"))
+	heard := listen(t, h.root)
+
+	rejected := echo("a", "a")
+	rejected.Config = json.RawMessage(`{"times":0,"text":"a"}`)
+	h.apply(t, rejected, echo("b", "b!"))
+	all := heard.all()
+	Equal(t, 1, len(all))
+	Equal(t, "b", strings.Join(all[0].Updated, ","), "a refused update was reported as applied")
+	True(t, slices.ContainsFunc(all[0].Issues, func(issue loader.Issue) bool { return issue.Path == "a" }),
+		"the refused update is not an issue of the notice")
+	True(t, h.active("a"), "the old config of a stopped running")
+	Equal(t, 1, constructs(h.echo, "a"))
+}
+
+func TestALayerFilesCompositionIssuesReachTheNotice(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "user.json")
+	writeFile(t, path, `[{"insert":[`+echoJSON("a", "a")+`]},{"id":"missing","remove":true}]`)
+	h := start(t)
+	heard := listen(t, h.root)
+	set := MustWait(t, Must(h.root.Use(loader.LayerSetComponent, loader.LayerSetOptions{
+		Layers: []loader.Layer{{Label: "user", Path: path}},
+	}))).Instance().(*loader.LayerSet)
+	missing := func(notice loader.ReloadNotice) bool {
+		return slices.ContainsFunc(notice.Issues, func(issue loader.Issue) bool {
+			return strings.Contains(issue.Path+" "+issue.Message, "missing")
+		})
+	}
+	True(t, missing(heard.all()[0]), "the initial notice lacks the unmatched operation")
+
+	writeFile(t, path, `[{"insert":[`+echoJSON("a", "a!")+`]},{"id":"missing","remove":true}]`)
+	NoError(t, set.Reload())
+	all := heard.all()
+	True(t, missing(all[len(all)-1]), "the reload notice lacks the unmatched operation")
+}
+
+func TestConcurrentSetsOfOneAbsentPathAllSucceed(t *testing.T) {
+	h := start(t)
+	h.apply(t, group("g"))
+	var wg sync.WaitGroup
+	errs := make(chan error, 8)
+	for i := range 8 {
+		wg.Go(func() { errs <- h.loader.Set("g:x", echo("x", string(rune('a'+i)))) })
+	}
+	Within(t, "concurrent sets", wg.Wait)
+	close(errs)
+	for err := range errs {
+		NoError(t, err)
+	}
+	group := h.loader.Snapshot()[0]
+	Equal(t, 1, len(group.Children), "concurrent Set created duplicates")
+
+	// a Set racing a Remove of the same path recreates or updates, never fails
+	for range 4 {
+		wg.Go(func() { _ = h.loader.Remove("g:x") })
+		wg.Go(func() { NoError(t, h.loader.Set("g:x", echo("x", "z"))) })
+		Within(t, "set racing remove", wg.Wait)
+	}
 }
