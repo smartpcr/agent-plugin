@@ -238,6 +238,19 @@ func TestFuzzCheckSeedProvenance(t *testing.T) {
 			[]string{"(calls readSeed)"}},
 		{"conversion shadowed in another file", []string{"seeds_test.go", fuzz("f.Add(string(nil))"), "shadow_test.go", shadowFn},
 			[]string{"is not compiled in"}},
+		{"copy into an alias of a local", []string{"seeds_test.go", fuzz("b := []byte(\"x\")\nalias := b\ncopy(alias, readSeed())\nf.Add(b)"), "read_test.go", readSeed},
+			[]string{"(calls readSeed)"}},
+		{"write through a subslice", []string{"seeds_test.go", fuzz("b := []byte(\"xy\")\nalias := b[1:]\nalias[0] = readSeed()[0]\nf.Add(b)"), "read_test.go", readSeed},
+			[]string{"(calls readSeed)"}},
+		{"append into a shared array", []string{"seeds_test.go", fuzz("b := make([]byte, 0, 8)\ny := append(b[:0], readSeed()...)\n_ = y\nf.Add(b[:1])"), "read_test.go", readSeed},
+			[]string{"(calls readSeed)"}},
+		{"range alias of a seed slice", []string{"seeds_test.go", fuzz("for _, s := range decodeSeeds { copy(s, readSeed()) }\nf.Add(decodeSeeds[0])"), "read_test.go", readSeed},
+			[]string{"(calls readSeed)"}},
+		{"alias of a seed slice written in another file", []string{"seeds_test.go", fuzz("f.Add(decodeSeeds[0])"), "copy_test.go",
+			"package p\nvar disk []byte\nfunc init() { s := decodeSeeds[0]; copy(s, disk) }\n"},
+			[]string{"(decodeSeeds shares storage with s, which is written in copy_test.go)"}},
+		{"aliases that are only read", []string{"seeds_test.go", fuzz("b := []byte(\"x\")\nalias := b\nf.Add(alias)\nf.Add(b)"), "len_test.go",
+			"package p\nfunc init() { for _, s := range decodeSeeds { n := len(s); _ = string(s); _ = n } }\n"}, nil},
 		{"helper of another file reads the disk", []string{"seeds_test.go", fuzz("f.Add(readSeed())"), "read_test.go", readSeed},
 			[]string{"f.Add argument readSeed() is not compiled in (calls readSeed)"}},
 		{"local assigned from a helper", []string{"seeds_test.go", fuzz("b := []byte(\"x\")\nb = readSeed()\nf.Add(b)"), "read_test.go", readSeed},
@@ -266,6 +279,28 @@ func TestFuzzCheckSeedProvenance(t *testing.T) {
 			[]string{"(b is a parameter)"}},
 		{"seeder parameter", []string{"seeds_test.go", fuzz("add(f, nil)") + "func add(g *testing.F, b []byte) { g.Add(b) }\n"},
 			[]string{"g.Add argument b is not compiled in (b is a parameter)"}},
+	}
+	for _, name := range []string{"nil", "true", "false", "iota"} {
+		tests = append(tests,
+			struct {
+				name  string
+				files []string
+				want  []string
+			}{name + " declared in another file", []string{"seeds_test.go", fuzz("f.Add(" + name + ")"), "read_test.go",
+				readSeed + "var " + name + " = readSeed()\n"}, []string{"(" + name + " is not declared in seeds_test.go)"}},
+			struct {
+				name  string
+				files []string
+				want  []string
+			}{name + " declared in seeds_test.go", []string{"seeds_test.go", fuzz("f.Add("+name+")") + "var " + name + " = readSeed()\n",
+				"read_test.go", readSeed}, []string{"(calls readSeed)"}},
+			struct {
+				name  string
+				files []string
+				want  []string
+			}{name + " declared locally", []string{"seeds_test.go", fuzz(name + " := readSeed()\nf.Add(" + name + ")"), "read_test.go", readSeed},
+				[]string{"(calls readSeed)"}},
+		)
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -111,6 +111,10 @@ then requires, in the package's own (not `_test`-suffixed) test files:
    variable of another file, a predeclared name another file redeclares, or a
    `seeds_test.go` variable that another test file assigns, copies into or takes the
    address of is reported at the argument (`len`/`cap`/conversions elsewhere only read).
+   Writes follow storage: `alias := b`, `alias := b[1:]` or `for _, s := range seeds`
+   join one alias class, so `copy(alias, readSeed())` taints `b` too. `nil`, `true`,
+   `false` and `iota` are trusted only when no declaration in the package or function
+   renames them.
 
 ```go
 // seeds_test.go

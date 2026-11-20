@@ -5,6 +5,7 @@ import (
 	"go/token"
 	"go/types"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -13,7 +14,8 @@ import (
 // computed from data compiled into the test binary. The check is syntactic and
 // conservative: an argument is compiled in when it is built only from
 //
-//   - literals, nil, true, false and iota;
+//   - literals, and nil, true, false and iota where no declaration of the package
+//     or the function renames them;
 //   - composite literals of seedTypes (slices, arrays and maps of predeclared
 //     types; never a named type, so no String, MarshalJSON or other method can run
 //     on a seed), operators, indexing and slicing of compiled-in values;
@@ -34,6 +36,13 @@ import (
 // another test file writes, takes the address of or passes to any call. A
 // predeclared or imported name declared anywhere in the package or the function is
 // not trusted.
+//
+// Writes follow storage, not names: a variable defined or assigned from an
+// expression that mentions another (alias := b, alias := b[1:], for _, s := range
+// seeds, y := append(b[:0], ...)) may share its backing array, so the two join one
+// alias class and every write to a member is a write to all of them. In another test
+// file a seeds_test.go variable may only be read: a write to it or to any local of
+// its class other than len, cap or a conversion makes it opaque.
 
 // pureBuiltins are the builtins an argument may call; none reads outside its operands.
 var pureBuiltins = map[string]bool{
@@ -84,6 +93,50 @@ type seedDef struct {
 type seedEnv struct {
 	locals   map[string][]seedDef
 	declared map[string]bool
+	alias    map[string]string // union-find parent of the names that may share storage
+}
+
+// find returns the representative of name's alias class.
+func (e *seedEnv) find(name string) string {
+	for {
+		up, ok := e.alias[name]
+		if !ok || up == name {
+			return name
+		}
+		name = up
+	}
+}
+
+// union joins the alias classes of a and b.
+func (e *seedEnv) union(a, b string) {
+	if a == "" || b == "" || a == "_" || b == "_" {
+		return
+	}
+	if ra, rb := e.find(a), e.find(b); ra != rb {
+		e.alias[ra] = rb
+	}
+	if _, ok := e.alias[b]; !ok {
+		e.alias[b] = b
+	}
+	if _, ok := e.alias[a]; !ok {
+		e.alias[a] = e.find(a)
+	}
+}
+
+// class returns the other names of name's alias class, sorted.
+func (e *seedEnv) class(name string) []string {
+	if _, ok := e.alias[name]; !ok {
+		return nil
+	}
+	root := e.find(name)
+	var out []string
+	for m := range e.alias {
+		if m != name && e.find(m) == root {
+			out = append(out, m)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 type seedKey struct {
@@ -132,6 +185,7 @@ func newProvenance(seeds *PackageFile, files []PackageFile) *provenance {
 		inSeeds := pf.Name == seeds.Name
 		for _, decl := range pf.File.Decls {
 			env := collectEnv(pf.File, decl)
+			p.propagateAliases(env, inSeeds, pf.Name)
 			for name, defs := range env.writes() {
 				if _, ok := p.pkg[name]; !ok {
 					continue
@@ -154,6 +208,51 @@ func newProvenance(seeds *PackageFile, files []PackageFile) *provenance {
 		}
 	}
 	return p
+}
+
+// propagateAliases makes every write that env records to a local sharing storage
+// with a seeds_test.go variable a write to that variable. In seeds_test.go the
+// variable is resolved through its aliases; in another file any such write other
+// than a read makes it opaque.
+func (p *provenance) propagateAliases(env *seedEnv, inSeeds bool, file string) {
+	var names []string
+	for name := range env.alias {
+		if _, ok := p.pkg[name]; ok && !env.declared[name] {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if inSeeds {
+			p.pkg[name] = append(p.pkg[name], p.aliasDefs(env, name)...)
+			continue
+		}
+	members:
+		for _, m := range env.class(name) {
+			if !env.declared[m] {
+				continue // another package variable: its own writes are checked
+			}
+			for _, d := range env.locals[m] {
+				if !d.decl && !p.onlyReads(d, env) {
+					p.pkg[name] = append(p.pkg[name], seedDef{kind: defOpaque,
+						why: name + " shares storage with " + m + ", which is written in " + path.Base(strings.ReplaceAll(file, `\`, "/"))})
+					break members
+				}
+			}
+		}
+	}
+}
+
+// aliasDefs returns a definition of name as each variable of its alias class in env,
+// so resolving name also resolves every write to storage it may share.
+func (p *provenance) aliasDefs(env *seedEnv, name string) []seedDef {
+	var defs []seedDef
+	for _, m := range env.class(name) {
+		if _, pkg := p.pkg[m]; env.declared[m] || pkg {
+			defs = append(defs, seedDef{kind: defExpr, x: ast.NewIdent(m), env: env})
+		}
+	}
+	return defs
 }
 
 // onlyReads reports whether d is a variable's use as the operand of len, cap or a
@@ -311,12 +410,14 @@ func (p *provenance) check(x ast.Expr, env *seedEnv) (ast.Node, string) {
 func (p *provenance) checkName(id *ast.Ident, env *seedEnv) (ast.Node, string) {
 	switch id.Name {
 	case "nil", "true", "false", "iota":
-		return nil, ""
+		if !p.shadowed(id.Name, env) {
+			return nil, ""
+		}
 	}
 	var defs []seedDef
 	found := false
 	if env != nil && env.declared[id.Name] {
-		defs, found = env.locals[id.Name], true
+		defs, found = append(append([]seedDef(nil), env.locals[id.Name]...), p.aliasDefs(env, id.Name)...), true
 	}
 	if pd, ok := p.pkg[id.Name]; ok {
 		for _, d := range pd {
@@ -431,7 +532,7 @@ func reassigned(env *seedEnv, name string) bool {
 // operands are checked with it; any other call makes it opaque. len, cap and
 // conversions only read their operand, and f.Add only reads its arguments.
 func collectEnv(file *ast.File, node ast.Node) *seedEnv {
-	env := &seedEnv{locals: map[string][]seedDef{}, declared: map[string]bool{}}
+	env := &seedEnv{locals: map[string][]seedDef{}, declared: map[string]bool{}, alias: map[string]string{}}
 	add := func(name string, d seedDef, declare bool) {
 		if name == "" || name == "_" {
 			return
@@ -441,6 +542,11 @@ func collectEnv(file *ast.File, node ast.Node) *seedEnv {
 			env.declared[name] = true
 		}
 		env.locals[name] = append(env.locals[name], d)
+		if d.kind == defExpr && d.x != nil {
+			for _, ref := range refNames(d.x) {
+				env.union(name, ref)
+			}
+		}
 	}
 	params := func(ft *ast.FuncType, recv *ast.FieldList) {
 		for _, fl := range []*ast.FieldList{recv, ft.Params, ft.Results} {
@@ -543,6 +649,22 @@ func collectEnv(file *ast.File, node ast.Node) *seedEnv {
 		return true
 	})
 	return env
+}
+
+// refNames returns every name x mentions, but not the selected names of selectors.
+func refNames(x ast.Node) []string {
+	var out []string
+	ast.Inspect(x, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.SelectorExpr:
+			out = append(out, refNames(n.X)...)
+			return false
+		case *ast.Ident:
+			out = append(out, n.Name)
+		}
+		return true
+	})
+	return out
 }
 
 // rootName returns the variable an assignable expression writes to: x for x, x[i],
