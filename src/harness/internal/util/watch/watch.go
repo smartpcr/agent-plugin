@@ -18,9 +18,12 @@
 // watched: a directory target covers its entries (Depth 0) or one level below
 // (Depth 1).
 //
-// Ownership in a component tree (each watch an effect on the fiber that asked,
-// closable only by it; the service owned by its own fiber) is the job of package
-// watchfiber, so this package has no cordis dependency.
+// Component util.watch provides the service under Key as a Watcher whose Watch
+// takes the owning *cordis.Context: each watch is an effect on the fiber that
+// asked, closable early only by it (Handle.CloseFrom), and the service is owned by
+// the component's own fiber. Owned applies those rules to any Engine; Service is
+// the engine itself and needs only a context.Context. watchtest.Manual implements
+// the same key for consumers' tests.
 package watch
 
 import (

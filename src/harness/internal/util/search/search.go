@@ -14,6 +14,10 @@
 // set. The contents of version-control directories (.git, .svn, .hg, .bzr, .jj,
 // .sl) are never listed or searched. The user's global Git ignore file is not read.
 //
+// An ignore file that cannot be read, or is over 1 MiB, withholds its directory
+// (CutIgnoreFile): the rules it holds are unknown, so nothing they might exclude
+// is shown.
+//
 // Cut-short results: a limit, cancellation or an unreadable directory sets
 // Summary.Incomplete and names the cause in Summary.Reason; a result is never
 // returned as if complete when it is not.
@@ -37,7 +41,8 @@ const (
 	CutFiles      = "limit: files"
 	CutBytes      = "limit: bytes"
 	CutUnreadable = "unreadable"
-	CutLongLine   = "limit: line length" // a line over 1 MiB was not searched
+	CutIgnoreFile = "unreadable ignore file" // its directory was withheld
+	CutLongLine   = "limit: line length"     // a line over 1 MiB was not searched
 	CutStopped    = "stopped by caller"
 	CutAborted    = "aborted"
 )

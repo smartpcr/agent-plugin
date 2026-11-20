@@ -2,6 +2,8 @@ package search
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"path"
@@ -111,6 +113,10 @@ func (r rule) match(rel string, isDir bool) bool {
 type level struct {
 	dir  string
 	sets [][]rule
+	// err is set when an ignore file of dir could not be read in full. Its rules
+	// are unknown, so everything below dir counts as ignored: a path a rule
+	// would have hidden is never shown as if it were not.
+	err error
 }
 
 // ignores is the stack of levels from the source root down to the directory being
@@ -123,6 +129,9 @@ type ignores []*level
 func (s ignores) ignored(p string, isDir bool) bool {
 	for i := len(s) - 1; i >= 0; i-- {
 		l := s[i]
+		if l.err != nil {
+			return true
+		}
 		rel := p
 		if l.dir != "." {
 			rel = strings.TrimPrefix(p, l.dir+"/")
@@ -139,7 +148,7 @@ func (s ignores) ignored(p string, isDir bool) bool {
 }
 
 // loadLevel reads the ignore files of dir, whose entries are given. It returns nil
-// when dir has none.
+// when dir has none, and a level with err set when one cannot be read in full.
 func loadLevel(src Source, dir string, entries []fs.DirEntry) *level {
 	has := map[string]bool{}
 	for _, e := range entries {
@@ -155,7 +164,11 @@ func loadLevel(src Source, dir string, entries []fs.DirEntry) *level {
 		if !has[name] && !(name == gitExclude && has[".git"]) {
 			continue
 		}
-		if rules := parseIgnore(readSmall(src, join(dir, name))); len(rules) > 0 {
+		data, err := readIgnore(src, join(dir, name), name == gitExclude)
+		if err != nil {
+			return &level{dir: dir, err: err}
+		}
+		if rules := parseIgnore(data); len(rules) > 0 {
 			l.sets = append(l.sets, rules)
 		}
 	}
@@ -165,15 +178,30 @@ func loadLevel(src Source, dir string, entries []fs.DirEntry) *level {
 	return l
 }
 
-func readSmall(src Source, name string) []byte {
+// readIgnore reads an ignore file whole. A file over maxIgnoreSize is an error,
+// not a prefix: a rule past the cut would otherwise be dropped silently. optional
+// says a missing file is no error (.git/info/exclude need not exist).
+func readIgnore(src Source, name string, optional bool) ([]byte, error) {
 	f, err := src.Open(name)
 	if err != nil {
-		return nil
+		if optional && errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("ignore file %s: %w", name, err)
 	}
 	defer f.Close()
-	data, _ := io.ReadAll(io.LimitReader(f, maxIgnoreSize))
-	return data
+	data, err := io.ReadAll(io.LimitReader(f, maxIgnoreSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("ignore file %s: %w", name, err)
+	}
+	if len(data) > maxIgnoreSize {
+		return nil, fmt.Errorf("ignore file %s: %w", name, ErrIgnoreTooLarge)
+	}
+	return data, nil
 }
+
+// ErrIgnoreTooLarge is an ignore file over 1 MiB, which is not read.
+var ErrIgnoreTooLarge = errors.New("larger than 1 MiB")
 
 func join(dir, name string) string {
 	if dir == "." || dir == "" {
@@ -199,11 +227,20 @@ func NewMatcher(src Source) *Matcher {
 
 // Ignored reports whether p (a slash or backslash path from the source root) is
 // ignored: by a rule, by lying under an ignored directory, or by lying in a
-// version-control directory. isDir says whether p names a directory.
+// version-control directory. isDir says whether p names a directory. A path
+// below a directory whose ignore file cannot be read is ignored; Check says why.
 func (m *Matcher) Ignored(p string, isDir bool) bool {
+	ignored, _ := m.Check(p, isDir)
+	return ignored
+}
+
+// Check is Ignored, and also returns the error of an ignore file that could not
+// be read in full on the way to p, in which case ignored is true: the rules that
+// would decide are unknown.
+func (m *Matcher) Check(p string, isDir bool) (ignored bool, err error) {
 	p = clean(p)
 	if p == "." {
-		return false
+		return false, nil
 	}
 	parts := strings.Split(p, "/")
 	var stack ignores
@@ -211,18 +248,21 @@ func (m *Matcher) Ignored(p string, isDir bool) bool {
 	for i, part := range parts {
 		last := i == len(parts)-1
 		if (!last || isDir) && vcsDirs[part] {
-			return true
+			return true, nil
 		}
 		if l := m.level(dir); l != nil {
+			if l.err != nil {
+				return true, l.err
+			}
 			stack = append(stack, l)
 		}
 		sub := join(dir, part)
 		if stack.ignored(sub, !last || isDir) {
-			return true
+			return true, nil
 		}
 		dir = sub
 	}
-	return false
+	return false, nil
 }
 
 func (m *Matcher) level(dir string) *level {

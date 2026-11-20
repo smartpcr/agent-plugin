@@ -6,9 +6,11 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math"
 	"regexp"
 	"regexp/syntax"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -123,7 +125,7 @@ func (l Local) Grep(ctx context.Context, q GrepQuery, emit func(Match) bool) (Su
 			if !include.match(relTo(root, f.path)) {
 				return true
 			}
-			j := &job{path: f.path, res: make(chan result, 1)}
+			j := &job{path: f.path, seen: walkSum.Files, res: make(chan result, 1)}
 			select {
 			case ordered <- j:
 			case <-ctx.Done():
@@ -144,19 +146,27 @@ func (l Local) Grep(ctx context.Context, q GrepQuery, emit func(Match) bool) (Su
 	stopped := ""
 	skip := max(q.Offset, 0)
 	long := false
+	// The byte budget is spent here, in walk order, so which matches fit does not
+	// depend on which worker finished first: the result is the one a single worker
+	// reading the files one after another would give.
+	var used int64
+	stoppedAt := 0
 	for j := range ordered {
 		r := <-j.res
 		if stopped != "" {
 			continue
 		}
-		if r.unreadable {
+		remaining := int64(math.MaxInt64)
+		if lim.bytes > 0 {
+			remaining = lim.bytes - used
+		}
+		over := r.read > remaining
+		if r.unreadable && !over {
 			sum.cut(CutUnreadable)
 		}
-		long = long || r.longLine
-		if r.overBytes {
-			stopped = CutBytes
-		}
-		for _, m := range r.matches {
+		long = long || r.longAt > 0 && r.longAt <= remaining
+		used += r.read
+		for _, m := range r.within(remaining, q.Output) {
 			if skip > 0 {
 				skip--
 				continue
@@ -171,10 +181,16 @@ func (l Local) Grep(ctx context.Context, q GrepQuery, emit func(Match) bool) (Su
 				break
 			}
 		}
+		if stopped == "" && over {
+			stopped = CutBytes
+		}
 		if stopped == "" && r.more && lim.matches > 0 && sum.Matches >= lim.matches {
 			stopped = CutMatches
 		}
 		if stopped != "" {
+			// How far the walk had run ahead depends on scheduling; the file the
+			// search stopped at does not.
+			stoppedAt = j.seen
 			cancel()
 		}
 	}
@@ -182,6 +198,9 @@ func (l Local) Grep(ctx context.Context, q GrepQuery, emit func(Match) bool) (Su
 	wg.Wait()
 
 	sum.Files = walkSum.Files
+	if stopped != "" {
+		sum.Files = stoppedAt
+	}
 	if walkSum.Incomplete {
 		sum.cut(walkSum.Reason)
 	}
@@ -211,15 +230,35 @@ type grepLimits struct {
 
 type job struct {
 	path string
+	seen int // files the walk had visited when it queued this one
 	res  chan result
 }
 
 type result struct {
-	matches    []Match
-	more       bool // the file had matches beyond the per-file cap
+	matches []Match
+	// ends holds, for each match (each counted line in OutputCounts), the bytes
+	// read from the file up to the end of its line, so the collector can tell
+	// which matches fit the budget left when the file's turn comes.
+	ends       []int64
+	read       int64 // bytes read from the file, capped just past MaxBytes
+	more       bool  // the file had matches beyond the per-file cap
 	unreadable bool
-	overBytes  bool
-	longLine   bool // a line over maxScanLine was not searched
+	longAt     int64 // >0: the end of the first line over maxScanLine, which was not searched
+}
+
+// within is the part of r a budget of remaining bytes reaches.
+func (r *result) within(remaining int64, output Output) []Match {
+	k := sort.Search(len(r.ends), func(i int) bool { return r.ends[i] > remaining })
+	if k == len(r.ends) {
+		return r.matches
+	}
+	if output == OutputCounts {
+		if k == 0 {
+			return nil
+		}
+		return []Match{{Path: r.matches[0].Path, Count: k}}
+	}
+	return r.matches[:k]
 }
 
 // scanner holds what every worker shares.
@@ -230,13 +269,21 @@ type scanner struct {
 	src     Source
 	ctx     context.Context
 	output  Output
-	read    atomic.Int64
 	// cut is set when cancellation ended a scan early, so the file was not
 	// fully searched.
 	cut atomic.Bool
 }
 
+// scan searches one file. Its reading stops once the file alone has gone past
+// MaxBytes; how much of the shared budget is left is the collector's business.
 func (s *scanner) scan(path string) result {
+	var pos int64
+	r := s.scanFile(path, &pos)
+	r.read = pos
+	return r
+}
+
+func (s *scanner) scanFile(path string, pos *int64) result {
 	var r result
 	if s.ctx.Err() != nil {
 		s.cut.Store(true)
@@ -261,13 +308,12 @@ func (s *scanner) scan(path string) result {
 			s.cut.Store(true)
 			return r
 		}
-		ln, err := s.readLine(br, line[:0])
+		ln, err := s.readLine(br, line[:0], pos)
 		line = ln.text
 		switch {
 		case err != nil:
 			return s.failed(r)
 		case ln.overBytes:
-			r.overBytes = true
 			return r
 		case ln.eof && ln.consumed == 0:
 			// Nothing follows the last terminator: there is no line here.
@@ -276,9 +322,11 @@ func (s *scanner) scan(path string) result {
 		if ln.long {
 			// Only a prefix was kept; matching it could miss a needle past the cap
 			// or match an end anchor falsely, so the line is not searched.
-			r.longLine = true
+			if r.longAt == 0 {
+				r.longAt = *pos
+			}
 		} else if s.wanted(bytes.TrimSuffix(line, []byte("\r"))) {
-			if r.add(s, path, n, bytes.TrimSuffix(line, []byte("\r"))) {
+			if r.add(s, path, n, bytes.TrimSuffix(line, []byte("\r")), *pos) {
 				return r
 			}
 		}
@@ -303,18 +351,20 @@ func (s *scanner) wanted(line []byte) bool {
 	return (s.literal == nil || bytes.Contains(line, s.literal)) && s.re.Match(line)
 }
 
-// add records a matching line in the shape the output mode asks for; it reports
-// whether the file needs no further reading.
-func (r *result) add(s *scanner, path string, n int, line []byte) bool {
+// add records a matching line, whose end is at byte end of the file, in the shape
+// the output mode asks for; it reports whether the file needs no further reading.
+func (r *result) add(s *scanner, path string, n int, line []byte, end int64) bool {
 	switch s.output {
 	case OutputFiles:
 		r.matches = append(r.matches, Match{Path: path, Count: 1})
+		r.ends = append(r.ends, end)
 		return true
 	case OutputCounts:
 		if len(r.matches) == 0 {
 			r.matches = append(r.matches, Match{Path: path})
 		}
 		r.matches[0].Count++
+		r.ends = append(r.ends, end)
 		return false
 	}
 	if s.lim.matches > 0 && len(r.matches) >= s.lim.matches {
@@ -322,6 +372,7 @@ func (r *result) add(s *scanner, path string, n int, line []byte) bool {
 		return true
 	}
 	r.matches = append(r.matches, s.match(path, n, line))
+	r.ends = append(r.ends, end)
 	return false
 }
 
@@ -331,18 +382,20 @@ type lineRead struct {
 	consumed  int64  // bytes read from the file for this line, terminator included
 	long      bool   // the line was longer than maxScanLine; text is a prefix
 	eof       bool   // no line follows
-	overBytes bool   // reading this line exceeded MaxBytes
+	overBytes bool   // the file alone has gone past MaxBytes
 }
 
 // readLine appends the next line to buf. Every byte read counts against MaxBytes
-// as it is read, including the part of a long line that is not kept, and the
-// context is checked between chunks so a huge line cannot pin a worker.
-func (s *scanner) readLine(br *bufio.Reader, buf []byte) (lineRead, error) {
+// as it is read (pos is the file's running total), including the part of a long
+// line that is not kept, and the context is checked between chunks so a huge line
+// cannot pin a worker.
+func (s *scanner) readLine(br *bufio.Reader, buf []byte, pos *int64) (lineRead, error) {
 	var ln lineRead
 	for {
 		chunk, err := br.ReadSlice('\n')
 		ln.consumed += int64(len(chunk))
-		if s.lim.bytes > 0 && s.read.Add(int64(len(chunk))) > s.lim.bytes {
+		*pos += int64(len(chunk))
+		if s.lim.bytes > 0 && *pos > s.lim.bytes {
 			ln.overBytes = true
 			ln.text = buf
 			return ln, nil

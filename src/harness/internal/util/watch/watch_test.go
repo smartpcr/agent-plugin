@@ -309,3 +309,37 @@ func TestRecreatedParentWithinSettle(t *testing.T) {
 		}
 	}
 }
+
+// TestDirectoryAtomicReplaceSameMeta: an entry of a watched directory replaced
+// atomically by a file of the same length with the same modification time is a
+// change: the entry's identity moved. One notice.
+func TestDirectoryAtomicReplaceSameMeta(t *testing.T) {
+	for _, mode := range []watch.Mode{watch.Notify, watch.Poll} {
+		t.Run(mode.String(), func(t *testing.T) {
+			dir := t.TempDir()
+			f := filepath.Join(dir, "settings.json")
+			write(t, f, "aaaa")
+			info, err := os.Stat(f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Prepared outside the watched directory, so the swap is one rename.
+			next := filepath.Join(t.TempDir(), "next")
+			write(t, next, "bbbb")
+			if err := os.Chtimes(next, info.ModTime(), info.ModTime()); err != nil {
+				t.Fatal(err)
+			}
+			_, r := start(t, service(t, pollFast), watch.Target{Path: dir, Mode: mode})
+			r.none(t, "before any change")
+			if err := os.Rename(next, f); err != nil {
+				t.Fatal(err)
+			}
+			if after, err := os.Stat(f); err != nil || after.Size() != info.Size() || !after.ModTime().Equal(info.ModTime()) {
+				t.Fatalf("replacement does not keep size and time: %v %v", after, err)
+			}
+			if err := r.one(t, "atomic replace keeping size and time"); err != nil {
+				t.Fatalf("notice carried %v", err)
+			}
+		})
+	}
+}

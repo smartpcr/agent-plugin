@@ -355,8 +355,8 @@ func (w *watch) notify(err error) {
 }
 
 // snap is what a check compares: a file's identity, size and times; a
-// directory's identity and a digest of its entries (names, kinds, and the size
-// and time of files) to Depth.
+// directory's identity and a digest of its entries (names, identities, kinds,
+// and the size and time of files) to Depth.
 type snap struct {
 	exists, dir bool
 	v           fsx.Version
@@ -402,6 +402,17 @@ func (w *watch) snapshot() snap {
 				s.n++
 			}
 			h.Write([]byte(e.Name()))
+			// The entry's identity: an atomic replace that keeps the size and
+			// restores the time is still a new file. An entry that cannot be
+			// opened right now hashes as unknown; that passes once it settles back.
+			if id, err := fsx.ID(filepath.Join(dir, e.Name())); err == nil {
+				h.Write([]byte{0})
+				h.Write(strconv.AppendUint(nil, id.Dev, 10))
+				h.Write([]byte{':'})
+				h.Write(strconv.AppendUint(nil, id.Ino, 10))
+			} else {
+				h.Write([]byte{0, '?'})
+			}
 			if e.IsDir() {
 				h.Write([]byte{0, 'd'})
 				if depth < w.t.Depth {

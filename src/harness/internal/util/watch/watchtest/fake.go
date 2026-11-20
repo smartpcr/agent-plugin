@@ -1,6 +1,8 @@
-// Package watchtest provides a fake watch.Notifier for tests of the watch service
-// and of its consumers: events and errors are sent by hand, Add can be made to
-// fail, and a silent notifier delivers nothing.
+// Package watchtest provides test doubles for util/watch. Manual implements the
+// service under watch.Key for consumers' tests: Fire(path) and Degrade(path, err)
+// drive the callbacks by hand, with no filesystem and no timers. Fake is a
+// scriptable watch.Notifier for tests of the real service: events and errors are
+// sent by hand, Add can be made to fail, and a silent notifier delivers nothing.
 package watchtest
 
 import (

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -349,4 +350,115 @@ func TestGrepCancelAfterWalk(t *testing.T) {
 	if !got.sum.Incomplete || got.sum.Reason != CutAborted {
 		t.Errorf("summary %+v, want aborted", got.sum)
 	}
+}
+
+// lagging is a Source that holds the open of first until every other file has
+// been opened (or a deadline passes), so later files are scanned before it.
+type lagging struct {
+	Source
+	first  string
+	others int
+	mu     sync.Mutex
+	opened int
+	go_    chan struct{}
+}
+
+func (l *lagging) Open(name string) (io.ReadCloser, error) {
+	if name == l.first {
+		select {
+		case <-l.go_:
+		case <-time.After(2 * time.Second):
+		}
+	} else {
+		l.mu.Lock()
+		l.opened++
+		if l.opened == l.others {
+			close(l.go_)
+		}
+		l.mu.Unlock()
+	}
+	return l.Source.Open(name)
+}
+
+// TestGrepBytesDeterministic: the byte budget is spent in walk order, so a tight
+// MaxBytes returns the same matches however the workers are scheduled, even when
+// the first file is the last to be read.
+func TestGrepBytesDeterministic(t *testing.T) {
+	files := map[string]string{}
+	for _, name := range []string{"a", "b", "c", "d", "e"} {
+		files[name] = strings.Repeat("hay\n", 15) + strings.Repeat("needle "+name+"\n", 5) // 110 bytes, needles in the last 50
+	}
+	fixed := tree(t, files)
+	for _, output := range []Output{OutputLines, OutputCounts, OutputFiles} {
+		q := GrepQuery{Pattern: "needle", Output: output, Limits: Limits{MaxBytes: 250}}
+		q.From = fixed
+		var want []Match
+		wantSum, err := Local{Workers: 1}.Grep(context.Background(), q, func(m Match) bool { want = append(want, m); return true })
+		if err != nil {
+			t.Fatal(err)
+		}
+		if wantSum.Reason != CutBytes || len(want) == 0 || want[0].Path != "a" {
+			t.Fatalf("output %v: sequential %+v %+v", output, wantSum, want)
+		}
+		for i := range 10 {
+			q.From = &lagging{Source: fixed, first: "a", others: 4, go_: make(chan struct{})}
+			var got []Match
+			sum, err := Local{Workers: 4}.Grep(context.Background(), q, func(m Match) bool { got = append(got, m); return true })
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, want) || sum != wantSum {
+				t.Fatalf("output %v run %d: got %+v %+v\nwant %+v %+v", output, i, sum, got, wantSum, want)
+			}
+		}
+	}
+}
+
+// TestIgnoreFileFailures: an ignore file that cannot be read, or is over the
+// size cap with a rule past the cap, never lets the paths it excludes through;
+// the listing is Incomplete and the Matcher reports why.
+func TestIgnoreFileFailures(t *testing.T) {
+	files := map[string]string{
+		"keep.txt":      "k",
+		"build/out.txt": "o",
+		"sub/a.txt":     "a",
+	}
+	big := maps.Clone(files)
+	big["sub/.gitignore"] = strings.Repeat("# padding\n", maxIgnoreSize/10+1) + "a.txt\n"
+	for _, tc := range []struct {
+		name   string
+		src    Source
+		want   []string
+		reason error
+	}{
+		{"unreadable root", failing{tree(t, withIgnore(files)), map[string]bool{".gitignore": true}}, nil, fs.ErrPermission},
+		{"oversized nested", tree(t, withIgnore(big)), []string{"keep.txt"}, ErrIgnoreTooLarge},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, sum, err := List(context.Background(), FilesQuery{From: tc.src})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("listed %q, want %q", got, tc.want)
+			}
+			if !sum.Incomplete || sum.Reason != CutIgnoreFile {
+				t.Errorf("summary %+v, want incomplete %q", sum, CutIgnoreFile)
+			}
+			m := NewMatcher(tc.src)
+			ignored, err := m.Check("sub/a.txt", false)
+			if !ignored || !errors.Is(err, tc.reason) {
+				t.Errorf("Check(sub/a.txt) = %v, %v; want ignored, %v", ignored, err, tc.reason)
+			}
+			if !m.Ignored("sub/a.txt", false) {
+				t.Error("Ignored(sub/a.txt) = false under an unreadable ignore file")
+			}
+		})
+	}
+}
+
+func withIgnore(files map[string]string) map[string]string {
+	out := maps.Clone(files)
+	out[".gitignore"] = "build/\n"
+	return out
 }

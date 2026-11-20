@@ -80,6 +80,9 @@ func (w *walker) ancestors(root string) ignores {
 	for _, d := range dirs {
 		if entries, err := w.src.ReadDir(d); err == nil {
 			if l := loadLevel(w.src, d, entries); l != nil {
+				if l.err != nil {
+					w.sum.cut(CutIgnoreFile)
+				}
 				stack = append(stack, l)
 			}
 		}
@@ -90,6 +93,12 @@ func (w *walker) ancestors(root string) ignores {
 func (w *walker) dir(dir string, entries []fs.DirEntry, stack ignores, visit func(file) bool) {
 	if !w.opt.noIgnore {
 		if l := loadLevel(w.src, dir, entries); l != nil {
+			if l.err != nil {
+				// The rules for this directory are unknown: withhold it rather
+				// than list what they might exclude.
+				w.sum.cut(CutIgnoreFile)
+				return
+			}
 			stack = append(stack[:len(stack):len(stack)], l)
 		}
 	}
