@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -410,14 +411,15 @@ func TestServeEnds(t *testing.T) {
 }
 
 func TestQueueBackpressure(t *testing.T) {
+	bg := context.Background()
 	q := newQueue(10)
-	if err := q.push(make([]byte, 8), nil, false); err != nil {
+	if err := q.push(bg, make([]byte, 8), nil, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := q.push(make([]byte, 8), nil, true); err != nil {
+	if err := q.push(bg, make([]byte, 8), nil, true); err != nil {
 		t.Fatal("a control frame must not wait")
 	}
-	pushed := async(t, func() error { return q.push(make([]byte, 8), nil, false) })
+	pushed := async(t, func() error { return q.push(bg, make([]byte, 8), nil, false) })
 	for range 2 {
 		it, ok := q.pop()
 		if !ok {
@@ -428,11 +430,92 @@ func TestQueueBackpressure(t *testing.T) {
 	if err := await(t, pushed); err != nil {
 		t.Fatal(err)
 	}
+	ctx, cancel := context.WithCancel(bg)
+	waiting := async(t, func() error { return q.push(ctx, make([]byte, 8), nil, false) })
+	cancel()
+	if err := await(t, waiting); !errors.Is(err, context.Canceled) {
+		t.Fatalf("push into a full queue after its ctx ended = %v", err)
+	}
 	q.close()
 	if _, ok := q.pop(); ok {
 		t.Fatal("pop after close")
 	}
-	if err := q.push(nil, nil, false); !HasReason(err, ReasonClosed) {
+	if err := q.push(bg, nil, nil, false); !HasReason(err, ReasonClosed) {
 		t.Fatalf("push after close = %v", err)
+	}
+}
+
+// TestServeContextEndsEarly: a ctx that has ended before Serve, or ends while Serve
+// runs, closes the connection without a race on the cancellation hook (run -race).
+func TestServeContextEndsEarly(t *testing.T) {
+	for i := range 100 {
+		ctx, cancel := context.WithCancel(context.Background())
+		if i%2 == 0 {
+			cancel()
+		}
+		r, w := io.Pipe()
+		ended := make(chan struct{})
+		go func() {
+			defer close(ended)
+			cancel()
+		}()
+		c := Serve(ctx, r, io.Discard, Options{})
+		<-ended
+		awaitDone(t, c)
+		r.Close()
+		w.Close()
+		if !HasReason(c.Err(), ReasonClosed) || !strings.Contains(c.Err().Error(), "context") {
+			t.Fatalf("Err = %v", c.Err())
+		}
+		if err := c.Call(context.Background(), "x", nil, nil); !HasReason(err, ReasonClosed) {
+			t.Fatalf("Call on an ended connection = %v", err)
+		}
+	}
+	t.Cleanup(func() {})
+}
+
+// TestCallCancelWhileQueueFull: with the writer blocked and the queue full, ending a
+// Call's ctx returns at once and releases its pending slot.
+func TestCallCancelWhileQueueFull(t *testing.T) {
+	pr, pw := io.Pipe() // nobody reads pr: the writer blocks on its first frame
+	blocked, feed := io.Pipe()
+	c := Serve(context.Background(), blocked, pw, Options{MaxQueuedBytes: 1, MaxPending: 1})
+	t.Cleanup(func() {
+		c.Close()
+		pr.Close()
+		feed.Close()
+	})
+	if err := c.Notify("stuck", nil); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	call := async(t, func() error { return c.Call(ctx, "x", nil, nil) })
+	deadline := time.Now().Add(waitFor)
+	for pending := 0; pending == 0; {
+		c.mu.Lock()
+		pending = len(c.pending)
+		c.mu.Unlock()
+		if time.Now().After(deadline) {
+			t.Fatal("the call never became pending")
+		}
+		runtime.Gosched()
+	}
+	cancel()
+	if err := await(t, call); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Call = %v, want context.Canceled", err)
+	}
+	c.mu.Lock()
+	left := len(c.pending)
+	c.mu.Unlock()
+	if left != 0 {
+		t.Fatalf("%d calls still pending after the cancelled call returned", left)
+	}
+	// The slot is free: a second call reaches the queue (and waits on it) instead of
+	// failing with too-many-pending.
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	cancel2()
+	if err := c.Call(ctx2, "y", nil, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("second Call = %v, want context.Canceled", err)
 	}
 }

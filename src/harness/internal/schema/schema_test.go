@@ -3,9 +3,12 @@ package schema
 import (
 	"encoding/json"
 	"errors"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/google/jsonschema-go/jsonschema"
 )
 
 type sample struct {
@@ -156,7 +159,8 @@ func TestDecode(t *testing.T) {
 		`{"a":3} {}`:      "data after the value",
 		`{"a":3,"b":1}`:   "/b: is not a known field",
 		`{"a":"x"}`:       "must be integer",
-		`{"a":1e400}`:     "must be integer",
+		`{"a":2.5}`:       "must be integer",
+		`{"a":1e400}`:     "does not decode",
 		`{"a":3,"a":"x"}`: "must be integer",
 	}
 	for in, want := range cases {
@@ -300,6 +304,107 @@ func TestFromJSON(t *testing.T) {
 		if _, err := FromJSON([]byte(doc)); err == nil {
 			t.Errorf("FromJSON(%s) succeeded", doc)
 		}
+	}
+}
+
+// TestNumbersAreExact: numbers are compared as decimals, never through float64.
+func TestNumbersAreExact(t *testing.T) {
+	for _, tc := range []struct {
+		schema, value string
+		ok            bool
+	}{
+		{`{"type":"integer"}`, `9007199254740992.5`, false},
+		{`{"type":"integer"}`, `9007199254740993`, true},
+		{`{"type":"integer"}`, `1.0`, true},
+		{`{"type":"integer"}`, `1.5e1`, true},
+		{`{"type":"integer"}`, `15e-1`, false},
+		{`{"type":"integer"}`, `1e400`, true},
+		{`{"type":"integer"}`, `1e-400`, false},
+		{`{"enum":[9007199254740992]}`, `9007199254740993`, false},
+		{`{"enum":[9007199254740992]}`, `9007199254740992`, true},
+		{`{"enum":[9007199254740992]}`, `9.007199254740992e15`, true},
+		{`{"const":[0.1]}`, `[1e-1]`, true},
+		{`{"const":0}`, `-0.0`, true},
+		{`{"type":"array","uniqueItems":true}`, `[9007199254740992,9007199254740993]`, true},
+		{`{"type":"array","uniqueItems":true}`, `[10,1e1]`, false},
+		{`{"type":"number","multipleOf":0.1}`, `0.3`, true},
+		{`{"type":"number","multipleOf":0.1}`, `0.7`, true},
+		{`{"type":"number","multipleOf":0.1}`, `-12.3e2`, true},
+		{`{"type":"number","multipleOf":0.1}`, `0`, true},
+		{`{"type":"number","multipleOf":0.1}`, `0.31`, false},
+		{`{"type":"number","multipleOf":0.1}`, `0.30000000000000004`, false},
+		{`{"type":"number","multipleOf":0.1}`, `1e-400`, false},
+		{`{"type":"number","multipleOf":0.1}`, `1e999999999999999999999`, true},
+		{`{"type":"number","multipleOf":0.01}`, `19.99`, true},
+		{`{"type":"number","multipleOf":0.01}`, `19.999`, false},
+		{`{"type":"number","multipleOf":3}`, `9e400`, true},
+		{`{"type":"number","multipleOf":7}`, `1e400`, false},
+		{`{"type":"number","multipleOf":2.5}`, `7.5`, true},
+		{`{"type":"number","maximum":9007199254740992}`, `9007199254740993`, false},
+		{`{"type":"number","minimum":0.1}`, `0.09999999999999999`, false},
+		{`{"type":"number","minimum":-1}`, `-0.5`, true},
+		{`{"type":"number","exclusiveMinimum":-1}`, `-1`, false},
+		{`{"type":"number","exclusiveMaximum":1e308}`, `1e309`, false},
+		{`{"type":"number","minimum":-1e308}`, `-1e309`, false},
+		{`{"type":"number","maximum":1}`, `-1e-999999999999999999999`, true},
+	} {
+		typ, err := FromJSON([]byte(tc.schema))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if is := typ.Validate([]byte(tc.value)); (is == nil) != tc.ok {
+			t.Errorf("%s against %s: issues %v, want ok=%v", tc.value, tc.schema, is, tc.ok)
+		}
+	}
+}
+
+func TestDecimal(t *testing.T) {
+	for _, s := range []string{"", "-", "1.", ".1", "1e", "1e+", "x", "1.x", "1ex", "--1"} {
+		if _, ok := parseDecimal(s); ok {
+			t.Errorf("parseDecimal(%q) succeeded", s)
+		}
+	}
+	for v, want := range map[any]string{
+		int(-3): "-3", int64(4): "4", int32(5): "5", uint(6): "6", uint64(7): "7",
+		float32(0.5): "0.5", 1.25: "1.25", json.Number("-0012.5000e+1"): "-125",
+	} {
+		d, ok := toDecimal(v)
+		w, _ := parseDecimal(want)
+		if !ok || d != w {
+			t.Errorf("toDecimal(%v) = %+v, %v; want %+v", v, d, ok, w)
+		}
+	}
+	for _, v := range []any{math.NaN(), math.Inf(1), "1", nil} {
+		if _, ok := toDecimal(v); ok {
+			t.Errorf("toDecimal(%v) succeeded", v)
+		}
+	}
+	zero, _ := parseDecimal("0")
+	one, _ := parseDecimal("1")
+	if !zero.multipleOf(one) || one.multipleOf(zero) || zero.cmp(one) >= 0 || one.cmp(zero) <= 0 || zero.cmp(zero) != 0 {
+		t.Fatal("zero arithmetic")
+	}
+	// Bounds that cannot come from JSON: ±Inf compare as such, NaN fails.
+	inst := json.Number("5")
+	for _, tc := range []struct {
+		s  jsonschema.Schema
+		ok bool
+	}{
+		{jsonschema.Schema{Minimum: jsonschema.Ptr(math.Inf(-1)), Maximum: jsonschema.Ptr(math.Inf(1))}, true},
+		{jsonschema.Schema{ExclusiveMinimum: jsonschema.Ptr(math.Inf(1))}, false},
+		{jsonschema.Schema{ExclusiveMaximum: jsonschema.Ptr(math.NaN())}, false},
+		{jsonschema.Schema{MultipleOf: jsonschema.Ptr(math.Inf(1))}, false},
+	} {
+		var v validator
+		v.checkNumber(&tc.s, inst, "")
+		if (len(v.issues) == 0) != tc.ok {
+			t.Errorf("bounds %+v: %v", tc.s, v.issues)
+		}
+	}
+	var v validator
+	v.checkNumber(&jsonschema.Schema{}, json.Number("nope"), "")
+	if len(v.issues) != 1 {
+		t.Fatalf("a malformed number: %v", v.issues)
 	}
 }
 

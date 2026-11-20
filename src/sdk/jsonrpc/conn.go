@@ -106,7 +106,11 @@ func Serve(ctx context.Context, r io.Reader, w io.Writer, o Options) *Conn {
 		done:     make(chan struct{}),
 	}
 	c.base, c.cancel = context.WithCancel(context.WithoutCancel(ctx))
+	// The callback runs closeWith, which takes c.mu: holding it here makes the
+	// callback of an already-ended ctx wait until c.stop is assigned.
+	c.mu.Lock()
 	c.stop = context.AfterFunc(ctx, func() { c.closeWith(newError(ReasonClosed, "the connection's context ended")) })
+	c.mu.Unlock()
 	go c.writeLoop()
 	go c.readLoop()
 	return c
@@ -141,9 +145,10 @@ func (c *Conn) closeWith(err error) {
 		ch <- &Response{ID: id, Error: closed}
 	}
 	c.pending = nil
+	stop := c.stop
 	c.mu.Unlock()
 	c.cancel()
-	c.stop()
+	stop()
 	c.q.close()
 	close(c.done)
 }
@@ -173,7 +178,9 @@ func (c *Conn) Call(ctx context.Context, method string, params, result any) erro
 
 	line, err := encodeLine(&Request{ID: id, Method: method, Params: raw}, c.o.MaxLineBytes)
 	if err == nil {
-		err = c.q.push(line, nil, false)
+		// Waiting for queue room ends with ctx: the request was never sent, so no
+		// $/cancel follows and the pending slot is released at once.
+		err = c.q.push(ctx, line, nil, false)
 	}
 	if err != nil {
 		c.forget(id)
@@ -193,7 +200,7 @@ func (c *Conn) Call(ctx context.Context, method string, params, result any) erro
 	case <-ctx.Done():
 		if c.forget(id) {
 			if line, err := encodeLine(&Notification{Method: CancelMethod, Params: cancelParams(id)}, c.o.MaxLineBytes); err == nil {
-				_ = c.q.push(line, nil, true)
+				_ = c.q.push(ctx, line, nil, true)
 			}
 		}
 		return ctx.Err()
@@ -223,13 +230,13 @@ func (c *Conn) Notify(method string, params any) error {
 	if err != nil {
 		return err
 	}
-	return c.q.push(line, nil, false)
+	return c.q.push(context.Background(), line, nil, false)
 }
 
 // Barrier returns once every frame queued before it has been written.
 func (c *Conn) Barrier(ctx context.Context) error {
 	done := make(chan struct{})
-	if err := c.q.push(nil, done, true); err != nil {
+	if err := c.q.push(ctx, nil, done, true); err != nil {
 		return err
 	}
 	select {
@@ -313,7 +320,7 @@ func (c *Conn) answerAndClose(err error) {
 	if b, e := Encode(&Response{Error: toWire(err)}); e == nil {
 		line := append(b, '\n')
 		done := make(chan struct{})
-		if c.q.push(line, done, true) == nil {
+		if c.q.push(context.Background(), line, done, true) == nil {
 			select {
 			case <-done:
 			case <-c.done:
@@ -385,7 +392,7 @@ func (c *Conn) respond(id ID, result any, err error) {
 		b, _ := Encode(&Response{ID: id, Error: toWire(lerr)})
 		line = append(b, '\n')
 	}
-	_ = c.q.push(line, nil, false)
+	_ = c.q.push(context.Background(), line, nil, false)
 }
 
 func (c *Conn) notify(n *Notification) {
@@ -457,13 +464,25 @@ func newQueue(maxBytes int) *queue {
 }
 
 // push appends a frame. Unless control is set it waits while the queued bytes would
-// pass the bound (a frame alone in the queue is always admitted). Control frames
-// ($/cancel, barriers, the last error frame) are small and never wait.
-func (q *queue) push(line []byte, done chan struct{}, control bool) error {
+// pass the bound (a frame alone in the queue is always admitted); the wait ends with
+// ctx, returning its error. Control frames ($/cancel, barriers, the last error
+// frame) are small and never wait.
+func (q *queue) push(ctx context.Context, line []byte, done chan struct{}, control bool) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	for !control && !q.closed && q.bytes > 0 && q.bytes+len(line) > q.max {
-		q.cond.Wait()
+	if q.full(line, control) {
+		wake := context.AfterFunc(ctx, func() {
+			q.mu.Lock()
+			q.cond.Broadcast()
+			q.mu.Unlock()
+		})
+		defer wake()
+		for q.full(line, control) {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			q.cond.Wait()
+		}
 	}
 	if q.closed {
 		return newError(ReasonClosed, "the connection has ended")
@@ -472,6 +491,11 @@ func (q *queue) push(line []byte, done chan struct{}, control bool) error {
 	q.bytes += len(line)
 	q.cond.Broadcast()
 	return nil
+}
+
+// full reports whether a frame of line must wait for room.
+func (q *queue) full(line []byte, control bool) bool {
+	return !control && !q.closed && q.bytes > 0 && q.bytes+len(line) > q.max
 }
 
 // pop waits for the next frame; false once the queue is closed.

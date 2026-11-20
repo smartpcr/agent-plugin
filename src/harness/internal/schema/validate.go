@@ -114,33 +114,34 @@ func kindOf(inst any) string {
 	return "unknown"
 }
 
-func number(inst any) (float64, bool) {
+// number reads an instance number exactly.
+func number(inst any) (decimal, bool) {
 	n, ok := inst.(json.Number)
 	if !ok {
-		return 0, false
+		return decimal{}, false
 	}
-	f, _ := strconv.ParseFloat(string(n), 64) // out of range parses to ±Inf
-	return f, true
+	return parseDecimal(string(n))
 }
 
 func matchesType(t string, inst any) bool {
 	k := kindOf(inst)
 	switch t {
 	case "integer":
-		f, ok := number(inst)
-		return ok && !math.IsInf(f, 0) && f == math.Trunc(f)
+		d, ok := number(inst)
+		return ok && d.isInteger()
 	case k:
 		return true
 	}
 	return false
 }
 
-// norm makes enum and const values comparable: every number becomes a float64.
+// norm makes enum and const values comparable: every number, of the instance or of
+// the schema, becomes its exact decimal.
 func norm(v any) any {
+	if d, ok := toDecimal(v); ok {
+		return d
+	}
 	switch x := v.(type) {
-	case json.Number:
-		f, _ := strconv.ParseFloat(string(x), 64)
-		return f
 	case []any:
 		out := make([]any, len(x))
 		for i, e := range x {
@@ -223,21 +224,44 @@ func count(subs []*jsonschema.Schema, inst any, path string) int {
 }
 
 func (v *validator) checkNumber(s *jsonschema.Schema, n json.Number, path string) {
-	f, _ := number(n)
-	if s.Minimum != nil && f < *s.Minimum {
-		v.add(path, "must be at least %v", *s.Minimum)
+	d, ok := number(n)
+	if !ok {
+		v.add(path, "is not a number")
+		return
 	}
-	if s.Maximum != nil && f > *s.Maximum {
-		v.add(path, "must be at most %v", *s.Maximum)
+	// cmpTo compares d with a schema bound; ±Inf compare as such and NaN fails.
+	cmpTo := func(bound float64) (int, bool) {
+		switch {
+		case math.IsInf(bound, 1):
+			return -1, true
+		case math.IsInf(bound, -1):
+			return 1, true
+		}
+		b, ok := toDecimal(bound)
+		return d.cmp(b), ok
 	}
-	if s.ExclusiveMinimum != nil && f <= *s.ExclusiveMinimum {
-		v.add(path, "must be above %v", *s.ExclusiveMinimum)
+	if b := s.Minimum; b != nil {
+		if c, ok := cmpTo(*b); !ok || c < 0 {
+			v.add(path, "must be at least %v", *b)
+		}
 	}
-	if s.ExclusiveMaximum != nil && f >= *s.ExclusiveMaximum {
-		v.add(path, "must be below %v", *s.ExclusiveMaximum)
+	if b := s.Maximum; b != nil {
+		if c, ok := cmpTo(*b); !ok || c > 0 {
+			v.add(path, "must be at most %v", *b)
+		}
+	}
+	if b := s.ExclusiveMinimum; b != nil {
+		if c, ok := cmpTo(*b); !ok || c <= 0 {
+			v.add(path, "must be above %v", *b)
+		}
+	}
+	if b := s.ExclusiveMaximum; b != nil {
+		if c, ok := cmpTo(*b); !ok || c >= 0 {
+			v.add(path, "must be below %v", *b)
+		}
 	}
 	if m := s.MultipleOf; m != nil && *m > 0 {
-		if q := f / *m; math.IsInf(q, 0) || q != math.Trunc(q) {
+		if md, ok := toDecimal(*m); !ok || !d.multipleOf(md) {
 			v.add(path, "must be a multiple of %v", *m)
 		}
 	}
