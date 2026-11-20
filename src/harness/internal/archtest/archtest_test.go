@@ -2,6 +2,7 @@ package archtest
 
 import (
 	"bytes"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -140,6 +141,18 @@ func TestRulesCatchViolations(t *testing.T) {
 			imports(pkg(StorePackage, "store", false, "a.go"), MemstorePackage),
 			imports(pkg(HarnessModule+"/internal/engine", "engine", false, "a.go"), StoretestPackage),
 		}, 5},
+		{"spawning and leaf packages within their bounds", HarnessModule, []Package{
+			imports(pkg(SubprocessPackage, "subprocess", false, "a.go"), ExecPackage, HerrPackage, "golang.org/x/sys/windows"),
+			imports(pkg(SubprocesstestPackage, "subprocesstest", false, "a.go"), SubprocessPackage, "testing"),
+			imports(pkg(HerrPackage, "herr", false, "a.go"), "errors", "fmt", "log/slog"),
+			imports(pkg(IdentPackage, "ident", false, "a.go"), "crypto/rand", "encoding/hex"),
+		}, 0},
+		{"spawning and leaf packages out of bounds", HarnessModule, []Package{
+			imports(pkg(HarnessModule+"/internal/tool/shell", "shell", false, "a.go"), ExecPackage),
+			imports(pkg(HarnessModule+"/internal/engine", "engine", false, "a.go"), SubprocesstestPackage),
+			imports(pkg(HerrPackage, "herr", false, "a.go"), "github.com/pkg/errors"),
+			imports(pkg(IdentPackage, "ident", false, "a.go"), "github.com/google/uuid"),
+		}, 4},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := check(tc.module, tc.pkgs...); len(got) != tc.bad {
@@ -179,6 +192,50 @@ func TestRequestTypes(t *testing.T) {
 		t.Fatal("a file that does not parse was accepted")
 	}
 	if _, err := RequestTypes(fstest.MapFS{}); err == nil {
+		t.Fatal("an empty tree passed")
+	}
+}
+
+// TestNoSpawnOutsideSubprocess is the source half of onespawn over the real
+// harness module: no non-test file outside internal/world/subprocess starts a
+// program (DH-D-EXEC-1).
+func TestNoSpawnOutsideSubprocess(t *testing.T) {
+	found, err := Spawns(os.DirFS(moduleDirs[HarnessModule]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range found {
+		t.Error(f)
+	}
+}
+
+// TestSpawns proves the predicate finds every way to start a program and honours
+// its exemptions.
+func TestSpawns(t *testing.T) {
+	file := func(src string) *fstest.MapFile { return &fstest.MapFile{Data: []byte("package p\n" + src)} }
+	for _, tc := range []struct {
+		name  string
+		files fstest.MapFS
+		found int
+	}{
+		{"clean", fstest.MapFS{"a/a.go": file(`import "os"; var _ = os.Getpid`)}, 0},
+		{"os.StartProcess", fstest.MapFS{"a/a.go": file(`import "os"; var _ = os.StartProcess`)}, 1},
+		{"renamed syscall", fstest.MapFS{"a/a.go": file(`import sc "syscall"; func f() { sc.ForkExec("", nil, nil); sc.Exec("", nil, nil) }`)}, 2},
+		{"x/sys", fstest.MapFS{"a/a.go": file(`import ("golang.org/x/sys/unix"; w "golang.org/x/sys/windows"); var _, _ = unix.Exec, w.CreateProcess`)}, 2},
+		{"os/exec", fstest.MapFS{"a/a.go": file(`import "os/exec"; var _ = exec.Command`)}, 1},
+		{"dot import", fstest.MapFS{"a/a.go": file(`import . "os/exec"; var _ = Command`)}, 1},
+		{"a local named os", fstest.MapFS{"a/a.go": file(`type t struct{}; func (t) StartProcess() {}; func f() { var os t; os.StartProcess() }`)}, 0},
+		{"the owner is exempt", fstest.MapFS{"a/a.go": file(""), SpawnOwner + "/s.go": file(`import "os/exec"; var _ = exec.Command`), SpawnOwner + "/subprocesstest/t.go": file(`import "os"; var _ = os.StartProcess`)}, 0},
+		{"tests and testdata are exempt", fstest.MapFS{"a/a.go": file(""), "a/a_test.go": file(`import "os"; var _ = os.StartProcess`), "a/testdata/x.go": file(`import "os"; var _ = os.StartProcess`)}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			found, err := Spawns(tc.files)
+			if err != nil || len(found) != tc.found {
+				t.Fatalf("Spawns = %q, %v; want %d", found, err, tc.found)
+			}
+		})
+	}
+	if _, err := Spawns(fstest.MapFS{}); err == nil {
 		t.Fatal("an empty tree passed")
 	}
 }
