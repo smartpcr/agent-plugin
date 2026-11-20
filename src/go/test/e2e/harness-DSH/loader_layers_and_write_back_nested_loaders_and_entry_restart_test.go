@@ -196,10 +196,17 @@ func (w *nestedWorld) nestedEntriesActive(a, b string) error {
 }
 
 func (w *nestedWorld) ownerUnloaded(string) error {
-	return nestedWithin("owner dispose and wait", func() {
+	var waitErr error
+	if err := nestedWithin("owner dispose and wait", func() {
 		w.owner.Dispose()
-		_ = w.owner.Wait()
-	})
+		waitErr = w.owner.Wait()
+	}); err != nil {
+		return err
+	}
+	if waitErr != nil {
+		return fmt.Errorf("owner Wait after Dispose failed: %w (log %s)", waitErr, w.echo.String())
+	}
+	return nil
 }
 
 func (w *nestedWorld) nestedDisposersRan(a, b string) error {
