@@ -291,6 +291,27 @@ func TestEditErrors(t *testing.T) {
 	}
 }
 
+// A comment inside a nested value that is deleted moves to the node that follows in
+// document order, which may be in an enclosing container, or to the end of the file.
+func TestDeleteNestedMovesCommentsForward(t *testing.T) {
+	const src = "- id: web\n  merge:\n    port: 8080 # the dev port\n\n# Gone.\n- id: old\n"
+	for _, tc := range []struct {
+		name string
+		ops  []Op
+		want string
+	}{
+		{"to the next item", []Op{Delete([]any{0, "merge"})}, "- id: web\n\n# the dev port\n# Gone.\n- id: old\n"},
+		{"to the end of the file", []Op{Delete([]any{1}), Delete([]any{0, "merge"})}, "- id: web\n\n# the dev port\n# Gone.\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := parse(t, src).Edit(tc.ops...)
+			if err != nil || string(out) != tc.want {
+				t.Fatalf("Edit = %q, %v; want %q", out, err, tc.want)
+			}
+		})
+	}
+}
+
 func TestEditIsStable(t *testing.T) { // DH-T-YAML-5
 	long := strings.Repeat("x", 300)
 	doc := parse(t, commented+"\n- id: long\n  config:\n    text: "+long+"\n")

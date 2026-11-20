@@ -221,6 +221,47 @@ func TestEncodeLayerReordered(t *testing.T) {
 	}
 }
 
+func TestEncodeLayerRefusesAnUnverifiedWrite(t *testing.T) { // DH-LIB-YAML-R8
+	doc, err := loader.ParseLayer(YAML, "project.yaml", []byte(layerYAML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ops := doc.Ops
+	real := edit
+	t.Cleanup(func() { edit = real })
+	for _, tc := range []struct {
+		name     string
+		previous *loader.LayerDocument
+		stub     func(*yamlx.Document, ...yamlx.Op) ([]byte, error)
+		reason   string
+	}{
+		{"previous text no longer parses", &loader.LayerDocument{File: "project.yaml", Data: []byte("a: *b\n")}, real, "does not parse"},
+		{"edit drops a comment", doc, func(*yamlx.Document, ...yamlx.Op) ([]byte, error) {
+			return nil, fmt.Errorf("%w: project.yaml: comment %q is lost", yamlx.ErrUnverified, "# Gone.")
+		}, "comment"},
+		{"edit changes another value", doc, func(d *yamlx.Document, o ...yamlx.Op) ([]byte, error) {
+			out, err := real(d, o...)
+			return []byte(strings.Replace(string(out), "8080", "1", 1)), err
+		}, "intended operations"},
+		{"edit is not YAML", doc, func(*yamlx.Document, ...yamlx.Op) ([]byte, error) { return []byte("- [\n"), nil }, "does not decode"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			edit = tc.stub
+			out, err := YAML.EncodeLayer(tc.previous, ops)
+			if !errors.Is(err, ErrWriteRefused) || out != nil || !strings.Contains(err.Error(), tc.reason) {
+				t.Fatalf("EncodeLayer = %q, %v; want no text and a refusal naming %q", out, err, tc.reason)
+			}
+		})
+	}
+	if _, err := YAML.EncodeLayer(doc, ops); !errors.Is(err, ErrWriteRefused) {
+		t.Fatal("the last stub stays installed; want it still refused")
+	}
+	edit = real
+	if out, err := YAML.EncodeLayer(doc, ops); err != nil || !strings.Contains(string(out), "# Gone.") {
+		t.Fatalf("real edit = %q, %v", out, err)
+	}
+}
+
 func TestDiff(t *testing.T) {
 	for _, tc := range []struct {
 		name, old, want string

@@ -7,6 +7,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -41,7 +43,8 @@ var searchSet = []string{
 // an rg installed for comparison only, when the fixed set of plain-word and regular
 // expression searches runs through the harness search and through rg, then every
 // search meets the agreed budget and is not cut short, and the ratio to rg is
-// recorded per search. Inputs: DSH_SCENARIO_REPOS, the ";"-separated checkouts;
+// recorded per search. An rg run that fails or reports a problem fails that search's
+// comparison rather than counting as zero matches. Inputs: DSH_SCENARIO_REPOS, the ";"-separated checkouts;
 // DSH_SCENARIO_SEARCH_BUDGET, the agreed budget per search as a Go duration;
 // DSH_SCENARIO_REPORT, the file the timing report (JSON lines) is written to.
 // Cleanup: removing the checkouts is the operator's; the report is kept.
@@ -83,14 +86,10 @@ func TestSearchMeetsBudget(t *testing.T) {
 				t.Errorf("%s %q: %v", repo, pattern, err)
 				continue
 			}
-			rgStart := time.Now()
-			cmd := exec.CommandContext(t.Context(), rg, "--files-with-matches", "--no-messages", "--", pattern, ".")
-			cmd.Dir = repo
-			out, rgErr := cmd.Output()
-			rgTook := time.Since(rgStart)
-			rgMatches := strings.Count(string(out), "\n")
-			if rgErr != nil && rgMatches != 0 {
-				t.Errorf("%s %q: rg: %v", repo, pattern, rgErr)
+			rgMatches, rgTook, err := runRG(t, rg, repo, pattern)
+			if err != nil {
+				t.Errorf("%s %q: the rg comparison did not run: %v", repo, pattern, err)
+				continue
 			}
 			ratio := took.Seconds() / max(rgTook.Seconds(), 1e-6)
 			_ = enc.Encode(map[string]any{"repo": repo, "pattern": pattern, "harness_ms": took.Milliseconds(),
@@ -184,6 +183,36 @@ func TestFileListingMatchesGit(t *testing.T) {
 				repo, len(diff), strings.Join(diff, "\n"))
 		}
 	}
+}
+
+// runRG runs rg over repo for pattern and returns the number of files it matched
+// and how long it took. rg exits 0 with matches and 1 with none; any other outcome
+// (exit 2 for a bad pattern or an unreadable path, a signal, a timeout, a missing
+// binary), output on its standard error, or exit 1 with output, means the
+// comparison did not run correctly and is an error, never a zero.
+func runRG(t *testing.T, rg, repo, pattern string) (int, time.Duration, error) {
+	t.Helper()
+	cmd := exec.CommandContext(t.Context(), rg, "--files-with-matches", "--", pattern, ".")
+	cmd.Dir = repo
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	start := time.Now()
+	err := cmd.Run()
+	took := time.Since(start)
+	files := strings.Count(stdout.String(), "\n")
+	var exit *exec.ExitError
+	switch {
+	case err == nil && files > 0:
+	case errors.As(err, &exit) && exit.ExitCode() == 1 && files == 0:
+	case err == nil:
+		return 0, took, errors.New("rg exited 0 with no files listed")
+	default:
+		return 0, took, fmt.Errorf("rg: %v (%d files listed)\n%s", err, files, stderr.String())
+	}
+	if stderr.Len() > 0 {
+		return 0, took, fmt.Errorf("rg reported problems, so its count is not comparable:\n%s", stderr.String())
+	}
+	return files, took, nil
 }
 
 // hidden reports whether a slash path has a segment starting with a dot.

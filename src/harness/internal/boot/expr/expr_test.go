@@ -179,13 +179,43 @@ func TestUseUnresolved(t *testing.T) {
 	}
 }
 
+// tree and forest contain themselves; badTree does and has a pointer; secretTree has
+// a secret only below the first level.
+type (
+	tree struct {
+		Name     string
+		Children []tree
+	}
+	forest struct {
+		Trees map[string]forest
+		Root  tree
+	}
+	badTree struct {
+		Children []badTree
+		P        *int
+	}
+	secretTree struct {
+		Children []secretTree
+		Auth     struct {
+			Token string `dsh:"live,secret"`
+		}
+	}
+)
+
 func TestCheckView(t *testing.T) {
 	type nested struct{ A map[string][]int }
+	type creds struct {
+		User  string
+		Token string `json:"token" dsh:"required,secret"`
+	}
 	type unexported struct{ a int }
 	good := []reflect.Type{reflect.TypeFor[gitView](), reflect.TypeFor[struct {
 		N nested
 		F [2]float64
 		U uint8
+	}](), reflect.TypeFor[tree](), reflect.TypeFor[forest](), reflect.TypeFor[struct {
+		S string `dsh:"pattern=secret,x"`
+		L string `dsh:"live"`
 	}]()}
 	for _, typ := range good {
 		if err := CheckView(typ); err != nil {
@@ -194,10 +224,19 @@ func TestCheckView(t *testing.T) {
 	}
 	bad := []reflect.Type{nil, reflect.TypeFor[int](), reflect.TypeFor[struct{ P *int }](),
 		reflect.TypeFor[struct{ F func() }](), reflect.TypeFor[struct{ M map[int]string }](),
-		reflect.TypeFor[struct{ I any }](), reflect.TypeFor[unexported]()}
+		reflect.TypeFor[struct{ I any }](), reflect.TypeFor[unexported](), reflect.TypeFor[badTree]()}
 	for _, typ := range bad {
 		if err := CheckView(typ); err == nil {
 			t.Fatalf("%v accepted", typ)
+		}
+	}
+	for typ, field := range map[reflect.Type]string{
+		reflect.TypeFor[creds]():                          "creds.Token",
+		reflect.TypeFor[struct{ C []map[string]creds }](): "C[][].Token",
+		reflect.TypeFor[secretTree]():                     "secretTree.Auth.Token",
+	} {
+		if err := CheckView(typ); err == nil || !strings.Contains(err.Error(), field) || !strings.Contains(err.Error(), "secret") {
+			t.Fatalf("CheckView(%v) = %v, want a secret refusal naming %s", typ, err, field)
 		}
 	}
 	if _, err := New(Options{Views: map[string]reflect.Type{"x": reflect.TypeFor[struct{ P *int }]()}}); err == nil {

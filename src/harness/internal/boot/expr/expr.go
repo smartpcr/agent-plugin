@@ -335,16 +335,18 @@ func (e *Evaluator) home(params ...any) (any, error) {
 
 // CheckView reports whether t is a view type an expression may read: a struct whose
 // fields are plain data (booleans, numbers, strings, and slices, arrays, maps with
-// string keys and structs of those), never a pointer, function, interface or channel
-// (DH-ADR-BOOT-5).
+// string keys and structs of those), never a pointer, function, interface or channel,
+// and never a field marked secret (`dsh:"secret"`), at any depth (DH-ADR-BOOT-5). A
+// type that contains itself (through a slice or a map) is checked once and accepted
+// if its fields are plain.
 func CheckView(t reflect.Type) error {
 	if t == nil || t.Kind() != reflect.Struct {
 		return fmt.Errorf("a view must be a struct, got %v", t)
 	}
-	return plain(t, t.String())
+	return plain(t, t.String(), map[reflect.Type]bool{})
 }
 
-func plain(t reflect.Type, path string) error {
+func plain(t reflect.Type, path string, seen map[reflect.Type]bool) error {
 	switch t.Kind() {
 	case reflect.Bool, reflect.String,
 		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
@@ -352,19 +354,26 @@ func plain(t reflect.Type, path string) error {
 		reflect.Float32, reflect.Float64:
 		return nil
 	case reflect.Slice, reflect.Array:
-		return plain(t.Elem(), path+"[]")
+		return plain(t.Elem(), path+"[]", seen)
 	case reflect.Map:
 		if t.Key().Kind() != reflect.String {
 			return fmt.Errorf("%s: map keys must be strings", path)
 		}
-		return plain(t.Elem(), path+"[]")
+		return plain(t.Elem(), path+"[]", seen)
 	case reflect.Struct:
+		if seen[t] {
+			return nil // being checked further up, or already checked
+		}
+		seen[t] = true
 		for i := 0; i < t.NumField(); i++ {
 			f := t.Field(i)
 			if !f.IsExported() {
 				return fmt.Errorf("%s.%s: unexported field", path, f.Name)
 			}
-			if err := plain(f.Type, path+"."+f.Name); err != nil {
+			if secretTag(f.Tag) {
+				return fmt.Errorf("%s.%s: a secret field may not be in a view", path, f.Name)
+			}
+			if err := plain(f.Type, path+"."+f.Name, seen); err != nil {
 				return err
 			}
 		}
@@ -372,4 +381,18 @@ func plain(t reflect.Type, path string) error {
 	default:
 		return fmt.Errorf("%s: %s is not plain data", path, t.Kind())
 	}
+}
+
+// secretTag reports whether a field's dsh tag carries the word secret, as the schema
+// package reads it (internal/schema: comma-separated words; pattern= takes the rest).
+func secretTag(tag reflect.StructTag) bool {
+	words, ok := tag.Lookup("dsh")
+	for ok && words != "" && !strings.HasPrefix(words, "pattern=") {
+		var word string
+		word, words, _ = strings.Cut(words, ",")
+		if strings.TrimSpace(word) == "secret" {
+			return true
+		}
+	}
+	return false
 }

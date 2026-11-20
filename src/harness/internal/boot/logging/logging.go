@@ -48,20 +48,28 @@ type Config struct {
 // stderr is standard error; tests replace it.
 var stderr io.Writer = os.Stderr
 
-// Handler returns the slog handler config describes writing to w.
-func (c Config) Handler(w io.Writer) (slog.Handler, error) {
-	var level slog.Level
+// levels returns config's level as a slog level and as the cordis threshold that
+// lets its messages through.
+func (c Config) levels() (slog.Level, cordis.LogLevel, error) {
 	switch strings.ToLower(c.Level) {
 	case "", "info":
-		level = slog.LevelInfo
+		return slog.LevelInfo, cordis.LevelInfo, nil
 	case "debug":
-		level = slog.LevelDebug
+		return slog.LevelDebug, cordis.LevelDebug, nil
 	case "warn":
-		level = slog.LevelWarn
+		return slog.LevelWarn, cordis.LevelWarn, nil
 	case "error":
-		level = slog.LevelError
+		return slog.LevelError, cordis.LevelError, nil
 	default:
-		return nil, fmt.Errorf("logging: level %q is not debug, info, warn or error", c.Level)
+		return 0, 0, fmt.Errorf("logging: level %q is not debug, info, warn or error", c.Level)
+	}
+}
+
+// Handler returns the slog handler config describes writing to w.
+func (c Config) Handler(w io.Writer) (slog.Handler, error) {
+	level, _, err := c.levels()
+	if err != nil {
+		return nil, err
 	}
 	options := &slog.HandlerOptions{Level: level}
 	switch strings.ToLower(c.Format) {
@@ -103,8 +111,19 @@ func (c Config) open() (io.Writer, func() error, error) {
 // SlogExporter to the tree's logger service, both as an effect of its fiber; on
 // unload the effect removes the exporter and closes the file. It neither clears nor
 // restores other exporters. A destination that cannot be opened fails the load.
+//
+// The tree's default threshold drops a message before any exporter sees it, so a
+// level more verbose than the current threshold (debug, under the default info)
+// raises the threshold to it while the component is loaded. It never lowers the
+// threshold, which would silence another exporter, and on unload it restores the
+// previous threshold unless someone has changed it since. A context's own logger
+// intercept (cordis.LoggerConfig) still decides for the loggers below it.
 var Component = cordis.Define(Name, func(ctx *cordis.Context, config Config) error {
 	_, err := ctx.Effect("log exporter", func() (cordis.Disposer, error) {
+		_, threshold, err := config.levels()
+		if err != nil {
+			return nil, err
+		}
 		w, closeFn, err := config.open()
 		if err != nil {
 			return nil, err
@@ -114,8 +133,17 @@ var Component = cordis.Define(Name, func(ctx *cordis.Context, config Config) err
 			_ = closeFn()
 			return nil, err
 		}
-		remove := ctx.Loggers().AddExporter(cordis.SlogExporter{Handler: handler})
+		loggers := ctx.Loggers()
+		remove := loggers.AddExporter(cordis.SlogExporter{Handler: handler})
+		previous := loggers.Level()
+		raised := threshold > previous
+		if raised {
+			loggers.SetLevel(threshold)
+		}
 		return func() error {
+			if raised && loggers.Level() == threshold {
+				loggers.SetLevel(previous)
+			}
 			remove()
 			return closeFn()
 		}, nil

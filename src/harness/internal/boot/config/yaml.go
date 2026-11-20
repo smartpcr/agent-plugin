@@ -8,6 +8,7 @@ package config
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"strconv"
 	"sync"
@@ -67,9 +68,20 @@ func (yamlCodec) Encode(_ *loader.Document, entries []loader.EntryOptions) ([]by
 	return yamlx.Dump(toValue(want))
 }
 
+// ErrWriteRefused wraps every reason EncodeLayer refuses to rewrite an existing
+// layer file (DH-LIB-YAML-R8): the file must be left as it was.
+var ErrWriteRefused = errors.New("config: YAML layer write refused")
+
+// edit applies ops to doc; tests replace it to stand in for a faulty encoder.
+var edit = func(doc *yamlx.Document, ops ...yamlx.Op) ([]byte, error) { return doc.Edit(ops...) }
+
 // EncodeLayer writes ops. Given the layer document last read, it edits that
 // document, so unchanged operations and values keep their text and every comment
-// stays; if the edit cannot be verified it renders afresh.
+// stays. If that document cannot be read again, or the edit cannot be verified to
+// give exactly ops with every comment (DH-LIB-YAML-R8), the write is refused with
+// an error wrapping ErrWriteRefused and no text: the caller keeps the change in
+// memory and reports it (DH-LIB-LOADER-R9). Only a layer with no previous text is
+// rendered afresh.
 func (c yamlCodec) EncodeLayer(previous *loader.LayerDocument, ops []loader.Op) ([]byte, error) {
 	if ops == nil {
 		ops = []loader.Op{}
@@ -78,18 +90,27 @@ func (c yamlCodec) EncodeLayer(previous *loader.LayerDocument, ops []loader.Op) 
 	if err != nil {
 		return nil, err
 	}
-	if previous != nil && len(previous.Data) > 0 {
-		if doc, err := yamlx.Parse(previous.File, previous.Data, yamlx.WithTag(ExprTag)); err == nil {
-			var edits []yamlx.Op
-			diff(doc.Value(), want, nil, &edits)
-			if edited, err := doc.Edit(edits...); err == nil {
-				if back, err := c.Decode(previous.File, edited); err == nil && same(back, want) {
-					return edited, nil
-				}
-			}
-		}
+	if previous == nil || len(previous.Data) == 0 {
+		return yamlx.Dump(toValue(want))
 	}
-	return yamlx.Dump(toValue(want))
+	doc, err := yamlx.Parse(previous.File, previous.Data, yamlx.WithTag(ExprTag))
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s: the previous text does not parse: %w", ErrWriteRefused, previous.File, err)
+	}
+	var edits []yamlx.Op
+	diff(doc.Value(), want, nil, &edits)
+	edited, err := edit(doc, edits...)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrWriteRefused, err)
+	}
+	back, err := c.Decode(previous.File, edited)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s: the edited text does not decode: %w", ErrWriteRefused, previous.File, err)
+	}
+	if !same(back, want) {
+		return nil, fmt.Errorf("%w: %s: the edited text does not hold the intended operations", ErrWriteRefused, previous.File)
+	}
+	return edited, nil
 }
 
 // fileForm is the node tree of v's JSON file form.

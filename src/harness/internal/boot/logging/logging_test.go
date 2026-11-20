@@ -99,6 +99,54 @@ func TestFileDestinationKeepsStdoutClean(t *testing.T) {
 	}
 }
 
+// DH-ADR-LOADER-9: a configured debug level reaches the destination through the
+// ordinary exporter-free tree, and unloading puts the tree's threshold back.
+func TestDebugLevelReachesTheDestination(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dsh.log")
+	root := cordis.New(cordis.WithExporters())
+	f, err := load(t, root, Config{Destination: File, Path: path, Level: "debug", Format: JSON})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := root.Loggers().Level(); got != cordis.LevelDebug {
+		t.Fatalf("threshold while loaded = %v, want Debug", got)
+	}
+	root.Logger().Debugf("detail %d", 7)
+	f.Dispose()
+	if got := root.Loggers().Level(); got != cordis.LevelInfo {
+		t.Fatalf("threshold after unload = %v, want Info", got)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record map[string]any
+	if err := json.Unmarshal(data, &record); err != nil || record["msg"] != "detail 7" || record["level"] != "DEBUG" {
+		t.Fatalf("file = %q (%v), want one DEBUG record", data, err)
+	}
+
+	// A threshold someone else set is neither lowered nor overwritten on unload.
+	root.Loggers().SetLevel(cordis.LevelDebug)
+	f, err = load(t, root, Config{Destination: File, Path: path, Level: "error"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := root.Loggers().Level(); got != cordis.LevelDebug {
+		t.Fatalf("an error-level exporter lowered the threshold to %v", got)
+	}
+	f.Dispose()
+	root.Loggers().SetLevel(cordis.LevelInfo)
+	f, err = load(t, root, Config{Destination: File, Path: path, Level: "debug"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root.Loggers().SetLevel(cordis.LevelWarn)
+	f.Dispose()
+	if got := root.Loggers().Level(); got != cordis.LevelWarn {
+		t.Fatalf("unload overwrote a threshold changed since: %v", got)
+	}
+}
+
 func TestStderrDestination(t *testing.T) {
 	buf := &syncBuffer{}
 	saved := stderr

@@ -64,6 +64,11 @@ func TestBuildRejects(t *testing.T) {
 		{[]catalog.Item{{Name: "boot.p", Component: component("boot.p"), Provides: []string{""}}}, "empty"},
 		{[]catalog.Item{{Name: "boot.v", Component: component("boot.v"), View: reflect.TypeFor[webView]()}}, "provides no service"},
 		{[]catalog.Item{{Name: "boot.v", Component: component("boot.v"), Provides: []string{"web"}, View: reflect.TypeFor[struct{ F func() }]()}}, "view"},
+		{[]catalog.Item{{Name: "boot.v", Component: component("boot.v"), Provides: []string{"web"}, View: reflect.TypeFor[struct {
+			Auth struct {
+				Key string `dsh:"secret"`
+			}
+		}]()}}, "secret"},
 		{[]catalog.Item{
 			{Name: "boot.v", Component: component("boot.v"), Provides: []string{"web"}, View: reflect.TypeFor[webView]()},
 			{Name: "boot.w", Component: component("boot.w"), Provides: []string{"web"}, View: reflect.TypeFor[webView]()},

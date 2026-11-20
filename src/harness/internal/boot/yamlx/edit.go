@@ -203,7 +203,7 @@ func apply(doc *yaml.Node, blank map[*yaml.Node]bool, op Op) error {
 			if at < len(parent.Content) {
 				next = parent.Content[at]
 			}
-			moveComments(doc, parent, top, next, moved)
+			moveComments(doc, top, op.path, next, moved)
 			return nil
 		}
 		n, err := build(op.value)
@@ -236,7 +236,7 @@ func apply(doc *yaml.Node, blank map[*yaml.Node]bool, op Op) error {
 			if index < len(parent.Content) {
 				next = parent.Content[index]
 			}
-			moveComments(doc, parent, top, next, moved)
+			moveComments(doc, top, op.path, next, moved)
 			return nil
 		}
 		n, err := build(op.value)
@@ -267,21 +267,46 @@ func keepComments(old, n, holder *yaml.Node) {
 	}
 }
 
-// moveComments puts the comments of a deleted key or item above the next one, or at
-// the end of its container (of the file, for a top-level entry).
-func moveComments(doc, parent, top, next *yaml.Node, lines []string) {
+// moveComments puts the comments of the key or item deleted at path above the node
+// that now follows it in document order: next, its container's next sibling, and so
+// up; past the last node, at the end of the file. A foot comment of a nested
+// container is not used: the encoder renders it outside the container.
+func moveComments(doc, top *yaml.Node, path []any, next *yaml.Node, lines []string) {
 	if len(lines) == 0 {
 		return
 	}
 	text := strings.Join(lines, "\n")
-	switch {
-	case next != nil:
-		next.HeadComment = joinComments(text, next.HeadComment)
-	case parent == top:
-		doc.FootComment = joinComments(text, doc.FootComment)
-	default:
-		parent.FootComment = joinComments(parent.FootComment, text)
+	for depth := len(path) - 1; next == nil && depth > 0; depth-- {
+		container, err := find(top, path[:depth-1])
+		if err != nil {
+			break
+		}
+		next = following(container, path[depth-1])
 	}
+	if next == nil {
+		doc.FootComment = joinComments(text, doc.FootComment)
+		return
+	}
+	next.HeadComment = joinComments(text, next.HeadComment)
+}
+
+// following returns the node after the child step of container: the next key of a
+// mapping, the next item of a sequence, or nil.
+func following(container *yaml.Node, step any) *yaml.Node {
+	switch container.Kind {
+	case yaml.MappingNode:
+		key, _ := step.(string)
+		for i := 0; i+3 < len(container.Content); i += 2 {
+			if container.Content[i].Value == key {
+				return container.Content[i+2]
+			}
+		}
+	case yaml.SequenceNode:
+		if index, ok := step.(int); ok && index+1 < len(container.Content) {
+			return container.Content[index+1]
+		}
+	}
+	return nil
 }
 
 func joinComments(a, b string) string {
