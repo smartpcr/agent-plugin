@@ -37,6 +37,8 @@ type Store struct {
 
 	mu       sync.Mutex
 	sessions map[string]*session
+	// gen counts crashes; a handle opened under an older gen died with its process.
+	gen uint64
 }
 
 type ckKey struct {
@@ -55,6 +57,36 @@ type session struct {
 	durableCk   map[ckKey]store.Checkpoint
 	deleted     bool
 	lastEventAt time.Time
+	// durableAt is lastEventAt as of the last point durable caught up with
+	// records; a rollback falls back to it when the surviving last record has no
+	// time of its own.
+	durableAt time.Time
+}
+
+// markDurable makes every accepted record and checkpoint durable; s.mu held.
+func (ss *session) markDurable() {
+	ss.durable = len(ss.records)
+	ss.durableCk = maps(ss.checkpoints)
+	ss.durableAt = ss.lastEventAt
+}
+
+// rollback discards the accepted, undurable records and checkpoints and puts
+// lastEventAt back to that of the surviving last record; s.mu held.
+func (ss *session) rollback() {
+	if len(ss.records) == ss.durable {
+		ss.checkpoints = maps(ss.durableCk)
+		return
+	}
+	ss.records = ss.records[:ss.durable]
+	ss.checkpoints = maps(ss.durableCk)
+	switch n := len(ss.records); {
+	case n == 0:
+		ss.lastEventAt = time.Time{}
+	case ss.records[n-1].Time > 0:
+		ss.lastEventAt = time.UnixMilli(ss.records[n-1].Time)
+	default:
+		ss.lastEventAt = ss.durableAt
+	}
 }
 
 // New is an empty store.
@@ -108,6 +140,9 @@ func (s *Store) Create(ctx context.Context, h store.Header, o store.CreateOption
 		// ForkSource/ForkThrough. A store may make records durable early.
 		if n := len(inherited); p.durable < n {
 			p.durable = n
+			if n == len(p.records) {
+				p.durableAt = p.lastEventAt
+			}
 		}
 		for _, r := range inherited {
 			ss.records = append(ss.records, r.Clone())
@@ -118,6 +153,7 @@ func (s *Store) Create(ctx context.Context, h store.Header, o store.CreateOption
 		} else {
 			ss.lastEventAt = p.lastEventAt
 		}
+		ss.durableAt = ss.lastEventAt
 		h.ForkSource, h.ForkThrough, h.InheritedCount = f.ID, f.Through, len(ss.records)
 	}
 	ss.header = h
@@ -128,7 +164,7 @@ func (s *Store) Create(ctx context.Context, h store.Header, o store.CreateOption
 // grant gives ss a new writer under a raised epoch; s.mu held.
 func (s *Store) grant(ss *session) *writer {
 	ss.epoch++
-	w := &writer{reader: reader{s: s, id: ss.header.ID, header: ss.header, ss: ss}, epoch: ss.epoch}
+	w := &writer{reader: reader{s: s, id: ss.header.ID, header: ss.header, ss: ss, gen: s.gen}, epoch: ss.epoch}
 	ss.holder = w
 	ss.since = s.now()
 	return w
@@ -154,8 +190,7 @@ func (s *Store) OpenWrite(ctx context.Context, id string, o store.OpenOptions) (
 	if ss.holder != nil {
 		// The displaced writer's accepted, undurable records are discarded: they
 		// were never durable.
-		ss.records = ss.records[:ss.durable]
-		ss.checkpoints = maps(ss.durableCk)
+		ss.rollback()
 		ss.holder = nil
 	}
 	return s.grant(ss), nil
@@ -175,7 +210,7 @@ func (s *Store) OpenRead(ctx context.Context, id string) (store.Reader, error) {
 	if err := store.CheckOpen(s.reg, ss.records); err != nil {
 		return nil, err
 	}
-	return &reader{s: s, id: id, header: ss.header, ss: ss}, nil
+	return &reader{s: s, id: id, header: ss.header, ss: ss, gen: s.gen}, nil
 }
 
 func (s *Store) live(id string) (*session, error) {
@@ -316,26 +351,26 @@ func (s *Store) Flush(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, ss := range s.sessions {
-		ss.durable = len(ss.records)
-		ss.durableCk = maps(ss.checkpoints)
+		ss.markDurable()
 	}
 	return nil
 }
 
 // Crash simulates the death of the process: every accepted, undurable record and
-// checkpoint is lost and every lease is released; the old writers and readers
-// fail with session/closed.
+// checkpoint is lost, LastEventAt falls back to the surviving last record, every
+// lease is released, and every writer and reader opened before the crash fails
+// with session/closed.
 func (s *Store) Crash() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, ss := range s.sessions {
-		ss.records = ss.records[:ss.durable]
-		ss.checkpoints = maps(ss.durableCk)
+		ss.rollback()
 		if ss.holder != nil {
 			ss.holder.crashed = true
 			ss.holder = nil
 		}
 	}
+	s.gen++
 	s.instance += "+"
 }
 
@@ -365,6 +400,7 @@ func (s *Store) Seed(ctx context.Context, h store.Header, recs []store.Record) e
 	if n := len(recs); n > 0 && recs[n-1].Time > 0 {
 		ss.lastEventAt = time.UnixMilli(recs[n-1].Time)
 	}
+	ss.durableAt = ss.lastEventAt
 	s.sessions[h.ID] = ss
 	return nil
 }
@@ -382,13 +418,17 @@ type reader struct {
 	id     string
 	header store.Header
 	ss     *session
-	closed bool // under s.mu
+	gen    uint64 // the store's crash count when the handle was opened
+	closed bool   // under s.mu
 }
 
 func (r *reader) Header() store.Header { return r.header }
 
 // session is the reader's session; s.mu held.
 func (r *reader) session() (*session, error) {
+	if r.gen != r.s.gen {
+		return nil, store.Errorf(store.CodeClosed, "reader of %q died with its process", r.id)
+	}
 	if r.closed {
 		return nil, store.Errorf(store.CodeClosed, "reader of %q is closed", r.id)
 	}
@@ -491,7 +531,7 @@ func (w *writer) Epoch() uint64 { return w.epoch }
 
 // check is the guard of an append or flush; s.mu held.
 func (w *writer) check() (*session, error) {
-	if w.crashed {
+	if w.crashed || w.gen != w.s.gen {
 		return nil, store.Errorf(store.CodeClosed, "writer of %q died with its process", w.id)
 	}
 	if w.closed {
@@ -571,8 +611,7 @@ func (w *writer) Flush(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	ss.durable = len(ss.records)
-	ss.durableCk = maps(ss.checkpoints)
+	ss.markDurable()
 	return nil
 }
 
@@ -585,8 +624,7 @@ func (w *writer) Close(context.Context) error {
 		return nil
 	}
 	if ss, err := w.check(); err == nil {
-		ss.durable = len(ss.records)
-		ss.durableCk = maps(ss.checkpoints)
+		ss.markDurable()
 		ss.holder = nil
 	}
 	w.closed = true
