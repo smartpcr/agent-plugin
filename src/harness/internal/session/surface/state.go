@@ -241,6 +241,11 @@ func (s *State) planSurfaceRecord(p *Plan, rec event.Record) error {
 	if err != nil {
 		return err
 	}
+	// A replacement while calls are unanswered could drop the tool_use of an open
+	// call, or the answer to an earlier one, and leave the history unpaired.
+	if rec.Op == event.OpReplace && len(s.br.Calls) > 0 {
+		return unbalanced(rec, "a replacement while %d tool calls are unanswered", len(s.br.Calls))
+	}
 	sp, err := s.hist.planSurface(rec, msg.Role(), call, msg)
 	if err != nil {
 		return err
