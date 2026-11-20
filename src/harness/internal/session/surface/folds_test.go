@@ -40,6 +40,15 @@ func TestHeaderAndToolHistory(t *testing.T) {
 		t.Fatalf("series base = %d %v, want %d [grep]", th.Base, names(th.Declared), h1)
 	}
 
+	// A name added twice in one update is refused and changes nothing.
+	before, _ := l.st.Checkpoint()
+	if _, err := l.try(toolUpdate(t, "m-dup", surface.ToolUpdate{Header: h2, Added: []string{"edit", "edit"}})); !errors.Is(err, event.ErrInvalidSurface) {
+		t.Fatalf("a duplicate addition: err = %v", err)
+	}
+	if after, _ := l.st.Checkpoint(); after != before || l.st.Len() != h2+1 || len(l.st.ToolHistory().Active()) != 1 {
+		t.Fatal("a refused duplicate addition changed the folds")
+	}
+
 	add := l.add(toolUpdate(t, "m-add", surface.ToolUpdate{Header: h2, Added: []string{"edit"}}))
 	th = l.st.ToolHistory()
 	if len(th.Changes) != 1 || th.Changes[0].Seq != add || th.Changes[0].Header != h2 || th.Changes[0].Added[0].Description != "edit" {
@@ -51,7 +60,7 @@ func TestHeaderAndToolHistory(t *testing.T) {
 
 	// Refusals: a header outside the series, a name the header does not define,
 	// a removal of an inactive name.
-	for _, u := range []surface.ToolUpdate{{Header: h2 + 100, Added: []string{"edit"}}, {Header: h2, Added: []string{"nope"}}, {Header: h2, Removed: []string{"nope"}}} {
+	for _, u := range []surface.ToolUpdate{{Header: h2 + 100, Added: []string{"edit"}}, {Header: h2, Added: []string{"nope"}}, {Header: h2, Removed: []string{"nope"}}, {Header: h2, Removed: []string{"edit", "edit"}}} {
 		if _, err := l.try(toolUpdate(t, "m-bad", u)); !errors.Is(err, event.ErrInvalidSurface) {
 			t.Fatalf("update %+v: err = %v", u, err)
 		}
@@ -80,6 +89,62 @@ func TestHeaderAndToolHistory(t *testing.T) {
 	h5 := l.add(header("r/b", schema("grep", "search v2")))
 	if th = l.st.ToolHistory(); th.Base != h5 {
 		t.Fatalf("a replacement did not start a series: base %d, want %d", th.Base, h5)
+	}
+}
+
+// DH-T-SESSION-13: a tool/result whose message does not answer the call its
+// payload names is refused, on append and on replacement, and changes nothing.
+func TestToolResultAnswersItsCall(t *testing.T) {
+	resultOf := func(op event.Op, call string, blocks []vocab.Block, sources ...event.Seq) func(t *testing.T) (event.Draft, error) {
+		return func(t *testing.T) (event.Draft, error) {
+			return event.ToolResult.Draft(op, event.ToolResultPayload{CallID: call, Message: msg(t, "x", vocab.RoleTool, blocks...)}, sources...)
+		}
+	}
+	block := func(id string) vocab.Block { return vocab.ToolResultBlock(id, false, vocab.TextPart("out")) }
+	setup := func(t *testing.T) (*logb, event.Seq) {
+		l := newLog(t)
+		l.add(turnStart(1))
+		l.add(stepStart(1, 1))
+		l.add(assistant(t, "a", call("c1", "grep"), call("c2", "grep")))
+		return l, l.add(result(t, "r1", "c1", "first"))
+	}
+	cases := []struct {
+		name  string
+		draft func(r1 event.Seq) func(t *testing.T) (event.Draft, error)
+	}{
+		{"append: block answers another call", func(event.Seq) func(*testing.T) (event.Draft, error) {
+			return resultOf(event.Append(), "c2", []vocab.Block{block("c9")})
+		}},
+		{"append: block answers a pending call the payload does not name", func(event.Seq) func(*testing.T) (event.Draft, error) {
+			return resultOf(event.Append(), "c2", []vocab.Block{block("c1")})
+		}},
+		{"append: two tool_result blocks", func(event.Seq) func(*testing.T) (event.Draft, error) {
+			return resultOf(event.Append(), "c2", []vocab.Block{block("c2"), block("c2")})
+		}},
+		{"replace: block changes the call", func(r1 event.Seq) func(*testing.T) (event.Draft, error) {
+			return resultOf(event.Replace(r1, r1), "c1", []vocab.Block{block("c2")}, r1)
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			l, r1 := setup(t)
+			before, _ := l.st.Checkpoint()
+			n := l.st.Len()
+			if _, err := l.try(c.draft(r1)(t)); !errors.Is(err, event.ErrInvalidSurface) {
+				t.Fatalf("err = %v, want %s", err, event.CodeInvalidSurface)
+			}
+			if after, _ := l.st.Checkpoint(); after != before || l.st.Len() != n || len(l.recs) != int(n) {
+				t.Fatal("a refused tool/result changed the log or the folds")
+			}
+			if calls := l.st.Open().Calls; len(calls) != 1 || calls[0].ID != "c2" {
+				t.Fatalf("pending calls = %+v, want [c2]", calls)
+			}
+		})
+	}
+	l, _ := setup(t)
+	l.add(result(t, "r2", "c2", "second"))
+	if l.st.Open().Calls != nil && len(l.st.Open().Calls) != 0 {
+		t.Fatalf("a matching result left calls pending: %+v", l.st.Open().Calls)
 	}
 }
 

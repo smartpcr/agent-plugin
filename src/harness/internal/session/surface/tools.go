@@ -209,6 +209,12 @@ func (f toolFold) planUpdate(seq event.Seq, u ToolUpdate) (change, error) {
 	isActive := func(name string) bool {
 		return slices.ContainsFunc(f.active, func(r toolRef) bool { return r.name == name })
 	}
+	if i, j, dup := firstDuplicate(u.Added); dup {
+		return change{}, errorf(event.CodeInvalidSurface, "tool update at seq %d adds %q twice (entries %d and %d)", seq, u.Added[i], i, j)
+	}
+	if i, j, dup := firstDuplicate(u.Removed); dup {
+		return change{}, errorf(event.CodeInvalidSurface, "tool update at seq %d removes %q twice (entries %d and %d)", seq, u.Removed[i], i, j)
+	}
 	for _, name := range u.Removed {
 		if !isActive(name) || slices.Contains(u.Added, name) {
 			return change{}, errorf(event.CodeInvalidSurface, "tool update at seq %d removes %q, which is not an active tool", seq, name)
@@ -230,6 +236,18 @@ func (f toolFold) planUpdate(seq event.Seq, u ToolUpdate) (change, error) {
 		ch.added = append(ch.added, found[0])
 	}
 	return ch, nil
+}
+
+// firstDuplicate is the first pair of equal names in names.
+func firstDuplicate(names []string) (int, int, bool) {
+	seen := make(map[string]int, len(names))
+	for j, n := range names {
+		if i, ok := seen[n]; ok {
+			return i, j, true
+		}
+		seen[n] = j
+	}
+	return 0, 0, false
 }
 
 func (f *toolFold) applyUpdate(ch change) {

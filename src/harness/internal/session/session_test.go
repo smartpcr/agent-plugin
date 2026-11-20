@@ -282,6 +282,14 @@ func (w *faultWriter) Append(ctx context.Context, b store.Batch) error {
 	return w.Writer.Append(ctx, b)
 }
 
+func (w *faultWriter) Close(ctx context.Context) error {
+	err := w.Writer.Close(ctx)
+	if w.f.getMode() == "close-fails" {
+		return errors.New("injected: flush on close failed")
+	}
+	return err
+}
+
 func (w *faultWriter) Read(ctx context.Context, from store.Seq, limit int, o store.ReadOptions) ([]store.Record, error) {
 	recs, err := w.Writer.Read(ctx, from, limit, o)
 	if err != nil || len(recs) == 0 {

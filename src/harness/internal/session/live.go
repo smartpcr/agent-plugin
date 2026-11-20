@@ -40,18 +40,26 @@ type live struct {
 
 	durable atomic.Uint64
 
-	dmu      sync.Mutex
-	dcond    *sync.Cond
-	target   event.Seq            // the next seq once committed; the deliverer's goal
-	next     event.Seq            // the deliverer's cursor
-	fps      map[event.Seq]string // fingerprints of committed, undelivered records
+	dmu    sync.Mutex
+	dcond  *sync.Cond
+	target event.Seq // the next seq once committed; the deliverer's goal
+	next   event.Seq // the deliverer's cursor
+	// fps is a fixed ring of the fingerprints of committed records that are
+	// neither delivered nor verified, seqs [fpFrom, target), at seq % len(fps).
+	// When delivery lags a full ring, the appender verifies the oldest against
+	// storage and forgets them, so a slow listener never grows the session.
+	fps      []string
+	fpFrom   event.Seq
 	stop     int
 	finished chan struct{}
 }
 
+// fpWindow is the size of the fingerprint ring.
+var fpWindow = 4096
+
 func newLive(v *service, id ID, h Header, key scope.Key, w store.Writer, st *surface.State, cursor, durable event.Seq) *live {
 	s := &live{svc: v, id: id, header: h, key: key, w: w, st: st,
-		target: st.Len(), next: cursor, fps: map[event.Seq]string{}, finished: make(chan struct{})}
+		target: st.Len(), next: cursor, fps: make([]string, fpWindow), fpFrom: st.Len(), finished: make(chan struct{})}
 	s.dcond = sync.NewCond(&s.dmu)
 	s.durable.Store(uint64(durable))
 	return s
@@ -222,6 +230,9 @@ func (s *live) appendLocked(ctx context.Context, ds []event.Draft, byCore, reuse
 		return nil, err
 	}
 	cfg := s.svc.cfg
+	if err := s.makeRoom(ctx, len(ds)); err != nil {
+		return nil, err
+	}
 	checkpoint := cfg.CheckpointEvery > 0 && s.sinceCP+len(ds) >= cfg.CheckpointEvery
 	cloned := len(ds) > 1 || checkpoint || cfg.Folder != nil
 	st := s.st
@@ -286,15 +297,110 @@ func (s *live) appendLocked(ctx context.Context, ds []event.Draft, byCore, reuse
 		s.sinceCP += len(ds)
 	}
 	out := make([]event.Receipt, len(recs))
-	s.dmu.Lock()
 	for i, r := range recs {
 		out[i] = event.Receipt{Seq: r.Seq, Time: r.Time}
-		s.fps[r.Seq] = fingerprint(r)
+	}
+	// A group larger than the ring is verified past its last len(fps) records
+	// at once; only those are held for the deliverer.
+	held := recs
+	if over := len(recs) - len(s.fps); over > 0 {
+		if err := s.verify(ctx, first, recs[over].Seq, func(q event.Seq) string { return fingerprint(recs[q-first]) }); err != nil {
+			s.failLocked(err)
+			return nil, err
+		}
+		held = recs[over:]
+	}
+	s.dmu.Lock()
+	if len(held) < len(recs) {
+		s.forgetLocked(held[0].Seq)
+	}
+	for _, r := range held {
+		s.fps[int(r.Seq)%len(s.fps)] = fingerprint(r)
 	}
 	s.target = s.st.Len()
 	s.dcond.Broadcast()
 	s.dmu.Unlock()
 	return out, nil
+}
+
+// makeRoom makes the ring hold room for k more fingerprints: when it would
+// overflow, the oldest held records are read back from storage, checked, and
+// forgotten, down to half the ring. The caller holds s.mu, so the ring's slots
+// change only here and in appendLocked.
+func (s *live) makeRoom(ctx context.Context, k int) error {
+	n := event.Seq(len(s.fps))
+	s.dmu.Lock()
+	from, end := s.fpFrom, s.target
+	held := end - from
+	if held+event.Seq(min(k, len(s.fps))) <= n {
+		s.dmu.Unlock()
+		return nil
+	}
+	keep := event.Seq(min(int(held), max(0, len(s.fps)/2-k)))
+	upTo := end - keep
+	// The deliverer clears slots as it delivers, so check against a copy.
+	want := make([]string, upTo-from)
+	for q := from; q < upTo; q++ {
+		want[q-from] = s.fps[int(q)%len(s.fps)]
+	}
+	s.dmu.Unlock()
+	if err := s.verify(ctx, from, upTo, func(q event.Seq) string { return want[q-from] }); err != nil {
+		s.failLocked(err)
+		return err
+	}
+	s.dmu.Lock()
+	s.forgetLocked(upTo)
+	s.dmu.Unlock()
+	return nil
+}
+
+// forgetLocked drops the fingerprints below seq, delivered or verified, and
+// frees their slots. The caller holds s.dmu.
+func (s *live) forgetLocked(seq event.Seq) {
+	for q := s.fpFrom; q < seq && q < s.fpFrom+event.Seq(len(s.fps)); q++ {
+		s.fps[int(q)%len(s.fps)] = ""
+	}
+	if s.fpFrom < seq {
+		s.fpFrom = seq
+	}
+}
+
+// verify reads [from, upTo) back from storage and checks each record against
+// want: the clauses the deliverer checks, ahead of delivery.
+func (s *live) verify(ctx context.Context, from, upTo event.Seq, want func(event.Seq) string) error {
+	for pos := from; pos < upTo; {
+		recs, err := s.w.Read(ctx, pos, min(1024, int(upTo-pos)), store.ReadOptions{})
+		if err == nil && len(recs) == 0 {
+			err = brokenStore(s.id, "a read from %d returned nothing although %d records are committed (a stale tail)", pos, upTo)
+		}
+		for i := 0; err == nil && i < len(recs); i++ {
+			switch r := recs[i]; {
+			case r.Seq != pos:
+				err = brokenStore(s.id, "a read has a gap or a wrong first seq: seq %d where %d was expected", r.Seq, pos)
+			case fingerprint(r) != want(r.Seq):
+				err = brokenStore(s.id, "the record at seq %d is not the one this session committed", r.Seq)
+			default:
+				pos++
+			}
+			if pos >= upTo {
+				break
+			}
+		}
+		if err != nil {
+			return s.classify(ctx, err)
+		}
+	}
+	return nil
+}
+
+// classify prefers a lost lease or a deleted session over a broken-store
+// reading: a takeover discards the displaced writer's undurable tail, so a short
+// or failed read is the lost lease when the writer no longer holds it.
+func (s *live) classify(ctx context.Context, err error) error {
+	if ferr := s.w.Flush(ctx); ferr != nil && (isLeaseLost(ferr) || errors.Is(ferr, store.ErrDeleted)) {
+		return ferr
+	}
+	return err
 }
 
 // fold calls the Folder over the batch with a frozen view of the folds after it;
@@ -411,7 +517,9 @@ func readFunc(r store.Reader) surface.ReadFunc {
 }
 
 // Close delivers every committed event, writes a checkpoint of the core folds,
-// releases the lease and then notifies Closed. It is idempotent.
+// releases the lease and then notifies Closed. It is idempotent, and returns the
+// cause Closed carries: nil for an ordinary close, else what ended the session
+// (a lost lease, a broken store, or a writer that failed to flush or release).
 func (s *live) Close(ctx context.Context) error {
 	s.mu.Lock()
 	if !s.closed {
@@ -436,7 +544,7 @@ func (s *live) Close(ctx context.Context) error {
 	s.mu.Unlock()
 	select {
 	case <-s.finished:
-		return nil
+		return s.endErr()
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -468,11 +576,7 @@ func (s *live) deliver() {
 			err = s.check(from, target, recs)
 		}
 		if err != nil {
-			// A takeover discards the displaced writer's undurable tail, so a short
-			// or failed read is the lost lease when the writer no longer holds it.
-			if ferr := s.w.Flush(ctx); ferr != nil && (isLeaseLost(ferr) || errors.Is(ferr, store.ErrDeleted)) {
-				err = ferr
-			}
+			err = s.classify(ctx, err)
 			s.mu.Lock()
 			s.failLocked(err)
 			s.mu.Unlock()
@@ -481,7 +585,9 @@ func (s *live) deliver() {
 		for _, r := range recs {
 			Committed.Notify(s.svc.base, s.key, CommittedArgs{Session: s, Event: event.Of(r)})
 			s.dmu.Lock()
-			delete(s.fps, r.Seq)
+			if s.fpFrom <= r.Seq {
+				s.forgetLocked(r.Seq + 1)
+			}
 			s.next = r.Seq + 1
 			stop := s.stop == stopNow
 			s.dmu.Unlock()
@@ -509,7 +615,8 @@ func (s *live) check(from, target event.Seq, recs []event.Record) error {
 			return brokenStore(s.id, "a read has a gap: seq %d where %d was expected", r.Seq, want)
 		case r.Seq >= target:
 			return brokenStore(s.id, "a read returned seq %d, past the committed end %d", r.Seq, target)
-		case fingerprint(r) != s.fps[r.Seq]:
+		case r.Seq >= s.fpFrom && fingerprint(r) != s.fps[int(r.Seq)%len(s.fps)]:
+			// Below fpFrom the appender already verified the record.
 			return brokenStore(s.id, "the record at seq %d is not the one this session committed", r.Seq)
 		}
 	}
@@ -517,13 +624,25 @@ func (s *live) check(from, target event.Seq, recs []event.Record) error {
 }
 
 // finish completes a close: the lease is released, the session leaves the
-// service and Closed is notified.
+// service and Closed is notified. A writer that fails to close (its flush or
+// lease release failed) becomes the close's cause unless an earlier failure is.
 func (s *live) finish() {
-	_ = s.w.Close(context.Background())
+	werr := s.w.Close(context.Background())
 	s.svc.remove(s)
 	s.mu.Lock()
+	if werr != nil && s.cause == nil {
+		s.cause = fmt.Errorf("session %q: closing the writer: %w", s.id, werr)
+	}
 	cause := s.cause
 	s.mu.Unlock()
 	Closed.Notify(s.svc.base, s.key, ClosedArgs{ID: s.id, Cause: cause})
 	close(s.finished)
+}
+
+// endErr is the cause the session ended with, nil for an ordinary close; Close
+// returns it and Closed carries it.
+func (s *live) endErr() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cause
 }

@@ -1,6 +1,8 @@
 package surface
 
 import (
+	"errors"
+	"fmt"
 	"slices"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
@@ -201,9 +203,37 @@ func surfaceMessage(rec event.Record) (vocab.Message, string, error) {
 		return v.Message, "", err
 	case event.ToolResult.Name():
 		v, err := event.ToolResult.Decode(rec)
-		return v.Message, v.CallID, err
+		if err != nil {
+			return vocab.Message{}, "", err
+		}
+		if err := answersCall(v.Message, v.CallID); err != nil {
+			return vocab.Message{}, "", errorf(event.CodeInvalidSurface, "tool/result at seq %d: %v", rec.Seq, err)
+		}
+		return v.Message, v.CallID, nil
 	}
 	return vocab.Message{}, "", errorf(event.CodeInvalidSurface, "surface type %q at seq %d has no message this build can fold", rec.Type, rec.Seq)
+}
+
+// answersCall requires m to hold exactly one tool_result block, and that block
+// to answer call: the payload's call id is the bracket's, the block's is the
+// model's, and the two may not disagree.
+func answersCall(m vocab.Message, call string) error {
+	var ids []string
+	for _, b := range m.Blocks() {
+		if b.Kind == vocab.KindToolResult {
+			if b.ToolResult == nil {
+				return errors.New("a tool_result block has no body")
+			}
+			ids = append(ids, b.ToolResult.CallID)
+		}
+	}
+	switch {
+	case len(ids) != 1:
+		return fmt.Errorf("the message holds %d tool_result blocks, want exactly 1", len(ids))
+	case ids[0] != call:
+		return fmt.Errorf("the payload answers %q but its tool_result block answers %q", call, ids[0])
+	}
+	return nil
 }
 
 func (s *State) planSurfaceRecord(p *Plan, rec event.Record) error {
