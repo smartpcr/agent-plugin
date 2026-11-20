@@ -1,0 +1,6 @@
+// user layer: local edits
+[
+  // raise b
+  { "id": "svc", "merge": { "b": 3 } }, // b was too low
+  { "id": "other", "disabled": false }
+]

@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"reflect"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -114,8 +117,12 @@ type Node struct {
 	// Fields are the members of an ObjectNode, in document order, duplicates included.
 	Fields []*Field
 	// Raw is the node's own JSON text, when the codec decoded JSON; JSON uses it so a
-	// value keeps the form it was written in.
+	// value keeps the form it was written in. It is nil when the text holds comments
+	// (JSONC), so JSON never returns text a JSON decoder rejects.
 	Raw []byte
+	// End is the 0-based byte offset just past the node's text, when the codec knows
+	// it (zero otherwise). With Pos.Offset it is the span a layer write edits in place.
+	End int
 }
 
 // Field is one member of an object node.
@@ -194,10 +201,14 @@ type Codec interface {
 // JSON is the codec for ".json" files.
 var JSON Codec = jsonCodec{}
 
+// JSONC is the codec for ".jsonc" files: JSON with "//" and "/* */" comments. A
+// layer written back through it keeps its comments and formatting (see LayerCodec).
+var JSONC Codec = jsonCodec{comments: true}
+
 var codecs = struct {
 	sync.RWMutex
 	byExt map[string]Codec
-}{byExt: map[string]Codec{".json": JSON}}
+}{byExt: map[string]Codec{".json": JSON, ".jsonc": JSONC}}
 
 // RegisterCodec makes codec the one used for files with the extension ext (such as
 // ".yaml"). It panics if codec is nil or ext is already registered.
@@ -275,19 +286,30 @@ func Parse(codec Codec, file string, data []byte) (*Document, error) {
 
 // ------------------------------------------------------------------ JSON
 
-type jsonCodec struct{}
+type jsonCodec struct {
+	comments bool
+}
 
-func (jsonCodec) Decode(file string, data []byte) (*Node, error) {
-	p := &jsonParser{file: file, data: data, line: 1}
+func (c jsonCodec) Decode(file string, data []byte) (*Node, error) {
+	p := &jsonParser{file: file, data: data, line: 1, comments: c.comments}
 	p.skipSpace()
+	if p.unterminated != nil {
+		return nil, p.unterminated
+	}
 	if p.i >= len(p.data) {
 		return nil, p.fail("unexpected end of input")
 	}
 	node, err := p.value(0)
+	if p.unterminated != nil {
+		return nil, p.unterminated
+	}
 	if err != nil {
 		return nil, err
 	}
 	p.skipSpace()
+	if p.unterminated != nil {
+		return nil, p.unterminated
+	}
 	if p.i < len(p.data) {
 		return nil, p.fail("unexpected trailing data")
 	}
@@ -318,6 +340,12 @@ type jsonParser struct {
 	// so pos() counts only the bytes since its previous call instead of the whole line.
 	colOffset int
 	colRunes  int
+	// comments allows "//" and "/* */" comments wherever whitespace may appear;
+	// commentCount counts the comments skipped so far.
+	comments     bool
+	commentCount int
+	// unterminated is the error of a block comment left open at the end of the input.
+	unterminated error
 }
 
 func (p *jsonParser) pos() Position {
@@ -347,10 +375,51 @@ func (p *jsonParser) skipSpace() {
 			p.lineStart = p.i
 		case ' ', '\t', '\r':
 			p.i++
+		case '/':
+			if !p.comments || !p.skipComment() {
+				return
+			}
 		default:
 			return
 		}
 	}
+}
+
+// skipComment skips the comment at p.i, if there is one. An unterminated block
+// comment runs to the end of the input and is recorded, at its start, as the error.
+func (p *jsonParser) skipComment() bool {
+	if p.i+1 >= len(p.data) {
+		return false
+	}
+	switch p.data[p.i+1] {
+	case '/':
+		for p.i < len(p.data) && p.data[p.i] != '\n' {
+			p.i++
+		}
+	case '*':
+		opened := p.fail("unterminated block comment")
+		p.i += 2
+		closed := false
+		for p.i < len(p.data) {
+			if p.data[p.i] == '*' && p.i+1 < len(p.data) && p.data[p.i+1] == '/' {
+				p.i += 2
+				closed = true
+				break
+			}
+			if p.data[p.i] == '\n' {
+				p.line++
+				p.lineStart = p.i + 1
+			}
+			p.i++
+		}
+		if !closed && p.unterminated == nil {
+			p.unterminated = opened
+		}
+	default:
+		return false
+	}
+	p.commentCount++
+	return true
 }
 
 func (p *jsonParser) value(depth int) (*Node, error) {
@@ -360,7 +429,7 @@ func (p *jsonParser) value(depth int) (*Node, error) {
 	if p.i >= len(p.data) {
 		return nil, p.fail("unexpected end of input")
 	}
-	start, pos := p.i, p.pos()
+	start, pos, comments := p.i, p.pos(), p.commentCount
 	var node *Node
 	var err error
 	switch c := p.data[p.i]; {
@@ -387,7 +456,10 @@ func (p *jsonParser) value(depth int) (*Node, error) {
 		return nil, err
 	}
 	node.Pos = pos
-	node.Raw = p.data[start:p.i]
+	node.End = p.i
+	if p.commentCount == comments {
+		node.Raw = p.data[start:p.i]
+	}
 	return node, nil
 }
 
@@ -534,4 +606,379 @@ func (p *jsonParser) number() (*Node, error) {
 
 func isWordByte(c byte) bool {
 	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+}
+
+// ---------------------------------------------------------------- layers
+
+// LayerCodec is a Codec that can write the operations of a layer (see Layer).
+// previous, when not nil, is the layer document last read from the same file; a codec
+// that can keep formatting edits it, so the operations and values a write does not
+// change keep their text, comments included.
+type LayerCodec interface {
+	Codec
+	EncodeLayer(previous *LayerDocument, ops []Op) ([]byte, error)
+}
+
+// EncodeLayer writes ops as a JSON array. Given the document last read, it edits that
+// document's text in place: an unchanged value keeps its bytes, a changed value is
+// replaced where it stands, and operations are matched to the ones they rewrite, so
+// comments (in JSONC) and formatting around them survive.
+func (c jsonCodec) EncodeLayer(previous *LayerDocument, ops []Op) ([]byte, error) {
+	if ops == nil {
+		ops = []Op{}
+	}
+	compact, err := json.Marshal(ops)
+	if err != nil {
+		return nil, err
+	}
+	if previous != nil && previous.Root != nil && len(previous.Data) > 0 {
+		want, err := JSON.Decode("", compact)
+		if err != nil {
+			return nil, err
+		}
+		e := &jsonEditor{data: previous.Data}
+		e.edit(previous.Root, want, opIdentity)
+		edited := e.result()
+		// keep the edit only if it reads back as exactly the operations written
+		if back, err := c.Decode("", edited); err == nil && sameJSON(back, want) {
+			return edited, nil
+		}
+	}
+	var b bytes.Buffer
+	if err := json.Indent(&b, compact, "", "  "); err != nil {
+		return nil, err
+	}
+	b.WriteByte('\n')
+	return b.Bytes(), nil
+}
+
+// opIdentity names the operation a layer item is, so an edit pairs each operation
+// with the one it rewrites: its kind and its target.
+func opIdentity(node *Node) string {
+	if node.Kind != ObjectNode {
+		return ""
+	}
+	id, kind := "", string(OpOverride)
+	for _, field := range node.Fields {
+		switch field.Key {
+		case "id":
+			id = field.Value.Text
+		case "insert", "merge", "remove":
+			kind = field.Key
+		}
+	}
+	return kind + "\x00" + id
+}
+
+// sameJSON reports whether two nodes hold the same value.
+func sameJSON(a, b *Node) bool {
+	if a.Kind == ExprNode || b.Kind == ExprNode {
+		return a.Kind == b.Kind && a.Text == b.Text
+	}
+	var left, right any
+	if decodeAny(a.JSON(), &left) != nil || decodeAny(b.JSON(), &right) != nil {
+		return false
+	}
+	return reflect.DeepEqual(left, right)
+}
+
+func decodeAny(data []byte, into *any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	return decoder.Decode(into)
+}
+
+type jsonEdit struct {
+	start, end int
+	text       string
+}
+
+// jsonEditor collects non-overlapping edits of a document's text.
+type jsonEditor struct {
+	data  []byte
+	edits []jsonEdit
+}
+
+func (e *jsonEditor) add(start, end int, text string) {
+	e.edits = append(e.edits, jsonEdit{start: start, end: end, text: text})
+}
+
+func (e *jsonEditor) result() []byte {
+	sort.SliceStable(e.edits, func(i, j int) bool { return e.edits[i].start < e.edits[j].start })
+	var b bytes.Buffer
+	at := 0
+	for _, edit := range e.edits {
+		b.Write(e.data[at:edit.start])
+		b.WriteString(edit.text)
+		at = edit.end
+	}
+	b.Write(e.data[at:])
+	return b.Bytes()
+}
+
+// edit turns the text of old into the value want. identity, when not nil, pairs the
+// items of an array by what they are rather than by their index.
+func (e *jsonEditor) edit(old, want *Node, identity func(*Node) string) {
+	if sameJSON(old, want) {
+		return
+	}
+	switch {
+	case old.Kind == ObjectNode && want.Kind == ObjectNode && len(old.Fields) > 0 && uniqueKeys(old):
+		e.editObject(old, want)
+	case old.Kind == ArrayNode && want.Kind == ArrayNode && len(old.Items) > 0:
+		e.editArray(old, want, identity)
+	default:
+		e.add(old.Pos.Offset, old.End, e.render(want, e.indentOf(old.Pos.Offset), e.multiline(old)))
+	}
+}
+
+func uniqueKeys(node *Node) bool {
+	seen := map[string]bool{}
+	for _, field := range node.Fields {
+		if seen[field.Key] {
+			return false
+		}
+		seen[field.Key] = true
+	}
+	return true
+}
+
+func (e *jsonEditor) editObject(old, want *Node) {
+	wanted := map[string]*Node{}
+	for _, field := range want.Fields {
+		wanted[field.Key] = field.Value
+	}
+	spans := make([][2]int, len(old.Fields))
+	keep := make([]bool, len(old.Fields))
+	present := map[string]bool{}
+	for i, field := range old.Fields {
+		spans[i] = [2]int{field.KeyPos.Offset, field.Value.End}
+		present[field.Key] = true
+		if value, ok := wanted[field.Key]; ok {
+			keep[i] = true
+			e.edit(field.Value, value, nil)
+		}
+	}
+	var added []*Field
+	for _, field := range want.Fields {
+		if !present[field.Key] {
+			added = append(added, field)
+		}
+	}
+	if !slices.Contains(keep, true) {
+		e.add(old.Pos.Offset, old.End, e.render(want, e.indentOf(old.Pos.Offset), e.multiline(old)))
+		return
+	}
+	e.members(old, spans, keep, len(added), func(i int, indent string, multiline bool) string {
+		key, _ := json.Marshal(added[i].Key)
+		return string(key) + ": " + e.render(added[i].Value, indent, multiline)
+	})
+}
+
+func (e *jsonEditor) editArray(old, want *Node, identity func(*Node) string) {
+	spans := make([][2]int, len(old.Items))
+	keep := make([]bool, len(old.Items))
+	for i, item := range old.Items {
+		spans[i] = [2]int{item.Pos.Offset, item.End}
+	}
+	var added []*Node
+	if identity == nil {
+		for i, item := range want.Items {
+			if i < len(old.Items) {
+				keep[i] = true
+				e.edit(old.Items[i], item, nil)
+			} else {
+				added = append(added, item)
+			}
+		}
+	} else {
+		// an identical item first, then one that is the same operation
+		used := make([]bool, len(old.Items))
+		pair := make([]int, len(want.Items))
+		for i, item := range want.Items {
+			pair[i] = -1
+			for j, candidate := range old.Items {
+				if !used[j] && sameJSON(candidate, item) {
+					pair[i], used[j] = j, true
+					break
+				}
+			}
+		}
+		for i, item := range want.Items {
+			if pair[i] >= 0 {
+				continue
+			}
+			for j, candidate := range old.Items {
+				if !used[j] && identity(candidate) != "" && identity(candidate) == identity(item) {
+					pair[i], used[j] = j, true
+					break
+				}
+			}
+		}
+		for i, item := range want.Items {
+			if j := pair[i]; j >= 0 {
+				keep[j] = true
+				e.edit(old.Items[j], item, nil)
+			} else {
+				added = append(added, item)
+			}
+		}
+	}
+	if !slices.Contains(keep, true) {
+		e.add(old.Pos.Offset, old.End, e.render(want, e.indentOf(old.Pos.Offset), e.multiline(old)))
+		return
+	}
+	e.members(old, spans, keep, len(added), func(i int, indent string, multiline bool) string {
+		return e.render(added[i], indent, multiline)
+	})
+}
+
+// members deletes the members of a container that are not kept and appends count new
+// ones after the last kept member, in the container's own layout.
+func (e *jsonEditor) members(container *Node, spans [][2]int, keep []bool, count int, render func(i int, indent string, multiline bool) string) {
+	last := -1
+	for i := range spans {
+		if keep[i] {
+			last = i
+		}
+	}
+	for i := 0; i < last; i++ {
+		if !keep[i] {
+			e.deleteMember(spans[i])
+		}
+	}
+	multiline := e.multiline(container)
+	indent := e.indentOf(spans[last][0])
+	separator := " "
+	if multiline {
+		separator = "\n" + indent
+	}
+	anchor := spans[last][1]
+	tail := spans[len(spans)-1][1]
+	if comma, commentEnd := e.trailer(anchor); multiline && commentEnd >= 0 {
+		// a comment trailing the last kept member stays on its line: the comma moves
+		// or goes, and new members follow the comment
+		if count > 0 && comma < 0 {
+			e.add(anchor, anchor, ",")
+		} else if count == 0 && comma >= 0 {
+			e.add(comma, comma+1, "")
+		}
+		var insertion strings.Builder
+		for i := range count {
+			if i > 0 {
+				insertion.WriteString(",")
+			}
+			insertion.WriteString(separator)
+			insertion.WriteString(render(i, indent, multiline))
+		}
+		end := max(commentEnd, tail)
+		if insertion.Len() > 0 || end != commentEnd {
+			e.add(commentEnd, end, insertion.String())
+		}
+		return
+	}
+	var insertion strings.Builder
+	for i := range count {
+		insertion.WriteString(",")
+		insertion.WriteString(separator)
+		insertion.WriteString(render(i, indent, multiline))
+	}
+	// the members after the last kept one go, with the comma before them
+	if insertion.Len() > 0 || tail != anchor {
+		e.add(anchor, tail, insertion.String())
+	}
+}
+
+// trailer finds what follows a member on its line: the offset of its comma (-1 if
+// none) and the end of a // comment after it (-1 if none).
+func (e *jsonEditor) trailer(at int) (comma, commentEnd int) {
+	comma, commentEnd = -1, -1
+	skipBlanks := func() {
+		for at < len(e.data) && (e.data[at] == ' ' || e.data[at] == '\t') {
+			at++
+		}
+	}
+	skipBlanks()
+	if at < len(e.data) && e.data[at] == ',' {
+		comma = at
+		at++
+		skipBlanks()
+	}
+	if at+1 < len(e.data) && e.data[at] == '/' && e.data[at+1] == '/' {
+		for at < len(e.data) && e.data[at] != '\n' && e.data[at] != '\r' {
+			at++
+		}
+		commentEnd = at
+	}
+	return comma, commentEnd
+}
+
+// deleteMember removes a member that is followed by another: its text, its comma and,
+// when it stands on lines of its own, those lines with a comment that trails it.
+func (e *jsonEditor) deleteMember(span [2]int) {
+	start, end := span[0], span[1]
+	lineStart := start
+	for lineStart > 0 && (e.data[lineStart-1] == ' ' || e.data[lineStart-1] == '\t') {
+		lineStart--
+	}
+	ownLine := lineStart == 0 || e.data[lineStart-1] == '\n'
+	if ownLine {
+		start = lineStart
+	}
+	skipBlanks := func() {
+		for end < len(e.data) && (e.data[end] == ' ' || e.data[end] == '\t') {
+			end++
+		}
+	}
+	skipBlanks()
+	if end < len(e.data) && e.data[end] == ',' {
+		end++
+	}
+	skipBlanks()
+	if ownLine {
+		if end+1 < len(e.data) && e.data[end] == '/' && e.data[end+1] == '/' {
+			for end < len(e.data) && e.data[end] != '\n' {
+				end++
+			}
+		}
+		if end < len(e.data) && e.data[end] == '\r' {
+			end++
+		}
+		if end < len(e.data) && e.data[end] == '\n' {
+			end++
+		}
+	}
+	e.add(start, end, "")
+}
+
+// multiline reports whether the node's text spans more than one line.
+func (e *jsonEditor) multiline(node *Node) bool {
+	return bytes.IndexByte(e.data[node.Pos.Offset:node.End], '\n') >= 0
+}
+
+// indentOf returns the blanks that open the line holding offset.
+func (e *jsonEditor) indentOf(offset int) string {
+	start := offset
+	for start > 0 && e.data[start-1] != '\n' {
+		start--
+	}
+	end := start
+	for end < offset && (e.data[end] == ' ' || e.data[end] == '\t') {
+		end++
+	}
+	return string(e.data[start:end])
+}
+
+// render writes a value: compact, or indented under indent when its place is laid
+// out over several lines.
+func (e *jsonEditor) render(node *Node, indent string, multiline bool) string {
+	compact := node.JSON()
+	if !multiline || (node.Kind != ObjectNode && node.Kind != ArrayNode) {
+		return string(compact)
+	}
+	var b bytes.Buffer
+	if json.Indent(&b, compact, indent, "  ") != nil {
+		return string(compact)
+	}
+	return b.String()
 }
