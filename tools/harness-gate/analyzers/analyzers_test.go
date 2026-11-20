@@ -170,19 +170,124 @@ func TestFuzzCheckRules(t *testing.T) {
 		{"seeds file in a directory path", []string{`C:\m\p\p.go`, markedParser, `C:\m\p\seeds_test.go`, fuzzSeeded}, nil},
 		{"seeded through a seeds_test.go helper", []string{"p.go", markedParser, "fuzz_test.go", fuzzViaHelper, "seeds_test.go", helperSeeds}, nil},
 		{"helper adds nothing", []string{"p.go", markedParser, "fuzz_test.go", fuzzViaHelper, "seeds_test.go", helperNoAdd}, []string{"FuzzDecode registers no seeds"}},
-		{"target adds outside seeds_test.go", []string{"p.go", markedParser, "fuzz_test.go", fuzzSeeded, "seeds_test.go", helperSeeds}, []string{"FuzzDecode registers no seeds"}},
+		{"target adds outside seeds_test.go", []string{"p.go", markedParser, "fuzz_test.go", fuzzSeeded, "seeds_test.go", helperSeeds}, []string{"f.Add outside seeds_test.go", "FuzzDecode registers no seeds"}},
 		{"target never calls Add", []string{"p.go", markedParser, "seeds_test.go", fuzzNoAdd}, []string{"FuzzDecode registers no seeds"}},
 		{"Add on another F", []string{"p.go", markedParser, "seeds_test.go", otherAdd}, []string{"FuzzDecode registers no seeds"}},
 		{"unnamed parameter", []string{"p.go", markedParser, "seeds_test.go", unnamedParam}, []string{"FuzzDecode registers no seeds"}},
 		{"blank parameter", []string{"p.go", markedParser, "fuzz_test.go", blankParam, "seeds_test.go", helperSeeds}, []string{"FuzzDecode registers no seeds"}},
-		{"seeds read from disk", []string{"p.go", markedParser, "seeds_test.go", seedsReadsDisk}, []string{"seeds_test.go imports os"}},
-		{"seeds read with ioutil", []string{"p.go", markedParser, "seeds_test.go", seedsIoutil}, []string{"seeds_test.go imports io/ioutil"}},
+		{"seeds read from disk", []string{"p.go", markedParser, "seeds_test.go", seedsReadsDisk}, []string{"seeds_test.go imports os", "f.Add argument b is not compiled in"}},
+		{"seeds read with ioutil", []string{"p.go", markedParser, "seeds_test.go", seedsIoutil}, []string{"seeds_test.go imports io/ioutil", "f.Add argument b is not compiled in"}},
 		{"dot-imported testing", []string{"p.go", markedParser, "seeds_test.go", dotTesting}, nil},
 		{"bare Fuzz name", []string{"p.go", markedParser, "seeds_test.go", strings.Replace(fuzzSeeded, "FuzzDecode", "Fuzz", 1)}, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := FuzzCheckFindings(parsePackage(t, tt.files...))
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %d findings, want %d: %v", len(got), len(tt.want), got)
+			}
+			for i, w := range tt.want {
+				if !strings.Contains(got[i].Message, w) {
+					t.Errorf("finding %d = %q, want it to contain %q", i, got[i].Message, w)
+				}
+			}
+		})
+	}
+}
+
+// TestFuzzCheckSeedProvenance checks that every f.Add argument in seeds_test.go is
+// compiled in: a helper of another file that reads the disk, a local or package
+// variable filled at run time, or a seed variable written elsewhere is reported at
+// the argument.
+func TestFuzzCheckSeedProvenance(t *testing.T) {
+	const (
+		head     = "package p\nimport (\"testing\"; \"strings\"; \"math\"; _ \"embed\")\nvar _ = strings.Repeat\nvar _ = math.Pi\n"
+		readSeed = "package p\nimport \"os\"\nfunc readSeed() []byte { b, _ := os.ReadFile(\"seed\"); return b }\n"
+		fillSeed = "package p\nfunc init() { decodeSeeds = [][]byte{readSeed()} }\nfunc readSeed() []byte { return nil }\n"
+		addrSeed = "package p\nfunc init() { p := &decodeSeeds; _ = p }\n"
+		copySeed = "package p\nvar disk []byte\nfunc init() { copy(decodeSeeds, [][]byte{disk}) }\n"
+		shadowOK = "package p\nimport \"testing\"\nfunc TestX(t *testing.T) { decodeSeeds := 1; decodeSeeds = 2; _ = decodeSeeds }\n"
+	)
+	fuzz := func(body string) string {
+		return head + "var decodeSeeds = [][]byte{[]byte(\"{}\"), nil}\n//go:embed testdata/seed.bin\nvar embedded []byte\nconst limit = 3\n" +
+			"func FuzzDecode(f *testing.F) {\n" + body + "\n}\n"
+	}
+	tests := []struct {
+		name  string
+		files []string
+		want  []string
+	}{
+		{"literal, slice, embed, const and pure std", []string{"seeds_test.go", fuzz(
+			"f.Add([]byte(\"x\"), 1)\nfor _, s := range decodeSeeds { f.Add(s, limit) }\nf.Add(embedded[:2], len(embedded))\n" +
+				"b := []byte(strings.Repeat(\"a\", 64))\nb = append(b, '}')\nf.Add(b, math.MaxInt8)\nvar z []byte\nf.Add(z, -1)")}, nil},
+		{"helper of another file reads the disk", []string{"seeds_test.go", fuzz("f.Add(readSeed())"), "read_test.go", readSeed},
+			[]string{"f.Add argument readSeed() is not compiled in (calls readSeed)"}},
+		{"local assigned from a helper", []string{"seeds_test.go", fuzz("b := []byte(\"x\")\nb = readSeed()\nf.Add(b)"), "read_test.go", readSeed},
+			[]string{"(calls readSeed)"}},
+		{"range over a helper result", []string{"seeds_test.go", fuzz("for _, s := range readAll() { f.Add(s) }"), "read_test.go", readSeed},
+			[]string{"(calls readAll)"}},
+		{"variable of another file", []string{"seeds_test.go", fuzz("f.Add(disk)"), "copy_test.go", copySeed},
+			[]string{"(disk is not declared in seeds_test.go)"}},
+		{"seed slice filled by another file", []string{"seeds_test.go", fuzz("for _, s := range decodeSeeds { f.Add(s) }"), "fill_test.go", fillSeed},
+			[]string{"(decodeSeeds is written in fill_test.go)"}},
+		{"seed slice address taken elsewhere", []string{"seeds_test.go", fuzz("f.Add(decodeSeeds[0])"), "addr_test.go", addrSeed},
+			[]string{"(decodeSeeds is written in addr_test.go)"}},
+		{"seed slice copied into elsewhere", []string{"seeds_test.go", fuzz("f.Add(decodeSeeds[0])"), "copy_test.go", copySeed},
+			[]string{"(decodeSeeds is written in copy_test.go)"}},
+		{"local shadow elsewhere is not a write", []string{"seeds_test.go", fuzz("f.Add(decodeSeeds[0])"), "x_test.go", shadowOK}, nil},
+		{"seed init in seeds_test.go from a helper", []string{"seeds_test.go", fuzz("f.Add(decodeSeeds[0])") +
+			"func init() { decodeSeeds[0] = readSeed() }\n", "read_test.go", readSeed}, []string{"(calls readSeed)"}},
+		{"package initializer calls a helper", []string{"seeds_test.go", strings.Replace(fuzz("f.Add(decodeSeeds[0])"),
+			"[][]byte{[]byte(\"{}\"), nil}", "[][]byte{readSeed()}", 1), "read_test.go", readSeed}, []string{"(calls readSeed)"}},
+		{"local passed to a helper", []string{"seeds_test.go", fuzz("b := make([]byte, 8)\nfill(b)\nf.Add(b)")},
+			[]string{"(b is passed to fill)"}},
+		{"address of a local", []string{"seeds_test.go", fuzz("b := []byte(\"x\")\nf.Add(&b)")}, []string{"(uses &b)"}},
+		{"shadowed conversion", []string{"seeds_test.go", fuzz("string := func(b []byte) []byte { return b }\nf.Add(string(nil))")},
+			[]string{"(calls string)"}},
+		{"fuzz parameter", []string{"seeds_test.go", fuzz("f.Fuzz(func(t *testing.T, b []byte) { f.Add(b) })")},
+			[]string{"(b is a parameter)"}},
+		{"seeder parameter", []string{"seeds_test.go", fuzz("add(f, nil)") + "func add(g *testing.F, b []byte) { g.Add(b) }\n"},
+			[]string{"g.Add argument b is not compiled in (b is a parameter)"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files := append([]string{"p.go", markedParser}, tt.files...)
+			got := FuzzCheckFindings(parsePackage(t, files...))
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %d findings, want %d: %v", len(got), len(tt.want), got)
+			}
+			for i, w := range tt.want {
+				if !strings.Contains(got[i].Message, w) {
+					t.Errorf("finding %d = %q, want it to contain %q", i, got[i].Message, w)
+				}
+			}
+		})
+	}
+}
+
+// TestFuzzCheckSeederBinding checks that a seeds_test.go helper seeds the target only
+// through the *testing.F parameter it calls Add on: the target's f must be passed at
+// that position.
+func TestFuzzCheckSeederBinding(t *testing.T) {
+	const twoF = "package p\nimport \"testing\"\nfunc addSeeds(unused, seeded *testing.F) { seeded.Add([]byte(\"x\")) }\n" +
+		"func chain(g *testing.F) { addSeeds(nil, g) }\nfunc reset(f *testing.F) { f = new(testing.F); f.Add(1) }\n"
+	target := func(body string) string {
+		return "package p\nimport \"testing\"\nfunc FuzzDecode(f *testing.F) { " + body + " }\n"
+	}
+	tests := []struct {
+		name string
+		body string
+		want []string
+	}{
+		{"f at the seeded position", "addSeeds(new(testing.F), f)", nil},
+		{"f at the unused position", "addSeeds(f, new(testing.F))", []string{"FuzzDecode registers no seeds"}},
+		{"f through a chain of seeders", "chain(f)", nil},
+		{"helper reassigns its parameter", "reset(f)", []string{"FuzzDecode registers no seeds"}},
+		{"target reassigns f", "f = new(testing.F); addSeeds(nil, f)", []string{"FuzzDecode registers no seeds"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := FuzzCheckFindings(parsePackage(t, "p.go", markedParser, "fuzz_test.go", target(tt.body), "seeds_test.go", twoF))
 			if len(got) != len(tt.want) {
 				t.Fatalf("got %d findings, want %d: %v", len(got), len(tt.want), got)
 			}

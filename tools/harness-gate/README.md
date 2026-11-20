@@ -40,7 +40,7 @@ file: a finding is fixed in the code, not listed away (QG-2, QG-3, DH-ADR-14).
 | `nosleep` | no reference to `time.Sleep` in a `_test.go` file |
 | `onespawn` | no `os/exec` import outside `internal/world/subprocess` (SP-12); `_test.go` files are exempt |
 | `cleanup` | a test that starts a goroutine, a listener (`net.Listen*`, `httptest.New*Server`) or a child process (`os.StartProcess`, `(*exec.Cmd).Start`) registers `t.Cleanup` (QG-5) |
-| `fuzzcheck` | a package with a `//dsh:untrusted-parser` line in a non-test file has a `func FuzzXxx(f *testing.F)` in its own test files, a `seeds_test.go` (no `os` / `io/ioutil` import), and every target registers its seeds with `f.Add` from `seeds_test.go` (QG-6, DH-ADR-TOOLCHAIN-3; see `src/harness/internal/testkit/README.md`) |
+| `fuzzcheck` | a package with a `//dsh:untrusted-parser` line in a non-test file has a `func FuzzXxx(f *testing.F)` in its own test files, a `seeds_test.go` (no `os` / `io/ioutil` import), every target seeds the `f` it receives through `f.Add` in `seeds_test.go` (directly or via the seeded parameter of a helper there), and every `f.Add` argument is compiled in -- literals, embed bytes or `seeds_test.go` data, never a call such as `readSeed()` (QG-6, DH-ADR-TOOLCHAIN-3; rules in `analyzers/fuzzseeds.go` and `src/harness/internal/testkit/README.md`) |
 
 The same binary is the vet tool: started with `HARNESS_GATE_VETTOOL=1` it runs
 `unitchecker.Main` over the analyzers. Their fixtures live in

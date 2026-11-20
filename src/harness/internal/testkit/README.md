@@ -93,7 +93,18 @@ then requires, in the package's own (not `_test`-suffixed) test files:
    ordinary case with no file read at run time (`seeds_test.go` may not import `os`
    or `io/ioutil`);
 3. every fuzz target registers its seeds from `seeds_test.go`: it is declared there
-   and calls `f.Add`, or it passes `f` to a `seeds_test.go` function that does.
+   and calls `f.Add`, or it passes `f` to a `seeds_test.go` function that calls
+   `Add` on the parameter `f` is passed as (a helper `add(unused, seeded *testing.F)`
+   seeds only through `seeded`; helpers may chain). A function that reassigns its
+   `*testing.F` seeds nothing, and `f.Add` outside `seeds_test.go` is reported;
+4. every `f.Add` argument is **compiled in**: built from literals, composite
+   literals, conversions to predeclared types (`[]byte("...")`), the builtins
+   `append`/`len`/`make`/..., the pure stdlib packages `strings`, `bytes`, `strconv`,
+   `fmt`, `math`, `encoding/*` (hex, base64, binary, json) and `unicode/utf8`/`utf16`,
+   constants and variables declared in `seeds_test.go` (initialised the same way, or
+   `//go:embed`), and locals derived from them. `f.Add(readSeed())`, a local filled by
+   a helper, a variable of another file, or a `seeds_test.go` variable that another
+   test file assigns, copies into or takes the address of is reported at the argument.
 
 ```go
 // seeds_test.go
