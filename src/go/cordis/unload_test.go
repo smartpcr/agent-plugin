@@ -501,20 +501,21 @@ func TestCreationHandlerRunsBeforeLoadUnderConcurrentDelivery(t *testing.T) {
 	True(t, !ran.Load(), "the body of a fiber disposed on creation ran")
 }
 
-// A notification raised while an effect is acquired is not delivered on the
-// acquisition's stack, so a handler can dispose the effect's fiber without waiting
+// A notification raised while an effect is acquired is delivered by the tree's
+// dispatcher, never on the acquisition's stack, so a handler can dispose the effect's fiber without waiting
 // for itself, and an acquisition can still wait for notification-driven work.
 func TestNotificationHandlerCanDisposeTheAcquiringFiber(t *testing.T) {
 	t.Run("root provide", func(t *testing.T) {
 		root, _ := Quiet()
 		var once sync.Once
+		handled := make(chan struct{})
 		root.Internal().OnService(func(name string, value any) {
 			if name == "svc" && value != nil {
-				once.Do(root.Dispose)
+				once.Do(func() { root.Dispose(); close(handled) })
 			}
 		})
 		Within(t, "provide", func() { _, _ = root.Provide("svc", 1) })
-		Within(t, "wait", func() { _ = root.Fiber().Wait() })
+		Within(t, "handler", func() { <-handled })
 		Equal(t, cordis.Disposed, root.Fiber().State())
 		True(t, !root.Has("svc"), "the service outlived the root")
 	})
@@ -524,9 +525,10 @@ func TestNotificationHandlerCanDisposeTheAcquiringFiber(t *testing.T) {
 		var released atomic.Int32
 		fiber := MustWait(t, Must(root.Apply("owner", func(*cordis.Context) error { return nil })))
 		var once sync.Once
+		handled := make(chan struct{})
 		root.Internal().OnService(func(name string, value any) {
 			if name == "inner" && value != nil {
-				once.Do(fiber.Dispose)
+				once.Do(func() { fiber.Dispose(); close(handled) })
 			}
 		})
 		Within(t, "effect", func() {
@@ -537,7 +539,7 @@ func TestNotificationHandlerCanDisposeTheAcquiringFiber(t *testing.T) {
 				return func() error { released.Add(1); return nil }, nil
 			})
 		})
-		Within(t, "wait", func() { NoError(t, fiber.Wait()) })
+		Within(t, "handler", func() { <-handled })
 		Equal(t, cordis.Disposed, fiber.State())
 		Equal(t, int32(1), released.Load(), "outer cleanup runs")
 	})
@@ -557,4 +559,34 @@ func TestNotificationHandlerCanDisposeTheAcquiringFiber(t *testing.T) {
 		Equal(t, cordis.Active, child.State())
 		Within(t, "dispose", root.Dispose)
 	})
+}
+
+// Root lifecycle handlers run on the dispatcher, not on the goroutine tearing the root
+// down: an Unloading handler that waits for the teardown, and a Disposed handler that
+// disposes the root again, neither block it.
+func TestRootLifecycleHandlersCannotBlockTeardown(t *testing.T) {
+	root, _ := Quiet()
+	var cleaned atomic.Bool
+	Must(root.Effect("cleanup", func() (cordis.Disposer, error) {
+		return func() error { cleaned.Store(true); return nil }, nil
+	}))
+	unloading, disposed := make(chan bool, 1), make(chan struct{})
+	root.Internal().OnStatus(func(f *cordis.Fiber, _, next cordis.FiberState) {
+		if f != root.Fiber() {
+			return
+		}
+		switch next {
+		case cordis.Unloading:
+			_ = f.Wait()
+			unloading <- cleaned.Load()
+		case cordis.Disposed:
+			root.Dispose()
+			close(disposed)
+		}
+	})
+	Within(t, "dispose", root.Dispose)
+	True(t, cleaned.Load(), "Dispose returned before the cleanup")
+	Within(t, "unloading handler", func() { True(t, <-unloading, "Wait in the Unloading handler returned before the cleanup") })
+	Within(t, "disposed handler", func() { <-disposed })
+	Equal(t, cordis.Disposed, root.Fiber().State())
 }

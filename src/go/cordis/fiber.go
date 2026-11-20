@@ -353,6 +353,7 @@ func (f *Fiber) Wait() error {
 		<-started
 	}
 	f.waitInertia()
+	f.t.sync()
 	return f.Err()
 }
 
@@ -424,7 +425,13 @@ func (f *Fiber) Update(config any, noSave bool) error {
 // root, and releases all of its effects in reverse order, tearing the whole tree down.
 // Dispose returns only once every cleanup the fiber owned has returned, also when
 // another goroutine started the disposal. Failures are logged, not returned.
+//
+// Wait and Dispose return once the notifications raised before they return have been
+// delivered, unless called from an Internal handler. Handlers run on the tree's
+// dispatcher, never on the goroutine doing the lifecycle work, so a handler may wait
+// for or dispose the fiber whose transition raised it.
 func (f *Fiber) Dispose() {
+	defer f.t.sync()
 	if !f.isRoot {
 		f.t.lock()
 		anchor := f.anchor
@@ -454,11 +461,14 @@ func (f *Fiber) Dispose() {
 		effects[i].Dispose()
 	}
 	f.waitReleasing()
+	// Completion is published before the terminal notification is handed over, so a
+	// Disposed handler that calls Dispose or Wait returns at once.
 	f.t.lock()
 	f.inertia = nil
 	f.setRootStateLocked(Disposed)
-	f.t.unlock()
+	f.t.unlockQuiet()
 	close(f.rootDone)
+	f.t.flush()
 }
 
 func (f *Fiber) setRootStateLocked(next FiberState) {
@@ -496,9 +506,7 @@ func (f *Fiber) run(name string, body func(h *EffectHandle) (*task, error)) (*Ef
 	f.effects = append(f.effects, h)
 	t.unlockQuiet() // the acquisition is already pending: deliver only once it ends
 
-	var pending *task
-	var err error
-	t.acquire(func() { pending, err = body(h) })
+	pending, err := body(h)
 	if pending == nil {
 		acquisition.finish(nil) // a synchronous failure is returned, not reported
 	}

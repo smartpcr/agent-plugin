@@ -1,25 +1,26 @@
 package cordis
 
-import (
-	"runtime"
-	"sync"
-)
+import "sync"
 
 // tree is the state shared by every context of one root.
 //
 // mu guards all fiber, effect, service, registry and event-hook state of the tree.
 // It is never held while component code runs. Anything that must call out while the
 // state is being changed (internal notifications, log lines) is posted to an ordered
-// outbox and delivered after mu is released, by whichever goroutine releases it first.
+// outbox and delivered after mu is released by the tree's dispatcher: one goroutine,
+// started on demand, that owns delivery. A goroutine that raises a notification never
+// delivers it, so a handler cannot block the lifecycle work that raised it (an
+// acquisition, an unload, the root's teardown) by waiting for or disposing it.
 type tree struct {
 	mu sync.Mutex
 
 	outboxMu   sync.Mutex
 	outbox     []func()
-	delivering bool
-	// acquiring counts the effect acquisitions running on each goroutine (by id);
-	// guarded by outboxMu. Such a goroutine never delivers notifications itself.
-	acquiring map[uint64]int
+	delivering bool // the dispatcher is running
+	inHandler  bool // the dispatcher is running a handler
+	posted     uint64
+	delivered  uint64
+	drained    sync.Cond // signalled on outboxMu as notifications are delivered
 
 	fiberUID int
 
@@ -33,15 +34,14 @@ type tree struct {
 
 func (t *tree) lock() { t.mu.Lock() }
 
-// unlock releases the tree lock and delivers queued notifications.
+// unlock releases the tree lock and hands queued notifications to the dispatcher.
 func (t *tree) unlock() {
 	t.mu.Unlock()
 	t.flush()
 }
 
-// unlockQuiet releases the tree lock without delivering notifications. Read-only
-// operations use it, so reading state never runs handlers on the caller's goroutine;
-// whoever posted a notification delivers it.
+// unlockQuiet releases the tree lock without waking the dispatcher. Read-only
+// operations use it; whoever posted a notification wakes the dispatcher.
 func (t *tree) unlockQuiet() { t.mu.Unlock() }
 
 // post queues fn for delivery outside the tree lock. Notifications are delivered in
@@ -49,78 +49,72 @@ func (t *tree) unlockQuiet() { t.mu.Unlock() }
 func (t *tree) post(fn func()) {
 	t.outboxMu.Lock()
 	t.outbox = append(t.outbox, fn)
+	t.posted++
 	t.outboxMu.Unlock()
 }
 
-// flush delivers queued notifications. Only one goroutine delivers at a time, so
-// notifications posted while a handler runs are delivered after it returns rather
-// than re-entering it. It must not be called with the tree lock held.
-//
-// A goroutine running an effect acquisition hands delivery to a new goroutine: a
-// handler may dispose the effect's fiber, which waits for that acquisition, so it must
-// not run on the acquisition's stack.
+// flush starts the dispatcher if notifications are queued and it is not running. It
+// never delivers on the calling goroutine, and must not be called with the tree lock
+// held.
 func (t *tree) flush() {
 	t.outboxMu.Lock()
-	if t.delivering {
-		t.outboxMu.Unlock()
-		return
-	}
-	if len(t.acquiring) > 0 && t.acquiring[goid()] > 0 {
-		pending := len(t.outbox) > 0
-		t.outboxMu.Unlock()
-		if pending {
-			go t.flush()
-		}
+	defer t.outboxMu.Unlock()
+	t.startLocked()
+}
+
+func (t *tree) startLocked() {
+	if t.delivering || len(t.outbox) == 0 {
 		return
 	}
 	t.delivering = true
+	go t.dispatch()
+}
+
+// sync waits until every notification posted so far has been delivered, so a
+// lifecycle call (Dispose, Wait) returns with its notifications observed, as upstream's
+// synchronous events are. Called from a handler (or anything a handler waits for) it
+// returns at once: the dispatcher is busy with that handler. It must be called only
+// once the caller's lifecycle work is complete, never with the tree lock held.
+func (t *tree) sync() {
+	t.outboxMu.Lock()
+	defer t.outboxMu.Unlock()
+	if t.inHandler {
+		return
+	}
+	if t.drained.L == nil {
+		t.drained.L = &t.outboxMu
+	}
+	target := t.posted
+	t.startLocked()
+	for t.delivered < target {
+		t.drained.Wait()
+	}
+}
+
+// dispatch delivers queued notifications one at a time, in order, until the outbox is
+// empty. A handler that blocks holds back later notifications, never the goroutine
+// that raised them.
+func (t *tree) dispatch() {
+	t.outboxMu.Lock()
 	for len(t.outbox) > 0 {
 		fn := t.outbox[0]
 		t.outbox[0] = nil
 		t.outbox = t.outbox[1:]
+		t.inHandler = true
 		t.outboxMu.Unlock()
 		if err := protect(func() error { fn(); return nil }); err != nil {
 			t.root.Logger().Error(err)
 		}
 		t.outboxMu.Lock()
+		t.inHandler = false
+		t.delivered++
+		if t.drained.L != nil {
+			t.drained.Broadcast()
+		}
 	}
 	t.outbox = nil
 	t.delivering = false
 	t.outboxMu.Unlock()
-}
-
-// acquire runs fn as an effect acquisition on the calling goroutine; see flush.
-func (t *tree) acquire(fn func()) {
-	id := goid()
-	t.outboxMu.Lock()
-	if t.acquiring == nil {
-		t.acquiring = map[uint64]int{}
-	}
-	t.acquiring[id]++
-	t.outboxMu.Unlock()
-	defer func() {
-		t.outboxMu.Lock()
-		if t.acquiring[id]--; t.acquiring[id] == 0 {
-			delete(t.acquiring, id)
-		}
-		t.outboxMu.Unlock()
-	}()
-	fn()
-}
-
-// goid returns the id of the calling goroutine, from the header of its stack trace
-// ("goroutine 123 [running]:").
-func goid() uint64 {
-	var buf [32]byte
-	n := runtime.Stack(buf[:], false)
-	var id uint64
-	for _, c := range buf[len("goroutine "):n] {
-		if c < '0' || c > '9' {
-			break
-		}
-		id = id*10 + uint64(c-'0')
-	}
-	return id
 }
 
 // listeners is a small, ordered, thread-safe subscriber list.
@@ -167,7 +161,10 @@ func (l *listeners[F]) snapshot() []F {
 // events). Each On method returns a function that removes the subscription.
 //
 // Plugin, status, service and replace notifications are delivered after the tree lock
-// is released, in the order they happened; a handler may call back into the context.
+// is released, in the order they happened, by the tree's dispatcher goroutine; a
+// handler may call back into the context, including disposing or waiting for the
+// fiber that raised the notification. Fiber.Wait and Fiber.Dispose return once the
+// notifications raised before them have been delivered.
 // Commit notifications are delivered synchronously from Fiber.Update.
 type Internal struct {
 	t       *tree

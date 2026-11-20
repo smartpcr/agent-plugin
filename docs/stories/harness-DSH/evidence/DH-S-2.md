@@ -27,7 +27,8 @@ races an acquisition against an unload, disposes a fiber from a creation handler
 reads a fiber lifetime, which are the only behaviours the changes alter. Re-checked
 after the second iteration (root teardown, acquisition tracking, creation ordering):
 still passes unchanged. Re-checked again after the third iteration (acquisition-safe
-notification delivery, root `Unloading`/`Disposed` state): still passes unchanged.
+notification delivery, root `Unloading`/`Disposed` state) and the fourth (notification
+dispatcher with a delivery barrier in `Wait`/`Dispose`): still passes unchanged.
 
 ### Tests
 
@@ -41,7 +42,7 @@ ok  github.com/smartpcr/agent-plugin/src/go/timer
 
 | Test | In `src/go/cordis/unload_test.go` |
 | --- | --- |
-| `DH-T-CORDIS-1` | `TestCleanupCannotRegisterWhileItsFiberUnloads`, `TestRootDisposeIsFinalAndExclusive` |
+| `DH-T-CORDIS-1` | `TestCleanupCannotRegisterWhileItsFiberUnloads`, `TestRootDisposeIsFinalAndExclusive`, `TestRootLifecycleHandlersCannotBlockTeardown` |
 | TC-02a | `TestConcurrentDisposeWaitsForEveryCleanup` |
 | `DH-T-CORDIS-2` | `TestRunningCleanupHoldsBackSecondDisposeAndProvider`, `TestDependentUnloadsBeforeItsProvider`, `TestUnloadWaitsForInFlightAcquisition`, `TestNotificationHandlerCanDisposeTheAcquiringFiber` |
 | `DH-T-CORDIS-3` | `TestPendingFiberReleasesEffectsAndCreationHandlerCanDispose`, `TestCreationHandlerRunsBeforeLoadUnderConcurrentDelivery` |
