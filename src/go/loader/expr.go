@@ -259,9 +259,12 @@ func (s *Service) checkExprs(options EntryOptions) []Issue {
 	var issues []Issue
 	for i, expr := range found {
 		var err error
-		if s.evaluator == nil {
+		switch {
+		case strings.TrimSpace(expr.source) == "":
+			err = errors.New("expression must not be empty")
+		case s.evaluator == nil:
 			err = ErrNoEvaluator
-		} else {
+		default:
 			err = s.evaluator.Check(expr.source, kinds[i])
 		}
 		if err != nil {

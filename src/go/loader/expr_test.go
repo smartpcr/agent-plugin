@@ -211,3 +211,30 @@ func TestAConfigEvaluationFailureNamesTheValuesPosition(t *testing.T) {
 	}, "the evaluation failure lacks its position:\n"+strings.Join(Texts(h.logs, cordis.LevelError), "\n"))
 	True(t, !h.active("e"), "an entry whose config failed to evaluate is active")
 }
+
+func TestAnEmptyExpressionIsRejectedNotTreatedAsAbsent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cordis.json")
+	writeFile(t, path, `[
+  { "id": "e", "name": "EchoPlugin", "disabled": { "$expr": "" } },
+  { "id": "c", "name": "EchoPlugin", "config": { "times": { "$expr": "  " } } },
+  { "id": "b", "name": "EchoPlugin", "config": { "times": 1, "text": "b" } }
+]`)
+	h := startWith(t, newEvaluator(func(string, loader.Scope) (any, error) { return false, nil }))
+	doc := Must(loader.Parse(loader.JSON, "f.json", []byte(readFile(t, path))))
+	assertTexts(t, []string{
+		"f.json:2:50: [0].disabled: expression must not be empty",
+		`f.json:3:59: [1].config.times: expression "  ": expression must not be empty`,
+	}, h.loader.Validate(doc.Entries))
+
+	file := useFile(t, h, loader.ConfigFileOptions{Path: path})
+	True(t, h.loader.Find("e") == nil && h.loader.Find("c") == nil, "an entry with an empty expression was loaded")
+	True(t, h.active("b"), "the valid sibling did not load")
+	errorsText := strings.Join(Texts(h.logs, cordis.LevelError), "\n")
+	True(t, strings.Contains(errorsText, filepath.Base(path)+":2:50: [0].disabled: expression must not be empty"), errorsText)
+
+	Within(t, "update", func() { NoError(t, h.fiber("b").Update(EchoOptions{Times: 2, Text: "b"}, false)) })
+	Within(t, "save", file.Save)
+	saved := readFile(t, path)
+	True(t, strings.Contains(saved, `"times": 2`), "not written back:\n"+saved)
+	True(t, strings.Contains(saved, `"$expr": ""`) && strings.Contains(saved, `"$expr": "  "`), "the invalid source was dropped:\n"+saved)
+}

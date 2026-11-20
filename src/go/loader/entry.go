@@ -260,7 +260,12 @@ func decodeEntry(node *Node, path string) EntryOptions {
 			case BoolNode:
 				o.Disabled = value.Bool
 			case ExprNode:
-				o.DisabledExpr = value.Text
+				if strings.TrimSpace(value.Text) == "" {
+					// an empty source is not "no expression": never let it enable the entry
+					fault(value, key, "expression must not be empty")
+				} else {
+					o.DisabledExpr = value.Text
+				}
 			default:
 				wrongType(value, key, "a boolean or an expression")
 			}
