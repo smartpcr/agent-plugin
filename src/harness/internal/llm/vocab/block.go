@@ -89,8 +89,12 @@ func ToolUseBlock(id, name string, args json.RawMessage) Block {
 	return Block{Kind: KindToolUse, ToolUse: &ToolUse{ID: id, Name: name, Args: bytes.Clone(args)}}
 }
 
-// ToolResultBlock answers a tool call; parts are copied.
+// ToolResultBlock answers a tool call; parts are copied, and no parts is an
+// empty list, never a missing one.
 func ToolResultBlock(callID string, isError bool, parts ...Part) Block {
+	if parts == nil {
+		parts = []Part{}
+	}
 	b := Block{Kind: KindToolResult, ToolResult: &ToolResult{CallID: callID, Parts: parts, IsError: isError}}
 	return b.Clone()
 }
@@ -128,9 +132,12 @@ func (b Block) Clone() Block {
 	}
 	if b.ToolResult != nil {
 		r := *b.ToolResult
-		r.Parts = nil
-		for _, p := range b.ToolResult.Parts {
-			r.Parts = append(r.Parts, p.clone())
+		// Keep nil distinct from empty so Validate can refuse a missing list.
+		if b.ToolResult.Parts != nil {
+			r.Parts = make([]Part, len(b.ToolResult.Parts))
+			for i, p := range b.ToolResult.Parts {
+				r.Parts[i] = p.clone()
+			}
 		}
 		out.ToolResult = &r
 	}
@@ -173,6 +180,9 @@ func (b Block) Validate() error {
 		r := b.ToolResult
 		if r == nil || r.CallID == "" {
 			return errors.New("vocab: a tool result needs the id of its call")
+		}
+		if r.Parts == nil {
+			return fmt.Errorf("vocab: tool result %s needs its parts list", r.CallID)
 		}
 		for i, p := range r.Parts {
 			if err := p.Validate(); err != nil {
