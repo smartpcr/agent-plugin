@@ -71,6 +71,10 @@ var codes = map[herr.Reason]int{
 	"profile/bad-layer":  Config,
 	"profile/bad-bundle": Config,
 
+	"boot/required":         Config,
+	"boot/host-preparation": Fatal,
+	"boot/panic":            Fatal,
+
 	"home/io":            Failed,
 	"home/not-directory": Invalid,
 	"home/not-private":   Denied,
