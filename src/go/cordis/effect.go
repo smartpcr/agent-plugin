@@ -13,11 +13,17 @@ type EffectSeq func(yield func(Disposer) bool) error
 type EffectHandle struct {
 	fiber *Fiber
 	label string
+	// released is closed once the handle's last cleanup has returned.
+	released chan struct{}
 
 	// guarded by the tree lock
 	alive     bool
 	disposers []Disposer
 	pending   *task
+}
+
+func newEffectHandle(f *Fiber, label string) *EffectHandle {
+	return &EffectHandle{fiber: f, label: label, alive: true, released: make(chan struct{})}
 }
 
 // Label returns the label the effect was created with.
@@ -42,14 +48,17 @@ func (h *EffectHandle) Disposer() Disposer {
 	}
 }
 
-// Dispose releases the effect: it waits for a pending asynchronous acquisition, then
-// runs the collected cleanups in reverse order, logging their failures. Disposing a
-// disposed effect does nothing.
+// Dispose releases the effect: it waits for its acquisition (also a synchronous one
+// running on another goroutine), then runs the collected cleanups in reverse order,
+// logging their failures. A second caller, concurrent or later, waits until the first
+// caller's cleanups have returned. A cleanup or acquisition must not dispose its own
+// handle, or wait for something that does.
 func (h *EffectHandle) Dispose() {
 	t := h.fiber.t
 	t.lock()
 	if !h.alive {
 		t.unlock()
+		t.await(h.released)
 		return
 	}
 	h.alive = false
@@ -58,7 +67,7 @@ func (h *EffectHandle) Dispose() {
 	t.unlock()
 
 	if pending != nil {
-		<-pending.done // a failure is reported by the runner
+		t.await(pending.done) // a failure is reported by the runner
 	}
 
 	t.lock()
@@ -69,17 +78,24 @@ func (h *EffectHandle) Dispose() {
 	for i := len(disposers) - 1; i >= 0; i-- {
 		h.release(disposers[i])
 	}
+
+	t.lock()
+	h.fiber.settleLocked(h)
+	t.unlock()
+	close(h.released)
 }
 
 func (h *EffectHandle) String() string { return "Effect <" + h.label + ">" }
 
 // collect adds a cleanup to the effect. On a disposed effect the cleanup runs at once.
-// It reports whether the effect is still alive.
+// It reports whether the effect is still alive. It runs on the acquisition's stack and
+// leaves waking the notification dispatcher to run and spawn, once the acquisition
+// has ended.
 func (h *EffectHandle) collect(dispose Disposer) bool {
 	t := h.fiber.t
 	t.lock()
 	if !h.alive {
-		t.unlock()
+		t.unlockQuiet()
 		if dispose != nil {
 			h.release(dispose)
 		}
@@ -88,7 +104,7 @@ func (h *EffectHandle) collect(dispose Disposer) bool {
 	if dispose != nil {
 		h.disposers = append(h.disposers, dispose)
 	}
-	t.unlock()
+	t.unlockQuiet()
 	return true
 }
 
@@ -98,13 +114,14 @@ func (h *EffectHandle) release(dispose Disposer) {
 	}
 }
 
-// spawn runs fn on a new goroutine as the effect's pending acquisition.
+// spawn runs fn on a new goroutine as the effect's pending acquisition, the one run
+// attached to the handle before publishing it.
 func (h *EffectHandle) spawn(fn func() error) *task {
-	pending := &task{done: make(chan struct{})}
-	h.fiber.t.lock()
-	h.pending = pending
-	h.fiber.t.unlock()
-	go func() { pending.finish(protect(fn)) }()
+	pending := h.pending
+	go func() {
+		pending.finish(protect(fn))
+		h.fiber.t.flush() // deliver what the acquisition raised, now that it is complete
+	}()
 	return pending
 }
 

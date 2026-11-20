@@ -236,7 +236,7 @@ may block (it is the Go form of an async body); the fiber stays `Loading` meanwh
 `fiber.Wait()` blocks until no transition is in flight.
 
 **Errors and panics.** Calls that can fail return an `error` instead of throwing:
-`ErrInactive` for an effect on a disposed fiber, a `*ServiceError` for a failed lookup, a
+`ErrInactive` for an effect on a disposed or unloading fiber, a `*ServiceError` for a failed lookup, a
 `*ConfigError` for a rejected config. A panic in a body, `Init`, an effect or a cleanup
 is recovered as a `*PanicError` and treated like any other load or cleanup failure, so one
 faulty component cannot take the process down. Listener panics in `Emit`, `Bail` and
@@ -288,6 +288,54 @@ Ported against upstream `86f59e4`, the revision the .NET port tracks. Every beha
 the .NET port's [upstream sync table](../net/README.md#upstream-sync) is ported, and every
 .NET test has a Go counterpart named after it; the upstream issue number is in a comment
 after the test name.
+
+Changes made for the harness, beyond upstream and the .NET port (harness requirement, not
+upstream; tests in `cordis/unload_test.go`):
+
+- **Final unload** (`DH-D-CORDIS-1`). A fiber that is unloading refuses new effects,
+  services, listeners and child fibers with `ErrInactive`, so a cleanup cannot register
+  something that outlives the unload. A second `EffectHandle.Dispose` or `Fiber.Dispose`
+  caller waits until the first caller's cleanups have returned, and an unload waits for
+  handles another goroutine is releasing before it releases its providers. Disposing a
+  fiber that never loaded still releases effects created on its context. An unload also
+  waits for an effect whose acquisition is still running on another goroutine, so the
+  cleanup it collects runs before the providers are released. Internal
+  notifications are delivered by the tree's dispatcher goroutine, each on a fresh
+  goroutine, never as a side effect of the lifecycle work (an acquisition, an unload, the
+  root's teardown), and strictly in the order they were posted: a notification starts
+  only once every earlier one has returned or is *parked*, that is blocked in a cordis
+  lifecycle wait (`Fiber.Wait`, `Fiber.Dispose`, `EffectHandle.Dispose`, an unload or
+  acquisition it waits for). `Fiber.Wait` and `Fiber.Dispose` return only once the
+  notifications raised during the call have been delivered (returned or parked). So a
+  handler may dispose or wait for the fiber that raised it, wait for a load that creates
+  and waits for children, or dispose a fiber whose cleanup creates another one: the
+  notifications that work raises are delivered while the handler waits. A handler
+  blocked outside cordis (on its own channel or lock) holds back every later
+  notification, and the `Wait`/`Dispose` calls waiting for them, until it returns. A
+  parked handler resumes concurrently with later ones, so handlers guard one-shot work
+  with a flag rather than `sync.Once`. A barrier waits only for its own target
+  notifications, never for a later one that is still running. A wait is attributed to
+  its delivery by goroutine id, which Go exposes only in a stack trace header
+  (`goroutine N [...]`); `goid.go` accepts only a well-formed, positive id, and an id
+  claimed by two running deliveries is attributed to neither until both have returned. A delivery without a valid identity is never parked:
+  delivery stays in order, a handler waiting in it holds back later notifications, and
+  the condition is logged once as a warning.
+  Disposing the root is
+  final in the same way: the root refuses new effects and child fibers, its state is
+  `Unloading` then `Disposed`, and an overlapping `root.Dispose()` or
+  `root.Fiber().Wait()` returns only after the teardown. A fiber loads only after its
+  `Internal.OnPlugin` creation handlers have returned (the creation notification starts
+  the load itself after running them), so a creation handler that disposes it stops it
+  before its body runs. `Fiber.Wait` on a new fiber waits for its creation handlers to
+  return, so a creation handler must not wait for the fiber it announces.
+  A cleanup or acquisition must not dispose its own handle or wait for its own fiber's
+  unload.
+- **Fiber lifetime** (`DH-D-CORDIS-2`). `Fiber.Lifetime()` / `Context.Lifetime()` is a
+  `context.Context` derived from the parent fiber's, fresh for each load, and cancelled
+  as soon as the fiber is asked to leave the load, before the unload waits for
+  dependents or runs cleanups. `context.Cause` is `ErrInactive` for a disposed fiber and
+  `ErrUnloading` otherwise; a fiber that is not loaded returns an already-cancelled
+  context. The root's lifetime ends with `root.Dispose()`.
 
 ## Upstream
 

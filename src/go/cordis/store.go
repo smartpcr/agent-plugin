@@ -67,7 +67,7 @@ func (s *store) provide(ctx *Context, name string, value any) (*EffectHandle, er
 		t.lock()
 		key := ctx.keyForLocked(name)
 		if existing := s.byKey[key]; existing != nil {
-			t.unlock()
+			t.unlockQuiet()
 			return nil, fmt.Errorf("cordis: service %q is already registered at <%s>", name, existing.ctx.fiber.Name())
 		}
 		s.counter++
@@ -84,7 +84,7 @@ func (s *store) provide(ctx *Context, name string, value any) (*EffectHandle, er
 		if ctx.fiber.state == Active {
 			s.notifyLocked(name, key)
 		}
-		t.unlock()
+		t.unlockQuiet() // delivered by run once the acquisition is complete
 
 		return func() error {
 			release := make(chan struct{})
@@ -101,7 +101,7 @@ func (s *store) provide(ctx *Context, name string, value any) (*EffectHandle, er
 			}
 			t.unlock()
 
-			<-release
+			t.await(release)
 
 			t.lock()
 			impl.release = nil

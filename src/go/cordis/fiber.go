@@ -1,6 +1,8 @@
 package cordis
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"slices"
@@ -11,6 +13,19 @@ import (
 
 // inactiveEpoch marks a fiber that should not be loaded.
 const inactiveEpoch = "\x00inactive"
+
+// unloadedLifetime and disposedLifetime stand in for the lifetime of a fiber that is
+// not loaded: already cancelled, with the cause a loaded fiber would have had.
+var (
+	unloadedLifetime = cancelledContext(ErrUnloading)
+	disposedLifetime = cancelledContext(ErrInactive)
+)
+
+func cancelledContext(cause error) context.Context {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(cause)
+	return ctx
+}
 
 // Initializer is implemented by component instances that finish loading
 // asynchronously, such as a service opening a connection. The fiber stays Loading,
@@ -66,12 +81,29 @@ type Fiber struct {
 	committed   map[string]*serviceImpl
 	provisions  []*serviceImpl
 	effects     []*EffectHandle
+	releasing   []*EffectHandle
 	loadTasks   []*task
 	updateHooks []*updateHook
 	anchor      *EffectHandle
+
+	// announced is set once the fiber's creation handlers have returned: the creation
+	// notification, posted with sequence announceSeq, announces the fiber after running
+	// them, and the fiber does not load before that. createdSeq is the last sequence
+	// posted before it.
+	announced   bool
+	createdSeq  uint64
+	announceSeq uint64
+	// rootDone is closed once the root's Dispose has released every effect.
+	rootDone chan struct{}
+
+	// lifetime is live while a load is the fiber's target; cancel is nil otherwise
+	lifetime      context.Context
+	cancel        context.CancelCauseFunc
+	lifetimeEpoch string
 }
 
 func newRootFiber(root *Context) *Fiber {
+	lifetime, cancel := context.WithCancelCause(context.Background())
 	return &Fiber{
 		t:          root.t,
 		parent:     root,
@@ -81,6 +113,10 @@ func newRootFiber(root *Context) *Fiber {
 		epoch:      "0",
 		candidates: map[string]*serviceImpl{},
 		committed:  map[string]*serviceImpl{},
+		lifetime:   lifetime,
+		cancel:     cancel,
+		announced:  true,
+		rootDone:   make(chan struct{}),
 	}
 }
 
@@ -105,30 +141,58 @@ func newFiber(parent *Context, runtime *Runtime, config any, inject []Dependency
 	}
 	f.runtime.Store(runtime)
 	f.ctx = parent.derive(f, nil, nil)
-	t.internal.raisePlugin(f)
 	t.unlock()
 
-	anchor, err := parent.fiber.effect("ctx.Use()", func() (Disposer, error) {
+	// The anchor is owned by the parent before the fiber is announced, so a creation
+	// handler that disposes the fiber removes it. The creation notification starts the
+	// load itself after its handlers return, so the load waits for every creation
+	// handler whichever goroutine delivers it. The acquisition does not
+	// deliver notifications itself: a handler may dispose the fiber, which waits for
+	// the acquisition.
+	_, err := parent.fiber.run("ctx.Use()", func(anchor *EffectHandle) (*task, error) {
+		anchor.collect(f.disposeAnchor)
 		t.lock()
-		// Joining the runtime (where provider notifications reach the fiber) and reading
-		// the providers happen under one lock, so a provider that activates in between
-		// cannot be missed.
-		f.runtime.Load().attachLocked(f)
-		for _, dependency := range f.inject {
-			f.checkImplLocked(dependency.Name)
+		defer t.unlockQuiet()
+		if f.disposed { // the parent released the anchor already
+			f.markAnnouncedLocked()
+			return nil, nil
 		}
-		f.refreshLocked()
-		t.unlock()
-		return f.disposeAnchor, nil
+		f.anchor = anchor
+		f.runtime.Load().attachLocked(f)
+		f.createdSeq = t.mark()
+		f.announceSeq = t.internal.announcePlugin(f, f.announce)
+		return nil, nil
 	})
 	if err != nil {
+		t.lock()
+		if len(runtime.fibers) == 0 {
+			t.registry.unregisterLocked(runtime)
+		}
+		t.unlock()
 		return nil, err
 	}
-	t.lock()
-	f.anchor = anchor
-	t.unlock()
 	return f, nil
 }
+
+// announce runs at the end of the creation notification, after its handlers, and
+// starts its first load unless a handler disposed it.
+func (f *Fiber) announce() {
+	t := f.t
+	t.lock()
+	defer t.unlock()
+	f.markAnnouncedLocked()
+	if f.disposed {
+		return
+	}
+	// The fiber joined its runtime's notification set before it was announced, and
+	// providers are read again here, so one that activated in between is not missed.
+	for _, dependency := range f.inject {
+		f.checkImplLocked(dependency.Name)
+	}
+	f.refreshLocked()
+}
+
+func (f *Fiber) markAnnouncedLocked() { f.announced = true }
 
 // disposeAnchor removes the fiber from its parent: the cleanup of the parent's effect.
 func (f *Fiber) disposeAnchor() error {
@@ -142,6 +206,14 @@ func (f *Fiber) disposeAnchor() error {
 		t.registry.unregisterLocked(runtime)
 	}
 	f.setEpochLocked(inactiveEpoch)
+	// A fiber that was not loaded starts no unload above, but may still own effects
+	// created on its context; release them through the same unload.
+	if f.inertia == nil && (len(f.effects) > 0 || len(f.releasing) > 0) {
+		f.updateStateLocked(func() (FiberState, bool) {
+			f.startLocked(f.unload)
+			return Unloading, true
+		})
+	}
 	t.unlock()
 
 	f.waitInertia()
@@ -164,6 +236,43 @@ func (f *Fiber) Parent() *Context { return f.parent }
 
 // Ctx returns the context handed to the component body; it is owned by this fiber.
 func (f *Fiber) Ctx() *Context { return f.ctx }
+
+// Lifetime returns the cancellation context of the fiber's current load. It is
+// derived from the parent fiber's lifetime, and cancelled as soon as the fiber is
+// asked to leave the load, before the unload waits for dependents or runs cleanups.
+// context.Cause reports ErrInactive for a disposed fiber and ErrUnloading otherwise.
+// A fiber that is not loading or loaded returns an already-cancelled context; each
+// load gets a fresh one. The root's lifetime ends with the root's Dispose.
+func (f *Fiber) Lifetime() context.Context {
+	f.t.lock()
+	defer f.t.unlockQuiet()
+	return f.lifetimeLocked()
+}
+
+func (f *Fiber) lifetimeLocked() context.Context {
+	switch {
+	case f.cancel != nil:
+		return f.lifetime
+	case f.disposed || f.isRoot:
+		return disposedLifetime
+	default:
+		return unloadedLifetime
+	}
+}
+
+// cancelLifetimeLocked ends the current load's lifetime, if it is still live.
+func (f *Fiber) cancelLifetimeLocked() {
+	if f.cancel == nil {
+		return
+	}
+	cause := ErrUnloading
+	if f.disposed || f.isRoot {
+		cause = ErrInactive
+	}
+	f.cancel(cause)
+	f.cancel = nil
+	f.lifetime = nil
+}
 
 // Runtime returns the component runtime behind the fiber, or nil for the root fiber.
 // It changes when Registry.Replace swaps the component.
@@ -228,10 +337,51 @@ func (f *Fiber) String() string { return fmt.Sprintf("Fiber <%s> (%s)", f.Name()
 
 // Wait blocks until the fiber settles (no load or unload is in flight) and returns
 // the error of a failed load. A fiber still waiting for dependencies settles as
-// Pending with a nil error.
+// Pending with a nil error. A fiber that was just created first waits for its creation
+// handlers, which run before it loads. Wait returns once the notifications raised
+// during the call have been delivered; called from a handler, it parks that handler's
+// delivery meanwhile. A creation handler cannot wait for the fiber it announces: that
+// fiber loads only after the handler returns, so Wait returns ErrWaitInCreation at
+// once instead of blocking forever.
 func (f *Fiber) Wait() error {
+	t := f.t
+	lo := t.mark()
+	t.lock()
+	announced, created, seq := f.announced, f.createdSeq, f.announceSeq
+	t.unlockQuiet()
+	if !announced {
+		// The creation notification would wait for itself to return.
+		if t.callerDelivering(created, seq) {
+			t.root.Logger().Warnf("%s: a creation handler waited for the fiber it announces", f.Name())
+			return ErrWaitInCreation
+		}
+		// Wait for the creation handlers too, so they still run before the load.
+		t.barrierReturned(created, seq)
+	}
 	f.waitInertia()
+	t.barrier(lo, t.mark())
 	return f.Err()
+}
+
+// ErrWaitInCreation is returned by Fiber.Wait called from a creation handler
+// (Internal.OnPlugin) for the fiber that handler announces, which cannot load before
+// the handler returns.
+var ErrWaitInCreation = errors.New("cordis: a creation handler cannot wait for the fiber it announces")
+
+// callerDelivering reports whether the calling goroutine is delivering a notification
+// posted after lo and up to hi. An unattributed delivery is not detected.
+func (t *tree) callerDelivering(lo, hi uint64) bool {
+	t.outboxMu.Lock()
+	defer t.outboxMu.Unlock()
+	if len(t.byGoroutine) == 0 {
+		return false
+	}
+	g, ok := goroutineID()
+	if !ok {
+		return false
+	}
+	d := t.byGoroutine[g]
+	return d != nil && d.seq > lo && d.seq <= hi
 }
 
 // Restart reloads the component with its current config, and waits for the fiber to
@@ -298,9 +448,17 @@ func (f *Fiber) Update(config any, noSave bool) error {
 // Dispose disposes the fiber. A component fiber is removed from its parent: it
 // unloads (waiting for its dependents, then releasing its effects), becomes Disposed,
 // and its component is unregistered once no fiber uses it. Disposing the root fiber
-// releases all of its effects in reverse order, tearing the whole tree down.
-// Failures are logged, not returned.
+// is final: it cancels the root's lifetime, refuses new effects and fibers on the
+// root, and releases all of its effects in reverse order, tearing the whole tree down.
+// Dispose returns only once every cleanup the fiber owned has returned, also when
+// another goroutine started the disposal. Failures are logged, not returned.
+//
+// Dispose returns once the notifications raised during the call have been delivered:
+// called from a handler, it parks that handler's delivery while it waits, so a handler
+// may wait for or dispose the fiber whose transition raised it.
 func (f *Fiber) Dispose() {
+	lo := f.t.mark()
+	defer func() { f.t.barrier(lo, f.t.mark()) }()
 	if !f.isRoot {
 		f.t.lock()
 		anchor := f.anchor
@@ -311,12 +469,39 @@ func (f *Fiber) Dispose() {
 		return
 	}
 	f.t.lock()
+	if f.disposed {
+		f.t.unlockQuiet()
+		f.t.await(f.rootDone)
+		return
+	}
+	// The teardown is the root's transition: Wait follows it and the state reports
+	// Unloading, then Disposed. The root's services are withdrawn by their own
+	// cleanups, in reverse order, so leaving Active notifies no dependents here.
+	f.disposed = true
+	f.inertia = f.rootDone
+	f.setRootStateLocked(Unloading)
+	f.cancelLifetimeLocked()
 	effects := f.effects
 	f.effects = nil
 	f.t.unlock()
 	for i := len(effects) - 1; i >= 0; i-- {
 		effects[i].Dispose()
 	}
+	f.waitReleasing()
+	// Completion is published before the terminal notification is handed over, so a
+	// Disposed handler that calls Dispose or Wait returns at once.
+	f.t.lock()
+	f.inertia = nil
+	f.setRootStateLocked(Disposed)
+	f.t.unlockQuiet()
+	close(f.rootDone)
+	f.t.flush()
+}
+
+func (f *Fiber) setRootStateLocked(next FiberState) {
+	old := f.state
+	f.state = next
+	f.t.internal.raiseStatus(f, old, next)
 }
 
 // ---------------------------------------------------------------- effects
@@ -329,19 +514,30 @@ func label(name string) string {
 }
 
 // run registers a new effect and runs body to acquire it. body returns the pending
-// acquisition of an asynchronous effect, or nil.
+// acquisition of an asynchronous effect (started with spawn), or nil. A fiber that is
+// disposed or unloading refuses new effects, so a cleanup cannot create one that
+// outlives the unload. The handle carries its acquisition from the moment it is
+// published, so an unload that reaches it waits for the acquisition and runs the
+// cleanup it collects before the fiber's providers are released. Notifications raised
+// during the acquisition are delivered once it is complete.
 func (f *Fiber) run(name string, body func(h *EffectHandle) (*task, error)) (*EffectHandle, error) {
 	t := f.t
-	h := &EffectHandle{fiber: f, label: label(name), alive: true}
+	h := newEffectHandle(f, label(name))
+	acquisition := &task{done: make(chan struct{})}
+	h.pending = acquisition
 	t.lock()
-	if f.disposed {
+	if f.disposed || f.state == Unloading {
 		t.unlock()
 		return nil, ErrInactive
 	}
 	f.effects = append(f.effects, h)
-	t.unlock()
+	t.unlockQuiet() // the acquisition is already pending: deliver only once it ends
 
 	pending, err := body(h)
+	if pending == nil {
+		acquisition.finish(nil) // a synchronous failure is returned, not reported
+	}
+	t.flush()
 	if err != nil {
 		h.Dispose()
 		return nil, err
@@ -406,16 +602,41 @@ func (f *Fiber) effectIter(name string, seq EffectSeq) (*EffectHandle, error) {
 // attachDisposer ties a cleanup to the fiber without the inactive check: used for the
 // instance a load produced.
 func (f *Fiber) attachDisposer(name string, dispose Disposer) {
-	h := &EffectHandle{fiber: f, label: name, alive: true}
+	h := newEffectHandle(f, name)
 	f.t.lock()
 	f.effects = append(f.effects, h)
 	f.t.unlock()
 	h.collect(dispose)
 }
 
+// detachLocked moves a handle being disposed from the fiber's effects to the handles
+// whose cleanups are still running.
 func (f *Fiber) detachLocked(h *EffectHandle) {
 	if i := slices.Index(f.effects, h); i >= 0 {
 		f.effects = slices.Delete(f.effects, i, i+1)
+	}
+	f.releasing = append(f.releasing, h)
+}
+
+// settleLocked forgets a handle whose cleanups have all returned.
+func (f *Fiber) settleLocked(h *EffectHandle) {
+	if i := slices.Index(f.releasing, h); i >= 0 {
+		f.releasing = slices.Delete(f.releasing, i, i+1)
+	}
+}
+
+// waitReleasing returns once no handle of the fiber is still running its cleanups,
+// including handles another goroutine started to dispose.
+func (f *Fiber) waitReleasing() {
+	for {
+		f.t.lock()
+		if len(f.releasing) == 0 {
+			f.t.unlockQuiet()
+			return
+		}
+		h := f.releasing[0]
+		f.t.unlockQuiet()
+		f.t.await(h.released)
 	}
 }
 
@@ -430,7 +651,7 @@ func (f *Fiber) addUpdateHook(handler UpdateHandler, prepend bool) (*EffectHandl
 		} else {
 			f.updateHooks = append(f.updateHooks, hook)
 		}
-		f.t.unlock()
+		f.t.unlockQuiet()
 		return func() error {
 			f.t.lock()
 			hook.removed = true
@@ -510,7 +731,7 @@ func (f *Fiber) checkImplLocked(name string) {
 // refreshLocked recomputes the epoch: the reload revision followed by the identity of
 // every injected binding.
 func (f *Fiber) refreshLocked() {
-	if f.disposed || f.isRoot {
+	if f.disposed || f.isRoot || !f.announced {
 		return
 	}
 	var b strings.Builder
@@ -559,6 +780,10 @@ func (f *Fiber) setEpochLocked(epoch string) {
 		return
 	}
 	f.epoch = epoch
+	// the fiber is asked to leave its load: tell the body before anything waits for it
+	if epoch != f.lifetimeEpoch {
+		f.cancelLifetimeLocked()
+	}
 	// a transition is already running; it reconciles with the new epoch when it ends
 	if f.inertia != nil {
 		return
@@ -581,11 +806,14 @@ func (f *Fiber) startLocked(transition func(done chan struct{})) {
 	go transition(done)
 }
 
-// startReloadLocked starts a load for the current epoch. The load is skipped if the
-// epoch has moved on by the time its goroutine runs (upstream's check after its
-// microtask yield), e.g. for a fiber disposed right after Use.
+// startReloadLocked starts a load for the current epoch, with a fresh lifetime. The
+// load is skipped if the epoch has moved on by the time its goroutine runs (upstream's
+// check after its microtask yield), e.g. for a fiber disposed right after Use.
 func (f *Fiber) startReloadLocked() {
 	epoch := f.epoch
+	f.cancelLifetimeLocked()
+	f.lifetime, f.cancel = context.WithCancelCause(f.parent.fiber.lifetimeLocked())
+	f.lifetimeEpoch = epoch
 	f.startLocked(func(done chan struct{}) { f.reload(done, epoch) })
 }
 
@@ -597,7 +825,7 @@ func (f *Fiber) waitInertia() {
 		if inertia == nil {
 			return
 		}
-		<-inertia
+		f.t.await(inertia)
 	}
 }
 
@@ -683,6 +911,7 @@ func (f *Fiber) reload(done chan struct{}, epoch string) {
 			if f.epoch == epoch {
 				f.err = err
 				f.epoch = inactiveEpoch
+				f.cancelLifetimeLocked()
 			}
 			t.unlock()
 		}
@@ -690,7 +919,9 @@ func (f *Fiber) reload(done chan struct{}, epoch string) {
 
 	t.lock()
 	f.updateStateLocked(func() (FiberState, bool) {
-		if f.epoch == epoch {
+		// An epoch that moved away and back cancelled this load's lifetime; the load
+		// cannot stay with it, so it unloads and loads again.
+		if f.epoch == epoch && f.cancel != nil {
 			f.inertia = nil
 			return 0, false
 		}
@@ -703,6 +934,10 @@ func (f *Fiber) reload(done chan struct{}, epoch string) {
 
 func (f *Fiber) unload(done chan struct{}) {
 	t := f.t
+
+	t.lock()
+	f.cancelLifetimeLocked()
+	t.unlock()
 
 	// Dependents are notified when this fiber leaves Active, but may still use its
 	// services during their own cleanup, so this fiber's effects are released only once
@@ -717,7 +952,7 @@ func (f *Fiber) unload(done chan struct{}) {
 		release := make(chan struct{})
 		f.release = release
 		t.unlock()
-		<-release
+		t.await(release)
 	}
 
 	t.lock()
@@ -731,6 +966,8 @@ func (f *Fiber) unload(done chan struct{}) {
 	for i := len(effects) - 1; i >= 0; i-- {
 		effects[i].Dispose()
 	}
+	// handles another goroutine started to dispose must finish before providers go
+	f.waitReleasing()
 
 	t.lock()
 	// release the providers waiting for this fiber to unload
@@ -817,7 +1054,7 @@ func (f *Fiber) execute() error {
 			return first
 		}
 		for _, task := range pending {
-			<-task.done
+			t.await(task.done)
 			if task.err != nil && first == nil {
 				first = task.err
 			}
