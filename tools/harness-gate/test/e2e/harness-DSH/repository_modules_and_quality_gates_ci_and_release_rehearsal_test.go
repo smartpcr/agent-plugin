@@ -659,7 +659,7 @@ func (s *ciRehearsal) vetRuns(command string) error {
 	if len(args) < 2 || args[0] != "go" {
 		return fmt.Errorf("unexpected command %q", command)
 	}
-	out, errOut, code, err := crRun(s.root, crEnv(crGoDrop), "go", args[1:]...)
+	out, errOut, code, err := crRun(s.root, crEnv(crGoDrop, "GOWORK=off"), "go", args[1:]...)
 	s.vetOut, s.vetCode = out+errOut, code
 	return err
 }
