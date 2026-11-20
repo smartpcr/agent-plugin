@@ -1,0 +1,3 @@
+NAME          CONFIG          PROVIDES  VIEW  PLATFORMS
+boot.logging  logging.Config  -         -     all
+util.watch    watch.Options   watch     -     all

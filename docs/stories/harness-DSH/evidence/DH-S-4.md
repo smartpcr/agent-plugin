@@ -1,0 +1,109 @@
+# DH-S-4 evidence
+
+Stages 4.1 to 4.3 (impl.md steps 4.1 to 4.9: the JSON-RPC codec, the shape schema,
+the SDK protocol types, the util leaves, the model vocabulary, `fsx`, `textdiff`,
+`search` and the watcher) were built by the earlier workstreams of this phase.
+Stage 4.4 (steps 4.10 to 4.14) closes DH-S-4. Every result below was re-run with all
+fourteen deliverables applied.
+
+## Stage 4.4 -- YAML, Expressions, Logging and Catalog (closes DH-S-4)
+
+### What changed
+
+| Step | Deliverable | Package (`src/harness/internal/boot/`) |
+| --- | --- | --- |
+| 4.10 | `DH-D-LOADER-2` | `config`: `YAML` is a `loader.Codec` (plugs the DH-D-LOADER-1 seam). `Decode` builds the entry tree through `yamlx`, so every diagnostic carries the file, line and column of the YAML source; `Encode` writes the canonical document; `EncodeLayer` writes a layer and keeps its comments. `Register` adds it beside the JSON codec for `.yaml`/`.yml`. |
+| 4.11 | `DH-D-BOOT-4` | `yamlx`: the one YAML dialect. `Parse` refuses anchors, aliases, merge keys, tags not registered by the caller (`WithTag`, used for `!expr`), duplicate keys and documents past the size/depth/node limits, each with its position; scalars are typed by YAML 1.2 core rules. `Edit` sets, inserts or removes one value and keeps every comment and the layout of every untouched line; it re-parses its output and refuses an edit whose result is not the requested tree. `DecodeFrontmatter` reads a Markdown front matter block. The package is `//dsh:untrusted-parser` with `FuzzParse` and seeds in `seeds_test.go` (QG-6). |
+| 4.12 | `DH-D-LOADER-5` | `expr`: `Evaluator` implements the DH-D-LOADER-4 seam on `github.com/expr-lang/expr`. Names are `env.<NAME>`, `os`, `cwd`, `launch.*` and, in config scope only, `use.<service>` (a declared, plain-data view). The only function is `home(...)`, a pure path join that refuses absolute paths and `..` escapes; only pure builtins are enabled (no `now`, `date`, `duration`, `timezone`); `$env`, a computed `env[...]`, and secret env names are refused at compile time. Nothing in the engine can reach the filesystem, network, clock or a process (NG-5). |
+| 4.13 | `DH-D-LOADER-12` | `logging`: the `boot.logging` cordis component. Its config (`destination` `stderr`/`file`, `path`, `level`, `format` `text`/`json`) builds a `log/slog` handler and adds it to the tree with `ctx.Loggers().AddExporter(cordis.SlogExporter(...))` (DH-D-CORDIS-9); unloading removes the exporter and closes the file. stdout is never written. |
+| 4.14 | `DH-D-BOOT-1` | `catalog`: `Build` freezes a named list of compiled-in components (name, config type, provided service, declared view, platforms), refusing malformed or unregistered family names, duplicates, a component whose name differs from its entry, and an invalid view. `Lookup` tells unknown from unavailable-on-this-OS; `Resolve` is the loader's resolver; `Print` writes the table `dsh` preview will show. `builtin.Catalog()` is the list this build ships. |
+
+Module pins (RM-10), in `src/harness/go.mod`, each with its reason comment:
+`go.yaml.in/yaml/v4 v4.0.0` (the module chosen by libs/yaml.md) and
+`github.com/expr-lang/expr v1.17.8`. Neither has dependencies of its own.
+`go mod verify` passes. Two new archtest rules keep each behind its one package:
+only `internal/boot/yamlx` imports the YAML module, only `internal/boot/expr`
+imports expr-lang.
+
+### Tests
+
+```text
+$ go test -race -count=1 -cover ./...          # from src/harness (excerpt)
+ok  .../internal/archtest          coverage: 96.9% of statements
+ok  .../internal/boot/builtin      coverage: 100.0% of statements
+ok  .../internal/boot/catalog      coverage: 100.0% of statements
+ok  .../internal/boot/config       coverage: 95.9% of statements
+ok  .../internal/boot/expr         coverage: 99.3% of statements
+ok  .../internal/boot/logging      coverage: 100.0% of statements
+ok  .../internal/boot/yamlx        coverage: 96.3% of statements
+```
+
+Every other package of `src/harness`, `src/sdk` and `src/go` also passes.
+`gofmt -l` is empty, and `go vet -tags scenario ./internal/testkit/scenarios/`
+compiles the scenario files without running them.
+
+| Scenario (implementation-plan.md Stage 4.4) | Test |
+| --- | --- |
+| Same entries through JSON and YAML codecs (`DH-T-LOADER-2`, TC-04a) | `TestSameEntriesThroughJSONAndYAML` (`config/yaml_test.go`): equal effective trees, and each diagnostic's position points into its own source; also `TestDecodeRejectsWithPosition`, `TestEncodeRoundTrips`, `TestEncodeLayerKeepsComments` |
+| yamlx edit keeps comments (TC-04a) | `TestEditKeepsComments` (`yamlx/yamlx_test.go`) against the committed golden `internal/boot/yamlx/testdata/edit_keep_comments.golden`; also `TestEditIsStable`, `TestEditRefusesUnverifiedText`, `FuzzParse` |
+| Expression engine has no side effects (`DH-T-LOADER-6`) | `TestNamesResolve` (env, launch, os, cwd resolve; an undefined name fails naming it), `TestRejected` (`readFile`, `$env`, computed env names, secrets), `TestOnlyPureBuiltins`, `TestHome`, `TestBehindLoaderSeam` (`expr/expr_test.go`) |
+| Catalog lists components by name (TC-04a) | `TestCatalogListsComponentsByName` (`catalog/catalog_test.go`) against the committed golden `internal/boot/catalog/testdata/catalog.golden`; also `TestBuildRejects` (DH-T-BOOT-1), `TestLookupAndPlatforms` |
+| Logging writes to the configured destination only (`DH-T-LOADER-13`) | `TestFileDestinationKeepsStdoutClean` (stdout stays empty, the file gets one JSON line, unloading removes the exporter and closes the file), `TestStderrDestination`, `TestBadConfigFailsLoad` (`logging/logging_test.go`) |
+
+## DH-S-4 exit: import direction
+
+```text
+$ go test ./internal/archtest/ -run TestImportDirection -count=1 -v   # from src/harness
+--- PASS: TestImportDirection
+ok  github.com/smartpcr/agent-plugin/src/harness/internal/archtest
+```
+
+`TestImportDirection` runs every rule against the real modules: `src/sdk` imports
+neither cordis (`src/go`) nor the harness, `src/go` imports neither `src/sdk` nor the
+harness, and the YAML and expression modules are reached only through `yamlx` and
+`expr`. The rule tests (`TestRulesCatchViolations`) show each rule failing on a seeded violation.
+
+## Manual checks (impl.md DH-S-4)
+
+These need a person at real machines and are recorded `manual`; they were not run by
+this workstream.
+
+| Check | Procedure | Result |
+| --- | --- | --- |
+| Watcher, real editor | On each of darwin, linux and windows, save a watched file from a real editor (VS Code, vim, a JetBrains IDE) and count the notices | `manual` -- pending; automated form is `DH-E-CHOKIDAR-1` |
+| Search ignored set | Run `search.List` on a real repository and compare the listed and ignored sets with `git ls-files --cached --others --exclude-standard` | `manual` -- pending; automated form is `DH-E-RIPGREP-2` |
+
+## Scenarios authored here, run in DH-S-18
+
+Indexed in `test/harness/acceptance-index.yaml` under `DH-S-18` with
+`authored: DH-S-4`, in `src/harness/internal/testkit/scenarios/` behind
+`//go:build scenario` (compiled by vet, not executed):
+
+| ID | Test | File |
+| --- | --- | --- |
+| `DH-E-CHOKIDAR-1` | `TestWatchRealEditorSaves` | `watch_scenario_test.go` |
+| `DH-E-CHOKIDAR-2` | `TestWatchRemoteFilesystemsPoll` | `watch_scenario_test.go` |
+| `DH-E-RIPGREP-1` | `TestSearchMeetsBudget` | `search_scenario_test.go` |
+| `DH-E-RIPGREP-2` | `TestFileListingMatchesGit` | `search_scenario_test.go` |
+| `DH-E-NODEFS-1` | `TestDurableReplaceSurvivesPowerLoss` | `durable_replace_scenario_test.go` |
+
+Each reads its real environment (editors, remote mounts, repositories, VMs) from
+`DSH_SCENARIO_*` variables and fails, naming the variable, when one is absent: a scenario that cannot run never skips (DH-O-15). The scenario-index check
+(`acceptance.ReadIndex` + `ScanScenarios` + `Check`) passes with six scenarios.
+`DH-E-FS-1` and `DH-E-FS-2` are authored by DH-S-12 (impl.md), not here.
+
+## Known limitations
+
+- `config.YAML.Encode` of a whole document writes the canonical form without comments;
+  only `EncodeLayer` (the write-back path) keeps them. A replaced scalar takes the
+  plain or quoted style its new value needs, not its old style.
+- `expr` takes the secret-name predicate and the launch data through `Options`; the
+  real sources (DH-D-HUMAN-7 and DH-D-BOOT-2) are later stages.
+- `boot.logging` at level `debug` only sees debug records once the tree's logger
+  threshold is lowered too (the tree defaults to info).
+- The catalog's families are names only; their owning areas are not yet recorded.
+- The built-in list lives in `internal/boot/builtin` (not beside `cmd/dsh`) so the
+  catalog golden test can import it.
+- The harness gate's vet step currently fails on files from earlier stages
+  (`src/go/cordis` tests, the `recur`, `glob`, `caltime`, `version` fuzz seeds and
+  `watchtest/manual_test.go`); none of the files of this stage are reported.

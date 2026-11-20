@@ -119,6 +119,14 @@ func TestRulesCatchViolations(t *testing.T) {
 		}, 2},
 		{"vocab imports another module", HarnessModule, []Package{imports(pkg(VocabPackage, "vocab", false, "a.go"), GoModule+"/cordis")}, 1},
 		{"cmd/dsh without tzdata", HarnessModule, []Package{pkg(HarnessModule+"/cmd/dsh", "main", false, "main.go")}, 1},
+		{"yaml and expr through their owners", HarnessModule, []Package{
+			imports(pkg(YAMLXPackage, "yamlx", false, "a.go"), YAMLModule),
+			imports(pkg(ExprPackage, "expr", false, "a.go"), ExprModule, ExprModule+"/ast"),
+			imports(pkg(YAMLModule, "yaml", true, "a.go"), YAMLModule+"/internal/libyaml"),
+		}, 0},
+		{"yaml and expr elsewhere", HarnessModule, []Package{
+			imports(pkg(HarnessModule+"/internal/boot/config", "config", false, "a.go"), YAMLModule, ExprModule+"/vm"),
+		}, 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := check(tc.module, tc.pkgs...); len(got) != tc.bad {

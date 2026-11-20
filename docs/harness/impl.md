@@ -564,20 +564,20 @@ three P0 deliverables depend on it.
 
 **Steps.**
 
-- [ ] **4.1** [DH-D-SDK-1](areas/sdk-acp-typert.md#dh-d-sdk-1) A bounded JSON-RPC codec with one error table (`src/sdk`).
-- [ ] **4.2** [DH-D-UTIL-1](areas/util-test-support.md#dh-d-util-1) One package describes, checks and fingerprints every data shape.
-- [ ] **4.3** [DH-D-SDK-2](areas/sdk-acp-typert.md#dh-d-sdk-2) The SDK protocol as Go types, a method table and a derived schema file.
-- [ ] **4.4** [DH-D-UTIL-4](areas/util-test-support.md#dh-d-util-4) Globs, versions, instants and recurrence rules each have one meaning.
-- [ ] **4.5** [DH-D-LLM-11](areas/llm.md#dh-d-llm-11) The model vocabulary is a leaf package.
-- [ ] **4.6** [DH-D-FS-1](areas/filesystem.md#dh-d-fs-1) `fsx`: replacing, creating, locking and identifying files.
-- [ ] **4.7** [DH-D-FS-2](areas/filesystem.md#dh-d-fs-2) `textdiff`: line diffs for display and the model's patch format.
-- [ ] **4.8** [DH-D-FS-3](areas/filesystem.md#dh-d-fs-3) `search`: content search and file listing in process.
-- [ ] **4.9** [DH-D-UTIL-3](areas/util-test-support.md#dh-d-util-3) A component is told when a file or directory changed (P1, pulled forward).
-- [ ] **4.10** [DH-D-LOADER-2](libs/cordis-loader.md#dh-d-loader-2) YAML codec in the harness module.
-- [ ] **4.11** [DH-D-BOOT-4](areas/boot.md#dh-d-boot-4) `yamlx`: one YAML dialect, with edits that keep comments.
-- [ ] **4.12** [DH-D-LOADER-5](libs/cordis-loader.md#dh-d-loader-5) Expression engine in the harness module.
-- [ ] **4.13** [DH-D-LOADER-12](libs/cordis-plugins.md#dh-d-loader-12) Logging component for the harness.
-- [ ] **4.14** [DH-D-BOOT-1](areas/boot.md#dh-d-boot-1) A build knows its components by name, and says so.
+- [x] **4.1** [DH-D-SDK-1](areas/sdk-acp-typert.md#dh-d-sdk-1) A bounded JSON-RPC codec with one error table (`src/sdk`).
+- [x] **4.2** [DH-D-UTIL-1](areas/util-test-support.md#dh-d-util-1) One package describes, checks and fingerprints every data shape.
+- [x] **4.3** [DH-D-SDK-2](areas/sdk-acp-typert.md#dh-d-sdk-2) The SDK protocol as Go types, a method table and a derived schema file.
+- [x] **4.4** [DH-D-UTIL-4](areas/util-test-support.md#dh-d-util-4) Globs, versions, instants and recurrence rules each have one meaning.
+- [x] **4.5** [DH-D-LLM-11](areas/llm.md#dh-d-llm-11) The model vocabulary is a leaf package.
+- [x] **4.6** [DH-D-FS-1](areas/filesystem.md#dh-d-fs-1) `fsx`: replacing, creating, locking and identifying files.
+- [x] **4.7** [DH-D-FS-2](areas/filesystem.md#dh-d-fs-2) `textdiff`: line diffs for display and the model's patch format.
+- [x] **4.8** [DH-D-FS-3](areas/filesystem.md#dh-d-fs-3) `search`: content search and file listing in process.
+- [x] **4.9** [DH-D-UTIL-3](areas/util-test-support.md#dh-d-util-3) A component is told when a file or directory changed (P1, pulled forward).
+- [x] **4.10** [DH-D-LOADER-2](libs/cordis-loader.md#dh-d-loader-2) YAML codec in the harness module.
+- [x] **4.11** [DH-D-BOOT-4](areas/boot.md#dh-d-boot-4) `yamlx`: one YAML dialect, with edits that keep comments.
+- [x] **4.12** [DH-D-LOADER-5](libs/cordis-loader.md#dh-d-loader-5) Expression engine in the harness module.
+- [x] **4.13** [DH-D-LOADER-12](libs/cordis-plugins.md#dh-d-loader-12) Logging component for the harness.
+- [x] **4.14** [DH-D-BOOT-1](areas/boot.md#dh-d-boot-1) A build knows its components by name, and says so.
 
 **Manual checks.** For the watcher, save a file from a real editor on each operating
 system and record one notice per save; for search, run it on a real repository and
