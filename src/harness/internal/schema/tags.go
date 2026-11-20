@@ -37,6 +37,9 @@ func applyTags(t reflect.Type, s *jsonschema.Schema, exact exactTable) error {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
+	if shape, ok := shapeOf(t); ok {
+		return applyTags(shape, s, exact)
+	}
 	switch t.Kind() {
 	case reflect.Slice, reflect.Array:
 		if s.Items != nil {

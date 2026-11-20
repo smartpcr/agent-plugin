@@ -48,6 +48,89 @@ type cacheKey struct {
 
 var cache sync.Map // cacheKey -> *Type
 
+// typeSchemas overrides the module's derivation where it does not follow
+// encoding/json: json.RawMessage is any JSON value on the wire, not an array of
+// bytes.
+var typeSchemas = map[reflect.Type]*jsonschema.Schema{
+	reflect.TypeFor[json.RawMessage](): {},
+}
+
+// Shaper is implemented, on the value receiver, by a type whose JSON form is not
+// its own fields: one that keeps its fields unexported and encodes through a
+// MarshalJSON of another type. SchemaShape returns that wire type; the type is
+// derived, tagged and fingerprinted as that shape wherever it appears, at the root
+// or nested in another value.
+type Shaper interface{ SchemaShape() reflect.Type }
+
+var shaperType = reflect.TypeFor[Shaper]()
+
+// shapeOf returns the wire type of t when t is a Shaper.
+func shapeOf(t reflect.Type) (reflect.Type, bool) {
+	if t.Kind() == reflect.Interface || !t.Implements(shaperType) {
+		return nil, false
+	}
+	return reflect.Zero(t).Interface().(Shaper).SchemaShape(), true
+}
+
+// shapeSchemas returns typeSchemas extended with the derived shape of every Shaper
+// reachable from t. A shape's own Shapers are derived before it; a Shaper whose
+// shape reaches itself is refused, as any recursive type is.
+func shapeSchemas(t reflect.Type) (map[reflect.Type]*jsonschema.Schema, error) {
+	out := map[reflect.Type]*jsonschema.Schema{}
+	for k, v := range typeSchemas {
+		out[k] = v
+	}
+	state := map[reflect.Type]int{} // 1 visiting, 2 done
+	var walk func(reflect.Type) error
+	walk = func(t reflect.Type) error {
+		for t.Kind() == reflect.Pointer {
+			t = t.Elem()
+		}
+		if _, fixed := typeSchemas[t]; fixed {
+			return nil
+		}
+		switch state[t] {
+		case 2:
+			return nil
+		case 1:
+			if _, ok := shapeOf(t); ok {
+				return fmt.Errorf("the shape of %s reaches %s again", t, t)
+			}
+			return nil // an ordinary recursive type: the module reports it
+		}
+		state[t] = 1
+		defer func() { state[t] = 2 }()
+		if shape, ok := shapeOf(t); ok {
+			if err := walk(shape); err != nil {
+				return err
+			}
+			s, err := jsonschema.ForType(shape, &jsonschema.ForOptions{TypeSchemas: out})
+			if err != nil {
+				return fmt.Errorf("shape of %s: %w", t, err)
+			}
+			out[t] = s
+			return nil
+		}
+		switch t.Kind() {
+		case reflect.Slice, reflect.Array, reflect.Map:
+			return walk(t.Elem())
+		case reflect.Struct:
+			for _, f := range reflect.VisibleFields(t) {
+				if f.IsExported() && !f.Anonymous {
+					if err := walk(f.Type); err != nil {
+						return err
+					}
+				}
+			}
+		}
+		return nil
+	}
+	if err := walk(t); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // Of derives the shape of T. The result is cached per type and options; deriving
 // twice returns the same *Type, so documents and fingerprints are byte-identical.
 func Of[T any](opts ...Option) (*Type, error) {
@@ -64,7 +147,11 @@ func ForType(t reflect.Type, opts ...Option) (*Type, error) {
 	if v, ok := cache.Load(key); ok {
 		return v.(*Type), nil
 	}
-	s, err := jsonschema.ForType(t, &jsonschema.ForOptions{})
+	overrides, err := shapeSchemas(t)
+	if err != nil {
+		return nil, fmt.Errorf("schema: deriving %s: %w", t, err)
+	}
+	s, err := jsonschema.ForType(t, &jsonschema.ForOptions{TypeSchemas: overrides})
 	if err != nil {
 		return nil, fmt.Errorf("schema: deriving %s: %w", t, err)
 	}
