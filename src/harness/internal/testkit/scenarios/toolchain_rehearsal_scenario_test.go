@@ -1,0 +1,158 @@
+//go:build scenario
+
+package scenarios
+
+import (
+	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"slices"
+	"strings"
+	"testing"
+)
+
+// rehearsalTargets are the six binaries the release rehearsal builds (QG-8).
+var rehearsalTargets = []string{
+	"dsh-darwin-amd64", "dsh-darwin-arm64",
+	"dsh-linux-amd64", "dsh-linux-arm64",
+	"dsh-windows-amd64.exe", "dsh-windows-arm64.exe",
+}
+
+// replayScenario is the keyless headless replay scenario every rehearsed binary
+// answers, relative to the repository root. It is recorded with the replay runner
+// of DH-S-16 (`dsh headless`); until it exists this scenario fails, it never skips.
+const replayScenario = "src/harness/internal/testkit/scenarios/testdata/rehearsal-replay"
+
+// rehearsalLine is one binary line of "harness-gate rehearse":
+// "<sha256>  <name>  version=<v> vcs.revision=<rev> vcs.modified=<bool>".
+var rehearsalLine = regexp.MustCompile(`^([0-9a-f]{64})  (dsh-\S+)  version=(\S+) vcs\.revision=(\S+) vcs\.modified=(\S+)$`)
+
+// TestToolchainRehearsal: a release rehearsal yields a runnable binary on every
+// platform (upstream/toolchain.md DH-E-TOOLCHAIN-2; DH-D-TOOLCHAIN-5,
+// DH-ADR-TOOLCHAIN-13, DH-ADR-15). Executed in DH-S-18 (step 18.1) on hosted Linux,
+// macOS and Windows runners at a commit where the harness job passes.
+//
+// Given a clean checkout, when "harness-gate rehearse" builds cmd/dsh for the six
+// targets (pure Go, -trimpath, nothing published), then six binaries exist, each
+// matches the SHA-256 the rehearsal printed and embeds the checked-out commit with
+// no "modified" marker; the binary of this runner's platform reports that version
+// from "dsh --version" and passes one keyless headless replay. Scope: the three
+// binaries matching the runners' processors are executed; the other three are built
+// and checksummed only. Cleanup: everything is under t.TempDir(); no tag or release
+// is created (the tag list is compared before and after).
+//
+//dsh:scenario DH-E-TOOLCHAIN-2
+func TestToolchainRehearsal(t *testing.T) {
+	root := repositoryRoot(t)
+	head := strings.TrimSpace(run(t, root, nil, "git", "rev-parse", "HEAD"))
+	if status := strings.TrimSpace(run(t, root, nil, "git", "status", "--porcelain")); status != "" {
+		t.Fatalf("the checkout is not clean; a rehearsal of a modified tree proves nothing:\n%s", status)
+	}
+	tagsBefore := run(t, root, nil, "git", "tag", "--list")
+
+	out := t.TempDir()
+	report := run(t, filepath.Join(root, "tools", "harness-gate"), []string{"GOWORK=off"},
+		"go", "run", ".", "rehearse", "--root", "../..", "--out", out)
+	t.Logf("rehearse:\n%s", report)
+
+	type binary struct{ sha, version, revision, modified string }
+	got := map[string]binary{}
+	sc := bufio.NewScanner(strings.NewReader(report))
+	for sc.Scan() {
+		if m := rehearsalLine.FindStringSubmatch(strings.TrimSpace(sc.Text())); m != nil {
+			got[m[2]] = binary{sha: m[1], version: m[3], revision: m[4], modified: m[5]}
+		}
+	}
+	names := make([]string, 0, len(got))
+	for name := range got {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	if !slices.Equal(names, rehearsalTargets) {
+		t.Fatalf("rehearsed binaries = %v, want %v", names, rehearsalTargets)
+	}
+	for _, name := range rehearsalTargets {
+		b := got[name]
+		data, err := os.ReadFile(filepath.Join(out, name))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		sum := sha256.Sum256(data)
+		if hex.EncodeToString(sum[:]) != b.sha {
+			t.Errorf("%s: SHA-256 %x, rehearsal printed %s", name, sum, b.sha)
+		}
+		if b.revision != head {
+			t.Errorf("%s: embedded vcs.revision %s, want the checked-out commit %s", name, b.revision, head)
+		}
+		if b.modified != "false" || strings.Contains(b.version, "+dirty") {
+			t.Errorf("%s: carries a modified marker (vcs.modified=%s, version %s)", name, b.modified, b.version)
+		}
+	}
+
+	native := "dsh-" + runtime.GOOS + "-" + runtime.GOARCH
+	if runtime.GOOS == "windows" {
+		native += ".exe"
+	}
+	b, ok := got[native]
+	if !ok {
+		t.Fatalf("no rehearsed binary for this runner (%s/%s)", runtime.GOOS, runtime.GOARCH)
+	}
+	bin := filepath.Join(out, native)
+	home := t.TempDir()
+	env := []string{"DSH_HOME=" + home, "DSH_DEEPSEEK_API_KEY="}
+	if v := strings.TrimSpace(run(t, home, env, bin, "--version")); v != "dsh "+b.version {
+		t.Errorf("%s --version = %q, want %q", native, v, "dsh "+b.version)
+	}
+
+	t.Run("keyless headless replay", func(t *testing.T) {
+		scenario := filepath.Join(root, filepath.FromSlash(replayScenario))
+		if _, err := os.Stat(scenario); err != nil {
+			t.Fatalf("replay scenario %s: %v (recorded with the replay runner of DH-S-16)", replayScenario, err)
+		}
+		run(t, home, env, bin, "headless", "--replay", scenario)
+	})
+
+	if after := run(t, root, nil, "git", "tag", "--list"); after != tagsBefore {
+		t.Errorf("the rehearsal changed the tags:\nbefore:\n%s\nafter:\n%s", tagsBefore, after)
+	}
+}
+
+// repositoryRoot is the checkout this package lives in.
+func repositoryRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.Abs(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "tools", "harness-gate", "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("repository root (tools/harness-gate/go.mod) not found above the package")
+		}
+		dir = parent
+	}
+}
+
+// run runs name with args in dir, the parent environment with env set, and returns
+// its standard output; a failure fails the test with the combined output.
+func run(t *testing.T, dir string, env []string, name string, args ...string) string {
+	t.Helper()
+	cmd := exec.CommandContext(t.Context(), name, args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), env...)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("%s %s: %v\n%s%s", name, strings.Join(args, " "), err, out, stderr.String())
+	}
+	return string(out)
+}

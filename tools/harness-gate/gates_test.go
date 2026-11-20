@@ -116,7 +116,7 @@ func assertStoppedAt(t *testing.T, out string, code int, gate string) {
 	if !strings.Contains(out, "harness-gate: FAILED at gate "+gate+"\n") {
 		t.Errorf("output does not name gate %q as failed:\n%s", gate, out)
 	}
-	names := []string{"gofmt", "vet", "test", "coverage", "trace", "budget", "cross-compile"}
+	names := []string{"gofmt", "vet", "test", "coverage", "trace", "scenario-index", "budget", "cross-compile"}
 	for _, later := range names[slices.Index(names, gate)+1:] {
 		if strings.Contains(out, " "+later+" -- ") {
 			t.Errorf("gate %q started after %q failed:\n%s", later, gate, out)
@@ -382,7 +382,7 @@ func TestCCompilerPreflightNamesMissingCompiler(t *testing.T) {
 // tree is clean under it).
 func TestRepositoryPassesEveryGate(t *testing.T) {
 	out, code := runGate(t, filepath.Join("..", ".."))
-	if code != 0 || !strings.Contains(out, "PASSED all 7 gates") {
+	if code != 0 || !strings.Contains(out, "PASSED all 8 gates") {
 		t.Fatalf("repository gate exited %d:\n%s", code, out)
 	}
 	for _, gate := range Gates(&Config{}) {

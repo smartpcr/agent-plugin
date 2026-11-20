@@ -34,7 +34,9 @@ package scenarios
 
 import "testing"
 
-// TestToolchainRehearsal is DH-E-TOOLCHAIN-2.
+// TestToolchainRehearsal: a release rehearsal yields a runnable binary on every platform.
+//
+//dsh:scenario DH-E-TOOLCHAIN-2
 func TestToolchainRehearsal(t *testing.T) {
 	// starts the built dsh binary, never "go run"
 }
@@ -46,8 +48,19 @@ func TestToolchainRehearsal(t *testing.T) {
 - A scenario starts the **built** `dsh` binary, never `go run` (DH-ADR-TOOLCHAIN-1).
 - It is vetted with the tag set: `go -C src/harness vet -tags scenario ./...`
   (build tags hide files from a plain `go vet`; DH-ADR-TOOLCHAIN-1 tradeoff).
+- The `DH-E-*` ID is bound to the test by a `//dsh:scenario <ID>` line in the
+  doc comment of a top-level `TestXxx` (one ID per test, one test per ID).
 - It is authored, reviewed and indexed in the story that writes it, and executed
   only at the stage impl.md assigns (EV-4); a skipped scenario stays open.
+- Indexing: the ID is listed, with its authoring stage, under the stage that
+  executes it in `test/harness/acceptance-index.yaml`. The gate's
+  `scenario-index` check fails when a scenario file's ID is not indexed (or is
+  indexed twice), and when an indexed ID authored at or before the index's
+  `built-through` stage has no file. The credentialed workflow
+  (`.github/workflows/harness-scenarios.yml`) derives `DSH_REQUIRE_SCENARIOS`
+  from the entry of the stage being accepted, and its preflight fails on a missing
+  `DSH_DEEPSEEK_API_KEY` or a required ID without a scenario test.
+- Scenarios of this module live in `internal/testkit/scenarios`.
 
 Replay tests follow the same shape with `*_replay_test.go` and `//go:build replay`.
 

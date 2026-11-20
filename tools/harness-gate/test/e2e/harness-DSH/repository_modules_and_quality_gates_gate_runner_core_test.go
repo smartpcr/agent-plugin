@@ -31,7 +31,7 @@ import (
 
 // gateOrder is the fixed gate list of harness-gate (QG-1), used to prove that no
 // gate after the failing one started.
-var gateOrder = []string{"gofmt", "vet", "test", "coverage", "trace", "budget", "cross-compile"}
+var gateOrder = []string{"gofmt", "vet", "test", "coverage", "trace", "scenario-index", "budget", "cross-compile"}
 
 // driverSource replaces main.go of package main through "go build -overlay", so
 // the in-process scenarios (TC-01a) call the real Run, ExitCode, ParseProfile,
