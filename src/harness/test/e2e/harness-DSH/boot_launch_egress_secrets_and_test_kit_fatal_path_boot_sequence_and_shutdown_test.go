@@ -57,6 +57,9 @@ type fpbsFakes struct {
 	mu    sync.Mutex
 	calls []string
 	ready []bool
+	// audit is the boot.State audit as boot left it when the tree unloaded.
+	audit   boot.Audit
+	audited bool
 }
 
 func (f *fpbsFakes) record(s *boot.State, name string) {
@@ -102,7 +105,12 @@ type fpbsHost struct {
 	s *boot.State
 }
 
-func (h *fpbsHost) Unload()                         { h.f.record(h.s, "unload") }
+func (h *fpbsHost) Unload() {
+	h.f.record(h.s, "unload")
+	h.f.mu.Lock()
+	h.f.audit, h.f.audited = h.s.Audit, true
+	h.f.mu.Unlock()
+}
 func (h *fpbsHost) Stuck() []string                 { return nil }
 func (h *fpbsHost) Processes() *subprocess.Registry { return nil }
 
@@ -314,7 +322,12 @@ func (s *fpbsState) unloadedAfterAudit() error {
 }
 
 func (s *fpbsState) zeroPermits() error {
-	a := boot.Audit{Permits: boot.Permits(nil)}
+	s.fakes.mu.Lock()
+	a, audited := s.fakes.audit, s.fakes.audited
+	s.fakes.mu.Unlock()
+	if !audited {
+		return fmt.Errorf("boot never unloaded the tree, so its audit was not captured")
+	}
 	if n := len(a.Allowed()); n != 0 {
 		return fmt.Errorf("%d permits allowed with none configured", n)
 	}
