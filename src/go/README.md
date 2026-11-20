@@ -310,7 +310,7 @@ operations (`insert`, override by `id`, `merge` into config, `remove`), and
 `loader.Compose` returns the tree with an `Index` naming the layer that supplied each
 value. Runtime edits are written to the one `Writable` layer only, edited in place so
 comments survive; the write is refused with `loader.ErrStaleLayer` when the file's
-content hash changed since it was read, and an optional `WriteGuard` (e.g. a
+content hash changed since it was read, and with `loader.ErrMaskedEdit` when a later layer overrides the edited value (nothing is written either way); a layer file that disappears keeps its last operations. An optional `WriteGuard` (e.g. a
 cross-process lock) wraps every write.
 
 ## Not ported

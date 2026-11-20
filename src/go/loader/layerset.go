@@ -10,7 +10,9 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,6 +38,24 @@ func (e *StaleLayerError) Error() string {
 
 // Is makes errors.Is(err, ErrStaleLayer) true.
 func (e *StaleLayerError) Is(target error) bool { return target == ErrStaleLayer }
+
+// ErrMaskedEdit is matched (errors.Is) by a *MaskedEditError.
+var ErrMaskedEdit = errors.New("loader: a layer above the writable one masks a runtime edit")
+
+// MaskedEditError is a refused write: the writable layer, written, would not compose
+// back into the runtime tree, because a later layer overrides the edited values of
+// the entries IDs. Nothing is written and the edits stay in memory.
+type MaskedEditError struct {
+	Label string
+	Path  string
+	IDs   []string
+}
+
+func (e *MaskedEditError) Error() string {
+	return fmt.Sprintf("loader: cannot save the runtime edits of %q to layer %q (%s): a later layer overrides them", strings.Join(e.IDs, `", "`), e.Label, e.Path)
+}
+
+func (e *MaskedEditError) Is(target error) bool { return target == ErrMaskedEdit }
 
 // ErrNoWritableLayer is returned by Flush when the tree holds runtime edits and no
 // layer is writable.
@@ -145,6 +165,8 @@ type layerState struct {
 	doc    *LayerDocument
 	// rejected is the hash of content that failed to parse, reported once
 	rejected *[sha256.Size]byte
+	// vanished is set while a file that was read is missing, so it is reported once
+	vanished bool
 }
 
 func newLayerSet(ctx *cordis.Context, options LayerSetOptions) (*LayerSet, error) {
@@ -301,6 +323,17 @@ func (s *LayerSet) readFiles() bool {
 			s.ctx.Logger().Warnf("cannot read layer %q (%s): %v; keeping its last operations", layer.Label, layer.Path, err)
 			continue
 		}
+		if exists {
+			layer.vanished = false
+		} else if layer.loaded && layer.exists {
+			// a file read before and now gone keeps its last operations, so the running
+			// tree is kept; a write to it is refused as stale until it is back
+			if !layer.vanished {
+				layer.vanished = true
+				s.ctx.Logger().Warnf("layer %q (%s) disappeared; keeping its last operations", layer.Label, layer.Path)
+			}
+			continue
+		}
 		sum := sha256.Sum256(data)
 		if layer.loaded && layer.exists == exists && layer.sum == sum {
 			continue
@@ -405,6 +438,9 @@ func (s *LayerSet) writeLocked() error {
 	if !layer.exists && len(ops) == 0 {
 		return nil // nothing to save: a missing writable layer stays missing
 	}
+	if masked := s.unreproduced(layer, text, runtime); len(masked) > 0 {
+		return &MaskedEditError{Label: layer.Label, Path: layer.Path, IDs: masked}
+	}
 
 	wrote := false
 	write := func() error {
@@ -431,8 +467,54 @@ func (s *LayerSet) writeLocked() error {
 	if wrote {
 		s.adopt(layer, text)
 		s.base = runtime
+		_, s.index, _ = Compose(s.snapshotLayers(false))
 	}
 	return err
+}
+
+// unreproduced composes every layer with the writable one read from text, as a
+// later read would, and returns the ids of the entries whose composition differs
+// from runtime: edits a layer above the writable one masks, which no write to the
+// writable layer can save.
+func (s *LayerSet) unreproduced(writable *layerState, text []byte, runtime []EntryOptions) []string {
+	doc, err := ParseLayer(writable.codec, writable.Path, text)
+	if err != nil {
+		return []string{""}
+	}
+	layers := s.snapshotLayers(false)
+	for i := range layers {
+		if layers[i].Writable {
+			layers[i].Ops = doc.Ops
+		}
+	}
+	composed, _, _ := Compose(layers)
+	assignStableIDs(composed, "", runtime)
+	want, wantOrder := flattenTree(runtime)
+	got, gotOrder := flattenTree(composed)
+	var differ []string
+	for _, id := range wantOrder {
+		if g, ok := got[id]; !ok || !sameShape(g.shape, want[id].shape) {
+			differ = append(differ, id)
+		}
+	}
+	for _, id := range gotOrder {
+		if _, ok := want[id]; !ok {
+			differ = append(differ, id)
+		}
+	}
+	return differ
+}
+
+// sameShape compares two encoded entries as values, so key order does not matter.
+func sameShape(a, b string) bool {
+	if a == b {
+		return true
+	}
+	var left, right any
+	if decodeAny([]byte(a), &left) != nil || decodeAny([]byte(b), &right) != nil {
+		return false
+	}
+	return reflect.DeepEqual(left, right)
 }
 
 // guarded runs write under the write guard, if there is one. A guard that panics, or

@@ -108,6 +108,17 @@ func TestParseLayerReadsOpsWithComments(t *testing.T) {
 	Equal(t, loader.OpOverride, doc.Ops[1].Kind)
 }
 
+func TestJSONCRejectsAnUnterminatedBlockComment(t *testing.T) {
+	for _, text := range []string{"[] /* unfinished", "[ /* open\n 1 ]", "/* x"} {
+		_, err := loader.JSONC.Decode("f.jsonc", []byte(text))
+		var parse *loader.ParseError
+		True(t, errors.As(err, &parse) && strings.Contains(err.Error(), "unterminated block comment"), text+": "+errText(err))
+		Equal(t, strings.Index(text, "/*"), parse.Issues[0].Pos.Offset, text)
+	}
+	_, err := loader.JSONC.Decode("f.jsonc", []byte("[] /* done */"))
+	NoError(t, err)
+}
+
 func TestEncodeLayerKeepsACommentTrailingTheLastKeptOp(t *testing.T) {
 	doc, err := loader.ParseLayer(loader.JSONC, "user.jsonc", []byte(userLayer))
 	NoError(t, err)
@@ -150,6 +161,7 @@ type layerHarness struct {
 	logs   *cordis.MemoryExporter
 	base   string
 	user   string
+	paths  map[string]string
 	mu     sync.Mutex
 	loads  map[string]int
 }
@@ -177,12 +189,30 @@ func (h *layerHarness) update(t *testing.T, id string, config map[string]int) {
 // a layer set over them, with the user layer writable.
 func startLayers(t *testing.T, guard loader.WriteGuard) (*layerHarness, *loader.LayerSet) {
 	t.Helper()
+	return startSet(t, guard, layerFile{"base", baseLayer, false}, layerFile{"user", userLayer, true})
+}
+
+type layerFile struct {
+	label    string
+	text     string
+	writable bool
+}
+
+// startSet writes each layer to <label>.jsonc in a temporary directory and loads a
+// layer set over them, in order.
+func startSet(t *testing.T, guard loader.WriteGuard, files ...layerFile) (*layerHarness, *loader.LayerSet) {
+	t.Helper()
 	directory := t.TempDir()
 	root, logs := Quiet()
-	h := &layerHarness{root: root, logs: logs, loads: map[string]int{},
-		base: filepath.Join(directory, "base.jsonc"), user: filepath.Join(directory, "user.jsonc")}
-	writeFile(t, h.base, baseLayer)
-	writeFile(t, h.user, userLayer)
+	h := &layerHarness{root: root, logs: logs, loads: map[string]int{}, paths: map[string]string{}}
+	var layers []loader.Layer
+	for _, file := range files {
+		path := filepath.Join(directory, file.label+".jsonc")
+		h.paths[file.label] = path
+		writeFile(t, path, file.text)
+		layers = append(layers, loader.Layer{Label: file.label, Path: path, Writable: file.writable})
+	}
+	h.base, h.user = h.paths["base"], h.paths["user"]
 	component := cordis.Define("Values", func(ctx *cordis.Context, config map[string]int) error {
 		id := "other"
 		if _, ok := config["b"]; ok {
@@ -197,10 +227,7 @@ func startLayers(t *testing.T, guard loader.WriteGuard) (*layerHarness, *loader.
 	MustWait(t, Must(root.Use(loader.Component, loader.Options{Resolver: loader.Components{"Values": component}})))
 	h.loader = Must(loader.Key.Get(root))
 	fiber := MustWait(t, Must(root.Use(loader.LayerSetComponent, loader.LayerSetOptions{
-		Layers: []loader.Layer{
-			{Label: "base", Path: h.base},
-			{Label: "user", Path: h.user, Writable: true},
-		},
+		Layers:     layers,
 		WriteGuard: guard,
 	})))
 	return h, fiber.Instance().(*loader.LayerSet)
@@ -242,6 +269,86 @@ func TestLayerSetARuntimeEditOfALowerValueBecomesAWritableOp(t *testing.T) {
 	Equal(t, 0, len(issues))
 	Equal(t, `{"a":7}`, config(t, tree, "other"))
 	Equal(t, `{"a":1,"b":2}`, config(t, tree, "svc"))
+
+	// the ownership index follows the write, and an unchanged reload keeps it
+	Equal(t, "user", owner(t, set.Index(), "other", "config.a"))
+	Equal(t, "base", owner(t, set.Index(), "svc", "config.a"))
+	Within(t, "reload", func() { NoError(t, set.Reload()) })
+	Equal(t, "user", owner(t, set.Index(), "other", "config.a"))
+}
+
+const bundleLayer = `[ { "insert": [ { "id": "svc", "name": "Values", "config": { "a": 1, "b": 1 } } ] } ]
+`
+const profileLayer = `[ { "id": "svc", "merge": { "a": 2 } } ]
+`
+const projectLayer = `// project pins b
+[ { "id": "svc", "merge": { "b": 2 } } ]
+`
+
+// a layer after the writable one masks an edit: saving it would compose back into
+// the masked value, so the write is refused rather than reported as saved
+func TestLayerSetAnEditMaskedByALaterLayerIsRefused(t *testing.T) {
+	h, set := startSet(t, nil,
+		layerFile{"bundle", bundleLayer, false},
+		layerFile{"profile", profileLayer, false},
+		layerFile{"user", "[]\n", true},
+		layerFile{"project", projectLayer, false},
+	)
+	Equal(t, `{"a":2,"b":2}`, h.svc(t))
+	Equal(t, "profile", owner(t, set.Index(), "svc", "config.a"))
+	Equal(t, "project", owner(t, set.Index(), "svc", "config.b"))
+
+	// a is not masked: it is saved to user and composes back
+	h.update(t, "svc", map[string]int{"a": 5, "b": 2})
+	Within(t, "flush", func() { NoError(t, set.Flush()) })
+	saved := readFile(t, h.paths["user"])
+	True(t, strings.Contains(saved, `"a": 5`) || strings.Contains(saved, `"a":5`), "edit not saved:\n"+saved)
+	Equal(t, "user", owner(t, set.Index(), "svc", "config.a"))
+
+	// b is masked by project: nothing is written and the caller is told
+	h.update(t, "svc", map[string]int{"a": 5, "b": 3})
+	var err error
+	Within(t, "flush", func() { err = set.Flush() })
+	True(t, errors.Is(err, loader.ErrMaskedEdit), "a masked edit was reported as saved: "+errText(err))
+	var masked *loader.MaskedEditError
+	True(t, errors.As(err, &masked) && len(masked.IDs) == 1 && masked.IDs[0] == "svc", "masked ids: "+errText(err))
+	Equal(t, saved, readFile(t, h.paths["user"]), "a masked edit was written")
+	Equal(t, `{"a":5,"b":3}`, h.svc(t), "the runtime edit was dropped")
+	for label, text := range map[string]string{"bundle": bundleLayer, "profile": profileLayer, "project": projectLayer} {
+		Equal(t, text, readFile(t, h.paths[label]), label+" was rewritten")
+	}
+
+	// what the files hold composes into the saved edit, not the masked one
+	tree, _, _ := loader.Compose(set.Layers())
+	Equal(t, `{"a":5,"b":2}`, config(t, tree, "svc"))
+}
+
+// a file that was read and then disappears keeps its last operations: the running
+// tree stays, and writing to a vanished writable layer is refused
+func TestLayerSetAVanishedLayerKeepsTheRunningTree(t *testing.T) {
+	h, set := startLayers(t, nil)
+	NoError(t, os.Remove(h.base))
+	Within(t, "reload", func() { NoError(t, set.Reload()) })
+	Equal(t, `{"a":1,"b":2}`, h.svc(t), "entries of a vanished layer were dropped")
+	True(t, h.loader.Find("other") != nil, "entries of a vanished layer were dropped")
+	Equal(t, 1, h.loadCount("svc"))
+	Within(t, "reload", func() { NoError(t, set.Reload()) })
+	Equal(t, 1, Count(h.logs, cordis.LevelWarn), "a vanished layer was not reported exactly once")
+
+	// it comes back, changed, and is read again
+	writeFile(t, h.base, strings.Replace(baseLayer, `"a": 1, "b": 1`, `"a": 4, "b": 1`, 1))
+	Within(t, "reload", func() { NoError(t, set.Reload()) })
+	Equal(t, `{"a":4,"b":2}`, h.svc(t))
+
+	NoError(t, os.Remove(h.user))
+	Within(t, "reload", func() { NoError(t, set.Reload()) })
+	Equal(t, `{"a":4,"b":2}`, h.svc(t), "the user layer's values were dropped")
+	h.update(t, "svc", map[string]int{"a": 4, "b": 3})
+	var err error
+	Within(t, "flush", func() { err = set.Flush() })
+	True(t, errors.Is(err, loader.ErrStaleLayer), "a write to a vanished layer was not refused: "+errText(err))
+	_, statErr := os.Stat(h.user)
+	True(t, os.IsNotExist(statErr), "a vanished layer was recreated")
 }
 
 func TestLayerSetAReadOnlyLayerFailsTheWriteUntilItIsWritable(t *testing.T) {

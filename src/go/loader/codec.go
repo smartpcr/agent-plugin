@@ -293,14 +293,23 @@ type jsonCodec struct {
 func (c jsonCodec) Decode(file string, data []byte) (*Node, error) {
 	p := &jsonParser{file: file, data: data, line: 1, comments: c.comments}
 	p.skipSpace()
+	if p.unterminated != nil {
+		return nil, p.unterminated
+	}
 	if p.i >= len(p.data) {
 		return nil, p.fail("unexpected end of input")
 	}
 	node, err := p.value(0)
+	if p.unterminated != nil {
+		return nil, p.unterminated
+	}
 	if err != nil {
 		return nil, err
 	}
 	p.skipSpace()
+	if p.unterminated != nil {
+		return nil, p.unterminated
+	}
 	if p.i < len(p.data) {
 		return nil, p.fail("unexpected trailing data")
 	}
@@ -335,6 +344,8 @@ type jsonParser struct {
 	// commentCount counts the comments skipped so far.
 	comments     bool
 	commentCount int
+	// unterminated is the error of a block comment left open at the end of the input.
+	unterminated error
 }
 
 func (p *jsonParser) pos() Position {
@@ -375,7 +386,7 @@ func (p *jsonParser) skipSpace() {
 }
 
 // skipComment skips the comment at p.i, if there is one. An unterminated block
-// comment runs to the end of the input, where the caller reports what is missing.
+// comment runs to the end of the input and is recorded, at its start, as the error.
 func (p *jsonParser) skipComment() bool {
 	if p.i+1 >= len(p.data) {
 		return false
@@ -386,10 +397,13 @@ func (p *jsonParser) skipComment() bool {
 			p.i++
 		}
 	case '*':
+		opened := p.fail("unterminated block comment")
 		p.i += 2
+		closed := false
 		for p.i < len(p.data) {
 			if p.data[p.i] == '*' && p.i+1 < len(p.data) && p.data[p.i+1] == '/' {
 				p.i += 2
+				closed = true
 				break
 			}
 			if p.data[p.i] == '\n' {
@@ -397,6 +411,9 @@ func (p *jsonParser) skipComment() bool {
 				p.lineStart = p.i + 1
 			}
 			p.i++
+		}
+		if !closed && p.unterminated == nil {
+			p.unterminated = opened
 		}
 	default:
 		return false
