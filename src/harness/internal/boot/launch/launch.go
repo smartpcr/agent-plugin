@@ -133,6 +133,12 @@ type Request struct {
 	SystemProxy map[string]string
 	// ReadFile reads the two .env files; nil reads none.
 	ReadFile ReadFile
+	// CheckPrivate verifies that a path is private to its owner (Probe sets
+	// home.CheckPrivate). When the home's config/.env exists, Build runs it on
+	// config/ and on the file before trusting the file's proxy, endpoint and TLS
+	// trust names; a failure fails the build. Nil skips the check, which only an
+	// in-memory ReadFile should rely on.
+	CheckPrivate func(path string) error
 }
 
 // Build turns a request into the launch data and the launch environment: the home
@@ -165,8 +171,20 @@ func Build(req Request) (Data, *Snapshot, error) {
 		if project, err = readEnvFile(req.ReadFile, filepath.Join(cwd, ProjectEnvFile), SourceProject, goos); err != nil {
 			return Data{}, nil, err
 		}
-		if homeFile, err = readEnvFile(req.ReadFile, filepath.Join(home.New(root).Config(), HomeEnvFile), SourceHome, goos); err != nil {
+		configDir := home.New(root).Config()
+		homePath := filepath.Join(configDir, HomeEnvFile)
+		if homeFile, err = readEnvFile(req.ReadFile, homePath, SourceHome, goos); err != nil {
 			return Data{}, nil, err
+		}
+		// The home file may set HomeOnly names (proxy, endpoints, TLS trust), so it
+		// is trusted only when neither it nor config/ is writable by anyone else.
+		if homeFile != nil && req.CheckPrivate != nil {
+			for _, p := range []string{configDir, homePath} {
+				if err := req.CheckPrivate(p); err != nil {
+					return Data{}, nil, herr.Wrap(ReasonRead, err,
+						"launch: "+homedir.Display(homePath)+" is not trusted; make it and config/ private to their owner")
+				}
+			}
 		}
 	}
 	env := newSnapshot(goos, process, project, homeFile, systemProxy(req.SystemProxy, goos))
@@ -201,13 +219,14 @@ func Probe() (Request, error) {
 		return Request{}, herr.Wrap(ReasonFacts, err, "launch: the working directory")
 	}
 	return Request{
-		Args:     slices.Clone(os.Args),
-		Cwd:      cwd,
-		OS:       runtime.GOOS,
-		User:     currentUser(),
-		Build:    buildIdentity(),
-		Environ:  os.Environ(),
-		ReadFile: os.ReadFile,
+		Args:         slices.Clone(os.Args),
+		Cwd:          cwd,
+		OS:           runtime.GOOS,
+		User:         currentUser(),
+		Build:        buildIdentity(),
+		Environ:      os.Environ(),
+		ReadFile:     os.ReadFile,
+		CheckPrivate: home.CheckPrivate,
 	}, nil
 }
 
