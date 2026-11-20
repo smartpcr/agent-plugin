@@ -105,6 +105,8 @@ type codecWorld struct {
 	data   []byte
 	issues []loader.Issue
 
+	wantLine, wantColumn int
+
 	entry     loader.EntryOptions
 	rawConfig string
 }
@@ -156,6 +158,7 @@ func (w *codecWorld) layerBytesWithTypeError(file string, line, column int) erro
 		return fmt.Errorf("fixture places the type error at 4:9, not %d:%d", line, column)
 	}
 	w.file, w.data = file, []byte(codecBaseJSON)
+	w.wantLine, w.wantColumn = line, column
 	return w.start(nil)
 }
 
@@ -183,8 +186,8 @@ func (w *codecWorld) firstDiagnosticIs(want string) error {
 	if got.Error() != want {
 		return fmt.Errorf("first diagnostic = %q, want %q", got.Error(), want)
 	}
-	if got.Pos.File != w.file || got.Pos.Line != 4 || got.Pos.Column != 9 {
-		return fmt.Errorf("first diagnostic position = %+v, want %s:4:9", got.Pos, w.file)
+	if got.Pos.File != w.file || got.Pos.Line != w.wantLine || got.Pos.Column != w.wantColumn {
+		return fmt.Errorf("first diagnostic position = %+v, want %s:%d:%d", got.Pos, w.file, w.wantLine, w.wantColumn)
 	}
 	return nil
 }
