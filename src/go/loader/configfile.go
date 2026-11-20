@@ -118,7 +118,9 @@ func (f *ConfigFile) Init() error {
 		}
 	} else {
 		entries = cloneAll(f.options.Initial)
-		text = f.render(entries)
+		if text, err = f.render(entries); err != nil {
+			return err
+		}
 		f.writeAtomic(text, nil)
 	}
 
@@ -261,33 +263,40 @@ func (f *ConfigFile) readStep() error {
 	f.known = &text
 	f.base = cloneAll(theirs)
 	f.document = document
-	// runtime edits survived the merge: write them out
-	if f.renderLocked(merged) != f.renderLocked(theirs) {
+	// runtime edits survived the merge: write them out (a write step also reports an
+	// encoding failure)
+	mergedText, mergedErr := f.renderLocked(merged)
+	theirsText, theirsErr := f.renderLocked(theirs)
+	if mergedErr != nil || theirsErr != nil || mergedText != theirsText {
 		f.dirtyWrite = true
 	}
 	f.mu.Unlock()
 	return nil
 }
 
-// render encodes entries with the file's codec, against the document last read.
-func (f *ConfigFile) render(entries []EntryOptions) string {
+// render encodes entries with the file's codec, against the document last read. An
+// encoding failure is returned, never replaced by another format.
+func (f *ConfigFile) render(entries []EntryOptions) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.renderLocked(entries)
 }
 
-func (f *ConfigFile) renderLocked(entries []EntryOptions) string {
+func (f *ConfigFile) renderLocked(entries []EntryOptions) (string, error) {
 	encoded, err := f.codec.Encode(f.document, entries)
 	if err != nil {
-		f.ctx.Logger().Error(fmt.Errorf("loader: cannot encode config file %q: %w", f.path, err))
-		return serialize(entries)
+		return "", fmt.Errorf("loader: cannot encode config file %q: %w", f.path, err)
 	}
-	return string(encoded)
+	return string(encoded), nil
 }
 
 func (f *ConfigFile) writeStep() error {
 	entries := f.loader.Snapshot()
-	text := f.render(entries)
+	text, err := f.render(entries)
+	if err != nil {
+		// the file and the synchronized baseline stay as they are; a later save retries
+		return err
+	}
 	known, unmergeable, _ := f.state()
 	if same(known, text) {
 		return nil

@@ -194,6 +194,10 @@ func (s *Service) configHook(fiber *cordis.Fiber, candidate any) (any, error) {
 	s.useGate.RLock()
 	s.mu.Lock()
 	entry := s.byFiber[fiber]
+	var options EntryOptions
+	if entry != nil {
+		options = entry.options
+	}
 	s.mu.Unlock()
 	s.useGate.RUnlock()
 	if entry == nil {
@@ -206,8 +210,11 @@ func (s *Service) configHook(fiber *cordis.Fiber, candidate any) (any, error) {
 		return s.evaluator.Eval(source, Scope{Kind: ConfigScope, EntryID: entry.id, Context: fiber.Ctx()})
 	})
 	if err != nil {
+		// name the file, line and column of the failing value, as a parse error does
+		pos, docPath := options.position(joinPath("config", path))
+		located := Issue{Pos: pos, Path: docPath, Message: "cannot evaluate expression: " + err.Error()}
 		return nil, &cordis.ConfigError{Issues: []cordis.ConfigIssue{{
-			Message: fmt.Sprintf("entry %q: cannot evaluate expression: %v", entry.id, err),
+			Message: fmt.Sprintf("entry %q: %s", entry.id, located.Error()),
 			Path:    path,
 		}}}
 	}

@@ -197,3 +197,17 @@ func TestAConfigExpressionReadingUseRunsOnlyOnceItsServiceIsActive(t *testing.T)
 	services.Range(func(any, any) bool { n++; return true })
 	Equal(t, 2, n, "the two evaluations did not see the two providers")
 }
+
+func TestAConfigEvaluationFailureNamesTheValuesPosition(t *testing.T) {
+	h := startWith(t, newEvaluator(func(string, loader.Scope) (any, error) { return nil, errors.New("env.X is unset") }))
+	doc := Must(loader.Parse(loader.JSON, "f.json", []byte(`[
+  { "id": "e", "name": "EchoPlugin",
+    "config": { "times": "${{ env.X }}" } }
+]`)))
+	Equal(t, 0, len(h.loader.Validate(doc.Entries)), "Check accepts the expression")
+	Within(t, "apply", func() { _ = h.loader.Apply(doc.Entries) })
+	Eventually(t, func() bool {
+		return strings.Contains(strings.Join(Texts(h.logs, cordis.LevelError), "\n"), "f.json:3:26: [0].config.times: cannot evaluate expression: env.X is unset")
+	}, "the evaluation failure lacks its position:\n"+strings.Join(Texts(h.logs, cordis.LevelError), "\n"))
+	True(t, !h.active("e"), "an entry whose config failed to evaluate is active")
+}

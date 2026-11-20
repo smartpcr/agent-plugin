@@ -278,6 +278,10 @@ func (s *Service) flatten(entries []EntryOptions, parentID string, sink map[stri
 		_, dup := sink[id]
 		if issues := s.check(*options, id, dup); len(issues) > 0 {
 			s.ctx.Logger().Error(&EntryError{ID: id, Issues: issues})
+			// the subtree is not loaded, but its own faults are still reported
+			s.walkChecks(options.Children, id, map[string]bool{}, func(id string, issues []Issue) {
+				s.ctx.Logger().Error(&EntryError{ID: id, Issues: issues})
+			})
 			continue
 		}
 		sink[id] = flatEntry{options: *options, parentID: parentID}
@@ -294,21 +298,33 @@ func (s *Service) flatten(entries []EntryOptions, parentID string, sink map[stri
 // Parse carries the file, line and column of the value at fault.
 func (s *Service) Validate(entries []EntryOptions) []Issue {
 	var issues []Issue
-	seen := map[string]bool{}
-	var visit func(level []EntryOptions, parentID string)
-	visit = func(level []EntryOptions, parentID string) {
-		for _, options := range level {
-			id := compose(parentID, options.ID)
-			dup := options.ID != "" && seen[id]
-			if options.ID != "" {
-				seen[id] = true
-			}
-			issues = append(issues, s.check(options, id, dup)...)
-			visit(options.Children, id)
-		}
-	}
-	visit(entries, "")
+	s.walkChecks(entries, "", map[string]bool{}, func(_ string, found []Issue) {
+		issues = append(issues, found...)
+	})
 	return issues
+}
+
+// walkChecks checks level and its descendants in document order without changing
+// them, and calls report with the issues of each faulty entry. An anonymous entry gets
+// a traversal-only identity from its index, so the children of two anonymous groups
+// never collide; seen holds the tree ids met so far, for duplicates.
+func (s *Service) walkChecks(level []EntryOptions, parentID string, seen map[string]bool, report func(id string, issues []Issue)) {
+	for i, options := range level {
+		var id string
+		duplicate := false
+		if options.ID == "" {
+			// Separator cannot occur in a valid id, so this cannot match one
+			id = compose(parentID, fmt.Sprintf("%s#%d", Separator, i))
+		} else {
+			id = compose(parentID, options.ID)
+			duplicate = seen[id]
+			seen[id] = true
+		}
+		if issues := s.check(options, id, duplicate); len(issues) > 0 {
+			report(id, issues)
+		}
+		s.walkChecks(options.Children, id, seen, report)
+	}
 }
 
 // check returns every issue of one entry (not of its children).

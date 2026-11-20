@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
@@ -198,4 +199,78 @@ func TestAnInterceptReachesTheEntrysServices(t *testing.T) {
 		NoError(t, service.Apply([]loader.EntryOptions{{ID: "p", Name: "Probe", Intercept: map[string]json.RawMessage{"probe": json.RawMessage(`{"step":2}`)}}}))
 	})
 	Equal(t, `{"step":2}`, <-seen)
+}
+
+// ------------------------------------------------- iteration 2 regressions
+
+func TestDescendantsOfAnInvalidGroupAreStillReportedWhenLoading(t *testing.T) {
+	h := start(t)
+	doc, err := loader.Parse(loader.JSON, "nest.json", []byte(`[
+  { "id": "g", "group": true, "colour": 1, "children": [
+    { "id": "a:b", "name": "EchoPlugin" },
+    { "id": "c", "name": "EchoPlugin", "disabeld": true }
+  ] },
+  { "id": "ok", "name": "EchoPlugin" }
+]`))
+	NoError(t, err)
+	h.apply(t, doc.Entries...)
+	True(t, h.loader.Find("g") == nil && h.loader.Find("g:c") == nil, "the invalid subtree was loaded")
+	True(t, h.active("ok"), "the valid sibling did not load")
+	errorsText := strings.Join(Texts(h.logs, cordis.LevelError), "\n")
+	for _, want := range []string{
+		"nest.json:2:31: [0].colour: unknown key",
+		`nest.json:3:13: [0].children[0].id: entry id "a:b" must not contain ":"`,
+		"nest.json:4:40: [0].children[1].disabeld: unknown key",
+	} {
+		True(t, strings.Contains(errorsText, want), "missing "+want+" in:\n"+errorsText)
+	}
+}
+
+func TestChildrenOfDistinctAnonymousGroupsDoNotCollide(t *testing.T) {
+	h := start(t)
+	anonymous := func(children ...loader.EntryOptions) loader.EntryOptions {
+		return loader.EntryOptions{Group: true, Children: children}
+	}
+	entries := []loader.EntryOptions{anonymous(echo("x", "1")), anonymous(echo("x", "2"))}
+	Equal(t, 0, len(h.loader.Validate(entries)), issueTexts(h.loader.Validate(entries)))
+	Equal(t, "", entries[0].ID, "Validate must not assign ids")
+
+	issues := h.loader.Validate([]loader.EntryOptions{anonymous(echo("x", "1"), echo("x", "2"))})
+	Equal(t, 1, len(issues), issueTexts(issues))
+	True(t, strings.Contains(issues[0].Message, "duplicate entry id"), issues[0].Message)
+}
+
+// flakyCodec is JSON whose Encode fails while fail is set. ConfigFileOptions is
+// deep-cloned, so the switch sits behind an unexported pointer.
+type flakyCodec struct{ fail *atomic.Bool }
+
+func (c flakyCodec) Decode(file string, data []byte) (*loader.Node, error) {
+	return loader.JSON.Decode(file, data)
+}
+
+func (c flakyCodec) Encode(previous *loader.Document, entries []loader.EntryOptions) ([]byte, error) {
+	if c.fail.Load() {
+		return nil, errors.New("encoder unavailable")
+	}
+	return loader.JSON.Encode(previous, entries)
+}
+
+func TestAnEncodingFailureLeavesTheFileUntouchedUntilARetry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cordis.custom")
+	writeFile(t, path, echoFile([2]string{"a", "a"}))
+	original := readFile(t, path)
+	codec := flakyCodec{fail: &atomic.Bool{}}
+	h := start(t)
+	file := useFile(t, h, loader.ConfigFileOptions{Path: path, Codec: codec})
+
+	codec.fail.Store(true)
+	Within(t, "update", func() { NoError(t, h.fiber("a").Update(EchoOptions{Times: 2, Text: "a"}, false)) })
+	Within(t, "save", file.Save)
+	Equal(t, original, readFile(t, path), "the file was rewritten despite the encoding failure")
+	errorsText := strings.Join(Texts(h.logs, cordis.LevelError), "\n")
+	True(t, strings.Contains(errorsText, "cannot encode config file") && strings.Contains(errorsText, "encoder unavailable"), errorsText)
+
+	codec.fail.Store(false)
+	Within(t, "retry", file.Save)
+	True(t, strings.Contains(readFile(t, path), `"times": 2`), "the retry did not write:\n"+readFile(t, path))
 }
