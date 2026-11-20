@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -399,13 +400,34 @@ func (w *yelcWorld) noImpureBuiltins() error {
 	if len(builtins) == 0 {
 		return errors.New("no builtins reported")
 	}
-	impure := []string{"now", "date", "timezone", "duration", "readFile", "writeFile", "exec", "getenv", "http", "open", "fetch"}
-	for _, b := range builtins {
-		for _, bad := range impure {
-			if strings.EqualFold(b, bad) {
-				return fmt.Errorf("impure builtin %s is enabled", b)
+	// Allowlist of reviewed pure builtins: any addition fails until it is reviewed here.
+	reviewed := []string{
+		"abs", "all", "any", "bitand", "bitnot", "bitor", "bitshl", "bitshr", "bitushr", "bitxor",
+		"ceil", "concat", "count", "filter", "find", "findIndex", "findLast", "findLastIndex",
+		"first", "flatten", "float", "floor", "fromBase64", "fromJSON", "fromPairs", "get",
+		"groupBy", "hasPrefix", "hasSuffix", "indexOf", "int", "join", "keys", "last",
+		"lastIndexOf", "len", "lower", "map", "max", "mean", "median", "min", "none", "one",
+		"reduce", "repeat", "replace", "reverse", "round", "sort", "sortBy", "split", "splitAfter",
+		"string", "sum", "take", "toBase64", "toJSON", "toPairs", "trim", "trimPrefix",
+		"trimSuffix", "type", "uniq", "upper", "values",
+	}
+	got := slices.Clone(builtins)
+	slices.Sort(got)
+	want := slices.Clone(reviewed)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		var extra, missing []string
+		for _, b := range got {
+			if !slices.Contains(want, b) {
+				extra = append(extra, b)
 			}
 		}
+		for _, b := range want {
+			if !slices.Contains(got, b) {
+				missing = append(missing, b)
+			}
+		}
+		return fmt.Errorf("enabled builtins differ from the reviewed pure allowlist: unreviewed %v, missing %v", extra, missing)
 	}
 	return nil
 }
