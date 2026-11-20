@@ -141,6 +141,21 @@ func CheckPrivate(path string) error {
 	return nil
 }
 
+// CheckPrivateFile is CheckPrivate for an open file: it checks the object f
+// refers to, so the answer holds for the bytes read from f even if the name is
+// swapped afterwards. The error names f's base only.
+func CheckPrivateFile(f *os.File) error {
+	base := filepath.Base(f.Name())
+	info, err := f.Stat()
+	if err != nil {
+		return herr.Wrap(ReasonIO, err, "home: "+base)
+	}
+	if problem := checkPrivateFile(f, info); problem != "" {
+		return herr.Newf(ReasonNotPrivate, "home: %s is not private to its owner: %s", base, problem)
+	}
+	return nil
+}
+
 // name is dir relative to the home, with a trailing slash: "spill/", "./".
 func (l Layout) name(dir string) string {
 	rel, err := filepath.Rel(l.root, dir)

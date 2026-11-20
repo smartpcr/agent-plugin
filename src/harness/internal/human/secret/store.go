@@ -3,7 +3,10 @@ package secret
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -44,32 +47,69 @@ func (s envSource) Lookup(_ context.Context, r Ref) (Value, bool, error) {
 }
 
 // FileSource reads secret://a/b from the file <dir>/a/b, where dir is
-// home.Layout.Secrets. The file must be private to its owner (the home's rule); one
-// trailing line ending is dropped.
+// home.Layout.Secrets. The read is rooted at dir: no link, at any depth, may lead
+// outside it, and the final entry must be a regular file, not a link. The opened
+// file must be private to its owner (the home's rule); one trailing line ending is
+// dropped.
 func FileSource(dir string) Source { return fileSource{dir} }
 
 type fileSource struct{ dir string }
 
 func (fileSource) Origin() string { return "file" }
 
+// maxSecretFile bounds a secret file read.
+const maxSecretFile = 64 << 10
+
 func (s fileSource) Lookup(_ context.Context, r Ref) (Value, bool, error) {
-	path := filepath.Join(append([]string{s.dir}, r.Segments()...)...)
-	if _, err := os.Lstat(path); errors.Is(err, fs.ErrNotExist) {
+	if _, err := os.Lstat(s.dir); errors.Is(err, fs.ErrNotExist) {
 		return Value{}, false, nil
 	}
-	if err := home.CheckPrivate(path); err != nil {
+	if err := home.CheckPrivate(s.dir); err != nil {
+		return Value{}, false, herr.Wrap(ReasonSource, err, r.String()+": the secrets directory is refused")
+	}
+	root, err := os.OpenRoot(s.dir)
+	if err != nil {
+		return Value{}, false, herr.Wrap(ReasonSource, pathless(err), r.String()+": the secrets directory cannot be opened")
+	}
+	defer root.Close()
+
+	rel := filepath.Join(r.Segments()...)
+	info, err := root.Lstat(rel)
+	if errors.Is(err, fs.ErrNotExist) {
+		return Value{}, false, nil
+	}
+	if err != nil {
+		return Value{}, false, herr.Wrap(ReasonSource, pathless(err), r.String()+": the secret file is refused")
+	}
+	if !info.Mode().IsRegular() {
+		return Value{}, false, herr.Newf(ReasonSource, "%s: the secret file is refused: it is not a regular file", r)
+	}
+	f, err := root.Open(rel)
+	if err != nil {
+		return Value{}, false, herr.Wrap(ReasonSource, pathless(err), r.String()+": the secret file cannot be read")
+	}
+	defer f.Close()
+	if err := home.CheckPrivateFile(f); err != nil {
 		return Value{}, false, herr.Wrap(ReasonSource, err, r.String()+": the secret file is refused")
 	}
-	data, err := os.ReadFile(path)
+	data, err := io.ReadAll(io.LimitReader(f, maxSecretFile+1))
 	if err != nil {
-		var pe *fs.PathError
-		if errors.As(err, &pe) {
-			err = pe.Err // the path is the caller's to name
-		}
-		return Value{}, false, herr.Wrap(ReasonSource, err, r.String()+": the secret file cannot be read")
+		return Value{}, false, herr.Wrap(ReasonSource, pathless(err), r.String()+": the secret file cannot be read")
+	}
+	if len(data) > maxSecretFile {
+		return Value{}, false, herr.Newf(ReasonSource, "%s: the secret file is larger than %d bytes", r, maxSecretFile)
 	}
 	v := strings.TrimSuffix(strings.TrimSuffix(string(data), "\n"), "\r")
 	return NewValue(v), true, nil
+}
+
+// pathless drops the path of a *fs.PathError; the caller names the reference.
+func pathless(err error) error {
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		return pe.Err
+	}
+	return err
 }
 
 // Store resolves references through its sources in order: the first source with a
@@ -141,7 +181,7 @@ func (s *Store) Use(ctx context.Context, r Ref, fn func(Value) error) error {
 		return err
 	}
 	if err := fn(v); err != nil {
-		return &useError{ref: r, msg: s.MaskString(err.Error()), cause: err}
+		return newUseError(r, s.MaskString(err.Error()), err)
 	}
 	return nil
 }
@@ -204,21 +244,43 @@ func SecretShaped(name string) bool {
 	return false
 }
 
+// newUseError masks cause. The result holds no field that can print the unmasked
+// error: only the masked text, the reason, and a closure for errors.Is, which fmt
+// prints as an address at most.
+func newUseError(r Ref, msg string, cause error) *useError {
+	reason := string(ReasonUse)
+	if rr, ok := herr.ReasonOf(cause); ok {
+		reason = string(rr)
+	}
+	return &useError{ref: r, msg: msg, reason: reason, is: func(target error) bool { return errors.Is(cause, target) }}
+}
+
 // useError is the masked error of a failed use. It does not unwrap, so no caller
 // can reach the unmasked text; Is delegates to the original chain.
 type useError struct {
-	ref   Ref
-	msg   string
-	cause error
+	ref    Ref
+	msg    string
+	reason string
+	is     func(error) bool
 }
 
 func (e *useError) Error() string { return e.ref.String() + ": " + e.msg }
 
-func (e *useError) Is(target error) bool { return errors.Is(e.cause, target) }
+func (e *useError) Is(target error) bool { return e.is != nil && e.is(target) }
 
-func (e *useError) Reason() string {
-	if r, ok := herr.ReasonOf(e.cause); ok {
-		return string(r)
+func (e *useError) Reason() string { return e.reason }
+
+// Format makes every verb print Error(), so %#v and %+v cannot dump fields.
+func (e *useError) Format(f fmt.State, verb rune) {
+	if verb == 'q' {
+		fmt.Fprintf(f, "%q", e.Error())
+		return
 	}
-	return string(ReasonUse)
+	io.WriteString(f, e.Error())
 }
+
+// GoString implements fmt.GoStringer.
+func (e *useError) GoString() string { return e.Error() }
+
+// LogValue implements slog.LogValuer.
+func (e *useError) LogValue() slog.Value { return slog.StringValue(e.Error()) }

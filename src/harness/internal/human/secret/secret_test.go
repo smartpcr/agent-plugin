@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -186,5 +188,90 @@ func TestIsSecretName(t *testing.T) {
 		if got := store.IsSecretName(name); got != want {
 			t.Errorf("IsSecretName(%s) = %v", name, got)
 		}
+	}
+}
+
+// stringErr and keyErr are value-typed errors that carry the credential in their
+// fields, which %#v would print if the masked error kept them.
+type stringErr string
+
+func (e stringErr) Error() string { return string(e) }
+
+type keyErr struct{ Key string }
+
+func (e keyErr) Error() string { return "rejected key " + e.Key }
+
+func TestUseErrorFormatsMaskedForValueErrors(t *testing.T) {
+	ref := MustParse("secret://deepseek/api-key")
+	for _, cause := range []error{stringErr("bad key " + testValue), keyErr{Key: testValue}} {
+		store := NewStore(&fakeSource{value: testValue})
+		err := store.Use(context.Background(), ref, func(Value) error { return cause })
+		if err == nil || !errors.Is(err, cause) {
+			t.Fatalf("error %v does not match its cause", err)
+		}
+		var logs bytes.Buffer
+		slog.New(slog.NewTextHandler(&logs, nil)).Error("use failed", "err", err)
+		slog.New(slog.NewJSONHandler(&logs, nil)).Error("use failed", "err", err)
+		for _, s := range []string{
+			fmt.Sprintf("%v", err), fmt.Sprintf("%+v", err), fmt.Sprintf("%#v", err), fmt.Sprintf("%s", err),
+			fmt.Sprintf("%q", err), fmt.Sprintf("%x", err), fmt.Sprintf("%#v", []error{err}),
+			fmt.Sprintf("%+v", struct{ E error }{err}), logs.String(),
+		} {
+			if strings.Contains(s, testValue) || strings.Contains(s, fmt.Sprintf("%x", testValue)) {
+				t.Errorf("%T: captured %s", cause, s)
+			}
+		}
+	}
+}
+
+// link makes newname point at oldname: a symbolic link, or on Windows without the
+// symlink privilege a directory junction.
+func link(t *testing.T, oldname, newname string) {
+	t.Helper()
+	err := os.Symlink(oldname, newname)
+	if err == nil {
+		return
+	}
+	if runtime.GOOS == "windows" {
+		if out, jerr := exec.Command("cmd", "/c", "mklink", "/J", newname, oldname).CombinedOutput(); jerr == nil {
+			return
+		} else {
+			t.Skipf("cannot link: %v; junction: %v %s", err, jerr, out)
+		}
+	}
+	t.Skipf("cannot link: %v", err)
+}
+
+// A link inside secrets/ that leads outside it is refused, even when the file it
+// reaches is private: the value must come from under the home.
+func TestFileSourceRefusesLinkEscapingSecrets(t *testing.T) {
+	l := home.New(t.TempDir())
+	if err := home.Ensure(l); err != nil {
+		t.Fatal(err)
+	}
+	outside := home.New(t.TempDir())
+	if err := home.Ensure(outside); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(outside.Secrets(), "elsewhere")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "api-key"), []byte(testValue), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Directly, the outside file passes the privacy check, so only containment
+	// refuses it below.
+	if _, _, err := NewStore(FileSource(outside.Secrets())).Resolve(context.Background(), MustParse("secret://elsewhere/api-key")); err != nil {
+		t.Fatalf("outside file read directly: %v", err)
+	}
+	link(t, target, filepath.Join(l.Secrets(), "deepseek"))
+
+	v, _, err := NewStore(FileSource(l.Secrets())).Resolve(context.Background(), MustParse("secret://deepseek/api-key"))
+	if !herr.Has(err, ReasonSource) || v.Reveal() != "" {
+		t.Fatalf("escaping link resolved: %q, %v", v.Reveal(), err)
+	}
+	if strings.Contains(err.Error(), testValue) {
+		t.Fatalf("error holds the value: %v", err)
 	}
 }

@@ -5,6 +5,7 @@ package home
 import (
 	"fmt"
 	"io/fs"
+	"os"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -68,6 +69,25 @@ func makePrivate(path string) error {
 // DACL whose every entry names the current user, SYSTEM or Administrators, and an
 // owner among them.
 func checkPrivate(path string, info fs.FileInfo) string {
+	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT,
+		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return "its access list cannot be read: " + err.Error()
+	}
+	return checkDescriptor(sd, info)
+}
+
+// checkPrivateFile checks the security descriptor of the open handle.
+func checkPrivateFile(f *os.File, info fs.FileInfo) string {
+	sd, err := windows.GetSecurityInfo(windows.Handle(f.Fd()), windows.SE_FILE_OBJECT,
+		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return "its access list cannot be read: " + err.Error()
+	}
+	return checkDescriptor(sd, info)
+}
+
+func checkDescriptor(sd *windows.SECURITY_DESCRIPTOR, info fs.FileInfo) string {
 	sids, err := trusted()
 	if err != nil {
 		return "the current user is unknown: " + err.Error()
@@ -79,11 +99,6 @@ func checkPrivate(path string, info fs.FileInfo) string {
 			}
 		}
 		return false
-	}
-	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT,
-		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
-	if err != nil {
-		return "its access list cannot be read: " + err.Error()
 	}
 	if owner, _, err := sd.Owner(); err != nil || owner == nil {
 		return "it has no owner"
