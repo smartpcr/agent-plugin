@@ -251,6 +251,23 @@ func TestFuzzCheckSeedProvenance(t *testing.T) {
 			[]string{"(decodeSeeds shares storage with s, which is written in copy_test.go)"}},
 		{"aliases that are only read", []string{"seeds_test.go", fuzz("b := []byte(\"x\")\nalias := b\nf.Add(alias)\nf.Add(b)"), "len_test.go",
 			"package p\nfunc init() { for _, s := range decodeSeeds { n := len(s); _ = string(s); _ = n } }\n"}, nil},
+		{"independent allocations stay independent", []string{"seeds_test.go", fuzz("b := []byte(\"x\")\nscratch := []byte(\"y\")\n_ = &scratch\nf.Add(b)")}, nil},
+		{"detached copies stay independent", []string{"seeds_test.go", fuzz("b := []byte(\"x\")\nc := bytes.Clone(b)\ncopy(c, readSeed())\n" +
+			"scratch := make([]byte, 1)\ncopy(scratch, b)\ncopy(scratch, readSeed())\nd := append([]byte(nil), b...)\nd[0] = readSeed()[0]\nf.Add(b)"), "read_test.go", readSeed}, nil},
+		{"scalar and string dependencies stay independent", []string{"seeds_test.go", fuzz("b := []byte(\"x\")\nn := len(b)\n_ = &n\n" +
+			"s := string(b)\n_ = &s\nc := b[0]\n_ = &c\nfor _, r := range b { _ = &r }\nf.Add(b)")}, nil},
+		{"copy of nested slices shares the inner arrays", []string{"seeds_test.go", fuzz("bs := [][]byte{[]byte(\"x\")}\nout := make([][]byte, 1)\n" +
+			"copy(out, bs)\ncopy(out[0], readSeed())\nf.Add(bs[0])"), "read_test.go", readSeed}, []string{"(calls readSeed)"}},
+		{"package-level alias written in seeds_test.go", []string{"seeds_test.go", fuzz("f.Add(seed)") +
+			"var seed = []byte(\"x\")\nvar alias = seed\nfunc init() { copy(alias, readSeed()) }\n", "read_test.go", readSeed},
+			[]string{"(calls readSeed)"}},
+		{"package-level alias in another file", []string{"seeds_test.go", fuzz("f.Add(seed)") + "var seed = []byte(\"x\")\n", "other_test.go",
+			readSeed + "var other = seed[1:]\nfunc init() { copy(other, readSeed()) }\n"}, []string{"(other is written in other_test.go)"}},
+		{"package variables joined through a local", []string{"seeds_test.go", fuzz("f.Add(seed)") +
+			"var seed = []byte(\"x\")\nvar alias []byte\nfunc init() { x := seed; alias = x }\n", "other_test.go",
+			readSeed + "func init() { copy(alias, readSeed()) }\n"}, []string{"(alias is written in other_test.go)"}},
+		{"package-level alias only read", []string{"seeds_test.go", fuzz("f.Add(seed)") + "var seed = []byte(\"x\")\n", "other_test.go",
+			"package p\nvar other = seed\nfunc init() { _ = len(other) }\n"}, nil},
 		{"helper of another file reads the disk", []string{"seeds_test.go", fuzz("f.Add(readSeed())"), "read_test.go", readSeed},
 			[]string{"f.Add argument readSeed() is not compiled in (calls readSeed)"}},
 		{"local assigned from a helper", []string{"seeds_test.go", fuzz("b := []byte(\"x\")\nb = readSeed()\nf.Add(b)"), "read_test.go", readSeed},

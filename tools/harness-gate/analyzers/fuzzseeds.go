@@ -37,12 +37,21 @@ import (
 // predeclared or imported name declared anywhere in the package or the function is
 // not trusted.
 //
-// Writes follow storage, not names: a variable defined or assigned from an
-// expression that mentions another (alias := b, alias := b[1:], for _, s := range
-// seeds, y := append(b[:0], ...)) may share its backing array, so the two join one
-// alias class and every write to a member is a write to all of them. In another test
-// file a seeds_test.go variable may only be read: a write to it or to any local of
-// its class other than len, cap or a conversion makes it opaque.
+// Writes follow storage, not names. A variable defined or assigned from an
+// expression that may share another's backing array joins that variable's alias
+// class, and a write to any member is a write to all of them: alias := b, alias :=
+// b[1:], x.f, &b, [][]byte{b}, y := append(b[:0], ...), a slice-to-slice conversion,
+// the bytes functions that may return a subslice, any other call of its operands, and
+// -- unless the source is flat (only bytes, numbers or strings, which hold no shared
+// storage) -- range variables, indexing, copy sources and append ... operands.
+// Expressions that allocate or yield scalars or strings ([]byte("x"), make,
+// bytes.Clone, string(b), len(b), b[0] of a []byte, operators) share nothing, so
+// independent allocations and detached copies stay independent. Package-level
+// variables of every file form one alias class graph: var alias = seed, and a write
+// in any function that joins two package variables through its locals. In another
+// test file a seeds_test.go variable, and any variable of its class, may only be
+// read: a write other than len, cap or a conversion makes it opaque, and a variable
+// of a non-test file is opaque in a seed's class (production code may write it).
 
 // pureBuiltins are the builtins an argument may call; none reads outside its operands.
 var pureBuiltins = map[string]bool{
@@ -96,6 +105,10 @@ type seedEnv struct {
 	alias    map[string]string // union-find parent of the names that may share storage
 }
 
+func newSeedEnv() *seedEnv {
+	return &seedEnv{locals: map[string][]seedDef{}, declared: map[string]bool{}, alias: map[string]string{}}
+}
+
 // find returns the representative of name's alias class.
 func (e *seedEnv) find(name string) string {
 	for {
@@ -147,67 +160,138 @@ type seedKey struct {
 // provenance resolves f.Add arguments of seeds_test.go.
 type provenance struct {
 	file     *ast.File
-	pkg      map[string][]seedDef
-	global   map[string]bool // every package-level name, of every file
+	pkg      map[string][]seedDef // package-level names of seeds_test.go
+	foreign  map[string][]seedDef // package-level variables of the other files
+	pkgAlias *seedEnv             // alias classes of package-level variables
+	global   map[string]bool      // every package-level name, of every file
 	visiting map[seedKey]bool
 }
 
 // newProvenance collects the package-level names of seeds and every write to them,
 // from seeds itself and from the other test files of the package.
 func newProvenance(seeds *PackageFile, files []PackageFile) *provenance {
-	p := &provenance{file: seeds.File, pkg: map[string][]seedDef{}, global: packageNames(files), visiting: map[seedKey]bool{}}
-	for _, decl := range seeds.File.Decls {
-		gd, ok := decl.(*ast.GenDecl)
-		if !ok || (gd.Tok != token.VAR && gd.Tok != token.CONST) {
-			continue
-		}
-		for _, spec := range gd.Specs {
-			vs := spec.(*ast.ValueSpec)
-			embedded := gd.Tok == token.VAR && (hasEmbed(gd.Doc) || hasEmbed(vs.Doc))
-			for i, n := range vs.Names {
-				switch {
-				case gd.Tok == token.VAR && !embedded && vs.Type != nil && !p.seedType(vs.Type, nil):
-					p.pkg[n.Name] = append(p.pkg[n.Name], seedDef{kind: defOpaque, why: n.Name + " has type " + types.ExprString(vs.Type)})
-				case gd.Tok == token.CONST || embedded || len(vs.Values) == 0:
-					p.pkg[n.Name] = append(p.pkg[n.Name], seedDef{kind: defZero})
-				case len(vs.Values) == len(vs.Names):
-					p.pkg[n.Name] = append(p.pkg[n.Name], seedDef{kind: defExpr, x: vs.Values[i]})
-				default:
-					p.pkg[n.Name] = append(p.pkg[n.Name], seedDef{kind: defOpaque, why: n.Name + " gets one of several results"})
-				}
-			}
-		}
-	}
+	p := &provenance{file: seeds.File, pkg: map[string][]seedDef{}, foreign: map[string][]seedDef{},
+		pkgAlias: newSeedEnv(), global: packageNames(files), visiting: map[seedKey]bool{}}
 	for _, pf := range files {
-		if !isTestFile(pf.Name) {
-			continue
-		}
 		inSeeds := pf.Name == seeds.Name
+		base := path.Base(strings.ReplaceAll(pf.Name, `\`, "/"))
 		for _, decl := range pf.File.Decls {
-			env := collectEnv(pf.File, decl)
-			p.propagateAliases(env, inSeeds, pf.Name)
-			for name, defs := range env.writes() {
-				if _, ok := p.pkg[name]; !ok {
-					continue
-				}
-				if inSeeds {
-					p.pkg[name] = append(p.pkg[name], defs...)
-					continue
-				}
-				if env.declared[name] {
-					continue // a local of the same name
-				}
-				for _, d := range defs {
-					if !p.onlyReads(d, env) {
-						p.pkg[name] = append(p.pkg[name], seedDef{kind: defOpaque,
-							why: name + " is written in " + path.Base(strings.ReplaceAll(pf.Name, `\`, "/"))})
-						break
+			gd, ok := decl.(*ast.GenDecl)
+			if !ok || (gd.Tok != token.VAR && gd.Tok != token.CONST) {
+				continue
+			}
+			for _, spec := range gd.Specs {
+				vs := spec.(*ast.ValueSpec)
+				embedded := gd.Tok == token.VAR && (hasEmbed(gd.Doc) || hasEmbed(vs.Doc))
+				for i, n := range vs.Names {
+					var d seedDef
+					switch {
+					case !isTestFile(pf.Name):
+						d = seedDef{kind: defOpaque, why: n.Name + " is a variable of " + base}
+					case gd.Tok == token.VAR && !embedded && vs.Type != nil && !p.seedType(vs.Type, nil):
+						d = seedDef{kind: defOpaque, why: n.Name + " has type " + types.ExprString(vs.Type)}
+					case gd.Tok == token.CONST || embedded || len(vs.Values) == 0:
+						d = seedDef{kind: defZero}
+					case len(vs.Values) == len(vs.Names):
+						d = seedDef{kind: defExpr, x: vs.Values[i]}
+					default:
+						d = seedDef{kind: defOpaque, why: n.Name + " gets one of several results"}
+					}
+					if inSeeds {
+						p.pkg[n.Name] = append(p.pkg[n.Name], d)
+					} else if gd.Tok == token.VAR {
+						p.foreign[n.Name] = append(p.foreign[n.Name], d)
+					}
+					if gd.Tok == token.VAR {
+						for j, v := range vs.Values {
+							if len(vs.Values) != len(vs.Names) || i == j {
+								for _, r := range storageRoots(pf.File, nil, v, false) {
+									p.pkgAlias.union(n.Name, r)
+								}
+							}
+						}
 					}
 				}
 			}
 		}
 	}
+	type fileEnv struct {
+		env     *seedEnv
+		inSeeds bool
+		name    string
+	}
+	var envs []fileEnv
+	for _, pf := range files {
+		if !isTestFile(pf.Name) {
+			continue
+		}
+		for _, decl := range pf.File.Decls {
+			env := collectEnv(pf.File, decl)
+			envs = append(envs, fileEnv{env, pf.Name == seeds.Name, pf.Name})
+			for name := range env.alias { // locals that join two package variables
+				if p.packageVar(name, env) {
+					for _, m := range env.class(name) {
+						if p.packageVar(m, env) {
+							p.pkgAlias.union(name, m)
+						}
+					}
+				}
+			}
+		}
+	}
+	for _, fe := range envs {
+		env := fe.env
+		p.propagateAliases(env, fe.inSeeds, fe.name)
+		for name, defs := range env.writes() {
+			target := p.pkg
+			if _, ok := p.pkg[name]; !ok {
+				if _, ok := p.foreign[name]; !ok {
+					continue
+				}
+				target = p.foreign
+			}
+			if fe.inSeeds {
+				target[name] = append(target[name], defs...)
+				continue
+			}
+			if env.declared[name] {
+				continue // a local of the same name
+			}
+			for _, d := range defs {
+				if !p.onlyReads(d, env) {
+					target[name] = append(target[name], seedDef{kind: defOpaque,
+						why: name + " is written in " + path.Base(strings.ReplaceAll(fe.name, `\`, "/"))})
+					break
+				}
+			}
+		}
+	}
 	return p
+}
+
+// packageVar reports whether name, which env does not declare, is a package-level
+// variable of some file.
+func (p *provenance) packageVar(name string, env *seedEnv) bool {
+	if env != nil && env.declared[name] {
+		return false
+	}
+	_, seeds := p.pkg[name]
+	_, other := p.foreign[name]
+	return seeds || other
+}
+
+// pkgAliasDefs returns the definitions that resolving the package-level name must
+// also check: one per other variable of its package alias class.
+func (p *provenance) pkgAliasDefs(name string) []seedDef {
+	var defs []seedDef
+	for _, m := range p.pkgAlias.class(name) {
+		if _, ok := p.pkg[m]; ok {
+			defs = append(defs, seedDef{kind: defExpr, x: ast.NewIdent(m)})
+		} else if fd, ok := p.foreign[m]; ok {
+			defs = append(defs, fd...)
+		}
+	}
+	return defs
 }
 
 // propagateAliases makes every write that env records to a local sharing storage
@@ -217,14 +301,18 @@ func newProvenance(seeds *PackageFile, files []PackageFile) *provenance {
 func (p *provenance) propagateAliases(env *seedEnv, inSeeds bool, file string) {
 	var names []string
 	for name := range env.alias {
-		if _, ok := p.pkg[name]; ok && !env.declared[name] {
+		if p.packageVar(name, env) {
 			names = append(names, name)
 		}
 	}
 	sort.Strings(names)
 	for _, name := range names {
+		target := p.pkg
+		if _, ok := p.pkg[name]; !ok {
+			target = p.foreign
+		}
 		if inSeeds {
-			p.pkg[name] = append(p.pkg[name], p.aliasDefs(env, name)...)
+			target[name] = append(target[name], p.aliasDefs(env, name)...)
 			continue
 		}
 	members:
@@ -234,7 +322,7 @@ func (p *provenance) propagateAliases(env *seedEnv, inSeeds bool, file string) {
 			}
 			for _, d := range env.locals[m] {
 				if !d.decl && !p.onlyReads(d, env) {
-					p.pkg[name] = append(p.pkg[name], seedDef{kind: defOpaque,
+					target[name] = append(target[name], seedDef{kind: defOpaque,
 						why: name + " shares storage with " + m + ", which is written in " + path.Base(strings.ReplaceAll(file, `\`, "/"))})
 					break members
 				}
@@ -250,6 +338,8 @@ func (p *provenance) aliasDefs(env *seedEnv, name string) []seedDef {
 	for _, m := range env.class(name) {
 		if _, pkg := p.pkg[m]; env.declared[m] || pkg {
 			defs = append(defs, seedDef{kind: defExpr, x: ast.NewIdent(m), env: env})
+		} else if fd, ok := p.foreign[m]; ok {
+			defs = append(defs, fd...)
 		}
 	}
 	return defs
@@ -425,6 +515,7 @@ func (p *provenance) checkName(id *ast.Ident, env *seedEnv) (ast.Node, string) {
 				defs = append(defs, d)
 			}
 		}
+		defs = append(defs, p.pkgAliasDefs(id.Name)...)
 		found = true
 	}
 	if !found {
@@ -478,9 +569,14 @@ func (p *provenance) pureSelector(sel *ast.SelectorExpr, env *seedEnv) bool {
 
 // pureImport reports whether name is the name file imports a pureStd package as.
 func pureImport(file *ast.File, name string) bool {
+	return pureStd[importPath(file, name)]
+}
+
+// importPath returns the path of the package file imports as name, or "".
+func importPath(file *ast.File, name string) string {
 	for _, imp := range file.Imports {
 		ip, err := strconv.Unquote(imp.Path.Value)
-		if err != nil || !pureStd[ip] {
+		if err != nil {
 			continue
 		}
 		n := path.Base(ip)
@@ -488,10 +584,10 @@ func pureImport(file *ast.File, name string) bool {
 			n = imp.Name.Name
 		}
 		if n == name {
-			return true
+			return ip
 		}
 	}
-	return false
+	return ""
 }
 
 // shadowed reports whether name is declared in env or at package level in any file
@@ -532,7 +628,16 @@ func reassigned(env *seedEnv, name string) bool {
 // operands are checked with it; any other call makes it opaque. len, cap and
 // conversions only read their operand, and f.Add only reads its arguments.
 func collectEnv(file *ast.File, node ast.Node) *seedEnv {
-	env := &seedEnv{locals: map[string][]seedDef{}, declared: map[string]bool{}, alias: map[string]string{}}
+	env := newSeedEnv()
+	type aliasEdge struct { // name may share storage with x, or with only x's elements
+		name  string
+		x     ast.Expr
+		elems bool
+	}
+	var edges []aliasEdge
+	edge := func(name string, x ast.Expr, elems bool) {
+		edges = append(edges, aliasEdge{name, x, elems})
+	}
 	add := func(name string, d seedDef, declare bool) {
 		if name == "" || name == "_" {
 			return
@@ -542,11 +647,6 @@ func collectEnv(file *ast.File, node ast.Node) *seedEnv {
 			env.declared[name] = true
 		}
 		env.locals[name] = append(env.locals[name], d)
-		if d.kind == defExpr && d.x != nil {
-			for _, ref := range refNames(d.x) {
-				env.union(name, ref)
-			}
-		}
 	}
 	params := func(ft *ast.FuncType, recv *ast.FieldList) {
 		for _, fl := range []*ast.FieldList{recv, ft.Params, ft.Results} {
@@ -577,6 +677,11 @@ func collectEnv(file *ast.File, node ast.Node) *seedEnv {
 				} else {
 					add(rootName(l), d, false)
 				}
+				for j, r := range n.Rhs {
+					if len(n.Lhs) != len(n.Rhs) || i == j {
+						edge(rootName(l), r, false)
+					}
+				}
 			}
 		case *ast.RangeStmt:
 			for _, l := range []ast.Expr{n.Key, n.Value} {
@@ -587,6 +692,9 @@ func collectEnv(file *ast.File, node ast.Node) *seedEnv {
 					add(id.Name, seedDef{kind: defExpr, x: n.X}, true)
 				} else {
 					add(rootName(l), seedDef{kind: defExpr, x: n.X}, false)
+				}
+				if l == n.Value { // the key is an index or a map key
+					edge(rootName(l), n.X, true)
 				}
 			}
 		case *ast.DeclStmt:
@@ -604,6 +712,7 @@ func collectEnv(file *ast.File, node ast.Node) *seedEnv {
 						add(id.Name, seedDef{kind: defZero}, true)
 					case len(vs.Values) == len(vs.Names):
 						add(id.Name, seedDef{kind: defExpr, x: vs.Values[i]}, true)
+						edge(id.Name, vs.Values[i], false)
 					default:
 						add(id.Name, seedDef{kind: defOpaque, why: id.Name + " gets one of several results"}, true)
 					}
@@ -617,7 +726,13 @@ func collectEnv(file *ast.File, node ast.Node) *seedEnv {
 		case *ast.CallExpr:
 			if id, ok := ast.Unparen(n.Fun).(*ast.Ident); ok && id.Name == "copy" && len(n.Args) == 2 {
 				add(rootName(n.Args[0]), seedDef{kind: defExpr, x: n.Args[1]}, false)
+				edge(rootName(n.Args[0]), n.Args[1], true)
 				break
+			}
+			if id, ok := ast.Unparen(n.Fun).(*ast.Ident); ok && id.Name == "append" && len(n.Args) > 0 {
+				for j, a := range n.Args[1:] { // the first operand's array receives the others
+					edge(rootName(n.Args[0]), a, n.Ellipsis.IsValid() && j == len(n.Args)-2)
+				}
 			}
 			fun := types.ExprString(n.Fun)
 			pure := false // a builtin, a conversion or a pureStd call: check decides
@@ -648,23 +763,180 @@ func collectEnv(file *ast.File, node ast.Node) *seedEnv {
 		}
 		return true
 	})
+	for _, e := range edges {
+		for _, r := range storageRoots(file, env, e.x, e.elems) {
+			env.union(e.name, r)
+		}
+	}
 	return env
 }
 
-// refNames returns every name x mentions, but not the selected names of selectors.
-func refNames(x ast.Node) []string {
+// bytesCopies are the bytes functions whose result never shares an operand's array.
+var bytesCopies = map[string]bool{
+	"Clone": true, "Join": true, "Map": true, "Repeat": true, "Replace": true, "ReplaceAll": true,
+	"Runes": true, "ToLower": true, "ToTitle": true, "ToUpper": true, "ToValidUTF8": true,
+	"Compare": true, "Contains": true, "ContainsAny": true, "ContainsFunc": true, "ContainsRune": true,
+	"Count": true, "Equal": true, "EqualFold": true, "HasPrefix": true, "HasSuffix": true,
+	"Index": true, "IndexAny": true, "IndexByte": true, "IndexFunc": true, "IndexRune": true,
+	"LastIndex": true, "LastIndexAny": true, "LastIndexByte": true, "LastIndexFunc": true,
+}
+
+// bytesNested are the bytes functions whose result holds subslices of an operand.
+var bytesNested = map[string]bool{
+	"Fields": true, "FieldsFunc": true, "Split": true, "SplitAfter": true, "SplitAfterN": true, "SplitN": true,
+}
+
+// storageRoots returns the variables whose storage the value of x may share, or, with
+// elems, whose storage the elements of x may share (a flat x has none).
+func storageRoots(file *ast.File, env *seedEnv, x ast.Expr, elems bool) []string {
+	if elems && flat(file, env, x, map[string]bool{}) {
+		return nil
+	}
+	switch x := x.(type) {
+	case *ast.Ident:
+		return []string{x.Name}
+	case *ast.ParenExpr:
+		return storageRoots(file, env, x.X, elems)
+	case *ast.SliceExpr:
+		return storageRoots(file, env, x.X, elems)
+	case *ast.StarExpr:
+		return storageRoots(file, env, x.X, elems)
+	case *ast.TypeAssertExpr:
+		return storageRoots(file, env, x.X, elems)
+	case *ast.IndexExpr:
+		return storageRoots(file, env, x.X, true)
+	case *ast.SelectorExpr:
+		if id, ok := ast.Unparen(x.X).(*ast.Ident); ok && importPath(file, id.Name) != "" {
+			return nil // a member of another package
+		}
+		return storageRoots(file, env, x.X, elems)
+	case *ast.UnaryExpr:
+		if x.Op == token.AND {
+			return storageRoots(file, env, x.X, false)
+		}
+	case *ast.CompositeLit:
+		var out []string
+		for _, e := range x.Elts {
+			if kv, ok := e.(*ast.KeyValueExpr); ok {
+				e = kv.Value
+			}
+			out = append(out, storageRoots(file, env, e, false)...)
+		}
+		return out
+	case *ast.CallExpr:
+		return callRoots(file, env, x)
+	}
+	return nil // a literal, an operator, a function literal: fresh or scalar
+}
+
+// callRoots returns the variables whose storage the result of call may share.
+func callRoots(file *ast.File, env *seedEnv, call *ast.CallExpr) []string {
 	var out []string
-	ast.Inspect(x, func(n ast.Node) bool {
-		switch n := n.(type) {
-		case *ast.SelectorExpr:
-			out = append(out, refNames(n.X)...)
-			return false
+	operands := func(from int) []string {
+		for _, a := range call.Args[from:] {
+			out = append(out, storageRoots(file, env, a, false)...)
+		}
+		return out
+	}
+	switch fn := ast.Unparen(call.Fun).(type) {
+	case *ast.ArrayType: // a slice-to-slice conversion shares its operand
+		return operands(0)
+	case *ast.Ident:
+		switch {
+		case fn.Name == "append" && len(call.Args) > 0:
+			out = storageRoots(file, env, call.Args[0], false)
+			for j, a := range call.Args[1:] {
+				out = append(out, storageRoots(file, env, a, call.Ellipsis.IsValid() && j == len(call.Args)-2)...)
+			}
+			return out
+		case predeclaredTypes[fn.Name] || pureBuiltins[fn.Name] || fn.Name == "copy":
+			return nil // a scalar, a string or a fresh allocation
+		}
+	case *ast.SelectorExpr:
+		if id, ok := ast.Unparen(fn.X).(*ast.Ident); ok {
+			if ip := importPath(file, id.Name); pureStd[ip] {
+				switch {
+				case ip == "bytes" && !bytesCopies[fn.Sel.Name]:
+					return operands(0)
+				case strings.HasPrefix(fn.Sel.Name, "Append") && len(call.Args) > 0:
+					return storageRoots(file, env, call.Args[0], false)
+				}
+				return nil
+			}
+		}
+		out = storageRoots(file, env, fn.X, false) // a method may return its receiver's storage
+	}
+	return operands(0) // any other call may return storage of its operands
+}
+
+// flat reports whether x holds no storage another variable can share: bytes,
+// numbers, strings, or a slice of them.
+func flat(file *ast.File, env *seedEnv, x ast.Expr, seen map[string]bool) bool {
+	switch x := x.(type) {
+	case *ast.BasicLit, *ast.BinaryExpr:
+		return true
+	case *ast.UnaryExpr:
+		return x.Op != token.AND
+	case *ast.ParenExpr:
+		return flat(file, env, x.X, seen)
+	case *ast.SliceExpr:
+		return flat(file, env, x.X, seen)
+	case *ast.CompositeLit:
+		return flatType(x.Type)
+	case *ast.CallExpr:
+		switch fn := ast.Unparen(x.Fun).(type) {
+		case *ast.ArrayType:
+			return flatType(fn)
 		case *ast.Ident:
-			out = append(out, n.Name)
+			switch fn.Name {
+			case "append":
+				return len(x.Args) > 0 && flat(file, env, x.Args[0], seen)
+			case "make":
+				return len(x.Args) > 0 && flatType(x.Args[0])
+			case "len", "cap", "copy", "complex", "real", "imag", "min", "max":
+				return true
+			}
+			return predeclaredTypes[fn.Name]
+		case *ast.SelectorExpr:
+			if id, ok := ast.Unparen(fn.X).(*ast.Ident); ok {
+				ip := importPath(file, id.Name)
+				return pureStd[ip] && !(ip == "bytes" && bytesNested[fn.Sel.Name])
+			}
+		}
+	case *ast.Ident:
+		if env == nil || !env.declared[x.Name] || seen[x.Name] {
+			return false
+		}
+		seen[x.Name] = true
+		for _, d := range env.locals[x.Name] {
+			switch d.kind {
+			case defOpaque:
+				return false
+			case defType:
+				if !flatType(d.x) {
+					return false
+				}
+			case defExpr:
+				if !d.call && !flat(file, env, d.x, seen) {
+					return false
+				}
+			}
 		}
 		return true
-	})
-	return out
+	}
+	return false
+}
+
+// flatType reports whether t is a predeclared type or a slice or array of one.
+func flatType(t ast.Expr) bool {
+	switch t := ast.Unparen(t).(type) {
+	case *ast.Ident:
+		return predeclaredTypes[t.Name]
+	case *ast.ArrayType:
+		id, ok := ast.Unparen(t.Elt).(*ast.Ident)
+		return ok && predeclaredTypes[id.Name]
+	}
+	return false
 }
 
 // rootName returns the variable an assignable expression writes to: x for x, x[i],
