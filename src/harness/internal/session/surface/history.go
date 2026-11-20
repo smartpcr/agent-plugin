@@ -24,7 +24,11 @@ type Node struct {
 // Seq is the position of the surface event that produced the node.
 func (n Node) Seq() event.Seq { return n.seq }
 
-// Revision counts the rewrites of the node's content; 0 until one happens.
+// Revision counts the rewrites of the node's content; 0 until one happens. A
+// content rewrite is a replacement of exactly one node by an event of the same
+// type (a tool result's new content, a new system prompt): the new node's
+// revision is the old one's plus one. A replacement over several nodes, or by
+// another type, builds a new node at revision 0.
 func (n Node) Revision() int { return n.rev }
 
 // Type is the surface event type.
@@ -205,6 +209,9 @@ func (h historyFold) planSurface(rec event.Record, role vocab.Role, call string,
 		if rec.Type != event.SystemMessage.Name() || from != to {
 			return surfacePlan{}, errorf(event.CodeInvalidSurface, "type %q at seq %d: the system prompt at node 0 may only be replaced by a system/message over exactly that node", rec.Type, rec.Seq)
 		}
+	}
+	if p.node != nil && from == to && h.nodes[from].typ == rec.Type {
+		p.node.rev = h.nodes[from].rev + 1
 	}
 	p.from, p.to = from, to
 	return p, nil
