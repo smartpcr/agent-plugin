@@ -274,6 +274,17 @@ func (p *Process) StopTree(ctx context.Context, grace time.Duration) error {
 	return nil
 }
 
+// Kill is the forced stop alone: it kills every member now and returns without
+// waiting. It does not wait for a StopTree in progress either, so a forced
+// shutdown escalates past a graceful stop still in its grace period. TreeGone or a
+// later StopTree observe the exit.
+func (p *Process) Kill() error {
+	if p.gone() {
+		return nil
+	}
+	return p.withOwner(treeOwner.kill)
+}
+
 func settle(ctx context.Context) (context.Context, context.CancelFunc) {
 	if _, ok := ctx.Deadline(); ok {
 		return context.WithCancel(ctx)

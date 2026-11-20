@@ -3,6 +3,7 @@ package output
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
 )
@@ -71,6 +72,10 @@ var codes = map[herr.Reason]int{
 	"profile/bad-layer":  Config,
 	"profile/bad-bundle": Config,
 
+	"boot/required":         Config,
+	"boot/host-preparation": Fatal,
+	"boot/panic":            Fatal,
+
 	"home/io":            Failed,
 	"home/not-directory": Invalid,
 	"home/not-private":   Denied,
@@ -106,6 +111,10 @@ func Status(err error) int {
 	if err == nil {
 		return OK
 	}
+	var exit exitError
+	if errors.As(err, &exit) {
+		return int(exit)
+	}
 	if r, ok := herr.ReasonOf(err); ok {
 		if status, ok := codes[r]; ok {
 			return status
@@ -125,4 +134,25 @@ func Status(err error) int {
 func Known(r herr.Reason) bool {
 	_, ok := codes[r]
 	return ok
+}
+
+// exitError is a status whose diagnostics were already printed.
+type exitError int
+
+func (e exitError) Error() string { return fmt.Sprintf("exit status %d", int(e)) }
+
+// Exit returns status as an error that Status maps back to it and Result.Fail
+// does not print: the run that returned it (a profile launch) already printed its
+// own diagnostics. Status 0 is nil.
+func Exit(status int) error {
+	if status == OK {
+		return nil
+	}
+	return exitError(status)
+}
+
+// reported reports whether err is an Exit status.
+func reported(err error) bool {
+	var exit exitError
+	return errors.As(err, &exit)
 }

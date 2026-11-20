@@ -1,0 +1,228 @@
+package boot
+
+import (
+	"fmt"
+	"slices"
+	"strings"
+
+	"github.com/smartpcr/agent-plugin/src/go/cordis"
+	"github.com/smartpcr/agent-plugin/src/go/loader"
+)
+
+// EgressKinds are the kinds of outbound traffic a host may be permitted to send,
+// in the order the audit lists them (host-telemetry.md, the sender table). Every
+// kind is off until configured.
+var EgressKinds = []string{
+	"model-request",
+	"session-upload",
+	"session-log-contribution",
+	"model-request-extras",
+	"feedback",
+	"analytics",
+	"telemetry",
+	"update-check",
+	"account-notices",
+	"translation",
+	"speech-audio",
+}
+
+// Permit is one outbound permit: a kind of traffic and where it may go.
+type Permit struct {
+	Kind        string `json:"kind"`
+	Destination string `json:"destination,omitempty"`
+	Allowed     bool   `json:"allowed"`
+}
+
+// Permits returns one permit per kind of EgressKinds: allowed with its destination
+// when configured names the kind, denied otherwise. Nil configures none.
+func Permits(configured map[string]string) []Permit {
+	out := make([]Permit, len(EgressKinds))
+	for i, kind := range EgressKinds {
+		dest, ok := configured[kind]
+		out[i] = Permit{Kind: kind, Destination: dest, Allowed: ok}
+	}
+	return out
+}
+
+// EntryState is the audit's view of one entry that is not active.
+type EntryState struct {
+	ID        string `json:"id"`
+	Component string `json:"component,omitempty"`
+	// Position is file:line:column of the entry in its layer, "" when unknown.
+	Position string `json:"position,omitempty"`
+	// State is absent, disabled, pending, loading, failed or not loaded.
+	State    string `json:"state"`
+	Cause    string `json:"cause,omitempty"`
+	Required bool   `json:"required,omitempty"`
+}
+
+func (e EntryState) String() string {
+	var b strings.Builder
+	b.WriteString(e.ID)
+	if e.Component != "" {
+		b.WriteString(" (" + e.Component + ")")
+	}
+	if e.Position != "" {
+		b.WriteString(" at " + e.Position)
+	}
+	b.WriteString(": " + e.State)
+	if e.Cause != "" {
+		b.WriteString(": " + strings.ReplaceAll(e.Cause, "\n", " "))
+	}
+	return b.String()
+}
+
+// Audit is the boot audit: the outbound permits, and the entries that are not
+// active, required ones marked.
+type Audit struct {
+	Permits  []Permit     `json:"permits"`
+	Inactive []EntryState `json:"inactive,omitempty"`
+}
+
+// Allowed returns the permits that are allowed.
+func (a Audit) Allowed() []Permit {
+	var out []Permit
+	for _, p := range a.Permits {
+		if p.Allowed {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// PermitLine is the audit line listing every outbound permit.
+func (a Audit) PermitLine() string {
+	allowed := a.Allowed()
+	if len(allowed) == 0 {
+		return "dsh: audit: outbound permits: none"
+	}
+	parts := make([]string, len(allowed))
+	for i, p := range allowed {
+		parts[i] = p.Kind
+		if p.Destination != "" {
+			parts[i] += " -> " + p.Destination
+		}
+	}
+	return fmt.Sprintf("dsh: audit: outbound permits: %d: %s", len(allowed), strings.Join(parts, ", "))
+}
+
+// WarningLine is the one warning for the entries that are not active, "" for none.
+func (a Audit) WarningLine() string {
+	if len(a.Inactive) == 0 {
+		return ""
+	}
+	parts := make([]string, len(a.Inactive))
+	for i, e := range a.Inactive {
+		parts[i] = e.String()
+	}
+	return fmt.Sprintf("dsh: warning: %d entries are not active: %s", len(a.Inactive), strings.Join(parts, "; "))
+}
+
+// RequiredError is the start-up report of a launch whose required entries did not
+// all load: the failed ones, the ones waiting for a service, and the others.
+type RequiredError struct {
+	Required []EntryState
+	Others   []EntryState
+}
+
+func (e *RequiredError) Reason() string { return string(ReasonRequired) }
+
+func (e *RequiredError) Error() string {
+	ids := make([]string, len(e.Required))
+	for i, r := range e.Required {
+		ids[i] = r.ID
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "required entry not active: %s", strings.Join(ids, ", "))
+	group := func(title string, pick func(EntryState) bool) {
+		var lines []string
+		for _, list := range [][]EntryState{e.Required, e.Others} {
+			for _, s := range list {
+				if pick(s) {
+					mark := ""
+					if s.Required {
+						mark = " [required]"
+					}
+					lines = append(lines, "  "+s.String()+mark)
+				}
+			}
+		}
+		if len(lines) > 0 {
+			b.WriteString("\n" + title + ":\n" + strings.Join(lines, "\n"))
+		}
+	}
+	group("failed", func(s EntryState) bool { return s.State == "failed" })
+	group("waiting for a service", func(s EntryState) bool { return s.State == "pending" })
+	group("not active", func(s EntryState) bool { return s.State != "failed" && s.State != "pending" })
+	return b.String()
+}
+
+var _ interface{ Reason() string } = (*RequiredError)(nil)
+
+// audit checks svc against the required ids: each must be present, enabled and
+// active. It returns the inactive entries, and a *RequiredError when a required one
+// is among them.
+func audit(svc *loader.Service, required []string) ([]EntryState, error) {
+	var inactive []EntryState
+	seen := map[string]bool{}
+	for _, entry := range svc.Entries() {
+		seen[entry.ID()] = true
+		if st, ok := entryState(svc, entry); !ok {
+			st.Required = slices.Contains(required, entry.ID())
+			inactive = append(inactive, st)
+		}
+	}
+	for _, id := range required {
+		if !seen[id] {
+			inactive = append(inactive, EntryState{ID: id, State: "absent", Required: true})
+		}
+	}
+	var req, others []EntryState
+	for _, st := range inactive {
+		if st.Required {
+			req = append(req, st)
+		} else {
+			others = append(others, st)
+		}
+	}
+	if len(req) > 0 {
+		return inactive, &RequiredError{Required: req, Others: others}
+	}
+	return inactive, nil
+}
+
+// entryState describes entry; ok is true when it is active or is a group.
+func entryState(svc *loader.Service, entry *loader.Entry) (EntryState, bool) {
+	opts := svc.Options(entry)
+	st := EntryState{ID: entry.ID(), Component: opts.Name}
+	if pos := opts.Position(); pos.IsValid() {
+		st.Position = pos.String()
+	}
+	if opts.Group && !opts.Disabled {
+		return st, true
+	}
+	fiber := svc.Fiber(entry)
+	switch {
+	case opts.Disabled:
+		st.State = "disabled"
+	case fiber == nil:
+		st.State = "not loaded"
+	default:
+		switch fiber.State() {
+		case cordis.Active:
+			return st, true
+		case cordis.Pending:
+			st.State = "pending"
+		case cordis.Loading:
+			st.State = "loading"
+		case cordis.Failed:
+			st.State = "failed"
+		default:
+			st.State = "not loaded"
+		}
+		if err := fiber.Err(); err != nil {
+			st.Cause = err.Error()
+		}
+	}
+	return st, false
+}

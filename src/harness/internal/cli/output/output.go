@@ -154,12 +154,16 @@ func (r *Result) write(data []byte) error {
 // Fail reports err for the named command and returns its status: one line
 // "dsh <command>: <domain>/<reason>: <message>" on the diagnostic stream (plus
 // HelpHint for a usage error) and, under a JSON mode, {"error":{"code","message"}}
-// as the last value of the result stream. A nil err is status OK and prints nothing.
+// as the last value of the result stream. A nil err is status OK and prints nothing;
+// an Exit status is its status and prints nothing either.
 func (r *Result) Fail(command string, err error) int {
 	if err == nil {
 		return OK
 	}
 	status := Status(err)
+	if reported(err) {
+		return status
+	}
 	if _, ok := herr.ReasonOf(err); !ok {
 		err = herr.Wrap(uncoded(status), err, "")
 	}
