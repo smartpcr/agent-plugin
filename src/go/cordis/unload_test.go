@@ -3,6 +3,7 @@ package cordis_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -239,12 +240,12 @@ func TestPendingFiberReleasesEffectsAndCreationHandlerCanDispose(t *testing.T) {
 
 	t.Run("creation handler", func(t *testing.T) {
 		root, logs := Quiet()
-		var ran, otherCalled atomic.Bool
-		var disposeOnce sync.Once
+		var ran, otherCalled, disposing atomic.Bool
 		root.Internal().OnPlugin(func(*cordis.Fiber) { panic("handler failure") })
 		root.Internal().OnPlugin(func(f *cordis.Fiber) {
-			if f.Name() == "doomed" {
-				disposeOnce.Do(f.Dispose)
+			// Dispose delivers its own notifications, so this handler is re-entered.
+			if f.Name() == "doomed" && disposing.CompareAndSwap(false, true) {
+				f.Dispose()
 			}
 		})
 		root.Internal().OnPlugin(func(*cordis.Fiber) { otherCalled.Store(true) })
@@ -474,15 +475,16 @@ func TestUnloadWaitsForInFlightAcquisition(t *testing.T) {
 func TestCreationHandlerRunsBeforeLoadUnderConcurrentDelivery(t *testing.T) {
 	root, _ := Quiet()
 	blocking, gate := make(chan struct{}), make(chan struct{})
-	var blockOnce, disposeOnce sync.Once
+	var blockOnce sync.Once
+	var disposing atomic.Bool
 	root.Internal().OnStatus(func(f *cordis.Fiber, _, _ cordis.FiberState) {
 		if f.Name() == "blocker" {
 			blockOnce.Do(func() { close(blocking); <-gate })
 		}
 	})
 	root.Internal().OnPlugin(func(f *cordis.Fiber) {
-		if f.Name() == "doomed" {
-			disposeOnce.Do(f.Dispose)
+		if f.Name() == "doomed" && disposing.CompareAndSwap(false, true) {
+			f.Dispose()
 		}
 	})
 	go func() { _, _ = root.Apply("blocker", func(*cordis.Context) error { return nil }) }()
@@ -507,11 +509,12 @@ func TestCreationHandlerRunsBeforeLoadUnderConcurrentDelivery(t *testing.T) {
 func TestNotificationHandlerCanDisposeTheAcquiringFiber(t *testing.T) {
 	t.Run("root provide", func(t *testing.T) {
 		root, _ := Quiet()
-		var once sync.Once
+		var claimed atomic.Bool
 		handled := make(chan struct{})
 		root.Internal().OnService(func(name string, value any) {
-			if name == "svc" && value != nil {
-				once.Do(func() { root.Dispose(); close(handled) })
+			if name == "svc" && value != nil && claimed.CompareAndSwap(false, true) {
+				root.Dispose()
+				close(handled)
 			}
 		})
 		Within(t, "provide", func() { _, _ = root.Provide("svc", 1) })
@@ -524,11 +527,12 @@ func TestNotificationHandlerCanDisposeTheAcquiringFiber(t *testing.T) {
 		root, _ := Quiet()
 		var released atomic.Int32
 		fiber := MustWait(t, Must(root.Apply("owner", func(*cordis.Context) error { return nil })))
-		var once sync.Once
+		var claimed atomic.Bool
 		handled := make(chan struct{})
 		root.Internal().OnService(func(name string, value any) {
-			if name == "inner" && value != nil {
-				once.Do(func() { fiber.Dispose(); close(handled) })
+			if name == "inner" && value != nil && claimed.CompareAndSwap(false, true) {
+				fiber.Dispose()
+				close(handled)
 			}
 		})
 		Within(t, "effect", func() {
@@ -589,4 +593,73 @@ func TestRootLifecycleHandlersCannotBlockTeardown(t *testing.T) {
 	Within(t, "unloading handler", func() { True(t, <-unloading, "Wait in the Unloading handler returned before the cleanup") })
 	Within(t, "disposed handler", func() { <-disposed })
 	Equal(t, cordis.Disposed, root.Fiber().State())
+}
+
+// A handler that waits for a fiber's load does not deadlock when that load creates and
+// waits for a child: the child's creation notification is delivered by the waiting
+// load itself, not behind the blocked handler.
+func TestHandlerWaitingForALoadThatWaitsForAChild(t *testing.T) {
+	root, _ := Quiet()
+	entered, handled := make(chan struct{}), make(chan error, 1)
+	var once sync.Once
+	var created atomic.Bool
+	root.Internal().OnPlugin(func(f *cordis.Fiber) {
+		if f.Name() == "child" {
+			created.Store(true)
+		}
+	})
+	root.Internal().OnStatus(func(f *cordis.Fiber, _, next cordis.FiberState) {
+		if f.Name() == "parent" && next == cordis.Loading {
+			once.Do(func() {
+				close(entered)
+				handled <- f.Wait()
+			})
+		}
+	})
+	var child *cordis.Fiber
+	parent := Must(root.Apply("parent", func(ctx *cordis.Context) error {
+		<-entered
+		var err error
+		if child, err = ctx.Apply("child", func(*cordis.Context) error { return nil }); err != nil {
+			return err
+		}
+		return child.Wait()
+	}))
+	Within(t, "handler", func() { NoError(t, <-handled) })
+	Within(t, "wait", func() { NoError(t, parent.Wait()) })
+	Equal(t, cordis.Active, parent.State())
+	Equal(t, cordis.Active, child.State())
+	True(t, created.Load(), "the child loaded before its creation handler ran")
+}
+
+// An external Dispose returns with its notifications delivered even while an unrelated
+// handler blocks the dispatcher.
+func TestDisposeDeliversItsNotificationsPastABlockedHandler(t *testing.T) {
+	root, _ := Quiet()
+	fiber := MustWait(t, Must(root.Apply("disposed", func(*cordis.Context) error { return nil })))
+	var mu sync.Mutex
+	var states []cordis.FiberState
+	blocking, gate := make(chan struct{}), make(chan struct{})
+	defer close(gate)
+	var claimed atomic.Bool
+	root.Internal().OnStatus(func(f *cordis.Fiber, _, next cordis.FiberState) {
+		switch f {
+		case fiber:
+			mu.Lock()
+			states = append(states, next)
+			mu.Unlock()
+		default:
+			if f.Name() == "blocker" && claimed.CompareAndSwap(false, true) {
+				close(blocking)
+				<-gate
+			}
+		}
+	})
+	go func() { _, _ = root.Apply("blocker", func(*cordis.Context) error { return nil }) }()
+	Within(t, "dispatcher blocked", func() { <-blocking })
+
+	Within(t, "dispose", fiber.Dispose)
+	mu.Lock()
+	defer mu.Unlock()
+	True(t, len(states) > 0 && states[len(states)-1] == cordis.Disposed, fmt.Sprint(states))
 }

@@ -300,19 +300,27 @@ upstream; tests in `cordis/unload_test.go`):
   fiber that never loaded still releases effects created on its context. An unload also
   waits for an effect whose acquisition is still running on another goroutine, so the
   cleanup it collects runs before the providers are released. Internal
-  notifications are delivered by the tree's dispatcher goroutine, never on the
-  goroutine doing the lifecycle work (an acquisition, an unload, the root's teardown),
-  so a handler may dispose or wait for the fiber that raised it; `Fiber.Wait` and
-  `Fiber.Dispose` still return only once the notifications raised before them have
-  been delivered (unless called from a handler).
+  notifications are delivered one at a time by the tree's dispatcher goroutine, never
+  as a side effect of the lifecycle work (an acquisition, an unload, the root's
+  teardown). `Fiber.Wait` and `Fiber.Dispose` return only once the notifications raised
+  during the call have been delivered: when the dispatcher is busy with a handler that
+  started before the call (the one the caller runs inside, or an unrelated blocked
+  one), the caller delivers the queued notifications itself, in order. So a handler may
+  dispose or wait for the fiber that raised it, or wait for a load that creates and
+  waits for children, and an unrelated `Dispose` is not held up by a blocked handler.
+  Such a delivery can re-enter the handler that called `Wait` or `Dispose` (as
+  upstream's synchronous emit does), so handlers guard one-shot work with a flag
+  rather than `sync.Once`.
   Disposing the root is
   final in the same way: the root refuses new effects and child fibers, its state is
   `Unloading` then `Disposed`, and an overlapping `root.Dispose()` or
   `root.Fiber().Wait()` returns only after the teardown. A fiber loads only after its
   `Internal.OnPlugin` creation notification has been delivered (a marker queued behind
   it starts the load), so a creation handler that disposes it stops it before its body
-  runs, even while another goroutine is delivering notifications; for the same reason
-  `Fiber.Wait` must not be called from a handler for a fiber created in that handler.
+  runs, even while another goroutine is delivering notifications. `Fiber.Wait` on a new
+  fiber delivers its creation notification first if the dispatcher has not, and waits
+  for its creation handlers, so a creation handler must not wait for the fiber it
+  announces.
   A cleanup or acquisition must not dispose its own handle or wait for its own fiber's
   unload.
 - **Fiber lifetime** (`DH-D-CORDIS-2`). `Fiber.Lifetime()` / `Context.Lifetime()` is a

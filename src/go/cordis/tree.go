@@ -7,20 +7,25 @@ import "sync"
 // mu guards all fiber, effect, service, registry and event-hook state of the tree.
 // It is never held while component code runs. Anything that must call out while the
 // state is being changed (internal notifications, log lines) is posted to an ordered
-// outbox and delivered after mu is released by the tree's dispatcher: one goroutine,
-// started on demand, that owns delivery. A goroutine that raises a notification never
-// delivers it, so a handler cannot block the lifecycle work that raised it (an
-// acquisition, an unload, the root's teardown) by waiting for or disposing it.
+// outbox and delivered after mu is released.
+//
+// Delivery is owned by the tree's dispatcher, a goroutine started on demand, so the
+// goroutine doing lifecycle work (an acquisition, an unload, the root's teardown)
+// never runs a handler as a side effect, and it delivers one notification at a time. A
+// lifecycle call that must observe delivery (Fiber.Wait, Fiber.Dispose) uses a barrier
+// instead: while only handlers that started before the call are running, it delivers
+// queued notifications itself, in order, up to its target, so it never waits behind a
+// handler that is blocked, possibly on that very call. It waits only for a delivery of
+// a notification raised during its own call.
 type tree struct {
 	mu sync.Mutex
 
-	outboxMu   sync.Mutex
-	outbox     []func()
-	delivering bool // the dispatcher is running
-	inHandler  bool // the dispatcher is running a handler
-	posted     uint64
-	delivered  uint64
-	drained    sync.Cond // signalled on outboxMu as notifications are delivered
+	outboxMu    sync.Mutex
+	outbox      []notification
+	posted      uint64              // sequence number of the last posted notification
+	running     map[uint64]struct{} // notifications being delivered, by sequence
+	dispatching bool                // the dispatcher goroutine is running
+	delivered   sync.Cond           // signalled on outboxMu when a delivery returns
 
 	fiberUID int
 
@@ -32,9 +37,14 @@ type tree struct {
 	internal *Internal
 }
 
+type notification struct {
+	seq uint64
+	fn  func()
+}
+
 func (t *tree) lock() { t.mu.Lock() }
 
-// unlock releases the tree lock and hands queued notifications to the dispatcher.
+// unlock releases the tree lock and wakes the dispatcher for queued notifications.
 func (t *tree) unlock() {
 	t.mu.Unlock()
 	t.flush()
@@ -44,13 +54,21 @@ func (t *tree) unlock() {
 // operations use it; whoever posted a notification wakes the dispatcher.
 func (t *tree) unlockQuiet() { t.mu.Unlock() }
 
-// post queues fn for delivery outside the tree lock. Notifications are delivered in
-// the order they were posted.
-func (t *tree) post(fn func()) {
+// post queues fn for delivery outside the tree lock and returns its sequence number.
+// Notifications start in the order they were posted.
+func (t *tree) post(fn func()) uint64 {
 	t.outboxMu.Lock()
-	t.outbox = append(t.outbox, fn)
+	defer t.outboxMu.Unlock()
 	t.posted++
-	t.outboxMu.Unlock()
+	t.outbox = append(t.outbox, notification{seq: t.posted, fn: fn})
+	return t.posted
+}
+
+// mark returns the sequence number of the last posted notification.
+func (t *tree) mark() uint64 {
+	t.outboxMu.Lock()
+	defer t.outboxMu.Unlock()
+	return t.posted
 }
 
 // flush starts the dispatcher if notifications are queued and it is not running. It
@@ -59,62 +77,84 @@ func (t *tree) post(fn func()) {
 func (t *tree) flush() {
 	t.outboxMu.Lock()
 	defer t.outboxMu.Unlock()
-	t.startLocked()
-}
-
-func (t *tree) startLocked() {
-	if t.delivering || len(t.outbox) == 0 {
+	if t.dispatching || len(t.outbox) == 0 {
 		return
 	}
-	t.delivering = true
+	t.dispatching = true
 	go t.dispatch()
 }
 
-// sync waits until every notification posted so far has been delivered, so a
-// lifecycle call (Dispose, Wait) returns with its notifications observed, as upstream's
-// synchronous events are. Called from a handler (or anything a handler waits for) it
-// returns at once: the dispatcher is busy with that handler. It must be called only
-// once the caller's lifecycle work is complete, never with the tree lock held.
-func (t *tree) sync() {
+// dispatch delivers queued notifications one at a time: it starts the next only once
+// no delivery is running, so handlers never overlap on its account.
+func (t *tree) dispatch() {
 	t.outboxMu.Lock()
 	defer t.outboxMu.Unlock()
-	if t.inHandler {
-		return
+	for len(t.outbox) > 0 {
+		if len(t.running) > 0 {
+			t.condLocked().Wait()
+			continue
+		}
+		t.deliverHeadLocked()
 	}
-	if t.drained.L == nil {
-		t.drained.L = &t.outboxMu
-	}
-	target := t.posted
-	t.startLocked()
-	for t.delivered < target {
-		t.drained.Wait()
+	t.dispatching = false
+}
+
+// barrier returns once every notification posted up to hi has started, and every one
+// posted after lo has also returned. A caller passes as lo the sequence number
+// observed when its call began. While every running delivery started before that
+// (the handler the caller may be running inside, or an unrelated handler that is
+// blocked), the caller delivers queued notifications up to hi itself, in order, so it
+// never waits for a handler that may be waiting for it. Otherwise it waits for the
+// running delivery to return. It must not be called with the tree lock held.
+func (t *tree) barrier(lo, hi uint64) {
+	t.outboxMu.Lock()
+	defer t.outboxMu.Unlock()
+	for {
+		busy := t.runningAfterLocked(lo)
+		if !busy && len(t.outbox) > 0 && t.outbox[0].seq <= hi {
+			t.deliverHeadLocked()
+			continue
+		}
+		if !busy && (len(t.outbox) == 0 || t.outbox[0].seq > hi) {
+			return
+		}
+		t.condLocked().Wait()
 	}
 }
 
-// dispatch delivers queued notifications one at a time, in order, until the outbox is
-// empty. A handler that blocks holds back later notifications, never the goroutine
-// that raised them.
-func (t *tree) dispatch() {
-	t.outboxMu.Lock()
-	for len(t.outbox) > 0 {
-		fn := t.outbox[0]
-		t.outbox[0] = nil
-		t.outbox = t.outbox[1:]
-		t.inHandler = true
-		t.outboxMu.Unlock()
-		if err := protect(func() error { fn(); return nil }); err != nil {
-			t.root.Logger().Error(err)
-		}
-		t.outboxMu.Lock()
-		t.inHandler = false
-		t.delivered++
-		if t.drained.L != nil {
-			t.drained.Broadcast()
+// runningAfterLocked reports whether a notification posted after lo is being delivered.
+func (t *tree) runningAfterLocked(lo uint64) bool {
+	for seq := range t.running {
+		if seq > lo {
+			return true
 		}
 	}
-	t.outbox = nil
-	t.delivering = false
+	return false
+}
+
+func (t *tree) condLocked() *sync.Cond {
+	if t.delivered.L == nil {
+		t.delivered.L = &t.outboxMu
+	}
+	return &t.delivered
+}
+
+// deliverHeadLocked runs the oldest queued notification with outboxMu released.
+func (t *tree) deliverHeadLocked() {
+	n := t.outbox[0]
+	t.outbox[0] = notification{}
+	t.outbox = t.outbox[1:]
+	if t.running == nil {
+		t.running = map[uint64]struct{}{}
+	}
+	t.running[n.seq] = struct{}{}
 	t.outboxMu.Unlock()
+	if err := protect(func() error { n.fn(); return nil }); err != nil {
+		t.root.Logger().Error(err)
+	}
+	t.outboxMu.Lock()
+	delete(t.running, n.seq)
+	t.condLocked().Broadcast()
 }
 
 // listeners is a small, ordered, thread-safe subscriber list.
@@ -161,10 +201,12 @@ func (l *listeners[F]) snapshot() []F {
 // events). Each On method returns a function that removes the subscription.
 //
 // Plugin, status, service and replace notifications are delivered after the tree lock
-// is released, in the order they happened, by the tree's dispatcher goroutine; a
-// handler may call back into the context, including disposing or waiting for the
-// fiber that raised the notification. Fiber.Wait and Fiber.Dispose return once the
-// notifications raised before them have been delivered.
+// is released, in the order they happened, by the tree's dispatcher goroutine, one at a
+// time. Fiber.Wait and Fiber.Dispose return once the notifications raised during the
+// call have been delivered, delivering queued ones on the calling goroutine when the
+// dispatcher is busy with a handler that started before the call, so a handler may
+// dispose or wait for the fiber that raised it, or for a load that creates and waits
+// for children. Such a delivery can re-enter a handler that called Wait or Dispose.
 // Commit notifications are delivered synchronously from Fiber.Update.
 type Internal struct {
 	t       *tree

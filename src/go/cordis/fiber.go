@@ -85,10 +85,12 @@ type Fiber struct {
 	updateHooks []*updateHook
 	anchor      *EffectHandle
 
-	// announced is set, and started closed, once the fiber's creation notification
-	// has been delivered; the fiber does not load before that.
-	announced bool
-	started   chan struct{}
+	// announced is set once the fiber's creation notification has been delivered, by
+	// the marker posted with sequence announceSeq; the fiber does not load before that.
+	// createdSeq is the last sequence posted before the creation notification.
+	announced   bool
+	createdSeq  uint64
+	announceSeq uint64
 	// rootDone is closed once the root's Dispose has released every effect.
 	rootDone chan struct{}
 
@@ -100,8 +102,6 @@ type Fiber struct {
 
 func newRootFiber(root *Context) *Fiber {
 	lifetime, cancel := context.WithCancelCause(context.Background())
-	started := make(chan struct{})
-	close(started)
 	return &Fiber{
 		t:          root.t,
 		parent:     root,
@@ -114,7 +114,6 @@ func newRootFiber(root *Context) *Fiber {
 		lifetime:   lifetime,
 		cancel:     cancel,
 		announced:  true,
-		started:    started,
 		rootDone:   make(chan struct{}),
 	}
 }
@@ -137,7 +136,6 @@ func newFiber(parent *Context, runtime *Runtime, config any, inject []Dependency
 		inject:     inject,
 		epoch:      inactiveEpoch,
 		candidates: map[string]*serviceImpl{},
-		started:    make(chan struct{}),
 	}
 	f.runtime.Store(runtime)
 	f.ctx = parent.derive(f, nil, nil)
@@ -159,8 +157,9 @@ func newFiber(parent *Context, runtime *Runtime, config any, inject []Dependency
 		}
 		f.anchor = anchor
 		f.runtime.Load().attachLocked(f)
+		f.createdSeq = t.mark()
 		t.internal.raisePlugin(f)
-		t.post(f.announce)
+		f.announceSeq = t.post(f.announce)
 		return nil, nil
 	})
 	if err != nil {
@@ -192,12 +191,7 @@ func (f *Fiber) announce() {
 	f.refreshLocked()
 }
 
-func (f *Fiber) markAnnouncedLocked() {
-	if !f.announced {
-		f.announced = true
-		close(f.started)
-	}
-}
+func (f *Fiber) markAnnouncedLocked() { f.announced = true }
 
 // disposeAnchor removes the fiber from its parent: the cleanup of the parent's effect.
 func (f *Fiber) disposeAnchor() error {
@@ -342,18 +336,24 @@ func (f *Fiber) String() string { return fmt.Sprintf("Fiber <%s> (%s)", f.Name()
 
 // Wait blocks until the fiber settles (no load or unload is in flight) and returns
 // the error of a failed load. A fiber still waiting for dependencies settles as
-// Pending with a nil error. A fiber that was just created first waits for its
-// creation notification to be delivered, so Wait must not be called from an Internal
-// handler for a fiber created during that handler.
+// Pending with a nil error. A fiber that was just created first has its creation
+// notification delivered, on the calling goroutine if the dispatcher has not reached
+// it, so its creation handlers run before it loads without Wait depending on the
+// dispatcher. Wait returns once the notifications raised during the call have been
+// delivered. A creation handler must not wait for the fiber it announces: that fiber
+// loads only after the handler returns.
 func (f *Fiber) Wait() error {
-	f.t.lock()
-	started, disposed := f.started, f.disposed
-	f.t.unlockQuiet()
-	if !disposed {
-		<-started
+	t := f.t
+	lo := t.mark()
+	t.lock()
+	announced, created, seq := f.announced || f.disposed, f.createdSeq, f.announceSeq
+	t.unlockQuiet()
+	if !announced {
+		// Wait for the creation handlers too, so they still run before the load.
+		t.barrier(created, seq)
 	}
 	f.waitInertia()
-	f.t.sync()
+	t.barrier(lo, t.mark())
 	return f.Err()
 }
 
@@ -426,12 +426,12 @@ func (f *Fiber) Update(config any, noSave bool) error {
 // Dispose returns only once every cleanup the fiber owned has returned, also when
 // another goroutine started the disposal. Failures are logged, not returned.
 //
-// Wait and Dispose return once the notifications raised before they return have been
-// delivered, unless called from an Internal handler. Handlers run on the tree's
-// dispatcher, never on the goroutine doing the lifecycle work, so a handler may wait
-// for or dispose the fiber whose transition raised it.
+// Dispose returns once the notifications raised during the call have been delivered:
+// queued ones are delivered on the calling goroutine once the lifecycle work is done,
+// so a handler may wait for or dispose the fiber whose transition raised it.
 func (f *Fiber) Dispose() {
-	defer f.t.sync()
+	lo := f.t.mark()
+	defer func() { f.t.barrier(lo, f.t.mark()) }()
 	if !f.isRoot {
 		f.t.lock()
 		anchor := f.anchor
