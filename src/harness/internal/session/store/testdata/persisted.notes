@@ -17,3 +17,5 @@ tool/result 1->2 sha256:f8d2367c143c96f8012f9e3bab8d0feb3139a111cdd17b355df8d73d
 turn/end 0->1 sha256:5a774ded67038e4dcb3b99c3ecb41f7edff8825d04f797e6c1a4f3d4df515f14 initial shape
 turn/start 0->1 sha256:e76b840e621a2c94959cd6e174161d9e8b74f916cf0ce1198b10b23a55cc8883 initial shape
 user/message 0->1 sha256:e13a040cc2bd93d7d6e2ebdeda222e9a63a8058c10c423065528995800cfc28e initial shape
+assistant/attempt 1->2 sha256:48dec199f42f090a06a6cc466c790cf3dec238fa4d46c998bb98fcdc791da7d1 optional field "served_by" added (llm.StreamAround); upgrade 1 is the identity (absent means the provider served it)
+assistant/message 1->2 sha256:1ca20de1a489df9ed68bca4cccae5ebd5beadfd7e66c1b821ad79c3df968cba6 optional field "served_by" added (llm.StreamAround); upgrade 1 is the identity (absent means the provider served it)

@@ -75,6 +75,9 @@ var Rules = []Rule{
 	{HarnessModule, "internal/session/store imports no harness package but schema and event (DH-D-STORE-1)", importsOnly(StorePackage, SchemaPackage, EventPackage)},
 	{HarnessModule, "no non-test package imports memstore or storetest (DH-D-STORE-1)", noImporter(MemstorePackage, StoretestPackage)},
 	{HarnessModule, "internal/session/surface imports no harness package but event, vocab and schema (DH-D-SESSION-3)", importsOnly(SurfacePackage, EventPackage, VocabPackage, SchemaPackage)},
+	{HarnessModule, "nothing outside internal/agent/driver imports it (DH-T-AGENT-27)", onlyImporter(DriverPackage, DriverPackage)},
+	{HarnessModule, "internal/session and its packages import no llm runtime, agent or interaction registry (DH-D-LLM-1, DH-D-AGENT-1)", importsNone(SessionPackage, LLMPackage, AgentPackage, HumanPackage)},
+	{HarnessModule, "internal/llm imports no agent, interaction or view package: the runtime holds no session writer (DH-D-LLM-1)", importsNone(LLMPackage, AgentPackage, HumanPackage, ViewsPackage)},
 }
 
 // Packages the rules name.
@@ -91,6 +94,12 @@ const (
 	MemstorePackage  = StorePackage + "/memstore"
 	StoretestPackage = StorePackage + "/storetest"
 	SurfacePackage   = HarnessModule + "/internal/session/surface"
+	SessionPackage   = HarnessModule + "/internal/session"
+	ViewsPackage     = SessionPackage + "/views"
+	LLMPackage       = HarnessModule + "/internal/llm"
+	AgentPackage     = HarnessModule + "/internal/agent"
+	DriverPackage    = AgentPackage + "/driver"
+	HumanPackage     = HarnessModule + "/internal/human"
 )
 
 // Third-party modules with a single importer.
@@ -130,6 +139,25 @@ func importsOnly(pkg string, allowed ...string) func([]Package) []string {
 			for _, imp := range p.Imports {
 				if strings.HasPrefix(imp, Root) && !slices.Contains(allowed, imp) {
 					bad = append(bad, fmt.Sprintf("%s imports %s", pkg, imp))
+				}
+			}
+		}
+		return bad
+	}
+}
+
+// importsNone fails every package at or below under that directly imports one of
+// forbidden (matched exactly, so a parent does not forbid its children).
+func importsNone(under string, forbidden ...string) func([]Package) []string {
+	return func(pkgs []Package) []string {
+		var bad []string
+		for _, p := range pkgs {
+			if !within(p.ImportPath, under) {
+				continue
+			}
+			for _, imp := range p.Imports {
+				if slices.Contains(forbidden, imp) {
+					bad = append(bad, fmt.Sprintf("%s imports %s", p.ImportPath, imp))
 				}
 			}
 		}
