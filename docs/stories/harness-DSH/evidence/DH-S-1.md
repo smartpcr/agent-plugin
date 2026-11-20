@@ -47,3 +47,41 @@ go.sum hash, checked offline against git history), and the `DH-T-TOOLCHAIN-11` /
 `DH-T-SDK-17` rule tests. The TC-02b golden
 (`src/go/cmd/cordis-sample/testdata/output.golden`) is in `a647d49`, before any DH-S-2
 edit, and passes `go -C src/go test -count=20 ./cmd/cordis-sample`.
+
+## Stage 1.3 -- Test Layers and Golden Helper
+
+| Field | Value |
+| --- | --- |
+| Kind | `automated` (unit, composition with the go toolchain) |
+| Toolchain | `go version go1.27.4 windows/amd64` |
+| Date | 2026-11-20 |
+
+### Ledger status of the DH-S-1 toolchain tests
+
+impl.md DH-S-1 "Scenarios": the tests below need helpers that later stories add,
+so at this stage they are **listed open, not failed**. No test for them is
+written, skipped or marked failed here.
+
+| Test | Status | Waits for |
+| --- | --- | --- |
+| `DH-T-TOOLCHAIN-1` | open | replay/scenario helpers of DH-S-16 |
+| `DH-T-TOOLCHAIN-3` | open | replay/scenario helpers of DH-S-16 |
+| `DH-T-TOOLCHAIN-5` | open | replay/scenario helpers of DH-S-16 |
+| `DH-T-TOOLCHAIN-6` | open | replay/scenario helpers of DH-S-16 |
+| `DH-T-TOOLCHAIN-10` | open | DH-S-46 |
+| `DH-T-TOOLCHAIN-13` | open | DH-S-46 |
+
+### Proven at this stage
+
+| Test / step | Proof |
+| --- | --- |
+| `DH-T-TOOLCHAIN-4` (golden helper diffs, updates only on `-update`, refuses under CI) | `src/harness/internal/testkit/golden`: `TestAssertDetectsDriftAndUpdatesOnlyOnSwitch`, `TestAssertRefusesUpdateUnderCI`, `TestAssertMissingGoldenFailsWithoutCreatingIt` and the rest of `golden_test.go` (100% statement coverage) |
+| step 1.6 part 2 (fuzz-target convention) | `tools/harness-gate/analyzers`: `TestFuzzCheckMissingTargetIsReported`, `TestFuzzCheckRules`, the `fuzzcheck/...` analysistest fixtures; `tools/harness-gate`: `TestFuzzCheckRunsInVetGate` (real `go vet -vettool`) |
+| step 1.6 part 3 (`replay`/`scenario` excluded from the default gate) | `tools/harness-gate`: `TestLayerTaggedTestsAreExcludedFromDefaultGate` over `testdata/layer-tagged` (gate passes; `go test -tags scenario` / `-tags replay` fails) |
+
+```text
+$ go -C src/harness test -race -shuffle=on -count=1 -cover ./internal/testkit/golden
+ok  github.com/smartpcr/agent-plugin/src/harness/internal/testkit/golden  coverage: 100.0% of statements
+$ GOWORK=off go -C tools/harness-gate test -count=1 ./...
+ok  (see the command log of the stage-1.3 PR)
+```
