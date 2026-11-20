@@ -81,10 +81,13 @@ func (r *Registry) rebuild(ctx context.Context, s session.ReadSession, at event.
 }
 
 // Fold is the session's Folder hook, called under the append lock with each
-// batch before storage commits it. The previous batch's result is promoted when
-// this one starts where it ended (it committed) and discarded when this one
-// starts where the committed state ends (its append failed); any other start is
-// a session this registry has not followed, which it folds from the log.
+// batch before storage commits it, so it does no I/O. The previous batch's
+// result is promoted when this one starts where it ended (it committed) and
+// discarded when this one starts where the committed state ends (its append
+// failed). Any other start is a session this registry has not followed (opened
+// before it, forgotten, or reopened after a restart): Fold folds nothing, and
+// the next Read rebuilds from the log at its cut, outside the append lock, and
+// seeds the base later batches fold from.
 func (r *Registry) Fold(s session.ReadSession, batch []event.Event) []session.Derived {
 	if len(batch) == 0 {
 		return nil
@@ -96,13 +99,10 @@ func (r *Registry) Fold(s session.ReadSession, batch []event.Event) []session.De
 	r.mu.Unlock()
 	rebuilt := base == nil
 	if rebuilt {
-		var err error
-		if base, err = r.rebuild(context.Background(), s, first); err != nil {
-			r.mu.Lock()
-			delete(r.sessions, s.ID())
-			r.mu.Unlock()
+		if first != 0 {
 			return nil
 		}
+		base = r.initial(s.Header())
 	}
 	next := base.clone()
 	for _, ev := range batch {
@@ -141,6 +141,23 @@ func (r *Registry) baseLocked(id session.ID, at event.Seq) *folded {
 	return nil
 }
 
+// seed records f, rebuilt from a live session's log, as the committed fold the
+// next batch starting at f.next builds on, unless the registry already holds a
+// later one. A batch that committed meanwhile leaves f behind; the next Read
+// then rebuilds and seeds again.
+func (r *Registry) seed(id session.ID, f *folded) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	t := r.sessions[id]
+	if t == nil {
+		t = &tracked{}
+		r.sessions[id] = t
+	}
+	if t.committed == nil || t.committed.next < f.next {
+		t.committed = f
+	}
+}
+
 // Forget drops the registry's state for a session, after it is closed or
 // deleted; a later read folds it from the log.
 func (r *Registry) Forget(id session.ID) {
@@ -175,7 +192,8 @@ func (r *Registry) Read(ctx context.Context, s session.ReadSession, keys ...stri
 
 	var at event.Seq
 	var hit *folded
-	if l, ok := s.(asOf); ok {
+	l, live := s.(asOf)
+	if live {
 		l.AsOf(func(n session.Offset) {
 			at = n
 			r.mu.Lock()
@@ -189,6 +207,9 @@ func (r *Registry) Read(ctx context.Context, s session.ReadSession, keys ...stri
 		var err error
 		if hit, err = r.rebuild(ctx, s, at); err != nil {
 			return Snapshot{}, err
+		}
+		if live {
+			r.seed(s.ID(), hit)
 		}
 	}
 	snap := Snapshot{AsOf: at, values: map[string]any{}, failed: map[string]error{}}
