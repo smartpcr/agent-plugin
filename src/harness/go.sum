@@ -28,7 +28,9 @@ github.com/hashicorp/golang-lru v0.5.4 h1:YDjusn29QI/Das2iO9M0BHnIbxPeyuCHsjMW+l
 github.com/hashicorp/golang-lru v0.5.4/go.mod h1:iADmTwqILo4mZ8BN3D2Q6+9jd8WM5uGBxy+E8yxSoD4=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
+github.com/smartpcr/agent-plugin/src/go v0.1.5-0.20261119220503-a647d4984790 h1:+X0ZYjvm5RUr2KmO3O7ABnaCY97cmq0vqKT8KwIwjlQ=
 github.com/smartpcr/agent-plugin/src/go v0.1.5-0.20261119220503-a647d4984790/go.mod h1:9fSA8rmSzLayjvwnUR39P59YsFDRRAKsiPPKeLMvziE=
+github.com/smartpcr/agent-plugin/src/sdk v0.0.0-20261119220503-a647d4984790 h1:ljeRlsuM1I7uEd5F/5wK3FhJGv2ldFD4+/Tq69pD2W8=
 github.com/smartpcr/agent-plugin/src/sdk v0.0.0-20261119220503-a647d4984790/go.mod h1:4ZWs5LPwRFeD4uSXHCeFrLPSYskVsh8X1oOB/0SDEbk=
 github.com/spf13/pflag v1.0.10 h1:4EBh2KAYBwaONj6b2Ye1GiHfwjqyROoF4RwYO+vPwFk=
 github.com/spf13/pflag v1.0.10/go.mod h1:McXfInJRrz4CZXVZOBLb0bTZqETkiAhM9Iw0y3An2Bg=
