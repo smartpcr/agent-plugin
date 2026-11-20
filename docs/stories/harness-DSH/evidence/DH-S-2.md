@@ -22,8 +22,11 @@ PASS
 
 `src/go/cmd/cordis-sample/testdata/output.golden` was not re-recorded: the sample's
 output is unchanged, so there are no intended diffs to note. The sample never creates
-an effect from a cleanup, disposes a handle twice concurrently, or reads a fiber
-lifetime, which are the only behaviours the two changes alter.
+an effect from a cleanup or the root's teardown, disposes a handle twice concurrently,
+races an acquisition against an unload, disposes a fiber from a creation handler, or
+reads a fiber lifetime, which are the only behaviours the changes alter. Re-checked
+after the second iteration (root teardown, acquisition tracking, creation ordering):
+still passes unchanged.
 
 ### Tests
 
@@ -37,8 +40,8 @@ ok  github.com/smartpcr/agent-plugin/src/go/timer
 
 | Test | In `src/go/cordis/unload_test.go` |
 | --- | --- |
-| `DH-T-CORDIS-1` | `TestCleanupCannotRegisterWhileItsFiberUnloads` |
+| `DH-T-CORDIS-1` | `TestCleanupCannotRegisterWhileItsFiberUnloads`, `TestRootDisposeIsFinalAndExclusive` |
 | TC-02a | `TestConcurrentDisposeWaitsForEveryCleanup` |
-| `DH-T-CORDIS-2` | `TestRunningCleanupHoldsBackSecondDisposeAndProvider`, `TestDependentUnloadsBeforeItsProvider` |
-| `DH-T-CORDIS-3` | `TestPendingFiberReleasesEffectsAndCreationHandlerCanDispose` |
+| `DH-T-CORDIS-2` | `TestRunningCleanupHoldsBackSecondDisposeAndProvider`, `TestDependentUnloadsBeforeItsProvider`, `TestUnloadWaitsForInFlightAcquisition` |
+| `DH-T-CORDIS-3` | `TestPendingFiberReleasesEffectsAndCreationHandlerCanDispose`, `TestCreationHandlerRunsBeforeLoadUnderConcurrentDelivery` |
 | `DH-T-CORDIS-4` | `TestFiberLifetimeIsCancelledByUnload` |

@@ -364,3 +364,136 @@ func TestFiberLifetimeIsCancelledByUnload(t *testing.T) {
 		Equal(t, cordis.ErrInactive, context.Cause(root.Lifetime()))
 	})
 }
+
+// Root teardown is exclusive and final: a root cleanup cannot register anything that
+// outlives it, and an overlapping Dispose returns only after the first one's cleanups.
+func TestRootDisposeIsFinalAndExclusive(t *testing.T) {
+	root, _ := Quiet()
+	entered, release := make(chan struct{}), make(chan struct{})
+	var released atomic.Bool
+	var refused []error
+	Must(root.Effect("gate", func() (cordis.Disposer, error) {
+		return func() error {
+			close(entered)
+			_, effectErr := root.Effect("late", func() (cordis.Disposer, error) { return nil, nil })
+			_, useErr := root.Apply("late", func(*cordis.Context) error { return nil })
+			_, provideErr := root.Provide("late", 1)
+			refused = []error{effectErr, useErr, provideErr}
+			<-release
+			released.Store(true)
+			return nil
+		}, nil
+	}))
+
+	results := make(chan bool, 2)
+	go func() { root.Dispose(); results <- released.Load() }()
+	Within(t, "first cleanup", func() { <-entered })
+	go func() { root.Dispose(); results <- released.Load() }()
+	select {
+	case <-results:
+		t.Fatal("a root Dispose returned while its cleanup was blocked")
+	case <-time.After(settle):
+	}
+	close(release)
+	for range 2 {
+		Within(t, "dispose", func() { True(t, <-results, "a root Dispose returned before the cleanup") })
+	}
+	for i, err := range refused {
+		True(t, isInactive(err), "root cleanup registration "+[]string{"Effect", "Use", "Provide"}[i]+" was not refused: "+errString(err))
+	}
+	_, err := root.Effect("after", func() (cordis.Disposer, error) { return nil, nil })
+	True(t, isInactive(err), "a disposed root accepted an effect: "+errString(err))
+	Equal(t, 0, len(root.Fiber().Effects()), "effects left on the disposed root")
+}
+
+// An acquisition in flight when its fiber unloads is waited for: the cleanup it
+// collects runs before the unload ends and before the fiber's provider is released.
+func TestUnloadWaitsForInFlightAcquisition(t *testing.T) {
+	for _, mode := range []string{"sync", "async"} {
+		t.Run(mode, func(t *testing.T) {
+			root, _ := Quiet()
+			var providerClosed, unloaded atomic.Bool
+			provider := MustWait(t, Must(root.Apply("provider", func(ctx *cordis.Context) error {
+				if _, err := ctx.Provide("svc", "value"); err != nil {
+					return err
+				}
+				_, err := ctx.Effect("close", func() (cordis.Disposer, error) {
+					return func() error { providerClosed.Store(true); return nil }, nil
+				})
+				return err
+			})))
+			owner := MustWait(t, Must(root.Apply("owner", func(*cordis.Context) error { return nil }, "svc")))
+			Equal(t, cordis.Active, owner.State())
+
+			entered, gate := make(chan struct{}), make(chan struct{})
+			type observed struct{ providerClosed, unloaded bool }
+			cleanups := make(chan observed, 2)
+			acquire := func() (cordis.Disposer, error) {
+				close(entered)
+				<-gate
+				return func() error {
+					cleanups <- observed{providerClosed.Load(), unloaded.Load()}
+					return nil
+				}, nil
+			}
+			register := owner.Ctx().Effect
+			if mode == "async" {
+				register = owner.Ctx().EffectAsync
+			}
+			go func() { _, _ = register("slow", acquire) }()
+			Within(t, "acquisition start", func() { <-entered })
+
+			life := owner.Lifetime()
+			disposed := make(chan struct{})
+			go func() {
+				provider.Dispose()
+				unloaded.Store(true)
+				close(disposed)
+			}()
+			Within(t, "owner unload start", func() { <-life.Done() })
+			select {
+			case <-disposed:
+				t.Fatal("the provider was disposed while its dependent was still acquiring")
+			case <-time.After(settle):
+			}
+			close(gate)
+			Within(t, "dispose", func() { <-disposed })
+			got := receive(t, cleanups, "cleanup")
+			True(t, !got.unloaded, "the cleanup ran after the unload returned")
+			True(t, !got.providerClosed, "the cleanup ran after the provider was released")
+			Equal(t, 0, len(cleanups), "the cleanup ran twice")
+		})
+	}
+}
+
+// A creation handler that disposes its fiber stops the load even when another
+// goroutine is delivering notifications, so the handler is queued behind it.
+func TestCreationHandlerRunsBeforeLoadUnderConcurrentDelivery(t *testing.T) {
+	root, _ := Quiet()
+	blocking, gate := make(chan struct{}), make(chan struct{})
+	var blockOnce, disposeOnce sync.Once
+	root.Internal().OnStatus(func(f *cordis.Fiber, _, _ cordis.FiberState) {
+		if f.Name() == "blocker" {
+			blockOnce.Do(func() { close(blocking); <-gate })
+		}
+	})
+	root.Internal().OnPlugin(func(f *cordis.Fiber) {
+		if f.Name() == "doomed" {
+			disposeOnce.Do(f.Dispose)
+		}
+	})
+	go func() { _, _ = root.Apply("blocker", func(*cordis.Context) error { return nil }) }()
+	Within(t, "delivery blocked", func() { <-blocking })
+
+	var ran atomic.Bool
+	doomed := Must(root.Apply("doomed", func(*cordis.Context) error {
+		ran.Store(true)
+		return nil
+	}))
+	time.Sleep(settle)
+	True(t, !ran.Load(), "the fiber loaded before its creation handler ran")
+	close(gate)
+	Within(t, "wait", func() { NoError(t, doomed.Wait()) })
+	Equal(t, cordis.Disposed, doomed.State())
+	True(t, !ran.Load(), "the body of a fiber disposed on creation ran")
+}

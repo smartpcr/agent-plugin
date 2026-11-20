@@ -297,10 +297,17 @@ upstream; tests in `cordis/unload_test.go`):
   something that outlives the unload. A second `EffectHandle.Dispose` or `Fiber.Dispose`
   caller waits until the first caller's cleanups have returned, and an unload waits for
   handles another goroutine is releasing before it releases its providers. Disposing a
-  fiber that never loaded still releases effects created on its context. A fiber is
-  announced to `Internal.OnPlugin` only once its parent owns it, so a creation handler
-  that disposes it stops it before its body runs. A cleanup must not dispose its own
-  handle or wait for its own fiber's unload.
+  fiber that never loaded still releases effects created on its context. An unload also
+  waits for an effect whose acquisition is still running on another goroutine, so the
+  cleanup it collects runs before the providers are released. Disposing the root is
+  final in the same way: the root refuses new effects and child fibers, and an
+  overlapping `root.Dispose()` waits for the first. A fiber loads only after its
+  `Internal.OnPlugin` creation notification has been delivered (a marker queued behind
+  it starts the load), so a creation handler that disposes it stops it before its body
+  runs, even while another goroutine is delivering notifications; for the same reason
+  `Fiber.Wait` must not be called from a handler for a fiber created in that handler.
+  A cleanup or acquisition must not dispose its own handle or wait for its own fiber's
+  unload.
 - **Fiber lifetime** (`DH-D-CORDIS-2`). `Fiber.Lifetime()` / `Context.Lifetime()` is a
   `context.Context` derived from the parent fiber's, fresh for each load, and cancelled
   as soon as the fiber is asked to leave the load, before the unload waits for

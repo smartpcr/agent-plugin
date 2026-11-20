@@ -48,10 +48,11 @@ func (h *EffectHandle) Disposer() Disposer {
 	}
 }
 
-// Dispose releases the effect: it waits for a pending asynchronous acquisition, then
-// runs the collected cleanups in reverse order, logging their failures. A second
-// caller, concurrent or later, waits until the first caller's cleanups have returned.
-// A cleanup must not dispose its own handle, or wait for something that does.
+// Dispose releases the effect: it waits for its acquisition (also a synchronous one
+// running on another goroutine), then runs the collected cleanups in reverse order,
+// logging their failures. A second caller, concurrent or later, waits until the first
+// caller's cleanups have returned. A cleanup or acquisition must not dispose its own
+// handle, or wait for something that does.
 func (h *EffectHandle) Dispose() {
 	t := h.fiber.t
 	t.lock()
@@ -111,12 +112,10 @@ func (h *EffectHandle) release(dispose Disposer) {
 	}
 }
 
-// spawn runs fn on a new goroutine as the effect's pending acquisition.
+// spawn runs fn on a new goroutine as the effect's pending acquisition, the one run
+// attached to the handle before publishing it.
 func (h *EffectHandle) spawn(fn func() error) *task {
-	pending := &task{done: make(chan struct{})}
-	h.fiber.t.lock()
-	h.pending = pending
-	h.fiber.t.unlock()
+	pending := h.pending
 	go func() { pending.finish(protect(fn)) }()
 	return pending
 }

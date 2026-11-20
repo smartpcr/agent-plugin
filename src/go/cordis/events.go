@@ -31,7 +31,7 @@ func (e *eventHub) register(ctx *Context, key any, name string, fn any, prepend 
 		} else {
 			e.hooks[key] = append(e.hooks[key], h)
 		}
-		e.t.unlock()
+		e.t.unlockQuiet()
 		return func() error {
 			h.removed.Store(true)
 			e.t.lock()
