@@ -304,6 +304,15 @@ port avoids third-party dependencies, so `ConfigFile` polls the file's content
 (`PollInterval`, 100ms by default). Polling sees editor-style rename saves and the
 component's own writes alike. Each tick reads one small file.
 
+**Layered config.** `loader.LayerSetComponent` composes the tree from ordered layers
+(bundle, profile, user, project); each layer file is a JSON/JSONC array of
+operations (`insert`, override by `id`, `merge` into config, `remove`), and
+`loader.Compose` returns the tree with an `Index` naming the layer that supplied each
+value. Runtime edits are written to the one `Writable` layer only, edited in place so
+comments survive; the write is refused with `loader.ErrStaleLayer` when the file's
+content hash changed since it was read, and an optional `WriteGuard` (e.g. a
+cross-process lock) wraps every write.
+
 ## Not ported
 
 Everything the [.NET port leaves out](../net/README.md#not-ported) is left out here too:
