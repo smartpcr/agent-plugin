@@ -39,11 +39,15 @@ const budgetPattern = "^TestBudget"
 //
 // A file of either layer is excluded from every go test of the gate: the test and
 // coverage gates pass an explicit empty tag list (noTags), which overrides any
-// -tags a GOFLAGS setting would add.
+// -tags a GOFLAGS setting would add. The vet gate still compiles and analyzes them
+// (layerTags), so their findings are reported without credentials (QG-2).
 var LayerTags = []string{"replay", "scenario"}
 
 // noTags is the build-tag flag of the gate's go test runs; see LayerTags.
 const noTags = "-tags="
+
+// layerTags is the build-tag flag that selects every LayerTags file for go vet.
+var layerTags = "-tags=" + strings.Join(LayerTags, ",")
 
 // Targets are the GOOS/GOARCH pairs cmd/dsh must build for with CGO_ENABLED=0 (QG-8).
 var Targets = []struct{ GOOS, GOARCH string }{
@@ -206,15 +210,20 @@ func goFiles(mod string) ([]string, error) {
 }
 
 // vetGate runs the standard go vet checks, then the project's own analyzers through
-// "go vet -vettool" (QG-2). No baseline or suppression file is read.
+// "go vet -vettool" (QG-2). No baseline or suppression file is read. Each runs twice:
+// without build tags, and with every LayerTags tag, so replay- and scenario-tagged
+// files are compiled and analyzed even though the gate never runs them. Vetting needs
+// no credentials.
 func (c *Config) vetGate(ctx context.Context, w io.Writer) error {
 	var errs []error
 	for _, mod := range c.Modules {
-		if err := c.goStep(ctx, w, mod, c.env(), "vet", "./..."); err != nil {
-			errs = append(errs, err)
-		}
-		if err := c.goStep(ctx, w, mod, c.env(vetToolEnv+"=1"), "vet", "-vettool="+c.VetTool, "./..."); err != nil {
-			errs = append(errs, err)
+		for _, tags := range []string{noTags, layerTags} {
+			if err := c.goStep(ctx, w, mod, c.env(), "vet", tags, "./..."); err != nil {
+				errs = append(errs, err)
+			}
+			if err := c.goStep(ctx, w, mod, c.env(vetToolEnv+"=1"), "vet", tags, "-vettool="+c.VetTool, "./..."); err != nil {
+				errs = append(errs, err)
+			}
 		}
 	}
 	return errors.Join(errs...)
