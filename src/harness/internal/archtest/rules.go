@@ -74,6 +74,7 @@ var Rules = []Rule{
 	{HarnessModule, "internal/session/scope imports nothing of the modules but cordis (DH-D-SESSION-8)", importsOnly(ScopePackage, CordisPackage)},
 	{HarnessModule, "internal/session/store imports no harness package but schema and event (DH-D-STORE-1)", importsOnly(StorePackage, SchemaPackage, EventPackage)},
 	{HarnessModule, "no non-test package imports memstore or storetest (DH-D-STORE-1)", noImporter(MemstorePackage, StoretestPackage)},
+	{HarnessModule, "internal/session/surface imports no harness package but event, vocab and schema (DH-D-SESSION-3)", importsOnly(SurfacePackage, EventPackage, VocabPackage, SchemaPackage)},
 }
 
 // Packages the rules name.
@@ -89,6 +90,7 @@ const (
 	StorePackage     = HarnessModule + "/internal/session/store"
 	MemstorePackage  = StorePackage + "/memstore"
 	StoretestPackage = StorePackage + "/storetest"
+	SurfacePackage   = HarnessModule + "/internal/session/surface"
 )
 
 // Third-party modules with a single importer.
