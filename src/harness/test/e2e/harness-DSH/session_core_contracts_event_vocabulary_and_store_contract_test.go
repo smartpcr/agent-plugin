@@ -192,11 +192,17 @@ func (s *evscState) committedGolden() error {
 	return nil
 }
 
+// e2ePluginTypePrefix names the plugin event types sibling e2e suites define in
+// event.Default() for their own scenarios; they share this test binary but are
+// not part of the program's persisted vocabulary.
+const e2ePluginTypePrefix = "ext/e2e-"
+
 func (s *evscState) inventoryMatchesGolden() error {
 	cur, err := store.Inventory(event.Default())
 	if err != nil {
 		return err
 	}
+	cur = slices.DeleteFunc(cur, func(e store.InventoryEntry) bool { return strings.HasPrefix(e.Type, e2ePluginTypePrefix) })
 	if p := store.CheckInventory(cur, s.golden, s.notes); len(p) > 0 {
 		return fmt.Errorf("unchanged registry already fails the check:\n%s", strings.Join(p, "\n"))
 	}
