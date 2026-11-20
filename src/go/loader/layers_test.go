@@ -323,6 +323,30 @@ func TestLayerSetAnEditMaskedByALaterLayerIsRefused(t *testing.T) {
 	Equal(t, `{"a":5,"b":2}`, config(t, tree, "svc"))
 }
 
+// the masked value is already in the writable file, so the write would produce its
+// exact bytes: it is still refused, not reported as saved
+func TestLayerSetAMaskedEditTheWritableFileAlreadyHoldsIsRefused(t *testing.T) {
+	user := "// user wants b=3\n[ { \"id\": \"svc\", \"merge\": { \"b\": 3 } } ]\n"
+	h, set := startSet(t, nil,
+		layerFile{"bundle", bundleLayer, false},
+		layerFile{"user", user, true},
+		layerFile{"project", projectLayer, false},
+	)
+	Equal(t, `{"a":1,"b":2}`, h.svc(t))
+
+	h.update(t, "svc", map[string]int{"a": 1, "b": 3})
+	var err error
+	Within(t, "flush", func() { err = set.Flush() })
+	True(t, errors.Is(err, loader.ErrMaskedEdit), "a masked edit was reported as saved: "+errText(err))
+	Equal(t, `{"a":1,"b":3}`, h.svc(t), "the unsaved runtime edit was dropped")
+	for label, text := range map[string]string{"bundle": bundleLayer, "user": user, "project": projectLayer} {
+		Equal(t, text, readFile(t, h.paths[label]), label+" was rewritten")
+	}
+	// still unsaved on the next attempt
+	Within(t, "flush", func() { err = set.Flush() })
+	True(t, errors.Is(err, loader.ErrMaskedEdit), "the second flush reported the edit saved: "+errText(err))
+}
+
 // a file that was read and then disappears keeps its last operations: the running
 // tree stays, and writing to a vanished writable layer is refused
 func TestLayerSetAVanishedLayerKeepsTheRunningTree(t *testing.T) {

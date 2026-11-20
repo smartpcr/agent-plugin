@@ -431,15 +431,17 @@ func (s *LayerSet) writeLocked() error {
 	if err != nil {
 		return fmt.Errorf("loader: cannot encode layer %q (%s): %w", layer.Label, layer.Path, err)
 	}
+	// checked before any success return: bytes the file already holds can still fail
+	// to compose into runtime when a later layer masks them
+	if masked := s.unreproduced(layer, text, runtime); len(masked) > 0 {
+		return &MaskedEditError{Label: layer.Label, Path: layer.Path, IDs: masked}
+	}
 	if layer.exists && bytes.Equal(text, layer.data) {
 		s.base = runtime
 		return nil
 	}
 	if !layer.exists && len(ops) == 0 {
 		return nil // nothing to save: a missing writable layer stays missing
-	}
-	if masked := s.unreproduced(layer, text, runtime); len(masked) > 0 {
-		return &MaskedEditError{Label: layer.Label, Path: layer.Path, IDs: masked}
 	}
 
 	wrote := false
