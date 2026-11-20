@@ -36,6 +36,9 @@ type tree struct {
 	fiberUID int
 	// unattributed is set once a delivery could not be attributed to its goroutine.
 	unattributed atomic.Bool
+	// cutShort is set once a barrier returned early because its caller may be running
+	// an unattributed delivery.
+	cutShort atomic.Bool
 
 	root     *Context
 	store    *store
@@ -51,10 +54,12 @@ type notification struct {
 }
 
 // delivery is a notification being run; parked counts the lifecycle waits its
-// goroutine is blocked in.
+// goroutine is blocked in. unattributed is set when the delivery is not registered
+// under its goroutine, so its waits cannot park it.
 type delivery struct {
-	seq    uint64
-	parked int
+	seq          uint64
+	parked       int
+	unattributed bool
 }
 
 func (t *tree) lock() { t.mu.Lock() }
@@ -133,16 +138,20 @@ func (t *tree) dispatch() {
 // unavailable is not registered. An identity claimed by two running deliveries is
 // ambiguous: it is unregistered for both until every claimant has returned, so neither
 // can park the other. A handler's waits then never park its delivery, which keeps the
-// order of delivery but holds back later notifications while the handler waits.
+// order of delivery but holds back later notifications while the handler waits. As
+// those notifications cannot start until the handler returns, a barrier called from
+// such a handler does not wait for them: see settle.
 func (t *tree) deliver(n notification, d *delivery, started chan<- struct{}) {
 	g, identified := goroutineID()
 	t.outboxMu.Lock()
 	attributed := identified && t.claimLocked(g, d)
+	d.unattributed = !attributed
 	t.outboxMu.Unlock()
 	close(started)
 	if !attributed && t.unattributed.CompareAndSwap(false, true) {
 		t.root.Logger().Warnf("cannot identify the goroutine delivering a notification; " +
-			"a handler that waits for lifecycle work holds back later notifications")
+			"a handler that waits for lifecycle work holds back later notifications, " +
+			"and its barriers do not wait for them")
 	}
 	if err := protect(func() error { n.fn(); return nil }); err != nil {
 		t.root.Logger().Error(err)
@@ -162,6 +171,9 @@ func (t *tree) deliver(n notification, d *delivery, started chan<- struct{}) {
 func (t *tree) claimLocked(g uint64, d *delivery) bool {
 	t.claims[g]++
 	if t.claims[g] > 1 {
+		if prev := t.byGoroutine[g]; prev != nil {
+			prev.unattributed = true
+		}
 		delete(t.byGoroutine, g)
 		return false
 	}
@@ -195,6 +207,12 @@ func (t *tree) busyLocked(lo, hi uint64) bool {
 // wait parks the caller's own delivery, if it runs in a handler, so the dispatcher
 // can deliver the notifications waited for. It must not be called with the tree lock
 // held.
+//
+// A caller that may be running an unattributed delivery (its goroutine identity is
+// unavailable or ambiguous) cannot park it. If the dispatcher is held back only by
+// unattributed deliveries, one of which may be the caller's own, the notifications
+// still queued cannot start before the caller returns, so the barrier returns once
+// those already started have returned or parked, and logs this once.
 func (t *tree) barrier(lo, hi uint64) { t.settle(lo, hi, false) }
 
 // barrierReturned is barrier, except that it also waits for parked notifications to
@@ -206,11 +224,54 @@ func (t *tree) settle(lo, hi uint64, returned bool) {
 		return
 	}
 	defer t.park()()
+	if t.waitSettled(lo, hi, returned) && t.cutShort.CompareAndSwap(false, true) {
+		t.root.Logger().Warnf("a lifecycle wait in a notification handler that cannot be " +
+			"identified returned before later notifications were delivered")
+	}
+}
+
+// waitSettled waits for the condition of settle and reports whether it returned
+// early, without waiting for queued notifications, because the caller may be running
+// the unattributed delivery that holds back the dispatcher.
+func (t *tree) waitSettled(lo, hi uint64, returned bool) (cutShort bool) {
 	t.outboxMu.Lock()
 	defer t.outboxMu.Unlock()
-	for (len(t.outbox) > 0 && t.outbox[0].seq <= hi) || t.busyLocked(lo, hi) || (returned && t.runningLocked(lo, hi)) {
+	fallback := t.callerUnattributedLocked()
+	for {
+		if !t.busyLocked(lo, hi) && !(returned && t.runningLocked(lo, hi)) {
+			if len(t.outbox) == 0 || t.outbox[0].seq > hi {
+				return false
+			}
+			if fallback && t.stalledOnUnattributedLocked(lo, hi) {
+				return true
+			}
+		}
 		t.condLocked().Wait()
 	}
+}
+
+// callerUnattributedLocked reports whether the calling goroutine may be running a
+// delivery that is not registered under it: its identity is unavailable, or claimed
+// by more than one running delivery.
+func (t *tree) callerUnattributedLocked() bool {
+	g, ok := goroutineID()
+	return !ok || t.claims[g] > 1
+}
+
+// stalledOnUnattributedLocked reports whether the dispatcher is held back only by
+// unparked, unattributed deliveries outside lo and hi.
+func (t *tree) stalledOnUnattributedLocked(lo, hi uint64) bool {
+	stalled := false
+	for seq, d := range t.running {
+		if d.parked > 0 {
+			continue
+		}
+		if (seq > lo && seq <= hi) || !d.unattributed {
+			return false
+		}
+		stalled = true
+	}
+	return stalled
 }
 
 // park marks the calling goroutine's delivery, if it is running one, as blocked in a
@@ -317,7 +378,8 @@ func (l *listeners[F]) snapshot() []F {
 // raises further notifications. A parked handler resumes concurrently with later ones.
 // A handler blocked outside cordis holds back every later notification. Fiber.Wait and
 // Fiber.Dispose return once the notifications raised during the call have returned or
-// parked.
+// parked; in a handler whose goroutine cannot be identified, they do not wait for
+// notifications that cannot start before the handler returns.
 // Commit notifications are delivered synchronously from Fiber.Update.
 type Internal struct {
 	t       *tree
