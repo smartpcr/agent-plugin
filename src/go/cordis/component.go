@@ -200,14 +200,14 @@ func decodeConfig[C any](raw []byte, defaults func() C, strict bool) (C, error) 
 	var zero C
 	if !strict {
 		if err := json.Unmarshal(trimmed, &value); err != nil {
-			return zero, decodeError(err)
+			return zero, decodeError(err, trimmed, reflect.TypeFor[C]())
 		}
 		return value, nil
 	}
 	decoder := json.NewDecoder(bytes.NewReader(trimmed))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&value); err != nil {
-		return zero, decodeError(err)
+		return zero, decodeError(err, trimmed, reflect.TypeFor[C]())
 	}
 	end := decoder.InputOffset()
 	var extra json.RawMessage
@@ -220,8 +220,9 @@ func decodeConfig[C any](raw []byte, defaults func() C, strict bool) (C, error) 
 }
 
 // decodeError turns a JSON decoding error into a ConfigError whose issue carries the
-// path of the offending field: the unknown key, or the field of a type mismatch.
-func decodeError(err error) error {
+// full dotted path of the offending field: the unknown key, or the field of a type
+// mismatch. data is the JSON that was decoded onto a value of type t.
+func decodeError(err error, data []byte, t reflect.Type) error {
 	issue := ConfigIssue{Message: err.Error()}
 	var typeError *json.UnmarshalTypeError
 	switch {
@@ -234,6 +235,9 @@ func decodeError(err error) error {
 		}
 		issue.Message = "unknown key"
 		issue.Path = name
+		if path, ok := unknownKeyPath(data, t); ok && (path == name || strings.HasSuffix(path, "."+name)) {
+			issue.Path = path
+		}
 	}
 	return &ConfigError{Issues: []ConfigIssue{issue}}
 }
@@ -241,6 +245,218 @@ func decodeError(err error) error {
 // unknownFieldPrefix starts the error json.Decoder reports for an unknown key; the
 // standard library has no typed error for it.
 const unknownFieldPrefix = `json: unknown field "`
+
+// unknownKeyPath finds the first key in data, in document order, that names no field
+// of the struct it is decoded into, and returns its dotted path. json.Decoder reports
+// only the leaf name of an unknown key; this recovers the rest of the path, built the
+// way UnmarshalTypeError.Field is (struct field names; map keys and array indices are
+// not segments), so both kinds of issue report paths alike.
+func unknownKeyPath(data []byte, t reflect.Type) (string, bool) {
+	walker := keyWalker{decoder: json.NewDecoder(bytes.NewReader(data))}
+	path, found, err := walker.value(t, nil)
+	if err != nil || !found {
+		return "", false
+	}
+	return path, true
+}
+
+type keyWalker struct {
+	decoder *json.Decoder
+}
+
+var jsonUnmarshalerType = reflect.TypeFor[json.Unmarshaler]()
+
+// value walks the next JSON value as decoded into t. It stops at the first unknown
+// key, returning its path.
+func (w *keyWalker) value(t reflect.Type, path []string) (string, bool, error) {
+	for t != nil && t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t == nil || t.Kind() == reflect.Interface || reflect.PointerTo(t).Implements(jsonUnmarshalerType) {
+		return "", false, w.skip()
+	}
+	token, err := w.decoder.Token()
+	if err != nil {
+		return "", false, err
+	}
+	switch token {
+	case json.Delim('{'):
+		return w.object(t, path)
+	case json.Delim('['):
+		if t.Kind() != reflect.Slice && t.Kind() != reflect.Array {
+			return "", false, w.rest()
+		}
+		for w.decoder.More() {
+			if path, found, err := w.value(t.Elem(), path); err != nil || found {
+				return path, found, err
+			}
+		}
+		_, err := w.decoder.Token()
+		return "", false, err
+	}
+	return "", false, nil
+}
+
+// object walks the members of a JSON object, its opening brace already read.
+func (w *keyWalker) object(t reflect.Type, path []string) (string, bool, error) {
+	switch {
+	case t.Kind() == reflect.Map:
+		for w.decoder.More() {
+			if _, err := w.decoder.Token(); err != nil {
+				return "", false, err
+			}
+			if path, found, err := w.value(t.Elem(), path); err != nil || found {
+				return path, found, err
+			}
+		}
+	case t.Kind() == reflect.Struct:
+		fields := jsonFields(t)
+		for w.decoder.More() {
+			token, err := w.decoder.Token()
+			if err != nil {
+				return "", false, err
+			}
+			key, _ := token.(string)
+			field, ok := fields.lookup(key)
+			if !ok {
+				return strings.Join(append(slices.Clone(path), key), "."), true, nil
+			}
+			if path, found, err := w.value(field.typ, append(slices.Clone(path), field.path...)); err != nil || found {
+				return path, found, err
+			}
+		}
+	default:
+		return "", false, w.rest()
+	}
+	_, err := w.decoder.Token()
+	return "", false, err
+}
+
+// skip consumes the next JSON value whole.
+func (w *keyWalker) skip() error {
+	token, err := w.decoder.Token()
+	if err != nil {
+		return err
+	}
+	if token == json.Delim('{') || token == json.Delim('[') {
+		return w.rest()
+	}
+	return nil
+}
+
+// rest consumes the remainder of an object or array whose opening delimiter is read.
+func (w *keyWalker) rest() error {
+	for depth := 1; depth > 0; {
+		token, err := w.decoder.Token()
+		if err != nil {
+			return err
+		}
+		switch token {
+		case json.Delim('{'), json.Delim('['):
+			depth++
+		case json.Delim('}'), json.Delim(']'):
+			depth--
+		}
+	}
+	return nil
+}
+
+// jsonField is a struct field as encoding/json sees it: its JSON name, its type, and
+// the path segments the decoder records for it (embedding struct names, then name).
+type jsonField struct {
+	name  string
+	typ   reflect.Type
+	path  []string
+	depth int
+}
+
+type jsonFieldSet []jsonField
+
+// lookup matches a key the way encoding/json does: exactly, then case-insensitively.
+func (fields jsonFieldSet) lookup(key string) (jsonField, bool) {
+	for _, field := range fields {
+		if field.name == key {
+			return field, true
+		}
+	}
+	for _, field := range fields {
+		if strings.EqualFold(field.name, key) {
+			return field, true
+		}
+	}
+	return jsonField{}, false
+}
+
+// jsonFields lists the fields encoding/json decodes into for struct type t, applying
+// its rules for tags, embedding and name conflicts.
+func jsonFields(t reflect.Type) jsonFieldSet {
+	type candidate struct {
+		jsonField
+		tagged bool
+	}
+	var candidates []candidate
+	for _, field := range reflect.VisibleFields(t) {
+		tag := field.Tag.Get("json")
+		if tag == "-" {
+			continue
+		}
+		name, _, _ := strings.Cut(tag, ",")
+		fieldType := field.Type
+		if fieldType.Kind() == reflect.Pointer {
+			fieldType = fieldType.Elem()
+		}
+		if field.Anonymous && name == "" && fieldType.Kind() == reflect.Struct {
+			continue // its fields are promoted, and VisibleFields lists them
+		}
+		if !field.IsExported() {
+			continue
+		}
+		tagged := name != ""
+		if !tagged {
+			name = field.Name
+		}
+		var path []string
+		outer := t
+		for _, index := range field.Index[:len(field.Index)-1] {
+			embedded := outer.Field(index)
+			path = append(path, embedded.Name)
+			outer = embedded.Type
+			if outer.Kind() == reflect.Pointer {
+				outer = outer.Elem()
+			}
+		}
+		path = append(path, name)
+		candidates = append(candidates, candidate{jsonField{name: name, typ: field.Type, path: path, depth: len(field.Index)}, tagged})
+	}
+	var fields jsonFieldSet
+	for _, c := range candidates {
+		// Of the fields sharing a name, the shallowest wins; at equal depth a single
+		// tagged field wins; otherwise the name is ambiguous and no field decodes it.
+		var rivals []candidate
+		for _, other := range candidates {
+			if other.name == c.name && other.depth <= c.depth {
+				rivals = append(rivals, other)
+			}
+		}
+		if len(rivals) == 1 {
+			fields = append(fields, c.jsonField)
+			continue
+		}
+		if !c.tagged || slices.ContainsFunc(rivals, func(other candidate) bool { return other.depth < c.depth }) {
+			continue
+		}
+		tagged := 0
+		for _, other := range rivals {
+			if other.tagged {
+				tagged++
+			}
+		}
+		if tagged == 1 {
+			fields = append(fields, c.jsonField)
+		}
+	}
+	return fields
+}
 
 // trailing returns a short excerpt of data from offset, for an error message.
 func trailing(data []byte, offset int64) string {
