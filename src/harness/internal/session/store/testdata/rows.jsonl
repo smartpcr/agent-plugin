@@ -13,3 +13,5 @@
 {"seq":12,"time":1735689600012,"type":"step/end","v":1,"payload":"{\"step\":1,\"turn\":1}"}
 {"seq":13,"time":1735689600013,"type":"turn/end","v":1,"payload":"{\"reason\":{\"kind\":\"completed\"},\"turn\":1}"}
 {"seq":14,"time":1735689600014,"type":"tool/result","v":1,"op":1,"payload":"{\"id\":\"c1\",\"message\":{\"id\":\"msg_879c340faa25b442ff35a5c9a05932ba\",\"role\":\"tool\",\"blocks\":[{\"kind\":\"tool_result\",\"tool_result\":{\"call_id\":\"c1\",\"parts\":[{\"text\":{\"text\":\"ok\"}}]}}]}}"}
+{"seq":15,"time":1735689600015,"type":"assistant/attempt","v":2,"payload":"{\"failure\":{\"class\":\"transient\",\"code\":\"llm/stream-closed\",\"message\":\"recorded\"},\"request_as_of\":4,\"request_digest\":\"sha256:00\",\"served_by\":\"replay\"}"}
+{"seq":16,"time":1735689600016,"type":"assistant/message","v":2,"op":1,"payload":"{\"message\":{\"blocks\":[{\"kind\":\"text\",\"text\":{\"text\":\"replayed\"}}],\"id\":\"msg_c6c5783f6aaea8aed08e2c7fbec85162\",\"role\":\"assistant\"},\"request_as_of\":4,\"request_digest\":\"sha256:00\",\"served_by\":\"replay\"}"}

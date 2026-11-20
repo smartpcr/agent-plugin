@@ -65,10 +65,24 @@ func (p *prepared) run(ctx context.Context, req session.Request, yield func(voca
 	if err := ctx.Err(); err != nil {
 		return outcome{finish: vocab.Finish{Reason: vocab.FinishAborted, Failure: abortedBy(ctx)}, yield: true}, asm
 	}
+	// StreamAround may substitute the stream; the route stays p.route either way.
+	src := p.call.Attempt
+	served, by, f := p.intercept(ctx, req)
+	switch {
+	case f != nil:
+		return fail(f)
+	case served != nil:
+		rec.ServedBy = by
+		src = func(context.Context, session.Request) iter.Seq2[vocab.Chunk, error] { return served }
+	}
+	if err := ctx.Err(); err != nil {
+		return outcome{finish: vocab.Finish{Reason: vocab.FinishAborted, Failure: abortedBy(ctx)}, yield: true}, asm
+	}
 	// The slot is released when the provider attempt exits (the pump returns),
 	// not when the record settles: a cancelled attempt still unwinding holds it.
+	// A served stream does no provider I/O and takes no slot.
 	release := func() {}
-	if p.slots != nil {
+	if p.slots != nil && served == nil {
 		select {
 		case p.slots <- struct{}{}:
 			release = func() { <-p.slots }
@@ -82,7 +96,7 @@ func (p *prepared) run(ctx context.Context, req session.Request, yield func(voca
 	ch := make(chan item)
 	done := make(chan struct{})
 	defer close(done)
-	go p.pump(actx, req, ch, done, release)
+	go p.pump(actx, src, req, ch, done, release)
 
 	for {
 		select {
@@ -124,7 +138,8 @@ func (p *prepared) run(ctx context.Context, req session.Request, yield func(voca
 
 // pump runs the adapter's iterator on its own goroutine so a cancellation or a
 // stalled provider never holds the normaliser; a panic is a malformed response.
-func (p *prepared) pump(ctx context.Context, req session.Request, ch chan<- item, done <-chan struct{}, release func()) {
+// src is the provider's Attempt or a StreamAround listener's served stream.
+func (p *prepared) pump(ctx context.Context, src func(context.Context, session.Request) iter.Seq2[vocab.Chunk, error], req session.Request, ch chan<- item, done <-chan struct{}, release func()) {
 	defer release()
 	send := func(it item) bool {
 		select {
@@ -136,10 +151,10 @@ func (p *prepared) pump(ctx context.Context, req session.Request, ch chan<- item
 	}
 	defer func() {
 		if r := recover(); r != nil {
-			send(item{err: failure(vocab.CodeMalformedResponse, "the adapter panicked: %v", r)})
+			send(item{err: failure(vocab.CodeMalformedResponse, "the stream panicked: %v", r)})
 		}
 	}()
-	for c, err := range p.call.Attempt(ctx, req) {
+	for c, err := range src(ctx, req) {
 		if err != nil {
 			send(item{err: err})
 			return

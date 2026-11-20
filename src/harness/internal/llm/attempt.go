@@ -24,6 +24,9 @@ type Attempt struct {
 	Finish vocab.Finish
 	Usage  *vocab.Usage
 	Timing event.Timing
+	// ServedBy names the llm.StreamAround listener that served the stream in
+	// place of the provider; "" when the route's adapter served it.
+	ServedBy string
 }
 
 // Succeeded is true when the attempt finished without a failure and produced a
@@ -51,11 +54,11 @@ func (a Attempt) Draft() (event.Draft, error) {
 	if a.Succeeded() {
 		return event.AssistantMessage.Draft(event.Append(), event.AssistantMessagePayload{
 			Message: *a.Message, RequestAsOf: &asOf, RequestDigest: a.RequestDigest,
-			Usage: a.Usage, Timing: &timing,
+			Usage: a.Usage, Timing: &timing, ServedBy: a.ServedBy,
 		})
 	}
 	return event.AssistantAttempt.Draft(event.AssistantAttemptPayload{
 		Message: a.Message, RequestAsOf: &asOf, RequestDigest: a.RequestDigest,
-		Usage: a.Usage, Timing: &timing, Failure: a.Finish.Failure,
+		Usage: a.Usage, Timing: &timing, Failure: a.Finish.Failure, ServedBy: a.ServedBy,
 	})
 }

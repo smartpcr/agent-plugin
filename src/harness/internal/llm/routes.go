@@ -8,6 +8,7 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
 )
@@ -204,4 +205,5 @@ type Runtime struct {
 	mu     sync.RWMutex
 	routes map[vocab.RouteID]*entry
 	clock  func() int64
+	host   *cordis.Context // StreamAround is dispatched through it; nil: no interception
 }

@@ -9,6 +9,14 @@
 // vocab.Finish and exactly one Attempt record. Runtime.Complete is the buffered
 // form used by auxiliary calls.
 //
+// Every attempt passes the around key StreamAround (when the runtime was built
+// WithInterception) after its request is checked and before any provider I/O. A
+// listener answers Proceed or Serve{Stream, ServedBy}: a served stream replaces
+// the provider (replay), is normalised and settled exactly like a provider's,
+// takes no route slot, and its record names ServedBy. No decision carries a
+// route, and a listener that hands next a changed route, model, configuration or
+// request is refused, so interception cannot reroute (DH-T-LLM-4).
+//
 // The runtime holds no session writer (SP-1, SP-2). The Attempt record goes to
 // the caller's AttemptSink, and the caller (the driver for a loop step, the
 // auxiliary caller otherwise) appends it as exactly one settlement event,
