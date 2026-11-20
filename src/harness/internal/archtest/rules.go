@@ -70,6 +70,10 @@ var Rules = []Rule{
 	{HarnessModule, "cmd/dsh embeds the zone database through time/tzdata (DH-T-TEMPORAL-5)", mustImport(HarnessModule+"/cmd/dsh", "time/tzdata")},
 	{HarnessModule, "only internal/boot/yamlx imports the YAML module (DH-T-YAML-1)", onlyImporter(YAMLModule, YAMLXPackage)},
 	{HarnessModule, "only internal/boot/expr imports the expression module (DH-D-LOADER-5)", onlyImporter(ExprModule, ExprPackage)},
+	{HarnessModule, "internal/session/event imports no harness package but vocab and schema (DH-D-SESSION-1)", importsOnly(EventPackage, VocabPackage, SchemaPackage)},
+	{HarnessModule, "internal/session/scope imports nothing of the modules but cordis (DH-D-SESSION-8)", importsOnly(ScopePackage, CordisPackage)},
+	{HarnessModule, "internal/session/store imports no harness package but schema and event (DH-D-STORE-1)", importsOnly(StorePackage, SchemaPackage, EventPackage)},
+	{HarnessModule, "no non-test package imports memstore or storetest (DH-D-STORE-1)", noImporter(MemstorePackage, StoretestPackage)},
 }
 
 // Packages the rules name.
@@ -78,6 +82,13 @@ const (
 	SchemaPackage = HarnessModule + "/internal/schema"
 	YAMLXPackage  = HarnessModule + "/internal/boot/yamlx"
 	ExprPackage   = HarnessModule + "/internal/boot/expr"
+
+	CordisPackage    = GoModule + "/cordis"
+	EventPackage     = HarnessModule + "/internal/session/event"
+	ScopePackage     = HarnessModule + "/internal/session/scope"
+	StorePackage     = HarnessModule + "/internal/session/store"
+	MemstorePackage  = StorePackage + "/memstore"
+	StoretestPackage = StorePackage + "/storetest"
 )
 
 // Third-party modules with a single importer.
@@ -133,6 +144,22 @@ func mustImport(pkg, imp string) func([]Package) []string {
 			}
 		}
 		return nil
+	}
+}
+
+// noImporter fails every listed package that directly imports one of pkgs. The
+// list excludes test files, so tests may import them.
+func noImporter(pkgs ...string) func([]Package) []string {
+	return func(list []Package) []string {
+		var bad []string
+		for _, p := range list {
+			for _, imp := range p.Imports {
+				if slices.Contains(pkgs, imp) {
+					bad = append(bad, fmt.Sprintf("%s imports %s; only tests may", p.ImportPath, imp))
+				}
+			}
+		}
+		return bad
 	}
 }
 

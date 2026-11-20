@@ -127,6 +127,19 @@ func TestRulesCatchViolations(t *testing.T) {
 		{"yaml and expr elsewhere", HarnessModule, []Package{
 			imports(pkg(HarnessModule+"/internal/boot/config", "config", false, "a.go"), YAMLModule, ExprModule+"/vm"),
 		}, 2},
+		{"session packages within their bounds", HarnessModule, []Package{
+			imports(pkg(EventPackage, "event", false, "a.go"), VocabPackage, SchemaPackage, "encoding/json"),
+			imports(pkg(ScopePackage, "scope", false, "a.go"), CordisPackage, "sync"),
+			imports(pkg(StorePackage, "store", false, "a.go"), EventPackage, SchemaPackage),
+			imports(pkg(MemstorePackage, "memstore", false, "a.go"), EventPackage, StorePackage),
+			imports(pkg(StoretestPackage, "storetest", false, "a.go"), EventPackage, StorePackage, VocabPackage, "testing"),
+		}, 0},
+		{"session packages out of bounds", HarnessModule, []Package{
+			imports(pkg(EventPackage, "event", false, "a.go"), StorePackage),
+			imports(pkg(ScopePackage, "scope", false, "a.go"), EventPackage),
+			imports(pkg(StorePackage, "store", false, "a.go"), MemstorePackage),
+			imports(pkg(HarnessModule+"/internal/engine", "engine", false, "a.go"), StoretestPackage),
+		}, 5},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := check(tc.module, tc.pkgs...); len(got) != tc.bad {

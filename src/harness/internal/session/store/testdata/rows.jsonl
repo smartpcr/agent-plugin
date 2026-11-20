@@ -1,0 +1,15 @@
+{"seq":0,"time":1735689600000,"type":"session/end-seed","v":1,"payload":"{\"cause\":\"create\",\"epoch\":1}"}
+{"seq":1,"time":1735689600001,"type":"request/header","v":1,"payload":"{\"route\":\"deepseek/chat\"}"}
+{"seq":2,"time":1735689600002,"type":"request/context","v":1,"payload":"{\"key\":\"cwd\",\"value\":\"/work\"}"}
+{"seq":3,"time":1735689600003,"type":"system/message","v":1,"op":1,"payload":"{\"message\":{\"blocks\":[{\"kind\":\"text\",\"text\":{\"text\":\"be brief\"}}],\"id\":\"msg_636c9f56dfae1fe0f9052c7247d2dd18\",\"role\":\"system\"}}"}
+{"seq":4,"time":1735689600004,"type":"developer/message","v":1,"op":1,"payload":"{\"message\":{\"blocks\":[{\"kind\":\"text\",\"text\":{\"text\":\"rules\"}}],\"id\":\"msg_f089ca2fcab6d6d433c6fcb572326da2\",\"role\":\"developer\"}}"}
+{"seq":5,"time":1735689600005,"type":"turn/start","v":1,"payload":"{\"turn\":1}"}
+{"seq":6,"time":1735689600006,"type":"user/message","v":1,"op":1,"payload":"{\"display\":\"hi\",\"message\":{\"blocks\":[{\"kind\":\"text\",\"text\":{\"text\":\"hi\"}}],\"id\":\"msg_629dd440c687c75926aa64bbadb03421\",\"role\":\"user\"}}"}
+{"seq":7,"time":1735689600007,"type":"step/start","v":1,"payload":"{\"step\":1,\"turn\":1}"}
+{"seq":8,"time":1735689600008,"type":"assistant/attempt","v":1,"payload":"{\"failure\":{\"class\":\"transient\",\"code\":\"llm/overloaded\",\"message\":\"busy\"},\"request_as_of\":4,\"request_digest\":\"sha256:00\"}"}
+{"seq":9,"time":1735689600009,"type":"assistant/message","v":1,"op":1,"payload":"{\"message\":{\"blocks\":[{\"kind\":\"text\",\"text\":{\"text\":\"calling\"}}],\"id\":\"msg_c6c5783f6aaea8aed08e2c7fbec85162\",\"role\":\"assistant\"},\"request_as_of\":4,\"request_digest\":\"sha256:00\",\"timing\":{\"end\":3,\"first_token\":2,\"start\":1},\"usage\":{\"cache_read\":0,\"cache_write\":0,\"input\":10,\"output\":2}}","cold":"[{\"delta\":\"calling\"}]"}
+{"seq":10,"time":1735689600010,"type":"tool/call","v":1,"sources":[9],"payload":"{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\",\"call_id\":\"c1\",\"name\":\"grep\"}"}
+{"seq":11,"time":1735689600011,"type":"tool/result","v":2,"op":1,"sources":[10],"payload":"{\"call_id\":\"c1\",\"message\":{\"blocks\":[{\"kind\":\"tool_result\",\"tool_result\":{\"call_id\":\"c1\",\"parts\":[{\"text\":{\"text\":\"ok\"}}]}}],\"id\":\"msg_879c340faa25b442ff35a5c9a05932ba\",\"role\":\"tool\"},\"spill\":{\"bytes\":9,\"path\":\"spill/c1\"}}"}
+{"seq":12,"time":1735689600012,"type":"step/end","v":1,"payload":"{\"step\":1,\"turn\":1}"}
+{"seq":13,"time":1735689600013,"type":"turn/end","v":1,"payload":"{\"reason\":{\"kind\":\"completed\"},\"turn\":1}"}
+{"seq":14,"time":1735689600014,"type":"tool/result","v":1,"op":1,"payload":"{\"id\":\"c1\",\"message\":{\"id\":\"msg_879c340faa25b442ff35a5c9a05932ba\",\"role\":\"tool\",\"blocks\":[{\"kind\":\"tool_result\",\"tool_result\":{\"call_id\":\"c1\",\"parts\":[{\"text\":{\"text\":\"ok\"}}]}}]}}"}
