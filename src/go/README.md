@@ -314,7 +314,12 @@ upstream; tests in `cordis/unload_test.go`):
   notification, and the `Wait`/`Dispose` calls waiting for them, until it returns. A
   parked handler resumes concurrently with later ones, so handlers guard one-shot work
   with a flag rather than `sync.Once`. A barrier waits only for its own target
-  notifications, never for a later one that is still running.
+  notifications, never for a later one that is still running. A wait is attributed to
+  its delivery by goroutine id, which Go exposes only in a stack trace header
+  (`goroutine N [...]`); `goid.go` accepts only a well-formed, positive id and never
+  lets two deliveries share one. A delivery without a valid identity is never parked:
+  delivery stays in order, a handler waiting in it holds back later notifications, and
+  the condition is logged once as a warning.
   Disposing the root is
   final in the same way: the root refuses new effects and child fibers, its state is
   `Unloading` then `Disposed`, and an overlapping `root.Dispose()` or

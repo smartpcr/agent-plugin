@@ -1,10 +1,8 @@
 package cordis
 
 import (
-	"bytes"
-	"runtime"
-	"strconv"
 	"sync"
+	"sync/atomic"
 )
 
 // tree is the state shared by every context of one root.
@@ -35,6 +33,8 @@ type tree struct {
 	changed     sync.Cond            // signalled on outboxMu when a delivery returns or parks
 
 	fiberUID int
+	// unattributed is set once a delivery could not be attributed to its goroutine.
+	unattributed atomic.Bool
 
 	root     *Context
 	store    *store
@@ -126,17 +126,32 @@ func (t *tree) dispatch() {
 	t.dispatching = false
 }
 
+// deliver runs a notification. It registers the delivery under its goroutine's
+// identity so a lifecycle wait of the handler parks it. A delivery whose identity is
+// unavailable, or already taken, is left unregistered rather than share one: its
+// handler's waits then never park it, which keeps the order of delivery but holds back
+// later notifications while the handler waits.
 func (t *tree) deliver(n notification, d *delivery, started chan<- struct{}) {
-	g := goid()
+	g, attributed := goroutineID()
 	t.outboxMu.Lock()
-	t.byGoroutine[g] = d
+	if attributed && t.byGoroutine[g] == nil {
+		t.byGoroutine[g] = d
+	} else {
+		attributed = false
+	}
 	t.outboxMu.Unlock()
 	close(started)
+	if !attributed && t.unattributed.CompareAndSwap(false, true) {
+		t.root.Logger().Warnf("cannot identify the goroutine delivering a notification; " +
+			"a handler that waits for lifecycle work holds back later notifications")
+	}
 	if err := protect(func() error { n.fn(); return nil }); err != nil {
 		t.root.Logger().Error(err)
 	}
 	t.outboxMu.Lock()
-	delete(t.byGoroutine, g)
+	if attributed {
+		delete(t.byGoroutine, g)
+	}
 	delete(t.running, n.seq)
 	t.condLocked().Broadcast()
 	t.outboxMu.Unlock()
@@ -186,7 +201,11 @@ func (t *tree) park() (unpark func()) {
 	if len(t.byGoroutine) == 0 {
 		return func() {}
 	}
-	d := t.byGoroutine[goid()]
+	g, ok := goroutineID()
+	if !ok {
+		return func() {}
+	}
+	d := t.byGoroutine[g]
 	if d == nil {
 		return func() {}
 	}
@@ -224,19 +243,6 @@ func (t *tree) condLocked() *sync.Cond {
 		t.changed.L = &t.outboxMu
 	}
 	return &t.changed
-}
-
-// goid returns the calling goroutine's id. It is read only to attribute a lifecycle
-// wait to the delivery that made it, when deliveries are running.
-func goid() uint64 {
-	var buf [64]byte
-	b := buf[:runtime.Stack(buf[:], false)]
-	b = bytes.TrimPrefix(b, []byte("goroutine "))
-	if i := bytes.IndexByte(b, ' '); i >= 0 {
-		b = b[:i]
-	}
-	id, _ := strconv.ParseUint(string(b), 10, 64)
-	return id
 }
 
 // listeners is a small, ordered, thread-safe subscriber list.

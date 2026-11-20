@@ -32,7 +32,8 @@ dispatcher with a delivery barrier in `Wait`/`Dispose`) and the fifth (serialise
 dispatcher, caller-delivering barrier) and the sixth (creation notification starts the
 load, bounded barrier) and the seventh (barriers deliver on fresh goroutines, creation-order
 announcement) and the eighth (strictly ordered dispatcher with parked deliveries, no
-barrier stealing): still passes unchanged.
+barrier stealing) and the ninth (validated goroutine identity for parked deliveries):
+still passes unchanged.
 
 ### Tests
 
@@ -46,7 +47,7 @@ ok  github.com/smartpcr/agent-plugin/src/go/timer
 
 | Test | In `src/go/cordis/unload_test.go` |
 | --- | --- |
-| `DH-T-CORDIS-1` | `TestCleanupCannotRegisterWhileItsFiberUnloads`, `TestRootDisposeIsFinalAndExclusive`, `TestRootLifecycleHandlersCannotBlockTeardown`, `TestHandlerWaitingForALoadThatWaitsForAChild`, `TestDisposeDeliversItsNotificationsInOrderBehindABlockedHandler`, `TestQueuedNotificationsKeepTheirOrderBehindABlockedHandler`, `TestBarrierIgnoresNotificationsPastItsTarget` (`tree_internal_test.go`) |
+| `DH-T-CORDIS-1` | `TestCleanupCannotRegisterWhileItsFiberUnloads`, `TestRootDisposeIsFinalAndExclusive`, `TestRootLifecycleHandlersCannotBlockTeardown`, `TestHandlerWaitingForALoadThatWaitsForAChild`, `TestDisposeDeliversItsNotificationsInOrderBehindABlockedHandler`, `TestQueuedNotificationsKeepTheirOrderBehindABlockedHandler`, `TestBarrierIgnoresNotificationsPastItsTarget`, `TestParseGoroutineIDAcceptsOnlyAWellFormedHeader`, `TestGoroutineIDIsDistinctPerGoroutine`, `TestUnidentifiedDeliveryIsNeverParked`, `TestDuplicateGoroutineIdentityIsNotShared` (`tree_internal_test.go`) |
 | TC-02a | `TestConcurrentDisposeWaitsForEveryCleanup` |
 | `DH-T-CORDIS-2` | `TestRunningCleanupHoldsBackSecondDisposeAndProvider`, `TestDependentUnloadsBeforeItsProvider`, `TestUnloadWaitsForInFlightAcquisition`, `TestNotificationHandlerCanDisposeTheAcquiringFiber`, `TestAcquisitionBarrierDoesNotRunHandlersOnItsStack` |
 | `DH-T-CORDIS-3` | `TestPendingFiberReleasesEffectsAndCreationHandlerCanDispose`, `TestCreationHandlerRunsBeforeLoadUnderConcurrentDelivery`, `TestBlockedCreationHandlerHoldsTheLoadAgainstOtherDelivery`, `TestCreationHandlerDisposalCanCreateASibling` |
