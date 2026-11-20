@@ -180,7 +180,18 @@ func (st *state) cobraTree() *cobra.Command {
 		cc := &cobra.Command{Use: c.word(), Short: c.spec.Summary}
 		if len(c.children) > 0 {
 			cc.Args = cobra.NoArgs
-			cc.RunE = func(*cobra.Command, []string) error { return ran(st.printHelp(c.help)) }
+			// A bare group lacks its required <command>: the help goes to the
+			// diagnostic stream and the run is a usage error. --help is handled by
+			// the help func and stays status 0 on the result stream.
+			cc.RunE = func(*cobra.Command, []string) error {
+				st.command = strings.TrimPrefix(c.spec.Name, "dsh ")
+				var buf bytes.Buffer
+				if err := c.help(&buf); err != nil {
+					return ran(err)
+				}
+				_, _ = io.Copy(st.env.Stderr, &buf)
+				return ran(cmdline.Usagef(c.spec.Name, "missing <command>"))
+			}
 		} else {
 			cc.DisableFlagParsing = true
 			cc.RunE = func(cc *cobra.Command, args []string) error {
