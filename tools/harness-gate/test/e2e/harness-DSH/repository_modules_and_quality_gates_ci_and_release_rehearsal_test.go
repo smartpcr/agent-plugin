@@ -148,7 +148,8 @@ type ciRehearsal struct {
 	tagsBefore  string
 
 	// three-lane gate
-	head string
+	head  string
+	gated string // commit recorded in the evidence's Source and build identity row
 
 	// scenario index
 	vetOut     string
@@ -444,7 +445,58 @@ func (s *ciRehearsal) storeBranchAtClosingCommit() error {
 			return fmt.Errorf("HEAD %s is not at the stage-closing commit: %s missing", s.head, rel)
 		}
 	}
+	sec, err := s.stage14Evidence()
+	if err != nil {
+		return err
+	}
+	row := regexp.MustCompile(`(?m)^\| Source and build identity \| .*$`).FindString(sec)
+	m := regexp.MustCompile("Commit `([0-9a-f]{40})`").FindStringSubmatch(row)
+	if m == nil {
+		return fmt.Errorf("Source and build identity row names no 40-hex commit: %q", row)
+	}
+	s.gated = m[1]
+	env := crEnv([]string{"GIT_DIR", "GIT_WORK_TREE"})
+	if _, stderr, code, err := crRun(root, env, "git", "cat-file", "-e", s.gated+"^{commit}"); err != nil {
+		return err
+	} else if code != 0 {
+		return fmt.Errorf("recorded commit %s is not in this checkout (fetch full history): %s", s.gated, stderr)
+	}
+	// The gated code must be identical to HEAD's; this e2e-tagged suite postdates
+	// the recorded run and is not built or run by any gate, so it is excluded.
+	out, stderr, code, err = crRun(root, env, "git", "diff", "--stat", s.gated, "HEAD", "--",
+		"src", "tools", ".github", ":(exclude)tools/harness-gate/test/e2e")
+	if err != nil {
+		return err
+	}
+	if code != 0 {
+		return fmt.Errorf("git diff %s HEAD exited %d: %s", s.gated, code, stderr)
+	}
+	if strings.TrimSpace(out) != "" {
+		return fmt.Errorf("HEAD %s differs from the gated commit %s under src, tools, .github:\n%s", s.head, s.gated, out)
+	}
 	return nil
+}
+
+// stage14Evidence returns the Stage 1.4 section of the DH-S-1 evidence record.
+func (s *ciRehearsal) stage14Evidence() (string, error) {
+	root, err := s.repo()
+	if err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(filepath.Join(root, "docs", "stories", "harness-DSH", "evidence", "DH-S-1.md"))
+	if err != nil {
+		return "", err
+	}
+	doc := strings.ReplaceAll(string(data), "\r\n", "\n")
+	i := strings.Index(doc, "## Stage 1.4")
+	if i < 0 {
+		return "", errors.New("DH-S-1 evidence record has no Stage 1.4 section")
+	}
+	sec := doc[i:]
+	if j := strings.Index(sec[1:], "\n## "); j >= 0 {
+		sec = sec[:j+1]
+	}
+	return sec, nil
 }
 
 // crJob returns the body of the top-level job name of a workflow file.
@@ -546,18 +598,9 @@ func crTail(s string, n int) string {
 }
 
 func (s *ciRehearsal) evidenceRecordsLanes() error {
-	data, err := os.ReadFile(filepath.Join(s.root, "docs", "stories", "harness-DSH", "evidence", "DH-S-1.md"))
+	sec, err := s.stage14Evidence()
 	if err != nil {
 		return err
-	}
-	doc := strings.ReplaceAll(string(data), "\r\n", "\n")
-	i := strings.Index(doc, "## Stage 1.4")
-	if i < 0 {
-		return errors.New("DH-S-1 evidence record has no Stage 1.4 section")
-	}
-	sec := doc[i:]
-	if j := strings.Index(sec[1:], "\n## "); j >= 0 {
-		sec = sec[:j+1]
 	}
 	var errs []error
 	runRow := regexp.MustCompile(`(?m)^\| Run identifiers \| .*$`).FindString(sec)
@@ -565,9 +608,18 @@ func (s *ciRehearsal) evidenceRecordsLanes() error {
 	if run == nil {
 		errs = append(errs, fmt.Errorf("Run identifiers row names no CI run id: %q", runRow))
 	}
+	if s.gated != "" && !strings.Contains(runRow, "at `"+s.gated[:7]+"`") {
+		errs = append(errs, fmt.Errorf("Run identifiers row does not name the gated commit %s: %q", s.gated[:7], runRow))
+	}
+	jobIDs := map[string]int64{}
 	for _, lane := range crLanes {
-		if !regexp.MustCompile("`harness \\(" + regexp.QuoteMeta(lane) + "\\)` \\d+").MatchString(runRow) {
+		m := regexp.MustCompile("`harness \\(" + regexp.QuoteMeta(lane) + "\\)` (\\d+)").FindStringSubmatch(runRow)
+		if m == nil {
 			errs = append(errs, fmt.Errorf("Run identifiers row names no job id for harness (%s)", lane))
+		} else {
+			var id int64
+			fmt.Sscan(m[1], &id)
+			jobIDs["harness ("+lane+")"] = id
 		}
 		if !regexp.MustCompile(`(?m)^\| ` + "`harness \\(" + regexp.QuoteMeta(lane) + "\\)`" + ` \| pass, all 8 gates \|$`).MatchString(sec) {
 			errs = append(errs, fmt.Errorf("lane table records no pass of all 8 gates for harness (%s)", lane))
@@ -578,6 +630,64 @@ func (s *ciRehearsal) evidenceRecordsLanes() error {
 	}
 	if !strings.Contains(sec, "harness-gate: PASSED all 8 gates\n```") {
 		errs = append(errs, errors.New("recorded lane output does not end with every gate passed"))
+	}
+	if run != nil && len(jobIDs) == len(crLanes) {
+		errs = append(errs, s.recordedRunMatches(run[1], jobIDs))
+	}
+	return errors.Join(errs...)
+}
+
+type crGHJob struct {
+	DatabaseID int64  `json:"databaseId"`
+	Name       string `json:"name"`
+	Conclusion string `json:"conclusion"`
+}
+
+// recordedRunMatches confirms through the GitHub API, when a token is supplied,
+// that the recorded run ran on the gated commit and each recorded harness job
+// succeeded. Without a token only the offline commit identity check applies.
+func (s *ciRehearsal) recordedRunMatches(runID string, jobIDs map[string]int64) error {
+	if os.Getenv("GH_TOKEN") == "" && os.Getenv("GITHUB_TOKEN") == "" {
+		return nil
+	}
+	if _, err := exec.LookPath("gh"); err != nil {
+		return fmt.Errorf("GH_TOKEN is set but gh is not on PATH: %w", err)
+	}
+	out, stderr, code, err := crRun(s.root, os.Environ(), "gh", "run", "view", runID,
+		"-R", "smartpcr/agent-plugin", "--json", "headSha,conclusion,jobs")
+	if err != nil {
+		return err
+	}
+	if code != 0 {
+		return fmt.Errorf("gh run view %s exited %d: %s", runID, code, stderr)
+	}
+	var got struct {
+		HeadSha    string    `json:"headSha"`
+		Conclusion string    `json:"conclusion"`
+		Jobs       []crGHJob `json:"jobs"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		return fmt.Errorf("gh run view %s: %w", runID, err)
+	}
+	var errs []error
+	if got.HeadSha != s.gated {
+		errs = append(errs, fmt.Errorf("run %s ran on %s, evidence records %s", runID, got.HeadSha, s.gated))
+	}
+	if got.Conclusion != "success" {
+		errs = append(errs, fmt.Errorf("run %s concluded %q, want success", runID, got.Conclusion))
+	}
+	for name, id := range jobIDs {
+		i := slices.IndexFunc(got.Jobs, func(j crGHJob) bool {
+			return j.DatabaseID == id
+		})
+		switch {
+		case i < 0:
+			errs = append(errs, fmt.Errorf("run %s has no job %d (%s)", runID, id, name))
+		case got.Jobs[i].Name != name:
+			errs = append(errs, fmt.Errorf("job %d is %q, evidence records %q", id, got.Jobs[i].Name, name))
+		case got.Jobs[i].Conclusion != "success":
+			errs = append(errs, fmt.Errorf("job %d (%s) concluded %q, want success", id, name, got.Jobs[i].Conclusion))
+		}
 	}
 	return errors.Join(errs...)
 }
