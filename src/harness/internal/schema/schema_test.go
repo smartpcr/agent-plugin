@@ -409,18 +409,238 @@ func TestDecimal(t *testing.T) {
 }
 
 func TestFromJSONOutsideSubset(t *testing.T) {
-	typ, err := FromJSON([]byte(`{"$defs":{"n":{"type":"integer"}},"type":"object","properties":{"a":{"$ref":"#/$defs/n"}}}`))
+	typ, err := FromJSON([]byte(`{"type":"object","properties":{"a":{"type":"integer"}},"propertyNames":{"maxLength":3}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if typ.fallback == nil {
-		t.Fatal("a $ref document should use the module's validator")
+		t.Fatal("a propertyNames document should use the module's validator")
 	}
 	if is := typ.Validate([]byte(`{"a":"x"}`)); len(is) != 1 {
 		t.Fatalf("issues = %v", is)
 	}
 	if is := typ.Validate([]byte(`{"a":1,"b":[1.5,{"c":2}]}`)); is != nil {
 		t.Fatalf("issues = %v", is)
+	}
+	// The module compares float64, so a number it would round is refused, never
+	// checked as its rounded neighbour.
+	for _, v := range []string{`{"a":9007199254740993}`, `{"a":9007199254740992.5}`, `{"b":[1e400]}`} {
+		if is := typ.Validate([]byte(v)); len(is) != 1 || !strings.Contains(is[0].Message, "cannot be checked exactly") {
+			t.Errorf("%s: issues = %v", v, is)
+		}
+	}
+	for _, doc := range []string{
+		`{"propertyNames":{"maxLength":3},"maximum":9007199254740993}`,
+		`{"propertyNames":{"maxLength":3},"enum":[9007199254740993]}`,
+		`{"propertyNames":{"maxLength":3},"if":{"const":0.30000000000000000001}}`,
+	} {
+		if _, err := FromJSON([]byte(doc)); err == nil || !strings.Contains(err.Error(), "cannot hold exactly") {
+			t.Errorf("FromJSON(%s) = %v, want a refusal", doc, err)
+		}
+	}
+	// Annotations hold no constraint, so their numbers may be anything.
+	if _, err := FromJSON([]byte(`{"propertyNames":{"maxLength":3},"default":9007199254740993}`)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestLocalRefs: a $ref into the document's own $defs or definitions, or to its
+// root, is validated by this package, exactly and with every issue.
+func TestLocalRefs(t *testing.T) {
+	inline := `{"type":"integer"}`
+	for _, doc := range []string{
+		inline,
+		`{"$defs":{"i":{"type":"integer"}},"$ref":"#/$defs/i"}`,
+		`{"definitions":{"a/b":{"type":"integer"}},"$ref":"#/definitions/a~1b"}`,
+		`{"$defs":{"i":{"$ref":"#/$defs/j"},"j":{"type":"integer"}},"$ref":"#/$defs/i"}`,
+	} {
+		typ, err := FromJSON([]byte(doc))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if typ.fallback != nil {
+			t.Errorf("%s uses the module's validator", doc)
+		}
+		for v, ok := range map[string]bool{`9007199254740992.5`: false, `9007199254740993`: true, `"x"`: false, `1e400`: true} {
+			if is := typ.Validate([]byte(v)); (is == nil) != ok {
+				t.Errorf("%s against %s: issues %v, want ok=%v", v, doc, is, ok)
+			}
+		}
+	}
+
+	// A recursive shape through the root.
+	tree, err := FromJSON([]byte(`{"type":"object","properties":{"v":{"type":"integer"},"kids":{"type":"array","items":{"$ref":"#"}}},"additionalProperties":false}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	is := tree.Validate([]byte(`{"v":1,"kids":[{"v":2.5},{"kids":[{"x":1}]}]}`))
+	if got := paths(is); !reflect.DeepEqual(got, []string{"/kids/0/v", "/kids/1/kids/0/x"}) {
+		t.Fatalf("paths = %v (%v)", got, is)
+	}
+
+	// A cycle that never descends into the value ends.
+	loop, err := FromJSON([]byte(`{"$defs":{"a":{"$ref":"#/$defs/b"},"b":{"$ref":"#/$defs/a","minimum":3}},"$ref":"#/$defs/a"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if is := loop.Validate([]byte(`2`)); len(is) != 1 {
+		t.Fatalf("issues = %v", is)
+	}
+	if is := loop.Validate([]byte(`3`)); is != nil {
+		t.Fatalf("issues = %v", is)
+	}
+
+	// A reference the subset does not resolve itself goes to the module.
+	for _, doc := range []string{`{"$defs":{"a":{"$defs":{"b":{}}}},"$ref":"#/$defs/a/$defs/b"}`} {
+		typ, err := FromJSON([]byte(doc))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if typ.fallback == nil {
+			t.Errorf("%s does not use the module's validator", doc)
+		}
+	}
+	if _, _, ok := localRef("#/$defs/a%25"); ok {
+		t.Fatal("a percent-encoded ref is resolved by the subset")
+	}
+	if target(&jsonschema.Schema{}, "other.json") != nil {
+		t.Fatal("a non-local ref resolved")
+	}
+	v := newValidator(&jsonschema.Schema{}, nil)
+	v.check(&jsonschema.Schema{Ref: "#/$defs/gone"}, json.Number("1"), "")
+	if len(v.issues) != 1 {
+		t.Fatalf("a dangling ref: %v", v.issues)
+	}
+}
+
+// TestDeclarationsAreExact: numbers a schema declares keep their precision through
+// validation, the exported document and the fingerprint.
+func TestDeclarationsAreExact(t *testing.T) {
+	const big = "9007199254740993" // float64 holds 9007199254740992, not this
+	for _, tc := range []struct {
+		schema, value string
+		ok            bool
+	}{
+		{`{"const":` + big + `}`, big, true},
+		{`{"const":` + big + `}`, `9007199254740992`, false},
+		{`{"enum":[1,` + big + `]}`, big, true},
+		{`{"enum":[1,` + big + `]}`, `9007199254740992`, false},
+		{`{"const":{"a":[` + big + `]}}`, `{"a":[9007199254740992]}`, false},
+		{`{"maximum":` + big + `}`, big, true},
+		{`{"maximum":9007199254740992}`, big, false},
+		{`{"minimum":` + big + `}`, `9007199254740992`, false},
+		{`{"exclusiveMinimum":` + big + `}`, big, false},
+		{`{"exclusiveMaximum":` + big + `}`, `9007199254740992`, true},
+		{`{"multipleOf":` + big + `}`, `18014398509481986`, true},
+		{`{"multipleOf":` + big + `}`, `18014398509481984`, false},
+		{`{"minimum":0.30000000000000000001}`, `0.3`, false},
+		{`{"$defs":{"n":{"maximum":` + big + `}},"$ref":"#/$defs/n"}`, `9007199254740994`, false},
+		{`{"items":{"minimum":` + big + `}}`, `[` + big + `]`, true},
+	} {
+		typ, err := FromJSON([]byte(tc.schema))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if is := typ.Validate([]byte(tc.value)); (is == nil) != tc.ok {
+			t.Errorf("%s against %s: issues %v, want ok=%v", tc.value, tc.schema, is, tc.ok)
+		}
+	}
+
+	// The exported document carries the literal, and the fingerprint tells the
+	// neighbours apart while ignoring spelling.
+	fp := map[string]string{}
+	for _, tc := range []struct {
+		name, doc string
+		exact     bool
+	}{
+		{"exact", `{"type":"object","properties":{"b":{"maximum":` + big + `},"a":{"enum":[` + big + `]}}}`, true},
+		{"rounded", `{"type":"object","properties":{"b":{"maximum":9007199254740992},"a":{"enum":[9007199254740992]}}}`, false},
+		{"respelled", `{"type":"object","properties":{"b":{"maximum":90071992547409930e-1},"a":{"enum":[9.007199254740993e15]}}}`, true},
+	} {
+		typ, err := FromJSON([]byte(tc.doc))
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := string(typ.JSONSchema())
+		fp[tc.name] = typ.Fingerprint()
+		if tc.name == "exact" && strings.Count(out, big) != 2 {
+			t.Errorf("JSONSchema() = %s, want both literals", out)
+		}
+		if !tc.exact && strings.Contains(out, big) {
+			t.Errorf("JSONSchema() = %s", out)
+		}
+		round, err := FromJSON(typ.JSONSchema())
+		if err != nil || round.Fingerprint() != typ.Fingerprint() {
+			t.Errorf("re-reading %s: %v", out, err)
+		}
+	}
+	if fp["exact"] != fp["respelled"] || fp["exact"] == fp["rounded"] {
+		t.Fatalf("fingerprints = %v, want the exact pair equal and the rounded one distinct", fp)
+	}
+
+	// Tags on Go fields keep their literal too.
+	type tagged struct {
+		N int64 `json:"n" dsh:"enum=1|9007199254740993"`
+		M int64 `json:"m" dsh:"min=-9007199254740993,max=9007199254740993"`
+	}
+	typ, err := Of[tagged]()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for v, ok := range map[string]bool{
+		`{"n":9007199254740993,"m":0}`:  true,
+		`{"n":9007199254740992,"m":0}`:  false,
+		`{"n":1,"m":9007199254740993}`:  true,
+		`{"n":1,"m":9007199254740994}`:  false,
+		`{"n":1,"m":-9007199254740994}`: false,
+		`{"n":1,"m":-9007199254740993}`: true,
+	} {
+		if is := typ.Validate([]byte(v)); (is == nil) != ok {
+			t.Errorf("%s: issues %v, want ok=%v", v, is, ok)
+		}
+	}
+	if out := string(typ.JSONSchema()); strings.Count(out, big) != 3 {
+		t.Errorf("JSONSchema() = %s", out)
+	}
+	type inverted struct {
+		N int64 `json:"n" dsh:"min=9007199254740993,max=9007199254740992"`
+	}
+	if _, err := Of[inverted](); err == nil {
+		t.Fatal("min above max by one was accepted")
+	}
+	type badEnum struct {
+		N int `json:"n" dsh:"enum=1|x"`
+	}
+	if _, err := Of[badEnum](); err == nil {
+		t.Fatal("a non-numeric enum was accepted")
+	}
+}
+
+// TestHugeExponents: exponents are exact however large, so distinct numbers never
+// collapse into one.
+func TestHugeExponents(t *testing.T) {
+	typ, err := FromJSON([]byte(`{"type":"array","uniqueItems":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for v, ok := range map[string]bool{
+		`[1e1099511627776,1e1099511627777]`:                                 true,
+		`[1e1099511627776,10e1099511627775]`:                                false,
+		`[1e-1099511627776,1e-1099511627777]`:                               true,
+		`[1e99999999999999999999999999999,1e99999999999999999999999999998]`: true,
+	} {
+		if is := typ.Validate([]byte(v)); (is == nil) != ok {
+			t.Errorf("%s: issues %v, want ok=%v", v, is, ok)
+		}
+	}
+	a, _ := parseDecimal("1e1099511627776")
+	b, _ := parseDecimal("1e1099511627777")
+	c, _ := parseDecimal("-1e99999999999999999999999")
+	if a.cmp(b) >= 0 || b.cmp(a) <= 0 || c.cmp(a) >= 0 || !b.multipleOf(a) || a.multipleOf(b) {
+		t.Fatal("huge exponent arithmetic")
+	}
+	if max, err := FromJSON([]byte(`{"maximum":1e1099511627776}`)); err == nil {
+		t.Fatalf("an out-of-float64 bound parsed: %s", max.JSONSchema())
 	}
 }
 

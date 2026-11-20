@@ -12,15 +12,16 @@ import (
 // trailing zeros. Zero has no digits and is never negative. Comparing two decimals
 // is exact; no number is rounded through float64 (9007199254740993 stays distinct
 // from 9007199254740992, and 0.3 is a multiple of 0.1).
+//
+// The exponent is kept exactly, as a canonical base-10 integer string ("" for
+// zero), so 1e1099511627776 and 1e1099511627777 stay distinct however large the
+// exponent; it is never expanded into a power of ten. The struct stays comparable,
+// so equal decimals are == and reflect.DeepEqual.
 type decimal struct {
 	neg    bool
 	digits string
-	exp    int64
+	exp    string
 }
-
-// maxExp clamps exponents so a pathological input like 1e999999999999999999 costs
-// nothing: numbers past it compare as the clamped value.
-const maxExp = 1 << 40
 
 // parseDecimal reads a JSON number. It reports false for anything else.
 func parseDecimal(s string) (decimal, bool) {
@@ -33,23 +34,35 @@ func parseDecimal(s string) (decimal, bool) {
 	if intPart == "" || !allDigits(intPart) || !allDigits(frac) || (strings.Contains(mant, ".") && frac == "") {
 		return decimal{}, false
 	}
+	exp := new(big.Int)
 	if hasExp {
-		e, ok := parseExp(expPart)
-		if !ok {
+		if !validExp(expPart) {
 			return decimal{}, false
 		}
-		d.exp = e
+		exp.SetString(strings.TrimPrefix(expPart, "+"), 10)
 	}
 	digits := intPart + frac
-	d.exp -= int64(len(frac))
 	trimmed := strings.TrimRight(digits, "0")
-	d.exp += int64(len(digits) - len(trimmed))
+	exp.Add(exp, big.NewInt(int64(len(digits)-len(trimmed)-len(frac))))
 	d.digits = strings.TrimLeft(trimmed, "0")
 	if d.digits == "" {
 		return decimal{}, true
 	}
-	d.exp = max(-maxExp, min(maxExp, d.exp))
+	d.exp = exp.String()
 	return d, true
+}
+
+func (d decimal) expInt() *big.Int {
+	e, _ := new(big.Int).SetString(d.exp, 10)
+	if e == nil {
+		return new(big.Int)
+	}
+	return e
+}
+
+// magnitude is the position of d's leading digit: len(digits) + exp.
+func (d decimal) magnitude() *big.Int {
+	return d.expInt().Add(d.expInt(), big.NewInt(int64(len(d.digits))))
 }
 
 func allDigits(s string) bool {
@@ -61,28 +74,12 @@ func allDigits(s string) bool {
 	return true
 }
 
-// parseExp reads an exponent, saturating at ±maxExp.
-func parseExp(s string) (int64, bool) {
-	neg := false
-	switch {
-	case strings.HasPrefix(s, "-"):
-		neg, s = true, s[1:]
-	case strings.HasPrefix(s, "+"):
+// validExp reports whether s is a JSON exponent: an optional sign, then digits.
+func validExp(s string) bool {
+	if strings.HasPrefix(s, "-") || strings.HasPrefix(s, "+") {
 		s = s[1:]
 	}
-	if s == "" || !allDigits(s) {
-		return 0, false
-	}
-	s = strings.TrimLeft(s, "0")
-	e := int64(maxExp)
-	if len(s) < 14 {
-		e, _ = strconv.ParseInt("0"+s, 10, 64)
-		e = min(e, maxExp)
-	}
-	if neg {
-		e = -e
-	}
-	return e, true
+	return s != "" && allDigits(s)
 }
 
 // toDecimal converts a JSON number (a json.Number) or a Go number from a schema
@@ -116,7 +113,7 @@ func toDecimal(v any) (decimal, bool) {
 func (d decimal) isZero() bool { return d.digits == "" }
 
 // isInteger reports whether d has no fractional part.
-func (d decimal) isInteger() bool { return d.isZero() || d.exp >= 0 }
+func (d decimal) isInteger() bool { return d.isZero() || !strings.HasPrefix(d.exp, "-") }
 
 // cmp returns -1, 0 or +1 as d is below, equal to or above e.
 func (d decimal) cmp(e decimal) int {
@@ -143,11 +140,8 @@ func (d decimal) cmpAbs(e decimal) int {
 		return 1
 	}
 	// The magnitude is the position of the leading digit.
-	if dm, em := int64(len(d.digits))+d.exp, int64(len(e.digits))+e.exp; dm != em {
-		if dm < em {
-			return -1
-		}
-		return 1
+	if c := d.magnitude().Cmp(e.magnitude()); c != 0 {
+		return c
 	}
 	a, b := d.digits, e.digits
 	n := max(len(a), len(b))
@@ -166,18 +160,21 @@ func (d decimal) multipleOf(m decimal) bool {
 	}
 	dn, _ := new(big.Int).SetString(d.digits, 10)
 	mn, _ := new(big.Int).SetString(m.digits, 10)
-	shift := d.exp - m.exp // d/m = dn/mn × 10^shift
-	if shift >= 0 {
+	shift := d.expInt().Sub(d.expInt(), m.expInt()) // d/m = dn/mn × 10^shift
+	if shift.Sign() >= 0 {
 		// mn = 2^a·5^b·r: past max(a, b) more powers of ten change nothing, and
 		// a, b ≤ log2(mn) < 4·len(digits).
-		shift = min(shift, int64(4*len(m.digits)))
-		dn.Mul(dn, new(big.Int).Exp(big.NewInt(10), big.NewInt(shift), nil))
+		if limit := big.NewInt(int64(4 * len(m.digits))); shift.Cmp(limit) > 0 {
+			shift = limit
+		}
+		dn.Mul(dn, new(big.Int).Exp(big.NewInt(10), shift, nil))
 	} else {
 		// mn·10^-shift exceeds dn once -shift passes dn's digit count.
-		if -shift > int64(len(d.digits)) {
+		shift.Neg(shift)
+		if shift.Cmp(big.NewInt(int64(len(d.digits)))) > 0 {
 			return false
 		}
-		mn.Mul(mn, new(big.Int).Exp(big.NewInt(10), big.NewInt(-shift), nil))
+		mn.Mul(mn, new(big.Int).Exp(big.NewInt(10), shift, nil))
 	}
 	return new(big.Int).Mod(dn, mn).Sign() == 0
 }

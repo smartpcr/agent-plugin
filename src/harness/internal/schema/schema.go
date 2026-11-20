@@ -29,6 +29,7 @@ type Type struct {
 	fp       string
 	open     bool
 	fallback *jsonschema.Resolved // set when the document uses keywords outside the subset
+	exact    exactTable           // the declared literal of every numeric bound
 }
 
 // Option adjusts a derivation.
@@ -68,13 +69,14 @@ func ForType(t reflect.Type, opts ...Option) (*Type, error) {
 		return nil, fmt.Errorf("schema: deriving %s: %w", t, err)
 	}
 	s = s.CloneSchemas()
-	if err := applyTags(t, s); err != nil {
+	exact := exactTable{}
+	if err := applyTags(t, s, exact); err != nil {
 		return nil, fmt.Errorf("schema: deriving %s: %w", t, err)
 	}
 	if o.open {
 		s.AdditionalProperties = nil
 	}
-	typ, err := build(t.String(), s, o.open)
+	typ, err := build(t.String(), s, o.open, exact)
 	if err != nil {
 		return nil, err
 	}
@@ -94,16 +96,44 @@ func MustOf[T any](opts ...Option) *Type {
 // FromJSON loads a schema document supplied at run time (an external plugin's tool,
 // an MCP server). Its strings are data: nothing in it is evaluated. Documents that
 // use keywords outside the subset this package enforces are validated by the
-// module's full validator instead, which reports the first violation only.
+// module's full validator instead, which reports the first violation only. Numbers
+// keep the precision they are written with; a document outside the subset that
+// declares a number float64 cannot hold is refused, since the module would compare
+// against the rounded value.
 func FromJSON(doc []byte) (*Type, error) {
 	var s jsonschema.Schema
 	if err := json.Unmarshal(doc, &s); err != nil {
 		return nil, fmt.Errorf("schema: the document does not parse: %w", err)
 	}
-	return build("document", &s, false)
+	g, err := parse(doc)
+	if err != nil {
+		return nil, fmt.Errorf("schema: the document does not parse: %w", err)
+	}
+	exact := exactTable{}
+	if err := collectExact(&s, g, exact); err != nil {
+		return nil, fmt.Errorf("schema: document: %w", err)
+	}
+	t, err := build("document", &s, false, exact)
+	if err != nil {
+		return nil, err
+	}
+	if t.fallback != nil {
+		if p, n, bad := inexactDeclaration(g, ""); bad {
+			return nil, fmt.Errorf("schema: document: %s declares %s, which the full validator cannot hold exactly", p, n)
+		}
+		// The module compares float64 values, so it gets the document as float64.
+		var fs jsonschema.Schema
+		if err := json.Unmarshal(doc, &fs); err != nil {
+			return nil, fmt.Errorf("schema: the document does not parse: %w", err)
+		}
+		if t.fallback, err = fs.Resolve(nil); err != nil {
+			return nil, fmt.Errorf("schema: document: %w", err)
+		}
+	}
+	return t, nil
 }
 
-func build(name string, s *jsonschema.Schema, open bool) (*Type, error) {
+func build(name string, s *jsonschema.Schema, open bool, exact exactTable) (*Type, error) {
 	rs, err := s.Resolve(nil)
 	if err != nil {
 		return nil, fmt.Errorf("schema: %s: %w", name, err)
@@ -111,7 +141,7 @@ func build(name string, s *jsonschema.Schema, open bool) (*Type, error) {
 	if err := compilePatterns(s); err != nil {
 		return nil, fmt.Errorf("schema: %s: %w", name, err)
 	}
-	doc, err := json.Marshal(s)
+	doc, err := exportDoc(s, exact)
 	if err != nil {
 		return nil, fmt.Errorf("schema: %s: %w", name, err)
 	}
@@ -119,7 +149,7 @@ func build(name string, s *jsonschema.Schema, open bool) (*Type, error) {
 	if err != nil {
 		return nil, fmt.Errorf("schema: %s: %w", name, err)
 	}
-	t := &Type{name: name, schema: s, doc: doc, fp: fp, open: open}
+	t := &Type{name: name, schema: s, doc: doc, fp: fp, open: open, exact: exact}
 	if !inSubset(s) {
 		t.fallback = rs
 	}
@@ -147,12 +177,15 @@ func (t *Type) Validate(v any) Issues {
 
 func (t *Type) check(inst any) Issues {
 	if t.fallback != nil {
+		if issues := inexactInstance(inst, ""); len(issues) > 0 {
+			return issues
+		}
 		if err := t.fallback.Validate(plain(inst)); err != nil {
 			return Issues{{Path: "", Message: err.Error()}}
 		}
 		return nil
 	}
-	var v validator
+	v := newValidator(t.schema, t.exact)
 	v.check(t.schema, inst, "")
 	return v.issues
 }
@@ -243,7 +276,8 @@ func toInstance(v any) (any, error) {
 	return parse(raw)
 }
 
-// plain converts json.Number to float64 for the module's validator.
+// plain converts json.Number to float64 for the module's validator. Every number has
+// passed inexactInstance first, so none is rounded.
 func plain(v any) any {
 	switch x := v.(type) {
 	case json.Number:
@@ -278,11 +312,11 @@ var mapKeywords = map[string]bool{
 }
 
 func fingerprint(doc []byte) (string, error) {
-	var v any
-	if err := json.Unmarshal(doc, &v); err != nil {
+	v, err := parse(doc)
+	if err != nil {
 		return "", err
 	}
-	canon, err := json.Marshal(canonical(v))
+	canon, err := json.Marshal(canonNumbers(canonical(v)))
 	if err != nil {
 		return "", err
 	}

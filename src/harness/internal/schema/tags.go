@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -32,18 +33,18 @@ func jsonName(f reflect.StructField) (string, bool) {
 }
 
 // applyTags writes the dsh tag constraints of t's fields into s, recursively.
-func applyTags(t reflect.Type, s *jsonschema.Schema) error {
+func applyTags(t reflect.Type, s *jsonschema.Schema, exact exactTable) error {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	switch t.Kind() {
 	case reflect.Slice, reflect.Array:
 		if s.Items != nil {
-			return applyTags(t.Elem(), s.Items)
+			return applyTags(t.Elem(), s.Items, exact)
 		}
 	case reflect.Map:
 		if s.AdditionalProperties != nil {
-			return applyTags(t.Elem(), s.AdditionalProperties)
+			return applyTags(t.Elem(), s.AdditionalProperties, exact)
 		}
 	case reflect.Struct:
 		for _, f := range reflect.VisibleFields(t) {
@@ -56,11 +57,11 @@ func applyTags(t reflect.Type, s *jsonschema.Schema) error {
 				continue
 			}
 			if tag, ok := f.Tag.Lookup("dsh"); ok {
-				if err := applyTag(s, name, ps, f.Type, tag); err != nil {
+				if err := applyTag(s, name, ps, f.Type, tag, exact); err != nil {
 					return fmt.Errorf("field %s.%s: %w", t, f.Name, err)
 				}
 			}
-			if err := applyTags(f.Type, ps); err != nil {
+			if err := applyTags(f.Type, ps, exact); err != nil {
 				return err
 			}
 		}
@@ -71,7 +72,7 @@ func applyTags(t reflect.Type, s *jsonschema.Schema) error {
 // applyTag applies one dsh tag, a comma-separated list of min=, max=, enum=a|b,
 // required, live, secret, ui= and pattern= (which takes the rest of the tag, so a
 // pattern may hold commas).
-func applyTag(parent *jsonschema.Schema, name string, s *jsonschema.Schema, ft reflect.Type, tag string) error {
+func applyTag(parent *jsonschema.Schema, name string, s *jsonschema.Schema, ft reflect.Type, tag string, exact exactTable) error {
 	for ft.Kind() == reflect.Pointer {
 		ft = ft.Elem()
 	}
@@ -92,11 +93,17 @@ func applyTag(parent *jsonschema.Schema, name string, s *jsonschema.Schema, ft r
 			}
 		case (key == "min" || key == "max") && hasVal:
 			n, err := strconv.ParseFloat(val, 64)
-			if err != nil {
+			if _, exactOK := parseDecimal(val); err != nil || !exactOK {
 				return fmt.Errorf("dsh %s=%q is not a number", key, val)
 			}
 			if err := setBound(s, key == "min", n, numeric, kind); err != nil {
 				return fmt.Errorf("dsh %s=%s: %w", key, val, err)
+			}
+			if numeric {
+				kw := map[string]string{"min": "minimum", "max": "maximum"}[key]
+				if err := exact.set(s, kw, val); err != nil {
+					return err
+				}
 			}
 		case key == "enum" && hasVal:
 			s.Enum = nil
@@ -105,11 +112,10 @@ func applyTag(parent *jsonschema.Schema, name string, s *jsonschema.Schema, ft r
 					s.Enum = append(s.Enum, e)
 					continue
 				}
-				n, err := strconv.ParseFloat(e, 64)
-				if err != nil {
+				if _, ok := parseDecimal(e); !ok {
 					return fmt.Errorf("dsh enum value %q is not a number", e)
 				}
-				s.Enum = append(s.Enum, n)
+				s.Enum = append(s.Enum, json.Number(e))
 			}
 		case key == "pattern" && hasVal:
 			if kind != reflect.String {
@@ -124,7 +130,9 @@ func applyTag(parent *jsonschema.Schema, name string, s *jsonschema.Schema, ft r
 			return fmt.Errorf("dsh tag word %q is not known", word)
 		}
 	}
-	if s.Minimum != nil && s.Maximum != nil && *s.Minimum > *s.Maximum {
+	lo, okLo := exact.bound(s, "minimum")
+	hi, okHi := exact.bound(s, "maximum")
+	if okLo && okHi && lo.d.cmp(hi.d) > 0 {
 		return errors.New("dsh min is above max")
 	}
 	return nil
