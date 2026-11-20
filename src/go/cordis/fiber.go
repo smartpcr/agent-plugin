@@ -1133,9 +1133,10 @@ func (f *Fiber) unload(done chan struct{}) {
 }
 
 // resolveConfig runs the tree's config hooks and then the component's schema on a
-// raw config. It stores nothing.
+// copy of a raw config, so neither can change the caller's value or a stored view. It
+// stores nothing.
 func (f *Fiber) resolveConfig(config any) (any, error) {
-	config, err := f.runConfigHooks(config)
+	config, err := f.runConfigHooks(cloneConfig(config))
 	if err != nil {
 		return nil, err
 	}

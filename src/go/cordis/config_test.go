@@ -203,7 +203,63 @@ func TestRetainConfigStoresRawWithoutUpdate(t *testing.T) {
 	Equal(t, any(sized{N: 7}), effective(t, fiber), "effective after the next load")
 }
 
-// ---------------------------------------------------------- DH-T-CORDIS-9
+func TestResolutionCannotMutateStoredConfigViews(t *testing.T) {
+	root, _ := Quiet()
+	// The hook edits a map or pointer candidate in place, then rejects n == 2.
+	Must(root.OnConfig(func(_ *cordis.Fiber, candidate any) (any, error) {
+		switch config := candidate.(type) {
+		case map[string]any:
+			config["n"] = config["n"].(int) * 10
+			config["tags"].([]any)[0] = "edited"
+			if config["n"] == 20 {
+				return nil, errors.New("two is refused")
+			}
+		case *sized:
+			config.N *= 10
+			if config.N == 20 {
+				return nil, errors.New("two is refused")
+			}
+		}
+		return candidate, nil
+	}))
+
+	t.Run("map", func(t *testing.T) {
+		raw := map[string]any{"n": 1, "tags": []any{"a"}}
+		fiber := MustWait(t, Must(root.Use(cordis.Define("mapped", func(*cordis.Context, sized) error { return nil }), raw)))
+		Equal(t, 1, raw["n"].(int), "the initial resolution changed the raw map")
+		Equal(t, "a", raw["tags"].([]any)[0].(string), "the initial resolution changed a nested slice")
+		Equal(t, any(sized{N: 10}), effective(t, fiber), "effective")
+
+		candidate := map[string]any{"n": 2, "tags": []any{"b"}}
+		_ = configIssue(t, fiber.Update(candidate, false))
+		Equal(t, 2, candidate["n"].(int), "a rejected update changed the caller's candidate")
+		_, err := fiber.ResolveConfig(fiber.Config())
+		NoError(t, err)
+		Equal(t, 1, fiber.Config().(map[string]any)["n"].(int), "ResolveConfig changed the raw config")
+		Equal(t, any(sized{N: 10}), effective(t, fiber), "effective after resolution")
+	})
+
+	t.Run("pointer", func(t *testing.T) {
+		raw := &sized{N: 1}
+		var got *sized
+		fiber := MustWait(t, Must(root.Use(cordis.Define("pointed", func(_ *cordis.Context, config *sized) error {
+			got = config
+			return nil
+		}), raw)))
+		Equal(t, 1, raw.N, "the initial resolution changed the raw pointer")
+		True(t, got != raw, "the body received the raw pointer")
+		Equal(t, 10, effective(t, fiber).(*sized).N, "effective")
+
+		NoError(t, fiber.RetainConfig(&sized{N: 2}))
+		_, err := fiber.ResolveConfig(fiber.Config())
+		_ = configIssue(t, err)
+		Equal(t, 2, fiber.Config().(*sized).N, "a rejected ResolveConfig changed the raw config")
+		Equal(t, 10, effective(t, fiber).(*sized).N, "a rejected ResolveConfig changed the effective config")
+		_, err = fiber.ResolveConfig(effective(t, fiber))
+		NoError(t, err)
+		Equal(t, 10, effective(t, fiber).(*sized).N, "resolving the effective config changed it")
+	})
+}
 
 func TestConfigHookTransformsEffectiveViewOnly(t *testing.T) {
 	root, _ := Quiet()

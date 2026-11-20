@@ -89,6 +89,10 @@ $ go test ./cordis/ -race -count=1 -v -run '<the DH-T-CORDIS-5..14 tests below>'
 --- PASS: TestSupersededInPlaceUpdateIsNotPublished (0.00s)
 --- PASS: TestPendingFiberHasNoEffectiveConfig (0.01s)
 --- PASS: TestRetainConfigStoresRawWithoutUpdate (0.00s)
+--- PASS: TestResolutionCannotMutateStoredConfigViews (0.00s)
+    --- PASS: TestResolutionCannotMutateStoredConfigViews/map (0.00s)
+    --- PASS: TestResolutionCannotMutateStoredConfigViews/pointer (0.00s)
+--- PASS: TestCloneConfigCopiesReferencesAndKeepsCycles (0.00s)
 --- PASS: TestConfigHookTransformsEffectiveViewOnly (0.00s)
 --- PASS: TestConfigHookCanRejectACandidate (0.00s)
 --- PASS: TestConfigHookEndsWithItsOwner (0.00s)
@@ -112,7 +116,7 @@ ok  github.com/smartpcr/agent-plugin/src/go/test/e2e/harness-DSH
 
 | Test | In `src/go/cordis/config_test.go` |
 | --- | --- |
-| `DH-T-CORDIS-8` (TC-02a) | `TestRejectedCandidateDoesNotLeakIntoEffectiveConfig`, `TestResolveConfigStoresNothing`, `TestInPlaceUpdatePublishesEffectiveConfig`, `TestSupersededInPlaceUpdateIsNotPublished` (later update, restart, disposal), `TestPendingFiberHasNoEffectiveConfig`, `TestRetainConfigStoresRawWithoutUpdate` |
+| `DH-T-CORDIS-8` (TC-02a) | `TestRejectedCandidateDoesNotLeakIntoEffectiveConfig`, `TestResolveConfigStoresNothing`, `TestInPlaceUpdatePublishesEffectiveConfig`, `TestSupersededInPlaceUpdateIsNotPublished` (later update, restart, disposal), `TestPendingFiberHasNoEffectiveConfig`, `TestRetainConfigStoresRawWithoutUpdate`, `TestResolutionCannotMutateStoredConfigViews` (a hook that edits a map or pointer candidate in place, then rejects it, leaves raw and effective unchanged; `TestCloneConfigCopiesReferencesAndKeepsCycles` in `clone_test.go` covers the copy itself) |
 | `DH-T-CORDIS-9` | `TestConfigHookTransformsEffectiveViewOnly`, `TestConfigHookCanRejectACandidate` (error and panic), `TestConfigHookEndsWithItsOwner` |
 | `DH-T-CORDIS-13` | `TestStrictConfigRejectsUnknownKeysAndTrailingData` |
 | `DH-T-CORDIS-14` | `TestTreeLogsOnlyToTheExportersItsCreatorChose` (the process's standard streams replaced by pipes) |

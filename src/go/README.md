@@ -54,7 +54,7 @@ gofmt -l .                    # must print nothing
 | class component | `cordis.Construct[C, T](name, func(*Context, C) (T, error), options...)` | instance `Init() error` and `io.Closer` are honoured |
 | `static inject = [...]` | `cordis.WithInject(names...)`, `cordis.WithInjectConfig(name, cfg)` | |
 | Standard Schema `Config` | `Validate() error` on the config type, or `cordis.WithSchema` | resolved on every load |
-| `fiber.rawConfig`, `fiber.effectiveConfig`, `fiber.resolveConfig(candidate)` (patch V15) | `fiber.Config()`, `fiber.EffectiveConfig()`, `fiber.ResolveConfig(candidate)`, `fiber.RetainConfig(raw)` | three distinct views; resolving a candidate stores nothing |
+| `fiber.rawConfig`, `fiber.effectiveConfig`, `fiber.resolveConfig(candidate)` (patch V15) | `fiber.Config()`, `fiber.EffectiveConfig()`, `fiber.ResolveConfig(candidate)`, `fiber.RetainConfig(raw)` | three distinct views; resolving a candidate works on a deep copy and stores nothing |
 | `ctx.on('internal/config', …)` | `ctx.OnConfig(hook)` | tree-wide, owned by the registering fiber; transforms or rejects a raw candidate before the schema |
 | `ctx.inject(deps, fn)` | `ctx.Inject(names, body)` / `ctx.Apply(name, body, inject...)` | |
 | `registry.replace(old, next)` | `ctx.Registry().Replace(old, next)` | later uses of `old` are forwarded |
