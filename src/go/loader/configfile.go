@@ -17,7 +17,7 @@ const writeAttempts = 10
 
 // ConfigFileOptions configures ConfigFile.
 type ConfigFileOptions struct {
-	// Path of the JSON file holding the array of entries. Required.
+	// Path of the file holding the array of entries. Required.
 	Path string `json:"path"`
 	// Watch reloads the tree when the file changes on disk.
 	Watch bool `json:"watch"`
@@ -25,6 +25,9 @@ type ConfigFileOptions struct {
 	Initial []EntryOptions `json:"initial,omitempty"`
 	// PollInterval is how often a watched file is checked; 100ms when zero.
 	PollInterval time.Duration `json:"pollInterval,omitempty"`
+	// Codec reads and writes the file. Nil picks the codec registered for the file's
+	// extension (CodecFor), which is JSON unless another one is registered.
+	Codec Codec `json:"-"`
 }
 
 // Validate requires a path.
@@ -47,12 +50,15 @@ var ConfigFileComponent = cordis.Construct("ConfigFile", newConfigFile, cordis.W
 // Writes go through a temporary file renamed over the config, retried while it is
 // locked, and never replace a file that changed since it was last read. A missing
 // file is seeded from Initial only at startup; a file that later disappears or stops
-// being a JSON array is logged and left alone, and the live tree is kept.
+// being an array of entries is logged and left alone, and the live tree is kept. The
+// file is read through a Codec, so every entry keeps the file, line and column it was
+// read from, and an invalid entry is reported at that position.
 type ConfigFile struct {
 	ctx     *cordis.Context
 	options ConfigFileOptions
 	loader  *Service
 	path    string
+	codec   Codec
 
 	mu          sync.Mutex
 	drain       chan struct{}
@@ -66,6 +72,7 @@ type ConfigFile struct {
 	known       *string
 	unmergeable *string
 	base        []EntryOptions
+	document    *Document
 }
 
 func newConfigFile(ctx *cordis.Context, options ConfigFileOptions) (*ConfigFile, error) {
@@ -80,7 +87,11 @@ func newConfigFile(ctx *cordis.Context, options ConfigFileOptions) (*ConfigFile,
 	if options.PollInterval <= 0 {
 		options.PollInterval = 100 * time.Millisecond
 	}
-	return &ConfigFile{ctx: ctx, options: options, loader: loader, path: path}, nil
+	codec := options.Codec
+	if codec == nil {
+		codec = CodecFor(path)
+	}
+	return &ConfigFile{ctx: ctx, options: options, loader: loader, path: path, codec: codec}, nil
 }
 
 // Path returns the absolute path of the file.
@@ -100,14 +111,14 @@ func (f *ConfigFile) Init() error {
 		return err
 	}
 	var entries []EntryOptions
+	var document *Document
 	if exists {
-		var ok bool
-		if entries, ok = parse(text); !ok {
-			return fmt.Errorf("loader: config file %q must contain a JSON array of entries", f.path)
+		if entries, document, err = parse(f.codec, f.path, text); err != nil {
+			return fmt.Errorf("loader: config file %q must contain an array of entries: %w", f.path, err)
 		}
 	} else {
 		entries = cloneAll(f.options.Initial)
-		text = serialize(entries)
+		text = f.render(entries)
 		f.writeAtomic(text, nil)
 	}
 
@@ -118,6 +129,7 @@ func (f *ConfigFile) Init() error {
 	f.mu.Lock()
 	f.known = &text
 	f.base = cloneAll(entries)
+	f.document = document
 	f.mu.Unlock()
 
 	if f.options.Watch {
@@ -225,15 +237,15 @@ func (f *ConfigFile) readStep() error {
 	if same(known, text) {
 		return nil
 	}
-	theirs, ok := parse(text)
-	if !ok {
+	theirs, document, err := parse(f.codec, f.path, text)
+	if err != nil {
 		if same(unmergeable, text) {
 			return nil
 		}
 		f.mu.Lock()
 		f.unmergeable = &text
 		f.mu.Unlock()
-		f.ctx.Logger().Warnf("config file %q is not a JSON array of entries; keeping the current tree", f.path)
+		f.ctx.Logger().Warnf("config file %q is not an array of entries (%v); keeping the current tree", f.path, err)
 		return nil
 	}
 
@@ -248,17 +260,34 @@ func (f *ConfigFile) readStep() error {
 	f.mu.Lock()
 	f.known = &text
 	f.base = cloneAll(theirs)
+	f.document = document
 	// runtime edits survived the merge: write them out
-	if serialize(merged) != serialize(theirs) {
+	if f.renderLocked(merged) != f.renderLocked(theirs) {
 		f.dirtyWrite = true
 	}
 	f.mu.Unlock()
 	return nil
 }
 
+// render encodes entries with the file's codec, against the document last read.
+func (f *ConfigFile) render(entries []EntryOptions) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.renderLocked(entries)
+}
+
+func (f *ConfigFile) renderLocked(entries []EntryOptions) string {
+	encoded, err := f.codec.Encode(f.document, entries)
+	if err != nil {
+		f.ctx.Logger().Error(fmt.Errorf("loader: cannot encode config file %q: %w", f.path, err))
+		return serialize(entries)
+	}
+	return string(encoded)
+}
+
 func (f *ConfigFile) writeStep() error {
 	entries := f.loader.Snapshot()
-	text := serialize(entries)
+	text := f.render(entries)
 	known, unmergeable, _ := f.state()
 	if same(known, text) {
 		return nil

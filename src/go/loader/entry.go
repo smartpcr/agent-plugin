@@ -3,6 +3,7 @@ package loader
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"slices"
 	"strings"
@@ -26,14 +27,81 @@ type EntryOptions struct {
 	Group bool `json:"group,omitempty"`
 	// Disabled keeps the entry (and, for a group, its children) unloaded.
 	Disabled bool `json:"disabled,omitempty"`
+	// DisabledExpr, when set, is an expression computing Disabled at each Apply; it
+	// takes precedence over Disabled. In a file it is written as the value of
+	// "disabled": {"$expr": "<source>"} or "${{ <source> }}".
+	DisabledExpr string `json:"-"`
 	// Inject adds dependencies on top of the component's own declaration.
 	Inject []string `json:"inject,omitempty"`
 	// Isolate maps a service name to a realm label. A label is shared, per service, by
-	// every entry that uses it; "true" makes a realm private to the entry, and "" is an
-	// ordinary shared label.
+	// every entry that uses it; "true" (in a file, also the boolean true) makes a
+	// realm private to the entry, and "" is an ordinary shared label.
 	Isolate map[string]string `json:"isolate,omitempty"`
+	// Intercept layers config on a service for this entry and everything it loads,
+	// as cordis.Context.Intercept does; services read it as json.RawMessage.
+	Intercept map[string]json.RawMessage `json:"intercept,omitempty"`
 	// Children are the entries of a group.
 	Children []EntryOptions `json:"children,omitempty"`
+
+	// source is where the entry was decoded from; nil for an entry built in code.
+	source *entrySource
+	// issues are the faults found while decoding the entry leniently.
+	issues []Issue
+	// raw is the entry's text when it has decoding issues, so writing it back does
+	// not lose what could not be decoded.
+	raw json.RawMessage
+}
+
+// entrySource records where an entry and its values are in a document.
+type entrySource struct {
+	pos  Position
+	path string
+	// positions of values by path relative to the entry ("name", "config.port")
+	values map[string]Position
+}
+
+// Position returns where the entry was decoded from; it is unknown for an entry
+// built in code.
+func (o EntryOptions) Position() Position {
+	if o.source == nil {
+		return Position{}
+	}
+	return o.source.pos
+}
+
+// position returns the position and document path of the value at the path relative
+// to the entry, falling back to its nearest known parent and then to the entry.
+func (o EntryOptions) position(relative string) (Position, string) {
+	if o.source == nil {
+		return Position{}, ""
+	}
+	path := joinPath(o.source.path, relative)
+	for key := relative; key != ""; key = parentPath(key) {
+		if pos, ok := o.source.values[key]; ok {
+			return pos, path
+		}
+	}
+	return o.source.pos, path
+}
+
+func joinPath(base, relative string) string {
+	switch {
+	case base == "":
+		return relative
+	case relative == "":
+		return base
+	case strings.HasPrefix(relative, "["):
+		return base + relative
+	default:
+		return base + "." + relative
+	}
+}
+
+func parentPath(path string) string {
+	if i := strings.LastIndexAny(path, ".["); i >= 0 {
+		return path[:i]
+	}
+	return ""
 }
 
 // Clone returns a deep copy.
@@ -44,7 +112,15 @@ func (o EntryOptions) Clone() EntryOptions {
 	if o.Isolate != nil {
 		clone.Isolate = maps.Clone(o.Isolate)
 	}
+	if o.Intercept != nil {
+		clone.Intercept = make(map[string]json.RawMessage, len(o.Intercept))
+		for name, config := range o.Intercept {
+			clone.Intercept[name] = slices.Clone(config)
+		}
+	}
 	clone.Children = cloneAll(o.Children)
+	clone.issues = slices.Clone(o.issues)
+	clone.raw = slices.Clone(o.raw)
 	return clone
 }
 
@@ -54,8 +130,224 @@ func (o EntryOptions) sameShape(other EntryOptions) bool {
 	return o.Name == other.Name &&
 		o.Group == other.Group &&
 		o.Disabled == other.Disabled &&
+		o.DisabledExpr == other.DisabledExpr &&
 		slices.Equal(o.Inject, other.Inject) &&
-		maps.Equal(o.Isolate, other.Isolate)
+		maps.Equal(o.Isolate, other.Isolate) &&
+		maps.EqualFunc(o.Intercept, other.Intercept, func(a, b json.RawMessage) bool { return jsonEqual(a, b) })
+}
+
+// entryJSON is the file form of an entry.
+type entryJSON struct {
+	ID        string                     `json:"id,omitempty"`
+	Name      string                     `json:"name,omitempty"`
+	Config    json.RawMessage            `json:"config,omitempty"`
+	Group     bool                       `json:"group,omitempty"`
+	Disabled  any                        `json:"disabled,omitempty"`
+	Inject    []string                   `json:"inject,omitempty"`
+	Isolate   map[string]any             `json:"isolate,omitempty"`
+	Intercept map[string]json.RawMessage `json:"intercept,omitempty"`
+	Children  []EntryOptions             `json:"children,omitempty"`
+}
+
+// MarshalJSON writes the entry in its file form. An entry that had decoding issues is
+// written as it was read.
+func (o EntryOptions) MarshalJSON() ([]byte, error) {
+	if len(o.issues) > 0 && len(o.raw) > 0 {
+		return slices.Clone(o.raw), nil
+	}
+	out := entryJSON{ID: o.ID, Name: o.Name, Config: o.Config, Group: o.Group, Inject: o.Inject, Intercept: o.Intercept, Children: o.Children}
+	switch {
+	case o.DisabledExpr != "":
+		out.Disabled = map[string]string{exprKey: o.DisabledExpr}
+	case o.Disabled:
+		out.Disabled = true
+	}
+	if len(o.Isolate) > 0 {
+		out.Isolate = make(map[string]any, len(o.Isolate))
+		for name, realm := range o.Isolate {
+			if realm == "true" {
+				out.Isolate[name] = true
+			} else {
+				out.Isolate[name] = realm
+			}
+		}
+	}
+	return json.Marshal(out)
+}
+
+// UnmarshalJSON reads an entry in its file form, and fails with a *ParseError that
+// lists every fault of the entry.
+func (o *EntryOptions) UnmarshalJSON(data []byte) error {
+	node, err := JSON.Decode("", data)
+	if err != nil {
+		return err
+	}
+	decoded := decodeEntry(node, "")
+	if issues := (&Document{Entries: []EntryOptions{decoded}}).Issues(); len(issues) > 0 {
+		return &ParseError{Issues: issues}
+	}
+	entries := []EntryOptions{decoded}
+	stripSources(entries)
+	*o = entries[0]
+	return nil
+}
+
+func stripSources(entries []EntryOptions) {
+	for i := range entries {
+		entries[i].source = nil
+		stripSources(entries[i].Children)
+	}
+}
+
+// decodeEntries builds entries from array items leniently: each fault becomes an
+// issue on its entry, with the position of the value at fault.
+func decodeEntries(items []*Node, path string) []EntryOptions {
+	if len(items) == 0 {
+		return nil
+	}
+	entries := make([]EntryOptions, len(items))
+	for i, item := range items {
+		entries[i] = decodeEntry(item, fmt.Sprintf("%s[%d]", path, i))
+	}
+	return entries
+}
+
+func decodeEntry(node *Node, path string) EntryOptions {
+	var o EntryOptions
+	o.source = &entrySource{pos: node.Pos, path: path, values: map[string]Position{}}
+	fault := func(at *Node, relative, message string) {
+		o.issues = append(o.issues, Issue{Pos: at.Pos, Path: joinPath(path, relative), Message: message})
+	}
+	wrongType := func(at *Node, relative, want string) {
+		fault(at, relative, fmt.Sprintf("must be %s, got %s", want, at.Kind))
+	}
+	if node.Kind != ObjectNode {
+		wrongType(node, "", "an object")
+		o.raw = node.JSON()
+		return o
+	}
+	seen := map[string]bool{}
+	for _, field := range node.Fields {
+		key, value := field.Key, field.Value
+		if seen[key] {
+			fault(value, key, "duplicate key")
+			continue
+		}
+		seen[key] = true
+		o.source.values[key] = value.Pos
+		switch key {
+		case "id", "name":
+			if value.Kind != StringNode {
+				wrongType(value, key, "a string")
+			} else if key == "id" {
+				o.ID = value.Text
+			} else {
+				o.Name = value.Text
+			}
+		case "config":
+			if value.Kind != NullNode {
+				o.Config = value.JSON()
+			}
+			recordPositions(value, key, o.source.values)
+		case "group":
+			if value.Kind != BoolNode {
+				wrongType(value, key, "a boolean")
+			} else {
+				o.Group = value.Bool
+			}
+		case "disabled":
+			switch value.Kind {
+			case BoolNode:
+				o.Disabled = value.Bool
+			case ExprNode:
+				o.DisabledExpr = value.Text
+			default:
+				wrongType(value, key, "a boolean or an expression")
+			}
+		case "inject":
+			if value.Kind != ArrayNode {
+				wrongType(value, key, "an array of service names")
+				break
+			}
+			o.Inject = []string{}
+			for i, item := range value.Items {
+				if item.Kind != StringNode {
+					wrongType(item, fmt.Sprintf("inject[%d]", i), "a service name")
+				} else {
+					o.Inject = append(o.Inject, item.Text)
+				}
+			}
+		case "isolate":
+			if value.Kind != ObjectNode {
+				wrongType(value, key, "an object of realm labels")
+				break
+			}
+			o.Isolate = map[string]string{}
+			for _, member := range value.Fields {
+				switch {
+				case member.Value.Kind == StringNode:
+					o.Isolate[member.Key] = member.Value.Text
+				case member.Value.Kind == BoolNode && member.Value.Bool:
+					o.Isolate[member.Key] = "true"
+				default:
+					wrongType(member.Value, "isolate."+member.Key, "a realm label or true")
+				}
+			}
+		case "intercept":
+			if value.Kind != ObjectNode {
+				wrongType(value, key, "an object of service configs")
+				break
+			}
+			o.Intercept = map[string]json.RawMessage{}
+			for _, member := range value.Fields {
+				o.Intercept[member.Key] = member.Value.JSON()
+			}
+		case "children":
+			if value.Kind != ArrayNode {
+				wrongType(value, key, "an array of entries")
+				break
+			}
+			o.Children = decodeEntries(value.Items, joinPath(path, key))
+		default:
+			o.issues = append(o.issues, Issue{Pos: field.KeyPos, Path: joinPath(path, key), Message: "unknown key"})
+		}
+	}
+	if len(o.issues) > 0 {
+		o.raw = node.JSON()
+	}
+	return o
+}
+
+// recordPositions records the position of node and of every value inside it.
+func recordPositions(node *Node, path string, positions map[string]Position) {
+	positions[path] = node.Pos
+	switch node.Kind {
+	case ObjectNode:
+		for _, field := range node.Fields {
+			recordPositions(field.Value, joinPath(path, field.Key), positions)
+		}
+	case ArrayNode:
+		for i, item := range node.Items {
+			recordPositions(item, fmt.Sprintf("%s[%d]", path, i), positions)
+		}
+	}
+}
+
+// EntryError reports every fault of one entry.
+type EntryError struct {
+	ID     string
+	Issues []Issue
+}
+
+func (e *EntryError) Error() string {
+	if len(e.Issues) == 1 {
+		return "loader: " + e.Issues[0].Error()
+	}
+	texts := make([]string, len(e.Issues))
+	for i, issue := range e.Issues {
+		texts[i] = "\t" + issue.Error()
+	}
+	return fmt.Sprintf("loader: entry %q has %d issues:\n%s", e.ID, len(e.Issues), strings.Join(texts, "\n"))
 }
 
 func (o EntryOptions) withoutChildren() EntryOptions {
@@ -133,6 +425,8 @@ type Entry struct {
 	scope   *cordis.Context
 	order   int
 	applied json.RawMessage
+	// labels of the shared realm keys the live fiber holds
+	realms []string
 }
 
 // ID returns the entry's tree id.

@@ -1,11 +1,12 @@
 package loader
 
 import (
-	"bytes"
 	"encoding/json"
 )
 
-// node is one entry of a flattened tree, for merging.
+// node is one entry of a flattened tree, for merging. Its options keep the source
+// position they were decoded from, so an entry the merge takes from the file still
+// reports issues at its place in the file.
 type node struct {
 	options  EntryOptions
 	parentID string
@@ -151,27 +152,18 @@ func merge(base, ours, theirs []EntryOptions) (merged []EntryOptions, conflicts 
 	return merged, conflicts
 }
 
-// parse reads a JSON array of entries; ok is false for anything else.
-func parse(text string) ([]EntryOptions, bool) {
-	trimmed := bytes.TrimSpace([]byte(text))
-	if len(trimmed) == 0 || trimmed[0] != '[' {
-		return nil, false
+// parse decodes a file's text with codec; the entries keep the positions they were
+// read from, and an error (a *ParseError) means it is not an array of entries.
+func parse(codec Codec, file, text string) ([]EntryOptions, *Document, error) {
+	doc, err := Parse(codec, file, []byte(text))
+	if err != nil {
+		return nil, nil, err
 	}
-	var entries []EntryOptions
-	if err := json.Unmarshal(trimmed, &entries); err != nil {
-		return nil, false
-	}
-	if entries == nil {
-		entries = []EntryOptions{}
-	}
-	normalize(entries)
-	return entries, true
+	normalize(doc.Entries)
+	return doc.Entries, doc, nil
 }
 
 func serialize(entries []EntryOptions) string {
-	if entries == nil {
-		entries = []EntryOptions{}
-	}
-	encoded, _ := json.MarshalIndent(entries, "", "  ")
-	return string(encoded) + "\n"
+	encoded, _ := JSON.Encode(nil, entries)
+	return string(encoded)
 }
