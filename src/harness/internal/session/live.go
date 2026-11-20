@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime"
+	"strconv"
 	"sync"
 	"sync/atomic"
 
@@ -59,6 +61,9 @@ type live struct {
 	at       [32]byte // the chain at next; the deliverer's
 	stop     int
 	finished chan struct{}
+	// deliverer is the deliverer goroutine's id, so a Close from a listener
+	// it runs does not wait on itself.
+	deliverer atomic.Uint64
 }
 
 // anchor is the chain's value over the records below seq.
@@ -474,6 +479,9 @@ func readFunc(r store.Reader) surface.ReadFunc {
 // releases the lease and then notifies Closed. It is idempotent, and returns the
 // cause Closed carries: nil for an ordinary close, else what ended the session
 // (a lost lease, a broken store, or a writer that failed to flush or release).
+// Called from a Committed or Closed listener, which runs on the deliverer, it
+// starts the close and returns at once with the cause so far: the deliverer
+// finishes the close after the listener returns, and Closed reports it.
 func (s *live) Close(ctx context.Context) error {
 	s.mu.Lock()
 	if !s.closed {
@@ -496,6 +504,9 @@ func (s *live) Close(ctx context.Context) error {
 		s.dmu.Unlock()
 	}
 	s.mu.Unlock()
+	if goid() == s.deliverer.Load() {
+		return s.endErr()
+	}
 	select {
 	case <-s.finished:
 		return s.endErr()
@@ -511,6 +522,7 @@ func (s *live) Close(ctx context.Context) error {
 // broken clause or a mismatch closes the session with a classified error and
 // nothing of the bad segment is delivered.
 func (s *live) deliver() {
+	s.deliverer.Store(goid())
 	defer s.finish()
 	ctx := context.Background()
 	page := s.svc.cfg.FeedPage
@@ -656,4 +668,18 @@ func (s *live) endErr() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.cause
+}
+
+// goid is the calling goroutine's id, parsed from its stack header
+// "goroutine N ["; it is never 0.
+func goid() uint64 {
+	var buf [64]byte
+	b := buf[:runtime.Stack(buf[:], false)]
+	b = b[len("goroutine "):]
+	i := 0
+	for i < len(b) && b[i] >= '0' && b[i] <= '9' {
+		i++
+	}
+	id, _ := strconv.ParseUint(string(b[:i]), 10, 64)
+	return id
 }
