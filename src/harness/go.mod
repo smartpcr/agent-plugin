@@ -4,6 +4,10 @@ go 1.26.0
 
 require (
 	github.com/cucumber/godog v0.16.0
+	// Schema inference and full JSON Schema validation for internal/schema
+	// (DH-D-UTIL-1): chosen by docs/harness/libs/zod.md DH-ADR-SCHEMA-1; MIT, no
+	// non-test dependencies (RM-10).
+	github.com/google/jsonschema-go v0.4.3
 	github.com/smartpcr/agent-plugin/src/go v0.1.5-0.20261119220503-a647d4984790
 	github.com/smartpcr/agent-plugin/src/sdk v0.0.0-20261119220503-a647d4984790
 )

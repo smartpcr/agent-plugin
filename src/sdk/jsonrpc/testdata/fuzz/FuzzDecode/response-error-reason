@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"jsonrpc\":\"2.0\",\"id\":4,\"error\":{\"code\":-32000,\"message\":\"m\",\"data\":{\"code\":\"session/not-found\",\"details\":{\"id\":\"s\"}}}}")
