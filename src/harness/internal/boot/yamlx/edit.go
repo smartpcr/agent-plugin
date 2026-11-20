@@ -659,8 +659,12 @@ func DecodeFrontmatter(markdown []byte) (fields Value, body []byte, err error) {
 	if end < 0 {
 		return Value{}, nil, &SyntaxError{Line: 1, Column: 1, Message: "frontmatter is not closed by ---"}
 	}
-	// keep the line numbers of the markdown file: the opening line is blank to YAML
-	src := append([]byte("\n"), rest[:end]...)
+	// keep the lines and byte offsets of the markdown file: the opening "---" line
+	// becomes a blank line of the same length to YAML
+	src := make([]byte, 0, open+end)
+	src = append(src, bytes.Repeat([]byte(" "), open-1)...)
+	src = append(src, '\n')
+	src = append(src, rest[:end]...)
 	doc, err := Parse("", src)
 	if err != nil {
 		return Value{}, nil, err
