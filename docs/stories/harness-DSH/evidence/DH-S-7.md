@@ -124,6 +124,7 @@ The package is `src/harness/internal/session/store/sqlite`.
     open and registered, so it can be retried.
   - `Store.Close` closes nothing when a release fails. It returns the error, and a
     later call retries.
+  - Concurrent `Store.Close` calls run one at a time, from the first check to the last pool closed. A call that waited returns `nil` if the one before it succeeded; if that one failed, the waiting call retries the release itself. The write connection and pool are closed and cleared under the write mutex.
 - **Reads.** Every read runs in one read transaction on a bounded read pool
   (`query_only`), so each read sees one snapshot.
   - Reads are paged with `Read(from, limit)` and `ReadSeqs`.
@@ -145,6 +146,7 @@ It passes.
 | Another process sees only durable events | `TestOtherProcessSeesOnlyDurable`: a child process appends five events without flushing and reports its write connection at `synchronous=2` (FULL). Another instance in the parent checks that what it reads equals `Durable`, which equals `NextSeq` (5). It checks before the child's flush, after it, and after the child is killed. | pass |
 | Failed close is retryable | `TestCloseRetriesAFailedRelease`: an outside connection holds the write lock, and `Writer.Close` and `Store.Close` both return `store/busy`. The leases stay held and new writers are refused. Once the lock is released, both calls succeed and `IfFree` opens in another instance succeed. | pass |
 | No lease orphaned by shutdown | `TestCloseRacingAcquisitions`: 20 rounds, each running 8 `OpenWrite` and 8 `Create` calls concurrently with `Store.Close`. Every acquisition either returns a writer or `session/closed`, and no round leaves a lease held. | pass |
+| Concurrent closes are serialized | `TestConcurrentClose`: 8 `Store.Close` calls run at once twice. The first time an outside write lock is held, and every call returns `store/busy` while both leases stay held. The second time the lock is released: every call returns `nil` only after the pools are closed, and no lease or host row remains. Under `-race` this test reports a `DATA RACE` against the iteration-2 teardown. | pass |
 | Driver budget (`DH-T-STORE-18`, F-2) | `TestBudgetStoreAppend` | pass, figures above |
 | Log immutable in the schema | `TestEventsImmutableInSchema` | pass |
 | Open refusals leave the file unchanged | `TestOpenRefusesUnchanged`: newer layout, foreign id, unrelated schema, not SQLite | pass |

@@ -169,6 +169,7 @@ func TestMultiEventAppendIsAtomic(t *testing.T) {
 		t.Fatalf("a fresh connection reads %d events, next seq %d, %d checkpoints; want 4, 4, 1", events, next, cks)
 	}
 }
+
 // The log is immutable in the database itself: an UPDATE or DELETE of an event
 // outside a session's deletion is aborted by a trigger.
 func TestEventsImmutableInSchema(t *testing.T) {
@@ -492,6 +493,7 @@ func TestOtherProcessSeesOnlyDurable(t *testing.T) {
 	c.kill()
 	visibleIsDurable("after the child was killed", 5)
 }
+
 // childEnviron is this process's environment without DSH_HOME, so a child never
 // opens the developer's real home.
 func childEnviron() []string {
@@ -835,5 +837,70 @@ func TestCloseRacingAcquisitions(t *testing.T) {
 		if held := countWhere(t, fresh(t, path), `SELECT count(*) FROM sessions WHERE lease_holder IS NOT NULL`); held != 0 {
 			t.Fatalf("round %d: %d leases left held by the closed instance", round, held)
 		}
+	}
+}
+
+// closeAll calls s.Close from n goroutines at once and returns their results.
+func closeAll(s *sqlite.Store, n int) []error {
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	errs := make([]error, n)
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			errs[i] = s.Close(bg)
+			if errs[i] == nil && !s.TornDown() {
+				errs[i] = errors.New("Close returned nil before the pools were closed")
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	return errs
+}
+
+// Concurrent Store.Close calls run one at a time through the whole teardown.
+// While a release fails each call returns the error and closes nothing; once
+// the release can succeed, exactly the leases and the host row are released,
+// every call returns nil and the pools are closed once (run under -race).
+func TestConcurrentClose(t *testing.T) {
+	const callers = 8
+	path := dbPath(t)
+	s, err := sqlite.Open(bg, path, sqlite.WithBusyTimeout(20*time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close(bg) })
+	for _, id := range []string{"a", "b"} {
+		if _, err := s.Create(bg, store.Header{ID: id}, store.CreateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	release := holdWriteLock(t, path)
+	for i, err := range closeAll(s, callers) {
+		if !errors.Is(err, &store.Error{Code: sqlite.CodeBusy}) {
+			t.Fatalf("Close %d under another process's write lock = %v, want %s", i, err, sqlite.CodeBusy)
+		}
+	}
+	db := fresh(t, path)
+	if held := countWhere(t, db, `SELECT count(*) FROM sessions WHERE lease_holder = ?`, s.Instance()); held != 2 {
+		t.Fatalf("%d leases held after the failed closes, want 2", held)
+	}
+	release()
+	for i, err := range closeAll(s, callers) {
+		if err != nil {
+			t.Fatalf("Close %d = %v", i, err)
+		}
+	}
+	if held := countWhere(t, db, `SELECT count(*) FROM sessions WHERE lease_holder IS NOT NULL`); held != 0 {
+		t.Fatalf("%d leases held after Close", held)
+	}
+	if n := countWhere(t, db, `SELECT count(*) FROM hosts WHERE instance = ?`, s.Instance()); n != 0 {
+		t.Fatalf("%d host rows of the closed instance", n)
+	}
+	if _, err := s.Stat(bg, "a"); !errors.Is(err, store.ErrClosed) {
+		t.Fatalf("Stat after Close = %v", err)
 	}
 }

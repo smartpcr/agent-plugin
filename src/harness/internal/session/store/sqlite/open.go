@@ -151,7 +151,7 @@ func WithBusyTimeout(d time.Duration) Option { return func(s *Store) { s.busy = 
 // only committed rows, sees only durable events, and Summary.Durable is the
 // committed next seq in every instance.
 //
-// Lock order: wmu before mu. Acquiring a lease, registering its writer and
+// Lock order: cmu, then wmu, then mu. Acquiring a lease, registering its writer and
 // releasing it all happen under wmu, and Close takes its writer snapshot under
 // wmu, so no lease is acquired that Close does not release.
 type Store struct {
@@ -170,6 +170,11 @@ type Store struct {
 	// broken is set when a rollback failed: the outcome of that transaction is
 	// unknown, so the store refuses further work until reopened.
 	broken error
+
+	// cmu serializes Close from its first check to its last teardown step: a
+	// concurrent Close waits for it and then sees its outcome (done, or the
+	// leases still held, which it retries).
+	cmu sync.Mutex
 
 	mu      sync.Mutex // guards writers, closed and done
 	writers map[*writer]struct{}
@@ -460,8 +465,11 @@ func (s *Store) Instance() string { return s.instance }
 // refused from its start; writers still open fail with session/closed
 // afterwards. When a release fails (a busy database, say) nothing is closed
 // and the error is returned: Close may be called again and retries the leases
-// still held. Once it succeeded it is idempotent.
+// still held. Once it succeeded it is idempotent. Concurrent calls run one at
+// a time; a call that waited returns nil when the one before it succeeded.
 func (s *Store) Close(ctx context.Context) error {
+	s.cmu.Lock()
+	defer s.cmu.Unlock()
 	s.mu.Lock()
 	if s.done {
 		s.mu.Unlock()
@@ -521,6 +529,7 @@ func (s *Store) snapshot() []*writer {
 	}
 	return ws
 }
+
 // closeDBs closes the read pool, then the write connection and pool. The read
 // pool's pointer stays set: a read racing Close fails on the closed pool.
 func (s *Store) closeDBs() error {
@@ -533,11 +542,11 @@ func (s *Store) closeDBs() error {
 		errs = append(errs, s.wconn.Close())
 		s.wconn = nil
 	}
-	s.wmu.Unlock()
 	if s.wdb != nil {
 		errs = append(errs, s.wdb.Close())
 		s.wdb = nil
 	}
+	s.wmu.Unlock()
 	for i, err := range errs {
 		if err != nil {
 			errs[i] = translate(nil, err)
