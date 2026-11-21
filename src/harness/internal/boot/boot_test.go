@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -22,6 +23,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/profile"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/cli/output"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/host/diag"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/clock"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess/subprocesstest"
@@ -476,4 +478,235 @@ func TestStopDuringStartupIsNeverReady(t *testing.T) {
 			}
 		})
 	}
+}
+
+// reloadProbe is a config whose level only its Validate checks.
+type reloadProbe struct {
+	Level string `json:"level,omitempty"`
+}
+
+func (c reloadProbe) Validate() error {
+	switch c.Level {
+	case "", "debug", "info", "warn":
+		return nil
+	}
+	return &cordis.ConfigError{Issues: []cordis.ConfigIssue{{Path: "level", Message: fmt.Sprintf("level %q is not debug, info or warn", c.Level)}}}
+}
+
+// waitFor polls cond until it holds, failing after 20 s.
+func waitFor(t *testing.T, what string, log fmt.Stringer, cond func() bool) {
+	t.Helper()
+	tick := time.NewTicker(5 * time.Millisecond)
+	defer tick.Stop()
+	limit := time.After(20 * time.Second)
+	for !cond() {
+		select {
+		case <-tick.C:
+		case <-limit:
+			t.Fatalf("timed out waiting for %s:\n%s", what, log)
+		}
+	}
+}
+
+// DH-D-BOOT-7: once ready, a profile that reloads applies a valid layer change to
+// the running tree and rejects an invalid one with a positioned diagnostic, the
+// running component keeping its config; shutdown stops the watch first.
+func TestReloadAfterReadyAppliesValidAndRejectsInvalidLayers(t *testing.T) {
+	opts, homeDir := fixture(t, "", "probe")
+	if err := home.Ensure(home.New(homeDir)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(profile.LayerPath(homeDir, opts.Profile.Name)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(profile.LayerPath(homeDir, opts.Profile.Name), []byte("- insert:\n    - id: probe\n      name: x.reload\n      config:\n        level: info\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var levels []string
+	level := func() (string, int) {
+		mu.Lock()
+		defer mu.Unlock()
+		if len(levels) == 0 {
+			return "", 0
+		}
+		return levels[len(levels)-1], len(levels)
+	}
+	probe := catalog.Item{Name: "x.reload", Config: reflect.TypeFor[reloadProbe](), Component: cordis.Define("x.reload", func(_ *cordis.Context, cfg reloadProbe) error {
+		mu.Lock()
+		defer mu.Unlock()
+		levels = append(levels, cfg.Level)
+		return nil
+	})}
+	cat, err := catalog.Build(append(builtin.Sets(), []catalog.Item{probe})...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := launch.NewApp()
+	var stderr syncBuffer
+	opts.Catalog, opts.Stderr, opts.App = cat, &stderr, app
+	opts.Profile.Reload = 10 * time.Millisecond
+	done := make(chan int, 1)
+	var wg sync.WaitGroup
+	t.Cleanup(wg.Wait)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		done <- Run(context.Background(), opts)
+	}()
+	t.Cleanup(func() { app.Stop(launch.Requested, output.OK) })
+	select {
+	case <-app.Ready():
+	case status := <-done:
+		t.Fatalf("Run ended with %d before ready:\n%s", status, stderr.String())
+	case <-time.After(30 * time.Second):
+		t.Fatal("never ready")
+	}
+	if l, _ := level(); l != "info" {
+		t.Fatalf("level at boot = %q", l)
+	}
+
+	user := profile.UserLayerPath(homeDir)
+	if err := os.WriteFile(user, []byte("- id: probe\n  merge:\n    level: debug\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the valid change to apply", &stderr, func() bool { l, _ := level(); return l == "debug" })
+	_, loads := level()
+
+	if err := os.WriteFile(user, []byte("# bad\n- id: probe\n  merge:\n    level: loud\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the rejection", &stderr, func() bool { return strings.Contains(stderr.String(), "reload rejected") })
+	out := stderr.String()
+	if !strings.Contains(out, user+":4:") || !strings.Contains(out, "probe.config.level") {
+		t.Errorf("the rejection is not positioned at %s:4:\n%s", user, out)
+	}
+	if l, n := level(); l != "debug" || n != loads {
+		t.Errorf("after the rejection level = %q after %d loads, want debug after %d", l, n, loads)
+	}
+
+	app.Stop(launch.Requested, output.OK)
+	select {
+	case status := <-done:
+		if status != output.OK {
+			t.Errorf("status = %d:\n%s", status, stderr.String())
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("shutdown did not end")
+	}
+	if n := strings.Count(stderr.String(), "reload rejected"); n != 1 {
+		t.Errorf("rejection told %d times, want once:\n%s", n, stderr.String())
+	}
+}
+
+// A reload still in flight at shutdown spends part of the one shutdown bound, not
+// time on top of it: the forced stop still starts a reserve before the bound and
+// Run returns at the bound on the clock.
+func TestStuckReloadDrainSharesTheShutdownBound(t *testing.T) {
+	release := make(chan struct{})
+	var once sync.Once
+	t.Cleanup(func() { once.Do(func() { close(release) }) })
+	holder := catalog.Item{Name: "x.hold", Component: cordis.Define("x.hold", func(ctx *cordis.Context, _ struct{}) error {
+		_, err := ctx.Effect("held", func() (cordis.Disposer, error) {
+			return func() error { <-release; return nil }, nil
+		})
+		return err
+	})}
+	cat, err := catalog.Build(append(builtin.Sets(), []catalog.Item{holder})...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts, homeDir := fixture(t, "- insert:\n    - id: hold\n      name: x.hold\n", "hold")
+	if err := home.Ensure(home.New(homeDir)); err != nil {
+		t.Fatal(err)
+	}
+	var armed sync.Mutex
+	gate := false
+	entered := make(chan struct{})
+	var enter sync.Once
+	opts.Request.ReadFile = func(path string) ([]byte, error) {
+		armed.Lock()
+		blocked := gate
+		armed.Unlock()
+		if blocked {
+			enter.Do(func() { close(entered) })
+			<-release
+		}
+		return os.ReadFile(path)
+	}
+	clk := clock.NewManual(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
+	app := launch.NewApp()
+	var stderr syncBuffer
+	opts.Catalog, opts.Stderr, opts.App, opts.Clock = cat, &stderr, app, clk
+	opts.Profile.Reload = 5 * time.Millisecond
+	done := make(chan int, 1)
+	var wg sync.WaitGroup
+	t.Cleanup(wg.Wait)
+	// runs before wg.Wait: on a failure, let Run reach any bound it still waits for
+	t.Cleanup(func() {
+		app.Stop(launch.Requested, output.OK)
+		once.Do(func() { close(release) })
+		for range 5 {
+			clk.Advance(time.Hour)
+			time.Sleep(10 * time.Millisecond)
+		}
+	})
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		done <- Run(context.Background(), opts)
+	}()
+	select {
+	case <-app.Ready():
+	case status := <-done:
+		t.Fatalf("Run returned %d before ready:\n%s", status, stderr.String())
+	case <-time.After(30 * time.Second):
+		t.Fatal("never ready")
+	}
+	armed.Lock()
+	gate = true
+	armed.Unlock()
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the reload never read the layers")
+	}
+	start := clk.Now()
+	budget := profile.DefaultLimits().ShutdownTimeout
+	reserve := forceReserve(budget)
+	pending := clk.Waiters()
+	app.Stop(launch.Requested, output.OK)
+	step := func(what string, d time.Duration) {
+		t.Helper()
+		if !clk.BlockUntil(pending+1, 10*time.Second) {
+			t.Fatalf("shutdown never waited for %s:\n%s", what, stderr.String())
+		}
+		clk.Advance(d)
+	}
+	// the stuck reload's drain takes its reserve; the unload then has only what
+	// is left of the bound before the forced stop
+	step("the reload", reserve)
+	step("the unload", budget-2*reserve)
+	waitFor(t, "the forced stop", &stderr, func() bool {
+		return strings.Contains(stderr.String(), "shutdown not done 15s into its 20s bound")
+	})
+	step("the forced stop", reserve)
+	select {
+	case status := <-done:
+		if status != output.Forced {
+			t.Errorf("status = %d, want %d", status, output.Forced)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("Run did not return at the bound")
+	}
+	if got := clk.Now().Sub(start); got != budget {
+		t.Errorf("shutdown took %s on the clock, want the %s bound", got, budget)
+	}
+	out := stderr.String()
+	for _, want := range []string{"a reload still running at shutdown", "stuck cleanups:"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stderr lacks %q:\n%s", want, out)
+		}
+	}
+	once.Do(func() { close(release) })
 }

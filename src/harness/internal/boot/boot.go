@@ -11,8 +11,10 @@ import (
 	"runtime/debug"
 	"time"
 
+	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/go/loader"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/catalog"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/config"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/launch"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/profile"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/cli/output"
@@ -94,12 +96,18 @@ type State struct {
 	// Layers
 	Layers []loader.Layer
 	Issues []loader.Issue
+	// layerFiles are the layer files as Layers read them (nil: missing), the
+	// baseline the reload compares the disk against.
+	layerFiles map[string][]byte
 	// Compose
 	Composed []loader.EntryOptions
 	Index    *loader.Index
 	// Tree
-	Host    Host
-	Service *loader.Service
+	Host      Host
+	Service   *loader.Service
+	catalog   *catalog.Catalog
+	evaluator loader.Evaluator
+	root      *cordis.Context
 	// Settle
 	ApplyErr error
 	// Audit
@@ -107,6 +115,10 @@ type State struct {
 	// Sharing is the gate every outbound permit comes from; nil until the audit
 	// builds one from the launch environment with every kind off.
 	Sharing *sharing.Gate
+	// Ready: the validated reload and the one edit path of the layers, when the
+	// profile reloads (DH-D-BOOT-7).
+	Config     *config.Service
+	stopReload func(budget time.Duration)
 }
 
 // OnRelease registers a function Run calls when it returns, last registered first.
@@ -203,6 +215,8 @@ func Run(ctx context.Context, o Options) (status int) {
 		return s.shutdownStopped()
 	}
 	s.printAudit()
+	// The layer watch runs from readiness; shutdown stops it first.
+	s.startReload(ctx)
 	// Step 9: run until the first stop.
 	select {
 	case <-s.App.Stopping():

@@ -76,6 +76,18 @@ var codes = map[herr.Reason]int{
 	"boot/host-preparation": Fatal,
 	"boot/panic":            Fatal,
 
+	"config/busy":         Busy,
+	"config/computed":     Invalid,
+	"config/not-writable": Config,
+	"config/rejected":     Config,
+	"config/shadowed":     Busy,
+	"config/stale":        Busy,
+	"config/stopping":     Busy,
+
+	"egress/ca-unreadable":       Config,
+	"egress/not-permitted":       Denied,
+	"egress/refused-proxy-value": Config,
+
 	"home/io":            Failed,
 	"home/not-directory": Invalid,
 	"home/not-private":   Denied,
@@ -94,9 +106,9 @@ var codes = map[herr.Reason]int{
 	"secret/source":         Unavailable,
 	"secret/use-failed":     Failed,
 
-	"egress/ca-unreadable":       Config,
-	"egress/not-permitted":       Denied,
-	"egress/refused-proxy-value": Config,
+	"settings/not-live":   Invalid,
+	"settings/overridden": Busy,
+	"settings/unsaved":    Failed,
 
 	"sharing/claimed":      Config,
 	"sharing/disabled":     Denied,
