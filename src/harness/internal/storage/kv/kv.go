@@ -24,6 +24,10 @@
 //     the same on a timer. A read that gates an action calls Fresh first.
 //
 // Reads return copies: each Get decodes the stored bytes afresh.
+//
+// The "settings" of DH-D-STORAGE-1 are the machine-written ones, held here as
+// namespaces. User settings are not stored here: they stay with the one
+// writable config layer, which storage/settings edits.
 package kv
 
 import (

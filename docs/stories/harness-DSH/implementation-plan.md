@@ -513,6 +513,8 @@ storyId: "harness:DSH"
 - [ ] impl.md step 8.1 / DH-D-STORAGE-1: implement `src/harness/internal/storage` typed machine-state tables (workspace registry, settings) in the same `dsh.db`, with typed accessors and migrations.
 - [ ] impl.md step 8.2 / DH-D-VIEW-2: stored fold state is never ahead of the log; each stored fold records the sequence it reflects and its fold version; a changed fold version rebuilds the stored state on open.
 
+> Operator decision: "settings" in step 8.1 means machine-written settings, which live in typed `kv` namespaces in `dsh.db` (`storage/kv`). User settings stay with the one writable config layer (`storage/settings`, [architecture.md](architecture.md), [storage.md](../../harness/areas/storage.md)), and there is no dedicated settings table. Pruning checkpoint rows of superseded fold versions is left to a later stage.
+
 ### Dependencies
 - phase-sqlite-store-leases-and-recovery/stage-export-import-follow-and-store-repair
 
