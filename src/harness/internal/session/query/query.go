@@ -27,6 +27,10 @@ const (
 	DefaultWindow = 100
 	// MaxWindow clamps every window.
 	MaxWindow = 500
+	// DefaultLimit is a List page with no limit; MaxLimit clamps every page
+	// (query.Config of docs/harness/areas/session-views.md §6.2).
+	DefaultLimit = 20
+	MaxLimit     = 100
 	// MaxListed bounds the store candidates ListByProject and Lineage's fork
 	// search examine (WithMaxListed lowers it).
 	MaxListed = 10_000
@@ -159,6 +163,7 @@ type ListOptions struct {
 	// IncludeBlank lists sessions with no prompt; by default they are hidden.
 	IncludeBlank bool
 	// Limit and Cursor page List (the store's keyset); ListByProject walks all.
+	// Limit 0 (or less) is DefaultLimit, more than MaxLimit is MaxLimit.
 	Limit  int
 	Cursor string
 	// AsOf is the cut of List's first page (zero: now); later pages keep the
@@ -181,9 +186,20 @@ type Page struct {
 // summary and flags; blank sessions and those the caller may not see are
 // filtered out, so a page may hold fewer than Limit.
 func (s *Service) List(ctx context.Context, o ListOptions) (Page, error) {
-	p, _, err := s.page(ctx, store.Query{Cwd: o.Cwd, Creator: o.Creator, Limit: o.Limit, Cursor: o.Cursor,
+	p, _, err := s.page(ctx, store.Query{Cwd: o.Cwd, Creator: o.Creator, Limit: pageLimit(o.Limit), Cursor: o.Cursor,
 		Order: store.OrderPrompt, AsOf: o.AsOf}, o)
 	return p, err
+}
+
+// pageLimit is the store page List asks for: n within (0, MaxLimit].
+func pageLimit(n int) int {
+	switch {
+	case n <= 0:
+		return DefaultLimit
+	case n > MaxLimit:
+		return MaxLimit
+	}
+	return n
 }
 
 // page is one filtered store page and how many candidates it examined.

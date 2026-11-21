@@ -215,10 +215,7 @@ func (s *Store) List(ctx context.Context, q store.Query) (store.Page, error) {
 	if err := ctx.Err(); err != nil {
 		return store.Page{}, err
 	}
-	limit := q.Limit
-	if limit <= 0 {
-		limit = defaultLimit
-	}
+	limit := q.PageLimit(defaultLimit)
 	where := []string{"state = 'active'"}
 	var args []any
 	if q.Cwd != "" {

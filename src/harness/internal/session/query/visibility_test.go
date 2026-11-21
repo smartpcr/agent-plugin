@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -353,5 +354,40 @@ func TestListPagesByLastPromptAsOf(t *testing.T) {
 	fresh := must(q.List(bg, query.ListOptions{}))
 	if len(fresh.Entries) != len(ids) || fresh.Entries[0].Summary.LastPromptAt < fresh.Entries[1].Summary.LastPromptAt {
 		t.Fatalf("a new listing is not by the latest prompts: %+v", fresh.Entries)
+	}
+}
+
+// List pages are bounded: no limit is DefaultLimit, a larger one (up to the
+// integer maximum, which must not overflow the store's query) is MaxLimit; the
+// store clamps a direct query too.
+func TestListPagesAreBounded(t *testing.T) {
+	st := must(sqlite.Open(bg, filepath.Join(t.TempDir(), "dsh.db")))
+	t.Cleanup(func() { _ = st.Close(bg) })
+	e := newEnvOn(t, st)
+	n := query.MaxLimit + 5
+	for i := range n {
+		h := must(e.svc.Create(bg, nil, session.CreateOptions{Header: session.Header{ID: fmt.Sprintf("s%03d", i)}}))
+		if _, err := h.AppendGroup(bg, []event.Draft{promptDraft(t, "p")}); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.Close(bg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	q := query.New(st)
+	for _, c := range []struct{ limit, want int }{
+		{0, query.DefaultLimit}, {-1, query.DefaultLimit}, {7, 7},
+		{query.MaxLimit, query.MaxLimit}, {query.MaxLimit + 1, query.MaxLimit}, {math.MaxInt, query.MaxLimit},
+	} {
+		p, err := q.List(bg, query.ListOptions{Limit: c.limit})
+		if err != nil || len(p.Entries) != c.want || p.Next == "" {
+			t.Fatalf("limit %d: %d entries, next %q, %v; want %d and more", c.limit, len(p.Entries), p.Next, err, c.want)
+		}
+	}
+	for _, o := range []store.Order{store.OrderRecent, store.OrderPrompt} {
+		p, err := st.List(bg, store.Query{Limit: math.MaxInt, Order: o})
+		if err != nil || len(p.Summaries) != n || p.Next != "" {
+			t.Fatalf("store order %d at the integer maximum: %d of %d, next %q, %v", o, len(p.Summaries), n, p.Next, err)
+		}
 	}
 }

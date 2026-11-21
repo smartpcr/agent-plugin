@@ -18,6 +18,8 @@ import (
 var (
 	storageSeenLine   = regexp.MustCompile(`(?m)^image_seen=true\s*$`)
 	storageObjectLine = regexp.MustCompile(`(?m)^object=(.+?)\s*$`)
+	// storageSentLine is the SHA-256 of the image bytes a model request carried.
+	storageSentLine = regexp.MustCompile(`(?m)^image_sha256=([0-9a-f]{64})\s*$`)
 )
 
 // TestImageSurvivesCrashRestartAndCollection: an attached image stays readable
@@ -33,22 +35,23 @@ var (
 // forked, the parent deleted, the clock advanced past the grace period and
 // maintenance waited for, and (5) the fork is asked about the image, then after
 // (1) the request carried the image; after (3) the follow-up is answered with
-// the image, every image the session references exists, the interrupted
+// the image and its request carried the same image bytes as (1)'s, every image the session references exists, the interrupted
 // upload's published object is not referenced, and the store check reports no
 // damage; after (4) every image the fork references still exists and the
 // interrupted upload's object file is gone; after (5) the fork's request carried
-// the image. Each process step has a 60 second timeout.
+// the same image bytes. Each process step has a 60 second timeout.
 //
 // Inputs are shell command lines over {home} and {session}:
 // DSH_SCENARIO_STORAGE2_START starts the headless host on {home} in the
 // foreground; DSH_SCENARIO_STORAGE2_ATTACH creates a session, attaches a 20MP
 // JPEG, asks about it, and prints "session=<id>" and, when the model request
-// carried the image, "image_seen=true"; DSH_SCENARIO_STORAGE2_UPLOAD_BEGIN
+// carried the image, "image_seen=true" and "image_sha256=<hex>" of the image
+// bytes that request carried; DSH_SCENARIO_STORAGE2_UPLOAD_BEGIN
 // starts a second upload to {session} and returns while it is in flight, once
 // its object is published, printing "object=<path>" for that object's file;
 // DSH_SCENARIO_STORAGE2_KILL kills the host without a clean stop;
 // DSH_SCENARIO_STORAGE2_ASK asks {session} a follow-up about the image and
-// prints "image_seen=true" when the model request carried it;
+// prints "image_seen=true" and "image_sha256=<hex>" as ATTACH does;
 // DSH_SCENARIO_STORAGE2_IMAGES prints one "image=<path>" line per image file
 // {session} references; DSH_SCENARIO_STORAGE2_FORK forks {session} and prints
 // "session=<id>"; DSH_SCENARIO_STORAGE2_DELETE deletes {session};
@@ -75,6 +78,15 @@ func TestImageSurvivesCrashRestartAndCollection(t *testing.T) {
 		}
 		return out
 	}
+	keep := false
+	sentOf := func(what, out string) string {
+		m := storageSentLine.FindStringSubmatch(out)
+		if !storageSeenLine.MatchString(out) || m == nil {
+			keep = true
+			t.Fatalf("%s: the request did not carry the image (no image_seen=true and image_sha256=<hex>):\n%s", what, out)
+		}
+		return m[1]
+	}
 	sessionOf := func(what, out string) string {
 		m := storeSessionLine.FindStringSubmatch(out)
 		if m == nil {
@@ -98,7 +110,6 @@ func TestImageSurvivesCrashRestartAndCollection(t *testing.T) {
 	if err := home.Ensure(home.New(root)); err != nil {
 		t.Fatal(err)
 	}
-	keep := false
 	t.Cleanup(func() {
 		if !keep && !t.Failed() {
 			_ = os.RemoveAll(root)
@@ -111,9 +122,7 @@ func TestImageSurvivesCrashRestartAndCollection(t *testing.T) {
 	host := startShell(t, expand(startT, with("")))
 	out := step("attach the image and ask", attachT, "")
 	id := sessionOf("attaching the image", out)
-	if !storageSeenLine.MatchString(out) {
-		t.Fatalf("the first request did not carry the image:\n%s", out)
-	}
+	sent := sentOf("the first request", out)
 	first := imagesExist(id)
 
 	// (2)
@@ -135,9 +144,9 @@ func TestImageSurvivesCrashRestartAndCollection(t *testing.T) {
 
 	// (3)
 	host = startShell(t, expand(startT, with("")))
-	if out := step("ask a follow-up", askT, id); !storageSeenLine.MatchString(out) {
+	if got := sentOf("the follow-up after the restart", step("ask a follow-up", askT, id)); got != sent {
 		keep = true
-		t.Fatalf("the follow-up after the restart did not carry the image:\n%s", out)
+		t.Fatalf("the follow-up after the restart sent image bytes %s, the first request %s", got, sent)
 	}
 	if after := imagesExist(id); !slices.Equal(after, first) {
 		keep = true
@@ -162,9 +171,9 @@ func TestImageSurvivesCrashRestartAndCollection(t *testing.T) {
 	}
 
 	// (5)
-	if out := step("ask the fork", askT, fork); !storageSeenLine.MatchString(out) {
+	if got := sentOf("the fork's request", step("ask the fork", askT, fork)); got != sent {
 		keep = true
-		t.Fatalf("the fork's request did not carry the image:\n%s", out)
+		t.Fatalf("the fork sent image bytes %s, the first request %s", got, sent)
 	}
 	step("stop the host", killT, "")
 	_ = host

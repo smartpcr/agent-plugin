@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
@@ -206,4 +207,80 @@ func TestRefoldEqualsStoredForEveryBuiltinView(t *testing.T) {
 	if got := idx.ByCall("call-1"); len(got) != 2 {
 		t.Fatalf("events of call-1 = %v", got)
 	}
+}
+
+// stamped is ds stamped from seq 0, with newer(i) marking record i as a newer,
+// ignorable payload version of its type.
+func stamped(t *testing.T, ds []event.Draft, newer ...int) []event.Record {
+	t.Helper()
+	recs := make([]event.Record, len(ds))
+	for i, d := range ds {
+		recs[i] = must(d.Stamp(event.Seq(i), int64(1_700_000_000_000+i)))
+		if slices.Contains(newer, i) {
+			info, _ := event.Default().Lookup(recs[i].Type)
+			recs[i].Version, recs[i].Ignorable = info.Version+1, true
+		}
+	}
+	return recs
+}
+
+// The event index agrees with the core on a newer ignorable surface record:
+// appended, it is shadowed and is no history node; as a replacement, it shadows
+// nothing, so the history it names stays current.
+func TestEventIndexSkipsNewerIgnorableSurfaceRecords(t *testing.T) {
+	user := func(id string) event.Draft {
+		return must(event.UserMessage.Draft(event.Append(), event.UserMessagePayload{Message: bmsg(id, vocab.RoleUser, vocab.TextBlock("hello "+id))}))
+	}
+	replace := must(event.UserMessage.Draft(event.Replace(0, 1), event.UserMessagePayload{Message: bmsg("ux", vocab.RoleUser, vocab.TextBlock("summary"))}))
+	recs := stamped(t, []event.Draft{user("u0"), user("u1"), user("u2"), replace, user("u4")}, 2, 3)
+	surf := must(surface.Replay(nil, recs))
+	evs := make([]event.Event, len(recs))
+	for i, r := range recs {
+		evs[i] = event.Of(r)
+	}
+	idx := views.Refold(views.EventIndexView(), session.Header{}, evs)
+	for _, rec := range recs {
+		if e, _ := idx.Entry(rec.Seq); e.Class != surf.Classify(rec).String() || e.Replaced {
+			t.Fatalf("seq %d: index %+v, core class %s", rec.Seq, e, surf.Classify(rec))
+		}
+	}
+	if want := []event.Seq{0, 1, 4}; !slices.Equal(idx.History, want) || !slices.Equal(surf.History().Seqs(), want) {
+		t.Fatalf("history: index %v, core %v, want %v", idx.History, surf.History().Seqs(), want)
+	}
+	if e, _ := idx.Entry(2); e.Class != views.ClassShadowed {
+		t.Fatalf("the newer appended prompt: %+v", e)
+	}
+}
+
+// Statistics count a step when it closes: an entered, unsettled step is open,
+// not closed, and its visible output is counted once it settles.
+func TestStatsCountClosedAndVisibleSteps(t *testing.T) {
+	answer := func(id, text string) event.Draft {
+		return must(event.AssistantMessage.Draft(event.Append(), event.AssistantMessagePayload{Message: bmsg(id, vocab.RoleAssistant, vocab.TextBlock(text))}))
+	}
+	ds := []event.Draft{
+		must(event.TurnStartType.Draft(event.TurnStart{Turn: 1})),
+		must(event.UserMessage.Draft(event.Append(), event.UserMessagePayload{Message: bmsg("u", vocab.RoleUser, vocab.TextBlock("hi"))})),
+		must(event.StepStartType.Draft(event.StepStart{Turn: 1, Step: 1})),
+		answer("a1", "   "),
+		must(event.StepEndType.Draft(event.StepEnd{Turn: 1, Step: 1})),
+		must(event.StepStartType.Draft(event.StepStart{Turn: 1, Step: 2})),
+		answer("a2", "done"),
+		must(event.StepEndType.Draft(event.StepEnd{Turn: 1, Step: 2})),
+	}
+	var evs []event.Event
+	for _, r := range stamped(t, ds) {
+		evs = append(evs, event.Of(r))
+	}
+	fold := func(n int) views.Stats { return views.Refold(views.StatsView(), session.Header{}, evs[:n]) }
+	check := func(n, closed, visible int, open bool) {
+		t.Helper()
+		if s := fold(n); s.Steps != closed || s.VisibleSteps != visible || s.OpenStep != open {
+			t.Fatalf("after %d events: steps %d visible %d open %v, want %d %d %v", n, s.Steps, s.VisibleSteps, s.OpenStep, closed, visible, open)
+		}
+	}
+	check(3, 0, 0, true)  // step 1 entered
+	check(5, 1, 0, false) // step 1 settled with blank output
+	check(7, 1, 0, true)  // step 2 entered with visible output, unsettled
+	check(8, 2, 1, false) // step 2 settled
 }

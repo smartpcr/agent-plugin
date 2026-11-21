@@ -149,6 +149,14 @@ CREATE TABLE session_flags (
 	pinned     INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1)),
 	updated_at INTEGER NOT NULL
 ) STRICT;
+
+-- The first-use decision of EnsureDefault, once per home: the default workspace
+-- it created, or '' when a workspace or a session already existed.
+CREATE TABLE workspace_first_use (
+	id         INTEGER PRIMARY KEY CHECK (id = 1),
+	workspace  TEXT    NOT NULL,
+	decided_at INTEGER NOT NULL
+) STRICT;
 `,
 	// 4: sessions.last_prompt_at of docs/harness/areas/session-store.md §6.2,
 	// the time of a session's last user/message (Unix nanoseconds, 0 when none),

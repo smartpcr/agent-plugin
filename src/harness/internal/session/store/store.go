@@ -145,11 +145,27 @@ const (
 	OrderPrompt
 )
 
+// MaxPage is the largest page a store's List returns.
+const MaxPage = 1000
+
+// PageLimit is the page size q asks for: def when it asks for none, at most
+// MaxPage.
+func (q Query) PageLimit(def int) int {
+	switch {
+	case q.Limit <= 0:
+		return def
+	case q.Limit > MaxPage:
+		return MaxPage
+	}
+	return q.Limit
+}
+
 // Query filters and pages List.
 type Query struct {
 	Cwd     string
 	Creator string
-	// Limit is the page size; 0 means 50.
+	// Limit is the page size; 0 (or less) means 50, more than MaxPage means
+	// MaxPage.
 	Limit int
 	// Cursor is the Next of the previous page; empty for the first.
 	Cursor string

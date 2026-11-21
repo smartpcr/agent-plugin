@@ -220,11 +220,18 @@ func TurnIndexView() Definition[TurnIndex] {
 
 // Stats counts the whole session for the statistics strip. An attempt is a model
 // call: an assistant/message or an assistant/attempt; Timed counts those that
-// carry timing, ModelMillis sums their durations.
+// carry timing, ModelMillis sums their durations. Steps counts closed steps
+// (a step/end), VisibleSteps the closed ones that produced visible output (an
+// assistant/message with non-blank text), and OpenStep is true while a step has
+// started and not yet ended, its output so far in OpenVisible: an entered but
+// unsettled step is not counted as closed.
 type Stats struct {
 	Events            int            `json:"events"`
 	Turns             int            `json:"turns"`
 	Steps             int            `json:"steps"`
+	VisibleSteps      int            `json:"visible_steps"`
+	OpenStep          bool           `json:"open_step,omitempty"`
+	OpenVisible       bool           `json:"open_visible,omitempty"`
 	UserMessages      int            `json:"user_messages"`
 	AssistantMessages int            `json:"assistant_messages"`
 	Attempts          int            `json:"attempts"`
@@ -244,7 +251,7 @@ type Stats struct {
 // StatsView is the statistics fold.
 func StatsView() Definition[Stats] {
 	return Definition[Stats]{
-		Key: StatsKey, Version: 1, Stored: true,
+		Key: StatsKey, Version: 2, Stored: true,
 		Init: func(session.Header) Stats { return Stats{} },
 		Apply: func(s Stats, ev event.Event) (Stats, bool) {
 			s.Events++
@@ -278,13 +285,22 @@ func StatsView() Definition[Stats] {
 					s.Outcomes[p.Reason.Kind]++
 				}
 			case event.StepStartType.Name():
-				s.Steps++
+				s.OpenStep, s.OpenVisible = true, false
+			case event.StepEndType.Name():
+				if s.OpenStep {
+					s.Steps++
+					if s.OpenVisible {
+						s.VisibleSteps++
+					}
+				}
+				s.OpenStep, s.OpenVisible = false, false
 			case event.UserMessage.Name():
 				s.UserMessages++
 			case event.AssistantMessage.Name():
 				s.AssistantMessages++
 				if p, err := event.AssistantMessage.As(ev); err == nil {
 					timed(p.Usage, p.Timing)
+					s.OpenVisible = s.OpenVisible || (s.OpenStep && hasText(p.Message))
 				} else {
 					s.Attempts++
 				}
@@ -374,7 +390,7 @@ func (x EventIndex) ByCall(id string) []event.Seq {
 // EventIndexView is the event index fold.
 func EventIndexView() Definition[EventIndex] {
 	return Definition[EventIndex]{
-		Key: EventIndexKey, Version: 1, Stored: true,
+		Key: EventIndexKey, Version: 2, Stored: true,
 		Init: func(session.Header) EventIndex { return EventIndex{} },
 		Apply: func(s EventIndex, ev event.Event) (EventIndex, bool) {
 			e := EventEntry{Seq: ev.Seq(), Type: ev.Type(), Class: ClassLogOnly, Call: callOf(ev)}
@@ -384,6 +400,13 @@ func EventIndexView() Definition[EventIndex] {
 			info, ok := event.Default().Lookup(ev.Type())
 			op := ev.Op()
 			if !ok || !info.Surface || op.Kind == event.OpNone {
+				s.Events = append(s.Events, e)
+				return s, true
+			}
+			if ev.Version() > info.Version {
+				// A newer ignorable surface record: the core skips it (no node, no
+				// replacement) and classifies it shadowed (surface.State.Plan).
+				e.Class = ClassShadowed
 				s.Events = append(s.Events, e)
 				return s, true
 			}
@@ -459,6 +482,13 @@ func producesNode(ev event.Event) bool {
 		}
 	}
 	return false
+}
+
+// hasText reports whether m has a text block with non-blank text.
+func hasText(m vocab.Message) bool {
+	return slices.ContainsFunc(m.Blocks(), func(b vocab.Block) bool {
+		return b.Kind == vocab.KindText && b.Text != nil && strings.TrimSpace(b.Text.Text) != ""
+	})
 }
 
 // callOf is the tool call id an event belongs to: a tool call's own, a tool

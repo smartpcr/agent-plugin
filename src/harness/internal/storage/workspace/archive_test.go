@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -612,3 +613,143 @@ func TestStepGateAdmitsAForkOfADeletedParent(t *testing.T) {
 }
 
 func isReject(d agent.PreStepDecision) bool { _, ok := d.(agent.Reject); return ok }
+
+// DH-T-STORAGE-18: EnsureDefault creates the first-use workspace once, never
+// after a session existed (even a deleted one) or a workspace was added, and
+// never again after its workspace was removed, across reopening the home;
+// removal leaves the folder untouched; a stale pending mark is cleared at start.
+func TestEnsureDefaultCreatesOnce(t *testing.T) {
+	folder := func(t *testing.T, home string) string {
+		t.Helper()
+		dir := filepath.Join(home, "default")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	ensure := func(t *testing.T, reg *workspace.Registry, dir string, want bool) workspace.Workspace {
+		t.Helper()
+		w, created, err := reg.EnsureDefault(bg, dir)
+		if err != nil || created != want {
+			t.Fatalf("EnsureDefault = %+v, created %v, %v; want created %v", w, created, err, want)
+		}
+		return w
+	}
+
+	t.Run("once and never after removal", func(t *testing.T) {
+		home := t.TempDir()
+		path, dir := filepath.Join(home, "dsh.db"), folder(t, home)
+		db := openDB(t, path)
+		reg := must(workspace.Open(bg, db))
+		w := ensure(t, reg, dir, true)
+		if l := must(reg.List(bg)); len(l) != 1 || l[0].ID != w.ID || l[0].Path != must(workspace.Resolve(dir)) {
+			t.Fatalf("the registry after first use: %+v", l)
+		}
+		ensure(t, reg, dir, false)
+		if err := reg.Remove(bg, w.ID); err != nil {
+			t.Fatal(err)
+		}
+		if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+			t.Fatalf("removing the default touched its folder: %v", err)
+		}
+		ensure(t, reg, dir, false)
+		if err := db.Close(bg); err != nil {
+			t.Fatal(err)
+		}
+		reg = must(workspace.Open(bg, openDB(t, path)))
+		ensure(t, reg, dir, false)
+		if l := must(reg.List(bg)); len(l) != 0 {
+			t.Fatalf("the removed default came back: %+v", l)
+		}
+	})
+
+	t.Run("never after a session existed", func(t *testing.T) {
+		home := t.TempDir()
+		dir := folder(t, home)
+		db := openDB(t, filepath.Join(home, "dsh.db"))
+		reg := must(workspace.Open(bg, db))
+		newSession(t, db, "s", home)
+		if err := db.Delete(bg, "s", store.DeleteOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		ensure(t, reg, dir, false)
+		if l := must(reg.List(bg)); len(l) != 0 {
+			t.Fatalf("a default was made after a session existed: %+v", l)
+		}
+	})
+
+	t.Run("never after a workspace was added", func(t *testing.T) {
+		home := t.TempDir()
+		dir := folder(t, home)
+		reg := must(workspace.Open(bg, openDB(t, filepath.Join(home, "dsh.db"))))
+		added := must(reg.Add(bg, home))
+		if err := reg.Remove(bg, added.ID); err != nil {
+			t.Fatal(err)
+		}
+		ensure(t, reg, dir, false)
+	})
+
+	t.Run("a stale pending mark is cleared at start", func(t *testing.T) {
+		home := t.TempDir()
+		path := filepath.Join(home, "dsh.db")
+		db := openDB(t, path)
+		reg := must(workspace.Open(bg, db))
+		newSession(t, db, "s", home)
+		if err := reg.SetArchive(bg, "s", workspace.ArchivePending); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Close(bg); err != nil {
+			t.Fatal(err)
+		}
+		reg = must(workspace.Open(bg, openDB(t, path)))
+		if n, err := reg.ClearPending(bg); err != nil || n != 1 {
+			t.Fatalf("ClearPending at start = %d, %v", n, err)
+		}
+		if f := must(reg.Flags(bg, "s")); f.Archive != workspace.ArchiveNone {
+			t.Fatalf("the stale mark survived the start: %+v", f)
+		}
+	})
+}
+
+// DH-D-STORAGE-7: an Add that adopts attaches, in its transaction, the
+// ungrouped sessions whose directory resolves to the folder (also through an
+// unclean path); sessions elsewhere or already attached are left alone, and a
+// plain Add adopts nothing.
+func TestAddAdoptsUngroupedSessions(t *testing.T) {
+	home := t.TempDir()
+	proj, other := filepath.Join(home, "proj"), filepath.Join(home, "other")
+	for _, d := range []string{proj, other} {
+		if err := os.Mkdir(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db := openDB(t, filepath.Join(home, "dsh.db"))
+	reg := must(workspace.Open(bg, db))
+	newSession(t, db, "in", proj)
+	newSession(t, db, "unclean", filepath.Join(proj, "..", "proj"))
+	newSession(t, db, "out", other)
+	newSession(t, db, "held", other)
+	wo := must(reg.Add(bg, other))
+	if err := reg.Attach(bg, wo.ID, "held"); err != nil {
+		t.Fatal(err)
+	}
+	if m := must(reg.Members(bg, wo.ID)); !slices.Equal(m, []session.ID{"held"}) {
+		t.Fatalf("a plain Add adopted: %v", m)
+	}
+	wp := must(reg.AddWith(bg, proj, workspace.AddOptions{Adopt: true}))
+	m := must(reg.Members(bg, wp.ID))
+	slices.Sort(m)
+	if !slices.Equal(m, []session.ID{"in", "unclean"}) {
+		t.Fatalf("adopted %v, want in and unclean", m)
+	}
+	if ws, ok := must2(reg.WorkspaceOf(bg, "out")); ok {
+		t.Fatalf("a session in another folder was adopted by %s", ws)
+	}
+}
+
+func must2[A, B any](a A, b B, err error) (A, B) {
+	if err != nil {
+		panic(err)
+	}
+	return a, b
+}

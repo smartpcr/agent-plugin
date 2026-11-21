@@ -113,6 +113,7 @@ func TestLayoutOneUpgradesToMachineState(t *testing.T) {
 			for _, q := range []string{
 				`DROP INDEX sessions_prompt`,
 				`ALTER TABLE sessions DROP COLUMN last_prompt_at`,
+				`DROP TABLE workspace_first_use`,
 				`DROP TABLE session_flags`,
 				`DROP TABLE workspace_sessions`,
 				`DROP TABLE workspaces`,
