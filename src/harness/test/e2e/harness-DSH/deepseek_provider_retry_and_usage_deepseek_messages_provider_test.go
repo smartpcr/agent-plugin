@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -109,6 +110,8 @@ type dmpState struct {
 	srvMu   sync.Mutex
 	headers []http.Header
 	bodies  [][]byte
+	methods []string
+	paths   []string
 
 	sink     *dmpSink
 	finishes int
@@ -238,6 +241,8 @@ func (s *dmpState) theSuccessFixtureServedByHttptest() error {
 		s.srvMu.Lock()
 		s.headers = append(s.headers, r.Header.Clone())
 		s.bodies = append(s.bodies, body)
+		s.methods = append(s.methods, r.Method)
+		s.paths = append(s.paths, r.URL.Path)
 		s.srvMu.Unlock()
 		for k, vs := range f.header {
 			w.Header()[k] = vs
@@ -472,6 +477,16 @@ func (s *dmpState) serverSawKeyHeader() error {
 	defer s.srvMu.Unlock()
 	if len(s.headers) != 1 {
 		return fmt.Errorf("server saw %d requests, want 1", len(s.headers))
+	}
+	if len(s.methods) != 1 || s.methods[0] != http.MethodPost {
+		return fmt.Errorf("server saw methods %v, want one POST", s.methods)
+	}
+	ep, err := url.Parse(deepseek.Endpoint(s.base))
+	if err != nil {
+		return fmt.Errorf("parse endpoint %q: %w", deepseek.Endpoint(s.base), err)
+	}
+	if len(s.paths) != 1 || s.paths[0] != ep.Path {
+		return fmt.Errorf("server saw paths %v, want one to %s", s.paths, ep.Path)
 	}
 	hd := s.headers[0]
 	if hd.Get("X-Api-Key") != dmpFakeKey {
