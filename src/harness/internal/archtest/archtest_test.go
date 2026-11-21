@@ -153,6 +153,14 @@ func TestRulesCatchViolations(t *testing.T) {
 			imports(pkg(HerrPackage, "herr", false, "a.go"), "github.com/pkg/errors"),
 			imports(pkg(IdentPackage, "ident", false, "a.go"), "github.com/google/uuid"),
 		}, 4},
+		{"the test kit within its bounds", HarnessModule, []Package{
+			imports(pkg(TestkitPackage+"/launcher", "launcher", false, "a.go"), TestkitPackage, TestkitPackage+"/temphome", SubprocessPackage),
+			imports(pkg(HarnessModule+"/internal/testkitx", "testkitx", false, "a.go"), HarnessModule+"/internal/testkitx/y"),
+		}, 0},
+		{"the test kit out of bounds", HarnessModule, []Package{
+			imports(pkg(HarnessModule+"/internal/boot", "boot", false, "a.go"), TestkitPackage+"/clock"),
+			imports(pkg(HarnessModule+"/cmd/dsh", "main", false, "main.go"), TestkitPackage, "time/tzdata"),
+		}, 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := check(tc.module, tc.pkgs...); len(got) != tc.bad {

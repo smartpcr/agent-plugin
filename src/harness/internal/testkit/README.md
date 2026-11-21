@@ -1,8 +1,37 @@
 # internal/testkit
 
-Test support for `src/harness`, imported only by `_test.go` files. This stage
-(impl.md step 1.6, DH-D-TOOLCHAIN-3) fixes the test **layers** and their
-conventions; the replay and scenario helpers themselves arrive with DH-S-16.
+Test support for `src/harness`, imported only by `_test.go` files and the kit's own
+packages (archtest rule DH-T-UTIL-11). Step 1.6 (DH-D-TOOLCHAIN-3) fixed the test
+**layers** and their conventions; step 6.17 (DH-D-UTIL-6) adds the kit that composes
+real components against scripted boundaries.
+
+## The kit (DH-D-UTIL-6, DH-ADR-UTIL-6)
+
+Every helper takes the `*testing.T` and registers its release with `t.Cleanup`
+(QG-5), so a test never closes, removes or stops anything itself.
+
+| package | gives | released at cleanup |
+|---------|-------|---------------------|
+| `testkit` | `Tree(t)`: a cordis root with no exporters; `Buffer`: a goroutine-safe writer | the root is disposed |
+| `clock` | the virtual clock: `NewManual(t0)`, `Now`, `After`, `Advance(d)`, `Waiters`, `BlockUntil`; time moves only by `Advance` | -- |
+| `temphome` | `Dir(t)` (a home path below `t.TempDir()`), `New(t)` (a laid-out `home.Layout`), `Write`, `Layer`, `UserLayer` | the home is removed, and a home that survives fails the test |
+| `model` | the fake model: `Transport` (an `http.RoundTripper` serving scripted SSE turns: `Reply`, `Status`, `Text`, `Usage`, `Finish`, `Error`, `Hang`), `Adapter` (an `llm.Adapter` over it), `Register(t, rt, id, tr)` | the route is unregistered; unused turns fail the test |
+| `answerer` | the fake answerer: `Register(t, owner, reg, channel, replies...)` answers interactions with `AllowOnce`, `AllowSession`, `Deny`, `Text` or `Never` and records what it was asked | the answerer is unloaded; unused replies fail the test |
+| `permit` | `New(t, kind, dest)`: an egress permit, `Withdraw()` | its context is cancelled |
+| `launcher` | `Build(t, dir, pkg, tags...)` builds a program; `Start(t, Program)` starts it through `world/subprocess` on a fresh temp home (`DSH_HOME` is managed: a `Program.Env` entry cannot override it) and returns a `src/sdk/jsonrpc` client on its stdio | the client and stdin close, the tree is stopped and awaited (survivors fail the test), then the home is removed |
+| `launcher` (hosts) | `Spawn(t, Program)` starts a program in its own process tree with captured output and no home or client; `Run(t, within, Program)` waits up to `within` and on timeout force-stops the whole tree (descendants holding the output included) and returns `ErrTimeout` | a tree still running is force-stopped; the stop and the wait are bounded by `3*Grace`, survivors fail the test |
+
+```go
+func TestOneTurn(t *testing.T) {
+	tr := model.NewTransport(t, model.Reply("hello"))
+	model.Register(t, runtime, "scripted", tr)
+	// ... run one attempt through the real llm.Runtime; one assistant/message "hello"
+}
+```
+
+Seams that belong to one package stay beside its contract (DH-ADR-UTIL-6): boot's
+step fakes, the secret store's source fake, and `httptest` servers that stand in for
+a remote peer.
 
 ## Test layers (DH-ADR-TOOLCHAIN-1)
 

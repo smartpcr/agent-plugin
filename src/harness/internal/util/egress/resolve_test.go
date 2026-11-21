@@ -1,7 +1,6 @@
 package egress_test
 
 import (
-	"context"
 	"encoding/pem"
 	"io"
 	"net"
@@ -15,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/permit"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/egress"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
 )
@@ -53,7 +53,7 @@ func TestResolveProxyNames(t *testing.T) {
 		t.Fatalf("Resolve = %v, %v", diags, err)
 	}
 	t.Cleanup(svc.CloseIdleConnections)
-	c, err := svc.Client("model-request", fakePermit{kind: "model-request", dest: "http://api.example", ctx: context.Background()}, egress.Options{})
+	c, err := svc.Client("model-request", permit.New(t, "model-request", "http://api.example"), egress.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,14 +145,14 @@ func TestExtraCACerts(t *testing.T) {
 		_, _ = io.WriteString(w, "private")
 	}))
 	t.Cleanup(srv.Close)
-	permit := fakePermit{kind: "model-request", dest: srv.URL, ctx: context.Background()}
+	grant := permit.New(t, "model-request", srv.URL)
 	get := func(c egress.Config) (string, error) {
 		svc, _, err := egress.Resolve(nil, c)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer svc.CloseIdleConnections()
-		cl, err := svc.Client("model-request", permit, egress.Options{})
+		cl, err := svc.Client("model-request", grant, egress.Options{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -211,10 +211,10 @@ func TestClientsAreReleasedWithTheirOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	permit := fakePermit{kind: "telemetry", dest: srv.URL, ctx: context.Background()}
+	grant := permit.New(t, "telemetry", srv.URL)
 
 	for range 100 {
-		c, err := svc.Client("telemetry", permit, egress.Options{})
+		c, err := svc.Client("telemetry", grant, egress.Options{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -232,7 +232,7 @@ func TestClientsAreReleasedWithTheirOwner(t *testing.T) {
 			return err
 		}
 		for range 3 {
-			c, err := s.Client("telemetry", permit, egress.Options{Owner: ctx.Lifetime(), Label: "consumer"})
+			c, err := s.Client("telemetry", grant, egress.Options{Owner: ctx.Lifetime(), Label: "consumer"})
 			if err != nil {
 				return err
 			}
@@ -261,7 +261,7 @@ func TestClientsAreReleasedWithTheirOwner(t *testing.T) {
 	if n := srv.conns.Load(); n != 0 {
 		t.Fatalf("released clients dialled %d connections", n)
 	}
-	if permit.Context().Err() != nil {
+	if grant.Context().Err() != nil {
 		t.Fatal("the permit ended with the client")
 	}
 }
@@ -360,7 +360,7 @@ func TestSocksProxy(t *testing.T) {
 	}
 	t.Cleanup(svc.CloseIdleConnections)
 	const dest = "http://only-the-proxy-knows.invalid"
-	c, err := svc.Client("model-request", fakePermit{kind: "model-request", dest: dest, ctx: context.Background()}, egress.Options{})
+	c, err := svc.Client("model-request", permit.New(t, "model-request", dest), egress.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

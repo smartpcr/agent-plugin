@@ -82,6 +82,7 @@ var Rules = []Rule{
 	{HarnessModule, "no non-test package imports subprocesstest (DH-D-EXEC-1)", noImporter(SubprocesstestPackage)},
 	{HarnessModule, "internal/util/herr and internal/util/ident import the standard library only (RM-6, DH-D-UTIL-5)", stdlibOnly(HerrPackage, IdentPackage)},
 	{HarnessModule, "internal/util/egress imports no harness package but herr, and of the modules only cordis: the permit is an interface, not sharing's type (DH-ADR-UTIL-2)", importsOnly(EgressPackage, HerrPackage, CordisPackage)},
+	{HarnessModule, "only tests and the test kit's own packages import internal/testkit (DH-T-UTIL-11, DH-ADR-UTIL-6)", importedOnlyWithin(TestkitPackage)},
 }
 
 // Packages the rules name.
@@ -110,6 +111,7 @@ const (
 	HerrPackage           = HarnessModule + "/internal/util/herr"
 	IdentPackage          = HarnessModule + "/internal/util/ident"
 	EgressPackage         = HarnessModule + "/internal/util/egress"
+	TestkitPackage        = HarnessModule + "/internal/testkit"
 	ExecPackage           = "os/exec"
 )
 
@@ -197,6 +199,25 @@ func noImporter(pkgs ...string) func([]Package) []string {
 			for _, imp := range p.Imports {
 				if slices.Contains(pkgs, imp) {
 					bad = append(bad, fmt.Sprintf("%s imports %s; only tests may", p.ImportPath, imp))
+				}
+			}
+		}
+		return bad
+	}
+}
+
+// importedOnlyWithin fails every listed package outside under that directly imports
+// a package at or below under. The list excludes test files, so tests may.
+func importedOnlyWithin(under string) func([]Package) []string {
+	return func(pkgs []Package) []string {
+		var bad []string
+		for _, p := range pkgs {
+			if within(p.ImportPath, under) {
+				continue
+			}
+			for _, imp := range p.Imports {
+				if within(imp, under) {
+					bad = append(bad, fmt.Sprintf("%s imports %s; only tests and %s may", p.ImportPath, imp, under))
 				}
 			}
 		}

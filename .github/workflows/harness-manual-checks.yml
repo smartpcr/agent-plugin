@@ -1,0 +1,82 @@
+# Per-OS manual checks of a harness stage's closure (impl.md DH-S-6: "start a child
+# that ignores termination and record that the tree is gone within the bound, on
+# each operating system").
+#
+# The tree owner's tests start a child whose grandchild ignores the polite stop
+# (subprocesstest.RoleStubborn) and check that StopTree removes the whole tree
+# within its bound; -v prints the owner each lane used (Job Object, cgroup, or the
+# process-group fallback of TC-X2) and the time the stop took. The test kit's
+# launcher tests check the same for a launched program and a timed-out run. The
+# output of each lane is the evidence recorded in docs/stories/<story>/evidence.
+#
+# Keyless and read-only: it runs no scenario and needs no secret, so it may run on
+# harness work branches as well as by hand.
+name: harness-manual-checks
+
+on:
+  push:
+    branches: ["ws/harness-**"]
+    paths:
+      - "src/harness/internal/world/subprocess/**"
+      - "src/harness/internal/testkit/**"
+      - "src/harness/internal/boot/**"
+      - "src/harness/internal/host/diag/**"
+      - ".github/workflows/harness-manual-checks.yml"
+      - "docs/stories/harness-DSH/evidence/DH-S-6.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  manual-checks:
+    name: manual checks (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: src/harness/go.mod
+          cache-dependency-path: src/harness/go.sum
+      - name: A child that ignores termination -- the tree is gone within the bound
+        run: |
+          set -o pipefail
+          mkdir -p artifacts/harness
+          out="artifacts/harness/tree-stop-${{ runner.os }}.txt"
+          { echo "commit ${GITHUB_SHA}"; uname -a; go version; } | tee "$out"
+          GOWORK=off go -C src/harness test -count=1 -v \
+            -run 'TestStopTreeStopsAndAwaitsTheTree|TestContextEndStopsTheTree|TestContextEndStopsDescendantsAfterChildExit|TestTreeOwnerIsReported' \
+            ./internal/world/subprocess/ 2>&1 | tee -a "$out"
+          GOWORK=off go -C src/harness test -count=1 -v \
+            -run 'TestRunTimeoutStopsTheTreeHoldingItsOutput|TestLaunchedProgramAndHomeTornDownByCleanup' \
+            ./internal/testkit/launcher/ 2>&1 | tee -a "$out"
+      - name: A broken required entry, and a bad layer edit
+        if: always()
+        run: |
+          set -o pipefail
+          mkdir -p artifacts/harness
+          out="artifacts/harness/boot-${{ runner.os }}.txt"
+          { echo "commit ${GITHUB_SHA}"; go version; } | tee "$out"
+          GOWORK=off go -C src/harness test -count=1 -v \
+            -run 'TestBrokenRequiredEntryFailsBootOnce|TestReloadAfterReadyAppliesValidAndRejectsInvalidLayers|TestFatalPrintsOneMessageAndWritesOneReport|TestBadLayerEditLeavesRunningTreeUnchanged' \
+            ./internal/boot/ ./internal/boot/config/ ./internal/host/diag/ 2>&1 | tee -a "$out"
+          { echo '```text'; grep -E '^(commit|---|ok|FAIL)' "$out"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Summarise the tree stop
+        if: always()
+        run: |
+          out="artifacts/harness/tree-stop-${{ runner.os }}.txt"
+          { echo '```text'; grep -E '^(commit|---|ok|FAIL|=== RUN)|owner|stopped in' "$out"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload the evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: manual-checks-${{ matrix.os }}
+          path: artifacts/harness/
+          if-no-files-found: warn

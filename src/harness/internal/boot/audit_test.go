@@ -11,6 +11,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/launch"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/cli/output"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/host/sharing"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit"
 )
 
 // TC-06a: with a permit configured for every kind and the off-switch on, the boot
@@ -64,7 +65,7 @@ func TestRealAuditReadsOffSwitchFromLaunchEnv(t *testing.T) {
 func TestRunPrintsKindsLine(t *testing.T) {
 	fakes := &fakeSteps{}
 	app := launch.NewApp()
-	var stderr syncBuffer
+	var stderr testkit.Buffer
 	done := make(chan int, 1)
 	go func() { done <- Run(context.Background(), Options{Stderr: &stderr, App: app, Steps: fakes}) }()
 	<-app.Ready()
@@ -84,7 +85,7 @@ func bootKinds(t *testing.T, layer string, environ ...string) string {
 	opts, _ := fixture(t, layer)
 	opts.Request.Environ = environ
 	app := launch.NewApp()
-	var stderr syncBuffer
+	var stderr testkit.Buffer
 	opts.App, opts.Stderr = app, &stderr
 	done := make(chan int, 1)
 	go func() { done <- Run(context.Background(), opts) }()
@@ -143,7 +144,7 @@ func TestUnreadableCertificateStopsTheLaunch(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			opts, _ := fixture(t, "- id: egress\n  merge:\n    extraCACerts: ['"+file+"']\n")
 			app := launch.NewApp()
-			var stderr syncBuffer
+			var stderr testkit.Buffer
 			opts.App, opts.Stderr = app, &stderr
 			if status := Run(context.Background(), opts); status != output.Config {
 				t.Errorf("status = %d, want %d", status, output.Config)
