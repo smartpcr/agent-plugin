@@ -217,13 +217,15 @@ func (c *Component) decide(_ *cordis.Context, f agent.AttemptFailure, next func(
 		if err := c.abandon(ctx, f, why); err != nil {
 			return nil, err
 		}
-		// A Permanent failure (llm/auth) is terminal: no inner listener is asked,
-		// so none can retry it or take it to another route (SP-2).
-		if f.Failure.Class == vocab.Permanent {
-			return agent.GiveUp{}, nil
+		// Only a failure this component does not retry (not-retryable, and not
+		// Permanent) is passed on: a repair listener may still own it. A bound
+		// this component enforces (exhausted, elapsed, cancelled) is final, so no
+		// inner listener can retry past it; a Permanent failure (llm/auth) is
+		// terminal, so none can retry it or take it to another route (SP-2).
+		if why == llm.AbandonNotRetryable && f.Failure.Class != vocab.Permanent {
+			return next(f)
 		}
-		// Not this component's to recover: a repair listener may still be.
-		return next(f)
+		return agent.GiveUp{}, nil
 	}
 	d, err := ScheduledType.Draft(Scheduled{Turn: f.Turn, Step: f.Step, Attempt: f.Attempt, DelayMs: wait.Milliseconds(), Failure: f.Failure, Policy: policy})
 	if err != nil {
