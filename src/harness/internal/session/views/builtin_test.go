@@ -252,6 +252,31 @@ func TestEventIndexSkipsNewerIgnorableSurfaceRecords(t *testing.T) {
 	}
 }
 
+// Entry looks up any unsigned position without panicking: positions past the
+// end, including the largest sequence (which wraps to -1 as an int), are absent.
+func TestEventIndexEntryOutOfRange(t *testing.T) {
+	var empty views.EventIndex
+	for _, seq := range []event.Seq{0, 1, ^event.Seq(0)} {
+		if e, ok := empty.Entry(seq); ok {
+			t.Fatalf("empty index: Entry(%d) = %+v", seq, e)
+		}
+	}
+	user := must(event.UserMessage.Draft(event.Append(), event.UserMessagePayload{Message: bmsg("u", vocab.RoleUser, vocab.TextBlock("hi"))}))
+	var evs []event.Event
+	for _, r := range stamped(t, []event.Draft{user}) {
+		evs = append(evs, event.Of(r))
+	}
+	idx := views.Refold(views.EventIndexView(), session.Header{}, evs)
+	if e, ok := idx.Entry(0); !ok || e.Seq != 0 {
+		t.Fatalf("Entry(0) = %+v, %v", e, ok)
+	}
+	for _, seq := range []event.Seq{1, ^event.Seq(0) >> 1, ^event.Seq(0)} {
+		if e, ok := idx.Entry(seq); ok {
+			t.Fatalf("populated index: Entry(%d) = %+v", seq, e)
+		}
+	}
+}
+
 // Statistics count a step when it closes: an entered, unsettled step is open,
 // not closed, and its visible output is counted once it settles.
 func TestStatsCountClosedAndVisibleSteps(t *testing.T) {

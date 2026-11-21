@@ -365,8 +365,11 @@ type EventIndex struct {
 
 // Entry is the row of seq, or false.
 func (x EventIndex) Entry(seq event.Seq) (EventEntry, bool) {
-	if i := int(seq); i < len(x.Events) && x.Events[i].Seq == seq {
-		return x.Events[i], true
+	// Compare unsigned before converting: a huge seq would wrap to a negative int.
+	if seq < event.Seq(len(x.Events)) {
+		if e := x.Events[seq]; e.Seq == seq {
+			return e, true
+		}
 	}
 	for _, e := range x.Events {
 		if e.Seq == seq {
