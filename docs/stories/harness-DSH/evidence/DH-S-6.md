@@ -6,13 +6,17 @@ closure) carries the closure record for DH-S-6. Every result below was re-run on
 tree: `f394c24` plus this stage's change, the commit that carries this record. All
 seventeen deliverables are built at that commit.
 
-**Closure status: pending.** Every closure item is recorded below except one: the
-manual check "a child that ignores termination ... on each operating system"
-(impl.md DH-S-6) is recorded on Windows 11 only. DH-S-6 closes when the Linux and
-macOS rows of that check are recorded here (or when the operator changes the
-requirement); until then the plan's closure step stays unticked. The rows are
-produced by `.github/workflows/harness-manual-checks.yml` on the next push of this
-branch (see "Manual checks").
+**Closure status: closed.** Every closure item is recorded below. The manual checks
+of impl.md DH-S-6, including "a child that ignores termination ... on each operating
+system", are recorded on Windows, Linux and macOS: Windows 11 on this runner, and all
+three systems in `harness-manual-checks` run
+[44860891149](https://github.com/smartpcr/agent-plugin/actions/runs/44860891149)
+(success; jobs 136713767008 Linux, 136713766919 macOS, 136713767118 Windows) at
+commit `42d0d7dbd163a46e3e395619d3c9f53c5aafff1a`, go1.26.0. The commit that carries
+this record differs from `42d0d7d` only in this file, the plan's tick and the
+workflow's push paths (which now include this file, so the closing commit's push runs
+the same checks on all three systems again). No code or test changed, so the results
+hold at the closing commit.
 
 ## Deliverables built at the closing commit
 
@@ -141,38 +145,66 @@ Every other test of these packages passes in the same run (12 in `boot`, 6 in
 
 ### Manual checks (impl.md DH-S-6; `manual`)
 
-Recorded on Windows 11 (this runner). The Linux and macOS rows are **not recorded**,
-and DH-S-6 is not closed without them. They are local manual checks of this stage,
-not the DH-E scenario runs that DH-S-18 owns. Why they could not be recorded here:
-- No Linux or macOS host was available: WSL has no distribution and docker is absent.
-- The CI `harness` lanes on `ubuntu-latest` and `macos-latest` do not reach the
-  subprocess tests on `main`. Run 44853707426 at `f394c24` stops at gate 1/8
-  (gofmt, `host/sharing/component.go`, fixed by this stage). A CI run of this
-  branch would still not reach them: the gate stops at its first failing gate, and
-  gate 2 (vet with the project's analyzers) fails on findings that predate this
-  stage (for example `boot/audit_test.go:70,91`, `boot/boot_test.go:98,434,632`), so
-  the test gate never starts on any lane.
-- Recording them therefore needs an operator with a Linux and a macOS machine, or an
-  approved change to the requirement; it is raised as an open question of this stage.
-- Route added by this stage: `.github/workflows/harness-manual-checks.yml` (keyless,
-  read-only, no scenario) runs exactly these checks (this one, and the broken-entry and bad-layer rows) on `ubuntu-latest`,
-  `macos-latest` and `windows-latest` on every push to a `ws/harness-**` branch that
-  touches the tree owner or the test kit, and by hand (`workflow_dispatch`). It
-  runs the tests directly rather than through the gate, so the pre-existing gate-2
-  findings do not stop it. Each lane writes the owner line and stop time to its job
-  summary and uploads them as `manual-checks-<os>`. The Linux and macOS rows are filled
-  from the first green run of that workflow at the closing commit (run id recorded
-  with them).
-To record them by hand instead, run `go -C src/harness test -count=1 -v -run
+Recorded on all three systems. They are manual checks of this stage, not the DH-E
+scenario runs that DH-S-18 owns. Windows 11 was recorded on this runner. Linux and
+macOS (and Windows again) were recorded by `.github/workflows/harness-manual-checks.yml`
+(keyless, read-only, no scenario), because no Linux or macOS host was available
+locally and the CI `harness` gate lanes never reach these tests: the gate stops at
+gate 2 (analyzer vet) on findings that predate this stage (for example
+`boot/audit_test.go:70,91`, `boot/boot_test.go:98,434,632`). The workflow runs on
+`ubuntu-latest`, `macos-latest` and `windows-latest` on every push to a
+`ws/harness-**` branch that touches the tree owner, the test kit, boot, `host/diag`
+or this record, and by hand (`workflow_dispatch`). It runs the tests directly rather than
+through the gate, writes the owner line and stop time to its job summary, and uploads
+the output as `manual-checks-<os>`.
+
+Run [44860891149](https://github.com/smartpcr/agent-plugin/actions/runs/44860891149),
+`push` at `42d0d7dbd163a46e3e395619d3c9f53c5aafff1a`, conclusion `success`. Excerpts from
+the uploaded `tree-stop-<OS>.txt`:
+
+```text
+# Linux runnervm0hi8g 7.0.0-1020-azure x86_64, go1.26.0 linux/amd64 (job 136713767008)
+subprocess_test.go:88: owner process-group (fallback: own control group not writable; delegated scope not requested (U-K1-1)); stopped in 2.011083403s
+--- PASS: TestStopTreeStopsAndAwaitsTheTree (2.02s)
+--- PASS: TestContextEndStopsTheTree (0.00s)
+--- PASS: TestContextEndStopsDescendantsAfterChildExit (0.01s)
+--- PASS: TestTreeOwnerIsReported (0.00s)
+--- PASS: TestRunTimeoutStopsTheTreeHoldingItsOutput (2.39s)
+--- PASS: TestLaunchedProgramAndHomeTornDownByCleanup (0.18s)
+
+# Darwin 25.6.0 arm64, go1.26.0 darwin/arm64 (job 136713766919)
+subprocess_test.go:88: owner process-group; stopped in 2.016072125s
+--- PASS: TestStopTreeStopsAndAwaitsTheTree (2.02s)
+--- PASS: TestContextEndStopsTheTree (0.00s)
+--- PASS: TestContextEndStopsDescendantsAfterChildExit (0.02s)
+--- PASS: TestTreeOwnerIsReported (0.00s)
+--- PASS: TestRunTimeoutStopsTheTreeHoldingItsOutput (2.57s)
+--- PASS: TestLaunchedProgramAndHomeTornDownByCleanup (0.33s)
+
+# Windows, go1.26.0 windows/amd64 (job 136713767118)
+subprocess_test.go:88: owner job-object; stopped in 2.0018494s
+--- PASS: TestStopTreeStopsAndAwaitsTheTree (2.04s)
+```
+
+The broken-entry and bad-layer tests (`boot-<OS>.txt`) pass on all three lanes:
+`TestBrokenRequiredEntryFailsBootOnce`, `TestReloadAfterReadyAppliesValidAndRejectsInvalidLayers`,
+`TestBadLayerEditLeavesRunningTreeUnchanged`, `TestFatalPrintsOneMessageAndWritesOneReport`.
+
+The bound: `StopTree` is called with a 2 s grace and a 15 s context. The grandchild
+ignores the polite stop (`subprocesstest.RoleStubborn`: SIGTERM, SIGINT and SIGHUP
+ignored on POSIX), so the tree outlives the grace and is force-stopped. Process
+group SIGKILL on Linux and macOS, the Job Object on Windows. On every system the tree
+is gone about 2.0 s after the stop began: inside the bound, and only the grace long.
+
+To repeat a row by hand, run `go -C src/harness test -count=1 -v -run
 'TestStopTreeStopsAndAwaitsTheTree|TestContextEndStopsDescendantsAfterChildExit|TestTreeOwnerIsReported'
-./internal/world/subprocess/` on each system and paste the owner line and stop time
-into the table.
+./internal/world/subprocess/` on the system.
 
 | Check | Windows 11 | Linux | macOS |
 | --- | --- | --- | --- |
-| Boot a tree with a broken required entry: one fatal message, one report file | Recorded. `TestBrokenRequiredEntryFailsBootOnce` (one message naming the entry, exit 78, one report under `reports/`), `TestFatalPrintsOneMessageAndWritesOneReport`. | not recorded | not recorded |
-| A child that ignores termination: the tree is gone within the bound | Recorded. `TestStopTreeStopsAndAwaitsTheTree`: `owner job-object; stopped in 2.007s` (grace 2 s, then the job is terminated); `TestContextEndStopsDescendantsAfterChildExit`; the kit's launcher test leaves no pid alive. | not recorded (cgroup and process-group paths) | not recorded |
-| Edit a layer file badly: the running tree is unchanged | Recorded. `TestBadLayerEditLeavesRunningTreeUnchanged` (the rejection names file, line and column; the tree's config and start count are unchanged); `TestReloadAfterReadyAppliesValidAndRejectsInvalidLayers`. | not recorded | not recorded |
+| Boot a tree with a broken required entry: one fatal message, one report file | Recorded. `TestBrokenRequiredEntryFailsBootOnce` (one message naming the entry, exit 78, one report under `reports/`), `TestFatalPrintsOneMessageAndWritesOneReport`. | Recorded, run 44860891149 (job 136713767008) at `42d0d7d`: both pass. | Recorded, run 44860891149 (job 136713766919) at `42d0d7d`: both pass. |
+| A child that ignores termination: the tree is gone within the bound | Recorded. `TestStopTreeStopsAndAwaitsTheTree`: `owner job-object; stopped in 2.007s` (grace 2 s, then the job is terminated); `TestContextEndStopsDescendantsAfterChildExit`; the kit's launcher test leaves no pid alive. CI run 44860891149: `owner job-object; stopped in 2.0018494s`. | Recorded, run 44860891149 (job 136713767008) at `42d0d7d`: `owner process-group (fallback: own control group not writable; delegated scope not requested (U-K1-1)); stopped in 2.011083403s`; context-end, orphan and launcher timeout tests pass, no pid alive. | Recorded, run 44860891149 (job 136713766919) at `42d0d7d`: `owner process-group; stopped in 2.016072125s`; context-end, orphan and launcher timeout tests pass, no pid alive. |
+| Edit a layer file badly: the running tree is unchanged | Recorded. `TestBadLayerEditLeavesRunningTreeUnchanged` (the rejection names file, line and column; the tree's config and start count are unchanged); `TestReloadAfterReadyAppliesValidAndRejectsInvalidLayers`. | Recorded, run 44860891149 (job 136713767008) at `42d0d7d`: both pass. | Recorded, run 44860891149 (job 136713766919) at `42d0d7d`: both pass. |
 
 ### Scenarios
 
@@ -246,8 +278,13 @@ host's own cgroup v2 is writable. Otherwise it falls back to the process group a
 reports it: `Owner{Kind: ProcessGroup, Exact: false, Fallback: "own control group
 not writable; delegated scope not requested (U-K1-1)[: cause]"}`
 (`owner_linux.go`), which the bash tool's result shows as `owner: process-group`
-with one warning. `TestTreeOwnerIsReported` checks the reported owner on each system
-(`job-object` here). The Linux run of the fallback is `DH-E-EXEC-1` step 3, in DH-S-18.
+with one warning. `TestTreeOwnerIsReported` checks the reported owner on each system.
+Reported in run 44860891149 at `42d0d7d`: on the `ubuntu-latest` runner the fallback
+was taken, `owner process-group (fallback: own control group not writable; delegated
+scope not requested (U-K1-1))`, and the whole tree was still stopped in 2.01 s.
+macOS reports `process-group` and Windows `job-object`. The cgroup path itself (a
+writable delegated cgroup) and the fallback under `DH-E-EXEC-1` are exercised in
+DH-S-18 (`DH-E-EXEC-1` step 3).
 
 ## Deviations, recorded
 
