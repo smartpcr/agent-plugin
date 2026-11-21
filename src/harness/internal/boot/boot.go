@@ -11,6 +11,7 @@ import (
 	"runtime/debug"
 	"time"
 
+	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/go/loader"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/catalog"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/config"
@@ -105,6 +106,7 @@ type State struct {
 	Service   *loader.Service
 	catalog   *catalog.Catalog
 	evaluator loader.Evaluator
+	root      *cordis.Context
 	// Settle
 	ApplyErr error
 	// Audit

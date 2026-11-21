@@ -169,7 +169,7 @@ func (Real) Tree(_ context.Context, s *State) error {
 		return err
 	}
 	t.svc, s.Service = svc, svc
-	s.catalog, s.evaluator = cat, ev
+	s.catalog, s.evaluator, s.root = cat, ev, root
 	return nil
 }
 

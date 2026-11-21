@@ -27,6 +27,7 @@ func (s *State) startReload(ctx context.Context) {
 			return profile.Stack(def, profile.Sources{Home: data.Home, Overlays: data.Overlays, Read: profile.ReadFile(read)})
 		},
 		Loader:    s.Service,
+		Context:   s.root,
 		Evaluator: s.evaluator,
 		Required:  def.Required,
 		Read:      layerReader(s.Options.Request.ReadFile),

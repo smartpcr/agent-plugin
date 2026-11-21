@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -269,6 +270,13 @@ func boot(t *testing.T, h *home, p *probes) (*loader.Service, *config.Service) {
 // bootWith is boot with the service's options beyond the stack, loader and catalog.
 func bootWith(t *testing.T, h *home, p *probes, opts config.ServiceOptions) (*loader.Service, *config.Service) {
 	t.Helper()
+	_, ldr, cs := bootRoot(t, h, p, opts)
+	return ldr, cs
+}
+
+// bootRoot is bootWith that also returns the tree's root.
+func bootRoot(t *testing.T, h *home, p *probes, opts config.ServiceOptions) (*cordis.Context, *loader.Service, *config.Service) {
+	t.Helper()
 	root := cordis.New(cordis.WithExporters())
 	t.Cleanup(root.Dispose)
 	fiber, err := root.Use(loader.Component, loader.Options{Resolver: p.cat, Evaluator: opts.Evaluator})
@@ -282,7 +290,7 @@ func bootWith(t *testing.T, h *home, p *probes, opts config.ServiceOptions) (*lo
 	if err != nil {
 		t.Fatal(err)
 	}
-	opts.Stack, opts.Loader, opts.Catalog = h.stack, ldr, p.cat
+	opts.Stack, opts.Loader, opts.Catalog, opts.Context = h.stack, ldr, p.cat, root
 	cs, err := config.NewService(opts)
 	if err != nil {
 		t.Fatal(err)
@@ -293,7 +301,7 @@ func bootWith(t *testing.T, h *home, p *probes, opts config.ServiceOptions) (*lo
 	if err := ldr.ApplyLayers(cs.Current().Layers); err != nil {
 		t.Fatal(err)
 	}
-	return ldr, cs
+	return root, ldr, cs
 }
 
 func effective(t *testing.T, ldr *loader.Service, id string) probeConfig {
@@ -678,27 +686,60 @@ func TestOmittedConfigIsValidatedToo(t *testing.T) {
 }
 
 // The loader's notices of a reload or an edit are published after the service's
-// locks are released: a lifecycle listener sees the new snapshot as Current and may
-// reload and edit without deadlocking.
+// locks are released, and once the service has made the applied snapshot Current:
+// a lifecycle or Reloaded listener sees the tree it is told about (its entries,
+// owners and revision, nothing pending) and may reload and edit without
+// deadlocking.
 func TestReloadListenerMayCallTheService(t *testing.T) {
 	h, p := newHome(t), newProbes(t)
-	ldr, cs := boot(t, h, p)
+	root, ldr, cs := bootRoot(t, h, p, config.ServiceOptions{})
 	var mu sync.Mutex
-	var seen []string
+	var seen, heard []string
 	var nested []error
+	// consistent describes what is wrong with Current as a listener sees it.
+	consistent := func() string {
+		cur := cs.Current()
+		var ids []string
+		for _, e := range cur.Report.Entries() {
+			ids = append(ids, e.ID)
+		}
+		ex, err := cur.Report.Explain("probe", "config.level")
+		switch {
+		case cs.Pending() || cur.Revision != cs.Revision():
+			return fmt.Sprintf("Current %s while %s is pending", short(cur.Revision), short(cs.Revision()))
+		case !slices.Contains(ids, "fresh"):
+			return fmt.Sprintf("Current lacks the inserted entry: %v", ids)
+		case err != nil || ex.Layer != "user" || string(ex.Value) != `"warn"`:
+			return fmt.Sprintf("Current owns probe.config.level as %+v (%v), want warn from user", ex, err)
+		}
+		if got := effective(t, ldr, "probe"); got.Level != "warn" {
+			return fmt.Sprintf("probe runs %+v", got)
+		}
+		return ""
+	}
 	remove := ldr.OnLifecycle(func(ev loader.LifecycleEvent) {
 		if ev.Kind != loader.EntryUpdated {
 			return
 		}
+		bad := consistent()
 		rev := cs.Revision()
 		err := cs.Reload()
 		_, aerr := cs.Apply(context.Background(), config.Edit{Revision: "old", Ops: nil})
 		mu.Lock()
 		defer mu.Unlock()
-		seen = append(seen, rev)
+		seen = append(seen, rev+bad)
 		nested = append(nested, err, aerr)
 	})
 	t.Cleanup(remove)
+	if _, err := loader.Reloaded.On(root, func(_ *cordis.Context, _ loader.ReloadNotice) error {
+		bad := consistent()
+		mu.Lock()
+		defer mu.Unlock()
+		heard = append(heard, bad)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	run := func(what string, fn func() error) {
 		t.Helper()
 		done := make(chan error, 1)
@@ -718,7 +759,7 @@ func TestReloadListenerMayCallTheService(t *testing.T) {
 			t.Fatalf("a listener calling the service deadlocked the %s", what)
 		}
 	}
-	write(t, profile.UserLayerPath(h.root), "- id: probe\n  merge:\n    level: warn\n")
+	write(t, profile.UserLayerPath(h.root), "- id: probe\n  merge:\n    level: warn\n- insert:\n    - id: fresh\n      name: x.probe\n")
 	run("reload", cs.Reload)
 	run("edit", func() error {
 		_, err := cs.Apply(context.Background(), config.Edit{Revision: cs.Revision(), Ops: []loader.Op{{Kind: loader.OpMerge, ID: "other", Patch: json.RawMessage(`{"port":7}`)}}})
@@ -727,10 +768,13 @@ func TestReloadListenerMayCallTheService(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	if len(seen) != 2 || seen[1] != cs.Revision() {
-		t.Fatalf("listener saw revisions %v, want 2 ending at %s", seen, cs.Revision())
+		t.Fatalf("listener saw %q, want 2 consistent revisions ending at %s", seen, cs.Revision())
 	}
 	if seen[0] == seen[1] {
 		t.Error("the listener saw the snapshot from before the edit")
+	}
+	if len(heard) != 2 || heard[0] != "" || heard[1] != "" {
+		t.Errorf("Reloaded listener saw %q, want 2 consistent notices", heard)
 	}
 	for i := 0; i < len(nested); i += 2 {
 		if nested[i] != nil || !hasReason(nested[i+1], config.ReasonStale) {
@@ -741,6 +785,8 @@ func TestReloadListenerMayCallTheService(t *testing.T) {
 		t.Errorf("probe = %+v", got)
 	}
 }
+
+func short(rev string) string { return rev[:min(len(rev), 8)] }
 
 // The edit path itself refuses an edit a higher layer shadows, whoever calls it,
 // and writes nothing; a field no higher layer sets is written.

@@ -312,3 +312,57 @@ func TestDescribeShowsEvaluatedExpression(t *testing.T) {
 		t.Errorf("token = %+v, want the presence marker", tok)
 	}
 }
+
+// A Reloaded listener that reads the form sees the reload it is told about: the
+// new value, from the layer that now owns it, with nothing pending.
+func TestDescribeFromReloadedListenerSeesTheNewTree(t *testing.T) {
+	cat := probeCatalog(t)
+	home := filepath.Join(t.TempDir(), "home")
+	def := profile.Definition{Name: "probe"}
+	write(t, profile.LayerPath(home, def.Name), profileText)
+	root := cordis.New(cordis.WithExporters())
+	t.Cleanup(root.Dispose)
+	fiber, err := root.Use(loader.Component, loader.Options{Resolver: cat})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fiber.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	ldr, err := loader.Key.Get(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs, err := config.NewService(config.ServiceOptions{Catalog: cat, Loader: ldr, Context: root, Stack: func(read config.ReadFile) ([]loader.Layer, []loader.Issue, error) {
+		return profile.Stack(def, profile.Sources{Home: home, Read: profile.ReadFile(read)})
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ldr.ApplyLayers(cs.Current().Layers); err != nil {
+		t.Fatal(err)
+	}
+	form := settings.New(cs, cat)
+	var told []*settings.Form
+	if _, err := loader.Reloaded.On(root, func(*cordis.Context, loader.ReloadNotice) error {
+		f, err := form.Describe()
+		if err != nil {
+			t.Error(err)
+			return nil
+		}
+		told = append(told, f)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	write(t, profile.UserLayerPath(home), "- id: probe\n  merge:\n    level: warn\n")
+	if err := cs.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if len(told) != 1 {
+		t.Fatalf("told %d times, want once", len(told))
+	}
+	if l := level(t, told[0]); string(l.Value) != `"warn"` || l.Layer != "user" || told[0].Pending || told[0].Revision != cs.Revision() {
+		t.Errorf("listener's form = level %+v, pending %v, revision %s; want warn from user at %s", l, told[0].Pending, told[0].Revision, cs.Revision())
+	}
+}

@@ -11,11 +11,13 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/go/loader"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/fsx"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
@@ -81,6 +83,11 @@ type ServiceOptions struct {
 	// Loader is the running tree's loader; nil validates and writes without applying
 	// (a second process editing the same home).
 	Loader *loader.Service
+	// Context is the context the loader's Reloaded notice is heard on (the tree's
+	// root); with it the service makes the applied snapshot Current before any
+	// Reloaded listener registered on it is told. Without it only the loader's
+	// lifecycle observers registered after NewService see the new Current.
+	Context *cordis.Context
 	// Catalog and Evaluator are the static check's (see CheckOptions).
 	Catalog   Catalog
 	Evaluator loader.Evaluator
@@ -114,17 +121,22 @@ type ServiceOptions struct {
 // running tree has applied it and settled. The tree is applied with no lock of the
 // service held, so a loader listener may call any method, and every Reload and
 // Apply returns only once its own tree, or a newer accepted one, has settled or
-// failed (settle). Listeners are told outside every lock.
+// failed (settle). The loader tells its listeners from inside ApplyLayers, once the
+// tree has settled; the service hears that first (a lifecycle observer registered
+// by NewService and a Reloaded listener prepended on Context) and makes the applied
+// snapshot Current then, so a listener sees the tree it is told about (published).
+// Listeners are told outside every lock.
 type Service struct {
 	opts ServiceOptions
 
 	op sync.Mutex
 
 	mu       sync.Mutex
-	current  *Snapshot // applied by the running tree and settled
-	desired  *Snapshot // accepted: validated and on disk
-	seq      uint64    // the accept order of snapshots
-	started  uint64    // the newest seq a settle has started applying
+	current  *Snapshot   // applied by the running tree and settled
+	desired  *Snapshot   // accepted: validated and on disk
+	seq      uint64      // the accept order of snapshots
+	started  uint64      // the newest seq a settle has started applying
+	inflight []*Snapshot // being applied by a settle, in start order
 	rejected string
 	closed   bool
 
@@ -171,6 +183,19 @@ func NewService(opts ServiceOptions) (*Service, error) {
 		return nil, err
 	}
 	s.current, s.desired = snap, snap
+	if opts.Loader != nil {
+		opts.Loader.OnLifecycle(func(loader.LifecycleEvent) { s.published() })
+		if opts.Context != nil {
+			if _, err := loader.Reloaded.Prepend(opts.Context, func(_ *cordis.Context, n loader.ReloadNotice) error {
+				if n.Loader == opts.Loader {
+					s.published()
+				}
+				return nil
+			}); err != nil {
+				return nil, fmt.Errorf("config: hear loader.Reloaded: %w", err)
+			}
+		}
+	}
 	return s, nil
 }
 
@@ -396,9 +421,13 @@ func (s *Service) settle() error {
 		s.mu.Lock()
 		target := s.desired
 		s.started = max(s.started, target.seq)
+		s.inflight = append(s.inflight, target)
 		s.mu.Unlock()
 		err := s.opts.Loader.ApplyLayers(target.Layers)
 		s.mu.Lock()
+		if i := slices.Index(s.inflight, target); i >= 0 {
+			s.inflight = slices.Delete(s.inflight, i, i+1)
+		}
 		if err != nil {
 			if s.desired.seq > target.seq {
 				s.mu.Unlock()
@@ -418,6 +447,60 @@ func (s *Service) settle() error {
 		s.mu.Unlock()
 		return nil
 	}
+}
+
+// published runs when the loader tells its listeners of a settled reconciliation,
+// before the listeners registered after the service: it makes the snapshot that
+// reconciliation applied Current, unless a newer one already is. It is the one
+// being applied, or, when several settles are applying at once, the one whose tree
+// the loader now holds (the newest when none matches). A reconciliation no settle
+// started (a restart) changes nothing.
+func (s *Service) published() {
+	s.mu.Lock()
+	inflight := slices.Clone(s.inflight)
+	s.mu.Unlock()
+	if len(inflight) == 0 {
+		return
+	}
+	snap := inflight[len(inflight)-1]
+	if slices.ContainsFunc(inflight, func(o *Snapshot) bool { return o != snap }) {
+		running := s.opts.Loader.Snapshot()
+		for i := len(inflight) - 1; i >= 0; i-- {
+			if sameTree(running, inflight[i].Report.Tree) {
+				snap = inflight[i]
+				break
+			}
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if snap.seq > s.current.seq {
+		s.current = snap
+	}
+}
+
+// sameTree reports whether the loader's tree running is the composed tree, an
+// anonymous composed entry matching whatever id the loader gave it.
+func sameTree(running, composed []loader.EntryOptions) bool {
+	if len(running) != len(composed) {
+		return false
+	}
+	for i, r := range running {
+		c := composed[i]
+		if c.DisabledExpr != r.DisabledExpr || !sameTree(r.Children, c.Children) {
+			return false
+		}
+		if c.ID == "" {
+			c.ID = r.ID
+		}
+		r.Children, c.Children = nil, nil
+		rj, rerr := json.Marshal(r)
+		cj, cerr := json.Marshal(c)
+		if rerr != nil || cerr != nil || !bytes.Equal(rj, cj) {
+			return false
+		}
+	}
+	return true
 }
 
 // Watch reloads whenever a layer file read changes, polling every interval, until
