@@ -525,18 +525,18 @@ storyId: "harness:DSH"
 ## Stage 8.2: Builtin Views Projects and Session Listing
 
 ### Implementation Steps
-- [ ] impl.md step 8.3 / DH-D-VIEW-3 (P1, pulled forward): built-in views in `internal/session/views` -- list summary, turn index, statistics, event index.
-- [ ] impl.md step 8.4 / DH-D-STORAGE-7 (P1, pulled forward): projects group sessions; a hidden session never keeps working (hiding stops its agents).
-- [ ] impl.md step 8.5 / DH-D-VIEW-5: list, observe, trace and follow sessions across forks.
-- [ ] Author `DH-E-STORAGE-1` (runs DH-S-19) and `DH-E-STORAGE-2` (runs DH-S-23) as scenario files.
+- [x] impl.md step 8.3 / DH-D-VIEW-3 (P1, pulled forward): built-in views in `internal/session/views` -- list summary, turn index, statistics, event index.
+- [x] impl.md step 8.4 / DH-D-STORAGE-7 (P1, pulled forward): projects group sessions; a hidden session never keeps working (hiding stops its agents).
+- [x] impl.md step 8.5 / DH-D-VIEW-5: list, observe, trace and follow sessions across forks.
+- [x] Author `DH-E-STORAGE-1` (runs DH-S-19) and `DH-E-STORAGE-2` (runs DH-S-23) as scenario files.
 
 ### Dependencies
 - phase-machine-state-views-and-spill/stage-typed-machine-state-and-stored-folds
 
 ### Test Scenarios
-- [ ] Scenario: Refold equals stored for every built-in view -- Given a fixed 200-event session in a temp home, When each built-in view is refolded from the log and compared with its stored state, Then all four are equal (DH-S-8 exit evidence, TC-08) [proof: service:sqlite; deps: sqlite embedded; filesystem via `t.TempDir()`]
-- [ ] Scenario: Listing groups by project -- Given three sessions in two projects, When sessions are listed by project, Then the result equals the committed golden listing (TC-08) [proof: golden; deps: sqlite embedded; filesystem via `t.TempDir()`; committed golden `session/views/testdata/list_by_project.golden`]
-- [ ] Scenario: Hidden session stops working -- Given a session with an agent registered through the agent contract fake, When the session is hidden, Then the agent receives a stop with cause `hidden` (TC-08 logic) [proof: in-process; deps: none -- memstore and fake agent]
+- [x] Scenario: Refold equals stored for every built-in view -- Given a fixed 200-event session in a temp home, When each built-in view is refolded from the log and compared with its stored state, Then all four are equal (DH-S-8 exit evidence, TC-08) [proof: service:sqlite; deps: sqlite embedded; filesystem via `t.TempDir()`]
+- [x] Scenario: Listing groups by project -- Given three sessions in two projects, When sessions are listed by project, Then the result equals the committed golden listing (TC-08) [proof: golden; deps: sqlite embedded; filesystem via `t.TempDir()`; committed golden `session/views/testdata/list_by_project.golden`]
+- [x] Scenario: Hidden session stops working -- Given a session with an agent registered through the agent contract fake, When the session is hidden, Then the agent receives a stop with cause `hidden` (TC-08 logic) [proof: in-process; deps: none -- memstore and fake agent]
 
 ## Stage 8.3: Spill Store and Attachments
 

@@ -1,0 +1,11 @@
+project alpha (position 0)
+  * s-a1   prompts=2 turns=2 events=22 last=1700000003000
+      first prompt at seq 1
+      preview: "prompt number 1: list the files and explain each of them in detail, please"
+    s-a2   prompts=1 turns=1 events=11 last=1700000007000
+      first prompt at seq 1
+      preview: "prompt number 4: list the files and explain each of them in detail, please"
+project beta (position 1)
+    s-b1   prompts=1 turns=1 events=12 last=1700000005000
+      first prompt at seq 1
+      preview: "prompt number 3: list the files and explain each of them in detail, please"

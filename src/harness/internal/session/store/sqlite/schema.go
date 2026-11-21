@@ -129,6 +129,26 @@ CREATE TABLE workspaces (
 ) STRICT;
 CREATE INDEX workspaces_order ON workspaces (position, id);
 `,
+	// 3: workspace membership and session flags of docs/harness/areas/storage.md
+	// DH-D-STORAGE-7 (DH-ADR-STORAGE-7): rows, not session events, so a process
+	// that does not hold a session's lease can archive it. Both go with their
+	// session's row, and membership with its workspace's row.
+	`
+CREATE TABLE workspace_sessions (
+	session      INTEGER PRIMARY KEY REFERENCES sessions (uid) ON DELETE CASCADE,
+	workspace    TEXT    NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
+	attached_at  INTEGER NOT NULL
+) STRICT;
+CREATE INDEX workspace_sessions_by_workspace ON workspace_sessions (workspace, session);
+
+CREATE TABLE session_flags (
+	session    INTEGER PRIMARY KEY REFERENCES sessions (uid) ON DELETE CASCADE,
+	archive    TEXT    NOT NULL DEFAULT '' CHECK (archive IN ('', 'pending', 'archived')),
+	archive_at INTEGER NOT NULL DEFAULT 0,
+	pinned     INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1)),
+	updated_at INTEGER NOT NULL
+) STRICT;
+`,
 }
 
 // LayoutVersion is the layout this build writes: the number of migrations.

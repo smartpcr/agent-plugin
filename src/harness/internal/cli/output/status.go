@@ -116,10 +116,14 @@ var codes = map[herr.Reason]int{
 	"storage/record-version": Config,
 	"storage/undecodable":    Failed,
 
-	"workspace/exists":          Busy,
-	"workspace/invalid":         Invalid,
-	"workspace/not-a-directory": Invalid,
-	"workspace/not-found":       Invalid,
+	"workspace/attached-elsewhere": Busy,
+	"workspace/exists":             Busy,
+	"workspace/invalid":            Invalid,
+	"workspace/no-session":         Invalid,
+	"workspace/not-a-directory":    Invalid,
+	"workspace/not-found":          Invalid,
+	"workspace/outside":            Invalid,
+	"workspace/session-active":     Busy,
 
 	"sharing/claimed":      Config,
 	"sharing/disabled":     Denied,
