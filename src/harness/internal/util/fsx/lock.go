@@ -13,22 +13,32 @@ import (
 // for a later process to break by guesswork. Locks are advisory: they exclude only
 // other lockers.
 type FileLock struct {
-	mu sync.Mutex
-	f  *os.File
+	mu     sync.Mutex
+	f      *os.File
+	beyond bool
 }
 
 // TryLock takes the lock on path, creating the lock file if needed. When another
 // holder (in this or another process) has it, the error matches ErrLocked.
-func TryLock(path string) (*FileLock, error) {
+func TryLock(path string) (*FileLock, error) { return tryLock(path, false) }
+
+// TryLockBeyondEnd is TryLock on a lock that never refuses a reader of the lock
+// file: on Windows the locked byte lies far beyond the end of the file, where no
+// read reaches (on Unix an flock never refuses a read). Lockers of one file must
+// all use the same form. The session lease's liveness lock uses it
+// (session-store.md §6.2, DH-T-STORE-7).
+func TryLockBeyondEnd(path string) (*FileLock, error) { return tryLock(path, true) }
+
+func tryLock(path string, beyond bool) (*FileLock, error) {
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, err
 	}
-	if err := lockFile(f); err != nil {
+	if err := lockFile(f, beyond); err != nil {
 		_ = f.Close()
 		return nil, err
 	}
-	return &FileLock{f: f}, nil
+	return &FileLock{f: f, beyond: beyond}, nil
 }
 
 // lockBackoff is the longest wait between attempts of Lock.
@@ -61,7 +71,7 @@ func (l *FileLock) Unlock() error {
 	if l.f == nil {
 		return nil
 	}
-	err := errors.Join(unlockFile(l.f), l.f.Close())
+	err := errors.Join(unlockFile(l.f, l.beyond), l.f.Close())
 	l.f = nil
 	return err
 }

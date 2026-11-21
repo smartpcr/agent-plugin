@@ -259,6 +259,12 @@ func (v *service) Open(ctx context.Context, owner *cordis.Context, id ID, o Open
 		if err != nil {
 			return fail(err)
 		}
+		// The closers are durable before anyone sees the session
+		// (DH-D-STORE-4): a crash right after Open replays them, not the
+		// open brackets again.
+		if _, err := s.Flush(ctx); err != nil {
+			return fail(err)
+		}
 	}
 	if err := v.publish(ctx, owner, s); err != nil {
 		return nil, OpenReport{}, err

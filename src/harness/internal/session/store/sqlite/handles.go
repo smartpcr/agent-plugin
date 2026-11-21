@@ -138,11 +138,18 @@ func (r *reader) Close(context.Context) error {
 	return nil
 }
 
-// writer holds the lease of one session at one epoch.
+// writer holds the lease of one session at one epoch, in the name of holder
+// (this instance's id).
 type writer struct {
 	reader
-	epoch uint64
+	epoch  uint64
+	holder string
 }
+
+// afterAppend, when set, runs after each committed append, before Append
+// returns. It is nil in production; the crash tests set it (export_test.go) to
+// end a re-exec'd child between an append and its flush.
+var afterAppend func(id string, b store.Batch)
 
 var _ store.Writer = (*writer)(nil)
 
@@ -158,7 +165,7 @@ func (w *writer) check(ctx context.Context, q querier) (row, error) {
 	if err != nil {
 		return row{}, err
 	}
-	if r.sum.Holder == nil || r.sum.Holder.Instance != w.s.instance || r.sum.LeaseEpoch != w.epoch {
+	if r.sum.Holder == nil || r.sum.Holder.Instance != w.holder || r.sum.LeaseEpoch != w.epoch {
 		return row{}, store.Errorf(store.CodeLeaseLost, "session %q: epoch %d was taken over (now %d)", w.id, w.epoch, r.sum.LeaseEpoch)
 	}
 	return r, nil
@@ -174,7 +181,7 @@ func (w *writer) Append(ctx context.Context, b store.Batch) error {
 	s := w.s
 	s.wmu.Lock()
 	defer s.wmu.Unlock()
-	return s.writeLocked(ctx, func(tx *sql.Tx) error {
+	err := s.writeLocked(ctx, func(tx *sql.Tx) error {
 		ss, err := w.check(ctx, tx)
 		if err != nil {
 			return err
@@ -232,7 +239,7 @@ func (w *writer) Append(ctx context.Context, b store.Batch) error {
 		}
 		res, err := tx.ExecContext(ctx, `UPDATE sessions SET next_seq = ?, last_event_at = ?, bytes = bytes + ?
 			WHERE uid = ? AND next_seq = ? AND lease_holder = ? AND lease_epoch = ? AND state = 'active'`,
-			int64(total), lastAt, size, w.uid, int64(next), s.instance, int64(w.epoch))
+			int64(total), lastAt, size, w.uid, int64(next), w.holder, int64(w.epoch))
 		if err != nil {
 			return err
 		}
@@ -243,6 +250,10 @@ func (w *writer) Append(ctx context.Context, b store.Batch) error {
 		}
 		return nil
 	})
+	if err == nil && afterAppend != nil {
+		afterAppend(w.id, b)
+	}
+	return err
 }
 
 // Flush returns once every commit of this instance, this writer's among them,
@@ -287,7 +298,7 @@ func (w *writer) closeLocked(ctx context.Context) error {
 		}
 		if err := s.writeLocked(ctx, func(tx *sql.Tx) error {
 			_, err := tx.ExecContext(ctx, `UPDATE sessions SET lease_holder = NULL, lease_pid = 0, lease_kind = '',
-				lease_since = 0 WHERE uid = ? AND lease_holder = ? AND lease_epoch = ?`, w.uid, s.instance, int64(w.epoch))
+				lease_since = 0 WHERE uid = ? AND lease_holder = ? AND lease_epoch = ?`, w.uid, w.holder, int64(w.epoch))
 			return err
 		}); err != nil {
 			return err

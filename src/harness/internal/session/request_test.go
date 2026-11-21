@@ -188,6 +188,37 @@ func must2[A, B any](a A, b B, err error) (A, B) {
 	return a, b
 }
 
+// DH-T-STORE-9 (publication): the closers Open appends are flushed before the
+// session is published; when that flush fails, Open fails, nothing is published
+// and the lease is released, so a later Open succeeds.
+func TestOpenFlushesClosersBeforePublishing(t *testing.T) {
+	var fs *faultStore
+	e := newEnv(t, session.Config{}, func(s store.Store) store.Store { fs = &faultStore{Store: s}; return fs })
+	h := e.create(t, scope.Key{})
+	id := h.ID()
+	must(h.AppendGroup(bg, []event.Draft{turnStart(t, 1), stepStart(t, 1, 1), userDraft(t, "u", "go")}))
+	if err := h.Close(bg); err != nil {
+		t.Fatal(err)
+	}
+	fs.setMode("flush-fails")
+	if h2, _, err := e.svc.Open(bg, nil, id, session.OpenOptions{}); err == nil {
+		h2.Close(bg)
+		t.Fatal("Open published a session whose closers did not flush")
+	}
+	if _, ok := e.svc.Get(id); ok {
+		t.Fatal("a session whose closers did not flush is live")
+	}
+	if sum := must(e.st.Stat(bg, string(id))); sum.Holder != nil {
+		t.Fatalf("the failed Open kept the lease: %+v", sum.Holder)
+	}
+	fs.setMode("")
+	h3, _ := must2(e.svc.Open(bg, nil, id, session.OpenOptions{}))
+	defer h3.Close(bg)
+	if h3.Open().IsOpen() {
+		t.Fatalf("brackets after the retried Open: %+v", h3.Open())
+	}
+}
+
 // DH-T-SESSION-14: an open restored from the core checkpoint has the same folds
 // as a full replay.
 func TestOpenFromCheckpoint(t *testing.T) {

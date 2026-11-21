@@ -296,6 +296,13 @@ func (w *faultWriter) Append(ctx context.Context, b store.Batch) error {
 	return err
 }
 
+func (w *faultWriter) Flush(ctx context.Context) error {
+	if w.f.getMode() == "flush-fails" {
+		return errors.New("injected: flush failed")
+	}
+	return w.Writer.Flush(ctx)
+}
+
 func (w *faultWriter) Close(ctx context.Context) error {
 	err := w.Writer.Close(ctx)
 	if w.f.getMode() == "close-fails" {
