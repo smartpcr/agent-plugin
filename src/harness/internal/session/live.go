@@ -180,7 +180,8 @@ func (s *live) Checkpoints(ctx context.Context) ([]store.Checkpoint, error) {
 // then commits the rows it rebuilt at the log head in a checkpoint-only batch
 // and flushes it, so stored fold state reflects the whole log and never more
 // (DH-D-VIEW-2). Stored state is derived: a failure is logged and the session
-// opens anyway; the Folder folds from the log when it must.
+// opens anyway; the Folder folds from the log when it must. A lost lease or a
+// seq conflict while storing the rows fails the session instead.
 func (s *live) restoreFolds(ctx context.Context, r Restorer) {
 	log := s.svc.base.Logger()
 	rows, err := func() (rows []Derived, err error) {
@@ -210,6 +211,17 @@ func (s *live) restoreFolds(ctx context.Context, r Restorer) {
 		batch.Checkpoints = append(batch.Checkpoints, store.Checkpoint{Key: d.Key, StateVersion: d.StateVersion, Seq: n - 1, State: d.State})
 	}
 	err = s.w.Append(ctx, batch)
+	// A lost lease or a refused seq is not a derived-state failure: the
+	// session is failed exactly as appendLocked does, so it is never
+	// published as healthy. Flush fails it on a lost lease itself.
+	switch {
+	case err == nil:
+	case isLeaseLost(err):
+		s.failLocked(err)
+	case errors.Is(err, store.ErrSeqConflict):
+		err = brokenStore(s.id, "the store refused first seq %d: %v", n, err)
+		s.failLocked(err)
+	}
 	s.mu.Unlock()
 	if err == nil {
 		_, err = s.Flush(ctx)
