@@ -76,6 +76,9 @@ func classify(status int, h http.Header, body []byte) (*vocab.Failure, bool) {
 		if code, known := BusinessCodes[e.Error.Type]; known {
 			return transport.Fail(code, "deepseek: %s: %s", e.Error.Type, clip(e.Error.Message)), true
 		}
+		if c, known := StatusCodes[status]; known {
+			return transport.Fail(c, "deepseek: status %d: %s: %s", status, strconvQuote(e.Error.Type), clip(e.Error.Message)), true
+		}
 		return unknown(status, h, strconvQuote(e.Error.Type), body), false
 	}
 	var v vendorBody
