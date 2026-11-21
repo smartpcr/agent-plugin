@@ -1,5 +1,5 @@
-# Stage 7.1 and 7.2 E2E (SQLite driver measurement and atomic appends; session
-# leases and crash recovery) on Azure Pipelines.
+# Stage 7.1 to 7.3 E2E (SQLite driver measurement and atomic appends; session
+# leases and crash recovery; export, import, follow and store repair) on Azure Pipelines.
 # Mirrors .github/workflows/e2e-sqlite-store-leases-and-recovery.yml: a gating
 # job on Microsoft-hosted agents for Linux, macOS and Windows (service:sqlite is
 # embedded; no DSN, no secrets) and a non-gating compose job on ubuntu-latest.

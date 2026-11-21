@@ -25,3 +25,13 @@ func E2EStaleWriter(ctx context.Context, s *Store, id, holder string, epoch uint
 	}
 	return &writer{reader: reader{s: s, id: id, uid: r.uid, header: r.sum.Header}, epoch: epoch, holder: holder}, nil
 }
+
+// E2ESetAfterDeleteChunk installs the crash-injection hook of DH-T-STORE-11 (run
+// after each committed chunk of a deletion with the events removed so far) and
+// returns the restore. Only the e2e build has it; the package's own tests use
+// SetAfterDeleteChunk (export_test.go).
+func E2ESetAfterDeleteChunk(fn func(id string, deleted int64)) func() {
+	old := afterDeleteChunk
+	afterDeleteChunk = fn
+	return func() { afterDeleteChunk = old }
+}
