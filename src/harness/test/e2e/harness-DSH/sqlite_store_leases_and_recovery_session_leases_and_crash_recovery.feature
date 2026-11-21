@@ -11,6 +11,7 @@ Feature: Session leases and crash recovery
   t.TempDir() (or a fresh directory under DSH_E2E_STORE_HOME when the compose
   run mounts one); service:sqlite is the embedded modernc.org/sqlite engine.
 
+  @TC-07 @DH-T-STORE-6 @proof:service:sqlite @proof:os-process
   Scenario: Second writer refused across processes
     Given process A holding the lease on session "S" in a temp home
     When process B opens "S" for writing
@@ -19,6 +20,7 @@ Feature: Session leases and crash recovery
     And the log of "S" contains only A's events
     And A still appends to "S"
 
+  @TC-07 @DH-T-STORE-7 @proof:service:sqlite @proof:os-process
   Scenario: Dead holder taken over safely
     Given process A holding the lease on session "S" in a temp home
     And process B has opened the store while A lives
@@ -30,6 +32,7 @@ Feature: Session leases and crash recovery
     And the log of "S" still holds 3 events
     And B appends to "S"
 
+  @TC-07 @DH-T-STORE-8 @proof:service:sqlite @proof:os-process
   Scenario: Crash between append and flush recovers honestly
     Given a child that appends turn/start, step/start and a tool call then exits before flush
     When the store is reopened for write
@@ -40,6 +43,7 @@ Feature: Session leases and crash recovery
     And the tool call has an interrupted result
     And every persisted row is durable
 
+  @SP-8 @DH-T-STORE-9 @proof:service:sqlite
   Scenario: Failed flush blocks the tool body
     Given a store whose flush returns an injected error
     When a checkpoint precedes a tool body
