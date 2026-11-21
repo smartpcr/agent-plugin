@@ -112,6 +112,8 @@ type sdmaState struct {
 	passed    map[string]map[string]bool // provider -> case -> passed
 	notWAL    []string
 	sqliteDBs int
+	dbPaths   map[string]string // dsh.db path -> first case that opened it
+	dupPaths  []string
 	ranSuite  bool
 
 	// atomic
@@ -170,6 +172,14 @@ func (s *sdmaState) sqliteFactory(t *testing.T) store.Store {
 	st := sdmaOpen(t, path)
 	s.mu.Lock()
 	s.sqliteDBs++
+	if s.dbPaths == nil {
+		s.dbPaths = map[string]string{}
+	}
+	if first, seen := s.dbPaths[path]; seen {
+		s.dupPaths = append(s.dupPaths, fmt.Sprintf("%s reused by %s (first opened by %s)", path, t.Name(), first))
+	} else {
+		s.dbPaths[path] = t.Name()
+	}
 	s.mu.Unlock()
 	return st
 }
@@ -217,6 +227,12 @@ func (s *sdmaState) sqlitePassesWhatMemstorePasses() error {
 func (s *sdmaState) everyCaseOwnWAL() error {
 	if s.sqliteDBs != len(s.passed["sqlite"]) || s.sqliteDBs == 0 {
 		return fmt.Errorf("opened %d SQLite stores for %d cases", s.sqliteDBs, len(s.passed["sqlite"]))
+	}
+	if len(s.dupPaths) > 0 {
+		return fmt.Errorf("SQLite cases shared a dsh.db: %v", s.dupPaths)
+	}
+	if len(s.dbPaths) != s.sqliteDBs {
+		return fmt.Errorf("opened %d SQLite stores but only %d distinct dsh.db paths", s.sqliteDBs, len(s.dbPaths))
 	}
 	if len(s.notWAL) > 0 {
 		return fmt.Errorf("databases not in WAL mode: %v", s.notWAL)
