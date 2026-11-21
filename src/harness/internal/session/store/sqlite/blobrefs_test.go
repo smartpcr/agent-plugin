@@ -98,7 +98,7 @@ func TestBlobRefsFollowAppendForkAndDelete(t *testing.T) {
 	}
 }
 
-// A database written before blob_refs existed (layout 2) gets the rows of its
+// A database written before blob_refs existed (layout 4) gets the rows of its
 // logged spill references when it is opened by this build.
 func TestBlobRefsBackfilledByTheMigration(t *testing.T) {
 	path := dbPath(t)
@@ -113,7 +113,7 @@ func TestBlobRefsBackfilledByTheMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	db := fresh(t, path)
-	for _, q := range []string{`DROP TABLE blob_refs`, `DROP TABLE lineage`, `PRAGMA user_version = 2`} {
+	for _, q := range []string{`DROP TABLE blob_refs`, `DROP TABLE lineage`, `PRAGMA user_version = 4`} {
 		if _, err := db.Exec(q); err != nil {
 			t.Fatal(err)
 		}

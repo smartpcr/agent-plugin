@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/cucumber/godog"
 
@@ -227,8 +228,27 @@ func (s *ssaState) theLoggedToolResultHoldsABoundedHeadAndTheReference(bound int
 		return fmt.Errorf("logged spill %+v, want %+v", s.logged.Spill, s.ref)
 	}
 	blocks := s.logged.Message.Blocks()
-	if len(blocks) != 1 {
-		return fmt.Errorf("logged result has %d blocks", len(blocks))
+	if len(blocks) != 1 || blocks[0].ToolResult == nil {
+		return fmt.Errorf("logged result has %d blocks, want one tool_result", len(blocks))
+	}
+	var persisted strings.Builder
+	for _, p := range blocks[0].ToolResult.Parts {
+		if p.Text == nil {
+			return errors.New("logged tool result has a non-text part")
+		}
+		persisted.WriteString(p.Text.Text)
+	}
+	// The persisted head itself: within the bound, the exact prefix Save
+	// returned, and not the full text.
+	got := persisted.String()
+	if len(got) > bound {
+		return fmt.Errorf("persisted head is %d bytes, bound %d", len(got), bound)
+	}
+	if got != string(s.head) || !bytes.HasPrefix(s.full, []byte(got)) {
+		return fmt.Errorf("persisted head (%d bytes) is not the %d-byte prefix returned by Save", len(got), len(s.head))
+	}
+	if !utf8.ValidString(got) || len(got) < bound-utf8.UTFMax {
+		return fmt.Errorf("persisted head of %d bytes is not the longest rune-aligned prefix within %d", len(got), bound)
 	}
 	if dir, _, err := spill.ParseID(s.ref.Path); err != nil || dir != sqlite.SpillName(s.sessionID) {
 		return fmt.Errorf("owner dir %q (%v), the session store removes %q", dir, err, sqlite.SpillName(s.sessionID))
@@ -360,10 +380,11 @@ func (s *ssaState) theSpillFilesPermissionsAreInspected() error {
 func (s *ssaState) theFileAndItsSpillDirectoriesArePrivate() error {
 	dirs := []string{filepath.Dir(s.spillFile), s.home.Spill()}
 	if runtime.GOOS == "windows" {
-		// Protected DACL whose only ACEs are owner, SYSTEM and Administrators,
-		// read back with GetNamedSecurityInfo.
+		// Protected DACL whose only ACEs are the owner SID, SYSTEM and
+		// Administrators (no other SID, not even the process user when it is
+		// not the owner), read back with GetNamedSecurityInfo.
 		for _, p := range append([]string{s.spillFile}, dirs...) {
-			if err := lfhsAssertPrivate(p); err != nil {
+			if err := ssaAssertOwnerOnly(p); err != nil {
 				return err
 			}
 		}
