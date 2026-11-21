@@ -202,12 +202,15 @@ func (s *Store) Open(ctx context.Context, caller, id string) (io.ReadSeekCloser,
 
 // owns checks that caller is the owner of dir or descends from it by forks: by
 // its recorded ancestry when the lineage keeps one (so a fork whose parent was
-// deleted still reads what it inherited from a grandparent), else by walking
-// the parents.
+// deleted still reads what it inherited from a grandparent), and by walking the
+// parents' headers. Either answer suffices; the recorded ancestry is not taken
+// as complete, so a chain whose record misses a link (an older or imported
+// session) is still judged by its headers.
 func (s *Store) owns(ctx context.Context, caller, dir string) error {
 	if spill.OwnerDir(caller) == dir {
 		return nil
 	}
+	recorded := false
 	if a, ok := s.lineage.(Ancestry); ok {
 		ancestors, err := a.Ancestors(ctx, caller)
 		if err != nil {
@@ -218,9 +221,7 @@ func (s *Store) owns(ctx context.Context, caller, dir string) error {
 				return nil
 			}
 		}
-		if len(ancestors) > 0 {
-			return notOwner(caller)
-		}
+		recorded = len(ancestors) > 0
 	}
 	id := caller
 	for range maxLineage {
@@ -232,6 +233,10 @@ func (s *Store) owns(ctx context.Context, caller, dir string) error {
 		}
 		parent, err := s.lineage.Parent(ctx, id)
 		if err != nil {
+			if recorded {
+				// The walk ends at a deleted ancestor the record already covered.
+				break
+			}
 			return fmt.Errorf("spill: the lineage of %q: %w", id, err)
 		}
 		if parent == "" {

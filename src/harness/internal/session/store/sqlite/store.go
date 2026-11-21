@@ -100,13 +100,7 @@ func (s *Store) Create(ctx context.Context, h store.Header, o store.CreateOption
 				SELECT ?, seq, ref FROM blob_refs WHERE session = ? AND seq <= ?`, uid, parent.uid, int64(through)); err != nil {
 				return err
 			}
-			// The fork's ancestry is its parent and the parent's, kept for the
-			// fork alone, so deleting an intermediate session does not cut it.
-			if _, err = tx.ExecContext(ctx, `INSERT INTO lineage (session, depth, ancestor) VALUES (?, 1, ?)`, uid, fork.ID); err != nil {
-				return err
-			}
-			_, err = tx.ExecContext(ctx, `INSERT INTO lineage (session, depth, ancestor)
-				SELECT ?, depth + 1, ancestor FROM lineage WHERE session = ? AND depth < 256`, uid, parent.uid)
+			err = recordLineage(ctx, tx, uid, fork.ID)
 		}
 		return err
 	})
@@ -118,6 +112,25 @@ func (s *Store) Create(ctx context.Context, h store.Header, o store.CreateOption
 	w := &writer{reader: reader{s: s, id: h.ID, uid: uid, header: h}, epoch: 1, holder: s.instance}
 	s.register(w)
 	return w, nil
+}
+
+// recordLineage writes the ancestry of the session row uid whose fork source is
+// source: source itself, then source's own recorded ancestry when this home
+// holds source. Every path that inserts a session row with a fork source (a
+// fork, an import, a seed) calls it, so the ancestry is kept for the session
+// alone and survives the deletion of any ancestor (the spill store authorizes
+// a fork's reads by it). No source, no rows.
+func recordLineage(ctx context.Context, tx *sql.Tx, uid int64, source string) error {
+	if source == "" {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO lineage (session, depth, ancestor) VALUES (?, 1, ?)`, uid, source); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO lineage (session, depth, ancestor)
+		SELECT ?, l.depth + 1, l.ancestor FROM lineage l JOIN sessions s ON s.uid = l.session
+		WHERE s.id = ? AND s.uid <> ? AND l.depth < 256`, uid, source, uid)
+	return err
 }
 
 // absent refuses an id an active session holds.
@@ -357,6 +370,9 @@ func (s *Store) Seed(ctx context.Context, h store.Header, recs []store.Record) e
 		}
 		uid, err := res.LastInsertId()
 		if err != nil {
+			return err
+		}
+		if err := recordLineage(ctx, tx, uid, h.ForkSource); err != nil {
 			return err
 		}
 		size, err := insertRecords(ctx, tx, s.reg, uid, recs)

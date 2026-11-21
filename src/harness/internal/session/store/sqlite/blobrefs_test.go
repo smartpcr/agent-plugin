@@ -367,3 +367,80 @@ func TestDeletionNeverFollowsAPlantedSpillLink(t *testing.T) {
 		t.Fatalf("the file outside the spill directory: %q, %v; want it untouched", b, err)
 	}
 }
+
+// An imported fork keeps its ancestry: export p's fork f, import it as f2, fork
+// g from f2. f2 and g read p's inherited spill file, before and after p and f
+// are deleted and the home reopened (the import records f2's lineage from its
+// header, completed by p's record; g's is f2's plus f2).
+func TestImportedForkReadsInheritedSpillAfterAncestorsAreDeleted(t *testing.T) {
+	l, s, _, early, _, full := forkedSpill(t)
+	var exp bytes.Buffer
+	if err := s.Export(bg, &exp, "f", sqlite.ExportOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Import(bg, &exp, sqlite.ImportOptions{NewID: "f2"}); err != nil {
+		t.Fatal(err)
+	}
+	g, err := s.Create(bg, store.Header{ID: "g"}, store.CreateOptions{ForkOf: &store.ForkOf{ID: "f2", Through: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Close(bg); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.Ancestors(bg, "g"); err != nil || len(got) != 2 || got[0] != "f2" || got[1] != "p" {
+		t.Fatalf("Ancestors(g) = %v, %v; want [f2 p]", got, err)
+	}
+	reads := func(st *sqlite.Store, when string) {
+		t.Helper()
+		sp, err := local.New(l, local.DefaultConfig, local.WithLineage(local.ForkLineage(st)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, id := range []string{"f2", "g"} {
+			if got := readSpill(t, sp, id, early); !bytes.Equal(got, full) {
+				t.Fatalf("%s: %s read %d bytes, want %d", when, id, len(got), len(full))
+			}
+		}
+	}
+	reads(s, "before the deletions")
+	for _, id := range []string{"p", "f"} {
+		if err := s.Delete(bg, id, store.DeleteOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Close(bg); err != nil {
+		t.Fatal(err)
+	}
+	r, err := sqlite.OpenHome(bg, l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close(bg)
+	reads(r, "after p and f were deleted and the home reopened")
+}
+
+// A session whose recorded lineage misses a link (here: rows removed, as for a
+// row written before layout 4 by a path that recorded none) is still judged by
+// its header chain while that chain is intact.
+func TestIncompleteRecordedLineageFallsBackToTheHeaders(t *testing.T) {
+	l, s, _, early, _, full := forkedSpill(t)
+	defer s.Close(bg)
+	g, err := s.Create(bg, store.Header{ID: "g"}, store.CreateOptions{ForkOf: &store.ForkOf{ID: "f", Through: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Close(bg); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fresh(t, l.DB()).Exec(`DELETE FROM lineage WHERE depth > 1`); err != nil {
+		t.Fatal(err)
+	}
+	sp, err := local.New(l, local.DefaultConfig, local.WithLineage(local.ForkLineage(s)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readSpill(t, sp, "g", early); !bytes.Equal(got, full) {
+		t.Fatal("an incomplete record refused a read the header chain allows")
+	}
+}

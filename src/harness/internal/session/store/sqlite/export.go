@@ -243,6 +243,11 @@ func (s *Store) Import(ctx context.Context, r io.Reader, o ImportOptions) (store
 		if err != nil {
 			return err
 		}
+		// The imported fork keeps the ancestry its header names, completed by
+		// this home's record of that ancestor when it holds one.
+		if err := recordLineage(ctx, tx, uid, h.ForkSource); err != nil {
+			return err
+		}
 		size, err := insertRecords(ctx, tx, s.reg, uid, recs)
 		if err != nil {
 			return err
