@@ -1,4 +1,5 @@
-# Stage 7.1 E2E (SQLite driver measurement and atomic appends) on Azure Pipelines.
+# Stage 7.1 and 7.2 E2E (SQLite driver measurement and atomic appends; session
+# leases and crash recovery) on Azure Pipelines.
 # Mirrors .github/workflows/e2e-sqlite-store-leases-and-recovery.yml: a gating
 # job on Microsoft-hosted agents for Linux, macOS and Windows (service:sqlite is
 # embedded; no DSN, no secrets) and a non-gating compose job on ubuntu-latest.
@@ -44,7 +45,7 @@ jobs:
       - bash: |
           set -o pipefail
           go -C src/harness test -tags e2e -count=1 -v \
-            -run TestE2E_sqlite_store_leases_and_recovery_sqlite_driver_measurement_and_atomic_appends \
+            -run '^TestE2E_sqlite_store_leases_and_recovery_' \
             ./test/e2e/harness-DSH/ 2>&1 | tee e2e.log
           if grep -q -- '--- SKIP' e2e.log; then echo "a required scenario skipped"; exit 1; fi
         displayName: Godog scenarios
