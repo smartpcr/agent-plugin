@@ -3,10 +3,16 @@ package main
 import (
 	"bytes"
 	"context"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/smartpcr/agent-plugin/tools/harness-gate/acceptance"
 )
 
 // TestAuthoredScenariosAreIndexedAndCompileButDoNotRun: on the repository, the
@@ -42,6 +48,37 @@ func TestAuthoredScenariosAreIndexedAndCompileButDoNotRun(t *testing.T) {
 	}
 	if _, ok := files["DH-E-TOOLCHAIN-1"]; ok {
 		t.Errorf("DH-E-TOOLCHAIN-1 has a file before DH-S-11: %v", files)
+	}
+	// DH-S-9's scenarios are authored ahead of the loop and titles they exercise:
+	// one file each, indexed under DH-S-17 with requires [DH-S-11, DH-S-16], and
+	// the files and the helpers they call import only the product boundary.
+	for id, file := range map[string]string{
+		"DH-E-LLM-1":  "llm_turn_scenario_test.go:TestTurnWithReasoningAndToolCall",
+		"DH-E-LLM-3":  "llm_bad_key_scenario_test.go:TestBadKeyIsAFact",
+		"DH-E-VIEW-1": "view_title_scenario_test.go:TestModelTitlesSession",
+	} {
+		if files[id] != "src/harness/internal/testkit/scenarios/"+file {
+			t.Errorf("%s file = %q, want %s", id, files[id], file)
+		}
+		if where[id] != "DH-S-17 authored DH-S-9" {
+			t.Errorf("%s index entry = %q", id, where[id])
+		}
+		if s, _ := x.Stage("DH-S-17"); !slices.ContainsFunc(s.Scenarios, func(e acceptance.Entry) bool {
+			return e.ID == id && slices.Equal(e.Requires, []string{"DH-S-11", "DH-S-16"})
+		}) {
+			t.Errorf("%s does not require [DH-S-11, DH-S-16]", id)
+		}
+	}
+	for _, helper := range []string{"sdkhost_test.go", "binary_test.go", "realenv_test.go"} {
+		f, err := parser.ParseFile(token.NewFileSet(), filepath.Join(cfg.Root, "src", "harness", "internal", "testkit", "scenarios", helper), nil, parser.ImportsOnly)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, spec := range f.Imports {
+			if path, _ := strconv.Unquote(spec.Path.Value); !acceptance.BoundaryImport(path) {
+				t.Errorf("%s, called by DH-S-9's scenarios, imports %s", helper, path)
+			}
+		}
 	}
 
 	harness := filepath.Join(cfg.Root, "src", "harness")
@@ -139,10 +176,10 @@ func TestRequireSubcommand(t *testing.T) {
 		out   string
 	}{
 		{"DH-S-18", 0, "DH-E-TOOLCHAIN-2,DH-E-CHOKIDAR-1,DH-E-CHOKIDAR-2,DH-E-NODEFS-1,DH-E-RIPGREP-1,DH-E-RIPGREP-2,DH-E-EXEC-1,DH-E-HOST-4\n"},
-		{"DH-S-17", 0, "DH-E-TOOLCHAIN-1,DH-E-LOADER-1\n"},
+		{"DH-S-17", 0, "DH-E-TOOLCHAIN-1,DH-E-LOADER-1,DH-E-LLM-1,DH-E-LLM-3,DH-E-VIEW-1\n"},
 		{"DH-S-21", 0, "DH-E-BOOT-2\n"},
 		{"DH-S-22", 0, "DH-E-BOOT-1\n"},
-		{"DH-S-39", 0, "DH-E-UTIL-1\n"},
+		{"DH-S-39", 0, "DH-E-UTIL-1,DH-E-STORAGE-3\n"},
 		{"DH-S-16", 0, "DH-E-STORE-1,DH-E-STORE-2,DH-E-STORE-6\n"},
 		{"DH-S-35", 0, "DH-E-STORE-5\n"},
 		{"", 0, "\n"},

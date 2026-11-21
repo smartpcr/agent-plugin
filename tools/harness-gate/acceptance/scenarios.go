@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -214,6 +215,58 @@ func Check(x *Index, scenarios []Scenario) error {
 	return errors.Join(errs...)
 }
 
+// The import paths a scenario authored ahead of the stages it requires may use:
+// the standard library, the client-facing SDK and the test kit's scenario
+// launcher. Such a scenario asserts behaviour that does not exist yet; reaching
+// into the product's internal packages would let it substitute that behaviour
+// (a title, a loop) for what the product boundary returns.
+const (
+	productModule  = "github.com/smartpcr/agent-plugin/"
+	sdkPrefix      = productModule + "src/sdk/"
+	launcherImport = productModule + "src/harness/internal/testkit/launcher"
+)
+
+// BoundaryImport reports whether a scenario with a requires list may import path.
+func BoundaryImport(path string) bool {
+	first, _, _ := strings.Cut(path, "/")
+	return !strings.Contains(first, ".") || strings.HasPrefix(path, sdkPrefix) || path == launcherImport
+}
+
+// CheckBoundary reads, under root, the file of every authored scenario whose index
+// entry has a requires list, and fails for each import BoundaryImport refuses.
+func CheckBoundary(root string, x *Index, scenarios []Scenario) error {
+	gated := map[string]bool{}
+	for _, s := range x.Stages {
+		for _, e := range s.Scenarios {
+			if len(e.Requires) > 0 {
+				gated[e.ID] = true
+			}
+		}
+	}
+	var errs []error
+	for _, s := range scenarios {
+		if !gated[s.ID] {
+			continue
+		}
+		f, err := parser.ParseFile(token.NewFileSet(), filepath.Join(root, filepath.FromSlash(s.File)), nil, parser.ImportsOnly)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		for _, spec := range f.Imports {
+			path, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("%s: %w", s.File, err))
+				continue
+			}
+			if !BoundaryImport(path) {
+				errs = append(errs, fmt.Errorf("%s (%s) imports %s: a scenario authored ahead of the stages it requires imports only the standard library, src/sdk/... and the test kit's launcher", s.ID, s.File, path))
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // Environment variables the preflight reads.
 const (
 	SecretEnv  = "DSH_DEEPSEEK_API_KEY"
@@ -254,7 +307,8 @@ func SplitRequired(v string) []string {
 // Preflight decides, from the environment env alone, whether the credentialed
 // scenario workflow may start (DH-ADR-TOOLCHAIN-6, -12): the secret must be set,
 // the index must agree with the authored scenarios, and every ID of
-// DSH_REQUIRE_SCENARIOS must have its scenario test. On any failure the plan is
+// DSH_REQUIRE_SCENARIOS must have its scenario test and every stage its index
+// entry requires must be built. On any failure the plan is
 // empty, so no scenario is started; every reason is named. An empty required list
 // passes with an empty plan.
 func Preflight(env map[string]string, x *Index, scenarios []Scenario) (Plan, error) {
@@ -273,6 +327,10 @@ func Preflight(env map[string]string, x *Index, scenarios []Scenario) (Plan, err
 			continue
 		}
 		if !slices.ContainsFunc(plan.Scenarios, func(s Scenario) bool { return s.ID == id }) {
+			if err := requiresBuilt(x, id); err != nil {
+				errs = append(errs, err)
+				continue
+			}
 			plan.Scenarios = append(plan.Scenarios, scenarios[i])
 		}
 	}
@@ -280,6 +338,29 @@ func Preflight(env map[string]string, x *Index, scenarios []Scenario) (Plan, err
 		return Plan{}, err
 	}
 	return plan, nil
+}
+
+// requiresBuilt fails when the index entry of scenario id requires a stage after
+// the index's built-through: the behaviour the scenario asserts does not exist yet.
+func requiresBuilt(x *Index, id string) error {
+	built, _ := StageNumber(x.BuiltThrough)
+	for _, s := range x.Stages {
+		for _, e := range s.Scenarios {
+			if e.ID != id {
+				continue
+			}
+			var missing []string
+			for _, req := range e.Requires {
+				if n, _ := StageNumber(req); n > built {
+					missing = append(missing, req)
+				}
+			}
+			if len(missing) > 0 {
+				return fmt.Errorf("required scenario %s requires %s, not built (built through %s)", id, strings.Join(missing, ", "), x.BuiltThrough)
+			}
+		}
+	}
+	return nil
 }
 
 // Environ turns "KEY=value" pairs into the map Preflight reads.

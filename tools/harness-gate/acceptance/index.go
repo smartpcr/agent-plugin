@@ -10,6 +10,9 @@
 //	  DH-S-17:
 //	    - id: DH-E-TOOLCHAIN-1
 //	      authored: DH-S-11
+//	    - id: DH-E-LLM-3
+//	      authored: DH-S-9
+//	      requires: [DH-S-11, DH-S-16]
 //	  DH-S-18:
 //	    - id: DH-E-TOOLCHAIN-2
 //	      authored: DH-S-1
@@ -28,6 +31,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -40,10 +44,12 @@ var (
 	scenarioPattern = regexp.MustCompile(`^DH-E-[A-Z][A-Z0-9]*-[1-9][0-9]*$`)
 )
 
-// Entry is one indexed scenario: its ID and the stage that authors its test.
+// Entry is one indexed scenario: its ID, the stage that authors its test, and the
+// stages that must be built before it runs (none for most entries).
 type Entry struct {
 	ID       string
 	Authored string
+	Requires []string
 }
 
 // Stage is one executing stage of the index and the scenarios it runs.
@@ -194,6 +200,15 @@ func ParseIndex(r io.Reader) (*Index, error) {
 				return nil, fmt.Errorf("line %d: authored %q is not a stage ID (DH-S-n)", lineNo, value)
 			}
 			entry.Authored = value
+		case indent == 6 && entry != nil && key == "requires" && hasColon:
+			if entry.Requires != nil {
+				return nil, fmt.Errorf("line %d: %s has two requires lists", lineNo, entry.ID)
+			}
+			req, err := parseRequires(stage.ID, value)
+			if err != nil {
+				return nil, fmt.Errorf("line %d: %s: %w", lineNo, entry.ID, err)
+			}
+			entry.Requires = req
 		default:
 			return nil, fmt.Errorf("line %d: unexpected %q", lineNo, trimmed)
 		}
@@ -211,4 +226,31 @@ func ParseIndex(r io.Reader) (*Index, error) {
 		return nil, fmt.Errorf("no stages")
 	}
 	return x, nil
+}
+
+// parseRequires parses a requires value, a non-empty flow list of distinct stage
+// IDs none of which comes after the executing stage.
+func parseRequires(executing, value string) ([]string, error) {
+	inner, open := strings.CutPrefix(value, "[")
+	inner, closed := strings.CutSuffix(inner, "]")
+	if !open || !closed || strings.TrimSpace(inner) == "" {
+		return nil, fmt.Errorf("requires %q is not a non-empty list [DH-S-n, ...]", value)
+	}
+	last, _ := StageNumber(executing)
+	var out []string
+	for _, item := range strings.Split(inner, ",") {
+		item = strings.TrimSpace(item)
+		n, ok := StageNumber(item)
+		if !ok {
+			return nil, fmt.Errorf("requires %q is not a stage ID (DH-S-n)", item)
+		}
+		if n > last {
+			return nil, fmt.Errorf("requires %s, after its executing stage %s", item, executing)
+		}
+		if slices.Contains(out, item) {
+			return nil, fmt.Errorf("requires %s twice", item)
+		}
+		out = append(out, item)
+	}
+	return out, nil
 }

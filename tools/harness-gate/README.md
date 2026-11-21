@@ -54,15 +54,19 @@ GOWORK=off go -C tools/harness-gate run . preflight --root ../..
   scenario workflow uses it to derive `DSH_REQUIRE_SCENARIOS`.
 - `preflight` (DH-ADR-TOOLCHAIN-6, -12) reads `DSH_DEEPSEEK_API_KEY` and
   `DSH_REQUIRE_SCENARIOS` from the environment and fails -- starting nothing --
-  when the key is absent or blank, when a required ID has no scenario test, or when
-  the `scenario-index` check fails. On success it appends `count=`, `run=` (a
+  when the key is absent or blank, when a required ID has no scenario test, when a
+  required ID's index entry `requires` a stage past `built-through`, or when the
+  `scenario-index` check fails. On success it appends `count=`, `run=` (a
   `go test -run` expression) and `tests=` to `$GITHUB_OUTPUT`.
 
 ## Acceptance index (`test/harness/acceptance-index.yaml`)
 
 Keyed by executing stage; each entry lists the authored `DH-E-*` IDs with their
 authoring stage. `built-through` is the last closed story: IDs authored at or
-before it must have a file. Scenario files bind an ID to a test with a
+before it must have a file. An optional `requires` list names the stages whose
+behaviour a scenario authored ahead of them exercises; `preflight` refuses to run
+it until `built-through` reaches every one, and none may come after the executing
+stage. Scenario files bind an ID to a test with a
 `//dsh:scenario <ID>` line in the doc comment of a top-level `TestXxx`. The parser
 (`acceptance/`) accepts only this shape, so no YAML dependency is needed:
 
@@ -70,6 +74,10 @@ before it must have a file. Scenario files bind an ID to a test with a
 built-through: DH-S-1
 stages:
   DH-S-16: []
+  DH-S-17:
+    - id: DH-E-LLM-3
+      authored: DH-S-9
+      requires: [DH-S-11, DH-S-16]
   DH-S-18:
     - id: DH-E-TOOLCHAIN-2
       authored: DH-S-1

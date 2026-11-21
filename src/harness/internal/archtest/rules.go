@@ -78,7 +78,7 @@ var Rules = []Rule{
 	{HarnessModule, "internal/session/surface imports no harness package but event, vocab and schema (DH-D-SESSION-3)", importsOnly(SurfacePackage, EventPackage, VocabPackage, SchemaPackage)},
 	{HarnessModule, "nothing outside internal/agent/driver imports it (DH-T-AGENT-27)", onlyImporter(DriverPackage, DriverPackage)},
 	{HarnessModule, "internal/session and its packages import no llm runtime, agent or interaction registry (DH-D-LLM-1, DH-D-AGENT-1)", importsNone(SessionPackage, LLMPackage, AgentPackage, HumanPackage)},
-	{HarnessModule, "internal/llm imports no agent, interaction or view package: the runtime holds no session writer (DH-D-LLM-1)", importsNone(LLMPackage, AgentPackage, HumanPackage, ViewsPackage)},
+	{HarnessModule, "internal/llm imports no agent, interaction or view package: the runtime holds no session writer (DH-D-LLM-1); only the retry listener sits on the driver's failed-attempt point (DH-D-LLM-3) and only the meter registers its folds (DH-D-LLM-6)", importsNoneExcept(LLMPackage, map[string]string{LLMRetryPackage: AgentPackage, LLMMeterPackage: ViewsPackage}, AgentPackage, HumanPackage, ViewsPackage)},
 	{HarnessModule, "only internal/world/subprocess imports os/exec: the one place a program starts (DH-D-EXEC-1, onespawn)", onlyImporter(ExecPackage, SubprocessPackage)},
 	{HarnessModule, "no non-test package imports subprocesstest (DH-D-EXEC-1)", noImporter(SubprocesstestPackage)},
 	{HarnessModule, "internal/util/herr and internal/util/ident import the standard library only (RM-6, DH-D-UTIL-5)", stdlibOnly(HerrPackage, IdentPackage)},
@@ -104,6 +104,8 @@ const (
 	SessionPackage   = HarnessModule + "/internal/session"
 	ViewsPackage     = SessionPackage + "/views"
 	LLMPackage       = HarnessModule + "/internal/llm"
+	LLMRetryPackage  = LLMPackage + "/retry"
+	LLMMeterPackage  = LLMPackage + "/meter"
 	AgentPackage     = HarnessModule + "/internal/agent"
 	DriverPackage    = AgentPackage + "/driver"
 	HumanPackage     = HarnessModule + "/internal/human"
@@ -173,6 +175,25 @@ func importsNone(under string, forbidden ...string) func([]Package) []string {
 			}
 			for _, imp := range p.Imports {
 				if slices.Contains(forbidden, imp) {
+					bad = append(bad, fmt.Sprintf("%s imports %s", p.ImportPath, imp))
+				}
+			}
+		}
+		return bad
+	}
+}
+
+// importsNoneExcept is importsNone with one named edge allowed per package: a
+// package listed in allowed may import the one forbidden package it maps to.
+func importsNoneExcept(under string, allowed map[string]string, forbidden ...string) func([]Package) []string {
+	return func(pkgs []Package) []string {
+		var bad []string
+		for _, p := range pkgs {
+			if !within(p.ImportPath, under) {
+				continue
+			}
+			for _, imp := range p.Imports {
+				if slices.Contains(forbidden, imp) && allowed[p.ImportPath] != imp {
 					bad = append(bad, fmt.Sprintf("%s imports %s", p.ImportPath, imp))
 				}
 			}

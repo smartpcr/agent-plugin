@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"math/rand/v2"
 	"slices"
 	"sync/atomic"
 	"time"
@@ -17,11 +18,23 @@ import (
 type Option func(*Runtime)
 
 // WithClock sets the clock attempt timings are read from, in Unix milliseconds.
+// Complete also measures a persistent retry policy's elapsed time on it.
 func WithClock(clock func() int64) Option { return func(rt *Runtime) { rt.clock = clock } }
+
+// WithTimer sets the timer Complete waits on between attempts (time.After by
+// default); a test passes a virtual clock's After.
+func WithTimer(after func(time.Duration) <-chan time.Time) Option {
+	return func(rt *Runtime) { rt.after = after }
+}
+
+// WithJitter sets the source of a retry's jitter draw, in [0, 1); the default is
+// math/rand. A constant 0.5 makes the backoff exact.
+func WithJitter(draw func() float64) Option { return func(rt *Runtime) { rt.jitter = draw } }
 
 // New is a runtime with no routes.
 func New(opts ...Option) *Runtime {
-	rt := &Runtime{routes: map[vocab.RouteID]*entry{}, clock: func() int64 { return time.Now().UnixMilli() }}
+	rt := &Runtime{routes: map[vocab.RouteID]*entry{}, clock: func() int64 { return time.Now().UnixMilli() },
+		after: time.After, jitter: rand.Float64}
 	for _, o := range opts {
 		o(rt)
 	}
@@ -48,6 +61,9 @@ type Prepared interface {
 	Model() string
 	// Config is the effective controls, the adapter's defaults materialised.
 	Config() vocab.CallConfig
+	// Retry is the route's retry policy captured with the call, its defaults
+	// filled; a later Replace does not reach it.
+	Retry() RetryPolicy
 	// Stream runs the call's one attempt; a prepared call is single-use, so a
 	// second Stream (sequential or concurrent) is refused with
 	// llm/invalid-request before any provider I/O, as is a request whose
@@ -72,6 +88,7 @@ type prepared struct {
 
 func (p *prepared) Route() vocab.RouteID { return p.route.ID }
 func (p *prepared) Model() string        { return p.model }
+func (p *prepared) Retry() RetryPolicy   { return p.route.Retry.Normalised() }
 func (p *prepared) Config() vocab.CallConfig {
 	return vocab.CallConfig{Controls: p.cfg.Controls.Clone(), Defaulted: slices.Clone(p.cfg.Defaulted)}
 }
@@ -167,13 +184,19 @@ func materialise(c, d vocab.Controls) vocab.CallConfig {
 	return vocab.CallConfig{Controls: c, Defaulted: defaulted}
 }
 
-// Complete is the buffered auxiliary call: one attempt on the request's route
-// and its default model, with the request's controls. req must be an auxiliary
-// request (from Session.RequestFrom); sink receives the one attempt record so the
-// caller logs it, attributed by requestAsOf, requestDigest and the purpose in
-// req.Meta(). The message is returned only when the attempt succeeded; a failed
-// attempt returns its *vocab.Failure, and a sink error is returned as itself,
-// never as an llm failure. Bounded retry around it is DH-D-LLM-3.
+// Complete is the buffered auxiliary call on the request's route and its default
+// model, with the request's controls, under the route's retry policy
+// (DH-D-LLM-3): a Transient failure is tried again on the same route after the
+// policy's wait, a Retry-After honoured up to its cap; any other failure, an
+// exhausted policy or a cancelled wait ends the call. Nothing else is tried: no
+// other route, model or credential. Each attempt is its own prepared call, and
+// sink receives each attempt's one record so the caller logs it, attributed by
+// requestAsOf, requestDigest and the purpose in req.Meta(); no chunk of any
+// attempt reaches the caller. req must be an auxiliary request (from
+// Session.RequestFrom). The message is returned only when an attempt succeeded;
+// otherwise the last attempt's *vocab.Failure (llm/aborted when the context
+// ended during a wait), and a sink error is returned as itself, never as an llm
+// failure.
 func (rt *Runtime) Complete(ctx context.Context, req session.Request, sink AttemptSink) (vocab.Message, error) {
 	if sink == nil {
 		return vocab.Message{}, errors.New("llm: Complete needs an attempt sink")
@@ -184,10 +207,38 @@ func (rt *Runtime) Complete(ctx context.Context, req session.Request, sink Attem
 	if !req.Meta().Auxiliary() {
 		return vocab.Message{}, failure(vocab.CodeInvalidRequest, "Complete takes an auxiliary request; a loop step streams")
 	}
-	p, err := rt.Prepare(ctx, req.Route(), "", req.Controls())
-	if err != nil {
-		return vocab.Message{}, err
+	start := rt.clock()
+	for attempt := 1; ; attempt++ {
+		p, err := rt.Prepare(ctx, req.Route(), "", req.Controls())
+		if err != nil {
+			return vocab.Message{}, err
+		}
+		rec, err := rt.completeOnce(ctx, p, req, sink)
+		if err != nil {
+			return vocab.Message{}, err
+		}
+		if rec.Succeeded() {
+			return *rec.Message, nil
+		}
+		elapsed := time.Duration(rt.clock()-start) * time.Millisecond
+		wait, stop := p.Retry().Next(rec.Finish.Failure, attempt, elapsed, rt.jitter())
+		if stop != "" {
+			return vocab.Message{}, rec.Finish.Failure
+		}
+		if ctx.Err() != nil {
+			return vocab.Message{}, failure(vocab.CodeAborted, "cancelled before retry %d: %v", attempt, ctx.Err())
+		}
+		select {
+		case <-ctx.Done():
+			return vocab.Message{}, failure(vocab.CodeAborted, "cancelled during the wait before retry %d: %v", attempt, ctx.Err())
+		case <-rt.after(wait):
+		}
 	}
+}
+
+// completeOnce runs p's one attempt buffered and returns its record once sink
+// has it.
+func (rt *Runtime) completeOnce(ctx context.Context, p Prepared, req session.Request, sink AttemptSink) (Attempt, error) {
 	var (
 		rec     Attempt
 		settled bool
@@ -202,11 +253,9 @@ func (rt *Runtime) Complete(ctx context.Context, req session.Request, sink Attem
 	}
 	switch {
 	case !settled:
-		return vocab.Message{}, errors.New("llm: the attempt was not settled")
+		return Attempt{}, errors.New("llm: the attempt was not settled")
 	case sinkErr != nil:
-		return vocab.Message{}, fmt.Errorf("llm: the attempt sink: %w", sinkErr)
-	case !rec.Succeeded():
-		return vocab.Message{}, rec.Finish.Failure
+		return Attempt{}, fmt.Errorf("llm: the attempt sink: %w", sinkErr)
 	}
-	return *rec.Message, nil
+	return rec, nil
 }

@@ -15,6 +15,9 @@ stages:
   DH-S-17:
     - id: DH-E-TOOLCHAIN-1 # trailing comment
       authored: DH-S-11
+    - id: DH-E-LLM-3
+      authored: DH-S-9
+      requires: [DH-S-11, DH-S-16]
   DH-S-18:
     - id: DH-E-TOOLCHAIN-2
       authored: DH-S-1
@@ -36,14 +39,17 @@ func TestParseIndex(t *testing.T) {
 	}
 	want := []Stage{
 		{ID: "DH-S-16"},
-		{ID: "DH-S-17", Scenarios: []Entry{{"DH-E-TOOLCHAIN-1", "DH-S-11"}}},
-		{ID: "DH-S-18", Scenarios: []Entry{{"DH-E-TOOLCHAIN-2", "DH-S-1"}}},
+		{ID: "DH-S-17", Scenarios: []Entry{{ID: "DH-E-TOOLCHAIN-1", Authored: "DH-S-11"}, {ID: "DH-E-LLM-3", Authored: "DH-S-9", Requires: []string{"DH-S-11", "DH-S-16"}}}},
+		{ID: "DH-S-18", Scenarios: []Entry{{ID: "DH-E-TOOLCHAIN-2", Authored: "DH-S-1"}}},
 	}
 	if len(x.Stages) != len(want) {
 		t.Fatalf("stages = %+v", x.Stages)
 	}
+	sameEntry := func(a, b Entry) bool {
+		return a.ID == b.ID && a.Authored == b.Authored && slices.Equal(a.Requires, b.Requires)
+	}
 	for i := range want {
-		if x.Stages[i].ID != want[i].ID || !slices.Equal(x.Stages[i].Scenarios, want[i].Scenarios) {
+		if x.Stages[i].ID != want[i].ID || !slices.EqualFunc(x.Stages[i].Scenarios, want[i].Scenarios, sameEntry) {
 			t.Errorf("stage %d = %+v, want %+v", i, x.Stages[i], want[i])
 		}
 	}
@@ -72,6 +78,12 @@ func TestParseIndexRejects(t *testing.T) {
 		"tab indentation":     {"built-through: DH-S-1\nstages:\n\tDH-S-2: []\n", "tab in indentation"},
 		"bad built-through":   {"built-through: one\nstages:\n", `built-through "one"`},
 		"two authored stages": {"built-through: DH-S-1\nstages:\n  DH-S-2:\n    - id: DH-E-X-1\n      authored: DH-S-1\n      authored: DH-S-1\n", "two authored stages"},
+		"requires not a list": {"built-through: DH-S-1\nstages:\n  DH-S-2:\n    - id: DH-E-X-1\n      authored: DH-S-1\n      requires: DH-S-1\n", "line 6: DH-E-X-1: requires \"DH-S-1\" is not a non-empty list"},
+		"requires empty":      {"built-through: DH-S-1\nstages:\n  DH-S-2:\n    - id: DH-E-X-1\n      authored: DH-S-1\n      requires: []\n", "is not a non-empty list"},
+		"requires bad stage":  {"built-through: DH-S-1\nstages:\n  DH-S-2:\n    - id: DH-E-X-1\n      authored: DH-S-1\n      requires: [S-1]\n", `requires "S-1" is not a stage ID`},
+		"requires later":      {"built-through: DH-S-1\nstages:\n  DH-S-2:\n    - id: DH-E-X-1\n      authored: DH-S-1\n      requires: [DH-S-3]\n", "requires DH-S-3, after its executing stage DH-S-2"},
+		"requires twice":      {"built-through: DH-S-1\nstages:\n  DH-S-2:\n    - id: DH-E-X-1\n      authored: DH-S-1\n      requires: [DH-S-1, DH-S-1]\n", "requires DH-S-1 twice"},
+		"two requires lists":  {"built-through: DH-S-1\nstages:\n  DH-S-2:\n    - id: DH-E-X-1\n      authored: DH-S-1\n      requires: [DH-S-1]\n      requires: [DH-S-2]\n", "two requires lists"},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -239,9 +251,69 @@ func TestPreflight(t *testing.T) {
 			}
 		})
 	}
+	// A scenario authored ahead of the stages it exercises is refused until
+	// built-through reaches every stage its entry requires (DH-S-9's scenarios
+	// require DH-S-11 and DH-S-16 and run at DH-S-17).
+	authored := append(slices.Clone(scenarios),
+		Scenario{ID: "DH-E-TOOLCHAIN-1", File: "s/t_scenario_test.go", Test: "TestToolchain"},
+		Scenario{ID: "DH-E-LLM-3", File: "s/l_scenario_test.go", Test: "TestBadKey"})
+	need := map[string]string{SecretEnv: "k", RequireEnv: "DH-E-TOOLCHAIN-1,DH-E-LLM-3"}
+	early := mustParse(t, strings.Replace(goodIndex, "built-through: DH-S-1", "built-through: DH-S-11", 1))
+	if plan, err := Preflight(need, early, authored); err == nil || !strings.Contains(err.Error(), "required scenario DH-E-LLM-3 requires DH-S-16, not built (built through DH-S-11)") || len(plan.Scenarios) != 0 {
+		t.Errorf("Preflight built through DH-S-11 = %v, %v; want DH-E-LLM-3 refused for DH-S-16 and no plan", plan.Tests(), err)
+	}
+	built := mustParse(t, strings.Replace(goodIndex, "built-through: DH-S-1", "built-through: DH-S-16", 1))
+	if plan, err := Preflight(need, built, authored); err != nil || !slices.Equal(plan.Tests(), []string{"TestToolchain", "TestBadKey"}) {
+		t.Errorf("Preflight built through DH-S-16 = %v, %v; want both planned", plan.Tests(), err)
+	}
 	// The index disagreeing with the scenario tests fails the preflight too.
 	if _, err := Preflight(map[string]string{SecretEnv: "k"}, x, nil); err == nil || !strings.Contains(err.Error(), "DH-E-TOOLCHAIN-2 is indexed under DH-S-18") {
 		t.Errorf("Preflight with the authored file missing = %v", err)
+	}
+}
+
+func TestBoundaryImport(t *testing.T) {
+	for path, want := range map[string]bool{
+		"encoding/json":                                         true,
+		"net/http/httptest":                                     true,
+		productModule + "src/sdk/protocol":                      true,
+		productModule + "src/sdk/jsonrpc":                       true,
+		productModule + "src/harness/internal/testkit/launcher": true,
+		productModule + "src/harness/internal/llm":              false,
+		productModule + "src/harness/internal/agent":            false,
+		productModule + "src/harness/internal/session/views":    false,
+		productModule + "src/harness/internal/testkit":          false,
+		productModule + "src/sdkextra/x":                        false,
+		"golang.org/x/sync/errgroup":                            false,
+	} {
+		if got := BoundaryImport(path); got != want {
+			t.Errorf("BoundaryImport(%s) = %v, want %v", path, got, want)
+		}
+	}
+}
+
+func TestCheckBoundary(t *testing.T) {
+	root := t.TempDir()
+	write := func(name, imports string) Scenario {
+		src := "//go:build scenario\n\npackage s\n\nimport (\n" + imports + ")\n"
+		if err := os.WriteFile(filepath.Join(root, name), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return Scenario{ID: strings.TrimSuffix(name, ".go"), File: name, Test: "TestX"}
+	}
+	clean := write("DH-E-A-1.go", "\t\"testing\"\n\t\""+productModule+"src/sdk/protocol\"\n\t\""+launcherImport+"\"\n")
+	dirty := write("DH-E-A-2.go", "\t\"testing\"\n\t\""+productModule+"src/harness/internal/llm\"\n")
+	free := write("DH-E-A-3.go", "\t\""+productModule+"src/harness/internal/llm\"\n")
+	x := mustParse(t, "built-through: DH-S-1\nstages:\n  DH-S-17:\n"+
+		"    - id: DH-E-A-1\n      authored: DH-S-9\n      requires: [DH-S-16]\n"+
+		"    - id: DH-E-A-2\n      authored: DH-S-9\n      requires: [DH-S-16]\n"+
+		"    - id: DH-E-A-3\n      authored: DH-S-9\n")
+	err := CheckBoundary(root, x, []Scenario{clean, dirty, free})
+	if err == nil || !strings.Contains(err.Error(), "DH-E-A-2 (DH-E-A-2.go) imports "+productModule+"src/harness/internal/llm") {
+		t.Fatalf("CheckBoundary = %v, want DH-E-A-2's internal import named", err)
+	}
+	if strings.Contains(err.Error(), "DH-E-A-1") || strings.Contains(err.Error(), "DH-E-A-3") {
+		t.Errorf("CheckBoundary = %v: a clean file and an entry without requires are not refused", err)
 	}
 }
 
