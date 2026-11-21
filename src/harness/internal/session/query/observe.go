@@ -163,8 +163,10 @@ func (s *Service) Lineage(ctx context.Context, id session.ID) (Lineage, error) {
 	// Prompt order is as of the first page, so a fork prompted during the walk
 	// is not skipped.
 	q := store.Query{Order: store.OrderPrompt}
-	complete := false
-	for examined := 0; examined < s.maxListed && !l.Truncated; {
+	// The fork bound is kept apart from the chain bound so a deep chain still
+	// lists its forks.
+	complete, forksFull := false, false
+	for examined := 0; examined < s.maxListed && !forksFull; {
 		q.Limit = min(listPage, s.maxListed-examined)
 		p, err := s.st.List(ctx, q)
 		if err != nil {
@@ -183,10 +185,13 @@ func (s *Service) Lineage(ctx context.Context, id session.ID) (Lineage, error) {
 				continue
 			}
 			if len(l.Forks) == MaxLineage {
-				l.Truncated = true
+				forksFull = true
 				break
 			}
 			l.Forks = append(l.Forks, session.ID(c.Header.ID))
+		}
+		if forksFull {
+			break
 		}
 		if p.Next == "" {
 			complete = true
@@ -197,9 +202,7 @@ func (s *Service) Lineage(ctx context.Context, id session.ID) (Lineage, error) {
 		}
 		q.Cursor = p.Next
 	}
-	if !complete {
-		l.Truncated = true
-	}
+	l.Truncated = l.Truncated || forksFull || !complete
 	sortIDs(l.Forks)
 	return l, nil
 }
