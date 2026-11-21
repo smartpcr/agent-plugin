@@ -682,7 +682,9 @@ func (s *htkcState) vetExits0() error {
 }
 
 // defaultRunNone lists the tests of every package holding a DH-S-6 scenario: with
-// the default tags none is compiled in; with -tags scenario every one is.
+// the gate's explicit empty tag list (-tags=, as tools/harness-gate noTags, which
+// overrides any GOFLAGS -tags) none is compiled in; with -tags scenario and GOFLAGS
+// cleared every one is.
 func (s *htkcState) defaultRunNone() error {
 	pkgs := map[string]bool{}
 	var tests []string
@@ -697,16 +699,16 @@ func (s *htkcState) defaultRunNone() error {
 	}
 	sort.Strings(list)
 	harness := filepath.Join(s.root, "src", "harness")
-	out, err := htkcCommand(harness, nil, "go", append([]string{"test", "-list", ".", "-count=1"}, list...)...)
+	out, err := htkcCommand(harness, nil, "go", append([]string{"test", "-tags=", "-list", ".", "-count=1"}, list...)...)
 	if err != nil {
-		return fmt.Errorf("go test -list (default tags): %v\n%s", err, out)
+		return fmt.Errorf("go test -tags= -list: %v\n%s", err, out)
 	}
 	for _, name := range tests {
 		if regexp.MustCompile(`(?m)^` + name + `\s*$`).MatchString(out) {
 			return fmt.Errorf("the default run includes %s:\n%s", name, out)
 		}
 	}
-	tagged, err := htkcCommand(harness, nil, "go", append([]string{"test", "-tags", "scenario", "-list", ".", "-count=1"}, list...)...)
+	tagged, err := htkcCommand(harness, []string{"GOFLAGS="}, "go", append([]string{"test", "-tags", "scenario", "-list", ".", "-count=1"}, list...)...)
 	if err != nil {
 		return fmt.Errorf("go test -tags scenario -list: %v\n%s", err, tagged)
 	}
