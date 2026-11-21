@@ -126,8 +126,10 @@ type open struct {
 // BlockStart, deltas and one BlockEnd (authoritative) per text, thinking and
 // tool_use block, then at message_stop the usage and the Finish. Unknown events
 // and block types are skipped. An error event ends the stream with its
-// classified failure, as does a malformed event; a stream that ends before
-// message_stop yields llm/stream-closed. A read error from body is yielded as is.
+// classified failure, as does a malformed event or a message_stop while a block
+// is still open; a stream that ends before message_stop yields llm/stream-closed.
+// A read error from body is yielded as is. Usage already reported is yielded
+// before any of these endings, so a failed attempt keeps its known counters.
 func Decode(body io.Reader, classify ErrorClassifier) iter.Seq2[vocab.Chunk, error] {
 	if classify == nil {
 		classify = ErrorFailure
@@ -152,19 +154,39 @@ func Decode(body io.Reader, classify ErrorClassifier) iter.Seq2[vocab.Chunk, err
 			set(&usage.CacheWrite, u.CacheCreationInputTokens)
 			set(&usage.CacheRead, u.CacheReadInputTokens)
 		}
+		// emitUsage yields the counters reported so far, once; every ending
+		// (finish, failure, read error) passes through it so a failed attempt
+		// still carries the usage it was billed for.
+		usageSent := false
+		emitUsage := func() bool {
+			if !haveUsage || usageSent {
+				return true
+			}
+			usageSent = true
+			u := usage
+			u.Total = u.Input + u.CacheRead + u.CacheWrite + u.Output
+			return yield(vocab.UsageChunk{Usage: u}, nil)
+		}
+		fault := func(err error) {
+			if emitUsage() {
+				yield(nil, err)
+			}
+		}
 		malformed := func(format string, args ...any) {
-			yield(nil, transport.Fail(vocab.CodeMalformedResponse, format, args...))
+			fault(transport.Fail(vocab.CodeMalformedResponse, format, args...))
 		}
 		for ev, err := range transport.Events(body) {
 			if err != nil {
-				yield(nil, err)
+				fault(err)
 				return
 			}
 			if ev.Type == "ping" {
 				continue
 			}
 			if ev.Type == "error" {
-				yield(vocab.Finish{Reason: vocab.FinishError, Failure: classify(0, nil, []byte(ev.Data))}, nil)
+				if emitUsage() {
+					yield(vocab.Finish{Reason: vocab.FinishError, Failure: classify(0, nil, []byte(ev.Data))}, nil)
+				}
 				return
 			}
 			var e eventJSON
@@ -287,18 +309,30 @@ func Decode(body io.Reader, classify ErrorClassifier) iter.Seq2[vocab.Chunk, err
 				}
 				addUsage(e.Usage)
 			case "message_stop":
-				if haveUsage {
-					usage.Total = usage.Input + usage.CacheRead + usage.CacheWrite + usage.Output
-					if !yield(vocab.UsageChunk{Usage: usage}, nil) {
-						return
-					}
+				if len(blocks) > 0 {
+					malformed("anthropic: message_stop with block %d still open", lowest(blocks))
+					return
+				}
+				if !emitUsage() {
+					return
 				}
 				yield(finish(reason), nil)
 				return
 			}
 		}
-		yield(nil, transport.Fail(vocab.CodeStreamClosed, "anthropic: the stream ended before message_stop"))
+		fault(transport.Fail(vocab.CodeStreamClosed, "anthropic: the stream ended before message_stop"))
 	}
+}
+
+func lowest(blocks map[int]*open) int {
+	first := true
+	n := 0
+	for i := range blocks {
+		if first || i < n {
+			n, first = i, false
+		}
+	}
+	return n
 }
 
 func finish(reason string) vocab.Finish {

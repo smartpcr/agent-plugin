@@ -116,8 +116,8 @@ type Response struct {
 	RequestID string
 }
 
-// Post sends r. A non-2xx response is read up to MaxErrorBody, closed and
-// returned as its *vocab.Failure; a request egress refuses is llm/invalid-request
+// Post sends r. A non-2xx response is read up to MaxErrorBody under the same
+// idle bound as a 2xx body, closed and returned as its *vocab.Failure; a request egress refuses is llm/invalid-request
 // naming egress/not-permitted (permanent, never retried); a dial or header-wait
 // failure is llm/transport or llm/timeout. A cancelled ctx returns ctx's error.
 func (t *Transport) Post(ctx context.Context, r Request) (*Response, error) {
@@ -141,16 +141,34 @@ func (t *Transport) Post(ctx context.Context, r Request) (*Response, error) {
 		}
 		return nil, doFailure(err)
 	}
+	body := t.idleBody(resp.Body, cancel, ctx, actx)
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, MaxErrorBody))
-		_ = resp.Body.Close()
-		cancel(nil)
-		return nil, t.classify(r.Classify, resp.StatusCode, resp.Header, body)
+		return nil, t.errorResponse(ctx, r.Classify, resp, body)
 	}
-	body := &idleBody{rc: resp.Body, cancel: cancel, parent: ctx, ctx: actx}
-	body.timer = time.AfterFunc(t.idle, func() { cancel(errIdle) })
-	body.idle = t.idle
 	return &Response{Status: resp.StatusCode, Header: resp.Header, Body: body, RequestID: RequestID(resp.Header)}, nil
+}
+
+func (t *Transport) idleBody(rc io.ReadCloser, cancel context.CancelCauseFunc, parent, ctx context.Context) *idleBody {
+	b := &idleBody{rc: rc, cancel: cancel, parent: parent, ctx: ctx, idle: t.idle}
+	b.timer = time.AfterFunc(t.idle, func() { cancel(errIdle) })
+	return b
+}
+
+// errorResponse reads an unsuccessful response's body under the idle bound and
+// classifies it. The status still decides the failure when the body is cut
+// short (a stalled 401 stays llm/auth); the message then says why. A cancelled
+// ctx returns ctx's error.
+func (t *Transport) errorResponse(ctx context.Context, c Classifier, resp *http.Response, body *idleBody) error {
+	data, rerr := io.ReadAll(io.LimitReader(body, MaxErrorBody))
+	_ = body.Close()
+	if rerr != nil && ctx.Err() != nil {
+		return context.Cause(ctx)
+	}
+	f := t.classify(c, resp.StatusCode, resp.Header, data)
+	if rerr != nil {
+		f.Message += "; the error body was cut short: " + rerr.Error()
+	}
+	return f
 }
 
 func (t *Transport) classify(c Classifier, status int, h http.Header, body []byte) *vocab.Failure {

@@ -129,6 +129,35 @@ func TestPostIdleTimeout(t *testing.T) {
 	}
 }
 
+// A non-2xx body that stalls after its headers is bounded by Idle too: the
+// status still classifies the failure and the message says the body was cut.
+func TestPostStalledErrorBody(t *testing.T) {
+	tr := Over(rtFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 401, Header: http.Header{"Request-Id": {"r2"}}, Body: &stall{ctx: r.Context()}, Request: r}, nil
+	}), Options{Idle: 20 * time.Millisecond})
+	_, err := tr.Post(context.Background(), Request{URL: "http://model.test/v1"})
+	var f *vocab.Failure
+	if !errors.As(err, &f) || f.Code != vocab.CodeAuth || f.Status != 401 || f.RequestID != "r2" {
+		t.Fatalf("failure = %+v, want llm/auth status 401", err)
+	}
+	if !strings.Contains(f.Message, "cut short") || !strings.Contains(f.Message, string(vocab.CodeTimeout)) {
+		t.Fatalf("message = %q, want the idle cut named", f.Message)
+	}
+}
+
+// A caller cancelling during a stalled error body gets its own error back.
+func TestPostErrorBodyCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tr := Over(rtFunc(func(r *http.Request) (*http.Response, error) {
+		time.AfterFunc(20*time.Millisecond, cancel)
+		return &http.Response{StatusCode: 503, Header: http.Header{}, Body: &stall{ctx: r.Context()}, Request: r}, nil
+	}), Options{Idle: time.Hour})
+	if _, err := tr.Post(ctx, Request{URL: "http://model.test/v1"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want the context's", err)
+	}
+}
+
 func TestPostCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

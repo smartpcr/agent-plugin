@@ -368,3 +368,31 @@ func TestDeepSeekKeyNeverLeaks(t *testing.T) {
 		t.Fatal("a request without a key was sent")
 	}
 }
+
+// A tool_use block the vendor never stopped does not settle as a tool call: the
+// attempt fails llm/malformed-response and keeps the usage it reported.
+func TestDeepSeekUnfinishedToolCallFails(t *testing.T) {
+	h, _ := dsSession(t)
+	body := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":12,\"output_tokens\":1}}}\n\n" +
+		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call_1\",\"name\":\"read\",\"input\":{}}}\n\n" +
+		"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"}}\n\n" +
+		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+	rt := &fixtureRT{f: fixture{status: 200, header: http.Header{"Content-Type": {"text/event-stream"}}, body: []byte(body)}}
+	a := attemptOnce(t, dsRuntime(t, transport.Over(rt, transport.Options{}), "", keyStore()), h).records[0]
+	if got := must(a.Draft()).Type(); got != "assistant/attempt" {
+		t.Fatalf("kind = %s, want assistant/attempt", got)
+	}
+	if a.Finish.Failure == nil || a.Finish.Failure.Code != vocab.CodeMalformedResponse {
+		t.Fatalf("failure = %+v, want llm/malformed-response", a.Finish.Failure)
+	}
+	if a.Message != nil {
+		for _, b := range a.Message.Blocks() {
+			if b.ToolUse != nil {
+				t.Fatalf("an unfinished tool call settled: %+v", b.ToolUse)
+			}
+		}
+	}
+	if a.Usage == nil || a.Usage.Input != 12 || a.Usage.Output != 1 {
+		t.Fatalf("usage = %+v, want the reported 12/1", a.Usage)
+	}
+}

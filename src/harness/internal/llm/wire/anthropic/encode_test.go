@@ -18,6 +18,10 @@ const (
 		"data: {\"type\":\"content_block_stop\",\"index\":1}\n\n" +
 		"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n"
 	errorEventStream = "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n"
+	usageStartStream = "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":12,\"output_tokens\":1}}}\n\n"
+	// unclosedToolStream finishes tool_use without stopping its block.
+	unclosedToolStream = "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"c1\",\"name\":\"f\",\"input\":{}}}\n\n" +
+		"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n"
 )
 
 type surface struct {
@@ -124,5 +128,55 @@ func TestDecodeErrorEvent(t *testing.T) {
 		if err != nil || !ok || f.Failure == nil || f.Failure.Code != vocab.CodeServer {
 			t.Fatalf("chunk %+v err %v, want an llm/server finish", c, err)
 		}
+	}
+}
+
+// Usage already reported survives every failed ending: a drop before
+// message_stop, a malformed event and an in-stream error each yield the known
+// counters, once, before the failure.
+func TestDecodeKeepsUsageOnFailure(t *testing.T) {
+	want := vocab.Usage{Input: 12, Output: 1, Total: 13}
+	for name, stream := range map[string]string{
+		"dropped":   usageStartStream,
+		"malformed": usageStartStream + "data: not json\n\n",
+		"error":     usageStartStream + errorEventStream,
+	} {
+		var usages []vocab.Usage
+		failed := false
+		for c, err := range Decode(strings.NewReader(stream), nil) {
+			if failed {
+				t.Fatalf("%s: a chunk after the failure", name)
+			}
+			if err != nil {
+				failed = true
+				continue
+			}
+			switch c := c.(type) {
+			case vocab.UsageChunk:
+				usages = append(usages, c.Usage)
+			case vocab.Finish:
+				failed = c.Failure != nil
+			}
+		}
+		if !failed || len(usages) != 1 || usages[0] != want {
+			t.Errorf("%s: failed=%v usages=%+v, want one %+v before the failure", name, failed, usages, want)
+		}
+	}
+}
+
+// message_stop while a block is open is malformed, and the unfinished tool call
+// never ends as a block.
+func TestDecodeRejectsOpenBlockAtStop(t *testing.T) {
+	var last error
+	for c, err := range Decode(strings.NewReader(unclosedToolStream), nil) {
+		switch c.(type) {
+		case vocab.BlockEnd, vocab.Finish:
+			t.Fatalf("chunk %+v from an unfinished block", c)
+		}
+		last = err
+	}
+	var f *vocab.Failure
+	if !errors.As(last, &f) || f.Code != vocab.CodeMalformedResponse {
+		t.Fatalf("err = %v, want llm/malformed-response", last)
 	}
 }
