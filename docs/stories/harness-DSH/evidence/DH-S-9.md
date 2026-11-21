@@ -44,6 +44,28 @@ with the good key and one with a bad key; expect one `assistant/message`
 settlement for the first, and exactly one `assistant/attempt` with failure
 `llm/auth` and no `llm/retry` event for the second. Record the request ids here.
 
+The check is scripted, outside every gate, by the `manual`-tagged probe
+`src/harness/internal/llm/manual_deepseek_test.go` (the default build and the gate
+never compile it). With the key in the environment only:
+
+```
+$env:DEEPSEEK_API_KEY = '<key>'
+go -C src/harness test -tags manual -count=1 -v -run TestManualDeepSeek ./internal/llm/
+```
+
+`TestManualDeepSeekGoodKey` streams one request and requires exactly one
+`assistant/message` with usage. `TestManualDeepSeekBadKey` uses a key-shaped
+non-key and requires exactly one `assistant/attempt` (`llm/auth`, permanent) on
+`deepseek-official`, no `llm/retry` event and no attempt on a second registered
+route. Each prints a `DH-S-9 good key:` or `DH-S-9 bad key:` line (seq, code,
+status, masked request id) for the table below.
+
+Attempted from this machine on 2026-11-21: the network refuses the TLS handshake
+to `api.deepseek.com` (`curl` exit 35; the probe saw `llm/transport: remote
+error: tls: handshake failure` and stopped at the default policy's bound). No
+request reached DeepSeek, so this is not an observation of either case and the
+table stays unfilled.
+
 | Request | Expected | Observed |
 | --- | --- | --- |
 | good key | one `assistant/message`, usage present | not run |
