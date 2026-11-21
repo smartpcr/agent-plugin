@@ -40,6 +40,14 @@ func safe(d *def, fn func() any) (v any, err error) {
 	return fn(), nil
 }
 
+// must is v, panicking with err so safe reports it as the fold's failure.
+func must[T any](v T, err error) T {
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
 // step folds ev into f in place; a fold that panics is failed for the session
 // from then on, and the others go on. A fold whose from is past ev (restored
 // from a later checkpoint) skips it; changed, when not nil, collects the keys
@@ -107,7 +115,9 @@ func (r *Registry) restore(ctx context.Context, s session.ReadSession, at event.
 		start := event.Seq(0)
 		if d.stored {
 			if cp, ok := usable(cps, d, at); ok {
-				if v, err := d.decode(cp.State); err == nil {
+				// A row that does not decode (or panics decoding) is unusable:
+				// the fold is rebuilt from the log and the row rewritten.
+				if v, err := safe(d, func() any { return must(d.decode(cp.State)) }); err == nil {
 					f.values[d.key] = v
 					delete(f.failed, d.key)
 					start = cp.Seq + 1
@@ -149,7 +159,9 @@ func usable(cps []store.Checkpoint, d *def, at event.Seq) (store.Checkpoint, boo
 }
 
 // rows is the checkpoint rows of the stored folds among keys in f, skipping a
-// failed fold and a state that does not encode.
+// failed fold. A state that does not encode (an error or a panic) is invalid
+// state: that key is failed in f from then on and the other folds go on
+// (session-views.md §7). The caller calls rows before it publishes f.
 func (r *Registry) rows(f *folded, keys func(*def) bool) []session.Derived {
 	var out []session.Derived
 	for _, d := range r.defs {
@@ -159,11 +171,13 @@ func (r *Registry) rows(f *folded, keys func(*def) bool) []session.Derived {
 		if _, failed := f.failed[d.key]; failed {
 			continue
 		}
-		state, err := d.encode(f.values[d.key])
+		state, err := safe(d, func() any { return must(d.encode(f.values[d.key])) })
 		if err != nil {
+			f.failed[d.key] = fmt.Errorf("storing its state at seq %d: %w", f.next, err)
+			delete(f.values, d.key)
 			continue
 		}
-		out = append(out, session.Derived{Key: d.key, StateVersion: d.version, State: state})
+		out = append(out, session.Derived{Key: d.key, StateVersion: d.version, State: state.(string)})
 	}
 	return out
 }
@@ -185,8 +199,9 @@ func (r *Registry) Restore(ctx context.Context, s session.ReadSession, cps []sto
 	if err != nil {
 		return nil, err
 	}
+	rows := r.rows(f, func(d *def) bool { return slices.Contains(stale, d.key) })
 	r.seed(s.ID(), f)
-	return r.rows(f, func(d *def) bool { return slices.Contains(stale, d.key) }), nil
+	return rows, nil
 }
 
 // Fold is the session's Folder hook, called under the append lock with each
@@ -220,6 +235,7 @@ func (r *Registry) Fold(s session.ReadSession, batch []event.Event) []session.De
 	for _, ev := range batch {
 		r.step(next, ev, nil, changed)
 	}
+	rows := r.rows(next, func(d *def) bool { return rebuilt || changed[d.key] })
 	r.mu.Lock()
 	t := r.sessions[s.ID()]
 	if t == nil {
@@ -231,7 +247,7 @@ func (r *Registry) Fold(s session.ReadSession, batch []event.Event) []session.De
 	}
 	t.pending = next
 	r.mu.Unlock()
-	return r.rows(next, func(d *def) bool { return rebuilt || changed[d.key] })
+	return rows
 }
 
 // baseLocked is the committed fold of id ending at at, promoting a pending
