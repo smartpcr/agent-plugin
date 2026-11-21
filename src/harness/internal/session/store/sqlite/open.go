@@ -618,8 +618,15 @@ func (s *Store) Close(ctx context.Context) error {
 		// can be released through it, so it closes.
 		retry = len(errs) > 0 && s.broken == nil
 		if !retry {
-			if _, err := s.wconn.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+			// Followers end first: one inside a read transaction would pin the
+			// log, and a TRUNCATE checkpoint reports that as busy, not as an error.
+			s.closeSubs()
+			var busy, log, done int64
+			if err := s.wconn.QueryRowContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&busy, &log, &done); err != nil {
 				errs = append(errs, translate(ctx, err))
+			} else if busy != 0 {
+				errs = append(errs, store.Errorf(CodeBusy,
+					"shutdown: the write-ahead log was not truncated: a reader is still active (log %d, checkpointed %d)", log, done))
 			}
 		}
 	}
