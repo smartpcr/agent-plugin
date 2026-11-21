@@ -71,11 +71,22 @@ table stays unfilled.
 | good key | one `assistant/message`, usage present | not run |
 | bad key | one `assistant/attempt`, `llm/auth`, no retry, no other route | not run |
 
+Owner (operator decision `dh-s-9-closure-path` = A, 2026-11-21): the operator runs
+both requests from a network that reaches `api.deepseek.com`, with the key supplied
+at run time, and replaces each `not run` cell with the printed `DH-S-9 ... :` line,
+which gives the settlement seq, code, status and masked request id. This stays a
+manual check (EV-6) and is never a gate criterion.
+
 ## Scenarios
 
 `DH-E-LLM-1`, `DH-E-LLM-3` and `DH-E-VIEW-1` authored, for review in this PR, and
 indexed to DH-S-17 with authoring stage DH-S-9 and `requires: [DH-S-11, DH-S-16]`;
 **none executed.**
+
+Review (operator decision `dh-s-9-scenario-review` = A): a separate reviewer
+approves the three files below in this branch's PR. The approval is recorded here
+with the PR number and reviewer before the closure is ticked. Pending: no PR has
+been opened for the branch yet.
 
 | Scenario | File | Test |
 | --- | --- | --- |
