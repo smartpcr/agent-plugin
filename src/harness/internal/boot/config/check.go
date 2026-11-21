@@ -30,6 +30,11 @@ type CheckOptions struct {
 	// Docs are the parsed layer files by layer label, so an issue in a config value
 	// names the line of that value; a layer without one is placed at its operation.
 	Docs map[string]*loader.LayerDocument
+	// Required are entry ids that must stay present and enabled
+	// (DH-ADR-BOOT-6): a composition that lacks one (an operation removed it or its
+	// group) or disables it or an enclosing group, by a literal or an expression,
+	// has a static issue, placed at the operation that did it.
+	Required []string
 }
 
 // Report is a composed tree that was checked without being started: the tree, the
@@ -74,7 +79,78 @@ func Check(layers []loader.Layer, opts CheckOptions) *Report {
 	r.walk(tree, "", func(id string, e loader.EntryOptions) {
 		r.Issues = append(r.Issues, r.checkEntry(id, e, opts, &pre)...)
 	})
+	r.Issues = append(r.Issues, r.requiredIssues(opts.Required)...)
 	return r
+}
+
+// requiredIssues are the issues of the required ids the tree lacks or disables.
+func (r *Report) requiredIssues(required []string) []loader.Issue {
+	if len(required) == 0 {
+		return nil
+	}
+	type state struct {
+		off   string // the id of the entry or group that disables it, or ""
+		entry loader.EntryOptions
+	}
+	found := map[string]state{}
+	entries := map[string]loader.EntryOptions{}
+	var visit func(list []loader.EntryOptions, parent, off string)
+	visit = func(list []loader.EntryOptions, parent, off string) {
+		for _, e := range list {
+			id := e.ID
+			if parent != "" && id != "" {
+				id = parent + loader.Separator + id
+			}
+			entries[id] = e
+			self := off
+			if self == "" && (e.Disabled || e.DisabledExpr != "") {
+				self = id
+			}
+			found[id] = state{off: self, entry: e}
+			if e.Group {
+				visit(e.Children, id, self)
+			}
+		}
+	}
+	visit(r.Tree, "", "")
+	var issues []loader.Issue
+	for _, id := range required {
+		st, ok := found[id]
+		switch {
+		case !ok:
+			issue := loader.Issue{Path: id, Message: "is a required entry and the composed tree lacks it"}
+			if op, ok := r.removal(id); ok {
+				issue.Pos = op.Pos
+				issue.Message = fmt.Sprintf("is a required entry and the remove of %s removes it", op.ID)
+			}
+			issues = append(issues, issue)
+		case st.off != "":
+			what := "disables it"
+			if st.off != id {
+				what = "disables its group " + st.off
+			}
+			issue := r.issue(st.off, entries[st.off], "disabled", "")
+			issue.Path = joinField(id, "disabled")
+			issue.Message = "is a required entry and a layer " + what
+			issues = append(issues, issue)
+		}
+	}
+	return issues
+}
+
+// removal is the last operation of the layers that removes the entry id or a group
+// enclosing it.
+func (r *Report) removal(id string) (loader.Op, bool) {
+	for i := len(r.layers) - 1; i >= 0; i-- {
+		ops := r.layers[i].Ops
+		for j := len(ops) - 1; j >= 0; j-- {
+			op := ops[j]
+			if op.Kind == loader.OpRemove && (op.ID == id || strings.HasPrefix(id, op.ID+loader.Separator)) {
+				return op, true
+			}
+		}
+	}
+	return loader.Op{}, false
 }
 
 // preflightHold is a service no tree provides: a scratch fiber that injects it stays

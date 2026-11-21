@@ -84,6 +84,9 @@ type ServiceOptions struct {
 	// Catalog and Evaluator are the static check's (see CheckOptions).
 	Catalog   Catalog
 	Evaluator loader.Evaluator
+	// Required are the profile's required entry ids (profile.Definition.Required):
+	// a candidate that removes or disables one is rejected (CheckOptions.Required).
+	Required []string
 	// Guard serialises writes to a layer file across processes; nil takes the
 	// operating-system lock <layer>.lock for at most LockTimeout (DH-D-LOADER-13).
 	Guard loader.WriteGuard
@@ -106,9 +109,11 @@ type ServiceOptions struct {
 // fiber's own candidate config with the tree's hooks (DH-D-CORDIS-5). A rejected
 // candidate changes nothing: no file, no fiber.
 //
-// Reloads and edits run one at a time (op); the effective state has its own lock
-// (mu), held only to read or swap it, and listeners are told after both are
-// released, so a listener may call any method.
+// Reloads and edits are read, checked and written one at a time (op); the
+// effective state has its own lock (mu), held only to read or swap it. The new tree
+// is applied to the running loader after both are released, by one drain at a time
+// (amu), and listeners are told outside every lock, so a listener may call any
+// method.
 type Service struct {
 	opts ServiceOptions
 
@@ -116,8 +121,13 @@ type Service struct {
 
 	mu       sync.Mutex
 	current  *Snapshot
+	applied  *Snapshot // the last snapshot the running tree applied
 	rejected string
 	closed   bool
+
+	amu      sync.Mutex
+	want     *Snapshot // the snapshot queued for the running tree
+	applying bool      // a drain is applying
 
 	lmu       sync.Mutex
 	listeners map[int]func(error)
@@ -160,7 +170,7 @@ func NewService(opts ServiceOptions) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	s.current = snap
+	s.current, s.applied = snap, snap
 	return s, nil
 }
 
@@ -289,14 +299,16 @@ func (s *Service) notify(err error) {
 // rejected (the digest of the bytes read), after every lock is released.
 func (s *Service) Reload() error {
 	s.op.Lock()
-	publish, err := s.reload()
+	then, err := s.reload()
 	s.op.Unlock()
-	publish()
+	if terr := then(); err == nil {
+		err = terr
+	}
 	return err
 }
 
-func (s *Service) reload() (func(), error) {
-	none := func() {}
+func (s *Service) reload() (func() error, error) {
+	none := func() error { return nil }
 	if err := s.stopping(); err != nil {
 		return none, err
 	}
@@ -315,39 +327,85 @@ func (s *Service) reload() (func(), error) {
 		err = herr.Wrap(ReasonRejected, err, "reload rejected")
 		return s.reject(snap.Revision, err), err
 	}
-	return s.adopt(snap)
+	return s.adopt(snap), nil
 }
 
 // reject records revision as rejected and returns the notification to publish once
 // the locks are released: none when that revision was rejected already.
-func (s *Service) reject(revision string, err error) func() {
+func (s *Service) reject(revision string, err error) func() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if revision == s.rejected {
-		return func() {}
+		return func() error { return nil }
 	}
 	s.rejected = revision
-	return func() { s.notify(err) }
+	return func() error {
+		s.notify(err)
+		return nil
+	}
 }
 
-// adopt applies snap to the running tree, outside the state lock, then makes it
-// effective. The caller holds op. The loader's lifecycle events and Reloaded notice
-// are not published yet: adopt returns that publication, which the caller runs once
-// op is released, so a listener sees the new snapshot as Current and may reload or
-// edit without deadlocking.
-func (s *Service) adopt(snap *Snapshot) (func(), error) {
-	publish := func() {}
-	if s.opts.Loader != nil {
-		p, err := s.opts.Loader.ApplyLayersDeferred(snap.Layers)
-		if err != nil {
-			return publish, err
-		}
-		publish = p
-	}
+// adopt makes the validated snap effective (Current) and queues it for the running
+// tree; the caller holds op, so snapshots are queued in the order they were read.
+// It returns the application, which the caller runs once op is released: the
+// loader publishes its lifecycle events and Reloaded notice inside ApplyLayers, so
+// a listener then sees snap as Current and may reload or edit without deadlocking.
+func (s *Service) adopt(snap *Snapshot) func() error {
 	s.mu.Lock()
 	s.current, s.rejected = snap, ""
 	s.mu.Unlock()
-	return publish, nil
+	if s.opts.Loader == nil {
+		return func() error { return nil }
+	}
+	s.amu.Lock()
+	s.want = snap
+	s.amu.Unlock()
+	return func() error { return s.drain(snap) }
+}
+
+// drain applies the latest queued snapshot to the running tree until none is
+// queued, one ApplyLayers at a time. A call made while another drain runs (a
+// listener reloading from a notice of that drain, or a concurrent edit) does not
+// wait: the running drain applies its snapshot right after its own, so a
+// reentrant call never deadlocks and a superseded snapshot is never applied after
+// a newer one. It returns the error of applying own, nil when another drain
+// applied it or a newer snapshot superseded it. A snapshot the loader refused
+// stops being Current, so the next Watch poll tries the files again, and the
+// listeners are told when it was not own.
+func (s *Service) drain(own *Snapshot) error {
+	s.amu.Lock()
+	if s.applying {
+		s.amu.Unlock()
+		return nil
+	}
+	s.applying = true
+	s.amu.Unlock()
+	var ownErr error
+	for {
+		s.amu.Lock()
+		snap := s.want
+		s.want = nil
+		if snap == nil {
+			s.applying = false
+			s.amu.Unlock()
+			return ownErr
+		}
+		s.amu.Unlock()
+		err := s.opts.Loader.ApplyLayers(snap.Layers)
+		s.mu.Lock()
+		if err == nil {
+			s.applied = snap
+		} else if s.current == snap {
+			s.current = s.applied
+		}
+		s.mu.Unlock()
+		switch {
+		case snap == own:
+			ownErr = err
+		case err != nil:
+			s.notify(herr.Wrap(ReasonRejected, err, "reload not applied"))
+		}
+	}
 }
 
 // Watch reloads whenever a layer file read changes, polling every interval, until
@@ -423,26 +481,49 @@ func (s *Service) candidate(snap *Snapshot, edit Edit) (*Snapshot, error) {
 
 // shadows lists the fields ops write that, in the composed tree, a layer above the
 // writable one (layers[writable]) supplies: an edit of them would not take effect.
+// A layer above shadows a written field when it supplies that field, a field
+// enclosing it (Index.Owner) or a field inside it: an override of the whole config
+// does not take effect where a higher layer merges config.level.
 func shadows(index *loader.Index, layers []loader.Layer, writable int, ops []loader.Op) []Shadow {
 	above := map[string]bool{}
 	for _, l := range layers[writable+1:] {
 		above[l.Label] = true
 	}
+	inner := map[string][]loader.Ownership{}
+	for _, o := range index.Owners() {
+		if o.Field != "" && above[o.Label] {
+			inner[o.ID] = append(inner[o.ID], o)
+		}
+	}
 	var found []Shadow
 	seen := map[string]bool{}
+	add := func(id, field, label string) {
+		key := joinField(id, field)
+		if !seen[key] {
+			seen[key] = true
+			found = append(found, Shadow{Field: key, Layer: label})
+		}
+	}
 	for _, op := range ops {
 		for _, field := range opFields(op) {
-			key := joinField(op.ID, field)
-			if seen[key] {
+			if owner, ok := index.Owner(op.ID, field); ok && above[owner] {
+				add(op.ID, field, owner)
 				continue
 			}
-			seen[key] = true
-			if owner, ok := index.Owner(op.ID, field); ok && above[owner] {
-				found = append(found, Shadow{Field: key, Layer: owner})
+			for _, o := range inner[op.ID] {
+				if within(o.Field, field) {
+					add(op.ID, o.Field, o.Label)
+				}
 			}
 		}
 	}
 	return found
+}
+
+// within reports whether the field path lies inside parent ("config.level" in
+// "config", "config.list[0]" in "config.list").
+func within(path, parent string) bool {
+	return strings.HasPrefix(path, parent+".") || strings.HasPrefix(path, parent+"[")
 }
 
 // opFields lists the entry fields a merge or override writes: each leaf of a merge
@@ -488,18 +569,20 @@ func opFields(op loader.Op) []string {
 // layers, refuses a stale revision, an edit a higher layer shadows (ReasonShadowed)
 // and a computed field without Overwrite, checks the candidate, writes the writable
 // layer (keeping its comments) and applies the new tree. A refused or rejected edit
-// writes nothing. It returns the new revision; the loader's notices are published
-// after every lock is released.
+// writes nothing. It returns the new revision; the new tree is applied after every
+// lock of the service is released (see drain).
 func (s *Service) Apply(ctx context.Context, edit Edit) (string, error) {
 	s.op.Lock()
-	publish, rev, err := s.apply(ctx, edit)
+	then, rev, err := s.apply(ctx, edit)
 	s.op.Unlock()
-	publish()
+	if terr := then(); err == nil {
+		err = terr
+	}
 	return rev, err
 }
 
-func (s *Service) apply(ctx context.Context, edit Edit) (func(), string, error) {
-	none := func() {}
+func (s *Service) apply(ctx context.Context, edit Edit) (func() error, string, error) {
+	none := func() error { return nil }
 	if err := s.stopping(); err != nil {
 		return none, "", err
 	}
@@ -533,8 +616,7 @@ func (s *Service) apply(ctx context.Context, edit Edit) (func(), string, error) 
 	if err != nil {
 		return none, "", err
 	}
-	publish, err := s.adopt(adopted)
-	return publish, adopted.Revision, err
+	return s.adopt(adopted), adopted.Revision, nil
 }
 
 // LockGuard is the default write guard: it takes the operating-system lock on
@@ -659,7 +741,7 @@ func (s *Service) readWith(readFile ReadFile) (*Snapshot, error) {
 // config changes, that fiber's own candidate config with the running tree's hooks
 // (DH-D-CORDIS-5). Without a catalogue the loader's own name check stands in.
 func (s *Service) check(layers []loader.Layer, docs map[string]*loader.LayerDocument) *Report {
-	r := Check(layers, CheckOptions{Catalog: s.opts.Catalog, Evaluator: s.opts.Evaluator, Docs: docs})
+	r := Check(layers, CheckOptions{Catalog: s.opts.Catalog, Evaluator: s.opts.Evaluator, Docs: docs, Required: s.opts.Required})
 	svc := s.opts.Loader
 	if svc == nil {
 		return r

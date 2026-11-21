@@ -238,6 +238,12 @@ func write(t *testing.T, path, text string) {
 // config service and returns both.
 func boot(t *testing.T, h *home, p *probes) (*loader.Service, *config.Service) {
 	t.Helper()
+	return bootWith(t, h, p, config.ServiceOptions{})
+}
+
+// bootWith is boot with the service's options beyond the stack, loader and catalog.
+func bootWith(t *testing.T, h *home, p *probes, opts config.ServiceOptions) (*loader.Service, *config.Service) {
+	t.Helper()
 	root := cordis.New(cordis.WithExporters())
 	t.Cleanup(root.Dispose)
 	fiber, err := root.Use(loader.Component, loader.Options{Resolver: p.cat})
@@ -251,7 +257,8 @@ func boot(t *testing.T, h *home, p *probes) (*loader.Service, *config.Service) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cs, err := config.NewService(config.ServiceOptions{Stack: h.stack, Loader: ldr, Catalog: p.cat})
+	opts.Stack, opts.Loader, opts.Catalog = h.stack, ldr, p.cat
+	cs, err := config.NewService(opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -724,13 +731,15 @@ func TestApplyRefusesShadowedEdit(t *testing.T) {
 	shadowed := []loader.Op{
 		{Kind: loader.OpMerge, ID: "probe", Patch: json.RawMessage(`{"level":"debug"}`)},
 		{Kind: loader.OpMerge, ID: "probe", Patch: json.RawMessage(`{"level":null}`)},
+		// Replacing the whole config does not take effect where the user merges level.
+		{Kind: loader.OpOverride, ID: "probe", Set: map[string]json.RawMessage{"config": json.RawMessage(`{"level":"debug"}`)}},
 	}
 	for _, op := range shadowed {
 		_, err := cs.Apply(context.Background(), config.Edit{Revision: cs.Revision(), Ops: []loader.Op{op}})
 		var se *config.ShadowedError
 		if !hasReason(err, config.ReasonShadowed) || !errors.As(err, &se) || len(se.Fields) != 1 ||
 			se.Fields[0] != (config.Shadow{Field: "probe.config.level", Layer: "user"}) {
-			t.Fatalf("edit %s = %v, want shadowed by user", op.Patch, err)
+			t.Fatalf("edit %s %s %s = %v, want shadowed by user", op.Kind, op.Patch, op.Set["config"], err)
 		}
 		if _, err := cs.Candidate(config.Edit{Revision: cs.Revision(), Ops: []loader.Op{op}}); !hasReason(err, config.ReasonShadowed) {
 			t.Errorf("candidate = %v, want shadowed", err)
@@ -765,5 +774,87 @@ func TestEffectiveIsTheResolvedConfig(t *testing.T) {
 	}
 	if _, ok := second.Effective("nobody"); ok {
 		t.Error("an unknown entry has an effective config")
+	}
+}
+
+// A candidate that removes or disables a required entry, or a group enclosing one,
+// is rejected with the operation's position, by a reload and by an edit, before
+// anything is written or applied (DH-ADR-BOOT-6, boot.md "Required entries").
+func TestRequiredEntriesSurviveReloadAndEdit(t *testing.T) {
+	const text = profileText + `- insert:
+    - id: core
+      group: true
+      children:
+        - id: keep
+          name: x.probe
+          config:
+            level: info
+`
+	keep := "core" + loader.Separator + "keep"
+	start := func(t *testing.T) (*home, *probes, *loader.Service, *config.Service) {
+		h, p := newHome(t), newProbes(t)
+		write(t, profile.LayerPath(h.root, h.def.Name), text)
+		ldr, cs := bootWith(t, h, p, config.ServiceOptions{Required: []string{"probe", keep}})
+		return h, p, ldr, cs
+	}
+	unchanged := func(t *testing.T, p *probes, ldr *loader.Service, cs *config.Service, starts int64, rev string) {
+		t.Helper()
+		for _, id := range []string{"probe", keep} {
+			if e := ldr.Find(id); e == nil || !ldr.Active(e) {
+				t.Errorf("required %s is no longer active", id)
+			}
+		}
+		if p.starts.Load() != starts || cs.Revision() != rev {
+			t.Errorf("the running tree changed: starts %d -> %d", starts, p.starts.Load())
+		}
+	}
+	cases := map[string]struct {
+		text, at, path string
+		op             loader.Op
+	}{
+		"disable":         {"- id: probe\n  disabled: true\n", ":2:", "probe.disabled", loader.Op{Kind: loader.OpOverride, ID: "probe", Set: map[string]json.RawMessage{"disabled": json.RawMessage(`true`)}}},
+		"remove":          {"- id: probe\n  remove: true\n", ":1:", "probe", loader.Op{Kind: loader.OpRemove, ID: "probe"}},
+		"disable group":   {"- id: core\n  disabled: true\n", ":2:", keep + ".disabled", loader.Op{Kind: loader.OpOverride, ID: "core", Set: map[string]json.RawMessage{"disabled": json.RawMessage(`true`)}}},
+		"remove group":    {"- id: core\n  remove: true\n", ":1:", keep, loader.Op{Kind: loader.OpRemove, ID: "core"}},
+		"disable by expr": {"- id: probe\n  disabled: !expr 'true'\n", ":2:", "probe.disabled", loader.Op{}},
+	}
+	for name, tc := range cases {
+		t.Run("reload/"+name, func(t *testing.T) {
+			h, p, ldr, cs := start(t)
+			starts, rev := p.starts.Load(), cs.Revision()
+			user := profile.UserLayerPath(h.root)
+			write(t, user, tc.text)
+			err := cs.Reload()
+			if !hasReason(err, config.ReasonRejected) || !strings.Contains(err.Error(), "required") ||
+				!strings.Contains(err.Error(), user+tc.at) || !strings.Contains(err.Error(), tc.path) {
+				t.Fatalf("reload = %v, want rejected at %s%s %s", err, user, tc.at, tc.path)
+			}
+			unchanged(t, p, ldr, cs, starts, rev)
+		})
+		if tc.op.Kind == "" {
+			continue
+		}
+		t.Run("edit/"+name, func(t *testing.T) {
+			h, p, ldr, cs := start(t)
+			starts, rev := p.starts.Load(), cs.Revision()
+			path := profile.LayerPath(h.root, h.def.Name)
+			before, _ := os.ReadFile(path)
+			_, err := cs.Apply(context.Background(), config.Edit{Revision: rev, Ops: []loader.Op{tc.op}})
+			if !hasReason(err, config.ReasonRejected) || !strings.Contains(err.Error(), "required") {
+				t.Fatalf("edit = %v, want rejected as required", err)
+			}
+			if after, _ := os.ReadFile(path); string(after) != string(before) {
+				t.Errorf("a rejected edit changed the file:\n%s", after)
+			}
+			unchanged(t, p, ldr, cs, starts, rev)
+		})
+	}
+	// Disabling an entry no one requires is still an edit like any other.
+	_, _, ldr, cs := start(t)
+	if _, err := cs.Apply(context.Background(), config.Edit{Revision: cs.Revision(), Ops: []loader.Op{{Kind: loader.OpOverride, ID: "other", Set: map[string]json.RawMessage{"disabled": json.RawMessage(`true`)}}}}); err != nil {
+		t.Fatalf("disabling a non-required entry: %v", err)
+	}
+	if e := ldr.Find("other"); e != nil && ldr.Active(e) {
+		t.Error("other is still active")
 	}
 }

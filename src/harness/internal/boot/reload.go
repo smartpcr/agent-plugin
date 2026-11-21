@@ -28,6 +28,7 @@ func (s *State) startReload(ctx context.Context) {
 		},
 		Loader:    s.Service,
 		Evaluator: s.evaluator,
+		Required:  def.Required,
 		Read:      layerReader(s.Options.Request.ReadFile),
 		Baseline:  s.layerFiles,
 	}
