@@ -97,14 +97,6 @@ CREATE TABLE requests (
 	drafts  TEXT NOT NULL,
 	state   TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'applied', 'refused', 'expired'))
 ) STRICT;
-
--- One row the flush barrier rewrites, so a flush always commits a frame and the
--- synchronous=FULL commit always syncs the write-ahead log.
-CREATE TABLE barrier (
-	id      INTEGER PRIMARY KEY CHECK (id = 1),
-	flushes INTEGER NOT NULL
-) STRICT;
-INSERT INTO barrier (id, flushes) VALUES (1, 0);
 `,
 }
 

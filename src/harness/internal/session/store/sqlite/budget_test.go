@@ -101,6 +101,13 @@ func TestBudgetStoreAppend(t *testing.T) {
 	} {
 		t.Logf("F-2 %-20s n=%4d p50=%v p95=%v p99=%v max=%v", m.name, len(m.d), p(m.d, .5), p(m.d, .95), p(m.d, .99), p(m.d, 1))
 	}
+	// The test gate runs this under -race with every other package, to catch a
+	// race in it; the budget gate runs it alone and uninstrumented, which is
+	// where the budgets measure the real code and are enforced (QG-7).
+	if raceEnabled {
+		t.Log("F-2 budgets not asserted: race-instrumented build")
+		return
+	}
 	for _, b := range []struct {
 		name   string
 		got    time.Duration

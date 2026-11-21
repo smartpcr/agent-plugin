@@ -165,18 +165,16 @@ func (w *writer) check(ctx context.Context, q querier) (row, error) {
 }
 
 // Append writes the batch in one transaction: every record and checkpoint, or
-// none of them. The commit survives the death of the process; Flush makes it
-// survive the machine's.
+// none of them. The commit is synced before Append returns (synchronous=FULL),
+// so another process never reads a record that is not durable.
 func (w *writer) Append(ctx context.Context, b store.Batch) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	s := w.s
-	var before store.Seq
-	written := false
 	s.wmu.Lock()
 	defer s.wmu.Unlock()
-	err := s.writeLocked(ctx, func(tx *sql.Tx) error {
+	return s.writeLocked(ctx, func(tx *sql.Tx) error {
 		ss, err := w.check(ctx, tx)
 		if err != nil {
 			return err
@@ -243,16 +241,8 @@ func (w *writer) Append(ctx context.Context, b store.Batch) error {
 		} else if n != 1 {
 			return store.Errorf(store.CodeLeaseLost, "session %q changed under the append", w.id)
 		}
-		before, written = next, true
 		return nil
 	})
-	if err != nil {
-		return err
-	}
-	if written {
-		s.markPending(w.uid, before)
-	}
-	return nil
 }
 
 // Flush returns once every commit of this instance, this writer's among them,
@@ -273,30 +263,39 @@ func (w *writer) Flush(ctx context.Context) error {
 	return s.barrierLocked(ctx)
 }
 
-// Close flushes, releases the lease and keeps the epoch. A writer that lost
-// its lease closes without error and changes nothing.
+// Close releases the lease and keeps the epoch. A writer that lost its lease
+// closes without error and changes nothing. When the release fails (a busy
+// database, say) the writer stays open and registered and the error is
+// returned: Close may be called again, and Store.Close still releases it.
 func (w *writer) Close(ctx context.Context) error {
-	w.mu.Lock()
-	if w.closed {
-		w.mu.Unlock()
-		return nil
-	}
-	w.closed = true
-	w.mu.Unlock()
 	s := w.s
-	defer s.untrack(w)
 	s.wmu.Lock()
 	defer s.wmu.Unlock()
-	if s.wconn == nil {
+	return w.closeLocked(context.WithoutCancel(ctx))
+}
+
+// closeLocked is Close with s.wmu held. The writer is marked closed and
+// unregistered only once the release committed.
+func (w *writer) closeLocked(ctx context.Context) error {
+	if w.isClosed() {
 		return nil
 	}
-	ctx = context.WithoutCancel(ctx)
-	if err := s.barrierLocked(ctx); err != nil {
-		return err
+	s := w.s
+	if s.wconn != nil {
+		if err := s.barrierLocked(ctx); err != nil {
+			return err
+		}
+		if err := s.writeLocked(ctx, func(tx *sql.Tx) error {
+			_, err := tx.ExecContext(ctx, `UPDATE sessions SET lease_holder = NULL, lease_pid = 0, lease_kind = '',
+				lease_since = 0 WHERE uid = ? AND lease_holder = ? AND lease_epoch = ?`, w.uid, s.instance, int64(w.epoch))
+			return err
+		}); err != nil {
+			return err
+		}
 	}
-	return s.writeLocked(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `UPDATE sessions SET lease_holder = NULL, lease_pid = 0, lease_kind = '',
-			lease_since = 0 WHERE uid = ? AND lease_holder = ? AND lease_epoch = ?`, w.uid, s.instance, int64(w.epoch))
-		return err
-	})
+	w.mu.Lock()
+	w.closed = true
+	w.mu.Unlock()
+	s.untrack(w)
+	return nil
 }

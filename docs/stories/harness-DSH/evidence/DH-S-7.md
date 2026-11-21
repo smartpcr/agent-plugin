@@ -35,18 +35,22 @@ in `src/harness/go.mod`, with a reason comment on each line:
 Machine: Windows 11 Enterprise, 13th Gen Intel Core i9-13900K, Samsung SSD 990 PRO
 (NVMe), go1.27.4 windows/amd64, the module's floor is `go 1.26.0`.
 
+Current run (every commit at `synchronous=FULL`, see "Durability" below):
+
 | Measurement | n | p50 | p95 | p99 | max |
 | --- | --- | --- | --- | --- | --- |
-| open, new file (creates it and runs the migrations) | 20 | 9.56 ms | 17.26 ms | 17.26 ms | 23.60 ms |
-| open, existing file | 20 | 4.90 ms | 11.10 ms | 11.10 ms | 18.15 ms |
-| append (one event, WAL commit, `synchronous=NORMAL`) | 1000 | <0.5 ms | 0.66 ms | 2.65 ms | 4.84 ms |
-| flush (barrier commit, `synchronous=FULL`) | 1000 | 0.52 ms | 2.58 ms | 5.97 ms | 12.69 ms |
-| append + flush | 1000 | 0.92 ms | 3.15 ms | 6.35 ms | 12.69 ms |
+| open, new file (creates it and runs the migrations) | 20 | 7.94 ms | 19.71 ms | 19.71 ms | 38.83 ms |
+| open, existing file | 20 | 3.70 ms | 7.14 ms | 7.14 ms | 18.25 ms |
+| append (one event, WAL commit synced, `synchronous=FULL`) | 1000 | 0.69 ms | 2.34 ms | 4.95 ms | 15.18 ms |
+| flush (waits for any commit in flight; no extra sync) | 1000 | <0.5 ms | 0.52 ms | 0.78 ms | 4.45 ms |
+| append + flush | 1000 | 0.83 ms | 2.50 ms | 5.22 ms | 15.18 ms |
 
-An earlier run on the same machine gave an append + flush p95 of 2.73 ms and a flush
-p95 of 2.31 ms. On Windows the Go monotonic clock ticks about every 0.5 ms, so an
-append that finishes inside one tick reads as 0. The p50 of the append row is
-therefore given as "<0.5 ms".
+The first measurement, before the durability change, committed appends at
+`synchronous=NORMAL` and synced in a separate barrier commit: append p95 0.66 ms,
+flush p95 2.58 ms, append + flush p95 3.15 ms. Syncing each commit moves the fsync
+from the flush into the append and costs nothing end to end. On Windows the Go
+monotonic clock ticks about every 0.5 ms, so a call that finishes inside one tick
+reads as 0; such a p50 is given as "<0.5 ms".
 
 **Budgets.** These are compiled into the test: `DSH_*` and `GO*` cannot relax them,
 and the budget gate clears both anyway. They were set from the run above, with
@@ -54,12 +58,17 @@ headroom for slower disks and the fsync cost of CI runners:
 
 | Budget | Value | Measured p95 | Headroom |
 | --- | --- | --- | --- |
-| open, new file | 250 ms | 17.26 ms | ~14x |
-| append | 10 ms | 0.66 ms | ~15x |
-| append + flush | 50 ms | 3.15 ms | ~16x |
+| open, new file | 250 ms | 19.71 ms | ~12x |
+| append | 10 ms | 2.34 ms | ~4x |
+| append + flush | 50 ms | 2.50 ms | ~20x |
 
-The test passes, also under `-race`. The figures are printed with the prefix `F-2`
-for this record.
+The figures are printed with the prefix `F-2` for this record. The budgets are
+asserted in uninstrumented builds, which is how the budget gate runs `TestBudget*`:
+alone and without `-race` (QG-7). The test gate also runs the test under `-race`,
+together with every other package, to catch data races. There the full workload runs
+and the figures are logged, but the budgets are not asserted. One such run under load
+measured an open p95 of 347 ms and an append p95 of 13 ms, which reflects the
+instrumentation and the load, not the driver.
 
 ### What was built (DH-D-STORE-2)
 
@@ -79,7 +88,7 @@ The package is `src/harness/internal/session/store/sqlite`.
   with `store/no-wal`. Last, it applies the numbered migrations, one per write
   transaction, and re-checks the version inside the transaction.
 - **Schema (architecture.md section 4.3).** Migration 1 creates these STRICT tables:
-  `sessions`, `events`, `checkpoints`, `hosts`, `duties`, `requests`, `barrier`.
+  `sessions`, `events`, `checkpoints`, `hosts`, `duties`, `requests`.
   - `events` is `WITHOUT ROWID`, keyed by `(session, seq)`.
   - Triggers abort any `UPDATE` of an event, and any `DELETE` of an event unless its
     session is being deleted.
@@ -94,14 +103,27 @@ The package is `src/harness/internal/session/store/sqlite`.
   - Every driver error is translated once into a harness code (`store/busy`,
     `store/constraint`, `store/corrupt`, ...). Only the message is carried over, never
     the driver's type (DH-LIB-SQLITE-R7).
-- **Flush barrier.**
-  - Appends commit with `synchronous=NORMAL`. Such a commit survives the death of the
-    process.
-  - `Flush` commits one row of `barrier` with `synchronous=FULL`. That fsyncs the WAL,
-    and with it every earlier frame.
-  - `Flush` returns only after that commit. `Writer.Close` and `Store.Close` flush.
-  - `Summary.Durable` is `NextSeq` except for sessions this instance has committed to
-    since the last barrier.
+- **Durability and the flush barrier.** session-store.md defines an event as durable
+  once its transaction committed with `synchronous = FULL`, and requires that another
+  process sees only durable events.
+  - The write connection runs `synchronous=FULL`, and `Open` refuses a connection that
+    does not report it. Every commit syncs the WAL before it returns, so every row
+    another process can read is durable.
+  - `Summary.Durable` is the committed `next_seq` in every instance. There is no
+    per-process bookkeeping that another instance could miss.
+  - `Flush` takes the write mutex, so it returns only after any commit in flight on
+    this instance, which was already synced.
+- **Lifecycle.**
+  - Acquiring a lease (`Create`, `OpenWrite`) runs under the write mutex: it checks
+    that the store is not closing, commits the lease and registers the writer before
+    releasing the mutex. `Store.Close` takes its writer snapshot under the same mutex,
+    so it releases every lease acquired before it started. An acquisition that starts
+    after it is refused with `session/closed` and changes nothing.
+  - `Writer.Close` marks the writer closed and unregisters it only after the lease
+    release commits. A failed release (for example `store/busy`) leaves the writer
+    open and registered, so it can be retried.
+  - `Store.Close` closes nothing when a release fails. It returns the error, and a
+    later call retries.
 - **Reads.** Every read runs in one read transaction on a bounded read pool
   (`query_only`), so each read sees one snapshot.
   - Reads are paged with `Read(from, limit)` and `ReadSeqs`.
@@ -118,8 +140,11 @@ It passes.
 | Scenario / ID | Test | Result |
 | --- | --- | --- |
 | Conformance suite on SQLite (`DH-T-STORE-1`, TC-07) | `TestConformance`: `storetest.Run` with a factory opening `dsh.db` in a temp home (or under `DSH_E2E_STORE_HOME`). All 21 cases that pass on memstore pass. | pass |
-| Multi-event append is atomic (TC-07) | `TestMultiEventAppendIsAtomic`: three events, the third repeats a primary key. A fresh `sql.Open` reads none of the three and `next_seq` is unchanged. A contract-refused third record behaves the same way. | pass |
-| Flush is durable (TC-07) | `TestFlushSurvivesKill`: a re-executed child appends and flushes, then is killed before closing anything. Reopening the store shows all five rows. | pass |
+| Multi-event append is atomic (TC-07) | `TestMultiEventAppendIsAtomic`: the batch runs through the real `Writer.Append`, and a trigger the test installs makes the database refuse it. In one case the third event is refused; in the other the checkpoint is refused after all three events were inserted. Each time, a fresh `sql.Open` reads no new event, `next_seq` unchanged and the old checkpoint. With the trigger dropped, the same batch commits whole. | pass |
+| Flush is durable (TC-07) | `TestFlushSurvivesKill`: a re-executed child appends and flushes, then is killed before closing anything. Reopening the store shows all five rows, all durable. | pass |
+| Another process sees only durable events | `TestOtherProcessSeesOnlyDurable`: a child process appends five events without flushing and reports its write connection at `synchronous=2` (FULL). Another instance in the parent checks that what it reads equals `Durable`, which equals `NextSeq` (5). It checks before the child's flush, after it, and after the child is killed. | pass |
+| Failed close is retryable | `TestCloseRetriesAFailedRelease`: an outside connection holds the write lock, and `Writer.Close` and `Store.Close` both return `store/busy`. The leases stay held and new writers are refused. Once the lock is released, both calls succeed and `IfFree` opens in another instance succeed. | pass |
+| No lease orphaned by shutdown | `TestCloseRacingAcquisitions`: 20 rounds, each running 8 `OpenWrite` and 8 `Create` calls concurrently with `Store.Close`. Every acquisition either returns a writer or `session/closed`, and no round leaves a lease held. | pass |
 | Driver budget (`DH-T-STORE-18`, F-2) | `TestBudgetStoreAppend` | pass, figures above |
 | Log immutable in the schema | `TestEventsImmutableInSchema` | pass |
 | Open refusals leave the file unchanged | `TestOpenRefusesUnchanged`: newer layout, foreign id, unrelated schema, not SQLite | pass |
@@ -128,7 +153,7 @@ It passes.
 | Error translation (DH-LIB-SQLITE-R7) | `TestTranslate` | pass |
 | One importer of the driver | archtest rule "only internal/session/store/sqlite imports the SQLite driver" | pass |
 
-Package statement coverage is 88.4%; the gate's floor is 85%.
+Package statement coverage is 89.6%; the gate's floor is 85%.
 
 `DH-T-STORE-2` to `-4` and the rest of `DH-T-STORE-18` belong to later stages of this
 phase, so they are not part of 7.1:

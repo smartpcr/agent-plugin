@@ -58,10 +58,15 @@ const (
 	rcNotADB     = 26
 )
 
-// busyTimeout bounds how long a statement waits for another process's lock
-// before it fails with CodeBusy (DH-LIB-SQLITE-R4); it also bounds the first
-// switch into WAL, which needs the database to itself.
-const busyTimeout = 5 * time.Second
+// DefaultBusyTimeout bounds how long a statement waits for another process's
+// lock before it fails with CodeBusy (DH-LIB-SQLITE-R4, store.Config
+// BusyTimeout); it also bounds the first switch into WAL, which needs the
+// database to itself.
+const DefaultBusyTimeout = 5 * time.Second
+
+// syncFull is PRAGMA synchronous = FULL: every commit syncs the write-ahead log
+// before it returns.
+const syncFull = 2
 
 // readPool bounds the read connections: each carries its own page cache.
 const readPool = 4
@@ -134,33 +139,45 @@ func WithClock(now func() time.Time) Option { return func(s *Store) { s.now = no
 // as a lease holder's Kind.
 func WithKind(kind string) Option { return func(s *Store) { s.kind = kind } }
 
+// WithBusyTimeout replaces DefaultBusyTimeout.
+func WithBusyTimeout(d time.Duration) Option { return func(s *Store) { s.busy = d } }
+
 // Store is the SQLite session store: one database per home (DH-D-STORE-2). It
 // owns one write connection, used under a mutex as the writer of the whole
 // instance, and a bounded read pool.
+//
+// Every commit runs with synchronous=FULL, so a committed event is a durable
+// one (session-store.md, "What durable means"): another process, which sees
+// only committed rows, sees only durable events, and Summary.Durable is the
+// committed next seq in every instance.
+//
+// Lock order: wmu before mu. Acquiring a lease, registering its writer and
+// releasing it all happen under wmu, and Close takes its writer snapshot under
+// wmu, so no lease is acquired that Close does not release.
 type Store struct {
 	path     string
 	reg      *event.Registry
 	now      func() time.Time
 	kind     string
+	busy     time.Duration
 	instance string
 	pid      int
 
 	wdb   *sql.DB
 	rdb   *sql.DB
-	wmu   sync.Mutex // guards wconn and broken
+	wmu   sync.Mutex // guards wconn and broken; held across every lease change
 	wconn *sql.Conn
 	// broken is set when a rollback failed: the outcome of that transaction is
 	// unknown, so the store refuses further work until reopened.
 	broken error
 
-	mu      sync.Mutex // guards writers and closed
+	mu      sync.Mutex // guards writers, closed and done
 	writers map[*writer]struct{}
-	closed  bool
-
-	// pending holds, per session uid with commits since the last barrier, how
-	// many of its records were durable before them (Summary.Durable).
-	dmu     sync.Mutex
-	pending map[int64]store.Seq
+	// closed refuses new handles once Close began; done is set once Close
+	// released everything and closed the pools. A Close that failed to release
+	// a lease leaves done unset, so it may be called again.
+	closed bool
+	done   bool
 }
 
 var _ store.Store = (*Store)(nil)
@@ -179,8 +196,8 @@ func Open(ctx context.Context, path string, opts ...Option) (*Store, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	s := &Store{path: path, reg: event.Default(), now: time.Now, kind: "dsh", pid: os.Getpid(),
-		writers: map[*writer]struct{}{}, pending: map[int64]store.Seq{}}
+	s := &Store{path: path, reg: event.Default(), now: time.Now, kind: "dsh", busy: DefaultBusyTimeout,
+		pid: os.Getpid(), writers: map[*writer]struct{}{}}
 	for _, o := range opts {
 		o(s)
 	}
@@ -199,7 +216,7 @@ func Open(ctx context.Context, path string, opts ...Option) (*Store, error) {
 		s.closeDBs()
 		return nil, err
 	}
-	rdb, err := sql.Open("sqlite", dsn(path, false))
+	rdb, err := sql.Open("sqlite", dsn(path, false, s.busy))
 	if err != nil {
 		s.closeDBs()
 		return nil, translate(ctx, err)
@@ -235,13 +252,13 @@ func createPrivate(path string) error {
 }
 
 // dsn is the connection string of the write connection or of a read
-// connection: the one place the driver's keys appear. synchronous=NORMAL keeps
-// an append's commit atomic and crash-safe for the process; the barrier raises
-// it to FULL for the commit that makes the log durable.
-func dsn(path string, write bool) string {
-	q := fmt.Sprintf("?_pragma=busy_timeout(%d)&_pragma=foreign_keys(1)", busyTimeout.Milliseconds())
+// connection: the one place the driver's keys appear. synchronous=FULL makes
+// every commit sync the write-ahead log before it returns, so nothing another
+// process can read is less than durable.
+func dsn(path string, write bool, busy time.Duration) string {
+	q := fmt.Sprintf("?_pragma=busy_timeout(%d)&_pragma=foreign_keys(1)", busy.Milliseconds())
 	if write {
-		return path + q + "&_pragma=synchronous(NORMAL)&_txlock=immediate"
+		return path + q + "&_pragma=synchronous(FULL)&_txlock=immediate"
 	}
 	return path + q + "&_pragma=query_only(1)"
 }
@@ -249,7 +266,7 @@ func dsn(path string, write bool) string {
 // openWriter opens the one write connection, checks identity and layout, enters
 // WAL and migrates.
 func (s *Store) openWriter(ctx context.Context) error {
-	wdb, err := sql.Open("sqlite", dsn(s.path, true))
+	wdb, err := sql.Open("sqlite", dsn(s.path, true, s.busy))
 	if err != nil {
 		return translate(ctx, err)
 	}
@@ -273,6 +290,13 @@ func (s *Store) openWriter(ctx context.Context) error {
 	}
 	if !strings.EqualFold(mode, "wal") {
 		return store.Errorf(CodeNoWAL, "%s: the write-ahead log cannot be entered (journal mode stays %q)", s.path, mode)
+	}
+	var sync int64
+	if err := conn.QueryRowContext(ctx, `PRAGMA synchronous`).Scan(&sync); err != nil {
+		return s.openErr(ctx, err)
+	}
+	if sync != syncFull {
+		return store.Errorf(CodeIO, "%s: the write connection runs synchronous=%d, not FULL", s.path, sync)
 	}
 	for v := version; v < LayoutVersion; v++ {
 		if err := s.migrate(ctx, v); err != nil {
@@ -393,9 +417,10 @@ func (s *Store) read(ctx context.Context, fn func(tx *sql.Tx) error) error {
 	return nil
 }
 
-// barrier makes every commit of this instance durable: one commit with
-// synchronous=FULL syncs the write-ahead log, and with it every frame the
-// earlier synchronous=NORMAL commits wrote (DH-LIB-SQLITE-R2).
+// barrier returns once every commit of this instance is durable. Each commit
+// synced the write-ahead log before it returned (synchronous=FULL), so holding
+// wmu, which orders the barrier after any commit in flight, is enough
+// (DH-LIB-SQLITE-R2).
 func (s *Store) barrier(ctx context.Context) error {
 	s.wmu.Lock()
 	defer s.wmu.Unlock()
@@ -409,22 +434,19 @@ func (s *Store) barrierLocked(ctx context.Context) error {
 	if s.wconn == nil {
 		return store.Errorf(store.CodeClosed, "the store is closed")
 	}
-	if _, err := s.wconn.ExecContext(ctx, `PRAGMA synchronous = FULL`); err != nil {
-		return translate(ctx, err)
+	return ctx.Err()
+}
+
+// admit refuses a new writer once Close began. It runs with wmu held, and the
+// writer is registered before wmu is released, so Close, which snapshots the
+// writers under wmu, always sees the lease it must release.
+func (s *Store) admit() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return store.Errorf(store.CodeClosed, "the store is closed")
 	}
-	err := s.writeLocked(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `UPDATE barrier SET flushes = flushes + 1 WHERE id = 1`)
-		return err
-	})
-	// Restored on a fresh context: a cancelled flush must not leave every later
-	// append paying for a sync.
-	if _, rerr := s.wconn.ExecContext(context.WithoutCancel(ctx), `PRAGMA synchronous = NORMAL`); rerr != nil && err == nil {
-		err = translate(ctx, rerr)
-	}
-	if err == nil {
-		s.clearPending()
-	}
-	return err
+	return nil
 }
 
 // Path is the database file.
@@ -433,50 +455,72 @@ func (s *Store) Path() string { return s.path }
 // Instance is this store's instance id, the lease holder name of its writers.
 func (s *Store) Instance() string { return s.instance }
 
-// Close makes every commit durable, releases the leases this instance holds,
-// unregisters it, checkpoints and truncates the write-ahead log and closes both
-// pools. Writers still open fail with session/closed afterwards. It is
-// idempotent.
+// Close releases the leases this instance holds, unregisters it, checkpoints
+// and truncates the write-ahead log and closes both pools. New handles are
+// refused from its start; writers still open fail with session/closed
+// afterwards. When a release fails (a busy database, say) nothing is closed
+// and the error is returned: Close may be called again and retries the leases
+// still held. Once it succeeded it is idempotent.
 func (s *Store) Close(ctx context.Context) error {
 	s.mu.Lock()
-	if s.closed {
+	if s.done {
 		s.mu.Unlock()
 		return nil
 	}
 	s.closed = true
-	ws := make([]*writer, 0, len(s.writers))
-	for w := range s.writers {
-		ws = append(ws, w)
-	}
 	s.mu.Unlock()
+	// A release must not be abandoned half-way because the caller's context
+	// ended; the busy timeout bounds each statement.
+	ctx = context.WithoutCancel(ctx)
 	var errs []error
-	for _, w := range ws {
-		if err := w.Close(ctx); err != nil {
-			errs = append(errs, err)
-		}
-	}
+	retry := false
 	s.wmu.Lock()
 	if s.wconn != nil && s.broken == nil {
-		if err := s.writeLocked(ctx, func(tx *sql.Tx) error {
-			_, err := tx.ExecContext(ctx, `DELETE FROM hosts WHERE instance = ?`, s.instance)
-			return err
-		}); err != nil {
-			errs = append(errs, err)
+		for _, w := range s.snapshot() {
+			if err := w.closeLocked(ctx); err != nil {
+				errs = append(errs, err)
+			}
 		}
-		if err := s.barrierLocked(ctx); err != nil {
-			errs = append(errs, err)
+		if len(errs) == 0 {
+			if err := s.writeLocked(ctx, func(tx *sql.Tx) error {
+				_, err := tx.ExecContext(ctx, `DELETE FROM hosts WHERE instance = ?`, s.instance)
+				return err
+			}); err != nil {
+				errs = append(errs, err)
+			}
 		}
-		if _, err := s.wconn.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
-			errs = append(errs, translate(ctx, err))
+		// A failed rollback on the way makes the store unusable: nothing more
+		// can be released through it, so it closes.
+		retry = len(errs) > 0 && s.broken == nil
+		if !retry {
+			if _, err := s.wconn.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+				errs = append(errs, translate(ctx, err))
+			}
 		}
 	}
 	s.wmu.Unlock()
+	if retry {
+		return errors.Join(errs...)
+	}
+	s.mu.Lock()
+	s.done = true
+	s.mu.Unlock()
 	if err := s.closeDBs(); err != nil {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
 }
 
+// snapshot is the writers registered now.
+func (s *Store) snapshot() []*writer {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ws := make([]*writer, 0, len(s.writers))
+	for w := range s.writers {
+		ws = append(ws, w)
+	}
+	return ws
+}
 // closeDBs closes the read pool, then the write connection and pool. The read
 // pool's pointer stays set: a read racing Close fails on the closed pool.
 func (s *Store) closeDBs() error {

@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -85,7 +86,9 @@ func fresh(t *testing.T, path string) *sql.DB {
 	return db
 }
 
-func countEvents(t *testing.T, db *sql.DB, id string) (events, next int64) {
+// countRows is what a fresh connection reads of session id: its events, its
+// next seq and its checkpoints.
+func countRows(t *testing.T, db *sql.DB, id string) (events, next, checkpoints int64) {
 	t.Helper()
 	if err := db.QueryRow(`SELECT count(*) FROM events JOIN sessions ON events.session = sessions.uid WHERE sessions.id = ?`, id).Scan(&events); err != nil {
 		t.Fatal(err)
@@ -93,11 +96,23 @@ func countEvents(t *testing.T, db *sql.DB, id string) (events, next int64) {
 	if err := db.QueryRow(`SELECT next_seq FROM sessions WHERE id = ?`, id).Scan(&next); err != nil {
 		t.Fatal(err)
 	}
+	if err := db.QueryRow(`SELECT count(*) FROM checkpoints JOIN sessions ON checkpoints.session = sessions.uid WHERE sessions.id = ?`, id).Scan(&checkpoints); err != nil {
+		t.Fatal(err)
+	}
+	return events, next, checkpoints
+}
+
+func countEvents(t *testing.T, db *sql.DB, id string) (events, next int64) {
+	t.Helper()
+	events, next, _ = countRows(t, db, id)
 	return events, next
 }
 
-// TC-07 / DH-D-STORE-2: an append of three events whose third violates a
-// constraint of the database leaves none of the three.
+// TC-07 / DH-D-STORE-2: an append of three events whose third the database
+// itself refuses leaves none of the three. The refusal comes from a trigger the
+// test installs, so the batch passes every check of Writer.Append and the
+// failure is the database's, met after two rows were already inserted in the
+// transaction.
 func TestMultiEventAppendIsAtomic(t *testing.T) {
 	path := dbPath(t)
 	s := open(t, path)
@@ -105,40 +120,55 @@ func TestMultiEventAppendIsAtomic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := w.Append(bg, store.Batch{First: 0, Records: []store.Record{call(t, 0)}}); err != nil {
+	if err := w.Append(bg, store.Batch{First: 0, Records: []store.Record{call(t, 0)},
+		Checkpoints: []store.Checkpoint{{Key: "core/x", StateVersion: 1, Seq: 0, State: `{"n":0}`}}}); err != nil {
 		t.Fatal(err)
 	}
-	// The third row repeats the first's seq: the primary key refuses it after
-	// the session row and two events were already written in the transaction.
-	bad := []store.Record{call(t, 1), call(t, 2), call(t, 1)}
-	err = s.InsertUnchecked(bg, "s", bad)
-	if !errors.Is(err, &store.Error{Code: sqlite.CodeConstraint}) {
-		t.Fatalf("InsertUnchecked = %v, want %s", err, sqlite.CodeConstraint)
+	db := fresh(t, path)
+	batch := store.Batch{First: 1, Records: []store.Record{call(t, 1), call(t, 2), call(t, 3)},
+		Checkpoints: []store.Checkpoint{{Key: "core/x", StateVersion: 1, Seq: 3, State: `{"n":3}`}}}
+	for _, tc := range []struct{ name, trigger string }{
+		{"third event refused", `CREATE TRIGGER refuse_test BEFORE INSERT ON events WHEN NEW.seq = 3
+			BEGIN SELECT RAISE(ABORT, 'test: the third row is refused'); END`},
+		{"checkpoint refused after the events", `CREATE TRIGGER refuse_test BEFORE UPDATE ON checkpoints
+			BEGIN SELECT RAISE(ABORT, 'test: the checkpoint is refused'); END`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := db.Exec(tc.trigger); err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if _, err := db.Exec(`DROP TRIGGER refuse_test`); err != nil {
+					t.Fatal(err)
+				}
+			}()
+			err := w.Append(bg, batch)
+			if !errors.Is(err, &store.Error{Code: sqlite.CodeConstraint}) || !strings.Contains(err.Error(), "test: the") {
+				t.Fatalf("Append = %v, want %s from the test trigger", err, sqlite.CodeConstraint)
+			}
+			if events, next, cks := countRows(t, fresh(t, path), "s"); events != 1 || next != 1 || cks != 1 {
+				t.Fatalf("after the refused append a fresh connection reads %d events, next seq %d, %d checkpoints; want 1, 1, 1", events, next, cks)
+			}
+			var state string
+			if err := fresh(t, path).QueryRow(`SELECT state FROM checkpoints`).Scan(&state); err != nil || state != `{"n":0}` {
+				t.Fatalf("checkpoint after the refused append = %q, %v", state, err)
+			}
+			if sum, err := s.Stat(bg, "s"); err != nil || sum.NextSeq != 1 || sum.Durable != 1 {
+				t.Fatalf("Stat after the refused append = %+v, %v", sum, err)
+			}
+		})
 	}
-	if events, next := countEvents(t, fresh(t, path), "s"); events != 1 || next != 1 {
-		t.Fatalf("after the refused append a fresh connection reads %d events, next seq %d; want 1, 1", events, next)
-	}
-	// The same through the contract: a batch whose third record is refused.
-	third := call(t, 3)
-	third.Type = ""
-	err = w.Append(bg, store.Batch{First: 1, Records: []store.Record{call(t, 1), call(t, 2), third}})
-	if !errors.Is(err, store.ErrInvalidBatch) {
-		t.Fatalf("Append = %v, want %v", err, store.ErrInvalidBatch)
-	}
-	if events, next := countEvents(t, fresh(t, path), "s"); events != 1 || next != 1 {
-		t.Fatalf("after the refused batch a fresh connection reads %d events, next seq %d; want 1, 1", events, next)
-	}
-	if err := w.Append(bg, store.Batch{First: 1, Records: []store.Record{call(t, 1), call(t, 2), call(t, 3)}}); err != nil {
+	// The same batch, once nothing refuses it, commits whole.
+	if err := w.Append(bg, batch); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.Close(bg); err != nil {
 		t.Fatal(err)
 	}
-	if events, next := countEvents(t, fresh(t, path), "s"); events != 4 || next != 4 {
-		t.Fatalf("a fresh connection reads %d events, next seq %d; want 4, 4", events, next)
+	if events, next, cks := countRows(t, fresh(t, path), "s"); events != 4 || next != 4 || cks != 1 {
+		t.Fatalf("a fresh connection reads %d events, next seq %d, %d checkpoints; want 4, 4, 1", events, next, cks)
 	}
 }
-
 // The log is immutable in the database itself: an UPDATE or DELETE of an event
 // outside a session's deletion is aborted by a trigger.
 func TestEventsImmutableInSchema(t *testing.T) {
@@ -295,8 +325,11 @@ func TestOpenRefusesUnchanged(t *testing.T) {
 
 const childEnv = "DSH_SQLITE_FLUSH_CHILD"
 
-// TestFlushChild is the re-executed child of TestFlushSurvivesKill: it appends,
-// flushes, reports, and waits to be killed.
+// TestFlushChild is the re-executed child of TestFlushSurvivesKill and
+// TestOtherProcessSeesOnlyDurable. It appends five single-event batches
+// without flushing and reports "appended sync=<synchronous>"; then, per line
+// of stdin, "flush" flushes and reports "flushed". It never closes anything:
+// the parent kills it.
 func TestFlushChild(t *testing.T) {
 	path := os.Getenv(childEnv)
 	if path == "" {
@@ -315,55 +348,93 @@ func TestFlushChild(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := w.Flush(bg); err != nil {
+	level, err := s.Synchronous(bg)
+	if err != nil {
 		t.Fatal(err)
 	}
-	fmt.Println("flushed")
-	io.Copy(io.Discard, os.Stdin) // until the parent kills this process
+	fmt.Printf("appended sync=%d\n", level)
+	for in := bufio.NewScanner(os.Stdin); in.Scan(); {
+		if in.Text() == "flush" {
+			if err := w.Flush(bg); err != nil {
+				t.Fatal(err)
+			}
+			fmt.Println("flushed")
+		}
+	}
 	t.Fatal("the parent did not kill the child")
 }
 
-// TC-07 / DH-D-STORE-2: once Flush returns, the rows survive the death of the
-// process that wrote them, killed before it closed anything.
-func TestFlushSurvivesKill(t *testing.T) {
-	path := dbPath(t)
+// child runs TestFlushChild on path: send writes a line to its stdin, expect
+// reads its stdout up to a line starting with prefix and returns that line,
+// kill kills it and waits.
+type child struct {
+	t     *testing.T
+	cmd   *exec.Cmd
+	stdin io.WriteCloser
+	out   *bufio.Scanner
+	log   []string
+}
+
+func startChild(t *testing.T, path string) *child {
+	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=^TestFlushChild$", "-test.count=1", "-test.v")
 	cmd.Env = append(childEnviron(), childEnv+"="+path)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stdin.Close()
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		if cmd.Process != nil {
-			cmd.Process.Kill() //nolint:errcheck // may be dead already
-			cmd.Wait()         //nolint:errcheck // killed
-		}
-	})
+	c := &child{t: t, cmd: cmd, stdin: stdin, out: bufio.NewScanner(out)}
+	t.Cleanup(func() { stop(cmd) })
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	flushed := false
-	var log []string
-	for sc := bufio.NewScanner(out); sc.Scan(); {
-		log = append(log, sc.Text())
-		if sc.Text() == "flushed" {
-			flushed = true
-			break
+	return c
+}
+
+func (c *child) send(line string) {
+	c.t.Helper()
+	if _, err := fmt.Fprintln(c.stdin, line); err != nil {
+		c.t.Fatal(err)
+	}
+}
+
+func (c *child) expect(prefix string) string {
+	c.t.Helper()
+	for c.out.Scan() {
+		c.log = append(c.log, c.out.Text())
+		if strings.HasPrefix(c.out.Text(), prefix) {
+			return c.out.Text()
 		}
 	}
-	if err := cmd.Process.Kill(); err != nil {
-		t.Fatal(err)
+	c.t.Fatalf("the child never reported %q:\n%s", prefix, strings.Join(c.log, "\n"))
+	return ""
+}
+
+func (c *child) kill() { stop(c.cmd) }
+
+// stop kills cmd, if it still runs, and waits for it.
+func stop(cmd *exec.Cmd) {
+	if cmd.Process == nil {
+		return
 	}
-	cmd.Wait() //nolint:errcheck // killed
+	cmd.Process.Kill() //nolint:errcheck // may be dead already
+	cmd.Wait()         //nolint:errcheck // killed
 	cmd.Process = nil
-	if !flushed {
-		t.Fatalf("the child never flushed:\n%s", strings.Join(log, "\n"))
-	}
+}
+
+// TC-07 / DH-D-STORE-2: once Flush returns, the rows survive the death of the
+// process that wrote them, killed before it closed anything.
+func TestFlushSurvivesKill(t *testing.T) {
+	path := dbPath(t)
+	c := startChild(t, path)
+	c.expect("appended")
+	c.send("flush")
+	c.expect("flushed")
+	c.kill()
 	s := open(t, path)
 	r, err := s.OpenRead(bg, "s")
 	if err != nil {
@@ -374,11 +445,53 @@ func TestFlushSurvivesKill(t *testing.T) {
 		t.Fatalf("after the kill: %d records, %v; want 5", len(got), err)
 	}
 	sum, err := s.Stat(bg, "s")
-	if err != nil || sum.NextSeq != 5 || sum.Holder == nil {
-		t.Fatalf("Stat after the kill = %+v, %v; want 5 records and the dead holder's lease", sum, err)
+	if err != nil || sum.NextSeq != 5 || sum.Durable != 5 || sum.Holder == nil {
+		t.Fatalf("Stat after the kill = %+v, %v; want 5 durable records and the dead holder's lease", sum, err)
 	}
 }
 
+// session-store.md "What durable means": another process sees only durable
+// events. The child commits five appends and does not flush; this process,
+// another instance, must read exactly the events it reports durable, before
+// the child's flush, after it, and after the child is killed. The child's
+// write connection runs synchronous=FULL, which is what makes its unflushed
+// commits durable rather than merely visible.
+func TestOtherProcessSeesOnlyDurable(t *testing.T) {
+	path := dbPath(t)
+	c := startChild(t, path)
+	if line := c.expect("appended"); line != "appended sync=2" {
+		t.Fatalf("child reported %q; want its write connection at synchronous=FULL (2)", line)
+	}
+	s := open(t, path)
+	visibleIsDurable := func(when string, want store.Seq) {
+		t.Helper()
+		sum, err := s.Stat(bg, "s")
+		if err != nil {
+			t.Fatalf("%s: Stat: %v", when, err)
+		}
+		r, err := s.OpenRead(bg, "s")
+		if err != nil {
+			t.Fatalf("%s: OpenRead: %v", when, err)
+		}
+		got, err := r.Read(bg, 0, 0, store.ReadOptions{})
+		if err != nil {
+			t.Fatalf("%s: Read: %v", when, err)
+		}
+		if sum.NextSeq != want || sum.Durable != want || store.Seq(len(got)) != sum.Durable {
+			t.Fatalf("%s: another process reads %d events, Stat next %d durable %d; want %d of each",
+				when, len(got), sum.NextSeq, sum.Durable, want)
+		}
+		if sum.Holder == nil || sum.Holder.Instance == s.Instance() {
+			t.Fatalf("%s: holder %+v; want the child's", when, sum.Holder)
+		}
+	}
+	visibleIsDurable("before the child's flush", 5)
+	c.send("flush")
+	c.expect("flushed")
+	visibleIsDurable("after the child's flush", 5)
+	c.kill()
+	visibleIsDurable("after the child was killed", 5)
+}
 // childEnviron is this process's environment without DSH_HOME, so a child never
 // opens the developer's real home.
 func childEnviron() []string {
@@ -561,5 +674,166 @@ func TestRefusals(t *testing.T) {
 	}
 	if err := s.Flush(bg); !errors.Is(err, store.ErrClosed) {
 		t.Fatalf("Store.Flush after Close = %v", err)
+	}
+}
+
+// holdWriteLock takes the database's write lock from a connection outside the
+// store, as another process would, until the returned function releases it.
+func holdWriteLock(t *testing.T, path string) (release func()) {
+	t.Helper()
+	conn, err := fresh(t, path).Conn(bg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.ExecContext(bg, `BEGIN IMMEDIATE`); err != nil {
+		t.Fatal(err)
+	}
+	var once sync.Once
+	release = func() {
+		once.Do(func() {
+			if _, err := conn.ExecContext(bg, `ROLLBACK`); err != nil {
+				t.Error(err)
+			}
+			conn.Close()
+		})
+	}
+	t.Cleanup(release)
+	return release
+}
+
+// A release that fails (another process holds the write lock) keeps the
+// writer open and registered: Writer.Close and Store.Close both return the
+// error, change nothing, and succeed when called again, after which the lease
+// is free for an IfFree open elsewhere.
+func TestCloseRetriesAFailedRelease(t *testing.T) {
+	path := dbPath(t)
+	s, err := sqlite.Open(bg, path, sqlite.WithBusyTimeout(50*time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close(bg) })
+	w, err := s.Create(bg, store.Header{ID: "w"}, store.CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Create(bg, store.Header{ID: "u"}, store.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	other := open(t, path)
+	release := holdWriteLock(t, path)
+	busy := &store.Error{Code: sqlite.CodeBusy}
+	if err := w.Close(bg); !errors.Is(err, busy) {
+		t.Fatalf("Writer.Close under another process's write lock = %v, want %s", err, sqlite.CodeBusy)
+	}
+	if err := s.Close(bg); !errors.Is(err, busy) {
+		t.Fatalf("Store.Close under another process's write lock = %v, want %s", err, sqlite.CodeBusy)
+	}
+	for _, id := range []string{"w", "u"} {
+		if sum, err := other.Stat(bg, id); err != nil || sum.Holder == nil || sum.Holder.Instance != s.Instance() {
+			t.Fatalf("after the failed closes %s reads %+v, %v; want still held", id, sum, err)
+		}
+	}
+	if _, err := s.OpenWrite(bg, "w", store.OpenOptions{Takeover: store.Force}); !errors.Is(err, store.ErrClosed) {
+		t.Fatalf("OpenWrite on a closing store = %v, want %v", err, store.ErrClosed)
+	}
+	release()
+	if err := w.Close(bg); err != nil {
+		t.Fatalf("Writer.Close retried = %v", err)
+	}
+	ow, err := other.OpenWrite(bg, "w", store.OpenOptions{})
+	if err != nil {
+		t.Fatalf("IfFree after the retried Writer.Close = %v", err)
+	}
+	if err := ow.Close(bg); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := other.OpenWrite(bg, "u", store.OpenOptions{}); err == nil {
+		t.Fatal("IfFree took u before the failed Store.Close was retried")
+	}
+	if err := s.Close(bg); err != nil {
+		t.Fatalf("Store.Close retried = %v", err)
+	}
+	uw, err := other.OpenWrite(bg, "u", store.OpenOptions{})
+	if err != nil {
+		t.Fatalf("IfFree after the retried Store.Close = %v", err)
+	}
+	if err := uw.Close(bg); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(bg); err != nil {
+		t.Fatalf("Store.Close after success = %v", err)
+	}
+	if n := countWhere(t, fresh(t, path), `SELECT count(*) FROM hosts WHERE instance = ?`, s.Instance()); n != 0 {
+		t.Fatalf("%d host rows of the closed instance", n)
+	}
+}
+
+func countWhere(t *testing.T, db *sql.DB, q string, args ...any) int64 {
+	t.Helper()
+	var n int64
+	if err := db.QueryRow(q, args...).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// OpenWrite and Create racing Store.Close: each either returns session/closed
+// having changed nothing, or returns a writer whose lease Close releases. No
+// round leaves a lease held by the closed instance.
+func TestCloseRacingAcquisitions(t *testing.T) {
+	const rounds, n = 20, 8
+	for round := range rounds {
+		path := dbPath(t)
+		s, err := sqlite.Open(bg, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { s.Close(bg) })
+		for i := range n {
+			if err := s.Seed(bg, store.Header{ID: fmt.Sprintf("o%d", i)}, nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var (
+			wg       sync.WaitGroup
+			start    = make(chan struct{})
+			errs     = make(chan error, 2*n)
+			closeErr error
+		)
+		for i := range n {
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				<-start
+				_, err := s.OpenWrite(bg, fmt.Sprintf("o%d", i), store.OpenOptions{})
+				errs <- err
+			}()
+			go func() {
+				defer wg.Done()
+				<-start
+				_, err := s.Create(bg, store.Header{ID: fmt.Sprintf("c%d", i)}, store.CreateOptions{})
+				errs <- err
+			}()
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			closeErr = s.Close(bg)
+		}()
+		close(start)
+		wg.Wait()
+		close(errs)
+		if closeErr != nil {
+			t.Fatalf("round %d: Close = %v", round, closeErr)
+		}
+		for err := range errs {
+			if err != nil && !errors.Is(err, store.ErrClosed) {
+				t.Fatalf("round %d: acquisition racing Close = %v", round, err)
+			}
+		}
+		if held := countWhere(t, fresh(t, path), `SELECT count(*) FROM sessions WHERE lease_holder IS NOT NULL`); held != 0 {
+			t.Fatalf("round %d: %d leases left held by the closed instance", round, held)
+		}
 	}
 }

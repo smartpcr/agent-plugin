@@ -50,6 +50,8 @@ func scanRow(sc scanner) (row, error) {
 	}
 	h.CreatedAt = time.Unix(0, r.created)
 	h.ForkThrough, h.InheritedCount, h.DelegationDepth = store.Seq(forkThrough), int(inherited), int(depth)
+	// Every commit is synced before it returns (synchronous=FULL), so every
+	// committed record is durable, whichever instance committed it.
 	r.sum.NextSeq, r.sum.Durable, r.sum.LeaseEpoch = store.Seq(next), store.Seq(next), uint64(epoch)
 	if holder.Valid {
 		r.sum.Holder = &store.Holder{Instance: holder.String, PID: int(pid), Kind: kind, Since: time.Unix(0, since)}
@@ -202,42 +204,13 @@ func (s *Store) eventNanos(ms int64) int64 {
 	return s.now().UnixNano()
 }
 
-// markPending records that session uid has commits past durable, the count
-// that was durable before them; the next barrier clears it.
-func (s *Store) markPending(uid int64, durable store.Seq) {
-	s.dmu.Lock()
-	defer s.dmu.Unlock()
-	if _, ok := s.pending[uid]; !ok {
-		s.pending[uid] = durable
-	}
-}
-
-// durable is Summary.Durable of r.
-func (s *Store) durable(r row) store.Seq {
-	s.dmu.Lock()
-	defer s.dmu.Unlock()
-	if d, ok := s.pending[r.uid]; ok {
-		return d
-	}
-	return r.sum.NextSeq
-}
-
-// clearPending runs after a barrier committed: every commit is durable.
-func (s *Store) clearPending() {
-	s.dmu.Lock()
-	clear(s.pending)
-	s.dmu.Unlock()
-}
-
-// track and untrack keep the writers Store.Close closes.
-func (s *Store) track(w *writer) error {
+// register and untrack keep the writers Store.Close releases. Both run with
+// wmu held: register after admit and the lease's commit, untrack after the
+// release's commit.
+func (s *Store) register(w *writer) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
-		return store.Errorf(store.CodeClosed, "the store is closed")
-	}
 	s.writers[w] = struct{}{}
-	return nil
+	s.mu.Unlock()
 }
 
 func (s *Store) untrack(w *writer) {

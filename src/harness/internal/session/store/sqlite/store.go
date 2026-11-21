@@ -28,6 +28,9 @@ func (s *Store) Create(ctx context.Context, h store.Header, o store.CreateOption
 	var uid int64
 	s.wmu.Lock()
 	defer s.wmu.Unlock()
+	if err := s.admit(); err != nil {
+		return nil, err
+	}
 	err := s.writeLocked(ctx, func(tx *sql.Tx) error {
 		if err := absent(ctx, tx, h.ID); err != nil {
 			return err
@@ -91,17 +94,10 @@ func (s *Store) Create(ctx context.Context, h store.Header, o store.CreateOption
 	if err != nil {
 		return nil, err
 	}
-	if o.ForkOf != nil {
-		// The child's copy is durable, so the parent's inherited prefix must be
-		// too, or a crash could let the parent rewrite seqs the child holds.
-		if err := s.barrierLocked(ctx); err != nil {
-			return nil, err
-		}
-	}
+	// Registered before wmu is released: a Close that began meanwhile waits
+	// for wmu and then releases this lease.
 	w := &writer{reader: reader{s: s, id: h.ID, uid: uid, header: h}, epoch: 1}
-	if err := s.track(w); err != nil {
-		return nil, err
-	}
+	s.register(w)
 	return w, nil
 }
 
@@ -128,7 +124,12 @@ func (s *Store) OpenWrite(ctx context.Context, id string, o store.OpenOptions) (
 		r     row
 		epoch uint64
 	)
-	err := s.write(ctx, func(tx *sql.Tx) error {
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
+	if err := s.admit(); err != nil {
+		return nil, err
+	}
+	err := s.writeLocked(ctx, func(tx *sql.Tx) error {
 		var err error
 		if r, err = liveByID(ctx, tx, id); err != nil {
 			return err
@@ -152,9 +153,7 @@ func (s *Store) OpenWrite(ctx context.Context, id string, o store.OpenOptions) (
 		return nil, err
 	}
 	w := &writer{reader: reader{s: s, id: id, uid: r.uid, header: r.sum.Header}, epoch: epoch}
-	if err := s.track(w); err != nil {
-		return nil, err
-	}
+	s.register(w)
 	return w, nil
 }
 
@@ -195,7 +194,6 @@ func (s *Store) Stat(ctx context.Context, id string) (store.Summary, error) {
 	if err != nil {
 		return store.Summary{}, err
 	}
-	r.sum.Durable = s.durable(r)
 	return r.sum, nil
 }
 
@@ -253,7 +251,6 @@ func (s *Store) List(ctx context.Context, q store.Query) (store.Page, error) {
 			page.Next = cursor{last: last.last, created: last.created, id: last.sum.Header.ID}.String()
 			break
 		}
-		r.sum.Durable = s.durable(r)
 		page.Summaries = append(page.Summaries, r.sum)
 	}
 	return page, nil
@@ -285,8 +282,7 @@ func (s *Store) Delete(ctx context.Context, id string, _ store.DeleteOptions) er
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	var uid int64
-	err := s.write(ctx, func(tx *sql.Tx) error {
+	return s.write(ctx, func(tx *sql.Tx) error {
 		r, err := liveByID(ctx, tx, id)
 		if err != nil {
 			return err
@@ -294,7 +290,7 @@ func (s *Store) Delete(ctx context.Context, id string, _ store.DeleteOptions) er
 		if r.sum.Holder != nil {
 			return &store.OwnedError{ID: id, Holder: *r.sum.Holder}
 		}
-		uid = r.uid
+		uid := r.uid
 		for _, q := range []string{
 			`UPDATE sessions SET state = 'deleting' WHERE uid = ?`,
 			`DELETE FROM events WHERE session = ?`,
@@ -307,15 +303,10 @@ func (s *Store) Delete(ctx context.Context, id string, _ store.DeleteOptions) er
 		}
 		return nil
 	})
-	if err == nil {
-		s.dmu.Lock()
-		delete(s.pending, uid)
-		s.dmu.Unlock()
-	}
-	return err
 }
 
-// Flush implements store.Store: a barrier over every commit of this instance.
+// Flush implements store.Store: it returns once every commit of this instance
+// is durable.
 func (s *Store) Flush(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -340,9 +331,7 @@ func (s *Store) Seed(ctx context.Context, h store.Header, recs []store.Record) e
 	if n := len(recs); n > 0 && recs[n-1].Time > 0 {
 		last = s.eventNanos(recs[n-1].Time)
 	}
-	s.wmu.Lock()
-	defer s.wmu.Unlock()
-	err := s.writeLocked(ctx, func(tx *sql.Tx) error {
+	return s.write(ctx, func(tx *sql.Tx) error {
 		if err := absent(ctx, tx, h.ID); err != nil {
 			return err
 		}
@@ -365,8 +354,4 @@ func (s *Store) Seed(ctx context.Context, h store.Header, recs []store.Record) e
 		_, err = tx.ExecContext(ctx, `UPDATE sessions SET bytes = ? WHERE uid = ?`, size, uid)
 		return err
 	})
-	if err != nil {
-		return err
-	}
-	return s.barrierLocked(ctx)
 }
