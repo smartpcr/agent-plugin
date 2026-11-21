@@ -112,6 +112,9 @@ type State struct {
 	ApplyErr error
 	// Audit
 	Audit Audit
+	// Sharing is the gate every outbound permit comes from; nil until the audit
+	// builds one from the launch environment with every kind off.
+	Sharing *sharing.Gate
 	// Ready: the validated reload and the one edit path of the layers, when the
 	// profile reloads (DH-D-BOOT-7).
 	Config     *config.Service
