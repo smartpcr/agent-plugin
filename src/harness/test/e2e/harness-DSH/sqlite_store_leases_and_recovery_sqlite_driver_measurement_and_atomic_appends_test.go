@@ -29,8 +29,12 @@ import (
 // need a real *testing.T, which godog's per-scenario TestingT does not expose.
 var sdmaOuterT *testing.T
 
-// The budgets of fact F-2 (DH-T-STORE-18), compiled in so no environment can
-// relax them; the same figures TestBudgetStoreAppend enforces.
+// The append budgets of fact F-2 (DH-T-STORE-18), compiled in so no environment
+// can relax them. They are this suite's own copy, not shared with
+// budgetAppendP95 and budgetAppendFlushP95 in
+// internal/session/store/sqlite/budget_test.go: nothing keeps the two in step,
+// so a change to F-2 must update both. underBudget also checks each figure
+// against the one the feature file names.
 const (
 	sdmaBudgetAppendP95      = 10 * time.Millisecond
 	sdmaBudgetAppendFlushP95 = 50 * time.Millisecond
@@ -375,6 +379,11 @@ func (s *sdmaState) pinnedDriver() error {
 	return nil
 }
 
+// runBudget is an independent re-measurement, not a run of TestBudgetStoreAppend:
+// it repeats that test's append loop (n single-event appends, each followed by a
+// flush, the append timed apart) against a fresh dsh.db from this suite, and does
+// not repeat its open/reopen timings. The step keeps the test's name so the
+// feature reads against the unit test it mirrors.
 func (s *sdmaState) runBudget(n int) error {
 	return sdmaRun("budget-store-append", func(t *testing.T) {
 		st := sdmaOpen(t, sdmaDBPath(t))
