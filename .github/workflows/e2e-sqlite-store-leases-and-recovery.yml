@@ -1,5 +1,5 @@
-# Stage 7.1 and 7.2 E2E (SQLite driver measurement and atomic appends; session
-# leases and crash recovery).
+# Stage 7.1 to 7.3 E2E (SQLite driver measurement and atomic appends; session
+# leases and crash recovery; export, import, follow and store repair).
 #
 #   e2e      the gate path: godog scenarios with -tags e2e on Linux, macOS and
 #            Windows. service:sqlite is embedded (modernc.org/sqlite compiled into
