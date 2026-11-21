@@ -72,7 +72,14 @@ func New(blobs *blob.Store, cfg Config) (*Store, error) {
 
 // SaveFile stores the bytes of r verbatim as a file named name (sanitised to one
 // safe segment). Equal bytes are one object; each distinct name gets its link.
+// gc.lock is held shared across both Put and the link, so the collector cannot
+// remove the object between its publish and its named link.
 func (s *Store) SaveFile(ctx context.Context, name string, r io.Reader) (FileRef, error) {
+	lock, err := s.lockShared(ctx)
+	if err != nil {
+		return FileRef{}, err
+	}
+	defer lock.Unlock()
 	ref, err := s.blobs.Put(ctx, blob.KindFile, r, s.cfg.MaxFileBytes)
 	if err != nil {
 		return FileRef{}, err
@@ -82,6 +89,20 @@ func (s *Store) SaveFile(ctx context.Context, name string, r io.Reader) (FileRef
 		return FileRef{}, err
 	}
 	return fr, nil
+}
+
+// lockShared takes <home>/blobs/gc.lock shared, as blob.Put does. Put's own
+// shared lock nests on a separate handle; shared locks are compatible and fsx
+// polls non-blocking, so a waiting collector cannot deadlock the nesting.
+func (s *Store) lockShared(ctx context.Context) (*fsx.FileLock, error) {
+	l, err := fsx.LockShared(ctx, filepath.Join(filepath.Dir(s.blobs.Dir()), blob.GCLock))
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, err
+		}
+		return nil, herr.Wrap(home.ReasonIO, err, "attachments: take "+blob.GCLock+" shared")
+	}
+	return l, nil
 }
 
 // link makes the read-only named link of a stored file and syncs its directory;
