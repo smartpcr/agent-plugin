@@ -22,6 +22,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store/memstore"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store/sqlite"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store/storetest"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/temphome"
 )
 
@@ -56,6 +57,30 @@ func sdmaDBPath(t *testing.T) string {
 		return filepath.Join(dir, "dsh.db")
 	}
 	return temphome.New(t).DB()
+}
+
+// sdmaScenarioDBPath is sdmaDBPath for a store that outlives the step's subtest:
+// it fails with an error rather than through any *testing.T, and hands back the
+// directory's removal for the scenario's After hook to run once the store is closed.
+func sdmaScenarioDBPath() (string, func(), error) {
+	if base := os.Getenv("DSH_E2E_STORE_HOME"); base != "" {
+		dir, err := os.MkdirTemp(base, "e2e-case-")
+		if err != nil {
+			return "", nil, err
+		}
+		return filepath.Join(dir, "dsh.db"), func() { os.RemoveAll(dir) }, nil
+	}
+	dir, err := os.MkdirTemp("", "dsh-e2e-home-")
+	if err != nil {
+		return "", nil, err
+	}
+	remove := func() { os.RemoveAll(dir) }
+	l := home.New(filepath.Join(dir, "home"))
+	if err := home.Ensure(l); err != nil {
+		remove()
+		return "", nil, err
+	}
+	return l.DB(), remove, nil
 }
 
 func sdmaOpen(t *testing.T, path string) *sqlite.Store {
@@ -248,7 +273,12 @@ func (s *sdmaState) everyCaseOwnWAL() error {
 
 func (s *sdmaState) emptySession(id string) error {
 	return sdmaRun("atomic-setup", func(t *testing.T) {
-		s.path = sdmaDBPath(sdmaOuterT)
+		path, remove, err := sdmaScenarioDBPath()
+		if err != nil {
+			t.Fatalf("store home: %v", err)
+		}
+		s.cleanups = append(s.cleanups, remove)
+		s.path = path
 		st, err := sqlite.Open(sdmaBG, s.path)
 		if err != nil {
 			t.Fatalf("sqlite.Open: %v", err)
