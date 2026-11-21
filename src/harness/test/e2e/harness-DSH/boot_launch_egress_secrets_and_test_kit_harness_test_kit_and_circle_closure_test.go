@@ -77,6 +77,7 @@ type htkcState struct {
 	// virtual clock
 	clk     *clock.Manual
 	done    chan time.Time
+	wait    time.Duration
 	advance time.Duration
 	wall    time.Duration
 
@@ -121,7 +122,10 @@ func (s *htkcState) componentWaiting(seconds int) error {
 	root := testkit.Tree(t)
 	s.clk = clock.NewManual(htkcEpoch)
 	s.done = make(chan time.Time, 1)
-	wait := time.Duration(seconds) * time.Second
+	s.wait = time.Duration(seconds) * time.Second
+	wait := s.wait
+	s.advance = 0
+	s.wall = 0
 	fiber, err := root.Apply("waiter", func(ctx *cordis.Context) error {
 		deadline := s.clk.After(wait)
 		go func() {
@@ -174,14 +178,14 @@ func (s *htkcState) advanceLast() error {
 	select {
 	case at := <-s.done:
 		s.wall += time.Since(start)
-		want := htkcEpoch.Add(30 * time.Second)
+		want := htkcEpoch.Add(s.wait)
 		if !at.Equal(want) {
 			return fmt.Errorf("the wait completed at %v, want %v", at, want)
 		}
 		s.done <- at
 		return nil
 	case <-time.After(time.Second):
-		return errors.New("advancing the clock to 30 s did not complete the wait")
+		return fmt.Errorf("advancing the clock to %v did not complete the wait", s.wait)
 	}
 }
 
@@ -194,7 +198,7 @@ func (s *htkcState) completedAtDeadline(seconds int) error {
 	default:
 		return errors.New("the wait has not completed")
 	}
-	if !s.clk.Now().Equal(htkcEpoch.Add(30 * time.Second)) {
+	if want := htkcEpoch.Add(time.Duration(seconds) * time.Second); !s.clk.Now().Equal(want) || s.wait != time.Duration(seconds)*time.Second {
 		return fmt.Errorf("the clock reads %v", s.clk.Now())
 	}
 	if s.clk.Waiters() != 0 {
@@ -205,7 +209,7 @@ func (s *htkcState) completedAtDeadline(seconds int) error {
 
 func (s *htkcState) wallUnder(ms int) error {
 	if s.wall >= time.Duration(ms)*time.Millisecond {
-		return fmt.Errorf("the 30 s wait took %v of wall time, want under %d ms", s.wall, ms)
+		return fmt.Errorf("the %v wait took %v of wall time, want under %d ms", s.wait, s.wall, ms)
 	}
 	return nil
 }
