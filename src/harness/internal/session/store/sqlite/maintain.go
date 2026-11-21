@@ -512,6 +512,9 @@ type RebuildReport struct {
 	// Differences names every stored checkpoint that differs from the refold
 	// (with Verify) or that the rebuild replaced.
 	Differences []string
+	// Conflicts names every session a whole-home rebuild left as it was because
+	// it grew during its refold (session/seq-conflict); the others still ran.
+	Conflicts []string
 }
 
 // Rebuild is the one operation that discards derived data and refolds it
@@ -519,7 +522,9 @@ type RebuildReport struct {
 // replays the events through o.Refold and, in one write transaction per session,
 // replaces the stored checkpoints with the refolded ones. A session that grew
 // between the refold and the write is refused with session/seq-conflict and left
-// as it was. With o.Verify it compares and changes nothing. The checkpoints are
+// as it was: a one-session rebuild returns that error, a whole-home rebuild
+// records the session in RebuildReport.Conflicts and goes on with the others.
+// With o.Verify it compares and changes nothing. The checkpoints are
 // the only derived rows this layout holds; A06's view rows and the search
 // documents join this operation when their tables exist.
 func (s *Store) Rebuild(ctx context.Context, o RebuildOptions) (RebuildReport, error) {
@@ -570,8 +575,8 @@ func (s *Store) Rebuild(ctx context.Context, o RebuildOptions) (RebuildReport, e
 		}
 		diff := diffCheckpoints(id, stored, got)
 		rep.Sessions++
-		rep.Differences = append(rep.Differences, diff...)
 		if o.Verify || len(diff) == 0 {
+			rep.Differences = append(rep.Differences, diff...)
 			continue
 		}
 		if err := s.write(ctx, func(tx *sql.Tx) error {
@@ -597,8 +602,13 @@ func (s *Store) Rebuild(ctx context.Context, o RebuildOptions) (RebuildReport, e
 			}
 			return nil
 		}); err != nil {
+			if o.Session == "" && errors.Is(err, store.ErrSeqConflict) {
+				rep.Conflicts = append(rep.Conflicts, id)
+				continue
+			}
 			return rep, err
 		}
+		rep.Differences = append(rep.Differences, diff...)
 	}
 	return rep, nil
 }
