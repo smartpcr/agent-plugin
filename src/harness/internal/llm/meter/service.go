@@ -90,9 +90,11 @@ type Measurement struct {
 // owner, under the request header h. The calibration factor is the last
 // sample's provider-reported prompt over the heuristic's price of that same
 // request envelope: the nodes up to the sample's requestAsOf, under the header
-// then in force. It applies only while that envelope is still the surface's
-// prefix: no surface replacement since the sample and no header change after
-// its request. Otherwise, or with Calibrate off, the factor is 1.
+// then in force, priced from the surface while that envelope is still its
+// prefix. Once a replacement or a header change has rewritten it, the factor
+// is the last such ratio the contextPressure fold took on an intact envelope,
+// so the new envelope is scaled by it rather than measured raw (llm.md,
+// token-meter.4). Before any sample, or with Calibrate off, the factor is 1.
 func (m *Meter) Measure(ctx context.Context, s session.ReadSession, h surface.RequestHeader) (Measurement, error) {
 	for range 3 {
 		snap, err := m.reg.Read(ctx, s, PressureKey)
@@ -126,10 +128,16 @@ func (m *Meter) Measure(ctx context.Context, s session.ReadSession, h surface.Re
 			continue
 		}
 		out := Measurement{AsOf: snap.AsOf, Estimate: total + EstimateHeader(h), Factor: 1}
-		if m.cfg.Calibrate && p.Sample != nil && !p.Rewritten && sameHeader && cur.Seq <= p.Sample.RequestAsOf {
-			if est := request + EstimateHeader(cur); p.Sample.Prompt > 0 && est > 0 {
+		switch {
+		case !m.cfg.Calibrate:
+		case p.Sample != nil && !p.Rewritten && sameHeader && cur.Seq <= p.Sample.RequestAsOf && p.Sample.Prompt > 0:
+			// The sample's envelope is still the surface's prefix: price it now.
+			if est := request + EstimateHeader(cur); est > 0 {
 				out.Factor, out.Calibrated = Calibration(p.Sample.Prompt, est), true
 			}
+		case p.Factor > 0:
+			// Rewritten since: the last ratio taken on an intact envelope.
+			out.Factor, out.Calibrated = p.Factor, true
 		}
 		out.Tokens = Calibrated(out.Estimate, out.Factor)
 		return out, nil
@@ -180,9 +188,13 @@ func (m *Meter) EstimateMessage(msg vocab.Message) int { return EstimateMessage(
 
 // EstimateHeader is the heuristic's tokens of a request header's tool schemas:
 // each tool's name, description and parameter document, plus a block's framing.
-func EstimateHeader(h surface.RequestHeader) int {
+func EstimateHeader(h surface.RequestHeader) int { return EstimateTools(h.Tools) }
+
+// EstimateTools is the heuristic's tokens of tool schemas: each tool's name,
+// description and parameter document, plus a block's framing.
+func EstimateTools(tools []vocab.ToolSchema) int {
 	n := 0
-	for _, t := range h.Tools {
+	for _, t := range tools {
 		n += BlockTokens + EstimateText(t.Name) + EstimateText(t.Description) + EstimateBytes(len(t.Parameters))
 	}
 	return n

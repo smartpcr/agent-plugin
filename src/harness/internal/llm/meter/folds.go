@@ -72,18 +72,58 @@ func UsageView() views.Definition[Usage] {
 	}
 }
 
-// SystemPrice is one retained system prompt's seq and estimated tokens.
+// SystemPrice is one retained system prompt's seq, its order key and its
+// estimated tokens.
 type SystemPrice struct {
 	Seq    event.Seq `json:"seq"`
+	Key    event.Seq `json:"key"`
 	Tokens int       `json:"tokens"`
 }
 
+// Anchor is the order key of a retained node that replaced others (a
+// compaction's summary, a spilled tool result): the key of the first node it
+// replaced, which is the position it took.
+type Anchor struct {
+	Seq event.Seq `json:"seq"`
+	Key event.Seq `json:"key"`
+}
+
 // Breakdown is the contextBreakdown fold's state: one price per system prompt
-// the surface retains, in surface order, and their running total. It holds
-// nothing per message.
+// the surface retains, in surface order, and their running total. It holds no
+// price per message.
+//
+// Surface order is an order key per retained node: an appended node's key is
+// its seq; a replacement's node takes the key of the first node it replaces.
+// Keys rise along the surface, so a replacement of Start..End removes exactly
+// the nodes whose key lies between Start's and End's keys. A source it cites
+// outside that range (provenance) stays. Only a node that replaced others has
+// a key other than its seq, so only those are kept (Anchors), and an anchor
+// goes when its node is replaced: the state grows with the retained rewritten
+// nodes, never with the appended messages.
 type Breakdown struct {
 	System      []SystemPrice `json:"system,omitempty"`
 	SystemTotal int           `json:"system_total"`
+	Anchors     []Anchor      `json:"anchors,omitempty"`
+}
+
+// key is the order key of the retained node at seq.
+func (s Breakdown) key(seq event.Seq) event.Seq {
+	for _, p := range s.System {
+		if p.Seq == seq {
+			return p.Key
+		}
+	}
+	for _, a := range s.Anchors {
+		if a.Seq == seq {
+			return a.Key
+		}
+	}
+	return seq
+}
+
+// isSystem reports whether the retained node at seq is a priced system prompt.
+func (s Breakdown) isSystem(seq event.Seq) bool {
+	return slices.ContainsFunc(s.System, func(p SystemPrice) bool { return p.Seq == seq })
 }
 
 // surfaceTypes are the five surface event types, the ones that change history.
@@ -95,7 +135,7 @@ var surfaceTypes = []string{
 // BreakdownView is the contextBreakdown fold over the surface events.
 func BreakdownView() views.Definition[Breakdown] {
 	return views.Definition[Breakdown]{
-		Key: BreakdownKey, Version: 1, Stored: true, Types: surfaceTypes,
+		Key: BreakdownKey, Version: 2, Stored: true, Types: surfaceTypes,
 		Init: func(session.Header) Breakdown { return Breakdown{} },
 		Apply: func(s Breakdown, ev event.Event) (Breakdown, bool) {
 			m, ok := surfaceMessage(ev)
@@ -103,50 +143,62 @@ func BreakdownView() views.Definition[Breakdown] {
 				return s, false
 			}
 			next := s.step(ev, m)
-			return next, !slices.Equal(next.System, s.System)
+			return next, !slices.Equal(next.System, s.System) || !slices.Equal(next.Anchors, s.Anchors)
 		},
 	}
 }
 
 // step is s after the surface event ev carrying m, applied as the surface does
-// (surface/history.go): a replacement removes the prices of every system prompt
-// it replaces, whatever its own type (a compaction may cover a later system
-// prompt), and a system prompt is priced only when it leaves a node, so an
-// empty system replacement removes the price and adds none. The list is
-// rebuilt, never written in place, so an earlier state shares nothing with it.
+// (surface/history.go): a replacement removes the prices of the system prompts
+// in its range, whatever its own type (a compaction may cover a later system
+// prompt), and keeps those it only cites; a system prompt is priced only when
+// it leaves a node, so an empty system replacement removes the price and adds
+// none. The lists are rebuilt, never written in place, so an earlier state
+// shares nothing with it.
 func (s Breakdown) step(ev event.Event, m vocab.Message) Breakdown {
 	op := ev.Op()
-	replaced := map[event.Seq]bool{}
+	in := func(event.Seq) bool { return false }
+	key := ev.Seq()
 	if op.Kind == event.OpReplace {
-		replaced[op.Start], replaced[op.End] = true, true
-		for _, q := range ev.Sources() {
-			replaced[q] = true
-		}
+		from, to := s.key(op.Start), s.key(op.End)
+		in = func(k event.Seq) bool { return k >= from && k <= to }
+		key = from
 	}
 	kept := make([]SystemPrice, 0, len(s.System)+1)
-	at := -1
 	for _, p := range s.System {
-		if replaced[p.Seq] {
-			if at < 0 {
-				at = len(kept)
-			}
-			continue
-		}
-		kept = append(kept, p)
-	}
-	if ev.Type() == event.SystemMessage.Name() && retained(ev.Type(), m) {
-		p := SystemPrice{Seq: ev.Seq(), Tokens: EstimateMessage(m)}
-		if at < 0 {
+		if !in(p.Key) {
 			kept = append(kept, p)
-		} else {
-			kept = slices.Insert(kept, at, p)
+		}
+	}
+	anchors := make([]Anchor, 0, len(s.Anchors)+1)
+	for _, a := range s.Anchors {
+		if !in(a.Key) {
+			anchors = append(anchors, a)
+		}
+	}
+	if retained(ev.Type(), m) {
+		switch {
+		case ev.Type() == event.SystemMessage.Name():
+			at := len(kept)
+			for i, p := range kept {
+				if p.Key > key {
+					at = i
+					break
+				}
+			}
+			kept = slices.Insert(kept, at, SystemPrice{Seq: ev.Seq(), Key: key, Tokens: EstimateMessage(m)})
+		case key != ev.Seq():
+			anchors = append(anchors, Anchor{Seq: ev.Seq(), Key: key})
 		}
 	}
 	n := 0
 	for _, p := range kept {
 		n += p.Tokens
 	}
-	return Breakdown{System: kept, SystemTotal: n}
+	if len(anchors) == 0 {
+		anchors = nil
+	}
+	return Breakdown{System: kept, SystemTotal: n, Anchors: anchors}
 }
 
 // Sample is the last provider-reported context: the usage of a settled step
@@ -162,8 +214,20 @@ type Sample struct {
 // Pressure is the contextPressure fold's state: the last sample, the system
 // prompts' prices, their total when the sample was taken, the heuristic price
 // of the nodes appended since the sample, and whether any surface replacement
-// happened since it (Rewritten) and whether one of them was not a system
-// prompt's (Compacted). Bounded: it does not grow with the log.
+// happened since it (Rewritten) and whether one of them removed a node other
+// than a system prompt (Compacted).
+//
+// It also carries the session's calibration factor. Surface is the
+// heuristic's running price of the retained non-system nodes and Header that of
+// the request header's tools; both are exact until a replacement removes a
+// node whose price the bounded state does not keep (Inexact). At a sample whose
+// request was the fold's latest state (nothing on the surface or the header
+// changed after its requestAsOf) and while the running price is exact, Factor
+// is the sample's reported prompt over the heuristic's price of that same
+// request envelope. Otherwise Factor keeps the last such ratio, so a compaction
+// or a header change scales the estimate by it rather than dropping back to
+// the raw heuristic (llm.md, token-meter.4). Bounded: it grows with the log
+// only as Breakdown does.
 type Pressure struct {
 	Sample         *Sample   `json:"sample,omitempty"`
 	System         Breakdown `json:"system"`
@@ -171,6 +235,11 @@ type Pressure struct {
 	AppendedSince  int       `json:"appended_since,omitempty"`
 	Rewritten      bool      `json:"rewritten,omitempty"`
 	Compacted      bool      `json:"compacted,omitempty"`
+	Surface        int       `json:"surface,omitempty"`
+	Header         int       `json:"header,omitempty"`
+	Inexact        bool      `json:"inexact,omitempty"`
+	Changed        event.Seq `json:"changed,omitempty"`
+	Factor         float64   `json:"factor,omitempty"`
 }
 
 // Projected is the context the next request is projected to occupy: the
@@ -191,39 +260,58 @@ func (p Pressure) Projected() int {
 // of 0 or less.
 func (p Pressure) Fraction(window int) float64 { return fraction(p.Projected(), window) }
 
-// PressureView is the contextPressure fold over the surface events.
+// PressureView is the contextPressure fold over the surface events and the
+// request header.
 func PressureView() views.Definition[Pressure] {
 	return views.Definition[Pressure]{
-		Key: PressureKey, Version: 1, Stored: true, Types: surfaceTypes,
+		Key: PressureKey, Version: 2, Stored: true, Types: append(slices.Clone(surfaceTypes), event.RequestHeader.Name()),
 		Init: func(session.Header) Pressure { return Pressure{} },
 		Apply: func(s Pressure, ev event.Event) (Pressure, bool) {
+			if ev.Type() == event.RequestHeader.Name() {
+				p, err := event.RequestHeader.As(ev)
+				if err != nil {
+					return s, false
+				}
+				s.Header, s.Changed = EstimateTools(p.Tools), ev.Seq()
+				return s, true
+			}
 			m, ok := surfaceMessage(ev)
 			if !ok {
 				return s, false
 			}
+			op := ev.Op()
+			if op.Kind == event.OpReplace {
+				// Only a system prompt replacing exactly one system prompt
+				// keeps the running price exact: the breakdown reprices it.
+				if !(ev.Type() == event.SystemMessage.Name() && op.Start == op.End && s.System.isSystem(op.Start)) {
+					s.Inexact, s.Compacted = true, true
+				}
+				s.Rewritten = true
+			}
 			s.System = s.System.step(ev, m)
-			if ev.Type() == event.AssistantMessage.Name() && ev.Op().Kind == event.OpAppend {
+			if ev.Type() == event.AssistantMessage.Name() && op.Kind == event.OpAppend {
 				if p, err := event.AssistantMessage.As(ev); err == nil && p.Usage != nil {
 					asOf := ev.Seq()
 					if p.RequestAsOf != nil {
 						asOf = *p.RequestAsOf
 					}
+					if !s.Inexact && s.Changed <= asOf {
+						s.Factor = Calibration(Prompt(*p.Usage), s.Surface+s.System.SystemTotal+s.Header)
+					}
 					s.Sample = &Sample{Seq: ev.Seq(), RequestAsOf: asOf, RequestDigest: p.RequestDigest,
 						Prompt: Prompt(*p.Usage), Output: p.Usage.Output}
 					s.SystemAtSample, s.AppendedSince = s.System.SystemTotal, 0
 					s.Rewritten, s.Compacted = false, false
+					s.Surface += EstimateMessage(m)
+					s.Changed = ev.Seq()
 					return s, true
-				}
-			}
-			if ev.Op().Kind == event.OpReplace {
-				s.Rewritten = true
-				if ev.Type() != event.SystemMessage.Name() {
-					s.Compacted = true
 				}
 			}
 			if ev.Type() != event.SystemMessage.Name() && retained(ev.Type(), m) {
 				s.AppendedSince += EstimateMessage(m)
+				s.Surface += EstimateMessage(m)
 			}
+			s.Changed = ev.Seq()
 			return s, true
 		},
 	}

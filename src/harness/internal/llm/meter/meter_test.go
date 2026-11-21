@@ -100,11 +100,12 @@ func TestUsageFoldedFromSettlements(t *testing.T) {
 	if a, b := len(must(json.Marshal(got))), len(must(json.Marshal(long))); a != b {
 		t.Fatalf("usage grew from %d to %d bytes over 200 messages", a, b)
 	}
-	// Pressure carries a running total of what was appended since the sample:
-	// 20 and 200 messages later its state differs by one digit only.
+	// Pressure carries running totals (appended since the sample, the
+	// surface's price) and the last change's seq: 20 and 200 messages later
+	// its state differs by a digit each only.
 	few := views.Refold(meter.PressureView(), session.Header{}, more[:26])
 	lp := views.Refold(meter.PressureView(), session.Header{}, more)
-	if a, b := len(must(json.Marshal(few))), len(must(json.Marshal(lp))); b > a+1 {
+	if a, b := len(must(json.Marshal(few))), len(must(json.Marshal(lp))); b > a+3 {
 		t.Fatalf("pressure grew from %d to %d bytes over 180 messages", a, b)
 	}
 
@@ -257,16 +258,32 @@ func TestSystemPricesFollowTheSurface(t *testing.T) {
 	}
 	cases := []struct {
 		name  string
-		last  event.Event
+		tail  []event.Event
 		total int
 	}{
-		{"an empty system replacement", system(t, 4, event.Replace(2, 2), "  \n"), frame + 10},
-		{"a compaction over a later system prompt", summary(t, 4, event.Replace(1, 3)), frame + 10},
-		{"a system replacement over a range", system(t, 4, event.Replace(1, 3), short), 2 * (frame + 10)},
-		{"a compaction that leaves the system prompts", summary(t, 4, event.Replace(3, 3)), 2 * (frame + 10)},
+		{"an empty system replacement", []event.Event{system(t, 4, event.Replace(2, 2), "  \n")}, frame + 10},
+		{"a compaction over a later system prompt", []event.Event{summary(t, 4, event.Replace(1, 3))}, frame + 10},
+		{"a system replacement over a range", []event.Event{system(t, 4, event.Replace(1, 3), short)}, 2 * (frame + 10)},
+		{"a compaction that leaves the system prompts", []event.Event{summary(t, 4, event.Replace(3, 3))}, 2 * (frame + 10)},
+		// A citation outside the range is provenance: system 0 stays.
+		{"a replacement citing a retained system prompt", []event.Event{system(t, 4, event.Replace(2, 2), short, 0, 2)}, 2 * (frame + 10)},
+		{"a compaction citing a retained system prompt", []event.Event{summary(t, 4, event.Replace(3, 3), 0, 2, 3)}, 2 * (frame + 10)},
+		// A replacement's node takes the position of the first node it
+		// replaced: the range 4..5 runs from the summary at user 1's place to
+		// user 5, so it covers system 2 although 2 < 4, and system 0 before it
+		// is untouched.
+		{"a range starting at a replacement's node", []event.Event{
+			summary(t, 4, event.Replace(1, 1)),
+			user(t, 5),
+			system(t, 6, event.Replace(4, 5), short, 4, 2, 3, 5),
+		}, frame + 10 + frame + 10},
+		{"a range ending at a replacement's node", []event.Event{
+			summary(t, 4, event.Replace(3, 3)),
+			summary(t, 5, event.Replace(2, 4), 2, 4),
+		}, frame + 10},
 	}
 	for _, c := range cases {
-		evs := append(append([]event.Event(nil), base...), c.last)
+		evs := append(append([]event.Event(nil), base...), c.tail...)
 		b := views.Refold(meter.BreakdownView(), session.Header{}, evs)
 		if got, want := priced(b), surfaceSystems(t, evs); !slices.Equal(got, want) || b.SystemTotal != c.total {
 			t.Errorf("%s: priced %v (total %d), the surface retains %v (want total %d)", c.name, got, b.SystemTotal, want, c.total)
@@ -328,8 +345,9 @@ func answer(t *testing.T, h session.Handle, asOf event.Seq, u *vocab.Usage) even
 // DH-T-LLM-15: the tokenMeter measures the session's current surface, read from
 // the session, under a header; the calibration factor is the last sample's
 // reported prompt over the heuristic's price of that same request (the nodes up
-// to its requestAsOf under the header then in force), and it is dropped, not
-// carried, once a replacement rewrites that envelope.
+// to its requestAsOf under the header then in force). Once a compaction or a
+// header change rewrites that envelope the new one is scaled by the last such
+// factor, not measured raw (token-meter.4).
 func TestMeterMeasuresTheSession(t *testing.T) {
 	h, hdr, asOf := newSession(t)
 	m := must(meter.New(views.New(), meter.DefaultConfig()))
@@ -365,16 +383,33 @@ func TestMeterMeasuresTheSession(t *testing.T) {
 		t.Fatalf("calibration off: %+v", g)
 	}
 
-	// A compaction rewrites the envelope: the factor is dropped and pressure
-	// measures the surface rather than projecting from the sample.
+	// A compaction rewrites the envelope: the factor taken on the intact one
+	// still scales the new estimate, and pressure measures the surface rather
+	// than projecting from the sample.
 	sum := must(vocab.RestoreMessage("c", vocab.RoleUser, nil, vocab.TextBlock("summary")))
 	must(h.Append(bg, must(event.UserMessage.Draft(event.Replace(asOf, at), event.UserMessagePayload{Message: sum}, asOf, at))))
 	after := must(m.Measure(bg, h, hdr))
-	if after.Calibrated || after.Factor != 1 || after.Estimate >= got.Estimate {
+	if !after.Calibrated || after.Factor != 2 || after.Estimate >= got.Estimate || after.Tokens != meter.Calibrated(after.Estimate, 2) {
 		t.Fatalf("after a compaction: %+v", after)
 	}
 	if r := must(m.Pressure(bg, h)); !r.Measured || r.Tokens != after.Tokens {
 		t.Fatalf("pressure after a compaction %+v, measured %+v", r, after)
+	}
+	if g := must(off.Measure(bg, h, hdr)); g.Calibrated || g.Factor != 1 {
+		t.Fatalf("calibration off after a compaction: %+v", g)
+	}
+
+	// A header change keeps the factor too; a sample taken on the rewritten
+	// envelope is not one of its request, so it does not recalibrate.
+	tool := vocab.ToolSchema{Name: "write", Description: "writes a file", Parameters: json.RawMessage(`{"type":"object"}`)}
+	must(h.Append(bg, must(event.RequestHeader.Draft(event.RequestHeaderPayload{Route: "r/a", Tools: append(slices.Clone(hdr.Tools), tool)}))))
+	hdr2, _ := h.RequestHeader()
+	if g := must(m.Measure(bg, h, hdr2)); !g.Calibrated || g.Factor != 2 || g.Tokens != meter.Calibrated(g.Estimate, 2) {
+		t.Fatalf("after a header change: %+v", g)
+	}
+	answer(t, h, asOf, &vocab.Usage{Input: 1, Output: 1})
+	if g := must(m.Measure(bg, h, hdr2)); !g.Calibrated || g.Factor != 2 {
+		t.Fatalf("a stale sample recalibrated: %+v", g)
 	}
 }
 
