@@ -107,7 +107,18 @@ through DH-S-7)" (`TestPreflight*` in `tools/harness-gate/acceptance`).
 
 Gate evidence: `go -C src/harness vet -tags scenario ./...` exits 0; the default
 `go test -list . ./internal/testkit/scenarios/...` lists no test;
-`GOWORK=off go -C tools/harness-gate test ./...` passes.
+`GOWORK=off go -C tools/harness-gate test ./...` passes except for
+`TestRepositoryPassesEveryGate`, which fails at its vet gate on files this stage does
+not change:
+- `src/go/cordis`;
+- in `src/harness`: `session/scope`, `util/caltime`, `util/fsx`, `util/glob`,
+  `util/recur`, `session/event/event_test.go`, `util/version` and
+  `util/watch/watchtest`.
+
+The findings are QG-4 (time.Sleep), QG-5 (goroutine without t.Cleanup) and QG-6
+(missing fuzz seeds). This branch leaves the analyzers unchanged. The operator
+decided (`inherited-vet-gate-failure` = A) to fix this in a follow-up workstream, not
+here.
 
 ## Closure
 
