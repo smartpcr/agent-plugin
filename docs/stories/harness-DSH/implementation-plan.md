@@ -529,6 +529,7 @@ storyId: "harness:DSH"
 - [ ] impl.md step 8.4 / DH-D-STORAGE-7 (P1, pulled forward): projects group sessions; a hidden session never keeps working (hiding stops its agents).
 - [ ] impl.md step 8.5 / DH-D-VIEW-5: list, observe, trace and follow sessions across forks.
 - [ ] Author `DH-E-STORAGE-1` (runs DH-S-19) and `DH-E-STORAGE-2` (runs DH-S-23) as scenario files.
+- [ ] Close DH-S-8 (moved here from Stage 8.3 by operator decision `dsh-s8-closure-waits-stage-8-2`): add the refold-equals-stored evidence for the four built-in views to `docs/stories/harness-DSH/evidence/DH-S-8.md`, tick impl.md steps 8.3-8.5 as built, and raise `built-through` in `test/harness/acceptance-index.yaml` to DH-S-8.
 
 ### Dependencies
 - phase-machine-state-views-and-spill/stage-typed-machine-state-and-stored-folds
@@ -541,13 +542,14 @@ storyId: "harness:DSH"
 ## Stage 8.3: Spill Store and Attachments
 
 ### Implementation Steps
-- [ ] impl.md step 8.6 / DH-D-STORAGE-5: spill store under `<home>/spill/` -- the full text of a large result saved privately, addressed by digest, readable back; only a bounded head enters the log.
+- [x] impl.md step 8.6 / DH-D-STORAGE-5: spill store under `<home>/spill/` -- the full text of a large result saved privately, addressed by a fixed-length id reserved before writing (owner-directory hash, 96 random bits, a safe name, as storage.md DH-D-STORAGE-5 specifies), readable back; only a bounded head enters the log.
 - [x] impl.md step 8.7 / DH-D-STORAGE-3 (P1, pulled forward): attachments under `<home>/blobs/` stored durably and read back verified by digest.
-- [ ] Author `DH-E-STORAGE-3` (runs DH-S-39). Close DH-S-8: write `docs/stories/harness-DSH/evidence/DH-S-8.md` (refold-equals-stored, manual checks: fold version change and the 5 MB result) and tick impl.md steps 8.1-8.7 as built.
+- [x] Author `DH-E-STORAGE-3` (runs DH-S-39). Write `docs/stories/harness-DSH/evidence/DH-S-8.md` with this stage's evidence (manual checks: fold version change and the 5 MB result) and tick impl.md steps 8.1, 8.2, 8.6 and 8.7 as built. Closing DH-S-8 (refold-equals-stored, impl.md 8.3-8.5) is Stage 8.2's step.
+- [x] Built with DH-D-STORAGE-3 (operator decision `defer-gc-lock-blob-refs`: build now): savers hold `<home>/blobs/gc.lock` shared and the collector's `LockCollection` takes it exclusively; cited references are `blob_refs` rows (layout 3 of the session store) written in the append, import and fork transactions and removed with their session; `blob.Store.ReferencedBy` reads them.
 
-> Status of Stage 8.3 (left unchecked on purpose):
-> - Step 8.6 is built except one clause. The spill store saves the full text privately under `<home>/spill/`, reads it back byte-identical and logs only a bounded head (the TC-08 unit tests in `internal/storage/spill/local` pass; the DH-S-39 scenario DH-E-STORAGE-3 is authored and compile-checked with the `scenario` build tag but has not been run: it needs the real sandbox and the spill policy, which later stages build). It is **not** addressed by a digest of the text: storage.md DH-D-STORAGE-5 reserves a fixed-length id (owner-directory hash, 96 random bits, a name) before any byte is written, and the session store's deletion (`sqlite.SpillName`) expects that owner prefix. Which document wins is waiting for the operator (open question `spill-addressing`); until then this step stays unchecked. impl.md step 8.6, whose own text asks only that the text be saved privately and read back, is ticked.
-> - The closure step is partly done. DH-E-STORAGE-3 is authored and indexed, `evidence/DH-S-8.md` records Stages 8.1 and 8.3 and both manual checks, and impl.md steps 8.1, 8.2, 8.6 and 8.7 are ticked. DH-S-8 is **not** closed: the refold-equals-stored evidence for the four built-in views and impl.md steps 8.3-8.5 belong to Stage 8.2, which has not landed. `built-through` stays at DH-S-7 until it does.
+> Status of Stage 8.3:
+> - Spill addressing follows storage.md DH-D-STORAGE-5 (operator decision `spill-addressing`: storage.md's random id governs; this plan's wording was amended from "addressed by digest"). The DH-S-39 scenario DH-E-STORAGE-3 is authored and compile-checked with the `scenario` build tag but has not been run: it needs the real sandbox and the spill policy, which later stages build.
+> - DH-S-8 closure belongs to Stage 8.2 (operator decision `dsh-s8-closure-waits-stage-8-2`). `built-through` stays at DH-S-7 until that step lands.
 
 ### Dependencies
 - phase-machine-state-views-and-spill/stage-typed-machine-state-and-stored-folds

@@ -29,12 +29,20 @@ func TryLock(path string) (*FileLock, error) { return tryLock(path, false) }
 // (session-store.md §6.2, DH-T-STORE-7).
 func TryLockBeyondEnd(path string) (*FileLock, error) { return tryLock(path, true) }
 
-func tryLock(path string, beyond bool) (*FileLock, error) {
+// TryLockShared takes the lock on path shared: any number of shared holders
+// coexist, and an exclusive holder (TryLock, Lock) excludes them all. When an
+// exclusive holder has it, the error matches ErrLocked. The blob store's savers
+// hold gc.lock this way against its collector (storage.md §6.1).
+func TryLockShared(path string) (*FileLock, error) { return tryLockMode(path, false, true) }
+
+func tryLock(path string, beyond bool) (*FileLock, error) { return tryLockMode(path, beyond, false) }
+
+func tryLockMode(path string, beyond, shared bool) (*FileLock, error) {
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, err
 	}
-	if err := lockFile(f, beyond); err != nil {
+	if err := lockFile(f, beyond, shared); err != nil {
 		_ = f.Close()
 		return nil, err
 	}
@@ -45,10 +53,18 @@ func tryLock(path string, beyond bool) (*FileLock, error) {
 const lockBackoff = 100 * time.Millisecond
 
 // Lock takes the lock on path, waiting while another holder has it until ctx ends.
-func Lock(ctx context.Context, path string) (*FileLock, error) {
+func Lock(ctx context.Context, path string) (*FileLock, error) { return waitLock(ctx, path, TryLock) }
+
+// LockShared is TryLockShared, waiting while an exclusive holder has the lock
+// until ctx ends.
+func LockShared(ctx context.Context, path string) (*FileLock, error) {
+	return waitLock(ctx, path, TryLockShared)
+}
+
+func waitLock(ctx context.Context, path string, try func(string) (*FileLock, error)) (*FileLock, error) {
 	wait := 5 * time.Millisecond
 	for {
-		l, err := TryLock(path)
+		l, err := try(path)
 		if !errors.Is(err, ErrLocked) {
 			return l, err
 		}

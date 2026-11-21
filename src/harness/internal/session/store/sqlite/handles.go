@@ -221,7 +221,7 @@ func (w *writer) Append(ctx context.Context, b store.Batch) error {
 		if len(b.Records) == 0 && len(b.Checkpoints) == 0 {
 			return nil
 		}
-		size, err := insertRecords(ctx, tx, w.uid, b.Records)
+		size, err := insertRecords(ctx, tx, s.reg, w.uid, b.Records)
 		if err != nil {
 			return err
 		}

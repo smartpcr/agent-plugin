@@ -129,6 +129,23 @@ CREATE TABLE workspaces (
 ) STRICT;
 CREATE INDEX workspaces_order ON workspaces (position, id);
 `,
+	// 3: blob_refs (session-store.md §6.2, storage.md §6.2): which stored object
+	// or spill file an event cites, as "<kind>:<id>". Rows are written in the
+	// append, import or fork transaction of their event and removed with their
+	// session; the collector (DH-D-STORAGE-9) keeps whatever a row names.
+	// Tool results logged before this layout are backfilled from their payload.
+	`
+CREATE TABLE blob_refs (
+	session INTEGER NOT NULL REFERENCES sessions (uid),
+	seq     INTEGER NOT NULL CHECK (seq >= 0),
+	ref     TEXT    NOT NULL CHECK (instr(ref, ':') > 1),
+	PRIMARY KEY (session, seq, ref)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX blob_refs_ref ON blob_refs (ref);
+INSERT OR IGNORE INTO blob_refs (session, seq, ref)
+	SELECT session, seq, 'spill:' || json_extract(data, '$.spill.path') FROM events
+	WHERE type = 'tool/result' AND json_valid(data) AND json_extract(data, '$.spill.path') <> '';
+`,
 }
 
 // LayoutVersion is the layout this build writes: the number of migrations.

@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
@@ -294,4 +295,36 @@ func CheckOpen(reg *event.Registry, recs []Record) error {
 		}
 	}
 	return nil
+}
+
+// BlobReferrer is a decoded payload that cites stored objects or spill files
+// (storage.md §6.2, the blob_refs table): each reference is "<kind>:<id>". It
+// has the method set of storage's blob.Referrer, named here because this
+// package imports no storage package.
+type BlobReferrer interface{ BlobRefs() []string }
+
+// BlobRefs are the references rec's payload cites, decoded with reg: none for a
+// type or version this build does not declare, a payload that does not decode
+// (admission and the open rule judge it, not this) or one that cites nothing.
+// A reference that is not "<kind>:<id>" is refused with ErrInvalidBatch.
+func BlobRefs(reg *event.Registry, rec Record) ([]string, error) {
+	info, ok := reg.Lookup(rec.Type)
+	if !ok || rec.Version > info.Version {
+		return nil, nil
+	}
+	v, err := reg.DecodeAny(rec)
+	if err != nil {
+		return nil, nil
+	}
+	r, ok := v.(BlobReferrer)
+	if !ok {
+		return nil, nil
+	}
+	refs := r.BlobRefs()
+	for _, ref := range refs {
+		if kind, id, ok := strings.Cut(ref, ":"); !ok || kind == "" || id == "" {
+			return nil, Errorf(CodeInvalidBatch, "type %q at seq %d cites %q, which is not <kind>:<id>", rec.Type, rec.Seq, ref)
+		}
+	}
+	return refs, nil
 }

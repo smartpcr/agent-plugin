@@ -243,7 +243,7 @@ func (s *Store) Import(ctx context.Context, r io.Reader, o ImportOptions) (store
 		if err != nil {
 			return err
 		}
-		size, err := insertRecords(ctx, tx, uid, recs)
+		size, err := insertRecords(ctx, tx, s.reg, uid, recs)
 		if err != nil {
 			return err
 		}

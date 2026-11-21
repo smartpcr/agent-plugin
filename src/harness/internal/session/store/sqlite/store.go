@@ -89,9 +89,15 @@ func (s *Store) Create(ctx context.Context, h store.Header, o store.CreateOption
 			return err
 		}
 		if fork != nil {
-			_, err = tx.ExecContext(ctx, `INSERT INTO events (session, seq, time, type, pv, ignorable, surface, env, data, cold)
+			if _, err = tx.ExecContext(ctx, `INSERT INTO events (session, seq, time, type, pv, ignorable, surface, env, data, cold)
 				SELECT ?, seq, time, type, pv, ignorable, surface, env, data, cold FROM events
-				WHERE session = ? AND seq <= ?`, uid, parent.uid, int64(through))
+				WHERE session = ? AND seq <= ?`, uid, parent.uid, int64(through)); err != nil {
+				return err
+			}
+			// The inherited prefix cites what the parent's did: its rows are the
+			// fork's own, so the fork keeps its objects after the parent goes.
+			_, err = tx.ExecContext(ctx, `INSERT INTO blob_refs (session, seq, ref)
+				SELECT ?, seq, ref FROM blob_refs WHERE session = ? AND seq <= ?`, uid, parent.uid, int64(through))
 		}
 		return err
 	})
@@ -202,6 +208,25 @@ func (s *Store) Stat(ctx context.Context, id string) (store.Summary, error) {
 		return store.Summary{}, err
 	}
 	return r.sum, nil
+}
+
+// Cites reports whether active session id logs an event citing ref, a blob_refs
+// reference "<kind>:<id>" (storage.md §6.2). A fork's inherited prefix counts:
+// its rows were copied with it. It implements storage's blob.Index, behind
+// blob.Store.ReferencedBy.
+func (s *Store) Cites(ctx context.Context, id, ref string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	var n int
+	err := s.read(ctx, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM blob_refs b JOIN sessions s ON s.uid = b.session
+			WHERE s.id = ? AND s.state = 'active' AND b.ref = ?)`, id, ref).Scan(&n)
+	})
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
 }
 
 // List implements store.Store: most recent first (LastEventAt, then CreatedAt,
@@ -325,7 +350,7 @@ func (s *Store) Seed(ctx context.Context, h store.Header, recs []store.Record) e
 		if err != nil {
 			return err
 		}
-		size, err := insertRecords(ctx, tx, uid, recs)
+		size, err := insertRecords(ctx, tx, s.reg, uid, recs)
 		if err != nil {
 			return err
 		}

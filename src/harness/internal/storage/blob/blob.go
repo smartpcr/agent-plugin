@@ -4,6 +4,7 @@
 //
 //	<home>/blobs/v1/<kind>/<2 hex>/<sha256>   objects; kind is image, file or data
 //	<home>/blobs/tmp/                          staging on the same volume
+//	<home>/blobs/gc.lock                       the collection lock
 //
 // Put streams into a private staging file while hashing, syncs it, publishes it
 // by an exclusive hard link, syncs the directory and sets the object read-only;
@@ -13,9 +14,14 @@
 // truncated or missing object is detected and never served. Who may read an
 // object is the calling route's decision (area A19), not this package's.
 //
-// Not yet here (later steps): the shared gc.lock a saver holds against the
-// collector and the collector itself (DH-D-STORAGE-9), and ReferencedBy, which
-// reads the session store's blob_refs rows (DH-D-STORE-2).
+// Put and Touch hold gc.lock shared for the whole save, and the collector holds
+// it exclusively for each batch (LockCollection), so the collector never removes
+// an object between a saver's publish or touch and the event that cites it.
+// Payloads that cite objects implement Referrer; the session store writes their
+// references as blob_refs rows in the event's transaction, and ReferencedBy
+// answers from those rows through an Index.
+//
+// Not yet here (a later step): the collector itself (DH-D-STORAGE-9).
 package blob
 
 import (
@@ -51,6 +57,7 @@ const (
 const (
 	VersionDir = "v1"
 	TmpDir     = "tmp"
+	GCLock     = "gc.lock"
 )
 
 // Kind is the kind of an object.
@@ -94,6 +101,26 @@ func validDigest(d string) bool {
 	return true
 }
 
+// Referrer is a payload that cites stored objects or spill files: each
+// reference is "<kind>:<id>" (Ref.String for an object, "spill:<id>" for a
+// spill file). The session store's BlobReferrer has the same method set.
+type Referrer interface{ BlobRefs() []string }
+
+// Index answers from the session store's blob_refs rows; the SQLite store
+// implements it.
+type Index interface {
+	Cites(ctx context.Context, session, ref string) (bool, error)
+}
+
+// Option configures a Store.
+type Option func(*Store)
+
+// WithIndex is the index ReferencedBy reads.
+func WithIndex(ix Index) Option { return func(s *Store) { s.index = ix } }
+
+// ErrNoIndex is ReferencedBy's answer on a store opened without an index.
+var ErrNoIndex = errors.New("blob: no session index to read references from")
+
 // syncDir makes a directory entry durable; tests replace it.
 var syncDir = fsx.SyncDir
 
@@ -102,13 +129,14 @@ var chmod = os.Chmod
 
 // Store is the blob store of one home.
 type Store struct {
-	root string // <home>/blobs
-	now  func() time.Time
+	root  string // <home>/blobs
+	now   func() time.Time
+	index Index
 }
 
 // New opens the blob store of the home: <home>/blobs must exist (home Ensure made
 // it) and be private; its v1/ and tmp/ are created private when missing.
-func New(l home.Layout) (*Store, error) {
+func New(l home.Layout, opts ...Option) (*Store, error) {
 	root := l.Blobs()
 	if err := home.CheckPrivate(root); err != nil {
 		return nil, fmt.Errorf("blob: the blobs directory %s: %w", root, err)
@@ -118,7 +146,49 @@ func New(l home.Layout) (*Store, error) {
 			return nil, fmt.Errorf("blob: %w", err)
 		}
 	}
-	return &Store{root: root, now: time.Now}, nil
+	s := &Store{root: root, now: time.Now}
+	for _, o := range opts {
+		o(s)
+	}
+	return s, nil
+}
+
+// lockShared takes gc.lock shared, waiting while the collector holds it.
+func (s *Store) lockShared(ctx context.Context) (*fsx.FileLock, error) {
+	l, err := fsx.LockShared(ctx, filepath.Join(s.root, GCLock))
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, err
+		}
+		return nil, herr.Wrap(home.ReasonIO, err, "blob: take "+GCLock+" shared")
+	}
+	return l, nil
+}
+
+// LockCollection takes gc.lock exclusively for one collection batch, waiting
+// while savers hold it until ctx ends. While it is held no Put or Touch runs.
+func (s *Store) LockCollection(ctx context.Context) (*fsx.FileLock, error) {
+	l, err := fsx.Lock(ctx, filepath.Join(s.root, GCLock))
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, err
+		}
+		return nil, herr.Wrap(home.ReasonIO, err, "blob: take "+GCLock)
+	}
+	return l, nil
+}
+
+// ReferencedBy reports whether session logs an event citing ref, or inherited
+// one from the session it was forked from (a fork's blob_refs rows are copied
+// with its prefix). A malformed reference is cited by nobody.
+func (s *Store) ReferencedBy(ctx context.Context, session string, ref Ref) (bool, error) {
+	if s.index == nil {
+		return false, ErrNoIndex
+	}
+	if !ref.Valid() {
+		return false, nil
+	}
+	return s.index.Cites(ctx, session, ref.String())
 }
 
 // Dir is <home>/blobs/v1, below which the attachment store keeps its named links.
@@ -163,6 +233,11 @@ func (s *Store) Put(ctx context.Context, kind Kind, r io.Reader, limit int64) (R
 	if !kind.Valid() {
 		return Ref{}, fmt.Errorf("blob: unknown kind %q", kind)
 	}
+	lock, err := s.lockShared(ctx)
+	if err != nil {
+		return Ref{}, err
+	}
+	defer lock.Unlock()
 	stage, err := s.stage()
 	if err != nil {
 		return Ref{}, err
@@ -294,6 +369,14 @@ func (s *Store) verify(ctx context.Context, ref Ref) error {
 // present with its length and digest, and gets its time updated, so the
 // collector's grace period starts again.
 func (s *Store) Touch(ctx context.Context, refs ...Ref) error {
+	if len(refs) == 0 {
+		return nil
+	}
+	lock, err := s.lockShared(ctx)
+	if err != nil {
+		return err
+	}
+	defer lock.Unlock()
 	for _, ref := range refs {
 		if err := ctx.Err(); err != nil {
 			return err

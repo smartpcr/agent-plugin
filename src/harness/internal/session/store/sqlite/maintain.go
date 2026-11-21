@@ -181,7 +181,7 @@ func (s *Store) finishAll(ctx context.Context, doomed []tomb) error {
 }
 
 // finish removes a tombstoned session: its spill directory, its events chunk by
-// chunk, then its checkpoints, requests and row. Every step can be repeated, so a
+// chunk, then its blob_refs rows, checkpoints, requests and row. Every step can be repeated, so a
 // second instance finishing the same tombstone, or a resumed one, is harmless.
 func (s *Store) finish(ctx context.Context, t tomb) error {
 	if s.spill != "" {
@@ -232,6 +232,7 @@ func (s *Store) finish(ctx context.Context, t tomb) error {
 			arg any
 		}{
 			{`DELETE FROM events WHERE session = ?`, t.uid},
+			{`DELETE FROM blob_refs WHERE session = ?`, t.uid},
 			{`DELETE FROM checkpoints WHERE session = ?`, t.uid},
 			{`DELETE FROM requests WHERE session = ?`, t.id},
 			{`DELETE FROM sessions WHERE uid = ?`, t.uid},
