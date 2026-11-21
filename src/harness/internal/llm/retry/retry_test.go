@@ -226,14 +226,20 @@ func TestRetryAfterCapAndPersistentElapsed(t *testing.T) {
 	e.listen(t, retry.Config{Policy: func(agent.AttemptFailure) llm.RetryPolicy {
 		return llm.RetryPolicy{Mode: llm.RetryPersistent, MaxElapsed: 10 * time.Second, RetryAfterCap: 4 * time.Second}
 	}})
-	e.ask(t, attempt(1, failure(vocab.CodeRateLimit, time.Hour)), 4*time.Second)
+	first := attempt(1, failure(vocab.CodeRateLimit, time.Hour))
+	first.StepStarted = e.clk.Now()
+	e.ask(t, first, 4*time.Second)
 	var s retry.Scheduled
 	must(0, json.Unmarshal([]byte(e.log.raws[0]), &s))
 	if s.DelayMs != 4000 {
 		t.Fatalf("capped wait %dms, want 4000", s.DelayMs)
 	}
-	e.ask(t, attempt(2, failure(vocab.CodeRateLimit, time.Hour)), 4*time.Second) // elapsed 4s + 4s <= 10s
-	if d := e.ask(t, attempt(3, failure(vocab.CodeRateLimit, time.Hour))); d != (agent.GiveUp{}) {
+	second := attempt(2, failure(vocab.CodeRateLimit, time.Hour))
+	second.StepStarted = first.StepStarted
+	e.ask(t, second, 4*time.Second) // elapsed 4s + 4s <= 10s
+	third := attempt(3, failure(vocab.CodeRateLimit, time.Hour))
+	third.StepStarted = first.StepStarted
+	if d := e.ask(t, third); d != (agent.GiveUp{}) {
 		t.Fatalf("past MaxElapsed: %#v", d) // elapsed 8s + 4s > 10s
 	}
 	var a retry.Abandoned
@@ -323,6 +329,31 @@ func TestPersistentElapsedCountsTheFirstAttempt(t *testing.T) {
 	f3.Attempt = 2
 	if d := e.ask(t, f3); d != (agent.GiveUp{}) { // 1s wait + 9s request + 1s wait > 10s
 		t.Fatalf("second attempt %#v", d)
+	}
+}
+
+// DH-T-LLM-7: a persistent policy's point without StepStarted fails explicitly,
+// with nothing recorded and no timer, rather than measuring MaxElapsed from the
+// first failure; a Permanent failure under it is still given up (SP-2); a
+// bounded policy needs no start.
+func TestPersistentPolicyRequiresTheStepStart(t *testing.T) {
+	e := newEnv(t)
+	mode := llm.RetryPersistent
+	e.listen(t, retry.Config{Policy: func(agent.AttemptFailure) llm.RetryPolicy {
+		return llm.RetryPolicy{Mode: mode, MaxRetries: 3, MaxElapsed: 10 * time.Second}
+	}})
+	d, err := agent.AttemptFailed.Around(e.root, attempt(1, failure(vocab.CodeServer, time.Second)), giveUp)
+	if !errors.Is(err, retry.ErrNoStepStart) || d != nil {
+		t.Fatalf("decision %#v, error %v", d, err)
+	}
+	equal(t, e.log.snapshot())
+	if d := e.ask(t, attempt(1, failure(vocab.CodeAuth, 0))); d != (agent.GiveUp{}) {
+		t.Fatalf("auth without a start: %#v", d)
+	}
+	equal(t, e.log.snapshot(), "llm/retry-abandoned")
+	mode = llm.RetryBounded
+	if d := e.ask(t, attempt(1, failure(vocab.CodeServer, time.Second)), time.Second); d != (agent.Retry{Reason: string(vocab.CodeServer)}) {
+		t.Fatalf("bounded without a start: %#v", d)
 	}
 }
 

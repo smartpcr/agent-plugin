@@ -149,7 +149,9 @@ func (c *Component) Close() { c.handle.Dispose() }
 
 // elapsed is the time since f's step began: its first attempt's start
 // (f.StepStarted) when the raiser supplies it, else the step's first failure,
-// which it records when f is that failure.
+// which it records when f is that failure. Only a bounded policy reaches the
+// fallback, and it does not read elapsed time: decide refuses a persistent
+// policy with no StepStarted.
 func (c *Component) elapsed(f agent.AttemptFailure) time.Duration {
 	now := c.cfg.Now()
 	c.mu.Lock()
@@ -182,6 +184,10 @@ func (c *Component) abandon(ctx context.Context, f agent.AttemptFailure, why llm
 	return c.cfg.Record(ctx, f, d)
 }
 
+// ErrNoStepStart is returned for a persistent policy's failure whose point did
+// not carry AttemptFailure.StepStarted.
+var ErrNoStepStart = errors.New("retry: a persistent policy measures MaxElapsed from the step's first attempt start, and the point carried no StepStarted")
+
 func (c *Component) decide(_ *cordis.Context, f agent.AttemptFailure, next func(agent.AttemptFailure) (agent.AttemptDecision, error)) (agent.AttemptDecision, error) {
 	ctx := f.Ctx
 	if ctx == nil {
@@ -198,6 +204,14 @@ func (c *Component) decide(_ *cordis.Context, f agent.AttemptFailure, next func(
 		return agent.GiveUp{}, nil
 	}
 	policy := c.cfg.Policy(f).Normalised()
+	// A persistent policy's MaxElapsed runs from the step's first attempt start;
+	// measuring it from the first failure would leave that request's duration
+	// out, so a point without the start fails explicitly instead. A Permanent
+	// failure is still given up below: it needs no elapsed time.
+	if policy.Mode == llm.RetryPersistent && f.StepStarted.IsZero() && f.Failure.Class != vocab.Permanent {
+		c.forget(f)
+		return nil, ErrNoStepStart
+	}
 	wait, why := policy.Next(f.Failure, f.Attempt, c.elapsed(f), c.cfg.Jitter())
 	if why != "" {
 		if err := c.abandon(ctx, f, why); err != nil {

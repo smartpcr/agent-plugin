@@ -176,28 +176,40 @@ func TestTurnWithReasoningAndToolCall(t *testing.T) {
 	}
 }
 
-// assertStreamsEnded checks that every streamed attempt of turn ended, and that
-// nothing of an attempt was streamed after its end.
+// assertStreamsEnded checks that every attempt streamed in turn, each one
+// observed by any notification, ended exactly once, and that nothing of an
+// attempt was streamed after its end.
 func (h *sdkHost) assertStreamsEnded(t *testing.T, turn int64) {
 	t.Helper()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	type key struct{ step, attempt int64 }
-	ended := map[key]bool{}
+	ends := map[key]int{}
+	var seen []key
 	for _, s := range h.streams {
 		if s.Turn != turn {
 			continue
 		}
 		k := key{s.Step, s.Attempt}
-		if ended[k] {
+		n, ok := ends[k]
+		if !ok {
+			seen = append(seen, k)
+		}
+		if n > 0 {
 			t.Fatalf("turn %d step %d attempt %d streamed %q after its end", turn, s.Step, s.Attempt, s.Kind)
 		}
 		if s.Kind == "end" {
-			ended[k] = true
+			n++
 		}
+		ends[k] = n
 	}
-	if len(ended) == 0 {
+	if len(seen) == 0 {
 		t.Fatalf("turn %d streamed nothing", turn)
+	}
+	for _, k := range seen {
+		if ends[k] != 1 {
+			t.Fatalf("turn %d step %d attempt %d streamed without an end", turn, k.step, k.attempt)
+		}
 	}
 }
 
