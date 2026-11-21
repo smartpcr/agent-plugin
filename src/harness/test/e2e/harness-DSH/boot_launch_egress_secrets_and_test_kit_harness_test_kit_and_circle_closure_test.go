@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -43,6 +44,26 @@ import (
 var htkcOuterT *testing.T
 
 var htkcEpoch = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// htkcReportCwdEnv makes a re-executed test binary print "cwd <quoted path>"
+// before its subprocesstest role runs, so the temp-home scenario can prove the
+// stubborn child's working directory is the home.
+const htkcReportCwdEnv = "HTKC_REPORT_CWD"
+
+func init() {
+	if _, ok := os.LookupEnv(subprocesstest.RoleEnv); !ok {
+		return
+	}
+	if _, ok := os.LookupEnv(htkcReportCwdEnv); !ok {
+		return
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "htkc: getwd: %v\n", err)
+		os.Exit(2)
+	}
+	fmt.Fprintf(os.Stdout, "cwd %s\n", strconv.Quote(wd))
+}
 
 // htkcDH6 are the scenario IDs authored by DH-S-6 and the stage each sits under.
 var htkcDH6 = map[string]string{
@@ -74,6 +95,7 @@ type htkcState struct {
 	layerFile  string
 	checkErr   error
 	homeChild  int
+	childCwd   string
 	cwdOK      bool
 	child      int
 	grandchild int
@@ -325,11 +347,21 @@ func (s *htkcState) startTest() error {
 
 			spec := subprocesstest.Spec(t, subprocesstest.RoleStubborn)
 			spec.Dir = l.Root()
+			spec.Env = append(spec.Env, htkcReportCwdEnv+"=1")
 			pr, pw := io.Pipe()
 			spec.Stdout = pw
 			subprocesstest.Start(t, spec)
 			t.Cleanup(func() { _ = pr.Close() })
-			line, err := bufio.NewReader(pr).ReadString('\n')
+			br := bufio.NewReader(pr)
+			line, err := br.ReadString('\n')
+			if err != nil || !strings.HasPrefix(line, "cwd ") {
+				t.Fatalf("stubborn child said %q: %v", line, err)
+			}
+			if s.childCwd, err = strconv.Unquote(strings.TrimSpace(strings.TrimPrefix(line, "cwd "))); err != nil {
+				t.Fatalf("stubborn child said %q: %v", line, err)
+			}
+			s.cwdOK = htkcSameDir(s.childCwd, l.Root())
+			line, err = br.ReadString('\n')
 			if err != nil {
 				t.Fatalf("stubborn child said %q: %v", line, err)
 			}
@@ -372,7 +404,26 @@ func (s *htkcState) childRunningInHome() error {
 			return fmt.Errorf("process %d is not running (home child %d, child %d, grandchild %d)", pid, s.homeChild, s.child, s.grandchild)
 		}
 	}
+	if !s.cwdOK {
+		return fmt.Errorf("the home child's working directory is %q, want the home %q", s.childCwd, s.homeRoot)
+	}
 	return nil
+}
+
+// htkcSameDir reports whether a and b name the same directory after resolving
+// symlinks (e.g. macOS /var -> /private/var) and, on Windows, short names or case.
+func htkcSameDir(a, b string) bool {
+	ra, errA := filepath.EvalSymlinks(a)
+	rb, errB := filepath.EvalSymlinks(b)
+	if errA != nil || errB != nil {
+		return false
+	}
+	if filepath.Clean(ra) == filepath.Clean(rb) {
+		return true
+	}
+	ia, errA := os.Stat(ra)
+	ib, errB := os.Stat(rb)
+	return errA == nil && errB == nil && os.SameFile(ia, ib)
 }
 
 func (s *htkcState) testEnds() error {
