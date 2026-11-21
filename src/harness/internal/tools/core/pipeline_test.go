@@ -1,0 +1,539 @@
+package core_test
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/smartpcr/agent-plugin/src/harness/internal/agent"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/human"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/human/approval"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/checkpoint"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store/memstore"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store/sqlite"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/tools"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/tools/core"
+)
+
+var me = agent.Ref{Session: session.ID("s-pipeline"), Incarnation: 1}
+
+// trace records the stages a call passed, in order.
+type trace struct {
+	mu    sync.Mutex
+	steps []string
+}
+
+func (tr *trace) add(s string) {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	tr.steps = append(tr.steps, s)
+}
+
+func (tr *trace) got() []string {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	return slices.Clone(tr.steps)
+}
+
+func (tr *trace) count(s string) int {
+	n := 0
+	for _, x := range tr.got() {
+		if x == s {
+			n++
+		}
+	}
+	return n
+}
+
+// The current trace of the validate hook; tests in this file run serially.
+var validating *trace
+
+type addIn struct {
+	A int `json:"a" dsh:"required"`
+	B int `json:"b" dsh:"required"`
+}
+
+func (addIn) Validate() error {
+	if validating != nil {
+		validating.add("validate")
+	}
+	return nil
+}
+
+func addTool(tr *trace) *tools.Declaration {
+	return tools.Define(tools.Spec[addIn, int]{
+		Name: "add", Description: "Adds two integers.",
+		Run: func(_ context.Context, in addIn, _ tools.Run) (int, error) {
+			tr.add("body")
+			return in.A + in.B, nil
+		},
+	})
+}
+
+// recView records the resolve stage.
+type recView struct {
+	tools.StepView
+	tr *trace
+}
+
+func (v recView) Lookup(name string) (*tools.Declaration, bool) {
+	v.tr.add("resolve")
+	return v.StepView.Lookup(name)
+}
+
+// stubRegistry answers every approval with ans, recording "approval".
+type stubRegistry struct {
+	human.Registry
+	tr  *trace
+	ans human.Answer
+}
+
+func (s stubRegistry) Ask(_ context.Context, it human.Item) (human.Answer, human.Actor, error) {
+	s.tr.add("approval")
+	return s.ans, human.Actor{Channel: "tui", Name: "ana"}, nil
+}
+
+// recCheckpoint records the flush and flushes.
+type recCheckpoint struct{ tr *trace }
+
+func (c recCheckpoint) Before(ctx context.Context, s checkpoint.Session, _ checkpoint.Point) error {
+	c.tr.add("flush")
+	_, err := s.Flush(ctx)
+	return err
+}
+
+// openSession is a session whose step's assistant message asks for calls, each
+// a name and its arguments, with ids c1, c2, ...
+func openSession(t *testing.T, st store.Store, calls ...[2]string) session.Handle {
+	t.Helper()
+	root := newEnv(t).root
+	h, err := session.NewService(root, st, session.Config{}).Create(context.Background(), nil, session.CreateOptions{Header: session.Header{ID: "s-pipeline"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := vocab.RestoreMessage("u1", vocab.RoleUser, nil, vocab.TextBlock("go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var uses []vocab.Block
+	for i, c := range calls {
+		uses = append(uses, vocab.ToolUseBlock(callID(i), c[0], json.RawMessage(c[1])))
+	}
+	asked, err := vocab.RestoreMessage("a1", vocab.RoleAssistant, nil, uses...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mk := range []func() (event.Draft, error){
+		func() (event.Draft, error) { return event.TurnStartType.Draft(event.TurnStart{Turn: 1}) },
+		func() (event.Draft, error) { return event.StepStartType.Draft(event.StepStart{Turn: 1, Step: 1}) },
+		func() (event.Draft, error) {
+			return event.UserMessage.Draft(event.Append(), event.UserMessagePayload{Message: user})
+		},
+		func() (event.Draft, error) {
+			return event.AssistantMessage.Draft(event.Append(), event.AssistantMessagePayload{Message: asked})
+		},
+	} {
+		d, err := mk()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := h.Append(context.Background(), d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return h
+}
+
+func callID(i int) string { return "c" + string(rune('1'+i)) }
+
+func requests(calls ...[2]string) []tools.CallRequest {
+	var out []tools.CallRequest
+	for i, c := range calls {
+		out = append(out, tools.CallRequest{ID: callID(i), Name: c[0], Arguments: c[1]})
+	}
+	return out
+}
+
+// types is the event types the session holds after its first four.
+func types(t *testing.T, h session.Handle) []string {
+	t.Helper()
+	evs, err := h.Read(context.Background(), 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, e := range evs[4:] {
+		out = append(out, e.Type())
+	}
+	return out
+}
+
+// pipeline replaces the env's registry with one configured by cfg.
+func (e *env) pipeline(t *testing.T, cfg core.Config) tools.Service {
+	t.Helper()
+	e.svc = core.NewWith(e.root, e.tab, cfg)
+	return e.svc
+}
+
+func view(t *testing.T, svc tools.Service) tools.StepView {
+	t.Helper()
+	v, err := svc.Resolve(context.Background(), tools.Target{Agent: me})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(v.Release)
+	return v
+}
+
+func execute(t *testing.T, svc tools.Service, v tools.StepView, h session.Handle, calls ...[2]string) []tools.Result {
+	t.Helper()
+	res, err := svc.ExecuteBatch(context.Background(), tools.Batch{View: v, Log: h, Calls: requests(calls...)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Results) != len(calls) {
+		t.Fatalf("%d results for %d calls", len(res.Results), len(calls))
+	}
+	return res.Results
+}
+
+func ask(_ context.Context, c tools.Call) tools.Decision {
+	return tools.Ask("adds", "")
+}
+
+// DH-T-TOOLS-3, TC-10a: arguments that break the schema never reach the body; the
+// model gets a validation error.
+func TestSchemaBreakingArgumentsNeverReachTheBody(t *testing.T) {
+	e := newEnv(t)
+	tr := &trace{}
+	svc := e.pipeline(t, core.Config{})
+	e.register(t, e.root, addTool(tr))
+	call := [2]string{"add", `{"a":"x"}`}
+	h := openSession(t, memstore.New(), call)
+	res := execute(t, svc, view(t, svc), h, call)[0]
+	if tr.count("body") != 0 {
+		t.Fatalf("the body ran %d times", tr.count("body"))
+	}
+	if !res.IsError || res.Code != tools.CodeInvalidArguments || res.Stage != tools.StageValidate {
+		t.Fatalf("result %+v, want an invalid-arguments error at validate", res)
+	}
+	if !strings.HasPrefix(res.Text, string(tools.CodeInvalidArguments)+": ") {
+		t.Fatalf("text %q", res.Text)
+	}
+	if got := strings.Join(types(t, h), ","); got != "tool/call,tool/result" {
+		t.Fatalf("events %s", got)
+	}
+}
+
+// DH-T-TOOLS-4: the stages run in their fixed order.
+func TestStageOrderFixed(t *testing.T) {
+	e := newEnv(t)
+	tr := &trace{}
+	validating = tr
+	t.Cleanup(func() { validating = nil })
+	reg := stubRegistry{tr: tr, ans: human.Answer{Outcome: human.OutcomeAllowedOnce}}
+	svc := e.pipeline(t, core.Config{Approval: approval.New(approval.Config{Registry: reg}), Checkpoint: recCheckpoint{tr}})
+	e.register(t, e.root, addTool(tr))
+	if _, err := svc.Shape(e.root, "shape", func(tools.Call, tools.Outcome) tools.PostDecision {
+		tr.add("shape")
+		return tools.Accept()
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Guard(e.root, "guard", func(context.Context, tools.Call) *tools.Denial { tr.add("guards"); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Decide(e.root, "policy", func(ctx context.Context, c tools.Call) tools.Decision {
+		tr.add("policy")
+		return ask(ctx, c)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	call := [2]string{"add", `{"a":1,"b":2}`}
+	h := openSession(t, memstore.New(), call)
+	res := execute(t, svc, recView{view(t, svc), tr}, h, call)[0]
+	want := []string{"resolve", "validate", "policy", "guards", "approval", "flush", "body", "shape"}
+	if got := tr.got(); !slices.Equal(got, want) {
+		t.Fatalf("stages %v, want %v", got, want)
+	}
+	if res.IsError || res.Text != "3" || res.Approval != string(approval.OutcomeApproved) {
+		t.Fatalf("result %+v", res)
+	}
+	if got := strings.Join(types(t, h), ","); got != "tool/call,approval/asked,approval/decided,tool/result" {
+		t.Fatalf("events %s", got)
+	}
+}
+
+// DH-T-TOOLS-3: a tool that is not registered, or registered but not admitted to
+// the step, is refused at resolve; nothing later runs and one tool/result closes
+// each call.
+func TestUnknownOrUnadmittedToolRefusedBeforeExecution(t *testing.T) {
+	e := newEnv(t)
+	tr := &trace{}
+	validating = tr
+	t.Cleanup(func() { validating = nil })
+	reg := stubRegistry{tr: tr, ans: human.Answer{Outcome: human.OutcomeAllowedOnce}}
+	svc := e.pipeline(t, core.Config{Approval: approval.New(approval.Config{Registry: reg}), Checkpoint: recCheckpoint{tr}})
+	agentScope := e.scope(t, "agent")
+	e.register(t, e.root, echo("Echoes."))
+	e.register(t, e.root, named("grep"))
+	if _, err := svc.Restrict(agentScope.Ctx(), tools.Filter{Allow: []string{"echo"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Decide(e.root, "policy", func(ctx context.Context, c tools.Call) tools.Decision { tr.add("policy"); return ask(ctx, c) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Guard(e.root, "guard", func(context.Context, tools.Call) *tools.Denial { tr.add("guards"); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	v, err := svc.Resolve(context.Background(), tools.Target{Agent: me, Scope: agentScope.Key()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Release()
+	if got := names(v); !slices.Equal(got, []string{"echo"}) {
+		t.Fatalf("view %v", got)
+	}
+	calls := [][2]string{{"rm", `{"path":"/"}`}, {"grep", `{"text":"x"}`}}
+	h := openSession(t, memstore.New(), calls...)
+	res := execute(t, svc, recView{v, tr}, h, calls...)
+	for i, r := range res {
+		if !r.IsError || r.Code != tools.CodeNotStarted || r.Stage != tools.StageResolve || r.Seq == 0 {
+			t.Fatalf("call %d: %+v, want tools/not-started at resolve", i, r)
+		}
+	}
+	if !strings.Contains(res[0].Text, "not a registered tool") || !strings.Contains(res[1].Text, "not a tool of this step") {
+		t.Fatalf("texts %q, %q", res[0].Text, res[1].Text)
+	}
+	if got := tr.got(); !slices.Equal(got, []string{"resolve", "resolve"}) {
+		t.Fatalf("stages %v, want only the two resolves", got)
+	}
+	if got := strings.Join(types(t, h), ","); got != "tool/result,tool/result" {
+		t.Fatalf("events %s", got)
+	}
+}
+
+// DH-S-10 exit evidence, SP-7: a tool needing approval, visible in the step, with
+// nobody to ask: the outcome is no-answerer, the audit pair is logged and the
+// body never runs; the tool was not hidden.
+func TestNoAnswererMeansNoThroughTheExecutor(t *testing.T) {
+	e := newEnv(t)
+	tr := &trace{}
+	svc := e.pipeline(t, core.Config{}) // nothing mounted under approval.Key
+	e.register(t, e.root, addTool(tr))
+	if _, err := svc.Decide(e.root, "ask", ask); err != nil {
+		t.Fatal(err)
+	}
+	v := view(t, svc)
+	if got := names(v); !slices.Contains(got, "add") {
+		t.Fatalf("add is not in the prompt's tools %v", got)
+	}
+	call := [2]string{"add", `{"a":1,"b":2}`}
+	h := openSession(t, memstore.New(), call)
+	res := execute(t, svc, v, h, call)[0]
+	if tr.count("body") != 0 {
+		t.Fatal("the body ran")
+	}
+	if res.Approval != string(approval.OutcomeNoAnswerer) || res.Code != tools.CodeApprovalNoAnswerer || res.Stage != tools.StageApproval || res.By != core.ByApproval {
+		t.Fatalf("result %+v", res)
+	}
+	if got := strings.Join(types(t, h), ","); got != "tool/call,approval/asked,approval/decided,tool/result" {
+		t.Fatalf("events %s", got)
+	}
+	evs, _ := h.Read(context.Background(), 0, 0)
+	var dec approval.Decided
+	if err := json.Unmarshal([]byte(evs[6].Raw()), &dec); err != nil {
+		t.Fatal(err)
+	}
+	if dec.Outcome != approval.OutcomeNoAnswerer || dec.By.Principal == "" {
+		t.Fatalf("decided %+v", dec)
+	}
+}
+
+// The other approval outcomes, through the executor: only an approval runs the
+// body.
+func TestApprovalOutcomesThroughTheExecutor(t *testing.T) {
+	for _, tc := range []struct {
+		ans  human.Outcome
+		out  approval.Outcome
+		code tools.Code
+		runs int
+	}{
+		{human.OutcomeAllowedOnce, approval.OutcomeApproved, "", 1},
+		{human.OutcomeDenied, approval.OutcomeDenied, tools.CodeApprovalDenied, 0},
+		{human.OutcomeUnavailable, approval.OutcomeNoAnswerer, tools.CodeApprovalNoAnswerer, 0},
+	} {
+		t.Run(string(tc.ans), func(t *testing.T) {
+			e := newEnv(t)
+			tr := &trace{}
+			reg := stubRegistry{tr: tr, ans: human.Answer{Outcome: tc.ans}}
+			svc := e.pipeline(t, core.Config{Approval: approval.New(approval.Config{Registry: reg})})
+			e.register(t, e.root, addTool(tr))
+			if _, err := svc.Decide(e.root, "ask", ask); err != nil {
+				t.Fatal(err)
+			}
+			call := [2]string{"add", `{"a":1,"b":2}`}
+			h := openSession(t, memstore.New(), call)
+			res := execute(t, svc, view(t, svc), h, call)[0]
+			if tr.count("body") != tc.runs || res.Code != tc.code || res.Approval != string(tc.out) {
+				t.Fatalf("body ran %d times, result %+v", tr.count("body"), res)
+			}
+		})
+	}
+}
+
+// Denial is enforced in the executor: the strongest verdict wins whatever the
+// order, a guard denies on its own, and the tool stays in the view.
+func TestDenialEnforcedInTheExecutor(t *testing.T) {
+	e := newEnv(t)
+	tr := &trace{}
+	svc := e.pipeline(t, core.Config{})
+	e.register(t, e.root, addTool(tr))
+	if _, err := svc.Decide(e.root, "allow", func(context.Context, tools.Call) tools.Decision { return tools.Allow() }); err != nil {
+		t.Fatal(err)
+	}
+	h1, err := svc.Decide(e.root, "deny", func(context.Context, tools.Call) tools.Decision {
+		return tools.Deny("", "writes are off")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := [2]string{"add", `{"a":1,"b":2}`}
+	h := openSession(t, memstore.New(), call, call2)
+	v := view(t, svc)
+	res := execute(t, svc, v, h, call)[0]
+	if res.Code != tools.CodeDenied || res.By != "deny" || res.Stage != tools.StagePolicy || tr.count("body") != 0 {
+		t.Fatalf("result %+v", res)
+	}
+	h1.Dispose()
+	if _, err := svc.Guard(e.root, "fence", func(context.Context, tools.Call) *tools.Denial {
+		return &tools.Denial{Reason: "outside the workspace"}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	res2, err := svc.ExecuteBatch(context.Background(), tools.Batch{View: v, Log: h, Calls: []tools.CallRequest{{ID: "c2", Name: "add", Arguments: call2[1]}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := res2.Results[0]; r.Code != tools.CodeDenied || r.By != "fence" || r.Stage != tools.StageGuards || tr.count("body") != 0 {
+		t.Fatalf("result %+v", r)
+	}
+	if _, ok := v.Lookup("add"); !ok {
+		t.Fatal("a denied tool was hidden")
+	}
+}
+
+var call2 = [2]string{"add", `{"a":3,"b":4}`}
+
+// The logged arguments are the model's bytes; nothing a listener does to the
+// Call's arguments reaches the log or the body.
+func TestLoggedArgumentsNeverRewritten(t *testing.T) {
+	e := newEnv(t)
+	var got addIn
+	svc := e.pipeline(t, core.Config{})
+	e.register(t, e.root, tools.Define(tools.Spec[addIn, int]{
+		Name: "add", Description: "Adds two integers.",
+		Run: func(_ context.Context, in addIn, _ tools.Run) (int, error) { got = in; return in.A + in.B, nil },
+	}))
+	if _, err := svc.Decide(e.root, "meddle", func(_ context.Context, c tools.Call) tools.Decision {
+		a := c.Arguments()
+		copy(a, []byte(`{"a":9`))
+		return tools.Allow()
+	}); err != nil {
+		t.Fatal(err)
+	}
+	raw := `{ "a" : 1, "b":2 }`
+	call := [2]string{"add", raw}
+	h := openSession(t, memstore.New(), call)
+	execute(t, svc, view(t, svc), h, call)
+	evs, _ := h.Read(context.Background(), 0, 0)
+	var p event.ToolCallPayload
+	if err := json.Unmarshal([]byte(evs[4].Raw()), &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.Arguments != raw || got.A != 1 {
+		t.Fatalf("logged %q, body got %+v", p.Arguments, got)
+	}
+}
+
+// TC-10b: on the SQLite store, the approval audit is durable, visible from a
+// second connection, before the body's first instruction.
+func TestFlushBeforeBodyObservedInTheDatabase(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sessions.db")
+	st, err := sqlite.Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close(ctx) })
+	e := newEnv(t)
+	var seen []string
+	var bodyErr error
+	tr := &trace{}
+	reg := stubRegistry{tr: tr, ans: human.Answer{Outcome: human.OutcomeAllowedOnce}}
+	svc := e.pipeline(t, core.Config{Approval: approval.New(approval.Config{Registry: reg}), Checkpoint: recCheckpoint{tr}})
+	e.register(t, e.root, tools.Define(tools.Spec[addIn, int]{
+		Name: "add", Description: "Adds two integers.",
+		Run: func(ctx context.Context, in addIn, _ tools.Run) (int, error) {
+			tr.add("body")
+			seen, bodyErr = durable(ctx, path)
+			return in.A + in.B, nil
+		},
+	}))
+	if _, err := svc.Decide(e.root, "ask", ask); err != nil {
+		t.Fatal(err)
+	}
+	call := [2]string{"add", `{"a":1,"b":2}`}
+	h := openSession(t, st, call)
+	res := execute(t, svc, view(t, svc), h, call)[0]
+	if res.IsError || bodyErr != nil {
+		t.Fatalf("result %+v, body: %v", res, bodyErr)
+	}
+	if !slices.Contains(seen, approval.DecidedType.Name()) || !slices.Contains(seen, event.ToolCall.Name()) {
+		t.Fatalf("the second connection saw %v before the body", seen)
+	}
+	if got := tr.got(); !slices.Equal(got, []string{"approval", "flush", "body"}) {
+		t.Fatalf("stages %v, want the flush between the approval and the body", got)
+	}
+}
+
+// durable is the record types a second connection to the database at path sees.
+func durable(ctx context.Context, path string) ([]string, error) {
+	other, err := sqlite.Open(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	defer other.Close(ctx)
+	r, err := other.OpenRead(ctx, "s-pipeline")
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close(ctx)
+	recs, err := r.Read(ctx, 0, 0, store.ReadOptions{})
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, rec := range recs {
+		out = append(out, rec.Type)
+	}
+	return out, nil
+}
+
+// An empty batch view or log is refused before anything runs.
+func TestInvalidBatchRefused(t *testing.T) {
+	e := newEnv(t)
+	svc := e.pipeline(t, core.Config{})
+	if _, err := svc.ExecuteBatch(context.Background(), tools.Batch{}); !errors.Is(err, tools.ErrInvalidBatch) {
+		t.Fatalf("err %v, want tools/invalid-batch", err)
+	}
+}

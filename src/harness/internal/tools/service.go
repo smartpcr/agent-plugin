@@ -12,7 +12,8 @@ import (
 // Registrations are effects of the caller's fiber, filed in the layer of the
 // caller's scope (the global layer for an untagged context): they disappear when
 // that fiber unloads, when the returned handle is disposed, or when the scope
-// closes. The pipeline's entries (ExecuteBatch, Call) arrive with DH-D-TOOLS-2.
+// closes. ExecuteBatch is the guarded pipeline (DH-D-TOOLS-2): the one way to a
+// tool body.
 type Service interface {
 	// Register files d in the layer of ctx's scope. A declaration with an Err, or
 	// a second tool of d's name in that layer, is refused and the layer is left as
@@ -30,6 +31,19 @@ type Service interface {
 	Resolve(ctx context.Context, t Target) (StepView, error)
 	// Catalogue lists every registered tool once, sorted by name.
 	Catalogue() []Entry
+
+	// Decide files policy listener p, named id in results, in the layer of ctx's
+	// scope; it answers for every call whose agent's scope chain holds the layer.
+	Decide(ctx *cordis.Context, id string, p Policy) (*cordis.EffectHandle, error)
+	// Guard files deny-only guard g, named id, like Decide.
+	Guard(ctx *cordis.Context, id string, g Guard) (*cordis.EffectHandle, error)
+	// Shape files shaper s, named id, like Decide.
+	Shape(ctx *cordis.Context, id string, s Shaper) (*cordis.EffectHandle, error)
+	// ExecuteBatch runs b's calls through the guarded pipeline, one at a time in
+	// the model's order, and returns one Result per call; each was appended as its
+	// tool/result. A refused call is a Result, not an error: the error is for a
+	// malformed batch, or a log that refused a tool/call or tool/result.
+	ExecuteBatch(ctx context.Context, b Batch) (BatchResult, error)
 }
 
 // Key is the tool registry's service key.

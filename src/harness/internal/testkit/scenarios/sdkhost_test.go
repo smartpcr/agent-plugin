@@ -47,11 +47,24 @@ type sdkTool struct {
 	Answer func(protocol.ToolCallParams) protocol.ToolCallResult
 }
 
+// sdkOptions are what a scenario adds to the connection startSDK makes.
+type sdkOptions struct {
+	// Approve, when set, answers the host's approval/request and declares the
+	// approvals capability; unset, the connection declares none.
+	Approve func(protocol.ApprovalRequest) protocol.ApprovalResult
+}
+
 // startSDK launches bin with args followed by "sdk" against a fresh temp home,
 // with env added to the scrubbed host environment, and initializes the connection
 // with the stream capability and tools declared. Requests the host sends for tools
 // are answered by their Answer.
 func startSDK(t *testing.T, bin string, env, args []string, tools ...sdkTool) *sdkHost {
+	t.Helper()
+	return startSDKWith(t, bin, env, args, sdkOptions{}, tools...)
+}
+
+// startSDKWith is startSDK with opts.
+func startSDKWith(t *testing.T, bin string, env, args []string, opts sdkOptions, tools ...sdkTool) *sdkHost {
 	t.Helper()
 	h := &sdkHost{changed: make(chan struct{}, 1)}
 	byName := map[string]sdkTool{}
@@ -73,6 +86,15 @@ func startSDK(t *testing.T, bin string, env, args []string, tools ...sdkTool) *s
 			return tool.Answer(p), nil
 		},
 	}
+	if opts.Approve != nil {
+		methods["approval/request"] = func(_ context.Context, raw json.RawMessage) (any, error) {
+			var p protocol.ApprovalRequest
+			if err := json.Unmarshal(raw, &p); err != nil {
+				return nil, err
+			}
+			return opts.Approve(p), nil
+		}
+	}
 	h.Session = launcher.Start(t, launcher.Program{
 		Argv: append(append([]string{bin}, args...), "sdk"),
 		Env:  env,
@@ -82,7 +104,7 @@ func startSDK(t *testing.T, bin string, env, args []string, tools ...sdkTool) *s
 	h.call(t, "initialize", protocol.InitializeParams{
 		ProtocolVersions: []int{protocol.Version},
 		ClientInfo:       protocol.Implementation{Name: "dsh-scenario", Version: "1"},
-		Capabilities:     protocol.ClientCapabilities{Stream: true, Tools: decls},
+		Capabilities:     protocol.ClientCapabilities{Stream: true, Approvals: opts.Approve != nil, Tools: decls},
 	}, &init)
 	if init.ProtocolVersion != protocol.Version {
 		t.Fatalf("initialize answered protocol %d, want %d", init.ProtocolVersion, protocol.Version)
