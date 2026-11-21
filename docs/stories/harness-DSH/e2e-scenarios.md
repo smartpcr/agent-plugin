@@ -1418,7 +1418,7 @@ passes, this store is used on **scratch homes only**.
   @TC-07 @proof:service:sqlite @DH-T-STORE-6
   Given re-exec'd process A holding the lease on session S in a temp home
   When re-exec'd process B opens S for writing
-  Then B is refused with store/lease-held and S's log holds only A's events
+  Then B is refused with session/owned naming A's process and S's log holds only A's events
   ```
 - **Scenario:** A dead holder is taken over and its stale epoch rejected
   ```gherkin
@@ -1433,7 +1433,7 @@ passes, this store is used on **scratch homes only**.
   @TC-07 @proof:service:sqlite @DH-D-STORE-3 @edge
   Given process A alive and idle holding the lease
   When process B's clock is advanced 24 hours and B opens S
-  Then B is still refused with store/lease-held
+  Then B is still refused with session/owned
   And only an explicit Force takeover succeeds, bumping the epoch
   ```
 

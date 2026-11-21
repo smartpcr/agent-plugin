@@ -114,7 +114,8 @@ func slcrChild(role, root string) error {
 			fmt.Printf("result opened epoch=%d\n", w.Epoch())
 			return slcrServeAppends(s, w, in, "b")
 		case errors.As(err, &owned):
-			fmt.Printf("result refused refusal=%s code=%s holder=%s pid=%d\n", slcrRefusalOf(err), slcrCodeOf(err), owned.Holder.Instance, owned.Holder.PID)
+			fmt.Printf("result refused code=%s is-owned=%t holder=%s pid=%d since=%d\n", slcrWireCode(err),
+				errors.Is(err, store.ErrOwned), owned.Holder.Instance, owned.Holder.PID, owned.Holder.Since.UnixNano())
 		default:
 			fmt.Printf("result error code=%s %v\n", slcrCodeOf(err), err)
 		}
@@ -218,27 +219,12 @@ func slcrCrashTurn(s *sqlite.Store) error {
 	return nil
 }
 
-// slcrLeaseHeld is the plan's name for the refusal of a second writer while the
-// holder lives (implementation-plan.md, e2e-scenarios.md). The store contract
-// that defines the refusal (docs/harness/areas/session-store.md §6.2, the lease,
-// rule 3; core-session.md errors) gives it the code session/owned, carrying the
-// holder's identity; no doc under docs/harness defines a store/lease-held code.
-// The scenario asserts both: the refusal is the lease-held kind, by its
-// structure, and it carries the contract's code.
-const slcrLeaseHeld = "store/lease-held"
-
-var slcrRefusalCodes = map[string]store.Code{slcrLeaseHeld: store.CodeOwned}
-
-// slcrRefusalOf classifies a refused OpenWrite: "store/lease-held" when it is
-// the store's lease refusal naming a recorded, live holder (an OwnedError that
-// matches ErrOwned, with instance, pid and since), else "other".
-func slcrRefusalOf(err error) string {
-	var owned *store.OwnedError
-	if errors.As(err, &owned) && errors.Is(err, store.ErrOwned) &&
-		owned.Holder.Instance != "" && owned.Holder.PID > 0 && !owned.Holder.Since.IsZero() {
-		return slcrLeaseHeld
-	}
-	return "other"
+// slcrWireCode is the code a refusal carries on the wire: the <domain>/<reason>
+// prefix of its message (core-session.md errors), as the production error
+// formats it. No mapping is applied.
+func slcrWireCode(err error) string {
+	code, _, _ := strings.Cut(err.Error(), ":")
+	return code
 }
 
 func slcrCodeOf(err error) store.Code {
@@ -529,36 +515,32 @@ func (s *slcrState) bOpens(id string) error {
 	return err
 }
 
-func (s *slcrState) bRefused(refusal string) error {
+// bRefused: B's OpenWrite was refused with exactly code, as production emits it,
+// naming A's live instance, pid and lease start.
+func (s *slcrState) bRefused(code string) error {
 	line := s.bResult
-	if !strings.HasPrefix(line, "result refused") || slcrField(line, "refusal") != refusal {
-		return fmt.Errorf("process B: %q; want refused with %s", line, refusal)
+	if !strings.HasPrefix(line, "result refused") || slcrField(line, "code") != code || slcrField(line, "is-owned") != "true" {
+		return fmt.Errorf("process B: %q; want refused with %s", line, code)
 	}
-	if slcrField(line, "holder") != s.aInst || slcrField(line, "pid") != s.aPID {
+	if slcrField(line, "holder") != s.aInst || slcrField(line, "pid") != s.aPID || slcrField(line, "since") == "" {
 		return fmt.Errorf("process B was refused naming %s pid %s; want A (%s, pid %s)",
 			slcrField(line, "holder"), slcrField(line, "pid"), s.aInst, s.aPID)
 	}
 	return nil
 }
 
-// refusalCarries: B's lease-held refusal carries the contract's code, and a
-// second writer opened in this process meets the same refusal naming A.
-func (s *slcrState) refusalCarries(code string) error {
-	if want := slcrRefusalCodes[slcrLeaseHeld]; string(want) != code {
-		return fmt.Errorf("the feature names %s but the lease-held refusal maps to %s", code, want)
-	}
-	if got := slcrField(s.bResult, "code"); got != code {
-		return fmt.Errorf("process B's lease-held refusal has code %q; want %s", got, code)
-	}
+// refusedInProcess: a second writer opened in this (third) process meets the
+// same refusal, with the same code, naming A.
+func (s *slcrState) refusedInProcess(code string) error {
 	st, err := s.open()
 	if err != nil {
 		return err
 	}
 	_, err = st.OpenWrite(slcrBG, slcrSession, store.OpenOptions{})
 	var owned *store.OwnedError
-	if slcrRefusalOf(err) != slcrLeaseHeld || slcrCodeOf(err) != store.Code(code) ||
+	if err == nil || slcrWireCode(err) != code || !errors.Is(err, store.ErrOwned) ||
 		!errors.As(err, &owned) || owned.Holder.Instance != s.aInst || strconv.Itoa(owned.Holder.PID) != s.aPID {
-		return fmt.Errorf("a second writer in this process = %v; want %s (%s) naming A", err, slcrLeaseHeld, code)
+		return fmt.Errorf("a second writer in this process = %v; want %s naming A", err, code)
 	}
 	return nil
 }
@@ -1070,7 +1052,7 @@ func InitializeScenario_sqlite_store_leases_and_recovery_session_leases_and_cras
 	ctx.Step(`^process A holding the lease on session "([^"]*)" in a temp home$`, s.aHolds)
 	ctx.Step(`^process B opens "([^"]*)" for writing$`, s.bOpens)
 	ctx.Step(`^B is refused with "([^"]*)" naming process A$`, s.bRefused)
-	ctx.Step(`^the lease-held refusal carries the store contract's code "([^"]*)"$`, s.refusalCarries)
+	ctx.Step(`^a second writer in another store instance is refused with "([^"]*)" naming process A$`, s.refusedInProcess)
 	ctx.Step(`^the log of "([^"]*)" contains only A's events$`, s.onlyAs)
 	ctx.Step(`^A still appends to "([^"]*)"$`, s.aStillAppends)
 

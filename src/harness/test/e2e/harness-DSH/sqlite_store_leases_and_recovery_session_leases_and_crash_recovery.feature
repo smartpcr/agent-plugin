@@ -1,9 +1,9 @@
 @story-harness:DSH @phase-sqlite-store-leases-and-recovery @stage-session-leases-and-crash-recovery @setup-compose
 Feature: Session leases and crash recovery
   One writer per session across processes: a live holder's lease refuses a
-  second writer with the store/lease-held refusal (an OwnedError naming the
-  live holder, whose code in the store contract, session-store.md section 6.2
-  rule 3, is session/owned), a
+  second writer with session/owned naming the holder (the store contract,
+  docs/harness/areas/session-store.md section 6.2 lease rule 3, which the
+  implementation plan's acceptance criterion now cites), a
   dead holder's lease is taken over inside the write transaction at epoch+1 and
   fences the old epoch, a crash between append and flush is recovered honestly,
   and a failed checkpoint flush keeps a tool body from running. Processes A and
@@ -14,8 +14,8 @@ Feature: Session leases and crash recovery
   Scenario: Second writer refused across processes
     Given process A holding the lease on session "S" in a temp home
     When process B opens "S" for writing
-    Then B is refused with "store/lease-held" naming process A
-    And the lease-held refusal carries the store contract's code "session/owned"
+    Then B is refused with "session/owned" naming process A
+    And a second writer in another store instance is refused with "session/owned" naming process A
     And the log of "S" contains only A's events
     And A still appends to "S"
 
