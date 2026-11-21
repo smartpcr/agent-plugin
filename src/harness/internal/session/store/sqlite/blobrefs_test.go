@@ -1,13 +1,22 @@
 package sqlite_test
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store/sqlite"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/spill"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/spill/local"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/temphome"
 )
 
 // spilled is a tool result at seq whose full output went to spill file id.
@@ -111,5 +120,151 @@ func TestBlobRefsBackfilledByTheMigration(t *testing.T) {
 	}
 	if !cites(t, open(t, path), "old", "spill:kept") {
 		t.Fatal("the migration did not backfill the logged spill reference")
+	}
+}
+
+// forkedSpill is a home whose session "p" spilled two files, cited at seqs 1 and
+// 2, and whose fork "f" inherited the prefix through seq 1: it cites the first
+// file only. It returns the home, the open store, the spill store reading with
+// the store's lineage, the two ids and the cited file's bytes.
+func forkedSpill(t *testing.T) (home.Layout, *sqlite.Store, *local.Store, string, string, []byte) {
+	t.Helper()
+	l := temphome.New(t)
+	s, err := sqlite.OpenHome(bg, l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sp, err := local.New(l, local.DefaultConfig, local.WithLineage(local.ForkLineage(s)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	full := bytes.Repeat([]byte("0123456789abcdef"), 1<<16)
+	_, early, err := spill.Save(bg, sp, "p", "early.log", full, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, late, err := spill.Save(bg, sp, "p", "late.log", []byte(string(full[:4096])), 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := s.Create(bg, store.Header{ID: "p"}, store.CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Append(bg, store.Batch{First: 0, Records: []store.Record{call(t, 0), spilled(t, 1, early.Path), spilled(t, 2, late.Path)}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(bg); err != nil {
+		t.Fatal(err)
+	}
+	f, err := s.Create(bg, store.Header{ID: "f"}, store.CreateOptions{ForkOf: &store.ForkOf{ID: "p", Through: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(bg); err != nil {
+		t.Fatal(err)
+	}
+	return l, s, sp, early.Path, late.Path, full
+}
+
+// readSpill is the bytes of spill file id as caller reads them.
+func readSpill(t *testing.T, sp *local.Store, caller, id string) []byte {
+	t.Helper()
+	r, err := sp.Open(bg, caller, id)
+	if err != nil {
+		t.Fatalf("fork read of %s: %v", id, err)
+	}
+	defer r.Close()
+	b, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func spillGone(t *testing.T, l home.Layout, id string) bool {
+	t.Helper()
+	_, err := os.Lstat(filepath.Join(l.Spill(), filepath.FromSlash(id)))
+	return errors.Is(err, os.ErrNotExist)
+}
+
+// storage.md §6.1 / DH-D-STORAGE-5: deleting a session keeps the spill files a
+// fork cites (through its inherited blob_refs rows) and removes the rest; the
+// fork reads the kept file byte-identical. Deleting the fork then removes the
+// file and the emptied directory, as nothing active cites or owns them.
+func TestDeletionKeepsSpillFilesAForkCites(t *testing.T) {
+	l, s, sp, early, late, full := forkedSpill(t)
+	defer s.Close(bg)
+	if err := s.Delete(bg, "p", store.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := readSpill(t, sp, "f", early); !bytes.Equal(got, full) {
+		t.Fatalf("the fork read %d bytes, not the %d its parent spilled", len(got), len(full))
+	}
+	if !spillGone(t, l, late) {
+		t.Fatal("the deleted parent's uncited spill file is still there")
+	}
+	if err := s.Delete(bg, "f", store.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if !spillGone(t, l, early) || !spillGone(t, l, sqlite.SpillName("p")) {
+		t.Fatal("deleting the last citing fork left the file or its directory")
+	}
+}
+
+// The same, when the parent's deletion is interrupted after its spill step: the
+// next OpenHome finishes the tombstone and still keeps the fork's file.
+func TestInterruptedDeletionKeepsSpillFilesAForkCites(t *testing.T) {
+	l, s, _, early, late, full := forkedSpill(t)
+	restore := sqlite.SetRemoveAll(func(path string) error {
+		_ = os.RemoveAll(path)
+		return os.ErrPermission // the crash, after the removal took effect
+	})
+	err := s.Delete(bg, "p", store.DeleteOptions{})
+	restore()
+	if err == nil {
+		t.Fatal("the interrupted deletion reported success")
+	}
+	if err := s.Close(bg); err != nil {
+		t.Fatal(err)
+	}
+	if n := countWhere(t, fresh(t, l.DB()), `SELECT count(*) FROM sessions WHERE id = 'p' AND state = 'deleting'`); n != 1 {
+		t.Fatalf("%d tombstones of the parent; the test does not exercise the resumed deletion", n)
+	}
+	r, err := sqlite.OpenHome(bg, l)
+	if err != nil {
+		t.Fatalf("OpenHome finishing the deletion: %v", err)
+	}
+	defer r.Close(bg)
+	assertGone(t, l.DB(), "p")
+	sp2, err := local.New(l, local.DefaultConfig, local.WithLineage(local.ForkLineage(r)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readSpill(t, sp2, "f", early); !bytes.Equal(got, full) {
+		t.Fatalf("after the resumed deletion the fork read %d bytes, want %d", len(got), len(full))
+	}
+	if !spillGone(t, l, late) {
+		t.Fatal("the resumed deletion left the parent's uncited spill file")
+	}
+}
+
+// The spill store's Delete, with the session store as its Citer, keeps what a
+// fork cites, as a session deletion does.
+func TestSessionStoreIsTheSpillCiter(t *testing.T) {
+	l, s, _, early, late, full := forkedSpill(t)
+	defer s.Close(bg)
+	sp, err := local.New(l, local.DefaultConfig, local.WithLineage(local.ForkLineage(s)), local.WithCiter(s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sp.Delete(bg, "p"); err != nil {
+		t.Fatal(err)
+	}
+	if got := readSpill(t, sp, "f", early); !bytes.Equal(got, full) {
+		t.Fatal("the spill Delete removed a file the fork cites")
+	}
+	if !spillGone(t, l, late) {
+		t.Fatal("the spill Delete kept an uncited file")
 	}
 }
