@@ -2,6 +2,7 @@ package prompt
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
@@ -32,6 +33,12 @@ type Config struct {
 // Defaults is the config with every default (identity and runtime context on).
 func Defaults() Config {
 	return Config{IncludeHarnessIdentity: true, IncludeRuntimeContext: true}
+}
+
+// clone is c with its own ToolOrder.
+func (c Config) clone() Config {
+	c.ToolOrder = slices.Clone(c.ToolOrder)
+	return c
 }
 
 // Validate checks toolOrder: exactly one Unlisted, no duplicates, every other name

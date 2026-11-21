@@ -330,3 +330,58 @@ func TestLivePersona(t *testing.T) {
 		t.Fatalf("identity off: %q", got)
 	}
 }
+
+// The service keeps its own toolOrder: mutating the slice handed to the component,
+// to Configure or to a live update, or the one Config returns, changes nothing.
+func TestToolOrderIsCopied(t *testing.T) {
+	for _, n := range []string{"copy_a", "copy_b"} {
+		define(n, tools.Full)
+	}
+	order := func() []string { return []string{"copy_a", prompt.Unlisted, "copy_b"} }
+	listed := func(e *env) []string {
+		var got []string
+		for _, ts := range e.must(t, scope.Key{}).Tools {
+			got = append(got, ts.Name)
+		}
+		return got
+	}
+	want := []string{"copy_a", "copy_b"}
+
+	given := order()
+	e := newEnv(t, prompt.Config{ToolOrder: given})
+	for _, n := range []string{"copy_a", "copy_b"} {
+		if _, err := e.tools.Register(e.root, define(n, tools.Full)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	given[2] = "copy_a"
+	if got := listed(e); !slices.Equal(got, want) {
+		t.Fatalf("after mutating the component config: %v, want %v", got, want)
+	}
+
+	e.prompt.Config().ToolOrder[2] = "copy_a"
+	if got := listed(e); !slices.Equal(got, want) {
+		t.Fatalf("after mutating Config(): %v, want %v", got, want)
+	}
+
+	configured := order()
+	if err := e.prompt.Configure(prompt.Config{ToolOrder: configured}); err != nil {
+		t.Fatal(err)
+	}
+	configured[2] = "copy_a"
+	if got := listed(e); !slices.Equal(got, want) {
+		t.Fatalf("after mutating the Configure argument: %v, want %v", got, want)
+	}
+
+	live := order()
+	if err := e.fiber.Update(prompt.Config{ToolOrder: live}, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.fiber.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	live[2] = "copy_a"
+	if got := listed(e); !slices.Equal(got, want) {
+		t.Fatalf("after mutating the live update: %v, want %v", got, want)
+	}
+}

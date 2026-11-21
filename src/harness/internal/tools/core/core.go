@@ -76,6 +76,9 @@ func (r *registry) RegisterSet(ctx *cordis.Context, ds []*tools.Declaration) (*c
 	if len(ds) == 0 {
 		return nil, &tools.Error{Code: tools.CodeInvalidDeclaration, Msg: "the set is empty"}
 	}
+	// The disposal closure keeps the set; a caller mutating its slice afterwards
+	// must not change what disposal removes.
+	ds = slices.Clone(ds)
 	names := make([]string, 0, len(ds))
 	for _, d := range ds {
 		if d == nil {

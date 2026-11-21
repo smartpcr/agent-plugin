@@ -325,3 +325,54 @@ func TestBodySeat(t *testing.T) {
 		t.Fatal("a refused declaration has a body")
 	}
 }
+
+// A zero-value declaration has no Err of its own but no schema or body either: it
+// is refused as invalid, alone or in a set, and the registry is left unchanged.
+func TestZeroValueDeclarationRefused(t *testing.T) {
+	e := newEnv(t)
+	if err := (&tools.Declaration{}).Err(); !errors.Is(err, tools.ErrInvalidDeclaration) {
+		t.Fatalf("Err of a zero value = %v; want tools/invalid-declaration", err)
+	}
+	if h, err := e.svc.Register(e.root, &tools.Declaration{}); !errors.Is(err, tools.ErrInvalidDeclaration) || h != nil {
+		t.Fatalf("Register zero value: %v, %v", h, err)
+	}
+	if h, err := e.svc.RegisterSet(e.root, []*tools.Declaration{named("grep"), {}}); !errors.Is(err, tools.ErrInvalidDeclaration) || h != nil {
+		t.Fatalf("RegisterSet with a zero value: %v, %v", h, err)
+	}
+	if got := names(e.resolve(t, scope.Key{})); len(got) != 0 {
+		t.Fatalf("view after refusals: %v", got)
+	}
+	if got := e.svc.Catalogue(); len(got) != 0 {
+		t.Fatalf("catalogue after refusals: %v", got)
+	}
+}
+
+// RegisterSet keeps its own copy of the set: a caller changing its slice after a
+// registration cannot change what disposal removes.
+func TestRegisterSetSnapshotsInput(t *testing.T) {
+	for _, replace := range []*tools.Declaration{named("other"), nil} {
+		e := newEnv(t)
+		d := echo("Echo.")
+		ds := []*tools.Declaration{d}
+		h := must(t)(e.svc.RegisterSet(e.root, ds))
+		ds[0] = replace
+		h.Dispose()
+		if _, ok := e.resolve(t, scope.Key{}).Lookup("echo"); ok {
+			t.Fatalf("echo still registered after disposal (slice entry replaced by %v)", replace)
+		}
+		if got := e.svc.Catalogue(); len(got) != 0 {
+			t.Fatalf("catalogue after disposal: %v", got)
+		}
+		e.register(t, e.root, d)
+	}
+}
+
+func must(t *testing.T) func(*cordis.EffectHandle, error) *cordis.EffectHandle {
+	return func(h *cordis.EffectHandle, err error) *cordis.EffectHandle {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+}

@@ -233,8 +233,18 @@ func (d *Declaration) Timeout() time.Duration { return d.timeout }
 // Origin is "" for a compiled-in tool and the DynamicSpec's origin otherwise.
 func (d *Declaration) Origin() string { return d.origin }
 
-// Err is why the declaration cannot be registered, nil when it can.
-func (d *Declaration) Err() error { return d.err }
+// Err is why the declaration cannot be registered, nil when it can. A declaration
+// not built by Define or Dynamic (a zero value) has no schema and no body, and is
+// refused here rather than by whatever reads it later.
+func (d *Declaration) Err() error {
+	if d.err != nil {
+		return d.err
+	}
+	if d.input == nil || d.run == nil {
+		return &Error{Code: CodeInvalidDeclaration, Tool: d.name, Msg: "not built by tools.Define or tools.Dynamic"}
+	}
+	return nil
+}
 
 // Schema is the tool as the model sees it: the canonical input document of
 // package schema, byte-identical on every call.

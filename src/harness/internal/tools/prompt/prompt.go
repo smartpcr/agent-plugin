@@ -47,7 +47,7 @@ var Component = cordis.Define(Name, func(ctx *cordis.Context, cfg Config) error 
 	if err != nil {
 		return err
 	}
-	if _, err := cordis.AcceptUpdate(ctx, func(next Config) { s.cfg.Store(&next) }); err != nil {
+	if _, err := cordis.AcceptUpdate(ctx, func(next Config) { s.store(next) }); err != nil {
 		return err
 	}
 	_, err = Key.Provide(ctx, s)
@@ -229,7 +229,7 @@ func New(owner *cordis.Context, tab scope.Table, cfg Config) (*Service, error) {
 		return nil, err
 	}
 	s := &Service{layers: scope.NewLayers(tab, newLayer)}
-	s.cfg.Store(&cfg)
+	s.store(cfg)
 	builtins := []Section{
 		{Name: SectionIdentity, Order: OrderIdentity, Literal: true, Func: func(Input) (string, error) {
 			if s.Config().IncludeHarnessIdentity {
@@ -253,15 +253,23 @@ func New(owner *cordis.Context, tab scope.Table, cfg Config) (*Service, error) {
 }
 
 // Config is the config the next assembly uses.
-func (s *Service) Config() Config { return *s.cfg.Load() }
+// The caller owns the returned copy: changing its ToolOrder changes nothing here.
+func (s *Service) Config() Config { return s.cfg.Load().clone() }
 
 // Configure validates cfg and makes the next assembly use it.
 func (s *Service) Configure(cfg Config) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
-	s.cfg.Store(&cfg)
+	s.store(cfg)
 	return nil
+}
+
+// store keeps a private copy of cfg, so the caller's slice cannot change the
+// validated ordering behind the service's back.
+func (s *Service) store(cfg Config) {
+	c := cfg.clone()
+	s.cfg.Store(&c)
 }
 
 func ownerOf(ctx *cordis.Context) string { return ctx.Fiber().Name() }
