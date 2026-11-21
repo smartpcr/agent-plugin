@@ -145,6 +145,7 @@ CREATE TABLE session_flags (
 	session    INTEGER PRIMARY KEY REFERENCES sessions (uid) ON DELETE CASCADE,
 	archive    TEXT    NOT NULL DEFAULT '' CHECK (archive IN ('', 'pending', 'archived')),
 	archive_at INTEGER NOT NULL DEFAULT 0,
+	archive_owner TEXT NOT NULL DEFAULT '',
 	pinned     INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1)),
 	updated_at INTEGER NOT NULL
 ) STRICT;

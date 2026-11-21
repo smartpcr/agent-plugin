@@ -2,6 +2,8 @@ package workspace
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -22,11 +24,21 @@ const ReasonActive herr.Reason = "workspace/session-active"
 // ErrActive matches an archive refused for activity.
 var ErrActive = herr.New(ReasonActive, "")
 
+// ReasonArchiveConflict is an archive whose mark another operation changed
+// before it could confirm (an unarchive in between).
+const ReasonArchiveConflict herr.Reason = "workspace/archive-conflict"
+
+// ErrArchiveConflict matches ReasonArchiveConflict.
+var ErrArchiveConflict = herr.New(ReasonArchiveConflict, "")
+
 // Marks is where archive marks live: the Registry's session_flags rows, or
-// MemoryMarks for a single process without a database.
+// MemoryMarks for a single process without a database. TransitionArchive is
+// atomic: it is how concurrent archives (in any process) never clobber each
+// other's marks.
 type Marks interface {
 	Flags(ctx context.Context, id session.ID) (Flags, error)
 	SetArchive(ctx context.Context, id session.ID, s ArchiveState) error
+	TransitionArchive(ctx context.Context, id session.ID, t Transition) (bool, error)
 }
 
 var _ Marks = (*Registry)(nil)
@@ -59,13 +71,31 @@ func (m *MemoryMarks) SetArchive(_ context.Context, id session.ID, s ArchiveStat
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.set(id, s, "")
+	return nil
+}
+
+func (m *MemoryMarks) set(id session.ID, s ArchiveState, owner string) {
 	f := m.flags[id]
-	f.Archive, f.ArchiveAt = s, m.now().UTC()
+	f.Archive, f.ArchiveAt, f.Owner = s, m.now().UTC(), owner
 	if s != ArchiveNone {
 		f.Pinned = false
 	}
 	m.flags[id] = f
-	return nil
+}
+
+// TransitionArchive applies t to id's mark when it matches.
+func (m *MemoryMarks) TransitionArchive(_ context.Context, id session.ID, t Transition) (bool, error) {
+	if err := t.valid(); err != nil {
+		return false, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !t.matches(m.flags[id]) {
+		return false, nil
+	}
+	m.set(id, t.To, t.owner())
+	return true, nil
 }
 
 // Activity is one thing working on a session, as a provider reports it.
@@ -139,21 +169,34 @@ func (a *Archiver) list() []ActivityProvider {
 	return append([]ActivityProvider(nil), a.providers...)
 }
 
-// Archive hides session id. It writes a pending mark first (which the step
-// gate already treats as blocked, closing the window between the check and the
-// write), then asks every provider. Without Stop, any activity or a failing
+// Archive hides session id. It writes a pending mark owned by this operation
+// first (which the step gate already treats as blocked, closing the window
+// between the check and the write; another operation's pending mark is taken
+// over), then asks every provider. Without Stop, any activity or a failing
 // Report removes the mark and refuses: *ActiveError (workspace/session-active)
 // or the Report error; with none the mark is confirmed. With Stop the mark is
 // confirmed first and then every provider is asked to stop with cause hidden;
 // the archive stands even when a provider fails, and the failures are returned.
+// Every change after the first is conditional on this operation still holding
+// the pending mark, so an overlapping archive or hide (in any process) is never
+// undone by this one's rollback; a mark unarchived before the confirm is
+// workspace/archive-conflict. Archiving an archived session checks nothing (a
+// hide still stops its work).
 func (a *Archiver) Archive(ctx context.Context, id session.ID, o ArchiveOptions) error {
-	if err := a.marks.SetArchive(ctx, id, ArchivePending); err != nil {
+	owner, err := newOwner()
+	if err != nil {
+		return err
+	}
+	archived, err := a.begin(ctx, id, owner)
+	if err != nil {
 		return err
 	}
 	providers := a.list()
 	if o.Stop {
-		if err := a.marks.SetArchive(ctx, id, ArchiveArchived); err != nil {
-			return errors.Join(err, a.marks.SetArchive(context.WithoutCancel(ctx), id, ArchiveNone))
+		if !archived {
+			if err := a.confirm(ctx, id, owner); err != nil {
+				return errors.Join(err, a.rollback(ctx, id, owner))
+			}
 		}
 		var errs []error
 		for _, p := range providers {
@@ -163,20 +206,71 @@ func (a *Archiver) Archive(ctx context.Context, id session.ID, o ArchiveOptions)
 		}
 		return errors.Join(errs...)
 	}
+	if archived {
+		return nil
+	}
 	var active []Activity
 	for _, p := range providers {
 		got, err := p.Report(ctx, id)
 		if err != nil {
-			return errors.Join(fmt.Errorf("%s: activity of session %s: %w", p.Name(), id, err),
-				a.marks.SetArchive(context.WithoutCancel(ctx), id, ArchiveNone))
+			return errors.Join(fmt.Errorf("%s: activity of session %s: %w", p.Name(), id, err), a.rollback(ctx, id, owner))
 		}
 		active = append(active, got...)
 	}
 	if len(active) > 0 {
-		return errors.Join(&ActiveError{Session: id, Activity: active},
-			a.marks.SetArchive(context.WithoutCancel(ctx), id, ArchiveNone))
+		return errors.Join(&ActiveError{Session: id, Activity: active}, a.rollback(ctx, id, owner))
 	}
-	return a.marks.SetArchive(ctx, id, ArchiveArchived)
+	return a.confirm(ctx, id, owner)
+}
+
+// maxTakeover bounds begin's retries against a mark that keeps changing.
+const maxTakeover = 8
+
+// begin writes owner's pending mark over none or another operation's pending
+// mark; archived is true (and nothing is written) when id is already archived.
+func (a *Archiver) begin(ctx context.Context, id session.ID, owner string) (archived bool, err error) {
+	for range maxTakeover {
+		f, err := a.marks.Flags(ctx, id)
+		if err != nil {
+			return false, err
+		}
+		if f.Archive == ArchiveArchived {
+			return true, nil
+		}
+		ok, err := a.marks.TransitionArchive(ctx, id, Transition{From: f.Archive, Owner: f.Owner, To: ArchivePending, NewOwner: owner})
+		if err != nil || ok {
+			return false, err
+		}
+	}
+	return false, herr.Newf(ReasonArchiveConflict, "session %s: its archive mark keeps changing", id)
+}
+
+// confirm turns owner's pending mark into archived. A mark another operation
+// already archived is success; anything else (unarchived) is a conflict.
+func (a *Archiver) confirm(ctx context.Context, id session.ID, owner string) error {
+	ok, err := a.marks.TransitionArchive(ctx, id, Transition{From: ArchivePending, Owner: owner, To: ArchiveArchived})
+	if err != nil || ok {
+		return err
+	}
+	f, err := a.marks.Flags(ctx, id)
+	if err != nil || f.Archive == ArchiveArchived {
+		return err
+	}
+	return herr.Newf(ReasonArchiveConflict, "session %s's archive mark changed to %q before the archive was confirmed", id, f.Archive)
+}
+
+// rollback removes owner's pending mark, if it still holds it.
+func (a *Archiver) rollback(ctx context.Context, id session.ID, owner string) error {
+	_, err := a.marks.TransitionArchive(context.WithoutCancel(ctx), id, Transition{From: ArchivePending, Owner: owner, To: ArchiveNone})
+	return err
+}
+
+func newOwner() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b[:]), nil
 }
 
 // Hide is Archive with Stop: a hidden session never keeps working, so hiding

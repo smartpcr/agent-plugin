@@ -294,6 +294,82 @@ func TestArchiveRefusesOrStops(t *testing.T) {
 
 type failingProvider struct{}
 
+// gatedProvider reports activity only once released, so a test can overlap
+// other operations with an archive that is between its pending mark and its
+// rollback or confirm.
+type gatedProvider struct {
+	entered chan struct{}
+	release chan struct{}
+	active  bool
+}
+
+func (gatedProvider) Name() string { return "gated" }
+func (p gatedProvider) Report(context.Context, session.ID) ([]workspace.Activity, error) {
+	p.entered <- struct{}{}
+	<-p.release
+	if p.active {
+		return []workspace.Activity{{Provider: "gated", Detail: "busy"}}, nil
+	}
+	return nil, nil
+}
+func (gatedProvider) Stop(context.Context, session.ID, agent.StopCause) error { return nil }
+
+// An archive's rollback or confirm never undoes an overlapping operation on the
+// same session: a hide that confirms while a no-stop archive is deciding stays
+// archived when that archive then refuses, and an unarchive in between makes
+// the archive a conflict instead of re-hiding the session. Over the in-memory
+// marks and the durable rows.
+func TestOverlappingArchivesKeepTheLastDecision(t *testing.T) {
+	home := t.TempDir()
+	db := openDB(t, filepath.Join(home, "dsh.db"))
+	reg := must(workspace.Open(bg, db))
+	newSession(t, db, "s", home)
+	for name, marks := range map[string]workspace.Marks{"memory": workspace.NewMemoryMarks(), "rows": reg} {
+		t.Run(name, func(t *testing.T) {
+			overlap := func(active bool, during func(a *workspace.Archiver)) error {
+				g := gatedProvider{entered: make(chan struct{}), release: make(chan struct{}), active: active}
+				a := workspace.NewArchiver(marks, g)
+				done := make(chan error, 1)
+				go func() { done <- a.Archive(bg, "s", workspace.ArchiveOptions{}) }()
+				<-g.entered
+				if f := must(marks.Flags(bg, "s")); f.Archive != workspace.ArchivePending || f.Owner == "" {
+					t.Fatalf("deciding archive's mark = %+v", f)
+				}
+				during(workspace.NewArchiver(marks))
+				close(g.release)
+				return <-done
+			}
+
+			err := overlap(true, func(b *workspace.Archiver) {
+				if err := b.Hide(bg, "s"); err != nil {
+					t.Fatalf("overlapping hide: %v", err)
+				}
+			})
+			if !errors.Is(err, workspace.ErrActive) {
+				t.Fatalf("the deciding archive saw activity but returned %v", err)
+			}
+			if f := must(marks.Flags(bg, "s")); f.Archive != workspace.ArchiveArchived || f.Owner != "" {
+				t.Fatalf("the refused archive undid the hide: %+v", f)
+			}
+
+			if err := marks.SetArchive(bg, "s", workspace.ArchiveNone); err != nil {
+				t.Fatal(err)
+			}
+			err = overlap(false, func(b *workspace.Archiver) {
+				if err := b.Unarchive(bg, "s"); err != nil {
+					t.Fatal(err)
+				}
+			})
+			if !errors.Is(err, workspace.ErrArchiveConflict) {
+				t.Fatalf("confirm after an unarchive = %v", err)
+			}
+			if f := must(marks.Flags(bg, "s")); f.Archive != workspace.ArchiveNone {
+				t.Fatalf("the archive overrode the unarchive: %+v", f)
+			}
+		})
+	}
+}
+
 func (failingProvider) Name() string { return "failing" }
 func (failingProvider) Report(context.Context, session.ID) ([]workspace.Activity, error) {
 	return nil, errors.New("cannot tell")

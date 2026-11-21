@@ -9,6 +9,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"time"
@@ -26,22 +27,63 @@ const (
 	DefaultWindow = 100
 	// MaxWindow clamps every window.
 	MaxWindow = 500
-	// MaxListed bounds ListByProject's walk of the store.
+	// MaxListed bounds the store candidates ListByProject and Lineage's fork
+	// search examine (WithMaxListed lowers it).
 	MaxListed = 10_000
+	// listPage is the page those walks ask the store for.
+	listPage = 100
 	// MaxLineage bounds the fork chain a lineage or trace walks.
 	MaxLineage = 32
 	// DefaultFollowInterval is how often a follower polls the store.
 	DefaultFollowInterval = 100 * time.Millisecond
 )
 
-// Service reads sessions from one store. Membership and flags come from the
-// workspace registry when one is given; without it every session is ungrouped
-// and unflagged (or flagged by WithMarks).
+// Caller is what a reader may see (DH-D-VIEW-5: "within what the caller may
+// see"). Every method applies the same rule: List and ListByProject leave out
+// what the caller may not see, and Observe, Lineage, Trace and Follow answer
+// for such a session exactly as for a missing one (session/not-found), so a
+// caller cannot tell a session it may not see from one that does not exist.
+type Caller struct {
+	// AllProjects sees the sessions of every project.
+	AllProjects bool
+	// Projects are the workspace ids whose sessions it sees otherwise.
+	Projects []string
+	// Ungrouped sees the sessions attached to no project.
+	Ungrouped bool
+	// Hidden sees pending and archived sessions.
+	Hidden bool
+}
+
+// Viewer sees every session that is not hidden: the default caller.
+func Viewer() Caller { return Caller{AllProjects: true, Ungrouped: true} }
+
+// Operator sees every session, hidden ones too.
+func Operator() Caller { return Caller{AllProjects: true, Ungrouped: true, Hidden: true} }
+
+// Sees reports whether c may see a session attached to workspace ws ("" when
+// ungrouped) with flags f.
+func (c Caller) Sees(ws string, f workspace.Flags) bool {
+	if f.Archive.Hidden() && !c.Hidden {
+		return false
+	}
+	if ws == "" {
+		return c.Ungrouped
+	}
+	return c.AllProjects || slices.Contains(c.Projects, ws)
+}
+
+func (c Caller) seesProject(ws string) bool { return c.AllProjects || slices.Contains(c.Projects, ws) }
+
+// Service reads sessions from one store for one caller. Membership and flags
+// come from the workspace registry when one is given; without it every session
+// is ungrouped and unflagged (or flagged by WithMarks).
 type Service struct {
-	st       store.Store
-	ws       *workspace.Registry
-	marks    workspace.Marks
-	interval time.Duration
+	st        store.Store
+	ws        *workspace.Registry
+	marks     workspace.Marks
+	caller    Caller
+	interval  time.Duration
+	maxListed int
 }
 
 // Option configures New.
@@ -60,6 +102,9 @@ func WithWorkspaces(r *workspace.Registry) Option {
 // WithMarks reads archive marks from m (a store without machine-state tables).
 func WithMarks(m workspace.Marks) Option { return func(s *Service) { s.marks = m } }
 
+// WithCaller reads as c; the default is Viewer.
+func WithCaller(c Caller) Option { return func(s *Service) { s.caller = c } }
+
 // WithFollowInterval sets the follower's poll interval.
 func WithFollowInterval(d time.Duration) Option {
 	return func(s *Service) {
@@ -69,13 +114,29 @@ func WithFollowInterval(d time.Duration) Option {
 	}
 }
 
+// WithMaxListed lowers the candidate bound of the walks below MaxListed.
+func WithMaxListed(n int) Option {
+	return func(s *Service) {
+		if n > 0 && n < MaxListed {
+			s.maxListed = n
+		}
+	}
+}
+
 // New is a Service over st.
 func New(st store.Store, opts ...Option) *Service {
-	s := &Service{st: st, interval: DefaultFollowInterval}
+	s := &Service{st: st, caller: Viewer(), interval: DefaultFollowInterval, maxListed: MaxListed}
 	for _, o := range opts {
 		o(s)
 	}
 	return s
+}
+
+// As is a copy of s reading as c.
+func (s *Service) As(c Caller) *Service {
+	cp := *s
+	cp.caller = c
+	return &cp
 }
 
 // Entry is one listed session: its header, store summary, list summary view and
@@ -91,13 +152,12 @@ type Entry struct {
 	Workspace string
 }
 
-// ListOptions filters List and ListByProject.
+// ListOptions filters List and ListByProject. What the caller may not see is
+// never listed (Caller); hidden sessions are listed only to a Hidden caller.
 type ListOptions struct {
 	Cwd, Creator string
 	// IncludeBlank lists sessions with no prompt; by default they are hidden.
 	IncludeBlank bool
-	// IncludeHidden lists pending and archived sessions.
-	IncludeHidden bool
 	// Limit and Cursor page List (the store's keyset); ListByProject walks all.
 	Limit  int
 	Cursor string
@@ -110,91 +170,173 @@ type Page struct {
 }
 
 // List is one page of sessions in the store's order, each with its summary and
-// flags; blank and hidden sessions are filtered out unless asked for, so a page
-// may hold fewer than Limit.
+// flags; blank sessions and those the caller may not see are filtered out, so
+// a page may hold fewer than Limit.
 func (s *Service) List(ctx context.Context, o ListOptions) (Page, error) {
-	p, err := s.st.List(ctx, store.Query{Cwd: o.Cwd, Creator: o.Creator, Limit: o.Limit, Cursor: o.Cursor})
+	p, _, err := s.page(ctx, store.Query{Cwd: o.Cwd, Creator: o.Creator, Limit: o.Limit, Cursor: o.Cursor}, o)
+	return p, err
+}
+
+// page is one filtered store page and how many candidates it examined.
+func (s *Service) page(ctx context.Context, q store.Query, o ListOptions) (Page, int, error) {
+	p, err := s.st.List(ctx, q)
 	if err != nil {
-		return Page{}, err
+		return Page{}, 0, err
 	}
 	out := Page{Next: p.Next}
 	for _, sum := range p.Summaries {
 		e, err := s.entry(ctx, sum)
 		if err != nil {
-			return Page{}, err
+			return Page{}, 0, err
 		}
-		if keep(e, o) {
+		if (o.IncludeBlank || !e.Summary.Blank) && s.caller.Sees(e.Workspace, e.Flags) {
 			out.Entries = append(out.Entries, e)
 		}
 	}
-	return out, nil
-}
-
-func keep(e Entry, o ListOptions) bool {
-	return (o.IncludeBlank || !e.Summary.Blank) && (o.IncludeHidden || !e.Flags.Archive.Hidden())
+	return out, len(p.Summaries), nil
 }
 
 func (s *Service) entry(ctx context.Context, sum store.Summary) (Entry, error) {
 	id := session.ID(sum.Header.ID)
 	e := Entry{ID: id, Header: sum.Header, Events: sum.NextSeq, LastEventAt: sum.LastEventAt}
 	var err error
-	if e.Summary, err = s.summary(ctx, sum.Header.ID); err != nil {
+	if e.Workspace, e.Flags, err = s.access(ctx, id); err != nil {
 		return Entry{}, err
 	}
-	if s.marks != nil {
-		if e.Flags, err = s.marks.Flags(ctx, id); err != nil {
-			return Entry{}, err
-		}
+	if !s.caller.Sees(e.Workspace, e.Flags) {
+		return e, nil
 	}
-	if s.ws != nil {
-		if e.Workspace, _, err = s.ws.WorkspaceOf(ctx, id); err != nil {
-			return Entry{}, err
-		}
+	if e.Summary, err = s.summary(ctx, sum); err != nil {
+		return Entry{}, err
 	}
 	return e, nil
 }
 
-// summary is the session's list summary: its stored row taken up by the log
-// after it, or a refold when there is no usable row.
-func (s *Service) summary(ctx context.Context, id string) (views.ListSummary, error) {
-	r, err := s.st.OpenRead(ctx, id)
+// access is session id's project and flags.
+func (s *Service) access(ctx context.Context, id session.ID) (ws string, f workspace.Flags, err error) {
+	if s.marks != nil {
+		if f, err = s.marks.Flags(ctx, id); err != nil {
+			return "", f, err
+		}
+	}
+	if s.ws != nil {
+		if ws, _, err = s.ws.WorkspaceOf(ctx, id); err != nil {
+			return "", f, err
+		}
+	}
+	return ws, f, nil
+}
+
+// notFound is what a caller learns of a session that is missing, deleted or
+// that it may not see: the same error for all three.
+func notFound(id session.ID) error {
+	return store.Errorf(store.CodeNotFound, "no session %s", id)
+}
+
+// check is session id's summary when the caller may see it, notFound otherwise.
+func (s *Service) check(ctx context.Context, id session.ID) (store.Summary, error) {
+	sum, err := s.st.Stat(ctx, string(id))
+	if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrDeleted) {
+		return store.Summary{}, notFound(id)
+	}
+	if err != nil {
+		return store.Summary{}, err
+	}
+	ws, f, err := s.access(ctx, id)
+	if err != nil {
+		return store.Summary{}, err
+	}
+	if !s.caller.Sees(ws, f) {
+		return store.Summary{}, notFound(id)
+	}
+	return sum, nil
+}
+
+// summary is the session's list summary at the head sum reports.
+func (s *Service) summary(ctx context.Context, sum store.Summary) (views.ListSummary, error) {
+	r, err := s.st.OpenRead(ctx, sum.Header.ID)
 	if err != nil {
 		return views.ListSummary{}, err
 	}
 	defer func() { _ = r.Close(ctx) }()
-	return stateAt(ctx, r, views.ListSummaryView(), -1)
+	c, err := readCut(ctx, r, sum.NextSeq)
+	if err != nil {
+		return views.ListSummary{}, err
+	}
+	d := views.ListSummaryView()
+	st, from := start(c, d)
+	if err := c.load(ctx, r, from); err != nil {
+		return views.ListSummary{}, err
+	}
+	return finish(c, d, st, from), nil
 }
 
-// stateAt is d's state over r's first asOf events (-1: all of them), from d's
-// stored row when it is usable (a row records the seq it reflects).
-func stateAt[S any](ctx context.Context, r store.Reader, d views.Definition[S], asOf int) (S, error) {
-	var zero S
+// cut is one committed cut of a log: everything below head and nothing past
+// it. Its checkpoints are read once and only those below head are kept; its
+// records are read once, from the earliest position any fold needs.
+type cut struct {
+	head event.Seq
+	hdr  store.Header
+	cps  []store.Checkpoint
+	from event.Seq
+	evs  []event.Event
+}
+
+func readCut(ctx context.Context, r store.Reader, head event.Seq) (*cut, error) {
 	cps, err := r.Checkpoints(ctx)
 	if err != nil {
-		return zero, err
+		return nil, err
 	}
-	state, from := d.Init(r.Header()), event.Seq(0)
-	for _, c := range cps {
-		if c.Key != d.Key || c.StateVersion != d.Version || (asOf >= 0 && int(c.Seq) >= asOf) {
+	c := &cut{head: head, hdr: r.Header()}
+	for _, cp := range cps {
+		if cp.Seq < head {
+			c.cps = append(c.cps, cp)
+		}
+	}
+	return c, nil
+}
+
+// start is d's state from its stored row in c when one is usable (a row
+// records the seq it reflects), else d's initial state; from is where the log
+// takes it up.
+func start[S any](c *cut, d views.Definition[S]) (S, event.Seq) {
+	state, from := d.Init(c.hdr), event.Seq(0)
+	for _, cp := range c.cps {
+		if cp.Key != d.Key || cp.StateVersion != d.Version {
 			continue
 		}
 		var v S
-		if json.Unmarshal([]byte(c.State), &v) == nil && c.Seq+1 >= from {
-			state, from = v, c.Seq+1
+		if json.Unmarshal([]byte(cp.State), &v) == nil && cp.Seq+1 >= from {
+			state, from = v, cp.Seq+1
 		}
 	}
-	limit := 0
-	if asOf >= 0 {
-		if int(from) >= asOf {
-			return state, nil
-		}
-		limit = asOf - int(from)
+	return state, from
+}
+
+// load reads c's records [from, head) in one read.
+func (c *cut) load(ctx context.Context, r store.Reader, from event.Seq) error {
+	c.from = from
+	n := int(c.head) - int(from)
+	if n <= 0 {
+		return nil
 	}
-	recs, err := r.Read(ctx, from, limit, store.ReadOptions{})
+	recs, err := r.Read(ctx, from, n, store.ReadOptions{})
 	if err != nil {
-		return zero, err
+		return err
 	}
-	return views.FoldFrom(d, state, events(recs)), nil
+	if len(recs) != n {
+		return store.Errorf(store.CodeNotFound, "session %s: %d of the %d records below its head %d", c.hdr.ID, len(recs), n, c.head)
+	}
+	c.evs = events(recs)
+	return nil
+}
+
+// finish is d folded from state over c's records from from up to the head.
+func finish[S any](c *cut, d views.Definition[S], state S, from event.Seq) S {
+	if from >= c.head {
+		return state
+	}
+	return views.FoldFrom(d, state, c.evs[from-c.from:])
 }
 
 func events(recs []store.Record) []event.Event {
@@ -213,17 +355,34 @@ type Group struct {
 	Sessions  []Entry
 }
 
-// ListByProject is every listed session grouped by project: the projects in
-// the registry's order, each with its sessions pinned first, then by the last
-// prompt (newest first), then by id; the ungrouped sessions come last, and a
-// project with no listed session is still shown. It walks at most MaxListed
-// sessions.
-func (s *Service) ListByProject(ctx context.Context, o ListOptions) ([]Group, error) {
+// Listing is ListByProject's result.
+type Listing struct {
+	Groups []Group
+	// Examined is how many store candidates the walk read.
+	Examined int
+	// Truncated is set when the walk stopped at its candidate bound before the
+	// store's last page: Groups then hold only what the examined candidates
+	// gave, not every session.
+	Truncated bool
+}
+
+// ListByProject is every listed session grouped by project: the projects the
+// caller may see in the registry's order, each with its sessions pinned first,
+// then by the last prompt (newest first), then by id; the ungrouped sessions
+// come last, and a project with no listed session is still shown. It examines
+// at most MaxListed store candidates (filtered ones count) and reports
+// Truncated when that bound cut the walk.
+func (s *Service) ListByProject(ctx context.Context, o ListOptions) (Listing, error) {
 	var projects []workspace.Workspace
 	if s.ws != nil {
-		var err error
-		if projects, err = s.ws.List(ctx); err != nil {
-			return nil, err
+		all, err := s.ws.List(ctx)
+		if err != nil {
+			return Listing{}, err
+		}
+		for _, w := range all {
+			if s.caller.seesProject(w.ID) {
+				projects = append(projects, w)
+			}
 		}
 	}
 	groups := make([]Group, len(projects), len(projects)+1)
@@ -233,13 +392,16 @@ func (s *Service) ListByProject(ctx context.Context, o ListOptions) ([]Group, er
 		at[w.ID] = i
 	}
 	ungrouped := Group{Ungrouped: true}
-	q := o
-	q.Cursor, q.Limit = "", 0
-	for walked := 0; walked < MaxListed; {
-		p, err := s.List(ctx, q)
+	var out Listing
+	q := store.Query{Cwd: o.Cwd, Creator: o.Creator}
+	complete := false
+	for out.Examined < s.maxListed {
+		q.Limit = min(listPage, s.maxListed-out.Examined)
+		p, n, err := s.page(ctx, q, o)
 		if err != nil {
-			return nil, err
+			return Listing{}, err
 		}
+		out.Examined += n
 		for _, e := range p.Entries {
 			if i, ok := at[e.Workspace]; ok {
 				groups[i].Sessions = append(groups[i].Sessions, e)
@@ -247,19 +409,24 @@ func (s *Service) ListByProject(ctx context.Context, o ListOptions) ([]Group, er
 				ungrouped.Sessions = append(ungrouped.Sessions, e)
 			}
 		}
-		walked += len(p.Entries) + 1
 		if p.Next == "" {
+			complete = true
+			break
+		}
+		if n == 0 {
 			break
 		}
 		q.Cursor = p.Next
 	}
+	out.Truncated = !complete
 	if len(ungrouped.Sessions) > 0 {
 		groups = append(groups, ungrouped)
 	}
 	for i := range groups {
 		slices.SortFunc(groups[i].Sessions, bySidebar)
 	}
-	return groups, nil
+	out.Groups = groups
+	return out, nil
 }
 
 // bySidebar orders a project's sessions: pinned first, then the last prompt

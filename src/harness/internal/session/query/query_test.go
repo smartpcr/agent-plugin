@@ -47,22 +47,25 @@ type env struct {
 	svc session.Service
 }
 
-func newEnv(t *testing.T) *env {
+func newEnv(t *testing.T) *env { return newEnvOn(t, memstore.New()) }
+
+func newEnvOn(t *testing.T, st store.Store) *env {
 	t.Helper()
 	root := cordis.New()
 	root.Loggers().ClearExporters()
 	root.Loggers().AddExporter(&cordis.MemoryExporter{})
 	t.Cleanup(root.Dispose)
-	st := memstore.New()
 	reg := views.New()
 	must(views.RegisterBuiltins(reg))
 	return &env{st: st, svc: session.NewService(root, st, session.Config{Folder: reg})}
 }
 
 // create makes a session of n request-context events and closes it.
-func (e *env) create(t *testing.T, id string, n int) {
+func (e *env) create(t *testing.T, id string, n int) { e.createIn(t, id, "", n) }
+
+func (e *env) createIn(t *testing.T, id, cwd string, n int) {
 	t.Helper()
-	h := must(e.svc.Create(bg, nil, session.CreateOptions{Header: session.Header{ID: id}}))
+	h := must(e.svc.Create(bg, nil, session.CreateOptions{Header: session.Header{ID: id, Cwd: cwd}}))
 	if _, err := h.AppendGroup(bg, ctxDrafts(id, n)); err != nil {
 		t.Fatal(err)
 	}
@@ -73,8 +76,12 @@ func (e *env) create(t *testing.T, id string, n int) {
 
 // fork forks parent through seq into id and appends n events of its own.
 func (e *env) fork(t *testing.T, id, parent string, through event.Seq, n int) {
+	e.forkIn(t, id, "", parent, through, n)
+}
+
+func (e *env) forkIn(t *testing.T, id, cwd, parent string, through event.Seq, n int) {
 	t.Helper()
-	w := must(e.st.Create(bg, store.Header{ID: id}, store.CreateOptions{ForkOf: &store.ForkOf{ID: parent, Through: through}}))
+	w := must(e.st.Create(bg, store.Header{ID: id, Cwd: cwd}, store.CreateOptions{ForkOf: &store.ForkOf{ID: parent, Through: through}}))
 	if err := w.Close(bg); err != nil {
 		t.Fatal(err)
 	}
@@ -136,6 +143,27 @@ func TestTraceAcrossForks(t *testing.T) {
 	page := must(q.Trace(bg, "g", query.Window{From: 8, Limit: 4}))
 	if len(page.Events) != 4 || page.Next != 12 || !page.More || page.Events[1].Origin != "p" || page.Events[2].Origin != "c" {
 		t.Fatalf("trace page = %d events next %d more %v", len(page.Events), page.Next, page.More)
+	}
+
+	// A fork that keeps less of its parent than the parent kept of its own
+	// (p -> c through 9, c -> g2 through 3): g2's own records past 3 are g2's,
+	// not p's.
+	e.fork(t, "g2", "c", 3, 2)
+	short := must(q.Trace(bg, "g2", query.Window{}))
+	if len(short.Events) != 6 {
+		t.Fatalf("trace of g2: %d events", len(short.Events))
+	}
+	for _, ev := range short.Events {
+		want := session.ID("g2")
+		if ev.Seq <= 3 {
+			want = "p"
+		}
+		if ev.Origin != want {
+			t.Fatalf("g2 seq %d origin %s, want %s", ev.Seq, ev.Origin, want)
+		}
+		if v := valueOf(t, ev.Record); v[:len(want)+1] != string(want)+"-" {
+			t.Fatalf("g2 seq %d value %q not written by %s", ev.Seq, v, want)
+		}
 	}
 
 	// The parent deleted: the lineage marks it gone, the trace still labels.

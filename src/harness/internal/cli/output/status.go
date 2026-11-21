@@ -116,6 +116,7 @@ var codes = map[herr.Reason]int{
 	"storage/record-version": Config,
 	"storage/undecodable":    Failed,
 
+	"workspace/archive-conflict":   Busy,
 	"workspace/attached-elsewhere": Busy,
 	"workspace/exists":             Busy,
 	"workspace/invalid":            Invalid,

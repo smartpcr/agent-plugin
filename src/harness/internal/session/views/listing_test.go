@@ -95,11 +95,14 @@ func TestListingGroupsByProject(t *testing.T) {
 	}
 
 	q := query.New(st, query.WithWorkspaces(ws))
-	groups := must(q.ListByProject(bg, query.ListOptions{}))
-	golden.Assert(t, "list_by_project", renderGroups(groups))
+	listing := must(q.ListByProject(bg, query.ListOptions{}))
+	if listing.Truncated || listing.Examined != 4 {
+		t.Fatalf("listing examined %d, truncated %v", listing.Examined, listing.Truncated)
+	}
+	golden.Assert(t, "list_by_project", renderGroups(listing.Groups))
 
-	all := must(q.ListByProject(bg, query.ListOptions{IncludeHidden: true}))
-	if n := len(all[0].Sessions); n != 3 {
+	all := must(q.As(query.Operator()).ListByProject(bg, query.ListOptions{}))
+	if n := len(all.Groups[0].Sessions); n != 3 {
 		t.Fatalf("with hidden, alpha lists %d sessions, want 3", n)
 	}
 }
