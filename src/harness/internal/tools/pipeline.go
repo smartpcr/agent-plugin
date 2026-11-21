@@ -150,22 +150,27 @@ func NewCall(id, name string, args []byte, origin Origin, parent string, ag agen
 	return c
 }
 
-// NewDecodedCall is NewCall whose Input decodes, with decode, a fresh copy of
-// the logged argument bytes on every call: no two readers share a value, so a
-// listener that mutates what it was given (a slice, a map, raw JSON) changes
-// nothing another listener, the body or the log sees.
-func NewDecodedCall(id, name string, args []byte, origin Origin, parent string, ag agent.Ref, d *Declaration, decode func(json.RawMessage) (any, error)) Call {
+// NewIsolatedCall is NewCall whose Input hands every reader its own deep copy of
+// input, the value the pipeline already decoded and validated: nothing is
+// decoded or validated again, and what one listener mutates (a slice, a map,
+// raw JSON) reaches neither another listener, nor the body, nor the log. The
+// copy is taken once here, from which each read copies again; an input that
+// cannot be copied (it holds a channel, function or unsafe pointer) is the
+// returned error, and the pipeline refuses the call at validate.
+func NewIsolatedCall(id, name string, args []byte, origin Origin, parent string, ag agent.Ref, d *Declaration, input any) (Call, error) {
 	c := NewCall(id, name, args, origin, parent, ag, d, nil)
-	if decode != nil {
+	snap, err := isolate(input)
+	if err != nil {
+		return c, err
+	}
+	if snap != nil {
 		c.input = func() any {
-			v, err := decode(bytes.Clone(c.args))
-			if err != nil {
-				return nil
-			}
+			// snap was copied once already, so copying it again cannot fail.
+			v, _ := isolate(snap)
 			return v
 		}
 	}
-	return c
+	return c, nil
 }
 
 // ID is the call id.
@@ -189,8 +194,8 @@ func (c Call) Agent() agent.Ref { return c.agent }
 // Tool is the resolved declaration; nil for a call refused at resolve.
 func (c Call) Tool() *Declaration { return c.decl }
 
-// Input is the decoded argument value, a fresh copy per call for a call the
-// pipeline built; nil before validation.
+// Input is the validated argument value, a fresh deep copy per read for a call
+// the pipeline built; nil before validation.
 func (c Call) Input() any {
 	if c.input == nil {
 		return nil

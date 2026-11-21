@@ -225,9 +225,14 @@ func (r *registry) run(ctx context.Context, b tools.Batch, ag agent.Ref, ls list
 		}
 		return r.settle(ctx, b, ls, call, stop(tools.StageValidate, code, "", trimCode(err.Error(), code)))
 	}
-	// Listeners see a fresh decode of the logged bytes per read, never in: what
-	// one of them mutates reaches neither the others nor the body.
-	call = tools.NewDecodedCall(req.ID, req.Name, args, b.Origin, b.Parent, ag, d, func(raw json.RawMessage) (any, error) { return decode(bd, raw) })
+	// Listeners see deep copies of in, never in itself, and nothing is decoded
+	// again: what one of them mutates reaches neither the others nor the body.
+	isolated, err := tools.NewIsolatedCall(req.ID, req.Name, args, b.Origin, b.Parent, ag, d, in)
+	if err != nil {
+		return r.settle(ctx, b, ls, call, stop(tools.StageValidate, tools.CodeInvalidArguments, "",
+			"the decoded arguments cannot be isolated from the listeners: "+err.Error()))
+	}
+	call = isolated
 	if ctx.Err() != nil {
 		return r.settle(ctx, b, ls, call, stop(tools.StagePolicy, tools.CodeAbortedBeforeStart, "", "cancelled: "+context.Cause(ctx).Error()))
 	}

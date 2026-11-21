@@ -244,17 +244,26 @@ func TestStageOrderFixed(t *testing.T) {
 	reg := stubRegistry{tr: tr, ans: human.Answer{Outcome: human.OutcomeAllowedOnce}}
 	svc := e.pipeline(t, core.Config{Approval: approval.New(approval.Config{Registry: reg}), Checkpoint: recCheckpoint{tr}})
 	e.register(t, e.root, addTool(tr))
-	if _, err := svc.Shape(e.root, "shape", func(tools.Call, tools.Outcome) tools.PostDecision {
+	// Every listener reads Input, twice: reading must not decode or validate again.
+	var seen []any
+	read := func(c tools.Call) { seen = append(seen, c.Input(), c.Input()) }
+	if _, err := svc.Shape(e.root, "shape", func(c tools.Call, _ tools.Outcome) tools.PostDecision {
 		tr.add("shape")
+		read(c)
 		return tools.Accept()
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.Guard(e.root, "guard", func(context.Context, tools.Call) *tools.Denial { tr.add("guards"); return nil }); err != nil {
+	if _, err := svc.Guard(e.root, "guard", func(_ context.Context, c tools.Call) *tools.Denial {
+		tr.add("guards")
+		read(c)
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.Decide(e.root, "policy", func(ctx context.Context, c tools.Call) tools.Decision {
 		tr.add("policy")
+		read(c)
 		return ask(ctx, c)
 	}); err != nil {
 		t.Fatal(err)
@@ -265,6 +274,14 @@ func TestStageOrderFixed(t *testing.T) {
 	want := []string{"resolve", "validate", "policy", "guards", "approval", "flush", "body", "shape"}
 	if got := tr.got(); !slices.Equal(got, want) {
 		t.Fatalf("stages %v, want %v", got, want)
+	}
+	if len(seen) != 6 {
+		t.Fatalf("listeners read %d inputs, want 6", len(seen))
+	}
+	for i, v := range seen {
+		if v != (addIn{A: 1, B: 2}) {
+			t.Fatalf("read %d of Input is %#v, want the validated addIn{1,2}", i, v)
+		}
 	}
 	if res.IsError || res.Text != "3" || res.Approval != string(approval.OutcomeApproved) {
 		t.Fatalf("result %+v", res)
@@ -568,6 +585,104 @@ func TestDecodedInputIsolatedFromListeners(t *testing.T) {
 			t.Fatalf("guard saw %q, body got %q; want %q", seen, got, dynRaw)
 		}
 	})
+}
+
+// stamp decodes statefully: each decode takes the next number of decodes, so a
+// second decode of the same bytes yields a different value.
+type stamp struct{ N int }
+
+var stamps int
+
+func (stamp) SchemaShape() reflect.Type { return reflect.TypeFor[string]() }
+
+func (s *stamp) UnmarshalJSON([]byte) error { stamps++; s.N = stamps; return nil }
+
+type stampIn struct {
+	S    stamp `json:"s" dsh:"required"`
+	Tags pair  `json:"tags" dsh:"required"`
+}
+
+var stampValidations int
+
+func (stampIn) Validate() error { stampValidations++; return nil }
+
+// Listeners read copies of the value validated once: no listener read decodes or
+// validates again, and what every listener sees equals what the body received.
+func TestListenerInputIsTheValidatedValue(t *testing.T) {
+	stamps, stampValidations = 0, 0
+	e := newEnv(t)
+	svc := e.pipeline(t, core.Config{})
+	var body stampIn
+	e.register(t, e.root, tools.Define(tools.Spec[stampIn, string]{
+		Name: "stamp", Description: "Stamps.",
+		Run: func(_ context.Context, in stampIn, _ tools.Run) (string, error) { body = in; return "ok", nil },
+	}))
+	var seen []stampIn
+	read := func(c tools.Call) {
+		for range 3 {
+			seen = append(seen, c.Input().(stampIn))
+		}
+	}
+	if _, err := svc.Decide(e.root, "policy", func(_ context.Context, c tools.Call) tools.Decision { read(c); return tools.Allow() }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Guard(e.root, "guard", func(_ context.Context, c tools.Call) *tools.Denial { read(c); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Shape(e.root, "shape", func(c tools.Call, _ tools.Outcome) tools.PostDecision { read(c); return tools.Accept() }); err != nil {
+		t.Fatal(err)
+	}
+	call := [2]string{"stamp", `{"s":"x","tags":["a","b"]}`}
+	h := openSession(t, memstore.New(), call)
+	if r := execute(t, svc, view(t, svc), h, call)[0]; r.IsError {
+		t.Fatalf("result %+v", r)
+	}
+	if stamps != 1 || stampValidations != 1 {
+		t.Fatalf("decoded %d times and validated %d times, want once each", stamps, stampValidations)
+	}
+	if len(seen) != 9 {
+		t.Fatalf("listeners read %d inputs, want 9", len(seen))
+	}
+	for i, v := range seen {
+		if !reflect.DeepEqual(v, body) {
+			t.Fatalf("read %d is %+v, the body received %+v", i, v, body)
+		}
+	}
+}
+
+// hook decodes into a function, which no copy can isolate.
+type hook struct{ Fn func() }
+
+func (hook) SchemaShape() reflect.Type { return reflect.TypeFor[string]() }
+
+func (h *hook) UnmarshalJSON([]byte) error { h.Fn = func() {}; return nil }
+
+type hookIn struct {
+	H hook `json:"h" dsh:"required"`
+}
+
+// An input that cannot be copied for the listeners is refused at validate, with
+// the reason, before any listener or the body; it is never shared nor nil.
+func TestUncopyableInputRefusedAtValidate(t *testing.T) {
+	e := newEnv(t)
+	tr := &trace{}
+	svc := e.pipeline(t, core.Config{})
+	e.register(t, e.root, tools.Define(tools.Spec[hookIn, string]{
+		Name: "hook", Description: "Hooks.",
+		Run: func(context.Context, hookIn, tools.Run) (string, error) { tr.add("body"); return "ok", nil },
+	}))
+	if _, err := svc.Decide(e.root, "policy", func(context.Context, tools.Call) tools.Decision { tr.add("policy"); return tools.Allow() }); err != nil {
+		t.Fatal(err)
+	}
+	call := [2]string{"hook", `{"h":"x"}`}
+	h := openSession(t, memstore.New(), call)
+	r := execute(t, svc, view(t, svc), h, call)[0]
+	if !r.IsError || r.Code != tools.CodeInvalidArguments || r.Stage != tools.StageValidate || !strings.Contains(r.Text, "cannot be isolated") || !strings.Contains(r.Text, ".H.Fn") {
+		t.Fatalf("result %+v", r)
+	}
+	if got := tr.got(); len(got) != 0 {
+		t.Fatalf("ran %v after the refusal", got)
+	}
 }
 
 // boomOut's encoding panics.
