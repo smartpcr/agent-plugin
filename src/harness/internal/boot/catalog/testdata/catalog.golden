@@ -1,3 +1,5 @@
 NAME          CONFIG          PROVIDES  VIEW  PLATFORMS
 boot.logging  logging.Config  -         -     all
+host.sharing  sharing.Config  -         -     all
+util.egress   egress.Config   egress    -     all
 util.watch    watch.Options   watch     -     all

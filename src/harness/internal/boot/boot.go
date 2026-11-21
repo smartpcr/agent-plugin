@@ -17,6 +17,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/profile"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/cli/output"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/host/diag"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/host/sharing"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess"
@@ -103,6 +104,9 @@ type State struct {
 	ApplyErr error
 	// Audit
 	Audit Audit
+	// Sharing is the gate every outbound permit comes from; nil until the audit
+	// builds one from the launch environment with every kind off.
+	Sharing *sharing.Gate
 }
 
 // OnRelease registers a function Run calls when it returns, last registered first.
@@ -270,12 +274,18 @@ func (s *State) fatal(source string, err error) {
 	s.Diag.Fatal(source, err)
 }
 
-// printAudit writes the boot audit: every outbound permit, and one warning for
-// the entries that are not active.
+// printAudit writes the boot audit: every outbound permit, every outbound kind with
+// its state, and one warning for the entries that are not active.
 func (s *State) printAudit() {
 	_, _ = io.WriteString(s.Stderr, s.Audit.PermitLine()+"\n")
+	if len(s.Audit.Permits) > 0 {
+		_, _ = io.WriteString(s.Stderr, s.Audit.KindsLine()+"\n")
+	}
 	if s.Ring != nil {
 		_, _ = fmt.Fprintf(s.Ring, "%s\n", s.Audit.PermitLine())
+		if len(s.Audit.Permits) > 0 {
+			_, _ = fmt.Fprintf(s.Ring, "%s\n", s.Audit.KindsLine())
+		}
 	}
 	if line := s.Audit.WarningLine(); line != "" {
 		_, _ = io.WriteString(s.Stderr, line+"\n")

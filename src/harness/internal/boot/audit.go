@@ -7,39 +7,56 @@ import (
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/go/loader"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/host/sharing"
 )
 
 // EgressKinds are the kinds of outbound traffic a host may be permitted to send,
-// in the order the audit lists them (host-telemetry.md, the sender table). Every
+// in the order the audit lists them: the sharing gate's table (DH-D-HOST-4). Every
 // kind is off until configured.
-var EgressKinds = []string{
-	"model-request",
-	"session-upload",
-	"session-log-contribution",
-	"model-request-extras",
-	"feedback",
-	"analytics",
-	"telemetry",
-	"update-check",
-	"account-notices",
-	"translation",
-	"speech-audio",
-}
+var EgressKinds = func() []string {
+	kinds := sharing.Kinds()
+	out := make([]string, len(kinds))
+	for i, k := range kinds {
+		out[i] = string(k)
+	}
+	return out
+}()
 
-// Permit is one outbound permit: a kind of traffic and where it may go.
+// Permit is one outbound permit decision: a kind of traffic, where it may go, and
+// its state as the gate sees it.
 type Permit struct {
 	Kind        string `json:"kind"`
 	Destination string `json:"destination,omitempty"`
 	Allowed     bool   `json:"allowed"`
+	// State is off, on or unavailable (sharing.State).
+	State string `json:"state"`
+	// Reason says why the kind is not on: sharing/off (stopped by the switch),
+	// sharing/disabled or sharing/no-endpoint.
+	Reason string `json:"reason,omitempty"`
 }
 
 // Permits returns one permit per kind of EgressKinds: allowed with its destination
 // when configured names the kind, denied otherwise. Nil configures none.
 func Permits(configured map[string]string) []Permit {
-	out := make([]Permit, len(EgressKinds))
-	for i, kind := range EgressKinds {
-		dest, ok := configured[kind]
-		out[i] = Permit{Kind: kind, Destination: dest, Allowed: ok}
+	cfg := sharing.Config{Kinds: map[sharing.Kind]sharing.Setting{}}
+	for kind, dest := range configured {
+		cfg.Kinds[sharing.Kind(kind)] = sharing.Setting{Enabled: true, Endpoint: dest}
+	}
+	return PermitsFrom(sharing.New(cfg, nil))
+}
+
+// PermitsFrom returns the gate's decision for every kind of EgressKinds.
+func PermitsFrom(g *sharing.Gate) []Permit {
+	senders := g.Senders()
+	out := make([]Permit, len(senders))
+	for i, st := range senders {
+		out[i] = Permit{
+			Kind:        string(st.Kind),
+			Destination: st.Endpoint,
+			Allowed:     st.State == sharing.StateOn,
+			State:       string(st.State),
+			Reason:      string(st.Reason),
+		}
 	}
 	return out
 }
@@ -75,8 +92,42 @@ func (e EntryState) String() string {
 // Audit is the boot audit: the outbound permits, and the entries that are not
 // active, required ones marked.
 type Audit struct {
-	Permits  []Permit     `json:"permits"`
-	Inactive []EntryState `json:"inactive,omitempty"`
+	Permits []Permit `json:"permits"`
+	// Off is set when the sharing off-switch denies every kind; OffLocked when the
+	// environment (DSH_SHARING_OFF) set it.
+	Off       bool         `json:"off,omitempty"`
+	OffLocked bool         `json:"offLocked,omitempty"`
+	Inactive  []EntryState `json:"inactive,omitempty"`
+}
+
+// FromGate fills a's permits and off-switch from the gate.
+func (a *Audit) FromGate(g *sharing.Gate) {
+	a.Permits = PermitsFrom(g)
+	a.Off, a.OffLocked = g.Off()
+}
+
+// KindsLine is the audit line listing every outbound kind with its state, so each
+// kind's setting is visible at every launch.
+func (a Audit) KindsLine() string {
+	parts := make([]string, len(a.Permits))
+	for i, p := range a.Permits {
+		state := p.State
+		if state == "" {
+			state = string(sharing.StateOff)
+			if p.Allowed {
+				state = string(sharing.StateOn)
+			}
+		}
+		parts[i] = p.Kind + "=" + state
+	}
+	head := "dsh: audit: outbound kinds"
+	switch {
+	case a.OffLocked:
+		head += " (off-switch set by " + sharing.EnvOff + ")"
+	case a.Off:
+		head += " (off-switch set)"
+	}
+	return head + ": " + strings.Join(parts, ", ")
 }
 
 // Allowed returns the permits that are allowed.
@@ -162,13 +213,19 @@ var _ interface{ Reason() string } = (*RequiredError)(nil)
 // audit checks svc against the required ids: each must be present, enabled and
 // active. It returns the inactive entries, and a *RequiredError when a required one
 // is among them.
-func audit(svc *loader.Service, required []string) ([]EntryState, error) {
+//
+// An enabled entry of a policy component (one of policies, by component name) is
+// required wherever it sits: a launch whose outbound policy did not initialize
+// stops rather than run with it failed. A disabled or absent one is not, as
+// nothing can then leave the machine.
+func audit(svc *loader.Service, required []string, policies ...string) ([]EntryState, error) {
 	var inactive []EntryState
 	seen := map[string]bool{}
 	for _, entry := range svc.Entries() {
 		seen[entry.ID()] = true
 		if st, ok := entryState(svc, entry); !ok {
-			st.Required = slices.Contains(required, entry.ID())
+			st.Required = slices.Contains(required, entry.ID()) ||
+				(st.State != "disabled" && slices.Contains(policies, st.Component))
 			inactive = append(inactive, st)
 		}
 	}

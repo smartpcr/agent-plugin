@@ -8,6 +8,8 @@ import (
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/catalog"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/logging"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/host/sharing"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/util/egress"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/watch"
 )
 
@@ -21,12 +23,20 @@ func Boot() []catalog.Item {
 // Util is the util family's items.
 func Util() []catalog.Item {
 	return []catalog.Item{
+		{Name: egress.Name, Component: egress.Component, Config: reflect.TypeFor[egress.Config](), Provides: []string{egress.Key.Name()}},
 		{Name: "util.watch", Component: watch.Component, Config: reflect.TypeFor[watch.Options](), Provides: []string{watch.Key.Name()}},
 	}
 }
 
+// Host is the host family's items.
+func Host() []catalog.Item {
+	return []catalog.Item{
+		{Name: sharing.Name, Component: sharing.Component, Config: reflect.TypeFor[sharing.Config]()},
+	}
+}
+
 // Sets is every family's items.
-func Sets() [][]catalog.Item { return [][]catalog.Item{Boot(), Util()} }
+func Sets() [][]catalog.Item { return [][]catalog.Item{Boot(), Host(), Util()} }
 
 // Catalog builds the catalogue of this binary.
 func Catalog() (*catalog.Catalog, error) { return catalog.Build(Sets()...) }

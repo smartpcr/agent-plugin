@@ -13,8 +13,10 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/profile"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/cli/output"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/host/diag"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/host/sharing"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human/secret"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/util/egress"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess"
 )
 
@@ -134,6 +136,17 @@ func (Real) Tree(_ context.Context, s *State) error {
 	if _, err := launch.ProcessesKey.Provide(root, procs); err != nil {
 		return err
 	}
+	// The launch's sharing gate and the trusted launch lookup egress reads proxy
+	// names through: both on the root, before any entry loads.
+	if s.Sharing == nil {
+		s.Sharing = sharing.New(sharing.Config{}, s.Env.Func())
+	}
+	if _, err := sharing.Key.Provide(root, s.Sharing); err != nil {
+		return err
+	}
+	if _, err := egress.LaunchKey.Provide(root, egress.Lookup(s.Env.Trusted().Func())); err != nil {
+		return err
+	}
 	fiber, err := root.Use(loader.Component, loader.Options{Resolver: cat, Evaluator: ev})
 	if err != nil {
 		return err
@@ -172,14 +185,25 @@ func (Real) Settle(ctx context.Context, s *State) error {
 	return nil
 }
 
-// Audit checks the required entries and lists the outbound permits. No egress is
-// configured yet, so every kind is denied.
+// PolicyComponents are the components whose enabled entries are required in every
+// profile: the outbound policy (proxy names and certificate authorities) and the
+// sharing settings. One that fails to initialize stops the launch before ready.
+var PolicyComponents = []string{egress.Name, sharing.Name}
+
+// Audit checks the required entries (the profile's and every enabled entry of a
+// PolicyComponents component) and lists every outbound kind as the launch's
+// gate decides it: the gate Tree provided, configured by the host.sharing entry
+// of the composed layers (every kind off without one), with DSH_SHARING_OFF read
+// from the launch environment.
 func (Real) Audit(_ context.Context, s *State) error {
-	s.Audit.Permits = Permits(nil)
+	if s.Sharing == nil {
+		s.Sharing = sharing.New(sharing.Config{}, s.Env.Func())
+	}
+	s.Audit.FromGate(s.Sharing)
 	if s.Service == nil {
 		return errors.New("no loader")
 	}
-	inactive, err := audit(s.Service, s.Options.Profile.Required)
+	inactive, err := audit(s.Service, s.Options.Profile.Required, PolicyComponents...)
 	s.Audit.Inactive = inactive
 	return err
 }
