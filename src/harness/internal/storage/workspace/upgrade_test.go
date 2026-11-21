@@ -111,6 +111,8 @@ func TestLayoutOneUpgradesToMachineState(t *testing.T) {
 	if err == nil {
 		err = old.WriteTx(bg, func(tx *sql.Tx) error {
 			for _, q := range []string{
+				`DROP TABLE lineage`,
+				`DROP TABLE blob_refs`,
 				`DROP INDEX sessions_prompt`,
 				`ALTER TABLE sessions DROP COLUMN last_prompt_at`,
 				`DROP TABLE workspace_first_use`,
@@ -128,7 +130,7 @@ func TestLayoutOneUpgradesToMachineState(t *testing.T) {
 			return nil
 		})
 	}
-	if v, tables := layoutOf(t, old); v != 1 || tables["workspaces"] || tables["kv"] || tables["kv_ns"] || !tables["events"] {
+	if v, tables := layoutOf(t, old); v != 1 || tables["workspaces"] || tables["kv"] || tables["kv_ns"] || tables["blob_refs"] || tables["lineage"] || !tables["events"] {
 		t.Errorf("fixture layout %d tables %v, want 1 with sessions only", v, tables)
 	}
 	if cerr := old.Close(bg); err == nil {
@@ -141,7 +143,7 @@ func TestLayoutOneUpgradesToMachineState(t *testing.T) {
 
 	// Upgrade.
 	st := openDB(t, path)
-	if v, tables := layoutOf(t, st); v != int64(current) || !tables["workspaces"] || !tables["kv"] || !tables["kv_ns"] {
+	if v, tables := layoutOf(t, st); v != int64(current) || !tables["workspaces"] || !tables["kv"] || !tables["kv_ns"] || !tables["blob_refs"] || !tables["lineage"] {
 		t.Fatalf("upgraded layout %d tables %v, want %d with machine state", v, tables, current)
 	}
 	checkSession(t, st, id, 7)
