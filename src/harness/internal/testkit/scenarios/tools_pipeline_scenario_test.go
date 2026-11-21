@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -30,22 +31,29 @@ import (
 // call the model made has exactly one tool/call before its one tool/result, in the
 // model's order; both reads ran and succeeded; the write was asked about, refused
 // with an approval code, its body (this client's handler) never ran and the file
-// is byte-identical; and the requests rebuilt from the log by replay are
-// byte-stable (two replays answer the same bytes). Cleanup: the home is deleted
-// by the launcher; on failure the exported log is kept (its path is logged).
+// is byte-identical; and, with a recording proxy in front of the provider, each
+// request rebuilt from the log by replay equals the request that was sent,
+// system text and tool declarations included, one for one and in order (and two
+// replays answer the same bytes). Cleanup: the home is deleted by the launcher;
+// on failure the exported log is kept (its path is logged).
 //
 // Inputs: DSH_DEEPSEEK_API_KEY is the real key, handed to the program as
-// DEEPSEEK_API_KEY; DSH_SCENARIO_TOOLS1_MODEL the model id on route
-// deepseek-official; DSH_SCENARIO_TOOLS1_LAYER a configuration layer, a template
-// whose {workspace} is the workspace directory, that makes the policy ask before
-// scenario_write; DSH_SCENARIO_TOOLS1_PROMPT a prompt, a template over
-// {workspace}, that reads a.txt and b.txt with scenario_read and then writes
-// c.txt with scenario_write; DSH_SCENARIO_TOOLS1_REPLAY the session/query text
-// whose result is the provider requests rebuilt from the log.
+// DEEPSEEK_API_KEY; DSH_SCENARIO_TOOLS1_OFFICIAL the base URL of DeepSeek's
+// Messages endpoint, fronted by the proxy as {official};
+// DSH_SCENARIO_TOOLS1_MODEL the model id on route deepseek-official;
+// DSH_SCENARIO_TOOLS1_LAYER a configuration layer, a template over {official}
+// (where the model route points) and {workspace} (the workspace directory),
+// that makes the policy ask before scenario_write and sends no request other
+// than the turn's (no title route); DSH_SCENARIO_TOOLS1_PROMPT a prompt, a
+// template over {workspace}, that reads a.txt and b.txt with scenario_read and
+// then writes c.txt with scenario_write; DSH_SCENARIO_TOOLS1_REPLAY the
+// session/query text whose result is the provider request bodies rebuilt from
+// the log, in order, as a JSON array or an object with a "requests" array.
 //
 //dsh:scenario DH-E-TOOLS-1
 func TestGuardedPipelineRefusesTheWrite(t *testing.T) {
 	key := need(t, "DSH_DEEPSEEK_API_KEY", "a real DeepSeek API key")
+	officialURL := need(t, "DSH_SCENARIO_TOOLS1_OFFICIAL", "the base URL of DeepSeek's Messages endpoint")
 	model := need(t, "DSH_SCENARIO_TOOLS1_MODEL", "a model on deepseek-official")
 	layerT := need(t, "DSH_SCENARIO_TOOLS1_LAYER", "a layer whose policy asks before scenario_write")
 	promptT := need(t, "DSH_SCENARIO_TOOLS1_PROMPT", "a prompt that reads two files and writes a third")
@@ -58,7 +66,8 @@ func TestGuardedPipelineRefusesTheWrite(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	vars := map[string]string{"workspace": filepath.ToSlash(ws)}
+	proxy := startProxy(t, map[string]string{"official": officialURL})
+	vars := map[string]string{"workspace": filepath.ToSlash(ws), "official": proxy.base("official")}
 
 	var (
 		mu     sync.Mutex
@@ -224,7 +233,8 @@ func TestGuardedPipelineRefusesTheWrite(t *testing.T) {
 		t.Fatalf("c.txt is %q (%v), want it unchanged", data, err)
 	}
 
-	// The requests rebuilt from the log are byte-stable.
+	// The requests rebuilt from the log are the requests that were sent, and
+	// rebuilding them is byte-stable.
 	rebuild := func() json.RawMessage {
 		var q protocol.SessionQueryResult
 		h.call(t, "session/query", protocol.SessionQueryParams{SessionID: session, Content: []protocol.ContentBlock{{Type: "text", Text: replay}}}, &q)
@@ -237,4 +247,51 @@ func TestGuardedPipelineRefusesTheWrite(t *testing.T) {
 	if !bytes.Equal(first, second) {
 		t.Fatalf("two replays differ:\n%s\n---\n%s", first, second)
 	}
+	var sent []json.RawMessage
+	for _, r := range proxy.requests("official") {
+		if r.Method == "POST" {
+			sent = append(sent, r.Body)
+		}
+	}
+	rebuilt := rebuiltRequests(t, first)
+	if len(sent) == 0 || len(rebuilt) != len(sent) {
+		t.Fatalf("replay rebuilt %d requests, the provider was sent %d", len(rebuilt), len(sent))
+	}
+	for i := range sent {
+		var want, got map[string]any
+		if err := json.Unmarshal(sent[i], &want); err != nil {
+			t.Fatalf("sent request %d is not a JSON object: %v\n%s", i, err, sent[i])
+		}
+		if err := json.Unmarshal(rebuilt[i], &got); err != nil {
+			t.Fatalf("rebuilt request %d is not a JSON object: %v\n%s", i, err, rebuilt[i])
+		}
+		for _, field := range []string{"system", "tools"} {
+			if _, ok := want[field]; !ok {
+				t.Fatalf("sent request %d carries no %s", i, field)
+			}
+			if !reflect.DeepEqual(got[field], want[field]) {
+				t.Fatalf("request %d: rebuilt %s differs from the sent one\nrebuilt: %v\nsent:    %v", i, field, got[field], want[field])
+			}
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("request %d: rebuilt differs from sent\nrebuilt: %s\nsent:    %s", i, rebuilt[i], sent[i])
+		}
+	}
+}
+
+// rebuiltRequests reads a replay's result: the rebuilt request bodies as a JSON
+// array, or an object holding them under "requests".
+func rebuiltRequests(t *testing.T, raw json.RawMessage) []json.RawMessage {
+	t.Helper()
+	var list []json.RawMessage
+	if err := json.Unmarshal(raw, &list); err == nil {
+		return list
+	}
+	var wrapped struct {
+		Requests []json.RawMessage `json:"requests"`
+	}
+	if err := json.Unmarshal(raw, &wrapped); err != nil || wrapped.Requests == nil {
+		t.Fatalf("the replay answered neither a request array nor {\"requests\": [...]}: %s", raw)
+	}
+	return wrapped.Requests
 }

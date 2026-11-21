@@ -137,13 +137,35 @@ type Call struct {
 	agent            agent.Ref
 	args             []byte
 	decl             *Declaration
-	input            any
+	input            func() any
 }
 
 // NewCall is a call as the pipeline hands it to its listeners; tests of a
-// listener build theirs with it.
+// listener build theirs with it. Input returns input as given: the test owns it.
 func NewCall(id, name string, args []byte, origin Origin, parent string, ag agent.Ref, d *Declaration, input any) Call {
-	return Call{id: id, name: name, args: bytes.Clone(args), origin: origin, parent: parent, agent: ag, decl: d, input: input}
+	c := Call{id: id, name: name, args: bytes.Clone(args), origin: origin, parent: parent, agent: ag, decl: d}
+	if input != nil {
+		c.input = func() any { return input }
+	}
+	return c
+}
+
+// NewDecodedCall is NewCall whose Input decodes, with decode, a fresh copy of
+// the logged argument bytes on every call: no two readers share a value, so a
+// listener that mutates what it was given (a slice, a map, raw JSON) changes
+// nothing another listener, the body or the log sees.
+func NewDecodedCall(id, name string, args []byte, origin Origin, parent string, ag agent.Ref, d *Declaration, decode func(json.RawMessage) (any, error)) Call {
+	c := NewCall(id, name, args, origin, parent, ag, d, nil)
+	if decode != nil {
+		c.input = func() any {
+			v, err := decode(bytes.Clone(c.args))
+			if err != nil {
+				return nil
+			}
+			return v
+		}
+	}
+	return c
 }
 
 // ID is the call id.
@@ -167,8 +189,14 @@ func (c Call) Agent() agent.Ref { return c.agent }
 // Tool is the resolved declaration; nil for a call refused at resolve.
 func (c Call) Tool() *Declaration { return c.decl }
 
-// Input is the decoded argument value; nil before validation.
-func (c Call) Input() any { return c.input }
+// Input is the decoded argument value, a fresh copy per call for a call the
+// pipeline built; nil before validation.
+func (c Call) Input() any {
+	if c.input == nil {
+		return nil
+	}
+	return c.input()
+}
 
 // Verdict is a policy listener's closed answer.
 type Verdict string

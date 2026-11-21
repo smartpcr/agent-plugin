@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -295,6 +296,14 @@ func TestUnknownOrUnadmittedToolRefusedBeforeExecution(t *testing.T) {
 	if _, err := svc.Guard(e.root, "guard", func(context.Context, tools.Call) *tools.Denial { tr.add("guards"); return nil }); err != nil {
 		t.Fatal(err)
 	}
+	// A shaper that records and then panics: were it dispatched, the refusal
+	// would turn into tools/failed at shape.
+	if _, err := svc.Shape(e.root, "shape", func(tools.Call, tools.Outcome) tools.PostDecision {
+		tr.add("shape")
+		panic("a refused call reached the shapers")
+	}); err != nil {
+		t.Fatal(err)
+	}
 	v, err := svc.Resolve(context.Background(), tools.Target{Agent: me, Scope: agentScope.Key()})
 	if err != nil {
 		t.Fatal(err)
@@ -462,6 +471,135 @@ func TestLoggedArgumentsNeverRewritten(t *testing.T) {
 	}
 	if p.Arguments != raw || got.A != 1 {
 		t.Fatalf("logged %q, body got %+v", p.Arguments, got)
+	}
+}
+
+// pair is a slice, so a decoded listIn shares backing storage with anything it
+// is copied to; its wire shape is a fixed pair, which a strict schema admits.
+type pair []string
+
+func (pair) SchemaShape() reflect.Type { return reflect.TypeFor[[2]string]() }
+
+type listIn struct {
+	Items pair `json:"items" dsh:"required"`
+}
+
+// rawBytes is a dynamic tool's decoded input as bytes, whatever its byte type.
+func rawBytes(t *testing.T, v any) []byte {
+	t.Helper()
+	switch b := v.(type) {
+	case json.RawMessage:
+		return b
+	case []byte:
+		return b
+	}
+	t.Fatalf("dynamic input is %T", v)
+	return nil
+}
+
+// A decoded input a listener mutates, through a slice or raw JSON,
+// changes neither what a later listener sees nor what the body receives.
+func TestDecodedInputIsolatedFromListeners(t *testing.T) {
+	const raw = `{"items":["a","b"]}`
+	t.Run("typed", func(t *testing.T) {
+		e := newEnv(t)
+		var got listIn
+		svc := e.pipeline(t, core.Config{})
+		e.register(t, e.root, tools.Define(tools.Spec[listIn, string]{
+			Name: "list", Description: "Lists.",
+			Run: func(_ context.Context, in listIn, _ tools.Run) (string, error) { got = in; return "ok", nil },
+		}))
+		var seen listIn
+		if _, err := svc.Decide(e.root, "meddle", func(_ context.Context, c tools.Call) tools.Decision {
+			in := c.Input().(listIn)
+			in.Items[0] = "x"
+			return tools.Allow()
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := svc.Guard(e.root, "look", func(_ context.Context, c tools.Call) *tools.Denial {
+			seen = c.Input().(listIn)
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		call := [2]string{"list", raw}
+		h := openSession(t, memstore.New(), call)
+		if r := execute(t, svc, view(t, svc), h, call)[0]; r.IsError {
+			t.Fatalf("result %+v", r)
+		}
+		for name, in := range map[string]listIn{"guard": seen, "body": got} {
+			if len(in.Items) != 2 || in.Items[0] != "a" {
+				t.Fatalf("the %s saw the policy's mutation: %+v", name, in)
+			}
+		}
+	})
+	t.Run("dynamic", func(t *testing.T) {
+		e := newEnv(t)
+		var got, seen string
+		svc := e.pipeline(t, core.Config{})
+		e.register(t, e.root, tools.Dynamic(tools.DynamicSpec{
+			Name: "dyn", Description: "Dynamic.", Origin: "test",
+			Schema: json.RawMessage(`{"type":"object","properties":{"items":{"type":"array","items":{"type":"string"}}}}`),
+			Run: func(_ context.Context, args json.RawMessage, _ tools.Run) (json.RawMessage, error) {
+				got = string(args)
+				return json.RawMessage(`"ok"`), nil
+			},
+		}))
+		if _, err := svc.Decide(e.root, "meddle", func(_ context.Context, c tools.Call) tools.Decision {
+			copy(rawBytes(t, c.Input()), `{"items":["Z"`)
+			return tools.Allow()
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := svc.Guard(e.root, "look", func(_ context.Context, c tools.Call) *tools.Denial {
+			seen = string(rawBytes(t, c.Input()))
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		dynRaw := `{"items":["a","b"]}`
+		call := [2]string{"dyn", dynRaw}
+		h := openSession(t, memstore.New(), call)
+		if r := execute(t, svc, view(t, svc), h, call)[0]; r.IsError {
+			t.Fatalf("result %+v", r)
+		}
+		if seen != dynRaw || got != dynRaw {
+			t.Fatalf("guard saw %q, body got %q; want %q", seen, got, dynRaw)
+		}
+	})
+}
+
+// boomOut's encoding panics.
+type boomOut struct{ N int }
+
+func (boomOut) MarshalJSON() ([]byte, error) { panic("cannot encode") }
+
+// A value whose encoding panics after the body ran still settles its call with
+// one error tool/result, and the batch goes on to the next call.
+func TestOutputEncodingPanicSettlesTheCall(t *testing.T) {
+	e := newEnv(t)
+	tr := &trace{}
+	svc := e.pipeline(t, core.Config{})
+	e.register(t, e.root, addTool(tr))
+	e.register(t, e.root, tools.Define(tools.Spec[addIn, boomOut]{
+		Name: "boom", Description: "Returns what cannot be encoded.",
+		Run: func(context.Context, addIn, tools.Run) (boomOut, error) { tr.add("boom"); return boomOut{1}, nil },
+	}))
+	calls := [][2]string{{"boom", `{"a":1,"b":2}`}, {"add", `{"a":1,"b":2}`}}
+	h := openSession(t, memstore.New(), calls...)
+	res := execute(t, svc, view(t, svc), h, calls...)
+	if r := res[0]; !r.IsError || r.Code != tools.CodeInvalidOutput || r.Stage != tools.StageShape || !strings.Contains(r.Text, "panicked") {
+		t.Fatalf("boom result %+v", r)
+	}
+	if r := res[1]; r.IsError || r.Text != "3" {
+		t.Fatalf("add result %+v", r)
+	}
+	if tr.count("boom") != 1 || tr.count("body") != 1 {
+		t.Fatalf("bodies ran %v", tr.got())
+	}
+	if got := strings.Join(types(t, h), ","); got != "tool/call,tool/result,tool/call,tool/result" {
+		t.Fatalf("events %s", got)
 	}
 }
 

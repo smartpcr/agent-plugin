@@ -225,7 +225,9 @@ func (r *registry) run(ctx context.Context, b tools.Batch, ag agent.Ref, ls list
 		}
 		return r.settle(ctx, b, ls, call, stop(tools.StageValidate, code, "", trimCode(err.Error(), code)))
 	}
-	call = tools.NewCall(req.ID, req.Name, args, b.Origin, b.Parent, ag, d, in)
+	// Listeners see a fresh decode of the logged bytes per read, never in: what
+	// one of them mutates reaches neither the others nor the body.
+	call = tools.NewDecodedCall(req.ID, req.Name, args, b.Origin, b.Parent, ag, d, func(raw json.RawMessage) (any, error) { return decode(bd, raw) })
 	if ctx.Err() != nil {
 		return r.settle(ctx, b, ls, call, stop(tools.StagePolicy, tools.CodeAbortedBeforeStart, "", "cancelled: "+context.Cause(ctx).Error()))
 	}
@@ -440,26 +442,25 @@ type resultMeta struct {
 func (r *registry) settle(ctx context.Context, b tools.Batch, ls listeners, c tools.Call, e ended) (tools.Result, error) {
 	res := tools.Result{CallID: c.ID(), Name: c.Name(), Stage: e.stage, Code: e.code, By: e.by, Approval: e.approval}
 	if e.code == "" {
-		if d := c.Tool(); d != nil && d.Output() != nil {
-			if is := d.Output().Validate(e.value); len(is) > 0 {
-				res.Code, res.Stage = tools.CodeInvalidOutput, tools.StageShape
-				res.Text = string(tools.CodeInvalidOutput) + ": " + is.Error()
-			}
-		}
-		if res.Code == "" {
-			text, err := render(e.value)
-			if err != nil {
-				res.Code, res.Text = tools.CodeInvalidOutput, string(tools.CodeInvalidOutput)+": "+err.Error()
-			} else {
-				res.Value, res.Text = e.value, text
-			}
+		text, msg := output(c.Tool(), e.value)
+		if msg != "" {
+			res.Code, res.Stage = tools.CodeInvalidOutput, tools.StageShape
+			res.Text = string(tools.CodeInvalidOutput) + ": " + msg
+		} else {
+			res.Value, res.Text = e.value, text
 		}
 	} else {
 		res.Text = string(e.code) + ": " + e.msg
 	}
 	res.IsError = res.Code != ""
 
-	for _, s := range ls.shapers {
+	// A call refused at resolve never started: nothing after resolve, shapers
+	// included, sees it.
+	shapers := ls.shapers
+	if e.stage == tools.StageResolve {
+		shapers = nil
+	}
+	for _, s := range shapers {
 		pd := shape(s, c, tools.Outcome{IsError: res.IsError, Code: res.Code, Text: res.Text, Value: res.Value})
 		switch pd.Kind {
 		case tools.PostAccept:
@@ -516,6 +517,27 @@ func shape(s named[tools.Shaper], c tools.Call, o tools.Outcome) (pd tools.PostD
 		pd.Kind = tools.PostAccept
 	}
 	return pd
+}
+
+// output validates a body's value against the declared output schema and
+// renders it; msg says why it could not be, a panic in a value's own encoding
+// included, so the call still settles with its one tool/result.
+func output(d *tools.Declaration, v any) (text, msg string) {
+	defer func() {
+		if x := recover(); x != nil {
+			text, msg = "", fmt.Sprintf("encoding the output panicked: %v", x)
+		}
+	}()
+	if d != nil && d.Output() != nil {
+		if is := d.Output().Validate(v); len(is) > 0 {
+			return "", is.Error()
+		}
+	}
+	text, err := render(v)
+	if err != nil {
+		return "", err.Error()
+	}
+	return text, ""
 }
 
 // render is the model-facing text of a body's value: a string as it is, raw JSON

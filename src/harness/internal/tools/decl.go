@@ -390,7 +390,7 @@ func Dynamic(spec DynamicSpec) *Declaration {
 		if is := d.input.Validate(args); len(is) > 0 {
 			return nil, &Error{Code: CodeInvalidArguments, Tool: d.name, Issues: issueStrings(is)}
 		}
-		return bytes.Clone(args), nil
+		return json.RawMessage(bytes.Clone(args)), nil
 	}
 	d.run = func(ctx context.Context, v any, run Run) (any, error) {
 		raw, ok := v.(json.RawMessage)
