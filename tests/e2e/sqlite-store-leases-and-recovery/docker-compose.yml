@@ -1,4 +1,4 @@
-# Stage 7.1 compose path (non-gating): the SQLite store tests and the godog E2E
+# Stage 7.1 and 7.2 compose path (non-gating): the SQLite store tests and the godog E2E
 # against a dsh-home named volume. The gate path needs none of this -- the
 # modernc.org/sqlite engine is embedded in the test binary and every dsh.db is
 # created under t.TempDir() when DSH_E2E_STORE_HOME is unset.
@@ -43,5 +43,5 @@ services:
         go -C src/harness test -race -count=1 ./internal/session/store/... &&
         go -C src/harness test -run TestBudgetStoreAppend -count=1 -v ./internal/session/store/sqlite &&
         go -C src/harness test -tags e2e -count=1 -v
-        -run TestE2E_sqlite_store_leases_and_recovery_sqlite_driver_measurement_and_atomic_appends
+        -run '^TestE2E_sqlite_store_leases_and_recovery_'
         ./test/e2e/harness-DSH/
