@@ -19,6 +19,20 @@ var host4Failures = []string{"load", "panic", "fault"}
 // host4Report is the report path standard error names.
 var host4Report = regexp.MustCompile(`(\S+\.(?:txt|log|json))`)
 
+// host4NamedReport returns the first file named in stderr that lies inside the
+// reports directory. Other files (the layer, logs) may be named first, and
+// siblings such as "<reports>-old/x.txt" are not inside it.
+func host4NamedReport(stderr, reports string) (string, bool) {
+	for _, m := range host4Report.FindAllStringSubmatch(stderr, -1) {
+		rel, err := filepath.Rel(reports, m[1])
+		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+			continue
+		}
+		return m[1], true
+	}
+	return "", false
+}
+
 // TestDyingHostLeavesReadableReport: a host that dies leaves a readable report on
 // each operating system (areas/host-telemetry.md DH-E-HOST-4; DH-D-HOST-7).
 // Executed in DH-S-18 (step 18.2) on Windows, macOS and Linux; authored in DH-S-6.
@@ -77,12 +91,11 @@ func TestDyingHostLeavesReadableReport(t *testing.T) {
 			if r.code == 0 {
 				t.Fatalf("the %s failure exited 0", failure)
 			}
-			m := host4Report.FindStringSubmatch(r.stderr)
-			if m == nil || !strings.HasPrefix(filepath.Clean(m[1]), filepath.Clean(layout.Reports())) {
+			report, ok := host4NamedReport(r.stderr, layout.Reports())
+			if !ok {
 				keep(t, r)
 				t.Fatalf("standard error names no report under %s", layout.Reports())
 			}
-			report := m[1]
 			f, err := os.Open(report)
 			if err != nil {
 				keep(t, r)
