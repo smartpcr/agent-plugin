@@ -3,6 +3,7 @@
 package scenarios
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -91,6 +92,13 @@ func TestFailedLaunchFailsLoudlyAndServingOneServes(t *testing.T) {
 	}
 	if out := host.Stdout.String(); out != "" {
 		t.Errorf("standard output is not empty:\n%s", out)
+	}
+	// The launcher owns the whole tree (cgroup, Job Object or process group), so a
+	// leaked child is caught even after it was reparented away from the dead pid.
+	treeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := host.Process.TreeGone(treeCtx); err != nil {
+		t.Errorf("child processes remain after the failed launch: %v", err)
 	}
 	if out, _ := shell(t, expand(children, map[string]string{"pid": strconv.Itoa(pid)})); strings.TrimSpace(out) != "" {
 		t.Errorf("child processes remain after the failed launch: %s", out)
