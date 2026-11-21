@@ -347,7 +347,7 @@ func (s *Service) Context(ctx *cordis.Context, c RuntimeContext) (*cordis.Effect
 }
 
 // Suppress removes the optional runtime context name from every assembly at ctx's
-// scope and the scopes that enclose it; a non-optional context is kept.
+// scope and every scope it encloses; a non-optional context is kept.
 func (s *Service) Suppress(ctx *cordis.Context, name string) (*cordis.EffectHandle, error) {
 	if ctx == nil {
 		return nil, &Error{Code: CodeInvalid, Msg: "a context is required"}
