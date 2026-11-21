@@ -235,6 +235,7 @@ func (s *Store) finish(ctx context.Context, t tomb) error {
 		}{
 			{`DELETE FROM events WHERE session = ?`, t.uid},
 			{`DELETE FROM blob_refs WHERE session = ?`, t.uid},
+			{`DELETE FROM lineage WHERE session = ?`, t.uid},
 			{`DELETE FROM checkpoints WHERE session = ?`, t.uid},
 			{`DELETE FROM requests WHERE session = ?`, t.id},
 			{`DELETE FROM sessions WHERE uid = ?`, t.uid},
@@ -321,16 +322,7 @@ func (s *Store) removeSpill(ctx context.Context, t tomb) error {
 	if err != nil {
 		return err
 	}
-	var errs []error
-	for _, o := range orphans {
-		dir, name, _ := strings.Cut(o, "/")
-		if err := removeAll(filepath.Join(s.spill, dir, name)); err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		// Gone only once empty: another orphan of it may still be cited.
-		_ = os.Remove(filepath.Join(s.spill, dir))
-	}
+	errs := []error{s.removeOrphans(orphans)}
 	dir := filepath.Join(s.spill, own)
 	if len(kept) == 0 {
 		return errors.Join(append(errs, removeAll(dir))...)
@@ -355,6 +347,76 @@ func (s *Store) removeSpill(ctx context.Context, t tomb) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// removeOrphans removes spill files "<dir>/<name>" through a handle rooted at
+// the spill directory, never following a link: a <dir> that is not a real
+// directory (a link or junction planted in the spill directory) is left alone,
+// so nothing outside it is touched, and a <name> that is a link loses only the
+// link. A directory goes once it is empty, as another of its files may still
+// be cited.
+func (s *Store) removeOrphans(orphans []string) error {
+	if len(orphans) == 0 {
+		return nil
+	}
+	root, err := os.OpenRoot(s.spill)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	var errs []error
+	for _, o := range orphans {
+		dir, _, _ := strings.Cut(o, "/")
+		info, err := root.Lstat(dir)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if !info.IsDir() {
+			continue
+		}
+		if err := root.Remove(o); err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, err)
+			continue
+		}
+		_ = root.Remove(dir)
+	}
+	return errors.Join(errs...)
+}
+
+// Ancestors is every session session id was forked from, nearest first, as its
+// create transaction recorded them (layout 4's lineage); it survives the
+// deletion of any of them. The spill store (storage/spill/local) authorizes a
+// fork's reads by it. A session with no recorded lineage has none.
+func (s *Store) Ancestors(ctx context.Context, id string) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	var out []string
+	err := s.read(ctx, func(tx *sql.Tx) error {
+		out = out[:0]
+		rs, err := tx.QueryContext(ctx, `SELECT l.ancestor FROM lineage l JOIN sessions s ON s.uid = l.session
+			WHERE s.id = ? AND s.state = 'active' ORDER BY l.depth`, id)
+		if err != nil {
+			return err
+		}
+		defer rs.Close()
+		for rs.Next() {
+			var a string
+			if err := rs.Scan(&a); err != nil {
+				return err
+			}
+			out = append(out, a)
+		}
+		return rs.Err()
+	})
+	return out, err
 }
 
 // safeSpillSegment is a name a blob_refs row may use for a path segment below

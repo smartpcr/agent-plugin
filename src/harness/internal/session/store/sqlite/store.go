@@ -96,8 +96,17 @@ func (s *Store) Create(ctx context.Context, h store.Header, o store.CreateOption
 			}
 			// The inherited prefix cites what the parent's did: its rows are the
 			// fork's own, so the fork keeps its objects after the parent goes.
-			_, err = tx.ExecContext(ctx, `INSERT INTO blob_refs (session, seq, ref)
-				SELECT ?, seq, ref FROM blob_refs WHERE session = ? AND seq <= ?`, uid, parent.uid, int64(through))
+			if _, err = tx.ExecContext(ctx, `INSERT INTO blob_refs (session, seq, ref)
+				SELECT ?, seq, ref FROM blob_refs WHERE session = ? AND seq <= ?`, uid, parent.uid, int64(through)); err != nil {
+				return err
+			}
+			// The fork's ancestry is its parent and the parent's, kept for the
+			// fork alone, so deleting an intermediate session does not cut it.
+			if _, err = tx.ExecContext(ctx, `INSERT INTO lineage (session, depth, ancestor) VALUES (?, 1, ?)`, uid, fork.ID); err != nil {
+				return err
+			}
+			_, err = tx.ExecContext(ctx, `INSERT INTO lineage (session, depth, ancestor)
+				SELECT ?, depth + 1, ancestor FROM lineage WHERE session = ? AND depth < 256`, uid, parent.uid)
 		}
 		return err
 	})

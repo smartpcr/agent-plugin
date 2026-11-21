@@ -146,6 +146,26 @@ INSERT OR IGNORE INTO blob_refs (session, seq, ref)
 	SELECT session, seq, 'spill:' || json_extract(data, '$.spill.path') FROM events
 	WHERE type = 'tool/result' AND json_valid(data) AND json_extract(data, '$.spill.path') <> '';
 `,
+	// 4: lineage (storage.md §6.1, DH-D-STORE-2): every ancestor id of a fork,
+	// nearest first, written in the fork's create transaction and removed with
+	// it. A fork keeps its whole ancestry when an intermediate session is
+	// deleted, so it can still read the spill files it inherited. Existing forks
+	// are backfilled from the fork_source chain.
+	`
+CREATE TABLE lineage (
+	session  INTEGER NOT NULL REFERENCES sessions (uid),
+	depth    INTEGER NOT NULL CHECK (depth >= 1),
+	ancestor TEXT    NOT NULL CHECK (ancestor <> ''),
+	PRIMARY KEY (session, depth)
+) STRICT, WITHOUT ROWID;
+WITH RECURSIVE chain (session, depth, ancestor) AS (
+	SELECT uid, 1, fork_source FROM sessions WHERE fork_source <> ''
+	UNION ALL
+	SELECT c.session, c.depth + 1, p.fork_source FROM chain c JOIN sessions p ON p.id = c.ancestor
+	WHERE p.fork_source <> '' AND c.depth < 256
+)
+INSERT OR IGNORE INTO lineage (session, depth, ancestor) SELECT session, depth, ancestor FROM chain;
+`,
 }
 
 // LayoutVersion is the layout this build writes: the number of migrations.

@@ -51,8 +51,26 @@ type Statter interface {
 	Stat(ctx context.Context, id string) (store.Summary, error)
 }
 
-// ForkLineage reads lineage from a session store's headers (DH-D-STORE-2).
-func ForkLineage(s Statter) Lineage { return forkLineage{s} }
+// Ancestry is a Lineage that also answers a session's whole ancestry, nearest
+// first, as recorded when it was forked, so it holds after an intermediate
+// session is deleted (the SQLite store's lineage table).
+type Ancestry interface {
+	Ancestors(ctx context.Context, id string) ([]string, error)
+}
+
+// ForkLineage reads lineage from a session store's headers (DH-D-STORE-2); when
+// the store also records ancestry (Ancestry), the lineage answers it too.
+func ForkLineage(s Statter) Lineage {
+	if a, ok := s.(Ancestry); ok {
+		return forkAncestry{forkLineage{s}, a}
+	}
+	return forkLineage{s}
+}
+
+type forkAncestry struct {
+	forkLineage
+	Ancestry
+}
 
 type forkLineage struct{ s Statter }
 
@@ -182,8 +200,28 @@ func (s *Store) Open(ctx context.Context, caller, id string) (io.ReadSeekCloser,
 	return f, nil
 }
 
-// owns checks that caller is the owner of dir or descends from it by forks.
+// owns checks that caller is the owner of dir or descends from it by forks: by
+// its recorded ancestry when the lineage keeps one (so a fork whose parent was
+// deleted still reads what it inherited from a grandparent), else by walking
+// the parents.
 func (s *Store) owns(ctx context.Context, caller, dir string) error {
+	if spill.OwnerDir(caller) == dir {
+		return nil
+	}
+	if a, ok := s.lineage.(Ancestry); ok {
+		ancestors, err := a.Ancestors(ctx, caller)
+		if err != nil {
+			return fmt.Errorf("spill: the ancestry of %q: %w", caller, err)
+		}
+		for _, id := range ancestors {
+			if spill.OwnerDir(id) == dir {
+				return nil
+			}
+		}
+		if len(ancestors) > 0 {
+			return notOwner(caller)
+		}
+	}
 	id := caller
 	for range maxLineage {
 		if spill.OwnerDir(id) == dir {
@@ -201,6 +239,10 @@ func (s *Store) owns(ctx context.Context, caller, dir string) error {
 		}
 		id = parent
 	}
+	return notOwner(caller)
+}
+
+func notOwner(caller string) error {
 	return herr.Newf(spill.ReasonNotOwner, "spill: session %q neither owns the file nor was forked from its owner", caller)
 }
 

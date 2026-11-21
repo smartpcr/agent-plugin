@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
@@ -17,6 +19,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/spill"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/spill/local"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/temphome"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
 )
 
 // spilled is a tool result at seq whose full output went to spill file id.
@@ -110,7 +113,7 @@ func TestBlobRefsBackfilledByTheMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	db := fresh(t, path)
-	for _, q := range []string{`DROP TABLE blob_refs`, `PRAGMA user_version = 2`} {
+	for _, q := range []string{`DROP TABLE blob_refs`, `DROP TABLE lineage`, `PRAGMA user_version = 2`} {
 		if _, err := db.Exec(q); err != nil {
 			t.Fatal(err)
 		}
@@ -266,5 +269,101 @@ func TestSessionStoreIsTheSpillCiter(t *testing.T) {
 	}
 	if !spillGone(t, l, late) {
 		t.Fatal("the spill Delete kept an uncited file")
+	}
+}
+
+// storage.md §6.1, spill.go (forks read their owner's files "transitively"): for
+// p -> f -> g, where g inherits p's spilled prefix through f, deleting p and
+// then f keeps the file, and g still reads it byte-identical, also through a
+// reopened home, because g's ancestry was recorded when it was forked. An
+// unrelated session is still refused.
+func TestNestedForkReadsInheritedSpillAfterAncestorsAreDeleted(t *testing.T) {
+	l, s, _, early, _, full := forkedSpill(t)
+	g, err := s.Create(bg, store.Header{ID: "g"}, store.CreateOptions{ForkOf: &store.ForkOf{ID: "f", Through: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Close(bg); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Seed(bg, store.Header{ID: "stranger"}, []store.Record{call(t, 0)}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"p", "f"} {
+		if err := s.Delete(bg, id, store.DeleteOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Close(bg); err != nil {
+		t.Fatal(err)
+	}
+	r, err := sqlite.OpenHome(bg, l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close(bg)
+	if got, err := r.Ancestors(bg, "g"); err != nil || len(got) != 2 || got[0] != "f" || got[1] != "p" {
+		t.Fatalf("Ancestors(g) = %v, %v; want [f p] after both were deleted", got, err)
+	}
+	sp, err := local.New(l, local.DefaultConfig, local.WithLineage(local.ForkLineage(r)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readSpill(t, sp, "g", early); !bytes.Equal(got, full) {
+		t.Fatalf("the grandchild read %d bytes, want the %d its grandparent spilled", len(got), len(full))
+	}
+	if _, err := sp.Open(bg, "stranger", early); !herr.Has(err, spill.ReasonNotOwner) {
+		t.Fatalf("an unrelated session's read = %v; want %s", err, spill.ReasonNotOwner)
+	}
+	if err := r.Delete(bg, "g", store.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if !spillGone(t, l, early) {
+		t.Fatal("deleting the last citing descendant left the file")
+	}
+}
+
+// link makes a directory link at name to target: a symlink, or on Windows,
+// where that needs a privilege, a junction. It skips the test when neither works.
+func link(t *testing.T, target, name string) {
+	t.Helper()
+	if err := os.Symlink(target, name); err == nil {
+		return
+	}
+	if runtime.GOOS == "windows" {
+		if out, err := exec.Command("cmd", "/c", "mklink", "/J", name, target).CombinedOutput(); err == nil {
+			return
+		} else {
+			t.Skipf("no directory link: %v %s", err, out)
+		}
+	}
+	t.Skip("no directory link")
+}
+
+// The orphan cleanup of a deletion stays inside the spill directory: an
+// inherited reference naming a directory that is a link planted in the spill
+// directory to an outside one leaves the outside file alone.
+func TestDeletionNeverFollowsAPlantedSpillLink(t *testing.T) {
+	l := temphome.New(t)
+	s, err := sqlite.OpenHome(bg, l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close(bg)
+	outside := t.TempDir()
+	sentinel := filepath.Join(outside, "sentinel")
+	if err := os.WriteFile(sentinel, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	planted := sqlite.SpillName("gone")
+	link(t, outside, filepath.Join(l.Spill(), planted))
+	if err := s.Seed(bg, store.Header{ID: "x"}, []store.Record{call(t, 0), spilled(t, 1, planted+"/sentinel")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Delete(bg, "x", store.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(sentinel); err != nil || string(b) != "keep" {
+		t.Fatalf("the file outside the spill directory: %q, %v; want it untouched", b, err)
 	}
 }
