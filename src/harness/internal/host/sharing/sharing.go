@@ -312,7 +312,13 @@ func (g *Gate) Off() (off, lockedByEnvironment bool) {
 func (g *Gate) Configure(cfg Config) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.cfg = clone(cfg)
+	g.configureLocked(clone(cfg))
+}
+
+// configureLocked installs cfg (already owned by the gate) and withdraws every
+// live permit it no longer allows. The caller holds g.mu.
+func (g *Gate) configureLocked(cfg Config) {
+	g.cfg = cfg
 	for p := range g.permits {
 		st := g.decide(p.kind)
 		if st.State != StateOn || st.Endpoint != p.dest {
@@ -330,10 +336,10 @@ func (g *Gate) Configure(cfg Config) {
 // changes nothing.
 func (g *Gate) SetOff(off bool) {
 	g.mu.Lock()
+	defer g.mu.Unlock()
 	cfg := clone(g.cfg)
-	g.mu.Unlock()
 	cfg.Off = off
-	g.Configure(cfg)
+	g.configureLocked(cfg)
 }
 
 // claim marks the gate configured by one entry; a second claim fails.
