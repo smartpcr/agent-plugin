@@ -201,7 +201,11 @@ func invalidExport(format string, args ...any) error {
 // seqs from 0, every record admitted by the registry), then written in one
 // transaction, so a refused file writes nothing. A gzip file is decompressed, at
 // most o.Limit bytes of it. An id the home already holds is refused with
-// session/exists unless o.NewID names another. It returns the imported header.
+// session/exists unless o.NewID names another. The file's creator is not
+// kept: it names a session of the exporting home, and a match in this home
+// would make the import a cascade child of an unrelated session (deleted or
+// retired with it); imported_from records the provenance instead. It returns
+// the imported header.
 func (s *Store) Import(ctx context.Context, r io.Reader, o ImportOptions) (store.Header, error) {
 	if err := ctx.Err(); err != nil {
 		return store.Header{}, err
@@ -215,6 +219,7 @@ func (s *Store) Import(ctx context.Context, r io.Reader, o ImportOptions) (store
 		return store.Header{}, err
 	}
 	from := h.ID
+	h.Creator = ""
 	if o.NewID != "" {
 		h.ID = o.NewID
 	}
