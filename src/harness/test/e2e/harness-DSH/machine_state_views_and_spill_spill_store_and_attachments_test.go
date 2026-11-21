@@ -62,7 +62,14 @@ type ssaState struct {
 	readErr error
 
 	// privacy
-	spillFile string
+	spillFile    string
+	permFindings []ssaPermFinding
+}
+
+// ssaPermFinding is the protection check result for one inspected path.
+type ssaPermFinding struct {
+	path string
+	err  error
 }
 
 func (s *ssaState) cleanup(f func()) { s.cleanups = append(s.cleanups, f) }
@@ -373,36 +380,44 @@ func (s *ssaState) aSpilledResultInATempHome() error {
 	return nil
 }
 
+// theSpillFilesPermissionsAreInspected reads the protection of the spill file
+// and its spill directories (POSIX mode bits, or the DACL read back with
+// GetNamedSecurityInfo on Windows) and records one finding per path; the Then
+// step only asserts on those findings.
 func (s *ssaState) theSpillFilesPermissionsAreInspected() error {
-	if _, err := os.Stat(s.spillFile); err != nil {
-		return err
+	paths := []string{s.spillFile, filepath.Dir(s.spillFile), s.home.Spill()}
+	s.permFindings = make([]ssaPermFinding, 0, len(paths))
+	for i, p := range paths {
+		var err error
+		switch {
+		case runtime.GOOS == "windows":
+			// Protected DACL whose only ACEs are the owner SID, SYSTEM and
+			// Administrators (no other SID, not even the process user when it
+			// is not the owner).
+			err = ssaAssertOwnerOnly(p)
+		case i == 0:
+			info, lerr := os.Lstat(p)
+			if lerr != nil {
+				return lerr
+			}
+			if perm := info.Mode().Perm(); perm != 0o600 {
+				err = fmt.Errorf("%s: mode %o, want 0600", p, perm)
+			}
+		default:
+			err = lfhsAssertPrivate(p)
+		}
+		s.permFindings = append(s.permFindings, ssaPermFinding{path: p, err: err})
 	}
 	return nil
 }
 
 func (s *ssaState) theFileAndItsSpillDirectoriesArePrivate() error {
-	dirs := []string{filepath.Dir(s.spillFile), s.home.Spill()}
-	if runtime.GOOS == "windows" {
-		// Protected DACL whose only ACEs are the owner SID, SYSTEM and
-		// Administrators (no other SID, not even the process user when it is
-		// not the owner), read back with GetNamedSecurityInfo.
-		for _, p := range append([]string{s.spillFile}, dirs...) {
-			if err := ssaAssertOwnerOnly(p); err != nil {
-				return err
-			}
-		}
-		return nil
+	if len(s.permFindings) != 3 {
+		return fmt.Errorf("expected permission findings for the file and 2 spill directories, got %d", len(s.permFindings))
 	}
-	info, err := os.Lstat(s.spillFile)
-	if err != nil {
-		return err
-	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		return fmt.Errorf("%s: mode %o, want 0600", s.spillFile, perm)
-	}
-	for _, d := range dirs {
-		if err := lfhsAssertPrivate(d); err != nil {
-			return err
+	for _, f := range s.permFindings {
+		if f.err != nil {
+			return f.err
 		}
 	}
 	return nil
