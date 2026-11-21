@@ -145,7 +145,13 @@ not the DH-E scenario runs that DH-S-18 owns. Why they could not be recorded her
 - No Linux or macOS host was available: WSL has no distribution and docker is absent.
 - The CI `harness` lanes on `ubuntu-latest` and `macos-latest` do not reach the
   subprocess tests on `main`. Run 44853707426 at `f394c24` stops at gate 1/8
-  (gofmt, `host/sharing/component.go`, fixed by this stage).
+  (gofmt, `host/sharing/component.go`, fixed by this stage). A CI run of this
+  branch would still not reach them: the gate stops at its first failing gate, and
+  gate 2 (vet with the project's analyzers) fails on findings that predate this
+  stage (for example `boot/audit_test.go:70,91`, `boot/boot_test.go:98,434,632`), so
+  the test gate never starts on any lane.
+- Recording them therefore needs an operator with a Linux and a macOS machine, or an
+  approved change to the requirement; it is raised as an open question of this stage.
 To record them, run `go -C src/harness test -count=1 -v -run
 'TestStopTreeStopsAndAwaitsTheTree|TestContextEndStopsDescendantsAfterChildExit|TestTreeOwnerIsReported'
 ./internal/world/subprocess/` on each system and paste the owner line and stop time
