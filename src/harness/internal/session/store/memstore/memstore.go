@@ -224,6 +224,12 @@ func (s *Store) live(id string) (*session, error) {
 func (s *Store) summary(ss *session) store.Summary {
 	sum := store.Summary{Header: ss.header, NextSeq: store.Seq(len(ss.records)), Durable: store.Seq(ss.durable),
 		LeaseEpoch: ss.epoch, LastEventAt: ss.lastEventAt}
+	for i := len(ss.records) - 1; i >= 0; i-- {
+		if r := ss.records[i]; r.Type == store.PromptType && r.Time > 0 {
+			sum.LastPromptAt = time.UnixMilli(r.Time)
+			break
+		}
+	}
 	if ss.holder != nil {
 		h := s.holderOf(ss)
 		sum.Holder = &h
@@ -252,9 +258,9 @@ func (s *Store) List(ctx context.Context, q store.Query) (store.Page, error) {
 	if err := ctx.Err(); err != nil {
 		return store.Page{}, err
 	}
-	limit := q.Limit
-	if limit <= 0 {
-		limit = defaultLimit
+	limit := q.PageLimit(defaultLimit)
+	if q.Order == store.OrderPrompt {
+		return s.listByPrompt(q, limit)
 	}
 	var after *cursor
 	if q.Cursor != "" {
@@ -284,6 +290,55 @@ func (s *Store) List(ctx context.Context, q store.Query) (store.Page, error) {
 			break
 		}
 		page.Summaries = append(page.Summaries, sum)
+	}
+	return page, nil
+}
+
+// listByPrompt is List in store.OrderPrompt: every session's key is computed
+// from its records as of the cut.
+func (s *Store) listByPrompt(q store.Query, limit int) (store.Page, error) {
+	var after *store.PromptCursor
+	cut := q.AsOf
+	if q.Cursor != "" {
+		c, err := store.ParsePromptCursor(q.Cursor)
+		if err != nil {
+			return store.Page{}, err
+		}
+		after, cut = &c, time.Unix(0, c.AsOf)
+	}
+	if cut.IsZero() {
+		cut = s.now()
+	}
+	type keyed struct {
+		key int64
+		sum store.Summary
+	}
+	s.mu.Lock()
+	var all []keyed
+	for _, ss := range s.sessions {
+		if ss.deleted || (q.Cwd != "" && ss.header.Cwd != q.Cwd) || (q.Creator != "" && ss.header.Creator != q.Creator) {
+			continue
+		}
+		key, ok := store.PromptKey(ss.header.CreatedAt, ss.records, cut.UnixNano())
+		if ok && (after == nil || after.Precedes(key, ss.header.ID)) {
+			all = append(all, keyed{key, s.summary(ss)})
+		}
+	}
+	s.mu.Unlock()
+	slices.SortFunc(all, func(a, b keyed) int {
+		if c := cmp.Compare(b.key, a.key); c != 0 {
+			return c
+		}
+		return strings.Compare(a.sum.Header.ID, b.sum.Header.ID)
+	})
+	var page store.Page
+	for i, k := range all {
+		if i == limit {
+			last := all[limit-1]
+			page.Next = store.PromptCursor{AsOf: cut.UnixNano(), Key: last.key, ID: last.sum.Header.ID}.String()
+			break
+		}
+		page.Summaries = append(page.Summaries, k.sum)
 	}
 	return page, nil
 }

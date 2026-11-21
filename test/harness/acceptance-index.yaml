@@ -68,6 +68,12 @@ stages:
       authored: DH-S-6
     - id: DH-E-HOST-4
       authored: DH-S-6
+  DH-S-19:
+    # Two processes share the workspace registry; an archive with stop ends the
+    # other process's turn (impl.md DH-S-19); authored by Stage 8.2 (impl.md
+    # steps 8.4, 8.5).
+    - id: DH-E-STORAGE-1
+      authored: DH-S-8
   DH-S-21:
     # Two processes on one home and one profile; guarded (impl.md step 21.13).
     - id: DH-E-BOOT-2
@@ -77,6 +83,11 @@ stages:
     # page (impl.md step 22.3); authored in DH-S-6.
     - id: DH-E-BOOT-1
       authored: DH-S-6
+  DH-S-23:
+    # An image survives a crash mid-upload, a restart, a fork whose parent is
+    # deleted and collection (impl.md DH-S-23); authored by Stage 8.2.
+    - id: DH-E-STORAGE-2
+      authored: DH-S-8
   DH-S-35:
     # A non-holder follows a session and hands its holder requests (impl.md step
     # 35.7); authored by Stage 7.3 (impl.md step 7.5), which builds the follow.

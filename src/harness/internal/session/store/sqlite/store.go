@@ -1,12 +1,15 @@
 package sqlite
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store"
 )
@@ -39,6 +42,7 @@ func (s *Store) Create(ctx context.Context, h store.Header, o store.CreateOption
 			parent     row
 			through    store.Seq
 			next, last int64
+			prompt     int64
 			size       int64
 			fork       = o.ForkOf
 		)
@@ -75,13 +79,14 @@ func (s *Store) Create(ctx context.Context, h store.Header, o store.CreateOption
 			for _, r := range inherited {
 				size += int64(len(r.Payload) + len(r.Cold))
 			}
+			prompt = promptNanos(0, inherited)
 			h.ForkSource, h.ForkThrough, h.InheritedCount = fork.ID, through, len(inherited)
 		}
 		res, err := tx.ExecContext(ctx, `INSERT INTO sessions (id, created_at, cwd, origin, creator, fork_source,
 			fork_through, inherited_count, delegation_depth, preset, next_seq, lease_epoch, lease_holder, lease_pid,
-			lease_kind, lease_since, last_event_at, bytes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)`,
+			lease_kind, lease_since, last_event_at, last_prompt_at, bytes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)`,
 			h.ID, h.CreatedAt.UnixNano(), h.Cwd, h.Origin, h.Creator, h.ForkSource, int64(h.ForkThrough),
-			h.InheritedCount, h.DelegationDepth, h.Preset, next, s.instance, s.pid, s.kind, since, last, size)
+			h.InheritedCount, h.DelegationDepth, h.Preset, next, s.instance, s.pid, s.kind, since, last, prompt, size)
 		if err != nil {
 			return err
 		}
@@ -257,10 +262,7 @@ func (s *Store) List(ctx context.Context, q store.Query) (store.Page, error) {
 	if err := ctx.Err(); err != nil {
 		return store.Page{}, err
 	}
-	limit := q.Limit
-	if limit <= 0 {
-		limit = defaultLimit
-	}
+	limit := q.PageLimit(defaultLimit)
 	where := []string{"state = 'active'"}
 	var args []any
 	if q.Cwd != "" {
@@ -268,6 +270,9 @@ func (s *Store) List(ctx context.Context, q store.Query) (store.Page, error) {
 	}
 	if q.Creator != "" {
 		where, args = append(where, "creator = ?"), append(args, q.Creator)
+	}
+	if q.Order == store.OrderPrompt {
+		return s.listByPrompt(ctx, q, limit, where, args)
 	}
 	if q.Cursor != "" {
 		c, err := parseCursor(q.Cursor)
@@ -306,6 +311,105 @@ func (s *Store) List(ctx context.Context, q store.Query) (store.Page, error) {
 			break
 		}
 		page.Summaries = append(page.Summaries, r.sum)
+	}
+	return page, nil
+}
+
+// listByPrompt is List in store.OrderPrompt, in one read transaction: the
+// sessions_prompt index scanned past the cursor for the sessions with no prompt
+// after the cut, merged with the few sessions prompted since the cut, whose key
+// as of the cut is read from their logs.
+func (s *Store) listByPrompt(ctx context.Context, q store.Query, limit int, where []string, args []any) (store.Page, error) {
+	var after *store.PromptCursor
+	cut := q.AsOf
+	if q.Cursor != "" {
+		c, err := store.ParsePromptCursor(q.Cursor)
+		if err != nil {
+			return store.Page{}, err
+		}
+		after, cut = &c, time.Unix(0, c.AsOf)
+	}
+	if cut.IsZero() {
+		cut = s.now()
+	}
+	at := cut.UnixNano()
+	pcut := store.PromptCut(at)
+	where = append(slices.Clip(where), "created_at <= ?")
+	args = append(slices.Clip(args), at)
+	type keyed struct {
+		key int64
+		r   row
+	}
+	var all []keyed
+	err := s.read(ctx, func(tx *sql.Tx) error {
+		scan := func(query string, args ...any) ([]row, error) {
+			rs, err := tx.QueryContext(ctx, query, args...)
+			if err != nil {
+				return nil, err
+			}
+			defer rs.Close()
+			var out []row
+			for rs.Next() {
+				r, err := scanRow(rs)
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, r)
+			}
+			return out, rs.Err()
+		}
+		w, a := append(slices.Clip(where), "last_prompt_at <= ?"), append(slices.Clip(args), pcut)
+		if after != nil {
+			w = append(w, "("+promptKey+" < ? OR ("+promptKey+" = ? AND id > ?))")
+			a = append(a, after.Key, after.Key, after.ID)
+		}
+		a = append(a, int64(limit)+1)
+		stable, err := scan(`SELECT `+sessionCols+` FROM sessions WHERE `+strings.Join(w, " AND ")+`
+			ORDER BY `+promptKey+` DESC, id LIMIT ?`, a...)
+		if err != nil {
+			return err
+		}
+		for _, r := range stable {
+			all = append(all, keyed{key: cmp.Or(r.prompt, r.created), r: r})
+		}
+		touched, err := scan(`SELECT `+sessionCols+` FROM sessions WHERE `+strings.Join(append(slices.Clip(where), "last_prompt_at > ?"), " AND "),
+			append(slices.Clip(args), pcut)...)
+		if err != nil {
+			return err
+		}
+		for _, r := range touched {
+			var ms sql.NullInt64
+			if err := tx.QueryRowContext(ctx, `SELECT MAX(time) FROM events WHERE session = ? AND type = ? AND time > 0 AND time <= ?`,
+				r.uid, store.PromptType, time.Unix(0, pcut).UnixMilli()).Scan(&ms); err != nil {
+				return err
+			}
+			key := r.created
+			if ms.Valid {
+				key = time.UnixMilli(ms.Int64).UnixNano()
+			}
+			if after == nil || after.Precedes(key, r.sum.Header.ID) {
+				all = append(all, keyed{key: key, r: r})
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return store.Page{}, err
+	}
+	slices.SortFunc(all, func(a, b keyed) int {
+		if c := cmp.Compare(b.key, a.key); c != 0 {
+			return c
+		}
+		return strings.Compare(a.r.sum.Header.ID, b.r.sum.Header.ID)
+	})
+	var page store.Page
+	for i, k := range all {
+		if i == limit {
+			last := all[limit-1]
+			page.Next = store.PromptCursor{AsOf: at, Key: last.key, ID: last.r.sum.Header.ID}.String()
+			break
+		}
+		page.Summaries = append(page.Summaries, k.r.sum)
 	}
 	return page, nil
 }
@@ -361,10 +465,10 @@ func (s *Store) Seed(ctx context.Context, h store.Header, recs []store.Record) e
 			return err
 		}
 		res, err := tx.ExecContext(ctx, `INSERT INTO sessions (id, created_at, cwd, origin, creator, fork_source,
-			fork_through, inherited_count, delegation_depth, preset, next_seq, last_event_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			fork_through, inherited_count, delegation_depth, preset, next_seq, last_event_at, last_prompt_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			h.ID, h.CreatedAt.UnixNano(), h.Cwd, h.Origin, h.Creator, h.ForkSource, int64(h.ForkThrough),
-			h.InheritedCount, h.DelegationDepth, h.Preset, len(recs), last)
+			h.InheritedCount, h.DelegationDepth, h.Preset, len(recs), last, promptNanos(0, recs))
 		if err != nil {
 			return err
 		}

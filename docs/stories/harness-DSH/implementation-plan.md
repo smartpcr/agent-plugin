@@ -535,9 +535,9 @@ storyId: "harness:DSH"
 - phase-machine-state-views-and-spill/stage-typed-machine-state-and-stored-folds
 
 ### Test Scenarios
-- [ ] Scenario: Refold equals stored for every built-in view -- Given a fixed 200-event session in a temp home, When each built-in view is refolded from the log and compared with its stored state, Then all four are equal (DH-S-8 exit evidence, TC-08) [proof: service:sqlite; deps: sqlite embedded; filesystem via `t.TempDir()`]
-- [ ] Scenario: Listing groups by project -- Given three sessions in two projects, When sessions are listed by project, Then the result equals the committed golden listing (TC-08) [proof: golden; deps: sqlite embedded; filesystem via `t.TempDir()`; committed golden `session/views/testdata/list_by_project.golden`]
-- [ ] Scenario: Hidden session stops working -- Given a session with an agent registered through the agent contract fake, When the session is hidden, Then the agent receives a stop with cause `hidden` (TC-08 logic) [proof: in-process; deps: none -- memstore and fake agent]
+- [x] Scenario: Refold equals stored for every built-in view -- Given a fixed 200-event session in a temp home, When each built-in view is refolded from the log and compared with its stored state, Then all four are equal (DH-S-8 exit evidence, TC-08) [proof: service:sqlite; deps: sqlite embedded; filesystem via `t.TempDir()`]
+- [x] Scenario: Listing groups by project -- Given three sessions in two projects, When sessions are listed by project, Then the result equals the committed golden listing (TC-08) [proof: golden; deps: sqlite embedded; filesystem via `t.TempDir()`; committed golden `session/views/testdata/list_by_project.golden`]
+- [x] Scenario: Hidden session stops working -- Given a session with an agent registered through the agent contract fake, When the session is hidden, Then the agent receives a stop with cause `hidden` (TC-08 logic) [proof: in-process; deps: none -- memstore and fake agent]
 
 ## Stage 8.3: Spill Store and Attachments
 

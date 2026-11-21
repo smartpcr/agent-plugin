@@ -237,9 +237,9 @@ func (w *writer) Append(ctx context.Context, b store.Batch) error {
 		if n := len(b.Records); n > 0 {
 			lastAt = s.eventNanos(b.Records[n-1].Time)
 		}
-		res, err := tx.ExecContext(ctx, `UPDATE sessions SET next_seq = ?, last_event_at = ?, bytes = bytes + ?
+		res, err := tx.ExecContext(ctx, `UPDATE sessions SET next_seq = ?, last_event_at = ?, last_prompt_at = ?, bytes = bytes + ?
 			WHERE uid = ? AND next_seq = ? AND lease_holder = ? AND lease_epoch = ? AND state = 'active'`,
-			int64(total), lastAt, size, w.uid, int64(next), w.holder, int64(w.epoch))
+			int64(total), lastAt, promptNanos(ss.prompt, b.Records), size, w.uid, int64(next), w.holder, int64(w.epoch))
 		if err != nil {
 			return err
 		}
