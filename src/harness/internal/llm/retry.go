@@ -29,19 +29,24 @@ const (
 	DefaultRetryAfterCap = time.Minute
 )
 
+// NoJitter is the Jitter that turns jitter off. A zero Jitter takes
+// DefaultJitter, like every other zero field, so 0 cannot mean "off".
+const NoJitter = -1.0
+
 // RetryPolicy is a route's retry policy, captured with the call at Prepare. Only
 // a Transient-class failure is ever retried; a Permanent one (llm/auth among
 // them) never is, in any mode, and a retry repeats the same route, model and
 // credential reference: there is no fallback to another route (SP-2). The zero
 // policy never retries (a stub route's); a provider route carries DefaultRetry.
-// A zero delay, jitter, elapsed bound or cap takes its default.
+// A zero delay, jitter, elapsed bound or cap takes its default; set Jitter to
+// NoJitter to disable jitter.
 type RetryPolicy struct {
 	Mode RetryMode `json:"mode,omitempty"`
 	// MaxRetries bounds the retries after the first attempt (bounded mode); 0
 	// is none.
 	MaxRetries int `json:"max_retries,omitempty"`
 	// BaseDelay doubles per retry up to MaxDelay; Jitter spreads it by up to
-	// that fraction either way.
+	// that fraction either way; NoJitter is none.
 	BaseDelay time.Duration `json:"base_delay,omitempty"`
 	MaxDelay  time.Duration `json:"max_delay,omitempty"`
 	Jitter    float64       `json:"jitter,omitempty"`
@@ -63,7 +68,7 @@ func DefaultRetry() RetryPolicy {
 func PersistentRetry() RetryPolicy { return RetryPolicy{Mode: RetryPersistent}.Normalised() }
 
 // Normalised is p with every zero delay, jitter, bound and cap at its default;
-// MaxRetries is kept as it is.
+// MaxRetries is kept as it is, and so is a NoJitter.
 func (p RetryPolicy) Normalised() RetryPolicy {
 	if p.Mode == "" {
 		p.Mode = RetryBounded
@@ -94,8 +99,8 @@ func (p RetryPolicy) Validate() error {
 	if p.MaxRetries < 0 || p.BaseDelay < 0 || p.MaxDelay < 0 || p.MaxElapsed < 0 || p.RetryAfterCap < 0 {
 		return fmt.Errorf("llm: retry policy %+v has a negative bound", p)
 	}
-	if p.Jitter < 0 || p.Jitter >= 1 {
-		return fmt.Errorf("llm: retry jitter %v is outside [0, 1)", p.Jitter)
+	if p.Jitter != NoJitter && (p.Jitter < 0 || p.Jitter >= 1) {
+		return fmt.Errorf("llm: retry jitter %v is neither NoJitter nor in [0, 1)", p.Jitter)
 	}
 	if p.BaseDelay > 0 && p.MaxDelay > 0 && p.BaseDelay > p.MaxDelay {
 		return fmt.Errorf("llm: retry base delay %v exceeds the max delay %v", p.BaseDelay, p.MaxDelay)
@@ -148,6 +153,8 @@ func (p RetryPolicy) backoff(attempt int, u float64) time.Duration {
 	}
 	d = min(d, p.MaxDelay)
 	u = min(max(u, 0), 1)
-	d = time.Duration(float64(d) * (1 + p.Jitter*(2*u-1)))
+	if p.Jitter > 0 {
+		d = time.Duration(float64(d) * (1 + p.Jitter*(2*u-1)))
+	}
 	return min(max(d, 0), p.MaxDelay)
 }
