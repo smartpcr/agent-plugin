@@ -84,6 +84,10 @@ var codes = map[herr.Reason]int{
 	"config/stale":        Busy,
 	"config/stopping":     Busy,
 
+	"egress/ca-unreadable":       Config,
+	"egress/not-permitted":       Denied,
+	"egress/refused-proxy-value": Config,
+
 	"home/io":            Failed,
 	"home/not-directory": Invalid,
 	"home/not-private":   Denied,
@@ -105,6 +109,14 @@ var codes = map[herr.Reason]int{
 	"settings/not-live":   Invalid,
 	"settings/overridden": Busy,
 	"settings/unsaved":    Failed,
+
+	"sharing/claimed":      Config,
+	"sharing/disabled":     Denied,
+	"sharing/no-endpoint":  Unavailable,
+	"sharing/off":          Denied,
+	"sharing/released":     Cancelled,
+	"sharing/unregistered": Invalid,
+	"sharing/withdrawn":    Cancelled,
 
 	"subprocess/bad-argument":     Invalid,
 	"subprocess/batch-refused":    Denied,
