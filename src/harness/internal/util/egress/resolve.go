@@ -38,12 +38,14 @@ type Diagnostic struct {
 func (d Diagnostic) String() string { return fmt.Sprintf("%s: %s [%s]", d.Name, d.Message, d.Reason) }
 
 // Resolve builds the service of the launch: the proxy policy read through lookup
-// (HTTPS_PROXY for https, HTTP_PROXY for http, ALL_PROXY for either when its own
-// name is unset, NO_PROXY bypassing; each upper case first, then lower case), and
-// the system's certificate authorities plus c.ExtraCACerts. A proxy value that is
-// not a proxy address is a diagnostic and that scheme goes direct; an unreadable
-// certificate file is an error. A nil lookup reads nothing. A Proxy already set
-// in c is kept.
+// (lower case first, then upper case; blank is unset): HTTP_PROXY for http,
+// HTTPS_PROXY for https, ALL_PROXY for a scheme whose own name is unset, and
+// HTTPS falling back to the HTTP proxy last; NO_PROXY bypasses and loopback is
+// always direct. Only http and https proxy addresses are accepted: any other value
+// is a diagnostic and that scheme goes direct, never borrowing another scheme's
+// proxy. The certificate authorities are the system's plus c.ExtraCACerts; an
+// unreadable certificate file is an error. A nil lookup reads nothing. A Proxy
+// already set in c is kept.
 func Resolve(lookup Lookup, c Config) (*Service, []Diagnostic, error) {
 	roots, err := loadRoots(c.ExtraCACerts)
 	if err != nil {
@@ -121,25 +123,36 @@ func readProxy(lookup Lookup) (*proxyPolicy, []Diagnostic) {
 		}
 		return u
 	}
-	httpsName, _ := read("HTTPS_PROXY", "https_proxy")
-	httpName, _ := read("HTTP_PROXY", "http_proxy")
-	if httpsName != "" {
-		p.https = pick(httpsName)
+	// ALL_PROXY is read (and reported) once, only when a scheme needs it.
+	var all *url.URL
+	allRead := false
+	fallback := func() *url.URL {
+		if !allRead {
+			allRead = true
+			all = pick("all_proxy", "ALL_PROXY")
+		}
+		return all
 	}
+	// Each scheme: its own name, else ALL_PROXY. A name that is set but refused
+	// keeps the scheme direct; it never borrows another scheme's proxy.
+	httpName, _ := read("http_proxy", "HTTP_PROXY")
 	if httpName != "" {
 		p.http = pick(httpName)
+	} else {
+		p.http = fallback()
 	}
-	if httpsName == "" || httpName == "" {
-		if all := pick("ALL_PROXY", "all_proxy"); all != nil {
-			if httpsName == "" {
-				p.https = all
-			}
-			if httpName == "" {
-				p.http = all
-			}
-		}
+	httpsName, _ := read("https_proxy", "HTTPS_PROXY")
+	switch {
+	case httpsName != "":
+		p.https = pick(httpsName)
+	case fallback() != nil:
+		p.https = all
+	case func() bool { n, _ := read("all_proxy", "ALL_PROXY"); return n == "" }():
+		// HTTPS falls back to the HTTP proxy last (DH-ADR-UNDICI-2); a refused
+		// ALL_PROXY keeps HTTPS direct instead.
+		p.https = p.http
 	}
-	if _, v := read("NO_PROXY", "no_proxy"); v != "" {
+	if _, v := read("no_proxy", "NO_PROXY"); v != "" {
 		p.parseBypass(v)
 	}
 	return p, diags
@@ -157,9 +170,9 @@ func parseProxy(v string) (*url.URL, string) {
 		return nil, "the value is not a URL"
 	}
 	switch strings.ToLower(u.Scheme) {
-	case "http", "https", "socks5", "socks5h":
+	case "http", "https":
 	default:
-		return nil, fmt.Sprintf("the scheme %q is not a proxy scheme (http, https, socks5, socks5h)", u.Scheme)
+		return nil, fmt.Sprintf("the scheme %q is not a proxy scheme (http, https)", u.Scheme)
 	}
 	if u.Hostname() == "" {
 		return nil, "the value names no host"
@@ -237,7 +250,7 @@ func (p *proxyPolicy) forURL(u *url.URL) *url.URL {
 		return nil
 	}
 	ip := net.ParseIP(host)
-	if ip != nil && ip.IsLoopback() {
+	if ip != nil && (ip.IsLoopback() || ip.IsUnspecified()) {
 		return nil
 	}
 	port := portOf(u)

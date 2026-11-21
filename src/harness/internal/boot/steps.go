@@ -185,7 +185,13 @@ func (Real) Settle(ctx context.Context, s *State) error {
 	return nil
 }
 
-// Audit checks the required entries and lists every outbound kind as the launch's
+// PolicyComponents are the components whose enabled entries are required in every
+// profile: the outbound policy (proxy names and certificate authorities) and the
+// sharing settings. One that fails to initialize stops the launch before ready.
+var PolicyComponents = []string{egress.Name, sharing.Name}
+
+// Audit checks the required entries (the profile's and every enabled entry of a
+// PolicyComponents component) and lists every outbound kind as the launch's
 // gate decides it: the gate Tree provided, configured by the host.sharing entry
 // of the composed layers (every kind off without one), with DSH_SHARING_OFF read
 // from the launch environment.
@@ -197,7 +203,7 @@ func (Real) Audit(_ context.Context, s *State) error {
 	if s.Service == nil {
 		return errors.New("no loader")
 	}
-	inactive, err := audit(s.Service, s.Options.Profile.Required)
+	inactive, err := audit(s.Service, s.Options.Profile.Required, PolicyComponents...)
 	s.Audit.Inactive = inactive
 	return err
 }

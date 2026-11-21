@@ -2,11 +2,14 @@ package boot
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/launch"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/cli/output"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/host/sharing"
 )
 
@@ -121,5 +124,45 @@ func TestComposedSharingSettingsReachTheAudit(t *testing.T) {
 	line = bootKinds(t, optIn, sharing.EnvOff+"=0")
 	if !strings.Contains(line, "(off-switch set by "+sharing.EnvOff+")") || strings.Contains(line, "=on") {
 		t.Fatalf("%s: %q, want every kind off, locked by the environment", sharing.EnvOff, line)
+	}
+}
+
+// The outbound policy is required in every profile: a configured certificate file
+// that is missing, or holds no certificate, fails the util.egress entry and the
+// boot ends with a configuration status, one fatal message naming the entry and
+// the cause, and no readiness.
+func TestUnreadableCertificateStopsTheLaunch(t *testing.T) {
+	junk := filepath.Join(t.TempDir(), "junk.pem")
+	if err := os.WriteFile(junk, []byte("not a certificate\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, file := range map[string]string{
+		"missing": filepath.Join(t.TempDir(), "absent.pem"),
+		"invalid": junk,
+	} {
+		t.Run(name, func(t *testing.T) {
+			opts, _ := fixture(t, "- id: egress\n  merge:\n    extraCACerts: ['"+file+"']\n")
+			app := launch.NewApp()
+			var stderr syncBuffer
+			opts.App, opts.Stderr = app, &stderr
+			if status := Run(context.Background(), opts); status != output.Config {
+				t.Errorf("status = %d, want %d", status, output.Config)
+			}
+			select {
+			case <-app.Ready():
+				t.Fatal("the launch announced readiness with the outbound policy failed")
+			default:
+			}
+			got := stderr.String()
+			if n := strings.Count(got, "dsh: fatal:"); n != 1 {
+				t.Fatalf("%d fatal messages, want 1:\n%s", n, got)
+			}
+			if !strings.Contains(got, "required entry not active: egress") {
+				t.Errorf("the message does not name the egress entry:\n%s", got)
+			}
+			if !strings.Contains(got, "certificate file "+file) {
+				t.Errorf("the message does not give the certificate cause:\n%s", got)
+			}
+		})
 	}
 }

@@ -213,13 +213,19 @@ var _ interface{ Reason() string } = (*RequiredError)(nil)
 // audit checks svc against the required ids: each must be present, enabled and
 // active. It returns the inactive entries, and a *RequiredError when a required one
 // is among them.
-func audit(svc *loader.Service, required []string) ([]EntryState, error) {
+//
+// An enabled entry of a policy component (one of policies, by component name) is
+// required wherever it sits: a launch whose outbound policy did not initialize
+// stops rather than run with it failed. A disabled or absent one is not, as
+// nothing can then leave the machine.
+func audit(svc *loader.Service, required []string, policies ...string) ([]EntryState, error) {
 	var inactive []EntryState
 	seen := map[string]bool{}
 	for _, entry := range svc.Entries() {
 		seen[entry.ID()] = true
 		if st, ok := entryState(svc, entry); !ok {
-			st.Required = slices.Contains(required, entry.ID())
+			st.Required = slices.Contains(required, entry.ID()) ||
+				(st.State != "disabled" && slices.Contains(policies, st.Component))
 			inactive = append(inactive, st)
 		}
 	}

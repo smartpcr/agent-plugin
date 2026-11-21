@@ -40,8 +40,8 @@ func proxyServer(t *testing.T) (*httptest.Server, *atomic.Int64) {
 
 // The proxy names are read through the launch lookup: HTTP_PROXY carries http
 // requests, NO_PROXY bypasses (and loopback is never proxied), HTTPS_PROXY wins
-// over ALL_PROXY, and a refused value is a diagnostic that never quotes the
-// password, with that scheme going direct.
+// over ALL_PROXY, HTTPS falls back to the HTTP proxy last, and a refused value is
+// a diagnostic that never quotes the password, with that scheme going direct.
 func TestResolveProxyNames(t *testing.T) {
 	proxy, seen := proxyServer(t)
 	svc, diags, err := egress.Resolve(lookup(map[string]string{
@@ -74,9 +74,14 @@ func TestResolveProxyNames(t *testing.T) {
 		diag   string // the name of the refused value, if any
 	}{
 		{"https name", map[string]string{"HTTPS_PROXY": "http://p1:8080", "ALL_PROXY": "http://p2:8080"}, "https://api.example/", "p1:8080", ""},
-		{"all as fallback", map[string]string{"ALL_PROXY": "socks5://p2:1080"}, "https://api.example/", "p2:1080", ""},
+		{"all as fallback", map[string]string{"ALL_PROXY": "http://p2:1080"}, "https://api.example/", "p2:1080", ""},
 		{"lower case", map[string]string{"https_proxy": "p3:3128"}, "https://api.example/", "p3:3128", ""},
-		{"no scheme of its own", map[string]string{"HTTP_PROXY": "http://p1:8080"}, "https://api.example/", "", ""},
+		{"lower case first", map[string]string{"https_proxy": "p3:3128", "HTTPS_PROXY": "http://p1:8080"}, "https://api.example/", "p3:3128", ""},
+		{"blank is unset", map[string]string{"https_proxy": "  ", "HTTPS_PROXY": "http://p1:8080"}, "https://api.example/", "p1:8080", ""},
+		{"https falls back to http", map[string]string{"HTTP_PROXY": "http://p1:8080"}, "https://api.example/", "p1:8080", ""},
+		{"all before the http fallback", map[string]string{"HTTP_PROXY": "http://p1:8080", "ALL_PROXY": "http://p2:8080"}, "https://api.example/", "p2:8080", ""},
+		{"refused https stays direct", map[string]string{"HTTPS_PROXY": "socks5://p9:1080", "HTTP_PROXY": "http://p1:8080"}, "https://api.example/", "", "HTTPS_PROXY"},
+		{"refused all stays direct", map[string]string{"ALL_PROXY": "pac://p9", "HTTP_PROXY": "http://p1:8080"}, "https://api.example/", "", "ALL_PROXY"},
 		{"bypass exact", map[string]string{"HTTPS_PROXY": "http://p1:8080", "NO_PROXY": "api.example"}, "https://api.example/", "", ""},
 		{"bypass subdomain", map[string]string{"HTTPS_PROXY": "http://p1:8080", "NO_PROXY": "example"}, "https://api.example/", "", ""},
 		{"bypass dot is subdomains only", map[string]string{"HTTPS_PROXY": "http://p1:8080", "NO_PROXY": ".api.example"}, "https://api.example/", "p1:8080", ""},
