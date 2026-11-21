@@ -3,6 +3,9 @@ package model_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
 	"testing"
 	"time"
 
@@ -132,5 +135,75 @@ func TestFakeModelScriptsFailures(t *testing.T) {
 				t.Fatalf("failure %+v, want %s: %s", got.Failure, tc.code, evs[0].Raw())
 			}
 		})
+	}
+}
+
+// hangingBody opens a hanging turn's body on a request that is never cancelled
+// and reads its scripted text, so the next read blocks.
+func hangingBody(t *testing.T, tr *model.Transport) io.ReadCloser {
+	t.Helper()
+	req := must(http.NewRequestWithContext(context.Background(), http.MethodPost, "https://model.test/v1", nil))
+	resp := must(tr.RoundTrip(req))
+	buf := make([]byte, 256)
+	if n, err := resp.Body.Read(buf); err != nil || n == 0 {
+		t.Fatalf("the scripted text: %d bytes, %v", n, err)
+	}
+	return resp.Body
+}
+
+// readOnce reads once from body in a goroutine and reports the error.
+func readOnce(body io.Reader) <-chan error {
+	got := make(chan error, 1)
+	go func() {
+		_, err := body.Read(make([]byte, 1))
+		got <- err
+	}()
+	return got
+}
+
+// TestClosingAHangingBodyUnblocksItsRead: a read blocked on a hanging stream whose
+// request is never cancelled returns once the body is closed, and closing twice is
+// harmless.
+func TestClosingAHangingBodyUnblocksItsRead(t *testing.T) {
+	tr := model.NewTransport(t, model.Turn{Events: []model.Event{model.Text("par")}, Hang: true})
+	body := hangingBody(t, tr)
+	t.Cleanup(func() { _ = body.Close() })
+	got := readOnce(body)
+	select {
+	case err := <-got:
+		t.Fatalf("the read returned %v before the body was closed", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if err := body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-got:
+		if !errors.Is(err, io.ErrClosedPipe) {
+			t.Errorf("the read after close returned %v, want %v", err, io.ErrClosedPipe)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("closing the body did not unblock the read")
+	}
+	if err := body.Close(); err != nil {
+		t.Errorf("a second close: %v", err)
+	}
+}
+
+// TestTransportCleanupReleasesHangingBodies: a hanging body left open by a test is
+// closed when that test ends, so its blocked read returns.
+func TestTransportCleanupReleasesHangingBodies(t *testing.T) {
+	var got <-chan error
+	t.Run("leaves a body open", func(t *testing.T) {
+		tr := model.NewTransport(t, model.Turn{Events: []model.Event{model.Text("par")}, Hang: true})
+		got = readOnce(hangingBody(t, tr))
+	})
+	select {
+	case err := <-got:
+		if !errors.Is(err, io.ErrClosedPipe) {
+			t.Errorf("the read after the test ended returned %v, want %v", err, io.ErrClosedPipe)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the transport's cleanup did not release the hanging body")
 	}
 }

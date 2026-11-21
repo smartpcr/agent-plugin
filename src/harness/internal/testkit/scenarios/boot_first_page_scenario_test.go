@@ -8,16 +8,12 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
-
-	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit"
 )
 
 // boot1Ready finds the first page's address with its launch token in the output.
@@ -76,27 +72,15 @@ func TestFailedLaunchFailsLoudlyAndServingOneServes(t *testing.T) {
 	args := []string{"--home", root, "--layer", overlay, "web"}
 
 	// (1) The port is held.
-	cmd := exec.CommandContext(t.Context(), bin, args...)
-	var stdout, stderr testkit.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	start := time.Now()
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
+	host := startDsh(t, nil, bin, args...)
+	pid := host.cmd.Process.Pid
+	if !host.await(bound) {
+		t.Fatalf("the held-port launch did not exit within %s:\n%s", bound, host.stderr.String())
 	}
-	pid := cmd.Process.Pid
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	select {
-	case err = <-done:
-	case <-time.After(bound):
-		_ = cmd.Process.Kill()
-		<-done
-		t.Fatalf("the held-port launch did not exit within %s:\n%s", bound, stderr.String())
+	if code := host.code(); code != 78 {
+		t.Errorf("the held-port launch ended with %v after %s, want exit status 78", host.err, time.Since(host.start))
 	}
-	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 78 {
-		t.Errorf("the held-port launch ended with %v after %s, want exit status 78", err, time.Since(start))
-	}
-	text := stderr.String()
+	text := host.stderr.String()
 	for _, want := range []string{httpEntry, "required", port, optional, overlay, root} {
 		if !strings.Contains(text, want) {
 			t.Errorf("standard error does not name %q:\n%s", want, text)
@@ -105,8 +89,8 @@ func TestFailedLaunchFailsLoudlyAndServingOneServes(t *testing.T) {
 	if !regexp.MustCompile(regexp.QuoteMeta(overlay) + `:\d+:\d+`).MatchString(text) {
 		t.Errorf("standard error gives no line and column in %s:\n%s", overlay, text)
 	}
-	if stdout.String() != "" {
-		t.Errorf("standard output is not empty:\n%s", stdout.String())
+	if out := host.stdout.String(); out != "" {
+		t.Errorf("standard output is not empty:\n%s", out)
 	}
 	if out, _ := shell(t, expand(children, map[string]string{"pid": strconv.Itoa(pid)})); strings.TrimSpace(out) != "" {
 		t.Errorf("child processes remain after the failed launch: %s", out)
@@ -116,48 +100,16 @@ func TestFailedLaunchFailsLoudlyAndServingOneServes(t *testing.T) {
 	if err := holder.Close(); err != nil {
 		t.Fatal(err)
 	}
-	cmd = exec.CommandContext(t.Context(), bin, args...)
-	stdout.Reset()
-	stderr.Reset()
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	done = make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	t.Cleanup(func() {
-		select {
-		case <-done:
-		default:
-			t.Logf("killing the surviving host; stderr:\n%s", stderr.String())
-			_ = cmd.Process.Kill()
-			<-done
-		}
-	})
-	var page string
-	deadline := time.Now().Add(bound)
-	for page == "" {
-		page = boot1Ready.FindString(stdout.String() + stderr.String())
-		if page != "" {
-			break
-		}
-		select {
-		case err := <-done:
-			t.Fatalf("the launch ended with %v before readiness:\n%s", err, stderr.String())
-		case <-time.After(100 * time.Millisecond):
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no readiness with a launch token within %s:\n%s%s", bound, stdout.String(), stderr.String())
-		}
-	}
+	host = startDsh(t, nil, bin, args...)
+	page := host.waitFor(t, bound, "readiness with a launch token", boot1Ready.FindString)
 	warnings := 0
-	for _, line := range strings.Split(stderr.String(), "\n") {
+	for _, line := range strings.Split(host.stderr.String(), "\n") {
 		if strings.Contains(strings.ToLower(line), "warn") && strings.Contains(line, optional) {
 			warnings++
 		}
 	}
 	if warnings != 1 {
-		t.Errorf("%d warnings name %s, want 1:\n%s", warnings, optional, stderr.String())
+		t.Errorf("%d warnings name %s, want 1:\n%s", warnings, optional, host.stderr.String())
 	}
 
 	// (3) The first page.
@@ -171,17 +123,15 @@ func TestFailedLaunchFailsLoudlyAndServingOneServes(t *testing.T) {
 		t.Errorf("GET the first page: %s with %d bytes", resp.Status, len(body))
 	}
 
-	// (4) The termination signal.
-	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+	// (4) The termination signal: SIGTERM on POSIX, closing the console on Windows.
+	if err := terminate(t, host.cmd); err != nil {
 		t.Fatalf("the termination signal: %v", err)
 	}
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Errorf("after the termination signal the host ended with %v, want exit 0", err)
-		}
-	case <-time.After(bound):
+	if !host.await(bound) {
 		t.Fatalf("the host did not exit within %s of the termination signal", bound)
+	}
+	if code := host.code(); code != 0 {
+		t.Errorf("after the termination signal the host ended with %v, want exit 0", host.err)
 	}
 	free, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%s", port))
 	if err != nil {

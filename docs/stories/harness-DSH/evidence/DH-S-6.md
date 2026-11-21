@@ -2,9 +2,15 @@
 
 Stages 6.1 to 6.6 (impl.md steps 6.1 to 6.16) were built by the earlier workstreams
 of this phase, merged to `main` up to `f394c24`. Stage 6.7 (step 6.17 and the circle
-closure) closes DH-S-6. Every result below was re-run on one tree: `f394c24` plus
-this stage's change, the commit that carries this record. All seventeen
-deliverables are built at that commit.
+closure) carries the closure record for DH-S-6. Every result below was re-run on one
+tree: `f394c24` plus this stage's change, the commit that carries this record. All
+seventeen deliverables are built at that commit.
+
+**Closure status: pending.** Every closure item is recorded below except one: the
+manual check "a child that ignores termination ... on each operating system"
+(impl.md DH-S-6) is recorded on Windows 11 only. DH-S-6 closes when the Linux and
+macOS rows of that check are recorded here (or when the operator changes the
+requirement); until then the plan's closure step stays unticked.
 
 ## Deliverables built at the closing commit
 
@@ -133,15 +139,23 @@ Every other test of these packages passes in the same run (12 in `boot`, 6 in
 
 ### Manual checks (impl.md DH-S-6; `manual`)
 
-Recorded on Windows 11 (this runner). Linux and macOS are open: no Linux or macOS
-host was available to this stage (WSL has no distribution installed). Those runs are
-owed by DH-S-18, which executes on all three systems.
+Recorded on Windows 11 (this runner). The Linux and macOS rows are **not recorded**,
+and DH-S-6 is not closed without them. They are local manual checks of this stage,
+not the DH-E scenario runs that DH-S-18 owns. Why they could not be recorded here:
+- No Linux or macOS host was available: WSL has no distribution and docker is absent.
+- The CI `harness` lanes on `ubuntu-latest` and `macos-latest` do not reach the
+  subprocess tests on `main`. Run 44853707426 at `f394c24` stops at gate 1/8
+  (gofmt, `host/sharing/component.go`, fixed by this stage).
+To record them, run `go -C src/harness test -count=1 -v -run
+'TestStopTreeStopsAndAwaitsTheTree|TestContextEndStopsDescendantsAfterChildExit|TestTreeOwnerIsReported'
+./internal/world/subprocess/` on each system and paste the owner line and stop time
+into the table.
 
 | Check | Windows 11 | Linux | macOS |
 | --- | --- | --- | --- |
-| Boot a tree with a broken required entry: one fatal message, one report file | Recorded. `TestBrokenRequiredEntryFailsBootOnce` (one message naming the entry, exit 78, one report under `reports/`), `TestFatalPrintsOneMessageAndWritesOneReport`. | open | open |
-| A child that ignores termination: the tree is gone within the bound | Recorded. `TestStopTreeStopsAndAwaitsTheTree`: `owner job-object; stopped in 2.007s` (grace 2 s, then the job is terminated); `TestContextEndStopsDescendantsAfterChildExit`; the kit's launcher test leaves no pid alive. | open (cgroup and process-group paths; DH-E-EXEC-1) | open |
-| Edit a layer file badly: the running tree is unchanged | Recorded. `TestBadLayerEditLeavesRunningTreeUnchanged` (the rejection names file, line and column; the tree's config and start count are unchanged); `TestReloadAfterReadyAppliesValidAndRejectsInvalidLayers`. | open | open |
+| Boot a tree with a broken required entry: one fatal message, one report file | Recorded. `TestBrokenRequiredEntryFailsBootOnce` (one message naming the entry, exit 78, one report under `reports/`), `TestFatalPrintsOneMessageAndWritesOneReport`. | not recorded | not recorded |
+| A child that ignores termination: the tree is gone within the bound | Recorded. `TestStopTreeStopsAndAwaitsTheTree`: `owner job-object; stopped in 2.007s` (grace 2 s, then the job is terminated); `TestContextEndStopsDescendantsAfterChildExit`; the kit's launcher test leaves no pid alive. | not recorded (cgroup and process-group paths) | not recorded |
+| Edit a layer file badly: the running tree is unchanged | Recorded. `TestBadLayerEditLeavesRunningTreeUnchanged` (the rejection names file, line and column; the tree's config and start count are unchanged); `TestReloadAfterReadyAppliesValidAndRejectsInvalidLayers`. | not recorded | not recorded |
 
 ### Scenarios
 
@@ -159,9 +173,26 @@ indexed in `test/harness/acceptance-index.yaml`; none is executed in this story.
 | `DH-E-BOOT-2` | `boot_two_process_scenario_test.go` | DH-S-21 (step 21.13) |
 
 Each file starts with `//go:build scenario`, binds one test with `//dsh:scenario`,
-builds `cmd/dsh` through the kit's `launcher.Build`, and fails (never skips) when an
-input is missing or the host is the wrong system. The index's `built-through` is
+and fails (never skips) when an input is missing or the host is the wrong system.
+The four scenarios authored here (`DH-E-EXEC-1`, `DH-E-HOST-4`, `DH-E-BOOT-1`,
+`DH-E-UTIL-1`) build `cmd/dsh` from the checkout through the kit's `launcher.Build`
+(`dshBinary` in `binary_test.go`) and run that binary; `DH-E-EXEC-1`'s
+command-line inputs must run it as `{dsh}`. The two Stage 6.5 scenarios
+(`DH-E-LOADER-1`, `DH-E-BOOT-2`) are unchanged here: they run the harness only
+through their operator-supplied start commands and build nothing themselves, so
+their executing stages (DH-S-17, DH-S-21) bind those commands to the checkout. The
+index's `built-through` is
 raised to `DH-S-6`, so every ID authored at or before DH-S-6 must have its file.
+
+Termination in `DH-E-BOOT-1` and `DH-E-HOST-4` is the platform's own signal
+(`terminate_unix_test.go`, `terminate_windows_test.go`): SIGTERM on POSIX; on
+Windows the host gets a hidden console of its own and the console is closed, which
+the Go runtime delivers as `SIGTERM` (`CTRL_CLOSE_EVENT`), since Windows cannot send
+SIGTERM to another process. The mechanism was checked on this Windows 11 runner
+against a probe program that exits 0 on `SIGTERM` and 130 on an interrupt: it
+received `terminated` and exited 0. It was also checked against the `dsh web`
+built from this checkout: the host was still running after 5 s, and closing its
+console made it exit 0.
 
 ```text
 $ go -C src/harness vet -tags scenario ./...          # exit 0

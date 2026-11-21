@@ -82,7 +82,8 @@ var exec1Warning = regexp.MustCompile(`(?im)^.*\bwarn\w*\b.*process-group.*$`)
 // its control group (areas/execution.md DH-E-EXEC-1; DH-D-EXEC-2). Executed in
 // DH-S-18 (step 18.3) on a Linux host with cgroup v2; authored in DH-S-6.
 //
-// Given a Linux host with cgroup v2 where the test user's cgroup is writable and a
+// Given the binary built from this checkout, a Linux host with cgroup v2 where the
+// test user's cgroup is writable and a
 // fixture program that starts a child, which starts a grandchild that calls setsid,
 // ignores SIGTERM and writes its pid to a file, when (1) the one-shot bash tool runs
 // the fixture with a 2 s timeout, (2) the same run is repeated and the dsh process
@@ -95,21 +96,24 @@ var exec1Warning = regexp.MustCompile(`(?im)^.*\bwarn\w*\b.*process-group.*$`)
 // killed and leftover cgroup directories removed; the runtime owner file is kept
 // if removal fails.
 //
-// Inputs are shell command lines over {home}, {fixture}, {timeout} and {log}:
-// DSH_SCENARIO_EXEC1_RUN runs the bash tool once through dsh on {home} with the
+// Inputs are shell command lines over {dsh}, {home}, {fixture}, {timeout} and {log},
+// where {dsh} is the binary this scenario builds from the checkout under test; each
+// line that runs dsh must run {dsh}, so no other installation is exercised:
+// DSH_SCENARIO_EXEC1_RUN runs the bash tool once through {dsh} on {home} with the
 // command {fixture} and timeout {timeout}, printing the tool result, its log written
 // to {log}; DSH_SCENARIO_EXEC1_START is the same run started in the foreground with
 // exec, so the shell's pid is dsh's, writing that pid to {home}/dsh.pid;
 // DSH_SCENARIO_EXEC1_CGROUPS prints the child cgroup directories dsh created for
 // {home}, one per line; DSH_SCENARIO_EXEC1_NOCGROUP is DSH_SCENARIO_EXEC1_RUN inside
-// a container with no writable cgroup and no user service manager, sharing {home}
-// and the fixture's directory.
+// a container with no writable cgroup and no user service manager, sharing {dsh},
+// {home} and the fixture's directory.
 //
 //dsh:scenario DH-E-EXEC-1
 func TestLinuxWholeProcessTreeIsKilled(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Fatalf("DH-E-EXEC-1 runs on Linux only; this runner is %s (the run is open, not passed)", runtime.GOOS)
 	}
+	bin := dshBinary(t)
 	dir := t.TempDir()
 	home := filepath.Join(dir, "home")
 	if err := os.MkdirAll(home, 0o700); err != nil {
@@ -124,12 +128,17 @@ func TestLinuxWholeProcessTreeIsKilled(t *testing.T) {
 		if err := os.WriteFile(fixture, []byte(strings.ReplaceAll(exec1Fixture, "{pids}", pids)), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		return map[string]string{"home": home, "fixture": fixture, "timeout": "2s", "log": filepath.Join(dir, step+".log")}, pids
+		return map[string]string{"dsh": bin, "home": home, "fixture": fixture, "timeout": "2s", "log": filepath.Join(dir, step+".log")}, pids
 	}
-	run := need(t, "DSH_SCENARIO_EXEC1_RUN", "command running the bash tool once on {home} with {fixture} and {timeout}, log to {log}")
+	run := need(t, "DSH_SCENARIO_EXEC1_RUN", "command running the bash tool once through {dsh} on {home} with {fixture} and {timeout}, log to {log}")
 	start := need(t, "DSH_SCENARIO_EXEC1_START", "the same run, exec'd in the foreground, writing dsh's pid to {home}/dsh.pid")
 	cgroups := need(t, "DSH_SCENARIO_EXEC1_CGROUPS", "command printing the child cgroup directories dsh created for {home}")
 	noCgroup := need(t, "DSH_SCENARIO_EXEC1_NOCGROUP", "the run inside a container with no writable cgroup and no user service manager")
+	for name, line := range map[string]string{"DSH_SCENARIO_EXEC1_RUN": run, "DSH_SCENARIO_EXEC1_START": start, "DSH_SCENARIO_EXEC1_NOCGROUP": noCgroup} {
+		if !strings.Contains(line, "{dsh}") {
+			t.Fatalf("%s does not run {dsh}, the binary built from this checkout: %s", name, line)
+		}
+	}
 
 	t.Run("timeout kills the tree", func(t *testing.T) {
 		v, pidDir := vars("timeout")

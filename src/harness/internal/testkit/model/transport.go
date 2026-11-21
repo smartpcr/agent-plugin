@@ -88,12 +88,14 @@ type Request struct {
 
 // Transport serves scripted turns in order. A request with no turn left fails the
 // test and gets a 599 response; a turn still scripted when the test ends fails it
-// too, so a script always matches the calls made.
+// too, so a script always matches the calls made. Hanging bodies still open when
+// the test ends are closed, so no read outlives the test.
 type Transport struct {
 	t        testing.TB
 	mu       sync.Mutex
 	turns    []Turn
 	requests []Request
+	bodies   []*hanging
 }
 
 // NewTransport is a transport scripted with turns, checked when the test ends.
@@ -103,6 +105,10 @@ func NewTransport(t testing.TB, turns ...Turn) *Transport {
 	t.Cleanup(func() {
 		tr.mu.Lock()
 		defer tr.mu.Unlock()
+		for _, b := range tr.bodies {
+			_ = b.Close()
+		}
+		tr.bodies = nil
 		if n := len(tr.turns); n != 0 {
 			t.Errorf("model: %d scripted turn(s) never requested", n)
 		}
@@ -152,7 +158,11 @@ func (tr *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	var rc io.ReadCloser = io.NopCloser(strings.NewReader(encode(turn.Events)))
 	if turn.Hang {
-		rc = &hanging{Reader: strings.NewReader(encode(turn.Events)), req: req}
+		h := newHanging(encode(turn.Events), req)
+		tr.mu.Lock()
+		tr.bodies = append(tr.bodies, h)
+		tr.mu.Unlock()
+		rc = h
 	}
 	return respond(req, http.StatusOK, "text/event-stream", rc), nil
 }
@@ -174,18 +184,32 @@ func encode(events []Event) string {
 	return b.String()
 }
 
-// hanging yields its text, then blocks until the request is cancelled.
+// hanging yields its text, then blocks until the request is cancelled or the body
+// is closed. Close is idempotent and unblocks a read in progress.
 type hanging struct {
 	*strings.Reader
-	req *http.Request
+	req    *http.Request
+	once   sync.Once
+	closed chan struct{}
+}
+
+func newHanging(text string, req *http.Request) *hanging {
+	return &hanging{Reader: strings.NewReader(text), req: req, closed: make(chan struct{})}
 }
 
 func (h *hanging) Read(p []byte) (int, error) {
 	if h.Len() > 0 {
 		return h.Reader.Read(p)
 	}
-	<-h.req.Context().Done()
-	return 0, h.req.Context().Err()
+	select {
+	case <-h.req.Context().Done():
+		return 0, h.req.Context().Err()
+	case <-h.closed:
+		return 0, io.ErrClosedPipe
+	}
 }
 
-func (h *hanging) Close() error { return nil }
+func (h *hanging) Close() error {
+	h.once.Do(func() { close(h.closed) })
+	return nil
+}

@@ -3,7 +3,6 @@
 package scenarios
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -39,15 +38,15 @@ var host4Report = regexp.MustCompile(`(\S+\.(?:txt|log|json))`)
 // component, with {failure} standing for load, panic or fault; DSH_SCENARIO_HOST4_ARGS
 // are the ";"-separated arguments after the global options that start the host
 // (for example "web"); DSH_SCENARIO_HOST4_READY is a shell command line over {home}
-// that exits 0 once the UI of a host running on {home} answers;
-// DSH_SCENARIO_HOST4_STOP is one that sends that host the termination signal.
+// that exits 0 once the UI of a host running on {home} answers. A running host is
+// stopped with the termination signal: SIGTERM on POSIX, closing its console on
+// Windows.
 //
 //dsh:scenario DH-E-HOST-4
 func TestDyingHostLeavesReadableReport(t *testing.T) {
 	layerT := need(t, "DSH_SCENARIO_HOST4_LAYER", "config layer enabling the crash component with {failure}")
 	args := needList(t, "DSH_SCENARIO_HOST4_ARGS", "arguments starting the host, ';'-separated")
 	ready := need(t, "DSH_SCENARIO_HOST4_READY", "command exiting 0 once the UI of the host on {home} answers")
-	stop := need(t, "DSH_SCENARIO_HOST4_STOP", "command sending the termination signal to the host running on {home}")
 	bin := dshBinary(t)
 	dir := t.TempDir()
 	root := filepath.Join(dir, "home")
@@ -101,32 +100,31 @@ func TestDyingHostLeavesReadableReport(t *testing.T) {
 				t.Errorf("the report holds no cause naming %q or no stacks:\n%s", failure, data)
 			}
 
-			next := runDsh(t, time.Minute, env, bin, append([]string{"--home", root, "--safe"}, args...)...)
-			out := next.stdout + next.stderr
-			if !strings.Contains(out, report) || !strings.Contains(out, "--safe") {
-				t.Errorf("the next start does not print the unclean-exit line with %s and the safe-mode option:\n%s", report, out)
-			}
+			// The next start is a healthy host: it prints the unclean-exit line and
+			// keeps running until it is sent the termination signal.
+			next := startDsh(t, env, bin, append([]string{"--home", root}, args...)...)
+			next.waitFor(t, time.Minute, "unclean-exit line naming "+report+" and the safe-mode option", func(out string) string {
+				for _, line := range strings.Split(out, "\n") {
+					if strings.Contains(line, report) && strings.Contains(line, "--safe") {
+						return line
+					}
+				}
+				return ""
+			})
+			stopHost(t, next)
 		})
 	}
 
 	t.Run("safe mode reaches the UI", func(t *testing.T) {
-		r := startShell(t, fmt.Sprintf("%q --home %q --safe %s", bin, root, strings.Join(args, " ")))
-		vars := map[string]string{"home": root}
-		deadline := time.Now().Add(30 * time.Second)
-		for {
-			if _, err := shell(t, expand(ready, vars)); err == nil {
-				break
+		h := startDsh(t, env, bin, append([]string{"--home", root, "--safe"}, args...)...)
+		check := expand(ready, map[string]string{"home": root})
+		h.waitFor(t, 30*time.Second, "answer from the UI of the safe-mode start", func(string) string {
+			if _, err := shell(t, check); err == nil {
+				return "ready"
 			}
-			if r.exited() {
-				t.Fatalf("a safe-mode start exited before reaching the UI:\n%s", r.out)
-			}
-			if time.Now().After(deadline) {
-				t.Fatal("a safe-mode start did not reach the UI within 30s")
-			}
-			<-time.After(200 * time.Millisecond)
-		}
-		mustShell(t, expand(stop, vars))
-		<-r.done
+			return ""
+		})
+		stopHost(t, h)
 	})
 
 	t.Run("twelve failures keep ten reports", func(t *testing.T) {
@@ -143,4 +141,16 @@ func TestDyingHostLeavesReadableReport(t *testing.T) {
 			t.Errorf("%d reports remain after twelve failures, want 10", len(entries))
 		}
 	})
+}
+
+// stopHost sends h the termination signal and fails the scenario unless it exits
+// within a minute.
+func stopHost(t *testing.T, h *dshHost) {
+	t.Helper()
+	if err := terminate(t, h.cmd); err != nil {
+		t.Fatalf("the termination signal: %v", err)
+	}
+	if !h.await(time.Minute) {
+		t.Fatalf("the host did not exit within a minute of the termination signal:\n%s", h.output())
+	}
 }
