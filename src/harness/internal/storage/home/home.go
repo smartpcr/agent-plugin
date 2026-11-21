@@ -14,6 +14,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/fsx"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
@@ -126,6 +127,81 @@ func Check(l Layout) error {
 		}
 	}
 	return nil
+}
+
+// EnsurePrivateDir creates dir below the layout (its parent must exist) private
+// to the current user, and checks it: an existing dir is adopted only when it is a
+// real directory (not a link) that is already private; it is never loosened or
+// repaired. The stores under spill/ and blobs/ create their subdirectories with it.
+func EnsurePrivateDir(dir string) error {
+	err := os.Mkdir(dir, 0o700)
+	switch {
+	case err == nil:
+		if err := makePrivate(dir); err != nil {
+			return herr.Wrap(ReasonIO, err, "home: make "+filepath.Base(dir)+" private")
+		}
+	case !errors.Is(err, fs.ErrExist):
+		return herr.Wrap(ReasonIO, err, "home: create "+filepath.Base(dir))
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return herr.Wrap(ReasonIO, err, "home: "+filepath.Base(dir))
+	}
+	if info.Mode()&fs.ModeSymlink != 0 || !info.IsDir() {
+		return herr.Newf(ReasonNotDirectory, "home: %s is not a directory", filepath.Base(dir))
+	}
+	return CheckPrivate(dir)
+}
+
+// CreatePrivateFile creates the file at path exclusively and private to the
+// current user from its first byte: mode 0600 on POSIX; on Windows a protected
+// access list naming only the current user, SYSTEM and Administrators, given at
+// creation. Anything already at path, a symbolic link included, fails the create
+// with an error matching fs.ErrExist; a link is never followed.
+func CreatePrivateFile(path string) (*os.File, error) { return createPrivate(path) }
+
+// SafeSegment makes a suggested file name one safe path segment of at most max
+// bytes: only ASCII letters, digits, '.', '_' and '-' are kept (any other byte, a
+// separator or NUL among them, becomes '_'), leading and trailing dots are
+// dropped (so "." and ".." are never a name), and a Windows device name (CON,
+// NUL, COM1 ...) gets a leading '_'. A result of nothing but '_' is fallback.
+func SafeSegment(name string, max int, fallback string) string {
+	var b strings.Builder
+	for i := 0; i < len(name) && b.Len() < max; i++ {
+		c := name[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '.', c == '_', c == '-':
+			b.WriteByte(c)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	s := strings.Trim(b.String(), ".")
+	if strings.Trim(s, "_") == "" {
+		return fallback
+	}
+	if isDeviceName(s) {
+		s = "_" + s
+		if len(s) > max {
+			s = strings.TrimRight(s[:max], ".")
+		}
+	}
+	return s
+}
+
+// isDeviceName reports a Windows reserved device name, with or without an
+// extension.
+func isDeviceName(s string) bool {
+	base := strings.ToUpper(s)
+	if i := strings.IndexByte(base, '.'); i >= 0 {
+		base = base[:i]
+	}
+	switch base {
+	case "CON", "PRN", "AUX", "NUL":
+		return true
+	}
+	return len(base) == 4 && (strings.HasPrefix(base, "COM") || strings.HasPrefix(base, "LPT")) &&
+		base[3] >= '0' && base[3] <= '9'
 }
 
 // CheckPrivate reports whether the file or directory at path is private to its

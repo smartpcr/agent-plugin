@@ -541,17 +541,19 @@ storyId: "harness:DSH"
 ## Stage 8.3: Spill Store and Attachments
 
 ### Implementation Steps
-- [ ] impl.md step 8.6 / DH-D-STORAGE-5: spill store under `<home>/spill/` -- the full text of a large result saved privately, addressed by digest, readable back; only a bounded head enters the log.
-- [ ] impl.md step 8.7 / DH-D-STORAGE-3 (P1, pulled forward): attachments under `<home>/blobs/` stored durably and read back verified by digest.
-- [ ] Author `DH-E-STORAGE-3` (runs DH-S-39). Close DH-S-8: write `docs/stories/harness-DSH/evidence/DH-S-8.md` (refold-equals-stored, manual checks: fold version change and the 5 MB result) and tick impl.md steps 8.1-8.7 as built.
+- [x] impl.md step 8.6 / DH-D-STORAGE-5: spill store under `<home>/spill/` -- the full text of a large result saved privately, addressed by digest, readable back; only a bounded head enters the log.
+- [x] impl.md step 8.7 / DH-D-STORAGE-3 (P1, pulled forward): attachments under `<home>/blobs/` stored durably and read back verified by digest.
+- [x] Author `DH-E-STORAGE-3` (runs DH-S-39). Close DH-S-8: write `docs/stories/harness-DSH/evidence/DH-S-8.md` (refold-equals-stored, manual checks: fold version change and the 5 MB result) and tick impl.md steps 8.1-8.7 as built.
+
+> Built by Stage 8.3: DH-E-STORAGE-3 is authored and indexed; `evidence/DH-S-8.md` records Stages 8.1 and 8.3 and both manual checks; impl.md steps 8.1, 8.2, 8.6 and 8.7 are ticked. Steps 8.3-8.5, the refold-equals-stored test for the built-in views and raising `built-through` to DH-S-8 follow when Stage 8.2 lands (its branch is separate). A spill file is addressed by its owner directory (the session id's SHA-256 prefix, as the session store's deletion expects) plus a random name, per storage.md DH-D-STORAGE-5; attachments are addressed by the SHA-256 of their bytes.
 
 ### Dependencies
 - phase-machine-state-views-and-spill/stage-typed-machine-state-and-stored-folds
 
 ### Test Scenarios
-- [ ] Scenario: Large result spilled and recoverable -- Given a 5 MB tool result, When it is stored through the spill store, Then the log holds a head no larger than the configured bound plus a spill reference, and reading the reference returns all 5 MB byte-identical (TC-08) [proof: service:filesystem; deps: filesystem via `t.TempDir()` home; sqlite embedded for the log row]
-- [ ] Scenario: Corrupted attachment detected -- Given an attachment stored in `blobs/`, When one byte of the file is flipped on disk and it is read back, Then the read fails with a digest-mismatch error (TC-08) [proof: service:filesystem; deps: filesystem via `t.TempDir()` home]
-- [ ] Scenario: Spill files are private -- Given a spilled result, When the file's permissions are inspected, Then it is private to its owner -- on Unix mode `0600` inside a `0700` `spill/`; on Windows a protected DACL whose only ACEs are for the owner SID, `SYSTEM` and `Administrators`, read back with `GetNamedSecurityInfo` (TC-08) [proof: service:filesystem; deps: filesystem via `t.TempDir()` home]
+- [x] Scenario: Large result spilled and recoverable -- Given a 5 MB tool result, When it is stored through the spill store, Then the log holds a head no larger than the configured bound plus a spill reference, and reading the reference returns all 5 MB byte-identical (TC-08) [proof: service:filesystem; deps: filesystem via `t.TempDir()` home; sqlite embedded for the log row]
+- [x] Scenario: Corrupted attachment detected -- Given an attachment stored in `blobs/`, When one byte of the file is flipped on disk and it is read back, Then the read fails with a digest-mismatch error (TC-08) [proof: service:filesystem; deps: filesystem via `t.TempDir()` home]
+- [x] Scenario: Spill files are private -- Given a spilled result, When the file's permissions are inspected, Then it is private to its owner -- on Unix mode `0600` inside a `0700` `spill/`; on Windows a protected DACL whose only ACEs are for the owner SID, `SYSTEM` and `Administrators`, read back with `GetNamedSecurityInfo` (TC-08) [proof: service:filesystem; deps: filesystem via `t.TempDir()` home]
 
 # Phase 9: DeepSeek Provider Retry and Usage
 

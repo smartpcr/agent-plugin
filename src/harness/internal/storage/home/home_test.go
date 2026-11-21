@@ -1,6 +1,8 @@
 package home
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -108,6 +110,46 @@ func TestLayoutPaths(t *testing.T) {
 	} {
 		if got != want {
 			t.Errorf("%s, want %s", got, want)
+		}
+	}
+}
+
+func TestPrivateDirAndFile(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "p")
+	if err := EnsurePrivateDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsurePrivateDir(dir); err != nil {
+		t.Fatalf("an existing private directory: %v", err)
+	}
+	f, err := CreatePrivateFile(filepath.Join(dir, "f"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckPrivateFile(f); err != nil {
+		t.Fatalf("a created private file: %v", err)
+	}
+	f.Close()
+	if _, err := CreatePrivateFile(filepath.Join(dir, "f")); !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("creating an existing file = %v", err)
+	}
+	if err := EnsurePrivateDir(filepath.Join(dir, "f")); !herr.Has(err, ReasonNotDirectory) {
+		t.Fatalf("EnsurePrivateDir over a file = %v", err)
+	}
+}
+
+func TestSafeSegment(t *testing.T) {
+	for in, want := range map[string]string{
+		"report.csv": "report.csv", "": "fb", "..": "fb", "a/b": "a_b", `a\b`: "a_b",
+	} {
+		if got := SafeSegment(in, 20, "fb"); got != want {
+			t.Errorf("SafeSegment(%q) = %q, want %q", in, got, want)
+		}
+	}
+	for _, in := range []string{"CON", "nul.txt", "com1", "LPT9.log", strings.Repeat("x", 50), "a\x00b", " . "} {
+		got := SafeSegment(in, 20, "fb")
+		if len(got) > 20 || strings.ContainsAny(got, "/\\\x00") || got == "." || got == ".." || isDeviceName(got) {
+			t.Errorf("SafeSegment(%q) = %q", in, got)
 		}
 	}
 }
