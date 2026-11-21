@@ -469,18 +469,58 @@ func TestBreakdownStaysBoundedUnderRewrites(t *testing.T) {
 	for _, sys := range []bool{false, true} {
 		few := views.Refold(meter.BreakdownView(), session.Header{}, rewrites(meter.MaxAnchors, sys))
 		many := views.Refold(meter.BreakdownView(), session.Header{}, rewrites(200, sys))
-		if few.Approximate || !many.Approximate || len(many.Anchors) != meter.MaxAnchors {
-			t.Fatalf("system prompts %v: %d anchors (approximate %v), %d anchors (approximate %v)", sys, len(few.Anchors), few.Approximate, len(many.Anchors), many.Approximate)
+		if few.Approximate || len(few.Anchors) != meter.MaxAnchors || !reflect.DeepEqual(many, meter.Breakdown{Approximate: true}) {
+			t.Fatalf("system prompts %v: %+v (approximate %v), then %+v", sys, few.Anchors, few.Approximate, many)
+		}
+		if got, want := priced(few), surfaceSystems(t, rewrites(meter.MaxAnchors, sys)); !slices.Equal(got, want) {
+			t.Fatalf("system prompts %v: priced %v, the surface retains %v", sys, got, want)
 		}
 		pf := views.Refold(meter.PressureView(), session.Header{}, rewrites(50, sys))
 		pm := views.Refold(meter.PressureView(), session.Header{}, rewrites(400, sys))
-		// The same entries; only their seqs' digits grow (two seqs per anchor).
-		if a, b := len(must(json.Marshal(pf))), len(must(json.Marshal(pm))); len(pm.System.Anchors) != meter.MaxAnchors || b > a+2*meter.MaxAnchors+12 {
-			t.Fatalf("system prompts %v: pressure grew from %d to %d bytes (%d anchors) over 350 rewrites", sys, a, b, len(pm.System.Anchors))
+		// No entries at all; only the counters' digits grow.
+		if a, b := len(must(json.Marshal(pf))), len(must(json.Marshal(pm))); !reflect.DeepEqual(pm.System, meter.Breakdown{Approximate: true}) || b > a+12 {
+			t.Fatalf("system prompts %v: pressure grew from %d to %d bytes (%+v) over 350 rewrites", sys, a, b, pm.System)
 		}
-		if got, want := priced(many), surfaceSystems(t, rewrites(200, sys)); !slices.Equal(got, want) {
-			t.Fatalf("system prompts %v: priced %v, the surface retains %v", sys, got, want)
+	}
+
+	// A range whose ends are rewritten nodes past the anchor bound: rewrite
+	// user b and the 17 users after system b+1, append a tail, then replace
+	// from b's rewrite to the tail with a system prompt citing every node it
+	// covers, which removes system b+1. The fold must not keep b+1's price by
+	// a guessed order, cycle after cycle.
+	cycle := func(evs []event.Event, b int) []event.Event {
+		evs = append(evs, user(t, b), system(t, b+1, event.Append(), short))
+		for i := 2; i <= 18; i++ {
+			evs = append(evs, user(t, b+i))
 		}
+		evs = append(evs, summary(t, b+19, event.Replace(event.Seq(b), event.Seq(b))))
+		for i := 2; i <= 18; i++ {
+			evs = append(evs, summary(t, b+18+i, event.Replace(event.Seq(b+i), event.Seq(b+i))))
+		}
+		evs = append(evs, user(t, b+37))
+		cited := []event.Seq{event.Seq(b + 19), event.Seq(b + 1)}
+		for i := 20; i <= 37; i++ {
+			cited = append(cited, event.Seq(b+i))
+		}
+		return append(evs, system(t, b+38, event.Replace(event.Seq(b+19), event.Seq(b+37)), short, cited...))
+	}
+	evs := []event.Event{system(t, 0, event.Append(), short)}
+	var one, five []byte
+	for c := range 5 {
+		evs = cycle(evs, 1+39*c)
+		if c == 0 {
+			if want := []event.Seq{0, 39}; !slices.Equal(surfaceSystems(t, evs), want) {
+				t.Fatalf("the surface retains %v, want %v", surfaceSystems(t, evs), want)
+			}
+			one = must(json.Marshal(views.Refold(meter.PressureView(), session.Header{}, evs)))
+		}
+	}
+	five = must(json.Marshal(views.Refold(meter.PressureView(), session.Header{}, evs)))
+	if b := views.Refold(meter.BreakdownView(), session.Header{}, evs); !reflect.DeepEqual(b, meter.Breakdown{Approximate: true}) {
+		t.Fatalf("evicted-end ranges kept %+v (the surface retains %v)", b, surfaceSystems(t, evs))
+	}
+	if len(five) > len(one)+12 {
+		t.Fatalf("pressure grew from %d to %d bytes over four more cycles: %s", len(one), len(five), five)
 	}
 
 	// On a session, an approximate fold defers to the surface.
@@ -502,6 +542,38 @@ func TestBreakdownStaysBoundedUnderRewrites(t *testing.T) {
 	r := must(m.Pressure(bg, h))
 	if got := must(m.Measure(bg, h, hdr)); !r.Measured || r.Tokens != got.Tokens {
 		t.Fatalf("pressure %+v, measured %+v", r, got)
+	}
+
+	// The evicted-end cycle on the session: the Meter prices exactly the
+	// system prompts the session's surface retains.
+	put := func(d event.Draft) event.Seq { return must(h.Append(bg, d)).Seq }
+	text := func(role vocab.Role, s string) vocab.Message {
+		return must(vocab.RestoreMessage(s, role, nil, vocab.TextBlock(s)))
+	}
+	for range 3 {
+		first := put(must(event.UserMessage.Draft(event.Append(), event.UserMessagePayload{Message: text(vocab.RoleUser, "first")})))
+		sys := put(must(event.SystemMessage.Draft(event.Append(), event.MessagePayload{Message: text(vocab.RoleSystem, short)})))
+		var rest []event.Seq
+		for range 17 {
+			rest = append(rest, put(must(event.UserMessage.Draft(event.Append(), event.UserMessagePayload{Message: text(vocab.RoleUser, "more")}))))
+		}
+		start := put(must(event.UserMessage.Draft(event.Replace(first, first), event.UserMessagePayload{Message: text(vocab.RoleUser, "summary")}, first)))
+		cited := []event.Seq{start, sys}
+		for _, q := range rest {
+			cited = append(cited, put(must(event.UserMessage.Draft(event.Replace(q, q), event.UserMessagePayload{Message: text(vocab.RoleUser, "summary")}, q))))
+		}
+		tail := put(must(event.UserMessage.Draft(event.Append(), event.UserMessagePayload{Message: text(vocab.RoleUser, "tail")})))
+		cited = append(cited, tail)
+		put(must(event.SystemMessage.Draft(event.Replace(start, tail), event.MessagePayload{Message: text(vocab.RoleSystem, short)}, cited...)))
+	}
+	var want []event.Seq
+	for i := range h.History().Len() {
+		if n := h.History().At(i); n.Type() == event.SystemMessage.Name() {
+			want = append(want, n.Seq())
+		}
+	}
+	if b := must(m.Breakdown(bg, h)); !b.Approximate || !slices.Equal(priced(b), want) {
+		t.Fatalf("breakdown priced %v, the session's surface retains %v", priced(b), want)
 	}
 }
 

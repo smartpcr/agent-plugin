@@ -100,13 +100,13 @@ type Anchor struct {
 // a key other than its seq, so only those are kept (Anchors), and an anchor
 // goes when its node is replaced.
 //
-// The state is bounded: at most MaxAnchors anchors are kept, the newest. An
-// evicted anchor's node is then ordered by its seq, which may misplace a
-// later range's ends, so the fold says so (Approximate, sticky) and the
-// Meter's Breakdown and Pressure read the system prompts from the session's
-// surface, their one owner, instead (token-meter.2, .6). Exact positions for
-// every rewritten node would need one entry per node, which DH-ADR-LLM-9
-// rules out.
+// The state is bounded: at most MaxAnchors anchors are kept. A rewrite that
+// would need more makes the fold Approximate (sticky): it then keeps no
+// prices and no anchors at all, since a guessed order could keep the price of
+// a system prompt the surface has removed, and the Meter's Breakdown and
+// Pressure read the system prompts from the session's surface, their one
+// owner, instead (token-meter.2, .6). Exact positions for every rewritten
+// node would need one entry per node, which DH-ADR-LLM-9 rules out.
 type Breakdown struct {
 	System      []SystemPrice `json:"system,omitempty"`
 	SystemTotal int           `json:"system_total"`
@@ -146,7 +146,7 @@ var surfaceTypes = []string{
 // BreakdownView is the contextBreakdown fold over the surface events.
 func BreakdownView() views.Definition[Breakdown] {
 	return views.Definition[Breakdown]{
-		Key: BreakdownKey, Version: 2, Stored: true, Types: surfaceTypes,
+		Key: BreakdownKey, Version: 3, Stored: true, Types: surfaceTypes,
 		Init: func(session.Header) Breakdown { return Breakdown{} },
 		Apply: func(s Breakdown, ev event.Event) (Breakdown, bool) {
 			m, ok := surfaceMessage(ev)
@@ -167,6 +167,9 @@ func BreakdownView() views.Definition[Breakdown] {
 // none. The lists are rebuilt, never written in place, so an earlier state
 // shares nothing with it.
 func (s Breakdown) step(ev event.Event, m vocab.Message) Breakdown {
+	if s.Approximate {
+		return Breakdown{Approximate: true}
+	}
 	op := ev.Op()
 	in := func(event.Seq) bool { return false }
 	key := ev.Seq()
@@ -206,14 +209,15 @@ func (s Breakdown) step(ev event.Event, m vocab.Message) Breakdown {
 	for _, p := range kept {
 		n += p.Tokens
 	}
-	approx := s.Approximate
 	if len(anchors) > MaxAnchors {
-		anchors, approx = anchors[len(anchors)-MaxAnchors:], true
+		// Evicting an anchor would misorder a later range's ends and so keep
+		// or drop the wrong prices; the fold keeps nothing from here on.
+		return Breakdown{Approximate: true}
 	}
 	if len(anchors) == 0 {
 		anchors = nil
 	}
-	return Breakdown{System: kept, SystemTotal: n, Anchors: anchors, Approximate: approx}
+	return Breakdown{System: kept, SystemTotal: n, Anchors: anchors}
 }
 
 // Sample is the last provider-reported context: the usage of a settled step
@@ -282,7 +286,7 @@ func (p Pressure) Fraction(window int) float64 { return fraction(p.Projected(), 
 // request header.
 func PressureView() views.Definition[Pressure] {
 	return views.Definition[Pressure]{
-		Key: PressureKey, Version: 2, Stored: true, Types: append(slices.Clone(surfaceTypes), event.RequestHeader.Name()),
+		Key: PressureKey, Version: 3, Stored: true, Types: append(slices.Clone(surfaceTypes), event.RequestHeader.Name()),
 		Init: func(session.Header) Pressure { return Pressure{} },
 		Apply: func(s Pressure, ev event.Event) (Pressure, bool) {
 			if ev.Type() == event.RequestHeader.Name() {
