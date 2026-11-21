@@ -584,8 +584,7 @@ func (s *brtState) sessionWithSettlements(tbl *godog.Table) error {
 		s.settled = append(s.settled, r.Seq)
 		asOf = r.Seq
 		if i == 0 {
-			// The retry settles the same step: no new user message, so the
-			// second settlement's request is as of the failed attempt.
+			// The retry adds no user message; its request is as of the failed attempt.
 			continue
 		}
 		if i == 1 {
