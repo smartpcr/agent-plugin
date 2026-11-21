@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"iter"
 	"net/http"
@@ -128,7 +129,8 @@ type open struct {
 // and block types are skipped. An error event ends the stream with its
 // classified failure, as does a malformed event or a message_stop while a block
 // is still open; a stream that ends before message_stop yields llm/stream-closed.
-// A read error from body is yielded as is. Usage already reported is yielded
+// A line or event over the event-stream parser's bound is llm/malformed-response;
+// any other read error from body is yielded as is. Usage already reported is yielded
 // before any of these endings, so a failed attempt keeps its known counters.
 func Decode(body io.Reader, classify ErrorClassifier) iter.Seq2[vocab.Chunk, error] {
 	if classify == nil {
@@ -177,7 +179,11 @@ func Decode(body io.Reader, classify ErrorClassifier) iter.Seq2[vocab.Chunk, err
 		}
 		for ev, err := range transport.Events(body) {
 			if err != nil {
-				fault(err)
+				if errors.Is(err, transport.ErrTooLarge) {
+					malformed("anthropic: %v", err)
+				} else {
+					fault(err)
+				}
 				return
 			}
 			if ev.Type == "ping" {

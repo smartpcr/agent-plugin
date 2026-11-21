@@ -140,13 +140,17 @@ func (c *call) Attempt(ctx context.Context, req session.Request) iter.Seq2[vocab
 		defer resp.Body.Close()
 		for ch, err := range anthropic.Decode(resp.Body, anthropic.ErrorClassifier(Classify(mask))) {
 			if err != nil {
-				err = masked(err, mask)
-				if f, ok := err.(*vocab.Failure); ok && f.RequestID == "" {
+				var f *vocab.Failure
+				if errors.As(err, &f) && f.RequestID == "" {
 					f.RequestID = resp.RequestID
 				}
+				err = masked(err, mask)
 			}
-			if f, ok := ch.(vocab.Finish); ok && f.Failure != nil && f.Failure.RequestID == "" {
-				f.Failure.RequestID = resp.RequestID
+			if f, ok := ch.(vocab.Finish); ok && f.Failure != nil {
+				if f.Failure.RequestID == "" {
+					f.Failure.RequestID = resp.RequestID
+				}
+				scrub(f.Failure, mask)
 			}
 			if !yield(ch, err) {
 				return
@@ -169,10 +173,17 @@ func Headers(key secret.Value) http.Header {
 	return h
 }
 
+// scrub masks every textual field of f a settlement persists. It runs after the
+// request id is attributed, so a header echoing the key is masked too.
+func scrub(f *vocab.Failure, mask func(string) string) {
+	f.Message = mask(f.Message)
+	f.RequestID = mask(f.RequestID)
+}
+
 func masked(err error, mask func(string) string) error {
 	var f *vocab.Failure
 	if errors.As(err, &f) {
-		f.Message = mask(f.Message)
+		scrub(f, mask)
 		return f
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {

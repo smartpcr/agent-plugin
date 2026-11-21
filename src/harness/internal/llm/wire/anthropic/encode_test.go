@@ -5,7 +5,9 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"testing/iotest"
 
+	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/transport"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/golden"
 )
@@ -178,5 +180,25 @@ func TestDecodeRejectsOpenBlockAtStop(t *testing.T) {
 	var f *vocab.Failure
 	if !errors.As(last, &f) || f.Code != vocab.CodeMalformedResponse {
 		t.Fatalf("err = %v, want llm/malformed-response", last)
+	}
+}
+
+// A line over the parser's bound is a malformed response (a valid failure, as
+// FuzzSSE requires); a genuine read error from the body is yielded as is.
+func TestDecodeParserBound(t *testing.T) {
+	var last error
+	for _, err := range Decode(strings.NewReader("data: "+strings.Repeat("x", transport.MaxLine+1)+"\n\n"), nil) {
+		last = err
+	}
+	f, ok := last.(*vocab.Failure)
+	if !ok || f.Code != vocab.CodeMalformedResponse || f.Validate() != nil {
+		t.Fatalf("oversized line: err = %v, want a valid llm/malformed-response", last)
+	}
+	cut := errors.New("cut")
+	for _, err := range Decode(iotest.ErrReader(cut), nil) {
+		last = err
+	}
+	if !errors.Is(last, cut) {
+		t.Fatalf("read error: err = %v, want %v", last, cut)
 	}
 }

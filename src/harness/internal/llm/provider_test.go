@@ -367,6 +367,32 @@ func TestDeepSeekKeyNeverLeaks(t *testing.T) {
 	if lb.conns.Load() != before {
 		t.Fatal("a request without a key was sent")
 	}
+
+	// A request-id header echoing the key is masked on every failure path: an
+	// unsuccessful response, an in-stream error event and a dropped stream.
+	echoed := func(f fixture) fixture {
+		f.header = f.header.Clone()
+		f.header.Set("Request-Id", fakeKey)
+		return f
+	}
+	inStream := fixture{status: 200, header: http.Header{"Content-Type": {"text/event-stream"}},
+		body: []byte("event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n")}
+	for name, f := range map[string]fixture{
+		"unsuccessful": loadFixture(t, "bad-key"),
+		"in-stream":    inStream,
+		"dropped":      loadFixture(t, "mid-stream-drop"),
+	} {
+		hs, _ := dsSession(t)
+		rt := &fixtureRT{f: echoed(f)}
+		a := attemptOnce(t, dsRuntime(t, transport.Over(rt, transport.Options{}), "", keyStore()), hs).records[0]
+		fl := a.Finish.Failure
+		if fl == nil {
+			t.Fatalf("%s: no failure", name)
+		}
+		if fl.RequestID != secret.Redacted || strings.Contains(must(a.Draft()).Raw(), fakeKey) {
+			t.Fatalf("%s: request id %q leaked the key", name, fl.RequestID)
+		}
+	}
 }
 
 // A tool_use block the vendor never stopped does not settle as a tool call: the
