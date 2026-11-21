@@ -86,7 +86,7 @@ func Ensure(l Layout) error {
 		err := os.Mkdir(dir, 0o700)
 		switch {
 		case errors.Is(err, fs.ErrNotExist) && dir == l.root:
-			if err = os.MkdirAll(filepath.Dir(dir), 0o700); err == nil {
+			if err = mkdirParents(filepath.Dir(dir)); err == nil {
 				err = os.Mkdir(dir, 0o700)
 			}
 		case errors.Is(err, fs.ErrExist) && dir == l.root && isEmptyDir(dir):
@@ -110,6 +110,45 @@ func Ensure(l Layout) error {
 		}
 	}
 	return Check(l)
+}
+
+// mkdirParents creates the missing directories of the path dir one level at a
+// time, each 0700, and syncs the parent of each so that its entry survives a
+// crash (MkdirAll syncs nothing). A level whose parent cannot be synced is removed
+// again, so a retry creates and syncs it instead of adopting an entry that may not
+// be durable.
+func mkdirParents(dir string) error {
+	var missing []string
+	for d := dir; ; {
+		_, err := os.Lstat(d)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		missing = append(missing, d)
+		parent := filepath.Dir(d)
+		if parent == d {
+			break
+		}
+		d = parent
+	}
+	for i := len(missing) - 1; i >= 0; i-- {
+		d := missing[i]
+		err := os.Mkdir(d, 0o700)
+		created := err == nil
+		if err != nil && !errors.Is(err, fs.ErrExist) {
+			return err
+		}
+		if err := syncDir(filepath.Dir(d)); err != nil {
+			if created {
+				_ = os.Remove(d)
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 // Check verifies that the home is local, that every directory of the layout

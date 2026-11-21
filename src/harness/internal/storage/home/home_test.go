@@ -206,3 +206,45 @@ func TestNewDirectorySyncsItsParent(t *testing.T) {
 		t.Fatalf("Ensure retried over the layout of a failed sync = %v, synced %v", err, dirs)
 	}
 }
+
+// A home whose parents are missing: every created ancestor has its parent synced,
+// and an ancestor whose parent sync fails is removed, so the retry syncs it.
+func TestEnsureSyncsNewAncestors(t *testing.T) {
+	base := filepath.Clean(t.TempDir())
+	var dirs []string
+	failOn := base
+	old := syncDir
+	syncDir = func(d string) error {
+		d = filepath.Clean(d)
+		dirs = append(dirs, d)
+		if d == failOn {
+			return errors.New("sync failed")
+		}
+		return nil
+	}
+	t.Cleanup(func() { syncDir = old })
+
+	a := filepath.Join(base, "a")
+	b := filepath.Join(a, "b")
+	l := New(filepath.Join(b, "home"))
+	if err := Ensure(l); !herr.Has(err, ReasonIO) {
+		t.Fatalf("Ensure with a failing ancestor sync = %v", err)
+	}
+	if _, err := os.Lstat(a); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the ancestor whose entry was not synced is still there: %v", err)
+	}
+
+	dirs, failOn = nil, ""
+	if err := Ensure(l); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{base, a, b, l.Root()}
+	if len(dirs) != len(want) {
+		t.Fatalf("synced %v, want %v", dirs, want)
+	}
+	for i := range want {
+		if dirs[i] != want[i] {
+			t.Fatalf("synced %v, want %v", dirs, want)
+		}
+	}
+}
