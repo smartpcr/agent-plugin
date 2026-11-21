@@ -39,7 +39,12 @@ type Definition[S any] struct {
 	// Types are the event types the fold consumes; nil is every type.
 	Types []string
 	// Stored keeps the state in checkpoint rows. S must round-trip through
-	// encoding/json; a state that does not encode is simply not stored.
+	// encoding/json. A state that does not encode (an error or a panic, e.g.
+	// a NaN float or a map with unsupported keys) is invalid state: that fold
+	// is failed for the session, and reads of it return view/failed from then
+	// on, while the other folds go on (session-views.md §7). encoding/json
+	// silently drops unexported fields, so S must keep all of its state in
+	// exported fields; otherwise a restored state is wrong with no error.
 	Stored bool
 	Init   func(h session.Header) S
 	Apply  func(s S, ev event.Event) (next S, changed bool)
