@@ -56,7 +56,11 @@ func (s *Store) lockInstance() error {
 // A broken store could not release them, so its file stays, unlocked: the next
 // prober acquires it and finds this instance dead (a missing file would read as
 // alive while the hosts row lasts).
-func (s *Store) unlockInstance() error {
+func (s *Store) unlockInstance() error { return s.releaseLive(false) }
+
+// releaseLive is unlockInstance; with keep, the file stays (unlocked) whether or
+// not the store is broken.
+func (s *Store) releaseLive(keep bool) error {
 	if s.live == nil {
 		return nil
 	}
@@ -65,7 +69,7 @@ func (s *Store) unlockInstance() error {
 	s.wmu.Unlock()
 	err := s.live.Unlock()
 	s.live = nil
-	if broken {
+	if broken || keep {
 		if err != nil {
 			return &store.Error{Code: CodeIO, Msg: "liveness lock: " + err.Error(), Err: err}
 		}

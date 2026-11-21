@@ -230,7 +230,8 @@ run in step 16.8.
     tombstone whose holder is gone, so an interrupted deletion finishes on the next
     open. A deletion `Open` cannot finish (a spill directory it cannot remove, a
     failing database) fails `Open` with that error; the instance is released and
-    the tombstone stays for the next `Open`.
+    the tombstone stays for the next `Open`. When its hosts row cannot be removed
+    either, its liveness file stays unlocked, so the next `Open` finds it dead.
   - `Retire(ctx, maxAge)` deletes the unheld sessions whose last event is older than
     `maxAge`. Its first read is only a shortlist: inside each tombstoning
     transaction the session must still be the same one (its uid) and still be
@@ -263,7 +264,7 @@ It passes.
 | Deletion refused while held (`DH-T-STORE-11`) | `TestDeleteRefusedWhileHeld`: a session held by another process, or a subagent child of it, is refused and nothing changes; this instance's own writer blocks it too until closed; deletion then runs in chunks and removes checkpoints and requests with the row. | pass |
 | Retention (`DH-T-STORE-11`) | `TestRetentionRetiresOnlyUnheldOldSessions`: off by default (age 0 deletes nothing), finishes tombstones, deletes only unheld sessions past the age, and runs as one duty per home. | pass |
 | Retention revalidates its shortlist (`DH-T-STORE-11`) | `TestRetireRevalidatesItsShortlist`: between the shortlist and the deletions one session gains a recent event and another id is deleted and created again; both survive, and only the untouched session is deleted. | pass |
-| Open fails on an unfinishable deletion (`DH-T-STORE-11`) | `TestOpenFailsWhenADeletionCannotFinish`: with spill removal failing, `Open` over a tombstone fails with `store/io` naming the session, leaves no hosts row and keeps the tombstone; the next `Open` finishes the deletion and `Check` is clean. | pass |
+| Open fails on an unfinishable deletion (`DH-T-STORE-11`) | `TestOpenFailsWhenADeletionCannotFinish`: with spill removal failing, `Open` over a tombstone fails with `store/io` naming the session, leaves no hosts row and keeps the tombstone. Again with another connection taking the write lock during the failed `Open`'s cleanup: its hosts row cannot be removed, so it keeps its liveness file unlocked; once the lock is released the next `Open` finds it dead, takes the tombstone over and finishes the deletion, and `Check` is clean (without the kept file the deletion stays stranded). | pass |
 | Check reports damage (`DH-T-STORE-12`) | `TestCheckReportsDamage`: a session whose row count was damaged on purpose, a checkpoint past the end, and rows of no session are reported. | pass |
 | Rebuild and verify (`DH-T-STORE-12`) | `TestRebuildAndVerify`: rebuilt checkpoints equal the incrementally built ones; verify reports a row damaged on purpose and changes nothing; rebuild repairs it. | pass |
 | Failures change nothing | `TestMaintenanceFailsCleanly`: with a cancelled context and on a closed store, each maintenance call fails and leaves the session, the import target and the duties unchanged; a failing refold stops a rebuild; a delete chunk of 1 still deletes every row. | pass |

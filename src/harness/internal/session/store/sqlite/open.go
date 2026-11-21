@@ -311,27 +311,34 @@ func Open(ctx context.Context, path string, opts ...Option) (*Store, error) {
 	// than run on with a deletion silently half done. The tombstone stays, so the
 	// next Open retries it.
 	if _, err := s.FinishDeletions(ctx); err != nil {
-		s.dropHost()
-		s.abandon()
-		return nil, err
+		// Recovery may already hold a tombstone's lease under this instance. When
+		// the hosts row cannot be removed (another connection holds the write
+		// lock), the liveness file must stay, unlocked: a missing file with a
+		// hosts row reads as alive and would strand that tombstone for good.
+		herr := s.dropHost()
+		s.abandonKeeping(herr != nil)
+		return nil, errors.Join(err, herr)
 	}
 	return s, nil
 }
 
-// dropHost removes this instance's hosts row, best effort: an Open that fails
-// after registering leaves no row behind (a sweep would remove it anyway, once
-// the liveness lock is gone).
-func (s *Store) dropHost() {
-	_ = s.write(context.Background(), func(tx *sql.Tx) error {
+// dropHost removes this instance's hosts row, so an Open that fails after
+// registering leaves no row behind.
+func (s *Store) dropHost() error {
+	return s.write(context.Background(), func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(context.Background(), `DELETE FROM hosts WHERE instance = ?`, s.instance)
 		return err
 	})
 }
 
 // abandon undoes a failed Open: the pools close and the liveness lock goes.
-func (s *Store) abandon() {
+func (s *Store) abandon() { s.abandonKeeping(false) }
+
+// abandonKeeping is abandon; with keep, the liveness file stays, unlocked, so the
+// next prober finds this instance dead even though its hosts row remains.
+func (s *Store) abandonKeeping(keep bool) {
 	_ = s.closeDBs()
-	_ = s.unlockInstance()
+	_ = s.releaseLive(keep)
 }
 
 // createPrivate creates path owner-only when it does not exist. The file is

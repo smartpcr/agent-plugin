@@ -2,6 +2,7 @@ package sqlite_test
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -344,6 +345,31 @@ func TestOpenFailsWhenADeletionCannotFinish(t *testing.T) {
 	if n := countWhere(t, db, `SELECT count(*) FROM sessions WHERE id = 'doomed' AND state = 'deleting'`); n != 1 {
 		t.Fatalf("the failed Open dropped the tombstone (%d rows)", n)
 	}
+
+	// The same failure while another connection takes the write lock: the
+	// failed Open has claimed the tombstone and cannot remove its hosts row, so
+	// it keeps its liveness file, unlocked, for the next Open to find it dead.
+	var (
+		release  func()
+		instance string
+	)
+	restore = sqlite.SetRemoveAll(func(string) error {
+		instance = tombHolder(t, db)
+		release = holdWriteLock(t, path)
+		return os.ErrPermission
+	})
+	_, err = sqlite.Open(bg, path, sqlite.WithSpillDir(spill), sqlite.WithBusyTimeout(100*time.Millisecond))
+	restore()
+	if codeOf(err) != sqlite.CodeIO || !strings.Contains(err.Error(), "doomed") || release == nil {
+		t.Fatalf("Open with an unfinishable deletion and a contended cleanup = %v; want %s naming the session", err, sqlite.CodeIO)
+	}
+	release()
+	if n := countWhere(t, db, `SELECT count(*) FROM hosts WHERE instance = ?`, instance); n != 1 {
+		t.Fatalf("%d hosts rows of the failed instance; want its row left by the contended cleanup", n)
+	}
+	if n := countWhere(t, db, `SELECT count(*) FROM sessions WHERE id = 'doomed' AND lease_holder = ?`, instance); n != 1 {
+		t.Fatal("the tombstone is not held by the failed instance; the test does not exercise the stranding")
+	}
 	r, err := sqlite.Open(bg, path, sqlite.WithSpillDir(spill))
 	if err != nil {
 		t.Fatalf("Open once removal works: %v", err)
@@ -351,6 +377,16 @@ func TestOpenFailsWhenADeletionCannotFinish(t *testing.T) {
 	defer r.Close(bg)
 	assertGone(t, path, "doomed")
 	assertClean(t, r)
+}
+
+// tombHolder is the lease holder of the 'doomed' tombstone.
+func tombHolder(t *testing.T, db *sql.DB) string {
+	t.Helper()
+	var h sql.NullString
+	if err := db.QueryRow(`SELECT lease_holder FROM sessions WHERE id = 'doomed'`).Scan(&h); err != nil {
+		t.Fatal(err)
+	}
+	return h.String
 }
 
 // DH-T-STORE-12: Check reports a session whose row count was damaged on purpose,
