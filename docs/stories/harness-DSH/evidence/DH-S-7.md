@@ -209,7 +209,7 @@ run in step 16.8.
   own, outside the bounded read pool (so any number of followers never starve
   `Stat`, `List`, `OpenRead` or `Export`), every follow interval (`WithFollowInterval`, default 250 ms), and reads
   only when another connection committed. Each read is a short read transaction, so
-  a follower never holds the WAL back. The subscription ends with `store/deleted`
+  a follower never holds the WAL back. The subscription ends with `session/deleted`
   when the session is deleted, with the context's error when it is cancelled, and
   with nil on `Close` or `Store.Close`. Once-per-home duties use the `duties` table:
   `AcquireDuty` takes a free or dead holder's duty with the epoch raised;
