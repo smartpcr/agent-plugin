@@ -247,8 +247,11 @@ func (s *ssaState) theLoggedToolResultHoldsABoundedHeadAndTheReference(bound int
 	if got != string(s.head) || !bytes.HasPrefix(s.full, []byte(got)) {
 		return fmt.Errorf("persisted head (%d bytes) is not the %d-byte prefix returned by Save", len(got), len(s.head))
 	}
-	if !utf8.ValidString(got) || len(got) < bound-utf8.UTFMax {
-		return fmt.Errorf("persisted head of %d bytes is not the longest rune-aligned prefix within %d", len(got), bound)
+	// The 2-byte rune planted at bound-1..bound is the only multi-byte rune,
+	// so the longest rune-aligned head is exactly bound-1 bytes and ends
+	// just before it.
+	if !utf8.ValidString(got) || len(got) != bound-1 || !bytes.HasPrefix(s.full[len(got):], []byte("\u00e9")) {
+		return fmt.Errorf("persisted head of %d bytes is not the %d-byte rune-aligned prefix ending before the planted rune", len(got), bound-1)
 	}
 	if dir, _, err := spill.ParseID(s.ref.Path); err != nil || dir != sqlite.SpillName(s.sessionID) {
 		return fmt.Errorf("owner dir %q (%v), the session store removes %q", dir, err, sqlite.SpillName(s.sessionID))
