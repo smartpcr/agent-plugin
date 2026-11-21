@@ -112,7 +112,16 @@ func (rt *Runtime) Prepare(ctx context.Context, r vocab.RouteID, model string, c
 	if !ok {
 		return nil, failure(vocab.CodeNoRoute, "no route %q is registered", r)
 	}
-	route := e.route
+	p, err := rt.prepareOn(ctx, e.route, e.slots, model, c)
+	if err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+// prepareOn is Prepare on route, already resolved, and its slots.
+func (rt *Runtime) prepareOn(ctx context.Context, route Route, slots chan struct{}, model string, c vocab.Controls) (*prepared, error) {
+	r := route.ID
 	m, ok := route.model(model)
 	if !ok {
 		if model == "" {
@@ -138,7 +147,7 @@ func (rt *Runtime) Prepare(ctx context.Context, r vocab.RouteID, model string, c
 	if call == nil {
 		return nil, failure(vocab.CodeInvalidRequest, "route %q prepared no call", r)
 	}
-	return &prepared{rt: rt, route: route, slots: e.slots, model: m.Name, cfg: cfg, call: call}, nil
+	return &prepared{rt: rt, route: route, slots: slots, model: m.Name, cfg: cfg, call: call}, nil
 }
 
 // callPrepare runs the adapter's Prepare with its panic contained.
@@ -189,7 +198,8 @@ func materialise(c, d vocab.Controls) vocab.CallConfig {
 // (DH-D-LLM-3): a Transient failure is tried again on the same route after the
 // policy's wait, a Retry-After honoured up to its cap; any other failure, an
 // exhausted policy or a cancelled wait ends the call. Nothing else is tried: no
-// other route, model or credential. Each attempt is its own prepared call, and
+// other route, model or credential. Each attempt is its own prepared call on the
+// route, model and policy the first attempt captured, and
 // sink receives each attempt's one record so the caller logs it, attributed by
 // requestAsOf, requestDigest and the purpose in req.Meta(); no chunk of any
 // attempt reaches the caller. req must be an auxiliary request (from
@@ -208,10 +218,21 @@ func (rt *Runtime) Complete(ctx context.Context, req session.Request, sink Attem
 		return vocab.Message{}, failure(vocab.CodeInvalidRequest, "Complete takes an auxiliary request; a loop step streams")
 	}
 	start := rt.clock()
+	// The first attempt captures the route (adapter, credential reference, models
+	// and retry policy), its slots and the model; every later attempt of the call
+	// is prepared on that capture, so a Replace meanwhile reaches none of them.
+	first, err := rt.Prepare(ctx, req.Route(), "", req.Controls())
+	if err != nil {
+		return vocab.Message{}, err
+	}
+	captured := first.(*prepared)
+	policy := captured.Retry()
 	for attempt := 1; ; attempt++ {
-		p, err := rt.Prepare(ctx, req.Route(), "", req.Controls())
-		if err != nil {
-			return vocab.Message{}, err
+		p := captured
+		if attempt > 1 {
+			if p, err = rt.prepareOn(ctx, captured.route, captured.slots, captured.model, req.Controls()); err != nil {
+				return vocab.Message{}, err
+			}
 		}
 		rec, err := rt.completeOnce(ctx, p, req, sink)
 		if err != nil {
@@ -221,7 +242,7 @@ func (rt *Runtime) Complete(ctx context.Context, req session.Request, sink Attem
 			return *rec.Message, nil
 		}
 		elapsed := time.Duration(rt.clock()-start) * time.Millisecond
-		wait, stop := p.Retry().Next(rec.Finish.Failure, attempt, elapsed, rt.jitter())
+		wait, stop := policy.Next(rec.Finish.Failure, attempt, elapsed, rt.jitter())
 		if stop != "" {
 			return vocab.Message{}, rec.Finish.Failure
 		}

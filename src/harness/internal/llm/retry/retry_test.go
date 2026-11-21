@@ -3,6 +3,7 @@ package retry_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -190,7 +191,9 @@ func TestBoundedRetryOnTheVirtualClock(t *testing.T) {
 }
 
 // DH-T-LLM-7, SP-2: a Permanent failure is never retried in any mode: no
-// llm/retry, an llm/retry-abandoned "not-retryable", and the failure passed on.
+// llm/retry, an llm/retry-abandoned "not-retryable", and the turn given up. An
+// inner recovery listener that would retry it (or take it elsewhere) is never
+// asked: auth is terminal.
 func TestPermanentFailureIsNeverRetried(t *testing.T) {
 	for _, mode := range []llm.RetryMode{llm.RetryBounded, llm.RetryPersistent} {
 		t.Run(string(mode), func(t *testing.T) {
@@ -201,7 +204,7 @@ func TestPermanentFailureIsNeverRetried(t *testing.T) {
 			passed := 0
 			must(agent.AttemptFailed.On(e.root, func(_ *cordis.Context, f agent.AttemptFailure, next func(agent.AttemptFailure) (agent.AttemptDecision, error)) (agent.AttemptDecision, error) {
 				passed++
-				return next(f)
+				return agent.Retry{Reason: "recover"}, nil
 			}))
 			if d := e.ask(t, attempt(1, failure(vocab.CodeAuth, time.Second))); d != (agent.GiveUp{}) {
 				t.Fatalf("decision %#v", d)
@@ -209,7 +212,7 @@ func TestPermanentFailureIsNeverRetried(t *testing.T) {
 			equal(t, e.log.snapshot(), "llm/retry-abandoned")
 			var a retry.Abandoned
 			must(0, json.Unmarshal([]byte(e.log.raws[0]), &a))
-			if a.Reason != llm.AbandonNotRetryable || a.Failure.Code != vocab.CodeAuth || passed != 1 {
+			if a.Reason != llm.AbandonNotRetryable || a.Failure.Code != vocab.CodeAuth || passed != 0 {
 				t.Fatalf("abandoned %+v, passed on %d", a, passed)
 			}
 		})
@@ -287,5 +290,101 @@ func TestStepCapBindsEveryListener(t *testing.T) {
 	must(0, json.Unmarshal([]byte(e.log.raws[len(e.log.raws)-1]), &a))
 	if a.Reason != llm.AbandonStepCap {
 		t.Fatalf("abandoned %+v", a)
+	}
+}
+
+// DH-T-LLM-7: persistent elapsed time counts from the step's first attempt
+// start (StepStarted), not its first failure: a first attempt that used the
+// whole MaxElapsed is not retried.
+func TestPersistentElapsedCountsTheFirstAttempt(t *testing.T) {
+	e := newEnv(t)
+	e.listen(t, retry.Config{Policy: func(agent.AttemptFailure) llm.RetryPolicy {
+		return llm.RetryPolicy{Mode: llm.RetryPersistent, MaxElapsed: 10 * time.Second}
+	}})
+	f := attempt(1, failure(vocab.CodeServer, time.Second))
+	f.StepStarted = e.clk.Now()
+	e.clk.Advance(10 * time.Second) // the first provider request took the whole bound
+	if d := e.ask(t, f); d != (agent.GiveUp{}) {
+		t.Fatalf("decision %#v, want no retry past MaxElapsed", d)
+	}
+	equal(t, e.log.snapshot(), "llm/retry-abandoned")
+	var a retry.Abandoned
+	must(0, json.Unmarshal([]byte(e.log.raws[0]), &a))
+	if a.Reason != llm.AbandonElapsed {
+		t.Fatalf("abandoned %+v", a)
+	}
+
+	// The start is kept for the step: a later failure measures from it too.
+	f2 := attempt(1, failure(vocab.CodeServer, time.Second))
+	f2.Step, f2.StepStarted = 2, e.clk.Now()
+	e.ask(t, f2, time.Second)
+	e.clk.Advance(9 * time.Second)
+	f3 := f2
+	f3.Attempt = 2
+	if d := e.ask(t, f3); d != (agent.GiveUp{}) { // 1s wait + 9s request + 1s wait > 10s
+		t.Fatalf("second attempt %#v", d)
+	}
+}
+
+// A failed Record hook fails the decision closed, at each of the three
+// appends, and the point's own bounded policy is the default.
+func TestRecordFailureFailsClosed(t *testing.T) {
+	for i, name := range []string{"scheduled", "started", "abandoned"} {
+		t.Run(name, func(t *testing.T) {
+			e := newEnv(t)
+			n := 0
+			c := must(retry.Listen(e.root, retry.Config{
+				Record: func(context.Context, agent.AttemptFailure, event.Draft) error {
+					n++
+					if (i < 2 && n == i+1) || i == 2 {
+						return errors.New("disk full")
+					}
+					return nil
+				},
+				Now: e.clk.Now, After: e.clk.After, Jitter: func() float64 { return 0.5 },
+			}))
+			t.Cleanup(c.Close)
+			f := attempt(1, failure(vocab.CodeServer, time.Second))
+			if i == 2 {
+				f = attempt(1, failure(vocab.CodeAuth, 0))
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+			f.Ctx = ctx
+			done := make(chan error, 1)
+			go func() { _, err := agent.AttemptFailed.Around(e.root, f, giveUp); done <- err }()
+			if i == 1 {
+				if !e.clk.BlockUntil(1, 5*time.Second) {
+					t.Fatal("no timer")
+				}
+				e.clk.Advance(time.Second)
+			}
+			if err := <-done; err == nil {
+				t.Fatal("a failed record was not an error")
+			}
+		})
+	}
+}
+
+// Listen refuses a missing Record hook and a negative cap; a point without a
+// failure is an error, not a decision.
+func TestListenAndPointValidation(t *testing.T) {
+	e := newEnv(t)
+	if _, err := retry.Listen(e.root, retry.Config{}); err == nil {
+		t.Fatal("Listen without Record")
+	}
+	if _, err := retry.Listen(e.root, retry.Config{Record: e.log.record, StepAttemptCap: -1}); err == nil {
+		t.Fatal("negative cap")
+	}
+	c := must(retry.Listen(e.root, retry.Config{Record: e.log.record}))
+	t.Cleanup(c.Close)
+	if _, err := agent.AttemptFailed.Around(e.root, agent.AttemptFailure{Attempt: 1}, giveUp); err == nil {
+		t.Fatal("a point with no failure decided")
+	}
+	if _, err := retry.AbandonedType.Draft(retry.Abandoned{Reason: "bored"}); err == nil {
+		t.Fatal("an abandon reason outside the closed set drafted")
+	}
+	if p := retry.FromAgent(agent.RetryPolicy{MaxAttempts: 3, BaseDelay: time.Second}); p.MaxRetries != 2 || p.Mode != llm.RetryBounded {
+		t.Fatalf("FromAgent %+v", p)
 	}
 }

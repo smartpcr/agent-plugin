@@ -3,13 +3,17 @@
 // character heuristic that estimates a text's or a message's tokens with no
 // model call (the result budget of DH-S-10 reads it).
 //
-// The fold is bounded: its state is totals and the last attempt's figures,
-// never one entry per message, so it does not grow with the log. Usage is
+// The fold is bounded: its state is totals, the last attempt's figures and one
+// price per retained system prompt, never one entry per message, so it does not
+// grow with the log. Usage is
 // billed per attempt: every assistant/message and every assistant/attempt
 // counts once, a failed or retried attempt included, in four disjoint buckets
 // (uncached input, cache read, cache write, output). Occupancy is a reference
 // figure, not an atomic observation: the context the last attempt that
-// reported usage occupied, prompt and answer, which the next request carries.
+// reported usage occupied, prompt and answer, which the next request carries,
+// with every system-prompt change since that sample repriced at once by the
+// heuristic (a rewrite is never priced at zero until the next sample). Measure
+// prices a current surface alone, for a cold read with no fold state.
 package meter
 
 import (
@@ -19,6 +23,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/surface"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/views"
 )
 
@@ -35,6 +40,25 @@ type Usage struct {
 	// Last is the usage of the last attempt that reported any; LastSeq its seq.
 	Last    vocab.Usage `json:"last"`
 	LastSeq event.Seq   `json:"last_seq,omitempty"`
+	// System is the heuristic price of each retained system prompt, in log
+	// order; SystemAtLast their sum when Last was sampled.
+	System       []SystemPrice `json:"system,omitempty"`
+	SystemAtLast int           `json:"system_at_last,omitempty"`
+}
+
+// SystemPrice is one retained system prompt's position and estimated tokens.
+type SystemPrice struct {
+	Seq    event.Seq `json:"seq"`
+	Tokens int       `json:"tokens"`
+}
+
+// SystemTokens is the estimated tokens of the retained system prompts.
+func (u Usage) SystemTokens() int {
+	n := 0
+	for _, p := range u.System {
+		n += p.Tokens
+	}
+	return n
 }
 
 // Prompt is the tokens of a usage's request: uncached input, cache reads and
@@ -44,9 +68,11 @@ func Prompt(u vocab.Usage) int { return u.Input + u.CacheRead + u.CacheWrite }
 // Total is the sum of the four disjoint buckets.
 func Total(u vocab.Usage) int { return Prompt(u) + u.Output }
 
-// Occupancy is the context the last reporting attempt occupied: its prompt and
-// its answer; 0 before any attempt reported usage.
-func (u Usage) Occupancy() int { return Total(u.Last) }
+// Occupancy is the context the last reporting attempt occupied, its prompt and
+// its answer, adjusted by the system prompts' price change since: a replaced
+// system prompt is repriced at once. Before any attempt reported usage it is
+// the system prompts' price alone.
+func (u Usage) Occupancy() int { return max(Total(u.Last)+u.SystemTokens()-u.SystemAtLast, 0) }
 
 // Pressure is Occupancy as a fraction of a context window of window tokens; 0
 // for a window of 0 or less.
@@ -60,12 +86,18 @@ func (u Usage) Pressure(window int) float64 {
 // UsageView is the usage fold over the settlement events.
 func UsageView() views.Definition[Usage] {
 	return views.Definition[Usage]{
-		Key: UsageKey, Version: 1, Stored: true,
-		Types: []string{event.AssistantMessage.Name(), event.AssistantAttempt.Name()},
+		Key: UsageKey, Version: 2, Stored: true,
+		Types: []string{event.SystemMessage.Name(), event.AssistantMessage.Name(), event.AssistantAttempt.Name()},
 		Init:  func(session.Header) Usage { return Usage{} },
 		Apply: func(s Usage, ev event.Event) (Usage, bool) {
 			var u *vocab.Usage
 			switch ev.Type() {
+			case event.SystemMessage.Name():
+				p, err := event.SystemMessage.As(ev)
+				if err != nil {
+					return s, false
+				}
+				return s.priceSystem(ev.Seq(), ev.Op(), EstimateMessage(p.Message)), true
 			case event.AssistantMessage.Name():
 				p, err := event.AssistantMessage.As(ev)
 				if err != nil {
@@ -86,10 +118,41 @@ func UsageView() views.Definition[Usage] {
 				s.Billed = add(s.Billed, *u)
 				s.Reported++
 				s.Last, s.LastSeq = *u, ev.Seq()
+				s.SystemAtLast = s.SystemTokens()
 			}
 			return s, true
 		},
 	}
+}
+
+// priceSystem is s with the system prompt at seq priced at tokens; a
+// replacement drops the prices of the system prompts it replaces. The list is
+// rebuilt, never written in place, so an earlier state shares nothing with it.
+func (s Usage) priceSystem(seq event.Seq, op event.Op, tokens int) Usage {
+	kept := make([]SystemPrice, 0, len(s.System)+1)
+	for _, p := range s.System {
+		if op.Kind == event.OpReplace && p.Seq >= op.Start && p.Seq <= op.End {
+			continue
+		}
+		kept = append(kept, p)
+	}
+	s.System = append(kept, SystemPrice{Seq: seq, Tokens: tokens})
+	return s
+}
+
+// Measure is the heuristic's tokens of the current surface h, every node's
+// message, scaled by the calibration factor: the bounded cold read that needs
+// no fold state. A node whose message does not decode is an error.
+func Measure(h surface.History, factor float64) (int, error) {
+	n := 0
+	for i := range h.Len() {
+		m, err := h.At(i).Message()
+		if err != nil {
+			return 0, err
+		}
+		n += EstimateMessage(m)
+	}
+	return Calibrated(n, factor), nil
 }
 
 // Register registers the usage fold in r.

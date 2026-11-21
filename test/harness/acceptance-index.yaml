@@ -27,7 +27,7 @@
 # exercises; "harness-gate preflight" refuses to run it until built-through has
 # reached every one, and none may come after the executing stage.
 
-built-through: DH-S-9
+built-through: DH-S-7
 
 stages:
   DH-S-16:

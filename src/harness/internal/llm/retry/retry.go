@@ -147,18 +147,22 @@ func Listen(scope *cordis.Context, cfg Config) (*Component, error) {
 // Close removes the listener.
 func (c *Component) Close() { c.handle.Dispose() }
 
-// elapsed is the time since the first failure of f's step, which it records
-// when f is that failure.
+// elapsed is the time since f's step began: its first attempt's start
+// (f.StepStarted) when the raiser supplies it, else the step's first failure,
+// which it records when f is that failure.
 func (c *Component) elapsed(f agent.AttemptFailure) time.Duration {
 	now := c.cfg.Now()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	s, ok := c.steps[f.Agent]
 	if !ok || s.turn != f.Turn || s.step != f.Step || f.Attempt <= 1 {
-		c.steps[f.Agent] = stepStart{turn: f.Turn, step: f.Step, at: now}
-		return 0
+		s = stepStart{turn: f.Turn, step: f.Step, at: now}
+		if !f.StepStarted.IsZero() {
+			s.at = f.StepStarted
+		}
+		c.steps[f.Agent] = s
 	}
-	return now.Sub(s.at)
+	return max(now.Sub(s.at), 0)
 }
 
 func (c *Component) forget(f agent.AttemptFailure) {
@@ -198,6 +202,11 @@ func (c *Component) decide(_ *cordis.Context, f agent.AttemptFailure, next func(
 	if why != "" {
 		if err := c.abandon(ctx, f, why); err != nil {
 			return nil, err
+		}
+		// A Permanent failure (llm/auth) is terminal: no inner listener is asked,
+		// so none can retry it or take it to another route (SP-2).
+		if f.Failure.Class == vocab.Permanent {
+			return agent.GiveUp{}, nil
 		}
 		// Not this component's to recover: a repair listener may still be.
 		return next(f)

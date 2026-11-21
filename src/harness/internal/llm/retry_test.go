@@ -274,6 +274,60 @@ func TestCompleteSinkOncePerAttempt(t *testing.T) {
 	}
 }
 
+// DH-D-LLM-3: an auxiliary call keeps the route, model and policy its first
+// attempt captured. A Replace during the wait (another adapter, another default
+// model and a longer retry bound) reaches no later attempt of the call, and the
+// originally exhausted bound ends it.
+func TestCompleteKeepsTheCaptureAcrossAReplace(t *testing.T) {
+	h := newSession(t)
+	orig := &fake{scripts: []script{
+		chunks(vocab.Finish{Reason: vocab.FinishError, Failure: overloaded()}),
+		chunks(vocab.Finish{Reason: vocab.FinishError, Failure: overloaded()}),
+	}}
+	repl := &fake{scripts: []script{chunks(append(text("replaced"), vocab.Finish{Reason: vocab.FinishStop})...)}}
+	v := newVirtual()
+	rt := llm.New(v.options()...)
+	g := must(rt.Register("fake", llm.Route{ID: "r/a", Models: []llm.Model{{Name: "m1"}}, Adapter: orig,
+		Retry: llm.RetryPolicy{Mode: llm.RetryBounded, MaxRetries: 1}}))
+	ask := must(h.Append(bg, must(summaryAsk.Draft(askPayload{Hint: "x"}))))
+	req := must(h.RequestFrom(ask.Seq))
+	sink := &recordingSink{h: h}
+
+	ctx, cancel := context.WithCancel(bg)
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	go func() { _, err := rt.Complete(ctx, req, sink); done <- err }()
+	if !v.clk.BlockUntil(1, 5*time.Second) {
+		t.Fatal("Complete never waited")
+	}
+	if err := g.Replace(llm.Route{ID: "r/a", Models: []llm.Model{{Name: "m2"}}, Adapter: repl,
+		Retry: llm.RetryPolicy{Mode: llm.RetryBounded, MaxRetries: 5}}); err != nil {
+		t.Fatal(err)
+	}
+	v.clk.Advance(time.Minute)
+	var fl *vocab.Failure
+	select {
+	case err := <-done:
+		if !errors.As(err, &fl) || fl.Code != vocab.CodeServer {
+			t.Fatalf("Complete = %v, want the captured bound exhausted with the last overloaded failure", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Complete never returned: the replaced, longer bound was used")
+	}
+	if orig.prepares.Load() != 2 || orig.attempts.Load() != 2 || repl.prepares.Load() != 0 {
+		t.Fatalf("prepares orig %d, attempts orig %d, prepares replacement %d: want 2, 2, 0",
+			orig.prepares.Load(), orig.attempts.Load(), repl.prepares.Load())
+	}
+	for i, a := range sink.records {
+		if a.Model != "m1" || a.Route != "r/a" {
+			t.Fatalf("attempt %d on %s/%s, want r/a/m1", i+1, a.Route, a.Model)
+		}
+	}
+	if len(sink.records) != 2 || len(v.noted()) != 1 {
+		t.Fatalf("records %d, waits %v: want 2 and one wait", len(sink.records), v.noted())
+	}
+}
+
 // DH-T-LLM-7: the policy alone, pure: a bounded count, a persistent elapsed
 // bound, a Permanent or Repairable failure never retried, a Retry-After
 // honoured up to its cap, and the jitter inside its fraction.

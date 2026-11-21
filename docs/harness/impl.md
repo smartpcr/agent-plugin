@@ -819,9 +819,9 @@ replay runner, so they are built in [DH-S-16](#dh-s-16).
 
 **Steps.**
 
-- [x] **9.1** [DH-D-LLM-2](areas/llm.md#dh-d-llm-2) The first working provider: shared transport, the Messages driver and key authentication.
-- [x] **9.2** [DH-D-LLM-3](areas/llm.md#dh-d-llm-3) Bounded retry, and buffered one-shot calls.
-- [x] **9.3** [DH-D-LLM-6](areas/llm.md#dh-d-llm-6) Token usage and context occupancy from the log (P1, pulled forward).
+- [ ] **9.1** [DH-D-LLM-2](areas/llm.md#dh-d-llm-2) The first working provider: shared transport, the Messages driver and key authentication.
+- [ ] **9.2** [DH-D-LLM-3](areas/llm.md#dh-d-llm-3) Bounded retry, and buffered one-shot calls.
+- [ ] **9.3** [DH-D-LLM-6](areas/llm.md#dh-d-llm-6) Token usage and context occupancy from the log (P1, pulled forward).
 
 **Manual checks.** One streamed request to the real API with a good key and one with
 a bad key; record one attempt event each and no retry on the bad key; `manual`.

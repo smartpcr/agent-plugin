@@ -3,12 +3,15 @@ package meter_test
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/meter"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/surface"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/views"
 )
 
@@ -76,7 +79,7 @@ func TestUsageFoldedFromSettlements(t *testing.T) {
 	row := must(json.Marshal(views.Refold(d, session.Header{}, evs[:2])))
 	var restored meter.Usage
 	must(0, json.Unmarshal(row, &restored))
-	if from := views.FoldFrom(d, restored, evs[2:]); from != got {
+	if from := views.FoldFrom(d, restored, evs[2:]); !reflect.DeepEqual(from, got) {
 		t.Fatalf("from a checkpoint %+v, from zero %+v", from, got)
 	}
 
@@ -111,5 +114,127 @@ func TestUsageFoldedFromSettlements(t *testing.T) {
 	}
 	if f := meter.Calibration(150, 100); f != 1.5 || meter.Calibrated(10, f) != 15 || meter.Calibration(0, 100) != 1 {
 		t.Fatalf("calibration %v", f)
+	}
+}
+
+func system(t *testing.T, seq int, op event.Op, text string) event.Event {
+	t.Helper()
+	m := must(vocab.RestoreMessage(fmt.Sprintf("s%d", seq), vocab.RoleSystem, nil, vocab.TextBlock(text)))
+	var cites []event.Seq
+	if op.Kind == event.OpReplace {
+		for s := op.Start; s <= op.End; s++ {
+			cites = append(cites, s)
+		}
+	}
+	return stamp(t, seq, must(event.SystemMessage.Draft(op, event.MessagePayload{Message: m}, cites...)))
+}
+
+// DH-T-LLM-15: a system-prompt replacement is repriced at once, before any new
+// usage sample, and the next sample takes the change in; folding from a stored
+// checkpoint between the replacement and the sample equals folding from zero.
+func TestSystemPromptReplacementIsRepricedAtOnce(t *testing.T) {
+	d := meter.UsageView()
+	short := strings.Repeat("a", 40) // 10 tokens of text
+	long := strings.Repeat("b", 400) // 100 tokens of text
+	frame := meter.MessageTokens + meter.BlockTokens
+	evs := []event.Event{
+		system(t, 0, event.Append(), short),
+		user(t, 1),
+	}
+	before := views.Refold(d, session.Header{}, evs)
+	if before.Occupancy() != frame+10 || before.SystemTokens() != frame+10 {
+		t.Fatalf("before any sample: occupancy %d, system %d, want %d", before.Occupancy(), before.SystemTokens(), frame+10)
+	}
+	evs = append(evs, message(t, 2, &vocab.Usage{Input: 300, Output: 20}))
+	sampled := views.Refold(d, session.Header{}, evs)
+	if sampled.Occupancy() != 320 {
+		t.Fatalf("sampled occupancy %d, want 320", sampled.Occupancy())
+	}
+
+	// The replacement of the system prompt at 0 is priced in the same step.
+	evs = append(evs, system(t, 3, event.Replace(0, 0), long))
+	replaced := views.Refold(d, session.Header{}, evs)
+	if want := 320 + 90; replaced.Occupancy() != want || len(replaced.System) != 1 || replaced.System[0].Seq != 3 {
+		t.Fatalf("after the replacement: occupancy %d, system %+v, want %d", replaced.Occupancy(), replaced.System, want)
+	}
+	if len(sampled.System) != 1 || sampled.System[0].Seq != 0 {
+		t.Fatalf("the replacement wrote into an earlier state: %+v", sampled.System)
+	}
+
+	// A checkpoint between the replacement and the next sample folds on equal.
+	row := must(json.Marshal(replaced))
+	var restored meter.Usage
+	must(0, json.Unmarshal(row, &restored))
+	tail := []event.Event{message(t, 4, &vocab.Usage{Input: 400, Output: 10})}
+	all := views.Refold(d, session.Header{}, append(append([]event.Event(nil), evs...), tail...))
+	if from := views.FoldFrom(d, restored, tail); !reflect.DeepEqual(from, all) {
+		t.Fatalf("from a checkpoint %+v, from zero %+v", from, all)
+	}
+	if all.Occupancy() != 410 {
+		t.Fatalf("the next sample's occupancy %d, want 410", all.Occupancy())
+	}
+
+	// An appended second system prompt adds its price; neither drops the other.
+	two := views.Refold(d, session.Header{}, append(append([]event.Event(nil), evs...), system(t, 4, event.Append(), short)))
+	if two.SystemTokens() != 2*frame+110 || two.Occupancy() != 320+90+frame+10 {
+		t.Fatalf("two system prompts: system %d, occupancy %d", two.SystemTokens(), two.Occupancy())
+	}
+	if p := (meter.Usage{}).Pressure(0); p != 0 {
+		t.Fatalf("pressure of no window %v", p)
+	}
+}
+
+// Measure prices a current surface alone: every node's message, calibrated;
+// a replaced node is priced by its replacement only.
+func TestMeasureTheCurrentSurface(t *testing.T) {
+	st := surface.NewState(event.Default())
+	for _, ev := range []event.Event{
+		system(t, 0, event.Append(), strings.Repeat("a", 40)),
+		user(t, 1),
+		system(t, 2, event.Replace(0, 0), strings.Repeat("b", 80)),
+	} {
+		if err := st.Fold(ev.Record(), true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	frame := meter.MessageTokens + meter.BlockTokens
+	want := frame + 20 + frame + meter.EstimateText("more")
+	if n := must(meter.Measure(st.History(), 1)); n != want {
+		t.Fatalf("measured %d, want %d", n, want)
+	}
+	if n := must(meter.Measure(st.History(), 2)); n != 2*want {
+		t.Fatalf("calibrated %d, want %d", n, 2*want)
+	}
+	if n := must(meter.Measure(surface.History{}, 1)); n != 0 {
+		t.Fatalf("an empty surface measured %d", n)
+	}
+}
+
+// The estimate prices every block kind: reasoning and its signature, a tool
+// call's id, name and arguments, a tool result's text and image parts, and an
+// image; a size not yet read is priced by bytes.
+func TestEstimateEveryBlockKind(t *testing.T) {
+	cases := []struct {
+		name string
+		role vocab.Role
+		b    vocab.Block
+		want int
+	}{
+		{"reasoning", vocab.RoleAssistant, vocab.ReasoningBlock("12345678", "1234", false), 3},
+		{"tool use", vocab.RoleAssistant, vocab.ToolUseBlock("1234", "read", []byte(`{"p":"x"}`)), 1 + 1 + 3},
+		{"tool result", vocab.RoleTool, vocab.ToolResultBlock("1234", false, vocab.TextPart("12345678"), vocab.ImagePart("image/png", "att1")), 1 + 2 + meter.ImageTokens},
+		{"image", vocab.RoleUser, vocab.ImageBlock("image/png", "att1"), meter.ImageTokens},
+	}
+	for _, c := range cases {
+		m := must(vocab.RestoreMessage("x", c.role, nil, c.b))
+		if n := meter.EstimateMessage(m); n != meter.MessageTokens+meter.BlockTokens+c.want {
+			t.Errorf("%s: %d, want %d", c.name, n, meter.MessageTokens+meter.BlockTokens+c.want)
+		}
+	}
+	if meter.EstimateBytes(0) != 0 || meter.EstimateBytes(9) != 3 {
+		t.Fatal("bytes estimate")
+	}
+	if meter.Calibrated(10, 0) != 10 || meter.Calibrated(-1, 2) != 0 {
+		t.Fatal("calibrated edge")
 	}
 }
