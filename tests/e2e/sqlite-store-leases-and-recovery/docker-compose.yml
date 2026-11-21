@@ -1,0 +1,47 @@
+# Stage 7.1 compose path (non-gating): the SQLite store tests and the godog E2E
+# against a dsh-home named volume. The gate path needs none of this -- the
+# modernc.org/sqlite engine is embedded in the test binary and every dsh.db is
+# created under t.TempDir() when DSH_E2E_STORE_HOME is unset.
+#
+#   docker compose -f tests/e2e/sqlite-store-leases-and-recovery/docker-compose.yml run --rm dsh-home-init
+#   docker compose -f tests/e2e/sqlite-store-leases-and-recovery/docker-compose.yml run --rm harness-store-tests
+#   docker compose -f tests/e2e/sqlite-store-leases-and-recovery/docker-compose.yml down -v
+name: dsh-sqlite-store-e2e
+
+volumes:
+  dsh-home: {}
+  go-cache: {}
+
+services:
+  dsh-home-init:
+    image: golang:1.26
+    user: "0:0"
+    volumes:
+      - dsh-home:/dsh-home
+    command: ["sh", "-c", "chown 0:0 /dsh-home && chmod 0700 /dsh-home && ls -ld /dsh-home"]
+
+  harness-store-tests:
+    image: golang:1.26
+    depends_on:
+      dsh-home-init:
+        condition: service_completed_successfully
+    working_dir: /repo
+    environment:
+      GOWORK: "off"
+      CGO_ENABLED: "1"
+      GOFLAGS: "-mod=readonly"
+      DSH_E2E_STORE_HOME: /dsh-home
+      DSH_HOME: ""
+    volumes:
+      - ../../..:/repo:ro
+      - dsh-home:/dsh-home
+      - go-cache:/root/.cache
+    command:
+      - sh
+      - -c
+      - >-
+        go -C src/harness test -race -count=1 ./internal/session/store/... &&
+        go -C src/harness test -run TestBudgetStoreAppend -count=1 -v ./internal/session/store/sqlite &&
+        go -C src/harness test -tags e2e -count=1 -v
+        -run TestE2E_sqlite_store_leases_and_recovery_sqlite_driver_measurement_and_atomic_appends
+        ./test/e2e/harness-DSH/

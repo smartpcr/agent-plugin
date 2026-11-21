@@ -1,0 +1,84 @@
+# Stage 7.1 E2E (SQLite driver measurement and atomic appends).
+#
+#   e2e      the gate path: godog scenarios with -tags e2e on Linux, macOS and
+#            Windows. service:sqlite is embedded (modernc.org/sqlite compiled into
+#            the test binary) and every dsh.db lives under t.TempDir(); no DSN,
+#            no secrets, DSH_E2E_STORE_HOME unset.
+#   compose  non-gating: the same tests against a dsh-home named volume through
+#            tests/e2e/sqlite-store-leases-and-recovery/docker-compose.yml.
+name: e2e-sqlite-store-leases-and-recovery
+
+on:
+  pull_request:
+    paths:
+      - src/harness/**
+      - tests/e2e/sqlite-store-leases-and-recovery/**
+      - .github/workflows/e2e-sqlite-store-leases-and-recovery.yml
+  push:
+    branches: [main]
+    paths:
+      - src/harness/**
+      - tests/e2e/sqlite-store-leases-and-recovery/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-sqlite-store-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: e2e (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      GOWORK: "off"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: src/harness/go.mod
+          cache-dependency-path: src/harness/go.sum
+      - name: Store tests
+        run: go -C src/harness test -race -shuffle=on -count=1 ./internal/session/store/...
+      - name: Driver measurement (F-2)
+        run: go -C src/harness test -run TestBudgetStoreAppend -count=1 -v ./internal/session/store/sqlite
+      - name: Godog scenarios
+        run: |
+          set -o pipefail
+          mkdir -p artifacts/e2e
+          log=artifacts/e2e/sqlite-store-${{ runner.os }}.txt
+          go -C src/harness test -tags e2e -count=1 -v \
+            -run TestE2E_sqlite_store_leases_and_recovery_sqlite_driver_measurement_and_atomic_appends \
+            ./test/e2e/harness-DSH/ 2>&1 | tee "$log"
+          if grep -q -- '--- SKIP' "$log"; then echo "a required scenario skipped"; exit 1; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-sqlite-store-${{ matrix.os }}
+          path: artifacts/e2e/
+          if-no-files-found: warn
+
+  compose:
+    name: compose (ubuntu-latest, non-gating)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    env:
+      COMPOSE_FILE: tests/e2e/sqlite-store-leases-and-recovery/docker-compose.yml
+    steps:
+      - uses: actions/checkout@v4
+      - name: Initialise the dsh-home volume
+        run: docker compose run --rm dsh-home-init
+      - name: Run the store tests against the volume
+        run: docker compose run --rm harness-store-tests
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
