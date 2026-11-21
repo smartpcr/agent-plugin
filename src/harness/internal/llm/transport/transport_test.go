@@ -42,6 +42,50 @@ func TestEventsStandard(t *testing.T) {
 	}
 }
 
+// stalledReader serves its chunks one Read at a time and then stands in for a
+// writer that stays open: a further Read fails the test instead of blocking.
+type stalledReader struct {
+	t      *testing.T
+	chunks []string
+}
+
+func (r *stalledReader) Read(p []byte) (int, error) {
+	if len(r.chunks) == 0 {
+		r.t.Fatal("reader waited for bytes past a complete event")
+	}
+	n := copy(p, r.chunks[0])
+	r.chunks[0] = r.chunks[0][n:]
+	if r.chunks[0] == "" {
+		r.chunks = r.chunks[1:]
+	}
+	return n, nil
+}
+
+// A CR ends its line at once: the event is dispatched without reading on, and
+// a CRLF pair split across reads still counts as one line ending.
+func TestEventsCRDispatchesWithoutWaiting(t *testing.T) {
+	for name, chunks := range map[string][]string{
+		"cr only":    {"data: hello\r\r"},
+		"split crlf": {"data: hel", "lo\r", "\ndata: x\r\n\r"},
+	} {
+		want := map[string]string{"cr only": "hello", "split crlf": "hello\nx"}[name]
+		got := false
+		for e, err := range Events(&stalledReader{t: t, chunks: chunks}) {
+			if err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			if e.Data != want || e.Type != "message" {
+				t.Fatalf("%s: event = %+v, want data %q", name, e, want)
+			}
+			got = true
+			break
+		}
+		if !got {
+			t.Fatalf("%s: no event dispatched", name)
+		}
+	}
+}
+
 func TestEventsBounded(t *testing.T) {
 	if _, err := collect(t, "data: "+strings.Repeat("x", MaxLine+1)+"\n\n"); !errors.Is(err, ErrTooLarge) {
 		t.Fatalf("long line: %v", err)

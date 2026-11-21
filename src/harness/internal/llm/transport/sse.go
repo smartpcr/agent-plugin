@@ -47,10 +47,11 @@ func Events(r io.Reader) iter.Seq2[Event, error] {
 			hasData bool
 			first   = true
 			line    []byte
+			afterCR bool
 		)
 		for {
 			var err error
-			line, err = readLine(br, line[:0])
+			line, err = readLine(br, line[:0], &afterCR)
 			if err != nil {
 				if !errors.Is(err, io.EOF) {
 					yield(Event{}, err)
@@ -105,8 +106,10 @@ func Events(r io.Reader) iter.Seq2[Event, error] {
 }
 
 // readLine appends the next line of br to buf, without its terminator. A final
-// line with no terminator is reported as io.EOF: the standard discards it.
-func readLine(br *bufio.Reader, buf []byte) ([]byte, error) {
+// line with no terminator is reported as io.EOF: the standard discards it. A CR
+// ends its line at once, without waiting for the next byte; *afterCR records it
+// so the LF of a CRLF pair is dropped at the start of the next call.
+func readLine(br *bufio.Reader, buf []byte, afterCR *bool) ([]byte, error) {
 	for {
 		b, err := br.ReadByte()
 		if err != nil {
@@ -115,13 +118,17 @@ func readLine(br *bufio.Reader, buf []byte) ([]byte, error) {
 			}
 			return buf, err
 		}
+		if *afterCR {
+			*afterCR = false
+			if b == '\n' {
+				continue
+			}
+		}
 		switch b {
 		case '\n':
 			return buf, nil
 		case '\r':
-			if next, err := br.Peek(1); err == nil && next[0] == '\n' {
-				_, _ = br.ReadByte()
-			}
+			*afterCR = true
 			return buf, nil
 		}
 		if len(buf) >= MaxLine {
