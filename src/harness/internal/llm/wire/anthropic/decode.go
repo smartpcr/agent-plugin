@@ -258,24 +258,33 @@ func Decode(body io.Reader, classify ErrorClassifier) iter.Seq2[vocab.Chunk, err
 				if b.kind == "" {
 					continue
 				}
+				// A delta whose type does not match its block's kind is skipped,
+				// like an unknown delta, so the streamed deltas always add up to
+				// the BlockEnd.
 				var c vocab.Chunk
 				switch e.Delta.Type {
 				case "text_delta":
+					if b.kind != vocab.KindText {
+						continue
+					}
 					s, ok := b.joinText(e.Delta.Text)
 					if !ok {
 						malformed("anthropic: text_delta for block %d is not a string", e.Index)
 						return
 					}
-					if b.kind == vocab.KindText && s != "" {
+					if s != "" {
 						c = vocab.TextDelta{Index: e.Index, Text: s}
 					}
 				case "thinking_delta":
+					if b.kind != vocab.KindReasoning || b.redacted {
+						continue
+					}
 					s, ok := b.joinText(e.Delta.Thinking)
 					if !ok {
 						malformed("anthropic: thinking_delta for block %d is not a string", e.Index)
 						return
 					}
-					if b.kind == vocab.KindReasoning && s != "" {
+					if s != "" {
 						c = vocab.ReasoningDelta{Index: e.Index, Text: s}
 					}
 				case "signature_delta":
