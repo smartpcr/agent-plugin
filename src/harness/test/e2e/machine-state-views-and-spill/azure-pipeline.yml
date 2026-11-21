@@ -1,5 +1,8 @@
 # Stage 8.1 E2E (typed machine state and stored folds): machine state survives
-# restart, and a changed stored-fold version rebuilds (TC-08). service:sqlite is
+# restart, and a changed stored-fold version rebuilds (TC-08). Stage 8.2 E2E
+# (built-in views, projects and session listing): refold equals stored for the
+# four built-in views, listing by project equals the committed golden, and a
+# hidden session's agent is stopped with cause hidden (TC-08). service:sqlite is
 # embedded (modernc.org/sqlite in the test binary), every dsh.db lives under
 # t.TempDir(); no DSN, no secrets. A compose job (non-gating) runs the same
 # tests against a dsh-home volume via tests/e2e/machine-state-views-and-spill.
