@@ -98,13 +98,24 @@ type Anchor struct {
 // the nodes whose key lies between Start's and End's keys. A source it cites
 // outside that range (provenance) stays. Only a node that replaced others has
 // a key other than its seq, so only those are kept (Anchors), and an anchor
-// goes when its node is replaced: the state grows with the retained rewritten
-// nodes, never with the appended messages.
+// goes when its node is replaced.
+//
+// The state is bounded: at most MaxAnchors anchors are kept, the newest. An
+// evicted anchor's node is then ordered by its seq, which may misplace a
+// later range's ends, so the fold says so (Approximate, sticky) and the
+// Meter's Breakdown and Pressure read the system prompts from the session's
+// surface, their one owner, instead (token-meter.2, .6). Exact positions for
+// every rewritten node would need one entry per node, which DH-ADR-LLM-9
+// rules out.
 type Breakdown struct {
 	System      []SystemPrice `json:"system,omitempty"`
 	SystemTotal int           `json:"system_total"`
 	Anchors     []Anchor      `json:"anchors,omitempty"`
+	Approximate bool          `json:"approximate,omitempty"`
 }
+
+// MaxAnchors bounds the anchors a Breakdown keeps.
+const MaxAnchors = 16
 
 // key is the order key of the retained node at seq.
 func (s Breakdown) key(seq event.Seq) event.Seq {
@@ -143,7 +154,7 @@ func BreakdownView() views.Definition[Breakdown] {
 				return s, false
 			}
 			next := s.step(ev, m)
-			return next, !slices.Equal(next.System, s.System) || !slices.Equal(next.Anchors, s.Anchors)
+			return next, !slices.Equal(next.System, s.System) || !slices.Equal(next.Anchors, s.Anchors) || next.Approximate != s.Approximate
 		},
 	}
 }
@@ -195,10 +206,14 @@ func (s Breakdown) step(ev event.Event, m vocab.Message) Breakdown {
 	for _, p := range kept {
 		n += p.Tokens
 	}
+	approx := s.Approximate
+	if len(anchors) > MaxAnchors {
+		anchors, approx = anchors[len(anchors)-MaxAnchors:], true
+	}
 	if len(anchors) == 0 {
 		anchors = nil
 	}
-	return Breakdown{System: kept, SystemTotal: n, Anchors: anchors}
+	return Breakdown{System: kept, SystemTotal: n, Anchors: anchors, Approximate: approx}
 }
 
 // Sample is the last provider-reported context: the usage of a settled step
@@ -220,14 +235,17 @@ type Sample struct {
 // It also carries the session's calibration factor. Surface is the
 // heuristic's running price of the retained non-system nodes and Header that of
 // the request header's tools; both are exact until a replacement removes a
-// node whose price the bounded state does not keep (Inexact). At a sample whose
-// request was the fold's latest state (nothing on the surface or the header
-// changed after its requestAsOf) and while the running price is exact, Factor
-// is the sample's reported prompt over the heuristic's price of that same
-// request envelope. Otherwise Factor keeps the last such ratio, so a compaction
-// or a header change scales the estimate by it rather than dropping back to
-// the raw heuristic (llm.md, token-meter.4). Bounded: it grows with the log
-// only as Breakdown does.
+// node whose price the bounded state does not keep (Inexact). At every sample
+// Factor is the sample's reported prompt over the heuristic's price of that
+// same request: the estimate the runtime recorded on the settlement when it
+// sent it (llm.Attempt.Estimate), so a request after any number of
+// compactions recalibrates. A settlement without one (written before the
+// field existed) calibrates on the running price instead, and only when that
+// is exact and its request was the fold's latest state (nothing on the surface
+// or the header changed after its requestAsOf). Otherwise Factor keeps the
+// last ratio, so a compaction or a header change scales the estimate by it
+// rather than dropping back to the raw heuristic (llm.md, token-meter.4).
+// Bounded: it grows with the log only as Breakdown does.
 type Pressure struct {
 	Sample         *Sample   `json:"sample,omitempty"`
 	System         Breakdown `json:"system"`
@@ -295,7 +313,12 @@ func PressureView() views.Definition[Pressure] {
 					if p.RequestAsOf != nil {
 						asOf = *p.RequestAsOf
 					}
-					if !s.Inexact && s.Changed <= asOf {
+					switch {
+					case p.Estimate > 0:
+						// The runtime priced the request it sent: the same
+						// request's ratio, whatever was rewritten before it.
+						s.Factor = Calibration(Prompt(*p.Usage), p.Estimate)
+					case !s.Inexact && s.Changed <= asOf:
 						s.Factor = Calibration(Prompt(*p.Usage), s.Surface+s.System.SystemTotal+s.Header)
 					}
 					s.Sample = &Sample{Seq: ev.Seq(), RequestAsOf: asOf, RequestDigest: p.RequestDigest,

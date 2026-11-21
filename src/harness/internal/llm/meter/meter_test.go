@@ -336,9 +336,15 @@ func newSession(t *testing.T) (session.Handle, surface.RequestHeader, event.Seq)
 
 func answer(t *testing.T, h session.Handle, asOf event.Seq, u *vocab.Usage) event.Seq {
 	t.Helper()
+	return answerPriced(t, h, asOf, u, 0)
+}
+
+// answerPriced settles a step whose request the runtime priced at estimate.
+func answerPriced(t *testing.T, h session.Handle, asOf event.Seq, u *vocab.Usage, estimate int) event.Seq {
+	t.Helper()
 	m := must(vocab.RestoreMessage("a", vocab.RoleAssistant, nil, vocab.TextBlock("the answer")))
 	r := must(h.Append(bg, must(event.AssistantMessage.Draft(event.Append(), event.AssistantMessagePayload{
-		Message: m, RequestAsOf: &asOf, RequestDigest: "sha256:ab", Usage: u}))))
+		Message: m, RequestAsOf: &asOf, RequestDigest: "sha256:ab", Usage: u, Estimate: estimate}))))
 	return r.Seq
 }
 
@@ -410,6 +416,92 @@ func TestMeterMeasuresTheSession(t *testing.T) {
 	answer(t, h, asOf, &vocab.Usage{Input: 1, Output: 1})
 	if g := must(m.Measure(bg, h, hdr2)); !g.Calibrated || g.Factor != 2 {
 		t.Fatalf("a stale sample recalibrated: %+v", g)
+	}
+
+	// A fresh request after the compaction, priced by the runtime when sent,
+	// recalibrates to its own ratio; a second compaction then keeps that ratio,
+	// not the first one, and so does a fold resumed from a checkpoint.
+	fresh := answerPriced(t, h, h.Len()-1, &vocab.Usage{Input: 3 * 40, Output: 1}, 40)
+	sum2 := must(vocab.RestoreMessage("c2", vocab.RoleUser, nil, vocab.TextBlock("summary again")))
+	must(h.Append(bg, must(event.UserMessage.Draft(event.Replace(fresh, fresh), event.UserMessagePayload{Message: sum2}, fresh))))
+	if g := must(m.Measure(bg, h, hdr2)); !g.Calibrated || g.Factor != 3 || g.Tokens != meter.Calibrated(g.Estimate, 3) {
+		t.Fatalf("after a second compaction: %+v", g)
+	}
+	evs := must(h.Read(bg, 0, 0))
+	d := meter.PressureView()
+	whole := views.Refold(d, session.Header{}, evs)
+	for cut := range evs {
+		if from := views.FoldFrom(d, views.Refold(d, session.Header{}, evs[:cut]), evs[cut:]); !reflect.DeepEqual(from, whole) {
+			t.Fatalf("resumed at %d: %+v, from zero %+v", cut, from, whole)
+		}
+	}
+	if whole.Factor != 3 {
+		t.Fatalf("the fold's factor %v", whole.Factor)
+	}
+}
+
+// DH-T-LLM-15: the breakdown's state is bounded. Rewriting every message one by
+// one keeps at most MaxAnchors anchors, with or without system prompts; past
+// that the fold says it is approximate and the Meter reads the system prompts
+// and the pressure from the session's surface, which then still match it.
+func TestBreakdownStaysBoundedUnderRewrites(t *testing.T) {
+	short := strings.Repeat("a", 40)
+	rewrites := func(n int, sys bool) []event.Event {
+		var evs []event.Event
+		if sys {
+			evs = append(evs, system(t, 0, event.Append(), short))
+		} else {
+			evs = append(evs, user(t, 0))
+		}
+		for i := 1; i <= n; i++ {
+			evs = append(evs, user(t, i))
+		}
+		if sys {
+			evs = append(evs, system(t, n+1, event.Append(), short))
+		} else {
+			evs = append(evs, user(t, n+1))
+		}
+		for i := 1; i <= n; i++ {
+			evs = append(evs, summary(t, n+1+i, event.Replace(event.Seq(i), event.Seq(i))))
+		}
+		return evs
+	}
+	for _, sys := range []bool{false, true} {
+		few := views.Refold(meter.BreakdownView(), session.Header{}, rewrites(meter.MaxAnchors, sys))
+		many := views.Refold(meter.BreakdownView(), session.Header{}, rewrites(200, sys))
+		if few.Approximate || !many.Approximate || len(many.Anchors) != meter.MaxAnchors {
+			t.Fatalf("system prompts %v: %d anchors (approximate %v), %d anchors (approximate %v)", sys, len(few.Anchors), few.Approximate, len(many.Anchors), many.Approximate)
+		}
+		pf := views.Refold(meter.PressureView(), session.Header{}, rewrites(50, sys))
+		pm := views.Refold(meter.PressureView(), session.Header{}, rewrites(400, sys))
+		// The same entries; only their seqs' digits grow (two seqs per anchor).
+		if a, b := len(must(json.Marshal(pf))), len(must(json.Marshal(pm))); len(pm.System.Anchors) != meter.MaxAnchors || b > a+2*meter.MaxAnchors+12 {
+			t.Fatalf("system prompts %v: pressure grew from %d to %d bytes (%d anchors) over 350 rewrites", sys, a, b, len(pm.System.Anchors))
+		}
+		if got, want := priced(many), surfaceSystems(t, rewrites(200, sys)); !slices.Equal(got, want) {
+			t.Fatalf("system prompts %v: priced %v, the surface retains %v", sys, got, want)
+		}
+	}
+
+	// On a session, an approximate fold defers to the surface.
+	h, hdr, _ := newSession(t)
+	m := must(meter.New(views.New(), meter.DefaultConfig()))
+	var us []event.Seq
+	for i := range meter.MaxAnchors + 2 {
+		u := must(vocab.RestoreMessage(fmt.Sprintf("m%d", i), vocab.RoleUser, nil, vocab.TextBlock("more")))
+		us = append(us, must(h.Append(bg, must(event.UserMessage.Draft(event.Append(), event.UserMessagePayload{Message: u})))).Seq)
+	}
+	for _, q := range us {
+		c := must(vocab.RestoreMessage("c", vocab.RoleUser, nil, vocab.TextBlock("summary")))
+		must(h.Append(bg, must(event.UserMessage.Draft(event.Replace(q, q), event.UserMessagePayload{Message: c}, q))))
+	}
+	b := must(m.Breakdown(bg, h))
+	if !b.Approximate || len(b.System) != 1 || b.System[0].Seq != h.History().At(0).Seq() || b.SystemTotal != b.System[0].Tokens {
+		t.Fatalf("breakdown from the surface %+v", b)
+	}
+	r := must(m.Pressure(bg, h))
+	if got := must(m.Measure(bg, h, hdr)); !r.Measured || r.Tokens != got.Tokens {
+		t.Fatalf("pressure %+v, measured %+v", r, got)
 	}
 }
 

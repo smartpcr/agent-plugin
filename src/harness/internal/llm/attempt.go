@@ -27,6 +27,9 @@ type Attempt struct {
 	// ServedBy names the llm.StreamAround listener that served the stream in
 	// place of the provider; "" when the route's adapter served it.
 	ServedBy string
+	// Estimate is the token meter's heuristic price of the request sent
+	// (meter.EstimateRequest), the denominator of the session's calibration.
+	Estimate int
 }
 
 // Succeeded is true when the attempt finished without a failure and produced a
@@ -54,11 +57,11 @@ func (a Attempt) Draft() (event.Draft, error) {
 	if a.Succeeded() {
 		return event.AssistantMessage.Draft(event.Append(), event.AssistantMessagePayload{
 			Message: *a.Message, RequestAsOf: &asOf, RequestDigest: a.RequestDigest,
-			Usage: a.Usage, Timing: &timing, ServedBy: a.ServedBy,
+			Usage: a.Usage, Timing: &timing, ServedBy: a.ServedBy, Estimate: a.Estimate,
 		})
 	}
 	return event.AssistantAttempt.Draft(event.AssistantAttemptPayload{
 		Message: a.Message, RequestAsOf: &asOf, RequestDigest: a.RequestDigest,
-		Usage: a.Usage, Timing: &timing, Failure: a.Finish.Failure, ServedBy: a.ServedBy,
+		Usage: a.Usage, Timing: &timing, Failure: a.Finish.Failure, ServedBy: a.ServedBy, Estimate: a.Estimate,
 	})
 }

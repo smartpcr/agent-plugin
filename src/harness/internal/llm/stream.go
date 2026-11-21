@@ -5,6 +5,7 @@ import (
 	"errors"
 	"iter"
 
+	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/meter"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
 )
@@ -23,6 +24,7 @@ func (p *prepared) Stream(ctx context.Context, req session.Request, sink Attempt
 		rec.Timing.Start = p.rt.clock()
 		if !req.IsZero() {
 			rec.Purpose = req.Meta().Purpose
+			rec.Estimate = meter.EstimateRequest(req)
 		}
 		fin, asm := p.run(ctx, req, yield, &rec)
 		p.settle(&rec, fin, asm)

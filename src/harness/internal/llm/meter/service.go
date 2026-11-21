@@ -62,13 +62,40 @@ func (m *Meter) Usage(ctx context.Context, s session.ReadSession) (Usage, error)
 	return m.usage.Get(snap)
 }
 
-// Breakdown is the session's contextBreakdown fold.
+// Breakdown is the session's contextBreakdown fold; once the fold is
+// Approximate, the prices of the system prompts the session's surface retains.
 func (m *Meter) Breakdown(ctx context.Context, s session.ReadSession) (Breakdown, error) {
 	snap, err := m.reg.Read(ctx, s, BreakdownKey)
 	if err != nil {
 		return Breakdown{}, err
 	}
-	return m.breakdown.Get(snap)
+	b, err := m.breakdown.Get(snap)
+	if err != nil || !b.Approximate {
+		return b, err
+	}
+	return surfaceBreakdown(s.History(), snap.AsOf)
+}
+
+// surfaceBreakdown prices the system nodes of h before the cut at.
+func surfaceBreakdown(h surface.History, at event.Seq) (Breakdown, error) {
+	out := Breakdown{Approximate: true}
+	for i := range h.Len() {
+		n := h.At(i)
+		if n.Seq() >= at {
+			return Breakdown{}, ErrMoved
+		}
+		if n.Type() != event.SystemMessage.Name() {
+			continue
+		}
+		msg, err := n.Message()
+		if err != nil {
+			return Breakdown{}, err
+		}
+		p := SystemPrice{Seq: n.Seq(), Key: n.Seq(), Tokens: EstimateMessage(msg)}
+		out.System = append(out.System, p)
+		out.SystemTotal += p.Tokens
+	}
+	return out, nil
 }
 
 // Measurement is the heuristic's price of a session's current surface under a
@@ -161,8 +188,9 @@ type Reading struct {
 func (r Reading) Fraction(window int) float64 { return fraction(r.Tokens, window) }
 
 // Pressure is the session's context pressure: the contextPressure fold's
-// projection, or, after a compaction since the last sample, the measurement of
-// the current surface under the header in force.
+// projection, or, after a compaction since the last sample or once the fold's
+// system prices are Approximate, the measurement of the current surface under
+// the header in force.
 func (m *Meter) Pressure(ctx context.Context, s session.ReadSession) (Reading, error) {
 	snap, err := m.reg.Read(ctx, s, PressureKey)
 	if err != nil {
@@ -172,7 +200,7 @@ func (m *Meter) Pressure(ctx context.Context, s session.ReadSession) (Reading, e
 	if err != nil {
 		return Reading{}, err
 	}
-	if !p.Compacted {
+	if !p.Compacted && !p.System.Approximate {
 		return Reading{AsOf: snap.AsOf, Tokens: p.Projected()}, nil
 	}
 	h, _ := s.RequestHeader()
@@ -189,6 +217,21 @@ func (m *Meter) EstimateMessage(msg vocab.Message) int { return EstimateMessage(
 // EstimateHeader is the heuristic's tokens of a request header's tool schemas:
 // each tool's name, description and parameter document, plus a block's framing.
 func EstimateHeader(h surface.RequestHeader) int { return EstimateTools(h.Tools) }
+
+// EstimateRequest is the heuristic's tokens of a built request: its messages
+// and its tools, the envelope a provider's reported prompt prices. A request
+// whose messages cannot be decoded is priced at 0 (unknown).
+func EstimateRequest(req session.Request) int {
+	msgs, err := req.Messages()
+	if err != nil {
+		return 0
+	}
+	n := EstimateTools(req.Tools())
+	for _, m := range msgs {
+		n += EstimateMessage(m)
+	}
+	return n
+}
 
 // EstimateTools is the heuristic's tokens of tool schemas: each tool's name,
 // description and parameter document, plus a block's framing.
