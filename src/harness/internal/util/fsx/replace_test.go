@@ -397,6 +397,57 @@ func TestLockBeyondEnd(t *testing.T) {
 	}
 }
 
+// TestLockShared: shared holders coexist; an exclusive holder excludes them and
+// they exclude it; LockShared waits for the exclusive holder to go.
+func TestLockShared(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gc.lock")
+	a, err := TryLockShared(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := TryLockShared(path)
+	if err != nil {
+		t.Fatalf("second shared holder: %v", err)
+	}
+	if _, err := TryLock(path); !errors.Is(err, ErrLocked) {
+		t.Fatalf("exclusive while shared is held: %v, want ErrLocked", err)
+	}
+	if err := errors.Join(a.Unlock(), b.Unlock()); err != nil {
+		t.Fatal(err)
+	}
+	ex, err := TryLock(path)
+	if err != nil {
+		t.Fatalf("exclusive once shared holders left: %v", err)
+	}
+	if _, err := TryLockShared(path); !errors.Is(err, ErrLocked) {
+		t.Fatalf("shared while exclusive is held: %v, want ErrLocked", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	if _, err := LockShared(ctx, path); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("LockShared while exclusive is held: %v, want the deadline", err)
+	}
+	got := make(chan error, 1)
+	go func() {
+		l, err := LockShared(context.Background(), path)
+		if err == nil {
+			err = l.Unlock()
+		}
+		got <- err
+	}()
+	if err := ex.Unlock(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-got:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("LockShared did not return after the exclusive holder left")
+	}
+}
+
 // TestRootedDurable: a durable rooted publication runs the durability step for the
 // published name and, when that step fails, reports ErrDurabilityUnknown with the
 // content in place rather than success; a non-durable one skips it.

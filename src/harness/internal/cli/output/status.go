@@ -72,6 +72,11 @@ var codes = map[herr.Reason]int{
 	"profile/bad-layer":  Config,
 	"profile/bad-bundle": Config,
 
+	"attachment/corrupt":     Failed,
+	"attachment/not-found":   Invalid,
+	"attachment/read-failed": Failed,
+	"attachment/too-large":   Limit,
+
 	"boot/required":         Config,
 	"boot/host-preparation": Fatal,
 	"boot/panic":            Fatal,
@@ -109,6 +114,10 @@ var codes = map[herr.Reason]int{
 	"settings/not-live":   Invalid,
 	"settings/overridden": Busy,
 	"settings/unsaved":    Failed,
+
+	"spill/not-found": Invalid,
+	"spill/not-owner": Denied,
+	"spill/too-large": Limit,
 
 	"storage/authority":      Config,
 	"storage/busy":           Busy,

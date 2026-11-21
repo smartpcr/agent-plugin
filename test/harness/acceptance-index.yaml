@@ -98,3 +98,8 @@ stages:
     # MCP server over HTTP (impl.md step 39.15); authored in DH-S-6.
     - id: DH-E-UTIL-1
       authored: DH-S-6
+    # A five-megabyte command output bounded and recoverable under a real sandbox,
+    # once per OS (storage.md DH-E-STORAGE-3); authored by Stage 8.3 (impl.md
+    # DH-S-8 step "Author DH-E-STORAGE-3").
+    - id: DH-E-STORAGE-3
+      authored: DH-S-8

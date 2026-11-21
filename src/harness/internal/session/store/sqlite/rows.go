@@ -141,8 +141,12 @@ func boolInt(b bool) int {
 const insertEvent = `INSERT INTO events (session, seq, time, type, pv, ignorable, surface, env, data, cold)
 	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
-// insertRecords writes recs to session uid as they are and returns their size.
-func insertRecords(ctx context.Context, tx *sql.Tx, uid int64, recs []store.Record) (int64, error) {
+const insertRef = `INSERT OR IGNORE INTO blob_refs (session, seq, ref) VALUES (?, ?, ?)`
+
+// insertRecords writes recs to session uid as they are, with the blob_refs rows
+// of the references their payloads cite (decoded with reg), and returns their
+// size.
+func insertRecords(ctx context.Context, tx *sql.Tx, reg *event.Registry, uid int64, recs []store.Record) (int64, error) {
 	if len(recs) == 0 {
 		return 0, nil
 	}
@@ -151,6 +155,12 @@ func insertRecords(ctx context.Context, tx *sql.Tx, uid int64, recs []store.Reco
 		return 0, err
 	}
 	defer stmt.Close()
+	var refStmt *sql.Stmt
+	defer func() {
+		if refStmt != nil {
+			_ = refStmt.Close()
+		}
+	}()
 	var size int64
 	for _, r := range recs {
 		if r.Seq > maxSeq {
@@ -163,6 +173,20 @@ func insertRecords(ctx context.Context, tx *sql.Tx, uid int64, recs []store.Reco
 		if _, err := stmt.ExecContext(ctx, uid, int64(r.Seq), r.Time, r.Type, r.Version, boolInt(r.Ignorable),
 			int(r.Op), env, r.Payload, nullable(r.Cold)); err != nil {
 			return 0, err
+		}
+		refs, err := store.BlobRefs(reg, r)
+		if err != nil {
+			return 0, err
+		}
+		for _, ref := range refs {
+			if refStmt == nil {
+				if refStmt, err = tx.PrepareContext(ctx, insertRef); err != nil {
+					return 0, err
+				}
+			}
+			if _, err := refStmt.ExecContext(ctx, uid, int64(r.Seq), ref); err != nil {
+				return 0, err
+			}
 		}
 		size += int64(len(r.Payload) + len(r.Cold))
 	}

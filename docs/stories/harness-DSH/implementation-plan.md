@@ -525,10 +525,11 @@ storyId: "harness:DSH"
 ## Stage 8.2: Builtin Views Projects and Session Listing
 
 ### Implementation Steps
-- [x] impl.md step 8.3 / DH-D-VIEW-3 (P1, pulled forward): built-in views in `internal/session/views` -- list summary, turn index, statistics, event index.
-- [x] impl.md step 8.4 / DH-D-STORAGE-7 (P1, pulled forward): projects group sessions; a hidden session never keeps working (hiding stops its agents).
-- [x] impl.md step 8.5 / DH-D-VIEW-5: list, observe, trace and follow sessions across forks.
-- [x] Author `DH-E-STORAGE-1` (runs DH-S-19) and `DH-E-STORAGE-2` (runs DH-S-23) as scenario files.
+- [ ] impl.md step 8.3 / DH-D-VIEW-3 (P1, pulled forward): built-in views in `internal/session/views` -- list summary, turn index, statistics, event index.
+- [ ] impl.md step 8.4 / DH-D-STORAGE-7 (P1, pulled forward): projects group sessions; a hidden session never keeps working (hiding stops its agents).
+- [ ] impl.md step 8.5 / DH-D-VIEW-5: list, observe, trace and follow sessions across forks.
+- [ ] Author `DH-E-STORAGE-1` (runs DH-S-19) and `DH-E-STORAGE-2` (runs DH-S-23) as scenario files.
+- [ ] Close DH-S-8 (moved here from Stage 8.3 by operator decision `dsh-s8-closure-waits-stage-8-2`): add the refold-equals-stored evidence for the four built-in views to `docs/stories/harness-DSH/evidence/DH-S-8.md`, tick impl.md steps 8.3-8.5 as built, and raise `built-through` in `test/harness/acceptance-index.yaml` to DH-S-8.
 
 ### Dependencies
 - phase-machine-state-views-and-spill/stage-typed-machine-state-and-stored-folds
@@ -541,17 +542,22 @@ storyId: "harness:DSH"
 ## Stage 8.3: Spill Store and Attachments
 
 ### Implementation Steps
-- [ ] impl.md step 8.6 / DH-D-STORAGE-5: spill store under `<home>/spill/` -- the full text of a large result saved privately, addressed by digest, readable back; only a bounded head enters the log.
-- [ ] impl.md step 8.7 / DH-D-STORAGE-3 (P1, pulled forward): attachments under `<home>/blobs/` stored durably and read back verified by digest.
-- [ ] Author `DH-E-STORAGE-3` (runs DH-S-39). Close DH-S-8: write `docs/stories/harness-DSH/evidence/DH-S-8.md` (refold-equals-stored, manual checks: fold version change and the 5 MB result) and tick impl.md steps 8.1-8.7 as built.
+- [x] impl.md step 8.6 / DH-D-STORAGE-5: spill store under `<home>/spill/` -- the full text of a large result saved privately, addressed by a fixed-length id reserved before writing (owner-directory hash, 96 random bits, a safe name, as storage.md DH-D-STORAGE-5 specifies), readable back; only a bounded head enters the log.
+- [x] impl.md step 8.7 / DH-D-STORAGE-3 (P1, pulled forward): attachments under `<home>/blobs/` stored durably and read back verified by digest.
+- [x] Author `DH-E-STORAGE-3` (runs DH-S-39). Write `docs/stories/harness-DSH/evidence/DH-S-8.md` with this stage's evidence (manual checks: fold version change and the 5 MB result) and tick impl.md steps 8.1, 8.2, 8.6 and 8.7 as built. Closing DH-S-8 (refold-equals-stored, impl.md 8.3-8.5) is Stage 8.2's step.
+- [x] Built with DH-D-STORAGE-3 (operator decision `defer-gc-lock-blob-refs`: build now): savers hold `<home>/blobs/gc.lock` shared and the collector's `LockCollection` takes it exclusively; cited references are `blob_refs` rows (layout 3 of the session store) written in the append, import and fork transactions and removed with their session; `blob.Store.ReferencedBy` reads them.
+
+> Status of Stage 8.3:
+> - Spill addressing follows storage.md DH-D-STORAGE-5 (operator decision `spill-addressing`: storage.md's random id governs; this plan's wording was amended from "addressed by digest"). The DH-S-39 scenario DH-E-STORAGE-3 is authored and compile-checked with the `scenario` build tag but has not been run: it needs the real sandbox and the spill policy, which later stages build.
+> - DH-S-8 closure belongs to Stage 8.2 (operator decision `dsh-s8-closure-waits-stage-8-2`). `built-through` stays at DH-S-7 until that step lands.
 
 ### Dependencies
 - phase-machine-state-views-and-spill/stage-typed-machine-state-and-stored-folds
 
 ### Test Scenarios
-- [ ] Scenario: Large result spilled and recoverable -- Given a 5 MB tool result, When it is stored through the spill store, Then the log holds a head no larger than the configured bound plus a spill reference, and reading the reference returns all 5 MB byte-identical (TC-08) [proof: service:filesystem; deps: filesystem via `t.TempDir()` home; sqlite embedded for the log row]
-- [ ] Scenario: Corrupted attachment detected -- Given an attachment stored in `blobs/`, When one byte of the file is flipped on disk and it is read back, Then the read fails with a digest-mismatch error (TC-08) [proof: service:filesystem; deps: filesystem via `t.TempDir()` home]
-- [ ] Scenario: Spill files are private -- Given a spilled result, When the file's permissions are inspected, Then it is private to its owner -- on Unix mode `0600` inside a `0700` `spill/`; on Windows a protected DACL whose only ACEs are for the owner SID, `SYSTEM` and `Administrators`, read back with `GetNamedSecurityInfo` (TC-08) [proof: service:filesystem; deps: filesystem via `t.TempDir()` home]
+- [x] Scenario: Large result spilled and recoverable -- Given a 5 MB tool result, When it is stored through the spill store, Then the log holds a head no larger than the configured bound plus a spill reference, and reading the reference returns all 5 MB byte-identical (TC-08) [proof: service:filesystem; deps: filesystem via `t.TempDir()` home; sqlite embedded for the log row]
+- [x] Scenario: Corrupted attachment detected -- Given an attachment stored in `blobs/`, When one byte of the file is flipped on disk and it is read back, Then the read fails with a digest-mismatch error (TC-08) [proof: service:filesystem; deps: filesystem via `t.TempDir()` home]
+- [x] Scenario: Spill files are private -- Given a spilled result, When the file's permissions are inspected, Then it is private to its owner -- on Unix mode `0600` inside a `0700` `spill/`; on Windows a protected DACL whose only ACEs are for the owner SID, `SYSTEM` and `Administrators`, read back with `GetNamedSecurityInfo` (TC-08) [proof: service:filesystem; deps: filesystem via `t.TempDir()` home]
 
 # Phase 9: DeepSeek Provider Retry and Usage
 

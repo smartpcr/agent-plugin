@@ -116,10 +116,20 @@ type ToolCallPayload struct {
 	Arguments string `json:"arguments"`
 }
 
-// Spill names where an over-large tool output was moved (area A07).
+// Spill names where an over-large tool output was moved (area A07): Path is the
+// spill store's id of the file.
 type Spill struct {
 	Path  string `json:"path"`
 	Bytes int64  `json:"bytes"`
+}
+
+// BlobRefs cites the spill file, "spill:<id>", for the session store's blob_refs
+// rows (storage.md §6.2), so the collector keeps it while the event is logged.
+func (p ToolResultPayload) BlobRefs() []string {
+	if p.Spill == nil || p.Spill.Path == "" {
+		return nil
+	}
+	return []string{"spill:" + p.Spill.Path}
 }
 
 // ToolResultPayload is the result of one tool call. Version 2 added Spill.

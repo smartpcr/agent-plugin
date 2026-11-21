@@ -12,6 +12,21 @@ import (
 // makePrivate sets mode 0700, whatever the process mask.
 func makePrivate(path string) error { return os.Chmod(path, 0o700) }
 
+// createPrivate creates path with O_EXCL, which never follows a link, and sets
+// mode 0600 whatever the process mask (the mask can only narrow 0600).
+func createPrivate(path string) (*os.File, error) {
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return nil, err
+	}
+	return f, nil
+}
+
 // checkPrivate requires the current user as owner and no group or other bits; a
 // directory needs owner rwx (mode 0700 exactly), a file owner read.
 func checkPrivate(_ string, info fs.FileInfo) string {

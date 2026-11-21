@@ -180,12 +180,14 @@ func (s *Store) finishAll(ctx context.Context, doomed []tomb) error {
 	return errors.Join(errs...)
 }
 
-// finish removes a tombstoned session: its spill directory, its events chunk by
-// chunk, then its checkpoints, requests and row. Every step can be repeated, so a
-// second instance finishing the same tombstone, or a resumed one, is harmless.
+// finish removes a tombstoned session: its spill files (removeSpill), its events
+// chunk by chunk, then its blob_refs rows, checkpoints, requests and row. Every
+// step can be repeated, so a second instance finishing the same tombstone, or a
+// resumed one, is harmless: the session's blob_refs rows go only in the last
+// transaction, so a resumed finish judges its spill files as the first did.
 func (s *Store) finish(ctx context.Context, t tomb) error {
 	if s.spill != "" {
-		if err := removeAll(filepath.Join(s.spill, SpillName(t.id))); err != nil {
+		if err := s.removeSpill(ctx, t); err != nil {
 			return ioErr("delete "+t.id+": spill", err)
 		}
 	}
@@ -232,6 +234,8 @@ func (s *Store) finish(ctx context.Context, t tomb) error {
 			arg any
 		}{
 			{`DELETE FROM events WHERE session = ?`, t.uid},
+			{`DELETE FROM blob_refs WHERE session = ?`, t.uid},
+			{`DELETE FROM lineage WHERE session = ?`, t.uid},
 			{`DELETE FROM checkpoints WHERE session = ?`, t.uid},
 			{`DELETE FROM requests WHERE session = ?`, t.id},
 			{`DELETE FROM sessions WHERE uid = ?`, t.uid},
@@ -242,6 +246,198 @@ func (s *Store) finish(ctx context.Context, t tomb) error {
 		}
 		return nil
 	})
+}
+
+// spillPrefix is the blob_refs form of every spill file in the directory dir.
+func spillPrefix(dir string) string { return "spill:" + dir + "/" }
+
+// removeSpill removes the spill files of tombstoned session t that no active
+// session cites (storage.md §6.1: a file goes "when the session is deleted and
+// no fork cites it"). With nothing cited its whole directory goes. A cited file
+// stays, with its directory, for the fork that inherited the citation; when the
+// last citing session is deleted, its finish removes the file, because no
+// active session then owns the directory or cites the file.
+func (s *Store) removeSpill(ctx context.Context, t tomb) error {
+	own := SpillName(t.id)
+	var (
+		kept    = map[string]bool{} // files of own cited by another active session
+		orphans []string            // files t cites in a directory no active session owns or cites
+	)
+	err := s.read(ctx, func(tx *sql.Tx) error {
+		p := spillPrefix(own)
+		rs, err := tx.QueryContext(ctx, `SELECT DISTINCT b.ref FROM blob_refs b JOIN sessions s ON s.uid = b.session
+			WHERE s.state = 'active' AND b.session <> ? AND substr(b.ref, 1, ?) = ?`, t.uid, len(p), p)
+		if err != nil {
+			return err
+		}
+		for rs.Next() {
+			var ref string
+			if err := rs.Scan(&ref); err != nil {
+				rs.Close()
+				return err
+			}
+			kept[strings.TrimPrefix(ref, p)] = true
+		}
+		rs.Close()
+		if err := rs.Err(); err != nil {
+			return err
+		}
+		owners := map[string]bool{}
+		ids, err := tx.QueryContext(ctx, `SELECT id FROM sessions WHERE state = 'active'`)
+		if err != nil {
+			return err
+		}
+		for ids.Next() {
+			var id string
+			if err := ids.Scan(&id); err != nil {
+				ids.Close()
+				return err
+			}
+			owners[SpillName(id)] = true
+		}
+		ids.Close()
+		if err := ids.Err(); err != nil {
+			return err
+		}
+		inherited, err := tx.QueryContext(ctx, `SELECT DISTINCT b.ref FROM blob_refs b WHERE b.session = ?
+			AND substr(b.ref, 1, 6) = 'spill:' AND substr(b.ref, 1, ?) <> ?
+			AND NOT EXISTS (SELECT 1 FROM blob_refs o JOIN sessions s ON s.uid = o.session
+				WHERE o.ref = b.ref AND o.session <> b.session AND s.state = 'active')`, t.uid, len(p), p)
+		if err != nil {
+			return err
+		}
+		defer inherited.Close()
+		for inherited.Next() {
+			var ref string
+			if err := inherited.Scan(&ref); err != nil {
+				return err
+			}
+			dir, name, ok := strings.Cut(strings.TrimPrefix(ref, "spill:"), "/")
+			if ok && !owners[dir] && safeSpillSegment(dir) && safeSpillSegment(name) {
+				orphans = append(orphans, dir+"/"+name)
+			}
+		}
+		return inherited.Err()
+	})
+	if err != nil {
+		return err
+	}
+	errs := []error{s.removeOrphans(orphans)}
+	dir := filepath.Join(s.spill, own)
+	if len(kept) == 0 {
+		return errors.Join(append(errs, removeAll(dir))...)
+	}
+	info, err := os.Lstat(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return errors.Join(errs...)
+	}
+	if err != nil || !info.IsDir() {
+		// Not a directory (a planted link): only the name goes, never its target.
+		return errors.Join(append(errs, err, removeAll(dir))...)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return errors.Join(append(errs, err)...)
+	}
+	for _, e := range entries {
+		if !kept[e.Name()] {
+			if err := removeAll(filepath.Join(dir, e.Name())); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// removeOrphans removes spill files "<dir>/<name>" through a handle rooted at
+// the spill directory, never following a link: a <dir> that is not a real
+// directory (a link or junction planted in the spill directory) is left alone,
+// so nothing outside it is touched, and a <name> that is a link loses only the
+// link. A directory goes once it is empty, as another of its files may still
+// be cited.
+func (s *Store) removeOrphans(orphans []string) error {
+	if len(orphans) == 0 {
+		return nil
+	}
+	root, err := os.OpenRoot(s.spill)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	var errs []error
+	for _, o := range orphans {
+		dir, _, _ := strings.Cut(o, "/")
+		info, err := root.Lstat(dir)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if !info.IsDir() {
+			continue
+		}
+		if err := root.Remove(o); err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, err)
+			continue
+		}
+		_ = root.Remove(dir)
+	}
+	return errors.Join(errs...)
+}
+
+// Ancestors is every session session id was forked from, nearest first, as its
+// create transaction recorded them (layout 4's lineage); it survives the
+// deletion of any of them. The spill store (storage/spill/local) authorizes a
+// fork's reads by it. A session with no recorded lineage has none.
+func (s *Store) Ancestors(ctx context.Context, id string) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	var out []string
+	err := s.read(ctx, func(tx *sql.Tx) error {
+		out = out[:0]
+		rs, err := tx.QueryContext(ctx, `SELECT l.ancestor FROM lineage l JOIN sessions s ON s.uid = l.session
+			WHERE s.id = ? AND s.state = 'active' ORDER BY l.depth`, id)
+		if err != nil {
+			return err
+		}
+		defer rs.Close()
+		for rs.Next() {
+			var a string
+			if err := rs.Scan(&a); err != nil {
+				return err
+			}
+			out = append(out, a)
+		}
+		return rs.Err()
+	})
+	return out, err
+}
+
+// safeSpillSegment is a name a blob_refs row may use for a path segment below
+// <home>/spill: non-empty, not a dot name, no separator.
+func safeSpillSegment(s string) bool {
+	return s != "" && s != "." && s != ".." && !strings.ContainsAny(s, `/\:`)
+}
+
+// CitedByOther reports whether an active session other than owner logs an event
+// citing spill file id; it is the spill store's Citer (storage/spill/local), so
+// a spill Delete keeps what a fork cites, as a session deletion does.
+func (s *Store) CitedByOther(ctx context.Context, id, owner string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	var n int
+	err := s.read(ctx, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM blob_refs b JOIN sessions s ON s.uid = b.session
+			WHERE b.ref = ? AND s.state = 'active' AND s.id <> ?)`, "spill:"+id, owner).Scan(&n)
+	})
+	return n == 1, err
 }
 
 // FinishDeletions completes every tombstone whose deleter is gone (or is this

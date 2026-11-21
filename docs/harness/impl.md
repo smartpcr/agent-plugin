@@ -773,13 +773,13 @@ conversation API depend on attachments.
 
 **Steps.**
 
-- [ ] **8.1** [DH-D-STORAGE-1](areas/storage.md#dh-d-storage-1) Program state survives restarts in one typed store.
-- [ ] **8.2** [DH-D-VIEW-2](areas/session-views.md#dh-d-view-2) Stored state is never ahead of the log, and a changed fold rebuilds it.
+- [x] **8.1** [DH-D-STORAGE-1](areas/storage.md#dh-d-storage-1) Program state survives restarts in one typed store.
+- [x] **8.2** [DH-D-VIEW-2](areas/session-views.md#dh-d-view-2) Stored state is never ahead of the log, and a changed fold rebuilds it.
 - [ ] **8.3** [DH-D-VIEW-3](areas/session-views.md#dh-d-view-3) The built-in views: list summary, turn index, statistics, event index (P1, pulled forward).
 - [ ] **8.4** [DH-D-STORAGE-7](areas/storage.md#dh-d-storage-7) Projects group sessions, and a hidden session never keeps working (P1, pulled forward).
 - [ ] **8.5** [DH-D-VIEW-5](areas/session-views.md#dh-d-view-5) Sessions can be listed, observed, traced and followed across forks.
-- [ ] **8.6** [DH-D-STORAGE-5](areas/storage.md#dh-d-storage-5) The full text of a large result is saved privately and can be read back.
-- [ ] **8.7** [DH-D-STORAGE-3](areas/storage.md#dh-d-storage-3) Attached images and files are kept durably and read back verified (P1, pulled forward).
+- [x] **8.6** [DH-D-STORAGE-5](areas/storage.md#dh-d-storage-5) The full text of a large result is saved privately and can be read back.
+- [x] **8.7** [DH-D-STORAGE-3](areas/storage.md#dh-d-storage-3) Attached images and files are kept durably and read back verified (P1, pulled forward).
 
 **Manual checks.** Change a fold's version and record that its stored state is
 rebuilt on open; write a five-megabyte result and record the bounded head and the

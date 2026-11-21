@@ -169,6 +169,43 @@ UPDATE sessions SET last_prompt_at = COALESCE((SELECT MAX(e.time) FROM events e
 	WHERE e.session = sessions.uid AND e.type = 'user/message' AND e.time > 0), 0) * 1000000;
 CREATE INDEX sessions_prompt ON sessions ((CASE WHEN last_prompt_at > 0 THEN last_prompt_at ELSE created_at END) DESC, id);
 `,
+	// 5: blob_refs (session-store.md §6.2, storage.md §6.2): which stored object
+	// or spill file an event cites, as "<kind>:<id>". Rows are written in the
+	// append, import or fork transaction of their event and removed with their
+	// session; the collector (DH-D-STORAGE-9) keeps whatever a row names.
+	// Tool results logged before this layout are backfilled from their payload.
+	`
+CREATE TABLE blob_refs (
+	session INTEGER NOT NULL REFERENCES sessions (uid),
+	seq     INTEGER NOT NULL CHECK (seq >= 0),
+	ref     TEXT    NOT NULL CHECK (instr(ref, ':') > 1),
+	PRIMARY KEY (session, seq, ref)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX blob_refs_ref ON blob_refs (ref);
+INSERT OR IGNORE INTO blob_refs (session, seq, ref)
+	SELECT session, seq, 'spill:' || json_extract(data, '$.spill.path') FROM events
+	WHERE type = 'tool/result' AND json_valid(data) AND json_extract(data, '$.spill.path') <> '';
+`,
+	// 6: lineage (storage.md §6.1, DH-D-STORE-2): every ancestor id of a fork,
+	// nearest first, written in the fork's create transaction and removed with
+	// it. A fork keeps its whole ancestry when an intermediate session is
+	// deleted, so it can still read the spill files it inherited. Existing forks
+	// are backfilled from the fork_source chain.
+	`
+CREATE TABLE lineage (
+	session  INTEGER NOT NULL REFERENCES sessions (uid),
+	depth    INTEGER NOT NULL CHECK (depth >= 1),
+	ancestor TEXT    NOT NULL CHECK (ancestor <> ''),
+	PRIMARY KEY (session, depth)
+) STRICT, WITHOUT ROWID;
+WITH RECURSIVE chain (session, depth, ancestor) AS (
+	SELECT uid, 1, fork_source FROM sessions WHERE fork_source <> ''
+	UNION ALL
+	SELECT c.session, c.depth + 1, p.fork_source FROM chain c JOIN sessions p ON p.id = c.ancestor
+	WHERE p.fork_source <> '' AND c.depth < 256
+)
+INSERT OR IGNORE INTO lineage (session, depth, ancestor) SELECT session, depth, ancestor FROM chain;
+`,
 }
 
 // LayoutVersion is the layout this build writes: the number of migrations.
