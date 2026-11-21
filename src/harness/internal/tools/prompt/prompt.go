@@ -12,6 +12,7 @@
 package prompt
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -423,7 +424,7 @@ func (s *Service) Assemble(ctx context.Context, in Input) (Assembly, error) {
 	}
 	slices.SortStableFunc(order, func(a, b owned[Section]) int {
 		if a.v.Order != b.v.Order {
-			return a.v.Order - b.v.Order
+			return cmp.Compare(a.v.Order, b.v.Order)
 		}
 		return strings.Compare(a.v.Name, b.v.Name)
 	})
@@ -491,7 +492,7 @@ func (s *Service) Assemble(ctx context.Context, in Input) (Assembly, error) {
 				list = append(list, o)
 			}
 		}
-		slices.SortStableFunc(list, func(a, b owned[RuntimeContext]) int { return a.v.Order - b.v.Order })
+		slices.SortStableFunc(list, func(a, b owned[RuntimeContext]) int { return cmp.Compare(a.v.Order, b.v.Order) })
 		for _, o := range list {
 			text, ok, err := o.v.Func(in)
 			if err != nil {
