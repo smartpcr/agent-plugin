@@ -73,14 +73,14 @@ func TestFailedLaunchFailsLoudlyAndServingOneServes(t *testing.T) {
 
 	// (1) The port is held.
 	host := startDsh(t, nil, bin, args...)
-	pid := host.cmd.Process.Pid
+	pid := host.pid()
 	if !host.await(bound) {
-		t.Fatalf("the held-port launch did not exit within %s:\n%s", bound, host.stderr.String())
+		t.Fatalf("the held-port launch did not exit within %s:\n%s", bound, host.Stderr.String())
 	}
 	if code := host.code(); code != 78 {
-		t.Errorf("the held-port launch ended with %v after %s, want exit status 78", host.err, time.Since(host.start))
+		t.Errorf("the held-port launch ended with exit %d after %s, want exit status 78", code, time.Since(host.Started))
 	}
-	text := host.stderr.String()
+	text := host.Stderr.String()
 	for _, want := range []string{httpEntry, "required", port, optional, overlay, root} {
 		if !strings.Contains(text, want) {
 			t.Errorf("standard error does not name %q:\n%s", want, text)
@@ -89,7 +89,7 @@ func TestFailedLaunchFailsLoudlyAndServingOneServes(t *testing.T) {
 	if !regexp.MustCompile(regexp.QuoteMeta(overlay) + `:\d+:\d+`).MatchString(text) {
 		t.Errorf("standard error gives no line and column in %s:\n%s", overlay, text)
 	}
-	if out := host.stdout.String(); out != "" {
+	if out := host.Stdout.String(); out != "" {
 		t.Errorf("standard output is not empty:\n%s", out)
 	}
 	if out, _ := shell(t, expand(children, map[string]string{"pid": strconv.Itoa(pid)})); strings.TrimSpace(out) != "" {
@@ -103,13 +103,13 @@ func TestFailedLaunchFailsLoudlyAndServingOneServes(t *testing.T) {
 	host = startDsh(t, nil, bin, args...)
 	page := host.waitFor(t, bound, "readiness with a launch token", boot1Ready.FindString)
 	warnings := 0
-	for _, line := range strings.Split(host.stderr.String(), "\n") {
+	for _, line := range strings.Split(host.Stderr.String(), "\n") {
 		if strings.Contains(strings.ToLower(line), "warn") && strings.Contains(line, optional) {
 			warnings++
 		}
 	}
 	if warnings != 1 {
-		t.Errorf("%d warnings name %s, want 1:\n%s", warnings, optional, host.stderr.String())
+		t.Errorf("%d warnings name %s, want 1:\n%s", warnings, optional, host.Stderr.String())
 	}
 
 	// (3) The first page.
@@ -124,14 +124,14 @@ func TestFailedLaunchFailsLoudlyAndServingOneServes(t *testing.T) {
 	}
 
 	// (4) The termination signal: SIGTERM on POSIX, closing the console on Windows.
-	if err := terminate(t, host.cmd); err != nil {
+	if err := terminate(t, host); err != nil {
 		t.Fatalf("the termination signal: %v", err)
 	}
 	if !host.await(bound) {
 		t.Fatalf("the host did not exit within %s of the termination signal", bound)
 	}
 	if code := host.code(); code != 0 {
-		t.Errorf("after the termination signal the host ended with %v, want exit 0", host.err)
+		t.Errorf("after the termination signal the host ended with exit %d, want exit 0", code)
 	}
 	free, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%s", port))
 	if err != nil {

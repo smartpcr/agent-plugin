@@ -65,7 +65,8 @@ type Program struct {
 	// Argv is the binary (absolute, as Build returns) and its arguments.
 	Argv []string
 	// Env are "NAME=value" entries added to the host environment, which loses its
-	// credentials and DSH_* names first; DSH_HOME always names the temp home.
+	// credentials and DSH_* names first; DSH_HOME always names the temp home, and
+	// a DSH_HOME entry here is overridden.
 	Env []string
 	// Dir is the working directory; empty is the temp home's parent.
 	Dir string
@@ -115,7 +116,9 @@ func Start(t testing.TB, p Program) *Session {
 		closeAll(inR, inW, outR, outW)
 		t.Fatalf("launcher: %v", err)
 	}
-	env := subprocess.BuildEnv(os.Environ(), subprocess.EnvOptions{Entries: append([]string{"DSH_HOME=" + l.Root()}, p.Env...)})
+	// DSH_HOME is managed, so it is applied after p.Env: an entry there cannot point
+	// the program at a home other than the one Session.Home names and cleanup removes.
+	env := subprocess.BuildEnv(os.Environ(), subprocess.EnvOptions{Entries: p.Env, Managed: []string{"DSH_HOME=" + l.Root()}})
 	s := &Session{Home: l, Stderr: &testkit.Buffer{}}
 	proc, err := subprocess.Start(context.Background(), subprocess.Spec{Argv: p.Argv, Dir: dir, Env: env, Stdin: inR, Stdout: outW, Stderr: errW, Grace: Grace})
 	closeAll(inR, outW, errW)

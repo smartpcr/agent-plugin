@@ -190,15 +190,24 @@ their executing stages (DH-S-17, DH-S-21) bind those commands to the checkout. T
 index's `built-through` is
 raised to `DH-S-6`, so every ID authored at or before DH-S-6 must have its file.
 
+Every scenario run of the binary is tree-owned: `runDsh` and `startDsh`
+(`binary_test.go`) start it through the kit's `launcher.Run` / `launcher.Spawn`, i.e.
+`internal/world/subprocess` (Job Object, cgroup or process group). A run that
+outlives its bound, or a descendant that still holds its output, has the whole
+tree force-stopped within `3*launcher.Grace`. This is covered in the default suite by
+`TestRunTimeoutStopsTheTreeHoldingItsOutput` (a hung program whose grandchild holds
+its stdout: `Run` returns `ErrTimeout` in about 3.4 s and neither pid is alive).
+
 Termination in `DH-E-BOOT-1` and `DH-E-HOST-4` is the platform's own signal
 (`terminate_unix_test.go`, `terminate_windows_test.go`): SIGTERM on POSIX; on
-Windows the host gets a hidden console of its own and the console is closed, which
-the Go runtime delivers as `SIGTERM` (`CTRL_CLOSE_EVENT`), since Windows cannot send
-SIGTERM to another process. The mechanism was checked on this Windows 11 runner
-against a probe program that exits 0 on `SIGTERM` and 130 on an interrupt: it
-received `terminated` and exited 0. It was also checked against the `dsh web`
-built from this checkout: the host was still running after 5 s, and closing its
-console made it exit 0.
+Windows the tree's root is a re-exec of the test binary acting as a console host,
+which starts the binary in a hidden console of its own (still inside the Job
+Object). That console is then closed, which the Go runtime delivers as `SIGTERM`
+(`CTRL_CLOSE_EVENT`), since Windows cannot send SIGTERM to another process. The
+mechanism was checked on this Windows 11 runner, tree-owned, against a probe program
+that exits 0 on `SIGTERM` and 130 on an interrupt: 10 runs out of 10 received
+`terminated` and exited 0. It was also checked against the `dsh web` built from this
+checkout: closing its console made it exit 0.
 
 ```text
 $ go -C src/harness vet -tags scenario ./...          # exit 0

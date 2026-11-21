@@ -147,7 +147,7 @@ func TestDyingHostLeavesReadableReport(t *testing.T) {
 // within a minute.
 func stopHost(t *testing.T, h *dshHost) {
 	t.Helper()
-	if err := terminate(t, h.cmd); err != nil {
+	if err := terminate(t, h); err != nil {
 		t.Fatalf("the termination signal: %v", err)
 	}
 	if !h.await(time.Minute) {

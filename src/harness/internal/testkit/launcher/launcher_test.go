@@ -5,12 +5,53 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/launcher"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess/subprocesstest"
 )
+
+// A run that outlives its bound while a grandchild holds its output returns
+// promptly with ErrTimeout, and the whole tree, grandchild included, is gone.
+func TestRunTimeoutStopsTheTreeHoldingItsOutput(t *testing.T) {
+	bin := launcher.Build(t, ".", "./testdata/echo")
+	start := time.Now()
+	h, err := launcher.Run(t, 2*time.Second, launcher.Program{Argv: []string{bin, "tree"}})
+	if !errors.Is(err, launcher.ErrTimeout) {
+		t.Fatalf("Run = %v, want ErrTimeout", err)
+	}
+	if took := time.Since(start); took > 2*time.Second+3*launcher.Grace {
+		t.Errorf("the timed-out run took %s to return", took)
+	}
+	grandchild, perr := strconv.Atoi(strings.TrimSpace(h.Stdout.String()))
+	if perr != nil || grandchild == 0 {
+		t.Fatalf("no grandchild pid in %q", h.Stdout.String())
+	}
+	for _, pid := range []int{h.Process.Pid(), grandchild} {
+		if subprocesstest.Alive(pid) {
+			t.Errorf("pid %d survives the timed-out run", pid)
+		}
+	}
+}
+
+// A DSH_HOME entry in Program.Env does not move the program off its private home.
+func TestProgramEnvCannotOverrideTheHome(t *testing.T) {
+	bin := launcher.Build(t, ".", "./testdata/echo")
+	other := t.TempDir()
+	s := launcher.Start(t, launcher.Program{Argv: []string{bin}, Env: []string{"DSH_HOME=" + other, "dsh_home=" + other}})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var home string
+	if err := s.Client.Call(ctx, "home", nil, &home); err != nil {
+		t.Fatal(err)
+	}
+	if home != s.Home.Root() {
+		t.Errorf("the program runs on %q, want its private home %q", home, s.Home.Root())
+	}
+}
 
 // TC-06b/TC-06c: a launched program answers JSON-RPC on its stdio with the temp
 // home it was given; when the test that launched it ends, the program, the

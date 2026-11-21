@@ -3,16 +3,20 @@
 package scenarios
 
 import (
-	"os/exec"
 	"syscall"
 	"testing"
+
+	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/launcher"
 )
 
-// ownConsole prepares cmd so terminate can reach it; on POSIX there is nothing to do.
-func ownConsole(*exec.Cmd) {}
+// hostCommand is bin and args as they are: on POSIX the binary is the tree's root
+// and its pid is the host's.
+func hostCommand(_ *testing.T, env []string, bin string, args ...string) ([]string, []string, func(*launcher.Host) int) {
+	return append([]string{bin}, args...), env, func(h *launcher.Host) int { return h.Process.Pid() }
+}
 
-// terminate sends cmd the termination signal, SIGTERM.
-func terminate(t *testing.T, cmd *exec.Cmd) error {
+// terminate sends the host the termination signal, SIGTERM.
+func terminate(t *testing.T, h *dshHost) error {
 	t.Helper()
-	return cmd.Process.Signal(syscall.SIGTERM)
+	return syscall.Kill(h.Process.Pid(), syscall.SIGTERM)
 }

@@ -18,7 +18,8 @@ Every helper takes the `*testing.T` and registers its release with `t.Cleanup`
 | `model` | the fake model: `Transport` (an `http.RoundTripper` serving scripted SSE turns: `Reply`, `Status`, `Text`, `Usage`, `Finish`, `Error`, `Hang`), `Adapter` (an `llm.Adapter` over it), `Register(t, rt, id, tr)` | the route is unregistered; unused turns fail the test |
 | `answerer` | the fake answerer: `Register(t, owner, reg, channel, replies...)` answers interactions with `AllowOnce`, `AllowSession`, `Deny`, `Text` or `Never` and records what it was asked | the answerer is unloaded; unused replies fail the test |
 | `permit` | `New(t, kind, dest)`: an egress permit, `Withdraw()` | its context is cancelled |
-| `launcher` | `Build(t, dir, pkg, tags...)` builds a program; `Start(t, Program)` starts it through `world/subprocess` on a fresh temp home and returns a `src/sdk/jsonrpc` client on its stdio | the client and stdin close, the tree is stopped and awaited (survivors fail the test), then the home is removed |
+| `launcher` | `Build(t, dir, pkg, tags...)` builds a program; `Start(t, Program)` starts it through `world/subprocess` on a fresh temp home (`DSH_HOME` is managed: a `Program.Env` entry cannot override it) and returns a `src/sdk/jsonrpc` client on its stdio | the client and stdin close, the tree is stopped and awaited (survivors fail the test), then the home is removed |
+| `launcher` (hosts) | `Spawn(t, Program)` starts a program in its own process tree with captured output and no home or client; `Run(t, within, Program)` waits up to `within` and on timeout force-stops the whole tree (descendants holding the output included) and returns `ErrTimeout` | a tree still running is force-stopped; the stop and the wait are bounded by `3*Grace`, survivors fail the test |
 
 ```go
 func TestOneTurn(t *testing.T) {
