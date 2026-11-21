@@ -84,6 +84,8 @@ var Rules = []Rule{
 	{HarnessModule, "internal/util/herr and internal/util/ident import the standard library only (RM-6, DH-D-UTIL-5)", stdlibOnly(HerrPackage, IdentPackage)},
 	{HarnessModule, "internal/util/egress imports no harness package but herr, and of the modules only cordis: the permit is an interface, not sharing's type (DH-ADR-UTIL-2)", importsOnly(EgressPackage, HerrPackage, CordisPackage)},
 	{HarnessModule, "only tests and the test kit's own packages import internal/testkit (DH-T-UTIL-11, DH-ADR-UTIL-6)", importedOnlyWithin(TestkitPackage)},
+	{HarnessModule, "no package outside internal/tools imports internal/tools/core or internal/tools/endpoint (DH-T-TOOLS-18)", importedOnlyFrom(ToolsPackage, ToolsCorePackage, ToolsEndpointPackage)},
+	{HarnessModule, "the internal/tools contract imports no llm provider, wire or transport package (DH-T-TOOLS-18)", importsNoneUnder(ToolsPackage, LLMProviderPackage, LLMWirePackage, LLMTransportPackage)},
 }
 
 // Packages the rules name.
@@ -109,6 +111,13 @@ const (
 	AgentPackage     = HarnessModule + "/internal/agent"
 	DriverPackage    = AgentPackage + "/driver"
 	HumanPackage     = HarnessModule + "/internal/human"
+
+	LLMProviderPackage   = LLMPackage + "/provider"
+	LLMWirePackage       = LLMPackage + "/wire"
+	LLMTransportPackage  = LLMPackage + "/transport"
+	ToolsPackage         = HarnessModule + "/internal/tools"
+	ToolsCorePackage     = ToolsPackage + "/core"
+	ToolsEndpointPackage = ToolsPackage + "/endpoint"
 
 	SubprocessPackage     = HarnessModule + "/internal/world/subprocess"
 	SubprocesstestPackage = SubprocessPackage + "/subprocesstest"
@@ -176,6 +185,50 @@ func importsNone(under string, forbidden ...string) func([]Package) []string {
 			for _, imp := range p.Imports {
 				if slices.Contains(forbidden, imp) {
 					bad = append(bad, fmt.Sprintf("%s imports %s", p.ImportPath, imp))
+				}
+			}
+		}
+		return bad
+	}
+}
+
+// importsNoneUnder fails pkg itself when it directly imports a package at or below
+// one of forbidden.
+func importsNoneUnder(pkg string, forbidden ...string) func([]Package) []string {
+	return func(pkgs []Package) []string {
+		var bad []string
+		for _, p := range pkgs {
+			if p.ImportPath != pkg {
+				continue
+			}
+			for _, imp := range p.Imports {
+				for _, f := range forbidden {
+					if within(imp, f) {
+						bad = append(bad, fmt.Sprintf("%s imports %s", pkg, imp))
+						break
+					}
+				}
+			}
+		}
+		return bad
+	}
+}
+
+// importedOnlyFrom fails every harness package outside under that directly imports a
+// package at or below one of targets.
+func importedOnlyFrom(under string, targets ...string) func([]Package) []string {
+	return func(pkgs []Package) []string {
+		var bad []string
+		for _, p := range pkgs {
+			if within(p.ImportPath, under) || !within(p.ImportPath, HarnessModule) {
+				continue
+			}
+			for _, imp := range p.Imports {
+				for _, t := range targets {
+					if within(imp, t) {
+						bad = append(bad, fmt.Sprintf("%s imports %s; only packages under %s may", p.ImportPath, imp, under))
+						break
+					}
 				}
 			}
 		}

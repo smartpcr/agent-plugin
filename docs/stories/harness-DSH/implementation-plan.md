@@ -610,8 +610,8 @@ storyId: "harness:DSH"
 ## Stage 10.1: Tool Registry and Prompt Assembly
 
 ### Implementation Steps
-- [ ] impl.md step 10.1 / DH-D-TOOLS-1: implement `src/harness/internal/tools` declaration and registry -- a tool is declared once (name, schema via `internal/schema`, resource keys, body) and registered in a cordis scope; duplicates in a scope are refused (`DH-T-TOOLS-1`, `-2`, `-18`).
-- [ ] impl.md step 10.2 / DH-D-TOOLS-5: deterministic assembly of each step's system prompt and tool list (stable ordering, canonical schema encoding) (`DH-T-TOOLS-14`, `-15`).
+- [x] impl.md step 10.1 / DH-D-TOOLS-1: implement `src/harness/internal/tools` declaration and registry -- a tool is declared once (name, schema via `internal/schema`, resource keys, body) and registered in a cordis scope; duplicates in a scope are refused (`DH-T-TOOLS-1`, `-2`, `-18`).
+- [x] impl.md step 10.2 / DH-D-TOOLS-5: deterministic assembly of each step's system prompt and tool list (stable ordering, canonical schema encoding) (`DH-T-TOOLS-14`, `-15`).
 
 ### Dependencies
 - phase-deepseek-provider-retry-and-usage/stage-bounded-retry-and-token-usage

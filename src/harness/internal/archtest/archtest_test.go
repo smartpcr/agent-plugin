@@ -170,6 +170,17 @@ func TestRulesCatchViolations(t *testing.T) {
 			imports(pkg(HarnessModule+"/internal/boot", "boot", false, "a.go"), TestkitPackage+"/clock"),
 			imports(pkg(HarnessModule+"/cmd/dsh", "main", false, "main.go"), TestkitPackage, "time/tzdata"),
 		}, 2},
+		{"the tools packages within their bounds", HarnessModule, []Package{
+			imports(pkg(ToolsPackage, "tools", false, "a.go"), SchemaPackage, VocabPackage, ScopePackage, CordisPackage),
+			imports(pkg(ToolsPackage+"/prompt", "prompt", false, "a.go"), ToolsPackage, ToolsCorePackage),
+			imports(pkg(ToolsEndpointPackage+"/script", "script", false, "a.go"), ToolsEndpointPackage),
+			imports(pkg(HarnessModule+"/internal/toolsx", "toolsx", false, "a.go"), HarnessModule+"/internal/toolsx/core"),
+		}, 0},
+		{"the tools packages out of bounds", HarnessModule, []Package{
+			imports(pkg(ToolsPackage, "tools", false, "a.go"), LLMProviderPackage+"/deepseek", LLMWirePackage, VocabPackage),
+			imports(pkg(HarnessModule+"/internal/agent/driver", "driver", false, "a.go"), ToolsPackage, ToolsCorePackage),
+			imports(pkg(HarnessModule+"/cmd/dsh", "main", false, "main.go"), ToolsEndpointPackage+"/mcp", "time/tzdata"),
+		}, 4},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := check(tc.module, tc.pkgs...); len(got) != tc.bad {
