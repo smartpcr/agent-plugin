@@ -180,6 +180,9 @@ type Store struct {
 	pid      int
 	run      string        // the directory of the liveness lock files
 	shutdown time.Duration // the bound of Close
+	follow   time.Duration // a follower's poll interval
+	spill    string        // <home>/spill, or "" when deletions remove rows only
+	chunk    int           // events per deletion transaction
 	// live is this instance's liveness lock, held from Open to Close.
 	live *fsx.FileLock
 
@@ -196,8 +199,10 @@ type Store struct {
 	// leases still held, which it retries).
 	cmu sync.Mutex
 
-	mu      sync.Mutex // guards writers, closed and done
+	mu      sync.Mutex // guards writers, subs, running, closed and done
 	writers map[*writer]struct{}
+	subs    map[*Subscription]struct{}
+	running map[string]chan struct{} // a run lock per duty name
 	// closed refuses new handles once Close began; done is set once Close
 	// released everything and closed the pools. A Close that failed to release
 	// a lease leaves done unset, so it may be called again.
@@ -237,9 +242,10 @@ func (m *ctxMutex) LockContext(ctx context.Context) error {
 }
 
 // OpenHome opens the database of the harness home l (<home>/dsh.db), with the
-// liveness locks in <home>/run.
+// liveness locks in <home>/run and the spill files a deletion removes in
+// <home>/spill.
 func OpenHome(ctx context.Context, l home.Layout, opts ...Option) (*Store, error) {
-	return Open(ctx, l.DB(), append([]Option{WithRunDir(l.Run())}, opts...)...)
+	return Open(ctx, l.DB(), append([]Option{WithRunDir(l.Run()), WithSpillDir(l.Spill())}, opts...)...)
 }
 
 // Open runs the open sequence on the database at path (DH-LIB-SQLITE-R12):
@@ -252,7 +258,8 @@ func Open(ctx context.Context, path string, opts ...Option) (*Store, error) {
 		return nil, err
 	}
 	s := &Store{path: path, reg: event.Default(), now: time.Now, kind: "dsh", busy: DefaultBusyTimeout,
-		shutdown: DefaultShutdownFlushTimeout, pid: os.Getpid(), writers: map[*writer]struct{}{}}
+		shutdown: DefaultShutdownFlushTimeout, follow: DefaultFollowInterval, chunk: DefaultDeleteChunk,
+		pid: os.Getpid(), writers: map[*writer]struct{}{}, subs: map[*Subscription]struct{}{}}
 	for _, o := range opts {
 		o(s)
 	}
@@ -298,13 +305,40 @@ func Open(ctx context.Context, path string, opts ...Option) (*Store, error) {
 	// Housekeeping only: OpenWrite probes a recorded holder whether or not its
 	// hosts row is gone, so a failed sweep (a busy database) does not fail Open.
 	_ = s.sweep(ctx)
+	// A deletion a dead instance left half done completes here (DH-ADR-STORE-7),
+	// before Open returns: a store that cannot finish it (a spill directory it
+	// cannot remove, a failing database) fails to open with that error rather
+	// than run on with a deletion silently half done. The tombstone stays, so the
+	// next Open retries it.
+	if _, err := s.FinishDeletions(ctx); err != nil {
+		// Recovery may already hold a tombstone's lease under this instance. When
+		// the hosts row cannot be removed (another connection holds the write
+		// lock), the liveness file must stay, unlocked: a missing file with a
+		// hosts row reads as alive and would strand that tombstone for good.
+		herr := s.dropHost()
+		s.abandonKeeping(herr != nil)
+		return nil, errors.Join(err, herr)
+	}
 	return s, nil
 }
 
+// dropHost removes this instance's hosts row, so an Open that fails after
+// registering leaves no row behind.
+func (s *Store) dropHost() error {
+	return s.write(context.Background(), func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(context.Background(), `DELETE FROM hosts WHERE instance = ?`, s.instance)
+		return err
+	})
+}
+
 // abandon undoes a failed Open: the pools close and the liveness lock goes.
-func (s *Store) abandon() {
+func (s *Store) abandon() { s.abandonKeeping(false) }
+
+// abandonKeeping is abandon; with keep, the liveness file stays, unlocked, so the
+// next prober finds this instance dead even though its hosts row remains.
+func (s *Store) abandonKeeping(keep bool) {
 	_ = s.closeDBs()
-	_ = s.unlockInstance()
+	_ = s.releaseLive(keep)
 }
 
 // createPrivate creates path owner-only when it does not exist. The file is
@@ -571,6 +605,9 @@ func (s *Store) Close(ctx context.Context) error {
 		}
 		if len(errs) == 0 {
 			if err := s.writeLocked(ctx, func(tx *sql.Tx) error {
+				if _, err := tx.ExecContext(ctx, `UPDATE duties SET holder = NULL WHERE holder = ?`, s.instance); err != nil {
+					return err
+				}
 				_, err := tx.ExecContext(ctx, `DELETE FROM hosts WHERE instance = ?`, s.instance)
 				return err
 			}); err != nil {
@@ -581,8 +618,15 @@ func (s *Store) Close(ctx context.Context) error {
 		// can be released through it, so it closes.
 		retry = len(errs) > 0 && s.broken == nil
 		if !retry {
-			if _, err := s.wconn.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+			// Followers end first: one inside a read transaction would pin the
+			// log, and a TRUNCATE checkpoint reports that as busy, not as an error.
+			s.closeSubs()
+			var busy, log, done int64
+			if err := s.wconn.QueryRowContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&busy, &log, &done); err != nil {
 				errs = append(errs, translate(ctx, err))
+			} else if busy != 0 {
+				errs = append(errs, store.Errorf(CodeBusy,
+					"shutdown: the write-ahead log was not truncated: a reader is still active (log %d, checkpointed %d)", log, done))
 			}
 		}
 	}
@@ -593,6 +637,7 @@ func (s *Store) Close(ctx context.Context) error {
 	s.mu.Lock()
 	s.done = true
 	s.mu.Unlock()
+	s.closeSubs()
 	if err := s.closeDBs(); err != nil {
 		errs = append(errs, err)
 	}

@@ -1,9 +1,11 @@
 # DH-S-7 evidence
 
 DH-S-7 is the SQLite store, leases and recovery. This file holds the evidence of its
-stages as they are built. **Closure status: open.** Stage 7.1 is recorded below. The
-leases, the liveness check, recovery and the crash-kill loop (`DH-T-STORE-5`) are the
-later stages of this phase.
+stages as they are built. **Closure status: closed by Stage 7.3** (see "Closure"
+at the end). Stage 7.1 (the database), Stage 7.2 (leases and crash recovery) and
+Stage 7.3 (export and import, follow and duties, deletion and repair) are recorded
+below. impl.md steps 7.1 to 7.6 are ticked as built. **Until step 16.8 passes, the
+SQLite store is used on scratch homes only.**
 
 ## Stage 7.1 -- SQLite Driver Measurement and Atomic Appends
 
@@ -164,3 +166,171 @@ phase, so they are not part of 7.1:
 - dead-holder takeover with the liveness lock;
 - the open of a session of more than 100,000 events;
 - the heavy-tailed listing corpus.
+
+## Stage 7.2 -- Session Leases and Crash Recovery
+
+Built in `lease.go`, `open.go` and `handles.go` of the same package, with the
+checkpoint helper in `internal/session/checkpoint`. This section records its
+crash-injection results, which the exit evidence of impl.md DH-S-7 names.
+
+| Scenario / ID | Test | Result |
+| --- | --- | --- |
+| Second writer refused across processes (`DH-T-STORE-6`) | `TestSecondWriterRefusedAcrossProcesses`: while process A holds S, a second writer is refused, from another process and from A's, with A's identity, and S's log holds only A's events. | pass |
+| Dead holder taken over (`DH-T-STORE-6`, `-7`) | `TestDeadHolderTakenOver`: after A is killed, B takes its liveness lock inside the write transaction, the lease at epoch+1, and removes A's lock file and hosts row; an append with A's epoch writes nothing. `TestRaceForDeadLeaseHasOneWinner`: one winner. `TestForcedTakeoverAcrossProcesses`: the displaced holder's next append is `session/lease-lost`. | pass |
+| Liveness lock (`DH-T-STORE-7`) | `TestLivenessLockSurvivesOSOpenAndClose`, `TestCloseReleasesTheLivenessLock` | pass |
+| Crash between append and flush (`DH-T-STORE-8`, `-9`, crash injection) | `TestCrashBetweenAppendAndFlushRecoversHonestly`: a child exits between the tool call's append and any flush. Reopening takes its lease and appends the closers (an outcome-unknown result, step/end, turn/end interrupted), durable before the session is published. | pass |
+| Crash-kill loop (`DH-T-STORE-5`, crash injection) | `TestKilledAppenderLeavesContiguousLog`: a child appending and flushing is killed at a random point five times on one session; every reopen finds a contiguous log holding at least the last event reported flushed. | pass |
+| Bounded shutdown (DH-ADR-STORE-3) | `TestCloseIsBoundedWhileAWriteWaitsOnAnotherConnection` | pass |
+
+The guarded scenarios DH-E-STORE-1 and DH-E-STORE-2 were authored in that stage
+(`store_two_process_scenario_test.go`, `store_crash_recovery_scenario_test.go`) and
+run in step 16.8.
+
+## Stage 7.3 -- Export Import Follow and Store Repair
+
+### What was built
+
+- **Export and import (DH-D-STORE-7, `export.go`).** `Store.Export(ctx, w, id,
+  ExportOptions{Gzip})` writes one readable JSON-lines file:
+  - a header line `{"dsh_export":1,"session":{...},"inherited":n}`;
+  - one line per event (seq, time, type, payload version, flags, the stored payload
+    and cold part as JSON strings, byte for byte);
+  - a trailer `{"dsh_export_end":{"events":n,"sha256":...}}` whose digest covers every
+    byte before it.
+  `Store.Import(ctx, r, ImportOptions{NewID, Limit})` reads the whole file (at most
+  `Limit`, default 1 GiB, counted after decompression, so a gzip bomb is stopped)
+  and validates it before it writes anything: the format number, the digest, the
+  count, contiguous seqs, nothing after the trailer, and the same admission as
+  `OpenWrite`. Then one transaction inserts the session unheld, with `imported_from`
+  naming the source id. An id already present, or still being deleted, is refused
+  with `session/exists`; `NewID` imports under another id.
+- **Follow and duties (DH-D-STORE-8, `follow.go`).** `Store.Follow(ctx, id, from)`
+  returns a `Subscription` that polls `PRAGMA data_version` on a connection of its
+  own, outside the bounded read pool (so any number of followers never starve
+  `Stat`, `List`, `OpenRead` or `Export`), every follow interval (`WithFollowInterval`, default 250 ms), and reads
+  only when another connection committed. Each read is a short read transaction, so
+  a follower never holds the WAL back. The subscription ends with `session/deleted`
+  when the session is deleted, with the context's error when it is cancelled, and
+  with nil on `Close` or `Store.Close`. Once-per-home duties use the `duties` table:
+  `AcquireDuty` takes a free or dead holder's duty with the epoch raised;
+  `RunDuty(ctx, name, every, fn)` runs `fn` only on the holder and only when the last
+  run is older than `every`, and records the run under an epoch guard. Calls of one
+  duty within one instance are serialized from the due check to the recorded run,
+  so two concurrent calls run `fn` once.
+  `Store.Close` releases the instance's duties.
+- **Deletion, retention, check and rebuild (DH-D-STORE-6, `maintain.go`).**
+  - `Delete` first tombstones the session and its transitive subagent children in
+    one transaction (state `deleting`, epoch raised). From that commit they are
+    invisible to `List`, `Stat`, `OpenRead`, `OpenWrite` and `Follow`, and their id
+    cannot be reused. It then removes the spill directory
+    (`<home>/spill/<SpillName(id)>`), deletes the events in chunks
+    (`WithDeleteChunk`, default 1,000), and finally deletes the checkpoints, requests
+    and the row. A fork is not deleted with its parent.
+  - Every step can be repeated. `Open` runs `FinishDeletions`, which takes over every
+    tombstone whose holder is gone, so an interrupted deletion finishes on the next
+    open. A deletion `Open` cannot finish (a spill directory it cannot remove, a
+    failing database) fails `Open` with that error; the instance is released and
+    the tombstone stays for the next `Open`. When its hosts row cannot be removed
+    either, its liveness file stays unlocked, so the next `Open` finds it dead.
+  - `Retire(ctx, maxAge)` deletes the unheld sessions whose last event is older than
+    `maxAge`. Its first read is only a shortlist: inside each tombstoning
+    transaction the session must still be the same one (its uid) and still be
+    old, and must not be held. `RunRetention` runs it as the once-per-home
+    `retention` duty.
+  - `Check` (`dsh store check`) is read-only and runs in one snapshot: SQLite's
+    integrity check; for each session, its row count and last seq against
+    `next_seq`; checkpoints past a session's end; rows of no session. Tombstones are
+    listed, not counted as damage.
+  - `Rebuild` refolds checkpoints from the log through an injected `Refold`. With
+    `Verify` it only reports the differences. Without it, it replaces the stored
+    checkpoints in a write transaction guarded by an unchanged `next_seq`.
+
+### Test results
+
+The command is `go -C src/harness test -race -shuffle=on -count=1 ./internal/session/... ./internal/archtest/...`.
+It passes.
+
+| Scenario / ID | Test | Result |
+| --- | --- | --- |
+| Export then import round-trips (`DH-T-STORE-13`, TC-07, golden) | `TestExportImportRoundTrip`: a fixed 50-event fixture in home H1 is exported, and the file equals the committed `testdata/export.golden`. Imported into an empty H2, H2's event rows equal H1's (type, version, payload, seq), and exporting again from H2 gives the same bytes, plain and gzip. | pass |
+| Import refuses an id already present (`DH-T-STORE-13`) | `TestImportRefusals`: an empty file, a file truncated mid-line, a missing trailer, an altered payload byte, a dropped event, bytes after the trailer, another format, not JSON, and an event the registry refuses are each refused with nothing written; an id the home holds is refused with the home unchanged. | pass |
+| Import bounded | `TestImportStopsAGzipBomb` (`store/export-too-large`), `TestExportMissing` | pass |
+| Follower sees another process's commits (`DH-T-STORE-14`, TC-07) | `TestFollowerSeesAnotherProcessesCommits`: a re-executed child appends 10 events, 20 ms apart; the parent follows at a 50 ms interval and receives all 10 in order, each within the 2 s bound of its commit; afterwards a `wal_checkpoint(TRUNCATE)` succeeds, so the follower held no reader. | pass |
+| Follow in one process | `TestFollowInProcess`: a follower sees its own process's commits, a subscription from a later seq starts there, deleting the session ends it with `session/deleted`, and `Store.Close` ends the rest. | pass |
+| One runner per duty (`DH-T-STORE-14`) | `TestDutyHasOneHolderAndMovesAfterAKill`: a duty has one holder across processes, is not run again within its period, and moves to another instance once its holder is killed; `Close` releases an instance's duties. | pass |
+| One run per duty within one instance (`DH-T-STORE-14`) | `TestConcurrentRunDutyRunsOnce`: two concurrent `RunDuty` calls with a one-hour period; the second never enters `fn` while the first runs, and exactly one reports a run. | pass |
+| Followers leave the read pool free | `TestFollowersLeaveTheReadPoolFree`: with 8 live followers (the read pool has 4 connections), `Stat`, `List`, `OpenRead`/`Read`, `Export`, `Check` and a ninth `Follow` answer within a 5 s context, and all 9 followers deliver the next commit. | pass |
+| Interrupted deletion finishes (`DH-T-STORE-11`) | `TestInterruptedDeletionFinishesOnOpen`: a re-executed child deletes a 1,000-event session with a subagent child and is killed after 500 events. The session is invisible at once and its spill directory is gone; reopening the store finishes the deletion; no row or spill file of either session remains, the fork survives, and `Check` is clean. | pass |
+| Deletion refused while held (`DH-T-STORE-11`) | `TestDeleteRefusedWhileHeld`: a session held by another process, or a subagent child of it, is refused and nothing changes; this instance's own writer blocks it too until closed; deletion then runs in chunks and removes checkpoints and requests with the row. | pass |
+| Retention (`DH-T-STORE-11`) | `TestRetentionRetiresOnlyUnheldOldSessions`: off by default (age 0 deletes nothing), finishes tombstones, deletes only unheld sessions past the age, and runs as one duty per home. | pass |
+| Retention revalidates its shortlist (`DH-T-STORE-11`) | `TestRetireRevalidatesItsShortlist`: between the shortlist and the deletions one session gains a recent event and another id is deleted and created again; both survive, and only the untouched session is deleted. | pass |
+| Open fails on an unfinishable deletion (`DH-T-STORE-11`) | `TestOpenFailsWhenADeletionCannotFinish`: with spill removal failing, `Open` over a tombstone fails with `store/io` naming the session, leaves no hosts row and keeps the tombstone. Again with another connection taking the write lock during the failed `Open`'s cleanup: its hosts row cannot be removed, so it keeps its liveness file unlocked; once the lock is released the next `Open` finds it dead, takes the tombstone over and finishes the deletion, and `Check` is clean (without the kept file the deletion stays stranded). | pass |
+| Check reports damage (`DH-T-STORE-12`) | `TestCheckReportsDamage`: a session whose row count was damaged on purpose, a checkpoint past the end, and rows of no session are reported. | pass |
+| Rebuild and verify (`DH-T-STORE-12`) | `TestRebuildAndVerify`: rebuilt checkpoints equal the incrementally built ones; verify reports a row damaged on purpose and changes nothing; rebuild repairs it. | pass |
+| Failures change nothing | `TestMaintenanceFailsCleanly`: with a cancelled context and on a closed store, each maintenance call fails and leaves the session, the import target and the duties unchanged; a failing refold stops a rebuild; a delete chunk of 1 still deletes every row. | pass |
+| Conformance on SQLite (`DH-T-STORE-1`) | `TestConformance`, including the `Delete` cases, now served by the chunked deletion. | pass |
+
+Package statement coverage is 85.8%; the gate's floor is 85%. The new test files
+are clean under the project's analyzers (no `time.Sleep`, every goroutine released
+with `t.Cleanup`).
+
+### Scenarios authored
+
+| ID | File | Runs in |
+| --- | --- | --- |
+| DH-E-STORE-6 (guarded) | `src/harness/internal/testkit/scenarios/store_deletion_scenario_test.go` | DH-S-16, step 16.8, scratch homes only |
+| DH-E-STORE-5 | `src/harness/internal/testkit/scenarios/store_follow_request_scenario_test.go` | DH-S-35, step 35.7 |
+
+Both are listed in `test/harness/acceptance-index.yaml`, and `harness-gate preflight`
+finds their tests. Their inputs are shell command lines, because the launcher and
+the admin tree (`dsh session delete`, `dsh store check`) do not exist yet. **Until
+step 16.8 passes, the SQLite store is used on scratch homes only.**
+
+### Not built here
+
+- The contract has no `Deleting` notification, so `Delete` sends none.
+- Search rows, view rows and blob references do not exist yet, so deletion has none
+  to remove. DH-E-STORE-6's image collection is checked through its input command.
+- Follow, duties, export, check and rebuild are methods of `*sqlite.Store`, not of
+  the `store.Store` contract. The contract notes that Follow is later work.
+
+## Manual checks of impl.md DH-S-7 (scratch home)
+
+Run on the machine above. The store tests were pointed at a scratch home with
+`DSH_E2E_STORE_HOME=%TEMP%\dsh-scratch-<n>`, so every database lived there and not in
+a user home. The command was
+`go -C src/harness test -count=1 -v -run '<names>' ./internal/session/store/sqlite/`.
+The directory was empty afterwards and was deleted.
+
+| Check | Test program | Recorded |
+| --- | --- | --- |
+| Kill a test program between an append and its flush; record what the reopened store holds | `TestCrashBetweenAppendAndFlushRecoversHonestly` | The reopened store holds the appended events and the closers: an outcome-unknown result, step/end and turn/end interrupted. pass |
+| Open one database from two test programs; record the refused second writer | `TestSecondWriterRefusedAcrossProcesses` | The second program's writer is refused with the first's identity; the log holds only the first's events. pass |
+| Export a session, import it into an empty home and compare | `TestExportImportRoundTrip` | The 52-line file (header, 50 events, trailer) equals the golden; the event rows of both homes are equal. pass |
+| Import and delete on a scratch home only | `TestInterruptedDeletionFinishesOnOpen`, `TestImportRefusals` | pass |
+| Also run there | `TestConformance`, `TestFollowerSeesAnotherProcessesCommits`, `TestDutyHasOneHolderAndMovesAfterAKill` | pass |
+
+Driver measurement, rerun at closure (`TestBudgetStoreAppend`, same machine):
+
+| Measurement | n | p50 | p95 | p99 | max |
+| --- | --- | --- | --- | --- | --- |
+| open, new file | 20 | 12.95 ms | 19.70 ms | 19.70 ms | 69.66 ms |
+| open, existing file | 20 | 5.86 ms | 8.05 ms | 8.05 ms | 8.85 ms |
+| append | 1000 | 1.03 ms | 1.80 ms | 3.26 ms | 25.74 ms |
+| flush | 1000 | <0.5 ms | 0.52 ms | 0.55 ms | 1.05 ms |
+| append + flush | 1000 | 1.05 ms | 1.90 ms | 3.26 ms | 25.74 ms |
+
+All are within the budgets of Stage 7.1.
+
+## Closure
+
+| Exit evidence (impl.md DH-S-7) | Where | Status |
+| --- | --- | --- |
+| Conformance suite passing against SQLite | Stage 7.1 and 7.3 test tables (`TestConformance`) | met |
+| The driver measurement (F-2) | Stage 7.1 "Fact F-2", rerun above | met |
+| Crash-injection tests of DH-D-STORE-4 | Stage 7.2 table | met |
+| Manual checks | "Manual checks" above, on a scratch home | met |
+| Scenarios authored | DH-E-STORE-1, -2 (7.2), -5, -6 (7.3), in the acceptance index | met; they run in steps 16.8 and 35.7 |
+
+impl.md steps 7.1 to 7.6 are ticked as built. `built-through` in the acceptance
+index is raised to DH-S-7.
