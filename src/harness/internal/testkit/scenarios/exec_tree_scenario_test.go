@@ -180,7 +180,13 @@ func TestLinuxWholeProcessTreeIsKilled(t *testing.T) {
 		if err := sigkill(dsh); err != nil {
 			t.Fatalf("SIGKILL dsh (pid %d): %v", dsh, err)
 		}
-		<-r.done
+		// A survivor holding the start line's output pipe would keep r.done open;
+		// the registered killListed cleanup runs before startShell's wait.
+		select {
+		case <-r.done:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("the start line did not return after dsh's SIGKILL: %s", r.line)
+		}
 		deadline := time.Now().Add(5 * time.Second)
 		for procAlive(pids["child"]) && time.Now().Before(deadline) {
 			<-time.After(50 * time.Millisecond)
