@@ -82,8 +82,15 @@ type Config struct {
 	// Record appends d to the session of f.Agent; required. An error fails the
 	// decision closed: the attempt is not retried.
 	Record func(ctx context.Context, f agent.AttemptFailure, d event.Draft) error
-	// Policy is the failed call's captured policy (llm.Prepared.Retry); nil reads
-	// the point's own bounded policy (FromAgent).
+	// Policy returns the failed call's captured route policy (llm.Prepared.Retry,
+	// e.g. the DeepSeek route's DefaultRetry). agent.AttemptFailure does not carry
+	// that policy, so the wiring that prepared the call (Phase 11) must inject it
+	// here; the route's Mode, RetryAfterCap, Jitter and MaxElapsed apply only
+	// through this hook.
+	//
+	// nil falls back to FromAgent(f.Policy): the point's own bounded policy,
+	// which never retries persistently and has no Retry-After cap, jitter or
+	// elapsed bound. It is a standalone default, not the route's policy.
 	Policy func(f agent.AttemptFailure) llm.RetryPolicy
 	// Now, After and Jitter are the clock, the timer and the jitter draw; nil is
 	// time.Now, time.After and math/rand. A test passes a virtual clock.
@@ -93,7 +100,8 @@ type Config struct {
 }
 
 // FromAgent is the llm policy of the point's bounded policy: MaxAttempts counts
-// the first attempt too.
+// the first attempt too. It carries only MaxAttempts, BaseDelay and MaxDelay; it
+// is Config.Policy's fallback, not a substitute for the route's captured policy.
 func FromAgent(p agent.RetryPolicy) llm.RetryPolicy {
 	return llm.RetryPolicy{Mode: llm.RetryBounded, MaxRetries: max(p.MaxAttempts-1, 0), BaseDelay: p.BaseDelay, MaxDelay: p.MaxDelay}.Normalised()
 }
@@ -124,6 +132,7 @@ func Listen(scope *cordis.Context, cfg Config) (*Component, error) {
 		cfg.StepAttemptCap = DefaultStepAttemptCap
 	}
 	if cfg.Policy == nil {
+		// Bounded-only fallback; the route policy needs Config.Policy (see Config).
 		cfg.Policy = func(f agent.AttemptFailure) llm.RetryPolicy { return FromAgent(f.Policy) }
 	}
 	if cfg.Now == nil {
