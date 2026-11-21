@@ -1,0 +1,11 @@
+{
+  "kind": "assistant/attempt",
+  "finish": "error",
+  "failure": {
+    "code": "llm/auth",
+    "class": "permanent",
+    "message": "deepseek: authentication_error: Authentication Fails, Your api key is invalid",
+    "status": 401,
+    "request_id": "req_fixture_bad_key"
+  }
+}

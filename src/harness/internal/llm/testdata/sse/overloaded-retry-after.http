@@ -1,0 +1,6 @@
+HTTP/1.1 529 Site Overloaded
+Content-Type: application/json
+Retry-After: 2
+Request-Id: req_fixture_overloaded
+
+{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}

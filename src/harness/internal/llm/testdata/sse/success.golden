@@ -1,0 +1,26 @@
+{
+  "kind": "assistant/message",
+  "finish": "stop",
+  "blocks": [
+    {
+      "kind": "reasoning",
+      "reasoning": {
+        "text": "The user said hello; greet back.",
+        "signature": "sig-fixture-0001"
+      }
+    },
+    {
+      "kind": "text",
+      "text": {
+        "text": "Hello, world 👋."
+      }
+    }
+  ],
+  "usage": {
+    "input": 12,
+    "cache_read": 4,
+    "cache_write": 0,
+    "output": 9,
+    "total": 25
+  }
+}
