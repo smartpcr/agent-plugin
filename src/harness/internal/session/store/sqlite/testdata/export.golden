@@ -1,0 +1,52 @@
+{"dsh_export":1,"session":{"id":"export-fixture","created_at":"2025-07-01T11:59:00Z","cwd":"C:\\work\\repo","preset":"default"},"inherited":0}
+{"seq":0,"time":1751371200000,"type":"tool/call","pv":1,"data":"{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\",\"call_id\":\"c0\",\"name\":\"grep\"}"}
+{"seq":1,"time":1751371201000,"type":"tool/call","pv":1,"data":"{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\",\"call_id\":\"c1\",\"name\":\"grep\"}"}
+{"seq":2,"time":1751371202000,"type":"tool/call","pv":1,"data":"{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\",\"call_id\":\"c2\",\"name\":\"grep\"}"}
+{"seq":3,"time":1751371203000,"type":"tool/call","pv":1,"data":"{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\",\"call_id\":\"c3\",\"name\":\"grep\"}"}
+{"seq":4,"time":1751371204000,"type":"future/thing","pv":3,"ignorable":true,"op":2,"start":2,"end":3,"sources":[1,3],"data":"{\"n\": 4,  \"kept\":\"as written\"}","aux":"{\"raw\":\"stream <&>\"}"}
+{"seq":5,"time":1751371205000,"type":"tool/call","pv":1,"data":"{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\",\"call_id\":\"c5\",\"name\":\"grep\"}"}
+{"seq":6,"time":1751371206000,"type":"tool/call","pv":1,"data":"{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\",\"call_id\":\"c6\",\"name\":\"grep\"}"}
+{"seq":7,"time":1751371207000,"type":"tool/call","pv":1,"data":"{\"arguments\":\"{\\\"q\\\":\\\"a<b && c>d \\\\u00e9\\\"}\",\"call_id\":\"c7\",\"name\":\"grep\"}"}
+{"seq":8,"time":1751371208000,"type":"tool/call","pv":1,"data":"{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\",\"call_id\":\"c8\",\"name\":\"grep\"}"}
+{"seq":9,"time":1751371209000,"type":"future/thing","pv":3,"ignorable":true,"op":2,"start":7,"end":8,"sources":[6,8],"data":"{\"n\": 9,  \"kept\":\"as written\"}","aux":"{\"raw\":\"stream <&>\"}"}
+{"seq":10,"time":1751371210000,"type":"tool/call","pv":1,"data":"{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\",\"call_id\":\"c10\",\"name\":\"grep\"}"}
+{"seq":11,"time":1751371211000,"type":"tool/call","pv":1,"data":"{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\",\"call_id\":\"c11\",\"name\":\"grep\"}"}
+{"seq":12,"time":1751371212000,"type":"tool/call","pv":1,"data":"{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\",\"call_id\":\"c12\",\"name\":\"grep\"}"}
+{"seq":13,"time":1751371213000,"type":"tool/call","pv":1,"data":"{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\",\"call_id\":\"c13\",\"name\":\"grep\"}"}
+{"seq":14,"time":1751371214000,"type":"future/thing","pv":3,"ignorable":true,"op":2,"start":12,"end":13,"sources":[11,13],"data":"{\"n\": 14,  \"kept\":\"as written\"}","aux":"{\"raw\":\"stream <&>\"}"}
+{"seq":15,"time":1751371215000,"type":"tool/call","pv":1,"data":"{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\",\"call_id\":\"c15\",\"name\":\"grep\"}"}
+{"seq":16,"time":1751371216000,"type":"tool/call","pv":1,"data":"{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\",\"call_id\":\"c16\",\"name\":\"grep\"}"}
+{"seq":17,"time":1751371217000,"type":"tool/call","pv":1,"data":"{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\",\"call_id\":\"c17\",\"name\":\"grep\"}"}
+{"seq":18,"time":1751371218000,"type":"tool/call","pv":1,"data":"{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\",\"call_id\":\"c18\",\"name\":\"grep\"}"}
+{"seq":19,"time":1751371219000,"type":"future/thing","pv":3,"ignorable":true,"op":2,"start":17,"end":18,"sources":[16,18],"data":"{\"n\": 19,  \"kept\":\"as written\"}","aux":"{\"raw\":\"stream <&>\"}"}
+{"seq":20,"time":1751371220000,"type":"tool/call","pv":1,"data":"{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\",\"call_id\":\"c20\",\"name\":\"grep\"}"}
+{"seq":21,"time":1751371221000,"type":"tool/call","pv":1,"data":"{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\",\"call_id\":\"c21\",\"name\":\"grep\"}"}
+{"seq":22,"time":1751371222000,"type":"tool/call","pv":1,"data":"{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\",\"call_id\":\"c22\",\"name\":\"grep\"}"}
+{"seq":23,"time":1751371223000,"type":"tool/call","pv":1,"data":"{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\",\"call_id\":\"c23\",\"name\":\"grep\"}"}
+{"seq":24,"time":1751371224000,"type":"future/thing","pv":3,"ignorable":true,"op":2,"start":22,"end":23,"sources":[21,23],"data":"{\"n\": 24,  \"kept\":\"as written\"}","aux":"{\"raw\":\"stream <&>\"}"}
+{"seq":25,"time":1751371225000,"type":"tool/call","pv":1,"data":"{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\",\"call_id\":\"c25\",\"name\":\"grep\"}"}
+{"seq":26,"time":1751371226000,"type":"tool/call","pv":1,"data":"{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\",\"call_id\":\"c26\",\"name\":\"grep\"}"}
+{"seq":27,"time":1751371227000,"type":"tool/call","pv":1,"data":"{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\",\"call_id\":\"c27\",\"name\":\"grep\"}"}
+{"seq":28,"time":1751371228000,"type":"tool/call","pv":1,"data":"{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\",\"call_id\":\"c28\",\"name\":\"grep\"}"}
+{"seq":29,"time":1751371229000,"type":"future/thing","pv":3,"ignorable":true,"op":2,"start":27,"end":28,"sources":[26,28],"data":"{\"n\": 29,  \"kept\":\"as written\"}","aux":"{\"raw\":\"stream <&>\"}"}
+{"seq":30,"time":1751371230000,"type":"tool/call","pv":1,"data":"{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\",\"call_id\":\"c30\",\"name\":\"grep\"}"}
+{"seq":31,"time":1751371231000,"type":"tool/call","pv":1,"data":"{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\",\"call_id\":\"c31\",\"name\":\"grep\"}"}
+{"seq":32,"time":1751371232000,"type":"tool/call","pv":1,"data":"{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\",\"call_id\":\"c32\",\"name\":\"grep\"}"}
+{"seq":33,"time":1751371233000,"type":"tool/call","pv":1,"data":"{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\",\"call_id\":\"c33\",\"name\":\"grep\"}"}
+{"seq":34,"time":1751371234000,"type":"future/thing","pv":3,"ignorable":true,"op":2,"start":32,"end":33,"sources":[31,33],"data":"{\"n\": 34,  \"kept\":\"as written\"}","aux":"{\"raw\":\"stream <&>\"}"}
+{"seq":35,"time":1751371235000,"type":"tool/call","pv":1,"data":"{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\",\"call_id\":\"c35\",\"name\":\"grep\"}"}
+{"seq":36,"time":1751371236000,"type":"tool/call","pv":1,"data":"{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\",\"call_id\":\"c36\",\"name\":\"grep\"}"}
+{"seq":37,"time":1751371237000,"type":"tool/call","pv":1,"data":"{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\",\"call_id\":\"c37\",\"name\":\"grep\"}"}
+{"seq":38,"time":1751371238000,"type":"tool/call","pv":1,"data":"{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\",\"call_id\":\"c38\",\"name\":\"grep\"}"}
+{"seq":39,"time":1751371239000,"type":"future/thing","pv":3,"ignorable":true,"op":2,"start":37,"end":38,"sources":[36,38],"data":"{\"n\": 39,  \"kept\":\"as written\"}","aux":"{\"raw\":\"stream <&>\"}"}
+{"seq":40,"time":1751371240000,"type":"tool/call","pv":1,"data":"{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\",\"call_id\":\"c40\",\"name\":\"grep\"}"}
+{"seq":41,"time":1751371241000,"type":"tool/call","pv":1,"data":"{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\",\"call_id\":\"c41\",\"name\":\"grep\"}"}
+{"seq":42,"time":1751371242000,"type":"tool/call","pv":1,"data":"{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\",\"call_id\":\"c42\",\"name\":\"grep\"}"}
+{"seq":43,"time":1751371243000,"type":"tool/call","pv":1,"data":"{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\",\"call_id\":\"c43\",\"name\":\"grep\"}"}
+{"seq":44,"time":1751371244000,"type":"future/thing","pv":3,"ignorable":true,"op":2,"start":42,"end":43,"sources":[41,43],"data":"{\"n\": 44,  \"kept\":\"as written\"}","aux":"{\"raw\":\"stream <&>\"}"}
+{"seq":45,"time":1751371245000,"type":"tool/call","pv":1,"data":"{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\",\"call_id\":\"c45\",\"name\":\"grep\"}"}
+{"seq":46,"time":1751371246000,"type":"tool/call","pv":1,"data":"{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\",\"call_id\":\"c46\",\"name\":\"grep\"}"}
+{"seq":47,"time":1751371247000,"type":"tool/call","pv":1,"data":"{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\",\"call_id\":\"c47\",\"name\":\"grep\"}"}
+{"seq":48,"time":1751371248000,"type":"tool/call","pv":1,"data":"{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\",\"call_id\":\"c48\",\"name\":\"grep\"}"}
+{"seq":49,"time":1751371249000,"type":"future/thing","pv":3,"ignorable":true,"op":2,"start":47,"end":48,"sources":[46,48],"data":"{\"n\": 49,  \"kept\":\"as written\"}","aux":"{\"raw\":\"stream <&>\"}"}
+{"dsh_export_end":{"events":50,"sha256":"f28b0dc4be4bd9a08af7f12e792752a2b4f36cb80712a82cea5a550a7db46288"}}

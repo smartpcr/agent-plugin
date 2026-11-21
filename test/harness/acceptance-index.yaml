@@ -22,7 +22,7 @@
 #       - id: DH-E-<AREA>-<n>
 #         authored: DH-S-<n>
 
-built-through: DH-S-6
+built-through: DH-S-7
 
 stages:
   DH-S-16:
@@ -31,6 +31,11 @@ stages:
     - id: DH-E-STORE-1
       authored: DH-S-7
     - id: DH-E-STORE-2
+      authored: DH-S-7
+    # Deletion and its interrupted finish; guarded, deletion removes data (impl.md
+    # step 16.8); authored by Stage 7.3 (impl.md step 7.6). Until 16.8 passes the
+    # SQLite store is used on scratch homes only.
+    - id: DH-E-STORE-6
       authored: DH-S-7
   DH-S-17:
     # Its subjects (the model runtime, the replay helpers) exist from Phase 11;
@@ -72,6 +77,11 @@ stages:
     # page (impl.md step 22.3); authored in DH-S-6.
     - id: DH-E-BOOT-1
       authored: DH-S-6
+  DH-S-35:
+    # A non-holder follows a session and hands its holder requests (impl.md step
+    # 35.7); authored by Stage 7.3 (impl.md step 7.5), which builds the follow.
+    - id: DH-E-STORE-5
+      authored: DH-S-7
   DH-S-39:
     # All traffic through a TLS-intercepting proxy: the model, a fetched page and an
     # MCP server over HTTP (impl.md step 39.15); authored in DH-S-6.

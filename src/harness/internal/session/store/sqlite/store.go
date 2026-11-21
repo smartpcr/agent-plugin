@@ -283,35 +283,6 @@ func parseCursor(v string) (cursor, error) {
 	return cursor{}, store.Errorf(store.CodeInvalidBoundary, "list cursor %q is not one this store issued", v)
 }
 
-// Delete implements store.Store: the session, its events and its checkpoints
-// go in one transaction; a handle opened on it then reads session/deleted.
-func (s *Store) Delete(ctx context.Context, id string, _ store.DeleteOptions) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	return s.write(ctx, func(tx *sql.Tx) error {
-		r, err := liveByID(ctx, tx, id)
-		if err != nil {
-			return err
-		}
-		if err := s.claimable(ctx, tx, id, r, store.OpenOptions{}); err != nil {
-			return err
-		}
-		uid := r.uid
-		for _, q := range []string{
-			`UPDATE sessions SET state = 'deleting' WHERE uid = ?`,
-			`DELETE FROM events WHERE session = ?`,
-			`DELETE FROM checkpoints WHERE session = ?`,
-			`DELETE FROM sessions WHERE uid = ?`,
-		} {
-			if _, err := tx.ExecContext(ctx, q, uid); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-}
-
 // Flush implements store.Store: it returns once every commit of this instance
 // is durable.
 func (s *Store) Flush(ctx context.Context) error {

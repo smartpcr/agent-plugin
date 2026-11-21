@@ -16,6 +16,15 @@ func SetAfterAppend(fn func(id string, b store.Batch)) func() {
 	return func() { afterAppend = old }
 }
 
+// SetAfterDeleteChunk installs the crash-injection hook of a deletion: fn runs
+// after each committed chunk with the events removed so far, so a re-exec'd child
+// can exit halfway through. It returns the restore.
+func SetAfterDeleteChunk(fn func(id string, deleted int64)) func() {
+	old := afterDeleteChunk
+	afterDeleteChunk = fn
+	return func() { afterDeleteChunk = old }
+}
+
 // StaleWriter is a writer of session id on s in the name of holder at epoch, as a
 // displaced holder (another process's, dead or alive) would still carry it. It
 // takes no lease: its appends meet the guard as the real holder's would.

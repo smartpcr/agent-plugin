@@ -143,7 +143,8 @@ func TestRequireSubcommand(t *testing.T) {
 		{"DH-S-21", 0, "DH-E-BOOT-2\n"},
 		{"DH-S-22", 0, "DH-E-BOOT-1\n"},
 		{"DH-S-39", 0, "DH-E-UTIL-1\n"},
-		{"DH-S-16", 0, "\n"},
+		{"DH-S-16", 0, "DH-E-STORE-1,DH-E-STORE-2,DH-E-STORE-6\n"},
+		{"DH-S-35", 0, "DH-E-STORE-5\n"},
 		{"", 0, "\n"},
 		{"DH-S-99", 1, ""},
 	}

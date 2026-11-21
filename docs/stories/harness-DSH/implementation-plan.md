@@ -488,19 +488,19 @@ storyId: "harness:DSH"
 ## Stage 7.3: Export Import Follow and Store Repair
 
 ### Implementation Steps
-- [ ] impl.md step 7.4 / DH-D-STORE-7: export a session to one readable file (JSON lines with a header) and import it into another home; import refuses a session id already present (`DH-T-STORE-13`).
-- [ ] impl.md step 7.5 / DH-D-STORE-8 (P1, pulled forward): follow a session another process writes (poll on WAL change with bounded latency) and once-per-home duties with one runner (`DH-T-STORE-14`).
-- [ ] impl.md step 7.6 / DH-D-STORE-6 (P1, pulled forward): delete sessions, retire old ones, check and repair the store; an interrupted deletion finishes on next open (`DH-T-STORE-11`, `-12`).
-- [ ] Author `DH-E-STORE-6` (guarded, step 16.8) and `DH-E-STORE-5` (step 35.7) as scenario files; record that the store is used on scratch homes only until 16.8 passes.
-- [ ] Close DH-S-7: write `docs/stories/harness-DSH/evidence/DH-S-7.md` (conformance on SQLite, driver measurement, crash-injection results, manual checks of impl.md DH-S-7 on a scratch home) and tick impl.md steps 7.1-7.6 as built.
+- [x] impl.md step 7.4 / DH-D-STORE-7: export a session to one readable file (JSON lines with a header) and import it into another home; import refuses a session id already present (`DH-T-STORE-13`).
+- [x] impl.md step 7.5 / DH-D-STORE-8 (P1, pulled forward): follow a session another process writes (poll on WAL change with bounded latency) and once-per-home duties with one runner (`DH-T-STORE-14`).
+- [x] impl.md step 7.6 / DH-D-STORE-6 (P1, pulled forward): delete sessions, retire old ones, check and repair the store; an interrupted deletion finishes on next open (`DH-T-STORE-11`, `-12`).
+- [x] Author `DH-E-STORE-6` (guarded, step 16.8) and `DH-E-STORE-5` (step 35.7) as scenario files; record that the store is used on scratch homes only until 16.8 passes.
+- [x] Close DH-S-7: write `docs/stories/harness-DSH/evidence/DH-S-7.md` (conformance on SQLite, driver measurement, crash-injection results, manual checks of impl.md DH-S-7 on a scratch home) and tick impl.md steps 7.1-7.6 as built.
 
 ### Dependencies
 - phase-sqlite-store-leases-and-recovery/stage-session-leases-and-crash-recovery
 
 ### Test Scenarios
-- [ ] Scenario: Export then import round-trips -- Given a session with 50 events in home H1, When it is exported and imported into empty home H2, Then H2's event rows are equal to H1's (type, version, payload, sequence) and the export file equals the committed golden for a fixed fixture (`DH-T-STORE-13`, TC-07) [proof: golden; deps: sqlite embedded; filesystem via two `t.TempDir()` homes; committed golden `store/sqlite/testdata/export.golden`]
-- [ ] Scenario: Follower sees another process's commits -- Given process A (re-exec'd) appending 10 events, When process B follows the session, Then B observes all 10 in order within the bounded latency (`DH-T-STORE-14`, TC-07) [proof: service:sqlite; deps: sqlite embedded; os-process via re-exec; filesystem via `t.TempDir()`]
-- [ ] Scenario: Interrupted deletion finishes -- Given a deletion killed after removing half the rows, When the store is reopened, Then the deletion completes, no row or spill file of that session remains, and `check` reports clean (`DH-T-STORE-11`) [proof: service:sqlite; deps: sqlite embedded; os-process via re-exec; filesystem via `t.TempDir()`]
+- [x] Scenario: Export then import round-trips -- Given a session with 50 events in home H1, When it is exported and imported into empty home H2, Then H2's event rows are equal to H1's (type, version, payload, sequence) and the export file equals the committed golden for a fixed fixture (`DH-T-STORE-13`, TC-07) [proof: golden; deps: sqlite embedded; filesystem via two `t.TempDir()` homes; committed golden `store/sqlite/testdata/export.golden`]
+- [x] Scenario: Follower sees another process's commits -- Given process A (re-exec'd) appending 10 events, When process B follows the session, Then B observes all 10 in order within the bounded latency (`DH-T-STORE-14`, TC-07) [proof: service:sqlite; deps: sqlite embedded; os-process via re-exec; filesystem via `t.TempDir()`]
+- [x] Scenario: Interrupted deletion finishes -- Given a deletion killed after removing half the rows, When the store is reopened, Then the deletion completes, no row or spill file of that session remains, and `check` reports clean (`DH-T-STORE-11`) [proof: service:sqlite; deps: sqlite embedded; os-process via re-exec; filesystem via `t.TempDir()`]
 
 # Phase 8: Machine State Views and Spill
 

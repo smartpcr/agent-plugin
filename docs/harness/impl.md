@@ -725,12 +725,12 @@ event stream and the spill store depend on them.
 
 **Steps.**
 
-- [ ] **7.1** [DH-D-STORE-2](areas/session-store.md#dh-d-store-2) The SQLite store: one database per home, atomic appends, a flush barrier.
-- [ ] **7.2** [DH-D-STORE-3](areas/session-store.md#dh-d-store-3) One writer per session across processes, with safe takeover.
-- [ ] **7.3** [DH-D-STORE-4](areas/session-store.md#dh-d-store-4) Durability checkpoints, honest crash recovery and a bounded shutdown.
-- [ ] **7.4** [DH-D-STORE-7](areas/session-store.md#dh-d-store-7) A session can be exported to one readable file and imported back.
-- [ ] **7.5** [DH-D-STORE-8](areas/session-store.md#dh-d-store-8) A process can follow a session another process writes; once-per-home duties (P1, pulled forward).
-- [ ] **7.6** [DH-D-STORE-6](areas/session-store.md#dh-d-store-6) Sessions can be deleted, old ones retired, and the store checked and repaired (P1, pulled forward).
+- [x] **7.1** [DH-D-STORE-2](areas/session-store.md#dh-d-store-2) The SQLite store: one database per home, atomic appends, a flush barrier.
+- [x] **7.2** [DH-D-STORE-3](areas/session-store.md#dh-d-store-3) One writer per session across processes, with safe takeover.
+- [x] **7.3** [DH-D-STORE-4](areas/session-store.md#dh-d-store-4) Durability checkpoints, honest crash recovery and a bounded shutdown.
+- [x] **7.4** [DH-D-STORE-7](areas/session-store.md#dh-d-store-7) A session can be exported to one readable file and imported back.
+- [x] **7.5** [DH-D-STORE-8](areas/session-store.md#dh-d-store-8) A process can follow a session another process writes; once-per-home duties (P1, pulled forward).
+- [x] **7.6** [DH-D-STORE-6](areas/session-store.md#dh-d-store-6) Sessions can be deleted, old ones retired, and the store checked and repaired (P1, pulled forward).
 
 **Manual checks.** Kill a test program between an append and its flush and record
 what the reopened store holds; open one database from two test programs and record
