@@ -952,11 +952,51 @@ func (s *brtState) imports(id string) ([]string, error) {
 	return out, nil
 }
 
+// brtLauncherImport derives the test kit launcher's import path from the
+// harness module's go.mod and fails when the launcher package is missing,
+// so a stale or moved launcher path cannot pass importsLimited silently.
+func (s *brtState) brtLauncherImport() (string, error) {
+	harness := filepath.Join(s.root, "src", "harness")
+	data, err := os.ReadFile(filepath.Join(harness, "go.mod"))
+	if err != nil {
+		return "", err
+	}
+	var module string
+	for _, line := range strings.Split(string(data), "\n") {
+		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "module "); ok {
+			module = strings.Trim(strings.TrimSpace(rest), `"`)
+			break
+		}
+	}
+	if module == "" {
+		return "", fmt.Errorf("%s has no module directive", filepath.Join(harness, "go.mod"))
+	}
+	dir := filepath.Join(harness, "internal", "testkit", "launcher")
+	files, err := filepath.Glob(filepath.Join(dir, "*.go"))
+	if err != nil {
+		return "", err
+	}
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		pf, err := parser.ParseFile(token.NewFileSet(), f, nil, parser.PackageClauseOnly)
+		if err != nil {
+			return "", err
+		}
+		if pf.Name.Name == "launcher" {
+			return module + "/internal/testkit/launcher", nil
+		}
+	}
+	return "", fmt.Errorf("the test kit's scenario launcher package is missing from %s", dir)
+}
+
 func (s *brtState) importsLimited(string) error {
-	const (
-		sdk      = "github.com/smartpcr/agent-plugin/src/sdk/"
-		launcher = "github.com/smartpcr/agent-plugin/src/harness/internal/testkit/launcher"
-	)
+	const sdk = "github.com/smartpcr/agent-plugin/src/sdk/"
+	launcher, err := s.brtLauncherImport()
+	if err != nil {
+		return err
+	}
 	for _, id := range s.ids {
 		ps, err := s.imports(id)
 		if err != nil {
