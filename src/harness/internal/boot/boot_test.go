@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -22,6 +23,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/profile"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/cli/output"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/host/diag"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/clock"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess/subprocesstest"
@@ -475,5 +477,124 @@ func TestStopDuringStartupIsNeverReady(t *testing.T) {
 				t.Errorf("%d fatal messages and %d reports, want %d:\n%s", n, len(entries), want, out)
 			}
 		})
+	}
+}
+
+// reloadProbe is a config whose level only its Validate checks.
+type reloadProbe struct {
+	Level string `json:"level,omitempty"`
+}
+
+func (c reloadProbe) Validate() error {
+	switch c.Level {
+	case "", "debug", "info", "warn":
+		return nil
+	}
+	return &cordis.ConfigError{Issues: []cordis.ConfigIssue{{Path: "level", Message: fmt.Sprintf("level %q is not debug, info or warn", c.Level)}}}
+}
+
+// waitFor polls cond until it holds, failing after 20 s.
+func waitFor(t *testing.T, what string, log fmt.Stringer, cond func() bool) {
+	t.Helper()
+	tick := time.NewTicker(5 * time.Millisecond)
+	defer tick.Stop()
+	limit := time.After(20 * time.Second)
+	for !cond() {
+		select {
+		case <-tick.C:
+		case <-limit:
+			t.Fatalf("timed out waiting for %s:\n%s", what, log)
+		}
+	}
+}
+
+// DH-D-BOOT-7: once ready, a profile that reloads applies a valid layer change to
+// the running tree and rejects an invalid one with a positioned diagnostic, the
+// running component keeping its config; shutdown stops the watch first.
+func TestReloadAfterReadyAppliesValidAndRejectsInvalidLayers(t *testing.T) {
+	opts, homeDir := fixture(t, "", "probe")
+	if err := home.Ensure(home.New(homeDir)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(profile.LayerPath(homeDir, opts.Profile.Name)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(profile.LayerPath(homeDir, opts.Profile.Name), []byte("- insert:\n    - id: probe\n      name: x.reload\n      config:\n        level: info\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var levels []string
+	level := func() (string, int) {
+		mu.Lock()
+		defer mu.Unlock()
+		if len(levels) == 0 {
+			return "", 0
+		}
+		return levels[len(levels)-1], len(levels)
+	}
+	probe := catalog.Item{Name: "x.reload", Config: reflect.TypeFor[reloadProbe](), Component: cordis.Define("x.reload", func(_ *cordis.Context, cfg reloadProbe) error {
+		mu.Lock()
+		defer mu.Unlock()
+		levels = append(levels, cfg.Level)
+		return nil
+	})}
+	cat, err := catalog.Build(append(builtin.Sets(), []catalog.Item{probe})...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := launch.NewApp()
+	var stderr syncBuffer
+	opts.Catalog, opts.Stderr, opts.App = cat, &stderr, app
+	opts.Profile.Reload = 10 * time.Millisecond
+	done := make(chan int, 1)
+	var wg sync.WaitGroup
+	t.Cleanup(wg.Wait)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		done <- Run(context.Background(), opts)
+	}()
+	t.Cleanup(func() { app.Stop(launch.Requested, output.OK) })
+	select {
+	case <-app.Ready():
+	case status := <-done:
+		t.Fatalf("Run ended with %d before ready:\n%s", status, stderr.String())
+	case <-time.After(30 * time.Second):
+		t.Fatal("never ready")
+	}
+	if l, _ := level(); l != "info" {
+		t.Fatalf("level at boot = %q", l)
+	}
+
+	user := profile.UserLayerPath(homeDir)
+	if err := os.WriteFile(user, []byte("- id: probe\n  merge:\n    level: debug\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the valid change to apply", &stderr, func() bool { l, _ := level(); return l == "debug" })
+	_, loads := level()
+
+	if err := os.WriteFile(user, []byte("# bad\n- id: probe\n  merge:\n    level: loud\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the rejection", &stderr, func() bool { return strings.Contains(stderr.String(), "reload rejected") })
+	out := stderr.String()
+	if !strings.Contains(out, user+":4:") || !strings.Contains(out, "probe.config.level") {
+		t.Errorf("the rejection is not positioned at %s:4:\n%s", user, out)
+	}
+	if l, n := level(); l != "debug" || n != loads {
+		t.Errorf("after the rejection level = %q after %d loads, want debug after %d", l, n, loads)
+	}
+
+	app.Stop(launch.Requested, output.OK)
+	select {
+	case status := <-done:
+		if status != output.OK {
+			t.Errorf("status = %d:\n%s", status, stderr.String())
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("shutdown did not end")
+	}
+	if n := strings.Count(stderr.String(), "reload rejected"); n != 1 {
+		t.Errorf("rejection told %d times, want once:\n%s", n, stderr.String())
 	}
 }

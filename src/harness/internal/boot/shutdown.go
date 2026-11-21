@@ -34,6 +34,9 @@ func forceReserve(budget time.Duration) time.Duration {
 // (even one a cleanup is stopping gracefully), and the status is 124 whatever the
 // stop asked for: a fatal report written before stays written.
 func (s *State) shutdown(status int, budget time.Duration) int {
+	if s.stopReload != nil {
+		s.stopReload(budget)
+	}
 	s.App.Stop(launch.Requested, status)
 	if s.Host == nil {
 		return status

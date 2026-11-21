@@ -58,17 +58,49 @@ func (r *Report) Err() error {
 // Check composes layers and checks the result without starting anything
 // (DH-D-BOOT-6, DH-ADR-BOOT-7): the composition issues, every entry name against
 // the catalogue, every literal config strictly against its component's config type
-// (unknown keys and wrong types are issues) and, with an evaluator, every
-// expression. It is a partial check by design: a config holding an expression is
-// decoded only when it loads, and a component's own Validate runs against the
-// running fiber's schema (see Service), so a value valid here may still fail its load.
+// (unknown keys and wrong types are issues), then through the component's own
+// schema on top of its defaults (DH-D-CORDIS-5 candidate config, on a scratch fiber
+// that never loads) and, with an evaluator, every expression. A config holding an
+// expression is decoded only when it loads, and an entry disabled by a literal is
+// not resolved (enabling it makes it part of the check), so a value valid here may
+// still fail its load. No component is constructed.
 func Check(layers []loader.Layer, opts CheckOptions) *Report {
 	tree, index, issues := loader.Compose(layers)
 	r := &Report{Tree: tree, Index: index, Issues: issues, layers: layers, docs: opts.Docs}
+	var pre preflight
+	defer pre.close()
 	r.walk(tree, "", func(id string, e loader.EntryOptions) {
-		r.Issues = append(r.Issues, r.checkEntry(id, e, opts)...)
+		r.Issues = append(r.Issues, r.checkEntry(id, e, opts, &pre)...)
 	})
 	return r
+}
+
+// preflightHold is a service no tree provides: a scratch fiber that injects it stays
+// pending, so its component is never constructed while its schema can still run.
+const preflightHold = "config.preflight-hold"
+
+// preflight is the scratch tree a check resolves candidate configs on, made on
+// first use and disposed at the end of the check.
+type preflight struct{ root *cordis.Context }
+
+// resolve runs component's schema on raw as a load would, without loading it.
+func (p *preflight) resolve(component *cordis.Component, raw json.RawMessage) error {
+	if p.root == nil {
+		p.root = cordis.New(cordis.WithExporters(), cordis.WithStrictConfig())
+	}
+	fiber, err := p.root.Use(component, nil, preflightHold)
+	if err != nil {
+		return err
+	}
+	defer fiber.Dispose()
+	_, err = fiber.ResolveConfig(json.RawMessage(bytes.Clone(raw)))
+	return err
+}
+
+func (p *preflight) close() {
+	if p.root != nil {
+		p.root.Dispose()
+	}
 }
 
 // walk calls fn for each entry of entries and their children, with its tree id.
@@ -85,7 +117,7 @@ func (r *Report) walk(entries []loader.EntryOptions, parent string, fn func(id s
 	}
 }
 
-func (r *Report) checkEntry(id string, e loader.EntryOptions, opts CheckOptions) []loader.Issue {
+func (r *Report) checkEntry(id string, e loader.EntryOptions, opts CheckOptions, pre *preflight) []loader.Issue {
 	var issues []loader.Issue
 	if opts.Evaluator != nil {
 		if e.DisabledExpr != "" {
@@ -110,7 +142,13 @@ func (r *Report) checkEntry(id string, e loader.EntryOptions, opts CheckOptions)
 		return issues
 	}
 	if field, msg := strictDecode(item.Config, e.Config); msg != "" {
-		issues = append(issues, r.issue(id, e, field, msg))
+		return append(issues, r.issue(id, e, field, msg))
+	}
+	if item.Component == nil || (e.Disabled && e.DisabledExpr == "") {
+		return issues
+	}
+	if err := pre.resolve(item.Component, e.Config); err != nil {
+		issues = append(issues, r.FromConfigError(id, e, err)...)
 	}
 	return issues
 }
@@ -222,6 +260,9 @@ func locateInOp(op loader.Op, node *loader.Node, id, field string) (loader.Posit
 		if len(steps) > 0 {
 			steps = steps[1:]
 		}
+		if !patchWrites(op.Patch, steps) {
+			return loader.Position{}, false
+		}
 		return deepest(op.Pos, member(node, "merge"), steps), true
 	case loader.OpOverride:
 		if op.ID != id || len(steps) == 0 {
@@ -246,6 +287,31 @@ func locateInOp(op loader.Op, node *loader.Node, id, field string) (loader.Posit
 		return pos, true
 	}
 	return loader.Position{}, false
+}
+
+// patchWrites reports whether a merge patch supplies the config field at steps: each
+// step is a key of the patch, or the patch replaces a value above it whole.
+func patchWrites(patch json.RawMessage, steps []string) bool {
+	if len(steps) == 0 {
+		return true
+	}
+	var v any
+	if err := json.Unmarshal(patch, &v); err != nil {
+		return true
+	}
+	for _, step := range steps {
+		if i := strings.IndexByte(step, '['); i > 0 {
+			step = step[:i]
+		}
+		m, ok := v.(map[string]any)
+		if !ok {
+			return true
+		}
+		if v, ok = m[step]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func findEntry(entries []loader.EntryOptions, parent, id string) (loader.EntryOptions, bool) {
@@ -332,6 +398,37 @@ func splitField(field string) []string {
 // once evaluated at load.
 func holdsExpr(raw json.RawMessage) bool {
 	return bytes.Contains(raw, []byte("$expr")) || bytes.Contains(raw, []byte("${{"))
+}
+
+// computed lists the fields an expression computes in the composed tree that ops
+// would replace (DH-ADR-BOOT-7): a merge whose patch writes an expression's field
+// or a value above it, an override of an expression-valued disabled or of a config
+// holding an expression.
+func (r *Report) computed(ops []loader.Op) []string {
+	var found []string
+	for _, op := range ops {
+		if op.Kind != loader.OpMerge && op.Kind != loader.OpOverride {
+			continue
+		}
+		e, ok := findEntry(r.Tree, "", op.ID)
+		if !ok {
+			continue
+		}
+		if op.Kind == loader.OpOverride {
+			if _, ok := op.Set["disabled"]; ok && e.DisabledExpr != "" {
+				found = append(found, joinField(op.ID, "disabled"))
+			}
+			if _, ok := op.Set["config"]; !ok {
+				continue
+			}
+		}
+		for _, x := range exprs(e.Config, "config") {
+			if op.Kind == loader.OpOverride || patchWrites(op.Patch, splitField(x.path)[1:]) {
+				found = append(found, joinField(op.ID, x.path))
+			}
+		}
+	}
+	return found
 }
 
 type foundExpr struct{ source, path string }

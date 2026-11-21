@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/go/loader"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/builtin"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/config"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/expr"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/launch"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/profile"
@@ -74,18 +77,38 @@ func (Real) Guards(_ context.Context, s *State) error {
 	return nil
 }
 
-// Layers reads and parses every layer of the profile.
+// Layers reads and parses every layer of the profile, keeping the bytes read as
+// the reload's baseline.
 func (Real) Layers(_ context.Context, s *State) error {
+	files := map[string][]byte{}
+	read := layerReader(s.Options.Request.ReadFile)
 	layers, issues, err := profile.Stack(s.Options.Profile, profile.Sources{
 		Home:     s.Data.Home,
 		Overlays: s.Data.Overlays,
-		Read:     profile.ReadFile(s.Options.Request.ReadFile),
+		Read: func(path string) ([]byte, error) {
+			data, err := read(path)
+			switch {
+			case err == nil:
+				files[path] = data
+			case errors.Is(err, fs.ErrNotExist):
+				files[path] = nil
+			}
+			return data, err
+		},
 	})
 	if err != nil {
 		return err
 	}
-	s.Layers, s.Issues = layers, issues
+	s.Layers, s.Issues, s.layerFiles = layers, issues, files
 	return nil
+}
+
+// layerReader is the request's file read, or os.ReadFile.
+func layerReader(read launch.ReadFile) config.ReadFile {
+	if read == nil {
+		return os.ReadFile
+	}
+	return config.ReadFile(read)
 }
 
 // Compose composes the layers into the tree to apply (pure).
@@ -146,6 +169,7 @@ func (Real) Tree(_ context.Context, s *State) error {
 		return err
 	}
 	t.svc, s.Service = svc, svc
+	s.catalog, s.evaluator = cat, ev
 	return nil
 }
 

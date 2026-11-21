@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/go/loader"
@@ -411,5 +412,170 @@ func TestRejectedEditWritesNothing(t *testing.T) {
 	after, _ := os.ReadFile(path)
 	if string(before) != string(after) {
 		t.Errorf("a rejected edit changed the file:\n%s", after)
+	}
+}
+
+// A second client, which runs no tree, still validates a candidate through each
+// component's schema (DH-D-CORDIS-5): a level only Validate refuses is rejected for
+// a changed entry, for a disabled entry an edit enables and for a new entry.
+func TestEditWithoutRunningTreeValidatesSchema(t *testing.T) {
+	h, p := newHome(t), newProbes(t)
+	path := profile.LayerPath(h.root, h.def.Name)
+	write(t, path, profileText+"    - id: quiet\n      name: x.probe\n      disabled: true\n      config:\n        level: loud\n")
+	cs, err := config.NewService(config.ServiceOptions{Stack: h.stack, Catalog: p.cat})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cs.Current().Report.Err(); err != nil {
+		t.Fatalf("a disabled entry was resolved: %v", err)
+	}
+	before, _ := os.ReadFile(path)
+	cases := map[string]struct {
+		op   loader.Op
+		path string
+	}{
+		"changed": {loader.Op{Kind: loader.OpMerge, ID: "probe", Patch: json.RawMessage(`{"level":"loud"}`)}, "probe.config.level"},
+		"enabled": {loader.Op{Kind: loader.OpOverride, ID: "quiet", Set: map[string]json.RawMessage{"disabled": json.RawMessage("false")}}, "quiet.config.level"},
+		"new":     {loader.Op{Kind: loader.OpInsert, Entries: []loader.EntryOptions{{ID: "fresh", Name: "x.probe", Config: json.RawMessage(`{"level":"loud"}`)}}}, "fresh.config.level"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := cs.Apply(context.Background(), config.Edit{Revision: cs.Revision(), Ops: []loader.Op{tc.op}})
+			if !hasReason(err, config.ReasonRejected) || !strings.Contains(err.Error(), tc.path) || !strings.Contains(err.Error(), `"loud"`) {
+				t.Fatalf("err = %v, want rejected at %s", err, tc.path)
+			}
+			if after, _ := os.ReadFile(path); string(after) != string(before) {
+				t.Errorf("a rejected edit changed the file:\n%s", after)
+			}
+		})
+	}
+	if p.starts.Load() != 0 {
+		t.Error("validation constructed a component")
+	}
+}
+
+// A running tree rejects at reload a new entry whose config only its component's
+// schema refuses, though no fiber of it runs yet.
+func TestReloadRejectsInvalidNewEntry(t *testing.T) {
+	h, p := newHome(t), newProbes(t)
+	ldr, cs := boot(t, h, p)
+	write(t, profile.UserLayerPath(h.root), "- insert:\n    - id: fresh\n      name: x.probe\n      config:\n        level: loud\n")
+	if err := cs.Reload(); !hasReason(err, config.ReasonRejected) || !strings.Contains(err.Error(), "fresh.config.level") {
+		t.Fatalf("reload = %v", err)
+	}
+	if ldr.Find("fresh") != nil {
+		t.Error("the rejected entry was mounted")
+	}
+}
+
+// Of two merges of one entry in one layer, the diagnostic names the one that wrote
+// the bad field, not the last one.
+func TestCheckPositionsTheMergeThatWroteTheField(t *testing.T) {
+	p := newProbes(t)
+	bundle, bdoc := layer(t, "bundle:core", "core.yml", bundleText)
+	user, udoc := layer(t, "user", "user.yml", "- id: probe\n  merge:\n    level: loud\n- id: probe\n  merge:\n    port: 2\n")
+	r := config.Check([]loader.Layer{bundle, user}, config.CheckOptions{Catalog: p.cat, Docs: map[string]*loader.LayerDocument{"bundle:core": bdoc, "user": udoc}})
+	if r.OK() {
+		t.Fatal("the bad level passed")
+	}
+	if got := r.Issues[0].Error(); !strings.Contains(got, "user.yml:3:") || !strings.Contains(got, "probe.config.level") {
+		t.Errorf("issue = %s, want it at user.yml:3", got)
+	}
+}
+
+// A listener runs outside the service's locks: it may read the state and reload.
+func TestRejectedListenerMayCallTheService(t *testing.T) {
+	h, p := newHome(t), newProbes(t)
+	_, cs := boot(t, h, p)
+	var seen []string
+	cs.OnRejected(func(error) {
+		seen = append(seen, cs.Current().Revision, cs.Revision())
+		_ = cs.Reload()
+	})
+	write(t, profile.UserLayerPath(h.root), "- id: probe\n  merge:\n    level: loud\n")
+	done := make(chan error, 1)
+	var wg sync.WaitGroup
+	t.Cleanup(wg.Wait)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		done <- cs.Reload()
+	}()
+	select {
+	case err := <-done:
+		if !hasReason(err, config.ReasonRejected) {
+			t.Fatalf("reload = %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("a listener calling the service deadlocked")
+	}
+	if len(seen) != 2 || seen[0] != seen[1] {
+		t.Errorf("listener saw %v", seen)
+	}
+}
+
+// A layer that does not parse is rejected once per content, however often it is
+// polled; new broken content is told again, and the fix is applied.
+func TestUnparsableLayerIsToldOncePerContent(t *testing.T) {
+	h, p := newHome(t), newProbes(t)
+	ldr, cs := boot(t, h, p)
+	var told []error
+	cs.OnRejected(func(err error) { told = append(told, err) })
+	user := profile.UserLayerPath(h.root)
+	write(t, user, "- id: probe\n  merge: [unclosed\n")
+	for range 3 {
+		if err := cs.Reload(); !hasReason(err, config.ReasonRejected) || !strings.Contains(err.Error(), user) {
+			t.Fatalf("reload = %v", err)
+		}
+	}
+	if len(told) != 1 {
+		t.Fatalf("told %d times for one content, want once", len(told))
+	}
+	write(t, user, "- id: probe\n  merge: {unclosed\n")
+	_ = cs.Reload()
+	if len(told) != 2 {
+		t.Errorf("told %d times after new broken content, want 2", len(told))
+	}
+	write(t, user, "- id: probe\n  merge:\n    level: warn\n")
+	if err := cs.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if got := effective(t, ldr, "probe"); got.Level != "warn" {
+		t.Errorf("probe after the fix = %+v", got)
+	}
+}
+
+// An edit replacing a value an expression computes is refused, and writes nothing,
+// unless it says to overwrite; a sibling field is not computed.
+func TestEditOfComputedFieldNeedsOverwrite(t *testing.T) {
+	h, p := newHome(t), newProbes(t)
+	path := profile.LayerPath(h.root, h.def.Name)
+	write(t, path, profileText+"- id: probe\n  merge:\n    level: !expr '\"info\"'\n")
+	cs, err := config.NewService(config.ServiceOptions{Stack: h.stack, Catalog: p.cat})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(path)
+	level := loader.Op{Kind: loader.OpMerge, ID: "probe", Patch: json.RawMessage(`{"level":"debug"}`)}
+	whole := loader.Op{Kind: loader.OpOverride, ID: "probe", Set: map[string]json.RawMessage{"config": json.RawMessage(`{"level":"warn"}`)}}
+	for _, op := range []loader.Op{level, whole} {
+		_, err := cs.Apply(context.Background(), config.Edit{Revision: cs.Revision(), Ops: []loader.Op{op}})
+		if !hasReason(err, config.ReasonComputed) || !strings.Contains(err.Error(), "probe.config.level") {
+			t.Fatalf("edit %v = %v, want computed", op.Kind, err)
+		}
+		if after, _ := os.ReadFile(path); string(after) != string(before) {
+			t.Fatalf("a refused edit changed the file:\n%s", after)
+		}
+	}
+	port := loader.Op{Kind: loader.OpMerge, ID: "probe", Patch: json.RawMessage(`{"port":3}`)}
+	rev, err := cs.Apply(context.Background(), config.Edit{Revision: cs.Revision(), Ops: []loader.Op{port}})
+	if err != nil {
+		t.Fatalf("sibling edit: %v", err)
+	}
+	if _, err := cs.Apply(context.Background(), config.Edit{Revision: rev, Ops: []loader.Op{level}, Overwrite: true}); err != nil {
+		t.Fatalf("overwrite: %v", err)
+	}
+	if ex, err := cs.Current().Report.Explain("probe", "config.level"); err != nil || string(ex.Value) != `"debug"` {
+		t.Errorf("level after overwrite = %s, %v", ex.Value, err)
 	}
 }

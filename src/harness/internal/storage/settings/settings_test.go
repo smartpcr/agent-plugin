@@ -36,6 +36,7 @@ const profileText = `# written by dsh
 
 type fixture struct {
 	home, profile, user string
+	config              *config.Service
 	form                *settings.Service
 }
 
@@ -56,7 +57,7 @@ func newFixture(t *testing.T) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.form = settings.New(cs, cat)
+	f.config, f.form = cs, settings.New(cs, cat)
 	return f
 }
 
@@ -82,11 +83,14 @@ func read(t *testing.T, path string) string {
 func TestDescribeListsLiveFieldsWithTheirLayer(t *testing.T) {
 	f := newFixture(t)
 	write(t, f.user, "- id: probe\n  merge:\n    level: warn\n")
+	if err := f.config.Reload(); err != nil {
+		t.Fatal(err)
+	}
 	form, err := f.form.Describe()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(form.Entries) != 1 || form.Revision == "" {
+	if len(form.Entries) != 1 || form.Revision == "" || form.Pending {
 		t.Fatalf("form = %+v", form)
 	}
 	got := map[string]settings.Field{}
@@ -101,6 +105,61 @@ func TestDescribeListsLiveFieldsWithTheirLayer(t *testing.T) {
 	}
 	if tok := got["config.token"]; !tok.Secret || string(tok.Value) != `"<set>"` || tok.Layer != "profile" {
 		t.Errorf("token = %+v", tok)
+	}
+}
+
+func level(t *testing.T, form *settings.Form) settings.Field {
+	t.Helper()
+	for _, field := range form.Entries[0].Fields {
+		if field.Path == "config.level" {
+			return field
+		}
+	}
+	t.Fatalf("no level in %+v", form)
+	return settings.Field{}
+}
+
+// After a rejected reload the form shows the value the running tree keeps, not the
+// rejected one on disk, and says the disk differs and why.
+func TestDescribeShowsEffectiveValueAfterRejection(t *testing.T) {
+	f := newFixture(t)
+	write(t, f.user, "- id: probe\n  merge:\n    level: 7\n")
+	if err := f.config.Reload(); !herr.Has(err, config.ReasonRejected) {
+		t.Fatalf("reload = %v, want rejected", err)
+	}
+	form, err := f.form.Describe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l := level(t, form); string(l.Value) != `"info"` || l.Layer != "profile" {
+		t.Errorf("level = %+v, want the effective info from profile", l)
+	}
+	if !form.Pending || len(form.Issues) == 0 || !strings.Contains(form.Issues[0].Path, "probe.config.level") {
+		t.Errorf("pending = %v, issues = %+v", form.Pending, form.Issues)
+	}
+	if form.Revision == f.config.Revision() {
+		t.Error("the form's revision is not the disk's, so an edit would be stale")
+	}
+}
+
+// An edit to a field an expression computes is refused, and nothing is written.
+func TestComputedFieldEditIsRefused(t *testing.T) {
+	f := newFixture(t)
+	write(t, f.profile, profileText+"- id: probe\n  merge:\n    level: !expr '\"warn\"'\n")
+	if err := f.config.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	before := read(t, f.profile)
+	form, err := f.form.Describe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := f.form.Apply(context.Background(), form.Revision, "probe", "config.level", json.RawMessage(`"debug"`))
+	if res.Status != settings.Failed || !herr.Has(res.Err, config.ReasonComputed) {
+		t.Fatalf("result = %+v", res)
+	}
+	if read(t, f.profile) != before {
+		t.Error("a refused edit changed the file")
 	}
 }
 

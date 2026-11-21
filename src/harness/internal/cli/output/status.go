@@ -77,9 +77,11 @@ var codes = map[herr.Reason]int{
 	"boot/panic":            Fatal,
 
 	"config/busy":         Busy,
+	"config/computed":     Invalid,
 	"config/not-writable": Config,
 	"config/rejected":     Config,
 	"config/stale":        Busy,
+	"config/stopping":     Busy,
 
 	"home/io":            Failed,
 	"home/not-directory": Invalid,

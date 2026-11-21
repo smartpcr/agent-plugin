@@ -65,7 +65,14 @@ type Definition struct {
 	// Required are the entry ids that must be present, enabled and active at the
 	// boot audit.
 	Required []string
+	// Reload is how often the layer files are polled once the app is ready, a
+	// changed and valid tree then applied while it runs (DH-D-BOOT-7); zero turns
+	// reload off: a change applies at the next start.
+	Reload time.Duration
 }
+
+// DefaultReload is the layer poll of a profile that reloads (web).
+const DefaultReload = 500 * time.Millisecond
 
 // Built-in profile names (DH-ADR-BOOT-1).
 const (
@@ -79,7 +86,7 @@ const (
 // builtins are the compiled-in profiles. There is no bundle named sdk-minimal: that
 // profile stacks core, minimal and sdk (DH-ADR-BOOT-1).
 var builtins = []Definition{
-	{Name: Web, Summary: "Start the host and open the web UI", Bundles: []string{"core", "web"}},
+	{Name: Web, Summary: "Start the host and open the web UI", Bundles: []string{"core", "web"}, Reload: DefaultReload},
 	{Name: Headless, Summary: "Run one task without a UI and print the answer", Bundles: []string{"core", "headless"}},
 	{Name: SDK, Summary: "Serve the SDK protocol on standard input and output", Bundles: []string{"core", "sdk"}},
 	{Name: SDKMinimal, Summary: "Serve the SDK protocol with the minimal agent preset", Bundles: []string{"core", "minimal", "sdk"}},

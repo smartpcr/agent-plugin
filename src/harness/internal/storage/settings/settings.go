@@ -53,10 +53,15 @@ type Entry struct {
 	Fields []Field `json:"fields"`
 }
 
-// Form is the live settings at one revision of the layers.
+// Form is the live settings: the effective values, those the running tree was
+// built from, and the revision of the layers on disk an edit is made against. When
+// the files on disk differ from the effective ones (a change saved but not yet
+// reloaded, or rejected), Pending is set and Issues are what the disk's layers fail.
 type Form struct {
-	Revision string  `json:"revision"`
-	Entries  []Entry `json:"entries"`
+	Revision string         `json:"revision"`
+	Entries  []Entry        `json:"entries"`
+	Pending  bool           `json:"pending,omitempty"`
+	Issues   []loader.Issue `json:"issues,omitempty"`
 }
 
 // Status is the outcome of an edit.
@@ -92,13 +97,23 @@ func New(cfg *config.Service, cat config.Catalog) *Service {
 	return &Service{config: cfg, catalog: cat}
 }
 
-// Describe reads the layers and lists every entry with live fields.
+// Describe lists every entry with live fields at its effective value: the accepted
+// tree, never a draft on disk that was rejected or not yet reloaded.
 func (s *Service) Describe() (*Form, error) {
-	snap, err := s.config.Draft()
-	if err != nil {
-		return nil, err
+	eff := s.config.Current()
+	form := &Form{Revision: eff.Revision, Entries: []Entry{}}
+	switch draft, err := s.config.Draft(); {
+	case err != nil:
+		form.Pending = true
+		form.Issues = []loader.Issue{{Message: err.Error()}}
+		var pe *loader.ParseError
+		if errors.As(err, &pe) {
+			form.Issues = pe.Issues
+		}
+	case draft.Revision != eff.Revision:
+		form.Revision, form.Pending, form.Issues = draft.Revision, true, draft.Report.Issues
 	}
-	form := &Form{Revision: snap.Revision, Entries: []Entry{}}
+	snap := eff
 	for _, pe := range snap.Report.Entries() {
 		if pe.Group || pe.ID == "" {
 			continue
@@ -181,6 +196,8 @@ func classify(err error) Result {
 	switch {
 	case herr.Has(err, config.ReasonStale):
 		return Result{Status: Stale, Err: err}
+	case herr.Has(err, config.ReasonComputed):
+		return Result{Status: Failed, Err: err}
 	case herr.Has(err, config.ReasonRejected):
 		var pe *loader.ParseError
 		r := Result{Status: Failed, Err: err}

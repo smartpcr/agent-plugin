@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -33,6 +34,11 @@ const (
 	ReasonRejected herr.Reason = "config/rejected"
 	// ReasonNotWritable is an edit with no writable layer to land in.
 	ReasonNotWritable herr.Reason = "config/not-writable"
+	// ReasonComputed is an edit that would replace a value an expression computes,
+	// made without Edit.Overwrite (DH-ADR-BOOT-7). Nothing was written.
+	ReasonComputed herr.Reason = "config/computed"
+	// ReasonStopping is a reload or an edit asked once shutdown began (Close).
+	ReasonStopping herr.Reason = "config/stopping"
 )
 
 // DefaultLockTimeout bounds the wait for the layer lock of an edit.
@@ -61,20 +67,35 @@ type ServiceOptions struct {
 	Guard loader.WriteGuard
 	// LockTimeout bounds the default guard's wait; zero is DefaultLockTimeout.
 	LockTimeout time.Duration
+	// Read reads a layer file for every read after the first; nil is os.ReadFile.
+	Read ReadFile
+	// Baseline are the layer files as the running tree was built from them (path to
+	// bytes, nil for a missing file). When set, the first snapshot is built from them
+	// rather than read again, so a change saved between boot's read and NewService
+	// is seen by the first Watch poll.
+	Baseline map[string][]byte
 }
 
 // Service is the validated reload and the one edit path of a launch's layers
 // (DH-D-BOOT-7, DH-ADR-BOOT-8). A candidate, whether a file changed under the
 // running tree or an edit, becomes effective only once its whole tree validates:
-// the static check (Check) and, for every running entry whose config changes,
-// the component's own schema through cordis candidate config (DH-D-CORDIS-5). A
-// rejected candidate changes nothing: no file, no fiber.
+// the static check (Check, which resolves every literal config through its
+// component's schema) and, for every running entry whose config changes, that
+// fiber's own candidate config with the tree's hooks (DH-D-CORDIS-5). A rejected
+// candidate changes nothing: no file, no fiber.
+//
+// Reloads and edits run one at a time (op); the effective state has its own lock
+// (mu), held only to read or swap it, and listeners are told after both are
+// released, so a listener may call any method.
 type Service struct {
 	opts ServiceOptions
+
+	op sync.Mutex
 
 	mu       sync.Mutex
 	current  *Snapshot
 	rejected string
+	closed   bool
 
 	lmu       sync.Mutex
 	listeners map[int]func(error)
@@ -109,12 +130,33 @@ func NewService(opts ServiceOptions) (*Service, error) {
 		return nil, errors.New("config: ServiceOptions.Stack is required")
 	}
 	s := &Service{opts: opts, listeners: map[int]func(error){}}
-	snap, err := s.read()
+	read := s.reader()
+	if opts.Baseline != nil {
+		read = baselineReader(opts.Baseline, read)
+	}
+	snap, err := s.readWith(read)
 	if err != nil {
 		return nil, err
 	}
 	s.current = snap
 	return s, nil
+}
+
+// Close stops admitting reloads and edits: each is then ReasonStopping. One in
+// flight finishes.
+func (s *Service) Close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed = true
+}
+
+func (s *Service) stopping() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return herr.New(ReasonStopping, "shutting down: reloads and edits are no longer admitted")
+	}
+	return nil
 }
 
 // Current is the effective snapshot: the last one read that validated.
@@ -129,7 +171,13 @@ func (s *Service) Revision() string { return s.Current().Revision }
 
 // Draft reads the layers on disk now, checked, without making them effective: the
 // read an edit starts from.
-func (s *Service) Draft() (*Snapshot, error) { return s.read() }
+func (s *Service) Draft() (*Snapshot, error) {
+	snap, err := s.read()
+	if err != nil {
+		return nil, err
+	}
+	return snap, nil
+}
 
 // OnRejected registers fn to be told of each rejected candidate, once per
 // revision rejected.
@@ -164,45 +212,70 @@ func (s *Service) notify(err error) {
 }
 
 // Reload reads the layers again and, if they changed and the candidate validates,
-// applies them to the running tree. A candidate that does not validate is
-// rejected whole with its positioned issues: the running tree is untouched, and
-// the listeners are told once for that revision.
+// applies them to the running tree. A candidate that does not validate, a layer
+// that does not parse included, is rejected whole with its positioned issues: the
+// running tree is untouched, and the listeners are told once for the content
+// rejected (the digest of the bytes read), after every lock is released.
 func (s *Service) Reload() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	snap, err := s.read()
-	if err != nil {
-		return s.rejectLocked("", herr.Wrap(ReasonRejected, err, "reload rejected"))
-	}
-	if snap.Revision == s.current.Revision {
-		return nil
-	}
-	if err := snap.Report.Err(); err != nil {
-		return s.rejectLocked(snap.Revision, herr.Wrap(ReasonRejected, err, "reload rejected"))
-	}
-	return s.adoptLocked(snap)
-}
-
-func (s *Service) rejectLocked(revision string, err error) error {
-	if revision == "" || revision != s.rejected {
-		s.rejected = revision
-		s.notify(err)
-	}
+	s.op.Lock()
+	publish, err := s.reload()
+	s.op.Unlock()
+	publish()
 	return err
 }
 
-func (s *Service) adoptLocked(snap *Snapshot) error {
+func (s *Service) reload() (func(), error) {
+	none := func() {}
+	if err := s.stopping(); err != nil {
+		return none, err
+	}
+	snap, err := s.read()
+	if err != nil {
+		err = herr.Wrap(ReasonRejected, err, "reload rejected")
+		return s.reject(snap.Revision, err), err
+	}
+	if snap.Revision == s.Revision() {
+		s.mu.Lock()
+		s.rejected = ""
+		s.mu.Unlock()
+		return none, nil
+	}
+	if err := snap.Report.Err(); err != nil {
+		err = herr.Wrap(ReasonRejected, err, "reload rejected")
+		return s.reject(snap.Revision, err), err
+	}
+	return none, s.adopt(snap)
+}
+
+// reject records revision as rejected and returns the notification to publish once
+// the locks are released: none when that revision was rejected already.
+func (s *Service) reject(revision string, err error) func() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if revision == s.rejected {
+		return func() {}
+	}
+	s.rejected = revision
+	return func() { s.notify(err) }
+}
+
+// adopt applies snap to the running tree, outside the state lock, then makes it
+// effective. The caller holds op.
+func (s *Service) adopt(snap *Snapshot) error {
 	if s.opts.Loader != nil {
 		if err := s.opts.Loader.ApplyLayers(snap.Layers); err != nil {
 			return err
 		}
 	}
+	s.mu.Lock()
 	s.current, s.rejected = snap, ""
+	s.mu.Unlock()
 	return nil
 }
 
 // Watch reloads whenever a layer file read changes, polling every interval, until
-// ctx ends. A rejected change is reported through OnRejected.
+// ctx ends or the service is closed. A rejected change is reported through
+// OnRejected, once per content.
 func (s *Service) Watch(ctx context.Context, interval time.Duration) {
 	t := time.NewTicker(interval)
 	defer t.Stop()
@@ -212,18 +285,23 @@ func (s *Service) Watch(ctx context.Context, interval time.Duration) {
 			return
 		case <-t.C:
 		}
+		if s.stopping() != nil {
+			return
+		}
 		cur := s.Current()
-		if digest(readAll(cur.files)) != cur.Revision {
+		if digest(readAll(cur.files, s.reader())) != cur.Revision {
 			_ = s.Reload()
 		}
 	}
 }
 
 // Edit is a change to the writable layer: operations appended to it, made against
-// the revision the editor read.
+// the revision the editor read. An operation that would replace a value an
+// expression computes is refused unless Overwrite says to replace it.
 type Edit struct {
-	Revision string
-	Ops      []loader.Op
+	Revision  string
+	Ops       []loader.Op
+	Overwrite bool
 }
 
 // Candidate checks the tree the edit would give, against the layers on disk now,
@@ -239,6 +317,11 @@ func (s *Service) Candidate(edit Edit) (*Snapshot, error) {
 func (s *Service) candidate(snap *Snapshot, edit Edit) (*Snapshot, error) {
 	if edit.Revision != snap.Revision {
 		return nil, herr.Newf(ReasonStale, "layers changed since revision %s (now %s): read again and retry", short(edit.Revision), short(snap.Revision))
+	}
+	if !edit.Overwrite {
+		if computed := snap.Report.computed(edit.Ops); len(computed) > 0 {
+			return nil, herr.Newf(ReasonComputed, "computed by an expression, so the edit must say to overwrite it: %s", strings.Join(computed, ", "))
+		}
 	}
 	layers := make([]loader.Layer, len(snap.Layers))
 	copy(layers, snap.Layers)
@@ -263,9 +346,12 @@ func (s *Service) candidate(snap *Snapshot, edit Edit) (*Snapshot, error) {
 // (keeping its comments) and applies the new tree. A rejected edit writes nothing.
 // It returns the new revision.
 func (s *Service) Apply(ctx context.Context, edit Edit) (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	path := s.current.Writable()
+	s.op.Lock()
+	defer s.op.Unlock()
+	if err := s.stopping(); err != nil {
+		return "", err
+	}
+	path := s.Current().Writable()
 	if path == "" {
 		return "", herr.New(ReasonNotWritable, "no writable layer")
 	}
@@ -295,7 +381,7 @@ func (s *Service) Apply(ctx context.Context, edit Edit) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := s.adoptLocked(adopted); err != nil {
+	if err := s.adopt(adopted); err != nil {
 		return adopted.Revision, err
 	}
 	return adopted.Revision, nil
@@ -350,12 +436,41 @@ func writeLayer(prev, cand *Snapshot) error {
 	return fsx.WriteFile(layer.Path, data, fsx.Options{Perm: 0o600, Durable: true})
 }
 
-// read reads and checks the layers, recording every file read for the revision.
-func (s *Service) read() (*Snapshot, error) {
+// reader is the configured file read.
+func (s *Service) reader() ReadFile {
+	if s.opts.Read != nil {
+		return s.opts.Read
+	}
+	return os.ReadFile
+}
+
+// baselineReader serves the files of baseline, a nil entry as missing, and reads
+// any other path with read.
+func baselineReader(baseline map[string][]byte, read ReadFile) ReadFile {
+	return func(path string) ([]byte, error) {
+		data, ok := baseline[path]
+		switch {
+		case !ok:
+			return read(path)
+		case data == nil:
+			return nil, &fs.PathError{Op: "open", Path: path, Err: fs.ErrNotExist}
+		}
+		return bytes.Clone(data), nil
+	}
+}
+
+// read reads and checks the layers now.
+func (s *Service) read() (*Snapshot, error) { return s.readWith(s.reader()) }
+
+// readWith reads and checks the layers through readFile, recording every file read
+// for the revision. When the layers cannot be read or parsed it returns the error
+// with a snapshot holding only the revision of the bytes read, so the same broken
+// content is recognised again.
+func (s *Service) readWith(readFile ReadFile) (*Snapshot, error) {
 	files := map[string][]byte{}
 	var fmu sync.Mutex
 	read := func(path string) ([]byte, error) {
-		data, err := os.ReadFile(path)
+		data, err := readFile(path)
 		fmu.Lock()
 		defer fmu.Unlock()
 		switch {
@@ -368,7 +483,9 @@ func (s *Service) read() (*Snapshot, error) {
 	}
 	layers, issues, err := s.opts.Stack(read)
 	if err != nil {
-		return nil, err
+		fmu.Lock()
+		defer fmu.Unlock()
+		return &Snapshot{Revision: digest(files), files: files}, err
 	}
 	Register()
 	docs := map[string]*loader.LayerDocument{}
@@ -387,8 +504,10 @@ func (s *Service) read() (*Snapshot, error) {
 	return snap, nil
 }
 
-// check is the static check, then the running components' own schemas for every
-// entry whose config changes (DH-D-CORDIS-5).
+// check is the static check (which resolves every literal config through its
+// component's schema on a scratch fiber), then, for every running entry whose
+// config changes, that fiber's own candidate config with the running tree's hooks
+// (DH-D-CORDIS-5). Without a catalogue the loader's own name check stands in.
 func (s *Service) check(layers []loader.Layer, docs map[string]*loader.LayerDocument) *Report {
 	r := Check(layers, CheckOptions{Catalog: s.opts.Catalog, Evaluator: s.opts.Evaluator, Docs: docs})
 	svc := s.opts.Loader
@@ -428,11 +547,11 @@ func (s *Service) check(layers []loader.Layer, docs map[string]*loader.LayerDocu
 	return r
 }
 
-// readAll reads again every path of files, a missing file as nil.
-func readAll(files map[string][]byte) map[string][]byte {
+// readAll reads again every path of files with read, a missing file as nil.
+func readAll(files map[string][]byte, read ReadFile) map[string][]byte {
 	now := make(map[string][]byte, len(files))
 	for p := range files {
-		data, err := os.ReadFile(p)
+		data, err := read(p)
 		if err != nil {
 			data = nil
 		}
