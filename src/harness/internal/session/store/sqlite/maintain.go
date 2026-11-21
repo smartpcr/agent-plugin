@@ -65,18 +65,21 @@ type tomb struct {
 // copy of the prefix. A deletion interrupted on the way leaves the tombstone,
 // which the next Open, FinishDeletions or the retention duty completes.
 func (s *Store) Delete(ctx context.Context, id string, _ store.DeleteOptions) error {
-	return s.deleteIf(ctx, id, nil)
+	_, err := s.deleteIf(ctx, id, nil)
+	return err
 }
 
 // errSkipped is deleteIf's answer when its guard declined the session.
 var errSkipped = errors.New("sqlite: deletion declined by its guard")
 
-// deleteIf is Delete, with guard (when set) judging the session's row inside the
-// tombstoning transaction: when it declines, nothing changes and deleteIf
-// returns errSkipped.
-func (s *Store) deleteIf(ctx context.Context, id string, guard func(ctx context.Context, tx *sql.Tx, r row) (bool, error)) error {
+// deleteIf is Delete, with guard (when set) judging, inside the tombstoning
+// transaction, the session's row and the row of every subagent child the
+// deletion would cascade to: when it declines any of them, nothing changes and
+// deleteIf returns errSkipped. It returns the ids it tombstoned, the session's
+// first and then its cascaded children's.
+func (s *Store) deleteIf(ctx context.Context, id string, guard func(ctx context.Context, tx *sql.Tx, r row) (bool, error)) ([]string, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return nil, err
 	}
 	var (
 		doomed  []tomb
@@ -86,16 +89,6 @@ func (s *Store) deleteIf(ctx context.Context, id string, guard func(ctx context.
 		r, err := liveByID(ctx, tx, id)
 		if err != nil {
 			return err
-		}
-		if guard != nil {
-			ok, err := guard(ctx, tx, r)
-			if err != nil {
-				return err
-			}
-			if !ok {
-				skipped = true
-				return nil
-			}
 		}
 		rows := []row{r}
 		seen := map[string]bool{id: true}
@@ -108,6 +101,18 @@ func (s *Store) deleteIf(ctx context.Context, id string, guard func(ctx context.
 				if !seen[k.sum.Header.ID] {
 					seen[k.sum.Header.ID] = true
 					rows = append(rows, k)
+				}
+			}
+		}
+		if guard != nil {
+			for _, c := range rows {
+				ok, err := guard(ctx, tx, c)
+				if err != nil {
+					return err
+				}
+				if !ok {
+					skipped = true
+					return nil
 				}
 			}
 		}
@@ -125,12 +130,16 @@ func (s *Store) deleteIf(ctx context.Context, id string, guard func(ctx context.
 		return nil
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if skipped {
-		return errSkipped
+		return nil, errSkipped
 	}
-	return s.finishAll(ctx, doomed)
+	ids := make([]string, len(doomed))
+	for i, t := range doomed {
+		ids[i] = t.id
+	}
+	return ids, s.finishAll(ctx, doomed)
 }
 
 // subagents are the active sessions created as subagent children of id.
@@ -337,8 +346,11 @@ func (s *Store) Retire(ctx context.Context, maxAge time.Duration) ([]string, err
 		// transaction the session must still be the same one (its uid; an id
 		// deleted and created again is another session) and still be old (no
 		// event appended since), and claimable checks its lease there too.
-		err := s.deleteIf(ctx, c.id, func(ctx context.Context, tx *sql.Tx, r row) (bool, error) {
-			if r.uid != c.uid {
+		// Every subagent child the deletion cascades to must be old as well,
+		// or the whole candidate is skipped: retention removes no recent
+		// history.
+		gone, err := s.deleteIf(ctx, c.id, func(ctx context.Context, tx *sql.Tx, r row) (bool, error) {
+			if r.sum.Header.ID == c.id && r.uid != c.uid {
 				return false, nil
 			}
 			var at int64
@@ -348,7 +360,7 @@ func (s *Store) Retire(ctx context.Context, maxAge time.Duration) ([]string, err
 		})
 		switch {
 		case err == nil:
-			deleted = append(deleted, c.id)
+			deleted = append(deleted, gone...)
 		case errors.Is(err, errSkipped), errors.Is(err, store.ErrOwned), errors.Is(err, store.ErrNotFound):
 			// refreshed or replaced since the shortlist, held by a live
 			// instance, or gone with its creator
