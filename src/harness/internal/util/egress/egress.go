@@ -296,15 +296,29 @@ func (t *permitted) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 		return nil, err
 	}
-	resp.Body = &releaseBody{ReadCloser: resp.Body, release: func() { stop(); cancel(nil) }}
+	resp.Body = &releaseBody{ReadCloser: resp.Body, kind: t.kind, pctx: pctx, release: func() { stop(); cancel(nil) }}
 	return resp, nil
 }
 
-// releaseBody ends the request's joined context when the body is closed.
+// releaseBody ends the request's joined context when the body is closed, and
+// reports a read cut short by a withdrawn permit as egress/not-permitted, the
+// same as a withdrawal before the response arrived.
 type releaseBody struct {
 	io.ReadCloser
+	kind    string
+	pctx    context.Context
 	once    sync.Once
 	release func()
+}
+
+func (b *releaseBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if err != nil && err != io.EOF && b.pctx.Err() != nil {
+		// As in RoundTrip: the cause is printed, not chained, so herr.Kind and the
+		// exit status read egress/not-permitted rather than sharing/withdrawn.
+		return n, herr.Newf(ReasonNotPermitted, "the permit for %s was withdrawn in flight: %v", b.kind, err)
+	}
+	return n, err
 }
 
 func (b *releaseBody) Close() error {
