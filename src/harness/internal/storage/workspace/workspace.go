@@ -147,6 +147,18 @@ func newID() (string, error) {
 // Add registers the folder at path, last in order. A folder that is already
 // registered is workspace/exists, returned with the existing workspace.
 func (r *Registry) Add(ctx context.Context, path string) (Workspace, error) {
+	return r.AddWith(ctx, path, AddOptions{})
+}
+
+// AddOptions configures AddWith.
+type AddOptions struct {
+	// Adopt attaches, in the same transaction, every ungrouped active session
+	// whose recorded working directory resolves to the new workspace's folder.
+	Adopt bool
+}
+
+// AddWith is Add, adopting ungrouped sessions when o asks.
+func (r *Registry) AddWith(ctx context.Context, path string, o AddOptions) (Workspace, error) {
 	real, err := Resolve(path)
 	if err != nil {
 		return Workspace{}, err
@@ -167,15 +179,16 @@ func (r *Registry) Add(ctx context.Context, path string) (Workspace, error) {
 		case !errors.Is(err, sql.ErrNoRows):
 			return err
 		}
-		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(position), -1) + 1 FROM workspaces`).Scan(&w.Position); err != nil {
+		if err := insert(ctx, tx, &w, now); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO workspaces (`+columns+`) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			w.ID, w.Path, w.RequestedPath, w.Title, w.Position, now, now); err != nil {
-			return err
+		if o.Adopt {
+			if err := adopt(ctx, tx, w, now); err != nil {
+				return err
+			}
 		}
-		_, err = kv.BumpRevision(ctx, tx, Namespace)
-		return err
+		// A workspace has existed: first use is over.
+		return decideFirstUse(ctx, tx, "", now)
 	})
 	if err != nil {
 		return Workspace{}, kv.Classify(err)
@@ -184,6 +197,115 @@ func (r *Registry) Add(ctx context.Context, path string) (Workspace, error) {
 		return *existing, herr.Newf(ReasonExists, "the folder %s is already workspace %s", real, existing.ID)
 	}
 	return w, nil
+}
+
+// adopt attaches to w every active session in no workspace whose recorded
+// working directory resolves to w's folder.
+func adopt(ctx context.Context, tx *sql.Tx, w Workspace, now int64) error {
+	rows, err := tx.QueryContext(ctx, `SELECT s.uid, s.cwd FROM sessions s
+		LEFT JOIN workspace_sessions m ON m.session = s.uid
+		WHERE s.state = 'active' AND s.cwd <> '' AND m.session IS NULL`)
+	if err != nil {
+		return err
+	}
+	type cand struct {
+		uid int64
+		cwd string
+	}
+	var cands []cand
+	for rows.Next() {
+		var c cand
+		if err := rows.Scan(&c.uid, &c.cwd); err != nil {
+			rows.Close()
+			return err
+		}
+		cands = append(cands, c)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	resolved := map[string]bool{}
+	for _, c := range cands {
+		in, ok := resolved[c.cwd]
+		if !ok {
+			real, err := Resolve(c.cwd)
+			in = err == nil && real == w.Path
+			resolved[c.cwd] = in
+		}
+		if !in {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO workspace_sessions (session, workspace, attached_at) VALUES (?, ?, ?)`, c.uid, w.ID, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// insert adds w last in order and bumps the revision.
+func insert(ctx context.Context, tx *sql.Tx, w *Workspace, now int64) error {
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(position), -1) + 1 FROM workspaces`).Scan(&w.Position); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO workspaces (`+columns+`) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		w.ID, w.Path, w.RequestedPath, w.Title, w.Position, now, now); err != nil {
+		return err
+	}
+	_, err := kv.BumpRevision(ctx, tx, Namespace)
+	return err
+}
+
+// decideFirstUse records the first-use decision unless one is recorded:
+// created is the default workspace EnsureDefault made, "" for none.
+func decideFirstUse(ctx context.Context, tx *sql.Tx, created string, now int64) error {
+	_, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO workspace_first_use (id, workspace, decided_at) VALUES (1, ?, ?)`, created, now)
+	return err
+}
+
+// EnsureDefault registers the folder at path as the first-use workspace when,
+// checked inside one transaction, no first use was decided before, no workspace
+// exists and no session ever existed (a deleted one counts: session uids are
+// never reused). It remembers the decision either way, so it creates at most
+// once per home and never again after that workspace is removed; an Add also
+// ends first use. created reports whether it made the workspace now.
+func (r *Registry) EnsureDefault(ctx context.Context, path string) (w Workspace, created bool, err error) {
+	real, err := Resolve(path)
+	if err != nil {
+		return Workspace{}, false, err
+	}
+	id, err := newID()
+	if err != nil {
+		return Workspace{}, false, herr.Wrap(ReasonInvalid, err, "a workspace id")
+	}
+	now := r.now().UnixNano()
+	w = Workspace{ID: id, Path: real, RequestedPath: path, Title: filepath.Base(real), CreatedAt: stamp(now), UpdatedAt: stamp(now)}
+	err = r.db.WriteTx(ctx, func(tx *sql.Tx) error {
+		var decided, used bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM workspace_first_use)`).Scan(&decided); err != nil || decided {
+			return err
+		}
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM workspaces)
+			OR EXISTS (SELECT 1 FROM sessions)
+			OR EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'sessions' AND seq > 0)`).Scan(&used); err != nil {
+			return err
+		}
+		if used {
+			return decideFirstUse(ctx, tx, "", now)
+		}
+		if err := insert(ctx, tx, &w, now); err != nil {
+			return err
+		}
+		created = true
+		return decideFirstUse(ctx, tx, w.ID, now)
+	})
+	if err != nil || !created {
+		return Workspace{}, false, kv.Classify(err)
+	}
+	return w, true, nil
 }
 
 // Get is the workspace with id.

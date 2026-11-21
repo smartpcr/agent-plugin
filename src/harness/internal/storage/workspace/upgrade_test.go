@@ -2,6 +2,7 @@ package workspace_test
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -88,12 +89,11 @@ func TestLayoutOneUpgradesToMachineState(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The layout-1 fixture, written by the store running layout 1's migrations.
+	// The layout-1 fixture: sessions written by this build, then every later
+	// migration undone, so the file holds exactly layout 1's objects.
 	current := sqlite.LayoutVersion
-	sqlite.LayoutVersion = 1
 	old, err := sqlite.Open(bg, path)
 	if err != nil {
-		sqlite.LayoutVersion = current
 		t.Fatal(err)
 	}
 	h, err := service(t, old).Create(bg, nil, session.CreateOptions{Scope: scope.Key{}})
@@ -108,13 +108,32 @@ func TestLayoutOneUpgradesToMachineState(t *testing.T) {
 			err = cerr
 		}
 	}
+	if err == nil {
+		err = old.WriteTx(bg, func(tx *sql.Tx) error {
+			for _, q := range []string{
+				`DROP INDEX sessions_prompt`,
+				`ALTER TABLE sessions DROP COLUMN last_prompt_at`,
+				`DROP TABLE workspace_first_use`,
+				`DROP TABLE session_flags`,
+				`DROP TABLE workspace_sessions`,
+				`DROP TABLE workspaces`,
+				`DROP TABLE kv`,
+				`DROP TABLE kv_ns`,
+				`PRAGMA user_version = 1`,
+			} {
+				if _, err := tx.ExecContext(bg, q); err != nil {
+					return fmt.Errorf("%s: %w", q, err)
+				}
+			}
+			return nil
+		})
+	}
 	if v, tables := layoutOf(t, old); v != 1 || tables["workspaces"] || tables["kv"] || tables["kv_ns"] || !tables["events"] {
 		t.Errorf("fixture layout %d tables %v, want 1 with sessions only", v, tables)
 	}
 	if cerr := old.Close(bg); err == nil {
 		err = cerr
 	}
-	sqlite.LayoutVersion = current
 	if err != nil {
 		t.Fatal(err)
 	}

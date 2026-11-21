@@ -232,10 +232,10 @@ func (s *Store) Import(ctx context.Context, r io.Reader, o ImportOptions) (store
 			return err
 		}
 		res, err := tx.ExecContext(ctx, `INSERT INTO sessions (id, created_at, cwd, origin, creator, fork_source,
-			fork_through, inherited_count, delegation_depth, preset, next_seq, last_event_at, imported_from)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			fork_through, inherited_count, delegation_depth, preset, next_seq, last_event_at, last_prompt_at, imported_from)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			h.ID, h.CreatedAt.UnixNano(), h.Cwd, h.Origin, h.Creator, h.ForkSource, int64(h.ForkThrough),
-			h.InheritedCount, h.DelegationDepth, h.Preset, len(recs), last, from)
+			h.InheritedCount, h.DelegationDepth, h.Preset, len(recs), last, promptNanos(0, recs), from)
 		if err != nil {
 			return err
 		}

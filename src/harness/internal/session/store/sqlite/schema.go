@@ -129,6 +129,46 @@ CREATE TABLE workspaces (
 ) STRICT;
 CREATE INDEX workspaces_order ON workspaces (position, id);
 `,
+	// 3: workspace membership and session flags of docs/harness/areas/storage.md
+	// DH-D-STORAGE-7 (DH-ADR-STORAGE-7): rows, not session events, so a process
+	// that does not hold a session's lease can archive it. Both go with their
+	// session's row, and membership with its workspace's row.
+	`
+CREATE TABLE workspace_sessions (
+	session      INTEGER PRIMARY KEY REFERENCES sessions (uid) ON DELETE CASCADE,
+	workspace    TEXT    NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
+	attached_at  INTEGER NOT NULL
+) STRICT;
+CREATE INDEX workspace_sessions_by_workspace ON workspace_sessions (workspace, session);
+
+CREATE TABLE session_flags (
+	session    INTEGER PRIMARY KEY REFERENCES sessions (uid) ON DELETE CASCADE,
+	archive    TEXT    NOT NULL DEFAULT '' CHECK (archive IN ('', 'pending', 'archived')),
+	archive_at INTEGER NOT NULL DEFAULT 0,
+	archive_owner TEXT NOT NULL DEFAULT '',
+	pinned     INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1)),
+	updated_at INTEGER NOT NULL
+) STRICT;
+
+-- The first-use decision of EnsureDefault, once per home: the default workspace
+-- it created, or '' when a workspace or a session already existed.
+CREATE TABLE workspace_first_use (
+	id         INTEGER PRIMARY KEY CHECK (id = 1),
+	workspace  TEXT    NOT NULL,
+	decided_at INTEGER NOT NULL
+) STRICT;
+`,
+	// 4: sessions.last_prompt_at of docs/harness/areas/session-store.md §6.2,
+	// the time of a session's last user/message (Unix nanoseconds, 0 when none),
+	// and the index the prompt-order list (store.OrderPrompt, DH-D-VIEW-5) scans:
+	// its key is the last prompt, else the creation. Existing rows are filled
+	// from their logs.
+	`
+ALTER TABLE sessions ADD COLUMN last_prompt_at INTEGER NOT NULL DEFAULT 0;
+UPDATE sessions SET last_prompt_at = COALESCE((SELECT MAX(e.time) FROM events e
+	WHERE e.session = sessions.uid AND e.type = 'user/message' AND e.time > 0), 0) * 1000000;
+CREATE INDEX sessions_prompt ON sessions ((CASE WHEN last_prompt_at > 0 THEN last_prompt_at ELSE created_at END) DESC, id);
+`,
 }
 
 // LayoutVersion is the layout this build writes: the number of migrations.

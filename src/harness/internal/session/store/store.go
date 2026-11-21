@@ -18,6 +18,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
@@ -119,17 +121,114 @@ type Summary struct {
 	// Holder is the lease holder, nil when none.
 	Holder      *Holder
 	LastEventAt time.Time
+	// LastPromptAt is the time of the last PromptType record; zero when none.
+	LastPromptAt time.Time
 }
 
-// Query filters and pages List. The order is the most recent activity first
-// (LastEventAt, then CreatedAt, descending), then ID.
+// PromptType is the record type of a prompt: the one that moves LastPromptAt
+// (event.UserMessage).
+var PromptType = event.UserMessage.Name()
+
+// Order is the order of List's pages.
+type Order int
+
+const (
+	// OrderRecent is the most recent activity first (LastEventAt, then
+	// CreatedAt, descending), then ID.
+	OrderRecent Order = iota
+	// OrderPrompt is the last prompt first, "as of" the first page: a session's
+	// key is the time of its last timed prompt before the cut's millisecond
+	// (PromptCut; its CreatedAt when it has none), descending, then ID; a
+	// session created after the cut is not listed. The cut travels in the
+	// cursor, so a prompt appended while a caller pages never moves a session
+	// across the cursor: no session is skipped or listed twice.
+	OrderPrompt
+)
+
+// MaxPage is the largest page a store's List returns.
+const MaxPage = 1000
+
+// PageLimit is the page size q asks for: def when it asks for none, at most
+// MaxPage.
+func (q Query) PageLimit(def int) int {
+	switch {
+	case q.Limit <= 0:
+		return def
+	case q.Limit > MaxPage:
+		return MaxPage
+	}
+	return q.Limit
+}
+
+// Query filters and pages List.
 type Query struct {
 	Cwd     string
 	Creator string
-	// Limit is the page size; 0 means 50.
+	// Limit is the page size; 0 (or less) means 50, more than MaxPage means
+	// MaxPage.
 	Limit int
 	// Cursor is the Next of the previous page; empty for the first.
 	Cursor string
+	// Order is the order of the pages; a cursor is valid only in its order.
+	Order Order
+	// AsOf is the cut of an OrderPrompt first page; zero is the store's clock
+	// now. Later pages take the cut from Cursor.
+	AsOf time.Time
+}
+
+// PromptCursor is an OrderPrompt List position: the cut (AsOf, Unix
+// nanoseconds) and the key and id of the last summary returned.
+type PromptCursor struct {
+	AsOf, Key int64
+	ID        string
+}
+
+// String is the cursor as List's Next.
+func (c PromptCursor) String() string { return fmt.Sprintf("p.%d.%d.%s", c.AsOf, c.Key, c.ID) }
+
+// Precedes reports whether c comes before the summary of key and id in
+// OrderPrompt, that is whether that summary is still to be listed.
+func (c PromptCursor) Precedes(key int64, id string) bool {
+	return key < c.Key || (key == c.Key && id > c.ID)
+}
+
+// ParsePromptCursor is the PromptCursor v names; a cursor of another order is
+// session/invalid-boundary.
+func ParsePromptCursor(v string) (PromptCursor, error) {
+	parts := strings.SplitN(v, ".", 4)
+	if len(parts) == 4 && parts[0] == "p" {
+		asOf, err1 := strconv.ParseInt(parts[1], 10, 64)
+		key, err2 := strconv.ParseInt(parts[2], 10, 64)
+		if err1 == nil && err2 == nil {
+			return PromptCursor{AsOf: asOf, Key: key, ID: parts[3]}, nil
+		}
+	}
+	return PromptCursor{}, Errorf(CodeInvalidBoundary, "list cursor %q is not a prompt-order cursor this store issued", v)
+}
+
+// PromptCut is the last prompt time (Unix nanoseconds) a cut takes in: a
+// prompt is before the cut when its millisecond is. Record times are
+// milliseconds, so a prompt appended after the first page, in the cut's own
+// millisecond or later, is after the cut and never moves a session across the
+// cursor.
+func PromptCut(cut int64) int64 { return time.UnixMilli(time.Unix(0, cut).UnixMilli()).UnixNano() - 1 }
+
+// PromptKey is a session's OrderPrompt key as of cut (Unix nanoseconds): the
+// time of its last timed PromptType record at or before cut, else its
+// creation. ok is false when the session was created after cut.
+func PromptKey(created time.Time, recs []Record, cut int64) (key int64, ok bool) {
+	if created.UnixNano() > cut {
+		return 0, false
+	}
+	pcut := PromptCut(cut)
+	for i := len(recs) - 1; i >= 0; i-- {
+		if r := recs[i]; r.Type == PromptType && r.Time > 0 {
+			if at := time.UnixMilli(r.Time).UnixNano(); at <= pcut {
+				return at, true
+			}
+		}
+	}
+	return created.UnixNano(), true
 }
 
 // Page is one page of summaries; Next is empty after the last page.

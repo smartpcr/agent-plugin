@@ -88,6 +88,35 @@ type Instance interface {
 	Close(ctx context.Context) error
 }
 
+// StopCause is why an agent is asked to stop working on its session.
+type StopCause string
+
+// The stop causes.
+const (
+	// StopHidden: the agent's session was hidden (archived); a hidden session
+	// never keeps working (DH-D-STORAGE-7).
+	StopHidden StopCause = "hidden"
+)
+
+// Stopper is the optional stop of an Instance: it ends the agent's running turn
+// and refuses new work, giving cause. The driver implements it (DH-D-AGENT-3);
+// an instance without it has nothing to stop.
+type Stopper interface {
+	Stop(ctx context.Context, cause StopCause) error
+}
+
+// Stop asks a (an agent from the registry, or an instance) to stop for cause.
+// An agent whose instance is no Stopper has no work to stop: nil.
+func Stop(ctx context.Context, a Agent, cause StopCause) error {
+	if v, ok := a.(view); ok {
+		a = v.a
+	}
+	if s, ok := a.(Stopper); ok {
+		return s.Stop(ctx, cause)
+	}
+	return nil
+}
+
 // Factory builds agents; the driver is the one shipped factory. ref is the
 // reference the registry gives the new instance, and the instance must report it.
 type Factory interface {

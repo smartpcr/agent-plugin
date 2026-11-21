@@ -56,6 +56,7 @@ func Run(t *testing.T, factory Factory) {
 		{"ColdPart", testColdPart},
 		{"Checkpoints", testCheckpoints},
 		{"List", testList},
+		{"ListByPrompt", testListByPrompt},
 		{"Delete", testDelete},
 		{"OpenRefusals", testOpenRefusals},
 		{"AppendAdmission", testAdmission},
@@ -549,6 +550,81 @@ func summaryIDs(p store.Page) []string {
 		out = append(out, s.Header.ID)
 	}
 	return out
+}
+
+// prompt is a user/message record at seq.
+func prompt(t *testing.T, seq store.Seq) store.Record {
+	t.Helper()
+	m, err := vocab.NewMessage(vocab.RoleUser, vocab.TextBlock("hi"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := event.UserMessage.Draft(event.Append(), event.UserMessagePayload{Message: m})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return stamp(t, d, seq)
+}
+
+// testListByPrompt pages store.OrderPrompt while prompts are appended between
+// pages: the order is by last prompt as of the first page, not by the last
+// event, and no session is skipped or repeated.
+func testListByPrompt(t *testing.T, s store.Store) {
+	ws := map[string]store.Writer{}
+	for _, id := range []string{"a", "b", "c", "d", "e"} {
+		ws[id] = create(t, s, id, prompt(t, 0))
+	}
+	bPrompt := stat(t, s, "b").LastPromptAt
+	appendOK(t, ws["b"], assistant(t, 1)) // b's last event is the newest; its prompt is not
+	create(t, s, "f")                     // blank: keyed by its creation
+	if sum := stat(t, s, "b"); !sum.LastPromptAt.Equal(bPrompt) || bPrompt.IsZero() || !sum.LastEventAt.After(bPrompt) {
+		t.Fatalf("b: LastPromptAt %v (was %v), LastEventAt %v", sum.LastPromptAt, bPrompt, sum.LastEventAt)
+	}
+	if !stat(t, s, "f").LastPromptAt.IsZero() {
+		t.Fatal("a blank session has a LastPromptAt")
+	}
+	cut := time.UnixMilli(times.next())
+	q := store.Query{Order: store.OrderPrompt, AsOf: cut, Limit: 2}
+	var seen []string
+	for pages := 0; ; pages++ {
+		if pages > 6 {
+			t.Fatal("List does not terminate")
+		}
+		p, err := s.List(bg, q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen = append(seen, summaryIDs(p)...)
+		if pages == 0 {
+			// After the first page: a (not yet listed) and e (listed) are
+			// prompted again and g is created. Without the cut a would move
+			// ahead of the cursor and be skipped.
+			appendOK(t, ws["a"], prompt(t, 1))
+			appendOK(t, ws["e"], prompt(t, 1))
+			create(t, s, "g", prompt(t, 0))
+		}
+		if p.Next == "" {
+			break
+		}
+		q.Cursor = p.Next
+	}
+	if want := []string{"f", "e", "d", "c", "b", "a"}; !slices.Equal(seen, want) {
+		t.Fatalf("listed as of the cut %v, want %v", seen, want)
+	}
+	p, err := s.List(bg, store.Query{Order: store.OrderPrompt, AsOf: time.UnixMilli(times.next())})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := summaryIDs(p), []string{"g", "e", "a", "f", "d", "c", "b"}; !slices.Equal(got, want) {
+		t.Fatalf("listed as of now %v, want %v", got, want)
+	}
+	recent, err := s.List(bg, store.Query{Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.List(bg, store.Query{Order: store.OrderPrompt, Cursor: recent.Next}); !errors.Is(err, store.ErrInvalidBoundary) {
+		t.Fatalf("a recent-order cursor in prompt order = %v", err)
+	}
 }
 
 func testDelete(t *testing.T, s store.Store) {
