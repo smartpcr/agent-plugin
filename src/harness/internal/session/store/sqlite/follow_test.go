@@ -3,6 +3,7 @@ package sqlite_test
 import (
 	"context"
 	"database/sql"
+	"io"
 	"strconv"
 	"testing"
 	"time"
@@ -273,5 +274,129 @@ func TestDutyHasOneHolderAndMovesAfterAKill(t *testing.T) {
 	}
 	if h, e, _ := dutyRow(); h.Valid || e != 3 {
 		t.Fatalf("duty row after Close = %v epoch %d; want released at epoch 3", h, e)
+	}
+}
+
+// Followers do not take the read pool: with more live subscriptions than the
+// pool has connections, Stat, List, OpenRead, Export, Check and one more Follow
+// all still answer within a bounded context, and every follower still delivers.
+func TestFollowersLeaveTheReadPoolFree(t *testing.T) {
+	path := dbPath(t)
+	s, err := sqlite.Open(bg, path, sqlite.WithFollowInterval(followInterval))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close(bg)
+	w, err := s.Create(bg, store.Header{ID: "f"}, store.CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close(bg)
+	var subs []*sqlite.Subscription
+	for range 8 {
+		sub, err := s.Follow(bg, "f", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		subs = append(subs, sub)
+	}
+	ctx, cancel := context.WithTimeout(bg, 5*time.Second)
+	defer cancel()
+	if _, err := s.Stat(ctx, "f"); err != nil {
+		t.Fatalf("Stat beside 8 followers: %v", err)
+	}
+	if _, err := s.List(ctx, store.Query{}); err != nil {
+		t.Fatalf("List beside 8 followers: %v", err)
+	}
+	rd, err := s.OpenRead(ctx, "f")
+	if err != nil {
+		t.Fatalf("OpenRead beside 8 followers: %v", err)
+	}
+	if _, err := rd.Read(ctx, 0, 0, store.ReadOptions{}); err != nil {
+		t.Fatalf("Read beside 8 followers: %v", err)
+	}
+	if err := s.Export(ctx, io.Discard, "f", sqlite.ExportOptions{}); err != nil {
+		t.Fatalf("Export beside 8 followers: %v", err)
+	}
+	if _, err := s.Check(ctx); err != nil {
+		t.Fatalf("Check beside 8 followers: %v", err)
+	}
+	ninth, err := s.Follow(ctx, "f", 0)
+	if err != nil {
+		t.Fatalf("a ninth Follow: %v", err)
+	}
+	subs = append(subs, ninth)
+	if err := w.Append(bg, store.Batch{First: 0, Records: []store.Record{call(t, 0)}}); err != nil {
+		t.Fatal(err)
+	}
+	for i, sub := range subs {
+		if rec := next(t, sub); rec.Seq != 0 {
+			t.Fatalf("follower %d delivered seq %d; want 0", i, rec.Seq)
+		}
+	}
+}
+
+// DH-T-STORE-14: two concurrent RunDuty calls of one instance run the duty once:
+// the second waits out the first, then finds it not due within the period.
+func TestConcurrentRunDutyRunsOnce(t *testing.T) {
+	s := open(t, dbPath(t))
+	entered, release := make(chan struct{}, 2), make(chan struct{})
+	var once bool
+	t.Cleanup(func() {
+		if !once {
+			close(release)
+		}
+	})
+	fn := func(context.Context) error {
+		entered <- struct{}{}
+		<-release
+		return nil
+	}
+	type result struct {
+		ran bool
+		err error
+	}
+	results := make(chan result, 2)
+	for range 2 {
+		go func() {
+			ran, err := s.RunDuty(bg, "d", time.Hour, fn)
+			results <- result{ran, err}
+		}()
+	}
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("neither RunDuty ran the duty within 10s")
+	}
+	// While the first run is inside fn, the second must not be: it waits on the
+	// run lock, so no second entry can arrive.
+	select {
+	case <-entered:
+		t.Fatal("a second RunDuty ran the duty while the first was still running")
+	case <-time.After(5 * followInterval):
+	}
+	once = true
+	close(release)
+	runs := 0
+	for range 2 {
+		select {
+		case r := <-results:
+			if r.err != nil {
+				t.Fatal(r.err)
+			}
+			if r.ran {
+				runs++
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("RunDuty did not return within 10s")
+		}
+	}
+	if runs != 1 || len(entered) != 0 {
+		t.Fatalf("%d runs reported, %d extra entries; want exactly one run", runs, len(entered))
+	}
+	ctx, cancel := context.WithCancel(bg)
+	cancel()
+	if _, err := s.RunDuty(ctx, "d", 0, fn); err != context.Canceled {
+		t.Fatalf("RunDuty with an ended context = %v; want context.Canceled", err)
 	}
 }

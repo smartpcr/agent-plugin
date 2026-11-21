@@ -33,6 +33,13 @@ func WithDeleteChunk(n int) Option { return func(s *Store) { s.chunk = n } }
 // each committed chunk of a deletion with the events removed so far.
 var afterDeleteChunk func(id string, deleted int64)
 
+// removeAll removes a spill directory; a test swaps it to inject a failure.
+var removeAll = os.RemoveAll
+
+// afterRetireShortlist, when set, runs between Retire's shortlist and its
+// deletions, so a test can refresh or replace a shortlisted session there.
+var afterRetireShortlist func(ids []string)
+
 // SpillName is the directory under <home>/spill that holds session id's spill
 // files: the first 16 hex digits of the SHA-256 of the id (storage.md).
 func SpillName(id string) string {
@@ -58,14 +65,37 @@ type tomb struct {
 // copy of the prefix. A deletion interrupted on the way leaves the tombstone,
 // which the next Open, FinishDeletions or the retention duty completes.
 func (s *Store) Delete(ctx context.Context, id string, _ store.DeleteOptions) error {
+	return s.deleteIf(ctx, id, nil)
+}
+
+// errSkipped is deleteIf's answer when its guard declined the session.
+var errSkipped = errors.New("sqlite: deletion declined by its guard")
+
+// deleteIf is Delete, with guard (when set) judging the session's row inside the
+// tombstoning transaction: when it declines, nothing changes and deleteIf
+// returns errSkipped.
+func (s *Store) deleteIf(ctx context.Context, id string, guard func(ctx context.Context, tx *sql.Tx, r row) (bool, error)) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	var doomed []tomb
+	var (
+		doomed  []tomb
+		skipped bool
+	)
 	err := s.write(ctx, func(tx *sql.Tx) error {
 		r, err := liveByID(ctx, tx, id)
 		if err != nil {
 			return err
+		}
+		if guard != nil {
+			ok, err := guard(ctx, tx, r)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				skipped = true
+				return nil
+			}
 		}
 		rows := []row{r}
 		seen := map[string]bool{id: true}
@@ -96,6 +126,9 @@ func (s *Store) Delete(ctx context.Context, id string, _ store.DeleteOptions) er
 	})
 	if err != nil {
 		return err
+	}
+	if skipped {
+		return errSkipped
 	}
 	return s.finishAll(ctx, doomed)
 }
@@ -142,7 +175,7 @@ func (s *Store) finishAll(ctx context.Context, doomed []tomb) error {
 // second instance finishing the same tombstone, or a resumed one, is harmless.
 func (s *Store) finish(ctx context.Context, t tomb) error {
 	if s.spill != "" {
-		if err := os.RemoveAll(filepath.Join(s.spill, SpillName(t.id))); err != nil {
+		if err := removeAll(filepath.Join(s.spill, SpillName(t.id))); err != nil {
 			return ioErr("delete "+t.id+": spill", err)
 		}
 	}
@@ -268,33 +301,57 @@ func (s *Store) Retire(ctx context.Context, maxAge time.Duration) ([]string, err
 		return nil, nil
 	}
 	cut := s.now().Add(-maxAge).UnixNano()
-	var ids []string
+	type candidate struct {
+		uid int64
+		id  string
+	}
+	var cands []candidate
 	if err := s.read(ctx, func(tx *sql.Tx) error {
-		rs, err := tx.QueryContext(ctx, `SELECT id FROM sessions WHERE state = 'active'
+		rs, err := tx.QueryContext(ctx, `SELECT uid, id FROM sessions WHERE state = 'active'
 			AND (CASE WHEN last_event_at > 0 THEN last_event_at ELSE created_at END) < ? ORDER BY uid`, cut)
 		if err != nil {
 			return err
 		}
 		defer rs.Close()
 		for rs.Next() {
-			var id string
-			if err := rs.Scan(&id); err != nil {
+			var c candidate
+			if err := rs.Scan(&c.uid, &c.id); err != nil {
 				return err
 			}
-			ids = append(ids, id)
+			cands = append(cands, c)
 		}
 		return rs.Err()
 	}); err != nil {
 		return nil, err
 	}
+	if afterRetireShortlist != nil {
+		ids := make([]string, len(cands))
+		for i, c := range cands {
+			ids[i] = c.id
+		}
+		afterRetireShortlist(ids)
+	}
 	var deleted []string
-	for _, id := range ids {
-		err := s.Delete(ctx, id, store.DeleteOptions{})
+	for _, c := range cands {
+		// The snapshot above is only a shortlist: inside the tombstoning
+		// transaction the session must still be the same one (its uid; an id
+		// deleted and created again is another session) and still be old (no
+		// event appended since), and claimable checks its lease there too.
+		err := s.deleteIf(ctx, c.id, func(ctx context.Context, tx *sql.Tx, r row) (bool, error) {
+			if r.uid != c.uid {
+				return false, nil
+			}
+			var at int64
+			err := tx.QueryRowContext(ctx, `SELECT CASE WHEN last_event_at > 0 THEN last_event_at ELSE created_at END
+				FROM sessions WHERE uid = ?`, r.uid).Scan(&at)
+			return err == nil && at < cut, err
+		})
 		switch {
 		case err == nil:
-			deleted = append(deleted, id)
-		case errors.Is(err, store.ErrOwned), errors.Is(err, store.ErrNotFound):
-			// held by a live instance, or gone with its creator
+			deleted = append(deleted, c.id)
+		case errors.Is(err, errSkipped), errors.Is(err, store.ErrOwned), errors.Is(err, store.ErrNotFound):
+			// refreshed or replaced since the shortlist, held by a live
+			// instance, or gone with its creator
 		default:
 			return deleted, err
 		}

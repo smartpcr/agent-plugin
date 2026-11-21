@@ -199,9 +199,10 @@ type Store struct {
 	// leases still held, which it retries).
 	cmu sync.Mutex
 
-	mu      sync.Mutex // guards writers, subs, closed and done
+	mu      sync.Mutex // guards writers, subs, running, closed and done
 	writers map[*writer]struct{}
 	subs    map[*Subscription]struct{}
+	running map[string]chan struct{} // a run lock per duty name
 	// closed refuses new handles once Close began; done is set once Close
 	// released everything and closed the pools. A Close that failed to release
 	// a lease leaves done unset, so it may be called again.
@@ -304,11 +305,27 @@ func Open(ctx context.Context, path string, opts ...Option) (*Store, error) {
 	// Housekeeping only: OpenWrite probes a recorded holder whether or not its
 	// hosts row is gone, so a failed sweep (a busy database) does not fail Open.
 	_ = s.sweep(ctx)
-	// A deletion a dead instance left half done completes here (DH-ADR-STORE-7).
-	// It is housekeeping too: the tombstone stays invisible, and the retention
-	// duty or the next Open retries what fails now.
-	_, _ = s.FinishDeletions(ctx)
+	// A deletion a dead instance left half done completes here (DH-ADR-STORE-7),
+	// before Open returns: a store that cannot finish it (a spill directory it
+	// cannot remove, a failing database) fails to open with that error rather
+	// than run on with a deletion silently half done. The tombstone stays, so the
+	// next Open retries it.
+	if _, err := s.FinishDeletions(ctx); err != nil {
+		s.dropHost()
+		s.abandon()
+		return nil, err
+	}
 	return s, nil
+}
+
+// dropHost removes this instance's hosts row, best effort: an Open that fails
+// after registering leaves no row behind (a sweep would remove it anyway, once
+// the liveness lock is gone).
+func (s *Store) dropHost() {
+	_ = s.write(context.Background(), func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(context.Background(), `DELETE FROM hosts WHERE instance = ?`, s.instance)
+		return err
+	})
 }
 
 // abandon undoes a failed Open: the pools close and the liveness lock goes.

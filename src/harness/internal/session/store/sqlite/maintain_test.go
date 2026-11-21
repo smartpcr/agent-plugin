@@ -255,6 +255,104 @@ func TestRetentionRetiresOnlyUnheldOldSessions(t *testing.T) {
 	}
 }
 
+// DH-T-STORE-11: Retire's shortlist is not its verdict. A shortlisted session
+// that gains a recent event before its deletion, or whose id is deleted and
+// created again (another session), survives; an untouched one goes.
+func TestRetireRevalidatesItsShortlist(t *testing.T) {
+	path := dbPath(t)
+	now := time.Date(2025, 9, 1, 0, 0, 0, 0, time.UTC)
+	s, err := sqlite.Open(bg, path, sqlite.WithClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close(bg)
+	old := now.Add(-30 * 24 * time.Hour)
+	for _, id := range []string{"refreshed", "replaced", "stale"} {
+		if err := s.Seed(bg, store.Header{ID: id, CreatedAt: old}, stamped(t, 3, old)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var shortlist []string
+	defer sqlite.SetAfterRetireShortlist(func(ids []string) {
+		shortlist = ids
+		w, err := s.OpenWrite(bg, "refreshed", store.OpenOptions{})
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		if err := w.Append(bg, store.Batch{First: 3, Records: stamped(t, 4, now)[3:]}); err != nil {
+			t.Error(err)
+		}
+		if err := w.Close(bg); err != nil {
+			t.Error(err)
+		}
+		if err := s.Delete(bg, "replaced", store.DeleteOptions{}); err != nil {
+			t.Error(err)
+		}
+		if err := s.Seed(bg, store.Header{ID: "replaced", CreatedAt: old}, stamped(t, 2, old)); err != nil {
+			t.Error(err)
+		}
+	})()
+	got, err := s.Retire(bg, 7*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(shortlist, []string{"refreshed", "replaced", "stale"}) {
+		t.Fatalf("shortlist = %v; want all three old sessions", shortlist)
+	}
+	if !slices.Equal(got, []string{"stale"}) {
+		t.Fatalf("Retire deleted %v; want only the untouched session", got)
+	}
+	assertGone(t, path, "stale")
+	if sum, err := s.Stat(bg, "refreshed"); err != nil || sum.NextSeq != 4 {
+		t.Fatalf("the refreshed session: %+v, %v; want it kept with 4 records", sum, err)
+	}
+	if sum, err := s.Stat(bg, "replaced"); err != nil || sum.NextSeq != 2 {
+		t.Fatalf("the replacement session: %+v, %v; want it kept with its 2 records", sum, err)
+	}
+}
+
+// DH-T-STORE-11: an interrupted deletion Open cannot finish fails Open with the
+// cause, releasing the instance (no hosts row, no liveness lock); the tombstone
+// stays, and the next Open that can finish it does.
+func TestOpenFailsWhenADeletionCannotFinish(t *testing.T) {
+	path := dbPath(t)
+	spill := filepath.Join(filepath.Dir(path), "spill")
+	s, err := sqlite.Open(bg, path, sqlite.WithSpillDir(spill))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Seed(bg, store.Header{ID: "doomed"}, stamped(t, 3, time.Now())); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(bg); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fresh(t, path).Exec(`UPDATE sessions SET state = 'deleting' WHERE id = 'doomed'`); err != nil {
+		t.Fatal(err)
+	}
+	restore := sqlite.SetRemoveAll(func(string) error { return os.ErrPermission })
+	if _, err := sqlite.Open(bg, path, sqlite.WithSpillDir(spill)); codeOf(err) != sqlite.CodeIO || !strings.Contains(err.Error(), "doomed") {
+		restore()
+		t.Fatalf("Open with an unfinishable deletion = %v; want %s naming the session", err, sqlite.CodeIO)
+	}
+	restore()
+	db := fresh(t, path)
+	if n := countWhere(t, db, `SELECT count(*) FROM hosts`); n != 0 {
+		t.Fatalf("the failed Open left %d hosts rows", n)
+	}
+	if n := countWhere(t, db, `SELECT count(*) FROM sessions WHERE id = 'doomed' AND state = 'deleting'`); n != 1 {
+		t.Fatalf("the failed Open dropped the tombstone (%d rows)", n)
+	}
+	r, err := sqlite.Open(bg, path, sqlite.WithSpillDir(spill))
+	if err != nil {
+		t.Fatalf("Open once removal works: %v", err)
+	}
+	defer r.Close(bg)
+	assertGone(t, path, "doomed")
+	assertClean(t, r)
+}
+
 // DH-T-STORE-12: Check reports a session whose row count was damaged on purpose,
 // a checkpoint past the end, and rows of no session.
 func TestCheckReportsDamage(t *testing.T) {

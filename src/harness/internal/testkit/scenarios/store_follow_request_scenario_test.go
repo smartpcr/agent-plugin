@@ -18,6 +18,7 @@ var (
 	storeFollowLine  = regexp.MustCompile(`(?m)^seq=(\d+) type=(\S+) at=(\d+)\s*$`)
 	storeRequestLine = regexp.MustCompile(`(?m)^request=(\S+)\s*$`)
 	storeStateLine   = regexp.MustCompile(`(?m)^state=(\S+) by=(\d*)\s*$`)
+	storeFollowReady = regexp.MustCompile(`(?m)^following from=(\d+)\s*$`)
 )
 
 // followed is one event a follower printed: its seq, type and the wall-clock
@@ -57,9 +58,10 @@ func readFollowed(t *testing.T, path string) []followed {
 // Given an empty home and processes A and B each started as a headless host on
 // it with the replay model provider, when (1) A creates a session and runs a
 // turn, (2) B follows the session read-only while A runs a second turn, (3) B
-// files one log-only request (a feedback entry) for it and (4) B files a second
-// request, A is killed before it applies it and B takes the free session's lease
-// through a maintenance append, then at (2) B receives every event of the turn
+// files one log-only request (a feedback entry) for it and (4) A is paused from
+// applying requests, B files a second request (which stays pending), A is killed
+// before it applies it and B takes the free session's lease through a
+// maintenance append, then at (2) B receives every event of the turn
 // once, in order, each within twice the follow interval of its commit; at (3) the
 // request becomes applied and its feedback event is in the log once; at (4) the
 // second request is applied exactly once, by B, and its row says so; the log has
@@ -72,9 +74,11 @@ func readFollowed(t *testing.T, path string) []followed {
 // DSH_SCENARIO_STORE5_CREATE makes {proc} create a session, run one turn and
 // print "session=<id>"; DSH_SCENARIO_STORE5_TURN makes {proc} run one turn on
 // {session}; DSH_SCENARIO_STORE5_FOLLOW makes {proc} follow {session} from its
-// next seq, appending "seq=<n> type=<t> at=<unix ns>" per event received to
+// next seq, appending first "following from=<n>" once subscribed, then "seq=<n> type=<t> at=<unix ns>" per event received to
 // {out}, until it is stopped; DSH_SCENARIO_STORE5_FEEDBACK makes {proc} file a
 // feedback request for {session} and print "request=<id>";
+// DSH_SCENARIO_STORE5_PAUSE makes {proc} stop applying requests and returns once
+// it has (requests filed after stay pending while it lives);
 // DSH_SCENARIO_STORE5_STATE prints "state=<s> by=<pid>" for {request};
 // DSH_SCENARIO_STORE5_MAINTAIN makes {proc} take {session}'s lease through a
 // maintenance append; DSH_SCENARIO_STORE5_KILL kills {proc} without a clean stop.
@@ -88,6 +92,7 @@ func TestNonHolderFollowsAndHandsItsHolderAChange(t *testing.T) {
 	turnT := need(t, "DSH_SCENARIO_STORE5_TURN", "command making {proc} run a turn on {session}")
 	followT := need(t, "DSH_SCENARIO_STORE5_FOLLOW", "command making {proc} follow {session} into {out}")
 	feedbackT := need(t, "DSH_SCENARIO_STORE5_FEEDBACK", "command making {proc} file a feedback request for {session}")
+	pauseT := need(t, "DSH_SCENARIO_STORE5_PAUSE", "command making {proc} stop applying requests")
 	stateT := need(t, "DSH_SCENARIO_STORE5_STATE", "command printing state=<s> by=<pid> for {request}")
 	maintainT := need(t, "DSH_SCENARIO_STORE5_MAINTAIN", "command making {proc} take {session}'s lease by a maintenance append")
 	killT := need(t, "DSH_SCENARIO_STORE5_KILL", "command killing {proc} without a clean stop")
@@ -179,6 +184,20 @@ func TestNonHolderFollowsAndHandsItsHolderAChange(t *testing.T) {
 
 	// (2)
 	follower := startShell(t, expand(followT, with("b")))
+	// The follower starts from the session's next seq; A's turn must not begin
+	// before it has subscribed, or the turn's first events precede its start.
+	for deadline := time.Now().Add(storeStepTimeout); ; <-time.After(interval) {
+		b, _ := os.ReadFile(out)
+		if m := storeFollowReady.FindSubmatch(b); m != nil {
+			if from, _ := strconv.Atoi(string(m[1])); from != len(before) {
+				t.Fatalf("B follows from seq %d, want %d (the session's next seq)", from, len(before))
+			}
+			break
+		}
+		if follower.exited() || time.Now().After(deadline) {
+			t.Fatalf("B's follower never reported it was subscribed")
+		}
+	}
 	if o, err := storeStep(t, "A runs a second turn", expand(turnT, with("a"))); err != nil {
 		t.Fatalf("A's second turn failed: %v\n%s", err, o)
 	}
@@ -215,10 +234,16 @@ func TestNonHolderFollowsAndHandsItsHolderAChange(t *testing.T) {
 	feedbackOnce("the first request")
 
 	// (4)
+	if o, err := storeStep(t, "pause A", expand(pauseT, with("a"))); err != nil {
+		t.Fatalf("A could not be paused from applying requests: %v\n%s", err, o)
+	}
+	req = file()
+	if o, err := storeStep(t, "request state", expand(stateT, with("b"))); err != nil || !strings.HasPrefix(strings.TrimSpace(o), "state=pending") {
+		t.Fatalf("request %s filed while A lives and is paused: %v\n%s; want pending", req, err, o)
+	}
 	if _, err := storeStep(t, "kill A", expand(killT, with("a"))); err != nil {
 		t.Fatalf("killing A: %v", err)
 	}
-	req = file()
 	for deadline := time.Now().Add(storeStepTimeout); !a.exited(); <-time.After(50 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatal("A did not exit after the kill")

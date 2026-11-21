@@ -52,8 +52,8 @@ func (sub *Subscription) Close() {
 
 // Follow delivers the events of session id from seq from on, including those
 // another process commits (DH-ADR-STORE-6, DH-D-STORE-8). While the subscription
-// lives it pins one connection of the read pool and polls PRAGMA data_version on
-// it every follow interval; when the counter moved it reads the rows past the last
+// lives it holds one connection of its own (not one of the read pool) and polls
+// PRAGMA data_version on it every follow interval; when the counter moved it reads the rows past the last
 // delivered seq in short read transactions. No read transaction stays open between
 // polls, so a follower never holds back a checkpoint of the write-ahead log. A
 // follower lags a commit by at most about one interval and sees only durable
@@ -71,9 +71,21 @@ func (s *Store) Follow(ctx context.Context, id string, from store.Seq) (*Subscri
 	}); err != nil {
 		return nil, err
 	}
-	conn, err := s.rdb.Conn(ctx)
+	// A follower's connection is its own, outside the bounded read pool, so any
+	// number of followers never starve Stat, List, OpenRead or Export.
+	fdb, err := sql.Open("sqlite", dsn(s.path, false, s.busy))
 	if err != nil {
 		return nil, translate(ctx, err)
+	}
+	fdb.SetMaxOpenConns(1)
+	conn, err := fdb.Conn(ctx)
+	if err != nil {
+		_ = fdb.Close()
+		return nil, translate(ctx, err)
+	}
+	release := func() {
+		_ = conn.Close()
+		_ = fdb.Close()
 	}
 	fctx, cancel := context.WithCancel(ctx)
 	sub := &Subscription{events: make(chan store.Record), cancel: cancel, done: make(chan struct{})}
@@ -81,14 +93,14 @@ func (s *Store) Follow(ctx context.Context, id string, from store.Seq) (*Subscri
 	if s.closed {
 		s.mu.Unlock()
 		cancel()
-		_ = conn.Close()
+		release()
 		return nil, store.Errorf(store.CodeClosed, "the store is closed")
 	}
 	s.subs[sub] = struct{}{}
 	s.mu.Unlock()
 	go func() {
 		err := s.poll(fctx, conn, sub, r.uid, id, from)
-		_ = conn.Close()
+		release()
 		s.mu.Lock()
 		delete(s.subs, sub)
 		s.mu.Unlock()
@@ -266,6 +278,14 @@ func (s *Store) RunDuty(ctx context.Context, name string, every time.Duration, f
 	if name == "" {
 		return false, store.Errorf(store.CodeInvalidBatch, "a duty needs a name")
 	}
+	// Runs of one duty in this instance are serialized from the due check to the
+	// recorded run: the instance holds the duty at one epoch, so the lease alone
+	// cannot tell two of its own calls apart.
+	unlock, err := s.lockDuty(ctx, name)
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
 	var (
 		epoch uint64
 		due   bool
@@ -300,4 +320,28 @@ func (s *Store) RunDuty(ctx context.Context, name string, every time.Duration, f
 		return true, store.Errorf(store.CodeLeaseLost, "duty %q was taken by another instance during its run", name)
 	}
 	return true, nil
+}
+
+// lockDuty takes this instance's run lock of duty name, or returns ctx's error
+// when ctx ends first; the returned function releases it.
+func (s *Store) lockDuty(ctx context.Context, name string) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	if s.running == nil {
+		s.running = map[string]chan struct{}{}
+	}
+	ch, ok := s.running[name]
+	if !ok {
+		ch = make(chan struct{}, 1)
+		s.running[name] = ch
+	}
+	s.mu.Unlock()
+	select {
+	case ch <- struct{}{}:
+		return func() { <-ch }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }

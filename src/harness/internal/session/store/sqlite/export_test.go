@@ -25,6 +25,22 @@ func SetAfterDeleteChunk(fn func(id string, deleted int64)) func() {
 	return func() { afterDeleteChunk = old }
 }
 
+// SetRemoveAll replaces the spill-directory removal of a deletion, so a test can
+// make it fail. It returns the restore.
+func SetRemoveAll(fn func(path string) error) func() {
+	old := removeAll
+	removeAll = fn
+	return func() { removeAll = old }
+}
+
+// SetAfterRetireShortlist installs fn between Retire's shortlist and its
+// deletions. It returns the restore.
+func SetAfterRetireShortlist(fn func(ids []string)) func() {
+	old := afterRetireShortlist
+	afterRetireShortlist = fn
+	return func() { afterRetireShortlist = old }
+}
+
 // StaleWriter is a writer of session id on s in the name of holder at epoch, as a
 // displaced holder (another process's, dead or alive) would still carry it. It
 // takes no lease: its appends meet the guard as the real holder's would.

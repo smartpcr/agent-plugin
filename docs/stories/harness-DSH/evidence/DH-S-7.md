@@ -205,15 +205,18 @@ run in step 16.8.
   naming the source id. An id already present, or still being deleted, is refused
   with `session/exists`; `NewID` imports under another id.
 - **Follow and duties (DH-D-STORE-8, `follow.go`).** `Store.Follow(ctx, id, from)`
-  returns a `Subscription` that polls `PRAGMA data_version` on a pinned read
-  connection every follow interval (`WithFollowInterval`, default 250 ms), and reads
+  returns a `Subscription` that polls `PRAGMA data_version` on a connection of its
+  own, outside the bounded read pool (so any number of followers never starve
+  `Stat`, `List`, `OpenRead` or `Export`), every follow interval (`WithFollowInterval`, default 250 ms), and reads
   only when another connection committed. Each read is a short read transaction, so
   a follower never holds the WAL back. The subscription ends with `store/deleted`
   when the session is deleted, with the context's error when it is cancelled, and
   with nil on `Close` or `Store.Close`. Once-per-home duties use the `duties` table:
   `AcquireDuty` takes a free or dead holder's duty with the epoch raised;
   `RunDuty(ctx, name, every, fn)` runs `fn` only on the holder and only when the last
-  run is older than `every`, and records the run under an epoch guard.
+  run is older than `every`, and records the run under an epoch guard. Calls of one
+  duty within one instance are serialized from the due check to the recorded run,
+  so two concurrent calls run `fn` once.
   `Store.Close` releases the instance's duties.
 - **Deletion, retention, check and rebuild (DH-D-STORE-6, `maintain.go`).**
   - `Delete` first tombstones the session and its transitive subagent children in
@@ -225,9 +228,14 @@ run in step 16.8.
     and the row. A fork is not deleted with its parent.
   - Every step can be repeated. `Open` runs `FinishDeletions`, which takes over every
     tombstone whose holder is gone, so an interrupted deletion finishes on the next
-    open.
+    open. A deletion `Open` cannot finish (a spill directory it cannot remove, a
+    failing database) fails `Open` with that error; the instance is released and
+    the tombstone stays for the next `Open`.
   - `Retire(ctx, maxAge)` deletes the unheld sessions whose last event is older than
-    `maxAge`. `RunRetention` runs it as the once-per-home `retention` duty.
+    `maxAge`. Its first read is only a shortlist: inside each tombstoning
+    transaction the session must still be the same one (its uid) and still be
+    old, and must not be held. `RunRetention` runs it as the once-per-home
+    `retention` duty.
   - `Check` (`dsh store check`) is read-only and runs in one snapshot: SQLite's
     integrity check; for each session, its row count and last seq against
     `next_seq`; checkpoints past a session's end; rows of no session. Tombstones are
@@ -249,9 +257,13 @@ It passes.
 | Follower sees another process's commits (`DH-T-STORE-14`, TC-07) | `TestFollowerSeesAnotherProcessesCommits`: a re-executed child appends 10 events, 20 ms apart; the parent follows at a 50 ms interval and receives all 10 in order, each within the 2 s bound of its commit; afterwards a `wal_checkpoint(TRUNCATE)` succeeds, so the follower held no reader. | pass |
 | Follow in one process | `TestFollowInProcess`: a follower sees its own process's commits, a subscription from a later seq starts there, deleting the session ends it with `session/deleted`, and `Store.Close` ends the rest. | pass |
 | One runner per duty (`DH-T-STORE-14`) | `TestDutyHasOneHolderAndMovesAfterAKill`: a duty has one holder across processes, is not run again within its period, and moves to another instance once its holder is killed; `Close` releases an instance's duties. | pass |
+| One run per duty within one instance (`DH-T-STORE-14`) | `TestConcurrentRunDutyRunsOnce`: two concurrent `RunDuty` calls with a one-hour period; the second never enters `fn` while the first runs, and exactly one reports a run. | pass |
+| Followers leave the read pool free | `TestFollowersLeaveTheReadPoolFree`: with 8 live followers (the read pool has 4 connections), `Stat`, `List`, `OpenRead`/`Read`, `Export`, `Check` and a ninth `Follow` answer within a 5 s context, and all 9 followers deliver the next commit. | pass |
 | Interrupted deletion finishes (`DH-T-STORE-11`) | `TestInterruptedDeletionFinishesOnOpen`: a re-executed child deletes a 1,000-event session with a subagent child and is killed after 500 events. The session is invisible at once and its spill directory is gone; reopening the store finishes the deletion; no row or spill file of either session remains, the fork survives, and `Check` is clean. | pass |
 | Deletion refused while held (`DH-T-STORE-11`) | `TestDeleteRefusedWhileHeld`: a session held by another process, or a subagent child of it, is refused and nothing changes; this instance's own writer blocks it too until closed; deletion then runs in chunks and removes checkpoints and requests with the row. | pass |
 | Retention (`DH-T-STORE-11`) | `TestRetentionRetiresOnlyUnheldOldSessions`: off by default (age 0 deletes nothing), finishes tombstones, deletes only unheld sessions past the age, and runs as one duty per home. | pass |
+| Retention revalidates its shortlist (`DH-T-STORE-11`) | `TestRetireRevalidatesItsShortlist`: between the shortlist and the deletions one session gains a recent event and another id is deleted and created again; both survive, and only the untouched session is deleted. | pass |
+| Open fails on an unfinishable deletion (`DH-T-STORE-11`) | `TestOpenFailsWhenADeletionCannotFinish`: with spill removal failing, `Open` over a tombstone fails with `store/io` naming the session, leaves no hosts row and keeps the tombstone; the next `Open` finishes the deletion and `Check` is clean. | pass |
 | Check reports damage (`DH-T-STORE-12`) | `TestCheckReportsDamage`: a session whose row count was damaged on purpose, a checkpoint past the end, and rows of no session are reported. | pass |
 | Rebuild and verify (`DH-T-STORE-12`) | `TestRebuildAndVerify`: rebuilt checkpoints equal the incrementally built ones; verify reports a row damaged on purpose and changes nothing; rebuild repairs it. | pass |
 | Failures change nothing | `TestMaintenanceFailsCleanly`: with a cancelled context and on a closed store, each maintenance call fails and leaves the session, the import target and the duties unchanged; a failing refold stops a rebuild; a delete chunk of 1 still deletes every row. | pass |
