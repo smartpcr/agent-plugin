@@ -3,14 +3,18 @@ package workspace_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/agent"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/scope"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store/memstore"
@@ -395,3 +399,216 @@ func TestStepGateWalksForkAncestry(t *testing.T) {
 		t.Fatalf("a step under a pending ancestor: %#v", d)
 	}
 }
+
+// ------------------------------------------- failed confirms, pins, ancestry
+
+// failConfirm fails every confirming transition (pending to archived).
+type failConfirm struct{ workspace.Marks }
+
+func (m failConfirm) TransitionArchive(ctx context.Context, id session.ID, t workspace.Transition) (bool, error) {
+	if t.To == workspace.ArchiveArchived {
+		return false, errors.New("disk full")
+	}
+	return m.Marks.TransitionArchive(ctx, id, t)
+}
+
+// cancelling reports no activity and cancels the archive's context, as a
+// caller giving up just after the check would.
+type cancelling struct{ cancel context.CancelFunc }
+
+func (cancelling) Name() string { return "cancelling" }
+func (p cancelling) Report(context.Context, session.ID) ([]workspace.Activity, error) {
+	p.cancel()
+	return nil, nil
+}
+func (cancelling) Stop(context.Context, session.ID, agent.StopCause) error { return nil }
+
+type busy struct{}
+
+func (busy) Name() string { return "busy" }
+func (busy) Report(context.Context, session.ID) ([]workspace.Activity, error) {
+	return []workspace.Activity{{Provider: "busy", Detail: "working"}}, nil
+}
+func (busy) Stop(context.Context, session.ID, agent.StopCause) error { return nil }
+
+// A no-stop archive whose confirm fails (the write fails, or its context is
+// cancelled after an inactive check) returns the failure and removes its
+// pending mark: the session is not left hidden with its steps blocked. Over
+// the in-memory marks and the durable rows.
+func TestFailedConfirmRollsBack(t *testing.T) {
+	home := t.TempDir()
+	db := openDB(t, filepath.Join(home, "dsh.db"))
+	reg := must(workspace.Open(bg, db))
+	newSession(t, db, "s", home)
+	for name, marks := range map[string]workspace.Marks{"memory": workspace.NewMemoryMarks(), "rows": reg} {
+		t.Run(name, func(t *testing.T) {
+			err := workspace.NewArchiver(failConfirm{marks}).Archive(bg, "s", workspace.ArchiveOptions{})
+			if err == nil || !strings.Contains(err.Error(), "disk full") {
+				t.Fatalf("archive with a failing confirm = %v", err)
+			}
+			if f := must(marks.Flags(bg, "s")); f.Archive != workspace.ArchiveNone || f.Owner != "" {
+				t.Fatalf("a failed confirm left %+v", f)
+			}
+
+			ctx, cancel := context.WithCancel(bg)
+			err = workspace.NewArchiver(marks, cancelling{cancel}).Archive(ctx, "s", workspace.ArchiveOptions{})
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("archive cancelled after its check = %v", err)
+			}
+			if f := must(marks.Flags(bg, "s")); f.Archive != workspace.ArchiveNone || f.Owner != "" {
+				t.Fatalf("a cancelled archive left %+v", f)
+			}
+		})
+	}
+}
+
+// DH-T-STORAGE-17: archiving clears the pin only when the archive stands. A
+// refused or failed archive leaves a pinned session pinned, an unpin while an
+// archive is deciding stands, and a confirmed archive clears the pin. Through
+// the durable rows.
+func TestRefusedArchiveKeepsThePin(t *testing.T) {
+	home := t.TempDir()
+	db := openDB(t, filepath.Join(home, "dsh.db"))
+	reg := must(workspace.Open(bg, db))
+	newSession(t, db, "s", home)
+	pinned := func() workspace.Flags {
+		t.Helper()
+		return must(reg.Flags(bg, "s"))
+	}
+	if err := reg.Pin(bg, "s", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := workspace.NewArchiver(reg, busy{}).Archive(bg, "s", workspace.ArchiveOptions{}); !errors.Is(err, workspace.ErrActive) {
+		t.Fatalf("archive of a busy session = %v", err)
+	}
+	if f := pinned(); !f.Pinned || f.Archive != workspace.ArchiveNone {
+		t.Fatalf("a refused archive dropped the pin: %+v", f)
+	}
+	if err := workspace.NewArchiver(failConfirm{reg}).Archive(bg, "s", workspace.ArchiveOptions{}); err == nil {
+		t.Fatal("a failing confirm was not reported")
+	}
+	if f := pinned(); !f.Pinned || f.Archive != workspace.ArchiveNone {
+		t.Fatalf("a failed archive dropped the pin: %+v", f)
+	}
+
+	g := gatedProvider{entered: make(chan struct{}), release: make(chan struct{}), active: true}
+	done := make(chan error, 1)
+	go func() { done <- workspace.NewArchiver(reg, g).Archive(bg, "s", workspace.ArchiveOptions{}) }()
+	<-g.entered
+	if err := reg.Pin(bg, "s", true); !errors.Is(err, workspace.ErrInvalid) {
+		t.Fatalf("pinning a pending session = %v", err)
+	}
+	if err := reg.Pin(bg, "s", false); err != nil {
+		t.Fatal(err)
+	}
+	close(g.release)
+	if err := <-done; !errors.Is(err, workspace.ErrActive) {
+		t.Fatalf("the deciding archive = %v", err)
+	}
+	if f := pinned(); f.Pinned || f.Archive != workspace.ArchiveNone {
+		t.Fatalf("the refused archive undid the unpin: %+v", f)
+	}
+
+	if err := reg.Pin(bg, "s", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := workspace.NewArchiver(reg).Archive(bg, "s", workspace.ArchiveOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if f := pinned(); f.Pinned || f.Archive != workspace.ArchiveArchived {
+		t.Fatalf("a confirmed archive kept the pin: %+v", f)
+	}
+}
+
+// The step gate admits a step only when it resolved the whole ancestry: a
+// hidden ancestor 70 forks up is found, a clean chain within MaxAncestry is
+// admitted, and a longer chain or a loop is rejected rather than admitted.
+func TestStepGateRejectsUnresolvedAncestry(t *testing.T) {
+	e := newAgentEnv(t, false)
+	var parentOf map[session.ID]session.ID
+	must(workspace.GuardSteps(e.root, e.marks, func(_ context.Context, id session.ID) (session.ID, bool, error) {
+		p, ok := parentOf[id]
+		return p, ok, nil
+	}))
+	chain := func(n int) map[session.ID]session.ID { // e.id and n-1 ancestors
+		m := map[session.ID]session.ID{}
+		prev := e.id
+		for i := 1; i < n; i++ {
+			id := session.ID(fmt.Sprintf("a%d", i))
+			m[prev], prev = id, id
+		}
+		return m
+	}
+	a, _ := e.reg.Get(e.id)
+	ask := func() agent.PreStepDecision {
+		t.Helper()
+		return must(agent.AskPreStep(e.root, a.ScopeKey(), agent.PreStepRequest{Ctx: bg, Agent: a.Ref()}))
+	}
+	rejected := func(what, reason string) {
+		t.Helper()
+		if r, ok := ask().(agent.Reject); !ok || r.By != workspace.GuardBy || !strings.Contains(r.Reason, reason) {
+			t.Fatalf("%s: %#v, want a rejection naming %q", what, ask(), reason)
+		}
+	}
+
+	parentOf = chain(100)
+	if err := e.marks.SetArchive(bg, "a70", workspace.ArchiveArchived); err != nil {
+		t.Fatal(err)
+	}
+	rejected("an archived ancestor 70 forks up", "a70")
+	if err := e.marks.SetArchive(bg, "a70", workspace.ArchiveNone); err != nil {
+		t.Fatal(err)
+	}
+	if d := ask(); !isEnter(d) {
+		t.Fatalf("a clean chain of 100: %#v", d)
+	}
+	parentOf = chain(workspace.MaxAncestry)
+	if d := ask(); !isEnter(d) {
+		t.Fatalf("a clean chain of MaxAncestry: %#v", d)
+	}
+	parentOf = chain(workspace.MaxAncestry + 1)
+	rejected("a chain past MaxAncestry", "longer than")
+	parentOf = map[session.ID]session.ID{e.id: "x", "x": "y", "y": "x"}
+	rejected("a looping chain", "loops")
+}
+
+// A fork survives its parent's deletion: with ForkParent over the real store
+// the deleted parent ends the walk, so the fork's step is admitted, and the
+// fork's own archive mark still blocks it.
+func TestStepGateAdmitsAForkOfADeletedParent(t *testing.T) {
+	home := t.TempDir()
+	db := openDB(t, filepath.Join(home, "dsh.db"))
+	reg := must(workspace.Open(bg, db))
+	w := must(db.Create(bg, store.Header{ID: "p", Cwd: home}, store.CreateOptions{}))
+	d := must(event.RequestContext.Draft(event.RequestContextPayload{Key: "k", Value: "v"}))
+	rec := must(d.Stamp(0, time.Now().UnixMilli()))
+	if err := w.Append(bg, store.Batch{First: 0, Records: []store.Record{rec}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(bg); err != nil {
+		t.Fatal(err)
+	}
+	c := must(db.Create(bg, store.Header{ID: "c", Cwd: home}, store.CreateOptions{ForkOf: &store.ForkOf{ID: "p", Through: 0}}))
+	if err := c.Close(bg); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Delete(bg, "p", store.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	e := newAgentEnv(t, false)
+	must(workspace.GuardSteps(e.root, reg, workspace.ForkParent(db)))
+	a, _ := e.reg.Get(e.id)
+	step := agent.PreStepRequest{Ctx: bg, Agent: agent.Ref{Session: "c", Incarnation: a.Ref().Incarnation}}
+	if got, err := agent.AskPreStep(e.root, a.ScopeKey(), step); err != nil || !isEnter(got) {
+		t.Fatalf("a step of the fork of a deleted parent: %#v, %v", got, err)
+	}
+	if err := reg.SetArchive(bg, "c", workspace.ArchiveArchived); err != nil {
+		t.Fatal(err)
+	}
+	if got := must(agent.AskPreStep(e.root, a.ScopeKey(), step)); !isReject(got) {
+		t.Fatalf("a step of the archived fork: %#v", got)
+	}
+}
+
+func isReject(d agent.PreStepDecision) bool { _, ok := d.(agent.Reject); return ok }

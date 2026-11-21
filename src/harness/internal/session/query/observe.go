@@ -160,7 +160,9 @@ func (s *Service) Lineage(ctx context.Context, id session.ID) (Lineage, error) {
 	}
 	slices.Reverse(chain)
 	l.Chain = chain
-	q := store.Query{}
+	// Prompt order is as of the first page, so a fork prompted during the walk
+	// is not skipped.
+	q := store.Query{Order: store.OrderPrompt}
 	complete := false
 	for examined := 0; examined < s.maxListed && !l.Truncated; {
 		q.Limit = min(listPage, s.maxListed-examined)

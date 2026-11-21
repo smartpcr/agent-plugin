@@ -150,6 +150,17 @@ CREATE TABLE session_flags (
 	updated_at INTEGER NOT NULL
 ) STRICT;
 `,
+	// 4: sessions.last_prompt_at of docs/harness/areas/session-store.md §6.2,
+	// the time of a session's last user/message (Unix nanoseconds, 0 when none),
+	// and the index the prompt-order list (store.OrderPrompt, DH-D-VIEW-5) scans:
+	// its key is the last prompt, else the creation. Existing rows are filled
+	// from their logs.
+	`
+ALTER TABLE sessions ADD COLUMN last_prompt_at INTEGER NOT NULL DEFAULT 0;
+UPDATE sessions SET last_prompt_at = COALESCE((SELECT MAX(e.time) FROM events e
+	WHERE e.session = sessions.uid AND e.type = 'user/message' AND e.time > 0), 0) * 1000000;
+CREATE INDEX sessions_prompt ON sessions ((CASE WHEN last_prompt_at > 0 THEN last_prompt_at ELSE created_at END) DESC, id);
+`,
 }
 
 // LayoutVersion is the layout this build writes: the number of migrations.

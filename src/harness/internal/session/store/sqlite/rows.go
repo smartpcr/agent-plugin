@@ -21,7 +21,11 @@ const defaultLimit = 50
 
 // sessionCols is the column list scanRow reads.
 const sessionCols = `uid, id, created_at, cwd, origin, creator, fork_source, fork_through, inherited_count,
-	delegation_depth, preset, next_seq, lease_epoch, lease_holder, lease_pid, lease_kind, lease_since, last_event_at`
+	delegation_depth, preset, next_seq, lease_epoch, lease_holder, lease_pid, lease_kind, lease_since, last_event_at, last_prompt_at`
+
+// promptKey is a session's store.OrderPrompt key with nothing appended after
+// the cut; the sessions_prompt index is on it.
+const promptKey = `(CASE WHEN last_prompt_at > 0 THEN last_prompt_at ELSE created_at END)`
 
 // row is one sessions row.
 type row struct {
@@ -29,6 +33,7 @@ type row struct {
 	sum     store.Summary
 	created int64 // created_at, Unix nanoseconds
 	last    int64 // last_event_at, Unix nanoseconds; 0 when no event has a time
+	prompt  int64 // last_prompt_at, Unix nanoseconds; 0 when no prompt
 }
 
 type scanner interface{ Scan(dest ...any) error }
@@ -45,7 +50,7 @@ func scanRow(sc scanner) (row, error) {
 	)
 	h := &r.sum.Header
 	if err := sc.Scan(&r.uid, &h.ID, &r.created, &h.Cwd, &h.Origin, &h.Creator, &h.ForkSource, &forkThrough,
-		&inherited, &depth, &h.Preset, &next, &epoch, &holder, &pid, &kind, &since, &r.last); err != nil {
+		&inherited, &depth, &h.Preset, &next, &epoch, &holder, &pid, &kind, &since, &r.last, &r.prompt); err != nil {
 		return row{}, err
 	}
 	h.CreatedAt = time.Unix(0, r.created)
@@ -59,7 +64,21 @@ func scanRow(sc scanner) (row, error) {
 	if r.last != 0 {
 		r.sum.LastEventAt = time.Unix(0, r.last)
 	}
+	if r.prompt != 0 {
+		r.sum.LastPromptAt = time.Unix(0, r.prompt)
+	}
 	return r, nil
+}
+
+// promptNanos is the last_prompt_at recs give a session whose value was prev:
+// the time of their last timed prompt.
+func promptNanos(prev int64, recs []store.Record) int64 {
+	for i := len(recs) - 1; i >= 0; i-- {
+		if r := recs[i]; r.Type == store.PromptType && r.Time > 0 {
+			return time.UnixMilli(r.Time).UnixNano()
+		}
+	}
+	return prev
 }
 
 type querier interface {

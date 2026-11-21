@@ -161,6 +161,9 @@ type ListOptions struct {
 	// Limit and Cursor page List (the store's keyset); ListByProject walks all.
 	Limit  int
 	Cursor string
+	// AsOf is the cut of List's first page (zero: now); later pages keep the
+	// cut their cursor carries.
+	AsOf time.Time
 }
 
 // Page is one page of List.
@@ -169,11 +172,17 @@ type Page struct {
 	Next    string
 }
 
-// List is one page of sessions in the store's order, each with its summary and
-// flags; blank sessions and those the caller may not see are filtered out, so
-// a page may hold fewer than Limit.
+// List is one page of sessions by their last prompt (a blank session by its
+// creation), newest first, then id, as of the first page's cut
+// (store.OrderPrompt on the store's last_prompt_at index, DH-D-VIEW-5): an
+// assistant's activity never reorders it, and a session prompted while the
+// caller pages keeps its place, so no session is skipped or listed twice; a
+// session created after the cut is left to a new listing. Each entry has its
+// summary and flags; blank sessions and those the caller may not see are
+// filtered out, so a page may hold fewer than Limit.
 func (s *Service) List(ctx context.Context, o ListOptions) (Page, error) {
-	p, _, err := s.page(ctx, store.Query{Cwd: o.Cwd, Creator: o.Creator, Limit: o.Limit, Cursor: o.Cursor}, o)
+	p, _, err := s.page(ctx, store.Query{Cwd: o.Cwd, Creator: o.Creator, Limit: o.Limit, Cursor: o.Cursor,
+		Order: store.OrderPrompt, AsOf: o.AsOf}, o)
 	return p, err
 }
 
@@ -393,7 +402,7 @@ func (s *Service) ListByProject(ctx context.Context, o ListOptions) (Listing, er
 	}
 	ungrouped := Group{Ungrouped: true}
 	var out Listing
-	q := store.Query{Cwd: o.Cwd, Creator: o.Creator}
+	q := store.Query{Cwd: o.Cwd, Creator: o.Creator, Order: store.OrderPrompt}
 	complete := false
 	for out.Examined < s.maxListed {
 		q.Limit = min(listPage, s.maxListed-out.Examined)

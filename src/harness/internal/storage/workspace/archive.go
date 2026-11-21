@@ -64,7 +64,7 @@ func (m *MemoryMarks) Flags(_ context.Context, id session.ID) (Flags, error) {
 	return m.flags[id], nil
 }
 
-// SetArchive sets id's archive mark; any mark but none clears the pin.
+// SetArchive sets id's archive mark; the archived mark clears the pin.
 func (m *MemoryMarks) SetArchive(_ context.Context, id session.ID, s ArchiveState) error {
 	if s != ArchiveNone && s != ArchivePending && s != ArchiveArchived {
 		return herr.Newf(ReasonInvalid, "archive state %q", s)
@@ -78,7 +78,7 @@ func (m *MemoryMarks) SetArchive(_ context.Context, id session.ID, s ArchiveStat
 func (m *MemoryMarks) set(id session.ID, s ArchiveState, owner string) {
 	f := m.flags[id]
 	f.Archive, f.ArchiveAt, f.Owner = s, m.now().UTC(), owner
-	if s != ArchiveNone {
+	if s == ArchiveArchived {
 		f.Pinned = false
 	}
 	m.flags[id] = f
@@ -174,9 +174,12 @@ func (a *Archiver) list() []ActivityProvider {
 // between the check and the write; another operation's pending mark is taken
 // over), then asks every provider. Without Stop, any activity or a failing
 // Report removes the mark and refuses: *ActiveError (workspace/session-active)
-// or the Report error; with none the mark is confirmed. With Stop the mark is
-// confirmed first and then every provider is asked to stop with cause hidden;
-// the archive stands even when a provider fails, and the failures are returned.
+// or the Report error; with none the mark is confirmed, and a confirm that
+// fails (a cancelled ctx, a failed write) removes the mark too. With Stop the
+// mark is confirmed first and then every provider is asked to stop with cause
+// hidden; the archive stands even when a provider fails, and the failures are
+// returned. Only the confirmed mark clears the pin, so a refused or failed
+// archive leaves the session pinned as it was.
 // Every change after the first is conditional on this operation still holding
 // the pending mark, so an overlapping archive or hide (in any process) is never
 // undone by this one's rollback; a mark unarchived before the confirm is
@@ -220,7 +223,10 @@ func (a *Archiver) Archive(ctx context.Context, id session.ID, o ArchiveOptions)
 	if len(active) > 0 {
 		return errors.Join(&ActiveError{Session: id, Activity: active}, a.rollback(ctx, id, owner))
 	}
-	return a.confirm(ctx, id, owner)
+	if err := a.confirm(ctx, id, owner); err != nil {
+		return errors.Join(err, a.rollback(ctx, id, owner))
+	}
+	return nil
 }
 
 // maxTakeover bounds begin's retries against a mark that keeps changing.
@@ -246,8 +252,13 @@ func (a *Archiver) begin(ctx context.Context, id session.ID, owner string) (arch
 }
 
 // confirm turns owner's pending mark into archived. A mark another operation
-// already archived is success; anything else (unarchived) is a conflict.
+// already archived is success; anything else (unarchived) is a conflict. A
+// cancelled ctx confirms nothing, whatever the marks' store, so the caller's
+// rollback always follows a failed confirm.
 func (a *Archiver) confirm(ctx context.Context, id session.ID, owner string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	ok, err := a.marks.TransitionArchive(ctx, id, Transition{From: ArchivePending, Owner: owner, To: ArchiveArchived})
 	if err != nil || ok {
 		return err
@@ -346,10 +357,15 @@ func (leaseProvider) Stop(context.Context, session.ID, agent.StopCause) error { 
 // Parent is the fork parent of a session; ok is false for a root session.
 type Parent func(ctx context.Context, id session.ID) (parent session.ID, ok bool, err error)
 
-// ForkParent is Parent from the store's headers.
+// ForkParent is Parent from the store's headers. A session the store no longer
+// has (a deleted ancestor) has no parent: its forks survive it and are judged
+// by their own marks and their remaining ancestry.
 func ForkParent(st store.Store) Parent {
 	return func(ctx context.Context, id session.ID) (session.ID, bool, error) {
 		sum, err := st.Stat(ctx, string(id))
+		if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrDeleted) {
+			return "", false, nil
+		}
 		if err != nil {
 			return "", false, err
 		}
@@ -360,13 +376,16 @@ func ForkParent(st store.Store) Parent {
 // GuardBy is the By of the step gate's Reject.
 const GuardBy = "workspace/archived"
 
-// maxAncestry bounds the fork chain the gate walks.
-const maxAncestry = 64
+// MaxAncestry bounds the fork chain the gate walks. A chain the gate cannot
+// resolve within it (deeper, or a cycle) is rejected, never admitted: an
+// ancestor past the bound may be hidden.
+const MaxAncestry = 256
 
 // GuardSteps registers, as an effect of ctx's fiber, the deny-only step gate on
 // agent.PreStep: a step of a session that is pending or archived, or whose fork
-// ancestor is, is rejected; any other step goes on downstream unchanged. parent
-// may be nil (no ancestry walk).
+// ancestor is, is rejected, and so is one whose ancestry is longer than
+// MaxAncestry or loops; any other step goes on downstream unchanged. parent may
+// be nil (no ancestry walk); a parent it reports as not found ends the walk.
 func GuardSteps(ctx *cordis.Context, m Marks, parent Parent) (*cordis.EffectHandle, error) {
 	if ctx == nil || m == nil {
 		return nil, herr.New(ReasonInvalid, "the step gate needs a context and marks")
@@ -376,16 +395,24 @@ func GuardSteps(ctx *cordis.Context, m Marks, parent Parent) (*cordis.EffectHand
 		if c == nil {
 			c = context.Background()
 		}
-		id := req.Agent.Session
-		for depth := 0; id != "" && depth < maxAncestry; depth++ {
+		self := req.Agent.Session
+		seen := map[session.ID]bool{}
+		for id := self; id != ""; {
+			if len(seen) == MaxAncestry {
+				return agent.Reject{By: GuardBy, Reason: fmt.Sprintf("session %s's fork ancestry is longer than %d sessions; its ancestors' archive marks cannot all be checked", self, MaxAncestry)}, nil
+			}
+			if seen[id] {
+				return agent.Reject{By: GuardBy, Reason: fmt.Sprintf("session %s's fork ancestry loops at %s", self, id)}, nil
+			}
+			seen[id] = true
 			f, err := m.Flags(c, id)
 			if err != nil {
 				return nil, err
 			}
 			if f.Archive.Hidden() {
 				reason := fmt.Sprintf("session %s is %s", id, f.Archive)
-				if id != req.Agent.Session {
-					reason = fmt.Sprintf("session %s's ancestor %s is %s", req.Agent.Session, id, f.Archive)
+				if id != self {
+					reason = fmt.Sprintf("session %s's ancestor %s is %s", self, id, f.Archive)
 				}
 				return agent.Reject{By: GuardBy, Reason: reason}, nil
 			}
@@ -393,6 +420,9 @@ func GuardSteps(ctx *cordis.Context, m Marks, parent Parent) (*cordis.EffectHand
 				break
 			}
 			p, ok, err := parent(c, id)
+			if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrDeleted) {
+				break
+			}
 			if err != nil {
 				return nil, err
 			}

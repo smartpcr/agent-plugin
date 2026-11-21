@@ -3,6 +3,8 @@
 package scenarios
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -13,7 +15,10 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
 )
 
-var storageSeenLine = regexp.MustCompile(`(?m)^image_seen=true\s*$`)
+var (
+	storageSeenLine   = regexp.MustCompile(`(?m)^image_seen=true\s*$`)
+	storageObjectLine = regexp.MustCompile(`(?m)^object=(.+?)\s*$`)
+)
 
 // TestImageSurvivesCrashRestartAndCollection: an attached image stays readable
 // through a crash mid-upload, a restart, a fork whose parent is deleted, and the
@@ -28,17 +33,19 @@ var storageSeenLine = regexp.MustCompile(`(?m)^image_seen=true\s*$`)
 // forked, the parent deleted, the clock advanced past the grace period and
 // maintenance waited for, and (5) the fork is asked about the image, then after
 // (1) the request carried the image; after (3) the follow-up is answered with
-// the image, every image the session references exists, nothing of the
-// interrupted upload is referenced, and the store check reports no damage; after
-// (4) every image the fork references still exists; after (5) the fork's request
-// carried the image. Each process step has a 60 second timeout.
+// the image, every image the session references exists, the interrupted
+// upload's published object is not referenced, and the store check reports no
+// damage; after (4) every image the fork references still exists and the
+// interrupted upload's object file is gone; after (5) the fork's request carried
+// the image. Each process step has a 60 second timeout.
 //
 // Inputs are shell command lines over {home} and {session}:
 // DSH_SCENARIO_STORAGE2_START starts the headless host on {home} in the
 // foreground; DSH_SCENARIO_STORAGE2_ATTACH creates a session, attaches a 20MP
 // JPEG, asks about it, and prints "session=<id>" and, when the model request
 // carried the image, "image_seen=true"; DSH_SCENARIO_STORAGE2_UPLOAD_BEGIN
-// starts a second upload to {session} and returns while it is in flight;
+// starts a second upload to {session} and returns while it is in flight, once
+// its object is published, printing "object=<path>" for that object's file;
 // DSH_SCENARIO_STORAGE2_KILL kills the host without a clean stop;
 // DSH_SCENARIO_STORAGE2_ASK asks {session} a follow-up about the image and
 // prints "image_seen=true" when the model request carried it;
@@ -110,7 +117,14 @@ func TestImageSurvivesCrashRestartAndCollection(t *testing.T) {
 	first := imagesExist(id)
 
 	// (2)
-	step("begin the second upload", uploadT, id)
+	um := storageObjectLine.FindStringSubmatch(step("begin the second upload", uploadT, id))
+	if um == nil {
+		t.Fatal("beginning the second upload printed no object=<path>")
+	}
+	orphan := um[1]
+	if _, err := os.Stat(orphan); err != nil || slices.Contains(first, orphan) {
+		t.Fatalf("the second upload's object %s is not a published new file (%v; first %v)", orphan, err, first)
+	}
 	step("kill the host", killT, "")
 	for deadline := time.Now().Add(storeStepTimeout); !host.exited(); {
 		if time.Now().After(deadline) {
@@ -139,7 +153,13 @@ func TestImageSurvivesCrashRestartAndCollection(t *testing.T) {
 	fork := sessionOf("forking", step("fork the session", forkT, id))
 	step("delete the parent", deleteT, id)
 	step("advance past the grace period and await maintenance", maintainT, "")
-	imagesExist(fork)
+	if refs := imagesExist(fork); slices.Contains(refs, orphan) {
+		t.Fatalf("the fork references the interrupted upload's object %s", orphan)
+	}
+	if _, err := os.Stat(orphan); !errors.Is(err, fs.ErrNotExist) {
+		keep = true
+		t.Fatalf("maintenance did not collect the interrupted upload's object %s: %v", orphan, err)
+	}
 
 	// (5)
 	if out := step("ask the fork", askT, fork); !storageSeenLine.MatchString(out) {

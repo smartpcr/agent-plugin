@@ -221,8 +221,10 @@ func (r *Registry) Flags(ctx context.Context, id session.ID) (Flags, error) {
 	return f, kv.Classify(err)
 }
 
-// SetArchive sets session id's archive mark; any mark but none clears the pin
-// (archiving clears the pin, DH-T-STORAGE-17).
+// SetArchive sets session id's archive mark; the archived mark clears the pin
+// (archiving clears the pin, DH-T-STORAGE-17). A pending mark keeps it, so an
+// archive that is refused or fails leaves the pin as it was; a pending session
+// cannot be pinned (Pin), and an unpin meanwhile stands.
 func (r *Registry) SetArchive(ctx context.Context, id session.ID, s ArchiveState) error {
 	if s != ArchiveNone && s != ArchivePending && s != ArchiveArchived {
 		return herr.Newf(ReasonInvalid, "archive state %q", s)
@@ -234,7 +236,7 @@ func (r *Registry) SetArchive(ctx context.Context, id session.ID, s ArchiveState
 func writeArchive(ctx context.Context, tx *sql.Tx, uid int64, s ArchiveState, owner string, now int64) error {
 	_, err := tx.ExecContext(ctx, `INSERT INTO session_flags (session, archive, archive_at, archive_owner, pinned, updated_at) VALUES (?, ?, ?, ?, 0, ?)
 		ON CONFLICT (session) DO UPDATE SET archive = excluded.archive, archive_at = excluded.archive_at, archive_owner = excluded.archive_owner,
-			pinned = CASE WHEN excluded.archive = '' THEN pinned ELSE 0 END, updated_at = excluded.updated_at`,
+			pinned = CASE WHEN excluded.archive = 'archived' THEN 0 ELSE pinned END, updated_at = excluded.updated_at`,
 		uid, string(s), now, owner, now)
 	return err
 }

@@ -21,7 +21,10 @@ import (
 
 var (
 	storageWorkspaceLine = regexp.MustCompile(`(?m)^workspace=(\S+)\s*$`)
-	storageRequestLine   = regexp.MustCompile(`(?m)^request_at=(\d+)\s*$`)
+	// storageActivityLine is workspace.ActiveError: the session and its first
+	// activity's provider and detail.
+	storageActivityLine = regexp.MustCompile(regexp.QuoteMeta(string(workspace.ReasonActive)) + `: session (\S+) is active \(([^:;()\s]+): ([^;\n]+)(?:;[^\n]*)?\)`)
+	storageRequestLine  = regexp.MustCompile(`(?m)^request_at=(\d+)\s*$`)
 )
 
 // storageListWithin bounds how soon a second process sees a workspace another
@@ -158,8 +161,11 @@ func TestWorkspaceSharedAndArchiveStopsWork(t *testing.T) {
 	if err == nil {
 		t.Fatalf("archiving a session B is working was not refused:\n%s", out)
 	}
-	if !strings.Contains(out, string(workspace.ReasonActive)) || !strings.Contains(strings.ToLower(out), "agent") {
-		t.Fatalf("the refusal does not name B's activity:\n%s", out)
+	// B's activity is whatever a provider in A can see of another process -- its
+	// lease, an agent -- so the refusal names some provider's activity of this
+	// session, not a particular provider.
+	if a := storageActivityLine.FindStringSubmatch(out); a == nil || a[1] != id || strings.TrimSpace(a[3]) == "" {
+		t.Fatalf("the refusal does not name B's activity on %s:\n%s", id, out)
 	}
 	if f := storageFlags(t, root, id); f.Archive.Hidden() {
 		t.Fatalf("a refused archive left the session hidden: %+v", f)

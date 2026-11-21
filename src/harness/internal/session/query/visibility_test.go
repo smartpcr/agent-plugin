@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/query"
@@ -254,5 +255,103 @@ func TestListingBoundCountsCandidates(t *testing.T) {
 	full := must(query.New(cs, query.WithMarks(marks)).ListByProject(bg, query.ListOptions{IncludeBlank: true}))
 	if full.Truncated || full.Examined != 30 || n.Load() != 30 || len(full.Groups) != 1 || len(full.Groups[0].Sessions) != 3 {
 		t.Fatalf("full listing: truncated %v, examined %d, handed out %d, groups %+v", full.Truncated, full.Examined, n.Load(), full.Groups)
+	}
+}
+
+func promptDraft(t testing.TB, text string) event.Draft {
+	m, err := vocab.NewMessage(vocab.RoleUser, vocab.TextBlock(text))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return must(event.UserMessage.Draft(event.Append(), event.UserMessagePayload{Message: m}))
+}
+
+// appendTo opens session id, appends ds and closes it.
+func (e *env) appendTo(id string, ds ...event.Draft) error {
+	h, _, err := e.svc.Open(bg, nil, session.ID(id), session.OpenOptions{})
+	if err != nil {
+		return err
+	}
+	_, err = h.AppendGroup(bg, ds)
+	return errors.Join(err, h.Close(bg))
+}
+
+// DH-D-VIEW-5 "the keyset list on last_prompt_at with as-of ordering": List
+// pages by the last prompt, not the last event, and while prompts are appended
+// concurrently to every session (each would move it to the top) a paging
+// caller lists every session exactly once, in the order as of its first page.
+func TestListPagesByLastPromptAsOf(t *testing.T) {
+	st := must(sqlite.Open(bg, filepath.Join(t.TempDir(), "dsh.db")))
+	t.Cleanup(func() { _ = st.Close(bg) })
+	e := newEnvOn(t, st)
+	ids := []string{"s1", "s2", "s3", "s4", "s5", "s6"}
+	for _, id := range ids {
+		h := must(e.svc.Create(bg, nil, session.CreateOptions{Header: session.Header{ID: id}}))
+		if _, err := h.AppendGroup(bg, []event.Draft{promptDraft(t, id)}); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.Close(bg); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(2 * time.Millisecond) // distinct prompt milliseconds
+	}
+	// s1 has the oldest prompt but the newest event.
+	if err := e.appendTo("s1", ctxDrafts("s1", 3)...); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(2 * time.Millisecond)
+	q := query.New(st)
+	again := promptDraft(t, "again")
+
+	stop := make(chan struct{})
+	done := make(chan error, 1)
+	var appended atomic.Int64
+	appendAll := func() {
+		defer close(done)
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			// The oldest prompts first: each jumps ahead of the cursor.
+			if err := e.appendTo(ids[i%len(ids)], again); err != nil {
+				done <- err
+				return
+			}
+			appended.Add(1)
+		}
+	}
+	var seen []string
+	o := query.ListOptions{Limit: 2}
+	for pages := 0; ; pages++ {
+		if pages > len(ids) {
+			t.Fatal("List does not terminate")
+		}
+		for pages > 0 && appended.Load() < int64(2*pages) { // prompts land between pages
+			time.Sleep(time.Millisecond)
+		}
+		p := must(q.List(bg, o))
+		for _, en := range p.Entries {
+			seen = append(seen, string(en.ID))
+		}
+		if pages == 0 {
+			go appendAll()
+		}
+		if p.Next == "" {
+			break
+		}
+		o.Cursor = p.Next
+	}
+	close(stop)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"s6", "s5", "s4", "s3", "s2", "s1"}; !slices.Equal(seen, want) {
+		t.Fatalf("listed %v while prompts were appended, want %v", seen, want)
+	}
+	fresh := must(q.List(bg, query.ListOptions{}))
+	if len(fresh.Entries) != len(ids) || fresh.Entries[0].Summary.LastPromptAt < fresh.Entries[1].Summary.LastPromptAt {
+		t.Fatalf("a new listing is not by the latest prompts: %+v", fresh.Entries)
 	}
 }
