@@ -127,6 +127,10 @@ type Lineage struct {
 	// Truncated is set when the chain or the forks were cut at MaxLineage, or
 	// the fork search at its candidate bound.
 	Truncated bool
+	// Beyond is set only when the chain was cut at MaxLineage: Chain[0] is then
+	// not the root, and its records at or below Beyond were inherited from
+	// ancestors past the bound.
+	Beyond event.Seq
 }
 
 // Lineage walks id's fork ancestry (at most MaxLineage links) and its direct
@@ -143,6 +147,7 @@ func (s *Service) Lineage(ctx context.Context, id session.ID) (Lineage, error) {
 	for h.ForkSource != "" {
 		if len(chain) >= MaxLineage {
 			l.Truncated = true
+			l.Beyond = h.ForkThrough
 			break
 		}
 		link := Link{ID: session.ID(h.ForkSource), Through: h.ForkThrough}
@@ -211,7 +216,8 @@ func (s *Service) Lineage(ctx context.Context, id session.ID) (Lineage, error) {
 type Traced struct {
 	store.Record
 	// Origin is the ancestor the record was inherited from, or the session
-	// itself.
+	// itself; empty when it came from an ancestor past the MaxLineage cut
+	// (see Lineage.Beyond).
 	Origin session.ID
 }
 
@@ -239,7 +245,7 @@ func (s *Service) Trace(ctx context.Context, id session.ID, w Window) (Trace, er
 	}
 	t := Trace{Lineage: l, Next: o.Next, More: o.More}
 	for _, rec := range o.Events {
-		t.Events = append(t.Events, Traced{Record: rec, Origin: originOf(l.Chain, rec.Seq)})
+		t.Events = append(t.Events, Traced{Record: rec, Origin: originOf(l, rec.Seq)})
 	}
 	return t, nil
 }
@@ -247,11 +253,17 @@ func (s *Service) Trace(ctx context.Context, id session.ID, w Window) (Trace, er
 // originOf resolves seq from the session upward: chain[i].Through is what
 // chain[i+1] took from chain[i], so seq moves up to chain[i] only while it is
 // within that cut, and stops at the first cut it exceeds (a fork may keep
-// less of its parent than the parent kept of its own).
-func originOf(chain []Link, seq event.Seq) session.ID {
+// less of its parent than the parent kept of its own). A seq that reaches the
+// top of a cut chain and is within Beyond came from past the bound, so it has
+// no known origin.
+func originOf(l Lineage, seq event.Seq) session.ID {
+	chain := l.Chain
 	o := len(chain) - 1
 	for i := len(chain) - 2; i >= 0 && seq <= chain[i].Through; i-- {
 		o = i
+	}
+	if o == 0 && l.Beyond > 0 && seq <= l.Beyond {
+		return ""
 	}
 	return chain[o].ID
 }
