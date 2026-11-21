@@ -370,6 +370,33 @@ func TestLock(t *testing.T) {
 	}
 }
 
+// TestLockBeyondEnd: the beyond-the-end lock excludes a second locker, never
+// refuses a reader of the lock file (TryLock's refuses one on Windows), and is
+// free again once unlocked.
+func TestLockBeyondEnd(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lock")
+	l, err := TryLockBeyondEnd(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := TryLockBeyondEnd(path); !errors.Is(err, ErrLocked) {
+		t.Fatalf("second TryLockBeyondEnd: %v, want ErrLocked", err)
+	}
+	if _, err := os.ReadFile(path); err != nil {
+		t.Fatalf("reading the lock file while held: %v", err)
+	}
+	if err := l.Unlock(); err != nil {
+		t.Fatal(err)
+	}
+	again, err := TryLockBeyondEnd(path)
+	if err != nil {
+		t.Fatalf("after Unlock: %v", err)
+	}
+	if err := again.Unlock(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestRootedDurable: a durable rooted publication runs the durability step for the
 // published name and, when that step fails, reports ErrDurabilityUnknown with the
 // content in place rather than success; a non-durable one skips it.

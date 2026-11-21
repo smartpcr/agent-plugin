@@ -100,7 +100,7 @@ func (s *Store) Create(ctx context.Context, h store.Header, o store.CreateOption
 	}
 	// Registered before wmu is released: a Close that began meanwhile waits
 	// for wmu and then releases this lease.
-	w := &writer{reader: reader{s: s, id: h.ID, uid: uid, header: h}, epoch: 1}
+	w := &writer{reader: reader{s: s, id: h.ID, uid: uid, header: h}, epoch: 1, holder: s.instance}
 	s.register(w)
 	return w, nil
 }
@@ -117,8 +117,11 @@ func absent(ctx context.Context, tx *sql.Tx, id string) error {
 	return nil
 }
 
-// OpenWrite implements store.Store. IfFree refuses any recorded holder: telling
-// a dead holder from a live one is the liveness check of the recovery stage.
+// OpenWrite implements store.Store (session-store.md, the lease, rules 2 to 4):
+// in one write transaction, a recorded holder is probed; a live one refuses the
+// lease with session/owned unless o forces the takeover, and a dead one's lease
+// is taken. Taking a lease raises the epoch, so the displaced writer's next
+// append or flush is session/lease-lost.
 func (s *Store) OpenWrite(ctx context.Context, id string, o store.OpenOptions) (store.Writer, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -138,8 +141,8 @@ func (s *Store) OpenWrite(ctx context.Context, id string, o store.OpenOptions) (
 		if r, err = liveByID(ctx, tx, id); err != nil {
 			return err
 		}
-		if r.sum.Holder != nil && o.Takeover != store.Force {
-			return &store.OwnedError{ID: id, Holder: *r.sum.Holder}
+		if err := s.claimable(ctx, tx, id, r, o); err != nil {
+			return err
 		}
 		recs, err := selectRecords(ctx, tx, r.uid, 0, -1, true)
 		if err != nil {
@@ -156,7 +159,7 @@ func (s *Store) OpenWrite(ctx context.Context, id string, o store.OpenOptions) (
 	if err != nil {
 		return nil, err
 	}
-	w := &writer{reader: reader{s: s, id: id, uid: r.uid, header: r.sum.Header}, epoch: epoch}
+	w := &writer{reader: reader{s: s, id: id, uid: r.uid, header: r.sum.Header}, epoch: epoch, holder: s.instance}
 	s.register(w)
 	return w, nil
 }
@@ -291,8 +294,8 @@ func (s *Store) Delete(ctx context.Context, id string, _ store.DeleteOptions) er
 		if err != nil {
 			return err
 		}
-		if r.sum.Holder != nil {
-			return &store.OwnedError{ID: id, Holder: *r.sum.Holder}
+		if err := s.claimable(ctx, tx, id, r, store.OpenOptions{}); err != nil {
+			return err
 		}
 		uid := r.uid
 		for _, q := range []string{

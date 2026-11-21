@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +20,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/util/fsx"
 )
 
 // The codes this store raises besides the contract's (DH-LIB-SQLITE-R7): every
@@ -63,6 +66,11 @@ const (
 // BusyTimeout); it also bounds the first switch into WAL, which needs the
 // database to itself.
 const DefaultBusyTimeout = 5 * time.Second
+
+// DefaultShutdownFlushTimeout bounds Close: the final barrier and the release of
+// every lease this instance holds (store.Config ShutdownFlushTimeout;
+// DH-ADR-STORE-3).
+const DefaultShutdownFlushTimeout = 10 * time.Second
 
 // syncFull is PRAGMA synchronous = FULL: every commit syncs the write-ahead log
 // before it returns.
@@ -142,6 +150,14 @@ func WithKind(kind string) Option { return func(s *Store) { s.kind = kind } }
 // WithBusyTimeout replaces DefaultBusyTimeout.
 func WithBusyTimeout(d time.Duration) Option { return func(s *Store) { s.busy = d } }
 
+// WithRunDir places the liveness lock files in dir instead of the run/ directory
+// beside the database (home.Layout.Run). Every process sharing the database must
+// use the same directory.
+func WithRunDir(dir string) Option { return func(s *Store) { s.run = dir } }
+
+// WithShutdownFlushTimeout replaces DefaultShutdownFlushTimeout.
+func WithShutdownFlushTimeout(d time.Duration) Option { return func(s *Store) { s.shutdown = d } }
+
 // Store is the SQLite session store: one database per home (DH-D-STORE-2). It
 // owns one write connection, used under a mutex as the writer of the whole
 // instance, and a bounded read pool.
@@ -162,10 +178,14 @@ type Store struct {
 	busy     time.Duration
 	instance string
 	pid      int
+	run      string        // the directory of the liveness lock files
+	shutdown time.Duration // the bound of Close
+	// live is this instance's liveness lock, held from Open to Close.
+	live *fsx.FileLock
 
 	wdb   *sql.DB
 	rdb   *sql.DB
-	wmu   sync.Mutex // guards wconn and broken; held across every lease change
+	wmu   ctxMutex // guards wconn and broken; held across every lease change
 	wconn *sql.Conn
 	// broken is set when a rollback failed: the outcome of that transaction is
 	// unknown, so the store refuses further work until reopened.
@@ -187,22 +207,52 @@ type Store struct {
 
 var _ store.Store = (*Store)(nil)
 
-// OpenHome opens the database of the harness home l (<home>/dsh.db).
+// ctxMutex is a mutex whose acquisition can also give up when a context ends, so
+// Close can bound its wait for a write in flight (one that may itself wait up to
+// the busy timeout on another process's lock). Its zero value is unlocked.
+type ctxMutex struct {
+	once sync.Once
+	ch   chan struct{}
+}
+
+func (m *ctxMutex) sem() chan struct{} {
+	m.once.Do(func() { m.ch = make(chan struct{}, 1) })
+	return m.ch
+}
+
+// Lock acquires m.
+func (m *ctxMutex) Lock() { m.sem() <- struct{}{} }
+
+// Unlock releases m.
+func (m *ctxMutex) Unlock() { <-m.sem() }
+
+// LockContext acquires m, or returns ctx's error when ctx ends first.
+func (m *ctxMutex) LockContext(ctx context.Context) error {
+	select {
+	case m.sem() <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// OpenHome opens the database of the harness home l (<home>/dsh.db), with the
+// liveness locks in <home>/run.
 func OpenHome(ctx context.Context, l home.Layout, opts ...Option) (*Store, error) {
-	return Open(ctx, l.DB(), opts...)
+	return Open(ctx, l.DB(), append([]Option{WithRunDir(l.Run())}, opts...)...)
 }
 
 // Open runs the open sequence on the database at path (DH-LIB-SQLITE-R12):
 // create it owner-only when missing; check its identity and layout version
 // before anything that writes, refusing a foreign or newer database unchanged;
 // enter WAL; apply the numbered migrations; open the read pool; register the
-// instance.
+// instance under its liveness lock; sweep the hosts rows of dead instances.
 func Open(ctx context.Context, path string, opts ...Option) (*Store, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	s := &Store{path: path, reg: event.Default(), now: time.Now, kind: "dsh", busy: DefaultBusyTimeout,
-		pid: os.Getpid(), writers: map[*writer]struct{}{}}
+		shutdown: DefaultShutdownFlushTimeout, pid: os.Getpid(), writers: map[*writer]struct{}{}}
 	for _, o := range opts {
 		o(s)
 	}
@@ -214,16 +264,24 @@ func Open(ctx context.Context, path string, opts ...Option) (*Store, error) {
 	if strings.ContainsAny(path, "?#") {
 		return nil, store.Errorf(CodeIO, "database path %q holds a URI delimiter", path)
 	}
+	if s.run == "" {
+		s.run = filepath.Join(filepath.Dir(path), "run")
+	}
 	if err := createPrivate(path); err != nil {
 		return nil, err
 	}
+	// The lock is held before this instance is named anywhere (its hosts row,
+	// a lease), so a prober never finds a running instance unlocked.
+	if err := s.lockInstance(); err != nil {
+		return nil, err
+	}
 	if err := s.openWriter(ctx); err != nil {
-		s.closeDBs()
+		s.abandon()
 		return nil, err
 	}
 	rdb, err := sql.Open("sqlite", dsn(path, false, s.busy))
 	if err != nil {
-		s.closeDBs()
+		s.abandon()
 		return nil, translate(ctx, err)
 	}
 	rdb.SetMaxOpenConns(readPool)
@@ -234,10 +292,19 @@ func Open(ctx context.Context, path string, opts ...Option) (*Store, error) {
 			s.instance, s.pid, s.kind, s.now().UnixNano())
 		return err
 	}); err != nil {
-		s.closeDBs()
+		s.abandon()
 		return nil, err
 	}
+	// Housekeeping only: OpenWrite probes a recorded holder whether or not its
+	// hosts row is gone, so a failed sweep (a busy database) does not fail Open.
+	_ = s.sweep(ctx)
 	return s, nil
+}
+
+// abandon undoes a failed Open: the pools close and the liveness lock goes.
+func (s *Store) abandon() {
+	_ = s.closeDBs()
+	_ = s.unlockInstance()
 }
 
 // createPrivate creates path owner-only when it does not exist. The file is
@@ -461,12 +528,17 @@ func (s *Store) Path() string { return s.path }
 func (s *Store) Instance() string { return s.instance }
 
 // Close releases the leases this instance holds, unregisters it, checkpoints
-// and truncates the write-ahead log and closes both pools. New handles are
-// refused from its start; writers still open fail with session/closed
-// afterwards. When a release fails (a busy database, say) nothing is closed
-// and the error is returned: Close may be called again and retries the leases
-// still held. Once it succeeded it is idempotent. Concurrent calls run one at
-// a time; a call that waited returns nil when the one before it succeeded.
+// and truncates the write-ahead log, closes both pools and releases its liveness
+// lock. New handles are refused from its start; writers still open fail with
+// session/closed afterwards. The wait for a write in flight, the final barrier
+// and the releases are bounded by the shutdown flush timeout (DH-ADR-STORE-3),
+// not by ctx, so a cancelled caller still drains; a wait or release that does
+// not finish in that bound is reported with the sessions still held, and nothing
+// is torn down under the write in flight. When a release fails (a busy database, say) nothing
+// is closed and the error is returned: Close may be called again and retries
+// the leases still held. Once it succeeded it is idempotent. Concurrent calls
+// run one at a time; a call that waited returns nil when the one before it
+// succeeded.
 func (s *Store) Close(ctx context.Context) error {
 	s.cmu.Lock()
 	defer s.cmu.Unlock()
@@ -477,17 +549,25 @@ func (s *Store) Close(ctx context.Context) error {
 	}
 	s.closed = true
 	s.mu.Unlock()
-	// A release must not be abandoned half-way because the caller's context
-	// ended; the busy timeout bounds each statement.
-	ctx = context.WithoutCancel(ctx)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.shutdown)
+	defer cancel()
 	var errs []error
 	retry := false
-	s.wmu.Lock()
+	// The wait for a write in flight is bounded too. When it outlasts the bound
+	// nothing is torn down under that write: the leases stay held and Close may
+	// be called again.
+	if err := s.wmu.LockContext(ctx); err != nil {
+		return errors.Join(s.unreleased(), store.Errorf(CodeBusy,
+			"shutdown: a write in flight did not finish within %s: %v", s.shutdown, err))
+	}
 	if s.wconn != nil && s.broken == nil {
 		for _, w := range s.snapshot() {
 			if err := w.closeLocked(ctx); err != nil {
 				errs = append(errs, err)
 			}
+		}
+		if len(errs) > 0 {
+			errs = append([]error{s.unreleased()}, errs...)
 		}
 		if len(errs) == 0 {
 			if err := s.writeLocked(ctx, func(tx *sql.Tx) error {
@@ -516,7 +596,20 @@ func (s *Store) Close(ctx context.Context) error {
 	if err := s.closeDBs(); err != nil {
 		errs = append(errs, err)
 	}
+	if err := s.unlockInstance(); err != nil {
+		errs = append(errs, err)
+	}
 	return errors.Join(errs...)
+}
+
+// unreleased names the sessions whose writers Close could not release.
+func (s *Store) unreleased() error {
+	var ids []string
+	for _, w := range s.snapshot() {
+		ids = append(ids, w.id)
+	}
+	slices.Sort(ids)
+	return store.Errorf(CodeBusy, "shutdown: %d session(s) still held: %s", len(ids), strings.Join(ids, ", "))
 }
 
 // snapshot is the writers registered now.

@@ -9,7 +9,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func lockFile(f *os.File) error {
+func lockFile(f *os.File, _ bool) error {
 	err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB)
 	if errors.Is(err, unix.EWOULDBLOCK) {
 		return &os.PathError{Op: "lock", Path: f.Name(), Err: ErrLocked}
@@ -17,6 +17,6 @@ func lockFile(f *os.File) error {
 	return err
 }
 
-func unlockFile(f *os.File) error {
+func unlockFile(f *os.File, _ bool) error {
 	return unix.Flock(int(f.Fd()), unix.LOCK_UN)
 }

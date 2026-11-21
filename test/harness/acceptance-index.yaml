@@ -25,7 +25,13 @@
 built-through: DH-S-6
 
 stages:
-  DH-S-16: []
+  DH-S-16:
+    # The store's two-process and crash-recovery scenarios, run on scratch homes
+    # (impl.md step 16.8); authored by Stage 7.2 (impl.md steps 7.2, 7.3).
+    - id: DH-E-STORE-1
+      authored: DH-S-7
+    - id: DH-E-STORE-2
+      authored: DH-S-7
   DH-S-17:
     # Its subjects (the model runtime, the replay helpers) exist from Phase 11;
     # the file is written by the DH-S-11 authoring step (impl.md DH-S-1 Scenarios).
