@@ -41,7 +41,9 @@ func (d Diagnostic) String() string { return fmt.Sprintf("%s: %s [%s]", d.Name, 
 // (lower case first, then upper case; blank is unset): HTTP_PROXY for http,
 // HTTPS_PROXY for https, ALL_PROXY for a scheme whose own name is unset, and
 // HTTPS falling back to the HTTP proxy last; NO_PROXY bypasses and loopback is
-// always direct. Only http and https proxy addresses are accepted: any other value
+// always direct. Only http, https, socks5 and socks5h proxy addresses are
+// accepted (DH-ADR-UNDICI-2; net/http dials all four): any other value (PAC, ftp,
+// garbage)
 // is a diagnostic and that scheme goes direct, never borrowing another scheme's
 // proxy. The certificate authorities are the system's plus c.ExtraCACerts; an
 // unreadable certificate file is an error. A nil lookup reads nothing. A Proxy
@@ -170,9 +172,9 @@ func parseProxy(v string) (*url.URL, string) {
 		return nil, "the value is not a URL"
 	}
 	switch strings.ToLower(u.Scheme) {
-	case "http", "https":
+	case "http", "https", "socks5", "socks5h":
 	default:
-		return nil, fmt.Sprintf("the scheme %q is not a proxy scheme (http, https)", u.Scheme)
+		return nil, fmt.Sprintf("the scheme %q is not a proxy scheme (http, https, socks5, socks5h)", u.Scheme)
 	}
 	if u.Hostname() == "" {
 		return nil, "the value names no host"

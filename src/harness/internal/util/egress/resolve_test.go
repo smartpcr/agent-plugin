@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/pem"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -80,7 +81,9 @@ func TestResolveProxyNames(t *testing.T) {
 		{"blank is unset", map[string]string{"https_proxy": "  ", "HTTPS_PROXY": "http://p1:8080"}, "https://api.example/", "p1:8080", ""},
 		{"https falls back to http", map[string]string{"HTTP_PROXY": "http://p1:8080"}, "https://api.example/", "p1:8080", ""},
 		{"all before the http fallback", map[string]string{"HTTP_PROXY": "http://p1:8080", "ALL_PROXY": "http://p2:8080"}, "https://api.example/", "p2:8080", ""},
-		{"refused https stays direct", map[string]string{"HTTPS_PROXY": "socks5://p9:1080", "HTTP_PROXY": "http://p1:8080"}, "https://api.example/", "", "HTTPS_PROXY"},
+		{"refused https stays direct", map[string]string{"HTTPS_PROXY": "ftp://p9:21", "HTTP_PROXY": "http://p1:8080"}, "https://api.example/", "", "HTTPS_PROXY"},
+		{"socks5 https", map[string]string{"HTTPS_PROXY": "socks5://p4:1080"}, "https://api.example/", "p4:1080", ""},
+		{"socks5h all", map[string]string{"ALL_PROXY": "socks5h://p5:1080"}, "http://api.example/", "p5:1080", ""},
 		{"refused all stays direct", map[string]string{"ALL_PROXY": "pac://p9", "HTTP_PROXY": "http://p1:8080"}, "https://api.example/", "", "ALL_PROXY"},
 		{"bypass exact", map[string]string{"HTTPS_PROXY": "http://p1:8080", "NO_PROXY": "api.example"}, "https://api.example/", "", ""},
 		{"bypass subdomain", map[string]string{"HTTPS_PROXY": "http://p1:8080", "NO_PROXY": "example"}, "https://api.example/", "", ""},
@@ -260,5 +263,114 @@ func TestClientsAreReleasedWithTheirOwner(t *testing.T) {
 	}
 	if permit.Context().Err() != nil {
 		t.Fatal("the permit ended with the client")
+	}
+}
+
+// socksServer is a loopback SOCKS5 proxy (no authentication, CONNECT only) that
+// counts the tunnels it opens and connects every one to target, whatever name the
+// client asked for: a request reaching target proves it went through the proxy.
+func socksServer(t *testing.T, target string) (string, *atomic.Int64) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	var tunnels atomic.Int64
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				buf := make([]byte, 262)
+				// greeting: VER NMETHODS METHODS...
+				if _, err := io.ReadFull(c, buf[:2]); err != nil {
+					return
+				}
+				if _, err := io.ReadFull(c, buf[:buf[1]]); err != nil {
+					return
+				}
+				_, _ = c.Write([]byte{5, 0})
+				// request: VER CMD RSV ATYP ADDR PORT
+				if _, err := io.ReadFull(c, buf[:4]); err != nil || buf[1] != 1 {
+					return
+				}
+				var n int
+				switch buf[3] {
+				case 1:
+					n = 4
+				case 4:
+					n = 16
+				case 3:
+					if _, err := io.ReadFull(c, buf[:1]); err != nil {
+						return
+					}
+					n = int(buf[0])
+				default:
+					return
+				}
+				if _, err := io.ReadFull(c, buf[:n+2]); err != nil {
+					return
+				}
+				up, err := net.Dial("tcp", target)
+				if err != nil {
+					_, _ = c.Write([]byte{5, 1, 0, 1, 0, 0, 0, 0, 0, 0})
+					return
+				}
+				defer up.Close()
+				tunnels.Add(1)
+				_, _ = c.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0})
+				go func() { _, _ = io.Copy(up, c) }()
+				_, _ = io.Copy(c, up)
+			}()
+		}
+	}()
+	return ln.Addr().String(), &tunnels
+}
+
+// SOCKS proxies are accepted (DH-ADR-UNDICI-2): socks5 and socks5h values resolve
+// without a diagnostic, and with socks5h the request -- for a name only the proxy
+// can resolve -- reaches the server through the proxy's tunnel.
+func TestSocksProxy(t *testing.T) {
+	var arrived atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		arrived.Add(1)
+		_, _ = io.WriteString(w, "tunnelled "+r.Host)
+	}))
+	t.Cleanup(srv.Close)
+	addr, tunnels := socksServer(t, srv.Listener.Addr().String())
+
+	for _, scheme := range []string{"socks5", "socks5h"} {
+		vars := map[string]string{"ALL_PROXY": scheme + "://" + addr}
+		if _, diags, err := egress.Resolve(lookup(vars), egress.Config{}); err != nil || len(diags) != 0 {
+			t.Fatalf("%s: Resolve = %v, %v; want no diagnostic", scheme, diags, err)
+		}
+		got := egress.ProxyFor(lookup(vars), mustParse(t, "https://api.example/"))
+		if got == nil || got.Scheme != scheme || got.Host != addr {
+			t.Fatalf("%s: proxy for https = %v, want %s://%s", scheme, got, scheme, addr)
+		}
+	}
+
+	svc, _, err := egress.Resolve(lookup(map[string]string{"ALL_PROXY": "socks5h://" + addr}), egress.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(svc.CloseIdleConnections)
+	const dest = "http://only-the-proxy-knows.invalid"
+	c, err := svc.Client("model-request", fakePermit{kind: "model-request", dest: dest, ctx: context.Background()}, egress.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := c.Get(dest + "/v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if string(b) != "tunnelled only-the-proxy-knows.invalid" || tunnels.Load() != 1 || arrived.Load() != 1 {
+		t.Fatalf("response %q, %d tunnels, %d arrivals; want one request through the SOCKS proxy", b, tunnels.Load(), arrived.Load())
 	}
 }
