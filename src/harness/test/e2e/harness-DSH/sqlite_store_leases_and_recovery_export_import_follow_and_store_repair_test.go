@@ -34,19 +34,21 @@ import (
 //   - append: creates session eifrFollowID and reports "ready"; on "go" it
 //     appends 10 tool calls, one batch each and spaced, reporting
 //     "committed seq=<n> at=<unix ns>" after each commit.
-//   - delete: deletes session eifrDeleteID in chunks of 100 events; after the
-//     chunk that brings the removed events to 500 it reports "chunk
-//     deleted=<n>" and stops there, as a process killed mid-deletion would.
+//   - delete: deletes session eifrDeleteID in chunks of eifrDeleteChunk events;
+//     after the chunk that brings the removed events to eifrStopAtEnv it reports
+//     "chunk deleted=<n>" and stops there, as a process killed mid-deletion would.
 //
 // No child closes its store: the parent kills it.
 const (
-	eifrRoleEnv   = "DSH_E2E_EIFR_ROLE"
-	eifrHomeEnv   = "DSH_E2E_EIFR_HOME"
-	eifrFollowID  = "f"
-	eifrDeleteID  = "big"
-	eifrTimeout   = 60 * time.Second
-	eifrInterval  = 50 * time.Millisecond
-	eifrGoldenRel = "../../../internal/session/store/sqlite/testdata/export.golden"
+	eifrRoleEnv     = "DSH_E2E_EIFR_ROLE"
+	eifrHomeEnv     = "DSH_E2E_EIFR_HOME"
+	eifrStopAtEnv   = "DSH_E2E_EIFR_STOP_AT"
+	eifrDeleteChunk = 100
+	eifrFollowID    = "f"
+	eifrDeleteID    = "big"
+	eifrTimeout     = 60 * time.Second
+	eifrInterval    = 50 * time.Millisecond
+	eifrGoldenRel   = "../../../internal/session/store/sqlite/testdata/export.golden"
 )
 
 var eifrBG = context.Background()
@@ -99,13 +101,17 @@ func eifrChild(role, root string) error {
 		}
 		fmt.Println("appended")
 	case "delete":
-		s, err := sqlite.OpenHome(eifrBG, home.New(root), sqlite.WithKind("e2e-child"), sqlite.WithDeleteChunk(100))
+		stopAt, err := strconv.ParseInt(os.Getenv(eifrStopAtEnv), 10, 64)
+		if err != nil || stopAt <= 0 {
+			return fmt.Errorf("bad %s %q: %v", eifrStopAtEnv, os.Getenv(eifrStopAtEnv), err)
+		}
+		s, err := sqlite.OpenHome(eifrBG, home.New(root), sqlite.WithKind("e2e-child"), sqlite.WithDeleteChunk(eifrDeleteChunk))
 		if err != nil {
 			return err
 		}
 		stopped := make(chan struct{})
 		sqlite.E2ESetAfterDeleteChunk(func(_ string, deleted int64) {
-			if deleted >= 500 {
+			if deleted >= stopAt {
 				fmt.Printf("chunk deleted=%d\n", deleted)
 				close(stopped)
 				select {} // killed here, between two chunks
@@ -144,17 +150,17 @@ type eifrProc struct {
 	done  bool
 }
 
-func eifrSpawn(root, role string) (*eifrProc, error) {
+func eifrSpawn(root, role string, extra ...string) (*eifrProc, error) {
 	cmd := exec.Command(os.Args[0], "-test.run=^$", "-test.count=1")
 	var env []string
 	for _, kv := range os.Environ() {
 		up := strings.ToUpper(kv)
-		if strings.HasPrefix(up, "DSH_HOME=") || strings.HasPrefix(up, eifrRoleEnv+"=") || strings.HasPrefix(up, eifrHomeEnv+"=") {
+		if strings.HasPrefix(up, "DSH_HOME=") || strings.HasPrefix(up, eifrRoleEnv+"=") || strings.HasPrefix(up, eifrHomeEnv+"=") || strings.HasPrefix(up, eifrStopAtEnv+"=") {
 			continue
 		}
 		env = append(env, kv)
 	}
-	cmd.Env = append(env, eifrRoleEnv+"="+role, eifrHomeEnv+"="+root)
+	cmd.Env = append(append(env, eifrRoleEnv+"="+role, eifrHomeEnv+"="+root), extra...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -273,6 +279,7 @@ type eifrState struct {
 	layout home.Layout
 	proc   *eifrProc
 	spill  string
+	total  int
 	store  *sqlite.Store
 	report sqlite.CheckReport
 }
@@ -308,8 +315,8 @@ func (s *eifrState) open(l home.Layout, opts ...sqlite.Option) (*sqlite.Store, e
 	return st, nil
 }
 
-func (s *eifrState) spawn(role string) (*eifrProc, error) {
-	p, err := eifrSpawn(s.root, role)
+func (s *eifrState) spawn(role string, extra ...string) (*eifrProc, error) {
+	p, err := eifrSpawn(s.root, role, extra...)
 	if err != nil {
 		return nil, err
 	}
@@ -573,6 +580,7 @@ func (s *eifrState) bigSession(id string, n int) error {
 		return err
 	}
 	s.root = s.layout.Root()
+	s.total = n
 	st, err := sqlite.OpenHome(eifrBG, s.layout)
 	if err != nil {
 		return err
@@ -598,8 +606,11 @@ func (s *eifrState) bigSession(id string, n int) error {
 }
 
 func (s *eifrState) deletionKilled(id string, half int) error {
+	if half <= 0 || half >= s.total || half%eifrDeleteChunk != 0 {
+		return fmt.Errorf("stop after %d of %d events: want a multiple of the %d-event chunk strictly between 0 and the total", half, s.total, eifrDeleteChunk)
+	}
 	var err error
-	if s.proc, err = s.spawn("delete"); err != nil {
+	if s.proc, err = s.spawn("delete", fmt.Sprintf("%s=%d", eifrStopAtEnv, half)); err != nil {
 		return err
 	}
 	line, err := s.proc.expect("chunk")
@@ -617,15 +628,15 @@ func (s *eifrState) deletionKilled(id string, half int) error {
 	if err != nil {
 		return err
 	}
-	if left != int64(half) {
-		return fmt.Errorf("%d events left mid-deletion; want %d", left, half)
+	if want := int64(s.total - half); left != want {
+		return fmt.Errorf("%d events left mid-deletion; want %d", left, want)
 	}
 	if n, err := eifrCount(s.layout, `SELECT count(*) FROM sessions WHERE id = ? AND state = 'deleting'`, id); err != nil || n != 1 {
 		return fmt.Errorf("%d tombstones of %q mid-deletion (%v); want 1", n, id, err)
 	}
 	s.proc.kill()
-	if left, err := eifrCount(s.layout, `SELECT count(*) FROM events`); err != nil || left != int64(half) {
-		return fmt.Errorf("%d events after the kill (%v); want %d left for the reopen to finish", left, err, half)
+	if left, err := eifrCount(s.layout, `SELECT count(*) FROM events`); err != nil || left != int64(s.total-half) {
+		return fmt.Errorf("%d events after the kill (%v); want %d left for the reopen to finish", left, err, s.total-half)
 	}
 	return nil
 }
