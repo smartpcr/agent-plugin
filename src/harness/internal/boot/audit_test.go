@@ -73,3 +73,53 @@ func TestRunPrintsKindsLine(t *testing.T) {
 		t.Fatalf("stderr = %q, want %q once", got, want)
 	}
 }
+
+// bootKinds runs the real boot over the core bundle plus layer, with environ as
+// the process environment, and returns the kinds line it printed.
+func bootKinds(t *testing.T, layer string, environ ...string) string {
+	t.Helper()
+	opts, _ := fixture(t, layer)
+	opts.Request.Environ = environ
+	app := launch.NewApp()
+	var stderr syncBuffer
+	opts.App, opts.Stderr = app, &stderr
+	done := make(chan int, 1)
+	go func() { done <- Run(context.Background(), opts) }()
+	select {
+	case <-app.Ready():
+	case status := <-done:
+		t.Fatalf("boot ended with %d before ready:\n%s", status, stderr.String())
+	}
+	app.Stop(launch.Completed, 0)
+	<-done
+	for _, line := range strings.Split(stderr.String(), "\n") {
+		if strings.HasPrefix(line, "dsh: audit: outbound kinds") {
+			return line
+		}
+	}
+	t.Fatalf("no kinds line:\n%s", stderr.String())
+	return ""
+}
+
+// The sharing settings are composed configuration: the core bundle's host.sharing
+// entry is every kind off; a layer that turns feedback on is listed on through the
+// real boot path, and the off-switch -- the layer's sharing.off or DSH_SHARING_OFF
+// in the launch environment -- overrides it.
+func TestComposedSharingSettingsReachTheAudit(t *testing.T) {
+	const optIn = "- id: sharing\n  merge:\n    kinds:\n      feedback:\n        enabled: true\n        endpoint: https://feedback.example\n"
+	if line := bootKinds(t, "[]\n"); strings.Contains(line, "=on") || strings.Contains(line, "off-switch") {
+		t.Fatalf("default boot: %q, want every kind off", line)
+	}
+	line := bootKinds(t, optIn)
+	if !strings.Contains(line, "feedback=on") || !strings.Contains(line, "model-request=off") || strings.Count(line, "=on") != 1 {
+		t.Fatalf("opt-in: %q, want feedback on and every other kind off", line)
+	}
+	line = bootKinds(t, optIn+"- id: sharing\n  merge:\n    off: true\n")
+	if !strings.Contains(line, "(off-switch set): ") || strings.Contains(line, "=on") {
+		t.Fatalf("sharing.off: %q, want every kind off by the switch", line)
+	}
+	line = bootKinds(t, optIn, sharing.EnvOff+"=0")
+	if !strings.Contains(line, "(off-switch set by "+sharing.EnvOff+")") || strings.Contains(line, "=on") {
+		t.Fatalf("%s: %q, want every kind off, locked by the environment", sharing.EnvOff, line)
+	}
+}

@@ -16,6 +16,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/host/sharing"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human/secret"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/util/egress"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess"
 )
 
@@ -135,6 +136,17 @@ func (Real) Tree(_ context.Context, s *State) error {
 	if _, err := launch.ProcessesKey.Provide(root, procs); err != nil {
 		return err
 	}
+	// The launch's sharing gate and the trusted launch lookup egress reads proxy
+	// names through: both on the root, before any entry loads.
+	if s.Sharing == nil {
+		s.Sharing = sharing.New(sharing.Config{}, s.Env.Func())
+	}
+	if _, err := sharing.Key.Provide(root, s.Sharing); err != nil {
+		return err
+	}
+	if _, err := egress.LaunchKey.Provide(root, egress.Lookup(s.Env.Trusted().Func())); err != nil {
+		return err
+	}
 	fiber, err := root.Use(loader.Component, loader.Options{Resolver: cat, Evaluator: ev})
 	if err != nil {
 		return err
@@ -173,9 +185,10 @@ func (Real) Settle(ctx context.Context, s *State) error {
 	return nil
 }
 
-// Audit checks the required entries and lists every outbound kind as the sharing
-// gate decides it. No kind is configured yet, so every kind is off; the gate reads
-// DSH_SHARING_OFF from the launch environment.
+// Audit checks the required entries and lists every outbound kind as the launch's
+// gate decides it: the gate Tree provided, configured by the host.sharing entry
+// of the composed layers (every kind off without one), with DSH_SHARING_OFF read
+// from the launch environment.
 func (Real) Audit(_ context.Context, s *State) error {
 	if s.Sharing == nil {
 		s.Sharing = sharing.New(sharing.Config{}, s.Env.Func())

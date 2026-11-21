@@ -94,11 +94,15 @@ var codes = map[herr.Reason]int{
 	"secret/source":         Unavailable,
 	"secret/use-failed":     Failed,
 
-	"egress/not-permitted": Denied,
+	"egress/ca-unreadable":       Config,
+	"egress/not-permitted":       Denied,
+	"egress/refused-proxy-value": Config,
 
+	"sharing/claimed":      Config,
 	"sharing/disabled":     Denied,
 	"sharing/no-endpoint":  Unavailable,
 	"sharing/off":          Denied,
+	"sharing/released":     Cancelled,
 	"sharing/unregistered": Invalid,
 	"sharing/withdrawn":    Cancelled,
 

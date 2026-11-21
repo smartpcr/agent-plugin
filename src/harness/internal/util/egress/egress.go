@@ -13,11 +13,19 @@
 // What a client sends is the request its caller built plus one header,
 // `User-Agent: dsh`, set after every other header. It keeps no cookie jar, follows
 // no redirect unless its caller says so, and never reads the process environment:
-// no proxy is used until the launch's proxy policy is resolved into Config.
+// Resolve reads the proxy names through the launch lookup boot gives it (the
+// trusted view, so a project file never supplies a proxy) and the extra
+// certificate authorities of Config.ExtraCACerts.
+//
+// A client belongs to its asker: it is registered until the asker releases it
+// (Service.Release), the asker's Options.Owner context ends (the fiber that asked
+// unloads), or its permit is withdrawn -- whichever comes first.
 package egress
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"io"
 	"net"
@@ -25,6 +33,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
@@ -47,14 +56,22 @@ type Permit interface {
 	Context() context.Context
 }
 
-// Config configures the service once, before any component asks for a client.
+// Config configures the service once, at launch (`egress.Config`, not live).
 type Config struct {
-	// Proxy chooses the proxy for a request; nil connects directly.
-	Proxy func(*http.Request) (*url.URL, error)
+	// ExtraCACerts are PEM files of certificate authorities trusted in addition to
+	// the system's (an intercepting proxy's authority). An unreadable file, or one
+	// holding no certificate, stops the launch with egress/ca-unreadable.
+	ExtraCACerts []string `json:"extraCACerts,omitempty"`
+	// Proxy chooses the proxy for a request; nil connects directly. Resolve sets
+	// it from the launch's proxy names.
+	Proxy func(*http.Request) (*url.URL, error) `json:"-"`
 	// Resolver is the service's name resolver; nil is a fresh pure-Go resolver.
-	Resolver *net.Resolver
+	Resolver *net.Resolver `json:"-"`
 	// DialTimeout bounds one connection attempt; zero is 30 s.
-	DialTimeout time.Duration
+	DialTimeout time.Duration `json:"-"`
+
+	// roots is the pool Resolve builds from ExtraCACerts; nil uses the system's.
+	roots *x509.CertPool
 }
 
 // Options configure one client.
@@ -65,6 +82,9 @@ type Options struct {
 	Redirect func(req *http.Request, via []*http.Request) error
 	// HeaderWait bounds the wait for response headers; zero waits for the context.
 	HeaderWait time.Duration
+	// Owner is the asker's lifetime (its fiber's Lifetime): when it ends the client
+	// is released. nil leaves the release to Service.Release or the permit.
+	Owner context.Context
 }
 
 // ClientInfo is one live client as Handed lists it.
@@ -81,7 +101,14 @@ type Service struct {
 
 	mu         sync.Mutex
 	transports map[time.Duration]*http.Transport
-	handed     map[*permitted]ClientInfo
+	handed     map[*permitted]*record
+}
+
+// record is one registered client: what Handed lists, and the callbacks on the
+// permit and the owner that release it, stopped once it is released.
+type record struct {
+	info  ClientInfo
+	stops []func() bool
 }
 
 // New returns the service.
@@ -92,44 +119,89 @@ func New(c Config) *Service {
 	if c.DialTimeout <= 0 {
 		c.DialTimeout = 30 * time.Second
 	}
-	return &Service{cfg: c, transports: map[time.Duration]*http.Transport{}, handed: map[*permitted]ClientInfo{}}
+	return &Service{cfg: c, transports: map[time.Duration]*http.Transport{}, handed: map[*permitted]*record{}}
 }
 
 // Client returns a client for kind under p. Without a permit, with a permit for
 // another kind, or with one already withdrawn it fails with egress/not-permitted.
-// The client is listed by Handed until the permit's context ends.
+// The client is listed by Handed until it is released: by Release, by the end of
+// o.Owner, or by the end of the permit's context. A released client refuses every
+// request with egress/not-permitted.
 func (s *Service) Client(kind string, p Permit, o Options) (*http.Client, error) {
 	if err := usable(kind, p); err != nil {
 		return nil, err
 	}
-	rt := &permitted{kind: kind, permit: p, next: s.transport(o.HeaderWait)}
+	if o.Owner != nil && o.Owner.Err() != nil {
+		return nil, herr.Newf(ReasonNotPermitted, "the asker of a %s client has ended", kind)
+	}
+	rt := &permitted{kind: kind, permit: p, owner: o.Owner, next: s.transport(o.HeaderWait)}
 	redirect := o.Redirect
 	if redirect == nil {
 		redirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	}
+	rec := &record{info: ClientInfo{Kind: kind, Destination: p.Destination(), Label: o.Label}}
 	s.mu.Lock()
-	s.handed[rt] = ClientInfo{Kind: kind, Destination: p.Destination(), Label: o.Label}
+	s.handed[rt] = rec
 	s.mu.Unlock()
-	context.AfterFunc(p.Context(), func() {
-		s.mu.Lock()
-		delete(s.handed, rt)
-		s.mu.Unlock()
-	})
+	drop := func() { s.release(rt) }
+	stops := []func() bool{context.AfterFunc(p.Context(), drop)}
+	if o.Owner != nil {
+		stops = append(stops, context.AfterFunc(o.Owner, drop))
+	}
+	s.mu.Lock()
+	if _, live := s.handed[rt]; live {
+		rec.stops, stops = stops, nil
+	}
+	s.mu.Unlock()
+	// Released while registering: nothing holds the callbacks any more.
+	for _, stop := range stops {
+		stop()
+	}
 	return &http.Client{Transport: rt, CheckRedirect: redirect}, nil
 }
 
+// Release releases c: it is no longer listed, its callbacks on the permit and the
+// owner are stopped, and every later request fails with egress/not-permitted.
+// Releasing a client twice, or one this service did not build, does nothing.
+func (s *Service) Release(c *http.Client) {
+	if c == nil {
+		return
+	}
+	if rt, ok := c.Transport.(*permitted); ok {
+		s.release(rt)
+	}
+}
+
+func (s *Service) release(rt *permitted) {
+	rt.released.Store(true)
+	s.mu.Lock()
+	rec, ok := s.handed[rt]
+	delete(s.handed, rt)
+	s.mu.Unlock()
+	if !ok {
+		return
+	}
+	for _, stop := range rec.stops {
+		stop()
+	}
+}
+
 // Handed lists every live client: its kind, destination and label. A client whose
-// permit was withdrawn is not live.
+// permit was withdrawn, or that was released, is not live.
 func (s *Service) Handed() []ClientInfo {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	var gone []*permitted
 	out := make([]ClientInfo, 0, len(s.handed))
-	for rt, info := range s.handed {
-		if rt.permit.Context().Err() != nil {
-			delete(s.handed, rt)
+	for rt, rec := range s.handed {
+		if rt.permit.Context().Err() != nil || rt.ownerEnded() {
+			gone = append(gone, rt)
 			continue
 		}
-		out = append(out, info)
+		out = append(out, rec.info)
+	}
+	s.mu.Unlock()
+	for _, rt := range gone {
+		s.release(rt)
 	}
 	return out
 }
@@ -160,6 +232,9 @@ func (s *Service) transport(headerWait time.Duration) *http.Transport {
 		ExpectContinueTimeout: time.Second,
 		ResponseHeaderTimeout: headerWait,
 	}
+	if s.cfg.roots != nil {
+		t.TLSClientConfig = &tls.Config{RootCAs: s.cfg.roots, MinVersion: tls.VersionTLS12}
+	}
 	s.transports[headerWait] = t
 	return t
 }
@@ -182,12 +257,20 @@ func usable(kind string, p Permit) error {
 // permitted is the round tripper of one client: the permit check, the one header,
 // and the permit's context joined with each request's.
 type permitted struct {
-	kind   string
-	permit Permit
-	next   http.RoundTripper
+	kind     string
+	permit   Permit
+	owner    context.Context
+	next     http.RoundTripper
+	released atomic.Bool
 }
 
+func (t *permitted) ownerEnded() bool { return t.owner != nil && t.owner.Err() != nil }
+
 func (t *permitted) RoundTrip(req *http.Request) (*http.Response, error) {
+	if t.released.Load() || t.ownerEnded() {
+		closeBody(req)
+		return nil, herr.Newf(ReasonNotPermitted, "the %s client was released", t.kind)
+	}
 	if err := usable(t.kind, t.permit); err != nil {
 		closeBody(req)
 		return nil, err
@@ -207,7 +290,9 @@ func (t *permitted) RoundTrip(req *http.Request) (*http.Response, error) {
 		withdrawn := pctx.Err() != nil
 		cancel(nil)
 		if withdrawn {
-			return nil, herr.Wrap(ReasonNotPermitted, err, "the permit for "+t.kind+" was withdrawn")
+			// The transport error chains the permit's cause (sharing/withdrawn); it is
+			// printed, not chained, so herr.Kind and the exit status read ours.
+			return nil, herr.Newf(ReasonNotPermitted, "the permit for %s was withdrawn in flight: %v", t.kind, err)
 		}
 		return nil, err
 	}

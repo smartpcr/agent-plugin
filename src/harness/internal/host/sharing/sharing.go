@@ -51,6 +51,12 @@ const (
 	ReasonNoEndpoint   herr.Reason = "sharing/no-endpoint"
 	ReasonUnregistered herr.Reason = "sharing/unregistered"
 	ReasonWithdrawn    herr.Reason = "sharing/withdrawn"
+	// ReasonReleased is the cause a permit's context ends with when its holder
+	// releases it (or the holder's owner ends).
+	ReasonReleased herr.Reason = "sharing/released"
+	// ReasonClaimed refuses a second host.sharing entry: one entry configures the
+	// launch's gate.
+	ReasonClaimed herr.Reason = "sharing/claimed"
 )
 
 // Info describes one kind: what is sent, and by whom.
@@ -137,12 +143,25 @@ type Status struct {
 func (s Status) StoppedBySwitch() bool { return s.Reason == ReasonOff }
 
 // Permit is the gate's "yes, for now" for one kind and one destination. Its
-// context ends, with a sharing/withdrawn cause, when consent is withdrawn.
+// context ends, with a sharing/withdrawn cause, when consent is withdrawn, and
+// with sharing/released when its holder releases it.
 type Permit struct {
+	gate   *Gate
 	kind   Kind
 	dest   string
 	ctx    context.Context
 	cancel context.CancelCauseFunc
+	owner  context.Context
+	stop   func() bool
+}
+
+// Release gives the permit back: the gate forgets it and its context ends with a
+// sharing/released cause. Releasing twice, or a nil permit, does nothing.
+func (p *Permit) Release() {
+	if p == nil || p.gate == nil {
+		return
+	}
+	p.gate.forget(p, herr.Newf(ReasonReleased, "permit for %s released", p.kind))
 }
 
 // Kind returns the permitted kind as a string, the form the egress client reads.
@@ -190,6 +209,7 @@ type Gate struct {
 	cfg     Config
 	envOff  bool
 	permits map[*Permit]struct{}
+	claimed bool
 }
 
 // New returns a gate over cfg. lookup reads the launch environment for EnvOff; nil
@@ -205,18 +225,77 @@ func New(cfg Config, lookup func(name string) (string, bool)) *Gate {
 }
 
 // Permit returns a permit for k, or an error carrying sharing/off,
-// sharing/disabled, sharing/no-endpoint or sharing/unregistered.
-func (g *Gate) Permit(k Kind) (*Permit, error) {
+// sharing/disabled, sharing/no-endpoint or sharing/unregistered. The gate holds
+// it until it is withdrawn or released; prefer PermitFor, which releases it with
+// its owner.
+func (g *Gate) Permit(k Kind) (*Permit, error) { return g.PermitFor(nil, k) }
+
+// PermitFor is Permit owned by owner (the asking fiber's Lifetime): the permit is
+// released when owner ends, so a fiber that unloads leaves nothing registered. A
+// nil owner leaves the release to Permit.Release or a withdrawal.
+func (g *Gate) PermitFor(owner context.Context, k Kind) (*Permit, error) {
+	if owner != nil && owner.Err() != nil {
+		return nil, herr.Newf(ReasonReleased, "the asker of a %s permit has ended", k)
+	}
 	g.mu.Lock()
-	defer g.mu.Unlock()
 	st := g.decide(k)
 	if st.State != StateOn {
+		g.mu.Unlock()
 		return nil, herr.Newf(st.Reason, "no permit for %s", k)
 	}
 	ctx, cancel := context.WithCancelCause(context.Background())
-	p := &Permit{kind: k, dest: st.Endpoint, ctx: ctx, cancel: cancel}
+	p := &Permit{gate: g, kind: k, dest: st.Endpoint, ctx: ctx, cancel: cancel, owner: owner}
 	g.permits[p] = struct{}{}
+	g.mu.Unlock()
+	if owner != nil {
+		stop := context.AfterFunc(owner, p.Release)
+		g.mu.Lock()
+		_, live := g.permits[p]
+		if live {
+			p.stop = stop
+		}
+		g.mu.Unlock()
+		if !live {
+			stop()
+		}
+	}
 	return p, nil
+}
+
+// Live is the number of permits the gate holds: given, and not yet withdrawn or
+// released.
+func (g *Gate) Live() int {
+	g.mu.Lock()
+	var ended []*Permit
+	for p := range g.permits {
+		if p.owner != nil && p.owner.Err() != nil {
+			ended = append(ended, p)
+		}
+	}
+	g.mu.Unlock()
+	for _, p := range ended {
+		p.Release()
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return len(g.permits)
+}
+
+// forget drops p and ends its context with cause.
+func (g *Gate) forget(p *Permit, cause error) {
+	g.mu.Lock()
+	_, ok := g.permits[p]
+	delete(g.permits, p)
+	stop := p.stop
+	p.stop = nil
+	g.mu.Unlock()
+	if !ok {
+		return
+	}
+	p.cancel(cause)
+	if stop != nil {
+		stop()
+	}
 }
 
 // Off reports whether the off-switch is set, and whether the environment set it
@@ -239,6 +318,10 @@ func (g *Gate) Configure(cfg Config) {
 		if st.State != StateOn || st.Endpoint != p.dest {
 			p.cancel(herr.Newf(ReasonWithdrawn, "permit for %s withdrawn: %s", p.kind, st.Reason))
 			delete(g.permits, p)
+			if p.stop != nil {
+				p.stop()
+				p.stop = nil
+			}
 		}
 	}
 }
@@ -251,6 +334,23 @@ func (g *Gate) SetOff(off bool) {
 	g.mu.Unlock()
 	cfg.Off = off
 	g.Configure(cfg)
+}
+
+// claim marks the gate configured by one entry; a second claim fails.
+func (g *Gate) claim() error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.claimed {
+		return herr.New(ReasonClaimed, "another host.sharing entry configures the gate")
+	}
+	g.claimed = true
+	return nil
+}
+
+func (g *Gate) unclaim() {
+	g.mu.Lock()
+	g.claimed = false
+	g.mu.Unlock()
 }
 
 // Senders lists every kind with its setting addresses and state, in table order.

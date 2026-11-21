@@ -6,3 +6,11 @@
       config:
         destination: stderr
         level: info
+    # Outbound data (DH-D-HOST-4): every kind is off until its own setting is on,
+    # and off: true (or DSH_SHARING_OFF) denies every kind.
+    - id: sharing
+      name: host.sharing
+      config:
+        off: false
+    - id: egress
+      name: util.egress

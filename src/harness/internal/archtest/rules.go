@@ -81,7 +81,7 @@ var Rules = []Rule{
 	{HarnessModule, "only internal/world/subprocess imports os/exec: the one place a program starts (DH-D-EXEC-1, onespawn)", onlyImporter(ExecPackage, SubprocessPackage)},
 	{HarnessModule, "no non-test package imports subprocesstest (DH-D-EXEC-1)", noImporter(SubprocesstestPackage)},
 	{HarnessModule, "internal/util/herr and internal/util/ident import the standard library only (RM-6, DH-D-UTIL-5)", stdlibOnly(HerrPackage, IdentPackage)},
-	{HarnessModule, "internal/util/egress imports no harness package but herr: the permit is an interface, not sharing's type (DH-ADR-UTIL-2)", importsOnly(EgressPackage, HerrPackage)},
+	{HarnessModule, "internal/util/egress imports no harness package but herr, and of the modules only cordis: the permit is an interface, not sharing's type (DH-ADR-UTIL-2)", importsOnly(EgressPackage, HerrPackage, CordisPackage)},
 }
 
 // Packages the rules name.
