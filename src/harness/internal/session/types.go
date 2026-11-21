@@ -82,6 +82,24 @@ type Folder interface {
 	Fold(s ReadSession, batch []event.Event) []Derived
 }
 
+// Restorer is a Folder that keeps stored fold state (DH-D-VIEW-2). Open calls
+// Restore once with the reopened session, before anyone sees it, and the
+// session's stored checkpoints: the Folder takes up the session from them (and
+// the log after them) and returns the rows to rewrite, the folds whose stored
+// state was missing, of another fold version, or behind the log. Open commits
+// them at the log head (Len-1); a failure is logged, not fatal, since stored
+// state is derived.
+type Restorer interface {
+	Folder
+	Restore(ctx context.Context, s ReadSession, cps []store.Checkpoint) ([]Derived, error)
+}
+
+// Checkpointed is a ReadSession that can list its stored checkpoints: a live
+// session and a read-only open are.
+type Checkpointed interface {
+	Checkpoints(ctx context.Context) ([]store.Checkpoint, error)
+}
+
 // CreateOptions are Create's options.
 type CreateOptions struct {
 	// Header is the new session's header; an empty ID is generated.

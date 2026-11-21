@@ -98,6 +98,37 @@ CREATE TABLE requests (
 	state   TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'applied', 'refused', 'expired'))
 ) STRICT;
 `,
+	// 2: the machine-state tables of docs/harness/areas/storage.md §6.2
+	// (DH-D-STORAGE-1), written through internal/storage: typed records per
+	// namespace, each namespace's revision and authority, and the workspace
+	// registry.
+	`
+CREATE TABLE kv_ns (
+	namespace TEXT    PRIMARY KEY CHECK (namespace <> ''),
+	revision  INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+	authority TEXT    NOT NULL CHECK (authority IN ('authoritative', 'derived'))
+) STRICT;
+
+CREATE TABLE kv (
+	namespace  TEXT    NOT NULL REFERENCES kv_ns (namespace),
+	key        TEXT    NOT NULL CHECK (key <> ''),
+	version    INTEGER NOT NULL CHECK (version >= 1),
+	value      TEXT    NOT NULL,
+	updated_at INTEGER NOT NULL,
+	PRIMARY KEY (namespace, key)
+) STRICT, WITHOUT ROWID;
+
+CREATE TABLE workspaces (
+	id             TEXT    PRIMARY KEY CHECK (id <> ''),
+	path           TEXT    NOT NULL UNIQUE CHECK (path <> ''),
+	requested_path TEXT    NOT NULL,
+	title          TEXT    NOT NULL,
+	position       INTEGER NOT NULL,
+	created_at     INTEGER NOT NULL,
+	updated_at     INTEGER NOT NULL
+) STRICT;
+CREATE INDEX workspaces_order ON workspaces (position, id);
+`,
 }
 
 // LayoutVersion is the layout this build writes: the number of migrations.

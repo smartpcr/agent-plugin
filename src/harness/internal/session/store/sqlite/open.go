@@ -558,6 +558,44 @@ func (s *Store) admit() error {
 // Path is the database file.
 func (s *Store) Path() string { return s.path }
 
+// WriteTx runs fn in one write transaction of this instance's writer, under the
+// same serialisation and bounded busy wait as an append (DH-D-STORE-2), and
+// commits it when fn returns nil. It is how internal/storage writes its
+// machine-state tables in the one database (DH-D-STORAGE-1). A driver error is
+// translated (CodeBusy when another process held the lock past the bound).
+func (s *Store) WriteTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := s.admit(); err != nil {
+		return err
+	}
+	var ferr error
+	err := s.write(ctx, func(tx *sql.Tx) error { ferr = fn(tx); return ferr })
+	return passFn(ferr, err)
+}
+
+// passFn returns fn's own error unchanged (a caller's typed error, or
+// sql.ErrNoRows), translating only a driver error; otherwise err.
+func passFn(ferr, err error) error {
+	var de *msqlite.Error
+	if ferr != nil && !errors.As(ferr, &de) {
+		return ferr
+	}
+	return err
+}
+
+// ReadTx runs fn in one read-only transaction on the read pool: one consistent
+// snapshot of the database.
+func (s *Store) ReadTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	var ferr error
+	err := s.read(ctx, func(tx *sql.Tx) error { ferr = fn(tx); return ferr })
+	return passFn(ferr, err)
+}
+
 // Instance is this store's instance id, the lease holder name of its writers.
 func (s *Store) Instance() string { return s.instance }
 

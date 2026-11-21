@@ -33,6 +33,10 @@ func (s *readSession) ToolHistory() surface.ToolHistory             { return s.s
 func (s *readSession) Open() surface.Brackets                       { return s.st.Open() }
 func (s *readSession) Scope() scope.Key                             { return s.key }
 
+func (s *readSession) Checkpoints(ctx context.Context) ([]store.Checkpoint, error) {
+	return s.r.Checkpoints(ctx)
+}
+
 func (s *readSession) Read(ctx context.Context, from Offset, limit int, opts ...ReadOption) ([]event.Event, error) {
 	out, err := readRange(ctx, s.r, from, limit, s.stored, opts)
 	if err != nil {

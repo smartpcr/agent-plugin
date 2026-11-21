@@ -166,6 +166,59 @@ func (s *live) Read(ctx context.Context, from Offset, limit int, opts ...ReadOpt
 	return readRange(ctx, s.w, from, limit, n, opts)
 }
 
+func (s *live) Checkpoints(ctx context.Context) ([]store.Checkpoint, error) {
+	s.mu.Lock()
+	closed := s.closed
+	s.mu.Unlock()
+	if closed {
+		return nil, s.closedErrLocked()
+	}
+	return s.w.Checkpoints(ctx)
+}
+
+// restoreFolds hands the reopened session and its checkpoints to the Folder,
+// then commits the rows it rebuilt at the log head in a checkpoint-only batch
+// and flushes it, so stored fold state reflects the whole log and never more
+// (DH-D-VIEW-2). Stored state is derived: a failure is logged and the session
+// opens anyway; the Folder folds from the log when it must.
+func (s *live) restoreFolds(ctx context.Context, r Restorer) {
+	log := s.svc.base.Logger()
+	rows, err := func() (rows []Derived, err error) {
+		defer func() {
+			if p := recover(); p != nil {
+				err = fmt.Errorf("the folder panicked restoring: %v", p)
+			}
+		}()
+		cps, err := s.w.Checkpoints(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return r.Restore(ctx, s, cps)
+	}()
+	if err != nil {
+		log.Error(fmt.Errorf("session %q: restoring stored folds: %w", s.id, err))
+		return
+	}
+	s.mu.Lock()
+	n := s.st.Len()
+	if len(rows) == 0 || n == 0 {
+		s.mu.Unlock()
+		return
+	}
+	batch := store.Batch{First: n}
+	for _, d := range rows {
+		batch.Checkpoints = append(batch.Checkpoints, store.Checkpoint{Key: d.Key, StateVersion: d.StateVersion, Seq: n - 1, State: d.State})
+	}
+	err = s.w.Append(ctx, batch)
+	s.mu.Unlock()
+	if err == nil {
+		_, err = s.Flush(ctx)
+	}
+	if err != nil {
+		log.Error(fmt.Errorf("session %q: storing rebuilt folds: %w", s.id, err))
+	}
+}
+
 func (s *live) closedErrLocked() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
