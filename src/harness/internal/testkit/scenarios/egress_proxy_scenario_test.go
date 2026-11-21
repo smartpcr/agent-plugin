@@ -118,12 +118,31 @@ func TestAllTrafficGoesThroughInterceptingProxy(t *testing.T) {
 	})
 
 	t.Run("without the authority", func(t *testing.T) {
+		before := len(logged())
 		r := util1Run(t, bin, root, layer(""), prompt, proxied...)
 		if r.code == 0 {
 			t.Fatal("the run without ExtraCACerts succeeded")
 		}
 		if !strings.Contains(strings.ToLower(r.stderr), "certificate") {
 			t.Errorf("the failure is not a certificate error:\n%s", r.stderr)
+		}
+		// Only the refused CONNECT/TLS handshake may reach the proxy; any line
+		// carrying dsh's User-Agent or a request to a host outside a CONNECT is
+		// a request that was sent over an unverified connection.
+		for _, line := range strings.Split(logged()[before:], "\n") {
+			if strings.TrimSpace(line) == "" || strings.Contains(line, "CONNECT ") && !strings.Contains(line, "User-Agent: dsh") {
+				continue
+			}
+			decrypted := strings.Contains(line, "User-Agent: dsh")
+			for _, host := range hosts {
+				decrypted = decrypted || strings.Contains(line, host)
+			}
+			if decrypted {
+				t.Errorf("a request was sent unverified: %s", line)
+			}
+		}
+		if direct := strings.TrimSpace(mustShell(t, expand(capture, map[string]string{"proxy": proxy}))); direct != "" {
+			t.Errorf("the run fell back to direct connections:\n%s", direct)
 		}
 	})
 
