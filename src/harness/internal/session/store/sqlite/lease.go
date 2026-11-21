@@ -130,9 +130,10 @@ func (s *Store) alive(ctx context.Context, tx *sql.Tx, holder string) (bool, err
 		}
 		return s.registered(ctx, tx, holder)
 	}
-	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return false, probeErr(err)
-	}
+	// The holder is proven dead. A failed removal (say a transient sharing
+	// violation on Windows) leaves a stale file whose next probe locks it and
+	// finds the holder dead again, so it must not fail the takeover.
+	_ = os.Remove(path)
 	_, err = tx.ExecContext(ctx, `DELETE FROM hosts WHERE instance = ?`, holder)
 	return false, err
 }
