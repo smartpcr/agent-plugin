@@ -186,6 +186,14 @@ subprocess_test.go:88: owner job-object; stopped in 2.0018494s
 --- PASS: TestStopTreeStopsAndAwaitsTheTree (2.04s)
 ```
 
+Confirming run at the commit that first carried this record:
+[44861208866](https://github.com/smartpcr/agent-plugin/actions/runs/44861208866),
+`push` at `2302fc822fad10cd63c727442277f5e29ea110e6`, conclusion `success` (jobs
+136714770420 Linux, 136714770672 macOS, 136714770648 Windows). Linux: `owner
+process-group (fallback: own control group not writable; delegated scope not
+requested (U-K1-1)); stopped in 2.010563566s`; macOS: `owner process-group; stopped
+in 2.014288583s`; Windows: `owner job-object; stopped in 2.0018977s`.
+
 The broken-entry and bad-layer tests (`boot-<OS>.txt`) pass on all three lanes:
 `TestBrokenRequiredEntryFailsBootOnce`, `TestReloadAfterReadyAppliesValidAndRejectsInvalidLayers`,
 `TestBadLayerEditLeavesRunningTreeUnchanged`, `TestFatalPrintsOneMessageAndWritesOneReport`.
