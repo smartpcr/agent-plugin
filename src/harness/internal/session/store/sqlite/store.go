@@ -1,0 +1,361 @@
+package sqlite
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store"
+)
+
+// Create implements store.Store: the session row and, for a fork, the copy of
+// the parent's prefix are written in one transaction, and the writer holds the
+// lease at epoch 1.
+func (s *Store) Create(ctx context.Context, h store.Header, o store.CreateOptions) (store.Writer, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if h.ID == "" {
+		return nil, store.Errorf(store.CodeInvalidBatch, "a session needs an id")
+	}
+	if h.CreatedAt.IsZero() {
+		h.CreatedAt = s.now()
+	}
+	since := s.now().UnixNano()
+	var uid int64
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
+	if err := s.admit(); err != nil {
+		return nil, err
+	}
+	err := s.writeLocked(ctx, func(tx *sql.Tx) error {
+		if err := absent(ctx, tx, h.ID); err != nil {
+			return err
+		}
+		var (
+			parent     row
+			through    store.Seq
+			next, last int64
+			size       int64
+			fork       = o.ForkOf
+		)
+		if fork != nil {
+			var err error
+			if parent, err = liveByID(ctx, tx, fork.ID); err != nil {
+				if errors.Is(err, store.ErrNotFound) {
+					return store.Errorf(store.CodeNotFound, "fork parent %q", fork.ID)
+				}
+				return err
+			}
+			if fork.Through >= parent.sum.NextSeq {
+				return store.Errorf(store.CodeInvalidBoundary, "fork of %q through seq %d, which has %d records",
+					fork.ID, fork.Through, parent.sum.NextSeq)
+			}
+			through = fork.Through
+			inherited, err := selectRecords(ctx, tx, parent.uid, 0, int64(through)+1, true)
+			if err != nil {
+				return err
+			}
+			if len(inherited) != int(through)+1 || inherited[len(inherited)-1].Seq != through {
+				return store.Errorf(CodeCorrupt, "fork parent %q: %d records through seq %d, want %d below next seq %d",
+					fork.ID, len(inherited), through, int64(through)+1, parent.sum.NextSeq)
+			}
+			if err := store.CheckOpen(s.reg, inherited); err != nil {
+				return err
+			}
+			next = int64(len(inherited))
+			if ms := inherited[len(inherited)-1].Time; ms > 0 {
+				last = s.eventNanos(ms)
+			} else {
+				last = parent.last
+			}
+			for _, r := range inherited {
+				size += int64(len(r.Payload) + len(r.Cold))
+			}
+			h.ForkSource, h.ForkThrough, h.InheritedCount = fork.ID, through, len(inherited)
+		}
+		res, err := tx.ExecContext(ctx, `INSERT INTO sessions (id, created_at, cwd, origin, creator, fork_source,
+			fork_through, inherited_count, delegation_depth, preset, next_seq, lease_epoch, lease_holder, lease_pid,
+			lease_kind, lease_since, last_event_at, bytes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)`,
+			h.ID, h.CreatedAt.UnixNano(), h.Cwd, h.Origin, h.Creator, h.ForkSource, int64(h.ForkThrough),
+			h.InheritedCount, h.DelegationDepth, h.Preset, next, s.instance, s.pid, s.kind, since, last, size)
+		if err != nil {
+			return err
+		}
+		if uid, err = res.LastInsertId(); err != nil {
+			return err
+		}
+		if fork != nil {
+			_, err = tx.ExecContext(ctx, `INSERT INTO events (session, seq, time, type, pv, ignorable, surface, env, data, cold)
+				SELECT ?, seq, time, type, pv, ignorable, surface, env, data, cold FROM events
+				WHERE session = ? AND seq <= ?`, uid, parent.uid, int64(through))
+		}
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	// Registered before wmu is released: a Close that began meanwhile waits
+	// for wmu and then releases this lease.
+	w := &writer{reader: reader{s: s, id: h.ID, uid: uid, header: h}, epoch: 1}
+	s.register(w)
+	return w, nil
+}
+
+// absent refuses an id an active session holds.
+func absent(ctx context.Context, tx *sql.Tx, id string) error {
+	var n int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM sessions WHERE id = ?`, id).Scan(&n); err != nil {
+		return err
+	}
+	if n > 0 {
+		return store.Errorf(store.CodeExists, "session %q exists", id)
+	}
+	return nil
+}
+
+// OpenWrite implements store.Store. IfFree refuses any recorded holder: telling
+// a dead holder from a live one is the liveness check of the recovery stage.
+func (s *Store) OpenWrite(ctx context.Context, id string, o store.OpenOptions) (store.Writer, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	since := s.now().UnixNano()
+	var (
+		r     row
+		epoch uint64
+	)
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
+	if err := s.admit(); err != nil {
+		return nil, err
+	}
+	err := s.writeLocked(ctx, func(tx *sql.Tx) error {
+		var err error
+		if r, err = liveByID(ctx, tx, id); err != nil {
+			return err
+		}
+		if r.sum.Holder != nil && o.Takeover != store.Force {
+			return &store.OwnedError{ID: id, Holder: *r.sum.Holder}
+		}
+		recs, err := selectRecords(ctx, tx, r.uid, 0, -1, true)
+		if err != nil {
+			return err
+		}
+		if err := store.CheckOpen(s.reg, recs); err != nil {
+			return err
+		}
+		epoch = r.sum.LeaseEpoch + 1
+		_, err = tx.ExecContext(ctx, `UPDATE sessions SET lease_epoch = ?, lease_holder = ?, lease_pid = ?,
+			lease_kind = ?, lease_since = ? WHERE uid = ?`, int64(epoch), s.instance, s.pid, s.kind, since, r.uid)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	w := &writer{reader: reader{s: s, id: id, uid: r.uid, header: r.sum.Header}, epoch: epoch}
+	s.register(w)
+	return w, nil
+}
+
+// OpenRead implements store.Store.
+func (s *Store) OpenRead(ctx context.Context, id string) (store.Reader, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	var r row
+	err := s.read(ctx, func(tx *sql.Tx) error {
+		var err error
+		if r, err = liveByID(ctx, tx, id); err != nil {
+			return err
+		}
+		recs, err := selectRecords(ctx, tx, r.uid, 0, -1, true)
+		if err != nil {
+			return err
+		}
+		return store.CheckOpen(s.reg, recs)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &reader{s: s, id: id, uid: r.uid, header: r.sum.Header}, nil
+}
+
+// Stat implements store.Store.
+func (s *Store) Stat(ctx context.Context, id string) (store.Summary, error) {
+	if err := ctx.Err(); err != nil {
+		return store.Summary{}, err
+	}
+	var r row
+	err := s.read(ctx, func(tx *sql.Tx) error {
+		var err error
+		r, err = liveByID(ctx, tx, id)
+		return err
+	})
+	if err != nil {
+		return store.Summary{}, err
+	}
+	return r.sum, nil
+}
+
+// List implements store.Store: most recent first (LastEventAt, then CreatedAt,
+// then id), paged by a keyset cursor.
+func (s *Store) List(ctx context.Context, q store.Query) (store.Page, error) {
+	if err := ctx.Err(); err != nil {
+		return store.Page{}, err
+	}
+	limit := q.Limit
+	if limit <= 0 {
+		limit = defaultLimit
+	}
+	where := []string{"state = 'active'"}
+	var args []any
+	if q.Cwd != "" {
+		where, args = append(where, "cwd = ?"), append(args, q.Cwd)
+	}
+	if q.Creator != "" {
+		where, args = append(where, "creator = ?"), append(args, q.Creator)
+	}
+	if q.Cursor != "" {
+		c, err := parseCursor(q.Cursor)
+		if err != nil {
+			return store.Page{}, err
+		}
+		where = append(where, "(last_event_at < ? OR (last_event_at = ? AND (created_at < ? OR (created_at = ? AND id > ?))))")
+		args = append(args, c.last, c.last, c.created, c.created, c.id)
+	}
+	args = append(args, int64(limit)+1)
+	var rows []row
+	err := s.read(ctx, func(tx *sql.Tx) error {
+		rs, err := tx.QueryContext(ctx, `SELECT `+sessionCols+` FROM sessions WHERE `+strings.Join(where, " AND ")+`
+			ORDER BY last_event_at DESC, created_at DESC, id LIMIT ?`, args...)
+		if err != nil {
+			return err
+		}
+		defer rs.Close()
+		for rs.Next() {
+			r, err := scanRow(rs)
+			if err != nil {
+				return err
+			}
+			rows = append(rows, r)
+		}
+		return rs.Err()
+	})
+	if err != nil {
+		return store.Page{}, err
+	}
+	var page store.Page
+	for i, r := range rows {
+		if i == limit {
+			last := rows[limit-1]
+			page.Next = cursor{last: last.last, created: last.created, id: last.sum.Header.ID}.String()
+			break
+		}
+		page.Summaries = append(page.Summaries, r.sum)
+	}
+	return page, nil
+}
+
+// cursor is a List position: the sort key of the last summary returned.
+type cursor struct {
+	last, created int64
+	id            string
+}
+
+func (c cursor) String() string { return fmt.Sprintf("%d.%d.%s", c.last, c.created, c.id) }
+
+func parseCursor(v string) (cursor, error) {
+	parts := strings.SplitN(v, ".", 3)
+	if len(parts) == 3 {
+		last, err1 := strconv.ParseInt(parts[0], 10, 64)
+		created, err2 := strconv.ParseInt(parts[1], 10, 64)
+		if err1 == nil && err2 == nil {
+			return cursor{last: last, created: created, id: parts[2]}, nil
+		}
+	}
+	return cursor{}, store.Errorf(store.CodeInvalidBoundary, "list cursor %q is not one this store issued", v)
+}
+
+// Delete implements store.Store: the session, its events and its checkpoints
+// go in one transaction; a handle opened on it then reads session/deleted.
+func (s *Store) Delete(ctx context.Context, id string, _ store.DeleteOptions) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return s.write(ctx, func(tx *sql.Tx) error {
+		r, err := liveByID(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		if r.sum.Holder != nil {
+			return &store.OwnedError{ID: id, Holder: *r.sum.Holder}
+		}
+		uid := r.uid
+		for _, q := range []string{
+			`UPDATE sessions SET state = 'deleting' WHERE uid = ?`,
+			`DELETE FROM events WHERE session = ?`,
+			`DELETE FROM checkpoints WHERE session = ?`,
+			`DELETE FROM sessions WHERE uid = ?`,
+		} {
+			if _, err := tx.ExecContext(ctx, q, uid); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// Flush implements store.Store: it returns once every commit of this instance
+// is durable.
+func (s *Store) Flush(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return s.barrier(ctx)
+}
+
+// Seed stores a durable, unheld session holding recs as they are, without the
+// admission rule an Append applies: it stands in for rows another build wrote
+// (storetest.Seeder). It is for fixtures.
+func (s *Store) Seed(ctx context.Context, h store.Header, recs []store.Record) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if h.ID == "" {
+		return store.Errorf(store.CodeInvalidBatch, "a session needs an id")
+	}
+	if h.CreatedAt.IsZero() {
+		h.CreatedAt = s.now()
+	}
+	var last int64
+	if n := len(recs); n > 0 && recs[n-1].Time > 0 {
+		last = s.eventNanos(recs[n-1].Time)
+	}
+	return s.write(ctx, func(tx *sql.Tx) error {
+		if err := absent(ctx, tx, h.ID); err != nil {
+			return err
+		}
+		res, err := tx.ExecContext(ctx, `INSERT INTO sessions (id, created_at, cwd, origin, creator, fork_source,
+			fork_through, inherited_count, delegation_depth, preset, next_seq, last_event_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			h.ID, h.CreatedAt.UnixNano(), h.Cwd, h.Origin, h.Creator, h.ForkSource, int64(h.ForkThrough),
+			h.InheritedCount, h.DelegationDepth, h.Preset, len(recs), last)
+		if err != nil {
+			return err
+		}
+		uid, err := res.LastInsertId()
+		if err != nil {
+			return err
+		}
+		size, err := insertRecords(ctx, tx, uid, recs)
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE sessions SET bytes = ? WHERE uid = ?`, size, uid)
+		return err
+	})
+}

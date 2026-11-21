@@ -70,6 +70,7 @@ var Rules = []Rule{
 	{HarnessModule, "cmd/dsh embeds the zone database through time/tzdata (DH-T-TEMPORAL-5)", mustImport(HarnessModule+"/cmd/dsh", "time/tzdata")},
 	{HarnessModule, "only internal/boot/yamlx imports the YAML module (DH-T-YAML-1)", onlyImporter(YAMLModule, YAMLXPackage)},
 	{HarnessModule, "only internal/boot/expr imports the expression module (DH-D-LOADER-5)", onlyImporter(ExprModule, ExprPackage)},
+	{HarnessModule, "only internal/session/store/sqlite imports the SQLite driver (DH-D-STORE-2, DH-ADR-SQLITE-1)", onlyImporter(SQLiteModule, SQLitePackage)},
 	{HarnessModule, "internal/session/event imports no harness package but vocab and schema (DH-D-SESSION-1)", importsOnly(EventPackage, VocabPackage, SchemaPackage)},
 	{HarnessModule, "internal/session/scope imports nothing of the modules but cordis (DH-D-SESSION-8)", importsOnly(ScopePackage, CordisPackage)},
 	{HarnessModule, "internal/session/store imports no harness package but schema and event (DH-D-STORE-1)", importsOnly(StorePackage, SchemaPackage, EventPackage)},
@@ -98,6 +99,7 @@ const (
 	StorePackage     = HarnessModule + "/internal/session/store"
 	MemstorePackage  = StorePackage + "/memstore"
 	StoretestPackage = StorePackage + "/storetest"
+	SQLitePackage    = StorePackage + "/sqlite"
 	SurfacePackage   = HarnessModule + "/internal/session/surface"
 	SessionPackage   = HarnessModule + "/internal/session"
 	ViewsPackage     = SessionPackage + "/views"
@@ -117,8 +119,9 @@ const (
 
 // Third-party modules with a single importer.
 const (
-	YAMLModule = "go.yaml.in/yaml/v4"
-	ExprModule = "github.com/expr-lang/expr"
+	YAMLModule   = "go.yaml.in/yaml/v4"
+	ExprModule   = "github.com/expr-lang/expr"
+	SQLiteModule = "modernc.org/sqlite"
 )
 
 // onlyImporter fails every harness package other than owner that directly imports a

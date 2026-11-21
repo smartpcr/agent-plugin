@@ -44,14 +44,31 @@ require (
 	// File identity, locks, POSIX rename and filesystem type for internal/util/fsx
 	// (DH-D-FS-1): docs/harness/libs/node-fs-path-os-zlib.md; BSD-3-Clause.
 	golang.org/x/sys v0.50.0
+	// The pinned libc translation the SQLite driver is generated against
+	// (DH-ADR-SQLITE-1): modernc.org/sqlite builds only with the exact libc it was
+	// transpiled with, so the pair is pinned together and moves only together after a
+	// new F-2 measurement (docs/stories/harness-DSH/evidence/DH-S-7.md); BSD-3-Clause.
+	modernc.org/libc v1.80.1 // indirect
+	// The session store's engine, imported only by internal/session/store/sqlite
+	// (DH-D-STORE-2): chosen by docs/harness/libs/sqlite.md DH-ADR-SQLITE-1 as pure
+	// Go, so the harness stays a single static binary with no cgo and no system
+	// SQLite (NG-4); BSD-3-Clause, requires only its modernc.org runtime (RM-10).
+	// Measured by TestBudgetStoreAppend before anything was built on it (fact F-2).
+	modernc.org/sqlite v1.62.0
 )
 
 require (
 	github.com/cucumber/gherkin/go/v42 v42.0.0 // indirect
 	github.com/cucumber/messages/go/v34 v34.2.0 // indirect
+	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/hashicorp/go-immutable-radix v1.3.1 // indirect
 	github.com/hashicorp/go-memdb v1.3.5 // indirect
 	github.com/hashicorp/golang-lru v0.5.4 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
+	github.com/mattn/go-isatty v0.0.24 // indirect
+	github.com/ncruces/go-strftime v1.1.0 // indirect
+	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+	modernc.org/mathutil v1.7.1 // indirect
+	modernc.org/memory v1.12.1 // indirect
 )
