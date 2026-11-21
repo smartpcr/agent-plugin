@@ -188,7 +188,12 @@ func block(b vocab.Block) (content, bool, error) {
 		}
 		return content{Type: "thinking", Thinking: str(r.Text), Signature: r.Signature}, true, nil
 	case vocab.KindToolUse:
-		return content{Type: "tool_use", ID: b.ToolUse.ID, Name: b.ToolUse.Name, Input: b.ToolUse.Args}, true, nil
+		// The Messages API requires tool_use.input, so a call without arguments sends {}.
+		in := b.ToolUse.Args
+		if len(bytes.TrimSpace(in)) == 0 {
+			in = json.RawMessage("{}")
+		}
+		return content{Type: "tool_use", ID: b.ToolUse.ID, Name: b.ToolUse.Name, Input: in}, true, nil
 	case vocab.KindToolResult:
 		r := b.ToolResult
 		parts := []content{}
