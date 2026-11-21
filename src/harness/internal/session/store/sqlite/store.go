@@ -59,6 +59,10 @@ func (s *Store) Create(ctx context.Context, h store.Header, o store.CreateOption
 			if err != nil {
 				return err
 			}
+			if len(inherited) != int(through)+1 || inherited[len(inherited)-1].Seq != through {
+				return store.Errorf(CodeCorrupt, "fork parent %q: %d records through seq %d, want %d below next seq %d",
+					fork.ID, len(inherited), through, int64(through)+1, parent.sum.NextSeq)
+			}
 			if err := store.CheckOpen(s.reg, inherited); err != nil {
 				return err
 			}
