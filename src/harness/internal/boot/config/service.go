@@ -11,8 +11,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"slices"
+	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -121,22 +122,25 @@ type ServiceOptions struct {
 // running tree has applied it and settled. The tree is applied with no lock of the
 // service held, so a loader listener may call any method, and every Reload and
 // Apply returns only once its own tree, or a newer accepted one, has settled or
-// failed (settle). The loader tells its listeners from inside ApplyLayers, once the
-// tree has settled; the service hears that first (a lifecycle observer registered
-// by NewService and a Reloaded listener prepended on Context) and makes the applied
-// snapshot Current then, so a listener sees the tree it is told about (published).
-// Listeners are told outside every lock.
+// failed (settle). The loader tells its listeners from inside ApplyLayers, on the
+// goroutine that called it, once the tree has settled; the service hears that
+// first (a lifecycle observer registered by NewService and a Reloaded listener
+// prepended on Context) and makes the snapshot that goroutine is applying Current
+// then, so a listener sees the tree it is told about (published). An application
+// starts only once every other one in flight has settled, so reconciliations never
+// overlap and each publication belongs to exactly one application. Listeners are
+// told outside every lock.
 type Service struct {
 	opts ServiceOptions
 
 	op sync.Mutex
 
 	mu       sync.Mutex
-	current  *Snapshot   // applied by the running tree and settled
-	desired  *Snapshot   // accepted: validated and on disk
-	seq      uint64      // the accept order of snapshots
-	started  uint64      // the newest seq a settle has started applying
-	inflight []*Snapshot // being applied by a settle, in start order
+	turn     *sync.Cond // on mu: an application settled or ended
+	current  *Snapshot  // applied by the running tree and settled
+	desired  *Snapshot  // accepted: validated and on disk
+	seq      uint64     // the accept order of snapshots
+	apps     map[uint64][]*application
 	rejected string
 	closed   bool
 
@@ -173,7 +177,8 @@ func NewService(opts ServiceOptions) (*Service, error) {
 	if opts.Stack == nil {
 		return nil, errors.New("config: ServiceOptions.Stack is required")
 	}
-	s := &Service{opts: opts, listeners: map[int]func(error){}}
+	s := &Service{opts: opts, listeners: map[int]func(error){}, apps: map[uint64][]*application{}}
+	s.turn = sync.NewCond(&s.mu)
 	read := s.reader()
 	if opts.Baseline != nil {
 		read = baselineReader(opts.Baseline, read)
@@ -404,103 +409,112 @@ func (s *Service) adopt(snap *Snapshot) func() error {
 	return s.settle
 }
 
+// application is one settle's ApplyLayers of snap; published once the loader has
+// told of its settled reconciliation.
+type application struct {
+	snap      *Snapshot
+	published bool
+}
+
 // settle applies the latest accepted snapshot to the running tree and returns once
 // it has settled, so a caller's success means its tree (or a newer accepted one,
 // which holds every earlier write) is what runs. No lock of the service is held
-// while the loader applies, because the loader publishes its Reloaded notice from
-// inside ApplyLayers: a listener may then reload or edit, and its own settle applies
-// its tree nested in the outer one. A concurrent settle is not lost behind a stuck
-// one: the loader serialises the reconciliations and each ApplyLayers waits for
-// every fiber, so it returns only once the stuck application has settled too. When
-// a newer snapshot was accepted or started applying meanwhile, the one applied may
-// have been reconciled after it, so the latest is applied again before returning.
-// A snapshot the loader refused stops being Desired, so the next Watch poll tries
-// the files again.
+// while the loader applies, because the loader publishes from inside ApplyLayers:
+// a listener may then reload or edit, and its settle applies its tree nested in the
+// outer one, on the same goroutine. An application starts only once every
+// application of another goroutine has published (admits): its reconciliation is
+// over, so reconciliations never overlap or reorder, and an edit made while
+// another application is stuck waits for it truthfully instead of being reported
+// early. When a newer snapshot was accepted meanwhile it is applied before
+// returning. A snapshot the loader refused stops being Desired, so the next Watch
+// poll tries the files again.
 func (s *Service) settle() error {
+	g := goid()
 	for {
 		s.mu.Lock()
+		for !s.admits(g) {
+			s.turn.Wait()
+		}
 		target := s.desired
-		s.started = max(s.started, target.seq)
-		s.inflight = append(s.inflight, target)
+		s.apps[g] = append(s.apps[g], &application{snap: target})
 		s.mu.Unlock()
 		err := s.opts.Loader.ApplyLayers(target.Layers)
 		s.mu.Lock()
-		if i := slices.Index(s.inflight, target); i >= 0 {
-			s.inflight = slices.Delete(s.inflight, i, i+1)
+		if stack := s.apps[g][:len(s.apps[g])-1]; len(stack) > 0 {
+			s.apps[g] = stack
+		} else {
+			delete(s.apps, g)
 		}
-		if err != nil {
-			if s.desired.seq > target.seq {
-				s.mu.Unlock()
-				continue
-			}
-			s.desired = s.current
-			s.mu.Unlock()
-			return herr.Wrap(ReasonRejected, err, "reload not applied")
-		}
-		if s.desired.seq > target.seq || s.started > target.seq {
-			s.mu.Unlock()
-			continue
-		}
-		if target.seq > s.current.seq {
+		s.turn.Broadcast()
+		if err == nil && target.seq > s.current.seq {
 			s.current = target
 		}
+		switch {
+		case s.desired == s.current && s.current.seq >= target.seq:
+			s.mu.Unlock()
+			return nil
+		case s.desired.seq > target.seq:
+			s.mu.Unlock()
+			continue
+		case err == nil:
+			s.mu.Unlock()
+			return nil
+		}
+		s.desired = s.current
 		s.mu.Unlock()
-		return nil
+		return herr.Wrap(ReasonRejected, err, "reload not applied")
 	}
 }
 
-// published runs when the loader tells its listeners of a settled reconciliation,
-// before the listeners registered after the service: it makes the snapshot that
-// reconciliation applied Current, unless a newer one already is. It is the one
-// being applied, or, when several settles are applying at once, the one whose tree
-// the loader now holds (the newest when none matches). A reconciliation no settle
-// started (a restart) changes nothing.
-func (s *Service) published() {
-	s.mu.Lock()
-	inflight := slices.Clone(s.inflight)
-	s.mu.Unlock()
-	if len(inflight) == 0 {
-		return
-	}
-	snap := inflight[len(inflight)-1]
-	if slices.ContainsFunc(inflight, func(o *Snapshot) bool { return o != snap }) {
-		running := s.opts.Loader.Snapshot()
-		for i := len(inflight) - 1; i >= 0; i-- {
-			if sameTree(running, inflight[i].Report.Tree) {
-				snap = inflight[i]
-				break
-			}
-		}
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if snap.seq > s.current.seq {
-		s.current = snap
-	}
-}
-
-// sameTree reports whether the loader's tree running is the composed tree, an
-// anonymous composed entry matching whatever id the loader gave it.
-func sameTree(running, composed []loader.EntryOptions) bool {
-	if len(running) != len(composed) {
-		return false
-	}
-	for i, r := range running {
-		c := composed[i]
-		if c.DisabledExpr != r.DisabledExpr || !sameTree(r.Children, c.Children) {
-			return false
-		}
-		if c.ID == "" {
-			c.ID = r.ID
-		}
-		r.Children, c.Children = nil, nil
-		rj, rerr := json.Marshal(r)
-		cj, cerr := json.Marshal(c)
-		if rerr != nil || cerr != nil || !bytes.Equal(rj, cj) {
+// admits reports whether goroutine g may start an application: every other
+// goroutine's innermost application has published. g's own (a listener's nested
+// edit) never holds it back, or the listener would wait for itself. s.mu is held.
+func (s *Service) admits(g uint64) bool {
+	for other, stack := range s.apps {
+		if other != g && !stack[len(stack)-1].published {
 			return false
 		}
 	}
 	return true
+}
+
+// published runs when the loader tells of a settled reconciliation, before the
+// listeners registered after the service. The loader tells on the goroutine whose
+// ApplyLayers reconciled, so the reconciliation is that goroutine's innermost
+// application: its snapshot becomes Current, unless a newer one already is, and
+// applications of other goroutines may start. A notice on a goroutine applying
+// nothing (a restart, another goroutine's apply) changes nothing; nor does a second
+// notice of the same application.
+func (s *Service) published() {
+	g := goid()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	stack := s.apps[g]
+	if len(stack) == 0 {
+		return
+	}
+	app := stack[len(stack)-1]
+	if app.published {
+		return
+	}
+	app.published = true
+	if app.snap.seq > s.current.seq {
+		s.current = app.snap
+	}
+	s.turn.Broadcast()
+}
+
+// goid is the calling goroutine's id, read from its stack header ("goroutine N
+// [..."). Go has no other way to name the goroutine a synchronous callback runs on,
+// which is what ties a loader publication to the ApplyLayers that made it.
+func goid() uint64 {
+	var buf [64]byte
+	b := bytes.TrimPrefix(buf[:runtime.Stack(buf[:], false)], []byte("goroutine "))
+	if i := bytes.IndexByte(b, ' '); i >= 0 {
+		b = b[:i]
+	}
+	id, _ := strconv.ParseUint(string(b), 10, 64)
+	return id
 }
 
 // Watch reloads whenever a layer file read changes, polling every interval, until

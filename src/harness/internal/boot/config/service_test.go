@@ -59,6 +59,9 @@ type probes struct {
 	starts atomic.Int64
 	// gate holds the cleanup of every x.hold until it is closed.
 	gate chan struct{}
+	// build holds the constructor of every x.slow until it is closed; building is
+	// told each time one starts.
+	build, building chan struct{}
 }
 
 // literals is an evaluator of three sources: true and false are booleans, word is a
@@ -79,7 +82,7 @@ func (literals) Eval(source string, _ loader.Scope) (any, error) {
 
 func newProbes(t *testing.T) *probes {
 	t.Helper()
-	p := &probes{gate: make(chan struct{})}
+	p := &probes{gate: make(chan struct{}), build: make(chan struct{}), building: make(chan struct{}, 8)}
 	component := cordis.Define("x.probe", func(*cordis.Context, probeConfig) error {
 		p.starts.Add(1)
 		return nil
@@ -94,10 +97,16 @@ func newProbes(t *testing.T) *probes {
 		})
 		return err
 	})
+	slow := cordis.Define("x.slow", func(*cordis.Context, struct{}) error {
+		p.building <- struct{}{}
+		<-p.build
+		return nil
+	})
 	cat, err := catalog.Build([]catalog.Item{
 		{Name: "x.probe", Component: component, Config: reflect.TypeFor[probeConfig]()},
 		{Name: "x.strict", Component: strict, Config: reflect.TypeFor[strictConfig]()},
 		{Name: "x.hold", Component: hold, Config: reflect.TypeFor[struct{}]()},
+		{Name: "x.slow", Component: slow, Config: reflect.TypeFor[struct{}]()},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1066,5 +1075,110 @@ func TestReloadListenerMayEditValidly(t *testing.T) {
 	}
 	if cs.Pending() {
 		t.Error("the service reports a pending tree after both settled")
+	}
+}
+
+// Reload A is paused in a consumer's lifecycle callback while edit B, made from
+// another goroutine, inserts a component whose constructor blocks. When A resumes
+// and emits Reloaded, B must not become Current: B stays pending, and both calls
+// wait, until B's constructor completes.
+func TestOverlappingApplicationStaysPendingUntilItSettles(t *testing.T) {
+	h, p := newHome(t), newProbes(t)
+	root, ldr, cs := bootRoot(t, h, p, config.ServiceOptions{})
+	var wg sync.WaitGroup
+	t.Cleanup(wg.Wait)
+	var built sync.Once
+	finish := func() { built.Do(func() { close(p.build) }) }
+	t.Cleanup(finish)
+	paused, resume := make(chan string, 1), make(chan struct{})
+	var resumed sync.Once
+	t.Cleanup(func() { resumed.Do(func() { close(resume) }) })
+	var first, told atomic.Bool
+	var pendingAfter atomic.Value
+	remove := ldr.OnLifecycle(func(ev loader.LifecycleEvent) {
+		if ev.Kind != loader.EntryUpdated || !first.CompareAndSwap(false, true) {
+			return
+		}
+		paused <- cs.Current().Revision
+		<-resume
+	})
+	t.Cleanup(remove)
+	// A's Reloaded notice comes after its lifecycle events, once A resumes; the
+	// service hears it before this listener
+	if _, err := loader.Reloaded.On(root, func(_ *cordis.Context, _ loader.ReloadNotice) error {
+		if told.CompareAndSwap(false, true) {
+			pendingAfter.Store(cs.Pending())
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	start := func(fn func() error) chan error {
+		done := make(chan error, 1)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			done <- fn()
+		}()
+		return done
+	}
+	within := func(what string, ch <-chan struct{}) {
+		t.Helper()
+		select {
+		case <-ch:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("timed out waiting for %s", what)
+		}
+	}
+
+	write(t, profile.UserLayerPath(h.root), "- id: probe\n  merge:\n    level: warn\n")
+	reload := start(cs.Reload)
+	var revA string
+	select {
+	case revA = <-paused:
+	case <-time.After(10 * time.Second):
+		t.Fatal("reload A was never published")
+	}
+	edit := start(func() error {
+		_, err := cs.Apply(context.Background(), config.Edit{Revision: cs.Revision(), Ops: []loader.Op{{Kind: loader.OpInsert, Entries: []loader.EntryOptions{{ID: "slow", Name: "x.slow"}}}}})
+		return err
+	})
+	within("B's constructor to start", p.building)
+	revB := cs.Revision()
+	if revB == revA {
+		t.Fatal("edit B was not accepted")
+	}
+	resumed.Do(func() { close(resume) })
+
+	select {
+	case err := <-reload:
+		t.Fatalf("reload A returned %v while the newer B was still constructing", err)
+	case err := <-edit:
+		t.Fatalf("edit B returned %v while its constructor was blocked", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if v, _ := pendingAfter.Load().(bool); !v {
+		t.Error("A's resumed publication reported B effective while B's constructor was blocked")
+	}
+	if !cs.Pending() || cs.Current().Revision != revA {
+		t.Errorf("Current = %s, Pending = %v; want A (%s) current and B (%s) pending", short(cs.Current().Revision), cs.Pending(), short(revA), short(revB))
+	}
+
+	finish()
+	for what, done := range map[string]chan error{"reload": reload, "edit": edit} {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("%s: %v", what, err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("the %s never returned after B's constructor finished", what)
+		}
+	}
+	if cs.Pending() || cs.Current().Revision != revB {
+		t.Errorf("Current = %s, Pending = %v after B settled; want B (%s)", short(cs.Current().Revision), cs.Pending(), short(revB))
+	}
+	if ldr.Find("slow") == nil {
+		t.Error("slow is not in the running tree")
 	}
 }
