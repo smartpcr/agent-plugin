@@ -115,6 +115,10 @@ func Before(ctx context.Context, policy Policy, s Session, p Point) error {
 	if err == nil {
 		err = policy.Before(ctx, s, p)
 	}
+	// A cancellation that arrived during a successful flush still stops the work.
+	if err == nil {
+		err = ctx.Err()
+	}
 	if err == nil {
 		return nil
 	}

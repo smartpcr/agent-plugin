@@ -152,6 +152,38 @@ func TestCancelledBeforeTheBodyIsAbortedBeforeStart(t *testing.T) {
 	}
 }
 
+// cancelling is a session whose Flush succeeds but cancels the checkpoint's
+// context while it runs, as a turn cancelled during the flush would.
+type cancelling struct {
+	cancel  context.CancelFunc
+	flushes int
+}
+
+func (c *cancelling) Flush(context.Context) (event.Offset, error) {
+	c.flushes++
+	c.cancel()
+	return 0, nil
+}
+
+// session-store.md DH-D-STORE-4: a cancellation that arrives during the flush
+// yields tools/aborted-before-start, and the body never runs.
+func TestCancelledDuringTheFlushIsAbortedBeforeStart(t *testing.T) {
+	ctx, cancel := context.WithCancel(bg)
+	defer cancel()
+	s := &cancelling{cancel: cancel}
+	var calls int
+	err := checkpoint.RunTool(ctx, nil, s, false, func(context.Context) error { calls++; return nil })
+	if s.flushes != 1 {
+		t.Fatalf("flushes = %d, want 1", s.flushes)
+	}
+	if calls != 0 {
+		t.Fatalf("the body ran %d times after a cancellation during its checkpoint", calls)
+	}
+	if !errors.Is(err, checkpoint.ErrAbortedBeforeStart) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want tools/aborted-before-start wrapping the cancellation", err)
+	}
+}
+
 type counting struct{ points []checkpoint.Point }
 
 func (c *counting) Before(_ context.Context, _ checkpoint.Session, p checkpoint.Point) error {

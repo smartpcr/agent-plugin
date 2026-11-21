@@ -185,7 +185,7 @@ type Store struct {
 
 	wdb   *sql.DB
 	rdb   *sql.DB
-	wmu   sync.Mutex // guards wconn and broken; held across every lease change
+	wmu   ctxMutex // guards wconn and broken; held across every lease change
 	wconn *sql.Conn
 	// broken is set when a rollback failed: the outcome of that transaction is
 	// unknown, so the store refuses further work until reopened.
@@ -206,6 +206,35 @@ type Store struct {
 }
 
 var _ store.Store = (*Store)(nil)
+
+// ctxMutex is a mutex whose acquisition can also give up when a context ends, so
+// Close can bound its wait for a write in flight (one that may itself wait up to
+// the busy timeout on another process's lock). Its zero value is unlocked.
+type ctxMutex struct {
+	once sync.Once
+	ch   chan struct{}
+}
+
+func (m *ctxMutex) sem() chan struct{} {
+	m.once.Do(func() { m.ch = make(chan struct{}, 1) })
+	return m.ch
+}
+
+// Lock acquires m.
+func (m *ctxMutex) Lock() { m.sem() <- struct{}{} }
+
+// Unlock releases m.
+func (m *ctxMutex) Unlock() { <-m.sem() }
+
+// LockContext acquires m, or returns ctx's error when ctx ends first.
+func (m *ctxMutex) LockContext(ctx context.Context) error {
+	select {
+	case m.sem() <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
 
 // OpenHome opens the database of the harness home l (<home>/dsh.db), with the
 // liveness locks in <home>/run.
@@ -501,10 +530,11 @@ func (s *Store) Instance() string { return s.instance }
 // Close releases the leases this instance holds, unregisters it, checkpoints
 // and truncates the write-ahead log, closes both pools and releases its liveness
 // lock. New handles are refused from its start; writers still open fail with
-// session/closed afterwards. The final barrier and the releases are bounded by
-// the shutdown flush timeout (DH-ADR-STORE-3), not by ctx, so a cancelled caller
-// still drains; a release that does not finish in that bound is reported with
-// the sessions still held. When a release fails (a busy database, say) nothing
+// session/closed afterwards. The wait for a write in flight, the final barrier
+// and the releases are bounded by the shutdown flush timeout (DH-ADR-STORE-3),
+// not by ctx, so a cancelled caller still drains; a wait or release that does
+// not finish in that bound is reported with the sessions still held, and nothing
+// is torn down under the write in flight. When a release fails (a busy database, say) nothing
 // is closed and the error is returned: Close may be called again and retries
 // the leases still held. Once it succeeded it is idempotent. Concurrent calls
 // run one at a time; a call that waited returns nil when the one before it
@@ -523,7 +553,13 @@ func (s *Store) Close(ctx context.Context) error {
 	defer cancel()
 	var errs []error
 	retry := false
-	s.wmu.Lock()
+	// The wait for a write in flight is bounded too. When it outlasts the bound
+	// nothing is torn down under that write: the leases stay held and Close may
+	// be called again.
+	if err := s.wmu.LockContext(ctx); err != nil {
+		return errors.Join(s.unreleased(), store.Errorf(CodeBusy,
+			"shutdown: a write in flight did not finish within %s: %v", s.shutdown, err))
+	}
 	if s.wconn != nil && s.broken == nil {
 		for _, w := range s.snapshot() {
 			if err := w.closeLocked(ctx); err != nil {

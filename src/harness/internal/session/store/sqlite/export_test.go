@@ -34,6 +34,17 @@ func StaleWriter(ctx context.Context, s *Store, id, holder string, epoch uint64)
 // LockPath is the liveness lock file of instance under s's run directory.
 func LockPath(s *Store, instance string) string { return s.lockPath(instance) }
 
+// WriteHeld reports whether a write (or a lease change) holds s's writer mutex.
+func WriteHeld(s *Store) bool {
+	select {
+	case s.wmu.sem() <- struct{}{}:
+		s.wmu.Unlock()
+		return false
+	default:
+		return true
+	}
+}
+
 // Synchronous is PRAGMA synchronous on the write connection, the one every
 // commit runs on (2: FULL).
 func (s *Store) Synchronous(ctx context.Context) (int64, error) {
