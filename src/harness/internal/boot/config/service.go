@@ -109,25 +109,24 @@ type ServiceOptions struct {
 // fiber's own candidate config with the tree's hooks (DH-D-CORDIS-5). A rejected
 // candidate changes nothing: no file, no fiber.
 //
-// Reloads and edits are read, checked and written one at a time (op); the
-// effective state has its own lock (mu), held only to read or swap it. The new tree
-// is applied to the running loader after both are released, by one drain at a time
-// (amu), and listeners are told outside every lock, so a listener may call any
-// method.
+// Reloads and edits are read, checked and written one at a time (op). A candidate
+// that validates is accepted (Desired) at once and becomes Current only once the
+// running tree has applied it and settled. The tree is applied with no lock of the
+// service held, so a loader listener may call any method, and every Reload and
+// Apply returns only once its own tree, or a newer accepted one, has settled or
+// failed (settle). Listeners are told outside every lock.
 type Service struct {
 	opts ServiceOptions
 
 	op sync.Mutex
 
 	mu       sync.Mutex
-	current  *Snapshot
-	applied  *Snapshot // the last snapshot the running tree applied
+	current  *Snapshot // applied by the running tree and settled
+	desired  *Snapshot // accepted: validated and on disk
+	seq      uint64    // the accept order of snapshots
+	started  uint64    // the newest seq a settle has started applying
 	rejected string
 	closed   bool
-
-	amu      sync.Mutex
-	want     *Snapshot // the snapshot queued for the running tree
-	applying bool      // a drain is applying
 
 	lmu       sync.Mutex
 	listeners map[int]func(error)
@@ -143,6 +142,7 @@ type Snapshot struct {
 
 	files map[string][]byte
 	docs  map[string]*loader.LayerDocument
+	seq   uint64
 }
 
 // Writable returns the path of the writable layer, or "".
@@ -170,7 +170,7 @@ func NewService(opts ServiceOptions) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	s.current, s.applied = snap, snap
+	s.current, s.desired = snap, snap
 	return s, nil
 }
 
@@ -191,15 +191,32 @@ func (s *Service) stopping() error {
 	return nil
 }
 
-// Current is the effective snapshot: the last one read that validated.
+// Current is the effective snapshot: the last accepted one the running tree has
+// applied and settled (without a running tree, the last accepted one).
 func (s *Service) Current() *Snapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.current
 }
 
-// Revision is the effective snapshot's revision.
-func (s *Service) Revision() string { return s.Current().Revision }
+// Desired is the last snapshot accepted: validated and on disk. It differs from
+// Current while the running tree is applying it.
+func (s *Service) Desired() *Snapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.desired
+}
+
+// Pending reports whether an accepted snapshot is not yet effective.
+func (s *Service) Pending() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.desired != s.current
+}
+
+// Revision is the accepted snapshot's revision: what the layers on disk were when
+// the service last read them, and what an edit is made against.
+func (s *Service) Revision() string { return s.Desired().Revision }
 
 // Effective is the config the entry's component runs with, as JSON: what its
 // running fiber resolved (component defaults applied, expressions evaluated).
@@ -345,66 +362,61 @@ func (s *Service) reject(revision string, err error) func() error {
 	}
 }
 
-// adopt makes the validated snap effective (Current) and queues it for the running
-// tree; the caller holds op, so snapshots are queued in the order they were read.
-// It returns the application, which the caller runs once op is released: the
-// loader publishes its lifecycle events and Reloaded notice inside ApplyLayers, so
-// a listener then sees snap as Current and may reload or edit without deadlocking.
+// adopt accepts the validated snap (Desired); the caller holds op, so snapshots
+// are accepted in the order they were read. It returns the application, which the
+// caller runs once op is released (settle). Without a running tree snap is
+// effective at once.
 func (s *Service) adopt(snap *Snapshot) func() error {
 	s.mu.Lock()
-	s.current, s.rejected = snap, ""
-	s.mu.Unlock()
+	defer s.mu.Unlock()
+	s.seq++
+	snap.seq = s.seq
+	s.desired, s.rejected = snap, ""
 	if s.opts.Loader == nil {
+		s.current = snap
 		return func() error { return nil }
 	}
-	s.amu.Lock()
-	s.want = snap
-	s.amu.Unlock()
-	return func() error { return s.drain(snap) }
+	return s.settle
 }
 
-// drain applies the latest queued snapshot to the running tree until none is
-// queued, one ApplyLayers at a time. A call made while another drain runs (a
-// listener reloading from a notice of that drain, or a concurrent edit) does not
-// wait: the running drain applies its snapshot right after its own, so a
-// reentrant call never deadlocks and a superseded snapshot is never applied after
-// a newer one. It returns the error of applying own, nil when another drain
-// applied it or a newer snapshot superseded it. A snapshot the loader refused
-// stops being Current, so the next Watch poll tries the files again, and the
-// listeners are told when it was not own.
-func (s *Service) drain(own *Snapshot) error {
-	s.amu.Lock()
-	if s.applying {
-		s.amu.Unlock()
-		return nil
-	}
-	s.applying = true
-	s.amu.Unlock()
-	var ownErr error
+// settle applies the latest accepted snapshot to the running tree and returns once
+// it has settled, so a caller's success means its tree (or a newer accepted one,
+// which holds every earlier write) is what runs. No lock of the service is held
+// while the loader applies, because the loader publishes its Reloaded notice from
+// inside ApplyLayers: a listener may then reload or edit, and its own settle applies
+// its tree nested in the outer one. A concurrent settle is not lost behind a stuck
+// one: the loader serialises the reconciliations and each ApplyLayers waits for
+// every fiber, so it returns only once the stuck application has settled too. When
+// a newer snapshot was accepted or started applying meanwhile, the one applied may
+// have been reconciled after it, so the latest is applied again before returning.
+// A snapshot the loader refused stops being Desired, so the next Watch poll tries
+// the files again.
+func (s *Service) settle() error {
 	for {
-		s.amu.Lock()
-		snap := s.want
-		s.want = nil
-		if snap == nil {
-			s.applying = false
-			s.amu.Unlock()
-			return ownErr
-		}
-		s.amu.Unlock()
-		err := s.opts.Loader.ApplyLayers(snap.Layers)
 		s.mu.Lock()
-		if err == nil {
-			s.applied = snap
-		} else if s.current == snap {
-			s.current = s.applied
+		target := s.desired
+		s.started = max(s.started, target.seq)
+		s.mu.Unlock()
+		err := s.opts.Loader.ApplyLayers(target.Layers)
+		s.mu.Lock()
+		if err != nil {
+			if s.desired.seq > target.seq {
+				s.mu.Unlock()
+				continue
+			}
+			s.desired = s.current
+			s.mu.Unlock()
+			return herr.Wrap(ReasonRejected, err, "reload not applied")
+		}
+		if s.desired.seq > target.seq || s.started > target.seq {
+			s.mu.Unlock()
+			continue
+		}
+		if target.seq > s.current.seq {
+			s.current = target
 		}
 		s.mu.Unlock()
-		switch {
-		case snap == own:
-			ownErr = err
-		case err != nil:
-			s.notify(herr.Wrap(ReasonRejected, err, "reload not applied"))
-		}
+		return nil
 	}
 }
 
@@ -423,7 +435,7 @@ func (s *Service) Watch(ctx context.Context, interval time.Duration) {
 		if s.stopping() != nil {
 			return
 		}
-		cur := s.Current()
+		cur := s.Desired()
 		if digest(readAll(cur.files, s.reader())) != cur.Revision {
 			_ = s.Reload()
 		}
@@ -569,8 +581,9 @@ func opFields(op loader.Op) []string {
 // layers, refuses a stale revision, an edit a higher layer shadows (ReasonShadowed)
 // and a computed field without Overwrite, checks the candidate, writes the writable
 // layer (keeping its comments) and applies the new tree. A refused or rejected edit
-// writes nothing. It returns the new revision; the new tree is applied after every
-// lock of the service is released (see drain).
+// writes nothing. It returns the new revision once the running tree has applied
+// it, or a newer accepted tree, and settled; the tree is applied after every lock
+// of the service is released (see settle).
 func (s *Service) Apply(ctx context.Context, edit Edit) (string, error) {
 	s.op.Lock()
 	then, rev, err := s.apply(ctx, edit)

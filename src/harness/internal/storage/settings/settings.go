@@ -63,7 +63,8 @@ type Entry struct {
 // Form is the live settings: the effective values, those the running tree was
 // built from, and the revision of the layers on disk an edit is made against. When
 // the files on disk differ from the effective ones (a change saved but not yet
-// reloaded, or rejected), Pending is set and Issues are what the disk's layers fail.
+// reloaded, still being applied, or rejected), Pending is set and Issues are what
+// the disk's layers fail.
 type Form struct {
 	Revision string         `json:"revision"`
 	Entries  []Entry        `json:"entries"`

@@ -32,8 +32,10 @@ type CheckOptions struct {
 	Docs map[string]*loader.LayerDocument
 	// Required are entry ids that must stay present and enabled
 	// (DH-ADR-BOOT-6): a composition that lacks one (an operation removed it or its
-	// group) or disables it or an enclosing group, by a literal or an expression,
-	// has a static issue, placed at the operation that did it.
+	// group) or disables it or an enclosing group has a static issue, placed at the
+	// operation that did it. A disabled expression is evaluated with Evaluator, as
+	// the load would: one that yields true, fails, yields no boolean or has no
+	// evaluator to run it disables; one that yields false does not.
 	Required []string
 }
 
@@ -79,40 +81,43 @@ func Check(layers []loader.Layer, opts CheckOptions) *Report {
 	r.walk(tree, "", func(id string, e loader.EntryOptions) {
 		r.Issues = append(r.Issues, r.checkEntry(id, e, opts, &pre)...)
 	})
-	r.Issues = append(r.Issues, r.requiredIssues(opts.Required)...)
+	r.Issues = append(r.Issues, r.requiredIssues(opts.Required, opts.Evaluator)...)
 	return r
 }
 
-// requiredIssues are the issues of the required ids the tree lacks or disables.
-func (r *Report) requiredIssues(required []string) []loader.Issue {
+// requiredIssues are the issues of the required ids the tree lacks or disables;
+// eval decides the disabled expressions.
+func (r *Report) requiredIssues(required []string, eval loader.Evaluator) []loader.Issue {
 	if len(required) == 0 {
 		return nil
 	}
 	type state struct {
-		off   string // the id of the entry or group that disables it, or ""
-		entry loader.EntryOptions
+		off string // the id of the entry or group that disables it, or ""
+		why string // how it disables it, for an expression
 	}
 	found := map[string]state{}
 	entries := map[string]loader.EntryOptions{}
-	var visit func(list []loader.EntryOptions, parent, off string)
-	visit = func(list []loader.EntryOptions, parent, off string) {
+	var visit func(list []loader.EntryOptions, parent string, inherited state)
+	visit = func(list []loader.EntryOptions, parent string, inherited state) {
 		for _, e := range list {
 			id := e.ID
 			if parent != "" && id != "" {
 				id = parent + loader.Separator + id
 			}
 			entries[id] = e
-			self := off
-			if self == "" && (e.Disabled || e.DisabledExpr != "") {
-				self = id
+			st := inherited
+			if st.off == "" {
+				if off, why := disables(e, id, eval); off {
+					st = state{off: id, why: why}
+				}
 			}
-			found[id] = state{off: self, entry: e}
+			found[id] = st
 			if e.Group {
-				visit(e.Children, id, self)
+				visit(e.Children, id, st)
 			}
 		}
 	}
-	visit(r.Tree, "", "")
+	visit(r.Tree, "", state{})
 	var issues []loader.Issue
 	for _, id := range required {
 		st, ok := found[id]
@@ -131,11 +136,35 @@ func (r *Report) requiredIssues(required []string) []loader.Issue {
 			}
 			issue := r.issue(st.off, entries[st.off], "disabled", "")
 			issue.Path = joinField(id, "disabled")
-			issue.Message = "is a required entry and a layer " + what
+			issue.Message = "is a required entry and a layer " + what + st.why
 			issues = append(issues, issue)
 		}
 	}
 	return issues
+}
+
+// disables reports whether the entry's own disabled field turns it off, as the load
+// would decide it: a literal true, or an expression that evaluates to true, fails,
+// yields no boolean or has no evaluator. why says how an expression disables it.
+func disables(e loader.EntryOptions, id string, eval loader.Evaluator) (bool, string) {
+	if e.DisabledExpr == "" {
+		return e.Disabled, ""
+	}
+	if eval == nil {
+		return true, fmt.Sprintf(" with expression %q, which cannot be evaluated: %v", e.DisabledExpr, loader.ErrNoEvaluator)
+	}
+	v, err := eval.Eval(e.DisabledExpr, loader.Scope{Kind: loader.DisabledScope, EntryID: id})
+	if err != nil {
+		return true, fmt.Sprintf(" with expression %q, which fails: %v", e.DisabledExpr, err)
+	}
+	b, ok := v.(bool)
+	if !ok {
+		return true, fmt.Sprintf(" with expression %q, which yields %T, not a boolean", e.DisabledExpr, v)
+	}
+	if b {
+		return true, fmt.Sprintf(" with expression %q, which is true", e.DisabledExpr)
+	}
+	return false, ""
 }
 
 // removal is the last operation of the layers that removes the entry id or a group

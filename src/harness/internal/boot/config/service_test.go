@@ -56,11 +56,29 @@ func (c strictConfig) Validate() error {
 type probes struct {
 	cat    *catalog.Catalog
 	starts atomic.Int64
+	// gate holds the cleanup of every x.hold until it is closed.
+	gate chan struct{}
+}
+
+// literals is an evaluator of three sources: true and false are booleans, word is a
+// string, and anything else fails to evaluate.
+type literals struct{}
+
+func (literals) Check(string, loader.ScopeKind) error { return nil }
+
+func (literals) Eval(source string, _ loader.Scope) (any, error) {
+	switch source {
+	case "true", "false":
+		return source == "true", nil
+	case "word":
+		return "word", nil
+	}
+	return nil, fmt.Errorf("cannot evaluate %q", source)
 }
 
 func newProbes(t *testing.T) *probes {
 	t.Helper()
-	p := &probes{}
+	p := &probes{gate: make(chan struct{})}
 	component := cordis.Define("x.probe", func(*cordis.Context, probeConfig) error {
 		p.starts.Add(1)
 		return nil
@@ -69,9 +87,16 @@ func newProbes(t *testing.T) *probes {
 		p.starts.Add(1)
 		return nil
 	})
+	hold := cordis.Define("x.hold", func(ctx *cordis.Context, _ struct{}) error {
+		_, err := ctx.Effect("held", func() (cordis.Disposer, error) {
+			return func() error { <-p.gate; return nil }, nil
+		})
+		return err
+	})
 	cat, err := catalog.Build([]catalog.Item{
 		{Name: "x.probe", Component: component, Config: reflect.TypeFor[probeConfig]()},
 		{Name: "x.strict", Component: strict, Config: reflect.TypeFor[strictConfig]()},
+		{Name: "x.hold", Component: hold, Config: reflect.TypeFor[struct{}]()},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -246,7 +271,7 @@ func bootWith(t *testing.T, h *home, p *probes, opts config.ServiceOptions) (*lo
 	t.Helper()
 	root := cordis.New(cordis.WithExporters())
 	t.Cleanup(root.Dispose)
-	fiber, err := root.Use(loader.Component, loader.Options{Resolver: p.cat})
+	fiber, err := root.Use(loader.Component, loader.Options{Resolver: p.cat, Evaluator: opts.Evaluator})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -794,7 +819,7 @@ func TestRequiredEntriesSurviveReloadAndEdit(t *testing.T) {
 	start := func(t *testing.T) (*home, *probes, *loader.Service, *config.Service) {
 		h, p := newHome(t), newProbes(t)
 		write(t, profile.LayerPath(h.root, h.def.Name), text)
-		ldr, cs := bootWith(t, h, p, config.ServiceOptions{Required: []string{"probe", keep}})
+		ldr, cs := bootWith(t, h, p, config.ServiceOptions{Required: []string{"probe", keep}, Evaluator: literals{}})
 		return h, p, ldr, cs
 	}
 	unchanged := func(t *testing.T, p *probes, ldr *loader.Service, cs *config.Service, starts int64, rev string) {
@@ -817,6 +842,9 @@ func TestRequiredEntriesSurviveReloadAndEdit(t *testing.T) {
 		"disable group":   {"- id: core\n  disabled: true\n", ":2:", keep + ".disabled", loader.Op{Kind: loader.OpOverride, ID: "core", Set: map[string]json.RawMessage{"disabled": json.RawMessage(`true`)}}},
 		"remove group":    {"- id: core\n  remove: true\n", ":1:", keep, loader.Op{Kind: loader.OpRemove, ID: "core"}},
 		"disable by expr": {"- id: probe\n  disabled: !expr 'true'\n", ":2:", "probe.disabled", loader.Op{}},
+		"failing expr":    {"- id: probe\n  disabled: !expr 'broken'\n", ":2:", "probe.disabled", loader.Op{}},
+		"non-bool expr":   {"- id: probe\n  disabled: !expr 'word'\n", ":2:", "probe.disabled", loader.Op{}},
+		"group by expr":   {"- id: core\n  disabled: !expr 'true'\n", ":2:", keep + ".disabled", loader.Op{}},
 	}
 	for name, tc := range cases {
 		t.Run("reload/"+name, func(t *testing.T) {
@@ -849,6 +877,26 @@ func TestRequiredEntriesSurviveReloadAndEdit(t *testing.T) {
 			unchanged(t, p, ldr, cs, starts, rev)
 		})
 	}
+	// A disabled expression that evaluates to false leaves a required entry, or its
+	// group, enabled: the reload is accepted and both keep running.
+	for _, text := range []string{"- id: probe\n  disabled: !expr 'false'\n", "- id: core\n  disabled: !expr 'false'\n"} {
+		t.Run("reload/false expr "+strings.Fields(text)[2], func(t *testing.T) {
+			h, _, ldr, cs := start(t)
+			rev := cs.Revision()
+			write(t, profile.UserLayerPath(h.root), text)
+			if err := cs.Reload(); err != nil {
+				t.Fatalf("reload = %v, want accepted", err)
+			}
+			if cs.Revision() == rev || cs.Pending() {
+				t.Errorf("revision %s -> %s, pending %v: the reload was not applied", rev, cs.Revision(), cs.Pending())
+			}
+			for _, id := range []string{"probe", keep} {
+				if e := ldr.Find(id); e == nil || !ldr.Active(e) {
+					t.Errorf("required %s is no longer active", id)
+				}
+			}
+		})
+	}
 	// Disabling an entry no one requires is still an edit like any other.
 	_, _, ldr, cs := start(t)
 	if _, err := cs.Apply(context.Background(), config.Edit{Revision: cs.Revision(), Ops: []loader.Op{{Kind: loader.OpOverride, ID: "other", Set: map[string]json.RawMessage{"disabled": json.RawMessage(`true`)}}}}); err != nil {
@@ -856,5 +904,121 @@ func TestRequiredEntriesSurviveReloadAndEdit(t *testing.T) {
 	}
 	if e := ldr.Find("other"); e != nil && ldr.Active(e) {
 		t.Error("other is still active")
+	}
+}
+
+// A reload whose application is stuck (a cleanup that does not return) does not
+// let a concurrent edit report success early: the edit is accepted and written,
+// but neither call returns, and the edit stays Pending, until the stuck
+// application settles; then both are effective.
+func TestEditDuringStuckApplicationWaitsForItToSettle(t *testing.T) {
+	h, p := newHome(t), newProbes(t)
+	write(t, profile.LayerPath(h.root, h.def.Name), profileText+"- insert:\n    - id: hold\n      name: x.hold\n")
+	ldr, cs := boot(t, h, p)
+	var wg sync.WaitGroup
+	t.Cleanup(wg.Wait)
+	var once sync.Once
+	release := func() { once.Do(func() { close(p.gate) }) }
+	t.Cleanup(release)
+	start := func(fn func() error) chan error {
+		done := make(chan error, 1)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			done <- fn()
+		}()
+		return done
+	}
+	waitFor := func(what string, ok func() bool) {
+		t.Helper()
+		tick := time.NewTicker(5 * time.Millisecond)
+		defer tick.Stop()
+		deadline := time.After(10 * time.Second)
+		for !ok() {
+			select {
+			case <-tick.C:
+			case <-deadline:
+				t.Fatalf("timed out waiting for %s", what)
+			}
+		}
+	}
+
+	write(t, profile.UserLayerPath(h.root), "- id: hold\n  remove: true\n")
+	reload := start(cs.Reload)
+	waitFor("the reload to be accepted", cs.Pending)
+	edit := start(func() error {
+		_, err := cs.Apply(context.Background(), config.Edit{Revision: cs.Revision(), Ops: []loader.Op{{Kind: loader.OpMerge, ID: "other", Patch: json.RawMessage(`{"port":7}`)}}})
+		return err
+	})
+	waitFor("the edit to be written", func() bool {
+		data, _ := os.ReadFile(profile.LayerPath(h.root, h.def.Name))
+		return strings.Contains(string(data), "port: 7")
+	})
+	select {
+	case err := <-edit:
+		t.Fatalf("the edit returned %v while the reload before it was still applying", err)
+	case err := <-reload:
+		t.Fatalf("the reload returned %v while its cleanup was stuck", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if !cs.Pending() || cs.Current().Revision == cs.Revision() {
+		t.Error("an accepted, unsettled edit is reported effective")
+	}
+
+	release()
+	for what, done := range map[string]chan error{"reload": reload, "edit": edit} {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("%s: %v", what, err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("the %s never returned after the cleanup was released", what)
+		}
+	}
+	if cs.Pending() || cs.Current().Revision != cs.Revision() {
+		t.Error("both settled, yet the service reports a pending tree")
+	}
+	if got := effective(t, ldr, "other"); got.Port != 7 {
+		t.Errorf("other = %+v, want the edit's port 7", got)
+	}
+	if ldr.Find("hold") != nil {
+		t.Error("hold is still in the running tree")
+	}
+}
+
+// A listener told of a reload may make a valid edit of its own: the nested edit is
+// applied (not dropped or reported early) and the outer reload returns once the
+// newer tree has settled.
+func TestReloadListenerMayEditValidly(t *testing.T) {
+	h, p := newHome(t), newProbes(t)
+	ldr, cs := boot(t, h, p)
+	var fired atomic.Bool
+	var nested error
+	remove := ldr.OnLifecycle(func(ev loader.LifecycleEvent) {
+		if ev.Kind != loader.EntryUpdated || !fired.CompareAndSwap(false, true) {
+			return
+		}
+		_, nested = cs.Apply(context.Background(), config.Edit{Revision: cs.Revision(), Ops: []loader.Op{{Kind: loader.OpMerge, ID: "other", Patch: json.RawMessage(`{"port":9}`)}}})
+		if got := effective(t, ldr, "other"); nested == nil && got.Port != 9 {
+			t.Errorf("the nested edit returned before it applied: other = %+v", got)
+		}
+	})
+	t.Cleanup(remove)
+	write(t, profile.UserLayerPath(h.root), "- id: probe\n  merge:\n    level: warn\n")
+	if err := cs.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if nested != nil {
+		t.Fatalf("nested edit: %v", nested)
+	}
+	if got := effective(t, ldr, "other"); got.Port != 9 {
+		t.Errorf("other = %+v, want the nested edit's port 9", got)
+	}
+	if got := effective(t, ldr, "probe"); got.Level != "warn" {
+		t.Errorf("probe = %+v, want the reload's warn", got)
+	}
+	if cs.Pending() {
+		t.Error("the service reports a pending tree after both settled")
 	}
 }
