@@ -33,10 +33,14 @@ Feature: Bounded Retry and Token Usage
     And the route "r/other" was never prepared nor attempted
 
   # DH-S-9 closure; proof: service:go-toolchain
+  # The DH-S-9 closing commit is DSH_E2E_DHS9_COMMIT when set, else the first commit
+  # whose acceptance index raises built-through to DH-S-9, checked out into a
+  # temporary git worktree; while the checkout is still built through less than
+  # DH-S-9 (DH-S-9 not yet closed) the checkout itself is the closing candidate.
   Scenario: DH-S-9 scenarios authored before closure
-    Given the DH-S-9 scenario files for "DH-E-LLM-1,DH-E-LLM-3,DH-E-VIEW-1" and "test/harness/acceptance-index.yaml" in the checkout
-    When the gate's index check runs on the checkout
-    And "go -C src/harness vet -tags scenario ./..." runs
+    Given the DH-S-9 scenario files for "DH-E-LLM-1,DH-E-LLM-3,DH-E-VIEW-1" and "test/harness/acceptance-index.yaml" at the DH-S-9 closing commit
+    When the gate's index check runs on that commit
+    And "go -C src/harness vet -tags scenario ./..." runs on that commit
     Then the gate's index check passes
     And each of the IDs has exactly one scenario file bound to a TestXxx
     And each of the IDs has exactly one index entry, under "DH-S-17", authored "DH-S-9" and requiring "DH-S-11,DH-S-16"
@@ -44,7 +48,7 @@ Feature: Bounded Retry and Token Usage
     And no file imports "internal/llm,internal/agent,internal/session/views,internal/session/store"
     And vet exits 0
     And the default gate run executes none of them
-    And requiring any of them before "DH-S-11,DH-S-16" are built is refused by the preflight
+    And requiring any of them at that commit is refused by the preflight because "DH-S-11,DH-S-16" are not built
 
   # DH-T-LLM-15; proof: in-process
   Scenario: Usage folded from settlements
