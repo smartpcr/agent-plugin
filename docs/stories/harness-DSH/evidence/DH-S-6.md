@@ -10,7 +10,9 @@ seventeen deliverables are built at that commit.
 manual check "a child that ignores termination ... on each operating system"
 (impl.md DH-S-6) is recorded on Windows 11 only. DH-S-6 closes when the Linux and
 macOS rows of that check are recorded here (or when the operator changes the
-requirement); until then the plan's closure step stays unticked.
+requirement); until then the plan's closure step stays unticked. The rows are
+produced by `.github/workflows/harness-manual-checks.yml` on the next push of this
+branch (see "Manual checks").
 
 ## Deliverables built at the closing commit
 
@@ -152,7 +154,16 @@ not the DH-E scenario runs that DH-S-18 owns. Why they could not be recorded her
   the test gate never starts on any lane.
 - Recording them therefore needs an operator with a Linux and a macOS machine, or an
   approved change to the requirement; it is raised as an open question of this stage.
-To record them, run `go -C src/harness test -count=1 -v -run
+- Route added by this stage: `.github/workflows/harness-manual-checks.yml` (keyless,
+  read-only, no scenario) runs exactly these checks (this one, and the broken-entry and bad-layer rows) on `ubuntu-latest`,
+  `macos-latest` and `windows-latest` on every push to a `ws/harness-**` branch that
+  touches the tree owner or the test kit, and by hand (`workflow_dispatch`). It
+  runs the tests directly rather than through the gate, so the pre-existing gate-2
+  findings do not stop it. Each lane writes the owner line and stop time to its job
+  summary and uploads them as `manual-checks-<os>`. The Linux and macOS rows are filled
+  from the first green run of that workflow at the closing commit (run id recorded
+  with them).
+To record them by hand instead, run `go -C src/harness test -count=1 -v -run
 'TestStopTreeStopsAndAwaitsTheTree|TestContextEndStopsDescendantsAfterChildExit|TestTreeOwnerIsReported'
 ./internal/world/subprocess/` on each system and paste the owner line and stop time
 into the table.
