@@ -666,23 +666,23 @@ tests that need the real thing pass only when the later step lands.
 
 **Steps.**
 
-- [ ] **6.1** [DH-D-UTIL-5](areas/util-test-support.md#dh-d-util-5) Leaf packages: errors, identifiers, the home location, media types.
-- [ ] **6.2** [DH-D-EXEC-1](areas/execution.md#dh-d-exec-1) One package starts every program, from an argument list.
-- [ ] **6.3** [DH-D-EXEC-2](areas/execution.md#dh-d-exec-2) A whole process tree is stopped and awaited on every system.
-- [ ] **6.4** [DH-D-BOOT-2](areas/boot.md#dh-d-boot-2) Launch facts, the launch environment and the expression scope.
-- [ ] **6.5** [DH-D-STORAGE-2](areas/storage.md#dh-d-storage-2) The storage directories exist, are private, and are checked at start.
-- [ ] **6.6** [DH-D-HUMAN-7](areas/interaction-credentials.md#dh-d-human-7) Configuration names a secret; the value sits behind one store.
-- [ ] **6.7** [DH-D-BOOT-3](areas/boot.md#dh-d-boot-3) Profiles, embedded bundles and the layer stack.
-- [ ] **6.8** [DH-D-CLI-1](areas/app-cli.md#dh-d-cli-1) One command tree: grammar, help, usage errors and a generated reference.
-- [ ] **6.9** [DH-D-CLI-3](areas/app-cli.md#dh-d-cli-3) Every command prints and exits by one contract.
-- [ ] **6.10** [DH-D-HOST-7](areas/host-telemetry.md#dh-d-host-7) A host that cannot continue says why once and leaves a report.
-- [ ] **6.11** [DH-D-BOOT-5](areas/boot.md#dh-d-boot-5) The boot sequence, the audit, readiness, the fatal path and shutdown.
-- [ ] **6.12** [DH-D-BOOT-6](areas/boot.md#dh-d-boot-6) The composed tree can be previewed, explained and checked without starting it (P1, pulled forward; held open: H-21, its `dsh config` commands wait for the admin tree of [DH-S-16](#dh-s-16)).
-- [ ] **6.13** [DH-D-BOOT-7](areas/boot.md#dh-d-boot-7) Validated reload and one edit path, safe across processes (P1, pulled forward).
-- [ ] **6.14** [DH-D-STORAGE-8](areas/storage.md#dh-d-storage-8) Live settings are edited through one path, and a bad edit changes nothing (P1, pulled forward).
-- [ ] **6.15** [DH-D-HOST-4](areas/host-telemetry.md#dh-d-host-4) Nothing leaves the machine by default; each kind has a visible setting and one off-switch.
-- [ ] **6.16** [DH-D-UTIL-2](areas/util-test-support.md#dh-d-util-2) Every outbound connection follows one policy.
-- [ ] **6.17** [DH-D-UTIL-6](areas/util-test-support.md#dh-d-util-6) The test kit: real components against scripted boundaries, in virtual time.
+- [x] **6.1** [DH-D-UTIL-5](areas/util-test-support.md#dh-d-util-5) Leaf packages: errors, identifiers, the home location, media types.
+- [x] **6.2** [DH-D-EXEC-1](areas/execution.md#dh-d-exec-1) One package starts every program, from an argument list.
+- [x] **6.3** [DH-D-EXEC-2](areas/execution.md#dh-d-exec-2) A whole process tree is stopped and awaited on every system.
+- [x] **6.4** [DH-D-BOOT-2](areas/boot.md#dh-d-boot-2) Launch facts, the launch environment and the expression scope.
+- [x] **6.5** [DH-D-STORAGE-2](areas/storage.md#dh-d-storage-2) The storage directories exist, are private, and are checked at start.
+- [x] **6.6** [DH-D-HUMAN-7](areas/interaction-credentials.md#dh-d-human-7) Configuration names a secret; the value sits behind one store.
+- [x] **6.7** [DH-D-BOOT-3](areas/boot.md#dh-d-boot-3) Profiles, embedded bundles and the layer stack.
+- [x] **6.8** [DH-D-CLI-1](areas/app-cli.md#dh-d-cli-1) One command tree: grammar, help, usage errors and a generated reference.
+- [x] **6.9** [DH-D-CLI-3](areas/app-cli.md#dh-d-cli-3) Every command prints and exits by one contract.
+- [x] **6.10** [DH-D-HOST-7](areas/host-telemetry.md#dh-d-host-7) A host that cannot continue says why once and leaves a report.
+- [x] **6.11** [DH-D-BOOT-5](areas/boot.md#dh-d-boot-5) The boot sequence, the audit, readiness, the fatal path and shutdown.
+- [x] **6.12** [DH-D-BOOT-6](areas/boot.md#dh-d-boot-6) The composed tree can be previewed, explained and checked without starting it (P1, pulled forward; held open: H-21, its `dsh config` commands wait for the admin tree of [DH-S-16](#dh-s-16)).
+- [x] **6.13** [DH-D-BOOT-7](areas/boot.md#dh-d-boot-7) Validated reload and one edit path, safe across processes (P1, pulled forward).
+- [x] **6.14** [DH-D-STORAGE-8](areas/storage.md#dh-d-storage-8) Live settings are edited through one path, and a bad edit changes nothing (P1, pulled forward).
+- [x] **6.15** [DH-D-HOST-4](areas/host-telemetry.md#dh-d-host-4) Nothing leaves the machine by default; each kind has a visible setting and one off-switch.
+- [x] **6.16** [DH-D-UTIL-2](areas/util-test-support.md#dh-d-util-2) Every outbound connection follows one policy.
+- [x] **6.17** [DH-D-UTIL-6](areas/util-test-support.md#dh-d-util-6) The test kit: real components against scripted boundaries, in virtual time.
 
 **Manual checks.** Boot a tree with a broken required entry and record the single
 fatal message and the report file; start a child that ignores termination and record

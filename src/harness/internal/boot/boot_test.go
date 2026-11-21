@@ -2,7 +2,6 @@ package boot
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -24,30 +23,14 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/cli/output"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/host/diag"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/clock"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/temphome"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess/subprocesstest"
 )
 
 func TestMain(m *testing.M) { subprocesstest.Main(m) }
-
-// syncBuffer is a goroutine-safe diagnostic stream.
-type syncBuffer struct {
-	mu sync.Mutex
-	b  bytes.Buffer
-}
-
-func (s *syncBuffer) Write(p []byte) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.b.Write(p)
-}
-
-func (s *syncBuffer) String() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.b.String()
-}
 
 // fakeSteps records every step and fakes the tree.
 type fakeSteps struct {
@@ -110,7 +93,7 @@ func TestBootOrderAndAuditOnFakes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			fakes := &fakeSteps{}
 			app := launch.NewApp()
-			var stderr syncBuffer
+			var stderr testkit.Buffer
 			done := make(chan int, 1)
 			go func() {
 				done <- Run(context.Background(), Options{Profile: profile.Definition{Name: "fake"}, Stderr: &stderr, App: app, Steps: fakes})
@@ -155,12 +138,10 @@ func failing(name string) catalog.Item {
 // requires the entry the layer inserts.
 func fixture(t *testing.T, layer string, required ...string) (Options, string) {
 	t.Helper()
-	root := t.TempDir()
-	homeDir := filepath.Join(root, "home")
+	homeDir := temphome.Dir(t)
+	root := filepath.Dir(homeDir)
 	overlay := filepath.Join(root, "overlay.yml")
-	if err := os.WriteFile(overlay, []byte(layer), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	temphome.Write(t, overlay, layer)
 	def := profile.Definition{Name: "probe", Bundles: []string{"core"}, Required: required}
 	return Options{
 		Request: launch.Request{Args: []string{"dsh", "probe"}, Cwd: root, Home: homeDir, Profile: def.Name, Overlays: []string{overlay}},
@@ -176,7 +157,7 @@ func TestBrokenRequiredEntryFailsBootOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var stderr syncBuffer
+	var stderr testkit.Buffer
 	opts.Catalog, opts.Stderr = cat, &stderr
 	if status := Run(context.Background(), opts); status != output.Config {
 		t.Errorf("status = %d, want %d", status, output.Config)
@@ -258,7 +239,7 @@ func TestShutdownOverrunExits124(t *testing.T) {
 	opts, _ := fixture(t, "- insert:\n    - id: worker\n      name: x.tree\n", "worker")
 	clk := clock.NewManual(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
 	app := launch.NewApp()
-	var stderr syncBuffer
+	var stderr testkit.Buffer
 	opts.Catalog, opts.Stderr, opts.App, opts.Clock = cat, &stderr, app, clk
 	done := make(chan int, 1)
 	go func() { done <- Run(context.Background(), opts) }()
@@ -357,7 +338,7 @@ func TestFatalShutdownOverrunIsBounded(t *testing.T) {
 	t.Cleanup(func() { close(steps.release) })
 	clk := clock.NewManual(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
 	app := launch.NewApp()
-	var stderr syncBuffer
+	var stderr testkit.Buffer
 	done := make(chan int, 1)
 	go func() {
 		done <- Run(context.Background(), Options{Profile: profile.Definition{Name: "fake"}, Stderr: &stderr, App: app, Clock: clk, Steps: steps})
@@ -445,7 +426,7 @@ func TestStopDuringStartupIsNeverReady(t *testing.T) {
 				t.Fatal(err)
 			}
 			app := launch.NewApp()
-			var stderr syncBuffer
+			var stderr testkit.Buffer
 			// The manual clock never reaches StartupTimeout: only the stop ends the wait.
 			opts.Catalog, opts.Stderr, opts.App = cat, &stderr, app
 			opts.Clock = clock.NewManual(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
@@ -543,7 +524,7 @@ func TestReloadAfterReadyAppliesValidAndRejectsInvalidLayers(t *testing.T) {
 		t.Fatal(err)
 	}
 	app := launch.NewApp()
-	var stderr syncBuffer
+	var stderr testkit.Buffer
 	opts.Catalog, opts.Stderr, opts.App = cat, &stderr, app
 	opts.Profile.Reload = 10 * time.Millisecond
 	done := make(chan int, 1)
@@ -636,7 +617,7 @@ func TestStuckReloadDrainSharesTheShutdownBound(t *testing.T) {
 	}
 	clk := clock.NewManual(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
 	app := launch.NewApp()
-	var stderr syncBuffer
+	var stderr testkit.Buffer
 	opts.Catalog, opts.Stderr, opts.App, opts.Clock = cat, &stderr, app, clk
 	opts.Profile.Reload = 5 * time.Millisecond
 	done := make(chan int, 1)

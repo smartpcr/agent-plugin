@@ -1,34 +1,16 @@
 package logging
 
 import (
-	"bytes"
 	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit"
 )
-
-type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *syncBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
 
 func load(t *testing.T, root *cordis.Context, config Config) (*cordis.Fiber, error) {
 	t.Helper()
@@ -52,7 +34,7 @@ func TestFileDestinationKeepsStdoutClean(t *testing.T) {
 	t.Cleanup(func() { os.Stdout = stdout })
 
 	path := filepath.Join(t.TempDir(), "logs", "dsh.log")
-	root := cordis.New(cordis.WithExporters())
+	root := testkit.Tree(t)
 	f, err := load(t, root, Config{Destination: File, Path: path, Format: JSON})
 	if err != nil {
 		t.Fatal(err)
@@ -103,7 +85,7 @@ func TestFileDestinationKeepsStdoutClean(t *testing.T) {
 // ordinary exporter-free tree, and unloading puts the tree's threshold back.
 func TestDebugLevelReachesTheDestination(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "dsh.log")
-	root := cordis.New(cordis.WithExporters())
+	root := testkit.Tree(t)
 	f, err := load(t, root, Config{Destination: File, Path: path, Level: "debug", Format: JSON})
 	if err != nil {
 		t.Fatal(err)
@@ -153,7 +135,7 @@ func TestOverlappingDebugLoggers(t *testing.T) {
 	for _, firstOut := range []int{0, 1} {
 		dir := t.TempDir()
 		paths := []string{filepath.Join(dir, "a.log"), filepath.Join(dir, "b.log")}
-		root := cordis.New(cordis.WithExporters())
+		root := testkit.Tree(t)
 		var fibers []*cordis.Fiber
 		for _, path := range paths {
 			f, err := load(t, root, Config{Destination: File, Path: path, Level: "debug"})
@@ -200,12 +182,12 @@ func TestOverlappingDebugLoggers(t *testing.T) {
 }
 
 func TestStderrDestination(t *testing.T) {
-	buf := &syncBuffer{}
+	buf := &testkit.Buffer{}
 	saved := stderr
 	stderr = buf
 	t.Cleanup(func() { stderr = saved })
 
-	root := cordis.New(cordis.WithExporters())
+	root := testkit.Tree(t)
 	f, err := load(t, root, Config{Level: "warn"})
 	if err != nil {
 		t.Fatal(err)
@@ -240,7 +222,7 @@ func TestBadConfigFailsLoad(t *testing.T) {
 		{Config{Destination: File, Path: dir}, "logging"},
 	}
 	for _, c := range cases {
-		root := cordis.New(cordis.WithExporters())
+		root := testkit.Tree(t)
 		f, err := load(t, root, c.config)
 		if err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Fatalf("%+v: got %v, want %q", c.config, err, c.want)

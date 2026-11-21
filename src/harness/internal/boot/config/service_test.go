@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -20,6 +19,8 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/catalog"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/config"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/profile"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/temphome"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
 )
 
@@ -251,22 +252,12 @@ const profileText = `# written by dsh; comments stay
 
 func newHome(t *testing.T) *home {
 	t.Helper()
-	h := &home{root: filepath.Join(t.TempDir(), "home"), def: profile.Definition{Name: "probe"}}
-	write(t, profile.LayerPath(h.root, h.def.Name), profileText)
+	h := &home{root: temphome.Dir(t), def: profile.Definition{Name: "probe"}}
+	temphome.Write(t, profile.LayerPath(h.root, h.def.Name), profileText)
 	h.stack = func(read config.ReadFile) ([]loader.Layer, []loader.Issue, error) {
 		return profile.Stack(h.def, profile.Sources{Home: h.root, Read: profile.ReadFile(read)})
 	}
 	return h
-}
-
-func write(t *testing.T, path, text string) {
-	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
-		t.Fatal(err)
-	}
 }
 
 // boot mounts a loader with the probes, applies the home's layers through a
@@ -287,8 +278,7 @@ func bootWith(t *testing.T, h *home, p *probes, opts config.ServiceOptions) (*lo
 // with the loader before the service is made (an observer registered before it).
 func bootRoot(t *testing.T, h *home, p *probes, opts config.ServiceOptions, observe ...func(*loader.Service)) (*cordis.Context, *loader.Service, *config.Service) {
 	t.Helper()
-	root := cordis.New(cordis.WithExporters())
-	t.Cleanup(root.Dispose)
+	root := testkit.Tree(t)
 	fiber, err := root.Use(loader.Component, loader.Options{Resolver: p.cat, Evaluator: opts.Evaluator})
 	if err != nil {
 		t.Fatal(err)
@@ -350,7 +340,7 @@ func TestBadLayerEditLeavesRunningTreeUnchanged(t *testing.T) {
 			cs.OnRejected(func(err error) { told = append(told, err) })
 
 			user := profile.UserLayerPath(h.root)
-			write(t, user, tc.text)
+			temphome.Write(t, user, tc.text)
 			err := cs.Reload()
 			if err == nil {
 				t.Fatal("the bad edit was accepted")
@@ -375,7 +365,7 @@ func TestBadLayerEditLeavesRunningTreeUnchanged(t *testing.T) {
 			}
 
 			// Fixing the file reloads it.
-			write(t, user, "- id: other\n  merge:\n    port: 2\n")
+			temphome.Write(t, user, "- id: other\n  merge:\n    port: 2\n")
 			if err := cs.Reload(); err != nil {
 				t.Fatal(err)
 			}
@@ -496,7 +486,7 @@ func TestRejectedEditWritesNothing(t *testing.T) {
 func TestEditWithoutRunningTreeValidatesSchema(t *testing.T) {
 	h, p := newHome(t), newProbes(t)
 	path := profile.LayerPath(h.root, h.def.Name)
-	write(t, path, profileText+"    - id: quiet\n      name: x.probe\n      disabled: true\n      config:\n        level: loud\n")
+	temphome.Write(t, path, profileText+"    - id: quiet\n      name: x.probe\n      disabled: true\n      config:\n        level: loud\n")
 	cs, err := config.NewService(config.ServiceOptions{Stack: h.stack, Catalog: p.cat})
 	if err != nil {
 		t.Fatal(err)
@@ -534,7 +524,7 @@ func TestEditWithoutRunningTreeValidatesSchema(t *testing.T) {
 func TestReloadRejectsInvalidNewEntry(t *testing.T) {
 	h, p := newHome(t), newProbes(t)
 	ldr, cs := boot(t, h, p)
-	write(t, profile.UserLayerPath(h.root), "- insert:\n    - id: fresh\n      name: x.probe\n      config:\n        level: loud\n")
+	temphome.Write(t, profile.UserLayerPath(h.root), "- insert:\n    - id: fresh\n      name: x.probe\n      config:\n        level: loud\n")
 	if err := cs.Reload(); !hasReason(err, config.ReasonRejected) || !strings.Contains(err.Error(), "fresh.config.level") {
 		t.Fatalf("reload = %v", err)
 	}
@@ -567,7 +557,7 @@ func TestRejectedListenerMayCallTheService(t *testing.T) {
 		seen = append(seen, cs.Current().Revision, cs.Revision())
 		_ = cs.Reload()
 	})
-	write(t, profile.UserLayerPath(h.root), "- id: probe\n  merge:\n    level: loud\n")
+	temphome.Write(t, profile.UserLayerPath(h.root), "- id: probe\n  merge:\n    level: loud\n")
 	done := make(chan error, 1)
 	var wg sync.WaitGroup
 	t.Cleanup(wg.Wait)
@@ -597,7 +587,7 @@ func TestUnparsableLayerIsToldOncePerContent(t *testing.T) {
 	var told []error
 	cs.OnRejected(func(err error) { told = append(told, err) })
 	user := profile.UserLayerPath(h.root)
-	write(t, user, "- id: probe\n  merge: [unclosed\n")
+	temphome.Write(t, user, "- id: probe\n  merge: [unclosed\n")
 	for range 3 {
 		if err := cs.Reload(); !hasReason(err, config.ReasonRejected) || !strings.Contains(err.Error(), user) {
 			t.Fatalf("reload = %v", err)
@@ -606,12 +596,12 @@ func TestUnparsableLayerIsToldOncePerContent(t *testing.T) {
 	if len(told) != 1 {
 		t.Fatalf("told %d times for one content, want once", len(told))
 	}
-	write(t, user, "- id: probe\n  merge: {unclosed\n")
+	temphome.Write(t, user, "- id: probe\n  merge: {unclosed\n")
 	_ = cs.Reload()
 	if len(told) != 2 {
 		t.Errorf("told %d times after new broken content, want 2", len(told))
 	}
-	write(t, user, "- id: probe\n  merge:\n    level: warn\n")
+	temphome.Write(t, user, "- id: probe\n  merge:\n    level: warn\n")
 	if err := cs.Reload(); err != nil {
 		t.Fatal(err)
 	}
@@ -625,7 +615,7 @@ func TestUnparsableLayerIsToldOncePerContent(t *testing.T) {
 func TestEditOfComputedFieldNeedsOverwrite(t *testing.T) {
 	h, p := newHome(t), newProbes(t)
 	path := profile.LayerPath(h.root, h.def.Name)
-	write(t, path, profileText+"- id: probe\n  merge:\n    level: !expr '\"info\"'\n")
+	temphome.Write(t, path, profileText+"- id: probe\n  merge:\n    level: !expr '\"info\"'\n")
 	cs, err := config.NewService(config.ServiceOptions{Stack: h.stack, Catalog: p.cat})
 	if err != nil {
 		t.Fatal(err)
@@ -661,7 +651,7 @@ func TestEditOfComputedFieldNeedsOverwrite(t *testing.T) {
 func TestOmittedConfigIsValidatedToo(t *testing.T) {
 	h, p := newHome(t), newProbes(t)
 	path := profile.LayerPath(h.root, h.def.Name)
-	write(t, path, profileText+"    - id: dormant\n      name: x.strict\n      disabled: true\n")
+	temphome.Write(t, path, profileText+"    - id: dormant\n      name: x.strict\n      disabled: true\n")
 	ldr, cs := boot(t, h, p)
 	before, _ := os.ReadFile(path)
 	starts := p.starts.Load()
@@ -772,7 +762,7 @@ func TestReloadListenerMayCallTheService(t *testing.T) {
 			t.Fatalf("a listener calling the service deadlocked the %s", what)
 		}
 	}
-	write(t, profile.UserLayerPath(h.root), "- id: probe\n  merge:\n    level: warn\n- insert:\n    - id: fresh\n      name: x.probe\n")
+	temphome.Write(t, profile.UserLayerPath(h.root), "- id: probe\n  merge:\n    level: warn\n- insert:\n    - id: fresh\n      name: x.probe\n")
 	run("reload", cs.Reload)
 	run("edit", func() error {
 		_, err := cs.Apply(context.Background(), config.Edit{Revision: cs.Revision(), Ops: []loader.Op{{Kind: loader.OpMerge, ID: "other", Patch: json.RawMessage(`{"port":7}`)}}})
@@ -805,7 +795,7 @@ func short(rev string) string { return rev[:min(len(rev), 8)] }
 // and writes nothing; a field no higher layer sets is written.
 func TestApplyRefusesShadowedEdit(t *testing.T) {
 	h, p := newHome(t), newProbes(t)
-	write(t, profile.UserLayerPath(h.root), "- id: probe\n  merge:\n    level: warn\n")
+	temphome.Write(t, profile.UserLayerPath(h.root), "- id: probe\n  merge:\n    level: warn\n")
 	cs, err := config.NewService(config.ServiceOptions{Stack: h.stack, Catalog: p.cat})
 	if err != nil {
 		t.Fatal(err)
@@ -877,7 +867,7 @@ func TestRequiredEntriesSurviveReloadAndEdit(t *testing.T) {
 	keep := "core" + loader.Separator + "keep"
 	start := func(t *testing.T) (*home, *probes, *loader.Service, *config.Service) {
 		h, p := newHome(t), newProbes(t)
-		write(t, profile.LayerPath(h.root, h.def.Name), text)
+		temphome.Write(t, profile.LayerPath(h.root, h.def.Name), text)
 		ldr, cs := bootWith(t, h, p, config.ServiceOptions{Required: []string{"probe", keep}, Evaluator: literals{}})
 		return h, p, ldr, cs
 	}
@@ -910,7 +900,7 @@ func TestRequiredEntriesSurviveReloadAndEdit(t *testing.T) {
 			h, p, ldr, cs := start(t)
 			starts, rev := p.starts.Load(), cs.Revision()
 			user := profile.UserLayerPath(h.root)
-			write(t, user, tc.text)
+			temphome.Write(t, user, tc.text)
 			err := cs.Reload()
 			if !hasReason(err, config.ReasonRejected) || !strings.Contains(err.Error(), "required") ||
 				!strings.Contains(err.Error(), user+tc.at) || !strings.Contains(err.Error(), tc.path) {
@@ -942,7 +932,7 @@ func TestRequiredEntriesSurviveReloadAndEdit(t *testing.T) {
 		t.Run("reload/false expr "+strings.Fields(text)[2], func(t *testing.T) {
 			h, _, ldr, cs := start(t)
 			rev := cs.Revision()
-			write(t, profile.UserLayerPath(h.root), text)
+			temphome.Write(t, profile.UserLayerPath(h.root), text)
 			if err := cs.Reload(); err != nil {
 				t.Fatalf("reload = %v, want accepted", err)
 			}
@@ -972,7 +962,7 @@ func TestRequiredEntriesSurviveReloadAndEdit(t *testing.T) {
 // application settles; then both are effective.
 func TestEditDuringStuckApplicationWaitsForItToSettle(t *testing.T) {
 	h, p := newHome(t), newProbes(t)
-	write(t, profile.LayerPath(h.root, h.def.Name), profileText+"- insert:\n    - id: hold\n      name: x.hold\n")
+	temphome.Write(t, profile.LayerPath(h.root, h.def.Name), profileText+"- insert:\n    - id: hold\n      name: x.hold\n")
 	ldr, cs := boot(t, h, p)
 	var wg sync.WaitGroup
 	t.Cleanup(wg.Wait)
@@ -1002,7 +992,7 @@ func TestEditDuringStuckApplicationWaitsForItToSettle(t *testing.T) {
 		}
 	}
 
-	write(t, profile.UserLayerPath(h.root), "- id: hold\n  remove: true\n")
+	temphome.Write(t, profile.UserLayerPath(h.root), "- id: hold\n  remove: true\n")
 	reload := start(cs.Reload)
 	waitFor("the reload to be accepted", cs.Pending)
 	edit := start(func() error {
@@ -1064,7 +1054,7 @@ func TestReloadListenerMayEditValidly(t *testing.T) {
 		}
 	})
 	t.Cleanup(remove)
-	write(t, profile.UserLayerPath(h.root), "- id: probe\n  merge:\n    level: warn\n")
+	temphome.Write(t, profile.UserLayerPath(h.root), "- id: probe\n  merge:\n    level: warn\n")
 	if err := cs.Reload(); err != nil {
 		t.Fatal(err)
 	}
@@ -1135,7 +1125,7 @@ func TestOverlappingApplicationStaysPendingUntilItSettles(t *testing.T) {
 		}
 	}
 
-	write(t, profile.UserLayerPath(h.root), "- id: probe\n  merge:\n    level: warn\n")
+	temphome.Write(t, profile.UserLayerPath(h.root), "- id: probe\n  merge:\n    level: warn\n")
 	reload := start(cs.Reload)
 	var revA string
 	select {
@@ -1249,7 +1239,7 @@ func TestEarlierObserverMayWaitForAnEditOnAnotherGoroutine(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	write(t, profile.UserLayerPath(h.root), "- id: probe\n  merge:\n    level: warn\n")
+	temphome.Write(t, profile.UserLayerPath(h.root), "- id: probe\n  merge:\n    level: warn\n")
 	if err := cs.Reload(); err != nil {
 		t.Fatal(err)
 	}

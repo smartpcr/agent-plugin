@@ -1,7 +1,6 @@
 package egress_test
 
 import (
-	"context"
 	"io"
 	"net"
 	"net/http"
@@ -13,19 +12,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/permit"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/egress"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
 )
-
-// fakePermit stands in for sharing.Permit, which util may not import.
-type fakePermit struct {
-	kind, dest string
-	ctx        context.Context
-}
-
-func (p fakePermit) Kind() string             { return p.kind }
-func (p fakePermit) Destination() string      { return p.dest }
-func (p fakePermit) Context() context.Context { return p.ctx }
 
 // countingServer is an httptest server on 127.0.0.1:0 that counts connections and
 // requests.
@@ -98,7 +88,7 @@ func TestNoPermitNoDial(t *testing.T) {
 	}
 
 	// A permit for another kind is refused the same way.
-	other := fakePermit{kind: "telemetry", dest: srv.URL, ctx: context.Background()}
+	other := permit.New(t, "telemetry", srv.URL)
 	if _, err := svc.Client("model-request", other, egress.Options{}); err == nil {
 		t.Fatal("a client was handed out for a permit of another kind")
 	} else {
@@ -107,7 +97,7 @@ func TestNoPermitNoDial(t *testing.T) {
 
 	// A permit for another destination: the client exists, but the POST fails
 	// before any dial.
-	elsewhere := fakePermit{kind: "model-request", dest: "https://api.example.invalid", ctx: context.Background()}
+	elsewhere := permit.New(t, "model-request", "https://api.example.invalid")
 	c, err := svc.Client("model-request", elsewhere, egress.Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -122,7 +112,7 @@ func TestNoPermitNoDial(t *testing.T) {
 	}
 
 	// With a model-request permit for the server, the request arrives once.
-	ok := fakePermit{kind: "model-request", dest: srv.URL, ctx: context.Background()}
+	ok := permit.New(t, "model-request", srv.URL)
 	c, err = svc.Client("model-request", ok, egress.Options{Label: "deepseek"})
 	if err != nil {
 		t.Fatal(err)
@@ -170,8 +160,8 @@ func TestWithdrawnPermitCancelsAndRefuses(t *testing.T) {
 	})
 	svc := egress.New(egress.Config{})
 	t.Cleanup(svc.CloseIdleConnections)
-	ctx, withdraw := context.WithCancel(context.Background())
-	c, err := svc.Client("telemetry", fakePermit{kind: "telemetry", dest: srv.URL, ctx: ctx}, egress.Options{})
+	grant := permit.New(t, "telemetry", srv.URL)
+	c, err := svc.Client("telemetry", grant, egress.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +174,7 @@ func TestWithdrawnPermitCancelsAndRefuses(t *testing.T) {
 		done <- err
 	}()
 	<-entered
-	withdraw()
+	grant.Withdraw()
 	select {
 	case err := <-done:
 		wantNotPermitted(t, err)
@@ -212,7 +202,7 @@ func TestRedirectNotFollowed(t *testing.T) {
 	})
 	svc := egress.New(egress.Config{})
 	t.Cleanup(svc.CloseIdleConnections)
-	c, err := svc.Client("model-request", fakePermit{kind: "model-request", dest: srv.URL, ctx: context.Background()}, egress.Options{})
+	c, err := svc.Client("model-request", permit.New(t, "model-request", srv.URL), egress.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

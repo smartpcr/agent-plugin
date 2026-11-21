@@ -29,7 +29,7 @@ require (
 	// non-test dependencies (RM-10).
 	github.com/google/jsonschema-go v0.4.3
 	github.com/smartpcr/agent-plugin/src/go v0.1.5-0.20261120142542-a7caf0f79ab0
-	github.com/smartpcr/agent-plugin/src/sdk v0.0.0-20261119220503-a647d4984790
+	github.com/smartpcr/agent-plugin/src/sdk v0.0.0-20261121020315-f394c244a7a7
 	// The fixed command tree, help routing and completion scripts of internal/cli
 	// (DH-D-CLI-1): chosen by docs/harness/libs/commander.md section 5
 	// (DH-LIB-COMMANDER); Apache-2.0, links pflag and, on Windows only, mousetrap.

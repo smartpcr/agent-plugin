@@ -22,7 +22,7 @@
 #       - id: DH-E-<AREA>-<n>
 #         authored: DH-S-<n>
 
-built-through: DH-S-1
+built-through: DH-S-6
 
 stages:
   DH-S-16: []
@@ -50,8 +50,24 @@ stages:
       authored: DH-S-4
     - id: DH-E-RIPGREP-2
       authored: DH-S-4
+    # Linux: a whole process tree is killed (impl.md step 18.3), and a host that
+    # dies leaves a readable report on each OS (step 18.2); authored with the
+    # test kit that closes circle C-1 (DH-S-6, step 6.17).
+    - id: DH-E-EXEC-1
+      authored: DH-S-6
+    - id: DH-E-HOST-4
+      authored: DH-S-6
   DH-S-21:
     # Two processes on one home and one profile; guarded (impl.md step 21.13).
     - id: DH-E-BOOT-2
       authored: DH-S-6
-  DH-S-22: []
+  DH-S-22:
+    # A launch that cannot serve fails loudly; one that can serves the UI's first
+    # page (impl.md step 22.3); authored in DH-S-6.
+    - id: DH-E-BOOT-1
+      authored: DH-S-6
+  DH-S-39:
+    # All traffic through a TLS-intercepting proxy: the model, a fetched page and an
+    # MCP server over HTTP (impl.md step 39.15); authored in DH-S-6.
+    - id: DH-E-UTIL-1
+      authored: DH-S-6

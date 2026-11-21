@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -19,6 +18,8 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/expr"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/profile"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/settings"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/temphome"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
 )
 
@@ -51,10 +52,10 @@ type fixture struct {
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	cat := probeCatalog(t)
-	f := &fixture{home: filepath.Join(t.TempDir(), "home")}
+	f := &fixture{home: temphome.Dir(t)}
 	def := profile.Definition{Name: "probe"}
 	f.profile, f.user = profile.LayerPath(f.home, def.Name), profile.UserLayerPath(f.home)
-	write(t, f.profile, profileText)
+	temphome.Write(t, f.profile, profileText)
 	cs, err := config.NewService(config.ServiceOptions{Catalog: cat, Stack: func(read config.ReadFile) ([]loader.Layer, []loader.Issue, error) {
 		return profile.Stack(def, profile.Sources{Home: f.home, Read: profile.ReadFile(read)})
 	}})
@@ -75,16 +76,6 @@ func probeCatalog(t *testing.T) *catalog.Catalog {
 	return cat
 }
 
-func write(t *testing.T, path, text string) {
-	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func read(t *testing.T, path string) string {
 	t.Helper()
 	data, err := os.ReadFile(path)
@@ -96,7 +87,7 @@ func read(t *testing.T, path string) string {
 
 func TestDescribeListsLiveFieldsWithTheirLayer(t *testing.T) {
 	f := newFixture(t)
-	write(t, f.user, "- id: probe\n  merge:\n    level: warn\n")
+	temphome.Write(t, f.user, "- id: probe\n  merge:\n    level: warn\n")
 	if err := f.config.Reload(); err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +128,7 @@ func level(t *testing.T, form *settings.Form) settings.Field {
 // rejected one on disk, and says the disk differs and why.
 func TestDescribeShowsEffectiveValueAfterRejection(t *testing.T) {
 	f := newFixture(t)
-	write(t, f.user, "- id: probe\n  merge:\n    level: 7\n")
+	temphome.Write(t, f.user, "- id: probe\n  merge:\n    level: 7\n")
 	if err := f.config.Reload(); !herr.Has(err, config.ReasonRejected) {
 		t.Fatalf("reload = %v, want rejected", err)
 	}
@@ -159,7 +150,7 @@ func TestDescribeShowsEffectiveValueAfterRejection(t *testing.T) {
 // An edit to a field an expression computes is refused, and nothing is written.
 func TestComputedFieldEditIsRefused(t *testing.T) {
 	f := newFixture(t)
-	write(t, f.profile, profileText+"- id: probe\n  merge:\n    level: !expr '\"warn\"'\n")
+	temphome.Write(t, f.profile, profileText+"- id: probe\n  merge:\n    level: !expr '\"warn\"'\n")
 	if err := f.config.Reload(); err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +211,7 @@ func TestRefusedEditsChangeNothing(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFixture(t)
-			write(t, f.user, "- id: probe\n  merge:\n    level: warn\n")
+			temphome.Write(t, f.user, "- id: probe\n  merge:\n    level: warn\n")
 			before, user := read(t, f.profile), read(t, f.user)
 			form, err := f.form.Describe()
 			if err != nil {
@@ -265,15 +256,14 @@ func TestDescribeShowsDefaults(t *testing.T) {
 // component holds, marked computed, with the layer that holds the expression.
 func TestDescribeShowsEvaluatedExpression(t *testing.T) {
 	cat := probeCatalog(t)
-	home := filepath.Join(t.TempDir(), "home")
+	home := temphome.Dir(t)
 	def := profile.Definition{Name: "probe"}
-	write(t, profile.LayerPath(home, def.Name), profileText+"- id: probe\n  merge:\n    level: !expr '\"wa\" + \"rn\"'\n")
+	temphome.Write(t, profile.LayerPath(home, def.Name), profileText+"- id: probe\n  merge:\n    level: !expr '\"wa\" + \"rn\"'\n")
 	evaluator, err := expr.New(expr.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	root := cordis.New(cordis.WithExporters())
-	t.Cleanup(root.Dispose)
+	root := testkit.Tree(t)
 	fiber, err := root.Use(loader.Component, loader.Options{Resolver: cat, Evaluator: evaluator})
 	if err != nil {
 		t.Fatal(err)
@@ -320,11 +310,10 @@ func TestDescribeShowsEvaluatedExpression(t *testing.T) {
 // new value, from the layer that now owns it, with nothing pending.
 func TestDescribeFromReloadedListenerSeesTheNewTree(t *testing.T) {
 	cat := probeCatalog(t)
-	home := filepath.Join(t.TempDir(), "home")
+	home := temphome.Dir(t)
 	def := profile.Definition{Name: "probe"}
-	write(t, profile.LayerPath(home, def.Name), profileText)
-	root := cordis.New(cordis.WithExporters())
-	t.Cleanup(root.Dispose)
+	temphome.Write(t, profile.LayerPath(home, def.Name), profileText)
+	root := testkit.Tree(t)
 	fiber, err := root.Use(loader.Component, loader.Options{Resolver: cat})
 	if err != nil {
 		t.Fatal(err)
@@ -358,7 +347,7 @@ func TestDescribeFromReloadedListenerSeesTheNewTree(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	write(t, profile.UserLayerPath(home), "- id: probe\n  merge:\n    level: warn\n")
+	temphome.Write(t, profile.UserLayerPath(home), "- id: probe\n  merge:\n    level: warn\n")
 	if err := cs.Reload(); err != nil {
 		t.Fatal(err)
 	}
@@ -376,11 +365,10 @@ func TestDescribeFromReloadedListenerSeesTheNewTree(t *testing.T) {
 // pending.
 func TestDescribeFromEditHandedOffByAnEarlierObserverSeesTheEdit(t *testing.T) {
 	cat := probeCatalog(t)
-	home := filepath.Join(t.TempDir(), "home")
+	home := temphome.Dir(t)
 	def := profile.Definition{Name: "probe"}
-	write(t, profile.LayerPath(home, def.Name), profileText)
-	root := cordis.New(cordis.WithExporters())
-	t.Cleanup(root.Dispose)
+	temphome.Write(t, profile.LayerPath(home, def.Name), profileText)
+	root := testkit.Tree(t)
 	fiber, err := root.Use(loader.Component, loader.Options{Resolver: cat})
 	if err != nil {
 		t.Fatal(err)
@@ -437,7 +425,7 @@ func TestDescribeFromEditHandedOffByAnEarlierObserverSeesTheEdit(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	write(t, profile.UserLayerPath(home), "- id: probe\n  merge:\n    level: warn\n")
+	temphome.Write(t, profile.UserLayerPath(home), "- id: probe\n  merge:\n    level: warn\n")
 	if err := cs.Reload(); err != nil {
 		t.Fatal(err)
 	}
