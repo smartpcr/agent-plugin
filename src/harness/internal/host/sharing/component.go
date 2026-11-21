@@ -1,8 +1,6 @@
 package sharing
 
-import (
-	"github.com/smartpcr/agent-plugin/src/go/cordis"
-)
+import "github.com/smartpcr/agent-plugin/src/go/cordis"
 
 // Name is the component's catalogue name.
 const Name = "host.sharing"
@@ -14,10 +12,13 @@ var Key = cordis.NewServiceKey[*Gate]("host.sharing")
 
 // Component is host.sharing: the entry whose config is `sharing.Config`, the
 // visible settings `sharing.off` and `sharing.kinds.<kind>.enabled|endpoint`. On
-// load it applies its config to the gate under Key; on unload (the entry removed,
-// or reloaded with a new config) it puts the gate back to the default, every kind
-// off, which withdraws every permit the config allowed. One entry configures the
-// gate: a second one fails with sharing/claimed.
+// load it applies its config to the gate under Key. A live config change is
+// accepted in place: the gate is reconfigured without restarting the fiber, so
+// (per Gate.Configure) only kinds whose setting or endpoint changed lose their
+// permits and unchanged kinds are never briefly denied. On unload (the entry
+// removed) it puts the gate back to the default, every kind off, which withdraws
+// every permit the config allowed. One entry configures the gate: a second one
+// fails with sharing/claimed.
 var Component = cordis.Define(Name, func(ctx *cordis.Context, cfg Config) error {
 	g, err := Key.Get(ctx)
 	if err != nil {
@@ -36,6 +37,8 @@ var Component = cordis.Define(Name, func(ctx *cordis.Context, cfg Config) error 
 	})
 	if err != nil {
 		g.unclaim()
+		return err
 	}
+	_, err = cordis.AcceptUpdate(ctx, func(next Config) { g.Configure(next) })
 	return err
 })
