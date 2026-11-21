@@ -93,6 +93,10 @@ type AssistantMessagePayload struct {
 	// ServedBy names who served a substituted stream (llm.StreamAround); empty
 	// when the route's provider did.
 	ServedBy string `json:"served_by,omitempty"`
+	// Estimate is the token meter's heuristic price of the request sent, so a
+	// fold can calibrate against that same request (DH-ADR-LLM-9); 0 when
+	// unknown.
+	Estimate int `json:"estimate,omitempty"`
 }
 
 // AssistantAttemptPayload is the log-only record of a model call that did not
@@ -106,6 +110,7 @@ type AssistantAttemptPayload struct {
 	Failure       *vocab.Failure  `json:"failure,omitempty"`
 	Stream        json.RawMessage `json:"stream,omitempty"`
 	ServedBy      string          `json:"served_by,omitempty"`
+	Estimate      int             `json:"estimate,omitempty"`
 }
 
 // ToolCallPayload is a tool call the model made; Arguments stay the raw string the
@@ -197,12 +202,13 @@ var (
 		Validate: func(p MessagePayload) error { return needRole(p.Message, vocab.RoleDeveloper) }})
 	UserMessage = mustCoreSurface(Spec[UserMessagePayload]{Name: "user/message", Version: 1,
 		Validate: func(p UserMessagePayload) error { return needRole(p.Message, vocab.RoleUser) }})
-	// Version 2 of both attempt events adds the optional served_by (llm.StreamAround).
-	AssistantMessage = mustCoreSurface(Spec[AssistantMessagePayload]{Name: "assistant/message", Version: 2,
-		Upgrades: map[int]Upgrade{1: upgradeAddedServedBy}, Cold: "stream", NoSources: true,
+	// Version 2 of both attempt events adds the optional served_by
+	// (llm.StreamAround); version 3 adds the optional estimate (the token meter).
+	AssistantMessage = mustCoreSurface(Spec[AssistantMessagePayload]{Name: "assistant/message", Version: 3,
+		Upgrades: map[int]Upgrade{1: upgradeAddedServedBy, 2: upgradeAddedEstimate}, Cold: "stream", NoSources: true,
 		Validate: func(p AssistantMessagePayload) error { return needRole(p.Message, vocab.RoleAssistant) }})
-	AssistantAttempt = mustCore(Spec[AssistantAttemptPayload]{Name: "assistant/attempt", Version: 2,
-		Upgrades: map[int]Upgrade{1: upgradeAddedServedBy}, Cold: "stream"})
+	AssistantAttempt = mustCore(Spec[AssistantAttemptPayload]{Name: "assistant/attempt", Version: 3,
+		Upgrades: map[int]Upgrade{1: upgradeAddedServedBy, 2: upgradeAddedEstimate}, Cold: "stream"})
 
 	ToolCall = mustCore(Spec[ToolCallPayload]{Name: "tool/call", Version: 1,
 		Validate: func(p ToolCallPayload) error {
@@ -235,6 +241,10 @@ var (
 // upgradeAddedServedBy is the identity: version 2 only adds the optional
 // served_by, and a version-1 payload, which has none, was served by the provider.
 func upgradeAddedServedBy(raw json.RawMessage) (json.RawMessage, error) { return raw, nil }
+
+// upgradeAddedEstimate is the identity: version 3 only adds the optional
+// estimate, and a version-2 payload, which has none, left it unknown.
+func upgradeAddedEstimate(raw json.RawMessage) (json.RawMessage, error) { return raw, nil }
 
 // upgradeToolResultV1 converts tool/result version 1, which named the call "id"
 // and had no spill reference, to version 2.

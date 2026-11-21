@@ -76,6 +76,9 @@ type AttemptFailure struct {
 	Failure      *vocab.Failure
 	Policy       RetryPolicy
 	AttemptsLeft int
+	// StepStarted is when the step's first attempt started, so an elapsed bound
+	// counts that attempt's own time; zero when the raiser does not know it.
+	StepStarted time.Time
 }
 
 // AttemptDecision is Retry or GiveUp.
@@ -215,7 +218,9 @@ func AskPreStep(ctx *cordis.Context, at scope.Key, req PreStepRequest) (PreStepD
 
 // AskAttemptFailed dispatches AttemptFailed. A cancelled attempt is not asked
 // about (the turn ends aborted): GiveUp. A Retry with a negative wait is an
-// extension failure.
+// extension failure. A Permanent failure (llm/auth among them) is never retried
+// (SP-2): a Retry any listener returns for it is GiveUp, and the turn ends with
+// the failure itself.
 func AskAttemptFailed(ctx *cordis.Context, at scope.Key, f AttemptFailure) (AttemptDecision, error) {
 	if f.Failure == nil {
 		return nil, errors.New("agent: AttemptFailed needs the failure")
@@ -235,6 +240,9 @@ func AskAttemptFailed(ctx *cordis.Context, at scope.Key, f AttemptFailure) (Atte
 	case Retry:
 		if d.After < 0 {
 			return nil, extFailed(AttemptFailed.Name(), fmt.Errorf("retry after %v", d.After))
+		}
+		if f.Failure.Class == vocab.Permanent {
+			return GiveUp{}, nil
 		}
 		return d, nil
 	}

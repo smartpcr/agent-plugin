@@ -13,6 +13,7 @@ import (
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/meter"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
@@ -163,6 +164,7 @@ type settlement struct {
 	RequestAsOf   *event.Seq     `json:"request_as_of"`
 	RequestDigest string         `json:"request_digest"`
 	Failure       *vocab.Failure `json:"failure"`
+	Estimate      int            `json:"estimate"`
 }
 
 // DH-T-LLM-2 (TC-05): one attempt, one caller-logged settlement. A route that
@@ -200,6 +202,9 @@ func TestStreamOneAttemptOneSettlement(t *testing.T) {
 		if f.reqs[attempt-1] != req.Digest() {
 			t.Fatal("the adapter saw another request")
 		}
+		if rec.Estimate == 0 || rec.Estimate != meter.EstimateRequest(req) {
+			t.Fatalf("attempt %d: estimate %d, the request prices at %d", attempt, rec.Estimate, meter.EstimateRequest(req))
+		}
 		if got := sink.before[attempt-1]; got != start+event.Offset(attempt-1) {
 			t.Fatalf("attempt %d: the runtime appended: log %d at settle, want %d", attempt, got, start+event.Offset(attempt-1))
 		}
@@ -217,7 +222,7 @@ func TestStreamOneAttemptOneSettlement(t *testing.T) {
 		if err := json.Unmarshal([]byte(ev.Raw()), &s); err != nil {
 			t.Fatal(err)
 		}
-		if s.RequestAsOf == nil || *s.RequestAsOf != sink.records[i].RequestAsOf || s.RequestDigest != sink.records[i].RequestDigest {
+		if s.RequestAsOf == nil || *s.RequestAsOf != sink.records[i].RequestAsOf || s.RequestDigest != sink.records[i].RequestDigest || s.Estimate != sink.records[i].Estimate {
 			t.Fatalf("settlement %d does not attribute its request: %s", i, ev.Raw())
 		}
 	}

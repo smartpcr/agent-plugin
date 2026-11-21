@@ -52,6 +52,8 @@ type Config struct {
 	Transport *transport.Transport
 	// MaxConcurrent caps the route's concurrent attempts; zero is uncapped.
 	MaxConcurrent int
+	// Retry is the route's retry policy; zero is llm.DefaultRetry.
+	Retry llm.RetryPolicy
 	// Diagnose receives the encoder's diagnostics; nil drops them.
 	Diagnose func(string)
 }
@@ -72,6 +74,9 @@ func Route(cfg Config) (llm.Route, error) {
 		cfg.Key = KeyRef
 	}
 	cfg.Secrets.Name(cfg.Key)
+	if cfg.Retry == (llm.RetryPolicy{}) {
+		cfg.Retry = llm.DefaultRetry()
+	}
 	models := make([]llm.Model, len(Models))
 	copy(models, Models)
 	return llm.Route{
@@ -79,6 +84,7 @@ func Route(cfg Config) (llm.Route, error) {
 		Models:        models,
 		Defaults:      vocab.Controls{MaxOutputTokens: DefaultMaxTokens},
 		MaxConcurrent: cfg.MaxConcurrent,
+		Retry:         cfg.Retry,
 		Adapter:       &adapter{cfg: cfg},
 	}, nil
 }

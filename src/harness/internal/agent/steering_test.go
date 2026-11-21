@@ -247,6 +247,15 @@ func TestAttemptFailed(t *testing.T) {
 		t.Fatalf("a cancelled attempt was asked about: %T, asked %d", d, asked)
 	}
 	h.Dispose()
+	// SP-2: a listener that retries a Permanent failure (llm/auth) is overruled.
+	hp := must(agent.AttemptFailed.On(a.Scope(), func(*cordis.Context, agent.AttemptFailure, func(agent.AttemptFailure) (agent.AttemptDecision, error)) (agent.AttemptDecision, error) {
+		return agent.Retry{Reason: "another key"}, nil
+	}))
+	req.Failure = must(vocab.NewFailure(vocab.CodeAuth, "bad key"))
+	if d := must(agent.AskAttemptFailed(e.root, a.ScopeKey(), req)); d != (agent.GiveUp{}) {
+		t.Fatalf("an auth failure was retried: %#v", d)
+	}
+	hp.Dispose()
 	must(agent.AttemptFailed.On(a.Scope(), func(*cordis.Context, agent.AttemptFailure, func(agent.AttemptFailure) (agent.AttemptDecision, error)) (agent.AttemptDecision, error) {
 		panic("retry bug")
 	}))

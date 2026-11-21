@@ -22,8 +22,9 @@
 //	                       published (DH-D-TOOLCHAIN-5)
 //	preflight              the credentialed scenario workflow's first step: fails when
 //	                       DSH_DEEPSEEK_API_KEY is absent, the index disagrees with the
-//	                       scenario tests, or an ID of DSH_REQUIRE_SCENARIOS has no
-//	                       scenario test (DH-D-TOOLCHAIN-4)
+//	                       scenario tests, an ID of DSH_REQUIRE_SCENARIOS has no
+//	                       scenario test, or its index entry requires a stage past
+//	                       built-through (DH-D-TOOLCHAIN-4)
 //	require --stage DH-S-n prints the index entry of the stage being accepted, the
 //	                       value of DSH_REQUIRE_SCENARIOS
 package main

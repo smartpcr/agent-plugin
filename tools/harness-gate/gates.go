@@ -435,6 +435,9 @@ func (c *Config) scenarioIndexGate(_ context.Context, w io.Writer) error {
 	if err := acceptance.Check(x, scenarios); err != nil {
 		return err
 	}
+	if err := acceptance.CheckBoundary(c.Root, x, scenarios); err != nil {
+		return err
+	}
 	indexed := 0
 	for _, s := range x.Stages {
 		indexed += len(s.Scenarios)

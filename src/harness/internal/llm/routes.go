@@ -7,6 +7,7 @@ import (
 	"iter"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
@@ -47,7 +48,9 @@ type Route struct {
 	Defaults vocab.Controls
 	// MaxConcurrent caps the route's attempts in flight; 0 is no cap.
 	MaxConcurrent int
-	Adapter       Adapter
+	// Retry is the route's retry policy; zero never retries.
+	Retry   RetryPolicy
+	Adapter Adapter
 }
 
 func (r Route) clone() Route {
@@ -68,6 +71,9 @@ func (r Route) validate() error {
 	}
 	if r.MaxConcurrent < 0 {
 		return fmt.Errorf("llm: route %q has a negative concurrency cap", r.ID)
+	}
+	if err := r.Retry.Validate(); err != nil {
+		return fmt.Errorf("llm: route %q: %w", r.ID, err)
 	}
 	seen := map[string]bool{}
 	for _, m := range r.Models {
@@ -214,5 +220,7 @@ type Runtime struct {
 	mu     sync.RWMutex
 	routes map[vocab.RouteID]*entry
 	clock  func() int64
-	host   *cordis.Context // StreamAround is dispatched through it; nil: no interception
+	after  func(time.Duration) <-chan time.Time // the retry waits of Complete
+	jitter func() float64                       // draws a retry's jitter, in [0, 1)
+	host   *cordis.Context                      // StreamAround is dispatched through it; nil: no interception
 }

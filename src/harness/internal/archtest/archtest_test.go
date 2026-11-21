@@ -153,6 +153,15 @@ func TestRulesCatchViolations(t *testing.T) {
 			imports(pkg(HerrPackage, "herr", false, "a.go"), "github.com/pkg/errors"),
 			imports(pkg(IdentPackage, "ident", false, "a.go"), "github.com/google/uuid"),
 		}, 4},
+		{"the llm listener and meter edges", HarnessModule, []Package{
+			imports(pkg(LLMRetryPackage, "retry", false, "a.go"), LLMPackage, AgentPackage),
+			imports(pkg(LLMMeterPackage, "meter", false, "a.go"), VocabPackage, ViewsPackage),
+		}, 0},
+		{"the llm edges are not widened", HarnessModule, []Package{
+			imports(pkg(LLMRetryPackage, "retry", false, "a.go"), ViewsPackage, HumanPackage),
+			imports(pkg(LLMMeterPackage, "meter", false, "a.go"), AgentPackage),
+			imports(pkg(LLMPackage, "llm", false, "a.go"), AgentPackage, ViewsPackage),
+		}, 5},
 		{"the test kit within its bounds", HarnessModule, []Package{
 			imports(pkg(TestkitPackage+"/launcher", "launcher", false, "a.go"), TestkitPackage, TestkitPackage+"/temphome", SubprocessPackage),
 			imports(pkg(HarnessModule+"/internal/testkitx", "testkitx", false, "a.go"), HarnessModule+"/internal/testkitx/y"),

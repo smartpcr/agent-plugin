@@ -21,6 +21,11 @@
 #     DH-S-<n>:
 #       - id: DH-E-<AREA>-<n>
 #         authored: DH-S-<n>
+#         requires: [DH-S-<n>, ...]   # optional: stages that must be built first
+#
+# requires names the stages whose behaviour a scenario authored ahead of them
+# exercises; "harness-gate preflight" refuses to run it until built-through has
+# reached every one, and none may come after the executing stage.
 
 built-through: DH-S-7
 
@@ -46,6 +51,20 @@ stages:
     # authored with the validated reload of DH-S-6 (step 6.13).
     - id: DH-E-LOADER-1
       authored: DH-S-6
+    # The model runtime against the real DeepSeek API: a turn with reasoning and a
+    # tool call, a bad key that is never retried nor routed elsewhere, and a real
+    # model titling a session (impl.md DH-S-9 "Scenarios: authored here, run in
+    # DH-S-17"). Written against the SDK boundary of the built dsh; they need the
+    # agent loop (DH-S-11) and titles and the headless launcher (DH-S-16).
+    - id: DH-E-LLM-1
+      authored: DH-S-9
+      requires: [DH-S-11, DH-S-16]
+    - id: DH-E-LLM-3
+      authored: DH-S-9
+      requires: [DH-S-11, DH-S-16]
+    - id: DH-E-VIEW-1
+      authored: DH-S-9
+      requires: [DH-S-11, DH-S-16]
   DH-S-18:
     - id: DH-E-TOOLCHAIN-2
       authored: DH-S-1
