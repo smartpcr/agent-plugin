@@ -1,4 +1,4 @@
-# Stage 8.1 compose path (non-gating): the machine-state and stored-fold tests and the godog E2E
+# Stage 8.1/8.2 compose path (non-gating): the machine-state and stored-fold tests and the godog E2E
 # against a dsh-home named volume. The gate path needs none of this -- the
 # modernc.org/sqlite engine is embedded in the test binary and every dsh.db is
 # created under t.TempDir() when DSH_E2E_STORE_HOME is unset.
