@@ -1,10 +1,20 @@
 package blob
 
-import "testing"
+import (
+	"io/fs"
+	"testing"
+)
 
 // SetSyncDir replaces the directory sync for one test.
 func SetSyncDir(t testing.TB, f func(string) error) {
 	old := syncDir
 	syncDir = f
 	t.Cleanup(func() { syncDir = old })
+}
+
+// SetChmod replaces the mode change for one test.
+func SetChmod(t testing.TB, f func(string, fs.FileMode) error) {
+	old := chmod
+	chmod = f
+	t.Cleanup(func() { chmod = old })
 }

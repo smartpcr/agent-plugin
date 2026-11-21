@@ -97,6 +97,9 @@ func validDigest(d string) bool {
 // syncDir makes a directory entry durable; tests replace it.
 var syncDir = fsx.SyncDir
 
+// chmod sets an object's mode; tests replace it.
+var chmod = os.Chmod
+
 // Store is the blob store of one home.
 type Store struct {
 	root string // <home>/blobs
@@ -242,7 +245,7 @@ func (s *Store) publish(ctx context.Context, staged string, ref Ref) error {
 	if err := syncDir(filepath.Dir(path)); err != nil {
 		return herr.Wrap(home.ReasonIO, err, "blob: sync the directory of "+ref.String())
 	}
-	if err := os.Chmod(path, 0o400); err != nil {
+	if err := chmod(path, 0o400); err != nil {
 		return herr.Wrap(home.ReasonIO, err, "blob: make "+ref.String()+" read-only")
 	}
 	return nil
@@ -261,6 +264,13 @@ func (s *Store) adopt(ctx context.Context, path string, ref Ref) error {
 	}
 	if err := s.verify(ctx, ref); err != nil {
 		return err
+	}
+	// A publish that failed after its link (on the directory sync) left the
+	// object writable; an adopted object is made read-only like a new one.
+	if info.Mode().Perm()&0o222 != 0 {
+		if err := chmod(path, 0o400); err != nil {
+			return herr.Wrap(home.ReasonIO, err, "blob: make "+ref.String()+" read-only")
+		}
 	}
 	now := s.now()
 	if err := os.Chtimes(path, now, now); err != nil {

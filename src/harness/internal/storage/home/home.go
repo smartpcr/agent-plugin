@@ -100,8 +100,13 @@ func Ensure(l Layout) error {
 		if err := makePrivate(dir); err != nil {
 			return herr.Wrap(ReasonIO, err, "home: make "+l.name(dir)+" private")
 		}
-		if err := syncDir(filepath.Dir(dir)); err != nil {
-			return herr.Wrap(ReasonIO, err, "home: sync the entry of "+l.name(dir))
+	}
+	// Every layout directory is the home or a child of it, so syncing the home's
+	// parent and the home makes all their entries durable, adopted ones included
+	// (an earlier Ensure may have failed before its sync).
+	for _, d := range []string{filepath.Dir(l.root), l.root} {
+		if err := syncDir(d); err != nil {
+			return herr.Wrap(ReasonIO, err, "home: sync the entries of the layout")
 		}
 	}
 	return Check(l)
@@ -146,10 +151,6 @@ func EnsurePrivateDir(dir string) error {
 		if err := makePrivate(dir); err != nil {
 			return herr.Wrap(ReasonIO, err, "home: make "+filepath.Base(dir)+" private")
 		}
-		// A new entry survives a crash only once its parent is synced.
-		if err := syncDir(filepath.Dir(dir)); err != nil {
-			return herr.Wrap(ReasonIO, err, "home: sync the entry of "+filepath.Base(dir))
-		}
 	case !errors.Is(err, fs.ErrExist):
 		return herr.Wrap(ReasonIO, err, "home: create "+filepath.Base(dir))
 	}
@@ -160,7 +161,16 @@ func EnsurePrivateDir(dir string) error {
 	if info.Mode()&fs.ModeSymlink != 0 || !info.IsDir() {
 		return herr.Newf(ReasonNotDirectory, "home: %s is not a directory", filepath.Base(dir))
 	}
-	return CheckPrivate(dir)
+	if err := CheckPrivate(dir); err != nil {
+		return err
+	}
+	// An entry survives a crash only once its parent is synced. An adopted
+	// directory is synced too: its creator may have failed, or not yet reached,
+	// that sync, and nothing may be published below an entry that is not durable.
+	if err := syncDir(filepath.Dir(dir)); err != nil {
+		return herr.Wrap(ReasonIO, err, "home: sync the entry of "+filepath.Base(dir))
+	}
+	return nil
 }
 
 // CreatePrivateFile creates the file at path exclusively and private to the

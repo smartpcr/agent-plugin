@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -314,5 +315,33 @@ func TestSameSizeCorruptObjectNotAdopted(t *testing.T) {
 	}
 	if _, err := read(s, ref); !herr.Has(err, blob.ReasonCorrupt) {
 		t.Fatalf("read of the corrupt object = %v", err)
+	}
+}
+
+// A Put that failed on its directory sync leaves a writable object; the retry
+// adopts it read-only and synced, and a failing mode change is reported.
+func TestRetryAfterFailedPublishLeavesTheObjectReadOnly(t *testing.T) {
+	s, _ := newStore(t)
+	recordSyncs(t, errors.New("sync failed"))
+	if _, err := s.Put(bg, blob.KindFile, strings.NewReader("retried"), 0); !herr.Has(err, home.ReasonIO) {
+		t.Fatalf("Put with a failing sync = %v", err)
+	}
+	dirs := recordSyncs(t, nil)
+	blob.SetChmod(t, func(string, fs.FileMode) error { return errors.New("chmod failed") })
+	if _, err := s.Put(bg, blob.KindFile, strings.NewReader("retried"), 0); !herr.Has(err, home.ReasonIO) {
+		t.Fatalf("retry with a failing chmod = %v", err)
+	}
+	blob.SetChmod(t, os.Chmod)
+	ref := put(t, s, "retried")
+	path, _ := s.Path(ref)
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm()&0o222 != 0 {
+		t.Fatalf("the adopted object is %v, %v; want read-only", info.Mode(), err)
+	}
+	if len(*dirs) == 0 || (*dirs)[len(*dirs)-1] != filepath.Dir(path) {
+		t.Fatalf("the retry synced %v, want the object's directory", *dirs)
+	}
+	if got, err := read(s, ref); err != nil || string(got) != "retried" {
+		t.Fatalf("read back %q, %v", got, err)
 	}
 }

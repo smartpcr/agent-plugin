@@ -169,12 +169,23 @@ func TestNewDirectorySyncsItsParent(t *testing.T) {
 	if len(dirs) != 1 || dirs[0] != filepath.Clean(parent) {
 		t.Fatalf("synced %v, want the parent %s", dirs, parent)
 	}
-	if err := EnsurePrivateDir(dir); err != nil || len(dirs) != 1 {
-		t.Fatalf("adopting an existing directory = %v, synced %v", err, dirs)
+	if err := EnsurePrivateDir(dir); err != nil || len(dirs) != 2 || dirs[1] != filepath.Clean(parent) {
+		t.Fatalf("adopting an existing directory = %v, synced %v; want its parent synced again", err, dirs)
 	}
+
+	// A failed sync leaves the directory behind; the retry that adopts it must
+	// sync its parent before reporting success.
 	fail = errors.New("sync failed")
-	if err := EnsurePrivateDir(filepath.Join(parent, "other")); !herr.Has(err, ReasonIO) {
+	other := filepath.Join(parent, "other")
+	if err := EnsurePrivateDir(other); !herr.Has(err, ReasonIO) {
 		t.Fatalf("EnsurePrivateDir with a failing sync = %v", err)
+	}
+	if _, err := os.Lstat(other); err != nil {
+		t.Fatalf("the directory of the failed call: %v", err)
+	}
+	dirs, fail = nil, nil
+	if err := EnsurePrivateDir(other); err != nil || len(dirs) != 1 || dirs[0] != filepath.Clean(parent) {
+		t.Fatalf("retry after a failed sync = %v, synced %v; want the parent %s", err, dirs, parent)
 	}
 
 	dirs, fail = nil, nil
@@ -182,11 +193,16 @@ func TestNewDirectorySyncsItsParent(t *testing.T) {
 	if err := Ensure(l); err != nil {
 		t.Fatal(err)
 	}
-	if len(dirs) != len(l.Dirs()) || dirs[0] != filepath.Dir(l.Root()) || dirs[1] != l.Root() {
-		t.Fatalf("Ensure synced %v", dirs)
+	if len(dirs) != 2 || dirs[0] != filepath.Dir(l.Root()) || dirs[1] != l.Root() {
+		t.Fatalf("Ensure synced %v, want the home's parent and the home", dirs)
 	}
 	fail = errors.New("sync failed")
-	if err := Ensure(New(filepath.Join(t.TempDir(), "home"))); !herr.Has(err, ReasonIO) {
+	l2 := New(filepath.Join(t.TempDir(), "home"))
+	if err := Ensure(l2); !herr.Has(err, ReasonIO) {
 		t.Fatalf("Ensure with a failing sync = %v", err)
+	}
+	dirs, fail = nil, nil
+	if err := Ensure(l2); err != nil || len(dirs) != 2 {
+		t.Fatalf("Ensure retried over the layout of a failed sync = %v, synced %v", err, dirs)
 	}
 }
