@@ -34,6 +34,9 @@ func forceReserve(budget time.Duration) time.Duration {
 // (even one a cleanup is stopping gracefully), and the status is 124 whatever the
 // stop asked for: a fatal report written before stays written.
 func (s *State) shutdown(status int, budget time.Duration) int {
+	// one deadline for the whole operation, the reload's drain included
+	deadline := s.Clock.Now().Add(budget)
+	reserve := forceReserve(budget)
 	if s.stopReload != nil {
 		s.stopReload(budget)
 	}
@@ -41,8 +44,6 @@ func (s *State) shutdown(status int, budget time.Duration) int {
 	if s.Host == nil {
 		return status
 	}
-	deadline := s.Clock.Now().Add(budget)
-	reserve := forceReserve(budget)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -57,7 +58,7 @@ func (s *State) shutdown(status int, budget time.Duration) int {
 			return output.Forced
 		}
 		return status
-	case <-s.Clock.After(budget - reserve):
+	case <-s.Clock.After(max(deadline.Add(-reserve).Sub(s.Clock.Now()), 0)):
 		why = fmt.Sprintf("shutdown not done %s into its %s bound", budget-reserve, budget)
 	case <-s.App.Urgent():
 		why = "shutdown interrupted"

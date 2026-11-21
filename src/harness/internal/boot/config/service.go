@@ -39,7 +39,29 @@ const (
 	ReasonComputed herr.Reason = "config/computed"
 	// ReasonStopping is a reload or an edit asked once shutdown began (Close).
 	ReasonStopping herr.Reason = "config/stopping"
+	// ReasonShadowed is an edit of a field a layer above the writable one sets, so
+	// it would not take effect (DH-D-BOOT-7). Nothing was written; the error holds a
+	// *ShadowedError naming the layers.
+	ReasonShadowed herr.Reason = "config/shadowed"
 )
+
+// Shadow is one field of an edit that a higher layer shadows: the field
+// ("probe.config.level") and the label of the layer that sets it.
+type Shadow struct {
+	Field string
+	Layer string
+}
+
+// ShadowedError lists the fields of a refused edit that higher layers shadow.
+type ShadowedError struct{ Fields []Shadow }
+
+func (e *ShadowedError) Error() string {
+	parts := make([]string, len(e.Fields))
+	for i, f := range e.Fields {
+		parts[i] = fmt.Sprintf("%s is set by layer %s, which is above the one edited", f.Field, f.Layer)
+	}
+	return strings.Join(parts, "; ")
+}
 
 // DefaultLockTimeout bounds the wait for the layer lock of an edit.
 const DefaultLockTimeout = 5 * time.Second
@@ -169,6 +191,55 @@ func (s *Service) Current() *Snapshot {
 // Revision is the effective snapshot's revision.
 func (s *Service) Revision() string { return s.Current().Revision }
 
+// Effective is the config the entry's component runs with, as JSON: what its
+// running fiber resolved (component defaults applied, expressions evaluated).
+// Without a running fiber of it (a second process, or an entry not loaded) it is
+// the effective snapshot's literal config resolved through the component's schema
+// on a scratch fiber; ok is false when neither is known (a config holding an
+// expression that only a load evaluates, or no catalogue).
+func (s *Service) Effective(id string) (value json.RawMessage, ok bool) {
+	if ldr := s.opts.Loader; ldr != nil {
+		if entry := ldr.Find(id); entry != nil {
+			if fiber := ldr.Fiber(entry); fiber != nil {
+				if cfg, has := fiber.EffectiveConfig(); has {
+					if raw, err := json.Marshal(cfg); err == nil {
+						return raw, true
+					}
+				}
+			}
+		}
+	}
+	if s.opts.Catalog == nil {
+		return nil, false
+	}
+	var e *loader.EntryOptions
+	r := s.Current().Report
+	r.walk(r.Tree, "", func(eid string, opt loader.EntryOptions) {
+		if eid == id && e == nil && !opt.Group {
+			e = &opt
+		}
+	})
+	if e == nil || holdsExpr(e.Config) {
+		return nil, false
+	}
+	item, err := s.opts.Catalog.Lookup(e.Name)
+	if err != nil || item.Component == nil {
+		return nil, false
+	}
+	var pre preflight
+	defer pre.close()
+	var raw json.RawMessage
+	if len(bytes.TrimSpace(e.Config)) > 0 {
+		raw = e.Config
+	}
+	cfg, err := pre.resolved(item.Component, raw)
+	if err != nil {
+		return nil, false
+	}
+	out, err := json.Marshal(cfg)
+	return out, err == nil
+}
+
 // Draft reads the layers on disk now, checked, without making them effective: the
 // read an edit starts from.
 func (s *Service) Draft() (*Snapshot, error) {
@@ -244,7 +315,7 @@ func (s *Service) reload() (func(), error) {
 		err = herr.Wrap(ReasonRejected, err, "reload rejected")
 		return s.reject(snap.Revision, err), err
 	}
-	return none, s.adopt(snap)
+	return s.adopt(snap)
 }
 
 // reject records revision as rejected and returns the notification to publish once
@@ -260,17 +331,23 @@ func (s *Service) reject(revision string, err error) func() {
 }
 
 // adopt applies snap to the running tree, outside the state lock, then makes it
-// effective. The caller holds op.
-func (s *Service) adopt(snap *Snapshot) error {
+// effective. The caller holds op. The loader's lifecycle events and Reloaded notice
+// are not published yet: adopt returns that publication, which the caller runs once
+// op is released, so a listener sees the new snapshot as Current and may reload or
+// edit without deadlocking.
+func (s *Service) adopt(snap *Snapshot) (func(), error) {
+	publish := func() {}
 	if s.opts.Loader != nil {
-		if err := s.opts.Loader.ApplyLayers(snap.Layers); err != nil {
-			return err
+		p, err := s.opts.Loader.ApplyLayersDeferred(snap.Layers)
+		if err != nil {
+			return publish, err
 		}
+		publish = p
 	}
 	s.mu.Lock()
 	s.current, s.rejected = snap, ""
 	s.mu.Unlock()
-	return nil
+	return publish, nil
 }
 
 // Watch reloads whenever a layer file read changes, polling every interval, until
@@ -325,35 +402,110 @@ func (s *Service) candidate(snap *Snapshot, edit Edit) (*Snapshot, error) {
 	}
 	layers := make([]loader.Layer, len(snap.Layers))
 	copy(layers, snap.Layers)
-	found := false
+	writable := -1
 	for i := range layers {
 		if layers[i].Writable {
 			layers[i].Ops = append(append([]loader.Op{}, layers[i].Ops...), edit.Ops...)
-			found = true
+			writable = i
 			break
 		}
 	}
-	if !found {
+	if writable < 0 {
 		return nil, herr.New(ReasonNotWritable, "no writable layer")
 	}
 	next := &Snapshot{Revision: snap.Revision, Layers: layers, files: snap.files, docs: snap.docs}
 	next.Report = s.check(layers, snap.docs)
+	if shadowed := shadows(next.Report.Index, layers, writable, edit.Ops); len(shadowed) > 0 {
+		return nil, herr.Wrap(ReasonShadowed, &ShadowedError{Fields: shadowed}, "edit shadowed")
+	}
 	return next, nil
 }
 
+// shadows lists the fields ops write that, in the composed tree, a layer above the
+// writable one (layers[writable]) supplies: an edit of them would not take effect.
+func shadows(index *loader.Index, layers []loader.Layer, writable int, ops []loader.Op) []Shadow {
+	above := map[string]bool{}
+	for _, l := range layers[writable+1:] {
+		above[l.Label] = true
+	}
+	var found []Shadow
+	seen := map[string]bool{}
+	for _, op := range ops {
+		for _, field := range opFields(op) {
+			key := joinField(op.ID, field)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			if owner, ok := index.Owner(op.ID, field); ok && above[owner] {
+				found = append(found, Shadow{Field: key, Layer: owner})
+			}
+		}
+	}
+	return found
+}
+
+// opFields lists the entry fields a merge or override writes: each leaf of a merge
+// patch under "config", each key an override sets.
+func opFields(op loader.Op) []string {
+	switch op.Kind {
+	case loader.OpOverride:
+		fields := make([]string, 0, len(op.Set))
+		for k := range op.Set {
+			fields = append(fields, k)
+		}
+		sort.Strings(fields)
+		return fields
+	case loader.OpMerge:
+		var v any
+		if err := json.Unmarshal(op.Patch, &v); err != nil {
+			return []string{"config"}
+		}
+		var fields []string
+		var walk func(v any, path string)
+		walk = func(v any, path string) {
+			m, ok := v.(map[string]any)
+			if !ok || len(m) == 0 {
+				fields = append(fields, path)
+				return
+			}
+			keys := make([]string, 0, len(m))
+			for k := range m {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				walk(m[k], path+"."+k)
+			}
+		}
+		walk(v, "config")
+		return fields
+	}
+	return nil
+}
+
 // Apply is the one edit path (DH-D-BOOT-7): under the layer lock it reads the
-// layers, refuses a stale revision, checks the candidate, writes the writable layer
-// (keeping its comments) and applies the new tree. A rejected edit writes nothing.
-// It returns the new revision.
+// layers, refuses a stale revision, an edit a higher layer shadows (ReasonShadowed)
+// and a computed field without Overwrite, checks the candidate, writes the writable
+// layer (keeping its comments) and applies the new tree. A refused or rejected edit
+// writes nothing. It returns the new revision; the loader's notices are published
+// after every lock is released.
 func (s *Service) Apply(ctx context.Context, edit Edit) (string, error) {
 	s.op.Lock()
-	defer s.op.Unlock()
+	publish, rev, err := s.apply(ctx, edit)
+	s.op.Unlock()
+	publish()
+	return rev, err
+}
+
+func (s *Service) apply(ctx context.Context, edit Edit) (func(), string, error) {
+	none := func() {}
 	if err := s.stopping(); err != nil {
-		return "", err
+		return none, "", err
 	}
 	path := s.Current().Writable()
 	if path == "" {
-		return "", herr.New(ReasonNotWritable, "no writable layer")
+		return none, "", herr.New(ReasonNotWritable, "no writable layer")
 	}
 	guard := s.opts.Guard
 	if guard == nil {
@@ -379,12 +531,10 @@ func (s *Service) Apply(ctx context.Context, edit Edit) (string, error) {
 		return err
 	})
 	if err != nil {
-		return "", err
+		return none, "", err
 	}
-	if err := s.adopt(adopted); err != nil {
-		return adopted.Revision, err
-	}
-	return adopted.Revision, nil
+	publish, err := s.adopt(adopted)
+	return publish, adopted.Revision, err
 }
 
 // LockGuard is the default write guard: it takes the operating-system lock on

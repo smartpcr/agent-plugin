@@ -60,10 +60,12 @@ func (r *Report) Err() error {
 // the catalogue, every literal config strictly against its component's config type
 // (unknown keys and wrong types are issues), then through the component's own
 // schema on top of its defaults (DH-D-CORDIS-5 candidate config, on a scratch fiber
-// that never loads) and, with an evaluator, every expression. A config holding an
-// expression is decoded only when it loads, and an entry disabled by a literal is
-// not resolved (enabling it makes it part of the check), so a value valid here may
-// still fail its load. No component is constructed.
+// that never loads; an omitted config is resolved as the load would resolve it, so a
+// component that cannot run on its defaults is an issue) and, with an evaluator,
+// every expression. A config holding an expression is decoded only when it loads,
+// and an entry disabled by a literal is not resolved (enabling it makes it part of
+// the check), so a value valid here may still fail its load. No component is
+// constructed.
 func Check(layers []loader.Layer, opts CheckOptions) *Report {
 	tree, index, issues := loader.Compose(layers)
 	r := &Report{Tree: tree, Index: index, Issues: issues, layers: layers, docs: opts.Docs}
@@ -85,16 +87,25 @@ type preflight struct{ root *cordis.Context }
 
 // resolve runs component's schema on raw as a load would, without loading it.
 func (p *preflight) resolve(component *cordis.Component, raw json.RawMessage) error {
+	_, err := p.resolved(component, raw)
+	return err
+}
+
+// resolved is resolve returning the config the component would receive.
+func (p *preflight) resolved(component *cordis.Component, raw json.RawMessage) (any, error) {
 	if p.root == nil {
 		p.root = cordis.New(cordis.WithExporters(), cordis.WithStrictConfig())
 	}
 	fiber, err := p.root.Use(component, nil, preflightHold)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer fiber.Dispose()
-	_, err = fiber.ResolveConfig(json.RawMessage(bytes.Clone(raw)))
-	return err
+	var candidate any
+	if raw != nil {
+		candidate = json.RawMessage(bytes.Clone(raw))
+	}
+	return fiber.ResolveConfig(candidate)
 }
 
 func (p *preflight) close() {
@@ -138,16 +149,25 @@ func (r *Report) checkEntry(id string, e loader.EntryOptions, opts CheckOptions,
 	if err != nil {
 		return append(issues, r.issue(id, e, "name", err.Error()))
 	}
-	if item.Config == nil || len(bytes.TrimSpace(e.Config)) == 0 || holdsExpr(e.Config) {
+	present := len(bytes.TrimSpace(e.Config)) > 0
+	if present && holdsExpr(e.Config) {
 		return issues
 	}
-	if field, msg := strictDecode(item.Config, e.Config); msg != "" {
-		return append(issues, r.issue(id, e, field, msg))
+	if present && item.Config != nil {
+		if field, msg := strictDecode(item.Config, e.Config); msg != "" {
+			return append(issues, r.issue(id, e, field, msg))
+		}
 	}
 	if item.Component == nil || (e.Disabled && e.DisabledExpr == "") {
 		return issues
 	}
-	if err := pre.resolve(item.Component, e.Config); err != nil {
+	// an omitted config is resolved too, as the load would (nil, so the component's
+	// defaults and schema decide whether it may run without one)
+	var raw json.RawMessage
+	if present {
+		raw = e.Config
+	}
+	if err := pre.resolve(item.Component, raw); err != nil {
 		issues = append(issues, r.FromConfigError(id, e, err)...)
 	}
 	return issues

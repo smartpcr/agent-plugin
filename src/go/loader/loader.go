@@ -244,9 +244,23 @@ func (s *Service) Apply(desired []EntryOptions) error {
 // It is how a nested loader (New) is changed; a loader driven by a layer source
 // should be changed through that source instead.
 func (s *Service) ApplyLayers(layers []Layer) error {
+	publish, err := s.ApplyLayersDeferred(layers)
+	if err != nil {
+		return err
+	}
+	publish()
+	return nil
+}
+
+// ApplyLayersDeferred is ApplyLayers that returns the publication of the lifecycle
+// events and the Reloaded notice instead of making it, as a layer source does
+// (applyDeferred): a caller holding its own lock commits its state and releases the
+// lock, then calls publish, so a listener may call back into it. publish is non-nil
+// when err is nil and must be called exactly once.
+func (s *Service) ApplyLayersDeferred(layers []Layer) (publish func(), err error) {
 	if s.nested {
 		if err := checkNestedLayers(layers); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	tree, _, issues := Compose(layers)
@@ -255,7 +269,7 @@ func (s *Service) ApplyLayers(layers []Layer) error {
 	}
 	s.apply.Lock()
 	assignStableIDs(tree, "", s.Snapshot())
-	return s.reconcileLocked(tree, nil, issues)
+	return s.reconcileHeld(tree, nil, issues)
 }
 
 // applyDeferred is Apply for a layer source. issues are the source's own faults

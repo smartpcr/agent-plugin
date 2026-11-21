@@ -80,6 +80,7 @@ var codes = map[herr.Reason]int{
 	"config/computed":     Invalid,
 	"config/not-writable": Config,
 	"config/rejected":     Config,
+	"config/shadowed":     Busy,
 	"config/stale":        Busy,
 	"config/stopping":     Busy,
 

@@ -36,14 +36,21 @@ const (
 // Secret is the presence marker shown instead of a secret field's value.
 const Secret = "<set>"
 
+// DefaultLayer is the Layer of a field no layer sets: its value is the component's
+// default.
+const DefaultLayer = "default"
+
 // Field is one live field of an entry: its path ("config.level"), its effective
-// value, the layer that supplies it, and whether it is a secret (Value is then the
-// presence marker, or null when unset).
+// value (what the running component resolved: defaults applied, expressions
+// evaluated), the layer that supplies it (DefaultLayer when none does), whether an
+// expression computes it (an edit must then overwrite it), and whether it is a
+// secret (Value is then the presence marker, or null when unset).
 type Field struct {
-	Path   string          `json:"path"`
-	Value  json.RawMessage `json:"value"`
-	Layer  string          `json:"layer,omitempty"`
-	Secret bool            `json:"secret,omitempty"`
+	Path     string          `json:"path"`
+	Value    json.RawMessage `json:"value"`
+	Layer    string          `json:"layer,omitempty"`
+	Computed bool            `json:"computed,omitempty"`
+	Secret   bool            `json:"secret,omitempty"`
 }
 
 // Entry is one entry of the tree with live fields.
@@ -97,8 +104,10 @@ func New(cfg *config.Service, cat config.Catalog) *Service {
 	return &Service{config: cfg, catalog: cat}
 }
 
-// Describe lists every entry with live fields at its effective value: the accepted
-// tree, never a draft on disk that was rejected or not yet reloaded.
+// Describe lists every entry with live fields at its effective value: what the
+// running component resolved from the accepted tree (config.Service.Effective),
+// never a draft on disk that was rejected or not yet reloaded, with the owning
+// layer from the accepted tree's index.
 func (s *Service) Describe() (*Form, error) {
 	eff := s.config.Current()
 	form := &Form{Revision: eff.Revision, Entries: []Entry{}}
@@ -122,16 +131,23 @@ func (s *Service) Describe() (*Form, error) {
 		if len(fields) == 0 {
 			continue
 		}
+		running, known := s.config.Effective(pe.ID)
 		entry := Entry{ID: pe.ID, Name: pe.Name}
 		for _, f := range fields {
 			field := Field{Path: f.path, Secret: f.secret, Value: json.RawMessage("null")}
 			if ex, err := snap.Report.Explain(pe.ID, f.path); err == nil {
 				field.Layer = ex.Layer
-				if len(ex.Value) > 0 {
+				field.Computed = holdsExpr(ex.Value)
+				if len(ex.Value) > 0 && !known {
 					field.Value = ex.Value
 				}
-			} else if label, ok := snap.Report.Index.Owner(pe.ID, f.path); ok {
-				field.Layer = label
+			} else {
+				field.Layer = DefaultLayer
+			}
+			if known {
+				if v, ok := valueAt(running, f.path); ok {
+					field.Value = v
+				}
 			}
 			if f.secret && !bytes.Equal(field.Value, []byte("null")) {
 				field.Value = json.RawMessage(`"` + Secret + `"`)
@@ -141,6 +157,32 @@ func (s *Service) Describe() (*Form, error) {
 		form.Entries = append(form.Entries, entry)
 	}
 	return form, nil
+}
+
+// holdsExpr reports whether a composed value is an expression's source.
+func holdsExpr(raw json.RawMessage) bool {
+	return bytes.Contains(raw, []byte(`"$expr"`)) || bytes.Contains(raw, []byte("${{"))
+}
+
+// valueAt is the value at a "config.a.b" path of a resolved config.
+func valueAt(config json.RawMessage, path string) (json.RawMessage, bool) {
+	steps := strings.Split(path, ".")
+	if len(steps) < 2 || steps[0] != "config" {
+		return nil, false
+	}
+	v := config
+	for _, step := range steps[1:] {
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(v, &m); err != nil {
+			return nil, false
+		}
+		next, ok := m[step]
+		if !ok {
+			return nil, false
+		}
+		v = next
+	}
+	return v, true
 }
 
 // Apply sets the entry's live field to value (JSON; null clears it in the writable
@@ -176,10 +218,6 @@ func (s *Service) Apply(ctx context.Context, revision, id, path string, value js
 	if !cand.Report.OK() {
 		return Result{Status: Failed, Issues: cand.Report.Issues, Err: herr.Wrap(config.ReasonRejected, cand.Report.Err(), "edit rejected")}
 	}
-	writable := writableLabel(cand)
-	if owner, ok := cand.Report.Index.Owner(id, path); ok && owner != writable {
-		return Result{Status: Overridden, Layer: owner, Err: herr.Newf(ReasonOverridden, "%s.%s is set by layer %s, which is above the one edited", id, path, owner)}
-	}
 	rev, err := s.config.Apply(ctx, edit)
 	if err != nil {
 		return classify(err)
@@ -194,6 +232,13 @@ func failed(err error, issue loader.Issue) Result {
 // classify maps an error of config.Service to an outcome.
 func classify(err error) Result {
 	switch {
+	case herr.Has(err, config.ReasonShadowed):
+		r := Result{Status: Overridden, Err: herr.Wrap(ReasonOverridden, err, "edit shadowed")}
+		var se *config.ShadowedError
+		if errors.As(err, &se) && len(se.Fields) > 0 {
+			r.Layer = se.Fields[0].Layer
+		}
+		return r
 	case herr.Has(err, config.ReasonStale):
 		return Result{Status: Stale, Err: err}
 	case herr.Has(err, config.ReasonComputed):
@@ -207,15 +252,6 @@ func classify(err error) Result {
 		return r
 	}
 	return Result{Status: Unsaved, Err: herr.Wrap(ReasonUnsaved, err, "edit not saved")}
-}
-
-func writableLabel(snap *config.Snapshot) string {
-	for _, l := range snap.Layers {
-		if l.Writable {
-			return l.Label
-		}
-	}
-	return ""
 }
 
 // mergeOp is the merge operation setting the config field at path to value.

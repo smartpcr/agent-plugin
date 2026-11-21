@@ -3,6 +3,7 @@ package config_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -37,7 +38,21 @@ func (c probeConfig) Validate() error {
 	return &cordis.ConfigError{Issues: []cordis.ConfigIssue{{Path: "level", Message: fmt.Sprintf("level %q is not debug, info or warn", c.Level)}}}
 }
 
-// probes is a catalogue of one counting component, x.probe.
+// strictConfig is the config of x.strict, which cannot run on its defaults: its
+// schema refuses an empty name.
+type strictConfig struct {
+	Name string `json:"name,omitempty"`
+}
+
+func (c strictConfig) Validate() error {
+	if c.Name == "" {
+		return &cordis.ConfigError{Issues: []cordis.ConfigIssue{{Path: "name", Message: "name is required"}}}
+	}
+	return nil
+}
+
+// probes is a catalogue of two counting components: x.probe, which runs on its
+// defaults, and x.strict, which does not.
 type probes struct {
 	cat    *catalog.Catalog
 	starts atomic.Int64
@@ -50,7 +65,14 @@ func newProbes(t *testing.T) *probes {
 		p.starts.Add(1)
 		return nil
 	})
-	cat, err := catalog.Build([]catalog.Item{{Name: "x.probe", Component: component, Config: reflect.TypeFor[probeConfig]()}})
+	strict := cordis.Define("x.strict", func(*cordis.Context, strictConfig) error {
+		p.starts.Add(1)
+		return nil
+	})
+	cat, err := catalog.Build([]catalog.Item{
+		{Name: "x.probe", Component: component, Config: reflect.TypeFor[probeConfig]()},
+		{Name: "x.strict", Component: strict, Config: reflect.TypeFor[strictConfig]()},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -577,5 +599,171 @@ func TestEditOfComputedFieldNeedsOverwrite(t *testing.T) {
 	}
 	if ex, err := cs.Current().Report.Explain("probe", "config.level"); err != nil || string(ex.Value) != `"debug"` {
 		t.Errorf("level after overwrite = %s, %v", ex.Value, err)
+	}
+}
+
+// An entry that cannot run on its defaults is rejected when an edit inserts or
+// enables it without a config, as its load would fail: nothing is written and the
+// running tree, the valid sibling change of the same edit included, is unchanged.
+func TestOmittedConfigIsValidatedToo(t *testing.T) {
+	h, p := newHome(t), newProbes(t)
+	path := profile.LayerPath(h.root, h.def.Name)
+	write(t, path, profileText+"    - id: dormant\n      name: x.strict\n      disabled: true\n")
+	ldr, cs := boot(t, h, p)
+	before, _ := os.ReadFile(path)
+	starts := p.starts.Load()
+	sibling := loader.Op{Kind: loader.OpMerge, ID: "other", Patch: json.RawMessage(`{"port":5}`)}
+	cases := map[string]struct {
+		op loader.Op
+		id string
+	}{
+		"inserted": {loader.Op{Kind: loader.OpInsert, Entries: []loader.EntryOptions{{ID: "bare", Name: "x.strict"}}}, "bare"},
+		"enabled":  {loader.Op{Kind: loader.OpOverride, ID: "dormant", Set: map[string]json.RawMessage{"disabled": json.RawMessage("false")}}, "dormant"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := cs.Apply(context.Background(), config.Edit{Revision: cs.Revision(), Ops: []loader.Op{sibling, tc.op}})
+			if !hasReason(err, config.ReasonRejected) || !strings.Contains(err.Error(), tc.id+".config.name") || !strings.Contains(err.Error(), "name is required") {
+				t.Fatalf("err = %v, want rejected at %s.config.name", err, tc.id)
+			}
+			if after, _ := os.ReadFile(path); string(after) != string(before) {
+				t.Errorf("a rejected edit changed the file:\n%s", after)
+			}
+			if got := effective(t, ldr, "other"); got.Port != 1 {
+				t.Errorf("the sibling changed to %+v", got)
+			}
+			if e := ldr.Find(tc.id); e != nil && ldr.Fiber(e) != nil {
+				t.Errorf("%s was loaded", tc.id)
+			}
+		})
+	}
+	if p.starts.Load() != starts {
+		t.Error("a rejected edit started a component")
+	}
+	if r := config.Check(cs.Current().Layers, config.CheckOptions{Catalog: p.cat}); !r.OK() {
+		t.Errorf("a disabled entry without config was resolved: %v", r.Issues)
+	}
+}
+
+// The loader's notices of a reload or an edit are published after the service's
+// locks are released: a lifecycle listener sees the new snapshot as Current and may
+// reload and edit without deadlocking.
+func TestReloadListenerMayCallTheService(t *testing.T) {
+	h, p := newHome(t), newProbes(t)
+	ldr, cs := boot(t, h, p)
+	var mu sync.Mutex
+	var seen []string
+	var nested []error
+	remove := ldr.OnLifecycle(func(ev loader.LifecycleEvent) {
+		if ev.Kind != loader.EntryUpdated {
+			return
+		}
+		rev := cs.Revision()
+		err := cs.Reload()
+		_, aerr := cs.Apply(context.Background(), config.Edit{Revision: "old", Ops: nil})
+		mu.Lock()
+		defer mu.Unlock()
+		seen = append(seen, rev)
+		nested = append(nested, err, aerr)
+	})
+	t.Cleanup(remove)
+	run := func(what string, fn func() error) {
+		t.Helper()
+		done := make(chan error, 1)
+		var wg sync.WaitGroup
+		t.Cleanup(wg.Wait)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			done <- fn()
+		}()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("%s: %v", what, err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("a listener calling the service deadlocked the %s", what)
+		}
+	}
+	write(t, profile.UserLayerPath(h.root), "- id: probe\n  merge:\n    level: warn\n")
+	run("reload", cs.Reload)
+	run("edit", func() error {
+		_, err := cs.Apply(context.Background(), config.Edit{Revision: cs.Revision(), Ops: []loader.Op{{Kind: loader.OpMerge, ID: "other", Patch: json.RawMessage(`{"port":7}`)}}})
+		return err
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != 2 || seen[1] != cs.Revision() {
+		t.Fatalf("listener saw revisions %v, want 2 ending at %s", seen, cs.Revision())
+	}
+	if seen[0] == seen[1] {
+		t.Error("the listener saw the snapshot from before the edit")
+	}
+	for i := 0; i < len(nested); i += 2 {
+		if nested[i] != nil || !hasReason(nested[i+1], config.ReasonStale) {
+			t.Errorf("nested reload = %v, edit = %v", nested[i], nested[i+1])
+		}
+	}
+	if got := effective(t, ldr, "probe"); got.Level != "warn" {
+		t.Errorf("probe = %+v", got)
+	}
+}
+
+// The edit path itself refuses an edit a higher layer shadows, whoever calls it,
+// and writes nothing; a field no higher layer sets is written.
+func TestApplyRefusesShadowedEdit(t *testing.T) {
+	h, p := newHome(t), newProbes(t)
+	write(t, profile.UserLayerPath(h.root), "- id: probe\n  merge:\n    level: warn\n")
+	cs, err := config.NewService(config.ServiceOptions{Stack: h.stack, Catalog: p.cat})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := profile.LayerPath(h.root, h.def.Name)
+	before, _ := os.ReadFile(path)
+	shadowed := []loader.Op{
+		{Kind: loader.OpMerge, ID: "probe", Patch: json.RawMessage(`{"level":"debug"}`)},
+		{Kind: loader.OpMerge, ID: "probe", Patch: json.RawMessage(`{"level":null}`)},
+	}
+	for _, op := range shadowed {
+		_, err := cs.Apply(context.Background(), config.Edit{Revision: cs.Revision(), Ops: []loader.Op{op}})
+		var se *config.ShadowedError
+		if !hasReason(err, config.ReasonShadowed) || !errors.As(err, &se) || len(se.Fields) != 1 ||
+			se.Fields[0] != (config.Shadow{Field: "probe.config.level", Layer: "user"}) {
+			t.Fatalf("edit %s = %v, want shadowed by user", op.Patch, err)
+		}
+		if _, err := cs.Candidate(config.Edit{Revision: cs.Revision(), Ops: []loader.Op{op}}); !hasReason(err, config.ReasonShadowed) {
+			t.Errorf("candidate = %v, want shadowed", err)
+		}
+		if after, _ := os.ReadFile(path); string(after) != string(before) {
+			t.Fatalf("a shadowed edit changed the file:\n%s", after)
+		}
+	}
+	if _, err := cs.Apply(context.Background(), config.Edit{Revision: cs.Revision(), Ops: []loader.Op{{Kind: loader.OpMerge, ID: "probe", Patch: json.RawMessage(`{"port":4}`)}}}); err != nil {
+		t.Fatalf("unshadowed edit: %v", err)
+	}
+}
+
+// Effective is the config the component runs with: its defaults and evaluated
+// expressions from the running fiber, and, without one, the literal config resolved
+// through the component's schema.
+func TestEffectiveIsTheResolvedConfig(t *testing.T) {
+	h, p := newHome(t), newProbes(t)
+	ldr, cs := boot(t, h, p)
+	if got, ok := cs.Effective("probe"); !ok || string(got) != `{"level":"info"}` {
+		t.Errorf("running effective = %s, %v", got, ok)
+	}
+	if got := effective(t, ldr, "probe"); got.Level != "info" {
+		t.Errorf("probe = %+v", got)
+	}
+	second, err := config.NewService(config.ServiceOptions{Stack: h.stack, Catalog: p.cat})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := second.Effective("other"); !ok || string(got) != `{"port":1}` {
+		t.Errorf("resolved effective = %s, %v", got, ok)
+	}
+	if _, ok := second.Effective("nobody"); ok {
+		t.Error("an unknown entry has an effective config")
 	}
 }

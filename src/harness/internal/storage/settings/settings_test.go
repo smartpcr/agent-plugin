@@ -13,6 +13,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/go/loader"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/catalog"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/config"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/expr"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/profile"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/settings"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
@@ -21,8 +22,12 @@ import (
 type probeConfig struct {
 	Level string `json:"level,omitempty" dsh:"live"`
 	Token string `json:"token,omitempty" dsh:"live,secret"`
+	Mode  string `json:"mode,omitempty" dsh:"live"`
 	Port  int    `json:"port,omitempty"`
 }
+
+// probeDefaults supplies mode, which no layer sets.
+func probeDefaults() probeConfig { return probeConfig{Mode: "auto"} }
 
 const profileText = `# written by dsh
 - insert:
@@ -42,11 +47,7 @@ type fixture struct {
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	component := cordis.Define("x.probe", func(*cordis.Context, probeConfig) error { return nil })
-	cat, err := catalog.Build([]catalog.Item{{Name: "x.probe", Component: component, Config: reflect.TypeFor[probeConfig]()}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	cat := probeCatalog(t)
 	f := &fixture{home: filepath.Join(t.TempDir(), "home")}
 	def := profile.Definition{Name: "probe"}
 	f.profile, f.user = profile.LayerPath(f.home, def.Name), profile.UserLayerPath(f.home)
@@ -59,6 +60,16 @@ func newFixture(t *testing.T) *fixture {
 	}
 	f.config, f.form = cs, settings.New(cs, cat)
 	return f
+}
+
+func probeCatalog(t *testing.T) *catalog.Catalog {
+	t.Helper()
+	component := cordis.Define("x.probe", func(*cordis.Context, probeConfig) error { return nil }, cordis.WithDefaults(probeDefaults))
+	cat, err := catalog.Build([]catalog.Item{{Name: "x.probe", Component: component, Config: reflect.TypeFor[probeConfig]()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cat
 }
 
 func write(t *testing.T, path, text string) {
@@ -97,8 +108,8 @@ func TestDescribeListsLiveFieldsWithTheirLayer(t *testing.T) {
 	for _, field := range form.Entries[0].Fields {
 		got[field.Path] = field
 	}
-	if len(got) != 2 {
-		t.Errorf("live fields = %+v, want level and token only", form.Entries[0].Fields)
+	if len(got) != 3 {
+		t.Errorf("live fields = %+v, want level, token and mode only", form.Entries[0].Fields)
 	}
 	if l := got["config.level"]; string(l.Value) != `"warn"` || l.Layer != "user" {
 		t.Errorf("level = %+v", l)
@@ -226,5 +237,78 @@ func TestRefusedEditsChangeNothing(t *testing.T) {
 				t.Error("a refused edit changed a layer file")
 			}
 		})
+	}
+}
+
+// A live field no layer sets shows the component's default, from the default layer.
+func TestDescribeShowsDefaults(t *testing.T) {
+	f := newFixture(t)
+	form, err := f.form.Describe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range form.Entries[0].Fields {
+		if field.Path == "config.mode" {
+			if string(field.Value) != `"auto"` || field.Layer != settings.DefaultLayer || field.Computed {
+				t.Errorf("mode = %+v, want the default auto", field)
+			}
+			return
+		}
+	}
+	t.Fatalf("no mode in %+v", form.Entries[0].Fields)
+}
+
+// Over a running tree, a field an expression computes shows the value the running
+// component holds, marked computed, with the layer that holds the expression.
+func TestDescribeShowsEvaluatedExpression(t *testing.T) {
+	cat := probeCatalog(t)
+	home := filepath.Join(t.TempDir(), "home")
+	def := profile.Definition{Name: "probe"}
+	write(t, profile.LayerPath(home, def.Name), profileText+"- id: probe\n  merge:\n    level: !expr '\"wa\" + \"rn\"'\n")
+	evaluator, err := expr.New(expr.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := cordis.New(cordis.WithExporters())
+	t.Cleanup(root.Dispose)
+	fiber, err := root.Use(loader.Component, loader.Options{Resolver: cat, Evaluator: evaluator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fiber.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	ldr, err := loader.Key.Get(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs, err := config.NewService(config.ServiceOptions{Catalog: cat, Loader: ldr, Evaluator: evaluator, Stack: func(read config.ReadFile) ([]loader.Layer, []loader.Issue, error) {
+		return profile.Stack(def, profile.Sources{Home: home, Read: profile.ReadFile(read)})
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cs.Current().Report.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err := ldr.ApplyLayers(cs.Current().Layers); err != nil {
+		t.Fatal(err)
+	}
+	form, err := settings.New(cs, cat).Describe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]settings.Field{}
+	for _, field := range form.Entries[0].Fields {
+		got[field.Path] = field
+	}
+	if l := got["config.level"]; string(l.Value) != `"warn"` || !l.Computed || l.Layer != "profile" {
+		t.Errorf("level = %+v, want the evaluated warn, computed, from profile", l)
+	}
+	if m := got["config.mode"]; string(m.Value) != `"auto"` || m.Layer != settings.DefaultLayer {
+		t.Errorf("mode = %+v, want the running default", m)
+	}
+	if tok := got["config.token"]; string(tok.Value) != `"<set>"` {
+		t.Errorf("token = %+v, want the presence marker", tok)
 	}
 }
