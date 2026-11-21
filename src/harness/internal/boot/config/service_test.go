@@ -1189,8 +1189,9 @@ func TestOverlappingApplicationStaysPendingUntilItSettles(t *testing.T) {
 
 // A lifecycle observer registered before the service runs ahead of the service's
 // own observer. It may hand a valid edit to another goroutine and wait for it: the
-// edit applies (it does not wait for the publication the observer is part of), and
-// once the reload returns both are Current.
+// edit applies (it does not wait for the publication the observer is part of), the
+// listeners told of the edit's reconciliation read it as Current, and once the
+// reload returns both are Current.
 func TestEarlierObserverMayWaitForAnEditOnAnotherGoroutine(t *testing.T) {
 	h, p := newHome(t), newProbes(t)
 	var wg sync.WaitGroup
@@ -1199,8 +1200,9 @@ func TestEarlierObserverMayWaitForAnEditOnAnotherGoroutine(t *testing.T) {
 	var cs *config.Service
 	var handed error
 	var applied bool
+	var root *cordis.Context
 	ldr := func() *loader.Service {
-		_, ldr, svc := bootRoot(t, h, p, config.ServiceOptions{}, func(ldr *loader.Service) {
+		r, ldr, svc := bootRoot(t, h, p, config.ServiceOptions{}, func(ldr *loader.Service) {
 			t.Cleanup(ldr.OnLifecycle(func(ev loader.LifecycleEvent) {
 				if ev.Kind != loader.EntryUpdated || !fired.CompareAndSwap(false, true) {
 					return
@@ -1220,9 +1222,32 @@ func TestEarlierObserverMayWaitForAnEditOnAnotherGoroutine(t *testing.T) {
 				}
 			}))
 		})
-		cs = svc
+		cs, root = svc, r
 		return ldr
 	}()
+	// the first notice with port 7 running is the handed edit's, told while the
+	// reload's observer still waits for it
+	var told bool
+	var tell []string
+	if _, err := loader.Reloaded.On(root, func(*cordis.Context, loader.ReloadNotice) error {
+		if told || effective(t, ldr, "other").Port != 7 {
+			return nil
+		}
+		told = true
+		cur := cs.Current()
+		if cs.Pending() || cur.Revision != cs.Revision() {
+			tell = append(tell, fmt.Sprintf("Current = %s, Pending = %v; want the edit's %s", short(cur.Revision), cs.Pending(), short(cs.Revision())))
+		}
+		if ex, err := cur.Report.Explain("other", "config.port"); err != nil || string(ex.Value) != "7" {
+			tell = append(tell, fmt.Sprintf("Current explains other's port as %+v (%v), want 7", ex, err))
+		}
+		if ex, err := cur.Report.Explain("probe", "config.level"); err != nil || string(ex.Value) != `"warn"` || ex.Layer != "user" {
+			tell = append(tell, fmt.Sprintf("Current explains probe's level as %+v (%v), want warn from user", ex, err))
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	write(t, profile.UserLayerPath(h.root), "- id: probe\n  merge:\n    level: warn\n")
 	if err := cs.Reload(); err != nil {
@@ -1233,6 +1258,12 @@ func TestEarlierObserverMayWaitForAnEditOnAnotherGoroutine(t *testing.T) {
 	}
 	if !applied {
 		t.Error("the handed edit returned before its tree was running")
+	}
+	if !told {
+		t.Error("no listener was told of the handed edit's reconciliation")
+	}
+	for _, msg := range tell {
+		t.Error("in the edit's Reloaded listener: " + msg)
 	}
 	if got := effective(t, ldr, "other"); got.Port != 7 {
 		t.Errorf("other = %+v, want the edit's port 7", got)

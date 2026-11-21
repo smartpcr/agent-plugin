@@ -86,7 +86,8 @@ type ServiceOptions struct {
 	Loader *loader.Service
 	// Context is the context the loader's Reloaded notice is heard on (the tree's
 	// root); with it the service makes the applied snapshot Current before any
-	// Reloaded listener registered on it is told. Without it only the loader's
+	// Reloaded listener registered on it is told, also when an older application's
+	// observer is waiting for this one (see resolveLocked). Without it only the loader's
 	// lifecycle observers registered after NewService see the new Current.
 	Context *cordis.Context
 	// Catalog and Evaluator are the static check's (see CheckOptions).
@@ -440,9 +441,10 @@ func (s *Service) settle() error {
 		}
 		target := app.snap
 		switch {
-		case s.desired.seq > target.seq && s.desired != s.current:
+		case s.desired.seq > target.seq && (s.desired != s.current || !composes(s.opts.Loader.Snapshot(), s.current.Report.Tree)):
 			// started before unlocking, so no resolve sees the tree it is about to
-			// replace as the last one reconciled
+			// replace as the last one reconciled; a Current made newer meanwhile
+			// whose tree this older reconciliation replaced is applied again
 			app = s.startLocked(g)
 			continue
 		case err == nil || s.current.seq >= target.seq:
@@ -502,10 +504,13 @@ func (s *Service) completeLocked(app *application) {
 //     is the last one reconciled; the newest settled snapshot composing it is
 //     Current (the newest settled one when none does, the tree having been edited
 //     at runtime).
-//   - Some still in flight: one settled snapshot with none older in flight is
-//     Current, as no older tree can be reconciled after it. Otherwise Current waits
-//     for the rest, staying Pending rather than guessing; an application's caller
-//     may thus return, its tree settled, before Current names it.
+//   - Some still in flight: the newest settled snapshot is Current when none newer
+//     is in flight and the loader's tree is its tree, so the listeners told of it
+//     read it even while an older application's listener waits for it; an older
+//     one reconciled after it anyway makes settle apply Current again. One settled
+//     snapshot with none older in flight is Current too, as no older tree can be
+//     reconciled after it. Otherwise Current waits for the rest, staying Pending
+//     rather than guessing.
 //
 // Current never moves to a snapshot older than itself.
 func (s *Service) resolveLocked() {
@@ -522,14 +527,23 @@ func (s *Service) resolveLocked() {
 	}
 	var pick *Snapshot
 	if len(inflight) > 0 {
-		if len(s.settled) > 1 {
-			return
-		}
-		pick = s.settled[0].snap
-		for _, app := range inflight {
-			if app.snap.seq <= pick.seq {
-				return
+		for _, app := range s.settled {
+			if pick == nil || app.snap.seq > pick.seq {
+				pick = app.snap
 			}
+		}
+		newer, older := false, false
+		for _, app := range inflight {
+			newer = newer || app.snap.seq > pick.seq
+			older = older || app.snap.seq <= pick.seq
+		}
+		switch {
+		case !older && len(s.settled) == 1:
+		case !newer && composes(s.opts.Loader.Snapshot(), pick.Report.Tree):
+			// the newest tree, and the loader's: an older application still in
+			// flight reconciled before it, or settle reapplies Current after it
+		default:
+			return
 		}
 	} else {
 		running := s.opts.Loader.Snapshot()

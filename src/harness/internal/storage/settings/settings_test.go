@@ -7,7 +7,10 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/go/loader"
@@ -364,5 +367,98 @@ func TestDescribeFromReloadedListenerSeesTheNewTree(t *testing.T) {
 	}
 	if l := level(t, told[0]); string(l.Value) != `"warn"` || l.Layer != "user" || told[0].Pending || told[0].Revision != cs.Revision() {
 		t.Errorf("listener's form = level %+v, pending %v, revision %s; want warn from user at %s", l, told[0].Pending, told[0].Revision, cs.Revision())
+	}
+}
+
+// A lifecycle observer registered before the service may hand a settings edit to
+// another goroutine and wait for it. The form read by the listener told of that
+// edit's reconciliation shows it, and the reload still in publication, with nothing
+// pending.
+func TestDescribeFromEditHandedOffByAnEarlierObserverSeesTheEdit(t *testing.T) {
+	cat := probeCatalog(t)
+	home := filepath.Join(t.TempDir(), "home")
+	def := profile.Definition{Name: "probe"}
+	write(t, profile.LayerPath(home, def.Name), profileText)
+	root := cordis.New(cordis.WithExporters())
+	t.Cleanup(root.Dispose)
+	fiber, err := root.Use(loader.Component, loader.Options{Resolver: cat})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fiber.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	ldr, err := loader.Key.Get(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	t.Cleanup(wg.Wait)
+	var form *settings.Service
+	var cs *config.Service
+	var fired atomic.Bool
+	var handed settings.Result
+	t.Cleanup(ldr.OnLifecycle(func(ev loader.LifecycleEvent) {
+		if ev.Kind != loader.EntryUpdated || form == nil || !fired.CompareAndSwap(false, true) {
+			return
+		}
+		done := make(chan settings.Result, 1)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			done <- form.Apply(context.Background(), cs.Revision(), "probe", "config.mode", json.RawMessage(`"manual"`))
+		}()
+		select {
+		case handed = <-done:
+		case <-time.After(10 * time.Second):
+			handed = settings.Result{Status: settings.Failed}
+		}
+	}))
+	cs, err = config.NewService(config.ServiceOptions{Catalog: cat, Loader: ldr, Context: root, Stack: func(read config.ReadFile) ([]loader.Layer, []loader.Issue, error) {
+		return profile.Stack(def, profile.Sources{Home: home, Read: profile.ReadFile(read)})
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ldr.ApplyLayers(cs.Current().Layers); err != nil {
+		t.Fatal(err)
+	}
+	form = settings.New(cs, cat)
+	var told []*settings.Form
+	var revisions []string
+	if _, err := loader.Reloaded.On(root, func(*cordis.Context, loader.ReloadNotice) error {
+		f, err := form.Describe()
+		if err != nil {
+			t.Error(err)
+			return nil
+		}
+		told, revisions = append(told, f), append(revisions, cs.Revision())
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	write(t, profile.UserLayerPath(home), "- id: probe\n  merge:\n    level: warn\n")
+	if err := cs.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if handed.Status != settings.Applied {
+		t.Fatalf("handed edit = %+v, want applied", handed)
+	}
+	if len(told) == 0 {
+		t.Fatal("no listener was told")
+	}
+	// the first notice is the edit's: the reload is still telling its observers
+	got := map[string]settings.Field{}
+	for _, field := range told[0].Entries[0].Fields {
+		got[field.Path] = field
+	}
+	if m := got["config.mode"]; string(m.Value) != `"manual"` || m.Layer != "profile" {
+		t.Errorf("edit's listener: mode = %+v, want the edit's manual from profile", m)
+	}
+	if l := got["config.level"]; string(l.Value) != `"warn"` || l.Layer != "user" {
+		t.Errorf("edit's listener: level = %+v, want the reload's warn from user", l)
+	}
+	if told[0].Pending || told[0].Revision != revisions[0] {
+		t.Errorf("edit's listener: form revision %s, pending %v; want %s, nothing pending", told[0].Revision, told[0].Pending, revisions[0])
 	}
 }
