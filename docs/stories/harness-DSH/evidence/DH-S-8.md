@@ -33,9 +33,9 @@ Built and merged before this stage (#63). Its tests, rerun here with
 | --- | --- | --- |
 | 8.6 DH-D-STORAGE-5 | `internal/storage/spill` | The contract: `Store` (`Reserve`, `Create`, `Open`, `Stat`, `Delete`, `HostPath`), the id form `<16 hex of SHA-256(session)>/<24 hex random>-<sanitised name>` (at most `MaxIDLen` bytes), `ParseID` (refuses any string that could leave `<home>/spill`), `SanitizeName`, `Save` (a text over the bound is saved whole and returns its head, cut on a rune boundary, plus the `event.Spill` reference) and `Head`. |
 | 8.6 | `internal/storage/spill/local` | The provider over `<home>/spill`: owner directories `0700` / protected DACL, files created exclusively and private from their first byte (`home.CreatePrivateFile`), a writer that enforces the size limit while writing and removes the file on over-limit, failure or `Abort`, file and directory synced on `Close`; reads through `os.Root` (no escape, no link out of the root) for the owner and sessions forked from it (`ForkLineage` over `Store.Stat`'s `ForkSource`), `spill/not-owner` for anyone else; `Delete` keeps files another session cites. The owner directory is the name the session store's deletion already removes (`sqlite.SpillName`). |
-| 8.7 DH-D-STORAGE-3 | `internal/storage/blob` | Content-addressed objects at `<home>/blobs/v1/<kind>/<2 hex>/<sha256>`: streamed into a private staging file in `blobs/tmp/` while hashed, synced, published by an exclusive hard link, directory synced, then read-only; an equal object already there is success and gets its time updated. `Open` checks the length and verifies the digest while streaming: a changed byte fails with `attachment/corrupt` "digest mismatch", a truncated or grown object with `attachment/corrupt`, a missing one with `attachment/not-found`. |
+| 8.7 DH-D-STORAGE-3 | `internal/storage/blob` | Content-addressed objects at `<home>/blobs/v1/<kind>/<2 hex>/<sha256>`: streamed into a private staging file in `blobs/tmp/` while hashed, synced, published by an exclusive hard link, directory synced, then read-only; an equal object already there is success only once its length and digest verify (a same-size object with a flipped byte is `attachment/corrupt` and is never adopted), and then gets its time updated and its directory synced. `Open` checks the length and verifies the digest while streaming: a changed byte fails with `attachment/corrupt` "digest mismatch", a truncated or grown object with `attachment/corrupt`, a missing one with `attachment/not-found`. |
 | 8.7 | `internal/storage/attachments` | Files a person attaches: one `file` object plus a read-only named link `<home>/blobs/v1/names/<2 hex>/<sha256>/<name>` for file tools; size limit enforced while streaming (`attachment/too-large`); reads verified through the blob store. |
-| shared | `internal/storage/home` | `EnsurePrivateDir`, `CreatePrivateFile` (Windows: `CreateFile` with a protected DACL in its security attributes; POSIX: `O_EXCL` `0600`), `SafeSegment`. `internal/util/fsx.SyncDir`. |
+| shared | `internal/storage/home` | `EnsurePrivateDir` (a new directory syncs its parent, so every newly created level survives a crash; `Ensure` does the same for the layout), `CreatePrivateFile` (Windows: `CreateFile` with a protected DACL in its security attributes; POSIX: `O_EXCL` `0600`), `SafeSegment`. `internal/util/fsx.SyncDir`. |
 
 ### Tests (TC-08)
 
@@ -54,10 +54,15 @@ DH-T-STORAGE-9 parts: `TestSanitizeName`, `TestEscapingIDsRefused`, `FuzzParseID
 creating a symbolic link needs a privilege it does not hold; it runs on Linux CI).
 Blob and attachment edges: `TestTooLargeLeavesNoObject`,
 `TestTruncatedAndMissingObjects`, `TestReadDetectsAGrownObjectAndANonFile`,
-`TestADifferentObjectUnderTheNameIsNotAdopted`, `TestHostPathAndLookupEdges`.
+`TestADifferentObjectUnderTheNameIsNotAdopted`, `TestSameSizeCorruptObjectNotAdopted`, `TestHostPathAndLookupEdges`.
+Durability (each records the directories synced and injects a failing sync): `home`
+`TestNewDirectorySyncsItsParent`, `blob` `TestPublishSyncsTheObjectDirectory` and
+`TestPublishFailsWhenTheDirectorySyncFails`, `attachments` `TestNamedLinkSynced` and
+`TestSaveFileFailsWhenTheLinkSyncFails`, `spill/local` `TestCloseSyncsTheSessionDirectory`
+and `TestCloseSyncFailureRemovesTheFile`.
 
 Statement coverage of the new packages (merged across the storage tests): `spill`
-88.1%, `spill/local` 89.9%, `blob` 86.7%, `attachments` 89.3%.
+88.1%, `spill/local` 91.1%, `blob` 87.0%, `attachments` 89.5%.
 
 ### Not built here (later steps of the storage area)
 
@@ -95,6 +100,7 @@ its test.
 | Refold-equals-stored test for every built-in view | Stage 8.2 (impl.md step 8.3) | **pending**: Stage 8.2 has not landed on this branch |
 | Manual checks | "Manual checks" above | met |
 | Scenarios authored | DH-E-STORAGE-3 (8.3) in the acceptance index; DH-E-STORAGE-1, -2 by Stage 8.2 | partly met |
+| Spill addressing (implementation-plan Stage 8.3 says "addressed by digest") | storage.md DH-D-STORAGE-5 prescribes owner hash + random id | **open**: conflicting documents, waiting for the operator |
 
 impl.md steps 8.1, 8.2, 8.6 and 8.7 are ticked as built. The stage closes, and
 `built-through` is raised to DH-S-8, when Stage 8.2 lands with steps 8.3 to 8.5,

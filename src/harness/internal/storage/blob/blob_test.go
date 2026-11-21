@@ -259,3 +259,60 @@ func TestADifferentObjectUnderTheNameIsNotAdopted(t *testing.T) {
 		t.Fatalf("Put over a damaged object of the same name = %v", err)
 	}
 }
+
+// recordSyncs records every directory the package syncs, failing them with fail.
+func recordSyncs(t *testing.T, fail error) *[]string {
+	var dirs []string
+	blob.SetSyncDir(t, func(d string) error {
+		dirs = append(dirs, filepath.Clean(d))
+		return fail
+	})
+	return &dirs
+}
+
+func TestPublishSyncsTheObjectDirectory(t *testing.T) {
+	s, _ := newStore(t)
+	dirs := recordSyncs(t, nil)
+	ref := put(t, s, "durable")
+	path, _ := s.Path(ref)
+	if len(*dirs) != 1 || (*dirs)[0] != filepath.Dir(path) {
+		t.Fatalf("synced %v, want the object's directory", *dirs)
+	}
+	put(t, s, "durable")
+	if len(*dirs) != 2 || (*dirs)[1] != filepath.Dir(path) {
+		t.Fatalf("adopting synced %v, want the object's directory again", *dirs)
+	}
+}
+
+func TestPublishFailsWhenTheDirectorySyncFails(t *testing.T) {
+	s, _ := newStore(t)
+	existing := put(t, s, "already here")
+	recordSyncs(t, errors.New("sync failed"))
+	if _, err := s.Put(bg, blob.KindFile, strings.NewReader("new bytes"), 0); !herr.Has(err, home.ReasonIO) {
+		t.Fatalf("Put of a new object with a failing sync = %v", err)
+	}
+	if _, err := s.Put(bg, blob.KindFile, strings.NewReader("already here"), 0); !herr.Has(err, home.ReasonIO) {
+		t.Fatalf("Put of an existing object with a failing sync = %v", err)
+	}
+	if got, err := read(s, existing); err != nil || string(got) != "already here" {
+		t.Fatalf("the existing object reads %q, %v", got, err)
+	}
+}
+
+// A same-length object with a flipped byte is not adopted by a later Put of the
+// original bytes, nor re-validated by Touch.
+func TestSameSizeCorruptObjectNotAdopted(t *testing.T) {
+	s, _ := newStore(t)
+	ref := put(t, s, "original bytes")
+	path, _ := s.Path(ref)
+	rewrite(t, path, func(b []byte) []byte { b[3] ^= 0x01; return b })
+	if _, err := s.Put(bg, blob.KindFile, strings.NewReader("original bytes"), 0); !herr.Has(err, blob.ReasonCorrupt) {
+		t.Fatalf("Put over a same-size corrupt object = %v, want %s", err, blob.ReasonCorrupt)
+	}
+	if err := s.Touch(bg, ref); !herr.Has(err, blob.ReasonCorrupt) {
+		t.Fatalf("Touch of a same-size corrupt object = %v, want %s", err, blob.ReasonCorrupt)
+	}
+	if _, err := read(s, ref); !herr.Has(err, blob.ReasonCorrupt) {
+		t.Fatalf("read of the corrupt object = %v", err)
+	}
+}

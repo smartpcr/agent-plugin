@@ -39,6 +39,9 @@ const (
 	ReasonIO           herr.Reason = "home/io"
 )
 
+// syncDir makes a new directory entry durable; tests replace it.
+var syncDir = fsx.SyncDir
+
 // Layout derives every path from the home boot resolved once.
 type Layout struct{ root string }
 
@@ -97,6 +100,9 @@ func Ensure(l Layout) error {
 		if err := makePrivate(dir); err != nil {
 			return herr.Wrap(ReasonIO, err, "home: make "+l.name(dir)+" private")
 		}
+		if err := syncDir(filepath.Dir(dir)); err != nil {
+			return herr.Wrap(ReasonIO, err, "home: sync the entry of "+l.name(dir))
+		}
 	}
 	return Check(l)
 }
@@ -139,6 +145,10 @@ func EnsurePrivateDir(dir string) error {
 	case err == nil:
 		if err := makePrivate(dir); err != nil {
 			return herr.Wrap(ReasonIO, err, "home: make "+filepath.Base(dir)+" private")
+		}
+		// A new entry survives a crash only once its parent is synced.
+		if err := syncDir(filepath.Dir(dir)); err != nil {
+			return herr.Wrap(ReasonIO, err, "home: sync the entry of "+filepath.Base(dir))
 		}
 	case !errors.Is(err, fs.ErrExist):
 		return herr.Wrap(ReasonIO, err, "home: create "+filepath.Base(dir))

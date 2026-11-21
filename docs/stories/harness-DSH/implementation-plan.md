@@ -541,11 +541,13 @@ storyId: "harness:DSH"
 ## Stage 8.3: Spill Store and Attachments
 
 ### Implementation Steps
-- [x] impl.md step 8.6 / DH-D-STORAGE-5: spill store under `<home>/spill/` -- the full text of a large result saved privately, addressed by digest, readable back; only a bounded head enters the log.
+- [ ] impl.md step 8.6 / DH-D-STORAGE-5: spill store under `<home>/spill/` -- the full text of a large result saved privately, addressed by digest, readable back; only a bounded head enters the log.
 - [x] impl.md step 8.7 / DH-D-STORAGE-3 (P1, pulled forward): attachments under `<home>/blobs/` stored durably and read back verified by digest.
-- [x] Author `DH-E-STORAGE-3` (runs DH-S-39). Close DH-S-8: write `docs/stories/harness-DSH/evidence/DH-S-8.md` (refold-equals-stored, manual checks: fold version change and the 5 MB result) and tick impl.md steps 8.1-8.7 as built.
+- [ ] Author `DH-E-STORAGE-3` (runs DH-S-39). Close DH-S-8: write `docs/stories/harness-DSH/evidence/DH-S-8.md` (refold-equals-stored, manual checks: fold version change and the 5 MB result) and tick impl.md steps 8.1-8.7 as built.
 
-> Built by Stage 8.3: DH-E-STORAGE-3 is authored and indexed; `evidence/DH-S-8.md` records Stages 8.1 and 8.3 and both manual checks; impl.md steps 8.1, 8.2, 8.6 and 8.7 are ticked. Steps 8.3-8.5, the refold-equals-stored test for the built-in views and raising `built-through` to DH-S-8 follow when Stage 8.2 lands (its branch is separate). A spill file is addressed by its owner directory (the session id's SHA-256 prefix, as the session store's deletion expects) plus a random name, per storage.md DH-D-STORAGE-5; attachments are addressed by the SHA-256 of their bytes.
+> Status of Stage 8.3 (left unchecked on purpose):
+> - Step 8.6 is built except one clause. The spill store saves the full text privately under `<home>/spill/`, reads it back byte-identical and logs only a bounded head (DH-S-39 scenario DH-E-STORAGE-3 and the TC-08 tests pass). It is **not** addressed by a digest of the text: storage.md DH-D-STORAGE-5 reserves a fixed-length id (owner-directory hash, 96 random bits, a name) before any byte is written, and the session store's deletion (`sqlite.SpillName`) expects that owner prefix. Which document wins is waiting for the operator (open question `spill-addressing`); until then this step stays unchecked. impl.md step 8.6, whose own text asks only that the text be saved privately and read back, is ticked.
+> - The closure step is partly done. DH-E-STORAGE-3 is authored and indexed, `evidence/DH-S-8.md` records Stages 8.1 and 8.3 and both manual checks, and impl.md steps 8.1, 8.2, 8.6 and 8.7 are ticked. DH-S-8 is **not** closed: the refold-equals-stored evidence for the four built-in views and impl.md steps 8.3-8.5 belong to Stage 8.2, which has not landed. `built-through` stays at DH-S-7 until it does.
 
 ### Dependencies
 - phase-machine-state-views-and-spill/stage-typed-machine-state-and-stored-folds

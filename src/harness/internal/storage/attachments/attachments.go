@@ -25,6 +25,7 @@ import (
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/blob"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/util/fsx"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
 )
 
@@ -83,8 +84,9 @@ func (s *Store) SaveFile(ctx context.Context, name string, r io.Reader) (FileRef
 	return fr, nil
 }
 
-// link makes the read-only named link of a stored file; an existing link to the
-// same object is success.
+// link makes the read-only named link of a stored file and syncs its directory;
+// an existing link to the same object is success once that directory is synced
+// (a prior link may have failed before its sync).
 func (s *Store) link(fr FileRef) error {
 	object, _ := s.blobs.Path(fr.Ref)
 	dir := s.nameDir(fr.Ref)
@@ -98,16 +100,20 @@ func (s *Store) link(fr FileRef) error {
 	if errors.Is(err, fs.ErrExist) {
 		a, aerr := os.Lstat(object)
 		b, berr := os.Lstat(path)
-		if aerr == nil && berr == nil && os.SameFile(a, b) {
-			return nil
+		if aerr != nil || berr != nil || !os.SameFile(a, b) {
+			return herr.Newf(blob.ReasonCorrupt, "attachments: %s is not a link to %s", fr.Name, fr.Ref)
 		}
-		return herr.Newf(blob.ReasonCorrupt, "attachments: %s is not a link to %s", fr.Name, fr.Ref)
-	}
-	if err != nil {
+	} else if err != nil {
 		return herr.Wrap(home.ReasonIO, err, "attachments: link "+fr.Name)
+	}
+	if err := syncDir(dir); err != nil {
+		return herr.Wrap(home.ReasonIO, err, "attachments: sync the link "+fr.Name)
 	}
 	return nil
 }
+
+// syncDir makes a directory entry durable; tests replace it.
+var syncDir = fsx.SyncDir
 
 func (s *Store) nameDir(ref blob.Ref) string {
 	return filepath.Join(s.blobs.Dir(), NamesDir, ref.Digest[:2], ref.Digest)

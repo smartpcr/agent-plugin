@@ -153,3 +153,40 @@ func TestSafeSegment(t *testing.T) {
 		}
 	}
 }
+
+func TestNewDirectorySyncsItsParent(t *testing.T) {
+	var dirs []string
+	fail := error(nil)
+	old := syncDir
+	syncDir = func(d string) error { dirs = append(dirs, filepath.Clean(d)); return fail }
+	t.Cleanup(func() { syncDir = old })
+
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "new")
+	if err := EnsurePrivateDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	if len(dirs) != 1 || dirs[0] != filepath.Clean(parent) {
+		t.Fatalf("synced %v, want the parent %s", dirs, parent)
+	}
+	if err := EnsurePrivateDir(dir); err != nil || len(dirs) != 1 {
+		t.Fatalf("adopting an existing directory = %v, synced %v", err, dirs)
+	}
+	fail = errors.New("sync failed")
+	if err := EnsurePrivateDir(filepath.Join(parent, "other")); !herr.Has(err, ReasonIO) {
+		t.Fatalf("EnsurePrivateDir with a failing sync = %v", err)
+	}
+
+	dirs, fail = nil, nil
+	l := New(filepath.Join(t.TempDir(), "home"))
+	if err := Ensure(l); err != nil {
+		t.Fatal(err)
+	}
+	if len(dirs) != len(l.Dirs()) || dirs[0] != filepath.Dir(l.Root()) || dirs[1] != l.Root() {
+		t.Fatalf("Ensure synced %v", dirs)
+	}
+	fail = errors.New("sync failed")
+	if err := Ensure(New(filepath.Join(t.TempDir(), "home"))); !herr.Has(err, ReasonIO) {
+		t.Fatalf("Ensure with a failing sync = %v", err)
+	}
+}

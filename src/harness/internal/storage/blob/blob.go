@@ -7,7 +7,8 @@
 //
 // Put streams into a private staging file while hashing, syncs it, publishes it
 // by an exclusive hard link, syncs the directory and sets the object read-only;
-// an existing object of the same digest is success and gets its time updated.
+// an existing object of the same digest is success only once its bytes verify,
+// and then gets its time updated. Each new directory level's parent is synced.
 // Open verifies the length and the digest while streaming, so a changed,
 // truncated or missing object is detected and never served. Who may read an
 // object is the calling route's decision (area A19), not this package's.
@@ -92,6 +93,9 @@ func validDigest(d string) bool {
 	}
 	return true
 }
+
+// syncDir makes a directory entry durable; tests replace it.
+var syncDir = fsx.SyncDir
 
 // Store is the blob store of one home.
 type Store struct {
@@ -184,7 +188,7 @@ func (s *Store) Put(ctx context.Context, kind Kind, r io.Reader, limit int64) (R
 		return Ref{}, herr.Wrap(home.ReasonIO, err, "blob: close the staged object")
 	}
 	ref := Ref{Kind: kind, Digest: hex.EncodeToString(h.Sum(nil)), Size: n}
-	if err := s.publish(staged, ref); err != nil {
+	if err := s.publish(ctx, staged, ref); err != nil {
 		return Ref{}, err
 	}
 	return ref, nil
@@ -208,8 +212,10 @@ func (s *Store) stage() (*os.File, error) {
 }
 
 // publish links the staged file to the object's name, unless an object of that
-// digest is there already, which then only gets its time updated.
-func (s *Store) publish(staged string, ref Ref) error {
+// digest is there already, which is then verified, gets its time updated and has
+// its directory entry synced (a prior publish may have failed before its sync).
+// Every new directory level syncs its parent as EnsurePrivateDir creates it.
+func (s *Store) publish(ctx context.Context, staged string, ref Ref) error {
 	path, _ := s.Path(ref)
 	kindDir := filepath.Dir(filepath.Dir(path))
 	for _, d := range []string{kindDir, filepath.Dir(path)} {
@@ -219,7 +225,13 @@ func (s *Store) publish(staged string, ref Ref) error {
 	}
 	err := os.Link(staged, path)
 	if errors.Is(err, fs.ErrExist) {
-		return s.adopt(path, ref)
+		if err := s.adopt(ctx, path, ref); err != nil {
+			return err
+		}
+		if err := syncDir(filepath.Dir(path)); err != nil {
+			return herr.Wrap(home.ReasonIO, err, "blob: sync the directory of "+ref.String())
+		}
+		return nil
 	}
 	if err != nil {
 		return herr.Wrap(home.ReasonIO, err, "blob: publish "+ref.String())
@@ -227,7 +239,7 @@ func (s *Store) publish(staged string, ref Ref) error {
 	// The staged name goes before the object is made read-only: Windows refuses
 	// to remove a read-only name, and both names are one file.
 	_ = os.Remove(staged)
-	if err := fsx.SyncDir(filepath.Dir(path)); err != nil {
+	if err := syncDir(filepath.Dir(path)); err != nil {
 		return herr.Wrap(home.ReasonIO, err, "blob: sync the directory of "+ref.String())
 	}
 	if err := os.Chmod(path, 0o400); err != nil {
@@ -236,16 +248,19 @@ func (s *Store) publish(staged string, ref Ref) error {
 	return nil
 }
 
-// adopt accepts an existing object of the same name if it is a regular file of
-// the expected length, and updates its time; one that is not is never replaced
-// automatically.
-func (s *Store) adopt(path string, ref Ref) error {
+// adopt accepts an existing object of the same name only if it is a regular file
+// whose length and digest are ref's, and updates its time; one that is not is
+// attachment/corrupt and is never replaced automatically.
+func (s *Store) adopt(ctx context.Context, path string, ref Ref) error {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return herr.Wrap(home.ReasonIO, err, "blob: "+ref.String())
 	}
 	if !info.Mode().IsRegular() || info.Size() != ref.Size {
 		return herr.Newf(ReasonCorrupt, "blob: the stored object %s is %d bytes, want %d", ref, info.Size(), ref.Size)
+	}
+	if err := s.verify(ctx, ref); err != nil {
+		return err
 	}
 	now := s.now()
 	if err := os.Chtimes(path, now, now); err != nil {
@@ -254,9 +269,20 @@ func (s *Store) adopt(path string, ref Ref) error {
 	return nil
 }
 
+// verify reads the whole object through the verifying reader.
+func (s *Store) verify(ctx context.Context, ref Ref) error {
+	rc, err := s.Open(ctx, ref)
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+	_, err = io.Copy(io.Discard, ctxReader{ctx, rc})
+	return err
+}
+
 // Touch re-validates references before an event cites them: each object must be
-// present with its length, and gets its time updated, so the collector's grace
-// period starts again.
+// present with its length and digest, and gets its time updated, so the
+// collector's grace period starts again.
 func (s *Store) Touch(ctx context.Context, refs ...Ref) error {
 	for _, ref := range refs {
 		if err := ctx.Err(); err != nil {
@@ -269,7 +295,7 @@ func (s *Store) Touch(ctx context.Context, refs ...Ref) error {
 		if _, err := os.Lstat(path); errors.Is(err, fs.ErrNotExist) {
 			return herr.Newf(ReasonNotFound, "blob: no stored object %s", ref)
 		}
-		if err := s.adopt(path, ref); err != nil {
+		if err := s.adopt(ctx, path, ref); err != nil {
 			return err
 		}
 	}

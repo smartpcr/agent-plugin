@@ -332,7 +332,12 @@ func (w *writer) Write(p []byte) (int, error) {
 	return n, nil
 }
 
-// Close syncs the file and its directory entry; on failure the file is removed.
+// syncDir makes a directory entry durable; tests replace it.
+var syncDir = fsx.SyncDir
+
+// Close syncs the file and its directory entry (the session directory's own
+// entry in spill/ was synced when EnsurePrivateDir created it); on failure the
+// file is removed.
 func (w *writer) Close() error {
 	if w.done {
 		return w.err
@@ -343,7 +348,7 @@ func (w *writer) Close() error {
 		err = cerr
 	}
 	if err == nil {
-		err = fsx.SyncDir(w.dir)
+		err = syncDir(w.dir)
 	}
 	if err != nil {
 		_ = os.Remove(w.path)

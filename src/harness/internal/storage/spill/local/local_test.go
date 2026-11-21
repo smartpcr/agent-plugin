@@ -462,3 +462,34 @@ func TestDeleteKeepsFilesWhenCitationsAreUnknown(t *testing.T) {
 		t.Fatalf("a file whose citations are unknown was removed: %v", err)
 	}
 }
+
+func TestCloseSyncsTheSessionDirectory(t *testing.T) {
+	l := newHome(t)
+	sp := newStore(t, l)
+	var dirs []string
+	local.SetSyncDir(t, func(d string) error { dirs = append(dirs, filepath.Clean(d)); return nil })
+	ref := sp.Reserve("s1", "out")
+	w := must(sp.Create(bg, ref, 0))
+	must(w.Write([]byte("abc")))
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	dir, _, _ := spill.ParseID(ref.ID)
+	if want := filepath.Join(l.Spill(), dir); len(dirs) != 1 || dirs[0] != want {
+		t.Fatalf("synced %v, want %s", dirs, want)
+	}
+}
+
+func TestCloseSyncFailureRemovesTheFile(t *testing.T) {
+	sp := newStore(t, newHome(t))
+	local.SetSyncDir(t, func(string) error { return errors.New("sync failed") })
+	ref := sp.Reserve("s1", "out")
+	w := must(sp.Create(bg, ref, 0))
+	must(w.Write([]byte("abc")))
+	if err := w.Close(); !herr.Has(err, home.ReasonIO) {
+		t.Fatalf("Close with a failing sync = %v", err)
+	}
+	if _, err := sp.Stat(bg, ref.ID); !herr.Has(err, spill.ReasonNotFound) {
+		t.Fatalf("Stat after a failed Close = %v, want %s", err, spill.ReasonNotFound)
+	}
+}

@@ -2,6 +2,7 @@ package attachments_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -138,5 +139,33 @@ func TestHostPathAndLookupEdges(t *testing.T) {
 	}
 	if _, err := s.SaveFile(bg, "planted.txt", strings.NewReader("other")); !herr.Has(err, blob.ReasonCorrupt) {
 		t.Fatalf("SaveFile over a planted name = %v", err)
+	}
+}
+
+func TestNamedLinkSynced(t *testing.T) {
+	s := newStore(t, attachments.Config{})
+	var dirs []string
+	attachments.SetSyncDir(t, func(d string) error { dirs = append(dirs, filepath.Clean(d)); return nil })
+	fr, err := s.SaveFile(bg, "notes.txt", strings.NewReader("linked"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, _ := s.HostPath(fr)
+	if len(dirs) != 1 || dirs[0] != filepath.Dir(path) {
+		t.Fatalf("synced %v, want the link's directory %s", dirs, filepath.Dir(path))
+	}
+}
+
+func TestSaveFileFailsWhenTheLinkSyncFails(t *testing.T) {
+	s := newStore(t, attachments.Config{})
+	attachments.SetSyncDir(t, func(string) error { return errors.New("sync failed") })
+	if _, err := s.SaveFile(bg, "a.txt", strings.NewReader("bytes")); !herr.Has(err, home.ReasonIO) {
+		t.Fatalf("SaveFile with a failing sync = %v", err)
+	}
+	// The link left by the failed save is adopted, and synced, by the retry.
+	var dirs []string
+	attachments.SetSyncDir(t, func(d string) error { dirs = append(dirs, d); return nil })
+	if _, err := s.SaveFile(bg, "a.txt", strings.NewReader("bytes")); err != nil || len(dirs) != 1 {
+		t.Fatalf("retried SaveFile = %v, synced %v", err, dirs)
 	}
 }
