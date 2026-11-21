@@ -283,8 +283,9 @@ func bootWith(t *testing.T, h *home, p *probes, opts config.ServiceOptions) (*lo
 	return ldr, cs
 }
 
-// bootRoot is bootWith that also returns the tree's root.
-func bootRoot(t *testing.T, h *home, p *probes, opts config.ServiceOptions) (*cordis.Context, *loader.Service, *config.Service) {
+// bootRoot is bootWith that also returns the tree's root; each observe is called
+// with the loader before the service is made (an observer registered before it).
+func bootRoot(t *testing.T, h *home, p *probes, opts config.ServiceOptions, observe ...func(*loader.Service)) (*cordis.Context, *loader.Service, *config.Service) {
 	t.Helper()
 	root := cordis.New(cordis.WithExporters())
 	t.Cleanup(root.Dispose)
@@ -298,6 +299,9 @@ func bootRoot(t *testing.T, h *home, p *probes, opts config.ServiceOptions) (*co
 	ldr, err := loader.Key.Get(root)
 	if err != nil {
 		t.Fatal(err)
+	}
+	for _, fn := range observe {
+		fn(ldr)
 	}
 	opts.Stack, opts.Loader, opts.Catalog, opts.Context = h.stack, ldr, p.cat, root
 	cs, err := config.NewService(opts)
@@ -1180,5 +1184,63 @@ func TestOverlappingApplicationStaysPendingUntilItSettles(t *testing.T) {
 	}
 	if ldr.Find("slow") == nil {
 		t.Error("slow is not in the running tree")
+	}
+}
+
+// A lifecycle observer registered before the service runs ahead of the service's
+// own observer. It may hand a valid edit to another goroutine and wait for it: the
+// edit applies (it does not wait for the publication the observer is part of), and
+// once the reload returns both are Current.
+func TestEarlierObserverMayWaitForAnEditOnAnotherGoroutine(t *testing.T) {
+	h, p := newHome(t), newProbes(t)
+	var wg sync.WaitGroup
+	t.Cleanup(wg.Wait)
+	var fired atomic.Bool
+	var cs *config.Service
+	var handed error
+	var applied bool
+	ldr := func() *loader.Service {
+		_, ldr, svc := bootRoot(t, h, p, config.ServiceOptions{}, func(ldr *loader.Service) {
+			t.Cleanup(ldr.OnLifecycle(func(ev loader.LifecycleEvent) {
+				if ev.Kind != loader.EntryUpdated || !fired.CompareAndSwap(false, true) {
+					return
+				}
+				done := make(chan error, 1)
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					_, err := cs.Apply(context.Background(), config.Edit{Revision: cs.Revision(), Ops: []loader.Op{{Kind: loader.OpMerge, ID: "other", Patch: json.RawMessage(`{"port":7}`)}}})
+					done <- err
+				}()
+				select {
+				case handed = <-done:
+					applied = effective(t, ldr, "other").Port == 7
+				case <-time.After(10 * time.Second):
+					handed = errors.New("the edit handed to another goroutine deadlocked behind the publication waiting for it")
+				}
+			}))
+		})
+		cs = svc
+		return ldr
+	}()
+
+	write(t, profile.UserLayerPath(h.root), "- id: probe\n  merge:\n    level: warn\n")
+	if err := cs.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if handed != nil {
+		t.Fatal(handed)
+	}
+	if !applied {
+		t.Error("the handed edit returned before its tree was running")
+	}
+	if got := effective(t, ldr, "other"); got.Port != 7 {
+		t.Errorf("other = %+v, want the edit's port 7", got)
+	}
+	if got := effective(t, ldr, "probe"); got.Level != "warn" {
+		t.Errorf("probe = %+v, want the reload's warn", got)
+	}
+	if cs.Pending() || cs.Current().Revision != cs.Revision() {
+		t.Errorf("Current = %s, Pending = %v after both settled; want %s", short(cs.Current().Revision), cs.Pending(), short(cs.Revision()))
 	}
 }
