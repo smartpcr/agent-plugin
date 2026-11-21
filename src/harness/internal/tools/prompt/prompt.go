@@ -102,6 +102,10 @@ var (
 // scope and the model selection.
 type Input struct {
 	View tools.StepView
+
+	// cfg is the config snapshot of the assembly in progress, so the built-in
+	// sections read the same config as the tool order and runtime contexts.
+	cfg *Config
 }
 
 // Target is the view's target, zero without a view.
@@ -231,17 +235,17 @@ func New(owner *cordis.Context, tab scope.Table, cfg Config) (*Service, error) {
 	s := &Service{layers: scope.NewLayers(tab, newLayer)}
 	s.store(cfg)
 	builtins := []Section{
-		{Name: SectionIdentity, Order: OrderIdentity, Literal: true, Func: func(Input) (string, error) {
-			if s.Config().IncludeHarnessIdentity {
+		{Name: SectionIdentity, Order: OrderIdentity, Literal: true, Func: func(in Input) (string, error) {
+			if s.configOf(in).IncludeHarnessIdentity {
 				return IdentityLine, nil
 			}
 			return "", nil
 		}},
-		{Name: SectionPersonaPrefix, Order: OrderPersonaPrefix, Literal: true, Func: func(Input) (string, error) {
-			return s.Config().PersonaPrefix, nil
+		{Name: SectionPersonaPrefix, Order: OrderPersonaPrefix, Literal: true, Func: func(in Input) (string, error) {
+			return s.configOf(in).PersonaPrefix, nil
 		}},
-		{Name: SectionPersonaSuffix, Order: OrderPersonaSuffix, Literal: true, Func: func(Input) (string, error) {
-			return s.Config().PersonaSuffix, nil
+		{Name: SectionPersonaSuffix, Order: OrderPersonaSuffix, Literal: true, Func: func(in Input) (string, error) {
+			return s.configOf(in).PersonaSuffix, nil
 		}},
 	}
 	for _, b := range builtins {
@@ -255,6 +259,15 @@ func New(owner *cordis.Context, tab scope.Table, cfg Config) (*Service, error) {
 // Config is the config the next assembly uses.
 // The caller owns the returned copy: changing its ToolOrder changes nothing here.
 func (s *Service) Config() Config { return s.cfg.Load().clone() }
+
+// configOf is the config of the assembly in carries, or the current one when in
+// did not come from Assemble.
+func (s *Service) configOf(in Input) Config {
+	if in.cfg != nil {
+		return *in.cfg
+	}
+	return s.Config()
+}
 
 // Configure validates cfg and makes the next assembly use it.
 func (s *Service) Configure(cfg Config) error {
@@ -387,6 +400,7 @@ func (s *Service) Assemble(ctx context.Context, in Input) (Assembly, error) {
 		return Assembly{}, &Error{Code: CodeInvalid, Msg: "a step view is required"}
 	}
 	cfg := s.Config()
+	in.cfg = &cfg
 	chain := s.layers.Chain(in.Target().Scope)
 
 	secs := visible(chain, func(l *layer) map[string]owned[Section] { return l.sections })

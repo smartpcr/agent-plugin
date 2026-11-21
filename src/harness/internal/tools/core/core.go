@@ -219,6 +219,9 @@ func (r *registry) Resolve(ctx context.Context, t tools.Target) (tools.StepView,
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	// The view keeps its own target; each When gets a further copy, so neither
+	// the caller nor a condition can change what the view publishes.
+	t = t.Clone()
 	chain := r.layers.Chain(t.Scope)
 	snaps := make([]snapshot, len(chain))
 	for i, l := range chain {
@@ -240,7 +243,7 @@ func (r *registry) Resolve(ctx context.Context, t tools.Target) (tools.StepView,
 	slices.SortFunc(visible, func(a, b *tools.Declaration) int { return strings.Compare(a.Name(), b.Name()) })
 	active := make([]*tools.Declaration, 0, len(visible))
 	for _, d := range visible {
-		ok, err := d.Active(t)
+		ok, err := d.Active(t.Clone())
 		if err != nil {
 			return nil, &tools.Error{Code: tools.CodeActivationFailed, Tool: d.Name(), Msg: err.Error()}
 		}
@@ -300,14 +303,14 @@ type view struct {
 }
 
 func newView(t tools.Target, list []*tools.Declaration) *view {
-	v := &view{target: t, list: list, index: make(map[string]*tools.Declaration, len(list))}
+	v := &view{target: t.Clone(), list: list, index: make(map[string]*tools.Declaration, len(list))}
 	for _, d := range list {
 		v.index[d.Name()] = d
 	}
 	return v
 }
 
-func (v *view) Target() tools.Target { return v.target }
+func (v *view) Target() tools.Target { return v.target.Clone() }
 
 func (v *view) Tools() []*tools.Declaration { return slices.Clone(v.list) }
 

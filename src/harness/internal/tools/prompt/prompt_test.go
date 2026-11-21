@@ -385,3 +385,57 @@ func TestToolOrderIsCopied(t *testing.T) {
 		t.Fatalf("after mutating the live update: %v, want %v", got, want)
 	}
 }
+
+// One assembly uses one config: an update landing while sections are being
+// computed does not mix the old persona prefix with the new suffix, identity or
+// tool order; the next assembly uses the new config throughout.
+func TestAssemblyUsesOneConfigSnapshot(t *testing.T) {
+	for _, n := range []string{"snap_a", "snap_b"} {
+		define(n, tools.Full)
+	}
+	old := prompt.Defaults()
+	old.PersonaPrefix, old.PersonaSuffix, old.ToolOrder = "Old prefix.", "Old suffix.", []string{"snap_b", prompt.Unlisted}
+	next := prompt.Config{PersonaPrefix: "New prefix.", PersonaSuffix: "New suffix.", ToolOrder: []string{prompt.Unlisted}}
+	e := newEnv(t, old)
+	for _, n := range []string{"snap_a", "snap_b"} {
+		if _, err := e.tools.Register(e.root, define(n, tools.Full)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	updated := false
+	ok(e.prompt.Section(e.root, prompt.Section{Name: "midway", Order: prompt.OrderHarness, Func: func(prompt.Input) (string, error) {
+		if !updated {
+			updated = true
+			if err := e.prompt.Configure(next); err != nil {
+				return "", err
+			}
+		}
+		return "Midway.", nil
+	}}))(t)
+	names := func(a prompt.Assembly) []string {
+		var got []string
+		for _, ts := range a.Tools {
+			got = append(got, ts.Name)
+		}
+		return got
+	}
+
+	a := e.must(t, scope.Key{})
+	if !updated {
+		t.Fatal("the update did not land during the assembly")
+	}
+	if got, want := e.render(t, a), prompt.IdentityLine+"\n\nOld prefix.\n\nMidway.\n\nOld suffix."; got != want {
+		t.Fatalf("assembly during the update: %q, want %q", got, want)
+	}
+	if got, want := names(a), []string{"snap_b", "snap_a"}; !slices.Equal(got, want) {
+		t.Fatalf("tools during the update: %v, want %v", got, want)
+	}
+
+	b := e.must(t, scope.Key{})
+	if got, want := e.render(t, b), "New prefix.\n\nMidway.\n\nNew suffix."; got != want {
+		t.Fatalf("next assembly: %q, want %q", got, want)
+	}
+	if got, want := names(b), []string{"snap_a", "snap_b"}; !slices.Equal(got, want) {
+		t.Fatalf("next tools: %v, want %v", got, want)
+	}
+}

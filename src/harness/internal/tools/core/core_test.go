@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/agent"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/scope"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools/core"
@@ -375,4 +377,41 @@ func must(t *testing.T) func(*cordis.EffectHandle, error) *cordis.EffectHandle {
 		}
 		return h
 	}
+}
+
+// The step view's target is its own: mutating the caller's controls after
+// Resolve, the controls a When condition receives, or the controls Target
+// returns, changes nothing the view publishes.
+func TestStepViewTargetIsImmutable(t *testing.T) {
+	e := newEnv(t)
+	when := tools.Define(tools.Spec[echoIn, echoOut]{
+		Name: "meddler", Description: "Mutates its target.",
+		Run: func(_ context.Context, in echoIn, _ tools.Run) (echoOut, error) { return echoOut(in), nil },
+		When: func(tg tools.Target) (bool, error) {
+			tg.Model.Controls.Stop[0] = "when"
+			*tg.Model.Controls.Temperature = 1.9
+			return true, nil
+		},
+	})
+	e.register(t, e.root, when)
+	temp, topP := 0.5, 0.9
+	tg := tools.Target{Model: agent.ModelSelection{Model: "m", Controls: vocab.Controls{Temperature: &temp, TopP: &topP, Stop: []string{"END"}}}}
+	v, err := e.svc.Resolve(context.Background(), tg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Release()
+	check := func(stage string) {
+		t.Helper()
+		c := v.Target().Model.Controls
+		if c.Stop[0] != "END" || *c.Temperature != 0.5 || *c.TopP != 0.9 {
+			t.Fatalf("%s: view controls stop=%v temperature=%v top_p=%v", stage, c.Stop, *c.Temperature, *c.TopP)
+		}
+	}
+	check("after a When mutated its target")
+	tg.Model.Controls.Stop[0], temp, topP = "caller", 0.1, 0.2
+	check("after the caller mutated its controls")
+	got := v.Target()
+	got.Model.Controls.Stop[0], *got.Model.Controls.Temperature, *got.Model.Controls.TopP = "reader", 1.5, 0.3
+	check("after a reader mutated Target()")
 }

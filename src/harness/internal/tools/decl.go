@@ -64,6 +64,13 @@ type Target struct {
 	Model agent.ModelSelection
 }
 
+// Clone is a deep copy: the model controls' pointers and stop list are not
+// shared, so a step view's target cannot be changed through a caller's copy.
+func (t Target) Clone() Target {
+	t.Model.Controls = t.Model.Controls.Clone()
+	return t
+}
+
 // Run is what the pipeline hands a body besides its arguments.
 type Run struct {
 	// CallID is the id of the call being run.
