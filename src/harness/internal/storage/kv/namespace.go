@@ -289,6 +289,8 @@ type Txn[T any] struct {
 	base   map[string]record
 	staged map[string]*record // nil is a delete
 	now    int64
+
+	downgrade bool // Put and Delete may replace a newer-version record
 }
 
 // Get is key's record as this transaction sees it.
@@ -329,10 +331,31 @@ func (t *Txn[T]) Keys() []string {
 	return out
 }
 
-// Put writes v under key at the current version.
+// AllowDowngrade lets this transaction's Put and Delete replace a record
+// written by a newer build, discarding whatever that build stored.
+func (t *Txn[T]) AllowDowngrade() { t.downgrade = true }
+
+// guardNewer refuses to replace key's record when a newer build wrote it, so an
+// older build sharing the database cannot silently drop fields it does not know.
+func (t *Txn[T]) guardNewer(key string) error {
+	if t.downgrade {
+		return nil
+	}
+	if r, ok := t.lookup(key); ok && r.version > t.n.spec.Version {
+		return herr.Newf(ReasonRecordVersion, "namespace %q key %q: record version %d is newer than %d: upgrade dsh",
+			t.n.spec.Namespace, key, r.version, t.n.spec.Version)
+	}
+	return nil
+}
+
+// Put writes v under key at the current version. A record of a newer version is
+// storage/record-version unless AllowDowngrade was called.
 func (t *Txn[T]) Put(key string, v T) error {
 	if key == "" {
 		return herr.Newf(ReasonInvalid, "namespace %q: an empty key", t.n.spec.Namespace)
+	}
+	if err := t.guardNewer(key); err != nil {
+		return err
 	}
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -342,11 +365,16 @@ func (t *Txn[T]) Put(key string, v T) error {
 	return nil
 }
 
-// Delete removes key; deleting a missing key is no change.
-func (t *Txn[T]) Delete(key string) {
+// Delete removes key; deleting a missing key is no change. A record of a newer
+// version is storage/record-version unless AllowDowngrade was called.
+func (t *Txn[T]) Delete(key string) error {
+	if err := t.guardNewer(key); err != nil {
+		return err
+	}
 	if _, ok := t.lookup(key); ok {
 		t.staged[key] = nil
 	}
+	return nil
 }
 
 // Update runs fn in one write transaction. When fn returns nil its writes, and
