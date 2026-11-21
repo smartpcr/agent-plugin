@@ -114,7 +114,7 @@ func slcrChild(role, root string) error {
 			fmt.Printf("result opened epoch=%d\n", w.Epoch())
 			return slcrServeAppends(s, w, in, "b")
 		case errors.As(err, &owned):
-			fmt.Printf("result refused code=%s holder=%s pid=%d\n", slcrCodeOf(err), owned.Holder.Instance, owned.Holder.PID)
+			fmt.Printf("result refused refusal=%s code=%s holder=%s pid=%d\n", slcrRefusalOf(err), slcrCodeOf(err), owned.Holder.Instance, owned.Holder.PID)
 		default:
 			fmt.Printf("result error code=%s %v\n", slcrCodeOf(err), err)
 		}
@@ -216,6 +216,29 @@ func slcrCrashTurn(s *sqlite.Store) error {
 	fmt.Printf("crashing id=%s\n", slcrCrashID)
 	os.Exit(slcrCrashExit)
 	return nil
+}
+
+// slcrLeaseHeld is the plan's name for the refusal of a second writer while the
+// holder lives (implementation-plan.md, e2e-scenarios.md). The store contract
+// that defines the refusal (docs/harness/areas/session-store.md §6.2, the lease,
+// rule 3; core-session.md errors) gives it the code session/owned, carrying the
+// holder's identity; no doc under docs/harness defines a store/lease-held code.
+// The scenario asserts both: the refusal is the lease-held kind, by its
+// structure, and it carries the contract's code.
+const slcrLeaseHeld = "store/lease-held"
+
+var slcrRefusalCodes = map[string]store.Code{slcrLeaseHeld: store.CodeOwned}
+
+// slcrRefusalOf classifies a refused OpenWrite: "store/lease-held" when it is
+// the store's lease refusal naming a recorded, live holder (an OwnedError that
+// matches ErrOwned, with instance, pid and since), else "other".
+func slcrRefusalOf(err error) string {
+	var owned *store.OwnedError
+	if errors.As(err, &owned) && errors.Is(err, store.ErrOwned) &&
+		owned.Holder.Instance != "" && owned.Holder.PID > 0 && !owned.Holder.Since.IsZero() {
+		return slcrLeaseHeld
+	}
+	return "other"
 }
 
 func slcrCodeOf(err error) store.Code {
@@ -506,14 +529,36 @@ func (s *slcrState) bOpens(id string) error {
 	return err
 }
 
-func (s *slcrState) bRefused(code string) error {
+func (s *slcrState) bRefused(refusal string) error {
 	line := s.bResult
-	if !strings.HasPrefix(line, "result refused") || slcrField(line, "code") != code {
-		return fmt.Errorf("process B: %q; want refused with %s", line, code)
+	if !strings.HasPrefix(line, "result refused") || slcrField(line, "refusal") != refusal {
+		return fmt.Errorf("process B: %q; want refused with %s", line, refusal)
 	}
 	if slcrField(line, "holder") != s.aInst || slcrField(line, "pid") != s.aPID {
 		return fmt.Errorf("process B was refused naming %s pid %s; want A (%s, pid %s)",
 			slcrField(line, "holder"), slcrField(line, "pid"), s.aInst, s.aPID)
+	}
+	return nil
+}
+
+// refusalCarries: B's lease-held refusal carries the contract's code, and a
+// second writer opened in this process meets the same refusal naming A.
+func (s *slcrState) refusalCarries(code string) error {
+	if want := slcrRefusalCodes[slcrLeaseHeld]; string(want) != code {
+		return fmt.Errorf("the feature names %s but the lease-held refusal maps to %s", code, want)
+	}
+	if got := slcrField(s.bResult, "code"); got != code {
+		return fmt.Errorf("process B's lease-held refusal has code %q; want %s", got, code)
+	}
+	st, err := s.open()
+	if err != nil {
+		return err
+	}
+	_, err = st.OpenWrite(slcrBG, slcrSession, store.OpenOptions{})
+	var owned *store.OwnedError
+	if slcrRefusalOf(err) != slcrLeaseHeld || slcrCodeOf(err) != store.Code(code) ||
+		!errors.As(err, &owned) || owned.Holder.Instance != s.aInst || strconv.Itoa(owned.Holder.PID) != s.aPID {
+		return fmt.Errorf("a second writer in this process = %v; want %s (%s) naming A", err, slcrLeaseHeld, code)
 	}
 	return nil
 }
@@ -815,12 +860,62 @@ func (s *slcrState) turnClosedAs(reason string) error {
 		if err := json.Unmarshal([]byte(r.data), &end); err != nil {
 			return err
 		}
-		if string(end.Reason.Kind) != reason || end.Reason.Kind != event.ReasonInterrupted {
-			return fmt.Errorf("turn/end reason %q; want %q", end.Reason.Kind, reason)
+		if string(end.Reason.Kind) != reason || end.Reason.Kind != event.ReasonInterrupted || end.Reason.Cause != string(surface.CauseInterrupted) {
+			return fmt.Errorf("turn/end reason %+v; want kind and cause %q", end.Reason, reason)
 		}
 		return nil
 	}
 	return fmt.Errorf("recovery wrote no turn/end: %v", s.types())
+}
+
+// stepClosedInterrupted: step/end carries no reason of its own (event.StepEnd is
+// turn and step), so the cut step is closed as interrupted when its only
+// step/end is one of the closers the recovering open appended, names the step
+// the crash cut, and precedes the closer turn/end of reason interrupted
+// (design.md, "The host dies mid-turn"; core-session.md DH-T-SESSION-13).
+func (s *slcrState) stepClosedInterrupted() error {
+	was := s.report.Was
+	if !was.StepOpen || !was.TurnOpen || was.Turn != 1 || was.Step != 1 {
+		return fmt.Errorf("brackets as found %+v; want turn 1 step 1 open", was)
+	}
+	closer := map[int]bool{}
+	for _, r := range s.report.Closers {
+		closer[int(r.Seq)] = true
+	}
+	stepAt, turnAt := -1, -1
+	for i, r := range s.rows {
+		switch r.typ {
+		case event.StepEndType.Name():
+			if stepAt >= 0 {
+				return fmt.Errorf("two step/end rows: %v", s.types())
+			}
+			stepAt = i
+			var end event.StepEnd
+			if err := json.Unmarshal([]byte(r.data), &end); err != nil {
+				return err
+			}
+			if end.Turn != was.Turn || end.Step != was.Step {
+				return fmt.Errorf("step/end %+v; want the cut step %d.%d", end, was.Turn, was.Step)
+			}
+		case event.TurnEndType.Name():
+			var end event.TurnEnd
+			if err := json.Unmarshal([]byte(r.data), &end); err != nil {
+				return err
+			}
+			if end.Reason.Kind == event.ReasonInterrupted {
+				turnAt = i
+			}
+		}
+	}
+	switch {
+	case stepAt < 0:
+		return fmt.Errorf("no persisted step/end: %v", s.types())
+	case stepAt < len(s.crashBefore) || !closer[stepAt]:
+		return fmt.Errorf("step/end at seq %d is not a recovery closer (closers %v)", stepAt, s.report.Closers)
+	case turnAt < 0 || !closer[turnAt] || turnAt <= stepAt:
+		return fmt.Errorf("step/end at seq %d is not followed by the closer turn/end interrupted (at %d): %v", stepAt, turnAt, s.types())
+	}
+	return nil
 }
 
 func (s *slcrState) interruptedResult() error {
@@ -975,6 +1070,7 @@ func InitializeScenario_sqlite_store_leases_and_recovery_session_leases_and_cras
 	ctx.Step(`^process A holding the lease on session "([^"]*)" in a temp home$`, s.aHolds)
 	ctx.Step(`^process B opens "([^"]*)" for writing$`, s.bOpens)
 	ctx.Step(`^B is refused with "([^"]*)" naming process A$`, s.bRefused)
+	ctx.Step(`^the lease-held refusal carries the store contract's code "([^"]*)"$`, s.refusalCarries)
 	ctx.Step(`^the log of "([^"]*)" contains only A's events$`, s.onlyAs)
 	ctx.Step(`^A still appends to "([^"]*)"$`, s.aStillAppends)
 
@@ -991,6 +1087,7 @@ func InitializeScenario_sqlite_store_leases_and_recovery_session_leases_and_cras
 	ctx.Step(`^the session is reported interrupted$`, s.reportedInterrupted)
 	ctx.Step(`^the persisted rows contain balanced brackets$`, s.balanced)
 	ctx.Step(`^the turn is closed as "([^"]*)"$`, s.turnClosedAs)
+	ctx.Step(`^the cut step's persisted step/end is a closer of the interrupted turn$`, s.stepClosedInterrupted)
 	ctx.Step(`^the tool call has an interrupted result$`, s.interruptedResult)
 	ctx.Step(`^every persisted row is durable$`, s.allDurable)
 

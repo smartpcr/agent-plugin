@@ -1,7 +1,9 @@
 @story-harness:DSH @phase-sqlite-store-leases-and-recovery @stage-session-leases-and-crash-recovery @setup-compose
 Feature: Session leases and crash recovery
   One writer per session across processes: a live holder's lease refuses a
-  second writer (the plan's store/lease-held refusal, code session/owned), a
+  second writer with the store/lease-held refusal (an OwnedError naming the
+  live holder, whose code in the store contract, session-store.md section 6.2
+  rule 3, is session/owned), a
   dead holder's lease is taken over inside the write transaction at epoch+1 and
   fences the old epoch, a crash between append and flush is recovered honestly,
   and a failed checkpoint flush keeps a tool body from running. Processes A and
@@ -12,7 +14,8 @@ Feature: Session leases and crash recovery
   Scenario: Second writer refused across processes
     Given process A holding the lease on session "S" in a temp home
     When process B opens "S" for writing
-    Then B is refused with "session/owned" naming process A
+    Then B is refused with "store/lease-held" naming process A
+    And the lease-held refusal carries the store contract's code "session/owned"
     And the log of "S" contains only A's events
     And A still appends to "S"
 
@@ -33,6 +36,7 @@ Feature: Session leases and crash recovery
     Then the session is reported interrupted
     And the persisted rows contain balanced brackets
     And the turn is closed as "interrupted"
+    And the cut step's persisted step/end is a closer of the interrupted turn
     And the tool call has an interrupted result
     And every persisted row is durable
 
