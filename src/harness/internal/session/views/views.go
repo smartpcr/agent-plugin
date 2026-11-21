@@ -7,13 +7,23 @@
 // position shows the batch committed, and serves reads from the committed state
 // at the session's AsOf position. A session it has not followed (opened before
 // the registry, a read-only open) is folded from its log at the read's cut.
-// Checkpoint rows (DH-D-VIEW-2) are not written yet: Fold returns none.
+//
+// A fold declared Stored keeps its state in the session's checkpoint rows
+// (DH-D-VIEW-2): Fold hands the rows of the folds a batch changed to the
+// session, which commits them in the batch's own transaction at the batch's
+// last seq, so stored state is never ahead of the log. Each row records the
+// seq it reflects and the fold's Version. When a session opens, Restore takes
+// each stored fold up from its row and the log after it; a row of another
+// Version, or none, is rebuilt from the log and rewritten at the log head. A
+// read of a session the registry has not followed starts from the rows too.
 package views
 
 import (
+	"encoding/json"
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"sync"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
@@ -28,8 +38,16 @@ type Definition[S any] struct {
 	Version int
 	// Types are the event types the fold consumes; nil is every type.
 	Types []string
-	Init  func(h session.Header) S
-	Apply func(s S, ev event.Event) (next S, changed bool)
+	// Stored keeps the state in checkpoint rows. S must round-trip through
+	// encoding/json. A state that does not encode (an error or a panic, e.g.
+	// a NaN float or a map with unsupported keys) is invalid state: that fold
+	// is failed for the session, and reads of it return view/failed from then
+	// on, while the other folds go on (session-views.md §7). encoding/json
+	// silently drops unexported fields, so S must keep all of its state in
+	// exported fields; otherwise a restored state is wrong with no error.
+	Stored bool
+	Init   func(h session.Header) S
+	Apply  func(s S, ev event.Event) (next S, changed bool)
 }
 
 // Code is a closed registry error code.
@@ -76,9 +94,15 @@ type def struct {
 	key     string
 	version int
 	all     bool
+	stored  bool
 	init    func(session.Header) any
 	apply   func(any, event.Event) (any, bool)
+	encode  func(any) (string, error)
+	decode  func(string) (any, error)
 }
+
+// reservedPrefix is the session core's checkpoint keys (store.Checkpoint).
+const reservedPrefix = "core/"
 
 // Handle is the typed read of one registered fold.
 type Handle[S any] struct{ key string }
@@ -150,6 +174,9 @@ func Register[S any](r *Registry, d Definition[S]) (Handle[S], error) {
 	if d.Key == "" || d.Version < 1 || d.Init == nil || d.Apply == nil {
 		return Handle[S]{}, errorf(CodeInvalid, "a fold needs a key, a version of at least 1, Init and Apply")
 	}
+	if strings.HasPrefix(d.Key, reservedPrefix) {
+		return Handle[S]{}, errorf(CodeInvalid, "fold key %q is under the session core's %q", d.Key, reservedPrefix)
+	}
 	if d.Types != nil && len(d.Types) == 0 {
 		return Handle[S]{}, errorf(CodeInvalid, "fold %q consumes no event type", d.Key)
 	}
@@ -157,8 +184,18 @@ func Register[S any](r *Registry, d Definition[S]) (Handle[S], error) {
 		key:     d.Key,
 		version: d.Version,
 		all:     d.Types == nil,
-		init:    func(h session.Header) any { return d.Init(h) },
-		apply:   func(s any, ev event.Event) (any, bool) { return d.Apply(s.(S), ev) },
+		stored:  d.Stored,
+		encode: func(s any) (string, error) {
+			b, err := json.Marshal(s.(S))
+			return string(b), err
+		},
+		decode: func(raw string) (any, error) {
+			var s S
+			err := json.Unmarshal([]byte(raw), &s)
+			return s, err
+		},
+		init:  func(h session.Header) any { return d.Init(h) },
+		apply: func(s any, ev event.Event) (any, bool) { return d.Apply(s.(S), ev) },
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()

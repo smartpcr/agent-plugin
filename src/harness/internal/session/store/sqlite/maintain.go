@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store"
@@ -491,8 +492,13 @@ func eachString(ctx context.Context, tx *sql.Tx, q string, fn func(string)) erro
 	return rs.Err()
 }
 
+// coreKeyPrefix is the checkpoint key prefix the session core owns (see
+// store.Checkpoint); every other key in the checkpoints table is a view's.
+const coreKeyPrefix = "core/"
+
 // Refold replays a session's events and returns the checkpoints an incremental
-// build would hold for it. The session core provides it.
+// build would hold for it under the core's keys ("core/..."). The session core
+// provides it.
 type Refold func(ctx context.Context, r store.Reader) ([]store.Checkpoint, error)
 
 // RebuildOptions are Rebuild's options.
@@ -524,9 +530,12 @@ type RebuildReport struct {
 // between the refold and the write is refused with session/seq-conflict and left
 // as it was: a one-session rebuild returns that error, a whole-home rebuild
 // records the session in RebuildReport.Conflicts and goes on with the others.
-// With o.Verify it compares and changes nothing. The checkpoints are
-// the only derived rows this layout holds; A06's view rows and the search
-// documents join this operation when their tables exist.
+// With o.Verify it compares and changes nothing. Only the core's checkpoints
+// (keys under "core/") are selected, compared, deleted and rewritten; o.Refold
+// must not return any other key. A06's view rows share the checkpoints table
+// under their own keys and are left as they are: a view whose stored row is
+// stale or of an old version refolds itself on the next open. The search
+// documents join this operation when their table exists.
 func (s *Store) Rebuild(ctx context.Context, o RebuildOptions) (RebuildReport, error) {
 	if err := ctx.Err(); err != nil {
 		return RebuildReport{}, err
@@ -564,6 +573,12 @@ func (s *Store) Rebuild(ctx context.Context, o RebuildOptions) (RebuildReport, e
 		if err != nil {
 			return rep, fmt.Errorf("rebuild %q: %w", id, err)
 		}
+		for _, c := range got {
+			if !strings.HasPrefix(c.Key, coreKeyPrefix) {
+				return rep, store.Errorf(store.CodeInvalidBatch, "rebuild %q: refold returned checkpoint %s outside %q",
+					id, c.Key, coreKeyPrefix)
+			}
+		}
 		got = newestCheckpoints(got)
 		var stored []store.Checkpoint
 		if err := s.read(ctx, func(tx *sql.Tx) error {
@@ -588,7 +603,8 @@ func (s *Store) Rebuild(ctx context.Context, o RebuildOptions) (RebuildReport, e
 				return store.Errorf(store.CodeSeqConflict, "rebuild %q: it grew from %d to %d records during the refold",
 					id, r.sum.NextSeq, cur.sum.NextSeq)
 			}
-			if _, err := tx.ExecContext(ctx, `DELETE FROM checkpoints WHERE session = ?`, r.uid); err != nil {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM checkpoints WHERE session = ? AND substr(key, 1, ?) = ?`,
+				r.uid, len(coreKeyPrefix), coreKeyPrefix); err != nil {
 				return err
 			}
 			for _, c := range got {
@@ -613,9 +629,10 @@ func (s *Store) Rebuild(ctx context.Context, o RebuildOptions) (RebuildReport, e
 	return rep, nil
 }
 
+// selectCheckpoints returns a session's core checkpoints (keys under "core/").
 func selectCheckpoints(ctx context.Context, q querier, uid int64) ([]store.Checkpoint, error) {
-	rs, err := q.QueryContext(ctx, `SELECT key, state_version, seq, state FROM checkpoints WHERE session = ?
-		ORDER BY key, state_version`, uid)
+	rs, err := q.QueryContext(ctx, `SELECT key, state_version, seq, state FROM checkpoints
+		WHERE session = ? AND substr(key, 1, ?) = ? ORDER BY key, state_version`, uid, len(coreKeyPrefix), coreKeyPrefix)
 	if err != nil {
 		return nil, err
 	}

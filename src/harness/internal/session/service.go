@@ -266,6 +266,9 @@ func (v *service) Open(ctx context.Context, owner *cordis.Context, id ID, o Open
 			return fail(err)
 		}
 	}
+	if r, ok := v.cfg.Folder.(Restorer); ok {
+		s.restoreFolds(ctx, r)
+	}
 	if err := v.publish(ctx, owner, s); err != nil {
 		return nil, OpenReport{}, err
 	}

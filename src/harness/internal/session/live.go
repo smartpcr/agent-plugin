@@ -166,6 +166,71 @@ func (s *live) Read(ctx context.Context, from Offset, limit int, opts ...ReadOpt
 	return readRange(ctx, s.w, from, limit, n, opts)
 }
 
+func (s *live) Checkpoints(ctx context.Context) ([]store.Checkpoint, error) {
+	s.mu.Lock()
+	closed := s.closed
+	s.mu.Unlock()
+	if closed {
+		return nil, s.closedErrLocked()
+	}
+	return s.w.Checkpoints(ctx)
+}
+
+// restoreFolds hands the reopened session and its checkpoints to the Folder,
+// then commits the rows it rebuilt at the log head in a checkpoint-only batch
+// and flushes it, so stored fold state reflects the whole log and never more
+// (DH-D-VIEW-2). Stored state is derived: a failure is logged and the session
+// opens anyway; the Folder folds from the log when it must. A lost lease or a
+// seq conflict while storing the rows fails the session instead.
+func (s *live) restoreFolds(ctx context.Context, r Restorer) {
+	log := s.svc.base.Logger()
+	rows, err := func() (rows []Derived, err error) {
+		defer func() {
+			if p := recover(); p != nil {
+				err = fmt.Errorf("the folder panicked restoring: %v", p)
+			}
+		}()
+		cps, err := s.w.Checkpoints(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return r.Restore(ctx, s, cps)
+	}()
+	if err != nil {
+		log.Error(fmt.Errorf("session %q: restoring stored folds: %w", s.id, err))
+		return
+	}
+	s.mu.Lock()
+	n := s.st.Len()
+	if len(rows) == 0 || n == 0 {
+		s.mu.Unlock()
+		return
+	}
+	batch := store.Batch{First: n}
+	for _, d := range rows {
+		batch.Checkpoints = append(batch.Checkpoints, store.Checkpoint{Key: d.Key, StateVersion: d.StateVersion, Seq: n - 1, State: d.State})
+	}
+	err = s.w.Append(ctx, batch)
+	// A lost lease or a refused seq is not a derived-state failure: the
+	// session is failed exactly as appendLocked does, so it is never
+	// published as healthy. Flush fails it on a lost lease itself.
+	switch {
+	case err == nil:
+	case isLeaseLost(err):
+		s.failLocked(err)
+	case errors.Is(err, store.ErrSeqConflict):
+		err = brokenStore(s.id, "the store refused first seq %d: %v", n, err)
+		s.failLocked(err)
+	}
+	s.mu.Unlock()
+	if err == nil {
+		_, err = s.Flush(ctx)
+	}
+	if err != nil {
+		log.Error(fmt.Errorf("session %q: storing rebuilt folds: %w", s.id, err))
+	}
+}
+
 func (s *live) closedErrLocked() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
