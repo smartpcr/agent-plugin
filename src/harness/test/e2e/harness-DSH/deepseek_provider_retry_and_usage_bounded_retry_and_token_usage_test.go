@@ -584,10 +584,12 @@ func (s *brtState) sessionWithSettlements(tbl *godog.Table) error {
 		s.settled = append(s.settled, r.Seq)
 		asOf = r.Seq
 		if i == 0 {
-			// The next step's request: the user speaks again after the retried step.
+			// The retry settles the same step: no new user message, so the
+			// second settlement's request is as of the failed attempt.
 			continue
 		}
 		if i == 1 {
+			// The next step's request: the user speaks again after the retried step.
 			um, err := vocab.RestoreMessage("u2", vocab.RoleUser, nil, vocab.TextBlock("more"))
 			if err != nil {
 				return err
