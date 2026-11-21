@@ -1,0 +1,12 @@
+{
+  "kind": "assistant/attempt",
+  "finish": "error",
+  "failure": {
+    "code": "llm/server",
+    "class": "transient",
+    "message": "deepseek: overloaded_error: Overloaded",
+    "status": 529,
+    "retry_after": 2000000000,
+    "request_id": "req_fixture_overloaded"
+  }
+}

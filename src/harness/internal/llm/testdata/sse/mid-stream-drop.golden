@@ -1,0 +1,18 @@
+{
+  "kind": "assistant/attempt",
+  "finish": "error",
+  "failure": {
+    "code": "llm/stream-closed",
+    "class": "transient",
+    "message": "anthropic: the stream ended before message_stop",
+    "request_id": "req_fixture_drop"
+  },
+  "blocks": [
+    {
+      "kind": "text",
+      "text": {
+        "text": "Hello, wor"
+      }
+    }
+  ]
+}
