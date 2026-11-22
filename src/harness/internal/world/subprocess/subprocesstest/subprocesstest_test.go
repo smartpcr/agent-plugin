@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/procwait"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess"
 )
 
@@ -218,16 +217,41 @@ func TestTreeRoleWaitsForTheGrandchild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	t.Cleanup(func() { _ = g.Kill() })
+	// The tree ran in this process, so this process is the grandchild's parent. On
+	// Unix a killed child stays a zombie, which kill(pid, 0) still finds, until its
+	// parent reaps it, so the fact to wait for is the reaping: Wait returns once
+	// the grandchild has exited and been reaped. The wait is bounded, and the
+	// cleanup kills before it joins, so the waiter always ends.
+	waited := make(chan error, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, err := g.Wait()
+		waited <- err
+	}()
+	t.Cleanup(func() {
+		_ = g.Kill()
+		<-done
+	})
 	if !Alive(grandchild) {
 		t.Fatalf("grandchild %d is not running after the tree reported it", grandchild)
 	}
 	if err := g.Kill(); err != nil {
 		t.Fatalf("kill grandchild %d: %v", grandchild, err)
 	}
-	procwait.Until(ctx, t, func() bool { return !Alive(grandchild) })
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	select {
+	case err := <-waited:
+		if err != nil {
+			t.Fatalf("wait for grandchild %d: %v", grandchild, err)
+		}
+	case <-ctx.Done():
+		t.Fatalf("grandchild %d was not reaped within 15s of its kill", grandchild)
+	}
+	if Alive(grandchild) {
+		t.Fatalf("grandchild %d is still found after it was reaped", grandchild)
+	}
 }
 
 // A child that fails writes its reason to standard error, which Output logs
