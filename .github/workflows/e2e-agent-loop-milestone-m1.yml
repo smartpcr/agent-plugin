@@ -1,12 +1,15 @@
 # Phase "agent loop milestone M1" E2E (Stage 11.1: model selection and step
-# tool batch).
+# tool batch; Stage 11.2: agent driver brackets and cancellation).
 #
 #   e2e      the gate path: godog scenarios with -tags e2e on Linux, macOS and
 #            Windows. TC-11a (DH-T-AGENT-23) runs in-process on the test kit's
 #            scripted fake model and memstore, zero I/O; TC-11b (DH-T-AGENT-26)
 #            runs the step's batch on the embedded SQLite store in a test-kit
 #            temp home and reads the committed tool/call and tool/result order
-#            back from a second connection. No DSN, no secrets,
+#            back from a second connection. Stage 11.2 drives the real agent
+#            driver in-process: the 500-case no-unanswered-tool-call property
+#            (DH-S-11), the step cancel resuming at point 14 (DH-T-AGENT-16) and
+#            the step budget (DH-T-AGENT-8). No DSN, no secrets,
 #            DSH_E2E_STORE_HOME and DSH_DEEPSEEK_API_KEY unset.
 #   compose  non-gating: the same tests against a dsh-home named volume through
 #            tests/e2e/agent-loop-milestone-m1/docker-compose.yml.
