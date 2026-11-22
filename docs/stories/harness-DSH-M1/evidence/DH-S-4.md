@@ -116,6 +116,7 @@ The watcher scenarios time a save or remote change at the moment this machine fi
   (`src/go/cordis` tests, the `recur`, `glob`, `caltime`, `version` fuzz seeds and
   `watchtest/manual_test.go`); none of the files of this stage are reported.
 - M1 gate repair (plan 13.1.5; [DH-S-1.md, "M1 gate repair"](DH-S-1.md#m1-gate-repair)): the fuzz seeds of `internal/util/{caltime,glob,recur,version}` moved to a new `seeds_test.go` in each package (`caltime_test.go`, `glob_test.go`, `rrule_test.go`, `version_test.go` call the helper); `watchtest/manual_test.go` is Stage 13.2.
+- M1 gate triage (plan 13.7.1, [M1-G-GATE-15.2](../gap-analysis.md)): on Linux a watch whose parent directory is deleted and recreated within one settle window is re-registered -- ext4 reuses the inode number, so the identity check alone kept a dead inotify registration; an event naming the watched directory itself, or an overflow, now forces a re-add (`util/watch/watch.go` `subscribe`, `dispatch`; new `TestFakeRearmOnDirectoryEvent`). `TestRecreatedParentWithinSettle` went from 5 failures in 5 to a passing `-race -shuffle=on -count=20` of `./internal/util/watch/...` on WSL ext4, also passing on Windows native; package coverage 91.2% to 93.5% (WSL), 91.4% to 92.7% (Windows) (go1.27.4, uncommitted on `105859e`; `manual`, not gate evidence).
 
 ## Evidence record (impl.md sec. 7.3)
 
