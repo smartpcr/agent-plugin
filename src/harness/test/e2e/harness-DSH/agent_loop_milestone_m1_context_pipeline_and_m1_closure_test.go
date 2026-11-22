@@ -845,7 +845,9 @@ func (s *cpmState) reopenedEqualsGolden(rel string) (err error) {
 	cpmMust(0, s.sess.Close(context.Background()))
 	db := cpmMust(sqlite.Open(context.Background(), s.dbPath))
 	s.tb.Cleanup(func() { _ = db.Close(context.Background()) })
-	rs, release := cpmMust2(session.NewService(cordis.New(), db, session.Config{}).OpenRead(context.Background(), cpmF2Session))
+	root := cordis.New()
+	s.tb.Cleanup(root.Dispose)
+	rs, release := cpmMust2(session.NewService(root, db, session.Config{}).OpenRead(context.Background(), cpmF2Session))
 	defer release()
 	return cpmMatchGolden(cpmMust(rs.Read(context.Background(), 0, 0)), rel)
 }
