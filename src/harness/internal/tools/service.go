@@ -3,8 +3,10 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/agent"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/scope"
 )
 
@@ -39,6 +41,15 @@ type Service interface {
 	Guard(ctx *cordis.Context, id string, g Guard) (*cordis.EffectHandle, error)
 	// Shape files shaper s, named id, like Decide.
 	Shape(ctx *cordis.Context, id string, s Shaper) (*cordis.EffectHandle, error)
+	// SetSpill files the spill seat s, named id, in the layer of ctx's scope:
+	// one seat per layer, the nearest on the agent's scope chain answers, and a
+	// second seat in the same layer is refused (DH-ADR-STORAGE-4).
+	SetSpill(ctx *cordis.Context, id string, s SpillShaper) (*cordis.EffectHandle, error)
+	// Detached lists the bodies that did not return within grace and may still
+	// be running, oldest first (DH-ADR-TOOLS-4).
+	Detached() []DetachedCall
+	// Limits is the registry's configured budgets.
+	Limits() Limits
 	// ExecuteBatch runs b's calls through the guarded pipeline, one at a time in
 	// the model's order, and returns one Result per call; each was appended as its
 	// tool/result. A refused call is a Result, not an error: the error is for a
@@ -48,6 +59,28 @@ type Service interface {
 
 // Key is the tool registry's service key.
 var Key = cordis.NewServiceKey[Service]("tools")
+
+// Limits is the registry's budgets (areas/tools.md sec. 6.2).
+type Limits struct {
+	// MaxResultBytes is the ceiling on the model-facing text of any result.
+	MaxResultBytes int
+	// MaxArgumentBytes bounds a call's raw argument bytes.
+	MaxArgumentBytes int
+	// DefaultTimeout is the budget of a tool that declares none.
+	DefaultTimeout time.Duration
+	// Grace is how long a cancelled body is waited for before it is detached.
+	Grace time.Duration
+}
+
+// DetachedCall is a body that did not return within grace: its outcome is
+// unknown and it may still be running. It is listed until it returns.
+type DetachedCall struct {
+	CallID string
+	Tool   string
+	Agent  agent.Ref
+	// Since is when it was detached.
+	Since time.Time
+}
 
 // StepView is the immutable set of tools one agent may use in one step. The
 // prompt, the pipeline and nested calls all read the same view.

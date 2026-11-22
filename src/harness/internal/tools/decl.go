@@ -161,8 +161,17 @@ type Spec[In, Out any] struct {
 	Overlap func(in In) Overlap
 	// When is a step-time condition; nil means always. An error fails Resolve.
 	When func(t Target) (bool, error)
-	// Timeout is the call budget; 0 means the registry's default.
+	// Timeout is the call budget; 0 means the registry's default and NoDeadline
+	// opts the tool out.
 	Timeout time.Duration
+	// Grace is how long the pipeline waits for the body to return after its
+	// budget ends or the turn is cancelled, when it is longer than the
+	// registry's grace (a tool that must stop a process tree); 0 is the
+	// registry's.
+	Grace time.Duration
+	// BoundsOwnOutput says the body bounds its own result (a reader of spilled
+	// text), so the spill policy skips it; the registry's ceiling still applies.
+	BoundsOwnOutput bool
 	// Reach is who may call the tool; "" means ReachBoth.
 	Reach Reach
 	// Disclosure is how much the model is told up front; "" means Full.
@@ -170,6 +179,10 @@ type Spec[In, Out any] struct {
 	// Effects is the closed set of side effects; empty means unknown.
 	Effects []Effect
 }
+
+// NoDeadline, as a declaration's Timeout, opts the tool out of the call budget
+// (DH-ADR-TOOLS-5); an operator override still applies. Opting out is explicit.
+const NoDeadline time.Duration = -1
 
 // DynamicSpec declares a tool whose schema arrives at run time (an MCP server, a
 // plugin): the input schema is a JSON Schema document and the body receives the
@@ -185,7 +198,10 @@ type DynamicSpec struct {
 	Overlap func(args json.RawMessage) Overlap
 	When    func(t Target) (bool, error)
 	Timeout time.Duration
-	Reach   Reach
+	Grace   time.Duration
+	// BoundsOwnOutput: as Spec's.
+	BoundsOwnOutput bool
+	Reach           Reach
 	// Disclosure defaults to Full.
 	Disclosure Disclosure
 	Effects    []Effect
@@ -203,6 +219,8 @@ type Declaration struct {
 	disclosure  Disclosure
 	effects     []Effect
 	timeout     time.Duration
+	grace       time.Duration
+	boundsOwn   bool
 	origin      string
 
 	when     func(Target) (bool, error)
@@ -234,8 +252,16 @@ func (d *Declaration) Disclosure() Disclosure { return d.disclosure }
 // Effects is the tool's declared side effects, sorted; a fresh slice.
 func (d *Declaration) Effects() []Effect { return slices.Clone(d.effects) }
 
-// Timeout is the declared budget, 0 for the registry's default.
+// Timeout is the declared budget, 0 for the registry's default, NoDeadline for
+// none.
 func (d *Declaration) Timeout() time.Duration { return d.timeout }
+
+// Grace is the declared grace, 0 for the registry's.
+func (d *Declaration) Grace() time.Duration { return d.grace }
+
+// BoundsOwnOutput reports whether the body bounds its own result, so the spill
+// policy skips it.
+func (d *Declaration) BoundsOwnOutput() bool { return d.boundsOwn }
 
 // Origin is "" for a compiled-in tool and the DynamicSpec's origin otherwise.
 func (d *Declaration) Origin() string { return d.origin }
@@ -311,6 +337,7 @@ var namePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 // names Known reports.
 func Define[In, Out any](spec Spec[In, Out]) *Declaration {
 	d := base(spec.Name, spec.Description, spec.Reach, spec.Disclosure, spec.Effects, spec.Timeout, spec.When)
+	d.grace, d.boundsOwn = spec.Grace, spec.BoundsOwnOutput
 	var issues []string
 	if spec.Run == nil {
 		issues = append(issues, "the declaration has no body")
@@ -365,6 +392,7 @@ func Define[In, Out any](spec Spec[In, Out]) *Declaration {
 // with DeclarePrefix.
 func Dynamic(spec DynamicSpec) *Declaration {
 	d := base(spec.Name, spec.Description, spec.Reach, spec.Disclosure, spec.Effects, spec.Timeout, spec.When)
+	d.grace, d.boundsOwn = spec.Grace, spec.BoundsOwnOutput
 	d.origin = spec.Origin
 	var issues []string
 	if strings.TrimSpace(spec.Origin) == "" {
@@ -447,8 +475,11 @@ func (d *Declaration) checkBase() []string {
 			issues = append(issues, fmt.Sprintf("effect %q is not one of %v", e, effects))
 		}
 	}
-	if d.timeout < 0 {
-		issues = append(issues, "the timeout is negative")
+	if d.timeout < 0 && d.timeout != NoDeadline {
+		issues = append(issues, "the timeout is negative and not tools.NoDeadline")
+	}
+	if d.grace < 0 {
+		issues = append(issues, "the grace is negative")
 	}
 	return issues
 }

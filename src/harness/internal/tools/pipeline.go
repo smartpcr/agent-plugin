@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/agent"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
@@ -119,9 +120,26 @@ type Result struct {
 	Value any
 	// Approval is the approval outcome when the call was asked about.
 	Approval string
+	// Cause is why a body's context was cancelled, "" when it was not.
+	Cause Cause
+	// Truncated reports that the text was cut to the registry's ceiling.
+	Truncated bool
+	// Spill is the saved full result when the spill seat bounded the text.
+	Spill *event.Spill
 	// Seq is the seq of the tool/result event.
 	Seq event.Seq
 }
+
+// Cause is why a running body's context was cancelled.
+type Cause string
+
+// The causes.
+const (
+	// CauseDeadline: the call's budget ended.
+	CauseDeadline Cause = "deadline"
+	// CauseCancelled: the turn was cancelled.
+	CauseCancelled Cause = "cancelled"
+)
 
 // BatchResult holds one Result per call, in the batch's order.
 type BatchResult struct {
@@ -298,3 +316,38 @@ func Block(reason string) PostDecision { return PostDecision{Kind: PostBlock, Re
 // Shaper is a shaping listener over every settled call, refused ones included.
 // A panic fails the call.
 type Shaper func(c Call, o Outcome) PostDecision
+
+// SpillResult is the spill seat's answer. With Replace unset the text is kept.
+type SpillResult struct {
+	Replace bool
+	// Text is the bounded model-facing text: a preview and the notice.
+	Text string
+	// Ref is the saved full result; nil when the save failed (the notice says
+	// so).
+	Ref *event.Spill
+}
+
+// SpillShaper is the spill seat (DH-ADR-STORAGE-4): it runs after the shapers on
+// every call that reached the body, except a tool that bounds its own output,
+// and bounds the text, saving the full result through the spill store. A panic
+// or a Replace that grows the text is ignored; the registry's ceiling still
+// applies.
+type SpillShaper func(ctx context.Context, c Call, o Outcome) SpillResult
+
+// LateReturn is tool/late-return: a detached body returned after its call was
+// answered outcome-unknown. Its result is never shown to the model.
+type LateReturn struct {
+	CallID string `json:"call_id"`
+	Tool   string `json:"tool"`
+	// OK reports that the body returned without an error.
+	OK bool `json:"ok"`
+}
+
+// LateReturnType is the durable, log-only audit event of a late return.
+var LateReturnType = event.MustDefine(event.Default(), event.Spec[LateReturn]{Name: "tool/late-return", Version: 1,
+	Validate: func(l LateReturn) error {
+		if l.CallID == "" || l.Tool == "" {
+			return errors.New("tool/late-return: call_id and tool are required")
+		}
+		return nil
+	}})
