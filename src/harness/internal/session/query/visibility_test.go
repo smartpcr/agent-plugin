@@ -9,8 +9,10 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
@@ -282,79 +284,101 @@ func (e *env) appendTo(id string, ds ...event.Draft) error {
 // concurrently to every session (each would move it to the top) a paging
 // caller lists every session exactly once, in the order as of its first page.
 func TestListPagesByLastPromptAsOf(t *testing.T) {
-	st := must(sqlite.Open(bg, filepath.Join(t.TempDir(), "dsh.db")))
-	t.Cleanup(func() { _ = st.Close(bg) })
-	e := newEnvOn(t, st)
-	ids := []string{"s1", "s2", "s3", "s4", "s5", "s6"}
-	for _, id := range ids {
-		h := must(e.svc.Create(bg, nil, session.CreateOptions{Header: session.Header{ID: id}}))
-		if _, err := h.AppendGroup(bg, []event.Draft{promptDraft(t, id)}); err != nil {
+	// P-V: the session clock reads time.Now, so in the bubble the prompt
+	// milliseconds are virtual and two prompts are 2 ms apart without a sleep.
+	synctest.Test(t, func(t *testing.T) {
+		st := must(sqlite.Open(bg, filepath.Join(t.TempDir(), "dsh.db")))
+		t.Cleanup(func() { _ = st.Close(bg) })
+		e := newEnvOn(t, st)
+		ids := []string{"s1", "s2", "s3", "s4", "s5", "s6"}
+		for _, id := range ids {
+			h := must(e.svc.Create(bg, nil, session.CreateOptions{Header: session.Header{ID: id}}))
+			if _, err := h.AppendGroup(bg, []event.Draft{promptDraft(t, id)}); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.Close(bg); err != nil {
+				t.Fatal(err)
+			}
+			<-time.After(2 * time.Millisecond) // distinct prompt milliseconds (virtual)
+		}
+		// s1 has the oldest prompt but the newest event.
+		if err := e.appendTo("s1", ctxDrafts("s1", 3)...); err != nil {
 			t.Fatal(err)
 		}
-		if err := h.Close(bg); err != nil {
-			t.Fatal(err)
-		}
-		time.Sleep(2 * time.Millisecond) // distinct prompt milliseconds
-	}
-	// s1 has the oldest prompt but the newest event.
-	if err := e.appendTo("s1", ctxDrafts("s1", 3)...); err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(2 * time.Millisecond)
-	q := query.New(st)
-	again := promptDraft(t, "again")
+		<-time.After(2 * time.Millisecond)
+		q := query.New(st)
+		again := promptDraft(t, "again")
 
-	stop := make(chan struct{})
-	done := make(chan error, 1)
-	var appended atomic.Int64
-	appendAll := func() {
-		defer close(done)
-		for i := 0; ; i++ {
-			select {
-			case <-stop:
-				return
-			default:
+		stop := make(chan struct{})
+		halt := sync.OnceFunc(func() { close(stop) })
+		done := make(chan error, 1)
+		// P-S: the writer sends on appended after each prompt it lands, so the
+		// reader waits for two prompts between pages instead of polling a counter.
+		appended := make(chan struct{}, 2*len(ids))
+		appendAll := func() {
+			defer close(done)
+			for i := 0; ; i++ {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				// Each prompt in a later (virtual) millisecond than the one before,
+				// as on the wall clock.
+				<-time.After(time.Millisecond)
+				// The oldest prompts first: each jumps ahead of the cursor.
+				if err := e.appendTo(ids[i%len(ids)], again); err != nil {
+					done <- err
+					return
+				}
+				select {
+				case appended <- struct{}{}:
+				case <-stop:
+					return
+				}
 			}
-			// The oldest prompts first: each jumps ahead of the cursor.
-			if err := e.appendTo(ids[i%len(ids)], again); err != nil {
-				done <- err
-				return
+		}
+		var seen []string
+		o := query.ListOptions{Limit: 2}
+		for pages := 0; ; pages++ {
+			if pages > len(ids) {
+				t.Fatal("List does not terminate")
 			}
-			appended.Add(1)
+			for n := 0; pages > 0 && n < 2; n++ { // prompts land between pages
+				select {
+				case <-appended:
+				case err := <-done:
+					t.Fatalf("the writer stopped before two prompts landed: %v", err)
+				}
+			}
+			p := must(q.List(bg, o))
+			for _, en := range p.Entries {
+				seen = append(seen, string(en.ID))
+			}
+			if pages == 0 {
+				// P-C: the cleanup stops the writer, then joins it.
+				t.Cleanup(func() { halt(); <-done })
+				go appendAll()
+			}
+			if p.Next == "" {
+				break
+			}
+			o.Cursor = p.Next
 		}
-	}
-	var seen []string
-	o := query.ListOptions{Limit: 2}
-	for pages := 0; ; pages++ {
-		if pages > len(ids) {
-			t.Fatal("List does not terminate")
+		halt()
+		if err := <-done; err != nil {
+			t.Fatal(err)
 		}
-		for pages > 0 && appended.Load() < int64(2*pages) { // prompts land between pages
-			time.Sleep(time.Millisecond)
+		if want := []string{"s6", "s5", "s4", "s3", "s2", "s1"}; !slices.Equal(seen, want) {
+			t.Fatalf("listed %v while prompts were appended, want %v", seen, want)
 		}
-		p := must(q.List(bg, o))
-		for _, en := range p.Entries {
-			seen = append(seen, string(en.ID))
+		// A new listing's cut is its own now: let the last prompt's millisecond pass.
+		<-time.After(2 * time.Millisecond)
+		fresh := must(q.List(bg, query.ListOptions{}))
+		if len(fresh.Entries) != len(ids) || fresh.Entries[0].Summary.LastPromptAt < fresh.Entries[1].Summary.LastPromptAt {
+			t.Fatalf("a new listing is not by the latest prompts: %+v", fresh.Entries)
 		}
-		if pages == 0 {
-			go appendAll()
-		}
-		if p.Next == "" {
-			break
-		}
-		o.Cursor = p.Next
-	}
-	close(stop)
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
-	if want := []string{"s6", "s5", "s4", "s3", "s2", "s1"}; !slices.Equal(seen, want) {
-		t.Fatalf("listed %v while prompts were appended, want %v", seen, want)
-	}
-	fresh := must(q.List(bg, query.ListOptions{}))
-	if len(fresh.Entries) != len(ids) || fresh.Entries[0].Summary.LastPromptAt < fresh.Entries[1].Summary.LastPromptAt {
-		t.Fatalf("a new listing is not by the latest prompts: %+v", fresh.Entries)
-	}
+	})
 }
 
 // List pages are bounded: no limit is DefaultLimit, a larger one (up to the

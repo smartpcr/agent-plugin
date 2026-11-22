@@ -137,6 +137,7 @@ func TestScopedRegistrations(t *testing.T) {
 		t.Fatalf("layers = %d, want 4", ls.size())
 	}
 	var wg sync.WaitGroup
+	t.Cleanup(wg.Wait) // P-C: nothing gates Close; the cleanup joins on every exit path
 	for range 8 {
 		wg.Add(1)
 		go func() { defer wg.Done(); _ = preset.Close() }()

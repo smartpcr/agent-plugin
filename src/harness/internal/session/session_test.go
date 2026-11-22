@@ -185,6 +185,7 @@ func TestOrderedOnceDelivery(t *testing.T) {
 	h := e.create(t, scope.Key{})
 	const goroutines, per = 8, 125
 	var wg sync.WaitGroup
+	t.Cleanup(wg.Wait) // P-C: the appenders have no gate; the cleanup joins them on every exit path
 	receipts := make(chan event.Receipt, goroutines*per)
 	for g := 0; g < goroutines; g++ {
 		wg.Add(1)

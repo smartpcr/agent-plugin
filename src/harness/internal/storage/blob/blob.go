@@ -127,6 +127,10 @@ var syncDir = fsx.SyncDir
 // chmod sets an object's mode; tests replace it.
 var chmod = os.Chmod
 
+// afterLockShared is a test seam (export_test.go, SetAfterLockShared): when set,
+// it runs each time a saver has taken gc.lock shared. It is nil outside tests.
+var afterLockShared func()
+
 // Store is the blob store of one home.
 type Store struct {
 	root  string // <home>/blobs
@@ -161,6 +165,9 @@ func (s *Store) lockShared(ctx context.Context) (*fsx.FileLock, error) {
 			return nil, err
 		}
 		return nil, herr.Wrap(home.ReasonIO, err, "blob: take "+GCLock+" shared")
+	}
+	if afterLockShared != nil {
+		afterLockShared()
 	}
 	return l, nil
 }

@@ -319,6 +319,27 @@ func (p gatedProvider) Report(context.Context, session.ID) ([]workspace.Activity
 }
 func (gatedProvider) Stop(context.Context, session.ID, agent.StopCause) error { return nil }
 
+// goJoined runs fn on a new goroutine and registers its release with t.Cleanup
+// right after the start (P-C, tools/harness-gate/README.md): the cleanup calls
+// unblock, which must make fn return and be safe to call twice, then joins fn,
+// failing the test if it has not returned within ten seconds.
+func goJoined(t *testing.T, unblock func(), fn func()) {
+	t.Helper()
+	joined := make(chan struct{})
+	t.Cleanup(func() {
+		unblock()
+		select {
+		case <-joined:
+		case <-time.After(10 * time.Second):
+			t.Error("a test goroutine did not return after its release")
+		}
+	})
+	go func() {
+		defer close(joined)
+		fn()
+	}()
+}
+
 // An archive's rollback or confirm never undoes an overlapping operation on the
 // same session: a hide that confirms while a no-stop archive is deciding stays
 // archived when that archive then refuses, and an unarchive in between makes
@@ -334,14 +355,15 @@ func TestOverlappingArchivesKeepTheLastDecision(t *testing.T) {
 			overlap := func(active bool, during func(a *workspace.Archiver)) error {
 				g := gatedProvider{entered: make(chan struct{}), release: make(chan struct{}), active: active}
 				a := workspace.NewArchiver(marks, g)
+				release := sync.OnceFunc(func() { close(g.release) })
 				done := make(chan error, 1)
-				go func() { done <- a.Archive(bg, "s", workspace.ArchiveOptions{}) }()
+				goJoined(t, release, func() { done <- a.Archive(bg, "s", workspace.ArchiveOptions{}) })
 				<-g.entered
 				if f := must(marks.Flags(bg, "s")); f.Archive != workspace.ArchivePending || f.Owner == "" {
 					t.Fatalf("deciding archive's mark = %+v", f)
 				}
 				during(workspace.NewArchiver(marks))
-				close(g.release)
+				release()
 				return <-done
 			}
 
@@ -493,8 +515,9 @@ func TestRefusedArchiveKeepsThePin(t *testing.T) {
 	}
 
 	g := gatedProvider{entered: make(chan struct{}), release: make(chan struct{}), active: true}
+	release := sync.OnceFunc(func() { close(g.release) })
 	done := make(chan error, 1)
-	go func() { done <- workspace.NewArchiver(reg, g).Archive(bg, "s", workspace.ArchiveOptions{}) }()
+	goJoined(t, release, func() { done <- workspace.NewArchiver(reg, g).Archive(bg, "s", workspace.ArchiveOptions{}) })
 	<-g.entered
 	if err := reg.Pin(bg, "s", true); !errors.Is(err, workspace.ErrInvalid) {
 		t.Fatalf("pinning a pending session = %v", err)
@@ -502,7 +525,7 @@ func TestRefusedArchiveKeepsThePin(t *testing.T) {
 	if err := reg.Pin(bg, "s", false); err != nil {
 		t.Fatal(err)
 	}
-	close(g.release)
+	release()
 	if err := <-done; !errors.Is(err, workspace.ErrActive) {
 		t.Fatalf("the deciding archive = %v", err)
 	}

@@ -215,6 +215,14 @@ func TestManualCallbackReentry(t *testing.T) {
 		t.Fatal(err)
 	}
 	done := make(chan struct{})
+	// P-C: nothing gates the firing goroutine; the cleanup joins it, bounded.
+	t.Cleanup(func() {
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("the firing goroutine did not return")
+		}
+	})
 	go func() {
 		defer close(done)
 		m.Fire(path)
