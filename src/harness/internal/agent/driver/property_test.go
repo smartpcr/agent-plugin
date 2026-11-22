@@ -265,6 +265,7 @@ func runCase(t *testing.T, root *cordis.Context, svc tools.Service, i int, p *pl
 		}
 		// The driver stopped; the next write-open closes what it left open.
 		leaseCut.Add(1)
+		r.skipReplay = true
 		h, rep, err := session.NewService(root, st, session.Config{}).Open(bg, nil, session.ID(id), session.OpenOptions{Takeover: store.Force})
 		if err != nil {
 			t.Fatalf("reopen after the lease loss: %v", err)

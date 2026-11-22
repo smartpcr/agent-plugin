@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"time"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/agent"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm"
@@ -31,9 +32,12 @@ type stepResult struct {
 // log. Once step/start is appended, step/end is appended on every path but a
 // failed append, after every tool call of the step has its tool/result.
 func (d *Driver) step(t *turnState, n int, batch []vocab.Message) (res stepResult, err error) {
-	s := d.o.Session
-	cp, err := d.o.Model.Capture(logCtx, t.turn, n)
-	if err != nil {
+	var cp agent.Capture
+	if err := d.write(t.ctx, func(ctx context.Context) error {
+		var err error
+		cp, err = d.o.Model.Capture(ctx, t.turn, n)
+		return err
+	}); err != nil {
 		return stepResult{reason: errorReason("driver/model", err)}, nil
 	}
 	st, err := ResolveStep(t.ctx, d.o.Tools, d.o.Agent, cp.Selection)
@@ -60,7 +64,7 @@ func (d *Driver) step(t *turnState, n int, batch []vocab.Message) (res stepResul
 	}()
 
 	// Points 4 to 6: PreStep, then step/start with the batch and the capture.
-	out, err := agent.ProposeStep(d.o.Context, d.o.Agent, noCancelLog{s}, agent.PreStepRequest{
+	out, err := agent.ProposeStep(d.o.Context, d.o.Agent, d.log(), agent.PreStepRequest{
 		Ctx: t.ctx, Turn: t.turn, Step: n, Messages: batch, Selection: cp.Selection, Previous: cp.Previous,
 	}, cp.Record)
 	if err != nil {
@@ -76,13 +80,13 @@ func (d *Driver) step(t *turnState, n int, batch []vocab.Message) (res stepResul
 			return // a failed append: the session's next write-open closes the step
 		}
 		res.cause = stepCause(ss)
-		err = d.closeStep(t.turn, n, res.cause)
+		err = d.closeStep(ss.ctx, t.turn, n, res.cause)
 	}()
 
-	if err := d.admit(batch, out.Enter.Messages); err != nil {
+	if err := d.admit(ss.ctx, batch, out.Enter.Messages); err != nil {
 		return res, err
 	}
-	msg, reason, err := d.call(t, ss, n, cp.Selection, st)
+	msg, reason, err := d.call(t, ss, n, cp.Selection, st, out.Enter.StartsSeries)
 	if err != nil {
 		return res, err
 	}
@@ -96,14 +100,23 @@ func (d *Driver) step(t *turnState, n int, batch []vocab.Message) (res stepResul
 	if len(calls) > 0 {
 		// Point 12. A cancelled step still runs the batch: each call is logged
 		// and answered tools/aborted-before-start without its body running.
-		_, _ = st.Execute(sctx, noCancelLog{s}, calls)
+		// A batch that a log write stopped ends the turn error once point 13
+		// has answered the calls it left.
+		if _, xerr := st.Execute(sctx, d.log(), calls); xerr != nil {
+			if permanent(xerr) {
+				return res, xerr
+			}
+			d.failed(t.turn, n, xerr)
+			res.reason = errorReason("driver/tools", xerr)
+		}
 	}
 	return res, nil
 }
 
 // closeStep is point 13: an error result for each call still unanswered (one
-// whose batch failed), then step/end with the step's cancel cause, one group.
-func (d *Driver) closeStep(turn, step int, cause agent.Cause) error {
+// whose batch failed), then step/end with the step's cancel cause, one group,
+// a write made for the step's context parent.
+func (d *Driver) closeStep(parent context.Context, turn, step int, cause agent.Cause) error {
 	s := d.o.Session
 	b := s.Open()
 	closer := surface.CauseFailed
@@ -115,13 +128,15 @@ func (d *Driver) closeStep(turn, step int, cause agent.Cause) error {
 		return err
 	}
 	ds = append(ds, mustDraft(event.StepEndType.Draft(event.StepEnd{Turn: turn, Step: step, Cause: string(cause)})))
-	_, err = s.AppendGroup(logCtx, ds)
-	return err
+	return d.write(parent, func(ctx context.Context) error {
+		_, err := s.AppendGroup(ctx, ds)
+		return err
+	})
 }
 
 // admit appends the messages of the entered batch that are not yet in the log:
 // the claims logged batch, so only what a PreStep listener added is new.
-func (d *Driver) admit(batch, entered []vocab.Message) error {
+func (d *Driver) admit(parent context.Context, batch, entered []vocab.Message) error {
 	logged := make(map[string]bool, len(batch))
 	for _, m := range batch {
 		logged[m.ID()] = true
@@ -132,7 +147,7 @@ func (d *Driver) admit(batch, entered []vocab.Message) error {
 			fresh = append(fresh, m)
 		}
 	}
-	return d.insert(fresh)
+	return d.insert(parent, fresh)
 }
 
 // settled is the message a step's attempt produced.
@@ -142,9 +157,11 @@ type settled struct {
 }
 
 // call is points 7 to 11: the model attempts of one step, retried as point 11
-// decides, each settled by exactly one event. It returns the logged assistant
+// decides, each settled by exactly one event. series is the step's
+// Enter.StartsSeries: the step's first request starts a new request series, so
+// its header is appended even when unchanged. It returns the logged assistant
 // message (nil for none) and the reason that ends the turn after the step.
-func (d *Driver) call(t *turnState, ss *stepState, n int, sel agent.ModelSelection, st *StepTools) (*settled, *event.Reason, error) {
+func (d *Driver) call(t *turnState, ss *stepState, n int, sel agent.ModelSelection, st *StepTools, series bool) (*settled, *event.Reason, error) {
 	s := d.o.Session
 	maxAttempts := d.budget.attempts()
 	started := d.o.Now()
@@ -159,7 +176,7 @@ func (d *Driver) call(t *turnState, ss *stepState, n int, sel agent.ModelSelecti
 			}
 			return nil, errorReason("driver/prepare", err), nil
 		}
-		if err := d.header(p.Route(), st.Schemas(), sel.Controls); err != nil {
+		if err := d.header(ss.ctx, p.Route(), st.Schemas(), sel.Controls, series && attempt == 1); err != nil {
 			return nil, nil, err
 		}
 		req, err := s.NextRequest()
@@ -173,7 +190,7 @@ func (d *Driver) call(t *turnState, ss *stepState, n int, sel agent.ModelSelecti
 		if !got {
 			return nil, nil, fmt.Errorf("driver: attempt %d of step %d settled no record", attempt, n)
 		}
-		if err := d.settle(rec); err != nil {
+		if err := d.settle(ss.ctx, rec); err != nil {
 			return nil, nil, err
 		}
 		if rec.Succeeded() {
@@ -212,7 +229,7 @@ func (d *Driver) call(t *turnState, ss *stepState, n int, sel agent.ModelSelecti
 // settle appends the attempt's one settlement event. An interrupted attempt
 // that kept a prefix is the turn's assistant/message: the prefix is history,
 // with no tool call.
-func (d *Driver) settle(a llm.Attempt) error {
+func (d *Driver) settle(parent context.Context, a llm.Attempt) error {
 	var (
 		dr  event.Draft
 		err error
@@ -229,15 +246,17 @@ func (d *Driver) settle(a llm.Attempt) error {
 	if err != nil {
 		return err
 	}
-	_, err = d.o.Session.Append(logCtx, dr)
-	return err
+	return d.write(parent, func(ctx context.Context) error {
+		_, err := d.o.Session.Append(ctx, dr)
+		return err
+	})
 }
 
 // header appends a request/header when the step's route, tools or controls
-// differ from the one in force.
-func (d *Driver) header(route vocab.RouteID, schemas []vocab.ToolSchema, c vocab.Controls) error {
+// differ from the one in force, or when force starts a new request series.
+func (d *Driver) header(parent context.Context, route vocab.RouteID, schemas []vocab.ToolSchema, c vocab.Controls, force bool) error {
 	cur, ok := d.o.Session.RequestHeader()
-	if ok && cur.Route == route && sameTools(cur.Tools, schemas) && reflect.DeepEqual(cur.Controls, c) {
+	if !force && ok && cur.Route == route && sameTools(cur.Tools, schemas) && reflect.DeepEqual(cur.Controls, c) {
 		return nil
 	}
 	p := event.RequestHeaderPayload{Route: route, Tools: schemas}
@@ -249,8 +268,10 @@ func (d *Driver) header(route vocab.RouteID, schemas []vocab.ToolSchema, c vocab
 	if err != nil {
 		return err
 	}
-	_, err = d.o.Session.Append(logCtx, dr)
-	return err
+	return d.write(parent, func(ctx context.Context) error {
+		_, err := d.o.Session.Append(ctx, dr)
+		return err
+	})
 }
 
 func sameTools(a, b []vocab.ToolSchema) bool {
@@ -291,23 +312,39 @@ func errorReason(by string, err error) *event.Reason {
 }
 
 // noCancelLog writes through a cancelled context: a cancelled step's tool/call
-// and its error result, and the step's own brackets, are still logged.
+// and its error result, and the step's own brackets, are still logged. Each
+// write keeps ctx's values but not its cancel, and is bounded by bound
+// (Options.CleanupTimeout), so a stalled store cannot hold the step.
 type noCancelLog struct {
 	s interface {
 		Append(ctx context.Context, d event.Draft) (event.Receipt, error)
 		AppendGroup(ctx context.Context, ds []event.Draft) ([]event.Receipt, error)
 		Flush(ctx context.Context) (event.Offset, error)
 	}
+	bound time.Duration
+}
+
+// log is the session as the step's pipeline writes it.
+func (d *Driver) log() noCancelLog { return noCancelLog{s: d.o.Session, bound: d.o.CleanupTimeout} }
+
+func (l noCancelLog) ctx(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), l.bound)
 }
 
 func (l noCancelLog) Append(ctx context.Context, d event.Draft) (event.Receipt, error) {
-	return l.s.Append(context.WithoutCancel(ctx), d)
+	ctx, cancel := l.ctx(ctx)
+	defer cancel()
+	return l.s.Append(ctx, d)
 }
 
 func (l noCancelLog) AppendGroup(ctx context.Context, ds []event.Draft) ([]event.Receipt, error) {
-	return l.s.AppendGroup(context.WithoutCancel(ctx), ds)
+	ctx, cancel := l.ctx(ctx)
+	defer cancel()
+	return l.s.AppendGroup(ctx, ds)
 }
 
 func (l noCancelLog) Flush(ctx context.Context) (event.Offset, error) {
-	return l.s.Flush(context.WithoutCancel(ctx))
+	ctx, cancel := l.ctx(ctx)
+	defer cancel()
+	return l.s.Flush(ctx)
 }

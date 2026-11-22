@@ -17,6 +17,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools"
 )
 
@@ -52,8 +53,23 @@ type Options struct {
 	// Now and After are the clock; nil is the wall clock.
 	Now   func() time.Time
 	After func(time.Duration) <-chan time.Time
-	Hooks Hooks
+	// CleanupTimeout bounds each log write the driver makes, the closers a
+	// cancel owes above all (architecture.md F4's cleanupBudget): a write runs
+	// under context.WithTimeout(context.WithoutCancel(turnCtx), CleanupTimeout),
+	// so a cancel never stops it and a stalled store cannot hold the driver.
+	// 0 is DefaultCleanupTimeout.
+	CleanupTimeout time.Duration
+	// FinalFlushTimeout bounds the flush that settles a turn (point 16,
+	// tech-spec.md §5.5 finalFlushTimeout); 0 is DefaultFinalFlushTimeout.
+	FinalFlushTimeout time.Duration
+	Hooks             Hooks
 }
+
+// The cleanup bounds' defaults.
+const (
+	DefaultCleanupTimeout    = 10 * time.Second
+	DefaultFinalFlushTimeout = 10 * time.Second
+)
 
 // Driver runs one agent's turns on its own goroutine.
 type Driver struct {
@@ -67,7 +83,7 @@ type Driver struct {
 	mu      sync.Mutex
 	status  agent.Status
 	waiting bool            // parked on the wake
-	held    map[string]bool // next-turn input kept across a cancel waits for a new wake
+	held    map[string]bool // next-turn input a cancel kept waits for a new wake
 	changed chan struct{}
 	cur     *turnState
 	err     error
@@ -92,6 +108,15 @@ func Start(o Options) (*Driver, error) {
 	}
 	if o.After == nil {
 		o.After = time.After
+	}
+	if o.CleanupTimeout < 0 || o.FinalFlushTimeout < 0 {
+		return nil, errors.New("driver: a cleanup timeout cannot be negative")
+	}
+	if o.CleanupTimeout == 0 {
+		o.CleanupTimeout = DefaultCleanupTimeout
+	}
+	if o.FinalFlushTimeout == 0 {
+		o.FinalFlushTimeout = DefaultFinalFlushTimeout
 	}
 	life, stop := context.WithCancelCause(context.Background())
 	d := &Driver{o: o, budget: b, life: life, stopLife: stop, done: make(chan struct{}),
@@ -172,6 +197,7 @@ func (d *Driver) Stop(ctx context.Context, _ agent.StopCause) error { return d.C
 func (d *Driver) halt(c agent.Cause) {
 	d.mu.Lock()
 	if t := d.cur; t != nil {
+		d.keepPending(t)
 		t.cancelTurn(c)
 	}
 	d.mu.Unlock()
@@ -205,7 +231,7 @@ func (d *Driver) run() {
 		d.held = nil
 		d.mu.Unlock()
 		for d.life.Err() == nil {
-			ran, aborted, err := d.turn()
+			ran, kept, err := d.turn()
 			if err != nil {
 				d.fail(err)
 				return
@@ -213,22 +239,20 @@ func (d *Driver) run() {
 			if !ran {
 				break
 			}
-			if aborted {
-				// Input kept across a cancel stays parked until a new wake: the
-				// wake its own send left is spent here.
-				held := map[string]bool{}
-				for _, m := range d.o.Inbox.Pending(agent.ListNextTurn) {
-					held[m.ID] = true
-				}
+			if kept != nil {
+				// Input that was parked when the cancel landed stays parked
+				// until a new wake: the wake its own send left is spent here.
+				// A Send that arrived during the cancel or its cleanup is not
+				// in kept, so it is a new wake and opens the next turn now.
 				select {
 				case <-d.o.Inbox.Wake():
 				default:
 				}
 				d.mu.Lock()
-				d.held = held
+				d.held = kept
 				d.mu.Unlock()
-				if !allHeld(d.o.Inbox.Pending(agent.ListNextTurn), held) {
-					continue // a send after the cancel is a new wake
+				if !allHeld(d.o.Inbox.Pending(agent.ListNextTurn), kept) {
+					continue
 				}
 				break
 			}
@@ -269,5 +293,38 @@ func allHeld(pending []agent.InboxMessage, held map[string]bool) bool {
 	return true
 }
 
-// logCtx is the context of every log write: a cancel never stops a closer.
-var logCtx = context.Background()
+// writeCtx is the context of one log write made for parent (the turn's or
+// step's context, nil for none): parent's values without its cancel, bounded
+// by CleanupTimeout. A cancel never stops a closer; a stalled store does.
+func (d *Driver) writeCtx(parent context.Context) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = d.life
+	}
+	return context.WithTimeout(context.WithoutCancel(parent), d.o.CleanupTimeout)
+}
+
+// write runs fn under a fresh writeCtx for parent.
+func (d *Driver) write(parent context.Context, fn func(ctx context.Context) error) error {
+	ctx, cancel := d.writeCtx(parent)
+	defer cancel()
+	return fn(ctx)
+}
+
+// keepPending snapshots, at t's first cancel, the next-turn input parked at
+// that moment: it is the input the cancel keeps, which waits for a new wake.
+// The caller holds mu.
+func (d *Driver) keepPending(t *turnState) {
+	if t.kept != nil {
+		return
+	}
+	t.kept = map[string]bool{}
+	for _, m := range d.o.Inbox.Pending(agent.ListNextTurn) {
+		t.kept[m.ID] = true
+	}
+}
+
+// permanent reports a write failure no retry can mend: the session is closed
+// or its lease went to another writer.
+func permanent(err error) bool {
+	return errors.Is(err, store.ErrLeaseLost) || errors.Is(err, session.ErrClosed)
+}

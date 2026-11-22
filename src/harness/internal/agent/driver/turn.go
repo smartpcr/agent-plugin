@@ -13,28 +13,46 @@ import (
 )
 
 // turn runs one turn when next-turn input is pending (points 2 to 16). ran is
-// false when nothing opened; aborted is true when the turn ended aborted, so
-// the input kept parked waits for a new wake. A returned error is a failed
-// append or flush: the driver stops and the turn may stay open in the log.
-func (d *Driver) turn() (ran, aborted bool, err error) {
+// false when nothing opened. kept is non-nil when the turn ended aborted: the
+// next-turn input that was parked when the cancel landed, which waits for a
+// new wake. A returned error is a failed append or flush: the driver stops and
+// the turn may stay open in the log.
+func (d *Driver) turn() (ran bool, kept map[string]bool, err error) {
 	if len(d.o.Inbox.Pending(agent.ListNextTurn)) == 0 {
-		return false, false, nil
+		return false, nil, nil
 	}
 	d.setStatus(agent.StatusRunning, false)
 	s := d.o.Session
 	// Point 2: a turn a failed close left open is closed first.
 	if s.Open().IsOpen() {
-		if _, err := s.CloseOpen(logCtx, surface.CauseFailed); err != nil {
-			return true, false, err
+		if err := d.write(nil, func(ctx context.Context) error {
+			_, err := s.CloseOpen(ctx, surface.CauseFailed)
+			return err
+		}); err != nil {
+			return true, nil, err
 		}
 	}
 	n := s.Open().LastTurn + 1
-	msg, ok, err := d.o.Inbox.ClaimTurn(logCtx, n)
+	var (
+		msg agent.InboxMessage
+		ok  bool
+	)
+	err = d.write(nil, func(ctx context.Context) error {
+		var err error
+		msg, ok, err = d.o.Inbox.ClaimTurn(ctx, n)
+		return err
+	})
 	if err != nil {
-		return true, false, err
+		if !ok {
+			return true, nil, err
+		}
+		// The item is taken but not durable: make it durable, then run it.
+		if err := d.durable(err); err != nil {
+			return true, nil, fmt.Errorf("driver: claim turn %d: %w", n, err)
+		}
 	}
 	if !ok {
-		return false, false, nil
+		return false, nil, nil
 	}
 	tctx, cancel := context.WithCancelCause(d.life)
 	t := &turnState{turn: n, ctx: tctx, cancel: cancel}
@@ -52,31 +70,66 @@ func (d *Driver) turn() (ran, aborted bool, err error) {
 	}
 	first, err := msg.Message()
 	if err != nil {
-		return true, false, err
+		return true, nil, err
 	}
 	batch := []vocab.Message{first}
 	more, err := d.claimStep(n)
 	if err != nil {
-		return true, false, err
+		return true, nil, err
 	}
 	batch = append(batch, more...)
 
 	reason, err := d.steps(t, batch)
 	if err != nil {
-		return true, false, err
+		return true, nil, err
 	}
 	// Point 15: one turn/end, unless point 5 already wrote it.
 	if reason != nil {
-		if _, err := s.Append(logCtx, mustDraft(event.TurnEndType.Draft(event.TurnEnd{Turn: n, Reason: *reason}))); err != nil {
-			return true, false, err
+		if err := d.write(t.ctx, func(ctx context.Context) error {
+			_, err := s.Append(ctx, mustDraft(event.TurnEndType.Draft(event.TurnEnd{Turn: n, Reason: *reason})))
+			return err
+		}); err != nil {
+			return true, nil, err
 		}
-		aborted = reason.Kind == event.ReasonAborted
+		if reason.Kind == event.ReasonAborted {
+			d.mu.Lock()
+			kept = t.kept
+			d.mu.Unlock()
+			if kept == nil {
+				kept = map[string]bool{}
+			}
+		}
 	}
-	// Point 16: the next turn opens only after this flush has settled.
-	if _, err := s.Flush(logCtx); err != nil {
-		return true, aborted, fmt.Errorf("driver: flush turn %d: %w", n, err)
+	// Point 16: the next turn opens only after this flush has settled, within
+	// FinalFlushTimeout.
+	fctx, stop := context.WithTimeout(context.WithoutCancel(t.ctx), d.o.FinalFlushTimeout)
+	defer stop()
+	if _, err := s.Flush(fctx); err != nil {
+		return true, kept, fmt.Errorf("driver: flush turn %d: %w", n, err)
 	}
-	return true, aborted, nil
+	return true, kept, nil
+}
+
+// durable makes a claim whose append succeeded but whose flush failed (first)
+// durable: its items have left the queue and are handed out never again, so
+// they must run, not be lost. It retries Inbox.Sync with a backoff until it
+// succeeds, the failure is permanent or the driver stops.
+func (d *Driver) durable(first error) error {
+	err, delay := first, 10*time.Millisecond
+	for {
+		if permanent(err) {
+			return err
+		}
+		select {
+		case <-d.life.Done():
+			return err
+		case <-d.o.After(delay):
+		}
+		if err = d.write(nil, d.o.Inbox.Sync); err == nil {
+			return nil
+		}
+		delay = min(2*delay, time.Second)
+	}
 }
 
 // timeLimit cancels t with cause budget when its time is up.
@@ -85,6 +138,7 @@ func (d *Driver) timeLimit(t *turnState, lim time.Duration) {
 	case <-t.ctx.Done():
 	case <-d.o.After(lim):
 		d.mu.Lock()
+		d.keepPending(t)
 		if t.cancelTurn(agent.CauseBudget) {
 			t.limit = LimitDuration
 		}
@@ -92,11 +146,22 @@ func (d *Driver) timeLimit(t *turnState, lim time.Duration) {
 	}
 }
 
-// claimStep claims every next-step item into turn n, as messages.
+// claimStep claims every next-step item into turn n, as messages. Items whose
+// claim was appended but not flushed are made durable and run.
 func (d *Driver) claimStep(n int) ([]vocab.Message, error) {
-	items, err := d.o.Inbox.ClaimStep(logCtx, n)
+	var items []agent.InboxMessage
+	err := d.write(nil, func(ctx context.Context) error {
+		var err error
+		items, err = d.o.Inbox.ClaimStep(ctx, n)
+		return err
+	})
 	if err != nil {
-		return nil, err
+		if items == nil {
+			return nil, err
+		}
+		if err := d.durable(err); err != nil {
+			return nil, fmt.Errorf("driver: claim step input of turn %d: %w", n, err)
+		}
 	}
 	out := make([]vocab.Message, 0, len(items))
 	for _, m := range items {
@@ -195,7 +260,7 @@ func (d *Driver) steps(t *turnState, batch []vocab.Message) (*event.Reason, erro
 		if !ok {
 			return &event.Reason{Kind: kind}, nil
 		}
-		if err := d.insert(keep.Messages); err != nil {
+		if err := d.insert(t.ctx, keep.Messages); err != nil {
 			return nil, err
 		}
 		batch = keep.Messages
@@ -206,8 +271,9 @@ func (d *Driver) stepLimit() *event.Reason {
 	return &event.Reason{Kind: event.ReasonBudget, Limit: LimitSteps, Value: d.budget.MaxSteps}
 }
 
-// insert appends KeepOpen's messages, each as the event of its role, in one group.
-func (d *Driver) insert(msgs []vocab.Message) error {
+// insert appends msgs, each as the event of its role, in one group, a write
+// made for parent.
+func (d *Driver) insert(parent context.Context, msgs []vocab.Message) error {
 	var ds []event.Draft
 	for _, m := range msgs {
 		var (
@@ -232,8 +298,10 @@ func (d *Driver) insert(msgs []vocab.Message) error {
 	if len(ds) == 0 {
 		return nil
 	}
-	_, err := d.o.Session.AppendGroup(logCtx, ds)
-	return err
+	return d.write(parent, func(ctx context.Context) error {
+		_, err := d.o.Session.AppendGroup(ctx, ds)
+		return err
+	})
 }
 
 // failed reports a steering listener's failure through agent.Failed.

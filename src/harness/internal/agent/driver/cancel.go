@@ -17,7 +17,10 @@ type turnState struct {
 	cause agent.Cause
 	// limit is set when the time budget, not a caller, cancelled the turn.
 	limit string
-	step  *stepState
+	// kept is the next-turn input parked at the turn's first cancel; nil
+	// until a cancel lands.
+	kept map[string]bool
+	step *stepState
 }
 
 // stepState is the step between point 4 and point 13; nil outside it.
@@ -75,7 +78,11 @@ func (d *Driver) Cancel(c agent.Cause, o agent.CancelOptions) error {
 		}
 		for _, l := range lists {
 			for _, m := range d.o.Inbox.Pending(l) {
-				if _, err := d.o.Inbox.Discard(logCtx, l, m.ID, string(c)); err != nil {
+				err := d.write(nil, func(ctx context.Context) error {
+					_, err := d.o.Inbox.Discard(ctx, l, m.ID, string(c))
+					return err
+				})
+				if err != nil {
 					errs = errors.Join(errs, err)
 				}
 			}
@@ -86,9 +93,11 @@ func (d *Driver) Cancel(c agent.Cause, o agent.CancelOptions) error {
 	if t := d.cur; t != nil {
 		switch o.Scope {
 		case agent.ScopeTurn:
+			d.keepPending(t)
 			t.cancelTurn(c)
 		case agent.ScopeStep:
 			if t.step != nil {
+				d.keepPending(t)
 				t.step.cancelStep(c)
 			}
 		}

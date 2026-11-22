@@ -27,12 +27,19 @@ const route vocab.RouteID = "r/a"
 // rig is one driven agent on the scripted model.
 type rig struct {
 	t     *testing.T
+	root  *cordis.Context
+	store *memstore.Store
 	sess  session.Handle
 	inbox *agent.Inbox
 	tr    *fakemodel.Transport
 	drv   *driver.Driver
 	// requests receives the number of each model request as it is sent.
 	requests chan int
+	// sent records every request the driver streamed, for the replay check.
+	sent *recorder
+	// skipReplay turns off the DH-T-AGENT-8 check run after the test, for a
+	// case whose log another writer changed.
+	skipReplay bool
 }
 
 type rigOptions struct {
@@ -52,6 +59,8 @@ type rigOptions struct {
 	model http.RoundTripper
 	// failOK accepts a driver that stopped on a failure.
 	failOK bool
+	// options edits the driver's options before Start.
+	options func(*driver.Options)
 }
 
 // counting reports each request on a channel once the script has answered it.
@@ -96,7 +105,7 @@ func newRig(t *testing.T, o rigOptions) *rig {
 	if o.wrap != nil {
 		live = o.wrap(sess)
 	}
-	r := &rig{t: t, sess: sess, requests: make(chan int, 64)}
+	r := &rig{t: t, root: o.root, store: st, sess: sess, requests: make(chan int, 64)}
 	model := o.model
 	if model == nil {
 		r.tr = fakemodel.NewTransport(t, o.turns...)
@@ -104,17 +113,29 @@ func newRig(t *testing.T, o rigOptions) *rig {
 	}
 	rt := llm.New()
 	fakemodel.Register(t, rt, route, &counting{next: model, ch: r.requests})
+	r.sent = &recorder{Models: rt}
 	r.inbox = must(agent.OpenInbox(bg, live))
 	mod := must(agent.OpenModel(bg, live, agent.ModelOptions{Initial: agent.ModelSelection{Route: route}}))
 	opts := driver.Options{
 		Context: o.root, Agent: stubAgent{ref: agent.Ref{Session: session.ID(id), Incarnation: 1}},
-		Session: live, Inbox: r.inbox, Model: mod, Models: rt, Tools: o.svc,
+		Session: live, Inbox: r.inbox, Model: mod, Models: r.sent, Tools: o.svc,
 		Budget: o.budget, Hooks: o.hooks,
 	}
 	if o.clock != nil {
 		opts.Now, opts.After = o.clock.Now, o.clock.After
 	}
+	if o.options != nil {
+		o.options(&opts)
+	}
 	r.drv = must(driver.Start(opts))
+	// Cleanups run last first: the driver closes, then the replay check of
+	// agent-loop.md §9.1 runs, then the session closes.
+	t.Cleanup(func() {
+		if r.skipReplay || r.drv.Err() != nil || t.Failed() {
+			return
+		}
+		r.replayed()
+	})
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(bg, 10*time.Second)
 		defer cancel()
@@ -274,6 +295,10 @@ func TestTurnBudgetClosesTheTurn(t *testing.T) {
 		t.Fatalf("turn/end %+v, want budget{steps, 3}", got)
 	}
 	checkClosed(t, r.sess)
+	if n := len(r.sent.requests()); n != 3 {
+		t.Fatalf("%d requests sent, want 3", n)
+	}
+	r.replayed()
 }
 
 // DH-T-AGENT-28: the defaults bound a turn; a turn inside them is not cut.
