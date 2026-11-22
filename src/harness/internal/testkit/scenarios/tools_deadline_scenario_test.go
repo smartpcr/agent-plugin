@@ -12,9 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
-	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store"
-	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
+	"github.com/smartpcr/agent-plugin/src/sdk/protocol"
 )
 
 // tools3Budget is the shell call's budget the scenario asks for.
@@ -26,36 +24,59 @@ const tools3Margin = 3 * time.Second
 var tools3Process = regexp.MustCompile(`(?m)^\s*(\d+)\s+(.*\S)\s*$`)
 
 // tools3Call is what the log says of one tool call: its tool/call and
-// tool/result in order, with their times in Unix milliseconds.
+// tool/result in order, with their times.
 type tools3Call struct {
 	id, name     string
-	called, done int64
+	called, done time.Time
 	result       string
 	answered     bool
 }
 
-// tools3Calls returns the tool calls of a session's log in their order.
-func tools3Calls(t *testing.T, recs []store.Record) []*tools3Call {
+// tools3Log is the session's log as DSH_SCENARIO_TOOLS3_LOG prints it: one SDK
+// protocol.Event per line (the wire shape of session/history), in log order.
+func tools3Log(t *testing.T, out string) []protocol.Event {
 	t.Helper()
+	var evs []protocol.Event
+	for i, line := range strings.Split(out, "\n") {
+		if line = strings.TrimSpace(line); line == "" {
+			continue
+		}
+		var e protocol.Event
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			t.Fatalf("the log's line %d is not an SDK event: %v\n%s", i+1, err, line)
+		}
+		evs = append(evs, e)
+	}
+	return evs
+}
+
+// tools3Calls returns the tool calls of a session's log in their order.
+func tools3Calls(t *testing.T, evs []protocol.Event) []*tools3Call {
+	t.Helper()
+	at := func(e protocol.Event) time.Time {
+		ts, err := time.Parse(time.RFC3339Nano, e.Time)
+		if err != nil {
+			t.Fatalf("the time of %s at seq %d: %v", e.Type, e.Seq, err)
+		}
+		return ts
+	}
 	var out []*tools3Call
 	byID := map[string]*tools3Call{}
-	for _, rec := range recs {
-		switch rec.Type {
+	for _, e := range evs {
+		var p struct {
+			CallID string `json:"call_id"`
+			Name   string `json:"name"`
+		}
+		switch e.Type {
 		case "tool/call":
-			var p event.ToolCallPayload
-			if err := json.Unmarshal([]byte(rec.Payload), &p); err != nil {
-				t.Fatalf("decoding the tool call at seq %d: %v", rec.Seq, err)
-			}
-			c := &tools3Call{id: p.CallID, name: p.Name, called: rec.Time}
+			decode(t, e, &p)
+			c := &tools3Call{id: p.CallID, name: p.Name, called: at(e)}
 			byID[p.CallID] = c
 			out = append(out, c)
 		case "tool/result":
-			var p event.ToolResultPayload
-			if err := json.Unmarshal([]byte(rec.Payload), &p); err != nil {
-				t.Fatalf("decoding the tool result at seq %d: %v", rec.Seq, err)
-			}
+			decode(t, e, &p)
 			if c := byID[p.CallID]; c != nil {
-				c.done, c.result, c.answered = rec.Time, rec.Payload, true
+				c.done, c.result, c.answered = at(e), string(e.Data), true
 			}
 		}
 	}
@@ -84,7 +105,9 @@ func tools3Calls(t *testing.T, recs []store.Record) []*tools3Call {
 // call of the fixture with a 5 second budget and then one more tool call, with
 // {mode} "deadline" (the call runs to its budget) or "cancel" (the turn is
 // cancelled one second into the call), waits for the turn and prints
-// "session=<id>"; DSH_SCENARIO_TOOLS3_PS prints "<pid> <command line>" for each
+// "session=<id>"; DSH_SCENARIO_TOOLS3_LOG prints the log of {session} on {home}
+// as one SDK protocol.Event per line (the wire shape of session/history);
+// DSH_SCENARIO_TOOLS3_PS prints "<pid> <command line>" for each
 // process whose pid is recorded under {pids} and is still running;
 // DSH_SCENARIO_TOOLS3_KILL kills {pid}; DSH_SCENARIO_TOOLS3_DELETE deletes
 // {session}; DSH_SCENARIO_TOOLS3_STOP stops the host. DSH_SCENARIO_TOOLS3_GRACE
@@ -95,6 +118,7 @@ func TestDeadlineStopsCommandThatIgnoresTermination(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "home")
 	startT := need(t, "DSH_SCENARIO_TOOLS3_START", "command starting the headless host on {home}")
 	callT := need(t, "DSH_SCENARIO_TOOLS3_CALL", "command running the fixture's shell call in a new session in {mode}")
+	logT := need(t, "DSH_SCENARIO_TOOLS3_LOG", "command printing the log of {session} as SDK events, one per line")
 	psT := need(t, "DSH_SCENARIO_TOOLS3_PS", "command listing the live processes whose pids are under {pids}")
 	killT := need(t, "DSH_SCENARIO_TOOLS3_KILL", "command killing {pid}")
 	deleteT := need(t, "DSH_SCENARIO_TOOLS3_DELETE", "command deleting {session}")
@@ -104,7 +128,7 @@ func TestDeadlineStopsCommandThatIgnoresTermination(t *testing.T) {
 		t.Fatalf("DSH_SCENARIO_TOOLS3_GRACE is not a positive number of seconds: %v", err)
 	}
 	bound := tools3Budget + time.Duration(graceS)*time.Second + tools3Margin
-	if err := home.Ensure(home.New(root)); err != nil {
+	if err := os.MkdirAll(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	pidsRoot := filepath.Join(t.TempDir(), "pids")
@@ -137,8 +161,11 @@ func TestDeadlineStopsCommandThatIgnoresTermination(t *testing.T) {
 			t.Fatalf("the %s call: %v\n%s", step.mode, err, out)
 		}
 		sessions = append(sessions, m[1])
-		recs, _ := storeLog(t, root, m[1])
-		calls := tools3Calls(t, recs)
+		logOut, err := storeStep(t, "the "+step.mode+" session's log", expand(logT, with(step.mode, m[1], "")))
+		if err != nil {
+			t.Fatalf("reading the %s session's log: %v\n%s", step.mode, err, logOut)
+		}
+		calls := tools3Calls(t, tools3Log(t, logOut))
 		if len(calls) == 0 || !calls[0].answered {
 			t.Fatalf("%s: the shell call has no result: %+v", step.mode, calls)
 		}
@@ -146,7 +173,7 @@ func TestDeadlineStopsCommandThatIgnoresTermination(t *testing.T) {
 		if !strings.Contains(first.result, step.code) {
 			t.Errorf("%s: the shell call's result is not %s: %s", step.mode, step.code, first.result)
 		}
-		if took := time.Duration(first.done-first.called) * time.Millisecond; took > bound {
+		if took := first.done.Sub(first.called); took > bound {
 			t.Errorf("%s: the result came %s after the call, the bound is %s", step.mode, took, bound)
 		}
 		if step.mode == "deadline" && (len(calls) < 2 || !calls[1].answered) {
