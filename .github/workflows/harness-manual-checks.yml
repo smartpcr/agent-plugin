@@ -22,7 +22,7 @@ on:
       - "src/harness/internal/boot/**"
       - "src/harness/internal/host/diag/**"
       - ".github/workflows/harness-manual-checks.yml"
-      - "docs/stories/harness-DSH/evidence/DH-S-6.md"
+      - "docs/stories/harness-DSH-M1/evidence/DH-S-6.md"
   workflow_dispatch:
 
 permissions:

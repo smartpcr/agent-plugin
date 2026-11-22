@@ -439,7 +439,7 @@ func (s *ciRehearsal) storeBranchAtClosingCommit() error {
 	for _, rel := range []string{
 		".github/workflows/ci.yml", ".github/workflows/harness-scenarios.yml",
 		"tools/harness-gate/rehearse.go", "tools/harness-gate/acceptance/scenarios.go",
-		"docs/stories/harness-DSH/evidence/DH-S-1.md",
+		"docs/stories/harness-DSH-M1/evidence/DH-S-1.md",
 	} {
 		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); err != nil {
 			return fmt.Errorf("HEAD %s is not at the stage-closing commit: %s missing", s.head, rel)
@@ -483,7 +483,7 @@ func (s *ciRehearsal) stage14Evidence() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	data, err := os.ReadFile(filepath.Join(root, "docs", "stories", "harness-DSH", "evidence", "DH-S-1.md"))
+	data, err := os.ReadFile(filepath.Join(root, "docs", "stories", "harness-DSH-M1", "evidence", "DH-S-1.md"))
 	if err != nil {
 		return "", err
 	}

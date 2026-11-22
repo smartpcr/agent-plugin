@@ -12,7 +12,7 @@
 //	$env:DEEPSEEK_API_KEY = '<key>'   # never committed, never logged
 //	go -C src/harness test -tags manual -count=1 -v -run TestManualM1 ./internal/agent/
 //
-// and copy the printed lines into docs/stories/harness-DSH/evidence/DH-S-11.md.
+// and copy the printed lines into docs/stories/harness-DSH-M1/evidence/DH-S-11.md.
 
 package agent_test
 

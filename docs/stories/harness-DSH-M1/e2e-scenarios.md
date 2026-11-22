@@ -27,7 +27,7 @@ does not restate them; it names them.
 | Kind | What it is | Run in this story? |
 |---|---|---|
 | **Gate scenario** (every `- **Scenario:**` below unless tagged `@manual`; this includes the index and `-tags scenario` vet checks that prove each authored `DH-E-*` file exists) | A Go test (unit, composition, golden, two-process, loopback) proving one `TC-xx` row | **Yes.** Part of `tools/harness-gate` on Linux, macOS and Windows; may not skip |
-| **Manual check** (`@manual`) | The two real-DeepSeek-API checks impl.md requires at DH-S-9 and DH-S-11 | Yes, by hand, recorded in `docs/stories/harness-DSH/evidence/DH-S-<n>.md`; never a gate criterion (EV-6) |
+| **Manual check** (`@manual`) | The two real-DeepSeek-API checks impl.md requires at DH-S-9 and DH-S-11 | Yes, by hand, recorded in `docs/stories/harness-DSH-M1/evidence/DH-S-<n>.md`; never a gate criterion (EV-6) |
 | **Real-environment scenario** (`DH-E-*`; listed only in the schedule table below, never as a `- **Scenario:**` bullet, so no gate check is excluded by its tag) | impl.md's acceptance scenarios, written as `//go:build scenario` files | **Authored here; executed at the stage impl.md assigns; none executed in this story** (contract rule 2) |
 
 ### Conventions
@@ -402,7 +402,7 @@ and the three-module layout (`src/go`, `src/sdk`, `src/harness`, root `go.work`)
   Given the stage-closing commit of DH-S-1
   When the harness job runs on ubuntu-latest, macos-latest and windows-latest
   Then each lane ends with every gate passed and uploads its output as the evidence artifact
-  And the run ids are recorded in docs/stories/harness-DSH/evidence/DH-S-1.md
+  And the run ids are recorded in docs/stories/harness-DSH-M1/evidence/DH-S-1.md
   ```
 
 ---
@@ -1650,7 +1650,7 @@ format; the key reaches it only through C18 (secret store) and C19 (egress).
   Manual check (`@manual`, impl.md DH-S-9): run the documented Go test with
   `DSH_DEEPSEEK_API_KEY` exported in the developer's own shell for the good-key run and
   a deliberately wrong value for the bad-key run; record both in
-  `docs/stories/harness-DSH/evidence/DH-S-9.md`.
+  `docs/stories/harness-DSH-M1/evidence/DH-S-9.md`.
 - **CI runner**: GitHub-hosted `ubuntu-latest`, `macos-latest`, `windows-latest`
   (`harness` job). The manual check never runs in CI.
 - **Secrets**: none for the gate. The manual check reads `DSH_DEEPSEEK_API_KEY` from
