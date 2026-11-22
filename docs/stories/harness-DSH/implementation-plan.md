@@ -691,9 +691,9 @@ storyId: "harness:DSH"
 ## Stage 11.2: Agent Driver Brackets and Cancellation
 
 ### Implementation Steps
-- [ ] impl.md step 11.3 / DH-D-AGENT-3: the driver in `internal/agent` -- one goroutine per agent; turns and steps bracketed, bounded by the configurable turn budget defaults of tech-spec sec. 5.5 (owner-unconfirmed, impl.md sec. 9.1), and closed on every path (`DH-T-AGENT-5`, `-7`..`-10`, `-22`; `DH-T-AGENT-28` inside budget).
-- [ ] impl.md step 11.4 / DH-D-AGENT-5: cancellation of a turn or a single step with a recorded cause on `turn/end`/`step/end`; scope Turn/Step, inbox Keep/Discard (architecture.md flow F4) (`DH-T-AGENT-15`..`-18`).
-- [ ] Add the property test "no tool call is left unanswered in history on any exit path" (cancel, budget, error, lease loss) using the test kit's scripted model (SP-4).
+- [x] impl.md step 11.3 / DH-D-AGENT-3: the driver in `internal/agent` -- one goroutine per agent; turns and steps bracketed, bounded by the configurable turn budget defaults of tech-spec sec. 5.5 (owner-unconfirmed, impl.md sec. 9.1), and closed on every path (`DH-T-AGENT-5`, `-7`..`-10`, `-22`; `DH-T-AGENT-28` inside budget).
+- [x] impl.md step 11.4 / DH-D-AGENT-5: cancellation of a turn or a single step with a recorded cause on `turn/end`/`step/end`; scope Turn/Step, inbox Keep/Discard (architecture.md flow F4) (`DH-T-AGENT-15`..`-18`).
+- [x] Add the property test "no tool call is left unanswered in history on any exit path" (cancel, budget, error, lease loss) using the test kit's scripted model (SP-4).
 
 ### Dependencies
 - phase-agent-loop-milestone-m1/stage-model-selection-and-step-tool-batch

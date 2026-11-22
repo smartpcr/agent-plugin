@@ -9,6 +9,7 @@
 // The wire is the kit's own minimal dialect, one SSE event per line pair:
 //
 //	event: text     data: {"text":"..."}
+//	event: tool     data: {"id":"c1","name":"echo","args":{...}}
 //	event: usage    data: {"input":3,"output":2}
 //	event: finish   data: {"reason":"stop"}
 //	event: error    data: {"code":"llm/server","message":"..."}
@@ -32,7 +33,7 @@ import (
 
 // Event is one SSE event of a scripted turn.
 type Event struct {
-	Name string // text, usage, finish or error
+	Name string // text, tool, usage, finish or error
 	Data string // the JSON payload
 }
 
@@ -49,6 +50,22 @@ type Turn struct {
 
 // Text is an event appending s to the reply.
 func Text(s string) Event { return Event{"text", mustJSON(map[string]string{"text": s})} }
+
+// Tool is one complete tool call block: id, tool name and the JSON object of
+// its arguments ("" is {}). It closes a text block before it, so text after it
+// opens a new one.
+func Tool(id, name, args string) Event {
+	if args == "" {
+		args = "{}"
+	}
+	return Event{"tool", mustJSON(map[string]any{"id": id, "name": name, "args": json.RawMessage(args)})}
+}
+
+// Calls is a complete turn that asks for the tool calls in order and finishes
+// with tool_calls.
+func Calls(calls ...Event) Turn {
+	return Turn{Events: append(append([]Event(nil), calls...), Usage(vocab.Usage{Input: 1, Output: 1}), Finish(vocab.FinishToolCalls))}
+}
 
 // Usage is a usage event.
 func Usage(u vocab.Usage) Event { return Event{"usage", mustJSON(u)} }
