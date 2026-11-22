@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
@@ -61,15 +62,36 @@ type Call struct {
 	// Args is the validated argument object, nil for a command without Args.
 	Args  json.RawMessage
 	inbox Inbox
+	state *callState
 }
 
+// callState is shared by every copy of a Call: it numbers sends and records
+// that run has settled the command.
+type callState struct {
+	sends   atomic.Uint64
+	settled atomic.Bool
+}
+
+// ErrSettled is a Send after the command settled, typically from a handler that
+// outlived its deadline and was recorded aborted.
+var ErrSettled = errors.New("command/settled")
+
 // Send delivers text to the agent through its inbox, attributed to the person
-// who ran the command; list next-turn wakes an idle agent.
+// who ran the command; list next-turn wakes an idle agent. Each send gets its
+// own message ID (msg-<command>-<n>), and a send after the command settled is
+// refused with ErrSettled.
 func (c Call) Send(ctx context.Context, list agent.List, text string) (agent.Receipt, error) {
 	if c.inbox == nil {
 		return agent.Receipt{}, errors.New("command: the agent has no inbox")
 	}
-	return c.inbox.Send(ctx, list, agent.InboxMessage{ID: "msg-" + c.ID, Source: agent.SourceCommand, By: principal(c.By), Text: text})
+	if c.state == nil {
+		c.state = &callState{}
+	}
+	if c.state.settled.Load() {
+		return agent.Receipt{}, fmt.Errorf("%w: %s", ErrSettled, c.ID)
+	}
+	n := c.state.sends.Add(1)
+	return c.inbox.Send(ctx, list, agent.InboxMessage{ID: fmt.Sprintf("msg-%s-%d", c.ID, n), Source: agent.SourceCommand, By: principal(c.By), Text: text})
 }
 
 // Inbox is the target agent's inbox (*agent.Inbox).
@@ -264,7 +286,7 @@ func (r *Registry) Execute(ctx context.Context, t Target, by human.Actor, line s
 		return Result{}, fmt.Errorf("command: append command/run: %w", err)
 	}
 
-	res := run(ctx, c, Call{ID: id, Agent: t.Agent, By: by, Name: name, Rest: rest, Args: args, inbox: t.Inbox})
+	res := run(ctx, c, Call{ID: id, Agent: t.Agent, By: by, Name: name, Rest: rest, Args: args, inbox: t.Inbox, state: &callState{}})
 	res.ID = id
 	d, err = DoneType.Draft(Done{ID: id, Name: name, Outcome: res.Outcome, Output: res.Output, Detail: res.Detail})
 	if err == nil {
@@ -285,6 +307,10 @@ func run(ctx context.Context, c Command, call Call) Result {
 	}
 	hctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	if call.state == nil {
+		call.state = &callState{}
+	}
+	defer call.state.settled.Store(true)
 	type settled struct {
 		out string
 		err error
