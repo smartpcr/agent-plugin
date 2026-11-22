@@ -68,6 +68,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return runPreflight(args[1:], stdout, stderr)
 		case "require":
 			return runRequire(args[1:], stdout, stderr)
+		case "trace-tests":
+			return runTraceTests(args[1:], stdout, stderr)
 		}
 	}
 	flags := flag.NewFlagSet("harness-gate", flag.ContinueOnError)

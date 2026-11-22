@@ -119,6 +119,14 @@ stages:
       authored: DH-S-6
     - id: DH-E-HOST-4
       authored: DH-S-6
+    # Owed by DH-S-6 under rule 4 (impl.md sec. 7.5 places them in DH-S-18) and
+    # authored late by gap-closure Stage 13.6 (M1-G-CLOSE-7): the host's delegated
+    # scope over a real SSH login (impl.md step 18.3), and stored data another
+    # local user cannot read (step 18.10).
+    - id: DH-E-EXEC-10
+      authored: DH-S-6
+    - id: DH-E-STORAGE-6
+      authored: DH-S-6
   DH-S-19:
     # Two processes share the workspace registry; an archive with stop ends the
     # other process's turn (impl.md DH-S-19); authored by Stage 8.2 (impl.md
