@@ -144,3 +144,30 @@ func TestCleanupReportsRefusedLeftoverAndUnscriptedReplies(t *testing.T) {
 		t.Fatalf("the unscripted answerer reported %q", got)
 	}
 }
+
+// M1-G-GATE-15.4 (DH-D-UTIL-6): a test that takes an item from Next and then
+// ends, with its Ask still pending, has the answerer's cleanup wait for the
+// reply and report its refusal. Before the fix Deliver sent the item before
+// the reply joined the wait group, so this cleanup raced that Add (a -race
+// failure) and could miss the refused reply.
+func TestCleanupAfterNextWaitsForTheReply(t *testing.T) {
+	root := testkit.Tree(t)
+	reg := human.New()
+	t.Cleanup(reg.Close)
+	r := &recorder{TB: t}
+	// A text answer is no answer to an approval: the registry refuses it.
+	a := answerer.Register(r, root, reg, "ui", answerer.Text("blue"))
+	ref := agent.Ref{Session: session.ID("ses-n"), Incarnation: 1}
+	if _, err := reg.Bind(root, ref, human.Binding{Channel: "ui"}); err != nil {
+		t.Fatal(err)
+	}
+	askAsync(t, context.Background(), reg, human.Item{Kind: human.KindApproval, To: human.Audience{Agent: ref}, Payload: "x"})
+	a.Next(t)
+	// The answerer's test ends here, the Ask not joined.
+	r.cleanup()
+	got := r.failed()
+	if len(got) != 1 || !strings.HasPrefix(got[0], "answerer: ") ||
+		!(strings.Contains(got[0], "is not an answer to a") || strings.Contains(got[0], "has settled")) {
+		t.Fatalf("the cleanup reported %q, want the refused reply", got)
+	}
+}
