@@ -258,9 +258,7 @@ func TestBoundedWork(t *testing.T) {
 }
 
 func FuzzCompile(f *testing.F) {
-	for _, s := range []string{"**/*.go", "{a,{b,c}}/[!x]?", `\[`, "[]a]", "a/**b", "{,}", "[a-]"} {
-		f.Add(s, "a/b/c.go")
-	}
+	addCompileSeeds(f)
 	f.Fuzz(func(t *testing.T, p, name string) {
 		if len(p) > 128 || len(name) > 256 {
 			return

@@ -172,7 +172,10 @@ func unreleasedStarts(file *ast.File, info *types.Info, t *ast.Ident, body *ast.
 }
 
 // assignedIdents maps each call in body that is the sole right-hand side of an
-// assignment or declaration to the identifier receiving its first result.
+// assignment or declaration to the identifier receiving its first result. A selector
+// left-hand side (x.F = net.Listen(...), x.a.F = ...) is recorded under its root
+// identifier x, so a t.Cleanup that references x (t.Cleanup(x.Close)) releases it
+// (M1-G-GATE-5).
 func assignedIdents(body *ast.BlockStmt) map[*ast.CallExpr]*ast.Ident {
 	out := map[*ast.CallExpr]*ast.Ident{}
 	record := func(lhs ast.Expr, rhs []ast.Expr) {
@@ -183,7 +186,7 @@ func assignedIdents(body *ast.BlockStmt) map[*ast.CallExpr]*ast.Ident {
 		if !ok {
 			return
 		}
-		if id, ok := ast.Unparen(lhs).(*ast.Ident); ok {
+		if id := selectorRoot(lhs); id != nil {
 			out[call] = id
 		}
 	}
@@ -201,6 +204,23 @@ func assignedIdents(body *ast.BlockStmt) map[*ast.CallExpr]*ast.Ident {
 		return true
 	})
 	return out
+}
+
+// selectorRoot returns the identifier at the root of a chain of field selectors
+// (x in x, x.F or x.a.F), or nil for any other expression. Unlike fuzzseeds'
+// rootIdent, only selections count: an index, a slice or a dereference names no
+// single variable whose cleanup would release the value.
+func selectorRoot(e ast.Expr) *ast.Ident {
+	for {
+		switch x := ast.Unparen(e).(type) {
+		case *ast.Ident:
+			return x
+		case *ast.SelectorExpr:
+			e = x.X
+		default:
+			return nil
+		}
+	}
 }
 
 // valueKey identifies the variable id names, or returns nil when id is absent or

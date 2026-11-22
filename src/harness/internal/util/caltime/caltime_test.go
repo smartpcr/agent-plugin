@@ -213,9 +213,7 @@ func TestZoneDataSource(t *testing.T) {
 }
 
 func FuzzParse(f *testing.F) {
-	for _, s := range []string{"2099-01-01T01:00:00.000Z", "2099-01-01T09:00:00.5+08:00", "2016-12-31T23:59:60Z", "Asia/Tokyo", "-00:00", "2021-03-14"} {
-		f.Add(s)
-	}
+	addParseSeeds(f)
 	f.Fuzz(func(t *testing.T, s string) {
 		if v, r := ParseStored(s); r == OK {
 			if back, ok := FormatStored(v); !ok || back != s {

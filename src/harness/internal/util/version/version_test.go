@@ -153,9 +153,7 @@ func MustRange(t *testing.T, s string) Range {
 }
 
 func FuzzParse(f *testing.F) {
-	for _, s := range []string{"1.2.3", "1.2.3-rc.1+b", "v1", "^1.2 || 2.x", "1.2 - 3", "~0.0.1-0"} {
-		f.Add(s)
-	}
+	addParseSeeds(f)
 	f.Fuzz(func(t *testing.T, s string) {
 		if v, err := Parse(s); err == nil {
 			if v.String() != s || v.Compare(v) != 0 || !v.Exact(v) {
