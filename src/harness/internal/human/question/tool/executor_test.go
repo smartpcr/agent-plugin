@@ -42,14 +42,14 @@ func (l *flakyFlush) Flush(ctx context.Context) (event.Offset, error) {
 
 // rig is a session whose model called name with args as c1, an executor with the
 // ask_user_question tool (and failing, which asks then fails) over a question
-// service whose first flush fails.
+// service whose first fails flushes fail.
 type rig struct {
 	h     session.Handle
 	inbox *agent.Inbox
 	svc   tools.Service
 }
 
-func newRig(t *testing.T, name, args string) *rig {
+func newRig(t *testing.T, name, args string, fails int) *rig {
 	t.Helper()
 	root := cordis.New()
 	root.Loggers().ClearExporters()
@@ -91,7 +91,7 @@ func newRig(t *testing.T, name, args string) *rig {
 			t.Fatal(err)
 		}
 	}
-	flaky := &flakyFlush{Handle: h, fails: 1}
+	flaky := &flakyFlush{Handle: h, fails: fails}
 	inbox, err := agent.OpenInbox(bg, flaky)
 	if err != nil {
 		t.Fatal(err)
@@ -151,15 +151,34 @@ func (r *rig) resume(t *testing.T) ([]string, *agent.Inbox) {
 
 const askArgs = `{"question":"Colour?","wait":true}`
 
-// An answer handed over with a failed flush is still the call's answer: the
-// executor's own flush makes the group durable before the tool result, the
-// model sees the answer, and a resume neither reopens the question nor
-// delivers the answer a second time.
+// answeredAt is the offset of the session's question/answered.
+func (r *rig) answeredAt(t *testing.T) event.Offset {
+	t.Helper()
+	evs, err := r.h.Read(bg, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, ev := range evs {
+		if ev.Type() == question.AnsweredType.Name() {
+			return event.Offset(i)
+		}
+	}
+	t.Fatal("no question/answered")
+	return 0
+}
+
+// A hand-over whose flush fails is acknowledged only once it is durable: Reply
+// syncs, so when the tool returns the answer the group is already in storage
+// (the session's durable offset is past question/answered); a resume neither
+// reopens the question nor delivers the answer a second time.
 func TestHandedAnswerUnderAFailedFlushReachesTheModelOnce(t *testing.T) {
-	r := newRig(t, tool.Name, askArgs)
+	r := newRig(t, tool.Name, askArgs, 1)
 	res := r.execute(t, tool.Name, askArgs)
 	if res.IsError || !strings.Contains(res.Text, `"answer":"blue"`) {
 		t.Fatalf("result %+v", res)
+	}
+	if at := r.answeredAt(t); r.h.Durable() <= at || !r.inbox.Durable() {
+		t.Fatalf("answer acknowledged at offset %d with durable %d", at, r.h.Durable())
 	}
 	open, inbox := r.resume(t)
 	if len(open) != 0 || len(inbox.Pending(agent.ListNextTurn)) != 0 {
@@ -170,7 +189,7 @@ func TestHandedAnswerUnderAFailedFlushReachesTheModelOnce(t *testing.T) {
 // A call that fails after the hand-over writes an error result: the model never
 // saw the answer, so a resume delivers it again next-turn, once.
 func TestAnswerOfAFailedCallIsDeliveredAgainOnResume(t *testing.T) {
-	r := newRig(t, "failing", askArgs)
+	r := newRig(t, "failing", askArgs, 0)
 	if res := r.execute(t, "failing", askArgs); !res.IsError {
 		t.Fatalf("result %+v, want an error", res)
 	}
@@ -180,5 +199,27 @@ func TestAnswerOfAFailedCallIsDeliveredAgainOnResume(t *testing.T) {
 		if len(open) != 0 || len(p) != 1 || p[0].Text != "blue" || p[0].Call != "c1" {
 			t.Fatalf("resume %d: open %v, next-turn %+v", i, open, p)
 		}
+	}
+}
+
+// When the hand-over cannot be made durable (the flush and the sync both fail),
+// the call is not told it succeeded: its result is an error, and the answer is
+// queued again for the next step so this run still shows it to the model. Once
+// storage recovers, a resume reopens nothing and delivers no third copy.
+func TestHandOverThatCannotBeMadeDurableFailsTheCall(t *testing.T) {
+	r := newRig(t, tool.Name, askArgs, 2)
+	if res := r.execute(t, tool.Name, askArgs); !res.IsError {
+		t.Fatalf("result %+v, want an error", res)
+	}
+	p := r.inbox.Pending(agent.ListNextStep)
+	if len(p) != 1 || p[0].Text != "blue" || p[0].Call != "c1" {
+		t.Fatalf("next-step %+v", p)
+	}
+	if _, err := r.h.Flush(bg); err != nil {
+		t.Fatal(err)
+	}
+	open, inbox := r.resume(t)
+	if len(open) != 0 || len(inbox.Pending(agent.ListNextTurn)) != 0 || len(inbox.Pending(agent.ListNextStep)) != 1 {
+		t.Fatalf("after resume: open %v, next-turn %+v, next-step %+v", open, inbox.Pending(agent.ListNextTurn), inbox.Pending(agent.ListNextStep))
 	}
 }

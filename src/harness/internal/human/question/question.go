@@ -446,8 +446,10 @@ func lateList(log Log) agent.List {
 // waiting call is handed the answer (admitted and discarded returned-to-call,
 // and the interaction withdrawn); otherwise it stays queued, next-step into an
 // open turn or next-turn to wake an idle agent. A question takes one answer: a
-// second is ErrReplyQueued. On an error nothing was written unless the error says
-// the flush failed, and the question is open for another answer.
+// second is ErrReplyQueued. On an error nothing was written, and the question is
+// open for another answer, unless the error says the flush failed: then the
+// answer is settled and a waiting call is given it only once Sync made it durable
+// (otherwise the call gets the error and the answer is queued again).
 func (s *Service) Reply(ctx context.Context, id string, by human.Actor, text string) (agent.Receipt, error) {
 	if strings.TrimSpace(text) == "" {
 		return agent.Receipt{}, fmt.Errorf("%w: an answer has text", ErrInvalid)
@@ -475,12 +477,30 @@ func (s *Service) Reply(ctx context.Context, id string, by human.Actor, text str
 	switch {
 	case errors.Is(err, agent.ErrDuplicateMessage):
 		err = fmt.Errorf("%w: %s", ErrReplyQueued, id)
+	case err != nil && written && toCall:
+		// The hand-over group is appended and folded; only its flush failed. The
+		// call is told the answer only once it is durable: Sync now. If that fails
+		// too the call gets the error (its error result makes Restore deliver the
+		// answer again), and the answer is queued again so this run sees it at the
+		// next step; a crash before any flush loses the whole group, and the
+		// question reopens on Restore.
+		if serr := o.inbox.Sync(ctx); serr == nil {
+			err = nil
+			break
+		}
+		again := agent.InboxMessage{ID: redeliveredID(id), Source: agent.SourceQuestion, By: who.Principal, Call: o.q.Call, Text: text}
+		if _, qerr := o.inbox.SendWith(ctx, lateList(o.log), again); qerr != nil && !errors.Is(qerr, agent.ErrDuplicateMessage) {
+			err = errors.Join(err, qerr)
+		}
+		s.mu.Lock()
+		s.unsynced[id] = unsynced{inbox: o.inbox, rec: rec}
+		s.mu.Unlock()
+		err = fmt.Errorf("question: settle the answer: %w", err)
 	case err != nil && written:
-		// The group is appended and folded; only its flush failed. It is the
-		// settlement: a crash before a later flush loses the whole group (the
-		// question reopens on Restore), and every later flush (the tool result's
-		// among them) makes it durable first. A waiting call returns the answer;
-		// a queued answer is made durable and woken by Sync or a retry.
+		// The queued answer is appended and folded; only its flush failed. It is
+		// the settlement: Sync or a retried Reply makes it durable and pays the
+		// wake, and a crash before then loses the whole group (the question
+		// reopens on Restore).
 		s.mu.Lock()
 		s.unsynced[id] = unsynced{inbox: o.inbox, rec: rec}
 		s.mu.Unlock()
@@ -489,7 +509,7 @@ func (s *Service) Reply(ctx context.Context, id string, by human.Actor, text str
 		err = fmt.Errorf("question: settle the answer: %w", err)
 	}
 	callErr := err
-	if written {
+	if written && !toCall {
 		callErr = nil
 	}
 	s.finish(id, o, toCall, written, Result{ID: id, Outcome: OutcomeAnswered, Text: text, By: who}, callErr)
