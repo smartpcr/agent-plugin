@@ -2,7 +2,8 @@
 // streams until they end. "home" answers DSH_HOME, "echo" its params and "spawn"
 // starts a copy of itself that sleeps in the home (a grandchild the launcher's
 // cleanup must reap) and answers its pid. "echo tree" starts a grandchild holding
-// its output streams, prints the grandchild's pid and hangs.
+// its output streams, prints the grandchild's pid and hangs. "echo tags" prints
+// the build tags of tags_*.go it was built with, sorted, comma-separated.
 package main
 
 import (
@@ -10,12 +11,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/sdk/jsonrpc"
 )
 
+// tags is appended to by the init of each tags_*.go the build tags select.
+var tags []string
+
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "tags" {
+		slices.Sort(tags)
+		fmt.Println(strings.Join(tags, ","))
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "sleep" {
 		time.Sleep(time.Hour)
 		return
