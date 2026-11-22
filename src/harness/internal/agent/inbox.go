@@ -387,6 +387,12 @@ func (b *Inbox) Durable() bool {
 // the item's user/message are one group, durable before it returns. With nothing
 // pending it appends nothing and returns false: a wake that finds nothing opens
 // no turn.
+//
+// A claim whose append succeeds but whose flush fails is already taken: it
+// returns the item and true together with the flush error. The driver owns that
+// turn; it must retry Sync until the claim is durable and then run the item,
+// because the item is no longer pending and is never handed out again. With
+// false, nothing was claimed and the item is still pending.
 func (b *Inbox) ClaimTurn(ctx context.Context, turn int) (InboxMessage, bool, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -399,7 +405,10 @@ func (b *Inbox) ClaimTurn(ctx context.Context, turn int) (InboxMessage, bool, er
 	if err != nil {
 		return InboxMessage{}, false, err
 	}
-	if err := b.claimLocked(ctx, ListNextTurn, 1, turn, start); err != nil {
+	if claimed, err := b.claimLocked(ctx, ListNextTurn, 1, turn, start); err != nil {
+		if claimed {
+			return m, true, err
+		}
 		return InboxMessage{}, false, err
 	}
 	return m, true, nil
@@ -408,6 +417,11 @@ func (b *Inbox) ClaimTurn(ctx context.Context, turn int) (InboxMessage, bool, er
 // ClaimStep takes every next-step item into the open turn at a step boundary:
 // one group of the claim and the items' user messages, durable before it
 // returns. With nothing pending it appends nothing.
+//
+// As with ClaimTurn, a failed flush after a successful append returns the
+// claimed items together with the error: they are taken, so the driver must
+// retry Sync and then run them. A nil slice with an error means nothing was
+// claimed.
 func (b *Inbox) ClaimStep(ctx context.Context, turn int) ([]InboxMessage, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -415,39 +429,45 @@ func (b *Inbox) ClaimStep(ctx context.Context, turn int) ([]InboxMessage, error)
 	if len(l) == 0 {
 		return nil, nil
 	}
-	if err := b.claimLocked(ctx, ListNextStep, len(l), turn); err != nil {
+	if claimed, err := b.claimLocked(ctx, ListNextStep, len(l), turn); err != nil {
+		if claimed {
+			return l, err
+		}
 		return nil, err
 	}
 	return l, nil
 }
 
-func (b *Inbox) claimLocked(ctx context.Context, list List, n, turn int, lead ...event.Draft) error {
+// claimLocked appends and folds the claim of list's first n items, then
+// flushes. claimed reports that the claim was folded (the items left pending),
+// which is true also when only the flush failed.
+func (b *Inbox) claimLocked(ctx context.Context, list List, n, turn int, lead ...event.Draft) (claimed bool, err error) {
 	s := Splice{List: list, Position: 0, Removed: n, Outcome: &SpliceOutcome{Kind: OutcomeClaimed, Turn: turn}}
 	d, err := SplicedType.Draft(s)
 	if err != nil {
-		return err
+		return false, err
 	}
 	group := append(slices.Clone(lead), d)
 	for _, m := range b.pending[list][:n] {
 		msg, err := m.Message()
 		if err != nil {
-			return fmt.Errorf("agent: claim %q: %w", m.ID, err)
+			return false, fmt.Errorf("agent: claim %q: %w", m.ID, err)
 		}
 		um, err := event.UserMessage.Draft(event.Append(), event.UserMessagePayload{Message: msg})
 		if err != nil {
-			return fmt.Errorf("agent: claim %q: %w", m.ID, err)
+			return false, fmt.Errorf("agent: claim %q: %w", m.ID, err)
 		}
 		group = append(group, um)
 	}
 	rs, err := b.log.AppendGroup(ctx, group)
 	if err != nil {
-		return fmt.Errorf("agent: claim: %w", err)
+		return false, fmt.Errorf("agent: claim: %w", err)
 	}
 	b.apply(s, rs[len(lead)].Seq)
 	if err := b.flushLocked(ctx); err != nil {
-		return fmt.Errorf("agent: claim: flush: %w", err)
+		return true, fmt.Errorf("agent: claim: flush: %w", err)
 	}
-	return nil
+	return true, nil
 }
 
 // Discard removes the pending item id from list with cause, logged; it never
