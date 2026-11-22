@@ -42,6 +42,16 @@ Feature: Model selection and step tool batch (Stage 11.1)
     Then the bodies finished in order "2,1,3"
     And calls 1 and 3 never overlapped
     And calls 1 and 2 overlapped
-    And no more than 3 bodies ran at once
     And the batch returned results in order "c1,c2,c3"
     And a second connection to the database reads tool/call rows in order "c1,c2,c3" and tool/result rows in order "c1,c2,c3"
+
+  @proof-in-process @TC-11b @DH-T-AGENT-26
+  Scenario: Non-conflicting calls never exceed maxParallel
+    Given the SQLite store in a temp home
+    And a guarded pipeline with maxParallel 2
+    And tool "hold" that writes the resource named by its "key" argument and holds it briefly
+    And the step's tool set is resolved for the agent
+    When the model calls "hold" with keys "a,b,c,d"
+    Then exactly 2 bodies ran at once at the peak
+    And the batch returned results in order "c1,c2,c3,c4"
+    And a second connection to the database reads tool/call rows in order "c1,c2,c3,c4" and tool/result rows in order "c1,c2,c3,c4"
