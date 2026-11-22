@@ -117,11 +117,14 @@ func statusCode(status int) vocab.Code {
 	return vocab.HTTPCode(status)
 }
 
-// decoder turns events into chunks: one text block, opened by the first delta
-// and closed before the finish.
+// decoder turns events into chunks: text deltas build one text block, opened by
+// the first delta and closed before a tool call or the finish; each tool event
+// is one whole tool use block at the next index.
 type decoder struct {
 	yield func(vocab.Chunk, error) bool
 	open  bool
+	index int // the open text block's index
+	next  int // the next unused block index
 	text  strings.Builder
 }
 
@@ -133,13 +136,30 @@ func (d *decoder) event(name, data string) bool {
 			return d.yield(nil, err)
 		}
 		if !d.open {
-			d.open = true
-			if !d.yield(vocab.BlockStart{Index: 0, Kind: vocab.KindText}, nil) {
+			d.open, d.index = true, d.next
+			d.next++
+			if !d.yield(vocab.BlockStart{Index: d.index, Kind: vocab.KindText}, nil) {
 				return false
 			}
 		}
 		d.text.WriteString(p.Text)
-		return d.yield(vocab.TextDelta{Index: 0, Text: p.Text}, nil)
+		return d.yield(vocab.TextDelta{Index: d.index, Text: p.Text}, nil)
+	case "tool":
+		var p struct {
+			ID   string          `json:"id"`
+			Name string          `json:"name"`
+			Args json.RawMessage `json:"args"`
+		}
+		if err := json.Unmarshal([]byte(data), &p); err != nil {
+			return d.yield(nil, err)
+		}
+		if !d.close() {
+			return false
+		}
+		i := d.next
+		d.next++
+		return d.yield(vocab.BlockStart{Index: i, Kind: vocab.KindToolUse}, nil) &&
+			d.yield(vocab.BlockEnd{Index: i, Block: vocab.ToolUseBlock(p.ID, p.Name, p.Args)}, nil)
 	case "usage":
 		var u vocab.Usage
 		if err := json.Unmarshal([]byte(data), &u); err != nil {
@@ -174,7 +194,9 @@ func (d *decoder) close() bool {
 		return true
 	}
 	d.open = false
-	return d.yield(vocab.BlockEnd{Index: 0, Block: vocab.TextBlock(d.text.String())}, nil)
+	text := d.text.String()
+	d.text.Reset()
+	return d.yield(vocab.BlockEnd{Index: d.index, Block: vocab.TextBlock(text)}, nil)
 }
 
 // ModelName is the one model the kit's routes list.

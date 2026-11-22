@@ -55,10 +55,13 @@ type StepStart struct {
 	Step int `json:"step"`
 }
 
-// StepEnd closes a step.
+// StepEnd closes a step. Cause is the cancel cause of a step that was cancelled
+// (user, parent, extension, disposed or budget), "" for one that ran to its end.
+// Version 2 added Cause.
 type StepEnd struct {
-	Turn int `json:"turn"`
-	Step int `json:"step"`
+	Turn  int    `json:"turn"`
+	Step  int    `json:"step"`
+	Cause string `json:"cause,omitempty"`
 }
 
 // MessagePayload is the payload of system/message and developer/message.
@@ -194,7 +197,8 @@ var (
 			return nil
 		}})
 	StepStartType = mustCore(Spec[StepStart]{Name: "step/start", Version: 1, NoSources: true})
-	StepEndType   = mustCore(Spec[StepEnd]{Name: "step/end", Version: 1, NoSources: true})
+	StepEndType   = mustCore(Spec[StepEnd]{Name: "step/end", Version: 2, NoSources: true,
+		Upgrades: map[int]Upgrade{1: upgradeAddedStepCause}})
 
 	SystemMessage = mustCoreSurface(Spec[MessagePayload]{Name: "system/message", Version: 1,
 		Validate: func(p MessagePayload) error { return needRole(p.Message, vocab.RoleSystem) }})
@@ -245,6 +249,10 @@ func upgradeAddedServedBy(raw json.RawMessage) (json.RawMessage, error) { return
 // upgradeAddedEstimate is the identity: version 3 only adds the optional
 // estimate, and a version-2 payload, which has none, left it unknown.
 func upgradeAddedEstimate(raw json.RawMessage) (json.RawMessage, error) { return raw, nil }
+
+// upgradeAddedStepCause is the identity: version 2 of step/end only adds the
+// optional cause, and a version-1 step, which has none, was not cancelled.
+func upgradeAddedStepCause(raw json.RawMessage) (json.RawMessage, error) { return raw, nil }
 
 // upgradeToolResultV1 converts tool/result version 1, which named the call "id"
 // and had no spill reference, to version 2.

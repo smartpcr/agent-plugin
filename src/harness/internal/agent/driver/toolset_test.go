@@ -49,7 +49,7 @@ func (a stubAgent) ScopeKey() scope.Key          { return scope.Key{} }
 func (a stubAgent) Scope() *cordis.Context       { return nil }
 func (a stubAgent) Session() session.ReadSession { return nil }
 
-func setup(t *testing.T) (*cordis.Context, tools.Service) {
+func setup(t testing.TB) (*cordis.Context, tools.Service) {
 	t.Helper()
 	root := cordis.New()
 	root.Loggers().ClearExporters()

@@ -691,9 +691,10 @@ storyId: "harness:DSH"
 ## Stage 11.2: Agent Driver Brackets and Cancellation
 
 ### Implementation Steps
-- [ ] impl.md step 11.3 / DH-D-AGENT-3: the driver in `internal/agent` -- one goroutine per agent; turns and steps bracketed, bounded by the configurable turn budget defaults of tech-spec sec. 5.5 (owner-unconfirmed, impl.md sec. 9.1), and closed on every path (`DH-T-AGENT-5`, `-7`..`-10`, `-22`; `DH-T-AGENT-28` inside budget).
-- [ ] impl.md step 11.4 / DH-D-AGENT-5: cancellation of a turn or a single step with a recorded cause on `turn/end`/`step/end`; scope Turn/Step, inbox Keep/Discard (architecture.md flow F4) (`DH-T-AGENT-15`..`-18`).
-- [ ] Add the property test "no tool call is left unanswered in history on any exit path" (cancel, budget, error, lease loss) using the test kit's scripted model (SP-4).
+- [x] impl.md step 11.3 / DH-D-AGENT-3: the driver in `internal/agent` -- one goroutine per agent; turns and steps bracketed, bounded by the configurable turn budget defaults of tech-spec sec. 5.5 (owner-confirmed for this stage: 500 steps, 8 attempts per step, no time limit), and closed on every path (`DH-T-AGENT-5`, `-7`..`-10`, `-22`; `DH-T-AGENT-28` inside budget).
+  - Status: the driver, its brackets and `DH-T-AGENT-5`, `-7`..`-10`, `-22` are implemented and tested (`internal/agent/driver`). The owner confirmed the turn budget defaults for this stage: 500 steps, 8 attempts per step, no time limit (`budget.go`). `DH-T-AGENT-28` is accepted in stages, as the owner decided. `continuation_bench_test.go` (bench tag) fails if the 99th-percentile (nearest-rank) continuation latency at any rung up to the p99 rung of the synthetic heavy-tailed ladder exceeds a provisional p99 budget of 100 ms; `latency_test.go` proves the gate fails on a mostly fast sample with a slow tail. It applies this in the plain run and in the GOMEMLIMIT reruns; the max rung is measured but not budgeted. The final budget stays unpinned until the replay provider and session corpus land (impl.md step 16.7, H-10), and the check is then re-run against them.
+- [x] impl.md step 11.4 / DH-D-AGENT-5: cancellation of a turn or a single step with a recorded cause on `turn/end`/`step/end`; scope Turn/Step, inbox Keep/Discard (architecture.md flow F4) (`DH-T-AGENT-15`..`-18`).
+- [x] Add the property test "no tool call is left unanswered in history on any exit path" (cancel, budget, error, lease loss) using the test kit's scripted model (SP-4).
 
 ### Dependencies
 - phase-agent-loop-milestone-m1/stage-model-selection-and-step-tool-batch
