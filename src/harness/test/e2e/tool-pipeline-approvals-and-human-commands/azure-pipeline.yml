@@ -1,8 +1,10 @@
 # Phase "tool pipeline, approvals and human commands" E2E (Stage 10.1: tool
-# registry and prompt assembly) on Azure Pipelines. Mirrors
+# registry and prompt assembly; Stage 10.2: approvals and guarded pipeline) on
+# Azure Pipelines. Mirrors
 # .github/workflows/e2e-tool-pipeline-approvals-and-human-commands.yml: a gating
-# job on Microsoft-hosted agents for Linux, macOS and Windows (in-process and
-# golden proofs; no DSN, no secrets) and a non-gating compose job on ubuntu-latest.
+# job on Microsoft-hosted agents for Linux, macOS and Windows (in-process, golden
+# and embedded-SQLite proofs; no DSN, no secrets) and a non-gating compose job on
+# ubuntu-latest.
 trigger:
   branches:
     include: [main]
