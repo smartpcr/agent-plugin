@@ -82,25 +82,31 @@ func (r *registry) execute(ctx context.Context, b tools.Batch, d *tools.Declarat
 		v, err := runBody(bctx, bd, in, run)
 		done <- bodyOut{v, err, clk.Now()}
 	}()
-	// returned classifies a body's return by when it returned, not by which
-	// notification was seen first: the same return settles the same way
-	// whatever order a select picks ready channels in.
+	// cause is how the body's context was cancelled, set once, before any grace;
+	// "" while it is not.
+	var cause tools.Cause
+	var graceEnd time.Time
+	// returned classifies a body's return. A cancellation the pipeline already
+	// acted on keeps its cause: a body whose context the turn cancelled before
+	// its budget ended is answered as cancelled even if it returns after the
+	// expiry, within grace. Otherwise the return's time, not the order a select
+	// picks ready channels in, decides between a timeout and its own value.
 	returned := func(o bodyOut) ended {
 		switch {
+		case cause == tools.CauseCancelled:
+			return cancelledEnded(tools.CauseCancelled, budget, o)
 		case expired(o.at):
 			// At or after its expiry: a timeout, even when its return won the
 			// race with the timer.
 			return cancelledEnded(tools.CauseDeadline, budget, o)
 		case ctx.Err() != nil:
-			// The turn was cancelled as the body returned, or while it ran: the
-			// same as a body that returned within grace.
+			// The turn was cancelled as the body returned: the same as a body
+			// that returned within grace.
 			return cancelledEnded(tools.CauseCancelled, budget, o)
 		}
 		// Before its expiry: its own value, even when the deadline was seen first.
 		return bodyEnded(o)
 	}
-	var cause tools.Cause
-	var graceEnd time.Time
 	select {
 	case o := <-done:
 		cancel(nil)

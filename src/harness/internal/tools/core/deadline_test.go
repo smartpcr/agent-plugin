@@ -536,6 +536,49 @@ func TestDeadlineReturnAtExpiryIsTimeout(t *testing.T) {
 	}
 }
 
+// DH-T-TOOLS-8, docs/harness/areas/tools.md: a body whose context the turn
+// cancelled before its budget ended is answered as cancelled when it returns
+// within grace, even after its expiry: with a 10 s budget and 20 s grace,
+// cancelled at 1 s and returning at 11 s, a value becomes tools/aborted and a
+// specific failure is kept, both with cause cancelled.
+func TestDeadlineCancelledBeforeExpiryKeepsCancelCause(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		code tools.Code
+	}{
+		{"value", nil, tools.CodeAborted},
+		{"specific-failure", &tools.Error{Code: "fs/locked", Msg: "the file is locked"}, "fs/locked"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clk := clock.NewManual(epoch)
+			e := newEnv(t)
+			svc := e.pipeline(t, core.Config{Clock: clk, Grace: 20 * time.Second, Checkpoint: recCheckpoint{&trace{}}})
+			e.register(t, e.root, tools.Define(tools.Spec[noIn, string]{
+				Name: "slow", Description: "Ignores cancellation until 11 s.", Timeout: 10 * time.Second,
+				Run: func(context.Context, noIn, tools.Run) (string, error) {
+					<-clk.After(11 * time.Second)
+					return "done", tc.err
+				},
+			}))
+			call := [2]string{"slow", `{}`}
+			h := openSession(t, memstore.New(), call)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := run(svc, view(t, svc), h, ctx, call)
+			block(t, clk, 2) // the budget's timer and the body's
+			clk.Advance(time.Second)
+			cancel()
+			block(t, clk, 3) // and the cancellation's grace timer
+			clk.Advance(10 * time.Second)
+			r := recv(t, done, "the batch").res.Results[0]
+			if r.Code != tc.code || r.Cause != tools.CauseCancelled || !r.IsError {
+				t.Fatalf("result = %+v", r)
+			}
+		})
+	}
+}
+
 // lateClock is a manual clock whose timers the pipeline asks for are never
 // delivered: the pipeline sees a body's return before any deadline.
 type lateClock struct{ *clock.Manual }
