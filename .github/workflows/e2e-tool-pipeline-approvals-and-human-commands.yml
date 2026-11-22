@@ -1,10 +1,13 @@
 # Phase "tool pipeline, approvals and human commands" E2E (Stage 10.1: tool
-# registry and prompt assembly; Stage 10.2: approvals and guarded pipeline).
+# registry and prompt assembly; Stage 10.2: approvals and guarded pipeline;
+# Stage 10.3: deadlines and result budget).
 #
 #   e2e      the gate path: godog scenarios with -tags e2e on Linux, macOS and
-#            Windows. TC-10a runs in-process; DH-T-TOOLS-14 compares against the
+#            Windows. TC-10a runs in-process (Stage 10.3's deadline on the virtual
+#            clock with memstore, zero I/O); DH-T-TOOLS-14 compares against the
 #            committed golden internal/tools/testdata/prompt.golden; TC-10b runs
-#            on the embedded SQLite store in a test-kit temp home. No DSN, no
+#            on the embedded SQLite store in a test-kit temp home (Stage 10.3's
+#            2 MB result spilled under a 64 KB maxResultBytes into that home). No DSN, no
 #            secrets, DSH_E2E_STORE_HOME unset.
 #   compose  non-gating: the same tests against a dsh-home named volume through
 #            tests/e2e/tool-pipeline-approvals-and-human-commands/docker-compose.yml.
