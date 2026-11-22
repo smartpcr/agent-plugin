@@ -74,14 +74,15 @@ func TestRunDoesNotStartAGateAfterCancellation(t *testing.T) {
 	}
 }
 
-// TestGateListIsFixed pins the order of QG-1: gofmt, vet + own analyzers,
-// race/shuffle tests, coverage, harness-trace verify, scenario index, budgets, cross-compile.
+// TestGateListIsFixed pins the order of QG-1: gofmt, vet + own analyzers, module
+// hygiene, race/shuffle tests, coverage, harness-trace verify, scenario index,
+// budgets, cross-compile and the gate's own tests (M1-D-GATE-23; DH-T-TOOLCHAIN-9).
 func TestGateListIsFixed(t *testing.T) {
 	var names []string
 	for _, g := range Gates(&Config{}) {
 		names = append(names, g.Name)
 	}
-	want := []string{"gofmt", "vet", "test", "coverage", "trace", "scenario-index", "budget", "cross-compile"}
+	want := []string{"gofmt", "vet", "modules", "test", "coverage", "trace", "scenario-index", "budget", "cross-compile", "self"}
 	if !slices.Equal(names, want) {
 		t.Errorf("gates = %v, want %v", names, want)
 	}

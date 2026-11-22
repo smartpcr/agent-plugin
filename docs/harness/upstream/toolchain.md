@@ -390,6 +390,17 @@ when every proof it names **has passed**; a manual check never closes one.
 - **Depends on.** Nothing.
 - **Done when.** `DH-T-TOOLCHAIN-11` has passed.
 
+> **DC-3 override note (M1 story, 2026-11-22).** "`tools/go.mod`" in Components is
+> overridden by decision M1-D-TOOL-2 (a) in
+> [the M1 decision log](../../stories/harness-DSH-M1/decisions.md): the tools module is
+> `tools/harness-gate/go.mod`, the gate runner's own module, which is outside `go.work`
+> and run with `GOWORK=off`. It pins staticcheck (`honnef.co/go/tools` v0.8.2) and
+> govulncheck (`golang.org/x/vuln` v1.10.0) as `tool` lines, each with a reason comment
+> (gap-closure plan step 13.4.1). Under M1-D-TOOL-4 (A) the cordis module's Gherkin
+> suites are a nested test-only module, `src/go/test/e2e/go.mod`, outside `go.work` and
+> outside the three product modules of RM-1, so `src/go/go.mod` requires nothing (step
+> 13.4.2). The decision text above is unchanged (DC-2).
+
 <a id="dh-d-toolchain-2"></a>
 #### DH-D-TOOLCHAIN-2 The gate runner and the gates it calls
 

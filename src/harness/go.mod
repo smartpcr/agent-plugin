@@ -15,6 +15,10 @@ require (
 	// internal/util/search (DH-D-FS-3: chosen by docs/harness/libs/vscode-ripgrep.md
 	// and picomatch.md); MIT, no dependencies (RM-10), no cgo.
 	github.com/bmatcuk/doublestar/v4 v4.10.4
+	// The Gherkin runner of the harness's e2e suites in test/e2e/harness-DSH (the
+	// Gherkin feature files of each story stage); MIT. Test code only: no package of dsh
+	// imports it, so it is never linked into the binary. The same version as
+	// src/go/test/e2e and tools/harness-gate, so the repository has one Gherkin dialect.
 	github.com/cucumber/godog v0.16.0
 	// The expression engine behind the loader's Evaluator seam, internal/boot/expr
 	// (DH-D-LOADER-5): chosen by docs/harness/libs/cordis-loader.md (DH-LIB-LOADEREXPR)
@@ -28,7 +32,12 @@ require (
 	// (DH-D-UTIL-1): chosen by docs/harness/libs/zod.md DH-ADR-SCHEMA-1; MIT, no
 	// non-test dependencies (RM-10).
 	github.com/google/jsonschema-go v0.4.3
+	// The cordis port (packages cordis, loader, timer) the harness is built on
+	// (design.md sec. 4.2, DH-ADR-26, RM-4): pinned to a committed revision, never
+	// replaced, so a GOWORK=off release build resolves it from this go.mod and go.sum.
 	github.com/smartpcr/agent-plugin/src/go v0.1.5-0.20261120142542-a7caf0f79ab0
+	// The SDK module (jsonrpc codec, protocol message types and schema) the harness
+	// serves (design.md sec. 4.2, DH-ADR-26, RM-4): pinned the same way.
 	github.com/smartpcr/agent-plugin/src/sdk v0.0.0-20261121020315-f394c244a7a7
 	// The fixed command tree, help routing and completion scripts of internal/cli
 	// (DH-D-CLI-1): chosen by docs/harness/libs/commander.md section 5

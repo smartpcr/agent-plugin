@@ -80,7 +80,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: src/go/go.mod
-          cache: false # the module has no dependencies
+          # src/go requires nothing (standard library only, M1-D-TOOL-4 (A)): its
+          # godog suites are the nested test-only module src/go/test/e2e, which
+          # "./..." here does not enter, so there is nothing to cache.
+          cache: false
       - name: gofmt
         if: runner.os == 'Linux'
         run: |
