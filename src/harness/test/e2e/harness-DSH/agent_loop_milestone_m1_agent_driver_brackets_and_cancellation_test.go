@@ -453,6 +453,17 @@ type bccPlan struct {
 	inbox      agent.InboxChoice
 	park       bool
 	leaseAfter int
+	// fired is set only once the planned exit actually happens; a case whose
+	// model answers before the exit fires runs as a none case.
+	fired atomic.Bool
+}
+
+// observed is the exit the case actually took.
+func (p *bccPlan) observed() bccExit {
+	if p.fired.Load() {
+		return p.exit
+	}
+	return bccExitNone
 }
 
 func newBccPlan(seed uint64) *bccPlan {
@@ -496,6 +507,7 @@ func (m *bccLazyModel) next(n int) fakemodel.Turn {
 	p := m.p
 	switch {
 	case p.exit == bccExitProvider && n == p.at:
+		p.fired.Store(true)
 		if p.rng.IntN(2) == 0 {
 			return fakemodel.Status(500)
 		}
@@ -570,9 +582,9 @@ func (s *bccState) propertyCasesRun(n int) error {
 	s.seen = map[bccExit]int{}
 	for i := range n {
 		p := newBccPlan(uint64(i))
-		s.seen[p.exit]++
 		tb := newBccTB()
 		err := s.runCase(tb, i, p)
+		s.seen[p.observed()]++
 		if derr := tb.dispose(); err == nil {
 			err = derr
 		}
@@ -604,6 +616,7 @@ func (s *bccState) runCase(tb *bccTB, i int, p *bccPlan) error {
 					return
 				}
 				lost.Store(true)
+				p.fired.Store(true)
 			}}
 			return wrapped
 		}
@@ -612,7 +625,10 @@ func (s *bccState) runCase(tb *bccTB, i int, p *bccPlan) error {
 	if err != nil {
 		return err
 	}
+	// Served by the model at step p.at (cancel-in-model) or by the trip tool
+	// (cancel-in-tool), so calling it means the cancel exit fired.
 	cancel := func() {
+		p.fired.Store(true)
 		if p.park {
 			if err := r.send(agent.ListNextStep, "parked step input"); err != nil {
 				tb.Errorf("park: %v", err)
@@ -675,6 +691,7 @@ func (s *bccState) runCase(tb *bccTB, i int, p *bccPlan) error {
 		if len(ends) != 1 || ends[0].Kind != event.ReasonBudget || ends[0].Value != p.at {
 			return fmt.Errorf("budget case ended %+v", ends)
 		}
+		p.fired.Store(true)
 	case bccExitProvider:
 		if len(ends) != 1 || ends[0].Kind != event.ReasonError || ends[0].Failure == nil {
 			return fmt.Errorf("provider case ended %+v", ends)
