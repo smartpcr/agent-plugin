@@ -635,10 +635,11 @@ func (s *agpState) secondConnSaw(csv string) error {
 	if s.seen == nil {
 		return errors.New("the body never looked at the database")
 	}
-	for _, want := range strings.Split(csv, ",") {
-		if !slices.Contains(s.seen, want) {
-			return fmt.Errorf("the second connection saw %v before the body, want %s among them", s.seen, want)
-		}
+	if len(s.seen) < 4 {
+		return fmt.Errorf("the second connection saw %v before the body, want the step's four first", s.seen)
+	}
+	if got, want := s.seen[4:], strings.Split(csv, ","); !slices.Equal(got, want) {
+		return fmt.Errorf("the second connection saw %v after the step's four before the body, want exactly %v", got, want)
 	}
 	return nil
 }
