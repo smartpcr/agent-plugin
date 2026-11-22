@@ -860,8 +860,8 @@ card.
 - [x] **10.2** [DH-D-TOOLS-5](areas/tools.md#dh-d-tools-5) The system prompt and tool list of each step are assembled deterministically.
 - [x] **10.3** [DH-D-HUMAN-2](areas/interaction-credentials.md#dh-d-human-2) An approval returns one closed outcome and leaves an attributed audit record.
 - [x] **10.4** [DH-D-TOOLS-2](areas/tools.md#dh-d-tools-2) Every tool call passes one guarded pipeline.
-- [ ] **10.5** [DH-D-TOOLS-3](areas/tools.md#dh-d-tools-3) Tool calls have enforced deadlines and never hold a turn.
-- [ ] **10.6** [DH-D-STORAGE-6](areas/storage.md#dh-d-storage-6) No tool result larger than the budget reaches a model.
+- [x] **10.5** [DH-D-TOOLS-3](areas/tools.md#dh-d-tools-3) Tool calls have enforced deadlines and never hold a turn.
+- [x] **10.6** [DH-D-STORAGE-6](areas/storage.md#dh-d-storage-6) No tool result larger than the budget reaches a model.
 - [x] **10.7** [DH-D-AGENT-2](areas/agent-loop.md#dh-d-agent-2) Input can be sent at any time, is durable at once, and runs at most once.
 - [x] **10.8** [DH-D-HUMAN-5](areas/interaction-credentials.md#dh-d-human-5) The model can ask the user a question, wait or move on (P1, pulled forward).
 - [x] **10.9** [DH-D-HUMAN-6](areas/interaction-credentials.md#dh-d-human-6) A person runs a command against an agent from any client (P1, pulled forward).

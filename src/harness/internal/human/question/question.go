@@ -225,7 +225,11 @@ type Service struct {
 
 type unsynced struct {
 	inbox Inbox
+	log   Log
 	rec   agent.Receipt
+	// again is the redelivery a hand-over that could not be made durable owes
+	// the running agent; nil when none is owed.
+	again *agent.InboxMessage
 }
 
 // New is a Service over cfg.
@@ -493,7 +497,7 @@ func (s *Service) Reply(ctx context.Context, id string, by human.Actor, text str
 			err = errors.Join(err, qerr)
 		}
 		s.mu.Lock()
-		s.unsynced[id] = unsynced{inbox: o.inbox, rec: rec}
+		s.unsynced[id] = unsynced{inbox: o.inbox, log: o.log, rec: rec, again: &again}
 		s.mu.Unlock()
 		err = fmt.Errorf("question: settle the answer: %w", err)
 	case err != nil && written:
@@ -502,7 +506,7 @@ func (s *Service) Reply(ctx context.Context, id string, by human.Actor, text str
 		// wake, and a crash before then loses the whole group (the question
 		// reopens on Restore).
 		s.mu.Lock()
-		s.unsynced[id] = unsynced{inbox: o.inbox, rec: rec}
+		s.unsynced[id] = unsynced{inbox: o.inbox, log: o.log, rec: rec}
 		s.mu.Unlock()
 		err = fmt.Errorf("question: settle the answer: %w", err)
 	case err != nil:
@@ -524,6 +528,17 @@ func (s *Service) resync(ctx context.Context, id string) (rec agent.Receipt, pen
 	s.mu.Unlock()
 	if !ok {
 		return agent.Receipt{}, false, nil
+	}
+	// A redelivery whose admission failed is owed still: admit it first (once,
+	// by id), so recovery never acknowledges an answer the agent cannot see.
+	if u.again != nil {
+		if _, sent := u.inbox.Seen(u.again.ID); !sent {
+			if _, err := u.inbox.SendWith(ctx, lateList(u.log), *u.again); err != nil && !errors.Is(err, agent.ErrDuplicateMessage) {
+				if _, folded := u.inbox.Seen(u.again.ID); !folded {
+					return u.rec, true, fmt.Errorf("question: deliver the answer again: %w", err)
+				}
+			}
+		}
 	}
 	if err := u.inbox.Sync(ctx); err != nil {
 		return u.rec, true, fmt.Errorf("question: make the answer durable: %w", err)

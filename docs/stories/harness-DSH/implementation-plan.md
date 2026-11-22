@@ -658,7 +658,7 @@ storyId: "harness:DSH"
 - [x] impl.md step 10.8 / DH-D-HUMAN-5 (P1, pulled forward): the model can ask the user a question through a tool, then wait or move on; answers arrive through the inbox.
 - [x] impl.md step 10.9 / DH-D-HUMAN-6 (P1, pulled forward): human commands against an agent from any client, delivered through the inbox and logged with attribution. Author `DH-E-HUMAN-6` (runs DH-S-22).
 - [x] impl.md step 10.10 / DH-D-HUMAN-3 (P1, pulled forward): session grants of one directory or one application, listable and revocable, stored with the session and never copied to resume, fork or subagent (NG-8).
-- [ ] Close DH-S-10: write `docs/stories/harness-DSH/evidence/DH-S-10.md` (denial-through-executor test, manual checks of impl.md DH-S-10) and tick impl.md steps 10.1-10.10 as built.
+- [x] Close DH-S-10: write `docs/stories/harness-DSH/evidence/DH-S-10.md` (denial-through-executor test, manual checks of impl.md DH-S-10) and tick impl.md steps 10.1-10.10 as built.
 
 ### Dependencies
 - phase-tool-pipeline-approvals-and-human-commands/stage-approvals-and-guarded-pipeline

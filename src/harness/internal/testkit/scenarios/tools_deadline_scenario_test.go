@@ -3,6 +3,7 @@
 package scenarios
 
 import (
+	"bufio"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -11,10 +12,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
-	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store"
-	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
 )
 
 // tools3Budget is the shell call's budget the scenario asks for.
@@ -34,15 +31,64 @@ type tools3Call struct {
 	answered     bool
 }
 
+// tools3Record is one line the log hook prints: a log record of the session,
+// its time in Unix milliseconds and its payload as the JSON text the log holds.
+// The scenario reads the log through the hook, never through the product's
+// internal packages (it is authored ahead of the stages it requires).
+type tools3Record struct {
+	Seq     int64  `json:"seq"`
+	Type    string `json:"type"`
+	Time    int64  `json:"time"`
+	Payload string `json:"payload"`
+}
+
+// tools3CallPayload and tools3ResultPayload are the fields of tool/call and
+// tool/result payloads the scenario reads (core-session.md).
+type tools3CallPayload struct {
+	CallID string `json:"call_id"`
+	Name   string `json:"name"`
+}
+
+type tools3ResultPayload struct {
+	CallID string `json:"call_id"`
+}
+
+// tools3Log runs the log hook and decodes its lines.
+func tools3Log(t *testing.T, line string) []tools3Record {
+	t.Helper()
+	out, err := storeStep(t, "print the session's log", line)
+	if err != nil {
+		t.Fatalf("printing the session's log: %v\n%s", err, out)
+	}
+	var recs []tools3Record
+	sc := bufio.NewScanner(strings.NewReader(out))
+	sc.Buffer(make([]byte, 0, 64*1024), 16<<20)
+	for sc.Scan() {
+		text := strings.TrimSpace(sc.Text())
+		if text == "" {
+			continue
+		}
+		var rec tools3Record
+		if err := json.Unmarshal([]byte(text), &rec); err != nil {
+			t.Fatalf("decoding the log line %q: %v", text, err)
+		}
+		recs = append(recs, rec)
+	}
+	if err := sc.Err(); err != nil {
+		t.Fatalf("reading the session's log: %v", err)
+	}
+	return recs
+}
+
 // tools3Calls returns the tool calls of a session's log in their order.
-func tools3Calls(t *testing.T, recs []store.Record) []*tools3Call {
+func tools3Calls(t *testing.T, recs []tools3Record) []*tools3Call {
 	t.Helper()
 	var out []*tools3Call
 	byID := map[string]*tools3Call{}
 	for _, rec := range recs {
 		switch rec.Type {
 		case "tool/call":
-			var p event.ToolCallPayload
+			var p tools3CallPayload
 			if err := json.Unmarshal([]byte(rec.Payload), &p); err != nil {
 				t.Fatalf("decoding the tool call at seq %d: %v", rec.Seq, err)
 			}
@@ -50,7 +96,7 @@ func tools3Calls(t *testing.T, recs []store.Record) []*tools3Call {
 			byID[p.CallID] = c
 			out = append(out, c)
 		case "tool/result":
-			var p event.ToolResultPayload
+			var p tools3ResultPayload
 			if err := json.Unmarshal([]byte(rec.Payload), &p); err != nil {
 				t.Fatalf("decoding the tool result at seq %d: %v", rec.Seq, err)
 			}
@@ -86,6 +132,8 @@ func tools3Calls(t *testing.T, recs []store.Record) []*tools3Call {
 // cancelled one second into the call), waits for the turn and prints
 // "session=<id>"; DSH_SCENARIO_TOOLS3_PS prints "<pid> <command line>" for each
 // process whose pid is recorded under {pids} and is still running;
+// DSH_SCENARIO_TOOLS3_LOG prints {session}'s log on {home}, one JSON object
+// {"seq","type","time" (Unix ms),"payload" (the payload's JSON text)} per line;
 // DSH_SCENARIO_TOOLS3_KILL kills {pid}; DSH_SCENARIO_TOOLS3_DELETE deletes
 // {session}; DSH_SCENARIO_TOOLS3_STOP stops the host. DSH_SCENARIO_TOOLS3_GRACE
 // is the registry's grace in seconds.
@@ -96,6 +144,7 @@ func TestDeadlineStopsCommandThatIgnoresTermination(t *testing.T) {
 	startT := need(t, "DSH_SCENARIO_TOOLS3_START", "command starting the headless host on {home}")
 	callT := need(t, "DSH_SCENARIO_TOOLS3_CALL", "command running the fixture's shell call in a new session in {mode}")
 	psT := need(t, "DSH_SCENARIO_TOOLS3_PS", "command listing the live processes whose pids are under {pids}")
+	logT := need(t, "DSH_SCENARIO_TOOLS3_LOG", "command printing {session}'s log as JSON lines")
 	killT := need(t, "DSH_SCENARIO_TOOLS3_KILL", "command killing {pid}")
 	deleteT := need(t, "DSH_SCENARIO_TOOLS3_DELETE", "command deleting {session}")
 	stopT := need(t, "DSH_SCENARIO_TOOLS3_STOP", "command stopping the host")
@@ -104,7 +153,7 @@ func TestDeadlineStopsCommandThatIgnoresTermination(t *testing.T) {
 		t.Fatalf("DSH_SCENARIO_TOOLS3_GRACE is not a positive number of seconds: %v", err)
 	}
 	bound := tools3Budget + time.Duration(graceS)*time.Second + tools3Margin
-	if err := home.Ensure(home.New(root)); err != nil {
+	if err := os.MkdirAll(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	pidsRoot := filepath.Join(t.TempDir(), "pids")
@@ -137,8 +186,7 @@ func TestDeadlineStopsCommandThatIgnoresTermination(t *testing.T) {
 			t.Fatalf("the %s call: %v\n%s", step.mode, err, out)
 		}
 		sessions = append(sessions, m[1])
-		recs, _ := storeLog(t, root, m[1])
-		calls := tools3Calls(t, recs)
+		calls := tools3Calls(t, tools3Log(t, expand(logT, with(step.mode, m[1], ""))))
 		if len(calls) == 0 || !calls[0].answered {
 			t.Fatalf("%s: the shell call has no result: %+v", step.mode, calls)
 		}

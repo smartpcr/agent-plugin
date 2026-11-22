@@ -26,6 +26,8 @@ type faultyLog struct {
 	session.Handle
 	failing    atomic.Bool
 	flushFails atomic.Int32
+	// appendFails fails the next single (ungrouped) appends.
+	appendFails atomic.Int32
 }
 
 func (l *faultyLog) Flush(ctx context.Context) (event.Offset, error) {
@@ -57,9 +59,10 @@ func (l *faultyLog) refuse(ds ...event.Draft) bool {
 }
 
 func (l *faultyLog) Append(ctx context.Context, d event.Draft) (event.Receipt, error) {
-	if l.refuse(d) {
+	if l.refuse(d) || l.appendFails.Add(-1) >= 0 {
 		return event.Receipt{}, errInjected
 	}
+	l.appendFails.Store(0)
 	return l.Handle.Append(ctx, d)
 }
 
@@ -371,5 +374,59 @@ func TestRetryAfterAFailedFlushCompletesTheAnswer(t *testing.T) {
 	}
 	if open, err := newService(t, question.Config{}).Restore(bg, f.h, inbox); err != nil || len(open) != 0 {
 		t.Fatalf("restored %v, %v", open, err)
+	}
+}
+
+// A hand-over that cannot be made durable, whose redelivery cannot even be
+// admitted (flush, sync and requeue all fail), owes the redelivery: the call
+// gets the error, and a retried Reply first admits the redelivery and only
+// then reports recovery, so the live agent sees the answer without a restart,
+// once.
+func TestRetryAdmitsARedeliveryWhoseRequeueFailed(t *testing.T) {
+	f := setup(t)
+	a := f.bind(t, answerer.Never())
+	log := &faultyLog{Handle: f.h}
+	inbox, err := agent.OpenInbox(bg, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := newService(t, question.Config{Registry: f.reg})
+	ch := askAsync(t, svc, log, inbox, question.Question{Agent: me, Call: "call-q", Text: "Colour?", Wait: true, Timeout: time.Hour})
+	until(t, "the question never reached the answerer", func() bool { return len(a.Asked()) == 1 })
+	id := svc.Open()[0]
+	log.flushFails.Store(2)
+	log.appendFails.Store(1)
+	first, err := svc.Reply(bg, id, human.Actor{Channel: "ui", Name: "bob"}, "blue")
+	if !errors.Is(err, errInjected) {
+		t.Fatalf("reply %v", err)
+	}
+	if o := receive(t, ch); o.err == nil {
+		t.Fatalf("the call was told %+v although the answer is not durable", o.r)
+	}
+	if n := len(inbox.Pending(agent.ListNextStep)) + len(inbox.Pending(agent.ListNextTurn)); n != 0 {
+		t.Fatalf("%d items pending before the retry", n)
+	}
+	again, err := svc.Reply(bg, id, human.Actor{Channel: "ui", Name: "bob"}, "blue")
+	if err != nil || again != first {
+		t.Fatalf("retry %+v, %v; first %+v", again, err, first)
+	}
+	p := inbox.Pending(agent.ListNextTurn)
+	if len(p) != 1 || p[0].ID != "ans-"+id+"-again" || p[0].Text != "blue" || p[0].Call != "call-q" || !inbox.Durable() {
+		t.Fatalf("pending %+v, durable %v", p, inbox.Durable())
+	}
+	select {
+	case <-inbox.Wake():
+	default:
+		t.Fatal("the redelivery did not wake the idle agent")
+	}
+	if _, err := svc.Reply(bg, id, human.Actor{Channel: "ui"}, "red"); !errors.Is(err, question.ErrReplyQueued) {
+		t.Fatalf("second answer %v", err)
+	}
+	fresh, err := agent.OpenInbox(bg, f.h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if open, err := newService(t, question.Config{}).Restore(bg, f.h, fresh); err != nil || len(open) != 0 || len(fresh.Pending(agent.ListNextTurn)) != 1 {
+		t.Fatalf("restored %v, %v, pending %+v", open, err, fresh.Pending(agent.ListNextTurn))
 	}
 }
