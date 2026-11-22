@@ -258,7 +258,9 @@ func TestCompositionWithAStubFactory(t *testing.T) {
 		t.Fatal("a vetoed creation was not rolled back")
 	}
 	must(0, h.Dispose(bg))
-	if len(disposed) != 1 || disposed[0] != h.Agent().Ref() {
+	// The vetoed creation had begun Created, so its rollback sent Disposed too
+	// (DH-T-AGENT-19).
+	if len(disposed) != 2 || disposed[0].Session != "vetoed" || disposed[1] != h.Agent().Ref() {
 		t.Fatalf("Disposed notices %v", disposed)
 	}
 }

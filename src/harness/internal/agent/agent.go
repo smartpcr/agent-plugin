@@ -84,7 +84,18 @@ type CreateOptions struct {
 	// ranks below a recorded Select and the latest request header
 	// (ModelOptions.Initial).
 	Model ModelSelection
+	// Setup runs at creation step 4 with the agent's scope context: what it
+	// registers there (tools, prompt sections, listeners) lives exactly as
+	// long as the agent. Its commit runs once Setup has returned. An error
+	// from either rolls the creation back, undoing what Setup registered.
+	Setup SetupFunc
+	// Resume is set by Registry.Resume: the factory opens the stored session
+	// (closing an interrupted turn) instead of creating it. Create clears it.
+	Resume bool
 }
+
+// SetupFunc is CreateOptions.Setup. commit may be nil.
+type SetupFunc func(scope *cordis.Context, a Agent) (commit func() error, err error)
 
 // Instance is what a factory builds: the agent and its close.
 type Instance interface {
@@ -141,6 +152,9 @@ type Registry interface {
 	// returned Handle alone disposes it, and it is disposed when owner's fiber
 	// unloads.
 	Create(owner *cordis.Context, o CreateOptions) (Handle, error)
+	// Resume is Create for a stored session: the factory opens it, closing an
+	// interrupted turn, and the agent starts idle with its queued input.
+	Resume(owner *cordis.Context, o CreateOptions) (Handle, error)
 	// Get is the live agent of a session.
 	Get(id session.ID) (Agent, bool)
 	// Resolve is the live agent r names; it fails for a disposed or replaced
@@ -168,6 +182,13 @@ const (
 	CodeNotFound        Code = "agent/not-found"
 	CodeStale           Code = "agent/stale-ref"
 	CodeExtensionFailed Code = "extension/failed"
+	// CodeClosing: the agent is being torn down and admits no input.
+	CodeClosing Code = "agent/closing"
+	// CodeSelfWait: WaitIdle or Dispose was called from inside the agent's
+	// own Created dispatch, a wait that could never end.
+	CodeSelfWait Code = "agent/self-wait"
+	// CodeFlushFailed: teardown's final flush failed or timed out (FlushError).
+	CodeFlushFailed Code = "session/flush-failed"
 )
 
 // Error is an agent error with a closed code.
@@ -201,6 +222,9 @@ var (
 	ErrNotFound        = &Error{Code: CodeNotFound}
 	ErrStale           = &Error{Code: CodeStale}
 	ErrExtensionFailed = &Error{Code: CodeExtensionFailed}
+	ErrClosing         = &Error{Code: CodeClosing}
+	ErrSelfWait        = &Error{Code: CodeSelfWait}
+	ErrFlushFailed     = &Error{Code: CodeFlushFailed}
 )
 
 func errorf(c Code, format string, args ...any) error {
