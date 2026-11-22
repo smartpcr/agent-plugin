@@ -79,7 +79,22 @@ go -C src/harness test -tags manual -count=1 -v -run TestManualM1 ./internal/age
 
 Without the key both skip. Attempted from this machine: `curl` to
 `https://api.deepseek.com/` times out (exit 28), as the DH-S-9 attempt found, so no
-request reached DeepSeek and the table stays unfilled.
+request reached DeepSeek and the table stays unfilled. Re-attempted 2026-11-22:
+no key in the environment and `curl --max-time 15` still exits 28.
+
+Operator runbook (from `src/harness`, a network that reaches `api.deepseek.com`):
+
+```
+$env:DEEPSEEK_API_KEY = '<supplied at run time, never committed>'
+git rev-parse HEAD
+go test -tags manual -count=1 -v -run 'TestManualM1OneTurn|TestManualM1CancelMidStream' ./internal/agent/
+```
+
+Paste the commit and, per run, the `M1 bracketed log`, `M1 request N` (sent and
+rebuilt digests), `M1 turn/end`, `M1 final reply`, `M1 cancelled log` and
+`M1 cancel:` lines into the Observed cells; the lines carry ids, digests and
+text only, no credential. Both tests must report `PASS`; a failure is recorded
+as observed and DH-S-11 stays open.
 
 | Run | Expected | Observed |
 | --- | --- | --- |
