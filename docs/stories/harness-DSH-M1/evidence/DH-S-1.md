@@ -688,6 +688,55 @@ DH-S-5's three missing IDs (`DH-T-AGENT-14`, `DH-T-VIEW-1`, `DH-T-VIEW-4`) are
 sub-gaps M1-G-CLOSE-9.1 to 9.3. Two tagged IDs have an unasserted clause:
 `DH-T-VIEW-3` (9.4) and `DH-T-HUMAN-2` (9.5).
 
+## Phase 13 exit gate runs
+
+Plan step 13.7.4 (M1-G-GATE-1). `manual`. **Both local lanes pass all 12 gates at one
+commit, `e593f6d`.** The gates, in order: gofmt, vet, staticcheck, modules, test,
+coverage, trace, scenario-index, budget, cross-compile, vulncheck, self. Each run was
+started by its lane script on a clean checkout, and each lane wrote its own evidence
+record.
+
+| Field | WSL lane (`lanes/wsl.sh`) | Windows lane (`lanes/win.ps1`) |
+| --- | --- | --- |
+| Run-record id | `wsl-e593f6d-20261122T2328Z` | `win-e593f6d-20261122T2336Z` |
+| Record file | [runs/wsl-e593f6d-20261122T2328Z.txt](runs/wsl-e593f6d-20261122T2328Z.txt) | [runs/win-e593f6d-20261122T2336Z.txt](runs/win-e593f6d-20261122T2336Z.txt) |
+| File SHA-256 | `e781fec9df469fcfa99e6f0de7ef0f412c6474eab39f29ba05d62b0e3e2c03c5` | `46ff2735406a5fb741865451bfeba864c1b1721095f3f68ce2241204c62275ca` |
+| Output SHA-256 (`sha256:` line) | `6fb10d0fc2db3c478fd7f3cca3beaf73981e756c2eb328f11b60ee434f5b55ed` | `10456bcf5755930dee8983795c5191845a7f9b1206780498de1ddda52b79075a` |
+| Commit | `e593f6d8f127d7770bb29bf496319e8b5310063e`, clean tree | the same |
+| System | Ubuntu 24.04.5 LTS (WSL2, `Ubuntu-24.04`); kernel 6.18.58.1-microsoft-standard-WSL2; ext4 checkout; uid 1000; `TMPDIR=/tmp` on ext4 | Windows 10.0.28000.3501; NTFS checkout; not elevated |
+| Toolchain | go1.27.4 linux/amd64 (the floor, `go-floor-1-27-4`); gcc 13.3.0; `CGO_ENABLED=1` | go1.27.4 windows/amd64 (`GOTOOLCHAIN=go1.27.4`); MSYS2 UCRT64 gcc 16.1.0 |
+| Times (UTC) | 23:28:46 to 23:36:32 | 23:36:47 to 23:56:23 |
+| Result | `harness-gate: PASSED all 12 gates`, exit 0 | `harness-gate: PASSED all 12 gates`, exit 0 |
+| Gate times | test 2m47s; coverage 3m30s; self 30s | test 4m24s; coverage 9m45s; self 4m13s |
+| Reasoned exceptions | 35 (typeassert 32, SA1019 1, SA2001 1, U1000 1) | the same |
+| Rehearsal | [runs/wsl-e593f6d-20261122T2328Z-rehearse.txt](runs/wsl-e593f6d-20261122T2328Z-rehearse.txt), file sha256 `e4c0e9a004fed42fdcd1623c2e188d60761de9f7d0935bf2e09cb5f4247c2c31`. Six binaries (linux, darwin and windows, each on amd64 and arm64), each `vcs.modified=false`; nothing published | -- (WSL lane only) |
+| macOS | not run: removed from M1 by OWNER-1 (`platforms-windows-wsl`) | -- |
+
+**Sub-gaps found and closed on the way to green** (registered in
+[gap-analysis.md](../gap-analysis.md), GATE register):
+
+| Sub-gap | What it was | Fixed in |
+| --- | --- | --- |
+| M1-G-GATE-15.1 | Two processes opening one fresh SQLite database failed inside `Open` | `38fa1ca` |
+| M1-G-GATE-15.2 | The Linux watcher kept a dead inotify watch when a directory was recreated with the same inode | `d9653a1` |
+| M1-G-GATE-15.3 | On Windows, the loader's watcher blocked its own rename-based save | `d9274ee` |
+| M1-G-GATE-15.4 | Race in the test-kit answerer's `Deliver` | `27160b7` |
+| M1-G-GATE-16.1 | Re-exec'd `subprocesstest` children did not count toward coverage; also a Linux zombie in a new test | `2f9bc4d`, `845bb64` |
+| M1-G-GATE-16.2 | `world/subprocess` Linux paths were uncovered (63.7% on Linux) | `e593f6d` |
+
+Coverage for the 22 packages under 85% was lifted with behaviour-asserting tests in
+`5c64f06`, `692f6af`, `e397684` and `25b7113`.
+
+**Earlier runs**, recorded and kept as history. None of them is closure evidence:
+- Windows passed all 12 gates at `db9ca23`.
+- WSL stopped at `test` at `db9ca23` (15.2 and 16.1).
+- WSL stopped at `coverage` at `845bb64` (16.2).
+
+**Still open after this record:**
+- **13.7.5:** the required-check ruleset on `main`. It is an owner action.
+- **errdiscard:** held out of vet (M1-D-TOOL-1c; M1-G-TOOL-6.1, before DH-S-12).
+- **Hosted CI:** the `harness` lanes run as supplementary regression signals, not as the evidence of record.
+
 ## Evidence record (impl.md sec. 7.3)
 
 These are the eight fields of [impl.md sec. 7.3](../../../harness/impl.md#73-the-evidence-record),
