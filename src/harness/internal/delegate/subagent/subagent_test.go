@@ -3,7 +3,10 @@ package subagent_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -294,7 +297,8 @@ func TestManagerComponentProvidesTheSeam(t *testing.T) {
 	}
 }
 
-// Unloading the manager releases the runs it still holds.
+// Unloading the manager refuses new runs and releases every run it admitted,
+// a start still in Setup included, before its unload completes.
 func TestManagerUnloadReleasesItsRuns(t *testing.T) {
 	e := newEnv(t, fakemodel.Turn{Events: []fakemodel.Event{fakemodel.Text("par")}, Hang: true})
 	must(agent.Agents.Provide(e.root, e.reg))
@@ -310,12 +314,82 @@ func TestManagerUnloadReleasesItsRuns(t *testing.T) {
 	act := must(rt.Start(c, e.spec("K")))
 	waitRequests(t, e.tr, 1)
 
-	mf.Dispose()
-	must(0, mf.Wait())
-	if _, ok := e.reg.Get("K"); ok {
-		t.Fatal("K outlived the manager")
+	// P is admitted before the unload and still in Setup when it begins.
+	entered, release := make(chan struct{}), make(chan struct{})
+	free := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(free)
+	ps := e.spec("P")
+	ps.Setup = func(*cordis.Context, agent.Agent) (func() error, error) {
+		close(entered)
+		<-release
+		return nil, errors.New("setup failed")
+	}
+	pending := make(chan error, 1)
+	go func() { _, err := rt.Start(c, ps); pending <- err }()
+	<-entered
+
+	unloaded := make(chan struct{})
+	go func() { mf.Dispose(); _ = mf.Wait(); close(unloaded) }()
+	// Starts racing the unload are either admitted, and then released with
+	// it, or refused once it has begun.
+	var admitted []subagent.Activation
+	ids := []session.ID{"K", "P"}
+	deadline := time.Now().Add(5 * time.Second)
+	for n := 0; ; n++ {
+		s := e.spec(fmt.Sprintf("late-%d", n))
+		// An admitted late start fails in Setup, so it calls no model.
+		s.Setup = func(*cordis.Context, agent.Agent) (func() error, error) { return nil, errors.New("late") }
+		a, err := rt.Start(c, s)
+		if errors.Is(err, subagent.ErrInactive) {
+			break
+		}
+		if err == nil {
+			admitted = append(admitted, a)
+			ids = append(ids, a.Child())
+		}
+		if time.Now().After(deadline) {
+			free()
+			t.Fatalf("starts were never refused during the manager's unload: %v", err)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case <-unloaded:
+		t.Fatal("the manager unloaded while an admitted start was still pending")
+	case <-time.After(100 * time.Millisecond):
+	}
+	free()
+	select {
+	case <-unloaded:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the manager never finished unloading")
+	}
+	for _, id := range ids {
+		if _, ok := e.reg.Get(id); ok {
+			t.Fatalf("%s outlived the manager", id)
+		}
+		if _, ok := rt.OwnerOf(id); ok {
+			t.Fatalf("%s kept an owner", id)
+		}
 	}
 	if r := settled(t, act); r.Stop != subagent.StopAborted {
 		t.Fatalf("result %+v", r)
+	}
+	for _, a := range admitted {
+		settled(t, a)
+	}
+	select {
+	case err := <-pending:
+		if err == nil || !strings.Contains(err.Error(), "setup failed") {
+			t.Fatalf("pending start: %v", err)
+		}
+	default:
+		t.Fatal("the manager unloaded before the pending start returned")
+	}
+	if _, err := rt.Start(c, e.spec("after")); !errors.Is(err, subagent.ErrInactive) {
+		t.Fatalf("a start after the manager unloaded: %v", err)
+	}
+	if len(rt.Children(c)) != 0 {
+		t.Fatalf("children after the unload: %v", rt.Children(c))
 	}
 }

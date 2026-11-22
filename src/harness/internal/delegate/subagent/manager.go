@@ -24,8 +24,9 @@ func New(agents agent.Registry) Runtime {
 type manager struct {
 	agents agent.Registry
 
-	mu   sync.Mutex
-	acts map[session.ID]*activation // unsettled runs by child
+	mu      sync.Mutex
+	acts    map[session.ID]*activation // unsettled runs by child
+	closing bool                       // the manager is unloading: no new runs
 }
 
 // activation is one run. Its fiber is a child of the owner's and holds, as
@@ -80,8 +81,13 @@ func (m *manager) Start(owner *cordis.Context, s Spec) (Activation, error) {
 		a.name = string(s.Session)
 	}
 
-	// A2 reserve: one run per child, one name per owner.
+	// A2 reserve: one run per child, one name per owner, none once the
+	// manager unloads (closeAll then sees every run admitted before).
 	m.mu.Lock()
+	if m.closing {
+		m.mu.Unlock()
+		return nil, errorf(CodeInactive, nil, "the subagent manager is unloading")
+	}
 	if _, ok := m.acts[a.child]; ok {
 		m.mu.Unlock()
 		return nil, errorf(CodeNameTaken, nil, "session %q already has an owner", a.child)
@@ -112,7 +118,6 @@ func (m *manager) Start(owner *cordis.Context, s Spec) (Activation, error) {
 		m.forget(a)
 		return nil, err
 	}
-	a.fiber = fiber
 	if _, err := a.ctx.Effect("subagent.settle", func() (cordis.Disposer, error) {
 		return func() error { a.settle(); return nil }, nil
 	}); err != nil {
@@ -120,6 +125,7 @@ func (m *manager) Start(owner *cordis.Context, s Spec) (Activation, error) {
 		m.forget(a)
 		return nil, err
 	}
+	a.fiber = fiber
 	var model agent.ModelSelection
 	if s.Model != nil {
 		model = *s.Model
@@ -380,9 +386,12 @@ func (m *manager) WaitQuiet(ctx context.Context, owner *cordis.Context) error {
 	}
 }
 
-// closeAll releases every run still held: the manager unloading.
+// closeAll is the manager unloading: it refuses new runs and, under the same
+// lock, takes every run admitted so far, starts still in progress included;
+// each is waited for, released and settled before closeAll returns.
 func (m *manager) closeAll() {
 	m.mu.Lock()
+	m.closing = true
 	acts := make([]*activation, 0, len(m.acts))
 	for _, a := range m.acts {
 		acts = append(acts, a)
@@ -390,9 +399,12 @@ func (m *manager) closeAll() {
 	m.mu.Unlock()
 	for _, a := range acts {
 		<-a.ready
-		if a.fiber != nil {
-			a.fiber.Dispose()
+		if a.fiber == nil {
+			continue
 		}
+		a.fiber.Dispose()
+		<-a.settled
+		a.watch.Wait()
 	}
 }
 

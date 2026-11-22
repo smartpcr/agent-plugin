@@ -204,12 +204,29 @@ func (r *registry) create(owner *cordis.Context, o CreateOptions) (Handle, error
 	return handle{e}, nil
 }
 
+// ownHook, when set by a test, runs inside the owner effect's acquisition.
+var ownHook func(Ref)
+
 // own ties e's teardown to ctx's fiber as effect i. Its disposer waits for a
 // build still running and tears down what it built; a build that failed has
-// rolled itself back.
+// rolled itself back. A disposer run before own has returned (the fiber
+// unloaded during the acquisition, so cordis releases it inline on this
+// goroutine) must not wait for the build, which starts only after own
+// returns: it marks the guard abandoned and own reports the owner inactive.
 func (e *entry) own(ctx *cordis.Context, i int) error {
+	var armed, abandoned bool
 	eh, err := ctx.Effect("agent:"+string(e.ref.Session), func() (cordis.Disposer, error) {
+		if h := ownHook; h != nil {
+			h(e.ref)
+		}
 		return func() error {
+			e.r.mu.Lock()
+			if !armed {
+				abandoned = true
+				e.r.mu.Unlock()
+				return nil
+			}
+			e.r.mu.Unlock()
 			<-e.built
 			if e.inst == nil {
 				return nil
@@ -221,11 +238,15 @@ func (e *entry) own(ctx *cordis.Context, i int) error {
 		return err
 	}
 	e.r.mu.Lock()
-	swept := e.swept
-	if !swept {
+	armed = true
+	swept, gone := e.swept, abandoned
+	if !swept && !gone {
 		e.effects[i] = eh
 	}
 	e.r.mu.Unlock()
+	if gone {
+		return cordis.ErrInactive
+	}
 	if swept {
 		eh.Dispose()
 	}
