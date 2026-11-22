@@ -202,16 +202,7 @@ func (s *evscState) inventoryMatchesGolden() error {
 	if err != nil {
 		return err
 	}
-	// The golden governs the store's own link set (persisted_test.go is its
-	// gate); this binary also links the types of later layers (approval/*,
-	// tool/late-return, ...), which the golden does not govern.
-	governed := map[string]bool{}
-	for _, e := range s.golden {
-		governed[e.Type] = true
-	}
-	cur = slices.DeleteFunc(cur, func(e store.InventoryEntry) bool {
-		return strings.HasPrefix(e.Type, e2ePluginTypePrefix) || !governed[e.Type]
-	})
+	cur = slices.DeleteFunc(cur, func(e store.InventoryEntry) bool { return strings.HasPrefix(e.Type, e2ePluginTypePrefix) })
 	if p := store.CheckInventory(cur, s.golden, s.notes); len(p) > 0 {
 		return fmt.Errorf("unchanged registry already fails the check:\n%s", strings.Join(p, "\n"))
 	}
