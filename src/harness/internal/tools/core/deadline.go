@@ -82,22 +82,29 @@ func (r *registry) execute(ctx context.Context, b tools.Batch, d *tools.Declarat
 		v, err := runBody(bctx, bd, in, run)
 		done <- bodyOut{v, err, clk.Now()}
 	}()
+	// returned classifies a body's return by when it returned, not by which
+	// notification was seen first: the same return settles the same way
+	// whatever order a select picks ready channels in.
+	returned := func(o bodyOut) ended {
+		switch {
+		case expired(o.at):
+			// At or after its expiry: a timeout, even when its return won the
+			// race with the timer.
+			return cancelledEnded(tools.CauseDeadline, budget, o)
+		case ctx.Err() != nil:
+			// The turn was cancelled as the body returned, or while it ran: the
+			// same as a body that returned within grace.
+			return cancelledEnded(tools.CauseCancelled, budget, o)
+		}
+		// Before its expiry: its own value, even when the deadline was seen first.
+		return bodyEnded(o)
+	}
 	var cause tools.Cause
 	var graceEnd time.Time
 	select {
 	case o := <-done:
 		cancel(nil)
-		switch {
-		case expired(o.at):
-			// Returned at or after its expiry: a timeout, even when its return
-			// won the race with the timer.
-			return cancelledEnded(tools.CauseDeadline, budget, o)
-		case ctx.Err() != nil:
-			// The turn was cancelled as the body returned: the same as a body
-			// that returned within grace.
-			return cancelledEnded(tools.CauseCancelled, budget, o)
-		}
-		return bodyEnded(o)
+		return returned(o)
 	case <-deadline:
 		cause, graceEnd = tools.CauseDeadline, expiry.Add(grace)
 		cancel(fmt.Errorf("%w: the budget of %s ended", tools.ErrTimeout, budget))
@@ -113,12 +120,12 @@ func (r *registry) execute(ctx context.Context, b tools.Batch, d *tools.Declarat
 	}
 	select {
 	case o := <-done:
-		return cancelledEnded(cause, budget, o)
+		return returned(o)
 	case <-clk.After(graceEnd.Sub(clk.Now())):
 		// A return that is ready as grace ends is still a return.
 		select {
 		case o := <-done:
-			return cancelledEnded(cause, budget, o)
+			return returned(o)
 		default:
 		}
 	}

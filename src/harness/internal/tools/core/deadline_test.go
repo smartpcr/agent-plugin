@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -540,6 +541,70 @@ func TestDeadlineReturnAtExpiryIsTimeout(t *testing.T) {
 type lateClock struct{ *clock.Manual }
 
 func (lateClock) After(time.Duration) <-chan time.Time { return make(chan time.Time) }
+
+// firedClock is a manual clock whose first timer, the call's budget, the test
+// fires itself without advancing time; later timers are the manual clock's.
+type firedClock struct {
+	*clock.Manual
+	fire  chan time.Time
+	asked *atomic.Bool
+}
+
+func (c firedClock) After(d time.Duration) <-chan time.Time {
+	if c.asked.CompareAndSwap(false, true) {
+		return c.fire
+	}
+	return c.Manual.After(d)
+}
+
+// DH-T-TOOLS-8: a body that returned before its expiry keeps its value when the
+// deadline is seen first, or together with its return: the recorded return
+// time, not the select's order, decides.
+func TestDeadlineReturnBeforeExpiryWithDeadlineSeen(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		runs  int
+		first bool // fire the deadline before the body returns
+	}{
+		{"deadline-seen-first", 1, true},
+		{"both-ready", 50, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for range tc.runs {
+				clk := firedClock{clock.NewManual(epoch), make(chan time.Time, 1), &atomic.Bool{}}
+				e := newEnv(t)
+				svc := e.pipeline(t, core.Config{Clock: clk, Grace: 2 * time.Second, Checkpoint: recCheckpoint{&trace{}}})
+				started, release, back := make(chan struct{}, 1), make(chan struct{}), make(chan struct{})
+				e.register(t, e.root, tools.Define(tools.Spec[noIn, string]{
+					Name: "quick", Description: "Returns in budget.", Timeout: 10 * time.Second,
+					Run: func(context.Context, noIn, tools.Run) (string, error) {
+						started <- struct{}{}
+						<-release
+						defer close(back)
+						return "done", nil
+					},
+				}))
+				call := [2]string{"quick", `{}`}
+				h := openSession(t, memstore.New(), call)
+				done := run(svc, view(t, svc), h, context.Background(), call)
+				recv(t, started, "the body to start")
+				if tc.first {
+					clk.fire <- epoch.Add(10 * time.Second)
+					block(t, clk.Manual, 1) // the pipeline is in grace: it saw the deadline
+					close(release)
+				} else {
+					close(release)
+					<-back
+					clk.fire <- epoch.Add(10 * time.Second)
+				}
+				r := recv(t, done, "the batch").res.Results[0]
+				if r.IsError || r.Code != "" || r.Cause != "" || r.Text != "done" {
+					t.Fatalf("an in-budget return was not kept: %+v", r)
+				}
+			}
+		})
+	}
+}
 
 // DH-ADR-STORAGE-4: a spill seat that panics, or whose Replace grows the text,
 // is reported in Result.SpillFailure and the logged result, and the text, still
