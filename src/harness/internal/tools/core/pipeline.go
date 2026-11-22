@@ -465,8 +465,26 @@ func (r *registry) settle(ctx context.Context, b tools.Batch, ls listeners, c to
 	if e.stage == tools.StageResolve {
 		shapers = nil
 	}
+	// Shapers see deep copies of the value, as policies and guards see copies of
+	// the input: what one mutates reaches neither a later shaper nor the
+	// returned Value, which stays the one Text was rendered from. A value that
+	// cannot be copied is invalid output, before any shaper sees it.
+	var value tools.Call
+	if res.Value != nil && len(shapers) > 0 {
+		snap, err := tools.NewIsolatedCall(c.ID(), c.Name(), c.Arguments(), c.Origin(), c.Parent(), c.Agent(), c.Tool(), res.Value)
+		if err != nil {
+			res.IsError, res.Code, res.Stage, res.Value = true, tools.CodeInvalidOutput, tools.StageShape, nil
+			res.Text = string(tools.CodeInvalidOutput) + ": the value cannot be isolated from the shapers: " + err.Error()
+		} else {
+			value = snap
+		}
+	}
 	for _, s := range shapers {
-		pd := shape(s, c, tools.Outcome{IsError: res.IsError, Code: res.Code, Text: res.Text, Value: res.Value})
+		o := tools.Outcome{IsError: res.IsError, Code: res.Code, Text: res.Text}
+		if res.Value != nil {
+			o.Value = value.Input()
+		}
+		pd := shape(s, c, o)
 		switch pd.Kind {
 		case tools.PostAccept:
 		case tools.PostReplaceContent:
