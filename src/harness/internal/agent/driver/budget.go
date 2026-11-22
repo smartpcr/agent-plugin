@@ -5,8 +5,9 @@ import (
 	"time"
 )
 
-// The budget defaults (tech-spec §5.5, DH-ADR-AGENT-7). They are not yet
-// confirmed by their owner (impl.md §9.1); they live here only.
+// The budget defaults (tech-spec §5.5, DH-ADR-AGENT-7), confirmed by their
+// owner for Stage 11.2 (impl.md §9.1): 500 steps, 8 attempts per step, no time
+// limit. They live here only.
 const (
 	DefaultMaxSteps           = 500
 	DefaultMaxAttemptsPerStep = 8

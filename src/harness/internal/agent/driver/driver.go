@@ -65,7 +65,8 @@ type Options struct {
 	Hooks             Hooks
 }
 
-// The cleanup bounds' defaults.
+// The cleanup bounds' defaults: 10 s each, confirmed by their owner for
+// Stage 11.2 (architecture.md F4 cleanupBudget, tech-spec.md §5.5).
 const (
 	DefaultCleanupTimeout    = 10 * time.Second
 	DefaultFinalFlushTimeout = 10 * time.Second

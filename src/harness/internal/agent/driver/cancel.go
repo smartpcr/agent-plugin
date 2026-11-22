@@ -61,7 +61,8 @@ func (s *stepState) cancelStep(c agent.Cause) {
 // and the turn ends aborted{cause}. ScopeStep cancels only the step context: the
 // step closes the same way, and at point 14 the turn goes on with pending
 // next-step input or else ends aborted{cause}. Between steps a step cancel
-// finds no step and stops nothing. With no turn running only the inbox choice
+// finds no step and stops nothing: the turn goes on as if it never came (an
+// owner decision for Stage 11.2). With no turn running only the inbox choice
 // applies. Of two cancels the first cause is the one recorded.
 //
 // Cancel signals at once and never waits on inbox storage: a claim or Sync

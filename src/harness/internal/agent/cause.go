@@ -102,7 +102,9 @@ func CheckCancel(c Cause, o CancelOptions) error {
 }
 
 // Canceller is the cancel of a driven agent. It never waits for the turn to
-// close; the log says, on step/end and turn/end, why it closed.
+// close; the log says, on step/end and turn/end, why it closed. It is an
+// optional interface an agent's instance implements, not a method of Agent
+// (an owner decision for Stage 11.2); Cancel below is the way to call it.
 type Canceller interface {
 	Cancel(cause Cause, o CancelOptions) error
 }

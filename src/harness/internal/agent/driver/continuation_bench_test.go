@@ -9,16 +9,18 @@
 //
 // and again under GOMEMLIMIT (4GiB, 8GiB) for the memory-limited rerun.
 //
-// What this is not yet: the budget is unmeasured (agent-loop.md §9.1 leaves
-// it open), so no reviewed constant is asserted; the scripted model stands in
-// for the replay provider (DH-D-UTIL-7, impl.md step 16.7, held open by H-10)
-// and memstore for the built binary's store, and the ladder stands in for the
-// measured 1,650-session distribution, which is not in the repository. Each
-// timed continuation resumes a fresh store seeded with the same template
-// session (records only: the template's checkpoints are not copied), whose
-// size is checked outside the timer. The benchmark reports wall time per
-// continuation, peak heap, turns and records; when the
-// replay provider and the corpus land, the same loop gains the budget check.
+// Acceptance is staged (an owner decision for Stage 11.2): until the replay
+// provider (DH-D-UTIL-7, impl.md step 16.7, held open by H-10) and the
+// measured 1,650-session corpus land, the scripted model and memstore stand in
+// for them and a synthetic ladder stands in for the corpus. On it, the
+// continuation of every session up to the p99 rung must stay inside
+// provisionalBudget (median over the iterations), in the plain run and in the
+// GOMEMLIMIT reruns; the max rung is measured, not budgeted. The final budget
+// stays unpinned until the provider and the corpus land, when this check is
+// re-run against them. Each timed continuation resumes a fresh store seeded
+// with the same template session (records only: the template's checkpoints
+// are not copied), whose size is checked outside the timer. The benchmark
+// reports wall time per continuation, the median, peak heap, turns and records.
 
 package driver_test
 
@@ -27,6 +29,7 @@ import (
 	"fmt"
 	"iter"
 	"runtime"
+	"slices"
 	"testing"
 	"time"
 
@@ -46,11 +49,16 @@ import (
 // very long and the longest session. Each turn is tool-heavy: one step with
 // two tool calls, then the answer.
 var sessionSizes = []struct {
-	name  string
-	turns int
+	name     string
+	turns    int
+	budgeted bool
 }{
-	{"p50", 8}, {"p90", 64}, {"p99", 512}, {"max", 1024},
+	{"p50", 8, true}, {"p90", 64, true}, {"p99", 512, true}, {"max", 1024, false},
 }
+
+// provisionalBudget is the staged DH-T-AGENT-28 budget for one continuation of
+// a session up to the p99 rung; not the final pin (see the file comment).
+const provisionalBudget = 100 * time.Millisecond
 
 // firstStream signals each request the driver hands to the model.
 type firstStream struct {
@@ -164,7 +172,10 @@ func BenchmarkContinuation(b *testing.B) {
 				b.Fatalf("the template holds %d turns, want %d", n, size.turns)
 			}
 
-			var peak uint64
+			var (
+				peak  uint64
+				times []time.Duration
+			)
 			var ms runtime.MemStats
 			b.ResetTimer()
 			b.StopTimer()
@@ -182,6 +193,7 @@ func BenchmarkContinuation(b *testing.B) {
 				c.tr.Script(tooled(1)...)
 				runtime.GC()
 				b.StartTimer()
+				began := time.Now()
 				must(c.in.Send(bg, agent.ListNextTurn, agent.InboxMessage{Source: agent.SourceUser, Text: "continue"}))
 				select {
 				case <-c.ch:
@@ -189,6 +201,7 @@ func BenchmarkContinuation(b *testing.B) {
 					b.Fatal("no model request left the driver")
 				}
 				b.StopTimer()
+				times = append(times, time.Since(began))
 				runtime.ReadMemStats(&ms)
 				peak = max(peak, ms.HeapAlloc)
 				c.idle(b, time.Minute)
@@ -197,6 +210,12 @@ func BenchmarkContinuation(b *testing.B) {
 			b.ReportMetric(float64(peak), "peak-heap-B")
 			b.ReportMetric(float64(size.turns), "turns")
 			b.ReportMetric(float64(len(recs)), "records")
+			slices.Sort(times)
+			med := times[len(times)/2]
+			b.ReportMetric(float64(med.Nanoseconds()), "median-ns")
+			if size.budgeted && med > provisionalBudget {
+				b.Errorf("continuation of a %d-turn session took %v (median of %d), over the provisional budget %v", size.turns, med, len(times), provisionalBudget)
+			}
 		})
 	}
 }
