@@ -120,8 +120,8 @@ func TestQuestionAnsweredThroughTheInbox(t *testing.T) {
 
 // DH-T-HUMAN-8 (subset), the in-process half of DH-E-HUMAN-6: a timed question
 // returns pending at its deadline; after a restart the question is open again;
-// the late answer becomes one user message naming the call, claimed at the next
-// step; a second answer is question/reply-queued.
+// the late answer becomes one user message naming the call, which wakes the
+// idle agent and starts a turn; a second answer is question/reply-queued.
 func TestTimedQuestionReturnsPendingAndTheLateAnswerIsOneUserMessage(t *testing.T) {
 	f := setup(t)
 	f.bind(t, answerer.Never())
@@ -172,13 +172,18 @@ func TestTimedQuestionReturnsPendingAndTheLateAnswerIsOneUserMessage(t *testing.
 	if _, err := svc2.Reply(bg, r.ID, human.Actor{Channel: "ui", Name: "alice"}, "no"); !errors.Is(err, question.ErrReplyQueued) {
 		t.Fatalf("second answer %v", err)
 	}
-	if _, err := h2.Append(bg, mustDraft(event.TurnStartType.Draft(event.TurnStart{Turn: 1}))); err != nil {
-		t.Fatal(err)
+	// The resumed agent is idle: the late answer is next-turn input, wakes it,
+	// and the wake starts the answer's own turn — no turn was opened by hand.
+	select {
+	case <-inbox2.Wake():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the late answer did not wake the idle agent")
 	}
-	got, err := inbox2.ClaimStep(bg, 1)
-	if err != nil || len(got) != 1 || got[0].ID != rec.MessageID || got[0].Call != "call-q" || got[0].Text != "yes" || got[0].By != "alice" {
-		t.Fatalf("claimed %+v, %v", got, err)
+	m, ok, err := inbox2.ClaimTurn(bg, 1)
+	if err != nil || !ok || m.ID != rec.MessageID || m.Call != "call-q" || m.Text != "yes" || m.By != "alice" {
+		t.Fatalf("claimed %+v, %v, %v", m, ok, err)
 	}
+	got := []agent.InboxMessage{m}
 	msg, _ := got[0].Message()
 	src, _ := msg.Source()
 	if src.Kind != agent.SourceQuestion || !strings.Contains(string(src.Data), "call-q") {
@@ -218,14 +223,14 @@ func TestNoBindingAndMovingOn(t *testing.T) {
 	timeout := time.After(5 * time.Second)
 	tick := time.NewTicker(5 * time.Millisecond)
 	defer tick.Stop()
-	for len(f.inbox.Pending(agent.ListNextStep)) == 0 {
+	for len(f.inbox.Pending(agent.ListNextTurn)) == 0 {
 		select {
 		case <-tick.C:
 		case <-timeout:
 			t.Fatal("the answer never reached the inbox")
 		}
 	}
-	p := f.inbox.Pending(agent.ListNextStep)
+	p := f.inbox.Pending(agent.ListNextTurn)
 	if len(p) != 1 || p[0].Text != "later" || p[0].Call != "call-2" || len(a.Asked()) != 1 {
 		t.Fatalf("pending %+v", p)
 	}

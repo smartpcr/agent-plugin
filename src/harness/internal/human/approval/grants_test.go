@@ -13,6 +13,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human/approval"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/scope"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store/memstore"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/answerer"
 )
@@ -39,10 +40,35 @@ func dirReq(ref agent.Ref, call, path string) approval.Request {
 		Subject: &approval.Subject{Kind: approval.ScopeDirectory, Path: path}}
 }
 
+// lifeAgent is a stub agent instance whose session is the real one of its id:
+// created the first time, resumed (session.Open) after.
+type lifeAgent struct {
+	ref agent.Ref
+	h   session.Handle
+	sc  *scope.Scope
+	// keep leaves the session live when the agent closes.
+	keep bool
+}
+
+func (a *lifeAgent) Ref() agent.Ref               { return a.ref }
+func (a *lifeAgent) Session() session.ReadSession { return a.h }
+func (a *lifeAgent) Scope() *cordis.Context       { return a.sc.Ctx() }
+func (a *lifeAgent) ScopeKey() scope.Key          { return a.sc.Key() }
+func (a *lifeAgent) Status() agent.Status         { return agent.StatusIdle }
+func (a *lifeAgent) State() agent.State           { return agent.StateLive }
+func (a *lifeAgent) Close(ctx context.Context) error {
+	_ = a.sc.Close()
+	if a.keep {
+		return nil
+	}
+	return a.h.Close(ctx)
+}
+
 // DH-D-HUMAN-3, NG-8: a session grant of directory w, given on an allowed-session
-// answer, approves the next call inside w without asking; after the session ends
-// and is resumed, the grant list is empty and a call needing w asks again,
-// although the log holds grant/created.
+// answer, approves the next call inside w without asking; after the agent is
+// disposed and its session resumed by a new incarnation, the grant list is empty
+// and a call needing w asks again, although the log holds grant/created. Nothing
+// here ends grants by hand: the table is bound to the agent lifecycle.
 func TestGrantDoesNotSurviveResume(t *testing.T) {
 	ctx := context.Background()
 	w := filepath.Join(t.TempDir(), "w")
@@ -54,10 +80,16 @@ func TestGrantDoesNotSurviveResume(t *testing.T) {
 	svc, grants, ans, root := granting(t, "ui", []agent.Ref{first, resumed}, answerer.AllowSession(), answerer.AllowOnce())
 
 	sessions := session.NewService(root, memstore.New(), session.Config{})
-	h, err := sessions.Create(ctx, nil, session.CreateOptions{Header: session.Header{ID: "s-grant"}})
-	if err != nil {
+	if _, err := grants.Bind(root, sessions); err != nil {
 		t.Fatal(err)
 	}
+	reg := lifecycle(t, root, sessions, false)
+
+	a1, err := reg.Create(root, agent.CreateOptions{Session: "s-grant"})
+	if err != nil || a1.Agent().Ref() != first {
+		t.Fatalf("create %v, %v", a1, err)
+	}
+	h, _ := sessions.Get("s-grant")
 	d, err := svc.Request(ctx, h, dirReq(first, "c1", w))
 	if err != nil || !d.Approved() || !strings.HasPrefix(d.Detail, approval.DetailGranted+":") {
 		t.Fatalf("first decision %+v, %v", d, err)
@@ -74,23 +106,19 @@ func TestGrantDoesNotSurviveResume(t *testing.T) {
 		t.Fatalf("roots %v", got)
 	}
 
-	// The session ends: no EndAll, as after a crash; the resume closes the log's
-	// grants and starts with an empty table.
-	if err := h.Close(ctx); err != nil {
+	// The session ends with its agent; a new incarnation resumes it.
+	if err := a1.Dispose(ctx); err != nil {
 		t.Fatal(err)
 	}
-	h2, _, err := sessions.Open(ctx, root, "s-grant", session.OpenOptions{})
-	if err != nil {
-		t.Fatal(err)
+	if got := grants.List(first); len(got) != 0 {
+		t.Fatalf("grants of the disposed agent %+v", got)
 	}
-	t.Cleanup(func() { h2.Close(ctx) })
-	closed, err := approval.CloseGrantsOnResume(ctx, h2)
-	if err != nil || len(closed) != 1 || closed[0] != list[0].ID {
-		t.Fatalf("closed on resume %v, %v", closed, err)
+	a2, err := reg.Create(root, agent.CreateOptions{Session: "s-grant"})
+	if err != nil || a2.Agent().Ref() != resumed {
+		t.Fatalf("resume %v, %v", a2, err)
 	}
-	if again, _ := approval.CloseGrantsOnResume(ctx, h2); len(again) != 0 {
-		t.Fatalf("closed twice: %v", again)
-	}
+	t.Cleanup(func() { _ = a2.Dispose(ctx) })
+	h2, _ := sessions.Get("s-grant")
 	if got := grants.List(resumed); len(got) != 0 {
 		t.Fatalf("resumed grants %+v", got)
 	}
@@ -115,6 +143,71 @@ func TestGrantDoesNotSurviveResume(t *testing.T) {
 	if created != 1 || ended != 1 {
 		t.Fatalf("log has %d grant/created, %d grant/ended", created, ended)
 	}
+}
+
+// An agent disposed while its session stays live (the session outlives its
+// agent) ends its grants at once, session-ended.
+func TestGrantEndsWhenItsAgentIsDisposed(t *testing.T) {
+	ctx := context.Background()
+	ref := agent.Ref{Session: "s-keep", Incarnation: 1}
+	svc, grants, _, root := granting(t, "ui", []agent.Ref{ref}, answerer.AllowSession())
+	sessions := session.NewService(root, memstore.New(), session.Config{})
+	if _, err := grants.Bind(root, sessions); err != nil {
+		t.Fatal(err)
+	}
+	reg := lifecycle(t, root, sessions, true)
+	a, err := reg.Create(root, agent.CreateOptions{Session: "s-keep"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, _ := sessions.Get("s-keep")
+	if _, err := svc.Request(ctx, h, dirReq(ref, "c1", t.TempDir())); err != nil || len(grants.List(ref)) != 1 {
+		t.Fatalf("grant %v, %v", grants.List(ref), err)
+	}
+	if err := a.Dispose(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := grants.List(ref); len(got) != 0 {
+		t.Fatalf("grants after disposal %+v", got)
+	}
+	evs, _ := h.Read(ctx, 0, 100)
+	if last := evs[len(evs)-1]; last.Type() != approval.GrantEndedType.Name() {
+		t.Fatalf("last event %s", last.Type())
+	} else if e, _ := approval.GrantEndedType.As(last); e.Reason != approval.EndSessionEnded {
+		t.Fatalf("ended %+v", e)
+	}
+}
+
+// lifecycle is an agent registry whose stub factory creates the session of an
+// id the first time and resumes it after; keep leaves the session live when the
+// agent closes.
+func lifecycle(t *testing.T, root *cordis.Context, sessions session.Service, keep bool) agent.Registry {
+	t.Helper()
+	ctx := context.Background()
+	tab := scope.NewTable(root)
+	reg := agent.NewRegistry(root)
+	opened := map[agent.Ref]bool{}
+	if _, err := reg.SetFactory(root, agent.FactoryFunc(func(owner *cordis.Context, o agent.CreateOptions, ref agent.Ref) (agent.Instance, error) {
+		var h session.Handle
+		var err error
+		if opened[agent.Ref{Session: o.Session}] {
+			h, _, err = sessions.Open(ctx, owner, o.Session, session.OpenOptions{})
+		} else {
+			h, err = sessions.Create(ctx, owner, session.CreateOptions{Header: session.Header{ID: string(o.Session)}})
+		}
+		if err != nil {
+			return nil, err
+		}
+		opened[agent.Ref{Session: o.Session}] = true
+		sc, err := tab.New(owner, ref.String())
+		if err != nil {
+			return nil, err
+		}
+		return &lifeAgent{ref: ref, h: h, sc: sc, keep: keep}, nil
+	})); err != nil {
+		t.Fatal(err)
+	}
+	return reg
 }
 
 // DH-T-HUMAN-5 (subset): a directory grant covers the directory and paths inside
@@ -218,5 +311,30 @@ func TestGrantRevokeChannelAndCap(t *testing.T) {
 	}
 	if err := capGrants.EndAll(ctx, &recLog{}, me, approval.EndPolicyChanged); err != nil || len(capGrants.List(me)) != 0 {
 		t.Fatalf("end all: %v", err)
+	}
+}
+
+// A grant refused by rule approves the call once and says so; a grant whose
+// grant/created cannot be written is an audit failure: the call is refused, the
+// error returned, the denial still logged, and no grant is live.
+func TestGrantCreateFailures(t *testing.T) {
+	ctx := context.Background()
+	w := t.TempDir()
+	sdk, _, _, _ := granting(t, "sdk", []agent.Ref{me}, answerer.AllowSession())
+	if d, err := sdk.Request(ctx, &recLog{}, dirReq(me, "c1", w)); err != nil || !d.Approved() || !strings.HasPrefix(d.Detail, approval.DetailGrantRefused+":") {
+		t.Fatalf("refused grant %+v, %v", d, err)
+	}
+
+	svc, grants, _, _ := granting(t, "ui", []agent.Ref{me}, answerer.AllowSession())
+	log := &recLog{failType: approval.GrantCreatedType.Name()}
+	d, err := svc.Request(ctx, log, dirReq(me, "c1", w))
+	if err == nil || !strings.Contains(err.Error(), "grant/created") || d.Approved() || d.Detail != "grant-audit-failed" {
+		t.Fatalf("failed grant %+v, %v", d, err)
+	}
+	if n := len(grants.List(me)); n != 0 {
+		t.Fatalf("%d grants live after a failed grant/created", n)
+	}
+	if got := strings.Join(log.types(), ","); got != "approval/asked,approval/decided" {
+		t.Fatalf("log %s", got)
 	}
 }

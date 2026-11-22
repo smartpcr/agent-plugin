@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/agent"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
@@ -299,6 +300,59 @@ func appendEnded(ctx context.Context, log Log, id, reason, who string) error {
 		return fmt.Errorf("approval: append grant/ended: %w", err)
 	}
 	return nil
+}
+
+// Sessions finds a live session to write grant/ended to (session.Service).
+type Sessions interface {
+	Get(id session.ID) (session.Session, bool)
+}
+
+// Bind ties the table to the agent lifecycle under root, so cleanup needs no
+// caller: when an agent is created (a new or resumed incarnation) every grant
+// its session's log leaves open is ended session-ended and the table drops any
+// older incarnation of the session; when an agent is disposed its grants end
+// session-ended while its session is still live, and the table forgets them
+// either way. A failed close of the log fails the creation. The returned handles
+// unbind.
+func (g *Grants) Bind(root *cordis.Context, sessions Sessions) ([]*cordis.EffectHandle, error) {
+	created, err := agent.Created.On(root, func(_ *cordis.Context, n agent.CreatedNotice) error {
+		ref := n.Agent.Ref()
+		g.forgetOlder(ref)
+		s, ok := sessions.Get(ref.Session)
+		if !ok {
+			return nil
+		}
+		_, err := CloseGrantsOnResume(context.Background(), s)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	disposed, err := agent.Disposed.On(root, func(_ *cordis.Context, n agent.DisposedNotice) error {
+		if s, ok := sessions.Get(n.Ref.Session); ok {
+			return g.EndAll(context.Background(), s, n.Ref, EndSessionEnded)
+		}
+		g.mu.Lock()
+		delete(g.byAgent, n.Ref)
+		g.mu.Unlock()
+		return nil
+	})
+	if err != nil {
+		created.Dispose()
+		return nil, err
+	}
+	return []*cordis.EffectHandle{created, disposed}, nil
+}
+
+// forgetOlder drops the grants of ref's session held by any other incarnation.
+func (g *Grants) forgetOlder(ref agent.Ref) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for r := range g.byAgent {
+		if r.Session == ref.Session && r != ref {
+			delete(g.byAgent, r)
+		}
+	}
 }
 
 // GrantLog is a session the resume closer reads and appends to.

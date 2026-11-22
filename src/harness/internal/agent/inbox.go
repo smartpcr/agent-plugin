@@ -230,14 +230,19 @@ func (b *Inbox) Seen(id string) (Receipt, bool) {
 // returns a *DuplicateError carrying the first receipt. Send opens no turn: a
 // next-turn send signals Wake.
 func (b *Inbox) Send(ctx context.Context, list List, m InboxMessage) (Receipt, error) {
+	return b.SendWith(ctx, list, m)
+}
+
+// SendWith is Send whose splice and also are one group: all of them are in the
+// log or none is, so a producer's own record of the send (an answer's
+// question/answered) can never be cut from it by a crash.
+func (b *Inbox) SendWith(ctx context.Context, list List, m InboxMessage, also ...event.Draft) (Receipt, error) {
 	if !list.valid() {
 		return Receipt{}, errorf(CodeInboxInvalid, "list %q", list)
 	}
-	if m.ID == "" {
-		m.ID = mintMessageID()
-	}
-	if m.Source == "" {
-		return Receipt{}, errorf(CodeInboxInvalid, "message %q names no source", m.ID)
+	m, err := b.admissible(m)
+	if err != nil {
+		return Receipt{}, err
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -245,17 +250,9 @@ func (b *Inbox) Send(ctx context.Context, list List, m InboxMessage) (Receipt, e
 		return first, &DuplicateError{First: first}
 	}
 	s := Splice{List: list, Position: len(b.pending[list]), Inserted: []InboxMessage{m}}
-	d, err := SplicedType.Draft(s)
+	r, err := b.groupLocked(ctx, "send", []Splice{s}, also)
 	if err != nil {
-		return Receipt{}, errorf(CodeInboxInvalid, "%v", err)
-	}
-	r, err := b.log.Append(ctx, d)
-	if err != nil {
-		return Receipt{}, fmt.Errorf("agent: send: %w", err)
-	}
-	b.apply(s, r.Seq)
-	if _, err := b.log.Flush(ctx); err != nil {
-		return Receipt{}, fmt.Errorf("agent: send: flush: %w", err)
+		return r, err
 	}
 	if list == ListNextTurn {
 		select {
@@ -264,6 +261,77 @@ func (b *Inbox) Send(ctx context.Context, list List, m InboxMessage) (Receipt, e
 		}
 	}
 	return Receipt{MessageID: m.ID, Seq: r.Seq}, nil
+}
+
+// Hand admits m and hands it straight to a caller waiting for it: the admission
+// on next-step, its discard with cause and also are one group. The message is in
+// the session's history of input (its id is taken) and never runs as a turn.
+func (b *Inbox) Hand(ctx context.Context, m InboxMessage, cause string, also ...event.Draft) (Receipt, error) {
+	m, err := b.admissible(m)
+	if err != nil {
+		return Receipt{}, err
+	}
+	if cause == "" {
+		cause = "discarded"
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if first, ok := b.seen[m.ID]; ok {
+		return first, &DuplicateError{First: first}
+	}
+	at := len(b.pending[ListNextStep])
+	in := Splice{List: ListNextStep, Position: at, Inserted: []InboxMessage{m}}
+	out := Splice{List: ListNextStep, Position: at, Removed: 1, Outcome: &SpliceOutcome{Kind: OutcomeDiscarded, Cause: cause}}
+	r, err := b.groupLocked(ctx, "hand", []Splice{in, out}, also)
+	if err != nil {
+		return r, err
+	}
+	return Receipt{MessageID: m.ID, Seq: r.Seq}, nil
+}
+
+func (b *Inbox) admissible(m InboxMessage) (InboxMessage, error) {
+	if m.ID == "" {
+		m.ID = mintMessageID()
+	}
+	if m.Source == "" {
+		return m, errorf(CodeInboxInvalid, "message %q names no source", m.ID)
+	}
+	return m, nil
+}
+
+// groupLocked appends splices then also as one group, folds the splices and
+// flushes; the receipt is the first splice's. A failed append folds nothing; a
+// failed flush leaves the group appended and folded (the caller can tell by Seen).
+func (b *Inbox) groupLocked(ctx context.Context, op string, splices []Splice, also []event.Draft) (Receipt, error) {
+	group := make([]event.Draft, 0, len(splices)+len(also))
+	for _, s := range splices {
+		d, err := SplicedType.Draft(s)
+		if err != nil {
+			return Receipt{}, errorf(CodeInboxInvalid, "%v", err)
+		}
+		group = append(group, d)
+	}
+	group = append(group, also...)
+	var rs []event.Receipt
+	var err error
+	if len(group) == 1 {
+		var r event.Receipt
+		r, err = b.log.Append(ctx, group[0])
+		rs = []event.Receipt{r}
+	} else {
+		rs, err = b.log.AppendGroup(ctx, group)
+	}
+	if err != nil {
+		return Receipt{}, fmt.Errorf("agent: %s: %w", op, err)
+	}
+	for i, s := range splices {
+		b.apply(s, rs[i].Seq)
+	}
+	r := Receipt{Seq: rs[0].Seq}
+	if _, err := b.log.Flush(ctx); err != nil {
+		return r, fmt.Errorf("agent: %s: flush: %w", op, err)
+	}
+	return r, nil
 }
 
 // ClaimTurn opens turn with the first next-turn item: turn/start, the claim and

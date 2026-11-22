@@ -26,6 +26,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/surface"
 )
 
 // Outcome is how an ask settled for its caller.
@@ -140,10 +141,13 @@ type Log interface {
 	Append(ctx context.Context, d event.Draft) (event.Receipt, error)
 }
 
-// Inbox is the asking agent's inbox (*agent.Inbox).
+// Inbox is the asking agent's inbox (*agent.Inbox). An answer's admission and
+// its question/answered are one group (SendWith, Hand), so no crash separates
+// them.
 type Inbox interface {
-	Send(ctx context.Context, list agent.List, m agent.InboxMessage) (agent.Receipt, error)
-	Discard(ctx context.Context, list agent.List, id, cause string) (bool, error)
+	SendWith(ctx context.Context, list agent.List, m agent.InboxMessage, also ...event.Draft) (agent.Receipt, error)
+	Hand(ctx context.Context, m agent.InboxMessage, cause string, also ...event.Draft) (agent.Receipt, error)
+	Seen(id string) (agent.Receipt, bool)
 }
 
 // Prompt is the payload of the human.Item an answerer receives.
@@ -169,15 +173,31 @@ type Config struct {
 	Timeout time.Duration
 	// After is the timer; nil is time.After.
 	After func(time.Duration) <-chan time.Time
+	// OnError hears a settlement that failed with no caller to return it to: an
+	// answer or a close the registry produced for a call that moved on. The
+	// question stays open; nil drops the report.
+	OnError func(id string, err error)
+}
+
+// settlement is what a waiting call receives: its result, or why the
+// settlement could not be written.
+type settlement struct {
+	r   Result
+	err error
 }
 
 type open struct {
 	q     Question
 	log   Log
 	inbox Inbox
-	// waiting is where a waiting call takes its answer; nil once the call
-	// has returned or never waited.
-	waiting chan Result
+	// cancel withdraws the registry interaction; nil for a restored question.
+	cancel context.CancelFunc
+	// waiting: a call blocks on result. Whoever clears it (a settlement, the
+	// deadline, the caller's cancellation) sends result exactly one value.
+	waiting bool
+	// settling: a reply or a close is writing the settlement now.
+	settling bool
+	result   chan settlement
 }
 
 // Service asks questions and takes their answers.
@@ -201,8 +221,10 @@ func New(cfg Config) *Service {
 }
 
 // Ask appends question/asked and puts q to the agent's channel. With Wait it
-// returns the answer, or pending at the deadline; without, it returns pending at
-// once. Either way a later answer arrives through inbox.
+// returns the answer, or pending at the deadline or when ctx ends; without, it
+// returns pending at once. Either way a later answer arrives through inbox. An
+// error with a result means the settlement could not be written: the question is
+// still open.
 func (s *Service) Ask(ctx context.Context, log Log, inbox Inbox, q Question) (Result, error) {
 	if log == nil || inbox == nil || q.Agent.IsZero() || strings.TrimSpace(q.Text) == "" {
 		return Result{}, fmt.Errorf("%w: a question needs its log, inbox, agent and text", ErrInvalid)
@@ -219,56 +241,49 @@ func (s *Service) Ask(ctx context.Context, log Log, inbox Inbox, q Question) (Re
 	if err != nil {
 		return Result{}, fmt.Errorf("question: append question/asked: %w", err)
 	}
-	o := &open{q: q, log: log, inbox: inbox}
-	if q.Wait {
-		o.waiting = make(chan Result, 1)
-	}
+	// The question outlives the asking call: the interaction ends at its
+	// deadline or its settlement, never at the caller's cancellation.
+	actx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	o := &open{q: q, log: log, inbox: inbox, cancel: cancel, waiting: q.Wait, result: make(chan settlement, 1)}
 	s.mu.Lock()
 	s.open[id] = o
 	s.mu.Unlock()
-
+	go s.interact(actx, id, o, timeout)
 	if !q.Wait {
-		go s.ask(context.WithoutCancel(ctx), id, o, timeout)
 		return Result{ID: id, Outcome: OutcomePending}, nil
 	}
-	ch := o.waiting
-	if closed := s.ask(ctx, id, o, timeout); closed != nil {
-		return *closed, nil
+	select {
+	case st := <-o.result:
+		return st.r, st.err
+	case <-ctx.Done():
 	}
-	s.mu.Lock()
-	_, still := s.open[id]
-	if still {
-		o.waiting = nil
-	}
-	s.mu.Unlock()
-	if still {
-		return Result{ID: id, Outcome: OutcomePending}, nil
-	}
-	// A reply took the question while the call still waited: it hands the
-	// call its result.
-	return <-ch, nil
+	s.expire(id, o)
+	st := <-o.result
+	return st.r, st.err
 }
 
-// ask puts the question to the registry until the deadline. It returns the
-// closing result when nobody can be asked or the person declined; an answer is
-// taken through Reply; a deadline leaves the question open.
-func (s *Service) ask(ctx context.Context, id string, o *open, timeout time.Duration) *Result {
+// interact puts the question to the registry until the deadline or a
+// settlement. An answer is settled through Reply; a refusal or nobody to ask
+// closes the question; the deadline leaves it open for a late answer.
+func (s *Service) interact(ctx context.Context, id string, o *open, timeout time.Duration) {
+	defer o.cancel()
+	defer s.expire(id, o)
+	wctx := context.WithoutCancel(ctx)
 	if s.cfg.Registry == nil {
-		return s.close(ctx, id, OutcomeNoAnswerer, "no-registry", By{Principal: PrincipalHarness})
+		s.report(id, s.closeWith(wctx, id, OutcomeNoAnswerer, "no-registry", By{Principal: PrincipalHarness}))
+		return
 	}
-	actx, cancel := context.WithCancel(ctx)
-	defer cancel()
 	stop := make(chan struct{})
 	defer close(stop)
 	timer := s.cfg.After(timeout)
 	go func() {
 		select {
 		case <-timer:
-			cancel()
+			o.cancel()
 		case <-stop:
 		}
 	}()
-	ans, by, err := s.cfg.Registry.Ask(actx, human.Item{ID: human.ID(id), Kind: human.KindQuestion, To: human.Audience{Agent: o.q.Agent},
+	ans, by, err := s.cfg.Registry.Ask(ctx, human.Item{ID: human.ID(id), Kind: human.KindQuestion, To: human.Audience{Agent: o.q.Agent},
 		Session: o.q.Agent.Session, Call: o.q.Call, Payload: Prompt{Question: o.q.Text, Choices: o.q.Choices, Call: o.q.Call}})
 	switch {
 	case err != nil || ans.Outcome == human.OutcomeUnavailable:
@@ -276,86 +291,152 @@ func (s *Service) ask(ctx context.Context, id string, o *open, timeout time.Dura
 		if err != nil {
 			detail = err.Error()
 		}
-		return s.close(ctx, id, OutcomeNoAnswerer, detail, By{Principal: PrincipalHarness})
+		err = s.closeWith(wctx, id, OutcomeNoAnswerer, detail, By{Principal: PrincipalHarness})
 	case ans.Outcome == human.OutcomeAnswered:
-		_, _ = s.Reply(ctx, id, by, ans.Text)
+		if _, err = s.Reply(wctx, id, by, ans.Text); errors.Is(err, ErrReplyQueued) || errors.Is(err, ErrUnknown) {
+			err = nil // another reply settled it first
+		}
 	case ans.Outcome == human.OutcomeDenied:
-		return s.close(ctx, id, OutcomeDeclined, ans.Text, attributed(by))
+		err = s.closeWith(wctx, id, OutcomeDeclined, ans.Text, attributed(by))
 	}
-	return nil
+	s.report(id, err)
 }
 
-// close settles id with no answer and appends question/answered; nil when id was
-// settled already.
-func (s *Service) close(ctx context.Context, id string, out Outcome, detail string, by By) *Result {
+// expire returns pending to o's waiting call unless a settlement took it first
+// (that settlement sends the call its result).
+func (s *Service) expire(id string, o *open) {
 	s.mu.Lock()
+	release := o.waiting
+	o.waiting = false
+	s.mu.Unlock()
+	if release {
+		o.result <- settlement{r: Result{ID: id, Outcome: OutcomePending}}
+	}
+}
+
+func (s *Service) report(id string, err error) {
+	if err != nil && s.cfg.OnError != nil {
+		s.cfg.OnError(id, err)
+	}
+}
+
+// take starts settling id: one settlement at a time, and none after one was
+// written. toCall reports that a call is waiting for this settlement.
+func (s *Service) take(id string) (o *open, toCall bool, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	o, ok := s.open[id]
-	if ok {
+	switch {
+	case (ok && o.settling) || (!ok && s.done[id]):
+		return nil, false, fmt.Errorf("%w: %s", ErrReplyQueued, id)
+	case !ok:
+		return nil, false, fmt.Errorf("%w: %s", ErrUnknown, id)
+	}
+	o.settling = true
+	toCall = o.waiting
+	o.waiting = false
+	return o, toCall, nil
+}
+
+// finish ends a settlement. written (the settlement is in the log) closes the
+// question and withdraws the interaction; otherwise the question is open again.
+// A waiting call gets r with err, or pending with err when nothing was written.
+func (s *Service) finish(id string, o *open, toCall, written bool, r Result, err error) {
+	s.mu.Lock()
+	o.settling = false
+	if written {
 		delete(s.open, id)
 		s.done[id] = true
 	}
 	s.mu.Unlock()
-	if !ok {
-		return nil
+	if written && o.cancel != nil {
+		o.cancel()
 	}
-	if d, err := AnsweredType.Draft(Answered{ID: id, Call: o.q.Call, Outcome: out, Text: detail, By: by}); err == nil {
-		_, _ = o.log.Append(context.WithoutCancel(ctx), d)
+	if toCall {
+		if !written {
+			r = Result{ID: id, Outcome: OutcomePending}
+		}
+		o.result <- settlement{r: r, err: err}
 	}
-	return &Result{ID: id, Outcome: out, Text: detail, By: by}
 }
 
-// Reply answers the open question id with text, by an actor: the answer is sent
-// into the asking agent's inbox as a user message naming the call, and
-// question/answered is appended, attributed. A waiting call returns the answer
-// and the message is discarded from the inbox (returned-to-call); otherwise it
-// stays queued for the next boundary. A question takes one answer: a second is
-// ErrReplyQueued.
+// closeWith settles id with no answer, appending question/answered. A question
+// settled already is left alone (nil).
+func (s *Service) closeWith(ctx context.Context, id string, out Outcome, detail string, by By) error {
+	o, toCall, err := s.take(id)
+	if err != nil {
+		return nil
+	}
+	d, err := AnsweredType.Draft(Answered{ID: id, Call: o.q.Call, Outcome: out, Text: detail, By: by})
+	if err == nil {
+		_, err = o.log.Append(ctx, d)
+	}
+	if err != nil {
+		err = fmt.Errorf("question: append question/answered: %w", err)
+	}
+	s.finish(id, o, toCall, err == nil, Result{ID: id, Outcome: out, Text: detail, By: by}, err)
+	return err
+}
+
+// answerID is the inbox id of question id's answer; deterministic, so the
+// inbox refuses a second admission of it.
+func answerID(id string) string { return "ans-" + id }
+
+// redeliveredID is the inbox id of an answer delivered again after a crash took
+// it from its call.
+func redeliveredID(id string) string { return answerID(id) + "-again" }
+
+// bracketed is a log that knows whether a turn is open (a session).
+type bracketed interface{ Open() surface.Brackets }
+
+// lateList is where an answer no call waits for goes: into the open turn at its
+// next step, or, when the agent is idle, next-turn, which wakes the agent and
+// starts a turn of its own.
+func lateList(log Log) agent.List {
+	if b, ok := log.(bracketed); ok && b.Open().TurnOpen {
+		return agent.ListNextStep
+	}
+	return agent.ListNextTurn
+}
+
+// Reply answers the open question id with text, by an actor. The answer's inbox
+// admission and its attributed question/answered are one durable group: a
+// waiting call is handed the answer (admitted and discarded returned-to-call,
+// and the interaction withdrawn); otherwise it stays queued, next-step into an
+// open turn or next-turn to wake an idle agent. A question takes one answer: a
+// second is ErrReplyQueued. On an error nothing was written unless the error says
+// the flush failed, and the question is open for another answer.
 func (s *Service) Reply(ctx context.Context, id string, by human.Actor, text string) (agent.Receipt, error) {
 	if strings.TrimSpace(text) == "" {
 		return agent.Receipt{}, fmt.Errorf("%w: an answer has text", ErrInvalid)
 	}
-	s.mu.Lock()
-	o, ok := s.open[id]
-	switch {
-	case !ok && s.done[id]:
-		s.mu.Unlock()
-		return agent.Receipt{}, fmt.Errorf("%w: %s", ErrReplyQueued, id)
-	case !ok:
-		s.mu.Unlock()
-		return agent.Receipt{}, fmt.Errorf("%w: %s", ErrUnknown, id)
+	o, toCall, err := s.take(id)
+	if err != nil {
+		return agent.Receipt{}, err
 	}
-	delete(s.open, id)
-	s.done[id] = true
-	waiting := o.waiting
-	s.mu.Unlock()
-
 	who := attributed(by)
-	msg := agent.InboxMessage{ID: "ans-" + id, Source: agent.SourceQuestion, By: who.Principal, Call: o.q.Call, Text: text}
-	rec, err := o.inbox.Send(ctx, agent.ListNextStep, msg)
-	if err != nil {
-		s.mu.Lock()
-		o.waiting = nil
-		s.open[id] = o
-		delete(s.done, id)
-		s.mu.Unlock()
-		if waiting != nil {
-			waiting <- Result{ID: id, Outcome: OutcomePending}
-		}
-		return agent.Receipt{}, fmt.Errorf("question: send the answer: %w", err)
-	}
-	if waiting != nil {
-		_, _ = o.inbox.Discard(ctx, agent.ListNextStep, msg.ID, CauseReturnedToCall)
-	}
-	d, err := AnsweredType.Draft(Answered{ID: id, Call: o.q.Call, Outcome: OutcomeAnswered, Text: text, By: who, Message: msg.ID, ToCall: waiting != nil})
+	msg := agent.InboxMessage{ID: answerID(id), Source: agent.SourceQuestion, By: who.Principal, Call: o.q.Call, Text: text}
+	var rec agent.Receipt
+	d, err := AnsweredType.Draft(Answered{ID: id, Call: o.q.Call, Outcome: OutcomeAnswered, Text: text, By: who, Message: msg.ID, ToCall: toCall})
 	if err == nil {
-		_, err = o.log.Append(context.WithoutCancel(ctx), d)
+		if toCall {
+			rec, err = o.inbox.Hand(ctx, msg, CauseReturnedToCall, d)
+		} else {
+			rec, err = o.inbox.SendWith(ctx, lateList(o.log), msg, d)
+		}
 	}
-	if waiting != nil {
-		waiting <- Result{ID: id, Outcome: OutcomeAnswered, Text: text, By: who}
+	_, written := o.inbox.Seen(msg.ID)
+	switch {
+	case errors.Is(err, agent.ErrDuplicateMessage):
+		err = fmt.Errorf("%w: %s", ErrReplyQueued, id)
+	case err != nil:
+		err = fmt.Errorf("question: settle the answer: %w", err)
 	}
+	s.finish(id, o, toCall, written, Result{ID: id, Outcome: OutcomeAnswered, Text: text, By: who}, err)
 	if err != nil {
-		return rec, fmt.Errorf("question: append question/answered: %w", err)
+		return rec, err
 	}
+	rec.MessageID = msg.ID
 	return rec, nil
 }
 
@@ -368,10 +449,14 @@ type RestoreLog interface {
 
 // Restore reopens the questions of a resumed session: each question/asked with
 // no question/answered is open again for a late Reply, answered into inbox, and
-// each answered one refuses a second answer.
+// each answered one refuses a second answer. An answer handed to a call the
+// crash ended before its result (the call's only result is a closer, or none) is
+// delivered again, next-turn, so the model still sees it; once, by id.
 func (s *Service) Restore(ctx context.Context, log RestoreLog, inbox Inbox) ([]string, error) {
 	asked := map[string]Asked{}
 	var order []string
+	var handed []Answered
+	results := map[string]bool{} // call id -> a result the tool wrote
 	const page = 256
 	for from, n := event.Offset(0), log.Len(); from < n; from += page {
 		evs, err := log.Read(ctx, from, page)
@@ -391,23 +476,52 @@ func (s *Service) Restore(ctx context.Context, log RestoreLog, inbox Inbox) ([]s
 					s.mu.Lock()
 					s.done[a.ID] = true
 					s.mu.Unlock()
+					if a.ToCall && a.Outcome == OutcomeAnswered && a.Call != "" {
+						handed = append(handed, a)
+					}
+				}
+			case event.ToolResult.Name():
+				if p, err := event.ToolResult.As(ev); err == nil {
+					if src, ok := p.Message.Source(); !ok || src.Kind != closerKind {
+						results[p.CallID] = true
+					}
 				}
 			}
 		}
 	}
 	var reopened []string
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	for _, id := range order {
 		a, ok := asked[id]
 		if !ok || s.open[id] != nil {
 			continue
 		}
-		s.open[id] = &open{q: Question{Agent: parseRef(a.Agent), Call: a.Call, Text: a.Question, Choices: a.Choices}, log: log, inbox: inbox}
+		if _, admitted := inbox.Seen(answerID(id)); admitted {
+			s.done[id] = true // settled; its question/answered is in the same group
+			continue
+		}
+		s.open[id] = &open{q: Question{Agent: parseRef(a.Agent), Call: a.Call, Text: a.Question, Choices: a.Choices}, log: log, inbox: inbox, result: make(chan settlement, 1)}
 		reopened = append(reopened, id)
+	}
+	s.mu.Unlock()
+	for _, a := range handed {
+		if results[a.Call] {
+			continue
+		}
+		m := agent.InboxMessage{ID: redeliveredID(a.ID), Source: agent.SourceQuestion, By: a.By.Principal, Call: a.Call, Text: a.Text}
+		if _, sent := inbox.Seen(m.ID); sent {
+			continue
+		}
+		if _, err := inbox.SendWith(ctx, agent.ListNextTurn, m); err != nil && !errors.Is(err, agent.ErrDuplicateMessage) {
+			return reopened, fmt.Errorf("question: deliver %s again: %w", a.ID, err)
+		}
 	}
 	return reopened, nil
 }
+
+// closerKind is the source kind of a result the session wrote for a call the
+// crash left open (surface.Closers).
+const closerKind = "closer"
 
 // Open is the ids of the questions still waiting for an answer, sorted.
 func (s *Service) Open() []string {

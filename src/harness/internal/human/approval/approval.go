@@ -119,6 +119,10 @@ const DetailAllowedByGrant = "allowed-by-grant"
 // a grant.
 const DetailGranted = "granted"
 
+// DetailGrantRefused prefixes the detail of an allowed-session decision whose
+// grant a rule refused (channel, subject, cap): the call is approved once.
+const DetailGrantRefused = "grant-refused"
+
 // Approved reports whether the call may run.
 func (d Decision) Approved() bool { return d.Outcome == OutcomeApproved }
 
@@ -237,15 +241,25 @@ func (s *Service) Request(ctx context.Context, log Log, r Request) (Decision, er
 	}
 
 	var d Decision
+	var grantErr error
 	if gr, ok := s.cfg.Grants.Match(r.Agent, r.Subject); ok {
 		d = Decision{ID: id, Outcome: OutcomeApproved, Detail: DetailAllowedByGrant + ":" + gr.ID, By: gr.By}
 	} else {
 		d = s.ask(ctx, id, r, timeout)
 		if d.session && r.Subject != nil && s.cfg.Grants != nil {
-			// A refused grant (channel, subject, cap) still approves this call
-			// once: the person allowed it.
-			if gr, err := s.cfg.Grants.create(context.WithoutCancel(ctx), log, r.Agent, *r.Subject, d.By, r.Tool, r.Call); err == nil {
+			gr, err := s.cfg.Grants.create(context.WithoutCancel(ctx), log, r.Agent, *r.Subject, d.By, r.Tool, r.Call)
+			switch {
+			case err == nil:
 				d.Detail = DetailGranted + ":" + gr.ID
+			case errors.Is(err, ErrGrantRefused) || errors.Is(err, ErrGrantCap):
+				// The grant is refused by rule (channel, subject, cap); the
+				// person still allowed this call, once.
+				d.Detail = DetailGrantRefused + ":" + err.Error()
+			default:
+				// The grant could not be recorded: the call is refused, as for
+				// any audit failure, and the decision says why.
+				grantErr = err
+				d = refuse(id, "grant-audit-failed")
 			}
 		}
 	}
@@ -256,7 +270,10 @@ func (s *Service) Request(ctx context.Context, log Log, r Request) (Decision, er
 		_, err = log.Append(context.WithoutCancel(ctx), decided)
 	}
 	if err != nil {
-		return refuse(id, "audit-failed"), fmt.Errorf("approval: append approval/decided: %w", err)
+		return refuse(id, "audit-failed"), errors.Join(grantErr, fmt.Errorf("approval: append approval/decided: %w", err))
+	}
+	if grantErr != nil {
+		return d, grantErr
 	}
 	return d, nil
 }
