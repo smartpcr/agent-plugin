@@ -604,7 +604,7 @@ func (s *bccState) runCase(tb *bccTB, i int, p *bccPlan) error {
 	model := &bccLazyModel{p: p, tr: fakemodel.NewTransport(tb)}
 	var lost atomic.Bool
 	var wrapped *bccLossy
-	o := bccRigOptions{id: id, store: st, model: model, failOK: true}
+	o := bccRigOptions{id: id, store: st, model: model, failOK: p.exit == bccExitLease}
 	if p.exit == bccExitBudget {
 		o.budget = &driver.Budget{MaxSteps: p.at}
 	}
