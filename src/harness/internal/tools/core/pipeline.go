@@ -263,11 +263,18 @@ func (r *registry) run(ctx context.Context, b tools.Batch, ag agent.Ref, ls list
 		ad, err := requestApproval(ctx, r.approvalService(), b.Log, approval.Request{Agent: ag, Tool: d.Name(), Call: req.ID,
 			Parent: b.Parent, Origin: string(b.Origin), Reason: dec.Reason, Display: display})
 		outcome = string(ad.Outcome)
-		if err != nil || !ad.Approved() {
+		// A wait ended by the turn's context is an abort, settled below, not the
+		// approver's refusal.
+		if ctx.Err() == nil && (err != nil || !ad.Approved()) {
 			e := stop(tools.StageApproval, approvalCode(ad.Outcome), ByApproval, approvalText(ad, err))
 			e.approval = outcome
 			return r.settle(ctx, b, ls, call, e)
 		}
+	}
+	if ctx.Err() != nil {
+		e := stop(tools.StageApproval, tools.CodeAbortedBeforeStart, "", "cancelled: "+context.Cause(ctx).Error())
+		e.approval = outcome
+		return r.settle(ctx, b, ls, call, e)
 	}
 
 	// 6. Checkpoint: everything logged so far, the approval audit included, is
