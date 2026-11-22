@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -134,36 +135,61 @@ func selfCheckProxyClose(t *testing.T) {
 	t.Cleanup(upstream.Close)
 	proxy := startProxy(t, map[string]string{"up": upstream.URL})
 	hold := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(hold) }) }
+	// Registered after startProxy, so it runs before the proxy's Close: a
+	// failure while held must not leave a handler blocked in cleanup.
+	t.Cleanup(release)
+	defer release()
 	proxy.mu.Lock()
 	proxy.hold = hold
 	proxy.mu.Unlock()
 
 	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, proxy.base("up")+"/endless", nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("self-check: %v", err)
 	}
 	if _, err := resp.Body.Read(make([]byte, 64)); err != nil {
+		_ = resp.Body.Close()
 		t.Fatalf("self-check: no first chunk: %v", err)
 	}
 	cancel()
 	_ = resp.Body.Close()
 	// The client is gone but the handler is held: its outcome is not recorded,
 	// so a snapshot taken now would read not-closed, and settled must wait.
-	got := make(chan proxiedRequest, 1)
-	go func() { got <- proxy.settled(t, "up", 0, 10*time.Second) }()
+	type outcome struct {
+		r   proxiedRequest
+		err error
+	}
+	got := make(chan outcome, 1)
+	go func() {
+		r, err := proxy.awaitSettled("up", 0, 10*time.Second)
+		got <- outcome{r, err}
+	}()
 	select {
-	case r := <-got:
-		t.Fatalf("self-check: settled returned %+v before the held handler recorded its outcome", r)
+	case o := <-got:
+		t.Fatalf("self-check: settled returned (%+v, %v) before the held handler recorded its outcome", o.r, o.err)
 	default:
 	}
 	if snap := proxy.requests("up")[0]; snap.ClientClosed {
 		t.Fatal("self-check: the held handler recorded its outcome early")
 	}
-	close(hold)
-	if r := <-got; !r.ClientClosed {
-		t.Fatal("self-check: an abandoned stream did not settle ClientClosed")
+	release()
+	bound := time.NewTimer(20 * time.Second)
+	defer bound.Stop()
+	select {
+	case o := <-got:
+		if o.err != nil {
+			t.Fatalf("self-check: %v", o.err)
+		}
+		if !o.r.ClientClosed {
+			t.Fatal("self-check: an abandoned stream did not settle ClientClosed")
+		}
+	case <-bound.C:
+		t.Fatal("self-check: the settled wait did not report back")
 	}
 
 	resp, err = http.Get(proxy.base("up") + "/once")

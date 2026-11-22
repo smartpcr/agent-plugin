@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -470,6 +471,16 @@ func (p *recordingProxy) base(name string) string { return p.URL + "/" + name }
 // scenario.
 func (p *recordingProxy) settled(t *testing.T, name string, i int, within time.Duration) proxiedRequest {
 	t.Helper()
+	r, err := p.awaitSettled(name, i, within)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+// awaitSettled is settled without a *testing.T: it reports the bound as an
+// error, so it may run on a goroutine other than the test's.
+func (p *recordingProxy) awaitSettled(name string, i int, within time.Duration) (proxiedRequest, error) {
 	bound := time.NewTimer(within)
 	defer bound.Stop()
 	for {
@@ -479,15 +490,15 @@ func (p *recordingProxy) settled(t *testing.T, name string, i int, within time.D
 		if rs := p.requests(name); i < len(rs) {
 			select {
 			case <-rs[i].done:
-				return p.requests(name)[i]
+				return p.requests(name)[i], nil
 			case <-bound.C:
-				t.Fatalf("the proxy's handler for request %d to %s did not return within %s", i, name, within)
+				return proxiedRequest{}, fmt.Errorf("the proxy's handler for request %d to %s did not return within %s", i, name, within)
 			}
 		}
 		select {
 		case <-changed:
 		case <-bound.C:
-			t.Fatalf("the proxy saw no request %d to %s within %s", i, name, within)
+			return proxiedRequest{}, fmt.Errorf("the proxy saw no request %d to %s within %s", i, name, within)
 		}
 	}
 }
