@@ -31,6 +31,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 
@@ -107,6 +108,7 @@ type Service struct {
 	nErr    error // why there is no notifier
 	dirs    map[string]map[*watch]struct{}
 	ids     map[string]fsx.FileID // identity of each directory when it was added
+	stale   map[string]bool       // registrations an event may have killed (see subscribe)
 	watches map[*watch]struct{}
 	closed  bool
 
@@ -133,6 +135,7 @@ func New(opt Options) *Service {
 		opt:     opt,
 		dirs:    map[string]map[*watch]struct{}{},
 		ids:     map[string]fsx.FileID{},
+		stale:   map[string]bool{},
 		watches: map[*watch]struct{}{},
 		stop:    make(chan struct{}),
 		stopped: make(chan struct{}),
@@ -225,11 +228,23 @@ func (s *Service) Watch(ctx context.Context, t Target, changed func(err error)) 
 	return w, nil
 }
 
+// idsReused: the filesystem may give a new directory the identity of one just
+// deleted. Unix filesystems reuse a freed inode number at once (ext4 hands a
+// directory removed and made again its old number), so there identity cannot
+// tell a recreated directory from the one that was registered. NTFS and ReFS
+// file IDs are not reused that soon, and re-registering there on every event
+// naming the directory would churn directory handles for nothing.
+const idsReused = runtime.GOOS != "windows"
+
 // subscribe registers w for events in dir, adding dir to the notifier for its
 // first subscriber. A directory is registered by name but the kernel watches the
-// directory itself, so its identity is kept: when dir now names a different
-// directory (deleted and recreated, perhaps within one settle window, so no
-// event marked the change), the dead registration is dropped and dir re-added.
+// directory itself, so the registration dies with it. Two signs say dir may now
+// name a different directory (deleted and recreated, perhaps within one settle
+// window, so no settled check saw it missing): its identity differs from the one
+// registered, or (where identities are reused) an event named dir itself or
+// events overflowed since. Either way the dead registration is dropped, dir is
+// re-added, and its subscribers re-check, for a change made while it was not
+// registered.
 func (s *Service) subscribe(w *watch, dir string) error {
 	id, idErr := fsx.ID(dir)
 	s.mu.Lock()
@@ -241,12 +256,18 @@ func (s *Service) subscribe(w *watch, dir string) error {
 		return ErrClosed
 	}
 	subs := s.dirs[dir]
-	if subs != nil && idErr == nil && s.ids[dir] != id {
+	if subs != nil && (s.stale[dir] || idErr == nil && s.ids[dir] != id) {
 		_ = s.n.Remove(dir) // the old registration may be gone already
 		if err := s.n.Add(dir); err != nil {
 			return fmt.Errorf("%w: watching %s: %v", ErrDegraded, dir, err)
 		}
-		s.ids[dir] = id
+		delete(s.stale, dir)
+		if idErr == nil {
+			s.ids[dir] = id
+		}
+		for o := range subs {
+			o.event("")
+		}
 	}
 	if subs == nil {
 		if err := s.n.Add(dir); err != nil {
@@ -255,6 +276,7 @@ func (s *Service) subscribe(w *watch, dir string) error {
 		subs = map[*watch]struct{}{}
 		s.dirs[dir] = subs
 		s.ids[dir] = id
+		delete(s.stale, dir)
 	}
 	subs[w] = struct{}{}
 	return nil
@@ -271,6 +293,7 @@ func (s *Service) unsubscribe(w *watch, dir string) {
 	if len(subs) == 0 {
 		delete(s.dirs, dir)
 		delete(s.ids, dir)
+		delete(s.stale, dir)
 		if s.n != nil {
 			_ = s.n.Remove(dir) // the directory may be gone already
 		}
@@ -284,7 +307,10 @@ func (s *Service) forget(w *watch) {
 }
 
 // dispatch routes notifier events to the watches subscribed to the directory that
-// holds the path (or to the path itself, when it is a watched directory).
+// holds the path (or to the path itself, when it is a watched directory). An
+// event naming a watched directory itself, or an overflow, marks the
+// registration stale where identities are reused; every subscriber is kicked by
+// it, so the next sync re-adds the directory (see subscribe).
 func (s *Service) dispatch() {
 	defer close(s.stopped)
 	events, errs := s.n.Events(), s.n.Errors()
@@ -299,6 +325,9 @@ func (s *Service) dispatch() {
 			}
 			p = filepath.Clean(p)
 			s.mu.Lock()
+			if idsReused && s.dirs[p] != nil {
+				s.stale[p] = true
+			}
 			for _, dir := range []string{filepath.Dir(p), p} {
 				for w := range s.dirs[dir] {
 					w.event(p)
@@ -311,6 +340,11 @@ func (s *Service) dispatch() {
 				continue
 			}
 			s.mu.Lock()
+			if idsReused && errors.Is(err, ErrOverflow) {
+				for dir := range s.dirs {
+					s.stale[dir] = true
+				}
+			}
 			for w := range s.watches {
 				if errors.Is(err, ErrOverflow) {
 					w.event("")

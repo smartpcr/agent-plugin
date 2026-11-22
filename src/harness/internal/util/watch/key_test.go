@@ -84,6 +84,35 @@ func asker(t *testing.T, r *cordis.Context, name, path string) (*cordis.Fiber, *
 	return f, c, w, rec
 }
 
+// TestOwnedRefusals: Owned refuses a watch with no owner, and a watch its engine
+// refuses is refused to the caller with the engine's error and leaves nothing
+// registered or owned: the fiber unloads cleanly and the notifier holds no
+// directory.
+func TestOwnedRefusals(t *testing.T) {
+	fake := watchtest.New()
+	s := service(t, watch.Options{NewNotifier: fake.Factory()})
+	noop := func(error) {}
+	if _, err := watch.Owned(s).Watch(nil, watch.Target{Path: t.TempDir()}, noop); !errors.Is(err, watch.ErrBadTarget) {
+		t.Fatalf("no owner: %v", err)
+	}
+	var refused, accepted error
+	f := ready(t, cordisRoot(t), cordis.Define("test.watch-refused", func(ctx *cordis.Context, _ cordis.None) error {
+		_, refused = watch.Owned(s).Watch(ctx, watch.Target{Path: "x", Depth: 2}, noop)
+		_, accepted = watch.Owned(s).Watch(ctx, watch.Target{Path: t.TempDir(), Mode: watch.Notify}, noop)
+		return nil
+	}), nil)
+	if !errors.Is(refused, watch.ErrBadTarget) {
+		t.Fatalf("engine refusal: %v", refused)
+	}
+	if accepted != nil || len(fake.Watched()) == 0 {
+		t.Fatalf("accepted watch: %v, watched %q", accepted, fake.Watched())
+	}
+	f.Dispose()
+	if got := fake.Watched(); len(got) != 0 {
+		t.Fatalf("still watched after the owner unloaded: %q", got)
+	}
+}
+
 // TestKeyContract: the real component and watchtest.Manual behave alike behind
 // watch.Key: one notice per change, a watch is closed with its asker's fiber,
 // only that fiber may close it early, and the provider's unload closes every
