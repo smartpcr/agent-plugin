@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/agent"
@@ -258,7 +259,54 @@ func TestCompositionWithAStubFactory(t *testing.T) {
 		t.Fatal("a vetoed creation was not rolled back")
 	}
 	must(0, h.Dispose(bg))
-	if len(disposed) != 1 || disposed[0] != h.Agent().Ref() {
+	// The vetoed creation had begun Created, so its rollback sent Disposed too
+	// (DH-T-AGENT-19).
+	if len(disposed) != 2 || disposed[0].Session != "vetoed" || disposed[1] != h.Agent().Ref() {
 		t.Fatalf("Disposed notices %v", disposed)
 	}
+}
+
+// DH-T-AGENT-19: the owner unloading while the creation's owner guard is
+// still being acquired neither deadlocks the creation nor the unload: cordis
+// releases the guard inline, the creation is refused before anything is
+// built, and the owner's unload completes.
+func TestOwnerUnloadDuringGuardAcquisition(t *testing.T) {
+	e := newEnv(t)
+	e.seat(t)
+	var owner *cordis.Context
+	of := must(e.root.Apply("owner", func(c *cordis.Context) error { owner = c; return nil }))
+	must(0, of.Wait())
+	unloaded := make(chan struct{})
+	var fired atomic.Bool
+	defer agent.SetOwnHook(func(r agent.Ref) {
+		if r.Session != "g" || !fired.CompareAndSwap(false, true) {
+			return
+		}
+		go func() { of.Dispose(); _ = of.Wait(); close(unloaded) }()
+		<-owner.Lifetime().Done()
+		// The owner's unload marks this guard dead, then waits for the acquisition.
+		time.Sleep(100 * time.Millisecond)
+	})()
+	res := make(chan error, 1)
+	go func() { _, err := e.reg.Create(owner, agent.CreateOptions{Session: "g"}); res <- err }()
+	select {
+	case err := <-res:
+		if !errors.Is(err, agent.ErrInvalid) {
+			t.Fatalf("create: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the creation deadlocked on its owner's unload")
+	}
+	select {
+	case <-unloaded:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the owner's unload deadlocked on the creation")
+	}
+	if e.built.Load() != 0 {
+		t.Fatal("a creation whose owner unloaded reached the factory")
+	}
+	if _, ok := e.reg.Get("g"); ok {
+		t.Fatal("g is addressable")
+	}
+	e.create(t, "g")
 }
