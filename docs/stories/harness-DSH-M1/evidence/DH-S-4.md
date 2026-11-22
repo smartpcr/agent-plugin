@@ -1,5 +1,15 @@
 # DH-S-4 evidence
 
+Decisions that govern M1 records, this one included, are logged in [decisions.md](../decisions.md).
+
+Closure status: open
+
+This line becomes `closed at <sha>` only in plan step 18.1.14, at the M1 closure commit.
+The stage records below are history: under M1-D-CLOSE-1 every tick made while the gate
+was red is provisional and is re-verified at that commit. The fields of impl.md sec. 7.3
+and the per-step manual-check register are at the end of this file, in "Evidence record
+(impl.md sec. 7.3)"; how to fill them is in [the evidence runbook](README.md).
+
 Stages 4.1 to 4.3 (impl.md steps 4.1 to 4.9: the JSON-RPC codec, the shape schema,
 the SDK protocol types, the util leaves, the model vocabulary, `fsx`, `textdiff`,
 `search` and the watcher) were built by the earlier workstreams of this phase.
@@ -70,7 +80,7 @@ this workstream.
 
 | Check | Procedure | Result |
 | --- | --- | --- |
-| Watcher, real editor | On each of darwin, linux and windows, save a watched file from a real editor (VS Code, vim, a JetBrains IDE) and count the notices | `manual` -- pending; automated form is `DH-E-CHOKIDAR-1` |
+| Watcher, real editor | On each of darwin, linux and windows, save a watched file from a real editor (VS Code, vim, a JetBrains IDE) and count the notices (historical procedure; darwin is out of scope (`platforms-windows-wsl`); re-targeted by plan 12.4.5 in the register below) | `manual` -- pending; automated form is `DH-E-CHOKIDAR-1` |
 | Search ignored set | Run `search.List` on a real repository and compare the listed and ignored sets with `git ls-files --cached --others --exclude-standard` | `manual` -- pending; automated form is `DH-E-RIPGREP-2` |
 
 ## Scenarios authored here, run in DH-S-18
@@ -105,3 +115,85 @@ The watcher scenarios time a save or remote change at the moment this machine fi
 - The harness gate's vet step currently fails on files from earlier stages
   (`src/go/cordis` tests, the `recur`, `glob`, `caltime`, `version` fuzz seeds and
   `watchtest/manual_test.go`); none of the files of this stage are reported.
+
+## Evidence record (impl.md sec. 7.3)
+
+These are the eight fields of [impl.md sec. 7.3](../../../harness/impl.md#73-the-evidence-record),
+in the format of [the evidence runbook](README.md#the-evidence-record-headings). Plan step
+18.1.7 fills them at the frozen M1 closure commit; plan Stage 14.5 adds the test mapping
+for steps 4.1 to 4.9 and the two manual-check records before that. Until then each field
+points to the history above, which stays exactly as it was recorded and is not closure
+evidence (M1-D-CLOSE-1).
+
+### Source and build identity
+
+At closure: not yet recorded (plan 18.1.7). Historical: no commit was recorded; the module
+pins are under "What changed" of Stage 4.4.
+
+### Environment and fixture
+
+At closure: both local lanes, from their run records, and for the manual checks the
+distribution, kernel and editor of each save (plan 14.5.5). macOS: out of scope
+(`platforms-windows-wsl`). Historical: one local machine. Fixtures: the committed goldens
+`internal/boot/yamlx/testdata/edit_keep_comments.golden` and
+`internal/boot/catalog/testdata/catalog.golden`.
+
+### Exact tests and commands
+
+At closure: the lane scripts, and `go -C src/harness test -race -count=1 -cover ./...` and
+`go -C src/sdk test -race -count=1 ./...`. Historical: the `go test` lines under "Tests"
+of Stage 4.4 and "DH-S-4 exit: import direction".
+
+### Run identifiers
+
+At closure: the run-record ids of both lanes, in the runbook's template (plan 18.1.3).
+WSL lane: not run. Windows lane: not run. macOS: out of scope (`platforms-windows-wsl`).
+Historical: no run id was recorded. The scenarios authored here run in DH-S-18 and have
+no run id yet.
+
+### Results
+
+At closure: not yet recorded. Historical: the test table of Stage 4.4 and the import
+direction test.
+
+### Manual checks
+
+impl.md DH-S-4 names two checks: for the watcher (step 4.9), save a file from a real
+editor on each operating system and record one notice per save; for search (step 4.8),
+run it on a real repository and compare the ignored set with what Git reports. Plan step
+12.4.5 re-targets both to the in-scope systems, and plan step 14.5.5 runs them
+([plan Stage 14.5](../gap-closure-plan.md#stage-145-leaf-test-tags-evidence-and-manual-checks)).
+Darwin is out of scope (`platforms-windows-wsl`). The other steps take the rule-3
+default. How to run and fill the register: [the evidence runbook](README.md#manual-checks).
+Composed tests run as `go -C src/harness test -count=1 -v -run '<names>' <packages>`
+unless the row names `src/sdk`.
+
+#### Manual checks register
+
+| Step | Check | Procedure | Systems | Operator | Commit | Seen | Label |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 4.1 | rule-3 default: a bounded JSON-RPC codec with one error table | composed test: `go -C src/sdk test -count=1 -v ./jsonrpc/`; record an over-limit frame refused with its table code | one lane | | | | `manual` |
+| 4.2 | rule-3 default: one package describes, checks and fingerprints shapes | composed test: `./internal/schema/...` | one lane | | | | `manual` |
+| 4.3 | rule-3 default: the SDK protocol types, method table and derived schema | composed test: `go -C src/sdk test -count=1 -v ./protocol/`; record that the derived schema equals the committed file | one lane | | | | `manual` |
+| 4.4 | rule-3 default: globs, versions, instants and recurrence rules | composed test: `./internal/util/glob/ ./internal/util/version/ ./internal/util/caltime/ ./internal/util/recur/` | one lane | | | | `manual` |
+| 4.5 | rule-3 default: the model vocabulary is a leaf | composed test: `./internal/llm/vocab/`, and `TestImportDirection` in `./internal/archtest/` | one lane | | | | `manual` |
+| 4.6 | rule-3 default: `fsx` replaces, creates, locks and identifies files | composed test: `./internal/util/fsx/` | Windows, WSL | | | | `manual` |
+| 4.7 | rule-3 default: `textdiff` line diffs and patch format | composed test: `./internal/util/textdiff/` | one lane | | | | `manual` |
+| 4.8 | search on a real repository: the ignored set equals Git's (re-targeted, 12.4.5) | by hand: a throwaway program or test (removed afterwards) prints `search.List` for the repository root; compare it, sorted, with `git ls-files --cached --others --exclude-standard`. WSL: in the ext4 clone with `core.autocrlf=false`, and again on `/mnt/e` ignoring `core.filemode` noise. Windows: in the host checkout. Record both counts and every difference. Run by plan 14.5.5 | Windows, WSL | | | | `manual` |
+| 4.9 | watcher with a real editor: one notice per save (re-targeted, 12.4.5) | by hand: watch a file and save it three times from each editor. Windows: a real editor (VS Code) on a local NTFS path. WSL: vim on an ext4 path (inotify). WSL: a Windows editor saving a file under `/mnt/e` (9p is probed as remote by `fsx/remote_linux.go`, so the watcher polls). Record the notice count per save and the mode (event or poll). Run by plan 14.5.5 | Windows, WSL | | | | `manual` |
+| 4.10 | rule-3 default: the YAML codec in the harness module | composed test: `TestSameEntriesThroughJSONAndYAML`, `TestEncodeLayerKeepsComments` in `./internal/boot/config/` | one lane | | | | `manual` |
+| 4.11 | rule-3 default: one YAML dialect, edits keep comments | composed test: `TestEditKeepsComments`, `TestEditRefusesUnverifiedText` in `./internal/boot/yamlx/` | one lane | | | | `manual` |
+| 4.12 | rule-3 default: the expression engine has no side effects | composed test: `TestNamesResolve`, `TestRejected` in `./internal/boot/expr/` | one lane | | | | `manual` |
+| 4.13 | rule-3 default: logging writes to the configured destination only | composed test: `TestFileDestinationKeepsStdoutClean`, `TestDebugLevelReachesTheDestination` in `./internal/boot/logging/` | one lane | | | | `manual` |
+| 4.14 | rule-3 default: a build knows its components by name | composed test: `TestCatalogListsComponentsByName`, `TestLookupAndPlatforms` in `./internal/boot/catalog/` | one lane | | | | `manual` |
+
+### Cleanup evidence
+
+At closure: the throwaway search program is removed and the watched files are deleted;
+`git status --porcelain` empty after the run. Historical: none recorded.
+
+### Open items
+
+At closure: plan 18.1.11 lists them. Now open: the test mapping for steps 4.1 to 4.9 and
+both manual checks (plan Stage 14.5); the scenarios authored here, which run in DH-S-18;
+the vet findings under "Known limitations" (plan Phase 13).

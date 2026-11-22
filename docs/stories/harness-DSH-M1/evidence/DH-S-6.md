@@ -1,5 +1,17 @@
 # DH-S-6 evidence
 
+Decisions governing this record ([decisions.md](../decisions.md)): `platforms-windows-wsl` (the macOS rows below are historical), M1-D-CLOSE-1 (ticks made while the gate was red are provisional until the closure commit), and the open M1-D-BOOT-1, M1-D-BOOT-2 and M1-D-BOOT-3 (cut-short deliverables, DH-T-HOST-17, the usage-error status). Logged by gap-closure-plan Stage 12.1; merge commit: recorded when the Stage 12.1 change merges.
+
+Closure status: open
+
+This line becomes `closed at <sha>` only in plan step 18.1.14, at the M1 closure commit.
+The "Closure status: closed" paragraph below is the Stage 6.7 closure, kept as history:
+under M1-D-CLOSE-1 every tick made while the gate was red is provisional and is
+re-verified at that commit, and plan Stage 14.6 re-records the manual checks on the two
+M1 lanes. The fields of impl.md sec. 7.3 and the per-step manual-check register are at
+the end of this file, in "Evidence record (impl.md sec. 7.3)"; how to fill them is in
+[the evidence runbook](README.md).
+
 Stages 6.1 to 6.6 (impl.md steps 6.1 to 6.16) were built by the earlier workstreams
 of this phase, merged to `main` up to `f394c24`. Stage 6.7 (step 6.17 and the circle
 closure) carries the closure record for DH-S-6. Every result below was re-run on one
@@ -8,15 +20,21 @@ seventeen deliverables are built at that commit.
 
 **Closure status: closed.** Every closure item is recorded below. The manual checks
 of impl.md DH-S-6, including "a child that ignores termination ... on each operating
-system", are recorded on Windows, Linux and macOS: Windows 11 on this runner, and all
+system", are recorded on Windows, Linux and macOS (macOS: historical, `platforms-windows-wsl`): Windows 11 on this runner, and all
 three systems in `harness-manual-checks` run
 [44860891149](https://github.com/smartpcr/agent-plugin/actions/runs/44860891149)
-(success; jobs 136713767008 Linux, 136713766919 macOS, 136713767118 Windows) at
+(success; jobs 136713767008 Linux, 136713766919 macOS (historical), 136713767118 Windows) at
 commit `42d0d7dbd163a46e3e395619d3c9f53c5aafff1a`, go1.26.0. The commit that carries
 this record differs from `42d0d7d` only in this file, the plan's tick and the
 workflow's push paths (which now include this file, so the closing commit's push runs
 the same checks on all three systems again). No code or test changed, so the results
 hold at the closing commit.
+
+> **Historical (decision `platforms-windows-wsl`, 2026-11-22).** Every macOS result in
+> this record (the macOS jobs of runs 44860891149 and 44861208866, the macOS column of
+> the manual-check table and the macOS owner line) was recorded before macOS left M1
+> scope. It is kept as history and counts as neither a pass nor a skip for M1; the M1
+> lanes are Windows (native) and Linux (WSL).
 
 ## Deliverables built at the closing commit
 
@@ -106,7 +124,8 @@ ok   .../internal/testkit/temphome
 
 `go -C src/harness test ./...`, `go -C src/harness vet ./...`, `go vet` with
 `GOOS=linux CGO_ENABLED=0` and with `GOOS=darwin`, and `GOWORK=off go build ./...`
-all pass; `gofmt -l src/harness` is clean.
+all pass; `gofmt -l src/harness` is clean. (The `GOOS=darwin` vet is a cross-build check
+run on Windows, not a macOS lane; macOS is out of scope, `platforms-windows-wsl`.)
 
 ## DH-S-6 exit checks
 
@@ -145,14 +164,15 @@ Every other test of these packages passes in the same run (12 in `boot`, 6 in
 
 ### Manual checks (impl.md DH-S-6; `manual`)
 
-Recorded on all three systems. They are manual checks of this stage, not the DH-E
+Recorded on all three systems; the macOS results are historical (decision
+`platforms-windows-wsl`). They are manual checks of this stage, not the DH-E
 scenario runs that DH-S-18 owns. Windows 11 was recorded on this runner. Linux and
-macOS (and Windows again) were recorded by `.github/workflows/harness-manual-checks.yml`
-(keyless, read-only, no scenario), because no Linux or macOS host was available
+macOS (historical) (and Windows again) were recorded by `.github/workflows/harness-manual-checks.yml`
+(keyless, read-only, no scenario), because no Linux or macOS (historical) host was available
 locally and the CI `harness` gate lanes never reach these tests: the gate stops at
 gate 2 (analyzer vet) on findings that predate this stage (for example
 `boot/audit_test.go:70,91`, `boot/boot_test.go:98,434,632`). The workflow runs on
-`ubuntu-latest`, `macos-latest` and `windows-latest` on every push to a
+`ubuntu-latest`, `macos-latest` (historical) and `windows-latest` on every push to a
 `ws/harness-**` branch that touches the tree owner, the test kit, boot, `host/diag`
 or this record, and by hand (`workflow_dispatch`). It runs the tests directly rather than
 through the gate, writes the owner line and stop time to its job summary, and uploads
@@ -160,7 +180,7 @@ the output as `manual-checks-<os>`.
 
 Run [44860891149](https://github.com/smartpcr/agent-plugin/actions/runs/44860891149),
 `push` at `42d0d7dbd163a46e3e395619d3c9f53c5aafff1a`, conclusion `success`. Excerpts from
-the uploaded `tree-stop-<OS>.txt`:
+the uploaded `tree-stop-<OS>.txt` (the Darwin excerpt is historical, `platforms-windows-wsl`):
 
 ```text
 # Linux runnervm0hi8g 7.0.0-1020-azure x86_64, go1.26.0 linux/amd64 (job 136713767008)
@@ -189,26 +209,26 @@ subprocess_test.go:88: owner job-object; stopped in 2.0018494s
 Confirming run at the commit that first carried this record:
 [44861208866](https://github.com/smartpcr/agent-plugin/actions/runs/44861208866),
 `push` at `2302fc822fad10cd63c727442277f5e29ea110e6`, conclusion `success` (jobs
-136714770420 Linux, 136714770672 macOS, 136714770648 Windows). Linux: `owner
+136714770420 Linux, 136714770672 macOS (historical), 136714770648 Windows). Linux: `owner
 process-group (fallback: own control group not writable; delegated scope not
-requested (U-K1-1)); stopped in 2.010563566s`; macOS: `owner process-group; stopped
+requested (U-K1-1)); stopped in 2.010563566s`; macOS (historical): `owner process-group; stopped
 in 2.014288583s`; Windows: `owner job-object; stopped in 2.0018977s`.
 
-The broken-entry and bad-layer tests (`boot-<OS>.txt`) pass on all three lanes:
+The broken-entry and bad-layer tests (`boot-<OS>.txt`) pass on all three lanes (the macOS lane historical, `platforms-windows-wsl`):
 `TestBrokenRequiredEntryFailsBootOnce`, `TestReloadAfterReadyAppliesValidAndRejectsInvalidLayers`,
 `TestBadLayerEditLeavesRunningTreeUnchanged`, `TestFatalPrintsOneMessageAndWritesOneReport`.
 
 The bound: `StopTree` is called with a 2 s grace and a 15 s context. The grandchild
 ignores the polite stop (`subprocesstest.RoleStubborn`: SIGTERM, SIGINT and SIGHUP
 ignored on POSIX), so the tree outlives the grace and is force-stopped. Process
-group SIGKILL on Linux and macOS, the Job Object on Windows. On every system the tree
+group SIGKILL on Linux and macOS (historical), the Job Object on Windows. On every system the tree
 is gone about 2.0 s after the stop began: inside the bound, and only the grace long.
 
 To repeat a row by hand, run `go -C src/harness test -count=1 -v -run
 'TestStopTreeStopsAndAwaitsTheTree|TestContextEndStopsDescendantsAfterChildExit|TestTreeOwnerIsReported'
 ./internal/world/subprocess/` on the system.
 
-| Check | Windows 11 | Linux | macOS |
+| Check | Windows 11 | Linux | macOS (historical, `platforms-windows-wsl`) |
 | --- | --- | --- | --- |
 | Boot a tree with a broken required entry: one fatal message, one report file | Recorded. `TestBrokenRequiredEntryFailsBootOnce` (one message naming the entry, exit 78, one report under `reports/`), `TestFatalPrintsOneMessageAndWritesOneReport`. | Recorded, run 44860891149 (job 136713767008) at `42d0d7d`: both pass. | Recorded, run 44860891149 (job 136713766919) at `42d0d7d`: both pass. |
 | A child that ignores termination: the tree is gone within the bound | Recorded. `TestStopTreeStopsAndAwaitsTheTree`: `owner job-object; stopped in 2.007s` (grace 2 s, then the job is terminated); `TestContextEndStopsDescendantsAfterChildExit`; the kit's launcher test leaves no pid alive. CI run 44860891149: `owner job-object; stopped in 2.0018494s`. | Recorded, run 44860891149 (job 136713767008) at `42d0d7d`: `owner process-group (fallback: own control group not writable; delegated scope not requested (U-K1-1)); stopped in 2.011083403s`; context-end, orphan and launcher timeout tests pass, no pid alive. | Recorded, run 44860891149 (job 136713766919) at `42d0d7d`: `owner process-group; stopped in 2.016072125s`; context-end, orphan and launcher timeout tests pass, no pid alive. |
@@ -278,6 +298,7 @@ The default gate passes `-tags=` and so executes none of them.
 
 - **H-21**: step 6.12's `dsh config` commands wait for the admin tree of DH-S-16;
   the preview, explain and check functions are built and tested, the commands are not.
+  H-21 closing step: impl.md 16.10 (`dsh config show`, `dsh config validate`).
 
 ### Linux ownership fallback (TC-X2, U-K1-1)
 
@@ -290,7 +311,7 @@ with one warning. `TestTreeOwnerIsReported` checks the reported owner on each sy
 Reported in run 44860891149 at `42d0d7d`: on the `ubuntu-latest` runner the fallback
 was taken, `owner process-group (fallback: own control group not writable; delegated
 scope not requested (U-K1-1))`, and the whole tree was still stopped in 2.01 s.
-macOS reports `process-group` and Windows `job-object`. The cgroup path itself (a
+macOS (historical) reports `process-group` and Windows `job-object`. The cgroup path itself (a
 writable delegated cgroup) and the fallback under `DH-E-EXEC-1` are exercised in
 DH-S-18 (`DH-E-EXEC-1` step 3).
 
@@ -309,3 +330,91 @@ DH-S-18 (`DH-E-EXEC-1` step 3).
   predate this stage (`src/go/cordis`, `llm`, `session`, `human`, the `util` fuzz
   seeds, and `boot`/`util/egress` lines this stage did not write); none is in a file
   this stage authored.
+
+## Evidence record (impl.md sec. 7.3)
+
+These are the eight fields of [impl.md sec. 7.3](../../../harness/impl.md#73-the-evidence-record),
+in the format of [the evidence runbook](README.md#the-evidence-record-headings). Plan step
+18.1.7 fills them at the frozen M1 closure commit; plan Stage 14.6 adds its "Gap closure
+(14.6)" section before that. Until then each field points to the history above, which
+stays exactly as it was recorded and is not closure evidence (M1-D-CLOSE-1).
+
+### Source and build identity
+
+At closure: not yet recorded (plan 18.1.7). Historical: commits `f394c24` (Stages 6.1 to
+6.6), `42d0d7d` (the manual-check run) and `2302fc8` (the confirming run), and the
+`src/sdk` pin of `src/harness/go.mod`, under "Stage 6.7" and "Manual checks" above.
+
+### Environment and fixture
+
+At closure: both local lanes, from their run records, with the tree owner each reports
+(`job-object` on Windows; on WSL the `owner:` line with `systemd=true`, and without it
+while plan 19.4 has not landed, EN-5). macOS: out of scope (`platforms-windows-wsl`).
+Historical: Windows 11 locally, and hosted `ubuntu-latest`, `macos-latest` and
+`windows-latest` runners; the macOS results are historical.
+
+### Exact tests and commands
+
+At closure: the lane scripts, and `go -C src/harness test -race -count=1 ./...`. The
+scenario value of `DSH_REQUIRE_SCENARIOS` stays empty: no DH-S-6 scenario executes in
+this story. Historical: the commands under "Tests" and "DH-S-6 exit checks" above.
+
+### Run identifiers
+
+At closure: the run-record ids of both lanes, in the runbook's template (plan 18.1.3).
+WSL lane: not run. Windows lane: not run. macOS: out of scope (`platforms-windows-wsl`).
+Historical: `harness-manual-checks` runs 44860891149 and 44861208866 and their job ids;
+their macOS jobs are historical.
+
+### Results
+
+At closure: not yet recorded. Historical: "Tests that waited on a later step of circle
+C-1" and the test table of Stage 6.7.
+
+### Manual checks
+
+impl.md DH-S-6 names three checks: boot a tree with a broken required entry and record
+the single fatal message and the report file (steps 6.10, 6.11); start a child that
+ignores termination and record that the tree is gone within the bound, on each operating
+system (steps 6.2, 6.3); edit a layer file badly and record that the running tree is
+unchanged (steps 6.13, 6.14). Plan step 14.6.12 re-records them on Windows native and
+Linux under WSL ([plan Stage 14.6](../gap-closure-plan.md#stage-146-dh-s-6-m1-blockers)).
+The other steps take the rule-3 default. Historical record: "Manual checks (impl.md
+DH-S-6; `manual`)" above, whose macOS column is historical. How to run and fill the
+register: [the evidence runbook](README.md#manual-checks). Composed tests run as
+`go -C src/harness test -count=1 -v -run '<names>' <packages>`.
+
+#### Manual checks register
+
+| Step | Check | Procedure | Systems | Operator | Commit | Seen | Label |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 6.1 | rule-3 default: leaf packages (errors, identifiers, home location, media types) | composed test: `./internal/util/herr/ ./internal/util/ident/ ./internal/util/homedir/ ./internal/util/mediatype/` | one lane | | | | `manual` |
+| 6.2 | a child that ignores termination: started through the one spawn package | composed test: `TestStopTreeStopsAndAwaitsTheTree`, `TestTreeOwnerIsReported` in `./internal/world/subprocess/`; record the `owner` line | Windows, WSL | | | | `manual` |
+| 6.3 | a child that ignores termination: the whole tree is gone within the bound | composed test: `TestStopTreeStopsAndAwaitsTheTree`, `TestContextEndStopsDescendantsAfterChildExit` in `./internal/world/subprocess/`; record `stopped in <time>` and that no pid is alive. WSL: with `systemd=true`, and without it while plan 19.4 has not landed | Windows, WSL | | | | `manual` |
+| 6.4 | rule-3 default: launch facts, launch environment and expression scope | composed test: `./internal/boot/launch/` | one lane | | | | `manual` |
+| 6.5 | rule-3 default: the storage directories exist, are private and are checked at start | composed test: `./internal/storage/home/` (run as a non-root, non-elevated user) | Windows, WSL | | | | `manual` |
+| 6.6 | rule-3 default: configuration names a secret; the value sits behind one store | composed test: `./internal/human/secret/` | one lane | | | | `manual` |
+| 6.7 | rule-3 default: profiles, embedded bundles and the layer stack | composed test: `./internal/boot/profile/` | one lane | | | | `manual` |
+| 6.8 | rule-3 default: one command tree, help and usage errors | composed test: `./internal/cli/ ./internal/cli/cmdline/`; by hand: `dsh --help` and one usage error, recording the exit status | one lane | | | | `manual` |
+| 6.9 | rule-3 default: every command prints and exits by one contract | composed test: `./internal/cli/output/` | one lane | | | | `manual` |
+| 6.10 | a broken required entry: one fatal message and one report file | composed test: `TestFatalPrintsOneMessageAndWritesOneReport` in `./internal/host/diag/`; record the message and the report path | Windows, WSL | | | | `manual` |
+| 6.11 | a broken required entry fails boot once | composed test: `TestBrokenRequiredEntryFailsBootOnce` in `./internal/boot/`; record the one message naming the entry, the exit status and the one report under `reports/` | Windows, WSL | | | | `manual` |
+| 6.12 | rule-3 default: the composed tree is previewed, explained and checked without starting it | composed test: `./internal/boot/config/` (the `dsh config` commands are held open as H-21 until impl.md 16.10) | one lane | | | | `manual` |
+| 6.13 | a bad layer edit: the running tree is unchanged | composed test: `TestBadLayerEditLeavesRunningTreeUnchanged`, `TestReloadAfterReadyAppliesValidAndRejectsInvalidLayers` in `./internal/boot/...`; record the rejection's file, line and column and the unchanged start count | Windows, WSL | | | | `manual` |
+| 6.14 | a bad settings edit changes nothing | composed test: `TestRefusedEditsChangeNothing`, `TestDescribeShowsEffectiveValueAfterRejection` in `./internal/storage/settings/` | Windows, WSL | | | | `manual` |
+| 6.15 | rule-3 default: nothing leaves by default; one off-switch per kind | composed test: `./internal/host/sharing/` | one lane | | | | `manual` |
+| 6.16 | rule-3 default: every outbound connection follows one policy | composed test: `TestNoPermitNoDial`, `TestWithdrawnPermitCancelsAndRefuses` in `./internal/util/egress/` | one lane | | | | `manual` |
+| 6.17 | rule-3 default: the test kit runs real components against scripted boundaries | composed test: `TestVirtualClockDrivesDeadlinesWithoutSleeping`, `TestFakeModelScriptsATurn`, `TestLaunchedProgramAndHomeTornDownByCleanup` in `./internal/testkit/...` | one lane | | | | `manual` |
+
+### Cleanup evidence
+
+At closure: no pid of a stopped tree is alive (a process listing after rows 6.2 and 6.3)
+and every temporary home is gone; `git status --porcelain` empty after the run.
+Historical: the "no pid alive" observations in the manual-check table above.
+
+### Open items
+
+At closure: plan 18.1.11 lists them. Now open: H-21 ("Held open" above, closing step
+impl.md 16.10); the DH-S-6 M1 blockers of plan Stage 14.6 and the decisions M1-D-BOOT-1,
+-2 and -3; the scenarios authored here, which run in DH-S-18, DH-S-21, DH-S-22 and
+DH-S-39.

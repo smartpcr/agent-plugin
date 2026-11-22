@@ -145,24 +145,43 @@ func writeFile(t *testing.T, p, src string) {
 	}
 }
 
+// unsetModelVariables removes from the process environment, for the rest of the
+// test, every variable that could carry a model credential, so the preflight runs
+// with no model variable at all.
+func unsetModelVariables(t *testing.T) {
+	t.Helper()
+	for _, kv := range os.Environ() {
+		name, _, _ := strings.Cut(kv, "=")
+		upper := strings.ToUpper(name)
+		for _, marker := range []string{"API_KEY", "DEEPSEEK", "ANTHROPIC", "OPENAI", "CLAUDE", "COPILOT"} {
+			if strings.Contains(upper, marker) {
+				t.Setenv(name, "") // restores the value when the test ends
+				os.Unsetenv(name)
+				break
+			}
+		}
+	}
+}
+
 // TestPreflightSubcommand drives "harness-gate preflight" on the repository through
-// the process environment, as the scenario workflow does.
+// the process environment, as the scenario workflow does. No model variable is set:
+// the preflight reads no key (models-signed-in-claude-copilot; M1-G-TOOL-15;
+// DH-T-TOOLCHAIN-6).
 func TestPreflightSubcommand(t *testing.T) {
 	root := filepath.Join("..", "..")
 	tests := []struct {
-		name, key, require string
-		code               int
-		want               string
+		name, require string
+		code          int
+		want          string
 	}{
-		{"missing secret", "", "", 1, "secret DSH_DEEPSEEK_API_KEY is not set"},
-		{"unknown required scenario", "k", "DH-E-FAKE-9", 1, "required scenario DH-E-FAKE-9"},
-		{"empty required list", "k", "", 0, "0 required scenarios"},
-		{"required list", "k", "DH-E-TOOLCHAIN-2", 0, "1 required scenarios"},
+		{"unknown required scenario", "DH-E-FAKE-9", 1, "required scenario DH-E-FAKE-9"},
+		{"empty required list", "", 0, "harness-gate preflight: passed; 0 required scenarios"},
+		{"required list", "DH-E-TOOLCHAIN-2", 0, "harness-gate preflight: passed; 1 required scenarios"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ghOut := filepath.Join(t.TempDir(), "github_output")
-			t.Setenv("DSH_DEEPSEEK_API_KEY", tt.key)
+			unsetModelVariables(t)
 			t.Setenv("DSH_REQUIRE_SCENARIOS", tt.require)
 			t.Setenv("GITHUB_OUTPUT", ghOut)
 			var stdout, stderr bytes.Buffer
@@ -220,36 +239,115 @@ func TestSubcommandUsageErrors(t *testing.T) {
 	}
 }
 
-// TestHarnessJobRunsTheGateOnThreeSystems pins the keyless CI lane of
-// DH-D-TOOLCHAIN-4 (QG-4, QG-10): the harness job runs on Linux, macOS and Windows
-// with cgo on, runs the documented gate command, runs the rehearsal on Linux only and
-// uploads the output; the scenario workflow is never triggered by pull requests.
-func TestHarnessJobRunsTheGateOnThreeSystems(t *testing.T) {
+// hostedLanes is the hosted CI runner list of decision platforms-windows-wsl: the
+// harness lanes on GitHub-hosted runners are regression signals on Linux and
+// Windows only; macOS is out of M1 scope, and the evidence of record is the local
+// Windows and WSL lanes (lanes/).
+var hostedLanes = []string{"ubuntu-latest", "windows-latest"}
+
+// workflowJob returns the body of the top-level job name of a workflow file: the
+// lines after "  name:" up to the next top-level job.
+func workflowJob(t *testing.T, workflow, name string) string {
+	t.Helper()
+	workflow = strings.ReplaceAll(workflow, "\r\n", "\n")
+	_, body, ok := strings.Cut(workflow, "\n  "+name+":\n")
+	if !ok {
+		t.Fatalf("workflow has no %s job", name)
+	}
+	lines := strings.Split(body, "\n")
+	for i, l := range lines {
+		if len(l) > 2 && strings.HasPrefix(l, "  ") && l[2] != ' ' && l[2] != '#' {
+			return strings.Join(lines[:i], "\n")
+		}
+	}
+	return body
+}
+
+// matrixOS returns the runner list of a job's "os: [...]" matrix line, failing when
+// the job has not exactly one.
+func matrixOS(t *testing.T, job string) []string {
+	t.Helper()
+	var lists [][]string
+	for _, l := range strings.Split(job, "\n") {
+		v, ok := strings.CutPrefix(strings.TrimSpace(l), "os: [")
+		if !ok {
+			continue
+		}
+		v, ok = strings.CutSuffix(v, "]")
+		if !ok {
+			t.Fatalf("matrix line %q is not a flow list", l)
+		}
+		var list []string
+		for _, f := range strings.Split(v, ",") {
+			list = append(list, strings.TrimSpace(f))
+		}
+		lists = append(lists, list)
+	}
+	if len(lists) != 1 {
+		t.Fatalf("job has %d os matrix lines, want 1", len(lists))
+	}
+	return lists[0]
+}
+
+// TestHarnessJobRunsTheGateOnTwoSystems pins the keyless CI lane of
+// DH-D-TOOLCHAIN-4 (QG-4, QG-10) under decision platforms-windows-wsl: the harness
+// job and the scenario job run on exactly the hosted lanes (ubuntu-latest,
+// windows-latest; no macOS), with cgo on and the floor toolchain from
+// src/harness/go.mod; the harness job runs the documented gate command, runs the
+// rehearsal on Linux only and uploads the output; the manual-check workflow drops
+// macOS; the scenario workflow is never triggered by pull requests and reads no
+// model key (models-signed-in-claude-copilot) (M1-G-GATE-21, M1-G-TOOL-13;
+// DH-T-TOOLCHAIN-9).
+func TestHarnessJobRunsTheGateOnTwoSystems(t *testing.T) {
 	read := func(name string) string {
 		data, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", name))
 		if err != nil {
 			t.Fatal(err)
 		}
-		return string(data)
+		return strings.ReplaceAll(string(data), "\r\n", "\n")
 	}
 	ci := read("ci.yml")
-	_, job, ok := strings.Cut(ci, "\n  harness:\n")
-	if !ok {
-		t.Fatal("ci.yml has no harness job")
+	job := workflowJob(t, ci, "harness")
+	if got := matrixOS(t, job); !slices.Equal(got, hostedLanes) {
+		t.Errorf("ci.yml harness matrix = %v, want %v (platforms-windows-wsl)", got, hostedLanes)
 	}
 	for _, want := range []string{
-		"os: [ubuntu-latest, macos-latest, windows-latest]",
 		`CGO_ENABLED: "1"`,
+		"go-version-file: src/harness/go.mod",
 		"GOWORK=off go -C tools/harness-gate run . --root ../..",
-		"GOWORK=off go -C tools/harness-gate run . rehearse --root ../..",
-		"if: runner.os == 'Linux'",
 		"actions/upload-artifact@",
 	} {
 		if !strings.Contains(job, want) {
 			t.Errorf("harness job lacks %q", want)
 		}
 	}
+	// The rehearsal step is on the Linux lane only.
+	_, rehearsal, ok := strings.Cut(job, "- name: Release rehearsal")
+	rehearsal, _, _ = strings.Cut(rehearsal, "\n      - ")
+	if !ok || !strings.Contains(rehearsal, "if: runner.os == 'Linux'\n") || !strings.Contains(rehearsal, "GOWORK=off go -C tools/harness-gate run . rehearse --root ../..") {
+		t.Errorf("harness job does not run the rehearsal on the Linux lane only:\n%s", rehearsal)
+	}
+	header, _, _ := strings.Cut(ci, "\nname: ci\n")
+	for _, want := range []string{"platforms-windows-wsl", "regression signal", "tools/harness-gate/lanes/"} {
+		if !strings.Contains(header, want) {
+			t.Errorf("ci.yml header comment lacks %q", want)
+		}
+	}
+	for _, name := range []string{"ci.yml", "harness-scenarios.yml", "harness-manual-checks.yml"} {
+		if strings.Contains(read(name), "macos-latest") {
+			t.Errorf("%s still names macos-latest", name)
+		}
+	}
+	if got := matrixOS(t, workflowJob(t, read("harness-manual-checks.yml"), "manual-checks")); !slices.Equal(got, hostedLanes) {
+		t.Errorf("harness-manual-checks.yml matrix = %v, want %v", got, hostedLanes)
+	}
 	scen := read("harness-scenarios.yml")
+	if got := matrixOS(t, workflowJob(t, scen, "scenarios")); !slices.Equal(got, hostedLanes) {
+		t.Errorf("harness-scenarios.yml scenarios matrix = %v, want %v (platforms-windows-wsl)", got, hostedLanes)
+	}
+	if strings.Contains(scen, "secrets.") || strings.Contains(scen, "API_KEY") {
+		t.Error("harness-scenarios.yml reads a model key; models-signed-in-claude-copilot removes it")
+	}
 	_, on, _ := strings.Cut(scen, "\non:\n")
 	on, _, _ = strings.Cut(on, "\njobs:")
 	for _, bad := range []string{"pull_request", "push:"} {
@@ -257,7 +355,7 @@ func TestHarnessJobRunsTheGateOnThreeSystems(t *testing.T) {
 			t.Errorf("harness-scenarios.yml is triggered by %s", bad)
 		}
 	}
-	for _, want := range []string{"workflow_dispatch:", "schedule:", "GOWORK=off go -C tools/harness-gate run . preflight --root ../..", "secrets.DSH_DEEPSEEK_API_KEY", "run . require --root ../.. --stage"} {
+	for _, want := range []string{"workflow_dispatch:", "schedule:", "GOWORK=off go -C tools/harness-gate run . preflight --root ../..", "run . require --root ../.. --stage"} {
 		if !strings.Contains(scen, want) {
 			t.Errorf("harness-scenarios.yml lacks %q", want)
 		}

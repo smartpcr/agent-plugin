@@ -267,11 +267,24 @@ func CheckBoundary(root string, x *Index, scenarios []Scenario) error {
 	return errors.Join(errs...)
 }
 
-// Environment variables the preflight reads.
-const (
-	SecretEnv  = "DSH_DEEPSEEK_API_KEY"
-	RequireEnv = "DSH_REQUIRE_SCENARIOS"
-)
+// RequireEnv is the environment variable the preflight reads: the comma- or
+// space-separated scenario IDs the run must execute. The preflight reads no model
+// key: under decision models-signed-in-claude-copilot real-model checks use the
+// user's signed-in Claude or Copilot session, never an API key (M1-G-TOOL-15).
+const RequireEnv = "DSH_REQUIRE_SCENARIOS"
+
+// CredentialHook checks, from the environment env alone, that the credentials the
+// scenario run needs are present. A non-nil error fails the preflight, named.
+type CredentialHook func(env map[string]string) error
+
+// NoCredentials is the hook in force: it checks nothing and passes. Under
+// models-signed-in-claude-copilot there is no key to look for; stage 19.2 replaces
+// it with the signed-in-route check.
+func NoCredentials(map[string]string) error { return nil }
+
+// Credentials is the credential hook Preflight calls (NoCredentials until stage
+// 19.2 fills it).
+var Credentials CredentialHook = NoCredentials
 
 // Plan is what the scenario job runs after a passing preflight.
 type Plan struct {
@@ -305,16 +318,19 @@ func SplitRequired(v string) []string {
 }
 
 // Preflight decides, from the environment env alone, whether the credentialed
-// scenario workflow may start (DH-ADR-TOOLCHAIN-6, -12): the secret must be set,
-// the index must agree with the authored scenarios, and every ID of
-// DSH_REQUIRE_SCENARIOS must have its scenario test and every stage its index
-// entry requires must be built. On any failure the plan is
-// empty, so no scenario is started; every reason is named. An empty required list
-// passes with an empty plan.
+// scenario workflow may start (DH-ADR-TOOLCHAIN-6, -12): the credential hook
+// (Credentials) must pass, the index must agree with the authored scenarios, and
+// every ID of DSH_REQUIRE_SCENARIOS must have its scenario test and every stage its
+// index entry requires must be built. No model key is read
+// (models-signed-in-claude-copilot). On any failure the plan is empty, so no
+// scenario is started; every reason is named. An empty required list passes with
+// an empty plan.
 func Preflight(env map[string]string, x *Index, scenarios []Scenario) (Plan, error) {
 	var errs []error
-	if strings.TrimSpace(env[SecretEnv]) == "" {
-		errs = append(errs, fmt.Errorf("secret %s is not set: the credentialed scenario workflow cannot run", SecretEnv))
+	if Credentials != nil {
+		if err := Credentials(env); err != nil {
+			errs = append(errs, fmt.Errorf("credentials: %w", err))
+		}
 	}
 	if err := Check(x, scenarios); err != nil {
 		errs = append(errs, err)

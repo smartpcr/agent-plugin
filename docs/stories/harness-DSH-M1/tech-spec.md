@@ -13,6 +13,7 @@ it**. It is the contract the sibling plan documents build against:
 | [architecture.md](architecture.md) | Components C01..C30, data model, interfaces, flows F1..F7, the **Test & Environment Contract** (TC-01a .. TC-X2) | This file adopts its M1 slice and its TC ids; it does not repeat component tables or signatures |
 | [implementation-plan.md](implementation-plan.md) | Ordered work items and commits | Must stay inside the scope of sec. 2 and obey every constraint of sec. 5 |
 | [e2e-scenarios.md](e2e-scenarios.md) | `DH-E-*` scenario scripts | Must honour sec. 3.2 (authored, not executed) and constraint EV-4 |
+| [decisions.md](decisions.md) | Every owner, operator and lead decision that shapes M1, with its status | Rows of this file that a decision changed cite it by name; the restated definition of done is its sec. 1.1 |
 
 Source documents (the requirements; this story never re-decides them):
 [docs/harness/README.md](../../harness/README.md),
@@ -51,7 +52,9 @@ into the first running slice -- an agent that answers one prompt against the rea
 DeepSeek API with a tool call through the guarded pipeline, every step logged and
 rebuildable -- without breaking the existing cordis port, and with the quality gates
 in force from the first commit so that later stages never need a baseline of
-exceptions.*
+exceptions.* Since 2026-11-22 the M1 run reaches a real model through the user's
+signed-in Claude or Copilot client instead of the DeepSeek API (decision
+`models-signed-in-claude-copilot`); the DeepSeek provider stays built and fake-tested.
 
 ### 1.3 Why M1 is the right cut, and why it is hard
 
@@ -93,7 +96,7 @@ stage-level obligations are:
 
 | Stage | Result this story must deliver (impl.md wording, condensed) | Outcomes served | Closes on (impl.md "Exit evidence") |
 |---|---|---|---|
-| DH-S-1 | Three modules build together; a fixed gate list passes on Linux, macOS, Windows; release rehearsal compiles one pure-Go binary per platform, publishes nothing | DH-O-14, DH-O-15 | Gate-runner output on three OSes + seeded-violation checks |
+| DH-S-1 | Three modules build together; a fixed gate list passes on Linux, macOS, Windows (impl.md wording; for M1 the lanes are Windows (native) and Linux (WSL), decision `platforms-windows-wsl`); release rehearsal compiles one pure-Go binary per platform, publishes nothing | DH-O-14, DH-O-15 | Gate-runner output on both M1 lanes (impl.md: three OSes; narrowed by decision `platforms-windows-wsl`) + seeded-violation checks |
 | DH-S-2 | cordis: final unload, per-fiber cancellation context, scoped dispatch, contained `Notify`, `AroundKey`, raw/effective/candidate config, strict decode, chosen log exporters | DH-O-1 | `DH-T-CORDIS-*` under the race detector; existing `src/go` tests still pass |
 | DH-S-3 | loader: positions, entry schema, expression seam, layer composition + ownership index, write-back to one layer, nested loader, restart one entry, settled-reload notice, write guard | DH-O-2 | `DH-T-LOADER-*` pass |
 | DH-S-4 | Leaf packages: `src/sdk/jsonrpc`, `src/sdk/protocol`, `internal/schema`, `internal/llm/vocab`, `fsx`, `textdiff`, `search`, watcher, YAML codec + `yamlx`, expression engine, logging component, catalog | DH-O-4, DH-O-13 | Import-direction test: `src/sdk` imports neither cordis nor the harness |
@@ -121,28 +124,50 @@ stage-level obligations are:
    acceptance workflow's required list (impl.md sec. 1.4 rule 4).
 5. **One manual-check record per step**, labelled `manual`, carrying the commit
    (impl.md sec. 1.4 rule 3). The DH-S-11 manual check is the M1 demonstration: one
-   prompt to the real DeepSeek API with one test tool, the bracketed log and the
-   rebuilt request recorded; a second run cancelled mid-stream with the cause on
-   `turn/end`.
+   prompt with one test tool on the user's signed-in Claude route (Copilot also run and
+   recorded, M1-D-LOOP-6), reached through the installed official client with no API
+   key (decision `models-signed-in-claude-copilot`; M1-D-PIPE-3 option A); the bracketed
+   log and the logged client invocation recorded, SP-1 holding at the client-invocation
+   boundary (M1-D-PIPE-4 and M1-D-CLOSE-3, option A); a second run cancelled mid-stream
+   with the cause on `turn/end`. Historical: until 2026-11-22 this item named the real
+   DeepSeek API.
 6. **One evidence record per stage** in the format of impl.md sec. 7.3.
-7. **CI**: the keyless `harness` job on Linux, macOS and Windows and the separate
-   credentialed workflow with its preflight (step 1.8). The credentialed workflow is
-   created; it is not required to pass in this story because no scenario executes
-   here (sec. 3.2).
+7. **Gate lanes and CI**: the gate of record runs on two local lanes, Windows (native)
+   and Linux under WSL on the development host (decision `platforms-windows-wsl`); the
+   macOS lane is out of M1 scope (decision `platforms-windows-wsl`). The keyless hosted
+   `harness` job keeps the lanes M1-D-GATE-21 / M1-D-TOOL-5 decide, as regression
+   signals. The separate credentialed workflow with its preflight (step 1.8) stays; its
+   preflight no longer asks for a model key (decision `models-signed-in-claude-copilot`,
+   plan step 12.3.8). The credentialed workflow is created; it is not required to pass
+   in this story because no scenario executes here (sec. 3.2). Historical: this item
+   first read "on Linux, macOS and Windows" (decision `platforms-windows-wsl`).
 8. **Ledger upkeep**: `tools/harness-trace verify` keeps passing; deliverables move to
    status *built* only.
 
 ### 2.3 Definition of "done" for this story
 
-The story is done when **all** of the following hold at one commit on the story branch:
+Restated on 2026-11-22 under decisions `platforms-windows-wsl` and
+`models-signed-in-claude-copilot`; the authority is [decisions.md](decisions.md)
+sec. 1.1. The story is done when **all** of the following hold at one commit on the
+story branch:
 
-- Every step 1.1 .. 11.7 of impl.md is ticked as *built* (impl.md sec. 1.3 "Built").
-  None is claimed *done* unless its proof is local tests only.
-- `tools/harness-gate` passes on the three CI operating systems.
+- Every step 1.1 .. 11.7 of impl.md (103 steps, 99 deliverables) is ticked as *built*
+  (impl.md sec. 1.3 "Built"). None is claimed *done* unless its proof is local tests
+  only. Ticks made while the gate was red are provisional and are re-verified at that
+  commit (M1-D-CLOSE-1, option B).
+- `tools/harness-gate` passes on Windows (native) and Linux (WSL), each run recorded in
+  the local-lane evidence format (decision `platforms-windows-wsl`). macOS is out of M1
+  scope and is never recorded as a pass or a skip (decision `platforms-windows-wsl`).
 - Every stage DH-S-1 .. DH-S-11 has its evidence record.
-- The M1 manual check is recorded.
+- The M1 manual check is recorded on the signed-in Claude route (decision
+  `models-signed-in-claude-copilot`: no API key), and Copilot is run and recorded either
+  way (M1-D-LOOP-6).
 - The held-open item H-21 (DH-D-BOOT-6's `dsh config` commands) is listed as open
-  with its closing step in DH-S-16.
+  with its closing step impl.md 16.10 in DH-S-16, together with every held-open item a
+  row of [decisions.md](decisions.md) creates.
+
+Historical: before 2026-11-22 the second item read "passes on the three CI operating
+systems" (replaced by decision `platforms-windows-wsl`).
 
 ---
 
@@ -159,7 +184,7 @@ The story is done when **all** of the following hold at one commit on the story 
 | Profiles, launchers (`dsh headless`, `dsh web`), admin tree, replay runner, titles (DH-D-VIEW-4) | DH-S-16 | Needs DH-S-12..15 |
 | Every acceptance stage (DH-S-17, -18, -22, -32, -39, -48, -58) | as named | They execute scenarios; see 3.2 |
 | Web UI, HTML routes, event stream (no UI code of any kind lands in DH-S-1..11) | DH-S-19 .. DH-S-22 | M3 |
-| Additional providers, compaction, skills, jobs, terminals, macOS/Windows sandboxes, SSH, subagents beyond the seam, schedules, goals, plan mode, workflows | DH-S-23 .. DH-S-31 | P1 parity |
+| Additional providers, compaction, skills, jobs, terminals, macOS/Windows sandboxes (product backends, not gate lanes; the macOS gate lane is out of M1 scope by decision `platforms-windows-wsl`), SSH, subagents beyond the seam, schedules, goals, plan mode, workflows | DH-S-23 .. DH-S-31 | P1 parity |
 | MCP, web access, plugin processes, OS keychain, vendor account, office documents, ACP, Python SDK, admin commands, watchdog | DH-S-33 .. DH-S-38 | P1 parity |
 | Signed release, documentation website, operator lifecycle | DH-S-46 | Blocked on open owner decisions (signing keys, hosting) |
 | All P2 / experimental (`internal/x/...`) | DH-S-49 .. DH-S-59 | M5 |
@@ -240,13 +265,13 @@ stage unbuildable. Each has an ID so the implementation plan and reviews can cit
 | QG-1 | One command, `tools/harness-gate`, runs a **fixed sequential** gate list and names the first failing gate; exit status non-zero on failure | DH-D-TOOLCHAIN-2; DH-ADR-TOOLCHAIN-9 |
 | QG-2 | **No baseline file and no exemption list** for any gate, from the first commit | DH-O-15; DH-ADR-TOOLCHAIN-8 |
 | QG-3 | Coverage floor **85% of statements per package**, merged across processes (re-exec'd child processes count) | DH-ADR-14; DH-ADR-TOOLCHAIN-7 |
-| QG-4 | Every test package runs with `-race -shuffle=on -count=1` on **all three** gate OSes (Linux, macOS, Windows); a lane where `-race` cannot run is a gate **failure**, not a skip. The test lanes set `CGO_ENABLED=1` and are provisioned with a C compiler (constraint EN-6); time-dependent tests use virtual time (`testing/synctest` or the test kit's clock), never sleeps | architecture.md sec. 6 gate sequence and TC-X1 (binding for this story); DH-ADR-TOOLCHAIN-2 |
+| QG-4 | Every test package runs with `-race -shuffle=on -count=1` on **both** M1 gate lanes, Windows (native) and Linux (WSL) (decision `platforms-windows-wsl`; the macOS lane is out of M1 scope, and "all three gate OSes" is historical); a lane where `-race` cannot run is a gate **failure**, not a skip. The test lanes set `CGO_ENABLED=1` and are provisioned with a C compiler (constraint EN-6); time-dependent tests use virtual time (`testing/synctest` or the test kit's clock), never sleeps | architecture.md sec. 6 gate sequence and TC-X1 (binding for this story); DH-ADR-TOOLCHAIN-2 |
 | QG-5 | Every test that starts a goroutine, listener or child process registers its release with `t.Cleanup` | upstream/toolchain.md DH-ADR-TOOLCHAIN-2 |
 | QG-6 | Goldens use one helper with **one update switch**; every parser of untrusted bytes (`jsonrpc`, `yamlx`, SSE decode, schema validation input) has a fuzz target whose seed corpus runs as a unit test | DH-D-TOOLCHAIN-3; DH-ADR-TOOLCHAIN-3, -4 |
 | QG-7 | Performance budgets are tests that ignore environment overrides | DH-ADR-TOOLCHAIN-14 |
-| QG-8 | `cmd/dsh` cross-compiles with `CGO_ENABLED=0` for Linux, macOS and Windows on amd64 and arm64 | DH-ADR-TOOLCHAIN-13; DH-ADR-15 |
+| QG-8 | `cmd/dsh` cross-compiles with `CGO_ENABLED=0` for Linux, macOS and Windows on amd64 and arm64 (cross-compiling for macOS stays a gate; only the macOS test lane left M1 scope, decision `platforms-windows-wsl`) | DH-ADR-TOOLCHAIN-13; DH-ADR-15 |
 | QG-9 | `tools/harness-trace verify` is a gate and passes on every commit | DH-ADR-6; impl.md DH-S-1 |
-| QG-10 | CI: a keyless `harness` job on three OSes runs the gate runner; credentialed scenarios live in a **separate** workflow, never triggered by `pull_request_target`, whose preflight fails when a secret or a required scenario is missing | DH-ADR-TOOLCHAIN-12, -6 |
+| QG-10 | CI: a keyless hosted `harness` job runs the gate runner on the lanes M1-D-GATE-21 / M1-D-TOOL-5 keep, as regression signals; the evidence of record is the two local lanes (decision `platforms-windows-wsl`; "three OSes" is historical). Credentialed scenarios live in a **separate** workflow, never triggered by `pull_request_target`, whose preflight fails when a required scenario is missing; it no longer requires a model key (decision `models-signed-in-claude-copilot`; plan steps 12.3.8, 19.2) | DH-ADR-TOOLCHAIN-12, -6 |
 
 ### 5.3 Evidence and status discipline
 
@@ -257,7 +282,7 @@ stage unbuildable. Each has an ID so the implementation plan and reviews can cit
 | EV-3 | Every step has a recorded manual check labelled `manual` with the commit. A manual check never ticks a scenario | impl.md sec. 1.4 rule 3 |
 | EV-4 | Scenarios are authored, reviewed and listed in this story; executed at the impl.md-assigned stage; a skipped scenario stays open | impl.md sec. 1.4 rules 4, 6, 8 |
 | EV-5 | Proof strategies are those of architecture.md's Test & Environment Contract: `in-process` means zero external I/O; a `service:*` row (filesystem, os-process, go-toolchain, loopback-http, sqlite) is never proved with a mock in its place | architecture.md, contract |
-| EV-6 | The real DeepSeek API is reached only by the manual checks of DH-S-9 and DH-S-11; it is **never** a gate criterion | impl.md DH-S-9, DH-S-11; architecture.md TC-09b, TC-11b |
+| EV-6 | A real model is reached only by the manual checks of DH-S-9 and DH-S-11, and only through the user's signed-in Claude or Copilot client with no API key (decision `models-signed-in-claude-copilot`; M1-D-PIPE-3 option A); it is **never** a gate criterion. On that route SP-1 holds at the client-invocation boundary and the client's own additions are opaque (M1-D-PIPE-4 option A). Historical: EV-6 first named the real DeepSeek API | impl.md DH-S-9, DH-S-11; architecture.md TC-09b, TC-11b |
 | EV-7 | Each stage ends with the evidence record of impl.md sec. 7.3: source commit, build identity, environment, exact commands, run ids, results, cleanup proof | impl.md sec. 7.3 |
 
 ### 5.4 Behavioural invariants of the spine (non-negotiable at M1)
@@ -298,7 +323,7 @@ and must be confirmed or changed **before the named stage starts** (constraint D
 | Tool registry (`tools.registry`, tools.md sec. 6.2) | `maxParallel` 10 (the one overlap cap); `defaultTimeout` 5m; `grace` 5s; `maxArgumentBytes` 1 MiB; `maxResultBytes` 256 KiB; `forceExclusive` empty | *Unconfirmed* ("tool defaults", I1 Q10) | DH-S-10 |
 | Spill budget (DH-D-STORAGE-5/-6) | As stated in areas/storage.md; must stay below `maxResultBytes` (load-time check) | *Unconfirmed* (I1 Q10) | DH-S-8 |
 | Turn budget (`driver.Config`, agent-loop.md) | `budget.maxSteps` 500 (0 = unlimited, must be written explicitly); `budget.maxAttemptsPerStep` 8; `budget.maxDuration` none; `finalFlushTimeout` 10 s; `drainWarnAfter` 10 s | *Unconfirmed* (I1 Q3) | DH-S-11 |
-| Default model route (bundle-preset.md, llm.md) | `deepseek-official`, Anthropic Messages wire, key by reference (`DEEPSEEK_API_KEY` supplied at run time for manual checks) | Spec | -- |
+| Default model route (bundle-preset.md, llm.md) | M1 real-model checks: the signed-in Claude route (Copilot also run), through the user's installed official client, no API key (decision `models-signed-in-claude-copilot`; M1-D-PIPE-3 option A). The spec's `deepseek-official` route (Anthropic Messages wire, key by reference) stays built and fake-tested pending M1-D-PIPE-5. Historical: this row first named `DEEPSEEK_API_KEY` supplied at run time for manual checks | Owner decision 2026-11-22 (spec default narrowed) | -- |
 | Safe mode (I3 Q4) | Switches off plugin processes and optional bundles | *Unconfirmed* | DH-S-6 |
 | Volatile reference type (I4 Q2) | Not built | *Unconfirmed* | DH-S-2 |
 
@@ -325,10 +350,10 @@ A reason not of the form `<domain>/<reason>` fails a declaration test (DH-T-UTIL
 |---|---|
 | EN-1 | The gate host has **no docker and no services**. Every gate-run test uses only the five `service:*` provisions of architecture.md's contract; SQLite is embedded (pure Go) with files under `t.TempDir()` |
 | EN-2 | Tests never touch the developer's real home; every home is a temp home |
-| EN-3 | A real model key is supplied **at run time** for manual checks only; it is never committed, never written to a layer file, never echoed into a manual-check record, and is absent from the keyless CI job |
+| EN-3 | M1 needs no model API key (decision `models-signed-in-claude-copilot`): the manual checks use the user's signed-in client session, and dsh never reads the client's token (M1-D-PIPE-3 option A). Any credential -- the client's session, or a key for a later keyed route -- is supplied **at run time** only; it is never committed, never written to a layer file, never echoed into a manual-check record, and is absent from the keyless CI job |
 | EN-4 | Child processes in tests are the test binary re-executing itself (no external program is installed) |
 | EN-5 | Linux exact process-tree ownership needs a user service manager or writable cgroup (register U-K1-1, DH-ADR-40); without it the fallback is process groups and the fallback is reported, not hidden |
-| EN-6 | The `service:go-toolchain` provision includes a cgo-capable C compiler on every gate OS, so the race gate of QG-4 runs everywhere: `gcc` on Linux, Xcode command-line `clang` on macOS, and MinGW-w64 `gcc` on Windows (installed or verified on `PATH` by an explicit CI step before the gate runner starts; the gate runner's first check fails with the message `race: no C compiler` if it is absent). cgo is a **test-only** dependency: release and cross-compile builds of `cmd/dsh` stay `CGO_ENABLED=0` |
+| EN-6 | The `service:go-toolchain` provision includes a cgo-capable C compiler on both M1 gate lanes, so the race gate of QG-4 runs everywhere: `gcc` from `build-essential` on Linux under WSL, and MSYS2 UCRT64 (MinGW-w64) `gcc` on Windows (decision `platforms-windows-wsl`; installed or verified on `PATH` before the gate runner starts, by the lane provisioning of plan steps 12.3.1 and 12.3.2 and by an explicit step in each hosted CI lane; the gate runner's first check fails with the message `race: no C compiler` if it is absent). Historical: the Xcode command-line `clang` of the macOS lane, which left M1 scope by decision `platforms-windows-wsl`. cgo is a **test-only** dependency: release and cross-compile builds of `cmd/dsh` stay `CGO_ENABLED=0` |
 
 ### 5.7 Documentation and change control
 
@@ -352,17 +377,17 @@ gate.
 
 | ID | Risk | L | I | Trigger | Mitigation (before) | Response (after) |
 |---|---|---|---|---|---|---|
-| R-01 | **Size versus points.** 11 stages, about 106 steps, roughly 100 deliverables for a 13-point story; the story stalls mid-foundation with nothing runnable | H | H | DH-S-6 not built when half the story budget is spent | Land stage by stage; each stage is independently reviewable and closes on its own evidence record; nothing later depends on an unclosed stage | Stop at the last *built* stage and re-plan the remainder as a follow-up story; never mark a partial stage built. Open question `dsh-story-slice` |
+| R-01 | **Size versus points.** 11 stages, 103 steps (99 deliverables) for a 13-point story; the story stalls mid-foundation with nothing runnable | H | H | DH-S-6 not built when half the story budget is spent | Land stage by stage; each stage is independently reviewable and closes on its own evidence record; nothing later depends on an unclosed stage | Stop at the last *built* stage and re-plan the remainder as a follow-up story; never mark a partial stage built. Open question `dsh-story-slice` |
 | R-02 | **SQLite driver fails measurement** (fact F-2): `modernc.org/sqlite` is provisional and about 3x slower than C on large rows -- assistant messages and tool results are large rows (libs/sqlite.md sec. 5) | M | H | Step 7.1 measurement misses a libs/sqlite.md sec. 5.3 threshold | Measure first in step 7.1, before the rest of DH-S-7; keep every driver-specific string in the one driver package; the store contract (C10) and conformance suite isolate the choice | Switch to the named fallback `github.com/ncruces/go-sqlite3` (pure Go) and re-run the suite; a cgo driver is not an option (NG-4). If both fail, escalate to the owner |
 | R-03 | **Dependency circle C-1 in DH-S-6.** 14 deliverables depend on each other; partial landing leaves tests that cannot pass | H | M | A DH-S-6 step's local tests need a later step's real implementation | Contract-first order exactly as impl.md DH-S-6 "Sequence"; hand-written fakes until the test kit (6.17) replaces them | The stage closes only when all 17 are built at one commit (DC-1); no gate is relaxed meanwhile -- a step whose tests need a not-yet-built circle member stays unmerged on its work branch until that member lands |
 | R-04 | **Breaking the existing cordis port.** DH-S-2/-3 change public behaviour of `src/go/cordis` and `src/go/loader` that `cmd/cordis-sample`, existing tests and external importers rely on | M | H | TC-02b golden diff that is not explained by the change | Commit the TC-02b golden **before** the first edit; one deliverable per commit; existing `src/go` tests stay green under `-race` | Revert the offending commit; re-record the golden only for an intended diff, with the step ID in the commit |
 | R-05 | **Toolchain floor drift.** The authoring host runs `go1.27.4`; code may use a 1.27-only API while the modules claim `go 1.26.0` (fact F-1) | M | M | CI on a 1.26.0 toolchain fails to compile | CI's `harness` job pins Go 1.26.0 exactly; third-party modules resolved once at `go 1.26.0` in step 1.1 / 4.x (fact F-1) | Remove the 1.27 usage; if a chosen module needs >1.26 the floor rises by owner decision and design.md sec. 4.2 is revised |
-| R-06 | **C toolchain provisioning for the three-OS race gate.** `go test -race` needs cgo and a C compiler; today's `ci.yml` runs race on Linux only, and a Windows runner image change can drop MinGW-w64 `gcc` from `PATH` | M | M | The Windows or macOS `harness` lane fails at the race gate with `race: no C compiler` | Provision the compiler explicitly in the CI step that precedes the gate runner (EN-6) rather than relying on the runner image; pin the MinGW-w64 package version; the race gate stays mandatory on all three OSes (QG-4) and is never reduced to a report | Fix the provisioning step and re-run; a lane without race is a failed gate, so the stage does not close until race passes on Linux, macOS and Windows. Release builds are unaffected (`CGO_ENABLED=0`) |
+| R-06 | **C toolchain provisioning for the race gate on both lanes** (decision `platforms-windows-wsl`; the three-OS form of this risk, with a macOS lane, is historical). `go test -race` needs cgo and a C compiler; the WSL distribution needs `build-essential`, and on Windows an MSYS2 update or a `PATH` change can drop UCRT64 `gcc` | M | M | The Windows (native) or Linux (WSL) lane fails at the race gate with `race: no C compiler` | Provision the compiler explicitly in the lane setup (plan steps 12.3.1, 12.3.2) and in each hosted CI lane (EN-6) rather than relying on an image; the race gate stays mandatory on both lanes (QG-4) and is never reduced to a report | Fix the provisioning and re-run; a lane without race is a failed gate, so the stage does not close until race passes on Windows (native) and Linux (WSL). Release builds are unaffected (`CGO_ENABLED=0`) |
 | R-07 | **Coverage floor with re-exec'd processes.** 85% per package must merge coverage from child processes (os-process tests, two-process lease tests); naive `-coverprofile` misses child coverage and drives packages under the floor | M | M | `internal/world/subprocess` or `internal/session/store/sqlite` under 85% though tests exist | Use Go's integration coverage (`GOCOVERDIR`) for re-exec'd children and merge in the gate (TC-01a covers the merge arithmetic) | Add tests, never exemptions (QG-2) |
-| R-08 | **Windows semantics** of process trees (job objects), file locking (`LockFileEx`), file replacement and private-directory checks differ from POSIX; the authoring host *is* Windows | M | H | TC-06c / TC-07 pass on Linux and fail on Windows | Each OS-specific path has its own test file and runs in the three-OS CI job from DH-S-1 on | Fix per OS; a platform limit discovered here is recorded with a register entry, not hidden |
+| R-08 | **Windows semantics** of process trees (job objects), file locking (`LockFileEx`), file replacement and private-directory checks differ from POSIX; the authoring host *is* Windows | M | H | TC-06c / TC-07 pass on Linux and fail on Windows | Each OS-specific path has its own test file and runs on both gate lanes, Windows (native) and Linux (WSL), from DH-S-1 on (decision `platforms-windows-wsl`) | Fix per OS; a platform limit discovered here is recorded with a register entry, not hidden |
 | R-09 | **Unconfirmed defaults harden into formats.** Turn budget, tool defaults and spill budget get baked into persisted events or public types before the owner confirms them | M | M | A persisted payload or exported const carries one of the sec. 5.5 *unconfirmed* values | DC-4: values live in configuration; confirm before DH-S-8, DH-S-10, DH-S-11 | Owner confirms or changes the holding spec; the config default changes, no migration needed |
-| R-10 | **Vendor-side unknowns in DH-S-9.** The DeepSeek business error codes (`protocol.ts:245`) and the effort field of the model listing are carried-unresolved debt (README "Tech debt" items 1-2); the Anthropic-Messages mapping may differ on the live endpoint | M | M | Manual check of step 9 sees an unmapped status/body | Recorded SSE fixtures (success, overloaded + retry-after, bad key, mid-stream drop) drive the gate; unknown codes map to the generic class with the raw body kept | Record the observed code in the evidence record and a feedback note to areas/llm.md; never retry an unknown permanent class |
-| R-11 | **Key leakage during manual checks.** The M1 manual check uses a real `DEEPSEEK_API_KEY`; a debug log, a fatal report or an error message may print it | L | H | Key substring appears in a log, report or record | SP-11 + EN-3; redaction tests in TC-06a; manual-check records reviewed before commit | Rotate the key, purge the record, add a regression test at the leaking site |
+| R-10 | **Vendor-side unknowns in DH-S-9.** The DeepSeek business error codes (`protocol.ts:245`) and the effort field of the model listing are carried-unresolved debt (README "Tech debt" items 1-2); the Anthropic-Messages mapping may differ on the live endpoint. Under decision `models-signed-in-claude-copilot` the DH-S-9 manual check runs on a signed-in client route, so M1 does not reach the DeepSeek endpoint: this risk now applies to the fake-tested provider until a keyed route is used (M1-D-PIPE-5). On the client route the matching unknown is a client exit or message dsh does not map | M | M | A recorded fixture, a later keyed run, or a signed-in client run shows an unmapped status, body or client exit | Recorded SSE fixtures (success, overloaded + retry-after, bad key, mid-stream drop) drive the gate; unknown codes map to the generic class with the raw body kept | Record the observed code in the evidence record and a feedback note to areas/llm.md; never retry an unknown permanent class |
+| R-11 | **Credential leakage during manual checks.** Under decision `models-signed-in-claude-copilot` the M1 manual check uses no API key, and dsh never reads the client's token (M1-D-PIPE-3 option A). A debug log, a fatal report, an error message or the logged client invocation may still print a session token or another secret from the environment. Historical: R-11 first named a real `DEEPSEEK_API_KEY` | L | H | A token, key or secret substring appears in a log, report or record | SP-11 + EN-3; the logged invocation keeps environment names without values (M1-D-PIPE-4 option A); redaction tests in TC-06a; manual-check records reviewed before commit | Sign out and revoke the session (or rotate a key), purge the record, add a regression test at the leaking site |
 | R-12 | **Docs/harness inconsistency surfaces mid-build.** The audit fix pass was not re-audited (1 blocker, 13 major findings before fixes); ~17-70 "resolved" debt rows may be resolved in name only | M | M | Two specs give different contracts for the same seam | DC-2/DC-3: record both citations and the choice in the stage's evidence record; impl.md sec. 7.5 governs scenario placement | Raise to the owner when the choice changes an outcome; otherwise proceed with the area spec that owns the seam |
 | R-13 | **Upstream moves.** deepseek-harness keeps changing after commit `2e39e70` | H | L | A newer upstream behaviour is proposed in review | The pinned commit is the requirements source (README); NG-1, NG-2 | Out of scope; a later re-trace updates the ledger, not this story |
 | R-14 | **.NET port divergence.** After DH-S-2 the Go and .NET cordis ports no longer match | H | L | A consumer expects parity | Port README lists each change as a harness requirement (impl.md sec. 9.2) | Owner decision; nothing in this story blocks on it |
@@ -375,15 +400,17 @@ gate.
 | ID | Assumption | If false |
 |---|---|---|
 | A-1 | The story branch may hold the three modules and the gate runner before `main` does; merging to `main` happens per closed stage | Merge cadence changes; constraints unchanged |
-| A-2 | GitHub-hosted runners for Linux, macOS and Windows are available to the `harness` job | DH-S-1 cannot close (its exit evidence needs three OSes) |
-| A-3 | An operator can supply a DeepSeek API key at run time for the DH-S-9 and DH-S-11 manual checks | M1 is built but its manual check is recorded as *not run*; the stage does not close (EV-3) |
+| A-2 | The Windows development host runs the Windows (native) lane and a WSL 2 Linux distribution for the Linux lane (decision `platforms-windows-wsl`); hosted runners are regression signals only. Historical: A-2 first assumed hosted Linux, macOS and Windows runners | DH-S-1 cannot close (its exit evidence needs both lanes) |
+| A-3 | An operator has the official `claude` CLI (and the Copilot CLI) installed and signed in on the development host for the DH-S-9 and DH-S-11 manual checks; no API key is needed (decision `models-signed-in-claude-copilot`). Historical: A-3 first assumed a DeepSeek API key supplied at run time | M1 is built but its manual check is recorded as *not run*; the stage does not close (EV-3) |
 | A-4 | Third-party modules named in the library specs resolve together at `go 1.26.0` (fact F-1) | R-05 response |
 | A-5 | `tools/harness-trace verify` stays green as deliverable status moves to *built* (the ledger tracks dispositions, not build status) | Ledger tooling change is a separate item, raised per DC-2 |
 
 External dependencies of this story: the Go 1.26 toolchain; `modernc.org/sqlite`
 v1.62.0 with `modernc.org/libc` v1.80.1 (or the ncruces fallback); the YAML, expression
-and watcher modules named in their library specs; GitHub Actions; the DeepSeek
-Messages endpoint (manual checks only).
+and watcher modules named in their library specs; GitHub Actions (regression signals);
+a WSL 2 distribution on the development host (decision `platforms-windows-wsl`); the
+official `claude` and Copilot CLIs, installed and signed in (manual checks only,
+decision `models-signed-in-claude-copilot`). Historical: the DeepSeek Messages endpoint.
 
 ---
 

@@ -1,5 +1,17 @@
 # DH-S-10 evidence
 
+Decisions that govern M1 records, this one included, are logged in [decisions.md](../decisions.md).
+
+Closure status: open
+
+This line becomes `closed at <sha>` only in plan step 18.1.14, at the M1 closure commit.
+The "DH-S-10 is closed" statement below is the stage's own closure, kept as history:
+under M1-D-CLOSE-1 every tick made while the gate was red is provisional and is
+re-verified at that commit, and plan step 16.6.1 unticks impl.md 10.3, 10.4 and 10.6
+(known not built) until plan Stages 16.1 to 16.3 land. The fields of impl.md sec. 7.3
+and the per-step manual-check register are at the end of this file, in "Evidence record
+(impl.md sec. 7.3)"; how to fill them is in [the evidence runbook](README.md).
+
 DH-S-10 is the tool pipeline, approvals and human commands. Stage 10.1 (#72/#73)
 built impl.md steps 10.1 and 10.2, Stage 10.2 (#74/#75) built 10.3 and 10.4, and
 Stage 10.3 (#76, `69c5f17`, merged into this branch) built 10.5 and 10.6 and
@@ -88,3 +100,78 @@ marker past DH-S-7 would claim those stages are built, and preflight would run
 scenarios that require them. The stage that closes DH-S-8 raises the marker, and
 each later closing stage, this one included, raises it in turn once everything
 before it is closed.
+
+## Evidence record (impl.md sec. 7.3)
+
+These are the eight fields of [impl.md sec. 7.3](../../../harness/impl.md#73-the-evidence-record),
+in the format of [the evidence runbook](README.md#the-evidence-record-headings). Plan step
+18.1.7 fills them at the frozen M1 closure commit; plan step 16.6.3 rewrites the closure
+before that. Until then each field points to the history above, which stays exactly as
+it was recorded and is not closure evidence (M1-D-CLOSE-1).
+
+### Source and build identity
+
+At closure: not yet recorded (plan 18.1.7). Historical: Stage 10.3 names commit
+`69c5f17`; the other stages name their PRs (#72 to #76).
+
+### Environment and fixture
+
+At closure: both local lanes, from their run records. macOS: out of scope
+(`platforms-windows-wsl`). Historical: one Windows machine. Fixtures: SQLite stores in
+`t.TempDir()`, the test kit's answerer, a 2 MB result.
+
+### Exact tests and commands
+
+At closure: the lane scripts, and `go -C src/harness test -race -count=1 ./internal/agent/
+./internal/human/... ./internal/tools/... ./internal/storage/spill/...`. Historical: the
+command under "Tests (TC-10a, TC-10b)".
+
+### Run identifiers
+
+At closure: the run-record ids of both lanes, in the runbook's template (plan 18.1.3).
+WSL lane: not run. Windows lane: not run. macOS: out of scope (`platforms-windows-wsl`).
+Historical: no run id was recorded. DH-E-TOOLS-3 and DH-E-HUMAN-6 run in later stages
+and have no run id yet.
+
+### Results
+
+At closure: not yet recorded. Historical: the test table under "Tests (TC-10a, TC-10b)".
+
+### Manual checks
+
+impl.md DH-S-10 names three checks: call a test tool with arguments that break its
+schema and record that the body never ran (step 10.4); request an approval with no
+answerer and record the denial (step 10.3); give a grant, end the session, resume it and
+record that the grant is gone (step 10.10). Under the default of M1-D-CLOSE-2 each is run
+as the scripted test that composes the real pipeline, watched by a named person; an
+interactive run through a launcher waits for DH-S-11 and DH-S-21. The other steps take
+the rule-3 default. Rows 10.3, 10.4 and 10.6 run only after plan Stages 16.1 to 16.3 have
+landed (plan 16.6.1). Historical record: "Manual checks (impl.md DH-S-10)". How to run and
+fill the register: [the evidence runbook](README.md#manual-checks). Composed tests run as
+`go -C src/harness test -count=1 -v -run '<names>' <package>`.
+
+#### Manual checks register
+
+| Step | Check | Procedure | Systems | Operator | Commit | Seen | Label |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 10.1 | rule-3 default: a tool is declared once and registered in a scope | composed test: `./internal/tools/` (the declaration and registry tests) | one lane | | | | `manual` |
+| 10.2 | rule-3 default: the system prompt and tool list are assembled deterministically | composed test: `./internal/tools/prompt/` | one lane | | | | `manual` |
+| 10.3 | an approval with no answerer is denied, with an audit record | composed test: `TestNoAnswererMeansNoThroughTheExecutor` in `./internal/tools/core/`; record the outcome and the approval code | one lane | | | | `manual` |
+| 10.4 | arguments that break the schema: the body never runs | composed test: `TestSchemaBreakingArgumentsNeverReachTheBody`, `TestDenialEnforcedInTheExecutor` in `./internal/tools/core/`; record the validation code and the body counter (0) | one lane | | | | `manual` |
+| 10.5 | rule-3 default: enforced deadlines that never hold a turn | composed test: `TestDeadlineDoesNotHoldTheTurn`, `TestDeadlineGraceEndsAtExpiryPlusGrace` in `./internal/tools/core/` | one lane | | | | `manual` |
+| 10.6 | rule-3 default: no result larger than the budget reaches a model | composed test: `TestOversizedResultSpilledBeforeReachingTheModel` in `./internal/tools/core/`, `TestPolicyNeverOverBudget` in `./internal/storage/spill/policy/` | one lane | | | | `manual` |
+| 10.7 | rule-3 default: input is durable at once and runs at most once | composed test: `TestInboxSendIsDurableBeforeItReturns`, `TestClaimedItemRunsAtMostOnceAcrossACrash` in `./internal/agent/` | one lane | | | | `manual` |
+| 10.8 | rule-3 default: the model asks the user a question, waits or moves on | composed test: `TestQuestionAnsweredThroughTheInbox`, `TestTimedQuestionReturnsPendingAndTheLateAnswerIsOneUserMessage` in `./internal/human/question/` | one lane | | | | `manual` |
+| 10.9 | rule-3 default: a person runs a command against an agent from any client | composed test: `TestCommandRunsAttributedAndDeliversThroughTheInbox` in `./internal/human/command/` | one lane | | | | `manual` |
+| 10.10 | give a grant, end the session, resume it: the grant is gone | composed test: `TestGrantDoesNotSurviveResume` in `./internal/human/approval/`; record the empty grant list, the `grant/ended{session-ended}` event and that the call asks again | one lane | | | | `manual` |
+
+### Cleanup evidence
+
+At closure: every temporary store is gone; `git status --porcelain` empty after the run.
+Historical: none recorded.
+
+### Open items
+
+At closure: plan 18.1.11 lists them. Now open: the known-false ticks of impl.md 10.3, 10.4
+and 10.6 (plan 16.6.1) and their gaps M1-G-PIPE-1 to -8 (plan Stages 16.1 to 16.3); the
+items under "Known limits"; DH-E-TOOLS-3 (DH-S-39) and DH-E-HUMAN-6 (DH-S-22).

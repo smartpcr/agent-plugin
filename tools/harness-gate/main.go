@@ -20,11 +20,12 @@
 //	rehearse [--out dir]   the release rehearsal: cmd/dsh for six targets, pure Go,
 //	                       -trimpath, SHA-256 and embedded version printed, nothing
 //	                       published (DH-D-TOOLCHAIN-5)
-//	preflight              the credentialed scenario workflow's first step: fails when
-//	                       DSH_DEEPSEEK_API_KEY is absent, the index disagrees with the
+//	preflight              the scenario workflow's first step: fails when the
+//	                       credential hook fails, the index disagrees with the
 //	                       scenario tests, an ID of DSH_REQUIRE_SCENARIOS has no
 //	                       scenario test, or its index entry requires a stage past
-//	                       built-through (DH-D-TOOLCHAIN-4)
+//	                       built-through (DH-D-TOOLCHAIN-4); it reads no model key
+//	                       (models-signed-in-claude-copilot)
 //	require --stage DH-S-n prints the index entry of the stage being accepted, the
 //	                       value of DSH_REQUIRE_SCENARIOS
 package main
@@ -72,6 +73,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("harness-gate", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	root := flags.String("root", ".", "repository root, or the directory of a single module to gate")
+	evidence := flags.String("evidence", "", "write an evidence record of the run (header, full output, exit status, SHA-256) to this file; refused on a tree that is not clean")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -79,12 +81,42 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "harness-gate: unexpected arguments %q\n", flags.Args())
 		return 2
 	}
+	if *evidence != "" {
+		return runEvidence(ctx, *root, *evidence, args, stdout, stderr)
+	}
 	cfg, err := NewConfig(*root)
 	if err != nil {
 		fmt.Fprintf(stderr, "harness-gate: %v\n", err)
 		return 2
 	}
+	printToolchain(stdout, cfg)
 	return ExitCode(Run(ctx, stdout, Gates(cfg)))
+}
+
+// runEvidence is "harness-gate --root dir --evidence file": the clean-tree check
+// first (exit 2 naming the dirty paths, no file written and no gate started), then
+// the floor check of NewConfig, then the gates recorded through Config.RunEvidence.
+func runEvidence(ctx context.Context, root, path string, args []string, stdout, stderr io.Writer) int {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		fmt.Fprintf(stderr, "harness-gate: %v\n", err)
+		return 2
+	}
+	commit, err := CleanCommit(ctx, abs)
+	if err != nil {
+		fmt.Fprintf(stderr, "harness-gate: --evidence: %v\n", err)
+		return 2
+	}
+	if path, err = filepath.Abs(path); err != nil {
+		fmt.Fprintf(stderr, "harness-gate: %v\n", err)
+		return 2
+	}
+	cfg, err := NewConfig(abs)
+	if err != nil {
+		fmt.Fprintf(stderr, "harness-gate: %v\n", err)
+		return 2
+	}
+	return cfg.RunEvidence(ctx, path, commit, args, Gates, stdout, stderr)
 }
 
 // subcommandFlags parses the flags of subcommand name: --root and those add
@@ -122,6 +154,7 @@ func runRehearse(ctx context.Context, args []string, stdout, stderr io.Writer) i
 		fmt.Fprintf(stderr, "harness-gate rehearse: %v\n", err)
 		return 2
 	}
+	printToolchain(stdout, cfg)
 	if out == "" {
 		tmp, err := os.MkdirTemp("", "harness-gate-rehearse-")
 		if err != nil {
@@ -161,7 +194,7 @@ func runPreflight(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "harness-gate preflight: FAILED, no scenario is started:\n%v\n", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "harness-gate preflight: passed; %s is set; %d required scenarios", acceptance.SecretEnv, len(plan.Scenarios))
+	fmt.Fprintf(stdout, "harness-gate preflight: passed; %d required scenarios", len(plan.Scenarios))
 	for _, s := range plan.Scenarios {
 		fmt.Fprintf(stdout, "\n  %s  %s (%s)", s.ID, s.Test, s.File)
 	}

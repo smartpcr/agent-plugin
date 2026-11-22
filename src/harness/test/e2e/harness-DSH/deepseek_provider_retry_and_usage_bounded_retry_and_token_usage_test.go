@@ -767,7 +767,7 @@ func main() {
 	out["boundary_err"] = errString(acceptance.CheckBoundary(root, x, sc))
 	pre := map[string]string{}
 	for _, id := range os.Args[2:] {
-		_, err := acceptance.Preflight(map[string]string{acceptance.SecretEnv: "e2e-dummy-not-a-key", acceptance.RequireEnv: id}, x, sc)
+		_, err := acceptance.Preflight(map[string]string{acceptance.RequireEnv: id}, x, sc)
 		pre[id] = errString(err)
 	}
 	out["preflight"] = pre

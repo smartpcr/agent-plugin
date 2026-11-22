@@ -1,5 +1,45 @@
 # DH-S-1 evidence
 
+Decisions governing this record: [decisions.md](../decisions.md), chiefly `platforms-windows-wsl` (the gate lanes are Windows native and Linux under WSL; the macOS rows below are historical) and `models-signed-in-claude-copilot` (the preflight no longer asks for a model key).
+
+Closure status: open
+
+This line becomes `closed at <sha>` only in plan step 18.1.14, at the M1 closure commit.
+The stage records below are history: under M1-D-CLOSE-1 every tick made while the gate
+was red is provisional and is re-verified at that commit. The fields of impl.md sec. 7.3
+and the per-step manual-check register are at the end of this file, in "Evidence record
+(impl.md sec. 7.3)"; how to fill them is in [the evidence runbook](README.md).
+
+**Scope change (2026-11-22, decision `platforms-windows-wsl`).** impl.md DH-S-1 asks for
+the gate to pass "on Linux, macOS and Windows". For M1 the gate of record runs on two
+systems: Windows (native) and Linux under WSL on the development host. macOS has left M1
+scope: a macOS row reads "out of scope (`platforms-windows-wsl`)" and is never a pass or a
+skip. No stage brings macOS back yet (`macos-return-stage`, open). Cross-compiling
+`cmd/dsh` for macOS stays a gate (QG-8). The upstream rules this overrides carry DC-3
+notes in [toolchain.md](../../../harness/upstream/toolchain.md#dh-d-toolchain-4).
+
+## Toolchain scope decisions
+
+Where the toolchain built in DH-S-1 differs from
+[toolchain.md](../../../harness/upstream/toolchain.md), this table says what was built,
+what the spec asks for, which decision in [decisions.md](../decisions.md) covers the
+difference, and where the difference ends (gap-closure plan steps 12.2.1 and 12.2.4). A
+row whose decision is `open` follows the plan's default until the owner answers; the
+default is not in force.
+
+| Item | What was built (DH-S-1 closing commit `e13abf3`) | What the spec asks for | Decision (status) | Return stage |
+| --- | --- | --- | --- | --- |
+| Gate list | 8 gates: `gofmt`, `vet` (with the own analyzers), `test`, `coverage`, `trace`, `scenario-index`, `budget`, `cross-compile` | DH-ADR-TOOLCHAIN-8 and -9, DH-D-TOOLCHAIN-2: also staticcheck, module tidy and verify, the vulnerability check and replay | M1-D-GATE-23, M1-D-TOOL-1 (both open; default: build the missing gates now, growing the list to 12 with `modules`, `staticcheck`, `vulncheck`, `self`) | plan 13.4, 13.5; replay by `replay-gate-step-dh-s-16` below |
+| Module hygiene | `modcheck` tests: three modules, one `go` floor, no `replace`, pins resolve, the release build ignores `go.work`. No `go mod tidy -diff` or `go mod verify` gate | DH-ADR-TOOLCHAIN-11: tidy and verify as gates; tools pinned in a separate tools module | M1-D-GATE-23 (open); M1-D-TOOL-2 (open; default: `tools/harness-gate/go.mod` is the tools module) | plan 13.4 |
+| Site exceptions | None: the own analyzers have no exception form at all (and no baseline file) | DH-ADR-TOOLCHAIN-8: an exception written at the site with a reason; a test fails on one without a reason and prints the total | M1-D-GATE-23 (open; the QG-2 "no exemption list" tension gets a DC-3 note in plan 13.5.8) | plan 13.5 |
+| Release rehearsal | Built in part: `harness-gate rehearse` builds six pure-Go binaries with `go build`, prints each SHA-256 and embedded version, publishes nothing; `release.yml` and `.goreleaser.yaml` unchanged | DH-D-TOOLCHAIN-5: a GoReleaser snapshot with archives and a checksum file, and each archive that matches a runner starts and answers a keyless replay | M1-D-TOOL-3 (open; default: a GoReleaser snapshot at plan 19.1, before DH-S-18) | plan 19.1.1; run by DH-E-TOOLCHAIN-2 at DH-S-18 |
+| Coverage floor | Stricter than the spec: 85% for every package of the three product modules, `main` packages included | DH-ADR-TOOLCHAIN-7: 85% for every package under `src/harness/internal`; `main` packages excluded by rule | `coverage-floor-all-packages-kept` (in force, lead settlement; DC-3 record, rule kept) | none: the stricter rule stays |
+| Import rules | Go tests: `src/harness/internal/archtest/rules.go`, run by `TestImportDirection` in the `test` gate | DH-ADR-TOOLCHAIN-8 lists them as an own analyzer; DH-ADR-TOOLCHAIN-9 allows structural rules as Go tests | `import-rules-by-archtest` (in force, lead settlement) | none: met. The other three missing own analyzers are built by plan 13.5.4 |
+| HTTP-client rule | Not in DH-S-1 | DH-ADR-TOOLCHAIN-8: an analyzer owned by the area that states the rule | `http-client-rule-owner` (in force, lead settlement): util's `DH-T-UTIL-22` for DH-D-UTIL-10 | impl.md step 23.16 (DH-S-23) |
+| Golden files | Checked inside the `test` gate (`golden.Assert` runs in plain `go test`); no separate gate | DH-D-TOOLCHAIN-2 lists golden files as one of the runner's checks | `goldens-in-test-gate` (in force, lead settlement); the local lanes set `CI=1` so `-update` is refused there | plan 12.3.5 (`CI=1`) |
+| Replay gate and `harness-replay` job | Neither exists, and no impl.md stage schedules them | DH-D-TOOLCHAIN-4, DH-ADR-TOOLCHAIN-12, `DH-T-TOOLCHAIN-5` | `replay-gate-step-dh-s-16` (open: a proposed impl.md step 16.11, which the owner signs under DC-2) | DH-S-16; built by plan 19.1.2 |
+| Platform lanes | Hosted `ubuntu-latest`, `macos-latest`, `windows-latest` (historical) | DH-D-TOOLCHAIN-4, DH-ADR-TOOLCHAIN-6 and -12: Linux, macOS and Windows; no lane switched off without a failing job | `platforms-windows-wsl` (in force); hosted lanes kept by M1-D-GATE-21 / M1-D-TOOL-5 (open) | plan 12.3; macOS: `macos-return-stage` (open, no stage) |
+
 ## Stage 1.1 -- Three Module Workspace (manual check)
 
 | Field | Value |
@@ -47,6 +87,37 @@ go.sum hash, checked offline against git history), and the `DH-T-TOOLCHAIN-11` /
 `DH-T-SDK-17` rule tests. The TC-02b golden
 (`src/go/cmd/cordis-sample/testdata/output.golden`) is in `a647d49`, before any DH-S-2
 edit, and passes `go -C src/go test -count=20 ./cmd/cordis-sample`.
+
+## Stage 1.2 -- Gate Runner Core (manual check, recorded after the fact)
+
+This record was missing (gap M1-G-TOOL-18) and is added by gap-closure plan step 12.2.4.
+It holds no new run: every result below is copied from the Stage 1.4 rows of this file,
+and the commits are read from git history.
+
+| Field | Value |
+| --- | --- |
+| Kind | `manual` |
+| Commit that built the stage | `609c1d0f9aaa12080c078f8b66aaed7bc22a45e9` ("[impl] Gate Runner Core", PR #8, 2026-11-19): `runner.go`, `gates.go`, `coverage.go`, the own analyzers `nosleep`, `onespawn` and `cleanup`, and the seeded-violation modules under `tools/harness-gate/testdata/` (`race-seeded`, `unformatted-file`, `coverage-40pct` and others). Its godog suite followed in `c2b0c62` (PR #9). |
+| Commit at which the seeded checks were seen | `e13abf3234ea9adeab5d72d329c873b52bb7c901` (the Stage 1.4 commit, 2026-11-19), local Windows, `go1.27.4 windows/amd64`, by the stage author (Copilot agent). No seeded run at `609c1d0` itself is recorded. |
+| Gate list at `609c1d0` | 7 gates: `gofmt`, `vet`, `test`, `coverage`, `trace`, `budget`, `cross-compile`. `scenario-index` was added at `e13abf3`, making the 8 of the Stage 1.4 record. |
+| Date written | 2026-11-22 |
+
+The seeded checks of impl.md DH-S-1 "Manual checks" ("seed one violation per gate and
+record that the runner names it"). Each `tools/harness-gate/testdata` module was copied
+to a temp directory and run with a built `harness-gate --root <copy>`; the rows are those
+of "Manual checks (seeded violations)" under Stage 1.4:
+
+| Seeded violation | Gate named | What was seen | Exit |
+| --- | --- | --- | --- |
+| data race (`race-seeded`) | `test` | `harness-gate: FAILED at gate test` -- `failing tests: TestRace; data race detected` | 1 |
+| unformatted file (`unformatted-file`) | `gofmt` | `harness-gate: FAILED at gate gofmt` -- `not gofmt-formatted:` `add.go` | 1 |
+| package under the floor (`coverage-40pct`) | `coverage` | `harness-gate: FAILED at gate coverage` -- `example.com/cov40/p: 40% < 85% of statements (2 of 5 covered)` | 1 |
+
+Automated counterparts in `609c1d0`: `TestRunStopsAtFirstFailingGate`,
+`TestGateListIsFixed` (`runner_test.go`) and `TestSeededViolationFailsNamedGate`
+(`gates_test.go`). They passed in the full `GOWORK=off go -C tools/harness-gate test
+-count=1 ./...` run at `e13abf3` recorded under Stage 1.4; no run at `609c1d0` is
+recorded.
 
 ## Stage 1.3 -- Test Layers and Golden Helper
 
@@ -97,13 +168,20 @@ ok  	github.com/smartpcr/agent-plugin/tools/harness-gate/modcheck	17.238s
 | --- | --- |
 | Kind | `automated` (CI lanes, gate unit/composition tests) and `manual` (seeded violations) |
 | Source and build identity | Commit `e13abf3234ea9adeab5d72d329c873b52bb7c901` (one commit for `src/go`, `src/sdk`, `src/harness`; no module tags cut -- this story publishes nothing, so the embedded version is `(devel)`) |
-| Go version | CI: `go1.26.0` linux/amd64, darwin/arm64, windows/amd64 (`go-version-file: src/harness/go.mod`); local: `go1.27.4 windows/amd64` |
-| Environment | GitHub-hosted `ubuntu-latest`, `macos-latest`, `windows-latest`; `CGO_ENABLED=1`, C compiler verified per lane (`go env CC`; Windows: MSYS2 UCRT64 `gcc`) |
-| Run identifiers | `ci` run [44670956416](https://github.com/smartpcr/agent-plugin/actions/runs/44670956416) (`workflow_dispatch` at `e13abf3`): job `harness (ubuntu-latest)` 136071526284, `harness (macos-latest)` 136071526164, `harness (windows-latest)` 136071526084 -- all success; artifacts `harness-gate-<os>` |
+| Go version | CI: `go1.26.0` linux/amd64, darwin/arm64 (historical), windows/amd64 (`go-version-file: src/harness/go.mod`); local: `go1.27.4 windows/amd64` |
+| Environment | GitHub-hosted `ubuntu-latest`, `macos-latest` (historical), `windows-latest`; `CGO_ENABLED=1`, C compiler verified per lane (`go env CC`; Windows: MSYS2 UCRT64 `gcc`) |
+| Run identifiers | `ci` run [44670956416](https://github.com/smartpcr/agent-plugin/actions/runs/44670956416) (`workflow_dispatch` at `e13abf3`): job `harness (ubuntu-latest)` 136071526284, `harness (macos-latest)` 136071526164 (historical), `harness (windows-latest)` 136071526084 -- all success; artifacts `harness-gate-<os>` |
 | `DSH_REQUIRE_SCENARIOS` | empty -- no scenario executes in DH-S-1 (tech-spec sec. 3.2); `harness-scenarios.yml` was not run with a stage |
 | Date | 2026-11-21 |
 
-### Gate output, three operating systems
+> **Historical (decision `platforms-windows-wsl`, 2026-11-22).** The macOS entries in this
+> record (the `macos-latest` lane, `darwin/arm64` Go, job 136071526164) were made before
+> macOS left M1 scope. They are kept as history only. For M1 closure they are neither a
+> pass nor a skip: a macOS row now reads "out of scope (`platforms-windows-wsl`)", and
+> the gate of record runs on Windows (native) and Linux (WSL). The darwin binaries of the
+> rehearsal below are cross-compile output, which stays in scope (QG-8).
+
+### Gate output, three operating systems (historical lanes)
 
 Every lane ends identically (timings stripped; full logs in the run's artifacts):
 
@@ -123,7 +201,7 @@ harness-gate: PASSED all 8 gates
 | Lane | Result |
 | --- | --- |
 | `harness (ubuntu-latest)` | pass, all 8 gates |
-| `harness (macos-latest)` | pass, all 8 gates |
+| `harness (macos-latest)` | historical: pass, all 8 gates (macOS out of M1 scope, `platforms-windows-wsl`) |
 | `harness (windows-latest)` | pass, all 8 gates |
 
 ### Release rehearsal (Linux lane, DH-D-TOOLCHAIN-5)
@@ -157,7 +235,7 @@ ok  	github.com/smartpcr/agent-plugin/tools/harness-gate/modcheck	24.437s
 | Preflight fails on a missing secret | `acceptance.TestPreflight` (environment as a map; empty plan on failure), `TestPreflightSubcommand/missing_secret` (no `$GITHUB_OUTPUT` written) |
 | Preflight fails on an unknown required scenario; empty list passes | `acceptance.TestPreflight` (`DH-E-FAKE-9`), `TestPreflightSubcommand` |
 | Rehearsal produces six pure-Go binaries, publishes nothing | `TestRehearseBuildsSixPureGoBinaries` (`GOPROXY=off`, parent `CGO_ENABLED=1`/`GOFLAGS=-race` overridden, build info `CGO_ENABLED=0 -trimpath=true`, tags unchanged), `TestRehearseNamesFailingTarget` |
-| Gate passes on all three CI operating systems | run 44670956416 above |
+| Gate passes on all three CI operating systems (historical; restated by `platforms-windows-wsl` as Windows native plus Linux under WSL, still open) | run 44670956416 above |
 | Authored scenarios are indexed, compile, do not run | `TestAuthoredScenariosAreIndexedAndCompileButDoNotRun` (`scenario-index` passes on the repo; `go -C src/harness vet -tags scenario ./...` exit 0; `go test -tags= -list` lists no test, `-tags scenario` lists `TestToolchainRehearsal`), `TestScenarioIndexGateNamesUnindexedScenario`, `acceptance.TestCheck` |
 
 ### Manual checks (seeded violations)
@@ -189,4 +267,155 @@ and after (unchanged). No tag, release or upload was made.
   the DH-S-16 recording `testkit/scenarios/testdata/rehearsal-replay`).
 - `DH-E-TOOLCHAIN-1`: open; authored at DH-S-11, run at DH-S-17.
 - `DH-T-TOOLCHAIN-1`, `-3`, `-5`, `-6` (DH-S-16) and `-10`, `-13` (DH-S-46): open, as recorded under Stage 1.3.
-- `harness-scenarios.yml` has not been run: the `DSH_DEEPSEEK_API_KEY` secret is consumed first at the stage that accepts a scenario.
+- `harness-scenarios.yml` has not been run: the `DSH_DEEPSEEK_API_KEY` secret is consumed first at the stage that accepts a scenario. (Historical: under decision `models-signed-in-claude-copilot` the secret is removed by gap-closure-plan step 12.3.8.)
+
+## Local lanes
+
+This section is the exit evidence of plan Stage 12.3 (gaps M1-G-GATE-20, -21,
+M1-G-TOOL-12 to -15). Under decision `platforms-windows-wsl` the gate of record runs on
+two local lanes of the Windows development host: **Windows native** and **Linux under
+WSL**. macOS is out of scope (`platforms-windows-wsl`). The hosted CI lanes stay as
+regression signals only.
+
+**Decisions.** All in [decisions.md](../decisions.md):
+- `platforms-windows-wsl` (OWNER-1, in force): the two lanes; macOS out of M1 scope.
+- M1-D-GATE-21 and M1-D-TOOL-5 (one question, both `open`): what hosted CI keeps. The
+  plan's default, which plan step 12.3.7 applies: hosted `ubuntu-latest` and
+  `windows-latest` `harness` lanes as regression signals, macOS removed.
+- `lane-toolchain-floor` (in force, lead settlement): go1.26.0 on both lanes.
+- `local-run-record-format` (in force, lead settlement): the run-record id and path.
+
+**Where the procedure is.** Provisioning, the clone rule and the preflight checks:
+[tools/harness-gate/README.md sec. Lanes](../../../../tools/harness-gate/README.md#lanes).
+The lane scripts: [`lanes/wsl.sh`](../../../../tools/harness-gate/lanes/wsl.sh) and
+[`lanes/win.ps1`](../../../../tools/harness-gate/lanes/win.ps1). How to run them and
+record a run: [the evidence runbook](README.md#lanes).
+
+**Changed workflows (plan 12.3.7 and 12.3.8).**
+- [`.github/workflows/ci.yml`](../../../../.github/workflows/ci.yml): the `harness` matrix
+  is `[ubuntu-latest, windows-latest]`, and the header comment says the hosted lanes are
+  regression signals and the evidence of record is the local lanes.
+- [`.github/workflows/harness-scenarios.yml`](../../../../.github/workflows/harness-scenarios.yml):
+  the `scenarios` matrix is `[ubuntu-latest, windows-latest]`, and the DeepSeek key is no
+  longer read (`models-signed-in-claude-copilot`).
+- [`.github/workflows/harness-manual-checks.yml`](../../../../.github/workflows/harness-manual-checks.yml):
+  macOS is dropped from its matrix.
+
+### Provisioning facts
+
+`manual`, measured on 2026-11-22 at the provisioning of plan steps 12.3.1 and 12.3.2.
+Operator: to be named by the lead. These are facts of the host, not a gate run.
+
+| Fact | WSL lane (12.3.1) | Windows native lane (12.3.2) |
+| --- | --- | --- |
+| Host | Windows 10.0.28000.3501; WSL2, default version 2 | Windows 10.0.28000.3501 |
+| Install | `wsl --install -d Ubuntu-24.04 --no-launch` | -- |
+| Distribution | Ubuntu 24.04.5 LTS | -- |
+| Kernel | 6.18.58.1-microsoft-standard-WSL2 | -- |
+| User | default user `dsh`, uid 1000 (not root) | not recorded at provisioning; `win.ps1` refuses an elevated shell at each run |
+| `/etc/wsl.conf` | `[user] default=dsh`, `[interop] appendWindowsPath=false`, `[boot] systemd=true` | -- |
+| systemd | on: systemd is PID 1 and `systemctl --user` is available, so the Linux user-scope path is usable (EN-5) | -- |
+| Go | go1.26.0 linux/amd64 in `/usr/local/go`, from the go.dev tarball (SHA-256 `aac1b08a0fb0c4e0a7c1555beb7b59180b05dfc5a3d62e40e9de90cd42f88235`, matched against the go.dev JSON); `PATH` set in `~/.profile` (login shells) | host default go1.27.4; `GOTOOLCHAIN=go1.26.0` selects go1.26.0 windows/amd64 (downloaded by Go on first use) |
+| C compiler | gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0, from `build-essential` | `CC=gcc`, resolving to `C:\msys64\ucrt64\bin\gcc.exe`: gcc (Rev5, Built by MSYS2 project) 16.1.0 |
+| git | 2.43.0 | not recorded |
+| Caches and temp | `GOCACHE=/home/dsh/.cache/go-build`, `GOMODCACHE=/home/dsh/go/pkg/mod`, `TMPDIR` unset (so `/tmp`), all on ext4 | not recorded |
+| File systems | the clone and the caches on ext4 (`/dev/sdd`; `stat -f -c %T` prints `ext2/ext3`); `/mnt/e` reports `v9fs`, which the lane preflight refuses | not recorded at provisioning; `win.ps1` requires a local fixed NTFS or ReFS volume at each run |
+| Checkout | `git clone /mnt/e/work/github/ai/agent-plugin ~/src/agent-plugin`, `core.autocrlf=false`, on ext4, clean at `cf64524` | the host checkout |
+| macOS | out of scope (`platforms-windows-wsl`) | |
+
+### First lane runs (plan 12.3.9)
+
+`manual`, **not closure evidence.** Both scripts run once at the Stage 12.3 commit to
+prove the lanes work end to end; each is expected to stop at the `vet` gate, which Phase
+13 repairs. The record is the first triage input for plan step 13.7. The lead fills this
+table after the stage commit.
+
+| Field | WSL lane (`lanes/wsl.sh`) | Windows lane (`lanes/win.ps1`) |
+| --- | --- | --- |
+| Run-record id | _to be filled_ | _to be filled_ |
+| Record file and SHA-256 | _to be filled_ | _to be filled_ |
+| Rehearsal file and SHA-256 | _to be filled_ | -- (WSL lane only) |
+| Operator | _to be filled_ | _to be filled_ |
+| Commit | _to be filled_ | _to be filled_ |
+| Preflight | _to be filled_ (the `preflight passed` line, or the failed check and exit 3) | _to be filled_ |
+| Gate result | _to be filled_ (expected: `FAILED at gate vet`, exit 1) | _to be filled_ (expected: `FAILED at gate vet`, exit 1) |
+| Label | `manual`, not closure evidence | `manual`, not closure evidence |
+
+## Evidence record (impl.md sec. 7.3)
+
+These are the eight fields of [impl.md sec. 7.3](../../../harness/impl.md#73-the-evidence-record),
+in the format of [the evidence runbook](README.md#the-evidence-record-headings). Plan step
+18.1.7 fills them at the frozen M1 closure commit. Until then each field points to the
+history above, which stays exactly as it was recorded and is not closure evidence
+(M1-D-CLOSE-1).
+
+### Source and build identity
+
+At closure: not yet recorded (plan 18.1.7). Historical: commits `a647d49` (Stage 1.1),
+`609c1d0` and `e13abf3` (Stage 1.2), `38969de` (Stage 1.3) and `e13abf3` (Stage 1.4, the
+DH-S-1 closing record), each with its toolchain, in the stage sections above. The
+rehearsal's binary checksums and embedded versions are under "Release rehearsal (Linux
+lane, DH-D-TOOLCHAIN-5)".
+
+### Environment and fixture
+
+At closure: both local lanes, as provisioned in "Local lanes" above; the run-record
+header gives the rest. macOS: out of scope (`platforms-windows-wsl`). Historical: the
+hosted CI lanes and the local Windows runs named in the stage sections above; the macOS
+lane there is historical.
+
+### Exact tests and commands
+
+At closure: `lanes/wsl.sh` and `lanes/win.ps1` (each runs `GOWORK=off go -C
+tools/harness-gate run . --root ../.. --evidence <file>`; the WSL script also runs
+`rehearse`), and `GOWORK=off go -C tools/harness-gate test -count=1 ./...`.
+`DSH_REQUIRE_SCENARIOS`: empty (no scenario executes in DH-S-1). Historical: the commands
+in the stage sections above.
+
+### Run identifiers
+
+At closure: the run-record ids of both lanes, in the runbook's template (plan 18.1.3).
+WSL lane: not run. Windows lane: not run. macOS: out of scope (`platforms-windows-wsl`).
+Not closure evidence: the first lane runs of 12.3.9 ("Local lanes" above). Historical:
+CI run 44670956416 (Stage 1.4), whose macOS job is historical.
+
+### Results
+
+At closure: not yet recorded. Historical: "Gate output, three operating systems
+(historical lanes)" and "Tests of this stage" under Stage 1.4.
+
+### Manual checks
+
+impl.md DH-S-1 names one check: seed one violation per gate and record that the runner
+names it. Historical records: "Stage 1.2 -- Gate Runner Core" and "Manual checks (seeded
+violations)" above. How to run and fill the register: [the evidence runbook](README.md#manual-checks).
+Commands run from the repository root; a "seeded gate" row copies the named module of
+`tools/harness-gate/testdata/` to a temporary directory and runs `GOWORK=off go -C
+tools/harness-gate run . --root <copy>`.
+
+#### Manual checks register
+
+| Step | Check | Procedure | Systems | Operator | Commit | Seen | Label |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1.1 | rule-3 default: three modules build together, the release build ignores `go.work` | by hand: from a clean clone, `go build ./src/go/... ./src/sdk/... ./src/harness/...`, `go list -m` (three modules), `GOWORK=off go -C src/harness build ./cmd/dsh` and run `./src/harness/dsh` (prints `dsh (devel)`) | one lane | | | | `manual` |
+| 1.2 | seeded violation per gate: the runner names the gate | seeded gate: run each module of `testdata/` and record `harness-gate: FAILED at gate <gate>`, exit 1, and no later gate started; with `testdata/fake-go` first on `PATH`, setup fails with exit 2 naming both versions | one lane | | | | `manual` |
+| 1.3 | seeded violation: a data race | seeded gate: `race-seeded` and `budget-race` each fail at `test` (`data race detected`) | one lane | | | | `manual` |
+| 1.4 | seeded violation: an own-analyzer finding | seeded gate: add a `time.Sleep` call to a `_test.go` file of a copied module and record `FAILED at gate vet` naming the `nosleep` finding | one lane | | | | `manual` |
+| 1.5 | seeded violation: a package under the floor | seeded gate: `coverage-40pct` fails at `coverage` (`40% < 85%`); `coverage-blocked` fails naming `TestBlocked`; `coverage-child` passes | one lane | | | | `manual` |
+| 1.6 | seeded violation: a golden drift; layers excluded | composed test: `go -C src/harness test -count=1 -v ./internal/testkit/golden` (drift reported; `-update` refused with `CI=1`); seeded gate: `layer-tagged` passes `test` and `coverage` | one lane | | | | `manual` |
+| 1.7 | seeded violation: a budget over its limit | seeded gate: `budget-exceeded` with `DSH_BUDGET_RELAX=1` set still fails at `budget` | one lane | | | | `manual` |
+| 1.8 | rule-3 default: keyless CI lanes and a credentialed preflight | by hand: read the `harness` matrix of `ci.yml` and the `scenarios` matrix of `harness-scenarios.yml` (equal to the decided list, M1-D-GATE-21 / M1-D-TOOL-5); run `GOWORK=off go -C tools/harness-gate run . preflight --root ../..` with no model variable (passes) and with `DSH_REQUIRE_SCENARIOS=DH-E-FAKE-9` (fails naming the ID) | one lane | | | | `manual` |
+| 1.9 | seeded violation: a target that does not cross-compile; the rehearsal | seeded gate: `cross-broken` fails at `cross-compile` naming `windows/arm64`; by hand: the `-rehearse.txt` of a WSL lane run lists six binaries with `vcs.modified=false` and publishes nothing | WSL (rehearsal) | | | | `manual` |
+
+### Cleanup evidence
+
+At closure: not yet recorded; the comparison is `git for-each-ref refs/tags` before and
+after the rehearsal (unchanged) and `git status --porcelain` empty after the run.
+Historical: "Cleanup evidence" under Stage 1.4.
+
+### Open items
+
+At closure: plan 18.1.11 lists them. Now open: the `DH-E-TOOLCHAIN-1` and `-2` scenarios
+and the `DH-T-TOOLCHAIN` tests listed under "Open items" of Stage 1.4; the toolchain
+scope rows whose decisions are `open` ("Toolchain scope decisions" above); macOS, out of
+scope (`platforms-windows-wsl`), with no return stage (`macos-return-stage`, open).

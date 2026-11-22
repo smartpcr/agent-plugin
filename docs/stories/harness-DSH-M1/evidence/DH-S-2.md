@@ -1,5 +1,15 @@
 # DH-S-2 evidence
 
+Decisions that govern M1 records, this one included, are logged in [decisions.md](../decisions.md).
+
+Closure status: open
+
+This line becomes `closed at <sha>` only in plan step 18.1.14, at the M1 closure commit.
+The stage records below are history: under M1-D-CLOSE-1 every tick made while the gate
+was red is provisional and is re-verified at that commit. The fields of impl.md sec. 7.3
+and the per-step manual-check register are at the end of this file, in "Evidence record
+(impl.md sec. 7.3)"; how to fill them is in [the evidence runbook](README.md).
+
 ## Stage 2.1 -- Final Unload and Fiber Cancellation
 
 ### Manual check: the port's example output (TC-02b)
@@ -148,3 +158,72 @@ does not use `WithStrictConfig`, registers no config hook, and its only config e
 
 `DH-D-CORDIS-6`, `DH-D-CORDIS-10` and `DH-D-CORDIS-11` (P1/P2) stay for DH-S-38 and
 DH-S-49.
+
+## Evidence record (impl.md sec. 7.3)
+
+These are the eight fields of [impl.md sec. 7.3](../../../harness/impl.md#73-the-evidence-record),
+in the format of [the evidence runbook](README.md#the-evidence-record-headings). Plan step
+18.1.7 fills them at the frozen M1 closure commit. Until then each field points to the
+history above, which stays exactly as it was recorded and is not closure evidence
+(M1-D-CLOSE-1).
+
+### Source and build identity
+
+At closure: not yet recorded (plan 18.1.7). Historical: the Stage 2.1 and Stage 2.3
+records above name the toolchain (`go1.27.4 windows/amd64`) and date but no commit.
+
+### Environment and fixture
+
+At closure: both local lanes, from their run records. macOS: out of scope
+(`platforms-windows-wsl`). Historical: one local Windows machine. Fixture: the committed
+golden `src/go/cmd/cordis-sample/testdata/output.golden`.
+
+### Exact tests and commands
+
+At closure: the lane scripts, and `go -C src/go test -race -count=1 ./...`. Historical:
+the `go test` lines under "Tests" of Stage 2.1 and Stage 2.3.
+
+### Run identifiers
+
+At closure: the run-record ids of both lanes, in the runbook's template (plan 18.1.3).
+WSL lane: not run. Windows lane: not run. macOS: out of scope (`platforms-windows-wsl`).
+Historical: no run id was recorded.
+
+### Results
+
+At closure: not yet recorded. Historical: the test tables of Stage 2.1, 2.2 and 2.3.
+
+### Manual checks
+
+impl.md DH-S-2 names one check for every step: run the port's existing example with
+each change and record that its output is unchanged except where the change says so.
+Historical records: "Manual check: the port's example output (TC-02b)" under Stage 2.1
+and Stage 2.3. How to run and fill the register: [the evidence runbook](README.md#manual-checks).
+Each row runs `go -C src/go test -race -count=1 -v -run TestOutputMatchesGolden
+./cmd/cordis-sample/` and records `PASS` and that `git diff --exit-code
+src/go/cmd/cordis-sample/testdata/output.golden` is clean (the golden was not
+re-recorded).
+
+#### Manual checks register
+
+| Step | Check | Procedure | Systems | Operator | Commit | Seen | Label |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 2.1 | the example's output is unchanged (unload is complete and final) | composed test: the sample golden, as above; expected difference: none | one lane | | | | `manual` |
+| 2.2 | the example's output is unchanged (a cancellation context per fiber) | composed test: the sample golden; expected difference: none | one lane | | | | `manual` |
+| 2.3 | the example's output is unchanged (context values, scoped dispatch) | composed test: the sample golden; expected difference: none | one lane | | | | `manual` |
+| 2.4 | the example's output is unchanged (contained `Notify`) | composed test: the sample golden; expected difference: none | one lane | | | | `manual` |
+| 2.5 | the example's output is unchanged (around key) | composed test: the sample golden; expected difference: none | one lane | | | | `manual` |
+| 2.6 | the example's output is unchanged (raw, effective and candidate config) | composed test: the sample golden; expected difference: none (the sample registers no config hook) | one lane | | | | `manual` |
+| 2.7 | the example's output is unchanged (strict config decoding) | composed test: the sample golden; expected difference: none (the sample does not use `WithStrictConfig`) | one lane | | | | `manual` |
+| 2.8 | the example's output is unchanged (exporters chosen by the creator) | composed test: the sample golden; expected difference: none (`cordis.New()` keeps the console exporter) | one lane | | | | `manual` |
+
+### Cleanup evidence
+
+At closure: `git status --porcelain` empty after the run (no golden re-recorded).
+Historical: none recorded.
+
+### Open items
+
+At closure: plan 18.1.11 lists them. Now open: the `src/go/cordis` test findings of the
+`vet` gate, repaired by plan Stage 13.1; `DH-D-CORDIS-6`, `-10` and `-11` stay for DH-S-38
+and DH-S-49 ("Not in DH-S-2" above).

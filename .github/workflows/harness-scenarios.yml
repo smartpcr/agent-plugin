@@ -1,20 +1,23 @@
-# Credentialed harness scenarios (DH-D-TOOLCHAIN-4 part 2, QG-10).
+# Harness scenarios (DH-D-TOOLCHAIN-4 part 2, QG-10).
 #
 # Runs only on workflow_dispatch and on a schedule -- never on pull_request or
-# pull_request_target -- so the DeepSeek key is never exposed to fork code. The
-# keyless gate lives in ci.yml (harness job).
+# pull_request_target -- so fork code never reaches a scenario run. No model key
+# is read: under decision models-signed-in-claude-copilot real-model checks use a
+# signed-in Claude or Copilot session, and the preflight's credential hook checks
+# nothing until stage 19.2 fills it. The keyless gate lives in ci.yml (harness job).
 #
 #   preflight  derives DSH_REQUIRE_SCENARIOS from the entry of the stage being
 #              accepted in test/harness/acceptance-index.yaml ("harness-gate
-#              require"), then runs "harness-gate preflight": it fails when the key
-#              is absent, when a required ID has no scenario test, or when the index
-#              and the authored *_scenario_test.go files disagree
+#              require"), then runs "harness-gate preflight": it fails when the
+#              credential hook fails, when a required ID has no scenario test, or
+#              when the index and the authored *_scenario_test.go files disagree
 #              (DH-ADR-TOOLCHAIN-6, -12). Nothing else starts on a failed preflight.
-#   scenarios  runs exactly the required scenario tests (-tags scenario) on Linux,
-#              macOS and Windows; a skipped or missing required test fails the run.
+#   scenarios  runs exactly the required scenario tests (-tags scenario) on hosted
+#              Linux and Windows (platforms-windows-wsl: regression signals; no
+#              macOS); a skipped or missing required test fails the run.
 #
-# A scheduled run accepts no stage, so the required list is empty and only the key
-# and the index are checked.
+# A scheduled run accepts no stage, so the required list is empty and only the index
+# is checked.
 name: harness-scenarios
 
 on:
@@ -58,7 +61,6 @@ jobs:
       - name: Preflight
         id: preflight
         env:
-          DSH_DEEPSEEK_API_KEY: ${{ secrets.DSH_DEEPSEEK_API_KEY }}
           DSH_REQUIRE_SCENARIOS: ${{ steps.require.outputs.list }}
         run: GOWORK=off go -C tools/harness-gate run . preflight --root ../..
 
@@ -69,7 +71,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # platforms-windows-wsl: hosted regression lanes; no macOS.
+        os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -84,7 +87,6 @@ jobs:
             tools/harness-gate/go.sum
       - name: Run the required scenarios
         env:
-          DSH_DEEPSEEK_API_KEY: ${{ secrets.DSH_DEEPSEEK_API_KEY }}
           RUN: ${{ needs.preflight.outputs.run }}
           TESTS: ${{ needs.preflight.outputs.tests }}
         run: |

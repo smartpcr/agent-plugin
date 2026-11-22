@@ -131,6 +131,18 @@ names S6, S11, S12. **Tradeoff.** M2 waits for an operator run on a network that
 rule 1. **Supports** every M2 outcome. **Verified by** the closed evidence records and
 the index's `built-through` value at the first M2 commit.
 
+> **Draft amendment of M2-DEC-1, for the M2 owner to confirm** (written by M1
+> gap-closure-plan step 12.1.9, 2026-11-22; not in force until the M2 owner confirms
+> it). Proposed Choice: "No M2 build stage starts until M1 is closed under the definition
+> of done in [decisions.md](../harness-DSH-M1/decisions.md) sec. 1.1: every step 1.1 to
+> 11.7 built and re-verified at one commit, the gate green on Windows (native) and Linux
+> (WSL) (decision `platforms-windows-wsl`), every evidence record complete, the M1 manual
+> check recorded on the signed-in Claude route with no API key (decision
+> `models-signed-in-claude-copilot`), held-open items listed, and `built-through` raised
+> to DH-S-11." Proposed Tradeoff: "M2 waits for the M1 run on the signed-in route and
+> for the gate to turn green on both lanes." The current text's "real key", "Linux, macOS
+> and Windows" and `api.deepseek.com` become historical.
+
 ### 3.2 Stages
 
 Step counts are impl.md's. The implementation plan may use at most 20 checklist steps
@@ -325,7 +337,7 @@ an index, not a restatement.
 
 | ID | Requirement |
 |---|---|
-| M2-EN-1 | **Targets.** E1: the `deepseek-official` route, reachable from the runner that executes the scenario. E2: hosted Linux, macOS and Windows runners for TOOLCHAIN-1/-2, RIPGREP, CHOKIDAR-1, HOST-4, STORE-1/-6, FS-1/-3, CONTEXT-2 where they suffice; team-kept virtual machines for every Linux variant hosted runners lack (Landlock only without bwrap, old kernels at Landlock ABI 1-4, Landlock disabled, musl, systemd with SSH login, no user service manager, writable cgroup v2), for the two-account machines of STORAGE-6, for the three power-off VMs of NODEFS-1, and for the SMB/NFS/WSL setups of CHOKIDAR-2 |
+| M2-EN-1 | **Targets.** E1: the `deepseek-official` route, reachable from the runner that executes the scenario. E2: hosted Linux, macOS and Windows runners for TOOLCHAIN-1/-2, RIPGREP, CHOKIDAR-1, HOST-4, STORE-1/-6, FS-1/-3, CONTEXT-2 where they suffice; team-kept virtual machines for every Linux variant hosted runners lack (Landlock only without bwrap, old kernels at Landlock ABI 1-4, Landlock disabled, musl, systemd with SSH login, no user service manager, writable cgroup v2), for the two-account machines of STORAGE-6, for the three power-off VMs of NODEFS-1, and for the SMB/NFS/WSL setups of CHOKIDAR-2. *Draft amendment for the M2 owner to confirm (M1 gap-closure-plan step 12.1.9):* E1 becomes the signed-in Claude and Copilot client routes on the machine that runs the scenario, with no API key (decision `models-signed-in-claude-copilot`); the `deepseek-official` route stays a keyed route for fakes. M1 closes without a macOS lane (decision `platforms-windows-wsl`); whether E2 still needs hosted macOS runners is the M2 owner's call |
 | M2-EN-2 | **Discovery.** A committed target inventory names each target by role and how it is reached (runner label or SSH host alias), never by address, user or key. Before any scenario, preflight probes every target and records its facts: OS and version, kernel, Landlock ABI, `bwrap` presence, cgroup writability, `systemd --user`, filesystem type, accounts. A probe that contradicts the role fails preflight (M2-DEC-4) |
 | M2-EN-3 | **Transport.** The controller (`go test -tags scenario`) runs on the target, or on a controller machine that reaches the VM over SSH (impl.md sec. 7.1, E2); the controller may be a developer machine. The model API is reached from the target through egress under an explicit permit (SP-13) |
 | M2-EN-4 | **Credentials at run time only.** The model key as the job secret `DSH_DEEPSEEK_API_KEY`, in the child's environment only; the SSH private key for the VM controller; share credentials for CHOKIDAR-2; the second account of STORAGE-6, created on a snapshot per run; a proxy certificate created per run. None is committed, written to a layer file, echoed into a record or present in the keyless jobs (EN-3, SP-11) |
@@ -447,7 +459,7 @@ hold. Changes and additions for M2:
 
 | ID | Risk | L | I | Trigger | Mitigation | Response |
 |---|---|---|---|---|---|---|
-| M2-R-01 | **The model API cannot be reached** from the machines that must reach it (the authoring host already times out), blocking M1 closure, the S16 manual check, DH-E-STORE-2, all of S17 and four S18 scenarios | H | H | Preflight or a manual run fails to connect | Confirm reachability from the credentialed runners and the Linux VMs on day one (sec. 3.5); route through egress with a configured proxy if needed | Run from a network that reaches the API; never mark a scenario passed or skipped-as-pass; S17 stays open |
+| M2-R-01 | **The model API cannot be reached** from the machines that must reach it (the authoring host already times out), blocking M1 closure, the S16 manual check, DH-E-STORE-2, all of S17 and four S18 scenarios | H | H | Preflight or a manual run fails to connect | Confirm reachability from the credentialed runners and the Linux VMs on day one (sec. 3.5); route through egress with a configured proxy if needed | Run from a network that reaches the API; never mark a scenario passed or skipped-as-pass; S17 stays open. *Draft amendment for the M2 owner to confirm (M1 gap-closure-plan step 12.1.9):* under decision `models-signed-in-claude-copilot`, M1 closure no longer needs `api.deepseek.com`; the risk becomes "the signed-in client cannot reach its vendor, or its session expires", with the trigger "a `llm/sign-in-required` settlement or a client exit" and the response "sign in again and re-run; the scenario stays open meanwhile" |
 | M2-R-02 | **The S18 environment fleet does not exist.** About a dozen Linux variants, power-off VMs, SMB/NFS/WSL, two-account machines; hosted runners provide few of them | H | H | Preflight reports an unreachable target | Provision first (long pole); inventory and probes (M2-DEC-4); snapshots for every VM | The affected scenario stays open with the reason; M2 is not claimed; raise M2-Q-3 |
 | M2-R-03 | **A confinement or fence defect** lets a model-chosen command write outside its roots, or a takeover defect puts two writers on one log | M | H | DH-E-FS-1 outside listing changes; DH-E-SANDBOX-1 finds `D`; DH-E-STORE-1 sees a gap | Fake-backend tests of every control in S13; guarded scenarios on scratch homes first; `require: full` honoured | Fix, re-run the scenario on the same variants; record the defect in the evidence record; nothing enabled meanwhile |
 | M2-R-04 | **M1 does not close soon** (open S8, S9, S11; red vet gate) | M | H | First M2 commit is due and `built-through` is still DH-S-7 | M2-DEC-1; fix the inherited vet findings as their own workstream | M2 build stages wait; only environment work proceeds |
@@ -464,7 +476,7 @@ hold. Changes and additions for M2:
 
 | ID | Assumption | If false |
 |---|---|---|
-| M2-A-1 | An operator can supply a DeepSeek key at run time and the credentialed runners reach the API | M2-R-01 response |
+| M2-A-1 | An operator can supply a DeepSeek key at run time and the credentialed runners reach the API. *Draft amendment for the M2 owner to confirm (M1 gap-closure-plan step 12.1.9):* "An operator has the official `claude` and Copilot CLIs installed and signed in on the machines that run the M1 check and the S17 scenarios; no API key is needed (decision `models-signed-in-claude-copilot`)." | M2-R-01 response |
 | M2-A-2 | The team can keep the VMs of M2-EN-1 with snapshots, reachable over SSH from a controller | S18 cannot close (M2-R-02) |
 | M2-A-3 | GitHub-hosted Linux, macOS and Windows runners remain available | 16.8 and parts of S18 move to team VMs |
 | M2-A-4 | The ledger's `proof` lists are current, so sec. 3.3's done-at-M2 column holds | The plan re-derives it at each stage entry |

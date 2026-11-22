@@ -1,25 +1,27 @@
 @story-harness:DSH @phase-repository-modules-and-quality-gates @stage-ci-and-release-rehearsal @setup-inline
 Feature: CI and release rehearsal (Stage 1.4)
-  The keyless harness job gates every commit on Linux, macOS and Windows; the
-  release rehearsal builds six pure-Go binaries and publishes nothing; the
-  credentialed scenario workflow is guarded by a preflight that decides from its
-  environment alone; authored scenarios are indexed, compile, and never run in the
-  default gate.
+  The keyless harness job gates every commit on hosted Linux and Windows, as
+  regression signals (platforms-windows-wsl: the evidence of record is the local
+  Windows and WSL lanes, and macOS is out of M1 scope); the release rehearsal
+  builds six pure-Go binaries and publishes nothing; the scenario workflow is
+  guarded by a preflight that decides from its environment alone and reads no
+  model key (models-signed-in-claude-copilot); authored scenarios are indexed,
+  compile, and never run in the default gate.
 
-  Scenario: Preflight fails on a missing secret
+  Scenario: Preflight passes with no model key
     Given an in-memory acceptance index with "DH-E-X-1" under "DH-S-18" authored at "DH-S-1" and its scenario test
-    And an injected environment map without "DSH_DEEPSEEK_API_KEY" and with DSH_REQUIRE_SCENARIOS "DH-E-X-1"
+    And an injected environment map with no model variables and DSH_REQUIRE_SCENARIOS ""
     When the preflight decision function runs
-    Then it returns a failure naming "DSH_DEEPSEEK_API_KEY"
-    And no scenario is started
-    And the preflight subcommand on the repository without the secret and with DSH_REQUIRE_SCENARIOS "DH-E-TOOLCHAIN-2" exits 1 naming "DSH_DEEPSEEK_API_KEY" and writes no scenario plan
+    Then the preflight passes with an empty plan
+    And the preflight subcommand on the repository with no model variables and DSH_REQUIRE_SCENARIOS "" exits 0 and plans 0 scenarios
 
   Scenario: Preflight fails on an unknown required scenario
     Given an in-memory acceptance index with "DH-E-X-1" under "DH-S-18" authored at "DH-S-1" and its scenario test
-    And an injected environment map with "DSH_DEEPSEEK_API_KEY" set and DSH_REQUIRE_SCENARIOS "DH-E-FAKE-9"
+    And an injected environment map with no model variables and DSH_REQUIRE_SCENARIOS "DH-E-FAKE-9"
     When the preflight decision function runs
     Then it returns a failure naming "DH-E-FAKE-9"
     And no scenario is started
+    And the preflight subcommand on the repository with no model variables and DSH_REQUIRE_SCENARIOS "DH-E-FAKE-9" exits 1 naming "DH-E-FAKE-9" and writes no scenario plan
     When DSH_REQUIRE_SCENARIOS is empty and the preflight decision function runs
     Then the preflight passes with an empty plan
 
@@ -32,13 +34,13 @@ Feature: CI and release rehearsal (Stage 1.4)
     And the printed SHA-256 of each binary matches its content
     And the repository's tags are unchanged
 
-  Scenario: Gate passes on all three CI operating systems
+  Scenario: Gate passes on both hosted CI operating systems
     Given the story branch at the stage-closing commit
-    And the harness job of ci.yml runs the gate on ubuntu-latest, macos-latest and windows-latest with CGO_ENABLED=1
+    And the harness job of ci.yml runs the gate on ubuntu-latest and windows-latest with CGO_ENABLED=1
     And a C compiler is available for -race on this host's lane
     When the harness job's gate runs on this host's lane
     Then this lane's gate output ends with every gate passed
-    And the DH-S-1 evidence record names the run id and a passing result for each of ubuntu-latest, macos-latest and windows-latest
+    And the DH-S-1 evidence record names the run id and a passing result for each of ubuntu-latest and windows-latest
 
   Scenario: Authored scenarios are indexed and compile but do not run
     Given "src/harness/internal/testkit/scenarios/toolchain_rehearsal_scenario_test.go" and "test/harness/acceptance-index.yaml" in the checkout

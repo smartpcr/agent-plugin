@@ -110,7 +110,7 @@ exactly once, and is excluded from the default gate run.
 | 1 (indexed), 11 (file) | DH-E-TOOLCHAIN-1 | DH-S-17 (17.1) |
 | 4 | file, search and watcher scenarios impl.md sec. 7.5 indexes to DH-S-4 | DH-S-18 |
 | 6 (Stage 6.5) | DH-E-LOADER-1; DH-E-BOOT-2 | DH-S-17 (17.7); guarded step 21.13 |
-| 6 (Stage 6.7) | DH-E-EXEC-1, DH-E-HOST-4; DH-E-BOOT-1; DH-E-UTIL-1 | DH-S-18; DH-S-22 (22.3); DH-S-39 (39.15) |
+| 6 (Stage 6.7) | DH-E-EXEC-1, DH-E-EXEC-10, DH-E-HOST-4, DH-E-STORAGE-6; DH-E-BOOT-1; DH-E-UTIL-1 | DH-S-18 (EXEC-10 at 18.3, STORAGE-6 at 18.10); DH-S-22 (22.3); DH-S-39 (39.15) |
 | 7 | DH-E-STORE-1, DH-E-STORE-2, DH-E-STORE-6; DH-E-STORE-5 | guarded step 16.8 (scratch homes); step 35.7 |
 | 8 | DH-E-STORAGE-1; DH-E-STORAGE-2; DH-E-STORAGE-3 | DH-S-19 (19.7); DH-S-23 (23.14); DH-S-39 (39.8) |
 | 9 | DH-E-LLM-1, DH-E-LLM-3, DH-E-VIEW-1 | DH-S-17 (17.4, 17.6), `requires: [DH-S-11, DH-S-16]` |
@@ -118,6 +118,11 @@ exactly once, and is excluded from the default gate run.
 | 11 | DH-E-SESSION-1, DH-E-SESSION-2, DH-E-AGENT-1..4 | DH-S-17 (17.2, 17.3) |
 
 Phase 2 (cordis) has no `DH-E-*` of its own (impl.md DH-S-2: "None of its own").
+
+DH-E-EXEC-10 and DH-E-STORAGE-6 are owed by DH-S-6 (impl.md sec. 7.5) but were not
+authored in Phase 6 (gap M1-G-CLOSE-7). Step 13.6 of
+[gap-closure-plan.md](gap-closure-plan.md) authors and indexes them; until then they
+have no file.
 
 ### Phase to proof-row map
 

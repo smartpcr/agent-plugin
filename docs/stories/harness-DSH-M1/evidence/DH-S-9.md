@@ -1,5 +1,15 @@
 # DH-S-9 evidence
 
+Decisions governing this record ([decisions.md](../decisions.md)): `models-signed-in-claude-copilot` with M1-D-PIPE-3 and M1-D-PIPE-4 (the manual check below moves to the signed-in Claude and Copilot routes, so `dh-s-9-closure-path` is superseded), `dh-s-9-scenario-review`, `inherited-vet-gate-failure`, `archtest-llm-edges-exception`, `built-through-may-skip-s8` (superseded), M1-D-CLOSE-1 and M1-D-CLOSE-4, and the open M1-D-PIPE-5 and `retro-entry-order-s8-s11`. Logged by gap-closure-plan Stage 12.1; merge commit: recorded when the Stage 12.1 change merges.
+
+Closure status: open
+
+This line becomes `closed at <sha>` only in plan step 18.1.14, at the M1 closure commit;
+the stage itself is re-closed by plan step 16.6.3. The records below are history. The
+fields of impl.md sec. 7.3 and the per-step manual-check register, re-targeted to the
+signed-in Claude and Copilot routes, are at the end of this file, in "Evidence record
+(impl.md sec. 7.3)"; how to fill them is in [the evidence runbook](README.md).
+
 DH-S-9 is the DeepSeek provider, retry and usage. Stage 9.1 (the Messages provider,
 #68/#69) built impl.md step 9.1. Stage 9.2 built steps 9.2 and 9.3 and authored
 DH-S-9's three scenarios. **DH-S-9 is not closed yet**: its manual check (below)
@@ -35,6 +45,13 @@ The Stage 9.1 tests in the same packages (`TestDeepSeek*`, `TestStream*`,
 `TestPrepare*`) were rerun with them and pass.
 
 ## Manual check (impl.md DH-S-9)
+
+> **Re-targeted (plan 12.4.4; `models-signed-in-claude-copilot`, M1-D-CLOSE-3).** The
+> DeepSeek procedure below is historical: it needs an API key, which M1 no longer uses,
+> and its decision `dh-s-9-closure-path` is superseded. The check now runs on the
+> signed-in Claude and Copilot routes, and "bad key" becomes "signed-out or expired
+> session". The procedure of record is the register under "Evidence record (impl.md
+> sec. 7.3)" at the end of this file.
 
 **Not run on this machine:** no DeepSeek key was available to this run. It is
 `manual` and never a gate criterion (EV-6). Procedure, for the operator with a
@@ -130,8 +147,91 @@ here.
 2. The three scenario files are reviewed in this stage's PR.
 
 Closing is then: tick impl.md steps 9.1, 9.2 and 9.3 as built, tick "Close DH-S-9"
-in the implementation plan, and raise `built-through` to DH-S-9. The operator has
-approved raising it to DH-S-9 even if DH-S-8's own closure has not landed yet; until
-DH-S-9 closes it stays at DH-S-7. The archtest's narrow exception for the
+in the implementation plan, and raise `built-through` to DH-S-9. The operator had
+approved raising it to DH-S-9 even if DH-S-8's own closure has not landed yet; that
+decision (`built-through-may-skip-s8`) is superseded by the index rule of
+`DH-S-10.md` "Closure", so the marker is raised only in order. Until DH-S-9 closes it
+stays at DH-S-7. The archtest's narrow exception for the
 `llm/retry` to `agent` and `llm/meter` to `views` edges is kept, by operator
-decision.
+decision `archtest-llm-edges-exception`.
+
+## Evidence record (impl.md sec. 7.3)
+
+These are the eight fields of [impl.md sec. 7.3](../../../harness/impl.md#73-the-evidence-record),
+in the format of [the evidence runbook](README.md#the-evidence-record-headings). Plan step
+18.1.7 fills them at the frozen M1 closure commit; plan Stages 16.5 and 16.6 add the
+signed-in route record and the re-closure before that. Until then each field points to
+the history above, which stays exactly as it was recorded and is not closure evidence
+(M1-D-CLOSE-1).
+
+### Source and build identity
+
+At closure: not yet recorded (plan 18.1.7), with the client name and version of each
+signed-in route (`claude --version`, `copilot --version`). Historical: no commit was
+recorded.
+
+### Environment and fixture
+
+At closure: both local lanes, from their run records; for the manual check, the
+operator's own workstation (Windows native or WSL, recorded per line) with Claude Code
+and the Copilot CLI installed and signed in. macOS: out of scope
+(`platforms-windows-wsl`). Historical: the Windows machine named at the top of this file.
+
+### Exact tests and commands
+
+At closure: the lane scripts; `go -C src/harness test -race -count=1 ./internal/llm/...`;
+and the probe of plan step 16.5.6, `go -C src/harness test -tags manual -count=1 -v -run
+TestManualSignedIn ./internal/llm/` with `DSH_MANUAL_SIGNEDIN=1`. Historical: the
+DeepSeek probe commands above.
+
+### Run identifiers
+
+At closure: the run-record ids of both lanes, in the runbook's template (plan 18.1.3),
+and per signed-in case the settlement seq and the masked client request or session id.
+WSL lane: not run. Windows lane: not run. macOS: out of scope (`platforms-windows-wsl`).
+Historical: no DeepSeek request was made, so no request id exists.
+
+### Results
+
+At closure: not yet recorded. Historical: "Tests (TC-09a)" above.
+
+### Manual checks
+
+impl.md DH-S-9 names one check: one streamed request with a good key and one with a bad
+key; one attempt event each, and no retry on the bad key. Under
+`models-signed-in-claude-copilot` and M1-D-CLOSE-3 (in force) it runs on the user's
+signed-in Claude and Copilot clients, with no API key, and "bad key" becomes "signed-out
+or expired session": exactly one `assistant/attempt` settlement with
+`llm/sign-in-required` (or `llm/auth`), no retry and no fallback. It covers steps 9.1
+and 9.2; step 9.3 takes the rule-3 default. The probe is built by plan step 16.5.6 and
+run by step 16.5.9 under the runbook of
+[plan Stage 16.5](../gap-closure-plan.md#stage-165-signed-in-client-routes-and-the-dh-s-9-manual-check);
+these rows cannot run before it. Claude must pass; Copilot is run and recorded either way
+(M1-D-LOOP-6, lead settlement). How to run and fill the register:
+[the evidence runbook](README.md#the-signed-in-route-checks-dh-s-9-and-dh-s-11).
+
+#### Manual checks register
+
+| Step | Check | Procedure | Systems | Operator | Commit | Seen | Label |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 9.1 | one streamed request per signed-in client: one settlement with usage | probe (plan 16.5.6): `claude --version` and `copilot --version`, then `TestManualSignedIn` with `DSH_MANUAL_SIGNEDIN=1`; copy the `DH-S-9 claude signed-in:` and `DH-S-9 copilot signed-in:` lines: one `assistant/message` with usage, the route id, the model id the client reported, the masked request id. Claude must pass; Copilot is recorded either way | the operator's workstation (Windows or WSL, recorded) | | | | `manual` |
+| 9.2 | a signed-out or expired session: one settlement, no retry, no fallback | probe (plan 16.5.6): the signed-out cases of `TestManualSignedIn`, run against an empty temporary configuration home; copy the `DH-S-9 claude signed-out:` and `DH-S-9 copilot signed-out:` lines: exactly one `assistant/attempt` with `llm/sign-in-required` (or `llm/auth`), class permanent, 0 `llm/retry` events, 0 attempts on the second registered route | the operator's workstation (Windows or WSL, recorded) | | | | `manual` |
+| 9.3 | rule-3 default: token usage and context occupancy are read from the log | composed test: `go -C src/harness test -count=1 -v -run 'TestUsageFoldedFromSettlements\|TestMeterMeasuresTheSession' ./internal/llm/meter/`; and the usage of the 9.1 settlement | one lane | | | | `manual` |
+
+Every printed line passes the mask and the token-shape filter of plan step 16.5.6, and a
+second person reviews the record before it is committed (R-11). A vendor that cannot be
+reached is recorded `not run: <client>, <date>, <host>, <error line>`, and the row stays
+open.
+
+### Cleanup evidence
+
+At closure: the empty temporary configuration home of the signed-out cases is removed,
+and the user's own sign-in is unchanged (the client still reports signed in afterwards).
+Historical: none recorded.
+
+### Open items
+
+At closure: plan 18.1.11 lists them. Now open: the signed-in routes and the probe (plan
+Stage 16.5); the re-authored scenarios DH-E-LLM-1, DH-E-LLM-3 and DH-E-VIEW-1 and their
+review (plan 16.5.8, `dh-s-9-scenario-review`); M1-D-PIPE-5 (the DeepSeek provider,
+`open`); the closure items under "Closure" above.

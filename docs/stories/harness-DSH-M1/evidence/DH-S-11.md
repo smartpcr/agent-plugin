@@ -1,5 +1,15 @@
 # DH-S-11 evidence
 
+Decisions governing this record ([decisions.md](../decisions.md)): `m1-operator-run`, `context-package-name`, `agent-28-staged-acceptance`, `models-signed-in-claude-copilot` with M1-D-PIPE-3, M1-D-PIPE-4 and M1-D-CLOSE-3 (the M1 run moves to the signed-in route, so `dh-s-11-closure-path` is superseded), `platforms-windows-wsl`, M1-D-CLOSE-1, M1-D-CLOSE-4 and M1-D-LOOP-6, and the open `turn-budget-defaults-s11`, M1-D-LOOP-1 to M1-D-LOOP-5 and `retro-entry-order-s8-s11`. The restated definition of done is decisions.md sec. 1.1. Logged by gap-closure-plan Stage 12.1; merge commit: recorded when the Stage 12.1 change merges.
+
+Closure status: open
+
+This line becomes `closed at <sha>` only in plan step 18.1.14, at the M1 closure commit.
+The records below are history. The fields of impl.md sec. 7.3 and the per-step
+manual-check register, with the M1 check re-targeted to the signed-in Claude and Copilot
+routes, are at the end of this file, in "Evidence record (impl.md sec. 7.3)"; how to fill
+them is in [the evidence runbook](README.md).
+
 DH-S-11 is the agent loop, milestone M1. Stage 11.1 built impl.md steps 11.1 and
 11.2, Stage 11.2 built 11.3 and 11.4 with the no-unanswered-call property test, and
 Stage 11.3 built 11.5 and 11.6. Stage 11.4, this one, builds step 11.7, adds the
@@ -44,6 +54,13 @@ is Stage 11.2's (`internal/agent/driver` `property_test.go`), and passes on this
 branch.
 
 ## Manual check: M1 (impl.md DH-S-11)
+
+> **Re-targeted (plan 12.4.4; `models-signed-in-claude-copilot`, M1-D-CLOSE-3).** The
+> DeepSeek procedure below is historical: it needs an API key, which M1 no longer uses,
+> and its decision `dh-s-11-closure-path` is superseded. The M1 check now runs on the
+> signed-in Claude and Copilot routes, at the client-invocation boundary. The procedure
+> of record is the register under "Evidence record (impl.md sec. 7.3)" at the end of this
+> file.
 
 `manual`, never a gate criterion (EV-6), and not a scenario. Scripted by
 `src/harness/internal/agent/m1_manual_test.go` (`//go:build manual`), which reuses
@@ -141,8 +158,8 @@ Not confirmed at this commit:
 
 | Item | Status |
 | --- | --- |
-| All 106 steps built | no: DH-S-8 (8.3 to 8.5), DH-S-9 (9.1 to 9.3) and DH-S-11 (11.3, 11.4, 11.7) are unticked |
-| Gate green on three OSes | not observable from this machine (Windows only); the inherited vet-gate failure of DH-S-9's evidence still applies |
+| All 103 steps (99 deliverables) built | no: DH-S-8 (8.3 to 8.5), DH-S-9 (9.1 to 9.3) and DH-S-11 (11.3, 11.4, 11.7) are unticked |
+| Gate green on Windows (native) and Linux (WSL) (decision `platforms-windows-wsl`; historically "three OSes") | not observable from this machine (Windows only); the inherited vet-gate failure of DH-S-9's evidence still applies |
 | Eleven evidence records | ten closed or open records plus this one; DH-S-8, DH-S-9 and DH-S-11 are open |
 | M1 recorded | no: the table above is unfilled |
 | H-21 open | unchanged by this stage |
@@ -171,3 +188,91 @@ implementation plan once the definition of done above holds, and raise
 
 Under these decisions, this stage's open M1 and closure rows are handed to the
 follow-up PR, not left undecided.
+
+## Evidence record (impl.md sec. 7.3)
+
+These are the eight fields of [impl.md sec. 7.3](../../../harness/impl.md#73-the-evidence-record),
+in the format of [the evidence runbook](README.md#the-evidence-record-headings). Plan step
+18.1.7 fills them at the frozen M1 closure commit; plan Stage 17.4 adds the M1 record per
+route before that. Until then each field points to the history above, which stays exactly
+as it was recorded and is not closure evidence (M1-D-CLOSE-1).
+
+### Source and build identity
+
+At closure: not yet recorded (plan 18.1.7), with the client name and version of each
+signed-in route. Historical: no commit was recorded.
+
+### Environment and fixture
+
+At closure: both local lanes, from their run records; for the M1 check, the operator's
+own workstation (Windows, and WSL if run there) with the clients signed in. macOS: out of
+scope (`platforms-windows-wsl`). Historical: one Windows machine. Fixtures: the F2
+composition with one `probe` tool; the golden `internal/agent/testdata/f2_log.golden`.
+
+### Exact tests and commands
+
+At closure: the lane scripts; `go -C src/harness test -race -count=1 ./internal/context/...
+./internal/agent/... ./internal/archtest/`; and the probe of plan steps 17.4.1 to 17.4.3,
+`go -C src/harness test -tags manual -count=1 -v -run
+'TestManualM1OneTurn|TestManualM1CancelMidStream' ./internal/agent/` with `DSH_M1_ROUTE`
+set to `claude` and then `copilot`. Historical: the DeepSeek runbook above.
+
+### Run identifiers
+
+At closure: the run-record ids of both lanes, in the runbook's template (plan 18.1.3),
+and per route the masked client session ids. WSL lane: not run. Windows lane: not run.
+macOS: out of scope (`platforms-windows-wsl`). Historical: no request reached a provider,
+so no request id exists.
+
+### Results
+
+At closure: not yet recorded. Historical: "Tests (TC-11a, TC-11b)" above.
+
+### Manual checks
+
+impl.md DH-S-11 names two checks: from a Go test that composes the real components, send
+one prompt to the real model with one test tool and record the bracketed log and the
+rebuilt request (steps 11.1, 11.2, 11.3, 11.7); cancel a second run mid-stream and record
+the cause on `turn/end` (step 11.4). This is milestone M1, and it is not a scenario.
+Under `models-signed-in-claude-copilot` and M1-D-CLOSE-3 (in force, a boundary route) it
+runs on the user's signed-in Claude and Copilot clients, with no API key; the rebuilt
+request is compared at the logged client-invocation boundary. Steps 11.5 and 11.6 take
+the rule-3 default. The probe is retargeted by plan steps 17.4.1 (route selector) and
+17.4.2 (redaction) and run by step 17.4.3
+([plan Stage 17.4](../gap-closure-plan.md#stage-174-m1-on-the-signed-in-route-and-dh-s-11-closure));
+the routes it uses come from plan Stage 16.5
+([16.5](../gap-closure-plan.md#stage-165-signed-in-client-routes-and-the-dh-s-9-manual-check)).
+These rows cannot run before them. Claude must pass; Copilot is run and recorded either
+way, and a Copilot failure is recorded as seen and stays open (M1-D-LOOP-6, lead
+settlement). How to run and fill the register:
+[the evidence runbook](README.md#the-signed-in-route-checks-dh-s-9-and-dh-s-11).
+
+#### Manual checks register
+
+| Step | Check | Procedure | Systems | Operator | Commit | Seen | Label |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 11.1 | M1, one prompt with one test tool: each step uses one logged model selection | probe (plan 17.4.3): `TestManualM1OneTurn` per route (`DSH_M1_ROUTE=claude`, then `copilot`); from the redacted `M1 bracketed log`, record the one model selection logged per step and the route and model id | the operator's workstation (Windows; WSL if run there) | | | | `manual` |
+| 11.2 | M1, one prompt with one test tool: the step's tools are fixed once, its calls run in an ordered batch | probe: the same run; record the one `probe` call, its approval and its `tool/result` (`probed: ping`) | the operator's workstation | | | | `manual` |
+| 11.3 | M1, one prompt with one test tool: every turn and step is bracketed and closed | probe: the same run and the cancel run; record that the brackets close in both, one `turn/end` completed and one aborted | the operator's workstation | | | | `manual` |
+| 11.4 | M1, a second run cancelled mid-stream: the cause on `turn/end` | probe: `TestManualM1CancelMidStream` per route; copy the redacted `M1 cancelled log` and `M1 cancel:` lines: `turn/end` aborted with cause `user`, `step/end` cause `user`, one cancelled settlement | the operator's workstation | | | | `manual` |
+| 11.5 | rule-3 default: agents are created, resumed and torn down as one transaction | composed test: `go -C src/harness test -count=1 -v ./internal/agent/` (the lifecycle tests of DH-D-AGENT-6); record create, resume and teardown | one lane | | | | `manual` |
+| 11.6 | rule-3 default: one delegation seam; every child has one owner | composed test: `go -C src/harness test -count=1 -v ./internal/delegate/...`; runs only after plan Stage 17.2 (impl.md 11.6 is unticked by plan 17.4.6 until then) | one lane | | | | `manual` |
+| 11.7 | M1, one prompt with one test tool: the request rebuilt from the log equals the one sent | probe: the `TestManualM1OneTurn` run; copy the `M1 request N` lines (sent and rebuilt digests at the client-invocation boundary, M1-D-CLOSE-3), `M1 turn/end` and `M1 final reply` | the operator's workstation | | | | `manual` |
+
+Every printed line passes the `m1Redact` filter of plan step 17.4.2 (account name and
+email, `Authorization` and cookie values, token prefixes, token file paths); a second
+person reviews the record before it is committed (R-11). A vendor that cannot be reached
+is recorded `not run: <client>, <date>, <host>, <error line>`, and the row stays open.
+
+### Cleanup evidence
+
+At closure: the cancelled run leaves no client process alive (a process listing after
+row 11.4), and the user's own sign-in is unchanged. Historical: none recorded.
+
+### Open items
+
+At closure: plan 18.1.11 lists them, including H-21 with its closing step impl.md 16.10.
+Now open: the M1 record per route (plan Stage 17.4); the seven retargeted scenario files
+and their review (plan 17.4.4, 17.4.5); the definition-of-done table above; the decisions
+M1-D-LOOP-1 to -5 and `turn-budget-defaults-s11`; macOS, out of scope
+(`platforms-windows-wsl`).
