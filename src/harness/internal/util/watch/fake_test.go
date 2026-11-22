@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -48,6 +50,86 @@ func TestFakeRouting(t *testing.T) {
 	s.Close()
 	if !fake.Closed() {
 		t.Fatal("notifier not closed with the service")
+	}
+}
+
+// TestFakeRearmOnDirectoryEvent: where identities are reused (ext4 gives a
+// directory deleted and made again its old inode number), an event naming the
+// watched directory itself, or an overflow, re-adds the directory at the next
+// check: the registration may have died with a deleted directory that the
+// identity check cannot tell from its successor (M1-G-GATE-15.2).
+func TestFakeRearmOnDirectoryEvent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("file IDs are not reused on Windows; the identity check decides there")
+	}
+	fake := watchtest.New()
+	added := make(chan string, 16)
+	fake.AddErr = func(dir string) error {
+		select {
+		case added <- dir:
+		default:
+		}
+		return nil
+	}
+	dir := canon(t, t.TempDir())
+	f := filepath.Join(dir, "f")
+	write(t, f, "1")
+	start(t, service(t, watch.Options{NewNotifier: fake.Factory()}), watch.Target{Path: f, Mode: watch.Notify})
+	readd := func(what string) {
+		t.Helper()
+		select {
+		case got := <-added:
+			if got != dir {
+				t.Fatalf("%s: added %q, want %q", what, got, dir)
+			}
+		case <-time.After(deadline):
+			t.Fatalf("%s: %s not re-added within %v", what, dir, deadline)
+		}
+	}
+	readd("initial registration")
+	fake.Send(dir)
+	readd("event naming the directory")
+	fake.Fail(watch.ErrOverflow)
+	readd("overflow")
+}
+
+// TestRearmRefusedDegrades: the watched directory is deleted and recreated with no
+// settled check in between; when the notifier then refuses to re-add it, the
+// watch does not stay deaf on the dead registration: it switches to polling, says
+// so once (ErrDegraded), and still sees the next change.
+func TestRearmRefusedDegrades(t *testing.T) {
+	fake := watchtest.New()
+	var adds atomic.Int32
+	fake.AddErr = func(string) error {
+		if adds.Add(1) > 1 {
+			return errors.New("no more watches")
+		}
+		return nil
+	}
+	p := filepath.Join(canon(t, t.TempDir()), "p")
+	if err := os.Mkdir(p, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f := filepath.Join(p, "f")
+	write(t, f, "0")
+	w, r := start(t, service(t, watch.Options{NewNotifier: fake.Factory(), FilePoll: 30 * time.Millisecond}), watch.Target{Path: f, Mode: watch.Notify})
+	if err := os.RemoveAll(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(p, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, f, "1")
+	fake.Send(p)
+	if err := r.one(t, "re-add refused"); !errors.Is(err, watch.ErrDegraded) || w.Mode() != watch.Poll {
+		t.Fatalf("%v in %v", err, w.Mode())
+	}
+	if got := fake.Watched(); len(got) != 0 {
+		t.Fatalf("still registered after degrading: %q", got)
+	}
+	write(t, f, "two")
+	if err := r.one(t, "change while polling"); err != nil {
+		t.Fatal(err)
 	}
 }
 
