@@ -349,6 +349,8 @@ index is raised to DH-S-7.
 
 M1 gate repair (plan 13.2.2, 13.2.3; [DH-S-1.md, "M1 gate repair"](DH-S-1.md#m1-gate-repair)): `internal/session/store/sqlite/shutdown_test.go` waits on two signals from `export_test.go` instead of polling and sleeping -- `WriteHeldSignal` (a test seam on the writer mutex, `ctxMutex.held`, nil outside tests) and `BusyWaitSignal` (a call context that notices the driver's `busyHandler` asking it for `Done`), so `Close` is called while the append is really in the busy wait -- and its cleanup rolls back the other connection, then joins the append (P-C); `internal/session/query/visibility_test.go` `TestListPagesByLastPromptAsOf` runs on the SQLite store in a `synctest` bubble (virtual prompt milliseconds, an `appended` channel instead of the counter poll, P-C for the writer). Assertions unchanged.
 
+M1 gate triage (plan 13.7.1, [M1-G-GATE-15.1](../gap-analysis.md)): concurrent `Open` of one fresh database no longer fails -- identify, the switch into WAL and the migrations run under `run/open.lock`, and `identify` reads its three values in one snapshot; `TestDutyHasOneHolderAndMovesAfterAKill` under `-race` went from 4 failures in 20 to 0 in 40 (Windows native, go1.27.4, uncommitted on `105859e`; `manual`, not gate evidence).
+
 ## Evidence record (impl.md sec. 7.3)
 
 These are the eight fields of [impl.md sec. 7.3](../../../harness/impl.md#73-the-evidence-record),
