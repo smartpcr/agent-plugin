@@ -155,3 +155,19 @@ steps 11.3, 11.4 and 11.7 as built, tick "Close DH-S-11 and the story" in the
 implementation plan once the definition of done above holds, and raise
 `built-through` when DH-S-8 and DH-S-9 have closed (the index's own rule, as
 `DH-S-10.md` explains).
+
+### Operator decisions (pinned 2026-11-22)
+
+- `m1-operator-run`: **merge this stage with DH-S-11 Open; record M1 and close
+  the story in a follow-up PR.** That PR's operator runs the runbook above with a
+  real key, replaces both `not run` cells with the printed lines and the commit,
+  ticks impl.md 11.3, 11.4 and 11.7, and ticks the plan's M1 and Close steps only
+  if the definition of done above then holds at that one commit.
+- `dh-s-11-closure-path`: the operator runs M1 with a real key, then ticks and
+  closes, as above; this stage ticks nothing it has not built.
+- `context-package-name`: **`request`**, as the plan and architecture.md (C30)
+  name it; context-compaction-skill.md §6.1's `context/inject` is the area's
+  older name for the same component.
+
+Under these decisions, this stage's open M1 and closure rows are handed to the
+follow-up PR, not left undecided.
