@@ -23,10 +23,10 @@ const tools3Margin = 3 * time.Second
 var tools3Process = regexp.MustCompile(`(?m)^\s*(\d+)\s+(.*\S)\s*$`)
 
 // tools3Call is what the log says of one tool call: its tool/call and
-// tool/result in order, with their times in Unix milliseconds.
+// tool/result in order, with their times.
 type tools3Call struct {
 	id, name     string
-	called, done int64
+	called, done time.Time
 	result       string
 	answered     bool
 }
@@ -83,10 +83,38 @@ func tools3Log(t *testing.T, line string) []tools3Record {
 // tools3Calls returns the tool calls of a session's log in their order.
 func tools3Calls(t *testing.T, recs []tools3Record) []*tools3Call {
 	t.Helper()
+	var evs []protocol.Event
+	for i, line := range strings.Split(out, "\n") {
+		if line = strings.TrimSpace(line); line == "" {
+			continue
+		}
+		var e protocol.Event
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			t.Fatalf("the log's line %d is not an SDK event: %v\n%s", i+1, err, line)
+		}
+		evs = append(evs, e)
+	}
+	return evs
+}
+
+// tools3Calls returns the tool calls of a session's log in their order.
+func tools3Calls(t *testing.T, evs []protocol.Event) []*tools3Call {
+	t.Helper()
+	at := func(e protocol.Event) time.Time {
+		ts, err := time.Parse(time.RFC3339Nano, e.Time)
+		if err != nil {
+			t.Fatalf("the time of %s at seq %d: %v", e.Type, e.Seq, err)
+		}
+		return ts
+	}
 	var out []*tools3Call
 	byID := map[string]*tools3Call{}
-	for _, rec := range recs {
-		switch rec.Type {
+	for _, e := range evs {
+		var p struct {
+			CallID string `json:"call_id"`
+			Name   string `json:"name"`
+		}
+		switch e.Type {
 		case "tool/call":
 			var p tools3CallPayload
 			if err := json.Unmarshal([]byte(rec.Payload), &p); err != nil {
@@ -101,7 +129,7 @@ func tools3Calls(t *testing.T, recs []tools3Record) []*tools3Call {
 				t.Fatalf("decoding the tool result at seq %d: %v", rec.Seq, err)
 			}
 			if c := byID[p.CallID]; c != nil {
-				c.done, c.result, c.answered = rec.Time, rec.Payload, true
+				c.done, c.result, c.answered = at(e), string(e.Data), true
 			}
 		}
 	}
@@ -130,7 +158,9 @@ func tools3Calls(t *testing.T, recs []tools3Record) []*tools3Call {
 // call of the fixture with a 5 second budget and then one more tool call, with
 // {mode} "deadline" (the call runs to its budget) or "cancel" (the turn is
 // cancelled one second into the call), waits for the turn and prints
-// "session=<id>"; DSH_SCENARIO_TOOLS3_PS prints "<pid> <command line>" for each
+// "session=<id>"; DSH_SCENARIO_TOOLS3_LOG prints the log of {session} on {home}
+// as one SDK protocol.Event per line (the wire shape of session/history);
+// DSH_SCENARIO_TOOLS3_PS prints "<pid> <command line>" for each
 // process whose pid is recorded under {pids} and is still running;
 // DSH_SCENARIO_TOOLS3_LOG prints {session}'s log on {home}, one JSON object
 // {"seq","type","time" (Unix ms),"payload" (the payload's JSON text)} per line;
@@ -143,6 +173,7 @@ func TestDeadlineStopsCommandThatIgnoresTermination(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "home")
 	startT := need(t, "DSH_SCENARIO_TOOLS3_START", "command starting the headless host on {home}")
 	callT := need(t, "DSH_SCENARIO_TOOLS3_CALL", "command running the fixture's shell call in a new session in {mode}")
+	logT := need(t, "DSH_SCENARIO_TOOLS3_LOG", "command printing the log of {session} as SDK events, one per line")
 	psT := need(t, "DSH_SCENARIO_TOOLS3_PS", "command listing the live processes whose pids are under {pids}")
 	logT := need(t, "DSH_SCENARIO_TOOLS3_LOG", "command printing {session}'s log as JSON lines")
 	killT := need(t, "DSH_SCENARIO_TOOLS3_KILL", "command killing {pid}")
@@ -194,7 +225,7 @@ func TestDeadlineStopsCommandThatIgnoresTermination(t *testing.T) {
 		if !strings.Contains(first.result, step.code) {
 			t.Errorf("%s: the shell call's result is not %s: %s", step.mode, step.code, first.result)
 		}
-		if took := time.Duration(first.done-first.called) * time.Millisecond; took > bound {
+		if took := first.done.Sub(first.called); took > bound {
 			t.Errorf("%s: the result came %s after the call, the bound is %s", step.mode, took, bound)
 		}
 		if step.mode == "deadline" && (len(calls) < 2 || !calls[1].answered) {
