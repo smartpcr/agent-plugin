@@ -86,6 +86,8 @@ var Rules = []Rule{
 	{HarnessModule, "only tests and the test kit's own packages import internal/testkit (DH-T-UTIL-11, DH-ADR-UTIL-6)", importedOnlyWithin(TestkitPackage)},
 	{HarnessModule, "no package outside internal/tools imports internal/tools/core or internal/tools/endpoint (DH-T-TOOLS-18)", importedOnlyFrom(ToolsPackage, ToolsCorePackage, ToolsEndpointPackage)},
 	{HarnessModule, "the internal/tools contract imports no llm provider, wire or transport package (DH-T-TOOLS-18)", importsNoneUnder(ToolsPackage, LLMProviderPackage, LLMWirePackage, LLMTransportPackage)},
+	{HarnessModule, "internal/context holds no Go package, so nothing shadows the standard context package (RM-8)", noPackage(ContextPackage)},
+	{HarnessModule, "no package under internal/context imports the agent driver or an llm provider, wire or transport package (DH-T-CONTEXT-25)", belowImportsNoneUnder(ContextPackage, DriverPackage, LLMProviderPackage, LLMWirePackage, LLMTransportPackage)},
 }
 
 // Packages the rules name.
@@ -125,6 +127,7 @@ const (
 	IdentPackage          = HarnessModule + "/internal/util/ident"
 	EgressPackage         = HarnessModule + "/internal/util/egress"
 	TestkitPackage        = HarnessModule + "/internal/testkit"
+	ContextPackage        = HarnessModule + "/internal/context"
 	ExecPackage           = "os/exec"
 )
 
@@ -211,6 +214,40 @@ func importsNoneUnder(pkg string, forbidden ...string) func([]Package) []string 
 			}
 		}
 		return bad
+	}
+}
+
+// belowImportsNoneUnder fails every package at or below under that directly
+// imports a package at or below one of forbidden.
+func belowImportsNoneUnder(under string, forbidden ...string) func([]Package) []string {
+	return func(pkgs []Package) []string {
+		var bad []string
+		for _, p := range pkgs {
+			if !within(p.ImportPath, under) {
+				continue
+			}
+			for _, imp := range p.Imports {
+				for _, f := range forbidden {
+					if within(imp, f) {
+						bad = append(bad, fmt.Sprintf("%s imports %s", p.ImportPath, imp))
+						break
+					}
+				}
+			}
+		}
+		return bad
+	}
+}
+
+// noPackage fails when pkg itself is a listed package with Go files.
+func noPackage(pkg string) func([]Package) []string {
+	return func(pkgs []Package) []string {
+		for _, p := range pkgs {
+			if p.ImportPath == pkg && len(p.GoFiles) > 0 {
+				return []string{fmt.Sprintf("%s is a Go package; it must stay a directory only", pkg)}
+			}
+		}
+		return nil
 	}
 }
 

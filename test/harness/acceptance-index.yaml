@@ -44,7 +44,8 @@ stages:
       authored: DH-S-7
   DH-S-17:
     # Its subjects (the model runtime, the replay helpers) exist from Phase 11;
-    # the file is written by the DH-S-11 authoring step (impl.md DH-S-1 Scenarios).
+    # the file is written by the DH-S-11 authoring step (impl.md DH-S-1 Scenarios),
+    # in Stage 11.4: toolchain_record_replay_scenario_test.go.
     - id: DH-E-TOOLCHAIN-1
       authored: DH-S-11
     # A running harness following an edit to its profile patch (impl.md step 17.7);
@@ -71,6 +72,30 @@ stages:
     # and the headless launcher (DH-S-16).
     - id: DH-E-TOOLS-1
       authored: DH-S-10
+      requires: [DH-S-11, DH-S-16]
+    # The session's two real-environment scenarios (impl.md DH-S-5, "authored in
+    # DH-S-11", once a real model can be called) and the agent loop's four
+    # (impl.md DH-S-11), written by Stage 11.4 against the SDK boundary. They need
+    # the agent loop (DH-S-11) and the headless launcher (DH-S-16); the two that
+    # run a real shell command across a stop or a kill also need the shell tool
+    # (DH-S-13).
+    - id: DH-E-SESSION-1
+      authored: DH-S-11
+      requires: [DH-S-11, DH-S-16]
+    - id: DH-E-SESSION-2
+      authored: DH-S-11
+      requires: [DH-S-11, DH-S-13, DH-S-16]
+    - id: DH-E-AGENT-1
+      authored: DH-S-11
+      requires: [DH-S-11, DH-S-16]
+    - id: DH-E-AGENT-2
+      authored: DH-S-11
+      requires: [DH-S-11, DH-S-16]
+    - id: DH-E-AGENT-3
+      authored: DH-S-11
+      requires: [DH-S-11, DH-S-13, DH-S-16]
+    - id: DH-E-AGENT-4
+      authored: DH-S-11
       requires: [DH-S-11, DH-S-16]
   DH-S-18:
     - id: DH-E-TOOLCHAIN-2
