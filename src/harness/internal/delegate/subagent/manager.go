@@ -47,7 +47,7 @@ type activation struct {
 	watch sync.WaitGroup
 
 	mu       sync.Mutex
-	from     session.Offset // the child's log length before its task
+	from     session.Offset // the child's log length before it went live
 	stopped  bool           // S2 ran before the run closed by itself
 	captured *Result
 	startErr error
@@ -144,9 +144,6 @@ func (m *manager) Start(owner *cordis.Context, s Spec) (Activation, error) {
 	}
 
 	// A5 accept: the task, as next-turn input from the creator.
-	a.mu.Lock()
-	a.from = h.Agent().Session().Len()
-	a.mu.Unlock()
 	by := string(s.Creator.Session)
 	if _, err := agent.Send(context.Background(), h.Agent(), agent.ListNextTurn,
 		agent.InboxMessage{Source: SourceSubagent, By: by, Text: s.Prompt}); err != nil {
@@ -172,8 +169,13 @@ func (a *activation) abort(err error) error {
 // setup puts the capture (S3) in the child's scope ahead of the caller's
 // Setup: the scope closes at teardown's T5, after the driver wrote the turn's
 // closers and before the session closes, whichever trigger released it.
+// The run's start offset is sampled here, before the caller's Setup and
+// before the agent goes live, so no turn of the run can precede it.
 func (a *activation) setup(user agent.SetupFunc) agent.SetupFunc {
 	return func(sc *cordis.Context, ag agent.Agent) (func() error, error) {
+		a.mu.Lock()
+		a.from = ag.Session().Len()
+		a.mu.Unlock()
 		if _, err := sc.Effect("subagent.capture", func() (cordis.Disposer, error) {
 			return func() error { a.capture(ag.Session()); return nil }, nil
 		}); err != nil {
