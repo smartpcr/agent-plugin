@@ -640,9 +640,9 @@ storyId: "harness:DSH"
 ## Stage 10.3: Deadlines and Result Budget
 
 ### Implementation Steps
-- [ ] impl.md step 10.5 / DH-D-TOOLS-3: enforced deadlines with grace -- a body exceeding its deadline is cancelled via context; after grace the call is answered as timed out and the turn proceeds (`DH-T-TOOLS-8`, `-9`).
-- [ ] impl.md step 10.6 / DH-D-STORAGE-6: result budget -- no result larger than `maxResultBytes` (and the token estimate from DH-D-LLM-6) reaches a model; the excess is spilled through the DH-S-8 spill store with a reference.
-- [ ] Author `DH-E-TOOLS-3` (runs DH-S-39) as a scenario file.
+- [x] impl.md step 10.5 / DH-D-TOOLS-3: enforced deadlines with grace -- a body exceeding its deadline is cancelled via context; after grace the call is answered as timed out and the turn proceeds (`DH-T-TOOLS-8`, `-9`).
+- [x] impl.md step 10.6 / DH-D-STORAGE-6: result budget -- no result larger than `maxResultBytes` (and the token estimate from DH-D-LLM-6) reaches a model; the excess is spilled through the DH-S-8 spill store with a reference.
+- [x] Author `DH-E-TOOLS-3` (runs DH-S-39) as a scenario file.
 
 ### Dependencies
 - phase-tool-pipeline-approvals-and-human-commands/stage-approvals-and-guarded-pipeline

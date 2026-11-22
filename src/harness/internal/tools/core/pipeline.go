@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
+	"unicode/utf8"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/agent"
@@ -22,11 +24,43 @@ import (
 // Config.MaxArgumentBytes is zero (areas/tools.md §6.2, maxArgumentBytes).
 const DefaultMaxArgumentBytes = 1 << 20
 
+// The defaults of the deadline and result budget (areas/tools.md §6.2).
+const (
+	DefaultTimeout        = 5 * time.Minute
+	DefaultGrace          = 5 * time.Second
+	DefaultMaxResultBytes = 256 << 10
+)
+
+// Clock is the time the deadlines are measured on; tests pass a manual clock.
+type Clock interface {
+	Now() time.Time
+	After(d time.Duration) <-chan time.Time
+}
+
+type realClock struct{}
+
+func (realClock) Now() time.Time                         { return time.Now() }
+func (realClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
+
 // Config configures the pipeline of a registry.
 type Config struct {
 	// MaxArgumentBytes bounds a call's raw argument bytes; zero is
 	// DefaultMaxArgumentBytes.
 	MaxArgumentBytes int
+	// MaxResultBytes is the ceiling on a result's model-facing text, applied
+	// after the shapers and the spill seat; zero is DefaultMaxResultBytes.
+	MaxResultBytes int
+	// DefaultTimeout is the budget of a tool that declares none; zero is
+	// DefaultTimeout.
+	DefaultTimeout time.Duration
+	// Timeouts are the operator's per-tool overrides, by tool name: they win
+	// over the declaration's Timeout (tools.NoDeadline among them).
+	Timeouts map[string]time.Duration
+	// Grace is how long a cancelled body is waited for before it is detached;
+	// zero is DefaultGrace. A declaration's longer Grace wins.
+	Grace time.Duration
+	// Clock measures budgets and grace; nil is the wall clock.
+	Clock Clock
 	// Approval is the service an Ask is put to; nil is the one mounted under
 	// approval.Key on the registry's context, or, when none is, a service with no
 	// registry, which settles every request no-answerer (SP-7).
@@ -92,6 +126,7 @@ type listeners struct {
 	policies []named[tools.Policy]
 	guards   []named[tools.Guard]
 	shapers  []named[tools.Shaper]
+	spill    *named[tools.SpillShaper] // the nearest layer's seat
 }
 
 func collect[F any](m map[uint64]named[F]) []named[F] {
@@ -114,6 +149,9 @@ func (r *registry) listenersAt(t tools.Target) listeners {
 		ls.policies = append(ls.policies, collect(l.policies)...)
 		ls.guards = append(ls.guards, collect(l.guards)...)
 		ls.shapers = append(ls.shapers, collect(l.shapers)...)
+		if ls.spill == nil && l.spill != nil {
+			ls.spill = l.spill
+		}
 		l.mu.RUnlock()
 	}
 	return ls
@@ -176,6 +214,7 @@ type ended struct {
 	msg      string
 	value    any
 	approval string
+	cause    tools.Cause
 }
 
 func stop(stage tools.Stage, code tools.Code, by, msg string) ended {
@@ -295,19 +334,18 @@ func (r *registry) run(ctx context.Context, b tools.Batch, ag agent.Ref, ls list
 		return r.settle(ctx, b, ls, call, e)
 	}
 
-	// 7. The body.
-	v, err := runBody(ctx, bd, in, tools.Run{CallID: req.ID, Agent: ag})
-	if err != nil {
-		code := tools.CodeFailed
-		var te *tools.Error
-		if errors.As(err, &te) && te.Code != "" {
-			code = te.Code
-		}
-		e := stop(tools.StageBody, code, "", trimCode(err.Error(), code))
+	// 7. The body, under its budget: a body that does not return within grace
+	// after its deadline or a cancellation is detached, and the call settles. A
+	// tool whose detached body still runs for this agent is busy.
+	if r.busy(ag, d.Name()) {
+		e := stop(tools.StageBody, tools.CodeBusy, "",
+			fmt.Sprintf("an earlier call of %q by this agent did not return within grace and is still running", d.Name()))
 		e.approval = outcome
 		return r.settle(ctx, b, ls, call, e)
 	}
-	return r.settle(ctx, b, ls, call, ended{stage: tools.StageShape, value: v, approval: outcome})
+	e := r.execute(ctx, b, d, bd, in, tools.Run{CallID: req.ID, Agent: ag})
+	e.approval = outcome
+	return r.settle(ctx, b, ls, call, e)
 }
 
 // registered reports whether any layer holds a tool of that name.
@@ -448,10 +486,102 @@ func trimCode(msg string, code tools.Code) string {
 // resultMeta is the structured part of a tool/result, carried in its message's
 // source.
 type resultMeta struct {
-	Code     tools.Code  `json:"code,omitempty"`
-	Stage    tools.Stage `json:"stage"`
-	By       string      `json:"by,omitempty"`
-	Approval string      `json:"approval,omitempty"`
+	Code         tools.Code   `json:"code,omitempty"`
+	Stage        tools.Stage  `json:"stage"`
+	By           string       `json:"by,omitempty"`
+	Approval     string       `json:"approval,omitempty"`
+	Cause        tools.Cause  `json:"cause,omitempty"`
+	Truncated    bool         `json:"truncated,omitempty"`
+	Spill        *event.Spill `json:"spill,omitempty"`
+	SpillFailure string       `json:"spillFailure,omitempty"`
+}
+
+// maxSpillFailure bounds the reason a spill failure notice quotes.
+const maxSpillFailure = 200
+
+// spillShape runs the spill seat; a panic is reported as failure, and the text
+// is kept for the ceiling to bound.
+func spillShape(ctx context.Context, s named[tools.SpillShaper], c tools.Call, o tools.Outcome) (sr tools.SpillResult, failure string) {
+	defer func() {
+		if x := recover(); x != nil {
+			sr, failure = tools.SpillResult{}, fmt.Sprintf("the spill seat %s panicked: %v", s.id, x)
+		}
+	}()
+	return s.f(ctx, c, o), ""
+}
+
+// boundedSpillShape runs the spill seat detached from the turn's cancellation
+// but bounded by the registry's grace: a seat whose store stalls (a full disk,
+// a hung mount) is cancelled and abandoned at grace, and reported as a spill
+// failure so the ceiling and the not-saved notice still hold the turn to
+// budget plus grace (DH-ADR-TOOLS-4).
+func (r *registry) boundedSpillShape(ctx context.Context, s named[tools.SpillShaper], c tools.Call, o tools.Outcome) (tools.SpillResult, string) {
+	sctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	type out struct {
+		sr      tools.SpillResult
+		failure string
+	}
+	done := make(chan out, 1)
+	go func() {
+		sr, failure := spillShape(sctx, s, c, o)
+		done <- out{sr, failure}
+	}()
+	select {
+	case v := <-done:
+		cancel()
+		return v.sr, v.failure
+	case <-r.cfg.Clock.After(r.cfg.Grace):
+		cancel()
+		return tools.SpillResult{}, fmt.Sprintf("the spill seat %s did not return within %s", s.id, r.cfg.Grace)
+	}
+}
+
+// spillFailureNotice is the model-facing line saying the spill seat failed; it
+// does not claim the full result was saved, since a seat that panicked may have
+// saved it and lost the reference.
+func spillFailureNotice(failure string) string {
+	failure = strings.ReplaceAll(failure, "\n", " ")
+	if len(failure) > maxSpillFailure {
+		cut := maxSpillFailure
+		for cut > 0 && !utf8.RuneStart(failure[cut]) {
+			cut--
+		}
+		failure = failure[:cut] + "..."
+	}
+	return "\n[the full result was not saved for later reading: " + failure + "]"
+}
+
+// withNotice appends notice to text within limit bytes, cutting text (with the
+// ceiling's marker) rather than the notice; ok reports whether text was cut.
+func withNotice(text, notice string, limit int) (string, bool) {
+	if len(text)+len(notice) <= limit {
+		return text + notice, false
+	}
+	if len(notice) >= limit {
+		out, _ := ceiling(notice, limit)
+		return out, true
+	}
+	cut, _ := ceiling(text, limit-len(notice))
+	return cut + notice, true
+}
+
+// ceiling cuts text to at most limit bytes, at a rune boundary, with a marker
+// saying how much was dropped; ok reports whether it cut.
+func ceiling(text string, limit int) (string, bool) {
+	if len(text) <= limit {
+		return text, false
+	}
+	marker := fmt.Sprintf("\n[truncated: %d of %d bytes omitted]", len(text), len(text))
+	keep := max(limit-len(marker), 0)
+	for keep > 0 && !utf8.RuneStart(text[keep]) {
+		keep--
+	}
+	marker = fmt.Sprintf("\n[truncated: %d of %d bytes omitted]", len(text)-keep, len(text))
+	out := text[:keep] + marker
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, true
 }
 
 // settle is stage 8: validate and render a body's value, run the shapers (a
@@ -516,6 +646,32 @@ func (r *registry) settle(ctx context.Context, b tools.Batch, ls listeners, c to
 	}
 
 	meta := resultMeta{Code: res.Code, Stage: res.Stage, By: res.By, Approval: res.Approval}
+	res.Cause = e.cause
+	// The spill seat bounds a large text and saves the whole of it; the ceiling
+	// then holds whatever it left (DH-D-STORAGE-6, DH-ADR-TOOLS-4).
+	if ls.spill != nil && c.Tool() != nil && !c.Tool().BoundsOwnOutput() {
+		sr, failure := r.boundedSpillShape(ctx, *ls.spill, c,
+			tools.Outcome{IsError: res.IsError, Code: res.Code, Text: res.Text})
+		switch {
+		case failure != "":
+		case sr.Replace && len(sr.Text) > len(res.Text):
+			failure = fmt.Sprintf("the spill seat %s grew the text from %d to %d bytes", ls.spill.id, len(res.Text), len(sr.Text))
+		case sr.Replace:
+			res.Text = sr.Text
+			if sr.Ref != nil {
+				ref := *sr.Ref
+				res.Spill = &ref
+			}
+		}
+		if failure != "" {
+			res.SpillFailure = failure
+			res.Text, res.Truncated = withNotice(res.Text, spillFailureNotice(failure), r.cfg.MaxResultBytes)
+		}
+	}
+	if !res.Truncated {
+		res.Text, res.Truncated = ceiling(res.Text, r.cfg.MaxResultBytes)
+	}
+	meta.Cause, meta.Truncated, meta.Spill, meta.SpillFailure = res.Cause, res.Truncated, res.Spill, res.SpillFailure
 	data, err := json.Marshal(meta)
 	if err != nil {
 		return res, err
@@ -527,7 +683,7 @@ func (r *registry) settle(ctx context.Context, b tools.Batch, ls listeners, c to
 	if err != nil {
 		return res, fmt.Errorf("tools: result of %s: %w", c.ID(), err)
 	}
-	d, err := event.ToolResult.Draft(event.Append(), event.ToolResultPayload{Message: msg, CallID: c.ID(), IsError: res.IsError})
+	d, err := event.ToolResult.Draft(event.Append(), event.ToolResultPayload{Message: msg, CallID: c.ID(), IsError: res.IsError, Spill: res.Spill})
 	if err != nil {
 		return res, fmt.Errorf("tools: result of %s: %w", c.ID(), err)
 	}
