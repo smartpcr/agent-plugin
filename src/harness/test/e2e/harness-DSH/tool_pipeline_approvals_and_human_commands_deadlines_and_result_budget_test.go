@@ -398,14 +398,14 @@ func (s *dlbState) result(name string) (tools.Result, error) {
 	return tools.Result{}, fmt.Errorf("no result for %s in %+v", name, s.results)
 }
 
-func (s *dlbState) answeredTimedOut(name, budget, cause string) error {
+func (s *dlbState) answeredTimedOut(name, code, budget, cause string) error {
 	r, err := s.result(name)
 	if err != nil {
 		return err
 	}
 	// Answered timed out: the budget ended and, the body ignoring its context,
 	// grace ended too, so the call settles without waiting for the body.
-	if !r.IsError || r.Code != tools.CodeOutcomeUnknown || string(r.Cause) != cause || r.Stage != tools.StageBody ||
+	if !r.IsError || r.Code != tools.CodeOutcomeUnknown || string(r.Code) != code || string(r.Cause) != cause || r.Stage != tools.StageBody ||
 		!strings.Contains(r.Text, "timed out after "+budget) || r.Seq == 0 {
 		return fmt.Errorf("the call of %s: %+v, want timed out after %s (cause %s) with its tool/result appended", name, r, budget, cause)
 	}
@@ -620,7 +620,7 @@ func InitializeScenario_tool_pipeline_approvals_and_human_commands_deadlines_and
 	ctx.Step(`^the model calls "([^"]+)" with arguments '([^']*)'$`, s.modelCalls)
 	ctx.Step(`^the detached body of "([^"]+)" finally returns$`, s.bodyReturns)
 
-	ctx.Step(`^the call of "([^"]+)" is answered timed out after "([^"]+)" with cause "([^"]+)"$`, s.answeredTimedOut)
+	ctx.Step(`^the call of "([^"]+)" is answered "([^"]+)" \(timed out after "([^"]+)"\) with cause "([^"]+)"$`, s.answeredTimedOut)
 	ctx.Step(`^the step continues: the call of "([^"]+)" succeeds with text "([^"]*)"$`, s.stepContinues)
 	ctx.Step(`^the session log after the step holds "([^"]+)"$`, s.logHolds)
 	ctx.Step(`^the body of "([^"]+)" is listed as detached for the step's agent$`, s.listedDetached)
