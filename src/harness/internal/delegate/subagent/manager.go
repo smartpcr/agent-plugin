@@ -48,7 +48,7 @@ type activation struct {
 
 	mu       sync.Mutex
 	from     session.Offset // the child's log length before it went live
-	stopped  bool           // S2 ran before the run closed by itself
+	stopped  bool           // S2 cancelled a still-working run; named in the Diagnostic when no turn end records it
 	captured *Result
 	startErr error
 	cleanErr error
@@ -223,8 +223,12 @@ func (a *activation) release() error {
 func (a *activation) capture(s session.ReadSession) {
 	a.mu.Lock()
 	from := a.from
+	stopped := a.stopped
 	a.mu.Unlock()
 	r := Result{Stop: StopAborted, Diagnostic: "released before the run ended a turn"}
+	if stopped {
+		r.Diagnostic = "stopped by the parent before the run ended a turn"
+	}
 	evs, err := s.Read(context.Background(), from, 0)
 	if err != nil {
 		r = Result{Stop: StopError, Diagnostic: err.Error()}
@@ -282,6 +286,8 @@ func (a *activation) settle() {
 			r = Result{Stop: StopStartFailed, Diagnostic: a.startErr.Error()}
 		case a.captured != nil:
 			r = *a.captured
+		case a.stopped:
+			r = Result{Stop: StopAborted, Diagnostic: "stopped by the parent before the run was captured"}
 		default:
 			r = Result{Stop: StopAborted, Diagnostic: "released before the run was captured"}
 		}
