@@ -1,5 +1,6 @@
 # Phase "agent loop milestone M1" E2E (Stage 11.1: model selection and step
-# tool batch; Stage 11.2: agent driver brackets and cancellation).
+# tool batch; Stage 11.2: agent driver brackets and cancellation; Stage 11.3:
+# agent lifecycle and delegation seam).
 #
 #   e2e      the gate path: godog scenarios with -tags e2e on Linux, macOS and
 #            Windows. TC-11a (DH-T-AGENT-23) runs in-process on the test kit's
@@ -9,7 +10,11 @@
 #            back from a second connection. Stage 11.2 drives the real agent
 #            driver in-process: the 500-case no-unanswered-tool-call property
 #            (DH-S-11), the step cancel resuming at point 14 (DH-T-AGENT-16) and
-#            the step budget (DH-T-AGENT-8). No DSN, no secrets,
+#            the step budget (DH-T-AGENT-8). Stage 11.3 runs the registry and
+#            the driver's factory: a failed create rolls back (DH-T-AGENT-19),
+#            a delegated child goes with its one owner (TC-11a) and a shutdown
+#            mid-step on the embedded SQLite store keeps closed brackets and
+#            the last settlement (DH-T-AGENT-21, TC-11b). No DSN, no secrets,
 #            DSH_E2E_STORE_HOME and DSH_DEEPSEEK_API_KEY unset.
 #   compose  non-gating: the same tests against a dsh-home named volume through
 #            tests/e2e/agent-loop-milestone-m1/docker-compose.yml.
@@ -56,8 +61,8 @@ jobs:
         with:
           go-version-file: src/harness/go.mod
           cache-dependency-path: src/harness/go.sum
-      - name: Agent, tools and llm tests
-        run: go -C src/harness test -race -shuffle=on -count=1 ./internal/agent/... ./internal/tools/... ./internal/llm/...
+      - name: Agent, delegate, tools and llm tests
+        run: go -C src/harness test -race -shuffle=on -count=1 ./internal/agent/... ./internal/delegate/... ./internal/tools/... ./internal/llm/...
       - name: Godog scenarios
         run: |
           set -o pipefail

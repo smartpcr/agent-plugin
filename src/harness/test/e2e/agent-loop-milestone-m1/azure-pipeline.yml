@@ -1,6 +1,6 @@
 # Phase "agent loop milestone M1" E2E (Stage 11.1: model selection and step
-# tool batch; Stage 11.2: agent driver brackets and cancellation) on Azure
-# Pipelines. Mirrors
+# tool batch; Stage 11.2: agent driver brackets and cancellation; Stage 11.3:
+# agent lifecycle and delegation seam) on Azure Pipelines. Mirrors
 # .github/workflows/e2e-agent-loop-milestone-m1.yml: a gating job on
 # Microsoft-hosted agents for Linux, macOS and Windows (in-process and
 # embedded-SQLite proofs; no DSN, no secrets) and a non-gating compose job on
@@ -40,8 +40,8 @@ jobs:
       - task: GoTool@0
         inputs:
           version: "1.26.0"
-      - bash: go -C src/harness test -race -shuffle=on -count=1 ./internal/agent/... ./internal/tools/... ./internal/llm/...
-        displayName: Agent, tools and llm tests
+      - bash: go -C src/harness test -race -shuffle=on -count=1 ./internal/agent/... ./internal/delegate/... ./internal/tools/... ./internal/llm/...
+        displayName: Agent, delegate, tools and llm tests
       - bash: |
           set -o pipefail
           go -C src/harness test -tags e2e -count=1 -v \
