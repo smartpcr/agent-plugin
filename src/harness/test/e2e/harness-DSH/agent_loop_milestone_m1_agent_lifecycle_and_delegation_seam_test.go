@@ -14,6 +14,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -109,6 +111,7 @@ type alsState struct {
 	svc  session.Service
 	reg  agent.Registry
 	tr   *fakemodel.Transport
+	tap  *alsTap
 
 	mu       sync.Mutex
 	created  []string
@@ -171,7 +174,8 @@ func (s *alsState) boot(st store.Store, turns ...fakemodel.Turn) error {
 	s.reg = agent.NewRegistry(root)
 	models := llm.New()
 	s.tr = fakemodel.NewTransport(s.tb, turns...)
-	fakemodel.Register(s.tb, models, alsRoute, s.tr)
+	s.tap = newALSTap(s.tr, turns)
+	fakemodel.Register(s.tb, models, alsRoute, s.tap)
 	f, err := driver.NewFactory(driver.FactoryOptions{
 		Context: root, Sessions: s.svc, Scopes: scope.NewTable(root), Models: models, Tools: tsvc,
 	})
@@ -198,17 +202,81 @@ func (s *alsState) boot(st store.Store, turns ...fakemodel.Turn) error {
 	return err
 }
 
-func (s *alsState) waitRequests(n int) error {
-	deadline := time.Now().Add(alsWait)
-	for len(s.tr.Requests()) < n {
-		if time.Now().After(deadline) {
-			return fmt.Errorf("model request %d was never sent", n)
-		}
-		time.Sleep(5 * time.Millisecond)
+// waitHangPoint waits until the driver has read hanging model request n's
+// whole scripted prefix and is blocked reading past it. The adapter reads the
+// body again only after the normaliser has received every chunk decoded so far,
+// and the normaliser folds a received chunk in before it can see an abort, so
+// the prefix is then part of the attempt whatever cancels it next.
+func (s *alsState) waitHangPoint(n int) error {
+	select {
+	case <-s.tap.hung(n - 1):
+		return nil
+	case <-time.After(alsWait):
+		return fmt.Errorf("the driver never read model request %d up to its hang point (%d requests sent)", n, len(s.tr.Requests()))
 	}
-	// Let the streamed prefix land in the log.
-	time.Sleep(200 * time.Millisecond)
-	return nil
+}
+
+// alsTap wraps the fake transport so each hanging turn's body reports when it
+// is read past its scripted events.
+type alsTap struct {
+	next  http.RoundTripper
+	turns []fakemodel.Turn
+
+	mu    sync.Mutex
+	calls int
+	chans map[int]chan struct{}
+}
+
+func newALSTap(next http.RoundTripper, turns []fakemodel.Turn) *alsTap {
+	return &alsTap{next: next, turns: turns, chans: map[int]chan struct{}{}}
+}
+
+// hung is closed once request i's hanging body is read past its events.
+func (t *alsTap) hung(i int) chan struct{} {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	c, ok := t.chans[i]
+	if !ok {
+		c = make(chan struct{})
+		t.chans[i] = c
+	}
+	return c
+}
+
+func (t *alsTap) RoundTrip(req *http.Request) (*http.Response, error) {
+	t.mu.Lock()
+	i := t.calls
+	t.calls++
+	t.mu.Unlock()
+	resp, err := t.next.RoundTrip(req)
+	if err != nil || i >= len(t.turns) || !t.turns[i].Hang || resp.StatusCode != http.StatusOK {
+		return resp, err
+	}
+	// The SSE framing matches the fake transport's encoding of a turn.
+	left := 0
+	for _, e := range t.turns[i].Events {
+		left += len("event: " + e.Name + "\ndata: " + e.Data + "\n\n")
+	}
+	resp.Body = &alsHangBody{ReadCloser: resp.Body, left: left, hung: t.hung(i)}
+	return resp, nil
+}
+
+// alsHangBody counts the prefix bytes still unread; a Read issued with none
+// left is the reader reaching the hang point.
+type alsHangBody struct {
+	io.ReadCloser
+	left int
+	once sync.Once
+	hung chan struct{}
+}
+
+func (b *alsHangBody) Read(p []byte) (int, error) {
+	if b.left <= 0 {
+		b.once.Do(func() { close(b.hung) })
+	}
+	n, err := b.ReadCloser.Read(p)
+	b.left -= n
+	return n, err
 }
 
 func alsSplit(list string) []string {
@@ -377,7 +445,7 @@ func (s *alsState) delegates(owner, child, _ string) error {
 	return nil
 }
 
-func (s *alsState) inFlight() error { return s.waitRequests(1) }
+func (s *alsState) inFlight() error { return s.waitHangPoint(1) }
 
 func (s *alsState) oneOwner(owner, children string) error {
 	c, err := s.component(owner)
@@ -506,7 +574,7 @@ func (s *alsState) midStep(id, _ string) error {
 		agent.InboxMessage{Source: agent.SourceUser, Text: "go"}); err != nil {
 		return err
 	}
-	return s.waitRequests(1)
+	return s.waitHangPoint(1)
 }
 
 func (s *alsState) shutdown() error {
