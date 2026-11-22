@@ -17,9 +17,9 @@ import (
 
 // TestAuthoredScenariosAreIndexedAndCompileButDoNotRun: on the repository, the
 // scenario-index gate passes with DH-E-TOOLCHAIN-2 authored and indexed under
-// DH-S-18 and DH-E-TOOLCHAIN-1 indexed under DH-S-17 (authored at DH-S-11, no file
-// yet); "go vet -tags scenario" compiles the scenario files; and the default test
-// run of the gate (-tags=) lists no scenario test.
+// DH-S-18 and DH-E-TOOLCHAIN-1 indexed under DH-S-17 (authored at DH-S-11, its
+// file written by Stage 11.4); "go vet -tags scenario" compiles the scenario
+// files; and the default test run of the gate (-tags=) lists no scenario test.
 func TestAuthoredScenariosAreIndexedAndCompileButDoNotRun(t *testing.T) {
 	cfg := newTestConfig(t, filepath.Join("..", ".."))
 	var out bytes.Buffer
@@ -46,19 +46,32 @@ func TestAuthoredScenariosAreIndexedAndCompileButDoNotRun(t *testing.T) {
 	if files["DH-E-TOOLCHAIN-2"] != "src/harness/internal/testkit/scenarios/toolchain_rehearsal_scenario_test.go:TestToolchainRehearsal" {
 		t.Errorf("scenario files = %v", files)
 	}
-	if _, ok := files["DH-E-TOOLCHAIN-1"]; ok {
-		t.Errorf("DH-E-TOOLCHAIN-1 has a file before DH-S-11: %v", files)
+	if files["DH-E-TOOLCHAIN-1"] != "src/harness/internal/testkit/scenarios/toolchain_record_replay_scenario_test.go:TestRecordThenReplayWithoutAKey" {
+		t.Errorf("DH-E-TOOLCHAIN-1 file = %q", files["DH-E-TOOLCHAIN-1"])
 	}
-	// DH-S-9's and DH-S-10's scenarios are authored ahead of the loop and titles
-	// they exercise: one file each, indexed under DH-S-17 with requires [DH-S-11,
-	// DH-S-16], and the files and the helpers they call import only the product
+	// DH-S-9's, DH-S-10's and DH-S-11's scenarios are authored ahead of the stages
+	// they exercise: one file each, indexed under DH-S-17 with the stages they
+	// require, and the files and the helpers they call import only the product
 	// boundary.
-	for id, want := range map[string]struct{ file, authored string }{
-		"DH-E-LLM-1":   {"llm_turn_scenario_test.go:TestTurnWithReasoningAndToolCall", "DH-S-9"},
-		"DH-E-LLM-3":   {"llm_bad_key_scenario_test.go:TestBadKeyIsAFact", "DH-S-9"},
-		"DH-E-VIEW-1":  {"view_title_scenario_test.go:TestModelTitlesSession", "DH-S-9"},
-		"DH-E-TOOLS-1": {"tools_pipeline_scenario_test.go:TestGuardedPipelineRefusesTheWrite", "DH-S-10"},
+	for id, want := range map[string]struct {
+		file, authored string
+		requires       []string
+	}{
+		"DH-E-LLM-1":     {"llm_turn_scenario_test.go:TestTurnWithReasoningAndToolCall", "DH-S-9", nil},
+		"DH-E-LLM-3":     {"llm_bad_key_scenario_test.go:TestBadKeyIsAFact", "DH-S-9", nil},
+		"DH-E-VIEW-1":    {"view_title_scenario_test.go:TestModelTitlesSession", "DH-S-9", nil},
+		"DH-E-TOOLS-1":   {"tools_pipeline_scenario_test.go:TestGuardedPipelineRefusesTheWrite", "DH-S-10", nil},
+		"DH-E-SESSION-1": {"session_rebuild_scenario_test.go:TestRequestsReceivedEqualRequestsRebuilt", "DH-S-11", nil},
+		"DH-E-SESSION-2": {"session_kill_resume_scenario_test.go:TestKilledDuringToolCallResumesIntoAcceptedHistory", "DH-S-11", []string{"DH-S-11", "DH-S-13", "DH-S-16"}},
+		"DH-E-AGENT-1":   {"agent_turn_scenario_test.go:TestRealMultiStepTurnIsBracketed", "DH-S-11", nil},
+		"DH-E-AGENT-2":   {"agent_cancel_scenario_test.go:TestCancelledStreamKeepsWhatWasShown", "DH-S-11", nil},
+		"DH-E-AGENT-3":   {"agent_stop_kill_scenario_test.go:TestStopAndKillLeaveAnHonestLog", "DH-S-11", []string{"DH-S-11", "DH-S-13", "DH-S-16"}},
+		"DH-E-AGENT-4":   {"agent_budget_scenario_test.go:TestBudgetStopsARealToolLoop", "DH-S-11", nil},
 	} {
+		requires := want.requires
+		if requires == nil {
+			requires = []string{"DH-S-11", "DH-S-16"}
+		}
 		if files[id] != "src/harness/internal/testkit/scenarios/"+want.file {
 			t.Errorf("%s file = %q, want %s", id, files[id], want.file)
 		}
@@ -66,12 +79,12 @@ func TestAuthoredScenariosAreIndexedAndCompileButDoNotRun(t *testing.T) {
 			t.Errorf("%s index entry = %q", id, where[id])
 		}
 		if s, _ := x.Stage("DH-S-17"); !slices.ContainsFunc(s.Scenarios, func(e acceptance.Entry) bool {
-			return e.ID == id && slices.Equal(e.Requires, []string{"DH-S-11", "DH-S-16"})
+			return e.ID == id && slices.Equal(e.Requires, requires)
 		}) {
-			t.Errorf("%s does not require [DH-S-11, DH-S-16]", id)
+			t.Errorf("%s does not require %v", id, requires)
 		}
 	}
-	for _, helper := range []string{"sdkhost_test.go", "binary_test.go", "realenv_test.go"} {
+	for _, helper := range []string{"sdkhost_test.go", "binary_test.go", "realenv_test.go", "session_rebuild_scenario_test.go", "session_kill_resume_scenario_test.go", "agent_turn_scenario_test.go", "agent_cancel_scenario_test.go"} {
 		f, err := parser.ParseFile(token.NewFileSet(), filepath.Join(cfg.Root, "src", "harness", "internal", "testkit", "scenarios", helper), nil, parser.ImportsOnly)
 		if err != nil {
 			t.Fatal(err)
@@ -178,7 +191,7 @@ func TestRequireSubcommand(t *testing.T) {
 		out   string
 	}{
 		{"DH-S-18", 0, "DH-E-TOOLCHAIN-2,DH-E-CHOKIDAR-1,DH-E-CHOKIDAR-2,DH-E-NODEFS-1,DH-E-RIPGREP-1,DH-E-RIPGREP-2,DH-E-EXEC-1,DH-E-HOST-4\n"},
-		{"DH-S-17", 0, "DH-E-TOOLCHAIN-1,DH-E-LOADER-1,DH-E-LLM-1,DH-E-LLM-3,DH-E-VIEW-1,DH-E-TOOLS-1\n"},
+		{"DH-S-17", 0, "DH-E-TOOLCHAIN-1,DH-E-LOADER-1,DH-E-LLM-1,DH-E-LLM-3,DH-E-VIEW-1,DH-E-TOOLS-1,DH-E-SESSION-1,DH-E-SESSION-2,DH-E-AGENT-1,DH-E-AGENT-2,DH-E-AGENT-3,DH-E-AGENT-4\n"},
 		{"DH-S-21", 0, "DH-E-BOOT-2\n"},
 		{"DH-S-22", 0, "DH-E-BOOT-1,DH-E-HUMAN-6\n"},
 		{"DH-S-39", 0, "DH-E-UTIL-1,DH-E-STORAGE-3,DH-E-TOOLS-3\n"},

@@ -179,6 +179,25 @@ func (d *Driver) call(t *turnState, ss *stepState, n int, sel agent.ModelSelecti
 		if err := d.header(ss.ctx, p.Route(), st.Schemas(), sel.Controls, series && attempt == 1); err != nil {
 			return nil, nil, err
 		}
+		// Point 9: checkpoint, then build the request at the committed cut, so
+		// everything it reflects is durable before a byte leaves the machine.
+		// A failed flush means the attempt does not run. Like durable, the
+		// flush runs under the step's context, bounded by CleanupTimeout, so a
+		// cancel stops a stalled store at once and the turn ends aborted;
+		// point 16's flush settles what this one left. A failure no retry can
+		// mend stops the driver; any other ends the turn error.
+		fctx, stop := context.WithTimeout(ss.ctx, d.o.CleanupTimeout)
+		_, err = s.Flush(fctx)
+		stop()
+		if err != nil {
+			if ss.ctx.Err() != nil {
+				return nil, nil, nil
+			}
+			if permanent(err) {
+				return nil, nil, err
+			}
+			return nil, errorReason("driver/flush", err), nil
+		}
 		req, err := s.NextRequest()
 		if err != nil {
 			return nil, errorReason("driver/request", err), nil

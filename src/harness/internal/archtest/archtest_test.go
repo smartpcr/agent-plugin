@@ -181,6 +181,15 @@ func TestRulesCatchViolations(t *testing.T) {
 			imports(pkg(HarnessModule+"/internal/agent/driver", "driver", false, "a.go"), ToolsPackage, ToolsCorePackage),
 			imports(pkg(HarnessModule+"/cmd/dsh", "main", false, "main.go"), ToolsEndpointPackage+"/mcp", "time/tzdata"),
 		}, 4},
+		{"the context packages within their bounds", HarnessModule, []Package{
+			imports(pkg(ContextPackage+"/request", "request", false, "a.go"), AgentPackage, VocabPackage, EventPackage, SurfacePackage, CordisPackage),
+			imports(pkg(HarnessModule+"/internal/contextx", "contextx", false, "a.go"), DriverPackage),
+		}, 1},
+		{"the context packages out of bounds", HarnessModule, []Package{
+			pkg(ContextPackage, "context", false, "a.go"),
+			imports(pkg(ContextPackage+"/request", "request", false, "a.go"), DriverPackage, LLMProviderPackage+"/deepseek", LLMWirePackage),
+			imports(pkg(ContextPackage+"/clock", "clock", false, "a.go"), LLMTransportPackage),
+		}, 6},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := check(tc.module, tc.pkgs...); len(got) != tc.bad {
