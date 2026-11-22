@@ -20,6 +20,7 @@ Every helper takes the `*testing.T` and registers its release with `t.Cleanup`
 | `permit` | `New(t, kind, dest)`: an egress permit, `Withdraw()` | its context is cancelled |
 | `launcher` | `Build(t, dir, pkg, tags...)` builds a program; `Start(t, Program)` starts it through `world/subprocess` on a fresh temp home (`DSH_HOME` is managed: a `Program.Env` entry cannot override it) and returns a `src/sdk/jsonrpc` client on its stdio | the client and stdin close, the tree is stopped and awaited (survivors fail the test), then the home is removed |
 | `launcher` (hosts) | `Spawn(t, Program)` starts a program in its own process tree with captured output and no home or client; `Run(t, within, Program)` waits up to `within` and on timeout force-stops the whole tree (descendants holding the output included) and returns `ErrTimeout` | a tree still running is force-stopped; the stop and the wait are bounded by `3*Grace`, survivors fail the test |
+| `procwait` | the one poll helper (M1-D-GATE-24 A), for facts with no in-process signal (another process's pid file, log line or port): `Poll(ctx, fact)` checks every `Interval` and returns an error naming the cause; `Until(ctx, t, fact)` fails the test instead. Every wait is bounded by the context's deadline or `DefaultTimeout`; in-process work is awaited through a signal or `testing/synctest`, never polled | -- |
 
 ```go
 func TestOneTurn(t *testing.T) {
@@ -42,6 +43,12 @@ a remote peer.
 | 3 | golden | `*_test.go` + `testdata/*.golden`, through [`golden`](golden/golden.go) | plain `go test ./...` and the gate |
 | 4 | replay | `*_replay_test.go` with `//go:build replay` | `go test -tags replay ./...` only |
 | 5 | scenario | `*_scenario_test.go` with `//go:build scenario` | `go test -tags scenario ./...` only, from the credentialed scenario workflow |
+
+### Naming what a test proves (`//dsh:test`; M1-G-CLOSE-9)
+
+| directive | where | means |
+|-----------|-------|-------|
+| `//dsh:test DH-T-<AREA>-<n>[, ...]` | the line directly above a `func Test*`, `Fuzz*` or `Benchmark*`, in any layer; a deferral `//dsh:test DH-T-X-n later DH-S-m` only in the package's `doc.go` | this test proves those IDs; a deferral counts only when impl.md's DH-S-m section names the ID (not an exemption list, QG-2). `harness-gate trace-tests` reports every required ID no test names; existing `// DH-T-...` comments migrate to the directive. Rules: [`tools/harness-gate/README.md`](../../../../tools/harness-gate/README.md#test-traceability-dshtest-trace-tests-m1-g-close-9) |
 
 ### Build tags `replay` and `scenario` (DH-ADR-TOOLCHAIN-4; `DH-T-TOOLCHAIN-4`)
 
