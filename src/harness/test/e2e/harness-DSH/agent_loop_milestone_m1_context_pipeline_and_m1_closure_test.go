@@ -367,8 +367,10 @@ func (s *cpmState) contributorsRegistered(list string) (err error) {
 		Table:    s.tab,
 		Sessions: func(agent.Ref) (request.Log, error) { return sess, nil },
 	}))
-	for i, n := range names {
-		c := &cpmContributor{name: n, required: i == 0}
+	// Register in reverse of the listed order so registration order never
+	// matches the order table: the request must still follow the table.
+	for i := len(names) - 1; i >= 0; i-- {
+		c := &cpmContributor{name: names[i], required: i == 0}
 		cpmMust(s.pipe.Register(s.root, c))
 		s.contribs = append(s.contribs, c)
 	}
@@ -407,6 +409,13 @@ func (s *cpmState) contributionsInOrder(list string) (err error) {
 	}
 	if !slices.Equal(tableOrder, want) {
 		return fmt.Errorf("%q is not the order table's order %q", want, tableOrder)
+	}
+	var registered []string
+	for _, c := range s.contribs {
+		registered = append(registered, c.name)
+	}
+	if slices.Equal(registered, want) {
+		return fmt.Errorf("contributors were registered in the table order %q; the check cannot tell table order from registration order", registered)
 	}
 	msgs := cpmMust(s.req.Messages())
 	var kinds []string
@@ -854,7 +863,7 @@ func InitializeScenario_agent_loop_milestone_m1_context_pipeline_and_m1_closure(
 		return c, nil
 	})
 
-	ctx.Step(`^three context contributors "([^"]*)" registered in that order$`, s.contributorsRegistered)
+	ctx.Step(`^three context contributors "([^"]*)" registered (?:in that order|in reverse order)$`, s.contributorsRegistered)
 	ctx.Step(`^the loop request for a step is built with NextRequest$`, s.requestBuilt)
 	ctx.Step(`^the request's contributions appear in the order "([^"]*)"$`, s.contributionsInOrder)
 	ctx.Step(`^each contribution is backed by a logged user/message at or before the request's requestAsOf$`, s.contributionsLogged)
