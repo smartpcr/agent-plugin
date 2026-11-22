@@ -260,7 +260,10 @@ func (g *Grants) create(ctx context.Context, log Log, ref agent.Ref, s Subject, 
 	return gr, nil
 }
 
-// Revoke ends ref's grant id, logging grant/ended{revoked} by who.
+// Revoke ends ref's grant id, logging grant/ended{revoked} by who. Like
+// EndAll it fails closed: the grant is forgotten even when its grant/ended
+// cannot be written, the append error is returned, and the log's unended
+// grant/created is closed at the next resume.
 func (g *Grants) Revoke(ctx context.Context, log Log, ref agent.Ref, id, who string) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -268,11 +271,12 @@ func (g *Grants) Revoke(ctx context.Context, log Log, ref agent.Ref, id, who str
 	if i < 0 {
 		return fmt.Errorf("%w: %s", ErrGrantNotFound, id)
 	}
-	if err := appendEnded(ctx, log, id, EndRevoked, who); err != nil {
-		return err
-	}
+	err := appendEnded(ctx, log, id, EndRevoked, who)
 	g.byAgent[ref] = slices.Delete(g.byAgent[ref], i, i+1)
-	return nil
+	if len(g.byAgent[ref]) == 0 {
+		delete(g.byAgent, ref)
+	}
+	return err
 }
 
 // EndAll ends every grant of ref with reason (session-ended at disposal,
