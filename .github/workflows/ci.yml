@@ -147,7 +147,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          # The floor of src/harness/go.mod (go 1.26.0): the gate fails setup on
+          # The floor of src/harness/go.mod (go 1.27.4): the gate fails setup on
           # any other toolchain (M1-G-TOOL-14).
           go-version-file: src/harness/go.mod
           cache-dependency-path: |

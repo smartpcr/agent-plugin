@@ -165,6 +165,7 @@ func (k *EventKey[A]) Emit(ctx *Context, args A) error {
 		if h.removed.Load() {
 			continue
 		}
+		//lint:ignore typeassert the handlers of an event key are stored only by its typed registration, so h.fn is always func(*Context, A) error
 		if err := h.fn.(func(*Context, A) error)(h.ctx, args); err != nil {
 			return err
 		}
@@ -187,6 +188,7 @@ func (k *EventKey[A]) Notify(ctx *Context, args A) {
 		if h.removed.Load() {
 			continue
 		}
+		//lint:ignore typeassert the handlers of an event key are stored only by its typed registration, so h.fn is always func(*Context, A) error
 		if err := protect(func() error { return h.fn.(func(*Context, A) error)(h.ctx, args) }); err != nil {
 			h.ctx.Logger().Error(fmt.Errorf("listener of event %q failed: %w", k.name, err))
 		}
@@ -213,6 +215,7 @@ func (k *EventKey[A]) Parallel(ctx *Context, args A) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			//lint:ignore typeassert the handlers of an event key are stored only by its typed registration, so h.fn is always func(*Context, A) error
 			errs[i] = protect(func() error { return h.fn.(func(*Context, A) error)(h.ctx, args) })
 		}()
 	}
@@ -264,6 +267,7 @@ func (k *BailKey[A, R]) Bail(ctx *Context, args A) (result R, ok bool, err error
 		if h.removed.Load() {
 			continue
 		}
+		//lint:ignore typeassert the handlers of a query key are stored only by its typed registration, so h.fn always has this signature
 		result, ok, err = h.fn.(func(*Context, A) (R, bool, error))(h.ctx, args)
 		if err != nil || ok {
 			return result, ok, err
@@ -313,6 +317,7 @@ func (k *WaterfallKey[A]) Waterfall(ctx *Context, value A, terminal func(A) (A, 
 		h := hooks[index]
 		index++
 		called := false
+		//lint:ignore typeassert the hooks of a pipe key are stored only by its typed registration, so h.fn always has this signature
 		return h.fn.(func(*Context, A, func(A) (A, error)) (A, error))(h.ctx, value, func(next A) (A, error) {
 			if called {
 				var zero A

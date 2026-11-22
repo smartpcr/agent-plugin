@@ -3,7 +3,7 @@
 // run with GOWORK=off, so nothing here reaches a product module's build list.
 module github.com/smartpcr/agent-plugin/tools/harness-gate
 
-go 1.26.0
+go 1.27.4
 
 require (
 	// The Gherkin runner of the gate's own e2e suites in test/e2e/harness-DSH
@@ -41,12 +41,12 @@ require (
 
 tool (
 	// The vulnerability check of the vulncheck gate (DH-ADR-TOOLCHAIN-9, M1-D-TOOL-1
-	// (a)): v1.10.0, the newest release, verified to build and run on the go1.26.0
+	// (a)): v1.10.0, the newest release, verified to build and run on the go1.27.4
 	// floor; BSD-3-Clause, maintained by the Go team. Run as
 	// "go -C tools/harness-gate tool govulncheck".
 	golang.org/x/vuln/cmd/govulncheck
 	// The staticcheck gate's linter (DH-ADR-TOOLCHAIN-8): v0.8.2 (release 2026.2.2),
-	// the newest release, verified to build and run on the go1.26.0 floor; MIT. Pinned
+	// the newest release, verified to build and run on the go1.27.4 floor; MIT. Pinned
 	// here, not installed per machine, so every lane runs the same checks. Run as
 	// "go -C tools/harness-gate tool staticcheck".
 	honnef.co/go/tools/cmd/staticcheck

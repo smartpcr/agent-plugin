@@ -248,7 +248,7 @@ stage unbuildable. Each has an ID so the implementation plan and reviews can cit
 | ID | Constraint | Source | Enforced by |
 |---|---|---|---|
 | RM-1 | Exactly three Go modules: `src/go` (cordis, loader, timer), `src/sdk` (jsonrpc, protocol; the Go client arrives later), `src/harness` (the product). One version number, three tags on one commit | DH-ADR-26; design.md sec. 4.2 | Step 1.1; `DH-T-TOOLCHAIN-11` |
-| RM-2 | All three modules state `go 1.26.0`. `tools/harness-gate` and `tools/harness-trace` may keep their own lines | design.md sec. 4.2; fact F-1 | Gate: cross-compile with the floor toolchain (see R-05) |
+| RM-2 | All three modules state one floor, `go 1.27.4`. Note: raised from `go 1.26.0` on 2026-11-22 by owner decision [`go-floor-1-27-4`](decisions.md) (govulncheck: standard-library vulnerabilities with no 1.26 fix). `tools/harness-gate` and `tools/harness-trace` may keep their own lines | design.md sec. 4.2; fact F-1 | Gate: cross-compile with the floor toolchain (see R-05) |
 | RM-3 | `src/go` and `src/sdk` import the standard library only and never each other | DH-ADR-26 | Import-direction test (DH-S-4 exit) |
 | RM-4 | `src/harness` requires `src/go` and `src/sdk` **without `replace`**; the root `go.work` is for development and is off in the release build (`GOWORK=off`) | design.md sec. 4.2 | Release rehearsal (step 1.9) builds with `GOWORK=off` |
 | RM-5 | Every implementation package of `src/harness` sits under `internal/`; `cmd/dsh` holds `main` only | design.md sec. 4.2 | Import-direction test |

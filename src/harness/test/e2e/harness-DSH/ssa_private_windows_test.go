@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"fmt"
+	//lint:ignore typeassert reading an ACE's SID (GetAce) needs unsafe.Pointer at SidStart
 	"unsafe"
 
 	"golang.org/x/sys/windows"

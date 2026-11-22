@@ -38,7 +38,7 @@ if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
 $floorLine = Select-String -LiteralPath (Join-Path $root 'src/harness/go.mod') -Pattern '^go\s+(\S+)' | Select-Object -First 1
 if (-not $floorLine) { Fail 'no go line in src/harness/go.mod' }
 $floor = $floorLine.Matches[0].Groups[1].Value
-$env:GOTOOLCHAIN = "go$floor"   # go1.26.0 at the time of writing
+$env:GOTOOLCHAIN = "go$floor"   # go1.27.4 at the time of writing (go-floor-1-27-4)
 if (-not (Get-Command go -ErrorAction SilentlyContinue)) { Fail 'go is not on PATH' }
 $version = (& go version 2>&1 | Select-Object -Last 1)
 if ($LASTEXITCODE -ne 0) { Fail "go version with GOTOOLCHAIN=go${floor}: $version" }

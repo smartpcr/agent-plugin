@@ -257,6 +257,18 @@ Existing practice in this repository is the starting point: [ci.yml](../../../.g
 - **Serves.** [DH-O-15](../design.md#dh-o-15).
 - **Verified by.** `DH-T-TOOLCHAIN-8`.
 
+> **DC-3 note (M1 story, 2026-11-22; M1-D-GATE-23, plan 13.5.8).** Tech-spec QG-2 asks
+> for "no baseline file and no exemption list". A `//lint:ignore <check> <reason>`
+> directive at a site, as this decision requires, is not an exemption list. It sits
+> beside the one statement it accepts and states why, and the `lintignore` analyzer
+> rejects any directive with no reason, no check or an unknown check. A
+> `//lint:file-ignore` is always rejected, and no file outside the code records a
+> violation. The vet gate prints the total (`exceptions: N`). The own analyzers of
+> M1 are `rootcall`, `typeassert` and `lintignore`, run by vet. `errdiscard` is built
+> but pending until its narrowed sites are fixed. The rule above, that an analyzer
+> joins only in a change that leaves the tree clean, holds. The decision text above is
+> unchanged (DC-2).
+
 <a id="dh-adr-toolchain-9"></a>
 ### DH-ADR-TOOLCHAIN-9 A gate is a Go test or one of a short fixed command list
 

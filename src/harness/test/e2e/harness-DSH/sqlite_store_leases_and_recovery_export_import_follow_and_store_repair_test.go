@@ -32,8 +32,10 @@ import (
 // eifrHomeEnv:
 //
 //   - append: creates session eifrFollowID and reports "ready"; on "go" it
-//     appends 10 tool calls, one batch each and spaced, reporting
-//     "committed seq=<n> at=<unix ns>" after each commit.
+//     appends 10 tool calls, one batch each, reporting
+//     "committed seq=<n> at=<unix ns>" after each commit; before the next commit it
+//     waits for the parent's "next", sent once B has received the event, so B sees
+//     every commit on its own.
 //   - delete: deletes session eifrDeleteID in chunks of eifrDeleteChunk events;
 //     after the chunk that brings the removed events to eifrStopAtEnv it reports
 //     "chunk deleted=<n>" and stops there, as a process killed mid-deletion would.
@@ -97,7 +99,10 @@ func eifrChild(role, root string) error {
 				return err
 			}
 			fmt.Printf("committed seq=%d at=%d\n", seq, time.Now().UnixNano())
-			time.Sleep(20 * time.Millisecond) // spaced commits, so the follower polls between them
+			if seq < 9 {
+				for in.Scan() && in.Text() != "next" {
+				}
+			}
 		}
 		fmt.Println("appended")
 	case "delete":
@@ -546,6 +551,11 @@ func (s *eifrState) observesInOrder(n, bound int) error {
 			// A reports its commit after Append returned, so B may see the row first.
 			if lag := got.Sub(f.committed[want]); lag > limit {
 				return fmt.Errorf("seq %d reached B %s after its commit; want within %s", want, lag, limit)
+			}
+			if want < store.Seq(n)-1 {
+				if err := s.proc.send("next"); err != nil {
+					return err
+				}
 			}
 		case <-time.After(10 * time.Second):
 			return fmt.Errorf("B never received seq %d", want)

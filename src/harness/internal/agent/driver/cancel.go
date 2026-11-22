@@ -107,7 +107,7 @@ func (d *Driver) Cancel(c agent.Cause, o agent.CancelOptions) error {
 	var errs error
 	for _, l := range lists {
 		for _, m := range d.o.Inbox.Pending(l) {
-			err := d.write(nil, func(ctx context.Context) error {
+			err := d.write(d.life, func(ctx context.Context) error {
 				_, err := d.o.Inbox.Discard(ctx, l, m.ID, string(c))
 				return err
 			})

@@ -206,10 +206,12 @@ func (e *Evaluator) compile(source string, kind loader.ScopeKind) *program {
 	kind = e.kindOf(kind)
 	k := key{kind: kind, source: source}
 	if cached, ok := e.compiled.Load(k); ok {
+		//lint:ignore typeassert e.compiled holds only *program values; compile is its only writer
 		return cached.(*program)
 	}
 	p := e.build(source, kind)
 	cached, _ := e.compiled.LoadOrStore(k, p)
+	//lint:ignore typeassert e.compiled holds only *program values; compile is its only writer
 	return cached.(*program)
 }
 

@@ -516,6 +516,7 @@ func (s *LayerSet) writeLocked() error {
 	if entries := s.unaddressable(ops); len(entries) > 0 {
 		return &UnaddressableEditError{Label: layer.Label, Path: layer.Path, Entries: entries}
 	}
+	//lint:ignore typeassert the writable layer's codec is checked to be a LayerCodec when the layer set is built
 	text, err := layer.codec.(LayerCodec).EncodeLayer(layer.doc, ops)
 	if err != nil {
 		return fmt.Errorf("loader: cannot encode layer %q (%s): %w", layer.Label, layer.Path, err)

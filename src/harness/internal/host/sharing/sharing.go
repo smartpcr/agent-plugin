@@ -228,7 +228,7 @@ func New(cfg Config, lookup func(name string) (string, bool)) *Gate {
 // sharing/disabled, sharing/no-endpoint or sharing/unregistered. The gate holds
 // it until it is withdrawn or released; prefer PermitFor, which releases it with
 // its owner.
-func (g *Gate) Permit(k Kind) (*Permit, error) { return g.PermitFor(nil, k) }
+func (g *Gate) Permit(k Kind) (*Permit, error) { return g.PermitFor(context.Background(), k) }
 
 // PermitFor is Permit owned by owner (the asking fiber's Lifetime): the permit is
 // released when owner ends, so a fiber that unloads leaves nothing registered. A

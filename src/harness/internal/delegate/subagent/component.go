@@ -18,6 +18,7 @@ var Component = cordis.Define(Name, func(ctx *cordis.Context, _ cordis.None) err
 	if err != nil {
 		return err
 	}
+	//lint:ignore typeassert New returns its own *manager; the component needs the concrete type to close every agent on unload
 	m := New(reg).(*manager)
 	if _, err := ctx.Effect("subagent.manager", func() (cordis.Disposer, error) {
 		return func() error { m.closeAll(); return nil }, nil

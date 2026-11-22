@@ -23,15 +23,15 @@ const FloorModule = "src/harness/go.mod"
 // PATH is another release) and then run directly from its own GOROOT, so a child
 // that sets GOTOOLCHAIN=local (the budget gate) still runs on the floor.
 type Toolchain struct {
-	Floor   string // the go line, e.g. "1.26.0"
+	Floor   string // the go line, e.g. "1.27.4"
 	Source  string // the go.mod the floor was read from, slash-separated, relative to the root
-	Version string // what "go version" reported, e.g. "go1.26.0"
+	Version string // what "go version" reported, e.g. "go1.27.4"
 	Line    string // the whole "go version" line
 	GOROOT  string // the floor toolchain's GOROOT
 	Go      string // GOROOT/bin/go
 }
 
-// Name is the toolchain name of the floor, e.g. "go1.26.0".
+// Name is the toolchain name of the floor, e.g. "go1.27.4".
 func (t Toolchain) Name() string { return "go" + t.Floor }
 
 // String is the line the gate prints before its first gate.
@@ -42,8 +42,8 @@ func (t Toolchain) String() string {
 // FloorError is the setup error of a toolchain that is not the floor. The gate exits
 // 2 on it; there is no flag that accepts another toolchain (QG-2).
 type FloorError struct {
-	Floor  string // e.g. "go1.26.0"
-	Got    string // e.g. "go1.27.4"
+	Floor  string // e.g. "go1.27.4"
+	Got    string // e.g. "go1.26.0"
 	Source string // the go.mod the floor was read from
 	Go     string // the go command that reported Got
 }
@@ -136,8 +136,8 @@ func goVersion(ctx context.Context, gobin, dir string, env []string) (line, vers
 	return line, VersionOf(line), nil
 }
 
-// VersionOf returns the toolchain version of a "go version" line, e.g. "go1.26.0"
-// of "go version go1.26.0 windows/amd64"; for a devel toolchain, the whole remainder.
+// VersionOf returns the toolchain version of a "go version" line, e.g. "go1.27.4"
+// of "go version go1.27.4 windows/amd64"; for a devel toolchain, the whole remainder.
 func VersionOf(line string) string {
 	rest, ok := strings.CutPrefix(strings.TrimSpace(line), "go version ")
 	if !ok {

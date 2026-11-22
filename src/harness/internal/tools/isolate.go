@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 	"time"
+	//lint:ignore typeassert copying unexported struct fields needs reflect.NewAt with unsafe.Pointer of the field's address
 	"unsafe"
 )
 

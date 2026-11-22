@@ -14,14 +14,14 @@ volumes:
 
 services:
   dsh-home-init:
-    image: golang:1.26
+    image: golang:1.27
     user: "0:0"
     volumes:
       - dsh-home:/dsh-home
     command: ["sh", "-c", "chown 0:0 /dsh-home && chmod 0700 /dsh-home && ls -ld /dsh-home"]
 
   harness-store-tests:
-    image: golang:1.26
+    image: golang:1.27
     depends_on:
       dsh-home-init:
         condition: service_completed_successfully

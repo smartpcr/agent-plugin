@@ -342,9 +342,7 @@ func runFuzzCheck(pass *analysis.Pass) (any, error) {
 	if !hasTests && len(files) > 0 && hasInPackageTests(filepath.Dir(files[0].Name), pass.Pkg.Name()) {
 		return nil, nil
 	}
-	for _, f := range FuzzCheckFindings(files) {
-		pass.Report(analysis.Diagnostic{Pos: f.Pos, Message: f.Message})
-	}
+	report(pass, "fuzzcheck", FuzzCheckFindings(files))
 	return nil, nil
 }
 

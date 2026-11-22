@@ -29,7 +29,7 @@ import (
 )
 
 // Floor is the single go line every product module and the workspace state (RM-2).
-const Floor = "1.26.0"
+const Floor = "1.27.4"
 
 // Module is one product module of RM-1.
 type Module struct {

@@ -206,6 +206,7 @@ func (w *manualWatch) Close() error {
 		stop()
 	}
 	w.calling.Lock()
+	//lint:ignore SA2001 the empty section is the point: it waits until a callback in flight releases the lock
 	w.calling.Unlock() // only waits for a callback in flight
 	return nil
 }

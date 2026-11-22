@@ -215,6 +215,7 @@ func LoadZone(name string) (*time.Location, Reason) {
 		return nil, NotAreaLocation
 	}
 	if v, ok := zones.Load(name); ok {
+		//lint:ignore typeassert zones holds only *time.Location values; this function is its only writer
 		return v.(*time.Location), OK
 	}
 	loc, err := time.LoadLocation(name)
@@ -222,6 +223,7 @@ func LoadZone(name string) (*time.Location, Reason) {
 		return nil, UnknownZone
 	}
 	v, _ := zones.LoadOrStore(name, loc)
+	//lint:ignore typeassert zones holds only *time.Location values; this function is its only writer
 	return v.(*time.Location), OK
 }
 
@@ -323,6 +325,7 @@ func ZoneDataSource() string {
 			}
 		}
 	}
+	//lint:ignore SA1019 time.LoadLocation itself still searches runtime.GOROOT's zoneinfo.zip, so the report must name the same place
 	if root := runtime.GOROOT(); root != "" {
 		zip := filepath.Join(root, "lib", "time", "zoneinfo.zip")
 		if _, err := os.Stat(zip); err == nil {

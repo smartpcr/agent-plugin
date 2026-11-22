@@ -339,7 +339,7 @@ func (w *threeModuleWorkspace) dhTToolchain11ChecksTheParsedBytes() error {
 		return err
 	}
 	gate := filepath.ToSlash(filepath.Join(w.root, "tools", "harness-gate"))
-	mod := "module dshe2eprobe\n\ngo 1.26.0\n\n" +
+	mod := "module dshe2eprobe\n\ngo 1.27.4\n\n" +
 		"require github.com/smartpcr/agent-plugin/tools/harness-gate v0.0.0\n\n" +
 		"replace github.com/smartpcr/agent-plugin/tools/harness-gate => " + gate + "\n"
 	if err := os.WriteFile(filepath.Join(probe, "go.mod"), []byte(mod), 0o644); err != nil {

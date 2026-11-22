@@ -5,7 +5,7 @@
 //	GOWORK=off go -C src/go/test/e2e test -tags e2e -count=1 ./...
 module github.com/smartpcr/agent-plugin/src/go/test/e2e
 
-go 1.26.0
+go 1.27.4
 
 require (
 	// The Gherkin runner of every suite here; the same runner and version as

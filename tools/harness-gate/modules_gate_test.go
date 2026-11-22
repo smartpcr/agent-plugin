@@ -142,7 +142,7 @@ func TestModulesGateNamesRM4(t *testing.T) {
 // DH-T-TOOLCHAIN-11).
 func TestModulesGateNamesUnreasonedPin(t *testing.T) {
 	root := t.TempDir()
-	mod := "module example.com/unreasoned\n\ngo 1.26.0\n\nrequire golang.org/x/mod v0.43.0\n"
+	mod := "module example.com/unreasoned\n\ngo 1.27.4\n\nrequire golang.org/x/mod v0.43.0\n"
 	writeFiles(t, root, map[string]string{
 		"go.mod": mod,
 		"go.sum": goSumLines(t, "golang.org/x/mod"),
@@ -169,7 +169,7 @@ func selfRoot(t *testing.T, test string) *Config {
 	cfg := newTestConfig(t, scratch(t, "race-seeded"))
 	cfg.Root = t.TempDir()
 	writeFiles(t, cfg.Root, map[string]string{
-		SelfModule + "/go.mod":    "module example.com/selfseed\n\ngo 1.26.0\n",
+		SelfModule + "/go.mod":    "module example.com/selfseed\n\ngo 1.27.4\n",
 		SelfModule + "/s.go":      "// Package s is seeded for the self gate.\npackage s\n",
 		SelfModule + "/s_test.go": test,
 	})
