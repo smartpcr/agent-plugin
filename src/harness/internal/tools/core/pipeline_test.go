@@ -650,6 +650,61 @@ func TestListenerInputIsTheValidatedValue(t *testing.T) {
 	}
 }
 
+// bag is opaque: its state is a private slice, reachable only through methods,
+// one of which mutates it in place.
+type bag struct{ items []string }
+
+func (bag) SchemaShape() reflect.Type { return reflect.TypeFor[[2]string]() }
+
+func (b *bag) UnmarshalJSON(raw []byte) error { return json.Unmarshal(raw, &b.items) }
+
+func (b bag) First() string { return b.items[0] }
+
+func (b bag) Poison() { b.items[0] = "poisoned" }
+
+type bagIn struct {
+	B bag `json:"b" dsh:"required"`
+}
+
+// A listener calling an exported method that mutates an opaque input's private
+// state changes neither what a later listener sees nor what the body receives.
+func TestOpaqueInputPrivateStateIsolated(t *testing.T) {
+	e := newEnv(t)
+	svc := e.pipeline(t, core.Config{})
+	var body, guard, shaper string
+	e.register(t, e.root, tools.Define(tools.Spec[bagIn, string]{
+		Name: "bag", Description: "Bags.",
+		Run: func(_ context.Context, in bagIn, _ tools.Run) (string, error) { body = in.B.First(); return "ok", nil },
+	}))
+	if _, err := svc.Decide(e.root, "poison", func(_ context.Context, c tools.Call) tools.Decision {
+		c.Input().(bagIn).B.Poison()
+		return tools.Allow()
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Guard(e.root, "look", func(_ context.Context, c tools.Call) *tools.Denial {
+		c.Input().(bagIn).B.Poison()
+		guard = c.Input().(bagIn).B.First()
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Shape(e.root, "look", func(c tools.Call, _ tools.Outcome) tools.PostDecision {
+		shaper = c.Input().(bagIn).B.First()
+		return tools.Accept()
+	}); err != nil {
+		t.Fatal(err)
+	}
+	call := [2]string{"bag", `{"b":["a","b"]}`}
+	h := openSession(t, memstore.New(), call)
+	if r := execute(t, svc, view(t, svc), h, call)[0]; r.IsError {
+		t.Fatalf("result %+v", r)
+	}
+	if body != "a" || guard != "a" || shaper != "a" {
+		t.Fatalf("body saw %q, guard %q, shaper %q; want the validated %q everywhere", body, guard, shaper, "a")
+	}
+}
+
 // hook decodes into a function, which no copy can isolate.
 type hook struct{ Fn func() }
 

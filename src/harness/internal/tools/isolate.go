@@ -3,15 +3,18 @@ package tools
 import (
 	"fmt"
 	"reflect"
+	"time"
+	"unsafe"
 )
 
 // isolate deep-copies v, an already decoded and validated input, without
 // decoding or validating it again: slices, maps, arrays, pointers, interfaces
-// and exported struct fields are copied recursively, aliasing within v is kept
-// and cycles terminate. Unexported struct fields are copied by value, as a
-// listener outside the declaring package cannot reach them. A value holding a
-// non-nil channel, function or unsafe pointer cannot be isolated and is an
-// error, never a silently shared value.
+// and struct fields, unexported ones included, are copied recursively, so not
+// even a method of an opaque value that mutates its private state can reach
+// another copy; aliasing within v is kept and cycles terminate. A value holding
+// a non-nil channel, function or unsafe pointer, in any field, cannot be
+// isolated and is an error, never a silently shared value. Only the immutable
+// time.Time and *time.Location are shared as they are.
 func isolate(v any) (any, error) {
 	if v == nil {
 		return nil, nil
@@ -31,8 +34,18 @@ type visit struct {
 
 type copier struct{ seen map[visit]reflect.Value }
 
+// immutable are types whose values no method mutates; they are shared, not copied.
+var immutable = map[reflect.Type]bool{
+	reflect.TypeFor[time.Time]():      true,
+	reflect.TypeFor[*time.Location](): true,
+}
+
 func (c copier) copy(v reflect.Value, path string) (reflect.Value, error) {
 	out := reflect.New(v.Type()).Elem()
+	if immutable[v.Type()] {
+		out.Set(v)
+		return out, nil
+	}
 	switch v.Kind() {
 	case reflect.Chan, reflect.Func, reflect.UnsafePointer:
 		if !v.IsNil() {
@@ -116,17 +129,18 @@ func (c copier) copy(v reflect.Value, path string) (reflect.Value, error) {
 		}
 		return m, nil
 	case reflect.Struct:
-		out.Set(v)
+		// Unexported fields are neither readable as interfaces nor settable
+		// through reflect; both sides are reached through their addresses.
+		src := reflect.New(v.Type()).Elem()
+		src.Set(v)
 		t := v.Type()
 		for i := range t.NumField() {
-			if !t.Field(i).IsExported() {
-				continue
-			}
-			e, err := c.copy(v.Field(i), path+"."+t.Field(i).Name)
+			sf, df := open(src.Field(i)), open(out.Field(i))
+			e, err := c.copy(sf, path+"."+t.Field(i).Name)
 			if err != nil {
 				return out, err
 			}
-			out.Field(i).Set(e)
+			df.Set(e)
 		}
 		return out, nil
 	default:
@@ -140,4 +154,10 @@ func where(path string) string {
 		return "the input"
 	}
 	return "the input at " + path
+}
+
+// open is f, a field of an addressable struct, readable and settable even when
+// unexported.
+func open(f reflect.Value) reflect.Value {
+	return reflect.NewAt(f.Type(), unsafe.Pointer(f.UnsafeAddr())).Elem()
 }
