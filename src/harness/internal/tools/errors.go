@@ -42,6 +42,16 @@ const (
 	CodeFailed Code = "tools/failed"
 	// CodeBlocked: a shaper blocked a successful result.
 	CodeBlocked Code = "tools/blocked"
+	// CodeTimeout: the call's budget ended and its body returned within grace.
+	CodeTimeout Code = "tools/timeout"
+	// CodeAborted: the turn was cancelled while the body ran, and the body
+	// returned within grace.
+	CodeAborted Code = "tools/aborted"
+	// CodeOutcomeUnknown: the body did not return within grace after its deadline
+	// or a cancellation; it is detached and may still be running.
+	CodeOutcomeUnknown Code = "tools/outcome-unknown"
+	// CodeBusy: a detached body of this tool, for this agent, is still running.
+	CodeBusy Code = "tools/busy"
 	// CodeApprovalDenied: the approval was refused, or could not be audited.
 	CodeApprovalDenied Code = "approval/denied"
 	// CodeApprovalTimeout: nobody answered the approval in time.
@@ -93,4 +103,7 @@ var (
 	ErrInvalidArguments   = &Error{Code: CodeInvalidArguments}
 	ErrInvalidOutput      = &Error{Code: CodeInvalidOutput}
 	ErrInvalidBatch       = &Error{Code: CodeInvalidBatch}
+	// ErrTimeout is matched by the cause of a body's context cancelled because
+	// the call's budget ended (context.Cause).
+	ErrTimeout = &Error{Code: CodeTimeout}
 )

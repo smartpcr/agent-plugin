@@ -9,6 +9,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -42,6 +43,7 @@ type layer struct {
 	policies map[uint64]named[tools.Policy]
 	guards   map[uint64]named[tools.Guard]
 	shapers  map[uint64]named[tools.Shaper]
+	spill    *named[tools.SpillShaper] // the layer's one spill seat
 	next     uint64
 }
 
@@ -56,9 +58,10 @@ type registry struct {
 	layers *scope.Layers[*layer]
 	cfg    Config
 
-	mu   sync.Mutex
-	seq  uint64
-	live map[*tools.Declaration]*liveDecl // every registration, for Catalogue
+	mu       sync.Mutex
+	seq      uint64
+	live     map[*tools.Declaration]*liveDecl // every registration, for Catalogue
+	detached map[*detachedBody]struct{}       // bodies that outlived their grace
 }
 
 type liveDecl struct {
@@ -76,7 +79,21 @@ func NewWith(ctx *cordis.Context, tab scope.Table, cfg Config) tools.Service {
 	if cfg.MaxArgumentBytes <= 0 {
 		cfg.MaxArgumentBytes = DefaultMaxArgumentBytes
 	}
-	return &registry{ctx: ctx, layers: scope.NewLayers(tab, newLayer), cfg: cfg, live: map[*tools.Declaration]*liveDecl{}}
+	if cfg.MaxResultBytes <= 0 {
+		cfg.MaxResultBytes = DefaultMaxResultBytes
+	}
+	if cfg.DefaultTimeout <= 0 {
+		cfg.DefaultTimeout = DefaultTimeout
+	}
+	if cfg.Grace <= 0 {
+		cfg.Grace = DefaultGrace
+	}
+	if cfg.Clock == nil {
+		cfg.Clock = realClock{}
+	}
+	cfg.Timeouts = maps.Clone(cfg.Timeouts)
+	return &registry{ctx: ctx, layers: scope.NewLayers(tab, newLayer), cfg: cfg, live: map[*tools.Declaration]*liveDecl{},
+		detached: map[*detachedBody]struct{}{}}
 }
 
 func (r *registry) Register(ctx *cordis.Context, d *tools.Declaration) (*cordis.EffectHandle, error) {
