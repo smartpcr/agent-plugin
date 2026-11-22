@@ -30,14 +30,17 @@ type detachedBody struct {
 }
 
 // budget is the call budget of d: the operator's override, else the declared
-// Timeout, else the default; 0 is none (tools.NoDeadline).
+// Timeout, else the default; 0 is none (tools.NoDeadline). Opting out must be
+// explicit (DH-ADR-TOOLS-5): an override that is negative but not
+// tools.NoDeadline is misconfigured and ignored, as the declaration path
+// refuses it, so it never silently disables the budget.
 func (r *registry) budget(d *tools.Declaration) time.Duration {
 	t, ok := r.cfg.Timeouts[d.Name()]
-	if !ok || t == 0 {
+	if !ok || t == 0 || (t < 0 && t != tools.NoDeadline) {
 		t = d.Timeout()
 	}
 	switch {
-	case t == tools.NoDeadline || t < 0:
+	case t == tools.NoDeadline:
 		return 0
 	case t == 0:
 		return r.cfg.DefaultTimeout
