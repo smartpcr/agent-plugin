@@ -3,6 +3,7 @@ package agent_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"iter"
 	"regexp"
@@ -294,6 +295,139 @@ func f2Types(evs []event.Event) []string {
 		out = append(out, e.Type())
 	}
 	return out
+}
+
+func f2OfType(evs []event.Event, typ string) []event.Event {
+	var out []event.Event
+	for _, e := range evs {
+		if e.Type() == typ {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func f2Decode[T any](e event.Event) (T, error) {
+	var v T
+	if err := json.Unmarshal([]byte(e.Raw()), &v); err != nil {
+		return v, fmt.Errorf("decode %s: %w", e.Type(), err)
+	}
+	return v, nil
+}
+
+// f2Text is a message's text: its text blocks and the text parts of its tool
+// results, where a tool-role message keeps what the tool returned.
+func f2Text(m vocab.Message) string {
+	var b strings.Builder
+	for _, bl := range m.Blocks() {
+		if bl.Text != nil {
+			b.WriteString(bl.Text.Text)
+		}
+		if bl.ToolResult != nil {
+			for _, p := range bl.ToolResult.Parts {
+				if p.Text != nil {
+					b.WriteString(p.Text.Text)
+				}
+			}
+		}
+	}
+	return b.String()
+}
+
+func f2HasToolUse(m vocab.Message) bool {
+	for _, bl := range m.Blocks() {
+		if bl.ToolUse != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func f2ToolResultFailed(p event.ToolResultPayload) bool {
+	if p.IsError {
+		return true
+	}
+	for _, bl := range p.Message.Blocks() {
+		if bl.ToolResult != nil && bl.ToolResult.IsError {
+			return true
+		}
+	}
+	return false
+}
+
+// f2Completed is the M1 one-turn success oracle, shared with the keyless F2
+// run so it is checked against a real successful payload: exactly one turn,
+// completed; no failed attempt; one tool/result, a success whose text carries
+// answer; and the last settlement an assistant/message with text and no tool
+// call. It returns the final reply's text.
+func f2Completed(evs []event.Event, answer string) (string, error) {
+	ends := f2OfType(evs, "turn/end")
+	if len(ends) != 1 {
+		return "", fmt.Errorf("%d turn/end events, want exactly one", len(ends))
+	}
+	te, err := f2Decode[event.TurnEnd](ends[0])
+	if err != nil {
+		return "", err
+	}
+	if te.Reason.Kind != event.ReasonCompleted {
+		return "", fmt.Errorf("turn/end %+v, want completed", te.Reason)
+	}
+	if n := len(f2OfType(evs, "assistant/attempt")); n != 0 {
+		return "", fmt.Errorf("%d failed attempts in the turn", n)
+	}
+	results := f2OfType(evs, "tool/result")
+	if len(results) != 1 {
+		return "", fmt.Errorf("%d tool/result events, want 1", len(results))
+	}
+	res, err := f2Decode[event.ToolResultPayload](results[0])
+	if err != nil {
+		return "", err
+	}
+	if f2ToolResultFailed(res) || !strings.Contains(f2Text(res.Message), answer) {
+		return "", fmt.Errorf("tool result %s, want a success carrying %q", results[0].Raw(), answer)
+	}
+	var last event.Event
+	found := false
+	for _, e := range evs {
+		switch e.Type() {
+		case "assistant/message", "tool/result":
+			last, found = e, true
+		}
+	}
+	if !found || last.Type() != "assistant/message" {
+		return "", errors.New("the turn's last settlement is not an assistant reply after the tool result")
+	}
+	reply, err := f2Decode[event.AssistantMessagePayload](last)
+	if err != nil {
+		return "", err
+	}
+	if f2Text(reply.Message) == "" || f2HasToolUse(reply.Message) {
+		return "", fmt.Errorf("final reply %s, want text and no tool call", last.Raw())
+	}
+	return f2Text(reply.Message), nil
+}
+
+// The M1 one-turn oracle accepts the scripted F2 turn (its tool result holds
+// the probe's text under tool_result.parts, not a text block) and refuses the
+// same log cut before the reply, or with the tool result turned into an error.
+func TestM1CompletionOracleOnTheF2Turn(t *testing.T) {
+	sess, _, _ := f2Run(t, memstore.New(), f2Hooks{})
+	evs := must(sess.Read(bg, 0, 0))
+	if _, err := f2Completed(evs, f2Answer); err != nil {
+		t.Fatalf("the oracle refused the successful F2 turn: %v", err)
+	}
+	cut := slices.IndexFunc(evs, func(e event.Event) bool { return e.Type() == "tool/result" })
+	if _, err := f2Completed(evs[:cut+1], f2Answer); err == nil {
+		t.Fatal("the oracle accepted a turn cut after the tool result")
+	}
+	res := must(f2Decode[event.ToolResultPayload](evs[cut]))
+	res.IsError = true
+	if !f2ToolResultFailed(res) {
+		t.Fatal("an error tool result reads as a success")
+	}
+	if _, err := f2Completed(evs, "not the probe's output"); err == nil {
+		t.Fatal("the oracle accepted a tool result without the expected text")
+	}
 }
 
 // TC-11a, the Stage 11.4 scenario "Flow F2 bracketed log matches golden": one

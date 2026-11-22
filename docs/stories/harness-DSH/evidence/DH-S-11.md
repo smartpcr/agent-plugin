@@ -60,9 +60,14 @@ go -C src/harness test -tags manual -count=1 -v -run TestManualM1 ./internal/age
   bracketed log (`M1 bracketed log`), and for each sent request the digest rebuilt
   by `surface.Rebuild` at its `requestAsOf` and its messages (`M1 request N:`). It
   fails unless the brackets close, the answerer was asked once, every rebuilt digest
-  equals the sent one, there is exactly one `turn/end` and it is completed, no
-  attempt failed, the one `tool/result` is a success carrying `probed: ping`, and
-  the last settlement is an `assistant/message` with text and no tool call.
+  equals the sent one, and the shared oracle `f2Completed` holds: exactly one
+  `turn/end`, completed; no failed attempt; the one `tool/result` a success (no
+  `is_error` on the payload or its `tool_result` block) whose `tool_result.parts`
+  text carries `probed: ping`; the last settlement an `assistant/message` with
+  text and no tool call. `TestM1CompletionOracleOnTheF2Turn` (default build, no
+  key) runs the same oracle on the scripted F2 turn, so it is proven against the real
+  successful payload shape, and shows it refuses a turn cut after the tool result,
+  an error result and a result without the probe's text.
 - `TestManualM1CancelMidStream` sends a prompt with a long reply, cancels the turn
   (`CauseUser`, `ScopeTurn`) only after a nonempty answer `TextDelta` has
   streamed (a block start, usage chunk or error finish does not trigger it), and
@@ -108,7 +113,7 @@ stage supplies.
 SESSION-2 and AGENT-3 also require DH-S-13 because they kill the host during a
 shell tool call. With these, every `DH-E-*` scenario of DH-S-1 to DH-S-11 named in
 impl.md §7.5 has a file and an index entry. `tools/harness-gate/scenarios_test.go`
-expects each file and test (TOOLCHAIN-1 requires record to write a new, nonempty `session[.vN].jsonl` of JSON-object lines into a copy that held no session log, upstream/toolchain.md:556), checks the new helper files against the import
+expects each file and test (TOOLCHAIN-1 requires record to write a new `session[.vN].jsonl` into a copy that held no session log, upstream/toolchain.md:556, with every line a nonempty JSON object; `null`, `{}`, arrays, scalars and torn lines are refused, which the scenario's keyless `selfCheckSessionLog` proves before reading its inputs. AGENT-2 asserts the persisted shape the driver writes for a cancelled stream: one `assistant/message` whose text begins with the streamed text, no tool call, `turn/end` aborted{user}, and the recording proxy's `ClientClosed` showing dsh closed the provider connection before the response ended, areas/agent-loop.md:556), checks the new helper files against the import
 boundary, and lists the six new ids in the `require --stage DH-S-17` output.
 
 Gate evidence: `go -C src/harness vet -tags scenario ./...` exits 0; the default

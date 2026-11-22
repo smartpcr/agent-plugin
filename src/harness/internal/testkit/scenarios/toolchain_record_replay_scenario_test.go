@@ -7,6 +7,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -51,6 +53,7 @@ import (
 //
 //dsh:scenario DH-E-TOOLCHAIN-1
 func TestRecordThenReplayWithoutAKey(t *testing.T) {
+	selfCheckSessionLog(t)
 	key := need(t, "DSH_DEEPSEEK_API_KEY", "a real DeepSeek API key")
 	rel := need(t, "DSH_SCENARIO_TOOLCHAIN1_DIR", "a scenario directory holding a manifest and a workspace seed")
 	recordT := need(t, "DSH_SCENARIO_TOOLCHAIN1_RECORD", "the replay package's record command")
@@ -161,20 +164,51 @@ func assertRecordedLog(t *testing.T, dir string) {
 		if err != nil {
 			t.Fatalf("reading the recorded log %s: %v", l, err)
 		}
-		lines := 0
-		for i, line := range strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n") {
-			if strings.TrimSpace(line) == "" {
-				continue
-			}
-			var obj map[string]json.RawMessage
-			if err := json.Unmarshal([]byte(line), &obj); err != nil {
-				t.Fatalf("the recorded log %s line %d is not a JSON object: %v\n%s", l, i+1, err, line)
-			}
-			lines++
+		if err := checkSessionLog(data); err != nil {
+			t.Fatalf("the recorded log %s: %v", l, err)
 		}
-		if lines == 0 {
-			t.Fatalf("the recorded log %s is empty", l)
+	}
+}
+
+// checkSessionLog accepts a JSON Lines log with at least one line, each line a
+// nonempty JSON object. A JSON null decodes into a map without error and leaves
+// it nil, so it is refused explicitly, as are arrays, scalars and {}.
+func checkSessionLog(data []byte) error {
+	lines := 0
+	for i, line := range strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
 		}
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(line), &obj); err != nil {
+			return fmt.Errorf("line %d is not a JSON object: %v\n%s", i+1, err, line)
+		}
+		if len(obj) == 0 {
+			return fmt.Errorf("line %d is not a nonempty JSON object: %s", i+1, line)
+		}
+		lines++
+	}
+	if lines == 0 {
+		return errors.New("the log is empty")
+	}
+	return nil
+}
+
+// selfCheckSessionLog proves the log oracle refuses what record must not pass
+// off as a session log, and accepts a real line. It needs no key, so it runs
+// before the scenario's inputs are read.
+func selfCheckSessionLog(t *testing.T) {
+	t.Helper()
+	for name, data := range map[string]string{
+		"empty": "", "blank lines": "\n\r\n  \n", "null": "null\n", "null after a line": "{\"seq\":1}\nnull\n",
+		"empty object": "{}\n", "array": "[{\"seq\":1}]\n", "scalar": "1\n", "string": "\"x\"\n", "torn": "{\"seq\":1}\n{\"seq\":\n",
+	} {
+		if err := checkSessionLog([]byte(data)); err == nil {
+			t.Fatalf("the session-log oracle accepted %s: %q", name, data)
+		}
+	}
+	if err := checkSessionLog([]byte("{\"seq\":1,\"type\":\"turn/start\"}\r\n{\"seq\":2,\"type\":\"turn/end\"}\n")); err != nil {
+		t.Fatalf("the session-log oracle refused a valid log: %v", err)
 	}
 }
 

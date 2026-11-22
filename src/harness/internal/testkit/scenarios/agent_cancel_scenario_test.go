@@ -23,9 +23,11 @@ import (
 // provider and a prompt that produces a long answer, when after the first chunk
 // frames arrive the client cancels the turn (cause user) keeping the inbox, waits
 // for idle and then sends "repeat your last sentence", then the first turn ends
-// aborted with cause user; its one settlement is an interrupted assistant message
-// holding the text that was streamed, whose failure is the cancel (the provider
-// connection closed by it); and the second request the proxy forwarded carries
+// aborted with cause user; its one settlement is an interrupted assistant/message
+// holding the text that was streamed, with no tool call (areas/agent-loop.md:556;
+// the driver keeps a cancelled attempt's prefix as history), and the proxy saw
+// dsh close the provider connection before the response ended; and the second
+// request the proxy forwarded carries
 // that text. Cleanup: the launcher stops dsh and deletes the home. On failure the
 // export is kept (its path is logged) and the proxy's requests are in the failure
 // message.
@@ -70,17 +72,32 @@ func TestCancelledStreamKeepsWhatWasShown(t *testing.T) {
 	h.mu.Lock()
 	shown := streamedText(h, session, int64(run1.Turn))
 	h.mu.Unlock()
+	// The driver persists a cancelled attempt that kept a prefix as the turn's
+	// assistant/message (no failure field): the interruption is the turn's
+	// aborted{user}, checked above, and the prefix is history with no tool call.
 	settled := ofType(evs1, "assistant/message", "assistant/attempt")
-	if len(settled) != 1 || !bytes.Contains(settled[0].Data, []byte("interrupted")) {
-		t.Fatalf("turn 1 has %d settlements, want one interrupted assistant message: %v", len(settled), eventTypes(settled))
+	if len(settled) != 1 || settled[0].Type != "assistant/message" {
+		t.Fatalf("turn 1 has settlements %v, want one interrupted assistant/message", eventTypes(settled))
 	}
 	var s wireSettlement
 	decode(t, settled[0], &s)
-	if s.Failure == nil || s.Failure.Class != "cancelled" {
-		t.Fatalf("the interrupted attempt's failure is %+v, want class cancelled (the connection closed by the cancel)", s.Failure)
+	if s.Message == nil {
+		t.Fatalf("the interrupted assistant/message has no message:\n%s", settled[0].Data)
 	}
-	if !bytes.Contains(settled[0].Data, jsonText(shown)) {
-		t.Fatalf("the interrupted message does not hold the streamed text %q:\n%s", shown, settled[0].Data)
+	var kept strings.Builder
+	for _, b := range s.Message.Blocks {
+		if b.ToolUse != nil {
+			t.Fatalf("the interrupted message carries a tool call:\n%s", settled[0].Data)
+		}
+		if b.Text != nil {
+			kept.WriteString(b.Text.Text)
+		}
+	}
+	if shown == "" || !strings.HasPrefix(kept.String(), shown) {
+		t.Fatalf("the interrupted message holds %q, want the streamed text %q", kept.String(), shown)
+	}
+	if fwd := proxy.requests("official"); len(fwd) == 0 || !fwd[0].ClientClosed {
+		t.Fatal("the cancelled request's provider connection was not closed by dsh before the response ended")
 	}
 
 	run2 := h.awaitRun(t, session, h.prompt(t, session, "repeat your last sentence"), 10*time.Minute)

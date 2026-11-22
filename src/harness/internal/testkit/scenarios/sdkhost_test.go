@@ -304,7 +304,10 @@ type (
 		Output     int `json:"output"`
 	}
 	wireBlock struct {
-		Kind      string `json:"kind"`
+		Kind string `json:"kind"`
+		Text *struct {
+			Text string `json:"text"`
+		} `json:"text"`
 		Reasoning *struct {
 			Text      string `json:"text"`
 			Signature string `json:"signature"`
@@ -357,6 +360,9 @@ type proxiedRequest struct {
 	Method   string
 	Path     string
 	Body     []byte
+	// ClientClosed is set when dsh closed its connection before the upstream
+	// response ended, as a cancel does.
+	ClientClosed bool
 }
 
 // recordingProxy forwards {base}/<name>/... to upstream <name> and records every
@@ -390,7 +396,15 @@ func startProxy(t *testing.T, upstreams map[string]string) *recordingProxy {
 		body, _ := io.ReadAll(r.Body)
 		p.mu.Lock()
 		p.seen = append(p.seen, proxiedRequest{Upstream: name, Method: r.Method, Path: "/" + rest, Body: body})
+		idx := len(p.seen) - 1
 		p.mu.Unlock()
+		defer func() {
+			if r.Context().Err() != nil {
+				p.mu.Lock()
+				p.seen[idx].ClientClosed = true
+				p.mu.Unlock()
+			}
+		}()
 		out := *target
 		out.Path = strings.TrimSuffix(target.Path, "/") + "/" + rest
 		out.RawQuery = r.URL.RawQuery
