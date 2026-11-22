@@ -1,0 +1,67 @@
+# Phase "agent loop milestone M1" E2E (Stage 11.1: model selection and step
+# tool batch) on Azure Pipelines. Mirrors
+# .github/workflows/e2e-agent-loop-milestone-m1.yml: a gating job on
+# Microsoft-hosted agents for Linux, macOS and Windows (in-process and
+# embedded-SQLite proofs; no DSN, no secrets) and a non-gating compose job on
+# ubuntu-latest. The M1 manual check (DSH_DEEPSEEK_API_KEY) never runs here.
+trigger:
+  branches:
+    include: [main]
+  paths:
+    include:
+      - src/harness
+      - tests/e2e/agent-loop-milestone-m1
+
+pr:
+  paths:
+    include:
+      - src/harness
+      - tests/e2e/agent-loop-milestone-m1
+
+variables:
+  GOWORK: "off"
+
+jobs:
+  - job: e2e
+    displayName: e2e ($(imageName))
+    strategy:
+      matrix:
+        linux:
+          imageName: ubuntu-latest
+        mac:
+          imageName: macos-latest
+        windows:
+          imageName: windows-latest
+    pool:
+      vmImage: $(imageName)
+    steps:
+      - checkout: self
+      - task: GoTool@0
+        inputs:
+          version: "1.26.0"
+      - bash: go -C src/harness test -race -shuffle=on -count=1 ./internal/agent/... ./internal/tools/... ./internal/llm/...
+        displayName: Agent, tools and llm tests
+      - bash: |
+          set -o pipefail
+          go -C src/harness test -tags e2e -count=1 -v \
+            -run '^TestE2E_agent_loop_milestone_m1_' \
+            ./test/e2e/harness-DSH/ 2>&1 | tee e2e.log
+          if grep -q -- '--- SKIP' e2e.log; then echo "a required scenario skipped"; exit 1; fi
+        displayName: Godog scenarios
+
+  - job: compose
+    displayName: compose (non-gating)
+    continueOnError: true
+    pool:
+      vmImage: ubuntu-latest
+    variables:
+      COMPOSE_FILE: tests/e2e/agent-loop-milestone-m1/docker-compose.yml
+    steps:
+      - checkout: self
+      - bash: docker compose run --rm dsh-home-init
+        displayName: Initialise the dsh-home volume
+      - bash: docker compose run --rm harness-store-tests
+        displayName: Run the tests against the volume
+      - bash: docker compose down -v
+        displayName: Tear down
+        condition: always()

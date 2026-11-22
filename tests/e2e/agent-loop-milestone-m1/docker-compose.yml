@@ -1,0 +1,50 @@
+# Phase "agent loop milestone M1" compose path (non-gating): the agent, tools
+# and llm package tests and the godog E2E against a dsh-home named volume. The
+# gate path needs none of this -- TC-11a runs in-process on the test kit's
+# scripted fake model and memstore; TC-11b runs on the embedded SQLite store in
+# a test-kit temp home when DSH_E2E_STORE_HOME is unset.
+#
+#   docker compose -f tests/e2e/agent-loop-milestone-m1/docker-compose.yml run --rm dsh-home-init
+#   docker compose -f tests/e2e/agent-loop-milestone-m1/docker-compose.yml run --rm harness-store-tests
+#   docker compose -f tests/e2e/agent-loop-milestone-m1/docker-compose.yml down -v
+#
+# internal/delegate and internal/context join the package list once a later
+# stage of the phase lands them.
+name: dsh-agent-loop-m1-e2e
+
+volumes:
+  dsh-home: {}
+  go-cache: {}
+
+services:
+  dsh-home-init:
+    image: golang:1.26
+    user: "0:0"
+    volumes:
+      - dsh-home:/dsh-home
+    command: ["sh", "-c", "chown 0:0 /dsh-home && chmod 0700 /dsh-home && ls -ld /dsh-home"]
+
+  harness-store-tests:
+    image: golang:1.26
+    depends_on:
+      dsh-home-init:
+        condition: service_completed_successfully
+    working_dir: /repo
+    environment:
+      GOWORK: "off"
+      CGO_ENABLED: "1"
+      GOFLAGS: "-mod=readonly"
+      DSH_E2E_STORE_HOME: /dsh-home
+      DSH_HOME: ""
+    volumes:
+      - ../../..:/repo:ro
+      - dsh-home:/dsh-home
+      - go-cache:/root/.cache
+    command:
+      - sh
+      - -c
+      - >-
+        go -C src/harness test -race -count=1 ./internal/agent/... ./internal/tools/... ./internal/llm/... &&
+        go -C src/harness test -tags e2e -count=1 -v
+        -run '^TestE2E_agent_loop_milestone_m1_'
+        ./test/e2e/harness-DSH/
