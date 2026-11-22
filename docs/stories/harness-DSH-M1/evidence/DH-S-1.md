@@ -327,19 +327,32 @@ Operator: to be named by the lead. These are facts of the host, not a gate run.
 
 `manual`, **not closure evidence.** Both scripts run once at the Stage 12.3 commit to
 prove the lanes work end to end; each is expected to stop at the `vet` gate, which Phase
-13 repairs. The record is the first triage input for plan step 13.7. The lead fills this
-table after the stage commit.
+13 repairs. The record is the first triage input for plan step 13.7.
 
 | Field | WSL lane (`lanes/wsl.sh`) | Windows lane (`lanes/win.ps1`) |
 | --- | --- | --- |
-| Run-record id | _to be filled_ | _to be filled_ |
-| Record file and SHA-256 | _to be filled_ | _to be filled_ |
-| Rehearsal file and SHA-256 | _to be filled_ | -- (WSL lane only) |
-| Operator | _to be filled_ | _to be filled_ |
-| Commit | _to be filled_ | _to be filled_ |
-| Preflight | _to be filled_ (the `preflight passed` line, or the failed check and exit 3) | _to be filled_ |
-| Gate result | _to be filled_ (expected: `FAILED at gate vet`, exit 1) | _to be filled_ (expected: `FAILED at gate vet`, exit 1) |
+| Run-record id | `wsl-a30ddd9-20261122T1535Z` | `win-4a96224-20261122T1534Z` |
+| Record file and SHA-256 | [runs/wsl-a30ddd9-20261122T1535Z.txt](runs/wsl-a30ddd9-20261122T1535Z.txt), file sha256 `8d7cbdbc30c6197eb6f0a5abb0d983f86a9dc1b19139e1ec87ded9463bc444a1` (the `sha256:` line inside covers the output above it) | [runs/win-4a96224-20261122T1534Z.txt](runs/win-4a96224-20261122T1534Z.txt), file sha256 `9828d6d0af39a4c2e9b9c719d309004ad37ff3583d071e3408ba9616b199dc49` |
+| Rehearsal file and SHA-256 | [runs/wsl-a30ddd9-20261122T1535Z-rehearse.txt](runs/wsl-a30ddd9-20261122T1535Z-rehearse.txt), file sha256 `8eed8c858326bb029428906893a96d7095246082c4c22220337b1a24d4e46770`; exit 0, six binaries, each `vcs.modified=false` | -- (WSL lane only) |
+| Operator | Claude Code (lead agent), for the owner | Claude Code (lead agent), for the owner |
+| Commit | `a30ddd9` (`4a96224` plus the executable bit on `lanes/wsl.sh`) | `4a96224` (identical tree except that file mode) |
+| Preflight | passed: ext4 checkout, uid 1000, go1.26.0, `CC=gcc`, clean tree, `TMPDIR=/tmp` on ext4 | passed: NTFS, not elevated, go1.26.0 (`GOTOOLCHAIN=go1.26.0`), MSYS2 gcc, clean tree |
+| Gate result | `harness-gate: FAILED at gate vet`, exit 1 (analyzer findings in `src/harness` test files; Phase 13) | `harness-gate: FAILED at gate vet`, exit 1 (same findings) |
 | Label | `manual`, not closure evidence | `manual`, not closure evidence |
+
+Lane fault found by the first run: `lanes/wsl.sh` had been committed without its
+executable bit (exit 126 at `4a96224`); fixed in `a30ddd9`.
+
+### Runbook dry run (plan 12.4.7)
+
+`manual`, **not closure evidence.** On the fresh distribution at `a30ddd9`, every
+verification line of [README.md sec. Lanes](README.md) printed its stated value:
+`go env GOOS GOARCH` = `linux amd64`; `df -T .` = `ext4`; `git status --porcelain` empty
+apart from the new run records; `go env CC` = `gcc`, gcc 13.3.0; `systemctl --user`
+present (the Linux user-scope path is usable, EN-5); `id -u` = 1000; `TMPDIR` = `/tmp`
+on ext4; `CGO_ENABLED=1`; Ubuntu 24.04.5 LTS, kernel 6.18.58.1-microsoft-standard-WSL2;
+`wsl.exe --version`: WSL 3.0.5.0, kernel 6.18.58.1-1. A gate log was produced (the WSL
+row above).
 
 ## Evidence record (impl.md sec. 7.3)
 
