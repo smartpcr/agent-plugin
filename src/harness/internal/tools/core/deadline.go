@@ -27,7 +27,8 @@ type detachedBody struct {
 	tool  string
 	agent agent.Ref
 	since time.Time
-	// overlap is the call's batch classification, kept while the body runs so
+	// overlap is the call's declared classification (forceExclusive aside),
+	// kept while the body runs so
 	// a later call on a conflicting resource key does not overlap it.
 	overlap tools.Overlap
 }
@@ -206,12 +207,14 @@ func (r *registry) detach(b tools.Batch, d *tools.Declaration, run tools.Run, ov
 	}()
 }
 
-// busy is why a call of tool classified ov, by ag, may not start, "" when it
+// busy is why a call of tool declaring ov, by ag, may not start, "" when it
 // may: a detached body of the same tool for ag is still running, or one whose
-// resource keys conflict with ov's. Only keyed classifications are compared:
-// exclusivity orders the calls of one batch, and a detached exclusive body
-// would otherwise refuse every later call of the agent. It refuses at once and
-// never waits, since a detached body may never return.
+// declared resource keys conflict with ov's. ov and a detached body's overlap
+// are the declared classifications, forceExclusive aside, so forcing either
+// tool exclusive never hides a key conflict. A classification without keys is
+// not compared with other tools: per DH-D-TOOLS-3 a detached body makes its own
+// tool busy, and the step goes on with others (DH-T-TOOLS-9). It refuses at
+// once and never waits, since a detached body may never return.
 func (r *registry) busy(ag agent.Ref, tool string, ov tools.Overlap) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()

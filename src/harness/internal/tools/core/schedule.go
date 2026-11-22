@@ -73,7 +73,13 @@ func (r *registry) schedule(ctx context.Context, b tools.Batch, ag agent.Ref, ls
 		if failed != nil {
 			break
 		}
-		a := r.prepare(ctx, b, ag, ls, c, ov)
+		// The declared keys, not the forced classification, guard a body
+		// that detaches.
+		keys := ov
+		if slices.Contains(r.cfg.ForceExclusive, c.Name) {
+			keys = r.declared(decls, c)
+		}
+		a := r.prepare(ctx, b, ag, ls, c, keys)
 		s := &slot{a: a}
 		slots[i] = s
 		if a.run == nil {
@@ -109,8 +115,18 @@ func (r *registry) schedule(ctx context.Context, b tools.Batch, ag agent.Ref, ls
 // argument over the byte bound is exclusive without being decoded, so its
 // Overlap function never sees it; prepare settles it arguments-too-large.
 func (r *registry) overlap(decls map[string]*tools.Declaration, c tools.CallRequest) tools.Overlap {
+	if slices.Contains(r.cfg.ForceExclusive, c.Name) {
+		return tools.Exclusive
+	}
+	return r.declared(decls, c)
+}
+
+// declared is the classification c's declaration gives it, forceExclusive
+// aside: forcing a tool exclusive orders it within its batch but does not hide
+// the resource keys it declares, which a detached body keeps holding.
+func (r *registry) declared(decls map[string]*tools.Declaration, c tools.CallRequest) tools.Overlap {
 	d, ok := decls[c.Name]
-	if !ok || slices.Contains(r.cfg.ForceExclusive, c.Name) || len(c.Arguments) > r.cfg.MaxArgumentBytes {
+	if !ok || len(c.Arguments) > r.cfg.MaxArgumentBytes {
 		return tools.Exclusive
 	}
 	return d.Classify([]byte(c.Arguments))

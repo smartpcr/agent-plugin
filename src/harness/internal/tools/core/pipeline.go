@@ -234,7 +234,8 @@ func early(call tools.Call, e ended) prepared { return prepared{call: call, e: e
 
 // prepare takes one call through the stages before its body, in their fixed
 // order. It runs on the batch's coordinator, so a batch's appends stay serial.
-// ov is the call's classification; a detached body keeps it.
+// ov is the call's declared classification, forceExclusive aside; a detached
+// body keeps it.
 func (r *registry) prepare(ctx context.Context, b tools.Batch, ag agent.Ref, ls listeners, req tools.CallRequest, ov tools.Overlap) prepared {
 	args := []byte(req.Arguments)
 	call := tools.NewCall(req.ID, req.Name, args, b.Origin, b.Parent, ag, nil, nil)

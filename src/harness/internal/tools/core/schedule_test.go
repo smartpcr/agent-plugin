@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -279,46 +280,72 @@ func TestLogFailureStopsAdmissionWhileEarlierCallsRun(t *testing.T) {
 	}
 }
 
-// A detached body keeps its resource keys: a later call of a different tool
-// writing the same key is refused busy at once, without waiting on the body,
-// while one on another key runs.
+// A detached body keeps its declared resource keys: a later call of a different
+// tool writing the same key, in the same batch or a later one, is refused busy
+// at once without waiting on the body, while one on another key runs. Forcing
+// either tool exclusive orders the batch but hides no key.
 func TestDetachedBodyKeepsItsResourceKeys(t *testing.T) {
-	clk := clock.NewManual(epoch)
-	e := newEnv(t)
-	act := newActivity()
-	svc := e.pipeline(t, core.Config{Clock: clk, DefaultTimeout: 7 * time.Second, Grace: time.Second, Checkpoint: recCheckpoint{&trace{}}})
-	started, release := make(chan struct{}), make(chan struct{})
-	writes := func(in keyIn) tools.Overlap { return tools.Writes(in.Key) }
-	e.register(t, e.root, keyedTool("hold", act, writes, func(string) {
-		close(started)
-		<-release
-	}))
-	e.register(t, e.root, keyedTool("poke", act, writes, func(string) {}))
-	defer close(release)
+	for _, tc := range []struct {
+		name   string
+		forced []string
+		batch  bool // the conflicting calls follow hold in its own batch
+	}{
+		{name: "later batch"},
+		{name: "same batch", batch: true},
+		{name: "detached forced exclusive", forced: []string{"hold"}, batch: true},
+		{name: "later call forced exclusive", forced: []string{"poke"}, batch: true},
+		{name: "both forced, later batch", forced: []string{"hold", "poke"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clk := clock.NewManual(epoch)
+			e := newEnv(t)
+			act := newActivity()
+			svc := e.pipeline(t, core.Config{Clock: clk, DefaultTimeout: 7 * time.Second, Grace: time.Second,
+				MaxParallel: 3, ForceExclusive: tc.forced, Checkpoint: recCheckpoint{&trace{}}})
+			started, release := make(chan struct{}), make(chan struct{})
+			writes := func(in keyIn) tools.Overlap { return tools.Writes(in.Key) }
+			e.register(t, e.root, keyedTool("hold", act, writes, func(string) {
+				close(started)
+				<-release
+			}))
+			e.register(t, e.root, keyedTool("poke", act, writes, func(string) {}))
+			defer close(release)
 
-	hold := [2]string{"hold", `{"key":"k","id":"1"}`}
-	done := run(svc, view(t, svc), openSession(t, memstore.New(), hold), context.Background(), hold)
-	recv(t, started, "the held body to start")
-	block(t, clk, 1)
-	clk.Advance(8 * time.Second)
-	if out := recv(t, done, "the batch"); out.err != nil || out.res.Results[0].Code != tools.CodeOutcomeUnknown {
-		t.Fatalf("held call: %+v", out)
-	}
-	if len(svc.Detached()) != 1 {
-		t.Fatalf("Detached = %+v", svc.Detached())
-	}
-
-	same, other := [2]string{"poke", `{"key":"k","id":"2"}`}, [2]string{"poke", `{"key":"j","id":"3"}`}
-	res := execute(t, svc, view(t, svc), openSession(t, memstore.New(), same, other), same, other)
-	if res[0].Code != tools.CodeBusy || res[0].Stage != tools.StageBody || !strings.Contains(res[0].Text, "resource key") {
-		t.Fatalf("same key: %+v", res[0])
-	}
-	if res[1].IsError {
-		t.Fatalf("other key: %+v", res[1])
-	}
-	act.mu.Lock()
-	defer act.mu.Unlock()
-	if !reflect.DeepEqual(act.ended, []string{"3"}) {
-		t.Fatalf("bodies ended %v, want only call 3", act.ended)
+			hold := [2]string{"hold", `{"key":"k","id":"1"}`}
+			same, other := [2]string{"poke", `{"key":"k","id":"2"}`}, [2]string{"poke", `{"key":"j","id":"3"}`}
+			calls := [][2]string{hold}
+			if tc.batch {
+				calls = append(calls, same, other)
+			}
+			done := run(svc, view(t, svc), openSession(t, memstore.New(), calls...), context.Background(), calls...)
+			recv(t, started, "the held body to start")
+			block(t, clk, 1)
+			clk.Advance(8 * time.Second)
+			out := recv(t, done, "the batch")
+			if out.err != nil || out.res.Results[0].Code != tools.CodeOutcomeUnknown {
+				t.Fatalf("held call: %+v", out)
+			}
+			if len(svc.Detached()) != 1 {
+				t.Fatalf("Detached = %+v", svc.Detached())
+			}
+			res := out.res.Results[1:]
+			if !tc.batch {
+				res = execute(t, svc, view(t, svc), openSession(t, memstore.New(), same, other), same, other)
+			}
+			if res[0].Code != tools.CodeBusy || res[0].Stage != tools.StageBody || !strings.Contains(res[0].Text, "resource key") {
+				t.Fatalf("same key: %+v", res[0])
+			}
+			if res[1].IsError {
+				t.Fatalf("other key: %+v", res[1])
+			}
+			act.mu.Lock()
+			defer act.mu.Unlock()
+			if _, ok := act.running["2"]; ok || slices.Contains(act.ended, "2") {
+				t.Fatal("the conflicting call ran beside the detached body")
+			}
+			if !slices.Contains(act.ended, "3") {
+				t.Fatalf("bodies ended %v, want call 3 among them", act.ended)
+			}
+		})
 	}
 }
