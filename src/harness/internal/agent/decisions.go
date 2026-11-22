@@ -13,11 +13,12 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/scope"
 )
 
-// ModelSelection is the model a step is proposed for.
+// ModelSelection is the model a step is proposed for: the route, the model
+// name ("" is the route's default) and the request controls.
 type ModelSelection struct {
-	Route    vocab.RouteID
-	Model    string
-	Controls vocab.Controls
+	Route    vocab.RouteID  `json:"route"`
+	Model    string         `json:"model,omitempty"`
+	Controls vocab.Controls `json:"controls,omitzero"`
 }
 
 // --------------------------------------------------------------- PreStep
@@ -195,9 +196,16 @@ func (e *ExtensionError) Is(target error) bool { return target == ErrExtensionFa
 func extFailed(point string, err error) error { return &ExtensionError{Point: point, Err: err} }
 
 // AskPreStep dispatches PreStep to the listeners visible at the agent's scope at.
-// With no listener the proposal is entered as it is.
+// With no listener the proposal is entered as it is. Listeners get their own
+// copy of the messages and of the selections' controls, so none can change the
+// selection the caller captured and logged.
 func AskPreStep(ctx *cordis.Context, at scope.Key, req PreStepRequest) (PreStepDecision, error) {
 	req.Messages = slices.Clone(req.Messages)
+	req.Selection = cloneSelection(req.Selection)
+	if req.Previous != nil {
+		prev := cloneSelection(*req.Previous)
+		req.Previous = &prev
+	}
 	d, err := PreStep.Around(ctx.WithFilter(scope.Filter(at)), req, func(r PreStepRequest) (PreStepDecision, error) {
 		return Enter{Messages: slices.Clone(r.Messages)}, nil
 	})
