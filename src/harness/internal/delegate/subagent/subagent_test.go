@@ -435,3 +435,93 @@ func TestManagerUnloadReleasesItsRuns(t *testing.T) {
 		}
 	})
 }
+
+// A run whose turn ends in an error settles StopError with the failure named.
+func TestChildErrorIsTheResult(t *testing.T) {
+	e := newEnv(t, fakemodel.Status(500))
+	_, c := e.component("C")
+	act := must(e.rt.Start(c, e.spec("K")))
+	r := settled(t, act)
+	if r.Stop != subagent.StopError || !strings.HasPrefix(r.Diagnostic, "error: ") || r.Cleanup != subagent.CleanupOK {
+		t.Fatalf("result %+v, want an error stop naming the failure", r)
+	}
+}
+
+// An owner's children are listed by child id; one name per owner is refused
+// with name-taken, and the refusal reads as its code.
+func TestOwnerChildrenAndNameTaken(t *testing.T) {
+	hang := fakemodel.Turn{Events: []fakemodel.Event{fakemodel.Text("par")}, Hang: true}
+	e := newEnv(t, hang, hang)
+	_, c := e.component("C")
+	for _, id := range []string{"K2", "K1"} {
+		s := e.spec(id)
+		s.Name = "worker-" + id
+		must(e.rt.Start(c, s))
+	}
+	waitRequests(t, e.tr, 2)
+	if got := e.rt.Children(c); !slices.Equal(got, []session.ID{"K1", "K2"}) {
+		t.Fatalf("children of C: %v, want K1, K2 in id order", got)
+	}
+	dup := e.spec("K3")
+	dup.Name = "worker-K1"
+	_, err := e.rt.Start(c, dup)
+	if !errors.Is(err, subagent.ErrNameTaken) || !strings.HasPrefix(err.Error(), string(subagent.CodeNameTaken)+": ") {
+		t.Fatalf("a second child named worker-K1: %v", err)
+	}
+	if _, ok := e.reg.Get("K3"); ok {
+		t.Fatal("a refused start created an agent")
+	}
+}
+
+// A start on an unloaded owner is refused inactive, and the error carries the
+// owner's own error as its cause.
+func TestStartOnAnUnloadedOwnerCarriesTheCause(t *testing.T) {
+	e := newEnv(t)
+	cf, c := e.component("C")
+	cf.Dispose()
+	_, err := e.rt.Start(c, e.spec("K"))
+	if !errors.Is(err, subagent.ErrInactive) {
+		t.Fatalf("start: %v, want inactive", err)
+	}
+	cause := errors.Unwrap(err)
+	if cause == nil || cause != c.Lifetime().Err() || !strings.HasSuffix(err.Error(), ": "+cause.Error()) {
+		t.Fatalf("start error %q, cause %v: want the owner's lifetime error as the cause", err, cause)
+	}
+}
+
+// Result returns the context's error when it ends first: a run still working
+// has no result.
+func TestResultHonoursItsContext(t *testing.T) {
+	e := newEnv(t, fakemodel.Turn{Events: []fakemodel.Event{fakemodel.Text("par")}, Hang: true})
+	_, c := e.component("C")
+	act := must(e.rt.Start(c, e.spec("K")))
+	waitRequests(t, e.tr, 1)
+	ctx, cancel := context.WithCancel(bg)
+	cancel()
+	if _, err := act.Result(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Result of a working run: %v, want the context's error", err)
+	}
+}
+
+// WaitQuiet returns the context's error when it ends while a start is still in
+// Setup.
+func TestWaitQuietHonoursItsContext(t *testing.T) {
+	e := newEnv(t)
+	_, c := e.component("C")
+	ctx, cancel := context.WithCancel(bg)
+	cancel()
+	entered, release := make(chan struct{}), make(chan struct{})
+	free := sync.OnceFunc(func() { close(release) })
+	s := e.spec("P")
+	s.Setup = func(*cordis.Context, agent.Agent) (func() error, error) {
+		close(entered)
+		<-release
+		return nil, errors.New("setup refused")
+	}
+	goJoined(t, free, func() { _, _ = e.rt.Start(c, s) })
+	<-entered
+	if err := e.rt.WaitQuiet(ctx, c); !errors.Is(err, context.Canceled) {
+		t.Fatalf("WaitQuiet during a pending start: %v, want the context's error", err)
+	}
+	free()
+}
