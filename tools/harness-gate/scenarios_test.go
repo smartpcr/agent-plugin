@@ -180,7 +180,7 @@ func TestRequireSubcommand(t *testing.T) {
 		{"DH-S-18", 0, "DH-E-TOOLCHAIN-2,DH-E-CHOKIDAR-1,DH-E-CHOKIDAR-2,DH-E-NODEFS-1,DH-E-RIPGREP-1,DH-E-RIPGREP-2,DH-E-EXEC-1,DH-E-HOST-4\n"},
 		{"DH-S-17", 0, "DH-E-TOOLCHAIN-1,DH-E-LOADER-1,DH-E-LLM-1,DH-E-LLM-3,DH-E-VIEW-1,DH-E-TOOLS-1\n"},
 		{"DH-S-21", 0, "DH-E-BOOT-2\n"},
-		{"DH-S-22", 0, "DH-E-BOOT-1\n"},
+		{"DH-S-22", 0, "DH-E-BOOT-1,DH-E-HUMAN-6\n"},
 		{"DH-S-39", 0, "DH-E-UTIL-1,DH-E-STORAGE-3\n"},
 		{"DH-S-16", 0, "DH-E-STORE-1,DH-E-STORE-2,DH-E-STORE-6\n"},
 		{"DH-S-35", 0, "DH-E-STORE-5\n"},

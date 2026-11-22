@@ -10,8 +10,8 @@
 // The request is asked through the interaction registry (human.Registry), so the
 // answer comes from whichever channel the agent is bound to. This package only
 // bounds the wait, maps the registry's outcomes onto the closed set and writes the
-// audit events. A decision covers one call only and never grants the session
-// anything.
+// audit events. A decision covers one call; a session grant (grants.go) is
+// created only from an allowed-session answer to a request naming a subject.
 package approval
 
 import (
@@ -75,6 +75,10 @@ type Request struct {
 	Display string
 	// Timeout overrides Config.Timeout for this request when positive.
 	Timeout time.Duration
+	// Subject is what the call needs (one directory, one application), nil
+	// for none. A live session grant covering it approves the call without
+	// asking; an allowed-session answer grants it. No subject never matches.
+	Subject *Subject
 }
 
 // Prompt is the payload of the human.Item an answerer receives.
@@ -85,6 +89,8 @@ type Prompt struct {
 	Origin  string `json:"origin,omitempty"`
 	Reason  string `json:"reason,omitempty"`
 	Display string `json:"display,omitempty"`
+	// Subject is what an allowed-session answer would grant, nil for none.
+	Subject *Subject `json:"subject,omitempty"`
 }
 
 // By attributes a decision to the principal who made it and the channel it came
@@ -102,7 +108,16 @@ type Decision struct {
 	// Detail explains any outcome other than approved.
 	Detail string `json:"detail,omitempty"`
 	By     By     `json:"by"`
+	// session is an allowed-session answer, for the grant path.
+	session bool
 }
+
+// DetailAllowedByGrant prefixes the detail of a decision a session grant made.
+const DetailAllowedByGrant = "allowed-by-grant"
+
+// DetailGranted prefixes the detail of an allowed-session decision that created
+// a grant.
+const DetailGranted = "granted"
 
 // Approved reports whether the call may run.
 func (d Decision) Approved() bool { return d.Outcome == OutcomeApproved }
@@ -169,6 +184,9 @@ type Config struct {
 	Timeout time.Duration
 	// After is the timer; nil is time.After. Tests pass a manual clock's.
 	After func(time.Duration) <-chan time.Time
+	// Grants is the session grant table; nil disables grants, so an
+	// allowed-session answer approves once.
+	Grants *Grants
 }
 
 // Service asks for approvals.
@@ -218,7 +236,19 @@ func (s *Service) Request(ctx context.Context, log Log, r Request) (Decision, er
 		return refuse(id, "audit-failed"), fmt.Errorf("approval: append approval/asked: %w", err)
 	}
 
-	d := s.ask(ctx, id, r, timeout)
+	var d Decision
+	if gr, ok := s.cfg.Grants.Match(r.Agent, r.Subject); ok {
+		d = Decision{ID: id, Outcome: OutcomeApproved, Detail: DetailAllowedByGrant + ":" + gr.ID, By: gr.By}
+	} else {
+		d = s.ask(ctx, id, r, timeout)
+		if d.session && r.Subject != nil && s.cfg.Grants != nil {
+			// A refused grant (channel, subject, cap) still approves this call
+			// once: the person allowed it.
+			if gr, err := s.cfg.Grants.create(context.WithoutCancel(ctx), log, r.Agent, *r.Subject, d.By, r.Tool, r.Call); err == nil {
+				d.Detail = DetailGranted + ":" + gr.ID
+			}
+		}
+	}
 	decided, err := DecidedType.Draft(Decided{ID: d.ID, Tool: r.Tool, Call: r.Call, Outcome: d.Outcome, Detail: d.Detail, By: d.By})
 	if err == nil {
 		// Write the decision even when ctx has ended, so the caller's
@@ -268,7 +298,7 @@ func (s *Service) ask(ctx context.Context, id string, r Request, timeout time.Du
 		To:      human.Audience{Agent: r.Agent},
 		Session: r.Agent.Session,
 		Call:    r.Call,
-		Payload: Prompt{Tool: r.Tool, Call: r.Call, Parent: r.Parent, Origin: r.Origin, Reason: r.Reason, Display: r.Display},
+		Payload: Prompt{Tool: r.Tool, Call: r.Call, Parent: r.Parent, Origin: r.Origin, Reason: r.Reason, Display: r.Display, Subject: r.Subject},
 	})
 	if err != nil {
 		d.Outcome, d.Detail = OutcomeNoAnswerer, err.Error()
@@ -276,10 +306,11 @@ func (s *Service) ask(ctx context.Context, id string, r Request, timeout time.Du
 	}
 	switch ans.Outcome {
 	case human.OutcomeAllowedOnce, human.OutcomeAllowedSession:
-		// Granting the session is not this package's job, so the call is
-		// approved once.
+		// An allowed-session answer approves this call; Request turns it into a
+		// session grant when the request names a subject.
 		d.Outcome = OutcomeApproved
 		d.By = attributed(by)
+		d.session = ans.Outcome == human.OutcomeAllowedSession
 	case human.OutcomeDenied:
 		d.Outcome, d.Detail = OutcomeDenied, ans.Text
 		d.By = attributed(by)

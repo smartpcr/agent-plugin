@@ -654,20 +654,20 @@ storyId: "harness:DSH"
 ## Stage 10.4: Durable Inbox Questions Commands and Grants
 
 ### Implementation Steps
-- [ ] impl.md step 10.7 / DH-D-AGENT-2: inbox in `internal/agent` -- input accepted any time, durable before `Send` returns, taken only at turn/step boundaries, runs at most once (SP-5; `DH-T-AGENT-4`, `-5`, `-6`).
-- [ ] impl.md step 10.8 / DH-D-HUMAN-5 (P1, pulled forward): the model can ask the user a question through a tool, then wait or move on; answers arrive through the inbox.
-- [ ] impl.md step 10.9 / DH-D-HUMAN-6 (P1, pulled forward): human commands against an agent from any client, delivered through the inbox and logged with attribution. Author `DH-E-HUMAN-6` (runs DH-S-22).
-- [ ] impl.md step 10.10 / DH-D-HUMAN-3 (P1, pulled forward): session grants of one directory or one application, listable and revocable, stored with the session and never copied to resume, fork or subagent (NG-8).
+- [x] impl.md step 10.7 / DH-D-AGENT-2: inbox in `internal/agent` -- input accepted any time, durable before `Send` returns, taken only at turn/step boundaries, runs at most once (SP-5; `DH-T-AGENT-4`, `-5`, `-6`).
+- [x] impl.md step 10.8 / DH-D-HUMAN-5 (P1, pulled forward): the model can ask the user a question through a tool, then wait or move on; answers arrive through the inbox.
+- [x] impl.md step 10.9 / DH-D-HUMAN-6 (P1, pulled forward): human commands against an agent from any client, delivered through the inbox and logged with attribution. Author `DH-E-HUMAN-6` (runs DH-S-22).
+- [x] impl.md step 10.10 / DH-D-HUMAN-3 (P1, pulled forward): session grants of one directory or one application, listable and revocable, stored with the session and never copied to resume, fork or subagent (NG-8).
 - [ ] Close DH-S-10: write `docs/stories/harness-DSH/evidence/DH-S-10.md` (denial-through-executor test, manual checks of impl.md DH-S-10) and tick impl.md steps 10.1-10.10 as built.
 
 ### Dependencies
 - phase-tool-pipeline-approvals-and-human-commands/stage-approvals-and-guarded-pipeline
 
 ### Test Scenarios
-- [ ] Scenario: Inbox item durable before Send returns -- Given the SQLite store in a temp home, When `Send` returns for a message, Then a second connection reads the inbox row immediately (TC-10b) [proof: service:sqlite; deps: sqlite embedded; filesystem via `t.TempDir()`]
-- [ ] Scenario: One accepted message is at most one turn -- Given an inbox item and a driver stub that crashes after taking it, When the agent resumes, Then the item is not run a second time and the log shows one turn for it (`DH-T-AGENT-6`, TC-10a) [proof: in-process; deps: none]
-- [ ] Scenario: Grant does not survive resume -- Given a session grant of directory `/w` and an ended session, When the session is resumed, Then the grant list is empty and a call needing `/w` asks again (`DH-D-HUMAN-3`) [proof: in-process; deps: none]
-- [ ] Scenario: Question answered through the inbox -- Given the model asks a question with wait, When the fake answerer replies, Then the reply enters the inbox, the waiting tool call returns the answer, and both events are logged with attribution (TC-10a) [proof: in-process; deps: none]
+- [x] Scenario: Inbox item durable before Send returns -- Given the SQLite store in a temp home, When `Send` returns for a message, Then a second connection reads the inbox row immediately (TC-10b) [proof: service:sqlite; deps: sqlite embedded; filesystem via `t.TempDir()`]
+- [x] Scenario: One accepted message is at most one turn -- Given an inbox item and a driver stub that crashes after taking it, When the agent resumes, Then the item is not run a second time and the log shows one turn for it (`DH-T-AGENT-6`, TC-10a) [proof: in-process; deps: none]
+- [x] Scenario: Grant does not survive resume -- Given a session grant of directory `/w` and an ended session, When the session is resumed, Then the grant list is empty and a call needing `/w` asks again (`DH-D-HUMAN-3`) [proof: in-process; deps: none]
+- [x] Scenario: Question answered through the inbox -- Given the model asks a question with wait, When the fake answerer replies, Then the reply enters the inbox, the waiting tool call returns the answer, and both events are logged with attribution (TC-10a) [proof: in-process; deps: none]
 
 # Phase 11: Agent Loop Milestone M1
 
