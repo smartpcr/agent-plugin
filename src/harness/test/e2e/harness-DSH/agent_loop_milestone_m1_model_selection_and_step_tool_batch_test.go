@@ -591,18 +591,30 @@ func (s *msbState) callsThree(name, keys string) error {
 			return err
 		}
 	}
-	done := make(chan error, 1)
+	type outcome struct {
+		results []tools.Result
+		err     error
+	}
+	runCtx, cancel := context.WithTimeout(ctx, 2*msbWait)
+	defer cancel()
+	done := make(chan outcome, 1)
 	go func() {
-		res, err := s.step.Execute(ctx, h, calls)
-		s.results = res.Results
-		done <- err
+		res, err := s.step.Execute(runCtx, h, calls)
+		done <- outcome{results: res.Results, err: err}
 	}()
 	select {
-	case err := <-done:
-		if err != nil {
-			return fmt.Errorf("the batch failed: %w", err)
+	case out := <-done:
+		if out.err != nil {
+			return fmt.Errorf("the batch failed: %w", out.err)
 		}
-	case <-time.After(2 * msbWait):
+		s.results = out.results
+	case <-runCtx.Done():
+		cancel()
+		// Give the cancelled batch a bounded chance to stop before cleanup closes the session.
+		select {
+		case <-done:
+		case <-time.After(msbWait):
+		}
 		return errors.New("the batch did not finish")
 	}
 	if _, err := h.Flush(ctx); err != nil {
