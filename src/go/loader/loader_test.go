@@ -266,7 +266,7 @@ func TestConfigFileWatchingSurvivesRenameBasedSaves(t *testing.T) {
 	path := filepath.Join(directory, "cordis.json")
 	writeFile(t, path, echoFile([2]string{"a", "v1"}))
 	h := start(t)
-	useFile(t, h, loader.ConfigFileOptions{Path: path, Watch: true, PollInterval: 20e6})
+	file := useFile(t, h, loader.ConfigFileOptions{Path: path, Watch: true, PollInterval: 20e6})
 
 	// an editor-style save: write a temporary file, then rename it over the config. On
 	// Windows the rename is refused while the watcher's poll has the file open, so it
@@ -282,10 +282,32 @@ func TestConfigFileWatchingSurvivesRenameBasedSaves(t *testing.T) {
 	saveByRename("v2")
 	Eventually(t, func() bool { return h.text("a") == "v2" }, "the first rename-based save was not picked up")
 
-	// the component's own write-back is itself a rename; watching must continue after it
+	// the component's own write-back is itself a rename; watching must continue after it.
+	// Save returns once that write is done (P-S): polling the file instead would open
+	// it while the rename replaces it, which Windows refuses with a sharing violation
+	// (M1-G-GATE-15.3).
 	Within(t, "update", func() { NoError(t, h.fiber("a").Update(EchoOptions{Times: 1, Text: "runtime"}, false)) })
-	Eventually(t, func() bool { return strings.Contains(readFile(t, path), `"runtime"`) }, "the runtime change was not written back")
+	Within(t, "save", file.Save)
+	True(t, strings.Contains(readFile(t, path), `"runtime"`), "the runtime change was not written back")
 
 	saveByRename("v3")
 	Eventually(t, func() bool { return h.text("a") == "v3" }, "a save after the component's own write was not picked up")
+}
+
+// The component's own watcher never costs it a write-back: with the watcher polling
+// as fast as it can, every runtime save lands in the file and none is given up as
+// "kept in memory". On Windows a poll that had the file open used to refuse the
+// save's rename until its attempts ran out (M1-G-GATE-15.3).
+func TestConfigFileOwnWatcherNeverBlocksAWriteBack(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cordis.json")
+	writeFile(t, path, echoFile([2]string{"a", "v0"}))
+	h := start(t)
+	file := useFile(t, h, loader.ConfigFileOptions{Path: path, Watch: true, PollInterval: 1e5})
+	for i := range 100 {
+		text := fmt.Sprint("save", i)
+		Within(t, "update", func() { NoError(t, h.fiber("a").Update(EchoOptions{Times: 1, Text: text}, false)) })
+		Within(t, "save", file.Save)
+		True(t, strings.Contains(readFile(t, path), `"`+text+`"`), "save "+text+" was not written")
+	}
+	Equal(t, 0, Count(h.logs, cordis.LevelWarn), strings.Join(Texts(h.logs, cordis.LevelWarn), "\n"))
 }

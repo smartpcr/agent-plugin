@@ -200,6 +200,10 @@ type LayerSet struct {
 	writeQueued bool
 	tasks       sync.WaitGroup
 	tempCounter int
+	// fileIO keeps the watcher's poll from holding a layer file open while replace
+	// renames a write over it, which Windows refuses (M1-G-GATE-15.3; see
+	// ConfigFile.fileIO).
+	fileIO sync.Mutex
 }
 
 // layerState is one layer and what was last read of its file. Guarded by serial.
@@ -761,7 +765,10 @@ func (s *LayerSet) replace(path string, text []byte) error {
 	}
 	var err error
 	for attempt := 1; attempt <= writeAttempts; attempt++ {
-		if err = os.Rename(temp, path); err == nil {
+		s.fileIO.Lock()
+		err = os.Rename(temp, path)
+		s.fileIO.Unlock()
+		if err == nil {
 			return nil
 		}
 		time.Sleep(time.Duration(20*attempt) * time.Millisecond)
@@ -1062,7 +1069,9 @@ func (s *LayerSet) watch() error {
 				case <-ticker.C:
 					changed := false
 					for path, previous := range last {
+						s.fileIO.Lock()
 						current, err := os.ReadFile(path)
+						s.fileIO.Unlock()
 						if err != nil && !errors.Is(err, fs.ErrNotExist) {
 							continue // e.g. locked mid-rename on Windows; look again next tick
 						}
