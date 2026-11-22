@@ -361,8 +361,10 @@ type proxiedRequest struct {
 	Path     string
 	Body     []byte
 	// ClientClosed is set when dsh closed its connection before the upstream
-	// response ended, as a cancel does.
+	// response ended, as a cancel does. It is final only once the handler has
+	// returned; read it through recordingProxy.settled.
 	ClientClosed bool
+	done         chan struct{} // closed when the handler has returned
 }
 
 // recordingProxy forwards {base}/<name>/... to upstream <name> and records every
@@ -371,6 +373,12 @@ type recordingProxy struct {
 	*httptest.Server
 	mu   sync.Mutex
 	seen []proxiedRequest
+	// changed is closed and replaced whenever a request is recorded.
+	changed chan struct{}
+	// hold, when set, keeps each handler from recording its outcome until it is
+	// closed, so a self-check can prove settled joins the handler rather than
+	// racing it.
+	hold chan struct{}
 }
 
 // startProxy starts a recording proxy in front of upstreams (name -> base URL).
@@ -384,7 +392,7 @@ func startProxy(t *testing.T, upstreams map[string]string) *recordingProxy {
 		}
 		targets[name] = u
 	}
-	p := &recordingProxy{}
+	p := &recordingProxy{changed: make(chan struct{})}
 	client := &http.Client{Timeout: 5 * time.Minute}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		name, rest, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/"), "/")
@@ -394,16 +402,23 @@ func startProxy(t *testing.T, upstreams map[string]string) *recordingProxy {
 			return
 		}
 		body, _ := io.ReadAll(r.Body)
+		done := make(chan struct{})
 		p.mu.Lock()
-		p.seen = append(p.seen, proxiedRequest{Upstream: name, Method: r.Method, Path: "/" + rest, Body: body})
+		p.seen = append(p.seen, proxiedRequest{Upstream: name, Method: r.Method, Path: "/" + rest, Body: body, done: done})
 		idx := len(p.seen) - 1
+		hold := p.hold
+		close(p.changed)
+		p.changed = make(chan struct{})
 		p.mu.Unlock()
 		defer func() {
-			if r.Context().Err() != nil {
-				p.mu.Lock()
-				p.seen[idx].ClientClosed = true
-				p.mu.Unlock()
+			if hold != nil {
+				<-hold
 			}
+			closed := r.Context().Err() != nil
+			p.mu.Lock()
+			p.seen[idx].ClientClosed = closed
+			p.mu.Unlock()
+			close(done)
 		}()
 		out := *target
 		out.Path = strings.TrimSuffix(target.Path, "/") + "/" + rest
@@ -448,6 +463,34 @@ func startProxy(t *testing.T, upstreams map[string]string) *recordingProxy {
 
 // base is the proxy's URL for upstream name.
 func (p *recordingProxy) base(name string) string { return p.URL + "/" + name }
+
+// settled waits, up to within, for the handler of the i-th request forwarded to
+// upstream name to return, and gives that request with its final outcome. A
+// request not yet seen or a handler still running at the bound fails the
+// scenario.
+func (p *recordingProxy) settled(t *testing.T, name string, i int, within time.Duration) proxiedRequest {
+	t.Helper()
+	bound := time.NewTimer(within)
+	defer bound.Stop()
+	for {
+		p.mu.Lock()
+		changed := p.changed
+		p.mu.Unlock()
+		if rs := p.requests(name); i < len(rs) {
+			select {
+			case <-rs[i].done:
+				return p.requests(name)[i]
+			case <-bound.C:
+				t.Fatalf("the proxy's handler for request %d to %s did not return within %s", i, name, within)
+			}
+		}
+		select {
+		case <-changed:
+		case <-bound.C:
+			t.Fatalf("the proxy saw no request %d to %s within %s", i, name, within)
+		}
+	}
+}
 
 // requests returns what the proxy forwarded to upstream name so far.
 func (p *recordingProxy) requests(name string) []proxiedRequest {

@@ -4,7 +4,11 @@ package scenarios
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -42,6 +46,7 @@ import (
 //
 //dsh:scenario DH-E-AGENT-2
 func TestCancelledStreamKeepsWhatWasShown(t *testing.T) {
+	selfCheckProxyClose(t)
 	key := need(t, "DSH_DEEPSEEK_API_KEY", "a real DeepSeek API key")
 	officialURL := need(t, "DSH_SCENARIO_AGENT2_OFFICIAL", "the base URL of DeepSeek's Messages endpoint")
 	model := need(t, "DSH_SCENARIO_AGENT2_MODEL", "a small model on deepseek-official")
@@ -96,7 +101,7 @@ func TestCancelledStreamKeepsWhatWasShown(t *testing.T) {
 	if shown == "" || !strings.HasPrefix(kept.String(), shown) {
 		t.Fatalf("the interrupted message holds %q, want the streamed text %q", kept.String(), shown)
 	}
-	if fwd := proxy.requests("official"); len(fwd) == 0 || !fwd[0].ClientClosed {
+	if fwd := proxy.settled(t, "official", 0, 30*time.Second); !fwd.ClientClosed {
 		t.Fatal("the cancelled request's provider connection was not closed by dsh before the response ended")
 	}
 
@@ -108,6 +113,67 @@ func TestCancelledStreamKeepsWhatWasShown(t *testing.T) {
 	}
 	if !bytes.Contains(sent[1], jsonText(shown)) {
 		t.Fatalf("the second request does not carry the text shown before the cancel %q:\n%s", shown, sent[1])
+	}
+}
+
+// selfCheckProxyClose proves the provider-close oracle needs no key and does not
+// race the proxy: with every handler held before it records its outcome,
+// settled does not return until the handler does; then a stream the client
+// abandoned mid-body settles ClientClosed and a response read to its end does
+// not.
+func selfCheckProxyClose(t *testing.T) {
+	t.Helper()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: first\n\n"))
+		w.(http.Flusher).Flush()
+		if r.URL.Path == "/endless" {
+			<-r.Context().Done()
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	proxy := startProxy(t, map[string]string{"up": upstream.URL})
+	hold := make(chan struct{})
+	proxy.mu.Lock()
+	proxy.hold = hold
+	proxy.mu.Unlock()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, proxy.base("up")+"/endless", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("self-check: %v", err)
+	}
+	if _, err := resp.Body.Read(make([]byte, 64)); err != nil {
+		t.Fatalf("self-check: no first chunk: %v", err)
+	}
+	cancel()
+	_ = resp.Body.Close()
+	// The client is gone but the handler is held: its outcome is not recorded,
+	// so a snapshot taken now would read not-closed, and settled must wait.
+	got := make(chan proxiedRequest, 1)
+	go func() { got <- proxy.settled(t, "up", 0, 10*time.Second) }()
+	select {
+	case r := <-got:
+		t.Fatalf("self-check: settled returned %+v before the held handler recorded its outcome", r)
+	default:
+	}
+	if snap := proxy.requests("up")[0]; snap.ClientClosed {
+		t.Fatal("self-check: the held handler recorded its outcome early")
+	}
+	close(hold)
+	if r := <-got; !r.ClientClosed {
+		t.Fatal("self-check: an abandoned stream did not settle ClientClosed")
+	}
+
+	resp, err = http.Get(proxy.base("up") + "/once")
+	if err != nil {
+		t.Fatalf("self-check: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if got := proxy.settled(t, "up", 1, 10*time.Second); got.ClientClosed {
+		t.Fatal("self-check: a response read to its end settled ClientClosed")
 	}
 }
 
