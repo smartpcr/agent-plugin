@@ -239,7 +239,7 @@ func (r *registry) Detached() []tools.DetachedCall {
 
 func (r *registry) Limits() tools.Limits {
 	return tools.Limits{MaxResultBytes: r.cfg.MaxResultBytes, MaxArgumentBytes: r.cfg.MaxArgumentBytes,
-		DefaultTimeout: r.cfg.DefaultTimeout, Grace: r.cfg.Grace}
+		DefaultTimeout: r.cfg.DefaultTimeout, Grace: r.cfg.Grace, MaxParallel: r.cfg.MaxParallel}
 }
 
 func (r *registry) SetSpill(ctx *cordis.Context, id string, s tools.SpillShaper) (*cordis.EffectHandle, error) {

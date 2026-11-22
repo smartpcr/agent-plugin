@@ -678,15 +678,15 @@ storyId: "harness:DSH"
 ## Stage 11.1: Model Selection and Step Tool Batch
 
 ### Implementation Steps
-- [ ] impl.md step 11.1 / DH-D-AGENT-7: each step uses one model selection, logged before the attempt (`DH-T-AGENT-23`).
-- [ ] impl.md step 11.2 / DH-D-AGENT-10: a step's tool set is fixed once at step start; its calls run in a bounded batch (cap `maxParallel`), overlapping only when resource keys do not conflict, and results commit in the model's order (`DH-T-AGENT-26`).
+- [x] impl.md step 11.1 / DH-D-AGENT-7: each step uses one model selection, logged before the attempt (`DH-T-AGENT-23`).
+- [x] impl.md step 11.2 / DH-D-AGENT-10: a step's tool set is fixed once at step start; its calls run in a bounded batch (cap `maxParallel`), overlapping only when resource keys do not conflict, and results commit in the model's order (`DH-T-AGENT-26`).
 
 ### Dependencies
 - phase-tool-pipeline-approvals-and-human-commands/stage-durable-inbox-questions-commands-and-grants
 
 ### Test Scenarios
-- [ ] Scenario: Model selection logged per step -- Given an agent whose default model changes between steps, When two steps run, Then each `step/start` is followed by a selection event naming the model used and the settlement's route matches it (`DH-T-AGENT-23`, TC-11a) [proof: in-process; deps: none]
-- [ ] Scenario: Conflicting calls serialize, results keep model order -- Given three calls where calls 1 and 3 share a resource key and call 2 finishes first, When the batch runs with `maxParallel=3`, Then calls 1 and 3 never overlap and results are committed in order 1, 2, 3 (`DH-T-AGENT-26`) [proof: in-process; deps: none]
+- [x] Scenario: Model selection logged per step -- Given an agent whose default model changes between steps, When two steps run, Then each `step/start` is followed by a selection event naming the model used and the settlement's route matches it (`DH-T-AGENT-23`, TC-11a) [proof: in-process; deps: none]
+- [x] Scenario: Conflicting calls serialize, results keep model order -- Given three calls where calls 1 and 3 share a resource key and call 2 finishes first, When the batch runs with `maxParallel=3`, Then calls 1 and 3 never overlap and results are committed in order 1, 2, 3 (`DH-T-AGENT-26`) [proof: in-process; deps: none]
 
 ## Stage 11.2: Agent Driver Brackets and Cancellation
 

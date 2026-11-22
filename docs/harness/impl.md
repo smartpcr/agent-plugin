@@ -905,8 +905,8 @@ server waits on it for a quiet tree. The context pipeline closes the stage.
 
 **Steps.**
 
-- [ ] **11.1** [DH-D-AGENT-7](areas/agent-loop.md#dh-d-agent-7) Each step uses one logged model selection.
-- [ ] **11.2** [DH-D-AGENT-10](areas/agent-loop.md#dh-d-agent-10) A step's tools are fixed once, and its calls run in a bounded, ordered batch.
+- [x] **11.1** [DH-D-AGENT-7](areas/agent-loop.md#dh-d-agent-7) Each step uses one logged model selection.
+- [x] **11.2** [DH-D-AGENT-10](areas/agent-loop.md#dh-d-agent-10) A step's tools are fixed once, and its calls run in a bounded, ordered batch.
 - [ ] **11.3** [DH-D-AGENT-3](areas/agent-loop.md#dh-d-agent-3) Every turn and step is bracketed, bounded and closed on every path.
 - [ ] **11.4** [DH-D-AGENT-5](areas/agent-loop.md#dh-d-agent-5) A turn or a single step can be stopped, and the log says why.
 - [ ] **11.5** [DH-D-AGENT-6](areas/agent-loop.md#dh-d-agent-6) Agents are created, resumed and torn down as one transaction.

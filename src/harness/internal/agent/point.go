@@ -26,12 +26,14 @@ type StepOutcome struct {
 }
 
 // ProposeStep runs point 4 to 6 of a turn whose step is not yet open: it asks
-// PreStep and then appends step/start (Enter), or turn/end blocked with who and
-// why (Reject), or turn/end error naming extension/failed (a listener's error
-// or panic); no step/start is appended unless the step is entered. Observers
-// learn the outcome through StepDecided (and Failed), whose failures change
-// nothing. The returned error is the append's only.
-func ProposeStep(c *cordis.Context, a Agent, w Appender, req PreStepRequest) (StepOutcome, error) {
+// PreStep and then appends step/start (Enter) followed by also, in order (the
+// step's model/selection capture among them, DH-D-AGENT-7), or turn/end blocked
+// with who and why (Reject), or turn/end error naming extension/failed (a
+// listener's error or panic); no step/start, and nothing of also, is appended
+// unless the step is entered. Observers learn the outcome through StepDecided
+// (and Failed), whose failures change nothing. The returned error is the
+// append's only.
+func ProposeStep(c *cordis.Context, a Agent, w Appender, req PreStepRequest, also ...event.Draft) (StepOutcome, error) {
 	ctx := req.Ctx
 	if ctx == nil {
 		ctx = context.Background()
@@ -44,6 +46,11 @@ func ProposeStep(c *cordis.Context, a Agent, w Appender, req PreStepRequest) (St
 		r, aerr := w.Append(ctx, mustDraft(event.StepStartType.Draft(event.StepStart{Turn: req.Turn, Step: req.Step})))
 		if aerr != nil {
 			return out, aerr
+		}
+		for _, x := range also {
+			if _, aerr := w.Append(ctx, x); aerr != nil {
+				return out, aerr
+			}
 		}
 		out = StepOutcome{Entered: true, Enter: d, Seq: r.Seq}
 	case Reject:

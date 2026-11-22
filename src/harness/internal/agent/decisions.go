@@ -13,11 +13,12 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/scope"
 )
 
-// ModelSelection is the model a step is proposed for.
+// ModelSelection is the model a step is proposed for: the route, the model
+// name ("" is the route's default) and the request controls.
 type ModelSelection struct {
-	Route    vocab.RouteID
-	Model    string
-	Controls vocab.Controls
+	Route    vocab.RouteID  `json:"route"`
+	Model    string         `json:"model,omitempty"`
+	Controls vocab.Controls `json:"controls,omitzero"`
 }
 
 // --------------------------------------------------------------- PreStep

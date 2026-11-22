@@ -80,6 +80,10 @@ type CreateOptions struct {
 	Preset string
 	// Parent is the agent that spawned this one, zero for a root agent.
 	Parent Ref
+	// Model is the agent's initial model selection, a blank Route for none; it
+	// ranks below a recorded Select and the latest request header
+	// (ModelOptions.Initial).
+	Model ModelSelection
 }
 
 // Instance is what a factory builds: the agent and its close.

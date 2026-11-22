@@ -50,10 +50,13 @@ type Service interface {
 	Detached() []DetachedCall
 	// Limits is the registry's configured budgets.
 	Limits() Limits
-	// ExecuteBatch runs b's calls through the guarded pipeline, one at a time in
-	// the model's order, and returns one Result per call; each was appended as its
-	// tool/result. A refused call is a Result, not an error: the error is for a
-	// malformed batch, or a log that refused a tool/call or tool/result.
+	// ExecuteBatch runs b's calls through the guarded pipeline as one bounded
+	// batch: calls start in the model's order, bodies overlap only when their
+	// Overlap classifications do not conflict (at most Limits.MaxParallel at
+	// once), and results commit in the model's order. It returns one Result per
+	// call; each was appended as its tool/result. A refused call is a Result, not
+	// an error: the error is for a malformed batch, or a log that refused a
+	// tool/call or tool/result.
 	ExecuteBatch(ctx context.Context, b Batch) (BatchResult, error)
 }
 
@@ -70,6 +73,8 @@ type Limits struct {
 	DefaultTimeout time.Duration
 	// Grace is how long a cancelled body is waited for before it is detached.
 	Grace time.Duration
+	// MaxParallel caps the bodies of one batch that overlap.
+	MaxParallel int
 }
 
 // DetachedCall is a body that did not return within grace: its outcome is

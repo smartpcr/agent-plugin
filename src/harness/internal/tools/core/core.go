@@ -91,6 +91,10 @@ func NewWith(ctx *cordis.Context, tab scope.Table, cfg Config) tools.Service {
 	if cfg.Clock == nil {
 		cfg.Clock = realClock{}
 	}
+	if cfg.MaxParallel <= 0 {
+		cfg.MaxParallel = DefaultMaxParallel
+	}
+	cfg.ForceExclusive = slices.Clone(cfg.ForceExclusive)
 	cfg.Timeouts = maps.Clone(cfg.Timeouts)
 	return &registry{ctx: ctx, layers: scope.NewLayers(tab, newLayer), cfg: cfg, live: map[*tools.Declaration]*liveDecl{},
 		detached: map[*detachedBody]struct{}{}}

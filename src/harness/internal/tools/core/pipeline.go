@@ -68,6 +68,12 @@ type Config struct {
 	// Checkpoint is the tool-body checkpoint; nil is the policy mounted on the
 	// registry's context (checkpoint.Mounted).
 	Checkpoint checkpoint.Policy
+	// MaxParallel caps the bodies of one batch that overlap; zero is
+	// DefaultMaxParallel, and one runs every batch serially.
+	MaxParallel int
+	// ForceExclusive names tools the operator runs exclusive whatever their
+	// declared Overlap.
+	ForceExclusive []string
 }
 
 // ByApproval names the approval service in a Result's By.
@@ -195,15 +201,7 @@ func (r *registry) ExecuteBatch(ctx context.Context, b tools.Batch) (tools.Batch
 	}
 	target := b.View.Target()
 	ls := r.listenersAt(target)
-	out := tools.BatchResult{Results: make([]tools.Result, 0, len(b.Calls))}
-	for _, c := range b.Calls {
-		res, err := r.run(ctx, b, target.Agent, ls, c)
-		out.Results = append(out.Results, res)
-		if err != nil {
-			return out, err
-		}
-	}
-	return out, nil
+	return r.schedule(ctx, b, target.Agent, ls)
 }
 
 // ended is how a call ended before Shape, or the body's outcome.
@@ -221,9 +219,22 @@ func stop(stage tools.Stage, code tools.Code, by, msg string) ended {
 	return ended{stage: stage, code: code, by: by, msg: msg}
 }
 
-// run takes one call through the stages, in their fixed order; every path ends in
-// settle, which appends its one tool/result.
-func (r *registry) run(ctx context.Context, b tools.Batch, ag agent.Ref, ls listeners, req tools.CallRequest) (tools.Result, error) {
+// prepared is one call taken through the stages before its body: either how it
+// ended there (run is nil) or the body still to run. Every prepared call is
+// settled exactly once, which appends its one tool/result.
+type prepared struct {
+	call tools.Call
+	e    ended
+	run  func() ended
+	// err is a log failure of the stages, joined with the settle's.
+	err error
+}
+
+func early(call tools.Call, e ended) prepared { return prepared{call: call, e: e} }
+
+// prepare takes one call through the stages before its body, in their fixed
+// order. It runs on the batch's coordinator, so a batch's appends stay serial.
+func (r *registry) prepare(ctx context.Context, b tools.Batch, ag agent.Ref, ls listeners, req tools.CallRequest) prepared {
 	args := []byte(req.Arguments)
 	call := tools.NewCall(req.ID, req.Name, args, b.Origin, b.Parent, ag, nil, nil)
 
@@ -235,29 +246,30 @@ func (r *registry) run(ctx context.Context, b tools.Batch, ag agent.Ref, ls list
 		if !r.registered(req.Name) {
 			why = "is not a registered tool"
 		}
-		return r.settle(ctx, b, ls, call, stop(tools.StageResolve, tools.CodeNotStarted, "", fmt.Sprintf("%q %s", req.Name, why)))
+		return early(call, stop(tools.StageResolve, tools.CodeNotStarted, "", fmt.Sprintf("%q %s", req.Name, why)))
 	}
 	if !d.Reaches(b.Origin) {
-		return r.settle(ctx, b, ls, call, stop(tools.StageResolve, tools.CodeNotStarted, "",
+		return early(call, stop(tools.StageResolve, tools.CodeNotStarted, "",
 			fmt.Sprintf("%q cannot be called from origin %s (reach %s)", req.Name, b.Origin, d.Reach())))
 	}
 	bd, ok := body.Of(d)
 	if !ok {
-		return r.settle(ctx, b, ls, call, stop(tools.StageResolve, tools.CodeNotStarted, "", fmt.Sprintf("%q has no body", req.Name)))
+		return early(call, stop(tools.StageResolve, tools.CodeNotStarted, "", fmt.Sprintf("%q has no body", req.Name)))
 	}
 	draft, err := event.ToolCall.Draft(event.ToolCallPayload{CallID: req.ID, Name: req.Name, Arguments: req.Arguments})
 	if err == nil {
 		_, err = b.Log.Append(ctx, draft)
 	}
 	if err != nil {
-		res, serr := r.settle(ctx, b, ls, call, stop(tools.StageResolve, tools.CodeNotStarted, "", "the call could not be logged: "+err.Error()))
-		return res, errors.Join(fmt.Errorf("tools: append tool/call %s: %w", req.ID, err), serr)
+		a := early(call, stop(tools.StageResolve, tools.CodeNotStarted, "", "the call could not be logged: "+err.Error()))
+		a.err = fmt.Errorf("tools: append tool/call %s: %w", req.ID, err)
+		return a
 	}
 	call = tools.NewCall(req.ID, req.Name, args, b.Origin, b.Parent, ag, d, nil)
 
 	// 2. Bound, decode and validate the arguments.
 	if len(args) > r.cfg.MaxArgumentBytes {
-		return r.settle(ctx, b, ls, call, stop(tools.StageValidate, tools.CodeArgumentsTooLarge, "",
+		return early(call, stop(tools.StageValidate, tools.CodeArgumentsTooLarge, "",
 			fmt.Sprintf("%d argument bytes exceed the bound of %d", len(args), r.cfg.MaxArgumentBytes)))
 	}
 	in, err := decode(bd, args)
@@ -267,33 +279,33 @@ func (r *registry) run(ctx context.Context, b tools.Batch, ag agent.Ref, ls list
 		if errors.As(err, &te) && te.Code != "" {
 			code = te.Code
 		}
-		return r.settle(ctx, b, ls, call, stop(tools.StageValidate, code, "", trimCode(err.Error(), code)))
+		return early(call, stop(tools.StageValidate, code, "", trimCode(err.Error(), code)))
 	}
 	// Listeners see deep copies of in, never in itself, and nothing is decoded
 	// again: what one of them mutates reaches neither the others nor the body.
 	isolated, err := tools.NewIsolatedCall(req.ID, req.Name, args, b.Origin, b.Parent, ag, d, in)
 	if err != nil {
-		return r.settle(ctx, b, ls, call, stop(tools.StageValidate, tools.CodeInvalidArguments, "",
+		return early(call, stop(tools.StageValidate, tools.CodeInvalidArguments, "",
 			"the decoded arguments cannot be isolated from the listeners: "+err.Error()))
 	}
 	call = isolated
 	if ctx.Err() != nil {
-		return r.settle(ctx, b, ls, call, stop(tools.StagePolicy, tools.CodeAbortedBeforeStart, "", "cancelled: "+context.Cause(ctx).Error()))
+		return early(call, stop(tools.StagePolicy, tools.CodeAbortedBeforeStart, "", "cancelled: "+context.Cause(ctx).Error()))
 	}
 
 	// 3. Policy listeners: the strongest verdict wins, whatever the order.
 	dec, by := decide(ctx, ls.policies, call)
 	switch dec.Verdict {
 	case tools.VerdictDeny:
-		return r.settle(ctx, b, ls, call, stop(tools.StagePolicy, tools.CodeDenied, by, denyText(dec)))
+		return early(call, stop(tools.StagePolicy, tools.CodeDenied, by, denyText(dec)))
 	case tools.VerdictCancel:
-		return r.settle(ctx, b, ls, call, stop(tools.StagePolicy, tools.CodeAbortedBeforeStart, by, dec.Reason))
+		return early(call, stop(tools.StagePolicy, tools.CodeAbortedBeforeStart, by, dec.Reason))
 	}
 
 	// 4. Deny-only guards.
 	for _, g := range ls.guards {
 		if den := guard(ctx, g, call); den != nil {
-			return r.settle(ctx, b, ls, call, stop(tools.StageGuards, tools.CodeDenied, g.id, denialText(den)))
+			return early(call, stop(tools.StageGuards, tools.CodeDenied, g.id, denialText(den)))
 		}
 	}
 
@@ -312,13 +324,13 @@ func (r *registry) run(ctx context.Context, b tools.Batch, ag agent.Ref, ls list
 		if ctx.Err() == nil && (err != nil || !ad.Approved()) {
 			e := stop(tools.StageApproval, approvalCode(ad.Outcome), ByApproval, approvalText(ad, err))
 			e.approval = outcome
-			return r.settle(ctx, b, ls, call, e)
+			return early(call, e)
 		}
 	}
 	if ctx.Err() != nil {
 		e := stop(tools.StageApproval, tools.CodeAbortedBeforeStart, "", "cancelled: "+context.Cause(ctx).Error())
 		e.approval = outcome
-		return r.settle(ctx, b, ls, call, e)
+		return early(call, e)
 	}
 
 	// 6. Checkpoint: everything logged so far, the approval audit included, is
@@ -331,7 +343,7 @@ func (r *registry) run(ctx context.Context, b tools.Batch, ag agent.Ref, ls list
 		}
 		e := stop(tools.StageFlush, code, "", err.Error())
 		e.approval = outcome
-		return r.settle(ctx, b, ls, call, e)
+		return early(call, e)
 	}
 
 	// 7. The body, under its budget: a body that does not return within grace
@@ -341,11 +353,13 @@ func (r *registry) run(ctx context.Context, b tools.Batch, ag agent.Ref, ls list
 		e := stop(tools.StageBody, tools.CodeBusy, "",
 			fmt.Sprintf("an earlier call of %q by this agent did not return within grace and is still running", d.Name()))
 		e.approval = outcome
-		return r.settle(ctx, b, ls, call, e)
+		return early(call, e)
 	}
-	e := r.execute(ctx, b, d, bd, in, tools.Run{CallID: req.ID, Agent: ag})
-	e.approval = outcome
-	return r.settle(ctx, b, ls, call, e)
+	return prepared{call: call, run: func() ended {
+		e := r.execute(ctx, b, d, bd, in, tools.Run{CallID: req.ID, Agent: ag})
+		e.approval = outcome
+		return e
+	}}
 }
 
 // registered reports whether any layer holds a tool of that name.
