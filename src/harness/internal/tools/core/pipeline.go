@@ -142,10 +142,15 @@ func (r *registry) ExecuteBatch(ctx context.Context, b tools.Batch) (tools.Batch
 	if b.View == nil || b.Log == nil {
 		return tools.BatchResult{}, &tools.Error{Code: tools.CodeInvalidBatch, Msg: "a batch needs its step view and log"}
 	}
+	seen := make(map[string]struct{}, len(b.Calls))
 	for _, c := range b.Calls {
 		if c.ID == "" || c.Name == "" {
 			return tools.BatchResult{}, &tools.Error{Code: tools.CodeInvalidBatch, Msg: "every call needs its id and name"}
 		}
+		if _, dup := seen[c.ID]; dup {
+			return tools.BatchResult{}, &tools.Error{Code: tools.CodeInvalidBatch, Msg: "call id " + c.ID + " repeats in the batch"}
+		}
+		seen[c.ID] = struct{}{}
 	}
 	if b.Origin == "" {
 		b.Origin = tools.OriginModel
