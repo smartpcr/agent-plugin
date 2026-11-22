@@ -37,7 +37,7 @@ jobs:
       - checkout: self
       - task: GoTool@0
         inputs:
-          version: "1.26.0"
+          version: "1.27.4"
       - bash: go -C src/harness test -race -shuffle=on -count=1 ./internal/session/store/...
         displayName: Store tests
       - bash: go -C src/harness test -run TestBudgetStoreAppend -count=1 -v ./internal/session/store/sqlite

@@ -186,6 +186,7 @@ func Register[S any](r *Registry, d Definition[S]) (Handle[S], error) {
 		all:     d.Types == nil,
 		stored:  d.Stored,
 		encode: func(s any) (string, error) {
+			//lint:ignore typeassert the def built for S receives only states its own init and apply produced, all of type S
 			b, err := json.Marshal(s.(S))
 			return string(b), err
 		},
@@ -194,7 +195,8 @@ func Register[S any](r *Registry, d Definition[S]) (Handle[S], error) {
 			err := json.Unmarshal([]byte(raw), &s)
 			return s, err
 		},
-		init:  func(h session.Header) any { return d.Init(h) },
+		init: func(h session.Header) any { return d.Init(h) },
+		//lint:ignore typeassert the def built for S receives only states its own init and apply produced, all of type S
 		apply: func(s any, ev event.Event) (any, bool) { return d.Apply(s.(S), ev) },
 	}
 	r.mu.Lock()

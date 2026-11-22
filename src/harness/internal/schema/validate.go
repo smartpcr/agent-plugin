@@ -412,6 +412,7 @@ func (v *validator) checkString(s *jsonschema.Schema, str string, path string) {
 		v.add(path, "must be at most %d characters", *s.MaxLength)
 	}
 	if s.Pattern != "" {
+		//lint:ignore typeassert patterns holds only compiled *regexp.Regexp values
 		if re, ok := patterns.Load(s.Pattern); ok && !re.(*regexp.Regexp).MatchString(str) {
 			v.add(path, "must match %s", s.Pattern)
 		}

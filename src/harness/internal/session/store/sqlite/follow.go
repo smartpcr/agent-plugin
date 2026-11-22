@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"sync"
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store"
@@ -25,7 +24,6 @@ type Subscription struct {
 	events chan store.Record
 	cancel context.CancelFunc
 	done   chan struct{}
-	once   sync.Once
 	err    error // set before events is closed
 }
 

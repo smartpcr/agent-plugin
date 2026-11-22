@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	//lint:ignore typeassert SetFileInformationByHandle(FileRenameInfoEx) takes a variable-length FILE_RENAME_INFO built with unsafe.Offsetof and unsafe.Pointer
 	"unsafe"
 
 	"golang.org/x/sys/windows"

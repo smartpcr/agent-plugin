@@ -102,8 +102,8 @@ func TestFloorErrorsNameBothVersions(t *testing.T) {
 	dir := t.TempDir()
 	for name, src := range map[string]string{
 		"none.mod": "module example.com/x\n",
-		"two.mod":  "module example.com/x\n\ngo 1.26.0\ngo 1.27.0\n",
-		"one.mod":  "module example.com/x\n\ngo 1.26.0 // the floor\n",
+		"two.mod":  "module example.com/x\n\ngo 1.27.4\ngo 1.28.0\n",
+		"one.mod":  "module example.com/x\n\ngo 1.27.4 // the floor\n",
 	} {
 		path := filepath.Join(dir, name)
 		if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
@@ -111,8 +111,8 @@ func TestFloorErrorsNameBothVersions(t *testing.T) {
 		}
 		floor, err := ReadFloor(path)
 		switch {
-		case name == "one.mod" && (err != nil || floor != "1.26.0"):
-			t.Errorf("ReadFloor(%s) = %q, %v; want 1.26.0", name, floor, err)
+		case name == "one.mod" && (err != nil || floor != "1.27.4"):
+			t.Errorf("ReadFloor(%s) = %q, %v; want 1.27.4", name, floor, err)
 		case name != "one.mod" && (err == nil || !strings.Contains(err.Error(), "want exactly one go line")):
 			t.Errorf("ReadFloor(%s) = %q, %v; want an error", name, floor, err)
 		}
@@ -121,8 +121,8 @@ func TestFloorErrorsNameBothVersions(t *testing.T) {
 		t.Error("ReadFloor of a missing file passed")
 	}
 
-	msg := (&FloorError{Floor: "go1.26.0", Got: "go1.27.4", Source: "src/harness/go.mod", Go: "go"}).Error()
-	for _, want := range []string{"go1.27.4", "go1.26.0", "src/harness/go.mod", "GOTOOLCHAIN=go1.26.0"} {
+	msg := (&FloorError{Floor: "go1.27.4", Got: "go1.26.0", Source: "src/harness/go.mod", Go: "go"}).Error()
+	for _, want := range []string{"go1.27.4", "go1.26.0", "src/harness/go.mod", "GOTOOLCHAIN=go1.27.4"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("FloorError %q lacks %q", msg, want)
 		}

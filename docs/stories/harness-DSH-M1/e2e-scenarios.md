@@ -152,7 +152,7 @@ and the three-module layout (`src/go`, `src/sdk`, `src/harness`, root `go.work`)
 
 ### Setup
 - **Type**: inline
-- **Local**: from the repository root with the pinned Go toolchain (`go` line `1.26.0`)
+- **Local**: from the repository root with the pinned Go toolchain (`go` line `1.27.4`, decision `go-floor-1-27-4`)
   and a C compiler on `PATH` for `-race`:
   `go build ./src/go/... ./src/sdk/... ./src/harness/...`, then
   `GOWORK=off go -C tools/harness-gate test -race -shuffle=on ./...`, then the full gate

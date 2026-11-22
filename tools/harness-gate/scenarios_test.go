@@ -125,7 +125,7 @@ func TestScenarioIndexGateFailsWithoutIndex(t *testing.T) {
 // does not list fails the gate, named.
 func TestScenarioIndexGateNamesUnindexedScenario(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, "go.mod"), "module example.com/x\n\ngo 1.26.0\n")
+	writeFile(t, filepath.Join(root, "go.mod"), "module example.com/x\n\ngo 1.27.4\n")
 	writeFile(t, filepath.Join(root, "test", "harness", "acceptance-index.yaml"), "built-through: DH-S-1\nstages:\n  DH-S-18: []\n")
 	writeFile(t, filepath.Join(root, "y_scenario_test.go"), "//go:build scenario\n\npackage x\n\nimport \"testing\"\n\n//dsh:scenario DH-E-X-1\nfunc TestY(t *testing.T) {}\n")
 	cfg := newTestConfig(t, root)

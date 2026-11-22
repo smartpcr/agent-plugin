@@ -1,6 +1,6 @@
 module github.com/smartpcr/agent-plugin/src/harness
 
-go 1.26.0
+go 1.27.4
 
 require (
 	// One semantic-version dialect for internal/util/version (DH-D-UTIL-4): chosen by
@@ -53,11 +53,6 @@ require (
 	// File identity, locks, POSIX rename and filesystem type for internal/util/fsx
 	// (DH-D-FS-1): docs/harness/libs/node-fs-path-os-zlib.md; BSD-3-Clause.
 	golang.org/x/sys v0.50.0
-	// The pinned libc translation the SQLite driver is generated against
-	// (DH-ADR-SQLITE-1): modernc.org/sqlite builds only with the exact libc it was
-	// transpiled with, so the pair is pinned together and moves only together after a
-	// new F-2 measurement (docs/stories/harness-DSH-M1/evidence/DH-S-7.md); BSD-3-Clause.
-	modernc.org/libc v1.80.1 // indirect
 	// The session store's engine, imported only by internal/session/store/sqlite
 	// (DH-D-STORE-2): chosen by docs/harness/libs/sqlite.md DH-ADR-SQLITE-1 as pure
 	// Go, so the harness stays a single static binary with no cgo and no system
@@ -78,6 +73,11 @@ require (
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.1.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+	// The pinned libc translation the SQLite driver is generated against
+	// (DH-ADR-SQLITE-1): modernc.org/sqlite builds only with the exact libc it was
+	// transpiled with, so the pair is pinned together and moves only together after a
+	// new F-2 measurement (docs/stories/harness-DSH-M1/evidence/DH-S-7.md); BSD-3-Clause.
+	modernc.org/libc v1.80.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
 )

@@ -103,7 +103,7 @@ not evidence: fix the lane and run again.
 | --- | --- | --- | --- |
 | WSL | `go env GOOS GOARCH` | `linux` and `amd64` | The Linux toolchain is in use, not the Windows `go.exe` through interop (`appendWindowsPath=false`). |
 | Windows | `go env GOOS GOARCH` | `windows` and `amd64` | The native lane. |
-| both | `go version` (Windows: after `$env:GOTOOLCHAIN = 'go1.26.0'`) | `go1.26.0` | The go floor of `src/harness/go.mod` (`lane-toolchain-floor`). |
+| both | `go version` (Windows: after `$env:GOTOOLCHAIN = 'go1.27.4'`) | `go1.27.4` | The go floor of `src/harness/go.mod` (`go-floor-1-27-4`, superseding `lane-toolchain-floor`'s go1.26.0). |
 | WSL | `df -T .` (and `stat -f -c %T .`) | `ext4` (`stat` prints `ext2/ext3`) | DrvFs and 9p (`/mnt/e`) break the privacy tests, `flock` and the budget gate. |
 | WSL | `df -T "${TMPDIR:-/tmp}"` | `ext4` | Temporary homes of the tests live there. |
 | WSL | `id -u` | not `0` | Root bypasses the permission tests. |

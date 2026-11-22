@@ -177,6 +177,7 @@ func (r *Registry) rows(f *folded, keys func(*def) bool) []session.Derived {
 			delete(f.values, d.key)
 			continue
 		}
+		//lint:ignore typeassert d.encode returns a string, and safe passes its value through
 		out = append(out, session.Derived{Key: d.key, StateVersion: d.version, State: state.(string)})
 	}
 	return out

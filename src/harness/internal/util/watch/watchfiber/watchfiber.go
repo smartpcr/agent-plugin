@@ -31,6 +31,7 @@ func Watch(ctx *cordis.Context, s *watch.Service, t watch.Target, changed func(e
 	if err != nil {
 		return nil, err
 	}
+	//lint:ignore typeassert watch.Owned(s).Watch on a *watch.Service returns that service's *watch.Handle
 	return &Handle{w.(*watch.Handle)}, nil
 }
 

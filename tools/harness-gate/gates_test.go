@@ -229,7 +229,7 @@ func TestNoExemptionFileIsHonoured(t *testing.T) {
 func TestOwnAnalyzersRunInVetGate(t *testing.T) {
 	root := t.TempDir()
 	files := map[string]string{
-		"go.mod":    "module example.com/vetseeded\n\ngo 1.26.0\n",
+		"go.mod":    "module example.com/vetseeded\n\ngo 1.27.4\n",
 		"x.go":      "// Package x is seeded for the vet gate.\npackage x\n",
 		"x_test.go": "package x\n\nimport (\n\t\"testing\"\n\t\"time\"\n)\n\nfunc TestX(t *testing.T) {\n\ttime.Sleep(1)\n}\n",
 	}
@@ -302,7 +302,7 @@ func TestLayerTaggedTestsAreExcludedFromDefaultGate(t *testing.T) {
 func TestFuzzCheckRunsInVetGate(t *testing.T) {
 	root := t.TempDir()
 	files := map[string]string{
-		"go.mod":        "module example.com/fuzzseeded\n\ngo 1.26.0\n",
+		"go.mod":        "module example.com/fuzzseeded\n\ngo 1.27.4\n",
 		"p.go":          "// Package p decodes untrusted frames.\npackage p\n\n//dsh:untrusted-parser\n\n// Decode returns the frame length.\nfunc Decode(b []byte) int { return len(b) }\n",
 		"p_test.go":     "package p\n\nimport \"testing\"\n\nfunc TestDecode(t *testing.T) {\n\tif Decode(nil) != 0 {\n\t\tt.Fatal(\"Decode\")\n\t}\n}\n",
 		"seeds_test.go": "package p\n\nimport \"testing\"\n\nvar seeds = [][]byte{[]byte(\"{}\")}\n\nfunc FuzzDecode(f *testing.F) {\n\tfor _, s := range seeds {\n\t\tf.Add(s)\n\t}\n\tf.Fuzz(func(t *testing.T, b []byte) { Decode(b) })\n}\n",

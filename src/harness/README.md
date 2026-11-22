@@ -2,7 +2,7 @@
 
 `src/harness` is the harness product module
 (`github.com/smartpcr/agent-plugin/src/harness`). It is one of exactly three product
-modules (RM-1), all on the same `go 1.26.0` floor (RM-2):
+modules (RM-1), all on the same `go 1.27.4` floor (RM-2):
 
 | Module | Holds | Requires |
 | --- | --- | --- |

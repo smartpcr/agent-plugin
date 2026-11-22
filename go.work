@@ -1,6 +1,6 @@
 // Development workspace only. Release and rehearsal builds run with GOWORK=off,
 // so src/harness resolves src/go and src/sdk from its own go.mod (DH-ADR-26).
-go 1.26.0
+go 1.27.4
 
 use (
 	./src/go

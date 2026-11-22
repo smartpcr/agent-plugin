@@ -14,22 +14,22 @@ var repoRoot = filepath.Join("..", "..", "..")
 const (
 	fixtureGo = `module github.com/smartpcr/agent-plugin/src/go
 
-go 1.26.0
+go 1.27.4
 `
 	fixtureSDK = `module github.com/smartpcr/agent-plugin/src/sdk
 
-go 1.26.0
+go 1.27.4
 `
 	fixtureHarness = `module github.com/smartpcr/agent-plugin/src/harness
 
-go 1.26.0
+go 1.27.4
 
 require (
 	github.com/smartpcr/agent-plugin/src/go v0.1.5-0.20261119220503-a647d4984790
 	github.com/smartpcr/agent-plugin/src/sdk v0.0.0-20261119220503-a647d4984790
 )
 `
-	fixtureWork = `go 1.26.0
+	fixtureWork = `go 1.27.4
 
 use (
 	./src/go
@@ -111,13 +111,13 @@ func TestToolchain11RejectsReplaceBlock(t *testing.T) {
 
 func TestToolchain11RejectsSecondGoFloor(t *testing.T) {
 	repo := fixtureRepo()
-	repo.Mods["src/sdk"] = []byte(strings.Replace(fixtureSDK, "go 1.26.0", "go 1.25", 1))
-	wantFailure(t, CheckToolchain11(repo), "src/sdk/go.mod:3: go 1.25", "src/go/go.mod:3: go 1.26.0")
+	repo.Mods["src/sdk"] = []byte(strings.Replace(fixtureSDK, "go 1.27.4", "go 1.25", 1))
+	wantFailure(t, CheckToolchain11(repo), "src/sdk/go.mod:3: go 1.25", "src/go/go.mod:3: go 1.27.4")
 }
 
 func TestToolchain11RejectsFourthModule(t *testing.T) {
 	repo := fixtureRepo()
-	repo.Mods["src/extra"] = []byte("module example.com/extra\n\ngo 1.26.0\n")
+	repo.Mods["src/extra"] = []byte("module example.com/extra\n\ngo 1.27.4\n")
 	wantFailure(t, CheckToolchain11(repo), "src/extra")
 
 	repo = fixtureRepo()
@@ -222,7 +222,7 @@ func TestGoModHashMatchesGoSum(t *testing.T) {
 
 const fixtureTest = `module github.com/smartpcr/agent-plugin/src/go/test/e2e
 
-go 1.26.0
+go 1.27.4
 
 require (
 	// The Gherkin runner.
@@ -268,7 +268,7 @@ func TestToolchain11TestModuleClass(t *testing.T) {
 		t.Fatalf("fixture with a test module: %v", err)
 	}
 
-	repo.Tests["src/go/test/e2e"] = []byte(strings.Replace(fixtureTest, "go 1.26.0", "go 1.25", 1))
+	repo.Tests["src/go/test/e2e"] = []byte(strings.Replace(fixtureTest, "go 1.27.4", "go 1.25", 1))
 	wantFailure(t, CheckToolchain11(repo), "src/go/test/e2e/go.mod:3: go 1.25", "(RM-2)")
 
 	repo.Tests["src/go/test/e2e"] = []byte(strings.Replace(fixtureTest, "src/go/test/e2e\n", "src/go/e2e\n", 1))
@@ -291,7 +291,7 @@ func TestToolchain11TestModuleClass(t *testing.T) {
 // with a comment above it or at the end of its line it passes (M1-G-TOOL-2;
 // DH-T-TOOLCHAIN-11).
 func TestReasonsNamePinWithoutReason(t *testing.T) {
-	const head = "module example.com/m\n\ngo 1.26.0\n\n"
+	const head = "module example.com/m\n\ngo 1.27.4\n\n"
 	wantFailure(t, CheckReasons("scratch/go.mod", []byte(head+"require example.com/x v1.0.0\n")),
 		"scratch/go.mod:5: require example.com/x v1.0.0: no reason comment")
 	for name, body := range map[string]string{
@@ -311,11 +311,11 @@ func TestReasonsNamePinWithoutReason(t *testing.T) {
 // need a reason, a bare "// indirect" mark is not one, and neither a comment above a
 // block nor one separated by a blank line counts (M1-G-TOOL-2; DH-T-TOOLCHAIN-11).
 func TestReasonsCoverEveryPinVerb(t *testing.T) {
-	const head = "module example.com/m\n\ngo 1.26.0\n\n"
+	const head = "module example.com/m\n\ngo 1.27.4\n\n"
 	for body, want := range map[string]string{
 		"replace example.com/x => ../x\n":                   "scratch/go.mod:5: replace example.com/x => ../x",
 		"exclude example.com/x v1.0.1\n":                    "scratch/go.mod:5: exclude example.com/x v1.0.1",
-		"toolchain go1.26.0\n":                              "scratch/go.mod:5: toolchain go1.26.0",
+		"toolchain go1.27.4\n":                              "scratch/go.mod:5: toolchain go1.27.4",
 		"tool (\n\texample.com/x/cmd/x\n)\n":                "scratch/go.mod:6: tool example.com/x/cmd/x",
 		"// For x.\nrequire (\n\texample.com/x v1.0.0\n)\n": "scratch/go.mod:7: require example.com/x v1.0.0",
 		"// For x.\n\nrequire example.com/x v1.0.0\n":       "scratch/go.mod:7: require example.com/x v1.0.0",

@@ -104,6 +104,7 @@ func (c *Component) String() string { return "Component <" + c.name + ">" }
 func Define[C any](name string, apply func(ctx *Context, config C) error, options ...Option) *Component {
 	c := newComponent[C](name, options)
 	c.apply = func(ctx *Context, config any) (any, error) {
+		//lint:ignore typeassert config is resolved for this component's own config type C (newComponent[C]), so it always holds a C
 		return nil, apply(ctx, config.(C))
 	}
 	return c
@@ -115,6 +116,7 @@ func Define[C any](name string, apply func(ctx *Context, config C) error, option
 func Construct[C, T any](name string, construct func(ctx *Context, config C) (T, error), options ...Option) *Component {
 	c := newComponent[C](name, options)
 	c.apply = func(ctx *Context, config any) (any, error) {
+		//lint:ignore typeassert config is resolved for this component's own config type C (newComponent[C]), so it always holds a C
 		instance, err := construct(ctx, config.(C))
 		if err != nil {
 			return nil, err
@@ -474,6 +476,7 @@ func trailing(data []byte, offset int64) string {
 func zeroConfig[C any]() C {
 	var zero C
 	if t := reflect.TypeFor[C](); t.Kind() == reflect.Pointer {
+		//lint:ignore typeassert C is a pointer type here, and reflect.New of its element type yields exactly a C
 		return reflect.New(t.Elem()).Interface().(C)
 	}
 	return zero

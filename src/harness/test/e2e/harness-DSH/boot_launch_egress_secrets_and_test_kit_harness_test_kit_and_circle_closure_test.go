@@ -34,6 +34,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/clock"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/model"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/procwait"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/temphome"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess/subprocesstest"
 )
@@ -461,22 +462,23 @@ func (s *htkcState) homeGone() error {
 }
 
 func (s *htkcState) noChildRemains() error {
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		var alive []int
+	// Whether a child has exited is a fact only the OS makes true: the one named poll
+	// helper waits for it (M1-D-GATE-24, rule 4).
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	var alive []int
+	if err := procwait.Poll(ctx, func() bool {
+		alive = alive[:0]
 		for _, pid := range []int{s.homeChild, s.child, s.grandchild} {
 			if subprocesstest.Alive(pid) {
 				alive = append(alive, pid)
 			}
 		}
-		if len(alive) == 0 {
-			return nil
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("processes %v survive the test", alive)
-		}
-		time.Sleep(50 * time.Millisecond)
+		return len(alive) == 0
+	}); err != nil {
+		return fmt.Errorf("processes %v survive the test: %w", alive, err)
 	}
+	return nil
 }
 
 // ---- DH-S-6 scenarios authored and indexed ----

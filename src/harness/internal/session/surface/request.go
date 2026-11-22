@@ -131,7 +131,7 @@ func (b *Built) seal() error {
 		c.Base = &base
 	}
 	for _, ch := range b.toolHist.Changes {
-		c.Changes = append(c.Changes, canonicalTool{ch.Seq, ch.Header, ch.Added, ch.Removed})
+		c.Changes = append(c.Changes, canonicalTool(ch))
 	}
 	raw, err := vocab.Encode(c)
 	if err != nil {

@@ -162,8 +162,3 @@ func parse(codec Codec, file, text string) ([]EntryOptions, *Document, error) {
 	normalize(doc.Entries)
 	return doc.Entries, doc, nil
 }
-
-func serialize(entries []EntryOptions) string {
-	encoded, _ := JSON.Encode(nil, entries)
-	return string(encoded)
-}

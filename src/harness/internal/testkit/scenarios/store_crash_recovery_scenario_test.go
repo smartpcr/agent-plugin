@@ -106,7 +106,7 @@ func TestKilledHostRecoversHonestly(t *testing.T) {
 	}
 
 	// (3)
-	host = startShell(t, expand(startT, with("")))
+	startShell(t, expand(startT, with("")))
 	if out, err := storeStep(t, "resume", expand(resumeT, with(""))); err != nil {
 		t.Fatalf("the resume failed: %v\n%s", err, out)
 	}

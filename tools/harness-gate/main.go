@@ -121,25 +121,6 @@ func runEvidence(ctx context.Context, root, path string, args []string, stdout, 
 	return cfg.RunEvidence(ctx, path, commit, args, Gates, stdout, stderr)
 }
 
-// subcommandFlags parses the flags of subcommand name: --root and those add
-// registers.
-func subcommandFlags(name string, args []string, stderr io.Writer, add func(*flag.FlagSet)) (root string, ok bool) {
-	flags := flag.NewFlagSet("harness-gate "+name, flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	r := flags.String("root", ".", "repository root")
-	if add != nil {
-		add(flags)
-	}
-	if err := flags.Parse(args); err != nil {
-		return "", false
-	}
-	if flags.NArg() != 0 {
-		fmt.Fprintf(stderr, "harness-gate %s: unexpected arguments %q\n", name, flags.Args())
-		return "", false
-	}
-	return *r, true
-}
-
 // runRehearse is "harness-gate rehearse [--root dir] [--out dir]": the release
 // rehearsal of DH-D-TOOLCHAIN-5. Without --out the binaries go to a temporary
 // directory that is removed afterwards.

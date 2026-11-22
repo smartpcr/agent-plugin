@@ -736,7 +736,7 @@ func (s *Store) closeDBs() error {
 	s.wmu.Unlock()
 	for i, err := range errs {
 		if err != nil {
-			errs[i] = translate(nil, err)
+			errs[i] = translate(context.Background(), err)
 		}
 	}
 	return errors.Join(errs...)

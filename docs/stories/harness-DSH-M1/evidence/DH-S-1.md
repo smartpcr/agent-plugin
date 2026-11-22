@@ -29,9 +29,9 @@ default is not in force.
 
 | Item | What was built (DH-S-1 closing commit `e13abf3`) | What the spec asks for | Decision (status) | Return stage |
 | --- | --- | --- | --- | --- |
-| Gate list | 8 gates: `gofmt`, `vet` (with the own analyzers), `test`, `coverage`, `trace`, `scenario-index`, `budget`, `cross-compile` | DH-ADR-TOOLCHAIN-8 and -9, DH-D-TOOLCHAIN-2: also staticcheck, module tidy and verify, the vulnerability check and replay | M1-D-GATE-23, M1-D-TOOL-1 (both open; default: build the missing gates now, growing the list to 12 with `modules`, `staticcheck`, `vulncheck`, `self`) | plan 13.4, 13.5; replay by `replay-gate-step-dh-s-16` below |
-| Module hygiene | `modcheck` tests: three modules, one `go` floor, no `replace`, pins resolve, the release build ignores `go.work`. No `go mod tidy -diff` or `go mod verify` gate | DH-ADR-TOOLCHAIN-11: tidy and verify as gates; tools pinned in a separate tools module | M1-D-GATE-23 (open); M1-D-TOOL-2 (open; default: `tools/harness-gate/go.mod` is the tools module) | plan 13.4 |
-| Site exceptions | None: the own analyzers have no exception form at all (and no baseline file) | DH-ADR-TOOLCHAIN-8: an exception written at the site with a reason; a test fails on one without a reason and prints the total | M1-D-GATE-23 (open; the QG-2 "no exemption list" tension gets a DC-3 note in plan 13.5.8) | plan 13.5 |
+| Gate list | 8 gates: `gofmt`, `vet` (with the own analyzers), `test`, `coverage`, `trace`, `scenario-index`, `budget`, `cross-compile` | DH-ADR-TOOLCHAIN-8 and -9, DH-D-TOOLCHAIN-2: also staticcheck, module tidy and verify, the vulnerability check and replay | M1-D-GATE-23 A, M1-D-TOOL-1 (a) (in force, owner 2026-11-22). Outcome (13.5.8): built. The list is 12 gates; 13.4 added `modules` and `self`, 13.5 added `staticcheck` and `vulncheck`. DH-D-TOOLCHAIN-2 is built to its Result list, replay aside (see the [Stage 1.2 addendum](#stage-12-addendum----static-analysis-to-spec-gap-closure-plan-135)) | plan 13.4, 13.5; replay by `replay-gate-step-dh-s-16` below |
+| Module hygiene | `modcheck` tests: three modules, one `go` floor, no `replace`, pins resolve, the release build ignores `go.work`. No `go mod tidy -diff` or `go mod verify` gate | DH-ADR-TOOLCHAIN-11: tidy and verify as gates; tools pinned in a separate tools module | M1-D-GATE-23 A (in force; built in 13.4: the `modules` gate); M1-D-TOOL-2 (default: `tools/harness-gate/go.mod` is the tools module) | plan 13.4 |
+| Site exceptions | None: the own analyzers have no exception form at all (and no baseline file) | DH-ADR-TOOLCHAIN-8: an exception written at the site with a reason; a test fails on one without a reason and prints the total | M1-D-GATE-23 A (in force). Outcome (13.5.8): built. `//lint:ignore <check> <reason>` is read for the own analyzers and staticcheck, a reasonless one fails `vet`, and the gate prints `exceptions: N`. The QG-2 tension is resolved by the DC-3 note under DH-ADR-TOOLCHAIN-8 in `docs/harness/upstream/toolchain.md` | plan 13.5 |
 | Release rehearsal | Built in part: `harness-gate rehearse` builds six pure-Go binaries with `go build`, prints each SHA-256 and embedded version, publishes nothing; `release.yml` and `.goreleaser.yaml` unchanged | DH-D-TOOLCHAIN-5: a GoReleaser snapshot with archives and a checksum file, and each archive that matches a runner starts and answers a keyless replay | M1-D-TOOL-3 (open; default: a GoReleaser snapshot at plan 19.1, before DH-S-18) | plan 19.1.1; run by DH-E-TOOLCHAIN-2 at DH-S-18 |
 | Coverage floor | Stricter than the spec: 85% for every package of the three product modules, `main` packages included | DH-ADR-TOOLCHAIN-7: 85% for every package under `src/harness/internal`; `main` packages excluded by rule | `coverage-floor-all-packages-kept` (in force, lead settlement; DC-3 record, rule kept) | none: the stricter rule stays |
 | Import rules | Go tests: `src/harness/internal/archtest/rules.go`, run by `TestImportDirection` in the `test` gate | DH-ADR-TOOLCHAIN-8 lists them as an own analyzer; DH-ADR-TOOLCHAIN-9 allows structural rules as Go tests | `import-rules-by-archtest` (in force, lead settlement) | none: met. The other three missing own analyzers are built by plan 13.5.4 |
@@ -223,6 +223,68 @@ Automated counterparts in `609c1d0`: `TestRunStopsAtFirstFailingGate`,
 -count=1 ./...` run at `e13abf3` recorded under Stage 1.4; no run at `609c1d0` is
 recorded.
 
+### Stage 1.2 addendum -- static analysis to spec (gap-closure plan 13.5)
+
+Plan stage 13.5 (M1-G-TOOL-1, -4, -6, -7, -17; M1-G-GATE-23, -25). Tree: `8addff6` plus
+the uncommitted 13.5 part B changes and the go1.27.4 floor change, Windows host,
+`GOTOOLCHAIN=go1.27.4`. The measurements are `manual`. Each was run per module
+(`src/go`, `src/sdk`, `src/harness`) with `-tags=` and `-tags=replay,scenario`, on
+GOOS=windows and GOOS=linux. Site lists: plan 13.5 part A record (lead's scratchpad,
+not committed).
+
+**Gate list.** 12 gates: `gofmt`, `vet`, `staticcheck`, `modules`, `test`, `coverage`, `trace`,
+`scenario-index`, `budget`, `cross-compile`, `vulncheck`, `self` (`TestGateListIsFixed`).
+`vet` now also compiles and analyzes the `e2e` layer (`-tags=e2e`; M1-D-GATE-25 A).
+
+**staticcheck (v0.8.2, default checks).**
+
+| | src/go | src/sdk | src/harness | total |
+| --- | --- | --- | --- | --- |
+| before (part A, unique findings) | 2 | 0 | 14 | **16** |
+| after | 0 | 0 | 0 | **0** |
+
+Before, by check: SA1012 6, U1000 5, and one each of SA6005, S1016, SA4006, SA1019 and
+SA2001. Each was fixed in code, except three that carry a reasoned directive: U1000 on a
+test fixture field read only by reflection, SA1019 on `runtime.GOROOT` (it mirrors
+`time.LoadLocation`), and SA2001 on a deliberate empty critical section.
+
+**Own analyzers, site counts.**
+
+| analyzer | as first specified | narrowed (owner, 2026-11-22) | after 13.5 | in `vet` |
+| --- | --- | --- | --- | --- |
+| `rootcall` | 0 | -- | 0 | yes |
+| `lintignore` | 0 | -- | 0 | yes |
+| `typeassert` | 92 (87 assertions, 62 of them in tests; 5 `unsafe` imports) | 30 (25 non-test assertions + 5 `unsafe`) | 0 (each annotated with its invariant or Windows API; `-tags=e2e` found 2 more `unsafe` imports, also annotated) | yes |
+| `errdiscard` | 339 (188 `_ =`, 104 call statements, 47 `defer`) | **268** (188 `_ =`, 44 call statements, 36 `defer`) | 268, not fixed | **no** -- over the owner's ~120 limit; stays in `analyzers.Pending` until the owner decides |
+
+errdiscard is narrowed to non-test code. `fmt.Fprint*` is exempt, and so is a deferred
+`Close` of a read-only handle (`analyzers/errdiscard.go`, README "Own analyzers").
+typeassert assertions are checked in non-test code only, while `unsafe` imports are
+checked in every file.
+
+**Exceptions.** The vet gate prints `exceptions: 35 (SA1019 1, SA2001 1, U1000 1, typeassert 32)`.
+Each one is a `//lint:ignore` with a reason at its site; there is no list (DC-3 note,
+13.5.8).
+
+**vulncheck (govulncheck v1.10.0).** Database `https://vuln.go.dev`, `db_last_modified`
+2026-11-11T02:51:11Z. On the go1.26.0 floor, `src/harness` reached 30 standard-library
+vulnerabilities (exit 3); `src/go` and `src/sdk` were clean. On the go1.27.4 floor,
+all three report "No vulnerabilities found" (exit 0), and the gate passes on this tree.
+
+**e2e vet (13.5.7).** Before: 3 `nosleep` findings, standard `go vet` clean. After: 0.
+The three sleeps were replaced as follows:
+- the child-exit wait uses `procwait.Poll` (rule 4);
+- the appender child waits for the parent's `next` instead of a timed pause (P-S);
+- the detached-body waits use a signal on the `tool/late-return` append (P-S).
+
+The `cleanup` analyzer's blind spot for godog step functions is sub-gap M1-G-GATE-24.1.
+
+**Seeded violations** (tests, `tools/harness-gate/linters_test.go`):
+- `TestStaticcheckFindingStopsTheGate`: `if x == x` stops the gate at `staticcheck`, naming SA4000, exit 1;
+- `TestVulncheckGateUsesTheDatabase`: with the offline file database `testdata/vulndb`, it fails naming `GO-2099-0001`; an unreadable database fails rather than skips;
+- `TestBrokenE2EFileFailsVet`: a non-compiling `//go:build e2e` file fails `vet`;
+- `TestVetGatePrintsExceptions` and the `analyzers` tests: `TestReasonlessExceptionFails` and `TestNewAnalyzersOnFixtures`.
+
 ## Stage 1.3 -- Test Layers and Golden Helper
 
 | Field | Value |
@@ -386,7 +448,8 @@ regression signals only.
 - M1-D-GATE-21 and M1-D-TOOL-5 (one question, both `open`): what hosted CI keeps. The
   plan's default, which plan step 12.3.7 applies: hosted `ubuntu-latest` and
   `windows-latest` `harness` lanes as regression signals, macOS removed.
-- `lane-toolchain-floor` (in force, lead settlement): go1.26.0 on both lanes.
+- `lane-toolchain-floor` (superseded by `go-floor-1-27-4`): go1.26.0 on both lanes;
+  go1.27.4 since 2026-11-22 ([Floor raised to go1.27.4](#floor-raised-to-go1274)).
 - `local-run-record-format` (in force, lead settlement): the run-record id and path.
 
 **Where the procedure is.** Provisioning, the clone rule and the preflight checks:
@@ -457,6 +520,21 @@ present (the Linux user-scope path is usable, EN-5); `id -u` = 1000; `TMPDIR` = 
 on ext4; `CGO_ENABLED=1`; Ubuntu 24.04.5 LTS, kernel 6.18.58.1-microsoft-standard-WSL2;
 `wsl.exe --version`: WSL 3.0.5.0, kernel 6.18.58.1-1. A gate log was produced (the WSL
 row above).
+
+### Floor raised to go1.27.4
+
+On 2026-11-22 the owner raised the go floor from go1.26.0 to go1.27.4
+([`go-floor-1-27-4`](../decisions.md), superseding `lane-toolchain-floor`): govulncheck
+finds 30 standard-library vulnerabilities in `src/harness` on go1.26.0, at least one
+with no 1.26 fix, and none under go1.27.4. Every module that stated `go 1.26.0` now
+states `go 1.27.4` (`src/go`, `src/sdk`, `src/harness`, `src/go/test/e2e`,
+`tools/harness-gate`, `go.work`, and the seeded modules of `tools/harness-gate/testdata`),
+and `modcheck.Floor` is `1.27.4`. The pinned `src/go` and `src/sdk` revisions keep their
+older `go 1.26.0` lines, which is allowed (a pin may be at or below the floor, never
+above). The go1.26.0 entries above (provisioning facts, first lane runs, the Stage 1.1
+addendum and the run records under `runs/`) are historical; the WSL lane is
+re-provisioned with go1.27.4 by the lead, and both lanes record go1.27.4 from their
+next run.
 
 ## M1 gate repair
 
