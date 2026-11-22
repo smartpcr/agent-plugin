@@ -248,6 +248,28 @@ indexed in `test/harness/acceptance-index.yaml`; none is executed in this story.
 | `DH-E-UTIL-1` | `egress_proxy_scenario_test.go` (`TestAllTrafficGoesThroughInterceptingProxy`) | DH-S-39 (step 39.15) |
 | `DH-E-LOADER-1` | `loader_edit_scenario_test.go` | DH-S-17 (step 17.7) |
 | `DH-E-BOOT-2` | `boot_two_process_scenario_test.go` | DH-S-21 (step 21.13) |
+| `DH-E-EXEC-10` | `exec_scope_ssh_scenario_test.go` (`TestLinuxSSHLoginDelegatedScopeOwnsTree`) | DH-S-18 (step 18.3) |
+| `DH-E-STORAGE-6` | `storage_private_scenario_test.go` (`TestAnotherLocalUserCannotReadStoredData`) | DH-S-18 (step 18.10) |
+
+**Scenario line (gap-closure 13.6.7, 13.6.8; M1-G-CLOSE-7).** DH-E-EXEC-10 and
+DH-E-STORAGE-6 are owed by DH-S-6 under rule 4: impl.md sec. 7.5 places them in
+DH-S-18, the paired acceptance stage of DH-S-6. They were not written in Phase 6.
+
+- **Authored** in Stage 13.6 (commit `0b5d058`): `//go:build scenario`, one
+  `//dsh:scenario` directive each.
+- **Inputs** are `DSH_SCENARIO_EXEC10_*` and `DSH_SCENARIO_STORAGE6_*`. A missing
+  input fails the test, naming the variable; it never skips.
+- **Indexed** under `DH-S-18` with `authored: DH-S-6` in
+  `test/harness/acceptance-index.yaml`.
+- **Reviewer:** pending PR review.
+- **Not executed** in this story.
+
+Checks run on the files:
+- `go -C src/harness vet -tags scenario ./internal/testkit/scenarios/` exits 0 on
+  Windows and with `GOOS=linux`.
+- The default `go test -list .` lists no scenario.
+- `CheckRule4Authoring` named exactly these two before they were indexed, and
+  passes after. It now runs in the `scenario-index` gate.
 
 Each file starts with `//go:build scenario`, binds one test with `//dsh:scenario`,
 and fails (never skips) when an input is missing or the host is the wrong system.

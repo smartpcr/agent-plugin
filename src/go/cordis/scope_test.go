@@ -57,6 +57,7 @@ func (c *counter) take() string {
 
 // ---------------------------------------------------------- DH-T-CORDIS-5
 
+//dsh:test DH-T-CORDIS-5
 func TestContextValueIsVisibleToItsSubtreeOnly(t *testing.T) {
 	root, _ := Quiet()
 	var tagged, untagged, derived, child, sibling any
@@ -114,6 +115,7 @@ func TestContextValueIsVisibleToItsSubtreeOnly(t *testing.T) {
 
 // ---------------------------------------------------------- DH-T-CORDIS-6
 
+//dsh:test DH-T-CORDIS-6
 func TestScopedDispatchReachesOneSubtree(t *testing.T) {
 	root, logs := Quiet()
 	hits := &counter{}
@@ -197,6 +199,7 @@ func TestScopedDispatchReachesOneSubtree(t *testing.T) {
 
 // ---------------------------------------------------------- DH-T-CORDIS-7
 
+//dsh:test DH-T-CORDIS-7
 func TestNotifyListenerCannotVetoTheFact(t *testing.T) {
 	root, logs := Quiet()
 	log := &Log{}
@@ -240,6 +243,7 @@ func TestNotifyListenerCannotVetoTheFact(t *testing.T) {
 
 // --------------------------------------------------------- DH-T-CORDIS-12
 
+//dsh:test DH-T-CORDIS-12
 func TestAroundKeyWrapsInRegistrationOrder(t *testing.T) {
 	root, _ := Quiet()
 	wrap := func(ctx *cordis.Context, in, out string, opts ...cordis.ListenOption) *cordis.EffectHandle {

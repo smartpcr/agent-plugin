@@ -119,6 +119,8 @@ func TestStreamAroundServedStreamIsNormalised(t *testing.T) {
 // listener that edits its copy (route, model, controls, request) and calls next
 // changes nothing: the inner listener sees the original, and with no inner
 // listener the attempt runs on the prepared route.
+//
+//dsh:test DH-T-LLM-4
 func TestStreamAroundCannotReroute(t *testing.T) {
 	ok := chunks(append(text("ok"), vocab.Finish{Reason: vocab.FinishStop})...)
 	other := must(newSession(t).NextRequest())

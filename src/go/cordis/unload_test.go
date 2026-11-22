@@ -20,6 +20,8 @@ func isInactive(err error) bool { return errors.Is(err, cordis.ErrInactive) }
 
 // DH-T-CORDIS-1: a cleanup cannot register anything on its unloading fiber, so the
 // next load starts with an empty effect list.
+//
+//dsh:test DH-T-CORDIS-1
 func TestCleanupCannotRegisterWhileItsFiberUnloads(t *testing.T) {
 	root, _ := Quiet()
 	ping := cordis.NewEvent[int]("ping")
@@ -155,6 +157,8 @@ func TestDependentUnloadsBeforeItsProvider(t *testing.T) {
 
 // DH-T-CORDIS-2: a cleanup started by one goroutine holds back a second disposal of
 // the same handle and the unload of the fiber's providers until it returns.
+//
+//dsh:test DH-T-CORDIS-2
 func TestRunningCleanupHoldsBackSecondDisposeAndProvider(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		root, _ := Quiet()
@@ -227,6 +231,8 @@ func TestRunningCleanupHoldsBackSecondDisposeAndProvider(t *testing.T) {
 
 // DH-T-CORDIS-3: a fiber that never loaded still releases its effects, and a creation
 // handler can dispose the new fiber before its body runs.
+//
+//dsh:test DH-T-CORDIS-3
 func TestPendingFiberReleasesEffectsAndCreationHandlerCanDispose(t *testing.T) {
 	t.Run("pending fiber", func(t *testing.T) {
 		root, _ := Quiet()
@@ -298,6 +304,8 @@ func receive[T any](t *testing.T, ch <-chan T, what string) T {
 
 // DH-T-CORDIS-4: each load gets a fresh lifetime, cancelled with the leave's cause
 // before cleanups run.
+//
+//dsh:test DH-T-CORDIS-4
 func TestFiberLifetimeIsCancelledByUnload(t *testing.T) {
 	t.Run("dispose", func(t *testing.T) {
 		root, _ := Quiet()

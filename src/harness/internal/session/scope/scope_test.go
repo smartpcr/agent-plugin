@@ -67,6 +67,8 @@ func set(t *testing.T, ls *Layers[layer], ctx *cordis.Context, name, v string) *
 }
 
 // DH-T-SESSION-17: visibility, nearest-wins, order, cycles, Close and reclaim.
+//
+//dsh:test DH-T-SESSION-17
 func TestScopedRegistrations(t *testing.T) {
 	root := newRoot(t)
 	tab := mount(t, root)
@@ -203,6 +205,8 @@ func mustPeek(t *testing.T, ls *Layers[layer], k Key) layer {
 
 // DH-T-SESSION-6 (scope clauses): a scoped event reaches the scope's listeners,
 // enclosing and untagged ones and global ones, not another scope's.
+//
+//dsh:test DH-T-SESSION-6
 func TestScopedEvent(t *testing.T) {
 	root := newRoot(t)
 	tab := mount(t, root)
@@ -242,6 +246,8 @@ type spine struct{}
 
 // DH-T-SESSION-18: a scope context reaches no service; a component mounted under
 // it resolves exactly what it declares; CheckMount reports a Shared registry.
+//
+//dsh:test DH-T-SESSION-18
 func TestNoBorrowedAuthority(t *testing.T) {
 	root := newRoot(t)
 	spineKey := cordis.NewServiceKey[*spine]("test.spine")

@@ -191,6 +191,21 @@ func ParseImpl(r io.Reader) (*ImplPlan, error) {
 	return p, nil
 }
 
+// CheckPlan reads impl.md and the ledger under root and runs CheckBuiltThrough and
+// CheckRule4Authoring on the index x. A root without either file fails: the checks
+// cannot be skipped.
+func CheckPlan(root string, x *Index) error {
+	p, err := ReadImpl(root)
+	if err != nil {
+		return err
+	}
+	proves, err := ReadLedgerScenarios(root)
+	if err != nil {
+		return err
+	}
+	return errors.Join(CheckBuiltThrough(x, p), CheckRule4Authoring(x, p, proves))
+}
+
 // CheckBuiltThrough requires the index's built-through marker to equal the largest
 // n for which every step of DH-S-1..n is ticked in impl.md (M1-G-CLOSE-3). A marker
 // ahead of the ticks names the first unticked step at or before it; a marker behind

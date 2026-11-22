@@ -54,6 +54,8 @@ func storeRead(t *testing.T, st store.Store, id session.ID) surface.ReadFunc {
 // DH-T-SESSION-12 (TC-05): a loop request rebuilt from the log prefix ending at
 // its requestAsOf has the same canonical bytes and digest; an auxiliary request
 // names its builder event, and is the same whether built live or rebuilt.
+//
+//dsh:test DH-T-SESSION-12
 func TestRequestRebuild(t *testing.T) {
 	e := newEnv(t, session.Config{})
 	h := e.create(t, scope.Key{})
@@ -106,6 +108,8 @@ func TestRequestRebuild(t *testing.T) {
 // DH-T-SESSION-13 (scenario): turn/end before step/end is refused and the log is
 // unchanged; the failure path appends step/end, then turn/end; a turn/end of kind
 // interrupted is the core's alone.
+//
+//dsh:test DH-T-SESSION-13
 func TestBracketsOnAppend(t *testing.T) {
 	e := newEnv(t, session.Config{})
 	h := e.create(t, scope.Key{})
@@ -144,6 +148,8 @@ func types(evs []event.Event) []string {
 // DH-T-SESSION-13 (open): opening a session left inside a turn with a pending
 // call appends the closers and an end seed once; a read-only open shows them
 // and writes nothing; a second open appends nothing.
+//
+//dsh:test DH-T-SESSION-13
 func TestOpenClosesBrackets(t *testing.T) {
 	e := newEnv(t, session.Config{})
 	h := e.create(t, scope.Key{})
@@ -221,6 +227,8 @@ func TestOpenFlushesClosersBeforePublishing(t *testing.T) {
 
 // DH-T-SESSION-14: an open restored from the core checkpoint has the same folds
 // as a full replay.
+//
+//dsh:test DH-T-SESSION-14
 func TestOpenFromCheckpoint(t *testing.T) {
 	e := newEnv(t, session.Config{CheckpointEvery: 3})
 	h := e.create(t, scope.Key{})
@@ -260,6 +268,8 @@ func TestOpenFromCheckpoint(t *testing.T) {
 // DH-T-SESSION-19: a store read that breaks a clause (stale tail, a wrong first
 // seq, a gap, a record this session did not commit) closes the session with
 // session/broken-store, and nothing of the bad page is delivered.
+//
+//dsh:test DH-T-SESSION-19
 func TestBrokenStoreRead(t *testing.T) {
 	for _, mode := range []string{"stale", "first", "gap", "foreign"} {
 		t.Run(mode, func(t *testing.T) {
@@ -286,6 +296,8 @@ func TestBrokenStoreRead(t *testing.T) {
 // DH-T-SESSION-7: a vetoed Created publishes nothing; Close delivers every event
 // before Closed and is idempotent; Append after close is session/closed; a lost
 // lease closes the session with that cause.
+//
+//dsh:test DH-T-SESSION-7
 func TestLifecycle(t *testing.T) {
 	e := newEnv(t, session.Config{})
 	rec := listen(t, e.root)
@@ -338,6 +350,8 @@ func TestLifecycle(t *testing.T) {
 
 // DH-T-SESSION-8: Read honours from and limit, and returns cold parts only when
 // asked.
+//
+//dsh:test DH-T-SESSION-8
 func TestRead(t *testing.T) {
 	e := newEnv(t, session.Config{})
 	h := e.create(t, scope.Key{})
@@ -365,6 +379,8 @@ func TestRead(t *testing.T) {
 }
 
 // DH-T-SESSION-5: what a caller gets back cannot change what the session holds.
+//
+//dsh:test DH-T-SESSION-5
 func TestImmutableResults(t *testing.T) {
 	e := newEnv(t, session.Config{})
 	h := e.create(t, scope.Key{})

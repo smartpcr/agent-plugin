@@ -53,6 +53,8 @@ func lastTurnEnd(t *testing.T, h session.Handle) event.TurnEnd {
 // turn blocked with who and why and appends no step/start, and a panicking
 // observer is logged without changing that; a PreStep listener that panics
 // ends the turn error with extension/failed, and the next turn still runs.
+//
+//dsh:test DH-T-AGENT-10, DH-T-AGENT-11, DH-T-AGENT-12
 func TestPreStepRejectAndPanic(t *testing.T) {
 	e := newEnv(t)
 	e.seat(t)
@@ -123,6 +125,8 @@ func logged(e *env, s string) bool {
 
 // DH-T-AGENT-12: Enter replaces the batch and StartsSeries reaches the caller;
 // step/start is appended; listeners see copies.
+//
+//dsh:test DH-T-AGENT-12
 func TestPreStepEnterReplacesTheBatch(t *testing.T) {
 	e := newEnv(t)
 	e.seat(t)
@@ -146,6 +150,8 @@ func TestPreStepEnterReplacesTheBatch(t *testing.T) {
 // DH-T-AGENT-13: KeepOpen from any one listener keeps the turn open in every
 // registration order, messages joined in registration order; it is not asked
 // after abort, error or budget; a listener error is extension/failed.
+//
+//dsh:test DH-T-AGENT-13
 func TestTurnStoppingKeepOpenWinsInEveryOrder(t *testing.T) {
 	allow := func(*cordis.Context, agent.StopRequest) (agent.StopDecision, error) { return agent.AllowStop{}, nil }
 	keep := func(id string) agent.TurnStoppingListener {
@@ -222,6 +228,8 @@ func sortedIDs(ids []string) []string {
 // DH-T-AGENT-10: AttemptFailed gives up with no listener, retries when a
 // listener says so, is not asked for a cancelled attempt, and a listener panic
 // is extension/failed.
+//
+//dsh:test DH-T-AGENT-10
 func TestAttemptFailed(t *testing.T) {
 	e := newEnv(t)
 	e.seat(t)

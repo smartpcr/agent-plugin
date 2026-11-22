@@ -12,6 +12,8 @@ import (
 )
 
 // DH-T-STORE-1 / TC-05: the conformance suite passes on memstore.
+//
+//dsh:test DH-T-STORE-1
 func TestConformance(t *testing.T) {
 	storetest.Run(t, func(*testing.T) store.Store { return memstore.New() })
 }

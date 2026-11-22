@@ -275,6 +275,8 @@ func TestStalledCleanupIsBounded(t *testing.T) {
 // DH-T-AGENT-12: Enter.StartsSeries reaches the request header: the step's
 // request opens with a request/header although route, tools and controls are
 // unchanged.
+//
+//dsh:test DH-T-AGENT-12
 func TestStartsSeriesReachesTheHeader(t *testing.T) {
 	root, svc := setup(t)
 	must(svc.Register(root, tool("echo")))

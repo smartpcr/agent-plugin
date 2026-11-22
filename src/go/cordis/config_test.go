@@ -44,6 +44,7 @@ func configIssue(t *testing.T, err error) cordis.ConfigIssue {
 
 // ---------------------------------------------------------- DH-T-CORDIS-8
 
+//dsh:test DH-T-CORDIS-8
 func TestRejectedCandidateDoesNotLeakIntoEffectiveConfig(t *testing.T) {
 	root, _ := Quiet()
 	var loads atomic.Int32
@@ -79,6 +80,7 @@ func TestRejectedCandidateDoesNotLeakIntoEffectiveConfig(t *testing.T) {
 	Equal(t, int32(1), loads.Load(), "a rejected candidate restarted the fiber")
 }
 
+//dsh:test DH-T-CORDIS-8
 func TestResolveConfigStoresNothing(t *testing.T) {
 	root, _ := Quiet()
 	var loads atomic.Int32
@@ -95,6 +97,7 @@ func TestResolveConfigStoresNothing(t *testing.T) {
 	True(t, errors.Is(err, cordis.ErrRootFiber), "the root fiber has no config to resolve")
 }
 
+//dsh:test DH-T-CORDIS-8
 func TestInPlaceUpdatePublishesEffectiveConfig(t *testing.T) {
 	root, _ := Quiet()
 	var loads atomic.Int32
@@ -115,6 +118,7 @@ func TestInPlaceUpdatePublishesEffectiveConfig(t *testing.T) {
 	Equal(t, any(sized{N: 6}), effective(t, restarting), "effective after a restart")
 }
 
+//dsh:test DH-T-CORDIS-8
 func TestSupersededInPlaceUpdateIsNotPublished(t *testing.T) {
 	root, _ := Quiet()
 	entered := make(chan struct{})
@@ -174,6 +178,7 @@ func TestSupersededInPlaceUpdateIsNotPublished(t *testing.T) {
 	})
 }
 
+//dsh:test DH-T-CORDIS-8
 func TestPendingFiberHasNoEffectiveConfig(t *testing.T) {
 	root, _ := Quiet()
 	var loads atomic.Int32
@@ -189,6 +194,7 @@ func TestPendingFiberHasNoEffectiveConfig(t *testing.T) {
 	Equal(t, any(sized{N: 2}), effective(t, fiber), "effective once loaded")
 }
 
+//dsh:test DH-T-CORDIS-8
 func TestRetainConfigStoresRawWithoutUpdate(t *testing.T) {
 	root, _ := Quiet()
 	var loads atomic.Int32
@@ -206,6 +212,7 @@ func TestRetainConfigStoresRawWithoutUpdate(t *testing.T) {
 	Equal(t, any(sized{N: 7}), effective(t, fiber), "effective after the next load")
 }
 
+//dsh:test DH-T-CORDIS-8
 func TestResolutionCannotMutateStoredConfigViews(t *testing.T) {
 	root, _ := Quiet()
 	// The hook edits a map or pointer candidate in place, then rejects n == 2.
@@ -286,6 +293,7 @@ func TestResolutionCannotMutateStoredConfigViews(t *testing.T) {
 	})
 }
 
+//dsh:test DH-T-CORDIS-9
 func TestConfigHookTransformsEffectiveViewOnly(t *testing.T) {
 	root, _ := Quiet()
 	var mu sync.Mutex
@@ -318,6 +326,7 @@ func TestConfigHookTransformsEffectiveViewOnly(t *testing.T) {
 	True(t, len(seen) == 2 && seen[0] == fiber && seen[1] == fiber, "the hook did not receive the fiber being checked")
 }
 
+//dsh:test DH-T-CORDIS-9
 func TestConfigHookCanRejectACandidate(t *testing.T) {
 	root, _ := Quiet()
 	var later atomic.Int32
@@ -358,6 +367,7 @@ func TestConfigHookCanRejectACandidate(t *testing.T) {
 	Equal(t, int32(0), later.Load(), "a later hook saw a rejected candidate")
 }
 
+//dsh:test DH-T-CORDIS-9
 func TestConfigHookEndsWithItsOwner(t *testing.T) {
 	root, _ := Quiet()
 	owner := MustWait(t, Must(root.Apply("owner", func(ctx *cordis.Context) error {
@@ -388,6 +398,7 @@ type retryConfig struct {
 	Retries int `json:"retries"`
 }
 
+//dsh:test DH-T-CORDIS-13
 func TestStrictConfigRejectsUnknownKeysAndTrailingData(t *testing.T) {
 	var constructed atomic.Int32
 	construct := func(ctx *cordis.Context, config retryConfig) (*retryConfig, error) {
@@ -490,6 +501,7 @@ func logEveryLevel(ctx *cordis.Context, tag string) {
 	logger.Debugf("%s debug", tag)
 }
 
+//dsh:test DH-T-CORDIS-14
 func TestTreeLogsOnlyToTheExportersItsCreatorChose(t *testing.T) {
 	mem := &cordis.MemoryExporter{}
 	var stdout, stderr string

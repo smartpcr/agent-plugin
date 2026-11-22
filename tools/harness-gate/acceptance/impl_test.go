@@ -209,6 +209,35 @@ func TestRule4IgnoresScenarioMovedLater(t *testing.T) {
 	}
 }
 
+// TestCheckPlanRunsInCheckBoundary: the scenario-index gate's CheckBoundary runs
+// both plan checks (13.6.4, 13.6.6), and a root without impl.md or the ledger fails
+// rather than skips.
+func TestCheckPlanRunsInCheckBoundary(t *testing.T) {
+	ledger := `{"kind":"scenario","go":"DH-E-EXEC-10","proves":["DH-D-A-61"]}` + "\n"
+	root := writeTree(t, map[string]string{ImplPath: rule4Plan(), LedgerPath: ledger})
+	ahead := mustParse(t, "built-through: DH-S-7\nstages:\n  DH-S-18: []\n")
+	err := CheckBoundary(root, ahead, nil)
+	if err == nil || !strings.Contains(err.Error(), "built-through DH-S-7, but DH-S-1 has no section") || !strings.Contains(err.Error(), "DH-E-EXEC-10 is owed by DH-S-6") {
+		t.Fatalf("CheckBoundary = %v, want the marker drift and the rule-4 omission named", err)
+	}
+	full := "## 6\n\n"
+	for n := 1; n <= 6; n++ {
+		full += planStage(n, "DH-S-18", true)
+	}
+	full += "## 7\n\n### 7.5 Index\n\n| [DH-S-18](#dh-s-18) | 1 | [DH-E-EXEC-10](x.md) |\n"
+	good := writeTree(t, map[string]string{ImplPath: full, LedgerPath: `{"kind":"scenario","go":"DH-E-EXEC-10","proves":["DH-D-A-61"]}` + "\n"})
+	x := mustParse(t, "built-through: DH-S-6\nstages:\n  DH-S-18:\n    - id: DH-E-EXEC-10\n      authored: DH-S-6\n")
+	if err := CheckBoundary(good, x, nil); err != nil {
+		t.Errorf("CheckBoundary on an agreeing plan = %v", err)
+	}
+	if err := CheckPlan(t.TempDir(), x); err == nil || !strings.Contains(err.Error(), ImplPath) {
+		t.Errorf("CheckPlan without impl.md = %v, want it named", err)
+	}
+	if err := CheckPlan(writeTree(t, map[string]string{ImplPath: full}), x); err == nil || !strings.Contains(err.Error(), LedgerPath) {
+		t.Errorf("CheckPlan without the ledger = %v, want it named", err)
+	}
+}
+
 func TestReadLedgerScenarios(t *testing.T) {
 	root := writeTree(t, map[string]string{LedgerPath: `{"kind":"deliverable","go":"DH-D-A-1","proof":["DH-T-A-1"]}
 
