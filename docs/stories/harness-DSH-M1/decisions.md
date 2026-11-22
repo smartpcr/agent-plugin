@@ -153,7 +153,8 @@ assumption the plan works to; it is not a choice. Gap IDs are rows of
 | M1-D-GATE-24 | 2026-11-22 | owner | What is the wait and release idiom for tests? | A: strict `nosleep`; synctest or explicit signals; one named poll helper for real processes; a cleanup must unblock and join | A: strict `nosleep`; synctest or explicit signals; one named test-kit poll helper for real processes; a cleanup must unblock and join | M1-G-GATE-24 (and the 81 findings M1-G-GATE-2 to -14) | plan 13.1, 13.2, 13.3 | in force |
 | M1-D-GATE-25 | 2026-11-22 | owner | Is the `e2e` layer vetted? | A: vet the `e2e` layer now (13.5.7) | A: vet the `e2e` layer, done in 13.5.7 together with M1-G-TOOL-17 (lead's working default) | M1-G-GATE-25 (= M1-G-TOOL-17) | plan 13.5.7 | in force |
 | M1-D-TOOL-1 | 2026-11-22 | owner | Is govulncheck an M1 gate? | (a) govulncheck is an M1 gate now | (a) yes, a gate now, as ADR-TOOLCHAIN-9 lists; part of the 12-gate list built in 13.4 and 13.5 (lead's working default) | M1-G-TOOL-4 | plan 13.5.5, 13.5.6, 12.2.1; [evidence/DH-S-1.md](evidence/DH-S-1.md#toolchain-scope-decisions) | in force |
-| M1-D-TOOL-1b | 2026-11-22 | owner (pending) | If staticcheck reports more than about 100 findings, may it land advisory-first? | -- | No: fix everything first (ADR-TOOLCHAIN-8) | M1-G-TOOL-4 (sub-question) | plan 13.5.5 | open |
+| M1-D-TOOL-1b | 2026-11-22 | lead (question moot) | If staticcheck reports more than about 100 findings, may it land advisory-first? | Not needed: staticcheck reported 16 findings, all closed in 13.5 (13 fixed, 3 reasoned directives) | No: fix everything first (ADR-TOOLCHAIN-8) | M1-G-TOOL-4 (sub-question) | plan 13.5.5 | superseded |
+| M1-D-TOOL-1c | 2026-11-22 | owner | errdiscard reports 268 sites even after narrowing (non-test code only; `fmt.Fprint*` and deferred `Close` on read-only handles exempt): 188 `_ = f()`, 44 ignored calls, 36 `defer`. Does it join vet in M1? | Hold it out of M1: errdiscard stays built in `analyzers.Pending`, not in vet; held-open gap M1-G-TOOL-6.1 closes before DH-S-12 closes | DH-D-TOOLCHAIN-2's "discarded errors" analyzer is built but not a gate at M1 | M1-G-TOOL-6.1 | plan 13.5.3; [gap-analysis.md](gap-analysis.md) | in force |
 | M1-D-TOOL-2 | 2026-11-22 | owner (pending) | Where is the tools module? | -- | (a) `tools/harness-gate/go.mod` is the tools module; the spec path is amended | M1-G-TOOL-5 | plan 13.4.1, 12.2.1; [evidence/DH-S-1.md](evidence/DH-S-1.md#toolchain-scope-decisions) | open |
 | M1-D-TOOL-3 | 2026-11-22 | owner (pending) | When does the rehearsal become GoReleaser? | -- | (b) a GoReleaser snapshot at plan 19.1, before DH-S-18; D-TOOLCHAIN-5 recorded as "built in part" | M1-G-TOOL-8 | plan 19.1.1, 12.2.1; [evidence/DH-S-1.md](evidence/DH-S-1.md#toolchain-scope-decisions) | open |
 | M1-D-TOOL-4 | 2026-11-22 | owner | What happens to `src/go`'s godog dependency? | (A) `src/go/test/e2e` becomes a nested test-only module; `src/go` is standard-library only | (A) `src/go/test/e2e` becomes a nested test-only module | M1-G-TOOL-10 | plan 13.4.2 | in force |
@@ -201,13 +202,13 @@ stage is in [evidence/DH-S-1.md](evidence/DH-S-1.md#toolchain-scope-decisions).
 
 ## 7. Counts
 
-As of 2026-11-22 this file has 67 rows, 37 of them `M1-D-*` rows (every decision of
+As of 2026-11-22 this file has 68 rows, 38 of them `M1-D-*` rows (every decision of
 [gap-analysis.md](gap-analysis.md) sec. 7).
 
 | Status | Rows | Which |
 |---|---|---|
-| in force: owner answers of 2026-11-22 | 14 | platforms-windows-wsl, models-signed-in-claude-copilot, impl-md-pointer-lines-only, go-floor-1-27-4, M1-D-PIPE-3, M1-D-PIPE-4, M1-D-CLOSE-3, M1-D-CLOSE-1; for Phase 13: M1-D-GATE-23, M1-D-GATE-24, M1-D-GATE-25, M1-D-TOOL-1, M1-D-TOOL-4, M1-D-PIPE-5 |
+| in force: owner answers of 2026-11-22 | 15 | platforms-windows-wsl, models-signed-in-claude-copilot, impl-md-pointer-lines-only, go-floor-1-27-4, M1-D-PIPE-3, M1-D-PIPE-4, M1-D-CLOSE-3, M1-D-CLOSE-1; for Phase 13: M1-D-GATE-23, M1-D-GATE-24, M1-D-GATE-25, M1-D-TOOL-1, M1-D-TOOL-4, M1-D-PIPE-5, M1-D-TOOL-1c |
 | in force: operator or owner decisions recorded in stage evidence | 10 | sec. 2 rows marked `in force` |
 | in force (lead settlement, owner may override) | 8 | M1-D-CLOSE-4, M1-D-LOOP-6, local-run-record-format, budget-held-open-not-h10, coverage-floor-all-packages-kept, import-rules-by-archtest, http-client-rule-owner, goldens-in-test-gate |
-| superseded | 4 | dh-s-11-closure-path, dh-s-9-closure-path, built-through-may-skip-s8, lane-toolchain-floor |
-| open | 31 | macos-return-stage, dsh-story-slice, turn-budget-defaults-s11, m1-done-claims, retro-entry-order-s8-s11, replay-gate-step-dh-s-16, M1-D-CLOSE-2, and 24 rows of sec. 5 |
+| superseded | 5 | dh-s-11-closure-path, dh-s-9-closure-path, built-through-may-skip-s8, lane-toolchain-floor, M1-D-TOOL-1b (moot) |
+| open | 30 | macos-return-stage, dsh-story-slice, turn-budget-defaults-s11, m1-done-claims, retro-entry-order-s8-s11, replay-gate-step-dh-s-16, M1-D-CLOSE-2, and 23 rows of sec. 5 |
