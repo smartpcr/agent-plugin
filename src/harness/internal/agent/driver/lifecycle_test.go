@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
@@ -36,6 +37,9 @@ type life struct {
 
 	mu  sync.Mutex
 	log []string
+	// waiters are the channels reached handed out, closed by the next note of
+	// their point.
+	waiters map[string][]chan struct{}
 }
 
 type lifeOptions struct {
@@ -71,7 +75,24 @@ func newLife(t *testing.T, o lifeOptions) *life {
 func (l *life) note(s string) {
 	l.mu.Lock()
 	l.log = append(l.log, s)
+	for _, ch := range l.waiters[s] {
+		close(ch)
+	}
+	delete(l.waiters, s)
 	l.mu.Unlock()
+}
+
+// reached is closed by the next note of point p after the call: the signal a
+// test waits on instead of polling the notes.
+func (l *life) reached(p string) <-chan struct{} {
+	ch := make(chan struct{})
+	l.mu.Lock()
+	if l.waiters == nil {
+		l.waiters = map[string][]chan struct{}{}
+	}
+	l.waiters[p] = append(l.waiters[p], ch)
+	l.mu.Unlock()
+	return ch
 }
 
 func (l *life) notes() []string {
@@ -132,14 +153,24 @@ func (l *life) notices() (created, disposed *[]string) {
 	return created, disposed
 }
 
+// waitRequests blocks until the scripted model has received n requests.
 func waitRequests(t *testing.T, tr *fakemodel.Transport, n int) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for len(tr.Requests()) < n {
-		if time.Now().After(deadline) {
-			t.Fatalf("model request %d was never sent", n)
-		}
-		time.Sleep(5 * time.Millisecond)
+	ctx, cancel := context.WithTimeout(bg, 10*time.Second)
+	defer cancel()
+	if err := tr.WaitRequests(ctx, n); err != nil {
+		t.Fatalf("model request %d was never sent: %v", n, err)
+	}
+}
+
+// prefixServed waits until the stream of model request n has delivered its whole
+// scripted text to the runtime (a hanging turn is then blocked after its prefix).
+func prefixServed(t *testing.T, tr *fakemodel.Transport, n int) {
+	t.Helper()
+	select {
+	case <-tr.PrefixServed(n):
+	case <-time.After(10 * time.Second):
+		t.Fatalf("the stream of model request %d never delivered its prefix", n)
 	}
 }
 
@@ -212,7 +243,8 @@ func TestOwnerDisposedDuringCreate(t *testing.T) {
 	l := newLife(t, lifeOptions{})
 	of, owner := l.fiber("owner")
 	setup := func(*cordis.Context, agent.Agent) (func() error, error) {
-		go of.Dispose()
+		// of.Dispose returns once the creation has rolled back; the cleanup joins it.
+		goJoined(t, nil, of.Dispose)
 		<-owner.Lifetime().Done()
 		return nil, nil
 	}
@@ -237,7 +269,7 @@ func TestTeardownOrderAndConcurrentDisposers(t *testing.T) {
 	defer cancel()
 	must(0, agent.WaitIdle(ctx, h.Agent()))
 
-	var refused atomic.Value
+	refused := make(chan error, 1)
 	stop := must(session.Closed.On(l.root, func(_ *cordis.Context, a session.ClosedArgs) error {
 		if a.ID == "t" {
 			l.note("closed")
@@ -249,25 +281,29 @@ func TestTeardownOrderAndConcurrentDisposers(t *testing.T) {
 	l.mu.Lock()
 	l.log = nil
 	l.mu.Unlock()
-	// Refuse-from-T1 is checked from the observer, between T1 and T2.
-	go func() {
-		for !slices.Contains(l.notes(), "T1") {
-			time.Sleep(time.Millisecond)
+	// Refuse-from-T1 is checked once the observer has seen T1.
+	t1, stopRefuse := l.reached("T1"), make(chan struct{})
+	goJoined(t, closeOnce(stopRefuse), func() {
+		select {
+		case <-t1:
+		case <-stopRefuse: // the test ended before T1
+			return
 		}
 		_, err := agent.Send(bg, a, agent.ListNextTurn, agent.InboxMessage{Source: agent.SourceUser, Text: "late"})
-		refused.Store(&err)
-	}()
-	var wg sync.WaitGroup
+		refused <- err
+	})
 	errs := make([]error, 3)
+	var disposers []<-chan struct{}
 	for i, d := range []func() error{
 		func() error { return h.Dispose(bg) },
 		func() error { ownerFiber.Dispose(); return nil },
 		func() error { l.drv.Dispose(); return nil },
 	} {
-		wg.Add(1)
-		go func() { defer wg.Done(); errs[i] = d() }()
+		disposers = append(disposers, goJoined(t, nil, func() { errs[i] = d() }))
 	}
-	wg.Wait()
+	for _, d := range disposers {
+		within(t, d, "a disposer's return")
+	}
 	if err := errors.Join(errs...); err != nil {
 		t.Fatalf("dispose: %v", err)
 	}
@@ -298,11 +334,13 @@ func TestTeardownOrderAndConcurrentDisposers(t *testing.T) {
 	if !slices.Equal(*disposed, []string{"t"}) {
 		t.Fatalf("Disposed %v", *disposed)
 	}
-	for deadline := time.Now().Add(5 * time.Second); refused.Load() == nil && time.Now().Before(deadline); {
-		time.Sleep(time.Millisecond)
-	}
-	if p, _ := refused.Load().(*error); p == nil || !errors.Is(*p, agent.ErrClosing) {
-		t.Fatalf("send after T1: %v", p)
+	select {
+	case err := <-refused:
+		if !errors.Is(err, agent.ErrClosing) {
+			t.Fatalf("send after T1: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("send after T1: no send was made")
 	}
 	l.absent("t")
 	l.released("t")
@@ -318,7 +356,7 @@ func TestShutdownKeepsTheLastEvents(t *testing.T) {
 	h := must(l.create(l.root, "s", nil))
 	must(agent.Send(bg, h.Agent(), agent.ListNextTurn, agent.InboxMessage{Source: agent.SourceUser, Text: "go"}))
 	waitRequests(t, l.tr, 1)
-	time.Sleep(200 * time.Millisecond)
+	prefixServed(t, l.tr, 1) // the streamed prefix has reached the runtime
 	l.root.Dispose()
 	must(0, st.Close(bg))
 
@@ -467,17 +505,17 @@ func TestOwnerUnloadJoinsABlockedCreation(t *testing.T) {
 					return nil
 				}))
 			}
+			free := closeOnce(release)
 			res := make(chan error, 1)
-			go func() { _, err := l.create(owner, "b", setup); res <- err }()
+			goJoined(t, free, func() { _, err := l.create(owner, "b", setup); res <- err })
 			<-entered
-			unloaded := make(chan struct{})
-			go func() { of.Dispose(); _ = of.Wait(); close(unloaded) }()
+			unloaded := goJoined(t, free, func() { of.Dispose(); _ = of.Wait() })
 			select {
 			case <-unloaded:
 				t.Fatal("the owner finished unloading while its creation still held the session")
 			case <-time.After(100 * time.Millisecond):
 			}
-			close(release)
+			free()
 			select {
 			case <-unloaded:
 			case <-time.After(10 * time.Second):
@@ -543,45 +581,50 @@ func (l *life) interrupted(id string) {
 // hands the recovery report to the carrier; the agent starts idle with its
 // queued input parked, which the next waking input runs with.
 func TestResumeReportsAndStartsIdle(t *testing.T) {
-	l := newLife(t, lifeOptions{turns: []fakemodel.Turn{fakemodel.Reply("one"), fakemodel.Reply("two")}})
-	l.interrupted("q")
-	h, err := l.reg.Resume(l.root, agent.CreateOptions{Session: "q", Model: agent.ModelSelection{Route: route}})
-	if err != nil {
-		t.Fatalf("resume: %v", err)
-	}
-	rep, ok := agent.OpenReport(h.Agent())
-	if !ok || !rep.Interrupted || len(rep.Closers) == 0 {
-		t.Fatalf("report %+v %v", rep, ok)
-	}
-	if _, ok := l.reg.Get("q"); !ok {
-		t.Fatal("the resumed agent is not addressable")
-	}
-	time.Sleep(100 * time.Millisecond)
-	if n := len(l.tr.Requests()); n != 0 {
-		t.Fatalf("a resumed agent ran without a wake: %d requests", n)
-	}
-	if s := h.Agent().Status(); s != agent.StatusIdle {
-		t.Fatalf("status %s", s)
-	}
-	must(agent.Send(bg, h.Agent(), agent.ListNextTurn, agent.InboxMessage{Source: agent.SourceUser, Text: "wake"}))
-	waitRequests(t, l.tr, 2)
-	ctx, cancel := context.WithTimeout(bg, 10*time.Second)
-	defer cancel()
-	must(0, agent.WaitIdle(ctx, h.Agent()))
-	var texts []string
-	for _, e := range ofType(must(h.Agent().Session().Read(bg, 0, 0)), event.UserMessage.Name()) {
-		p := must(event.UserMessage.Decode(e.Record()))
-		for _, b := range p.Message.Blocks() {
-			if b.Text != nil {
-				texts = append(texts, b.Text.Text)
+	// The "no request without a wake" check runs in a bubble, so synctest.Wait
+	// stands for "the agent has done all it will do" with no settle time.
+	synctest.Test(t, func(t *testing.T) {
+		l := newLife(t, lifeOptions{turns: []fakemodel.Turn{fakemodel.Reply("one"), fakemodel.Reply("two")}})
+		l.interrupted("q")
+		h, err := l.reg.Resume(l.root, agent.CreateOptions{Session: "q", Model: agent.ModelSelection{Route: route}})
+		if err != nil {
+			t.Fatalf("resume: %v", err)
+		}
+		rep, ok := agent.OpenReport(h.Agent())
+		if !ok || !rep.Interrupted || len(rep.Closers) == 0 {
+			t.Fatalf("report %+v %v", rep, ok)
+		}
+		if _, ok := l.reg.Get("q"); !ok {
+			t.Fatal("the resumed agent is not addressable")
+		}
+		// Every goroutine of the bubble is blocked: nothing can still wake the agent.
+		synctest.Wait()
+		if n := len(l.tr.Requests()); n != 0 {
+			t.Fatalf("a resumed agent ran without a wake: %d requests", n)
+		}
+		if s := h.Agent().Status(); s != agent.StatusIdle {
+			t.Fatalf("status %s", s)
+		}
+		must(agent.Send(bg, h.Agent(), agent.ListNextTurn, agent.InboxMessage{Source: agent.SourceUser, Text: "wake"}))
+		waitRequests(t, l.tr, 2)
+		ctx, cancel := context.WithTimeout(bg, 10*time.Second)
+		defer cancel()
+		must(0, agent.WaitIdle(ctx, h.Agent()))
+		var texts []string
+		for _, e := range ofType(must(h.Agent().Session().Read(bg, 0, 0)), event.UserMessage.Name()) {
+			p := must(event.UserMessage.Decode(e.Record()))
+			for _, b := range p.Message.Blocks() {
+				if b.Text != nil {
+					texts = append(texts, b.Text.Text)
+				}
 			}
 		}
-	}
-	if !slices.Equal(texts, []string{"queued", "wake"}) {
-		t.Fatalf("user messages %v: the queued input was not kept", texts)
-	}
-	must(0, h.Dispose(bg))
-	l.released("q")
+		if !slices.Equal(texts, []string{"queued", "wake"}) {
+			t.Fatalf("user messages %v: the queued input was not kept", texts)
+		}
+		must(0, h.Dispose(bg))
+		l.released("q")
+	})
 }
 
 // DH-D-AGENT-6: a resume whose Setup fails leaves no agent and frees the

@@ -83,15 +83,49 @@ func (e *env) spec(id string) subagent.Spec {
 	return subagent.Spec{Session: session.ID(id), Prompt: "do it", Model: &agent.ModelSelection{Route: route}}
 }
 
+// waitRequests blocks until the scripted model has received n requests.
 func waitRequests(t *testing.T, tr *fakemodel.Transport, n int) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for len(tr.Requests()) < n {
-		if time.Now().After(deadline) {
-			t.Fatalf("model request %d was never sent", n)
-		}
-		time.Sleep(5 * time.Millisecond)
+	ctx, cancel := context.WithTimeout(bg, 10*time.Second)
+	defer cancel()
+	if err := tr.WaitRequests(ctx, n); err != nil {
+		t.Fatalf("model request %d was never sent: %v", n, err)
 	}
+}
+
+// within waits for ch, failing the test after 10 s.
+func within(t *testing.T, ch <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("%s never happened", what)
+	}
+}
+
+// goJoined runs fn on a new goroutine and registers its release with t.Cleanup
+// right after the start (P-C, tools/harness-gate/README.md "Waiting and releasing
+// in tests"): the cleanup calls unblock, which must make fn return (nil when fn
+// returns by itself), then joins fn within 10 s. The returned channel is closed
+// when fn returns.
+func goJoined(t *testing.T, unblock func(), fn func()) <-chan struct{} {
+	t.Helper()
+	done := make(chan struct{})
+	t.Cleanup(func() {
+		if unblock != nil {
+			unblock()
+		}
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Error("a released test goroutine did not return within 10s")
+		}
+	})
+	go func() {
+		defer close(done)
+		fn()
+	}()
+	return done
 }
 
 func settled(t *testing.T, a subagent.Activation) subagent.Result {
@@ -114,7 +148,7 @@ func TestChildTornDownWithItsOwner(t *testing.T) {
 	_, d := e.component("D")
 	act := must(e.rt.Start(c, e.spec("K")))
 	waitRequests(t, e.tr, 1)
-	time.Sleep(200 * time.Millisecond) // the streamed prefix lands
+	within(t, e.tr.PrefixServed(1), "the streamed prefix landing")
 
 	if o, ok := e.rt.OwnerOf("K"); !ok || o != c {
 		t.Fatalf("owner of K: %v %v", o, ok)
@@ -220,6 +254,7 @@ func TestWaitQuietWaitsForAPendingStart(t *testing.T) {
 	e := newEnv(t, fakemodel.Reply("done"))
 	_, c := e.component("C")
 	entered, release := make(chan struct{}), make(chan struct{})
+	free := sync.OnceFunc(func() { close(release) })
 	s := e.spec("K")
 	s.Setup = func(*cordis.Context, agent.Agent) (func() error, error) {
 		close(entered)
@@ -227,16 +262,17 @@ func TestWaitQuietWaitsForAPendingStart(t *testing.T) {
 		return nil, nil
 	}
 	started := make(chan error, 1)
-	go func() { _, err := e.rt.Start(c, s); started <- err }()
+	goJoined(t, free, func() { _, err := e.rt.Start(c, s); started <- err })
 	<-entered
 	quiet := make(chan error, 1)
-	go func() { quiet <- e.rt.WaitQuiet(bg, c) }()
+	qctx, stopQuiet := context.WithCancel(bg)
+	goJoined(t, func() { free(); stopQuiet() }, func() { quiet <- e.rt.WaitQuiet(qctx, c) })
 	select {
 	case err := <-quiet:
 		t.Fatalf("WaitQuiet returned during the child's Setup: %v", err)
 	case <-time.After(100 * time.Millisecond):
 	}
-	close(release)
+	free()
 	if err := <-started; err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -325,33 +361,28 @@ func TestManagerUnloadReleasesItsRuns(t *testing.T) {
 		return nil, errors.New("setup failed")
 	}
 	pending := make(chan error, 1)
-	go func() { _, err := rt.Start(c, ps); pending <- err }()
+	goJoined(t, free, func() { _, err := rt.Start(c, ps); pending <- err })
 	<-entered
 
-	unloaded := make(chan struct{})
-	go func() { mf.Dispose(); _ = mf.Wait(); close(unloaded) }()
+	unloaded := goJoined(t, free, func() { mf.Dispose(); _ = mf.Wait() })
 	// Starts racing the unload are either admitted, and then released with
-	// it, or refused once it has begun.
+	// it, or refused once it has begun: the first races it, and once the
+	// manager signals that it is refusing, the next is refused.
 	var admitted []subagent.Activation
 	ids := []session.ID{"K", "P"}
-	deadline := time.Now().Add(5 * time.Second)
-	for n := 0; ; n++ {
+	late := func(n int) (subagent.Activation, error) {
 		s := e.spec(fmt.Sprintf("late-%d", n))
 		// An admitted late start fails in Setup, so it calls no model.
 		s.Setup = func(*cordis.Context, agent.Agent) (func() error, error) { return nil, errors.New("late") }
-		a, err := rt.Start(c, s)
-		if errors.Is(err, subagent.ErrInactive) {
-			break
-		}
-		if err == nil {
-			admitted = append(admitted, a)
-			ids = append(ids, a.Child())
-		}
-		if time.Now().After(deadline) {
-			free()
-			t.Fatalf("starts were never refused during the manager's unload: %v", err)
-		}
-		time.Sleep(time.Millisecond)
+		return rt.Start(c, s)
+	}
+	if a, err := late(0); err == nil {
+		admitted = append(admitted, a)
+		ids = append(ids, a.Child())
+	}
+	within(t, subagent.Refusing(rt), "the manager's refusal of new runs")
+	if _, err := late(1); !errors.Is(err, subagent.ErrInactive) {
+		t.Fatalf("starts were not refused during the manager's unload: %v", err)
 	}
 	select {
 	case <-unloaded:

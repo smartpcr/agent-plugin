@@ -275,9 +275,10 @@ func TestCancelDuringStalledRecoverySyncReturnsAtOnce(t *testing.T) {
 			within(t, entered, "the recovery Sync")
 			returned := make(chan error, 1)
 			start := time.Now()
-			go func() {
+			// Cancel returns by itself; the cleanup joins it.
+			goJoined(t, nil, func() {
 				returned <- r.drv.Cancel(agent.CauseUser, agent.CancelOptions{Scope: agent.ScopeTurn, Inbox: choice})
-			}()
+			})
 			select {
 			case err := <-returned:
 				must(0, err)

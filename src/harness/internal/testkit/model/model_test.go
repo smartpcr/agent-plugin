@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm"
@@ -170,9 +171,14 @@ func TestClosingAHangingBodyUnblocksItsRead(t *testing.T) {
 	t.Cleanup(func() { _ = body.Close() })
 	got := readOnce(body)
 	select {
+	case <-tr.PrefixServed(1): // the read is past the text and blocking
+	case <-time.After(10 * time.Second):
+		t.Fatal("the read never reached the end of the scripted text")
+	}
+	select {
 	case err := <-got:
 		t.Fatalf("the read returned %v before the body was closed", err)
-	case <-time.After(50 * time.Millisecond):
+	default:
 	}
 	if err := body.Close(); err != nil {
 		t.Fatal(err)
@@ -205,5 +211,127 @@ func TestTransportCleanupReleasesHangingBodies(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("the transport's cleanup did not release the hanging body")
+	}
+}
+
+// post sends one request through tr and returns its response.
+func post(t *testing.T, tr *model.Transport) *http.Response {
+	t.Helper()
+	req := must(http.NewRequestWithContext(context.Background(), http.MethodPost, "https://model.test/v1", nil))
+	return must(tr.RoundTrip(req))
+}
+
+// M1-G-GATE-12, scenario "WaitRequests blocks without polling": WaitRequests(ctx,
+// 2) called before any request is still blocked after the first and returns nil
+// after the second; synctest.Wait shows each "still blocked" with no settle time.
+func TestWaitRequestsBlocksUntilTheNthRequest(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		tr := model.NewTransport(t, model.Reply("one"), model.Reply("two"))
+		ctx, cancel := context.WithCancel(context.Background())
+		got, done := make(chan error, 1), make(chan struct{})
+		t.Cleanup(func() { cancel(); <-done })
+		go func() { defer close(done); got <- tr.WaitRequests(ctx, 2) }()
+		blocked := func(when string) {
+			t.Helper()
+			synctest.Wait()
+			select {
+			case err := <-got:
+				t.Fatalf("WaitRequests returned %v %s", err, when)
+			default:
+			}
+		}
+		blocked("before any request")
+		_ = post(t, tr).Body.Close()
+		blocked("after one request")
+		_ = post(t, tr).Body.Close()
+		synctest.Wait()
+		select {
+		case err := <-got:
+			if err != nil {
+				t.Fatalf("WaitRequests after the second request: %v", err)
+			}
+		default:
+			t.Fatal("WaitRequests was still blocked after the second request")
+		}
+		if err := tr.WaitRequests(ctx, 2); err != nil {
+			t.Fatalf("WaitRequests for a count already reached: %v", err)
+		}
+	})
+}
+
+// M1-G-GATE-12: a WaitRequests whose context ends first returns the context's
+// error, or its cause when one was given.
+func TestWaitRequestsReturnsTheContextError(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		tr := model.NewTransport(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if err := tr.WaitRequests(ctx, 1); !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled context: %v, want %v", err, context.Canceled)
+		}
+		why := errors.New("the test gave up")
+		cctx, ccancel := context.WithCancelCause(context.Background())
+		got, done := make(chan error, 1), make(chan struct{})
+		t.Cleanup(func() { ccancel(nil); <-done })
+		go func() { defer close(done); got <- tr.WaitRequests(cctx, 1) }()
+		synctest.Wait()
+		ccancel(why)
+		if err := <-got; !errors.Is(err, why) {
+			t.Fatalf("cancelled with a cause: %v, want %v", err, why)
+		}
+	})
+}
+
+// M1-G-GATE-12: PrefixServed(n) closes once the client reads past the scripted
+// text of response n: before a hanging read blocks, at a complete stream's end,
+// never for a status reply; a channel asked for before its request is the same one.
+func TestPrefixServedSignalsTheEndOfTheScriptedText(t *testing.T) {
+	tr := model.NewTransport(t,
+		model.Reply("whole"),
+		model.Turn{Events: []model.Event{model.Text("par")}, Hang: true},
+		model.Status(503))
+	early := tr.PrefixServed(2)
+	closed := func(ch <-chan struct{}) bool {
+		select {
+		case <-ch:
+			return true
+		default:
+			return false
+		}
+	}
+
+	resp := post(t, tr)
+	if closed(tr.PrefixServed(1)) {
+		t.Fatal("served before the client read anything")
+	}
+	if _, err := io.ReadAll(resp.Body); err != nil {
+		t.Fatal(err)
+	}
+	if !closed(tr.PrefixServed(1)) {
+		t.Fatal("a complete stream read to its end is not served")
+	}
+
+	body := hangingBody(t, tr)
+	t.Cleanup(func() { _ = body.Close() })
+	if closed(early) {
+		t.Fatal("a hanging stream is served before the client asked past its text")
+	}
+	got := readOnce(body)
+	select {
+	case <-early:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the read past the text never signalled")
+	}
+	if early != tr.PrefixServed(2) {
+		t.Fatal("PrefixServed(2) asked before the request is not the request's channel")
+	}
+	_ = body.Close()
+	<-got
+
+	resp = post(t, tr)
+	_, _ = io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if closed(tr.PrefixServed(3)) {
+		t.Fatal("a status reply is served")
 	}
 }

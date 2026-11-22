@@ -20,6 +20,7 @@ package model
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -107,18 +108,28 @@ type Request struct {
 // test and gets a 599 response; a turn still scripted when the test ends fails it
 // too, so a script always matches the calls made. Hanging bodies still open when
 // the test ends are closed, so no read outlives the test.
+//
+// A test waits on the transport through signals, never by polling (M1-D-GATE-24):
+// WaitRequests blocks until a number of requests has arrived, and PrefixServed is
+// closed once the client has consumed a response's scripted events.
 type Transport struct {
 	t        testing.TB
 	mu       sync.Mutex
 	turns    []Turn
 	requests []Request
 	bodies   []*hanging
+	// arrived is closed and replaced each time a request is recorded, waking
+	// every WaitRequests call to recheck the count.
+	arrived chan struct{}
+	// served holds the PrefixServed channel of each request number (1-based),
+	// made by whichever comes first: the request or a PrefixServed call.
+	served map[int]chan struct{}
 }
 
 // NewTransport is a transport scripted with turns, checked when the test ends.
 func NewTransport(t testing.TB, turns ...Turn) *Transport {
 	t.Helper()
-	tr := &Transport{t: t, turns: turns}
+	tr := &Transport{t: t, turns: turns, arrived: make(chan struct{}), served: map[int]chan struct{}{}}
 	t.Cleanup(func() {
 		tr.mu.Lock()
 		defer tr.mu.Unlock()
@@ -147,6 +158,46 @@ func (tr *Transport) Requests() []Request {
 	return append([]Request(nil), tr.requests...)
 }
 
+// WaitRequests blocks until the transport has received at least n requests and
+// returns nil, or returns ctx's error (its cause, when one was given) when ctx
+// ends first. It is woken by each request; it does not poll.
+func (tr *Transport) WaitRequests(ctx context.Context, n int) error {
+	for {
+		tr.mu.Lock()
+		got, arrived := len(tr.requests), tr.arrived
+		tr.mu.Unlock()
+		if got >= n {
+			return nil
+		}
+		select {
+		case <-arrived:
+		case <-ctx.Done():
+			return context.Cause(ctx)
+		}
+	}
+}
+
+// PrefixServed is closed once the client has read the whole scripted text of the
+// response to request n (1-based, counted like WaitRequests) and asked for more:
+// a hanging turn's reader is then blocked after its prefix, and a complete turn's
+// reader has reached the end of its stream. The kit's adapter decodes on the
+// reading goroutine, so by then every event of the turn has been handed to the
+// llm runtime. A request answered with a status, or never made, never closes it.
+func (tr *Transport) PrefixServed(n int) <-chan struct{} {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	return tr.servedLocked(n)
+}
+
+func (tr *Transport) servedLocked(n int) chan struct{} {
+	ch, ok := tr.served[n]
+	if !ok {
+		ch = make(chan struct{})
+		tr.served[n] = ch
+	}
+	return ch
+}
+
 // RoundTrip answers req with the next turn.
 func (tr *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	var body []byte
@@ -160,6 +211,9 @@ func (tr *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	tr.mu.Lock()
 	tr.requests = append(tr.requests, Request{Method: req.Method, URL: req.URL.String(), Header: req.Header.Clone(), Body: body})
+	served := tr.servedLocked(len(tr.requests))
+	close(tr.arrived)
+	tr.arrived = make(chan struct{})
 	var turn Turn
 	ok := len(tr.turns) > 0
 	if ok {
@@ -173,9 +227,9 @@ func (tr *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if turn.Status != 0 && turn.Status != http.StatusOK {
 		return respond(req, turn.Status, "text/plain", io.NopCloser(strings.NewReader(encode(turn.Events)))), nil
 	}
-	var rc io.ReadCloser = io.NopCloser(strings.NewReader(encode(turn.Events)))
+	var rc io.ReadCloser = &complete{Reader: strings.NewReader(encode(turn.Events)), served: signal(served)}
 	if turn.Hang {
-		h := newHanging(encode(turn.Events), req)
+		h := newHanging(encode(turn.Events), req, signal(served))
 		tr.mu.Lock()
 		tr.bodies = append(tr.bodies, h)
 		tr.mu.Unlock()
@@ -201,23 +255,45 @@ func encode(events []Event) string {
 	return b.String()
 }
 
+// signal is a once-only close of ch.
+func signal(ch chan struct{}) func() { return sync.OnceFunc(func() { close(ch) }) }
+
+// complete yields its text, then io.EOF; the first read past the text closes the
+// request's PrefixServed channel.
+type complete struct {
+	*strings.Reader
+	served func()
+}
+
+func (c *complete) Read(p []byte) (int, error) {
+	if c.Len() == 0 {
+		c.served()
+	}
+	return c.Reader.Read(p)
+}
+
+func (c *complete) Close() error { return nil }
+
 // hanging yields its text, then blocks until the request is cancelled or the body
-// is closed. Close is idempotent and unblocks a read in progress.
+// is closed. Close is idempotent and unblocks a read in progress. The first read
+// past the text closes the request's PrefixServed channel before it blocks.
 type hanging struct {
 	*strings.Reader
 	req    *http.Request
 	once   sync.Once
 	closed chan struct{}
+	served func()
 }
 
-func newHanging(text string, req *http.Request) *hanging {
-	return &hanging{Reader: strings.NewReader(text), req: req, closed: make(chan struct{})}
+func newHanging(text string, req *http.Request, served func()) *hanging {
+	return &hanging{Reader: strings.NewReader(text), req: req, closed: make(chan struct{}), served: served}
 }
 
 func (h *hanging) Read(p []byte) (int, error) {
 	if h.Len() > 0 {
 		return h.Reader.Read(p)
 	}
+	h.served()
 	select {
 	case <-h.req.Context().Done():
 		return 0, h.req.Context().Err()

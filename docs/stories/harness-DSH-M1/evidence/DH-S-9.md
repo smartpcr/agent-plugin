@@ -137,6 +137,12 @@ The findings are QG-4 (time.Sleep), QG-5 (goroutine without t.Cleanup) and QG-6
 decided (`inherited-vet-gate-failure` = A) to fix this in a follow-up workstream, not
 here.
 
+Superseded by M1 gate repair (Phase 13): the follow-up workstream is
+[gap-closure-plan Phase 13](../gap-closure-plan.md#phase-13-gate-green), which fixes the
+findings above and the agent-family debt added after this stage (M1-G-GATE-27; the
+files are named in [DH-S-11.md](DH-S-11.md)), with its evidence in
+[DH-S-1.md, "M1 gate repair"](DH-S-1.md#m1-gate-repair). This record is historical.
+
 ## Closure
 
 **Open.** DH-S-9 closes only when both of these are done; until then impl.md steps
