@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -116,7 +117,10 @@ func assertStoppedAt(t *testing.T, out string, code int, gate string) {
 	if !strings.Contains(out, "harness-gate: FAILED at gate "+gate+"\n") {
 		t.Errorf("output does not name gate %q as failed:\n%s", gate, out)
 	}
-	names := []string{"gofmt", "vet", "test", "coverage", "trace", "scenario-index", "budget", "cross-compile"}
+	var names []string
+	for _, g := range Gates(&Config{}) {
+		names = append(names, g.Name)
+	}
 	for _, later := range names[slices.Index(names, gate)+1:] {
 		if strings.Contains(out, " "+later+" -- ") {
 			t.Errorf("gate %q started after %q failed:\n%s", later, gate, out)
@@ -132,6 +136,7 @@ func TestSeededViolationFailsNamedGate(t *testing.T) {
 		{"budget-race", "test", "failing tests: TestBudgetRacy; data race detected"},
 		{"unformatted-file", "gofmt", "add.go"},
 		{"coverage-40pct", "coverage", "example.com/cov40/p: 40% < 85%"},
+		{"untidy-module", "modules", "-require golang.org/x/mod v0.43.0"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.module, func(t *testing.T) {
@@ -240,6 +245,18 @@ func TestOwnAnalyzersRunInVetGate(t *testing.T) {
 	}
 }
 
+// gateNamed is the gate called name of cfg's gate list.
+func gateNamed(t *testing.T, cfg *Config, name string) Gate {
+	t.Helper()
+	for _, g := range Gates(cfg) {
+		if g.Name == name {
+			return g
+		}
+	}
+	t.Fatalf("no gate %q", name)
+	return Gate{}
+}
+
 func newTestConfig(t *testing.T, root string) *Config {
 	t.Helper()
 	cfg, err := NewConfig(root)
@@ -259,7 +276,7 @@ func TestLayerTaggedTestsAreExcludedFromDefaultGate(t *testing.T) {
 		t.Run("GOFLAGS="+goflags, func(t *testing.T) {
 			cfg := newTestConfig(t, root)
 			cfg.Environ = setEnv(cfg.Environ, "GOFLAGS="+goflags)
-			for _, gate := range []Gate{Gates(cfg)[2], Gates(cfg)[3]} {
+			for _, gate := range []Gate{gateNamed(t, cfg, "test"), gateNamed(t, cfg, "coverage")} {
 				var out bytes.Buffer
 				if err := gate.Run(context.Background(), &out); err != nil {
 					t.Errorf("%s gate: %v\n%s", gate.Name, err, out.String())
@@ -358,7 +375,7 @@ func TestRaceUnavailableFailsTheTestGate(t *testing.T) {
 		return errors.New("race: -race is not supported on this lane")
 	}}
 	var out bytes.Buffer
-	results := Run(context.Background(), &out, []Gate{Gates(cfg)[2]})
+	results := Run(context.Background(), &out, []Gate{gateNamed(t, cfg, "test")})
 	if len(results) != 1 || results[0].Passed() || results[0].Name != "test" {
 		t.Fatalf("results = %+v, want the test gate failed", results)
 	}
@@ -382,7 +399,7 @@ func TestCCompilerPreflightNamesMissingCompiler(t *testing.T) {
 // tree is clean under it).
 func TestRepositoryPassesEveryGate(t *testing.T) {
 	out, code := runGate(t, filepath.Join("..", ".."))
-	if code != 0 || !strings.Contains(out, "PASSED all 8 gates") {
+	if code != 0 || !strings.Contains(out, fmt.Sprintf("PASSED all %d gates", len(Gates(&Config{})))) {
 		t.Fatalf("repository gate exited %d:\n%s", code, out)
 	}
 	for _, gate := range Gates(&Config{}) {

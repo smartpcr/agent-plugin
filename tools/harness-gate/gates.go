@@ -156,25 +156,148 @@ func Gates(c *Config) []Gate {
 	return []Gate{
 		{Name: "gofmt", Title: "every Go file is gofmt-formatted", Run: c.gofmtGate},
 		{Name: "vet", Title: "go vet and the project's own analyzers (nosleep, onespawn, cleanup, fuzzcheck)", Run: c.vetGate},
+		{Name: "modules", Title: "go mod tidy -diff and go mod verify per module, the module rules (RM-1..RM-4) and a reason on every pin (RM-10)", Run: c.modulesGate},
 		{Name: "test", Title: "go test -race -shuffle=on -count=1 per module, CGO_ENABLED=1", Run: c.testGate},
 		{Name: "coverage", Title: fmt.Sprintf("coverage merged across processes, %d%% of statements per package", CoverageFloor), Run: c.coverageGate},
 		{Name: "trace", Title: "tools/harness-trace verify", Run: c.traceGate},
 		{Name: "scenario-index", Title: "every authored DH-E-* scenario test is in " + acceptance.IndexPath + " exactly once, and every indexed one authored so far has its test", Run: c.scenarioIndexGate},
 		{Name: "budget", Title: "performance budgets (TestBudget*) with DSH_* and GO* overrides cleared", Run: c.budgetGate},
 		{Name: "cross-compile", Title: "cmd/dsh for linux, darwin, windows on amd64 and arm64 with CGO_ENABLED=0", Run: c.crossCompileGate},
+		{Name: "self", Title: "the gate's own tests: go test -count=1 ./... in " + SelfModule + ", without the e2e tag", Run: c.selfGate},
 	}
 }
 
-// gofmtGate fails when any Go file of a module is not gofmt-formatted. testdata,
-// vendor, hidden and nested-module directories are not part of a module's build
-// and are not checked.
+// SelfModule is the gate's own module, whose tests the self gate runs (M1-G-TOOL-3).
+const SelfModule = "tools/harness-gate"
+
+// selfSkip is the test the self gate leaves out: it runs this gate list on the
+// repository, so inside the self gate it would recurse.
+const selfSkip = "^TestRepositoryPassesEveryGate$"
+
+// selfTimeout bounds the self gate's go test; the main package's tests run the gate
+// on seeded modules and cross-compile cmd/dsh.
+const selfTimeout = 30 * time.Minute
+
+// testModules are the nested test-only modules (<module>/test/e2e/go.mod) of the
+// gated modules, such as src/go/test/e2e (M1-D-TOOL-4 (A)).
+func (c *Config) testModules() []string {
+	var out []string
+	for _, mod := range c.Modules {
+		if dir := filepath.Join(mod, filepath.FromSlash(strings.TrimPrefix(modcheck.TestModuleSuffix, "/"))); isFile(filepath.Join(dir, "go.mod")) {
+			out = append(out, dir)
+		}
+	}
+	return out
+}
+
+// toolsModules are the tools/<name> modules of a repository root, such as the tools
+// module tools/harness-gate (M1-D-TOOL-2 (a)); a single-module root has none.
+func (c *Config) toolsModules() []string {
+	if c.singleModule() {
+		return nil
+	}
+	found, _ := filepath.Glob(filepath.Join(c.Root, "tools", "*", "go.mod"))
+	var out []string
+	for _, p := range found {
+		out = append(out, filepath.Dir(p))
+	}
+	slices.Sort(out)
+	return out
+}
+
+// singleModule reports whether the gates run on the one module at the root.
+func (c *Config) singleModule() bool {
+	return len(c.Modules) == 1 && c.Modules[0] == c.Root
+}
+
+// modulesGate is module hygiene (M1-G-TOOL-2; DH-T-TOOLCHAIN-11). In every module --
+// the gated modules, their test modules and the tools modules -- "go mod tidy -diff"
+// must print nothing and "go mod verify" must pass. Then the module files are checked
+// without the go command: on a repository root modcheck.CheckToolchain11 (RM-1..RM-4,
+// src/go standard-library only) and modcheck.CheckRepoReasons, on a single-module root
+// modcheck.CheckReasons of its go.mod. Every failure is reported.
+func (c *Config) modulesGate(ctx context.Context, w io.Writer) error {
+	env := c.env("GOFLAGS=")
+	var errs []error
+	dirs := append(append(slices.Clone(c.Modules), c.testModules()...), c.toolsModules()...)
+	for _, dir := range dirs {
+		if err := c.tidyStep(ctx, w, dir, env); err != nil {
+			errs = append(errs, err)
+		}
+		if err := c.goStep(ctx, w, dir, env, "mod", "verify"); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if c.singleModule() {
+		data, err := os.ReadFile(filepath.Join(c.Root, "go.mod"))
+		if err == nil {
+			err = modcheck.CheckReasons("go.mod", data)
+		}
+		if err != nil {
+			errs = append(errs, err)
+		}
+		fmt.Fprintf(w, "modules: %d modules checked\n", len(dirs))
+		return errors.Join(errs...)
+	}
+	repo, err := modcheck.Load(c.Root)
+	if err != nil {
+		return errors.Join(append(errs, err)...)
+	}
+	if err := modcheck.CheckToolchain11(repo); err != nil {
+		errs = append(errs, err)
+	}
+	if err := modcheck.CheckRepoReasons(repo); err != nil {
+		errs = append(errs, err)
+	}
+	fmt.Fprintf(w, "modules: %d product, %d test and %d tools modules checked\n", len(repo.Mods), len(repo.Tests), len(repo.Tools))
+	return errors.Join(errs...)
+}
+
+// tidyStep runs "go mod tidy -diff" in dir: a non-zero exit, or any output other than
+// the go command's download notices, fails it, and the diff is printed.
+func (c *Config) tidyStep(ctx context.Context, w io.Writer, dir string, env []string) error {
+	out, err := c.command(ctx, dir, env, c.Go, "mod", "tidy", "-diff")
+	var diff []string
+	for _, line := range strings.SplitAfter(out, "\n") {
+		if !strings.HasPrefix(line, "go: downloading ") && !strings.HasPrefix(line, "go: finding ") {
+			diff = append(diff, line)
+		}
+	}
+	text := strings.Join(diff, "")
+	if err == nil && strings.TrimSpace(text) == "" {
+		fmt.Fprintf(w, "ok   %s: go mod tidy -diff\n", c.rel(dir))
+		return nil
+	}
+	fmt.Fprintf(w, "FAIL %s: go mod tidy -diff\n%s", c.rel(dir), text)
+	if err == nil {
+		err = errors.New("printed a diff")
+	}
+	return fmt.Errorf("%s: go mod tidy -diff: %w; the module is not tidy (run go mod tidy)", c.rel(dir), err)
+}
+
+// selfGate runs the gate's own tests -- modcheck, the analyzers, the runner, the
+// acceptance index -- so a module or analyzer rule cannot regress unseen (M1-G-TOOL-3;
+// DH-T-TOOLCHAIN-9). It runs "go test -tags= -count=1 -skip <selfSkip> ./..." in
+// SelfModule on the floor toolchain, without the e2e tag. A root without the module
+// fails: the check cannot be skipped.
+func (c *Config) selfGate(ctx context.Context, w io.Writer) error {
+	dir := filepath.Join(c.Root, filepath.FromSlash(SelfModule))
+	if !isFile(filepath.Join(dir, "go.mod")) {
+		return fmt.Errorf("%s not found under %s: the gate's own tests cannot run (M1-G-TOOL-3)", SelfModule, c.Root)
+	}
+	return c.goStep(ctx, w, dir, c.env(), "test", noTags, "-count=1", "-timeout="+selfTimeout.String(), "-skip", selfSkip, "./...")
+}
+
+// gofmtGate fails when any Go file of a module, or of its test module
+// (testModules), is not gofmt-formatted. testdata, vendor, hidden and other
+// nested-module directories are not part of a module's build and are not checked.
 func (c *Config) gofmtGate(ctx context.Context, w io.Writer) error {
 	gofmt, err := c.gofmtPath(ctx)
 	if err != nil {
 		return err
 	}
 	var files []string
-	for _, mod := range c.Modules {
+	for _, mod := range append(slices.Clone(c.Modules), c.testModules()...) {
 		found, err := goFiles(mod)
 		if err != nil {
 			return err

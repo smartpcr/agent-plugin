@@ -88,6 +88,110 @@ go.sum hash, checked offline against git history), and the `DH-T-TOOLCHAIN-11` /
 (`src/go/cmd/cordis-sample/testdata/output.golden`) is in `a647d49`, before any DH-S-2
 edit, and passes `go -C src/go test -count=20 ./cmd/cordis-sample`.
 
+### Stage 1.1 addendum: tools module and module hygiene (plan stage 13.4)
+
+`manual`, **not closure evidence**. Plan Stage 13.4 (M1-G-TOOL-2, -3, -5, -10) under
+M1-D-TOOL-2 (a), M1-D-TOOL-4 (A) and M1-D-GATE-23 (A). Recorded on the Windows
+development host on the uncommitted tree over `035bd97`, branch `m1-phase-13`; the
+lead's stage commit is the build identity.
+
+| Field | Value |
+| --- | --- |
+| Kind | `manual` |
+| Base commit | `035bd97` (plus the stage 13.4 working-tree changes) |
+| Toolchain | `go1.26.0` (`GOTOOLCHAIN=go1.26.0`; host default go1.27.4) |
+| Date | 2026-11-22 |
+
+**What changed.**
+
+- `tools/harness-gate/go.mod` is the tools module. It pins staticcheck
+  (`honnef.co/go/tools` v0.8.2, release 2026.2.2) and govulncheck
+  (`golang.org/x/vuln` v1.10.0) as `tool` lines. Both are the newest releases
+  (`go list -m -versions`), and both build and run under go1.26.0. `golang.org/x/tools`
+  stays at v0.53.0, which govulncheck requires; staticcheck needs v0.51.0. The DC-3
+  note under DH-D-TOOLCHAIN-1 in `toolchain.md` names the file.
+- `src/go/test/e2e` is a nested test-only module. It requires godog and `src/go`
+  through a reasoned `replace => ../..`. `src/go/go.mod` now requires nothing, and its
+  empty `go.sum` is removed. The module is outside `go.work`, so it runs with
+  `GOWORK=off`. No `e2e-*.yml` workflow, docker-compose file or azure-pipeline file ran
+  `src/go`'s suites, so no path in them changed; only the `ci.yml` `cache:` comment
+  was corrected.
+- `modcheck` gains the test-module and tools-module classes,
+  `CheckCordisStdlib` (also enforced by `CheckToolchain11`), `CheckReasons` and
+  `CheckRepoReasons`.
+- New gates `modules` (after `vet`) and `self` (last). The list has 10 gates:
+  `gofmt, vet, modules, test, coverage, trace, scenario-index, budget,
+  cross-compile, self`. `gofmt` also checks the test module's files.
+
+**New reason comments** (in full in each file):
+
+| File | Line | Reason, in short |
+| --- | --- | --- |
+| `tools/harness-gate/go.mod` | `github.com/cucumber/godog v0.16.0` | Gherkin runner of the gate's own e2e suites; one version across the repository; test code only |
+| `tools/harness-gate/go.mod` | `golang.org/x/tools v0.53.0` | analysis framework of the own analyzers (QG-2); also the floor the pinned tools require |
+| `tools/harness-gate/go.mod` | `golang.org/x/vuln v1.10.0`, `honnef.co/go/tools v0.8.2` | the version pins of the two `tool` lines |
+| `tools/harness-gate/go.mod` | `tool golang.org/x/vuln/cmd/govulncheck` | vulnerability check of the `vulncheck` gate (M1-D-TOOL-1 (a)); newest release, verified on the floor |
+| `tools/harness-gate/go.mod` | `tool honnef.co/go/tools/cmd/staticcheck` | linter of the `staticcheck` gate (DH-ADR-TOOLCHAIN-8); newest release, verified on the floor; pinned, not installed per machine |
+| `src/harness/go.mod` | `github.com/cucumber/godog v0.16.0` | Gherkin runner of `test/e2e/harness-DSH`; never linked into `dsh` |
+| `src/harness/go.mod` | `.../src/go`, `.../src/sdk` pins | product modules pinned to committed revisions, never replaced (DH-ADR-26, RM-4) |
+| `src/go/test/e2e/go.mod` | godog, `src/go`, `replace => ../..` | the suites' runner; the module under test; the replace tests the working tree and cannot leak, since the module is never released |
+
+**Commands and output.**
+
+```text
+$ GOWORK=off GOTOOLCHAIN=go1.26.0 go list -m -versions honnef.co/go/tools   # last: v0.8.2
+$ GOWORK=off GOTOOLCHAIN=go1.26.0 go list -m -versions golang.org/x/vuln    # last: v1.10.0
+$ GOWORK=off GOPROXY=off GOTOOLCHAIN=go1.26.0 go -C tools/harness-gate tool staticcheck -version
+staticcheck.exe 2026.2.2 (0.8.2)
+$ GOWORK=off GOTOOLCHAIN=go1.26.0 go -C tools/harness-gate tool govulncheck -version
+Go: go1.26.0
+Scanner: govulncheck@v1.10.0
+$ GOWORK=off go -C src/go mod tidy -diff          # (no output, exit 0)
+$ GOWORK=off go -C src/go/test/e2e vet -tags e2e ./...   # (exit 0)
+$ GOWORK=off go -C src/go/test/e2e test -tags e2e -count=1 ./...
+ok  	github.com/smartpcr/agent-plugin/src/go/test/e2e/harness-DSH	38.090s
+$ GOWORK=off go -C tools/harness-gate vet ./...   # (exit 0)
+$ GOWORK=off go -C tools/harness-gate test -count=1 -timeout 25m -skip TestRepositoryPassesEveryGate ./...
+ok  	github.com/smartpcr/agent-plugin/tools/harness-gate	393.548s
+ok  	github.com/smartpcr/agent-plugin/tools/harness-gate/acceptance	0.830s
+ok  	github.com/smartpcr/agent-plugin/tools/harness-gate/analyzers	35.274s
+ok  	github.com/smartpcr/agent-plugin/tools/harness-gate/modcheck	30.684s
+```
+
+The stage's five scenarios, run with `go test -count=1 -v -run ...`, all `PASS`:
+
+| Scenario | Test |
+| --- | --- |
+| Untidy module fails the modules gate | `TestSeededViolationFailsNamedGate/untidy-module` (`testdata/untidy-module`: the built gate stops at `modules`, prints the `-require golang.org/x/mod v0.43.0` diff, exits 1) |
+| Pin without a reason is named | `TestReasonsNamePinWithoutReason`, `TestReasonsCoverEveryPinVerb`, `TestModulesGateNamesUnreasonedPin` (`go.mod:5: require golang.org/x/mod v0.43.0: no reason comment ...`) |
+| src/go is standard-library only | `TestCordisModuleIsStandardLibraryOnly`, `TestToolchain11TestModuleClass`, and the e2e vet above |
+| A broken module rule fails the main gate | `TestModulesGateNamesRM4` (a scratch copy of the three product modules plus `go.work`: it passes unchanged, then fails naming `replace ...: replace directive is not allowed (RM-4)` with no go-command step failing), and `TestSelfGateRunsTheGateTests` (passes; skips `TestRepositoryPassesEveryGate`; then fails naming `TestBrokenRule`) |
+| Tools resolve from the tools module | `TestToolPinsResolveOffline` (`GOPROXY=off`: staticcheck prints `(0.8.2)`, govulncheck builds, `go list -m` gives v1.10.0), `TestToolsModulePinsLinters` |
+
+`TestModulesGatePassesOnRepository` checks the `modules` gate on the checkout and
+prints `modules: 3 product, 1 test and 2 tools modules checked`.
+`TestReasonsCommittedFilesPass` checks every committed pin.
+
+The full gate, run once after the stage (`GOWORK=off go -C tools/harness-gate run .
+--root ../..`), shows the new list and stops at `vet`, as expected while stages
+13.2 and 13.3 are open. `gofmt` passed; `src/go`, `src/sdk` and the plain
+`src/harness` vet passed. The own analyzers in `src/harness` report 30 unique
+findings over the two tag sets:
+
+```text
+harness-gate: gate 1/10 gofmt -- every Go file is gofmt-formatted
+harness-gate: PASS gofmt (306ms)
+harness-gate: gate 2/10 vet -- go vet and the project's own analyzers (nosleep, onespawn, cleanup, fuzzcheck)
+FAIL src/harness: go vet -tags= -vettool=<harness-gate> ./...
+FAIL src/harness: go vet -tags=replay,scenario -vettool=<harness-gate> ./...
+harness-gate: FAIL vet (1m9.824s)
+harness-gate: FAILED at gate vet
+```
+
+So the `modules` and `self` gates have not yet run inside the full gate. Their
+behaviour is proved by the gate tests above. The full-gate `PASS modules` and
+`PASS self` lines are still open until vet is green (stage 13.3's Windows gate run).
+
 ## Stage 1.2 -- Gate Runner Core (manual check, recorded after the fact)
 
 This record was missing (gap M1-G-TOOL-18) and is added by gap-closure plan step 12.2.4.
@@ -353,6 +457,64 @@ present (the Linux user-scope path is usable, EN-5); `id -u` = 1000; `TMPDIR` = 
 on ext4; `CGO_ENABLED=1`; Ubuntu 24.04.5 LTS, kernel 6.18.58.1-microsoft-standard-WSL2;
 `wsl.exe --version`: WSL 3.0.5.0, kernel 6.18.58.1-1. A gate log was produced (the WSL
 row above).
+
+## M1 gate repair
+
+Plan Stage 13.1 (Wait Idiom, Analyzer Fix, cordis and Fuzz Seeds; M1-G-GATE-2 to -5,
+M1-G-GATE-24). `manual`, **not closure evidence**: the `vet` gate as a whole still
+fails on the `src/harness` findings that Stages 13.2 and 13.3 repair.
+
+**The decided idiom (M1-D-GATE-24, option A).** `nosleep` stays strict (no
+`time.Sleep` in any `_test.go` file, `analyzers/nosleep.go` unchanged); waits use
+`testing/synctest` virtual time or an explicit signal; no `<-time.After` settle
+outside a bubble; a cleanup must unblock, then join; one named poll helper,
+`src/harness/internal/testkit/procwait` (`Until(ctx, t, fact)`, `Poll(ctx, fact)`),
+for a real child process or another process's log. Written down in
+[tools/harness-gate/README.md, "Waiting and releasing in tests"](../../../../tools/harness-gate/README.md#waiting-and-releasing-in-tests-m1-d-gate-24),
+with the fix patterns P-C, P-V, P-S and P-F.
+
+**The analyzer fix (M1-G-GATE-5).** `cleanup.go` `assignedIdents` records a
+selector left-hand side (`cs.Server = httptest.NewServer(...)`) under its root
+identifier, so `t.Cleanup(cs.Close)` releases it. Fixtures, tagged DH-T-TOOLCHAIN-8:
+
+| fixture or test | proves |
+| --- | --- |
+| `tools/harness-gate/analyzers/testdata/src/cleanup/field_test.go` (run by `TestAnalyzersOnFixtures`, `analysistest`) | `TestFieldServerReleased` and `TestNestedFieldServerReleased` have no diagnostic; `TestFieldServerLeaks` and `TestFieldServerOtherCleanupDoesNotCount` each have exactly one `listener started ... (QG-5)` (`// want`) |
+| `TestCleanupFieldAssignedListener` (`analyzers_test.go`) | the stage scenario in memory: released, no finding; cleanup removed, exactly one `listener started ... (QG-5)` |
+| `src/harness/internal/testkit/procwait/procwait_test.go` | the poll helper, on virtual time: immediate success, one check per `Interval`, the context deadline, the `DefaultTimeout` bound, the cancel cause, and `Until` failing its test |
+
+The fixture is named `field_test.go`, not the plan's `field.go`: the analyzer judges
+`_test.go` files only, so a `field.go` fixture could not carry a diagnostic.
+Without the `cleanup.go` change the fixture fails with two unexpected diagnostics
+(lines 19 and 25), checked once by reverting the file.
+
+**`src/go` vet output.** Run on the working tree of `c080f53` plus the Stage 13.1
+edits (the lead records the stage commit), Windows host, go1.27.4 with
+`GOTOOLCHAIN=go1.26.0`, vet tool built from `tools/harness-gate` (`HARNESS_GATE_VETTOOL=1`
+must be set for `go vet -vettool`):
+
+```
+go -C src/go vet -vettool=$TEMP/hg/harness-gate.exe ./...
+go -C src/go vet -vettool=$TEMP/hg/harness-gate.exe -tags=replay,scenario ./...
+```
+
+Before: exit 1, the same 23 findings with both tag sets -- `cordis/tree_internal_test.go:25,68`,
+`cordis/config_test.go:137,151,164,455,456`, `cordis/unload_test.go:96,195,200,207,392,395,396,449,454,492,659,663,734,814,824`
+(QG-5) and `cordis/unload_test.go:500` (QG-4). After: exit 0, no output, with both tag sets.
+
+`src/harness` (default tags): 53 findings before, 48 after; the five cleared are the
+four QG-6 findings of `util/{caltime,glob,recur,version}` and the field false positive
+at `util/egress/egress_test.go:32`. Total cleared by the stage: 28 of 81.
+
+**Tests run** (`manual` record of this stage's scenarios):
+`GOWORK=off go -C tools/harness-gate test -count=1 ./analyzers/...` ok;
+`CGO_ENABLED=1 go -C src/go test -race -shuffle=on -count=3 ./cordis/` ok;
+`go -C src/harness test -run Fuzz ./internal/util/...` ok (every seed runs as
+`FuzzXxx/seed#n`, from `seeds_test.go`); `go -C src/harness test ./internal/testkit/procwait/` ok.
+The cordis cleanups were also checked on the failure path: with a `t.FailNow()`
+injected right after the goroutines start in five `unload_test.go` tests (four in a
+synctest bubble), each test failed with no bubble deadlock and no join timeout, so
+every cleanup released and joined its goroutines (injection reverted).
 
 ## Evidence record (impl.md sec. 7.3)
 
