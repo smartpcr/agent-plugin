@@ -17,8 +17,9 @@ type turnState struct {
 	cause agent.Cause
 	// limit is set when the time budget, not a caller, cancelled the turn.
 	limit string
-	// kept is the next-turn input parked at the turn's first cancel; nil
-	// until a cancel lands.
+	// kept is the next-turn input parked at the cancel that aborts the turn;
+	// nil until a cancel lands. A step cancel's snapshot is dropped when the
+	// turn goes on past it (resumed).
 	kept map[string]bool
 	step *stepState
 }
@@ -103,6 +104,18 @@ func (d *Driver) Cancel(c agent.Cause, o agent.CancelOptions) error {
 		}
 	}
 	return errs
+}
+
+// resumed is called when point 14 goes on with claimed steering after a step:
+// a step cancel the turn survived kept nothing, so its snapshot is dropped and
+// the cancel that does abort the turn takes its own. A turn already cancelled
+// keeps the snapshot its cancel took.
+func (d *Driver) resumed(t *turnState) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if t.cause == "" {
+		t.kept = nil
+	}
 }
 
 // stepCause is the cause the step closes with, "" when it was not cancelled.

@@ -310,9 +310,10 @@ func (d *Driver) write(parent context.Context, fn func(ctx context.Context) erro
 	return fn(ctx)
 }
 
-// keepPending snapshots, at t's first cancel, the next-turn input parked at
-// that moment: it is the input the cancel keeps, which waits for a new wake.
-// The caller holds mu.
+// keepPending snapshots, at a cancel of t, the next-turn input parked at that
+// moment: it is the input the cancel keeps, which waits for a new wake. The
+// first snapshot stands until resumed drops a step cancel's. The caller holds
+// mu.
 func (d *Driver) keepPending(t *turnState) {
 	if t.kept != nil {
 		return

@@ -33,27 +33,8 @@ func (d *Driver) turn() (ran bool, kept map[string]bool, err error) {
 		}
 	}
 	n := s.Open().LastTurn + 1
-	var (
-		msg agent.InboxMessage
-		ok  bool
-	)
-	err = d.write(nil, func(ctx context.Context) error {
-		var err error
-		msg, ok, err = d.o.Inbox.ClaimTurn(ctx, n)
-		return err
-	})
-	if err != nil {
-		if !ok {
-			return true, nil, err
-		}
-		// The item is taken but not durable: make it durable, then run it.
-		if err := d.durable(err); err != nil {
-			return true, nil, fmt.Errorf("driver: claim turn %d: %w", n, err)
-		}
-	}
-	if !ok {
-		return false, nil, nil
-	}
+	// The turn is Cancel's from before its claim: a cancel that lands while a
+	// claim is being made durable stops this turn, not a later one.
 	tctx, cancel := context.WithCancelCause(d.life)
 	t := &turnState{turn: n, ctx: tctx, cancel: cancel}
 	d.mu.Lock()
@@ -68,16 +49,42 @@ func (d *Driver) turn() (ran bool, kept map[string]bool, err error) {
 	if lim := d.budget.MaxDuration; lim > 0 {
 		go d.timeLimit(t, lim)
 	}
+	var (
+		msg agent.InboxMessage
+		ok  bool
+	)
+	err = d.write(nil, func(ctx context.Context) error {
+		var err error
+		msg, ok, err = d.o.Inbox.ClaimTurn(ctx, n)
+		return err
+	})
+	if err != nil {
+		if !ok {
+			return true, nil, err
+		}
+		// The item is taken but not durable: make it durable, then run it. A
+		// cancel stops the wait; the item is in the turn it aborts.
+		if err := d.durable(t.ctx, err); err != nil {
+			return true, nil, fmt.Errorf("driver: claim turn %d: %w", n, err)
+		}
+	}
+	if !ok {
+		return false, nil, nil
+	}
 	first, err := msg.Message()
 	if err != nil {
 		return true, nil, err
 	}
 	batch := []vocab.Message{first}
-	more, err := d.claimStep(n)
-	if err != nil {
-		return true, nil, err
+	// A turn cancelled while its claim was recovering leaves parked steering
+	// parked: point 3 ends it before any step.
+	if t.ctx.Err() == nil {
+		more, err := d.claimStep(t)
+		if err != nil {
+			return true, nil, err
+		}
+		batch = append(batch, more...)
 	}
-	batch = append(batch, more...)
 
 	reason, err := d.steps(t, batch)
 	if err != nil {
@@ -107,22 +114,31 @@ func (d *Driver) turn() (ran bool, kept map[string]bool, err error) {
 	if _, err := s.Flush(fctx); err != nil {
 		return true, kept, fmt.Errorf("driver: flush turn %d: %w", n, err)
 	}
+	// A claim whose recovery a cancel cut short is durable with this flush;
+	// Sync clears the inbox's record of it and pays its owed wake.
+	if !d.o.Inbox.Durable() {
+		if err := d.o.Inbox.Sync(fctx); err != nil {
+			return true, kept, fmt.Errorf("driver: flush turn %d: %w", n, err)
+		}
+	}
 	return true, kept, nil
 }
 
 // durable makes a claim whose append succeeded but whose flush failed (first)
 // durable: its items have left the queue and are handed out never again, so
 // they must run, not be lost. It retries Inbox.Sync with a backoff until it
-// succeeds, the failure is permanent or the driver stops.
-func (d *Driver) durable(first error) error {
+// succeeds or the failure is permanent. A cancel of the turn (ctx), Close
+// included, stops the wait at once and returns nil: the items are in the log,
+// the turn they joined ends aborted, and point 16's flush makes them durable.
+func (d *Driver) durable(ctx context.Context, first error) error {
 	err, delay := first, 10*time.Millisecond
 	for {
 		if permanent(err) {
 			return err
 		}
 		select {
-		case <-d.life.Done():
-			return err
+		case <-ctx.Done():
+			return nil
 		case <-d.o.After(delay):
 		}
 		if err = d.write(nil, d.o.Inbox.Sync); err == nil {
@@ -146,9 +162,11 @@ func (d *Driver) timeLimit(t *turnState, lim time.Duration) {
 	}
 }
 
-// claimStep claims every next-step item into turn n, as messages. Items whose
-// claim was appended but not flushed are made durable and run.
-func (d *Driver) claimStep(n int) ([]vocab.Message, error) {
+// claimStep claims every next-step item into turn t, as messages. Items whose
+// claim was appended but not flushed are made durable and run; a cancel of t
+// during that recovery returns them as well, and point 3 then ends the turn.
+func (d *Driver) claimStep(t *turnState) ([]vocab.Message, error) {
+	n := t.turn
 	var items []agent.InboxMessage
 	err := d.write(nil, func(ctx context.Context) error {
 		var err error
@@ -159,7 +177,7 @@ func (d *Driver) claimStep(n int) ([]vocab.Message, error) {
 		if items == nil {
 			return nil, err
 		}
-		if err := d.durable(err); err != nil {
+		if err := d.durable(t.ctx, err); err != nil {
 			return nil, fmt.Errorf("driver: claim step input of turn %d: %w", n, err)
 		}
 	}
@@ -233,10 +251,11 @@ func (d *Driver) steps(t *turnState, batch []vocab.Message) (*event.Reason, erro
 			return d.stepLimit(), nil // parked input stays parked
 		}
 		if pending {
-			if batch, err = d.claimStep(t.turn); err != nil {
+			if batch, err = d.claimStep(t); err != nil {
 				return nil, err
 			}
 			if len(batch) > 0 {
+				d.resumed(t)
 				continue
 			}
 		}

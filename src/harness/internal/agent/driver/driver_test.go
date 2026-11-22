@@ -301,7 +301,9 @@ func TestTurnBudgetClosesTheTurn(t *testing.T) {
 	r.replayed()
 }
 
-// DH-T-AGENT-28: the defaults bound a turn; a turn inside them is not cut.
+// DH-T-AGENT-22: the defaults bound a turn; a turn inside them is not cut. The
+// performance half of DH-T-AGENT-28 is BenchmarkContinuation (bench tag), not
+// this test.
 func TestDefaultBudgetLeavesAShortTurnAlone(t *testing.T) {
 	if b := driver.DefaultBudget(); b.MaxSteps != driver.DefaultMaxSteps || b.MaxAttemptsPerStep != driver.DefaultMaxAttemptsPerStep || b.MaxDuration != 0 {
 		t.Fatalf("defaults %+v", b)
