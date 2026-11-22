@@ -66,8 +66,7 @@ func TestRunPrintsKindsLine(t *testing.T) {
 	fakes := &fakeSteps{}
 	app := launch.NewApp()
 	var stderr testkit.Buffer
-	done := make(chan int, 1)
-	go func() { done <- Run(context.Background(), Options{Stderr: &stderr, App: app, Steps: fakes}) }()
+	done := runJoined(t, app, func() int { return Run(context.Background(), Options{Stderr: &stderr, App: app, Steps: fakes}) })
 	<-app.Ready()
 	app.Stop(launch.Completed, 0)
 	<-done
@@ -87,8 +86,7 @@ func bootKinds(t *testing.T, layer string, environ ...string) string {
 	app := launch.NewApp()
 	var stderr testkit.Buffer
 	opts.App, opts.Stderr = app, &stderr
-	done := make(chan int, 1)
-	go func() { done <- Run(context.Background(), opts) }()
+	done := runJoined(t, app, func() int { return Run(context.Background(), opts) })
 	select {
 	case <-app.Ready():
 	case status := <-done:

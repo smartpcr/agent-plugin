@@ -500,6 +500,10 @@ func TestRouteConcurrencyCap(t *testing.T) {
 	req := must(h.NextRequest())
 	prep := func() llm.Prepared { return must(rt.Prepare(bg, "r/a", "m", vocab.Controls{})) }
 	var wg sync.WaitGroup
+	unhold := sync.OnceFunc(func() { close(release) })
+	// P-C: the admitted attempt holds until release, so the cleanup releases it,
+	// then joins the streaming goroutine.
+	t.Cleanup(func() { unhold(); wg.Wait() })
 	recs := make(chan llm.Attempt, 3)
 	sink := llm.AttemptSinkFunc(func(a llm.Attempt) error { recs <- a; return nil })
 	wg.Add(1)
@@ -514,7 +518,7 @@ func TestRouteConcurrencyCap(t *testing.T) {
 	if f.attempts.Load() != 1 {
 		t.Fatal("the cap admitted a second attempt")
 	}
-	close(release)
+	unhold()
 	wg.Wait()
 	if a := <-recs; !a.Succeeded() {
 		t.Fatalf("the admitted attempt: %+v", a.Finish)
@@ -546,6 +550,7 @@ func TestPreparedCallIsSingleUse(t *testing.T) {
 	req := must(h.NextRequest())
 	out := make(chan llm.Attempt, n)
 	var wg sync.WaitGroup
+	t.Cleanup(wg.Wait) // P-C: nothing gates the streams; the cleanup joins them on every exit path
 	for range n {
 		wg.Add(1)
 		go func() {
@@ -618,7 +623,21 @@ func TestSlotHeldUntilTheProviderExits(t *testing.T) {
 	sink := llm.AttemptSinkFunc(func(a llm.Attempt) error { recs = append(recs, a); return nil })
 
 	ctx, cancel := context.WithCancel(bg)
-	go func() { <-started; cancel() }()
+	// P-C: the canceller waits for the provider to start and the provider for
+	// unwind, so the cleanup stops the canceller and lets the provider exit, then
+	// joins the canceller.
+	stop, canceller := make(chan struct{}), make(chan struct{})
+	halt := sync.OnceFunc(func() { close(stop) })
+	letUnwind := sync.OnceFunc(func() { close(unwind) })
+	t.Cleanup(func() { halt(); letUnwind(); <-canceller })
+	go func() {
+		defer close(canceller)
+		select {
+		case <-started:
+			cancel()
+		case <-stop:
+		}
+	}()
 	drain(prep().Stream(ctx, req, sink)) // returns while the provider is still unwinding
 	if len(recs) != 1 || recs[0].Finish.Reason != vocab.FinishAborted {
 		t.Fatalf("the cancelled attempt did not settle promptly: %+v", recs)
@@ -631,7 +650,7 @@ func TestSlotHeldUntilTheProviderExits(t *testing.T) {
 		t.Fatalf("a second attempt overlapped the unwinding one: %+v, %d attempts", recs[1].Finish, f.attempts.Load())
 	}
 
-	close(unwind)
+	letUnwind()
 	drain(prep().Stream(bg, req, sink)) // blocks until the slot frees, then runs
 	if len(recs) != 3 || !recs[2].Succeeded() || f.attempts.Load() != 2 {
 		t.Fatalf("after the provider exited: %+v", recs[2].Finish)

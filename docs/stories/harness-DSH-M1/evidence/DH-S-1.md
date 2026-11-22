@@ -516,6 +516,65 @@ injected right after the goroutines start in five `unload_test.go` tests (four i
 synctest bubble), each test failed with no bubble deadlock and no join timeout, so
 every cleanup released and joined its goroutines (injection reverted).
 
+### Stage 13.2 (session, storage, util, boot, llm and human tests)
+
+Plan 13.2.1-13.2.5 (M1-G-GATE-6 to -10). `manual`, **not closure evidence**. The 26
+vet findings of `src/harness/internal/{session,storage,util,boot,llm,human}` are
+cleared:
+- **P-C** in `session/{scope,event,views}`, `session/session_test.go`,
+  `util/fsx/replace_test.go`, `util/watch/watchtest/manual_test.go`,
+  `boot/{audit,boot}_test.go`, `storage/workspace/archive_test.go`,
+  `llm/runtime_test.go` and `human/human_test.go`.
+- **P-V** in `session/query/visibility_test.go` (the SQLite store in a `synctest`
+  bubble) and `storage/blob/gclock_test.go`.
+- **P-S** through the `appended` channel (query), `sqlite.WriteHeldSignal` and
+  `sqlite.BusyWaitSignal` (shutdown), `blob.SetAfterLockShared` (gclock) and
+  `clock.Manual.BlockUntil` before each `Advance` (boot).
+
+Two unexported test seams in non-test code are nil outside tests: `ctxMutex.held` in
+`session/store/sqlite/open.go` and `afterLockShared` in `storage/blob/blob.go`.
+
+Checks:
+- vet with the gate tool, both tag sets: exit 0, no diagnostic.
+- `-race -shuffle=on -count=3`: 55 packages ok.
+- The "close during busy wait" scenario, `-race -count=20`: ok.
+- **Open, not a 13.2 finding:** `session/store/sqlite`
+  `TestDutyHasOneHolderAndMovesAfterAKill` (DH-T-STORE-14) fails intermittently with
+  `store/busy` (SQLITE_BUSY) when two child processes open one fresh database. The
+  unchanged code fails it as well: 3 of 20 runs side by side, against 1 of 20 with the
+  13.2 edits. It is recorded for plan step 13.7.1 as the first race and order triage
+  item.
+
+Windows host, go1.26.0, MSYS2 gcc.
+
+### Stage 13.3 (agent, delegate, tools and scenario-layer tests)
+
+Plan 13.3.1-13.3.5 (M1-G-GATE-11 to -14, -27). `manual`, **not closure evidence**.
+The scripted model `internal/testkit/model` gained:
+- `(*Transport).WaitRequests(ctx, n)`, which is woken by each request, does not
+  poll, and returns `context.Cause(ctx)`;
+- `(*Transport).PrefixServed(n)`.
+
+Unit tests: `TestWaitRequestsBlocksUntilTheNthRequest`,
+`TestWaitRequestsReturnsTheContextError` (the "WaitRequests blocks without polling"
+scenario, in `synctest`) and `TestPrefixServedSignalsTheEndOfTheScriptedText`.
+
+The 27 agent-family findings are cleared in `agent/agent_test.go`,
+`agent/driver/{driver,lifecycle,retry}_test.go`, `delegate/subagent/subagent_test.go`,
+`tools/core/schedule_test.go` and, under `-tags scenario`,
+`testkit/scenarios/store_{two_process,crash_recovery}_scenario_test.go`. The patterns
+used:
+- **P-C** through `goJoined` helpers.
+- **P-V** through `synctest`. A follow-up (`a199951`) also moved the three 100 ms
+  "did not happen" waits (owner unload, `WaitQuiet`, manager unload) into bubbles.
+- **P-S** through `WaitRequests`, `PrefixServed`, `life.reached` and
+  `subagent.Refusing`.
+- `procwait.Poll` for the two cross-process polls.
+
+Vet with the gate tool (`GOTOOLCHAIN=go1.26.0`), both tag sets: exit 0.
+`-race -shuffle=on -count=3` over the packages: all ok. The scenario files are vetted,
+not run (EV-4).
+
 ## Evidence record (impl.md sec. 7.3)
 
 These are the eight fields of [impl.md sec. 7.3](../../../harness/impl.md#73-the-evidence-record),

@@ -377,6 +377,7 @@ func TestUpgradesSnapshotted(t *testing.T) {
 	}
 	r.Seal()
 	done := make(chan struct{})
+	t.Cleanup(func() { <-done }) // P-C: the writer has no gate; the cleanup joins it on every exit path
 	go func() {
 		defer close(done)
 		for i := 0; i < 1000; i++ {

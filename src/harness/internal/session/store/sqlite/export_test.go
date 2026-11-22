@@ -3,6 +3,9 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"runtime"
+	"sync"
+	"testing"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store"
 )
@@ -68,6 +71,52 @@ func WriteHeld(s *Store) bool {
 	default:
 		return true
 	}
+}
+
+// WriteHeldSignal returns a channel closed the first time, from now on, that a
+// write (or a lease change, or Close) takes s's writer mutex. Install it before
+// starting the write it waits for, while nothing else uses s.
+func WriteHeldSignal(s *Store) <-chan struct{} {
+	ch := make(chan struct{})
+	s.wmu.held = sync.OnceFunc(func() { close(ch) })
+	return ch
+}
+
+// busyHandlerFunc is the driver's busy callback (modernc.org/sqlite busy.go): it
+// runs while a statement waits, under busy_timeout, for another connection's lock,
+// and reads the call's context there.
+const busyHandlerFunc = "modernc.org/sqlite.busyHandler"
+
+// BusyWaitSignal returns a context for a store call and a channel closed once that
+// call has entered the driver's busy wait: the busy handler asks the context of the
+// call in progress for Done before each of its waits, and the returned context
+// notices that caller. The context is cancelled when the test ends.
+func BusyWaitSignal(t testing.TB, parent context.Context) (context.Context, <-chan struct{}) {
+	ctx, cancel := context.WithCancel(parent)
+	t.Cleanup(cancel)
+	ch := make(chan struct{})
+	return busyCtx{Context: ctx, entered: sync.OnceFunc(func() { close(ch) })}, ch
+}
+
+type busyCtx struct {
+	context.Context
+	entered func()
+}
+
+func (c busyCtx) Done() <-chan struct{} {
+	var pcs [8]uintptr
+	frames := runtime.CallersFrames(pcs[:runtime.Callers(2, pcs[:])])
+	for {
+		f, more := frames.Next()
+		if f.Function == busyHandlerFunc {
+			c.entered()
+			break
+		}
+		if !more {
+			break
+		}
+	}
+	return c.Context.Done()
 }
 
 // Synchronous is PRAGMA synchronous on the write connection, the one every

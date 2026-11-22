@@ -122,6 +122,8 @@ Stage 8.3's evidence is complete. DH-S-8 closes, and `built-through` is raised t
 DH-S-8, with Stage 8.2's closure step (steps 8.3 to 8.5, the refold-equals-stored
 test and DH-E-STORAGE-1 and -2).
 
+M1 gate repair (plan 13.2.1, 13.2.3, 13.2.5; [DH-S-1.md, "M1 gate repair"](DH-S-1.md#m1-gate-repair)): `internal/storage/blob/gclock_test.go` `TestSaversWaitForTheCollector` runs in a `synctest` bubble ("Put still waits" is `synctest.Wait`, not a 30 ms settle) and replaces the `waitFor` poll with a signal from the lock (`SetAfterLockShared`, a test seam `afterLockShared` in `blob.go`, nil outside tests), with P-C for both savers; `storage/workspace/archive_test.go` (helper `goJoined`) and `util/fsx/replace_test.go` `TestLockShared` (the cleanup unlocks, then joins the waiter) release and join every goroutine they start. Assertions unchanged.
+
 ## Evidence record (impl.md sec. 7.3)
 
 These are the eight fields of [impl.md sec. 7.3](../../../harness/impl.md#73-the-evidence-record),

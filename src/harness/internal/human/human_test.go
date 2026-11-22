@@ -194,6 +194,7 @@ func TestConcurrentAnswersOneWins(t *testing.T) {
 		it := delivered(t, ui)
 		var wins, settledErrs atomic.Int32
 		var wg sync.WaitGroup
+		t.Cleanup(wg.Wait) // P-C: nothing gates the answers; the cleanup joins them on every exit path
 		for i := range 8 {
 			wg.Add(1)
 			go func() {

@@ -81,6 +81,8 @@ func TestFoldsReadAtOneCut(t *testing.T) {
 
 	var stop atomic.Bool
 	var wg sync.WaitGroup
+	// P-C: the cleanup stops the appenders (unblock), then joins them.
+	t.Cleanup(func() { stop.Store(true); wg.Wait() })
 	for range 4 {
 		wg.Add(1)
 		go func() {

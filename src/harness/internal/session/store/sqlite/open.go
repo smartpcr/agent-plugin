@@ -218,6 +218,9 @@ var _ store.Store = (*Store)(nil)
 type ctxMutex struct {
 	once sync.Once
 	ch   chan struct{}
+	// held is a test seam (export_test.go, WriteHeldSignal): when set, it runs
+	// right after each acquisition. It is nil outside tests.
+	held func()
 }
 
 func (m *ctxMutex) sem() chan struct{} {
@@ -226,7 +229,12 @@ func (m *ctxMutex) sem() chan struct{} {
 }
 
 // Lock acquires m.
-func (m *ctxMutex) Lock() { m.sem() <- struct{}{} }
+func (m *ctxMutex) Lock() {
+	m.sem() <- struct{}{}
+	if m.held != nil {
+		m.held()
+	}
+}
 
 // Unlock releases m.
 func (m *ctxMutex) Unlock() { <-m.sem() }
@@ -235,6 +243,9 @@ func (m *ctxMutex) Unlock() { <-m.sem() }
 func (m *ctxMutex) LockContext(ctx context.Context) error {
 	select {
 	case m.sem() <- struct{}{}:
+		if m.held != nil {
+			m.held()
+		}
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()

@@ -331,6 +331,8 @@ DH-S-18 (`DH-E-EXEC-1` step 3).
   seeds, and `boot`/`util/egress` lines this stage did not write); none is in a file
   this stage authored.
 
+M1 gate repair (plan 13.2.4; [DH-S-1.md, "M1 gate repair"](DH-S-1.md#m1-gate-repair)): `internal/boot/audit_test.go` and `boot_test.go` start every `Run` through `runJoined` (P-C: the cleanup stops the app, then joins `Run`, bounded), and the `TestStuckReloadDrainSharesTheShutdownBound` cleanup waits on `clock.Manual.BlockUntil` for a pending timer before each `Advance` instead of sleeping; TC ids and assertions unchanged.
+
 ## Evidence record (impl.md sec. 7.3)
 
 These are the eight fields of [impl.md sec. 7.3](../../../harness/impl.md#73-the-evidence-record),
