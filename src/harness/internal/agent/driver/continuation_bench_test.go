@@ -13,14 +13,15 @@
 // provider (DH-D-UTIL-7, impl.md step 16.7, held open by H-10) and the
 // measured 1,650-session corpus land, the scripted model and memstore stand in
 // for them and a synthetic ladder stands in for the corpus. On it, the
-// continuation of every session up to the p99 rung must stay inside
-// provisionalBudget (median over the iterations), in the plain run and in the
-// GOMEMLIMIT reruns; the max rung is measured, not budgeted. The final budget
+// 99th-percentile (nearest-rank) latency of the continuations timed at each
+// rung up to the p99 rung must stay inside provisionalBudget, in the plain run
+// and in the GOMEMLIMIT reruns; the max rung is measured, not budgeted. The final budget
 // stays unpinned until the provider and the corpus land, when this check is
 // re-run against them. Each timed continuation resumes a fresh store seeded
 // with the same template session (records only: the template's checkpoints
 // are not copied), whose size is checked outside the timer. The benchmark
-// reports wall time per continuation, the median, peak heap, turns and records.
+// reports wall time per continuation, the p50 and p99 latency, peak heap,
+// turns and records.
 
 package driver_test
 
@@ -29,7 +30,6 @@ import (
 	"fmt"
 	"iter"
 	"runtime"
-	"slices"
 	"testing"
 	"time"
 
@@ -56,8 +56,9 @@ var sessionSizes = []struct {
 	{"p50", 8, true}, {"p90", 64, true}, {"p99", 512, true}, {"max", 1024, false},
 }
 
-// provisionalBudget is the staged DH-T-AGENT-28 budget for one continuation of
-// a session up to the p99 rung; not the final pin (see the file comment).
+// provisionalBudget is the staged DH-T-AGENT-28 p99 latency budget for the
+// continuations of a session up to the p99 rung; not the final pin (see the
+// file comment).
 const provisionalBudget = 100 * time.Millisecond
 
 // firstStream signals each request the driver hands to the model.
@@ -210,11 +211,11 @@ func BenchmarkContinuation(b *testing.B) {
 			b.ReportMetric(float64(peak), "peak-heap-B")
 			b.ReportMetric(float64(size.turns), "turns")
 			b.ReportMetric(float64(len(recs)), "records")
-			slices.Sort(times)
-			med := times[len(times)/2]
-			b.ReportMetric(float64(med.Nanoseconds()), "median-ns")
-			if size.budgeted && med > provisionalBudget {
-				b.Errorf("continuation of a %d-turn session took %v (median of %d), over the provisional budget %v", size.turns, med, len(times), provisionalBudget)
+			p99, over := overBudget(times, provisionalBudget)
+			b.ReportMetric(float64(percentile(times, 50).Nanoseconds()), "p50-ns")
+			b.ReportMetric(float64(p99.Nanoseconds()), "p99-ns")
+			if size.budgeted && over {
+				b.Errorf("p99 continuation latency of a %d-turn session is %v over %d samples, over the provisional budget %v", size.turns, p99, len(times), provisionalBudget)
 			}
 		})
 	}
