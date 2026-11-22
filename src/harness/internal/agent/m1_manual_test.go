@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -126,24 +127,102 @@ func TestManualM1OneTurn(t *testing.T) {
 			t.Errorf("request %d: rebuilt digest %s, sent %s", i+1, b.Digest(), req.Digest())
 		}
 	}
-	for _, te := range m1TurnEnds(t, evs) {
+	ends := m1TurnEnds(t, evs)
+	for _, te := range ends {
 		t.Logf("M1 turn/end: turn=%d reason=%+v", te.Turn, te.Reason)
 	}
+	// M1 is evidence only for a turn that ran to its end: one completed turn,
+	// the probe ran and succeeded, and the model answered after it.
+	if len(ends) != 1 || ends[0].Reason.Kind != event.ReasonCompleted {
+		t.Fatalf("turn/end %+v, want exactly one completed turn", ends)
+	}
+	results := m1OfType(evs, "tool/result")
+	if len(results) != 1 {
+		t.Fatalf("%d tool/result events, want 1", len(results))
+	}
+	res := m1Decode[event.ToolResultPayload](t, results[0])
+	if res.IsError || !strings.Contains(m1Text(res.Message), f2Answer) {
+		t.Fatalf("probe result %s, want a success carrying %q", results[0].Raw(), f2Answer)
+	}
+	if n := len(m1OfType(evs, "assistant/attempt")); n != 0 {
+		t.Errorf("%d failed attempts in the M1 turn", n)
+	}
+	var last event.Event
+	found := false
+	for _, e := range evs {
+		switch e.Type() {
+		case "assistant/message", "tool/result":
+			last, found = e, true
+		}
+	}
+	if !found || last.Type() != "assistant/message" {
+		t.Fatalf("the turn's last settlement is not an assistant reply after the tool result")
+	}
+	reply := m1Decode[event.AssistantMessagePayload](t, last).Message
+	if m1Text(reply) == "" || m1HasToolUse(reply) {
+		t.Fatalf("final reply %s, want text and no tool call", last.Raw())
+	}
+	t.Logf("M1 final reply: %q", m1Text(reply))
 }
 
-// Run two: a turn whose reply streams long is cancelled after its first chunk;
-// the cause is on its turn/end and the brackets close.
+func m1OfType(evs []event.Event, typ string) []event.Event {
+	var out []event.Event
+	for _, e := range evs {
+		if e.Type() == typ {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func m1Decode[T any](t *testing.T, e event.Event) T {
+	t.Helper()
+	var v T
+	if err := json.Unmarshal([]byte(e.Raw()), &v); err != nil {
+		t.Fatalf("decode %s: %v", e.Type(), err)
+	}
+	return v
+}
+
+func m1Text(m vocab.Message) string {
+	var b strings.Builder
+	for _, bl := range m.Blocks() {
+		if bl.Text != nil {
+			b.WriteString(bl.Text.Text)
+		}
+	}
+	return b.String()
+}
+
+func m1HasToolUse(m vocab.Message) bool {
+	for _, bl := range m.Blocks() {
+		if bl.ToolUse != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// Run two: a turn whose reply streams long is cancelled by the user once answer
+// text is streaming; the turn ends aborted{user}, the step's settlement records
+// the cancel, and the brackets close.
 func TestManualM1CancelMidStream(t *testing.T) {
 	key := m1Key(t)
 	var once sync.Once
 	first := make(chan struct{})
-	hooks := f2Hooks{wallClock: true, chunk: func(int, vocab.Chunk) { once.Do(func() { close(first) }) }}
+	// Only a nonempty answer delta proves the reply is streaming: a BlockStart,
+	// a usage chunk or an error Finish must not trigger the cancel.
+	hooks := f2Hooks{wallClock: true, chunk: func(_ int, c vocab.Chunk) {
+		if d, ok := c.(vocab.TextDelta); ok && d.Text != "" {
+			once.Do(func() { close(first) })
+		}
+	}}
 	r := f2Start(t, memstore.New(), hooks, m1Route(t, key))
 	must(r.inbox.Send(bg, agent.ListNextTurn, agent.InboxMessage{Source: agent.SourceUser, Text: m1Long}))
 	select {
 	case <-first:
 	case <-time.After(2 * time.Minute):
-		t.Fatal("no chunk streamed within 2m")
+		t.Fatal("no answer text streamed within 2m")
 	}
 	if err := r.drv.Cancel(agent.CauseUser, agent.CancelOptions{Scope: agent.ScopeTurn, Inbox: agent.InboxKeep}); err != nil {
 		t.Fatalf("cancel: %v", err)
@@ -160,7 +239,32 @@ func TestManualM1CancelMidStream(t *testing.T) {
 		t.Fatalf("%d turn/end events, want 1", len(ends))
 	}
 	t.Logf("M1 cancel: turn/end reason=%+v", ends[0].Reason)
-	if ends[0].Reason.Kind == event.ReasonCompleted {
-		t.Errorf("the cancelled turn ended completed: %+v", ends[0].Reason)
+	if ends[0].Reason.Kind != event.ReasonAborted || ends[0].Reason.Cause != string(agent.CauseUser) {
+		t.Fatalf("turn/end reason %+v, want aborted{cause: user}", ends[0].Reason)
+	}
+	steps := m1OfType(evs, "step/end")
+	if len(steps) != 1 || m1Decode[event.StepEnd](t, steps[0]).Cause != string(agent.CauseUser) {
+		t.Fatalf("step/end %v, want one step cancelled by the user", steps)
+	}
+	// The cancelled step settles either as an interrupted assistant/message
+	// keeping the streamed prefix with no tool call, or as an assistant/attempt
+	// whose failure is cancelled -- never as a provider failure.
+	settled := append(m1OfType(evs, "assistant/message"), m1OfType(evs, "assistant/attempt")...)
+	if len(settled) != 1 {
+		t.Fatalf("%d settlements, want 1", len(settled))
+	}
+	switch s := settled[0]; s.Type() {
+	case "assistant/message":
+		m := m1Decode[event.AssistantMessagePayload](t, s).Message
+		if m1Text(m) == "" || m1HasToolUse(m) {
+			t.Fatalf("interrupted message %s, want the streamed prefix and no tool call", s.Raw())
+		}
+		t.Logf("M1 cancel: interrupted prefix kept (%d bytes)", len(m1Text(m)))
+	default:
+		a := m1Decode[event.AssistantAttemptPayload](t, s)
+		if a.Failure == nil || a.Failure.Class != vocab.Cancelled {
+			t.Fatalf("attempt %s, want failure class %q", s.Raw(), vocab.Cancelled)
+		}
+		t.Logf("M1 cancel: attempt settled cancelled (%s)", a.Failure.Code)
 	}
 }

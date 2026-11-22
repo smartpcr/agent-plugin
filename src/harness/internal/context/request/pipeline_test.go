@@ -186,3 +186,82 @@ func TestRegisterKeepsTheTable(t *testing.T) {
 	h.Dispose()
 	must(r.pipe.Register(r.root, &fake{name: request.KindClock}))
 }
+
+// DH-ADR-CONTEXT-1: a contributor mounted in a preset serves only that
+// preset's agents. Two sibling presets each mount their own clock (the same
+// kind, both accepted) under a global clock and a global catalogue: each
+// preset's agent sees its own clock and the catalogue, a sibling's agent never
+// observes the other preset's clock, an agent outside both sees the global
+// clock, and closing a preset leaves its agent the global one.
+func TestContributorServesOnlyItsScopesAgents(t *testing.T) {
+	r := newRig(t)
+	presetA := must(r.tab.New(r.root, "preset-a"))
+	presetB := must(r.tab.New(r.root, "preset-b"))
+	agentA := must(r.tab.New(r.root, "agent-a", presetA.Key()))
+	agentB := must(r.tab.New(r.root, "agent-b", presetB.Key()))
+	refA := agent.Ref{Session: "s-a", Incarnation: 1}
+	refB := agent.Ref{Session: "s-b", Incarnation: 1}
+	refC := agent.Ref{Session: "s-c", Incarnation: 1}
+	r.mu.Lock()
+	r.scopes[refA], r.scopes[refB] = agentA.Key(), agentB.Key()
+	r.mu.Unlock()
+
+	global := &fake{name: request.KindClock, t: t}
+	catalog := &fake{name: request.KindSkillCatalog, t: t}
+	clockA := &fake{name: request.KindClock, t: t}
+	clockB := &fake{name: request.KindClock, t: t}
+	must(r.pipe.Register(r.root, global))
+	must(r.pipe.Register(r.root, catalog))
+	must(r.pipe.Register(presetA.Ctx(), clockA))
+	must(r.pipe.Register(presetB.Ctx(), clockB))
+	if _, err := r.pipe.Register(presetA.Ctx(), &fake{name: request.KindClock, t: t}); err == nil {
+		t.Fatal("a second clock contributor was registered in preset A")
+	}
+
+	step := func(ref agent.Ref) []string {
+		t.Helper()
+		r.mu.Lock()
+		at := r.scopes[ref]
+		r.mu.Unlock()
+		d := must(agent.AskPreStep(r.root, at, agent.PreStepRequest{
+			Ctx: bg, Agent: ref, Turn: 1, Step: 1, Selection: agent.ModelSelection{Route: route},
+		}))
+		enter, ok := d.(agent.Enter)
+		if !ok {
+			t.Fatalf("%s: decision %+v, want enter", ref, d)
+		}
+		var kinds []string
+		for _, m := range enter.Messages {
+			src, _ := m.Source()
+			kinds = append(kinds, src.Kind)
+		}
+		return kinds
+	}
+	calls := func() [4]int32 {
+		return [4]int32{global.calls.Load(), catalog.calls.Load(), clockA.calls.Load(), clockB.calls.Load()}
+	}
+	want := []string{request.KindSkillCatalog, request.KindClock}
+
+	for _, tc := range []struct {
+		name string
+		ref  agent.Ref
+		want [4]int32 // global, catalog, clock A, clock B, cumulative
+	}{
+		{"preset A's agent", refA, [4]int32{0, 1, 1, 0}},
+		{"preset B's agent", refB, [4]int32{0, 2, 1, 1}},
+		{"an agent outside both presets", refC, [4]int32{1, 3, 1, 1}},
+	} {
+		if got := step(tc.ref); !slices.Equal(got, want) {
+			t.Fatalf("%s entered %q, want %q", tc.name, got, want)
+		}
+		if got := calls(); got != tc.want {
+			t.Fatalf("after %s the contributors (global, catalog, A, B) ran %v times, want %v", tc.name, got, tc.want)
+		}
+	}
+
+	must(0, presetA.Close())
+	step(refA)
+	if got := calls(); got != [4]int32{2, 4, 1, 1} {
+		t.Fatalf("after preset A closed its agent ran (global, catalog, A, B) %v, want the global clock", got)
+	}
+}

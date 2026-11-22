@@ -18,7 +18,7 @@ Machine: Windows, go toolchain per `src/harness/go.mod` (floor `go 1.26.0`).
 
 | Step | Package | What it does |
 | --- | --- | --- |
-| 11.7 DH-D-CONTEXT-1 | `internal/context/request` | `Pipeline` is the context area's one `agent.PreStep` listener. It calls downstream first; when the step is entered, it runs its contributors against a read-only view of the agent's surface in the fixed order of one table (`Order()`), whatever order they registered in, and appends their messages to `Enter.Messages` after the claimed batch. The driver logs every entered message as `user/message` before it builds the request, so each contribution is a logged event whose source kind is the contributor's name, and the request rebuilt from the log at its `requestAsOf` equals the one sent. A contributor never appends. An unchanged observation adds nothing. A failing or panicking optional contributor is skipped for the step and recorded as the log-only `context/skipped`; a failing required one rejects the step (the turn ends blocked, naming it). A downstream reject enters nothing and runs no contributor. `Register` keeps the table: an unknown or duplicate name is refused. The package is named `request` as the plan names it; context-compaction-skill.md §6.1 calls it `context/inject`. |
+| 11.7 DH-D-CONTEXT-1 | `internal/context/request` | `Pipeline` is the context area's one `agent.PreStep` listener. It calls downstream first; when the step is entered, it runs its contributors against a read-only view of the agent's surface in the fixed order of one table (`Order()`), whatever order they registered in, and appends their messages to `Enter.Messages` after the claimed batch. The driver logs every entered message as `user/message` before it builds the request, so each contribution is a logged event whose source kind is the contributor's name, and the request rebuilt from the log at its `requestAsOf` equals the one sent. A contributor never appends. An unchanged observation adds nothing. A failing or panicking optional contributor is skipped for the step and recorded as the log-only `context/skipped`; a failing required one rejects the step (the turn ends blocked, naming it). A downstream reject enters nothing and runs no contributor. Contributors are scope-layered (`scope.Layers`): `Register` mounts one in its owner's scope (`scope.Of`), so a contributor mounted in a preset serves only that preset's agents (context-compaction-skill.md §6.1) and the global scope's serve every agent; for each step the pipeline resolves the target agent's scope (`Options.Scopes`, `LiveScopes` over the agent registry), and the nearest mount of each kind wins. `Register` keeps the table: an unknown name, or a second mount of one kind in the same scope, is refused; the same kind in two sibling scopes is allowed. The package is named `request` as the plan names it; context-compaction-skill.md §6.1 calls it `context/inject`. |
 | RM-8 | `internal/archtest` | Two rules: the directory `internal/context` holds no Go package (nothing shadows the standard `context`), and no package under `internal/context` imports the agent driver or a model provider, wire format or transport. |
 
 The F2 harness (`internal/agent/f2_test.go`) composes the real components: a
@@ -34,9 +34,9 @@ Run with `go -C src/harness test -race -count=1 ./internal/context/... ./interna
 
 | Scenario (implementation-plan Stage 11.4) | Test | Result |
 | --- | --- | --- |
-| Context pipeline is logged and ordered (TC-11a) | `request` `TestContributionsAreLoggedInTableOrderAndRebuildTheRequest`, `TestUnchangedObservationAddsNothing`, `TestFailuresAreContainedPerContributor`, `TestRegisterKeepsTheTable` | pass. Three contributors registered out of order contribute in table order, each backed by one logged `user/message` with its source. The request's `Digest()` equals that of `surface.Rebuild` over the log prefix ending at its `requestAsOf`. An optional failure or panic is skipped and logged as `context/skipped`; a required failure blocks the turn. |
+| Context pipeline is logged and ordered (TC-11a) | `request` `TestContributionsAreLoggedInTableOrderAndRebuildTheRequest`, `TestUnchangedObservationAddsNothing`, `TestFailuresAreContainedPerContributor`, `TestRegisterKeepsTheTable`, `TestContributorServesOnlyItsScopesAgents` | pass. Three contributors registered out of order contribute in table order, each backed by one logged `user/message` with its source. The request's `Digest()` equals that of `surface.Rebuild` over the log prefix ending at its `requestAsOf`. An optional failure or panic is skipped and logged as `context/skipped`; a required failure blocks the turn. A contributor mounted in one preset reaches only that preset's agent, not its sibling's; a preset mount shadows the global one of its kind for that preset only; closing the preset unmounts it. |
 | Flow F2 bracketed log matches golden (TC-11a) | `agent` `TestFlowF2LogMatchesGolden` | pass. One turn on memstore, with one `probe` call and one approval, serializes to `internal/agent/testdata/f2_log.golden` (19 events: turn and step brackets, the request header, the two settlements, the call, `approval/asked` and `approval/decided`, the result, `turn/end` completed). Generated ids, digests and the transport's wall-clock timing are numbered or masked, so runs are byte-identical (`-count=5`). Both sent requests rebuild from the log to the same digest. |
-| Flow F2 persisted with checkpoints before I/O (TC-11b) | `agent` `TestFlowF2CheckpointsBeforeIOOnSQLite` | pass. On the SQLite store in a temp home, a second connection sees, before each provider attempt, every row the request reflects (and before attempt 2, step 1's `step/end`); before the tool body, the call's `assistant/message`, `tool/call` and `approval/decided`; after the turn, the `step/end` and `turn/end` as the last two rows. The log reopened from the database serializes to the same golden. |
+| Flow F2 persisted with checkpoints before I/O (TC-11b) | `agent` `TestFlowF2CheckpointsBeforeIOOnSQLite`, `TestFlowF2CheckpointOracleCatchesAMissingFlush` | pass. The SQLite store is wrapped so every successful `Writer.Flush` (the durability barrier) is recorded with the highest sequence it covered; because SQLite commits each append, rows alone cannot prove a barrier, so the test requires a recorded flush covering the cut before each provider attempt, before the tool body and at step end, in that order. The negative twin hides the recorded flushes and asserts the oracle then fails at every cut. This found a driver defect, fixed here: `driver/step.go` `call()` built and sent the request without a flush (architecture.md §6.2 point 9, "checkpoint, then build at the committed cut"); it now flushes after the request header and before `NextRequest`, and a failed flush means the attempt does not run. In addition, a second connection sees, before each provider attempt, every row the request reflects (and before attempt 2, step 1's `step/end`); before the tool body, the call's `assistant/message`, `tool/call` and `approval/decided`; after the turn, the `step/end` and `turn/end` as the last two rows. The log reopened from the database serializes to the same golden. |
 | Import direction (RM-8) | `archtest` `TestImportDirection`, `TestRulesCatchViolations` | pass. A package at `internal/context` and an import of the driver from `internal/context/...` are both caught. |
 
 The property test that no tool call is left unanswered in history on any exit path
@@ -59,11 +59,18 @@ go -C src/harness test -tags manual -count=1 -v -run TestManualM1 ./internal/age
 - `TestManualM1OneTurn` sends one prompt asking for one `probe` call, prints the
   bracketed log (`M1 bracketed log`), and for each sent request the digest rebuilt
   by `surface.Rebuild` at its `requestAsOf` and its messages (`M1 request N:`). It
-  fails if the brackets stay open or a rebuilt digest differs.
+  fails unless the brackets close, the answerer was asked once, every rebuilt digest
+  equals the sent one, there is exactly one `turn/end` and it is completed, no
+  attempt failed, the one `tool/result` is a success carrying `probed: ping`, and
+  the last settlement is an `assistant/message` with text and no tool call.
 - `TestManualM1CancelMidStream` sends a prompt with a long reply, cancels the turn
-  (`CauseUser`, `ScopeTurn`) after the first streamed chunk, and prints the
-  `turn/end` reason (`M1 cancel:`). It fails if the brackets stay open or the turn
-  ended completed.
+  (`CauseUser`, `ScopeTurn`) only after a nonempty answer `TextDelta` has
+  streamed (a block start, usage chunk or error finish does not trigger it), and
+  prints the `turn/end` reason (`M1 cancel:`). It fails unless the brackets close,
+  `turn/end` is `aborted` with cause `user`, the one `step/end` carries cause
+  `user`, and the one settlement is either an interrupted `assistant/message`
+  keeping the streamed text with no tool call or an `assistant/attempt` whose
+  failure class is `cancelled`; a provider or authentication failure fails it.
 
 Without the key both skip. Attempted from this machine: `curl` to
 `https://api.deepseek.com/` times out (exit 28), as the DH-S-9 attempt found, so no
@@ -71,8 +78,8 @@ request reached DeepSeek and the table stays unfilled.
 
 | Run | Expected | Observed |
 | --- | --- | --- |
-| one prompt, one tool | brackets closed, one approval, every rebuilt digest equals the sent one | not run |
-| cancel mid-stream | brackets closed, `turn/end` reason not completed, cause user | not run |
+| one prompt, one tool | brackets closed, one approval, every rebuilt digest equals the sent one, one completed turn, probe succeeded, final text reply | not run |
+| cancel mid-stream | brackets closed, `turn/end` aborted with cause user, cancelled settlement | not run |
 
 Owner: the operator runs both from a network that reaches `api.deepseek.com`, with
 the key supplied at run time, and replaces each `not run` cell with the printed
@@ -101,7 +108,7 @@ stage supplies.
 SESSION-2 and AGENT-3 also require DH-S-13 because they kill the host during a
 shell tool call. With these, every `DH-E-*` scenario of DH-S-1 to DH-S-11 named in
 impl.md §7.5 has a file and an index entry. `tools/harness-gate/scenarios_test.go`
-expects each file and test, checks the new helper files against the import
+expects each file and test (TOOLCHAIN-1 requires record to write a new, nonempty `session[.vN].jsonl` of JSON-object lines into a copy that held no session log, upstream/toolchain.md:556), checks the new helper files against the import
 boundary, and lists the six new ids in the `require --stage DH-S-17` output.
 
 Gate evidence: `go -C src/harness vet -tags scenario ./...` exits 0; the default

@@ -179,6 +179,15 @@ func (d *Driver) call(t *turnState, ss *stepState, n int, sel agent.ModelSelecti
 		if err := d.header(ss.ctx, p.Route(), st.Schemas(), sel.Controls, series && attempt == 1); err != nil {
 			return nil, nil, err
 		}
+		// Point 9: checkpoint, then build the request at the committed cut, so
+		// everything it reflects is durable before a byte leaves the machine.
+		// A failed flush means the attempt does not run.
+		if err := d.write(ss.ctx, func(ctx context.Context) error {
+			_, err := s.Flush(ctx)
+			return err
+		}); err != nil {
+			return nil, nil, err
+		}
 		req, err := s.NextRequest()
 		if err != nil {
 			return nil, errorReason("driver/request", err), nil

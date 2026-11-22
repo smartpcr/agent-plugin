@@ -107,14 +107,18 @@ func (a stubAgent) ScopeKey() scope.Key { return scope.Key{} }
 
 // rig is one driven agent on the scripted model with the pipeline listening.
 type rig struct {
-	t     *testing.T
-	root  *cordis.Context
-	st    *memstore.Store
-	sess  session.Handle
-	inbox *agent.Inbox
-	drv   *driver.Driver
-	sent  *recorder
-	pipe  *request.Pipeline
+	t    *testing.T
+	root *cordis.Context
+	tab  scope.Table
+	st   *memstore.Store
+	// scopes is each agent's scope key for the pipeline; absent is global.
+	mu     sync.Mutex
+	scopes map[agent.Ref]scope.Key
+	sess   session.Handle
+	inbox  *agent.Inbox
+	drv    *driver.Driver
+	sent   *recorder
+	pipe   *request.Pipeline
 }
 
 func newRig(t *testing.T, turns ...fakemodel.Turn) *rig {
@@ -126,9 +130,15 @@ func newRig(t *testing.T, turns ...fakemodel.Turn) *rig {
 	for _, c := range []*cordis.Component{scope.Component, core.Component} {
 		must(0, must(root.Use(c, cordis.None{})).Wait())
 	}
-	var svc tools.Service
-	g := must(root.Inject([]string{tools.Key.Name()}, func(c *cordis.Context) (err error) {
-		svc, err = tools.Key.Get(c)
+	var (
+		svc tools.Service
+		tab scope.Table
+	)
+	g := must(root.Inject([]string{tools.Key.Name(), scope.TableKey.Name()}, func(c *cordis.Context) (err error) {
+		if svc, err = tools.Key.Get(c); err != nil {
+			return err
+		}
+		tab, err = scope.TableKey.Get(c)
 		return err
 	}))
 	must(0, g.Wait())
@@ -137,8 +147,16 @@ func newRig(t *testing.T, turns ...fakemodel.Turn) *rig {
 	id := "s-ctx"
 	sess := must(session.NewService(root, st, session.Config{}).Create(bg, nil, session.CreateOptions{Header: session.Header{ID: id}}))
 	t.Cleanup(func() { _ = sess.Close(bg) })
-	r := &rig{t: t, root: root, st: st, sess: sess}
-	r.pipe, _ = must2(request.New(root, request.Options{Sessions: func(agent.Ref) (request.Log, error) { return sess, nil }}))
+	r := &rig{t: t, root: root, tab: tab, st: st, sess: sess, scopes: map[agent.Ref]scope.Key{}}
+	r.pipe, _ = must2(request.New(root, request.Options{
+		Table:    tab,
+		Sessions: func(agent.Ref) (request.Log, error) { return sess, nil },
+		Scopes: func(a agent.Ref) (scope.Key, error) {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			return r.scopes[a], nil
+		},
+	}))
 
 	rt := llm.New()
 	fakemodel.Register(t, rt, route, fakemodel.NewTransport(t, turns...))

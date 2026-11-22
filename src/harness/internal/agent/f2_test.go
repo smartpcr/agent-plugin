@@ -316,15 +316,107 @@ func TestFlowF2LogMatchesGolden(t *testing.T) {
 	golden.Assert(t, f2Golden, f2Serialize(evs))
 }
 
-// TC-11b, the Stage 11.4 scenario "Flow F2 persisted with checkpoints before
-// I/O": on the SQLite store in a temp home a second connection sees, before
-// each provider attempt, every row the request reflects; before the tool body
-// the call's tool/call and its approval; and after the turn, the step/end and
-// turn/end. The log reopened from the database equals the in-memory golden.
-func TestFlowF2CheckpointsBeforeIOOnSQLite(t *testing.T) {
+// f2Barriers is a store whose writers record every successful Flush: the
+// highest seq accepted before the call, which the barrier made durable. hide
+// drops the record (the flush still runs), standing in for a driver that never
+// flushed, so the oracle's own failure can be shown.
+type f2Barriers struct {
+	store.Store
+	mu       sync.Mutex
+	accepted event.Seq
+	cuts     []event.Seq
+	types    map[event.Seq]string
+	hide     bool
+}
+
+func newF2Barriers(st store.Store) *f2Barriers {
+	return &f2Barriers{Store: st, types: map[event.Seq]string{}}
+}
+
+func (b *f2Barriers) Create(ctx context.Context, h store.Header, o store.CreateOptions) (store.Writer, error) {
+	w, err := b.Store.Create(ctx, h, o)
+	if err != nil {
+		return nil, err
+	}
+	return &f2Writer{Writer: w, b: b}, nil
+}
+
+func (b *f2Barriers) OpenWrite(ctx context.Context, id string, o store.OpenOptions) (store.Writer, error) {
+	w, err := b.Store.OpenWrite(ctx, id, o)
+	if err != nil {
+		return nil, err
+	}
+	return &f2Writer{Writer: w, b: b}, nil
+}
+
+// flushed is the highest seq a successful barrier has covered so far.
+func (b *f2Barriers) flushed() event.Seq {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.cuts) == 0 {
+		return 0
+	}
+	return b.cuts[len(b.cuts)-1]
+}
+
+// last is the highest accepted seq of type typ, 0 for none.
+func (b *f2Barriers) last(typ string) event.Seq {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var s event.Seq
+	for seq, t := range b.types {
+		if t == typ && seq > s {
+			s = seq
+		}
+	}
+	return s
+}
+
+type f2Writer struct {
+	store.Writer
+	b *f2Barriers
+}
+
+func (w *f2Writer) Append(ctx context.Context, bt store.Batch) error {
+	if err := w.Writer.Append(ctx, bt); err != nil {
+		return err
+	}
+	w.b.mu.Lock()
+	for _, r := range bt.Records {
+		w.b.types[r.Seq] = r.Type
+		w.b.accepted = max(w.b.accepted, r.Seq)
+	}
+	w.b.mu.Unlock()
+	return nil
+}
+
+func (w *f2Writer) Flush(ctx context.Context) error {
+	w.b.mu.Lock()
+	at := w.b.accepted
+	w.b.mu.Unlock()
+	if err := w.Writer.Flush(ctx); err != nil {
+		return err
+	}
+	w.b.mu.Lock()
+	if !w.b.hide {
+		w.b.cuts = append(w.b.cuts, at)
+	}
+	w.b.mu.Unlock()
+	return nil
+}
+
+// f2Durability runs flow F2 on the SQLite store in a temp home behind a
+// barrier recorder and returns what failed of TC-11b's checks. At each cut,
+// before the provider attempt, at the start of the tool body and once the turn
+// is idle, a successful Flush must already cover the records that cut needs,
+// and a second connection must read them from the database.
+func f2Durability(t *testing.T, hide bool) (problems []string, seen string, sess session.Handle, sent []session.Request, st store.Store, stop func()) {
+	t.Helper()
 	layout := temphome.New(t)
-	st := must(sqlite.OpenHome(bg, layout))
-	t.Cleanup(func() { _ = st.Close(bg) })
+	db := must(sqlite.OpenHome(bg, layout))
+	t.Cleanup(func() { _ = db.Close(bg) })
+	bar := newF2Barriers(db)
+	bar.hide = hide
 	durable := func() []store.Record {
 		other := must(sqlite.Open(bg, layout.DB()))
 		defer func() { _ = other.Close(bg) }()
@@ -333,55 +425,70 @@ func TestFlowF2CheckpointsBeforeIOOnSQLite(t *testing.T) {
 		return must(r.Read(bg, 0, 0, store.ReadOptions{}))
 	}
 	var (
-		mu       sync.Mutex
-		problems []string
-		seen     []string
+		mu    sync.Mutex
+		order []string
 	)
 	fail := func(format string, args ...any) {
 		mu.Lock()
 		problems = append(problems, fmt.Sprintf(format, args...))
 		mu.Unlock()
 	}
+	// covered checks one cut: a barrier covers through, and the database holds it.
+	covered := func(cut string, through event.Seq) {
+		if f := bar.flushed(); f < through {
+			fail("%s: no flush covers seq %d (flushed through %d)", cut, through, f)
+		}
+		rows := durable()
+		if len(rows) == 0 || rows[len(rows)-1].Seq < through {
+			fail("%s: the database holds %d rows, want through seq %d", cut, len(rows), through)
+		}
+		mu.Lock()
+		order = append(order, cut)
+		mu.Unlock()
+	}
 	hooks := f2Hooks{
 		attempt: func(n int, req session.Request) {
-			rows := durable()
-			if len(rows) == 0 || rows[len(rows)-1].Seq < req.AsOf() {
-				fail("attempt %d: the database holds %d rows, the request reflects seq %d", n, len(rows), req.AsOf())
-				return
+			covered("attempt", req.AsOf())
+			if n == 2 {
+				covered("attempt", bar.last("step/end"))
 			}
-			if n == 2 && !slices.ContainsFunc(rows, func(r store.Record) bool { return r.Type == "step/end" }) {
-				fail("attempt 2: step 1's step/end is not durable")
-			}
-			mu.Lock()
-			seen = append(seen, "attempt")
-			mu.Unlock()
 		},
 		body: func() {
-			var types []string
-			for _, r := range durable() {
-				types = append(types, r.Type)
-			}
 			for _, typ := range []string{"assistant/message", "tool/call", "approval/decided"} {
-				if !slices.Contains(types, typ) {
-					fail("before the tool body: %s is not durable (%v)", typ, types)
+				s := bar.last(typ)
+				if s == 0 {
+					fail("before the tool body: no %s was accepted", typ)
 				}
+				covered("body", s)
 			}
-			mu.Lock()
-			seen = append(seen, "body")
-			mu.Unlock()
 		},
 	}
-	sess, sent, stop := f2Run(t, st, hooks)
+	sess, sent, stop = f2Run(t, bar, hooks)
+	// At the end, before the driver closes (which flushes again), the step/end
+	// and turn/end are the last durable rows and a barrier covered them.
+	covered("end", bar.last("turn/end"))
 	rows := durable()
-	if n := len(rows); n == 0 || rows[n-1].Type != "turn/end" || rows[n-2].Type != "step/end" || event.Offset(n) != sess.Len() {
+	if n := len(rows); n < 2 || rows[n-1].Type != "turn/end" || rows[n-2].Type != "step/end" || event.Offset(n) != sess.Len() {
 		fail("after the turn the database holds %d of %d rows, ending %v", n, sess.Len(), rows[max(0, n-2):])
 	}
-	seen = append(seen, "end")
+	return problems, strings.Join(slices.Compact(order), ","), sess, sent, bar, stop
+}
+
+// TC-11b, the Stage 11.4 scenario "Flow F2 persisted with checkpoints before
+// I/O": on the SQLite store in a temp home a successful Flush, recorded at the
+// writer, covers, before each provider attempt, every record the request
+// reflects (and before attempt 2, step 1's step/end); before the tool body the
+// call's assistant/message, tool/call and approval/decided; and before the turn
+// is idle, the step/end and turn/end. A second connection reads each of them
+// from the database at the same cut. The log reopened from the database equals
+// the in-memory golden.
+func TestFlowF2CheckpointsBeforeIOOnSQLite(t *testing.T) {
+	problems, seen, sess, sent, st, stop := f2Durability(t, false)
 	if len(problems) > 0 {
 		t.Fatal(strings.Join(problems, "\n"))
 	}
-	if got := strings.Join(slices.Compact(seen), ","); got != "attempt,body,attempt,end" {
-		t.Fatalf("checkpoints observed %s", got)
+	if seen != "attempt,body,attempt,end" {
+		t.Fatalf("checkpoints observed %s", seen)
 	}
 	f2Check(t, st, sess, sent)
 
@@ -391,4 +498,16 @@ func TestFlowF2CheckpointsBeforeIOOnSQLite(t *testing.T) {
 	rs, release := must2(session.NewService(cordis.New(), st, session.Config{}).OpenRead(bg, f2Session))
 	defer release()
 	golden.Assert(t, f2Golden, f2Serialize(must(rs.Read(bg, 0, 0))))
+}
+
+// The TC-11b oracle fails without the barriers: the same run with every flush
+// hidden from the recorder (the rows are still durable, because the SQLite
+// store commits each append) is reported at every cut.
+func TestFlowF2CheckpointOracleCatchesAMissingFlush(t *testing.T) {
+	problems, _, _, _, _, _ := f2Durability(t, true)
+	for _, cut := range []string{"attempt", "body", "end"} {
+		if !slices.ContainsFunc(problems, func(p string) bool { return strings.HasPrefix(p, cut+": no flush covers") }) {
+			t.Errorf("a missing flush at the %s cut was not reported: %q", cut, problems)
+		}
+	}
 }

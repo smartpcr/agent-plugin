@@ -6,12 +6,14 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync/atomic"
@@ -29,7 +31,8 @@ import (
 // seed, when the replay package is run in record mode for that scenario (on a
 // copy, so the checkout is never written), the key is removed from the
 // environment and the package is run in replay mode twice, then record writes a
-// session log and, for a file-changing scenario, the product's workspace equals
+// session log (a new, nonempty session[.vN].jsonl of JSON lines at the top of
+// the copy, which held none before) and, for a file-changing scenario, the product's workspace equals
 // workspace.expected/; both replays pass with no request reaching the network
 // (every proxy variable names a listener that counts and refuses); the fixture
 // directory has no differences after the replays; and each run report lists the
@@ -71,12 +74,13 @@ func TestRecordThenReplayWithoutAKey(t *testing.T) {
 	}
 
 	// Record against the real model.
+	if logs := sessionLogs(t, scenario); len(logs) != 0 {
+		t.Fatalf("the scenario directory already holds session logs %v; it must hold only a manifest and a workspace seed", logs)
+	}
 	rv := vars()
 	report := shellEnv(t, expand(recordT, rv), "DEEPSEEK_API_KEY="+key)
 	assertExecuted(t, "record", report, name)
-	if treeDigest(t, scenario) == "" {
-		t.Fatal("the scenario copy is empty after record")
-	}
+	assertRecordedLog(t, scenario)
 	if expected := filepath.Join(scenario, "workspace.expected"); exists(expected) {
 		if got, want := treeDigest(t, rv["workspace"]), treeDigest(t, expected); got != want {
 			t.Fatalf("the product's workspace differs from workspace.expected/ (digest %s, want %s)", got, want)
@@ -112,6 +116,65 @@ func assertExecuted(t *testing.T, mode, report, name string) {
 	t.Helper()
 	if strings.Contains(report, name+" skipped") || !strings.Contains(report, name+" executed") {
 		t.Fatalf("the %s report does not list %s as executed:\n%s", mode, name, report)
+	}
+}
+
+// sessionLogName matches a scenario's session logs (upstream/toolchain.md
+// sec. 2): session[.vN].jsonl for the parent, session.<ordinal>[.vN].jsonl for
+// a child agent.
+var sessionLogName = regexp.MustCompile(`^session(\.\d+)?(\.v\d+)?\.jsonl$`)
+
+var parentLogName = regexp.MustCompile(`^session(\.v\d+)?\.jsonl$`)
+
+// sessionLogs lists the session logs at the top of a scenario directory.
+func sessionLogs(t *testing.T, dir string) []string {
+	t.Helper()
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("listing %s: %v", dir, err)
+	}
+	var out []string
+	for _, e := range ents {
+		if e.Type().IsRegular() && sessionLogName.MatchString(e.Name()) {
+			out = append(out, e.Name())
+		}
+	}
+	return out
+}
+
+// assertRecordedLog checks that record wrote the parent's session log into a
+// directory that held none: present, nonempty, and every line one JSON object.
+func assertRecordedLog(t *testing.T, dir string) {
+	t.Helper()
+	logs := sessionLogs(t, dir)
+	parent := ""
+	for _, l := range logs {
+		if parentLogName.MatchString(l) {
+			parent = l
+		}
+	}
+	if parent == "" {
+		t.Fatalf("record wrote no parent session log (session[.vN].jsonl) into %s; found %v", dir, logs)
+	}
+	for _, l := range logs {
+		data, err := os.ReadFile(filepath.Join(dir, l))
+		if err != nil {
+			t.Fatalf("reading the recorded log %s: %v", l, err)
+		}
+		lines := 0
+		for i, line := range strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n") {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			var obj map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(line), &obj); err != nil {
+				t.Fatalf("the recorded log %s line %d is not a JSON object: %v\n%s", l, i+1, err, line)
+			}
+			lines++
+		}
+		if lines == 0 {
+			t.Fatalf("the recorded log %s is empty", l)
+		}
 	}
 }
 

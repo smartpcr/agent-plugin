@@ -11,6 +11,11 @@
 // every contribution is in the log with its observation (the message source)
 // and a request rebuilt from the log at its requestAsOf equals the one sent.
 //
+// Contributors are layered by scope (session/scope): one registered in a
+// preset's scope serves only the agents that scope encloses, the nearest
+// scope's contributor of a kind wins, and a global one serves every agent
+// (DH-ADR-CONTEXT-1). Options.Scopes names each agent's scope.
+//
 // A contributor observes the world once and returns user-role messages whose
 // source kind is its name; it never appends. A failing or panicking optional
 // contributor is skipped for the step and recorded as the ignorable,

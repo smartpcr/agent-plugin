@@ -13,6 +13,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/agent"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/scope"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/surface"
 )
 
@@ -72,8 +73,14 @@ type Log interface {
 
 // Options are New's options.
 type Options struct {
+	// Table is the scope table contributors are layered over. Required.
+	Table scope.Table
 	// Sessions is the live session of an agent. Required.
 	Sessions func(agent.Ref) (Log, error)
+	// Scopes is an agent's scope: its step sees the contributors registered in
+	// that scope, in the scopes enclosing it (its preset) and globally. Nil
+	// puts every agent at the global scope, which sees only global ones.
+	Scopes func(agent.Ref) (scope.Key, error)
 }
 
 // Live is the Sessions lookup over the agent registry: the live session of the
@@ -89,6 +96,18 @@ func Live(reg agent.Registry) func(agent.Ref) (Log, error) {
 			return nil, fmt.Errorf("request: the session of %s is not live", r)
 		}
 		return l, nil
+	}
+}
+
+// LiveScopes is the Scopes lookup over the agent registry: the scope key of
+// the agent r names.
+func LiveScopes(reg agent.Registry) func(agent.Ref) (scope.Key, error) {
+	return func(r agent.Ref) (scope.Key, error) {
+		a, err := reg.Resolve(r)
+		if err != nil {
+			return scope.Key{}, err
+		}
+		return a.ScopeKey(), nil
 	}
 }
 
@@ -117,20 +136,23 @@ var SkippedType = event.MustDefine(event.Default(), event.Spec[Skipped]{
 
 // Pipeline is the context area's one PreStep listener and its contributors.
 type Pipeline struct {
-	o  Options
+	o Options
+	// mu orders a registration's duplicate check with its binding.
 	mu sync.Mutex
-	// by is the registered contributor of each kind.
-	by map[string]Contributor
+	// layers holds the contributors of each scope by kind: a contributor
+	// mounted in a preset serves only that preset's agents
+	// (DH-ADR-CONTEXT-1), and the nearest scope's contributor of a kind wins.
+	layers *scope.Layers[*scope.Named[Contributor]]
 }
 
 // New builds the pipeline and registers its PreStep listener as an effect of
 // owner: the listener goes when owner's fiber unloads or the handle is
 // disposed.
 func New(owner *cordis.Context, o Options) (*Pipeline, *cordis.EffectHandle, error) {
-	if owner == nil || o.Sessions == nil {
-		return nil, nil, errors.New("request: New needs an owner and a session lookup")
+	if owner == nil || o.Table == nil || o.Sessions == nil {
+		return nil, nil, errors.New("request: New needs an owner, a scope table and a session lookup")
 	}
-	p := &Pipeline{o: o, by: map[string]Contributor{}}
+	p := &Pipeline{o: o, layers: scope.NewLayers(o.Table, scope.NewNamed[Contributor])}
 	h, err := agent.PreStep.On(owner, p.preStep)
 	if err != nil {
 		return nil, nil, err
@@ -138,9 +160,11 @@ func New(owner *cordis.Context, o Options) (*Pipeline, *cordis.EffectHandle, err
 	return p, h, nil
 }
 
-// Register adds c as an effect of owner: it contributes until owner's fiber
-// unloads or the handle is disposed. A name outside the order table, or one
-// already registered, is refused.
+// Register adds c in owner's scope (global for an untagged owner) as an
+// effect of owner: it contributes to the agents that scope encloses until
+// owner's fiber unloads, the handle is disposed or the scope closes. A name
+// outside the order table, or one already registered in that scope, is
+// refused; the same kind in another scope is not.
 func (p *Pipeline) Register(owner *cordis.Context, c Contributor) (*cordis.EffectHandle, error) {
 	if owner == nil || c == nil {
 		return nil, errors.New("request: Register needs an owner and a contributor")
@@ -149,35 +173,41 @@ func (p *Pipeline) Register(owner *cordis.Context, c Contributor) (*cordis.Effec
 	if !slices.Contains(order, name) {
 		return nil, fmt.Errorf("request: contributor %q is not in the order table %v", name, order)
 	}
-	return owner.Effect("context.request:"+name, func() (cordis.Disposer, error) {
-		p.mu.Lock()
-		defer p.mu.Unlock()
-		if _, taken := p.by[name]; taken {
-			return nil, fmt.Errorf("request: a %q contributor is already registered", name)
+	k := scope.Of(owner)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if l, ok := p.layers.Peek(k); ok {
+		if _, taken := l.Get(name); taken {
+			return nil, fmt.Errorf("request: a %q contributor is already registered in %s", name, k)
 		}
-		p.by[name] = c
-		return func() error {
-			p.mu.Lock()
-			if p.by[name] == c {
-				delete(p.by, name)
-			}
-			p.mu.Unlock()
-			return nil
-		}, nil
+	}
+	return p.layers.Add(owner, "context.request:"+name, func(l *scope.Named[Contributor]) func() {
+		return l.Set(name, c)
 	})
 }
 
-// contributors is the registered contributors in table order.
-func (p *Pipeline) contributors() []Contributor {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+// contributors is, in table order, the contributor of each kind visible at
+// k: its own scope's, else the nearest enclosing scope's, else the global one.
+func (p *Pipeline) contributors(k scope.Key) []Contributor {
+	by := map[string]Contributor{}
+	for _, e := range scope.Merged(p.layers, k, func(l *scope.Named[Contributor]) *scope.Named[Contributor] { return l }) {
+		by[e.Name] = e.Value
+	}
 	var out []Contributor
-	for _, k := range order {
-		if c, ok := p.by[k]; ok {
+	for _, kind := range order {
+		if c, ok := by[kind]; ok {
 			out = append(out, c)
 		}
 	}
 	return out
+}
+
+// scopeOf is the scope the agent r's step runs at.
+func (p *Pipeline) scopeOf(r agent.Ref) (scope.Key, error) {
+	if p.o.Scopes == nil {
+		return scope.Key{}, nil
+	}
+	return p.o.Scopes(r)
 }
 
 func (p *Pipeline) preStep(_ *cordis.Context, req agent.PreStepRequest, next func(agent.PreStepRequest) (agent.PreStepDecision, error)) (agent.PreStepDecision, error) {
@@ -189,7 +219,11 @@ func (p *Pipeline) preStep(_ *cordis.Context, req agent.PreStepRequest, next fun
 	if !ok {
 		return d, nil
 	}
-	cs := p.contributors()
+	at, err := p.scopeOf(req.Agent)
+	if err != nil {
+		return nil, fmt.Errorf("request: the scope of %s: %w", req.Agent, err)
+	}
+	cs := p.contributors(at)
 	if len(cs) == 0 {
 		return enter, nil
 	}
