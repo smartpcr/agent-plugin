@@ -13,7 +13,7 @@ Feature: Deadlines and result budget
     And tool "add(a:int,b:int)" is registered
     When the model calls "stuck" and then "add" with arguments '{"a":1,"b":2}'
     And the body of "stuck" has started and the virtual clock advances 12 s
-    Then the call of "stuck" is answered timed out after "10s" with cause "deadline"
+    Then the call of "stuck" is answered "tools/outcome-unknown" (timed out after "10s") with cause "deadline"
     And the step continues: the call of "add" succeeds with text "3"
     And the session log after the step holds "tool/call,tool/result,tool/call,tool/result"
     And the body of "stuck" is listed as detached for the step's agent
