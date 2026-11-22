@@ -13,8 +13,9 @@ import (
 )
 
 // turn runs one turn when next-turn input is pending (points 2 to 16). ran is
-// false when nothing opened. aborted reports a turn that ended aborted: the
-// next-turn input parked when its cancel landed waits for a new wake. A
+// false when nothing opened. aborted reports a turn a cancel ended, aborted
+// or budget{duration}: the next-turn input parked when its cancel landed waits
+// for a new wake. A
 // returned error is a failed append or flush: the driver stops and
 // the turn may stay open in the log.
 func (d *Driver) turn() (ran, aborted bool, err error) {
@@ -99,7 +100,10 @@ func (d *Driver) turn() (ran, aborted bool, err error) {
 		}); err != nil {
 			return true, false, err
 		}
-		aborted = reason.Kind == event.ReasonAborted
+		// The time limit is a cancel too (timeLimit calls keep): its
+		// budget{duration} end holds parked next-turn input like aborted.
+		aborted = reason.Kind == event.ReasonAborted ||
+			(reason.Kind == event.ReasonBudget && reason.Limit == LimitDuration)
 	}
 	// Point 16: the next turn opens only after this flush has settled, within
 	// FinalFlushTimeout.
@@ -149,7 +153,8 @@ func (d *Driver) durable(ctx context.Context, first error) error {
 	}
 }
 
-// timeLimit cancels t with cause budget when its time is up.
+// timeLimit cancels t with cause budget when its time is up. Like any turn
+// cancel, next-turn input parked then waits for a new wake (keep).
 func (d *Driver) timeLimit(t *turnState, lim time.Duration) {
 	select {
 	case <-t.ctx.Done():
