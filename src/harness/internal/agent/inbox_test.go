@@ -217,3 +217,61 @@ func TestConcurrentSendsAreOrderedAndUnique(t *testing.T) {
 		t.Fatal("the fold differs from the live list")
 	}
 }
+
+// flakyFlush fails the next fails flushes; appends stay buffered in the session.
+type flakyFlush struct {
+	session.Handle
+	fails int
+}
+
+func (l *flakyFlush) Flush(ctx context.Context) (event.Offset, error) {
+	if l.fails > 0 {
+		l.fails--
+		return 0, errors.New("injected flush failure")
+	}
+	return l.Handle.Flush(ctx)
+}
+
+// A next-turn send whose flush fails is admitted but not durable: it does not
+// wake the agent and a resend is a duplicate, never a second admission. Sync
+// completes the durability and then pays the wake, once.
+func TestFailedFlushOwesTheWakeUntilSync(t *testing.T) {
+	ctx := context.Background()
+	_, h := inboxSession(t, memstore.New(), "s-flush")
+	t.Cleanup(func() { h.Close(ctx) })
+	log := &flakyFlush{Handle: h, fails: 1}
+	in := must(agent.OpenInbox(ctx, log))
+	if _, err := in.Send(ctx, agent.ListNextTurn, userText("m1", "hello")); err == nil {
+		t.Fatal("a failed flush was not reported")
+	}
+	select {
+	case <-in.Wake():
+		t.Fatal("a send that is not durable woke the agent")
+	default:
+	}
+	if in.Durable() || len(in.Pending(agent.ListNextTurn)) != 1 {
+		t.Fatalf("durable %v, pending %v", in.Durable(), in.Pending(agent.ListNextTurn))
+	}
+	if _, err := in.Send(ctx, agent.ListNextTurn, userText("m1", "hello")); !errors.Is(err, agent.ErrDuplicateMessage) {
+		t.Fatalf("resend %v", err)
+	}
+	if err := in.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-in.Wake():
+	default:
+		t.Fatal("Sync did not pay the owed wake")
+	}
+	if !in.Durable() || count(t, h, agent.SplicedType.Name()) != 1 {
+		t.Fatalf("durable %v, splices %d", in.Durable(), count(t, h, agent.SplicedType.Name()))
+	}
+	if err := in.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-in.Wake():
+		t.Fatal("a clean Sync woke the agent again")
+	default:
+	}
+}

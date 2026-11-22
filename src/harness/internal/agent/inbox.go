@@ -164,6 +164,10 @@ type Inbox struct {
 	// seen is the consumedWork fold: every id ever admitted, whatever became
 	// of it, with its first receipt.
 	seen map[string]Receipt
+	// dirty: a flush failed, so folded changes may not be durable yet; owed: a
+	// next-turn admission among them has not signalled Wake. The next flush that
+	// succeeds (any write, or Sync) clears both and pays the wake.
+	dirty, owed bool
 }
 
 // OpenInbox folds log's splices into a fresh inbox. A resumed agent starts idle:
@@ -251,14 +255,15 @@ func (b *Inbox) SendWith(ctx context.Context, list List, m InboxMessage, also ..
 	}
 	s := Splice{List: list, Position: len(b.pending[list]), Inserted: []InboxMessage{m}}
 	r, err := b.groupLocked(ctx, "send", []Splice{s}, also)
+	if list == ListNextTurn {
+		if _, folded := b.seen[m.ID]; folded && err != nil {
+			b.owed = true // admitted, not yet durable: wake once it is
+		} else if err == nil {
+			b.signal()
+		}
+	}
 	if err != nil {
 		return r, err
-	}
-	if list == ListNextTurn {
-		select {
-		case b.wake <- struct{}{}:
-		default:
-		}
 	}
 	return Receipt{MessageID: m.ID, Seq: r.Seq}, nil
 }
@@ -328,10 +333,54 @@ func (b *Inbox) groupLocked(ctx context.Context, op string, splices []Splice, al
 		b.apply(s, rs[i].Seq)
 	}
 	r := Receipt{Seq: rs[0].Seq}
-	if _, err := b.log.Flush(ctx); err != nil {
+	if err := b.flushLocked(ctx); err != nil {
 		return r, fmt.Errorf("agent: %s: flush: %w", op, err)
 	}
 	return r, nil
+}
+
+// flushLocked makes every folded change durable. A failure marks the inbox
+// dirty; the first later success clears it and pays an owed wake.
+func (b *Inbox) flushLocked(ctx context.Context) error {
+	if _, err := b.log.Flush(ctx); err != nil {
+		b.dirty = true
+		return err
+	}
+	b.dirty = false
+	if b.owed {
+		b.owed = false
+		b.signal()
+	}
+	return nil
+}
+
+func (b *Inbox) signal() {
+	select {
+	case b.wake <- struct{}{}:
+	default:
+	}
+}
+
+// Sync completes the durability of changes a failed flush left behind and then
+// delivers their owed wake; with nothing outstanding it does nothing. It never
+// appends: an admitted message is admitted once.
+func (b *Inbox) Sync(ctx context.Context) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !b.dirty {
+		return nil
+	}
+	if err := b.flushLocked(ctx); err != nil {
+		return fmt.Errorf("agent: sync: %w", err)
+	}
+	return nil
+}
+
+// Durable reports that no folded change is waiting for a flush.
+func (b *Inbox) Durable() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return !b.dirty
 }
 
 // ClaimTurn opens turn with the first next-turn item: turn/start, the claim and
@@ -395,7 +444,7 @@ func (b *Inbox) claimLocked(ctx context.Context, list List, n, turn int, lead ..
 		return fmt.Errorf("agent: claim: %w", err)
 	}
 	b.apply(s, rs[len(lead)].Seq)
-	if _, err := b.log.Flush(ctx); err != nil {
+	if err := b.flushLocked(ctx); err != nil {
 		return fmt.Errorf("agent: claim: flush: %w", err)
 	}
 	return nil
@@ -423,7 +472,7 @@ func (b *Inbox) Discard(ctx context.Context, list List, id, cause string) (bool,
 		return false, fmt.Errorf("agent: discard: %w", err)
 	}
 	b.apply(s, r.Seq)
-	if _, err := b.log.Flush(ctx); err != nil {
+	if err := b.flushLocked(ctx); err != nil {
 		return false, fmt.Errorf("agent: discard: flush: %w", err)
 	}
 	return true, nil

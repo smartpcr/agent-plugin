@@ -3,11 +3,13 @@ package question_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/agent"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human/question"
@@ -18,10 +20,28 @@ import (
 
 var errInjected = errors.New("injected write failure")
 
-// faultyLog fails every write carrying a question/answered while failing is set.
+// faultyLog fails every write carrying a question/answered while failing is set,
+// and the next flushFails flushes (the appends stay buffered in the session).
 type faultyLog struct {
 	session.Handle
-	failing atomic.Bool
+	failing    atomic.Bool
+	flushFails atomic.Int32
+}
+
+func (l *faultyLog) Flush(ctx context.Context) (event.Offset, error) {
+	if l.flushFails.Add(-1) >= 0 {
+		return 0, errInjected
+	}
+	l.flushFails.Store(0)
+	return l.Handle.Flush(ctx)
+}
+
+// newService is a question service whose interactions end with the test.
+func newService(t *testing.T, cfg question.Config) *question.Service {
+	t.Helper()
+	svc := question.New(cfg)
+	t.Cleanup(svc.Close)
+	return svc
 }
 
 func (l *faultyLog) refuse(ds ...event.Draft) bool {
@@ -99,7 +119,7 @@ func receive(t *testing.T, ch <-chan askOut) askOut {
 func TestReplyReleasesAWaitingAsk(t *testing.T) {
 	f := setup(t)
 	a := f.bind(t, answerer.Never())
-	svc := question.New(question.Config{Registry: f.reg})
+	svc := newService(t, question.Config{Registry: f.reg})
 	ch := askAsync(t, svc, f.h, f.inbox, question.Question{Agent: me, Call: "call-q", Text: "Deploy?", Wait: true, Timeout: time.Hour})
 	until(t, "the question never reached the answerer", func() bool { return len(a.Asked()) == 1 })
 	id := string(a.Asked()[0].ID)
@@ -126,7 +146,7 @@ func TestLateAnswerIntoAnOpenTurnIsNextStep(t *testing.T) {
 	if _, err := f.h.Append(bg, mustDraft(event.TurnStartType.Draft(event.TurnStart{Turn: 1}))); err != nil {
 		t.Fatal(err)
 	}
-	svc := question.New(question.Config{Registry: f.reg})
+	svc := newService(t, question.Config{Registry: f.reg})
 	r, err := svc.Ask(bg, f.h, f.inbox, question.Question{Agent: me, Call: "call-q", Text: "Deploy?"})
 	if err != nil {
 		t.Fatal(err)
@@ -151,7 +171,7 @@ func TestFailedSettlementLeavesTheQuestionOpen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc := question.New(question.Config{Registry: f.reg})
+	svc := newService(t, question.Config{Registry: f.reg})
 
 	// A waiting call: the failed hand-over returns pending with the error.
 	ch := askAsync(t, svc, log, inbox, question.Question{Agent: me, Call: "call-w", Text: "Wait?", Wait: true, Timeout: time.Hour})
@@ -208,7 +228,7 @@ func TestFailedCloseIsReported(t *testing.T) {
 	}
 	var mu sync.Mutex
 	var reported []error
-	svc := question.New(question.Config{Registry: f.reg, OnError: func(_ string, err error) {
+	svc := newService(t, question.Config{Registry: f.reg, OnError: func(_ string, err error) {
 		mu.Lock()
 		defer mu.Unlock()
 		reported = append(reported, err)
@@ -232,16 +252,17 @@ func TestFailedCloseIsReported(t *testing.T) {
 // question is not reopened and a second answer is refused, not a duplicate.
 func TestRestoreClosesAQuestionWhoseAnswerWasAdmitted(t *testing.T) {
 	f := setup(t)
-	f.bind(t, answerer.Never())
-	svc := question.New(question.Config{Registry: f.reg})
+	a := f.bind(t, answerer.Never())
+	svc := newService(t, question.Config{Registry: f.reg})
 	r, err := svc.Ask(bg, f.h, f.inbox, question.Question{Agent: me, Call: "call-q", Text: "Deploy?"})
 	if err != nil {
 		t.Fatal(err)
 	}
+	until(t, "the question never reached the answerer", func() bool { return len(a.Asked()) == 1 })
 	if _, err := f.inbox.Send(bg, agent.ListNextTurn, agent.InboxMessage{ID: "ans-" + r.ID, Source: agent.SourceQuestion, By: "bob", Text: "yes"}); err != nil {
 		t.Fatal(err)
 	}
-	svc2 := question.New(question.Config{})
+	svc2 := newService(t, question.Config{})
 	if open, err := svc2.Restore(bg, f.h, f.inbox); err != nil || len(open) != 0 {
 		t.Fatalf("restored %v, %v", open, err)
 	}
@@ -255,13 +276,13 @@ func TestRestoreClosesAQuestionWhoseAnswerWasAdmitted(t *testing.T) {
 func TestRestoreRedeliversAnAnswerTheCrashTookFromItsCall(t *testing.T) {
 	f := setup(t)
 	f.bind(t, answerer.Text("blue"))
-	svc := question.New(question.Config{Registry: f.reg})
+	svc := newService(t, question.Config{Registry: f.reg})
 	r, err := svc.Ask(bg, f.h, f.inbox, question.Question{Agent: me, Call: "call-q", Text: "Colour?", Wait: true})
 	if err != nil || r.Outcome != question.OutcomeAnswered {
 		t.Fatalf("result %+v, %v", r, err)
 	}
 	for i := 0; i < 2; i++ {
-		svc2 := question.New(question.Config{})
+		svc2 := newService(t, question.Config{})
 		if _, err := svc2.Restore(bg, f.h, f.inbox); err != nil {
 			t.Fatal(err)
 		}
@@ -269,5 +290,86 @@ func TestRestoreRedeliversAnAnswerTheCrashTookFromItsCall(t *testing.T) {
 	p := f.inbox.Pending(agent.ListNextTurn)
 	if len(p) != 1 || p[0].Text != "blue" || p[0].Call != "call-q" || p[0].By != "testkit" {
 		t.Fatalf("redelivered %+v", p)
+	}
+}
+
+// Without OnError a failed background settlement is not dropped: it is logged
+// to the Owner's logger (and to slog with no Owner).
+func TestFailedBackgroundSettlementIsLoggedByDefault(t *testing.T) {
+	f := setup(t)
+	a := f.bind(t, answerer.Deny())
+	e := &cordis.MemoryExporter{}
+	f.root.Loggers().ClearExporters()
+	f.root.Loggers().AddExporter(e)
+	log := &faultyLog{Handle: f.h}
+	log.failing.Store(true)
+	inbox, err := agent.OpenInbox(bg, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := newService(t, question.Config{Registry: f.reg, Owner: f.root})
+	r, err := svc.Ask(bg, log, inbox, question.Question{Agent: me, Call: "call-q", Text: "Deploy?"})
+	if err != nil || r.Outcome != question.OutcomePending {
+		t.Fatalf("result %+v, %v", r, err)
+	}
+	until(t, "the question never reached the answerer", func() bool { return len(a.Asked()) == 1 })
+	until(t, "the failed settlement was not logged", func() bool {
+		for _, m := range e.Messages() {
+			if m.Level == cordis.LevelError && errors.Is(m.Err, errInjected) && strings.Contains(m.Text, r.ID) {
+				return true
+			}
+		}
+		return false
+	})
+	if len(svc.Open()) != 1 {
+		t.Fatalf("open %v", svc.Open())
+	}
+}
+
+// An answer whose flush fails is admitted but not yet durable: Reply reports
+// the failure and the idle agent is not woken. A retry completes the
+// durability with the same receipt, wakes the agent once, and admits nothing
+// twice; afterwards the question refuses a second answer.
+func TestRetryAfterAFailedFlushCompletesTheAnswer(t *testing.T) {
+	f := setup(t)
+	a := f.bind(t, answerer.Never())
+	log := &faultyLog{Handle: f.h}
+	inbox, err := agent.OpenInbox(bg, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := newService(t, question.Config{Registry: f.reg})
+	r, err := svc.Ask(bg, log, inbox, question.Question{Agent: me, Call: "call-q", Text: "Deploy?"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	until(t, "the question never reached the answerer", func() bool { return len(a.Asked()) == 1 })
+	log.flushFails.Store(1)
+	first, err := svc.Reply(bg, r.ID, human.Actor{Channel: "ui", Name: "bob"}, "yes")
+	if !errors.Is(err, errInjected) {
+		t.Fatalf("reply %v", err)
+	}
+	select {
+	case <-inbox.Wake():
+		t.Fatal("an answer that is not durable woke the agent")
+	default:
+	}
+	again, err := svc.Reply(bg, r.ID, human.Actor{Channel: "ui", Name: "bob"}, "yes")
+	if err != nil || again != first {
+		t.Fatalf("retry %+v, %v; first %+v", again, err, first)
+	}
+	select {
+	case <-inbox.Wake():
+	default:
+		t.Fatal("the completed answer did not wake the agent")
+	}
+	if p := inbox.Pending(agent.ListNextTurn); len(p) != 1 || !inbox.Durable() || len(f.answered(t)) != 1 {
+		t.Fatalf("pending %+v, durable %v, answered %+v", p, inbox.Durable(), f.answered(t))
+	}
+	if _, err := svc.Reply(bg, r.ID, human.Actor{Channel: "ui"}, "no"); !errors.Is(err, question.ErrReplyQueued) {
+		t.Fatalf("second answer %v", err)
+	}
+	if open, err := newService(t, question.Config{}).Restore(bg, f.h, inbox); err != nil || len(open) != 0 {
+		t.Fatalf("restored %v, %v", open, err)
 	}
 }

@@ -94,7 +94,7 @@ func (f *fixture) answered(t *testing.T) []question.Answered {
 func TestQuestionAnsweredThroughTheInbox(t *testing.T) {
 	f := setup(t)
 	f.bind(t, answerer.Text("blue"))
-	svc := question.New(question.Config{Registry: f.reg})
+	svc := newService(t, question.Config{Registry: f.reg})
 	resolve := func(agent.Ref) (question.Log, question.Inbox, error) { return f.h, f.inbox, nil }
 	if err := tool.Declare(svc, resolve).Err(); err != nil {
 		t.Fatalf("declaration: %v", err)
@@ -126,7 +126,7 @@ func TestTimedQuestionReturnsPendingAndTheLateAnswerIsOneUserMessage(t *testing.
 	f := setup(t)
 	f.bind(t, answerer.Never())
 	clk := clock.NewManual(time.Unix(0, 0))
-	svc := question.New(question.Config{Registry: f.reg, After: clk.After})
+	svc := newService(t, question.Config{Registry: f.reg, After: clk.After})
 	done := make(chan question.Result, 1)
 	exited := make(chan struct{})
 	t.Cleanup(func() { <-exited })
@@ -160,7 +160,7 @@ func TestTimedQuestionReturnsPendingAndTheLateAnswerIsOneUserMessage(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc2 := question.New(question.Config{Registry: f.reg})
+	svc2 := newService(t, question.Config{Registry: f.reg})
 	reopened, err := svc2.Restore(bg, h2, inbox2)
 	if err != nil || len(reopened) != 1 || reopened[0] != r.ID {
 		t.Fatalf("restored %v, %v", reopened, err)
@@ -193,7 +193,7 @@ func TestTimedQuestionReturnsPendingAndTheLateAnswerIsOneUserMessage(t *testing.
 		t.Fatalf("answered %+v", a)
 	}
 	// A third service restored from the log refuses the answered question too.
-	svc3 := question.New(question.Config{})
+	svc3 := newService(t, question.Config{})
 	if open, err := svc3.Restore(bg, h2, inbox2); err != nil || len(open) != 0 {
 		t.Fatalf("restored %v, %v", open, err)
 	}
@@ -206,7 +206,7 @@ func TestTimedQuestionReturnsPendingAndTheLateAnswerIsOneUserMessage(t *testing.
 // call that moves on returns pending at once and its answer is queued.
 func TestNoBindingAndMovingOn(t *testing.T) {
 	f := setup(t)
-	svc := question.New(question.Config{Registry: f.reg})
+	svc := newService(t, question.Config{Registry: f.reg})
 	r, err := svc.Ask(bg, f.h, f.inbox, question.Question{Agent: me, Text: "Anyone?", Wait: true})
 	if err != nil || r.Outcome != question.OutcomeNoAnswerer {
 		t.Fatalf("unbound %+v, %v", r, err)

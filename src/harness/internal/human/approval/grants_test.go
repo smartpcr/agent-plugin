@@ -13,6 +13,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human/approval"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/scope"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store/memstore"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/answerer"
@@ -336,5 +337,81 @@ func TestGrantCreateFailures(t *testing.T) {
 	}
 	if got := strings.Join(log.types(), ","); got != "approval/asked,approval/decided" {
 		t.Fatalf("log %s", got)
+	}
+}
+
+// endFails is a session whose grant/ended appends fail.
+type endFails struct{ session.Session }
+
+func (s endFails) Append(ctx context.Context, d event.Draft) (event.Receipt, error) {
+	if d.Type() == approval.GrantEndedType.Name() {
+		return event.Receipt{}, errors.New("injected grant/ended failure")
+	}
+	return s.Session.Append(ctx, d)
+}
+
+// failingEnds finds sessions wrapped in endFails.
+type failingEnds struct{ session.Service }
+
+func (s failingEnds) Get(id session.ID) (session.Session, bool) {
+	h, ok := s.Service.Get(id)
+	if !ok {
+		return nil, false
+	}
+	return endFails{h}, true
+}
+
+// A grant/ended that cannot be written does not keep a grant alive: EndAll
+// forgets every grant of the agent, fails closed, and reports each failure; a
+// disposal whose audit fails leaves no grant behind either.
+func TestEndAllForgetsGrantsWhoseEndCannotBeWritten(t *testing.T) {
+	ctx := context.Background()
+	svc, grants, _, _ := granting(t, "ui", []agent.Ref{me}, answerer.AllowSession(), answerer.AllowSession())
+	log := &recLog{}
+	for i, w := range []string{t.TempDir(), t.TempDir()} {
+		if _, err := svc.Request(ctx, log, dirReq(me, "c"+string(rune('1'+i)), w)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	list := grants.List(me)
+	log.failType = approval.GrantEndedType.Name()
+	err := grants.EndAll(ctx, log, me, approval.EndPolicyChanged)
+	if err == nil || !strings.Contains(err.Error(), list[0].ID) || !strings.Contains(err.Error(), list[1].ID) {
+		t.Fatalf("end all %v, grants %+v", err, list)
+	}
+	if got := grants.List(me); len(got) != 0 {
+		t.Fatalf("grants after a failed end %+v", got)
+	}
+	if _, ok := grants.Match(me, &list[0].Subject); ok {
+		t.Fatal("a grant whose end failed still matches")
+	}
+
+	ref := agent.Ref{Session: "s-fail", Incarnation: 1}
+	svc2, grants2, _, root := granting(t, "ui", []agent.Ref{ref}, answerer.AllowSession())
+	e := &cordis.MemoryExporter{}
+	root.Loggers().ClearExporters()
+	root.Loggers().AddExporter(e)
+	sessions := session.NewService(root, memstore.New(), session.Config{})
+	if _, err := grants2.Bind(root, failingEnds{sessions}); err != nil {
+		t.Fatal(err)
+	}
+	a, err := lifecycle(t, root, sessions, true).Create(root, agent.CreateOptions{Session: "s-fail"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, _ := sessions.Get("s-fail")
+	if _, err := svc2.Request(ctx, h, dirReq(ref, "c1", t.TempDir())); err != nil || len(grants2.List(ref)) != 1 {
+		t.Fatalf("grant %v, %v", grants2.List(ref), err)
+	}
+	_ = a.Dispose(ctx)
+	if got := grants2.List(ref); len(got) != 0 {
+		t.Fatalf("grants after a disposal whose audit failed %+v", got)
+	}
+	logged := false
+	for _, m := range e.Messages() {
+		logged = logged || (m.Err != nil && strings.Contains(m.Err.Error(), "injected grant/ended failure"))
+	}
+	if !logged {
+		t.Fatalf("the failed audit was not reported: %+v", e.Messages())
 	}
 }

@@ -16,12 +16,14 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/agent"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
@@ -148,6 +150,9 @@ type Inbox interface {
 	SendWith(ctx context.Context, list agent.List, m agent.InboxMessage, also ...event.Draft) (agent.Receipt, error)
 	Hand(ctx context.Context, m agent.InboxMessage, cause string, also ...event.Draft) (agent.Receipt, error)
 	Seen(id string) (agent.Receipt, bool)
+	// Sync completes the durability of an admission whose flush failed and
+	// delivers its owed wake, without admitting anything again.
+	Sync(ctx context.Context) error
 }
 
 // Prompt is the payload of the human.Item an answerer receives.
@@ -175,8 +180,12 @@ type Config struct {
 	After func(time.Duration) <-chan time.Time
 	// OnError hears a settlement that failed with no caller to return it to: an
 	// answer or a close the registry produced for a call that moved on. The
-	// question stays open; nil drops the report.
+	// question stays open. Nil logs the failure as an error on Owner's logger,
+	// or on slog's default logger when Owner is nil too.
 	OnError func(id string, err error)
+	// Owner is the context whose logger hears unreturned settlement failures
+	// when OnError is nil.
+	Owner *cordis.Context
 }
 
 // settlement is what a waiting call receives: its result, or why the
@@ -207,6 +216,16 @@ type Service struct {
 	mu   sync.Mutex
 	open map[string]*open
 	done map[string]bool
+	// unsynced is the answers admitted whose flush failed: a later Reply of the
+	// question completes their durability (Inbox.Sync) instead of refusing.
+	unsynced map[string]unsynced
+	// running counts the registry interactions; Close waits for them.
+	running sync.WaitGroup
+}
+
+type unsynced struct {
+	inbox Inbox
+	rec   agent.Receipt
 }
 
 // New is a Service over cfg.
@@ -217,7 +236,7 @@ func New(cfg Config) *Service {
 	if cfg.After == nil {
 		cfg.After = time.After
 	}
-	return &Service{cfg: cfg, open: map[string]*open{}, done: map[string]bool{}}
+	return &Service{cfg: cfg, open: map[string]*open{}, done: map[string]bool{}, unsynced: map[string]unsynced{}}
 }
 
 // Ask appends question/asked and puts q to the agent's channel. With Wait it
@@ -248,7 +267,11 @@ func (s *Service) Ask(ctx context.Context, log Log, inbox Inbox, q Question) (Re
 	s.mu.Lock()
 	s.open[id] = o
 	s.mu.Unlock()
-	go s.interact(actx, id, o, timeout)
+	s.running.Add(1)
+	go func() {
+		defer s.running.Done()
+		s.interact(actx, id, o, timeout)
+	}()
 	if !q.Wait {
 		return Result{ID: id, Outcome: OutcomePending}, nil
 	}
@@ -315,9 +338,28 @@ func (s *Service) expire(id string, o *open) {
 }
 
 func (s *Service) report(id string, err error) {
-	if err != nil && s.cfg.OnError != nil {
+	switch {
+	case err == nil:
+	case s.cfg.OnError != nil:
 		s.cfg.OnError(id, err)
+	case s.cfg.Owner != nil:
+		s.cfg.Owner.Logger().Error(fmt.Errorf("question %s: settlement failed: %w", id, err))
+	default:
+		slog.Error("question: settlement failed", "question", id, "err", err)
 	}
+}
+
+// Close withdraws every running registry interaction and waits for them to
+// end. Open questions stay open for a later Reply (or a Restore after restart).
+func (s *Service) Close() {
+	s.mu.Lock()
+	for _, o := range s.open {
+		if o.cancel != nil {
+			o.cancel()
+		}
+	}
+	s.mu.Unlock()
+	s.running.Wait()
 }
 
 // take starts settling id: one settlement at a time, and none after one was
@@ -410,6 +452,9 @@ func (s *Service) Reply(ctx context.Context, id string, by human.Actor, text str
 	if strings.TrimSpace(text) == "" {
 		return agent.Receipt{}, fmt.Errorf("%w: an answer has text", ErrInvalid)
 	}
+	if rec, pending, err := s.resync(ctx, id); pending {
+		return rec, err
+	}
 	o, toCall, err := s.take(id)
 	if err != nil {
 		return agent.Receipt{}, err
@@ -426,18 +471,47 @@ func (s *Service) Reply(ctx context.Context, id string, by human.Actor, text str
 		}
 	}
 	_, written := o.inbox.Seen(msg.ID)
+	rec.MessageID = msg.ID
 	switch {
 	case errors.Is(err, agent.ErrDuplicateMessage):
 		err = fmt.Errorf("%w: %s", ErrReplyQueued, id)
+	case err != nil && written:
+		// The group is appended and folded; only its flush failed. It is the
+		// settlement: a crash before a later flush loses the whole group (the
+		// question reopens on Restore), and every later flush (the tool result's
+		// among them) makes it durable first. A waiting call returns the answer;
+		// a queued answer is made durable and woken by Sync or a retry.
+		s.mu.Lock()
+		s.unsynced[id] = unsynced{inbox: o.inbox, rec: rec}
+		s.mu.Unlock()
+		err = fmt.Errorf("question: settle the answer: %w", err)
 	case err != nil:
 		err = fmt.Errorf("question: settle the answer: %w", err)
 	}
-	s.finish(id, o, toCall, written, Result{ID: id, Outcome: OutcomeAnswered, Text: text, By: who}, err)
-	if err != nil {
-		return rec, err
+	callErr := err
+	if written {
+		callErr = nil
 	}
-	rec.MessageID = msg.ID
-	return rec, nil
+	s.finish(id, o, toCall, written, Result{ID: id, Outcome: OutcomeAnswered, Text: text, By: who}, callErr)
+	return rec, err
+}
+
+// resync completes an answer of id admitted with a failed flush: pending reports
+// that one was outstanding; rec is its first receipt, err a renewed failure.
+func (s *Service) resync(ctx context.Context, id string) (rec agent.Receipt, pending bool, err error) {
+	s.mu.Lock()
+	u, ok := s.unsynced[id]
+	s.mu.Unlock()
+	if !ok {
+		return agent.Receipt{}, false, nil
+	}
+	if err := u.inbox.Sync(ctx); err != nil {
+		return u.rec, true, fmt.Errorf("question: make the answer durable: %w", err)
+	}
+	s.mu.Lock()
+	delete(s.unsynced, id)
+	s.mu.Unlock()
+	return u.rec, true, nil
 }
 
 // RestoreLog is the session Restore folds and later appends to.
@@ -450,7 +524,8 @@ type RestoreLog interface {
 // Restore reopens the questions of a resumed session: each question/asked with
 // no question/answered is open again for a late Reply, answered into inbox, and
 // each answered one refuses a second answer. An answer handed to a call the
-// crash ended before its result (the call's only result is a closer, or none) is
+// crash or a failure ended before it returned the answer (the call has no
+// result, or only a closer or an error result) is
 // delivered again, next-turn, so the model still sees it; once, by id.
 func (s *Service) Restore(ctx context.Context, log RestoreLog, inbox Inbox) ([]string, error) {
 	asked := map[string]Asked{}
@@ -482,7 +557,10 @@ func (s *Service) Restore(ctx context.Context, log RestoreLog, inbox Inbox) ([]s
 				}
 			case event.ToolResult.Name():
 				if p, err := event.ToolResult.As(ev); err == nil {
-					if src, ok := p.Message.Source(); !ok || src.Kind != closerKind {
+					// Only a result the tool returned counts: a closer, or an
+					// error result (the call failed after the hand-over), never
+					// showed the model its answer.
+					if src, ok := p.Message.Source(); !p.IsError && (!ok || src.Kind != closerKind) {
 						results[p.CallID] = true
 					}
 				}

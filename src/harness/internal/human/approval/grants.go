@@ -276,19 +276,21 @@ func (g *Grants) Revoke(ctx context.Context, log Log, ref agent.Ref, id, who str
 }
 
 // EndAll ends every grant of ref with reason (session-ended at disposal,
-// host-stopped, policy-changed at a permission switch).
+// host-stopped, policy-changed at a permission switch). Every grant is
+// forgotten even when its grant/ended cannot be written, so it never
+// authorises again (failing closed); the joined errors are returned, and the
+// log's unended grant/created is closed at the next resume.
 func (g *Grants) EndAll(ctx context.Context, log Log, ref agent.Ref, reason string) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	for len(g.byAgent[ref]) > 0 {
-		gr := g.byAgent[ref][0]
+	var errs []error
+	for _, gr := range g.byAgent[ref] {
 		if err := appendEnded(ctx, log, gr.ID, reason, ""); err != nil {
-			return err
+			errs = append(errs, fmt.Errorf("%s: %w", gr.ID, err))
 		}
-		g.byAgent[ref] = g.byAgent[ref][1:]
 	}
 	delete(g.byAgent, ref)
-	return nil
+	return errors.Join(errs...)
 }
 
 func appendEnded(ctx context.Context, log Log, id, reason, who string) error {
