@@ -8,8 +8,6 @@
 #   docker compose -f tests/e2e/agent-loop-milestone-m1/docker-compose.yml run --rm harness-store-tests
 #   docker compose -f tests/e2e/agent-loop-milestone-m1/docker-compose.yml down -v
 #
-# internal/context joins the package list once a later stage of the phase
-# lands it.
 name: dsh-agent-loop-m1-e2e
 
 volumes:
@@ -44,7 +42,7 @@ services:
       - sh
       - -c
       - >-
-        go -C src/harness test -race -count=1 ./internal/agent/... ./internal/delegate/... ./internal/tools/... ./internal/llm/... &&
+        go -C src/harness test -race -count=1 ./internal/agent/... ./internal/delegate/... ./internal/context/... ./internal/tools/... ./internal/llm/... &&
         go -C src/harness test -tags e2e -count=1 -v
         -run '^TestE2E_agent_loop_milestone_m1_'
         ./test/e2e/harness-DSH/
