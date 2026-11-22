@@ -8,7 +8,9 @@
 #            clock with memstore, zero I/O); DH-T-TOOLS-14 compares against the
 #            committed golden internal/tools/testdata/prompt.golden; TC-10b runs
 #            on the embedded SQLite store in a test-kit temp home (Stage 10.3's
-#            2 MB result spilled under a 64 KB maxResultBytes into that home). No DSN, no
+#            2 MB result spilled under a 64 KB maxResultBytes into that home; Stage 10.4's
+#            inbox splice read back from a second connection). Stage 10.4's crash/resume,
+#            grant and question scenarios run in-process on memstore. No DSN, no
 #            secrets, DSH_E2E_STORE_HOME unset.
 #   compose  non-gating: the same tests against a dsh-home named volume through
 #            tests/e2e/tool-pipeline-approvals-and-human-commands/docker-compose.yml.
