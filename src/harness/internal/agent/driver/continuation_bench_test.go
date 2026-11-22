@@ -13,8 +13,11 @@
 // it open), so no reviewed constant is asserted; the scripted model stands in
 // for the replay provider (DH-D-UTIL-7, impl.md step 16.7, held open by H-10)
 // and memstore for the built binary's store, and the ladder stands in for the
-// measured 1,650-session distribution, which is not in the repository. The
-// benchmark reports wall time per continuation and peak heap; when the
+// measured 1,650-session distribution, which is not in the repository. Each
+// timed continuation resumes a fresh store seeded with the same template
+// session (records only: the template's checkpoints are not copied), whose
+// size is checked outside the timer. The benchmark reports wall time per
+// continuation, peak heap, turns and records; when the
 // replay provider and the corpus land, the same loop gains the budget check.
 
 package driver_test
@@ -33,6 +36,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store/memstore"
 	fakemodel "github.com/smartpcr/agent-plugin/src/harness/internal/testkit/model"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools"
@@ -146,7 +150,8 @@ func BenchmarkContinuation(b *testing.B) {
 			st := memstore.New()
 			id := "bench-" + size.name
 
-			// The long session: size.turns tool-heavy turns, then closed.
+			// The long session: size.turns tool-heavy turns, then closed. It
+			// is the fixed template every timed continuation starts from.
 			c := resume(b, root, svc, st, id, true)
 			c.tr.Script(tooled(size.turns)...)
 			for i := range size.turns {
@@ -154,14 +159,28 @@ func BenchmarkContinuation(b *testing.B) {
 			}
 			c.idle(b, 10*time.Minute)
 			c.close(b)
+			head, recs := snapshot(b, st, id)
+			if n := turnsIn(recs); n != size.turns {
+				b.Fatalf("the template holds %d turns, want %d", n, size.turns)
+			}
 
 			var peak uint64
 			var ms runtime.MemStats
 			b.ResetTimer()
 			b.StopTimer()
 			for range b.N {
-				c := resume(b, root, svc, st, id, false)
+				// Each continuation starts from an equal copy of the template,
+				// checked before the timer runs, so b.N never lengthens it.
+				fresh := memstore.New()
+				if err := fresh.Seed(bg, head, recs); err != nil {
+					b.Fatal(err)
+				}
+				if _, got := snapshot(b, fresh, id); len(got) != len(recs) || turnsIn(got) != size.turns {
+					b.Fatalf("the copy holds %d records and %d turns, want %d and %d", len(got), turnsIn(got), len(recs), size.turns)
+				}
+				c := resume(b, root, svc, fresh, id, false)
 				c.tr.Script(tooled(1)...)
+				runtime.GC()
 				b.StartTimer()
 				must(c.in.Send(bg, agent.ListNextTurn, agent.InboxMessage{Source: agent.SourceUser, Text: "continue"}))
 				select {
@@ -177,6 +196,32 @@ func BenchmarkContinuation(b *testing.B) {
 			}
 			b.ReportMetric(float64(peak), "peak-heap-B")
 			b.ReportMetric(float64(size.turns), "turns")
+			b.ReportMetric(float64(len(recs)), "records")
 		})
 	}
+}
+
+// snapshot is the header and every record of session id in st.
+func snapshot(b *testing.B, st *memstore.Store, id string) (store.Header, []store.Record) {
+	b.Helper()
+	r, err := st.OpenRead(bg, id)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer r.Close(bg)
+	recs, err := r.Read(bg, 0, 0, store.ReadOptions{WithAux: true})
+	if err != nil {
+		b.Fatal(err)
+	}
+	return r.Header(), recs
+}
+
+func turnsIn(recs []store.Record) int {
+	n := 0
+	for _, r := range recs {
+		if r.Type == "turn/end" {
+			n++
+		}
+	}
+	return n
 }

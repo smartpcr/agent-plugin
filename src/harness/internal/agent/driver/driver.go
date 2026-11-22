@@ -84,6 +84,7 @@ type Driver struct {
 	status  agent.Status
 	waiting bool            // parked on the wake
 	held    map[string]bool // next-turn input a cancel kept waits for a new wake
+	gates   []chan struct{} // Discards a Cancel is making; closed when settled
 	changed chan struct{}
 	cur     *turnState
 	err     error
@@ -197,7 +198,6 @@ func (d *Driver) Stop(ctx context.Context, _ agent.StopCause) error { return d.C
 func (d *Driver) halt(c agent.Cause) {
 	d.mu.Lock()
 	if t := d.cur; t != nil {
-		d.keepPending(t)
 		t.cancelTurn(c)
 	}
 	d.mu.Unlock()
@@ -231,7 +231,7 @@ func (d *Driver) run() {
 		d.held = nil
 		d.mu.Unlock()
 		for d.life.Err() == nil {
-			ran, kept, err := d.turn()
+			ran, aborted, err := d.turn()
 			if err != nil {
 				d.fail(err)
 				return
@@ -239,21 +239,24 @@ func (d *Driver) run() {
 			if !ran {
 				break
 			}
-			if kept != nil {
-				// Input that was parked when the cancel landed stays parked
-				// until a new wake: the wake its own send left is spent here.
-				// A Send that arrived during the cancel or its cleanup is not
-				// in kept, so it is a new wake and opens the next turn now.
+			if aborted {
+				// The cancel spent the wakes of the input parked then (keep),
+				// so that input stays parked until a new wake. A wake left now
+				// is a Send that arrived during the cancel or its cleanup: it
+				// opens the next turn at once. The snapshot is taken first, so
+				// a send after it is never held.
+				held := map[string]bool{}
+				for _, m := range d.o.Inbox.Pending(agent.ListNextTurn) {
+					held[m.ID] = true
+				}
 				select {
 				case <-d.o.Inbox.Wake():
+					continue
 				default:
 				}
 				d.mu.Lock()
-				d.held = kept
+				d.held = held
 				d.mu.Unlock()
-				if !allHeld(d.o.Inbox.Pending(agent.ListNextTurn), kept) {
-					continue
-				}
 				break
 			}
 		}
@@ -308,20 +311,6 @@ func (d *Driver) write(parent context.Context, fn func(ctx context.Context) erro
 	ctx, cancel := d.writeCtx(parent)
 	defer cancel()
 	return fn(ctx)
-}
-
-// keepPending snapshots, at a cancel of t, the next-turn input parked at that
-// moment: it is the input the cancel keeps, which waits for a new wake. The
-// first snapshot stands until resumed drops a step cancel's. The caller holds
-// mu.
-func (d *Driver) keepPending(t *turnState) {
-	if t.kept != nil {
-		return
-	}
-	t.kept = map[string]bool{}
-	for _, m := range d.o.Inbox.Pending(agent.ListNextTurn) {
-		t.kept[m.ID] = true
-	}
 }
 
 // permanent reports a write failure no retry can mend: the session is closed

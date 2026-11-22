@@ -1,6 +1,7 @@
 package driver_test
 
 import (
+	"context"
 	"strings"
 	"sync"
 	"testing"
@@ -231,6 +232,75 @@ func TestCancelDuringClaimRecoveryAbortsTheTurn(t *testing.T) {
 				if n := len(r.inbox.Pending(agent.ListNextStep)); n != 1 {
 					t.Fatalf("%d next-step items pending, want the parked steer kept", n)
 				}
+			}
+			checkClosed(t, r.sess)
+		})
+	}
+}
+
+// architecture.md F4 "cancels the turn context; returns at once": a cancel
+// that lands while the claim's recovery Sync is stalled inside the store's
+// flush (holding the inbox's lock) returns at once and stops that Sync, with
+// either inbox choice: a Discard's own inbox writes follow the signal. The
+// turn ends aborted{user} long before CleanupTimeout.
+func TestCancelDuringStalledRecoverySyncReturnsAtOnce(t *testing.T) {
+	for _, choice := range []agent.InboxChoice{agent.InboxKeep, agent.InboxDiscard} {
+		t.Run(string(choice), func(t *testing.T) {
+			var (
+				mu      sync.Mutex
+				flushes int
+			)
+			entered := make(chan struct{})
+			f := &faulty{}
+			f.set(nil, func(ctx context.Context, ds []event.Draft) error {
+				mu.Lock()
+				claim := flushes == 0 && has(ds, "turn/start")
+				retry := flushes == 1
+				if claim || retry {
+					flushes++
+				}
+				mu.Unlock()
+				switch {
+				case claim:
+					return errFlaky
+				case retry:
+					close(entered)
+					return stall(ctx)
+				}
+				return nil
+			})
+			long := func(o *driver.Options) { o.CleanupTimeout = time.Minute }
+			r := newRig(t, rigOptions{wrap: f.wrap, options: long})
+			r.send(agent.ListNextTurn, "go")
+			within(t, entered, "the recovery Sync")
+			returned := make(chan error, 1)
+			start := time.Now()
+			go func() {
+				returned <- r.drv.Cancel(agent.CauseUser, agent.CancelOptions{Scope: agent.ScopeTurn, Inbox: choice})
+			}()
+			select {
+			case err := <-returned:
+				must(0, err)
+			case <-time.After(2 * time.Second):
+				t.Fatal("Cancel waited behind a Sync stalled in the store")
+			}
+			ctx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+			defer stop()
+			if err := r.drv.WaitIdle(ctx); err != nil {
+				t.Fatalf("the turn did not close promptly: %v", err)
+			}
+			if el := time.Since(start); el > 5*time.Second {
+				t.Fatalf("the cancelled turn took %v to close", el)
+			}
+			evs := r.events()
+			if got := turnEnds(t, evs); len(got) != 1 || got[0].Kind != event.ReasonAborted || got[0].Cause != string(agent.CauseUser) {
+				t.Fatalf("turn/end %+v, want aborted{user}", got)
+			}
+			if n := len(ofType(evs, "step/start")); n != 0 {
+				t.Fatalf("%d steps ran in a turn cancelled at its claim", n)
+			}
+			if !r.inbox.Durable() {
+				t.Fatal("the claim was left not durable")
 			}
 			checkClosed(t, r.sess)
 		})

@@ -13,13 +13,13 @@ import (
 )
 
 // turn runs one turn when next-turn input is pending (points 2 to 16). ran is
-// false when nothing opened. kept is non-nil when the turn ended aborted: the
-// next-turn input that was parked when the cancel landed, which waits for a
-// new wake. A returned error is a failed append or flush: the driver stops and
+// false when nothing opened. aborted reports a turn that ended aborted: the
+// next-turn input parked when its cancel landed waits for a new wake. A
+// returned error is a failed append or flush: the driver stops and
 // the turn may stay open in the log.
-func (d *Driver) turn() (ran bool, kept map[string]bool, err error) {
+func (d *Driver) turn() (ran, aborted bool, err error) {
 	if len(d.o.Inbox.Pending(agent.ListNextTurn)) == 0 {
-		return false, nil, nil
+		return false, false, nil
 	}
 	d.setStatus(agent.StatusRunning, false)
 	s := d.o.Session
@@ -29,7 +29,7 @@ func (d *Driver) turn() (ran bool, kept map[string]bool, err error) {
 			_, err := s.CloseOpen(ctx, surface.CauseFailed)
 			return err
 		}); err != nil {
-			return true, nil, err
+			return true, false, err
 		}
 	}
 	n := s.Open().LastTurn + 1
@@ -53,6 +53,7 @@ func (d *Driver) turn() (ran bool, kept map[string]bool, err error) {
 		msg agent.InboxMessage
 		ok  bool
 	)
+	d.discarded()
 	err = d.write(nil, func(ctx context.Context) error {
 		var err error
 		msg, ok, err = d.o.Inbox.ClaimTurn(ctx, n)
@@ -60,20 +61,20 @@ func (d *Driver) turn() (ran bool, kept map[string]bool, err error) {
 	})
 	if err != nil {
 		if !ok {
-			return true, nil, err
+			return true, false, err
 		}
 		// The item is taken but not durable: make it durable, then run it. A
 		// cancel stops the wait; the item is in the turn it aborts.
 		if err := d.durable(t.ctx, err); err != nil {
-			return true, nil, fmt.Errorf("driver: claim turn %d: %w", n, err)
+			return true, false, fmt.Errorf("driver: claim turn %d: %w", n, err)
 		}
 	}
 	if !ok {
-		return false, nil, nil
+		return false, false, nil
 	}
 	first, err := msg.Message()
 	if err != nil {
-		return true, nil, err
+		return true, false, err
 	}
 	batch := []vocab.Message{first}
 	// A turn cancelled while its claim was recovering leaves parked steering
@@ -81,14 +82,14 @@ func (d *Driver) turn() (ran bool, kept map[string]bool, err error) {
 	if t.ctx.Err() == nil {
 		more, err := d.claimStep(t)
 		if err != nil {
-			return true, nil, err
+			return true, false, err
 		}
 		batch = append(batch, more...)
 	}
 
 	reason, err := d.steps(t, batch)
 	if err != nil {
-		return true, nil, err
+		return true, false, err
 	}
 	// Point 15: one turn/end, unless point 5 already wrote it.
 	if reason != nil {
@@ -96,39 +97,33 @@ func (d *Driver) turn() (ran bool, kept map[string]bool, err error) {
 			_, err := s.Append(ctx, mustDraft(event.TurnEndType.Draft(event.TurnEnd{Turn: n, Reason: *reason})))
 			return err
 		}); err != nil {
-			return true, nil, err
+			return true, false, err
 		}
-		if reason.Kind == event.ReasonAborted {
-			d.mu.Lock()
-			kept = t.kept
-			d.mu.Unlock()
-			if kept == nil {
-				kept = map[string]bool{}
-			}
-		}
+		aborted = reason.Kind == event.ReasonAborted
 	}
 	// Point 16: the next turn opens only after this flush has settled, within
 	// FinalFlushTimeout.
 	fctx, stop := context.WithTimeout(context.WithoutCancel(t.ctx), d.o.FinalFlushTimeout)
 	defer stop()
 	if _, err := s.Flush(fctx); err != nil {
-		return true, kept, fmt.Errorf("driver: flush turn %d: %w", n, err)
+		return true, aborted, fmt.Errorf("driver: flush turn %d: %w", n, err)
 	}
 	// A claim whose recovery a cancel cut short is durable with this flush;
 	// Sync clears the inbox's record of it and pays its owed wake.
 	if !d.o.Inbox.Durable() {
 		if err := d.o.Inbox.Sync(fctx); err != nil {
-			return true, kept, fmt.Errorf("driver: flush turn %d: %w", n, err)
+			return true, aborted, fmt.Errorf("driver: flush turn %d: %w", n, err)
 		}
 	}
-	return true, kept, nil
+	return true, aborted, nil
 }
 
 // durable makes a claim whose append succeeded but whose flush failed (first)
 // durable: its items have left the queue and are handed out never again, so
 // they must run, not be lost. It retries Inbox.Sync with a backoff until it
 // succeeds or the failure is permanent. A cancel of the turn (ctx), Close
-// included, stops the wait at once and returns nil: the items are in the log,
+// included, stops the wait and a Sync in flight at once (each Sync runs under
+// ctx, bounded by CleanupTimeout) and returns nil: the items are in the log,
 // the turn they joined ends aborted, and point 16's flush makes them durable.
 func (d *Driver) durable(ctx context.Context, first error) error {
 	err, delay := first, 10*time.Millisecond
@@ -141,7 +136,13 @@ func (d *Driver) durable(ctx context.Context, first error) error {
 			return nil
 		case <-d.o.After(delay):
 		}
-		if err = d.write(nil, d.o.Inbox.Sync); err == nil {
+		sctx, cancel := context.WithTimeout(ctx, d.o.CleanupTimeout)
+		err = d.o.Inbox.Sync(sctx)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		if ctx.Err() != nil {
 			return nil
 		}
 		delay = min(2*delay, time.Second)
@@ -154,7 +155,7 @@ func (d *Driver) timeLimit(t *turnState, lim time.Duration) {
 	case <-t.ctx.Done():
 	case <-d.o.After(lim):
 		d.mu.Lock()
-		d.keepPending(t)
+		d.keep(t)
 		if t.cancelTurn(agent.CauseBudget) {
 			t.limit = LimitDuration
 		}
@@ -167,6 +168,7 @@ func (d *Driver) timeLimit(t *turnState, lim time.Duration) {
 // during that recovery returns them as well, and point 3 then ends the turn.
 func (d *Driver) claimStep(t *turnState) ([]vocab.Message, error) {
 	n := t.turn
+	d.discarded()
 	var items []agent.InboxMessage
 	err := d.write(nil, func(ctx context.Context) error {
 		var err error
