@@ -9,14 +9,12 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	. "github.com/smartpcr/agent-plugin/src/go/internal/testkit"
 )
-
-// settle is how long a test waits to observe that something did not happen.
-const settle = 50 * time.Millisecond
 
 func isInactive(err error) bool { return errors.Is(err, cordis.ErrInactive) }
 
@@ -64,53 +62,57 @@ func TestCleanupCannotRegisterWhileItsFiberUnloads(t *testing.T) {
 // TC-02a: concurrent disposals both return only after every cleanup ran exactly once,
 // and the disposed fiber refuses new effects.
 func TestConcurrentDisposeWaitsForEveryCleanup(t *testing.T) {
-	root, _ := Quiet()
-	release := make(chan struct{})
-	var ran [3]atomic.Int32
-	fiber := Must(root.Apply("blocking", func(ctx *cordis.Context) error {
-		for i := range ran {
-			if _, err := ctx.Effect("block", func() (cordis.Disposer, error) {
-				return func() error {
-					<-release
-					ran[i].Add(1)
-					return nil
-				}, nil
-			}); err != nil {
-				return err
+	synctest.Test(t, func(t *testing.T) {
+		root, _ := Quiet()
+		release := make(chan struct{})
+		unblock := closeOnce(release)
+		var ran [3]atomic.Int32
+		fiber := Must(root.Apply("blocking", func(ctx *cordis.Context) error {
+			for i := range ran {
+				if _, err := ctx.Effect("block", func() (cordis.Disposer, error) {
+					return func() error {
+						<-release
+						ran[i].Add(1)
+						return nil
+					}, nil
+				}); err != nil {
+					return err
+				}
 			}
-		}
-		return nil
-	}))
-	MustWait(t, fiber)
+			return nil
+		}))
+		MustWait(t, fiber)
 
-	allRanOnce := func() bool {
-		for i := range ran {
-			if ran[i].Load() != 1 {
-				return false
+		allRanOnce := func() bool {
+			for i := range ran {
+				if ran[i].Load() != 1 {
+					return false
+				}
 			}
+			return true
 		}
-		return true
-	}
-	results := make(chan bool, 2)
-	for range 2 {
-		go func() {
-			fiber.Dispose()
-			results <- allRanOnce()
-		}()
-	}
-	select {
-	case <-results:
-		t.Fatal("Dispose returned while cleanups were blocked")
-	case <-time.After(settle):
-	}
-	close(release)
-	for range 2 {
-		Within(t, "dispose", func() { True(t, <-results, "Dispose returned before every cleanup ran once") })
-	}
-	Within(t, "wait", func() { NoError(t, fiber.Wait()) })
-	True(t, allRanOnce(), "a cleanup ran more than once")
-	_, err := fiber.Ctx().Effect("after", func() (cordis.Disposer, error) { return nil, nil })
-	True(t, isInactive(err), "a disposed fiber accepted an effect: "+errString(err))
+		results := make(chan bool, 2)
+		for range 2 {
+			goJoined(t, unblock, func() {
+				fiber.Dispose()
+				results <- allRanOnce()
+			})
+		}
+		synctest.Wait()
+		select {
+		case <-results:
+			t.Fatal("Dispose returned while cleanups were blocked")
+		default:
+		}
+		unblock()
+		for range 2 {
+			Within(t, "dispose", func() { True(t, <-results, "Dispose returned before every cleanup ran once") })
+		}
+		Within(t, "wait", func() { NoError(t, fiber.Wait()) })
+		True(t, allRanOnce(), "a cleanup ran more than once")
+		_, err := fiber.Ctx().Effect("after", func() (cordis.Disposer, error) { return nil, nil })
+		True(t, isInactive(err), "a disposed fiber accepted an effect: "+errString(err))
+	})
 }
 
 // A dependent's cleanup sees its provider's resources live; the provider's run after.
@@ -154,73 +156,73 @@ func TestDependentUnloadsBeforeItsProvider(t *testing.T) {
 // DH-T-CORDIS-2: a cleanup started by one goroutine holds back a second disposal of
 // the same handle and the unload of the fiber's providers until it returns.
 func TestRunningCleanupHoldsBackSecondDisposeAndProvider(t *testing.T) {
-	root, _ := Quiet()
-	log := &Log{}
-	var closed atomic.Bool
-	var sawLive atomic.Bool
-	entered := make(chan struct{})
-	release := make(chan struct{})
-	provider := Must(root.Apply("provider", func(ctx *cordis.Context) error {
-		if _, err := ctx.Provide("svc", "value"); err != nil {
+	synctest.Test(t, func(t *testing.T) {
+		root, _ := Quiet()
+		log := &Log{}
+		var closed atomic.Bool
+		var sawLive atomic.Bool
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		unblock := closeOnce(release)
+		provider := Must(root.Apply("provider", func(ctx *cordis.Context) error {
+			if _, err := ctx.Provide("svc", "value"); err != nil {
+				return err
+			}
+			_, err := ctx.Effect("resource", func() (cordis.Disposer, error) {
+				return func() error {
+					closed.Store(true)
+					log.Add("provider")
+					return nil
+				}, nil
+			})
 			return err
+		}))
+		var handle atomic.Pointer[cordis.EffectHandle]
+		consumer := Must(root.Apply("consumer", func(ctx *cordis.Context) error {
+			h, err := ctx.Effect("blocking", func() (cordis.Disposer, error) {
+				return func() error {
+					close(entered)
+					<-release
+					sawLive.Store(!closed.Load())
+					log.Add("consumer")
+					return nil
+				}, nil
+			})
+			handle.Store(h)
+			return err
+		}, "svc"))
+		MustWait(t, provider)
+		MustWait(t, consumer)
+		h := handle.Load()
+
+		aDone := goJoined(t, unblock, h.Dispose)
+		Within(t, "cleanup start", func() { <-entered })
+
+		bHandle := make(chan struct{})
+		bDone := goJoined(t, unblock, func() {
+			h.Dispose()
+			close(bHandle)
+			provider.Dispose()
+		})
+		providerDone := goJoined(t, unblock, provider.Dispose)
+
+		synctest.Wait()
+		select {
+		case <-bHandle:
+			t.Fatal("a second Dispose returned while the first caller's cleanup was running")
+		case <-providerDone:
+			t.Fatal("the provider unloaded while a dependent's cleanup was running")
+		default:
 		}
-		_, err := ctx.Effect("resource", func() (cordis.Disposer, error) {
-			return func() error {
-				closed.Store(true)
-				log.Add("provider")
-				return nil
-			}, nil
-		})
-		return err
-	}))
-	var handle atomic.Pointer[cordis.EffectHandle]
-	consumer := Must(root.Apply("consumer", func(ctx *cordis.Context) error {
-		h, err := ctx.Effect("blocking", func() (cordis.Disposer, error) {
-			return func() error {
-				close(entered)
-				<-release
-				sawLive.Store(!closed.Load())
-				log.Add("consumer")
-				return nil
-			}, nil
-		})
-		handle.Store(h)
-		return err
-	}, "svc"))
-	MustWait(t, provider)
-	MustWait(t, consumer)
-	h := handle.Load()
+		True(t, !log.Contains("provider"), "the provider's cleanup ran before its dependent's: "+log.String())
 
-	aDone := make(chan struct{})
-	go func() { h.Dispose(); close(aDone) }()
-	Within(t, "cleanup start", func() { <-entered })
-
-	bHandle := make(chan struct{})
-	bDone := make(chan struct{})
-	go func() {
-		h.Dispose()
-		close(bHandle)
-		provider.Dispose()
-		close(bDone)
-	}()
-	providerDone := make(chan struct{})
-	go func() { provider.Dispose(); close(providerDone) }()
-
-	select {
-	case <-bHandle:
-		t.Fatal("a second Dispose returned while the first caller's cleanup was running")
-	case <-providerDone:
-		t.Fatal("the provider unloaded while a dependent's cleanup was running")
-	case <-time.After(settle):
-	}
-	True(t, !log.Contains("provider"), "the provider's cleanup ran before its dependent's: "+log.String())
-
-	close(release)
-	Within(t, "first dispose", func() { <-aDone })
-	Within(t, "second dispose", func() { <-bDone })
-	Within(t, "provider dispose", func() { <-providerDone })
-	Equal(t, "consumer,provider", log.String())
-	True(t, sawLive.Load(), "the dependent's cleanup saw its provider released")
+		unblock()
+		Within(t, "first dispose", func() { <-aDone })
+		Within(t, "second dispose", func() { <-bDone })
+		Within(t, "provider dispose", func() { <-providerDone })
+		Equal(t, "consumer,provider", log.String())
+		True(t, sawLive.Load(), "the dependent's cleanup saw its provider released")
+	})
 }
 
 // DH-T-CORDIS-3: a fiber that never loaded still releases its effects, and a creation
@@ -371,45 +373,49 @@ func TestFiberLifetimeIsCancelledByUnload(t *testing.T) {
 // Root teardown is exclusive and final: a root cleanup cannot register anything that
 // outlives it, and an overlapping Dispose returns only after the first one's cleanups.
 func TestRootDisposeIsFinalAndExclusive(t *testing.T) {
-	root, _ := Quiet()
-	entered, release := make(chan struct{}), make(chan struct{})
-	var released atomic.Bool
-	var refused []error
-	Must(root.Effect("gate", func() (cordis.Disposer, error) {
-		return func() error {
-			close(entered)
-			_, effectErr := root.Effect("late", func() (cordis.Disposer, error) { return nil, nil })
-			_, useErr := root.Apply("late", func(*cordis.Context) error { return nil })
-			_, provideErr := root.Provide("late", 1)
-			refused = []error{effectErr, useErr, provideErr}
-			<-release
-			released.Store(true)
-			return nil
-		}, nil
-	}))
+	synctest.Test(t, func(t *testing.T) {
+		root, _ := Quiet()
+		entered, release := make(chan struct{}), make(chan struct{})
+		unblock := closeOnce(release)
+		var released atomic.Bool
+		var refused []error
+		Must(root.Effect("gate", func() (cordis.Disposer, error) {
+			return func() error {
+				close(entered)
+				_, effectErr := root.Effect("late", func() (cordis.Disposer, error) { return nil, nil })
+				_, useErr := root.Apply("late", func(*cordis.Context) error { return nil })
+				_, provideErr := root.Provide("late", 1)
+				refused = []error{effectErr, useErr, provideErr}
+				<-release
+				released.Store(true)
+				return nil
+			}, nil
+		}))
 
-	results := make(chan bool, 3)
-	go func() { root.Dispose(); results <- released.Load() }()
-	Within(t, "first cleanup", func() { <-entered })
-	Equal(t, cordis.Unloading, root.Fiber().State())
-	go func() { root.Dispose(); results <- released.Load() }()
-	go func() { _ = root.Fiber().Wait(); results <- released.Load() }()
-	select {
-	case <-results:
-		t.Fatal("a root Dispose or Wait returned while its cleanup was blocked")
-	case <-time.After(settle):
-	}
-	close(release)
-	for range 3 {
-		Within(t, "dispose", func() { True(t, <-results, "a root Dispose or Wait returned before the cleanup") })
-	}
-	Equal(t, cordis.Disposed, root.Fiber().State())
-	for i, err := range refused {
-		True(t, isInactive(err), "root cleanup registration "+[]string{"Effect", "Use", "Provide"}[i]+" was not refused: "+errString(err))
-	}
-	_, err := root.Effect("after", func() (cordis.Disposer, error) { return nil, nil })
-	True(t, isInactive(err), "a disposed root accepted an effect: "+errString(err))
-	Equal(t, 0, len(root.Fiber().Effects()), "effects left on the disposed root")
+		results := make(chan bool, 3)
+		goJoined(t, unblock, func() { root.Dispose(); results <- released.Load() })
+		Within(t, "first cleanup", func() { <-entered })
+		Equal(t, cordis.Unloading, root.Fiber().State())
+		goJoined(t, unblock, func() { root.Dispose(); results <- released.Load() })
+		goJoined(t, unblock, func() { _ = root.Fiber().Wait(); results <- released.Load() })
+		synctest.Wait()
+		select {
+		case <-results:
+			t.Fatal("a root Dispose or Wait returned while its cleanup was blocked")
+		default:
+		}
+		unblock()
+		for range 3 {
+			Within(t, "dispose", func() { True(t, <-results, "a root Dispose or Wait returned before the cleanup") })
+		}
+		Equal(t, cordis.Disposed, root.Fiber().State())
+		for i, err := range refused {
+			True(t, isInactive(err), "root cleanup registration "+[]string{"Effect", "Use", "Provide"}[i]+" was not refused: "+errString(err))
+		}
+		_, err := root.Effect("after", func() (cordis.Disposer, error) { return nil, nil })
+		True(t, isInactive(err), "a disposed root accepted an effect: "+errString(err))
+		Equal(t, 0, len(root.Fiber().Effects()), "effects left on the disposed root")
+	})
 }
 
 // An acquisition in flight when its fiber unloads is waited for: the cleanup it
@@ -417,57 +423,59 @@ func TestRootDisposeIsFinalAndExclusive(t *testing.T) {
 func TestUnloadWaitsForInFlightAcquisition(t *testing.T) {
 	for _, mode := range []string{"sync", "async"} {
 		t.Run(mode, func(t *testing.T) {
-			root, _ := Quiet()
-			var providerClosed, unloaded atomic.Bool
-			provider := MustWait(t, Must(root.Apply("provider", func(ctx *cordis.Context) error {
-				if _, err := ctx.Provide("svc", "value"); err != nil {
+			synctest.Test(t, func(t *testing.T) {
+				root, _ := Quiet()
+				var providerClosed, unloaded atomic.Bool
+				provider := MustWait(t, Must(root.Apply("provider", func(ctx *cordis.Context) error {
+					if _, err := ctx.Provide("svc", "value"); err != nil {
+						return err
+					}
+					_, err := ctx.Effect("close", func() (cordis.Disposer, error) {
+						return func() error { providerClosed.Store(true); return nil }, nil
+					})
 					return err
+				})))
+				owner := MustWait(t, Must(root.Apply("owner", func(*cordis.Context) error { return nil }, "svc")))
+				Equal(t, cordis.Active, owner.State())
+
+				entered, gate := make(chan struct{}), make(chan struct{})
+				unblock := closeOnce(gate)
+				type observed struct{ providerClosed, unloaded bool }
+				cleanups := make(chan observed, 2)
+				acquire := func() (cordis.Disposer, error) {
+					close(entered)
+					<-gate
+					return func() error {
+						cleanups <- observed{providerClosed.Load(), unloaded.Load()}
+						return nil
+					}, nil
 				}
-				_, err := ctx.Effect("close", func() (cordis.Disposer, error) {
-					return func() error { providerClosed.Store(true); return nil }, nil
+				register := owner.Ctx().Effect
+				if mode == "async" {
+					register = owner.Ctx().EffectAsync
+				}
+				goJoined(t, unblock, func() { _, _ = register("slow", acquire) })
+				Within(t, "acquisition start", func() { <-entered })
+
+				life := owner.Lifetime()
+				disposed := goJoined(t, unblock, func() {
+					provider.Dispose()
+					unloaded.Store(true)
 				})
-				return err
-			})))
-			owner := MustWait(t, Must(root.Apply("owner", func(*cordis.Context) error { return nil }, "svc")))
-			Equal(t, cordis.Active, owner.State())
-
-			entered, gate := make(chan struct{}), make(chan struct{})
-			type observed struct{ providerClosed, unloaded bool }
-			cleanups := make(chan observed, 2)
-			acquire := func() (cordis.Disposer, error) {
-				close(entered)
-				<-gate
-				return func() error {
-					cleanups <- observed{providerClosed.Load(), unloaded.Load()}
-					return nil
-				}, nil
-			}
-			register := owner.Ctx().Effect
-			if mode == "async" {
-				register = owner.Ctx().EffectAsync
-			}
-			go func() { _, _ = register("slow", acquire) }()
-			Within(t, "acquisition start", func() { <-entered })
-
-			life := owner.Lifetime()
-			disposed := make(chan struct{})
-			go func() {
-				provider.Dispose()
-				unloaded.Store(true)
-				close(disposed)
-			}()
-			Within(t, "owner unload start", func() { <-life.Done() })
-			select {
-			case <-disposed:
-				t.Fatal("the provider was disposed while its dependent was still acquiring")
-			case <-time.After(settle):
-			}
-			close(gate)
-			Within(t, "dispose", func() { <-disposed })
-			got := receive(t, cleanups, "cleanup")
-			True(t, !got.unloaded, "the cleanup ran after the unload returned")
-			True(t, !got.providerClosed, "the cleanup ran after the provider was released")
-			Equal(t, 0, len(cleanups), "the cleanup ran twice")
+				Within(t, "owner unload start", func() { <-life.Done() })
+				synctest.Wait()
+				select {
+				case <-disposed:
+					t.Fatal("the provider was disposed while its dependent was still acquiring")
+				default:
+				}
+				unblock()
+				Within(t, "dispose", func() { <-disposed })
+				got := receive(t, cleanups, "cleanup")
+				True(t, !got.unloaded, "the cleanup ran after the unload returned")
+				True(t, !got.providerClosed, "the cleanup ran after the provider was released")
+				Equal(t, 0, len(cleanups), "the cleanup ran twice")
+			})
 		})
 	}
 }
@@ -475,34 +483,38 @@ func TestUnloadWaitsForInFlightAcquisition(t *testing.T) {
 // A creation handler that disposes its fiber stops the load even when another
 // goroutine is delivering notifications, so the handler is queued behind it.
 func TestCreationHandlerRunsBeforeLoadUnderConcurrentDelivery(t *testing.T) {
-	root, _ := Quiet()
-	blocking, gate := make(chan struct{}), make(chan struct{})
-	var blockOnce sync.Once
-	var disposing atomic.Bool
-	root.Internal().OnStatus(func(f *cordis.Fiber, _, _ cordis.FiberState) {
-		if f.Name() == "blocker" {
-			blockOnce.Do(func() { close(blocking); <-gate })
-		}
-	})
-	root.Internal().OnPlugin(func(f *cordis.Fiber) {
-		if f.Name() == "doomed" && disposing.CompareAndSwap(false, true) {
-			f.Dispose()
-		}
-	})
-	go func() { _, _ = root.Apply("blocker", func(*cordis.Context) error { return nil }) }()
-	Within(t, "delivery blocked", func() { <-blocking })
+	synctest.Test(t, func(t *testing.T) {
+		root, _ := Quiet()
+		blocking, gate := make(chan struct{}), make(chan struct{})
+		unblock := closeOnce(gate)
+		var blockOnce sync.Once
+		var disposing atomic.Bool
+		root.Internal().OnStatus(func(f *cordis.Fiber, _, _ cordis.FiberState) {
+			if f.Name() == "blocker" {
+				blockOnce.Do(func() { close(blocking); <-gate })
+			}
+		})
+		root.Internal().OnPlugin(func(f *cordis.Fiber) {
+			if f.Name() == "doomed" && disposing.CompareAndSwap(false, true) {
+				f.Dispose()
+			}
+		})
+		goJoined(t, unblock, func() { _, _ = root.Apply("blocker", func(*cordis.Context) error { return nil }) })
+		Within(t, "delivery blocked", func() { <-blocking })
 
-	var ran atomic.Bool
-	doomed := Must(root.Apply("doomed", func(*cordis.Context) error {
-		ran.Store(true)
-		return nil
-	}))
-	time.Sleep(settle)
-	True(t, !ran.Load(), "the fiber loaded before its creation handler ran")
-	close(gate)
-	Within(t, "wait", func() { NoError(t, doomed.Wait()) })
-	Equal(t, cordis.Disposed, doomed.State())
-	True(t, !ran.Load(), "the body of a fiber disposed on creation ran")
+		var ran atomic.Bool
+		doomed := Must(root.Apply("doomed", func(*cordis.Context) error {
+			ran.Store(true)
+			return nil
+		}))
+		// Every goroutine of the bubble is blocked: the load could have run by now.
+		synctest.Wait()
+		True(t, !ran.Load(), "the fiber loaded before its creation handler ran")
+		unblock()
+		Within(t, "wait", func() { NoError(t, doomed.Wait()) })
+		Equal(t, cordis.Disposed, doomed.State())
+		True(t, !ran.Load(), "the body of a fiber disposed on creation ran")
+	})
 }
 
 // A notification raised while an effect is acquired is delivered by the tree's
@@ -642,6 +654,7 @@ func TestDisposeDeliversItsNotificationsInOrderBehindABlockedHandler(t *testing.
 	var mu sync.Mutex
 	var states []cordis.FiberState
 	blocking, gate := make(chan struct{}), make(chan struct{})
+	unblock := closeOnce(gate)
 	var claimed atomic.Bool
 	root.Internal().OnStatus(func(f *cordis.Fiber, _, next cordis.FiberState) {
 		switch f {
@@ -656,11 +669,10 @@ func TestDisposeDeliversItsNotificationsInOrderBehindABlockedHandler(t *testing.
 			}
 		}
 	})
-	go func() { _, _ = root.Apply("blocker", func(*cordis.Context) error { return nil }) }()
+	goJoined(t, unblock, func() { _, _ = root.Apply("blocker", func(*cordis.Context) error { return nil }) })
 	Within(t, "dispatcher blocked", func() { <-blocking })
 
-	disposed := make(chan struct{})
-	go func() { fiber.Dispose(); close(disposed) }()
+	disposed := goJoined(t, unblock, fiber.Dispose)
 	Within(t, "unload", func() {
 		for fiber.State() != cordis.Disposed {
 			runtime.Gosched()
@@ -674,7 +686,7 @@ func TestDisposeDeliversItsNotificationsInOrderBehindABlockedHandler(t *testing.
 	mu.Lock()
 	Equal(t, 0, len(states))
 	mu.Unlock()
-	close(gate)
+	unblock()
 	Within(t, "dispose", func() { <-disposed })
 	mu.Lock()
 	defer mu.Unlock()
@@ -717,6 +729,7 @@ func TestAcquisitionBarrierDoesNotRunHandlersOnItsStack(t *testing.T) {
 	root, _ := Quiet()
 	sibling := MustWait(t, Must(root.Apply("sibling", func(*cordis.Context) error { return nil })))
 	blocking, gate := make(chan struct{}), make(chan struct{})
+	unblock := closeOnce(gate)
 	var blocked, claimed atomic.Bool
 	root.Internal().OnStatus(func(f *cordis.Fiber, _, _ cordis.FiberState) {
 		if f.Name() == "blocker" && blocked.CompareAndSwap(false, true) {
@@ -731,7 +744,7 @@ func TestAcquisitionBarrierDoesNotRunHandlersOnItsStack(t *testing.T) {
 			close(handled)
 		}
 	})
-	go func() { _, _ = root.Apply("blocker", func(*cordis.Context) error { return nil }) }()
+	goJoined(t, unblock, func() { _, _ = root.Apply("blocker", func(*cordis.Context) error { return nil }) })
 	Within(t, "dispatcher blocked", func() { <-blocking })
 
 	var cleaned atomic.Bool
@@ -746,7 +759,7 @@ func TestAcquisitionBarrierDoesNotRunHandlersOnItsStack(t *testing.T) {
 			return func() error { cleaned.Store(true); return nil }, nil
 		})
 	})
-	close(gate)
+	unblock()
 	Within(t, "handler", func() { <-handled })
 	Equal(t, cordis.Disposed, root.Fiber().State())
 	True(t, cleaned.Load(), "the acquisition's cleanup did not run")
@@ -794,6 +807,7 @@ func TestQueuedNotificationsKeepTheirOrderBehindABlockedHandler(t *testing.T) {
 	var seen []string
 	record := func(s string) { mu.Lock(); seen = append(seen, s); mu.Unlock() }
 	blocking, gate := make(chan struct{}), make(chan struct{})
+	unblock := closeOnce(gate)
 	var claimed atomic.Bool
 	root.Internal().OnStatus(func(f *cordis.Fiber, _, next cordis.FiberState) {
 		switch {
@@ -811,7 +825,7 @@ func TestQueuedNotificationsKeepTheirOrderBehindABlockedHandler(t *testing.T) {
 			record("service:" + name)
 		}
 	})
-	go func() { _, _ = root.Apply("blocker", func(*cordis.Context) error { return nil }) }()
+	goJoined(t, unblock, func() { _, _ = root.Apply("blocker", func(*cordis.Context) error { return nil }) })
 	Within(t, "dispatcher blocked", func() { <-blocking })
 
 	for i := range services {
@@ -820,15 +834,14 @@ func TestQueuedNotificationsKeepTheirOrderBehindABlockedHandler(t *testing.T) {
 		NoError(t, err)
 		want = append(want, "service:"+name)
 	}
-	disposed := make(chan struct{})
-	go func() { fiber.Dispose(); close(disposed) }()
+	disposed := goJoined(t, unblock, fiber.Dispose)
 	Within(t, "unload", func() {
 		for fiber.State() != cordis.Disposed {
 			runtime.Gosched()
 		}
 	})
 	want = append(want, "status:"+cordis.Unloading.String(), "status:"+cordis.Disposed.String())
-	close(gate)
+	unblock()
 	Within(t, "dispose", func() { <-disposed })
 	mu.Lock()
 	defer mu.Unlock()

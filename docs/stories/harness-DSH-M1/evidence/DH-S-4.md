@@ -115,6 +115,7 @@ The watcher scenarios time a save or remote change at the moment this machine fi
 - The harness gate's vet step currently fails on files from earlier stages
   (`src/go/cordis` tests, the `recur`, `glob`, `caltime`, `version` fuzz seeds and
   `watchtest/manual_test.go`); none of the files of this stage are reported.
+- M1 gate repair (plan 13.1.5; [DH-S-1.md, "M1 gate repair"](DH-S-1.md#m1-gate-repair)): the fuzz seeds of `internal/util/{caltime,glob,recur,version}` moved to a new `seeds_test.go` in each package (`caltime_test.go`, `glob_test.go`, `rrule_test.go`, `version_test.go` call the helper); `watchtest/manual_test.go` is Stage 13.2.
 
 ## Evidence record (impl.md sec. 7.3)
 

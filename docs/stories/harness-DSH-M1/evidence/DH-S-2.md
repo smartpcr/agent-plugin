@@ -159,6 +159,8 @@ does not use `WithStrictConfig`, registers no config hook, and its only config e
 `DH-D-CORDIS-6`, `DH-D-CORDIS-10` and `DH-D-CORDIS-11` (P1/P2) stay for DH-S-38 and
 DH-S-49.
 
+M1 gate repair (plan 13.1.3, 13.1.4; [DH-S-1.md, "M1 gate repair"](DH-S-1.md#m1-gate-repair)): `src/go/cordis/config_test.go`, `tree_internal_test.go` and `unload_test.go` now release and join every goroutine they start (P-C, helper `join_test.go`), and the `unload_test.go` settle waits run in `synctest` bubbles; DH-T-CORDIS tags unchanged.
+
 ## Evidence record (impl.md sec. 7.3)
 
 These are the eight fields of [impl.md sec. 7.3](../../../harness/impl.md#73-the-evidence-record),

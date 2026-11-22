@@ -344,14 +344,7 @@ func TestElapsedSpacing(t *testing.T) {
 }
 
 func FuzzParse(f *testing.F) {
-	for _, s := range []string{
-		"DTSTART:20260101T090000Z\nRRULE:FREQ=DAILY",
-		"DTSTART;TZID=America/New_York:19970930T090000\nRRULE:FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1",
-		"DTSTART:20200101T090000Z\nRRULE:FREQ=YEARLY;BYWEEKNO=-1;BYDAY=MO;COUNT=2",
-		"DTSTART:20260101T090000Z\nRRULE:FREQ=MINUTELY;INTERVAL=7;UNTIL=20260102T000000Z",
-	} {
-		f.Add(s, true)
-	}
+	addParseSeeds(f)
 	f.Fuzz(func(t *testing.T, text string, authoring bool) {
 		r, rej := parse(text, authoring)
 		if rej != nil {
