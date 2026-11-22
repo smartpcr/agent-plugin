@@ -55,6 +55,8 @@ func open(t *testing.T, path string) *sqlite.Store {
 }
 
 // DH-T-STORE-1 / TC-07: the conformance suite passes on SQLite.
+//
+//dsh:test DH-T-STORE-1
 func TestConformance(t *testing.T) {
 	storetest.Run(t, func(t *testing.T) store.Store { return open(t, dbPath(t)) })
 }

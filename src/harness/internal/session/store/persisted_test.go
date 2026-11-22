@@ -38,6 +38,8 @@ func committed(t *testing.T) ([]store.InventoryEntry, []store.InventoryNote) {
 // TestInventory is DH-T-STORE-10: the inventory of the program's registry matches
 // the committed golden, and every type, version and fingerprint in it is
 // accounted for in persisted.notes.
+//
+//dsh:test DH-T-STORE-10
 func TestInventory(t *testing.T) {
 	cur, err := store.Inventory(event.Default())
 	if err != nil {
@@ -61,6 +63,8 @@ func TestInventory(t *testing.T) {
 // shape change with a note that does not say "compatible" is refused both against
 // the golden it would replace and after the golden was re-recorded, and so is a
 // second bump note laundering a new shape at an existing version.
+//
+//dsh:test DH-T-STORE-10
 func TestInventoryUpdatePath(t *testing.T) {
 	was, notes := committed(t)
 	cur, err := store.Inventory(event.Default())
@@ -109,6 +113,8 @@ type changedToolCall struct {
 
 // TestInventoryCatchesUnbumpedChange is the DH-T-STORE-10 scenario: a persisted
 // type that gains a field without a version bump fails the check, naming the type.
+//
+//dsh:test DH-T-STORE-10
 func TestInventoryCatchesUnbumpedChange(t *testing.T) {
 	was, notes := committed(t)
 	cur, err := store.Inventory(event.Default())

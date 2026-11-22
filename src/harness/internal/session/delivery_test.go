@@ -48,6 +48,8 @@ func drafts(t *testing.T, n int) []event.Draft {
 // DH-T-SESSION-8 (bounded state): with a listener blocked, the session's
 // delivery state never exceeds its fixed limit, and every event is still
 // delivered once, in order, when the listener resumes.
+//
+//dsh:test DH-T-SESSION-8
 func TestDeliveryStateBounded(t *testing.T) {
 	defer session.SetAnchorLimit(8)()
 	e := newEnv(t, session.Config{CheckpointEvery: -1, FeedPage: 16})
@@ -80,6 +82,8 @@ func TestDeliveryStateBounded(t *testing.T) {
 // of another session in its place on the read the deliverer delivers from.
 // The session closes with session/broken-store and delivers nothing from that
 // segment on: an earlier good read is never taken as proof of a later one.
+//
+//dsh:test DH-T-SESSION-19
 func TestForeignRecordOnLaterRead(t *testing.T) {
 	defer session.SetAnchorLimit(8)()
 	for _, mode := range []string{"foreign", "foreign-late"} {
@@ -194,6 +198,8 @@ func TestCancelledAppendKeepsSession(t *testing.T) {
 // session's heap is within a fixed bound of the same appends with a listener
 // that keeps up: the store's log is the same in both, so the difference is the
 // session's own state.
+//
+//dsh:test DH-T-SESSION-8
 func TestHeapBoundedBehindBlockedListener(t *testing.T) {
 	if testing.Short() {
 		t.Skip("100,000 appends")
@@ -240,6 +246,8 @@ func heap() uint64 {
 
 // DH-T-SESSION-7: a writer that fails to close (its flush or lease release)
 // is reported by Close and carried by Closed, not swallowed.
+//
+//dsh:test DH-T-SESSION-7
 func TestCloseReportsWriterFailure(t *testing.T) {
 	var fs *faultStore
 	e := newEnv(t, session.Config{}, faulty(&fs))

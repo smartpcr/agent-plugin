@@ -155,6 +155,8 @@ func golden(t *testing.T, name, got string) {
 // DH-T-SESSION-10: a log gives the expected history JSON; empty system,
 // developer and assistant messages produce no node; a snapshot is unchanged by
 // later appends and replacements, and unchanged nodes keep their identity.
+//
+//dsh:test DH-T-SESSION-10
 func TestHistoryGolden(t *testing.T) {
 	l := newLog(t)
 	l.add(system(t, "m-sys", "you are terse"))
@@ -196,6 +198,8 @@ func TestHistoryGolden(t *testing.T) {
 
 // DH-T-SESSION-9: each replacement rule of §3.2 accepts and rejects; a refused
 // record changes nothing.
+//
+//dsh:test DH-T-SESSION-9
 func TestReplacementRules(t *testing.T) {
 	setup := func(t *testing.T) (*logb, map[string]event.Seq) {
 		l := newLog(t)

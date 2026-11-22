@@ -179,6 +179,8 @@ func dense(seqs []event.Seq, n int) bool {
 
 // DH-T-SESSION-3 (TC-05): concurrent appenders get dense seqs and
 // non-decreasing times; three listeners see each event once, in order.
+//
+//dsh:test DH-T-SESSION-3
 func TestOrderedOnceDelivery(t *testing.T) {
 	e := newEnv(t, session.Config{})
 	rs := []*recorder{listen(t, e.root), listen(t, e.root), listen(t, e.root)}
@@ -350,6 +352,8 @@ func (w *faultWriter) Read(ctx context.Context, from store.Seq, limit int, o sto
 // DH-T-SESSION-4: a group with one invalid member changes nothing; a valid group
 // reaches storage as one batch; with a fault injected in the store none of it is
 // readable and the folds are unchanged.
+//
+//dsh:test DH-T-SESSION-4
 func TestGroupAtomic(t *testing.T) {
 	var fs *faultStore
 	e := newEnv(t, session.Config{CheckpointEvery: -1}, func(s store.Store) store.Store { fs = &faultStore{Store: s}; return fs })
@@ -389,6 +393,8 @@ func TestGroupAtomic(t *testing.T) {
 // DH-T-SESSION-6: a failing, panicking or blocked listener does not fail or
 // delay Append; a listener may append; listeners see only the sessions their
 // scope reaches.
+//
+//dsh:test DH-T-SESSION-6
 func TestListeners(t *testing.T) {
 	e := newEnv(t, session.Config{})
 	release := make(chan struct{})
@@ -446,6 +452,8 @@ func TestListeners(t *testing.T) {
 
 // DH-T-SESSION-6 (scope clauses): a listener in agent A's scope does not see
 // agent B's session; an enclosing scope's and a global one do.
+//
+//dsh:test DH-T-SESSION-6
 func TestListenerScopes(t *testing.T) {
 	e := newEnv(t, session.Config{})
 	preset := must(e.tab.New(e.root, "preset"))

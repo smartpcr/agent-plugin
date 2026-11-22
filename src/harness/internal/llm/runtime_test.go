@@ -172,6 +172,8 @@ type settlement struct {
 // record carrying requestAsOf and requestDigest to the caller's sink, and the
 // store holds exactly one settlement per attempt, every one appended by the
 // caller; the runtime appends nothing.
+//
+//dsh:test DH-T-LLM-2
 func TestStreamOneAttemptOneSettlement(t *testing.T) {
 	h := newSession(t)
 	f := &fake{scripts: []script{
@@ -237,6 +239,8 @@ func TestStreamOneAttemptOneSettlement(t *testing.T) {
 
 // DH-T-LLM-2: Complete makes one attempt and hands its one record to the
 // caller's sink; the record names the auxiliary purpose and request.
+//
+//dsh:test DH-T-LLM-2
 func TestCompleteHandsOneRecordToTheCaller(t *testing.T) {
 	h := newSession(t)
 	f := &fake{scripts: []script{chunks(append(text("a summary"), vocab.Finish{Reason: vocab.FinishStop})...)}}
@@ -375,6 +379,8 @@ func TestStreamNormalisesEveryEnding(t *testing.T) {
 
 // DH-T-LLM-3: a tool call is assembled from its deltas; max_tokens drops calls;
 // an interrupted attempt keeps its text but not an unfinished call.
+//
+//dsh:test DH-T-LLM-3
 func TestStreamAssemblesBlocks(t *testing.T) {
 	call := []vocab.Chunk{vocab.BlockStart{Index: 1, Kind: vocab.KindToolUse},
 		vocab.ToolCallDelta{Index: 1, ID: "c1", Name: "search"}, vocab.ToolCallDelta{Index: 1, ArgsDelta: `{"q":`},
@@ -419,6 +425,8 @@ func TestStreamAssemblesBlocks(t *testing.T) {
 // DH-T-LLM-4: routing and validation fail before any I/O with closed codes; a
 // route id is served once; Replace swaps a set atomically; a request for
 // another route is refused with one record.
+//
+//dsh:test DH-T-LLM-4
 func TestPrepareRoutesAndValidates(t *testing.T) {
 	f := &fake{}
 	rt := newRuntime(t, f)
@@ -528,6 +536,8 @@ func TestRouteConcurrencyCap(t *testing.T) {
 // DH-T-LLM-3: a prepared call runs once. A second Stream, sequential or
 // concurrent, is refused with llm/invalid-request and one record, before any
 // provider I/O.
+//
+//dsh:test DH-T-LLM-3
 func TestPreparedCallIsSingleUse(t *testing.T) {
 	ok := chunks(append(text("ok"), vocab.Finish{Reason: vocab.FinishStop})...)
 	f := &fake{scripts: []script{ok}}
@@ -577,6 +587,8 @@ func TestPreparedCallIsSingleUse(t *testing.T) {
 // DH-T-LLM-3: a request whose controls differ from the prepared configuration
 // is refused before the adapter runs; one with exactly the prepared controls,
 // defaults materialised either way, runs.
+//
+//dsh:test DH-T-LLM-3
 func TestStreamRefusesAConfigMismatch(t *testing.T) {
 	half := 0.5
 	ok := chunks(append(text("ok"), vocab.Finish{Reason: vocab.FinishStop})...)

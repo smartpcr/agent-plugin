@@ -575,6 +575,41 @@ Vet with the gate tool (`GOTOOLCHAIN=go1.26.0`), both tag sets: exit 0.
 `-race -shuffle=on -count=3` over the packages: all ok. The scenario files are vetted,
 not run (EV-4).
 
+### trace-tests report (13.6, not yet a gate)
+
+Plan 13.6.2 and 13.6.3 (M1-G-CLOSE-9). This is a **report, not yet a gate**: `trace-tests` joins
+the gate list at step 18.1.4. It is not closure evidence.
+
+- Command: `GOWORK=off go -C tools/harness-gate run . trace-tests --root ../.. --stage DH-S-11`.
+- Tree: `d25a556` plus the uncommitted 13.6 part B changes. Those changes add
+  `//dsh:test` directives to the DH-S-2 and DH-S-5 tests, and nothing else in test
+  files. The run exits 1 because IDs are missing.
+- No ID is deferred: no `doc.go` deferral exists yet. DH-S-1's `DH-T-TOOLCHAIN-1`,
+  `-3` and `-5` are therefore counted as missing, not deferred. impl.md's DH-S-16
+  section names them, so each needs a `doc.go` deferral line.
+
+| Stage | Required | Tagged | Deferred | Missing |
+| --- | --- | --- | --- | --- |
+| DH-S-1 | 12 | 5 | 0 | 7 |
+| DH-S-2 | 12 | 12 | 0 | 0 |
+| DH-S-3 | 11 | 5 | 0 | 6 |
+| DH-S-4 | 70 | 17 | 0 | 53 |
+| DH-S-5 | 37 | 34 | 0 | 3 |
+| DH-S-6 | 81 | 6 | 0 | 75 |
+| DH-S-7 | 13 | 9 | 0 | 4 |
+| DH-S-8 | 19 | 4 | 0 | 15 |
+| DH-S-9 | 6 | 6 | 0 | 0 |
+| DH-S-10 | 25 | 19 | 0 | 6 |
+| DH-S-11 | 24 | 17 | 0 | 7 |
+| **Total** | **310** | **134** | **0** | **176** |
+
+The tags were found in three forms: 46 `//dsh:test` directives, 81 legacy doc
+comments and 7 legacy body comments.
+
+DH-S-5's three missing IDs (`DH-T-AGENT-14`, `DH-T-VIEW-1`, `DH-T-VIEW-4`) are
+sub-gaps M1-G-CLOSE-9.1 to 9.3. Two tagged IDs have an unasserted clause:
+`DH-T-VIEW-3` (9.4) and `DH-T-HUMAN-2` (9.5).
+
 ## Evidence record (impl.md sec. 7.3)
 
 These are the eight fields of [impl.md sec. 7.3](../../../harness/impl.md#73-the-evidence-record),

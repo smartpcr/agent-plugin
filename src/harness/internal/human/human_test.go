@@ -184,6 +184,8 @@ func TestPendingIsAddressableByAgent(t *testing.T) {
 }
 
 // DH-T-HUMAN-1: two concurrent answers, one wins.
+//
+//dsh:test DH-T-HUMAN-1
 func TestConcurrentAnswersOneWins(t *testing.T) {
 	e := newEnv(t)
 	ui, _ := e.answerer("ui")
@@ -222,6 +224,7 @@ func TestConcurrentAnswersOneWins(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-HUMAN-2
 func TestCancelUnbindUnloadAndRefusals(t *testing.T) {
 	e := newEnv(t)
 	ui, _ := e.answerer("ui")
