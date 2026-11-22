@@ -242,17 +242,27 @@ func (p *Pipeline) preStep(_ *cordis.Context, req agent.PreStepRequest, next fun
 	}
 	msgs := slices.Clone(enter.Messages)
 	for _, c := range cs {
+		if ctx.Err() != nil {
+			// A cancelled turn: the driver's cancel path names the reason.
+			return enter, nil
+		}
 		out, err := contribute(ctx, c, in)
 		if err == nil {
 			err = check(c.Name(), out.Messages)
 		}
 		if err != nil {
+			if ctx.Err() != nil {
+				// The failure is the cancel's, not the contributor's: enter
+				// the step as the chain proposed it and let the driver end
+				// the turn aborted.
+				return enter, nil
+			}
 			if c.Required() {
 				return agent.Reject{By: c.Name(), Reason: err.Error()}, nil
 			}
 			dr, derr := SkippedType.Draft(Skipped{Contributor: c.Name(), Turn: req.Turn, Step: req.Step, Error: err.Error()})
 			if derr == nil {
-				_, derr = log.Append(ctx, dr)
+				_, derr = log.Append(context.WithoutCancel(ctx), dr)
 			}
 			if derr != nil {
 				return nil, fmt.Errorf("request: recording the skip of %q: %w", c.Name(), derr)
