@@ -1,8 +1,9 @@
-// Package core is the tools.registry component (DH-D-TOOLS-1): the registry of
-// tool declarations and the step view. The pipeline and batch scheduler
-// (DH-D-TOOLS-2, -3) join it here, so that no composition can have one without the
-// other. Only packages under internal/tools import it (DH-T-TOOLS-18); everything
-// else uses the contract, tools.Service under tools.Key.
+// Package core is the tools.registry component (DH-D-TOOLS-1, DH-D-TOOLS-2): the
+// registry of tool declarations, the step view, and the guarded pipeline that is
+// the one way to a tool body. The batch scheduler (DH-D-TOOLS-3) joins them here,
+// so that no composition can have one without the others. Only packages under
+// internal/tools import it (DH-T-TOOLS-18); everything else uses the contract,
+// tools.Service under tools.Key.
 package core
 
 import (
@@ -35,20 +36,25 @@ var Component = cordis.Define(Name, func(ctx *cordis.Context, _ cordis.None) err
 
 // layer is one scope's (or the global) registrations.
 type layer struct {
-	mu      sync.RWMutex
-	tools   map[string]*tools.Declaration
-	filters map[uint64]tools.Filter
-	next    uint64
+	mu       sync.RWMutex
+	tools    map[string]*tools.Declaration
+	filters  map[uint64]tools.Filter
+	policies map[uint64]named[tools.Policy]
+	guards   map[uint64]named[tools.Guard]
+	shapers  map[uint64]named[tools.Shaper]
+	next     uint64
 }
 
 func newLayer() *layer {
-	return &layer{tools: map[string]*tools.Declaration{}, filters: map[uint64]tools.Filter{}}
+	return &layer{tools: map[string]*tools.Declaration{}, filters: map[uint64]tools.Filter{},
+		policies: map[uint64]named[tools.Policy]{}, guards: map[uint64]named[tools.Guard]{}, shapers: map[uint64]named[tools.Shaper]{}}
 }
 
 // registry is the tools.Service.
 type registry struct {
 	ctx    *cordis.Context // notifies tools.Changed
 	layers *scope.Layers[*layer]
+	cfg    Config
 
 	mu   sync.Mutex
 	seq  uint64
@@ -62,7 +68,15 @@ type liveDecl struct {
 
 // New is a registry over the scope table tab; ctx notifies tools.Changed.
 func New(ctx *cordis.Context, tab scope.Table) tools.Service {
-	return &registry{ctx: ctx, layers: scope.NewLayers(tab, newLayer), live: map[*tools.Declaration]*liveDecl{}}
+	return NewWith(ctx, tab, Config{})
+}
+
+// NewWith is New with the pipeline configured by cfg.
+func NewWith(ctx *cordis.Context, tab scope.Table, cfg Config) tools.Service {
+	if cfg.MaxArgumentBytes <= 0 {
+		cfg.MaxArgumentBytes = DefaultMaxArgumentBytes
+	}
+	return &registry{ctx: ctx, layers: scope.NewLayers(tab, newLayer), cfg: cfg, live: map[*tools.Declaration]*liveDecl{}}
 }
 
 func (r *registry) Register(ctx *cordis.Context, d *tools.Declaration) (*cordis.EffectHandle, error) {

@@ -8,7 +8,7 @@ import (
 type Code string
 
 // The codes this package and its registry raise at registration and step
-// resolution. The pipeline's outcome codes (areas/tools.md §6.2) arrive with it.
+// resolution, and the pipeline's outcome codes (areas/tools.md §6.2).
 const (
 	// CodeInvalidDeclaration: a declaration that cannot be registered (a bad name,
 	// no body, a schema that cannot be derived or leaves the model-facing subset).
@@ -23,6 +23,31 @@ const (
 	CodeInvalidArguments Code = "tools/invalid-arguments"
 	// CodeInvalidOutput: a body's value that is not of its declared output shape.
 	CodeInvalidOutput Code = "tools/invalid-output"
+	// CodeInvalidBatch: a batch without its view or log, or a call without its id.
+	CodeInvalidBatch Code = "tools/invalid-batch"
+
+	// CodeNotStarted: the call never started. Its name is not a tool of the
+	// step's view (unknown, not admitted, or not reachable from the origin), or
+	// the checkpoint before the body failed.
+	CodeNotStarted Code = "tools/not-started"
+	// CodeArgumentsTooLarge: argument bytes over the registry's bound.
+	CodeArgumentsTooLarge Code = "tools/arguments-too-large"
+	// CodeDenied: a policy listener or a guard refused the call.
+	CodeDenied Code = "tools/denied"
+	// CodeAbortedBeforeStart: a policy cancelled the call, or its context ended
+	// before the body started.
+	CodeAbortedBeforeStart Code = "tools/aborted-before-start"
+	// CodeFailed: the body failed without a code of its own, or panicked; or a
+	// listener of the call panicked.
+	CodeFailed Code = "tools/failed"
+	// CodeBlocked: a shaper blocked a successful result.
+	CodeBlocked Code = "tools/blocked"
+	// CodeApprovalDenied: the approval was refused, or could not be audited.
+	CodeApprovalDenied Code = "approval/denied"
+	// CodeApprovalTimeout: nobody answered the approval in time.
+	CodeApprovalTimeout Code = "approval/timeout"
+	// CodeApprovalNoAnswerer: nobody could be asked; no means no (SP-7).
+	CodeApprovalNoAnswerer Code = "approval/no-answerer"
 )
 
 // Error carries a Code, the tool it concerns and, for schema failures, every
@@ -67,4 +92,5 @@ var (
 	ErrActivationFailed   = &Error{Code: CodeActivationFailed}
 	ErrInvalidArguments   = &Error{Code: CodeInvalidArguments}
 	ErrInvalidOutput      = &Error{Code: CodeInvalidOutput}
+	ErrInvalidBatch       = &Error{Code: CodeInvalidBatch}
 )

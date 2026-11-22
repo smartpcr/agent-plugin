@@ -49,18 +49,20 @@ func TestAuthoredScenariosAreIndexedAndCompileButDoNotRun(t *testing.T) {
 	if _, ok := files["DH-E-TOOLCHAIN-1"]; ok {
 		t.Errorf("DH-E-TOOLCHAIN-1 has a file before DH-S-11: %v", files)
 	}
-	// DH-S-9's scenarios are authored ahead of the loop and titles they exercise:
-	// one file each, indexed under DH-S-17 with requires [DH-S-11, DH-S-16], and
-	// the files and the helpers they call import only the product boundary.
-	for id, file := range map[string]string{
-		"DH-E-LLM-1":  "llm_turn_scenario_test.go:TestTurnWithReasoningAndToolCall",
-		"DH-E-LLM-3":  "llm_bad_key_scenario_test.go:TestBadKeyIsAFact",
-		"DH-E-VIEW-1": "view_title_scenario_test.go:TestModelTitlesSession",
+	// DH-S-9's and DH-S-10's scenarios are authored ahead of the loop and titles
+	// they exercise: one file each, indexed under DH-S-17 with requires [DH-S-11,
+	// DH-S-16], and the files and the helpers they call import only the product
+	// boundary.
+	for id, want := range map[string]struct{ file, authored string }{
+		"DH-E-LLM-1":   {"llm_turn_scenario_test.go:TestTurnWithReasoningAndToolCall", "DH-S-9"},
+		"DH-E-LLM-3":   {"llm_bad_key_scenario_test.go:TestBadKeyIsAFact", "DH-S-9"},
+		"DH-E-VIEW-1":  {"view_title_scenario_test.go:TestModelTitlesSession", "DH-S-9"},
+		"DH-E-TOOLS-1": {"tools_pipeline_scenario_test.go:TestGuardedPipelineRefusesTheWrite", "DH-S-10"},
 	} {
-		if files[id] != "src/harness/internal/testkit/scenarios/"+file {
-			t.Errorf("%s file = %q, want %s", id, files[id], file)
+		if files[id] != "src/harness/internal/testkit/scenarios/"+want.file {
+			t.Errorf("%s file = %q, want %s", id, files[id], want.file)
 		}
-		if where[id] != "DH-S-17 authored DH-S-9" {
+		if where[id] != "DH-S-17 authored "+want.authored {
 			t.Errorf("%s index entry = %q", id, where[id])
 		}
 		if s, _ := x.Stage("DH-S-17"); !slices.ContainsFunc(s.Scenarios, func(e acceptance.Entry) bool {
@@ -176,7 +178,7 @@ func TestRequireSubcommand(t *testing.T) {
 		out   string
 	}{
 		{"DH-S-18", 0, "DH-E-TOOLCHAIN-2,DH-E-CHOKIDAR-1,DH-E-CHOKIDAR-2,DH-E-NODEFS-1,DH-E-RIPGREP-1,DH-E-RIPGREP-2,DH-E-EXEC-1,DH-E-HOST-4\n"},
-		{"DH-S-17", 0, "DH-E-TOOLCHAIN-1,DH-E-LOADER-1,DH-E-LLM-1,DH-E-LLM-3,DH-E-VIEW-1\n"},
+		{"DH-S-17", 0, "DH-E-TOOLCHAIN-1,DH-E-LOADER-1,DH-E-LLM-1,DH-E-LLM-3,DH-E-VIEW-1,DH-E-TOOLS-1\n"},
 		{"DH-S-21", 0, "DH-E-BOOT-2\n"},
 		{"DH-S-22", 0, "DH-E-BOOT-1\n"},
 		{"DH-S-39", 0, "DH-E-UTIL-1,DH-E-STORAGE-3\n"},

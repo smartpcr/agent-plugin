@@ -65,6 +65,13 @@ stages:
     - id: DH-E-VIEW-1
       authored: DH-S-9
       requires: [DH-S-11, DH-S-16]
+    # The guarded pipeline with a real model: two reads and a write the policy asks
+    # about and the answerer rejects (impl.md DH-S-10, "runs DH-S-17,
+    # 17.5"). Written against the SDK boundary; it needs the agent loop (DH-S-11)
+    # and the headless launcher (DH-S-16).
+    - id: DH-E-TOOLS-1
+      authored: DH-S-10
+      requires: [DH-S-11, DH-S-16]
   DH-S-18:
     - id: DH-E-TOOLCHAIN-2
       authored: DH-S-1
