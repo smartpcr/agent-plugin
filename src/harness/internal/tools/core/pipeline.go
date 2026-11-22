@@ -234,7 +234,8 @@ func early(call tools.Call, e ended) prepared { return prepared{call: call, e: e
 
 // prepare takes one call through the stages before its body, in their fixed
 // order. It runs on the batch's coordinator, so a batch's appends stay serial.
-func (r *registry) prepare(ctx context.Context, b tools.Batch, ag agent.Ref, ls listeners, req tools.CallRequest) prepared {
+// ov is the call's classification; a detached body keeps it.
+func (r *registry) prepare(ctx context.Context, b tools.Batch, ag agent.Ref, ls listeners, req tools.CallRequest, ov tools.Overlap) prepared {
 	args := []byte(req.Arguments)
 	call := tools.NewCall(req.ID, req.Name, args, b.Origin, b.Parent, ag, nil, nil)
 
@@ -348,15 +349,15 @@ func (r *registry) prepare(ctx context.Context, b tools.Batch, ag agent.Ref, ls 
 
 	// 7. The body, under its budget: a body that does not return within grace
 	// after its deadline or a cancellation is detached, and the call settles. A
-	// tool whose detached body still runs for this agent is busy.
-	if r.busy(ag, d.Name()) {
-		e := stop(tools.StageBody, tools.CodeBusy, "",
-			fmt.Sprintf("an earlier call of %q by this agent did not return within grace and is still running", d.Name()))
+	// tool whose detached body still runs for this agent is busy, and so is a
+	// call whose resource keys conflict with such a body's.
+	if why := r.busy(ag, d.Name(), ov); why != "" {
+		e := stop(tools.StageBody, tools.CodeBusy, "", why)
 		e.approval = outcome
 		return early(call, e)
 	}
 	return prepared{call: call, run: func() ended {
-		e := r.execute(ctx, b, d, bd, in, tools.Run{CallID: req.ID, Agent: ag})
+		e := r.execute(ctx, b, d, bd, in, tools.Run{CallID: req.ID, Agent: ag}, ov)
 		e.approval = outcome
 		return e
 	}}

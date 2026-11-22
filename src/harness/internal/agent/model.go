@@ -273,7 +273,7 @@ func (m *Model) Capture(ctx context.Context, turn, step int) (Capture, error) {
 	if err != nil {
 		return Capture{}, errorf(CodeInvalid, "%v", err)
 	}
-	c := Capture{Selection: sel, Source: src, Record: d}
+	c := Capture{Selection: cloneSelection(sel), Source: src, Record: d}
 	if m.last != nil {
 		prev := cloneSelection(m.last.Selection)
 		c.Previous = &prev

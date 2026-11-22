@@ -1,6 +1,7 @@
 package agent_test
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -227,4 +228,105 @@ func TestModelSwitchNotice(t *testing.T) {
 	if len(got) != 2 || got[1].Role() != vocab.RoleUser || !strings.Contains(got[1].Blocks()[0].Text.Text, "r/b (m-b)") {
 		t.Fatalf("switch: %+v", got)
 	}
+}
+
+// interleaver stands for a session another writer appends to: any event
+// appended alone right after a step/start is followed by an intruding header.
+type interleaver struct{ session.Handle }
+
+func (w interleaver) Append(ctx context.Context, d event.Draft) (event.Receipt, error) {
+	r, err := w.Handle.Append(ctx, d)
+	if err == nil && d.Type() == event.StepStartType.Name() {
+		must(w.Handle.Append(ctx, must(event.RequestHeader.Draft(event.RequestHeaderPayload{Route: "r/intruder"}))))
+	}
+	return r, err
+}
+
+// refusingGroup is a session whose group appends fail.
+type refusingGroup struct{ session.Handle }
+
+func (refusingGroup) AppendGroup(context.Context, []event.Draft) ([]event.Receipt, error) {
+	return nil, errors.New("disk full")
+}
+
+// appendOnly is a session writer without groups.
+type appendOnly struct{ h session.Handle }
+
+func (w appendOnly) Append(ctx context.Context, d event.Draft) (event.Receipt, error) {
+	return w.h.Append(ctx, d)
+}
+
+// DH-T-AGENT-23: step/start and its capture are one group: another writer
+// cannot land between them, and a refused append leaves no open step.
+func TestStepStartAndCaptureAppendAtomically(t *testing.T) {
+	e := newEnv(t)
+	e.seat(t)
+	a := e.create(t, "a").Agent()
+	h := openTurn(t, a, 1)
+	m := must(agent.OpenModel(bg, h, agent.ModelOptions{Initial: agent.ModelSelection{Route: "r/a"}}))
+
+	cp := must(m.Capture(bg, 1, 1))
+	failed := refusingGroup{h}
+	out, err := agent.ProposeStep(e.root, a, failed, agent.PreStepRequest{Turn: 1, Step: 1, Selection: cp.Selection}, cp.Record)
+	if err == nil || out.Entered {
+		t.Fatalf("a refused group: %+v, %v", out, err)
+	}
+	if _, err := agent.ProposeStep(e.root, a, appendOnly{h}, agent.PreStepRequest{Turn: 1, Step: 1, Selection: cp.Selection}, cp.Record); !errors.Is(err, &agent.Error{Code: agent.CodeInvalid}) {
+		t.Fatalf("a writer without groups: %v", err)
+	}
+	for _, ev := range must(h.Read(bg, 0, 0)) {
+		if ev.Type() == event.StepStartType.Name() || ev.Type() == agent.SelectionType.Name() {
+			t.Fatalf("a refused step left %s at seq %d", ev.Type(), ev.Seq())
+		}
+	}
+
+	out = must(agent.ProposeStep(e.root, a, interleaver{h}, agent.PreStepRequest{Turn: 1, Step: 1, Selection: cp.Selection}, cp.Record))
+	if !out.Entered {
+		t.Fatalf("not entered: %+v", out)
+	}
+	if got := steps(t, h); len(got) != 1 || got[0].selected.Selection.Route != "r/a" {
+		t.Fatalf("logged %+v", got)
+	}
+}
+
+// DH-T-AGENT-23: a PreStep listener that changes the proposed selection's
+// controls changes neither the capture nor what was logged for the step.
+func TestPreStepListenerCannotChangeTheCapture(t *testing.T) {
+	e := newEnv(t)
+	e.seat(t)
+	a := e.create(t, "a").Agent()
+	h := openTurn(t, a, 1)
+	temp, topP := 0.5, 0.9
+	initial := agent.ModelSelection{Route: "r/a", Controls: vocab.Controls{Temperature: &temp, TopP: &topP, Stop: []string{"x"}}}
+	m := must(agent.OpenModel(bg, h, agent.ModelOptions{Initial: initial}))
+	runStep(t, e.root, a, h, m, 1, 1, nil)
+
+	l := must(agent.PreStep.On(a.Scope(), preStepFn(func(_ *cordis.Context, r agent.PreStepRequest, next func(agent.PreStepRequest) (agent.PreStepDecision, error)) (agent.PreStepDecision, error) {
+		for _, s := range []*agent.ModelSelection{&r.Selection, r.Previous} {
+			*s.Controls.Temperature, *s.Controls.TopP = 1.9, 0.1
+			s.Controls.Stop[0] = "y"
+		}
+		return next(r)
+	})))
+	defer l.Dispose()
+	cp := must(m.Capture(bg, 1, 2))
+	if cp.Previous == nil {
+		t.Fatal("no previous selection")
+	}
+	out := must(agent.ProposeStep(e.root, a, h, agent.PreStepRequest{Turn: 1, Step: 2, Selection: cp.Selection, Previous: cp.Previous}, cp.Record))
+	if !out.Entered {
+		t.Fatalf("not entered: %+v", out)
+	}
+	unchanged := func(what string, s agent.ModelSelection) {
+		t.Helper()
+		c := s.Controls
+		if *c.Temperature != 0.5 || *c.TopP != 0.9 || len(c.Stop) != 1 || c.Stop[0] != "x" {
+			t.Fatalf("%s changed by the listener: %+v", what, c)
+		}
+	}
+	unchanged("the capture", cp.Selection)
+	unchanged("the previous selection", *cp.Previous)
+	unchanged("the initial selection", initial)
+	got := steps(t, h)
+	unchanged("the logged selection", got[len(got)-1].selected.Selection)
 }

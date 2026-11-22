@@ -2,7 +2,9 @@ package core_test
 
 import (
 	"context"
+	"errors"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -10,6 +12,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store/memstore"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/clock"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools/core"
 )
@@ -185,5 +188,137 @@ func TestExclusiveCallsRunAlone(t *testing.T) {
 				t.Fatalf("%d bodies ran at once", act.max)
 			}
 		})
+	}
+}
+
+// An argument over MaxArgumentBytes is classified without being decoded: the
+// tool's Overlap function never sees it, and the call settles
+// arguments-too-large.
+func TestOversizedArgumentsAreNotClassified(t *testing.T) {
+	e := newEnv(t)
+	act := newActivity()
+	var classified []string
+	var mu sync.Mutex
+	svc := e.pipeline(t, core.Config{MaxParallel: 3, MaxArgumentBytes: 40})
+	e.register(t, e.root, keyedTool("touch", act,
+		func(in keyIn) tools.Overlap {
+			mu.Lock()
+			defer mu.Unlock()
+			classified = append(classified, in.ID)
+			return tools.Writes(in.Key)
+		},
+		func(string) {}))
+	calls := [][2]string{
+		{"touch", `{"key":"a","id":"1"}`},
+		{"touch", `{"key":"` + strings.Repeat("x", 64) + `","id":"2"}`},
+	}
+	h := openSession(t, memstore.New(), calls...)
+	res := execute(t, svc, view(t, svc), h, calls...)
+	if res[0].IsError {
+		t.Fatalf("call 1: %+v", res[0])
+	}
+	if res[1].Code != tools.CodeArgumentsTooLarge {
+		t.Fatalf("call 2: %+v", res[1])
+	}
+	if !reflect.DeepEqual(classified, []string{"1"}) {
+		t.Fatalf("Overlap saw %v, want only call 1", classified)
+	}
+}
+
+// failCallLog refuses the n-th tool/call append and then closes failed.
+type failCallLog struct {
+	session.Handle
+	mu     sync.Mutex
+	n      int
+	failed chan struct{}
+}
+
+func (l *failCallLog) Append(ctx context.Context, d event.Draft) (event.Receipt, error) {
+	if d.Type() == event.ToolCall.Name() {
+		l.mu.Lock()
+		l.n--
+		hit := l.n == 0
+		l.mu.Unlock()
+		if hit {
+			close(l.failed)
+			return event.Receipt{}, errors.New("disk full")
+		}
+	}
+	return l.Handle.Append(ctx, d)
+}
+
+// A log that refuses call 2's tool/call stops admission at once: while call 1
+// still runs, call 3, though free to overlap, is neither logged nor started.
+func TestLogFailureStopsAdmissionWhileEarlierCallsRun(t *testing.T) {
+	e := newEnv(t)
+	act := newActivity()
+	svc := e.pipeline(t, core.Config{MaxParallel: 3})
+	calls := [][2]string{
+		{"free", `{"key":"a","id":"1"}`},
+		{"free", `{"key":"b","id":"2"}`},
+		{"free", `{"key":"c","id":"3"}`},
+	}
+	h := &failCallLog{Handle: openSession(t, memstore.New(), calls...), n: 2, failed: make(chan struct{})}
+	e.register(t, e.root, keyedTool("free", act,
+		func(keyIn) tools.Overlap { return tools.Free },
+		func(id string) {
+			if id == "1" {
+				<-h.failed // call 1 runs until call 2's append has failed
+			}
+		}))
+	_, err := svc.ExecuteBatch(context.Background(), tools.Batch{View: view(t, svc), Log: h, Calls: requests(calls...)})
+	if err == nil {
+		t.Fatal("a refused tool/call did not fail the batch")
+	}
+	if !reflect.DeepEqual(act.ended, []string{"1"}) {
+		t.Fatalf("bodies run %v, want only call 1", act.ended)
+	}
+	lc, lr := resultOrder(t, h.Handle)
+	if !reflect.DeepEqual(lc, []string{"c1"}) || !reflect.DeepEqual(lr, []string{"c1", "c2"}) {
+		t.Fatalf("logged calls %v results %v, want calls [c1] and results [c1 c2]", lc, lr)
+	}
+}
+
+// A detached body keeps its resource keys: a later call of a different tool
+// writing the same key is refused busy at once, without waiting on the body,
+// while one on another key runs.
+func TestDetachedBodyKeepsItsResourceKeys(t *testing.T) {
+	clk := clock.NewManual(epoch)
+	e := newEnv(t)
+	act := newActivity()
+	svc := e.pipeline(t, core.Config{Clock: clk, DefaultTimeout: 7 * time.Second, Grace: time.Second, Checkpoint: recCheckpoint{&trace{}}})
+	started, release := make(chan struct{}), make(chan struct{})
+	writes := func(in keyIn) tools.Overlap { return tools.Writes(in.Key) }
+	e.register(t, e.root, keyedTool("hold", act, writes, func(string) {
+		close(started)
+		<-release
+	}))
+	e.register(t, e.root, keyedTool("poke", act, writes, func(string) {}))
+	defer close(release)
+
+	hold := [2]string{"hold", `{"key":"k","id":"1"}`}
+	done := run(svc, view(t, svc), openSession(t, memstore.New(), hold), context.Background(), hold)
+	recv(t, started, "the held body to start")
+	block(t, clk, 1)
+	clk.Advance(8 * time.Second)
+	if out := recv(t, done, "the batch"); out.err != nil || out.res.Results[0].Code != tools.CodeOutcomeUnknown {
+		t.Fatalf("held call: %+v", out)
+	}
+	if len(svc.Detached()) != 1 {
+		t.Fatalf("Detached = %+v", svc.Detached())
+	}
+
+	same, other := [2]string{"poke", `{"key":"k","id":"2"}`}, [2]string{"poke", `{"key":"j","id":"3"}`}
+	res := execute(t, svc, view(t, svc), openSession(t, memstore.New(), same, other), same, other)
+	if res[0].Code != tools.CodeBusy || res[0].Stage != tools.StageBody || !strings.Contains(res[0].Text, "resource key") {
+		t.Fatalf("same key: %+v", res[0])
+	}
+	if res[1].IsError {
+		t.Fatalf("other key: %+v", res[1])
+	}
+	act.mu.Lock()
+	defer act.mu.Unlock()
+	if !reflect.DeepEqual(act.ended, []string{"3"}) {
+		t.Fatalf("bodies ended %v, want only call 3", act.ended)
 	}
 }

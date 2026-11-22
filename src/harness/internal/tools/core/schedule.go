@@ -73,7 +73,7 @@ func (r *registry) schedule(ctx context.Context, b tools.Batch, ag agent.Ref, ls
 		if failed != nil {
 			break
 		}
-		a := r.prepare(ctx, b, ag, ls, c)
+		a := r.prepare(ctx, b, ag, ls, c, ov)
 		s := &slot{a: a}
 		slots[i] = s
 		if a.run == nil {
@@ -86,12 +86,16 @@ func (r *registry) schedule(ctx context.Context, b tools.Batch, ag agent.Ref, ls
 			}(i, a.run)
 		}
 		commit()
-		if failed != nil {
+		// A log that refused this call's tool/call stops admission at once, as
+		// the serial pipeline did, even while earlier bodies still run: their
+		// results and this call's still commit in order below, and no later call
+		// is started.
+		if failed != nil || a.err != nil {
 			break
 		}
 	}
-	// A failed batch still waits for the bodies it started, so none outlives
-	// it beyond the pipeline's own grace; their results are not committed.
+	// The bodies already started are waited for and committed in order until a
+	// commit fails; after that no result is committed.
 	for len(running) > 0 {
 		wait()
 		commit()
@@ -101,10 +105,12 @@ func (r *registry) schedule(ctx context.Context, b tools.Batch, ag agent.Ref, ls
 }
 
 // overlap is the classification of c in this batch: unknown, refused or
-// forced-exclusive tools are exclusive, as is a call whose Overlap says so.
+// forced-exclusive tools are exclusive, as is a call whose Overlap says so. An
+// argument over the byte bound is exclusive without being decoded, so its
+// Overlap function never sees it; prepare settles it arguments-too-large.
 func (r *registry) overlap(decls map[string]*tools.Declaration, c tools.CallRequest) tools.Overlap {
 	d, ok := decls[c.Name]
-	if !ok || slices.Contains(r.cfg.ForceExclusive, c.Name) {
+	if !ok || slices.Contains(r.cfg.ForceExclusive, c.Name) || len(c.Arguments) > r.cfg.MaxArgumentBytes {
 		return tools.Exclusive
 	}
 	return d.Classify([]byte(c.Arguments))

@@ -27,6 +27,9 @@ type detachedBody struct {
 	tool  string
 	agent agent.Ref
 	since time.Time
+	// overlap is the call's batch classification, kept while the body runs so
+	// a later call on a conflicting resource key does not overlap it.
+	overlap tools.Overlap
 }
 
 // budget is the call budget of d: the operator's override, else the declared
@@ -68,7 +71,7 @@ type bodyOut struct {
 // noticed, a body that returned at or after that instant has timed out even
 // when its return is seen first, and grace after a deadline ends at
 // expiry+grace, not grace after the timer was noticed.
-func (r *registry) execute(ctx context.Context, b tools.Batch, d *tools.Declaration, bd body.Body, in any, run tools.Run) ended {
+func (r *registry) execute(ctx context.Context, b tools.Batch, d *tools.Declaration, bd body.Body, in any, run tools.Run, ov tools.Overlap) ended {
 	budget, grace := r.budget(d), r.grace(d)
 	clk := r.cfg.Clock
 	bctx, cancel := context.WithCancelCause(ctx)
@@ -138,7 +141,7 @@ func (r *registry) execute(ctx context.Context, b tools.Batch, d *tools.Declarat
 		default:
 		}
 	}
-	r.detach(b, d, run, done)
+	r.detach(b, d, run, ov, done)
 	what := "the turn was cancelled"
 	if cause == tools.CauseDeadline {
 		what = fmt.Sprintf("timed out after %s", budget)
@@ -186,8 +189,8 @@ func cancelledEnded(cause tools.Cause, budget time.Duration, o bodyOut) ended {
 // detach lists the body and waits for it on its own goroutine: its return
 // removes it from the list and appends tool/late-return to the call's session.
 // Its value is never shown to the model.
-func (r *registry) detach(b tools.Batch, d *tools.Declaration, run tools.Run, done <-chan bodyOut) {
-	db := &detachedBody{call: run.CallID, tool: d.Name(), agent: run.Agent, since: r.cfg.Clock.Now()}
+func (r *registry) detach(b tools.Batch, d *tools.Declaration, run tools.Run, ov tools.Overlap, done <-chan bodyOut) {
+	db := &detachedBody{call: run.CallID, tool: d.Name(), agent: run.Agent, since: r.cfg.Clock.Now(), overlap: ov}
 	r.mu.Lock()
 	r.detached[db] = struct{}{}
 	r.mu.Unlock()
@@ -203,16 +206,28 @@ func (r *registry) detach(b tools.Batch, d *tools.Declaration, run tools.Run, do
 	}()
 }
 
-// busy reports whether a detached body of tool, for ag, is still running.
-func (r *registry) busy(ag agent.Ref, tool string) bool {
+// busy is why a call of tool classified ov, by ag, may not start, "" when it
+// may: a detached body of the same tool for ag is still running, or one whose
+// resource keys conflict with ov's. Only keyed classifications are compared:
+// exclusivity orders the calls of one batch, and a detached exclusive body
+// would otherwise refuse every later call of the agent. It refuses at once and
+// never waits, since a detached body may never return.
+func (r *registry) busy(ag agent.Ref, tool string, ov tools.Overlap) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	keyed := func(o tools.Overlap) bool { return !o.IsExclusive() && !o.IsFree() }
 	for db := range r.detached {
-		if db.tool == tool && db.agent == ag {
-			return true
+		if db.agent != ag {
+			continue
+		}
+		if db.tool == tool {
+			return fmt.Sprintf("an earlier call of %q by this agent did not return within grace and is still running", tool)
+		}
+		if keyed(ov) && keyed(db.overlap) && ov.Conflicts(db.overlap) {
+			return fmt.Sprintf("call %s of %q by this agent did not return within grace, is still running and holds a resource key this call conflicts with", db.call, db.tool)
 		}
 	}
-	return false
+	return ""
 }
 
 func (r *registry) Detached() []tools.DetachedCall {

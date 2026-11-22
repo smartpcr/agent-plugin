@@ -13,6 +13,11 @@ type Appender interface {
 	Append(ctx context.Context, d event.Draft) (event.Receipt, error)
 }
 
+// GroupAppender appends drafts as one contiguous, all-or-nothing group.
+type GroupAppender interface {
+	AppendGroup(ctx context.Context, ds []event.Draft) ([]event.Receipt, error)
+}
+
 // StepOutcome is how point 4 ended.
 type StepOutcome struct {
 	// Entered is true when step/start was appended (Seq); Enter is the batch.
@@ -43,16 +48,28 @@ func ProposeStep(c *cordis.Context, a Agent, w Appender, req PreStepRequest, als
 	d, err := AskPreStep(c, a.ScopeKey(), req)
 	switch d := d.(type) {
 	case Enter:
-		r, aerr := w.Append(ctx, mustDraft(event.StepStartType.Draft(event.StepStart{Turn: req.Turn, Step: req.Step})))
-		if aerr != nil {
-			return out, aerr
-		}
-		for _, x := range also {
-			if _, aerr := w.Append(ctx, x); aerr != nil {
+		start := mustDraft(event.StepStartType.Draft(event.StepStart{Turn: req.Turn, Step: req.Step}))
+		var seq event.Seq
+		if len(also) == 0 {
+			r, aerr := w.Append(ctx, start)
+			if aerr != nil {
 				return out, aerr
 			}
+			seq = r.Seq
+		} else {
+			// One group, so nothing lands between step/start and its capture,
+			// and a refused append leaves no open step.
+			g, ok := w.(GroupAppender)
+			if !ok {
+				return out, errorf(CodeInvalid, "a step/start with its capture needs a session that appends groups")
+			}
+			rs, aerr := g.AppendGroup(ctx, append([]event.Draft{start}, also...))
+			if aerr != nil {
+				return out, aerr
+			}
+			seq = rs[0].Seq
 		}
-		out = StepOutcome{Entered: true, Enter: d, Seq: r.Seq}
+		out = StepOutcome{Entered: true, Enter: d, Seq: seq}
 	case Reject:
 		out.Reason = event.Reason{Kind: event.ReasonBlocked, By: d.By, Detail: d.Reason}
 	default:
