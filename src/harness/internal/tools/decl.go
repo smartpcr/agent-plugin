@@ -167,7 +167,7 @@ type Spec[In, Out any] struct {
 	// Grace is how long the pipeline waits for the body to return after its
 	// budget ends or the turn is cancelled, when it is longer than the
 	// registry's grace (a tool that must stop a process tree); 0 is the
-	// registry's.
+	// registry's. At most MaxGrace.
 	Grace time.Duration
 	// BoundsOwnOutput says the body bounds its own result (a reader of spilled
 	// text), so the spill policy skips it; the registry's ceiling still applies.
@@ -183,6 +183,11 @@ type Spec[In, Out any] struct {
 // NoDeadline, as a declaration's Timeout, opts the tool out of the call budget
 // (DH-ADR-TOOLS-5); an operator override still applies. Opting out is explicit.
 const NoDeadline time.Duration = -1
+
+// MaxGrace is the longest grace a declaration may ask for (docs/harness/areas/
+// tools.md: "at most 60 s"); a longer one is refused, so no body holds a turn
+// for longer than its budget and this.
+const MaxGrace = 60 * time.Second
 
 // DynamicSpec declares a tool whose schema arrives at run time (an MCP server, a
 // plugin): the input schema is a JSON Schema document and the body receives the
@@ -480,6 +485,9 @@ func (d *Declaration) checkBase() []string {
 	}
 	if d.grace < 0 {
 		issues = append(issues, "the grace is negative")
+	}
+	if d.grace > MaxGrace {
+		issues = append(issues, fmt.Sprintf("the grace of %s is above the most a turn waits, %s", d.grace, MaxGrace))
 	}
 	return issues
 }

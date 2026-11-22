@@ -126,6 +126,10 @@ type Result struct {
 	Truncated bool
 	// Spill is the saved full result when the spill seat bounded the text.
 	Spill *event.Spill
+	// SpillFailure is why the spill seat gave no answer (it panicked, or its
+	// Replace grew the text), "" when it answered or did not run. It is logged
+	// with the result, and the text says the full result was not saved.
+	SpillFailure string
 	// Seq is the seq of the tool/result event.
 	Seq event.Seq
 }
@@ -330,8 +334,9 @@ type SpillResult struct {
 // SpillShaper is the spill seat (DH-ADR-STORAGE-4): it runs after the shapers on
 // every call that reached the body, except a tool that bounds its own output,
 // and bounds the text, saving the full result through the spill store. A panic
-// or a Replace that grows the text is ignored; the registry's ceiling still
-// applies.
+// or a Replace that grows the text is recorded as Result.SpillFailure and the
+// text ends with a notice that the full result was not saved; the registry's
+// ceiling still applies, and leaves the notice whole.
 type SpillShaper func(ctx context.Context, c Call, o Outcome) SpillResult
 
 // LateReturn is tool/late-return: a detached body returned after its call was

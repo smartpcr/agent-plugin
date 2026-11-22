@@ -486,24 +486,57 @@ func trimCode(msg string, code tools.Code) string {
 // resultMeta is the structured part of a tool/result, carried in its message's
 // source.
 type resultMeta struct {
-	Code      tools.Code   `json:"code,omitempty"`
-	Stage     tools.Stage  `json:"stage"`
-	By        string       `json:"by,omitempty"`
-	Approval  string       `json:"approval,omitempty"`
-	Cause     tools.Cause  `json:"cause,omitempty"`
-	Truncated bool         `json:"truncated,omitempty"`
-	Spill     *event.Spill `json:"spill,omitempty"`
+	Code         tools.Code   `json:"code,omitempty"`
+	Stage        tools.Stage  `json:"stage"`
+	By           string       `json:"by,omitempty"`
+	Approval     string       `json:"approval,omitempty"`
+	Cause        tools.Cause  `json:"cause,omitempty"`
+	Truncated    bool         `json:"truncated,omitempty"`
+	Spill        *event.Spill `json:"spill,omitempty"`
+	SpillFailure string       `json:"spillFailure,omitempty"`
 }
 
-// spillShape runs the spill seat; a panic keeps the text, which the ceiling
-// still bounds.
-func spillShape(ctx context.Context, s named[tools.SpillShaper], c tools.Call, o tools.Outcome) (sr tools.SpillResult) {
+// maxSpillFailure bounds the reason a spill failure notice quotes.
+const maxSpillFailure = 200
+
+// spillShape runs the spill seat; a panic is reported as failure, and the text
+// is kept for the ceiling to bound.
+func spillShape(ctx context.Context, s named[tools.SpillShaper], c tools.Call, o tools.Outcome) (sr tools.SpillResult, failure string) {
 	defer func() {
 		if x := recover(); x != nil {
-			sr = tools.SpillResult{}
+			sr, failure = tools.SpillResult{}, fmt.Sprintf("the spill seat %s panicked: %v", s.id, x)
 		}
 	}()
-	return s.f(ctx, c, o)
+	return s.f(ctx, c, o), ""
+}
+
+// spillFailureNotice is the model-facing line saying the spill seat failed; it
+// does not claim the full result was saved, since a seat that panicked may have
+// saved it and lost the reference.
+func spillFailureNotice(failure string) string {
+	failure = strings.ReplaceAll(failure, "\n", " ")
+	if len(failure) > maxSpillFailure {
+		cut := maxSpillFailure
+		for cut > 0 && !utf8.RuneStart(failure[cut]) {
+			cut--
+		}
+		failure = failure[:cut] + "..."
+	}
+	return "\n[the full result was not saved for later reading: " + failure + "]"
+}
+
+// withNotice appends notice to text within limit bytes, cutting text (with the
+// ceiling's marker) rather than the notice; ok reports whether text was cut.
+func withNotice(text, notice string, limit int) (string, bool) {
+	if len(text)+len(notice) <= limit {
+		return text + notice, false
+	}
+	if len(notice) >= limit {
+		out, _ := ceiling(notice, limit)
+		return out, true
+	}
+	cut, _ := ceiling(text, limit-len(notice))
+	return cut + notice, true
 }
 
 // ceiling cuts text to at most limit bytes, at a rune boundary, with a marker
@@ -591,18 +624,28 @@ func (r *registry) settle(ctx context.Context, b tools.Batch, ls listeners, c to
 	// The spill seat bounds a large text and saves the whole of it; the ceiling
 	// then holds whatever it left (DH-D-STORAGE-6, DH-ADR-TOOLS-4).
 	if ls.spill != nil && c.Tool() != nil && !c.Tool().BoundsOwnOutput() {
-		sr := spillShape(context.WithoutCancel(ctx), *ls.spill, c,
+		sr, failure := spillShape(context.WithoutCancel(ctx), *ls.spill, c,
 			tools.Outcome{IsError: res.IsError, Code: res.Code, Text: res.Text})
-		if sr.Replace && len(sr.Text) <= len(res.Text) {
+		switch {
+		case failure != "":
+		case sr.Replace && len(sr.Text) > len(res.Text):
+			failure = fmt.Sprintf("the spill seat %s grew the text from %d to %d bytes", ls.spill.id, len(res.Text), len(sr.Text))
+		case sr.Replace:
 			res.Text = sr.Text
 			if sr.Ref != nil {
 				ref := *sr.Ref
 				res.Spill = &ref
 			}
 		}
+		if failure != "" {
+			res.SpillFailure = failure
+			res.Text, res.Truncated = withNotice(res.Text, spillFailureNotice(failure), r.cfg.MaxResultBytes)
+		}
 	}
-	res.Text, res.Truncated = ceiling(res.Text, r.cfg.MaxResultBytes)
-	meta.Cause, meta.Truncated, meta.Spill = res.Cause, res.Truncated, res.Spill
+	if !res.Truncated {
+		res.Text, res.Truncated = ceiling(res.Text, r.cfg.MaxResultBytes)
+	}
+	meta.Cause, meta.Truncated, meta.Spill, meta.SpillFailure = res.Cause, res.Truncated, res.Spill, res.SpillFailure
 	data, err := json.Marshal(meta)
 	if err != nil {
 		return res, err

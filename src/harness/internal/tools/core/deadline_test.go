@@ -111,9 +111,9 @@ func TestDeadlineDoesNotHoldTheTurn(t *testing.T) {
 	done := run(svc, v, h, context.Background(), stuck, add)
 	recv(t, started, "the body to start")
 	block(t, clk, 1)
-	clk.Advance(10 * time.Second)
-	block(t, clk, 1) // the grace timer
-	clk.Advance(2 * time.Second)
+	// One advance past both the budget and the grace: grace is measured from
+	// the deadline, not from when its timer was noticed.
+	clk.Advance(12 * time.Second)
 	out := recv(t, done, "the batch")
 	if out.err != nil {
 		t.Fatal(out.err)
@@ -287,18 +287,24 @@ func TestDeadlineDeclaredGraceIsLonger(t *testing.T) {
 	}
 }
 
-// The declaration refuses a negative timeout other than NoDeadline and a
-// negative grace.
+// The declaration refuses a negative timeout other than NoDeadline, a negative
+// grace and a grace above tools.MaxGrace (60 s).
 func TestDeadlineDeclarationChecks(t *testing.T) {
 	for _, spec := range []tools.Spec[noIn, string]{
 		{Timeout: -2 * time.Second},
 		{Grace: -time.Second},
+		{Grace: tools.MaxGrace + time.Nanosecond},
 	} {
 		spec.Name, spec.Description = "bad", "Bad."
 		spec.Run = func(context.Context, noIn, tools.Run) (string, error) { return "", nil }
 		if err := tools.Define(spec).Err(); err == nil {
 			t.Fatalf("%+v was accepted", spec)
 		}
+	}
+	longest := tools.Define(tools.Spec[noIn, string]{Name: "tree", Description: "Longest grace.", Grace: tools.MaxGrace,
+		Run: func(context.Context, noIn, tools.Run) (string, error) { return "", nil }})
+	if err := longest.Err(); err != nil || longest.Grace() != 60*time.Second {
+		t.Fatalf("a grace of MaxGrace: %v, %v", err, longest.Grace())
 	}
 	ok := tools.Define(tools.Spec[noIn, string]{Name: "free", Description: "No deadline.", Timeout: tools.NoDeadline,
 		Run: func(context.Context, noIn, tools.Run) (string, error) { return "", nil }})
@@ -459,6 +465,142 @@ func TestOversizedResultSpilledBeforeReachingTheModel(t *testing.T) {
 	}
 	if r := res[3]; r.Spill != nil || logged["c4"].Spill != nil || !r.Truncated || len(r.Text) > limit {
 		t.Fatalf("a tool bounding its own output: spill %+v, truncated %v, %d bytes", r.Spill, r.Truncated, len(r.Text))
+	}
+}
+
+// DH-T-TOOLS-9: grace after a deadline ends at expiry+grace however the clock
+// gets there: noticed at 10 s, the call is still waiting at 11.999 s and is
+// answered at 12 s.
+func TestDeadlineGraceEndsAtExpiryPlusGrace(t *testing.T) {
+	clk := clock.NewManual(epoch)
+	e := newEnv(t)
+	svc := e.pipeline(t, core.Config{Clock: clk, Grace: 2 * time.Second, Checkpoint: recCheckpoint{&trace{}}})
+	started, release := make(chan struct{}, 1), make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	e.register(t, e.root, stuckTool(10*time.Second, started, release))
+	call := [2]string{"stuck", `{}`}
+	h := openSession(t, memstore.New(), call)
+	done := run(svc, view(t, svc), h, context.Background(), call)
+	recv(t, started, "the body to start")
+	block(t, clk, 1)
+	clk.Advance(10 * time.Second)
+	block(t, clk, 1) // the grace timer
+	clk.Advance(2*time.Second - time.Millisecond)
+	select {
+	case out := <-done:
+		t.Fatalf("answered before expiry+grace: %+v", out.res.Results)
+	case <-time.After(20 * time.Millisecond):
+	}
+	clk.Advance(time.Millisecond)
+	if r := recv(t, done, "the batch").res.Results[0]; r.Code != tools.CodeOutcomeUnknown || r.Cause != tools.CauseDeadline {
+		t.Fatalf("result = %+v", r)
+	}
+}
+
+// DH-T-TOOLS-8: a body that returns at its expiry has timed out even when its
+// return is seen before the deadline's timer (lateClock never delivers the
+// budget's timer, as a timer noticed late); one that returns a moment before
+// its expiry keeps its value.
+func TestDeadlineReturnAtExpiryIsTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		after time.Duration
+		code  tools.Code
+	}{
+		{"at-expiry", 10 * time.Second, tools.CodeTimeout},
+		{"after-expiry", 11 * time.Second, tools.CodeTimeout},
+		{"before-expiry", 10*time.Second - time.Millisecond, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clk := clock.NewManual(epoch)
+			e := newEnv(t)
+			svc := e.pipeline(t, core.Config{Clock: lateClock{clk}, Grace: 2 * time.Second, Checkpoint: recCheckpoint{&trace{}}})
+			e.register(t, e.root, tools.Define(tools.Spec[noIn, string]{
+				Name: "racer", Description: "Returns on its own timer.", Timeout: 10 * time.Second,
+				Run: func(context.Context, noIn, tools.Run) (string, error) {
+					<-clk.After(tc.after)
+					return "done", nil
+				},
+			}))
+			call := [2]string{"racer", `{}`}
+			h := openSession(t, memstore.New(), call)
+			done := run(svc, view(t, svc), h, context.Background(), call)
+			block(t, clk, 1) // the body's timer
+			clk.Advance(tc.after)
+			r := recv(t, done, "the batch").res.Results[0]
+			if r.Code != tc.code || (tc.code == "" && r.IsError) || (tc.code != "" && r.Cause != tools.CauseDeadline) {
+				t.Fatalf("result = %+v", r)
+			}
+		})
+	}
+}
+
+// lateClock is a manual clock whose timers the pipeline asks for are never
+// delivered: the pipeline sees a body's return before any deadline.
+type lateClock struct{ *clock.Manual }
+
+func (lateClock) After(time.Duration) <-chan time.Time { return make(chan time.Time) }
+
+// DH-ADR-STORAGE-4: a spill seat that panics, or whose Replace grows the text,
+// is reported in Result.SpillFailure and the logged result, and the text, still
+// within maxResultBytes, ends with a notice that the full result was not saved.
+func TestSpillSeatFailureIsReported(t *testing.T) {
+	const limit = 1000
+	for _, tc := range []struct {
+		name string
+		seat tools.SpillShaper
+		want string
+	}{
+		{"panic", func(context.Context, tools.Call, tools.Outcome) tools.SpillResult {
+			panic(strings.Repeat("disk on fire\n", 50))
+		}, "panicked: disk on fire"},
+		{"grows", func(_ context.Context, _ tools.Call, o tools.Outcome) tools.SpillResult {
+			return tools.SpillResult{Replace: true, Text: o.Text + "more", Ref: &event.Spill{Path: "x", Bytes: 1}}
+		}, "grew the text"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			svc := e.pipeline(t, core.Config{MaxResultBytes: limit, Checkpoint: recCheckpoint{&trace{}}})
+			if _, err := svc.SetSpill(e.root, "broken", tc.seat); err != nil {
+				t.Fatal(err)
+			}
+			e.register(t, e.root, textTool("big", numbered(10_000), false))
+			call := [2]string{"big", `{}`}
+			h := openSession(t, memstore.New(), call)
+			r := execute(t, svc, view(t, svc), h, call)[0]
+			if r.IsError || r.Spill != nil || !r.Truncated || len(r.Text) > limit || !strings.Contains(r.SpillFailure, tc.want) {
+				t.Fatalf("result (%d bytes) = %+v", len(r.Text), r)
+			}
+			if !strings.HasSuffix(r.Text, "]") || !strings.Contains(r.Text, "[the full result was not saved for later reading: the spill seat broken") ||
+				!strings.Contains(r.Text, "[truncated:") {
+				t.Fatalf("the notice is missing or cut: %q", r.Text[max(len(r.Text)-400, 0):])
+			}
+			logged, sizes := resultsOf(t, h)
+			evs, _ := h.Read(context.Background(), 0, 0)
+			raw := evs[len(evs)-1].Raw()
+			if logged["c1"].Spill != nil || sizes["c1"] > 4*limit || !strings.Contains(raw, "spillFailure") {
+				t.Fatalf("logged result: %s", raw)
+			}
+		})
+	}
+	// A small result keeps all its text with the notice; a ceiling below the
+	// notice's size still holds.
+	for _, tc := range []struct {
+		limit int
+		cut   bool
+	}{{1000, false}, {40, true}} {
+		e := newEnv(t)
+		svc := e.pipeline(t, core.Config{MaxResultBytes: tc.limit, Checkpoint: recCheckpoint{&trace{}}})
+		if _, err := svc.SetSpill(e.root, "broken", func(context.Context, tools.Call, tools.Outcome) tools.SpillResult { panic("no") }); err != nil {
+			t.Fatal(err)
+		}
+		e.register(t, e.root, textTool("small", "fits", false))
+		call := [2]string{"small", `{}`}
+		r := execute(t, svc, view(t, svc), openSession(t, memstore.New(), call), call)[0]
+		if len(r.Text) > tc.limit || r.Truncated != tc.cut || r.SpillFailure == "" ||
+			(!tc.cut && (!strings.HasPrefix(r.Text, "fits\n[the full result was not saved") || !strings.HasSuffix(r.Text, "]"))) {
+			t.Fatalf("limit %d: %+v", tc.limit, r)
+		}
 	}
 }
 

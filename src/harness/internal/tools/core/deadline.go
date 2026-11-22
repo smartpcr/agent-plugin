@@ -53,46 +53,74 @@ func (r *registry) grace(d *tools.Declaration) time.Duration {
 type bodyOut struct {
 	v   any
 	err error
+	at  time.Time // when the body returned, on the registry's clock
 }
 
 // execute runs the body of d under its budget and the turn's context, and
 // settles it as stage 7 ends: the body's own value or failure when it returned
 // in time, tools/timeout or tools/aborted when it returned within grace after
 // its context was cancelled, tools/outcome-unknown when it did not.
+//
+// Times are absolute: the budget expires at start+budget whenever its timer is
+// noticed, a body that returned at or after that instant has timed out even
+// when its return is seen first, and grace after a deadline ends at
+// expiry+grace, not grace after the timer was noticed.
 func (r *registry) execute(ctx context.Context, b tools.Batch, d *tools.Declaration, bd body.Body, in any, run tools.Run) ended {
 	budget, grace := r.budget(d), r.grace(d)
+	clk := r.cfg.Clock
 	bctx, cancel := context.WithCancelCause(ctx)
 	// Armed before the body starts, so a body that has started has its timer.
 	var deadline <-chan time.Time
+	var expiry time.Time
 	if budget > 0 {
-		deadline = r.cfg.Clock.After(budget)
+		expiry = clk.Now().Add(budget)
+		deadline = clk.After(budget)
 	}
+	expired := func(at time.Time) bool { return budget > 0 && !at.Before(expiry) }
 	done := make(chan bodyOut, 1)
 	go func() {
 		v, err := runBody(bctx, bd, in, run)
-		done <- bodyOut{v, err}
+		done <- bodyOut{v, err, clk.Now()}
 	}()
 	var cause tools.Cause
+	var graceEnd time.Time
 	select {
 	case o := <-done:
 		cancel(nil)
-		if ctx.Err() != nil {
+		switch {
+		case expired(o.at):
+			// Returned at or after its expiry: a timeout, even when its return
+			// won the race with the timer.
+			return cancelledEnded(tools.CauseDeadline, budget, o)
+		case ctx.Err() != nil:
 			// The turn was cancelled as the body returned: the same as a body
 			// that returned within grace.
 			return cancelledEnded(tools.CauseCancelled, budget, o)
 		}
 		return bodyEnded(o)
 	case <-deadline:
-		cause = tools.CauseDeadline
+		cause, graceEnd = tools.CauseDeadline, expiry.Add(grace)
 		cancel(fmt.Errorf("%w: the budget of %s ended", tools.ErrTimeout, budget))
 	case <-ctx.Done():
-		cause = tools.CauseCancelled
-		cancel(context.Cause(ctx))
+		cause, graceEnd = tools.CauseCancelled, clk.Now().Add(grace)
+		if expired(clk.Now()) {
+			// The budget had already ended when the turn's cancellation was seen.
+			cause, graceEnd = tools.CauseDeadline, expiry.Add(grace)
+			cancel(fmt.Errorf("%w: the budget of %s ended", tools.ErrTimeout, budget))
+		} else {
+			cancel(context.Cause(ctx))
+		}
 	}
 	select {
 	case o := <-done:
 		return cancelledEnded(cause, budget, o)
-	case <-r.cfg.Clock.After(grace):
+	case <-clk.After(graceEnd.Sub(clk.Now())):
+		// A return that is ready as grace ends is still a return.
+		select {
+		case o := <-done:
+			return cancelledEnded(cause, budget, o)
+		default:
+		}
 	}
 	r.detach(b, d, run, done)
 	what := "the turn was cancelled"
