@@ -528,6 +528,31 @@ func (s *msbState) registerTouch(name, arg string) error {
 	return err
 }
 
+// registerHold declares a tool whose Overlap writes the key argument and whose
+// body holds briefly, so non-conflicting calls pile up to the pipeline's bound.
+func (s *msbState) registerHold(name, arg string) error {
+	if arg != "key" {
+		return fmt.Errorf("only the key argument is declared, got %q", arg)
+	}
+	s.act = &msbActivity{running: map[string]bool{}, overlap: map[[2]string]bool{}}
+	act := s.act
+	_, err := s.svc.Register(s.root, tools.Define(tools.Spec[msbKeyIn, string]{
+		Name: name, Description: "Writes a keyed resource and holds it briefly.",
+		Overlap: func(in msbKeyIn) tools.Overlap { return tools.Writes(in.Key) },
+		Run: func(ctx context.Context, in msbKeyIn, _ tools.Run) (string, error) {
+			act.start(in.ID)
+			defer act.end(in.ID)
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(150 * time.Millisecond):
+			}
+			return in.ID, nil
+		},
+	}))
+	return err
+}
+
 func (s *msbState) resolveStep() error {
 	a := &msbAgent{ref: agent.Ref{Session: msbBatchSession, Incarnation: 1}, sc: nil}
 	st, err := driver.ResolveStep(context.Background(), s.svc, msbRootAgent{a}, agent.ModelSelection{Route: "r/a"})
@@ -552,6 +577,15 @@ func (s *msbState) callsThree(name, keys string) error {
 	if len(ks) != 3 {
 		return fmt.Errorf("want three keys, got %v", ks)
 	}
+	return s.runCalls(name, ks)
+}
+
+// callsKeys runs one call of name per key as the step's batch.
+func (s *msbState) callsKeys(name, keys string) error {
+	return s.runCalls(name, msbSplit(keys))
+}
+
+func (s *msbState) runCalls(name string, ks []string) error {
 	ctx := context.Background()
 	h, err := session.NewService(s.root, s.st, session.Config{}).Create(ctx, nil, session.CreateOptions{Header: session.Header{ID: msbBatchSession}})
 	if err != nil {
@@ -661,6 +695,15 @@ func (s *msbState) atMost(n int) error {
 	return nil
 }
 
+func (s *msbState) atPeak(n int) error {
+	s.act.mu.Lock()
+	defer s.act.mu.Unlock()
+	if s.act.max != n {
+		return fmt.Errorf("%d bodies ran at once at the peak, want %d", s.act.max, n)
+	}
+	return nil
+}
+
 func (s *msbState) resultsInOrder(order string) error {
 	var got []string
 	for _, r := range s.results {
@@ -757,6 +800,9 @@ func InitializeScenario_agent_loop_milestone_m1_model_selection_and_step_tool_ba
 	ctx.Step(`^calls (\d+) and (\d+) never overlapped$`, s.neverOverlapped)
 	ctx.Step(`^calls (\d+) and (\d+) overlapped$`, s.overlapped)
 	ctx.Step(`^no more than (\d+) bodies ran at once$`, s.atMost)
+	ctx.Step(`^tool "([^"]+)" that writes the resource named by its "([^"]+)" argument and holds it briefly$`, s.registerHold)
+	ctx.Step(`^the model calls "([^"]+)" with keys "([^"]+)"$`, s.callsKeys)
+	ctx.Step(`^exactly (\d+) bodies ran at once at the peak$`, s.atPeak)
 	ctx.Step(`^the batch returned results in order "([^"]+)"$`, s.resultsInOrder)
 	ctx.Step(`^a second connection to the database reads tool/call rows in order "([^"]+)" and tool/result rows in order "([^"]+)"$`, s.secondConnRows)
 }
