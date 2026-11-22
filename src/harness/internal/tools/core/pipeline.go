@@ -510,6 +510,32 @@ func spillShape(ctx context.Context, s named[tools.SpillShaper], c tools.Call, o
 	return s.f(ctx, c, o), ""
 }
 
+// boundedSpillShape runs the spill seat detached from the turn's cancellation
+// but bounded by the registry's grace: a seat whose store stalls (a full disk,
+// a hung mount) is cancelled and abandoned at grace, and reported as a spill
+// failure so the ceiling and the not-saved notice still hold the turn to
+// budget plus grace (DH-ADR-TOOLS-4).
+func (r *registry) boundedSpillShape(ctx context.Context, s named[tools.SpillShaper], c tools.Call, o tools.Outcome) (tools.SpillResult, string) {
+	sctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	type out struct {
+		sr      tools.SpillResult
+		failure string
+	}
+	done := make(chan out, 1)
+	go func() {
+		sr, failure := spillShape(sctx, s, c, o)
+		done <- out{sr, failure}
+	}()
+	select {
+	case v := <-done:
+		cancel()
+		return v.sr, v.failure
+	case <-r.cfg.Clock.After(r.cfg.Grace):
+		cancel()
+		return tools.SpillResult{}, fmt.Sprintf("the spill seat %s did not return within %s", s.id, r.cfg.Grace)
+	}
+}
+
 // spillFailureNotice is the model-facing line saying the spill seat failed; it
 // does not claim the full result was saved, since a seat that panicked may have
 // saved it and lost the reference.
@@ -624,7 +650,7 @@ func (r *registry) settle(ctx context.Context, b tools.Batch, ls listeners, c to
 	// The spill seat bounds a large text and saves the whole of it; the ceiling
 	// then holds whatever it left (DH-D-STORAGE-6, DH-ADR-TOOLS-4).
 	if ls.spill != nil && c.Tool() != nil && !c.Tool().BoundsOwnOutput() {
-		sr, failure := spillShape(context.WithoutCancel(ctx), *ls.spill, c,
+		sr, failure := r.boundedSpillShape(ctx, *ls.spill, c,
 			tools.Outcome{IsError: res.IsError, Code: res.Code, Text: res.Text})
 		switch {
 		case failure != "":
