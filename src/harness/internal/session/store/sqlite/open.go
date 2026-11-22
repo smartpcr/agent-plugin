@@ -262,7 +262,8 @@ func OpenHome(ctx context.Context, l home.Layout, opts ...Option) (*Store, error
 // Open runs the open sequence on the database at path (DH-LIB-SQLITE-R12):
 // create it owner-only when missing; check its identity and layout version
 // before anything that writes, refusing a foreign or newer database unchanged;
-// enter WAL; apply the numbered migrations; open the read pool; register the
+// enter WAL; apply the numbered migrations (these three under run/open.lock, one
+// process at a time); open the read pool; register the
 // instance under its liveness lock; sweep the hosts rows of dead instances.
 func Open(ctx context.Context, path string, opts ...Option) (*Store, error) {
 	if err := ctx.Err(); err != nil {
@@ -293,7 +294,7 @@ func Open(ctx context.Context, path string, opts ...Option) (*Store, error) {
 	if err := s.lockInstance(); err != nil {
 		return nil, err
 	}
-	if err := s.openWriter(ctx); err != nil {
+	if err := s.openWriterSerialized(ctx); err != nil {
 		s.abandon()
 		return nil, err
 	}
@@ -380,8 +381,41 @@ func dsn(path string, write bool, busy time.Duration) string {
 	return path + q + "&_pragma=query_only(1)"
 }
 
+// openLockName is the lock file under run/ that serializes the open sequence
+// (identity check, switch into WAL, migrations) across the processes sharing the
+// database (M1-G-GATE-15.1). SQLite's busy timeout does not cover the switch
+// into WAL: PRAGMA journal_mode = WAL reads page 1 under a shared lock and then
+// upgrades to a write lock, and when two connections both hold the shared lock
+// SQLite fails one of them with SQLITE_BUSY at once (deadlock avoidance) instead
+// of waiting. Two processes opening one fresh database at the same time would
+// otherwise see store/busy from Open (DH-O-5, DH-T-STORE-14).
+const openLockName = "open.lock"
+
+// openWriterSerialized is openWriter under the open lock, waiting for it at most
+// the busy timeout. The lock is released once the database is in WAL at the
+// current layout; everything after that waits on SQLite's own locks.
+func (s *Store) openWriterSerialized(ctx context.Context) error {
+	wctx, cancel := context.WithTimeout(ctx, s.busy)
+	l, err := fsx.Lock(wctx, filepath.Join(s.run, openLockName))
+	cancel()
+	if err != nil {
+		if cerr := ctx.Err(); cerr != nil {
+			return cerr
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return store.Errorf(CodeBusy, "%s: another process held the open lock past the busy timeout %s", s.path, s.busy)
+		}
+		return &store.Error{Code: CodeIO, Msg: "open lock: " + err.Error(), Err: err}
+	}
+	err = s.openWriter(ctx)
+	if uerr := l.Unlock(); uerr != nil && err == nil {
+		err = &store.Error{Code: CodeIO, Msg: "open lock: " + uerr.Error(), Err: uerr}
+	}
+	return err
+}
+
 // openWriter opens the one write connection, checks identity and layout, enters
-// WAL and migrates.
+// WAL and migrates. Run it under the open lock (openWriterSerialized).
 func (s *Store) openWriter(ctx context.Context) error {
 	wdb, err := sql.Open("sqlite", dsn(s.path, true, s.busy))
 	if err != nil {
@@ -434,16 +468,16 @@ func (s *Store) openErr(ctx context.Context, err error) error {
 }
 
 // identify reads the identity and layout version without writing: a foreign
-// or newer database is refused before any pragma that writes.
+// or newer database is refused before any pragma that writes. The three values
+// are read in one statement, so from one snapshot: read one at a time, a
+// migration another writer commits between them would show an application id of
+// 0 beside a layout version of 1, which reads as foreign (M1-G-GATE-15.1).
 func (s *Store) identify(ctx context.Context) (int, error) {
 	var app, version, objects int64
-	if err := s.wconn.QueryRowContext(ctx, `PRAGMA application_id`).Scan(&app); err != nil {
-		return 0, s.openErr(ctx, err)
-	}
-	if err := s.wconn.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
-		return 0, s.openErr(ctx, err)
-	}
-	if err := s.wconn.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_schema`).Scan(&objects); err != nil {
+	if err := s.wconn.QueryRowContext(ctx, `SELECT
+		(SELECT application_id FROM pragma_application_id),
+		(SELECT user_version FROM pragma_user_version),
+		(SELECT count(*) FROM sqlite_schema)`).Scan(&app, &version, &objects); err != nil {
 		return 0, s.openErr(ctx, err)
 	}
 	switch {
