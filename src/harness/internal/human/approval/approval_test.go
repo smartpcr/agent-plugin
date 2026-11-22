@@ -25,12 +25,14 @@ type recLog struct {
 	mu     sync.Mutex
 	drafts []event.Draft
 	fail   int
+	// failType fails every append of this event type.
+	failType string
 }
 
 func (l *recLog) Append(_ context.Context, d event.Draft) (event.Receipt, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.fail == len(l.drafts)+1 {
+	if l.fail == len(l.drafts)+1 || (l.failType != "" && d.Type() == l.failType) {
 		return event.Receipt{}, errors.New("disk full")
 	}
 	l.drafts = append(l.drafts, d)

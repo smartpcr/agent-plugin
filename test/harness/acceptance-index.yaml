@@ -109,6 +109,11 @@ stages:
     # page (impl.md step 22.3); authored in DH-S-6.
     - id: DH-E-BOOT-1
       authored: DH-S-6
+    # A question that timed out survives a kill and restart and is answered once
+    # through the inbox (impl.md step 10.9); authored by Stage 10.4.
+    - id: DH-E-HUMAN-6
+      authored: DH-S-10
+      requires: [DH-S-11, DH-S-16, DH-S-21]
   DH-S-23:
     # An image survives a crash mid-upload, a restart, a fork whose parent is
     # deleted and collection (impl.md DH-S-23); authored by Stage 8.2.
