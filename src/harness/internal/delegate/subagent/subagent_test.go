@@ -210,3 +210,112 @@ func TestStartRefusals(t *testing.T) {
 		t.Fatal("a refused start created an agent")
 	}
 }
+
+// WaitQuiet waits for a start still in Setup: it neither skips the reserved
+// child nor returns before that child has run its task and gone idle.
+func TestWaitQuietWaitsForAPendingStart(t *testing.T) {
+	e := newEnv(t, fakemodel.Reply("done"))
+	_, c := e.component("C")
+	entered, release := make(chan struct{}), make(chan struct{})
+	s := e.spec("K")
+	s.Setup = func(*cordis.Context, agent.Agent) (func() error, error) {
+		close(entered)
+		<-release
+		return nil, nil
+	}
+	started := make(chan error, 1)
+	go func() { _, err := e.rt.Start(c, s); started <- err }()
+	<-entered
+	quiet := make(chan error, 1)
+	go func() { quiet <- e.rt.WaitQuiet(bg, c) }()
+	select {
+	case err := <-quiet:
+		t.Fatalf("WaitQuiet returned during the child's Setup: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	if err := <-started; err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	select {
+	case err := <-quiet:
+		if err != nil {
+			t.Fatalf("WaitQuiet: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("WaitQuiet never returned")
+	}
+	if len(e.tr.Requests()) != 1 {
+		t.Fatalf("WaitQuiet returned before the child ran: %d requests", len(e.tr.Requests()))
+	}
+	ctx, cancel := context.WithTimeout(bg, time.Second)
+	defer cancel()
+	if err := e.rt.WaitQuiet(ctx, c); err != nil {
+		t.Fatalf("WaitQuiet with nothing pending: %v", err)
+	}
+}
+
+// DH-D-SUBAGENT-1: subagent.manager injects the agent registry and provides
+// the seam under Key; a component that injects Key delegates through it and
+// its child goes with it.
+func TestManagerComponentProvidesTheSeam(t *testing.T) {
+	e := newEnv(t, fakemodel.Turn{Events: []fakemodel.Event{fakemodel.Text("par")}, Hang: true})
+	must(agent.Agents.Provide(e.root, e.reg))
+	mf := must(e.root.Use(subagent.Component, cordis.None{}))
+	must(0, mf.Wait())
+
+	var rt subagent.Runtime
+	var c *cordis.Context
+	cf := must(e.root.Inject([]string{subagent.Key.Name()}, func(ctx *cordis.Context) (err error) {
+		c = ctx
+		rt, err = subagent.Key.Get(ctx)
+		return err
+	}))
+	must(0, cf.Wait())
+	act := must(rt.Start(c, e.spec("K")))
+	waitRequests(t, e.tr, 1)
+	if o, ok := rt.OwnerOf("K"); !ok || o != c {
+		t.Fatalf("owner of K: %v %v", o, ok)
+	}
+	k := act.Agent()
+
+	cf.Dispose()
+	must(0, cf.Wait())
+	select {
+	case <-agent.Done(k):
+	default:
+		t.Fatal("K's driver goroutine outlived its owner")
+	}
+	if _, ok := e.reg.Get("K"); ok {
+		t.Fatal("K is still addressable")
+	}
+	if r := settled(t, act); r.Stop != subagent.StopAborted {
+		t.Fatalf("result %+v", r)
+	}
+}
+
+// Unloading the manager releases the runs it still holds.
+func TestManagerUnloadReleasesItsRuns(t *testing.T) {
+	e := newEnv(t, fakemodel.Turn{Events: []fakemodel.Event{fakemodel.Text("par")}, Hang: true})
+	must(agent.Agents.Provide(e.root, e.reg))
+	mf := must(e.root.Use(subagent.Component, cordis.None{}))
+	must(0, mf.Wait())
+	var rt subagent.Runtime
+	g := must(e.root.Inject([]string{subagent.Key.Name()}, func(ctx *cordis.Context) (err error) {
+		rt, err = subagent.Key.Get(ctx)
+		return err
+	}))
+	must(0, g.Wait())
+	_, c := e.component("C")
+	act := must(rt.Start(c, e.spec("K")))
+	waitRequests(t, e.tr, 1)
+
+	mf.Dispose()
+	must(0, mf.Wait())
+	if _, ok := e.reg.Get("K"); ok {
+		t.Fatal("K outlived the manager")
+	}
+	if r := settled(t, act); r.Stop != subagent.StopAborted {
+		t.Fatalf("result %+v", r)
+	}
+}

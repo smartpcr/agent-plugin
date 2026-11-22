@@ -55,6 +55,9 @@ type activation struct {
 	once    sync.Once
 	settled chan struct{}
 	result  Result
+	// ready is closed when Start has returned; h is set by then, nil for a
+	// start that failed before the agent was created.
+	ready chan struct{}
 }
 
 func (m *manager) Start(owner *cordis.Context, s Spec) (Activation, error) {
@@ -71,7 +74,8 @@ func (m *manager) Start(owner *cordis.Context, s Spec) (Activation, error) {
 	if s.Session == "" {
 		s.Session = mint()
 	}
-	a := &activation{m: m, owner: owner, name: s.Name, child: s.Session, creator: s.Creator, settled: make(chan struct{})}
+	a := &activation{m: m, owner: owner, name: s.Name, child: s.Session, creator: s.Creator,
+		settled: make(chan struct{}), ready: make(chan struct{})}
 	if a.name == "" {
 		a.name = string(s.Session)
 	}
@@ -90,6 +94,7 @@ func (m *manager) Start(owner *cordis.Context, s Spec) (Activation, error) {
 	}
 	m.acts[a.child] = a
 	m.mu.Unlock()
+	defer close(a.ready)
 
 	// A4 materialise: the activation fiber under the owner, then the agent,
 	// owned by that fiber alone.
@@ -345,16 +350,50 @@ func (m *manager) Children(owner *cordis.Context) []session.ID {
 	return out
 }
 
+// WaitQuiet returns once every child of owner is idle with no waking input.
+// A start still in progress is waited for, and children reserved meanwhile
+// are waited for in turn: it returns on a snapshot that brought nothing new.
 func (m *manager) WaitQuiet(ctx context.Context, owner *cordis.Context) error {
-	for _, a := range m.of(owner) {
-		if a.h == nil {
-			continue
+	seen := map[*activation]bool{}
+	for {
+		fresh := false
+		for _, a := range m.of(owner) {
+			if seen[a] {
+				continue
+			}
+			fresh = true
+			select {
+			case <-a.ready:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			if a.h != nil {
+				if err := agent.WaitIdle(ctx, a.h.Agent()); err != nil && ctx.Err() != nil {
+					return err
+				}
+			}
+			seen[a] = true
 		}
-		if err := agent.WaitIdle(ctx, a.h.Agent()); err != nil && ctx.Err() != nil {
-			return err
+		if !fresh {
+			return nil
 		}
 	}
-	return nil
+}
+
+// closeAll releases every run still held: the manager unloading.
+func (m *manager) closeAll() {
+	m.mu.Lock()
+	acts := make([]*activation, 0, len(m.acts))
+	for _, a := range m.acts {
+		acts = append(acts, a)
+	}
+	m.mu.Unlock()
+	for _, a := range acts {
+		<-a.ready
+		if a.fiber != nil {
+			a.fiber.Dispose()
+		}
+	}
 }
 
 func mint() session.ID {

@@ -435,3 +435,177 @@ func must3[A, B any](a A, b B, err error) (A, B) {
 	}
 	return a, b
 }
+
+// DH-T-AGENT-19: an owner unloading while its creation is blocked, in Setup
+// or in a Created listener, does not finish before the creation has rolled
+// back: the lease and registrations cannot outlive the owner's unload.
+func TestOwnerUnloadJoinsABlockedCreation(t *testing.T) {
+	for _, at := range []string{"setup", "created"} {
+		t.Run(at, func(t *testing.T) {
+			l := newLife(t, lifeOptions{})
+			created, disposed := l.notices()
+			of, owner := l.fiber("owner")
+			entered, release := make(chan struct{}), make(chan struct{})
+			var undone atomic.Bool
+			block := func() { close(entered); <-release }
+			setup := func(sc *cordis.Context, _ agent.Agent) (func() error, error) {
+				if _, err := sc.Effect("reg", func() (cordis.Disposer, error) {
+					return func() error { undone.Store(true); return nil }, nil
+				}); err != nil {
+					return nil, err
+				}
+				if at == "setup" {
+					block()
+				}
+				return nil, nil
+			}
+			if at == "created" {
+				must(agent.Created.On(l.root, func(_ *cordis.Context, n agent.CreatedNotice) error {
+					if n.Agent.Ref().Session == "b" {
+						block()
+					}
+					return nil
+				}))
+			}
+			res := make(chan error, 1)
+			go func() { _, err := l.create(owner, "b", setup); res <- err }()
+			<-entered
+			unloaded := make(chan struct{})
+			go func() { of.Dispose(); _ = of.Wait(); close(unloaded) }()
+			select {
+			case <-unloaded:
+				t.Fatal("the owner finished unloading while its creation still held the session")
+			case <-time.After(100 * time.Millisecond):
+			}
+			close(release)
+			select {
+			case <-unloaded:
+			case <-time.After(10 * time.Second):
+				t.Fatal("the owner never finished unloading")
+			}
+			if !undone.Load() {
+				t.Fatal("the registration outlived the owner's unload")
+			}
+			l.absent("b")
+			l.released("b")
+			if err := <-res; err == nil {
+				t.Fatal("a creation outlived its owner")
+			}
+			want := []string(nil)
+			if at == "created" {
+				want = []string{"b"}
+			}
+			if !slices.Equal(*created, want) || !slices.Equal(*disposed, want) {
+				t.Fatalf("notices created %v disposed %v", *created, *disposed)
+			}
+		})
+	}
+}
+
+// DH-T-AGENT-19, -21: a rollback whose final flush fails reports both the
+// cause of the rollback and the flush failure.
+func TestRollbackKeepsTheFlushFailure(t *testing.T) {
+	st := &flaky{Store: memstore.New()}
+	l := newLife(t, lifeOptions{store: st, flushLimit: 50 * time.Millisecond})
+	errVeto := errors.New("vetoed")
+	must(agent.Created.On(l.root, func(*cordis.Context, agent.CreatedNotice) error {
+		st.mode.Store(1)
+		return errVeto
+	}))
+	_, err := l.create(l.root, "r", nil)
+	st.mode.Store(0)
+	if !errors.Is(err, errVeto) || !errors.Is(err, agent.ErrFlushFailed) {
+		t.Fatalf("create: %v", err)
+	}
+	var fe *agent.FlushError
+	if !errors.As(err, &fe) {
+		t.Fatalf("no flush error in %v", err)
+	}
+	l.absent("r")
+	l.released("r")
+}
+
+// interrupted leaves session id with an open turn and one queued message, as
+// a crashed host would.
+func (l *life) interrupted(id string) {
+	l.t.Helper()
+	h := must(l.svc.Create(bg, nil, session.CreateOptions{Header: session.Header{ID: id}}))
+	in := must(agent.OpenInbox(bg, h))
+	must(in.Send(bg, agent.ListNextTurn, agent.InboxMessage{Source: agent.SourceUser, Text: "queued"}))
+	must(h.AppendGroup(bg, []event.Draft{
+		must(event.TurnStartType.Draft(event.TurnStart{Turn: 1})),
+		must(event.StepStartType.Draft(event.StepStart{Turn: 1, Step: 1})),
+	}))
+	must(0, h.Close(bg))
+}
+
+// DH-D-AGENT-6, agent-loop 6.3: Resume closes the interrupted brackets and
+// hands the recovery report to the carrier; the agent starts idle with its
+// queued input parked, which the next waking input runs with.
+func TestResumeReportsAndStartsIdle(t *testing.T) {
+	l := newLife(t, lifeOptions{turns: []fakemodel.Turn{fakemodel.Reply("one"), fakemodel.Reply("two")}})
+	l.interrupted("q")
+	h, err := l.reg.Resume(l.root, agent.CreateOptions{Session: "q", Model: agent.ModelSelection{Route: route}})
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	rep, ok := agent.OpenReport(h.Agent())
+	if !ok || !rep.Interrupted || len(rep.Closers) == 0 {
+		t.Fatalf("report %+v %v", rep, ok)
+	}
+	if _, ok := l.reg.Get("q"); !ok {
+		t.Fatal("the resumed agent is not addressable")
+	}
+	time.Sleep(100 * time.Millisecond)
+	if n := len(l.tr.Requests()); n != 0 {
+		t.Fatalf("a resumed agent ran without a wake: %d requests", n)
+	}
+	if s := h.Agent().Status(); s != agent.StatusIdle {
+		t.Fatalf("status %s", s)
+	}
+	must(agent.Send(bg, h.Agent(), agent.ListNextTurn, agent.InboxMessage{Source: agent.SourceUser, Text: "wake"}))
+	waitRequests(t, l.tr, 2)
+	ctx, cancel := context.WithTimeout(bg, 10*time.Second)
+	defer cancel()
+	must(0, agent.WaitIdle(ctx, h.Agent()))
+	var texts []string
+	for _, e := range ofType(must(h.Agent().Session().Read(bg, 0, 0)), event.UserMessage.Name()) {
+		p := must(event.UserMessage.Decode(e.Record()))
+		for _, b := range p.Message.Blocks() {
+			if b.Text != nil {
+				texts = append(texts, b.Text.Text)
+			}
+		}
+	}
+	if !slices.Equal(texts, []string{"queued", "wake"}) {
+		t.Fatalf("user messages %v: the queued input was not kept", texts)
+	}
+	must(0, h.Dispose(bg))
+	l.released("q")
+}
+
+// DH-D-AGENT-6: a resume whose Setup fails leaves no agent and frees the
+// lease; the closers it wrote stay, so the next open has nothing to close.
+func TestResumeRollsBackOnSetupFailure(t *testing.T) {
+	l := newLife(t, lifeOptions{})
+	created, _ := l.notices()
+	l.interrupted("x")
+	_, err := l.reg.Resume(l.root, agent.CreateOptions{Session: "x", Model: agent.ModelSelection{Route: route},
+		Setup: func(*cordis.Context, agent.Agent) (func() error, error) { return nil, errors.New("no tools") }})
+	if err == nil || !strings.Contains(err.Error(), "no tools") {
+		t.Fatalf("resume: %v", err)
+	}
+	l.absent("x")
+	if len(*created) != 0 {
+		t.Fatalf("created %v", *created)
+	}
+	h, rep, err := l.svc.Open(bg, nil, "x", session.OpenOptions{})
+	if err != nil {
+		t.Fatalf("the lease was kept: %v", err)
+	}
+	defer h.Close(bg)
+	if rep.Interrupted || len(rep.Closers) != 0 {
+		t.Fatalf("the failed resume left the log open: %+v", rep)
+	}
+	checkClosed(t, h)
+}

@@ -69,6 +69,22 @@ func unwrap(a Agent) (Agent, *entry) {
 	return a, nil
 }
 
+// Reporter is an Instance that a resume opened: OpenReport is what the
+// session's open closed (agent-loop.md §6.3 step 2), for the carrier.
+type Reporter interface {
+	OpenReport() session.OpenReport
+}
+
+// OpenReport is what opening a's session closed; ok is false for an agent
+// whose instance keeps no report. A created agent's report is zero.
+func OpenReport(a Agent) (session.OpenReport, bool) {
+	a, _ = unwrap(a)
+	if r, ok := a.(Reporter); ok {
+		return r.OpenReport(), true
+	}
+	return session.OpenReport{}, false
+}
+
 // WaitIdle waits until a's loop is parked with nothing to run. An agent with
 // no loop is idle. Called from inside a's own Created dispatch it fails at
 // once with agent/self-wait.

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -38,6 +39,11 @@ type entry struct {
 	creatingG uint64
 	effects   [2]*cordis.EffectHandle // on the owner's fiber, on the co-owner's
 	swept     bool
+	// closing is set when the teardown begins; a creation then never goes live.
+	closing bool
+	// built is closed once the build has settled: inst is set, or the build
+	// failed and rolled itself back.
+	built chan struct{}
 
 	once      sync.Once
 	leaveOnce sync.Once
@@ -117,10 +123,19 @@ func (r *registry) create(owner *cordis.Context, o CreateOptions) (Handle, error
 		return nil, errorf(CodeDuplicate, "session %q already has a live agent", o.Session)
 	}
 	r.inc[o.Session]++
-	e := &entry{r: r, ref: Ref{Session: o.Session, Incarnation: r.inc[o.Session]}}
+	e := &entry{r: r, ref: Ref{Session: o.Session, Incarnation: r.inc[o.Session]}, built: make(chan struct{})}
 	r.entries[o.Session] = e
 	r.mu.Unlock()
 
+	// The owner's effect is in place before anything is built, so an owner
+	// that unloads while the build or Created still runs waits for them and
+	// then tears down what was built: nothing outlives the owner's unload.
+	if err := e.own(owner, ownerEffect); err != nil {
+		r.release(e)
+		close(e.built)
+		return nil, &Error{Code: CodeInvalid, Msg: "the owner is not active", Err: err}
+	}
+	bg := context.Background()
 	inst, err := build(f, owner, o, e.ref)
 	if err == nil && inst.Ref() != e.ref {
 		err = errorf(CodeInvalid, "the factory built %s, not %s", inst.Ref(), e.ref)
@@ -128,49 +143,79 @@ func (r *registry) create(owner *cordis.Context, o CreateOptions) (Handle, error
 	if err != nil {
 		r.release(e)
 		if inst != nil {
-			_ = closeInst(inst, context.Background())
+			err = errors.Join(err, closeInst(inst, bg))
 		}
+		close(e.built)
+		e.sweep(noEffect)
 		return nil, err
 	}
 
+	// An owner already unloading tears the agent down without Created.
 	g, _ := goroutineID()
+	began := owner.Lifetime().Err() == nil
 	r.mu.Lock()
 	e.inst = inst
-	e.creating, e.creatingG = make(chan struct{}), g
-	r.mu.Unlock()
-	err = emitCreated(r.root, inst, view{inst, e})
-	close(e.creating)
-	if err != nil {
-		_ = e.dispose(context.Background(), noEffect)
-		return nil, err
+	if began {
+		e.creating, e.creatingG = make(chan struct{}), g
 	}
-
-	if err := e.own(owner, ownerEffect); err != nil {
-		_ = handle{e}.Dispose(context.Background())
-		return nil, err
+	r.mu.Unlock()
+	close(e.built)
+	if !began {
+		return nil, errors.Join(&Error{Code: CodeInvalid, Msg: "the owner unloaded during the creation", Err: owner.Lifetime().Err()},
+			e.dispose(bg, noEffect))
 	}
 	if co, ok := inst.(CoOwned); ok && co.CoOwner() != nil && co.CoOwner() != owner {
 		if err := e.own(co.CoOwner(), coEffect); err != nil {
-			_ = handle{e}.Dispose(context.Background())
-			return nil, err
+			// Created never began: withdraw the mark so no Disposed is sent.
+			r.mu.Lock()
+			ch := e.creating
+			e.creating = nil
+			r.mu.Unlock()
+			close(ch)
+			return nil, errors.Join(err, e.dispose(bg, noEffect))
 		}
 	}
+	err = emitCreated(r.root, inst, view{inst, e})
+	close(e.creating)
+	if err == nil {
+		if cause := owner.Lifetime().Err(); cause != nil {
+			err = &Error{Code: CodeInvalid, Msg: "the owner unloaded during the creation", Err: cause}
+		}
+	}
+	if err != nil {
+		return nil, errors.Join(err, e.dispose(bg, noEffect))
+	}
+
+	// Go live unless a teardown has begun meanwhile.
 	r.mu.Lock()
-	e.live = true
+	closing := e.closing
+	if !closing {
+		e.live = true
+	}
 	r.mu.Unlock()
+	if closing {
+		return nil, errors.Join(Closing(e.ref), e.dispose(bg, noEffect))
+	}
 	if act, ok := inst.(Activator); ok {
 		if err := activate(act); err != nil {
-			_ = handle{e}.Dispose(context.Background())
-			return nil, err
+			return nil, errors.Join(err, e.dispose(bg, noEffect))
 		}
 	}
 	return handle{e}, nil
 }
 
-// own ties e's teardown to ctx's fiber as effect i.
+// own ties e's teardown to ctx's fiber as effect i. Its disposer waits for a
+// build still running and tears down what it built; a build that failed has
+// rolled itself back.
 func (e *entry) own(ctx *cordis.Context, i int) error {
 	eh, err := ctx.Effect("agent:"+string(e.ref.Session), func() (cordis.Disposer, error) {
-		return func() error { return e.dispose(context.Background(), i) }, nil
+		return func() error {
+			<-e.built
+			if e.inst == nil {
+				return nil
+			}
+			return e.dispose(context.Background(), i)
+		}, nil
 	})
 	if err != nil {
 		return err
@@ -245,6 +290,9 @@ func (e *entry) dispose(ctx context.Context, from int) error {
 		return errorf(CodeSelfWait, "Dispose of %s from inside its own Created dispatch", e.ref)
 	}
 	e.once.Do(func() {
+		e.r.mu.Lock()
+		e.closing = true
+		e.r.mu.Unlock()
 		if td, ok := e.inst.(Teardowner); ok {
 			e.err = teardown(td, ctx, TeardownHooks{JoinCreation: e.join, Leave: e.leave})
 		} else {
