@@ -117,13 +117,18 @@ func (a agpAnswerer) Ask(context.Context, human.Item) (human.Answer, human.Actor
 	return human.Answer{Outcome: human.OutcomeAllowedOnce}, human.Actor{Channel: "tui", Name: "ana"}, nil
 }
 
-// agpCheckpoint records the flush and flushes the log.
+// agpCheckpoint records the flush stage and delegates to the shipped Default
+// policy, so the flush the scenarios observe is the production one. It refuses
+// any point other than ToolBody, proving the pipeline asked for the tool-body
+// checkpoint (a refusal surfaces as tools/not-started and fails the scenario).
 type agpCheckpoint struct{ tr *agpTrace }
 
-func (c agpCheckpoint) Before(ctx context.Context, s checkpoint.Session, _ checkpoint.Point) error {
+func (c agpCheckpoint) Before(ctx context.Context, s checkpoint.Session, p checkpoint.Point) error {
+	if p != checkpoint.ToolBody {
+		return fmt.Errorf("checkpoint at %q, want %q", p, checkpoint.ToolBody)
+	}
 	c.tr.add("flush")
-	_, err := s.Flush(ctx)
-	return err
+	return checkpoint.Default{}.Before(ctx, s, p)
 }
 
 type agpState struct {
