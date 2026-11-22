@@ -152,6 +152,8 @@ Gate evidence: `go -C src/harness vet -tags scenario ./...` exits 0; the default
 `go test -list . ./internal/testkit/scenarios/...` lists no test;
 `GOWORK=off go -C tools/harness-gate test -run 'TestAuthoredScenarios|TestRequireSubcommand|TestPreflightSubcommand|TestScenarioIndex' . ./acceptance/` passes.
 
+M1 gate repair (plan 13.3, M1-G-GATE-11 to -14 and -27; [DH-S-1.md, "M1 gate repair"](DH-S-1.md#m1-gate-repair)): the vet debt added after DH-S-9 was 27 findings (QG-4 `time.Sleep`, QG-5 goroutine without `t.Cleanup`) in `src/harness/internal/agent/agent_test.go`, `agent/driver/driver_test.go`, `lifecycle_test.go`, `retry_test.go`, `delegate/subagent/subagent_test.go`, `tools/core/schedule_test.go` and, under the `scenario` tag, `testkit/scenarios/store_two_process_scenario_test.go` and `store_crash_recovery_scenario_test.go`. They now wait on the scripted model's `WaitRequests` and `PrefixServed` signals (`testkit/model`), on `synctest` bubbles or on explicit signals, and every goroutine they start is released and joined (P-C); the scenario polls of another process go through `testkit/procwait`. The DH-T-AGENT tags are unchanged; the two scenario files are vetted, not run (EV-4). `manual`, uncommitted at the time of writing: `harness-gate` vet with and without `-tags=replay,scenario` reports nothing for these packages.
+
 ## Definition of done (tech-spec §2.3)
 
 Not confirmed at this commit:

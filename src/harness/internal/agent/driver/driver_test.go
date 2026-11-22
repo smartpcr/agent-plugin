@@ -167,6 +167,17 @@ func (r *rig) waitRequest(n int) {
 	}
 }
 
+// prefixServed waits until the stream of model request n has delivered its whole
+// scripted text to the runtime (a hanging turn is then blocked after its prefix).
+func (r *rig) prefixServed(n int) {
+	r.t.Helper()
+	select {
+	case <-r.tr.PrefixServed(n):
+	case <-time.After(10 * time.Second):
+		r.t.Fatalf("the stream of model request %d never delivered its prefix", n)
+	}
+}
+
 func (r *rig) idle() {
 	r.t.Helper()
 	ctx, cancel := context.WithTimeout(bg, 10*time.Second)
@@ -442,9 +453,9 @@ func TestCancelStepMidStreamKeepsThePrefix(t *testing.T) {
 	r := newRig(t, rigOptions{turns: []fakemodel.Turn{{Events: []fakemodel.Event{fakemodel.Text("partial")}, Hang: true}}})
 	r.send(agent.ListNextTurn, "start")
 	r.waitRequest(1)
-	// The hanging body serves the prefix at once and then blocks; give the
-	// stream time to deliver it before cancelling.
-	time.Sleep(200 * time.Millisecond)
+	// The hanging body serves the prefix and then blocks; cancel once the
+	// stream has delivered it.
+	r.prefixServed(1)
 	must(0, r.drv.Cancel(agent.CauseUser, agent.CancelOptions{Scope: agent.ScopeStep, Inbox: agent.InboxKeep}))
 	r.idle()
 	evs := r.events()
