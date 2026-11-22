@@ -480,62 +480,67 @@ func must3[A, B any](a A, b B, err error) (A, B) {
 func TestOwnerUnloadJoinsABlockedCreation(t *testing.T) {
 	for _, at := range []string{"setup", "created"} {
 		t.Run(at, func(t *testing.T) {
-			l := newLife(t, lifeOptions{})
-			created, disposed := l.notices()
-			of, owner := l.fiber("owner")
-			entered, release := make(chan struct{}), make(chan struct{})
-			var undone atomic.Bool
-			block := func() { close(entered); <-release }
-			setup := func(sc *cordis.Context, _ agent.Agent) (func() error, error) {
-				if _, err := sc.Effect("reg", func() (cordis.Disposer, error) {
-					return func() error { undone.Store(true); return nil }, nil
-				}); err != nil {
-					return nil, err
-				}
-				if at == "setup" {
-					block()
-				}
-				return nil, nil
-			}
-			if at == "created" {
-				must(agent.Created.On(l.root, func(_ *cordis.Context, n agent.CreatedNotice) error {
-					if n.Agent.Ref().Session == "b" {
+			// In a synctest bubble, synctest.Wait shows the unload still waiting
+			// for the blocked creation with no settle time.
+			synctest.Test(t, func(t *testing.T) {
+				l := newLife(t, lifeOptions{})
+				created, disposed := l.notices()
+				of, owner := l.fiber("owner")
+				entered, release := make(chan struct{}), make(chan struct{})
+				var undone atomic.Bool
+				block := func() { close(entered); <-release }
+				setup := func(sc *cordis.Context, _ agent.Agent) (func() error, error) {
+					if _, err := sc.Effect("reg", func() (cordis.Disposer, error) {
+						return func() error { undone.Store(true); return nil }, nil
+					}); err != nil {
+						return nil, err
+					}
+					if at == "setup" {
 						block()
 					}
-					return nil
-				}))
-			}
-			free := closeOnce(release)
-			res := make(chan error, 1)
-			goJoined(t, free, func() { _, err := l.create(owner, "b", setup); res <- err })
-			<-entered
-			unloaded := goJoined(t, free, func() { of.Dispose(); _ = of.Wait() })
-			select {
-			case <-unloaded:
-				t.Fatal("the owner finished unloading while its creation still held the session")
-			case <-time.After(100 * time.Millisecond):
-			}
-			free()
-			select {
-			case <-unloaded:
-			case <-time.After(10 * time.Second):
-				t.Fatal("the owner never finished unloading")
-			}
-			if !undone.Load() {
-				t.Fatal("the registration outlived the owner's unload")
-			}
-			l.absent("b")
-			l.released("b")
-			if err := <-res; err == nil {
-				t.Fatal("a creation outlived its owner")
-			}
-			want := []string(nil)
-			if at == "created" {
-				want = []string{"b"}
-			}
-			if !slices.Equal(*created, want) || !slices.Equal(*disposed, want) {
-				t.Fatalf("notices created %v disposed %v", *created, *disposed)
-			}
+					return nil, nil
+				}
+				if at == "created" {
+					must(agent.Created.On(l.root, func(_ *cordis.Context, n agent.CreatedNotice) error {
+						if n.Agent.Ref().Session == "b" {
+							block()
+						}
+						return nil
+					}))
+				}
+				free := closeOnce(release)
+				res := make(chan error, 1)
+				goJoined(t, free, func() { _, err := l.create(owner, "b", setup); res <- err })
+				<-entered
+				unloaded := goJoined(t, free, func() { of.Dispose(); _ = of.Wait() })
+				synctest.Wait()
+				select {
+				case <-unloaded:
+					t.Fatal("the owner finished unloading while its creation still held the session")
+				default:
+				}
+				free()
+				select {
+				case <-unloaded:
+				case <-time.After(10 * time.Second):
+					t.Fatal("the owner never finished unloading")
+				}
+				if !undone.Load() {
+					t.Fatal("the registration outlived the owner's unload")
+				}
+				l.absent("b")
+				l.released("b")
+				if err := <-res; err == nil {
+					t.Fatal("a creation outlived its owner")
+				}
+				want := []string(nil)
+				if at == "created" {
+					want = []string{"b"}
+				}
+				if !slices.Equal(*created, want) || !slices.Equal(*disposed, want) {
+					t.Fatalf("notices created %v disposed %v", *created, *disposed)
+				}
+			})
 		})
 	}
 }
