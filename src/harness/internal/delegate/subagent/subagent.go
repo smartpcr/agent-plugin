@@ -1,14 +1,3 @@
-// Package subagent is the delegation seam (DH-D-SUBAGENT-1): any component
-// delegates a task to a child agent through Runtime.Start, and every child has
-// exactly one owner, the component that started it. The child's activation is
-// a fiber under that owner holding the child's agent handle, so the owner's
-// unload stops the child's turn, tears the agent down (agent-loop.md §6.3, T1
-// to T8) and settles its result before the owner's Wait returns.
-//
-// This is the local, in-process manager of subagent-team.md §6.2 at its
-// lifecycle points A1 admit, A2 reserve, A4 materialise, A5 accept, A6 publish,
-// and S1 to S7 from close to deliver. The ledger (A3, S5), slots and start
-// budgets, providers and the subagent tools arrive with DH-D-SUBAGENT-2 onward.
 package subagent
 
 import (
@@ -39,6 +28,11 @@ type Spec struct {
 	Model *agent.ModelSelection
 	// Setup runs in the child's scope at creation (agent.CreateOptions.Setup).
 	Setup agent.SetupFunc
+	// Resume reopens the stored child session Session, which is then
+	// required, instead of creating it (A4): the child starts with its queued
+	// input, and Prompt is its next task. A start that meets a run of the
+	// same child still releasing waits for that run to settle.
+	Resume bool
 }
 
 // StopReason is how a run ended.
