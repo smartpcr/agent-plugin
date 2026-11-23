@@ -34,6 +34,7 @@ const (
 	ReasonLineTooLong     = "jsonrpc/line-too-long"
 	ReasonTooManyPending  = "jsonrpc/too-many-pending"
 	ReasonClosed          = "jsonrpc/closed"
+	ReasonWriteStalled    = "jsonrpc/write-stalled"
 	ReasonUnknownResponse = "jsonrpc/unknown-response"
 )
 
@@ -57,6 +58,7 @@ var Table = []Entry{
 	{ReasonLineTooLong, CodeApplication, "a line over the line bound; the connection is then closed"},
 	{ReasonTooManyPending, CodeApplication, "a call over the bound of pending outbound requests"},
 	{ReasonClosed, CodeApplication, "the connection is closed; every pending call fails with it once"},
+	{ReasonWriteStalled, CodeApplication, "the peer accepted no frame for WriteStall; the connection is closed and every pending call fails with it once"},
 	{ReasonUnknownResponse, CodeApplication, "a response names no pending request"},
 }
 
