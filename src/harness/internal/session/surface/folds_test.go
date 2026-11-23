@@ -85,6 +85,22 @@ func TestHeaderAndToolHistory(t *testing.T) {
 		t.Fatalf("an update citing the old series: %v", err)
 	}
 
+	// Version 2: the header in force carries the prompt assembly's fingerprint
+	// and manifest (plan 17.1.3); a later header without them clears them.
+	man := []event.ManifestEntry{{Name: "identity", Order: 0, Owner: "tools.prompt"}}
+	hv2 := l.add(event.RequestHeader.Draft(event.RequestHeaderPayload{Route: "r/b", Tools: []vocab.ToolSchema{schema("grep", "search v2")},
+		Fingerprint: "sha256:ab", Manifest: man}))
+	if h, _ := l.st.RequestHeader(); h.Seq != hv2 || h.Fingerprint != "sha256:ab" || !slices.Equal(h.Manifest, man) {
+		t.Fatalf("v2 header folded to %+v", h)
+	}
+	if th = l.st.ToolHistory(); th.Base != h4 {
+		t.Fatalf("a fingerprint alone restarted the series: base %d, want %d", th.Base, h4)
+	}
+	l.add(header("r/b", schema("grep", "search v2")))
+	if h, _ := l.st.RequestHeader(); h.Fingerprint != "" || h.Manifest != nil {
+		t.Fatalf("a header without an assembly kept %+v", h)
+	}
+
 	// A surface replacement starts a new series at the next header.
 	u := l.add(user(t, "m-u", "x"))
 	l.add(userReplace(t, "m-u'", "y", u, u, u))

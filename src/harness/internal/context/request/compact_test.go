@@ -324,8 +324,10 @@ func TestBaselineShadowedByCompactionIsReentered(t *testing.T) {
 
 	r.turn("first")
 	first := r.sent.requests()
-	if len(first) != 1 || !slices.Equal(r.admission(), []string{request.KindInstructions}) {
-		t.Fatalf("turn 1 admitted %q, want the baseline", r.admission())
+	// The claimed message is admitted in the step's batch, before the
+	// baseline (M1-D-LOOP-1 A, plan 17.1.8).
+	if len(first) != 1 || !slices.Equal(r.admission(), []string{"user", request.KindInstructions}) {
+		t.Fatalf("turn 1 admitted %q, want the claimed message and the baseline", r.admission())
 	}
 	shadowedID := baselineIDs(t, must(first[0].Messages()))
 	if len(shadowedID) != 1 {

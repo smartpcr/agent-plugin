@@ -32,8 +32,10 @@ func TestContributionsAreLoggedInTableOrderAndRebuildTheRequest(t *testing.T) {
 	if got := r.kinds(); !slices.Equal(got, want) {
 		t.Fatalf("user/message source kinds %q, want %q", got, want)
 	}
-	if got := strings.Join(r.types(), ","); !strings.HasPrefix(got[strings.Index(got, "step/start"):], "step/start,model/selection,user/message,user/message,user/message,request/header") {
-		t.Fatalf("the contributions are not admitted between step/start and the request header: %s", got)
+	if got := strings.Join(r.types(), ","); !strings.HasPrefix(got[strings.Index(got, "step/start"):], "step/start,model/selection,user/message,user/message,user/message,user/message,request/header") {
+		// The claimed message is admitted in the same batch, before the
+		// contributions (M1-D-LOOP-1 A, plan 17.1.8).
+		t.Fatalf("the claimed message and the contributions are not admitted between step/start and the request header: %s", got)
 	}
 
 	sent := r.sent.requests()
@@ -166,7 +168,9 @@ func TestFailuresAreContainedPerContributor(t *testing.T) {
 		if te := r.lastTurnEnd(); te.Reason.Kind != event.ReasonBlocked || te.Reason.By != "quota" {
 			t.Fatalf("turn/end %+v", te)
 		}
-		if clock.calls.Load() != 0 || len(r.kinds()) != 1 || len(r.skipped()) != 0 {
+		// A rejected step admits nothing, the claimed message neither
+		// (M1-D-LOOP-1 A, plan 17.1.8).
+		if clock.calls.Load() != 0 || len(r.kinds()) != 0 || len(r.skipped()) != 0 {
 			t.Fatalf("a rejected step ran contributors: %d calls, kinds %q", clock.calls.Load(), r.kinds())
 		}
 	})

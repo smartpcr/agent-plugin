@@ -178,7 +178,7 @@ func (s *State) planHeader(p *Plan, rec event.Record) error {
 			return errorf(event.CodeInvalidEvent, "request/header at seq %d: %v", rec.Seq, err)
 		}
 	}
-	h := RequestHeader{Seq: rec.Seq, Route: v.Route, Tools: cloneTools(v.Tools)}
+	h := RequestHeader{Seq: rec.Seq, Route: v.Route, Tools: cloneTools(v.Tools), Fingerprint: v.Fingerprint, Manifest: slices.Clone(v.Manifest)}
 	if v.Controls != nil {
 		if err := v.Controls.Validate(); err != nil {
 			return errorf(event.CodeInvalidEvent, "request/header at seq %d: %v", rec.Seq, err)

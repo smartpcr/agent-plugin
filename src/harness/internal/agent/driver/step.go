@@ -3,7 +3,6 @@ package driver
 import (
 	"context"
 	"fmt"
-	"reflect"
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/agent"
@@ -29,10 +28,12 @@ type stepResult struct {
 	maxTokens bool
 }
 
-// step runs points 4 to 13 of step n with batch, the messages not yet in the
-// log. Once step/start is appended, step/end is appended on every path but a
-// failed append, after every tool call of the step has its tool/result.
-func (d *Driver) step(t *turnState, n int, batch []vocab.Message) (res stepResult, err error) {
+// step runs points 4 to 13 of step n with batch, the step's input: claimed
+// messages, which point 8 admits, and kept-open messages already in the log
+// (their ids in logged). Once step/start is appended, step/end is appended on
+// every path but a failed append, after every tool call of the step has its
+// tool/result.
+func (d *Driver) step(t *turnState, n int, batch []vocab.Message, logged map[string]bool) (res stepResult, err error) {
 	var cp agent.Capture
 	if err := d.write(t.ctx, func(ctx context.Context) error {
 		var err error
@@ -49,11 +50,20 @@ func (d *Driver) step(t *turnState, n int, batch []vocab.Message) (res stepResul
 		return stepResult{reason: errorReason("driver/tools", err)}, nil
 	}
 	defer st.Release()
+	// Point 4: the step's prompt, assembled once from the step's view; the
+	// step's retries reuse it. A failure opens no step.
+	asm, system, err := d.assemble(t.ctx, st.View())
+	if err != nil {
+		if t.ctx.Err() != nil {
+			return stepResult{reason: d.aborted(t)}, nil
+		}
+		return stepResult{reason: errorReason("driver/prompt", err)}, nil
+	}
 
 	// The step is cancellable from before point 4: a step cancel that lands
 	// while PreStep runs closes this step.
 	sctx, cancel := context.WithCancelCause(t.ctx)
-	ss := &stepState{step: n, ctx: sctx, cancel: cancel}
+	ss := &stepState{step: n, ctx: sctx, cancel: cancel, asm: asm, system: system}
 	d.mu.Lock()
 	t.step = ss
 	d.mu.Unlock()
@@ -91,10 +101,9 @@ func (d *Driver) step(t *turnState, n int, batch []vocab.Message) (res stepResul
 		}
 	}()
 
-	if err := d.admit(ss.ctx, batch, out.Enter.Messages); err != nil {
-		return res, err
-	}
-	msg, reason, err := d.call(t, ss, n, cp.Selection, st, out.Enter.StartsSeries)
+	msg, reason, err := d.call(t, ss, n, cp.Selection, admission{
+		controls: cp.Selection.Controls, series: out.Enter.StartsSeries, entered: out.Enter.Messages, logged: logged,
+	})
 	if err != nil {
 		return res, err
 	}
@@ -162,22 +171,6 @@ func (d *Driver) closeStep(parent context.Context, turn, step int, cause agent.C
 // Default flush when none is.
 func (d *Driver) checkpoints() checkpoint.Policy { return checkpoint.Mounted(d.o.Context) }
 
-// admit appends the messages of the entered batch that are not yet in the log:
-// the claims logged batch, so only what a PreStep listener added is new.
-func (d *Driver) admit(parent context.Context, batch, entered []vocab.Message) error {
-	logged := make(map[string]bool, len(batch))
-	for _, m := range batch {
-		logged[m.ID()] = true
-	}
-	var fresh []vocab.Message
-	for _, m := range entered {
-		if !logged[m.ID()] {
-			fresh = append(fresh, m)
-		}
-	}
-	return d.insert(parent, fresh)
-}
-
 // settled is the message a step's attempt produced.
 type settled struct {
 	message   vocab.Message
@@ -185,11 +178,11 @@ type settled struct {
 }
 
 // call is points 7 to 11: the model attempts of one step, retried as point 11
-// decides, each settled by exactly one event. series is the step's
-// Enter.StartsSeries: the step's first request starts a new request series, so
-// its header is appended even when unchanged. It returns the logged assistant
-// message (nil for none) and the reason that ends the turn after the step.
-func (d *Driver) call(t *turnState, ss *stepState, n int, sel agent.ModelSelection, st *StepTools, series bool) (*settled, *event.Reason, error) {
+// decides, each settled by exactly one event. adm is the step's admission: the
+// first attempt admits it whole (point 8), a retry only a changed header. It
+// returns the logged assistant message (nil for none) and the reason that ends
+// the turn after the step.
+func (d *Driver) call(t *turnState, ss *stepState, n int, sel agent.ModelSelection, adm admission) (*settled, *event.Reason, error) {
 	s := d.o.Session
 	maxAttempts := d.budget.attempts()
 	started := d.o.Now()
@@ -204,7 +197,8 @@ func (d *Driver) call(t *turnState, ss *stepState, n int, sel agent.ModelSelecti
 			}
 			return nil, errorReason("driver/prepare", err), nil
 		}
-		if err := d.header(ss.ctx, p.Route(), st.Schemas(), sel.Controls, series && attempt == 1); err != nil {
+		adm.route, adm.first = p.Route(), attempt == 1
+		if err := d.admitBatch(ss.ctx, ss, adm); err != nil {
 			return nil, nil, err
 		}
 		// Point 9: checkpoint, then build the request at the committed cut, so
@@ -305,7 +299,7 @@ func (d *Driver) settle(parent context.Context, a llm.Attempt) error {
 		asOf, timing := a.RequestAsOf, a.Timing
 		dr, err = event.AssistantMessage.Draft(event.Append(), event.AssistantMessagePayload{
 			Message: *a.Message, RequestAsOf: &asOf, RequestDigest: a.RequestDigest,
-			Usage: a.Usage, Timing: &timing, ServedBy: a.ServedBy, Estimate: a.Estimate,
+			Usage: a.Usage, Timing: &timing, ServedBy: a.ServedBy, Estimate: a.Estimate, Client: a.Client,
 		})
 	} else {
 		dr, err = a.Draft()
@@ -317,35 +311,6 @@ func (d *Driver) settle(parent context.Context, a llm.Attempt) error {
 		_, err := d.o.Session.Append(ctx, dr)
 		return err
 	})
-}
-
-// header appends a request/header when the step's route, tools or controls
-// differ from the one in force, or when force starts a new request series.
-func (d *Driver) header(parent context.Context, route vocab.RouteID, schemas []vocab.ToolSchema, c vocab.Controls, force bool) error {
-	cur, ok := d.o.Session.RequestHeader()
-	if !force && ok && cur.Route == route && sameTools(cur.Tools, schemas) && reflect.DeepEqual(cur.Controls, c) {
-		return nil
-	}
-	p := event.RequestHeaderPayload{Route: route, Tools: schemas}
-	if !reflect.DeepEqual(c, vocab.Controls{}) {
-		ctrl := c.Clone()
-		p.Controls = &ctrl
-	}
-	dr, err := event.RequestHeader.Draft(p)
-	if err != nil {
-		return err
-	}
-	return d.write(parent, func(ctx context.Context) error {
-		_, err := d.o.Session.Append(ctx, dr)
-		return err
-	})
-}
-
-func sameTools(a, b []vocab.ToolSchema) bool {
-	if len(a) == 0 && len(b) == 0 {
-		return true
-	}
-	return reflect.DeepEqual(a, b)
 }
 
 func retryPolicy(p llm.RetryPolicy, maxAttempts int) agent.RetryPolicy {

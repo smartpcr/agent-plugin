@@ -187,11 +187,30 @@ type ToolResultPayload struct {
 }
 
 // RequestHeaderPayload is the request header in force: model, tools and adapter
-// defaults. Empty tool lists and defaults are omitted.
+// defaults, and the prompt assembly the step's system prompt and tools came from.
+// Empty tool lists, defaults, fingerprint and manifest are omitted. Version 2 added
+// Fingerprint and Manifest (plan 17.1.3); a version-1 header has neither. Neither
+// is part of a request: they say where the prompt came from, and a request rebuilt
+// from the log has the same digest with or without them.
 type RequestHeaderPayload struct {
 	Route    vocab.RouteID      `json:"route,omitempty"`
 	Tools    []vocab.ToolSchema `json:"tools,omitempty"`
 	Controls *vocab.Controls    `json:"controls,omitempty"`
+	// Fingerprint is the prompt assembly's "sha256:<hex>" of its rendered sections
+	// and tools (DH-ADR-TOOLS-8), "" when the header names no assembly.
+	Fingerprint string `json:"fingerprint,omitempty"`
+	// Manifest names the assembly's sections, in order, with their owners.
+	Manifest []ManifestEntry `json:"manifest,omitempty"`
+}
+
+// ManifestEntry names one section of a prompt assembly, its order and the
+// component that owns it. It is the logged form of tools/prompt.ManifestEntry,
+// declared here because this package cannot import the prompt package.
+type ManifestEntry struct {
+	Name     string `json:"name"`
+	Order    int    `json:"order"`
+	Owner    string `json:"owner"`
+	Complete bool   `json:"complete,omitempty"`
 }
 
 // RequestContextPayload is request context outside history (instructions, cwd).
@@ -273,7 +292,10 @@ var (
 			return needRole(p.Message, vocab.RoleTool)
 		}})
 
-	RequestHeader  = mustCore(Spec[RequestHeaderPayload]{Name: "request/header", Version: 1})
+	// Version 2 of request/header adds the optional fingerprint and manifest of
+	// the prompt assembly (plan 17.1.3).
+	RequestHeader = mustCore(Spec[RequestHeaderPayload]{Name: "request/header", Version: 2,
+		Upgrades: map[int]Upgrade{1: upgradeAddedPrompt}})
 	RequestContext = mustCore(Spec[RequestContextPayload]{Name: "request/context", Version: 1,
 		Validate: func(p RequestContextPayload) error {
 			if p.Key == "" {
@@ -296,6 +318,11 @@ func upgradeAddedEstimate(raw json.RawMessage) (json.RawMessage, error) { return
 // upgradeAddedClient is the identity: the new versions only add the optional
 // client, and an older payload, which has none, was not on a client route.
 func upgradeAddedClient(raw json.RawMessage) (json.RawMessage, error) { return raw, nil }
+
+// upgradeAddedPrompt is the identity: version 2 of request/header only adds the
+// optional fingerprint and manifest, and a version-1 header, which has neither,
+// names no prompt assembly.
+func upgradeAddedPrompt(raw json.RawMessage) (json.RawMessage, error) { return raw, nil }
 
 // upgradeAddedStepCause is the identity: version 2 of step/end only adds the
 // optional cause, and a version-1 step, which has none, was not cancelled.

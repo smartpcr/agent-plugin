@@ -32,11 +32,12 @@ const (
 	exitBudget
 	exitProvider
 	exitLease
+	exitClaimAdmit
 	exits
 )
 
 func (e exit) String() string {
-	return [...]string{"none", "cancel-in-model", "cancel-in-tool", "budget", "provider-error", "lease-loss"}[e]
+	return [...]string{"none", "cancel-in-model", "cancel-in-tool", "budget", "provider-error", "lease-loss", "crash-between-claim-and-admit"}[e]
 }
 
 // plan is one property case: a random script and one random exit at step at.
@@ -162,8 +163,10 @@ var trip atomic.Pointer[func()]
 
 // TC-11a, DH-S-11: whatever exit a turn takes (a turn or step cancel in the
 // model call or in a tool body, the step budget, a provider failure, a lost
-// lease), every tool call in the history has a result and every bracket closes
-// (after the next write-open's closers when the driver itself was cut off).
+// lease, a crash between the claim and the admission), every tool call in the
+// history has a result and every bracket closes (after the next write-open's
+// closers when the driver itself was cut off); a claimed message that was never
+// admitted is reported discarded and never runs (M1-D-LOOP-1 A).
 func TestNoToolCallLeftUnansweredOnAnyExit(t *testing.T) {
 	root, svc := setup(t)
 	must(svc.Register(root, tool("echo")))
@@ -229,6 +232,13 @@ func runCase(t *testing.T, root *cordis.Context, svc tools.Service, i int, p *pl
 			return wrapped
 		}
 	}
+	if p.exit == exitClaimAdmit {
+		f := &faulty{}
+		f.set(once(func(ds []event.Draft) bool { return has(ds, "user/message") }, func(context.Context) error {
+			return fmt.Errorf("crash before admission: %w", session.ErrClosed)
+		}), nil)
+		o.wrap = f.wrap
+	}
 	r := newRig(t, o)
 	cancel := func() {
 		if p.park {
@@ -254,6 +264,10 @@ func runCase(t *testing.T, root *cordis.Context, svc tools.Service, i int, p *pl
 	ctx, stop := context.WithTimeout(bg, 20*time.Second)
 	defer stop()
 	err := r.drv.WaitIdle(ctx)
+	if p.exit == exitClaimAdmit {
+		claimAdmitCrash(t, root, st, id, r, err)
+		return
+	}
 	switch {
 	case lost.Load():
 		if err == nil {
@@ -300,6 +314,44 @@ func runCase(t *testing.T, root *cordis.Context, svc tools.Service, i int, p *pl
 		if !(p.scope == agent.ScopeStep && p.park) && (len(ends) == 0 || ends[0].Kind != event.ReasonAborted || ends[0].Cause != string(agent.CauseUser)) {
 			t.Fatalf("cancel case ended %+v", ends)
 		}
+	}
+}
+
+// claimAdmitCrash checks a case whose store failed the admission after the
+// claim: the driver stopped, and the reopened session has the turn closed
+// interrupted, nothing pending, and the claimed message reported discarded.
+func claimAdmitCrash(t *testing.T, root *cordis.Context, st store.Store, id string, r *rig, err error) {
+	t.Helper()
+	if err == nil || r.drv.Err() == nil {
+		t.Fatalf("the driver ran on past a failed admission: %v", err)
+	}
+	r.skipReplay = true
+	if n := len(r.sent.requests()); n != 0 {
+		t.Fatalf("%d requests sent with nothing admitted", n)
+	}
+	must(0, r.sess.Close(bg))
+	h, rep, err := session.NewService(root, st, session.Config{}).Open(bg, nil, session.ID(id), session.OpenOptions{})
+	if err != nil {
+		t.Fatalf("reopen after the crash: %v", err)
+	}
+	defer func() { _ = h.Close(bg) }()
+	if !rep.Interrupted {
+		t.Fatal("the reopen closed no turn")
+	}
+	checkClosed(t, h)
+	evs := must(h.Read(bg, 0, 0))
+	if ends := turnEnds(t, evs); len(ends) != 1 || ends[0].Kind != event.ReasonInterrupted {
+		t.Fatalf("turn/end %+v, want interrupted", ends)
+	}
+	if n := len(ofType(evs, "user/message")); n != 0 {
+		t.Fatalf("%d user messages: the crash admitted something", n)
+	}
+	in := must(agent.OpenInbox(bg, h))
+	if d := in.Discarded(); len(d) != 1 || d[0].Message.Text != "go" || d[0].Cause != agent.CauseUnadmitted {
+		t.Fatalf("discarded %+v, want the claimed message", d)
+	}
+	if len(in.Pending(agent.ListNextTurn)) != 0 {
+		t.Fatal("the claimed message is pending again")
 	}
 }
 

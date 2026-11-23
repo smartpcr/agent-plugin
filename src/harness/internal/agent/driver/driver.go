@@ -19,11 +19,21 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/tools/prompt"
 )
 
 // Models binds a step's model call (point 7); *llm.Runtime is one.
 type Models interface {
 	Prepare(ctx context.Context, route vocab.RouteID, model string, c vocab.Controls) (llm.Prepared, error)
+}
+
+// Prompter assembles a step's system prompt and tool list (point 4) and renders
+// the system prompt text; *prompt.Service, the tools.prompt component's service
+// under prompt.Key, is one. Assemble runs once per proposed step, and the step's
+// retries reuse its result.
+type Prompter interface {
+	Assemble(ctx context.Context, in prompt.Input) (prompt.Assembly, error)
+	Render(a prompt.Assembly) (string, error)
 }
 
 // Hooks are test seams; each runs on the driver goroutine and must return
@@ -48,6 +58,8 @@ type Options struct {
 	// Models prepares model calls; Tools resolves and runs step tool sets.
 	Models Models
 	Tools  tools.Service
+	// Prompt assembles each step's system prompt and tool list; required.
+	Prompt Prompter
 	// Budget is the turn budget; nil is DefaultBudget.
 	Budget *Budget
 	// Now and After are the clock; nil is the wall clock.
@@ -97,6 +109,8 @@ func Start(o Options) (*Driver, error) {
 	switch {
 	case o.Context == nil, o.Agent == nil, o.Session == nil, o.Inbox == nil, o.Model == nil, o.Models == nil, o.Tools == nil:
 		return nil, errors.New("driver: Start needs a context, the agent, its session, inbox and model, the model runtime and the tool service")
+	case o.Prompt == nil:
+		return nil, errors.New("driver: Start needs the prompt assembly (Options.Prompt): without it every request goes out with no system prompt")
 	}
 	b := DefaultBudget()
 	if o.Budget != nil {

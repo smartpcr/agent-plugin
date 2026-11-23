@@ -15,11 +15,17 @@ type RequestHeader struct {
 	Route    vocab.RouteID
 	Controls vocab.Controls
 	Tools    []vocab.ToolSchema
+	// Fingerprint and Manifest are the prompt assembly the header names
+	// (request/header version 2); empty for a version-1 header. Neither is part
+	// of a request.
+	Fingerprint string
+	Manifest    []event.ManifestEntry
 }
 
 func (h RequestHeader) clone() RequestHeader {
 	h.Controls = h.Controls.Clone()
 	h.Tools = cloneTools(h.Tools)
+	h.Manifest = slices.Clone(h.Manifest)
 	return h
 }
 
