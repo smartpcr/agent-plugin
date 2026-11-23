@@ -24,6 +24,8 @@ func item(name string) catalog.Item { return catalog.Item{Name: name, Component:
 type webView struct{ URL string }
 
 // TC-04a: the compiled-in catalogue, printed, equals the committed golden list.
+//
+//dsh:test DH-T-BOOT-3
 func TestCatalogListsComponentsByName(t *testing.T) {
 	c, err := builtin.Catalog()
 	if err != nil {

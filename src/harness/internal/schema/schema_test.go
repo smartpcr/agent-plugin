@@ -72,6 +72,7 @@ func TestShapeScenario(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-ZOD-2
 func TestDocument(t *testing.T) {
 	doc := string(MustOf[sample]().JSONSchema())
 	order := []string{`"name"`, `"n"`, `"tags"`, `"mode"`, `"nested"`}
@@ -109,6 +110,7 @@ func TestRawMessageIsAnyJSON(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-ZOD-9
 func TestFingerprint(t *testing.T) {
 	base := MustOf[sample]().Fingerprint()
 	if got := MustOf[reordered]().Fingerprint(); got != base {
@@ -284,6 +286,7 @@ func TestTagErrors(t *testing.T) {
 	}]()
 }
 
+//dsh:test DH-T-ZOD-10
 func TestFromJSON(t *testing.T) {
 	typ, err := FromJSON([]byte(`{
 		"type":"object",

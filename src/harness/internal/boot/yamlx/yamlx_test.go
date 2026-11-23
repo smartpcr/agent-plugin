@@ -293,6 +293,8 @@ func TestEditErrors(t *testing.T) {
 
 // A comment inside a nested value that is deleted moves to the node that follows in
 // document order, which may be in an enclosing container, or to the end of the file.
+//
+//dsh:test DH-T-BOOT-9
 func TestDeleteNestedMovesCommentsForward(t *testing.T) {
 	const src = "- id: web\n  merge:\n    port: 8080 # the dev port\n\n# Gone.\n- id: old\n"
 	for _, tc := range []struct {
@@ -309,6 +311,35 @@ func TestDeleteNestedMovesCommentsForward(t *testing.T) {
 				t.Fatalf("Edit = %q, %v; want %q", out, err, tc.want)
 			}
 		})
+	}
+}
+
+// DH-T-BOOT-9: each of the four edit operations (set, replace, insert, delete) at
+// a nested path keeps every comment of the file, and the !expr scalar beside the
+// edit keeps its text exactly.
+//
+//dsh:test DH-T-BOOT-9
+func TestNestedEditsKeepEveryComment(t *testing.T) {
+	comments := []string{"# Harness config, written by hand.", "# The web server.", "# the main one", "# The watcher.", "# end of entries"}
+	for name, op := range map[string]Op{
+		"set a new nested field": Set([]any{1, "config", "depth"}, 3),
+		"replace a nested value": Set([]any{0, "config", "host"}, "0.0.0.0"),
+		"insert a nested item":   Insert([]any{1, "config", "paths"}, 1, "lib"),
+		"delete a nested field":  Delete([]any{0, "config", "banner"}),
+	} {
+		out, err := parse(t, commented).Edit(op)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		for _, c := range comments {
+			if strings.Count(string(out), c) != 1 {
+				t.Errorf("%s: comment %q is not kept once:\n%s", name, c, out)
+			}
+		}
+		if !strings.Contains(string(out), "    port: !expr env.PORT ?? 3080\n") {
+			t.Errorf("%s: the !expr scalar changed:\n%s", name, out)
+		}
+		parse(t, string(out))
 	}
 }
 
@@ -338,6 +369,7 @@ func TestEditIsStable(t *testing.T) { // DH-T-YAML-5
 	}
 }
 
+//dsh:test DH-T-YAML-6, DH-T-BOOT-9
 func TestEditRefusesUnverifiedText(t *testing.T) { // DH-T-YAML-6
 	doc := parse(t, commented)
 	real := encode
