@@ -117,10 +117,11 @@ its test. It compiles under the `scenario` build tag (`go vet -tags scenario`) b
 
 A held-open entry is a part of a deliverable that is ticked as built (or will be) but
 is not done: the part that waits is not enabled, and its step is not done, until the
-closing step lands. H-33 and H-35 are the M1 story's entries for DH-S-8, added by plan
-Stage 15.3: decision M1-D-STORE-D (b) holds the draft record open (plan step 15.3.9),
-and M1-D-STORE-B (a) makes the `DH-T-VIEW-25` budgets provisional from their first
-measured run (plan step 15.3.2). A *provisional budget* is a time and memory limit
+closing step lands. H-33, H-35 and H-36 are the M1 story's entries for DH-S-8, added by
+Phase 15 of the plan: decision M1-D-STORE-D (b) holds the draft record open (plan step 15.3.9),
+M1-D-STORE-B (a) makes the `DH-T-VIEW-25` budgets provisional from their first
+measured run (plan step 15.3.2), and M1-D-STORE-E (a) holds open linear growth of the
+event index's writes until the views become tables (plan step 15.2.4). A *provisional budget* is a time and memory limit
 taken from the first measured run: the benchmark fails when it is missed, but the
 number is not final until it is pinned at its closing step. The entry is not H-10,
 which is the replay of a session with children (lead settlement
@@ -132,6 +133,7 @@ lists (DC-2); its table is unchanged. Each closing stage records the entries it 
 | --- | --- | --- | --- | --- | --- | --- |
 | H-33 | 8.7 | DH-D-STORAGE-3 | The draft record: one record per session in the `kv` namespace `draft` that lists its staged uploads, so an unsent draft and its files survive a reload and no file a draft names is collected; with it `DH-T-STORAGE-7`'s draft clause (a draft's staged file survives a collection run and is collected after the draft is deleted) | M1-G-STORE-28 | impl.md 21.2, DH-S-21's composer step (M1-D-STORE-D (b)) | open |
 | H-35 | 8.5 | DH-D-VIEW-5 | The final budgets of `DH-T-VIEW-25`'s DH-D-VIEW-5 clauses: the first list page over the heavy-tailed corpus and a snapshot of a session above 100,000 events, each also under `GOMEMLIMIT`. Until then the budgets are the provisional ones of plan step 15.3.2. The test's ranked-search, literal-search and `TreeMessages` clauses are not in this entry: they belong to DH-D-VIEW-6 at DH-S-23 (impl.md step 23.9) | M1-G-STORE-22, M1-G-STORE-7 | impl.md 16.7 (M1-D-STORE-B (a)) | open |
+| H-36 | 8.1 | DH-D-VIEW-2 | Linear growth of the bytes the event index upserts. The four built-in views are checkpoint documents (M1-D-STORE-C (a)), so each `Periodic` event-index write is the whole document and the total grows as about n^2/k, where k is the turn length (28.8 MB over 10,000 events, measured at plan step 15.2.4). Until then the test asserts what holds: the every-commit rows grow linearly, each event-index write is linear in the events it covers, and the writes are at most turns + n/200 + 2 | M1-G-STORE-13 | the view tables at DH-S-23 (M1-D-STORE-E (a)) | open |
 
 ## Closure
 
