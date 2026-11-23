@@ -445,9 +445,11 @@ func (s *fpbsState) treeGone() error {
 	if err := s.tree.p.TreeGone(ctx); err != nil {
 		return fmt.Errorf("tree not gone: %w", err)
 	}
+	// Exited, not !Alive: an orphaned member is reaped by its reaper on its own
+	// time, and kill(pid, 0) still finds the zombie until then (M1-G-BOOT-36).
 	for _, pid := range []int{s.tree.child, s.tree.grandchild} {
-		if subprocesstest.Alive(pid) {
-			return fmt.Errorf("process %d is still alive", pid)
+		if !subprocesstest.Exited(pid) {
+			return fmt.Errorf("process %d is still running", pid)
 		}
 	}
 	return nil

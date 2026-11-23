@@ -176,10 +176,12 @@ func (s *lhptState) stopTreeOK() error {
 
 func (s *lhptState) bothGone() error {
 	// Checked immediately after StopTree returned: no polling, so this proves
-	// StopTree awaited both exits.
-	if subprocesstest.Alive(s.child) || subprocesstest.Alive(s.grandchild) {
-		return fmt.Errorf("StopTree returned after %v with child alive=%v, grandchild alive=%v (owner %+v)",
-			s.stopTook, subprocesstest.Alive(s.child), subprocesstest.Alive(s.grandchild), s.proc.Owner())
+	// StopTree awaited both exits. Exited, not !Alive: the orphaned grandchild is
+	// reaped by its reaper on its own time, and kill(pid, 0) still finds the
+	// zombie until then (M1-G-BOOT-36).
+	if !subprocesstest.Exited(s.child) || !subprocesstest.Exited(s.grandchild) {
+		return fmt.Errorf("StopTree returned after %v with child exited=%v, grandchild exited=%v (owner %+v)",
+			s.stopTook, subprocesstest.Exited(s.child), subprocesstest.Exited(s.grandchild), s.proc.Owner())
 	}
 	return nil
 }

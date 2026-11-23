@@ -293,9 +293,11 @@ func TestShutdownOverrunExits124(t *testing.T) {
 	if err := s.p.TreeGone(ctx); err != nil {
 		t.Errorf("tree not gone: %v", err)
 	}
+	// Exited, not !Alive: an orphaned member is reaped by its reaper on its own
+	// time, and kill(pid, 0) still finds the zombie until then (M1-G-BOOT-36).
 	for _, pid := range []int{s.child, s.grandchild} {
-		if subprocesstest.Alive(pid) {
-			t.Errorf("process %d is still alive", pid)
+		if !subprocesstest.Exited(pid) {
+			t.Errorf("process %d is still running", pid)
 		}
 	}
 	out := stderr.String()
