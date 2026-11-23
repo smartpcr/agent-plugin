@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/smartpcr/agent-plugin/src/harness/internal/human/secret"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/temphome"
@@ -65,9 +66,14 @@ type Program struct {
 	// Argv is the binary (absolute, as Build returns) and its arguments.
 	Argv []string
 	// Env are "NAME=value" entries added to the host environment, which loses its
-	// credentials and DSH_* names first; DSH_HOME always names the temp home, and
-	// a DSH_HOME entry here is overridden.
+	// credentials, its secret names and its DSH_* names first; DSH_HOME always
+	// names the temp home, and a DSH_HOME entry here is overridden.
 	Env []string
+	// Secrets is the store whose named references, and every credential-shaped
+	// name, Start removes from the host environment (SP-11); nil is an empty
+	// store, which removes the credential-shaped names. An entry of Env is the
+	// test's own choice and is kept.
+	Secrets *secret.Store
 	// Dir is the working directory; empty is the temp home's parent.
 	Dir string
 	// RPC configures the client; its methods answer the program's requests.
@@ -118,7 +124,11 @@ func Start(t testing.TB, p Program) *Session {
 	}
 	// DSH_HOME is managed, so it is applied after p.Env: an entry there cannot point
 	// the program at a home other than the one Session.Home names and cleanup removes.
-	env := subprocess.BuildEnv(os.Environ(), subprocess.EnvOptions{Entries: p.Env, Managed: []string{"DSH_HOME=" + l.Root()}})
+	store := p.Secrets
+	if store == nil {
+		store = secret.NewStore()
+	}
+	env := subprocess.BuildEnv(os.Environ(), subprocess.EnvOptions{Secrets: store, Entries: p.Env, Managed: []string{"DSH_HOME=" + l.Root()}})
 	s := &Session{Home: l, Stderr: &testkit.Buffer{}}
 	proc, err := subprocess.Start(context.Background(), subprocess.Spec{Argv: p.Argv, Dir: dir, Env: env, Stdin: inR, Stdout: outW, Stderr: errW, Grace: Grace})
 	closeAll(inR, outW, errW)

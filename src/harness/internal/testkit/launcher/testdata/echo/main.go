@@ -1,7 +1,8 @@
 // Command echo is the launcher's test program: it serves JSON-RPC on its standard
-// streams until they end. "home" answers DSH_HOME, "echo" its params and "spawn"
-// starts a copy of itself that sleeps in the home (a grandchild the launcher's
-// cleanup must reap) and answers its pid. "echo tree" starts a grandchild holding
+// streams until they end. "home" answers DSH_HOME, "echo" its params, "env"
+// whether each name of its params is set, and "spawn" starts a copy of itself
+// that sleeps in the home (a grandchild the launcher's cleanup must reap) and
+// answers its pid. "echo tree" starts a grandchild holding
 // its output streams, prints the grandchild's pid and hangs. "echo tags" prints
 // the build tags of tags_*.go it was built with, sorted, comma-separated.
 package main
@@ -38,6 +39,17 @@ func main() {
 	conn := jsonrpc.Serve(context.Background(), os.Stdin, os.Stdout, jsonrpc.Options{Methods: map[string]jsonrpc.Handler{
 		"home": func(context.Context, json.RawMessage) (any, error) { return os.Getenv("DSH_HOME"), nil },
 		"echo": func(_ context.Context, p json.RawMessage) (any, error) { return p, nil },
+		"env": func(_ context.Context, p json.RawMessage) (any, error) {
+			var names []string
+			if err := json.Unmarshal(p, &names); err != nil {
+				return nil, err
+			}
+			set := map[string]bool{}
+			for _, n := range names {
+				_, set[n] = os.LookupEnv(n)
+			}
+			return set, nil
+		},
 		"spawn": func(context.Context, json.RawMessage) (any, error) {
 			exe, err := os.Executable()
 			if err != nil {

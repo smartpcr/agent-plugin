@@ -21,26 +21,45 @@ var DefaultDeny = []string{"*KEY*", "*TOKEN*", "*SECRET*", "*PASSWORD*", "*PASSP
 // from the host environment before caller entries are added.
 const HarnessPrefix = "DSH_"
 
+// SecretNames says which environment variable names hold a secret. The secret
+// store (*secret.Store in internal/human/secret) is one: it names the variable of
+// every reference configuration named, such as GITHUB_PAT for secret://github/pat,
+// and every credential-shaped name. It is an interface so that this package
+// imports nothing of internal/human.
+type SecretNames interface {
+	IsSecretName(name string) bool
+}
+
 // EnvOptions says how BuildEnv derives a child environment.
 type EnvOptions struct {
 	// Deny adds name patterns to DefaultDeny.
 	Deny []string
 	// Allow keeps names (patterns) that a deny pattern would remove. It does not
-	// keep a credential name or a DSH_* name.
+	// keep a credential name, a name Secrets matches or a DSH_* name.
 	Allow []string
 	// Credentials are the exact names configuration uses as credential
 	// references; each is always removed.
 	Credentials []string
+	// Secrets removes every host name it reports as a secret (SP-11), whatever
+	// the deny and allow patterns say. A child that needs a secret gets it as an
+	// explicit entry, never by inheritance.
+	Secrets SecretNames
 	// Entries are the caller's "NAME=value" additions.
 	Entries []string
 	// Managed is the managed-variable snapshot, applied last.
 	Managed []string
 }
 
-// BuildEnv derives a child environment from host (usually os.Environ()): names
-// matching a deny pattern are removed unless allowed, credential names and every
-// DSH_* name are removed, then the caller's entries and finally the managed
-// snapshot are added. The result is merged by name, which on Windows ignores case.
+// BuildEnv derives a child environment from host (usually os.Environ()): every
+// DSH_* name, every credential name and every name Secrets reports are removed,
+// names matching a deny pattern are removed unless allowed, then the caller's
+// entries and finally the managed snapshot are added. The result is merged by
+// name, which on Windows ignores case.
+//
+// The filter fails closed: a host entry that is not NAME=value is dropped, the
+// allow list cannot keep a name the earlier rules remove, and a Secrets check that
+// panics removes the name. Entries and Managed are the caller's explicit choices
+// and are not filtered.
 func BuildEnv(host []string, o EnvOptions) Env {
 	deny := append(slices.Clone(DefaultDeny), o.Deny...)
 	out := make(Env, 0, len(host)+len(o.Entries)+len(o.Managed))
@@ -52,6 +71,7 @@ func BuildEnv(host []string, o EnvOptions) Env {
 		switch {
 		case hasPrefixFold(name, HarnessPrefix):
 		case containsName(o.Credentials, name):
+		case isSecret(o.Secrets, name):
 		case matchAny(deny, name) && !matchAny(o.Allow, name):
 		default:
 			out = append(out, kv)
@@ -153,6 +173,20 @@ func sameName(a, b string) bool { return key(a) == key(b) }
 
 func hasPrefixFold(s, prefix string) bool {
 	return len(s) >= len(prefix) && strings.EqualFold(s[:len(prefix)], prefix)
+}
+
+// isSecret asks names about name. A check that panics counts as a secret, so a
+// faulty store removes the variable instead of passing it on.
+func isSecret(names SecretNames, name string) (secret bool) {
+	if names == nil {
+		return false
+	}
+	defer func() {
+		if recover() != nil {
+			secret = true
+		}
+	}()
+	return names.IsSecretName(name)
 }
 
 func containsName(names []string, name string) bool {
