@@ -51,7 +51,10 @@ import (
 
 // recordsPerTurn is the records one tool-heavy driver turn logs (one step with
 // two tool calls, then the answer); the template check below fails if it drifts.
-const recordsPerTurn = 19
+// Since the one-batch admission (plan 17.1) an unchanged prompt adds no
+// system/message and no request/header, so the session's system prompt and
+// header are logged once, in its first turn (two records more in all).
+const recordsPerTurn = 17
 
 // sessionSize is one rung of the ladder in driver turns.
 type sessionSize struct {
@@ -144,6 +147,7 @@ func resume(b *testing.B, root *cordis.Context, svc tools.Service, st *memstore.
 	c.drv = must(driver.Start(driver.Options{
 		Context: root, Agent: stubAgent{ref: agent.Ref{Session: session.ID(id), Incarnation: 1}},
 		Session: h, Inbox: c.in, Model: mod, Models: &firstStream{Models: rt, ch: c.ch}, Tools: svc,
+		Prompt: newTestPrompt(defaultPrompt),
 	}))
 	return c
 }
@@ -177,6 +181,9 @@ func tooled(n int) []fakemodel.Turn {
 	return out
 }
 
+// BenchmarkContinuation times each rung's continuations (see the file comment).
+//
+//dsh:test DH-T-AGENT-28
 func BenchmarkContinuation(b *testing.B) {
 	for _, size := range sessionSizes() {
 		b.Run(size.name, func(b *testing.B) {

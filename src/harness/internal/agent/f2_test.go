@@ -16,6 +16,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/agent"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/agent/driver"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/context/request"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human/approval"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm"
@@ -37,6 +38,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/temphome"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools/core"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/tools/prompt"
 )
 
 // Flow F2 (architecture.md §6.2): one M1 turn with one test tool call and one
@@ -139,7 +141,9 @@ type f2Rig struct {
 	models *f2Models
 	drv    *driver.Driver
 	ans    *answerer.Answerer
-	stop   func()
+	// prompts is the driver's prompter: the prompt service, recorded.
+	prompts *f2Prompts
+	stop    func()
 	// clk is the driver's virtual clock (nil on the wall clock); waits are the
 	// durations the driver waited on it.
 	clk   *clock.Manual
@@ -149,6 +153,14 @@ type f2Rig struct {
 // f2Run runs flow F2 on st and returns the live session's log, still open, and
 // the requests the driver sent. The caller closes nothing: cleanups do.
 func f2Run(t *testing.T, st store.Store, h f2Hooks) (session.Handle, []session.Request, func()) {
+	t.Helper()
+	r := f2RunRig(t, st, h)
+	return r.sess, r.models.requests(), r.stop
+}
+
+// f2RunRig is f2Run returning the whole rig, for a check of what the prompt
+// component assembled.
+func f2RunRig(t *testing.T, st store.Store, h f2Hooks) *f2Rig {
 	t.Helper()
 	r := f2Start(t, st, h, func(rt *llm.Runtime) agent.ModelSelection {
 		fakemodel.Register(t, rt, f2Route, fakemodel.NewTransport(t,
@@ -164,7 +176,31 @@ func f2Run(t *testing.T, st store.Store, h f2Hooks) (session.Handle, []session.R
 	if asked := r.ans.Asked(); len(asked) != 1 || asked[0].Kind != human.KindApproval {
 		t.Fatalf("the answerer was asked %+v, want one approval", asked)
 	}
-	return r.sess, r.models.requests(), r.stop
+	return r
+}
+
+// f2Prompts is the prompt service with each assembly it returned to the
+// driver recorded, so a test can compare the log with what was assembled.
+type f2Prompts struct {
+	driver.Prompter
+	mu  sync.Mutex
+	got []prompt.Assembly
+}
+
+func (p *f2Prompts) Assemble(ctx context.Context, in prompt.Input) (prompt.Assembly, error) {
+	a, err := p.Prompter.Assemble(ctx, in)
+	if err == nil {
+		p.mu.Lock()
+		p.got = append(p.got, a)
+		p.mu.Unlock()
+	}
+	return a, err
+}
+
+func (p *f2Prompts) assemblies() []prompt.Assembly {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return slices.Clone(p.got)
 }
 
 func (m *f2Models) requests() []session.Request {
@@ -182,9 +218,18 @@ func f2Start(t *testing.T, st store.Store, h f2Hooks, register func(*llm.Runtime
 	root.Loggers().AddExporter(&cordis.MemoryExporter{})
 	t.Cleanup(root.Dispose)
 	must(0, must(root.Use(scope.Component, cordis.None{})).Wait())
-	var tab scope.Table
-	g := must(root.Inject([]string{scope.TableKey.Name()}, func(c *cordis.Context) (err error) {
-		tab, err = scope.TableKey.Get(c)
+	// The prompt component with its defaults (identity line and runtime context
+	// on) assembles each step's system prompt and tool list (plan 17.1.9).
+	must(0, must(root.Use(prompt.Component, prompt.Defaults())).Wait())
+	var (
+		tab scope.Table
+		ps  *prompt.Service
+	)
+	g := must(root.Inject([]string{scope.TableKey.Name(), prompt.Key.Name()}, func(c *cordis.Context) (err error) {
+		if tab, err = scope.TableKey.Get(c); err != nil {
+			return err
+		}
+		ps, err = prompt.Key.Get(c)
 		return err
 	}))
 	must(0, g.Wait())
@@ -228,13 +273,27 @@ func f2Start(t *testing.T, st store.Store, h f2Hooks, register func(*llm.Runtime
 
 	sess := must(sessions.Create(bg, nil, session.CreateOptions{Header: session.Header{ID: f2Session}}))
 	t.Cleanup(func() { _ = sess.Close(bg) })
+	// The context pipeline, with no contributors: its PreStep listener runs on
+	// every step over the agent's live session (plan 17.1.9).
+	_, pipeSeat := must2(request.New(root, request.Options{
+		Table: tab,
+		Sessions: func(r agent.Ref) (request.Log, error) {
+			if r != f2Ref {
+				return nil, fmt.Errorf("f2: no live session for %s", r)
+			}
+			return sess, nil
+		},
+		Scopes: func(agent.Ref) (scope.Key, error) { return f2Agent{}.ScopeKey(), nil },
+	}))
+	t.Cleanup(pipeSeat.Dispose)
 	rt := llm.New()
 	initial := register(rt)
 	models := &f2Models{Models: rt, hook: h.attempt, chunk: h.chunk}
 	inbox := must(agent.OpenInbox(bg, sess))
 	mod := must(agent.OpenModel(bg, sess, agent.ModelOptions{Initial: initial}))
+	prompts := &f2Prompts{Prompter: ps}
 	opts := driver.Options{
-		Context: root, Agent: f2Agent{}, Session: sess, Inbox: inbox, Model: mod, Models: models, Tools: svc,
+		Context: root, Agent: f2Agent{}, Session: sess, Inbox: inbox, Model: mod, Models: models, Tools: svc, Prompt: prompts,
 	}
 	var (
 		clk    *clock.Manual
@@ -278,7 +337,7 @@ func f2Start(t *testing.T, st store.Store, h f2Hooks, register func(*llm.Runtime
 		defer waitMu.Unlock()
 		return slices.Clone(waited)
 	}
-	return &f2Rig{sess: sess, inbox: inbox, models: models, drv: drv, ans: ans, stop: stop, clk: clk, waits: waits}
+	return &f2Rig{sess: sess, inbox: inbox, models: models, drv: drv, ans: ans, prompts: prompts, stop: stop, clk: clk, waits: waits}
 }
 
 // The per-run values a golden cannot hold: generated ids and the digests over
@@ -482,12 +541,15 @@ func TestM1CompletionOracleOnTheF2Turn(t *testing.T) {
 }
 
 // TC-11a, the Stage 11.4 scenario "Flow F2 bracketed log matches golden": one
-// turn on memstore serializes to testdata/f2_log.golden.
+// turn on memstore serializes to testdata/f2_log.golden, and every request
+// rebuilt from the log at its requestAsOf has the digest that was sent.
+//
+//dsh:test DH-T-AGENT-8
 func TestFlowF2LogMatchesGolden(t *testing.T) {
 	st := memstore.New()
 	sess, sent, _ := f2Run(t, st, f2Hooks{})
 	evs := must(sess.Read(bg, 0, 0))
-	for _, typ := range []string{"turn/start", "step/start", "request/header", "assistant/message", "tool/call", "approval/asked", "approval/decided", "tool/result", "step/end", "turn/end"} {
+	for _, typ := range []string{"turn/start", "step/start", "system/message", "user/message", "request/header", "assistant/message", "tool/call", "approval/asked", "approval/decided", "tool/result", "step/end", "turn/end"} {
 		if !slices.Contains(f2Types(evs), typ) {
 			t.Fatalf("the F2 log has no %s: %v", typ, f2Types(evs))
 		}
@@ -499,6 +561,55 @@ func TestFlowF2LogMatchesGolden(t *testing.T) {
 	}
 	f2Check(t, st, sess, sent)
 	golden.Assert(t, f2Golden, f2Serialize(evs))
+}
+
+// Plan 17.1 scenario "The step prompt reaches the model and the log": the F2
+// rig with prompt.Defaults() and the scripted model runs one turn. The first
+// request's leading system text is prompt.IdentityLine; the one system/message
+// precedes every user/message on the surface; the one request/header carries
+// the assembly's fingerprint and manifest (step 2's unchanged assembly adds
+// neither a system/message nor a header); and each request rebuilt at its
+// requestAsOf has the digest that was sent.
+func TestF2StepPromptReachesTheModelAndTheLog(t *testing.T) {
+	st := memstore.New()
+	r := f2RunRig(t, st, f2Hooks{})
+	sent := r.models.requests()
+	evs := must(r.sess.Read(bg, 0, 0))
+
+	first := must(sent[0].Messages())
+	if len(first) == 0 || first[0].Role() != vocab.RoleSystem || f2Text(first[0]) != prompt.IdentityLine {
+		t.Fatalf("the first request leads with %+v, want the system text %q", first, prompt.IdentityLine)
+	}
+	if n := len(f2OfType(evs, "system/message")); n != 1 {
+		t.Fatalf("%d system/message events, want 1", n)
+	}
+	msgs := must(r.sess.History().Messages())
+	sys := slices.IndexFunc(msgs, func(m vocab.Message) bool { return m.Role() == vocab.RoleSystem })
+	user := slices.IndexFunc(msgs, func(m vocab.Message) bool { return m.Role() == vocab.RoleUser })
+	if sys != 0 || user <= sys {
+		t.Fatalf("on the surface the system message is at %d and the first user message at %d, want 0 and after it", sys, user)
+	}
+
+	as := r.prompts.assemblies()
+	if len(as) != 2 || as[0].Fingerprint == "" || as[1].Fingerprint != as[0].Fingerprint {
+		t.Fatalf("assemblies %+v, want one per step with one fingerprint", as)
+	}
+	heads := f2OfType(evs, "request/header")
+	if len(heads) != 1 {
+		t.Fatalf("%d request/header events, want 1 (step 2's prompt is unchanged)", len(heads))
+	}
+	h := must(f2Decode[event.RequestHeaderPayload](heads[0]))
+	if h.Fingerprint != as[0].Fingerprint {
+		t.Fatalf("header fingerprint %q, want the assembly's %q", h.Fingerprint, as[0].Fingerprint)
+	}
+	var want []event.ManifestEntry
+	for _, m := range as[0].Manifest() {
+		want = append(want, event.ManifestEntry{Name: m.Name, Order: m.Order, Owner: m.Owner, Complete: m.Complete})
+	}
+	if len(want) == 0 || want[0].Name != prompt.SectionIdentity || !slices.Equal(h.Manifest, want) {
+		t.Fatalf("header manifest %+v, want the assembly's %+v", h.Manifest, want)
+	}
+	f2Check(t, st, r.sess, sent)
 }
 
 // f2Barriers is a store whose writers record every successful Flush: the
