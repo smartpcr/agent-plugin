@@ -79,10 +79,14 @@ stages:
       requires: [DH-S-11, DH-S-16]
     # The session's two real-environment scenarios (impl.md DH-S-5, "authored in
     # DH-S-11", once a real model can be called) and the agent loop's four
-    # (impl.md DH-S-11), written by Stage 11.4 against the SDK boundary. They need
-    # the agent loop (DH-S-11) and the headless launcher (DH-S-16); the two that
-    # run a real shell command across a stop or a kill also need the shell tool
-    # (DH-S-13).
+    # (impl.md DH-S-11), written by Stage 11.4 against the SDK boundary and
+    # retargeted onto the user's signed-in Claude Code and Copilot CLI client
+    # routes by gap-closure step 17.4.4 (OWNER-2, M1-D-CLOSE-4 A), together with
+    # DH-E-TOOLCHAIN-1 above: no API key, one subtest per route, claude-code must
+    # pass and copilot-cli is recorded either way (M1-D-LOOP-6 A); the request
+    # checks moved to the client invocation (M1-D-PIPE-4 A). They need the agent
+    # loop (DH-S-11) and the headless launcher (DH-S-16); the two that run a real
+    # shell command across a stop or a kill also need the shell tool (DH-S-13).
     - id: DH-E-SESSION-1
       authored: DH-S-11
       requires: [DH-S-11, DH-S-16]

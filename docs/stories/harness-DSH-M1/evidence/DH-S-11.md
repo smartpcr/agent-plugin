@@ -60,7 +60,9 @@ branch.
 > and its decision `dh-s-11-closure-path` is superseded. The M1 check now runs on the
 > signed-in Claude and Copilot routes, at the client-invocation boundary. The procedure
 > of record is the register under "Evidence record (impl.md sec. 7.3)" at the end of this
-> file.
+> file, and the operator's steps, commands and record table are
+> [DH-S-11-manual-runbook.md](DH-S-11-manual-runbook.md) (probe retargeted by plan steps
+> 17.4.1 and 17.4.2; `m1_manual_test.go` no longer names DeepSeek).
 
 `manual`, never a gate criterion (EV-6), and not a scenario. Scripted by
 `src/harness/internal/agent/m1_manual_test.go` (`//go:build manual`), which reuses
@@ -124,6 +126,28 @@ lines.
 
 ## Scenarios
 
+**Retargeted (plan 17.4.4, M1-D-CLOSE-4 A).** The seven files below no longer take
+`DSH_DEEPSEEK_API_KEY`, a provider base URL or a recording proxy. Under OWNER-2 each runs on
+the user's own signed-in client routes (`claude-code`, then `copilot-cli`, one subtest per
+route through `forEachRoute` of `signedin_routes_test.go`; Claude must pass, Copilot is
+recorded either way, M1-D-LOOP-6 A), with no API key anywhere and the route selected by its
+id in the layer template (`{route}`) and `DSH_SCENARIO_<route>_MODEL`. The proxy assertions
+of DH-E-SESSION-1, DH-E-AGENT-1 and DH-E-AGENT-2 are re-expressed at the boundary
+16.5.2 says is observable, the settled client invocation (M1-D-PIPE-4 A): the host rebuilds
+every settlement's argument list, its digest and the standard input it wrote from the log,
+and the scenario compares them with the recorded invocation, recomputing the
+standard-input digest itself; a keyless `selfCheckInvocationOracle` proves the comparison
+refuses a differing argument list, digest or input before any input is read. DH-E-AGENT-2's
+"connection closed" becomes "no chunk of the cancelled turn after it ended" (the process
+tree stop is DH-T-LLM-23 and -27), and "the second request carries the shown text" becomes
+"turn 2's rebuilt standard input, matching its logged digest, carries it". DH-E-TOOLCHAIN-1
+records on the route and replays with empty client homes, client stand-ins first on the
+`PATH` that must never run, and refusing proxies. The rows are in `areas/agent-loop.md`,
+`areas/core-session.md`, `upstream/toolchain.md` and `e2e-scenarios.md` Phase 11.
+
+Review: reviewer: the owner, in the Phase 17 PR, pending (plan 17.4.5 records the PR
+number and reviewer here).
+
 Authored for review in this PR, indexed under DH-S-17 in
 `test/harness/acceptance-index.yaml` with authoring stage DH-S-11; **none
 executed.** Each starts the built `dsh` through the test kit's launcher and
@@ -151,6 +175,16 @@ boundary, and lists the six new ids in the `require --stage DH-S-17` output.
 Gate evidence: `go -C src/harness vet -tags scenario ./...` exits 0; the default
 `go test -list . ./internal/testkit/scenarios/...` lists no test;
 `GOWORK=off go -C tools/harness-gate test -run 'TestAuthoredScenarios|TestRequireSubcommand|TestPreflightSubcommand|TestScenarioIndex' . ./acceptance/` passes.
+
+The recording-proxy details of the paragraph above (AGENT-2's `ClientClosed`,
+`selfCheckProxyClose`) are the Stage 11.4 form, kept as history; the retarget at the top of
+this section replaced them. Retarget gate evidence (plan 17.4.4, local Windows lane, not a
+lab or scenario run): `go -C src/harness vet -tags scenario ./...` (run by the gate test
+below) exits 0, and the analyzers through `-vettool` with `-tags=replay,scenario,bench`
+report nothing for `internal/testkit/scenarios`;
+`GOWORK=off go -C tools/harness-gate test -count=1 -run '^TestAuthoredScenariosAreIndexedAndCompileButDoNotRun$' .`
+passes; `GOWORK=off go -C tools/harness-trace run . verify` passes. File and test names are
+unchanged, so the gate's pinned names stand.
 
 M1 gate repair (plan 13.3, M1-G-GATE-11 to -14 and -27; [DH-S-1.md, "M1 gate repair"](DH-S-1.md#m1-gate-repair)): the vet debt added after DH-S-9 was 27 findings (QG-4 `time.Sleep`, QG-5 goroutine without `t.Cleanup`) in `src/harness/internal/agent/agent_test.go`, `agent/driver/driver_test.go`, `lifecycle_test.go`, `retry_test.go`, `delegate/subagent/subagent_test.go`, `tools/core/schedule_test.go` and, under the `scenario` tag, `testkit/scenarios/store_two_process_scenario_test.go` and `store_crash_recovery_scenario_test.go`. They now wait on the scripted model's `WaitRequests` and `PrefixServed` signals (`testkit/model`), on `synctest` bubbles or on explicit signals, and every goroutine they start is released and joined (P-C); the scenario polls of another process go through `testkit/procwait`. The DH-T-AGENT tags are unchanged; the two scenario files are vetted, not run (EV-4). `manual`, uncommitted at the time of writing: `harness-gate` vet with and without `-tags=replay,scenario` reports nothing for these packages.
 
@@ -217,7 +251,8 @@ At closure: the lane scripts; `go -C src/harness test -race -count=1 ./internal/
 ./internal/agent/... ./internal/archtest/`; and the probe of plan steps 17.4.1 to 17.4.3,
 `go -C src/harness test -tags manual -count=1 -v -run
 'TestManualM1OneTurn|TestManualM1CancelMidStream' ./internal/agent/` with `DSH_M1_ROUTE`
-set to `claude` and then `copilot`. Historical: the DeepSeek runbook above.
+set to `claude` and then `copilot`, per [DH-S-11-manual-runbook.md](DH-S-11-manual-runbook.md).
+Historical: the DeepSeek runbook above.
 
 ### Run identifiers
 

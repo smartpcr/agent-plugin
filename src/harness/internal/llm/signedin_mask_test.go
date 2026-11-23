@@ -1,18 +1,20 @@
 package llm_test
 
 import (
-	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human/secret"
+	kitredact "github.com/smartpcr/agent-plugin/src/harness/internal/testkit/redact"
 )
 
 // tokenShape matches the token shapes a signed-in client's output could carry
 // (plan 16.5.6; R-11 re-scoped): Anthropic keys and OAuth tokens (sk-ant-),
 // GitHub tokens (gho_, ghu_, ghp_, ghs_, ghr_, github_pat_) and bearer
-// credentials. The DH-S-9 manual check passes every printed line through it.
-var tokenShape = regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}|sk-ant-[A-Za-z0-9_-]+|\bgh[oupsr]_[A-Za-z0-9_]+|\bgithub_pat_[A-Za-z0-9_]+`)
+// credentials. The DH-S-9 manual check passes every printed line through it. It
+// is the test kit's shared shape (testkit/redact), which the M1 check's
+// m1Redact filter of plan 17.4.2 also uses.
+var tokenShape = kitredact.TokenShape
 
 // redact is text with every value store has released masked (secret.Store.Mask)
 // and every token shape replaced by secret.Redacted.

@@ -27,7 +27,7 @@ does not restate them; it names them.
 | Kind | What it is | Run in this story? |
 |---|---|---|
 | **Gate scenario** (every `- **Scenario:**` below unless tagged `@manual`; this includes the index and `-tags scenario` vet checks that prove each authored `DH-E-*` file exists) | A Go test (unit, composition, golden, two-process, loopback) proving one `TC-xx` row | **Yes.** Part of `tools/harness-gate` on Linux, macOS and Windows; may not skip |
-| **Manual check** (`@manual`) | The two real-DeepSeek-API checks impl.md requires at DH-S-9 and DH-S-11 | Yes, by hand, recorded in `docs/stories/harness-DSH-M1/evidence/DH-S-<n>.md`; never a gate criterion (EV-6) |
+| **Manual check** (`@manual`) | The two real-model checks impl.md requires at DH-S-9 and DH-S-11, now run on the user's signed-in Claude and Copilot clients with no API key (OWNER-2; gap-closure-plan 16.5 and 17.4) | Yes, by hand, recorded in `docs/stories/harness-DSH-M1/evidence/DH-S-<n>.md`; never a gate criterion (EV-6) |
 | **Real-environment scenario** (`DH-E-*`; listed only in the schedule table below, never as a `- **Scenario:**` bullet, so no gate check is excluded by its tag) | impl.md's acceptance scenarios, written as `//go:build scenario` files | **Authored here; executed at the stage impl.md assigns; none executed in this story** (contract rule 2) |
 
 ### Conventions
@@ -2212,15 +2212,31 @@ runs turns against a real model with one tool, every step logged".
   Then the database rows show a durable flush before the provider attempt, before the tool body and at step end
   And after the store is closed and reopened, the serialized log read back equals internal/agent/testdata/f2_log.golden byte for byte
   ```
-- **Scenario:** M1 against the real DeepSeek API
+- **Scenario:** M1 on the signed-in Claude and Copilot routes
   ```gherkin
   @manual
-  Given DSH_DEEPSEEK_API_KEY exported in the developer's shell and a Go test composing the real components with one test tool
+  Given the operator's own Claude Code or GitHub Copilot CLI installed and signed in, no API key anywhere,
+    DSH_M1_ROUTE set to claude or copilot, and a Go test composing the real components with one test tool
   When one prompt runs to completion, and a second run is cancelled mid-stream
-  Then the first run's bracketed log and rebuilt request are recorded in evidence/DH-S-11.md
-  And the second run's turn/end records the cancel cause
+  Then the first run's bracketed log and, per request, the sent and rebuilt digests and the logged and rebuilt
+    client-invocation digests (arguments and standard input) are recorded in evidence/DH-S-11.md
+  And the second run's turn/end records the cancel cause and its settlement records the stopped client's invocation
+  And every printed line has passed m1Redact; Claude must pass, Copilot is recorded either way
   And neither run is a gate criterion
   ```
+  Re-targeted from the DeepSeek API by gap-closure-plan 17.4.1 and 17.4.2 (OWNER-2,
+  M1-D-CLOSE-3 A, M1-D-LOOP-6 A). Procedure:
+  [evidence/DH-S-11-manual-runbook.md](evidence/DH-S-11-manual-runbook.md).
+- **Scenario:** Redaction catches identity
+  ```gherkin
+  @proof:in-process
+  Given printed lines holding a fake email, a bearer header and a gho_ token
+  When m1Redact runs
+  Then every value is masked
+  And a surviving pattern fails the test
+  ```
+  `TestM1RedactionCatchesIdentity` in `src/harness/internal/agent/m1_redact_test.go`
+  (normal gate) over the test kit's filter `internal/testkit/redact` (plan 17.4.2).
 - **Scenario:** Every DH-E scenario of DH-S-1..11 has a file and an index entry
   ```gherkin
   @TC-01b @proof:service:go-toolchain
@@ -2230,6 +2246,53 @@ runs turns against a real model with one tool, every step logged".
   And every DH-E scenario listed in this document's schedule table has a file and one index entry
   And vet exits 0 and the default gate runs none of them
   ```
+- **Scenario:** Retargeted scenarios are authored
+  ```gherkin
+  @proof:service:go-toolchain
+  Given the seven DH-S-11 scenario files at the stage's closing commit
+  When "go -C src/harness vet -tags scenario ./..." and the gate's index checks run
+  Then vet exits 0, no file references DeepSeek, and each id has one DH-S-17 entry
+  ```
+  Gap-closure-plan 17.4.4 (M1-D-CLOSE-4 A). Commands: the vet above, the analyzers through
+  `-vettool` with `-tags=replay,scenario,bench`,
+  `GOWORK=off go -C tools/harness-gate test -count=1 -run '^TestAuthoredScenariosAreIndexedAndCompileButDoNotRun$' .`
+  and `GOWORK=off go -C tools/harness-trace run . verify`.
+
+**The seven DH-S-11 real-environment scenarios on the signed-in client routes.** These are
+`DH-E-*` scenarios, not gate scenarios, so they are described here and never as
+`- **Scenario:**` bullets. Under OWNER-2 (no API key) gap-closure-plan step 17.4.4
+(M1-D-CLOSE-4 A) retargeted them from the DeepSeek API onto the signed-in client routes of
+`llm.md` DH-D-LLM-12. They are authored and reviewed, never run in M1, and execute at
+DH-S-17. Each runs one subtest per route: `claude-code` must pass and `copilot-cli` is run
+and its result recorded either way (M1-D-LOOP-6 A). The route helpers are the DH-S-9 ones,
+`signedin_routes_test.go` and `signedin_routes_copilot_test.go`. The full rows are
+`docs/harness/areas/core-session.md` DH-E-SESSION-1 and -2, `agent-loop.md` DH-E-AGENT-1 to
+-4 and `upstream/toolchain.md` DH-E-TOOLCHAIN-1.
+
+The recording proxy of the keyed form is gone: no proxy can sit between a vendor's own
+client and its vendor. The request-equality checks of DH-E-SESSION-1, DH-E-AGENT-1 and
+DH-E-AGENT-2 move to the **client-invocation boundary** (M1-D-PIPE-4 A): the host rebuilds
+from the log, for every settlement, the argument list it started the client with, its
+digest, and the standard input it wrote, and the scenario compares them with what the
+settlement recorded, recomputing the standard-input digest itself. That the client received
+exactly those bytes is proved locally against a stand-in (`DH-T-LLM-20`, `DH-T-LLM-24`), and
+that a cancel stops the client's process tree by `DH-T-LLM-23` and `DH-T-LLM-27`.
+
+| Scenario (file, test) | Given | When | Then |
+|---|---|---|---|
+| DH-E-SESSION-1 (`session_rebuild_scenario_test.go`, `TestRequestsReceivedEqualRequestsRebuilt`) | The built dsh, a fresh temporary home, no API key anywhere; the user's own client on the `PATH`, signed in, its route registered by a headless layer with no title route; a workspace with one text file and an SDK tool that reads it | (1) A prompt that reads the file with the tool; (2) a second prompt; (3) the host rebuilds every settlement's client invocation from the log, twice | The rebuilds are byte-identical; every settlement records an invocation of the route's client with its own client session id; one rebuilt entry per settlement, in order, whose arguments, argument digest and standard-input digest equal the recorded ones, the digest recomputed by the scenario |
+| DH-E-SESSION-2 (`session_kill_resume_scenario_test.go`, `TestKilledDuringToolCallResumesIntoAcceptedHistory`) | The built dsh, a fresh home on the SQLite store, no API key, the client signed in, `workspace-write`, the shell tool | (1) A command sleeping two minutes; (2) the `tool/call` durable; (3) export, kill; (4) resume on a new host; (5) export; (6) ask what happened | The second export extends the first byte for byte with exactly `tool/result` (`tools/outcome-unknown`), `step/end`, `turn/end{interrupted}`, `session/end-seed`; a second resume adds no closer; the client's model answers step 6 with an `assistant/message` recording its invocation |
+| DH-E-AGENT-1 (`agent_turn_scenario_test.go`, `TestRealMultiStepTurnIsBracketed`) | An empty home, headless, no API key, the client signed in with a small model, a workspace with one text file | One prompt that requires reading the file; wait for idle; rebuild the client invocations | One `turn/start`, one `turn/end{completed}`, at least two bracketed steps, one settlement per attempt, a result per call; every invocation equals the one rebuilt from the log |
+| DH-E-AGENT-2 (`agent_cancel_scenario_test.go`, `TestCancelledStreamKeepsWhatWasShown`) | An empty home, headless, no API key, the client signed in, a prompt with a long answer | Cancel (cause `user`, `Keep`) after the first text chunk; wait for idle; send "repeat your last sentence"; rebuild the client invocations | Turn 1 ends `aborted{user}` with one interrupted `assistant/message` holding the shown text, no tool call, recording the stopped client's invocation; no chunk of turn 1 after it ended; every invocation equals its rebuild; turn 2's first rebuilt standard input carries the shown text |
+| DH-E-AGENT-3 (`agent_stop_kill_scenario_test.go`, `TestStopAndKillLeaveAnHonestLog`) | An empty home on SQLite, headless, no API key, the client signed in, the sandboxed shell tool, a command sleeping 60 seconds | Run A: stop the host; run B: kill it; then resume on a second dsh | A: the stopping host wrote the result, `step/end` and `turn/end{aborted, disposed}` and no child remains; B: resume appends outcome-unknown and the closers and does not continue; no sequence gap; every settlement records the client's invocation |
+| DH-E-AGENT-4 (`agent_budget_scenario_test.go`, `TestBudgetStopsARealToolLoop`) | An empty home, headless with `budget.maxSteps: 2`, no API key, the client signed in, four small files | The four-read prompt; wait for idle; "continue" | Turn 1 ends `budget{steps, 2}` with every call paired, each run once by the harness, every settlement recording the client's invocation; turn 2 reads a file turn 1 did not |
+| DH-E-TOOLCHAIN-1 (`toolchain_record_replay_scenario_test.go`, `TestRecordThenReplayWithoutAKey`) | A clean checkout and its dsh, no API key, the client signed in, a scenario directory with only a manifest and a workspace seed | Record on the route (on a copy); replay twice with empty client homes, client stand-ins first on the `PATH` and refusing proxies | Record writes a new session log (and the expected workspace); both replays pass with no client started, no network request and an unchanged fixture; each report lists the scenario as executed |
+
+Cleanup for all seven: the launcher (or the test) deletes the temporary homes, workspaces
+and stand-in directories; nothing of the user's sign-in or client settings is read or
+changed; on failure the exported session logs are kept and the client invocations logged.
+Review: reviewer: the owner, in the Phase 17 PR, pending (recorded in
+`evidence/DH-S-11.md` "Scenarios" by plan 17.4.5).
 - **Scenario:** Story closure at one commit
   ```gherkin
   @TC-X1 @proof:service:go-toolchain

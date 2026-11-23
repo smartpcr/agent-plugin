@@ -553,22 +553,34 @@ All are `go test` with the race detector; storage is A05's in-memory provider un
 Scope and the fold logic need no real environment: they are in-process and deterministic. Two behaviours do.
 
 <a id="dh-e-session-1"></a>
+Under OWNER-2 (no API key; real-model checks only through the user's own signed-in Claude
+and Copilot) both run on the signed-in client routes of
+[llm.md DH-D-LLM-12](llm.md#dh-d-llm-12): the user's installed official client, signed in by
+the user beforehand, which `dsh` starts as a child process and never reads a token of
+(M1-D-PIPE-3 A). They were retargeted onto these routes by
+`docs/stories/harness-DSH-M1/gap-closure-plan.md` step 17.4.4 (M1-D-CLOSE-4 A). Each runs
+once per route, `claude-code` and `copilot-cli`, as a subtest; the `claude-code` leg must
+pass and the `copilot-cli` leg is run and its result recorded either way (M1-D-LOOP-6 A).
+They run on the operator's workstation, where the client is signed in.
+
+<a id="dh-e-session-1"></a>
 #### DH-E-SESSION-1 Requests received by a real model API equal requests rebuilt from the log
 
-- **Proves.** DH-D-SESSION-4, DH-D-SESSION-3, DH-D-SESSION-1.
-- **Given.** The built `dsh` binary. A new temporary harness home. A real provider account for one of the four protocol drivers, its key supplied at run time through the environment and never written to disk. A loopback forwarding proxy, set as that provider's base address, which relays to the real API and records each request body. A workspace holding one text file. Areas A04, A05 and A24 delivered.
-- **When.** (1) Start the host in the headless profile. (2) Send a prompt that makes the model read the file with a tool and answer. (3) After the turn ends, send a second prompt. (4) Export the session. (5) In the test process, for each settlement in the export, rebuild the request at `requestAsOf` and encode it with the same adapter.
-- **Then.** The proxy recorded as many requests as the log has settlements. Each rebuilt body equals the recorded body byte for byte. Each recomputed digest equals `requestDigest`. If the provider failed an attempt, that attempt has an `assistant/attempt` settlement and its request still matches. Any recorded request with no settlement fails the scenario.
-- **Cleanup.** Stop the host and the proxy; delete the temporary home and the recordings. If a comparison failed, keep the export, the recordings and the host log.
+- **Proves.** DH-D-SESSION-4, DH-D-SESSION-3, DH-D-SESSION-1, at the client-invocation boundary. The title is kept as the trace records it; on a client route "the requests received" are the client invocations `dsh` started, as the next line explains.
+- **Why this boundary.** The keyed form of this scenario put a recording proxy between `dsh` and the provider's API. A client route starts the vendor's own client, which talks to its vendor itself, so no proxy can sit between them. The guarantee that what was sent equals what the log rebuilds (SP-1) holds where `dsh` hands the request over (M1-D-PIPE-4 A, [llm.md DH-ADR-LLM-10](llm.md#dh-adr-llm-10)): each settlement records the client's argument list (the attempt directory written as `{attempt}`), its digest, and the digest of the standard input `dsh` wrote. That the client received exactly those bytes is proved locally against a stand-in client (`DH-T-LLM-20`, `DH-T-LLM-24`); what the client sends its vendor is declared opaque.
+- **Given.** The built `dsh` binary. A new temporary harness home. No API key anywhere (the test kit's launcher removes every credential-shaped name). The user's own installed client on the `PATH`, signed in by the user; its route registered by a headless layer that sends no request but the turns' (no title route). A workspace holding one text file and one SDK client tool that reads it. Areas A04, A05 and A24 delivered. File: `src/harness/internal/testkit/scenarios/session_rebuild_scenario_test.go`, test `TestRequestsReceivedEqualRequestsRebuilt`, one subtest per route.
+- **When.** Per route: (1) start the host in the headless profile; (2) send a prompt that makes the model read the file with the tool and answer; (3) after the turn ends, send a second prompt; (4) ask the host twice, through a `session/query`, to rebuild from the log the client invocation of every settlement at its `requestAsOf`, rendered by the route's own renderer.
+- **Then.** The two rebuilds are byte-identical. Every settlement (`assistant/message` and `assistant/attempt`) records a complete invocation of the route's client with a client session id of its own. The rebuild has exactly one entry per settlement, in log order: one with no rebuildable invocation, or one more than was settled, fails the scenario. Each rebuilt argument list and its digest equal the recorded ones, and each rebuilt standard input has the recorded digest, recomputed by the scenario with SHA-256. If an attempt failed, it has an `assistant/attempt` settlement and its invocation still matches. Before reading its inputs the scenario proves its comparison refuses a differing argument list, digest or standard input, with no client and no sign-in.
+- **Cleanup.** Stop the host; delete the temporary home. Nothing of the user's sign-in or client settings is read or changed. If a comparison failed, keep the export, the logged client invocations and the host log.
 
 <a id="dh-e-session-2"></a>
 #### DH-E-SESSION-2 A host killed during a tool call resumes into a history a real provider accepts
 
 - **Proves.** DH-D-SESSION-5, DH-D-SESSION-2.
-- **Given.** The built binary, a new temporary home on A05's real store, a real provider key as above, a workspace in `workspace-write` mode, and a shell tool (A09). Areas A02, A05 and A09 delivered.
-- **When.** (1) Prompt the model to run a command that sleeps for two minutes. (2) Wait until the `tool/call` event is durable, observed through the event stream. (3) Export the session, then kill the host process without a graceful stop. (4) Start a new host on the same home and resume the session. (5) Export again. (6) Send a prompt asking what happened.
-- **Then.** The second export begins with the first, byte for byte. It then holds, in order, one `tool/result` with code `tools/outcome-unknown` citing the `tool/call`, `step/end`, `turn/end` with reason `interrupted`, and `session/end-seed` with a higher epoch, and nothing else. Resuming a second time adds no closer. The provider answers step 6 with success and an `assistant/message` is appended, which shows the history has no unanswered call. Whether the sleeping process survived is area A09's assertion, not this scenario's.
-- **Cleanup.** Stop the host; end any leftover sleeping process by the recorded process id; delete the temporary home. If an assertion failed, keep both exports and the logs of both hosts.
+- **Given.** The built binary, a new temporary home on A05's real store, no API key anywhere, the user's own installed client signed in with its route registered by a layer, a workspace in `workspace-write` mode, and a shell tool (A09). Areas A02, A05 and A09 delivered. File: `session_kill_resume_scenario_test.go`, test `TestKilledDuringToolCallResumesIntoAcceptedHistory`, one subtest per route.
+- **When.** Per route: (1) prompt the model to run a command that sleeps for two minutes; (2) wait until the `tool/call` event is durable, observed through the event stream; (3) export the session, then kill the host process without a graceful stop; (4) start a new host on the same home and resume the session; (5) export again; (6) send a prompt asking what happened.
+- **Then.** The second export begins with the first, byte for byte. It then holds, in order, one `tool/result` with code `tools/outcome-unknown` citing the `tool/call`, `step/end`, `turn/end` with reason `interrupted`, and `session/end-seed` with a higher epoch, and nothing else. Resuming a second time adds no closer. The client's model answers step 6 and an `assistant/message` recording the invocation of the route's client is appended, which shows the history rendered to the client, the outcome-unknown result included, has no unanswered call. The client runs only during an attempt and has returned the shell call unexecuted before the command starts (M1-D-PIPE-6 A), so the kill meets the shell tool's child, not the client. Whether the sleeping process survived is area A09's assertion, not this scenario's.
+- **Cleanup.** Stop the host; end any leftover sleeping process by the recorded process id; delete the temporary home. Nothing of the user's sign-in is touched. If an assertion failed, keep both exports and the logs of both hosts.
 
 Nothing here has been run. A scenario that is missing, skipped or blocked is open, not passed.
 
