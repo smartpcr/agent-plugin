@@ -92,20 +92,22 @@ func (a *Answerer) Deliver(_ context.Context, it human.Item) error {
 		a.errs = append(a.errs, &unscripted{it.ID})
 	}
 	a.mu.Unlock()
+	// The answer joins the wait group before Next can hand the item to the test,
+	// so a cleanup that follows Next waits for it and sees its error
+	// (M1-G-GATE-15.4).
+	if !r.Never {
+		a.wg.Go(func() {
+			if err := a.reg.Answer(context.Background(), a.by, it.ID, r.Answer); err != nil {
+				a.mu.Lock()
+				a.errs = append(a.errs, err)
+				a.mu.Unlock()
+			}
+		})
+	}
 	select {
 	case a.got <- it:
 	default:
 	}
-	if r.Never {
-		return nil
-	}
-	a.wg.Go(func() {
-		if err := a.reg.Answer(context.Background(), a.by, it.ID, r.Answer); err != nil {
-			a.mu.Lock()
-			a.errs = append(a.errs, err)
-			a.mu.Unlock()
-		}
-	})
 	return nil
 }
 

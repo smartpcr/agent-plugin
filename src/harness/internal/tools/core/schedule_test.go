@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
@@ -140,29 +141,33 @@ func TestConflictingCallsSerializeAndResultsKeepModelOrder(t *testing.T) {
 	}
 }
 
-// maxParallel bounds the bodies of one batch even when none conflict.
+// maxParallel bounds the bodies of one batch even when none conflict. The
+// batch runs in a synctest bubble, so each body's 20 ms is virtual time.
 func TestBatchNeverExceedsMaxParallel(t *testing.T) {
-	e := newEnv(t)
-	act := newActivity()
-	svc := e.pipeline(t, core.Config{MaxParallel: 2})
-	e.register(t, e.root, keyedTool("free", act,
-		func(keyIn) tools.Overlap { return tools.Free },
-		func(string) { time.Sleep(20 * time.Millisecond) }))
-	var calls [][2]string
-	for _, id := range []string{"1", "2", "3", "4", "5"} {
-		calls = append(calls, [2]string{"free", `{"key":"k","id":"` + id + `"}`})
-	}
-	h := openSession(t, memstore.New(), calls...)
-	res := execute(t, svc, view(t, svc), h, calls...)
-	if len(res) != 5 {
-		t.Fatalf("%d results", len(res))
-	}
-	if act.max != 2 {
-		t.Fatalf("at most %d bodies ran at once, want 2", act.max)
-	}
-	if _, lr := resultOrder(t, h); !reflect.DeepEqual(lr, []string{"c1", "c2", "c3", "c4", "c5"}) {
-		t.Fatalf("logged results %v", lr)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		e := newEnv(t)
+		act := newActivity()
+		svc := e.pipeline(t, core.Config{MaxParallel: 2})
+		e.register(t, e.root, keyedTool("free", act,
+			func(keyIn) tools.Overlap { return tools.Free },
+			func(string) { <-time.After(20 * time.Millisecond) }))
+		var calls [][2]string
+		for _, id := range []string{"1", "2", "3", "4", "5"} {
+			calls = append(calls, [2]string{"free", `{"key":"k","id":"` + id + `"}`})
+		}
+		h := openSession(t, memstore.New(), calls...)
+		t.Cleanup(func() { _ = h.Close(context.Background()) }) // its delivery goroutine leaves the bubble
+		res := execute(t, svc, view(t, svc), h, calls...)
+		if len(res) != 5 {
+			t.Fatalf("%d results", len(res))
+		}
+		if act.max != 2 {
+			t.Fatalf("at most %d bodies ran at once, want 2", act.max)
+		}
+		if _, lr := resultOrder(t, h); !reflect.DeepEqual(lr, []string{"c1", "c2", "c3", "c4", "c5"}) {
+			t.Fatalf("logged results %v", lr)
+		}
+	})
 }
 
 // A tool without an Overlap, and one the operator forces exclusive, overlaps
@@ -177,17 +182,21 @@ func TestExclusiveCallsRunAlone(t *testing.T) {
 		{name: "forced", cfg: core.Config{MaxParallel: 4, ForceExclusive: []string{"t"}},
 			ov: func(keyIn) tools.Overlap { return tools.Free }},
 	} {
+		// Each case runs in a synctest bubble: a body's 5 ms is virtual time.
 		t.Run(tc.name, func(t *testing.T) {
-			e := newEnv(t)
-			act := newActivity()
-			svc := e.pipeline(t, tc.cfg)
-			e.register(t, e.root, keyedTool("t", act, tc.ov, func(string) { time.Sleep(5 * time.Millisecond) }))
-			calls := [][2]string{{"t", `{"key":"a","id":"1"}`}, {"t", `{"key":"b","id":"2"}`}, {"t", `{"key":"c","id":"3"}`}}
-			h := openSession(t, memstore.New(), calls...)
-			execute(t, svc, view(t, svc), h, calls...)
-			if act.max != 1 {
-				t.Fatalf("%d bodies ran at once", act.max)
-			}
+			synctest.Test(t, func(t *testing.T) {
+				e := newEnv(t)
+				act := newActivity()
+				svc := e.pipeline(t, tc.cfg)
+				e.register(t, e.root, keyedTool("t", act, tc.ov, func(string) { <-time.After(5 * time.Millisecond) }))
+				calls := [][2]string{{"t", `{"key":"a","id":"1"}`}, {"t", `{"key":"b","id":"2"}`}, {"t", `{"key":"c","id":"3"}`}}
+				h := openSession(t, memstore.New(), calls...)
+				t.Cleanup(func() { _ = h.Close(context.Background()) }) // its delivery goroutine leaves the bubble
+				execute(t, svc, view(t, svc), h, calls...)
+				if act.max != 1 {
+					t.Fatalf("%d bodies ran at once", act.max)
+				}
+			})
 		})
 	}
 }

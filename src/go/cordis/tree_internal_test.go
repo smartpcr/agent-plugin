@@ -3,6 +3,7 @@ package cordis
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -12,21 +13,40 @@ import (
 func TestBarrierIgnoresNotificationsPastItsTarget(t *testing.T) {
 	tr := New().t
 	started, gate := make(chan struct{}), make(chan struct{})
-	defer close(gate)
+	release := sync.OnceFunc(func() { close(gate) })
+	t.Cleanup(release)
 	target := tr.post(func() {})
 	tr.post(func() { close(started); <-gate })
 	tr.flush()
 	select {
 	case <-started:
-	case <-time.After(5 * time.Second):
+	case <-time.After(joinTimeout):
 		t.Fatal("the later notification did not start")
 	}
+	// A barrier that wrongly waits for the later notification returns once the gate
+	// opens, so the cleanup releases the gate, then joins the barrier (P-C).
 	done := make(chan struct{})
-	go func() { tr.barrier(target-1, target); close(done) }()
+	t.Cleanup(func() { release(); joinWithin(t, done) })
+	go func() { defer close(done); tr.barrier(target-1, target) }()
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	case <-time.After(joinTimeout):
 		t.Fatal("the barrier waited for a notification past its target")
+	}
+}
+
+// joinTimeout bounds every wait of these tests, so a deadlock fails instead of hanging.
+const joinTimeout = 5 * time.Second
+
+// joinWithin waits for done, the exit signal of a goroutine the test started, and
+// fails the test if it is not closed within joinTimeout. A t.Cleanup calls it after
+// unblocking that goroutine (P-C).
+func joinWithin(t *testing.T, done <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(joinTimeout):
+		t.Error("a test goroutine did not exit after its release")
 	}
 }
 
@@ -64,8 +84,13 @@ func TestGoroutineIDIsDistinctPerGoroutine(t *testing.T) {
 	if !ok || mine == 0 {
 		t.Fatalf("own id: %d, %v", mine, ok)
 	}
-	other := make(chan uint64)
+	// The buffered send never blocks, so the goroutine needs no release: the cleanup
+	// only joins it (P-C).
+	other := make(chan uint64, 1)
+	done := make(chan struct{})
+	t.Cleanup(func() { joinWithin(t, done) })
 	go func() {
+		defer close(done)
 		id, ok := goroutineID()
 		if !ok {
 			id = 0

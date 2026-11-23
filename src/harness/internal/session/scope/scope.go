@@ -153,11 +153,10 @@ type node struct {
 type table struct {
 	base *cordis.Context
 
-	mu     sync.RWMutex
-	next   uint64
-	nodes  map[uint64]*node
-	vis    map[string]Visibility
-	closed bool
+	mu    sync.RWMutex
+	next  uint64
+	nodes map[uint64]*node
+	vis   map[string]Visibility
 }
 
 // NewTable is a table whose scopes hang under base. base should be a context

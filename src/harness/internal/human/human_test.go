@@ -184,6 +184,8 @@ func TestPendingIsAddressableByAgent(t *testing.T) {
 }
 
 // DH-T-HUMAN-1: two concurrent answers, one wins.
+//
+//dsh:test DH-T-HUMAN-1
 func TestConcurrentAnswersOneWins(t *testing.T) {
 	e := newEnv(t)
 	ui, _ := e.answerer("ui")
@@ -194,6 +196,7 @@ func TestConcurrentAnswersOneWins(t *testing.T) {
 		it := delivered(t, ui)
 		var wins, settledErrs atomic.Int32
 		var wg sync.WaitGroup
+		t.Cleanup(wg.Wait) // P-C: nothing gates the answers; the cleanup joins them on every exit path
 		for i := range 8 {
 			wg.Add(1)
 			go func() {
@@ -221,6 +224,7 @@ func TestConcurrentAnswersOneWins(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-HUMAN-2
 func TestCancelUnbindUnloadAndRefusals(t *testing.T) {
 	e := newEnv(t)
 	ui, _ := e.answerer("ui")

@@ -26,7 +26,7 @@ func (d *Driver) turn() (ran, aborted bool, err error) {
 	s := d.o.Session
 	// Point 2: a turn a failed close left open is closed first.
 	if s.Open().IsOpen() {
-		if err := d.write(nil, func(ctx context.Context) error {
+		if err := d.write(d.life, func(ctx context.Context) error {
 			_, err := s.CloseOpen(ctx, surface.CauseFailed)
 			return err
 		}); err != nil {
@@ -55,7 +55,7 @@ func (d *Driver) turn() (ran, aborted bool, err error) {
 		ok  bool
 	)
 	d.discarded()
-	err = d.write(nil, func(ctx context.Context) error {
+	err = d.write(d.life, func(ctx context.Context) error {
 		var err error
 		msg, ok, err = d.o.Inbox.ClaimTurn(ctx, n)
 		return err
@@ -175,7 +175,7 @@ func (d *Driver) claimStep(t *turnState) ([]vocab.Message, error) {
 	n := t.turn
 	d.discarded()
 	var items []agent.InboxMessage
-	err := d.write(nil, func(ctx context.Context) error {
+	err := d.write(d.life, func(ctx context.Context) error {
 		var err error
 		items, err = d.o.Inbox.ClaimStep(ctx, n)
 		return err

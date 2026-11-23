@@ -427,15 +427,27 @@ func TestLockShared(t *testing.T) {
 	if _, err := LockShared(ctx, path); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("LockShared while exclusive is held: %v, want the deadline", err)
 	}
-	got := make(chan error, 1)
+	// P-C: the waiter blocks on the exclusive holder, so the cleanup unlocks it
+	// (once, shared with the body) and then joins the waiter, bounded.
+	unlock := sync.OnceValue(ex.Unlock)
+	got, done := make(chan error, 1), make(chan struct{})
+	t.Cleanup(func() {
+		_ = unlock()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("the LockShared waiter did not return after the cleanup unlocked")
+		}
+	})
 	go func() {
+		defer close(done)
 		l, err := LockShared(context.Background(), path)
 		if err == nil {
 			err = l.Unlock()
 		}
 		got <- err
 	}()
-	if err := ex.Unlock(); err != nil {
+	if err := unlock(); err != nil {
 		t.Fatal(err)
 	}
 	select {

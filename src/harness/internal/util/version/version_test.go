@@ -153,9 +153,7 @@ func MustRange(t *testing.T, s string) Range {
 }
 
 func FuzzParse(f *testing.F) {
-	for _, s := range []string{"1.2.3", "1.2.3-rc.1+b", "v1", "^1.2 || 2.x", "1.2 - 3", "~0.0.1-0"} {
-		f.Add(s)
-	}
+	addParseSeeds(f)
 	f.Fuzz(func(t *testing.T, s string) {
 		if v, err := Parse(s); err == nil {
 			if v.String() != s || v.Compare(v) != 0 || !v.Exact(v) {
@@ -170,4 +168,45 @@ func FuzzParse(f *testing.F) {
 			r.Satisfies(MustParse("1.2.3-rc.1"))
 		}
 	})
+}
+
+// TestZeroValuesAndErrors covers the zero version and range, the refusal text and
+// MustParse's panic: a zero version is below every version and has no text, and a
+// refused range never replaces the value it is decoded into.
+func TestZeroValuesAndErrors(t *testing.T) {
+	var zero Version
+	one := MustParse("0.0.0")
+	if !zero.IsZero() || one.IsZero() {
+		t.Fatalf("IsZero: zero %v, 0.0.0 %v", zero.IsZero(), one.IsZero())
+	}
+	if zero.Compare(Version{}) != 0 || zero.Compare(one) != -1 || one.Compare(zero) != 1 {
+		t.Fatalf("zero compares %d, %d, %d; want 0, -1, +1",
+			zero.Compare(Version{}), zero.Compare(one), one.Compare(zero))
+	}
+
+	_, err := Parse("v1.2.3")
+	if got, want := err.Error(), `version: "v1.2.3" has a 'v' prefix; write 1.2.3`; got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+	func() {
+		defer func() {
+			e, ok := recover().(*Error)
+			if !ok || e.Text != "1.2" {
+				t.Fatalf("MustParse(1.2) panicked with %v, want an *Error naming it", e)
+			}
+		}()
+		MustParse("1.2")
+		t.Fatal("MustParse accepted 1.2")
+	}()
+
+	r := MustRange(t, ">=1.0.0 <2.0.0")
+	if r.String() != ">=1.0.0 <2.0.0" {
+		t.Fatalf("Range.String() = %q", r.String())
+	}
+	if _, err := (Range{}).MarshalText(); err == nil {
+		t.Fatal("the zero range encoded")
+	}
+	if err := r.UnmarshalText([]byte("1.0.0, 2.0.0")); err == nil || r.String() != ">=1.0.0 <2.0.0" {
+		t.Fatalf("UnmarshalText of a comma range = %v, range now %q", err, r.String())
+	}
 }

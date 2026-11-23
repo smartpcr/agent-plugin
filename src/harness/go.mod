@@ -1,6 +1,6 @@
 module github.com/smartpcr/agent-plugin/src/harness
 
-go 1.26.0
+go 1.27.4
 
 require (
 	// One semantic-version dialect for internal/util/version (DH-D-UTIL-4): chosen by
@@ -15,6 +15,10 @@ require (
 	// internal/util/search (DH-D-FS-3: chosen by docs/harness/libs/vscode-ripgrep.md
 	// and picomatch.md); MIT, no dependencies (RM-10), no cgo.
 	github.com/bmatcuk/doublestar/v4 v4.10.4
+	// The Gherkin runner of the harness's e2e suites in test/e2e/harness-DSH (the
+	// Gherkin feature files of each story stage); MIT. Test code only: no package of dsh
+	// imports it, so it is never linked into the binary. The same version as
+	// src/go/test/e2e and tools/harness-gate, so the repository has one Gherkin dialect.
 	github.com/cucumber/godog v0.16.0
 	// The expression engine behind the loader's Evaluator seam, internal/boot/expr
 	// (DH-D-LOADER-5): chosen by docs/harness/libs/cordis-loader.md (DH-LIB-LOADEREXPR)
@@ -28,7 +32,12 @@ require (
 	// (DH-D-UTIL-1): chosen by docs/harness/libs/zod.md DH-ADR-SCHEMA-1; MIT, no
 	// non-test dependencies (RM-10).
 	github.com/google/jsonschema-go v0.4.3
+	// The cordis port (packages cordis, loader, timer) the harness is built on
+	// (design.md sec. 4.2, DH-ADR-26, RM-4): pinned to a committed revision, never
+	// replaced, so a GOWORK=off release build resolves it from this go.mod and go.sum.
 	github.com/smartpcr/agent-plugin/src/go v0.1.5-0.20261120142542-a7caf0f79ab0
+	// The SDK module (jsonrpc codec, protocol message types and schema) the harness
+	// serves (design.md sec. 4.2, DH-ADR-26, RM-4): pinned the same way.
 	github.com/smartpcr/agent-plugin/src/sdk v0.0.0-20261121020315-f394c244a7a7
 	// The fixed command tree, help routing and completion scripts of internal/cli
 	// (DH-D-CLI-1): chosen by docs/harness/libs/commander.md section 5
@@ -44,11 +53,6 @@ require (
 	// File identity, locks, POSIX rename and filesystem type for internal/util/fsx
 	// (DH-D-FS-1): docs/harness/libs/node-fs-path-os-zlib.md; BSD-3-Clause.
 	golang.org/x/sys v0.50.0
-	// The pinned libc translation the SQLite driver is generated against
-	// (DH-ADR-SQLITE-1): modernc.org/sqlite builds only with the exact libc it was
-	// transpiled with, so the pair is pinned together and moves only together after a
-	// new F-2 measurement (docs/stories/harness-DSH-M1/evidence/DH-S-7.md); BSD-3-Clause.
-	modernc.org/libc v1.80.1 // indirect
 	// The session store's engine, imported only by internal/session/store/sqlite
 	// (DH-D-STORE-2): chosen by docs/harness/libs/sqlite.md DH-ADR-SQLITE-1 as pure
 	// Go, so the harness stays a single static binary with no cgo and no system
@@ -69,6 +73,11 @@ require (
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.1.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+	// The pinned libc translation the SQLite driver is generated against
+	// (DH-ADR-SQLITE-1): modernc.org/sqlite builds only with the exact libc it was
+	// transpiled with, so the pair is pinned together and moves only together after a
+	// new F-2 measurement (docs/stories/harness-DSH-M1/evidence/DH-S-7.md); BSD-3-Clause.
+	modernc.org/libc v1.80.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
 )

@@ -1,0 +1,377 @@
+harness-gate evidence record
+commit: db9ca23d149ed15b43b6dff36df082176fa65497
+tree: clean (git status --porcelain --untracked-files=all is empty)
+command: harness-gate --root ../.. --evidence E:\work\github\ai\agent-plugin\docs\stories\harness-DSH-M1\evidence\runs\win-db9ca23-20261122T2239Z.txt
+goos/goarch: windows/amd64
+go version: go version go1.27.4 windows/amd64
+go floor: go1.27.4 (src/harness/go.mod); children run with GOTOOLCHAIN=go1.27.4
+goroot: C:\Program Files\Go
+cc: gcc
+cc --version: gcc (Rev5, Built by MSYS2 project) 16.1.0
+host os: Microsoft Windows [Version 10.0.28000.3501]
+children: CI=1
+started: 2026-11-22T22:39:44Z
+--- output ---
+harness-gate: toolchain go1.27.4 (the go floor of src/harness/go.mod; children run with GOTOOLCHAIN=go1.27.4, GOROOT=C:\Program Files\Go)
+harness-gate: gate 1/12 gofmt -- every Go file is gofmt-formatted
+gofmt: 579 files checked
+harness-gate: PASS gofmt (352ms)
+harness-gate: gate 2/12 vet -- go vet and the project's own analyzers (nosleep, onespawn, cleanup, fuzzcheck, rootcall, typeassert, lintignore), also on the e2e layer; prints the //lint:ignore exception total
+ok   src/go: go vet -tags= ./...
+ok   src/go: go vet -tags= -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\go-build2692183788\b001\exe\harness-gate.exe ./...
+ok   src/go: go vet -tags=replay,scenario ./...
+ok   src/go: go vet -tags=replay,scenario -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\go-build2692183788\b001\exe\harness-gate.exe ./...
+ok   src/go: go vet -tags=e2e ./...
+ok   src/go: go vet -tags=e2e -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\go-build2692183788\b001\exe\harness-gate.exe ./...
+ok   src/sdk: go vet -tags= ./...
+ok   src/sdk: go vet -tags= -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\go-build2692183788\b001\exe\harness-gate.exe ./...
+ok   src/sdk: go vet -tags=replay,scenario ./...
+ok   src/sdk: go vet -tags=replay,scenario -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\go-build2692183788\b001\exe\harness-gate.exe ./...
+ok   src/sdk: go vet -tags=e2e ./...
+ok   src/sdk: go vet -tags=e2e -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\go-build2692183788\b001\exe\harness-gate.exe ./...
+ok   src/harness: go vet -tags= ./...
+ok   src/harness: go vet -tags= -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\go-build2692183788\b001\exe\harness-gate.exe ./...
+ok   src/harness: go vet -tags=replay,scenario ./...
+ok   src/harness: go vet -tags=replay,scenario -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\go-build2692183788\b001\exe\harness-gate.exe ./...
+ok   src/harness: go vet -tags=e2e ./...
+ok   src/harness: go vet -tags=e2e -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\go-build2692183788\b001\exe\harness-gate.exe ./...
+exceptions: 35 (SA1019 1, SA2001 1, U1000 1, typeassert 32)
+harness-gate: PASS vet (1m43.647s)
+harness-gate: gate 3/12 staticcheck -- the pinned staticcheck per module, with -tags= and -tags=replay,scenario
+ok   src/go: staticcheck -tags= ./...
+ok   src/go: staticcheck -tags=replay,scenario ./...
+ok   src/sdk: staticcheck -tags= ./...
+ok   src/sdk: staticcheck -tags=replay,scenario ./...
+ok   src/harness: staticcheck -tags= ./...
+ok   src/harness: staticcheck -tags=replay,scenario ./...
+harness-gate: PASS staticcheck (17.781s)
+harness-gate: gate 4/12 modules -- go mod tidy -diff and go mod verify per module, the module rules (RM-1..RM-4) and a reason on every pin (RM-10)
+ok   src/go: go mod tidy -diff
+ok   src/go: go mod verify
+ok   src/sdk: go mod tidy -diff
+ok   src/sdk: go mod verify
+ok   src/harness: go mod tidy -diff
+ok   src/harness: go mod verify
+ok   src/go/test/e2e: go mod tidy -diff
+ok   src/go/test/e2e: go mod verify
+ok   tools/harness-gate: go mod tidy -diff
+ok   tools/harness-gate: go mod verify
+ok   tools/harness-trace: go mod tidy -diff
+ok   tools/harness-trace: go mod verify
+modules: 3 product, 1 test and 2 tools modules checked
+harness-gate: PASS modules (55.79s)
+harness-gate: gate 5/12 test -- go test -race -shuffle=on -count=1 per module, CGO_ENABLED=1
+ok   src/go: go test -tags= -race -shuffle=on -count=1 ./...
+ok   src/sdk: go test -tags= -race -shuffle=on -count=1 ./...
+ok   src/harness: go test -tags= -race -shuffle=on -count=1 ./...
+harness-gate: PASS test (4m45.256s)
+harness-gate: gate 6/12 coverage -- coverage merged across processes, 85% of statements per package
+ok   src/go: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-4056093710\bin\pkg0.test.exe github.com/smartpcr/agent-plugin/src/go/cmd/cordis-sample
+ok   src/go/cmd/cordis-sample: github.com/smartpcr/agent-plugin/src/go/cmd/cordis-sample.test
+ok   src/go: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-4056093710\bin\pkg1.test.exe github.com/smartpcr/agent-plugin/src/go/cordis
+ok   src/go/cordis: github.com/smartpcr/agent-plugin/src/go/cordis.test
+ok   src/go: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-4056093710\bin\pkg3.test.exe github.com/smartpcr/agent-plugin/src/go/loader
+ok   src/go/loader: github.com/smartpcr/agent-plugin/src/go/loader.test
+ok   src/go: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-4056093710\bin\pkg4.test.exe github.com/smartpcr/agent-plugin/src/go/timer
+ok   src/go/timer: github.com/smartpcr/agent-plugin/src/go/timer.test
+ok   src/go: go tool covdata textfmt -i=C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-4056093710\covdata -o=C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-4056093710\covdata.out
+ok   src/go: go test -tags= -cover -covermode=set -coverprofile=C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-4056093710\untested.out github.com/smartpcr/agent-plugin/src/go/internal/testkit
+coverage: github.com/smartpcr/agent-plugin/src/go/cmd/cordis-sample 85%
+coverage: github.com/smartpcr/agent-plugin/src/go/cordis 92.5%
+coverage: github.com/smartpcr/agent-plugin/src/go/internal/testkit 87.2%
+coverage: github.com/smartpcr/agent-plugin/src/go/loader 89.1%
+coverage: github.com/smartpcr/agent-plugin/src/go/timer 89.9%
+ok   src/sdk: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-2552491700\bin\pkg0.test.exe github.com/smartpcr/agent-plugin/src/sdk/jsonrpc
+ok   src/sdk/jsonrpc: github.com/smartpcr/agent-plugin/src/sdk/jsonrpc.test
+ok   src/sdk: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-2552491700\bin\pkg1.test.exe github.com/smartpcr/agent-plugin/src/sdk/protocol
+ok   src/sdk/protocol: github.com/smartpcr/agent-plugin/src/sdk/protocol.test
+ok   src/sdk: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-2552491700\bin\pkg2.test.exe github.com/smartpcr/agent-plugin/src/sdk/protocol/internal/genschema
+ok   src/sdk/protocol/internal/genschema: github.com/smartpcr/agent-plugin/src/sdk/protocol/internal/genschema.test
+ok   src/sdk: go tool covdata textfmt -i=C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-2552491700\covdata -o=C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-2552491700\covdata.out
+coverage: github.com/smartpcr/agent-plugin/src/sdk/jsonrpc 94.8%
+coverage: github.com/smartpcr/agent-plugin/src/sdk/protocol 99.2%
+coverage: github.com/smartpcr/agent-plugin/src/sdk/protocol/internal/genschema 90.9%
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg0.test.exe github.com/smartpcr/agent-plugin/src/harness/cmd/dsh
+ok   src/harness/cmd/dsh: github.com/smartpcr/agent-plugin/src/harness/cmd/dsh.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg2.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/agent
+ok   src/harness/internal/agent: github.com/smartpcr/agent-plugin/src/harness/internal/agent.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg3.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/agent/driver
+ok   src/harness/internal/agent/driver: github.com/smartpcr/agent-plugin/src/harness/internal/agent/driver.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg4.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/archtest
+ok   src/harness/internal/archtest: github.com/smartpcr/agent-plugin/src/harness/internal/archtest.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg5.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/boot
+ok   src/harness/internal/boot: github.com/smartpcr/agent-plugin/src/harness/internal/boot.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg6.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/boot/builtin
+ok   src/harness/internal/boot/builtin: github.com/smartpcr/agent-plugin/src/harness/internal/boot/builtin.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg7.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/boot/catalog
+ok   src/harness/internal/boot/catalog: github.com/smartpcr/agent-plugin/src/harness/internal/boot/catalog.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg8.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/boot/config
+ok   src/harness/internal/boot/config: github.com/smartpcr/agent-plugin/src/harness/internal/boot/config.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg9.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/boot/expr
+ok   src/harness/internal/boot/expr: github.com/smartpcr/agent-plugin/src/harness/internal/boot/expr.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg10.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/boot/launch
+ok   src/harness/internal/boot/launch: github.com/smartpcr/agent-plugin/src/harness/internal/boot/launch.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg11.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/boot/logging
+ok   src/harness/internal/boot/logging: github.com/smartpcr/agent-plugin/src/harness/internal/boot/logging.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg12.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/boot/profile
+ok   src/harness/internal/boot/profile: github.com/smartpcr/agent-plugin/src/harness/internal/boot/profile.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg13.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/boot/yamlx
+ok   src/harness/internal/boot/yamlx: github.com/smartpcr/agent-plugin/src/harness/internal/boot/yamlx.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg14.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/cli
+ok   src/harness/internal/cli: github.com/smartpcr/agent-plugin/src/harness/internal/cli.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg15.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/cli/cmdline
+ok   src/harness/internal/cli/cmdline: github.com/smartpcr/agent-plugin/src/harness/internal/cli/cmdline.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg16.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/cli/output
+ok   src/harness/internal/cli/output: github.com/smartpcr/agent-plugin/src/harness/internal/cli/output.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg17.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/context/request
+ok   src/harness/internal/context/request: github.com/smartpcr/agent-plugin/src/harness/internal/context/request.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg18.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/delegate/subagent
+ok   src/harness/internal/delegate/subagent: github.com/smartpcr/agent-plugin/src/harness/internal/delegate/subagent.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg19.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/host/diag
+ok   src/harness/internal/host/diag: github.com/smartpcr/agent-plugin/src/harness/internal/host/diag.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg20.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/host/sharing
+ok   src/harness/internal/host/sharing: github.com/smartpcr/agent-plugin/src/harness/internal/host/sharing.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg21.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/human
+ok   src/harness/internal/human: github.com/smartpcr/agent-plugin/src/harness/internal/human.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg22.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/human/approval
+ok   src/harness/internal/human/approval: github.com/smartpcr/agent-plugin/src/harness/internal/human/approval.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg23.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/human/command
+ok   src/harness/internal/human/command: github.com/smartpcr/agent-plugin/src/harness/internal/human/command.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg24.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/human/question
+ok   src/harness/internal/human/question: github.com/smartpcr/agent-plugin/src/harness/internal/human/question.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg25.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/human/question/tool
+ok   src/harness/internal/human/question/tool: github.com/smartpcr/agent-plugin/src/harness/internal/human/question/tool.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg26.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/human/secret
+ok   src/harness/internal/human/secret: github.com/smartpcr/agent-plugin/src/harness/internal/human/secret.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg27.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/llm
+ok   src/harness/internal/llm: github.com/smartpcr/agent-plugin/src/harness/internal/llm.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg28.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/llm/meter
+ok   src/harness/internal/llm/meter: github.com/smartpcr/agent-plugin/src/harness/internal/llm/meter.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg29.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/llm/provider/deepseek
+ok   src/harness/internal/llm/provider/deepseek: github.com/smartpcr/agent-plugin/src/harness/internal/llm/provider/deepseek.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg30.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/llm/retry
+ok   src/harness/internal/llm/retry: github.com/smartpcr/agent-plugin/src/harness/internal/llm/retry.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg31.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/llm/transport
+ok   src/harness/internal/llm/transport: github.com/smartpcr/agent-plugin/src/harness/internal/llm/transport.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg32.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab
+ok   src/harness/internal/llm/vocab: github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg33.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/llm/wire/anthropic
+ok   src/harness/internal/llm/wire/anthropic: github.com/smartpcr/agent-plugin/src/harness/internal/llm/wire/anthropic.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg34.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/schema
+ok   src/harness/internal/schema: github.com/smartpcr/agent-plugin/src/harness/internal/schema.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg35.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/session
+ok   src/harness/internal/session: github.com/smartpcr/agent-plugin/src/harness/internal/session.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg36.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/session/checkpoint
+ok   src/harness/internal/session/checkpoint: github.com/smartpcr/agent-plugin/src/harness/internal/session/checkpoint.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg37.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/session/event
+ok   src/harness/internal/session/event: github.com/smartpcr/agent-plugin/src/harness/internal/session/event.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg38.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/session/query
+ok   src/harness/internal/session/query: github.com/smartpcr/agent-plugin/src/harness/internal/session/query.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg39.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/session/scope
+ok   src/harness/internal/session/scope: github.com/smartpcr/agent-plugin/src/harness/internal/session/scope.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg40.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/session/store
+ok   src/harness/internal/session/store: github.com/smartpcr/agent-plugin/src/harness/internal/session/store.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg41.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/session/store/memstore
+ok   src/harness/internal/session/store/memstore: github.com/smartpcr/agent-plugin/src/harness/internal/session/store/memstore.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg42.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/session/store/sqlite
+ok   src/harness/internal/session/store/sqlite: github.com/smartpcr/agent-plugin/src/harness/internal/session/store/sqlite.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg43.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/session/store/storetest
+ok   src/harness/internal/session/store/storetest: github.com/smartpcr/agent-plugin/src/harness/internal/session/store/storetest.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg44.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/session/surface
+ok   src/harness/internal/session/surface: github.com/smartpcr/agent-plugin/src/harness/internal/session/surface.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg45.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/session/views
+ok   src/harness/internal/session/views: github.com/smartpcr/agent-plugin/src/harness/internal/session/views.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg46.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/storage/attachments
+ok   src/harness/internal/storage/attachments: github.com/smartpcr/agent-plugin/src/harness/internal/storage/attachments.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg47.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/storage/blob
+ok   src/harness/internal/storage/blob: github.com/smartpcr/agent-plugin/src/harness/internal/storage/blob.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg48.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/storage/home
+ok   src/harness/internal/storage/home: github.com/smartpcr/agent-plugin/src/harness/internal/storage/home.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg49.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/storage/kv
+ok   src/harness/internal/storage/kv: github.com/smartpcr/agent-plugin/src/harness/internal/storage/kv.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg50.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/storage/settings
+ok   src/harness/internal/storage/settings: github.com/smartpcr/agent-plugin/src/harness/internal/storage/settings.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg52.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/storage/spill/local
+ok   src/harness/internal/storage/spill/local: github.com/smartpcr/agent-plugin/src/harness/internal/storage/spill/local.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg53.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/storage/spill/policy
+ok   src/harness/internal/storage/spill/policy: github.com/smartpcr/agent-plugin/src/harness/internal/storage/spill/policy.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg54.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/storage/workspace
+ok   src/harness/internal/storage/workspace: github.com/smartpcr/agent-plugin/src/harness/internal/storage/workspace.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg55.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/testkit
+ok   src/harness/internal/testkit: github.com/smartpcr/agent-plugin/src/harness/internal/testkit.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg56.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/testkit/answerer
+ok   src/harness/internal/testkit/answerer: github.com/smartpcr/agent-plugin/src/harness/internal/testkit/answerer.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg57.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/testkit/clock
+ok   src/harness/internal/testkit/clock: github.com/smartpcr/agent-plugin/src/harness/internal/testkit/clock.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg58.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/testkit/golden
+ok   src/harness/internal/testkit/golden: github.com/smartpcr/agent-plugin/src/harness/internal/testkit/golden.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg59.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/testkit/launcher
+ok   src/harness/internal/testkit/launcher: github.com/smartpcr/agent-plugin/src/harness/internal/testkit/launcher.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg60.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/testkit/model
+ok   src/harness/internal/testkit/model: github.com/smartpcr/agent-plugin/src/harness/internal/testkit/model.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg62.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/testkit/procwait
+ok   src/harness/internal/testkit/procwait: github.com/smartpcr/agent-plugin/src/harness/internal/testkit/procwait.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg64.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/testkit/temphome
+ok   src/harness/internal/testkit/temphome: github.com/smartpcr/agent-plugin/src/harness/internal/testkit/temphome.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg65.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/tools
+ok   src/harness/internal/tools: github.com/smartpcr/agent-plugin/src/harness/internal/tools.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg67.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/tools/core
+ok   src/harness/internal/tools/core: github.com/smartpcr/agent-plugin/src/harness/internal/tools/core.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg69.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/tools/prompt
+ok   src/harness/internal/tools/prompt: github.com/smartpcr/agent-plugin/src/harness/internal/tools/prompt.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg70.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/util/caltime
+ok   src/harness/internal/util/caltime: github.com/smartpcr/agent-plugin/src/harness/internal/util/caltime.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg71.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/util/egress
+ok   src/harness/internal/util/egress: github.com/smartpcr/agent-plugin/src/harness/internal/util/egress.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg72.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/util/fsx
+ok   src/harness/internal/util/fsx: github.com/smartpcr/agent-plugin/src/harness/internal/util/fsx.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg73.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/util/glob
+ok   src/harness/internal/util/glob: github.com/smartpcr/agent-plugin/src/harness/internal/util/glob.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg74.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/util/herr
+ok   src/harness/internal/util/herr: github.com/smartpcr/agent-plugin/src/harness/internal/util/herr.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg75.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/util/homedir
+ok   src/harness/internal/util/homedir: github.com/smartpcr/agent-plugin/src/harness/internal/util/homedir.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg76.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/util/ident
+ok   src/harness/internal/util/ident: github.com/smartpcr/agent-plugin/src/harness/internal/util/ident.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg77.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/util/mediatype
+ok   src/harness/internal/util/mediatype: github.com/smartpcr/agent-plugin/src/harness/internal/util/mediatype.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg78.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/util/recur
+ok   src/harness/internal/util/recur: github.com/smartpcr/agent-plugin/src/harness/internal/util/recur.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg79.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/util/search
+ok   src/harness/internal/util/search: github.com/smartpcr/agent-plugin/src/harness/internal/util/search.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg80.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/util/textdiff
+ok   src/harness/internal/util/textdiff: github.com/smartpcr/agent-plugin/src/harness/internal/util/textdiff.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg81.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/util/textdiff/patch
+ok   src/harness/internal/util/textdiff/patch: github.com/smartpcr/agent-plugin/src/harness/internal/util/textdiff/patch.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg82.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/util/version
+ok   src/harness/internal/util/version: github.com/smartpcr/agent-plugin/src/harness/internal/util/version.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg83.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/util/watch
+ok   src/harness/internal/util/watch: github.com/smartpcr/agent-plugin/src/harness/internal/util/watch.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg84.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/util/watch/watchfiber
+ok   src/harness/internal/util/watch/watchfiber: github.com/smartpcr/agent-plugin/src/harness/internal/util/watch/watchfiber.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg85.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/util/watch/watchtest
+ok   src/harness/internal/util/watch/watchtest: github.com/smartpcr/agent-plugin/src/harness/internal/util/watch/watchtest.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg86.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess
+ok   src/harness/internal/world/subprocess: github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess.test
+ok   src/harness: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\bin\pkg87.test.exe github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess/subprocesstest
+ok   src/harness/internal/world/subprocess/subprocesstest: github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess/subprocesstest.test
+ok   src/harness: go tool covdata textfmt -i=C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\covdata -o=C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\covdata.out
+ok   src/harness: go test -tags= -cover -covermode=set -coverprofile=C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3851536394\untested.out github.com/smartpcr/agent-plugin/src/harness/internal github.com/smartpcr/agent-plugin/src/harness/internal/storage/spill github.com/smartpcr/agent-plugin/src/harness/internal/testkit/permit github.com/smartpcr/agent-plugin/src/harness/internal/testkit/scenarios github.com/smartpcr/agent-plugin/src/harness/internal/tools/conform github.com/smartpcr/agent-plugin/src/harness/internal/tools/internal/body
+coverage: github.com/smartpcr/agent-plugin/src/harness/cmd/dsh 100%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/agent 87.1%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/agent/driver 88.7%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/archtest 96.1%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/boot 87.1%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/boot/builtin 100%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/boot/catalog 95.9%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/boot/config 90.1%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/boot/expr 99.3%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/boot/launch 88%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/boot/logging 98.5%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/boot/profile 94.4%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/boot/yamlx 96.1%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/cli 94.4%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/cli/cmdline 94.2%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/cli/output 92.8%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/context/request 92.4%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/delegate/subagent 89.7%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/host/diag 90.9%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/host/sharing 89.7%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/human 91.3%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/human/approval 87.6%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/human/command 97%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/human/question 89.7%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/human/question/tool 85.7%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/human/secret 96.1%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/llm 89.1%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/llm/meter 87.9%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/llm/provider/deepseek 85.4%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/llm/retry 92.5%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/llm/transport 91.3%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab 89.6%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/llm/wire/anthropic 94.6%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/schema 91.2%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/session 89.8%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/session/checkpoint 100%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/session/event 87.5%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/session/query 85.6%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/session/scope 86.2%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/session/store 94.3%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/session/store/memstore 92.1%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/session/store/sqlite 85.3%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/session/store/storetest 89.3%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/session/surface 87.7%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/session/views 89.4%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/storage/attachments 85%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/storage/blob 88.4%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/storage/home 87.6%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/storage/kv 95.5%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/storage/settings 92.4%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/storage/spill 88%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/storage/spill/local 90.7%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/storage/spill/policy 96.2%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/storage/workspace 92.3%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/testkit 100%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/testkit/answerer 96.1%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/testkit/clock 97.2%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/testkit/golden 100%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/testkit/launcher 87.8%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/testkit/model 86.1%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/testkit/permit 100%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/testkit/procwait 100%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/testkit/temphome 96.9%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/tools 87%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/tools/conform 85.4%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/tools/core 89.5%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/tools/prompt 90.5%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/util/caltime 94.6%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/util/egress 91.3%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/util/fsx 92%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/util/glob 94%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/util/herr 90.9%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/util/homedir 90.1%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/util/ident 95.4%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/util/mediatype 94.3%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/util/recur 94.3%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/util/search 96.2%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/util/textdiff 99.1%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/util/textdiff/patch 98.4%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/util/version 100%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/util/watch 92.6%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/util/watch/watchfiber 100%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/util/watch/watchtest 94.1%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess 90.7%
+coverage: github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess/subprocesstest 88.5%
+harness-gate: PASS coverage (11m33.26s)
+harness-gate: gate 7/12 trace -- tools/harness-trace verify
+trace: verify: PASS
+harness-gate: PASS trace (2.662s)
+harness-gate: gate 8/12 scenario-index -- every authored DH-E-* scenario test is in test/harness/acceptance-index.yaml exactly once, and every indexed one authored so far has its test
+scenario-index: 34 scenario tests authored, 34 scenarios indexed in 9 stages, built through DH-S-7
+harness-gate: PASS scenario-index (58ms)
+harness-gate: gate 9/12 budget -- performance budgets (TestBudget*) with DSH_* and GO* overrides cleared
+ok   src/go: go test -count=1 -run ^TestBudget ./...
+ok   src/sdk: go test -count=1 -run ^TestBudget ./...
+ok   src/harness: go test -count=1 -run ^TestBudget ./...
+harness-gate: PASS budget (41.076s)
+harness-gate: gate 10/12 cross-compile -- cmd/dsh for linux, darwin, windows on amd64 and arm64 with CGO_ENABLED=0
+ok   src/harness: go build -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cross-1620231571\dsh-linux-amd64 ./cmd/dsh
+ok   src/harness: go build -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cross-1620231571\dsh-linux-arm64 ./cmd/dsh
+ok   src/harness: go build -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cross-1620231571\dsh-darwin-amd64 ./cmd/dsh
+ok   src/harness: go build -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cross-1620231571\dsh-darwin-arm64 ./cmd/dsh
+ok   src/harness: go build -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cross-1620231571\dsh-windows-amd64.exe ./cmd/dsh
+ok   src/harness: go build -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cross-1620231571\dsh-windows-arm64.exe ./cmd/dsh
+harness-gate: PASS cross-compile (29.84s)
+harness-gate: gate 11/12 vulncheck -- govulncheck ./... per module against the vulnerability database; an unreachable database fails
+ok   src/go: govulncheck ./...
+ok   src/sdk: govulncheck ./...
+ok   src/harness: govulncheck ./...
+harness-gate: PASS vulncheck (14.585s)
+harness-gate: gate 12/12 self -- the gate's own tests: go test -count=1 ./... in tools/harness-gate, without the e2e tag
+ok   tools/harness-gate: go test -tags= -count=1 -timeout=30m0s -skip ^TestRepositoryPassesEveryGate$ ./...
+harness-gate: PASS self (6m4.616s)
+harness-gate: PASSED all 12 gates
+--- end of output ---
+ended: 2026-11-22T23:06:33Z
+exit: 0
+sha256: c16a2bf61b41ff833951c035ebbe068699a866b7ae0ce227d17518daed88516b

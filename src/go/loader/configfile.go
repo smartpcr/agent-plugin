@@ -67,6 +67,12 @@ type ConfigFile struct {
 	dirtyWrite  bool
 	disposed    bool
 	tempCounter int
+	// fileIO keeps the watcher's poll from holding the file open while the drain
+	// loop renames a write over it: on Windows an open file cannot be replaced, so
+	// the component's own poll could otherwise refuse every attempt of its own
+	// write-back and lose it (M1-G-GATE-15.3). Other processes' readers are still
+	// met by the write's retries.
+	fileIO sync.Mutex
 	// pending publishes the reconciliations of the current drain; the drain loop
 	// runs it once it has stopped. Guarded by mu.
 	pending func()
@@ -413,7 +419,10 @@ func (f *ConfigFile) writeAtomic(text string, expected *string) bool {
 			return false
 		}
 		if err == nil {
-			if err = os.Rename(temp, f.path); err == nil {
+			f.fileIO.Lock()
+			err = os.Rename(temp, f.path)
+			f.fileIO.Unlock()
+			if err == nil {
 				return true
 			}
 		}
@@ -444,7 +453,9 @@ func (f *ConfigFile) watch() error {
 				case <-stop:
 					return
 				case <-ticker.C:
+					f.fileIO.Lock()
 					current, err := os.ReadFile(f.path)
+					f.fileIO.Unlock()
 					if err != nil && !errors.Is(err, fs.ErrNotExist) {
 						continue // e.g. locked mid-rename on Windows; look again next tick
 					}

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
@@ -83,15 +84,49 @@ func (e *env) spec(id string) subagent.Spec {
 	return subagent.Spec{Session: session.ID(id), Prompt: "do it", Model: &agent.ModelSelection{Route: route}}
 }
 
+// waitRequests blocks until the scripted model has received n requests.
 func waitRequests(t *testing.T, tr *fakemodel.Transport, n int) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for len(tr.Requests()) < n {
-		if time.Now().After(deadline) {
-			t.Fatalf("model request %d was never sent", n)
-		}
-		time.Sleep(5 * time.Millisecond)
+	ctx, cancel := context.WithTimeout(bg, 10*time.Second)
+	defer cancel()
+	if err := tr.WaitRequests(ctx, n); err != nil {
+		t.Fatalf("model request %d was never sent: %v", n, err)
 	}
+}
+
+// within waits for ch, failing the test after 10 s.
+func within(t *testing.T, ch <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("%s never happened", what)
+	}
+}
+
+// goJoined runs fn on a new goroutine and registers its release with t.Cleanup
+// right after the start (P-C, tools/harness-gate/README.md "Waiting and releasing
+// in tests"): the cleanup calls unblock, which must make fn return (nil when fn
+// returns by itself), then joins fn within 10 s. The returned channel is closed
+// when fn returns.
+func goJoined(t *testing.T, unblock func(), fn func()) <-chan struct{} {
+	t.Helper()
+	done := make(chan struct{})
+	t.Cleanup(func() {
+		if unblock != nil {
+			unblock()
+		}
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Error("a released test goroutine did not return within 10s")
+		}
+	})
+	go func() {
+		defer close(done)
+		fn()
+	}()
+	return done
 }
 
 func settled(t *testing.T, a subagent.Activation) subagent.Result {
@@ -114,7 +149,7 @@ func TestChildTornDownWithItsOwner(t *testing.T) {
 	_, d := e.component("D")
 	act := must(e.rt.Start(c, e.spec("K")))
 	waitRequests(t, e.tr, 1)
-	time.Sleep(200 * time.Millisecond) // the streamed prefix lands
+	within(t, e.tr.PrefixServed(1), "the streamed prefix landing")
 
 	if o, ok := e.rt.OwnerOf("K"); !ok || o != c {
 		t.Fatalf("owner of K: %v %v", o, ok)
@@ -217,45 +252,52 @@ func TestStartRefusals(t *testing.T) {
 // WaitQuiet waits for a start still in Setup: it neither skips the reserved
 // child nor returns before that child has run its task and gone idle.
 func TestWaitQuietWaitsForAPendingStart(t *testing.T) {
-	e := newEnv(t, fakemodel.Reply("done"))
-	_, c := e.component("C")
-	entered, release := make(chan struct{}), make(chan struct{})
-	s := e.spec("K")
-	s.Setup = func(*cordis.Context, agent.Agent) (func() error, error) {
-		close(entered)
-		<-release
-		return nil, nil
-	}
-	started := make(chan error, 1)
-	go func() { _, err := e.rt.Start(c, s); started <- err }()
-	<-entered
-	quiet := make(chan error, 1)
-	go func() { quiet <- e.rt.WaitQuiet(bg, c) }()
-	select {
-	case err := <-quiet:
-		t.Fatalf("WaitQuiet returned during the child's Setup: %v", err)
-	case <-time.After(100 * time.Millisecond):
-	}
-	close(release)
-	if err := <-started; err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	select {
-	case err := <-quiet:
-		if err != nil {
-			t.Fatalf("WaitQuiet: %v", err)
+	// In a synctest bubble, synctest.Wait shows WaitQuiet still blocked with no
+	// settle time: every goroutine is then durably blocked.
+	synctest.Test(t, func(t *testing.T) {
+		e := newEnv(t, fakemodel.Reply("done"))
+		_, c := e.component("C")
+		entered, release := make(chan struct{}), make(chan struct{})
+		free := sync.OnceFunc(func() { close(release) })
+		s := e.spec("K")
+		s.Setup = func(*cordis.Context, agent.Agent) (func() error, error) {
+			close(entered)
+			<-release
+			return nil, nil
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("WaitQuiet never returned")
-	}
-	if len(e.tr.Requests()) != 1 {
-		t.Fatalf("WaitQuiet returned before the child ran: %d requests", len(e.tr.Requests()))
-	}
-	ctx, cancel := context.WithTimeout(bg, time.Second)
-	defer cancel()
-	if err := e.rt.WaitQuiet(ctx, c); err != nil {
-		t.Fatalf("WaitQuiet with nothing pending: %v", err)
-	}
+		started := make(chan error, 1)
+		goJoined(t, free, func() { _, err := e.rt.Start(c, s); started <- err })
+		<-entered
+		quiet := make(chan error, 1)
+		qctx, stopQuiet := context.WithCancel(bg)
+		goJoined(t, func() { free(); stopQuiet() }, func() { quiet <- e.rt.WaitQuiet(qctx, c) })
+		synctest.Wait()
+		select {
+		case err := <-quiet:
+			t.Fatalf("WaitQuiet returned during the child's Setup: %v", err)
+		default:
+		}
+		free()
+		if err := <-started; err != nil {
+			t.Fatalf("start: %v", err)
+		}
+		select {
+		case err := <-quiet:
+			if err != nil {
+				t.Fatalf("WaitQuiet: %v", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("WaitQuiet never returned")
+		}
+		if len(e.tr.Requests()) != 1 {
+			t.Fatalf("WaitQuiet returned before the child ran: %d requests", len(e.tr.Requests()))
+		}
+		ctx, cancel := context.WithTimeout(bg, time.Second)
+		defer cancel()
+		if err := e.rt.WaitQuiet(ctx, c); err != nil {
+			t.Fatalf("WaitQuiet with nothing pending: %v", err)
+		}
+	})
 }
 
 // DH-D-SUBAGENT-1: subagent.manager injects the agent registry and provides
@@ -300,96 +342,186 @@ func TestManagerComponentProvidesTheSeam(t *testing.T) {
 // Unloading the manager refuses new runs and releases every run it admitted,
 // a start still in Setup included, before its unload completes.
 func TestManagerUnloadReleasesItsRuns(t *testing.T) {
-	e := newEnv(t, fakemodel.Turn{Events: []fakemodel.Event{fakemodel.Text("par")}, Hang: true})
-	must(agent.Agents.Provide(e.root, e.reg))
-	mf := must(e.root.Use(subagent.Component, cordis.None{}))
-	must(0, mf.Wait())
-	var rt subagent.Runtime
-	g := must(e.root.Inject([]string{subagent.Key.Name()}, func(ctx *cordis.Context) (err error) {
-		rt, err = subagent.Key.Get(ctx)
-		return err
-	}))
-	must(0, g.Wait())
-	_, c := e.component("C")
-	act := must(rt.Start(c, e.spec("K")))
-	waitRequests(t, e.tr, 1)
+	// In a synctest bubble, synctest.Wait shows the unload still waiting for the
+	// pending start with no settle time.
+	synctest.Test(t, func(t *testing.T) {
+		e := newEnv(t, fakemodel.Turn{Events: []fakemodel.Event{fakemodel.Text("par")}, Hang: true})
+		must(agent.Agents.Provide(e.root, e.reg))
+		mf := must(e.root.Use(subagent.Component, cordis.None{}))
+		must(0, mf.Wait())
+		var rt subagent.Runtime
+		g := must(e.root.Inject([]string{subagent.Key.Name()}, func(ctx *cordis.Context) (err error) {
+			rt, err = subagent.Key.Get(ctx)
+			return err
+		}))
+		must(0, g.Wait())
+		_, c := e.component("C")
+		act := must(rt.Start(c, e.spec("K")))
+		waitRequests(t, e.tr, 1)
 
-	// P is admitted before the unload and still in Setup when it begins.
-	entered, release := make(chan struct{}), make(chan struct{})
-	free := sync.OnceFunc(func() { close(release) })
-	t.Cleanup(free)
-	ps := e.spec("P")
-	ps.Setup = func(*cordis.Context, agent.Agent) (func() error, error) {
-		close(entered)
-		<-release
-		return nil, errors.New("setup failed")
-	}
-	pending := make(chan error, 1)
-	go func() { _, err := rt.Start(c, ps); pending <- err }()
-	<-entered
-
-	unloaded := make(chan struct{})
-	go func() { mf.Dispose(); _ = mf.Wait(); close(unloaded) }()
-	// Starts racing the unload are either admitted, and then released with
-	// it, or refused once it has begun.
-	var admitted []subagent.Activation
-	ids := []session.ID{"K", "P"}
-	deadline := time.Now().Add(5 * time.Second)
-	for n := 0; ; n++ {
-		s := e.spec(fmt.Sprintf("late-%d", n))
-		// An admitted late start fails in Setup, so it calls no model.
-		s.Setup = func(*cordis.Context, agent.Agent) (func() error, error) { return nil, errors.New("late") }
-		a, err := rt.Start(c, s)
-		if errors.Is(err, subagent.ErrInactive) {
-			break
+		// P is admitted before the unload and still in Setup when it begins.
+		entered, release := make(chan struct{}), make(chan struct{})
+		free := sync.OnceFunc(func() { close(release) })
+		t.Cleanup(free)
+		ps := e.spec("P")
+		ps.Setup = func(*cordis.Context, agent.Agent) (func() error, error) {
+			close(entered)
+			<-release
+			return nil, errors.New("setup failed")
 		}
-		if err == nil {
+		pending := make(chan error, 1)
+		goJoined(t, free, func() { _, err := rt.Start(c, ps); pending <- err })
+		<-entered
+
+		unloaded := goJoined(t, free, func() { mf.Dispose(); _ = mf.Wait() })
+		// Starts racing the unload are either admitted, and then released with
+		// it, or refused once it has begun: the first races it, and once the
+		// manager signals that it is refusing, the next is refused.
+		var admitted []subagent.Activation
+		ids := []session.ID{"K", "P"}
+		late := func(n int) (subagent.Activation, error) {
+			s := e.spec(fmt.Sprintf("late-%d", n))
+			// An admitted late start fails in Setup, so it calls no model.
+			s.Setup = func(*cordis.Context, agent.Agent) (func() error, error) { return nil, errors.New("late") }
+			return rt.Start(c, s)
+		}
+		if a, err := late(0); err == nil {
 			admitted = append(admitted, a)
 			ids = append(ids, a.Child())
 		}
-		if time.Now().After(deadline) {
-			free()
-			t.Fatalf("starts were never refused during the manager's unload: %v", err)
+		within(t, subagent.Refusing(rt), "the manager's refusal of new runs")
+		if _, err := late(1); !errors.Is(err, subagent.ErrInactive) {
+			t.Fatalf("starts were not refused during the manager's unload: %v", err)
 		}
-		time.Sleep(time.Millisecond)
+		synctest.Wait()
+		select {
+		case <-unloaded:
+			t.Fatal("the manager unloaded while an admitted start was still pending")
+		default:
+		}
+		free()
+		select {
+		case <-unloaded:
+		case <-time.After(10 * time.Second):
+			t.Fatal("the manager never finished unloading")
+		}
+		for _, id := range ids {
+			if _, ok := e.reg.Get(id); ok {
+				t.Fatalf("%s outlived the manager", id)
+			}
+			if _, ok := rt.OwnerOf(id); ok {
+				t.Fatalf("%s kept an owner", id)
+			}
+		}
+		if r := settled(t, act); r.Stop != subagent.StopAborted {
+			t.Fatalf("result %+v", r)
+		}
+		for _, a := range admitted {
+			settled(t, a)
+		}
+		select {
+		case err := <-pending:
+			if err == nil || !strings.Contains(err.Error(), "setup failed") {
+				t.Fatalf("pending start: %v", err)
+			}
+		default:
+			t.Fatal("the manager unloaded before the pending start returned")
+		}
+		if _, err := rt.Start(c, e.spec("after")); !errors.Is(err, subagent.ErrInactive) {
+			t.Fatalf("a start after the manager unloaded: %v", err)
+		}
+		if len(rt.Children(c)) != 0 {
+			t.Fatalf("children after the unload: %v", rt.Children(c))
+		}
+	})
+}
+
+// A run whose turn ends in an error settles StopError with the failure named.
+func TestChildErrorIsTheResult(t *testing.T) {
+	e := newEnv(t, fakemodel.Status(500))
+	_, c := e.component("C")
+	act := must(e.rt.Start(c, e.spec("K")))
+	r := settled(t, act)
+	if r.Stop != subagent.StopError || !strings.HasPrefix(r.Diagnostic, "error: ") || r.Cleanup != subagent.CleanupOK {
+		t.Fatalf("result %+v, want an error stop naming the failure", r)
 	}
-	select {
-	case <-unloaded:
-		t.Fatal("the manager unloaded while an admitted start was still pending")
-	case <-time.After(100 * time.Millisecond):
+}
+
+// An owner's children are listed by child id; one name per owner is refused
+// with name-taken, and the refusal reads as its code.
+func TestOwnerChildrenAndNameTaken(t *testing.T) {
+	hang := fakemodel.Turn{Events: []fakemodel.Event{fakemodel.Text("par")}, Hang: true}
+	e := newEnv(t, hang, hang)
+	_, c := e.component("C")
+	for _, id := range []string{"K2", "K1"} {
+		s := e.spec(id)
+		s.Name = "worker-" + id
+		must(e.rt.Start(c, s))
+	}
+	waitRequests(t, e.tr, 2)
+	if got := e.rt.Children(c); !slices.Equal(got, []session.ID{"K1", "K2"}) {
+		t.Fatalf("children of C: %v, want K1, K2 in id order", got)
+	}
+	dup := e.spec("K3")
+	dup.Name = "worker-K1"
+	_, err := e.rt.Start(c, dup)
+	if !errors.Is(err, subagent.ErrNameTaken) || !strings.HasPrefix(err.Error(), string(subagent.CodeNameTaken)+": ") {
+		t.Fatalf("a second child named worker-K1: %v", err)
+	}
+	if _, ok := e.reg.Get("K3"); ok {
+		t.Fatal("a refused start created an agent")
+	}
+}
+
+// A start on an unloaded owner is refused inactive, and the error carries the
+// owner's own error as its cause.
+func TestStartOnAnUnloadedOwnerCarriesTheCause(t *testing.T) {
+	e := newEnv(t)
+	cf, c := e.component("C")
+	cf.Dispose()
+	_, err := e.rt.Start(c, e.spec("K"))
+	if !errors.Is(err, subagent.ErrInactive) {
+		t.Fatalf("start: %v, want inactive", err)
+	}
+	cause := errors.Unwrap(err)
+	if cause == nil || cause != c.Lifetime().Err() || !strings.HasSuffix(err.Error(), ": "+cause.Error()) {
+		t.Fatalf("start error %q, cause %v: want the owner's lifetime error as the cause", err, cause)
+	}
+}
+
+// Result returns the context's error when it ends first: a run still working
+// has no result.
+func TestResultHonoursItsContext(t *testing.T) {
+	e := newEnv(t, fakemodel.Turn{Events: []fakemodel.Event{fakemodel.Text("par")}, Hang: true})
+	_, c := e.component("C")
+	act := must(e.rt.Start(c, e.spec("K")))
+	waitRequests(t, e.tr, 1)
+	ctx, cancel := context.WithCancel(bg)
+	cancel()
+	if _, err := act.Result(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Result of a working run: %v, want the context's error", err)
+	}
+}
+
+// WaitQuiet returns the context's error when it ends while a start is still in
+// Setup.
+func TestWaitQuietHonoursItsContext(t *testing.T) {
+	e := newEnv(t)
+	_, c := e.component("C")
+	ctx, cancel := context.WithCancel(bg)
+	cancel()
+	entered, release := make(chan struct{}), make(chan struct{})
+	free := sync.OnceFunc(func() { close(release) })
+	s := e.spec("P")
+	s.Setup = func(*cordis.Context, agent.Agent) (func() error, error) {
+		close(entered)
+		<-release
+		return nil, errors.New("setup refused")
+	}
+	goJoined(t, free, func() { _, _ = e.rt.Start(c, s) })
+	<-entered
+	if err := e.rt.WaitQuiet(ctx, c); !errors.Is(err, context.Canceled) {
+		t.Fatalf("WaitQuiet during a pending start: %v, want the context's error", err)
 	}
 	free()
-	select {
-	case <-unloaded:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the manager never finished unloading")
-	}
-	for _, id := range ids {
-		if _, ok := e.reg.Get(id); ok {
-			t.Fatalf("%s outlived the manager", id)
-		}
-		if _, ok := rt.OwnerOf(id); ok {
-			t.Fatalf("%s kept an owner", id)
-		}
-	}
-	if r := settled(t, act); r.Stop != subagent.StopAborted {
-		t.Fatalf("result %+v", r)
-	}
-	for _, a := range admitted {
-		settled(t, a)
-	}
-	select {
-	case err := <-pending:
-		if err == nil || !strings.Contains(err.Error(), "setup failed") {
-			t.Fatalf("pending start: %v", err)
-		}
-	default:
-		t.Fatal("the manager unloaded before the pending start returned")
-	}
-	if _, err := rt.Start(c, e.spec("after")); !errors.Is(err, subagent.ErrInactive) {
-		t.Fatalf("a start after the manager unloaded: %v", err)
-	}
-	if len(rt.Children(c)) != 0 {
-		t.Fatalf("children after the unload: %v", rt.Children(c))
-	}
 }

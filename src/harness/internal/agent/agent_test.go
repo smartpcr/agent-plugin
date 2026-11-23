@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
@@ -105,6 +106,8 @@ func (e *env) create(t *testing.T, id string) agent.Handle {
 
 // DH-T-AGENT-1: create, get, list; a second live agent with one id is refused;
 // Get gives no way to dispose; the owner's unload disposes; one factory seat.
+//
+//dsh:test DH-T-AGENT-1
 func TestRegistryCreateGetList(t *testing.T) {
 	e := newEnv(t)
 	if _, err := e.reg.Create(e.root, agent.CreateOptions{Session: "a"}); !errors.Is(err, agent.ErrNoFactory) {
@@ -160,6 +163,8 @@ func TestRegistryCreateGetList(t *testing.T) {
 
 // DH-T-AGENT-2: a tool body reads its initiator, a shared worker reads none;
 // Resolve refuses a disposed or replaced incarnation.
+//
+//dsh:test DH-T-AGENT-2
 func TestInitiatorAndResolve(t *testing.T) {
 	e := newEnv(t)
 	e.seat(t)
@@ -202,6 +207,8 @@ func TestInitiatorAndResolve(t *testing.T) {
 
 // DH-T-AGENT-3: a listener in agent A's scope sees none of agent B's events; a
 // global listener sees both. Steering listeners are scoped the same way.
+//
+//dsh:test DH-T-AGENT-3
 func TestEventsAreScopedPerAgent(t *testing.T) {
 	e := newEnv(t)
 	e.seat(t)
@@ -229,6 +236,8 @@ func TestEventsAreScopedPerAgent(t *testing.T) {
 // DH-T-AGENT-27: a stub factory replaces the driver and a registry consumer, a
 // creation listener and a dispose listener run unchanged; a creation listener's
 // error rolls the creation back.
+//
+//dsh:test DH-T-AGENT-27
 func TestCompositionWithAStubFactory(t *testing.T) {
 	e := newEnv(t)
 	e.seat(t)
@@ -269,44 +278,50 @@ func TestCompositionWithAStubFactory(t *testing.T) {
 // DH-T-AGENT-19: the owner unloading while the creation's owner guard is
 // still being acquired neither deadlocks the creation nor the unload: cordis
 // releases the guard inline, the creation is refused before anything is
-// built, and the owner's unload completes.
+// built, and the owner's unload completes. The test runs in a synctest bubble,
+// so the acquisition holds until the unload is blocked waiting for it.
 func TestOwnerUnloadDuringGuardAcquisition(t *testing.T) {
-	e := newEnv(t)
-	e.seat(t)
-	var owner *cordis.Context
-	of := must(e.root.Apply("owner", func(c *cordis.Context) error { owner = c; return nil }))
-	must(0, of.Wait())
-	unloaded := make(chan struct{})
-	var fired atomic.Bool
-	defer agent.SetOwnHook(func(r agent.Ref) {
-		if r.Session != "g" || !fired.CompareAndSwap(false, true) {
-			return
+	synctest.Test(t, func(t *testing.T) {
+		e := newEnv(t)
+		e.seat(t)
+		var owner *cordis.Context
+		of := must(e.root.Apply("owner", func(c *cordis.Context) error { owner = c; return nil }))
+		must(0, of.Wait())
+		var unloaded <-chan struct{}
+		var fired atomic.Bool
+		defer agent.SetOwnHook(func(r agent.Ref) {
+			if r.Session != "g" || !fired.CompareAndSwap(false, true) {
+				return
+			}
+			// The unload returns once this acquisition has; the cleanup joins it.
+			unloaded = goJoined(t, nil, func() { of.Dispose(); _ = of.Wait() })
+			<-owner.Lifetime().Done()
+			// The owner's unload marks this guard dead, then waits for the
+			// acquisition: once every other goroutine of the bubble is blocked,
+			// the unload is in that wait.
+			synctest.Wait()
+		})()
+		res := make(chan error, 1)
+		goJoined(t, nil, func() { _, err := e.reg.Create(owner, agent.CreateOptions{Session: "g"}); res <- err })
+		select {
+		case err := <-res:
+			if !errors.Is(err, agent.ErrInvalid) {
+				t.Fatalf("create: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("the creation deadlocked on its owner's unload")
 		}
-		go func() { of.Dispose(); _ = of.Wait(); close(unloaded) }()
-		<-owner.Lifetime().Done()
-		// The owner's unload marks this guard dead, then waits for the acquisition.
-		time.Sleep(100 * time.Millisecond)
-	})()
-	res := make(chan error, 1)
-	go func() { _, err := e.reg.Create(owner, agent.CreateOptions{Session: "g"}); res <- err }()
-	select {
-	case err := <-res:
-		if !errors.Is(err, agent.ErrInvalid) {
-			t.Fatalf("create: %v", err)
+		select {
+		case <-unloaded:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the owner's unload deadlocked on the creation")
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the creation deadlocked on its owner's unload")
-	}
-	select {
-	case <-unloaded:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the owner's unload deadlocked on the creation")
-	}
-	if e.built.Load() != 0 {
-		t.Fatal("a creation whose owner unloaded reached the factory")
-	}
-	if _, ok := e.reg.Get("g"); ok {
-		t.Fatal("g is addressable")
-	}
-	e.create(t, "g")
+		if e.built.Load() != 0 {
+			t.Fatal("a creation whose owner unloaded reached the factory")
+		}
+		if _, ok := e.reg.Get("g"); ok {
+			t.Fatal("g is addressable")
+		}
+		e.create(t, "g")
+	})
 }

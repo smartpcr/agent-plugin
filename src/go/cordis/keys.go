@@ -168,6 +168,7 @@ func (k *AroundKey[Req, Res]) Around(ctx *Context, req Req, terminal func(Req) (
 			called = true
 			return dispatch(index+1, inner)
 		}
+		//lint:ignore typeassert the listeners of an around key are stored only by its typed registration, so h.fn is always AroundListener[Req, Res]
 		if panicked := capturePanic(func() { res, err = h.fn.(AroundListener[Req, Res])(h.ctx, req, next) }); panicked != nil {
 			var zero Res
 			return zero, fmt.Errorf("cordis: listener of around %q in %s panicked: %w", k.name, h.ctx.fiber.Name(), panicked)

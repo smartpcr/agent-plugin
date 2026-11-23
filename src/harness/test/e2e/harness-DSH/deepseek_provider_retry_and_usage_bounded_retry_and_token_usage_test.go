@@ -845,7 +845,7 @@ func (s *brtState) givenScenarioFiles(list, index string) error {
 func (s *brtState) runIndexCheck() error {
 	tmp := brtOuterT.TempDir()
 	gate := filepath.Join(s.root, "tools", "harness-gate")
-	gomod := fmt.Sprintf("module dsh.e2e/brtindex\n\ngo 1.26.0\n\nrequire github.com/smartpcr/agent-plugin/tools/harness-gate v0.0.0\n\nreplace github.com/smartpcr/agent-plugin/tools/harness-gate => %s\n",
+	gomod := fmt.Sprintf("module dsh.e2e/brtindex\n\ngo 1.27.4\n\nrequire github.com/smartpcr/agent-plugin/tools/harness-gate v0.0.0\n\nreplace github.com/smartpcr/agent-plugin/tools/harness-gate => %s\n",
 		strconv.Quote(filepath.ToSlash(gate)))
 	if err := os.WriteFile(filepath.Join(tmp, "go.mod"), []byte(gomod), 0o644); err != nil {
 		return err

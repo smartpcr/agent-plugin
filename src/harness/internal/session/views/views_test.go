@@ -72,6 +72,8 @@ func last() views.Definition[event.Seq] {
 }
 
 // Scenario: Folds read at one cut (DH-D-VIEW-1).
+//
+//dsh:test DH-T-VIEW-2
 func TestFoldsReadAtOneCut(t *testing.T) {
 	reg := views.New()
 	cnt := must(views.Register(reg, count()))
@@ -81,6 +83,8 @@ func TestFoldsReadAtOneCut(t *testing.T) {
 
 	var stop atomic.Bool
 	var wg sync.WaitGroup
+	// P-C: the cleanup stops the appenders (unblock), then joins them.
+	t.Cleanup(func() { stop.Store(true); wg.Wait() })
 	for range 4 {
 		wg.Add(1)
 		go func() {
@@ -136,6 +140,7 @@ func must2[A, B any](a A, b B, err error) (A, B) {
 	return a, b
 }
 
+//dsh:test DH-T-VIEW-3
 func TestRegistrationIsOnceAndBeforeUse(t *testing.T) {
 	reg := views.New()
 	must(views.Register(reg, count()))
@@ -172,6 +177,7 @@ func TestRegistrationIsOnceAndBeforeUse(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-VIEW-3
 func TestDispatchByTypeAndContainedPanic(t *testing.T) {
 	reg := views.New()
 	var calls atomic.Int32

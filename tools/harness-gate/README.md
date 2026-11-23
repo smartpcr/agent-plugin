@@ -24,16 +24,71 @@ The module has its own `go.mod` and is not part of the root `go.work`; run it wi
 | # | gate | what fails it |
 |---|------|---------------|
 | 1 | `gofmt` | any `.go` file not `gofmt`-formatted (`testdata/`, `vendor/`, nested modules skipped) |
-| 2 | `vet` | `go vet ./...`, then the own analyzers through `go vet -vettool=<harness-gate>` (QG-2) |
-| 3 | `test` | `go test -tags= -race -shuffle=on -count=1 ./...` per module with `CGO_ENABLED=1` (QG-4); the `replay` and `scenario` layers are excluded |
-| 4 | `coverage` | any package under 85% of statements, profiles merged across processes (QG-3) |
-| 5 | `trace` | `tools/harness-trace verify` (QG-9); a root without the tool fails |
-| 6 | `scenario-index` | `test/harness/acceptance-index.yaml` missing or malformed; a `*_scenario_test.go` ID not indexed, indexed twice or bound to two tests; an indexed ID authored at or before `built-through` without a file (DH-ADR-TOOLCHAIN-12) |
-| 7 | `budget` | a `TestBudget*` test over its compiled-in budget (QG-7) |
-| 8 | `cross-compile` | `GOWORK=off CGO_ENABLED=0 go build ./cmd/dsh` for linux, darwin, windows × amd64, arm64 (QG-8) |
+| 2 | `vet` | `go vet ./...`, then the own analyzers through `go vet -vettool=<harness-gate>` (QG-2), each with `-tags=`, `-tags=replay,scenario` and `-tags=e2e` (the e2e layer is vetted, never run: M1-D-GATE-25 A); then prints `exceptions: N`, the accepted `//lint:ignore` directives of the modules (see [Site exceptions](#site-exceptions-lintignore)) |
+| 3 | `staticcheck` | any finding of the pinned staticcheck (default checks), run per module with `-tags=` and `-tags=replay,scenario` from the binary of the tools module's `tool` line (`go tool -n staticcheck`); the output names the check, for example `SA4000` (M1-G-TOOL-1) |
+| 4 | `modules` | in every product, test and tools module: `go mod tidy -diff` prints anything, or `go mod verify` fails; then a module rule of `modcheck` (RM-1 to RM-4, `src/go` requiring anything) or a pin without a reason comment (RM-10). See [Modules](#modules-modcheck) |
+| 5 | `test` | `go test -tags= -race -shuffle=on -count=1 ./...` per module with `CGO_ENABLED=1` (QG-4); the `replay` and `scenario` layers are excluded |
+| 6 | `coverage` | any package under 85% of statements, profiles merged across processes (QG-3) |
+| 7 | `trace` | `tools/harness-trace verify` (QG-9); a root without the tool fails |
+| 8 | `scenario-index` | `test/harness/acceptance-index.yaml` missing or malformed; a `*_scenario_test.go` ID not indexed, indexed twice or bound to two tests; an indexed ID authored at or before `built-through` without a file (DH-ADR-TOOLCHAIN-12) |
+| 9 | `budget` | a `TestBudget*` test over its compiled-in budget (QG-7) |
+| 10 | `cross-compile` | `GOWORK=off CGO_ENABLED=0 go build ./cmd/dsh` for linux, darwin, windows × amd64, arm64 (QG-8) |
+| 11 | `vulncheck` | `govulncheck ./...` per module reports a vulnerability the code reaches (exit 3), or the vulnerability database cannot be read or reached (exit 1): it fails and is re-run, it never skips. `Config.VulnDB` selects `-db`; the default is `https://vuln.go.dev`. It is the one gate that needs the network, so it runs after every local check (M1-G-TOOL-4, M1-D-TOOL-1 (a)) |
+| 12 | `self` | the gate's own tests: `GOWORK=off go test -tags= -count=1 -skip '^TestRepositoryPassesEveryGate$' ./...` in `tools/harness-gate`, without the `e2e` tag (that test runs this list and would recurse); a root without the module fails (M1-G-TOOL-3) |
 
-There is no "skipped" state. Nothing reads a baseline, suppression or exemption
-file: a finding is fixed in the code, not listed away (QG-2, QG-3, DH-ADR-14).
+The list has the 12 gates of M1-D-GATE-23: plan stage 13.4 added `modules` and
+`self`, and stage 13.5 added `staticcheck` and `vulncheck`, which run the linters
+pinned in the tools module (`linters.go`). `TestGateListIsFixed` pins the order.
+
+`gofmt` also checks the test modules' files. Every gate runs on the go floor.
+
+There is no "skipped" state. Nothing reads a baseline or exemption file: a finding
+is fixed in the code, not listed away (QG-2, QG-3, DH-ADR-14). The one way to accept
+a finding is a reasoned directive at its site, below.
+
+## Modules (`modcheck/`)
+
+`modcheck` reads `go.mod` and `go.work` with its own line parser (standard library
+only) and knows three classes of module:
+
+| class | modules | rules |
+|-------|---------|-------|
+| product (RM-1) | `src/go`, `src/sdk`, `src/harness` | exactly these three, all in `go.work`, one go floor (RM-2), no `replace` (RM-4), `src/sdk` and `src/go` require nothing (RM-3, M1-D-TOOL-4), `src/harness` pins `src/go` and `src/sdk` at real revisions with their `go.sum` lines |
+| test | `<product>/test/e2e`, today `src/go/test/e2e` | outside the RM-1 count and `go.work`; module path `<product path>/test/e2e`, on the floor; its one allowed `replace` points its own product module at a checkout directory |
+| tools | `tools/<name>`: `tools/harness-gate`, `tools/harness-trace` | outside `go.work`, run with `GOWORK=off` |
+
+In every class, `CheckReasons` requires a reason comment on every direct `require`
+and every `replace`, `exclude`, `tool` and `toolchain` line: on the comment lines
+right above it (no blank line between) or at the end of its own line. A bare
+`// indirect` is not a reason, and a comment above `require (` does not count for
+the entries inside (RM-10, DH-ADR-TOOLCHAIN-11). The `modules` gate runs
+`go mod tidy -diff` and `go mod verify` in each module, then `CheckToolchain11` and
+`CheckRepoReasons` on the checkout (a single-module root: `CheckReasons` on its
+`go.mod`). `TestCordisModuleIsStandardLibraryOnly` is the `src/go` rule.
+
+The cordis suites run in their test module, with the workspace off (the module is
+not in `go.work`):
+
+```sh
+GOWORK=off go -C src/go/test/e2e vet -tags e2e ./...
+GOWORK=off go -C src/go/test/e2e test -tags e2e -count=1 ./...
+```
+
+## The tools module
+
+`tools/harness-gate/go.mod` is the repository's tools module (M1-D-TOOL-2 (a);
+DC-3 note under DH-D-TOOLCHAIN-1 in `docs/harness/upstream/toolchain.md`). Besides
+the gate's own requirements it pins the linters as `tool` lines, each with a reason:
+
+| tool | module and version | run as |
+|------|--------------------|--------|
+| staticcheck | `honnef.co/go/tools` v0.8.2 (release 2026.2.2) | `GOWORK=off go -C tools/harness-gate tool staticcheck` |
+| govulncheck | `golang.org/x/vuln` v1.10.0 | `GOWORK=off go -C tools/harness-gate tool govulncheck` |
+
+Both are the newest releases and were checked to build and run on the go1.26.0
+floor. Once the module cache holds them they resolve with `GOPROXY=off`. Moving a
+pin means changing the `require` line, keeping its reason comment, and running
+`go mod tidy`.
 
 ## Subcommands
 
@@ -85,6 +140,70 @@ stages:
     - id: DH-E-TOOLCHAIN-2
       authored: DH-S-1
 ```
+
+## Test traceability (`//dsh:test`, `trace-tests`; M1-G-CLOSE-9)
+
+A test names the `DH-T` IDs it proves with a directive on the line directly
+above its `func Test*`, `Fuzz*` or `Benchmark*` (the last line of its doc comment):
+
+```go
+// TestHomeIsPrivate: created directories are 0700 and files 0600.
+//
+//dsh:test DH-T-STORAGE-4, DH-T-STORAGE-14
+func TestHomeIsPrivate(t *testing.T) { ... }
+```
+
+IDs are written in full and separated by commas. A **deferral** exists only where
+impl.md defers the test, and is written in the package's `doc.go`:
+
+```go
+//dsh:test DH-T-TOOLCHAIN-1 later DH-S-16
+package scenarios
+```
+
+`trace-tests` accepts it only when impl.md's DH-S-16 section names that ID and
+DH-S-16 comes after the stage that requires it. This is not an exemption list
+(QG-2): the plan's own text is the only thing that can defer a test. A directive
+anywhere else (on a helper, a method, inside a body, a deferral on a test, a
+doc.go line without `later`) is an error.
+
+```sh
+GOWORK=off go -C tools/harness-gate run . trace-tests --root ../.. [--stage DH-S-n]
+```
+
+For every step of DH-S-1 through `--stage` (default: the index's `built-through`)
+it reads the `DH-T` IDs the step's own text names and those of the "Done when"
+lines of the deliverables it links to, expanding the plan's shorthand (`` `-n` ``,
+`to`, `through`, `..`). Each ID is listed at one step: the first whose own text
+names it, else the first that links a deliverable naming it. It then scans every
+`*_test.go` and `doc.go` below `src/` and `tools/` (all build tags; `testdata`,
+`vendor` and hidden directories skipped) and prints, per step, the required,
+tagged, deferred and missing IDs, the totals per stage and overall, and how the
+tags were found. It exits 1 on a missing ID, a deferral impl.md does not back, a
+misplaced directive or a broken deliverable link, and 2 when its inputs cannot be
+read.
+
+Tag forms accepted while the existing tests migrate (`acceptance/tests.go`):
+
+| form | example | status |
+|------|---------|--------|
+| directive | `//dsh:test DH-T-X-1, DH-T-X-2` above the func | the convention |
+| doc comment | `// TestX ... (DH-T-X-1, -2).` in the func's doc comment | legacy, migrates to the directive |
+| body comment | `func TestX(t *testing.T) { // DH-T-X-1`, or a comment inside the body | legacy, migrates to the directive |
+
+`trace-tests` is a report, not yet a gate: it joins the gate list at step 18.1.4,
+once every code stage has tagged its tests.
+
+The `scenario-index` gate also runs two plan checks of `acceptance/impl.go`
+(13.6.4, 13.6.6). They are called through `acceptance.CheckBoundary` →
+`CheckPlan`, which reads `docs/harness/impl.md` and
+`docs/harness/trace/ledger.jsonl`; a root without either file fails.
+- `CheckBuiltThrough`: the marker equals the largest n for which every step of
+  DH-S-1..n is ticked in impl.md. Otherwise it names the first offending step.
+- `CheckRule4Authoring`: a scenario whose ledger `proves` are all built by stage k,
+  and which impl.md sec. 7.5 places in k's paired acceptance stage, is in the index
+  once k is built.
+
 ## Own analyzers (`analyzers/`)
 
 | analyzer | rule |
@@ -93,10 +212,54 @@ stages:
 | `onespawn` | no `os/exec` import outside `internal/world/subprocess` (SP-12); `_test.go` files are exempt |
 | `cleanup` | a test that starts a goroutine, a listener (`net.Listen*`, `httptest.New*Server`) or a child process (`os.StartProcess`, `(*exec.Cmd).Start`) registers `t.Cleanup` (QG-5) |
 | `fuzzcheck` | a package with a `//dsh:untrusted-parser` line in a non-test file has a `func FuzzXxx(f *testing.F)` in its own test files, a `seeds_test.go` (no `os` / `io/ioutil` import), every target seeds the `f` it receives through `f.Add` in `seeds_test.go` (directly or via the seeded parameter of a helper there, never through a local that shadows it), and every `f.Add` argument is compiled in -- literals of unnamed types, embed bytes, `seeds_test.go` data and pure stdlib calls (`bytes`, `strings`, `strconv`, ...; not `fmt`), never a call such as `readSeed()`, a write through a local or package-level alias (`alias := b; copy(alias, readSeed())`, `var alias = seed`, also through multi-hop chains in other test files; read-only chains, number/string copies and same-named variables of other scopes are fine) or a shadowed `true`/`nil` (QG-6, DH-ADR-TOOLCHAIN-3; rules in `analyzers/fuzzseeds.go` and `src/harness/internal/testkit/README.md`) |
+| `rootcall` | no use of `(*cordis.Context).Root` -- call, method value or method expression -- outside `src/go/cordis` (DH-ADR-TOOLCHAIN-8) |
+| `typeassert` | no unchecked `x.(T)` (anything but `v, ok := x.(T)` and a type switch) in a non-test file, and no `unsafe` import in any file (DH-ADR-TOOLCHAIN-8). Test files may assert unchecked: a failed assertion panics inside the test and fails it, which is what a checked one would do (owner decision, 2026-11-22) |
+| `lintignore` | every `//lint:ignore` names a known check and gives a reason; no `//lint:file-ignore` (DH-ADR-TOOLCHAIN-8) |
+
+Built and tested, not yet run by the vet gate (`analyzers.Pending`): each joins
+`analyzers.All` in the change that leaves the tree clean under it (DH-ADR-TOOLCHAIN-8).
+
+| analyzer | rule |
+|----------|------|
+| `errdiscard` | an `error` result assigned to `_` (`_ = f()`, `v, _ := f()`, `var _ = f()`) or dropped by a call, `defer` or `go` statement, in non-test code |
+
+`errdiscard` is narrowed to where a dropped error can hide a defect (owner decision,
+2026-11-22): `_test.go` files are not checked (a test fails on the behaviour it
+asserts, and a teardown error has no caller); `fmt.Print*` and `fmt.Fprint*` are
+exempt (they return only the writer's error, which the writer's owner sees on its
+next write, `Flush` or `Close`); the `Write*` methods of `*bytes.Buffer` and
+`*strings.Builder` are exempt (their error is always nil); and a deferred `Close` of
+a read-only handle is exempt -- a file opened with `os.Open`, `(*os.Root).Open` or
+`os.OpenFile(..., os.O_RDONLY, ...)`, or any value that can `Read` but not `Write`,
+such as an `http.Response` body -- because closing what was only read loses no
+data. A `Close` of anything written is still reported: there the error is where a
+failed write surfaces. Narrowed, it reports 268 sites in the product modules, so it
+stays pending until they are fixed or reason-annotated (plan stage 13.5).
 
 The same binary is the vet tool: started with `HARNESS_GATE_VETTOOL=1` it runs
 `unitchecker.Main` over the analyzers. Their fixtures live in
 `analyzers/testdata/src` and are checked with `analysistest`.
+
+### Site exceptions (`lintignore`)
+
+A finding of an own analyzer or of staticcheck is accepted only by a directive at
+its site that names the check and says why (DH-ADR-TOOLCHAIN-8, M1-G-TOOL-7):
+
+```go
+import (
+	//lint:ignore typeassert reading an ACE's SID (GetAce) needs unsafe.Pointer at SidStart
+	"unsafe"
+)
+```
+
+It is staticcheck's own form, matched the same way: the directive belongs to the
+statement it stands above (or trails) and suppresses the named checks on the line
+where that statement starts. A directive without a reason, without a check or with
+an unknown check is a `lintignore` finding and suppresses nothing;
+`//lint:file-ignore` is always a finding. `analyzers.Exceptions` reads every Go
+file of the modules, whatever its build tags, and the vet gate prints the total, for
+example `exceptions: 3 (U1000 1, errdiscard 1, typeassert 1)`. A reasoned directive
+at a site is not an exemption list: nothing outside the code records a violation.
 
 `fuzzcheck` decides over a whole package: `go vet` hands it a package together
 with its in-package `_test.go` files. A loader that also yields the package without
@@ -153,6 +316,78 @@ The convention:
   (channel, `sync.WaitGroup`, `synctest.Wait`).
 - Everything a bubble starts must finish inside it; register `t.Cleanup` for what
   outlives a step (the `cleanup` analyzer).
+
+## Waiting and releasing in tests (M1-D-GATE-24)
+
+The owner chose option A on 2026-11-22 (`docs/stories/harness-DSH-M1/decisions.md`,
+M1-D-GATE-24). **Why it matters:** a test that sleeps passes or fails with the
+host's speed, and a test that leaves a goroutine blocked holds memory, files or a
+port until the test binary exits and can break a later test in a shuffled run. The
+rules below make every wait deterministic and every start released, so the `vet`
+gate can enforce them without exceptions.
+
+**The rules.**
+
+1. `nosleep` is strict: no `time.Sleep` in a `_test.go` file, inside a
+   `synctest` bubble or not. The analyzer has no allow-list and is never silenced;
+   where it is wrong, the analyzer is fixed with an `analysistest` fixture (QG-2).
+2. No settle wait outside a bubble: `select { case <-x: ...; case <-time.After(d): }`
+   used to show that something did *not* happen is a sleep under another name. Use
+   P-V, so "nothing more can happen" is `synctest.Wait()`, not a guess at `d`. A
+   `time.After` that only bounds a wait which should succeed (`Within`, a
+   `receive` helper's timeout) is fine.
+3. A cleanup must **unblock, then join**. Waiting for a goroutine that is still
+   blocked on the test's gate hangs the cleanup; releasing a gate without waiting
+   leaves the goroutine running past the test. Both halves are required, and the
+   join is bounded so a stuck goroutine fails the test instead of hanging it.
+4. One named poll helper exists, for facts with no in-process signal: a real child
+   process or another process's log. Everything else waits on a signal or on
+   virtual time.
+
+**The fix patterns.**
+
+| pattern | when | what it looks like |
+|---------|------|--------------------|
+| P-C (cleanup) | a test starts a goroutine, listener or child process | register the release right after the start: `t.Cleanup(func() { unblock(); <-done })`, where `unblock` closes a gate, cancels a context or disposes a root (safe to call twice: `sync.OnceFunc`), and `done` is the goroutine's own exit signal (`defer close(done)`) |
+| P-V (virtual time) | the code under test waits on a timer, or the test must show that something did not happen | wrap the test in `synctest.Test`; `synctest.Wait()` replaces a settle sleep, and `<-time.After(d)` inside the bubble is virtual |
+| P-S (signal) | a test polls in-process state | replace the poll with an explicit signal: a channel the code sends on, a test hook, or a process's `done` channel |
+| P-F (fuzz seeds) | a `Fuzz*` target of an untrusted parser | move the `f.Add` seeds into `seeds_test.go` as a Go slice with an `add<Target>Seeds(f)` helper (the `fuzzcheck` rules above) |
+
+```go
+// P-C with P-V: the cleanup releases the gate, then joins the goroutine.
+synctest.Test(t, func(t *testing.T) {
+	gate, done := make(chan struct{}), make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(gate) })
+	t.Cleanup(func() { unblock(); <-done })
+	go func() { defer close(done); fiber.Dispose() }() // blocks on a cleanup waiting for gate
+	synctest.Wait()                                     // every goroutine is blocked: Dispose has not returned
+	// ... assert that Dispose is still waiting ...
+	unblock()
+})
+```
+
+`src/go/cordis/join_test.go` (`goJoined`, `closeOnce`) packages P-C for the cordis
+tests: it starts the goroutine, registers "unblock, then join within `Timeout`"
+and returns the goroutine's `done` channel.
+
+**The poll helper** is `src/harness/internal/testkit/procwait`:
+
+- `procwait.Until(ctx, t, fact func() bool)` checks `fact` at once and then every
+  `procwait.Interval` (10 ms) until it holds, and fails `t` when `ctx` ends first;
+- `procwait.Poll(ctx, fact) error` is the same wait returning the error (wrapping
+  the context's cause) instead of failing the test;
+- a context without a deadline is bounded by `procwait.DefaultTimeout` (30 s).
+
+It is for facts only another process can make true -- a child has written its pid
+file, another process's log holds a line. It is not for in-process state, which
+has a signal (P-S). Its own tests run on virtual time and never sleep
+(`procwait_test.go`, DH-T-TOOLCHAIN-8).
+
+**The `cleanup` analyzer and fields.** A listener assigned to a field
+(`cs.Server = httptest.NewServer(...)`) is recorded under the root variable `cs`,
+so `t.Cleanup(cs.Close)` releases it (M1-G-GATE-5; fixture
+`analyzers/testdata/src/cleanup/field_test.go`, `TestCleanupFieldAssignedListener`,
+DH-T-TOOLCHAIN-8).
 
 ## Coverage across processes (QG-3)
 
@@ -216,6 +451,7 @@ override can relax a budget.
 | `race-seeded` | `test` (a data race) |
 | `budget-race` | `test` (a data race inside `TestBudgetRacy`) |
 | `unformatted-file` | `gofmt` (`add.go` is deliberately unformatted) |
+| `untidy-module` | `modules` (a reasoned but unused `require golang.org/x/mod`; `go mod tidy -diff` prints its removal) |
 | `coverage-40pct` | `coverage` (`example.com/cov40/p` at 40%) |
 | `coverage-blocked` | `coverage` (`TestBlocked` never returns; the binary's `-test.timeout` fires) |
 | `coverage-child` | passes `coverage` only with both child processes' profiles merged |
@@ -223,6 +459,8 @@ override can relax a budget.
 | `cross-broken` | `cross-compile` (`windows/arm64` only) |
 | `layer-tagged` | passes `test` and `coverage`: its always-failing `replay` and `scenario` tests are excluded |
 | `fake-go` | not a gated module: a `go` command that answers `go version go1.99.0`, put first on `PATH` to prove the setup failure of an off-floor toolchain |
+| `staticcheck-seeded` | `staticcheck` (`if x == x`, SA4000) |
+| `vuln-stdlib` | the `vulncheck` gate against the fake database `vulndb/` (a file database that lists `strings.ToUpper` as vulnerable before go1.99.0, advisory `GO-2099-0001`); `linters_test.go` runs the gate on it directly, offline |
 
 `gates_test.go` copies each into `t.TempDir()`, runs a freshly built
 `harness-gate` against it and checks the named gate, the non-zero exit and that no
@@ -244,13 +482,13 @@ pwsh -File tools/harness-gate/lanes/win.ps1             # on the Windows host
 The gate reads the floor from the `go` line of `src/harness/go.mod` (a
 single-module root: its own `go.mod`), runs `go version` with
 `GOTOOLCHAIN=go<floor>` (Go fetches that toolchain when the default `go` on
-`PATH` is another release, e.g. go1.27.4), and then runs every child with the
+`PATH` is another release, e.g. go1.26.0), and then runs every child with the
 floor's own `go` binary, its `GOROOT`, its `bin` first on `PATH` and
 `GOTOOLCHAIN=go<floor>`; the budget gate's `GOTOOLCHAIN=local` therefore also
 runs the floor. It prints the toolchain before the first gate:
 
 ```text
-harness-gate: toolchain go1.26.0 (the go floor of src/harness/go.mod; children run with GOTOOLCHAIN=go1.26.0, GOROOT=...)
+harness-gate: toolchain go1.27.4 (the go floor of src/harness/go.mod; children run with GOTOOLCHAIN=go1.27.4, GOROOT=...)
 ```
 
 When `go version` is not the floor (a `go` older than 1.21 that ignores
@@ -290,7 +528,7 @@ Each script checks its lane and stops at the first check not met, naming it
 |-------|----------|-----------|
 | checkout file system | ext4 (`stat -f -c %T .` prints `ext2/ext3`); `9p`/`v9fs` is refused as "checkout on 9p", `drvfs` or any `/mnt/<drive>` path as drvfs | a local fixed NTFS or ReFS volume |
 | user | `id -u` is not 0 | not elevated (Administrator) |
-| go floor | `GOTOOLCHAIN=local go version` is the floor, and `go` is not a `/mnt/` Windows binary | `GOTOOLCHAIN=go<floor>` set (go1.26.0), then `go version` is the floor |
+| go floor | `GOTOOLCHAIN=local go version` is the floor, and `go` is not a `/mnt/` Windows binary | `GOTOOLCHAIN=go<floor>` set (go1.27.4), then `go version` is the floor |
 | C compiler | `go env CC` resolves | `go env CC` resolves (MSYS2 UCRT64 `gcc`) |
 | tree | clean, `core.autocrlf` unset or `false` | clean, `core.autocrlf` unset or `false` |
 | `TMPDIR` | on ext4 | (WSL only) |
@@ -309,11 +547,11 @@ rehearsal's.
 - `wsl --install -d Ubuntu-24.04` under WSL2, with a **non-root** default user:
   root bypasses the permission tests (`storage/home/private_unix_test.go`,
   `loosen_unix_test.go`).
-- Go **1.26.0 exactly**, from the go.dev `linux/amd64` tarball into
-  `/usr/local/go`, first on `PATH` (`~/.profile`; `wsl.sh` prepends
-  `/usr/local/go/bin` itself for a non-login shell). In `/etc/wsl.conf`, set
-  `[interop] appendWindowsPath=false`, so the Windows `go.exe` can never be
-  picked up.
+- Go **1.27.4 exactly** (decision `go-floor-1-27-4`), from the go.dev
+  `linux/amd64` tarball into `/usr/local/go`, first on `PATH` (`~/.profile`;
+  `wsl.sh` prepends `/usr/local/go/bin` itself for a non-login shell). In
+  `/etc/wsl.conf`, set `[interop] appendWindowsPath=false`, so the Windows
+  `go.exe` can never be picked up.
 - `build-essential` (gcc, for `-race` with `CGO_ENABLED=1`) and `git`.
 - `GOCACHE`, `GOMODCACHE` and `TMPDIR` on ext4 (the defaults under `~` and `/tmp`
   are).
@@ -343,8 +581,8 @@ Why:
 
 ### Provisioning the Windows lane
 
-- The floor toolchain is selected with `GOTOOLCHAIN=go1.26.0`. The host default
-  may be later (go1.27.4); `win.ps1` sets the variable from `src/harness/go.mod`,
+- The floor toolchain is selected with `GOTOOLCHAIN=go1.27.4`. The host default
+  may be another release; `win.ps1` sets the variable from `src/harness/go.mod`,
   and the gate pins every child to the floor itself.
 - MSYS2 UCRT64 `gcc` on `PATH` (for `-race`), as in `.github/workflows/ci.yml`.
 - A non-elevated shell, and the checkout on a local NTFS or ReFS (Dev Drive)

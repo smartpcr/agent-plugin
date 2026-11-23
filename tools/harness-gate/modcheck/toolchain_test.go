@@ -1,6 +1,7 @@
 package modcheck
 
 import (
+	"go/version"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -104,7 +105,7 @@ func git(t *testing.T, args ...string) (string, error) {
 // src/harness/go.mod is usable by a GOWORK=off build even though cmd/dsh imports
 // neither module yet: the pinned revision is in this repository's history, its
 // committer time is the pseudo-version's timestamp, its go.mod declares the required
-// module path on the go floor, and that go.mod's hash is the one go.sum records.
+// module path at or below the go floor, and that go.mod's hash is the one go.sum records.
 func TestPinsResolveToCommittedModules(t *testing.T) {
 	repo := committedRepo(t)
 	pins, err := Pins(repo.Mods["src/harness"])
@@ -150,8 +151,12 @@ func TestPinsResolveToCommittedModules(t *testing.T) {
 		if m := file.All("module"); len(m) != 1 || m[0].Args != pin.Module.Path {
 			t.Errorf("%s: %s/go.mod at %s declares %v", pin.Directive, pin.Module.Dir, pseudo.Rev, m)
 		}
-		if g := file.All("go"); len(g) != 1 || g[0].Args != Floor {
-			t.Errorf("%s: %s/go.mod at %s is not on the go %s floor: %v", pin.Directive, pin.Module.Dir, pseudo.Rev, Floor, g)
+		// At or below the floor, not equal to it: a revision pinned before the floor
+		// was raised (go-floor-1-27-4) keeps its older go line, and the build still
+		// runs on the floor because src/harness states it. A pin above the floor
+		// would raise the harness's go line behind RM-2's back.
+		if g := file.All("go"); len(g) != 1 || version.Compare("go"+g[0].Args, "go"+Floor) > 0 {
+			t.Errorf("%s: %s/go.mod at %s is above the go %s floor: %v", pin.Directive, pin.Module.Dir, pseudo.Rev, Floor, g)
 		}
 		key := pin.Module.Path + " " + pin.Version + "/go.mod"
 		if got := GoModHash([]byte(mod)); sums[key] != got {

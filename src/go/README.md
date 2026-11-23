@@ -9,7 +9,7 @@
 
 A dynamic DI container where **service availability is a value that changes over time**.
 Components declare what they need, load themselves when it appears, and unload
-themselves when it goes away. Requires Go 1.26 or later and has no third-party
+themselves when it goes away. Requires Go 1.27.4 or later and has no third-party
 dependencies.
 
 Paths below are relative to `src/go/`, where `go.mod` lives

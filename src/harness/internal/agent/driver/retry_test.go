@@ -48,6 +48,8 @@ func waitBackoff(t *testing.T, clk *clock.Manual) {
 // DH-T-AGENT-10: two failures then success give two assistant/attempt and one
 // assistant/message in one step; the user message is admitted once and each
 // retry waits on the clock.
+//
+//dsh:test DH-T-AGENT-10
 func TestRetryAfterTwoFailuresSucceedsInOneStep(t *testing.T) {
 	root, svc := setup(t)
 	must(svc.Register(root, tool("echo")))
@@ -86,6 +88,8 @@ func TestRetryAfterTwoFailuresSucceedsInOneStep(t *testing.T) {
 
 // DH-T-AGENT-10: the attempt cap ends the turn with the last failure although
 // the listener would retry again.
+//
+//dsh:test DH-T-AGENT-10
 func TestAttemptCapEndsTheTurn(t *testing.T) {
 	root, svc := setup(t)
 	must(svc.Register(root, tool("echo")))
@@ -116,6 +120,8 @@ func TestAttemptCapEndsTheTurn(t *testing.T) {
 
 // DH-T-AGENT-10: the retry wait is cancellable: a turn cancel during it ends
 // the step with the cause and the turn aborted, and no further attempt runs.
+//
+//dsh:test DH-T-AGENT-10
 func TestCancelDuringRetryWait(t *testing.T) {
 	root, svc := setup(t)
 	must(svc.Register(root, tool("echo")))
@@ -275,9 +281,10 @@ func TestCancelDuringStalledRecoverySyncReturnsAtOnce(t *testing.T) {
 			within(t, entered, "the recovery Sync")
 			returned := make(chan error, 1)
 			start := time.Now()
-			go func() {
+			// Cancel returns by itself; the cleanup joins it.
+			goJoined(t, nil, func() {
 				returned <- r.drv.Cancel(agent.CauseUser, agent.CancelOptions{Scope: agent.ScopeTurn, Inbox: choice})
-			}()
+			})
 			select {
 			case err := <-returned:
 				must(0, err)

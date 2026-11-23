@@ -2,6 +2,7 @@ package sqlite_test
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,19 +30,44 @@ func TestCloseIsBoundedWhileAWriteWaitsOnAnotherConnection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer other.Close()
+	t.Cleanup(func() { _ = other.Close() })
 	if _, err := other.ExecContext(bg, `BEGIN IMMEDIATE`); err != nil {
 		t.Fatal(err)
 	}
-	appended := make(chan error, 1)
-	go func() { appended <- w.Append(bg, store.Batch{First: 0, Records: []store.Record{call(t, 0)}}) }()
-	for deadline := time.Now().Add(10 * time.Second); !sqlite.WriteHeld(s); {
-		if time.Now().After(deadline) {
-			t.Fatal("the append never took the writer mutex")
+	rollback := sync.OnceValue(func() error {
+		_, err := other.ExecContext(bg, `ROLLBACK`)
+		return err
+	})
+	held := sqlite.WriteHeldSignal(s)
+	ctx, busy := sqlite.BusyWaitSignal(t, bg)
+	rec := call(t, 0)
+	appended, done := make(chan error, 1), make(chan struct{})
+	// P-C: the append waits on other's lock, so the cleanup rolls that back
+	// (unblock), then joins the append, bounded.
+	t.Cleanup(func() {
+		_ = rollback()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Error("the append in flight did not return after the cleanup rolled the other connection back")
 		}
-		time.Sleep(time.Millisecond)
+	})
+	go func() {
+		defer close(done)
+		appended <- w.Append(ctx, store.Batch{First: 0, Records: []store.Record{rec}})
+	}()
+	// P-S: the append took the writer mutex, then entered the driver's busy wait
+	// on the other connection's lock.
+	for _, sig := range []struct {
+		what string
+		ch   <-chan struct{}
+	}{{"took the writer mutex", held}, {"entered the busy wait", busy}} {
+		select {
+		case <-sig.ch:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("the append never %s", sig.what)
+		}
 	}
-	time.Sleep(20 * time.Millisecond) // let it reach the busy wait on the other connection
 
 	start := time.Now()
 	err = s.Close(context.Background())
@@ -55,7 +81,7 @@ func TestCloseIsBoundedWhileAWriteWaitsOnAnotherConnection(t *testing.T) {
 		t.Fatal("Close took the writer mutex from the write in flight")
 	}
 
-	if _, err := other.ExecContext(bg, `ROLLBACK`); err != nil {
+	if err := rollback(); err != nil {
 		t.Fatal(err)
 	}
 	if err := <-appended; err != nil {

@@ -215,6 +215,7 @@ func TestCheckView(t *testing.T) {
 		User  string
 		Token string `json:"token" dsh:"required,secret"`
 	}
+	//lint:ignore U1000 the field is found by reflection only: the test checks that an unexported field is refused
 	type unexported struct{ a int }
 	good := []reflect.Type{reflect.TypeFor[gitView](), reflect.TypeFor[struct {
 		N nested

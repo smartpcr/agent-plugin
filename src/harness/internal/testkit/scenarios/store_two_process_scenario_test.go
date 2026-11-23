@@ -26,15 +26,25 @@ var (
 )
 
 // storeStep runs one bounded process step: a step that outlasts storeStepTimeout
-// fails the scenario.
+// fails the scenario. The shell is bound to the test's context, which ends before
+// the cleanups run, so the cleanup that joins the step's goroutine also stops a
+// step still running (P-C).
 func storeStep(t *testing.T, what, line string) (string, error) {
 	t.Helper()
 	type result struct {
 		out string
 		err error
 	}
-	done := make(chan result, 1)
+	done, exited := make(chan result, 1), make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-exited:
+		case <-time.After(storeStepTimeout):
+			t.Errorf("%s: the step's shell did not return within %s of the test's end", what, storeStepTimeout)
+		}
+	})
 	go func() {
+		defer close(exited)
 		out, err := shell(t, line)
 		done <- result{out, err}
 	}()
@@ -171,12 +181,10 @@ func TestTwoProcessesShareOneHomeWithOneWriter(t *testing.T) {
 	if out, err := storeStep(t, "kill A", expand(killT, with("a"))); err != nil {
 		t.Fatalf("killing A: %v\n%s", err, out)
 	}
-	deadline := time.Now().Add(storeStepTimeout)
-	for !a.exited() {
-		if time.Now().After(deadline) {
-			t.Fatal("A did not exit after the kill")
-		}
-		time.Sleep(50 * time.Millisecond)
+	select {
+	case <-a.done:
+	case <-time.After(storeStepTimeout):
+		t.Fatal("A did not exit after the kill")
 	}
 
 	// (4)

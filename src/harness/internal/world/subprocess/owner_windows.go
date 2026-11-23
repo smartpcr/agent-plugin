@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"syscall"
+	//lint:ignore typeassert SetInformationJobObject and QueryInformationJobObject take the job information struct as unsafe.Pointer and unsafe.Sizeof, and THREADENTRY32.Size needs unsafe.Sizeof
 	"unsafe"
 
 	"golang.org/x/sys/windows"

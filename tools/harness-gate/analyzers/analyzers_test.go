@@ -98,6 +98,32 @@ func TestAnalyzersOnFixtures(t *testing.T) {
 	analysistest.Run(t, dir, FuzzCheck, "fuzzcheck/...")
 }
 
+// TestCleanupFieldAssignedListener is the stage 13.1 scenario "Field-assigned
+// listener is released": cs.Server = httptest.NewServer(...) released by
+// t.Cleanup(cs.Close) has no diagnostic, and with the cleanup removed there is
+// exactly one "listener started ... (QG-5)" (M1-G-GATE-5; DH-T-TOOLCHAIN-8). The
+// typed case is the fixture cleanup/field_test.go, run by TestAnalyzersOnFixtures.
+func TestCleanupFieldAssignedListener(t *testing.T) {
+	const head = "package y\nimport (\"net/http\"; \"net/http/httptest\"; \"testing\")\n" +
+		"type countingServer struct{ *httptest.Server }\n" +
+		"func TestY(t *testing.T) {\n\tcs := &countingServer{}\n\tcs.Server = httptest.NewServer(http.NotFoundHandler())\n"
+	released := head + "\tt.Cleanup(cs.Close)\n}\n"
+	removed := head + "}\n"
+
+	_, file := parse(t, "y_test.go", released)
+	if got := CleanupFindings("y_test.go", file, nil); len(got) != 0 {
+		t.Errorf("released: got %v, want no finding", got)
+	}
+	_, file = parse(t, "y_test.go", removed)
+	got := CleanupFindings("y_test.go", file, nil)
+	if len(got) != 1 {
+		t.Fatalf("cleanup removed: got %d findings, want exactly 1: %v", len(got), got)
+	}
+	if !strings.HasPrefix(got[0].Message, "listener started") || !strings.HasSuffix(got[0].Message, "(QG-5)") {
+		t.Errorf("message = %q, want \"listener started ... (QG-5)\"", got[0].Message)
+	}
+}
+
 // parsePackage parses the in-memory files of one package, in the order given.
 func parsePackage(t *testing.T, files ...string) []PackageFile {
 	t.Helper()

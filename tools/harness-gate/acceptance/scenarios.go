@@ -233,8 +233,16 @@ func BoundaryImport(path string) bool {
 }
 
 // CheckBoundary reads, under root, the file of every authored scenario whose index
-// entry has a requires list, and fails for each import BoundaryImport refuses.
+// entry has a requires list, and fails for each import BoundaryImport refuses. It
+// then checks the index against the plan under root (CheckPlan): the built-through
+// marker against impl.md's ticks, and rule 4's authoring. The scenario-index gate
+// calls it, so both plan checks are part of that gate (13.6.4, 13.6.6).
 func CheckBoundary(root string, x *Index, scenarios []Scenario) error {
+	return errors.Join(checkImports(root, x, scenarios), CheckPlan(root, x))
+}
+
+// checkImports is the import half of CheckBoundary.
+func checkImports(root string, x *Index, scenarios []Scenario) error {
 	gated := map[string]bool{}
 	for _, s := range x.Stages {
 		for _, e := range s.Scenarios {

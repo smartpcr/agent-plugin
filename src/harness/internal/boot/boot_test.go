@@ -94,10 +94,9 @@ func TestBootOrderAndAuditOnFakes(t *testing.T) {
 			fakes := &fakeSteps{}
 			app := launch.NewApp()
 			var stderr testkit.Buffer
-			done := make(chan int, 1)
-			go func() {
-				done <- Run(context.Background(), Options{Profile: profile.Definition{Name: "fake"}, Stderr: &stderr, App: app, Steps: fakes})
-			}()
+			done := runJoined(t, app, func() int {
+				return Run(context.Background(), Options{Profile: profile.Definition{Name: "fake"}, Stderr: &stderr, App: app, Steps: fakes})
+			})
 			select {
 			case <-app.Ready():
 			case status := <-done:
@@ -430,8 +429,7 @@ func TestStopDuringStartupIsNeverReady(t *testing.T) {
 			// The manual clock never reaches StartupTimeout: only the stop ends the wait.
 			opts.Catalog, opts.Stderr, opts.App = cat, &stderr, app
 			opts.Clock = clock.NewManual(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
-			done := make(chan int, 1)
-			go func() { done <- Run(context.Background(), opts) }()
+			done := runJoined(t, app, func() int { return Run(context.Background(), opts) })
 			select {
 			case status := <-done:
 				if status != tc.status {
@@ -487,6 +485,29 @@ func waitFor(t *testing.T, what string, log fmt.Stringer, cond func() bool) {
 			t.Fatalf("timed out waiting for %s:\n%s", what, log)
 		}
 	}
+}
+
+// runJoined runs run (a Run of app) on a new goroutine and registers its release
+// with t.Cleanup right after the start (P-C, tools/harness-gate/README.md): the
+// cleanup stops app, which ends Run's wait (a later Stop joins the first, so the
+// test's own stop keeps its status), then joins run, failing the test if it has
+// not returned within 30 seconds. The returned channel carries run's status.
+func runJoined(t *testing.T, app *launch.Control, run func() int) <-chan int {
+	t.Helper()
+	done, joined := make(chan int, 1), make(chan struct{})
+	t.Cleanup(func() {
+		app.Stop(launch.Requested, output.OK)
+		select {
+		case <-joined:
+		case <-time.After(30 * time.Second):
+			t.Error("Run did not return after the cleanup stopped the app")
+		}
+	})
+	go func() {
+		defer close(joined)
+		done <- run()
+	}()
+	return done
 }
 
 // DH-D-BOOT-7: once ready, a profile that reloads applies a valid layer change to
@@ -620,21 +641,40 @@ func TestStuckReloadDrainSharesTheShutdownBound(t *testing.T) {
 	var stderr testkit.Buffer
 	opts.Catalog, opts.Stderr, opts.App, opts.Clock = cat, &stderr, app, clk
 	opts.Profile.Reload = 5 * time.Millisecond
-	done := make(chan int, 1)
-	var wg sync.WaitGroup
-	t.Cleanup(wg.Wait)
-	// runs before wg.Wait: on a failure, let Run reach any bound it still waits for
+	done, ran := make(chan int, 1), make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-ran:
+		case <-time.After(30 * time.Second):
+			t.Error("Run did not return after the cleanup released it")
+		}
+	})
+	// runs before the join: on a failure, unblock Run (stop it, release the held
+	// cleanup) and carry it past every bound it still waits for. Each Advance waits
+	// on the clock until Run (or its reload) has a timer pending, so no sleep
+	// guesses when the next bound is armed; it ends once Run has returned.
 	t.Cleanup(func() {
 		app.Stop(launch.Requested, output.OK)
 		once.Do(func() { close(release) })
-		for range 5 {
+		for range 100 {
+			select {
+			case <-ran:
+				return
+			default:
+			}
+			if !clk.BlockUntil(1, 10*time.Second) {
+				select {
+				case <-ran:
+				default:
+					t.Error("Run neither returned nor armed a timer after the cleanup stopped it")
+				}
+				return
+			}
 			clk.Advance(time.Hour)
-			time.Sleep(10 * time.Millisecond)
 		}
 	})
-	wg.Add(1)
 	go func() {
-		defer wg.Done()
+		defer close(ran)
 		done <- Run(context.Background(), opts)
 	}()
 	select {

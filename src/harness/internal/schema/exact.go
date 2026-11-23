@@ -395,6 +395,7 @@ func readValue(dec *json.Decoder) (any, error) {
 			if err != nil {
 				return nil, err
 			}
+			//lint:ignore typeassert inside an object the json.Decoder returns every key token as a string
 			o.set(kt.(string), v)
 		}
 		_, err := dec.Token()

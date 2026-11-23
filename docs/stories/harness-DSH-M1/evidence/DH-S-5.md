@@ -115,6 +115,8 @@ ok  github.com/smartpcr/agent-plugin/src/harness/internal/session
   - composer swap;
   - stream frames (`DH-T-AGENT-14`).
 
+M1 gate repair (plan 13.2.1, 13.2.5; [DH-S-1.md, "M1 gate repair"](DH-S-1.md#m1-gate-repair)): `internal/session/scope/scope_test.go`, `session/event/event_test.go`, `session/session_test.go`, `session/views/views_test.go`, `llm/runtime_test.go` and `human/human_test.go` now register a cleanup right after each goroutine they start that unblocks it (a stop flag, a released gate, a closed unwind channel), then joins it (P-C); DH-T-SESSION, DH-T-LLM and DH-T-HUMAN tags and assertions unchanged.
+
 ## Evidence record (impl.md sec. 7.3)
 
 These are the eight fields of [impl.md sec. 7.3](../../../harness/impl.md#73-the-evidence-record),

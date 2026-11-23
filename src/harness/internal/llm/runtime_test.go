@@ -172,6 +172,8 @@ type settlement struct {
 // record carrying requestAsOf and requestDigest to the caller's sink, and the
 // store holds exactly one settlement per attempt, every one appended by the
 // caller; the runtime appends nothing.
+//
+//dsh:test DH-T-LLM-2
 func TestStreamOneAttemptOneSettlement(t *testing.T) {
 	h := newSession(t)
 	f := &fake{scripts: []script{
@@ -237,6 +239,8 @@ func TestStreamOneAttemptOneSettlement(t *testing.T) {
 
 // DH-T-LLM-2: Complete makes one attempt and hands its one record to the
 // caller's sink; the record names the auxiliary purpose and request.
+//
+//dsh:test DH-T-LLM-2
 func TestCompleteHandsOneRecordToTheCaller(t *testing.T) {
 	h := newSession(t)
 	f := &fake{scripts: []script{chunks(append(text("a summary"), vocab.Finish{Reason: vocab.FinishStop})...)}}
@@ -375,6 +379,8 @@ func TestStreamNormalisesEveryEnding(t *testing.T) {
 
 // DH-T-LLM-3: a tool call is assembled from its deltas; max_tokens drops calls;
 // an interrupted attempt keeps its text but not an unfinished call.
+//
+//dsh:test DH-T-LLM-3
 func TestStreamAssemblesBlocks(t *testing.T) {
 	call := []vocab.Chunk{vocab.BlockStart{Index: 1, Kind: vocab.KindToolUse},
 		vocab.ToolCallDelta{Index: 1, ID: "c1", Name: "search"}, vocab.ToolCallDelta{Index: 1, ArgsDelta: `{"q":`},
@@ -419,6 +425,8 @@ func TestStreamAssemblesBlocks(t *testing.T) {
 // DH-T-LLM-4: routing and validation fail before any I/O with closed codes; a
 // route id is served once; Replace swaps a set atomically; a request for
 // another route is refused with one record.
+//
+//dsh:test DH-T-LLM-4
 func TestPrepareRoutesAndValidates(t *testing.T) {
 	f := &fake{}
 	rt := newRuntime(t, f)
@@ -500,6 +508,10 @@ func TestRouteConcurrencyCap(t *testing.T) {
 	req := must(h.NextRequest())
 	prep := func() llm.Prepared { return must(rt.Prepare(bg, "r/a", "m", vocab.Controls{})) }
 	var wg sync.WaitGroup
+	unhold := sync.OnceFunc(func() { close(release) })
+	// P-C: the admitted attempt holds until release, so the cleanup releases it,
+	// then joins the streaming goroutine.
+	t.Cleanup(func() { unhold(); wg.Wait() })
 	recs := make(chan llm.Attempt, 3)
 	sink := llm.AttemptSinkFunc(func(a llm.Attempt) error { recs <- a; return nil })
 	wg.Add(1)
@@ -514,7 +526,7 @@ func TestRouteConcurrencyCap(t *testing.T) {
 	if f.attempts.Load() != 1 {
 		t.Fatal("the cap admitted a second attempt")
 	}
-	close(release)
+	unhold()
 	wg.Wait()
 	if a := <-recs; !a.Succeeded() {
 		t.Fatalf("the admitted attempt: %+v", a.Finish)
@@ -524,6 +536,8 @@ func TestRouteConcurrencyCap(t *testing.T) {
 // DH-T-LLM-3: a prepared call runs once. A second Stream, sequential or
 // concurrent, is refused with llm/invalid-request and one record, before any
 // provider I/O.
+//
+//dsh:test DH-T-LLM-3
 func TestPreparedCallIsSingleUse(t *testing.T) {
 	ok := chunks(append(text("ok"), vocab.Finish{Reason: vocab.FinishStop})...)
 	f := &fake{scripts: []script{ok}}
@@ -546,6 +560,7 @@ func TestPreparedCallIsSingleUse(t *testing.T) {
 	req := must(h.NextRequest())
 	out := make(chan llm.Attempt, n)
 	var wg sync.WaitGroup
+	t.Cleanup(wg.Wait) // P-C: nothing gates the streams; the cleanup joins them on every exit path
 	for range n {
 		wg.Add(1)
 		go func() {
@@ -572,6 +587,8 @@ func TestPreparedCallIsSingleUse(t *testing.T) {
 // DH-T-LLM-3: a request whose controls differ from the prepared configuration
 // is refused before the adapter runs; one with exactly the prepared controls,
 // defaults materialised either way, runs.
+//
+//dsh:test DH-T-LLM-3
 func TestStreamRefusesAConfigMismatch(t *testing.T) {
 	half := 0.5
 	ok := chunks(append(text("ok"), vocab.Finish{Reason: vocab.FinishStop})...)
@@ -618,7 +635,21 @@ func TestSlotHeldUntilTheProviderExits(t *testing.T) {
 	sink := llm.AttemptSinkFunc(func(a llm.Attempt) error { recs = append(recs, a); return nil })
 
 	ctx, cancel := context.WithCancel(bg)
-	go func() { <-started; cancel() }()
+	// P-C: the canceller waits for the provider to start and the provider for
+	// unwind, so the cleanup stops the canceller and lets the provider exit, then
+	// joins the canceller.
+	stop, canceller := make(chan struct{}), make(chan struct{})
+	halt := sync.OnceFunc(func() { close(stop) })
+	letUnwind := sync.OnceFunc(func() { close(unwind) })
+	t.Cleanup(func() { halt(); letUnwind(); <-canceller })
+	go func() {
+		defer close(canceller)
+		select {
+		case <-started:
+			cancel()
+		case <-stop:
+		}
+	}()
 	drain(prep().Stream(ctx, req, sink)) // returns while the provider is still unwinding
 	if len(recs) != 1 || recs[0].Finish.Reason != vocab.FinishAborted {
 		t.Fatalf("the cancelled attempt did not settle promptly: %+v", recs)
@@ -631,7 +662,7 @@ func TestSlotHeldUntilTheProviderExits(t *testing.T) {
 		t.Fatalf("a second attempt overlapped the unwinding one: %+v, %d attempts", recs[1].Finish, f.attempts.Load())
 	}
 
-	close(unwind)
+	letUnwind()
 	drain(prep().Stream(bg, req, sink)) // blocks until the slot frees, then runs
 	if len(recs) != 3 || !recs[2].Succeeded() || f.attempts.Load() != 2 {
 		t.Fatalf("after the provider exited: %+v", recs[2].Finish)

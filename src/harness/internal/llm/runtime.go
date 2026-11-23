@@ -225,6 +225,7 @@ func (rt *Runtime) Complete(ctx context.Context, req session.Request, sink Attem
 	if err != nil {
 		return vocab.Message{}, err
 	}
+	//lint:ignore typeassert rt.Prepare returns only *prepared; the retry loop needs its captured route
 	captured := first.(*prepared)
 	policy := captured.Retry()
 	for attempt := 1; ; attempt++ {

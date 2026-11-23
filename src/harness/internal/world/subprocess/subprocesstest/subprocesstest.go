@@ -24,6 +24,12 @@ import (
 // because BuildEnv removes every DSH_* name.
 const RoleEnv = "SUBPROCESSTEST_ROLE"
 
+// CoverDirEnv is the directory a binary built with -cover writes its coverage
+// data to. It is the one host variable a re-executed child inherits: the gate
+// merges coverage from the test process and every child (QG-3), and the name
+// holds a directory, never a secret (SP-11).
+const CoverDirEnv = "GOCOVERDIR"
+
 // Roles a re-executed binary plays.
 const (
 	// RoleArgs prints its arguments as one JSON array line and exits.
@@ -77,39 +83,48 @@ func run(role string, args []string, out io.Writer) int {
 		code, _ := strconv.Atoi(firstOr(args, "0"))
 		return code
 	default:
-		fmt.Fprintf(os.Stderr, "subprocesstest: unknown role %q\n", role)
-		return 2
+		return fail(fmt.Errorf("unknown role %q", role))
 	}
 	return 0
 }
 
-// tree starts the grandchild the way an arbitrary program would, so it inherits
-// the child's process group, control group or job, with an explicit environment
-// that holds only the role; then it reports both pids.
-func tree(out io.Writer) int {
+// fail reports err on standard error and is the exit code of a role that could
+// not do its part.
+func fail(err error) int {
+	fmt.Fprintln(os.Stderr, "subprocesstest:", err)
+	return 2
+}
+
+// startStubborn starts a RoleStubborn grandchild the way an arbitrary program
+// would, with stdout as its standard output and an explicit environment that
+// holds only the role (and the coverage directory, childEnv).
+func startStubborn(stdout *os.File) (*os.Process, error) {
 	exe, err := os.Executable()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 2
+		return nil, err
 	}
+	return os.StartProcess(exe, []string{exe}, &os.ProcAttr{
+		Env:   childEnv(RoleStubborn),
+		Files: []*os.File{nil, stdout, nil},
+	})
+}
+
+// tree starts the grandchild so it inherits the child's process group, control
+// group or job; once it is ready it reports both pids.
+func tree(out io.Writer) int {
 	pr, pw, err := os.Pipe()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 2
+		return fail(err)
 	}
-	g, err := os.StartProcess(exe, []string{exe}, &os.ProcAttr{
-		Env:   []string{RoleEnv + "=" + RoleStubborn},
-		Files: []*os.File{nil, pw, nil},
-	})
+	defer pr.Close()
+	g, err := startStubborn(pw)
 	_ = pw.Close()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 2
+		return fail(err)
 	}
 	line, err := bufio.NewReader(pr).ReadString('\n')
 	if err != nil || !strings.HasPrefix(line, "ready ") {
-		fmt.Fprintf(os.Stderr, "subprocesstest: grandchild said %q: %v\n", line, err)
-		return 2
+		return fail(fmt.Errorf("grandchild said %q: %v", line, err))
 	}
 	fmt.Fprintf(out, "tree %d %d\n", os.Getpid(), g.Pid)
 	park()
@@ -119,26 +134,29 @@ func tree(out io.Writer) int {
 // orphan starts the grandchild without sharing the child's streams, so nothing
 // ties the child's exit to it, then exits.
 func orphan(out io.Writer) int {
-	exe, err := os.Executable()
+	g, err := startStubborn(nil)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 2
-	}
-	g, err := os.StartProcess(exe, []string{exe}, &os.ProcAttr{
-		Env:   []string{RoleEnv + "=" + RoleStubborn},
-		Files: []*os.File{nil, nil, nil},
-	})
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 2
+		return fail(err)
 	}
 	fmt.Fprintf(out, "orphan %d\n", g.Pid)
 	_ = g.Release()
 	return 0
 }
 
-// park waits until the process is killed.
-func park() {
+// childEnv is the whole environment of a re-executed child in role: the role,
+// and CoverDirEnv when this process has it. Nothing else of the host reaches it.
+func childEnv(role string) []string {
+	env := []string{RoleEnv + "=" + role}
+	if dir := os.Getenv(CoverDirEnv); dir != "" {
+		env = append(env, CoverDirEnv+"="+dir)
+	}
+	return env
+}
+
+// park waits until the process is killed. A killed process writes no coverage
+// data, so this package's own tests replace it to run the parking roles in
+// their own process, where the counters are kept.
+var park = func() {
 	for {
 		time.Sleep(time.Hour)
 	}
@@ -152,7 +170,7 @@ func firstOr(args []string, def string) string {
 }
 
 // Spec is the spec that re-executes the test binary in role with args. Its
-// environment holds only RoleEnv; callers add to Env.
+// environment holds only RoleEnv and, when set, CoverDirEnv; callers add to Env.
 func Spec(t testing.TB, role string, args ...string) subprocess.Spec {
 	t.Helper()
 	exe, err := os.Executable()
@@ -161,7 +179,7 @@ func Spec(t testing.TB, role string, args ...string) subprocess.Spec {
 	}
 	return subprocess.Spec{
 		Argv: append([]string{exe}, args...),
-		Env:  subprocess.Env{RoleEnv + "=" + role},
+		Env:  subprocess.Env(childEnv(role)),
 	}
 }
 

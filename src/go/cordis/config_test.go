@@ -44,6 +44,7 @@ func configIssue(t *testing.T, err error) cordis.ConfigIssue {
 
 // ---------------------------------------------------------- DH-T-CORDIS-8
 
+//dsh:test DH-T-CORDIS-8
 func TestRejectedCandidateDoesNotLeakIntoEffectiveConfig(t *testing.T) {
 	root, _ := Quiet()
 	var loads atomic.Int32
@@ -79,6 +80,7 @@ func TestRejectedCandidateDoesNotLeakIntoEffectiveConfig(t *testing.T) {
 	Equal(t, int32(1), loads.Load(), "a rejected candidate restarted the fiber")
 }
 
+//dsh:test DH-T-CORDIS-8
 func TestResolveConfigStoresNothing(t *testing.T) {
 	root, _ := Quiet()
 	var loads atomic.Int32
@@ -95,6 +97,7 @@ func TestResolveConfigStoresNothing(t *testing.T) {
 	True(t, errors.Is(err, cordis.ErrRootFiber), "the root fiber has no config to resolve")
 }
 
+//dsh:test DH-T-CORDIS-8
 func TestInPlaceUpdatePublishesEffectiveConfig(t *testing.T) {
 	root, _ := Quiet()
 	var loads atomic.Int32
@@ -115,6 +118,7 @@ func TestInPlaceUpdatePublishesEffectiveConfig(t *testing.T) {
 	Equal(t, any(sized{N: 6}), effective(t, restarting), "effective after a restart")
 }
 
+//dsh:test DH-T-CORDIS-8
 func TestSupersededInPlaceUpdateIsNotPublished(t *testing.T) {
 	root, _ := Quiet()
 	entered := make(chan struct{})
@@ -132,13 +136,14 @@ func TestSupersededInPlaceUpdateIsNotPublished(t *testing.T) {
 
 	t.Run("by a later update", func(t *testing.T) {
 		entered, release = make(chan struct{}), make(chan struct{})
+		unblock := closeOnce(release)
 		fiber := MustWait(t, Must(root.Use(live, sized{N: 1})))
 		stale := make(chan error, 1)
-		go func() { stale <- fiber.Update(sized{N: 3}, true) }()
+		goJoined(t, unblock, func() { stale <- fiber.Update(sized{N: 3}, true) })
 		<-entered
 		NoError(t, fiber.Update(sized{N: 4}, true))
 		Equal(t, any(sized{N: 4}), effective(t, fiber), "effective after the later update")
-		close(release)
+		unblock()
 		NoError(t, <-stale)
 		Equal(t, any(sized{N: 4}), effective(t, fiber), "a stale update was published")
 		Equal(t, any(sized{N: 4}), fiber.Config(), "raw after the stale update")
@@ -146,31 +151,34 @@ func TestSupersededInPlaceUpdateIsNotPublished(t *testing.T) {
 
 	t.Run("by a restart", func(t *testing.T) {
 		entered, release = make(chan struct{}), make(chan struct{})
+		unblock := closeOnce(release)
 		fiber := MustWait(t, Must(root.Use(live, sized{N: 1})))
 		stale := make(chan error, 1)
-		go func() { stale <- fiber.Update(sized{N: 3}, true) }()
+		goJoined(t, unblock, func() { stale <- fiber.Update(sized{N: 3}, true) })
 		<-entered
 		NoError(t, fiber.RetainConfig(sized{N: 9}))
 		NoError(t, fiber.Restart())
-		close(release)
+		unblock()
 		NoError(t, <-stale)
 		Equal(t, any(sized{N: 9}), effective(t, fiber), "an update superseded by a restart was published")
 	})
 
 	t.Run("by disposal", func(t *testing.T) {
 		entered, release = make(chan struct{}), make(chan struct{})
+		unblock := closeOnce(release)
 		fiber := MustWait(t, Must(root.Use(live, sized{N: 1})))
 		stale := make(chan error, 1)
-		go func() { stale <- fiber.Update(sized{N: 3}, true) }()
+		goJoined(t, unblock, func() { stale <- fiber.Update(sized{N: 3}, true) })
 		<-entered
 		Within(t, "dispose", fiber.Dispose)
-		close(release)
+		unblock()
 		NoError(t, <-stale)
 		_, ok := fiber.EffectiveConfig()
 		True(t, !ok, "a disposed fiber holds an effective config")
 	})
 }
 
+//dsh:test DH-T-CORDIS-8
 func TestPendingFiberHasNoEffectiveConfig(t *testing.T) {
 	root, _ := Quiet()
 	var loads atomic.Int32
@@ -186,6 +194,7 @@ func TestPendingFiberHasNoEffectiveConfig(t *testing.T) {
 	Equal(t, any(sized{N: 2}), effective(t, fiber), "effective once loaded")
 }
 
+//dsh:test DH-T-CORDIS-8
 func TestRetainConfigStoresRawWithoutUpdate(t *testing.T) {
 	root, _ := Quiet()
 	var loads atomic.Int32
@@ -203,6 +212,7 @@ func TestRetainConfigStoresRawWithoutUpdate(t *testing.T) {
 	Equal(t, any(sized{N: 7}), effective(t, fiber), "effective after the next load")
 }
 
+//dsh:test DH-T-CORDIS-8
 func TestResolutionCannotMutateStoredConfigViews(t *testing.T) {
 	root, _ := Quiet()
 	// The hook edits a map or pointer candidate in place, then rejects n == 2.
@@ -283,6 +293,7 @@ func TestResolutionCannotMutateStoredConfigViews(t *testing.T) {
 	})
 }
 
+//dsh:test DH-T-CORDIS-9
 func TestConfigHookTransformsEffectiveViewOnly(t *testing.T) {
 	root, _ := Quiet()
 	var mu sync.Mutex
@@ -315,6 +326,7 @@ func TestConfigHookTransformsEffectiveViewOnly(t *testing.T) {
 	True(t, len(seen) == 2 && seen[0] == fiber && seen[1] == fiber, "the hook did not receive the fiber being checked")
 }
 
+//dsh:test DH-T-CORDIS-9
 func TestConfigHookCanRejectACandidate(t *testing.T) {
 	root, _ := Quiet()
 	var later atomic.Int32
@@ -355,6 +367,7 @@ func TestConfigHookCanRejectACandidate(t *testing.T) {
 	Equal(t, int32(0), later.Load(), "a later hook saw a rejected candidate")
 }
 
+//dsh:test DH-T-CORDIS-9
 func TestConfigHookEndsWithItsOwner(t *testing.T) {
 	root, _ := Quiet()
 	owner := MustWait(t, Must(root.Apply("owner", func(ctx *cordis.Context) error {
@@ -385,6 +398,7 @@ type retryConfig struct {
 	Retries int `json:"retries"`
 }
 
+//dsh:test DH-T-CORDIS-13
 func TestStrictConfigRejectsUnknownKeysAndTrailingData(t *testing.T) {
 	var constructed atomic.Int32
 	construct := func(ctx *cordis.Context, config retryConfig) (*retryConfig, error) {
@@ -442,7 +456,9 @@ func TestStrictConfigRejectsUnknownKeysAndTrailingData(t *testing.T) {
 // --------------------------------------------------------- DH-T-CORDIS-14
 
 // captureStdStreams replaces the process's standard output and error with pipes while
-// fn runs, and returns what was written to them.
+// fn runs, and returns what was written to them. The readers end at EOF, so closing
+// the write ends releases them; the cleanup does that, then joins them, even when fn
+// fails the test half-way (P-C).
 func captureStdStreams(t *testing.T, fn func()) (stdout, stderr string) {
 	t.Helper()
 	outRead, outWrite, err := os.Pipe()
@@ -451,6 +467,16 @@ func captureStdStreams(t *testing.T, fn func()) (stdout, stderr string) {
 	NoError(t, err)
 	var outText, errText []byte
 	var readers sync.WaitGroup
+	closeWriters := sync.OnceFunc(func() {
+		_ = outWrite.Close()
+		_ = errWrite.Close()
+	})
+	t.Cleanup(func() {
+		closeWriters()
+		Within(t, "joining the stream readers", readers.Wait)
+		_ = outRead.Close()
+		_ = errRead.Close()
+	})
 	readers.Add(2)
 	go func() { defer readers.Done(); outText, _ = io.ReadAll(outRead) }()
 	go func() { defer readers.Done(); errText, _ = io.ReadAll(errRead) }()
@@ -461,11 +487,8 @@ func captureStdStreams(t *testing.T, fn func()) (stdout, stderr string) {
 		defer func() { os.Stdout, os.Stderr = savedOut, savedErr }()
 		fn()
 	}()
-	_ = outWrite.Close()
-	_ = errWrite.Close()
+	closeWriters()
 	readers.Wait()
-	_ = outRead.Close()
-	_ = errRead.Close()
 	return string(outText), string(errText)
 }
 
@@ -478,6 +501,7 @@ func logEveryLevel(ctx *cordis.Context, tag string) {
 	logger.Debugf("%s debug", tag)
 }
 
+//dsh:test DH-T-CORDIS-14
 func TestTreeLogsOnlyToTheExportersItsCreatorChose(t *testing.T) {
 	mem := &cordis.MemoryExporter{}
 	var stdout, stderr string

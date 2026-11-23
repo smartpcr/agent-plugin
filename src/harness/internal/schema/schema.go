@@ -69,6 +69,7 @@ func shapeOf(t reflect.Type) (reflect.Type, bool) {
 	if t.Kind() == reflect.Interface || !t.Implements(shaperType) {
 		return nil, false
 	}
+	//lint:ignore typeassert t implements Shaper (checked above) and is not an interface, so its zero value is a Shaper
 	return reflect.Zero(t).Interface().(Shaper).SchemaShape(), true
 }
 
@@ -145,6 +146,7 @@ func ForType(t reflect.Type, opts ...Option) (*Type, error) {
 	}
 	key := cacheKey{t, o.open}
 	if v, ok := cache.Load(key); ok {
+		//lint:ignore typeassert cache holds only *Type values; this function is its only writer
 		return v.(*Type), nil
 	}
 	overrides, err := shapeSchemas(t)
@@ -168,6 +170,7 @@ func ForType(t reflect.Type, opts ...Option) (*Type, error) {
 		return nil, err
 	}
 	v, _ := cache.LoadOrStore(key, typ)
+	//lint:ignore typeassert cache holds only *Type values; this function is its only writer
 	return v.(*Type), nil
 }
 
@@ -330,7 +333,7 @@ func (t *Type) foldedKeys(inst any) Issues {
 			continue
 		}
 		for p := range t.schema.Properties {
-			if strings.EqualFold(k, p) || strings.ToUpper(k) == strings.ToUpper(p) {
+			if strings.EqualFold(k, p) {
 				issues = append(issues, Issue{Path: pointer("", k), Message: fmt.Sprintf("differs from the field %q only in case", p)})
 				break
 			}

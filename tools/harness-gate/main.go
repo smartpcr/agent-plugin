@@ -68,6 +68,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return runPreflight(args[1:], stdout, stderr)
 		case "require":
 			return runRequire(args[1:], stdout, stderr)
+		case "trace-tests":
+			return runTraceTests(args[1:], stdout, stderr)
 		}
 	}
 	flags := flag.NewFlagSet("harness-gate", flag.ContinueOnError)
@@ -117,25 +119,6 @@ func runEvidence(ctx context.Context, root, path string, args []string, stdout, 
 		return 2
 	}
 	return cfg.RunEvidence(ctx, path, commit, args, Gates, stdout, stderr)
-}
-
-// subcommandFlags parses the flags of subcommand name: --root and those add
-// registers.
-func subcommandFlags(name string, args []string, stderr io.Writer, add func(*flag.FlagSet)) (root string, ok bool) {
-	flags := flag.NewFlagSet("harness-gate "+name, flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	r := flags.String("root", ".", "repository root")
-	if add != nil {
-		add(flags)
-	}
-	if err := flags.Parse(args); err != nil {
-		return "", false
-	}
-	if flags.NArg() != 0 {
-		fmt.Fprintf(stderr, "harness-gate %s: unexpected arguments %q\n", name, flags.Args())
-		return "", false
-	}
-	return *r, true
 }
 
 // runRehearse is "harness-gate rehearse [--root dir] [--out dir]": the release

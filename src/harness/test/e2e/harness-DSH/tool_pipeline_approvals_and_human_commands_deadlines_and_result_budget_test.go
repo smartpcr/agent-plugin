@@ -77,6 +77,7 @@ type dlbState struct {
 	released bool
 
 	sess    session.Handle
+	late    chan struct{} // a tool/late-return was appended (dlbLateLog)
 	pending <-chan dlbBatch
 	results []tools.Result
 
@@ -90,7 +91,7 @@ func (s *dlbState) dispose() {
 	// A detached body appends its late return to the session: let it land
 	// before the session closes.
 	if s.svc != nil {
-		_ = dlbUntil(func() bool { return len(s.svc.Detached()) == 0 })
+		_ = s.untilLate(func() bool { return len(s.svc.Detached()) == 0 })
 	}
 	for i := len(s.cleanups) - 1; i >= 0; i-- {
 		s.cleanups[i]()
@@ -105,15 +106,38 @@ func (s *dlbState) releaseBody() {
 	}
 }
 
-func dlbUntil(ok func() bool) bool {
-	end := time.Now().Add(dlbWait)
-	for time.Now().Before(end) {
-		if ok() {
-			return true
+// untilLate reports whether ok holds, re-checking it after every tool/late-return
+// the pipeline appends (P-S): a detached body leaves the detached list before its
+// late return is appended, so each change ok waits for comes with that signal.
+// dlbWait bounds the wait.
+func (s *dlbState) untilLate(ok func() bool) bool {
+	timeout := time.After(dlbWait)
+	for !ok() {
+		select {
+		case <-s.late:
+		case <-timeout:
+			return ok()
 		}
-		time.Sleep(5 * time.Millisecond)
 	}
-	return ok()
+	return true
+}
+
+// dlbLateLog is the batch's session log, signalling late on each tool/late-return
+// append once it is stored.
+type dlbLateLog struct {
+	session.Handle
+	late chan<- struct{}
+}
+
+func (l dlbLateLog) Append(ctx context.Context, d event.Draft) (event.Receipt, error) {
+	rc, err := l.Handle.Append(ctx, d)
+	if d.Type() == tools.LateReturnType.Name() {
+		select {
+		case l.late <- struct{}{}:
+		default: // a signal is already pending; the waiter re-checks on it
+		}
+	}
+	return rc, err
 }
 
 // boot composes the scope table and replaces the tool registry with a pipeline
@@ -306,10 +330,14 @@ func (s *dlbState) start(st store.Store, calls ...tools.CallRequest) (session.Ha
 	if err != nil {
 		return nil, nil, err
 	}
+	if s.late == nil {
+		s.late = make(chan struct{}, 1)
+	}
+	log := dlbLateLog{Handle: h, late: s.late}
 	out := make(chan dlbBatch, 1)
 	go func() {
 		defer v.Release()
-		res, err := s.svc.ExecuteBatch(context.Background(), tools.Batch{View: v, Log: h, Calls: calls})
+		res, err := s.svc.ExecuteBatch(context.Background(), tools.Batch{View: v, Log: log, Calls: calls})
 		out <- dlbBatch{res, err}
 	}()
 	return h, out, nil
@@ -381,7 +409,7 @@ func (s *dlbState) modelCalls(name, args string) error {
 
 func (s *dlbState) bodyReturns(string) error {
 	s.releaseBody()
-	if !dlbUntil(func() bool { return len(s.svc.Detached()) == 0 }) {
+	if !s.untilLate(func() bool { return len(s.svc.Detached()) == 0 }) {
 		return fmt.Errorf("still detached after its return: %+v", s.svc.Detached())
 	}
 	return nil
@@ -481,7 +509,7 @@ func (s *dlbState) furtherCallBusy(name, code, stage string) error {
 func (s *dlbState) lateReturnLogged(name string) error {
 	var evs []event.Event
 	var late *tools.LateReturn
-	ok := dlbUntil(func() bool {
+	ok := s.untilLate(func() bool {
 		all, err := s.sess.Read(context.Background(), 0, 0)
 		if err != nil {
 			return false

@@ -257,6 +257,18 @@ Existing practice in this repository is the starting point: [ci.yml](../../../.g
 - **Serves.** [DH-O-15](../design.md#dh-o-15).
 - **Verified by.** `DH-T-TOOLCHAIN-8`.
 
+> **DC-3 note (M1 story, 2026-11-22; M1-D-GATE-23, plan 13.5.8).** Tech-spec QG-2 asks
+> for "no baseline file and no exemption list". A `//lint:ignore <check> <reason>`
+> directive at a site, as this decision requires, is not an exemption list. It sits
+> beside the one statement it accepts and states why, and the `lintignore` analyzer
+> rejects any directive with no reason, no check or an unknown check. A
+> `//lint:file-ignore` is always rejected, and no file outside the code records a
+> violation. The vet gate prints the total (`exceptions: N`). The own analyzers of
+> M1 are `rootcall`, `typeassert` and `lintignore`, run by vet. `errdiscard` is built
+> but pending until its narrowed sites are fixed. The rule above, that an analyzer
+> joins only in a change that leaves the tree clean, holds. The decision text above is
+> unchanged (DC-2).
+
 <a id="dh-adr-toolchain-9"></a>
 ### DH-ADR-TOOLCHAIN-9 A gate is a Go test or one of a short fixed command list
 
@@ -389,6 +401,17 @@ when every proof it names **has passed**; a manual check never closes one.
   `go.work`, `tools/go.mod`.
 - **Depends on.** Nothing.
 - **Done when.** `DH-T-TOOLCHAIN-11` has passed.
+
+> **DC-3 override note (M1 story, 2026-11-22).** "`tools/go.mod`" in Components is
+> overridden by decision M1-D-TOOL-2 (a) in
+> [the M1 decision log](../../stories/harness-DSH-M1/decisions.md): the tools module is
+> `tools/harness-gate/go.mod`, the gate runner's own module, which is outside `go.work`
+> and run with `GOWORK=off`. It pins staticcheck (`honnef.co/go/tools` v0.8.2) and
+> govulncheck (`golang.org/x/vuln` v1.10.0) as `tool` lines, each with a reason comment
+> (gap-closure plan step 13.4.1). Under M1-D-TOOL-4 (A) the cordis module's Gherkin
+> suites are a nested test-only module, `src/go/test/e2e/go.mod`, outside `go.work` and
+> outside the three product modules of RM-1, so `src/go/go.mod` requires nothing (step
+> 13.4.2). The decision text above is unchanged (DC-2).
 
 <a id="dh-d-toolchain-2"></a>
 #### DH-D-TOOLCHAIN-2 The gate runner and the gates it calls

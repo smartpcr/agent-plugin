@@ -18,7 +18,7 @@ import (
 
 // New is the delegation manager over agents.
 func New(agents agent.Registry) Runtime {
-	return &manager{agents: agents, acts: map[session.ID]*activation{}}
+	return &manager{agents: agents, acts: map[session.ID]*activation{}, refusing: make(chan struct{})}
 }
 
 type manager struct {
@@ -27,6 +27,9 @@ type manager struct {
 	mu      sync.Mutex
 	acts    map[session.ID]*activation // unsettled runs by child
 	closing bool                       // the manager is unloading: no new runs
+	// refusing is closed when closing is set: the tests' signal that every
+	// later Start is refused (export_test.go). Nothing else reads it.
+	refusing chan struct{}
 }
 
 // activation is one run. Its fiber is a child of the owner's and holds, as
@@ -399,6 +402,9 @@ func (m *manager) WaitQuiet(ctx context.Context, owner *cordis.Context) error {
 // each is waited for, released and settled before closeAll returns.
 func (m *manager) closeAll() {
 	m.mu.Lock()
+	if !m.closing {
+		close(m.refusing)
+	}
 	m.closing = true
 	acts := make([]*activation, 0, len(m.acts))
 	for _, a := range m.acts {

@@ -25,6 +25,8 @@ func names(ts []vocab.ToolSchema) []string {
 // DH-T-SESSION-11: the header fold returns the latest snapshot; the tool history
 // resolves an addition through the header it cites, restarts on a series start
 // or a changed definition, and continues when a removed name returns unchanged.
+//
+//dsh:test DH-T-SESSION-11
 func TestHeaderAndToolHistory(t *testing.T) {
 	l := newLog(t)
 	if _, ok := l.st.RequestHeader(); ok {
@@ -94,6 +96,8 @@ func TestHeaderAndToolHistory(t *testing.T) {
 
 // DH-T-SESSION-13: a tool/result whose message does not answer the call its
 // payload names is refused, on append and on replacement, and changes nothing.
+//
+//dsh:test DH-T-SESSION-13
 func TestToolResultAnswersItsCall(t *testing.T) {
 	resultOf := func(op event.Op, call string, blocks []vocab.Block, sources ...event.Seq) func(t *testing.T) (event.Draft, error) {
 		return func(t *testing.T) (event.Draft, error) {
@@ -150,6 +154,8 @@ func TestToolResultAnswersItsCall(t *testing.T) {
 
 // DH-T-SESSION-13: bracket refusals, the SP-3 rule and the exact closers for a
 // table of interruption points.
+//
+//dsh:test DH-T-SESSION-13
 func TestBracketsAndClosers(t *testing.T) {
 	t.Run("refusals", func(t *testing.T) {
 		l := newLog(t)
@@ -357,6 +363,8 @@ func readSeqs(recs []event.Record) surface.ReadSeqsFunc {
 // DH-T-SESSION-9 and -14: for generated valid logs the incremental fold equals a
 // fold from storage, and a checkpoint at any position plus the suffix equals
 // full replay.
+//
+//dsh:test DH-T-SESSION-9, DH-T-SESSION-14
 func TestIncrementalEqualsReplay(t *testing.T) {
 	for seed := uint64(1); seed <= 25; seed++ {
 		r := rand.New(rand.NewPCG(seed, seed))
@@ -392,6 +400,8 @@ func TestIncrementalEqualsReplay(t *testing.T) {
 
 // DH-T-SESSION-14: a checkpoint of another version is refused, so the caller
 // discards it and replays.
+//
+//dsh:test DH-T-SESSION-14
 func TestCheckpointOtherVersion(t *testing.T) {
 	l := genLog(t, rand.New(rand.NewPCG(7, 7)), 2)
 	state, _ := l.st.Checkpoint()
@@ -401,6 +411,8 @@ func TestCheckpointOtherVersion(t *testing.T) {
 }
 
 // DH-T-SESSION-9: the planner never panics and never changes state on error.
+//
+//dsh:test DH-T-SESSION-9
 func FuzzPlan(f *testing.F) {
 	f.Add("user/message", 1, uint8(1), uint64(0), uint64(0), `{"message":{"id":"m","role":"user","blocks":[{"kind":"text","text":{"text":"x"}}]}}`, false, uint64(0))
 	f.Add("tool/result", 2, uint8(2), uint64(2), uint64(3), `{"call_id":"c1","message":{"id":"m","role":"tool","blocks":[]}}`, false, uint64(2))

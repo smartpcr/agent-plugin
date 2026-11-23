@@ -125,7 +125,7 @@ func TestScenarioIndexGateFailsWithoutIndex(t *testing.T) {
 // does not list fails the gate, named.
 func TestScenarioIndexGateNamesUnindexedScenario(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, "go.mod"), "module example.com/x\n\ngo 1.26.0\n")
+	writeFile(t, filepath.Join(root, "go.mod"), "module example.com/x\n\ngo 1.27.4\n")
 	writeFile(t, filepath.Join(root, "test", "harness", "acceptance-index.yaml"), "built-through: DH-S-1\nstages:\n  DH-S-18: []\n")
 	writeFile(t, filepath.Join(root, "y_scenario_test.go"), "//go:build scenario\n\npackage x\n\nimport \"testing\"\n\n//dsh:scenario DH-E-X-1\nfunc TestY(t *testing.T) {}\n")
 	cfg := newTestConfig(t, root)
@@ -209,7 +209,7 @@ func TestRequireSubcommand(t *testing.T) {
 		code  int
 		out   string
 	}{
-		{"DH-S-18", 0, "DH-E-TOOLCHAIN-2,DH-E-CHOKIDAR-1,DH-E-CHOKIDAR-2,DH-E-NODEFS-1,DH-E-RIPGREP-1,DH-E-RIPGREP-2,DH-E-EXEC-1,DH-E-HOST-4\n"},
+		{"DH-S-18", 0, "DH-E-TOOLCHAIN-2,DH-E-CHOKIDAR-1,DH-E-CHOKIDAR-2,DH-E-NODEFS-1,DH-E-RIPGREP-1,DH-E-RIPGREP-2,DH-E-EXEC-1,DH-E-HOST-4,DH-E-EXEC-10,DH-E-STORAGE-6\n"},
 		{"DH-S-17", 0, "DH-E-TOOLCHAIN-1,DH-E-LOADER-1,DH-E-LLM-1,DH-E-LLM-3,DH-E-VIEW-1,DH-E-TOOLS-1,DH-E-SESSION-1,DH-E-SESSION-2,DH-E-AGENT-1,DH-E-AGENT-2,DH-E-AGENT-3,DH-E-AGENT-4\n"},
 		{"DH-S-21", 0, "DH-E-BOOT-2\n"},
 		{"DH-S-22", 0, "DH-E-BOOT-1,DH-E-HUMAN-6\n"},

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	//lint:ignore typeassert SECURITY_ATTRIBUTES.Length needs unsafe.Sizeof, and reading an ACE's SID (GetAce) needs unsafe.Pointer at SidStart
 	"unsafe"
 
 	"golang.org/x/sys/windows"

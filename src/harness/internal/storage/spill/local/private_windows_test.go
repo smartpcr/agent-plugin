@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	//lint:ignore typeassert reading an ACE's SID (GetAce) needs unsafe.Pointer at SidStart
 	"unsafe"
 
 	"golang.org/x/sys/windows"

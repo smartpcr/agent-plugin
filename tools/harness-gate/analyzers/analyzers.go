@@ -7,14 +7,26 @@
 //     its release with t.Cleanup (QG-5)
 //   - fuzzcheck: a package marked //dsh:untrusted-parser has a Fuzz* target whose
 //     seeds are registered from seeds_test.go (QG-6, DH-ADR-TOOLCHAIN-3)
+//   - rootcall: no use of (*cordis.Context).Root outside src/go/cordis
+//     (DH-ADR-TOOLCHAIN-8)
+//   - typeassert: no unchecked x.(T) in non-test code, no unsafe import
+//     (DH-ADR-TOOLCHAIN-8)
+//   - lintignore: every //lint:ignore names a known check and gives a reason
+//     (DH-ADR-TOOLCHAIN-8); see directive.go
+//
+// Pending holds the analyzers that are built but not yet in All: errdiscard
+// (discarded error results). An analyzer joins All only in the change that leaves
+// the tree clean under it (DH-ADR-TOOLCHAIN-8).
 //
 // Each analyzer is a thin wrapper over a predicate that takes one parsed file (one
 // package's files for fuzzcheck), so the decision can be tested on ASTs parsed from
 // in-memory strings. A predicate uses type information when it is given and falls
 // back to import names when it is not.
 //
-// There is no baseline, no suppression comment and no exemption file: every finding
-// is reported, from the first commit (QG-2).
+// There is no baseline and no exemption file: every finding is reported, from the
+// first commit (QG-2). The one way to accept a finding is a //lint:ignore directive
+// at its site that names the check and gives a reason (directive.go); the vet gate
+// prints how many there are.
 package analyzers
 
 import (
@@ -29,8 +41,13 @@ import (
 	"golang.org/x/tools/go/analysis"
 )
 
-// All is the fixed list of the project's own analyzers, in the order they report.
-var All = []*analysis.Analyzer{NoSleep, OneSpawn, Cleanup, FuzzCheck}
+// All is the fixed list of the project's own analyzers, in the order they report:
+// the ones the vet gate runs.
+var All = []*analysis.Analyzer{NoSleep, OneSpawn, Cleanup, FuzzCheck, RootCall, TypeAssert, LintIgnore}
+
+// Pending are the analyzers that are built and tested but not yet in All, because the
+// tree is not clean under them yet (DH-ADR-TOOLCHAIN-8; plan stage 13.5).
+var Pending = []*analysis.Analyzer{ErrDiscard}
 
 // Finding is one diagnostic of a predicate.
 type Finding struct {
@@ -41,18 +58,19 @@ type Finding struct {
 // predicate decides the findings of one file. info may be nil.
 type predicate func(filename string, file *ast.File, info *types.Info) []Finding
 
-// newAnalyzer wraps a predicate as an analyzer that reports every finding.
+// newAnalyzer wraps a predicate as an analyzer that reports every finding an
+// accepted //lint:ignore at its site does not suppress.
 func newAnalyzer(name, doc string, decide predicate) *analysis.Analyzer {
 	return &analysis.Analyzer{
 		Name: name,
 		Doc:  doc,
 		Run: func(pass *analysis.Pass) (any, error) {
+			var findings []Finding
 			for _, file := range pass.Files {
 				filename := pass.Fset.File(file.FileStart).Name()
-				for _, f := range decide(filename, file, pass.TypesInfo) {
-					pass.Report(analysis.Diagnostic{Pos: f.Pos, Message: f.Message})
-				}
+				findings = append(findings, decide(filename, file, pass.TypesInfo)...)
 			}
+			report(pass, name, findings)
 			return nil, nil
 		},
 	}

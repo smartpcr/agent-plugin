@@ -24,6 +24,8 @@ type note struct {
 }
 
 // DH-T-SESSION-1: a declaration is refused when duplicated, malformed or late.
+//
+//dsh:test DH-T-SESSION-1
 func TestDefineRefusals(t *testing.T) {
 	r := event.NewRegistry()
 	if _, err := event.Define(r, event.Spec[note]{Name: "ext/note", Version: 1}); err != nil {
@@ -69,6 +71,8 @@ func idUpgrade(raw json.RawMessage) (json.RawMessage, error) { return raw, nil }
 
 // DH-T-SESSION-1: every core type is declared once, with the surface flag on
 // exactly the five surface types.
+//
+//dsh:test DH-T-SESSION-1
 func TestCoreVocabulary(t *testing.T) {
 	surface := map[string]bool{"system/message": true, "developer/message": true, "user/message": true,
 		"assistant/message": true, "tool/result": true}
@@ -91,6 +95,8 @@ func TestCoreVocabulary(t *testing.T) {
 
 // DH-T-SESSION-1: encode, decode and re-encode give the same bytes, and the cold
 // part is split off and merged back.
+//
+//dsh:test DH-T-SESSION-1
 func TestRoundTripStable(t *testing.T) {
 	asOf := event.Seq(3)
 	in := event.AssistantMessagePayload{
@@ -140,6 +146,8 @@ func TestRoundTripStable(t *testing.T) {
 }
 
 // DH-T-SESSION-1: an older version converts to the current struct.
+//
+//dsh:test DH-T-SESSION-1
 func TestOlderVersionConverts(t *testing.T) {
 	m, err := vocab.NewMessage(vocab.RoleTool, vocab.ToolResultBlock("c1", false, vocab.TextPart("ok")))
 	if err != nil {
@@ -159,6 +167,8 @@ func TestOlderVersionConverts(t *testing.T) {
 
 // DH-T-SESSION-2 / TC-05: tool/result version 3 against a registry that knows
 // version 2 is a typed newer-payload error, and no value is fabricated.
+//
+//dsh:test DH-T-SESSION-2
 func TestUnknownVersionSurfaces(t *testing.T) {
 	rec := event.Record{Seq: 9, Type: "tool/result", Version: 3, Op: event.OpAppend,
 		Payload: `{"call_id":"c1","message":{"role":"tool","blocks":[]},"new_field":1}`}
@@ -188,6 +198,8 @@ func TestUnknownVersionSurfaces(t *testing.T) {
 
 // DH-T-SESSION-1: an undeclared required type is refused by name; an ignorable
 // one is kept.
+//
+//dsh:test DH-T-SESSION-1
 func TestUnknownType(t *testing.T) {
 	r := event.Default()
 	err := r.Classify(event.Record{Seq: 2, Type: "future/thing", Version: 1, Payload: `{}`})
@@ -204,6 +216,8 @@ func TestUnknownType(t *testing.T) {
 }
 
 // DH-T-SESSION-1: plugin records follow the grammar and are always ignorable.
+//
+//dsh:test DH-T-SESSION-1
 func TestPluginRecords(t *testing.T) {
 	d, err := event.PluginDraft("acme.tools", "cursor", json.RawMessage(`{"b":1,"a":2}`), 1)
 	if err != nil {
@@ -236,6 +250,8 @@ func TestPluginRecords(t *testing.T) {
 }
 
 // DH-T-SESSION-2: invalid envelopes and drafts are refused with typed errors.
+//
+//dsh:test DH-T-SESSION-2
 func TestInvalidEnvelopes(t *testing.T) {
 	r := event.Default()
 	user, _ := json.Marshal(event.UserMessagePayload{Message: msg(t, vocab.RoleUser, "q")})
@@ -377,6 +393,7 @@ func TestUpgradesSnapshotted(t *testing.T) {
 	}
 	r.Seal()
 	done := make(chan struct{})
+	t.Cleanup(func() { <-done }) // P-C: the writer has no gate; the cleanup joins it on every exit path
 	go func() {
 		defer close(done)
 		for i := 0; i < 1000; i++ {

@@ -120,9 +120,12 @@ exactly once, and is excluded from the default gate run.
 Phase 2 (cordis) has no `DH-E-*` of its own (impl.md DH-S-2: "None of its own").
 
 DH-E-EXEC-10 and DH-E-STORAGE-6 are owed by DH-S-6 (impl.md sec. 7.5) but were not
-authored in Phase 6 (gap M1-G-CLOSE-7). Step 13.6 of
-[gap-closure-plan.md](gap-closure-plan.md) authors and indexes them; until then they
-have no file.
+authored in Phase 6 (gap M1-G-CLOSE-7). Stage 13.6 of
+[gap-closure-plan.md](gap-closure-plan.md) authored them:
+`exec_scope_ssh_scenario_test.go` and `storage_private_scenario_test.go` in
+`src/harness/internal/testkit/scenarios/`. Both are indexed under DH-S-18 with
+`authored: DH-S-6`, and their review is pending. The `scenario-index` gate's rule-4
+check (`CheckRule4Authoring`) now catches such an omission.
 
 ### Phase to proof-row map
 
@@ -149,7 +152,7 @@ and the three-module layout (`src/go`, `src/sdk`, `src/harness`, root `go.work`)
 
 ### Setup
 - **Type**: inline
-- **Local**: from the repository root with the pinned Go toolchain (`go` line `1.26.0`)
+- **Local**: from the repository root with the pinned Go toolchain (`go` line `1.27.4`, decision `go-floor-1-27-4`)
   and a C compiler on `PATH` for `-race`:
   `go build ./src/go/... ./src/sdk/... ./src/harness/...`, then
   `GOWORK=off go -C tools/harness-gate test -race -shuffle=on ./...`, then the full gate
