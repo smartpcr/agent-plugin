@@ -344,8 +344,10 @@ func TestFailedCommitKeepsTheBatch(t *testing.T) {
 // DH-T-STORE-4: when a transaction fails and its rollback fails too, the outcome
 // of that transaction is unknown, so the store is unusable: the failing append
 // returns its own error, and every later write, flush, open for write, deletion,
-// derived write and close of a writer returns store/unusable, even once the
-// rollback would work again. The database itself holds none of the batch.
+// derived write, close of a writer and read (a handle opened before the
+// failure included) returns store/unusable, even once the rollback would work
+// again. One store-wide Degraded notice says so. The database itself holds
+// none of the batch.
 //
 //dsh:test DH-T-STORE-4
 func TestFailedRollbackMakesTheStoreUnusable(t *testing.T) {
@@ -362,6 +364,12 @@ func TestFailedRollbackMakesTheStoreUnusable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	r, err := s.OpenRead(bg, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	notices := make(chan store.Degraded, 4)
+	defer s.OnDegraded(func(d store.Degraded) { notices <- d })()
 	db := fresh(t, path)
 	if _, err := db.Exec(`CREATE TRIGGER fault_test BEFORE INSERT ON events WHEN NEW.seq = 2
 		BEGIN SELECT RAISE(ABORT, 'test: the second row is refused'); END`); err != nil {
@@ -401,6 +409,35 @@ func TestFailedRollbackMakesTheStoreUnusable(t *testing.T) {
 		},
 		"WriteTx":      func() error { return s.WriteTx(bg, func(*sql.Tx) error { return nil }) },
 		"Writer.Close": func() error { return w.Close(bg) },
+		"OpenRead": func() error {
+			_, err := s.OpenRead(bg, "s")
+			return err
+		},
+		"Stat": func() error {
+			_, err := s.Stat(bg, "s")
+			return err
+		},
+		"List": func() error {
+			_, err := s.List(bg, store.Query{})
+			return err
+		},
+		"ReadTx": func() error { return s.ReadTx(bg, func(*sql.Tx) error { return nil }) },
+		"Read": func() error {
+			_, err := r.Read(bg, 0, 0, store.ReadOptions{})
+			return err
+		},
+		"ReadSeqs": func() error {
+			_, err := r.ReadSeqs(bg, []store.Seq{0}, store.ReadOptions{})
+			return err
+		},
+		"Checkpoints": func() error {
+			_, err := r.Checkpoints(bg)
+			return err
+		},
+		"Writer.Read": func() error {
+			_, err := w.Read(bg, 0, 0, store.ReadOptions{})
+			return err
+		},
 	} {
 		// Twice: the store stays unusable.
 		for range 2 {
@@ -411,6 +448,17 @@ func TestFailedRollbackMakesTheStoreUnusable(t *testing.T) {
 	}
 	if events, next, cks := countRows(t, fresh(t, path), "s"); events != 1 || next != 1 || cks != 0 {
 		t.Fatalf("a fresh connection reads %d events, next seq %d, %d checkpoints; want 1, 1, 0", events, next, cks)
+	}
+	// The notice is sent from its own goroutine; it is the only one.
+	d := <-notices
+	if d.Reason != store.DegradedUnusable || d.Session != "" || !errors.Is(d.Err, unusable) ||
+		!strings.Contains(d.Err.Error(), "test: the rollback failed") {
+		t.Fatalf("Degraded notice = %+v; want one store-wide %q notice naming the failed rollback", d, store.DegradedUnusable)
+	}
+	select {
+	case d := <-notices:
+		t.Fatalf("a second Degraded notice: %+v", d)
+	default:
 	}
 }
 

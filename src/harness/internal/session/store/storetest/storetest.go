@@ -64,6 +64,7 @@ func Run(t *testing.T, factory Factory) {
 		{"ReadSeqs", testReadSeqs},
 		{"ColdPart", testColdPart},
 		{"Checkpoints", testCheckpoints},
+		{"CheckpointsOnlyMoveForward", testCheckpointsForward},
 		{"DerivedRowRefused", testDerivedRefused},
 		{"UpsertDerived", testUpsertDerived},
 		{"List", testList},
@@ -487,6 +488,42 @@ func testCheckpoints(t *testing.T, s store.Store) {
 	if n := stat(t, s, "s1").NextSeq; n != 5 {
 		t.Fatalf("a refused batch wrote its records: NextSeq %d", n)
 	}
+}
+
+// testCheckpointsForward: an append's checkpoint never lowers a stored row's
+// seq. An older row leaves the stored one as it is (the append itself
+// succeeds, and nothing counts as dropped); a row at an equal seq replaces it;
+// a newer one moves it forward.
+func testCheckpointsForward(t *testing.T, s store.Store) {
+	w := create(t, s, "s1")
+	defer closeOK(t, w)
+	ck := func(seq store.Seq, state string) store.Checkpoint {
+		return store.Checkpoint{Key: "view/x", StateVersion: 1, Seq: seq, State: state}
+	}
+	stored := func(what string, want store.Checkpoint) {
+		t.Helper()
+		cps, err := w.Checkpoints(bg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(cps) != 1 || cps[0] != want {
+			t.Fatalf("%s: checkpoints = %+v, want %+v", what, cps, want)
+		}
+	}
+	appendOKWith(t, w, store.Batch{First: 0, Records: calls(t, 0, 4), Checkpoints: []store.Checkpoint{ck(3, `{"n":3}`)}})
+	appendOKWith(t, w, store.Batch{First: 4, Records: calls(t, 4, 1), Checkpoints: []store.Checkpoint{ck(1, `{"n":1}`)}})
+	stored("after an older row", ck(3, `{"n":3}`))
+	appendOKWith(t, w, store.Batch{First: 5, Checkpoints: []store.Checkpoint{ck(3, `{"n":3,"again":true}`)}})
+	stored("after a row at an equal seq", ck(3, `{"n":3,"again":true}`))
+	appendOKWith(t, w, store.Batch{First: 5, Checkpoints: []store.Checkpoint{ck(4, `{"n":4}`)}})
+	stored("after a newer row", ck(4, `{"n":4}`))
+	if dc, ok := w.(store.DerivedCounter); ok && dc.DerivedDropped() != 0 {
+		t.Fatalf("an older row counted as dropped: DerivedDropped = %d", dc.DerivedDropped())
+	}
+	if err := w.Flush(bg); err != nil {
+		t.Fatal(err)
+	}
+	stored("after Flush", ck(4, `{"n":4}`))
 }
 
 // testDerivedRefused: a batch whose derived row the store refuses commits its

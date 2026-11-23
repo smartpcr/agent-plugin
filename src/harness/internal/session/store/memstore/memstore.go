@@ -756,7 +756,12 @@ func (w *writer) appendLocked(b store.Batch) (dropped, err error) {
 		w.dropped += uint64(len(b.Checkpoints))
 	} else {
 		for _, c := range b.Checkpoints {
-			ss.checkpoints[ckKey{c.Key, c.StateVersion}] = c
+			// Only forward (or at an equal seq): a derived write never lowers a
+			// row's seq.
+			k := ckKey{c.Key, c.StateVersion}
+			if old, ok := ss.checkpoints[k]; !ok || c.Seq >= old.Seq {
+				ss.checkpoints[k] = c
+			}
 		}
 	}
 	if n := len(b.Records); n > 0 {

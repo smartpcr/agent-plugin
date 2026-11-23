@@ -301,13 +301,19 @@ type Writer interface {
 // records without its derived rows.
 const DegradedDerived = "derived-dropped"
 
+// DegradedUnusable is the Reason of a Degraded notice whose store became
+// unusable (a failed rollback left a transaction's outcome unknown): every
+// later call is refused until the store is reopened. Its Session is empty.
+const DegradedUnusable = "unusable"
+
 // Degraded is the notice a store sends when it did less than it was asked
-// without failing the call (session-store.md §6.2, "Events and errors"): today,
-// an append whose records committed while its derived rows were refused.
+// without failing the call, or can no longer work (session-store.md §6.2,
+// "Events and errors"): an append whose records committed while its derived
+// rows were refused, or a store that became unusable.
 type Degraded struct {
-	// Session is the session the notice is about.
+	// Session is the session the notice is about; empty for the whole store.
 	Session string
-	// Reason says what was not done: DegradedDerived.
+	// Reason says what was not done: DegradedDerived or DegradedUnusable.
 	Reason string
 	// Keys are the dropped derived rows, "<key>@<state version>", in batch
 	// order.
