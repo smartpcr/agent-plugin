@@ -128,13 +128,21 @@ type Summary struct {
 	// Holder is the lease holder, nil when none.
 	Holder      *Holder
 	LastEventAt time.Time
-	// LastPromptAt is the time of the last PromptType record; zero when none.
+	// LastPromptAt is the time of the last prompt (IsPrompt); zero when none.
 	LastPromptAt time.Time
 }
 
 // PromptType is the record type of a prompt: the one that moves LastPromptAt
-// (event.UserMessage).
+// (event.UserMessage). Not every record of it is a prompt: see IsPrompt.
 var PromptType = event.UserMessage.Name()
+
+// IsPrompt reports whether a record of type typ and surface operation op is a
+// human prompt, the one rule behind LastPromptAt, PromptKey and the list
+// summary view: a PromptType record, except one that replaces history (a
+// compaction's summary is written by the harness, not the human).
+func IsPrompt(typ string, op event.OpKind) bool {
+	return typ == PromptType && op != event.OpReplace
+}
 
 // Order is the order of List's pages.
 type Order int
@@ -146,7 +154,7 @@ const (
 	// OrderPrompt is the last prompt first, "as of" the first page: a session's
 	// key is the time of its last timed prompt before the cut's millisecond
 	// (PromptCut; its CreatedAt when it has none), descending, then ID; a
-	// session created at or after the cut is not listed. The cut travels in the
+	// session created after the cut is not listed. The cut travels in the
 	// cursor, so a prompt appended while a caller pages never moves a session
 	// across the cursor: no session is skipped or listed twice.
 	OrderPrompt
@@ -222,16 +230,14 @@ func PromptCut(cut int64) int64 { return time.UnixMilli(time.Unix(0, cut).UnixMi
 
 // PromptKey is a session's OrderPrompt key as of cut (Unix nanoseconds): the
 // time of its last timed PromptType record at or before cut, else its
-// creation. ok is false when the session was created at or after cut: a clock
-// coarser than a nanosecond stamps a session created just after the first page
-// with the cut itself, and its key would sit above every cursor.
+// creation. ok is false when the session was created after cut.
 func PromptKey(created time.Time, recs []Record, cut int64) (key int64, ok bool) {
-	if created.UnixNano() >= cut {
+	if created.UnixNano() > cut {
 		return 0, false
 	}
 	pcut := PromptCut(cut)
 	for i := len(recs) - 1; i >= 0; i-- {
-		if r := recs[i]; r.Type == PromptType && r.Time > 0 {
+		if r := recs[i]; IsPrompt(r.Type, r.Op) && r.Time > 0 {
 			if at := time.UnixMilli(r.Time).UnixNano(); at <= pcut {
 				return at, true
 			}

@@ -38,13 +38,20 @@ import (
 // NVMe, go1.27.4, -benchtime 20x; plain and gomemlimit-4GiB runs) measured p95s
 // of 2.95-3.28 s for the open (2.08 GB and 10.5 M allocations per open), 1.43-1.55 s
 // for the fork (732 MB, 3.0 M allocations) and 0.51-0.55 ms for the first page
-// (75 KB, 450 allocations); each budget is about three times the worst p95. The
-// Windows wall clock ticks in about half a millisecond, so the first page's p95
-// reads in whole ticks there.
+// (75 KB, 450 allocations). The budgets are from the run after the bounded open
+// (an open judges the records from the newest checkpoint, not the whole log)
+// and ReadSeqs' range reads, same machine and flags: p95s of 1.25-1.28 s for
+// the open (1.91 GB, 7.7 M allocations: the core's checkpoint restore reads,
+// and the reader judges, every surface node of the log), 1.31-1.49 s for the
+// fork (732 MB, 3.0 M allocations: it copies and judges the whole prefix) and
+// 1.0-1.5 ms for the first page (76 KB, 452 allocations; 124 us per page on
+// average, down from 198 us); each budget is about three times the worst p95.
+// The Windows wall clock ticks in about half a millisecond, so the first
+// page's p95 reads in whole ticks there.
 const (
-	budgetLongOpenP95  = 10 * time.Second
-	budgetLongForkP95  = 5 * time.Second
-	budgetFirstPageP95 = 2 * time.Millisecond
+	budgetLongOpenP95  = 4 * time.Second
+	budgetLongForkP95  = 4500 * time.Millisecond
+	budgetFirstPageP95 = 5 * time.Millisecond
 )
 
 // corpusSessions is the size of the heavy-tailed corpus home: the smallest

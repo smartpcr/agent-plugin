@@ -70,11 +70,15 @@ func scanRow(sc scanner) (row, error) {
 	return r, nil
 }
 
+// replaceOp is the events.surface value of a replacing record, which is never
+// a prompt (store.IsPrompt), for the queries that classify prompts in SQL.
+const replaceOp = int64(event.OpReplace)
+
 // promptNanos is the last_prompt_at recs give a session whose value was prev:
-// the time of their last timed prompt.
+// the time of their last timed prompt (store.IsPrompt).
 func promptNanos(prev int64, recs []store.Record) int64 {
 	for i := len(recs) - 1; i >= 0; i-- {
-		if r := recs[i]; r.Type == store.PromptType && r.Time > 0 {
+		if r := recs[i]; store.IsPrompt(r.Type, r.Op) && r.Time > 0 {
 			return time.UnixMilli(r.Time).UnixNano()
 		}
 	}

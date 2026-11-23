@@ -307,7 +307,7 @@ func (s *Store) summary(ss *session) store.Summary {
 	sum := store.Summary{Header: ss.header, NextSeq: store.Seq(len(ss.records)), Durable: store.Seq(ss.durable),
 		LeaseEpoch: ss.epoch, LastEventAt: ss.lastEventAt}
 	for i := len(ss.records) - 1; i >= 0; i-- {
-		if r := ss.records[i]; r.Type == store.PromptType && r.Time > 0 {
+		if r := ss.records[i]; store.IsPrompt(r.Type, r.Op) && r.Time > 0 {
 			sum.LastPromptAt = time.UnixMilli(r.Time)
 			break
 		}

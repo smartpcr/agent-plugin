@@ -36,11 +36,15 @@ import (
 // NVMe, go1.27.4, -benchtime 20x; plain and gomemlimit-4GiB runs) measured p95s
 // of 530-547 ms for the first page (726 MB and 2.5 M allocations per page: each
 // entry's reader opens its whole log, the newest session's 48 MB included) and
-// 578-733 ms for the snapshot (790 MB, 2.9 M allocations); each budget is about
-// three times the worst p95.
+// 578-733 ms for the snapshot (790 MB, 2.9 M allocations). The budgets are from
+// the run after the bounded reader open (an open judges the records from the
+// newest checkpoint, not the whole log), same machine and flags: p95s of
+// 21.3-23.0 ms for the first page (7.1 MB, 14.4 K allocations) and 47.3-47.9 ms
+// for the snapshot (67.5 MB, 67.5 K allocations); each budget is about three
+// times the worst p95.
 const (
-	budgetFirstPageP95 = 1750 * time.Millisecond
-	budgetSnapshotP95  = 2250 * time.Millisecond
+	budgetFirstPageP95 = 70 * time.Millisecond
+	budgetSnapshotP95  = 150 * time.Millisecond
 )
 
 // corpusSessions is the size of the heavy-tailed corpus home: the smallest
