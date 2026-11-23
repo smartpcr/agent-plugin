@@ -843,6 +843,8 @@ transport equal to the request rebuilt from the log.
 
 **Decision log (pointer, M1).** For the M1 story, this stage's manual check and closure follow the decisions logged in [the M1 decision log](../stories/harness-DSH-M1/decisions.md) (`models-signed-in-claude-copilot`); this section's text is unchanged (DC-2).
 
+**Re-closure (pointer, M1).** For the M1 story, gap-closure plan Stage 16.5 builds the signed-in client routes the manual check now runs on, [DH-D-LLM-12](areas/llm.md#dh-d-llm-12) (decisions M1-D-PIPE-3, -4, -6, -7 and -8), and Stage 16.4 moves the retry wait of step 9.2 into the driver (M1-D-PIPE-2). Both pass in both gate lanes at commit `f72f435`. Steps 9.1 to 9.3 stay unticked: plan step 16.6.3 ticks them only after the owner's signed-in run (plan 16.5.9) is recorded and the re-authored scenarios are reviewed ([the DH-S-9 evidence record](../stories/harness-DSH-M1/evidence/DH-S-9.md#closure), "Closure"). This section's text is unchanged (DC-2).
+
 <a id="dh-s-10"></a>
 ### DH-S-10: Tool pipeline, approvals and human commands
 
@@ -892,6 +894,8 @@ scenarios of approvals and grants are authored in [DH-S-21](#dh-s-21) and run in
 
 **Exit evidence.** The evidence record, with the test that denial is enforced through
 the executor and not by hiding the tool from the prompt.
+
+**Reopened and re-closed (pointer, M1).** For the M1 story, gap-closure plan step 16.6.1 unticked steps 10.3, 10.4 and 10.6 as known-false ticks (gaps M1-G-PIPE-1 to -8: the approval policy and resume closer, the guarded pipeline's missing cases and grant subjects, the spill reader and images in the budget) and re-ticked them in the same change, because plan Stages 16.1 to 16.3 pass in both gate lanes at commit `f72f435` (decision M1-D-PIPE-1 in [the M1 decision log](../stories/harness-DSH-M1/decisions.md); tests by `DH-T` ID in [the DH-S-10 evidence record](../stories/harness-DSH-M1/evidence/DH-S-10.md#gap-closure-m1-g-pipe-1-to-8), "Gap closure (M1-G-PIPE-1 to -8)", and the closure in its "Closure"). The ticks are built, not done, and are re-verified at the M1 closure commit (M1-D-CLOSE-1). This section's text is unchanged (DC-2).
 
 <a id="dh-s-11"></a>
 ### DH-S-11: Agent loop

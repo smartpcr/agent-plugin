@@ -592,18 +592,20 @@ storyId: "harness:DSH"
 ## Stage 9.1: DeepSeek Messages Provider
 
 ### Implementation Steps
-- [ ] impl.md step 9.1 / DH-D-LLM-2 (part 1): shared HTTP transport in `internal/llm` built on the egress client (permit kind `model-request`) and the Anthropic Messages wire driver: request encoding from `session.Request`, SSE decoding marked `//dsh:untrusted-parser` with `FuzzSSE`.
-- [ ] impl.md step 9.1 / DH-D-LLM-2 (part 2): the `deepseek-official` route (`api.deepseek.com`, architecture.md sec. 3.2) with key authentication through the secret-reference store; vendor error mapping into `vocab` failure classes (unknown business codes stay `unknown`, register item `protocol.ts:245`).
-- [ ] Record SSE fixtures (success, overloaded with retry-after, bad key, mid-stream drop) under `internal/llm/testdata/sse/` -- written by hand from the vendor's published format, containing no real key (`DH-T-LLM-5`, `-11`, `-16`).
+- [x] impl.md step 9.1 / DH-D-LLM-2 (part 1): shared HTTP transport in `internal/llm` built on the egress client (permit kind `model-request`) and the Anthropic Messages wire driver: request encoding from `session.Request`, SSE decoding marked `//dsh:untrusted-parser` with `FuzzSSE`.
+- [x] impl.md step 9.1 / DH-D-LLM-2 (part 2): the `deepseek-official` route (`api.deepseek.com`, architecture.md sec. 3.2) with key authentication through the secret-reference store; vendor error mapping into `vocab` failure classes (unknown business codes stay `unknown`, register item `protocol.ts:245`).
+- [x] Record SSE fixtures (success, overloaded with retry-after, bad key, mid-stream drop) under `internal/llm/testdata/sse/` -- written by hand from the vendor's published format, containing no real key (`DH-T-LLM-5`, `-11`, `-16`).
 
 ### Dependencies
 - phase-boot-launch-egress-secrets-and-test-kit/stage-egress-policy-and-telemetry-off-switch
 - phase-machine-state-views-and-spill/stage-spill-store-and-attachments
 
 ### Test Scenarios
-- [ ] Scenario: Request at the transport equals rebuilt request -- Given the fake transport of the test kit capturing bytes, When one attempt is made for a session, Then the captured body equals `surface.Rebuild` at the settlement's `requestAsOf`, and the settlement's `requestDigest` matches (DH-S-9 exit evidence, TC-09a) [proof: in-process; deps: none -- fake transport]
-- [ ] Scenario: Decoded fixtures settle once -- Given each SSE fixture, When fed through the driver in memory, Then each yields exactly one settlement of the expected kind and the decoded message equals the committed golden (TC-09a) [proof: golden; deps: committed fixtures and goldens under `internal/llm/testdata/sse/`]
-- [ ] Scenario: Provider over loopback HTTP -- Given the success fixture served by `httptest` on 127.0.0.1:0 and a `model-request` permit for that host, When the provider streams a reply, Then one `assistant/message` is settled and the server saw the `x-api-key` header from the secret store (TC-09b) [proof: service:loopback-http; deps: loopback-http -- `httptest` started and closed in the test]
+- [x] Scenario: Request at the transport equals rebuilt request -- Given the fake transport of the test kit capturing bytes, When one attempt is made for a session, Then the captured body equals `surface.Rebuild` at the settlement's `requestAsOf`, and the settlement's `requestDigest` matches (DH-S-9 exit evidence, TC-09a) [proof: in-process; deps: none -- fake transport]
+- [x] Scenario: Decoded fixtures settle once -- Given each SSE fixture, When fed through the driver in memory, Then each yields exactly one settlement of the expected kind and the decoded message equals the committed golden (TC-09a) [proof: golden; deps: committed fixtures and goldens under `internal/llm/testdata/sse/`]
+- [x] Scenario: Provider over loopback HTTP -- Given the success fixture served by `httptest` on 127.0.0.1:0 and a `model-request` permit for that host, When the provider streams a reply, Then one `assistant/message` is settled and the server saw the `x-api-key` header from the secret store (TC-09b) [proof: service:loopback-http; deps: loopback-http -- `httptest` started and closed in the test]
+
+> Ticked as built by gap-closure plan step 16.6.2 (Phase 16): the three steps were built by PRs #68 and #69 (Stage 9.1, [evidence/DH-S-9.md](evidence/DH-S-9.md)), and every test named here passes in both gate lanes at commit `f72f435` (run records `wsl-f72f435-20261123T1041Z`, `win-f72f435-20261123T1041Z`). Scenarios: "Request at the transport equals rebuilt request" is `llm` `TestDeepSeekRequestEqualsRebuilt`; "Decoded fixtures settle once" is `TestDeepSeekFixturesSettleOnce`; "Provider over loopback HTTP" is `TestDeepSeekOverLoopback` (with `TestDeepSeekWithoutPermitDialsNothing` and `TestDeepSeekKeyNeverLeaks`). The tags `DH-T-LLM-5`, `-11` and `-16` of step 9.1 are all present (`harness-gate trace-tests --stage DH-S-9`). Built, not done: `deepseek-official` is keyless and fake-tested, not proven against a real API (M1-D-PIPE-5 A, OWNER-2), and impl.md step 9.1 stays unticked until DH-S-9 closes (Stage 9.2, "Close DH-S-9").
 
 ## Stage 9.2: Bounded Retry and Token Usage
 
@@ -623,6 +625,8 @@ storyId: "harness:DSH"
 - [x] Scenario: DH-S-9 scenarios authored before closure -- Given the three DH-S-9 scenario files and `test/harness/acceptance-index.yaml` at the DH-S-9 closing commit, When the gate's index check and `go -C src/harness vet -tags scenario ./...` run on that commit, Then `DH-E-LLM-1`, `DH-E-LLM-3` and `DH-E-VIEW-1` each have exactly one file and one `DH-S-17` index entry with authoring stage DH-S-9 and `requires: [DH-S-11, DH-S-16]`, the files' imports are limited to `src/sdk/...`, the test kit's scenario launcher and the standard library (no `internal/llm`, `internal/agent`, views or store import, so no title or loop substitute exists in them), vet exits 0, and the default gate run executes none of them; the `go vet` result therefore depends only on code present at DH-S-9, while the title and loop behaviour they assert is first exercised at DH-S-17 [proof: service:go-toolchain; deps: go-toolchain package loader over the checkout; index read from the checkout by the gate]
 - [x] Scenario: Usage folded from settlements -- Given three settlements with known token counts, When the usage fold runs, Then totals and context occupancy equal the expected values (`DH-T-LLM-15`) [proof: in-process; deps: none]
 
+> Not closed (gap-closure plan Phase 16). The manual check and "Close DH-S-9" stay unticked: the check now runs on the signed-in Claude and Copilot routes (`models-signed-in-claude-copilot`), built by gap-closure Stage 16.5 and passing in both gate lanes at `f72f435`, but the owner's run (gap-closure step 16.5.9, [evidence/DH-S-9-manual-runbook.md](evidence/DH-S-9-manual-runbook.md)) has not happened, and the re-authored DH-E-LLM-1, DH-E-LLM-3 and DH-E-VIEW-1 await the owner's review in the Phase 16 PR. Gap-closure Stage 16.4 moved the retry wait of step 9.2 into the driver (M1-D-PIPE-2 A). Evidence: [evidence/DH-S-9.md](evidence/DH-S-9.md), "Stage 16.4", "Stage 16.5" and "Closure".
+
 # Phase 10: Tool Pipeline Approvals and Human Commands
 
 ## Dependencies
@@ -641,8 +645,10 @@ storyId: "harness:DSH"
 - phase-deepseek-provider-retry-and-usage/stage-bounded-retry-and-token-usage
 
 ### Test Scenarios
-- [ ] Scenario: Duplicate tool name refused in a scope -- Given a scope with tool `echo`, When a second `echo` is registered in the same scope, Then registration fails and the first remains; registering it in a child scope shadows only that subtree (`DH-T-TOOLS-2`, TC-10a) [proof: in-process; deps: none]
-- [ ] Scenario: Prompt assembly is deterministic -- Given five tools registered in random order across 100 runs, When the step prompt and tool list are assembled, Then every run produces bytes equal to the committed golden (`DH-T-TOOLS-14`) [proof: golden; deps: committed golden `internal/tools/testdata/prompt.golden`]
+- [x] Scenario: Duplicate tool name refused in a scope -- Given a scope with tool `echo`, When a second `echo` is registered in the same scope, Then registration fails and the first remains; registering it in a child scope shadows only that subtree (`DH-T-TOOLS-2`, TC-10a) [proof: in-process; deps: none]
+- [x] Scenario: Prompt assembly is deterministic -- Given five tools registered in random order across 100 runs, When the step prompt and tool list are assembled, Then every run produces bytes equal to the committed golden (`DH-T-TOOLS-14`) [proof: golden; deps: committed golden `internal/tools/testdata/prompt.golden`]
+
+> Ticked by gap-closure plan step 16.6.2 (Phase 16): both pass in both gate lanes at `f72f435`. "Duplicate tool name refused in a scope" is `tools/core` `TestDuplicateRefusedInScope` with `TestScopedViews` (the child-scope shadow); "Prompt assembly is deterministic" is `tools` `TestPromptAssemblyIsDeterministic` (100 runs, golden `prompt`). Evidence: [evidence/DH-S-10.md](evidence/DH-S-10.md), "Gap closure (M1-G-PIPE-1 to -8)", Stage 16.2 table.
 
 ## Stage 10.2: Approvals and Guarded Pipeline
 
@@ -672,8 +678,10 @@ storyId: "harness:DSH"
 - phase-tool-pipeline-approvals-and-human-commands/stage-approvals-and-guarded-pipeline
 
 ### Test Scenarios
-- [ ] Scenario: Deadline does not hold the turn -- Given a tool body that ignores cancellation, a 10 s deadline and 2 s grace on the virtual clock, When the clock advances 12 s, Then the call is answered `tools/timeout` and the step continues (`DH-T-TOOLS-8`, TC-10a) [proof: in-process; deps: none -- virtual clock]
-- [ ] Scenario: Oversized result spilled before reaching the model -- Given a tool returning 2 MB and `maxResultBytes` of 64 KB on the SQLite store, When the result is shaped, Then the logged result is within 64 KB with a spill reference and the spill file in the temp home holds all 2 MB (TC-10b) [proof: service:sqlite; deps: sqlite embedded; filesystem via `t.TempDir()` home]
+- [x] Scenario: Deadline does not hold the turn -- Given a tool body that ignores cancellation, a 10 s deadline and 2 s grace on the virtual clock, When the clock advances 12 s, Then the call is answered `tools/timeout` and the step continues (`DH-T-TOOLS-8`, TC-10a) [proof: in-process; deps: none -- virtual clock]
+- [x] Scenario: Oversized result spilled before reaching the model -- Given a tool returning 2 MB and `maxResultBytes` of 64 KB on the SQLite store, When the result is shaped, Then the logged result is within 64 KB with a spill reference and the spill file in the temp home holds all 2 MB (TC-10b) [proof: service:sqlite; deps: sqlite embedded; filesystem via `t.TempDir()` home]
+
+> Ticked by gap-closure plan step 16.6.2 (Phase 16): both pass in both gate lanes at `f72f435`. "Deadline does not hold the turn" is `tools/core` `TestDeadlineDoesNotHoldTheTurn`. Built note: at budget plus grace (12 s on the virtual clock) a body that ignores cancellation is detached and its call is answered `tools/outcome-unknown` with cause deadline, not `tools/timeout`, because its effects are unknown; `tools/timeout` is the answer when the body returns at or after its deadline (`TestDeadlineCooperativeBodyTimesOut`, `TestDeadlineReturnAtExpiryIsTimeout`); the step continues either way. "Oversized result spilled before reaching the model" is `tools/core` `TestOversizedResultSpilledBeforeReachingTheModel`. Gap-closure Stage 16.3 adds the reader for the rest of a spilled result (`spill_read`, `DH-T-STORAGE-13`) and images in the budget (`DH-T-STORAGE-11`). Evidence: [evidence/DH-S-10.md](evidence/DH-S-10.md).
 
 ## Stage 10.4: Durable Inbox Questions Commands and Grants
 
@@ -692,6 +700,8 @@ storyId: "harness:DSH"
 - [x] Scenario: One accepted message is at most one turn -- Given an inbox item and a driver stub that crashes after taking it, When the agent resumes, Then the item is not run a second time and the log shows one turn for it (`DH-T-AGENT-6`, TC-10a) [proof: in-process; deps: none]
 - [x] Scenario: Grant does not survive resume -- Given a session grant of directory `/w` and an ended session, When the session is resumed, Then the grant list is empty and a call needing `/w` asks again (`DH-D-HUMAN-3`) [proof: in-process; deps: none]
 - [x] Scenario: Question answered through the inbox -- Given the model asks a question with wait, When the fake answerer replies, Then the reply enters the inbox, the waiting tool call returns the answer, and both events are logged with attribution (TC-10a) [proof: in-process; deps: none]
+
+> "Close DH-S-10" was unticked by gap-closure plan step 16.6.1 as a known-false tick (gaps M1-G-PIPE-1 to -8: impl.md 10.3, 10.4 and 10.6 had been ticked without the approval policy and resume closer, the guarded pipeline's missing cases and grant subjects, and the spill reader and images in the budget) and re-ticked in the same change, because gap-closure Stages 16.1 to 16.3 pass in both gate lanes at commit `f72f435` (run records `wsl-f72f435-20261123T1041Z`, `win-f72f435-20261123T1041Z`). Evidence: [evidence/DH-S-10.md](evidence/DH-S-10.md), "Gap closure (M1-G-PIPE-1 to -8)" and "Closure" (step 16.6.3). Built, not done; `built-through` stays at DH-S-8 until DH-S-9 closes.
 
 # Phase 11: Agent Loop Milestone M1
 
