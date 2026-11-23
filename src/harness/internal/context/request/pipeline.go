@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -58,11 +59,78 @@ type Input struct {
 	Visible   surface.History
 }
 
-// Output is what a contributor adds: user-role messages, each with a source
-// of the contributor's kind, entered after the claimed batch.
+// Output is what a contributor adds. Every message is user-role with a source
+// of the contributor's kind and an id new to the step; every key of After and
+// Reword is the id of a message of the claimed batch (Input.Claimed).
+//
+// The step's batch is merged in one order: each claimed message (reworded if
+// a contributor reworded it), directly followed by the After messages placed
+// behind it, contributor by contributor in table order; then every
+// contributor's Messages, in table order. An output that breaks a rule fails
+// its contributor as a whole: none of it enters, and the contributor is
+// skipped (optional) or rejects the step (required).
 type Output struct {
+	// Messages follow the claimed batch.
 	Messages []vocab.Message
+	// After holds messages entered directly after one claimed message, as a
+	// session snapshot follows the message that cited it.
+	After map[string][]vocab.Message
+	// Reword is the readable text of one claimed message, as a mention made
+	// readable: it replaces that message's text blocks with one text block at
+	// the first one's place, keeping its id, role, source and other blocks. One
+	// contributor at most rewords a message, and only one that has text.
+	Reword map[string]string
 }
+
+// TriggerKind is why the pipeline asks the compaction seam at a step.
+type TriggerKind string
+
+// The triggers of the pipeline's compaction check (context-compaction-skill.md
+// §6.2): overflow and manual belong to other callers of the engine.
+const (
+	// TriggerPressure is every entered step: the engine measures the estimate
+	// against the route's threshold and reduces only if it is crossed.
+	TriggerPressure TriggerKind = "pressure"
+	// TriggerModelSwitch is a step whose route differs from the last step's:
+	// history is measured against the new route.
+	TriggerModelSwitch TriggerKind = "model-switch"
+)
+
+// Trigger is what the pipeline asks a Considerer about. Previous is the last
+// step's selection, nil for an agent's first step; a model-switch trigger
+// always has it set, naming another route than Selection.
+type Trigger struct {
+	Kind       TriggerKind
+	Turn, Step int
+	Selection  agent.ModelSelection
+	Previous   *agent.ModelSelection
+}
+
+// Result is what a compaction committed (context-compaction-skill.md §6.1):
+// its id, the sequence numbers of its summary record and checkpoint message,
+// the nodes it shadowed, the estimated tokens freed, and its outcome. The
+// pipeline does not read it: the contributors see the reduction through the
+// surface.
+type Result struct {
+	ID                  string
+	Summary, Checkpoint event.Seq
+	Shadowed            []event.Seq
+	Freed               int
+	Outcome             string
+}
+
+// Considerer is the part of the compaction seam (the spec's compact.Engine)
+// the pipeline calls: Consider qualifies, plans and runs one compaction of the
+// agent's session for t, appending it to the log, and returns nil with no
+// error when nothing could be reduced and nothing was logged. An error is a
+// failed compaction the engine has recorded.
+type Considerer interface {
+	Consider(ctx context.Context, a agent.Ref, t Trigger) (*Result, error)
+}
+
+// ByCompaction is the Reject.By of a step whose model-switch compaction
+// failed: nothing was sent to the new route.
+const ByCompaction = "compaction"
 
 // Log is the part of an agent's live session the pipeline uses: the current
 // surface, and the append of context/skipped. A session.Session is one.
@@ -81,6 +149,12 @@ type Options struct {
 	// that scope, in the scopes enclosing it (its preset) and globally. Nil
 	// puts every agent at the global scope, which sees only global ones.
 	Scopes func(agent.Ref) (scope.Key, error)
+	// Compact is the compaction check, run after downstream entered the step
+	// and before the contributors, which then see the surface it left. Nil (as
+	// at M1, decision M1-D-LOOP-4) runs no compaction. A failed pressure
+	// compaction lets the step proceed with full history; a failed
+	// model-switch compaction rejects the step (ByCompaction).
+	Compact Considerer
 }
 
 // Live is the Sessions lookup over the agent registry: the live session of the
@@ -223,6 +297,18 @@ func (p *Pipeline) preStep(_ *cordis.Context, req agent.PreStepRequest, next fun
 	if err != nil {
 		return nil, fmt.Errorf("request: the scope of %s: %w", req.Agent, err)
 	}
+	ctx := req.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if p.o.Compact != nil {
+		if ctx.Err() != nil {
+			return enter, nil
+		}
+		if rej, ok := p.compact(ctx, req); ok {
+			return rej, nil
+		}
+	}
 	cs := p.contributors(at)
 	if len(cs) == 0 {
 		return enter, nil
@@ -231,16 +317,14 @@ func (p *Pipeline) preStep(_ *cordis.Context, req agent.PreStepRequest, next fun
 	if err != nil {
 		return nil, fmt.Errorf("request: the session of %s: %w", req.Agent, err)
 	}
-	ctx := req.Ctx
-	if ctx == nil {
-		ctx = context.Background()
-	}
+	// Visible is read after the compaction check: a baseline it shadowed is
+	// absent, so its contributor enters it again in this step.
 	in := Input{
 		Agent: req.Agent, Turn: req.Turn, Step: req.Step,
 		Claimed: slices.Clone(enter.Messages), Selection: req.Selection, Previous: req.Previous,
 		Visible: log.History(),
 	}
-	msgs := slices.Clone(enter.Messages)
+	m := newMerge(enter.Messages)
 	for _, c := range cs {
 		if ctx.Err() != nil {
 			// A cancelled turn: the driver's cancel path names the reason.
@@ -248,7 +332,7 @@ func (p *Pipeline) preStep(_ *cordis.Context, req agent.PreStepRequest, next fun
 		}
 		out, err := contribute(ctx, c, in)
 		if err == nil {
-			err = check(c.Name(), out.Messages)
+			err = m.check(c.Name(), out)
 		}
 		if err != nil {
 			if ctx.Err() != nil {
@@ -269,10 +353,172 @@ func (p *Pipeline) preStep(_ *cordis.Context, req agent.PreStepRequest, next fun
 			}
 			continue
 		}
-		msgs = append(msgs, out.Messages...)
+		m.add(c.Name(), out)
 	}
-	enter.Messages = msgs
+	enter.Messages = m.messages()
 	return enter, nil
+}
+
+// compact runs the compaction check of an entered step. It returns a Reject
+// and true when a model-switch compaction failed; a failed pressure
+// compaction, or a failure the turn's cancel caused, lets the step proceed.
+func (p *Pipeline) compact(ctx context.Context, req agent.PreStepRequest) (agent.PreStepDecision, bool) {
+	t := Trigger{Kind: TriggerPressure, Turn: req.Turn, Step: req.Step, Selection: cloneSelection(req.Selection)}
+	if req.Previous != nil {
+		prev := cloneSelection(*req.Previous)
+		t.Previous = &prev
+		if prev.Route != req.Selection.Route {
+			t.Kind = TriggerModelSwitch
+		}
+	}
+	err := consider(ctx, p.o.Compact, req.Agent, t)
+	if err == nil || ctx.Err() != nil || t.Kind != TriggerModelSwitch {
+		// Pressure: the step proceeds with full history; the engine recorded
+		// its failure and backs off (§6.2).
+		return nil, false
+	}
+	return agent.Reject{By: ByCompaction, Reason: err.Error()}, true
+}
+
+// consider runs the compaction seam with its panic contained.
+func consider(ctx context.Context, c Considerer, a agent.Ref, t Trigger) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("compaction (%s) panicked: %v", t.Kind, r)
+		}
+	}()
+	_, err = c.Consider(ctx, a, t)
+	return err
+}
+
+// cloneSelection is a copy of s that shares no control with it.
+func cloneSelection(s agent.ModelSelection) agent.ModelSelection {
+	s.Controls = s.Controls.Clone()
+	return s
+}
+
+// merge builds a step's batch from the claimed messages and the contributors'
+// outputs, by the rules of Output.
+type merge struct {
+	claimed []vocab.Message
+	// at is the position of each claimed message by id.
+	at map[string]int
+	// ids is every id in the batch so far.
+	ids      map[string]bool
+	after    [][]vocab.Message
+	reworded map[string]vocab.Message
+	// rewordBy names the contributor that reworded each claimed message.
+	rewordBy map[string]string
+	tail     []vocab.Message
+}
+
+func newMerge(claimed []vocab.Message) *merge {
+	m := &merge{
+		claimed: slices.Clone(claimed), at: make(map[string]int, len(claimed)), ids: make(map[string]bool, len(claimed)),
+		after: make([][]vocab.Message, len(claimed)), reworded: map[string]vocab.Message{}, rewordBy: map[string]string{},
+	}
+	for i, c := range claimed {
+		m.at[c.ID()], m.ids[c.ID()] = i, true
+	}
+	return m
+}
+
+// check accepts out from the contributor name, or says which rule it breaks;
+// it changes nothing, so a failed output enters no part of itself.
+func (m *merge) check(name string, out Output) error {
+	seen := map[string]bool{}
+	fresh := func(msgs []vocab.Message) error {
+		if err := check(name, msgs); err != nil {
+			return err
+		}
+		for _, x := range msgs {
+			if m.ids[x.ID()] || seen[x.ID()] {
+				return fmt.Errorf("contributor %q returned message %s, whose id is already in the step's batch", name, x.ID())
+			}
+			seen[x.ID()] = true
+		}
+		return nil
+	}
+	if err := fresh(out.Messages); err != nil {
+		return err
+	}
+	for _, id := range slices.Sorted(maps.Keys(out.After)) {
+		if _, ok := m.at[id]; !ok {
+			return fmt.Errorf("contributor %q placed messages after %s, which is not a claimed message of the step", name, id)
+		}
+		if err := fresh(out.After[id]); err != nil {
+			return err
+		}
+	}
+	for _, id := range slices.Sorted(maps.Keys(out.Reword)) {
+		i, ok := m.at[id]
+		switch {
+		case !ok:
+			return fmt.Errorf("contributor %q rewords %s, which is not a claimed message of the step", name, id)
+		case strings.TrimSpace(out.Reword[id]) == "":
+			return fmt.Errorf("contributor %q rewords %s with no text", name, id)
+		case m.rewordBy[id] != "":
+			return fmt.Errorf("contributor %q rewords %s, which %q already reworded", name, id, m.rewordBy[id])
+		}
+		if _, err := reword(m.claimed[i], out.Reword[id]); err != nil {
+			return fmt.Errorf("contributor %q: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// add merges an output check accepted.
+func (m *merge) add(name string, out Output) {
+	for _, x := range out.Messages {
+		m.ids[x.ID()] = true
+	}
+	m.tail = append(m.tail, out.Messages...)
+	for id, msgs := range out.After {
+		for _, x := range msgs {
+			m.ids[x.ID()] = true
+		}
+		m.after[m.at[id]] = append(m.after[m.at[id]], msgs...)
+	}
+	for id, text := range out.Reword {
+		r, _ := reword(m.claimed[m.at[id]], text) // check built it once already
+		m.reworded[id], m.rewordBy[id] = r, name
+	}
+}
+
+// messages is the merged batch.
+func (m *merge) messages() []vocab.Message {
+	out := make([]vocab.Message, 0, len(m.ids))
+	for i, c := range m.claimed {
+		if r, ok := m.reworded[c.ID()]; ok {
+			c = r
+		}
+		out = append(out, c)
+		out = append(out, m.after[i]...)
+	}
+	return append(out, m.tail...)
+}
+
+// reword is msg with its text blocks replaced by one block of text, at the
+// first one's place.
+func reword(msg vocab.Message, text string) (vocab.Message, error) {
+	var blocks []vocab.Block
+	placed := false
+	for _, b := range msg.Blocks() {
+		switch {
+		case b.Kind != vocab.KindText:
+			blocks = append(blocks, b)
+		case !placed:
+			blocks, placed = append(blocks, vocab.TextBlock(text)), true
+		}
+	}
+	if !placed {
+		return vocab.Message{}, fmt.Errorf("message %s has no text to reword", msg.ID())
+	}
+	var src *vocab.Source
+	if s, ok := msg.Source(); ok {
+		src = &s
+	}
+	return vocab.RestoreMessage(msg.ID(), msg.Role(), src, blocks...)
 }
 
 // contribute runs one contributor with its panic contained.

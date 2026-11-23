@@ -207,6 +207,8 @@ type Provider interface {
 }
 ```
 
+At M1 the package `context/inject` is built as `context/request`, and its compaction check calls `request.Considerer`, the `Consider` part of `Engine` over the agent's reference: `Consider(ctx, agent.Ref, request.Trigger) (*request.Result, error)`. `request.Trigger` holds the kind (`pressure`, or `model-switch` when `Previous` names another route), the turn, the step, the selection and `Previous`. `Options.Compact` is nil at M1 ([M1-D-LOOP-4](../../stories/harness-DSH-M1/decisions.md)). The `Output` merge: each claimed message (with its `Reword` applied, which replaces its text blocks by one at the first one's place), then the `After` messages for it in table order, then all `Messages` in table order. Each key must name a claimed message, each id must be new to the step, at most one contributor may reword a message, and only a message that has text. An output that breaks a rule fails its contributor as a whole.
+
 `ProviderOptions` holds the name, source class, rank, `MaxAge` (zero for a provider that invalidates itself) and a deadline. `Result` holds the compaction id, the summary and checkpoint sequence numbers, the shadowed sequence numbers, the estimated tokens freed and the outcome. `nil` with no error means nothing could be reduced and nothing was logged.
 
 ### 6.2 Contracts

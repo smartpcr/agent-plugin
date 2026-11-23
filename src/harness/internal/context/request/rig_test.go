@@ -121,7 +121,11 @@ type rig struct {
 	pipe   *request.Pipeline
 }
 
-func newRig(t *testing.T, turns ...fakemodel.Turn) *rig {
+func newRig(t *testing.T, turns ...fakemodel.Turn) *rig { return newRigWith(t, nil, turns...) }
+
+// newRigWith is newRig with the pipeline's options changed by opt (nil changes
+// nothing) before New.
+func newRigWith(t *testing.T, opt func(*request.Options), turns ...fakemodel.Turn) *rig {
 	t.Helper()
 	root := cordis.New()
 	root.Loggers().ClearExporters()
@@ -148,7 +152,7 @@ func newRig(t *testing.T, turns ...fakemodel.Turn) *rig {
 	sess := must(session.NewService(root, st, session.Config{}).Create(bg, nil, session.CreateOptions{Header: session.Header{ID: id}}))
 	t.Cleanup(func() { _ = sess.Close(bg) })
 	r := &rig{t: t, root: root, tab: tab, st: st, sess: sess, scopes: map[agent.Ref]scope.Key{}}
-	r.pipe, _ = must2(request.New(root, request.Options{
+	o := request.Options{
 		Table:    tab,
 		Sessions: func(agent.Ref) (request.Log, error) { return sess, nil },
 		Scopes: func(a agent.Ref) (scope.Key, error) {
@@ -156,7 +160,11 @@ func newRig(t *testing.T, turns ...fakemodel.Turn) *rig {
 			defer r.mu.Unlock()
 			return r.scopes[a], nil
 		},
-	}))
+	}
+	if opt != nil {
+		opt(&o)
+	}
+	r.pipe, _ = must2(request.New(root, o))
 
 	rt := llm.New()
 	fakemodel.Register(t, rt, route, fakemodel.NewTransport(t, turns...))
