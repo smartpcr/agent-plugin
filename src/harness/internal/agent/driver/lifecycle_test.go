@@ -65,8 +65,8 @@ func newLife(t *testing.T, o lifeOptions) *life {
 	must(0, l.drv.Wait())
 	f := must(driver.NewFactory(driver.FactoryOptions{
 		Context: l.drvCtx, Sessions: l.svc, Scopes: scope.NewTable(root), Models: rt, Tools: tsvc,
-		FinalFlushTimeout: o.flushLimit,
-		Observe:           func(_ agent.Ref, p string) { l.note(p) },
+		Prompt: newTestPrompt(defaultPrompt), FinalFlushTimeout: o.flushLimit,
+		Observe: func(_ agent.Ref, p string) { l.note(p) },
 	}))
 	must(l.reg.SetFactory(root, f))
 	return l

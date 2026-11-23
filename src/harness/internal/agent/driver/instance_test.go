@@ -23,12 +23,13 @@ func TestNewFactoryRefusesBadOptions(t *testing.T) {
 	valid := func() driver.FactoryOptions {
 		return driver.FactoryOptions{
 			Context: root, Sessions: session.NewService(root, memstore.New(), session.Config{}),
-			Scopes: scope.NewTable(root), Models: llm.New(), Tools: tsvc,
+			Scopes: scope.NewTable(root), Models: llm.New(), Tools: tsvc, Prompt: newTestPrompt(defaultPrompt),
 		}
 	}
 	for name, edit := range map[string]func(*driver.FactoryOptions){
 		"no context":               func(o *driver.FactoryOptions) { o.Context = nil },
 		"no tools":                 func(o *driver.FactoryOptions) { o.Tools = nil },
+		"no prompt":                func(o *driver.FactoryOptions) { o.Prompt = nil },
 		"negative cleanup timeout": func(o *driver.FactoryOptions) { o.CleanupTimeout = -time.Second },
 		"negative flush timeout":   func(o *driver.FactoryOptions) { o.FinalFlushTimeout = -time.Second },
 		"negative budget":          func(o *driver.FactoryOptions) { o.Budget = &driver.Budget{MaxSteps: -1} },

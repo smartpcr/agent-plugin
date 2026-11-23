@@ -25,6 +25,7 @@ import (
 	fakemodel "github.com/smartpcr/agent-plugin/src/harness/internal/testkit/model"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools/core"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/tools/prompt"
 )
 
 var bg = context.Background()
@@ -171,9 +172,12 @@ func newRigWith(t *testing.T, opt func(*request.Options), turns ...fakemodel.Tur
 	r.sent = &recorder{Models: rt}
 	r.inbox = must(agent.OpenInbox(bg, sess))
 	mod := must(agent.OpenModel(bg, sess, agent.ModelOptions{Initial: agent.ModelSelection{Route: route}}))
+	// The prompt assembly with an empty config: no system prompt, so the
+	// pipeline's messages are what the requests hold (plan 17.1.1).
+	ps := must(prompt.New(root, tab, prompt.Config{}))
 	r.drv = must(driver.Start(driver.Options{
 		Context: root, Agent: stubAgent{ref: agent.Ref{Session: session.ID(id), Incarnation: 1}},
-		Session: sess, Inbox: r.inbox, Model: mod, Models: r.sent, Tools: svc,
+		Session: sess, Inbox: r.inbox, Model: mod, Models: r.sent, Tools: svc, Prompt: ps,
 	}))
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(bg, 10*time.Second)

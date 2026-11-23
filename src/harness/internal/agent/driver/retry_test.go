@@ -180,8 +180,9 @@ func TestTurnCancelAfterSurvivedStepCancelKeepsNewlyParkedInput(t *testing.T) {
 }
 
 // architecture.md F4: a cancel that lands while the driver is making a claim
-// durable stops that turn at once. The claimed input is not lost: it is in the
-// aborted turn's history and durable after point 16; parked input stays.
+// durable stops that turn at once. The claim is durable after point 16 and the
+// claimed input never runs: no step admitted it (M1-D-LOOP-1 A), so a reopened
+// inbox reports it discarded, and it is never pending again; parked input stays.
 func TestCancelDuringClaimRecoveryAbortsTheTurn(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -225,8 +226,11 @@ func TestCancelDuringClaimRecoveryAbortsTheTurn(t *testing.T) {
 			if got := turnEnds(t, evs); len(got) != 1 || got[0].Kind != event.ReasonAborted || got[0].Cause != string(agent.CauseUser) {
 				t.Fatalf("turn/end %+v, want aborted{user}", got)
 			}
-			if n := len(ofType(evs, "user/message")); n != tc.users {
-				t.Fatalf("%d user messages, want %d claimed", n, tc.users)
+			if n := len(ofType(evs, "user/message")); n != 0 {
+				t.Fatalf("%d user messages admitted by a turn cancelled at its claim", n)
+			}
+			if got := must(agent.OpenInbox(bg, r.sess)).Discarded(); len(got) != tc.users || got[0].Cause != agent.CauseUnadmitted || got[0].Turn != 1 {
+				t.Fatalf("discarded %+v, want the %d claimed", got, tc.users)
 			}
 			if !r.inbox.Durable() {
 				t.Fatal("the claim was left not durable")

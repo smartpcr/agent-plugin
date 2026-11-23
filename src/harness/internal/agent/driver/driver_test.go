@@ -16,6 +16,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store/memstore"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/clock"
 	fakemodel "github.com/smartpcr/agent-plugin/src/harness/internal/testkit/model"
@@ -28,7 +29,7 @@ const route vocab.RouteID = "r/a"
 type rig struct {
 	t     *testing.T
 	root  *cordis.Context
-	store *memstore.Store
+	store store.Store
 	sess  session.Handle
 	inbox *agent.Inbox
 	tr    *fakemodel.Transport
@@ -37,6 +38,8 @@ type rig struct {
 	requests chan int
 	// sent records every request the driver streamed, for the replay check.
 	sent *recorder
+	// prompt is the driver's prompter.
+	prompt *testPrompt
 	// skipReplay turns off the DH-T-AGENT-8 check run after the test, for a
 	// case whose log another writer changed.
 	skipReplay bool
@@ -52,7 +55,7 @@ type rigOptions struct {
 	// id names the session; "" is the test's name.
 	id string
 	// store is the session store; nil is a new memstore.
-	store *memstore.Store
+	store store.Store
 	// wrap wraps the session the driver, the inbox and the model write.
 	wrap func(session.Session) session.Session
 	// model replaces the scripted transport (turns is then unused).
@@ -61,6 +64,8 @@ type rigOptions struct {
 	failOK bool
 	// options edits the driver's options before Start.
 	options func(*driver.Options)
+	// prompt is the driver's prompter; nil is a testPrompt of defaultPrompt.
+	prompt *testPrompt
 }
 
 // counting reports each request on a channel once the script has answered it.
@@ -94,9 +99,9 @@ func newRig(t *testing.T, o rigOptions) *rig {
 	if id == "" {
 		id = "s-" + t.Name()
 	}
-	st := o.store
-	if st == nil {
-		st = memstore.New()
+	var st store.Store = memstore.New()
+	if o.store != nil {
+		st = o.store
 	}
 	sess := must(session.NewService(o.root, st, session.Config{}).Create(bg, nil,
 		session.CreateOptions{Header: session.Header{ID: id}}))
@@ -105,7 +110,10 @@ func newRig(t *testing.T, o rigOptions) *rig {
 	if o.wrap != nil {
 		live = o.wrap(sess)
 	}
-	r := &rig{t: t, root: o.root, store: st, sess: sess, requests: make(chan int, 64)}
+	if o.prompt == nil {
+		o.prompt = newTestPrompt(defaultPrompt)
+	}
+	r := &rig{t: t, root: o.root, store: st, sess: sess, requests: make(chan int, 64), prompt: o.prompt}
 	model := o.model
 	if model == nil {
 		r.tr = fakemodel.NewTransport(t, o.turns...)
@@ -118,7 +126,7 @@ func newRig(t *testing.T, o rigOptions) *rig {
 	mod := must(agent.OpenModel(bg, live, agent.ModelOptions{Initial: agent.ModelSelection{Route: route}}))
 	opts := driver.Options{
 		Context: o.root, Agent: stubAgent{ref: agent.Ref{Session: session.ID(id), Incarnation: 1}},
-		Session: live, Inbox: r.inbox, Model: mod, Models: r.sent, Tools: o.svc,
+		Session: live, Inbox: r.inbox, Model: mod, Models: r.sent, Tools: o.svc, Prompt: o.prompt,
 		Budget: o.budget, Hooks: o.hooks,
 	}
 	if o.clock != nil {

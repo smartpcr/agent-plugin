@@ -221,6 +221,9 @@ func (d *Driver) aborted(t *turnState) *event.Reason {
 // reason; nil when point 5 already closed the turn.
 func (d *Driver) steps(t *turnState, batch []vocab.Message) (*event.Reason, error) {
 	used, maxTokens := 0, false
+	// logged holds the ids of the batch's messages already in the log: a
+	// kept-open turn's insert. Claimed input is not; point 8 admits it.
+	var logged map[string]bool
 	for {
 		// Point 3.
 		if t.ctx.Err() != nil {
@@ -230,7 +233,7 @@ func (d *Driver) steps(t *turnState, batch []vocab.Message) (*event.Reason, erro
 			return d.stepLimit(), nil
 		}
 		used++
-		res, err := d.step(t, used, batch)
+		res, err := d.step(t, used, batch, logged)
 		if err != nil {
 			return nil, err
 		}
@@ -240,7 +243,7 @@ func (d *Driver) steps(t *turnState, batch []vocab.Message) (*event.Reason, erro
 		if !res.opened {
 			return res.reason, nil
 		}
-		batch = nil
+		batch, logged = nil, nil
 		maxTokens = maxTokens || res.maxTokens
 
 		// Point 14.
@@ -289,7 +292,10 @@ func (d *Driver) steps(t *turnState, batch []vocab.Message) (*event.Reason, erro
 		if err := d.insert(t.ctx, keep.Messages); err != nil {
 			return nil, err
 		}
-		batch = keep.Messages
+		batch, logged = keep.Messages, map[string]bool{}
+		for _, m := range keep.Messages {
+			logged[m.ID()] = true
+		}
 	}
 }
 
@@ -302,22 +308,9 @@ func (d *Driver) stepLimit() *event.Reason {
 func (d *Driver) insert(parent context.Context, msgs []vocab.Message) error {
 	var ds []event.Draft
 	for _, m := range msgs {
-		var (
-			dr  event.Draft
-			err error
-		)
-		switch m.Role() {
-		case vocab.RoleUser:
-			dr, err = event.UserMessage.Draft(event.Append(), event.UserMessagePayload{Message: m})
-		case vocab.RoleDeveloper:
-			dr, err = event.DeveloperMessage.Draft(event.Append(), event.MessagePayload{Message: m})
-		case vocab.RoleSystem:
-			dr, err = event.SystemMessage.Draft(event.Append(), event.MessagePayload{Message: m})
-		default:
-			err = fmt.Errorf("driver: a kept-open turn cannot insert a %s message", m.Role())
-		}
+		dr, err := messageDraft(m)
 		if err != nil {
-			return err
+			return fmt.Errorf("driver: a kept-open turn: %w", err)
 		}
 		ds = append(ds, dr)
 	}

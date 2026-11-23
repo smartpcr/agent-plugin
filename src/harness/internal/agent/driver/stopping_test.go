@@ -50,9 +50,11 @@ func TestKeepOpenInsertsItsMessagesAndRunsAStep(t *testing.T) {
 			order = append(order, e.Type())
 		}
 	}
-	want := []string{event.UserMessage.Name(), event.UserMessage.Name(), event.DeveloperMessage.Name(), event.SystemMessage.Name()}
+	// The step prompt's system/message leads, then the claimed user message,
+	// then the kept-open turn's three.
+	want := []string{event.SystemMessage.Name(), event.UserMessage.Name(), event.UserMessage.Name(), event.DeveloperMessage.Name(), event.SystemMessage.Name()}
 	if strings.Join(order, ",") != strings.Join(want, ",") {
-		t.Fatalf("inserted messages %v, want the claimed user message, then %v", order, want[1:])
+		t.Fatalf("inserted messages %v, want the prompt and the claimed user message, then %v", order, want[2:])
 	}
 	if got := turnEnds(t, evs); len(got) != 1 || got[0].Kind != event.ReasonCompleted {
 		t.Fatalf("turn/end %+v, want completed", got)

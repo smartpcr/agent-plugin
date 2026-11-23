@@ -18,6 +18,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/scope"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/tools/prompt"
 )
 
 // FactoryOptions are what the driver's factory builds agents with.
@@ -33,6 +34,10 @@ type FactoryOptions struct {
 	// Models and Tools are as in Options. Required.
 	Models Models
 	Tools  tools.Service
+	// Prompt is as in Options. nil injects the prompt service provided under
+	// prompt.Key on Context (the tools.prompt component); with neither, NewFactory
+	// refuses the composition.
+	Prompt Prompter
 	// Defaults is the default-model service, nil for none.
 	Defaults agent.DefaultModels
 	// Budget, Now, After, CleanupTimeout, FinalFlushTimeout and Hooks are as
@@ -56,6 +61,13 @@ func NewFactory(o FactoryOptions) (agent.Factory, error) {
 		return nil, errors.New("driver: NewFactory needs the driver's context, the session service, the scope table, the model runtime and the tool service")
 	case o.CleanupTimeout < 0 || o.FinalFlushTimeout < 0:
 		return nil, errors.New("driver: a cleanup timeout cannot be negative")
+	}
+	if o.Prompt == nil {
+		if ps, ok := prompt.Key.Lookup(o.Context); ok && ps != nil {
+			o.Prompt = ps
+		} else {
+			return nil, errors.New("driver: NewFactory needs the prompt assembly: set FactoryOptions.Prompt or provide " + prompt.Key.Name() + " on the driver's context")
+		}
 	}
 	if o.Budget != nil {
 		if err := o.Budget.Validate(); err != nil {
@@ -220,7 +232,7 @@ func (in *instance) Activate() error {
 	o := in.f.o
 	d, err := Start(Options{
 		Context: o.Context, Agent: in, Session: in.sess, Inbox: in.inbox, Model: in.model,
-		Models: o.Models, Tools: o.Tools, Budget: o.Budget, Now: o.Now, After: o.After,
+		Models: o.Models, Tools: o.Tools, Prompt: o.Prompt, Budget: o.Budget, Now: o.Now, After: o.After,
 		CleanupTimeout: o.CleanupTimeout, FinalFlushTimeout: o.FinalFlushTimeout, Hooks: o.Hooks,
 	})
 	if err != nil {

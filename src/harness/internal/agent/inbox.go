@@ -164,6 +164,9 @@ type Inbox struct {
 	// seen is the consumedWork fold: every id ever admitted, whatever became
 	// of it, with its first receipt.
 	seen map[string]Receipt
+	// discarded is the input a turn claimed but never admitted, as found when
+	// the inbox was opened.
+	discarded []DiscardedMessage
 	// dirty: a flush failed, so folded changes may not be durable yet; owed: a
 	// next-turn admission among them has not signalled Wake. The next flush that
 	// succeeds (any write, or Sync) clears both and pays the wake.
@@ -177,6 +180,8 @@ func OpenInbox(ctx context.Context, log InboxLog) (*Inbox, error) {
 		return nil, errorf(CodeInboxInvalid, "an inbox needs its session")
 	}
 	b := &Inbox{log: log, wake: make(chan struct{}, 1), pending: map[List][]InboxMessage{}, seen: map[string]Receipt{}}
+	var claims []DiscardedMessage
+	admitted := map[string]bool{}
 	const page = 256
 	for from, n := event.Offset(0), log.Len(); from < n; from += page {
 		evs, err := log.Read(ctx, from, page)
@@ -184,17 +189,66 @@ func OpenInbox(ctx context.Context, log InboxLog) (*Inbox, error) {
 			return nil, fmt.Errorf("agent: fold the inbox: %w", err)
 		}
 		for _, ev := range evs {
-			if ev.Type() != SplicedType.Name() {
+			switch ev.Type() {
+			case event.UserMessage.Name():
+				var p struct {
+					Message struct {
+						ID string `json:"id"`
+					} `json:"message"`
+				}
+				if json.Unmarshal([]byte(ev.Raw()), &p) == nil && p.Message.ID != "" {
+					admitted[p.Message.ID] = true
+				}
+				continue
+			case SplicedType.Name():
+			default:
 				continue
 			}
 			s, err := SplicedType.As(ev)
 			if err != nil {
 				return nil, fmt.Errorf("agent: fold the inbox at seq %d: %w", ev.Seq(), err)
 			}
+			if s.Removed > 0 && s.Outcome != nil && s.Outcome.Kind == OutcomeClaimed {
+				l := b.pending[s.List]
+				pos := min(s.Position, len(l))
+				for _, m := range l[pos:min(pos+s.Removed, len(l))] {
+					claims = append(claims, DiscardedMessage{Message: m, Turn: s.Outcome.Turn, Cause: CauseUnadmitted})
+				}
+			}
 			b.apply(s, ev.Seq())
 		}
 	}
+	for _, c := range claims {
+		if !admitted[c.Message.ID] {
+			b.discarded = append(b.discarded, c)
+		}
+	}
 	return b, nil
+}
+
+// CauseUnadmitted is the discard cause of input a turn claimed but never
+// admitted: the turn ended (a crash closed it interrupted, a cancel, a failed
+// model bind, a PreStep that replaced or rejected the batch) before the message
+// reached the log as a user/message.
+const CauseUnadmitted = "unadmitted"
+
+// DiscardedMessage is one claimed message that never ran, reported discarded.
+type DiscardedMessage struct {
+	Message InboxMessage
+	// Turn is the turn that claimed it.
+	Turn  int
+	Cause string
+}
+
+// Discarded is the input a turn claimed but never admitted, as found when the
+// inbox was opened (a resume), in claim order (M1-D-LOOP-1 A). Each is
+// discarded: its claim stays in the log, so it is never pending again and never
+// runs twice, and its id stays taken. A claim still being admitted by a live
+// driver is not reported until the session is reopened.
+func (b *Inbox) Discarded() []DiscardedMessage {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return slices.Clone(b.discarded)
 }
 
 // apply folds one splice; the caller holds mu or owns b.
@@ -383,8 +437,11 @@ func (b *Inbox) Durable() bool {
 	return !b.dirty
 }
 
-// ClaimTurn opens turn with the first next-turn item: turn/start, the claim and
-// the item's user/message are one group, durable before it returns. With nothing
+// ClaimTurn opens turn with the first next-turn item: turn/start and the claim
+// are one group, durable before it returns. The item's user/message is not
+// part of it: the driver admits the returned item at point 8, after the system
+// prompt (M1-D-LOOP-1 A); an item claimed but never admitted is reported by
+// Discarded once the session is reopened, and never runs. With nothing
 // pending it appends nothing and returns false: a wake that finds nothing opens
 // no turn.
 //
@@ -415,8 +472,8 @@ func (b *Inbox) ClaimTurn(ctx context.Context, turn int) (InboxMessage, bool, er
 }
 
 // ClaimStep takes every next-step item into the open turn at a step boundary:
-// one group of the claim and the items' user messages, durable before it
-// returns. With nothing pending it appends nothing.
+// the claim splice, durable before it returns; the driver admits the returned
+// items at the next step's point 8. With nothing pending it appends nothing.
 //
 // As with ClaimTurn, a failed flush after a successful append returns the
 // claimed items together with the error: they are taken, so the driver must
@@ -439,27 +496,30 @@ func (b *Inbox) ClaimStep(ctx context.Context, turn int) ([]InboxMessage, error)
 }
 
 // claimLocked appends and folds the claim of list's first n items, then
-// flushes. claimed reports that the claim was folded (the items left pending),
-// which is true also when only the flush failed.
+// flushes. The group is lead and the claim splice only: the claimed messages
+// are returned to the driver, which admits them at point 8, after the system
+// prompt (M1-D-LOOP-1 A). claimed reports that the claim was folded (the items
+// left pending), which is true also when only the flush failed.
 func (b *Inbox) claimLocked(ctx context.Context, list List, n, turn int, lead ...event.Draft) (claimed bool, err error) {
 	s := Splice{List: list, Position: 0, Removed: n, Outcome: &SpliceOutcome{Kind: OutcomeClaimed, Turn: turn}}
 	d, err := SplicedType.Draft(s)
 	if err != nil {
 		return false, err
 	}
-	group := append(slices.Clone(lead), d)
 	for _, m := range b.pending[list][:n] {
-		msg, err := m.Message()
-		if err != nil {
+		if _, err := m.Message(); err != nil {
 			return false, fmt.Errorf("agent: claim %q: %w", m.ID, err)
 		}
-		um, err := event.UserMessage.Draft(event.Append(), event.UserMessagePayload{Message: msg})
-		if err != nil {
-			return false, fmt.Errorf("agent: claim %q: %w", m.ID, err)
-		}
-		group = append(group, um)
 	}
-	rs, err := b.log.AppendGroup(ctx, group)
+	group := append(slices.Clone(lead), d)
+	var rs []event.Receipt
+	if len(group) == 1 {
+		var r event.Receipt
+		r, err = b.log.Append(ctx, d)
+		rs = []event.Receipt{r}
+	} else {
+		rs, err = b.log.AppendGroup(ctx, group)
+	}
 	if err != nil {
 		return false, fmt.Errorf("agent: claim: %w", err)
 	}
