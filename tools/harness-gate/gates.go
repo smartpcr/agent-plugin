@@ -188,7 +188,7 @@ func Gates(c *Config) []Gate {
 		{Name: "modules", Title: "go mod tidy -diff and go mod verify per module, the module rules (RM-1..RM-4) and a reason on every pin (RM-10)", Run: c.modulesGate},
 		{Name: "test", Title: "go test -race -shuffle=on -count=1 per module, CGO_ENABLED=1", Run: c.testGate},
 		{Name: "coverage", Title: fmt.Sprintf("coverage merged across processes, %d%% of statements per package", CoverageFloor), Run: c.coverageGate},
-		{Name: "trace", Title: "tools/harness-trace verify", Run: c.traceGate},
+		{Name: "trace", Title: "tools/harness-trace verify, and trace-tests: every DH-T ID of DH-S-1..built-through named by a test or validly deferred", Run: c.traceGate},
 		{Name: "scenario-index", Title: "every authored DH-E-* scenario test is in " + acceptance.IndexPath + " exactly once, and every indexed one authored so far has its test", Run: c.scenarioIndexGate},
 		{Name: "budget", Title: "performance budgets (TestBudget*) with DSH_* and GO* overrides cleared", Run: c.budgetGate},
 		{Name: "cross-compile", Title: "cmd/dsh for linux, darwin, windows on amd64 and arm64 with CGO_ENABLED=0", Run: c.crossCompileGate},
@@ -606,9 +606,17 @@ func readProfile(path string) (*Profile, error) {
 	return ParseProfile(bytes.NewReader(data))
 }
 
-// traceGate runs the traceability check (QG-9). A root without the tool fails: the
-// check cannot be skipped.
+// traceGate runs the two traceability checks (QG-9) and fails when either fails,
+// naming both failures when both do: tools/harness-trace verify, then the test
+// trace of trace-tests (M1-G-CLOSE-9, step 18.1.4) for DH-S-1 through the acceptance
+// index's built-through, the subcommand's default stage. A root without the tool, or
+// without impl.md or the index, fails: neither check can be skipped.
 func (c *Config) traceGate(ctx context.Context, w io.Writer) error {
+	return errors.Join(c.traceVerify(ctx, w), c.traceTests(w))
+}
+
+// traceVerify runs "tools/harness-trace verify" against the root.
+func (c *Config) traceVerify(ctx context.Context, w io.Writer) error {
 	dir := filepath.Join(c.Root, "tools", "harness-trace")
 	if !isFile(filepath.Join(dir, "go.mod")) {
 		return fmt.Errorf("tools/harness-trace not found under %s: the traceability check cannot run (QG-9)", c.Root)
@@ -618,6 +626,25 @@ func (c *Config) traceGate(ctx context.Context, w io.Writer) error {
 		return fmt.Errorf("tools/harness-trace verify: %w\n%s", err, out)
 	}
 	fmt.Fprintf(w, "trace: %s\n", lastLine(out))
+	return nil
+}
+
+// traceTests runs the check of "harness-gate trace-tests" with no --stage: every
+// DH-T ID that a step of DH-S-1..built-through requires is named by a test or
+// deferred by a doc.go deferral that impl.md backs. On a failure it prints the
+// subcommand's full report and returns the same lines the subcommand prints after
+// "FAILED:".
+func (c *Config) traceTests(w io.Writer) error {
+	r, err := acceptance.TraceTests(c.Root, "")
+	if err != nil {
+		return fmt.Errorf("trace-tests: %w", err)
+	}
+	if err := r.Err(); err != nil {
+		r.Write(w)
+		return fmt.Errorf("harness-gate trace-tests: FAILED:\n%w", err)
+	}
+	req, tag, def, miss := r.Totals("")
+	fmt.Fprintf(w, "trace-tests: DH-S-1..%s: required %d, tagged %d, deferred %d, missing %d\n", r.Through, req, tag, def, miss)
 	return nil
 }
 

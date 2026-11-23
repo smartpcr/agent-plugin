@@ -7,7 +7,8 @@
 //
 // The gates, in order: gofmt, vet (go vet and the project's own analyzers), test
 // (race, shuffle), coverage (merged across processes, 85% per package),
-// trace (tools/harness-trace verify), scenario-index (test/harness/acceptance-index.yaml
+// trace (tools/harness-trace verify, then the trace-tests check through built-through),
+// scenario-index (test/harness/acceptance-index.yaml
 // against the authored *_scenario_test.go files), budget (performance budgets) and
 // cross-compile (cmd/dsh for six targets). See README.md.
 //
