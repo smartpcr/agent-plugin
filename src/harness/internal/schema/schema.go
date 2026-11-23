@@ -38,7 +38,11 @@ type Type struct {
 // Option adjusts a derivation.
 type Option func(*options)
 
-type options struct{ open, tolerant bool }
+type options struct {
+	open, tolerant bool
+	defaults       any  // the Go value of Defaults; nil when none
+	hasDefaults    bool // Defaults was given
+}
 
 // Open admits unknown keys at the root object: they are kept out of the decoded
 // value instead of being reported. Nested objects stay closed.
@@ -50,6 +54,15 @@ func Open() Option { return func(o *options) { o.open = true } }
 // the type without the option, so a value that holds unknown keys still fails
 // Validate. Only Decode drops them, before it checks what is left.
 func Tolerant() Option { return func(o *options) { o.tolerant = true } }
+
+// Defaults writes the value v, of the derived type, into the document as the
+// default annotation of every property v holds (DH-ADR-SCHEMA-3): the annotation
+// is the Go value serialised, so it cannot disagree with the type. A default that
+// breaks the shape's own constraints (a bound, an enum, a pattern) fails the
+// derivation, naming its path. The fingerprint ignores annotations, so it is the
+// type's own; a type derived with Defaults is not cached. Decode then reads input
+// onto a value holding v, and an absent field keeps its default.
+func Defaults(v any) Option { return func(o *options) { o.defaults, o.hasDefaults = v, true } }
 
 type cacheKey struct {
 	t              reflect.Type
@@ -156,6 +169,9 @@ func ForType(t reflect.Type, opts ...Option) (*Type, error) {
 	var o options
 	for _, opt := range opts {
 		opt(&o)
+	}
+	if o.hasDefaults {
+		return withDefaults(t, o)
 	}
 	key := cacheKey{t, o.open, o.tolerant}
 	if v, ok := cache.Load(key); ok {

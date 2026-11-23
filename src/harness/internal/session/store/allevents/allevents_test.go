@@ -10,6 +10,7 @@ import (
 	"go/token"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -27,6 +28,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/retry"
 	_ "github.com/smartpcr/agent-plugin/src/harness/internal/tools"
 
+	"github.com/smartpcr/agent-plugin/src/harness/internal/schema"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/golden"
@@ -60,7 +62,7 @@ func notes(t *testing.T) []store.InventoryNote {
 // type, version and fingerprint in it is accounted for in persisted.notes (the
 // core types' notes stay in session/store/testdata).
 //
-//dsh:test DH-T-STORE-10
+//dsh:test DH-T-STORE-10, DH-T-ZOD-9
 func TestInventory(t *testing.T) {
 	cur, err := store.Inventory(event.Default())
 	if err != nil {
@@ -250,6 +252,82 @@ func TestStoredRowsDecode(t *testing.T) {
 		a, err := retry.AbandonedType.Decode(have[tv{"llm/retry-abandoned", v}])
 		if err != nil || a.Failure == nil || a.Failure.RetryAfter != 3*time.Second {
 			t.Fatalf("llm/retry-abandoned v%d = %+v, %v", v, a.Failure, err)
+		}
+	}
+}
+
+// shapes returns the derived document of every durable event payload the
+// program declares. The catalogued component configs are not walked yet: the
+// config of util.watch does not derive (M1-G-FND-21.4).
+func shapes() map[string]*schema.Type {
+	out := map[string]*schema.Type{}
+	for _, info := range event.Default().Types() {
+		out["event "+info.Name] = info.Schema
+	}
+	return out
+}
+
+func render(m map[string]*schema.Type) string {
+	names := make([]string, 0, len(m))
+	for n := range m {
+		names = append(names, n)
+	}
+	slices.Sort(names)
+	var b strings.Builder
+	for _, n := range names {
+		b.WriteString(n + " " + string(m[n].JSONSchema()) + "\n")
+	}
+	return b.String()
+}
+
+// childOut names the file a re-executed copy of this test writes its documents to.
+const childOut = "DSH_ALLEVENTS_DOCS"
+
+// TestDerivationIsStableAcrossProcesses is DH-T-ZOD-2 over every durable event
+// payload: deriving in this process and again in a second process gives the same
+// bytes; a derivation error fails. (Property order equals field order:
+// internal/schema TestDocument.)
+//
+//dsh:test DH-T-ZOD-2
+func TestDerivationIsStableAcrossProcesses(t *testing.T) {
+	here := render(shapes())
+	if out := os.Getenv(childOut); out != "" {
+		if err := os.WriteFile(out, []byte(here), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	if again := render(shapes()); again != here {
+		t.Fatal("deriving twice in one process changed a document")
+	}
+	file := filepath.Join(t.TempDir(), "docs.txt")
+	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestDerivationIsStableAcrossProcesses$", "-test.count=1",
+		"-test.gocoverdir="+os.Getenv("GOCOVERDIR"))
+	cmd.Env = append(os.Environ(), childOut+"="+file)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("second process: %v\n%s", err, out)
+	}
+	if there := read(t, file); there != here {
+		t.Fatalf("a second process derived other documents:\n%s", golden.Diff(here, there))
+	}
+}
+
+// TestDocumentsAreValidDraft2020 is DH-T-ZOD-10's first clause over every
+// durable event payload: each document, as an export would write it, is resolved by
+// the module as draft 2020-12 (schema.FromJSON resolves it) and keeps its
+// fingerprint. (The second clause, function-like strings kept as data:
+// internal/schema TestFromJSON. No export command exists yet: M1-G-FND-21.4.)
+//
+//dsh:test DH-T-ZOD-10
+func TestDocumentsAreValidDraft2020(t *testing.T) {
+	for name, typ := range shapes() {
+		back, err := schema.FromJSON(typ.JSONSchema())
+		if err != nil {
+			t.Errorf("%s: the module refuses the document: %v", name, err)
+			continue
+		}
+		if back.Fingerprint() != typ.Fingerprint() {
+			t.Errorf("%s: the reloaded document fingerprints %s, the derived %s", name, back.Fingerprint(), typ.Fingerprint())
 		}
 	}
 }
