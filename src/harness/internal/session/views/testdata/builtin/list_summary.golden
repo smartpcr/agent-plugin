@@ -1,0 +1,8 @@
+{
+  "blank": false,
+  "prompts": 4,
+  "turns": 3,
+  "first_prompt": 1,
+  "last_prompt_at": 29000,
+  "preview": "List the files in this directory, please."
+}
