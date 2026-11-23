@@ -12,65 +12,71 @@ import (
 )
 
 // TestRealMultiStepTurnIsBracketed: a real multi-step turn is bracketed and
-// reconstructable (areas/agent-loop.md DH-E-AGENT-1; DH-D-AGENT-3). Authored in
-// DH-S-11; executed in DH-S-17, which requires the agent loop (DH-S-11) and the
-// headless launcher (DH-S-16).
+// reconstructable (areas/agent-loop.md DH-E-AGENT-1; DH-D-AGENT-3, on the
+// signed-in client route of areas/llm.md DH-D-LLM-12). Authored in DH-S-11 and
+// retargeted onto the signed-in client routes by gap-closure-plan 17.4.4
+// (M1-D-CLOSE-4 A); executed in DH-S-17, which requires the agent loop (DH-S-11)
+// and the headless launcher (DH-S-16).
 //
-// Given an empty temporary home, profile headless, one real provider and a small
-// model, a temporary workspace holding one text file and a recording proxy between
-// dsh and the provider, when one prompt that requires reading the file is sent and
-// the session goes idle, then the exported log holds one turn/start and one
+// Given an empty temporary home, profile headless, no API key anywhere, the
+// user's own installed official client signed in as themselves with its route
+// registered by a layer and a small model, and a temporary workspace holding one
+// text file, when, per route, one prompt that requires reading the file is sent
+// and the session goes idle, then the exported log holds one turn/start and one
 // turn/end{completed}, at least two steps each closed by its step/end in order,
 // exactly one settlement per attempt (each step's attempts are settled, the last
-// by assistant/message), a tool/result for every tool/call, and every request
-// rebuilt from the log equals the body the proxy captured. Cleanup: the launcher
-// stops dsh and deletes the home; the workspace lies under t.TempDir(). On failure
-// the export (its path is logged) and the proxy capture (in the failure message)
-// are kept.
+// by assistant/message), a tool/result for every tool/call, and the client
+// invocation rebuilt from the log for every settlement equals the one it
+// recorded: the argument list and its digest, and the standard input dsh wrote,
+// by digest (the client-invocation boundary of M1-D-PIPE-4 A, where a keyed
+// route had a recording proxy; see TestRequestsReceivedEqualRequestsRebuilt).
+// Cleanup: the launcher stops dsh and deletes the home; the workspace lies under
+// t.TempDir(); nothing of the user's sign-in is touched. On failure the export
+// (its path is logged) and the client invocations are kept.
 //
-// Inputs: DSH_DEEPSEEK_API_KEY is the real key, handed to the program as
-// DEEPSEEK_API_KEY; DSH_SCENARIO_AGENT1_OFFICIAL the base URL of DeepSeek's
-// Messages endpoint, fronted by the proxy as {official}; DSH_SCENARIO_AGENT1_MODEL
-// a small model on route deepseek-official; DSH_SCENARIO_AGENT1_LAYER a headless
-// layer, a template over {official} and {workspace}, with no title route;
-// DSH_SCENARIO_AGENT1_PROMPT a prompt that requires reading notes.txt with
-// scenario_read; DSH_SCENARIO_AGENT1_REPLAY the session/query text whose result
-// is the request bodies rebuilt from the log.
+// The legs: claude-code must pass; copilot-cli is run and recorded either way
+// (M1-D-LOOP-6 A; forEachRoute).
+//
+// Inputs: DSH_SCENARIO_AGENT1_LAYER a headless layer, a template over {route}
+// and {workspace}, that registers that client route, with no title route;
+// DSH_SCENARIO_<route>_MODEL (<route> is CLAUDE_CODE or COPILOT_CLI) a small
+// model; DSH_SCENARIO_AGENT1_PROMPT a prompt that requires reading notes.txt
+// with scenario_read; DSH_SCENARIO_AGENT1_REPLAY the session/query text whose
+// result is the client invocations rebuilt from the log (rebuiltInvocations).
 //
 //dsh:scenario DH-E-AGENT-1
 func TestRealMultiStepTurnIsBracketed(t *testing.T) {
-	key := need(t, "DSH_DEEPSEEK_API_KEY", "a real DeepSeek API key")
-	officialURL := need(t, "DSH_SCENARIO_AGENT1_OFFICIAL", "the base URL of DeepSeek's Messages endpoint")
-	model := need(t, "DSH_SCENARIO_AGENT1_MODEL", "a small model on deepseek-official")
-	layerT := need(t, "DSH_SCENARIO_AGENT1_LAYER", "a headless layer routing the model through {official}")
+	selfCheckInvocationOracle(t)
+	layerT := need(t, "DSH_SCENARIO_AGENT1_LAYER", "a headless layer over {route} and {workspace} that registers that client route")
 	prompt := need(t, "DSH_SCENARIO_AGENT1_PROMPT", "a prompt that requires reading notes.txt")
-	replay := need(t, "DSH_SCENARIO_AGENT1_REPLAY", "the session/query text that rebuilds the requests")
+	replay := need(t, "DSH_SCENARIO_AGENT1_REPLAY", "the session/query text that rebuilds the client invocations")
+	bin := dshBinary(t)
+	forEachRoute(t, func(t *testing.T, r clientRoute) {
+		model := r.model(t)
+		ws := t.TempDir()
+		writeFiles(t, ws, map[string]string{"notes.txt": "The meeting moved to Thursday.\n"})
+		vars := map[string]string{"workspace": filepath.ToSlash(ws), "route": r.ID}
+		h := startSDK(t, bin, nil, []string{"--layer", writeLayer(t, expand(layerT, vars))}, readTool(ws, nil))
+		session := h.create(t, &protocol.ModelRoute{Provider: r.ID, Model: model})
+		h.keepExport(t, session)
 
-	ws := t.TempDir()
-	writeFiles(t, ws, map[string]string{"notes.txt": "The meeting moved to Thursday.\n"})
-	proxy := startProxy(t, map[string]string{"official": officialURL})
-	vars := map[string]string{"workspace": filepath.ToSlash(ws), "official": proxy.base("official")}
-	h := startSDK(t, dshBinary(t), []string{"DEEPSEEK_API_KEY=" + key},
-		[]string{"--layer", writeLayer(t, expand(layerT, vars))}, readTool(ws, nil))
-	session := h.create(t, &protocol.ModelRoute{Provider: "deepseek-official", Model: model})
-	h.keepExport(t, session)
-
-	run := h.awaitRun(t, session, h.prompt(t, session, expand(prompt, vars)), 10*time.Minute)
-	all := h.history(t, session)
-	logRequestIDs(t, all)
-	if n := len(ofType(all, "turn/start")); n != 1 {
-		t.Fatalf("%d turn/start, want 1", n)
-	}
-	if end := turnEnd(t, all); end.Reason.Kind != "completed" {
-		t.Fatalf("the turn ended %+v, want completed", end.Reason)
-	}
-	evs := inRun(all, run.FirstSeq, run.LastSeq)
-	steps := assertBracketedSteps(t, evs)
-	if steps < 2 {
-		t.Fatalf("the turn has %d steps, want at least two (a tool call, then the answer)", steps)
-	}
-	assertCallsPaired(t, evs)
-	assertRebuiltEqualSent(t, h, session, replay, sentBodies(proxy, "official"))
+		run := h.awaitRun(t, session, h.prompt(t, session, expand(prompt, vars)), 10*time.Minute)
+		all := h.history(t, session)
+		logInvocations(t, all)
+		if n := len(ofType(all, "turn/start")); n != 1 {
+			t.Fatalf("%d turn/start, want 1", n)
+		}
+		if end := turnEnd(t, all); end.Reason.Kind != "completed" {
+			t.Fatalf("the turn ended %+v, want completed", end.Reason)
+		}
+		evs := inRun(all, run.FirstSeq, run.LastSeq)
+		steps := assertBracketedSteps(t, evs)
+		if steps < 2 {
+			t.Fatalf("the turn has %d steps, want at least two (a tool call, then the answer)", steps)
+		}
+		assertCallsPaired(t, evs)
+		assertInvocationsRebuilt(t, h, session, replay, ofType(all, "assistant/message", "assistant/attempt"), r)
+	})
 }
 
 // assertBracketedSteps checks that evs holds steps opened and closed in order,

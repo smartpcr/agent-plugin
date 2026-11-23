@@ -537,41 +537,63 @@ of `DH-T-AGENT-8` runs.
 
 ### 9.2 Real-environment scenarios
 
-Each needs a real model API key supplied at run time through the credential store and the
-built `dsh` binary with a temporary harness home. The controller is `go test` under the
-scenario build tag; it runs on the developer's or the credentialed CI machine.
+Each needs the built `dsh` binary with a temporary harness home and a real model. Under
+OWNER-2 (no API key; real-model checks only through the user's own signed-in Claude and
+Copilot) the model is reached through the signed-in client routes of
+[llm.md DH-D-LLM-12](llm.md#dh-d-llm-12): the user's installed official client (Claude
+Code or the GitHub Copilot CLI), signed in by the user beforehand, which `dsh` starts as a
+child process and never reads a token of (M1-D-PIPE-3 A). No key is supplied anywhere; the
+test kit's launcher removes every credential-shaped name from `dsh`'s environment, and the
+route removes them again from the client's. The four scenarios were retargeted onto these
+routes by `docs/stories/harness-DSH-M1/gap-closure-plan.md` step 17.4.4 (M1-D-CLOSE-4 A).
+Each runs once per route, `claude-code` and `copilot-cli`, as a subtest; the `claude-code`
+leg must pass and the `copilot-cli` leg is run and its result recorded either way
+(M1-D-LOOP-6 A). The controller is `go test` under the scenario build tag; it runs on the
+operator's workstation, where the client is signed in as the operator (a hosted runner
+cannot hold a signed-in session until gap-closure-plan 19.2 says how).
+
+**Why the recording proxy is gone.** On a keyed route a loopback proxy between `dsh` and the
+provider recorded each request body. A client route starts the vendor's own client, which
+talks to its vendor itself, so no proxy can sit between them. The guarantee that what was
+sent equals what the log rebuilds (SP-1) holds at the **client-invocation boundary**
+(M1-D-PIPE-4 A, [llm.md DH-ADR-LLM-10](llm.md#dh-adr-llm-10)): every settlement records the
+argument list `dsh` started the client with (the attempt directory written as `{attempt}`),
+its digest, and the digest of the standard input `dsh` wrote. A scenario asks the host to
+rebuild those from the log and compares them. That the client received exactly those bytes
+is proved locally against a stand-in client (`DH-T-LLM-20`, `DH-T-LLM-24`); what the client
+then sends its vendor is declared opaque.
 
 <a id="dh-e-agent-1"></a>
 #### DH-E-AGENT-1 A real multi-step turn is bracketed and reconstructable
-- **Proves.** DH-D-AGENT-3.
-- **Given.** An empty temporary home; profile `headless`; one real provider and a small model; a temporary workspace holding one text file; a recording proxy between `dsh` and the provider.
-- **When.** The controller starts `dsh`, sends one prompt that requires reading the file, and waits for idle.
-- **Then.** The exported log holds one `turn/start` and one `turn/end{completed}`, at least two bracketed steps, one settled record per attempt and a result for every call. Every request rebuilt from the log equals the body the proxy captured.
-- **Cleanup.** Stop `dsh`; delete the home and workspace. On failure keep the export and the proxy capture.
+- **Proves.** DH-D-AGENT-3, on the signed-in client route.
+- **Given.** An empty temporary home; profile `headless`; no API key anywhere; the user's own installed client on the `PATH`, signed in by the user, its route (`claude-code`, then `copilot-cli`) registered by a configuration layer, and a small model; a temporary workspace holding one text file; one SDK client tool that reads it. File: `src/harness/internal/testkit/scenarios/agent_turn_scenario_test.go`, test `TestRealMultiStepTurnIsBracketed`, one subtest per route.
+- **When.** Per route, the controller starts `dsh`, sends one prompt that requires reading the file, waits for idle, then asks the host twice to rebuild from the log the client invocation of every settlement.
+- **Then.** The exported log holds one `turn/start` and one `turn/end{completed}`, at least two bracketed steps, one settled record per attempt and a result for every call. The two rebuilds are byte-identical; each settlement records the invocation of the route's client with a client session id of its own; the rebuilt argument list, its digest and the standard-input digest equal the recorded ones, one for one, and the rebuilt standard input digests (SHA-256, recomputed by the scenario) to the recorded digest. The `claude-code` leg must pass; the `copilot-cli` leg is recorded either way.
+- **Cleanup.** Stop `dsh`; delete the home and workspace. Nothing of the user's sign-in or client settings is read or changed. On failure keep the export and the logged client invocations.
 
 <a id="dh-e-agent-2"></a>
 #### DH-E-AGENT-2 Cancelling a real stream keeps what was shown and records the cause
-- **Proves.** DH-D-AGENT-5.
-- **Given.** An empty temporary home; profile `headless`; one real provider and a small model, its key supplied at run time; a recording proxy between `dsh` and the provider; a prompt that produces a long answer.
-- **When.** After the first chunk frames arrive the controller cancels with cause `user` and `Keep`, waits for idle, then sends "repeat your last sentence".
-- **Then.** The first turn ends `aborted` with cause `user`; an `interrupted` assistant message holds the delivered text; the provider connection is closed; the second request, read from the proxy, contains that text.
-- **Cleanup.** Stop `dsh`; delete the home. On failure keep the export and the proxy capture.
+- **Proves.** DH-D-AGENT-5, on the signed-in client route.
+- **Given.** An empty temporary home; profile `headless`; no API key anywhere; the user's own installed client, signed in, its route registered by a layer, and a small model; a prompt that produces a long answer. File: `agent_cancel_scenario_test.go`, test `TestCancelledStreamKeepsWhatWasShown`, one subtest per route.
+- **When.** Per route, after the first text chunk arrives the controller cancels with cause `user` and `Keep`, waits for idle, then sends "repeat your last sentence", and asks the host twice to rebuild the client invocations from the log.
+- **Then.** The first turn ends `aborted` with cause `user`; its one settlement is an `interrupted` assistant message that holds the delivered text, has no tool call and records the invocation of the client that was stopped. No chunk of the first turn is streamed after it ended (that the cancel stops the client's whole process tree is proved locally by `DH-T-LLM-23` and `DH-T-LLM-27`). Every settlement's invocation equals the one rebuilt from the log, as in DH-E-AGENT-1, and the standard input of the second turn's first attempt, rebuilt from the log and matching its recorded digest, contains the delivered text. This replaces the keyed route's proxy checks (the provider connection closed; the second request body read from the proxy). The `claude-code` leg must pass; the `copilot-cli` leg is recorded either way.
+- **Cleanup.** Stop `dsh`; delete the home. Nothing of the user's sign-in is touched. On failure keep the export and the logged client invocations.
 
 <a id="dh-e-agent-3"></a>
 #### DH-E-AGENT-3 Stopping and killing the host leave an honest log
 - **Proves.** DH-D-AGENT-6.
-- **Given.** An empty temporary home on the real SQLite store; profile `headless`; one real provider and a small model, its key supplied at run time; a temporary workspace; the shell tool under the platform's real sandbox; a prompt that starts a shell command sleeping 60 seconds.
-- **When.** Run A: while the command runs, the controller asks the host to stop (interrupt signal; console control event on Windows). Run B: the same, but the process is killed. In both a second `dsh` then opens the home and resumes the session.
-- **Then.** Run A: before any resume the database already holds a result for the call, `step/end` and `turn/end{aborted, disposed}`; no child process remains. Run B: resume appends an `outcome unknown` result and the closers; the turn is not continued. In both, sequence numbers have no gap.
-- **Cleanup.** Kill leftover processes by the recorded process ids; delete the home. On failure keep the database file.
+- **Given.** An empty temporary home on the real SQLite store; profile `headless`; no API key anywhere; the user's own installed client, signed in, its route registered by a layer, and a small model; a temporary workspace; the shell tool under the platform's real sandbox; a prompt that starts a shell command sleeping 60 seconds. File: `agent_stop_kill_scenario_test.go`, test `TestStopAndKillLeaveAnHonestLog`, one subtest per route with runs `A stop` and `B kill`.
+- **When.** Per route. Run A: while the command runs, the controller asks the host to stop (interrupt signal; console control event on Windows). Run B: the same, but the process is killed. In both a second `dsh` then opens the home and resumes the session.
+- **Then.** Run A: before any resume the database already holds a result for the call, `step/end` and `turn/end{aborted, disposed}`; no child process remains. Run B: resume appends an `outcome unknown` result and the closers; the turn is not continued. In both, sequence numbers have no gap and every settlement records the invocation of the route's client. The client runs only during an attempt and has returned the shell call unexecuted before the command starts (M1-D-PIPE-6 A), so the stop and the kill meet the shell tool's child, not the client.
+- **Cleanup.** Kill leftover processes by the recorded process ids; delete the home. Nothing of the user's sign-in is touched. On failure keep the database file.
 
 <a id="dh-e-agent-4"></a>
 #### DH-E-AGENT-4 The budget stops a real tool loop
 - **Proves.** DH-D-AGENT-3.
-- **Given.** An empty temporary home; profile `headless` with `budget.maxSteps: 2`; one real provider and a small model, its key supplied at run time; a temporary workspace holding four small files; a prompt that needs at least four tool calls in sequence (read each file in turn).
-- **When.** The controller sends the prompt, waits for idle, then sends "continue".
-- **Then.** The first turn ends as `budget{limit: steps, value: 2}` with every call paired; the second turn starts from that history and makes progress.
-- **Cleanup.** Stop `dsh`; delete the home and workspace. On failure keep the export.
+- **Given.** An empty temporary home; profile `headless` with `budget.maxSteps: 2`; no API key anywhere; the user's own installed client, signed in, its route registered by a layer, and a small model; a temporary workspace holding four small files; a prompt that needs at least four tool calls in sequence (read each file in turn). File: `agent_budget_scenario_test.go`, test `TestBudgetStopsARealToolLoop`, one subtest per route.
+- **When.** Per route, the controller sends the prompt, waits for idle, then sends "continue".
+- **Then.** The first turn ends as `budget{limit: steps, value: 2}` with every call paired; each call came back from the client unexecuted and was run once by the harness (one SDK tool request per `tool/result`); every settlement records the invocation of the route's client. The second turn starts from that history and makes progress.
+- **Cleanup.** Stop `dsh`; delete the home and workspace. Nothing of the user's sign-in is touched. On failure keep the export.
 
 Nothing here has been run. A scenario that is missing, skipped or blocked is open, not passed.
 

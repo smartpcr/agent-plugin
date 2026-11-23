@@ -599,10 +599,19 @@ Real-environment scenarios (not run; a local mock is not a substitute):
 <a id="dh-e-toolchain-1"></a>
 #### DH-E-TOOLCHAIN-1 Record against the real model, then replay without a key
 
-- **Given** a clean checkout on a hosted Linux runner, a `dsh` binary built from that commit, a model API key supplied at run time as a secret, and one scenario directory that holds only a manifest and a workspace seed.
-- **When** the controller runs the replay package in `record` mode for that scenario, then removes the key from the environment and runs it in `replay` mode twice.
-- **Then** record writes a session log and, for a file-changing scenario, the product's workspace equals `workspace.expected/`; both replays pass with no network access to the model host; the fixture directory has no differences after the replays; the run report lists the scenario as executed, not skipped.
-- **Cleanup.** Temporary home and workspace directories are removed by the test. On failure, keep the child's standard error and the unnormalised log as job artifacts.
+> **Retargeted (M1 story, gap-closure-plan 17.4.4, M1-D-CLOSE-4 A).** Under owner rule
+> OWNER-2 (no API key; real-model checks only through the user's own signed-in Claude and
+> Copilot) the record run uses the signed-in client routes of
+> [areas/llm.md DH-D-LLM-12](../areas/llm.md#dh-d-llm-12) instead of a key, and the replay
+> runs with no client, no sign-in and no network. A hosted runner cannot hold a signed-in
+> session, so the record runs on the operator's workstation until gap-closure-plan 19.2
+> (M1-G-TOOL-16) says how a session reaches a runner. The title is kept as the trace
+> records it: "without a key" still holds, and the replay now also needs no client.
+
+- **Given** a clean checkout, a `dsh` binary built from that commit, no API key anywhere, the user's own installed official client (Claude Code, then the GitHub Copilot CLI) on the `PATH` and signed in by the user beforehand, and one scenario directory that holds only a manifest and a workspace seed. File: `src/harness/internal/testkit/scenarios/toolchain_record_replay_scenario_test.go`, test `TestRecordThenReplayWithoutAKey`, one subtest per route (`claude-code` must pass; `copilot-cli` is recorded either way, M1-D-LOOP-6 A).
+- **When** per route, the controller runs the replay package in `record` mode for that scenario on that route (on a copy, so the checkout is never written), then runs it in `replay` mode twice with every client's configuration home pointed at an empty directory, a stand-in for each client program first on the `PATH` that records any start, and every proxy variable naming a listener that counts and refuses.
+- **Then** record writes a session log and, for a file-changing scenario, the product's workspace equals `workspace.expected/`; both replays pass with no client started (no stand-in ran), no sign-in in reach and no network access to any model host; the fixture directory has no differences after the replays; the run report lists the scenario as executed, not skipped.
+- **Cleanup.** Temporary home, workspace, empty configuration-home and stand-in directories are removed by the test. Nothing of the user's sign-in is read or changed. On failure, keep the child's standard error and the unnormalised log (the copy's path is logged).
 
 <a id="dh-e-toolchain-2"></a>
 #### DH-E-TOOLCHAIN-2 A release rehearsal yields a runnable binary on every platform
