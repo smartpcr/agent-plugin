@@ -17,6 +17,7 @@ heartbeat restored:          Active
 [Info] HeartbeatPlugin beat: hello from the database
 [Info] HeartbeatPlugin beat: hello from the database
 [Info] HeartbeatPlugin heartbeat every 150ms
+[Debug] loader apply: beat2
 loaded from <TMP>/cordis-sample.json - edit it and watch it reload
 [Info] HeartbeatPlugin beat: hello from the database
 [Info] HeartbeatPlugin beat: hello from the database
