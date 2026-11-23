@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	msqlite "modernc.org/sqlite"
@@ -209,6 +210,9 @@ type Store struct {
 	// broken is set when a rollback failed: the outcome of that transaction is
 	// unknown, so the store refuses further work until reopened.
 	broken error
+	// unusable is broken's message, set with it (markBroken): reads check it
+	// without wmu.
+	unusable atomic.Pointer[string]
 
 	// cmu serializes Close from its first check to its last teardown step: a
 	// concurrent Close waits for it and then sees its outcome (done, or the
@@ -546,7 +550,7 @@ func (s *Store) writeLocked(ctx context.Context, fn func(tx *sql.Tx) error) erro
 	}
 	if err := fn(tx); err != nil {
 		if rerr := rollbackTx(tx); rerr != nil && !errors.Is(rerr, sql.ErrTxDone) {
-			s.broken = fmt.Errorf("rollback failed after %v: %v", err, rerr)
+			s.markBroken(fmt.Errorf("rollback failed after %v: %v", err, rerr))
 		}
 		return translate(ctx, err)
 	}
@@ -564,6 +568,9 @@ func (s *Store) read(ctx context.Context, fn func(tx *sql.Tx) error) error {
 	s.mu.Unlock()
 	if closed || s.rdb == nil {
 		return store.Errorf(store.CodeClosed, "the store is closed")
+	}
+	if msg := s.unusable.Load(); msg != nil {
+		return &store.Error{Code: CodeUnusable, Msg: *msg}
 	}
 	tx, err := s.rdb.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {

@@ -22,11 +22,19 @@ var (
 	_ store.DerivedCounter   = (*writer)(nil)
 )
 
-// upsertInLease is an append's derived row: the lease holder's fold is the
-// session's newest, so its row replaces the stored one.
+// upsertInLease is an append's derived row. A derived write can only raise a
+// row's seq (session-views.md, "Ownership and access"), so a row older than
+// the stored one (a lease-free UpsertDerived may have moved it past the
+// holder's last periodic write) leaves it as it is. A row at an equal seq
+// replaces it: that does not lower the seq, and the holder's fold is the
+// session's authority at that position (a pure fold gives the same state, and
+// the holder may rewrite its own row at the same seq, as a closing checkpoint
+// does). UpsertDerived, which is not the holder, takes only a strictly newer
+// seq.
 const upsertInLease = `INSERT INTO checkpoints (session, key, state_version, seq, state)
 	VALUES (?, ?, ?, ?, ?) ON CONFLICT (session, key, state_version)
-	DO UPDATE SET seq = excluded.seq, state = excluded.state`
+	DO UPDATE SET seq = excluded.seq, state = excluded.state
+	WHERE excluded.seq >= checkpoints.seq`
 
 // upsertForward is UpsertDerived's row: written only below the session's next
 // seq, and over a stored row only when it moves that row forward.
@@ -67,6 +75,20 @@ func derivedInSavepoint(ctx context.Context, tx *sql.Tx, uid int64, rows []store
 	}
 	_, err = tx.ExecContext(ctx, `RELEASE derived`)
 	return nil, err
+}
+
+// markBroken makes the store unusable (s.wmu held): broken refuses every write,
+// unusable every read, and one store.Degraded notice (DegradedUnusable) goes to
+// the subscribers. The notice is sent from its own goroutine, because the
+// caller holds wmu and a subscriber may call the store.
+func (s *Store) markBroken(err error) {
+	if s.broken != nil {
+		return
+	}
+	s.broken = err
+	msg := err.Error()
+	s.unusable.Store(&msg)
+	go s.notices.Send(store.Degraded{Reason: store.DegradedUnusable, Err: &store.Error{Code: CodeUnusable, Msg: msg}})
 }
 
 // DerivedDropped implements store.DerivedCounter.
