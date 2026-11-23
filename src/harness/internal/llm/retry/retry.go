@@ -66,11 +66,17 @@ func validReason(a Abandoned) error {
 	return fmt.Errorf("retry: abandon reason %q is not in the closed set", a.Reason)
 }
 
-// The durable, log-only events of the component.
+// The durable, log-only events of the component. Version 2 of llm/retry and
+// llm/retry-abandoned writes every duration of the failure and the policy as its
+// text ("2s", "500ms") instead of integer nanoseconds (plan 14.4.1); upgrade 1
+// rewrites a stored number to its text.
 var (
-	ScheduledType = event.MustDefine(event.Default(), event.Spec[Scheduled]{Name: "llm/retry", Version: 1})
+	ScheduledType = event.MustDefine(event.Default(), event.Spec[Scheduled]{Name: "llm/retry", Version: 2,
+		Upgrades: map[int]event.Upgrade{1: event.DurationsAsText("failure.retry_after",
+			"policy.base_delay", "policy.max_delay", "policy.max_elapsed", "policy.retry_after_cap")}})
 	StartedType   = event.MustDefine(event.Default(), event.Spec[Started]{Name: "llm/retry-started", Version: 1})
-	AbandonedType = event.MustDefine(event.Default(), event.Spec[Abandoned]{Name: "llm/retry-abandoned", Version: 1,
+	AbandonedType = event.MustDefine(event.Default(), event.Spec[Abandoned]{Name: "llm/retry-abandoned", Version: 2,
+		Upgrades: map[int]event.Upgrade{1: event.DurationsAsText("failure.retry_after")},
 		Validate: validReason})
 )
 

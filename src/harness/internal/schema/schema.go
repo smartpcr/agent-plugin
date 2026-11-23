@@ -26,33 +26,46 @@ type Type struct {
 	name     string
 	schema   *jsonschema.Schema
 	doc      []byte
+	src      []byte // the document as supplied, for FromJSON; nil when derived
 	fp       string
 	open     bool
+	tolerant bool
 	fallback *jsonschema.Resolved // set when the document uses keywords outside the subset
 	exact    exactTable           // the declared literal of every numeric bound
+	union    *union               // set for a Union: Decode dispatches on its discriminator
 }
 
 // Option adjusts a derivation.
 type Option func(*options)
 
-type options struct{ open bool }
+type options struct{ open, tolerant bool }
 
 // Open admits unknown keys at the root object: they are kept out of the decoded
 // value instead of being reported. Nested objects stay closed.
 func Open() Option { return func(o *options) { o.open = true } }
 
+// Tolerant makes Decode skip unknown keys at every depth, so a build reads a
+// persisted record a newer build wrote and keeps the fields it knows. The shape
+// itself stays closed: the document, the fingerprint and Validate are those of
+// the type without the option, so a value that holds unknown keys still fails
+// Validate. Only Decode drops them, before it checks what is left.
+func Tolerant() Option { return func(o *options) { o.tolerant = true } }
+
 type cacheKey struct {
-	t    reflect.Type
-	open bool
+	t              reflect.Type
+	open, tolerant bool
 }
 
 var cache sync.Map // cacheKey -> *Type
 
 // typeSchemas overrides the module's derivation where it does not follow
-// encoding/json: json.RawMessage is any JSON value on the wire, not an array of
-// bytes.
+// encoding/json, or where this package fixes another wire form: json.RawMessage
+// is any JSON value on the wire, not an array of bytes, and a duration is its
+// text ("30s"), not a count of nanoseconds (see Marshal and Duration).
 var typeSchemas = map[reflect.Type]*jsonschema.Schema{
 	reflect.TypeFor[json.RawMessage](): {},
+	durationType:                       durationSchema(),
+	reflect.TypeFor[Duration]():        durationSchema(),
 }
 
 // Shaper is implemented, on the value receiver, by a type whose JSON form is not
@@ -144,23 +157,14 @@ func ForType(t reflect.Type, opts ...Option) (*Type, error) {
 	for _, opt := range opts {
 		opt(&o)
 	}
-	key := cacheKey{t, o.open}
+	key := cacheKey{t, o.open, o.tolerant}
 	if v, ok := cache.Load(key); ok {
 		//lint:ignore typeassert cache holds only *Type values; this function is its only writer
 		return v.(*Type), nil
 	}
-	overrides, err := shapeSchemas(t)
+	s, exact, err := derive(t)
 	if err != nil {
-		return nil, fmt.Errorf("schema: deriving %s: %w", t, err)
-	}
-	s, err := jsonschema.ForType(t, &jsonschema.ForOptions{TypeSchemas: overrides})
-	if err != nil {
-		return nil, fmt.Errorf("schema: deriving %s: %w", t, err)
-	}
-	s = s.CloneSchemas()
-	exact := exactTable{}
-	if err := applyTags(t, s, exact); err != nil {
-		return nil, fmt.Errorf("schema: deriving %s: %w", t, err)
+		return nil, err
 	}
 	if o.open {
 		s.AdditionalProperties = nil
@@ -169,9 +173,29 @@ func ForType(t reflect.Type, opts ...Option) (*Type, error) {
 	if err != nil {
 		return nil, err
 	}
+	typ.tolerant = o.tolerant
 	v, _ := cache.LoadOrStore(key, typ)
 	//lint:ignore typeassert cache holds only *Type values; this function is its only writer
 	return v.(*Type), nil
+}
+
+// derive returns a fresh, unshared schema of t with its dsh tags applied, and the
+// exact table of its numeric bounds.
+func derive(t reflect.Type) (*jsonschema.Schema, exactTable, error) {
+	overrides, err := shapeSchemas(t)
+	if err != nil {
+		return nil, nil, fmt.Errorf("schema: deriving %s: %w", t, err)
+	}
+	s, err := jsonschema.ForType(t, &jsonschema.ForOptions{TypeSchemas: overrides})
+	if err != nil {
+		return nil, nil, fmt.Errorf("schema: deriving %s: %w", t, err)
+	}
+	s = s.CloneSchemas()
+	exact := exactTable{}
+	if err := applyTags(t, s, exact); err != nil {
+		return nil, nil, fmt.Errorf("schema: deriving %s: %w", t, err)
+	}
+	return s, exact, nil
 }
 
 // MustOf is Of for package-level declarations; it panics on a derivation error.
@@ -207,6 +231,7 @@ func FromJSON(doc []byte) (*Type, error) {
 	if err != nil {
 		return nil, err
 	}
+	t.src = bytes.Clone(doc)
 	if t.fallback != nil {
 		if p, n, bad := inexactDeclaration(g, ""); bad {
 			return nil, fmt.Errorf("schema: document: %s declares %s, which the full validator cannot hold exactly", p, n)
@@ -266,6 +291,9 @@ func (t *Type) Validate(v any) Issues {
 }
 
 func (t *Type) check(inst any) Issues {
+	if t.union != nil {
+		return t.union.check(inst)
+	}
 	if t.fallback != nil {
 		if issues := inexactInstance(inst, ""); len(issues) > 0 {
 			return issues
@@ -285,12 +313,28 @@ func (t *Type) check(inst any) Issues {
 type Validator interface{ Validate() error }
 
 // Decode checks raw against the shape, then decodes it strictly into dst (unknown
-// fields are refused unless the shape is Open), then calls dst's Validate when it
-// has one. dst is left partly written when issues are returned.
+// fields are refused unless the shape is Open or Tolerant), then calls dst's
+// Validate when it has one. A time.Duration field of dst is read from its text
+// ("30s"), parsed by time.ParseDuration. dst is left partly written when issues
+// are returned.
 func (t *Type) Decode(raw []byte, dst any) Issues {
 	inst, err := parse(raw)
 	if err != nil {
 		return Issues{{Path: "", Message: err.Error()}}
+	}
+	if t.union != nil {
+		return t.union.decode(inst, dst)
+	}
+	return t.decode(inst, raw, dst)
+}
+
+// decode is Decode of an instance already parsed from raw; raw may be nil, and
+// is then encoded from the instance.
+func (t *Type) decode(inst any, raw []byte, dst any) Issues {
+	rewritten := raw == nil
+	if t.tolerant {
+		inst = prune(t.schema, t.schema, inst, 0)
+		rewritten = true
 	}
 	if issues := t.check(inst); len(issues) > 0 {
 		return issues
@@ -300,13 +344,33 @@ func (t *Type) Decode(raw []byte, dst any) Issues {
 			return issues
 		}
 	}
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	if !t.open {
+	if dt := reflect.TypeOf(dst); dt != nil && hasDurations(dt, false) {
+		var issues Issues
+		inst = readDurations(dt, inst, "", &issues)
+		if len(issues) > 0 {
+			return issues
+		}
+		rewritten = true
+	}
+	body := raw
+	if rewritten {
+		var err error
+		if body, err = json.Marshal(inst); err != nil {
+			return Issues{{Path: "", Message: "does not decode: " + err.Error()}}
+		}
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	if !t.open && !t.tolerant {
 		dec.DisallowUnknownFields()
 	}
 	if err := dec.Decode(dst); err != nil {
 		return Issues{{Path: "", Message: "does not decode: " + err.Error()}}
 	}
+	return validated(dst)
+}
+
+// validated calls dst's Validate when it has one.
+func validated(dst any) Issues {
 	if val, ok := dst.(Validator); ok {
 		if err := val.Validate(); err != nil {
 			var issues Issues
@@ -388,7 +452,7 @@ func toInstance(v any) (any, error) {
 	case []byte:
 		return parse(b)
 	}
-	raw, err := json.Marshal(v)
+	raw, err := Marshal(v)
 	if err != nil {
 		return nil, fmt.Errorf("does not encode: %w", err)
 	}
