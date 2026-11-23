@@ -150,7 +150,9 @@ func startPublisher(t *testing.T, l home.Layout) *publisher {
 		t.Fatal(err)
 	}
 	p := &publisher{t: t, cmd: cmd, stdin: stdin, out: bufio.NewScanner(out)}
-	t.Cleanup(p.kill)
+	// The cleanup kills the child (unblocking it) and then waits for it; after
+	// the test's own kill it finds no process and does nothing.
+	t.Cleanup(func() { stopPublisher(t, cmd) })
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -177,16 +179,20 @@ func (p *publisher) step() {
 }
 
 // kill kills the child, if it still runs, waits for it and checks it is gone.
-func (p *publisher) kill() {
-	if p.cmd.Process == nil {
+func (p *publisher) kill() { stopPublisher(p.t, p.cmd) }
+
+// stopPublisher kills cmd's process, if it has one, then waits for it and checks
+// it is gone; a second call (the cleanup after the test's own kill) is a no-op.
+func stopPublisher(t *testing.T, cmd *exec.Cmd) {
+	if cmd.Process == nil {
 		return
 	}
-	pid := p.cmd.Process.Pid
-	p.cmd.Process.Kill() //nolint:errcheck // may be dead already
-	p.cmd.Wait()         //nolint:errcheck // killed
-	p.cmd.Process = nil
+	pid := cmd.Process.Pid
+	cmd.Process.Kill() //nolint:errcheck // may be dead already
+	cmd.Wait()         //nolint:errcheck // killed
+	cmd.Process = nil
 	if !subprocesstest.Exited(pid) {
-		p.t.Errorf("child %d still runs after its kill", pid)
+		t.Errorf("child %d still runs after its kill", pid)
 	}
 }
 
