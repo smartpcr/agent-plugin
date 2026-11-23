@@ -1803,6 +1803,8 @@ and record that the child's request still asks; both `manual`.
 
 **Exit evidence.** The evidence record, with H-10 struck from the open list.
 
+**Deferred tests (pointer, M1).** For the M1 story, three tests that step 11.6 requires through [DH-D-SUBAGENT-1](areas/subagent-team.md#dh-d-subagent-1) move here by decision M1-D-LOOP-3 (B) in [the M1 decision log](../stories/harness-DSH-M1/decisions.md) (gap-closure plan steps 17.2.5 and 17.2.6): `DH-T-SUBAGENT-4`, the grandchild wait, with the ledger and notices of 29.1 and the in-process children of 29.3; `DH-T-SUBAGENT-14`, the capability check at A1 and the output-schema check at S3, with the providers of 29.3; and the interrupt and time-limit legs of `DH-T-SUBAGENT-3`, with the S5 record of 29.1 and the interrupt of 29.4. They are deferred by `//dsh:test ... later DH-S-29` in `delegate/subagent/doc.go`. This section's text is unchanged (DC-2).
+
 <a id="dh-s-30"></a>
 ### DH-S-30: Schedules, goals and plan mode
 
