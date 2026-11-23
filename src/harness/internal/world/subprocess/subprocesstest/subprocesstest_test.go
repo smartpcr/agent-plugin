@@ -170,8 +170,8 @@ func TestTreeReportsBothPids(t *testing.T) {
 	if child <= 0 || grandchild <= 0 || child == grandchild || !running {
 		t.Fatalf("Tree pids %d, %d (both running %v); want two distinct running processes", child, grandchild, running)
 	}
-	if Alive(child) || Alive(grandchild) {
-		t.Fatalf("after the cleanup: child alive %v, grandchild alive %v", Alive(child), Alive(grandchild))
+	if !Exited(child) || !Exited(grandchild) {
+		t.Fatalf("after the cleanup: child exited %v, grandchild exited %v", Exited(child), Exited(grandchild))
 	}
 }
 

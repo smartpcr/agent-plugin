@@ -10,6 +10,10 @@ const stillActive = 259
 // ignoreStop does nothing: a pipe child has no polite stop signal on Windows.
 func ignoreStop() {}
 
+// Exited reports whether the process with pid has exited. Windows keeps no
+// zombie: a process that exited is not Alive.
+func Exited(pid int) bool { return !Alive(pid) }
+
 // Alive reports whether a process with pid is still running.
 func Alive(pid int) bool {
 	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))

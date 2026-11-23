@@ -80,9 +80,12 @@ func TestStopTreeStopsAndAwaitsTheTree(t *testing.T) {
 	if err := p.StopTree(ctx, 2*time.Second); err != nil {
 		t.Fatalf("StopTree: %v", err)
 	}
-	if subprocesstest.Alive(child) || subprocesstest.Alive(grandchild) {
-		t.Fatalf("StopTree returned with child alive=%v, grandchild alive=%v",
-			subprocesstest.Alive(child), subprocesstest.Alive(grandchild))
+	// Exited, not !Alive: the grandchild's parent died in the stop, so its reaper
+	// (init or the scope's manager) reaps it on its own time, and until then
+	// kill(pid, 0) still finds the zombie.
+	if !subprocesstest.Exited(child) || !subprocesstest.Exited(grandchild) {
+		t.Fatalf("StopTree returned with child exited=%v, grandchild exited=%v",
+			subprocesstest.Exited(child), subprocesstest.Exited(grandchild))
 	}
 	if err := p.TreeGone(ctx); err != nil {
 		t.Fatalf("TreeGone after StopTree: %v", err)
@@ -141,8 +144,10 @@ func TestContextEndStopsDescendantsAfterChildExit(t *testing.T) {
 	if err := p.TreeGone(wctx); err != nil {
 		t.Fatalf("descendant survived the context: %v", err)
 	}
-	if subprocesstest.Alive(grandchild) {
-		t.Fatalf("grandchild %d alive after TreeGone", grandchild)
+	// The grandchild was orphaned when its parent exited, so its reaper reaps
+	// it on its own time; a zombie it has not reaped yet has exited all the same.
+	if !subprocesstest.Exited(grandchild) {
+		t.Fatalf("grandchild %d still running after TreeGone", grandchild)
 	}
 }
 
