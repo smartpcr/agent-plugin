@@ -114,7 +114,9 @@ func (s *Store) Create(ctx context.Context, h store.Header, o store.CreateOption
 	}
 	// Registered before wmu is released: a Close that began meanwhile waits
 	// for wmu and then releases this lease.
-	w := &writer{reader: reader{s: s, id: h.ID, uid: uid, header: h}, epoch: 1, holder: s.instance}
+	// Every record a new session holds was judged: a fork's inherited prefix
+	// above, an append's records by store.Admit.
+	w := &writer{reader: reader{s: s, id: h.ID, uid: uid, header: h, hi: store.Seq(h.InheritedCount)}, epoch: 1, holder: s.instance}
 	s.register(w)
 	return w, nil
 }
@@ -161,8 +163,9 @@ func (s *Store) OpenWrite(ctx context.Context, id string, o store.OpenOptions) (
 	}
 	since := s.now().UnixNano()
 	var (
-		r     row
-		epoch uint64
+		r       row
+		epoch   uint64
+		checked store.Seq
 	)
 	s.wmu.Lock()
 	defer s.wmu.Unlock()
@@ -177,11 +180,7 @@ func (s *Store) OpenWrite(ctx context.Context, id string, o store.OpenOptions) (
 		if err := s.claimable(ctx, tx, id, r, o); err != nil {
 			return err
 		}
-		recs, err := selectRecords(ctx, tx, r.uid, 0, -1, true)
-		if err != nil {
-			return err
-		}
-		if err := store.CheckOpen(s.reg, recs); err != nil {
+		if checked, err = s.checkOpen(ctx, tx, r.uid, r.sum.NextSeq); err != nil {
 			return err
 		}
 		epoch = r.sum.LeaseEpoch + 1
@@ -192,32 +191,82 @@ func (s *Store) OpenWrite(ctx context.Context, id string, o store.OpenOptions) (
 	if err != nil {
 		return nil, err
 	}
-	w := &writer{reader: reader{s: s, id: id, uid: r.uid, header: r.sum.Header}, epoch: epoch, holder: s.instance}
+	w := &writer{reader: reader{s: s, id: id, uid: r.uid, header: r.sum.Header, lo: checked, hi: r.sum.NextSeq},
+		epoch: epoch, holder: s.instance}
 	s.register(w)
 	return w, nil
 }
 
-// OpenRead implements store.Store.
+// OpenRead implements store.Store. It is bounded as OpenWrite is (checkOpen):
+// it judges the records from the newest checkpoint to the head, and the
+// reader judges every other record it returns.
 func (s *Store) OpenRead(ctx context.Context, id string) (store.Reader, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	var r row
+	var (
+		r       row
+		checked store.Seq
+	)
 	err := s.read(ctx, func(tx *sql.Tx) error {
 		var err error
 		if r, err = liveByID(ctx, tx, id); err != nil {
 			return err
 		}
-		recs, err := selectRecords(ctx, tx, r.uid, 0, -1, true)
-		if err != nil {
-			return err
-		}
-		return store.CheckOpen(s.reg, recs)
+		checked, err = s.checkOpen(ctx, tx, r.uid, r.sum.NextSeq)
+		return err
 	})
 	if err != nil {
 		return nil, err
 	}
-	return &reader{s: s, id: id, uid: r.uid, header: r.sum.Header}, nil
+	return &reader{s: s, id: id, uid: r.uid, header: r.sum.Header, lo: checked, hi: r.sum.NextSeq}, nil
+}
+
+// openPage is how many records checkOpen reads at a time.
+const openPage = 1024
+
+// onOpenCheck, when set, is told how many records each checkOpen read and
+// judged. It is nil in production; a test sets it to prove the open bounded.
+var onOpenCheck func(n int)
+
+// checkOpen is the read rule of an open (session-store.md §6.2, "Schema
+// evolution per event type"; store.CheckOpen), bounded by what restoring
+// reads: it judges the records from the newest checkpoint's seq (0 when the
+// session has none) to next, a page at a time, and returns that first seq. A
+// session with no checkpoint is judged whole, as before. The records below the
+// returned seq are judged when a handle reads them (reader.judge), so no
+// record the rule refuses is ever returned, and a refused record in that
+// suffix refuses the open itself, by its first position.
+func (s *Store) checkOpen(ctx context.Context, tx *sql.Tx, uid int64, next store.Seq) (store.Seq, error) {
+	var cut sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `SELECT MAX(seq) FROM checkpoints WHERE session = ?`, uid).Scan(&cut); err != nil {
+		return 0, err
+	}
+	from := store.Seq(0)
+	if cut.Valid && store.Seq(cut.Int64) < next {
+		from = store.Seq(cut.Int64)
+	}
+	n := 0
+	defer func() {
+		if onOpenCheck != nil {
+			onOpenCheck(n)
+		}
+	}()
+	for at := from; at < next; {
+		recs, err := selectRecords(ctx, tx, uid, at, openPage, true)
+		if err != nil {
+			return 0, err
+		}
+		n += len(recs)
+		if err := store.CheckOpen(s.reg, recs); err != nil {
+			return 0, err
+		}
+		if len(recs) < openPage {
+			break
+		}
+		at = recs[len(recs)-1].Seq + 1
+	}
+	return from, nil
 }
 
 // Stat implements store.Store.
@@ -279,14 +328,13 @@ func (s *Store) List(ctx context.Context, q store.Query) (store.Page, error) {
 		if err != nil {
 			return store.Page{}, err
 		}
-		where = append(where, "(last_event_at < ? OR (last_event_at = ? AND (created_at < ? OR (created_at = ? AND id > ?))))")
 		args = append(args, c.last, c.last, c.created, c.created, c.id)
 	}
 	args = append(args, int64(limit)+1)
+	query := recentQuery(where, q.Cursor != "")
 	var rows []row
 	err := s.read(ctx, func(tx *sql.Tx) error {
-		rs, err := tx.QueryContext(ctx, `SELECT `+sessionCols+` FROM sessions WHERE `+strings.Join(where, " AND ")+`
-			ORDER BY last_event_at DESC, created_at DESC, id LIMIT ?`, args...)
+		rs, err := tx.QueryContext(ctx, query, args...)
 		if err != nil {
 			return err
 		}
@@ -315,10 +363,52 @@ func (s *Store) List(ctx context.Context, q store.Query) (store.Page, error) {
 	return page, nil
 }
 
+// recentQuery is List's statement in store.OrderRecent over where, past a
+// cursor when cursor is set (bound its last, last, created, created and id,
+// then the limit). Its first cursor term bounds the sessions_recent range, so
+// a later page seeks to the cursor instead of scanning from the top of the
+// index (listplan_test.go).
+func recentQuery(where []string, cursor bool) string {
+	if cursor {
+		where = append(slices.Clip(where), "last_event_at <= ?",
+			"(last_event_at < ? OR (created_at < ? OR (created_at = ? AND id > ?)))")
+	}
+	return `SELECT ` + sessionCols + ` FROM sessions WHERE ` + strings.Join(where, " AND ") + `
+		ORDER BY last_event_at DESC, created_at DESC, id LIMIT ?`
+}
+
+// promptQueries are listByPrompt's two statements over where (conditions on
+// sessions, the creation cut among them): stable, the sessions with no prompt
+// after the cut, in list order from the cursor when after is set (bound
+// pcut, then the cursor's key, key and id, or else the cut, then the limit);
+// touched, the sessions prompted after it (bound pcut twice). Both are range
+// searches of the sessions_prompt index (listplan_test.go), so a page reads
+// the rows it lists and those changed since the cut, not every session:
+// stable seeks to the cursor (its key bounds the range; "key < K OR (key = K
+// AND id > I)" alone would make SQLite scan from the top of the index), and a
+// session prompted after the cut has its key, that prompt, past pcut.
+func promptQueries(where []string, after bool) (stable, touched string) {
+	w := append(slices.Clip(where), "last_prompt_at <= ?")
+	if after {
+		w = append(w, promptKey+" <= ?", "("+promptKey+" < ? OR id > ?)")
+	} else {
+		w = append(w, promptKey+" <= ?")
+	}
+	stable = `SELECT ` + sessionCols + ` FROM sessions WHERE ` + strings.Join(w, " AND ") + `
+		ORDER BY ` + promptKey + ` DESC, id LIMIT ?`
+	touched = `SELECT ` + sessionCols + ` FROM sessions WHERE ` +
+		strings.Join(append(slices.Clip(where), "last_prompt_at > ?", promptKey+" > ?"), " AND ")
+	return stable, touched
+}
+
 // listByPrompt is List in store.OrderPrompt, in one read transaction: the
-// sessions_prompt index scanned past the cursor for the sessions with no prompt
-// after the cut, merged with the few sessions prompted since the cut, whose key
-// as of the cut is read from their logs.
+// sessions_prompt index searched past the cursor for the sessions with no
+// prompt after the cut, merged with the few sessions prompted since the cut,
+// whose key as of the cut is read from their logs. A session created after the
+// first page is not listed on a later one: it is created after the cut, or,
+// on a clock coarser than a nanosecond, at the cut itself, and then its key is
+// the cut (it has no prompt before the cut's millisecond), above every cursor
+// except one at a session created in that same tick.
 func (s *Store) listByPrompt(ctx context.Context, q store.Query, limit int, where []string, args []any) (store.Page, error) {
 	var after *store.PromptCursor
 	cut := q.AsOf
@@ -336,6 +426,7 @@ func (s *Store) listByPrompt(ctx context.Context, q store.Query, limit int, wher
 	pcut := store.PromptCut(at)
 	where = append(slices.Clip(where), "created_at <= ?")
 	args = append(slices.Clip(args), at)
+	stableSQL, touchedSQL := promptQueries(where, after != nil)
 	type keyed struct {
 		key int64
 		r   row
@@ -358,29 +449,28 @@ func (s *Store) listByPrompt(ctx context.Context, q store.Query, limit int, wher
 			}
 			return out, rs.Err()
 		}
-		w, a := append(slices.Clip(where), "last_prompt_at <= ?"), append(slices.Clip(args), pcut)
+		a := append(slices.Clip(args), pcut)
 		if after != nil {
-			w = append(w, "("+promptKey+" < ? OR ("+promptKey+" = ? AND id > ?))")
 			a = append(a, after.Key, after.Key, after.ID)
+		} else {
+			a = append(a, at)
 		}
 		a = append(a, int64(limit)+1)
-		stable, err := scan(`SELECT `+sessionCols+` FROM sessions WHERE `+strings.Join(w, " AND ")+`
-			ORDER BY `+promptKey+` DESC, id LIMIT ?`, a...)
+		stable, err := scan(stableSQL, a...)
 		if err != nil {
 			return err
 		}
 		for _, r := range stable {
 			all = append(all, keyed{key: cmp.Or(r.prompt, r.created), r: r})
 		}
-		touched, err := scan(`SELECT `+sessionCols+` FROM sessions WHERE `+strings.Join(append(slices.Clip(where), "last_prompt_at > ?"), " AND "),
-			append(slices.Clip(args), pcut)...)
+		touched, err := scan(touchedSQL, append(slices.Clip(args), pcut, pcut)...)
 		if err != nil {
 			return err
 		}
 		for _, r := range touched {
 			var ms sql.NullInt64
-			if err := tx.QueryRowContext(ctx, `SELECT MAX(time) FROM events WHERE session = ? AND type = ? AND time > 0 AND time <= ?`,
-				r.uid, store.PromptType, time.Unix(0, pcut).UnixMilli()).Scan(&ms); err != nil {
+			if err := tx.QueryRowContext(ctx, `SELECT MAX(time) FROM events WHERE session = ? AND type = ? AND surface != ? AND time > 0 AND time <= ?`,
+				r.uid, store.PromptType, replaceOp, time.Unix(0, pcut).UnixMilli()).Scan(&ms); err != nil {
 				return err
 			}
 			key := r.created

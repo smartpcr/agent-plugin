@@ -9,6 +9,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store"
 )
 
 // The built-in views of docs/harness/areas/session-views.md DH-D-VIEW-3: four
@@ -84,7 +85,10 @@ func FoldFrom[S any](d Definition[S], s S, evs []event.Event) S {
 
 // ListSummary is what the session list shows of a session: whether it is blank
 // (no prompt yet, hidden by the list), the last human prompt time it orders by,
-// and a preview of the first prompt.
+// and a preview of the first prompt. A prompt is what store.IsPrompt says, the
+// same rule as the store's last_prompt_at: a user/message that replaces history
+// (a compaction's summary) is not a human prompt and leaves the summary as it
+// was.
 type ListSummary struct {
 	Blank        bool      `json:"blank"`
 	Prompts      int       `json:"prompts"`
@@ -97,7 +101,8 @@ type ListSummary struct {
 // ListSummaryView is the list summary fold.
 func ListSummaryView() Definition[ListSummary] {
 	return Definition[ListSummary]{
-		Key: ListSummaryKey, Version: 1, Stored: true,
+		// Version 2: a replacing user/message is no longer counted as a prompt.
+		Key: ListSummaryKey, Version: 2, Stored: true,
 		Types: []string{event.UserMessage.Name(), event.TurnStartType.Name()},
 		Init:  func(session.Header) ListSummary { return ListSummary{Blank: true} },
 		Apply: func(s ListSummary, ev event.Event) (ListSummary, bool) {
@@ -106,6 +111,9 @@ func ListSummaryView() Definition[ListSummary] {
 				s.Turns++
 				return s, true
 			case event.UserMessage.Name():
+				if !store.IsPrompt(ev.Type(), ev.Op().Kind) {
+					return s, false
+				}
 				p, err := event.UserMessage.As(ev)
 				if err != nil {
 					return s, false

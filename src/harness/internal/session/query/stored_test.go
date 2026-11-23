@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
@@ -84,7 +85,9 @@ func TestListingFailsOnUnreadableRows(t *testing.T) {
 	if err := mem.Delete(bg, "s", store.DeleteOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	p := must(query.New(failingRows{mem, true}).List(bg, query.ListOptions{IncludeBlank: true}))
+	// The cut is a second ahead: a coarse clock may stamp the creation with the
+	// cut itself, which the prompt order leaves to a later listing.
+	p := must(query.New(failingRows{mem, true}).List(bg, query.ListOptions{IncludeBlank: true, AsOf: time.Now().Add(time.Second)}))
 	if len(p.Entries) != 1 || p.Entries[0].SummaryState != views.Current || !p.Entries[0].Summary.Blank {
 		t.Fatalf("an empty session = %+v", p.Entries)
 	}
