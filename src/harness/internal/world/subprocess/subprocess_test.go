@@ -34,6 +34,8 @@ func TestArgumentsArriveLiterally(t *testing.T) {
 }
 
 // TC-06c, SP-11: a secret in the host environment never reaches the child.
+//
+//dsh:test DH-T-EXEC-3
 func TestChildEnvironmentHoldsNoSecret(t *testing.T) {
 	t.Setenv(secretName, "sk-dummy-never-leaks")
 	t.Setenv("SERVICE_TOKEN", "dummy")
@@ -224,6 +226,10 @@ func TestLookupUsesTheChildPath(t *testing.T) {
 	}
 }
 
+// BuildEnv removes deny-pattern names unless allowed, exact credential names and
+// every DSH_* name, then adds the caller's entries and the managed snapshot last.
+//
+//dsh:test DH-T-EXEC-3
 func TestBuildEnv(t *testing.T) {
 	host := []string{
 		"PATH=/bin",
@@ -258,6 +264,68 @@ func TestBuildEnv(t *testing.T) {
 		if got := env.Get(name); got != want {
 			t.Errorf("%s = %q, want %q (env %q)", name, got, want, env)
 		}
+	}
+}
+
+// secretNames is a SecretNames over a fixed list of names, compared without
+// regard to case as the secret store compares them.
+type secretNames []string
+
+func (s secretNames) IsSecretName(name string) bool {
+	for _, n := range s {
+		if strings.EqualFold(n, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// panicNames is a SecretNames whose check fails.
+type panicNames struct{}
+
+func (panicNames) IsSecretName(string) bool { panic("store unavailable") }
+
+// SP-11: BuildEnv removes every host name the secret names report, a name such as
+// GITHUB_PAT that no deny pattern catches included, whatever its case and whatever
+// the allow list says; a check that panics removes the name (fail closed); the
+// caller's entries are its own and are kept.
+//
+//dsh:test DH-T-EXEC-3
+func TestBuildEnvRemovesSecretNames(t *testing.T) {
+	host := []string{"PATH=/bin", "GITHUB_PAT=ghp", "github_pat=lower", "VENDOR_SIGNING_SEED=s", "PLAIN=1"}
+	env := subprocess.BuildEnv(host, subprocess.EnvOptions{
+		Secrets: secretNames{"GITHUB_PAT", "VENDOR_SIGNING_SEED"},
+		Allow:   []string{"GITHUB_PAT", "*"},
+		Entries: []string{"VENDOR_SIGNING_SEED=explicit"},
+	})
+	for _, name := range []string{"GITHUB_PAT", "github_pat"} {
+		if hasExact(env, name) {
+			t.Errorf("%s survived: %q", name, env)
+		}
+	}
+	if env.Get("PATH") != "/bin" || env.Get("PLAIN") != "1" || env.Get("VENDOR_SIGNING_SEED") != "explicit" {
+		t.Errorf("env = %q; want PATH, PLAIN and the explicit entry", env)
+	}
+	without := subprocess.BuildEnv(host, subprocess.EnvOptions{})
+	if !hasExact(without, "GITHUB_PAT") {
+		t.Errorf("without Secrets GITHUB_PAT is gone from %q; no deny pattern names it, so only Secrets removes it", without)
+	}
+	if failed := subprocess.BuildEnv(host, subprocess.EnvOptions{Secrets: panicNames{}}); len(failed) != 0 {
+		t.Errorf("a failing check kept %q; want every host name removed", failed)
+	}
+}
+
+// A re-executed child started with a store-like SecretNames reports GITHUB_PAT
+// absent though the host holds it (the plan's scenario "A named reference never
+// reaches a child").
+//
+//dsh:test DH-T-EXEC-3
+func TestChildNeverInheritsANamedSecret(t *testing.T) {
+	t.Setenv("GITHUB_PAT", "ghp-dummy-never-leaks")
+	spec := subprocesstest.Spec(t, subprocesstest.RoleEnvProbe, "GITHUB_PAT")
+	spec.Env = subprocess.BuildEnv(os.Environ(), subprocess.EnvOptions{Secrets: secretNames{"GITHUB_PAT"}, Entries: spec.Env})
+	if out := normal(subprocesstest.Output(t, spec)); out != "GITHUB_PAT=absent\n" {
+		t.Fatalf("child reported %q; want GITHUB_PAT absent", out)
 	}
 }
 

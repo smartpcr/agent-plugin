@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -47,6 +48,13 @@ const (
 	RoleOrphan = "orphan"
 	// RoleExit exits with the code given as its first argument.
 	RoleExit = "exit"
+	// RoleEnviron prints its whole environment, one NAME=value per line, sorted,
+	// and exits.
+	RoleEnviron = "environ"
+	// RoleHost plays a host: it starts a RoleStubborn child through
+	// subprocess.Start, so the child gets this process's tree owner, prints "host
+	// <child pid> <owner kind>" once the child is ready and waits to be killed.
+	RoleHost = "host"
 )
 
 // Main runs the role named by RoleEnv and exits; without one it runs the tests.
@@ -82,6 +90,14 @@ func run(role string, args []string, out io.Writer) int {
 	case RoleExit:
 		code, _ := strconv.Atoi(firstOr(args, "0"))
 		return code
+	case RoleEnviron:
+		env := os.Environ()
+		slices.Sort(env)
+		for _, kv := range env {
+			fmt.Fprintln(out, kv)
+		}
+	case RoleHost:
+		return host(out)
 	default:
 		return fail(fmt.Errorf("unknown role %q", role))
 	}
@@ -127,6 +143,28 @@ func tree(out io.Writer) int {
 		return fail(fmt.Errorf("grandchild said %q: %v", line, err))
 	}
 	fmt.Fprintf(out, "tree %d %d\n", os.Getpid(), g.Pid)
+	park()
+	return 0
+}
+
+// host starts a RoleStubborn child through the spawn package and reports it once
+// it is ready; the child's tree is never stopped here, so a test can kill the host
+// and watch what happens to the child.
+func host(out io.Writer) int {
+	exe, err := os.Executable()
+	if err != nil {
+		return fail(err)
+	}
+	pr, pw := io.Pipe()
+	p, err := subprocess.Start(context.Background(), subprocess.Spec{Argv: []string{exe}, Env: childEnv(RoleStubborn), Stdout: pw})
+	if err != nil {
+		return fail(err)
+	}
+	line, err := bufio.NewReader(pr).ReadString('\n')
+	if err != nil || !strings.HasPrefix(line, "ready ") {
+		return fail(fmt.Errorf("child said %q: %v", line, err))
+	}
+	fmt.Fprintf(out, "host %d %s\n", p.Pid(), p.Owner().Kind)
 	park()
 	return 0
 }

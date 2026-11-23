@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/smartpcr/agent-plugin/src/harness/internal/human/secret"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/launcher"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess/subprocesstest"
 )
@@ -51,6 +52,44 @@ func TestProgramEnvCannotOverrideTheHome(t *testing.T) {
 	}
 	if home != s.Home.Root() {
 		t.Errorf("the program runs on %q, want its private home %q", home, s.Home.Root())
+	}
+}
+
+// A launched program's environment loses every name the scenario's secret store
+// names, here the non-credential-shaped GITHUB_PAT of secret://github/pat, and
+// every credential-shaped name even without a store; the scenario's own entries
+// and a plain host variable reach it (SP-11).
+//
+//dsh:test DH-T-EXEC-3
+func TestStartDropsTheStoresSecretNames(t *testing.T) {
+	bin := launcher.Build(t, ".", "./testdata/echo")
+	t.Setenv("GITHUB_PAT", "ghp-dummy-never-leaks")
+	t.Setenv("LAUNCHER_DB_PASSWD", "dummy")
+	t.Setenv("LAUNCHER_PLAIN", "kept")
+	store := secret.NewStore()
+	store.Name(secret.MustParse("secret://github/pat"))
+	names := []string{"GITHUB_PAT", "LAUNCHER_DB_PASSWD", "LAUNCHER_PLAIN", "LAUNCHER_ENTRY"}
+	for name, c := range map[string]struct {
+		store *secret.Store
+		want  map[string]bool
+	}{
+		"with the store": {store, map[string]bool{"GITHUB_PAT": false, "LAUNCHER_DB_PASSWD": false, "LAUNCHER_PLAIN": true, "LAUNCHER_ENTRY": true}},
+		"without one":    {nil, map[string]bool{"GITHUB_PAT": true, "LAUNCHER_DB_PASSWD": false, "LAUNCHER_PLAIN": true, "LAUNCHER_ENTRY": true}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := launcher.Start(t, launcher.Program{Argv: []string{bin}, Secrets: c.store, Env: []string{"LAUNCHER_ENTRY=1"}})
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			var got map[string]bool
+			if err := s.Client.Call(ctx, "env", names, &got); err != nil {
+				t.Fatal(err)
+			}
+			for _, n := range names {
+				if got[n] != c.want[n] {
+					t.Errorf("%s set = %v in the program; want %v", n, got[n], c.want[n])
+				}
+			}
+		})
 	}
 }
 

@@ -41,7 +41,8 @@ type CheckOptions struct {
 
 // Report is a composed tree that was checked without being started: the tree, the
 // index of which layer supplied each value, and every issue found, each placed at
-// the file, line and column of the value at fault where it is known.
+// the file, line and column of the value at fault where it is known. Diagnostics
+// shows each issue with the code frame of its line (DH-T-CODEFRAME-1).
 type Report struct {
 	Tree   []loader.EntryOptions
 	Index  *loader.Index
