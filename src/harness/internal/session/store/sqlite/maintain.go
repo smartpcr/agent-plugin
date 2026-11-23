@@ -587,6 +587,9 @@ type CheckReport struct {
 	Problems []string
 	// Deleting names the sessions still tombstoned (not damage).
 	Deleting []string
+	// Backups names the layout backups kept under <home>/backup (not damage):
+	// a layout upgrade takes one first and never deletes it (migrate.go).
+	Backups []string
 }
 
 // Clean reports whether nothing is damaged.
@@ -595,6 +598,7 @@ func (r CheckReport) Clean() bool { return len(r.Integrity) == 0 && len(r.Proble
 // Check is the store check of DH-D-STORE-6 (`dsh store check`), read-only, in one
 // snapshot: SQLite's integrity check; for each active session, its row count and
 // last seq against next_seq; checkpoints past a session's end; rows of no session.
+// It also lists the layout backups kept beside the database.
 func (s *Store) Check(ctx context.Context) (CheckReport, error) {
 	if err := ctx.Err(); err != nil {
 		return CheckReport{}, err
@@ -669,6 +673,10 @@ func (s *Store) Check(ctx context.Context) (CheckReport, error) {
 			rep.Deleting = append(rep.Deleting, v)
 		})
 	})
+	if err != nil {
+		return rep, err
+	}
+	rep.Backups, err = s.Backups()
 	return rep, err
 }
 

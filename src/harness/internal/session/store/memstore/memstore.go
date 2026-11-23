@@ -39,6 +39,88 @@ type Store struct {
 	sessions map[string]*session
 	// gen counts crashes; a handle opened under an older gen died with its process.
 	gen uint64
+	// refused are the derived-row keys RefuseDerived makes the store refuse.
+	refused map[string]bool
+
+	notices store.Notices
+}
+
+var (
+	_ store.DerivedWriter    = (*Store)(nil)
+	_ store.DegradedNotifier = (*Store)(nil)
+	_ store.DerivedCounter   = (*writer)(nil)
+)
+
+// RefuseDerived makes the store refuse, from now on, every write of a derived
+// row under key, as a database that refuses the row would: an append's derived
+// rows are then dropped as a group (its records commit) and UpsertDerived fails.
+// It is the storetest.DerivedRefuser fixture hook.
+func (s *Store) RefuseDerived(key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.refused == nil {
+		s.refused = map[string]bool{}
+	}
+	s.refused[key] = true
+	return nil
+}
+
+// refusal is the error a refused derived row meets, nil when none is; s.mu
+// held.
+func (s *Store) refusal(rows []store.Checkpoint) error {
+	for _, c := range rows {
+		if s.refused[c.Key] {
+			return fmt.Errorf("memstore: the derived row %s is refused", store.DerivedKey(c))
+		}
+	}
+	return nil
+}
+
+// OnDegraded implements store.DegradedNotifier.
+func (s *Store) OnDegraded(fn func(store.Degraded)) (stop func()) { return s.notices.Subscribe(fn) }
+
+// UpsertDerived implements store.DerivedWriter without the lease: each row is
+// written only below the session's durable records (what another process
+// sees) and only when it moves the stored row of its key and version forward.
+// The rows it writes are durable at once.
+func (s *Store) UpsertDerived(ctx context.Context, id string, rows []store.Checkpoint) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	for _, c := range rows {
+		if c.Key == "" {
+			return 0, store.Errorf(store.CodeInvalidBatch, "session %q: a derived row has no key", id)
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ss, err := s.live(id)
+	if err != nil {
+		return 0, err
+	}
+	if err := s.refusal(rows); err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, c := range rows {
+		if c.Seq >= store.Seq(ss.durable) {
+			continue
+		}
+		k := ckKey{c.Key, c.StateVersion}
+		moved := false
+		if old, ok := ss.durableCk[k]; !ok || c.Seq > old.Seq {
+			ss.durableCk[k] = c
+			moved = true
+		}
+		if old, ok := ss.checkpoints[k]; !ok || c.Seq > old.Seq {
+			ss.checkpoints[k] = c
+			moved = true
+		}
+		if moved {
+			n++
+		}
+	}
+	return n, nil
 }
 
 type ckKey struct {
@@ -579,10 +661,18 @@ func (r *reader) Close(context.Context) error {
 type writer struct {
 	reader
 	epoch   uint64
-	crashed bool // under s.mu
+	crashed bool   // under s.mu
+	dropped uint64 // under s.mu: derived rows the appends committed without
 }
 
 func (w *writer) Epoch() uint64 { return w.epoch }
+
+// DerivedDropped implements store.DerivedCounter.
+func (w *writer) DerivedDropped() uint64 {
+	w.s.mu.Lock()
+	defer w.s.mu.Unlock()
+	return w.dropped
+}
 
 // check is the guard of an append or flush; s.mu held.
 func (w *writer) check() (*session, error) {
@@ -602,18 +692,37 @@ func (w *writer) check() (*session, error) {
 	return ss, nil
 }
 
+// Append accepts the batch: every record, or none of them. Its checkpoints, the
+// derived rows, are kept as a group: when the store refuses one (RefuseDerived)
+// none is kept, the records are accepted anyway, and the loss is counted
+// (DerivedDropped) and reported (store.Degraded) after the store's lock is
+// released; Append succeeds.
 func (w *writer) Append(ctx context.Context, b store.Batch) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	dropped, err := w.appendLocked(b)
+	if err == nil && dropped != nil {
+		keys := make([]string, len(b.Checkpoints))
+		for i, c := range b.Checkpoints {
+			keys[i] = store.DerivedKey(c)
+		}
+		w.s.notices.Send(store.Degraded{Session: w.id, Reason: store.DegradedDerived, Keys: keys, Err: dropped})
+	}
+	return err
+}
+
+// appendLocked is Append under s.mu; dropped is the refusal of the batch's
+// derived rows, when its records were accepted without them.
+func (w *writer) appendLocked(b store.Batch) (dropped, err error) {
 	w.s.mu.Lock()
 	defer w.s.mu.Unlock()
 	ss, err := w.check()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if b.First != store.Seq(len(ss.records)) {
-		return store.Errorf(store.CodeSeqConflict, "session %q: batch starts at %d, next seq is %d", w.id, b.First, len(ss.records))
+		return nil, store.Errorf(store.CodeSeqConflict, "session %q: batch starts at %d, next seq is %d", w.id, b.First, len(ss.records))
 	}
 	last := int64(0)
 	if n := len(ss.records); n > 0 {
@@ -621,30 +730,34 @@ func (w *writer) Append(ctx context.Context, b store.Batch) error {
 	}
 	for i, rec := range b.Records {
 		if rec.Seq != b.First+store.Seq(i) {
-			return store.Errorf(store.CodeSeqConflict, "session %q: record %d of the batch has seq %d, want %d", w.id, i, rec.Seq, b.First+store.Seq(i))
+			return nil, store.Errorf(store.CodeSeqConflict, "session %q: record %d of the batch has seq %d, want %d", w.id, i, rec.Seq, b.First+store.Seq(i))
 		}
 		if rec.Type == "" {
-			return store.Errorf(store.CodeInvalidBatch, "session %q: record at seq %d has no type", w.id, rec.Seq)
+			return nil, store.Errorf(store.CodeInvalidBatch, "session %q: record at seq %d has no type", w.id, rec.Seq)
 		}
 		if err := store.Admit(w.s.reg, rec); err != nil {
-			return err
+			return nil, err
 		}
 		if rec.Time < last {
-			return store.Errorf(store.CodeInvalidBatch, "session %q: record at seq %d goes back in time", w.id, rec.Seq)
+			return nil, store.Errorf(store.CodeInvalidBatch, "session %q: record at seq %d goes back in time", w.id, rec.Seq)
 		}
 		last = rec.Time
 	}
 	total := len(ss.records) + len(b.Records)
 	for _, c := range b.Checkpoints {
 		if c.Key == "" || c.Seq >= store.Seq(total) {
-			return store.Errorf(store.CodeInvalidBatch, "session %q: checkpoint %q at seq %d is outside the log", w.id, c.Key, c.Seq)
+			return nil, store.Errorf(store.CodeInvalidBatch, "session %q: checkpoint %q at seq %d is outside the log", w.id, c.Key, c.Seq)
 		}
 	}
 	for _, rec := range b.Records {
 		ss.records = append(ss.records, rec.Clone())
 	}
-	for _, c := range b.Checkpoints {
-		ss.checkpoints[ckKey{c.Key, c.StateVersion}] = c
+	if dropped = w.s.refusal(b.Checkpoints); dropped != nil {
+		w.dropped += uint64(len(b.Checkpoints))
+	} else {
+		for _, c := range b.Checkpoints {
+			ss.checkpoints[ckKey{c.Key, c.StateVersion}] = c
+		}
 	}
 	if n := len(b.Records); n > 0 {
 		if ms := b.Records[n-1].Time; ms > 0 {
@@ -653,7 +766,7 @@ func (w *writer) Append(ctx context.Context, b store.Batch) error {
 			ss.lastEventAt = w.s.now()
 		}
 	}
-	return nil
+	return dropped, nil
 }
 
 func (w *writer) Flush(ctx context.Context) error {

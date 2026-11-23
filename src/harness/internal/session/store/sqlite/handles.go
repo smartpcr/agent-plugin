@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"sync"
+	"sync/atomic"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store"
 )
@@ -144,6 +145,8 @@ type writer struct {
 	reader
 	epoch  uint64
 	holder string
+	// dropped counts the derived rows this writer's appends committed without.
+	dropped atomic.Uint64
 }
 
 // afterAppend, when set, runs after each committed append, before Append
@@ -171,17 +174,33 @@ func (w *writer) check(ctx context.Context, q querier) (row, error) {
 	return r, nil
 }
 
-// Append writes the batch in one transaction: every record and checkpoint, or
-// none of them. The commit is synced before Append returns (synchronous=FULL),
-// so another process never reads a record that is not durable.
+// Append writes the batch in one transaction: every record, or none of them.
+// The checkpoints, the batch's derived rows, are written after the records in
+// SAVEPOINT derived (DH-D-VIEW-2): a row the database refuses rolls back every
+// checkpoint of the batch, the records commit anyway, and the loss is counted
+// (DerivedDropped) and reported (store.Degraded) once the append returned its
+// lock; Append itself succeeds. The commit is synced before Append returns
+// (synchronous=FULL), so another process never reads a record that is not
+// durable.
 func (w *writer) Append(ctx context.Context, b store.Batch) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	dropped, err := w.appendLocked(ctx, b)
+	if err == nil && dropped != nil {
+		w.dropDerived(b, dropped)
+	}
+	return err
+}
+
+// appendLocked is Append under s.wmu; dropped is the refusal of the batch's
+// derived rows, when its records committed without them.
+func (w *writer) appendLocked(ctx context.Context, b store.Batch) (dropped error, err error) {
 	s := w.s
 	s.wmu.Lock()
 	defer s.wmu.Unlock()
-	err := s.writeLocked(ctx, func(tx *sql.Tx) error {
+	err = s.writeLocked(ctx, func(tx *sql.Tx) error {
+		dropped = nil
 		ss, err := w.check(ctx, tx)
 		if err != nil {
 			return err
@@ -225,14 +244,6 @@ func (w *writer) Append(ctx context.Context, b store.Batch) error {
 		if err != nil {
 			return err
 		}
-		for _, c := range b.Checkpoints {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO checkpoints (session, key, state_version, seq, state)
-				VALUES (?, ?, ?, ?, ?) ON CONFLICT (session, key, state_version)
-				DO UPDATE SET seq = excluded.seq, state = excluded.state`,
-				w.uid, c.Key, c.StateVersion, int64(c.Seq), c.State); err != nil {
-				return err
-			}
-		}
 		lastAt := ss.last
 		if n := len(b.Records); n > 0 {
 			lastAt = s.eventNanos(b.Records[n-1].Time)
@@ -248,12 +259,16 @@ func (w *writer) Append(ctx context.Context, b store.Batch) error {
 		} else if n != 1 {
 			return store.Errorf(store.CodeLeaseLost, "session %q changed under the append", w.id)
 		}
-		return nil
+		dropped, err = derivedInSavepoint(ctx, tx, w.uid, b.Checkpoints)
+		return err
 	})
+	if err != nil {
+		dropped = nil
+	}
 	if err == nil && afterAppend != nil {
 		afterAppend(w.id, b)
 	}
-	return err
+	return dropped, err
 }
 
 // Flush returns once every commit of this instance, this writer's among them,

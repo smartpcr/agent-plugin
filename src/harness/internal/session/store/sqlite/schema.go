@@ -206,7 +206,28 @@ WITH RECURSIVE chain (session, depth, ancestor) AS (
 )
 INSERT OR IGNORE INTO lineage (session, depth, ancestor) SELECT session, depth, ancestor FROM chain;
 `,
+	// 7: hosts.binary_version (session-store.md §6.2): the build of each live
+	// instance, which the derived-row prune (prune.go, DH-T-VIEW-8) compares with
+	// its own. Rows of older layouts keep ''. The table is rebuilt rather than
+	// altered so the step also applies to a home whose layout number was lowered
+	// by hand with the column already present (the upgrade tests' fixtures).
+	`
+CREATE TABLE hosts_l7 (
+	instance       TEXT    PRIMARY KEY,
+	pid            INTEGER NOT NULL,
+	kind           TEXT    NOT NULL,
+	started_at     INTEGER NOT NULL,
+	binary_version TEXT    NOT NULL DEFAULT ''
+) STRICT;
+INSERT INTO hosts_l7 (instance, pid, kind, started_at) SELECT instance, pid, kind, started_at FROM hosts;
+DROP TABLE hosts;
+ALTER TABLE hosts_l7 RENAME TO hosts;
+`,
 }
+
+// layoutBinaryVersion is the first layout whose hosts rows carry
+// binary_version.
+const layoutBinaryVersion = 7
 
 // LayoutVersion is the layout this build writes: the number of migrations.
 var LayoutVersion = len(migrations)
