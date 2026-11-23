@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
@@ -56,8 +57,13 @@ type Config struct {
 	Facts  Facts
 	// Ring is the log tail a report carries; nil carries none.
 	Ring *Ring
-	// Secrets are values redacted from the message and the report.
+	// Secrets are values redacted from the message and the report: the fallback
+	// that holds with no secret store.
 	Secrets []string
+	// Masker, when set, also masks the message and the report: the process's
+	// secret store (*secret.Store), which masks every value it has released.
+	// SetMasker attaches one later, once the store exists.
+	Masker Masker
 	// Now is the clock of the report; nil is time.Now.
 	Now func() time.Time
 	// Release runs after the report is written, bounded by ReleaseTimeout; nil runs
@@ -66,9 +72,19 @@ type Config struct {
 	ReleaseTimeout time.Duration
 }
 
+// Masker masks secret values in a text; *secret.Store is one. It is an interface
+// so that this package imports nothing of internal/human.
+type Masker interface {
+	MaskString(text string) string
+}
+
+// maskFailed replaces a text whose masker panicked: nothing unmasked is written.
+const maskFailed = "[redacted: the secret store could not mask this text]"
+
 // Path is a fatal path. Fatal reports once; later calls are not reported.
 type Path struct {
 	c      Config
+	masker atomic.Pointer[Masker]
 	mu     sync.Mutex
 	said   bool
 	report string
@@ -85,7 +101,20 @@ func New(c Config) *Path {
 	c.Secrets = slices.DeleteFunc(slices.Clone(c.Secrets), func(s string) bool { return len(s) < minSecret })
 	// longest first, so a secret that contains another is redacted whole
 	slices.SortFunc(c.Secrets, func(a, b string) int { return len(b) - len(a) })
-	return &Path{c: c}
+	p := &Path{c: c}
+	p.SetMasker(c.Masker)
+	return p
+}
+
+// SetMasker makes m mask every later message and report, in addition to
+// Config.Secrets; nil removes it. It is safe to call while a fatal error is
+// reported.
+func (p *Path) SetMasker(m Masker) {
+	if m == nil {
+		p.masker.Store(nil)
+		return
+	}
+	p.masker.Store(&m)
 }
 
 // Said reports whether a fatal error was reported, and the report it wrote ("" when
@@ -193,12 +222,22 @@ func (p *Path) write(source string, err error, text string) (string, error) {
 	return path, nil
 }
 
-// redact replaces every secret value in s.
-func (p *Path) redact(s string) string {
+// redact replaces every secret value in s: the configured values, then what the
+// masker masks. A masker that panics fails closed: the whole text is replaced.
+func (p *Path) redact(s string) (out string) {
 	for _, secret := range p.c.Secrets {
 		s = strings.ReplaceAll(s, secret, herr.Redacted)
 	}
-	return s
+	m := p.masker.Load()
+	if m == nil || *m == nil {
+		return s
+	}
+	defer func() {
+		if recover() != nil {
+			out = maskFailed
+		}
+	}()
+	return (*m).MaskString(s)
 }
 
 // chain is err and its causes, depth first.

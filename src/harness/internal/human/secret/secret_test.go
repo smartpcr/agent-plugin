@@ -38,6 +38,8 @@ var errUnauthorized = errors.New("unauthorized")
 // TC-06a / DH-D-HUMAN-7: config naming secret://deepseek/api-key and a fake source
 // returning the test value; the reference is resolved for one failing use; the
 // value is used once and appears in no captured config dump, log line or error.
+//
+//dsh:test DH-T-HUMAN-10
 func TestSecretResolvedPerUseAndRedacted(t *testing.T) {
 	type config struct {
 		APIKey Ref    `json:"apiKey"`
@@ -103,6 +105,7 @@ func TestSecretResolvedPerUseAndRedacted(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-HUMAN-10
 func TestValueNeverPrints(t *testing.T) {
 	v := NewValue(testValue)
 	var b bytes.Buffer
@@ -120,6 +123,8 @@ func TestValueNeverPrints(t *testing.T) {
 
 // Configuration takes a reference only; a value in its place is refused without
 // being echoed.
+//
+//dsh:test DH-T-HUMAN-10
 func TestConfigRefusesValue(t *testing.T) {
 	var cfg struct{ APIKey Ref }
 	err := json.Unmarshal([]byte(`{"APIKey":"`+testValue+`"}`), &cfg)
@@ -137,6 +142,7 @@ func TestConfigRefusesValue(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-HUMAN-11
 func TestResolveOrderAndSources(t *testing.T) {
 	root := t.TempDir()
 	l := home.New(root)
@@ -178,6 +184,7 @@ func TestResolveOrderAndSources(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-HUMAN-12
 func TestIsSecretName(t *testing.T) {
 	store := NewStore()
 	store.Name(MustParse("secret://acme/login"))
@@ -201,6 +208,7 @@ type keyErr struct{ Key string }
 
 func (e keyErr) Error() string { return "rejected key " + e.Key }
 
+//dsh:test DH-T-HUMAN-10
 func TestUseErrorFormatsMaskedForValueErrors(t *testing.T) {
 	ref := MustParse("secret://deepseek/api-key")
 	for _, cause := range []error{stringErr("bad key " + testValue), keyErr{Key: testValue}} {

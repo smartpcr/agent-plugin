@@ -470,7 +470,7 @@ func (s *htkcState) noChildRemains() error {
 	if err := procwait.Poll(ctx, func() bool {
 		alive = alive[:0]
 		for _, pid := range []int{s.homeChild, s.child, s.grandchild} {
-			if subprocesstest.Alive(pid) {
+			if !subprocesstest.Exited(pid) {
 				alive = append(alive, pid)
 			}
 		}

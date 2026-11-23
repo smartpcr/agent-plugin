@@ -5,12 +5,12 @@ package subprocess
 import (
 	"errors"
 	"fmt"
-	"os/exec"
 	"syscall"
 )
 
 // groupOwner is the child's own process group: the child calls setpgid at birth,
-// so every descendant that does not leave the group is reached by -pid.
+// so every descendant that does not leave the group is reached by -pid. Its start
+// is per system: owner_group_linux.go also ties the child to the host's life.
 type groupOwner struct {
 	pid      int
 	fallback string
@@ -18,16 +18,6 @@ type groupOwner struct {
 
 func (o *groupOwner) report() Owner {
 	return Owner{Kind: ProcessGroup, Exact: false, Fallback: o.fallback}
-}
-
-func (o *groupOwner) start(build func() *exec.Cmd) (*exec.Cmd, error) {
-	cmd := build()
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-	o.pid = cmd.Process.Pid
-	return cmd, nil
 }
 
 func (o *groupOwner) signal(sig syscall.Signal) error {

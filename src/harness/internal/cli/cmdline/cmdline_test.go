@@ -29,6 +29,8 @@ func usage(t *testing.T, err error, contains string) {
 }
 
 // DH-LIB-COMMANDER-R3: options after free words are options; -- ends them.
+//
+//dsh:test DH-T-COMMANDER-2
 func TestParseOptionsAfterFreeWords(t *testing.T) {
 	v, err := Parse(app, []string{"run the tests", "--json", "--layer", "a", "--layer=b", "--port", "8"})
 	if err != nil {
@@ -44,6 +46,7 @@ func TestParseOptionsAfterFreeWords(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-COMMANDER-1
 func TestParseStopAtArgs(t *testing.T) {
 	launcher := Spec{Name: "dsh", StopAtArgs: true, Options: []Option{{Name: "layer", Kind: Strings}}, Args: Args{Max: -1}}
 	v, err := Parse(launcher, []string{"--layer", "a", "web", "--layer", "inner", "--help"})
@@ -55,6 +58,7 @@ func TestParseStopAtArgs(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-COMMANDER-2
 func TestParseEnds(t *testing.T) {
 	spec := Spec{Name: "dsh", Options: []Option{
 		{Name: "profile", Short: "p", Kind: String, Ends: true}, {Name: "safe", Short: "s", Kind: Bool},
@@ -73,6 +77,7 @@ func TestParseEnds(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-COMMANDER-2
 func TestGiven(t *testing.T) {
 	for words, want := range map[string]bool{
 		"--json --nope":         true,
@@ -94,6 +99,7 @@ func TestGiven(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-COMMANDER-2
 func TestParseUsageErrors(t *testing.T) {
 	_, err := Parse(app, []string{"--nope"})
 	usage(t, err, "unknown flag: --nope")
@@ -113,6 +119,8 @@ func TestParseUsageErrors(t *testing.T) {
 }
 
 // DH-LIB-COMMANDER-R4: help is a result, not a print.
+//
+//dsh:test DH-T-COMMANDER-3
 func TestParseHelp(t *testing.T) {
 	v, err := Parse(app, []string{"-h"})
 	if err != nil || !v.Help() {
@@ -120,6 +128,7 @@ func TestParseHelp(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-COMMANDER-3
 func TestHelp(t *testing.T) {
 	var b strings.Builder
 	spec := Spec{Name: "dsh completion", Summary: "Print a completion script",

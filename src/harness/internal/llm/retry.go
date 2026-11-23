@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/schema"
 )
 
 // RetryMode is how a route's retry policy is bounded (DH-ADR-LLM-4).
@@ -56,6 +57,19 @@ type RetryPolicy struct {
 	// RetryAfterCap is the longest provider Retry-After honoured: a failure that
 	// asks for longer waits the cap.
 	RetryAfterCap time.Duration `json:"retry_after_cap,omitempty"`
+}
+
+// retryPolicyJSON is RetryPolicy without its methods, so its encoding is the
+// fields'.
+type retryPolicyJSON RetryPolicy
+
+// MarshalJSON writes each delay, bound and cap as its text, "500ms"
+// (schema.Marshal), so the bytes encoding/json writes match the derived shape.
+func (p RetryPolicy) MarshalJSON() ([]byte, error) { return schema.Marshal(retryPolicyJSON(p)) }
+
+// UnmarshalJSON reads each duration from its text; a number there is refused.
+func (p *RetryPolicy) UnmarshalJSON(b []byte) error {
+	return schema.Unmarshal(b, (*retryPolicyJSON)(p))
 }
 
 // DefaultRetry is the bounded default a provider route carries: five retries,

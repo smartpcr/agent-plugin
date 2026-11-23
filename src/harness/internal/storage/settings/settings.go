@@ -14,12 +14,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"reflect"
 	"slices"
 	"strings"
 
 	"github.com/smartpcr/agent-plugin/src/go/loader"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/config"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/schema"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
 )
 
@@ -281,7 +281,9 @@ type liveField struct {
 }
 
 // liveFields lists the fields of name's config type tagged dsh:"live", nested
-// structs included.
+// structs included, from the type's derived shape (schema.Fields): a live field's
+// own fields are edited through it, so they are not listed again. A config type
+// the shape package cannot derive has no live field.
 func (s *Service) liveFields(name string) []liveField {
 	if s.catalog == nil {
 		return nil
@@ -290,47 +292,30 @@ func (s *Service) liveFields(name string) []liveField {
 	if err != nil || item.Config == nil {
 		return nil
 	}
+	typ, err := schema.ForType(item.Config)
+	if err != nil {
+		return nil
+	}
 	var out []liveField
-	collect(item.Config, "config", &out, 0)
+	var live []string // pointers of the live fields listed, to skip what lies below them
+	for f := range typ.Fields() {
+		if !f.Live || slices.ContainsFunc(live, func(p string) bool { return strings.HasPrefix(f.Path, p+"/") }) {
+			continue
+		}
+		live = append(live, f.Path)
+		out = append(out, liveField{path: "config" + dotted(f.Path), secret: f.Secret})
+	}
 	return out
 }
 
-func collect(t reflect.Type, prefix string, out *[]liveField, depth int) {
-	for t.Kind() == reflect.Pointer {
-		t = t.Elem()
+// dotted spells a JSON Pointer the way a settings path does: "/inner/depth" is
+// ".inner.depth".
+func dotted(ptr string) string {
+	unescape := strings.NewReplacer("~1", "/", "~0", "~")
+	var b strings.Builder
+	for _, step := range strings.Split(ptr, "/")[1:] {
+		b.WriteByte('.')
+		b.WriteString(unescape.Replace(step))
 	}
-	if t.Kind() != reflect.Struct || depth > 8 {
-		return
-	}
-	for _, f := range reflect.VisibleFields(t) {
-		if f.Anonymous || !f.IsExported() {
-			continue
-		}
-		name, ok := jsonName(f)
-		if !ok {
-			continue
-		}
-		words := strings.Split(f.Tag.Get("dsh"), ",")
-		path := prefix + "." + name
-		if slices.Contains(words, "live") {
-			*out = append(*out, liveField{path: path, secret: slices.Contains(words, "secret")})
-			continue
-		}
-		collect(f.Type, path, out, depth+1)
-	}
-}
-
-func jsonName(f reflect.StructField) (string, bool) {
-	tag, ok := f.Tag.Lookup("json")
-	if !ok {
-		return f.Name, true
-	}
-	name, _, _ := strings.Cut(tag, ",")
-	switch name {
-	case "-":
-		return "", false
-	case "":
-		return f.Name, true
-	}
-	return name, true
+	return b.String()
 }

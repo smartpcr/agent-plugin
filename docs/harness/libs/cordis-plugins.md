@@ -163,6 +163,14 @@ standard output.
 - **How.** `Service.Restart(id)` disposes the entry's fiber and runs `ensure` again with the same options; it changes neither the tree nor any file. After each `Apply` settles, the loader emits a typed event `loader.Reloaded` with the ids created, updated, restarted and removed, and the issues found. The layer source debounces file changes with `timer.Debounce` when the timer service is present.
 - **Components.** `src/go/loader` (`loader.go`, `layerset.go`). **Depends on.** [DH-D-LOADER-7](cordis-loader.md#dh-d-loader-7). **Priority.** P1. **Outcome.** DH-O-2. **Done when.** DH-T-LOADER-12 passes and scenario DH-E-LOADER-1 passes.
 
+> **DC-3 override note (M1 story, 2026-11-22).** "The layer source debounces file changes
+> with `timer.Debounce` when the timer service is present" is overridden by owner decision
+> M1-D-FND-3 (a) in [the M1 decision log](../../stories/harness-DSH-M1/decisions.md)
+> (gap M1-G-FND-5). The layer debounce owns its timer: `LayerSet` waits for
+> `LayerSetOptions.Debounce` of quiet with its own `time.Timer` (`src/go/loader/layerset.go`,
+> the watch loop) and does not take the timer service. The behaviour is the same: changes
+> within the window become one reload. The deliverable text above is unchanged (DC-2).
+
 <a id="dh-d-loader-12"></a>
 #### DH-D-LOADER-12 Logging component for the harness
 - **Result.** Operators choose where logs go, and protocol output on standard output stays clean (R5).

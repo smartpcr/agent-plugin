@@ -828,8 +828,24 @@ type ReloadNotice struct {
 var Reloaded = cordis.NewEvent[ReloadNotice]("loader/reloaded")
 
 // publish tells the observers about events, already in the lifecycle log
-// (appendLocked), and emits notice.
+// (appendLocked), and emits notice. It first writes one debug line under the
+// "loader" logger for each kind of change the notice reports, naming the ids:
+// entries applied (created), reloaded in place, restarted and unloaded.
 func (s *Service) publish(events []LifecycleEvent, notice ReloadNotice) {
+	log := s.ctx.Loggers().For(s.ctx, "loader")
+	for _, change := range []struct {
+		kind string
+		ids  []string
+	}{
+		{"apply", notice.Created},
+		{"reload", notice.Updated},
+		{"restart", notice.Restarted},
+		{"unload", notice.Removed},
+	} {
+		if len(change.ids) > 0 {
+			log.Debugf("%s: %s", change.kind, strings.Join(change.ids, ", "))
+		}
+	}
 	s.raise(events)
 	notice.Loader = s
 	if s.nested {

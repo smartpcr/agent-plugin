@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -23,6 +24,8 @@ func item(name string) catalog.Item { return catalog.Item{Name: name, Component:
 type webView struct{ URL string }
 
 // TC-04a: the compiled-in catalogue, printed, equals the committed golden list.
+//
+//dsh:test DH-T-BOOT-3
 func TestCatalogListsComponentsByName(t *testing.T) {
 	c, err := builtin.Catalog()
 	if err != nil {
@@ -165,5 +168,37 @@ func TestFrozen(t *testing.T) {
 	again, _ := c.Lookup("boot.p")
 	if again.Provides[0] != "p" || again.Platforms[0] != "linux" {
 		t.Fatalf("catalogue changed: %+v", again)
+	}
+}
+
+// TestFamiliesHaveAreas: every registered family is named once and carries the
+// area key that owns it (M1-G-FND-20); Print shows that area beside each component.
+func TestFamiliesHaveAreas(t *testing.T) {
+	areaKey := regexp.MustCompile(`^(A[0-9]{2}|C[1-7]|X[1-6]?)$`)
+	seen := map[string]bool{}
+	for _, f := range catalog.Families {
+		if seen[f.Name] {
+			t.Errorf("family %q registered twice", f.Name)
+		}
+		seen[f.Name] = true
+		if !areaKey.MatchString(f.Area) {
+			t.Errorf("family %q: area %q is not an area key", f.Name, f.Area)
+		}
+		if err := catalog.CheckName(f.Name + ".thing"); err != nil {
+			t.Errorf("family %q: %v", f.Name, err)
+		}
+	}
+	c, err := catalog.BuildFor("linux", []catalog.Item{item("title.llm"), item("fs.tools")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := c.Print(&out); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 3 || strings.Fields(lines[0])[1] != "AREA" ||
+		strings.Fields(lines[1])[1] != "A08" || strings.Fields(lines[2])[1] != "X6" {
+		t.Fatalf("print:\n%s", out.String())
 	}
 }

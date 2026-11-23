@@ -3,6 +3,8 @@ package driver
 import (
 	"fmt"
 	"time"
+
+	"github.com/smartpcr/agent-plugin/src/harness/internal/schema"
 )
 
 // The budget defaults (tech-spec §5.5, DH-ADR-AGENT-7), confirmed by their
@@ -32,6 +34,18 @@ type Budget struct {
 	MaxAttemptsPerStep int `json:"maxAttemptsPerStep,omitempty"`
 	// MaxDuration is the most wall time one turn runs; 0 is none.
 	MaxDuration time.Duration `json:"maxDuration,omitempty"`
+}
+
+// budgetJSON is Budget without its methods, so its encoding is the fields'.
+type budgetJSON Budget
+
+// MarshalJSON writes MaxDuration as its text, "30m" (schema.Marshal), so a
+// config states a time limit with its unit and the bytes match the derived shape.
+func (b Budget) MarshalJSON() ([]byte, error) { return schema.Marshal(budgetJSON(b)) }
+
+// UnmarshalJSON reads MaxDuration from its text; a number there is refused.
+func (b *Budget) UnmarshalJSON(raw []byte) error {
+	return schema.Unmarshal(raw, (*budgetJSON)(b))
 }
 
 // DefaultBudget is the budget of an agent whose config names none.

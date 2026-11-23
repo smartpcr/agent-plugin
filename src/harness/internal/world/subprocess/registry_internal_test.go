@@ -14,6 +14,8 @@ import (
 // the tree still stopping is killed once more, named by pid, and left
 // registered, and its stop goes on in the background. Holding the tree's stop
 // lock stands in for a StopTree that another caller is still running.
+//
+//dsh:test DH-T-EXEC-5
 func TestStopAllReturnsAtTheContextEnd(t *testing.T) {
 	exe, err := os.Executable()
 	if err != nil {

@@ -17,8 +17,10 @@ import (
 )
 
 // TestReplaceNeverExposesPartialFile is TC-04b: a reader looping over the file (through
-// ReadFile, which never blocks a replace) while Replace publishes new content 200
+// ReadFile, which never blocks a replace) while Replace publishes new content 1,000
 // times sees only one of the two complete contents, and never a missing file.
+//
+//dsh:test DH-T-NODEFS-1
 func TestReplaceNeverExposesPartialFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	old := bytes.Repeat([]byte("o"), 64<<10)
@@ -56,7 +58,7 @@ func TestReplaceNeverExposesPartialFile(t *testing.T) {
 			close(stop)
 		}
 	})
-	for i := range 200 {
+	for i := range 1000 {
 		content := next
 		if i%2 == 1 {
 			content = old
@@ -143,6 +145,7 @@ func assertMode(t *testing.T, path string, want fs.FileMode) {
 	}
 }
 
+//dsh:test DH-T-FS-1, DH-T-NODEFS-1
 func TestReplaceWriterFailureLeavesTarget(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "f")
@@ -171,6 +174,7 @@ func TestReplaceWriterFailureLeavesTarget(t *testing.T) {
 	assertNoStaged(t, dir)
 }
 
+//dsh:test DH-T-FS-1, DH-T-NODEFS-2
 func TestCreateIfAbsentOneWinner(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "claim")
@@ -206,6 +210,7 @@ func TestCreateIfAbsentOneWinner(t *testing.T) {
 	assertNoStaged(t, dir)
 }
 
+//dsh:test DH-T-FS-1
 func TestRootedReplaceAndCreate(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(dir, "sub"), 0o755); err != nil {
@@ -242,6 +247,7 @@ func TestRootedReplaceAndCreate(t *testing.T) {
 	assertNoStaged(t, filepath.Join(dir, "sub"))
 }
 
+//dsh:test DH-T-FS-1
 func TestRootedCreateWithoutLinks(t *testing.T) {
 	saved := rootLink
 	t.Cleanup(func() { rootLink = saved })
@@ -280,6 +286,7 @@ func TestRootedCreateWithoutLinks(t *testing.T) {
 	assertNoStaged(t, dir)
 }
 
+//dsh:test DH-T-FS-1
 func TestSweepStaged(t *testing.T) {
 	dir := t.TempDir()
 	stale := filepath.Join(dir, StagePrefix+"old")

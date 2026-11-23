@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/smartpcr/agent-plugin/src/harness/internal/schema"
 )
 
 // Code names a failure: a closed table plus llm/http-<status>.
@@ -126,8 +128,20 @@ type Failure struct {
 	Class      Class         `json:"class" dsh:"enum=cancelled|transient|repairable|permanent"`
 	Message    string        `json:"message"`
 	Status     int           `json:"status,omitempty"`      // HTTP status, 0 when none
-	RetryAfter time.Duration `json:"retry_after,omitempty"` // the provider's request, validated; not a decision
+	RetryAfter time.Duration `json:"retry_after,omitempty"` // the provider's request, validated; not a decision; text ("2s") on the wire
 	RequestID  string        `json:"request_id,omitempty"`
+}
+
+// failureJSON is Failure without its methods, so its encoding is the fields'.
+type failureJSON Failure
+
+// MarshalJSON writes RetryAfter as its text, "2s" (schema.Marshal), so the
+// bytes encoding/json writes match the derived shape.
+func (f Failure) MarshalJSON() ([]byte, error) { return schema.Marshal(failureJSON(f)) }
+
+// UnmarshalJSON reads RetryAfter from its text; a number there is refused.
+func (f *Failure) UnmarshalJSON(b []byte) error {
+	return schema.Unmarshal(b, (*failureJSON)(f))
 }
 
 // NewFailure is a failure of code, classed from the code.

@@ -122,6 +122,8 @@ func fileForm(v any) (*loader.Node, error) {
 	return loader.JSON.Decode("", compact)
 }
 
+// parseError places a YAML syntax error at its line and column, so Diagnose can
+// show it in a code frame of the text; any other failure names the file only.
 func parseError(file string, err error) error {
 	var syntax *yamlx.SyntaxError
 	if errors.As(err, &syntax) {

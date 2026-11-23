@@ -7,6 +7,7 @@ import (
 	"testing"
 )
 
+//dsh:test DH-T-DIFF-1, DH-T-DIFF-3
 func TestLinesHunks(t *testing.T) {
 	cases := []struct {
 		name, a, b string
@@ -50,6 +51,7 @@ func assertApply(t *testing.T, r Result, a, b string) {
 	}
 }
 
+//dsh:test DH-T-DIFF-1
 func TestBeforeAfter(t *testing.T) {
 	r := Lines("a\nb\nc", "a\nB\nc", 1, Limits{})
 	if len(r.Hunks) != 1 {
@@ -61,6 +63,7 @@ func TestBeforeAfter(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-DIFF-2, DH-T-FS-6
 func TestLimits(t *testing.T) {
 	a := strings.Repeat("line\n", 20)
 	b := strings.Repeat("line\n", 10) + "x\n" + strings.Repeat("line\n", 9)
@@ -108,6 +111,8 @@ func TestApplyMismatch(t *testing.T) {
 
 // TestApplyInvertsLines checks Lines(a, b).Apply(a) == b over random texts built
 // from a small alphabet of lines, so equal lines and moves are common.
+//
+//dsh:test DH-T-DIFF-2
 func TestApplyInvertsLines(t *testing.T) {
 	rng := rand.New(rand.NewPCG(1, 2))
 	alphabet := []string{"a\n", "b\n", "c\n", "\n", "a\r\n", "d"}
@@ -134,6 +139,8 @@ func TestApplyInvertsLines(t *testing.T) {
 
 // TestEqualAboveLimits: identical inputs are unchanged even past MaxLines or
 // MaxBytes, where unequal inputs get a coarse whole-text hunk.
+//
+//dsh:test DH-T-DIFF-2
 func TestEqualAboveLimits(t *testing.T) {
 	s := "one\ntwo\nthree\n"
 	for _, lim := range []Limits{{MaxLines: 1}, {MaxBytes: 4}} {

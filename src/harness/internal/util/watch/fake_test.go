@@ -58,6 +58,8 @@ func TestFakeRouting(t *testing.T) {
 // watched directory itself, or an overflow, re-adds the directory at the next
 // check: the registration may have died with a deleted directory that the
 // identity check cannot tell from its successor (M1-G-GATE-15.2).
+//
+//dsh:test DH-T-CHOKIDAR-3
 func TestFakeRearmOnDirectoryEvent(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("file IDs are not reused on Windows; the identity check decides there")
@@ -97,6 +99,8 @@ func TestFakeRearmOnDirectoryEvent(t *testing.T) {
 // settled check in between; when the notifier then refuses to re-add it, the
 // watch does not stay deaf on the dead registration: it switches to polling, says
 // so once (ErrDegraded), and still sees the next change.
+//
+//dsh:test DH-T-CHOKIDAR-3, DH-T-CHOKIDAR-5
 func TestRearmRefusedDegrades(t *testing.T) {
 	fake := watchtest.New()
 	var adds atomic.Int32
@@ -135,6 +139,8 @@ func TestRearmRefusedDegrades(t *testing.T) {
 
 // TestReconcileOnReady: a change racing Watch (made while the directory is being
 // registered) is reported once the watch is ready.
+//
+//dsh:test DH-T-CHOKIDAR-4
 func TestReconcileOnReady(t *testing.T) {
 	fake := watchtest.New()
 	dir := t.TempDir()
@@ -154,6 +160,8 @@ func TestReconcileOnReady(t *testing.T) {
 // TestDegradedNotifications: a notifier that refuses Add, fails later, overflows
 // or stays silent still leaves a watch that sees changes, and the degradation is
 // reported once.
+//
+//dsh:test DH-T-CHOKIDAR-5
 func TestDegradedNotifications(t *testing.T) {
 	t.Run("add fails", func(t *testing.T) {
 		fake := watchtest.New()
@@ -268,6 +276,8 @@ func TestDegradedNotifications(t *testing.T) {
 
 // TestSymlinkSameTarget: a watch through a symbolic link watches the file it
 // names (DH-LIB-CHOKIDAR-R8).
+//
+//dsh:test DH-T-CHOKIDAR-6
 func TestSymlinkSameTarget(t *testing.T) {
 	realDir := t.TempDir()
 	f := filepath.Join(realDir, "f")

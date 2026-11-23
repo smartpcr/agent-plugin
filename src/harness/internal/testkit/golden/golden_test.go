@@ -74,6 +74,8 @@ func readFile(t *testing.T, file string) string {
 // TestAssertDetectsDriftAndUpdatesOnlyOnSwitch is DH-T-TOOLCHAIN-4 (with
 // TestAssertRefusesUpdateUnderCI): a golden holding "a" compared with "b" fails with
 // a diff and keeps "a"; only -update writes "b".
+//
+//dsh:test DH-T-TOOLCHAIN-4
 func TestAssertDetectsDriftAndUpdatesOnlyOnSwitch(t *testing.T) {
 	inTempDir(t)
 	file := writeGolden(t, "x", "a\n")
@@ -109,6 +111,7 @@ func TestAssertDetectsDriftAndUpdatesOnlyOnSwitch(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-TOOLCHAIN-4
 func TestAssertRefusesUpdateUnderCI(t *testing.T) {
 	inTempDir(t)
 	file := writeGolden(t, "x", "a\n")
@@ -126,6 +129,7 @@ func TestAssertRefusesUpdateUnderCI(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-TOOLCHAIN-4
 func TestAssertMissingGoldenFailsWithoutCreatingIt(t *testing.T) {
 	inTempDir(t)
 	setUpdate(t, false)
@@ -139,6 +143,7 @@ func TestAssertMissingGoldenFailsWithoutCreatingIt(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-TOOLCHAIN-4
 func TestAssertUpdateCreatesNestedGoldenAndKeepsIdenticalFile(t *testing.T) {
 	inTempDir(t)
 	setUpdate(t, true)
@@ -209,6 +214,7 @@ func TestPath(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-TOOLCHAIN-4
 func TestDiff(t *testing.T) {
 	tests := []struct{ name, want, got, diff string }{
 		{"equal", "a\nb\n", "a\nb\n", " a\n b\n"},
@@ -228,6 +234,7 @@ func TestDiff(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-TOOLCHAIN-4
 func TestDiffOfLargeInputReportsFirstDifference(t *testing.T) {
 	a := strings.Repeat("same\n", 3000)
 	got := Diff(a+"x\n", a+"y\n")
@@ -241,6 +248,8 @@ func TestDiffOfLargeInputReportsFirstDifference(t *testing.T) {
 }
 
 // TestDiffGolden records Diff's own output format with the helper it serves.
+//
+//dsh:test DH-T-TOOLCHAIN-4
 func TestDiffGolden(t *testing.T) {
 	Assert(t, "diff", Diff("one\ntwo\nthree\nfour\n", "one\n2\nthree\nfour\nfive"))
 }

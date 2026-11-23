@@ -51,9 +51,9 @@ func CheckName(name string) error {
 	if !nameRE.MatchString(name) {
 		return fmt.Errorf("name %q is not <family>.<name> or <family>.<name>.<part> in lower case", name)
 	}
-	family, _, _ := strings.Cut(name, ".")
-	if !slices.Contains(Families, family) {
-		return fmt.Errorf("name %q: family %q is not registered", name, family)
+	first, _, _ := strings.Cut(name, ".")
+	if _, ok := family(first); !ok {
+		return fmt.Errorf("name %q: family %q is not registered", name, first)
 	}
 	return nil
 }
@@ -218,8 +218,10 @@ func (c *Catalog) Views() map[string]reflect.Type {
 // The output does not depend on the running platform.
 func (c *Catalog) Print(w io.Writer) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tCONFIG\tPROVIDES\tVIEW\tPLATFORMS")
+	fmt.Fprintln(tw, "NAME\tAREA\tCONFIG\tPROVIDES\tVIEW\tPLATFORMS")
 	for _, item := range c.items {
+		first, _, _ := strings.Cut(item.Name, ".")
+		f, _ := family(first) // Build admitted only registered families
 		platforms := "all"
 		if len(item.Platforms) > 0 {
 			platforms = strings.Join(item.Platforms, ",")
@@ -228,7 +230,7 @@ func (c *Catalog) Print(w io.Writer) error {
 		if len(item.Provides) > 0 {
 			provides = strings.Join(item.Provides, ",")
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", item.Name, typeName(item.Config), provides, typeName(item.View), platforms)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", item.Name, f.Area, typeName(item.Config), provides, typeName(item.View), platforms)
 	}
 	return tw.Flush()
 }

@@ -81,6 +81,14 @@ func applyTag(parent *jsonschema.Schema, name string, s *jsonschema.Schema, ft r
 	}
 	kind := ft.Kind()
 	numeric := kind >= reflect.Int && kind <= reflect.Float64
+	if isDuration(ft) {
+		// A duration is text on the wire: its bounds would be bounds on a number
+		// that is not sent, and its enum values are texts.
+		kind, numeric = reflect.String, false
+		if strings.Contains(","+tag, ",min=") || strings.Contains(","+tag, ",max=") {
+			return errors.New("dsh min= and max= do not apply to a duration; check it in Validate")
+		}
+	}
 	for tag != "" {
 		var word string
 		if strings.HasPrefix(tag, "pattern=") {
@@ -121,7 +129,7 @@ func applyTag(parent *jsonschema.Schema, name string, s *jsonschema.Schema, ft r
 				s.Enum = append(s.Enum, json.Number(e))
 			}
 		case key == "pattern" && hasVal:
-			if kind != reflect.String {
+			if kind != reflect.String || isDuration(ft) {
 				return errors.New("dsh pattern= needs a string field")
 			}
 			s.Pattern = val

@@ -21,6 +21,8 @@ func (o *stuckOwner) release()                                  {}
 
 // With the direct child gone and a descendant left, await polls at pollEvery
 // rather than spinning on the closed exited channel.
+//
+//dsh:test DH-T-NODEPROC-5
 func TestAwaitDoesNotSpinAfterChildExit(t *testing.T) {
 	o := &stuckOwner{}
 	p := &Process{owner: o, exited: make(chan struct{}), releasedC: make(chan struct{})}

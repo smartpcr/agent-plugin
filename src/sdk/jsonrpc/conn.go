@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"strconv"
 	"sync"
+	"time"
 )
 
 // Defaults of the bounds Options leave unset.
@@ -15,6 +18,8 @@ const (
 	DefaultMaxPending     = 64
 	DefaultMaxInFlight    = 64
 	DefaultMaxQueuedBytes = 32 << 20
+	// DefaultWriteStall is the write-stall deadline, as stdio.Config's writeStall.
+	DefaultWriteStall = 60 * time.Second
 )
 
 // CancelMethod is the notification, sent both ways, that cancels request params.id.
@@ -28,8 +33,9 @@ type Handler func(ctx context.Context, params json.RawMessage) (result any, err 
 
 // Options configure a connection. Zero values select the defaults.
 type Options struct {
-	// MaxLineBytes bounds every line read and written (DefaultMaxLineBytes).
-	MaxLineBytes int
+	// MaxFrameBytes bounds every frame (one line) read and written
+	// (DefaultMaxLineBytes).
+	MaxFrameBytes int
 	// MaxPending bounds the outbound calls awaiting a response; one more fails at
 	// once with jsonrpc/too-many-pending (DefaultMaxPending).
 	MaxPending int
@@ -39,6 +45,11 @@ type Options struct {
 	// MaxQueuedBytes bounds the frames waiting for the writer; Call and Notify block
 	// while it is reached (DefaultMaxQueuedBytes).
 	MaxQueuedBytes int
+	// WriteStall bounds one write to the peer: a frame the writer has not accepted
+	// within it ends the connection with jsonrpc/write-stalled, and every pending
+	// call fails once with that error (DefaultWriteStall). The blocked Write itself
+	// returns only when the caller closes w.
+	WriteStall time.Duration
 	// Methods is the closed allow-list of request methods. Any other method is
 	// answered jsonrpc/method-not-found and reaches no handler.
 	Methods map[string]Handler
@@ -47,11 +58,17 @@ type Options struct {
 	// OnError receives the faults that cannot be answered: a response that names no
 	// pending call, or an error the peer sent to the null id.
 	OnError func(err error)
+	// Log, when set, receives the same faults as OnError and the write stall that
+	// ends a connection, as warnings. The codec writes no other log line.
+	Log *slog.Logger
 }
 
 func (o Options) withDefaults() Options {
-	if o.MaxLineBytes <= 0 {
-		o.MaxLineBytes = DefaultMaxLineBytes
+	if o.MaxFrameBytes <= 0 {
+		o.MaxFrameBytes = DefaultMaxLineBytes
+	}
+	if o.WriteStall <= 0 {
+		o.WriteStall = DefaultWriteStall
 	}
 	if o.MaxPending <= 0 {
 		o.MaxPending = DefaultMaxPending
@@ -85,6 +102,15 @@ type Conn struct {
 	inflight map[ID]*running
 	err      error
 	done     chan struct{}
+
+	// One-shot mode (ServeOne): framed is set by the reader once the first frame is
+	// read, replied is closed once that request's reply is queued, and refusal is
+	// the error a second frame was answered with (under mu).
+	oneShot bool
+	framed  bool
+	replied chan struct{}
+	reply   sync.Once
+	refusal error
 }
 
 type running struct {
@@ -93,18 +119,27 @@ type running struct {
 }
 
 // Serve starts a connection reading frames from r and writing to w. It ends when r
-// ends, when ctx ends, on a line over the bound, on a write error or on Close. The
-// caller owns r and w: closing them is what stops a blocked read.
+// ends, when ctx ends, on a line over the bound, on a write error, on a write stall
+// or on Close. The caller owns r and w: closing them is what stops a blocked read
+// or write.
 func Serve(ctx context.Context, r io.Reader, w io.Writer, o Options) *Conn {
+	return start(ctx, r, w, o, false)
+}
+
+func start(ctx context.Context, r io.Reader, w io.Writer, o Options, oneShot bool) *Conn {
 	o = o.withDefaults()
 	c := &Conn{
 		o:        o,
-		rd:       NewReader(r, o.MaxLineBytes),
+		rd:       NewReader(r, o.MaxFrameBytes),
 		w:        w,
 		q:        newQueue(o.MaxQueuedBytes),
 		pending:  map[ID]chan *Response{},
 		inflight: map[ID]*running{},
 		done:     make(chan struct{}),
+		oneShot:  oneShot,
+	}
+	if oneShot {
+		c.replied = make(chan struct{})
 	}
 	c.base, c.cancel = context.WithCancel(context.WithoutCancel(ctx))
 	// The callback runs closeWith, which takes c.mu: holding it here makes the
@@ -141,7 +176,12 @@ func (c *Conn) closeWith(err error) {
 		return
 	}
 	c.err = err
-	closed := newError(ReasonClosed, "the connection ended before the response: "+err.Error())
+	// A write stall means the peer is gone: the pending calls fail with the stall
+	// itself. Any other end fails them with jsonrpc/closed naming the cause.
+	var closed *Error
+	if !errors.As(err, &closed) || closed.Reason != ReasonWriteStalled {
+		closed = newError(ReasonClosed, "the connection ended before the response: "+err.Error())
+	}
 	for id, ch := range c.pending {
 		ch <- &Response{ID: id, Error: closed}
 	}
@@ -177,7 +217,7 @@ func (c *Conn) Call(ctx context.Context, method string, params, result any) erro
 	c.pending[id] = ch
 	c.mu.Unlock()
 
-	line, err := encodeLine(&Request{ID: id, Method: method, Params: raw}, c.o.MaxLineBytes)
+	line, err := encodeLine(&Request{ID: id, Method: method, Params: raw}, c.o.MaxFrameBytes)
 	if err == nil {
 		// Waiting for queue room ends with ctx: the request was never sent, so no
 		// $/cancel follows and the pending slot is released at once.
@@ -200,7 +240,7 @@ func (c *Conn) Call(ctx context.Context, method string, params, result any) erro
 		return nil
 	case <-ctx.Done():
 		if c.forget(id) {
-			if line, err := encodeLine(&Notification{Method: CancelMethod, Params: cancelParams(id)}, c.o.MaxLineBytes); err == nil {
+			if line, err := encodeLine(&Notification{Method: CancelMethod, Params: cancelParams(id)}, c.o.MaxFrameBytes); err == nil {
 				_ = c.q.push(ctx, line, nil, true)
 			}
 		}
@@ -227,7 +267,7 @@ func (c *Conn) Notify(method string, params any) error {
 	if err != nil {
 		return err
 	}
-	line, err := encodeLine(&Notification{Method: method, Params: raw}, c.o.MaxLineBytes)
+	line, err := encodeLine(&Notification{Method: method, Params: raw}, c.o.MaxFrameBytes)
 	if err != nil {
 		return err
 	}
@@ -264,15 +304,45 @@ func marshalParams(params any) (json.RawMessage, error) {
 	return raw, nil
 }
 
+// writeLoop is the one writer. Each frame is written by a helper goroutine while
+// writeLoop waits for it with the WriteStall timer, so a peer that accepts nothing
+// ends the connection instead of holding it forever. After a stall the helper stays
+// in its Write until the caller closes w; it then exits.
 func (c *Conn) writeLoop() {
+	lines := make(chan []byte)
+	written := make(chan error, 1)
+	go func() {
+		for line := range lines {
+			_, err := c.w.Write(line)
+			written <- err
+		}
+	}()
+	defer close(lines)
+	stall := time.NewTimer(c.o.WriteStall)
+	stall.Stop()
 	for {
 		it, ok := c.q.pop()
 		if !ok {
 			return
 		}
 		if it.line != nil {
-			if _, err := c.w.Write(it.line); err != nil {
-				c.closeWith(newError(ReasonClosed, "writing to the peer failed: "+err.Error()))
+			lines <- it.line
+			stall.Reset(c.o.WriteStall)
+			select {
+			case err := <-written:
+				stall.Stop()
+				if err != nil {
+					c.closeWith(newError(ReasonClosed, "writing to the peer failed: "+err.Error()))
+					return
+				}
+			case <-stall.C:
+				err := newError(ReasonWriteStalled, "the peer accepted no frame for "+c.o.WriteStall.String())
+				if c.o.Log != nil {
+					c.o.Log.Warn("jsonrpc: write stalled; closing the connection", "err", err)
+				}
+				c.closeWith(err)
+				return
+			case <-c.done:
 				return
 			}
 		}
@@ -282,6 +352,9 @@ func (c *Conn) writeLoop() {
 		}
 	}
 }
+
+// errOneRequest answers every frame of a one-shot connection after the first.
+const errOneRequest = "a one-shot connection carries exactly one request"
 
 func (c *Conn) readLoop() {
 	for {
@@ -293,7 +366,12 @@ func (c *Conn) readLoop() {
 		}
 		if err != nil {
 			if HasReason(err, ReasonLineTooLong) {
-				c.answerAndClose(err)
+				c.answerAndClose(ID{}, err)
+				return
+			}
+			if c.oneShot && c.framed {
+				// The request is read and its reply is still owed: the end of the
+				// peer's input does not end a one-shot connection.
 				return
 			}
 			c.closeWith(newError(ReasonClosed, "the peer's input ended: "+err.Error()))
@@ -302,11 +380,26 @@ func (c *Conn) readLoop() {
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
+		if c.oneShot {
+			if c.framed {
+				c.refuse(line)
+				continue
+			}
+			c.framed = true
+		}
 		f, err := Decode(line)
 		if err != nil {
 			// The decode error is a parse-error or invalid-request.
+			if c.oneShot {
+				c.answerAndClose(requestID(line), err)
+				return
+			}
 			c.respond(requestID(line), nil, err)
 			continue
+		}
+		if _, ok := f.(*Request); c.oneShot && !ok {
+			c.answerAndClose(ID{}, newError(ReasonInvalidRequest, errOneRequest+", and this frame is not one"))
+			return
 		}
 		switch f := f.(type) {
 		case *Request:
@@ -316,6 +409,25 @@ func (c *Conn) readLoop() {
 		case *Response:
 			c.settle(f)
 		}
+	}
+}
+
+// refuse answers a frame after the first of a one-shot connection with
+// jsonrpc/invalid-request, to its id when it has one, and records the refusal.
+func (c *Conn) refuse(line []byte) {
+	err := newError(ReasonInvalidRequest, errOneRequest)
+	c.mu.Lock()
+	if c.refusal == nil {
+		c.refusal = err
+	}
+	c.mu.Unlock()
+	c.respond(requestID(line), nil, err)
+}
+
+// served marks the reply of a one-shot connection's request as queued.
+func (c *Conn) served() {
+	if c.oneShot {
+		c.reply.Do(func() { close(c.replied) })
 	}
 }
 
@@ -361,11 +473,11 @@ func requestID(line []byte) ID {
 	return id
 }
 
-// answerAndClose writes one error frame for a fatal read fault, then ends the
+// answerAndClose writes one error frame to id for a fatal read fault, then ends the
 // connection with it. The frame is the codec's own and small, so it is sent even
 // when it is longer than a tiny line bound.
-func (c *Conn) answerAndClose(err error) {
-	if b, e := Encode(&Response{Error: toWire(err)}); e == nil {
+func (c *Conn) answerAndClose(id ID, err error) {
+	if b, e := Encode(&Response{ID: id, Error: toWire(err)}); e == nil {
 		line := append(b, '\n')
 		done := make(chan struct{})
 		if c.q.push(context.Background(), line, done, true) == nil {
@@ -382,6 +494,7 @@ func (c *Conn) dispatch(req *Request) {
 	h, ok := c.o.Methods[req.Method]
 	if !ok {
 		c.respond(req.ID, nil, newError(ReasonMethodNotFound, strconv.Quote(req.Method)+" is not a method of this connection"))
+		c.served()
 		return
 	}
 	c.mu.Lock()
@@ -422,6 +535,7 @@ func (c *Conn) handle(ctx context.Context, req *Request, h Handler, run *running
 		result, err = nil, newError(ReasonCancelled, "request "+req.ID.String()+" was cancelled")
 	}
 	c.respond(req.ID, result, err)
+	c.served()
 }
 
 // respond queues the response to id. Failures to queue mean the connection ended.
@@ -434,7 +548,7 @@ func (c *Conn) respond(id ID, result any, err error) {
 	} else {
 		resp.Result = raw
 	}
-	line, lerr := encodeLine(resp, c.o.MaxLineBytes)
+	line, lerr := encodeLine(resp, c.o.MaxFrameBytes)
 	if lerr != nil {
 		// The codec's own error frame is small; it is sent past a tiny bound.
 		b, _ := Encode(&Response{ID: id, Error: toWire(lerr)})
@@ -484,7 +598,11 @@ func (c *Conn) settle(r *Response) {
 	ch <- r
 }
 
+// report hands a fault that cannot be answered to Log, then to OnError.
 func (c *Conn) report(err error) {
+	if c.o.Log != nil {
+		c.o.Log.Warn("jsonrpc: a fault that cannot be answered", "err", err)
+	}
 	if c.o.OnError != nil {
 		c.o.OnError(err)
 	}

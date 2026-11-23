@@ -60,6 +60,16 @@ type Service interface {
 	ExecuteBatch(ctx context.Context, b Batch) (BatchResult, error)
 }
 
+// FinalShaper is the optional part of a Service that files a final shaper: one
+// that runs after every ordinary shaper of the call's scope chain, on the text they
+// left, a Block's text included, so no ordinary shaper registered later sees or
+// rebuilds what it changed. Final shapers run nearest layer first and in
+// registration order within a layer, also on a call refused at resolve. The secret
+// mask (human.secret.redact) is one: its masking is the last word on the text.
+type FinalShaper interface {
+	ShapeFinal(ctx *cordis.Context, id string, s Shaper) (*cordis.EffectHandle, error)
+}
+
 // Key is the tool registry's service key.
 var Key = cordis.NewServiceKey[Service]("tools")
 

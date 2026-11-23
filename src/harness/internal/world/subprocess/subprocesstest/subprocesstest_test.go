@@ -8,12 +8,14 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/procwait"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess"
 )
 
@@ -168,8 +170,8 @@ func TestTreeReportsBothPids(t *testing.T) {
 	if child <= 0 || grandchild <= 0 || child == grandchild || !running {
 		t.Fatalf("Tree pids %d, %d (both running %v); want two distinct running processes", child, grandchild, running)
 	}
-	if Alive(child) || Alive(grandchild) {
-		t.Fatalf("after the cleanup: child alive %v, grandchild alive %v", Alive(child), Alive(grandchild))
+	if !Exited(child) || !Exited(grandchild) {
+		t.Fatalf("after the cleanup: child exited %v, grandchild exited %v", Exited(child), Exited(grandchild))
 	}
 }
 
@@ -288,4 +290,47 @@ func (l *logTB) Logf(format string, args ...any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	*l.logs = append(*l.logs, fmt.Sprintf(format, args...))
+}
+
+// RoleEnviron prints the whole environment, one entry per line, in order.
+func TestEnvironRolePrintsTheWholeEnvironment(t *testing.T) {
+	t.Setenv("SUBPROCESSTEST_ENVIRON_PROBE", "seen")
+	var b strings.Builder
+	if code := run(RoleEnviron, nil, &b); code != 0 {
+		t.Fatalf("environ role exited %d", code)
+	}
+	lines := strings.Split(strings.TrimSuffix(b.String(), "\n"), "\n")
+	if !slices.IsSorted(lines) || !slices.Contains(lines, "SUBPROCESSTEST_ENVIRON_PROBE=seen") || len(lines) != len(os.Environ()) {
+		t.Fatalf("environ role printed %q; want every entry of this process, sorted", lines)
+	}
+}
+
+// RoleHost starts its child through the spawn package, reports it with its
+// owner once it is ready, then parks; the child runs until it is killed.
+func TestHostRoleReportsItsChild(t *testing.T) {
+	noPark(t)
+	var b strings.Builder
+	if code := run(RoleHost, nil, &b); code != 0 {
+		t.Fatalf("host role exited %d", code)
+	}
+	var child int
+	var kind string
+	if _, err := fmt.Sscanf(b.String(), "host %d %s\n", &child, &kind); err != nil || child <= 0 || kind != string(subprocess.TreeOwner().Kind) {
+		t.Fatalf("host role printed %q (%v); want the child's pid and this host's owner %s", b.String(), err, subprocess.TreeOwner().Kind)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	t.Cleanup(func() { killPid(child) })
+	if !Alive(child) {
+		t.Fatalf("child %d is not running after the host reported it", child)
+	}
+	killPid(child)
+	// The spawn package's own waiter reaps the child, so it is gone soon after.
+	procwait.Until(ctx, t, func() bool { return !Alive(child) })
+}
+
+func killPid(pid int) {
+	if p, err := os.FindProcess(pid); err == nil {
+		_ = p.Kill()
+	}
 }

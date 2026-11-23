@@ -1,0 +1,110 @@
+# web
+[
+  {
+    "id": "logging",
+    "name": "boot.logging",
+    "config": {
+      "destination": "stderr",
+      "level": "info"
+    }
+  },
+  {
+    "id": "sharing",
+    "name": "host.sharing",
+    "config": {
+      "off": false
+    }
+  },
+  {
+    "id": "egress",
+    "name": "util.egress"
+  }
+]
+# headless
+[
+  {
+    "id": "logging",
+    "name": "boot.logging",
+    "config": {
+      "destination": "stderr",
+      "level": "info"
+    }
+  },
+  {
+    "id": "sharing",
+    "name": "host.sharing",
+    "config": {
+      "off": false
+    }
+  },
+  {
+    "id": "egress",
+    "name": "util.egress"
+  }
+]
+# sdk
+[
+  {
+    "id": "logging",
+    "name": "boot.logging",
+    "config": {
+      "destination": "stderr",
+      "level": "info"
+    }
+  },
+  {
+    "id": "sharing",
+    "name": "host.sharing",
+    "config": {
+      "off": false
+    }
+  },
+  {
+    "id": "egress",
+    "name": "util.egress"
+  }
+]
+# sdk-minimal
+[
+  {
+    "id": "logging",
+    "name": "boot.logging",
+    "config": {
+      "destination": "stderr",
+      "level": "info"
+    }
+  },
+  {
+    "id": "sharing",
+    "name": "host.sharing",
+    "config": {
+      "off": false
+    }
+  },
+  {
+    "id": "egress",
+    "name": "util.egress"
+  }
+]
+# acp
+[
+  {
+    "id": "logging",
+    "name": "boot.logging",
+    "config": {
+      "destination": "stderr",
+      "level": "info"
+    }
+  },
+  {
+    "id": "sharing",
+    "name": "host.sharing",
+    "config": {
+      "off": false
+    }
+  },
+  {
+    "id": "egress",
+    "name": "util.egress"
+  }
+]

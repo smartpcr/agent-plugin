@@ -693,6 +693,8 @@ fatal message and the report file; start a child that ignores termination and re
 that the tree is gone within the bound, on each operating system; edit a layer file
 badly and record that the running tree is unchanged; all `manual`.
 
+**Held open (pointer, M1).** For the M1 story, steps 6.2, 6.3, 6.6, 6.7, 6.15, 6.16 and 6.17 stay ticked as built with their cut-short parts held open as H-24 to H-32 (decisions M1-D-BOOT-1 (b) and M1-D-BOOT-2 (b) in [the M1 decision log](../stories/harness-DSH-M1/decisions.md); the list is in [the DH-S-6 evidence record](../stories/harness-DSH-M1/evidence/DH-S-6.md#held-open)), and the usage-error status is 64 (M1-D-BOOT-3 (A)). This section's text is unchanged (DC-2).
+
 **Scenarios.** Authored here. The Linux process-tree and crash-report scenarios run
 in [DH-S-18](#dh-s-18); `DH-E-BOOT-1` requests the UI's first page and runs in
 [DH-S-22](#dh-s-22); the egress scenario `DH-E-UTIL-1` also fetches a page and starts
@@ -3606,6 +3608,8 @@ SDK-5, API-5, UICONV-1) are built and not done for this reason. At [M4](#m4): H-
 to H-18 and H-20, all on deliverables that wait for P2 work; three P1 deliverables
 (HUMAN-10, UISET-7, UIWORK-6) and the pulled-forward P2 deliverable UISIDE-9 are
 built and not done. At [M5](#m5): none.
+
+**Held open (pointer, M1).** For the M1 story, decisions M1-D-BOOT-1 (b) and M1-D-BOOT-2 (b) in [the M1 decision log](../stories/harness-DSH-M1/decisions.md) hold open the cut-short parts of steps 6.2, 6.3, 6.6, 6.7, 6.15, 6.16 and 6.17 and the test `DH-T-HOST-17` as H-24 to H-32. Each entry, with the part that waits and its closing step (gap-closure plan stages 19.3 to 19.5, and impl.md 16.7 for `DH-T-HOST-17`), is in the "Held open" list of [the DH-S-6 evidence record](../stories/harness-DSH-M1/evidence/DH-S-6.md#held-open). This section's text and table are unchanged (DC-2).
 
 ### 10.4 Scenarios that span stages
 

@@ -102,6 +102,8 @@ var pollFast = watch.Options{FilePoll: 30 * time.Millisecond, DirPoll: 30 * time
 
 // TestAtomicReplaceOneNotice: a file replaced atomically yields exactly one notice
 // for it within the deadline, with notifications and with polling (TC-04b).
+//
+//dsh:test DH-T-CHOKIDAR-1
 func TestAtomicReplaceOneNotice(t *testing.T) {
 	for _, mode := range []watch.Mode{watch.Notify, watch.Poll, watch.Auto} {
 		t.Run(mode.String(), func(t *testing.T) {
@@ -124,6 +126,8 @@ func TestAtomicReplaceOneNotice(t *testing.T) {
 }
 
 // TestFileTransitions: written in place, deleted, created again; one notice each.
+//
+//dsh:test DH-T-CHOKIDAR-1
 func TestFileTransitions(t *testing.T) {
 	for _, mode := range []watch.Mode{watch.Notify, watch.Poll} {
 		t.Run(mode.String(), func(t *testing.T) {
@@ -146,6 +150,7 @@ func TestFileTransitions(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-CHOKIDAR-2
 func TestDirectoryDepth(t *testing.T) {
 	for _, mode := range []watch.Mode{watch.Notify, watch.Poll} {
 		t.Run(mode.String(), func(t *testing.T) {
@@ -189,6 +194,8 @@ func TestDirectoryDepth(t *testing.T) {
 
 // TestMissingParents: a watch on a/b/c.txt before a exists follows the chain as
 // it is created, deleted and created again.
+//
+//dsh:test DH-T-CHOKIDAR-3
 func TestMissingParents(t *testing.T) {
 	for _, mode := range []watch.Mode{watch.Notify, watch.Poll} {
 		t.Run(mode.String(), func(t *testing.T) {
@@ -215,6 +222,8 @@ func TestMissingParents(t *testing.T) {
 
 // TestCloseStopsCallbacks: after Close returns no callback runs; closing twice,
 // closing through the context and closing the service are all harmless.
+//
+//dsh:test DH-T-CHOKIDAR-4
 func TestCloseStopsCallbacks(t *testing.T) {
 	dir := t.TempDir()
 	f := filepath.Join(dir, "f")
@@ -252,6 +261,7 @@ func TestCloseStopsCallbacks(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-CHOKIDAR-5
 func TestBadTargets(t *testing.T) {
 	s := service(t, watch.Options{MaxWatches: 1})
 	noop := func(error) {}
@@ -276,6 +286,8 @@ func TestBadTargets(t *testing.T) {
 // inside one settle window, so the kernel registration dies with no settled notice
 // in between. The watch must re-register the new directory: later saves are still
 // reported in Notify mode, not missed for ever.
+//
+//dsh:test DH-T-CHOKIDAR-3
 func TestRecreatedParentWithinSettle(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "p")
@@ -314,6 +326,8 @@ func TestRecreatedParentWithinSettle(t *testing.T) {
 // TestDirectoryAtomicReplaceSameMeta: an entry of a watched directory replaced
 // atomically by a file of the same length with the same modification time is a
 // change: the entry's identity moved. One notice.
+//
+//dsh:test DH-T-CHOKIDAR-2
 func TestDirectoryAtomicReplaceSameMeta(t *testing.T) {
 	for _, mode := range []watch.Mode{watch.Notify, watch.Poll} {
 		t.Run(mode.String(), func(t *testing.T) {

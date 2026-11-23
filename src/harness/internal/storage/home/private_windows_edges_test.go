@@ -15,6 +15,8 @@ import (
 // A directory whose access list inherits from its parent is not private, even
 // when every entry names a trusted account: a later change to the parent would
 // reach it.
+//
+//dsh:test DH-T-STORAGE-4
 func TestCheckPrivateRefusesAnInheritingDirectory(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "plain")
 	if err := os.Mkdir(dir, 0o700); err != nil {
@@ -27,6 +29,8 @@ func TestCheckPrivateRefusesAnInheritingDirectory(t *testing.T) {
 }
 
 // A file with a NULL access list grants everyone access, so it is not private.
+//
+//dsh:test DH-T-STORAGE-4
 func TestCheckPrivateRefusesANullAccessList(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "p")
 	if err := EnsurePrivateDir(dir); err != nil {

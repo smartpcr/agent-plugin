@@ -13,6 +13,8 @@ import (
 
 // TC-06b / DH-D-STORAGE-2: an empty home is created private; loosening spill/ makes
 // the next check fail naming spill/.
+//
+//dsh:test DH-T-STORAGE-4
 func TestHomeCreatedPrivate(t *testing.T) {
 	l := New(t.TempDir())
 	if err := Ensure(l); err != nil {
@@ -41,6 +43,8 @@ func TestHomeCreatedPrivate(t *testing.T) {
 }
 
 // A world-readable home that already holds data is reported, not repaired.
+//
+//dsh:test DH-T-STORAGE-4
 func TestEnsureRefusesLoosenedExistingHome(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "keep"), nil, 0o600); err != nil {
@@ -52,6 +56,7 @@ func TestEnsureRefusesLoosenedExistingHome(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-STORAGE-4
 func TestEnsureCreatesMissingParents(t *testing.T) {
 	l := New(filepath.Join(t.TempDir(), "a", "home"))
 	if err := Ensure(l); err != nil {
@@ -62,6 +67,7 @@ func TestEnsureCreatesMissingParents(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-STORAGE-4
 func TestCheckMissingAndNotDirectory(t *testing.T) {
 	l := New(t.TempDir())
 	if err := Ensure(l); err != nil {
@@ -82,6 +88,8 @@ func TestCheckMissingAndNotDirectory(t *testing.T) {
 }
 
 // A database file that others can read fails the check, naming dsh.db.
+//
+//dsh:test DH-T-STORAGE-4
 func TestCheckDatabaseFile(t *testing.T) {
 	l := New(t.TempDir())
 	if err := Ensure(l); err != nil {
@@ -114,6 +122,7 @@ func TestLayoutPaths(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-STORAGE-4
 func TestPrivateDirAndFile(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "p")
 	if err := EnsurePrivateDir(dir); err != nil {

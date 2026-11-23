@@ -31,6 +31,10 @@ type activity struct {
 	max     int
 	ended   []string
 	overlap map[[2]string]bool // ids seen running at once, in start order
+	// onEnd, when set, runs after a body's end is recorded, outside the lock: a
+	// test that releases another body once this one has ended does it here, so
+	// the release can never overtake the record.
+	onEnd func(id string)
 }
 
 func newActivity() *activity {
@@ -51,9 +55,12 @@ func (a *activity) start(id, key string) {
 
 func (a *activity) end(id string) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	delete(a.running, id)
 	a.ended = append(a.ended, id)
+	a.mu.Unlock()
+	if a.onEnd != nil {
+		a.onEnd(id)
+	}
 }
 
 // keyedTool writes the resource named by its key; body(id) runs inside the
@@ -96,6 +103,14 @@ func TestConflictingCallsSerializeAndResultsKeepModelOrder(t *testing.T) {
 	gate := make(chan struct{})
 	started := make(chan struct{})
 	svc := e.pipeline(t, core.Config{MaxParallel: 3})
+	// Call 1 is released only once call 2's end is recorded. Releasing it from
+	// call 2's body instead let call 1 record its end first, a race of the test,
+	// not of the scheduler (1 run in 20 on the Linux lane).
+	act.onEnd = func(id string) {
+		if id == "2" {
+			close(gate)
+		}
+	}
 	e.register(t, e.root, keyedTool("touch", act,
 		func(in keyIn) tools.Overlap { return tools.Writes(in.Key) },
 		func(id string) {
@@ -105,7 +120,6 @@ func TestConflictingCallsSerializeAndResultsKeepModelOrder(t *testing.T) {
 				<-gate // held until call 2 has finished
 			case "2":
 				<-started // call 2 runs while call 1 does
-				defer close(gate)
 			}
 		}))
 	calls := [][2]string{

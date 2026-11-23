@@ -34,6 +34,8 @@ func mustParse(t *testing.T, label, file, data string) loader.Layer {
 
 // TC-06a: bundle {model: a} < profile {model: b} < user {}: the profile wins and the
 // ownership index names the profile layer.
+//
+//dsh:test DH-T-BOOT-7
 func TestLayerStackPrecedence(t *testing.T) {
 	bundle := mustParse(t, BundleLabel+"test", "bundle.yml", "- insert:\n    - id: agent\n      name: test.agent\n      config:\n        model: a\n")
 	prof := mustParse(t, ProfileLabel, "profile.yml", "- id: agent\n  merge:\n    model: b\n")
@@ -61,6 +63,7 @@ func TestLayerStackPrecedence(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-BOOT-7
 func TestStackOrderAndOneWritableLayer(t *testing.T) {
 	root := filepath.Join("h")
 	def, err := Lookup(SDKMinimal)
@@ -108,6 +111,7 @@ func TestStackOrderAndOneWritableLayer(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-BOOT-7
 func TestStackErrors(t *testing.T) {
 	def, _ := Lookup(Web)
 	_, _, err := Stack(def, Sources{Home: "h", Overlays: []string{"missing.yml"}, Read: files(nil)})
@@ -168,6 +172,7 @@ func TestBundlesParseAndResolve(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-BOOT-7
 func TestLookupUnknown(t *testing.T) {
 	_, err := Lookup("nope")
 	if herr.Kind(err) != ReasonUnknown {

@@ -85,6 +85,8 @@ func (h *fakeHost) Processes() *subprocess.Registry { return nil }
 
 // TC-06a: the steps run in the documented order, readiness comes after the audit,
 // and the audit lists zero permits when none is configured.
+//
+//dsh:test DH-T-BOOT-5
 func TestBootOrderAndAuditOnFakes(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -150,6 +152,8 @@ func fixture(t *testing.T, layer string, required ...string) (Options, string) {
 
 // TC-06b: a broken required entry fails the boot once: one fatal message and one
 // report naming the entry and where it is.
+//
+//dsh:test DH-T-BOOT-10, DH-T-BOOT-11, DH-T-HOST-23
 func TestBrokenRequiredEntryFailsBootOnce(t *testing.T) {
 	opts, homeDir := fixture(t, "- insert:\n    - id: probe\n      name: x.probe\n", "probe")
 	cat, err := catalog.Build(append(builtin.Sets(), []catalog.Item{failing("x.probe")})...)
@@ -190,6 +194,8 @@ func TestBrokenRequiredEntryFailsBootOnce(t *testing.T) {
 
 // TC-06c: a child that ignores termination holds shutdown past its bound; the
 // tree is force-stopped, the status is 124 and no child remains.
+//
+//dsh:test DH-T-BOOT-12
 func TestShutdownOverrunExits124(t *testing.T) {
 	type started struct {
 		p                 *subprocess.Process
@@ -287,9 +293,11 @@ func TestShutdownOverrunExits124(t *testing.T) {
 	if err := s.p.TreeGone(ctx); err != nil {
 		t.Errorf("tree not gone: %v", err)
 	}
+	// Exited, not !Alive: an orphaned member is reaped by its reaper on its own
+	// time, and kill(pid, 0) still finds the zombie until then (M1-G-BOOT-36).
 	for _, pid := range []int{s.child, s.grandchild} {
-		if subprocesstest.Alive(pid) {
-			t.Errorf("process %d is still alive", pid)
+		if !subprocesstest.Exited(pid) {
+			t.Errorf("process %d is still running", pid)
 		}
 	}
 	out := stderr.String()
@@ -325,6 +333,8 @@ func (h *hungHost) Processes() *subprocess.Registry { return h.procs }
 // A fatal stop whose shutdown overruns exits 124 within its one bound: the forced
 // stop starts a reserve before it, kills a tree whose graceful StopTree is still
 // running, and Run returns at the bound although the unload never ends.
+//
+//dsh:test DH-T-BOOT-12, DH-T-BOOT-13
 func TestFatalShutdownOverrunIsBounded(t *testing.T) {
 	p := subprocesstest.Start(t, subprocesstest.Spec(t, subprocesstest.RoleStubborn))
 	gctx, cancelGrace := context.WithCancel(context.Background())
@@ -412,6 +422,8 @@ func stopper(name string, fatal bool) catalog.Item {
 
 // A stop during start-up, ordinary or fatal, ends the settle wait, skips the
 // audit and readiness, and exits with the stop's status.
+//
+//dsh:test DH-T-BOOT-5, DH-T-BOOT-12
 func TestStopDuringStartupIsNeverReady(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -513,6 +525,8 @@ func runJoined(t *testing.T, app *launch.Control, run func() int) <-chan int {
 // DH-D-BOOT-7: once ready, a profile that reloads applies a valid layer change to
 // the running tree and rejects an invalid one with a positioned diagnostic, the
 // running component keeping its config; shutdown stops the watch first.
+//
+//dsh:test DH-T-BOOT-15
 func TestReloadAfterReadyAppliesValidAndRejectsInvalidLayers(t *testing.T) {
 	opts, homeDir := fixture(t, "", "probe")
 	if err := home.Ensure(home.New(homeDir)); err != nil {
@@ -604,6 +618,8 @@ func TestReloadAfterReadyAppliesValidAndRejectsInvalidLayers(t *testing.T) {
 // A reload still in flight at shutdown spends part of the one shutdown bound, not
 // time on top of it: the forced stop still starts a reserve before the bound and
 // Run returns at the bound on the clock.
+//
+//dsh:test DH-T-BOOT-12
 func TestStuckReloadDrainSharesTheShutdownBound(t *testing.T) {
 	release := make(chan struct{})
 	var once sync.Once

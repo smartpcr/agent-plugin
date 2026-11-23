@@ -33,6 +33,8 @@ func owner(t *testing.T) (*cordis.Fiber, *cordis.Context) {
 
 // TestManualCovers: Fire reaches a file target, a directory's entries, and at
 // Depth 1 the entries of its subdirectories; nothing else.
+//
+//dsh:test DH-T-UTIL-6
 func TestManualCovers(t *testing.T) {
 	_, ctx := owner(t)
 	m := watchtest.NewManual()
@@ -74,6 +76,8 @@ func TestManualCovers(t *testing.T) {
 
 // TestManualDegradeAndClose: Degrade switches to Poll and wraps ErrDegraded; a
 // closed watch, a cancelled owner and a closed Manual deliver nothing more.
+//
+//dsh:test DH-T-UTIL-6
 func TestManualDegradeAndClose(t *testing.T) {
 	f, ctx := owner(t)
 	m := watchtest.NewManual()

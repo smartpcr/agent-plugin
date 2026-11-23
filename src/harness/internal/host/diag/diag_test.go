@@ -14,6 +14,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
 )
 
+//dsh:test DH-T-HOST-23, DH-T-ELECTRON-4
 func TestFatalPrintsOneMessageAndWritesOneReport(t *testing.T) {
 	dir := t.TempDir()
 	var stderr bytes.Buffer
@@ -63,6 +64,7 @@ func TestFatalPrintsOneMessageAndWritesOneReport(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-HOST-24
 func TestFatalWithoutWritableReportsStillPrints(t *testing.T) {
 	var stderr bytes.Buffer
 	missing := filepath.Join(t.TempDir(), "no", "such", "dir")
@@ -77,6 +79,7 @@ func TestFatalWithoutWritableReportsStillPrints(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-HOST-24
 func TestFatalPrunesToTheNewestReports(t *testing.T) {
 	dir := t.TempDir()
 	for i := range MaxReports + 3 {
@@ -100,6 +103,7 @@ func TestFatalPrunesToTheNewestReports(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-HOST-23, DH-T-BOOT-13
 func TestFatalReleaseIsBounded(t *testing.T) {
 	block := make(chan struct{})
 	defer close(block)
@@ -111,6 +115,7 @@ func TestFatalReleaseIsBounded(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-HOST-23
 func TestRingKeepsTheTail(t *testing.T) {
 	r := NewRing(8)
 	_, _ = r.Write([]byte("0123456789"))
@@ -120,6 +125,7 @@ func TestRingKeepsTheTail(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-HOST-24
 func TestInstallRemovesAnEmptyCrashFile(t *testing.T) {
 	dir := t.TempDir()
 	uninstall, err := Install(dir)
@@ -132,5 +138,41 @@ func TestInstallRemovesAnEmptyCrashFile(t *testing.T) {
 	uninstall()
 	if _, err := os.Stat(filepath.Join(dir, CrashFile)); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("empty crash file left behind: %v", err)
+	}
+}
+
+// maskFunc is a Masker over a function.
+type maskFunc func(string) string
+
+func (f maskFunc) MaskString(s string) string { return f(s) }
+
+// SP-11: a masker attached after New (the secret store, once it exists) masks the
+// message and the report beside the configured values; one that panics fails
+// closed, and nil removes it.
+//
+//dsh:test DH-T-HOST-23
+func TestFatalMasksThroughTheMasker(t *testing.T) {
+	dir := t.TempDir()
+	var stderr bytes.Buffer
+	p := New(Config{Reports: dir, Stderr: &stderr, Secrets: []string{"configured-dummy"}})
+	p.SetMasker(maskFunc(func(s string) string { return strings.ReplaceAll(s, "released-dummy", herr.Redacted) }))
+	report, _ := p.Fatal("probe", errors.New("released-dummy and configured-dummy"))
+	data, err := os.ReadFile(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{stderr.String(), string(data)} {
+		if strings.Contains(text, "released-dummy") || strings.Contains(text, "configured-dummy") {
+			t.Errorf("unmasked: %q", text)
+		}
+	}
+
+	failing := New(Config{Masker: maskFunc(func(string) string { panic("store gone") })})
+	if got := failing.redact("released-dummy"); got != maskFailed {
+		t.Errorf("redact with a panicking masker = %q; want %q", got, maskFailed)
+	}
+	failing.SetMasker(nil)
+	if got := failing.redact("plain"); got != "plain" {
+		t.Errorf("redact after SetMasker(nil) = %q", got)
 	}
 }

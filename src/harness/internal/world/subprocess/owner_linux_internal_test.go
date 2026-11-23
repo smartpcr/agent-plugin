@@ -17,6 +17,8 @@ import (
 // back to a process group; a failure of the program or its directory is the
 // caller's and is never retried. EACCES and EPERM are blamed on the group only
 // when the program and the directory are themselves usable.
+//
+//dsh:test DH-T-EXEC-4
 func TestCgroupStartErrorBlamesOnlyTheGroup(t *testing.T) {
 	exe, err := os.Executable()
 	if err != nil {
@@ -58,6 +60,8 @@ func TestCgroupStartErrorBlamesOnlyTheGroup(t *testing.T) {
 // When a tree's control group cannot be made, the child still starts, owned by
 // a process group, and the owner reports the fallback with its cause; every
 // operation then goes to the process group.
+//
+//dsh:test DH-T-EXEC-4
 func TestCgroupOwnerFallsBackToAProcessGroup(t *testing.T) {
 	probeCgroup()
 	saved := cgroupBase

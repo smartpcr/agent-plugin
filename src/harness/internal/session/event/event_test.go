@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
@@ -162,6 +163,53 @@ func TestOlderVersionConverts(t *testing.T) {
 	}
 	if got.CallID != "c1" || got.Spill != nil {
 		t.Fatalf("v1 upcast = %+v", got)
+	}
+}
+
+// DH-T-SESSION-1: a failure written before durations became text (turn/end v1,
+// assistant/attempt v1 to v3, retry_after in integer nanoseconds) converts to the
+// text form and decodes; one already in text, a payload without a failure and a
+// failure without retry_after pass through; and the current version writes the
+// text (plan 14.4.1).
+//
+//dsh:test DH-T-SESSION-1
+func TestRetryAfterBecomesText(t *testing.T) {
+	for _, v := range []int{1, 2, 3} {
+		rec := event.Record{Seq: 2, Type: "assistant/attempt", Version: v,
+			Payload: `{"failure":{"code":"llm/server","class":"transient","message":"busy","retry_after":2000000000}}`}
+		got, err := event.AssistantAttempt.Decode(rec)
+		if err != nil || got.Failure == nil || got.Failure.RetryAfter != 2*time.Second {
+			t.Fatalf("assistant/attempt v%d = %+v, %v", v, got.Failure, err)
+		}
+	}
+	old := event.Record{Seq: 3, Type: "turn/end", Version: 1,
+		Payload: `{"turn":1,"reason":{"kind":"error","failure":{"code":"llm/server","class":"transient","message":"busy","retry_after":1500000000}}}`}
+	end, err := event.TurnEndType.Decode(old)
+	if err != nil || end.Reason.Failure == nil || end.Reason.Failure.RetryAfter != 1500*time.Millisecond {
+		t.Fatalf("turn/end v1 = %+v, %v", end.Reason, err)
+	}
+	for _, payload := range []string{
+		`{"turn":1,"reason":{"kind":"completed"}}`,
+		`{"turn":1,"reason":{"kind":"error","failure":{"code":"llm/server","class":"transient","message":"busy"}}}`,
+		`{"turn":1,"reason":{"kind":"error","failure":{"code":"llm/server","class":"transient","message":"busy","retry_after":"3s"}}}`,
+		`{"turn":1,"reason":{"kind":"error","failure":null}}`,
+	} {
+		if _, err := event.TurnEndType.Decode(event.Record{Seq: 4, Type: "turn/end", Version: 1, Payload: payload}); err != nil {
+			t.Errorf("turn/end v1 %s: %v", payload, err)
+		}
+	}
+	bad := event.Record{Seq: 5, Type: "turn/end", Version: 1,
+		Payload: `{"turn":1,"reason":{"kind":"error","failure":{"code":"llm/server","class":"transient","message":"busy","retry_after":1.5}}}`}
+	if _, err := event.TurnEndType.Decode(bad); err == nil {
+		t.Error("a fractional nanosecond retry_after decoded")
+	}
+	f := &vocab.Failure{Code: vocab.CodeServer, Class: vocab.Transient, Message: "busy", RetryAfter: 2 * time.Second}
+	d, err := event.TurnEndType.Draft(event.TurnEnd{Turn: 1, Reason: event.Reason{Kind: event.ReasonError, Failure: f}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(d.Raw(), `"retry_after":"2s"`) {
+		t.Fatalf("turn/end v2 payload = %s", d.Raw())
 	}
 }
 

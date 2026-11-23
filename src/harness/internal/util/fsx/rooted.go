@@ -40,6 +40,9 @@ func publishIn(root *os.Root, name string, write func(io.Writer) error, opt Opti
 		return err
 	}
 	dir := path.Dir(name)
+	if err := fault(stepStage); err != nil {
+		return err
+	}
 	f, stage, err := createStageIn(root, dir)
 	if err != nil {
 		return err
@@ -58,6 +61,9 @@ func publishIn(root *os.Root, name string, write func(io.Writer) error, opt Opti
 		if err := copyACL(filepath.Join(root.Name(), name), filepath.Join(root.Name(), stage)); err != nil {
 			return err
 		}
+	}
+	if err := fault(stepPublish); err != nil {
+		return err
 	}
 	if exclusive {
 		err = linkOrReserve(root, stage, name)

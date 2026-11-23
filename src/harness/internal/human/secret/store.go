@@ -2,6 +2,7 @@ package secret
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -186,37 +187,67 @@ func (s *Store) Use(ctx context.Context, r Ref, fn func(Value) error) error {
 	return nil
 }
 
+// release remembers v, in every form a text may carry it, to mask.
 func (s *Store) release(v string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !slices.Contains(s.released, v) {
-		s.released = append(s.released, v)
-		// Longest first, so a value that contains another is masked whole.
-		slices.SortFunc(s.released, func(a, b string) int { return len(b) - len(a) })
+	for _, form := range forms(v) {
+		if !slices.Contains(s.released, form) {
+			s.released = append(s.released, form)
+		}
 	}
+	// Longest first, so a value that contains another is masked whole.
+	slices.SortStableFunc(s.released, func(a, b string) int { return len(b) - len(a) })
 }
 
-// Mask replaces every value this store has released, and its quoted form, with
-// Redacted.
+// forms are the spellings of v a text can hold: v itself, the inside of its Go
+// quoted form, and the inside of its JSON string form with and without HTML
+// escaping (a tool result renders a value as JSON, which escapes "<", ">" and
+// "&" by default).
+func forms(v string) []string {
+	out := []string{v}
+	add := func(quoted string) {
+		if len(quoted) >= 2 {
+			if inner := quoted[1 : len(quoted)-1]; inner != "" && !slices.Contains(out, inner) {
+				out = append(out, inner)
+			}
+		}
+	}
+	add(strconv.Quote(v))
+	for _, html := range []bool{true, false} {
+		var b strings.Builder
+		enc := json.NewEncoder(&b)
+		enc.SetEscapeHTML(html)
+		if enc.Encode(v) == nil {
+			add(strings.TrimSuffix(b.String(), "\n"))
+		}
+	}
+	return out
+}
+
+// Mask replaces every value this store has released, in each form forms names,
+// with Redacted.
 func (s *Store) Mask(p []byte) []byte { return []byte(s.MaskString(string(p))) }
 
-// MaskString is Mask for a string.
+// MaskString is Mask for a string. A nil store has released nothing.
 func (s *Store) MaskString(text string) string {
+	if s == nil {
+		return text
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, v := range s.released {
 		text = strings.ReplaceAll(text, v, Redacted)
-		if q := strconv.Quote(v); q[1:len(q)-1] != v {
-			text = strings.ReplaceAll(text, q[1:len(q)-1], Redacted)
-		}
 	}
 	return text
 }
 
 // IsSecretName reports whether an environment variable holds a secret: the
-// variable of a reference configuration named, or a name shaped like a credential
-// (…_API_KEY, …_TOKEN, …_SECRET, …_PASSWORD). It is the predicate env.NAME in
-// expressions refuses (DH-ADR-BOOT-5) and the names a child environment drops.
+// variable of a reference configuration named (secret://github/pat is GITHUB_PAT),
+// or a name SecretShaped reports. Case is ignored on every system. It is the
+// predicate env.NAME in expressions refuses (DH-ADR-BOOT-5), and, passed as
+// subprocess.EnvOptions.Secrets, the names BuildEnv removes from a child's
+// environment (SP-11). A nil store knows no reference and checks the shape only.
 func (s *Store) IsSecretName(name string) bool {
 	u := strings.ToUpper(name)
 	if s != nil {

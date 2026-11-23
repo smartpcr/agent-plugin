@@ -88,6 +88,8 @@ func asker(t *testing.T, r *cordis.Context, name, path string) (*cordis.Fiber, *
 // refuses is refused to the caller with the engine's error and leaves nothing
 // registered or owned: the fiber unloads cleanly and the notifier holds no
 // directory.
+//
+//dsh:test DH-T-UTIL-6
 func TestOwnedRefusals(t *testing.T) {
 	fake := watchtest.New()
 	s := service(t, watch.Options{NewNotifier: fake.Factory()})
@@ -117,6 +119,8 @@ func TestOwnedRefusals(t *testing.T) {
 // watch.Key: one notice per change, a watch is closed with its asker's fiber,
 // only that fiber may close it early, and the provider's unload closes every
 // watch.
+//
+//dsh:test DH-T-UTIL-6
 func TestKeyContract(t *testing.T) {
 	for _, p := range providers(t) {
 		t.Run(p.name, func(t *testing.T) {

@@ -10,7 +10,10 @@ import (
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -80,6 +83,8 @@ func isReasonType(expr ast.Expr, pkg string) bool {
 
 // Every error code the harness declares has a status, and the table names no code
 // that nobody declares.
+//
+//dsh:test DH-T-CLI-6
 func TestEveryReasonHasAStatus(t *testing.T) {
 	declared := declaredReasons(t)
 	for r, at := range declared {
@@ -94,6 +99,7 @@ func TestEveryReasonHasAStatus(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-CLI-6
 func TestStatusTableIsClosed(t *testing.T) {
 	statuses := map[int]bool{}
 	for _, s := range Statuses() {
@@ -109,6 +115,75 @@ func TestStatusTableIsClosed(t *testing.T) {
 	}
 }
 
+// appCLISpec is the area document that holds the exit table (app-cli.md §6.2.4).
+var appCLISpec = filepath.Join("..", "..", "..", "..", "..", "docs", "harness", "areas", "app-cli.md")
+
+// specStatuses reads the rows of the exit table of app-cli.md §6.2.4: status to
+// meaning, in document order.
+func specStatuses(t *testing.T) (codes []int, meaning map[int]string) {
+	t.Helper()
+	data, err := os.ReadFile(appCLISpec)
+	if err != nil {
+		t.Fatalf("the area document must be readable: %v", err)
+	}
+	_, table, ok := strings.Cut(string(data), "#### 6.2.4 Exit statuses")
+	if !ok {
+		t.Fatalf("%s has no section 6.2.4 Exit statuses", appCLISpec)
+	}
+	table, _, _ = strings.Cut(table, "\n####")
+	row := regexp.MustCompile(`(?m)^\| ([0-9]+) \| ([^|]*) \|`)
+	meaning = map[int]string{}
+	for _, m := range row.FindAllStringSubmatch(table, -1) {
+		code, _ := strconv.Atoi(m[1])
+		codes = append(codes, code)
+		meaning[code] = strings.TrimSpace(m[2])
+	}
+	if len(codes) == 0 {
+		t.Fatalf("section 6.2.4 of %s holds no status row", appCLISpec)
+	}
+	return codes, meaning
+}
+
+// DH-T-CLI-6: every code of the shared error table maps to exactly one status of
+// the closed table; no status is 2, which the area document reserves for the Go
+// runtime's exit after an unrecovered panic (M1-D-BOOT-3); and the statuses of
+// the table in source are the statuses of the table in app-cli.md §6.2.4.
+//
+//dsh:test DH-T-CLI-6
+func TestStatusTableMatchesTheAreaSpec(t *testing.T) {
+	var source []int
+	for _, s := range Statuses() {
+		source = append(source, s.Code)
+		if s.Code == 2 {
+			t.Errorf("status 2 (%s) is in the table; it is reserved for the Go runtime", s.Name)
+		}
+	}
+	if !slices.IsSorted(source) {
+		t.Errorf("Statuses() = %v, want code order", source)
+	}
+	for r, s := range codes {
+		if s == 2 {
+			t.Errorf("%s maps to status 2", r)
+		}
+	}
+	if Usage != 64 {
+		t.Errorf("Usage = %d, want 64 (EX_USAGE, M1-D-BOOT-3)", Usage)
+	}
+
+	spec, meaning := specStatuses(t)
+	if !strings.HasPrefix(meaning[2], "Reserved.") || !strings.Contains(meaning[2], "No command returns 2") {
+		t.Errorf("app-cli.md §6.2.4 status 2 = %q, want the reserved row", meaning[2])
+	}
+	spec = slices.DeleteFunc(spec, func(c int) bool { return c == 2 })
+	if !slices.Equal(spec, source) {
+		t.Errorf("app-cli.md §6.2.4 lists %v (2 reserved), source lists %v", spec, source)
+	}
+	if !strings.HasPrefix(meaning[Usage], "Usage error") {
+		t.Errorf("app-cli.md §6.2.4 status %d = %q, want the usage error", Usage, meaning[Usage])
+	}
+}
+
+//dsh:test DH-T-CLI-6
 func TestStatus(t *testing.T) {
 	cases := []struct {
 		err  error
@@ -130,6 +205,7 @@ func TestStatus(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-CLI-5
 func TestFailText(t *testing.T) {
 	var out, diag bytes.Buffer
 	r := New(&out, &diag, Text)
@@ -153,6 +229,7 @@ func TestFailText(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-CLI-5
 func TestFailJSONEndsResultWithError(t *testing.T) {
 	var out, diag bytes.Buffer
 	r := New(&out, &diag, JSON)
@@ -172,6 +249,7 @@ func TestFailJSONEndsResultWithError(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-CLI-5
 func TestResultModes(t *testing.T) {
 	var out bytes.Buffer
 	r := New(&out, &bytes.Buffer{}, JSON)
@@ -204,6 +282,7 @@ func (b *brokenWriter) Write([]byte) (int, error) {
 	return 0, errors.New("broken pipe")
 }
 
+//dsh:test DH-T-CLI-5
 func TestClosedResultStream(t *testing.T) {
 	w := &brokenWriter{}
 	r := New(w, &bytes.Buffer{}, Text)
@@ -217,6 +296,8 @@ func TestClosedResultStream(t *testing.T) {
 
 // An Exit status maps back to its status, wrapped or not, and Fail prints nothing
 // for it: the launch printed its own diagnostics.
+//
+//dsh:test DH-T-CLI-5
 func TestExitStatusIsNotPrintedAgain(t *testing.T) {
 	if Exit(OK) != nil {
 		t.Error("Exit(0) is not nil")

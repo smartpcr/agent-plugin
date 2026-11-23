@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/procwait"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess/subprocesstest"
@@ -35,6 +34,8 @@ var inScopeTests = []string{
 // delegation, where the process's own group belongs to the user; the coverage
 // directory is passed on so their counters are merged (QG-3). Without a user
 // manager there is no delegated scope to run in, and the test skips saying so.
+//
+//dsh:test DH-T-EXEC-4
 func TestControlGroupOwnerInADelegatedScope(t *testing.T) {
 	if os.Getenv(scopeEnv) != "" {
 		t.Skip("inside the scope: the in-scope tests run directly")
@@ -114,6 +115,8 @@ func treeGroups(t *testing.T) []string {
 
 // With its own group writable, the host reports an exact control-group owner,
 // with no fallback.
+//
+//dsh:test DH-T-EXEC-4
 func TestInScopeOwnerIsAControlGroup(t *testing.T) {
 	inScope(t)
 	o := subprocess.TreeOwner()
@@ -125,6 +128,8 @@ func TestInScopeOwnerIsAControlGroup(t *testing.T) {
 // TC-06c on the control-group rung: StopTree asks the tree to stop, then kills
 // the group, so the stubborn grandchild goes too; the tree's group is removed
 // once it is empty.
+//
+//dsh:test DH-T-NODEPROC-5
 func TestInScopeStopTreeStopsTheTreeAndRemovesItsGroup(t *testing.T) {
 	inScope(t)
 	p, child, grandchild := subprocesstest.Tree(t)
@@ -146,13 +151,17 @@ func TestInScopeStopTreeStopsTheTreeAndRemovesItsGroup(t *testing.T) {
 		t.Fatalf("tree groups after StopTree = %v; want none", g)
 	}
 	// The child is reaped by StopTree's wait; the grandchild, orphaned by the
-	// kill, by the scope's reaper, so its pid is gone soon after.
-	procwait.Until(ctx, t, func() bool { return !subprocesstest.Alive(child) && !subprocesstest.Alive(grandchild) })
+	// kill, by the scope's reaper on its own time, so it is checked as exited.
+	if !subprocesstest.Exited(child) || !subprocesstest.Exited(grandchild) {
+		t.Fatalf("after StopTree: child exited %v, grandchild exited %v", subprocesstest.Exited(child), subprocesstest.Exited(grandchild))
+	}
 }
 
 // A tree still running when TreeGone's context ends is reported with the group
 // and the pids it still holds; Kill writes cgroup.kill, after which the tree is
 // gone.
+//
+//dsh:test DH-T-EXEC-5
 func TestInScopeSurvivorsNameTheGroup(t *testing.T) {
 	inScope(t)
 	p := subprocesstest.Start(t, subprocesstest.Spec(t, subprocesstest.RoleStubborn))
@@ -186,6 +195,8 @@ func TestInScopeSurvivorsNameTheGroup(t *testing.T) {
 // A program that cannot start is the caller's failure, not the control group's:
 // it is reported as a start failure, no process-group fallback is tried, and its
 // group is removed.
+//
+//dsh:test DH-T-EXEC-4
 func TestInScopeStartFailureLeavesNoGroup(t *testing.T) {
 	inScope(t)
 	dir := t.TempDir()

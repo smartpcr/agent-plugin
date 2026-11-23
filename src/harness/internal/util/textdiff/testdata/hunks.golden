@@ -1,0 +1,28 @@
+== insertion: +1 -0, 1 hunks
+@@ -3,6 +3,7 @@
+before "three\nfour\nfive\nsix\nseven\neight\n"
+after  "three\nfour\nfive\nfive and a half\nsix\nseven\neight\n"
+== deletion: +0 -1, 1 hunks
+@@ -2,7 +2,6 @@
+before "two\nthree\nfour\nfive\nsix\nseven\neight\n"
+after  "two\nthree\nfour\nsix\nseven\neight\n"
+== replacement: +1 -1, 1 hunks
+@@ -2,7 +2,7 @@
+before "two\nthree\nfour\nfive\nsix\nseven\neight\n"
+after  "two\nthree\nfour\nFIVE\nsix\nseven\neight\n"
+== two separate changes: +2 -2, 2 hunks
+@@ -1,5 +1,5 @@
+before "one\ntwo\nthree\nfour\nfive\n"
+after  "one\nTWO\nthree\nfour\nfive\n"
+@@ -12,5 +12,5 @@
+before "twelve\nthirteen\nfourteen\nfifteen\nsixteen\n"
+after  "twelve\nthirteen\nfourteen\nFIFTEEN\nsixteen\n"
+== change at the first line: +1 -1, 1 hunks
+@@ -1,4 +1,4 @@
+before "one\ntwo\nthree\nfour\n"
+after  "ONE\ntwo\nthree\nfour\n"
+== change at the last line: +1 -1, 1 hunks
+@@ -13,4 +13,4 @@
+before "thirteen\nfourteen\nfifteen\nsixteen\n"
+after  "thirteen\nfourteen\nfifteen\nSIXTEEN\n"
+== identical texts: +0 -0, 0 hunks
