@@ -61,9 +61,13 @@ var Targets = []struct{ GOOS, GOARCH string }{
 type Config struct {
 	Root    string   // repository root, or a single module's directory
 	Modules []string // absolute module directories the per-module gates run in
-	Go      string   // the go command
+	Go      string   // the go command: the floor toolchain's own go binary (Toolchain.Go)
 	VetTool string   // this binary, run by "go vet -vettool"
 	Environ []string // the parent environment the children's environments derive from
+
+	// Toolchain is the go floor every child runs on (M1-G-TOOL-14); NewConfig
+	// fails setup when the toolchain it selects is not the floor.
+	Toolchain Toolchain
 
 	// RacePreflight checks that -race can run on this lane; nil selects
 	// cCompilerPreflight. A lane where it fails fails the test gate (QG-4).
@@ -92,6 +96,12 @@ func (c *Config) testTimeout() time.Duration {
 
 // NewConfig returns the configuration for root: the module at root when root holds a
 // go.mod, otherwise the three product modules of RM-1 under root.
+//
+// It reads the go floor from src/harness/go.mod (a single-module root: its own
+// go.mod), selects that toolchain with GOTOOLCHAIN=go<floor> and fails, with a
+// *FloorError naming both versions, when "go version" is not the floor
+// (M1-G-TOOL-14). Every child then runs the floor's own go binary with
+// Toolchain.Environ.
 func NewConfig(root string) (*Config, error) {
 	root, err := filepath.Abs(root)
 	if err != nil {
@@ -109,7 +119,20 @@ func NewConfig(root string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Config{Root: root, Modules: modules, Go: gobin, VetTool: self, Environ: os.Environ()}, nil
+	source := floorSource(root, modules)
+	floor, err := ReadFloor(source)
+	if err != nil {
+		return nil, err
+	}
+	rel, err := filepath.Rel(root, source)
+	if err != nil {
+		rel = source
+	}
+	tc, err := ResolveToolchain(context.Background(), gobin, root, os.Environ(), floor, filepath.ToSlash(rel))
+	if err != nil {
+		return nil, err
+	}
+	return &Config{Root: root, Modules: modules, Go: tc.Go, VetTool: self, Environ: tc.Environ(os.Environ()), Toolchain: tc}, nil
 }
 
 func discoverModules(root string) ([]string, error) {
@@ -584,11 +607,7 @@ func timedOutTests(out string) []string {
 
 // command runs name with args in dir and env and returns its combined output.
 func (c *Config) command(ctx context.Context, dir string, env []string, name string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Dir = dir
-	cmd.Env = env
-	out, err := cmd.CombinedOutput()
-	return string(out), err
+	return runCommand(ctx, dir, env, name, args...)
 }
 
 var failPattern = regexp.MustCompile(`(?m)^\s*--- FAIL: (\S+)`)

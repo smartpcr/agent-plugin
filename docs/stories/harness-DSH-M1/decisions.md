@@ -1,0 +1,212 @@
+# M1 decision log
+
+## What this file is
+
+**Purpose.** This is the one place where every owner, operator and lead decision that
+shapes milestone M1 of the `dsh` story is written down. M1 is impl.md stages DH-S-1 to
+DH-S-11: 103 steps, 99 deliverables. Before this file existed, decisions were scattered
+over five evidence records and the story plan, some had no name, and the two owner
+decisions of 2026-11-22 (OWNER-1 and OWNER-2) were recorded nowhere (gap M1-G-CLOSE-10).
+Plan Stage 12.1 of [gap-closure-plan.md](gap-closure-plan.md) creates it.
+
+**Who reads it.**
+- **Operators** check here which lanes, routes and credentials a run needs.
+- **Reviewers and the owner** check which choices are in force and which still wait for
+  an answer.
+- **Engineers** cite a row by its name, or by its `M1-D-*` ID, wherever a document or a
+  step depends on the choice.
+
+**The rule.** A document that relies on a decision cites it by name. Every name cited
+that way in the M1 story documents and the M2 tech-spec has exactly one row here, with a
+status. A changed decision gets a new row; the old row becomes `superseded` and names the
+row that replaced it. Rows are never deleted.
+
+**Relationship to the other documents.** [impl.md](../../harness/impl.md) stays the
+requirements baseline (rule DC-2 of [tech-spec.md](tech-spec.md) sec. 5.7): its text is
+not changed, and pointer lines lead from it to this file. The questions, options and
+reasoning behind each `M1-D-*` row are in [gap-analysis.md](gap-analysis.md) sec. 7; the
+stages that wait on each row are in [gap-closure-plan.md](gap-closure-plan.md),
+"Decisions that gate stages".
+
+### Columns
+
+| Column | Meaning |
+|---|---|
+| Name | The stable name a document cites. Owner and operator decisions have a lowercase name; decisions raised by the gap analysis keep their `M1-D-*` ID. |
+| Date | The day the choice was made, or the day the question was raised for an open row. |
+| Decided by | `owner` (the story owner), `operator` (the person running a stage, acting for the owner), or `lead` (the lead of the gap-closure work, settling a conflict between review fragments). |
+| Question | What had to be decided, in one sentence. |
+| Choice | What was chosen. For an `open` row, the question is unanswered and nothing is chosen yet. |
+| Narrows | What the choice removes from, or changes in, an earlier requirement or document, and the gaps it governs. |
+| Cited in | Where the decision is used. |
+| Status | `in force`, `superseded` or `open` (below). |
+
+### Statuses
+
+- **`in force`** -- the choice holds and documents and code follow it.
+- **`in force (lead settlement, owner may override)`** -- the lead chose a working
+  answer so that the plan and the gap analysis agree. It holds until the owner records a
+  different answer, which then gets its own row.
+- **`superseded`** -- the choice no longer holds. The row names what replaced it.
+- **`open`** -- the question is unanswered. Open rows in sec. 5 show the **default the
+  plan assumes**, taken from the plan's "Decisions that gate stages" table. A default is
+  a planning assumption only. It is not in force, and every gap that waits on the row
+  stays open until the owner answers ([gap-analysis.md](gap-analysis.md) sec. 2.4).
+
+## 1. Owner decisions on scope (2026-11-22)
+
+| Name | Date | Decided by | Question | Choice | Narrows | Cited in | Status |
+|---|---|---|---|---|---|---|---|
+| `platforms-windows-wsl` (OWNER-1) | 2026-11-22 | owner | On which systems must the M1 gate pass? | The Linux gate lane runs under WSL on the Windows development host. The macOS lane is skipped. "Gate green" means Windows (native) plus Linux (WSL). macOS leaves M1 scope: a macOS row is written "out of scope (platforms-windows-wsl)" and is never recorded as a pass or a skip. When macOS returns is the separate open row macos-return-stage. | tech-spec sec. 2.2 item 7, sec. 2.3, QG-4, QG-10, EN-6, A-2, R-06 (three-OS lanes); impl.md DH-S-1 "Linux, macOS and Windows" (by pointer line, not by edit); `toolchain.md` DH-ADR-TOOLCHAIN-6, -12 and DH-D-TOOLCHAIN-4 (DC-3 notes in plan 12.2.2). The macOS rows of `evidence/DH-S-1.md` and `evidence/DH-S-6.md` become historical. Governs M1-G-GATE-19, -20, -21, -22, M1-G-TOOL-12, -13, -14, M1-G-CLOSE-12, -13. Cross-compiling `cmd/dsh` for macOS (QG-8) stays a gate; only the macOS test lane leaves. | [tech-spec.md](tech-spec.md) sec. 2.2, 2.3, 5.2, 5.6, 6, 7; [implementation-plan.md](implementation-plan.md) Stage 1.4; [evidence/DH-S-1.md](evidence/DH-S-1.md), [evidence/DH-S-6.md](evidence/DH-S-6.md); [gap-analysis.md](gap-analysis.md) sec. 3; plan 12.1.3, 12.2, 12.3, 12.4.2 | in force |
+| `macos-return-stage` | 2026-11-22 | owner | At which stage does macOS return as a gate lane? | Not planned yet. macOS is an open scope removal with no return stage, and it is never a pass. Candidates considered and not chosen: DH-S-16 entry (CLOSE cluster; step 16.8 runs on macOS), DH-S-18 entry (GATE and FND clusters), DH-S-27 (TOOL and BOOT clusters). | Until a stage is named, no M1 or later document may count macOS as covered. | [gap-closure-plan.md](gap-closure-plan.md) "Points the lead must settle" and "Owner answers"; [gap-analysis.md](gap-analysis.md) sec. 10 item 1 | open |
+| `models-signed-in-claude-copilot` (OWNER-2) | 2026-11-22 | owner | Which models and credentials do M1's real-model checks use? | No DeepSeek requirement and no API key. Real-model checks run only on Claude and GitHub Copilot, through the user's own signed-in session. How dsh reaches them is M1-D-PIPE-3 (sec. 3). | tech-spec sec. 2.2 item 5, 5.5 default-route row, EV-6, EN-3, A-3, R-10, R-11; the DH-S-9 and DH-S-11 manual checks (re-targeted by plan 12.4.4, 16.5, 17.4); the preflight's `DSH_DEEPSEEK_API_KEY` check (removed by plan 12.3.8); the 13 DeepSeek-bound scenario files (M1-D-CLOSE-4). Governs M1-G-PIPE-12, -13, -14, M1-G-LOOP-12, -13, M1-G-TOOL-15, -16, M1-G-CLOSE-12, -14. | [tech-spec.md](tech-spec.md) sec. 1.2, 2.2, 5.3, 5.5, 5.6, 6, 7; [implementation-plan.md](implementation-plan.md) Stage 11.4; [evidence/DH-S-9.md](evidence/DH-S-9.md), [evidence/DH-S-11.md](evidence/DH-S-11.md); [M2 tech-spec](../harness-DSH-M2/tech-spec.md) drafts; plan 12.1.4, 12.3.8, 12.4.4, 16.5, 17.4 | in force |
+| `impl-md-pointer-lines-only` (DC-2) | 2026-11-22 | owner | May the gap-closure work change impl.md's own text? | No. impl.md stays the baseline. Only pointer lines to this file are added, under its DH-S-1, DH-S-9 and DH-S-11 sections (plan 12.1.8; a second DH-S-1 line by plan 12.2.2) and its sec. 7.3 (plan 12.4.2). A proposed impl.md text change (for example plan 12.2.3) stays an open row until the owner signs it. | The GATE and TOOL fragments' proposed impl.md amendments become pointer lines and DC-3 notes in `toolchain.md`. | [impl.md](../../harness/impl.md) DH-S-1, DH-S-9, DH-S-11; [tech-spec.md](tech-spec.md) DC-2; plan 12.1.8, 12.2.2, 12.2.3 | in force |
+
+### 1.1 The M1 definition of done, as restated
+
+This replaces the list of [tech-spec.md](tech-spec.md) sec. 2.3 as written before
+2026-11-22, and it is the definition that M2-DEC-1 refers to. M1 is closed when all of
+these hold at one commit on `main`:
+
+1. Every impl.md step 1.1 to 11.7 (103 steps, 99 deliverables) is ticked *built* under
+   impl.md sec. 1.4 rule 2, and the story plan agrees. Ticks made while the gate was red
+   are provisional and are re-verified at that commit (M1-D-CLOSE-1).
+2. `tools/harness-gate` passes every gate in its list on Windows (native) and on Linux
+   (WSL), each run recorded in the local-lane evidence format (platforms-windows-wsl,
+   local-run-record-format). macOS is out of scope and is not recorded as a pass or a
+   skip.
+3. Every stage DH-S-1 to DH-S-11 has a complete evidence record (impl.md sec. 7.3).
+4. The M1 manual check is recorded on the signed-in Claude route, with no API key;
+   Copilot is run and recorded either way (models-signed-in-claude-copilot, M1-D-LOOP-6,
+   M1-D-CLOSE-3).
+5. H-21 is listed open with its closing step impl.md 16.10, together with every other
+   held-open item that a row of this file creates.
+
+## 2. Operator decisions recorded in stage evidence
+
+These were taken while the stages were built and were first written in the evidence
+records or the story plan. Rows 1 to 10 had names already; rows 11 to 15 were unnamed
+and are named here (plan 12.1.2).
+
+| Name | Date | Decided by | Question | Choice | Narrows | Cited in | Status |
+|---|---|---|---|---|---|---|---|
+| `m1-operator-run` | 2026-11-22 (first in `630feec`, #86) | operator | How does DH-S-11 merge while its M1 run has not happened? | Merge DH-S-11 with its closure Open; record M1 and close the story in a follow-up PR, which ticks impl.md 11.3, 11.4 and 11.7 and the plan's M1 and Close steps only if the definition of done then holds at one commit. | The follow-up PR is now the gap-closure plan, ending at plan Stage 18.1. Its "real key" wording is replaced by models-signed-in-claude-copilot: the run is on a signed-in route. | [evidence/DH-S-11.md](evidence/DH-S-11.md) "Operator decisions"; [M2 tech-spec](../harness-DSH-M2/tech-spec.md) sec. 1.5 | in force |
+| `dh-s-11-closure-path` | 2026-11-22 (`630feec`, #86) | operator | What closes DH-S-11? | The operator runs M1 with a real model key, then ticks and closes; the stage ticks nothing it has not built. | The key-based run is withdrawn by models-signed-in-claude-copilot; the run-then-tick order carries into plan 17.4 and 18.1 on the signed-in route. | [evidence/DH-S-11.md](evidence/DH-S-11.md) "Operator decisions" | superseded (by models-signed-in-claude-copilot and M1-D-CLOSE-3) |
+| `context-package-name` | 2026-11-22 (`630feec`, #86) | operator | What is the context pipeline's package called? | `request` (`internal/context/request`), as the story plan and architecture.md C30 name it; `context/inject` in context-compaction-skill.md sec. 6.1 is the area's older name for the same component. | context-compaction-skill.md sec. 6.1 naming (DC-3 record). | [evidence/DH-S-11.md](evidence/DH-S-11.md); [gap-analysis.md](gap-analysis.md) sec. 9 item 14 | in force |
+| `dh-s-9-closure-path` | 2026-11-21 (`e4fcd13`, #70) | operator | How is the DH-S-9 manual check run? | Option A: the operator runs the good-key and bad-key requests from a network that reaches `api.deepseek.com`, with the key supplied at run time, and fills the table from the printed lines. | Withdrawn: under models-signed-in-claude-copilot the DH-S-9 check runs on the signed-in Claude and Copilot routes, and "bad key" becomes "signed-out or expired session" (plan 12.4.4, 16.5). | [evidence/DH-S-9.md](evidence/DH-S-9.md) "Manual checks" | superseded (by models-signed-in-claude-copilot) |
+| `dh-s-9-scenario-review` | 2026-11-21 (`e4fcd13`, #70) | operator | Who reviews the three DH-S-9 scenario files? | Option A: a separate reviewer approves them in the branch's PR, recorded with the PR number and reviewer before the closure is ticked. | Applies to the re-authored files of M1-D-CLOSE-4. | [evidence/DH-S-9.md](evidence/DH-S-9.md) "Scenarios" | in force |
+| `inherited-vet-gate-failure` | 2026-11-21 (`e4fcd13`, #70) | operator | Does DH-S-9 fix the vet findings of earlier stages? | Option A: no; they are fixed in a separate workstream. | That workstream is plan Phase 13. Under M1-D-CLOSE-1 the ticks made meanwhile are provisional. Overlaps M1-G-GATE-27, M1-G-CLOSE-2. | [evidence/DH-S-9.md](evidence/DH-S-9.md); [M2 tech-spec](../harness-DSH-M2/tech-spec.md) sec. 1.5 | in force |
+| `dsh-s8-closure-waits-stage-8-2` | 2026-11-21 (`dc986f8`, #65) | operator | Which plan stage closes DH-S-8? | Stage 8.2's step, not Stage 8.3: it adds the refold-equals-stored evidence, ticks impl.md 8.3 to 8.5 and raises `built-through` to DH-S-8. | Moves the close step from Stage 8.3 to 8.2; plan Stage 15.3 completes it. | [implementation-plan.md](implementation-plan.md) Stages 8.2, 8.3; [evidence/DH-S-8.md](evidence/DH-S-8.md); [evidence/DH-S-10.md](evidence/DH-S-10.md) | in force |
+| `spill-addressing` | 2026-11-21 (`dc986f8`, #65) | operator | Is a spilled result addressed by digest or by a random id? | storage.md DH-D-STORAGE-5 governs: owner-directory hash, 96 random bits and a safe name. The story plan's "addressed by digest" was amended. | Story plan Stage 8.3 step 8.6 wording. | [implementation-plan.md](implementation-plan.md) Stage 8.3; [evidence/DH-S-8.md](evidence/DH-S-8.md) "Closure" | in force |
+| `defer-gc-lock-blob-refs` | 2026-11-21 (`dc986f8`, #65) | operator | Are the blob collection lock and cited-reference rows built now or deferred? | Built now: savers hold `<home>/blobs/gc.lock` shared, the collector takes it exclusively, and cited references are `blob_refs` rows. | None; pulls work forward into DH-S-8. | [implementation-plan.md](implementation-plan.md) Stage 8.3; [evidence/DH-S-8.md](evidence/DH-S-8.md) | in force |
+| `dsh-story-slice` | 2026-11-19 (`e74a813`, #2) | owner (pending) | Is M1 the right slice for a 13-point story, or should it be cut further? | -- (recommended: keep M1 and land it stage by stage). | -- | [tech-spec.md](tech-spec.md) R-01, sec. 8; [architecture.md](architecture.md) sec. 8 | open |
+| `step-8-1-settings-meaning` | 2026-11-21 (`1d8631a`, #62) | operator | What does "settings" mean in impl.md step 8.1? | Machine-written settings, kept in typed `kv` namespaces in `dsh.db` (`storage/kv`). User settings stay with the one writable config layer (`storage/settings`); there is no dedicated settings table. Pruning checkpoint rows of superseded fold versions is left to a later stage (plan Stage 15.3 names it). | The "settings table" reading of step 8.1. | [implementation-plan.md](implementation-plan.md) Stage 8.1 | in force |
+| `turn-budget-defaults-s11` | 2026-11-21 (`5f27aab`, #82) | owner (pending) | Are the turn-budget defaults (500 steps, 8 attempts per step, no time limit) confirmed? | -- The story plan calls them owner-confirmed; tech-spec sec. 5.5 calls them unconfirmed. Left open until M1-D-LOOP-5 is answered. | Governs M1-G-LOOP-15. | [implementation-plan.md](implementation-plan.md) Stage 11.2; [tech-spec.md](tech-spec.md) sec. 5.5 | open |
+| `agent-28-staged-acceptance` | 2026-11-21 (`5f27aab`, #82) | owner | Must DH-T-AGENT-28 (continuation latency) pass in full at step 11.3? | It is accepted in stages: a provisional p99 budget of 100 ms now, the final budget pinned when the replay provider and session corpus land (impl.md step 16.7). | DH-T-AGENT-28 at step 11.3. The number and its held-open entry are M1-D-LOOP-2; plan 17.4.7 creates a new held-open entry instead of citing H-10 (budget-held-open-not-h10). | [implementation-plan.md](implementation-plan.md) Stage 11.2 | in force |
+| `archtest-llm-edges-exception` | 2026-11-21 (`e4fcd13`, #70) | operator | May `llm/retry` import `agent` and `llm/meter` import `views`? | Yes: the archtest keeps a narrow exception for exactly these two edges (`llm/retry` -> `agent`, `llm/meter` -> `views`). | The import-direction rule of RM-7 for these two edges. | [evidence/DH-S-9.md](evidence/DH-S-9.md) "Closure" | in force |
+| `built-through-may-skip-s8` | 2026-11-21 (`e4fcd13`, #70) | operator | May `built-through` be raised to DH-S-9 before DH-S-8 closes? | It was approved, then withdrawn: the marker means every stage through it is built, so it is raised only in order, as each stage closes. | Replaced by the index rule written in `evidence/DH-S-10.md:78-91`. | [evidence/DH-S-9.md](evidence/DH-S-9.md) "Closure"; [evidence/DH-S-10.md](evidence/DH-S-10.md) "Closure" | superseded (by the index rule of `DH-S-10.md:78-91`) |
+
+## 3. Route and closure decisions
+
+These rows decide how M1 reaches a real model under OWNER-2 and how M1 closes.
+M1-D-PIPE-3, M1-D-PIPE-4 and M1-D-CLOSE-3 are one design, explained in
+[gap-analysis.md](gap-analysis.md) sec. 7.1.
+
+| Name | Date | Decided by | Question | Choice | Narrows | Cited in | Status |
+|---|---|---|---|---|---|---|---|
+| M1-D-PIPE-3 | 2026-11-22 | owner | How does dsh reach Claude and Copilot without an API key? | Option A: dsh drives the user's installed official `claude` CLI and Copilot CLI as child processes. The client signs in; dsh never reads a token. | The `deepseek-official` default route of tech-spec sec. 5.5. The client becomes the first production child process, so the secret-name fix (M1-G-BOOT-6) is an entry of plan 16.5. Governs M1-G-PIPE-12. | [gap-analysis.md](gap-analysis.md) sec. 7, 7.1; plan 16.5, 17.4, 18.1, 19.2 | in force |
+| M1-D-PIPE-4 | 2026-11-22 | owner | What do dsh's guarantees mean on a client route? | Option A, a boundary guarantee. SP-1 ("the bytes sent equal the request rebuilt from the log") is narrowed to the client-invocation boundary: the logged, rebuildable unit is the client invocation (argument list, standard input, environment names without values, client version). The client's own additions (system text, context handling, loop) are declared opaque. Tool calls stay in dsh's guarded pipeline. | tech-spec SP-1, EV-6; design outcome DH-O-4 on this route only. Keyed routes keep full SP-1 against fakes. Whether a harness-hosted MCP bridge is needed for tool calls is decided in plan 16.5.2. Governs M1-G-PIPE-12. | [gap-analysis.md](gap-analysis.md) sec. 7, 7.1; [tech-spec.md](tech-spec.md) EV-6; plan 16.5, 17.1, 17.4, 18.1 | in force |
+| M1-D-CLOSE-3 | 2026-11-22 | owner | What does the M1 real-model check prove under OWNER-2? | Option A, the same answer as M1-D-PIPE-4: a boundary route. The check proves the bracketed log, the logged client invocation and a mid-stream cancel with its cause, on the signed-in route. | The DH-S-11 manual check of impl.md and tech-spec sec. 2.2 item 5. Governs M1-G-CLOSE-12. | [gap-analysis.md](gap-analysis.md) sec. 7; sec. 1.1 above; plan 12.1, 12.4, 16.5, 17.4, 18.1 | in force |
+| M1-D-PIPE-5 | 2026-11-22 | owner (pending) | Keep or delete the DeepSeek provider? | -- (default the plan assumes: A, keep it keyless and fake-tested, recorded as "built, not proven against a real API"). | Governs M1-G-PIPE-13. | [gap-analysis.md](gap-analysis.md) sec. 7; plan 16.5.7, 13.7.2 | open |
+| M1-D-CLOSE-1 | 2026-11-22 | owner | What happens to ticks made while the gate was red (before rule 2 held)? | Option B. The ticks are kept and labelled `m1-provisional-ticks`; all 103 steps are re-verified at the closure commit (plan 18.1.8). Ticks known to be false are unticked, not kept: impl.md 10.3, 10.4, 10.6 and 11.6, by plan 16.6.1 and 17.4.6. A step that fails rule 2 at the closure commit stays unticked and M1 stays open. | Rule 2 of impl.md sec. 1.4, for the M1 ticks only. Governs M1-G-CLOSE-2 (and the tick families of M1-G-CLOSE-1, M1-G-LOOP-14, -16, M1-G-PIPE-14). | [gap-analysis.md](gap-analysis.md) sec. 7, 7.3; sec. 1.1 above; plan 16.6.1, 17.4.6, 18.1.8 | in force |
+| M1-D-CLOSE-2 | 2026-11-22 | owner (pending) | Does a scripted probe count as a manual check? | -- (default: A, yes, when a named person runs it at the recorded commit, watches it and records it `manual`, plus the rule-3 default for each uncovered step). | Governs M1-G-CLOSE-6. | [gap-analysis.md](gap-analysis.md) sec. 7; plan 12.4.3, 18.1.5 | open |
+| M1-D-CLOSE-4 | 2026-11-22 | lead | Are the 13 DeepSeek-bound scenario files re-authored before M1 closes? | Option A: yes. All 13 files swap their route and credential Given to the signed-in route and are re-reviewed before M1 closes, matching the P0 priority of M1-G-LOOP-13 and M1-G-PIPE-14. | The Given of the 13 files in `testkit/scenarios/`. Governs M1-G-CLOSE-14. | [gap-analysis.md](gap-analysis.md) sec. 7, sec. 10 item 4; plan 16.5.8, 17.4.4, 18.1.1 | in force (lead settlement, owner may override) |
+| `m1-done-claims` | 2026-11-22 (raised) | owner (pending) | Which deliverables does M1 claim *done*, not only built? | -- (only deliverables proven by local tests alone can be done in M1; plan 18.1.12 writes the list of those whose tagged tests passed on both lanes, and the owner signs it here). | The "done" claims of the M1 records. Governs M1-G-CLOSE-2. | [gap-closure-plan.md](gap-closure-plan.md) 18.1.12 | open |
+| `retro-entry-order-s8-s11` | 2026-11-22 (raised) | owner (pending) | Does the owner acknowledge that DH-S-9 was started before DH-S-8 was built, and DH-S-10 and DH-S-11 before DH-S-9 (impl.md sec. 1.4 rule 1)? | -- (the plan asks for an acknowledgement after the fact; no re-ordering of merged work is proposed). | Rule 1 for DH-S-9 to DH-S-11. Governs M1-G-CLOSE-4. | [gap-analysis.md](gap-analysis.md) sec. 6.8; plan 12.1.5 | open |
+
+## 4. Lead settlements (2026-11-22)
+
+The review fragments disagreed on these points. The lead chose a working answer so that
+the plan and the gap analysis say the same thing. Each follows whatever the owner later
+records. M1-D-CLOSE-4 (sec. 3) and M1-D-LOOP-6 (sec. 5) are lead settlements too.
+
+| Name | Date | Decided by | Question | Choice | Narrows | Cited in | Status |
+|---|---|---|---|---|---|---|---|
+| `local-run-record-format` | 2026-11-22 | lead | How is a local-lane gate run identified and stored, in place of a CI run id? | The run-record id is `<lane>-<sha7>-<UTC yyyymmddThhmmZ>`; the log is kept under `evidence/runs/<run id>.txt`, with the file's SHA-256 beside it. | Replaces the GATE fragment's `evidence/gate-runs/`, the CLOSE fragment's `<yyyymmdd>-<lane>-<sha7>` and the TOOL fragment's SHA-256-only id. Governs M1-G-GATE-22, M1-G-CLOSE-13. | [gap-analysis.md](gap-analysis.md) sec. 10 item 3; plan 12.3.6, 12.4.2 | in force (lead settlement, owner may override) |
+| `lane-toolchain-floor` | 2026-11-22 | lead | Which Go toolchain do the local lanes use? | go1.26.0 on both lanes: installed in `/usr/local/go` on WSL, selected with `GOTOOLCHAIN=go1.26.0` on Windows (whose default is go1.27.4). The gate fails setup when `go version` is not the floor. | Replaces the CLOSE fragment's `GOTOOLCHAIN=local` and the TOOL fragment's `$HOME/sdk`. Governs M1-G-TOOL-14. | [gap-analysis.md](gap-analysis.md) sec. 10 item 3; plan 12.3.1, 12.3.2, 12.3.4 | in force (lead settlement, owner may override) |
+| `budget-held-open-not-h10` | 2026-11-22 | lead | May the provisional budgets cite H-10? | No. H-10 is the replay of a session with children (impl.md sec. 10.3). The provisional budgets get new held-open entries instead. | The story plan's and the STORE fragment's citations of H-10. | [gap-analysis.md](gap-analysis.md) sec. 9 item 40; plan 15.3.8, 17.4.7 | in force (lead settlement, owner may override) |
+
+## 5. Narrowings reported by other clusters
+
+One row per `M1-D-*` decision that the GATE, TOOL, FND, BOOT, STORE, PIPE and LOOP
+clusters raised (M1-D-PIPE-3 to -5 are in sec. 3). Each is `open` until the owner
+answers, except M1-D-LOOP-6, which the lead settled. The "Default" column is the
+assumption the plan works to; it is not a choice. Gap IDs are rows of
+[gap-analysis.md](gap-analysis.md) sec. 6; questions and options are in its sec. 7.
+
+| Name | Date | Decided by | Question | Choice | Default the plan assumes | Narrows (gaps governed) | Cited in | Status |
+|---|---|---|---|---|---|---|---|---|
+| M1-D-GATE-18 | 2026-11-22 | owner (pending) | Is the `harness` job made a required check? | -- | A: a ruleset on `main` requires the lanes kept by M1-D-GATE-21, switched on only once the gate is green | M1-G-GATE-18 | plan 13.7.5 | open |
+| M1-D-GATE-21 | 2026-11-22 | owner (pending) | What does hosted CI keep? (same question as M1-D-TOOL-5) | -- | Hosted ubuntu and windows `harness` lanes as regression signals; macOS removed | M1-G-GATE-21 | plan 12.3.7 | open |
+| M1-D-GATE-23 | 2026-11-22 | owner (pending) | How are the gates the spec requires but the runner lacks handled, and site exceptions? | -- | The missing gates are built now (13.4, 13.5); the gate list grows from 8 to 12 gates (`modules`, `staticcheck`, `vulncheck`, `self` added) and is recorded under DC-3. This is the lead's working default (gap-analysis.md sec. 10, item 2); the owner confirms it here. | M1-G-GATE-23 (= M1-G-TOOL-1, -2, -4, -7) | plan 13.5.8, 12.2.1; [evidence/DH-S-1.md](evidence/DH-S-1.md#toolchain-scope-decisions) | open |
+| M1-D-GATE-24 | 2026-11-22 | owner (pending) | What is the wait and release idiom for tests? | -- | A: strict `nosleep`; synctest or explicit signals; one named test-kit poll helper for real processes; a cleanup must unblock and join | M1-G-GATE-24 (and the 81 findings M1-G-GATE-2 to -14) | plan 13.1, 13.2, 13.3 | open |
+| M1-D-GATE-25 | 2026-11-22 | owner (pending) | Is the `e2e` layer vetted? | -- | A: vet the `e2e` layer, done in 13.5.7 together with M1-G-TOOL-17 (lead's working default) | M1-G-GATE-25 (= M1-G-TOOL-17) | plan 13.5.7 | open |
+| M1-D-TOOL-1 | 2026-11-22 | owner (pending) | Is govulncheck an M1 gate? | -- | (a) yes, a gate now, as ADR-TOOLCHAIN-9 lists; part of the 12-gate list built in 13.4 and 13.5 (lead's working default) | M1-G-TOOL-4 | plan 13.5.5, 13.5.6, 12.2.1; [evidence/DH-S-1.md](evidence/DH-S-1.md#toolchain-scope-decisions) | open |
+| M1-D-TOOL-1b | 2026-11-22 | owner (pending) | If staticcheck reports more than about 100 findings, may it land advisory-first? | -- | No: fix everything first (ADR-TOOLCHAIN-8) | M1-G-TOOL-4 (sub-question) | plan 13.5.5 | open |
+| M1-D-TOOL-2 | 2026-11-22 | owner (pending) | Where is the tools module? | -- | (a) `tools/harness-gate/go.mod` is the tools module; the spec path is amended | M1-G-TOOL-5 | plan 13.4.1, 12.2.1; [evidence/DH-S-1.md](evidence/DH-S-1.md#toolchain-scope-decisions) | open |
+| M1-D-TOOL-3 | 2026-11-22 | owner (pending) | When does the rehearsal become GoReleaser? | -- | (b) a GoReleaser snapshot at plan 19.1, before DH-S-18; D-TOOLCHAIN-5 recorded as "built in part" | M1-G-TOOL-8 | plan 19.1.1, 12.2.1; [evidence/DH-S-1.md](evidence/DH-S-1.md#toolchain-scope-decisions) | open |
+| M1-D-TOOL-4 | 2026-11-22 | owner (pending) | What happens to `src/go`'s godog dependency? | -- | (A) `src/go/test/e2e` becomes a nested test-only module | M1-G-TOOL-10 | plan 13.4.2 | open |
+| M1-D-TOOL-5 | 2026-11-22 | owner (pending) | What does CI keep? (same question as M1-D-GATE-21) | -- | (a) hosted ubuntu and windows `harness` lanes as merge checks; macOS dropped | M1-G-TOOL-13 | plan 12.3.7 | open |
+| M1-D-TOOL-6 | 2026-11-22 | owner (pending) | Where do credentialed scenarios run? | -- | (a) locally on the development host, via a new `harness-gate scenarios --stage` | M1-G-TOOL-16 | plan 19.2.1 | open |
+| M1-D-FND-1 | 2026-11-22 | owner (pending) | Where is the protocol schema derived? | -- | (a) keep the SDK deriver and `schema.json`; add a harness drift test | M1-G-FND-11 | plan 14.3.3 | open |
+| M1-D-FND-2 | 2026-11-22 | owner (pending) | When do `DecodeForm` and `Project` land? | -- | (a) build both now | M1-G-FND-17 | plan 14.4.6 | open |
+| M1-D-FND-3 | 2026-11-22 | owner (pending) | Are two small spec deviations accepted (own debounce timer, no `llm` aliases)? | -- | (a) accept both; amend `cordis-plugins.md:163` and `llm.md:463` | M1-G-FND-5, M1-G-FND-19 | plan 14.5.6 | open |
+| M1-D-BOOT-1 | 2026-11-22 | owner (pending) | How does M1 treat DH-S-6 deliverables that were cut short? | -- | (b) hold each cut part open as an `H-n` entry closing in its consuming stage | M1-G-BOOT-16 (covers M1-G-BOOT-2, -3, -4, -7, -11, -14) | plan 14.6.11, 19.3 to 19.5 | open |
+| M1-D-BOOT-2 | 2026-11-22 | owner (pending) | Where does DH-T-HOST-17 run? | -- | (b) held open as a new `H-n` closing at impl.md step 16.7 | M1-G-BOOT-9 | plan 14.6.11 | open |
+| M1-D-BOOT-3 | 2026-11-22 | owner (pending) | What is the usage-error exit status? | -- | (A) 64, as the area spec and three tests say | M1-G-BOOT-12 | plan 14.6.9 | open |
+| M1-D-STORE-A | 2026-11-22 | owner (pending) | What should DH-T-STORE-4's backlog clause assert? | -- | (a) amend the spec: no backlog bound while appends are synchronous | M1-G-STORE-4 | plan 15.1.4 | open |
+| M1-D-STORE-B | 2026-11-22 | owner (pending) | Where do the budget numbers come from, and who owns DH-T-VIEW-25's search clauses? | -- | (a) provisional budgets now, pinned at impl.md 16.7 (with new held-open entries, budget-held-open-not-h10) | M1-G-STORE-7, M1-G-STORE-22 | plan 15.1.5, 15.3.2 | open |
+| M1-D-STORE-C | 2026-11-22 | owner (pending) | Do built-in views stay checkpoint documents or become the spec's tables? | -- | (a) built-in views stay checkpoint documents; revisit at DH-S-23 | M1-G-STORE-24 | plan 15.3.10 | open |
+| M1-D-STORE-D | 2026-11-22 | owner (pending) | When is the draft record built? | -- | (b) held open, closing at DH-S-21 | M1-G-STORE-28 | plan 15.3.9 | open |
+| M1-D-PIPE-1 | 2026-11-22 | owner (pending) | Which approval outcome vocabulary is authoritative? | -- | A: the area spec's five approval outcomes, default timeout 0, peer in the record | M1-G-PIPE-5 | plan 16.1.2 | open |
+| M1-D-PIPE-2 | 2026-11-22 | owner (pending) | Who waits before a retry? | -- | A: the policy returns `Retry{After}`; the driver waits | M1-G-PIPE-9 | plan 16.4.1 | open |
+| M1-D-LOOP-1 | 2026-11-22 | owner (pending) | Where is the claimed user message logged, so the first system prompt can be node 0? | -- | A: the claim writes only the splice; user messages are admitted at point 8 | M1-G-LOOP-3 | plan 17.1.8 | open |
+| M1-D-LOOP-2 | 2026-11-22 | owner (pending) | What is the DH-T-AGENT-28 budget? | -- | A: pin 100 ms as the M1 budget, plus a new held-open entry closing at impl.md 16.7 | M1-G-LOOP-6 | plan 17.4.7 | open |
+| M1-D-LOOP-3 | 2026-11-22 | owner (pending) | What is the M1 scope of DH-T-SUBAGENT-3, -4 and -14? | -- | B: DH-T-SUBAGENT-4, -14 and the time-limit and interrupt legs of -3 move to DH-S-29 | M1-G-LOOP-8 | plan 17.2.5, 17.2.6 | open |
+| M1-D-LOOP-4 | 2026-11-22 | owner (pending) | What does compaction need at M1? | -- | A: build the compaction hook only, with a fake-compactor test | M1-G-LOOP-9 | plan 17.3.1 | open |
+| M1-D-LOOP-5 | 2026-11-22 | owner (pending) | Are the turn-budget defaults (500 / 8 / none) confirmed? | -- | The owner confirms 500 / 8 / none in writing; turn-budget-defaults-s11 then becomes in force | M1-G-LOOP-15 | plan 17.4.8 | open |
+| M1-D-LOOP-6 | 2026-11-22 | lead | Which routes must M1 pass? | A: Claude must pass; Copilot is run and recorded either way. | (settled) | M1-G-LOOP-12 | plan 17.4.3, 18.1.6; sec. 1.1 above | in force (lead settlement, owner may override) |
+
+## 6. Toolchain scope records (plan Stage 12.2)
+
+Plan Stage 12.2 turns each point where the built M1 toolchain differs from
+[toolchain.md](../../harness/upstream/toolchain.md) into a row a reviewer can read. Most
+of those points are already rows above: the gate list (M1-D-GATE-23, M1-D-TOOL-1), the
+tools module (M1-D-TOOL-2), the rehearsal (M1-D-TOOL-3), the hosted lanes (M1-D-GATE-21,
+M1-D-TOOL-5) and the platform override (`platforms-windows-wsl`). The rows below cover
+the rest. Four are DC-3 records: two documents, or a document and the build, say
+different things, and the row states both and the choice taken (tech-spec DC-3). The
+fifth is a proposed impl.md text change, which stays `open` until the owner signs it
+(`impl-md-pointer-lines-only`). The table that lists every narrowed item with its return
+stage is in [evidence/DH-S-1.md](evidence/DH-S-1.md#toolchain-scope-decisions).
+
+| Name | Date | Decided by | Question | Choice | Narrows | Cited in | Status |
+|---|---|---|---|---|---|---|---|
+| `coverage-floor-all-packages-kept` | 2026-11-22 | lead | The coverage gate floors every package of the three product modules (`src/go`, `src/sdk`, `src/harness`), `main` packages included; DH-ADR-TOOLCHAIN-7 floors every package under `src/harness/internal` and excludes `main` packages by rule. Which holds? | Keep the stricter built rule. It asks for more than the spec, never less, so nothing the spec requires is lost; a `main` package that cannot reach 85% is fixed by moving its logic into a tested package, not by an exclusion. | DH-ADR-TOOLCHAIN-7's exclusion rule, for M1 only (DC-3 record; the spec text is unchanged). Governs M1-G-GATE-26. | [evidence/DH-S-1.md](evidence/DH-S-1.md#toolchain-scope-decisions); `tools/harness-gate/gates.go` `coverageGate`; plan 12.2.1 | in force (lead settlement, owner may override) |
+| `import-rules-by-archtest` | 2026-11-22 | lead | DH-ADR-TOOLCHAIN-8 lists "package import rules" among the own analyzers, and DH-ADR-TOOLCHAIN-9 says structural rules such as import layering are Go tests. Which form meets the rule? | The Go-test form of DH-ADR-TOOLCHAIN-9: the import rules are `src/harness/internal/archtest/rules.go`, run by `TestImportDirection` inside the `test` gate. No import analyzer is built. The other three own analyzers of DH-ADR-TOOLCHAIN-8 (callers of `Context.Root()`, discarded errors, unchecked assertions and `unsafe`) are a gap, built by plan 13.5.4. | DH-ADR-TOOLCHAIN-8's analyzer list, by one item (DC-3 record). Governs the record part of M1-G-TOOL-6. | [evidence/DH-S-1.md](evidence/DH-S-1.md#toolchain-scope-decisions); plan 12.2.4, 13.5.4 | in force (lead settlement, owner may override) |
+| `http-client-rule-owner` | 2026-11-22 | lead | DH-ADR-TOOLCHAIN-8 lists "HTTP clients built outside the proxy-aware factory" as an own analyzer owned "by the area that states the rule". Is it DH-S-1 work? | No. The util area owns it: its check is `DH-T-UTIL-22`, the import-graph gate that proves DH-D-UTIL-10 (util-test-support.md DH-ADR-UTIL-5), built at impl.md step 23.16 in DH-S-23. The factory itself (DH-D-UTIL-2) was built at step 6.16. Plan 12.2.4 and gap-analysis.md sec. 8 name "DH-D-UTIL-8 at DH-S-16"; the spec files name DH-D-UTIL-10 at step 23.16, and this row follows the spec files. | DH-S-1's share of DH-ADR-TOOLCHAIN-8 (DC-3 record). Governs the record part of M1-G-TOOL-6. | [evidence/DH-S-1.md](evidence/DH-S-1.md#toolchain-scope-decisions); [util-test-support.md](../../harness/areas/util-test-support.md#dh-d-util-10); plan 12.2.4 | in force (lead settlement, owner may override) |
+| `goldens-in-test-gate` | 2026-11-22 | lead | Where are golden files checked? DH-D-TOOLCHAIN-2 lists "golden files" as one of the runner's checks, and impl.md step 1.6 places the golden helper under DH-D-TOOLCHAIN-3. | Inside the `test` gate. `golden.Assert` runs in ordinary `go test`, so a golden difference fails the `test` gate; there is no separate golden gate. The helper is built by impl.md step 1.6 and counted by DH-D-TOOLCHAIN-2's Result list; both citations stand. The helper refuses `-update` only when `CI` is set, so both local lanes set `CI=1` (plan 12.3.5). | DH-D-TOOLCHAIN-2's Result list, read as "checked inside the `test` gate" (DC-3 record). Governs M1-G-TOOL-18 (with gap-analysis.md sec. 9 item 17). | [evidence/DH-S-1.md](evidence/DH-S-1.md#toolchain-scope-decisions); `src/harness/internal/testkit/golden/golden.go`; plan 12.2.4, 12.3.5 | in force (lead settlement, owner may override) |
+| `replay-gate-step-dh-s-16` | 2026-11-22 (raised) | owner (pending) | May impl.md gain a DH-S-16 step that schedules the `replay` gate and the `harness-replay` job, which DH-D-TOOLCHAIN-4 and DH-ADR-TOOLCHAIN-12 require but no stage builds? | -- Proposed text, added after step 16.10 so no step is renumbered (DC-5): "**16.11** Part of [DH-D-TOOLCHAIN-2] and [DH-D-TOOLCHAIN-4]: a `replay` gate in `tools/harness-gate` (`go test -tags replay` against the built binary, using the replay runner of step 16.7), and the `harness-replay` CI job, or a local lane under `platforms-windows-wsl`, that runs it ([DH-ADR-TOOLCHAIN-9], [DH-ADR-TOOLCHAIN-12]). Done when `DH-T-TOOLCHAIN-5` passes in that job or lane." | Default the plan assumes: the owner signs it, and plan 19.1.2 builds it. Until then impl.md is unchanged and the requirement has no stage. Governs M1-G-TOOL-9. | [toolchain.md](../../harness/upstream/toolchain.md#dh-adr-toolchain-12) DC-3 note; [evidence/DH-S-1.md](evidence/DH-S-1.md#toolchain-scope-decisions); plan 12.2.3, 19.1.2 | open |
+
+## 7. Counts
+
+As of 2026-11-22 this file has 66 rows, 37 of them `M1-D-*` rows (every decision of
+[gap-analysis.md](gap-analysis.md) sec. 7).
+
+| Status | Rows | Which |
+|---|---|---|
+| in force: owner answers of 2026-11-22 | 7 | platforms-windows-wsl, models-signed-in-claude-copilot, impl-md-pointer-lines-only, M1-D-PIPE-3, M1-D-PIPE-4, M1-D-CLOSE-3, M1-D-CLOSE-1 |
+| in force: operator or owner decisions recorded in stage evidence | 10 | sec. 2 rows marked `in force` |
+| in force (lead settlement, owner may override) | 9 | M1-D-CLOSE-4, M1-D-LOOP-6, local-run-record-format, lane-toolchain-floor, budget-held-open-not-h10, coverage-floor-all-packages-kept, import-rules-by-archtest, http-client-rule-owner, goldens-in-test-gate |
+| superseded | 3 | dh-s-11-closure-path, dh-s-9-closure-path, built-through-may-skip-s8 |
+| open | 37 | macos-return-stage, dsh-story-slice, turn-budget-defaults-s11, m1-done-claims, retro-entry-order-s8-s11, replay-gate-step-dh-s-16, M1-D-PIPE-5, M1-D-CLOSE-2, and 29 rows of sec. 5 |

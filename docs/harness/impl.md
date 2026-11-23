@@ -461,6 +461,10 @@ in [DH-S-46](#dh-s-46).
 **Exit evidence.** The evidence record of [§7.3](#73-the-evidence-record) with the
 gate runner's output on three operating systems and the seeded-violation checks.
 
+**Decision log (pointer, M1).** For the M1 story, the gate lanes and this stage's evidence follow the decisions logged in [the M1 decision log](../stories/harness-DSH-M1/decisions.md) (`platforms-windows-wsl`); this section's text is unchanged (DC-2).
+
+**Toolchain scope (pointer, M1).** For the M1 story, "gate runner's output on three operating systems" above is read with the DC-3 override notes in [toolchain.md](upstream/toolchain.md#dh-d-toolchain-4) (two systems, Windows native and Linux under WSL), and the narrowed gate list, rehearsal and replay job are listed in the "Toolchain scope decisions" table of [the DH-S-1 evidence record](../stories/harness-DSH-M1/evidence/DH-S-1.md#toolchain-scope-decisions); this section's text is unchanged (DC-2).
+
 <a id="dh-s-2"></a>
 ### DH-S-2: cordis changes in `src/go`
 
@@ -831,6 +835,8 @@ a bad key; record one attempt event each and no retry on the bad key; `manual`.
 **Exit evidence.** The evidence record, with the request captured at the fake
 transport equal to the request rebuilt from the log.
 
+**Decision log (pointer, M1).** For the M1 story, this stage's manual check and closure follow the decisions logged in [the M1 decision log](../stories/harness-DSH-M1/decisions.md) (`models-signed-in-claude-copilot`); this section's text is unchanged (DC-2).
+
 <a id="dh-s-10"></a>
 ### DH-S-10: Tool pipeline, approvals and human commands
 
@@ -922,6 +928,8 @@ both `manual`. This is milestone M1 and it is not a scenario.
 
 **Exit evidence.** The evidence record, with the property test that no tool call is
 left unanswered in history on any exit path.
+
+**Decision log (pointer, M1).** For the M1 story, the M1 manual check, the definition of done and this stage's closure follow the decisions logged in [the M1 decision log](../stories/harness-DSH-M1/decisions.md) (`models-signed-in-claude-copilot`, `platforms-windows-wsl`); this section's text is unchanged (DC-2).
 
 <a id="dh-s-12"></a>
 ### DH-S-12: Working directory, filesystem seam, policy resolver and file tools
@@ -3200,6 +3208,8 @@ scenario, fills all of them.
 | Manual checks | What was done, what was seen, by whom, at which commit, marked `manual` |
 | Cleanup evidence | The before-and-after comparison the stage names (a home listing, a repository state, an access-control listing, a process list), or what was retained because cleanup failed |
 | Open items | Held-open deliverables (`H-n`) of the stage, deliverables built but not done because their scenario runs later, and any scenario left open with the reason |
+
+**Local-lane template (pointer, M1).** For the M1 story, a gate run on a local lane (Windows native or Linux under WSL) fills "Run identifiers" with a run-record id and the record's SHA-256 in place of a CI run id, in the template of [the M1 evidence runbook](../stories/harness-DSH-M1/evidence/README.md#the-run-record), which also holds the per-step manual-check register; decisions `local-run-record-format` and `platforms-windows-wsl` in [the M1 decision log](../stories/harness-DSH-M1/decisions.md). This section's text is unchanged (DC-2).
 
 ### 7.4 Guarded scenarios
 

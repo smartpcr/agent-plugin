@@ -13,7 +13,8 @@ GOWORK=off go -C tools/harness-gate run . --root ../..
 `src/go`, `src/sdk`, `src/harness`, RM-1) or a directory holding a `go.mod` (the
 gates then run on that one module; the seeded modules of `testdata/` are run this
 way). Exit status: `0` every gate passed, `1` a gate failed, `2` usage or setup
-error.
+error. Every child runs on the go floor (a toolchain that is not the floor is a
+setup error), and `--evidence FILE` records the run; see [Lanes](#lanes).
 
 The module has its own `go.mod` and is not part of the root `go.work`; run it with
 `GOWORK=off` (RM-2).
@@ -52,12 +53,14 @@ GOWORK=off go -C tools/harness-gate run . preflight --root ../..
 - `require` prints the comma-separated `DH-E-*` IDs of one stage entry of the
   acceptance index (empty for no `--stage`); an unknown stage is an error. The
   scenario workflow uses it to derive `DSH_REQUIRE_SCENARIOS`.
-- `preflight` (DH-ADR-TOOLCHAIN-6, -12) reads `DSH_DEEPSEEK_API_KEY` and
-  `DSH_REQUIRE_SCENARIOS` from the environment and fails -- starting nothing --
-  when the key is absent or blank, when a required ID has no scenario test, when a
+- `preflight` (DH-ADR-TOOLCHAIN-6, -12) reads `DSH_REQUIRE_SCENARIOS` from the
+  environment and fails -- starting nothing -- when the credential hook
+  (`acceptance.Credentials`) fails, when a required ID has no scenario test, when a
   required ID's index entry `requires` a stage past `built-through`, or when the
   `scenario-index` check fails. On success it appends `count=`, `run=` (a
-  `go test -run` expression) and `tests=` to `$GITHUB_OUTPUT`.
+  `go test -run` expression) and `tests=` to `$GITHUB_OUTPUT`. It reads no model
+  key (`models-signed-in-claude-copilot`): the credential hook checks nothing until
+  stage 19.2 fills it with the signed-in-route check.
 
 ## Acceptance index (`test/harness/acceptance-index.yaml`)
 
@@ -219,7 +222,130 @@ override can relax a budget.
 | `budget-exceeded` | `budget` (`TestBudgetX` honours `DSH_BUDGET_RELAX` unless cleared) |
 | `cross-broken` | `cross-compile` (`windows/arm64` only) |
 | `layer-tagged` | passes `test` and `coverage`: its always-failing `replay` and `scenario` tests are excluded |
+| `fake-go` | not a gated module: a `go` command that answers `go version go1.99.0`, put first on `PATH` to prove the setup failure of an off-floor toolchain |
 
 `gates_test.go` copies each into `t.TempDir()`, runs a freshly built
 `harness-gate` against it and checks the named gate, the non-zero exit and that no
 later gate started.
+
+## Lanes
+
+A commit is proved on two local lanes, Windows native and Linux under WSL, by one
+script per lane (M1-G-GATE-20, M1-G-TOOL-12). The hosted CI lanes are regression
+signals; the evidence of record is a lane run's evidence file.
+
+```sh
+~/src/agent-plugin/tools/harness-gate/lanes/wsl.sh      # in the WSL distribution
+pwsh -File tools/harness-gate/lanes/win.ps1             # on the Windows host
+```
+
+### The go floor (M1-G-TOOL-14)
+
+The gate reads the floor from the `go` line of `src/harness/go.mod` (a
+single-module root: its own `go.mod`), runs `go version` with
+`GOTOOLCHAIN=go<floor>` (Go fetches that toolchain when the default `go` on
+`PATH` is another release, e.g. go1.27.4), and then runs every child with the
+floor's own `go` binary, its `GOROOT`, its `bin` first on `PATH` and
+`GOTOOLCHAIN=go<floor>`; the budget gate's `GOTOOLCHAIN=local` therefore also
+runs the floor. It prints the toolchain before the first gate:
+
+```text
+harness-gate: toolchain go1.26.0 (the go floor of src/harness/go.mod; children run with GOTOOLCHAIN=go1.26.0, GOROOT=...)
+```
+
+When `go version` is not the floor (a `go` older than 1.21 that ignores
+`GOTOOLCHAIN`, a toolchain that cannot be fetched, a wrapper), setup fails with
+exit 2, naming both versions. There is no flag to accept another toolchain (QG-2).
+
+### Evidence files (`--evidence FILE`)
+
+```sh
+GOWORK=off go -C tools/harness-gate run . --root ../.. --evidence /abs/path/run.txt
+```
+
+`FILE` is resolved against the gate's working directory (`tools/harness-gate`
+under `go -C`), so the lane scripts pass an absolute path. Before anything else
+the gate runs `git status --porcelain --untracked-files=all`; any change is
+refused with exit 2, naming the dirty paths, and no file is written and no gate
+started. Otherwise it writes, and tees to stdout:
+
+1. the header: `commit` (`git rev-parse HEAD`), `tree: clean`, the `command`,
+   `goos/goarch`, `go version`, the `go floor` and `goroot`, `cc` (`go env CC`)
+   and `cc --version`, `host os` (`ver` on Windows, `uname -srvm` elsewhere), on
+   Linux `wsl distro` (`WSL_DISTRO_NAME`), `os-release` (`PRETTY_NAME`) and
+   `kernel` (`uname -r`), `children: CI=1`, and `started` (UTC);
+2. `--- output ---`, the full gate output, `--- end of output ---`;
+3. `ended` (UTC), `exit` (the gate's status) and `sha256`, the SHA-256 of every
+   byte of the file before that last line (`head -n -1 FILE | sha256sum`).
+
+Every child of an evidence run has `CI=1`, so a golden refuses `-update` on a
+local lane as it does in CI (`testkit/golden/golden.go`).
+
+### The lane scripts (`lanes/`)
+
+Each script checks its lane and stops at the first check not met, naming it
+(exit 3), before any gate runs:
+
+| check | `wsl.sh` | `win.ps1` |
+|-------|----------|-----------|
+| checkout file system | ext4 (`stat -f -c %T .` prints `ext2/ext3`); `9p`/`v9fs` is refused as "checkout on 9p", `drvfs` or any `/mnt/<drive>` path as drvfs | a local fixed NTFS or ReFS volume |
+| user | `id -u` is not 0 | not elevated (Administrator) |
+| go floor | `GOTOOLCHAIN=local go version` is the floor, and `go` is not a `/mnt/` Windows binary | `GOTOOLCHAIN=go<floor>` set (go1.26.0), then `go version` is the floor |
+| C compiler | `go env CC` resolves | `go env CC` resolves (MSYS2 UCRT64 `gcc`) |
+| tree | clean, `core.autocrlf` unset or `false` | clean, `core.autocrlf` unset or `false` |
+| `TMPDIR` | on ext4 | (WSL only) |
+
+Then each runs `GOWORK=off go -C tools/harness-gate run . --root ../.. --evidence
+<file>`, with the record at
+`docs/stories/harness-DSH-M1/evidence/runs/<lane>-<sha7>-<UTC yyyymmddThhmmZ>.txt`
+(`<lane>` is `wsl` or `win`). `wsl.sh` also runs `rehearse`, first, while the tree
+is still clean (an untracked record would make every binary `vcs.modified=true`),
+and writes its output next to the record as `...-rehearse.txt`, ending with the
+same kind of `sha256` line. The script exits with the gate's status, else the
+rehearsal's.
+
+### Provisioning the WSL lane
+
+- `wsl --install -d Ubuntu-24.04` under WSL2, with a **non-root** default user:
+  root bypasses the permission tests (`storage/home/private_unix_test.go`,
+  `loosen_unix_test.go`).
+- Go **1.26.0 exactly**, from the go.dev `linux/amd64` tarball into
+  `/usr/local/go`, first on `PATH` (`~/.profile`; `wsl.sh` prepends
+  `/usr/local/go/bin` itself for a non-login shell). In `/etc/wsl.conf`, set
+  `[interop] appendWindowsPath=false`, so the Windows `go.exe` can never be
+  picked up.
+- `build-essential` (gcc, for `-race` with `CGO_ENABLED=1`) and `git`.
+- `GOCACHE`, `GOMODCACHE` and `TMPDIR` on ext4 (the defaults under `~` and `/tmp`
+  are).
+- Optional: `[boot] systemd=true` in `/etc/wsl.conf`; it enables the Linux
+  user-scope path; without it the process-group fallback is reported (EN-5).
+  Raise the WSL memory limit (`.wslconfig`) if the coverage gate is killed.
+- Run `wsl --shutdown` before a budget run, to reset the clock drift of a
+  long-running VM.
+
+**The clone rule.** Run the WSL lane only from a WSL-native clone on ext4, never
+on `/mnt/e`:
+
+```sh
+git clone /mnt/e/work/github/ai/agent-plugin ~/src/agent-plugin
+git -C ~/src/agent-plugin checkout <sha>
+```
+
+Why:
+
+- DrvFs/9P reports every file as `0777` and ignores `chmod`. This breaks the
+  privacy tests and marks the tree `vcs.modified`.
+- `flock`, rename and inotify are unreliable there.
+- git's "dubious ownership" check breaks VCS stamping.
+- The budget gate fails on its speed.
+
+`.gitattributes` already forces `eol=lf`; do not set `core.autocrlf`.
+
+### Provisioning the Windows lane
+
+- The floor toolchain is selected with `GOTOOLCHAIN=go1.26.0`. The host default
+  may be later (go1.27.4); `win.ps1` sets the variable from `src/harness/go.mod`,
+  and the gate pins every child to the floor itself.
+- MSYS2 UCRT64 `gcc` on `PATH` (for `-race`), as in `.github/workflows/ci.yml`.
+- A non-elevated shell, and the checkout on a local NTFS or ReFS (Dev Drive)
+  volume.

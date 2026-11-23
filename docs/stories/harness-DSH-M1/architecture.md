@@ -27,7 +27,7 @@ Sibling plan documents (written in parallel; this file does not duplicate them):
 impl.md orders the whole product into stages; milestone **M1** ("an agent runs turns
 against a real model with one tool, every step logged") is reached when **DH-S-11** is
 built (impl.md sec. 3.3). This story is that milestone: the eleven build stages
-**DH-S-1 .. DH-S-11** (about 106 checklist steps), in impl.md order, with each stage's
+**DH-S-1 .. DH-S-11** (103 checklist steps, 99 deliverables), in impl.md order, with each stage's
 entry conditions respected. Per impl.md sec. 1.4 a build stage closes as **built**,
 not **done**. Its `DH-E-*` scenarios are **authored here and executed at the stage
 impl.md assigns to each one; none is executed in this story** (the schedule is in the
@@ -802,7 +802,7 @@ Rules for downstream documents:
 
 | Item | Risk | Handling |
 |---|---|---|
-| Size | 11 stages and about 106 steps for 13 points | Open question `dsh-story-slice`; recommended: keep M1 and land it stage by stage |
+| Size | 11 stages and 103 steps (99 deliverables) for 13 points | Open question `dsh-story-slice`; recommended: keep M1 and land it stage by stage |
 | SQLite driver (fact F-2) | `modernc.org/sqlite` is provisional until measured | Step 7.1 measures it first; the store contract (C10) isolates the choice |
 | Go floor (fact F-1) | `go 1.26.0` line for all three modules | Checked by the DH-S-1 gates; the local toolchain is newer and builds it |
 | DH-S-6 dependency circle C-1 | 14 deliverables depend on each other | Built contract-first; the stage closes only when all 17 are built at one commit |

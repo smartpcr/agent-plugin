@@ -1,5 +1,17 @@
 # DH-S-7 evidence
 
+Decisions that govern M1 records, this one included, are logged in [decisions.md](../decisions.md).
+
+Closure status: open
+
+This line becomes `closed at <sha>` only in plan step 18.1.14, at the M1 closure commit.
+The "Closure status: closed by Stage 7.3" statement below and the "met" rows of
+"Closure" are the stage's own closure, kept as history: under M1-D-CLOSE-1 every tick
+made while the gate was red is provisional and is re-verified at that commit, and plan
+Stage 15.1 adds the store gaps (M1-G-STORE). The fields of impl.md sec. 7.3 and the
+per-step manual-check register are at the end of this file, in "Evidence record
+(impl.md sec. 7.3)"; how to fill them is in [the evidence runbook](README.md).
+
 DH-S-7 is the SQLite store, leases and recovery. This file holds the evidence of its
 stages as they are built. **Closure status: closed by Stage 7.3** (see "Closure"
 at the end). Stage 7.1 (the database), Stage 7.2 (leases and crash recovery) and
@@ -334,3 +346,78 @@ All are within the budgets of Stage 7.1.
 
 impl.md steps 7.1 to 7.6 are ticked as built. `built-through` in the acceptance
 index is raised to DH-S-7.
+
+## Evidence record (impl.md sec. 7.3)
+
+These are the eight fields of [impl.md sec. 7.3](../../../harness/impl.md#73-the-evidence-record),
+in the format of [the evidence runbook](README.md#the-evidence-record-headings). Plan step
+18.1.7 fills them at the frozen M1 closure commit; plan Stage 15.1 adds its "Gap closure
+(M1-G-STORE)" section before that. Until then each field points to the history above,
+which stays exactly as it was recorded and is not closure evidence (M1-D-CLOSE-1).
+
+### Source and build identity
+
+At closure: not yet recorded (plan 18.1.7). Historical: the driver pins
+(`modernc.org/sqlite` v1.62.0, `modernc.org/libc` v1.80.1) under "Fact F-2"; no commit was
+recorded.
+
+### Environment and fixture
+
+At closure: both local lanes, from their run records, with the F-2 figures of each
+(plan Stage 15.1 runs the bench on both). macOS: out of scope (`platforms-windows-wsl`).
+Historical: the Windows machine named under "Fact F-2". Fixtures: scratch homes
+(`DSH_E2E_STORE_HOME`) and the committed `testdata/export.golden`.
+
+### Exact tests and commands
+
+At closure: the lane scripts, and `go -C src/harness test -race -count=1
+./internal/session/store/...`. Historical: the commands under each stage's "Test
+results" and "Manual checks of impl.md DH-S-7".
+
+### Run identifiers
+
+At closure: the run-record ids of both lanes, in the runbook's template (plan 18.1.3).
+WSL lane: not run. Windows lane: not run. macOS: out of scope (`platforms-windows-wsl`).
+Historical: no run id was recorded. The guarded scenarios DH-E-STORE-1, -2 and -6 run in
+impl.md step 16.8 and have no run id yet.
+
+### Results
+
+At closure: not yet recorded. Historical: the test tables of Stages 7.1, 7.2 and 7.3 and
+the driver measurements.
+
+### Manual checks
+
+impl.md DH-S-7 names four checks: kill a test program between an append and its flush
+and record what the reopened store holds (step 7.3); open one database from two test
+programs and record the refused second writer (step 7.2); export a session, import it
+into an empty home and compare (step 7.4); import and delete are checked on a scratch
+home only (step 7.6). Steps 7.1 and 7.5 take the rule-3 default. Historical record:
+"Manual checks of impl.md DH-S-7 (scratch home)". How to run and fill the register:
+[the evidence runbook](README.md#manual-checks). Every row runs with
+`DSH_E2E_STORE_HOME` set to a new, empty scratch directory, never a user home, as
+`go -C src/harness test -count=1 -v -run '<names>' ./internal/session/store/sqlite/`.
+
+#### Manual checks register
+
+| Step | Check | Procedure | Systems | Operator | Commit | Seen | Label |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 7.1 | rule-3 default: one database per home, atomic appends, a flush barrier | composed test: `TestConformance`, `TestMultiEventAppendIsAtomic`, `TestBudgetStoreAppend`; record the `F-2` lines | Windows, WSL | | | | `manual` |
+| 7.2 | open one database from two test programs: the second writer is refused | composed test: `TestSecondWriterRefusedAcrossProcesses`; record the refusal and the first writer's identity | one lane | | | | `manual` |
+| 7.3 | kill a test program between an append and its flush: what the reopened store holds | composed test: `TestCrashBetweenAppendAndFlushRecoversHonestly`; record the events and the closers (outcome-unknown result, `step/end`, `turn/end` interrupted) | one lane | | | | `manual` |
+| 7.4 | export a session, import it into an empty home and compare | composed test: `TestExportImportRoundTrip`; record the file's line count and that the event rows of both homes are equal | one lane | | | | `manual` |
+| 7.5 | rule-3 default: a process follows a session another process writes; once-per-home duties | composed test: `TestFollowerSeesAnotherProcessesCommits`, `TestDutyHasOneHolderAndMovesAfterAKill` | one lane | | | | `manual` |
+| 7.6 | import and delete on a scratch home only | composed test: `TestInterruptedDeletionFinishesOnOpen`, `TestImportRefusals`; record that nothing of the deleted session remains and `Check` is clean | one lane | | | | `manual` |
+
+### Cleanup evidence
+
+At closure: the scratch directory is listed after the run (empty) and then deleted; no
+user home was touched. Historical: "The directory was empty afterwards and was deleted",
+under "Manual checks of impl.md DH-S-7".
+
+### Open items
+
+At closure: plan 18.1.11 lists them. Now open: the store gaps of plan Stage 15.1
+(M1-G-STORE); the guarded scenarios DH-E-STORE-1, -2 and -6 (impl.md step 16.8) and
+DH-E-STORE-5 (step 35.7); until step 16.8 passes, the SQLite store is used on scratch
+homes only.

@@ -430,7 +430,7 @@ func (w *configViewsWorld) git(args ...string) (string, error) {
 
 func (w *configViewsWorld) onlyListedReRecordings() error {
 	repo := filepath.Dir(filepath.Dir(w.moduleDir))
-	evidence, err := os.ReadFile(filepath.Join(repo, "docs", "stories", "harness-DSH", "evidence", "DH-S-2.md"))
+	evidence, err := os.ReadFile(filepath.Join(repo, "docs", "stories", "harness-DSH-M1", "evidence", "DH-S-2.md"))
 	if err != nil {
 		return fmt.Errorf("DH-S-2 evidence record missing: %w", err)
 	}

@@ -230,6 +230,14 @@ Existing practice in this repository is the starting point: [ci.yml](../../../.g
 - **Serves.** [DH-O-15](../design.md#dh-o-15).
 - **Verified by.** `DH-T-TOOLCHAIN-6`.
 
+> **DC-3 override note (M1 story, 2026-11-22).** "macOS and Windows are required lanes of
+> the `harness` job" is overridden for macOS by owner decision `platforms-windows-wsl` in
+> [the M1 decision log](../../stories/harness-DSH-M1/decisions.md). For M1 the required
+> lanes are Windows (native) and Linux under WSL; macOS is out of scope, is never recorded
+> as a pass or a skip, and has no return stage yet (`macos-return-stage`, open). The rule
+> that a skipped scenario is never a pass is unchanged. The decision text above is
+> unchanged (DC-2).
+
 <a id="dh-adr-toolchain-7"></a>
 ### DH-ADR-TOOLCHAIN-7 Coverage across processes, one floor, no exemption list
 
@@ -285,6 +293,15 @@ Existing practice in this repository is the starting point: [ci.yml](../../../.g
 - **Tech debt answered.** With [DH-ADR-TOOLCHAIN-6](#dh-adr-toolchain-6): `UP-DEBT-found.Q3.5` and `UP-DEBT-found.Q3.6`.
 - **Serves.** [DH-O-15](../design.md#dh-o-15).
 - **Verified by.** `DH-E-TOOLCHAIN-1`, `DH-E-TOOLCHAIN-2`.
+
+> **DC-3 override note (M1 story, 2026-11-22).** "A `harness` job on Linux, Windows and
+> macOS" is overridden for macOS by owner decision `platforms-windows-wsl` in
+> [the M1 decision log](../../stories/harness-DSH-M1/decisions.md): the M1 gate of record
+> runs on two local lanes, Windows (native) and Linux under WSL. Which hosted lanes stay
+> in `ci.yml` is decision M1-D-GATE-21 / M1-D-TOOL-5 (open; the plan's default keeps the
+> hosted ubuntu and windows lanes and removes macOS). No stage schedules the
+> `harness-replay` job yet; proposal `replay-gate-step-dh-s-16` (open) adds it to DH-S-16.
+> The decision text above is unchanged (DC-2).
 
 <a id="dh-adr-toolchain-13"></a>
 ### DH-ADR-TOOLCHAIN-13 Release: one binary per platform from GoReleaser, plus a module tag
@@ -430,6 +447,14 @@ when every proof it names **has passed**; a manual check never closes one.
 - **Done when.** [DH-E-TOOLCHAIN-1](#dh-e-toolchain-1) and
   [DH-E-TOOLCHAIN-2](#dh-e-toolchain-2) have passed in these workflows.
 
+> **DC-3 override note (M1 story, 2026-11-22).** "No platform lane can be switched off
+> without a failing job" is overridden for macOS by owner decision
+> `platforms-windows-wsl` in [the M1 decision log](../../stories/harness-DSH-M1/decisions.md).
+> The macOS lane leaves by that recorded decision, not by switching it off. For the
+> Windows (native) and Linux (WSL) lanes the rule still holds. "Every change runs the gate
+> runner on Linux, macOS and Windows" reads, for M1, "on Windows (native) and Linux under
+> WSL". The text above is unchanged (DC-2).
+
 <a id="dh-d-toolchain-5"></a>
 #### DH-D-TOOLCHAIN-5 Release rehearsal
 
@@ -563,6 +588,20 @@ Real-environment scenarios (not run; a local mock is not a substitute):
 - **When** the release workflow runs GoReleaser in snapshot mode (nothing published), and each runner downloads the archive for its platform, verifies it against the checksum file and runs `dsh --version` and one keyless headless replay scenario.
 - **Then** six archives and one checksum file exist; each binary reports the commit it was built from and no "modified" marker; the scenario passes on all three systems. Scope: this proves the three archives that match the runners' processors; the other three are built and checksummed but not executed.
 - **Cleanup.** Snapshot artifacts expire with the workflow run; no tag or release is created. If a platform fails, keep its archive and log.
+
+> **DC-3 override note (M1 story, 2026-11-22): restated for two executed systems.** Under
+> owner decision `platforms-windows-wsl` in
+> [the M1 decision log](../../stories/harness-DSH-M1/decisions.md), and until
+> `macos-return-stage` names a stage, this scenario reads:
+> **Given** a Linux runner and a Windows runner (hosted, or the local Linux (WSL) and
+> Windows lanes) and a commit on which the gate passes on both. **When** the snapshot
+> runs and each system verifies the archive for its platform against the checksum file
+> and runs `dsh --version` and one keyless headless replay scenario. **Then** six
+> archives and one checksum file exist; each binary reports its commit and no "modified"
+> marker; the scenario passes on both systems. **Scope:** this proves the two archives
+> that match the two systems' processors; the other four, the macOS archives included,
+> are built and checksummed but not executed. macOS is not recorded as a pass or a skip.
+> The scenario text above is unchanged (DC-2).
 
 ## 13. Open questions
 

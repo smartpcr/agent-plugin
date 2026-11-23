@@ -24,6 +24,7 @@ import (
 	"github.com/cucumber/godog"
 
 	"github.com/smartpcr/agent-plugin/tools/harness-gate/acceptance"
+	"github.com/smartpcr/agent-plugin/tools/harness-gate/modcheck"
 )
 
 // crRehearsalBinaries are the six release targets of QG-8 and their GOOS/GOARCH.
@@ -36,7 +37,28 @@ var crRehearsalBinaries = map[string][2]string{
 	"dsh-windows-arm64.exe": {"windows", "arm64"},
 }
 
-var crLanes = []string{"ubuntu-latest", "macos-latest", "windows-latest"}
+// crLanes are the hosted CI lanes of decision platforms-windows-wsl: regression
+// signals on Linux and Windows; macOS is out of M1 scope.
+var crLanes = []string{"ubuntu-latest", "windows-latest"}
+
+// crModelMarkers name the environment variables that could carry a model
+// credential. The preflight reads none (models-signed-in-claude-copilot), so the
+// scenarios run it with every such variable removed.
+var crModelMarkers = []string{"API_KEY", "DEEPSEEK", "ANTHROPIC", "OPENAI", "CLAUDE", "COPILOT"}
+
+func crIsModelVar(name string) bool {
+	upper := strings.ToUpper(name)
+	return slices.ContainsFunc(crModelMarkers, func(m string) bool { return strings.Contains(upper, m) })
+}
+
+// crEnvWithoutModelVars is crEnv with every model variable removed as well.
+func crEnvWithoutModelVars(drop []string, extra ...string) []string {
+	env := slices.DeleteFunc(crEnv(drop), func(kv string) bool {
+		k, _, _ := strings.Cut(kv, "=")
+		return crIsModelVar(k)
+	})
+	return append(env, extra...)
+}
 
 // crProductModules are the module directories the gate and the scenario index scan.
 var crProductModules = []string{"src/go", "src/sdk", "src/harness"}
@@ -147,7 +169,7 @@ type ciRehearsal struct {
 	outDir      string
 	tagsBefore  string
 
-	// three-lane gate
+	// hosted-lane gate
 	head  string
 	gated string // commit recorded in the evidence's Source and build identity row
 
@@ -204,19 +226,15 @@ func (s *ciRehearsal) anInMemoryIndex(id, stage, authored string) error {
 	return nil
 }
 
-func (s *ciRehearsal) envWithoutSecret(secret, require string) error {
-	if secret != acceptance.SecretEnv {
-		return fmt.Errorf("the preflight reads %s, the scenario names %s", acceptance.SecretEnv, secret)
+// envWithoutModelVars injects an environment with no model variable at all: the
+// preflight must decide without a key (models-signed-in-claude-copilot).
+func (s *ciRehearsal) envWithoutModelVars(require string) error {
+	s.env = map[string]string{acceptance.RequireEnv: require, "PATH": "/usr/bin", "DSH_HOME": "/nonexistent"}
+	for k := range s.env {
+		if crIsModelVar(k) {
+			return fmt.Errorf("injected environment holds model variable %s", k)
+		}
 	}
-	s.env = map[string]string{acceptance.RequireEnv: require, "PATH": "/usr/bin"}
-	return nil
-}
-
-func (s *ciRehearsal) envWithSecret(secret, require string) error {
-	if secret != acceptance.SecretEnv {
-		return fmt.Errorf("the preflight reads %s, the scenario names %s", acceptance.SecretEnv, secret)
-	}
-	s.env = map[string]string{secret: "e2e-not-a-real-key", acceptance.RequireEnv: require}
 	return nil
 }
 
@@ -254,22 +272,51 @@ func (s *ciRehearsal) preflightPassesEmpty() error {
 	return s.noScenarioStarted()
 }
 
-func (s *ciRehearsal) preflightSubcommand(require string, code int, name string) error {
-	if err := crBuild(); err != nil {
-		return err
+// runPreflightSubcommand runs the built "harness-gate preflight" on the repository
+// with no model variable in its environment and DSH_REQUIRE_SCENARIOS=require; it
+// returns the output, the exit status and the GITHUB_OUTPUT path.
+func (s *ciRehearsal) runPreflightSubcommand(require string) (stdout, stderr string, code int, ghOut string, err error) {
+	if err = crBuild(); err != nil {
+		return
 	}
 	root, err := s.repo()
 	if err != nil {
-		return err
+		return
 	}
 	dir, err := s.tempDir()
 	if err != nil {
+		return
+	}
+	ghOut = filepath.Join(dir, "github_output")
+	env := crEnvWithoutModelVars([]string{acceptance.RequireEnv, "GITHUB_OUTPUT"},
+		acceptance.RequireEnv+"="+require, "GITHUB_OUTPUT="+ghOut)
+	stdout, stderr, code, err = crRun(root, env, crGateBin, "preflight", "--root", root)
+	return
+}
+
+func (s *ciRehearsal) preflightSubcommandPasses(require string, count int) error {
+	stdout, stderr, got, ghOut, err := s.runPreflightSubcommand(require)
+	if err != nil {
 		return err
 	}
-	ghOut := filepath.Join(dir, "github_output")
-	env := crEnv([]string{acceptance.SecretEnv, acceptance.RequireEnv, "GITHUB_OUTPUT"},
-		acceptance.RequireEnv+"="+require, "GITHUB_OUTPUT="+ghOut)
-	stdout, stderr, got, err := crRun(root, env, crGateBin, "preflight", "--root", root)
+	if got != 0 {
+		return fmt.Errorf("preflight subcommand exited %d, want 0:\n%s%s", got, stdout, stderr)
+	}
+	if want := fmt.Sprintf("harness-gate preflight: passed; %d required scenarios", count); !strings.Contains(stdout, want) {
+		return fmt.Errorf("preflight subcommand output lacks %q:\n%s", want, stdout)
+	}
+	data, err := os.ReadFile(ghOut)
+	if err != nil {
+		return fmt.Errorf("passing preflight wrote no GITHUB_OUTPUT: %w", err)
+	}
+	if want := fmt.Sprintf("count=%d\n", count); !strings.HasPrefix(string(data), want) {
+		return fmt.Errorf("GITHUB_OUTPUT = %q, want it to start with %q", data, want)
+	}
+	return nil
+}
+
+func (s *ciRehearsal) preflightSubcommand(require string, code int, name string) error {
+	stdout, stderr, got, ghOut, err := s.runPreflightSubcommand(require)
 	if err != nil {
 		return err
 	}
@@ -289,11 +336,28 @@ func (s *ciRehearsal) preflightSubcommand(require string, code int, name string)
 // --- Release rehearsal ------------------------------------------------------------
 
 func (s *ciRehearsal) rehearsalEnvironment() error {
+	// The gate runs every child on the go floor and fails setup when "go version" is
+	// not the floor (M1-G-TOOL-14). Offline, Go cannot fetch or verify a toolchain,
+	// so the floor is resolved here, once, with the normal environment, and the
+	// offline run starts with that toolchain first on PATH: its "go version" is
+	// already the floor and nothing is fetched. The floor check itself stays strict.
+	root, err := s.repo()
+	if err != nil {
+		return err
+	}
+	floor := "go" + modcheck.Floor
+	out, errOut, code, err := crRun(root, crEnv([]string{"GOTOOLCHAIN", "GOWORK"}, "GOTOOLCHAIN="+floor, "GOWORK=off"), "go", "env", "GOROOT")
+	if err != nil || code != 0 {
+		return fmt.Errorf("resolve the %s toolchain (exit %d): %v\n%s%s", floor, code, err, out, errOut)
+	}
+	goroot := strings.TrimSpace(out)
+	path := filepath.Join(goroot, "bin") + string(os.PathListSeparator) + os.Getenv("PATH")
 	// GOPROXY=off and a dead proxy make any module download or HTTP call fail; the
 	// parent's CGO_ENABLED=1 and GOFLAGS=-race must not reach the binaries.
-	s.rehearseEnv = crEnv(append(crGoDrop, "GOPROXY", "GOSUMDB", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"),
+	s.rehearseEnv = crEnv(append(crGoDrop, "GOPROXY", "GOSUMDB", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "PATH", "GOROOT", "GOTOOLCHAIN"),
 		"GOWORK=off", "CGO_ENABLED=1", "GOFLAGS=-race", "GOPROXY=off", "GOSUMDB=off",
-		"HTTP_PROXY=http://127.0.0.1:9", "HTTPS_PROXY=http://127.0.0.1:9")
+		"HTTP_PROXY=http://127.0.0.1:9", "HTTPS_PROXY=http://127.0.0.1:9",
+		"PATH="+path, "GOROOT="+goroot, "GOTOOLCHAIN=local")
 	return nil
 }
 
@@ -421,7 +485,7 @@ func (s *ciRehearsal) tagsUnchanged() error {
 	return nil
 }
 
-// --- Gate on all three CI operating systems ---------------------------------------
+// --- Gate on both hosted CI operating systems --------------------------------------
 
 func (s *ciRehearsal) storeBranchAtClosingCommit() error {
 	root, err := s.repo()
@@ -439,7 +503,7 @@ func (s *ciRehearsal) storeBranchAtClosingCommit() error {
 	for _, rel := range []string{
 		".github/workflows/ci.yml", ".github/workflows/harness-scenarios.yml",
 		"tools/harness-gate/rehearse.go", "tools/harness-gate/acceptance/scenarios.go",
-		"docs/stories/harness-DSH/evidence/DH-S-1.md",
+		"docs/stories/harness-DSH-M1/evidence/DH-S-1.md",
 	} {
 		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); err != nil {
 			return fmt.Errorf("HEAD %s is not at the stage-closing commit: %s missing", s.head, rel)
@@ -483,7 +547,7 @@ func (s *ciRehearsal) stage14Evidence() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	data, err := os.ReadFile(filepath.Join(root, "docs", "stories", "harness-DSH", "evidence", "DH-S-1.md"))
+	data, err := os.ReadFile(filepath.Join(root, "docs", "stories", "harness-DSH-M1", "evidence", "DH-S-1.md"))
 	if err != nil {
 		return "", err
 	}
@@ -905,14 +969,14 @@ func InitializeScenario_repository_modules_and_quality_gates_ci_and_release_rehe
 	})
 
 	ctx.Step(`^an in-memory acceptance index with "([^"]*)" under "([^"]*)" authored at "([^"]*)" and its scenario test$`, s.anInMemoryIndex)
-	ctx.Step(`^an injected environment map without "([^"]*)" and with DSH_REQUIRE_SCENARIOS "([^"]*)"$`, s.envWithoutSecret)
-	ctx.Step(`^an injected environment map with "([^"]*)" set and DSH_REQUIRE_SCENARIOS "([^"]*)"$`, s.envWithSecret)
+	ctx.Step(`^an injected environment map with no model variables and DSH_REQUIRE_SCENARIOS "([^"]*)"$`, s.envWithoutModelVars)
 	ctx.Step(`^the preflight decision function runs$`, s.preflightRuns)
 	ctx.Step(`^it returns a failure naming "([^"]*)"$`, s.preflightFailsNaming)
 	ctx.Step(`^no scenario is started$`, s.noScenarioStarted)
 	ctx.Step(`^DSH_REQUIRE_SCENARIOS is empty and the preflight decision function runs$`, s.emptyRequiredRuns)
 	ctx.Step(`^the preflight passes with an empty plan$`, s.preflightPassesEmpty)
-	ctx.Step(`^the preflight subcommand on the repository without the secret and with DSH_REQUIRE_SCENARIOS "([^"]*)" exits (\d+) naming "([^"]*)" and writes no scenario plan$`, s.preflightSubcommand)
+	ctx.Step(`^the preflight subcommand on the repository with no model variables and DSH_REQUIRE_SCENARIOS "([^"]*)" exits (\d+) naming "([^"]*)" and writes no scenario plan$`, s.preflightSubcommand)
+	ctx.Step(`^the preflight subcommand on the repository with no model variables and DSH_REQUIRE_SCENARIOS "([^"]*)" exits 0 and plans (\d+) scenarios$`, s.preflightSubcommandPasses)
 
 	ctx.Step(`^GOWORK=off, a parent environment with CGO_ENABLED=1 and GOFLAGS=-race, and no network$`, s.rehearsalEnvironment)
 	ctx.Step(`^harness-gate rehearse --out a temporary directory runs on the repository$`, s.rehearseRuns)
@@ -923,11 +987,11 @@ func InitializeScenario_repository_modules_and_quality_gates_ci_and_release_rehe
 	ctx.Step(`^the repository's tags are unchanged$`, s.tagsUnchanged)
 
 	ctx.Step(`^the story branch at the stage-closing commit$`, s.storeBranchAtClosingCommit)
-	ctx.Step(`^the harness job of ci\.yml runs the gate on ubuntu-latest, macos-latest and windows-latest with CGO_ENABLED=1$`, s.ciHarnessJob)
+	ctx.Step(`^the harness job of ci\.yml runs the gate on ubuntu-latest and windows-latest with CGO_ENABLED=1$`, s.ciHarnessJob)
 	ctx.Step(`^a C compiler is available for -race on this host's lane$`, s.cCompiler)
 	ctx.Step(`^the harness job's gate runs on this host's lane$`, s.gateRunsOnThisLane)
 	ctx.Step(`^this lane's gate output ends with every gate passed$`, s.laneEndsAllPassed)
-	ctx.Step(`^the DH-S-1 evidence record names the run id and a passing result for each of ubuntu-latest, macos-latest and windows-latest$`, s.evidenceRecordsLanes)
+	ctx.Step(`^the DH-S-1 evidence record names the run id and a passing result for each of ubuntu-latest and windows-latest$`, s.evidenceRecordsLanes)
 
 	ctx.Step(`^"([^"]*)" and "([^"]*)" in the checkout$`, s.theCheckoutFiles)
 	ctx.Step(`^the gate's scenario-index check runs on the repository$`, s.scenarioIndexGateRuns)

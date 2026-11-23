@@ -8,7 +8,7 @@
 //	$env:DEEPSEEK_API_KEY = '<key>'   # never committed, never logged
 //	go -C src/harness test -tags manual -count=1 -v -run TestManualDeepSeek ./internal/llm/
 //
-// and copy the printed lines into docs/stories/harness-DSH/evidence/DH-S-9.md.
+// and copy the printed lines into docs/stories/harness-DSH-M1/evidence/DH-S-9.md.
 
 package llm_test
 

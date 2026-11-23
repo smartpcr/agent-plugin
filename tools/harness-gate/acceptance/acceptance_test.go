@@ -1,6 +1,7 @@
 package acceptance
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -212,23 +213,17 @@ func TestPreflight(t *testing.T) {
 		planned  []string
 		notNamed string
 	}{
-		"missing secret": {
-			env: map[string]string{RequireEnv: "DH-E-TOOLCHAIN-2"}, fail: "secret DSH_DEEPSEEK_API_KEY is not set",
-		},
-		"blank secret": {
-			env: map[string]string{SecretEnv: "  "}, fail: "secret DSH_DEEPSEEK_API_KEY is not set",
-		},
 		"unknown required scenario": {
-			env: map[string]string{SecretEnv: "k", RequireEnv: "DH-E-FAKE-9"}, fail: "required scenario DH-E-FAKE-9",
+			env: map[string]string{RequireEnv: "DH-E-FAKE-9"}, fail: "required scenario DH-E-FAKE-9",
 		},
 		"indexed but unauthored required scenario": {
-			env: map[string]string{SecretEnv: "k", RequireEnv: "DH-E-TOOLCHAIN-1"}, fail: "required scenario DH-E-TOOLCHAIN-1",
+			env: map[string]string{RequireEnv: "DH-E-TOOLCHAIN-1"}, fail: "required scenario DH-E-TOOLCHAIN-1",
 		},
 		"empty required list": {
-			env: map[string]string{SecretEnv: "k", RequireEnv: ""},
+			env: map[string]string{RequireEnv: ""},
 		},
 		"required list": {
-			env: map[string]string{SecretEnv: "k", RequireEnv: " DH-E-TOOLCHAIN-2,DH-E-TOOLCHAIN-2 "}, planned: []string{"TestRehearsal"},
+			env: map[string]string{RequireEnv: " DH-E-TOOLCHAIN-2,DH-E-TOOLCHAIN-2 "}, planned: []string{"TestRehearsal"},
 		},
 	}
 	for name, tt := range tests {
@@ -257,7 +252,7 @@ func TestPreflight(t *testing.T) {
 	authored := append(slices.Clone(scenarios),
 		Scenario{ID: "DH-E-TOOLCHAIN-1", File: "s/t_scenario_test.go", Test: "TestToolchain"},
 		Scenario{ID: "DH-E-LLM-3", File: "s/l_scenario_test.go", Test: "TestBadKey"})
-	need := map[string]string{SecretEnv: "k", RequireEnv: "DH-E-TOOLCHAIN-1,DH-E-LLM-3"}
+	need := map[string]string{RequireEnv: "DH-E-TOOLCHAIN-1,DH-E-LLM-3"}
 	early := mustParse(t, strings.Replace(goodIndex, "built-through: DH-S-1", "built-through: DH-S-11", 1))
 	if plan, err := Preflight(need, early, authored); err == nil || !strings.Contains(err.Error(), "required scenario DH-E-LLM-3 requires DH-S-16, not built (built through DH-S-11)") || len(plan.Scenarios) != 0 {
 		t.Errorf("Preflight built through DH-S-11 = %v, %v; want DH-E-LLM-3 refused for DH-S-16 and no plan", plan.Tests(), err)
@@ -267,8 +262,58 @@ func TestPreflight(t *testing.T) {
 		t.Errorf("Preflight built through DH-S-16 = %v, %v; want both planned", plan.Tests(), err)
 	}
 	// The index disagreeing with the scenario tests fails the preflight too.
-	if _, err := Preflight(map[string]string{SecretEnv: "k"}, x, nil); err == nil || !strings.Contains(err.Error(), "DH-E-TOOLCHAIN-2 is indexed under DH-S-18") {
+	if _, err := Preflight(map[string]string{}, x, nil); err == nil || !strings.Contains(err.Error(), "DH-E-TOOLCHAIN-2 is indexed under DH-S-18") {
 		t.Errorf("Preflight with the authored file missing = %v", err)
+	}
+}
+
+// TestPreflightNeedsNoModelKey: under models-signed-in-claude-copilot the preflight
+// reads no model key. With no model variable at all and an empty required list it
+// passes with an empty plan; with DSH_REQUIRE_SCENARIOS=DH-E-FAKE-9 it fails naming
+// that ID and plans nothing (M1-G-TOOL-15; DH-T-TOOLCHAIN-6).
+func TestPreflightNeedsNoModelKey(t *testing.T) {
+	x := mustParse(t, goodIndex)
+	scenarios := []Scenario{{ID: "DH-E-TOOLCHAIN-2", File: "s/a_scenario_test.go", Test: "TestRehearsal"}}
+	for _, env := range []map[string]string{nil, {}, {RequireEnv: ""}, {RequireEnv: " , "}} {
+		plan, err := Preflight(env, x, scenarios)
+		if err != nil || len(plan.Scenarios) != 0 {
+			t.Errorf("Preflight(%v) = %v, %v; want a pass with an empty plan", env, plan.Tests(), err)
+		}
+	}
+	plan, err := Preflight(map[string]string{RequireEnv: "DH-E-FAKE-9"}, x, scenarios)
+	if err == nil || !strings.Contains(err.Error(), "required scenario DH-E-FAKE-9 ("+RequireEnv+") has no scenario test") {
+		t.Errorf("Preflight with DH-E-FAKE-9 = %v, want a failure naming DH-E-FAKE-9", err)
+	}
+	if len(plan.Scenarios) != 0 {
+		t.Errorf("a failed preflight planned %v", plan.Tests())
+	}
+}
+
+// TestPreflightCallsTheCredentialHook: the hook in force passes on any environment,
+// and a failing hook (as stage 19.2's check may be) fails the preflight, named,
+// with an empty plan (M1-G-TOOL-15; DH-T-TOOLCHAIN-6).
+func TestPreflightCallsTheCredentialHook(t *testing.T) {
+	for _, env := range []map[string]string{nil, {"DSH_HOME": "/h", RequireEnv: "DH-E-X-1"}} {
+		if err := Credentials(env); err != nil {
+			t.Errorf("the credential hook in force failed on %v: %v", env, err)
+		}
+	}
+	x := mustParse(t, goodIndex)
+	scenarios := []Scenario{{ID: "DH-E-TOOLCHAIN-2", File: "s/a_scenario_test.go", Test: "TestRehearsal"}}
+	saved := Credentials
+	t.Cleanup(func() { Credentials = saved })
+	var seen map[string]string
+	Credentials = func(env map[string]string) error {
+		seen = env
+		return errors.New("route claude is signed out")
+	}
+	env := map[string]string{RequireEnv: "DH-E-TOOLCHAIN-2"}
+	plan, err := Preflight(env, x, scenarios)
+	if err == nil || !strings.Contains(err.Error(), "credentials: route claude is signed out") || len(plan.Scenarios) != 0 {
+		t.Errorf("Preflight with a failing hook = %v, %v; want the hook's failure and no plan", plan.Tests(), err)
+	}
+	if seen[RequireEnv] != "DH-E-TOOLCHAIN-2" {
+		t.Errorf("the hook saw %v, want the preflight's environment", seen)
 	}
 }
 

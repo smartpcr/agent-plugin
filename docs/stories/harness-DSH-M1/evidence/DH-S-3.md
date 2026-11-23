@@ -1,5 +1,15 @@
 # DH-S-3 evidence
 
+Decisions that govern M1 records, this one included, are logged in [decisions.md](../decisions.md).
+
+Closure status: open
+
+This line becomes `closed at <sha>` only in plan step 18.1.14, at the M1 closure commit.
+The stage records below are history: under M1-D-CLOSE-1 every tick made while the gate
+was red is provisional and is re-verified at that commit. The fields of impl.md sec. 7.3
+and the per-step manual-check register are at the end of this file, in "Evidence record
+(impl.md sec. 7.3)"; how to fill them is in [the evidence runbook](README.md).
+
 Stages 3.1 and 3.2 (impl.md steps 3.1 to 3.5 and 3.9) were built by the previous
 workstreams of this phase; Stage 3.3 (steps 3.6 to 3.8) closes DH-S-3. Every test
 named below was re-run with all nine deliverables applied.
@@ -119,3 +129,76 @@ carries the same issue.
 ### Not in DH-S-3
 
 `DH-D-LOADER-14` (a group's `source` file, P2) stays with DH-D-LOADER-10's other half.
+
+## Evidence record (impl.md sec. 7.3)
+
+These are the eight fields of [impl.md sec. 7.3](../../../harness/impl.md#73-the-evidence-record),
+in the format of [the evidence runbook](README.md#the-evidence-record-headings). Plan step
+18.1.7 fills them at the frozen M1 closure commit. Until then each field points to the
+history above, which stays exactly as it was recorded and is not closure evidence
+(M1-D-CLOSE-1).
+
+### Source and build identity
+
+At closure: not yet recorded (plan 18.1.7). Historical: the manual check above names its
+toolchain (`go1.27.4 windows/amd64`) and date but no commit.
+
+### Environment and fixture
+
+At closure: both local lanes, from their run records. macOS: out of scope
+(`platforms-windows-wsl`). Historical: one local Windows machine. Fixture: the two
+hand-written layer files shown under "Manual check: two hand-composed layers, one
+broken".
+
+### Exact tests and commands
+
+At closure: the lane scripts, and `go -C src/go test -race -count=1 ./...`. Historical:
+the `go test` lines under "Tests" of Stage 3.3.
+
+### Run identifiers
+
+At closure: the run-record ids of both lanes, in the runbook's template (plan 18.1.3).
+WSL lane: not run. Windows lane: not run. macOS: out of scope (`platforms-windows-wsl`).
+Historical: no run id was recorded.
+
+### Results
+
+At closure: not yet recorded. Historical: "DH-S-3 exit: the `DH-T-LOADER-` tests of the
+nine deliverables" above.
+
+### Manual checks
+
+impl.md DH-S-3 names one check: compose two small layer files by hand, break one, and
+record the diagnostic's file, line and column. It covers steps 3.1, 3.4, 3.5 and 3.8 (the
+"Change" line of the historical record); the other steps take the rule-3 default.
+Historical record: "Manual check: two hand-composed layers, one broken". How to run and
+fill the register: [the evidence runbook](README.md#manual-checks). The hand-composed
+check writes `base.json` and a writable `user.json` with one misspelled key into a
+temporary directory and loads them through `loader.LayerSetComponent` from a throwaway
+test that is removed afterwards. Composed tests run as `go -C src/go test -count=1 -v
+-run '<names>' ./loader/`.
+
+#### Manual checks register
+
+| Step | Check | Procedure | Systems | Operator | Commit | Seen | Label |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 3.1 | two hand-composed layers, one broken: the diagnostic names file, line and column | by hand: the two layer files, as above; record the `<file>:<line>:<col>` of the `unknown key` diagnostic | one lane | | | | `manual` |
+| 3.2 | rule-3 default: every invalid entry is reported | composed test: `TestValidateReportsEveryInvalidEntryInDocumentOrder`, `TestAnEntryWithThreeFaultsReportsThemAllAndIsDisposed` | one lane | | | | `manual` |
+| 3.3 | rule-3 default: the expression seam calls the injected evaluator | composed test: `TestTheExpressionSeamCallsTheInjectedEvaluator`, `TestAnExpressionTheEvaluatorRejectsIsReportedAtItsPosition` | one lane | | | | `manual` |
+| 3.4 | two hand-composed layers, one broken: the other layer's entry still loads | by hand: the same run; record that the entry of `base.json` loads (`echo: +good`) | one lane | | | | `manual` |
+| 3.5 | two hand-composed layers, one broken: the layered source with one writable layer | by hand: the same run, `user.json` writable; record that only `user.json` is named as writable and neither file changed on disk | one lane | | | | `manual` |
+| 3.6 | rule-3 default: a nested loader runs under its owner's context | composed test: `TestNestedLoaderUnloadsWithItsOwner`, `TestNestedLoaderIsPrivateToItsOwnerAndReadOnly` | one lane | | | | `manual` |
+| 3.7 | rule-3 default: mutations are validated and logged in order | composed test: `TestLifecycleLogRecordsMutationsInOrder`, `TestMutationAndRestartErrorsChangeNothing` | one lane | | | | `manual` |
+| 3.8 | two hand-composed layers, one broken: one settled-reload notice | by hand: the same run; record the one `notice:` line and the issue it carries | one lane | | | | `manual` |
+| 3.9 | rule-3 default: the write guard refuses a stale write | composed test: `TestLayerSetWriteGuardRefusesAStaleWrite`, `TestLayerSetWriteGuardWrapsEveryWrite` | one lane | | | | `manual` |
+
+### Cleanup evidence
+
+At closure: the throwaway test is removed and the temporary directory is gone;
+`git status --porcelain` empty after the run. Historical: "removed afterwards", in the
+manual check above.
+
+### Open items
+
+At closure: plan 18.1.11 lists them. Now open: the loader write-back merge and proof of
+plan Stage 14.1; `DH-D-LOADER-14` ("Not in DH-S-3" above).

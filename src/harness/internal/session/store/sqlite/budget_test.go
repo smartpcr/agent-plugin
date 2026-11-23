@@ -11,7 +11,7 @@ import (
 
 // The budgets of fact F-2 (DH-T-STORE-18, DH-ADR-TOOLCHAIN-14), compiled in so no
 // environment can relax them. They were set from the first measured run
-// (docs/stories/harness-DSH/evidence/DH-S-7.md) with headroom for slower disks
+// (docs/stories/harness-DSH-M1/evidence/DH-S-7.md) with headroom for slower disks
 // and the fsync cost of CI runners.
 const (
 	budgetOpenP95        = 250 * time.Millisecond

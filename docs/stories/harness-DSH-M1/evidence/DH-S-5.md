@@ -1,5 +1,15 @@
 # DH-S-5 evidence
 
+Decisions that govern M1 records, this one included, are logged in [decisions.md](../decisions.md).
+
+Closure status: open
+
+This line becomes `closed at <sha>` only in plan step 18.1.14, at the M1 closure commit.
+The stage records below are history: under M1-D-CLOSE-1 every tick made while the gate
+was red is provisional and is re-verified at that commit. The fields of impl.md sec. 7.3
+and the per-step manual-check register are at the end of this file, in "Evidence record
+(impl.md sec. 7.3)"; how to fill them is in [the evidence runbook](README.md).
+
 Stages 5.1 and 5.2 (impl.md steps 5.1 to 5.8: the typed event registry, the scope
 layers, the store contract with memstore and its conformance suite, event
 versioning, the live session, the core folds, the rebuilt request and the
@@ -104,3 +114,75 @@ ok  github.com/smartpcr/agent-plugin/src/harness/internal/session
   - `Resume`;
   - composer swap;
   - stream frames (`DH-T-AGENT-14`).
+
+## Evidence record (impl.md sec. 7.3)
+
+These are the eight fields of [impl.md sec. 7.3](../../../harness/impl.md#73-the-evidence-record),
+in the format of [the evidence runbook](README.md#the-evidence-record-headings). Plan step
+18.1.7 fills them at the frozen M1 closure commit. Until then each field points to the
+history above, which stays exactly as it was recorded and is not closure evidence
+(M1-D-CLOSE-1).
+
+### Source and build identity
+
+At closure: not yet recorded (plan 18.1.7). Historical: no commit was recorded.
+
+### Environment and fixture
+
+At closure: both local lanes, from their run records. macOS: out of scope
+(`platforms-windows-wsl`). Historical: one local machine. Fixtures: memstore sessions;
+`internal/session/store/testdata/rows.jsonl`, `persisted.notes` and `persisted.golden`.
+
+### Exact tests and commands
+
+At closure: the lane scripts, and `go -C src/harness test -race -count=1 ./...`.
+Historical: the `go test` lines under "Tests" of Stage 5.3 and "DH-S-5 exit checks".
+
+### Run identifiers
+
+At closure: the run-record ids of both lanes, in the runbook's template (plan 18.1.3).
+WSL lane: not run. Windows lane: not run. macOS: out of scope (`platforms-windows-wsl`).
+Historical: no run id was recorded.
+
+### Results
+
+At closure: not yet recorded. Historical: the test table of Stage 5.3 and "DH-S-5 exit
+checks".
+
+### Manual checks
+
+impl.md DH-S-5 names one check: append a short hand-written event sequence to an
+in-memory session and record that the rebuilt request equals the expected one. It covers
+steps 5.5, 5.6 and 5.7; the other steps take the rule-3 default. Historical record:
+"Manual rebuilt-request check". How to run and fill the register: [the evidence
+runbook](README.md#manual-checks). Composed tests run as `go -C src/harness test
+-count=1 -v -run '<names>' <package>`.
+
+#### Manual checks register
+
+| Step | Check | Procedure | Systems | Operator | Commit | Seen | Label |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 5.1 | rule-3 default: a typed, versioned event vocabulary | composed test: `./internal/session/event/` | one lane | | | | `manual` |
+| 5.2 | rule-3 default: per-agent and per-preset registrations with one owner | composed test: `./internal/session/scope/` | one lane | | | | `manual` |
+| 5.3 | rule-3 default: the store contract and its in-memory reference | composed test: `TestConformance` in `./internal/session/store/memstore/` | one lane | | | | `manual` |
+| 5.4 | rule-3 default: a persisted type cannot change unnoticed | composed test: `TestInventory`, `TestInventoryCatchesUnbumpedChange`, `TestPersistedRowsDecode` in `./internal/session/store/` | one lane | | | | `manual` |
+| 5.5 | a hand-written sequence on an in-memory session: accepted in order, delivered once | composed test: `TestRequestRebuild` in `./internal/session/`; record the appended sequence and its seqs | one lane | | | | `manual` |
+| 5.6 | a hand-written sequence: history and the request header computed from the log | composed test: `TestRequestRebuild`; record the request's messages and header | one lane | | | | `manual` |
+| 5.7 | a hand-written sequence: the rebuilt request equals the expected one | composed test: `TestRequestRebuild`; record the sent and rebuilt digests, and that digest and `AsOf` are unchanged after more appends | one lane | | | | `manual` |
+| 5.8 | rule-3 default: brackets balance, checked on append and closed on failure | composed test: `./internal/session/` (the bracket tests of DH-D-SESSION-5) | one lane | | | | `manual` |
+| 5.9 | rule-3 default: one runtime, one settlement per attempt | composed test: `TestStreamOneAttemptOneSettlement`, `TestCompleteHandsOneRecordToTheCaller` in `./internal/llm/` | one lane | | | | `manual` |
+| 5.10 | rule-3 default: agents found, addressed and owned through one contract | composed test: `TestRegistryCreateGetList`, `TestCompositionWithAStubFactory` in `./internal/agent/` | one lane | | | | `manual` |
+| 5.11 | rule-3 default: three typed steering points | composed test: `TestPreStepRejectAndPanic`, `TestTurnStoppingKeepOpenWinsInEveryOrder` in `./internal/agent/` | one lane | | | | `manual` |
+| 5.12 | rule-3 default: one registry for pending approvals and questions | composed test: `TestPendingIsAddressableByAgent`, `TestConcurrentAnswersOneWins` in `./internal/human/` | one lane | | | | `manual` |
+| 5.13 | rule-3 default: folds registered once and read at one cut | composed test: `TestFoldsReadAtOneCut` in `./internal/session/views/` | one lane | | | | `manual` |
+
+### Cleanup evidence
+
+At closure: in-memory sessions only; nothing to clean up beyond `git status --porcelain`
+empty after the run. Historical: none recorded.
+
+### Open items
+
+At closure: plan 18.1.11 lists them. Now open: the deferrals under "Deviations,
+recorded" above (`Resume`, composer swap, stream frames), owned by later stages; the
+session test findings of the `vet` gate (plan Phase 13).
