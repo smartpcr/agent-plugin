@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
 )
@@ -189,7 +191,9 @@ func needRole(m vocab.Message, role vocab.Role) error {
 // The core declarations, on Default.
 var (
 	TurnStartType = mustCore(Spec[TurnStart]{Name: "turn/start", Version: 1, NoSources: true})
-	TurnEndType   = mustCore(Spec[TurnEnd]{Name: "turn/end", Version: 1, NoSources: true,
+	// Version 2 of turn/end writes a failure's retry_after as text ("2s").
+	TurnEndType = mustCore(Spec[TurnEnd]{Name: "turn/end", Version: 2, NoSources: true,
+		Upgrades: map[int]Upgrade{1: DurationsAsText("reason.failure.retry_after")},
 		Validate: func(p TurnEnd) error {
 			if p.Reason.Kind == "" {
 				return errors.New("reason kind is required")
@@ -207,12 +211,13 @@ var (
 	UserMessage = mustCoreSurface(Spec[UserMessagePayload]{Name: "user/message", Version: 1,
 		Validate: func(p UserMessagePayload) error { return needRole(p.Message, vocab.RoleUser) }})
 	// Version 2 of both attempt events adds the optional served_by
-	// (llm.StreamAround); version 3 adds the optional estimate (the token meter).
+	// (llm.StreamAround); version 3 adds the optional estimate (the token meter);
+	// version 4 of assistant/attempt writes its failure's retry_after as text.
 	AssistantMessage = mustCoreSurface(Spec[AssistantMessagePayload]{Name: "assistant/message", Version: 3,
 		Upgrades: map[int]Upgrade{1: upgradeAddedServedBy, 2: upgradeAddedEstimate}, Cold: "stream", NoSources: true,
 		Validate: func(p AssistantMessagePayload) error { return needRole(p.Message, vocab.RoleAssistant) }})
-	AssistantAttempt = mustCore(Spec[AssistantAttemptPayload]{Name: "assistant/attempt", Version: 3,
-		Upgrades: map[int]Upgrade{1: upgradeAddedServedBy, 2: upgradeAddedEstimate}, Cold: "stream"})
+	AssistantAttempt = mustCore(Spec[AssistantAttemptPayload]{Name: "assistant/attempt", Version: 4, Cold: "stream",
+		Upgrades: map[int]Upgrade{1: upgradeAddedServedBy, 2: upgradeAddedEstimate, 3: DurationsAsText("failure.retry_after")}})
 
 	ToolCall = mustCore(Spec[ToolCallPayload]{Name: "tool/call", Version: 1,
 		Validate: func(p ToolCallPayload) error {
@@ -253,6 +258,63 @@ func upgradeAddedEstimate(raw json.RawMessage) (json.RawMessage, error) { return
 // upgradeAddedStepCause is the identity: version 2 of step/end only adds the
 // optional cause, and a version-1 step, which has none, was not cancelled.
 func upgradeAddedStepCause(raw json.RawMessage) (json.RawMessage, error) { return raw, nil }
+
+// DurationsAsText is the upgrade of the persisted-format change that made a
+// duration its text (plan 14.4.1, Rule 6): at each dotted path ("failure.
+// retry_after", "policy.base_delay"), an integer count of nanoseconds becomes
+// the text schema.Marshal writes for it ("2s"). Every other field is kept as it
+// was; a path that is absent, crosses a value that is not an object (null, say),
+// or already holds text is left alone, for the decode to judge. A number that is
+// not whole nanoseconds fails the upgrade. Any declaring package whose payload
+// holds a duration uses it for the version that changed the form.
+func DurationsAsText(paths ...string) Upgrade {
+	steps := make([][]string, len(paths))
+	for i, p := range paths {
+		steps[i] = strings.Split(p, ".")
+	}
+	return func(raw json.RawMessage) (json.RawMessage, error) {
+		for i, s := range steps {
+			var err error
+			if raw, err = durationAsText(raw, s); err != nil {
+				return nil, fmt.Errorf("%s: %w", paths[i], err)
+			}
+		}
+		return raw, nil
+	}
+}
+
+func durationAsText(raw json.RawMessage, steps []string) (json.RawMessage, error) {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil || m == nil {
+		return raw, nil // not an object: nothing below it to convert
+	}
+	field, ok := m[steps[0]]
+	if !ok {
+		return raw, nil
+	}
+	var out json.RawMessage
+	if len(steps) > 1 {
+		sub, err := durationAsText(field, steps[1:])
+		if err != nil {
+			return nil, err
+		}
+		out = sub
+	} else {
+		var ns json.Number
+		if len(field) > 0 && field[0] == '"' || json.Unmarshal(field, &ns) != nil {
+			return raw, nil // already text, or not a number: the decode judges it
+		}
+		n, err := ns.Int64()
+		if err != nil {
+			return nil, fmt.Errorf("%s is not whole nanoseconds", ns)
+		}
+		if out, err = json.Marshal(time.Duration(n).String()); err != nil {
+			return nil, err
+		}
+	}
+	m[steps[0]] = out
+	return json.Marshal(m)
+}
 
 // upgradeToolResultV1 converts tool/result version 1, which named the call "id"
 // and had no spill reference, to version 2.

@@ -1,0 +1,19 @@
+# Upgrade notes (DH-D-STORE-5) of every durable type outside the core: <type> <from>-><to> <fingerprint> <reason>.
+# The core types' notes are in session/store/testdata/persisted.notes; this file adds the rest.
+agent/inbox/spliced 0->1 sha256:78343b7a036adeefd1b9733da9ff3d3d70b4e02c89a38646cddfefb210a82496 initial shape
+approval/asked 0->1 sha256:720c11d2f59b12a55e8ffdefebe75464b1064dbd63a5c65191f52ba1ebcff502 initial shape
+approval/decided 0->1 sha256:fb50a4355f1e541461c4c3c7514e9546794f2e38351043bf2ffd22f8b19a472d initial shape
+command/done 0->1 sha256:fa4c0e1015ce662726e38a97d825007f4429a37be5a95d85a6b38b4435b0588a initial shape
+command/run 0->1 sha256:0d991ee7c7dbc425ac36d16d5a306f70cb558fc677a9ad9d915708695f9a0f1b initial shape
+context/skipped 0->1 sha256:853b28644eb44bb9b21922a7d5eaafa035d754e2c53f5cce019940bfe8f60f98 initial shape
+grant/created 0->1 sha256:ab6149d6cd53c3edd2aba56f22064cd78fec90c05d4c2dee3998c94785f7b0af initial shape
+grant/ended 0->1 sha256:abf331f61cf2ae80da51d6523b5ce26252d2008babb33aeb663c6945459c72c2 initial shape
+llm/retry 0->1 sha256:7ce95ad22658ccd61a04fa8bfaaf2047d7add4f3f10ebd399ec29576ae70b75e initial shape
+llm/retry-abandoned 0->1 sha256:4c30f17e0efa39157b7f36f9b3476ffe4761a7a3a82d298d1e807163f85a51a4 initial shape
+llm/retry-started 0->1 sha256:ab5017486babcaa2d7e8db78afb2545d8a21d89f011e26ddcce8028197cb929b initial shape
+model/selection 0->1 sha256:f5c6eb577ff67aeea990d7af514bcea6d724bf15caed74883056ec967eaa48da initial shape
+question/answered 0->1 sha256:2cb86a36ff9720fa0288528010e940351fdd97eb143182532a1bdb67c470e89b initial shape
+question/asked 0->1 sha256:d31242ecde838dcd6532ed60ec8aa1a599c3ccf61ae34ad411ad291af020bed9 initial shape
+tool/late-return 0->1 sha256:629a4c8cf5805a04163f5812fe0ad8002c1107aab6d3fc12a2d6fb8c7777cb07 initial shape
+llm/retry 1->2 sha256:c9aa3cc87635a46e9b453d5110881086ab1005e2314d2c9eba6654eafbf0e39f the failure's retry_after and the policy's base_delay, max_delay, max_elapsed and retry_after_cap are durations' text ("2s"), not integer nanoseconds (plan 14.4.1, Rule 6); an older binary cannot read the text, so the version is bumped; upgrade 1 rewrites each number to its text
+llm/retry-abandoned 1->2 sha256:26b3d6f237a7a3d822f73f0782f9c500c16dd6f0bb91e07b8a64205d5d96286a the failure's retry_after is a duration's text ("2s"), not integer nanoseconds (plan 14.4.1, Rule 6); an older binary cannot read the text, so the version is bumped; upgrade 1 rewrites the number to its text

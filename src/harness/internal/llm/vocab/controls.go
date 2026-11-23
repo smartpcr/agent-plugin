@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"math"
 	"slices"
-	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/schema"
@@ -163,111 +161,33 @@ func (t ToolSchema) Validate() error {
 	if root, _ := doc.(map[string]any); root == nil || root["type"] != "object" {
 		return fmt.Errorf("vocab: the parameters of tool %s are not an object schema", t.Name)
 	}
-	var bad []string
-	modelSubset(doc, "", &bad)
-	if len(bad) > 0 {
-		sort.Strings(bad)
-		return fmt.Errorf("vocab: tool %s: the parameters leave the model-facing subset: %s", t.Name, strings.Join(bad, "; "))
-	}
-	if _, err := schema.FromJSON(t.Parameters); err != nil {
+	typ, err := schema.FromJSON(t.Parameters)
+	if err != nil {
 		return fmt.Errorf("vocab: tool %s: %w", t.Name, err)
+	}
+	if issues := typ.CheckSubset(modelSubset); len(issues) > 0 {
+		return fmt.Errorf("vocab: tool %s: the parameters leave the model-facing subset: %w", t.Name, issues)
 	}
 	return nil
 }
 
-// modelKeywords is the model-facing subset: upstream's keywords
+// modelSubset is the model-facing subset: upstream's keywords
 // (packages/core/tools/src/json-schema.ts:1-11) plus the constraints a dsh tag
 // derives. $ref, allOf, anyOf, not, if/then/else, format and every other keyword
-// are outside it.
-var modelKeywords = map[string]bool{
-	"type": true, "properties": true, "required": true, "additionalProperties": true,
-	"items": true, "enum": true, "const": true, "oneOf": true,
-	"description": true, "title": true, "default": true, "examples": true,
-	"minimum": true, "maximum": true, "pattern": true,
-	"minLength": true, "maxLength": true, "minItems": true, "maxItems": true,
-	"minProperties": true, "maxProperties": true,
-}
-
-// modelSubset appends "<pointer>: <reason>" for every violation under node.
-func modelSubset(node any, path string, bad *[]string) {
-	at := func(p string) string {
-		if p == "" {
-			return "/"
-		}
-		return p
-	}
-	obj, ok := node.(map[string]any)
-	if !ok {
-		*bad = append(*bad, at(path)+": a schema must be an object")
-		return
-	}
-	for k, v := range obj {
-		p := path + "/" + strings.NewReplacer("~", "~0", "/", "~1").Replace(k)
-		if !modelKeywords[k] {
-			*bad = append(*bad, p+": the keyword is not admitted")
-			continue
-		}
-		switch k {
-		case "type":
-			if _, ok := v.(string); !ok {
-				*bad = append(*bad, p+": must be one type name")
-			}
-		case "additionalProperties":
-			if _, ok := v.(bool); !ok {
-				*bad = append(*bad, p+": must be true or false")
-			}
-		case "required":
-			list, ok := v.([]any)
-			for _, e := range list {
-				if _, s := e.(string); !s {
-					ok = false
-				}
-			}
-			if !ok {
-				*bad = append(*bad, p+": must be a list of names")
-			}
-		case "enum":
-			list, ok := v.([]any)
-			for _, e := range list {
-				ok = ok && scalar(e)
-			}
-			if !ok {
-				*bad = append(*bad, p+": must be a list of scalars")
-			}
-		case "const":
-			if !scalar(v) {
-				*bad = append(*bad, p+": must be a scalar")
-			}
-		case "properties":
-			props, ok := v.(map[string]any)
-			if !ok {
-				*bad = append(*bad, p+": must map names to schemas")
-				continue
-			}
-			for name, sub := range props {
-				modelSubset(sub, p+"/"+strings.NewReplacer("~", "~0", "/", "~1").Replace(name), bad)
-			}
-		case "items":
-			modelSubset(v, p, bad)
-		case "oneOf":
-			list, ok := v.([]any)
-			if !ok {
-				*bad = append(*bad, p+": must be a list of schemas")
-				continue
-			}
-			for i, sub := range list {
-				modelSubset(sub, p+"/"+strconv.Itoa(i), bad)
-			}
-		}
-	}
-}
-
-func scalar(v any) bool {
-	switch v.(type) {
-	case nil, bool, string, json.Number:
-		return true
-	}
-	return false
+// are outside it; "type" names one type, additionalProperties is true or false,
+// and enum and const hold scalars.
+var modelSubset = schema.Subset{
+	Keywords: []string{
+		"type", "properties", "required", "additionalProperties",
+		"items", "enum", "const", "oneOf",
+		"description", "title", "default", "examples",
+		"minimum", "maximum", "pattern",
+		"minLength", "maxLength", "minItems", "maxItems",
+		"minProperties", "maxProperties",
+	},
+	SingleType:        true,
+	BooleanAdditional: true,
+	ScalarLiterals:    true,
 }
 
 // Usage is disjoint token counts: uncached input, cache read, cache write and
