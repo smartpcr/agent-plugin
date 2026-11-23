@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -363,7 +362,7 @@ type proxiedRequest struct {
 	Body     []byte
 	// ClientClosed is set when dsh closed its connection before the upstream
 	// response ended, as a cancel does. It is final only once the handler has
-	// returned; read it through recordingProxy.settled.
+	// returned (done is closed).
 	ClientClosed bool
 	done         chan struct{} // closed when the handler has returned
 }
@@ -464,44 +463,6 @@ func startProxy(t *testing.T, upstreams map[string]string) *recordingProxy {
 
 // base is the proxy's URL for upstream name.
 func (p *recordingProxy) base(name string) string { return p.URL + "/" + name }
-
-// settled waits, up to within, for the handler of the i-th request forwarded to
-// upstream name to return, and gives that request with its final outcome. A
-// request not yet seen or a handler still running at the bound fails the
-// scenario.
-func (p *recordingProxy) settled(t *testing.T, name string, i int, within time.Duration) proxiedRequest {
-	t.Helper()
-	r, err := p.awaitSettled(name, i, within)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return r
-}
-
-// awaitSettled is settled without a *testing.T: it reports the bound as an
-// error, so it may run on a goroutine other than the test's.
-func (p *recordingProxy) awaitSettled(name string, i int, within time.Duration) (proxiedRequest, error) {
-	bound := time.NewTimer(within)
-	defer bound.Stop()
-	for {
-		p.mu.Lock()
-		changed := p.changed
-		p.mu.Unlock()
-		if rs := p.requests(name); i < len(rs) {
-			select {
-			case <-rs[i].done:
-				return p.requests(name)[i], nil
-			case <-bound.C:
-				return proxiedRequest{}, fmt.Errorf("the proxy's handler for request %d to %s did not return within %s", i, name, within)
-			}
-		}
-		select {
-		case <-changed:
-		case <-bound.C:
-			return proxiedRequest{}, fmt.Errorf("the proxy saw no request %d to %s within %s", i, name, within)
-		}
-	}
-}
 
 // requests returns what the proxy forwarded to upstream name so far.
 func (p *recordingProxy) requests(name string) []proxiedRequest {
