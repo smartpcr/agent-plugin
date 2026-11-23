@@ -43,13 +43,15 @@ type layer struct {
 	policies map[uint64]named[tools.Policy]
 	guards   map[uint64]named[tools.Guard]
 	shapers  map[uint64]named[tools.Shaper]
-	spill    *named[tools.SpillShaper] // the layer's one spill seat
+	finals   map[uint64]named[tools.Shaper] // run after every ordinary shaper
+	spill    *named[tools.SpillShaper]      // the layer's one spill seat
 	next     uint64
 }
 
 func newLayer() *layer {
 	return &layer{tools: map[string]*tools.Declaration{}, filters: map[uint64]tools.Filter{},
-		policies: map[uint64]named[tools.Policy]{}, guards: map[uint64]named[tools.Guard]{}, shapers: map[uint64]named[tools.Shaper]{}}
+		policies: map[uint64]named[tools.Policy]{}, guards: map[uint64]named[tools.Guard]{}, shapers: map[uint64]named[tools.Shaper]{},
+		finals: map[uint64]named[tools.Shaper]{}}
 }
 
 // registry is the tools.Service.

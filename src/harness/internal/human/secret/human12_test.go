@@ -101,6 +101,29 @@ func TestNamedSecretsReachNoChildAndNoLog(t *testing.T) {
 		}
 	})
 
+	t.Run("a shaper registered after the mask", func(t *testing.T) {
+		// It rebuilds the text from the call's unmasked value, then blocks with a
+		// reason quoting a value; the mask runs after it all the same.
+		rebuild := func(_ tools.Call, o tools.Outcome) tools.PostDecision {
+			b, err := json.Marshal(o.Value)
+			if err != nil {
+				return tools.Block(err.Error())
+			}
+			return tools.ReplaceContent(string(b))
+		}
+		_, res := runRevealTool(t, store, rebuild)
+		if res.IsError || res.Text != revealedText() {
+			t.Fatalf("rebuilt result %+v; want the masked text %q", res, revealedText())
+		}
+		block := func(tools.Call, tools.Outcome) tools.PostDecision {
+			return tools.Block("refused " + threeReferences[0].value)
+		}
+		_, res = runRevealTool(t, store, block)
+		if res.Code != tools.CodeBlocked || strings.Contains(res.Text, "never-leaks") || !strings.Contains(res.Text, secret.Redacted) {
+			t.Fatalf("blocked result %+v; want the reason masked", res)
+		}
+	})
+
 	t.Run("tool result", func(t *testing.T) {
 		h, res := runRevealTool(t, store)
 		if res.IsError || res.Text != revealedText() {
@@ -171,8 +194,9 @@ func jsonInner(v string) string {
 
 // runRevealTool runs one call of a tool that resolves and returns the three
 // values through a tool registry with human.secret.redact loaded, on a memstore
-// session, and returns the session and the call's result.
-func runRevealTool(t *testing.T, store *secret.Store) (session.Handle, tools.Result) {
+// session, and returns the session and the call's result. Each of later is filed
+// as an ordinary shaper after the redact component loaded.
+func runRevealTool(t *testing.T, store *secret.Store, later ...tools.Shaper) (session.Handle, tools.Result) {
 	t.Helper()
 	ctx := context.Background()
 	root := cordis.New()
@@ -221,6 +245,11 @@ func runRevealTool(t *testing.T, store *secret.Store) (session.Handle, tools.Res
 	})
 	if _, err := svc.Register(root, reveal); err != nil {
 		t.Fatal(err)
+	}
+	for i, s := range later {
+		if _, err := svc.Shape(root, "later-"+string(rune('a'+i)), s); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	id := session.ID("s-human-12")

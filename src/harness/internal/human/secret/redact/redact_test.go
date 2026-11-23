@@ -133,3 +133,16 @@ func TestMountAndComponent(t *testing.T) {
 		t.Errorf("component with a wrong registry service: %v; want a load failure naming it", err)
 	}
 }
+
+// ordinaryOnly is a registry that cannot run a final shaper.
+type ordinaryOnly struct{ tools.Service }
+
+// A registry without a final-shaper seat is refused: an ordinary shaper could be
+// undone by one registered after it.
+//
+//dsh:test DH-T-HUMAN-12
+func TestMountRefusesARegistryWithoutAFinalSeat(t *testing.T) {
+	if _, err := redact.Mount(root(t), ordinaryOnly{}, released(t)); err == nil || !strings.Contains(err.Error(), "final shaper") {
+		t.Fatalf("Mount on a registry without final shapers = %v; want a refusal", err)
+	}
+}

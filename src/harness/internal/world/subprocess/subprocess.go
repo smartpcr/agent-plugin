@@ -69,6 +69,10 @@ type Spec struct {
 	// Dir is the working directory; empty is the host's.
 	Dir string
 	// Env is the whole child environment. Nil is empty: nothing is inherited.
+	// Start passes it as given and does not filter it: by DH-ADR-EXEC-8 it is the
+	// caller's explicit choice, built by BuildEnv, whose entries and managed
+	// snapshot (DSH_HOME, a lease's value) are deliberate. A caller that wants the
+	// host's variables gets them through BuildEnv, never by passing os.Environ().
 	Env Env
 	// Stdin, Stdout and Stderr are the standard streams; nil is the null device.
 	Stdin          io.Reader

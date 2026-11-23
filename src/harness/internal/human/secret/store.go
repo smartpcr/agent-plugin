@@ -229,8 +229,11 @@ func forms(v string) []string {
 // with Redacted.
 func (s *Store) Mask(p []byte) []byte { return []byte(s.MaskString(string(p))) }
 
-// MaskString is Mask for a string.
+// MaskString is Mask for a string. A nil store has released nothing.
 func (s *Store) MaskString(text string) string {
+	if s == nil {
+		return text
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, v := range s.released {
