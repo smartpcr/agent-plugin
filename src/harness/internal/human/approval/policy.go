@@ -73,7 +73,7 @@ func PolicyView() views.Definition[PolicyState] {
 			if err != nil {
 				return s, false
 			}
-			return PolicyState{Policy: p.Policy, By: p.By}, true
+			return PolicyState(p), true
 		},
 	}
 }
