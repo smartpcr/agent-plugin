@@ -172,6 +172,8 @@ func (busyDB) ReadTx(context.Context, func(tx *sql.Tx) error) error {
 
 // A database locked past its busy bound fails every registry call with
 // storage/busy.
+//
+//dsh:test DH-T-STORAGE-2
 func TestRegistryOverABusyDatabase(t *testing.T) {
 	if _, err := workspace.Open(bg, busyDB{}); !errors.Is(err, kv.ErrBusy) {
 		t.Fatalf("Open over a busy database = %v", err)

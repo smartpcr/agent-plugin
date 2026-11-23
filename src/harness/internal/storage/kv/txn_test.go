@@ -172,6 +172,8 @@ func TestTxnViewAndDeletes(t *testing.T) {
 
 // A foreign delete is raised as a Foreign OpDelete by Fresh, and Fresh with
 // nothing new raises nothing.
+//
+//dsh:test DH-T-STORAGE-2
 func TestFreshRaisesAForeignDelete(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "dsh.db")
 	a, err := kv.Open(bg, openDB(t, path), spec())
@@ -209,6 +211,8 @@ type nan struct{ F float64 }
 // A record a newer build wrote is refused by Put and Delete unless the
 // transaction allows the downgrade; an empty key and an unencodable value are
 // storage/invalid; a failing converter makes the read storage/undecodable.
+//
+//dsh:test DH-T-STORAGE-3
 func TestPutAndDeleteGuards(t *testing.T) {
 	db := openDB(t, filepath.Join(t.TempDir(), "dsh.db"))
 	conv := kv.Spec[pref]{Namespace: "conv", Version: 2, Authority: kv.Authoritative,
@@ -264,6 +268,8 @@ func TestPutAndDeleteGuards(t *testing.T) {
 
 // An Update that meets an undecodable record another instance wrote into an
 // authoritative namespace fails and changes nothing.
+//
+//dsh:test DH-T-STORAGE-3
 func TestUpdateRefusesAForeignUndecodableRecord(t *testing.T) {
 	db := openDB(t, filepath.Join(t.TempDir(), "dsh.db"))
 	ns, err := kv.Open(bg, db, spec())
@@ -321,6 +327,8 @@ func (f *failingRead) ReadTx(ctx context.Context, fn func(tx *sql.Tx) error) err
 // A write whose outcome is unknown leaves memory as it was and raises nothing,
 // and the next Fresh reloads even though the stored revision did not move. A
 // busy read fails Fresh with storage/busy.
+//
+//dsh:test DH-T-STORAGE-1, DH-T-STORAGE-2
 func TestUnknownCommitOutcomeReloads(t *testing.T) {
 	db := &lostCommit{Store: openDB(t, filepath.Join(t.TempDir(), "dsh.db"))}
 	ns, err := kv.Open(bg, db, spec())
@@ -369,6 +377,8 @@ func TestUnknownCommitOutcomeReloads(t *testing.T) {
 
 // Run refreshes on its timer, so a foreign write reaches a listener without a
 // call to Fresh, and returns the context's error when it ends. On virtual time.
+//
+//dsh:test DH-T-STORAGE-2
 func TestRunRefreshesOnItsTimer(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "dsh.db")

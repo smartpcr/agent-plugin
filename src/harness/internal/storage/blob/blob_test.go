@@ -66,6 +66,7 @@ func rewrite(t *testing.T, path string, f func([]byte) []byte) {
 	}
 }
 
+//dsh:test DH-T-STORAGE-5
 func TestPutAndReadBack(t *testing.T) {
 	s, l := newStore(t)
 	data := strings.Repeat("attachment bytes ", 1000)
@@ -96,6 +97,7 @@ func TestPutAndReadBack(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-STORAGE-5
 func TestEqualBytesAreOneObject(t *testing.T) {
 	s, _ := newStore(t)
 	a, b := put(t, s, "same"), put(t, s, "same")
@@ -109,6 +111,8 @@ func TestEqualBytesAreOneObject(t *testing.T) {
 
 // Scenario: Corrupted attachment detected (DH-D-STORAGE-3, TC-08): one byte
 // flipped on disk fails the read with a digest mismatch.
+//
+//dsh:test DH-T-STORAGE-5
 func TestCorruptedObjectDetected(t *testing.T) {
 	s, _ := newStore(t)
 	ref := put(t, s, "the bytes a person attached")
@@ -121,6 +125,7 @@ func TestCorruptedObjectDetected(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-STORAGE-5
 func TestTruncatedAndMissingObjects(t *testing.T) {
 	s, _ := newStore(t)
 	ref := put(t, s, "0123456789")
@@ -146,6 +151,7 @@ func TestTruncatedAndMissingObjects(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-STORAGE-5
 func TestTooLargeLeavesNoObject(t *testing.T) {
 	s, l := newStore(t)
 	data := bytes.Repeat([]byte("x"), 100)
@@ -199,6 +205,7 @@ func TestPutAndOpenErrors(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-STORAGE-5
 func TestReadDetectsAGrownObjectAndANonFile(t *testing.T) {
 	s, _ := newStore(t)
 	ref := put(t, s, "0123456789")
@@ -233,6 +240,7 @@ func TestReadDetectsAGrownObjectAndANonFile(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-STORAGE-5
 func TestLookupRefusesForeignShapes(t *testing.T) {
 	s, l := newStore(t)
 	ref := put(t, s, "x")
@@ -251,6 +259,7 @@ func TestLookupRefusesForeignShapes(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-STORAGE-6
 func TestADifferentObjectUnderTheNameIsNotAdopted(t *testing.T) {
 	s, _ := newStore(t)
 	ref := put(t, s, "0123456789")
@@ -271,6 +280,7 @@ func recordSyncs(t *testing.T, fail error) *[]string {
 	return &dirs
 }
 
+//dsh:test DH-T-STORAGE-6
 func TestPublishSyncsTheObjectDirectory(t *testing.T) {
 	s, _ := newStore(t)
 	dirs := recordSyncs(t, nil)
@@ -285,6 +295,7 @@ func TestPublishSyncsTheObjectDirectory(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-STORAGE-6
 func TestPublishFailsWhenTheDirectorySyncFails(t *testing.T) {
 	s, _ := newStore(t)
 	existing := put(t, s, "already here")
@@ -302,6 +313,8 @@ func TestPublishFailsWhenTheDirectorySyncFails(t *testing.T) {
 
 // A same-length object with a flipped byte is not adopted by a later Put of the
 // original bytes, nor re-validated by Touch.
+//
+//dsh:test DH-T-STORAGE-5
 func TestSameSizeCorruptObjectNotAdopted(t *testing.T) {
 	s, _ := newStore(t)
 	ref := put(t, s, "original bytes")
@@ -320,6 +333,8 @@ func TestSameSizeCorruptObjectNotAdopted(t *testing.T) {
 
 // A Put that failed on its directory sync leaves a writable object; the retry
 // adopts it read-only and synced, and a failing mode change is reported.
+//
+//dsh:test DH-T-STORAGE-6
 func TestRetryAfterFailedPublishLeavesTheObjectReadOnly(t *testing.T) {
 	s, _ := newStore(t)
 	recordSyncs(t, errors.New("sync failed"))

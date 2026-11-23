@@ -103,6 +103,8 @@ func (e *env) forkIn(t *testing.T, id, cwd, parent string, through event.Seq, n 
 // DH-D-VIEW-5: a fork's trace labels its inherited prefix with the ancestor
 // that wrote it, across two forks, and the lineage lists the chain root first
 // and the direct forks.
+//
+//dsh:test DH-T-VIEW-13
 func TestTraceAcrossForks(t *testing.T) {
 	e := newEnv(t)
 	e.create(t, "p", 15)

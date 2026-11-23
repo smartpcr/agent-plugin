@@ -9,6 +9,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/agent"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/checkpoint"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/surface"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools"
@@ -80,7 +81,14 @@ func (d *Driver) step(t *turnState, n int, batch []vocab.Message) (res stepResul
 			return // a failed append: the session's next write-open closes the step
 		}
 		res.cause = stepCause(ss)
-		err = d.closeStep(ss.ctx, t.turn, n, res.cause)
+		var flush *event.Reason
+		flush, err = d.closeStep(ss.ctx, t.turn, n, res.cause)
+		// A failed step-end checkpoint ends the turn error unless the step
+		// already ends it otherwise; a cancelled step stays aborted, and
+		// point 16's flush settles what this one left.
+		if flush != nil && res.reason == nil && res.cause == "" {
+			res.reason = flush
+		}
 	}()
 
 	if err := d.admit(ss.ctx, batch, out.Enter.Messages); err != nil {
@@ -115,8 +123,12 @@ func (d *Driver) step(t *turnState, n int, batch []vocab.Message) (res stepResul
 
 // closeStep is point 13: an error result for each call still unanswered (one
 // whose batch failed), then step/end with the step's cancel cause, one group,
-// a write made for the step's context parent.
-func (d *Driver) closeStep(parent context.Context, turn, step int, cause agent.Cause) error {
+// a write made for the step's context parent. Then the step-end checkpoint
+// (DH-D-STORE-4) through the policy mounted on the driver's context, a write
+// like the closers: a cancel does not stop it, CleanupTimeout bounds it. A
+// failed checkpoint is the reason that ends the turn (driver/flush), or the
+// error when no retry can mend it.
+func (d *Driver) closeStep(parent context.Context, turn, step int, cause agent.Cause) (*event.Reason, error) {
 	s := d.o.Session
 	b := s.Open()
 	closer := surface.CauseFailed
@@ -125,14 +137,30 @@ func (d *Driver) closeStep(parent context.Context, turn, step int, cause agent.C
 	}
 	ds, err := surface.Closers(surface.Brackets{Calls: b.Calls}, closer, s.Len())
 	if err != nil {
-		return err
+		return nil, err
 	}
 	ds = append(ds, mustDraft(event.StepEndType.Draft(event.StepEnd{Turn: turn, Step: step, Cause: string(cause)})))
-	return d.write(parent, func(ctx context.Context) error {
+	if err := d.write(parent, func(ctx context.Context) error {
 		_, err := s.AppendGroup(ctx, ds)
 		return err
+	}); err != nil {
+		return nil, err
+	}
+	err = d.write(parent, func(ctx context.Context) error {
+		return checkpoint.Before(ctx, d.checkpoints(), s, checkpoint.StepEnd)
 	})
+	switch {
+	case err == nil:
+		return nil, nil
+	case permanent(err):
+		return nil, err
+	}
+	return errorReason("driver/flush", err), nil
 }
+
+// checkpoints is the checkpoint policy mounted on the driver's context, the
+// Default flush when none is.
+func (d *Driver) checkpoints() checkpoint.Policy { return checkpoint.Mounted(d.o.Context) }
 
 // admit appends the messages of the entered batch that are not yet in the log:
 // the claims logged batch, so only what a PreStep listener added is new.
@@ -181,13 +209,15 @@ func (d *Driver) call(t *turnState, ss *stepState, n int, sel agent.ModelSelecti
 		}
 		// Point 9: checkpoint, then build the request at the committed cut, so
 		// everything it reflects is durable before a byte leaves the machine.
-		// A failed flush means the attempt does not run. Like durable, the
-		// flush runs under the step's context, bounded by CleanupTimeout, so a
-		// cancel stops a stalled store at once and the turn ends aborted;
-		// point 16's flush settles what this one left. A failure no retry can
-		// mend stops the driver; any other ends the turn error.
+		// The checkpoint is the policy mounted on the driver's context
+		// (DH-D-STORE-4), the Default flush when none is. A failed checkpoint
+		// means the attempt does not run. Like durable, it runs under the
+		// step's context, bounded by CleanupTimeout, so a cancel stops a
+		// stalled store at once and the turn ends aborted; point 16's flush
+		// settles what this one left. A failure no retry can mend stops the
+		// driver; any other ends the turn error.
 		fctx, stop := context.WithTimeout(ss.ctx, d.o.CleanupTimeout)
-		_, err = s.Flush(fctx)
+		err = checkpoint.Before(fctx, d.checkpoints(), s, checkpoint.Attempt)
 		stop()
 		if err != nil {
 			if ss.ctx.Err() != nil {

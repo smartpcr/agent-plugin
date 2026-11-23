@@ -26,6 +26,8 @@ func openDB(t *testing.T, path string) *sqlite.Store {
 
 // TC-08: Machine state survives restart. A workspace registered in a temp home
 // is read back with identical fields after the store is closed and reopened.
+//
+//dsh:test DH-T-STORAGE-1
 func TestMachineStateSurvivesRestart(t *testing.T) {
 	home := t.TempDir()
 	dbPath := filepath.Join(home, "dsh.db")
