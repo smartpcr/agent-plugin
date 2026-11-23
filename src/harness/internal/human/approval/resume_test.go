@@ -17,6 +17,8 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/scope"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store/memstore"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store/sqlite"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/surface"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/tools"
 )
 
 // resumer is an agent registry whose stub factory always resumes its session
@@ -43,10 +45,11 @@ func resumer(t *testing.T, root *cordis.Context, sessions session.Service) agent
 
 // crashLog writes, on the SQLite home at path, a session whose last turn is
 // mid-call: the step asked for bash, the call is recorded, its approval is asked
-// and not decided, and an earlier grant has no end. The host then stops without
-// disposing anything, as a crash would. It returns the log's length and the
-// ids of the open request and grant.
-func crashLog(t *testing.T, path string, id session.ID) (event.Offset, string, string) {
+// and, unless pending, allowed once (so its body may have started), and an
+// earlier grant has no end. The host then stops without disposing anything, as
+// a crash would. It returns the log's length and the ids of the request and
+// grant.
+func crashLog(t *testing.T, path string, id session.ID, pending bool) (event.Offset, string, string) {
 	t.Helper()
 	ctx := context.Background()
 	st, err := sqlite.Open(ctx, path)
@@ -88,6 +91,12 @@ func crashLog(t *testing.T, path string, id session.ID) (event.Offset, string, s
 		func() (event.Draft, error) {
 			return approval.AskedType.Draft(approval.Asked{ID: apr, Kind: approval.KindApproval, Agent: ref.String(), Tool: "bash", Call: "c1", Origin: "model"})
 		})
+	if !pending {
+		appendAll(t, h, func() (event.Draft, error) {
+			return approval.DecidedType.Draft(approval.Decided{ID: apr, Tool: "bash", Call: "c1", Outcome: approval.OutcomeAllowedOnce,
+				By: approval.By{Principal: "alice", Channel: "ui", Peer: "p1"}})
+		})
+	}
 	n := h.Len()
 	// The host dies: the session's store connection goes, no agent is disposed
 	// and no listener sees an end.
@@ -105,15 +114,50 @@ func crashLog(t *testing.T, path string, id session.ID) (event.Offset, string, s
 // log ends with tool/call and approval/asked and no decision, when a new host
 // resumes it through the agent registry, then before any other append the log
 // gains approval/decided{unavailable, host-stopped} and grant/ended{host-stopped}
-// for the open grant, and the core closes the turn. Nothing else is appended
-// before the registry hands the agent out.
+// for the open grant, and the core closes the turn, telling the model the call
+// did not run (approval/unavailable, not tools/outcome-unknown). Nothing else is
+// appended before the registry hands the agent out. Control: when the approval
+// was allowed before the crash, the body may have started, so the call still
+// closes tools/outcome-unknown and no decision is written.
 //
 //dsh:test DH-T-HUMAN-4
 func TestOpenPairClosedOnResumeBeforeAnyAppend(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		pending bool
+		want    []string
+		code    string
+		says    string
+	}{
+		{"approval pending", true,
+			[]string{"tool/result", "step/end", "turn/end", "session/end-seed", "approval/decided", "grant/ended"},
+			surface.CodeApprovalUnavailable, "did not run"},
+		{"approval allowed (control)", false,
+			[]string{"tool/result", "step/end", "turn/end", "session/end-seed", "grant/ended"},
+			surface.CodeToolOutcomeUnknown, "is unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) { resumeAfterCrash(t, tc.pending, tc.want, tc.code, tc.says) })
+	}
+}
+
+// The approval names and codes the session core matches by text (it cannot
+// import this package) are this package's and the tools area's.
+func TestSurfaceMirrorsTheApprovalNames(t *testing.T) {
+	if approval.AskedType.Name() != surface.ApprovalAskedType || approval.DecidedType.Name() != surface.ApprovalDecidedType {
+		t.Fatalf("surface matches %q and %q", surface.ApprovalAskedType, surface.ApprovalDecidedType)
+	}
+	if string(tools.CodeApprovalUnavailable) != surface.CodeApprovalUnavailable {
+		t.Fatalf("surface closes held calls with %q, the tools area's code is %q", surface.CodeApprovalUnavailable, tools.CodeApprovalUnavailable)
+	}
+}
+
+// resumeAfterCrash resumes a crashLog session on a new host and checks what the
+// resume appended: exactly want, the call's closer coded code and saying says.
+func resumeAfterCrash(t *testing.T, pending bool, want []string, code, says string) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "dsh.db")
 	const id = session.ID("s-crash")
-	n, apr, grt := crashLog(t, path, id)
+	n, apr, grt := crashLog(t, path, id, pending)
 
 	st, err := sqlite.Open(ctx, path)
 	if err != nil {
@@ -151,7 +195,6 @@ func TestOpenPairClosedOnResumeBeforeAnyAppend(t *testing.T) {
 	}
 	// The core's closers of the open turn (the call, the step, the turn and the
 	// end seed), then this area's closers, and nothing else.
-	want := []string{"tool/result", "step/end", "turn/end", "session/end-seed", "approval/decided", "grant/ended"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("on resume the log gained %s, want %s", strings.Join(got, ","), strings.Join(want, ","))
 	}
@@ -159,12 +202,17 @@ func TestOpenPairClosedOnResumeBeforeAnyAppend(t *testing.T) {
 	if err != nil || res.CallID != "c1" || !res.IsError {
 		t.Fatalf("the core's closer %+v, %v", res, err)
 	}
-	d, err := approval.DecidedType.As(evs[4])
-	if err != nil || d.ID != apr || d.Call != "c1" || d.Tool != "bash" || d.Outcome != approval.OutcomeUnavailable ||
-		d.Detail != approval.DetailHostStopped || d.By != (approval.By{Principal: approval.PrincipalHarness}) {
-		t.Fatalf("approval/decided %+v, %v; want unavailable host-stopped by harness for %s", d, err, apr)
+	if raw := evs[0].Raw(); !strings.Contains(raw, code+": ") || !strings.Contains(raw, says) {
+		t.Fatalf("the model is told %s, want %s (%q)", raw, code, says)
 	}
-	e, err := approval.GrantEndedType.As(evs[5])
+	if pending {
+		d, err := approval.DecidedType.As(evs[4])
+		if err != nil || d.ID != apr || d.Call != "c1" || d.Tool != "bash" || d.Outcome != approval.OutcomeUnavailable ||
+			d.Detail != approval.DetailHostStopped || d.By != (approval.By{Principal: approval.PrincipalHarness}) {
+			t.Fatalf("approval/decided %+v, %v; want unavailable host-stopped by harness for %s", d, err, apr)
+		}
+	}
+	e, err := approval.GrantEndedType.As(evs[len(evs)-1])
 	if err != nil || e.ID != grt || e.Reason != approval.EndHostStopped {
 		t.Fatalf("grant/ended %+v, %v; want %s host-stopped", e, err, grt)
 	}

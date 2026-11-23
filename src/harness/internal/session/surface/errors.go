@@ -46,4 +46,8 @@ func errorf(code event.Code, format string, args ...any) *event.Error {
 const (
 	CodeToolNotStarted     = "tools/not-started"
 	CodeToolOutcomeUnknown = "tools/outcome-unknown"
+	// CodeApprovalUnavailable closes a recorded call whose approval was asked
+	// and not given: its body never ran. It is stage 4's code for an approval
+	// nobody could answer (tools.md §6.2, interaction-credentials.md §6.3).
+	CodeApprovalUnavailable = "approval/unavailable"
 )
