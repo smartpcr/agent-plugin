@@ -52,3 +52,15 @@ func TestMainFallsBackToBuildVersion(t *testing.T) {
 		t.Errorf("main printed %q with status %d, want \"dsh <module version> (...)\"", got, status)
 	}
 }
+
+// TestMainServesTheListingMode: the hidden mode word reaches the listing-only
+// MCP server of the signed-in client routes before the command tree; without
+// its flags it refuses with status 2 and prints nothing on standard output.
+//
+//dsh:test DH-T-LLM-19
+func TestMainServesTheListingMode(t *testing.T) {
+	got, status := runMain(t, "mcp-listing")
+	if status != 2 || got != "" {
+		t.Errorf("main printed %q with status %d, want nothing and 2", got, status)
+	}
+}

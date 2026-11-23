@@ -254,6 +254,7 @@ Each agent has one driver goroutine, parked on a one-slot wake channel, and one 
 | | `UP-EVT-agent/inbox/discarded` | `agent.InboxDiscarded`, notify | `{Agent, Message, Cause}` |
 | | `UP-EVT-agent/assistant-stream` | `agent.StreamFrame`, notify | `Start`, `Chunk` with a dense index, one `End` holding the settled record's `seq` or `abandoned` |
 | | `UP-EVT-agent/error` | `agent.Failed`, notify | `{Agent, Turn, Step, Err}`; also sent when the failure has no place in the log |
+| | none: new (owner decision M1-D-PIPE-2 A, plan 16.4.1 of the M1 gap-closure plan) | `agent.RetryWaited`, notify (event key `agent/retry-wait-ended`) | `RetryWaitEnded{Agent, Turn, Step, Attempt, Cancelled}`; sent when the driver's wait on a `Retry` ends, before the next attempt is prepared or the step closes. `Cancelled` is true when a cancel of the step or turn ended the wait first, and then no further attempt runs. A retry listener writes the wait's outcome from it (`llm/retry-started`, or `llm/retry-abandoned` "cancelled"); an observer's error or panic never changes the step |
 | | `UP-EVT-agent-loop/config-start-failed` | `driver.StartFailed`, notify | `{Label, Session, Err}` |
 | **Not this area's** (assigned by default) | `UP-EVT-internal/config`, `internal/plugin`, `internal/service`, `internal/status`, `internal/dispatch`, `loader/volatile-update` | framework: no agent event | [DH-ADR-AGENT-13](#dh-adr-agent-13) |
 | | `UP-EVT-connection/reset`, `locale/change`, `slots/changed`, `theme/change` | browser runtime: no host event | [DH-ADR-AGENT-13](#dh-adr-agent-13) |

@@ -7,6 +7,7 @@
 {"go":"DH-ADR-LLM-7","kind":"decision","title":"Everything beyond the model request is opt-in, per route","serves":["DH-O-14","DH-O-8"],"spec":"areas/llm.md"}
 {"go":"DH-ADR-LLM-8","kind":"decision","title":"Tool schemas are projected per protocol from one canonical subset","serves":["DH-O-6","DH-O-8"],"spec":"areas/llm.md"}
 {"go":"DH-ADR-LLM-9","kind":"decision","title":"The token meter keeps bounded state and decides nothing","serves":["DH-O-14","DH-O-5"],"spec":"areas/llm.md"}
+{"go":"DH-ADR-LLM-10","kind":"decision","title":"A signed-in vendor client is a route: the guarantee holds at the client invocation, and the client never runs a tool","serves":["DH-O-8","DH-O-4"],"spec":"areas/llm.md"}
 {"go":"DH-D-LLM-1","kind":"deliverable","title":"One vocabulary and one runtime for every model call","outcomes":["DH-O-8","DH-O-4","DH-O-3"],"proof":["DH-T-LLM-1","DH-T-LLM-2","DH-T-LLM-3","DH-T-LLM-4","DH-E-LLM-1"],"deps":["DH-D-LLM-11","DH-D-SESSION-4","DH-D-CORDIS-2","DH-D-CORDIS-4","DH-D-CORDIS-7"],"priority":"P0","spec":"areas/llm.md"}
 {"go":"DH-D-LLM-2","kind":"deliverable","title":"The first working provider: shared transport, the Messages driver and the vendor's API-key route","outcomes":["DH-O-8","DH-O-14"],"proof":["DH-T-LLM-5","DH-T-LLM-11","DH-T-LLM-16","DH-E-LLM-1","DH-E-LLM-3","DH-E-LLM-5"],"deps":["DH-D-LLM-1","DH-D-UTIL-2","DH-D-HUMAN-7"],"priority":"P0","spec":"areas/llm.md"}
 {"go":"DH-D-LLM-3","kind":"deliverable","title":"Bounded retry, and buffered one-shot calls","outcomes":["DH-O-8","DH-O-3"],"proof":["DH-T-LLM-7","DH-T-LLM-8","DH-E-LLM-3"],"deps":["DH-D-LLM-1","DH-D-AGENT-4","DH-D-VIEW-1"],"priority":"P0","spec":"areas/llm.md"}
@@ -18,6 +19,7 @@
 {"go":"DH-D-LLM-9","kind":"deliverable","title":"Azure provider component: Microsoft Entra ID tokens","outcomes":["DH-O-8"],"proof":["DH-T-LLM-17","DH-E-LLM-9"],"deps":["DH-D-LLM-4","DH-D-HUMAN-8","DH-D-HUMAN-1"],"priority":"P2","spec":"areas/llm.md"}
 {"go":"DH-D-LLM-10","kind":"deliverable","title":"OAuth sign-in provider component with a stored refreshable grant","outcomes":["DH-O-8"],"proof":["DH-T-LLM-17","DH-E-LLM-10"],"deps":["DH-D-LLM-4","DH-D-HUMAN-8","DH-D-HUMAN-1"],"priority":"P2","spec":"areas/llm.md"}
 {"go":"DH-D-LLM-11","kind":"deliverable","title":"The model vocabulary is a leaf package","outcomes":["DH-O-8","DH-O-4"],"proof":["DH-T-LLM-1"],"deps":["DH-D-UTIL-1"],"priority":"P0","spec":"areas/llm.md"}
+{"go":"DH-D-LLM-12","kind":"deliverable","title":"Signed-in client routes","outcomes":["DH-O-8","DH-O-4"],"proof":["DH-T-LLM-18","DH-T-LLM-19","DH-T-LLM-20","DH-T-LLM-21","DH-T-LLM-22","DH-T-LLM-23","DH-T-LLM-24","DH-T-LLM-25","DH-T-LLM-26","DH-T-LLM-27","DH-E-CLAUDECODECLI-1"],"deps":["DH-D-LLM-1","DH-D-LLM-2","DH-D-LLM-3","DH-D-EXEC-1","DH-D-EXEC-2"],"priority":"P0","spec":"areas/llm.md"}
 {"go":"DH-T-LLM-1","kind":"test","title":"Assembler rules, stream record round trip, every chunk type handled by every consumer","proves":["DH-D-LLM-1","DH-D-LLM-11"],"spec":"areas/llm.md"}
 {"go":"DH-T-LLM-2","kind":"test","title":"A misbehaving adapter always yields exactly one finish and one attempt record","proves":["DH-D-LLM-1"],"spec":"areas/llm.md"}
 {"go":"DH-T-LLM-3","kind":"test","title":"A prepared call keeps its captured endpoint, facts and policy; misuse fails before I/O","proves":["DH-D-LLM-1"],"spec":"areas/llm.md"}
@@ -35,9 +37,19 @@
 {"go":"DH-T-LLM-15","kind":"test","title":"Token meter folds are deterministic, bounded in state and count every attempt once","proves":["DH-D-LLM-6"],"spec":"areas/llm.md"}
 {"go":"DH-T-LLM-16","kind":"test","title":"Request contributions: prepared after serialisation, name order, accepted only after 2xx","proves":["DH-D-LLM-2"],"spec":"areas/llm.md"}
 {"go":"DH-T-LLM-17","kind":"test","title":"A sign-in component streams through the shared transport and an existing driver unchanged","proves":["DH-D-LLM-7","DH-D-LLM-8","DH-D-LLM-9","DH-D-LLM-10"],"spec":"areas/llm.md"}
+{"go":"DH-T-LLM-18","kind":"test","title":"The shared client-route package: version probe, locator on the child's PATH, scrubbed environment, pure renderer, runner and invocation record","proves":["DH-D-LLM-12"],"spec":"areas/llm.md"}
+{"go":"DH-T-LLM-19","kind":"test","title":"The listing-only MCP server lists the harness tools and refuses every tools/call","proves":["DH-D-LLM-12"],"spec":"areas/llm.md"}
+{"go":"DH-T-LLM-20","kind":"test","title":"Claude route invocation: one settlement, the invocation rebuilt from the log, no ambient credential, too old refused before input","proves":["DH-D-LLM-12"],"spec":"areas/llm.md"}
+{"go":"DH-T-LLM-21","kind":"test","title":"Claude route stream mapping: chunks and finish, a tool call returned unexecuted, unplaceable lines are a contract breach","proves":["DH-D-LLM-12"],"spec":"areas/llm.md"}
+{"go":"DH-T-LLM-22","kind":"test","title":"Claude route failure mapping: signed out is llm/sign-in-required, Permanent, never retried, no second route prepared","proves":["DH-D-LLM-12"],"spec":"areas/llm.md"}
+{"go":"DH-T-LLM-23","kind":"test","title":"Claude route cancellation stops the client and the listing server and removes the attempt directory","proves":["DH-D-LLM-12"],"spec":"areas/llm.md"}
+{"go":"DH-T-LLM-24","kind":"test","title":"Copilot route invocation: one settlement, the invocation rebuilt from the log, no ambient credential, the .cmd shim by bare name","proves":["DH-D-LLM-12"],"spec":"areas/llm.md"}
+{"go":"DH-T-LLM-25","kind":"test","title":"Copilot route stream mapping: chunks and finish, the tree stopped at the first tool request","proves":["DH-D-LLM-12"],"spec":"areas/llm.md"}
+{"go":"DH-T-LLM-26","kind":"test","title":"Copilot route failure mapping: signed out is Permanent, never retried, no second route prepared","proves":["DH-D-LLM-12"],"spec":"areas/llm.md"}
+{"go":"DH-T-LLM-27","kind":"test","title":"Copilot route cancellation stops the client and the listing server and removes the attempt directory","proves":["DH-D-LLM-12"],"spec":"areas/llm.md"}
 {"go":"DH-E-LLM-1","kind":"scenario","title":"A turn with reasoning and a tool call on the vendor's own protocol","proves":["DH-D-LLM-1","DH-D-LLM-2","DH-D-LLM-6"],"spec":"areas/llm.md"}
 {"go":"DH-E-LLM-2","kind":"scenario","title":"The same turn on a second protocol","proves":["DH-D-LLM-4"],"spec":"areas/llm.md"}
-{"go":"DH-E-LLM-3","kind":"scenario","title":"A failure is a fact: no retry and no fallback on a bad key","proves":["DH-D-LLM-1","DH-D-LLM-2","DH-D-LLM-3"],"spec":"areas/llm.md"}
+{"go":"DH-E-LLM-3","kind":"scenario","title":"A failure is a fact: no retry and no fallback when the client is signed out","proves":["DH-D-LLM-1","DH-D-LLM-2","DH-D-LLM-3"],"spec":"areas/llm.md"}
 {"go":"DH-E-LLM-4","kind":"scenario","title":"Every provider accepts the projected tool schemas","proves":["DH-D-LLM-4"],"spec":"areas/llm.md"}
 {"go":"DH-E-LLM-5","kind":"scenario","title":"By default only the model request leaves the machine","proves":["DH-D-LLM-2","DH-D-LLM-5"],"spec":"areas/llm.md"}
 {"go":"DH-E-LLM-6","kind":"scenario","title":"The account route, images and sign-out","proves":["DH-D-LLM-5"],"spec":"areas/llm.md"}

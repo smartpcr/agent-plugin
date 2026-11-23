@@ -7,12 +7,14 @@
 // tool and records the bracketed log and the request rebuilt from it; run two
 // cancels a second turn mid-stream and records the cause on its turn/end. It is
 // not a scenario and not a gate criterion: the build tag keeps it out of every
-// default and gate run, and the key is read at run time only. Run with
+// default and gate run.
 //
-//	$env:DEEPSEEK_API_KEY = '<key>'   # never committed, never logged
-//	go -C src/harness test -tags manual -count=1 -v -run TestManualM1 ./internal/agent/
-//
-// and copy the printed lines into docs/stories/harness-DSH-M1/evidence/DH-S-11.md.
+// Not to be run as written. Under OWNER-2 (decisions.md
+// models-signed-in-claude-copilot) M1 uses no DeepSeek and no API key, so the
+// DeepSeek key run instructions that were here are removed (gap-closure-plan
+// 16.5.7, M1-D-PIPE-5 A). The retarget of this check to the signed-in Claude and
+// Copilot client routes is gap-closure-plan step 17.4.1; until it lands, nothing
+// this file prints is evidence for DH-S-11.
 
 package agent_test
 

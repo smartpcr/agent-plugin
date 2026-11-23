@@ -58,7 +58,7 @@ func TestAuthoredScenariosAreIndexedAndCompileButDoNotRun(t *testing.T) {
 		requires       []string
 	}{
 		"DH-E-LLM-1":     {"llm_turn_scenario_test.go:TestTurnWithReasoningAndToolCall", "DH-S-9", nil},
-		"DH-E-LLM-3":     {"llm_bad_key_scenario_test.go:TestBadKeyIsAFact", "DH-S-9", nil},
+		"DH-E-LLM-3":     {"llm_signed_out_scenario_test.go:TestSignedOutIsAFact", "DH-S-9", nil},
 		"DH-E-VIEW-1":    {"view_title_scenario_test.go:TestModelTitlesSession", "DH-S-9", nil},
 		"DH-E-TOOLS-1":   {"tools_pipeline_scenario_test.go:TestGuardedPipelineRefusesTheWrite", "DH-S-10", nil},
 		"DH-E-SESSION-1": {"session_rebuild_scenario_test.go:TestRequestsReceivedEqualRequestsRebuilt", "DH-S-11", nil},
@@ -84,7 +84,7 @@ func TestAuthoredScenariosAreIndexedAndCompileButDoNotRun(t *testing.T) {
 			t.Errorf("%s does not require %v", id, requires)
 		}
 	}
-	for _, helper := range []string{"sdkhost_test.go", "binary_test.go", "realenv_test.go", "session_rebuild_scenario_test.go", "session_kill_resume_scenario_test.go", "agent_turn_scenario_test.go", "agent_cancel_scenario_test.go"} {
+	for _, helper := range []string{"sdkhost_test.go", "binary_test.go", "realenv_test.go", "signedin_routes_test.go", "signedin_routes_copilot_test.go", "session_rebuild_scenario_test.go", "session_kill_resume_scenario_test.go", "agent_turn_scenario_test.go", "agent_cancel_scenario_test.go"} {
 		f, err := parser.ParseFile(token.NewFileSet(), filepath.Join(cfg.Root, "src", "harness", "internal", "testkit", "scenarios", helper), nil, parser.ImportsOnly)
 		if err != nil {
 			t.Fatal(err)

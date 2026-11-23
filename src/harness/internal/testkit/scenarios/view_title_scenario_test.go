@@ -3,8 +3,6 @@
 package scenarios
 
 import (
-	"bytes"
-	"encoding/json"
 	"slices"
 	"strconv"
 	"testing"
@@ -13,48 +11,68 @@ import (
 	"github.com/smartpcr/agent-plugin/src/sdk/protocol"
 )
 
-// TestModelTitlesSession: a real model titles a session, and a failing provider
-// leaves the fallback (areas/session-views.md DH-E-VIEW-1; DH-D-VIEW-4). Authored
-// in DH-S-9; executed in DH-S-17, which requires the agent loop (DH-S-11) and the
-// titles and headless launcher of DH-S-16. Nothing here produces a title: the
-// scenario only reads what the product's session/list and session/history return.
+// TestModelTitlesSession: a real model titles a session, and a failing title
+// route leaves the fallback (areas/session-views.md DH-E-VIEW-1; DH-D-VIEW-4).
+// Authored in DH-S-9 and re-authored onto the signed-in client routes by
+// gap-closure-plan 16.5.8 (M1-D-CLOSE-4 A), "signed out" replacing "a key the
+// provider rejects"; executed in DH-S-17, which requires the agent loop (DH-S-11)
+// and the titles and headless launcher of DH-S-16. Nothing here produces a
+// title: the scenario only reads what the product's session/list and
+// session/history return.
 //
-// Given a built dsh, an empty temporary home, one real model API key supplied at
-// run time and the default title configuration, with a recording proxy in front
-// of the provider, when (1) one prompt is sent, (2) the session's events are read
-// and (3) a second session is started with the title route keyed by a key the
-// provider rejects and one prompt is sent, then (1) the list shows a fallback
-// title and then a generated one; (2) the log holds session/title-request before
-// any session/title-attempt, one attempt with outcome accepted and a
-// session/title that cites it, and the request text equals what the proxy saw;
-// (3) the second session keeps its fallback, holds one attempt with outcome
-// failed, and its turn completed normally. Cleanup: the home is deleted by the
-// launcher; on failure both session exports are kept (their paths are logged).
+// Given a built dsh, an empty temporary home, no API key anywhere, the user's own
+// installed client of the route signed in as themselves, a layer that registers
+// the route with the default title configuration, when, per route, (1) one prompt
+// is sent, (2) the session's events are read and (3) a second dsh is started
+// whose title route is the other client route with that client signed out (its
+// configuration home an empty temporary directory), and one prompt is sent, then
+// (1) the list shows a fallback title and then a generated one; (2) the log holds
+// session/title-request before any session/title-attempt, one attempt with
+// outcome accepted that records the client invocation of the route (client,
+// version, argument and standard-input digests: the request reached the client
+// through the logged invocation, where SP-1 holds, M1-D-PIPE-4 A), and a
+// session/title that cites it; (3) the second session keeps its fallback, holds
+// one attempt with outcome failed, and its turn completed normally. The byte
+// equality of a logged request and what the client received is not re-checked
+// here: it is DH-E-SESSION-1's and DH-T-LLM-20's. Cleanup: the homes and the
+// empty configuration home are deleted; nothing of the user's sign-in is touched;
+// on failure both session exports are kept (their paths are logged).
 //
-// Inputs: DSH_DEEPSEEK_API_KEY is the real key (the workflow's secret), handed to
-// the program as DEEPSEEK_API_KEY; DSH_SCENARIO_VIEW1_OFFICIAL the base URL of
-// DeepSeek's Messages endpoint, fronted by the proxy as {official};
-// DSH_SCENARIO_VIEW1_LAYER the layer text over {official} that points the model
-// and the default title route at {official}; DSH_SCENARIO_VIEW1_BAD_LAYER the same
-// with the title route keyed from SCENARIO_VIEW1_TITLE_KEY, which the scenario
-// sets to a rejected key; DSH_SCENARIO_VIEW1_MODEL the model on
-// deepseek-official; DSH_SCENARIO_VIEW1_PROMPT the prompt.
+// The legs: claude-code must pass; copilot-cli is run and recorded either way
+// (M1-D-LOOP-6 A; forEachRoute). Step (3) of the Claude leg signs the Copilot
+// client out; if an empty COPILOT_HOME does not (signedin_routes_copilot_test.go),
+// the layer must name a title route that fails by other means, because only the
+// failed title attempt is asserted.
+//
+// Inputs: DSH_SCENARIO_VIEW1_LAYER the layer text over {route} that registers
+// that client route with the default title configuration;
+// DSH_SCENARIO_VIEW1_BAD_LAYER the layer text over {route} and {title} that
+// registers both client routes and sets the title route to {title};
+// DSH_SCENARIO_<route>_MODEL (<route> is CLAUDE_CODE or COPILOT_CLI) the model;
+// DSH_SCENARIO_VIEW1_PROMPT the prompt.
 //
 //dsh:scenario DH-E-VIEW-1
 func TestModelTitlesSession(t *testing.T) {
-	key := need(t, "DSH_DEEPSEEK_API_KEY", "a real DeepSeek API key")
-	officialURL := need(t, "DSH_SCENARIO_VIEW1_OFFICIAL", "the base URL of DeepSeek's Messages endpoint")
-	goodT := need(t, "DSH_SCENARIO_VIEW1_LAYER", "layer text over {official} with the default title configuration")
-	badT := need(t, "DSH_SCENARIO_VIEW1_BAD_LAYER", "layer text over {official} keying the title route from SCENARIO_VIEW1_TITLE_KEY")
-	model := need(t, "DSH_SCENARIO_VIEW1_MODEL", "the model on deepseek-official")
+	goodT := need(t, "DSH_SCENARIO_VIEW1_LAYER", "layer text over {route} with the default title configuration")
+	badT := need(t, "DSH_SCENARIO_VIEW1_BAD_LAYER", "layer text over {route} and {title} setting the title route to {title}")
 	prompt := need(t, "DSH_SCENARIO_VIEW1_PROMPT", "a prompt")
 	bin := dshBinary(t)
-	route := &protocol.ModelRoute{Provider: "deepseek-official", Model: model}
+	forEachRoute(t, func(t *testing.T, r clientRoute) {
+		title := r.other()
+		good := expand(goodT, map[string]string{"route": r.ID})
+		bad := expand(badT, map[string]string{"route": r.ID, "title": title.ID})
+		modelTitlesSession(t, bin, r, title, good, bad, prompt)
+	})
+}
+
+// modelTitlesSession is DH-E-VIEW-1 on route r, with title, signed out, as the
+// failing title route of step (3).
+func modelTitlesSession(t *testing.T, bin string, r, title clientRoute, goodLayer, badLayer, prompt string) {
+	t.Helper()
+	route := &protocol.ModelRoute{Provider: r.ID, Model: r.model(t)}
 
 	// (1)-(2) A real model titles the session.
-	proxy := startProxy(t, map[string]string{"official": officialURL})
-	vars := map[string]string{"official": proxy.base("official")}
-	h := startSDK(t, bin, []string{"DEEPSEEK_API_KEY=" + key}, []string{"--layer", writeLayer(t, expand(goodT, vars))})
+	h := startSDK(t, bin, nil, []string{"--layer", writeLayer(t, goodLayer)})
 	session := h.create(t, route)
 	h.keepExport(t, session)
 	receipt := h.prompt(t, session, prompt)
@@ -70,12 +88,12 @@ func TestModelTitlesSession(t *testing.T) {
 	if len(titleEvs) != 1 {
 		t.Fatalf("%d session/title events, want 1", len(titleEvs))
 	}
-	var title struct {
+	var named struct {
 		Title string `json:"title"`
 	}
-	decode(t, titleEvs[0], &title)
-	if len(titles) < 2 || titles[len(titles)-1] != title.Title {
-		t.Fatalf("the list showed titles %q, want a fallback and then the generated %q", titles, title.Title)
+	decode(t, titleEvs[0], &named)
+	if len(titles) < 2 || titles[len(titles)-1] != named.Title {
+		t.Fatalf("the list showed titles %q, want a fallback and then the generated %q", titles, named.Title)
 	}
 	requests, attempts := ofType(evs, "session/title-request"), ofType(evs, "session/title-attempt")
 	if len(requests) == 0 || len(attempts) != 1 || requests[0].Seq > attempts[0].Seq {
@@ -91,20 +109,20 @@ func TestModelTitlesSession(t *testing.T) {
 		Text string `json:"text"`
 	}
 	decode(t, requests[0], &request)
-	if request.Text == "" || !proxySaw(proxy, "official", request.Text) {
-		t.Fatalf("the title request text %q is not what the proxy saw", request.Text)
+	if request.Text == "" {
+		t.Fatal("the title request holds no text")
 	}
+	requireInvocation(t, attempts[0], r)
 
-	// (3) A provider that rejects the title route's key leaves the fallback.
-	bad := startSDK(t, bin, []string{"DEEPSEEK_API_KEY=" + key, "SCENARIO_VIEW1_TITLE_KEY=sk-dsh-scenario-deliberately-invalid"},
-		[]string{"--layer", writeLayer(t, expand(badT, vars))})
-	kept := bad.create(t, route)
-	bad.keepExport(t, kept)
-	run2 := bad.awaitRun(t, kept, bad.prompt(t, kept, prompt), 5*time.Minute)
-	keptTitles := bad.watchTitles(t, kept, 5*time.Minute, func() bool {
-		return len(ofType(bad.history(t, kept), "session/title-attempt")) > 0
+	// (3) A signed-out title route leaves the fallback.
+	failing := startSDK(t, bin, []string{title.signedOut(t)}, []string{"--layer", writeLayer(t, badLayer)})
+	kept := failing.create(t, route)
+	failing.keepExport(t, kept)
+	run2 := failing.awaitRun(t, kept, failing.prompt(t, kept, prompt), 5*time.Minute)
+	keptTitles := failing.watchTitles(t, kept, 5*time.Minute, func() bool {
+		return len(ofType(failing.history(t, kept), "session/title-attempt")) > 0
 	})
-	evs2 := bad.history(t, kept)
+	evs2 := failing.history(t, kept)
 	if end := turnEnd(t, inRun(evs2, run2.FirstSeq, run2.LastSeq)); end.Reason.Kind != "completed" {
 		t.Fatalf("the failing-title session's turn ended %q, want completed normally", end.Reason.Kind)
 	}
@@ -113,7 +131,7 @@ func TestModelTitlesSession(t *testing.T) {
 		t.Fatalf("%d title attempts, want one with outcome failed", len(attempts2))
 	}
 	if n := len(ofType(evs2, "session/title")); n != 0 {
-		t.Fatalf("%d session/title events with a rejected key, want none", n)
+		t.Fatalf("%d session/title events with a signed-out title route, want none", n)
 	}
 	if len(keptTitles) != 1 || keptTitles[0] == "" {
 		t.Fatalf("the list showed titles %q, want the fallback alone", keptTitles)
@@ -158,16 +176,3 @@ func titleOutcome(t *testing.T, e protocol.Event) string {
 
 // seqString writes a seq the way an event's sources cite it, in decimal.
 func seqString(seq int64) string { return strconv.FormatInt(seq, 10) }
-
-// proxySaw reports whether a request the proxy forwarded to upstream carried text,
-// in its JSON-escaped form.
-func proxySaw(p *recordingProxy, upstream, text string) bool {
-	quoted, _ := json.Marshal(text)
-	quoted = bytes.Trim(quoted, `"`)
-	for _, r := range p.requests(upstream) {
-		if bytes.Contains(r.Body, quoted) {
-			return true
-		}
-	}
-	return false
-}

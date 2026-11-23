@@ -417,7 +417,7 @@ func TestFailureClasses(t *testing.T) {
 			count++
 		}
 	}
-	if count != len(Codes()) || len(Codes()) != 29 {
+	if count != len(Codes()) || len(Codes()) != 30 {
 		t.Errorf("the table has %d codes, %d classified", len(Codes()), count)
 	}
 	for _, tc := range []struct {

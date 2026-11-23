@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/agent"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
 )
 
@@ -114,12 +116,19 @@ type Result struct {
 	// By names the component that ended the call: a policy, a guard, the
 	// approval service or a shaper; "" when the pipeline itself did.
 	By string
-	// Text is the model-facing content.
+	// Text is the model-facing content; for a result with images, the text of
+	// its parts.
 	Text string
+	// Parts is the model-facing content of a result with images, as logged in
+	// its tool/result; nil for a text-only result, whose content is Text.
+	Parts []vocab.Part
 	// Value is the body's typed value on success.
 	Value any
 	// Approval is the approval outcome when the call was asked about.
 	Approval string
+	// Grant is the session grant that approved the call (Approval
+	// allowed-by-grant) or that its allowed-session answer created; "" for none.
+	Grant string
 	// Cause is why a body's context was cancelled, "" when it was not.
 	Cause Cause
 	// Truncated reports that the text was cut to the registry's ceiling.
@@ -237,8 +246,8 @@ const (
 	VerdictDeny   Verdict = "deny"
 )
 
-// Decision is a policy listener's answer; build it with Allow, Deny, Ask or
-// Cancel.
+// Decision is a policy listener's answer; build it with Allow, Deny, Ask, AskFor
+// or Cancel.
 type Decision struct {
 	Verdict Verdict
 	Reason  string
@@ -246,6 +255,52 @@ type Decision struct {
 	Code Code
 	// Display is what an Ask shows the answerer instead of the raw arguments.
 	Display string
+	// Subject is what an Ask's call needs, nil for none: a session grant can
+	// cover it, and an "allow for this session" answer grants it. An Ask with no
+	// subject is asked every time and offers no session choice.
+	Subject *Subject
+}
+
+// SubjectKind is what a subject names (areas/interaction-credentials.md,
+// DH-ADR-HUMAN-4): a closed set, matched on facts, never on display text.
+type SubjectKind string
+
+// The subject kinds a session grant can cover.
+const (
+	// SubjectDirectory is one directory: Name is its path. A grant of it covers
+	// that directory and the paths inside it, never a prefix sibling.
+	SubjectDirectory SubjectKind = "directory"
+	// SubjectApplication is one application: Name is "<provider>:<app>", the
+	// provider id and the stable application id it reports (a bundle id, an
+	// executable path), split at the first colon. A process id is never one.
+	SubjectApplication SubjectKind = "application"
+)
+
+// Subject is what a call needs, as a policy names it from the call's validated
+// arguments (DH-D-TOOLS-2 stage 2): a kind, a name and a label. The approval
+// service, not the pipeline, matches it against the session's grants. The
+// contract keeps its own type so that it imports no approval package
+// (DH-T-TOOLS-18); the pipeline maps it.
+type Subject struct {
+	Kind SubjectKind
+	// Name is the fact a grant matches: a path, or "<provider>:<app>".
+	Name string
+	// Label is how a person is shown the scope, for example "writes under
+	// /repo/build"; it is never matched.
+	Label string
+}
+
+// Valid reports whether s names something a grant can cover: a known kind and a
+// non-empty name (an application's with both of its ids).
+func (s Subject) Valid() bool {
+	switch s.Kind {
+	case SubjectDirectory:
+		return s.Name != ""
+	case SubjectApplication:
+		p, a, ok := strings.Cut(s.Name, ":")
+		return ok && p != "" && a != ""
+	}
+	return false
 }
 
 // Allow lets the call go on to the guards.
@@ -256,9 +311,21 @@ func Deny(code Code, reason string) Decision {
 	return Decision{Verdict: VerdictDeny, Code: code, Reason: reason}
 }
 
-// Ask has the call approved before it runs.
+// Ask has the call approved before it runs. It names no subject, so it is asked
+// every time; AskFor names one.
 func Ask(reason, display string) Decision {
 	return Decision{Verdict: VerdictAsk, Reason: reason, Display: display}
+}
+
+// AskFor is Ask for a call that needs subject: a session grant that covers it
+// approves the call without asking, and an "allow for this session" answer
+// grants it. A subject that is not Valid is no subject.
+func AskFor(reason, display string, subject Subject) Decision {
+	d := Ask(reason, display)
+	if subject.Valid() {
+		d.Subject = &subject
+	}
+	return d
 }
 
 // Cancel ends the call as aborted before start.
@@ -282,8 +349,24 @@ type Guard func(ctx context.Context, c Call) *Denial
 type Outcome struct {
 	IsError bool
 	Code    Code
-	Text    string
-	Value   any
+	// Text is the model-facing content; for a result with images, the text of
+	// its parts in order, the images left out.
+	Text  string
+	Value any
+	// Parts is the content of a result with images (text and image parts in
+	// order); nil for a text-only result, whose content is Text. A shaper's
+	// ReplaceContent that changes Text replaces the content whole, images
+	// included.
+	Parts []vocab.Part
+}
+
+// Content is a body's value made of text and image parts (a screenshot with a
+// caption): the model is given the parts in order, and the spill seat prices and
+// bounds the images with the text. A Content with no image part is a text-only
+// result, its texts joined. An image names its attachment reference; its bytes
+// are never in the result.
+type Content struct {
+	Parts []vocab.Part `json:"parts"`
 }
 
 // PostKind is a shaper's closed answer.
@@ -329,6 +412,10 @@ type SpillResult struct {
 	// Ref is the saved full result; nil when the save failed (the notice says
 	// so).
 	Ref *event.Spill
+	// Parts is the bounded content of an outcome that had Parts: Text is then
+	// its texts, and each image is kept or left out whole. A seat that leaves it
+	// nil on such an outcome replaces the content with Text alone.
+	Parts []vocab.Part
 }
 
 // SpillShaper is the spill seat (DH-ADR-STORAGE-4): it runs after the shapers on

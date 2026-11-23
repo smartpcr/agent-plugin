@@ -85,6 +85,38 @@ type Timing struct {
 	End        int64 `json:"end"`
 }
 
+// ClientInvocation is the client-invocation boundary of a signed-in client route
+// (DH-ADR-LLM-10, M1-D-PIPE-4 A): what the harness started and handed the
+// client for one attempt, as the unit a reader rebuilds from the log. Args is the
+// argument list after the program with the attempt directory written as
+// "{attempt}"; ArgsDigest is the SHA-256 of Args' JSON encoding, StdinDigest the
+// SHA-256 of the bytes written to standard input and Files each attempt file's
+// SHA-256. Env names the child's variables, never their values. SessionID is the
+// client session id the harness chose, Model the model the client reported,
+// Retries and Denials the client-internal retries and permission denials it
+// reported. Every digest is "sha256:<hex>".
+type ClientInvocation struct {
+	Client      string       `json:"client"`
+	Version     string       `json:"version"`
+	Program     string       `json:"program"`
+	Args        []string     `json:"args"`
+	ArgsDigest  string       `json:"args_digest"`
+	StdinDigest string       `json:"stdin_digest"`
+	Files       []FileDigest `json:"files,omitempty"`
+	Env         []string     `json:"env,omitempty"`
+	SessionID   string       `json:"session_id,omitempty"`
+	Model       string       `json:"model,omitempty"`
+	Retries     int          `json:"retries,omitempty"`
+	Denials     int          `json:"denials,omitempty"`
+}
+
+// FileDigest is one file the adapter wrote for an attempt: its name inside the
+// attempt directory and the SHA-256 of its bytes.
+type FileDigest struct {
+	Name   string `json:"name"`
+	Digest string `json:"digest"`
+}
+
 // AssistantMessagePayload is the payload of assistant/message. The stream is the
 // cold part; usage and timing are hot, so no fold parses a stream. A seeded message
 // from an importer has no request fields and names its foreign source instead.
@@ -102,20 +134,24 @@ type AssistantMessagePayload struct {
 	// fold can calibrate against that same request (DH-ADR-LLM-9); 0 when
 	// unknown.
 	Estimate int `json:"estimate,omitempty"`
+	// Client is the client invocation of a signed-in client route; nil on every
+	// other route.
+	Client *ClientInvocation `json:"client,omitempty"`
 }
 
 // AssistantAttemptPayload is the log-only record of a model call that did not
 // produce the assistant/message: its partial message, if any, and the failure.
 type AssistantAttemptPayload struct {
-	Message       *vocab.Message  `json:"message,omitempty"`
-	RequestAsOf   *Seq            `json:"request_as_of,omitempty"`
-	RequestDigest string          `json:"request_digest,omitempty"`
-	Usage         *vocab.Usage    `json:"usage,omitempty"`
-	Timing        *Timing         `json:"timing,omitempty"`
-	Failure       *vocab.Failure  `json:"failure,omitempty"`
-	Stream        json.RawMessage `json:"stream,omitempty"`
-	ServedBy      string          `json:"served_by,omitempty"`
-	Estimate      int             `json:"estimate,omitempty"`
+	Message       *vocab.Message    `json:"message,omitempty"`
+	RequestAsOf   *Seq              `json:"request_as_of,omitempty"`
+	RequestDigest string            `json:"request_digest,omitempty"`
+	Usage         *vocab.Usage      `json:"usage,omitempty"`
+	Timing        *Timing           `json:"timing,omitempty"`
+	Failure       *vocab.Failure    `json:"failure,omitempty"`
+	Stream        json.RawMessage   `json:"stream,omitempty"`
+	ServedBy      string            `json:"served_by,omitempty"`
+	Estimate      int               `json:"estimate,omitempty"`
+	Client        *ClientInvocation `json:"client,omitempty"`
 }
 
 // ToolCallPayload is a tool call the model made; Arguments stay the raw string the
@@ -212,12 +248,14 @@ var (
 		Validate: func(p UserMessagePayload) error { return needRole(p.Message, vocab.RoleUser) }})
 	// Version 2 of both attempt events adds the optional served_by
 	// (llm.StreamAround); version 3 adds the optional estimate (the token meter);
-	// version 4 of assistant/attempt writes its failure's retry_after as text.
-	AssistantMessage = mustCoreSurface(Spec[AssistantMessagePayload]{Name: "assistant/message", Version: 3,
-		Upgrades: map[int]Upgrade{1: upgradeAddedServedBy, 2: upgradeAddedEstimate}, Cold: "stream", NoSources: true,
+	// version 4 of assistant/attempt writes its failure's retry_after as text;
+	// version 4 of assistant/message and 5 of assistant/attempt add the optional
+	// client (the client invocation of a signed-in client route, DH-D-LLM-12).
+	AssistantMessage = mustCoreSurface(Spec[AssistantMessagePayload]{Name: "assistant/message", Version: 4,
+		Upgrades: map[int]Upgrade{1: upgradeAddedServedBy, 2: upgradeAddedEstimate, 3: upgradeAddedClient}, Cold: "stream", NoSources: true,
 		Validate: func(p AssistantMessagePayload) error { return needRole(p.Message, vocab.RoleAssistant) }})
-	AssistantAttempt = mustCore(Spec[AssistantAttemptPayload]{Name: "assistant/attempt", Version: 4, Cold: "stream",
-		Upgrades: map[int]Upgrade{1: upgradeAddedServedBy, 2: upgradeAddedEstimate, 3: DurationsAsText("failure.retry_after")}})
+	AssistantAttempt = mustCore(Spec[AssistantAttemptPayload]{Name: "assistant/attempt", Version: 5, Cold: "stream",
+		Upgrades: map[int]Upgrade{1: upgradeAddedServedBy, 2: upgradeAddedEstimate, 3: DurationsAsText("failure.retry_after"), 4: upgradeAddedClient}})
 
 	ToolCall = mustCore(Spec[ToolCallPayload]{Name: "tool/call", Version: 1,
 		Validate: func(p ToolCallPayload) error {
@@ -254,6 +292,10 @@ func upgradeAddedServedBy(raw json.RawMessage) (json.RawMessage, error) { return
 // upgradeAddedEstimate is the identity: version 3 only adds the optional
 // estimate, and a version-2 payload, which has none, left it unknown.
 func upgradeAddedEstimate(raw json.RawMessage) (json.RawMessage, error) { return raw, nil }
+
+// upgradeAddedClient is the identity: the new versions only add the optional
+// client, and an older payload, which has none, was not on a client route.
+func upgradeAddedClient(raw json.RawMessage) (json.RawMessage, error) { return raw, nil }
 
 // upgradeAddedStepCause is the identity: version 2 of step/end only adds the
 // optional cause, and a version-1 step, which has none, was not cancelled.

@@ -1811,6 +1811,28 @@ format; the key reaches it only through C18 (secret store) and C19 (egress).
   And vet exits 0 and the default gate runs none of them
   ```
 
+**The three DH-S-9 real-environment scenarios on the signed-in client routes.** These
+are `DH-E-*` scenarios, not gate scenarios, so they are described here and never as
+`- **Scenario:**` bullets. Under OWNER-2 (no DeepSeek, no API key) gap-closure-plan
+step 16.5.8 (M1-D-CLOSE-4 A) re-authored the three files onto the signed-in client
+routes of `llm.md` DH-D-LLM-12, with "signed out" replacing "bad key". They are
+authored and reviewed, never run in M1, and execute at DH-S-17. Each runs one subtest
+per route: `claude-code` must pass and `copilot-cli` is run and its result recorded
+either way (M1-D-LOOP-6 A). The full rows are `docs/harness/areas/llm.md` DH-E-LLM-1
+and DH-E-LLM-3 and `session-views.md` DH-E-VIEW-1. The route helpers are
+`signedin_routes_test.go` and, for the Copilot leg, `signedin_routes_copilot_test.go`.
+
+| Scenario (file, test) | Given | When | Then |
+|---|---|---|---|
+| DH-E-LLM-1 (`llm_turn_scenario_test.go`, `TestTurnWithReasoningAndToolCall`) | The built dsh, a fresh temporary home, no API key anywhere; the user's own installed client on the `PATH`, signed in by the user, its route registered by a layer; a model and reasoning effort at which it reasons; one harmless SDK client tool | (1) Send a prompt that requires the tool; (2) let the turn finish; (3) send a second prompt and cancel it after its first text delta | Turn 1 has two steps, each attempt one `assistant/message` recording its client invocation; step 1 carries reasoning and a tool call with valid JSON arguments, which the client did not run and the harness ran once; turn 2 ends aborted with one `assistant/attempt` of class `cancelled` and its cause; `tokenUsage` equals the sum of the client-reported usage of the three attempts |
+| DH-E-LLM-3 (`llm_signed_out_scenario_test.go`, `TestSignedOutIsAFact`) | The built dsh, fresh temporary homes, no API key anywhere; a layer registering the route under test and the other client route as a second route, retry mode `persistent` | (1) Send one prompt with the client's configuration home (`CLAUDE_CONFIG_DIR`, `COPILOT_HOME`) pointed at an empty temporary directory; then, signed in, (2) one prompt with `MaxTokens` set and (3) the same prompt without it | (1) The turn ends `llm/sign-in-required` with exactly one Permanent `assistant/attempt` recording its invocation, `llm/retry-abandoned{not-retryable}`, no `llm/retry`, and no settlement naming the second route's client; (2) the cap is refused before the client starts with `llm/unsupported-option` and not retried; (3) the turn completes with one `assistant/message` of the route's client and no executed tool call |
+| DH-E-VIEW-1 (`view_title_scenario_test.go`, `TestModelTitlesSession`) | The built dsh, an empty temporary home, no API key, the route's client signed in, the default title configuration | (1) Send one prompt; (2) read the session's events; (3) start a second dsh whose title route is the other client route, signed out, and send one prompt | (1) The list shows a fallback title and then a generated one; (2) `session/title-request` precedes the one accepted `session/title-attempt`, which records the client invocation, and a `session/title` cites it; (3) that session keeps its fallback, holds one failed title attempt, and its turn completed normally |
+
+Cleanup for all three: the launcher deletes the temporary homes and the empty
+configuration homes; nothing of the user's sign-in is read or changed; on failure the
+exported session logs are kept and the client invocations logged. Review: the owner,
+in the Phase 16 PR (pending; recorded in `evidence/DH-S-9.md`).
+
 ---
 
 # Phase 10: Tool Pipeline Approvals and Human Commands
@@ -1887,7 +1909,7 @@ DH-D-STORAGE-6; DH-D-AGENT-2; DH-D-HUMAN-2,3,5,6).
   @TC-10a @proof:in-process @DH-D-HUMAN-2
   Given a tool requiring approval, present in the prompt's tool list, and no answerer
   When the model calls it
-  Then the approval outcome is no-answerer and an attributed audit event is logged
+  Then the approval outcome is unavailable and an attributed audit event is logged
   And the body counter is 0 and the tool was still listed in the prompt
   ```
 - **Scenario Outline:** Approval yields one closed outcome
@@ -1895,13 +1917,18 @@ DH-D-STORAGE-6; DH-D-AGENT-2; DH-D-HUMAN-2,3,5,6).
   @TC-10a @proof:in-process @DH-D-HUMAN-2
   Given a tool requiring approval and a fake answerer that <behaves>
   When the model calls it
-  Then the outcome is <outcome>, one audit event names the answerer, and the body ran <n> times
+  Then the outcome is <outcome> with tool code <code>, one audit event names who decided (principal, channel and peer), and the body ran <n> times
   Examples:
-    | behaves                         | outcome      | n |
-    | approves                        | approved     | 1 |
-    | denies                          | denied       | 0 |
-    | never answers (virtual timeout) | timeout      | 0 |
+    | behaves                                     | outcome          | code                 | n |
+    | allows once                                 | allowed-once     | (none)               | 1 |
+    | is not asked: a session grant covers it     | allowed-by-grant | (none)               | 1 |
+    | rejects                                     | rejected         | approval/rejected    | 0 |
+    | is not asked: the session's policy is never | rejected         | approval/rejected    | 0 |
+    | never answers and the call is cancelled     | cancelled        | approval/cancelled   | 0 |
+    | never answers (set timeout, virtual clock)  | unavailable      | approval/unavailable | 0 |
+    | is not bound, or panics                     | unavailable      | approval/unavailable | 0 |
   ```
+  The vocabulary is M1-D-PIPE-1 A: a timeout is `unavailable` with detail `timeout`, and the default timeout is 0 (wait).
 - **Scenario:** Logged arguments are never rewritten
   ```gherkin
   @TC-10a @proof:in-process @DH-D-TOOLS-2 @edge

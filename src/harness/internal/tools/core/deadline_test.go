@@ -377,8 +377,10 @@ func resultsOf(t *testing.T, h session.Handle) (map[string]event.ToolResultPaylo
 	return out, sizes
 }
 
-// DH-T-TOOLS-6 (ceiling): with no spill seat, a result above maxResultBytes is
+// DH-T-TOOLS-7 (ceiling): with no spill seat, a result above maxResultBytes is
 // cut at a rune boundary with a marker and Truncated is set.
+//
+//dsh:test DH-T-TOOLS-7
 func TestResultCeiling(t *testing.T) {
 	e := newEnv(t)
 	svc := e.pipeline(t, core.Config{MaxResultBytes: 101, Checkpoint: recCheckpoint{&trace{}}})

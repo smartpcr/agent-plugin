@@ -158,7 +158,7 @@ func TestPendingIsAddressableByAgent(t *testing.T) {
 		t.Fatalf("PendingAll = %+v, want A's then B's", all)
 	}
 
-	by := human.Actor{Channel: "ui", Name: "alice"}
+	by := human.Actor{Channel: "ui", Name: "alice", Peer: "tab-1"}
 	if err := e.reg.Answer(context.Background(), by, got[0].ID, human.Answer{Outcome: human.OutcomeAllowedOnce}); err != nil {
 		t.Fatalf("Answer: %v", err)
 	}
@@ -180,6 +180,36 @@ func TestPendingIsAddressableByAgent(t *testing.T) {
 	e.reg.Close()
 	if r := wait(t, askB); r.ans.Outcome != human.OutcomeUnavailable || r.ans.Detail != "host-stopping" {
 		t.Fatalf("B after Close = %+v", r)
+	}
+}
+
+// DH-T-HUMAN-1 (the actor): the asker gets back the actor that settled its item,
+// channel, name and peer exactly as the answerer gave them (an in-process
+// answerer's peer included); a settlement the registry makes itself
+// (unavailable) has no actor.
+//
+//dsh:test DH-T-HUMAN-1
+func TestActorRoundTrip(t *testing.T) {
+	e := newEnv(t)
+	ui, _ := e.answerer("ui")
+	a := ref("ses-actor")
+	e.bind(a, human.Binding{Channel: "ui"})
+	for _, tc := range []struct{ by, want human.Actor }{
+		{human.Actor{Channel: "ui", Name: "alice", Peer: "p1"}, human.Actor{Channel: "ui", Name: "alice", Peer: "p1"}},
+		{human.Actor{Channel: "ui", Name: "bob", Peer: human.PeerInProcess}, human.Actor{Channel: "ui", Name: "bob", Peer: human.PeerInProcess}},
+		{human.Actor{Channel: "ui", Name: "carol"}, human.Actor{Channel: "ui", Name: "carol"}},
+	} {
+		res := e.ask(context.Background(), human.Item{Kind: human.KindApproval, To: human.Audience{Agent: a}})
+		it := delivered(t, ui)
+		if err := e.reg.Answer(context.Background(), tc.by, it.ID, human.Answer{Outcome: human.OutcomeAllowedOnce}); err != nil {
+			t.Fatal(err)
+		}
+		if got := wait(t, res); got.err != nil || got.by != tc.want {
+			t.Fatalf("answered by %+v: the asker got %+v, want %+v", tc.by, got, tc.want)
+		}
+	}
+	if got := wait(t, e.ask(context.Background(), human.Item{Kind: human.KindApproval, To: human.Audience{Agent: ref("ses-unbound")}})); got.by != (human.Actor{}) {
+		t.Fatalf("a registry settlement has actor %+v", got.by)
 	}
 }
 

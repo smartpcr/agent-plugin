@@ -47,9 +47,40 @@ type DerivedRefuser interface {
 	RefuseDerived(key string) error
 }
 
+// Option configures Run.
+type Option func(*options)
+
+type options struct{ hooksOptional bool }
+
+// WithoutTestHooks runs the suite against a store built without its test-only
+// fixture hooks: a production build, as an end-to-end run links it, where a hook
+// a provider declares in a _test.go file (sqlite's RefuseDerived) does not
+// exist. A case that needs a missing hook is skipped with that reason instead of
+// failing. A provider's own unit run passes no option, so there a missing hook
+// still fails its case.
+func WithoutTestHooks() Option { return func(o *options) { o.hooksOptional = true } }
+
+// HookCases names each case that needs a test-only fixture hook, and the hook;
+// a run WithoutTestHooks skips exactly these when the store lacks the hook.
+var HookCases = map[string]string{"DerivedRowRefused": "storetest.DerivedRefuser"}
+
+// hasHook reports whether s has the hook case needs.
+func hasHook(name string, s store.Store) bool {
+	switch name {
+	case "DerivedRowRefused":
+		_, ok := s.(DerivedRefuser)
+		return ok
+	}
+	return true
+}
+
 // Run runs every case of the suite against stores from factory, each case on a
 // fresh store.
-func Run(t *testing.T, factory Factory) {
+func Run(t *testing.T, factory Factory, opts ...Option) {
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
 	cases := []struct {
 		name string
 		run  func(t *testing.T, s store.Store)
@@ -85,6 +116,9 @@ func Run(t *testing.T, factory Factory) {
 			s := factory(t)
 			if s == nil {
 				t.Fatal("the factory returned no store")
+			}
+			if hook, ok := HookCases[c.name]; ok && o.hooksOptional && !hasHook(c.name, s) {
+				t.Skipf("%T has no %s: the hook is test-only (declared in the provider's _test.go), so this build cannot run the case; the provider's unit run does", s, hook)
 			}
 			c.run(t, s)
 		})

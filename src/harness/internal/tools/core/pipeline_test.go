@@ -211,8 +211,10 @@ func ask(_ context.Context, c tools.Call) tools.Decision {
 	return tools.Ask("adds", "")
 }
 
-// DH-T-TOOLS-3, TC-10a: arguments that break the schema never reach the body; the
+// DH-T-TOOLS-4, TC-10a: arguments that break the schema never reach the body; the
 // model gets a validation error.
+//
+//dsh:test DH-T-TOOLS-4
 func TestSchemaBreakingArgumentsNeverReachTheBody(t *testing.T) {
 	e := newEnv(t)
 	tr := &trace{}
@@ -235,7 +237,9 @@ func TestSchemaBreakingArgumentsNeverReachTheBody(t *testing.T) {
 	}
 }
 
-// DH-T-TOOLS-4: the stages run in their fixed order.
+// DH-T-TOOLS-3: the stages run in their fixed order.
+//
+//dsh:test DH-T-TOOLS-3
 func TestStageOrderFixed(t *testing.T) {
 	e := newEnv(t)
 	tr := &trace{}
@@ -283,7 +287,7 @@ func TestStageOrderFixed(t *testing.T) {
 			t.Fatalf("read %d of Input is %#v, want the validated addIn{1,2}", i, v)
 		}
 	}
-	if res.IsError || res.Text != "3" || res.Approval != string(approval.OutcomeApproved) {
+	if res.IsError || res.Text != "3" || res.Approval != string(approval.OutcomeAllowedOnce) {
 		t.Fatalf("result %+v", res)
 	}
 	if got := strings.Join(types(t, h), ","); got != "tool/call,approval/asked,approval/decided,tool/result" {
@@ -294,6 +298,8 @@ func TestStageOrderFixed(t *testing.T) {
 // DH-T-TOOLS-3: a tool that is not registered, or registered but not admitted to
 // the step, is refused at resolve; nothing later runs and one tool/result closes
 // each call.
+//
+//dsh:test DH-T-TOOLS-3
 func TestUnknownOrUnadmittedToolRefusedBeforeExecution(t *testing.T) {
 	e := newEnv(t)
 	tr := &trace{}
@@ -349,8 +355,10 @@ func TestUnknownOrUnadmittedToolRefusedBeforeExecution(t *testing.T) {
 }
 
 // DH-S-10 exit evidence, SP-7: a tool needing approval, visible in the step, with
-// nobody to ask: the outcome is no-answerer, the audit pair is logged and the
+// nobody to ask: the outcome is unavailable, the audit pair is logged and the
 // body never runs; the tool was not hidden.
+//
+//dsh:test DH-T-TOOLS-5
 func TestNoAnswererMeansNoThroughTheExecutor(t *testing.T) {
 	e := newEnv(t)
 	tr := &trace{}
@@ -369,7 +377,7 @@ func TestNoAnswererMeansNoThroughTheExecutor(t *testing.T) {
 	if tr.count("body") != 0 {
 		t.Fatal("the body ran")
 	}
-	if res.Approval != string(approval.OutcomeNoAnswerer) || res.Code != tools.CodeApprovalNoAnswerer || res.Stage != tools.StageApproval || res.By != core.ByApproval {
+	if res.Approval != string(approval.OutcomeUnavailable) || res.Code != tools.CodeApprovalUnavailable || res.Stage != tools.StageApproval || res.By != core.ByApproval {
 		t.Fatalf("result %+v", res)
 	}
 	if got := strings.Join(types(t, h), ","); got != "tool/call,approval/asked,approval/decided,tool/result" {
@@ -380,7 +388,7 @@ func TestNoAnswererMeansNoThroughTheExecutor(t *testing.T) {
 	if err := json.Unmarshal([]byte(evs[6].Raw()), &dec); err != nil {
 		t.Fatal(err)
 	}
-	if dec.Outcome != approval.OutcomeNoAnswerer || dec.By.Principal == "" {
+	if dec.Outcome != approval.OutcomeUnavailable || dec.By.Principal == "" {
 		t.Fatalf("decided %+v", dec)
 	}
 }
@@ -394,9 +402,9 @@ func TestApprovalOutcomesThroughTheExecutor(t *testing.T) {
 		code tools.Code
 		runs int
 	}{
-		{human.OutcomeAllowedOnce, approval.OutcomeApproved, "", 1},
-		{human.OutcomeDenied, approval.OutcomeDenied, tools.CodeApprovalDenied, 0},
-		{human.OutcomeUnavailable, approval.OutcomeNoAnswerer, tools.CodeApprovalNoAnswerer, 0},
+		{human.OutcomeAllowedOnce, approval.OutcomeAllowedOnce, "", 1},
+		{human.OutcomeDenied, approval.OutcomeRejected, tools.CodeApprovalRejected, 0},
+		{human.OutcomeUnavailable, approval.OutcomeUnavailable, tools.CodeApprovalUnavailable, 0},
 	} {
 		t.Run(string(tc.ans), func(t *testing.T) {
 			e := newEnv(t)
@@ -419,6 +427,8 @@ func TestApprovalOutcomesThroughTheExecutor(t *testing.T) {
 
 // Denial is enforced in the executor: the strongest verdict wins whatever the
 // order, a guard denies on its own, and the tool stays in the view.
+//
+//dsh:test DH-T-TOOLS-5
 func TestDenialEnforcedInTheExecutor(t *testing.T) {
 	e := newEnv(t)
 	tr := &trace{}
@@ -462,6 +472,8 @@ var call2 = [2]string{"add", `{"a":3,"b":4}`}
 
 // The logged arguments are the model's bytes; nothing a listener does to the
 // Call's arguments reaches the log or the body.
+//
+//dsh:test DH-T-TOOLS-4
 func TestLoggedArgumentsNeverRewritten(t *testing.T) {
 	e := newEnv(t)
 	var got addIn

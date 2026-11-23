@@ -10,10 +10,12 @@ import (
 
 // CheckpointKey and CheckpointVersion name the core folds' checkpoint in the
 // store's checkpoint table (DH-T-SESSION-14). A checkpoint holds structure, not
-// message text or schemas: Restore reads the cited events back.
+// message text or schemas: Restore reads the cited events back. Version 2 adds
+// each unanswered call's Held approval (plan 16.1.4); a version-1 checkpoint is
+// refused, so the session folds its log from the start and finds the holds.
 const (
 	CheckpointKey     = "core/surface"
-	CheckpointVersion = 1
+	CheckpointVersion = 2
 )
 
 type cpNode struct {

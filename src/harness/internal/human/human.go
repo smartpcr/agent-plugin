@@ -31,10 +31,25 @@ const (
 // Channel is a carrier's answering channel: ui, sdk, acp, cli.
 type Channel string
 
-// Actor is who settled an interaction.
+// PeerRef names the carrier connection an answer arrived from: one browser
+// session, one SDK client, the terminal that started the host. A carrier builds
+// it from the peer it admitted, never from request data (DH-ADR-SECURITY-8).
+type PeerRef string
+
+// PeerInProcess is the peer of an answer given inside the host process, with no
+// carrier connection behind it: a test answerer, or a compiled-in component. An
+// actor that names no peer stands for it: the registry hands the actor back as
+// the answerer gave it, and an audit record of it names this peer.
+const PeerInProcess PeerRef = "in-process"
+
+// Actor is who settled an interaction: the person or client (Name), the channel
+// the answer came through, and the peer (connection) on that channel. Each
+// answerer sets all three; the registry returns them unchanged to the asker and
+// the audit records them (DH-D-HUMAN-1).
 type Actor struct {
 	Channel Channel
 	Name    string
+	Peer    PeerRef
 }
 
 // Outcome is the closed settlement vocabulary.

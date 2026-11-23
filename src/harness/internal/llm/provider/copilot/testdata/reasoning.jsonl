@@ -1,0 +1,10 @@
+{"type":"dsh_fixture","note":"SYNTHETIC, pending the 16.5.9 recording: written from docs/harness/libs/github-copilot-cli.md sec. 5.2 and 5.4 (Help 1.0.115-7; field names from the lib record, which cites the SDK event names and a third-party parser; 2026-11-23), not recorded from a real client. {{session_id}} is filled by the test stand-in."}
+{"type":"session.start","data":{"sessionId":"{{session_id}}","selectedModel":"claude-sonnet-4.5"},"id":"e-0001","timestamp":"2026-11-23T00:00:00.000Z","parentId":null}
+{"type":"assistant.turn_start","data":{"turnId":"0"},"id":"e-0002","timestamp":"2026-11-23T00:00:00.100Z"}
+{"type":"assistant.reasoning_delta","data":{"reasoningId":"rsn-1","deltaContent":"The user "},"id":"e-0003","ephemeral":true}
+{"type":"assistant.reasoning_delta","data":{"reasoningId":"rsn-1","deltaContent":"greets."},"id":"e-0004","ephemeral":true}
+{"type":"assistant.reasoning","data":{"reasoningId":"rsn-1","content":"The user greets."},"id":"e-0005"}
+{"type":"assistant.message_delta","data":{"messageId":"msg-1","deltaContent":"Hi."},"id":"e-0006","ephemeral":true}
+{"type":"assistant.message","data":{"messageId":"msg-1","content":"Hi.","toolRequests":[]},"id":"e-0007"}
+{"type":"assistant.turn_end","data":{"turnId":"0"},"id":"e-0009","timestamp":"2026-11-23T00:00:01.900Z"}
+{"type":"result","timestamp":"2026-11-23T00:00:02.000Z","sessionId":"{{session_id}}","exitCode":0}

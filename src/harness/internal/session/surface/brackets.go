@@ -1,6 +1,7 @@
 package surface
 
 import (
+	"encoding/json"
 	"fmt"
 	"slices"
 
@@ -16,6 +17,10 @@ type Call struct {
 	Seq event.Seq
 	// Started is set by the tool/call that began running it.
 	Started bool
+	// Held is the id of the approval that holds the call's body back: set by an
+	// approval/asked for the call, cleared by an approval/decided that allows it.
+	// A held call's body never started, so its closer says it did not run.
+	Held string `json:"held,omitempty"`
 }
 
 // Brackets is the open turn, the open step and the unanswered calls, as values
@@ -161,6 +166,54 @@ func (b Brackets) planResult(rec event.Record, callID string) (Brackets, error) 
 	return n, nil
 }
 
+// The approval audit types (human/approval owns them; surface cannot import it,
+// so it matches their names, and a test there checks they are equal). Only the
+// two fields every version of them carries are read: the request id and the call.
+const (
+	ApprovalAskedType   = "approval/asked"
+	ApprovalDecidedType = "approval/decided"
+)
+
+// approvalRef is the part of an approval/asked or approval/decided the brackets
+// read: which request, for which call, and how it settled.
+type approvalRef struct {
+	ID      string `json:"id"`
+	Call    string `json:"call"`
+	Outcome string `json:"outcome"`
+}
+
+// allowedOutcomes are the approval/decided outcomes that let the body start,
+// across versions: version 2's two allowed outcomes and version 1's approved.
+var allowedOutcomes = []string{"allowed-once", "allowed-by-grant", "approved"}
+
+// planApproval holds or releases an unanswered, started call on an approval
+// record for it: approval/asked holds it, an approval/decided that allows it
+// releases it, one that refuses keeps it held (its body never runs). A record
+// that does not name an unanswered call, or whose payload does not decode,
+// changes nothing: the approval types are not the core's to judge, so they never
+// fail a fold.
+func (b Brackets) planApproval(rec event.Record) (Brackets, bool) {
+	var a approvalRef
+	if json.Unmarshal([]byte(rec.Payload), &a) != nil || a.ID == "" || a.Call == "" {
+		return b, false
+	}
+	i := b.call(a.Call)
+	if i < 0 || !b.Calls[i].Started {
+		return b, false
+	}
+	n := b.clone()
+	switch rec.Type {
+	case ApprovalAskedType:
+		n.Calls[i].Held = a.ID
+	case ApprovalDecidedType:
+		if n.Calls[i].Held != a.ID || !slices.Contains(allowedOutcomes, a.Outcome) {
+			return b, false
+		}
+		n.Calls[i].Held = ""
+	}
+	return n, true
+}
+
 // Cause is why the core closes an open turn.
 type Cause string
 
@@ -172,9 +225,10 @@ const (
 )
 
 // Closers are the events that close b, in order: an error tool/result for each
-// unanswered call (tools/not-started if no tool/call began it, otherwise
-// tools/outcome-unknown), then step/end for an open step, then turn/end with
-// reason interrupted and cause for an open turn. at is the seq the first closer
+// unanswered call (tools/not-started if no tool/call began it; approval/
+// unavailable if its approval was asked and not allowed, so its body never ran;
+// otherwise tools/outcome-unknown), then step/end for an open step, then
+// turn/end with reason interrupted and cause for an open turn. at is the seq the first closer
 // will take; message ids derive from it, so the closers of one position are the
 // same bytes on every run. A caller appends them as one group, by the core.
 func Closers(b Brackets, cause Cause, at event.Seq) ([]event.Draft, error) {
@@ -184,7 +238,10 @@ func Closers(b Brackets, cause Cause, at event.Seq) ([]event.Draft, error) {
 	var out []event.Draft
 	for i, c := range b.Calls {
 		code, text := CodeToolNotStarted, fmt.Sprintf("the tool call %q was not started before the turn was closed (%s)", c.Name, cause)
-		if c.Started {
+		switch {
+		case c.Started && c.Held != "":
+			code, text = CodeApprovalUnavailable, fmt.Sprintf("the tool call %q did not run: its approval was asked and not given before the turn was closed (%s)", c.Name, cause)
+		case c.Started:
 			code, text = CodeToolOutcomeUnknown, fmt.Sprintf("the outcome of the tool call %q is unknown: the turn was closed while it ran (%s)", c.Name, cause)
 		}
 		msg, err := vocab.RestoreMessage(fmt.Sprintf("msg_closer_%d_%d", at, i), vocab.RoleTool,

@@ -787,6 +787,50 @@ The earlier WSL run at `3695cc2` stopped at `coverage` (`testkit/corpus` at 65.4
 the gate skips `^TestBudget` tests and the package's only Budget test had that name); its
 record is kept in `runs/`. `6e7514c` renames the test.
 
+## Phase 16 exit gate runs
+
+Gap-closure Phase 16 (stages 16.1 to 16.5), Rule 2. `manual`. **Both local lanes pass all 12
+gates at one commit, `f72f435`**, the closing commit for Phase 16's gate evidence (the
+record files were committed after it, in `e140a85`). The records of DH-S-9 and DH-S-10
+cite this section as their gate record.
+
+| Field | WSL lane | Windows lane |
+| --- | --- | --- |
+| Run-record id | `wsl-f72f435-20261123T1041Z` | `win-f72f435-20261123T1041Z` |
+| Record file and SHA-256 | [runs/wsl-f72f435-20261123T1041Z.txt](runs/wsl-f72f435-20261123T1041Z.txt), `dac33d4b6dab2f61598efc11253321cf878bc3a3f3af9a1661651ba0ca4c257b` | [runs/win-f72f435-20261123T1041Z.txt](runs/win-f72f435-20261123T1041Z.txt), `3daf59117de94b858462c5aea1a5c844f06fcd727c41342117983ba0b5aadda4` |
+| Output SHA-256 (`sha256:` line) | `170dee9aa2f953ed874032f5677ff57868b51a35edcbf76a9ada43acba7c1e8c` | `960105f8484ae4ccb71003eb5d3ff2b0d2c43e6d9f1ee8f66577f317c52a932c` |
+| Rehearsal file and SHA-256 | [runs/wsl-f72f435-20261123T1041Z-rehearse.txt](runs/wsl-f72f435-20261123T1041Z-rehearse.txt), `988772c0909fe19b9034bb5aebf087c940b411c44c900be02b7981b02e15a396`; each binary `vcs.modified=false`, nothing published | -- (WSL lane only) |
+| Operator | the lead (lane script) | the lead (lane script) |
+| Commit | `f72f43585c043c9ce0bc8dfe9f4fc05e64d11477` | the same |
+| git status --porcelain | empty (`tree: clean`) | empty (`tree: clean`) |
+| System | Ubuntu 24.04.5 LTS (`Ubuntu-24.04`), kernel `6.18.58.1-microsoft-standard-WSL2` | Microsoft Windows [Version 10.0.28000.3501] |
+| Go | go1.27.4 linux/amd64 (`/usr/local/go`) | go1.27.4 windows/amd64 (`C:\Program Files\Go`) |
+| CC and gcc | `gcc`, gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 | `gcc`, gcc (Rev5, Built by MSYS2 project) 16.1.0 |
+| Started, ended (UTC) | 2026-11-23T10:41:42Z, 10:50:07Z | 2026-11-23T10:41:42Z, 11:10:35Z |
+| Exit status | 0 | 0 |
+| Result | `harness-gate: PASSED all 12 gates` | `harness-gate: PASSED all 12 gates` |
+| Reasoned exceptions | 41 (typeassert 38, SA1019 1, SA2001 1, U1000 1) | the same |
+| Gate times (selected) | test 2m49s, coverage 4m36s, self 30s | test 5m9s, coverage 15m56s, self 4m54s |
+| CI run ids (supplementary) | none | none |
+| macOS | out of scope (`platforms-windows-wsl`) | |
+
+The systems, toolchains and gate list are unchanged from the Phase 15 runs above.
+
+**Earlier runs in Phase 16, kept as history (not closure evidence).** Two failed, and each
+failure was fixed before `f72f435`:
+- **WSL at `7976094` failed at `staticcheck`**
+  ([runs/wsl-7976094-20261123T0959Z.txt](runs/wsl-7976094-20261123T0959Z.txt), with its
+  rehearsal record): S1016 at `human/approval/policy.go:76` (a struct literal where a type
+  conversion would do). Fixed in `593059d`. A WSL run at `593059d` then passed all 12
+  gates; it was an interim run and no record was kept.
+- **Windows at `d67d483` failed at `test`**
+  ([runs/win-d67d483-20261123T1028Z.txt](runs/win-d67d483-20261123T1028Z.txt)):
+  `TestFlowF2CheckpointOracleCatchesAMissingFlush` hit "wait idle: context deadline
+  exceeded" after 14.27 s under the whole-module `-race` load. It did not reproduce on its
+  own: 120 runs at `-cpu=1,2,8` all passed. `f72f435` gives the F2 idle waits one named
+  one-minute bound, `f2IdleBound`. The WSL run at `d67d483` passed all 12 gates; it was
+  superseded by `f72f435` and no record was kept.
+
 ## Evidence record (impl.md sec. 7.3)
 
 These are the eight fields of [impl.md sec. 7.3](../../../harness/impl.md#73-the-evidence-record),

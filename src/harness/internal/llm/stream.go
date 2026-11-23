@@ -28,6 +28,9 @@ func (p *prepared) Stream(ctx context.Context, req session.Request, sink Attempt
 		}
 		fin, asm := p.run(ctx, req, yield, &rec)
 		p.settle(&rec, fin, asm)
+		if r, ok := p.call.(InvocationReporter); ok && rec.ServedBy == "" {
+			rec.Client = r.Invocation()
+		}
 		if fin.yield {
 			yield(rec.Finish)
 		}

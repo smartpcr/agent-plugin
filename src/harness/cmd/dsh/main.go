@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/cli"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/provider/clientroute/listing"
 
 	// The zone database is embedded so that zone names resolve the same on every
 	// host, a Windows host without Go installed included (DH-T-TEMPORAL-5).
@@ -22,5 +23,11 @@ var version string
 var exit = os.Exit
 
 func main() {
+	// The listing-only MCP server a signed-in client route's client starts
+	// (DH-ADR-LLM-10) is a hidden mode dispatched before the command tree.
+	if code, ok := listing.ServeIfAsked(os.Args[1:], os.Stdin, os.Stdout, os.Stderr); ok {
+		exit(code)
+		return
+	}
 	exit(cli.Main(context.Background(), cli.ProcessEnv(version)))
 }

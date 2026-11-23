@@ -1,0 +1,4 @@
+{"type":"dsh_fixture","note":"SYNTHETIC, pending the 16.5.9 recording: written from docs/harness/libs/github-copilot-cli.md sec. 5.2 and 5.4 (Help 1.0.115-7; field names from the lib record, which cites the SDK event names and a third-party parser; 2026-11-23), not recorded from a real client. {{session_id}} is filled by the test stand-in."}
+{"type":"session.start","data":{"sessionId":"{{session_id}}","selectedModel":"claude-sonnet-4.5"},"id":"e-0001","timestamp":"2026-11-23T00:00:00.000Z","parentId":null}
+{"type":"session.error","data":{"errorType":"authentication","message":"No authentication information found for gho_PLANTEDPLANTED"},"id":"e-0002"}
+{"type":"result","timestamp":"2026-11-23T00:00:02.000Z","sessionId":"{{session_id}}","exitCode":1}

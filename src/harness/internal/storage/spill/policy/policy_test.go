@@ -103,6 +103,8 @@ func (s *seat) SetSpill(_ *cordis.Context, id string, f tools.SpillShaper) (*cor
 
 // Mount files the policy in the registry's seat under its ceiling, and passes
 // the registry's refusal on.
+//
+//dsh:test DH-T-STORAGE-10
 func TestPolicyMount(t *testing.T) {
 	s := store(t)
 	svc := &seat{limit: 256 << 10}
@@ -120,6 +122,8 @@ func TestPolicyMount(t *testing.T) {
 
 // DH-T-STORAGE-11: an unmappable path is cited by id, and a save that fails at
 // write or close leaves no file and says so with its reason clipped.
+//
+//dsh:test DH-T-STORAGE-11
 func TestPolicyUnmappedAndBrokenWriter(t *testing.T) {
 	text := strings.Repeat("y", 100_000)
 	base := store(t)
@@ -148,6 +152,8 @@ func TestPolicyUnmappedAndBrokenWriter(t *testing.T) {
 
 // DH-T-STORAGE-12: a budget below the minimum, or one the registry's ceiling
 // would cut, is refused at load.
+//
+//dsh:test DH-T-STORAGE-12
 func TestPolicyConfigRefused(t *testing.T) {
 	s := store(t)
 	for _, tc := range []struct {
@@ -174,6 +180,8 @@ func TestPolicyConfigRefused(t *testing.T) {
 
 // DH-T-STORAGE-11: a failed save still bounds the result, gives no reference
 // and says the full result was not saved; so does a call with no session.
+//
+//dsh:test DH-T-STORAGE-11
 func TestPolicyFailedSaveStillBounds(t *testing.T) {
 	text := strings.Repeat("x", 100_000)
 	for name, tc := range map[string]struct {
@@ -196,6 +204,8 @@ func TestPolicyFailedSaveStillBounds(t *testing.T) {
 
 // DH-T-STORAGE-12 (property): no accepted budget yields an over-budget result,
 // whatever the text's size and runes, and a saved file holds the whole text.
+//
+//dsh:test DH-T-STORAGE-12
 func TestPolicyNeverOverBudget(t *testing.T) {
 	s := store(t)
 	rng := rand.New(rand.NewPCG(1, 2))

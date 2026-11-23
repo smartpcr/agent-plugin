@@ -16,6 +16,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/checkpoint"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/scope"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools/internal/body"
 )
@@ -63,7 +64,7 @@ type Config struct {
 	Clock Clock
 	// Approval is the service an Ask is put to; nil is the one mounted under
 	// approval.Key on the registry's context, or, when none is, a service with no
-	// registry, which settles every request no-answerer (SP-7).
+	// registry, which settles every request unavailable (SP-7).
 	Approval *approval.Service
 	// Checkpoint is the tool-body checkpoint; nil is the policy mounted on the
 	// registry's context (checkpoint.Mounted).
@@ -142,6 +143,8 @@ type listeners struct {
 	shapers  []named[tools.Shaper]
 	finals   []named[tools.Shaper]
 	spill    *named[tools.SpillShaper] // the nearest layer's seat
+	// at is the scope of the batch's agent, which tools.Settled is about.
+	at scope.Key
 }
 
 func collect[F any](m map[uint64]named[F]) []named[F] {
@@ -158,7 +161,7 @@ func collect[F any](m map[uint64]named[F]) []named[F] {
 }
 
 func (r *registry) listenersAt(t tools.Target) listeners {
-	var ls listeners
+	ls := listeners{at: t.Scope}
 	for _, l := range r.layers.Chain(t.Scope) {
 		l.mu.RLock()
 		ls.policies = append(ls.policies, collect(l.policies)...)
@@ -222,6 +225,7 @@ type ended struct {
 	msg      string
 	value    any
 	approval string
+	grant    string
 	cause    tools.Cause
 }
 
@@ -321,16 +325,24 @@ func (r *registry) prepare(ctx context.Context, b tools.Batch, ag agent.Ref, ls 
 		}
 	}
 
-	// 5. Approval, only for an Ask. Nobody to ask means no.
-	outcome := ""
+	// 5. Approval, only for an Ask. Nobody to ask means no: a call attributed to
+	// no agent has nobody to ask on its behalf, so it is unavailable without a
+	// request. The policy's subject, if any, is what a session grant can match;
+	// the approval service, not the pipeline, matches and creates grants.
+	outcome, grant := "", ""
 	if dec.Verdict == tools.VerdictAsk {
+		if ag.IsZero() {
+			e := stop(tools.StageApproval, tools.CodeApprovalUnavailable, ByApproval, "the call is attributed to no agent, so nobody can be asked to approve it")
+			e.approval = string(approval.OutcomeUnavailable)
+			return early(call, e)
+		}
 		display := dec.Display
 		if display == "" {
 			display = req.Arguments
 		}
 		ad, err := requestApproval(ctx, r.approvalService(), b.Log, approval.Request{Agent: ag, Tool: d.Name(), Call: req.ID,
-			Parent: b.Parent, Origin: string(b.Origin), Reason: dec.Reason, Display: display})
-		outcome = string(ad.Outcome)
+			Parent: b.Parent, Origin: string(b.Origin), Reason: dec.Reason, Display: display, Subject: approvalSubject(dec.Subject)})
+		outcome, grant = string(ad.Outcome), ad.Grant
 		// A wait ended by the turn's context is an abort, settled below, not the
 		// approver's refusal.
 		if ctx.Err() == nil && (err != nil || !ad.Approved()) {
@@ -339,10 +351,13 @@ func (r *registry) prepare(ctx context.Context, b tools.Batch, ag agent.Ref, ls 
 			return early(call, e)
 		}
 	}
+	// asked is e with the approval it passed, for every later end of the call.
+	asked := func(e ended) ended {
+		e.approval, e.grant = outcome, grant
+		return e
+	}
 	if ctx.Err() != nil {
-		e := stop(tools.StageApproval, tools.CodeAbortedBeforeStart, "", "cancelled: "+context.Cause(ctx).Error())
-		e.approval = outcome
-		return early(call, e)
+		return early(call, asked(stop(tools.StageApproval, tools.CodeAbortedBeforeStart, "", "cancelled: "+context.Cause(ctx).Error())))
 	}
 
 	// 6. Checkpoint: everything logged so far, the approval audit included, is
@@ -353,9 +368,7 @@ func (r *registry) prepare(ctx context.Context, b tools.Batch, ag agent.Ref, ls 
 		if errors.As(err, &ce) {
 			code = tools.Code(ce.Code)
 		}
-		e := stop(tools.StageFlush, code, "", err.Error())
-		e.approval = outcome
-		return early(call, e)
+		return early(call, asked(stop(tools.StageFlush, code, "", err.Error())))
 	}
 
 	// 7. The body, under its budget: a body that does not return within grace
@@ -363,15 +376,26 @@ func (r *registry) prepare(ctx context.Context, b tools.Batch, ag agent.Ref, ls 
 	// tool whose detached body still runs for this agent is busy, and so is a
 	// call whose resource keys conflict with such a body's.
 	if why := r.busy(ag, d.Name(), ov); why != "" {
-		e := stop(tools.StageBody, tools.CodeBusy, "", why)
-		e.approval = outcome
-		return early(call, e)
+		return early(call, asked(stop(tools.StageBody, tools.CodeBusy, "", why)))
 	}
 	return prepared{call: call, run: func() ended {
-		e := r.execute(ctx, b, d, bd, in, tools.Run{CallID: req.ID, Agent: ag}, ov)
-		e.approval = outcome
-		return e
+		return asked(r.execute(ctx, b, d, bd, in, tools.Run{CallID: req.ID, Agent: ag}, ov))
 	}}
+}
+
+// approvalSubject maps a policy's subject onto the approval service's (stage 4
+// of DH-D-TOOLS-2); nil for none or one that is not Valid, so the request offers
+// no session choice and matches no grant. The label goes with it, so the
+// answerer shows the scope in words; nothing matches on it.
+func approvalSubject(s *tools.Subject) *approval.Subject {
+	if s == nil || !s.Valid() {
+		return nil
+	}
+	if s.Kind == tools.SubjectApplication {
+		p, a, _ := strings.Cut(s.Name, ":")
+		return &approval.Subject{Kind: approval.ScopeApplication, Provider: p, App: a, Label: s.Label}
+	}
+	return &approval.Subject{Kind: approval.ScopeDirectory, Path: s.Name, Label: s.Label}
 }
 
 // registered reports whether any layer holds a tool of that name.
@@ -455,31 +479,38 @@ func guard(ctx context.Context, g named[tools.Guard], c tools.Call) (den *tools.
 func requestApproval(ctx context.Context, s *approval.Service, log approval.Log, r approval.Request) (d approval.Decision, err error) {
 	defer func() {
 		if x := recover(); x != nil {
-			d = approval.Decision{Outcome: approval.OutcomeNoAnswerer, Detail: fmt.Sprintf("the approval service panicked: %v", x)}
+			d = approval.Decision{Outcome: approval.OutcomeUnavailable, Detail: fmt.Sprintf("the approval service panicked: %v", x)}
 			err = fmt.Errorf("approval: %v", x)
 		}
 	}()
 	return s.Request(ctx, log, r)
 }
 
+// approvalCode is the tool code of a refusing outcome (tools.md stage 4); an
+// outcome outside the closed set, or an allowed one returned with an error, is
+// unavailable.
 func approvalCode(o approval.Outcome) tools.Code {
 	switch o {
-	case approval.OutcomeTimeout:
-		return tools.CodeApprovalTimeout
-	case approval.OutcomeNoAnswerer:
-		return tools.CodeApprovalNoAnswerer
+	case approval.OutcomeRejected:
+		return tools.CodeApprovalRejected
+	case approval.OutcomeCancelled:
+		return tools.CodeApprovalCancelled
 	}
-	return tools.CodeApprovalDenied
+	return tools.CodeApprovalUnavailable
 }
 
 func approvalText(d approval.Decision, err error) string {
 	switch {
 	case err != nil:
 		return "the approval could not be recorded: " + err.Error()
-	case d.Outcome == approval.OutcomeNoAnswerer:
+	case d.Outcome == approval.OutcomeUnavailable && d.Detail == approval.DetailTimeout:
+		return "nobody approved the call within its timeout"
+	case d.Outcome == approval.OutcomeUnavailable:
 		return "nobody could be asked to approve the call (" + d.Detail + ")"
-	case d.Outcome == approval.OutcomeTimeout:
-		return "nobody approved the call within " + d.Detail
+	case d.Outcome == approval.OutcomeCancelled:
+		return "the approval was cancelled before anyone answered (" + d.Detail + ")"
+	case d.Outcome == approval.OutcomeRejected && d.Detail == approval.DetailPolicyNever:
+		return "the session's approval policy is never: nobody is asked and the call is rejected"
 	}
 	s := "the call was not approved by " + d.By.Principal
 	if d.Detail != "" {
@@ -516,6 +547,7 @@ type resultMeta struct {
 	Stage        tools.Stage  `json:"stage"`
 	By           string       `json:"by,omitempty"`
 	Approval     string       `json:"approval,omitempty"`
+	Grant        string       `json:"grant,omitempty"`
 	Cause        tools.Cause  `json:"cause,omitempty"`
 	Truncated    bool         `json:"truncated,omitempty"`
 	Spill        *event.Spill `json:"spill,omitempty"`
@@ -613,14 +645,14 @@ func ceiling(text string, limit int) (string, bool) {
 // settle is stage 8: validate and render a body's value, run the shapers (a
 // refused call included), and append the one tool/result of the call.
 func (r *registry) settle(ctx context.Context, b tools.Batch, ls listeners, c tools.Call, e ended) (tools.Result, error) {
-	res := tools.Result{CallID: c.ID(), Name: c.Name(), Stage: e.stage, Code: e.code, By: e.by, Approval: e.approval}
+	res := tools.Result{CallID: c.ID(), Name: c.Name(), Stage: e.stage, Code: e.code, By: e.by, Approval: e.approval, Grant: e.grant}
 	if e.code == "" {
-		text, msg := output(c.Tool(), e.value)
+		text, parts, msg := output(c.Tool(), e.value)
 		if msg != "" {
 			res.Code, res.Stage = tools.CodeInvalidOutput, tools.StageShape
 			res.Text = string(tools.CodeInvalidOutput) + ": " + msg
 		} else {
-			res.Value, res.Text = e.value, text
+			res.Value, res.Text, res.Parts = e.value, text, parts
 		}
 	} else {
 		res.Text = string(e.code) + ": " + e.msg
@@ -641,14 +673,26 @@ func (r *registry) settle(ctx context.Context, b tools.Batch, ls listeners, c to
 	if res.Value != nil && len(shapers) > 0 {
 		snap, err := tools.NewIsolatedCall(c.ID(), c.Name(), c.Arguments(), c.Origin(), c.Parent(), c.Agent(), c.Tool(), res.Value)
 		if err != nil {
-			res.IsError, res.Code, res.Stage, res.Value = true, tools.CodeInvalidOutput, tools.StageShape, nil
+			res.IsError, res.Code, res.Stage, res.Value, res.Parts = true, tools.CodeInvalidOutput, tools.StageShape, nil, nil
 			res.Text = string(tools.CodeInvalidOutput) + ": the value cannot be isolated from the shapers: " + err.Error()
 		} else {
 			value = snap
 		}
 	}
+	// fail ends the call as code by component id: its content is the text alone.
+	fail := func(code tools.Code, id, text string) {
+		res.IsError, res.Code, res.By, res.Stage, res.Value, res.Parts = true, code, id, tools.StageShape, nil, nil
+		res.Text = text
+	}
+	// replace is a shaper's ReplaceContent: a changed text replaces the content
+	// whole, images included, since the shaper saw only the text.
+	replace := func(text string) {
+		if text != res.Text {
+			res.Text, res.Parts = text, nil
+		}
+	}
 	for _, s := range shapers {
-		o := tools.Outcome{IsError: res.IsError, Code: res.Code, Text: res.Text}
+		o := tools.Outcome{IsError: res.IsError, Code: res.Code, Text: res.Text, Parts: tools.CloneParts(res.Parts)}
 		if res.Value != nil {
 			o.Value = value.Input()
 		}
@@ -656,17 +700,16 @@ func (r *registry) settle(ctx context.Context, b tools.Batch, ls listeners, c to
 		switch pd.Kind {
 		case tools.PostAccept:
 		case tools.PostReplaceContent:
-			res.Text = pd.Text
+			replace(pd.Text)
 		case tools.PostBlock:
+			// Block turns a success into a failure; a failure stays the failure it was.
 			if !res.IsError {
-				res.IsError, res.Code, res.By, res.Stage, res.Value = true, tools.CodeBlocked, s.id, tools.StageShape, nil
-				res.Text = string(tools.CodeBlocked) + ": " + pd.Reason
+				fail(tools.CodeBlocked, s.id, string(tools.CodeBlocked)+": "+pd.Reason)
 			}
 		default:
 			// A failing shaper fails the call; nothing turns a failure into a success.
 			if !res.IsError || res.Code != tools.CodeFailed {
-				res.IsError, res.Code, res.By, res.Stage, res.Value = true, tools.CodeFailed, s.id, tools.StageShape, nil
-				res.Text = string(tools.CodeFailed) + ": " + pd.Reason
+				fail(tools.CodeFailed, s.id, string(tools.CodeFailed)+": "+pd.Reason)
 			}
 		}
 	}
@@ -675,51 +718,51 @@ func (r *registry) settle(ctx context.Context, b tools.Batch, ls listeners, c to
 	// shapers left, a Block's text included, and only replace it. They run on a
 	// call refused at resolve too, and never see the value.
 	for _, s := range ls.finals {
-		pd := shape(s, c, tools.Outcome{IsError: res.IsError, Code: res.Code, Text: res.Text})
+		pd := shape(s, c, tools.Outcome{IsError: res.IsError, Code: res.Code, Text: res.Text, Parts: tools.CloneParts(res.Parts)})
 		switch pd.Kind {
 		case tools.PostAccept:
 		case tools.PostReplaceContent:
-			res.Text = pd.Text
+			replace(pd.Text)
 		default:
 			// A final shaper that cannot answer fails the call, and its text is
 			// replaced whole: what it would have changed is not shown.
-			res.IsError, res.Code, res.By, res.Stage, res.Value = true, tools.CodeFailed, s.id, tools.StageShape, nil
-			res.Text = string(tools.CodeFailed) + ": the final shaper " + s.id + " did not answer"
+			fail(tools.CodeFailed, s.id, string(tools.CodeFailed)+": the final shaper "+s.id+" did not answer")
 		}
 	}
 
-	meta := resultMeta{Code: res.Code, Stage: res.Stage, By: res.By, Approval: res.Approval}
+	meta := resultMeta{Code: res.Code, Stage: res.Stage, By: res.By, Approval: res.Approval, Grant: res.Grant}
 	res.Cause = e.cause
-	// The spill seat bounds a large text and saves the whole of it; the ceiling
-	// then holds whatever it left (DH-D-STORAGE-6, DH-ADR-TOOLS-4).
+	// The spill seat bounds a large result and saves the whole of it; the ceiling
+	// then holds whatever it left (DH-D-STORAGE-6, DH-ADR-TOOLS-4). A result with
+	// images reaches the seat as its parts, so the images are priced and kept or
+	// left out whole with the text.
 	if ls.spill != nil && c.Tool() != nil && !c.Tool().BoundsOwnOutput() {
 		sr, failure := r.boundedSpillShape(ctx, *ls.spill, c,
-			tools.Outcome{IsError: res.IsError, Code: res.Code, Text: res.Text})
-		switch {
-		case failure != "":
-		case sr.Replace && len(sr.Text) > len(res.Text):
-			failure = fmt.Sprintf("the spill seat %s grew the text from %d to %d bytes", ls.spill.id, len(res.Text), len(sr.Text))
-		case sr.Replace:
-			res.Text = sr.Text
-			if sr.Ref != nil {
-				ref := *sr.Ref
-				res.Spill = &ref
-			}
+			tools.Outcome{IsError: res.IsError, Code: res.Code, Text: res.Text, Parts: tools.CloneParts(res.Parts)})
+		if failure == "" && sr.Replace {
+			failure = r.applySpill(&res, ls.spill.id, sr)
 		}
 		if failure != "" {
 			res.SpillFailure = failure
-			res.Text, res.Truncated = withNotice(res.Text, spillFailureNotice(failure), r.cfg.MaxResultBytes)
+			res.Truncated = r.addNotice(&res, spillFailureNotice(failure))
 		}
 	}
 	if !res.Truncated {
-		res.Text, res.Truncated = ceiling(res.Text, r.cfg.MaxResultBytes)
+		res.Truncated = r.bound(&res)
+	}
+	if !hasImage(res.Parts) {
+		res.Parts = nil
 	}
 	meta.Cause, meta.Truncated, meta.Spill, meta.SpillFailure = res.Cause, res.Truncated, res.Spill, res.SpillFailure
 	data, err := json.Marshal(meta)
 	if err != nil {
 		return res, err
 	}
-	msg, err := vocab.NewMessage(vocab.RoleTool, vocab.ToolResultBlock(c.ID(), res.IsError, vocab.TextPart(res.Text)))
+	content := []vocab.Part{vocab.TextPart(res.Text)}
+	if res.Parts != nil {
+		content = tools.CloneParts(res.Parts)
+	}
+	msg, err := vocab.NewMessage(vocab.RoleTool, vocab.ToolResultBlock(c.ID(), res.IsError, content...))
 	if err == nil {
 		msg, err = msg.WithSource(vocab.Source{Kind: "tool-result", Producers: []string{producer}, Data: data})
 	}
@@ -736,6 +779,12 @@ func (r *registry) settle(ctx context.Context, b tools.Batch, ls listeners, c to
 		return res, fmt.Errorf("tools: append tool/result %s: %w", c.ID(), err)
 	}
 	res.Seq = rc.Seq
+	// Stage 7: observers learn of the settled call only once its tool/result is
+	// appended, and see the durable form encoded above. Notify contains each
+	// observer's failure, so nothing they do changes the result or the batch.
+	if r.ctx != nil {
+		tools.Settled.Notify(r.ctx, ls.at, tools.NewSettlement(c, res, d.Raw()))
+	}
 	return res, nil
 }
 
@@ -754,24 +803,28 @@ func shape(s named[tools.Shaper], c tools.Call, o tools.Outcome) (pd tools.PostD
 }
 
 // output validates a body's value against the declared output schema and
-// renders it; msg says why it could not be, a panic in a value's own encoding
-// included, so the call still settles with its one tool/result.
-func output(d *tools.Declaration, v any) (text, msg string) {
+// renders it, a tools.Content as its parts; msg says why it could not be, a
+// panic in a value's own encoding included, so the call still settles with its
+// one tool/result.
+func output(d *tools.Declaration, v any) (text string, parts []vocab.Part, msg string) {
 	defer func() {
 		if x := recover(); x != nil {
-			text, msg = "", fmt.Sprintf("encoding the output panicked: %v", x)
+			text, parts, msg = "", nil, fmt.Sprintf("encoding the output panicked: %v", x)
 		}
 	}()
 	if d != nil && d.Output() != nil {
 		if is := d.Output().Validate(v); len(is) > 0 {
-			return "", is.Error()
+			return "", nil, is.Error()
 		}
+	}
+	if text, parts, msg, ok := content(v); ok {
+		return text, parts, msg
 	}
 	text, err := render(v)
 	if err != nil {
-		return "", err.Error()
+		return "", nil, err.Error()
 	}
-	return text, ""
+	return text, nil, ""
 }
 
 // render is the model-facing text of a body's value: a string as it is, raw JSON

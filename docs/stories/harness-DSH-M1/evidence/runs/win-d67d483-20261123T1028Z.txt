@@ -1,0 +1,178 @@
+harness-gate evidence record
+commit: d67d483004022b0f851925e81304d2be0e35c1fd
+tree: clean (git status --porcelain --untracked-files=all is empty)
+command: harness-gate --root ../.. --evidence E:\work\github\ai\agent-plugin\docs\stories\harness-DSH-M1\evidence\runs\win-d67d483-20261123T1028Z.txt
+goos/goarch: windows/amd64
+go version: go version go1.27.4 windows/amd64
+go floor: go1.27.4 (src/harness/go.mod); children run with GOTOOLCHAIN=go1.27.4
+goroot: C:\Program Files\Go
+cc: gcc
+cc --version: gcc (Rev5, Built by MSYS2 project) 16.1.0
+host os: Microsoft Windows [Version 10.0.28000.3501]
+children: CI=1
+started: 2026-11-23T10:28:11Z
+--- output ---
+harness-gate: toolchain go1.27.4 (the go floor of src/harness/go.mod; children run with GOTOOLCHAIN=go1.27.4, GOROOT=C:\Program Files\Go)
+harness-gate: gate 1/12 gofmt -- every Go file is gofmt-formatted
+gofmt: 726 files checked
+harness-gate: PASS gofmt (693ms)
+harness-gate: gate 2/12 vet -- go vet and the project's own analyzers (nosleep, onespawn, cleanup, fuzzcheck, rootcall, typeassert, lintignore), also on the e2e layer; prints the //lint:ignore exception total
+ok   src/go: go vet -tags= ./...
+ok   src/go: go vet -tags= -vettool=C:\Users\xiaodoli.REDMOND\AppData\Local\go-build\00\00c342850e56c4a51013b438083daececedb0eacfaa8183356bb3e2b564c2b88-d\harness-gate.exe ./...
+ok   src/go: go vet -tags=replay,scenario,bench ./...
+ok   src/go: go vet -tags=replay,scenario,bench -vettool=C:\Users\xiaodoli.REDMOND\AppData\Local\go-build\00\00c342850e56c4a51013b438083daececedb0eacfaa8183356bb3e2b564c2b88-d\harness-gate.exe ./...
+ok   src/go: go vet -tags=e2e ./...
+ok   src/go: go vet -tags=e2e -vettool=C:\Users\xiaodoli.REDMOND\AppData\Local\go-build\00\00c342850e56c4a51013b438083daececedb0eacfaa8183356bb3e2b564c2b88-d\harness-gate.exe ./...
+ok   src/sdk: go vet -tags= ./...
+ok   src/sdk: go vet -tags= -vettool=C:\Users\xiaodoli.REDMOND\AppData\Local\go-build\00\00c342850e56c4a51013b438083daececedb0eacfaa8183356bb3e2b564c2b88-d\harness-gate.exe ./...
+ok   src/sdk: go vet -tags=replay,scenario,bench ./...
+ok   src/sdk: go vet -tags=replay,scenario,bench -vettool=C:\Users\xiaodoli.REDMOND\AppData\Local\go-build\00\00c342850e56c4a51013b438083daececedb0eacfaa8183356bb3e2b564c2b88-d\harness-gate.exe ./...
+ok   src/sdk: go vet -tags=e2e ./...
+ok   src/sdk: go vet -tags=e2e -vettool=C:\Users\xiaodoli.REDMOND\AppData\Local\go-build\00\00c342850e56c4a51013b438083daececedb0eacfaa8183356bb3e2b564c2b88-d\harness-gate.exe ./...
+ok   src/harness: go vet -tags= ./...
+ok   src/harness: go vet -tags= -vettool=C:\Users\xiaodoli.REDMOND\AppData\Local\go-build\00\00c342850e56c4a51013b438083daececedb0eacfaa8183356bb3e2b564c2b88-d\harness-gate.exe ./...
+ok   src/harness: go vet -tags=replay,scenario,bench ./...
+ok   src/harness: go vet -tags=replay,scenario,bench -vettool=C:\Users\xiaodoli.REDMOND\AppData\Local\go-build\00\00c342850e56c4a51013b438083daececedb0eacfaa8183356bb3e2b564c2b88-d\harness-gate.exe ./...
+ok   src/harness: go vet -tags=e2e ./...
+ok   src/harness: go vet -tags=e2e -vettool=C:\Users\xiaodoli.REDMOND\AppData\Local\go-build\00\00c342850e56c4a51013b438083daececedb0eacfaa8183356bb3e2b564c2b88-d\harness-gate.exe ./...
+exceptions: 41 (SA1019 1, SA2001 1, U1000 1, typeassert 38)
+harness-gate: PASS vet (1m11.193s)
+harness-gate: gate 3/12 staticcheck -- the pinned staticcheck per module, with -tags= and -tags=replay,scenario,bench
+ok   src/go: staticcheck -tags= ./...
+ok   src/go: staticcheck -tags=replay,scenario,bench ./...
+ok   src/sdk: staticcheck -tags= ./...
+ok   src/sdk: staticcheck -tags=replay,scenario,bench ./...
+ok   src/harness: staticcheck -tags= ./...
+ok   src/harness: staticcheck -tags=replay,scenario,bench ./...
+harness-gate: PASS staticcheck (30.679s)
+harness-gate: gate 4/12 modules -- go mod tidy -diff and go mod verify per module, the module rules (RM-1..RM-4) and a reason on every pin (RM-10)
+ok   src/go: go mod tidy -diff
+ok   src/go: go mod verify
+ok   src/sdk: go mod tidy -diff
+ok   src/sdk: go mod verify
+ok   src/harness: go mod tidy -diff
+ok   src/harness: go mod verify
+ok   src/go/test/e2e: go mod tidy -diff
+ok   src/go/test/e2e: go mod verify
+ok   tools/harness-gate: go mod tidy -diff
+ok   tools/harness-gate: go mod verify
+ok   tools/harness-trace: go mod tidy -diff
+ok   tools/harness-trace: go mod verify
+modules: 3 product, 1 test and 2 tools modules checked
+harness-gate: PASS modules (1m6.834s)
+harness-gate: gate 5/12 test -- go test -race -shuffle=on -count=1 per module, CGO_ENABLED=1
+ok   src/go: go test -tags= -race -shuffle=on -count=1 ./...
+ok   src/sdk: go test -tags= -race -shuffle=on -count=1 ./...
+FAIL src/harness: go test -tags= -race -shuffle=on -count=1 ./...
+ok  	github.com/smartpcr/agent-plugin/src/harness/cmd/dsh	5.332s
+?   	github.com/smartpcr/agent-plugin/src/harness/internal	[no test files]
+-test.shuffle 1795429973916860300
+--- FAIL: TestFlowF2CheckpointOracleCatchesAMissingFlush (14.27s)
+    f2_test.go:692: wait idle: context deadline exceeded
+    transport.go:141: model: 1 scripted turn(s) never requested
+FAIL
+FAIL	github.com/smartpcr/agent-plugin/src/harness/internal/agent	31.347s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/agent/driver	41.298s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/archtest	96.635s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/boot	16.413s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/boot/builtin	2.845s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/boot/catalog	44.677s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/boot/config	46.434s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/boot/expr	2.146s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/boot/launch	3.335s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/boot/logging	3.526s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/boot/profile	3.143s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/boot/yamlx	2.400s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/cli	6.149s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/cli/cmdline	1.724s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/cli/output	43.197s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/context/request	3.069s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/delegate/subagent	2.547s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/host/diag	6.524s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/host/sharing	4.354s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/human	1.980s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/human/approval	12.038s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/human/command	2.388s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/human/question	2.416s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/human/question/tool	3.393s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/human/secret	5.098s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/human/secret/redact	2.324s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/llm	4.828s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/llm/meter	2.874s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/llm/provider/claudecode	62.077s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/llm/provider/clientroute	17.528s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/llm/provider/clientroute/listing	6.236s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/llm/provider/copilot	67.174s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/llm/provider/deepseek	2.771s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/llm/retry	2.484s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/llm/transport	2.471s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab	2.791s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/llm/wire/anthropic	2.845s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/schema	2.286s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/session	13.322s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/session/checkpoint	15.828s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/session/event	2.323s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/session/query	112.881s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/session/scope	1.903s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/session/store	5.444s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/session/store/allevents	39.625s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/session/store/memstore	2.150s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/session/store/sqlite	98.423s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/session/store/storetest	7.312s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/session/surface	4.292s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/session/views	63.150s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/storage/attachments	14.492s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/storage/blob	63.130s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/storage/home	5.334s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/storage/kv	26.771s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/storage/settings	21.240s
+?   	github.com/smartpcr/agent-plugin/src/harness/internal/storage/spill	[no test files]
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/storage/spill/local	9.723s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/storage/spill/policy	33.106s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/storage/spill/tool	18.625s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/storage/workspace	34.579s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/testkit	2.908s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/testkit/answerer	2.246s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/testkit/clock	2.030s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/testkit/corpus	12.997s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/testkit/corpus/corpussqlite	11.398s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/testkit/golden	2.903s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/testkit/launcher	64.989s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/testkit/model	4.054s
+?   	github.com/smartpcr/agent-plugin/src/harness/internal/testkit/permit	[no test files]
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/testkit/procwait	2.328s
+?   	github.com/smartpcr/agent-plugin/src/harness/internal/testkit/scenarios	[no test files]
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/testkit/temphome	5.455s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/tools	3.567s
+?   	github.com/smartpcr/agent-plugin/src/harness/internal/tools/conform	[no test files]
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/tools/core	6.615s
+?   	github.com/smartpcr/agent-plugin/src/harness/internal/tools/internal/body	[no test files]
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/tools/prompt	2.381s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/util/caltime	2.489s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/util/egress	2.620s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/util/fsx	15.832s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/util/glob	2.306s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/util/herr	3.122s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/util/homedir	2.082s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/util/ident	7.954s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/util/mediatype	3.645s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/util/recur	3.711s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/util/retain	2.433s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/util/search	5.320s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/util/textdiff	2.390s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/util/textdiff/patch	2.557s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/util/version	2.709s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/util/watch	162.648s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/util/watch/watchfiber	9.475s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/util/watch/watchtest	3.333s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/wire/protoschema	2.400s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess	20.545s
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess/subprocesstest	4.654s
+FAIL
+harness-gate: FAIL test (5m51.472s)
+src/harness: go test -tags= -race -shuffle=on -count=1 ./...: exit status 1; failing tests: TestFlowF2CheckpointOracleCatchesAMissingFlush
+harness-gate: FAILED at gate test
+--- end of output ---
+ended: 2026-11-23T10:36:52Z
+exit: 1
+sha256: 1a8fa67b05384c7d7ccf7d115ec46c225b251ff9d620b0599f723174ce28a5cf

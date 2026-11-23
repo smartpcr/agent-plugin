@@ -50,6 +50,7 @@ const (
 	CodeUnknownModel               Code = "llm/unknown-model"
 	CodeModelUnsupported           Code = "llm/model-unsupported"
 	CodeClientUpgradeRequired      Code = "llm/client-upgrade-required"
+	CodeClientContract             Code = "llm/client-contract" // a signed-in client broke its route's contract (DH-ADR-LLM-10)
 	CodeUnsupportedOption          Code = "llm/unsupported-option"
 	CodeUnsupportedContent         Code = "llm/unsupported-content"
 	CodeUnsupportedReasoningEffort Code = "llm/unsupported-reasoning-effort"
@@ -82,6 +83,7 @@ var classes = map[Code]Class{
 	CodeUnknownModel:               Permanent,
 	CodeModelUnsupported:           Permanent,
 	CodeClientUpgradeRequired:      Permanent,
+	CodeClientContract:             Permanent,
 	CodeUnsupportedOption:          Permanent,
 	CodeUnsupportedContent:         Permanent,
 	CodeUnsupportedReasoningEffort: Permanent,

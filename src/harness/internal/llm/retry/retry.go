@@ -5,12 +5,15 @@
 // never retried and never passed to another route (SP-2). One cap on attempts
 // per step binds every recovery listener.
 //
-// Every decision is a fact in the log, written through the component's Record
-// hook: llm/retry is appended before the wait starts, llm/retry-started once it
-// ends and the step re-runs, llm/retry-abandoned with the reason recovery
-// stopped. The wait runs on the component's timer and the failed attempt's
-// context, whichever ends first; a cancel during it is abandoned and makes no
-// attempt.
+// The component decides and logs; the driver waits (M1-D-PIPE-2 A). Every
+// decision is a fact in the log, written through the component's Record hook:
+// llm/retry is appended and agent.Retry{After} returned, so the record exists
+// before the driver's timer starts; when the driver's wait ends it sends
+// agent.RetryWaited, from which the component appends llm/retry-started (the
+// step re-runs) or llm/retry-abandoned "cancelled" (a cancel ended the wait and
+// no attempt runs). Any other stop is llm/retry-abandoned with its reason at the
+// decision. There is one clock, the driver's session clock, and one place a
+// cancel lands.
 package retry
 
 import (
@@ -85,40 +88,49 @@ type Config struct {
 	// StepAttemptCap bounds the attempts of one step across every recovery
 	// listener; zero is DefaultStepAttemptCap.
 	StepAttemptCap int
-	// Record appends d to the session of f.Agent; required. An error fails the
-	// decision closed: the attempt is not retried.
+	// Record appends d to the session of f.Agent; required. An error at the
+	// decision fails it closed: the attempt is not retried. The wait's outcome
+	// (llm/retry-started, llm/retry-abandoned "cancelled") is written from an
+	// observe-only notice, so an error there is logged on the component's logger
+	// and the step goes on as the driver decided.
 	Record func(ctx context.Context, f agent.AttemptFailure, d event.Draft) error
-	// Policy returns the failed call's captured route policy (llm.Prepared.Retry,
-	// e.g. the DeepSeek route's DefaultRetry). agent.AttemptFailure does not carry
-	// that policy, so the wiring that prepared the call (Phase 11) must inject it
-	// here; the route's Mode, RetryAfterCap, Jitter and MaxElapsed apply only
-	// through this hook.
-	//
-	// nil falls back to FromAgent(f.Policy): the point's own bounded policy,
-	// which never retries persistently and has no Retry-After cap, jitter or
-	// elapsed bound. It is a standalone default, not the route's policy.
+	// Policy overrides the policy a failure is decided under. nil is RoutePolicy:
+	// the failed call's route policy as captured at Prepare, which the driver
+	// carries in AttemptFailure.RoutePolicy, so the route's Mode, RetryAfterCap,
+	// Jitter and MaxElapsed apply.
 	Policy func(f agent.AttemptFailure) llm.RetryPolicy
-	// Now, After and Jitter are the clock, the timer and the jitter draw; nil is
-	// time.Now, time.After and math/rand. A test passes a virtual clock.
+	// Now and Jitter are the clock elapsed time is read on (the driver's session
+	// clock, so MaxElapsed and StepStarted agree) and the jitter draw; nil is
+	// time.Now and math/rand. The component starts no timer: the driver waits.
 	Now    func() time.Time
-	After  func(time.Duration) <-chan time.Time
 	Jitter func() float64
+}
+
+// RoutePolicy is Config.Policy's default: f.RoutePolicy, or FromAgent(f.Policy)
+// for a raiser that carried no route policy (the point's own bounded policy,
+// with no Retry-After cap, jitter or elapsed bound of the route's).
+func RoutePolicy(f agent.AttemptFailure) llm.RetryPolicy {
+	if f.RoutePolicy != (llm.RetryPolicy{}) {
+		return f.RoutePolicy
+	}
+	return FromAgent(f.Policy)
 }
 
 // FromAgent is the llm policy of the point's bounded policy: MaxAttempts counts
 // the first attempt too. It carries only MaxAttempts, BaseDelay and MaxDelay; it
-// is Config.Policy's fallback, not a substitute for the route's captured policy.
+// is RoutePolicy's fallback, not a substitute for the route's captured policy.
 func FromAgent(p agent.RetryPolicy) llm.RetryPolicy {
 	return llm.RetryPolicy{Mode: llm.RetryBounded, MaxRetries: max(p.MaxAttempts-1, 0), BaseDelay: p.BaseDelay, MaxDelay: p.MaxDelay}.Normalised()
 }
 
 // Component is one registered retry listener.
 type Component struct {
-	cfg    Config
-	handle *cordis.EffectHandle
+	cfg     Config
+	handles []*cordis.EffectHandle
 
-	mu    sync.Mutex
-	steps map[agent.Ref]stepStart // one entry per agent: its current step's first failure
+	mu      sync.Mutex
+	steps   map[agent.Ref]stepStart            // one entry per agent: its current step's first failure
+	waiting map[agent.Ref]agent.AttemptFailure // one entry per agent: the failure whose retry wait is pending
 }
 
 type stepStart struct {
@@ -138,29 +150,34 @@ func Listen(scope *cordis.Context, cfg Config) (*Component, error) {
 		cfg.StepAttemptCap = DefaultStepAttemptCap
 	}
 	if cfg.Policy == nil {
-		// Bounded-only fallback; the route policy needs Config.Policy (see Config).
-		cfg.Policy = func(f agent.AttemptFailure) llm.RetryPolicy { return FromAgent(f.Policy) }
+		cfg.Policy = RoutePolicy
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	if cfg.After == nil {
-		cfg.After = time.After
-	}
 	if cfg.Jitter == nil {
 		cfg.Jitter = rand.Float64
 	}
-	c := &Component{cfg: cfg, steps: map[agent.Ref]stepStart{}}
+	c := &Component{cfg: cfg, steps: map[agent.Ref]stepStart{}, waiting: map[agent.Ref]agent.AttemptFailure{}}
 	h, err := agent.AttemptFailed.On(scope, c.decide)
 	if err != nil {
 		return nil, err
 	}
-	c.handle = h
+	w, err := agent.RetryWaited.On(scope, c.waited)
+	if err != nil {
+		h.Dispose()
+		return nil, err
+	}
+	c.handles = []*cordis.EffectHandle{h, w}
 	return c, nil
 }
 
-// Close removes the listener.
-func (c *Component) Close() { c.handle.Dispose() }
+// Close removes the listeners.
+func (c *Component) Close() {
+	for _, h := range c.handles {
+		h.Dispose()
+	}
+}
 
 // elapsed is the time since f's step began: its first attempt's start
 // (f.StepStarted) when the raiser supplies it, else the step's first failure,
@@ -242,6 +259,15 @@ func (c *Component) decide(_ *cordis.Context, f agent.AttemptFailure, next func(
 		}
 		return agent.GiveUp{}, nil
 	}
+	// The raiser's own attempt budget (the driver's MaxAttemptsPerStep) is a
+	// step cap too: with no attempt left the driver would not retry, so a
+	// scheduled llm/retry would never be followed by its outcome.
+	if f.Policy.MaxAttempts > 0 && f.AttemptsLeft <= 0 {
+		if err := c.abandon(ctx, f, llm.AbandonStepCap); err != nil {
+			return nil, err
+		}
+		return agent.GiveUp{}, nil
+	}
 	d, err := ScheduledType.Draft(Scheduled{Turn: f.Turn, Step: f.Step, Attempt: f.Attempt, DelayMs: wait.Milliseconds(), Failure: f.Failure, Policy: policy})
 	if err != nil {
 		return nil, err
@@ -249,22 +275,40 @@ func (c *Component) decide(_ *cordis.Context, f agent.AttemptFailure, next func(
 	if err := c.cfg.Record(ctx, f, d); err != nil {
 		return nil, err
 	}
-	timer := c.cfg.After(wait)
-	select {
-	case <-ctx.Done():
-		if err := c.abandon(context.WithoutCancel(ctx), f, llm.AbandonCancelled); err != nil {
-			return nil, err
-		}
-		return agent.GiveUp{}, nil
-	case <-timer:
+	c.mu.Lock()
+	c.waiting[f.Agent] = f
+	c.mu.Unlock()
+	// The driver waits After on the session clock and sends agent.RetryWaited.
+	return agent.Retry{After: wait, Reason: string(f.Failure.Code)}, nil
+}
+
+// waited writes the outcome of the driver's wait for the retry this component
+// scheduled: llm/retry-started when the wait ran out, llm/retry-abandoned
+// "cancelled" when a cancel ended it. A notice for a wait the component did not
+// schedule (another listener's Retry) is not its to record.
+func (c *Component) waited(_ *cordis.Context, n agent.RetryWaitEnded) error {
+	c.mu.Lock()
+	f, ok := c.waiting[n.Agent]
+	if ok && f.Turn == n.Turn && f.Step == n.Step && f.Attempt == n.Attempt {
+		delete(c.waiting, n.Agent)
+	} else {
+		ok = false
 	}
-	d, err = StartedType.Draft(Started{Turn: f.Turn, Step: f.Step, Attempt: f.Attempt + 1})
+	c.mu.Unlock()
+	if !ok {
+		return nil
+	}
+	ctx := f.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if n.Cancelled {
+		// The step's context is cancelled: the record is still written.
+		return c.abandon(context.WithoutCancel(ctx), f, llm.AbandonCancelled)
+	}
+	d, err := StartedType.Draft(Started{Turn: f.Turn, Step: f.Step, Attempt: f.Attempt + 1})
 	if err != nil {
-		return nil, err
+		return err
 	}
-	if err := c.cfg.Record(ctx, f, d); err != nil {
-		return nil, err
-	}
-	// The wait is done here; the driver re-runs the step at once.
-	return agent.Retry{Reason: string(f.Failure.Code)}, nil
+	return c.cfg.Record(ctx, f, d)
 }
