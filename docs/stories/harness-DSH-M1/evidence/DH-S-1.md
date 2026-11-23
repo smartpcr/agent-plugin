@@ -770,6 +770,23 @@ is kept in `runs/`. Both regressions are fixed:
   (`d4ff110`). It is to be re-recorded at the next stage commit.
 - Every held-open entry listed in `gap-analysis.md`.
 
+## Phase 15 exit gate runs
+
+Gap-closure Phase 15 (stages 15.1 to 15.3), Rule 2. `manual`. **Both local lanes pass all 12
+gates at one commit, `6e7514c`:** run records `wsl-6e7514c-20261123T0602Z` (file SHA-256
+`e643fb9c05106103196578bbc483b4fa199c066baa3d3be5d7f3c5fcfbefa815`, with its rehearsal
+record) and `win-6e7514c-20261123T0602Z` (file SHA-256
+`69bd371846922b7e1f30eb65c11de10da067267112447a95f8594485fc71a6cf`). Reasoned exceptions:
+41 (typeassert 38, SA1019 1, SA2001 1, U1000 1). The full template is in
+[DH-S-7.md, "Gate runs at 6e7514c"](DH-S-7.md#gate-runs-at-6e7514c). The systems and
+toolchains are unchanged from the Phase 14 runs above. One gate change: the vet and
+staticcheck layer tag set is now `replay,scenario,bench`, so the bench files are compiled
+by the gate.
+
+The earlier WSL run at `3695cc2` stopped at `coverage` (`testkit/corpus` at 65.4%, because
+the gate skips `^TestBudget` tests and the package's only Budget test had that name); its
+record is kept in `runs/`. `6e7514c` renames the test.
+
 ## Evidence record (impl.md sec. 7.3)
 
 These are the eight fields of [impl.md sec. 7.3](../../../harness/impl.md#73-the-evidence-record),

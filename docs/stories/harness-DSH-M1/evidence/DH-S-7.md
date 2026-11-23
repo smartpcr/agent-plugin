@@ -7,8 +7,9 @@ Closure status: open
 This line becomes `closed at <sha>` only in plan step 18.1.14, at the M1 closure commit.
 The "Closure status: closed by Stage 7.3" statement below and the "met" rows of
 "Closure" are the stage's own closure, kept as history: under M1-D-CLOSE-1 every tick
-made while the gate was red is provisional and is re-verified at that commit, and plan
-Stage 15.1 adds the store gaps (M1-G-STORE). The fields of impl.md sec. 7.3 and the
+made while the gate was red is provisional and is re-verified at that commit. Plan
+Stage 15.1 built the missing store tests; they are recorded in
+["Gap closure (M1-G-STORE)"](#gap-closure-m1-g-store), with both gate runs at `6e7514c`. The fields of impl.md sec. 7.3 and the
 per-step manual-check register are at the end of this file, in "Evidence record
 (impl.md sec. 7.3)"; how to fill them is in [the evidence runbook](README.md).
 
@@ -171,13 +172,142 @@ It passes.
 
 Package statement coverage is 89.6%; the gate's floor is 85%.
 
-`DH-T-STORE-2` to `-4` and the rest of `DH-T-STORE-18` belong to later stages of this
-phase, so they are not part of 7.1:
+Historical (replaced by "Gap closure (M1-G-STORE)" below, plan step 15.1.6): this
+paragraph said that `DH-T-STORE-2` to `-4` and the rest of `DH-T-STORE-18` belonged to
+later stages. The crash-kill loop (`DH-T-STORE-5`) and dead-holder takeover were built in
+Stage 7.2; `DH-T-STORE-2` to `-4` and the rest of `DH-T-STORE-18` were not built until
+plan Phase 15.
 
-- the crash-kill loop of `DH-T-STORE-5`;
-- dead-holder takeover with the liveness lock;
-- the open of a session of more than 100,000 events;
-- the heavy-tailed listing corpus.
+## Gap closure (M1-G-STORE)
+
+**What this section records.** The audit of the M1 story (gaps M1-G-STORE-1 to -9 and
+-21, -30 in [gap-analysis.md](../gap-analysis.md)) found that DH-S-7 had been ticked
+without several of the store tests its Done-when lines name. Plan
+[Stage 15.1](../gap-closure-plan.md#stage-151-safe-layout-upgrade-and-store-proof) built
+them, with step 15.3.1 (the bounded open) and step 15.3.5 (the POSIX tests on WSL). This
+section maps each test ID to the tests that now prove it, with the commit, the commands,
+the two gate runs and the budget figures. It is the evidence of "built". It is not
+"done": the `DH-E-STORE` scenarios still run later (impl.md step 16.8, step 35.7).
+
+**Words used here.**
+- A **layout** is the database's table design, numbered by SQLite's `user_version`. A
+  newer `dsh` upgrades an older layout before it uses the file.
+- A **backup** is the copy of `dsh.db` taken (with `VACUUM INTO`) before an upgrade, kept
+  in `<home>/backup/`. It is the way back if the upgrade fails or the user returns to the
+  older binary. The upgrade never deletes it; `Store.Backups` and `Check` list it.
+- A **checkpoint** (in the store) is a stored row of derived state with the `seq` it
+  reflects. The open reads from the newest one instead of from the start of the log.
+- A **provisional budget** is a time and memory limit set from the first measured run.
+  The benchmark fails when it is missed, but the number is final only when pinned at
+  impl.md step 16.7 (held open as H-34, below).
+
+### Build identity and commands
+
+- **Built in:** `f4a422d`, `8d8abfa`, `cb1c07a`, `2fd1758`, `3695cc2`, with the test-only
+  fix `6e7514c` (the corpus Budget test renamed so the coverage gate runs it). The
+  decisions are M1-D-STORE-A, -B and -F ([decisions.md](../decisions.md)).
+- **Gate evidence commit:** `6e7514cdb6fbc8f105238e7e655fb20e3102166b`.
+- **Commands:**
+  - both lane scripts (`lanes/win.ps1`, `lanes/wsl.sh`), which run `harness-gate` with
+    `--evidence` (12 gates; the `bench` tag is now part of the vet and staticcheck layer
+    set `replay,scenario,bench`, so the bench files are compiled by the gate);
+  - `go -C src/harness test -race ./internal/session/store/...`, per package: pass;
+  - the bench runs (Windows; WSL pending):
+    `go -C src/harness test -tags bench -run '^$' -bench BudgetStore -benchtime 20x -timeout 60m ./internal/session/store/sqlite/`,
+    each also with `GOMEMLIMIT=4GiB`.
+
+### Gate runs at 6e7514c
+
+Both lanes ran the gate of record at one commit and passed all 12 gates.
+
+| Field | WSL lane | Windows lane |
+| --- | --- | --- |
+| Run-record id | `wsl-6e7514c-20261123T0602Z` | `win-6e7514c-20261123T0602Z` |
+| Record file and SHA-256 | [runs/wsl-6e7514c-20261123T0602Z.txt](runs/wsl-6e7514c-20261123T0602Z.txt), `e643fb9c05106103196578bbc483b4fa199c066baa3d3be5d7f3c5fcfbefa815` | [runs/win-6e7514c-20261123T0602Z.txt](runs/win-6e7514c-20261123T0602Z.txt), `69bd371846922b7e1f30eb65c11de10da067267112447a95f8594485fc71a6cf` |
+| Output SHA-256 (`sha256:` line) | `f234657b2553526a9acb3c92fb53a6cad1a561ae5f5f7e5dd6c754b38cd55511` | `b67f2d17137df1f60c6a43a9712138e72d1f047325f99fdd9e3495567b9f5c67` |
+| Rehearsal file and SHA-256 | [runs/wsl-6e7514c-20261123T0602Z-rehearse.txt](runs/wsl-6e7514c-20261123T0602Z-rehearse.txt), `e42fa7ab08dd64658cfaaa14f1d42a47626ebf923bf7fbe72203eaa3319b9b12`; six binaries, each `vcs.modified=false`, nothing published | -- (WSL lane only) |
+| Operator | the lead (lane script) | the lead (lane script) |
+| Commit | `6e7514cdb6fbc8f105238e7e655fb20e3102166b` | the same |
+| git status --porcelain | empty (`tree: clean`) | empty (`tree: clean`) |
+| System | Ubuntu 24.04.5 LTS (`Ubuntu-24.04`), kernel `6.18.58.1-microsoft-standard-WSL2`; `wsl.exe --version` not copied for this run | Microsoft Windows [Version 10.0.28000.3501] |
+| Go | go1.27.4 linux/amd64 (`/usr/local/go`) | go1.27.4 windows/amd64 (`C:\Program Files\Go`) |
+| CC and gcc | `gcc`, gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 | `gcc`, gcc (Rev5, Built by MSYS2 project) 16.1.0 |
+| CGO_ENABLED, TMPDIR, id -u | not copied; the lane preflight requires `TMPDIR` on ext4 and a non-root user, and the gate sets `CGO_ENABLED=1` for `test` | not copied, --, not elevated (lane preflight) |
+| Checkout file system | ext4 (WSL-native clone) | NTFS |
+| systemctl --user | not recorded for this run | -- |
+| Started, ended (UTC) | 2026-11-23T06:02:58Z, 06:10:39Z | 2026-11-23T06:02:59Z, 06:36:02Z |
+| Exit status | 0 | 0 |
+| Result | `harness-gate: PASSED all 12 gates` | `harness-gate: PASSED all 12 gates` |
+| Reasoned exceptions | 41 (typeassert 38, SA1019 1, SA2001 1, U1000 1) | the same |
+| Gate times (selected) | test 2m47s, coverage 4m11s, self 28s | test 5m3s, coverage 17m45s, self 6m34s |
+| CI run ids (supplementary) | none | none |
+| macOS | out of scope (`platforms-windows-wsl`) | |
+
+An earlier WSL run at `3695cc2`
+([runs/wsl-3695cc2-20261123T0553Z.txt](runs/wsl-3695cc2-20261123T0553Z.txt)) failed at
+`coverage`: `testkit/corpus` was at 65.4%, because the coverage gate skips tests named
+`^TestBudget` and the package's only Budget test was `TestBudgetRunsBothRuns`. `6e7514c`
+renames it. The Windows run at `3695cc2` was stopped by the lead after that result; no
+record was kept. The `3695cc2` run is kept as history and is not closure evidence.
+
+### Test IDs and results
+
+Every test below passed in both gate runs at `6e7514c`.
+
+| Test ID | Plan step | Tests (package `session/store/sqlite` unless named) | What they show | Result |
+| --- | --- | --- | --- | --- |
+| `DH-T-STORE-2` (upgrade) | 15.1.1, 15.1.2 | `TestUpgradeRefusedWhileOlderInstanceLives`, `TestUpgradeProbesAgainInsideItsTransaction`, `TestFailedUpgradeRollsBackAndKeepsTheBackup`, `TestFailedBackupChangesNothing` (`migrate_test.go`) | A re-executed child holding the home at layout N-1 blocks the upgrade: `store/migration-blocked` names its pid, kind and start time, `user_version` stays N-1 and no backup is made; after the child is killed, the upgrade runs and makes one backup. The liveness probe runs again inside the upgrade transaction. A failed upgrade from N-1 and from N-2 rolls back: `store/migration-failed` names the kept backup, the database reads at its old layout with every row, and the backup passes `integrity_check` and is owner-only. A failed backup (a full disk, a failed check) leaves `dsh.db` byte-identical. Layout 7 adds `hosts.binary_version` (it rebuilds the `hosts` table instead of `ALTER`, because the tests lower the layout by hand). A new database (layout 0) gets no backup and no probe. | pass |
+| `DH-T-STORE-2` (open sequence) | 15.1.3 | `TestOpenRefusesWithoutWAL`, `TestStoreFilesAreOwnerOnly` | A journal mode that is not WAL is refused with `store/no-wal`. `dsh.db` and `run/` are owner-only: POSIX `0600`/`0700` on WSL ext4, the DACL checked by `home.CheckPrivate` on Windows. | pass; on WSL PASS, not SKIP (15.3.5) |
+| `DH-T-STORE-3` | 15.1.4, 15.2.1 | `TestMultiEventAppendIsAtomic`, `TestAppendFaultAtEachStep`, `TestForkEqualsParentPrefixRowForRow`, `TestEventsImmutableInSchema`; `storetest` cases `DerivedRowRefused`, `UpsertDerived`, `CheckpointsOnlyMoveForward` on SQLite and `memstore` | A fault at each of 10 points of the append commits nothing. The checkpoint case is inverted (15.2.1): when the database refuses a derived row, the three events still commit, the row keeps its older seq, `DerivedDropped` is 1 and one `Degraded` notice is sent. A fork equals its parent's prefix row for row. The schema's triggers keep events immutable. | pass |
+| `DH-T-STORE-4` | 15.1.4 | `TestFailedCommitKeepsTheBatch`, `TestFailedRollbackMakesTheStoreUnusable`, `TestOtherProcessSeesOnlyDurable`, `TestFlushSurvivesKill` | A failed commit keeps the batch and the next `Flush` succeeds. After a failed rollback, every later write and read call returns `store/unusable` (checked twice), with one store-wide `Degraded` "unusable" notice. The backlog clause, per M1-D-STORE-A (a): an event is durable once `Append` returns. Known limit: `database/sql` ends the transaction on a failed commit, so a failed commit is not followed by a rollback; "commit and rollback both fail" is tested as a refused statement followed by a failing rollback. | pass |
+| `DH-T-STORE-7` | 15.3.5 | `TestLivenessLockSurvivesOSOpenAndClose` (`lease_test.go`) | The liveness lock survives an unrelated open and close of its file. The test carries no `//dsh:test` directive. | pass; on WSL PASS, not SKIP |
+| `DH-T-STORE-8` | 15.1.7 | `agent/driver` `TestMountedCheckpointGovernsEveryPoint`, `TestFailedStepEndCheckpointEndsTheTurn`, `TestFailedAttemptCheckpointSkipsTheAttempt` | A recording policy mounted on the driver's context sees attempt, tool-body, step-end, attempt, step-end, in that order. The tool body goes through `checkpoint.Before` (`tools/core/pipeline.go:350`) with the registry's policy, so one policy governs both points only when it is mounted where both see it. A failed step-end checkpoint ends the turn; a failed attempt checkpoint skips the attempt. Side effect: one more flush per step under the default policy. | pass |
+| `DH-T-STORE-10` (bounded open) | 15.3.1 | `TestReadsJudgeWhatTheOpenDidNot` (`openbound_test.go`) | Under M1-D-STORE-F, a record below the newest checkpoint that the open did not judge is refused, with its typed error, by the first `Read` or `ReadSeqs` that reaches it, and is never returned. | pass |
+| `DH-T-STORE-18` | 15.1.5, 15.3.1 | `BenchmarkBudgetStore` (`budget_bench_test.go`, `-tags bench`); `TestOpenIsBoundedByTheNewestCheckpoint` (`openbound_test.go`) | The open from checkpoints, the fork and the first list page over the corpus, each also under `GOMEMLIMIT`, within provisional budgets (figures below). An open judges 2 records at 100, 1,000 and 10,000 events. | pass (Windows bench; WSL bench pending); budgets provisional (H-34) |
+
+The heavy-tailed corpus is `internal/testkit/corpus` (the 22 anchors of UP-DEC
+2026-09-28), with a 100,000-event seeder writing through `sqlite.Store.Seed` with
+checkpoints (15.1.5). The driver's continuation benchmark (`DH-T-AGENT-28`, DH-S-11) now
+takes its ladder from the corpus: p50 rung 1.6 ms, p90 6.2 ms, p99 (381 turns) 27.7 ms,
+and the largest rung, capped at 1,024 turns, 71 ms.
+
+### Budget figures (F-2, `DH-T-STORE-18`)
+
+Windows: i9-13900K, go1.27.4, `-benchtime 20x`, after the bounded open of 15.3.1. Each
+p95 is the range over the plain run and the `GOMEMLIMIT=4GiB` run. The budgets are
+about 3 times the worst p95 (M1-D-STORE-B (a)) and are provisional (H-34). The 4 GiB
+limit never bound: the heap after an operation stayed at or below 250 MB.
+
+| Case | Windows p95 | WSL p95 | Budget |
+| --- | --- | --- | --- |
+| store open, 100,000 events, from checkpoints | 1.25-1.28 s (1.91 GB/op) | 1.25-1.28 s (1.91 GB/op) | 4 s |
+| store fork of that session | 1.31-1.49 s | 0.89-0.90 s (721 MB/op) | 4.5 s |
+| store first list page over the corpus | 1.0-1.5 ms (the Windows clock ticks about every 0.5 ms) | 0.24-0.30 ms (75 KB/op) | 5 ms |
+
+The WSL column is from `runs/wsl-6e7514c-bench.txt` (sha256 `2b9f3065905c822aeb921ce346713039447eb13efd133bff250bb1d6ebfe4fe6`): WSL Ubuntu-24.04 at `6e7514c`, go1.27.4, `-tags bench -benchtime 20x`, every case PASS within its budget.
+
+Before the bounded open (the first measured run, Windows): store open 2.95-3.28 s and
+2.08 GB; fork 1.43-1.55 s. The query and listing figures are in
+[DH-S-8.md, "Stage 8.2 -- Builtin Views, Projects and Session Listing"](DH-S-8.md#stage-82----builtin-views-projects-and-session-listing).
+
+### Manual check: upgrade a scratch home made by the previous binary
+
+`manual`, M1-D-CLOSE-2 option A (a scripted probe, watched): this is the 15.1 exit check.
+It does not fill the impl.md register below, which plan step 18.1.5 runs at the frozen
+closure commit, and it ticks no scenario box.
+
+| Step | Check | Procedure | Systems | Operator | Commit | Seen | Label |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 7.1 (plan 15.1 exit) | upgrade a scratch home made by the previous commit's binary; record the backup and the layout before and after | probe: a program built from `git archive 1109c62` (the Phase 14 closing commit, layout 6) creates a scratch home with session `s` (3 tool-call events); a program built from the current tree with `go build -overlay` (nothing added to the tree) opens it; then a second open | Windows | the lead (Claude), scripted probe | `3695cc271e735943cd943b743b332f58b2d34de7` (store code identical to `6e7514c`) | Before: layout 6. After: "opened at layout 7"; session `s` next seq 3, durable 3, 3 records read. Backup `backup/dsh-L6-1795413214887159700.db` (131,072 bytes) kept and listed by `Backups()` and by `Check`. The second open did no further upgrade (still 1 backup). The binary version read `(devel)+3695cc2...dirty` only because an untracked run record was in the tree. | `manual` |
+
+### What stays open
+
+- The bench figures on WSL (filled by the lead after the WSL run).
+- H-34: the `DH-T-STORE-18` budgets are provisional until impl.md step 16.7.
+- The guarded scenarios DH-E-STORE-1, -2 and -6 are authored and not run (impl.md step
+  16.8); DH-E-STORE-5 runs at step 35.7. Until step 16.8 passes, the SQLite store is
+  used on scratch homes only.
+- `TestLivenessLockSurvivesOSOpenAndClose` has no `//dsh:test` directive.
 
 ## Stage 7.2 -- Session Leases and Crash Recovery
 
@@ -338,14 +468,19 @@ All are within the budgets of Stage 7.1.
 
 | Exit evidence (impl.md DH-S-7) | Where | Status |
 | --- | --- | --- |
-| Conformance suite passing against SQLite | Stage 7.1 and 7.3 test tables (`TestConformance`) | met |
-| The driver measurement (F-2) | Stage 7.1 "Fact F-2", rerun above | met |
-| Crash-injection tests of DH-D-STORE-4 | Stage 7.2 table | met |
-| Manual checks | "Manual checks" above, on a scratch home | met |
-| Scenarios authored | DH-E-STORE-1, -2 (7.2), -5, -6 (7.3), in the acceptance index | met; they run in steps 16.8 and 35.7 |
+| Conformance suite passing against SQLite | Stage 7.1 and 7.3 test tables (`TestConformance`) | met; re-verified in both gate runs at `6e7514c` ("Gap closure (M1-G-STORE)") |
+| The driver measurement (F-2) | Stage 7.1 "Fact F-2", rerun above; the `DH-T-STORE-18` budget figures in "Gap closure (M1-G-STORE)" | met for the append measurement (Windows). The `DH-T-STORE-18` budgets are met on Windows at `6e7514c`; the WSL figures are pending (filled by the lead); the budgets are provisional (H-34) |
+| Crash-injection tests of DH-D-STORE-4 | Stage 7.2 table; `DH-T-STORE-8` in "Gap closure (M1-G-STORE)" | met; both gate runs at `6e7514c` |
+| The store tests the Done-when lines name (`DH-T-STORE-2`, `-3`, `-4`, `-8`, `-10`, `-18`; M1-G-STORE) | "Gap closure (M1-G-STORE)" | met at `6e7514c`, both lanes (historical: missing until plan Phase 15, though the stage was marked closed) |
+| Manual checks | "Manual checks" above, on a scratch home (historical); the 15.1 upgrade check in "Gap closure (M1-G-STORE)" (`manual`, `3695cc2`) | recorded as `manual`; the per-step register below stays open until plan step 18.1.5 |
+| Scenarios authored | DH-E-STORE-1, -2 (7.2), -5, -6 (7.3), in the acceptance index | authored, not run; they run in steps 16.8 and 35.7, so no DH-S-7 deliverable is "done" yet |
 
 impl.md steps 7.1 to 7.6 are ticked as built. `built-through` in the acceptance
-index is raised to DH-S-7.
+index was raised to DH-S-7 by this stage, and to DH-S-8 by plan step 15.3.7. Plan step
+15.3.8 confirmed the step 7.1 tick against Stage 15.1 at `6e7514c`, with H-34 open; the
+story plan's Stages 7.1 and 7.2 are ticked, citing this file. The gate of record for
+these ticks is the pair of run records `wsl-6e7514c-20261123T0602Z` and
+`win-6e7514c-20261123T0602Z`, in place of a CI run id.
 
 M1 gate repair (plan 13.2.2, 13.2.3; [DH-S-1.md, "M1 gate repair"](DH-S-1.md#m1-gate-repair)): `internal/session/store/sqlite/shutdown_test.go` waits on two signals from `export_test.go` instead of polling and sleeping -- `WriteHeldSignal` (a test seam on the writer mutex, `ctxMutex.held`, nil outside tests) and `BusyWaitSignal` (a call context that notices the driver's `busyHandler` asking it for `Done`), so `Close` is called while the append is really in the busy wait -- and its cleanup rolls back the other connection, then joins the append (P-C); `internal/session/query/visibility_test.go` `TestListPagesByLastPromptAsOf` runs on the SQLite store in a `synctest` bubble (virtual prompt milliseconds, an `appended` channel instead of the counter poll, P-C for the writer). Assertions unchanged.
 
@@ -355,40 +490,58 @@ M1 gate triage (plan 13.7.1, [M1-G-GATE-15.1](../gap-analysis.md)): concurrent `
 
 These are the eight fields of [impl.md sec. 7.3](../../../harness/impl.md#73-the-evidence-record),
 in the format of [the evidence runbook](README.md#the-evidence-record-headings). Plan step
-18.1.7 fills them at the frozen M1 closure commit; plan Stage 15.1 adds its "Gap closure
-(M1-G-STORE)" section before that. Until then each field points to the history above,
-which stays exactly as it was recorded and is not closure evidence (M1-D-CLOSE-1).
+18.1.7 fills them at the frozen M1 closure commit. Plan Stage 15.1 added the "Gap closure
+(M1-G-STORE)" section and fills the Phase 15 lines below. The history above stays exactly
+as it was recorded and is not closure evidence (M1-D-CLOSE-1).
 
 ### Source and build identity
 
-At closure: not yet recorded (plan 18.1.7). Historical: the driver pins
-(`modernc.org/sqlite` v1.62.0, `modernc.org/libc` v1.80.1) under "Fact F-2"; no commit was
-recorded.
+At closure: not yet recorded (plan 18.1.7). Phase 15 (gap closure): commit
+`6e7514cdb6fbc8f105238e7e655fb20e3102166b`, one commit for the three modules; the
+rehearsal built six `cmd/dsh` binaries at it, each `vcs.modified=false` (checksums in
+the rehearsal record). Historical: the driver pins (`modernc.org/sqlite` v1.62.0,
+`modernc.org/libc` v1.80.1) under "Fact F-2"; no commit was recorded.
 
 ### Environment and fixture
 
-At closure: both local lanes, from their run records, with the F-2 figures of each
-(plan Stage 15.1 runs the bench on both). macOS: out of scope (`platforms-windows-wsl`).
+At closure (18.1.7): both local lanes, from their run records at the closure commit.
+Phase 15 (gap closure), from the two `6e7514c` run records:
+- WSL lane: Ubuntu 24.04.5 LTS (`Ubuntu-24.04`) on WSL2, kernel
+  `6.18.58.1-microsoft-standard-WSL2`, go1.27.4 linux/amd64, gcc 13.3.0, a WSL-native
+  clone on ext4, `CI=1` for the children.
+- Windows lane: Windows 10.0.28000.3501, go1.27.4 windows/amd64, gcc 16.1.0 (MSYS2),
+  NTFS checkout, `CI=1` for the children.
+- Bench machine (Windows figures): i9-13900K. The WSL bench figures are pending.
+- macOS: out of scope (`platforms-windows-wsl`).
+
 Historical: the Windows machine named under "Fact F-2". Fixtures: scratch homes
-(`DSH_E2E_STORE_HOME`) and the committed `testdata/export.golden`.
+(`DSH_E2E_STORE_HOME`), the committed `testdata/export.golden`, and (Phase 15) the
+heavy-tailed corpus `internal/testkit/corpus` with its 100,000-event seeder.
 
 ### Exact tests and commands
 
 At closure: the lane scripts, and `go -C src/harness test -race -count=1
-./internal/session/store/...`. Historical: the commands under each stage's "Test
-results" and "Manual checks of impl.md DH-S-7".
+./internal/session/store/...`. Phase 15: the commands in "Gap closure (M1-G-STORE)".
+Historical: the commands under each stage's "Test results" and "Manual checks of impl.md
+DH-S-7".
 
 ### Run identifiers
 
-At closure: the run-record ids of both lanes, in the runbook's template (plan 18.1.3).
-WSL lane: not run. Windows lane: not run. macOS: out of scope (`platforms-windows-wsl`).
-Historical: no run id was recorded. The guarded scenarios DH-E-STORE-1, -2 and -6 run in
-impl.md step 16.8 and have no run id yet.
+At closure (18.1.3, 18.1.7): the run-record ids of both lanes at the frozen closure
+commit, in the runbook's template; not yet run. Phase 15 (gap closure), at `6e7514c`:
+WSL lane `wsl-6e7514c-20261123T0602Z` (file SHA-256
+`e643fb9c05106103196578bbc483b4fa199c066baa3d3be5d7f3c5fcfbefa815`; rehearsal
+`wsl-6e7514c-20261123T0602Z-rehearse.txt`); Windows lane `win-6e7514c-20261123T0602Z`
+(file SHA-256 `69bd371846922b7e1f30eb65c11de10da067267112447a95f8594485fc71a6cf`); the
+full template is in "Gate runs at 6e7514c". macOS: out of scope (`platforms-windows-wsl`).
+Historical: no run id was recorded before Phase 15. The guarded scenarios DH-E-STORE-1,
+-2 and -6 run in impl.md step 16.8 and have no run id yet.
 
 ### Results
 
-At closure: not yet recorded. Historical: the test tables of Stages 7.1, 7.2 and 7.3 and
-the driver measurements.
+At closure: not yet recorded. Phase 15: both lanes `PASSED all 12 gates` at `6e7514c`;
+per test ID, "Test IDs and results" in "Gap closure (M1-G-STORE)". Historical: the test
+tables of Stages 7.1, 7.2 and 7.3 and the driver measurements.
 
 ### Manual checks
 
@@ -421,10 +574,19 @@ under "Manual checks of impl.md DH-S-7".
 
 ### Open items
 
-At closure: plan 18.1.11 lists them. Now open: the store gaps of plan Stage 15.1
-(M1-G-STORE); the guarded scenarios DH-E-STORE-1, -2 and -6 (impl.md step 16.8) and
-DH-E-STORE-5 (step 35.7); until step 16.8 passes, the SQLite store is used on scratch
-homes only; the held-open entry H-34 ("Held open" below).
+At closure: plan 18.1.11 lists them. Now open:
+- the `DH-T-STORE-18` bench figures on WSL (the lead fills them after the WSL run);
+- the held-open entry H-34 ("Held open" below): provisional budgets until impl.md 16.7;
+- the guarded scenarios DH-E-STORE-1, -2 and -6 (impl.md step 16.8) and DH-E-STORE-5
+  (step 35.7), authored and not run; until step 16.8 passes, the SQLite store is used on
+  scratch homes only;
+- the per-step manual-check register, run at plan step 18.1.5;
+- `TestLivenessLockSurvivesOSOpenAndClose` (`DH-T-STORE-7`) carries no `//dsh:test`
+  directive.
+
+Built by Phase 15: the store gaps of plan Stage 15.1 (M1-G-STORE-1 to -5, -8, -9, and
+-6 with its budgets held open as H-34 and its WSL figures pending), the bounded open (M1-G-STORE-21, M1-D-STORE-F) and the POSIX runs on WSL (M1-G-STORE-30),
+recorded in "Gap closure (M1-G-STORE)".
 
 #### Held open
 

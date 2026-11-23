@@ -1,0 +1,66 @@
+commit: 6e7514cdb6fbc8f105238e7e655fb20e3102166b
+tmpdir fs: ext2/ext3
+go: go version go1.27.4 linux/amd64
+uname: Linux 6.18.58.1-microsoft-standard-WSL2
+=== 15.1.5 / 15.3.1 / 15.3.2 benches (-tags bench -benchtime 20x)
+BenchmarkBudgetStore/open-32         	      20	1216296003 ns/op	 254856176 heap-after-B	1214665997 p50-ns	1246647807 p95-ns	1908119652 B/op	 7701426 allocs/op
+--- BENCH: BenchmarkBudgetStore/open-32
+    budget.go:82: open: n=20 p50=1.197006746s p95=1.24869075s max=1.260388987s heap-after=228883360 B (budget 4s)
+    budget.go:82: open: n=20 p50=1.214665997s p95=1.246647807s max=1.266811697s heap-after=254856176 B (budget 4s)
+BenchmarkBudgetStore/open/gomemlimit-4GiB-32         	      20	1217184113 ns/op	 232966272 heap-after-B	1213310479 p50-ns	1281864509 p95-ns	1908103039 B/op	 7701358 allocs/op
+--- BENCH: BenchmarkBudgetStore/open/gomemlimit-4GiB-32
+    budget.go:82: open/gomemlimit-4GiB: n=20 p50=1.219114703s p95=1.270516288s max=1.271355614s heap-after=255823064 B (budget 4s)
+    budget.go:82: open/gomemlimit-4GiB: n=20 p50=1.213310479s p95=1.281864509s max=1.291245429s heap-after=232966272 B (budget 4s)
+BenchmarkBudgetStore/fork-32                         	      20	 861304084 ns/op	 128676664 heap-after-B	 860285484 p50-ns	 894986333 p95-ns	721168740 B/op	 2762753 allocs/op
+--- BENCH: BenchmarkBudgetStore/fork-32
+    budget.go:82: fork: n=20 p50=859.856526ms p95=884.918696ms max=904.410123ms heap-after=144791656 B (budget 4.5s)
+    budget.go:82: fork: n=20 p50=860.285484ms p95=894.986333ms max=905.119289ms heap-after=128676664 B (budget 4.5s)
+BenchmarkBudgetStore/fork/gomemlimit-4GiB-32         	      20	 859824249 ns/op	 151566136 heap-after-B	 855251820 p50-ns	 885321623 p95-ns	721164032 B/op	 2762729 allocs/op
+--- BENCH: BenchmarkBudgetStore/fork/gomemlimit-4GiB-32
+    budget.go:82: fork/gomemlimit-4GiB: n=20 p50=859.88315ms p95=890.533784ms max=893.705393ms heap-after=129729296 B (budget 4.5s)
+    budget.go:82: fork/gomemlimit-4GiB: n=20 p50=855.25182ms p95=885.321623ms max=924.944929ms heap-after=151566136 B (budget 4.5s)
+BenchmarkBudgetStore/first-page-32                   	      20	    177339 ns/op	   3464256 heap-after-B	    143183 p50-ns	    304043 p95-ns	   75444 B/op	     450 allocs/op
+--- BENCH: BenchmarkBudgetStore/first-page-32
+    budget.go:82: first-page: n=20 p50=149.21µs p95=272.523µs max=291.134µs heap-after=3537816 B (budget 5ms)
+    budget.go:82: first-page: n=20 p50=143.183µs p95=304.043µs max=306.711µs heap-after=3464256 B (budget 5ms)
+BenchmarkBudgetStore/first-page/gomemlimit-4GiB-32   	      20	    176432 ns/op	   3464368 heap-after-B	    172615 p50-ns	    242083 p95-ns	   75440 B/op	     450 allocs/op
+--- BENCH: BenchmarkBudgetStore/first-page/gomemlimit-4GiB-32
+    budget.go:82: first-page/gomemlimit-4GiB: n=20 p50=178.819µs p95=252.378µs max=321.871µs heap-after=3506280 B (budget 5ms)
+    budget.go:82: first-page/gomemlimit-4GiB: n=20 p50=172.615µs p95=242.083µs max=267.558µs heap-after=3464368 B (budget 5ms)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/session/store/sqlite	291.255s
+BenchmarkBudgetQuery/first-page-32         	      20	   8453884 ns/op	  15147720 heap-after-B	   8328582 p50-ns	   9384436 p95-ns	 6677166 B/op	    6508 allocs/op
+--- BENCH: BenchmarkBudgetQuery/first-page-32
+    budget.go:82: first-page: n=20 p50=8.849683ms p95=10.079565ms max=10.298539ms heap-after=15153320 B (budget 70ms)
+    budget.go:82: first-page: n=20 p50=8.328582ms p95=9.384436ms max=9.40954ms heap-after=15147720 B (budget 70ms)
+BenchmarkBudgetQuery/first-page/gomemlimit-4GiB-32         	      20	   8034781 ns/op	   8482488 heap-after-B	   8014857 p50-ns	   8853078 p95-ns	 6678404 B/op	    6509 allocs/op
+--- BENCH: BenchmarkBudgetQuery/first-page/gomemlimit-4GiB-32
+    budget.go:82: first-page/gomemlimit-4GiB: n=20 p50=8.035003ms p95=9.563229ms max=19.610867ms heap-after=15148136 B (budget 70ms)
+    budget.go:82: first-page/gomemlimit-4GiB: n=20 p50=8.014857ms p95=8.853078ms max=8.930644ms heap-after=8482488 B (budget 70ms)
+BenchmarkBudgetQuery/snapshot-32                           	      20	  42412645 ns/op	  36292992 heap-after-B	  41793800 p50-ns	  44141737 p95-ns	67292963 B/op	   62266 allocs/op
+--- BENCH: BenchmarkBudgetQuery/snapshot-32
+    budget.go:82: snapshot: n=20 p50=42.878196ms p95=48.618042ms max=51.81443ms heap-after=42977104 B (budget 150ms)
+    budget.go:82: snapshot: n=20 p50=41.7938ms p95=44.141737ms max=51.721985ms heap-after=36292992 B (budget 150ms)
+BenchmarkBudgetQuery/snapshot/gomemlimit-4GiB-32           	      20	  42892348 ns/op	  42977360 heap-after-B	  42206333 p50-ns	  47812506 p95-ns	67293761 B/op	   62268 allocs/op
+--- BENCH: BenchmarkBudgetQuery/snapshot/gomemlimit-4GiB-32
+    budget.go:82: snapshot/gomemlimit-4GiB: n=20 p50=42.337197ms p95=47.549631ms max=49.647319ms heap-after=42977120 B (budget 150ms)
+    budget.go:82: snapshot/gomemlimit-4GiB: n=20 p50=42.206333ms p95=47.812506ms max=48.552538ms heap-after=42977360 B (budget 150ms)
+BenchmarkBudgetList10k/first-page-32                       	      20	   9468780 ns/op	  71162912 heap-after-B	   9014472 p50-ns	  11528547 p95-ns	 6664254 B/op	    6493 allocs/op
+--- BENCH: BenchmarkBudgetList10k/first-page-32
+    budget.go:82: first-page: n=20 p50=8.886974ms p95=11.9492ms max=12.151139ms heap-after=71173272 B (budget 100ms)
+    budget.go:82: first-page: n=20 p50=9.014472ms p95=11.528547ms max=11.999073ms heap-after=71162912 B (budget 100ms)
+BenchmarkBudgetList10k/first-page/gomemlimit-4GiB-32       	      20	   9124864 ns/op	  71177448 heap-after-B	   8649555 p50-ns	  10419479 p95-ns	 6664580 B/op	    6495 allocs/op
+--- BENCH: BenchmarkBudgetList10k/first-page/gomemlimit-4GiB-32
+    budget.go:82: first-page/gomemlimit-4GiB: n=20 p50=9.072311ms p95=12.532805ms max=12.869769ms heap-after=71170392 B (budget 100ms)
+    budget.go:82: first-page/gomemlimit-4GiB: n=20 p50=8.649555ms p95=10.419479ms max=10.895563ms heap-after=71177448 B (budget 100ms)
+BenchmarkBudgetList10k/deep-page-32                        	      20	   6674083 ns/op	  39149936 heap-after-B	   6591604 p50-ns	   7026502 p95-ns	  393828 B/op	    6471 allocs/op
+--- BENCH: BenchmarkBudgetList10k/deep-page-32
+    budget.go:82: deep-page: n=20 p50=6.873096ms p95=7.607131ms max=7.799941ms heap-after=39186688 B (budget 70ms)
+    budget.go:82: deep-page: n=20 p50=6.591604ms p95=7.026502ms max=7.371618ms heap-after=39149936 B (budget 70ms)
+BenchmarkBudgetList10k/deep-page/gomemlimit-4GiB-32        	      20	   6582168 ns/op	  39166680 heap-after-B	   6513112 p50-ns	   6996124 p95-ns	  394380 B/op	    6473 allocs/op
+--- BENCH: BenchmarkBudgetList10k/deep-page/gomemlimit-4GiB-32
+    budget.go:82: deep-page/gomemlimit-4GiB: n=20 p50=6.605189ms p95=6.880778ms max=7.128037ms heap-after=39191488 B (budget 70ms)
+    budget.go:82: deep-page/gomemlimit-4GiB: n=20 p50=6.513112ms p95=6.996124ms max=7.366561ms heap-after=39166680 B (budget 70ms)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/session/query	252.132s
+=== done

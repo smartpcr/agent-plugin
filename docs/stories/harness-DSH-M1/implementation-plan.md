@@ -470,36 +470,40 @@ storyId: "harness:DSH"
 ## Stage 7.1: SQLite Driver Measurement and Atomic Appends
 
 ### Implementation Steps
-- [ ] Fact F-2 first (impl.md DH-S-7 entry): add `modernc.org/sqlite` v1.62.0 pinned with `modernc.org/libc` v1.80.1 to `src/harness/go.mod` with a reason comment (RM-10, NG-4), and a `TestBudget*` measurement of open, WAL append and flush latency recorded in `docs/stories/harness-DSH-M1/evidence/DH-S-7.md` BEFORE anything else is built on the driver.
-- [ ] impl.md step 7.1 / DH-D-STORE-2 (part 1): implement `src/harness/internal/session/store/sqlite` -- one database per home (`<home>/dsh.db`), WAL mode, the schema of architecture.md sec. 4.3 created by numbered migrations, atomic multi-event appends in one transaction.
-- [ ] impl.md step 7.1 / DH-D-STORE-2 (part 2): the flush barrier (`Flush(ctx)` returns after the WAL commit is durable), paged reads and listing; run `storetest.Run` from stage 5.1 against the SQLite factory (`DH-T-STORE-1`..`-5`, `DH-T-STORE-18` inside its budget).
+- [x] Fact F-2 first (impl.md DH-S-7 entry): add `modernc.org/sqlite` v1.62.0 pinned with `modernc.org/libc` v1.80.1 to `src/harness/go.mod` with a reason comment (RM-10, NG-4), and a `TestBudget*` measurement of open, WAL append and flush latency recorded in `docs/stories/harness-DSH-M1/evidence/DH-S-7.md` BEFORE anything else is built on the driver.
+- [x] impl.md step 7.1 / DH-D-STORE-2 (part 1): implement `src/harness/internal/session/store/sqlite` -- one database per home (`<home>/dsh.db`), WAL mode, the schema of architecture.md sec. 4.3 created by numbered migrations, atomic multi-event appends in one transaction.
+- [x] impl.md step 7.1 / DH-D-STORE-2 (part 2): the flush barrier (`Flush(ctx)` returns after the WAL commit is durable), paged reads and listing; run `storetest.Run` from stage 5.1 against the SQLite factory (`DH-T-STORE-1`..`-5`, `DH-T-STORE-18` inside its budget).
 
 ### Dependencies
 - phase-session-core-contracts/stage-event-vocabulary-and-store-contract
 - phase-boot-launch-egress-secrets-and-test-kit/stage-harness-test-kit-and-circle-closure
 
 ### Test Scenarios
-- [ ] Scenario: Conformance suite passes on SQLite -- Given `storetest.Run` with a factory opening `dsh.db` in a test-kit temp home, When the suite runs, Then every case that passes on `memstore` passes on SQLite (`DH-T-STORE-1`, TC-07) [proof: service:sqlite; deps: sqlite -- embedded `modernc.org/sqlite` compiled into the test binary, DB file under `t.TempDir()`; no DSN]
-- [ ] Scenario: Multi-event append is atomic -- Given an append of three events where the third violates a constraint, When the append runs, Then a fresh read of the database holds none of the three rows (TC-07) [proof: service:sqlite; deps: sqlite embedded; filesystem via `t.TempDir()`]
-- [ ] Scenario: Driver budget measured -- Given the pinned driver, When `TestBudgetStoreAppend` runs 1,000 single-event appends with flush, Then the p95 is under the budget compiled into the test and the measured figure is printed for the evidence record (`DH-T-STORE-18`, fact F-2) [proof: service:sqlite; deps: sqlite embedded; filesystem via `t.TempDir()`]
+- [x] Scenario: Conformance suite passes on SQLite -- Given `storetest.Run` with a factory opening `dsh.db` in a test-kit temp home, When the suite runs, Then every case that passes on `memstore` passes on SQLite (`DH-T-STORE-1`, TC-07) [proof: service:sqlite; deps: sqlite -- embedded `modernc.org/sqlite` compiled into the test binary, DB file under `t.TempDir()`; no DSN]
+- [x] Scenario: Multi-event append is atomic -- Given an append of three events where the third violates a constraint, When the append runs, Then a fresh read of the database holds none of the three rows (TC-07) [proof: service:sqlite; deps: sqlite embedded; filesystem via `t.TempDir()`]
+- [x] Scenario: Driver budget measured -- Given the pinned driver, When `TestBudgetStoreAppend` runs 1,000 single-event appends with flush, Then the p95 is under the budget compiled into the test and the measured figure is printed for the evidence record (`DH-T-STORE-18`, fact F-2) [proof: service:sqlite; deps: sqlite embedded; filesystem via `t.TempDir()`]
+
+> Ticked as built by gap-closure plan step 15.3.8 (Phase 15), at gate commit `6e7514c` (run records `wsl-6e7514c-20261123T0602Z`, `win-6e7514c-20261123T0602Z`). Evidence: [evidence/DH-S-7.md](evidence/DH-S-7.md) Stage 7.1 "Fact F-2" and "Test results" (`TestConformance`, `TestMultiEventAppendIsAtomic`, `TestBudgetStoreAppend`) and "Gap closure (M1-G-STORE)" (`DH-T-STORE-2` to `-4` and `-18`, which this stage's steps named but did not build until Phase 15). Held open: H-34, the provisional `DH-T-STORE-18` budgets (pinned at impl.md 16.7); the WSL bench figures are pending. Deviation: the "Multi-event append is atomic" checkpoint case is inverted by plan step 15.2.1 (gap M1-G-STORE-10: a refused derived row no longer rolls back the events); the constraint case on an event still rolls back all three.
 
 ## Stage 7.2: Session Leases and Crash Recovery
 
 ### Implementation Steps
-- [ ] impl.md step 7.2 / DH-D-STORE-3: one writer per session across processes -- lease row with epoch, per-instance liveness lock file under `run/`, epoch checked on every append; nothing expires by time; takeover only by `Force` or when the holder's liveness lock is acquired inside the write transaction (SP-9; `DH-T-STORE-6`, `-7`).
-- [ ] impl.md step 7.3 / DH-D-STORE-4 (part 1): durability checkpoints -- flush before a provider attempt, before a tool body and at step end; a failed flush means the work does not run (SP-8).
-- [ ] impl.md step 7.3 / DH-D-STORE-4 (part 2): honest crash recovery on write-open -- open brackets are closed with `interrupted` closers appended by the session core, pending tool calls answered as interrupted, and bounded shutdown flushes the last events (`DH-T-STORE-5`, `-8`, `-9`).
-- [ ] Add crash-injection hooks (test-only build of the re-exec child that exits between append and flush) used by the tests below.
-- [ ] Author `DH-E-STORE-1` and `DH-E-STORE-2` (guarded; run at step 16.8 on scratch homes) as `//go:build scenario` files; not executed in this story.
+- [x] impl.md step 7.2 / DH-D-STORE-3: one writer per session across processes -- lease row with epoch, per-instance liveness lock file under `run/`, epoch checked on every append; nothing expires by time; takeover only by `Force` or when the holder's liveness lock is acquired inside the write transaction (SP-9; `DH-T-STORE-6`, `-7`).
+- [x] impl.md step 7.3 / DH-D-STORE-4 (part 1): durability checkpoints -- flush before a provider attempt, before a tool body and at step end; a failed flush means the work does not run (SP-8).
+- [x] impl.md step 7.3 / DH-D-STORE-4 (part 2): honest crash recovery on write-open -- open brackets are closed with `interrupted` closers appended by the session core, pending tool calls answered as interrupted, and bounded shutdown flushes the last events (`DH-T-STORE-5`, `-8`, `-9`).
+- [x] Add crash-injection hooks (test-only build of the re-exec child that exits between append and flush) used by the tests below.
+- [x] Author `DH-E-STORE-1` and `DH-E-STORE-2` (guarded; run at step 16.8 on scratch homes) as `//go:build scenario` files; not executed in this story.
 
 ### Dependencies
 - phase-sqlite-store-leases-and-recovery/stage-sqlite-driver-measurement-and-atomic-appends
 
 ### Test Scenarios
-- [ ] Scenario: Second writer refused across processes -- Given process A (re-exec'd test binary) holding the lease on session S in a temp home, When process B opens S for writing, Then B is refused with `session/owned` naming A's process and S's log contains only A's events (`DH-T-STORE-6`, TC-07; the refusal code is the store contract's, [session-store.md §6.2](../../harness/areas/session-store.md) lease rule 3 -- an earlier draft named it `store/lease-held`, a code no contract defines) [proof: service:sqlite; deps: sqlite embedded; os-process via test-binary re-exec; filesystem via shared `t.TempDir()` home]
-- [ ] Scenario: Dead holder taken over safely -- Given process A holding the lease is killed, When process B opens S, Then B acquires A's liveness lock inside the write transaction, bumps the epoch, and a stale append carrying A's epoch is rejected (`DH-T-STORE-7`, TC-07) [proof: service:sqlite; deps: sqlite embedded; os-process via re-exec; filesystem via `t.TempDir()`]
-- [ ] Scenario: Crash between append and flush recovers honestly -- Given a child that appends `turn/start`, `step/start` and a tool call then exits before flush, When the store is reopened for write, Then the persisted rows contain balanced brackets closed as `interrupted` and the tool call has an interrupted result (`DH-T-STORE-8`, TC-07) [proof: service:sqlite; deps: sqlite embedded; os-process via re-exec; filesystem via `t.TempDir()`]
-- [ ] Scenario: Failed flush blocks the tool body -- Given a store whose flush returns an injected error, When a checkpoint precedes a tool body, Then the body's call counter stays 0 and the step ends with a checkpoint failure (SP-8, `DH-T-STORE-9`) [proof: service:sqlite; deps: sqlite embedded with fault-injecting wrapper; filesystem via `t.TempDir()`]
+- [x] Scenario: Second writer refused across processes -- Given process A (re-exec'd test binary) holding the lease on session S in a temp home, When process B opens S for writing, Then B is refused with `session/owned` naming A's process and S's log contains only A's events (`DH-T-STORE-6`, TC-07; the refusal code is the store contract's, [session-store.md §6.2](../../harness/areas/session-store.md) lease rule 3 -- an earlier draft named it `store/lease-held`, a code no contract defines) [proof: service:sqlite; deps: sqlite embedded; os-process via test-binary re-exec; filesystem via shared `t.TempDir()` home]
+- [x] Scenario: Dead holder taken over safely -- Given process A holding the lease is killed, When process B opens S, Then B acquires A's liveness lock inside the write transaction, bumps the epoch, and a stale append carrying A's epoch is rejected (`DH-T-STORE-7`, TC-07) [proof: service:sqlite; deps: sqlite embedded; os-process via re-exec; filesystem via `t.TempDir()`]
+- [x] Scenario: Crash between append and flush recovers honestly -- Given a child that appends `turn/start`, `step/start` and a tool call then exits before flush, When the store is reopened for write, Then the persisted rows contain balanced brackets closed as `interrupted` and the tool call has an interrupted result (`DH-T-STORE-8`, TC-07) [proof: service:sqlite; deps: sqlite embedded; os-process via re-exec; filesystem via `t.TempDir()`]
+- [x] Scenario: Failed flush blocks the tool body -- Given a store whose flush returns an injected error, When a checkpoint precedes a tool body, Then the body's call counter stays 0 and the step ends with a checkpoint failure (SP-8, `DH-T-STORE-9`) [proof: service:sqlite; deps: sqlite embedded with fault-injecting wrapper; filesystem via `t.TempDir()`]
+
+> Ticked as built by gap-closure plan step 15.3.8 (Phase 15), at gate commit `6e7514c`. Evidence: [evidence/DH-S-7.md](evidence/DH-S-7.md) Stage 7.2 table (`TestSecondWriterRefusedAcrossProcesses`, `TestDeadHolderTakenOver`, `TestCrashBetweenAppendAndFlushRecoversHonestly`, `TestKilledAppenderLeavesContiguousLog`) and "Gap closure (M1-G-STORE)" (`DH-T-STORE-7` on WSL, and `DH-T-STORE-8`: the driver's checkpoints now go through the mounted policy, plan 15.1.7); the failed-flush scenario is `session/checkpoint` `TestFailedFlushBlocksTheToolBody`. `DH-E-STORE-1` and `-2` are authored and not run (impl.md step 16.8).
 
 ## Stage 7.3: Export Import Follow and Store Repair
 
@@ -526,8 +530,8 @@ storyId: "harness:DSH"
 ## Stage 8.1: Typed Machine State and Stored Folds
 
 ### Implementation Steps
-- [ ] impl.md step 8.1 / DH-D-STORAGE-1: implement `src/harness/internal/storage` typed machine-state tables (workspace registry, settings) in the same `dsh.db`, with typed accessors and migrations.
-- [ ] impl.md step 8.2 / DH-D-VIEW-2: stored fold state is never ahead of the log; each stored fold records the sequence it reflects and its fold version; a changed fold version rebuilds the stored state on open.
+- [x] impl.md step 8.1 / DH-D-STORAGE-1: implement `src/harness/internal/storage` typed machine-state tables (workspace registry, settings) in the same `dsh.db`, with typed accessors and migrations.
+- [x] impl.md step 8.2 / DH-D-VIEW-2: stored fold state is never ahead of the log; each stored fold records the sequence it reflects and its fold version; a changed fold version rebuilds the stored state on open.
 
 > Operator decision `step-8-1-settings-meaning`: "settings" in step 8.1 means machine-written settings, which live in typed `kv` namespaces in `dsh.db` (`storage/kv`). User settings stay with the one writable config layer (`storage/settings`, [architecture.md](architecture.md), [storage.md](../../harness/areas/storage.md)), and there is no dedicated settings table. Pruning checkpoint rows of superseded fold versions is left to a later stage.
 
@@ -535,17 +539,19 @@ storyId: "harness:DSH"
 - phase-sqlite-store-leases-and-recovery/stage-export-import-follow-and-store-repair
 
 ### Test Scenarios
-- [ ] Scenario: Machine state survives restart -- Given a workspace registered in a temp home, When the store is closed and reopened, Then the workspace row is read back with identical fields (TC-08) [proof: service:sqlite; deps: sqlite embedded; filesystem via `t.TempDir()`]
-- [ ] Scenario: Changed fold version rebuilds -- Given a stored fold at version 1 over 20 events, When the fold is re-registered at version 2 and the store opens, Then the stored state is rebuilt, records version 2 and its sequence equals the log head (TC-08) [proof: service:sqlite; deps: sqlite embedded; filesystem via `t.TempDir()`]
+- [x] Scenario: Machine state survives restart -- Given a workspace registered in a temp home, When the store is closed and reopened, Then the workspace row is read back with identical fields (TC-08) [proof: service:sqlite; deps: sqlite embedded; filesystem via `t.TempDir()`]
+- [x] Scenario: Changed fold version rebuilds -- Given a stored fold at version 1 over 20 events, When the fold is re-registered at version 2 and the store opens, Then the stored state is rebuilt, records version 2 and its sequence equals the log head (TC-08) [proof: service:sqlite; deps: sqlite embedded; filesystem via `t.TempDir()`]
+
+> Ticked as built by gap-closure plan step 15.3.8 (Phase 15), at gate commit `6e7514c`. Evidence: [evidence/DH-S-8.md](evidence/DH-S-8.md) Stage 8.1 table and "Stage 8.1 addendum (M1-G-STORE)" (`DH-T-VIEW-1`, `-5` to `-9`; plan Stage 15.2). Held open: H-36, linear growth of the event index's writes (M1-D-STORE-E (a)). Deviation: "rebuilds the stored state on open" is now also done by the resumable `views-rebuild` sweep (plan 15.2.6), and a reader sees `pending` until the row is written.
 
 ## Stage 8.2: Builtin Views Projects and Session Listing
 
 ### Implementation Steps
-- [ ] impl.md step 8.3 / DH-D-VIEW-3 (P1, pulled forward): built-in views in `internal/session/views` -- list summary, turn index, statistics, event index.
-- [ ] impl.md step 8.4 / DH-D-STORAGE-7 (P1, pulled forward): projects group sessions; a hidden session never keeps working (hiding stops its agents).
-- [ ] impl.md step 8.5 / DH-D-VIEW-5: list, observe, trace and follow sessions across forks.
-- [ ] Author `DH-E-STORAGE-1` (runs DH-S-19) and `DH-E-STORAGE-2` (runs DH-S-23) as scenario files.
-- [ ] Close DH-S-8 (moved here from Stage 8.3 by operator decision `dsh-s8-closure-waits-stage-8-2`): add the refold-equals-stored evidence for the four built-in views to `docs/stories/harness-DSH-M1/evidence/DH-S-8.md`, tick impl.md steps 8.3-8.5 as built, and raise `built-through` in `test/harness/acceptance-index.yaml` to DH-S-8.
+- [x] impl.md step 8.3 / DH-D-VIEW-3 (P1, pulled forward): built-in views in `internal/session/views` -- list summary, turn index, statistics, event index.
+- [x] impl.md step 8.4 / DH-D-STORAGE-7 (P1, pulled forward): projects group sessions; a hidden session never keeps working (hiding stops its agents).
+- [x] impl.md step 8.5 / DH-D-VIEW-5: list, observe, trace and follow sessions across forks.
+- [x] Author `DH-E-STORAGE-1` (runs DH-S-19) and `DH-E-STORAGE-2` (runs DH-S-23) as scenario files.
+- [x] Close DH-S-8 (moved here from Stage 8.3 by operator decision `dsh-s8-closure-waits-stage-8-2`): add the refold-equals-stored evidence for the four built-in views to `docs/stories/harness-DSH-M1/evidence/DH-S-8.md`, tick impl.md steps 8.3-8.5 as built, and raise `built-through` in `test/harness/acceptance-index.yaml` to DH-S-8.
 
 ### Dependencies
 - phase-machine-state-views-and-spill/stage-typed-machine-state-and-stored-folds
@@ -554,6 +560,8 @@ storyId: "harness:DSH"
 - [x] Scenario: Refold equals stored for every built-in view -- Given a fixed 200-event session in a temp home, When each built-in view is refolded from the log and compared with its stored state, Then all four are equal (DH-S-8 exit evidence, TC-08) [proof: service:sqlite; deps: sqlite embedded; filesystem via `t.TempDir()`]
 - [x] Scenario: Listing groups by project -- Given three sessions in two projects, When sessions are listed by project, Then the result equals the committed golden listing (TC-08) [proof: golden; deps: sqlite embedded; filesystem via `t.TempDir()`; committed golden `session/views/testdata/list_by_project.golden`]
 - [x] Scenario: Hidden session stops working -- Given a session with an agent registered through the agent contract fake, When the session is hidden, Then the agent receives a stop with cause `hidden` (TC-08 logic) [proof: in-process; deps: none -- memstore and fake agent]
+
+> Closed as one unit by gap-closure plan step 15.3.7 (Phase 15), at gate commit `6e7514c` (run records `wsl-6e7514c-20261123T0602Z`, `win-6e7514c-20261123T0602Z`): the five steps above are ticked with the three scenario boxes, which were ticked when #64 merged and are re-confirmed by the same tests (`TestRefoldEqualsStoredForEveryBuiltinView`, `TestListingGroupsByProject`, `TestHiddenSessionStopsWorking`). Evidence: [evidence/DH-S-8.md](evidence/DH-S-8.md) "Stage 8.2 -- Builtin Views, Projects and Session Listing", with the `manual` checks of steps 8.3 to 8.5. impl.md steps 8.3 to 8.5 are ticked and `built-through` is DH-S-8. Held open: H-35, the provisional `DH-T-VIEW-25` budgets (WSL figures pending). `DH-E-STORAGE-1` and `-2` are authored and not run (DH-S-19, DH-S-23).
 
 ## Stage 8.3: Spill Store and Attachments
 
