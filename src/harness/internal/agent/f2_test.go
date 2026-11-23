@@ -156,7 +156,7 @@ func f2Run(t *testing.T, st store.Store, h f2Hooks) (session.Handle, []session.R
 		return agent.ModelSelection{Route: f2Route}
 	})
 	must(r.inbox.Send(bg, agent.ListNextTurn, agent.InboxMessage{Source: agent.SourceUser, Text: f2Prompt}))
-	ctx, cancel := context.WithTimeout(bg, 10*time.Second)
+	ctx, cancel := context.WithTimeout(bg, f2IdleBound)
 	defer cancel()
 	if err := r.drv.WaitIdle(ctx); err != nil {
 		t.Fatalf("wait idle: %v", err)
@@ -265,7 +265,7 @@ func f2Start(t *testing.T, st store.Store, h f2Hooks, register func(*llm.Runtime
 	var once sync.Once
 	stop := func() {
 		once.Do(func() {
-			ctx, cancel := context.WithTimeout(bg, 10*time.Second)
+			ctx, cancel := context.WithTimeout(bg, f2IdleBound)
 			defer cancel()
 			if err := drv.Close(ctx); err != nil {
 				t.Errorf("close the driver: %v", err)
@@ -685,6 +685,13 @@ func TestFlowF2CheckpointsBeforeIOOnSQLite(t *testing.T) {
 	golden.Assert(t, f2Golden, f2Serialize(must(rs.Read(bg, 0, 0))))
 }
 
+// f2IdleBound bounds every F2 wait for the driver to go idle. It only catches a
+// hang: a run normally idles in well under a second, but the gate's -race run of
+// the whole module on a loaded Windows host once took longer than an earlier 10 s
+// bound (TestFlowF2CheckpointOracleCatchesAMissingFlush, win lane at d67d483), so
+// the bound is a minute, still far inside the gate's test timeout.
+const f2IdleBound = time.Minute
+
 // The TC-11b oracle fails without the barriers: the same run with every flush
 // hidden from the recorder (the rows are still durable, because the SQLite
 // store commits each append) is reported at every cut.
@@ -807,7 +814,7 @@ func TestFlowF2RetriedWithinTheRouteCap(t *testing.T) {
 		t.Fatal("the driver never waited to retry")
 	}
 	r.clk.Advance(f2RouteCap)
-	ctx, cancel := context.WithTimeout(bg, 10*time.Second)
+	ctx, cancel := context.WithTimeout(bg, f2IdleBound)
 	defer cancel()
 	if err := r.drv.WaitIdle(ctx); err != nil {
 		t.Fatalf("wait idle: %v", err)
@@ -848,7 +855,7 @@ func TestFlowF2BadCredentialIsNeverRetried(t *testing.T) {
 		[]*vocab.Failure{f2Fail(vocab.CodeAuth, "invalid credential", 401, time.Second)})
 	r := f2Start(t, memstore.New(), f2Hooks{noApproval: true}, register)
 	must(r.inbox.Send(bg, agent.ListNextTurn, agent.InboxMessage{Source: agent.SourceUser, Text: f2RetryPrompt}))
-	ctx, cancel := context.WithTimeout(bg, 10*time.Second)
+	ctx, cancel := context.WithTimeout(bg, f2IdleBound)
 	defer cancel()
 	if err := r.drv.WaitIdle(ctx); err != nil {
 		t.Fatalf("wait idle: %v", err)
