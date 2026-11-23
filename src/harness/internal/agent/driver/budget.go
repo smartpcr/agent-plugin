@@ -7,9 +7,11 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/schema"
 )
 
-// The budget defaults (tech-spec §5.5, DH-ADR-AGENT-7), confirmed by their
-// owner for Stage 11.2 (impl.md §9.1): 500 steps, 8 attempts per step, no time
-// limit. They live here only.
+// The budget defaults (tech-spec §5.5, DH-ADR-AGENT-7): 500 steps, 8 attempts
+// per step, no time limit. The owner confirmed them in writing on 2026-11-23
+// (M1 decision M1-D-LOOP-5; turn-budget-defaults-s11 is in force), so they stay
+// constants (DC-4); impl.md §9.1 records the confirmation by a pointer line.
+// They live here only.
 const (
 	DefaultMaxSteps           = 500
 	DefaultMaxAttemptsPerStep = 8

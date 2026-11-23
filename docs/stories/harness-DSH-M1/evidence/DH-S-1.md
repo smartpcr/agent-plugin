@@ -831,6 +831,53 @@ failure was fixed before `f72f435`:
   one-minute bound, `f2IdleBound`. The WSL run at `d67d483` passed all 12 gates; it was
   superseded by `f72f435` and no record was kept.
 
+## Phase 17 exit gate runs
+
+Gap-closure Phase 17 (stages 17.1 to 17.4), Rule 2. `manual`. **Both local lanes pass all 12
+gates at one commit, `fda4b98`**, the closing commit for Phase 17's gate evidence (the
+record files were committed after it, in `0c284c8`). The DH-S-11 record cites this section
+as its gate record. A gate pass is local evidence for the stated build on these two
+systems; it is not the M1 manual check (plan 17.4.3), which has not run.
+
+| Field | WSL lane | Windows lane |
+| --- | --- | --- |
+| Run-record id | `wsl-fda4b98-20261123T1244Z` | `win-fda4b98-20261123T1244Z` |
+| Record file and SHA-256 | [runs/wsl-fda4b98-20261123T1244Z.txt](runs/wsl-fda4b98-20261123T1244Z.txt), `0959c65420cac2bccc8fa343fdba0c815548eedcc4f3906c83a7f88d2ccaa6d8` | [runs/win-fda4b98-20261123T1244Z.txt](runs/win-fda4b98-20261123T1244Z.txt), `b0908ca17607c49ecb9bb17eb0f198a35903c2ba237f4c75aa6ba2439c42b6af` |
+| Output SHA-256 (`sha256:` line) | `b7af240dec4f57cd909aa822205f5ceb13f7db5b6c9ec8eb7a541f7bfa1b4d89` | `cc3900c570624ae5de9069b40ef9ecd54e6c23923d1248d3152def2fe35db034` |
+| Rehearsal file and SHA-256 | [runs/wsl-fda4b98-20261123T1244Z-rehearse.txt](runs/wsl-fda4b98-20261123T1244Z-rehearse.txt), `6b0bc06be4bd202f24e0090a696fcc8bd5a870d07dad582889a186c4a1047160`; six binaries, each `vcs.revision=fda4b98…` and `vcs.modified=false`, nothing published | -- (WSL lane only) |
+| Operator | the lead (lane script) | the lead (lane script) |
+| Commit | `fda4b9846ae534e7d028ffa11f30ebb849bd9063` | the same |
+| git status --porcelain | empty (`tree: clean`) | empty (`tree: clean`) |
+| System | Ubuntu 24.04.5 LTS (`Ubuntu-24.04`), kernel `6.18.58.1-microsoft-standard-WSL2` | Microsoft Windows [Version 10.0.28000.3501] |
+| Go | go1.27.4 linux/amd64 (`/usr/local/go`) | go1.27.4 windows/amd64 (`C:\Program Files\Go`) |
+| CC and gcc | `gcc`, gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 | `gcc`, gcc (Rev5, Built by MSYS2 project) 16.1.0 |
+| Started, ended (UTC) | 2026-11-23T12:44:30Z, 12:53:07Z | 2026-11-23T12:44:27Z, 13:17:39Z |
+| Exit status | 0 | 0 |
+| Result | `harness-gate: PASSED all 12 gates` | `harness-gate: PASSED all 12 gates` |
+| Reasoned exceptions | 41 (typeassert 38, SA1019 1, SA2001 1, U1000 1) | the same |
+| Gate times (selected) | test 2m55s, coverage 4m40s, self 31s | test 5m16s, coverage 16m49s, self 7m39s |
+| CI run ids (supplementary) | none | none |
+| macOS | out of scope (`platforms-windows-wsl`) | |
+
+The systems, toolchains and gate list are unchanged from the Phase 16 runs above. What the
+gates do not run: the `bench`-tagged continuation benchmark (DH-T-AGENT-28) and the `e2e`
+features are compiled and analyzed by `vet` in both lanes, not executed; the `manual`
+probe of plan 17.4.1 is not built by any gate. Their results are recorded in
+[DH-S-11.md, "Stage 17.1"](DH-S-11.md#stage-171-prompt-assembly-and-one-batch-admission)
+with where they ran.
+
+**Earlier run in Phase 17, kept as history (not closure evidence).** One failed, and the
+failure was fixed before `fda4b98`:
+- **WSL at `1cb9026` failed at `staticcheck`**
+  ([runs/wsl-1cb9026-20261123T1242Z.txt](runs/wsl-1cb9026-20261123T1242Z.txt), SHA-256
+  `031f01209d05a15ce20fdcb4412876f4126540bacd1ea56fe787578442d2a6d5`, with its rehearsal
+  record [runs/wsl-1cb9026-20261123T1242Z-rehearse.txt](runs/wsl-1cb9026-20261123T1242Z-rehearse.txt)):
+  U1000 under `-tags=replay,scenario,bench`, `recordingProxy.settled` and `awaitSettled`
+  in `internal/testkit/scenarios/sdkhost_test.go` were left unused when plan 17.4.4
+  retargeted the DH-S-11 scenarios off the recording proxy. `fda4b98` removes them. The
+  Windows run at `1cb9026` was stopped by the lead after the WSL result; no record was
+  kept.
+
 ## Evidence record (impl.md sec. 7.3)
 
 These are the eight fields of [impl.md sec. 7.3](../../../harness/impl.md#73-the-evidence-record),

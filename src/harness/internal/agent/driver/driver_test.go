@@ -298,7 +298,7 @@ func TestTurnRunsStepsUntilTheModelAnswers(t *testing.T) {
 	}
 }
 
-// DH-T-AGENT-8: a step budget of 3 with a model that always calls a tool runs
+// DH-T-AGENT-22 (step-limit clause): a step budget of 3 with a model that always calls a tool runs
 // exactly 3 steps, and turn/end records budget{steps, 3}.
 func TestTurnBudgetClosesTheTurn(t *testing.T) {
 	b := driver.Budget{MaxSteps: 3}
