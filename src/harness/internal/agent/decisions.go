@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/llm"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/scope"
@@ -80,12 +81,20 @@ type AttemptFailure struct {
 	// StepStarted is when the step's first attempt started, so an elapsed bound
 	// counts that attempt's own time; zero when the raiser does not know it.
 	StepStarted time.Time
+	// RoutePolicy is the failed call's route retry policy as it was captured at
+	// Prepare (llm.Prepared.Retry, its defaults filled), so a recovery listener
+	// applies the route's Mode, RetryAfterCap, Jitter and MaxElapsed; zero when
+	// the raiser does not know it.
+	RoutePolicy llm.RetryPolicy
 }
 
 // AttemptDecision is Retry or GiveUp.
 type AttemptDecision interface{ attempt() }
 
-// Retry waits After and runs the attempt again in the same step.
+// Retry asks the driver to wait After on the session clock and then run the
+// attempt again in the same step. The listener only decides: the driver does
+// the waiting, so there is one clock and one place a cancel lands. When the
+// wait ends the driver sends RetryWaited.
 type Retry struct {
 	After  time.Duration
 	Reason string
@@ -100,6 +109,23 @@ func (GiveUp) attempt() {}
 // AttemptFailed is point 11. The terminal is GiveUp: with no listener nothing
 // is retried on the model's behalf.
 var AttemptFailed = cordis.NewAround[AttemptFailure, AttemptDecision]("agent/attempt-failed")
+
+// RetryWaitEnded is the observe-only outcome of a Retry's wait: the driver
+// waited After for failed attempt Attempt of the step, and either the wait ran
+// out and attempt Attempt+1 runs now (Cancelled false), or a cancel of the step
+// or turn ended it first and no further attempt runs (Cancelled true).
+type RetryWaitEnded struct {
+	Agent      Ref
+	Turn, Step int
+	// Attempt is the failed attempt's number, as in AttemptFailure.
+	Attempt   int
+	Cancelled bool
+}
+
+// RetryWaited is sent (Notify) when the driver's wait on a Retry ends, before
+// the next attempt is prepared or the step closes: a retry listener writes the
+// wait's outcome from it. An observer's error or panic never changes the step.
+var RetryWaited = scope.NewEvent[RetryWaitEnded]("agent/retry-wait-ended")
 
 // --------------------------------------------------------------- TurnStopping
 
