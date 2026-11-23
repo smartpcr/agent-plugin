@@ -128,6 +128,10 @@ func (s *State) Plan(rec event.Record, byCore bool) (Plan, error) {
 		err = planBracket(&p, rec, event.ToolCall, func(v event.ToolCallPayload) (Brackets, error) { return s.br.planToolCall(rec, v) })
 	case event.RequestHeader.Name():
 		err = s.planHeader(&p, rec)
+	case ApprovalAskedType, ApprovalDecidedType:
+		if b, ok := s.br.planApproval(rec); ok {
+			p.brackets = &b
+		}
 	default:
 		if info.Surface {
 			err = s.planSurfaceRecord(&p, rec)
