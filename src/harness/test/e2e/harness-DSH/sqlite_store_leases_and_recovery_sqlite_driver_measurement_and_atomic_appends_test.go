@@ -139,6 +139,7 @@ type sdmaState struct {
 	// conformance
 	mu        sync.Mutex
 	passed    map[string]map[string]bool // provider -> case -> passed
+	skipped   map[string]map[string]bool // provider -> case -> skipped
 	notWAL    []string
 	sqliteDBs int
 	dbPaths   map[string]string // dsh.db path -> first case that opened it
@@ -169,6 +170,12 @@ func (s *sdmaState) record(provider string, t *testing.T) {
 			s.passed[provider] = map[string]bool{}
 		}
 		s.passed[provider][name] = !t.Failed()
+		if t.Skipped() {
+			if s.skipped[provider] == nil {
+				s.skipped[provider] = map[string]bool{}
+			}
+			s.skipped[provider][name] = true
+		}
 	})
 }
 
@@ -177,6 +184,7 @@ func (s *sdmaState) conformanceFactory() error {
 		return errors.New("no outer *testing.T")
 	}
 	s.passed = map[string]map[string]bool{}
+	s.skipped = map[string]map[string]bool{}
 	return nil
 }
 
@@ -220,7 +228,9 @@ func (s *sdmaState) runSuites() error {
 		storetest.Run(t, func(t *testing.T) store.Store { s.record("memstore", t); return memstore.New() })
 	})
 	_ = sdmaOuterT.Run("storetest-sqlite", func(t *testing.T) {
-		storetest.Run(t, s.sqliteFactory)
+		// The production build has no test-only fixture hooks (sqlite declares
+		// RefuseDerived in a _test.go file); the sqlite unit run covers those cases.
+		storetest.Run(t, s.sqliteFactory, storetest.WithoutTestHooks())
 	})
 	return nil
 }
@@ -239,8 +249,13 @@ func (s *sdmaState) sqlitePassesWhatMemstorePasses() error {
 			continue
 		}
 		memPassed = append(memPassed, name)
-		if !lite[name] {
+		_, hookCase := storetest.HookCases[name]
+		switch {
+		case !lite[name]:
 			missing = append(missing, name)
+		case s.skipped["sqlite"][name] && !hookCase:
+			// Only a case that needs a test-only hook may be skipped here.
+			missing = append(missing, name+" (skipped)")
 		}
 	}
 	slices.Sort(missing)
