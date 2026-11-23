@@ -424,4 +424,21 @@ under "Manual checks of impl.md DH-S-7".
 At closure: plan 18.1.11 lists them. Now open: the store gaps of plan Stage 15.1
 (M1-G-STORE); the guarded scenarios DH-E-STORE-1, -2 and -6 (impl.md step 16.8) and
 DH-E-STORE-5 (step 35.7); until step 16.8 passes, the SQLite store is used on scratch
-homes only.
+homes only; the held-open entry H-34 ("Held open" below).
+
+#### Held open
+
+A held-open entry is a part of a deliverable that is ticked as built but is not done:
+the part that waits is not final, and its step is not done, until the closing step
+lands. H-34 is the M1 story's entry for DH-S-7: decision M1-D-STORE-B (a) makes the
+`DH-T-STORE-18` budgets provisional from their first measured run (plan step 15.1.5). A
+*provisional budget* is a time and memory limit taken from the first measured run: the
+benchmark fails when it is missed, but the number is not final until it is pinned at
+its closing step. The entry is not H-10, which is the replay of a session with children
+(lead settlement `budget-held-open-not-h10`). The DH-S-8 entries H-33 and H-35 are in
+[DH-S-8.md, "Held open"](DH-S-8.md#held-open). impl.md carries pointer lines to these
+lists (DC-2); its table is unchanged. The closing stage records the entry it closes.
+
+| ID | Step | Deliverable | The part held open | Gap | Closing step | Status |
+| --- | --- | --- | --- | --- | --- | --- |
+| H-34 | 7.1 | DH-D-STORE-2 | The final budgets of `DH-T-STORE-18`: the open of a session above 100,000 events from its checkpoints, its fork and the first list page over the heavy-tailed corpus, each also under `GOMEMLIMIT`. Until then the budgets are the provisional ones of plan step 15.1.5 | M1-G-STORE-6, M1-G-STORE-7 | impl.md 16.7 (M1-D-STORE-B (a)) | open |

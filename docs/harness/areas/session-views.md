@@ -200,8 +200,8 @@ All packages are under `src/harness/internal/session`, in the family that [desig
 
 | Package | Component and service key | Why it exists |
 |---|---|---|
-| `projection` | Component `session.projection`; service `projection.Key` (`Registry`). Spine. Injects the session store. | The one driver of folds: registration, dispatch, snapshots, checkpoints, catch-up, rebuild. |
-| `projection/folds/...` | No component: leaf packages holding pure fold functions | Purity is checked by imports, not by review. |
+| `projection` (proposed; built inside `views`) | Built: `session/views` holds the one driver of folds (`Definition`, `Register`, `Registry`, `Handle`, `Snapshot`) beside the built-in folds. Proposed: component `session.projection`; service `projection.Key` (`Registry`). Spine. Injects the session store. | The one driver of folds: registration, dispatch, snapshots, checkpoints, catch-up, rebuild. |
+| `projection/folds/...` (proposed, not built) | No component: leaf packages holding pure fold functions. Built: the built-in folds are functions in `session/views` (`builtin.go`, `RegisterBuiltins`) | Purity is checked by imports, not by review. |
 | `views` | Component `session.views`; registers the built-in folds: list summary, turn index, statistics, event class and links | A preset that does not want statistics removes one entry. |
 | `title` | Component `session.title` (`title.Key`, `Titles`), registry `title.Providers`; component `session.title.llm` registers the first-prompt provider. Injects `projection` and the LLM runtime | Titles and their model call. |
 | `query` | Component `session.query` (`query.Key`, `Query`); component `session.tools` registers `list_session` and `list_workspace` | Reads for the UI, the SDK and tools; tools are a separate component so that a preset without them pays no prompt tokens. |
@@ -209,6 +209,8 @@ All packages are under `src/harness/internal/session`, in the family that [desig
 | `transcript` | Functions only: `WriteArchive`, `WriteTranscript`, `Quote`, `RecognizeQuotes` | Carriers (route, command) own the transport. |
 | `upload` | Component `session.upload` (`upload.Key`, `Uploads`), registry `upload.Redactors`. Default-off entry | The only code here that sends anything off the machine. |
 | `workdir` | Component `session.workdir` (`workdir.Key`, `Service`). Injects `projection` and the filesystem seam | One owner of each session's directory. |
+
+**As built (M1).** The fold registry this section calls `projection` exists as package `src/harness/internal/session/views`, together with the four built-in folds; there is no `projection` package, so `projection.Register`, `projection.Changed` and `projection.Config` below read as `views.Register` and so on where they are built. `query` exists as `session/query`; this correction leaves the other rows unchanged. The code sketch below is the proposed interface (stage 15.2 of [the M1 gap-closure plan](../../stories/harness-DSH-M1/gap-closure-plan.md) adds `Freshness`, `Value` and `Registry.Snapshot`). Corrected by plan step 15.3.10 (gap M1-G-STORE-29).
 
 ```go
 // package projection
@@ -317,6 +319,8 @@ A `Visibility` can only be made by three constructors: from an admitted peer's p
 **Services.** `UP-SVC-sessionProjections` becomes `projection.Key`; `UP-SVC-sessionProjectionCache` is merged into it; `UP-SVC-sessionQuery` becomes `query.Key`; `UP-SVC-sessionTitle` becomes `title.Key`; `UP-SVC-workingDirectory` becomes `workdir.Key`; `UP-SVC-sessionTelemetry` is replaced by `upload.Key`, which has no `emit` method.
 
 **Persisted data.** All derived, all in the session database, all keyed by session and deleted with it. Area A05 owns the tables and the transaction ([session-store.md §6.2](session-store.md)); this area owns what goes in them. All five are in A05's layout.
+
+**As built: the built-in views are checkpoint documents** (owner decision M1-D-STORE-C (a) in [the M1 decision log](../../stories/harness-DSH-M1/decisions.md); plan step 15.3.10 of [the M1 gap-closure plan](../../stories/harness-DSH-M1/gap-closure-plan.md), gap M1-G-STORE-24). A *checkpoint document* is one `checkpoints` row per session, view key and fold version, whose `state` column holds the whole fold state as JSON and whose `seq` says how far into the log it reflects. The four built-in views keep their state that way: list summary (`view/list-summary`), turn index (`view/turn-index`), statistics (`view/stats`) and event index (`view/event-index`). The tables `session_summary`, `turn_index`, `event_class` and `event_link` below are not built. Why: the documents already give the guarantees this area needs (written in the batch's transaction, never ahead of the log, rebuilt when a fold's version changes), and building the tables would mean a new store layout in M1. The cost is that a view's values are not columns, so the database cannot filter or index on them; how often each document is written is set by its cadence (plan step 15.2.4). The tables are revisited at [DH-S-23](../impl.md#dh-s-23), with search (`search_docs`, `event_fts`), which is not built either.
 
 | Table | Key | Holds | Written by |
 |---|---|---|---|
