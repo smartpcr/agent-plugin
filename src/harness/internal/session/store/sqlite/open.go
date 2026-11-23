@@ -38,6 +38,14 @@ const (
 	// CodeUnusable is every call after a failed rollback left the outcome of a
 	// transaction unknown; the store must be reopened.
 	CodeUnusable store.Code = "store/unusable"
+	// CodeMigrationBlocked refuses a layout upgrade while another instance on
+	// the home is alive; the message names each one's pid, kind and start time.
+	// Nothing is changed.
+	CodeMigrationBlocked store.Code = "store/migration-blocked"
+	// CodeMigrationFailed is a layout upgrade whose transaction failed and was
+	// rolled back: the database keeps its older layout, and the message names the
+	// backup taken before it, which is kept.
+	CodeMigrationFailed store.Code = "store/migration-failed"
 
 	CodeBusy        store.Code = "store/busy"
 	CodeConstraint  store.Code = "store/constraint"
@@ -158,6 +166,10 @@ func WithRunDir(dir string) Option { return func(s *Store) { s.run = dir } }
 // WithShutdownFlushTimeout replaces DefaultShutdownFlushTimeout.
 func WithShutdownFlushTimeout(d time.Duration) Option { return func(s *Store) { s.shutdown = d } }
 
+// WithBinaryVersion records v as this instance's build in its hosts row instead
+// of the binary's own (BinaryVersion), so a test can stand in for another build.
+func WithBinaryVersion(v string) Option { return func(s *Store) { s.version = v } }
+
 // Store is the SQLite session store: one database per home (DH-D-STORE-2). It
 // owns one write connection, used under a mutex as the writer of the whole
 // instance, and a bounded read pool.
@@ -183,6 +195,10 @@ type Store struct {
 	follow   time.Duration // a follower's poll interval
 	spill    string        // <home>/spill, or "" when deletions remove rows only
 	chunk    int           // events per deletion transaction
+	version  string        // this build, recorded in the hosts row (binary_version)
+	target   int           // the layout Open upgrades to (LayoutVersion outside tests)
+	layout   int           // the layout of the open database
+	notices  store.Notices // Degraded subscribers (derived.go)
 	// live is this instance's liveness lock, held from Open to Close.
 	live *fsx.FileLock
 
@@ -262,16 +278,19 @@ func OpenHome(ctx context.Context, l home.Layout, opts ...Option) (*Store, error
 // Open runs the open sequence on the database at path (DH-LIB-SQLITE-R12):
 // create it owner-only when missing; check its identity and layout version
 // before anything that writes, refusing a foreign or newer database unchanged;
-// enter WAL; apply the numbered migrations (these three under run/open.lock, one
-// process at a time); open the read pool; register the
-// instance under its liveness lock; sweep the hosts rows of dead instances.
+// enter WAL; upgrade an older layout (these three under run/open.lock, one
+// process at a time; the upgrade as migrate.go describes: refused while another
+// instance lives, after a verified backup, in one transaction); open the read
+// pool; register the instance under its liveness lock; sweep the hosts rows of
+// dead instances.
 func Open(ctx context.Context, path string, opts ...Option) (*Store, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	s := &Store{path: path, reg: event.Default(), now: time.Now, kind: "dsh", busy: DefaultBusyTimeout,
 		shutdown: DefaultShutdownFlushTimeout, follow: DefaultFollowInterval, chunk: DefaultDeleteChunk,
-		pid: os.Getpid(), writers: map[*writer]struct{}{}, subs: map[*Subscription]struct{}{}}
+		pid: os.Getpid(), writers: map[*writer]struct{}{}, subs: map[*Subscription]struct{}{},
+		version: BinaryVersion(), target: layoutTarget()}
 	for _, o := range opts {
 		o(s)
 	}
@@ -307,8 +326,13 @@ func Open(ctx context.Context, path string, opts ...Option) (*Store, error) {
 	rdb.SetMaxIdleConns(readPool)
 	s.rdb = rdb
 	if err := s.write(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO hosts (instance, pid, kind, started_at) VALUES (?, ?, ?, ?)`,
-			s.instance, s.pid, s.kind, s.now().UnixNano())
+		if s.layout < layoutBinaryVersion {
+			_, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO hosts (instance, pid, kind, started_at) VALUES (?, ?, ?, ?)`,
+				s.instance, s.pid, s.kind, s.now().UnixNano())
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO hosts (instance, pid, kind, started_at, binary_version) VALUES (?, ?, ?, ?, ?)`,
+			s.instance, s.pid, s.kind, s.now().UnixNano(), s.version)
 		return err
 	}); err != nil {
 		s.abandon()
@@ -395,27 +419,34 @@ const openLockName = "open.lock"
 // the busy timeout. The lock is released once the database is in WAL at the
 // current layout; everything after that waits on SQLite's own locks.
 func (s *Store) openWriterSerialized(ctx context.Context) error {
+	return s.underRunLock(ctx, openLockName, "open lock", s.openWriter)
+}
+
+// underRunLock runs fn holding the exclusive lock file run/<name>, waiting for it
+// at most the busy timeout; what names the lock in errors.
+func (s *Store) underRunLock(ctx context.Context, name, what string, fn func(context.Context) error) error {
 	wctx, cancel := context.WithTimeout(ctx, s.busy)
-	l, err := fsx.Lock(wctx, filepath.Join(s.run, openLockName))
+	l, err := fsx.Lock(wctx, filepath.Join(s.run, name))
 	cancel()
 	if err != nil {
 		if cerr := ctx.Err(); cerr != nil {
 			return cerr
 		}
 		if errors.Is(err, context.DeadlineExceeded) {
-			return store.Errorf(CodeBusy, "%s: another process held the open lock past the busy timeout %s", s.path, s.busy)
+			return store.Errorf(CodeBusy, "%s: another process held the %s past the busy timeout %s", s.path, what, s.busy)
 		}
-		return &store.Error{Code: CodeIO, Msg: "open lock: " + err.Error(), Err: err}
+		return &store.Error{Code: CodeIO, Msg: what + ": " + err.Error(), Err: err}
 	}
-	err = s.openWriter(ctx)
+	err = fn(ctx)
 	if uerr := l.Unlock(); uerr != nil && err == nil {
-		err = &store.Error{Code: CodeIO, Msg: "open lock: " + uerr.Error(), Err: uerr}
+		err = &store.Error{Code: CodeIO, Msg: what + ": " + uerr.Error(), Err: uerr}
 	}
 	return err
 }
 
 // openWriter opens the one write connection, checks identity and layout, enters
-// WAL and migrates. Run it under the open lock (openWriterSerialized).
+// WAL and upgrades an older layout (upgrade, migrate.go). Run it under the open
+// lock (openWriterSerialized).
 func (s *Store) openWriter(ctx context.Context) error {
 	wdb, err := sql.Open("sqlite", dsn(s.path, true, s.busy))
 	if err != nil {
@@ -436,7 +467,7 @@ func (s *Store) openWriter(ctx context.Context) error {
 		return err
 	}
 	var mode string
-	if err := conn.QueryRowContext(ctx, `PRAGMA journal_mode = WAL`).Scan(&mode); err != nil {
+	if err := conn.QueryRowContext(ctx, journalPragma).Scan(&mode); err != nil {
 		return s.openErr(ctx, err)
 	}
 	if !strings.EqualFold(mode, "wal") {
@@ -449,11 +480,12 @@ func (s *Store) openWriter(ctx context.Context) error {
 	if sync != syncFull {
 		return store.Errorf(CodeIO, "%s: the write connection runs synchronous=%d, not FULL", s.path, sync)
 	}
-	for v := version; v < LayoutVersion; v++ {
-		if err := s.migrate(ctx, v); err != nil {
+	if version < s.target {
+		if err := s.upgrade(ctx, version); err != nil {
 			return err
 		}
 	}
+	s.layout = s.target
 	return nil
 }
 
@@ -485,34 +517,10 @@ func (s *Store) identify(ctx context.Context) (int, error) {
 		return 0, nil // a new, empty database
 	case app != ApplicationID:
 		return 0, store.Errorf(CodeForeign, "%s is not a dsh database (application id %#x)", s.path, app)
-	case version > int64(LayoutVersion):
-		return 0, store.Errorf(CodeNewerLayout, "%s has layout %d; this build knows layouts up to %d: upgrade dsh", s.path, version, LayoutVersion)
+	case version > int64(s.target):
+		return 0, store.Errorf(CodeNewerLayout, "%s has layout %d; this build knows layouts up to %d: upgrade dsh", s.path, version, s.target)
 	}
 	return int(version), nil
-}
-
-// migrate applies migration v (layout v to v+1) in one write transaction,
-// unless another process applied it first.
-func (s *Store) migrate(ctx context.Context, v int) error {
-	return s.write(ctx, func(tx *sql.Tx) error {
-		var now int64
-		if err := tx.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&now); err != nil {
-			return err
-		}
-		if now > int64(v) {
-			return nil
-		}
-		if _, err := tx.ExecContext(ctx, migrations[v]); err != nil {
-			return err
-		}
-		if v == 0 {
-			if _, err := tx.ExecContext(ctx, fmt.Sprintf(`PRAGMA application_id = %d`, ApplicationID)); err != nil {
-				return err
-			}
-		}
-		_, err := tx.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, v+1))
-		return err
-	})
 }
 
 // write runs fn in one write transaction (BEGIN IMMEDIATE) on the write
@@ -537,12 +545,12 @@ func (s *Store) writeLocked(ctx context.Context, fn func(tx *sql.Tx) error) erro
 		return translate(ctx, err)
 	}
 	if err := fn(tx); err != nil {
-		if rerr := tx.Rollback(); rerr != nil && !errors.Is(rerr, sql.ErrTxDone) {
+		if rerr := rollbackTx(tx); rerr != nil && !errors.Is(rerr, sql.ErrTxDone) {
 			s.broken = fmt.Errorf("rollback failed after %v: %v", err, rerr)
 		}
 		return translate(ctx, err)
 	}
-	if err := tx.Commit(); err != nil {
+	if err := commitTx(tx); err != nil {
 		return translate(ctx, err)
 	}
 	return nil
