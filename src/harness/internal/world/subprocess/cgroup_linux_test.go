@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/procwait"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess/subprocesstest"
@@ -152,8 +151,10 @@ func TestInScopeStopTreeStopsTheTreeAndRemovesItsGroup(t *testing.T) {
 		t.Fatalf("tree groups after StopTree = %v; want none", g)
 	}
 	// The child is reaped by StopTree's wait; the grandchild, orphaned by the
-	// kill, by the scope's reaper, so its pid is gone soon after.
-	procwait.Until(ctx, t, func() bool { return !subprocesstest.Alive(child) && !subprocesstest.Alive(grandchild) })
+	// kill, by the scope's reaper on its own time, so it is checked as exited.
+	if !subprocesstest.Exited(child) || !subprocesstest.Exited(grandchild) {
+		t.Fatalf("after StopTree: child exited %v, grandchild exited %v", subprocesstest.Exited(child), subprocesstest.Exited(grandchild))
+	}
 }
 
 // A tree still running when TreeGone's context ends is reported with the group
