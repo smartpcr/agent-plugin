@@ -84,11 +84,15 @@ Statement coverage of the new packages (merged across the storage tests): `spill
 - The spill policy and `spill_read` tool (DH-D-STORAGE-6): the shaping listener
   that prices a result, builds the notice and calls `spill.Save`. Stage 8.3 builds
   the store it uses.
-- Image admission, request images and crops (DH-D-STORAGE-4); the draft record
-  and quarantine (DH-D-STORAGE-10).
+- Image admission, request images and crops (DH-D-STORAGE-4); quarantine
+  (DH-D-STORAGE-10).
+- The draft record (part of DH-D-STORAGE-3, step 8.7, by storage.md; corrected by plan
+  step 15.3.9, gap M1-G-STORE-28): held open as H-33 (["Held open"](#held-open)),
+  closing at DH-S-21's composer step (decision M1-D-STORE-D (b)). Historical: this
+  list first assigned the draft record to DH-D-STORAGE-10, against storage.md.
 - The blob collector itself (DH-D-STORAGE-9): the lock it takes (`LockCollection`)
   and the `blob_refs` rows it reads are built here; the walk and the deletion are
-  not. A draft's own reference list belongs to DH-D-STORAGE-10.
+  not. A draft's own reference list is part of the draft record (H-33).
 - Spill retention by `MaxAge` (DH-D-STORAGE-2 retention); the field is configured
   and validated.
 
@@ -108,6 +112,26 @@ its test. It compiles under the `scenario` build tag (`go vet -tags scenario`) b
 | --- | --- | --- |
 | Change a fold's version and record that its stored state is rebuilt on open | `TestChangedFoldVersionRebuilds` | A stored fold at version 1 over 20 events, re-registered at version 2: on open the stored state is rebuilt, records version 2 and its seq is the log head. pass |
 | Write a five-megabyte result and record the bounded head and the recoverable rest | `TestLargeResultSpilledAndRecoverable` | 5,242,880 bytes; logged row 16,616 bytes with a 16,383-byte head under a 16,384-byte bound; the rest read back byte-identical through the reference. pass |
+
+## Held open
+
+A held-open entry is a part of a deliverable that is ticked as built (or will be) but
+is not done: the part that waits is not enabled, and its step is not done, until the
+closing step lands. H-33 and H-35 are the M1 story's entries for DH-S-8, added by plan
+Stage 15.3: decision M1-D-STORE-D (b) holds the draft record open (plan step 15.3.9),
+and M1-D-STORE-B (a) makes the `DH-T-VIEW-25` budgets provisional from their first
+measured run (plan step 15.3.2). A *provisional budget* is a time and memory limit
+taken from the first measured run: the benchmark fails when it is missed, but the
+number is not final until it is pinned at its closing step. The entry is not H-10,
+which is the replay of a session with children (lead settlement
+`budget-held-open-not-h10`). The DH-S-7 entry H-34 holds the `DH-T-STORE-18` budgets
+([DH-S-7.md, "Held open"](DH-S-7.md#held-open)). impl.md carries pointer lines to these
+lists (DC-2); its table is unchanged. Each closing stage records the entries it closes.
+
+| ID | Step | Deliverable | The part held open | Gap | Closing step | Status |
+| --- | --- | --- | --- | --- | --- | --- |
+| H-33 | 8.7 | DH-D-STORAGE-3 | The draft record: one record per session in the `kv` namespace `draft` that lists its staged uploads, so an unsent draft and its files survive a reload and no file a draft names is collected; with it `DH-T-STORAGE-7`'s draft clause (a draft's staged file survives a collection run and is collected after the draft is deleted) | M1-G-STORE-28 | impl.md 21.2, DH-S-21's composer step (M1-D-STORE-D (b)) | open |
+| H-35 | 8.5 | DH-D-VIEW-5 | The final budgets of `DH-T-VIEW-25`'s DH-D-VIEW-5 clauses: the first list page over the heavy-tailed corpus and a snapshot of a session above 100,000 events, each also under `GOMEMLIMIT`. Until then the budgets are the provisional ones of plan step 15.3.2. The test's ranked-search, literal-search and `TreeMessages` clauses are not in this entry: they belong to DH-D-VIEW-6 at DH-S-23 (impl.md step 23.9) | M1-G-STORE-22, M1-G-STORE-7 | impl.md 16.7 (M1-D-STORE-B (a)) | open |
 
 ## Closure
 
@@ -190,5 +214,6 @@ Historical: none recorded.
 ### Open items
 
 At closure: plan 18.1.11 lists them. Now open: steps 8.3 to 8.5 and the Stage 8.2
-closure (plan Stages 15.2 and 15.3); the items under "Not built here"; DH-E-STORAGE-1, -2
-and -3, which run in later stages.
+closure (plan Stages 15.2 and 15.3); the items under "Not built here"; the held-open
+entries H-33 and H-35 (["Held open"](#held-open)); DH-E-STORAGE-1, -2 and -3, which run
+in later stages.
