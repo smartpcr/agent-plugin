@@ -258,6 +258,7 @@ func (d *Driver) call(t *turnState, ss *stepState, n int, sel agent.ModelSelecti
 		dec, err := agent.AskAttemptFailed(d.o.Context, d.o.Agent.ScopeKey(), agent.AttemptFailure{
 			Ctx: ss.ctx, Agent: d.o.Agent.Ref(), Turn: t.turn, Step: n, Attempt: attempt, Failure: f,
 			Policy: retryPolicy(p.Retry(), maxAttempts), AttemptsLeft: maxAttempts - attempt, StepStarted: started,
+			RoutePolicy: p.Retry(),
 		})
 		if err != nil {
 			d.failed(t.turn, n, err)
@@ -267,12 +268,29 @@ func (d *Driver) call(t *turnState, ss *stepState, n int, sel agent.ModelSelecti
 		if !retry || attempt >= maxAttempts {
 			return nil, failureReason(f), nil
 		}
-		select {
-		case <-d.o.After(r.After):
-		case <-ss.ctx.Done():
+		// The listener decided; the driver waits, on the session clock and the
+		// step's context. A cancel during the wait ends the step with the cancel
+		// cause (nil reason: the caller records it), not with f.
+		if !d.retryWait(ss, t.turn, n, attempt, r.After) {
 			return nil, nil, nil
 		}
 	}
+}
+
+// retryWait waits after on the session clock for failed attempt attempt of
+// step n, or until the step is cancelled, and reports whether the wait ran out.
+// Either way it then sends agent.RetryWaited with the outcome.
+func (d *Driver) retryWait(ss *stepState, turn, n, attempt int, after time.Duration) bool {
+	select {
+	case <-d.o.After(after):
+	case <-ss.ctx.Done():
+	}
+	// A cancel that raced the timer still wins: the loop would not attempt.
+	ended := ss.ctx.Err() == nil
+	agent.Notify(d.o.Context, agent.RetryWaited, d.o.Agent, agent.RetryWaitEnded{
+		Agent: d.o.Agent.Ref(), Turn: turn, Step: n, Attempt: attempt, Cancelled: !ended,
+	})
+	return ended
 }
 
 // settle appends the attempt's one settlement event. An interrupted attempt
