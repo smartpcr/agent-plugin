@@ -352,10 +352,10 @@ storyId: "harness:DSH"
 ## Stage 6.1: Leaf Helpers and Process Trees
 
 ### Implementation Steps
-- [ ] impl.md step 6.1 / DH-D-UTIL-5: leaf packages `internal/util/herr` (error kinds `<domain>/<reason>`), `ident` (ids), `homedir` (home location) and `mediatype`; `herr` and `ident` import the standard library only (RM-6). Built contract-first inside dependency circle C-1.
-- [ ] impl.md step 6.2 / DH-D-EXEC-1: implement `src/harness/internal/world/subprocess` -- the one place a program starts, from an argument list only (no shell string), with an explicit environment that never inherits secrets (SP-11, SP-12); the `onespawn` analyzer of stage 1.2 now enforces it.
-- [ ] impl.md step 6.3 / DH-D-EXEC-2: `StopTree` stops and awaits a whole process tree on every OS (process group on Unix; Job Object on Windows; Linux control group when writable, otherwise process-group fallback that is reported, register U-K1-1).
-- [ ] Add the re-exec helper `subprocesstest` (test binary re-executes itself as child/grandchild via a helper env var) used by TC-06c and TC-07.
+- [x] impl.md step 6.1 / DH-D-UTIL-5: leaf packages `internal/util/herr` (error kinds `<domain>/<reason>`), `ident` (ids), `homedir` (home location) and `mediatype`; `herr` and `ident` import the standard library only (RM-6). Built contract-first inside dependency circle C-1. _As built: DH-D-UTIL-5 also names `retain` (one way to cut text) and the code frame, which this step did not build (M1-G-BOOT-1); gap-closure 14.6.1 and 14.6.2 add them._
+- [x] impl.md step 6.2 / DH-D-EXEC-1: implement `src/harness/internal/world/subprocess` -- the one place a program starts, from an argument list only (no shell string), with an explicit environment that never inherits secrets (SP-11, SP-12); the `onespawn` analyzer of stage 1.2 now enforces it. _As built: `Start`, `BuildEnv` and `LookPath`; `BuildEnv` dropped credential-shaped names only, and named secret references reach it from gap-closure 14.6.4 (M1-G-BOOT-6). The rest of DH-D-EXEC-1 (`Run`, private channels, `Detach`, the confirmation helper, in-job creation) is held open as H-24, closing at gap-closure 19.3; the batch opt-in is 16.5.1 ([held open](evidence/DH-S-6.md#held-open))._
+- [x] impl.md step 6.3 / DH-D-EXEC-2: `StopTree` stops and awaits a whole process tree on every OS (process group on Unix; Job Object on Windows; Linux control group when writable, otherwise process-group fallback that is reported, register U-K1-1). _As built: two stop rungs (polite, then forced); the group rung's `Pdeathsig` is gap-closure 14.6.3 (M1-G-BOOT-5). The delegated scope, the owners record and the five-rung ladder are H-25 (19.4.1 to 19.4.3); the trust mark, `PeerTree` and `Limits` are H-26 (19.4.4, 19.4.5) ([held open](evidence/DH-S-6.md#held-open))._
+- [x] Add the re-exec helper `subprocesstest` (test binary re-executes itself as child/grandchild via a helper env var) used by TC-06c and TC-07.
 
 ### Dependencies
 - phase-session-core-contracts/stage-model-runtime-agent-contract-and-registries
@@ -368,9 +368,9 @@ storyId: "harness:DSH"
 ## Stage 6.2: Launch Facts Home Layout and Secrets
 
 ### Implementation Steps
-- [ ] impl.md step 6.4 / DH-D-BOOT-2: launch facts (argv, cwd, OS, user, build identity), the launch environment and the expression scope fed to `boot/expr`, in `src/harness/internal/boot/launch`.
-- [ ] impl.md step 6.5 / DH-D-STORAGE-2: home layout (`dsh.db`, `run/`, `spill/`, `blobs/`, `config/`, `reports/`) created private (0700 / owner-only ACL) and checked at start; a world-readable home fails boot (architecture.md sec. 4.1).
-- [ ] impl.md step 6.6 / DH-D-HUMAN-7: secret-reference store in `internal/human` -- configuration names a secret (`secret://deepseek/api-key`); the value is resolved per use from the environment or a private file under the home and never enters config, log or error text (SP-11). OS keychain stays for DH-S-35.
+- [x] impl.md step 6.4 / DH-D-BOOT-2: launch facts (argv, cwd, OS, user, build identity), the launch environment and the expression scope fed to `boot/expr`, in `src/harness/internal/boot/launch`.
+- [x] impl.md step 6.5 / DH-D-STORAGE-2: home layout (`dsh.db`, `run/`, `spill/`, `blobs/`, `config/`, `reports/`) created private (0700 / owner-only ACL) and checked at start; a world-readable home fails boot (architecture.md sec. 4.1).
+- [x] impl.md step 6.6 / DH-D-HUMAN-7: secret-reference store in `internal/human` -- configuration names a secret (`secret://deepseek/api-key`); the value is resolved per use from the environment or a private file under the home and never enters config, log or error text (SP-11). OS keychain stays for DH-S-35. _As built: references and per-use resolution (read-only) in `human/secret`; masking a released value in a tool result is gap-closure 14.6.5 (M1-G-BOOT-6). Store writes, the `.env` source, leases and the source checks are H-27, closing at 19.5.4 ([held open](evidence/DH-S-6.md#held-open))._
 
 ### Dependencies
 - phase-boot-launch-egress-secrets-and-test-kit/stage-leaf-helpers-and-process-trees
@@ -383,23 +383,23 @@ storyId: "harness:DSH"
 ## Stage 6.3: Profiles Command Tree and Output Contract
 
 ### Implementation Steps
-- [ ] impl.md step 6.7 / DH-D-BOOT-3: profiles, embedded bundles (`embed.FS`) and the layer stack (bundle < profile < user < project) built on `loader` layers, in `internal/boot/profile`.
-- [ ] impl.md step 6.8 / DH-D-CLI-1: one command tree in `src/harness/internal/cli` (grammar, help, usage errors) and a generated command reference checked as a golden; `cmd/dsh/main.go` only calls it.
-- [ ] impl.md step 6.9 / DH-D-CLI-3: one print/exit contract -- every command returns a result mapped to stdout/stderr and a fixed exit code table (0 ok, 2 usage, 124 shutdown overrun, ...; tech-spec sec. 5.5).
+- [x] impl.md step 6.7 / DH-D-BOOT-3: profiles, embedded bundles (`embed.FS`) and the layer stack (bundle < profile < user < project) built on `loader` layers, in `internal/boot/profile`. _As built: without `profile reset` and the safe-mode layer, so `--safe` is parsed but disables nothing; both are H-28, closing at 19.5.5 ([held open](evidence/DH-S-6.md#held-open))._
+- [x] impl.md step 6.8 / DH-D-CLI-1: one command tree in `src/harness/internal/cli` (grammar, help, usage errors) and a generated command reference checked as a golden; `cmd/dsh/main.go` only calls it.
+- [x] impl.md step 6.9 / DH-D-CLI-3: one print/exit contract -- every command returns a result mapped to stdout/stderr and a fixed exit code table (0 ok, 64 usage, 124 shutdown overrun, ...; tech-spec sec. 5.5). _As built: the table first set usage to 2; under M1-D-BOOT-3 (A) gap-closure 14.6.9 sets 64, as app-cli.md sec. 6.2.4 says, and adds `DH-T-CLI-6` (no command path returns 2)._
 
 ### Dependencies
 - phase-boot-launch-egress-secrets-and-test-kit/stage-launch-facts-home-layout-and-secrets
 
 ### Test Scenarios
 - [ ] Scenario: Layer stack precedence -- Given in-memory bundle `{model: a}`, profile `{model: b}` and user `{}`, When the stack composes, Then `model` is `b` and the ownership index names the profile layer (TC-06a) [proof: in-process; deps: none]
-- [ ] Scenario: Usage error exits 2 -- Given the command tree, When `dsh --no-such-flag` is dispatched in process with captured streams, Then stderr holds one usage line plus help hint and the mapped exit code is 2 (TC-06a) [proof: in-process; deps: none]
+- [ ] Scenario: Usage error exits 64 -- Given the command tree, When `dsh --no-such-flag` is dispatched in process with captured streams, Then stderr holds one usage line plus help hint and the mapped exit code is 64 (M1-D-BOOT-3) (TC-06a) [proof: in-process; deps: none]
 - [ ] Scenario: Generated CLI reference is current -- Given the command tree, When the reference is generated, Then it equals the committed golden `internal/cli/testdata/reference.golden` [proof: golden; deps: committed golden `internal/cli/testdata/reference.golden`]
 
 ## Stage 6.4: Fatal Path Boot Sequence and Shutdown
 
 ### Implementation Steps
-- [ ] impl.md step 6.10 / DH-D-HOST-7: implement `src/harness/internal/host` fatal path -- a host that cannot continue prints one message and writes one report file under `reports/`.
-- [ ] impl.md step 6.11 / DH-D-BOOT-5: the boot sequence (launch facts, home check, layers, compose, audit, readiness), the boot audit listing every outbound permit, and bounded shutdown (20 s budget, process trees stopped via `StopTree`, exit 124 on overrun).
+- [x] impl.md step 6.10 / DH-D-HOST-7: implement `src/harness/internal/host` fatal path -- a host that cannot continue prints one message and writes one report file under `reports/`.
+- [x] impl.md step 6.11 / DH-D-BOOT-5: the boot sequence (launch facts, home check, layers, compose, audit, readiness), the boot audit listing every outbound permit, and bounded shutdown (20 s budget, process trees stopped via `StopTree`, exit 124 on overrun).
 
 ### Dependencies
 - phase-boot-launch-egress-secrets-and-test-kit/stage-profiles-command-tree-and-output-contract
@@ -412,10 +412,10 @@ storyId: "harness:DSH"
 ## Stage 6.5: Preview Validated Reload and Settings Edits
 
 ### Implementation Steps
-- [ ] impl.md step 6.12 / DH-D-BOOT-6 (P1, pulled forward; held open H-21): preview, explain and check the composed tree without starting it, as a Go API only; the `dsh config` commands wait for the DH-S-16 admin tree and H-21 is listed open in the evidence record.
-- [ ] impl.md step 6.13 / DH-D-BOOT-7 (P1, pulled forward): validated reload and one edit path safe across processes -- a candidate is validated through DH-D-CORDIS-5 candidate config before it becomes effective; writes go through the DH-D-LOADER-13 guard.
-- [ ] impl.md step 6.14 / DH-D-STORAGE-8 (P1, pulled forward): live settings edited through one path; a bad edit changes nothing (owner path only, NG-9).
-- [ ] Author `DH-E-LOADER-1` (runs in DH-S-17, step 17.7) and `DH-E-BOOT-2` (guarded, runs in step 21.13) as `//go:build scenario` files; not executed here.
+- [x] impl.md step 6.12 / DH-D-BOOT-6 (P1, pulled forward; held open H-21): preview, explain and check the composed tree without starting it, as a Go API only; the `dsh config` commands wait for the DH-S-16 admin tree and H-21 is listed open in the evidence record.
+- [x] impl.md step 6.13 / DH-D-BOOT-7 (P1, pulled forward): validated reload and one edit path safe across processes -- a candidate is validated through DH-D-CORDIS-5 candidate config before it becomes effective; writes go through the DH-D-LOADER-13 guard.
+- [x] impl.md step 6.14 / DH-D-STORAGE-8 (P1, pulled forward): live settings edited through one path; a bad edit changes nothing (owner path only, NG-9).
+- [x] Author `DH-E-LOADER-1` (runs in DH-S-17, step 17.7) and `DH-E-BOOT-2` (guarded, runs in step 21.13) as `//go:build scenario` files; not executed here.
 
 ### Dependencies
 - phase-boot-launch-egress-secrets-and-test-kit/stage-fatal-path-boot-sequence-and-shutdown
@@ -428,8 +428,8 @@ storyId: "harness:DSH"
 ## Stage 6.6: Egress Policy and Telemetry Off Switch
 
 ### Implementation Steps
-- [ ] impl.md step 6.15 / DH-D-HOST-4: nothing leaves the machine by default; each data kind has a visible setting, the boot audit lists it, and one off-switch disables all outbound kinds (NG-7).
-- [ ] impl.md step 6.16 / DH-D-UTIL-2: implement `src/harness/internal/util/egress` -- every outbound connection is made through one client that requires a permit per data kind; without one it fails with `egress/not-permitted` before dialing.
+- [x] impl.md step 6.15 / DH-D-HOST-4: nothing leaves the machine by default; each data kind has a visible setting, the boot audit lists it, and one off-switch disables all outbound kinds (NG-7). _As built: the gate in `host/sharing`; the source check that no client is built outside egress is gap-closure 14.6.7 and 14.6.8 (M1-G-BOOT-8). The recorded proof is H-29 (19.5.2) and `DH-T-HOST-17` is H-32 (impl.md 16.7) ([held open](evidence/DH-S-6.md#held-open))._
+- [x] impl.md step 6.16 / DH-D-UTIL-2: implement `src/harness/internal/util/egress` -- every outbound connection is made through one client that requires a permit per data kind; without one it fails with `egress/not-permitted` before dialing. _As built: the child-environment proxy overlay and the dial guard are H-30, closing at 19.3.7 and 19.3.8 ([held open](evidence/DH-S-6.md#held-open))._
 
 ### Dependencies
 - phase-boot-launch-egress-secrets-and-test-kit/stage-fatal-path-boot-sequence-and-shutdown
@@ -441,10 +441,10 @@ storyId: "harness:DSH"
 ## Stage 6.7: Harness Test Kit and Circle Closure
 
 ### Implementation Steps
-- [x] impl.md step 6.17 / DH-D-UTIL-6: implement `src/harness/internal/testkit` -- compose real components against scripted boundaries: fake model (scripted SSE turns), fake transport, fake answerer, virtual clock, temp homes, and a scenario launcher that builds and starts a program through `internal/world/subprocess` with a temp home and returns an `src/sdk/jsonrpc` client on its stdio (used by `//go:build scenario` files; it compiles now and first runs at DH-S-17); register every release with `t.Cleanup` (QG-5).
+- [x] impl.md step 6.17 / DH-D-UTIL-6: implement `src/harness/internal/testkit` -- compose real components against scripted boundaries: fake model (scripted SSE turns), fake transport, fake answerer, virtual clock, temp homes, and a scenario launcher that builds and starts a program through `internal/world/subprocess` with a temp home and returns an `src/sdk/jsonrpc` client on its stdio (used by `//go:build scenario` files; it compiles now and first runs at DH-S-17); register every release with `t.Cleanup` (QG-5). _As built: `compose`, `egresstest`, `faultserver` and the synctest clock are H-31, closing at 19.5.1 to 19.5.3 ([held open](evidence/DH-S-6.md#held-open))._
 - [x] Replace the hand-written fakes used by steps 6.1-6.16 with the test kit and re-run the tests that waited on later steps of circle C-1.
 - [x] Author DH-S-6's scenarios (impl.md DH-S-6 "Scenarios: authored here"; tech-spec sec. 2.2, EV-4) as `//go:build scenario` files under `src/harness/internal/testkit/scenarios/`, each reviewed in the PR and added to its executing stage's entry in `test/harness/acceptance-index.yaml`: `DH-E-EXEC-1` (Linux: a whole process tree is killed) and `DH-E-HOST-4` (a host that dies leaves a readable report on each OS) under `DH-S-18`; `DH-E-BOOT-1` (requests the UI's first page) under `DH-S-22` (step 22.3); `DH-E-UTIL-1` (egress scenario that fetches a page and starts an MCP server) under `DH-S-39`. `DH-E-LOADER-1` and `DH-E-BOOT-2` are authored in Stage 6.5. None is executed in this story.
-- [x] Close DH-S-6 at ONE commit: write `docs/stories/harness-DSH-M1/evidence/DH-S-6.md` with all seventeen deliverables built at that commit, the list of circle-waiting tests shown passing, the manual checks of impl.md DH-S-6 (broken entry, child ignoring termination on each OS, bad layer edit), the scenario line (`DH-E-EXEC-1`, `DH-E-HOST-4`, `DH-E-BOOT-1`, `DH-E-UTIL-1`, `DH-E-LOADER-1`, `DH-E-BOOT-2` authored, reviewed, indexed; none executed), H-21 open, and the Linux ownership fallback reported (TC-X2); tick impl.md steps 6.1-6.17 as built. _Closed: the manual checks are recorded on Windows, Linux and macOS from `harness-manual-checks` run 44860891149 at `42d0d7d` (see `evidence/DH-S-6.md`)._
+- [x] Close DH-S-6 at ONE commit: write `docs/stories/harness-DSH-M1/evidence/DH-S-6.md` with all seventeen deliverables built at that commit, the list of circle-waiting tests shown passing, the manual checks of impl.md DH-S-6 (broken entry, child ignoring termination on each OS, bad layer edit), the scenario line (`DH-E-EXEC-1`, `DH-E-HOST-4`, `DH-E-BOOT-1`, `DH-E-UTIL-1`, `DH-E-LOADER-1`, `DH-E-BOOT-2` authored, reviewed, indexed; none executed), H-21 open, and the Linux ownership fallback reported (TC-X2); tick impl.md steps 6.1-6.17 as built. _Closed: the manual checks are recorded on Windows, Linux and macOS from `harness-manual-checks` run 44860891149 at `42d0d7d` (see `evidence/DH-S-6.md`). Corrected by gap-closure 14.6.11: the macOS rows are historical (`platforms-windows-wsl`) and the Linux rows came from a hosted runner, not an M1 lane; gap-closure 14.6.12 re-records the checks on Windows native and Linux under WSL. Seven deliverables were cut short and are held open as H-24 to H-32 (M1-D-BOOT-1 (b), M1-D-BOOT-2 (b)); H-21 stays open. Ticks are provisional until the M1 closure commit (M1-D-CLOSE-1)._
 
 ### Dependencies
 - phase-boot-launch-egress-secrets-and-test-kit/stage-preview-validated-reload-and-settings-edits

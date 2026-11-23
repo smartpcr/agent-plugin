@@ -18,7 +18,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
 )
 
-// ReasonUsage is the code of every usage error (status 2).
+// ReasonUsage is the code of every usage error (status 64).
 const ReasonUsage herr.Reason = "cli/usage"
 
 // Kind is an option's kind.

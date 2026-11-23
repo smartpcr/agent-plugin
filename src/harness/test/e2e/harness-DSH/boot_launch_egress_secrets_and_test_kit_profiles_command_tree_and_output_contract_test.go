@@ -104,7 +104,7 @@ func (s *pctState) ownerOfEntryIsBundle() error {
 	return nil
 }
 
-// ---- Usage error exits 2 ----
+// ---- Usage error exits 64 ----
 
 func (s *pctState) commandTree() error { return nil }
 
@@ -128,8 +128,8 @@ func (s *pctState) exitCode(want int) error {
 	if s.status != want {
 		return fmt.Errorf("exit code = %d, want %d (stderr %q)", s.status, want, s.stderr)
 	}
-	if want == 2 && output.Usage != 2 {
-		return fmt.Errorf("output.Usage = %d, want 2", output.Usage)
+	if want == 64 && output.Usage != 64 {
+		return fmt.Errorf("output.Usage = %d, want 64", output.Usage)
 	}
 	return nil
 }

@@ -133,13 +133,13 @@ Examples:
 |---|---|---|
 | 0 | ok | Success; also help and version |
 | 1 | failed | The thing asked for ran and failed |
-| 2 | usage | Usage error: unknown command or flag, a broken rule between flags, a missing argument |
 | 3 | denied | Denied by policy, a guard or a person |
 | 4 | unavailable | Unavailable: no host, no endpoint, a capability that is missing |
 | 5 | invalid | Invalid input or not found: an unknown session, tool or profile |
 | 6 | busy | Busy or conflict |
 | 7 | limit | A limit or a timeout ended the work |
 | 8 | cancelled | Cancelled, or the outcome is unknown |
+| 64 | usage | Usage error: unknown command or flag, a broken rule between flags, a missing argument |
 | 70 | fatal | Fatal error with a report written |
 | 78 | config | The configuration cannot be composed, or a required entry failed to load |
 | 124 | forced | Forced exit: the exit deadline passed during shutdown |

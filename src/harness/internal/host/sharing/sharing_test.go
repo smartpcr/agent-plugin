@@ -228,3 +228,63 @@ func TestPermitsAreReleasedByHolderAndOwner(t *testing.T) {
 		t.Fatalf("consent is unchanged, yet Permit = %v, %v", p, err)
 	}
 }
+
+// DH-T-HOST-19, the two gate rows: a permit for an unregistered kind is refused,
+// even when the configuration turns that kind on; and every sharing-purpose client
+// egress hands out belongs to a listed sender, because egress hands a client only
+// for its permit's own kind and the gate issues permits only for table rows. The
+// table holds each kind once, so no kind has a second sender row.
+//
+//dsh:test DH-T-HOST-19
+func TestEverySharingClientBelongsToAListedSender(t *testing.T) {
+	cfg := everyKindOn()
+	for _, k := range []sharing.Kind{"carrier-pigeon", "", "Telemetry", "telemetry "} {
+		cfg.Kinds[k] = sharing.Setting{Enabled: true, Endpoint: "https://collector.example/x"}
+	}
+	g := sharing.New(cfg, nil)
+	for _, k := range []sharing.Kind{"carrier-pigeon", "", "Telemetry", "telemetry "} {
+		if p, err := g.Permit(k); p != nil || herr.Kind(err) != sharing.ReasonUnregistered {
+			t.Errorf("Permit(%q) = %v, %v; want refused with %s", k, p, err, sharing.ReasonUnregistered)
+		}
+		if _, ok := sharing.Describe(k); ok {
+			t.Errorf("Describe(%q) found a row", k)
+		}
+	}
+	if n := len(g.Senders()); n != len(sharing.Kinds()) {
+		t.Errorf("Senders() lists %d kinds with unregistered kinds configured, want %d", n, len(sharing.Kinds()))
+	}
+
+	listed := map[string]bool{}
+	for _, k := range sharing.Kinds() {
+		if listed[string(k)] {
+			t.Errorf("kind %s has two rows", k)
+		}
+		listed[string(k)] = true
+	}
+	svc := egress.New(egress.Config{})
+	t.Cleanup(svc.CloseIdleConnections)
+	for _, k := range sharing.Kinds() {
+		p, err := g.Permit(k)
+		if err != nil {
+			t.Fatalf("Permit(%s): %v", k, err)
+		}
+		if _, err := svc.Client("carrier-pigeon", p, egress.Options{}); !egress.IsNotPermitted(err) {
+			t.Errorf("a %s permit got a client for an unlisted kind: %v", k, err)
+		}
+		if _, err := svc.Client(string(k), p, egress.Options{Label: string(k)}); err != nil {
+			t.Fatalf("Client(%s): %v", k, err)
+		}
+	}
+	handed := svc.Handed()
+	if len(handed) != len(sharing.Kinds()) {
+		t.Fatalf("Handed() = %d clients, want one per kind (%d)", len(handed), len(sharing.Kinds()))
+	}
+	for _, c := range handed {
+		if !listed[c.Kind] {
+			t.Errorf("client %+v belongs to no listed sender", c)
+		}
+		if info, _ := sharing.Describe(sharing.Kind(c.Kind)); c.Destination != cfg.Kinds[info.Kind].Endpoint {
+			t.Errorf("client %+v does not go to its sender's endpoint %q", c, cfg.Kinds[info.Kind].Endpoint)
+		}
+	}
+}

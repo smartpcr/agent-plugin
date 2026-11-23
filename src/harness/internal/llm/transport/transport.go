@@ -69,12 +69,14 @@ func New(svc *egress.Service, p egress.Permit, o Options) (*Transport, error) {
 	return t, nil
 }
 
-// Over is a transport over rt with redirects refused: the seam for the test
-// kit's fake transport and recorded fixtures. Production transports come from New.
+// Over is a transport over rt with redirects refused and no permit checked: the
+// seam for the test kit's fake transport and recorded fixtures. Production
+// transports come from New. Only _test.go files and internal/testkit may call
+// Over: the archtest seam rule (archtest.SeamCalls, DH-T-HOST-19) fails the build's
+// tests on any other use, so no production path sends a model request past the
+// egress permit.
 func Over(rt http.RoundTripper, o Options) *Transport {
-	return over(&http.Client{Transport: rt, CheckRedirect: func(*http.Request, []*http.Request) error {
-		return http.ErrUseLastResponse
-	}}, o)
+	return over(egress.Over(rt), o)
 }
 
 func over(c *http.Client, o Options) *Transport {

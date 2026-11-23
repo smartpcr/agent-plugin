@@ -9,7 +9,6 @@ import (
 	"path"
 	"slices"
 	"strconv"
-	"strings"
 )
 
 // SpawnOwner is the directory, relative to the harness module root, below which
@@ -31,42 +30,24 @@ var spawnCalls = map[string][]string{
 // and names each call that starts a program. The import half is the os/exec
 // rule in Rules.
 func Spawns(fsys fs.FS) ([]string, error) {
-	fset := token.NewFileSet()
 	var found []string
-	parsed := 0
-	err := fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			if p == SpawnOwner || d.Name() == "testdata" || (p != "." && strings.HasPrefix(d.Name(), ".")) {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
-			return nil
-		}
-		src, err := fs.ReadFile(fsys, p)
-		if err != nil {
-			return err
-		}
-		f, err := parser.ParseFile(fset, p, src, parser.SkipObjectResolution)
-		if err != nil {
-			return err
-		}
-		parsed++
+	err := eachSource(fsys, []string{SpawnOwner}, func(fset *token.FileSet, _ string, f *ast.File) {
 		found = append(found, spawnsIn(fset, f)...)
-		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	if parsed == 0 {
-		return nil, fmt.Errorf("archtest: no Go source to check")
-	}
 	slices.Sort(found)
 	return found, nil
+}
+
+// parseFile parses one Go file of fsys.
+func parseFile(fsys fs.FS, fset *token.FileSet, p string) (*ast.File, error) {
+	src, err := fs.ReadFile(fsys, p)
+	if err != nil {
+		return nil, err
+	}
+	return parser.ParseFile(fset, p, src, parser.SkipObjectResolution)
 }
 
 func spawnsIn(fset *token.FileSet, f *ast.File) []string {

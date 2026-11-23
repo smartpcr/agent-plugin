@@ -23,7 +23,7 @@ import (
 // Error codes of the command line itself.
 const (
 	// ReasonUsage: an unknown command or flag, a broken rule between flags, a
-	// missing argument (status 2). It is declared by cmdline, which raises it.
+	// missing argument (status 64). It is declared by cmdline, which raises it.
 	ReasonUsage = cmdline.ReasonUsage
 	// ReasonFailed: a failure that carries no code of its own (status 1).
 	ReasonFailed herr.Reason = "cli/failed"
@@ -198,7 +198,7 @@ func oneLine(s string) string {
 	return strings.Join(strings.Fields(strings.ReplaceAll(s, "\r", "")), " ")
 }
 
-// Usagef returns a usage error (status 2) with the message.
+// Usagef returns a usage error (status 64) with the message.
 func Usagef(format string, args ...any) error { return herr.Newf(ReasonUsage, format, args...) }
 
 // IsUsage reports whether err is a usage error.

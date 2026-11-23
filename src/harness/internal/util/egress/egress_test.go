@@ -214,6 +214,18 @@ func TestRedirectNotFollowed(t *testing.T) {
 	if resp.StatusCode != http.StatusFound || c.Jar != nil {
 		t.Fatalf("status = %d, jar = %v; want 302 returned and no cookie jar", resp.StatusCode, c.Jar)
 	}
+
+	// The test seam under llm/transport.Over follows no redirect either and is
+	// never listed as handed out.
+	over := egress.Over(srv.Client().Transport)
+	resp, err = post(t, over, srv.URL, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusFound || over.Jar != nil || len(svc.Handed()) != 1 {
+		t.Fatalf("Over: status = %d, jar = %v, handed %v; want 302, no jar, only the permitted client", resp.StatusCode, over.Jar, svc.Handed())
+	}
 }
 
 func TestAllows(t *testing.T) {

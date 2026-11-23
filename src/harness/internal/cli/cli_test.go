@@ -36,11 +36,11 @@ func dispatch(t *testing.T, launchFn LaunchFunc, args ...string) run {
 }
 
 // TC-06a: an unknown launcher flag is one usage line plus the help hint on standard
-// error, nothing on standard output, and status 2.
-func TestUsageErrorExits2(t *testing.T) {
+// error, nothing on standard output, and status 64 (M1-D-BOOT-3).
+func TestUsageErrorExits64(t *testing.T) {
 	r := dispatch(t, nil, "--no-such-flag")
-	if r.status != 2 {
-		t.Errorf("status = %d, want 2", r.status)
+	if r.status != 64 || output.Usage != 64 {
+		t.Errorf("status = %d (output.Usage %d), want 64", r.status, output.Usage)
 	}
 	want := "dsh: cli/usage: unknown flag: --no-such-flag\n" + output.HelpHint + "\n"
 	if r.stderr != want {
@@ -48,6 +48,46 @@ func TestUsageErrorExits2(t *testing.T) {
 	}
 	if r.stdout != "" {
 		t.Errorf("stdout = %q, want empty", r.stdout)
+	}
+}
+
+// DH-T-CLI-6, the command half: no command path returns 2. Every fixed command of
+// the tree, every built-in profile and every hidden mode is dispatched bare, with
+// --help and with an unknown flag; a fixed command's unknown flag is the usage
+// status, 64, and no line of the grid exits 2 (the Go runtime's panic status).
+//
+//dsh:test DH-T-CLI-6
+func TestNoCommandPathReturns2(t *testing.T) {
+	var paths [][]string
+	newTree().walk(func(c *command) { paths = append(paths, strings.Fields(c.spec.Name)[1:]) })
+	if len(paths) == 0 {
+		t.Fatal("the command tree is empty")
+	}
+	launched := func(context.Context, Launch) error { return nil }
+	check := func(fn LaunchFunc, args []string, want int) {
+		t.Helper()
+		r := dispatch(t, fn, args...)
+		if r.status == 2 {
+			t.Errorf("dsh %q exits 2 (stderr %q)", args, r.stderr)
+		}
+		if want >= 0 && r.status != want {
+			t.Errorf("dsh %q = status %d, want %d (stderr %q)", args, r.status, want, r.stderr)
+		}
+	}
+	check(nil, nil, -1)
+	check(nil, []string{"--no-such-flag"}, output.Usage)
+	check(nil, []string{"--help"}, output.OK)
+	for _, p := range paths {
+		check(nil, p, -1)
+		check(nil, append(slices.Clone(p), "--help"), output.OK)
+		check(nil, append(slices.Clone(p), "--no-such-flag"), output.Usage)
+	}
+	for _, name := range append(profile.Names(), hiddenModes...) {
+		for _, fn := range []LaunchFunc{nil, launched} {
+			check(fn, []string{name}, -1)
+			check(fn, []string{name, "--no-such-flag"}, -1)
+			check(fn, []string{"--no-such-flag", name}, output.Usage)
+		}
 	}
 }
 
@@ -169,7 +209,7 @@ func TestJSONUsageErrorWritesErrorDocument(t *testing.T) {
 }
 
 // A bare group lacks its required <command>: its help goes to standard error and the
-// run is a usage error, status 2.
+// run is a usage error, status 64.
 func TestBareGroupIsUsageError(t *testing.T) {
 	r := dispatch(t, nil, "catalog")
 	if r.status != output.Usage || r.stdout != "" {
