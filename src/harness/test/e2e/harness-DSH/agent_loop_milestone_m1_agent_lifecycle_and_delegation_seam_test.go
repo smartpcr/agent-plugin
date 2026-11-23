@@ -41,6 +41,7 @@ import (
 	fakemodel "github.com/smartpcr/agent-plugin/src/harness/internal/testkit/model"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools/core"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/tools/prompt"
 )
 
 const alsRoute vocab.RouteID = "r/als"
@@ -158,9 +159,24 @@ func (s *alsState) boot(st store.Store, turns ...fakemodel.Turn) error {
 			return err
 		}
 	}
-	var tsvc tools.Service
-	g, err := root.Inject([]string{tools.Key.Name()}, func(c *cordis.Context) (err error) {
-		tsvc, err = tools.Key.Get(c)
+	// The prompt component assembles each step's system prompt and tool list,
+	// as the F2 rig composes it (plan 17.1.9).
+	pf, err := root.Use(prompt.Component, prompt.Defaults())
+	if err != nil {
+		return err
+	}
+	if err := pf.Wait(); err != nil {
+		return err
+	}
+	var (
+		tsvc tools.Service
+		ps   *prompt.Service
+	)
+	g, err := root.Inject([]string{tools.Key.Name(), prompt.Key.Name()}, func(c *cordis.Context) (err error) {
+		if tsvc, err = tools.Key.Get(c); err != nil {
+			return err
+		}
+		ps, err = prompt.Key.Get(c)
 		return err
 	})
 	if err == nil {
@@ -177,7 +193,7 @@ func (s *alsState) boot(st store.Store, turns ...fakemodel.Turn) error {
 	s.tap = newALSTap(s.tr, turns)
 	fakemodel.Register(s.tb, models, alsRoute, s.tap)
 	f, err := driver.NewFactory(driver.FactoryOptions{
-		Context: root, Sessions: s.svc, Scopes: scope.NewTable(root), Models: models, Tools: tsvc,
+		Context: root, Sessions: s.svc, Scopes: scope.NewTable(root), Models: models, Tools: tsvc, Prompt: ps,
 	})
 	if err != nil {
 		return err

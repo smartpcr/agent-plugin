@@ -1,14 +1,14 @@
 0 agent/inbox/spliced op=none t=0 {"inserted":[{"id":"<in-1>","source":"user","text":"answer once"}],"list":"next-turn","position":0}
 1 turn/start op=none t=0 {"turn":1}
 2 agent/inbox/spliced op=none t=0 {"list":"next-turn","outcome":{"kind":"claimed","turn":1},"position":0,"removed":1}
-3 user/message op=append t=0 {"message":{"blocks":[{"kind":"text","text":{"text":"answer once"}}],"id":"<in-1>","role":"user","source":{"kind":"user","producers":["user"]}}}
-4 step/start op=none t=0 {"step":1,"turn":1}
-5 model/selection op=none t=0 {"selection":{"route":"r/f2"},"source":"options","step":1,"turn":1}
-6 request/header op=none t=0 {"route":"r/f2","tools":[{"description":"Echoes its text.","name":"probe","parameters":{"additionalProperties":false,"properties":{"text":{"type":"string"}},"required":["text"],"type":"object"}}]}
-7 assistant/attempt op=none t=0 {"estimate":44,"failure":{"class":"transient","code":"llm/server","message":"overloaded","retry_after":"7s","status":529},"request_as_of":6,"request_digest":"<sha256-2>","timing":{"end":"<time>","start":"<time>"}}
-8 llm/retry op=none t=0 {"attempt":1,"delay_ms":5000,"failure":{"class":"transient","code":"llm/server","message":"overloaded","retry_after":"7s","status":529},"policy":{"base_delay":"500ms","jitter":-1,"max_delay":"10s","max_elapsed":"30m0s","max_retries":2,"mode":"bounded","retry_after_cap":"5s"},"step":1,"turn":1}
-9 llm/retry-started op=none t=0 {"attempt":2,"step":1,"turn":1}
-10 request/header op=none t=0 {"route":"r/f2","tools":[{"description":"Echoes its text.","name":"probe","parameters":{"additionalProperties":false,"properties":{"text":{"type":"string"}},"required":["text"],"type":"object"}}]}
-11 assistant/message op=append t=0 {"estimate":44,"message":{"blocks":[{"kind":"text","text":{"text":"answered after the retry"}}],"id":"<msg-3>","role":"assistant"},"request_as_of":10,"request_digest":"<sha256-4>","timing":{"end":"<time>","first_token":"<time>","start":"<time>"},"usage":{"cache_read":0,"cache_write":0,"input":1,"output":1}}
+3 step/start op=none t=0 {"step":1,"turn":1}
+4 model/selection op=none t=0 {"selection":{"route":"r/f2"},"source":"options","step":1,"turn":1}
+5 system/message op=append t=0 {"message":{"blocks":[{"kind":"text","text":{"text":"You are dsh, the DeepSeek harness: an agent that works in the user's workspace through the tools listed for this step."}}],"id":"<msg-2>","role":"system","source":{"kind":"prompt","producers":["tools.prompt"]}}}
+6 user/message op=append t=0 {"message":{"blocks":[{"kind":"text","text":{"text":"answer once"}}],"id":"<in-1>","role":"user","source":{"kind":"user","producers":["user"]}}}
+7 request/header op=none t=0 {"fingerprint":"<sha256-3>","manifest":[{"name":"identity","order":0,"owner":"tools.prompt"}],"route":"r/f2","tools":[{"description":"Echoes its text.","name":"probe","parameters":{"additionalProperties":false,"properties":{"text":{"type":"string"}},"required":["text"],"type":"object"}}]}
+8 assistant/attempt op=none t=0 {"estimate":80,"failure":{"class":"transient","code":"llm/server","message":"overloaded","retry_after":"7s","status":529},"request_as_of":7,"request_digest":"<sha256-4>","timing":{"end":"<time>","start":"<time>"}}
+9 llm/retry op=none t=0 {"attempt":1,"delay_ms":5000,"failure":{"class":"transient","code":"llm/server","message":"overloaded","retry_after":"7s","status":529},"policy":{"base_delay":"500ms","jitter":-1,"max_delay":"10s","max_elapsed":"30m0s","max_retries":2,"mode":"bounded","retry_after_cap":"5s"},"step":1,"turn":1}
+10 llm/retry-started op=none t=0 {"attempt":2,"step":1,"turn":1}
+11 assistant/message op=append t=0 {"estimate":80,"message":{"blocks":[{"kind":"text","text":{"text":"answered after the retry"}}],"id":"<msg-5>","role":"assistant"},"request_as_of":10,"request_digest":"<sha256-6>","timing":{"end":"<time>","first_token":"<time>","start":"<time>"},"usage":{"cache_read":0,"cache_write":0,"input":1,"output":1}}
 12 step/end op=none t=0 {"step":1,"turn":1}
 13 turn/end op=none t=0 {"reason":{"kind":"completed"},"turn":1}

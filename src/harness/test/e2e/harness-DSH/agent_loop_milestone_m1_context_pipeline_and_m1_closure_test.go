@@ -50,6 +50,7 @@ import (
 	fakemodel "github.com/smartpcr/agent-plugin/src/harness/internal/testkit/model"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools/core"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/tools/prompt"
 )
 
 // The flow F2 composition of internal/agent/f2_test.go: every value below
@@ -241,6 +242,8 @@ type cpmState struct {
 	tb   *cpmTB
 	root *cordis.Context
 	tab  scope.Table
+	// prompt is the tools.prompt component's service, the driver's prompter.
+	prompt *prompt.Service
 
 	// Context pipeline.
 	st       store.Store
@@ -270,8 +273,14 @@ func (s *cpmState) newRoot() {
 	root.Loggers().AddExporter(&cordis.MemoryExporter{})
 	s.tb.Cleanup(root.Dispose)
 	cpmMust(0, cpmMust(root.Use(scope.Component, cordis.None{})).Wait())
-	g := cpmMust(root.Inject([]string{scope.TableKey.Name()}, func(c *cordis.Context) (err error) {
-		s.tab, err = scope.TableKey.Get(c)
+	// The prompt component with its defaults assembles each step's system
+	// prompt and tool list, as the F2 rig composes it (plan 17.1.9).
+	cpmMust(0, cpmMust(root.Use(prompt.Component, prompt.Defaults())).Wait())
+	g := cpmMust(root.Inject([]string{scope.TableKey.Name(), prompt.Key.Name()}, func(c *cordis.Context) (err error) {
+		if s.tab, err = scope.TableKey.Get(c); err != nil {
+			return err
+		}
+		s.prompt, err = prompt.Key.Get(c)
 		return err
 	}))
 	cpmMust(0, g.Wait())
@@ -284,7 +293,7 @@ func (s *cpmState) startDriver(id string, initial agent.ModelSelection, rt *llm.
 	mod := cpmMust(agent.OpenModel(context.Background(), s.sess, agent.ModelOptions{Initial: initial}))
 	opts := driver.Options{
 		Context: s.root, Agent: cpmAgent{ref: agent.Ref{Session: session.ID(id), Incarnation: 1}},
-		Session: s.sess, Inbox: s.inbox, Model: mod, Models: s.models, Tools: svc,
+		Session: s.sess, Inbox: s.inbox, Model: mod, Models: s.models, Tools: svc, Prompt: s.prompt,
 	}
 	if now {
 		clk := clock.NewManual(time.UnixMilli(cpmF2Epoch))
@@ -437,14 +446,16 @@ func (s *cpmState) contributionsInOrder(list string) (err error) {
 			return fmt.Errorf("contributor %s observed %d times, want once", c.name, n)
 		}
 	}
-	// The log admits them between step/start and the request header.
+	// The log admits them between step/start and the request header, in the
+	// step's one admission batch: the system prompt, the claimed user message
+	// (M1-D-LOOP-1 A), then the three contributions.
 	var types []string
 	for _, e := range s.events {
 		types = append(types, e.Type())
 	}
 	joined := strings.Join(types, ",")
 	at := strings.Index(joined, "step/start")
-	if at < 0 || !strings.HasPrefix(joined[at:], "step/start,model/selection,user/message,user/message,user/message,request/header") {
+	if at < 0 || !strings.HasPrefix(joined[at:], "step/start,model/selection,system/message,user/message,user/message,user/message,user/message,request/header") {
 		return fmt.Errorf("the contributions are not admitted between step/start and request/header: %s", joined)
 	}
 	return nil
@@ -555,6 +566,13 @@ func (s *cpmState) f2Start(st store.Store, attempt func(int, session.Request), b
 		session.CreateOptions{Header: session.Header{ID: cpmF2Session}}))
 	sess := s.sess
 	s.tb.Cleanup(func() { _ = sess.Close(context.Background()) })
+	// The context pipeline with no contributors, as the F2 rig mounts it.
+	_, pipeSeat := cpmMust2(request.New(s.root, request.Options{
+		Table:    s.tab,
+		Sessions: func(agent.Ref) (request.Log, error) { return sess, nil },
+		Scopes:   func(agent.Ref) (scope.Key, error) { return scope.Key{}, nil },
+	}))
+	s.tb.Cleanup(pipeSeat.Dispose)
 	rt := llm.New()
 	fakemodel.Register(s.tb, rt, cpmF2Route, fakemodel.NewTransport(s.tb, s.f2Turns...))
 	s.startDriver(cpmF2Session, agent.ModelSelection{Route: cpmF2Route}, rt, svc, true, attempt)

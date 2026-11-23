@@ -275,8 +275,9 @@ func unanswered(t *testing.T, s session.ReadSession) {
 
 func echo(id string) fakemodel.Event { return fakemodel.Tool(id, "echo", `{"text":"x"}`) }
 
-// DH-T-AGENT-5, -7: a turn opens on a wake, brackets one step per model call
-// and ends completed when the model answers without a tool call.
+// DH-T-AGENT-5: a turn opens on a wake, brackets one step per model call and
+// ends completed when the model answers without a tool call. The three-step
+// golden is TestThreeStepTurnLogMatchesGolden.
 func TestTurnRunsStepsUntilTheModelAnswers(t *testing.T) {
 	r := newRig(t, rigOptions{turns: []fakemodel.Turn{fakemodel.Calls(echo("c1")), fakemodel.Reply("done")}})
 	r.send(agent.ListNextTurn, "hi")
