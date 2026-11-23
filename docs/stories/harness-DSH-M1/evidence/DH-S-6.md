@@ -674,3 +674,5 @@ with no registration that could refuse a second sender); the 18 DH-T IDs no test
 (M1-G-BOOT-18 to -35, "Gap closure (14.6)"); the intermittent control-group failure of
 6.3 (M1-G-BOOT-36); the WSL record without `systemd=true`; the scenarios authored here, which run in DH-S-18, DH-S-21, DH-S-22
 and DH-S-39.
+
+**Phase 14 gate runs (Rule 2).** Both lanes pass all 12 gates at `08233be`: run records `wsl-08233be-20261123T0215Z` and `win-08233be-20261123T0223Z` (`manual`; details in [DH-S-1.md](DH-S-1.md), "Phase 14 exit gate runs").
