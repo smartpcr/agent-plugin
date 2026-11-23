@@ -262,6 +262,9 @@ func TestGrantMatching(t *testing.T) {
 		{"other provider", &approval.Subject{Kind: approval.ScopeApplication, Provider: "windows", App: "com.apple.Notes"}, false},
 		{"a pid", &approval.Subject{Kind: approval.ScopeApplication, Provider: "macos", App: "com.apple.Notes", PID: 7}, false},
 		{"no subject", nil, false},
+		// A label is display only: it never makes nor breaks a match.
+		{"inside, other label", &approval.Subject{Kind: approval.ScopeDirectory, Path: filepath.Join(w, "a"), Label: "anything"}, true},
+		{"sibling, granted label", &approval.Subject{Kind: approval.ScopeDirectory, Path: w + "2", Label: "writes under " + w}, false},
 	} {
 		if _, ok := grants.Match(me, tc.s); ok != tc.want {
 			t.Errorf("%s: match = %v, want %v", tc.name, ok, tc.want)

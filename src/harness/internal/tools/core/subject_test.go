@@ -85,7 +85,7 @@ func TestSessionGrantMatchesALaterCall(t *testing.T) {
 	res := execute(t, svc, view(t, svc), h, calls...)
 
 	live := grants.List(me)
-	if len(live) != 1 || live[0].Subject.Kind != approval.ScopeDirectory || !strings.EqualFold(filepath.Base(live[0].Subject.Path), "w") {
+	if len(live) != 1 || live[0].Subject.Kind != approval.ScopeDirectory || !strings.EqualFold(filepath.Base(live[0].Subject.Path), "w") || live[0].Subject.Label != "writes under "+w {
 		t.Fatalf("grants %+v, want one directory grant of %s", live, w)
 	}
 	id := live[0].ID
@@ -105,8 +105,8 @@ func TestSessionGrantMatchesALaterCall(t *testing.T) {
 	if len(ps) != 2 || ps[0].Call != "c1" || ps[1].Call != "c3" {
 		t.Fatalf("delivered %+v, want the first and the third call only", ps)
 	}
-	if s := ps[0].Subject; s == nil || s.Kind != approval.ScopeDirectory || s.Path != w {
-		t.Fatalf("the first prompt's subject %+v, want directory %s", s, w)
+	if s := ps[0].Subject; s == nil || s.Kind != approval.ScopeDirectory || s.Path != w || s.Label != "writes under "+w {
+		t.Fatalf("the first prompt's subject %+v, want directory %s labelled with its scope", s, w)
 	}
 
 	want := "tool/call,approval/asked,grant/created,approval/decided,tool/result," +
@@ -153,7 +153,7 @@ func TestAskSubjectReachesThePromptOnlyWhenNamed(t *testing.T) {
 	}{
 		{"none", tools.Ask("writes", ""), nil},
 		{"application", tools.AskFor("drives", "", tools.Subject{Kind: tools.SubjectApplication, Name: "macos:com.example.app", Label: "the app"}),
-			&approval.Subject{Kind: approval.ScopeApplication, Provider: "macos", App: "com.example.app"}},
+			&approval.Subject{Kind: approval.ScopeApplication, Provider: "macos", App: "com.example.app", Label: "the app"}},
 		{"invalid", tools.AskFor("drives", "", tools.Subject{Kind: tools.SubjectApplication, Name: "no-provider"}), nil},
 		{"unknown kind", tools.AskFor("browses", "", tools.Subject{Kind: "website", Name: "https://example.com"}), nil},
 	} {

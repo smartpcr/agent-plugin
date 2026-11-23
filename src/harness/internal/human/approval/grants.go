@@ -29,23 +29,27 @@ const (
 
 // Subject is what a call needs, offered for a grant and matched against grants:
 // one directory (Path), or one application (Provider and App both). A process
-// id is never a subject.
+// id is never a subject. Label is how a person is shown the scope ("writes
+// under /repo/build"): the answerer shows it with the session choice and a grant
+// keeps it for its listing, but nothing ever matches on it.
 type Subject struct {
 	Kind     ScopeKind `json:"kind"`
 	Path     string    `json:"path,omitempty"`
 	Provider string    `json:"provider,omitempty"`
 	App      string    `json:"app,omitempty"`
 	PID      int       `json:"pid,omitempty"`
+	Label    string    `json:"label,omitempty"`
 }
 
 // canonical is s normalised for matching, or an error when s cannot be granted.
+// The label is kept as given; matches never reads it.
 func (s Subject) canonical() (Subject, error) {
 	switch s.Kind {
 	case ScopeDirectory:
 		if s.Path == "" {
 			return Subject{}, errors.New("approval: a directory subject names its path")
 		}
-		return Subject{Kind: ScopeDirectory, Path: canonicalPath(s.Path)}, nil
+		return Subject{Kind: ScopeDirectory, Path: canonicalPath(s.Path), Label: s.Label}, nil
 	case ScopeApplication:
 		if s.PID != 0 {
 			return Subject{}, errors.New("approval: a process id is not a subject")
@@ -53,7 +57,7 @@ func (s Subject) canonical() (Subject, error) {
 		if s.Provider == "" || s.App == "" {
 			return Subject{}, errors.New("approval: an application subject names its provider and its app")
 		}
-		return Subject{Kind: ScopeApplication, Provider: s.Provider, App: s.App}, nil
+		return Subject{Kind: ScopeApplication, Provider: s.Provider, App: s.App, Label: s.Label}, nil
 	}
 	return Subject{}, fmt.Errorf("approval: scope kind %q is not directory or application", s.Kind)
 }
