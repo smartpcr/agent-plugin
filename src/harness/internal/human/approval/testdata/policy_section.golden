@@ -1,0 +1,6 @@
+== policy ask
+manifest approval-policy order=300 owner=human.approval.prompt
+Approval policy: ask. A tool call that needs approval waits until a person allows or rejects it. A call whose approval is rejected, cancelled or unavailable did not run.
+== policy never
+manifest approval-policy order=300 owner=human.approval.prompt
+Approval policy: never. Nobody is asked to approve tool calls in this session: a call that needs approval is rejected without running, so prefer actions that need no approval.

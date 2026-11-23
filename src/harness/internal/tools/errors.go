@@ -52,12 +52,15 @@ const (
 	CodeOutcomeUnknown Code = "tools/outcome-unknown"
 	// CodeBusy: a detached body of this tool, for this agent, is still running.
 	CodeBusy Code = "tools/busy"
-	// CodeApprovalDenied: the approval was refused, or could not be audited.
-	CodeApprovalDenied Code = "approval/denied"
-	// CodeApprovalTimeout: nobody answered the approval in time.
-	CodeApprovalTimeout Code = "approval/timeout"
-	// CodeApprovalNoAnswerer: nobody could be asked; no means no (SP-7).
-	CodeApprovalNoAnswerer Code = "approval/no-answerer"
+	// CodeApprovalRejected: a person rejected the call, or the session's
+	// approval policy is never.
+	CodeApprovalRejected Code = "approval/rejected"
+	// CodeApprovalCancelled: the approval's context ended before it settled.
+	CodeApprovalCancelled Code = "approval/cancelled"
+	// CodeApprovalUnavailable: nobody could answer (no binding, no answerer, a
+	// failed answerer, a set timeout, a stopping host) or the approval could not
+	// be audited; no means no (SP-7).
+	CodeApprovalUnavailable Code = "approval/unavailable"
 )
 
 // Error carries a Code, the tool it concerns and, for schema failures, every

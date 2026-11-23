@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/agent"
@@ -187,10 +188,22 @@ var (
 type Grants struct {
 	mu      sync.Mutex
 	byAgent map[agent.Ref][]Grant
+	// disposed holds each session whose agent this table saw disposed (Bind)
+	// and not yet created again: its holder ended its grants itself, so a grant
+	// still open in its log at the next creation is one whose end could not be
+	// written, not one a dead host left.
+	disposed map[session.ID]struct{}
+	// lookups counts Match calls, so a test can prove a request consulted no grant.
+	lookups atomic.Uint64
 }
 
 // NewGrants is an empty table.
-func NewGrants() *Grants { return &Grants{byAgent: map[agent.Ref][]Grant{}} }
+func NewGrants() *Grants {
+	return &Grants{byAgent: map[agent.Ref][]Grant{}, disposed: map[session.ID]struct{}{}}
+}
+
+// Lookups is how many times Match has been called on g.
+func (g *Grants) Lookups() uint64 { return g.lookups.Load() }
 
 // List is a copy of ref's live grants, oldest first.
 func (g *Grants) List(ref agent.Ref) []Grant {
@@ -212,7 +225,11 @@ func (g *Grants) Roots(ref agent.Ref) []string {
 
 // Match is ref's first grant covering s; none for a nil or ungrantable subject.
 func (g *Grants) Match(ref agent.Ref, s *Subject) (Grant, bool) {
-	if g == nil || s == nil {
+	if g == nil {
+		return Grant{}, false
+	}
+	g.lookups.Add(1)
+	if s == nil {
 		return Grant{}, false
 	}
 	c, err := s.canonical()
@@ -315,26 +332,33 @@ type Sessions interface {
 
 // Bind ties the table to the agent lifecycle under root, so cleanup needs no
 // caller: when an agent is created (a new or resumed incarnation) every grant
-// its session's log leaves open is ended session-ended and the table drops any
-// older incarnation of the session; when an agent is disposed its grants end
+// its session's log leaves open is ended and the table drops any older
+// incarnation of the session; when an agent is disposed its grants end
 // session-ended while its session is still live, and the table forgets them
-// either way. A failed close of the log fails the creation. The returned handles
-// unbind.
+// either way. A grant left open by a holder this table saw disposed ends
+// session-ended (its end could not be written then); one left open by a holder
+// that never disposed here, a host that died, ends host-stopped. A failed close
+// of the log fails the creation, so the agent accepts no input first. The
+// returned handles unbind.
 func (g *Grants) Bind(root *cordis.Context, sessions Sessions) ([]*cordis.EffectHandle, error) {
 	created, err := agent.Created.On(root, func(_ *cordis.Context, n agent.CreatedNotice) error {
 		ref := n.Agent.Ref()
 		g.forgetOlder(ref)
+		cleanly := g.takeDisposed(ref.Session)
 		s, ok := sessions.Get(ref.Session)
 		if !ok {
 			return nil
 		}
-		_, err := CloseGrantsOnResume(context.Background(), s)
+		_, err := CloseGrantsOnResume(context.Background(), s, cleanly)
 		return err
 	})
 	if err != nil {
 		return nil, err
 	}
 	disposed, err := agent.Disposed.On(root, func(_ *cordis.Context, n agent.DisposedNotice) error {
+		g.mu.Lock()
+		g.disposed[n.Ref.Session] = struct{}{}
+		g.mu.Unlock()
 		if s, ok := sessions.Get(n.Ref.Session); ok {
 			return g.EndAll(context.Background(), s, n.Ref, EndSessionEnded)
 		}
@@ -348,6 +372,16 @@ func (g *Grants) Bind(root *cordis.Context, sessions Sessions) ([]*cordis.Effect
 		return nil, err
 	}
 	return []*cordis.EffectHandle{created, disposed}, nil
+}
+
+// takeDisposed reports whether session id's last agent was disposed through this
+// table, and clears the mark.
+func (g *Grants) takeDisposed(id session.ID) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	_, ok := g.disposed[id]
+	delete(g.disposed, id)
+	return ok
 }
 
 // forgetOlder drops the grants of ref's session held by any other incarnation.
@@ -368,10 +402,16 @@ type GrantLog interface {
 	Read(ctx context.Context, from event.Offset, limit int, opts ...session.ReadOption) ([]event.Event, error)
 }
 
-// CloseGrantsOnResume appends grant/ended{session-ended} for each grant/created
-// of log with no grant/ended, so the display fold of a resumed session lists no
-// grant. The table itself is never filled from the log.
-func CloseGrantsOnResume(ctx context.Context, log GrantLog) ([]string, error) {
+// CloseGrantsOnResume appends grant/ended for each grant/created of log with no
+// grant/ended, so the display fold of a resumed session lists no grant. The
+// reason is session-ended when the previous holder disposed cleanly (its own end
+// could not be written) and host-stopped when it did not (its host died). The
+// table itself is never filled from the log.
+func CloseGrantsOnResume(ctx context.Context, log GrantLog, cleanly bool) ([]string, error) {
+	reason := EndHostStopped
+	if cleanly {
+		reason = EndSessionEnded
+	}
 	var open []string
 	const page = 256
 	for from, n := event.Offset(0), log.Len(); from < n; from += page {
@@ -393,7 +433,7 @@ func CloseGrantsOnResume(ctx context.Context, log GrantLog) ([]string, error) {
 		}
 	}
 	for _, id := range open {
-		if err := appendEnded(ctx, log, id, EndSessionEnded, ""); err != nil {
+		if err := appendEnded(ctx, log, id, reason, ""); err != nil {
 			return nil, err
 		}
 	}
