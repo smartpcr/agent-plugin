@@ -34,8 +34,10 @@ func TestRunTimeoutStopsTheTreeHoldingItsOutput(t *testing.T) {
 	if perr != nil || grandchild == 0 {
 		t.Fatalf("no grandchild pid in %q", h.Stdout.String())
 	}
+	// Exited, not !Alive: the orphaned grandchild is reaped by its reaper on its
+	// own time, and kill(pid, 0) still finds the zombie until then (M1-G-BOOT-36).
 	for _, pid := range []int{h.Process.Pid(), grandchild} {
-		if subprocesstest.Alive(pid) {
+		if !subprocesstest.Exited(pid) {
 			t.Errorf("pid %d survives the timed-out run", pid)
 		}
 	}
@@ -130,10 +132,10 @@ func TestLaunchedProgramAndHomeTornDownByCleanup(t *testing.T) {
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for _, pid := range pids {
-		for subprocesstest.Alive(pid) && time.Now().Before(deadline) {
+		for !subprocesstest.Exited(pid) && time.Now().Before(deadline) {
 			<-time.After(20 * time.Millisecond)
 		}
-		if subprocesstest.Alive(pid) {
+		if !subprocesstest.Exited(pid) {
 			t.Errorf("pid %d survives its test", pid)
 		}
 	}
@@ -217,7 +219,7 @@ func TestSpawnCleanupStopsASurvivingTree(t *testing.T) {
 	if !h.Await(10 * time.Second) {
 		t.Fatal("the surviving program was not reported exited after its cleanup")
 	}
-	if subprocesstest.Alive(h.Process.Pid()) {
+	if !subprocesstest.Exited(h.Process.Pid()) {
 		t.Fatalf("pid %d outlived its cleanup", h.Process.Pid())
 	}
 }
@@ -237,7 +239,7 @@ func TestStartCleanupStopsAProgramThatIgnoresItsInput(t *testing.T) {
 	if took := time.Since(start); took < launcher.Grace {
 		t.Errorf("the cleanup stopped the program after %s, before its Grace of %s", took, launcher.Grace)
 	}
-	if subprocesstest.Alive(pid) {
+	if !subprocesstest.Exited(pid) {
 		t.Fatalf("pid %d outlived its cleanup", pid)
 	}
 }
