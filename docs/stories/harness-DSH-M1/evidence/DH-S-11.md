@@ -156,10 +156,10 @@ records on the route and replays with empty client homes, client stand-ins first
 `PATH` that must never run, and refusing proxies. The rows are in `areas/agent-loop.md`,
 `areas/core-session.md`, `upstream/toolchain.md` and `e2e-scenarios.md` Phase 11.
 
-**Scenario review line (plan 17.4.5).** Reviewer: the owner. PR: the Phase 17 PR, not
-opened yet when this record was written (branch `m1-phase-17`); its number is recorded here
-when it is opened. Status: **pending**. Until the owner has reviewed the seven files and
-this line names the PR number, step 17.4.5 stays open and DH-S-11 cannot close
+**Scenario review line (plan 17.4.5).** Reviewer: the owner. PR:
+[#93](https://github.com/smartpcr/agent-plugin/pull/93) (branch `m1-phase-17`). Status:
+**pending**. Until the owner has reviewed the seven files in #93, step 17.4.5 stays open and
+DH-S-11 cannot close
 (M1-D-CLOSE-4 A).
 
 Authored for review in this PR, indexed under DH-S-17 in
