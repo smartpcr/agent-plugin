@@ -59,6 +59,8 @@ func TestReasonsAreWellFormed(t *testing.T) {
 
 // A committed write survives a restart; a failed callback leaves memory and the
 // database unchanged and raises nothing.
+//
+//dsh:test DH-T-STORAGE-1
 func TestUpdateCommitsAtomicallyAndSurvivesRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "dsh.db")
 	db := openDB(t, path)
@@ -110,6 +112,8 @@ func TestUpdateCommitsAtomicallyAndSurvivesRestart(t *testing.T) {
 
 // Two instances over one file: Fresh sees the other's write as Foreign, and an
 // Update over a stale snapshot reads the stored records, not its cache.
+//
+//dsh:test DH-T-STORAGE-2
 func TestFreshSeesForeignWrites(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "dsh.db")
 	a, err := kv.Open(bg, openDB(t, path), spec())
@@ -173,6 +177,8 @@ func rawPut(t *testing.T, db kv.DB, ns, key string, version int, value string) {
 }
 
 // An older record is converted on read; a newer one fails only its own read.
+//
+//dsh:test DH-T-STORAGE-3
 func TestRecordVersions(t *testing.T) {
 	db := openDB(t, filepath.Join(t.TempDir(), "dsh.db"))
 	if _, err := kv.Open(bg, db, spec()); err != nil {
@@ -212,6 +218,8 @@ func TestRecordVersions(t *testing.T) {
 
 // An undecodable record fails an authoritative namespace and is dropped from a
 // derived one; nothing is deleted from the database.
+//
+//dsh:test DH-T-STORAGE-3
 func TestUndecodableByAuthority(t *testing.T) {
 	db := openDB(t, filepath.Join(t.TempDir(), "dsh.db"))
 	if _, err := kv.Open(bg, db, spec()); err != nil {

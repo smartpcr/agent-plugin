@@ -41,6 +41,8 @@ func sameAsMissing(t *testing.T, what string, id session.ID, err, missing error)
 // project or a hidden one every read (observe, trace, lineage, follow) answers
 // exactly as for a missing session; the lineage and the fork list stop at what
 // it may not see; a follower stops as the session is hidden.
+//
+//dsh:test DH-T-VIEW-14
 func TestCallerSeesOnlyWhatItMay(t *testing.T) {
 	home := t.TempDir()
 	st := must(sqlite.Open(bg, filepath.Join(home, "dsh.db")))
@@ -384,6 +386,8 @@ func TestListPagesByLastPromptAsOf(t *testing.T) {
 // List pages are bounded: no limit is DefaultLimit, a larger one (up to the
 // integer maximum, which must not overflow the store's query) is MaxLimit; the
 // store clamps a direct query too.
+//
+//dsh:test DH-T-VIEW-15
 func TestListPagesAreBounded(t *testing.T) {
 	st := must(sqlite.Open(bg, filepath.Join(t.TempDir(), "dsh.db")))
 	t.Cleanup(func() { _ = st.Close(bg) })
