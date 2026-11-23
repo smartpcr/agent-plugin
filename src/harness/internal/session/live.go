@@ -445,6 +445,24 @@ func (s *live) fold(st *surface.State, recs []event.Record) (rows []Derived) {
 	return s.svc.cfg.Folder.Fold(view, batch)
 }
 
+// closingRows is the ClosingFolder's rows as the session closes, with a frozen
+// view of the folds at the head; a panic is contained and drops the rows. The
+// caller holds s.mu.
+func (s *live) closingRows() (rows []Derived) {
+	c, ok := s.svc.cfg.Folder.(ClosingFolder)
+	if !ok {
+		return nil
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			s.svc.base.Logger().Error(fmt.Errorf("session %q: the folder panicked closing: %v", s.id, r))
+			rows = nil
+		}
+	}()
+	view := &readSession{id: s.id, header: s.header, key: s.key, r: s.w, st: s.st, stored: s.st.Len(), durable: s.Durable()}
+	return c.Closing(view)
+}
+
 // failLocked closes the session with cause; the deliverer stops at once and
 // finishes the close. The caller holds s.mu.
 func (s *live) failLocked(cause error) {
@@ -556,12 +574,22 @@ func (s *live) Close(ctx context.Context) error {
 	s.mu.Lock()
 	if !s.closed {
 		s.closed = true
-		if n := s.st.Len(); n > 0 && s.sinceCP > 0 {
-			if state, err := s.st.Checkpoint(); err == nil {
-				cp := store.Checkpoint{Key: surface.CheckpointKey, StateVersion: surface.CheckpointVersion, Seq: n - 1, State: state}
-				if err := s.w.Append(ctx, store.Batch{First: n, Checkpoints: []store.Checkpoint{cp}}); err != nil {
+		if n := s.st.Len(); n > 0 {
+			var cps []store.Checkpoint
+			for _, d := range s.closingRows() {
+				cps = append(cps, store.Checkpoint{Key: d.Key, StateVersion: d.StateVersion, Seq: n - 1, State: d.State})
+			}
+			core := false
+			if s.sinceCP > 0 {
+				if state, err := s.st.Checkpoint(); err == nil {
+					cps = append(cps, store.Checkpoint{Key: surface.CheckpointKey, StateVersion: surface.CheckpointVersion, Seq: n - 1, State: state})
+					core = true
+				}
+			}
+			if len(cps) > 0 {
+				if err := s.w.Append(ctx, store.Batch{First: n, Checkpoints: cps}); err != nil {
 					s.svc.base.Logger().Error(fmt.Errorf("session %q: the closing checkpoint: %w", s.id, err))
-				} else {
+				} else if core {
 					s.sinceCP = 0
 				}
 			}
