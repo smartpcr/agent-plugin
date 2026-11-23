@@ -90,22 +90,36 @@ func TestTheExpressionSeamCallsTheInjectedEvaluator(t *testing.T) {
 	Equal(t, 1, evaluator.count("config:env.X"))
 }
 
+//dsh:test DH-T-LOADER-4
 func TestASavedFileKeepsTheExpressionSource(t *testing.T) {
-	evaluator := newEvaluator(func(string, loader.Scope) (any, error) { return 3, nil })
+	// a disabled expression that fails keeps its entry unloaded, and its source is
+	// still what the file holds after a write-back (DH-T-LOADER-4)
+	evaluator := newEvaluator(func(_ string, scope loader.Scope) (any, error) {
+		if scope.Kind == loader.DisabledScope {
+			return nil, errors.New("env.OFF is unset")
+		}
+		return 3, nil
+	})
 	path := filepath.Join(t.TempDir(), "cordis.json")
 	writeFile(t, path, `[
   { "id": "e", "name": "EchoPlugin", "config": { "times": { "$expr": "env.N" }, "text": "e" } },
+  { "id": "d", "name": "EchoPlugin", "disabled": { "$expr": "env.OFF" }, "config": { "times": 1, "text": "d" } },
   { "id": "b", "name": "EchoPlugin", "config": { "times": 1, "text": "b" } }
 ]`)
 	h := startWith(t, evaluator)
 	useFile(t, h, loader.ConfigFileOptions{Path: path})
 	True(t, h.echo.Contains("+e e e"), "expression was not evaluated: "+h.echo.String())
+	True(t, h.fiber("d") == nil && !h.echo.Contains("+d"), "an entry whose disabled expression failed was loaded")
 
 	Within(t, "update", func() { NoError(t, h.fiber("b").Update(EchoOptions{Times: 2, Text: "b"}, false)) })
 	Eventually(t, func() bool { return strings.Contains(readFile(t, path), `"times": 2`) }, "config was not written back")
-	True(t, strings.Contains(readFile(t, path), `"$expr": "env.N"`), "the expression was not kept:\n"+readFile(t, path))
+	saved := readFile(t, path)
+	True(t, strings.Contains(saved, `"$expr": "env.N"`), "the expression was not kept:\n"+saved)
+	True(t, strings.Contains(saved, `"$expr": "env.OFF"`), "the failed disabled expression was not kept:\n"+saved)
+	True(t, !strings.Contains(saved, `"disabled": true`), "a failed disabled expression was saved as disabled:\n"+saved)
 }
 
+//dsh:test DH-T-LOADER-4
 func TestADisabledExpressionIsEvaluatedAtEachApply(t *testing.T) {
 	var disabled atomic.Bool
 	var fail atomic.Bool
@@ -163,6 +177,7 @@ func TestAnExpressionTheEvaluatorRejectsIsReportedAtItsPosition(t *testing.T) {
 
 // ---------------------------------------------------------- DH-T-LOADER-5
 
+//dsh:test DH-T-LOADER-5
 func TestAConfigExpressionReadingUseRunsOnlyOnceItsServiceIsActive(t *testing.T) {
 	var unavailable atomic.Int32
 	var services sync.Map

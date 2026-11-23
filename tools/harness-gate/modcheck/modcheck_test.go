@@ -144,12 +144,19 @@ func TestToolchain11RejectsWrongModulePath(t *testing.T) {
 	wantFailure(t, CheckToolchain11(repo), "src/sdk/go.mod: module is", "want github.com/smartpcr/agent-plugin/src/sdk")
 }
 
+// TestSDK17CommittedFilePasses: the committed src/sdk/go.mod requires nothing (RM-3).
+//
+//dsh:test DH-T-SDK-17
 func TestSDK17CommittedFilePasses(t *testing.T) {
 	if err := CheckSDK17(committedRepo(t).Mods["src/sdk"]); err != nil {
 		t.Fatal(err)
 	}
 }
 
+// TestSDK17RejectsRequire: a require line in src/sdk/go.mod, single or in a block,
+// fails the check and is named with its line.
+//
+//dsh:test DH-T-SDK-17
 func TestSDK17RejectsRequire(t *testing.T) {
 	err := CheckSDK17([]byte(fixtureSDK + "\nrequire golang.org/x/text v0.14.0\n"))
 	wantFailure(t, err, "src/sdk/go.mod:5: require golang.org/x/text v0.14.0")

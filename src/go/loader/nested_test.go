@@ -104,6 +104,7 @@ func inserts(entries ...loader.EntryOptions) loader.Layer {
 	return loader.Layer{Label: "preset", Ops: []loader.Op{{Kind: loader.OpInsert, Entries: entries}}}
 }
 
+//dsh:test DH-T-LOADER-11
 func TestNestedLoaderUnloadsWithItsOwner(t *testing.T) {
 	h := startOwner(t, inserts(echo("a", "a"), echo("b", "b")))
 	True(t, h.echo.Contains("+a") && h.echo.Contains("+b"), "nested entries not loaded: "+h.echo.String())
@@ -120,11 +121,23 @@ func TestNestedLoaderUnloadsWithItsOwner(t *testing.T) {
 	True(t, errors.Is(h.nested.Apply(nil), loader.ErrClosed), "an unloaded nested loader still applies")
 }
 
+//dsh:test DH-T-LOADER-11
 func TestNestedLoaderIsPrivateToItsOwnerAndReadOnly(t *testing.T) {
 	h := startOwner(t, inserts(echo("a", "a")))
 	root := Must(loader.Key.Get(h.root))
 	True(t, root != h.nested, "the root context sees the nested loader")
 	True(t, root.Find("a") == nil, "a nested entry leaked into the root loader")
+
+	// a sibling of the owner sees the root loader, not the owner's nested one
+	var sibling *loader.Service
+	siblingComponent := cordis.Define("Sibling", func(ctx *cordis.Context, _ EchoOptions) error {
+		var err error
+		sibling, err = loader.Key.Get(ctx)
+		return err
+	}, cordis.WithInject("loader"))
+	MustWait(t, Must(h.root.Use(siblingComponent, EchoOptions{Times: 1})))
+	True(t, sibling == root, "a sibling context sees the nested loader")
+	True(t, sibling.Find("a") == nil, "a nested entry is visible from a sibling context")
 
 	entry := h.nested.Find("a")
 	True(t, h.nested.EntryOf(h.nested.Fiber(entry)) == entry, "EntryOf does not find the nested entry's fiber")
@@ -140,6 +153,7 @@ func TestNestedLoaderIsPrivateToItsOwnerAndReadOnly(t *testing.T) {
 	Equal(t, "+a", h.echo.String())
 }
 
+//dsh:test DH-T-LOADER-11
 func TestNestedLoaderANewLayerListRestartsOnlyWhatChanged(t *testing.T) {
 	h := startOwner(t, inserts(echo("a", "a"), echo("b", "b")))
 	Within(t, "apply layers", func() {
@@ -155,6 +169,7 @@ func TestNestedLoaderANewLayerListRestartsOnlyWhatChanged(t *testing.T) {
 
 // ---------------------------------------------------------- restart and notices
 
+//dsh:test DH-T-LOADER-12
 func TestRestartOneEntryLeavesItsSiblingsAlone(t *testing.T) {
 	h := start(t)
 	heard := listen(t, h.root)
@@ -175,6 +190,7 @@ func TestRestartOneEntryLeavesItsSiblingsAlone(t *testing.T) {
 	True(t, errors.Is(h.loader.Restart("missing"), loader.ErrNotFound), "restart of an unknown entry")
 }
 
+//dsh:test DH-T-LOADER-12
 func TestAConfigEditRestartsOnlyTheChangedEntryWithOneNotice(t *testing.T) {
 	h := start(t)
 	h.apply(t, echo("one", "one"), echo("two", "two"), echo("three", "three"))
@@ -196,6 +212,7 @@ func TestAConfigEditRestartsOnlyTheChangedEntryWithOneNotice(t *testing.T) {
 	Equal(t, "one,three", strings.Join(append(all[1].Updated, all[1].Restarted...), ","))
 }
 
+//dsh:test DH-T-LOADER-12
 func TestWatchedLayersDebounceABurstOfSavesIntoOneReload(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		dir := t.TempDir()
@@ -374,6 +391,7 @@ func TestMutationsReportTheChangeAndASelfDisposedEntryIsNotDisabled(t *testing.T
 	Equal(t, 3, changes, "a self-disposed entry reported a change to persist")
 }
 
+//dsh:test DH-T-LOADER-11
 func TestNestedLoaderEvaluatesItsOwnExpressions(t *testing.T) {
 	root, _ := Quiet()
 	echoLog := &Log{}
@@ -396,6 +414,7 @@ func TestNestedLoaderEvaluatesItsOwnExpressions(t *testing.T) {
 	True(t, errors.Is(err, loader.ErrReadOnly), "Move on a nested loader")
 }
 
+//dsh:test DH-T-LOADER-12
 func TestRestartWritesNoFileAndANoticeListsTheChangedIDs(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "user.json")

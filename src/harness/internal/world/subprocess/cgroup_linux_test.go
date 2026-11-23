@@ -26,6 +26,7 @@ var inScopeTests = []string{
 	"TestInScopeStopTreeStopsTheTreeAndRemovesItsGroup",
 	"TestInScopeSurvivorsNameTheGroup",
 	"TestInScopeStartFailureLeavesNoGroup",
+	"TestDetachedGrandchildStaysInTheTree",
 }
 
 // A host whose own control group is writable puts each tree in a control group

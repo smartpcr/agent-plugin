@@ -128,6 +128,11 @@ func assertStoppedAt(t *testing.T, out string, code int, gate string) {
 	}
 }
 
+// TestSeededViolationFailsNamedGate seeds one violation per gate and checks the run
+// stops non-zero at the gate that names it: a data race fails the race-enabled unit
+// command, and a package at 40% fails the coverage floor.
+//
+//dsh:test DH-T-TOOLCHAIN-2, DH-T-TOOLCHAIN-7
 func TestSeededViolationFailsNamedGate(t *testing.T) {
 	tests := []struct {
 		module, gate, detail string
@@ -154,6 +159,8 @@ func TestSeededViolationFailsNamedGate(t *testing.T) {
 // separately built -cover helper binary. Only with both children's GOCOVERDIR
 // profiles merged by go tool covdata does p reach the floor; dropping either child
 // leaves p at 70%.
+//
+//dsh:test DH-T-TOOLCHAIN-7
 func TestCoverageMergesChildProcesses(t *testing.T) {
 	tests := []struct {
 		name, env, fail string
@@ -341,6 +348,8 @@ func TestFuzzCheckRunsInVetGate(t *testing.T) {
 
 // TestBudgetGateClearsOverrides runs the budget gate with DSH_* and GO* overrides in
 // the parent environment; the budget test would relax itself if one reached it.
+//
+//dsh:test DH-T-TOOLCHAIN-12
 func TestBudgetGateClearsOverrides(t *testing.T) {
 	cfg := newTestConfig(t, scratch(t, "budget-exceeded"))
 	cfg.Environ = append(slices.Clone(cfg.Environ),
@@ -358,6 +367,10 @@ func TestBudgetGateClearsOverrides(t *testing.T) {
 	}
 }
 
+// TestBudgetEnv: the budget child's environment drops every DSH_* and tuning GO*
+// variable of the parent, so no override can change a compiled-in budget.
+//
+//dsh:test DH-T-TOOLCHAIN-12
 func TestBudgetEnv(t *testing.T) {
 	parent := []string{"PATH=/bin", "DSH_X=1", "GOGC=off", "GOMAXPROCS=1", "GOFLAGS=-v", "GOWORK=/w", "GOTOOLCHAIN=go1.99",
 		"GOCACHE=/c", "GOMODCACHE=/m", "GOPATH=/p", "GOROOT=/r", "CGO_ENABLED=1"}

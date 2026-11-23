@@ -151,6 +151,54 @@ func TestContextEndStopsDescendantsAfterChildExit(t *testing.T) {
 	}
 }
 
+// A grandchild that detaches itself, as a daemon does (a new session on Linux, a
+// new process group on Windows), is still the tree's: once the direct child has
+// exited, the tree wait still counts it, and StopTree ends it. Only an exact owner
+// holds it (the Job Object, or a control group, which on Linux this test gets
+// inside the delegated scope of TestControlGroupOwnerInADelegatedScope); a
+// process group cannot (DH-LIB-NODEPROC-R9's owner table), so on that rung the
+// test skips before it starts anything that would escape.
+//
+//dsh:test DH-T-NODEPROC-6
+func TestDetachedGrandchildStaysInTheTree(t *testing.T) {
+	if o := subprocess.TreeOwner(); !o.Exact {
+		t.Skipf("owner %s: a process group does not hold a grandchild that leaves it", o)
+	}
+	spec := subprocesstest.Spec(t, subprocesstest.RoleDetached)
+	var out, errOut strings.Builder
+	spec.Stdout, spec.Stderr = &out, &errOut
+	p := subprocesstest.Start(t, spec)
+	if err := p.Wait(); err != nil {
+		t.Fatalf("detaching child: %v; stderr %q", err, errOut.String())
+	}
+	var grandchild int
+	if _, err := fmt.Sscanf(out.String(), "detached %d", &grandchild); err != nil {
+		t.Fatalf("detaching child said %q: %v", out.String(), err)
+	}
+	if !subprocesstest.Alive(grandchild) {
+		t.Fatalf("detached grandchild %d is not running after the child exited", grandchild)
+	}
+	// The grandchild waits to be killed, so the tree is not gone, and the wait
+	// says so instead of returning as if it were.
+	ended, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := p.TreeGone(ended); herr.Kind(err) != subprocess.ReasonSurvivors {
+		t.Fatalf("TreeGone with the detached grandchild running = %v; want %s", err, subprocess.ReasonSurvivors)
+	}
+	ctx, cancel2 := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel2()
+	if err := p.StopTree(ctx, 0); err != nil {
+		t.Fatalf("StopTree: %v", err)
+	}
+	if !subprocesstest.Exited(grandchild) {
+		t.Fatalf("detached grandchild %d still running after StopTree", grandchild)
+	}
+	if err := p.TreeGone(ctx); err != nil {
+		t.Fatalf("TreeGone after StopTree: %v", err)
+	}
+	t.Logf("owner %+v", p.Owner())
+}
+
 func TestExitCode(t *testing.T) {
 	p := subprocesstest.Start(t, subprocesstest.Spec(t, subprocesstest.RoleExit, "7"))
 	if err := p.Wait(); err == nil {
