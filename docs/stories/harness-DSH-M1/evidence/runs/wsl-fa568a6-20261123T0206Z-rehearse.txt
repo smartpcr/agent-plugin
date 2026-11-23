@@ -1,0 +1,21 @@
+harness-gate rehearse record
+commit: fa568a6eca293338b574149a355f451361fa2ade
+started: 2026-11-23T02:06:54Z
+harness-gate: toolchain go1.27.4 (the go floor of src/harness/go.mod; children run with GOTOOLCHAIN=go1.27.4, GOROOT=/usr/local/go)
+rehearse: cmd/dsh of src/harness with GOWORK=off CGO_ENABLED=0 -trimpath into /tmp/harness-gate-rehearse-2776033407; nothing is published
+ok   src/harness: go build -trimpath -o /tmp/harness-gate-rehearse-2776033407/dsh-linux-amd64 ./cmd/dsh
+ok   src/harness: go build -trimpath -o /tmp/harness-gate-rehearse-2776033407/dsh-linux-arm64 ./cmd/dsh
+ok   src/harness: go build -trimpath -o /tmp/harness-gate-rehearse-2776033407/dsh-darwin-amd64 ./cmd/dsh
+ok   src/harness: go build -trimpath -o /tmp/harness-gate-rehearse-2776033407/dsh-darwin-arm64 ./cmd/dsh
+ok   src/harness: go build -trimpath -o /tmp/harness-gate-rehearse-2776033407/dsh-windows-amd64.exe ./cmd/dsh
+ok   src/harness: go build -trimpath -o /tmp/harness-gate-rehearse-2776033407/dsh-windows-arm64.exe ./cmd/dsh
+ef58753a4b39fdb5e0e131ac6a26cde15fb9c1ac4eebea0c60456ee1ac2650b9  dsh-linux-amd64  version=(devel) vcs.revision=fa568a6eca293338b574149a355f451361fa2ade vcs.modified=false
+97269cb0c9a9ec3ac292cbf03b3e0ecc9b07df414e5911fd6cbe4187f728bf85  dsh-linux-arm64  version=(devel) vcs.revision=fa568a6eca293338b574149a355f451361fa2ade vcs.modified=false
+1c475fac0b3ca901bf8e6630c4bc66637fc273e1d51fc29238d0fb94aaac6970  dsh-darwin-amd64  version=(devel) vcs.revision=fa568a6eca293338b574149a355f451361fa2ade vcs.modified=false
+5b610eb98f5f1b00e338594b43cb25fcf0b6852639da7b473a224a05b5ceeb3b  dsh-darwin-arm64  version=(devel) vcs.revision=fa568a6eca293338b574149a355f451361fa2ade vcs.modified=false
+f0491445828cb3b990235f377d01d6725b6a9ae0eca97c539534d27779d45f9d  dsh-windows-amd64.exe  version=(devel) vcs.revision=fa568a6eca293338b574149a355f451361fa2ade vcs.modified=false
+adb99a142f8fb4d1b13b6463bcc5a65b3d02b141c469a9a95f0580f4bd6e0d74  dsh-windows-arm64.exe  version=(devel) vcs.revision=fa568a6eca293338b574149a355f451361fa2ade vcs.modified=false
+rehearse: 6 binaries, nothing published
+exit: 0
+ended: 2026-11-23T02:06:59Z
+sha256: 0edbebc08f9ed1ec06298cffcef3012820f6a5d07a0a0766a16fd63064faf303
