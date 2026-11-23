@@ -100,16 +100,26 @@ manual check (EV-6) and is never a gate criterion.
 indexed to DH-S-17 with authoring stage DH-S-9 and `requires: [DH-S-11, DH-S-16]`;
 **none executed.**
 
-Review (operator decision `dh-s-9-scenario-review` = A): a separate reviewer
-approves the three files below in this branch's PR. The approval is recorded here
-with the PR number and reviewer before the closure is ticked. Pending: no PR has
-been opened for the branch yet.
+Re-authored (gap-closure-plan 16.5.8, M1-D-CLOSE-4 A): the three files no longer
+use DeepSeek or any API key. They run on the user's signed-in client routes of
+`llm.md` DH-D-LLM-12, one subtest per route (`claude-code` must pass, `copilot-cli`
+is run and recorded either way, M1-D-LOOP-6 A), with "signed out" (the client's
+configuration home pointed at an empty temporary directory) replacing "bad key".
+The route helpers are `signedin_routes_test.go` and `signedin_routes_copilot_test.go`;
+the Copilot leg names its route only by ID, and its signed-out recipe and code stay
+open until `DH-E-COPILOTCLI-1` (plan 16.5.9) pins them (marked TODO in that file).
+Authored and compiled only; **none executed.**
+
+Review (operator decision `dh-s-9-scenario-review` = A): the re-authored files are
+reviewed in a PR before the closure is ticked.
+
+Review: reviewer: the owner, in the Phase 16 PR, pending.
 
 | Scenario | File | Test |
 | --- | --- | --- |
-| DH-E-LLM-1 (a turn with reasoning and a tool call on the vendor's protocol) | `src/harness/internal/testkit/scenarios/llm_turn_scenario_test.go` | `TestTurnWithReasoningAndToolCall` |
-| DH-E-LLM-3 (a failure is a fact: no retry, no fallback on a bad key) | `src/harness/internal/testkit/scenarios/llm_bad_key_scenario_test.go` | `TestBadKeyIsAFact` |
-| DH-E-VIEW-1 (a real model titles a session; a failing provider leaves the fallback) | `src/harness/internal/testkit/scenarios/view_title_scenario_test.go` | `TestModelTitlesSession` |
+| DH-E-LLM-1 (a turn with reasoning and a tool call on a signed-in client route) | `src/harness/internal/testkit/scenarios/llm_turn_scenario_test.go` | `TestTurnWithReasoningAndToolCall` |
+| DH-E-LLM-3 (a failure is a fact: no retry, no fallback when the client is signed out) | `src/harness/internal/testkit/scenarios/llm_signed_out_scenario_test.go` (was `llm_bad_key_scenario_test.go`) | `TestSignedOutIsAFact` (was `TestBadKeyIsAFact`) |
+| DH-E-VIEW-1 (a real model titles a session; a signed-out title route leaves the fallback) | `src/harness/internal/testkit/scenarios/view_title_scenario_test.go` | `TestModelTitlesSession` |
 
 Each starts the built `dsh` through the test kit's launcher (`dsh [--layer f] sdk`)
 and speaks only `src/sdk/protocol` and `src/sdk/jsonrpc`; the shared helper is

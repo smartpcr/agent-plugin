@@ -3,6 +3,14 @@
 // through the shared model transport, authenticated by an API key the secret
 // store resolves per attempt, with DeepSeek's errors mapped onto the closed
 // failure table (Classify).
+//
+// Status: keyless, fake-tested; not proven against a real API (OWNER-2). Under
+// decision M1-D-PIPE-5 A the route is kept and tested only against fakes (the
+// test kit's fake transport and loopback servers serving hand-written stream
+// fixtures, with a fake key);
+// M1 holds no DeepSeek key, so no request of this package has reached
+// api.deepseek.com. The M1 real-model routes are the signed-in client routes
+// (llm/provider/claudecode and llm/provider/copilot, DH-D-LLM-12).
 package deepseek
 
 import (
