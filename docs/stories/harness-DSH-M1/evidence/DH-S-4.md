@@ -191,6 +191,20 @@ unless the row names `src/sdk`.
 | 4.13 | rule-3 default: logging writes to the configured destination only | composed test: `TestFileDestinationKeepsStdoutClean`, `TestDebugLevelReachesTheDestination` in `./internal/boot/logging/`. Test mapping (plan Stage 14.5): DH-T-LOADER-13 `TestFileDestinationKeepsStdoutClean` | one lane |  | uncommitted on `b59ea4a` (plan 14.5) | Windows, go1.27.4: `-race -count=1 -cover` ok; coverage `logging` 98.6%; agent run, not an operator check | `manual` |
 | 4.14 | rule-3 default: a build knows its components by name | composed test: `TestCatalogListsComponentsByName`, `TestLookupAndPlatforms` in `./internal/boot/catalog/`. Test mapping (plan Stage 14.5): DH-T-BOOT-1 `TestBuildRejects`, `TestLookupAndPlatforms`; DH-T-BOOT-2, -3 and -22 are named by no test (M1-G-FND-21.3). Plan 14.5.6 (M1-G-FND-20): `catalog.Families` is `[]Family{Name, Area}` with each family's owning area key (`families.go`), `Print` writes an `AREA` column, the golden `internal/boot/catalog/testdata/catalog.golden` is regenerated, and `TestFamiliesHaveAreas` checks that every family is registered once with one area key; the built-in list still lives in `internal/boot/builtin` (stated deviation) | one lane |  | uncommitted on `b59ea4a` (plan 14.5) | Windows, go1.27.4: `-race -count=1 -cover` ok; coverage `catalog` 96.2% (`overlap`, untouched, 33.3%), `builtin` 100.0%; agent run, not an operator check | `manual` |
 
+### Held open
+
+A held-open entry is a part of a deliverable that is ticked as built but is not done:
+the part that waits is not enabled until its closing step lands. H-38 is the M1
+story's entry for this stage: decision M1-D-CLOSE-5 defers `DH-T-ZOD-1`, which no M1
+code proves, to the DH-S stage that first needs it, by a
+`//dsh:test DH-T-ZOD-1 later DH-S-12` directive in `internal/schema/doc.go`. impl.md
+carries the pointer line in its DH-S-12 section (DC-2). The deferred ID stays open and
+is never counted done; the closing stage records the entry in its own evidence record.
+
+| ID | Step | Deliverable | The part held open | Gap | Closing step | Status |
+| --- | --- | --- | --- | --- | --- | --- |
+| H-38 | 4.2 | DH-D-UTIL-1 | `DH-T-ZOD-1`: a walk of every registered config, tool, message and event type finding a description on each exported field and a parsable `dsh` tag, and the repository check for hand-written JSON Schema literals. No Go-declared shape of the product carries a `jsonschema:"..."` description yet, so the clause fails for every registered type | M1-G-FND-21.4 | DH-S-12 (impl.md DH-S-12, "Deferred tests (pointer, M1)"), with the file tools of 12.5; test deferred `later DH-S-12` (M1-D-CLOSE-5) | open |
+
 ### Cleanup evidence
 
 At closure: the throwaway search program is removed and the watched files are deleted;
@@ -204,6 +218,7 @@ DH-T-CHOKIDAR-5 text against the design (M1-G-FND-21.2); search entering nested 
 repositories (M1-G-FND-23.1); the VS Code save on Windows, which needs an operator
 (register row 4.9); the gate run ids of Stage 14.5 (filled by the lead); the scenarios
 authored here, which run in DH-S-18; the vet findings under "Known limitations" (plan
-Phase 13).
+Phase 13); `DH-T-ZOD-1`, held open as H-38 and deferred to DH-S-12 (["Held
+open"](#held-open), M1-D-CLOSE-5).
 
 **Phase 14 gate runs (Rule 2).** Both lanes pass all 12 gates at `08233be`: run records `wsl-08233be-20261123T0215Z` and `win-08233be-20261123T0223Z` (`manual`; details in [DH-S-1.md](DH-S-1.md), "Phase 14 exit gate runs").

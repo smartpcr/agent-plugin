@@ -178,6 +178,22 @@ runbook](README.md#manual-checks). Composed tests run as `go -C src/harness test
 | 5.12 | rule-3 default: one registry for pending approvals and questions | composed test: `TestPendingIsAddressableByAgent`, `TestConcurrentAnswersOneWins` in `./internal/human/` | one lane | | | | `manual` |
 | 5.13 | rule-3 default: folds registered once and read at one cut | composed test: `TestFoldsReadAtOneCut` in `./internal/session/views/` | one lane | | | | `manual` |
 
+### Held open
+
+A held-open entry is a part of a deliverable that is ticked as built but is not done:
+the part that waits is not enabled until its closing step lands. H-39 and H-40 are the
+M1 story's entries for this stage: decision M1-D-CLOSE-5 defers `DH-T-AGENT-14` and
+`DH-T-VIEW-4`, which no M1 code proves, each to the DH-S stage that first needs it, by
+a `//dsh:test <ID> later DH-S-<n>` directive in `internal/agent/doc.go` and
+`internal/session/views/doc.go`. impl.md carries the pointer lines in its DH-S-15 and
+DH-S-12 sections (DC-2). A deferred ID stays open and is never counted done; each
+closing stage records the entries it closes in its own evidence record.
+
+| ID | Step | Deliverable | The part held open | Gap | Closing step | Status |
+| --- | --- | --- | --- | --- | --- | --- |
+| H-39 | 5.11 | DH-D-AGENT-4 | `DH-T-AGENT-14`: the frames of the assistant stream notice (`agent.StreamFrame`: one `Start`, dense indexes, one `End` after the record is committed, `abandoned` when the append fails). No M1 code emits the frames ("stream frames" under "Deviations, recorded") | M1-G-CLOSE-9.1 | DH-S-15 (impl.md DH-S-15, "Deferred tests (pointer, M1)"), with the stream notices of 15.7; test deferred `later DH-S-15` (M1-D-CLOSE-5) | open |
+| H-40 | 5.13 | DH-D-VIEW-1 | `DH-T-VIEW-4`: the import check that fails a fold package importing I/O, clocks or randomness; folding a log twice gives identical bytes; a slow fold is reported | M1-G-CLOSE-9.3 | DH-S-12 (impl.md DH-S-12, "Deferred tests (pointer, M1)"), with the working-directory fold of 12.1 and the sandbox-mode fold of 12.3; test deferred `later DH-S-12` (M1-D-CLOSE-5) | open |
+
 ### Cleanup evidence
 
 At closure: in-memory sessions only; nothing to clean up beyond `git status --porcelain`
@@ -187,4 +203,6 @@ empty after the run. Historical: none recorded.
 
 At closure: plan 18.1.11 lists them. Now open: the deferrals under "Deviations,
 recorded" above (`Resume`, composer swap, stream frames), owned by later stages; the
-session test findings of the `vet` gate (plan Phase 13).
+session test findings of the `vet` gate (plan Phase 13); `DH-T-AGENT-14` and
+`DH-T-VIEW-4`, held open as H-39 (deferred to DH-S-15) and H-40 (deferred to DH-S-12)
+(["Held open"](#held-open), M1-D-CLOSE-5).

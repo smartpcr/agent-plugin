@@ -328,6 +328,11 @@ holds each part that the story plan cut from a DH-S-6 deliverable open until the
 that builds it before its first M2 consumer, and M1-D-BOOT-2 (b) holds `DH-T-HOST-17`
 open. impl.md carries pointer lines to this list (DC-2); its table is unchanged. Each
 closing stage records the entries it closes in its own section of this file.
+Decision M1-D-CLOSE-5 defers each `DH-T` ID of these entries that no M1 code proves
+to the DH-S stage, at or before DH-S-18, that builds or first needs it, by a
+`//dsh:test <ID> later DH-S-<n>` directive in a package `doc.go`; the Closing step
+column names that stage, and impl.md's section of the stage names the ID (DC-2). A
+deferred ID stays open and is never counted done.
 
 - **H-21** (open): step 6.12's `dsh config` commands wait for the admin tree of DH-S-16;
   the preview, explain and check functions are built and tested, the commands are not.
@@ -335,15 +340,15 @@ closing stage records the entries it closes in its own section of this file.
 
 | ID | Step | Deliverable | The part held open | Gap | Closing step | Status |
 | --- | --- | --- | --- | --- | --- | --- |
-| H-24 | 6.2 | DH-D-EXEC-1 | Run and capture with a cap (`Run`), private channels, a detached launch, the confirmation helper, creation inside the Windows job in one call, and `Stdin`, `OutputMode` and a typed `Launch` on `Spec` | M1-G-BOOT-2 | gap-closure 19.3.1 to 19.3.6 (the batch-file opt-in moved to 16.5.1) | open |
-| H-25 | 6.3 | DH-D-EXEC-2 | The delegated Linux scope from the user service manager, the `run/owners.json` record of live owners, and the five-rung stop ladder in place of the two-rung `StopTree` | M1-G-BOOT-3 | gap-closure 19.4.1 to 19.4.3 | open |
-| H-26 | 6.3 | DH-D-EXEC-2 | The trusted or untrusted mark of each tree, `PeerTree` and `Limits` | M1-G-BOOT-4 | gap-closure 19.4.4, 19.4.5 | open |
+| H-24 | 6.2 | DH-D-EXEC-1 | Run and capture with a cap (`Run`), private channels, a detached launch, the confirmation helper, creation inside the Windows job in one call, and `Stdin`, `OutputMode` and a typed `Launch` on `Spec` | M1-G-BOOT-2 | gap-closure 19.3.1 to 19.3.6 (the batch-file opt-in moved to 16.5.1); tests `DH-T-EXECA-1` to `-3` and `DH-T-NODEPROC-8` deferred `later DH-S-13` (M1-D-CLOSE-5) | open |
+| H-25 | 6.3 | DH-D-EXEC-2 | The delegated Linux scope from the user service manager, the `run/owners.json` record of live owners, and the five-rung stop ladder in place of the two-rung `StopTree` | M1-G-BOOT-3 | gap-closure 19.4.1 to 19.4.3; test `DH-T-EXEC-6` deferred `later DH-S-13` (M1-D-CLOSE-5) | open |
+| H-26 | 6.3 | DH-D-EXEC-2 | The trusted or untrusted mark of each tree, `PeerTree` and `Limits` | M1-G-BOOT-4 | gap-closure 19.4.4, 19.4.5; test `DH-T-EXEC-17` deferred `later DH-S-13` (M1-D-CLOSE-5) | open |
 | H-27 | 6.6 | DH-D-HUMAN-7 | Managed secret-store writes, the `.env` source, leases with a revocation signal (the lease half of `DH-T-HUMAN-12`) and the source checks | M1-G-BOOT-7 | gap-closure 19.5.4 | open |
-| H-28 | 6.7 | DH-D-BOOT-3 | `profile reset` (rename to a backup, never delete) and the safe-mode launcher layer, so `--safe` disables the `plugins` group and the optional bundles | M1-G-BOOT-14 | gap-closure 19.5.5 | open |
-| H-29 | 6.15 | DH-D-HOST-4 | The recorded proof that nothing else leaves: a recording transport and resolver that see every outbound request and name lookup (`testkit/egresstest`) | M1-G-BOOT-9, -11 | gap-closure 19.5.2 | open |
-| H-30 | 6.16 | DH-D-UTIL-2 | The child-environment proxy overlay (`egress.ChildEnv`) and the dial guard against private addresses | M1-G-BOOT-10 | gap-closure 19.3.7, 19.3.8 | open |
-| H-31 | 6.17 | DH-D-UTIL-6 | `testkit/compose`, `testkit/egresstest`, `testkit/faultserver`, the `testing/synctest` clock and the chunk-level scripted adapter | M1-G-BOOT-11 | gap-closure 19.5.1 to 19.5.3 | open |
-| H-32 | 6.15 | DH-D-HOST-4 | `DH-T-HOST-17`, a recorded run of each shipped profile; its inputs (the shipped profiles, the replay model) arrive in DH-S-16 and M3 | M1-G-BOOT-9 | impl.md 16.7 (M1-D-BOOT-2 (b)) | open |
+| H-28 | 6.7 | DH-D-BOOT-3 | `profile reset` (rename to a backup, never delete) and the safe-mode launcher layer, so `--safe` disables the `plugins` group and the optional bundles | M1-G-BOOT-14 | gap-closure 19.5.5; tests `DH-T-BOOT-8` and `DH-T-BOOT-23` deferred `later DH-S-16` (M1-D-CLOSE-5) | open |
+| H-29 | 6.15 | DH-D-HOST-4 | The recorded proof that nothing else leaves: a recording transport and resolver that see every outbound request and name lookup (`testkit/egresstest`) | M1-G-BOOT-9, -11 | gap-closure 19.5.2; its tests are `DH-T-UTIL-15` (H-31, deferred `later DH-S-12`) and `DH-T-HOST-17` (H-32, deferred `later DH-S-16`) (M1-D-CLOSE-5) | open |
+| H-30 | 6.16 | DH-D-UTIL-2 | The child-environment proxy overlay (`egress.ChildEnv`) and the dial guard against private addresses | M1-G-BOOT-10 | gap-closure 19.3.7, 19.3.8; tests `DH-T-UNDICI-7` and `DH-T-UNDICI-9` deferred `later DH-S-13` (M1-D-CLOSE-5) | open |
+| H-31 | 6.17 | DH-D-UTIL-6 | `testkit/compose`, `testkit/egresstest`, `testkit/faultserver`, the `testing/synctest` clock and the chunk-level scripted adapter | M1-G-BOOT-11 | gap-closure 19.5.1 to 19.5.3; tests `DH-T-UTIL-12`, `-13` and `-15` deferred `later DH-S-12` (M1-D-CLOSE-5) | open |
+| H-32 | 6.15 | DH-D-HOST-4 | `DH-T-HOST-17`, a recorded run of each shipped profile; its inputs (the shipped profiles, the replay model) arrive in DH-S-16 and M3 | M1-G-BOOT-9 | impl.md 16.7 (M1-D-BOOT-2 (b)); test `DH-T-HOST-17` deferred `later DH-S-16` (M1-D-CLOSE-5) | open |
 
 ### Linux ownership fallback (TC-X2, U-K1-1)
 
