@@ -108,7 +108,7 @@ Authored and compiled only; **none executed.**
 Review (operator decision `dh-s-9-scenario-review` = A): the re-authored files are
 reviewed in a PR before the closure is ticked.
 
-Review: reviewer: the owner, in the Phase 16 PR, pending.
+Review: reviewer: the owner, in the Phase 16 PR [#92](https://github.com/smartpcr/agent-plugin/pull/92), pending.
 
 | Scenario | File | Test |
 | --- | --- | --- |
