@@ -22,10 +22,10 @@ Feature: Approvals and guarded pipeline
     And a policy that asks for approval of every call
     And the step's assembled prompt lists tool "add"
     When the model calls "add" with arguments '{"a":1,"b":2}'
-    Then the approval outcome is "no-answerer"
-    And the call ends "approval/no-answerer" at the "approval" stage
+    Then the approval outcome is "unavailable"
+    And the call ends "approval/unavailable" at the "approval" stage
     And the session log after the step holds "tool/call,approval/asked,approval/decided,tool/result"
-    And the logged approval/decided has outcome "no-answerer" attributed to a principal
+    And the logged approval/decided has outcome "unavailable" attributed to a principal
     And the body counter is 0
 
   # DH-T-TOOLS-4 [proof: in-process]
@@ -34,7 +34,7 @@ Feature: Approvals and guarded pipeline
     And tool "add(a:int,b:int)" is registered with a body counter
     When the model calls "add" with arguments '{"a":1,"b":2}'
     Then the recorded order is "resolve,validate,policy,guards,approval,flush,body,shape"
-    And the call succeeds with text "3" and approval outcome "approved"
+    And the call succeeds with text "3" and approval outcome "allowed-once"
     And the session log after the step holds "tool/call,approval/asked,approval/decided,tool/result"
 
   # DH-T-TOOLS-3 [proof: in-process]
@@ -55,7 +55,7 @@ Feature: Approvals and guarded pipeline
     And a booted guarded pipeline with recording stubs at every stage and an answerer that approves
     And tool "add(a:int,b:int)" whose body reads the database from a second connection
     When the model calls "add" with arguments '{"a":1,"b":2}'
-    Then the call succeeds with text "3" and approval outcome "approved"
+    Then the call succeeds with text "3" and approval outcome "allowed-once"
     And the second connection saw "tool/call,approval/asked,approval/decided" before the body's first instruction
     And the second connection saw no "tool/result" before the body's first instruction
     And the recorded order is "resolve,validate,policy,guards,approval,flush,body,shape"

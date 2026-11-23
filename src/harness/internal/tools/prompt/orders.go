@@ -10,6 +10,8 @@ const (
 	OrderPersonaPrefix = 100
 	// OrderHarness is first-party guidance on how the harness works.
 	OrderHarness = 200
+	// OrderApproval is the session's approval policy (human/approval).
+	OrderApproval = 300
 	// OrderTools is guidance on using the tools of the step.
 	OrderTools = 400
 	// OrderEnvironment is facts about the workspace that do not change per step.
@@ -26,6 +28,10 @@ const (
 	SectionPersonaPrefix = "persona-prefix"
 	SectionPersonaSuffix = "persona-suffix"
 )
+
+// SectionApprovalPolicy is the section human/approval registers to state the
+// session's approval policy to the model (DH-D-HUMAN-2).
+const SectionApprovalPolicy = "approval-policy"
 
 // IdentityLine is the fixed harness identity line (includeHarnessIdentity).
 const IdentityLine = "You are dsh, the DeepSeek harness: an agent that works in the user's workspace through the tools listed for this step."

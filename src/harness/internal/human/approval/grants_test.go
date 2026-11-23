@@ -70,6 +70,8 @@ func (a *lifeAgent) Close(ctx context.Context) error {
 // disposed and its session resumed by a new incarnation, the grant list is empty
 // and a call needing w asks again, although the log holds grant/created. Nothing
 // here ends grants by hand: the table is bound to the agent lifecycle.
+//
+//dsh:test DH-T-HUMAN-6
 func TestGrantDoesNotSurviveResume(t *testing.T) {
 	ctx := context.Background()
 	w := filepath.Join(t.TempDir(), "w")
@@ -148,6 +150,8 @@ func TestGrantDoesNotSurviveResume(t *testing.T) {
 
 // An agent disposed while its session stays live (the session outlives its
 // agent) ends its grants at once, session-ended.
+//
+//dsh:test DH-T-HUMAN-6
 func TestGrantEndsWhenItsAgentIsDisposed(t *testing.T) {
 	ctx := context.Background()
 	ref := agent.Ref{Session: "s-keep", Incarnation: 1}
@@ -215,6 +219,8 @@ func lifecycle(t *testing.T, root *cordis.Context, sessions session.Service, kee
 // it and nothing beside it, a prefix sibling included; an application grant
 // matches both ids only; a process id is refused as a subject; no subject never
 // matches.
+//
+//dsh:test DH-T-HUMAN-5
 func TestGrantMatching(t *testing.T) {
 	ctx := context.Background()
 	base := t.TempDir()
@@ -270,6 +276,8 @@ func TestGrantMatching(t *testing.T) {
 
 // DH-T-HUMAN-6 (subset): revocation stops a grant and logs who; an sdk answer
 // cannot create one; the cap is enforced.
+//
+//dsh:test DH-T-HUMAN-6
 func TestGrantRevokeChannelAndCap(t *testing.T) {
 	ctx := context.Background()
 	w := t.TempDir()
@@ -318,6 +326,8 @@ func TestGrantRevokeChannelAndCap(t *testing.T) {
 // A grant refused by rule approves the call once and says so; a grant whose
 // grant/created cannot be written is an audit failure: the call is refused, the
 // error returned, the denial still logged, and no grant is live.
+//
+//dsh:test DH-T-HUMAN-6
 func TestGrantCreateFailures(t *testing.T) {
 	ctx := context.Background()
 	w := t.TempDir()
@@ -364,6 +374,8 @@ func (s failingEnds) Get(id session.ID) (session.Session, bool) {
 // A grant/ended that cannot be written does not keep a grant alive: EndAll
 // forgets every grant of the agent, fails closed, and reports each failure; a
 // disposal whose audit fails leaves no grant behind either.
+//
+//dsh:test DH-T-HUMAN-6
 func TestEndAllForgetsGrantsWhoseEndCannotBeWritten(t *testing.T) {
 	ctx := context.Background()
 	svc, grants, _, _ := granting(t, "ui", []agent.Ref{me}, answerer.AllowSession(), answerer.AllowSession())

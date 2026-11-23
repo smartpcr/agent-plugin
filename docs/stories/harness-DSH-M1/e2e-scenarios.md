@@ -1887,7 +1887,7 @@ DH-D-STORAGE-6; DH-D-AGENT-2; DH-D-HUMAN-2,3,5,6).
   @TC-10a @proof:in-process @DH-D-HUMAN-2
   Given a tool requiring approval, present in the prompt's tool list, and no answerer
   When the model calls it
-  Then the approval outcome is no-answerer and an attributed audit event is logged
+  Then the approval outcome is unavailable and an attributed audit event is logged
   And the body counter is 0 and the tool was still listed in the prompt
   ```
 - **Scenario Outline:** Approval yields one closed outcome
@@ -1895,13 +1895,18 @@ DH-D-STORAGE-6; DH-D-AGENT-2; DH-D-HUMAN-2,3,5,6).
   @TC-10a @proof:in-process @DH-D-HUMAN-2
   Given a tool requiring approval and a fake answerer that <behaves>
   When the model calls it
-  Then the outcome is <outcome>, one audit event names the answerer, and the body ran <n> times
+  Then the outcome is <outcome> with tool code <code>, one audit event names who decided (principal, channel and peer), and the body ran <n> times
   Examples:
-    | behaves                         | outcome      | n |
-    | approves                        | approved     | 1 |
-    | denies                          | denied       | 0 |
-    | never answers (virtual timeout) | timeout      | 0 |
+    | behaves                                     | outcome          | code                 | n |
+    | allows once                                 | allowed-once     | (none)               | 1 |
+    | is not asked: a session grant covers it     | allowed-by-grant | (none)               | 1 |
+    | rejects                                     | rejected         | approval/rejected    | 0 |
+    | is not asked: the session's policy is never | rejected         | approval/rejected    | 0 |
+    | never answers and the call is cancelled     | cancelled        | approval/cancelled   | 0 |
+    | never answers (set timeout, virtual clock)  | unavailable      | approval/unavailable | 0 |
+    | is not bound, or panics                     | unavailable      | approval/unavailable | 0 |
   ```
+  The vocabulary is M1-D-PIPE-1 A: a timeout is `unavailable` with detail `timeout`, and the default timeout is 0 (wait).
 - **Scenario:** Logged arguments are never rewritten
   ```gherkin
   @TC-10a @proof:in-process @DH-D-TOOLS-2 @edge

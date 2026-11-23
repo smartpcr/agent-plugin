@@ -63,7 +63,7 @@ type Config struct {
 	Clock Clock
 	// Approval is the service an Ask is put to; nil is the one mounted under
 	// approval.Key on the registry's context, or, when none is, a service with no
-	// registry, which settles every request no-answerer (SP-7).
+	// registry, which settles every request unavailable (SP-7).
 	Approval *approval.Service
 	// Checkpoint is the tool-body checkpoint; nil is the policy mounted on the
 	// registry's context (checkpoint.Mounted).
@@ -455,31 +455,38 @@ func guard(ctx context.Context, g named[tools.Guard], c tools.Call) (den *tools.
 func requestApproval(ctx context.Context, s *approval.Service, log approval.Log, r approval.Request) (d approval.Decision, err error) {
 	defer func() {
 		if x := recover(); x != nil {
-			d = approval.Decision{Outcome: approval.OutcomeNoAnswerer, Detail: fmt.Sprintf("the approval service panicked: %v", x)}
+			d = approval.Decision{Outcome: approval.OutcomeUnavailable, Detail: fmt.Sprintf("the approval service panicked: %v", x)}
 			err = fmt.Errorf("approval: %v", x)
 		}
 	}()
 	return s.Request(ctx, log, r)
 }
 
+// approvalCode is the tool code of a refusing outcome (tools.md stage 4); an
+// outcome outside the closed set, or an allowed one returned with an error, is
+// unavailable.
 func approvalCode(o approval.Outcome) tools.Code {
 	switch o {
-	case approval.OutcomeTimeout:
-		return tools.CodeApprovalTimeout
-	case approval.OutcomeNoAnswerer:
-		return tools.CodeApprovalNoAnswerer
+	case approval.OutcomeRejected:
+		return tools.CodeApprovalRejected
+	case approval.OutcomeCancelled:
+		return tools.CodeApprovalCancelled
 	}
-	return tools.CodeApprovalDenied
+	return tools.CodeApprovalUnavailable
 }
 
 func approvalText(d approval.Decision, err error) string {
 	switch {
 	case err != nil:
 		return "the approval could not be recorded: " + err.Error()
-	case d.Outcome == approval.OutcomeNoAnswerer:
+	case d.Outcome == approval.OutcomeUnavailable && d.Detail == approval.DetailTimeout:
+		return "nobody approved the call within its timeout"
+	case d.Outcome == approval.OutcomeUnavailable:
 		return "nobody could be asked to approve the call (" + d.Detail + ")"
-	case d.Outcome == approval.OutcomeTimeout:
-		return "nobody approved the call within " + d.Detail
+	case d.Outcome == approval.OutcomeCancelled:
+		return "the approval was cancelled before anyone answered (" + d.Detail + ")"
+	case d.Outcome == approval.OutcomeRejected && d.Detail == approval.DetailPolicyNever:
+		return "the session's approval policy is never: nobody is asked and the call is rejected"
 	}
 	s := "the call was not approved by " + d.By.Principal
 	if d.Detail != "" {

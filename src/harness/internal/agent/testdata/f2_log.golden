@@ -7,9 +7,9 @@
 6 request/header op=none t=0 {"route":"r/f2","tools":[{"description":"Echoes its text.","name":"probe","parameters":{"additionalProperties":false,"properties":{"text":{"type":"string"}},"required":["text"],"type":"object"}}]}
 7 assistant/message op=append t=0 {"estimate":47,"message":{"blocks":[{"kind":"tool_use","tool_use":{"args":{"text":"ping"},"id":"call-1","name":"probe"}}],"id":"<msg-2>","role":"assistant"},"request_as_of":6,"request_digest":"<sha256-3>","timing":{"end":"<time>","first_token":"<time>","start":"<time>"},"usage":{"cache_read":0,"cache_write":0,"input":1,"output":1}}
 8 tool/call op=none t=0 {"arguments":"{\"text\":\"ping\"}","call_id":"call-1","name":"probe"}
-9 approval/asked op=none t=0 {"agent":"s-f2#1","call":"call-1","id":"<apr-4>","origin":"model","reason":"probe needs a person","timeout_ms":300000,"tool":"probe"}
-10 approval/decided op=none t=0 {"by":{"channel":"ui","principal":"testkit"},"call":"call-1","id":"<apr-4>","outcome":"approved","tool":"probe"}
-11 tool/result op=append t=0 {"call_id":"call-1","message":{"blocks":[{"kind":"tool_result","tool_result":{"call_id":"call-1","parts":[{"text":{"text":"probed: ping"}}]}}],"id":"<msg-5>","role":"tool","source":{"data":{"approval":"approved","stage":"shape"},"kind":"tool-result","producers":["tools.registry"]}}}
+9 approval/asked op=none t=0 {"agent":"s-f2#1","call":"call-1","id":"<apr-4>","kind":"approval","origin":"model","reason":"probe needs a person","timeout_ms":0,"tool":"probe"}
+10 approval/decided op=none t=0 {"by":{"channel":"ui","peer":"in-process","principal":"testkit"},"call":"call-1","id":"<apr-4>","outcome":"allowed-once","tool":"probe"}
+11 tool/result op=append t=0 {"call_id":"call-1","message":{"blocks":[{"kind":"tool_result","tool_result":{"call_id":"call-1","parts":[{"text":{"text":"probed: ping"}}]}}],"id":"<msg-5>","role":"tool","source":{"data":{"approval":"allowed-once","stage":"shape"},"kind":"tool-result","producers":["tools.registry"]}}}
 12 step/end op=none t=0 {"step":1,"turn":1}
 13 step/start op=none t=0 {"step":2,"turn":1}
 14 model/selection op=none t=0 {"selection":{"route":"r/f2"},"source":"header","step":2,"turn":1}
