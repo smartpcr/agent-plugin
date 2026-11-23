@@ -229,3 +229,9 @@ Historical: none recorded.
 At closure: plan 18.1.11 lists them. Now open: the `src/go/cordis` test findings of the
 `vet` gate, repaired by plan Stage 13.1; `DH-D-CORDIS-6`, `-10` and `-11` stay for DH-S-38
 and DH-S-49 ("Not in DH-S-2" above).
+
+**TC-02b golden re-recorded (2026-11-23, Phase 14).** `src/go/cmd/cordis-sample/testdata/output.golden`
+gains exactly one line, `[Debug] loader apply: beat2`: the loader debug line per apply added on
+purpose by gap-closure-plan step 14.1.4 (M1-G-FND-4). The line was re-recorded with `-update`
+(contract rule 3) after the WSL lane at `fa568a6` failed `TestOutputMatchesGolden` on it; no other
+line changed, and `go test -race -count=5 ./cmd/cordis-sample` passes.
