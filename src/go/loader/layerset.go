@@ -20,13 +20,14 @@ import (
 )
 
 // ErrStaleLayer is matched (errors.Is) by a write refused because the layer file
-// changed since the layer set last read it.
+// changed again while the write merged an earlier change, or is gone.
 var ErrStaleLayer = errors.New("loader: layer file changed since it was read")
 
-// StaleLayerError refuses a write over a layer file that another writer changed
-// since the layer set last read it. The file is left as the other writer made it and
-// the runtime edits stay in memory; Reload merges the two, and a later Flush writes
-// the result.
+// StaleLayerError refuses a write over a layer file that a writer outside the write
+// guard changed while the write was merging the file's earlier change (or that was
+// removed, or holds no layer operations). A change made before the write, or while
+// the guard waited, is merged instead. The file is left as the other writer made it
+// and the runtime edits stay in memory; the next Flush, poll or Reload merges again.
 type StaleLayerError struct {
 	Label string
 	Path  string
@@ -170,10 +171,12 @@ var LayerSetComponent = cordis.Construct("LayerSet", newLayerSet, cordis.WithInj
 // the difference into operations and renders them over the writable file's last
 // read document through its LayerCodec, so the operations it does not change keep
 // their text and comments. The file is replaced through a temporary file and a
-// rename, and only while its content hash still equals the one last read; otherwise
-// the write fails with a *StaleLayerError and the other writer's content is kept.
-// The other layer files are only ever read. Every read and write runs under one lock,
-// in order.
+// rename. If its content hash no longer equals the one last read, the write, still
+// inside the one write-guard call, re-reads the file, merges the other writer's
+// change three ways with the runtime edits (the file wins a conflict) and renders
+// over the new document; only a file that changes yet again before the rename fails
+// the write with a *StaleLayerError, keeping the other writer's content. The other
+// layer files are only ever read. Every read and write runs under one lock, in order.
 type LayerSet struct {
 	ctx      *cordis.Context
 	options  LayerSetOptions
@@ -516,22 +519,9 @@ func (s *LayerSet) writeLocked() error {
 		}
 		return nil
 	}
-	ops := diffOps(s.lower, runtime, layer.Ops)
-	if entries := s.unaddressable(ops); len(entries) > 0 {
-		return &UnaddressableEditError{Label: layer.Label, Path: layer.Path, Entries: entries}
-	}
-	//lint:ignore typeassert the writable layer's codec is checked to be a LayerCodec when the layer set is built
-	text, err := layer.codec.(LayerCodec).EncodeLayer(layer.doc, ops)
+	text, ops, err := s.render(layer, layer.doc, layer.Ops, runtime)
 	if err != nil {
-		return fmt.Errorf("loader: cannot encode layer %q (%s): %w", layer.Label, layer.Path, err)
-	}
-	// checked before any success return: bytes the file already holds can still fail
-	// to compose into runtime when a later layer masks them
-	if differ := s.unreproduced(layer, text, runtime); len(differ) > 0 {
-		if masked := s.maskedByLater(differ); len(masked) > 0 {
-			return &MaskedEditError{Label: layer.Label, Path: layer.Path, IDs: masked}
-		}
-		return fmt.Errorf("loader: cannot save the runtime edits of %q to layer %q (%s): the written layer would not compose back into them", strings.Join(differ, `", "`), layer.Label, layer.Path)
+		return err
 	}
 	if layer.exists && bytes.Equal(text, layer.data) {
 		s.base = runtime
@@ -541,16 +531,100 @@ func (s *LayerSet) writeLocked() error {
 		return nil // nothing to save: a missing writable layer stays missing
 	}
 
-	wrote := false
-	write := func() error {
-		current, err := os.ReadFile(layer.Path)
-		exists := err == nil
-		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+	var outcome writeOutcome
+	err = s.guarded(layer.Path, func() error { return s.writeFile(layer, runtime, text, &outcome) }, &outcome.done)
+	if !outcome.done {
+		return err
+	}
+	s.adopt(layer, outcome.text)
+	_, s.index, _ = Compose(s.snapshotLayers(false))
+	if outcome.merged == nil {
+		s.base = runtime
+		return err
+	}
+	// the file now composes into the merged tree (render checked it); the running
+	// tree follows it, reconciled here, after the guard returned, so the guard's lock
+	// is never held while components start
+	s.base = cloneAll(outcome.merged)
+	if !sameTree(outcome.merged, runtime) {
+		publish, applyErr := s.loader.applyDeferred(outcome.merged, outcome.issues)
+		if applyErr != nil {
+			s.ctx.Logger().Error(applyErr)
 			return err
 		}
-		if exists != layer.exists || sha256.Sum256(current) != layer.sum {
-			return &StaleLayerError{Label: layer.Label, Path: layer.Path}
+		s.pending = chain(s.pending, publish)
+	}
+	return err
+}
+
+// writeOutcome is what one write of the writable layer did, set only when it
+// succeeded: done, the bytes the file now holds, and, when the file had changed
+// since it was read, the tree merged with that change and the issues of composing it.
+type writeOutcome struct {
+	done   bool
+	text   []byte
+	merged []EntryOptions
+	issues []Issue
+}
+
+// writeFile is the check-and-replace the write guard is handed. It replaces the
+// writable file with text while the file is still what was last read. If another
+// writer changed it since, the change is merged here, inside the same guard call:
+// the file is parsed, composed with the other layers, merged three ways with the
+// runtime edits (the file wins a conflict, as on a read), rendered over the new
+// document and checked again, and written once. Only a file that changes again
+// before the rename, or is gone or unreadable as layer operations, is refused with a
+// *StaleLayerError; nothing loops.
+func (s *LayerSet) writeFile(layer *layerState, runtime []EntryOptions, text []byte, outcome *writeOutcome) error {
+	current, exists, err := readLayerFile(layer.Path)
+	if err != nil {
+		return err
+	}
+	stale := &StaleLayerError{Label: layer.Label, Path: layer.Path}
+	var merged []EntryOptions
+	var issues []Issue
+	if exists != layer.exists || sha256.Sum256(current) != layer.sum {
+		if !exists {
+			// gone since it was read: as on a read, the layer keeps its last
+			// operations, and it is not recreated until it is back
+			return stale
 		}
+		doc, err := ParseLayer(layer.codec, layer.Path, current)
+		if err != nil {
+			return fmt.Errorf("%w: it cannot be merged: %w", stale, err)
+		}
+		layers := s.snapshotLayers(false)
+		for i := range layers {
+			if layers[i].Writable {
+				layers[i].Ops = doc.Ops
+			}
+		}
+		var theirs []EntryOptions
+		theirs, _, issues = Compose(layers)
+		s.report(issues)
+		assignStableIDs(theirs, "", s.base)
+		var conflicts []string
+		merged, conflicts = merge(s.base, runtime, theirs)
+		for _, id := range conflicts {
+			s.ctx.Logger().Errorf("entry %q was changed both in a layer file and at runtime; the file wins", id)
+		}
+		if text, _, err = s.render(layer, doc, doc.Ops, merged); err != nil {
+			return err
+		}
+		if !bytes.Equal(text, current) {
+			// the other writer has had its turn; one that changes the file again
+			// before the rename is not using the lock
+			again, stillExists, err := readLayerFile(layer.Path)
+			if err != nil {
+				return err
+			}
+			if !stillExists || sha256.Sum256(again) != sha256.Sum256(current) {
+				return stale
+			}
+		}
+		exists = true
+	}
+	if !exists || !bytes.Equal(text, current) {
 		if exists {
 			if info, err := os.Stat(layer.Path); err == nil && info.Mode().Perm()&0o200 == 0 {
 				return fmt.Errorf("loader: layer %q (%s) is read-only", layer.Label, layer.Path)
@@ -559,16 +633,42 @@ func (s *LayerSet) writeLocked() error {
 		if err := s.replace(layer.Path, text); err != nil {
 			return err
 		}
-		wrote = true
-		return nil
 	}
-	err = s.guarded(layer.Path, write, &wrote)
-	if wrote {
-		s.adopt(layer, text)
-		s.base = runtime
-		_, s.index, _ = Compose(s.snapshotLayers(false))
+	*outcome = writeOutcome{done: true, text: text, merged: merged, issues: issues}
+	return nil
+}
+
+// readLayerFile reads path; a missing file is not an error.
+func readLayerFile(path string) (data []byte, exists bool, err error) {
+	data, err = os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, false, nil
 	}
-	return err
+	return data, err == nil, err
+}
+
+// render turns the difference between the layers below the writable one and tree
+// into operations, renders them over doc, the writable file's document whose
+// operations are previous, and checks that the result composes back into tree.
+func (s *LayerSet) render(layer *layerState, doc *LayerDocument, previous []Op, tree []EntryOptions) ([]byte, []Op, error) {
+	ops := diffOps(s.lower, tree, previous)
+	if entries := s.unaddressable(ops); len(entries) > 0 {
+		return nil, nil, &UnaddressableEditError{Label: layer.Label, Path: layer.Path, Entries: entries}
+	}
+	//lint:ignore typeassert the writable layer's codec is checked to be a LayerCodec when the layer set is built
+	text, err := layer.codec.(LayerCodec).EncodeLayer(doc, ops)
+	if err != nil {
+		return nil, nil, fmt.Errorf("loader: cannot encode layer %q (%s): %w", layer.Label, layer.Path, err)
+	}
+	// checked before any success return: bytes the file already holds can still fail
+	// to compose into tree when a later layer masks them
+	if differ := s.unreproduced(layer, text, tree); len(differ) > 0 {
+		if masked := s.maskedByLater(differ); len(masked) > 0 {
+			return nil, nil, &MaskedEditError{Label: layer.Label, Path: layer.Path, IDs: masked}
+		}
+		return nil, nil, fmt.Errorf("loader: cannot save the runtime edits of %q to layer %q (%s): the written layer would not compose back into them", strings.Join(differ, `", "`), layer.Label, layer.Path)
+	}
+	return text, ops, nil
 }
 
 // unreproduced composes every layer with the writable one read from text, as a

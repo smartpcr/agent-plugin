@@ -260,6 +260,38 @@ func TestLifecycleLogRecordsMutationsInOrder(t *testing.T) {
 	True(t, last.Before != nil && last.After == nil, "a remove carries the entry it removed")
 }
 
+// loaderDebugLines returns the debug lines written under the "loader" logger.
+func loaderDebugLines(logs *cordis.MemoryExporter) []string {
+	var lines []string
+	for _, message := range logs.Messages() {
+		if message.Name == "loader" && message.Level == cordis.LevelDebug {
+			lines = append(lines, message.Text)
+		}
+	}
+	return lines
+}
+
+// Apply, reload, restart and unload each write one debug line under the "loader"
+// logger, naming the ids, once debug output is enabled; the lifecycle log is kept.
+//
+//dsh:test DH-T-LOADER-9
+func TestPublishWritesADebugLinePerApplyReloadRestartAndUnload(t *testing.T) {
+	h := start(t)
+	h.apply(t, echo("quiet", "quiet"))
+	Equal(t, 0, len(loaderDebugLines(h.logs)), "debug lines below the default threshold")
+
+	h.root.Loggers().SetLevel(cordis.LevelDebug)
+	h.apply(t, echo("a", "a"), echo("b", "b"), echo("c", "c"))
+	h.apply(t, echo("a", "a"), echo("b", "b2"), echo("c", "c"))
+	Within(t, "restart", func() { NoError(t, h.loader.Restart("c")) })
+	h.apply(t, echo("b", "b2"), echo("c", "c"))
+	Equal(t, "apply: a, b, c|unload: quiet|reload: b|restart: c|unload: a", strings.Join(loaderDebugLines(h.logs), "|"))
+	events := h.loader.Lifecycle()
+	Equal(t, "add,remove", strings.Join(kinds(events, "a"), ","), "the lifecycle log of a")
+	Equal(t, "add,update", strings.Join(kinds(events, "b"), ","), "the lifecycle log of b")
+	Equal(t, "add,restart", strings.Join(kinds(events, "c"), ","), "the lifecycle log of c")
+}
+
 func TestMutationsValidateAndSetUpserts(t *testing.T) {
 	h := start(t)
 	h.apply(t, echo("a", "a"), group("g"))

@@ -76,11 +76,19 @@ runs on virtual time (`testing/synctest`), so it does not sleep.
 | 3.3 | `DH-T-LOADER-5` | `TestAConfigExpressionReadingUseRunsOnlyOnceItsServiceIsActive`, `TestAConfigEvaluationFailureNamesTheValuesPosition`, `TestAnEmptyExpressionIsRejectedNotTreatedAsAbsent` (`expr_test.go`) |
 | 3.4 | `DH-T-LOADER-7` | `TestComposeOwnershipIndexNamesTheSupplyingLayer`, `TestComposeLaterLayersWinAndUnmatchedOpsAreReported`, `TestParseLayerReadsOpsWithComments`, `TestJSONCRejectsAnUnterminatedBlockComment`, `TestEncodeLayerKeepsACommentTrailingTheLastKeptOp` (`layers_test.go`) |
 | 3.5 | `DH-T-LOADER-8` | `TestLayerSetWriteBackTouchesOneLayerFileOnly`, `TestLayerSetARuntimeEditOfALowerValueBecomesAWritableOp`, `TestLayerSetAnEditMaskedByALaterLayerIsRefused`, `TestLayerSetAMaskedEditTheWritableFileAlreadyHoldsIsRefused`, `TestLayerSetAVanishedLayerKeepsTheRunningTree`, `TestLayerSetAReadOnlyLayerFailsTheWriteUntilItIsWritable`, `TestLayerSetOptionsAllowOneWritableLayer` (`layers_test.go`) |
-| 3.5 | `DH-T-LOADER-14` | `TestLayerSetEditingALayerRestartsOnlyTheChangedEntry` (`layers_test.go`), `TestConfigFileAnonymousEntriesSurviveAnEditToANeighbour` (`loader_test.go`) |
+| 3.5 | `DH-T-LOADER-14` | `TestLayerSetEditingALayerRestartsOnlyTheChangedEntry`, `TestLayerSetAnAcceptUpdateEntryAndAnAnonymousNeighbourAreNotRestarted` (`layers_test.go`; plan 14.1.3), `TestConfigFileAnonymousEntriesSurviveAnEditToANeighbour` (`loader_test.go`) |
 | 3.6 | `DH-T-LOADER-11` | `TestNestedLoaderUnloadsWithItsOwner`, `TestNestedLoaderIsPrivateToItsOwnerAndReadOnly`, `TestNestedLoaderEvaluatesItsOwnExpressions`, `TestNestedLoaderANewLayerListRestartsOnlyWhatChanged` (`nested_test.go`) |
-| 3.7 | `DH-T-LOADER-9` | `TestLifecycleLogRecordsMutationsInOrder`, `TestMutationsValidateAndSetUpserts`, `TestMutationAndRestartErrorsChangeNothing`, `TestMutationsReportTheChangeAndASelfDisposedEntryIsNotDisabled`, `TestConcurrentSetsOfOneAbsentPathAllSucceed` (`Set` is one atomic upsert), and `EntryOf` of a nested fiber in `TestNestedLoaderIsPrivateToItsOwnerAndReadOnly` (`nested_test.go`) |
+| 3.7 | `DH-T-LOADER-9` | `TestLifecycleLogRecordsMutationsInOrder`, `TestMutationsValidateAndSetUpserts`, `TestMutationAndRestartErrorsChangeNothing`, `TestMutationsReportTheChangeAndASelfDisposedEntryIsNotDisabled`, `TestConcurrentSetsOfOneAbsentPathAllSucceed` (`Set` is one atomic upsert), `TestPublishWritesADebugLinePerApplyReloadRestartAndUnload` (the `loader` debug lines; plan 14.1.4), and `EntryOf` of a nested fiber in `TestNestedLoaderIsPrivateToItsOwnerAndReadOnly` (`nested_test.go`) |
 | 3.8 | `DH-T-LOADER-12` | `TestRestartOneEntryLeavesItsSiblingsAlone`, `TestRestartWritesNoFileAndANoticeListsTheChangedIDs`, `TestWatchedLayersDebounceABurstOfSavesIntoOneReload`, `TestAConfigEditRestartsOnlyTheChangedEntryWithOneNotice`, `TestAReloadListenerCanCallBackIntoTheLayerSet` (the notice is published after the layer source commits and unlocks), `TestARejectedConfigUpdateIsAnIssueNotAnUpdate` (refused again, and reported again, when re-applied), `TestAReloadListenerCanSaveTheConfigFile` (a listener calls `ConfigFile.Save` synchronously), `TestALayerFilesCompositionIssuesReachTheNotice` (`nested_test.go`) |
-| 3.9 | `DH-T-LOADER-15` | `TestLayerSetWriteGuardRefusesAStaleWrite`, `TestLayerSetWriteGuardWrapsEveryWrite`, `TestLayerSetAGuardThatPanicsOrSkipsTheWriteFailsIt` (`layers_test.go`) |
+| 3.9 | `DH-T-LOADER-15` | `TestLayerSetWriteGuardMergesAFileChangedWhileItWaits` (a file changed while the guard waits is merged inside it; one `Flush`, no `Reload`), `TestLayerSetAWriterOutsideTheLockIsRefusedThenRetried` (`ErrStaleLayer` while a writer outside the lock keeps changing the file, its bytes kept; then `Reload` and `Flush` save both edits), `TestLayerSetWriteGuardWrapsEveryWrite`, `TestLayerSetAGuardThatPanicsOrSkipsTheWriteFailsIt` (`layers_test.go`; plan 14.1.1, 14.1.2) |
+
+Plan stage 14.1 (M1-G-FND-1 to -4) replaced the 3.9 row: the write guard no longer
+refuses a file changed while it waited, it merges it. The story plan's wording of step
+3.9 (`implementation-plan.md`) was corrected to "re-read and merged three ways inside
+the guard; refused only for a writer outside the lock" (M1-G-FND-2). Local runs at the
+working tree, before the stage commit: `go test -race -shuffle=on -count=5 ./loader/`
+passes on Windows (go1.27.4) and once on the WSL lane (Ubuntu-24.04); loader coverage
+89.2%. The commit and the gate run ids of both lanes are recorded at the stage commit.
 
 `DH-T-LOADER-2`, `-6`, `-10`, `-13` and `-16` verify deliverables outside DH-S-3
 (`src/harness` config and logging, DH-D-LOADER-9 and -14).
@@ -190,7 +198,7 @@ test that is removed afterwards. Composed tests run as `go -C src/go test -count
 | 3.6 | rule-3 default: a nested loader runs under its owner's context | composed test: `TestNestedLoaderUnloadsWithItsOwner`, `TestNestedLoaderIsPrivateToItsOwnerAndReadOnly` | one lane | | | | `manual` |
 | 3.7 | rule-3 default: mutations are validated and logged in order | composed test: `TestLifecycleLogRecordsMutationsInOrder`, `TestMutationAndRestartErrorsChangeNothing` | one lane | | | | `manual` |
 | 3.8 | two hand-composed layers, one broken: one settled-reload notice | by hand: the same run; record the one `notice:` line and the issue it carries | one lane | | | | `manual` |
-| 3.9 | rule-3 default: the write guard refuses a stale write | composed test: `TestLayerSetWriteGuardRefusesAStaleWrite`, `TestLayerSetWriteGuardWrapsEveryWrite` | one lane | | | | `manual` |
+| 3.9 | rule-3 default: the write guard merges a file changed while it waits, and refuses only a writer outside the lock | composed test: `TestLayerSetWriteGuardMergesAFileChangedWhileItWaits`, `TestLayerSetAWriterOutsideTheLockIsRefusedThenRetried`, `TestLayerSetWriteGuardWrapsEveryWrite` | one lane | | | | `manual` |
 
 ### Cleanup evidence
 

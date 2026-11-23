@@ -182,7 +182,7 @@ storyId: "harness:DSH"
 ### Implementation Steps
 - [ ] impl.md step 3.4 / DH-D-LOADER-6: add `src/go/loader/layers.go` -- ordered layers (bundle, profile, user, project) compose into one tree and an ownership index answers "which layer supplied this value" for every path (`DH-T-LOADER-7`).
 - [ ] impl.md step 3.5 / DH-D-LOADER-7: add `src/go/loader/layerset.go` -- a layered source that writes an edit back to exactly one named layer through the codec, preserving the other layers byte-for-byte (`DH-T-LOADER-8`, `DH-T-LOADER-14`). Scenario DH-E-LOADER-1 is authored in DH-S-6 and runs in DH-S-17 (17.7).
-- [ ] impl.md step 3.9 / DH-D-LOADER-13 (P1, pulled forward): a write guard on the layer source -- a write is refused when the file changed since it was read (content hash compare under a lock), so a concurrent edit is never lost (`DH-T-LOADER-15`).
+- [ ] impl.md step 3.9 / DH-D-LOADER-13 (P1, pulled forward): a write guard on the layer source -- a file changed since it was read is re-read and merged three ways inside the guard; refused only for a writer outside the lock (content hash compared again before the rename), so a concurrent edit is never lost (`DH-T-LOADER-15`).
 
 ### Dependencies
 - phase-loader-layers-and-write-back/stage-codec-seam-and-entry-schema
