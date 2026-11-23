@@ -103,6 +103,11 @@ type Config struct {
 	// Grace is the cancelled tree's grace (clientroute.DefaultGrace).
 	ProbeTimeout time.Duration
 	Grace        time.Duration
+	// Tap, when set, sees each line of the client's standard output as it is read,
+	// before the route places it: a diagnostic for the operator's manual check
+	// (plan 16.5.6), never set by the harness. It must not keep the slice; the
+	// route itself never logs a line.
+	Tap func(line []byte)
 }
 
 // Route is the copilot-cli route over cfg.
@@ -261,7 +266,7 @@ func (c *call) Attempt(ctx context.Context, req session.Request) iter.Seq2[vocab
 		// At a tool request the tree is stopped at once, before the calls are
 		// yielded: the client cannot act on its denial or send another request.
 		stop := func() { _ = run.Stop(0) }
-		if !m.stream(run.ReadLine, stop, func(ch vocab.Chunk) bool { return yield(ch, nil) }) {
+		if !m.stream(clientroute.Tapped(run.ReadLine, c.cfg.Tap), stop, func(ch vocab.Chunk) bool { return yield(ch, nil) }) {
 			return
 		}
 		// The output has ended (or the attempt cannot continue): the client gets

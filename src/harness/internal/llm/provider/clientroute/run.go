@@ -119,6 +119,22 @@ func (r *Run) ReadLine() ([]byte, error) {
 	return line, err
 }
 
+// Tapped is next with tap shown each line it returns, before the caller sees
+// it; a nil tap is next itself. It is the routes' Config.Tap: a diagnostic of
+// the operator's manual check (plan 16.5.6), never used to log a line.
+func Tapped(next func() ([]byte, error), tap func([]byte)) func() ([]byte, error) {
+	if tap == nil {
+		return next
+	}
+	return func() ([]byte, error) {
+		line, err := next()
+		if err == nil {
+			tap(line)
+		}
+		return line, err
+	}
+}
+
 // Pid is the client's process id.
 func (r *Run) Pid() int { return r.proc.Pid() }
 
