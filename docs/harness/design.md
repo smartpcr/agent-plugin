@@ -1523,7 +1523,7 @@ and the row was removed (attachments, [DH-ADR-21](#dh-adr-21)).
 | Raised in | The question, in a few words | The default applied | Held in |
 |---|---|---|---|
 | I1 Q2 | Does a fork remember which session it came from? | Yes: two header fields, for display only | [areas/core-session.md](areas/core-session.md) (`DH-ADR-SESSION-11`) |
-| I1 Q3 | The turn budget numbers | 500 steps, 8 attempts per step, no time limit | [areas/agent-loop.md](areas/agent-loop.md) (`DH-ADR-AGENT-7`) |
+| I1 Q3 | The turn budget numbers | 500 steps, 8 attempts per step, no time limit. **Confirmed by the owner on 2026-11-23** for the M1 story (decision M1-D-LOOP-5 in [the M1 decision log](../stories/harness-DSH-M1/decisions.md), `turn-budget-defaults-s11`); the row stays here as the record of where the default came from | [areas/agent-loop.md](areas/agent-loop.md) (`DH-ADR-AGENT-7`) |
 | I1 Q6 | Which compatibility version does a Go build declare to the vendor's version gate? | None, until the vendor lists this client | [areas/llm.md](areas/llm.md) (`DH-D-LLM-5`) |
 | I1 Q7 | Sign-in to another company's consumer subscription | A later, default-off component, per vendor whose terms permit it | [areas/llm.md](areas/llm.md) (`DH-D-LLM-10`) |
 | I1 Q8 | Are the cloud sign-in components in the default binary? | No: behind a build tag | [areas/llm.md](areas/llm.md) (`DH-D-LLM-7` to `-10`) |

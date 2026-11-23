@@ -45,7 +45,7 @@ func goList(t *testing.T, module string) []Package {
 // TestImportDirection runs every rule against the real modules. The src/sdk rule is
 // the stage scenario "src/sdk imports nothing of the product" (DH-S-4 exit evidence).
 //
-//dsh:test DH-T-UTIL-11, DH-T-LLM-1, DH-T-YAML-1
+//dsh:test DH-T-UTIL-11, DH-T-LLM-1, DH-T-YAML-1, DH-T-CONTEXT-25
 func TestImportDirection(t *testing.T) {
 	listed := map[string][]Package{}
 	for _, r := range Rules {
@@ -82,7 +82,7 @@ func TestParse(t *testing.T) {
 	}
 }
 
-//dsh:test DH-T-UTIL-11
+//dsh:test DH-T-UTIL-11, DH-T-CONTEXT-25
 func TestRulesCatchViolations(t *testing.T) {
 	pkg := func(path, name string, depOnly bool, files ...string) Package {
 		return Package{ImportPath: path, Name: name, DepOnly: depOnly, GoFiles: files}

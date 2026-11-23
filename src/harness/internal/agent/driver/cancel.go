@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/agent"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/tools/prompt"
 )
 
 // turnState is the running turn as Cancel sees it. Its fields after turn are
@@ -30,6 +31,10 @@ type stepState struct {
 	ctx    context.Context
 	cancel context.CancelCauseFunc
 	cause  agent.Cause
+	// asm and system are the step's prompt assembly and its rendered system
+	// prompt, made once at point 4; the step's retries reuse them.
+	asm    prompt.Assembly
+	system string
 }
 
 // cancelTurn cancels the turn and, through its context, the step; the first

@@ -1,0 +1,18 @@
+# natural-end
+S1 close
+S3 capture completed
+S4 release ok
+S6 free
+S7 deliver completed cleanup ok
+# dispose
+S2 stop parent
+S3 capture aborted
+S4 release ok
+S6 free
+S7 deliver aborted cleanup ok
+# owner-teardown
+S2 stop parent
+S3 capture aborted
+S4 release ok
+S6 free
+S7 deliver aborted cleanup ok

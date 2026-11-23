@@ -337,6 +337,17 @@ func (s *dibState) oneTurn(turns, msgs int, id string) error {
 	return nil
 }
 
+// reportedDiscarded: the claim writes only the splice and the driver admits the
+// message at point 8 (M1-D-LOOP-1 A), so a crash between the two leaves no
+// user/message; the resumed inbox reports the claimed message discarded instead.
+func (s *dibState) reportedDiscarded(id string, turn int) error {
+	d := s.inbox.Discarded()
+	if len(d) != 1 || d[0].Message.ID != id || d[0].Turn != turn || d[0].Cause != agent.CauseUnadmitted {
+		return fmt.Errorf("discarded %+v, want %s claimed by turn %d with cause %q", d, id, turn, agent.CauseUnadmitted)
+	}
+	return nil
+}
+
 func (s *dibState) resendRefused(id string) error {
 	_, err := s.inbox.Send(context.Background(), agent.ListNextTurn, dibUser(id, "do it"))
 	if !errors.Is(err, agent.ErrDuplicateMessage) {
@@ -739,6 +750,7 @@ func InitializeScenario_tool_pipeline_approvals_and_human_commands_durable_inbox
 	ctx.Step(`^the resume reports the open turn as interrupted$`, s.interrupted)
 	ctx.Step(`^the resumed inbox has nothing pending and a claim of turn (\d+) takes nothing$`, s.nothingPending)
 	ctx.Step(`^the log shows (\d+) turns? and (\d+) user messages? for "([^"]+)"$`, s.oneTurn)
+	ctx.Step(`^the resumed inbox reports "([^"]+)" discarded as unadmitted by turn (\d+)$`, s.reportedDiscarded)
 	ctx.Step(`^a resend of "([^"]+)" is refused as a duplicate with the first receipt$`, s.resendRefused)
 
 	ctx.Step(`^an agent of session "([^"]+)" answered on channel "([^"]+)" with ([a-z-]+) then ([a-z-]+)$`, s.grantingAgent)

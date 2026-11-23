@@ -17,46 +17,60 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 )
 
-// TestRecordThenReplayWithoutAKey: record against the real model, then replay
-// without a key (upstream/toolchain.md DH-E-TOOLCHAIN-1; DH-ADR-TOOLCHAIN-5,
-// DH-ADR-TOOLCHAIN-6, DH-ADR-TOOLCHAIN-12). Authored in DH-S-11, once its subjects
-// (the model runtime and the replay helpers) exist; executed in DH-S-17 on a
-// hosted Linux runner.
+// TestRecordThenReplayWithoutAKey: record against the real model on the
+// signed-in client route, then replay with no client, no sign-in and no network
+// (upstream/toolchain.md DH-E-TOOLCHAIN-1; DH-ADR-TOOLCHAIN-5,
+// DH-ADR-TOOLCHAIN-6, DH-ADR-TOOLCHAIN-12; the route of areas/llm.md
+// DH-D-LLM-12). Authored in DH-S-11, once its subjects (the model runtime and
+// the replay helpers) exist, and retargeted onto the signed-in client routes by
+// gap-closure-plan 17.4.4 (M1-D-CLOSE-4 A); executed in DH-S-17. Under OWNER-2 no
+// API key exists, so the record run needs the user's own signed-in client: it
+// runs on the operator's workstation, not a hosted runner, until the
+// credential-field preflight of gap-closure-plan 19.2 (M1-G-TOOL-16) says how a
+// signed-in session reaches a runner.
 //
-// Given a clean checkout, a dsh binary built from it, a model API key supplied at
-// run time and one scenario directory that holds only a manifest and a workspace
-// seed, when the replay package is run in record mode for that scenario (on a
-// copy, so the checkout is never written), the key is removed from the
-// environment and the package is run in replay mode twice, then record writes a
-// session log (a new, nonempty session[.vN].jsonl of JSON lines at the top of
-// the copy, which held none before) and, for a file-changing scenario, the product's workspace equals
-// workspace.expected/; both replays pass with no request reaching the network
-// (every proxy variable names a listener that counts and refuses); the fixture
+// Given a clean checkout, a dsh binary built from it, no API key anywhere, the
+// user's own installed official client signed in as themselves, and one
+// scenario directory that holds only a manifest and a workspace seed, when, per
+// route, the replay package is run in record mode for that scenario on that
+// route (on a copy, so the checkout is never written), and then in replay mode
+// twice with every client's configuration home pointed at an empty directory, a
+// stand-in for each client first on the PATH, and every proxy variable naming a
+// listener that counts and refuses, then record writes a session log (a new,
+// nonempty session[.vN].jsonl of JSON lines at the top of the copy, which held
+// none before) and, for a file-changing scenario, the product's workspace equals
+// workspace.expected/; both replays pass with no client started (no stand-in
+// ran), no sign-in in reach and no request reaching the network; the fixture
 // directory has no differences after the replays; and each run report lists the
-// scenario as executed, not skipped. Cleanup: the copy, the homes and the
-// workspaces are under t.TempDir(). On failure the commands' output, the child's
-// standard error among it, is in the failure message and the unnormalised log
-// stays in the copy, whose path is logged.
+// scenario as executed, not skipped. Cleanup: the copy, the homes, the
+// workspaces, the empty configuration homes and the stand-ins are under
+// t.TempDir(); nothing of the user's sign-in is touched. On failure the
+// commands' output, the child's standard error among it, is in the failure
+// message and the unnormalised log stays in the copy, whose path is logged.
 //
-// Inputs: DSH_DEEPSEEK_API_KEY is the real key, handed to the record run as
-// DEEPSEEK_API_KEY; DSH_SCENARIO_TOOLCHAIN1_DIR the scenario directory relative to
-// the repository root; DSH_SCENARIO_TOOLCHAIN1_RECORD and
+// The legs: claude-code must pass; copilot-cli is run and recorded either way
+// (M1-D-LOOP-6 A; forEachRoute).
+//
+// Inputs: DSH_SCENARIO_<route>_MODEL (<route> is CLAUDE_CODE or COPILOT_CLI)
+// the model; DSH_SCENARIO_TOOLCHAIN1_DIR the scenario directory relative to the
+// repository root; DSH_SCENARIO_TOOLCHAIN1_RECORD and
 // DSH_SCENARIO_TOOLCHAIN1_REPLAY command lines over {bin} (the built dsh),
-// {scenario} (the copy), {home} and {workspace} that run the replay package in
-// record and replay mode and print its run report, a line "<name> executed" or
-// "<name> skipped" per scenario.
+// {scenario} (the copy), {home}, {workspace}, {route} (the route id) and
+// {model} that run the replay package in record and replay mode and print its
+// run report, a line "<name> executed" or "<name> skipped" per scenario. The
+// client is the one on the PATH, signed in beforehand by the user.
 //
 //dsh:scenario DH-E-TOOLCHAIN-1
 func TestRecordThenReplayWithoutAKey(t *testing.T) {
 	selfCheckSessionLog(t)
-	key := need(t, "DSH_DEEPSEEK_API_KEY", "a real DeepSeek API key")
 	rel := need(t, "DSH_SCENARIO_TOOLCHAIN1_DIR", "a scenario directory holding a manifest and a workspace seed")
-	recordT := need(t, "DSH_SCENARIO_TOOLCHAIN1_RECORD", "the replay package's record command")
+	recordT := need(t, "DSH_SCENARIO_TOOLCHAIN1_RECORD", "the replay package's record command over {route} and {model}")
 	replayT := need(t, "DSH_SCENARIO_TOOLCHAIN1_REPLAY", "the replay package's replay command")
 
 	root := repositoryRoot(t)
@@ -64,6 +78,23 @@ func TestRecordThenReplayWithoutAKey(t *testing.T) {
 		t.Fatalf("the checkout is not clean:\n%s", status)
 	}
 	bin := dshBinary(t)
+	forEachRoute(t, func(t *testing.T, r clientRoute) {
+		recordThenReplay(t, root, bin, rel, recordT, replayT, r)
+	})
+}
+
+// noKeys empties every credential variable a model route could read, so the
+// runs hold no API key whatever the operator's shell holds; the client's own
+// sign-in, in its configuration home, is the only credential in play.
+var noKeys = []string{
+	"ANTHROPIC_API_KEY=", "ANTHROPIC_AUTH_TOKEN=", "CLAUDE_CODE_OAUTH_TOKEN=",
+	"GH_TOKEN=", "GITHUB_TOKEN=", "COPILOT_GITHUB_TOKEN=",
+}
+
+// recordThenReplay is DH-E-TOOLCHAIN-1 on route r.
+func recordThenReplay(t *testing.T, root, bin, rel, recordT, replayT string, r clientRoute) {
+	t.Helper()
+	model := r.model(t)
 	scenario := filepath.Join(t.TempDir(), filepath.Base(rel))
 	copyTree(t, filepath.Join(root, filepath.FromSlash(rel)), scenario)
 	t.Cleanup(func() {
@@ -73,15 +104,15 @@ func TestRecordThenReplayWithoutAKey(t *testing.T) {
 	})
 	name := filepath.Base(scenario)
 	vars := func() map[string]string {
-		return map[string]string{"bin": bin, "scenario": scenario, "home": t.TempDir(), "workspace": t.TempDir()}
+		return map[string]string{"bin": bin, "scenario": scenario, "home": t.TempDir(), "workspace": t.TempDir(), "route": r.ID, "model": model}
 	}
 
-	// Record against the real model.
+	// Record against the real model through the user's signed-in client.
 	if logs := sessionLogs(t, scenario); len(logs) != 0 {
 		t.Fatalf("the scenario directory already holds session logs %v; it must hold only a manifest and a workspace seed", logs)
 	}
 	rv := vars()
-	report := shellEnv(t, expand(recordT, rv), "DEEPSEEK_API_KEY="+key)
+	report := shellEnv(t, expand(recordT, rv), noKeys...)
 	assertExecuted(t, "record", report, name)
 	assertRecordedLog(t, scenario)
 	if expected := filepath.Join(scenario, "workspace.expected"); exists(expected) {
@@ -91,26 +122,64 @@ func TestRecordThenReplayWithoutAKey(t *testing.T) {
 	}
 	fixture := treeDigest(t, scenario)
 
-	// Replay twice with no key and no network.
+	// Replay twice with no client, no sign-in and no network.
 	var dialled atomic.Int64
 	refuse := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		dialled.Add(1)
 		http.Error(w, "the replay must not reach the network", http.StatusForbidden)
 	}))
 	t.Cleanup(refuse.Close)
-	offline := []string{
-		"DEEPSEEK_API_KEY=", "DSH_DEEPSEEK_API_KEY=",
-		"HTTP_PROXY=" + refuse.URL, "HTTPS_PROXY=" + refuse.URL, "ALL_PROXY=" + refuse.URL, "NO_PROXY=",
-		"http_proxy=" + refuse.URL, "https_proxy=" + refuse.URL, "all_proxy=" + refuse.URL, "no_proxy=",
+	standIns, started := clientStandIns(t)
+	offline := append(slices.Clone(noKeys),
+		"PATH="+standIns+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"HTTP_PROXY="+refuse.URL, "HTTPS_PROXY="+refuse.URL, "ALL_PROXY="+refuse.URL, "NO_PROXY=",
+		"http_proxy="+refuse.URL, "https_proxy="+refuse.URL, "all_proxy="+refuse.URL, "no_proxy=",
+	)
+	for _, c := range clientRoutes {
+		offline = append(offline, c.signedOut(t))
 	}
+	// The stand-ins are found first and record that they ran.
+	shellEnv(t, "claude", offline...)
+	if n := started(); n != 1 {
+		t.Fatalf("self-check: the claude stand-in recorded %d starts, want 1", n)
+	}
+	before := started()
 	for i := range 2 {
 		assertExecuted(t, "replay", shellEnv(t, expand(replayT, vars()), offline...), name)
 		if n := dialled.Load(); n != 0 {
 			t.Fatalf("replay %d made %d network requests", i+1, n)
 		}
+		if n := started() - before; n != 0 {
+			t.Fatalf("replay %d started a client %d times; a replay needs none", i+1, n)
+		}
 		if got := treeDigest(t, scenario); got != fixture {
 			t.Fatalf("replay %d changed the fixture directory", i+1)
 		}
+	}
+}
+
+// clientStandIns writes, into a new directory, a stand-in for each client
+// program (claude, copilot) that records each start in a marker file and exits
+// 0 with no output, and returns the directory and a count of the starts.
+func clientStandIns(t *testing.T) (string, func() int) {
+	t.Helper()
+	dir := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "started.txt")
+	for _, prog := range []string{"claude", "copilot"} {
+		path, body, mode := filepath.Join(dir, prog), "#!/bin/sh\necho started >> '"+marker+"'\n", os.FileMode(0o755)
+		if runtime.GOOS == "windows" {
+			path, body, mode = path+".cmd", "@echo started>>\""+marker+"\"\r\n", 0o644
+		}
+		if err := os.WriteFile(path, []byte(body), mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir, func() int {
+		data, err := os.ReadFile(marker)
+		if err != nil {
+			return 0
+		}
+		return strings.Count(string(data), "started")
 	}
 }
 

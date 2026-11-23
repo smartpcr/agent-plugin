@@ -32,6 +32,7 @@ import (
 	fakemodel "github.com/smartpcr/agent-plugin/src/harness/internal/testkit/model"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools/core"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/tools/prompt"
 )
 
 const bccRoute vocab.RouteID = "r/bcc"
@@ -165,6 +166,8 @@ type bccState struct {
 	tb   *bccTB
 	root *cordis.Context
 	svc  tools.Service
+	// prompt is the tools.prompt component's service, the driver's prompter.
+	prompt *prompt.Service
 
 	// Property.
 	exits    []string
@@ -204,8 +207,20 @@ func (s *bccState) boot() error {
 			return err
 		}
 	}
-	g, err := root.Inject([]string{tools.Key.Name()}, func(c *cordis.Context) (err error) {
-		s.svc, err = tools.Key.Get(c)
+	// The prompt component assembles each step's system prompt and tool list,
+	// as the F2 rig composes it (plan 17.1.9).
+	f, err := root.Use(prompt.Component, prompt.Defaults())
+	if err != nil {
+		return err
+	}
+	if err := f.Wait(); err != nil {
+		return err
+	}
+	g, err := root.Inject([]string{tools.Key.Name(), prompt.Key.Name()}, func(c *cordis.Context) (err error) {
+		if s.svc, err = tools.Key.Get(c); err != nil {
+			return err
+		}
+		s.prompt, err = prompt.Key.Get(c)
 		return err
 	})
 	if err == nil {
@@ -277,7 +292,7 @@ func (s *bccState) newRig(tb *bccTB, o bccRigOptions) (*bccRig, error) {
 	}
 	r.drv, err = driver.Start(driver.Options{
 		Context: s.root, Agent: bccStubAgent{ref: agent.Ref{Session: session.ID(o.id), Incarnation: 1}},
-		Session: live, Inbox: r.inbox, Model: mod, Models: rt, Tools: s.svc,
+		Session: live, Inbox: r.inbox, Model: mod, Models: rt, Tools: s.svc, Prompt: s.prompt,
 		Budget: o.budget, Hooks: o.hooks,
 	})
 	if err != nil {
@@ -966,8 +981,10 @@ func (s *bccState) step3WithParked() error {
 		return fmt.Errorf("%d model requests, want 3", len(reqs))
 	}
 	// Step 3 is opened with the parked message: after step 2 closed, the
-	// next-step list is claimed into the turn and the message is logged as user
-	// input before step 3's step/start.
+	// next-step list is claimed into the turn before step 3's step/start, and
+	// the message is admitted as user input inside step 3, in its one admission
+	// batch after the system prompt (M1-D-LOOP-1 A: the claim writes only the
+	// splice).
 	step2End, claimed, userMsg, step3Start := -1, -1, -1, -1
 	for i, e := range evs {
 		switch e.Type() {
@@ -991,9 +1008,9 @@ func (s *bccState) step3WithParked() error {
 			}
 		}
 	}
-	if !(step2End >= 0 && step2End < claimed && claimed < userMsg && userMsg < step3Start) {
-		return fmt.Errorf("want step 2 end < next-step claim < user message %q < step 3 start, got %d, %d, %d, %d",
-			s.parkedText, step2End, claimed, userMsg, step3Start)
+	if !(step2End >= 0 && step2End < claimed && claimed < step3Start && step3Start < userMsg) {
+		return fmt.Errorf("want step 2 end < next-step claim < step 3 start < user message %q, got %d, %d, %d, %d",
+			s.parkedText, step2End, claimed, step3Start, userMsg)
 	}
 	msgs, err := s.run1.sess.History().Messages()
 	if err != nil {

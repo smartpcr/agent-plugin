@@ -31,8 +31,12 @@ import (
 // reasoning and a tool call whose arguments are valid JSON, which the client did
 // not run and the harness ran once through its pipeline; every message reports
 // usage and nothing of an attempt streams after its end; the second step is
-// accepted. Turn 2 ends aborted with one assistant/attempt (class cancelled,
-// with its invocation) and its cause, and the session's tokenUsage equals the
+// accepted. Turn 2 ends aborted with its cause and one settlement recording the
+// stopped client's invocation: an interrupted assistant/message holding the
+// streamed text with no tool call when a prefix was kept (the usual case, the
+// cancel coming after a text delta), or an assistant/attempt of class
+// cancelled when nothing was, as the driver persists them (DH-E-AGENT-2); and
+// the session's tokenUsage equals the
 // sum of the client-reported usage of all three attempts. A client route renders
 // no reasoning back to the client (DH-T-LLM-18), so, unlike on a keyed Messages
 // route, the second request is not checked for it. Cleanup: the home is deleted
@@ -182,14 +186,41 @@ func turnWithReasoningAndToolCall(t *testing.T, bin string, r clientRoute, layer
 	if end2.Reason.Kind != "aborted" || end2.Reason.Cause == "" {
 		t.Fatalf("turn 2 ended %+v, want aborted with its cause", end2.Reason)
 	}
+	// The driver persists a cancelled attempt that kept a prefix as an
+	// interrupted assistant/message (the prefix is history, with no tool call),
+	// and one that kept nothing as an assistant/attempt of class cancelled
+	// (areas/agent-loop.md DH-E-AGENT-2). The cancel comes after the first text
+	// delta, so a prefix is the usual case; either records the stopped client's
+	// invocation.
 	attempts := ofType(evs2, "assistant/attempt", "assistant/message")
-	if len(attempts) != 1 || attempts[0].Type != "assistant/attempt" {
-		t.Fatalf("turn 2 settled %d attempts, want exactly one assistant/attempt", len(attempts))
+	if len(attempts) != 1 {
+		t.Fatalf("turn 2 settled %d attempts, want exactly one", len(attempts))
 	}
 	var aborted wireSettlement
 	decode(t, attempts[0], &aborted)
-	if aborted.Failure == nil || aborted.Failure.Class != "cancelled" {
-		t.Fatalf("turn 2's attempt failure %+v, want class cancelled (the client stopped by the cancel)", aborted.Failure)
+	switch attempts[0].Type {
+	case "assistant/message":
+		h.mu.Lock()
+		shown := streamedText(h, session, int64(run2.Turn))
+		h.mu.Unlock()
+		var kept strings.Builder
+		if aborted.Message != nil {
+			for _, b := range aborted.Message.Blocks {
+				if b.ToolUse != nil {
+					t.Fatalf("turn 2's interrupted message carries a tool call:\n%s", attempts[0].Data)
+				}
+				if b.Text != nil {
+					kept.WriteString(b.Text.Text)
+				}
+			}
+		}
+		if shown == "" || !strings.HasPrefix(kept.String(), shown) {
+			t.Fatalf("turn 2's interrupted message holds %q, want the streamed text %q", kept.String(), shown)
+		}
+	default:
+		if aborted.Failure == nil || aborted.Failure.Class != "cancelled" {
+			t.Fatalf("turn 2's attempt failure %+v, want class cancelled (the client stopped by the cancel)", aborted.Failure)
+		}
 	}
 	requireInvocation(t, attempts[0], r)
 	if aborted.Usage != nil {

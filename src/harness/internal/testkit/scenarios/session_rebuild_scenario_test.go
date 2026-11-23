@@ -4,9 +4,14 @@ package scenarios
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -14,70 +19,82 @@ import (
 	"github.com/smartpcr/agent-plugin/src/sdk/protocol"
 )
 
-// TestRequestsReceivedEqualRequestsRebuilt: the requests a real model API received
-// equal the requests rebuilt from the log (areas/core-session.md DH-E-SESSION-1;
-// DH-D-SESSION-4, DH-D-SESSION-3, DH-D-SESSION-1). Authored in DH-S-11; executed
-// in DH-S-17, which requires the agent loop (DH-S-11) and the headless launcher
-// (DH-S-16).
+// TestRequestsReceivedEqualRequestsRebuilt: what dsh handed the signed-in client
+// for each attempt equals what is rebuilt from the log (areas/core-session.md
+// DH-E-SESSION-1; DH-D-SESSION-4, DH-D-SESSION-3, DH-D-SESSION-1, on the client
+// route of areas/llm.md DH-D-LLM-12). Authored in DH-S-11 and retargeted onto
+// the signed-in client routes by gap-closure-plan 17.4.4 (M1-D-CLOSE-4 A);
+// executed in DH-S-17, which requires the agent loop (DH-S-11) and the headless
+// launcher (DH-S-16).
 //
-// Given the built dsh, a fresh temporary home, a real API key set at run time and
-// never written to disk, a recording proxy set as the provider's base address and
-// a workspace holding one text file, when (1) the host starts headless, (2) a
-// prompt that makes the model read the file with a tool is sent and the turn ends,
-// (3) a second prompt is sent and its turn ends, (4) the session is exported and
-// (5) every request is rebuilt from the log at its requestAsOf and encoded with the
-// same adapter, then the proxy recorded as many requests as the log has
-// settlements (assistant/message and assistant/attempt), each rebuilt body equals
-// the recorded body, a failed attempt's request matches as well, and no recorded
-// request lacks a settlement. Cleanup: the launcher stops the host and deletes the
-// home; the proxy closes with the test. On failure the export is kept (its path is
-// logged).
+// The boundary. A client route starts the user's own official client, which
+// talks to its vendor itself, so no proxy can sit between the client and the
+// vendor. SP-1 holds at the client invocation (M1-D-PIPE-4 A, DH-ADR-LLM-10):
+// each settlement records the argument list (the attempt directory written as
+// {attempt}), its digest and the digest of the standard input dsh wrote. That
+// the client received exactly those bytes is proved locally against a stand-in
+// client (DH-T-LLM-20, DH-T-LLM-24); what the client then sends its vendor is
+// declared opaque.
 //
-// Inputs: DSH_DEEPSEEK_API_KEY is the real key, handed to the program as
-// DEEPSEEK_API_KEY; DSH_SCENARIO_SESSION1_OFFICIAL the base URL of DeepSeek's
-// Messages endpoint, fronted by the proxy as {official}; DSH_SCENARIO_SESSION1_MODEL
-// the model id on route deepseek-official; DSH_SCENARIO_SESSION1_LAYER a layer, a
-// template over {official} and {workspace}, that points the route at the proxy,
-// selects the headless profile and sends no request other than the turns' (no
-// title route); DSH_SCENARIO_SESSION1_PROMPT a prompt, a template over {workspace},
-// that reads notes.txt with scenario_read and answers; DSH_SCENARIO_SESSION1_REPLAY
-// the session/query text whose result is the request bodies rebuilt from the log
-// (as for DH-E-TOOLS-1).
+// Given the built dsh, a fresh temporary home, no API key anywhere, the user's
+// own installed official client signed in as themselves, its route registered by
+// a headless layer that sends no request but the turns' (no title route), and a
+// workspace holding one text file, when, per route, (1) the host starts
+// headless, (2) a prompt that makes the model read the file with a tool is sent
+// and the turn ends, (3) a second prompt is sent and its turn ends and (4) the
+// host is asked, twice, to rebuild from the log the client invocation of every
+// settlement at its requestAsOf, then the two rebuilds are the same bytes; every
+// settlement (assistant/message and assistant/attempt) records a complete
+// invocation of the route's client with a client session id of its own; the
+// rebuild has exactly one entry per settlement, in log order; each rebuilt
+// argument list and its digest equal the logged ones; and each rebuilt standard
+// input has the logged digest, recomputed here with SHA-256. A failed attempt's
+// invocation matches as well. Cleanup: the launcher stops the host and deletes
+// the home; the workspace lies under t.TempDir(); nothing of the user's sign-in
+// or client settings is touched. On failure the export is kept (its path is
+// logged) and the client invocations are logged.
+//
+// The legs: claude-code must pass; copilot-cli is run and recorded either way
+// (M1-D-LOOP-6 A; forEachRoute).
+//
+// Inputs: DSH_SCENARIO_SESSION1_LAYER a headless layer, a template over {route}
+// and {workspace}, that registers that client route and sends no request other
+// than the turns'; DSH_SCENARIO_<route>_MODEL (<route> is CLAUDE_CODE or
+// COPILOT_CLI) the model; DSH_SCENARIO_SESSION1_PROMPT a prompt, a template over
+// {workspace}, that reads notes.txt with scenario_read and answers;
+// DSH_SCENARIO_SESSION1_REPLAY the session/query text whose result is the client
+// invocations rebuilt from the log (rebuiltInvocations). The client is the one
+// on the PATH, signed in beforehand by the user.
 //
 //dsh:scenario DH-E-SESSION-1
 func TestRequestsReceivedEqualRequestsRebuilt(t *testing.T) {
-	key := need(t, "DSH_DEEPSEEK_API_KEY", "a real DeepSeek API key")
-	officialURL := need(t, "DSH_SCENARIO_SESSION1_OFFICIAL", "the base URL of DeepSeek's Messages endpoint")
-	model := need(t, "DSH_SCENARIO_SESSION1_MODEL", "a model on deepseek-official")
-	layerT := need(t, "DSH_SCENARIO_SESSION1_LAYER", "a headless layer routing the model through {official}")
+	selfCheckInvocationOracle(t)
+	layerT := need(t, "DSH_SCENARIO_SESSION1_LAYER", "a headless layer over {route} and {workspace} that registers that client route")
 	promptT := need(t, "DSH_SCENARIO_SESSION1_PROMPT", "a prompt that reads notes.txt with scenario_read")
-	replay := need(t, "DSH_SCENARIO_SESSION1_REPLAY", "the session/query text that rebuilds the requests")
+	replay := need(t, "DSH_SCENARIO_SESSION1_REPLAY", "the session/query text that rebuilds the client invocations")
+	bin := dshBinary(t)
+	forEachRoute(t, func(t *testing.T, r clientRoute) {
+		model := r.model(t)
+		ws := t.TempDir()
+		writeFiles(t, ws, map[string]string{"notes.txt": "the answer is forty-two\n"})
+		vars := map[string]string{"workspace": filepath.ToSlash(ws), "route": r.ID}
 
-	ws := t.TempDir()
-	writeFiles(t, ws, map[string]string{"notes.txt": "the answer is forty-two\n"})
-	proxy := startProxy(t, map[string]string{"official": officialURL})
-	vars := map[string]string{"workspace": filepath.ToSlash(ws), "official": proxy.base("official")}
+		h := startSDK(t, bin, nil, []string{"--layer", writeLayer(t, expand(layerT, vars))}, readTool(ws, nil))
+		session := h.create(t, &protocol.ModelRoute{Provider: r.ID, Model: model})
+		h.keepExport(t, session)
 
-	h := startSDK(t, dshBinary(t), []string{"DEEPSEEK_API_KEY=" + key},
-		[]string{"--layer", writeLayer(t, expand(layerT, vars))}, readTool(ws, nil))
-	session := h.create(t, &protocol.ModelRoute{Provider: "deepseek-official", Model: model})
-	h.keepExport(t, session)
+		run1 := h.awaitRun(t, session, h.prompt(t, session, expand(promptT, vars)), 10*time.Minute)
+		evs1 := inRun(h.history(t, session), run1.FirstSeq, run1.LastSeq)
+		logInvocations(t, evs1)
+		if n := len(ofType(evs1, "tool/result")); n == 0 {
+			t.Fatal("turn 1 made no tool call: the prompt must make the model read the file")
+		}
+		run2 := h.awaitRun(t, session, h.prompt(t, session, "Thank you. In one word, what was the answer?"), 10*time.Minute)
+		logInvocations(t, inRun(h.history(t, session), run2.FirstSeq, run2.LastSeq))
 
-	run1 := h.awaitRun(t, session, h.prompt(t, session, expand(promptT, vars)), 10*time.Minute)
-	evs1 := inRun(h.history(t, session), run1.FirstSeq, run1.LastSeq)
-	logRequestIDs(t, evs1)
-	if n := len(ofType(evs1, "tool/result")); n == 0 {
-		t.Fatal("turn 1 made no tool call: the prompt must make the model read the file")
-	}
-	run2 := h.awaitRun(t, session, h.prompt(t, session, "Thank you. In one word, what was the answer?"), 10*time.Minute)
-	logRequestIDs(t, inRun(h.history(t, session), run2.FirstSeq, run2.LastSeq))
-
-	settlements := ofType(h.history(t, session), "assistant/message", "assistant/attempt")
-	sent := sentBodies(proxy, "official")
-	if len(sent) != len(settlements) {
-		t.Fatalf("the proxy recorded %d requests, the log has %d settlements: a recorded request with no settlement, or one never sent", len(sent), len(settlements))
-	}
-	assertRebuiltEqualSent(t, h, session, replay, sent)
+		settlements := ofType(h.history(t, session), "assistant/message", "assistant/attempt")
+		assertInvocationsRebuilt(t, h, session, replay, settlements, r)
+	})
 }
 
 // readTool is the client tool scenario_read over the files of ws; seen, when set,
@@ -124,21 +141,82 @@ func writeFiles(t *testing.T, dir string, files map[string]string) {
 	}
 }
 
-// sentBodies are the POST bodies the proxy forwarded to upstream, in order.
-func sentBodies(p *recordingProxy, upstream string) []json.RawMessage {
-	var out []json.RawMessage
-	for _, r := range p.requests(upstream) {
-		if r.Method == "POST" {
-			out = append(out, r.Body)
-		}
-	}
-	return out
+// wireRebuilt is one client invocation the host rebuilt from the log: the
+// argument list the route starts for the request rebuilt at the settlement's
+// requestAsOf (attempt directory as {attempt}, the logged client session id),
+// its digest, and that request rendered as the client's standard input, with
+// its digest.
+type wireRebuilt struct {
+	Args        []string `json:"args"`
+	ArgsDigest  string   `json:"args_digest"`
+	StdinDigest string   `json:"stdin_digest"`
+	Stdin       *string  `json:"stdin"`
 }
 
-// assertRebuiltEqualSent asks the host, twice, to rebuild session's requests from
-// its log with replay, and checks the two answers are the same bytes and that the
-// rebuilt bodies equal sent one for one, in order.
-func assertRebuiltEqualSent(t *testing.T, h *sdkHost, session, replay string, sent []json.RawMessage) {
+// rebuiltInvocations reads a replay's result: the rebuilt client invocations as
+// a JSON array in settlement order, or an object holding them under
+// "invocations".
+func rebuiltInvocations(t *testing.T, raw json.RawMessage) []wireRebuilt {
+	t.Helper()
+	var list []wireRebuilt
+	if err := json.Unmarshal(raw, &list); err == nil {
+		return list
+	}
+	var wrapped struct {
+		Invocations []wireRebuilt `json:"invocations"`
+	}
+	if err := json.Unmarshal(raw, &wrapped); err != nil || wrapped.Invocations == nil {
+		t.Fatalf("the replay answered neither an invocation array nor {\"invocations\": [...]}: %s", raw)
+	}
+	return wrapped.Invocations
+}
+
+// sha256Digest is "sha256:<hex>" of b, the form the invocation record uses.
+func sha256Digest(b []byte) string {
+	sum := sha256.Sum256(b)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// argsDigest is the digest of an argument list as the invocation record takes
+// it: over its JSON encoding, HTML characters not escaped.
+func argsDigest(args []string) string {
+	if args == nil {
+		args = []string{}
+	}
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(args)
+	return sha256Digest(bytes.TrimSuffix(b.Bytes(), []byte("\n")))
+}
+
+// invocationMismatch is nil when the rebuilt invocation is the settled one: the
+// same argument list and digest, the rebuilt list digesting to it, the same
+// standard-input digest, and the rebuilt standard input digesting to it.
+func invocationMismatch(settled *wireInvocation, rebuilt wireRebuilt) error {
+	switch {
+	case settled == nil:
+		return errors.New("the settlement records no client invocation")
+	case !slices.Equal(rebuilt.Args, settled.Args):
+		return fmt.Errorf("rebuilt arguments %q, logged %q", rebuilt.Args, settled.Args)
+	case rebuilt.ArgsDigest != settled.ArgsDigest || argsDigest(rebuilt.Args) != settled.ArgsDigest:
+		return fmt.Errorf("rebuilt argument digest %s (recomputed %s), logged %s", rebuilt.ArgsDigest, argsDigest(rebuilt.Args), settled.ArgsDigest)
+	case rebuilt.StdinDigest != settled.StdinDigest:
+		return fmt.Errorf("rebuilt standard-input digest %s, logged %s", rebuilt.StdinDigest, settled.StdinDigest)
+	case rebuilt.Stdin == nil:
+		return errors.New("the rebuild carries no standard input")
+	case sha256Digest([]byte(*rebuilt.Stdin)) != settled.StdinDigest:
+		return fmt.Errorf("the rebuilt standard input digests to %s, logged %s", sha256Digest([]byte(*rebuilt.Stdin)), settled.StdinDigest)
+	}
+	return nil
+}
+
+// assertInvocationsRebuilt asks the host, twice, to rebuild session's client
+// invocations from its log with replay, checks the two answers are the same
+// bytes, that every settlement records a complete invocation of r's client with
+// a client session id of its own, and that the rebuilt invocations equal the
+// settled ones one for one, in order. It returns the rebuilt invocations.
+func assertInvocationsRebuilt(t *testing.T, h *sdkHost, session, replay string, settlements []protocol.Event, r clientRoute) []wireRebuilt {
 	t.Helper()
 	rebuild := func() json.RawMessage {
 		var q protocol.SessionQueryResult
@@ -147,34 +225,63 @@ func assertRebuiltEqualSent(t *testing.T, h *sdkHost, session, replay string, se
 	}
 	first, second := rebuild(), rebuild()
 	if len(bytes.TrimSpace(first)) == 0 || strings.TrimSpace(string(first)) == "null" {
-		t.Fatalf("%q rebuilt no requests", replay)
+		t.Fatalf("%q rebuilt no invocations", replay)
 	}
 	if !bytes.Equal(first, second) {
 		t.Fatalf("two rebuilds differ:\n%s\n---\n%s", first, second)
 	}
-	rebuilt := rebuiltRequests(t, first)
-	if len(sent) == 0 || len(rebuilt) != len(sent) {
-		t.Fatalf("the log rebuilt %d requests, the provider was sent %d", len(rebuilt), len(sent))
+	rebuilt := rebuiltInvocations(t, first)
+	if len(settlements) == 0 || len(rebuilt) != len(settlements) {
+		t.Fatalf("the log rebuilt %d client invocations, it has %d settlements: an attempt with no rebuildable invocation, or one never settled", len(rebuilt), len(settlements))
 	}
-	for i := range sent {
-		if !jsonEqual(t, rebuilt[i], sent[i]) {
-			t.Fatalf("request %d: rebuilt differs from sent\nrebuilt: %s\nsent:    %s", i, rebuilt[i], sent[i])
+	sessions := map[string]bool{}
+	for i, e := range settlements {
+		inv := requireInvocation(t, e, r)
+		if inv.SessionID == "" || sessions[inv.SessionID] {
+			t.Fatalf("%s %d names client session %q, want a new one per attempt", e.Type, e.Seq, inv.SessionID)
+		}
+		sessions[inv.SessionID] = true
+		if err := invocationMismatch(inv, rebuilt[i]); err != nil {
+			t.Fatalf("%s %d: %v", e.Type, e.Seq, err)
 		}
 	}
+	return rebuilt
 }
 
-// jsonEqual compares two JSON documents by value; either failing to decode fails
-// the scenario.
-func jsonEqual(t *testing.T, a, b json.RawMessage) bool {
+// selfCheckInvocationOracle proves the invocation oracle needs no client and no
+// sign-in: a rebuilt invocation equal to the settled one passes, and one that
+// differs in its arguments, either digest or its standard input, or that has no
+// standard input or no settled invocation, is refused.
+func selfCheckInvocationOracle(t *testing.T) {
 	t.Helper()
-	var x, y any
-	if err := json.Unmarshal(a, &x); err != nil {
-		t.Fatalf("not JSON: %v\n%s", err, a)
+	args := []string{"-p", "--system-prompt-file", "{attempt}/system.txt", "--model", "m"}
+	stdin := "The conversation so far <is> below & continues."
+	settled := &wireInvocation{Client: "c", Version: "1.0.0", Args: args, ArgsDigest: argsDigest(args), StdinDigest: sha256Digest([]byte(stdin)), SessionID: "s"}
+	good := wireRebuilt{Args: slices.Clone(args), ArgsDigest: settled.ArgsDigest, StdinDigest: settled.StdinDigest, Stdin: &stdin}
+	if err := invocationMismatch(settled, good); err != nil {
+		t.Fatalf("self-check: the oracle refused a matching invocation: %v", err)
 	}
-	if err := json.Unmarshal(b, &y); err != nil {
-		t.Fatalf("not JSON: %v\n%s", err, b)
+	other := stdin + " (changed)"
+	otherArgs := append(slices.Clone(args), "--effort", "high")
+	for name, bad := range map[string]wireRebuilt{
+		"other arguments":        {Args: otherArgs, ArgsDigest: settled.ArgsDigest, StdinDigest: good.StdinDigest, Stdin: &stdin},
+		"other argument digest":  {Args: good.Args, ArgsDigest: argsDigest(otherArgs), StdinDigest: good.StdinDigest, Stdin: &stdin},
+		"other stdin digest":     {Args: good.Args, ArgsDigest: good.ArgsDigest, StdinDigest: sha256Digest([]byte(other)), Stdin: &stdin},
+		"other standard input":   {Args: good.Args, ArgsDigest: good.ArgsDigest, StdinDigest: good.StdinDigest, Stdin: &other},
+		"no standard input":      {Args: good.Args, ArgsDigest: good.ArgsDigest, StdinDigest: good.StdinDigest},
+		"HTML-escaped arguments": {Args: []string{"<a>"}, ArgsDigest: sha256Digest([]byte(`["<a>"]`)), StdinDigest: good.StdinDigest, Stdin: &stdin},
+	} {
+		s := settled
+		if name == "HTML-escaped arguments" {
+			c := *settled
+			c.Args, c.ArgsDigest = []string{"<a>"}, sha256Digest([]byte(`["<a>"]`))
+			s = &c
+		}
+		if err := invocationMismatch(s, bad); err == nil {
+			t.Fatalf("self-check: the oracle accepted %s", name)
+		}
 	}
-	xb, _ := json.Marshal(x)
-	yb, _ := json.Marshal(y)
-	return bytes.Equal(xb, yb)
+	if err := invocationMismatch(nil, good); err == nil {
+		t.Fatal("self-check: the oracle accepted a settlement with no invocation")
+	}
 }

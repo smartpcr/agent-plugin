@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -18,11 +19,14 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/scope"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store/memstore"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/golden"
 	fakemodel "github.com/smartpcr/agent-plugin/src/harness/internal/testkit/model"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools/core"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/tools/prompt"
 )
 
 var bg = context.Background()
@@ -53,9 +57,14 @@ func newEnv(t *testing.T, turns ...fakemodel.Turn) *env {
 	for _, c := range []*cordis.Component{scope.Component, core.Component} {
 		must(0, must(root.Use(c, cordis.None{})).Wait())
 	}
+	must(0, must(root.Use(prompt.Component, prompt.Defaults())).Wait())
 	var tsvc tools.Service
-	g := must(root.Inject([]string{tools.Key.Name()}, func(c *cordis.Context) (err error) {
-		tsvc, err = tools.Key.Get(c)
+	var ps *prompt.Service
+	g := must(root.Inject([]string{tools.Key.Name(), prompt.Key.Name()}, func(c *cordis.Context) (err error) {
+		if tsvc, err = tools.Key.Get(c); err != nil {
+			return err
+		}
+		ps, err = prompt.Key.Get(c)
 		return err
 	}))
 	must(0, g.Wait())
@@ -64,7 +73,7 @@ func newEnv(t *testing.T, turns ...fakemodel.Turn) *env {
 	fakemodel.Register(t, models, route, e.tr)
 	f := must(driver.NewFactory(driver.FactoryOptions{
 		Context: root, Sessions: session.NewService(root, memstore.New(), session.Config{}),
-		Scopes: scope.NewTable(root), Models: models, Tools: tsvc,
+		Scopes: scope.NewTable(root), Models: models, Tools: tsvc, Prompt: ps,
 	}))
 	must(e.reg.SetFactory(root, f))
 	e.rt = subagent.New(e.reg)
@@ -524,4 +533,445 @@ func TestWaitQuietHonoursItsContext(t *testing.T) {
 		t.Fatalf("WaitQuiet during a pending start: %v, want the context's error", err)
 	}
 	free()
+}
+
+// hang is a turn whose stream stays open until the request is cancelled.
+var hang = fakemodel.Turn{Events: []fakemodel.Event{fakemodel.Text("par")}, Hang: true}
+
+// recorder is the settle-point seam of one manager (subagent.SetTrace): it keeps
+// every point in the order the runs passed them, and can hold a run at one point
+// until the test lets it go on.
+type recorder struct {
+	mu    sync.Mutex
+	lines []string // "child point detail"
+	holds map[string]*held
+}
+
+type held struct {
+	reached, proceed chan struct{}
+}
+
+func record(rt subagent.Runtime) *recorder {
+	r := &recorder{holds: map[string]*held{}}
+	subagent.SetTrace(rt, r.trace)
+	return r
+}
+
+func (r *recorder) trace(child session.ID, point, detail string) {
+	key := string(child) + " " + point
+	r.mu.Lock()
+	r.lines = append(r.lines, key+" "+detail)
+	h := r.holds[key]
+	delete(r.holds, key)
+	r.mu.Unlock()
+	if h != nil {
+		close(h.reached)
+		<-h.proceed
+	}
+}
+
+// hold stops child's run at point: reached is closed when the run gets there,
+// and the run goes on once proceed is called (also when the test ends).
+func (r *recorder) hold(t *testing.T, child session.ID, point string) (reached <-chan struct{}, proceed func()) {
+	t.Helper()
+	h := &held{reached: make(chan struct{}), proceed: make(chan struct{})}
+	free := sync.OnceFunc(func() { close(h.proceed) })
+	r.mu.Lock()
+	r.holds[string(child)+" "+point] = h
+	r.mu.Unlock()
+	t.Cleanup(free)
+	return h.reached, free
+}
+
+// of is child's points so far, as "point detail".
+func (r *recorder) of(child session.ID) []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []string
+	for _, l := range r.lines {
+		if rest, ok := strings.CutPrefix(l, string(child)+" "); ok {
+			out = append(out, rest)
+		}
+	}
+	return out
+}
+
+// count is how many times child passed point.
+func (r *recorder) count(child session.ID, point string) int {
+	n := 0
+	for _, l := range r.of(child) {
+		if strings.HasPrefix(l, point+" ") {
+			n++
+		}
+	}
+	return n
+}
+
+// inserted maps every message id the child's log admitted to the seq of the
+// splice that first inserted it.
+func inserted(t *testing.T, s session.ReadSession) map[string]event.Seq {
+	t.Helper()
+	evs, err := s.Read(bg, 0, 0)
+	if err != nil {
+		t.Fatalf("read the child's log: %v", err)
+	}
+	out := map[string]event.Seq{}
+	for _, ev := range evs {
+		if ev.Type() != agent.SplicedType.Name() {
+			continue
+		}
+		sp, err := agent.SplicedType.As(ev)
+		if err != nil {
+			t.Fatalf("splice at %d: %v", ev.Seq(), err)
+		}
+		for _, m := range sp.Inserted {
+			if _, ok := out[m.ID]; !ok {
+				out[m.ID] = ev.Seq()
+			}
+		}
+	}
+	return out
+}
+
+// TestStartPublishesResultBlocksDisposeIdempotent: Start returns only after A6
+// (the child is published under its one owner and its task is in its log),
+// Result blocks until S7, and Dispose called twice at once returns nil from
+// both, settles the run once and leaves Result the same; a later Dispose is a
+// no-op.
+//
+//dsh:test DH-T-SUBAGENT-1
+func TestStartPublishesResultBlocksDisposeIdempotent(t *testing.T) {
+	// In a synctest bubble, synctest.Wait shows Result still blocked with no
+	// settle time.
+	synctest.Test(t, func(t *testing.T) {
+		e := newEnv(t, hang)
+		rec := record(e.rt)
+		_, c := e.component("C")
+		act := must(e.rt.Start(c, e.spec("K")))
+
+		// A6: published under C, addressable, and the task accepted (A5) as the
+		// creator's next-turn input, durable in the child's log.
+		if o, ok := e.rt.OwnerOf("K"); !ok || o != c {
+			t.Fatalf("owner of K when Start returned: %v %v", o, ok)
+		}
+		if got := e.rt.Children(c); !slices.Equal(got, []session.ID{"K"}) {
+			t.Fatalf("children of C when Start returned: %v", got)
+		}
+		if _, ok := e.reg.Get("K"); !ok {
+			t.Fatal("K was not addressable when Start returned")
+		}
+		task := false
+		for _, ev := range must(act.Agent().Session().Read(bg, 0, 0)) {
+			if ev.Type() != agent.SplicedType.Name() {
+				continue
+			}
+			for _, m := range must(agent.SplicedType.As(ev)).Inserted {
+				task = task || (m.Source == subagent.SourceSubagent && m.Text == "do it")
+			}
+		}
+		if !task {
+			t.Fatal("the task was not in the child's log when Start returned")
+		}
+		waitRequests(t, e.tr, 1)
+
+		// Result blocks until S7.
+		rctx, stopResult := context.WithCancel(bg)
+		results := make(chan subagent.Result, 1)
+		goJoined(t, stopResult, func() {
+			if r, err := act.Result(rctx); err == nil {
+				results <- r
+			}
+		})
+		synctest.Wait()
+		select {
+		case r := <-results:
+			t.Fatalf("Result returned %+v while the run was working", r)
+		default:
+		}
+		if n := rec.count("K", "S7"); n != 0 {
+			t.Fatalf("S7 reached %d times while the run was working", n)
+		}
+
+		// Two Disposes at once: both nil, one settlement.
+		errs := make(chan error, 2)
+		for range 2 {
+			goJoined(t, nil, func() { errs <- act.Dispose(bg) })
+		}
+		for range 2 {
+			if err := <-errs; err != nil {
+				t.Fatalf("Dispose: %v", err)
+			}
+		}
+		var r subagent.Result
+		select {
+		case r = <-results:
+		case <-time.After(10 * time.Second):
+			t.Fatal("Result never returned after Dispose")
+		}
+		if r.Stop != subagent.StopAborted || r.Cleanup != subagent.CleanupOK {
+			t.Fatalf("result %+v", r)
+		}
+		if rec.count("K", "S7") != 1 || rec.count("K", "S6") != 1 || rec.count("K", "S4") != 1 {
+			t.Fatalf("the run did not settle exactly once: %v", rec.of("K"))
+		}
+
+		// A later Dispose is a no-op: nil, no new point, the same result.
+		before := rec.of("K")
+		if err := act.Dispose(bg); err != nil {
+			t.Fatalf("a third Dispose: %v", err)
+		}
+		if after := rec.of("K"); !slices.Equal(after, before) {
+			t.Fatalf("a third Dispose passed settle points again: %v, then %v", before, after)
+		}
+		if again := settled(t, act); again != r {
+			t.Fatalf("Result changed after a second Dispose: %+v, then %+v", r, again)
+		}
+	})
+}
+
+// goroutines is the stack of every live goroutine, by its "goroutine N" header.
+func goroutines() map[string]string {
+	buf := make([]byte, 1<<16)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			buf = buf[:n]
+			break
+		}
+		buf = make([]byte, 2*len(buf))
+	}
+	out := map[string]string{}
+	for _, g := range strings.Split(string(buf), "\n\n") {
+		head, _, _ := strings.Cut(g, " [")
+		out[head] = g
+	}
+	return out
+}
+
+// TestRootDisposalLeavesNoGoroutine: three children under two owners; disposing
+// the root, with no call on any activation, releases and settles every child,
+// leaves none in the registry or the manager, and leaves no goroutine behind.
+// The settle signal is synctest.Wait: once it returns, every goroutine of the
+// bubble has exited or is durably blocked, so the live set is stable, and a
+// goroutine not in the baseline is a leak.
+//
+//dsh:test DH-T-SUBAGENT-2
+func TestRootDisposalLeavesNoGoroutine(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		base := goroutines()
+		e := newEnv(t, hang, hang, hang)
+		_, c := e.component("C")
+		_, d := e.component("D")
+		owners := map[session.ID]*cordis.Context{"K1": c, "K2": c, "K3": d}
+		var acts []subagent.Activation
+		for _, id := range []session.ID{"K1", "K2", "K3"} {
+			acts = append(acts, must(e.rt.Start(owners[id], e.spec(string(id)))))
+		}
+		waitRequests(t, e.tr, 3)
+		if len(e.rt.Children(c)) != 2 || len(e.rt.Children(d)) != 1 {
+			t.Fatalf("children: C %v, D %v", e.rt.Children(c), e.rt.Children(d))
+		}
+
+		e.root.Dispose()
+		synctest.Wait()
+
+		for _, a := range acts {
+			id := a.Child()
+			if _, ok := e.reg.Get(id); ok {
+				t.Errorf("%s is still in the registry", id)
+			}
+			if _, ok := e.rt.OwnerOf(id); ok {
+				t.Errorf("%s kept an owner", id)
+			}
+			select {
+			case <-agent.Done(a.Agent()):
+			default:
+				t.Errorf("%s's driver goroutine outlived the root", id)
+			}
+			if r := settled(t, a); r.Stop != subagent.StopAborted || r.Cleanup != subagent.CleanupOK {
+				t.Errorf("%s result %+v", id, r)
+			}
+		}
+		if n := len(e.rt.Children(c)) + len(e.rt.Children(d)); n != 0 {
+			t.Errorf("%d children outlived the root", n)
+		}
+		var leaked []string
+		for id, stack := range goroutines() {
+			if _, ok := base[id]; !ok {
+				leaked = append(leaked, stack)
+			}
+		}
+		if len(leaked) > 0 {
+			slices.Sort(leaked)
+			t.Fatalf("%d goroutine(s) outlived the root:\n\n%s", len(leaked), strings.Join(leaked, "\n\n"))
+		}
+	})
+}
+
+// TestConcurrentSendReleaseResumeSerialised: sends, a release and a resume of
+// one child, all at once, are serialised. Every send is answered with a receipt
+// or agent/closing, never another error; every receipt names its splice in the
+// child's log, so no admitted send is lost, and no refused send was admitted. A
+// resume issued while the release runs is not refused: it waits until the run
+// has settled (S7), then runs the same child session with its log intact. A
+// resume while the run still works is refused, as the child has an owner.
+//
+// The sends use the next-step list, which wakes no turn, so the scripted model
+// sees exactly one request per run whatever the interleaving.
+//
+//dsh:test DH-T-SUBAGENT-9
+func TestConcurrentSendReleaseResumeSerialised(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newEnv(t, hang, hang)
+		rec := record(e.rt)
+		_, c := e.component("C")
+		act := must(e.rt.Start(c, e.spec("K")))
+		waitRequests(t, e.tr, 1)
+		k := act.Agent()
+
+		resume := e.spec("K")
+		resume.Resume, resume.Prompt = true, "go on"
+		if _, err := e.rt.Start(c, resume); !errors.Is(err, subagent.ErrNameTaken) {
+			t.Fatalf("a resume of a working child: %v, want name-taken", err)
+		}
+
+		type sent struct {
+			id  string
+			r   agent.Receipt
+			err error
+		}
+		const n = 12
+		out := make(chan sent, n)
+		send := func(i int) {
+			id := fmt.Sprintf("m-%02d", i)
+			r, err := agent.Send(bg, k, agent.ListNextStep, agent.InboxMessage{ID: id, Source: "test", Text: id})
+			out <- sent{id, r, err}
+		}
+		// The first third of the sends race the start of the release.
+		for i := range n / 3 {
+			goJoined(t, nil, func() { send(i) })
+		}
+		reached, proceed := rec.hold(t, "K", "S2")
+		disposed := make(chan error, 1)
+		goJoined(t, proceed, func() { disposed <- act.Dispose(bg) })
+		within(t, reached, "the release reaching S2")
+
+		// The release is held at S2: a resume now waits for it, and the next
+		// third of the sends land while the run is releasing.
+		resumed := make(chan subagent.Activation, 1)
+		settledFirst := make(chan bool, 1)
+		goJoined(t, proceed, func() {
+			a, err := e.rt.Start(c, resume)
+			if err != nil {
+				t.Errorf("a resume during the release: %v, want it admitted once the run settled", err)
+				close(resumed)
+				return
+			}
+			settledFirst <- rec.count("K", "S7") == 1
+			resumed <- a
+		})
+		for i := n / 3; i < 2*n/3; i++ {
+			goJoined(t, nil, func() { send(i) })
+		}
+		synctest.Wait()
+		select {
+		case <-resumed:
+			t.Fatal("the resume returned while the first run was still releasing")
+		default:
+		}
+		proceed()
+		// The last third race the stop, the release and the resume.
+		for i := 2 * n / 3; i < n; i++ {
+			goJoined(t, nil, func() { send(i) })
+		}
+
+		if err := <-disposed; err != nil {
+			t.Fatalf("Dispose: %v", err)
+		}
+		act2, ok := <-resumed
+		if !ok {
+			t.FailNow()
+		}
+		if !<-settledFirst {
+			t.Fatalf("the resume was admitted before the first run settled: %v", rec.of("K"))
+		}
+		if r := settled(t, act); r.Stop != subagent.StopAborted || r.Cleanup != subagent.CleanupOK {
+			t.Fatalf("first run %+v", r)
+		}
+		if act2.Child() != "K" {
+			t.Fatalf("the resume ran %q", act2.Child())
+		}
+		waitRequests(t, e.tr, 2)
+
+		receipts := map[string]agent.Receipt{}
+		var refused []string
+		for range n {
+			s := <-out
+			switch {
+			case s.err == nil:
+				receipts[s.id] = s.r
+			case errors.Is(s.err, agent.ErrClosing):
+				refused = append(refused, s.id)
+			default:
+				t.Errorf("send %s: %v, want a receipt or agent/closing", s.id, s.err)
+			}
+		}
+		log := inserted(t, act2.Agent().Session())
+		for id, r := range receipts {
+			if at, ok := log[id]; !ok || at != r.Seq {
+				t.Errorf("send %s was receipted at seq %d; the log has it at %d (%v)", id, r.Seq, at, ok)
+			}
+		}
+		for _, id := range refused {
+			if at, ok := log[id]; ok {
+				t.Errorf("send %s was refused, yet the log admitted it at seq %d", id, at)
+			}
+		}
+		t.Logf("%d sends receipted, %d refused with agent/closing", len(receipts), len(refused))
+
+		must(0, act2.Dispose(bg))
+		if r := settled(t, act2); r.Stop != subagent.StopAborted {
+			t.Fatalf("resumed run %+v", r)
+		}
+	})
+}
+
+// settleOrder is the golden of TestSettleOrderGolden.
+const settleOrder = "settle_order"
+
+// TestSettleOrderGolden: the settle points a run passes come in the fixed order
+// of subagent-team.md §6.2 on each M1 path: a natural end (S1 close), a Dispose
+// and an owner's teardown (S2 stop), then S3 capture, S4 release, S6 free and
+// S7 deliver; testdata/settle_order.golden holds them. S5, the ledger record,
+// and the interrupt and time-limit legs are deferred to DH-S-29 (doc.go;
+// decision M1-D-LOOP-3 B).
+//
+//dsh:test DH-T-SUBAGENT-3
+func TestSettleOrderGolden(t *testing.T) {
+	e := newEnv(t, fakemodel.Reply("done"), hang, hang)
+	rec := record(e.rt)
+	_, c := e.component("C")
+	df, d := e.component("D")
+
+	natural := must(e.rt.Start(c, e.spec("natural-end")))
+	settled(t, natural)
+
+	disposed := must(e.rt.Start(c, e.spec("dispose")))
+	waitRequests(t, e.tr, 2)
+	must(0, disposed.Dispose(bg))
+
+	torn := must(e.rt.Start(d, e.spec("owner-teardown")))
+	waitRequests(t, e.tr, 3)
+	df.Dispose()
+	must(0, df.Wait())
+	settled(t, torn)
+
+	var b strings.Builder
+	for _, id := range []session.ID{"natural-end", "dispose", "owner-teardown"} {
+		fmt.Fprintf(&b, "# %s\n", id)
+		for _, p := range rec.of(id) {
+			b.WriteString(p + "\n")
+		}
+	}
+	golden.Assert(t, settleOrder, b.String())
 }

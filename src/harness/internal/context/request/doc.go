@@ -3,10 +3,15 @@
 // through one logged, ordered pipeline.
 //
 // A Pipeline is the one agent.PreStep listener of the context area. It calls
-// downstream first; when the step is entered it runs its contributors against
-// a read-only view of the agent's current surface, in the fixed order of one
-// table (Order), whatever order they registered in, and appends what they
-// return to Enter.Messages after the claimed batch. The driver logs every
+// downstream first; when the step is entered it runs the compaction check
+// (Options.Compact, a Considerer: nil at M1 by decision M1-D-LOOP-4), then
+// its contributors against a read-only view of the agent's current surface
+// read after that check, so a baseline compaction shadowed is entered again
+// in the same step. Contributors run in the fixed order of one table (Order),
+// whatever order they registered in, and their outputs merge by that order
+// into Enter.Messages: a contributor's After messages directly after the
+// claimed message they follow, its Reword in place of a claimed message's
+// text, its Messages after the claimed batch (see Output). The driver logs every
 // entered message as user/message before it builds the step's request, so
 // every contribution is in the log with its observation (the message source)
 // and a request rebuilt from the log at its requestAsOf equals the one sent.

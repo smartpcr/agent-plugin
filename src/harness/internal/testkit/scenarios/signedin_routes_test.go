@@ -11,7 +11,8 @@ import (
 )
 
 // The signed-in client routes the DH-S-9 scenarios (DH-E-LLM-1, DH-E-LLM-3,
-// DH-E-VIEW-1) run on. Under OWNER-2 (decisions.md
+// DH-E-VIEW-1) and, since gap-closure-plan 17.4.4, the DH-S-11 scenarios
+// (DH-E-SESSION-1, -2, DH-E-AGENT-1 to -4, DH-E-TOOLCHAIN-1) run on. Under OWNER-2 (decisions.md
 // models-signed-in-claude-copilot) M1 has no API key and no DeepSeek route: a real
 // model is reached only through the user's own installed and signed-in official
 // client, which dsh starts as a child process and never reads a token of
@@ -97,12 +98,15 @@ func (r clientRoute) other() clientRoute {
 
 // wireInvocation is the client invocation a settlement on a client route
 // records: the harness-to-client boundary where SP-1 holds (M1-D-PIPE-4 A).
+// Args is the argument list with the attempt directory written as
+// "{attempt}".
 type wireInvocation struct {
-	Client      string `json:"client"`
-	Version     string `json:"version"`
-	ArgsDigest  string `json:"args_digest"`
-	StdinDigest string `json:"stdin_digest"`
-	SessionID   string `json:"session_id"`
+	Client      string   `json:"client"`
+	Version     string   `json:"version"`
+	Args        []string `json:"args"`
+	ArgsDigest  string   `json:"args_digest"`
+	StdinDigest string   `json:"stdin_digest"`
+	SessionID   string   `json:"session_id"`
 }
 
 // invocationOf is the client invocation e records, nil for none.

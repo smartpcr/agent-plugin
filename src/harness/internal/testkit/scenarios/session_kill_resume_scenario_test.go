@@ -16,46 +16,64 @@ import (
 )
 
 // TestKilledDuringToolCallResumesIntoAcceptedHistory: a host killed during a tool
-// call resumes into a history a real provider accepts (areas/core-session.md
-// DH-E-SESSION-2; DH-D-SESSION-5, DH-D-SESSION-2). Authored in DH-S-11; executed in
-// DH-S-17, which requires the agent loop (DH-S-11), the shell tool (DH-S-13) and
-// the headless launcher (DH-S-16).
+// call resumes into a history a real model accepts (areas/core-session.md
+// DH-E-SESSION-2; DH-D-SESSION-5, DH-D-SESSION-2). Authored in DH-S-11 and
+// retargeted onto the signed-in client routes of areas/llm.md DH-D-LLM-12 by
+// gap-closure-plan 17.4.4 (M1-D-CLOSE-4 A); executed in DH-S-17, which requires
+// the agent loop (DH-S-11), the shell tool (DH-S-13) and the headless launcher
+// (DH-S-16).
 //
-// Given the built dsh, a fresh temporary home on the real store, a real API key
-// set at run time, a workspace in workspace-write mode and the shell tool, when (1)
-// the model is prompted to run a command that sleeps for two minutes, (2) the
-// tool/call is durable (read back through session/history), (3) the session is
-// exported and the host killed without a graceful stop, (4) a new host on the same
-// home resumes the session, (5) it is exported again and (6) a prompt asks what
-// happened, then the second export begins with the first, byte for byte, and then
-// holds, in order, exactly one tool/result with code tools/outcome-unknown citing
-// the call, step/end, turn/end with reason interrupted and session/end-seed;
-// resuming a second time adds no closer; and the provider answers step 6 with an
-// assistant/message, so the history has no unanswered call. Whether the sleeping
-// process survived is the shell tool's assertion (A09), not this scenario's.
-// Cleanup: the hosts' trees, the sleeping command included, are stopped by the
-// launcher and the home lies under t.TempDir(). On failure both exports are kept
-// (their paths are logged).
+// Given the built dsh, a fresh temporary home on the real store, no API key
+// anywhere, the user's own installed official client signed in as themselves
+// with its route registered by a layer, a workspace in workspace-write mode and
+// the shell tool, when, per route, (1) the model is prompted to run a command
+// that sleeps for two minutes, (2) the tool/call is durable (read back through
+// session/history), (3) the session is exported and the host killed without a
+// graceful stop, (4) a new host on the same home resumes the session, (5) it is
+// exported again and (6) a prompt asks what happened, then the second export
+// begins with the first, byte for byte, and then holds, in order, exactly one
+// tool/result with code tools/outcome-unknown citing the call, step/end,
+// turn/end with reason interrupted and session/end-seed; resuming a second time
+// adds no closer; and the client's model answers step 6 with an
+// assistant/message recording the invocation of the route's client, so the
+// history rendered to the client (the outcome-unknown result included) has no
+// unanswered call. The client ran only while an attempt ran: it returned the
+// shell call unexecuted before the command started (M1-D-PIPE-6 A), so the kill
+// meets the shell tool's child, not the client. Whether the sleeping process
+// survived is the shell tool's assertion (A09), not this scenario's. Cleanup:
+// the hosts' trees, the sleeping command included, are stopped by the launcher
+// and the home lies under t.TempDir(); nothing of the user's sign-in is
+// touched. On failure both exports are kept (their paths are logged).
 //
-// Inputs: DSH_DEEPSEEK_API_KEY is the real key, handed to the program as
-// DEEPSEEK_API_KEY; DSH_SCENARIO_SESSION2_MODEL the model id on route
-// deepseek-official; DSH_SCENARIO_SESSION2_LAYER a layer, a template over
-// {workspace}, that selects the headless profile and the SQLite store and enables
-// the shell tool; DSH_SCENARIO_SESSION2_PROMPT a prompt that makes the model run
-// one shell command sleeping 120 seconds.
+// The legs: claude-code must pass; copilot-cli is run and recorded either way
+// (M1-D-LOOP-6 A; forEachRoute).
+//
+// Inputs: DSH_SCENARIO_<route>_MODEL (<route> is CLAUDE_CODE or COPILOT_CLI)
+// the model; DSH_SCENARIO_SESSION2_LAYER a layer, a template over {route} and
+// {workspace}, that registers that client route, selects the headless profile
+// and the SQLite store and enables the shell tool; DSH_SCENARIO_SESSION2_PROMPT
+// a prompt that makes the model run one shell command sleeping 120 seconds.
 //
 //dsh:scenario DH-E-SESSION-2
 func TestKilledDuringToolCallResumesIntoAcceptedHistory(t *testing.T) {
-	key := need(t, "DSH_DEEPSEEK_API_KEY", "a real DeepSeek API key")
-	model := need(t, "DSH_SCENARIO_SESSION2_MODEL", "a model on deepseek-official")
-	layerT := need(t, "DSH_SCENARIO_SESSION2_LAYER", "a headless layer with the SQLite store and the shell tool")
+	layerT := need(t, "DSH_SCENARIO_SESSION2_LAYER", "a headless layer over {route} with the SQLite store and the shell tool")
 	prompt := need(t, "DSH_SCENARIO_SESSION2_PROMPT", "a prompt that runs a command sleeping 120 seconds")
-
-	ws := t.TempDir()
 	bin := dshBinary(t)
-	env := []string{"DEEPSEEK_API_KEY=" + key}
-	args := []string{"--home", filepath.Join(t.TempDir(), "home"), "--layer", writeLayer(t, expand(layerT, map[string]string{"workspace": filepath.ToSlash(ws)}))}
-	route := &protocol.ModelRoute{Provider: "deepseek-official", Model: model}
+	forEachRoute(t, func(t *testing.T, r clientRoute) {
+		killedDuringToolCall(t, bin, r, layerT, prompt)
+	})
+}
+
+// killedDuringToolCall is DH-E-SESSION-2 on route r.
+func killedDuringToolCall(t *testing.T, bin string, r clientRoute, layerT, prompt string) {
+	t.Helper()
+	ws := t.TempDir()
+	vars := map[string]string{"workspace": filepath.ToSlash(ws), "route": r.ID}
+	args := []string{"--home", filepath.Join(t.TempDir(), "home"), "--layer", writeLayer(t, expand(layerT, vars))}
+	route := &protocol.ModelRoute{Provider: r.ID, Model: r.model(t)}
+	// No entry: the launcher's scrubbed environment holds no credential, and the
+	// client finds the user's own sign-in in its configuration home.
+	var env []string
 
 	// (1)-(3) Run until the call is durable, export, then kill.
 	h1 := startSDK(t, bin, env, args)
@@ -116,12 +134,16 @@ func TestKilledDuringToolCallResumesIntoAcceptedHistory(t *testing.T) {
 		}
 	}
 
-	// (6) The provider accepts the history: no call is left unanswered.
+	// (6) The model accepts the history: no call is left unanswered.
 	run := h3.awaitRun(t, session, h3.prompt(t, session, "What happened to the command you ran?"), 10*time.Minute)
 	evs := inRun(h3.history(t, session), run.FirstSeq, run.LastSeq)
-	logRequestIDs(t, evs)
-	if end := turnEnd(t, evs); end.Reason.Kind != "completed" || len(ofType(evs, "assistant/message")) == 0 {
-		t.Fatalf("the provider did not answer after the resume: turn ended %+v", end.Reason)
+	logInvocations(t, evs)
+	msgs := ofType(evs, "assistant/message")
+	if end := turnEnd(t, evs); end.Reason.Kind != "completed" || len(msgs) == 0 {
+		t.Fatalf("the model did not answer after the resume: turn ended %+v", end.Reason)
+	}
+	for _, m := range msgs {
+		requireInvocation(t, m, r)
 	}
 }
 

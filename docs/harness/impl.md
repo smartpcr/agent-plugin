@@ -941,6 +941,8 @@ left unanswered in history on any exit path.
 
 **Decision log (pointer, M1).** For the M1 story, the M1 manual check, the definition of done and this stage's closure follow the decisions logged in [the M1 decision log](../stories/harness-DSH-M1/decisions.md) (`models-signed-in-claude-copilot`, `platforms-windows-wsl`); this section's text is unchanged (DC-2).
 
+**Ticks aligned (pointer, M1).** For the M1 story, gap-closure plan step 17.4.6 unticked step 11.6 as a known-false tick (gaps M1-G-LOOP-8 and -16: `DH-T-SUBAGENT-1`, `-2`, `-3`, `-4`, `-9` and `-14` were not written) and re-ticked it in the same change, because plan Stage 17.2 passes in both gate lanes at commit `fda4b98` and every test decision M1-D-LOOP-3 B keeps in M1 passes (`DH-T-SUBAGENT-1`, `-2`, `-9` and the M1 legs of `-3`; `-4`, `-14` and the time-limit and interrupt legs of `-3` are deferred to [DH-S-29](#dh-s-29)). Steps 11.3, 11.4 and 11.7 stay unticked: each waits for its row of the M1 manual check (plan 17.4.3, not run). Steps 11.1, 11.2 and 11.5 keep their ticks. The ticks are built, not done, and are re-verified at the M1 closure commit (M1-D-CLOSE-1). Tests by `DH-T` ID are in [the DH-S-11 evidence record](../stories/harness-DSH-M1/evidence/DH-S-11.md#gap-closure-plan-phase-17), "Gap closure (plan Phase 17)", and the closure in its "Closure". This section's text is unchanged (DC-2).
+
 <a id="dh-s-12"></a>
 ### DH-S-12: Working directory, filesystem seam, policy resolver and file tools
 
@@ -1802,6 +1804,8 @@ and record that the child's request still asks; both `manual`.
 54.7.
 
 **Exit evidence.** The evidence record, with H-10 struck from the open list.
+
+**Deferred tests (pointer, M1).** For the M1 story, three tests that step 11.6 requires through [DH-D-SUBAGENT-1](areas/subagent-team.md#dh-d-subagent-1) move here by decision M1-D-LOOP-3 (B) in [the M1 decision log](../stories/harness-DSH-M1/decisions.md) (gap-closure plan steps 17.2.5 and 17.2.6): `DH-T-SUBAGENT-4`, the grandchild wait, with the ledger and notices of 29.1 and the in-process children of 29.3; `DH-T-SUBAGENT-14`, the capability check at A1 and the output-schema check at S3, with the providers of 29.3; and the interrupt and time-limit legs of `DH-T-SUBAGENT-3`, with the S5 record of 29.1 and the interrupt of 29.4. They are deferred by `//dsh:test ... later DH-S-29` in `delegate/subagent/doc.go`. This section's text is unchanged (DC-2).
 
 <a id="dh-s-30"></a>
 ### DH-S-30: Schedules, goals and plan mode
@@ -3455,6 +3459,8 @@ named there.
 | Action cards, personalised pages and the badge skill are dropped (I5 Q10); a translation appended to a free session (U-K2-13) | [DH-S-57](#dh-s-57) |
 | The remaining scope boundaries of both registers that gained a sentence or a small decision (core §6.2, host §5.2); one row per decision when [design.md §9.2](design.md#92-recommended-defaults-applied-not-confirmed-by-the-owner) replaces its catch-all rows | [DH-S-47](#dh-s-47), [DH-S-59](#dh-s-59), where each is published as a known limit |
 
+**Confirmed (pointer, M1).** For the M1 story, the owner confirmed the turn budget row above in writing on 2026-11-23: 500 steps per turn, 8 attempts per step, no time limit (decision M1-D-LOOP-5 in [the M1 decision log](../stories/harness-DSH-M1/decisions.md), with `turn-budget-defaults-s11` now in force; gap-closure plan step 17.4.8). The values stay constants in `agent/driver/budget.go`, and [the story's tech-spec](../stories/harness-DSH-M1/tech-spec.md) sec. 5.5 and [design.md §9.2](design.md#92-recommended-defaults-applied-not-confirmed-by-the-owner) record the confirmation. This section's text and table are unchanged (DC-2).
+
 ### 9.2 What is still open
 
 From [design.md §9.3](design.md#93-still-open). These are not defaults: nobody has
@@ -3622,6 +3628,8 @@ built and not done. At [M5](#m5): none.
 **Held open (pointer, M1).** For the M1 story, decisions M1-D-BOOT-1 (b) and M1-D-BOOT-2 (b) in [the M1 decision log](../stories/harness-DSH-M1/decisions.md) hold open the cut-short parts of steps 6.2, 6.3, 6.6, 6.7, 6.15, 6.16 and 6.17 and the test `DH-T-HOST-17` as H-24 to H-32. Each entry, with the part that waits and its closing step (gap-closure plan stages 19.3 to 19.5, and impl.md 16.7 for `DH-T-HOST-17`), is in the "Held open" list of [the DH-S-6 evidence record](../stories/harness-DSH-M1/evidence/DH-S-6.md#held-open). This section's text and table are unchanged (DC-2).
 
 **Held open (pointer, M1, store).** For the M1 story, decisions M1-D-STORE-D (b) and M1-D-STORE-B (a) in [the M1 decision log](../stories/harness-DSH-M1/decisions.md) hold open three more parts as H-33 to H-35: H-33, the draft record of step 8.7 ([DH-D-STORAGE-3](areas/storage.md#dh-d-storage-3)), closing at step 21.2, the composer step of [DH-S-21](#dh-s-21) (gap-closure plan step 15.3.9); H-34, the budgets of `DH-T-STORE-18` (step 7.1), and H-35, the budgets of `DH-T-VIEW-25` (step 8.5), both provisional from their first measured run and pinned at step 16.7 (gap-closure plan steps 15.1.5 and 15.3.2; not H-10). `DH-T-VIEW-25`'s search and `TreeMessages` clauses belong to [DH-D-VIEW-6](areas/session-views.md#dh-d-view-6) at [DH-S-23](#dh-s-23). Decision M1-D-STORE-E (a) holds open H-36: linear growth of the bytes the event index upserts (step 8.2), until the view tables at [DH-S-23](#dh-s-23) (gap-closure plan step 15.2.4). Each entry, with the part that waits and its closing step, is in the "Held open" list of [the DH-S-7 evidence record](../stories/harness-DSH-M1/evidence/DH-S-7.md#held-open) (H-34) or [the DH-S-8 evidence record](../stories/harness-DSH-M1/evidence/DH-S-8.md#held-open) (H-33, H-35, H-36). This section's text and table are unchanged (DC-2).
+
+**Held open (pointer, M1, agent loop).** For the M1 story, decision M1-D-LOOP-2 A in [the M1 decision log](../stories/harness-DSH-M1/decisions.md) pins 100 ms as the M1 budget of `DH-T-AGENT-28` (step 11.3, [DH-D-AGENT-3](areas/agent-loop.md#dh-d-agent-3)) and holds its final figure open as H-37: the p99 continuation latency on the heavy-tailed session corpus with the replay provider, pinned at step 16.7 (gap-closure plan step 17.4.7; not H-10, which is the replay of a session with children). The entry, with the part that waits and its closing step, is in the "Held open" list of [the DH-S-11 evidence record](../stories/harness-DSH-M1/evidence/DH-S-11.md#held-open). This section's text and table are unchanged (DC-2).
 
 ### 10.4 Scenarios that span stages
 

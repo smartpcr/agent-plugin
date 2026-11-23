@@ -1,26 +1,37 @@
 # DH-S-11 evidence
 
-Decisions governing this record ([decisions.md](../decisions.md)): `m1-operator-run`, `context-package-name`, `agent-28-staged-acceptance`, `models-signed-in-claude-copilot` with M1-D-PIPE-3, M1-D-PIPE-4 and M1-D-CLOSE-3 (the M1 run moves to the signed-in route, so `dh-s-11-closure-path` is superseded), `platforms-windows-wsl`, M1-D-CLOSE-1, M1-D-CLOSE-4 and M1-D-LOOP-6, and the open `turn-budget-defaults-s11`, M1-D-LOOP-1 to M1-D-LOOP-5 and `retro-entry-order-s8-s11`. The restated definition of done is decisions.md sec. 1.1. Logged by gap-closure-plan Stage 12.1; merge commit: recorded when the Stage 12.1 change merges.
+Decisions governing this record ([decisions.md](../decisions.md)): `m1-operator-run`, `context-package-name`, `agent-28-staged-acceptance`, `models-signed-in-claude-copilot` with M1-D-PIPE-3, M1-D-PIPE-4 and M1-D-CLOSE-3 (the M1 run moves to the signed-in route, so `dh-s-11-closure-path` is superseded), `platforms-windows-wsl`, M1-D-CLOSE-1, M1-D-CLOSE-4 and M1-D-LOOP-6, and the open `retro-entry-order-s8-s11`. The restated definition of done is decisions.md sec. 1.1. Logged by gap-closure-plan Stage 12.1; merge commit: recorded when the Stage 12.1 change merges. Added by plan Phase 17, all in force: the owner's answers M1-D-LOOP-1 to M1-D-LOOP-5 (2026-11-23) and, with M1-D-LOOP-5, `turn-budget-defaults-s11`.
 
 Closure status: open
 
 This line becomes `closed at <sha>` only in plan step 18.1.14, at the M1 closure commit.
-The records below are history. The fields of impl.md sec. 7.3 and the per-step
-manual-check register, with the M1 check re-targeted to the signed-in Claude and Copilot
-routes, are at the end of this file, in "Evidence record (impl.md sec. 7.3)"; how to fill
-them is in [the evidence runbook](README.md).
+The stage itself closes at plan step 17.4.9, which **has not closed it yet**: plan Phase 17
+built the prompt assembly, the delegation seam proofs, the context pipeline and the M1
+probe on the signed-in routes (section ["Gap closure (plan Phase 17)"](#gap-closure-plan-phase-17),
+every test passing in both gate lanes at `fda4b98`), but the owner has not run the M1
+manual check (plan 17.4.3) and has not reviewed the seven retargeted scenarios (see
+[Closure](#closure)). The records before "Gap closure (plan Phase 17)" are history. The
+fields of impl.md sec. 7.3 and the per-step manual-check register, with the M1 check
+re-targeted to the signed-in Claude and Copilot routes, are at the end of this file, in
+"Evidence record (impl.md sec. 7.3)"; how to fill them is in
+[the evidence runbook](README.md).
 
 DH-S-11 is the agent loop, milestone M1. Stage 11.1 built impl.md steps 11.1 and
 11.2, Stage 11.2 built 11.3 and 11.4 with the no-unanswered-call property test, and
-Stage 11.3 built 11.5 and 11.6. Stage 11.4, this one, builds step 11.7, adds the
-flow F2 golden and its SQLite twin (TC-11a, TC-11b), authors the remaining
-`DH-E-*` scenarios of DH-S-1 to DH-S-11, and scripts the M1 manual check.
+Stage 11.3 built 11.5 and 11.6. Stage 11.4 built step 11.7, added the flow F2 golden
+and its SQLite twin (TC-11a, TC-11b), authored the remaining `DH-E-*` scenarios of
+DH-S-1 to DH-S-11, and scripted the M1 manual check. Plan Phase 17 closed the gaps
+M1-G-LOOP-1 to -16 that the review found in this work.
 
-**DH-S-11 is not closed yet**: the M1 manual check below has not run with a real key,
-so it is not recorded. Until it is, impl.md steps 11.3, 11.4 and 11.7 stay unticked
-(11.1, 11.2, 11.5 and 11.6 were ticked by their stages), the plan's "Close DH-S-11
-and the story" step stays unticked, and `built-through` stays at DH-S-7. See
-"Closure".
+**DH-S-11 is not closed yet.** The ticks after plan step 17.4.6 (Phase 17), in impl.md and
+the story plan alike: steps 11.1, 11.2, 11.5 and 11.6 are ticked as built (11.6 was
+unticked as a known-false tick and re-ticked in the same change, because every test
+M1-D-LOOP-3 B keeps in M1 now passes); steps 11.3, 11.4 and 11.7 stay unticked, because
+the M1 manual check that covers them (rows 11.3, 11.4 and 11.7 of the register below) has
+not run. Built is not done: no step's `DH-E` scenario has run. The plan's "Close DH-S-11
+and the story" step stays unticked, and `built-through` stays at DH-S-8
+(`CheckBuiltThrough` allows no more while DH-S-9 and DH-S-11 are open). See
+[Closure](#closure).
 
 Machine: Windows, go toolchain per `src/harness/go.mod` (floor `go 1.26.0`).
 
@@ -60,7 +71,9 @@ branch.
 > and its decision `dh-s-11-closure-path` is superseded. The M1 check now runs on the
 > signed-in Claude and Copilot routes, at the client-invocation boundary. The procedure
 > of record is the register under "Evidence record (impl.md sec. 7.3)" at the end of this
-> file.
+> file, and the operator's steps, commands and record table are
+> [DH-S-11-manual-runbook.md](DH-S-11-manual-runbook.md) (probe retargeted by plan steps
+> 17.4.1 and 17.4.2; `m1_manual_test.go` no longer names DeepSeek).
 
 `manual`, never a gate criterion (EV-6), and not a scenario. Scripted by
 `src/harness/internal/agent/m1_manual_test.go` (`//go:build manual`), which reuses
@@ -124,6 +137,31 @@ lines.
 
 ## Scenarios
 
+**Retargeted (plan 17.4.4, M1-D-CLOSE-4 A).** The seven files below no longer take
+`DSH_DEEPSEEK_API_KEY`, a provider base URL or a recording proxy. Under OWNER-2 each runs on
+the user's own signed-in client routes (`claude-code`, then `copilot-cli`, one subtest per
+route through `forEachRoute` of `signedin_routes_test.go`; Claude must pass, Copilot is
+recorded either way, M1-D-LOOP-6 A), with no API key anywhere and the route selected by its
+id in the layer template (`{route}`) and `DSH_SCENARIO_<route>_MODEL`. The proxy assertions
+of DH-E-SESSION-1, DH-E-AGENT-1 and DH-E-AGENT-2 are re-expressed at the boundary
+16.5.2 says is observable, the settled client invocation (M1-D-PIPE-4 A): the host rebuilds
+every settlement's argument list, its digest and the standard input it wrote from the log,
+and the scenario compares them with the recorded invocation, recomputing the
+standard-input digest itself; a keyless `selfCheckInvocationOracle` proves the comparison
+refuses a differing argument list, digest or input before any input is read. DH-E-AGENT-2's
+"connection closed" becomes "no chunk of the cancelled turn after it ended" (the process
+tree stop is DH-T-LLM-23 and -27), and "the second request carries the shown text" becomes
+"turn 2's rebuilt standard input, matching its logged digest, carries it". DH-E-TOOLCHAIN-1
+records on the route and replays with empty client homes, client stand-ins first on the
+`PATH` that must never run, and refusing proxies. The rows are in `areas/agent-loop.md`,
+`areas/core-session.md`, `upstream/toolchain.md` and `e2e-scenarios.md` Phase 11.
+
+**Scenario review line (plan 17.4.5).** Reviewer: the owner. PR:
+[#93](https://github.com/smartpcr/agent-plugin/pull/93) (branch `m1-phase-17`). Status:
+**pending**. Until the owner has reviewed the seven files in #93, step 17.4.5 stays open and
+DH-S-11 cannot close
+(M1-D-CLOSE-4 A).
+
 Authored for review in this PR, indexed under DH-S-17 in
 `test/harness/acceptance-index.yaml` with authoring stage DH-S-11; **none
 executed.** Each starts the built `dsh` through the test kit's launcher and
@@ -152,30 +190,331 @@ Gate evidence: `go -C src/harness vet -tags scenario ./...` exits 0; the default
 `go test -list . ./internal/testkit/scenarios/...` lists no test;
 `GOWORK=off go -C tools/harness-gate test -run 'TestAuthoredScenarios|TestRequireSubcommand|TestPreflightSubcommand|TestScenarioIndex' . ./acceptance/` passes.
 
+The recording-proxy details of the paragraph above (AGENT-2's `ClientClosed`,
+`selfCheckProxyClose`) are the Stage 11.4 form, kept as history; the retarget at the top of
+this section replaced them. Retarget gate evidence (plan 17.4.4, local Windows lane, not a
+lab or scenario run): `go -C src/harness vet -tags scenario ./...` (run by the gate test
+below) exits 0, and the analyzers through `-vettool` with `-tags=replay,scenario,bench`
+report nothing for `internal/testkit/scenarios`;
+`GOWORK=off go -C tools/harness-gate test -count=1 -run '^TestAuthoredScenariosAreIndexedAndCompileButDoNotRun$' .`
+passes; `GOWORK=off go -C tools/harness-trace run . verify` passes. File and test names are
+unchanged, so the gate's pinned names stand.
+
 M1 gate repair (plan 13.3, M1-G-GATE-11 to -14 and -27; [DH-S-1.md, "M1 gate repair"](DH-S-1.md#m1-gate-repair)): the vet debt added after DH-S-9 was 27 findings (QG-4 `time.Sleep`, QG-5 goroutine without `t.Cleanup`) in `src/harness/internal/agent/agent_test.go`, `agent/driver/driver_test.go`, `lifecycle_test.go`, `retry_test.go`, `delegate/subagent/subagent_test.go`, `tools/core/schedule_test.go` and, under the `scenario` tag, `testkit/scenarios/store_two_process_scenario_test.go` and `store_crash_recovery_scenario_test.go`. They now wait on the scripted model's `WaitRequests` and `PrefixServed` signals (`testkit/model`), on `synctest` bubbles or on explicit signals, and every goroutine they start is released and joined (P-C); the scenario polls of another process go through `testkit/procwait`. The DH-T-AGENT tags are unchanged; the two scenario files are vetted, not run (EV-4). `manual`, uncommitted at the time of writing: `harness-gate` vet with and without `-tags=replay,scenario` reports nothing for these packages.
+
+## Gap closure (plan Phase 17)
+
+Plan Phase 17 ("Agent Loop") closes the review's gaps M1-G-LOOP-1 to -16 in this stage.
+**Why it was needed.** Before it, the model received no system prompt at all: the driver
+never logged a `system/message`, so every request went out with only the history, the tool
+schemas and the route. Recording M1 then would have shown a model with no instructions, not
+flow F2 as designed. Phase 17 assembles the prompt (17.1), proves the delegation seam
+(17.2), completes the context pipeline (17.3), and retargets the M1 probe and the
+scenarios to the signed-in routes (17.4).
+
+| Commit | What it holds |
+| --- | --- |
+| `066a4bf` | the owner's answers M1-D-LOOP-1 to -5 in [decisions.md](../decisions.md) |
+| `df8ed28` | Stage 17.3, the context pipeline (17.3.1 to 17.3.4) |
+| `72704a7` | Stage 17.2, the delegation seam proofs and the DH-S-29 deferrals (17.2.1 to 17.2.6) |
+| `8aef1c3` | 17.4.1, 17.4.2 and 17.4.4: M1 on the signed-in routes, `m1Redact`, the seven scenarios retargeted |
+| `ad21287` | DH-E-LLM-1 (a DH-S-9 scenario) accepts the driver's cancel settlement |
+| `788dae6` | 17.1.1 to 17.1.8: prompt assembly and one-batch admission |
+| `1cb9026` | 17.1.9 to 17.1.12: the F2 rig composes the prompt, the Rule 6 golden regeneration, the three-step golden, the bench re-run |
+| `fda4b98` | the staticcheck fix (U1000 in `scenarios/sdkhost_test.go`), the closing commit for Phase 17's gate evidence |
+| `0c284c8` | the run records |
+
+**Where the results come from.** Unless a row says otherwise, every test below passed in
+both gate runs at `fda4b98` ([DH-S-1.md, "Phase 17 exit gate runs"](DH-S-1.md#phase-17-exit-gate-runs)).
+The `test` gate runs `go test -tags= -race -shuffle=on -count=1 ./...` per module, so the
+`-race -count=1` results the plan asks for are the gate's. Two kinds of result are
+not gate results, and are labelled where they appear: the continuation benchmark
+(`bench` tag) and the three M1 `e2e` features, which the gate compiles and vets but does not
+run.
+
+### Stage 17.1: prompt assembly and one-batch admission
+
+**What changed.** Each proposed step now asks the prompt component for its system prompt
+and its tool list, through a new `Prompter` in `driver.Options` and `FactoryOptions`; a
+composition without one is refused. The assembly is made once per proposed step and
+reused by its retries; if it fails, the turn ends `error{by: "driver/prompt"}` and no step
+opens. **Admission** (the point where the step's inputs are written to the log before the
+request is built) is now one batch, one `AppendGroup`: the system prompt (only when its
+fingerprint changed), the user messages the step entered, the runtime-context snapshots,
+the `request/header` and, when the tool names changed, a `developer/message` naming the
+added and removed tools. The header's tools come from the assembly in `toolOrder`. An
+unchanged prompt adds nothing; a retry adds only a changed header. After this stage the
+model receives the identity line (`prompt.IdentityLine`), and the log shows which section
+supplied each part of the prompt and who owns it (the header's manifest).
+
+**Request header v2 (Rule 6).** `request/header` gains two optional fields, as payload
+version 2: `fingerprint` (the digest of the assembly the step's system prompt and tools
+came from) and `manifest` (the sections, in order, with their owners). Version 1 is read by
+an identity upgrade: a v1 header decodes with an empty fingerprint and manifest, and the
+request rebuilt from an old log has the same digest as before (`TestOldHeadersStillReplay`,
+on SQLite). The persisted-format inventory records the change (`persisted.golden`,
+`persisted.notes`, `rows.jsonl`); this is the phase's one Rule 6 regeneration step, 17.1.10.
+
+**Goldens, new and changed.**
+
+| Golden | Change | Steps |
+| --- | --- | --- |
+| `internal/agent/testdata/f2_log.golden` | Regenerated; still 19 events. Step 1 now admits, after `model/selection`, the `system/message` carrying `prompt.IdentityLine` (seq 5), the claimed `user/message` (seq 6; it was seq 3, before `step/start`) and a v2 header with `fingerprint` and `manifest` `[{identity, 0, tools.prompt}]` (seq 7). The second header, an unchanged copy logged at step 2 (old seq 15, gap M1-G-LOOP-4), is gone. Every sent request's digest equals the one rebuilt from the log | 17.1.4, 17.1.7, 17.1.8, 17.1.10 |
+| `internal/agent/testdata/f2_retry_log.golden` | Regenerated the same way; still 14 events. The header the retry used to repeat (old seq 10) is gone | 17.1.10 |
+| `internal/agent/driver/testdata/three_step.golden` | New. A call, then a parallel pair of calls, then an answer; a persona edit through `prompt.Service.Configure` before step 3 forces exactly one node-0 replace (seq 22, `replace[5,5]`); `turn/end` is completed | 17.1.11 |
+| `internal/session/store/testdata/persisted.golden`, `persisted.notes`, `rows.jsonl`; `internal/session/store/allevents/testdata/persisted.golden` | `request/header` 1 to 2, its compatibility note, and one v2 row | 17.1.3 |
+
+**Tests.**
+
+| Step | Test ID | Tests (package) | What they show | Result |
+| --- | --- | --- | --- | --- |
+| 17.1.1 | `DH-T-AGENT-27` | `TestCompositionWithoutAPrompterIsRefused` (`agent/driver`); the "no prompt" case of `TestNewFactoryRefusesBadOptions` | `Start` and `NewFactory` refuse a composition with no `Prompter` | pass |
+| 17.1.2 | -- | `TestAssemblyFailureOpensNoStep` | a failed assembly ends the turn as `error{by: "driver/prompt"}` with no step opened | pass |
+| 17.1.3 | `DH-T-SESSION-11` | `TestRequestHeaderV2RoundTrip` (`session/event`), `TestHeaderAndToolHistory` (`session/surface`), `TestOldHeadersStillReplay` (`session`, SQLite) | v2 round trip; the header fold; a v1 log replays with empty fields and the same digest | pass |
+| 17.1.4 to 17.1.6 | `DH-T-AGENT-12`, `-26`, `DH-T-TOOLS-14` | `TestAdmissionIsOneBatch`, `TestEnteredMessagesAreAdmittedInTheirOrder` (`-12`), `TestChangedPromptReplacesNodeZero`, `TestRuntimeContextIsASnapshotWhenItChanges`, `TestToolChangeNoticeNamesTheAddedTool` (`-26`), `TestPromptServiceReachesTheHeader` (`DH-T-TOOLS-14`) (`agent/driver`) | one `AppendGroup` per admission; entered messages in order; a changed prompt replaces node 0; a runtime-context snapshot when its text changed; one notice naming the added tool, listed in `toolOrder`; the prompt service's tools reach the header | pass |
+| 17.1.7 | -- | `TestUnchangedHeaderIsNotRepeated` | written first to reproduce the duplicate header of the old `f2_log.golden`; an unchanged prompt now adds neither a `system/message` nor a `request/header` | pass |
+| 17.1.8 | `DH-T-AGENT-4`, `-5`, `-6` (re-run) | `TestConcurrentSendsAreOrderedAndUnique`, `TestQueuedFollowUpsAreOneTurnEach`, `TestClaimedItemRunsAtMostOnceAcrossACrash`, `TestIdleInjectionOpensNoTurnAndIsClaimedAtTheNextStep` (`agent`), `TestTurnRunsStepsUntilTheModelAnswers` (`agent/driver`); `TestNoToolCallLeftUnansweredOnAnyExit` with the new exit `crash-between-claim-and-admit`; `TestCrashBetweenClaimAndAdmit` (SQLite) | the claim writes only the inbox splice; the driver admits the claimed messages after the system prompt; a crash between claim and admission closes the turn `interrupted`, the item never runs twice, and `Inbox.Discarded()` reports it (cause `agent.CauseUnadmitted`) | pass |
+| (fix) | -- | `TestInterruptedPrefixKeepsTheClientInvocation` (`agent/driver`) | settling an interrupted `assistant/message` keeps its client invocation | pass |
+| 17.1.9, 17.1.10 | `DH-T-AGENT-8` | `TestFlowF2LogMatchesGolden`, `TestF2StepPromptReachesTheModelAndTheLog` (`agent`) | the F2 rig mounts `prompt.Component` with `prompt.Defaults()` and a contributor-free `request.New`, and passes the prompt service; the Phase 16 retry, grant and spill mounts are kept. Scenario "the step prompt reaches the model and the log" | pass |
+| 17.1.11 | `DH-T-AGENT-7` | `TestThreeStepTurnLogMatchesGolden` (`agent/driver`) | Scenario "three-step turn golden"; the old `-7` tag is removed from `driver_test.go` | pass |
+| 17.1.12 | `DH-T-AGENT-28` | `BenchmarkContinuation` (`agent/driver`, `bench` tag) | the table below | pass (see below for where it ran) |
+
+**Continuation latency, DH-T-AGENT-28 (17.1.12).** Re-measured with the one-batch admission
+in place, on the Windows workstation (13th Gen Intel Core i9-13900K), with the `bench` tag,
+at `1cb9026`; `continuation_bench_test.go` is unchanged from there to `fda4b98`. This is the
+lead's local run, not a gate result: the gate compiles and vets the bench file in both lanes
+and does not run it. The time is from a waking send on a resumed session to the first model
+request leaving the driver.
+
+| Rung | Turns | Records | p50 | p99 |
+| --- | --- | --- | --- | --- |
+| p50 | 4 | 70 | 0.51 ms | 1.51 ms |
+| p90 | 42 | 716 | 3.08 ms | 4.32 ms |
+| p99 | 426 | 7,244 | 28.7 ms | **33.8 ms** |
+| max (measured, not budgeted) | 1,024 | 17,410 | 69.8 ms | 83.4 ms |
+
+Every budgeted rung is under the 100 ms budget M1-D-LOOP-2 pins; the max rung is too,
+though it is not budgeted. One tool-heavy turn now logs 17 records, not 19
+(`recordsPerTurn`), because an unchanged prompt adds no `system/message` or header.
+
+**E2E features (not a gate result).** The three M1 `e2e` features (brackets 3/3, lifecycle
+3/3, context pipeline 3/3) pass with a prompter, run by the lead with the `e2e` tag at
+`1cb9026`; the gate vets them in both lanes. Two ordering checks were retargeted to
+M1-D-LOOP-1 A: the claimed messages are admitted inside the step, after `step/start`.
+
+**Deviations from the plan's text** (recorded, not hidden):
+- 17.1.7: the comparison uses `vocab.Canonical`, the digest encoding of the session's tool
+  fold, not `internal/schema`, because `schema.Fingerprint` strips descriptions, and a
+  changed description must count as a changed header.
+- 17.1.8: "reported discarded" is computed from the log when the inbox opens
+  (`Inbox.Discarded()`); there is no durable discard record and no `InboxDiscarded` notice.
+- 17.1.4: a node-0 replace happens whenever node 0 is a `system/message`; the tool notice
+  is written only when the new header continues the series; a runtime-context snapshot is
+  written only when its text changed.
+- 17.1.11: the scenario's wording (three steps: a call, a pair, an answer) was followed; the
+  step's text said "two tool calls, then a pair".
+
+**M1-D-LOOP-1 outcome.** Option A, in force: the claim writes only the splice, and the
+driver admits the claimed messages at point 8, after the system prompt, in the one
+admission batch, so the first system prompt is node 0 of the surface (seq 5 of
+`f2_log.golden`, before the user message at seq 6). A crash between the claim and the
+admission closes the turn `interrupted` and the item is reported discarded, never run twice
+(`TestCrashBetweenClaimAndAdmit`, the property test's new exit).
+
+### Stage 17.2: delegation seam proofs
+
+**What changed.** The seam's promise (one owner per child, a second `Dispose` does nothing,
+no goroutine left after the root goes, concurrent operations on one child serialised, and
+the settle points S1 to S7 in a fixed order) is proven by tests tagged with their IDs. The
+manager gains `Spec.Resume` and a per-activation reservation, so a send, a release and a
+resume on one child run one at a time.
+
+| Test ID | Tests (`delegate/subagent`) | What they show | Result |
+| --- | --- | --- | --- |
+| `DH-T-SUBAGENT-1` | `TestStartPublishesResultBlocksDisposeIdempotent` | `Start` returns only after A6, `Result` blocks until S7, a second `Dispose` (also two at once) is a no-op | pass |
+| `DH-T-SUBAGENT-2` | `TestRootDisposalLeavesNoGoroutine` | three children under two owners; after a root `Dispose` no child is registered and the goroutine count returns to its baseline | pass |
+| `DH-T-SUBAGENT-3` (M1 legs) | `TestSettleOrderGolden`, golden `delegate/subagent/testdata/settle_order.golden` | the recorded S-points of natural end, dispose and owner teardown equal the golden | pass |
+| `DH-T-SUBAGENT-9` | `TestConcurrentSendReleaseResumeSerialised` (under `-race`) | concurrent sends, release and resume on one child are serialised | pass |
+| `DH-T-SUBAGENT-4`, `-14`; the time-limit and interrupt legs of `-3` | -- | deferred: `//dsh:test DH-T-SUBAGENT-3/-4/-14 later DH-S-29` in the package's `doc.go` | deferred to DH-S-29 |
+
+All four tests also passed 30 consecutive `-race` runs (the lead, locally). The plan's
+`trace-tests --stage DH-S-11` row 11.6: required `-1`, `-2`, `-3`, `-4`, `-9`, `-14`; tagged
+`-1`, `-2`, `-3`, `-9`; deferred `-4`, `-14`; missing none. The tool accepts a deferral only
+when the impl.md section of the stage it names lists the ID, and it reported no unbacked
+deferral: impl.md's DH-S-29 pointer line maps `-4` to steps 29.1 and 29.3, `-14` to 29.3,
+and the `-3` legs to 29.1 and 29.4. `subagent-team.md:434` is amended to match.
+
+**M1-D-LOOP-3 outcome.** Option B, in force: `DH-T-SUBAGENT-4` (a child that delegated is
+held until its own child settles), `-14` (the capability check at A1) and the time-limit
+and interrupt legs of `-3` move to DH-S-29, which builds those features; every test the
+decision keeps in M1 passes. impl.md step 11.6 is therefore built, and plan step 17.4.6
+re-ticks it. DH-D-SUBAGENT-1 is built, not done: its scenario `DH-E-SUBAGENT-2` has not run.
+
+### Stage 17.3: context pipeline completion
+
+**What changed.** The context pipeline has a defined place where compaction runs: an
+optional `Options.Compact`, a `Considerer` (a subset of the spec's `compact.Engine`), called
+after an `Enter` and before the contributors with the `pressure` or `model-switch`
+trigger. It is nil at M1. A fake compactor proves that a contributor re-adds, in the same
+step, a baseline that compaction shadowed. A recorded multi-step log now replays with every
+observation forbidden. The contributor output gains `After` and `Reword` for the DH-S-25
+contributors.
+
+The 11.7 rows (impl.md step 11.7, DH-D-CONTEXT-1):
+
+| Test ID | Tests | What they show | Result |
+| --- | --- | --- | --- |
+| `DH-T-CONTEXT-1` | `TestRecordedLogRebuildsEveryRequest` (`context/request`) | three turns with contributors are rebuilt while every contributor, file, clock, shell and session read fails; every request's digest equals its record | pass |
+| `DH-T-CONTEXT-2` | `TestCompactionIsCheckedBeforeTheContributors`, `TestBaselineShadowedByCompactionIsReentered`, `TestAfterAndRewordMergeInTableOrder`, and the Stage 11.4 tests (`TestContributionsAreLoggedInTableOrderAndRebuildTheRequest`, `TestUnchangedObservationAddsNothing`) | the compaction hook runs before the contributors; a shadowed baseline is re-entered in the same step and the request rebuilds to the sent digest (with the new admission); `After` and `Reword` merge in table order | pass |
+| `DH-T-CONTEXT-3` | `TestCompactionFailuresFollowTheTrigger`, `TestAfterAndRewordAreChecked`, and Stage 11.4's `TestFailuresAreContainedPerContributor` | a compaction failure follows its trigger; bad `After` and `Reword` outputs are refused; contributor failures are contained | pass |
+| `DH-T-CONTEXT-25` | `TestImportDirection`, `TestRulesCatchViolations` (`archtest`) | "no consumer package imports a provider package": the import rule "no package under `internal/context` imports the agent driver or an llm provider, wire or transport package", which `rules.go` already names `DH-T-CONTEXT-25`, holds on the real modules, and the checker catches a seeded violation | pass at `fda4b98`; **tagged after it** (see below) |
+
+**DH-T-CONTEXT-25, untagged at `fda4b98`.** The test that proves it existed and passed in both
+lanes, but carried no tag, so `trace-tests --stage DH-S-11` reported it missing at row 11.7.
+The closure records' change adds `DH-T-CONTEXT-25` to the `//dsh:test` directives of
+`TestImportDirection` and `TestRulesCatchViolations` (`internal/archtest/archtest_test.go`),
+a comment-only change. The tag is therefore not in the gate runs' commit; it is re-proved
+at the next lane run (at the latest the closure commit, plan 18.1.3). Scope of the guarantee:
+at M1 the only package under `internal/context` is `context/request`, and the rule bars the
+providers it could reach, the agent driver and the llm provider, wire and transport packages.
+When DH-S-25 adds consumer and provider packages inside `internal/context` (for example
+`context/skill/tool` and `context/skill/fsprovider`), the rule must widen to cover them.
+
+**Deviations from the plan's text.** `Trigger` is a struct, not a bare kind. The merge rules of
+`After` and `Reword` were not stated by the spec; the agent that built them wrote them into
+[context-compaction-skill.md](../../../harness/areas/context-compaction-skill.md) sec. 6.1.
+
+**M1-D-LOOP-4 outcome.** Option A, in force: only the compaction hook is built, nil at M1, and
+it is proven with a fake compactor (`TestCompactionIsCheckedBeforeTheContributors`,
+`TestBaselineShadowedByCompactionIsReentered`). The engine itself arrives with DH-S-25.
+
+### Stage 17.4: M1 on the signed-in route
+
+**What was built.**
+- **17.4.1.** `agent/m1_manual_test.go` (build tag `manual`) runs on the `claude-code` or
+  `copilot-cli` route, selected by `DSH_M1_ROUTE=claude|copilot`. The skip check runs only the
+  client's version probe and never sends a prompt. The shared oracle `f2Completed` is kept:
+  `TestM1CompletionOracleOnTheF2Turn` (default build, keyless) passes. The probes are
+  `TestManualM1OneTurn` and `TestManualM1CancelMidStream`.
+- **17.4.2.** `testkit/redact` and `m1Redact` mask every printed line.
+- **17.4.4.** The seven DH-S-11 scenario files are retargeted per route (section "Scenarios"
+  above).
+
+**Redaction note (17.4.2).** Every line the probe prints passes `m1Redact` first: it masks the
+signed-in account name and email (by value from `DSH_M1_ACCOUNT` and the machine's user name,
+and by shape), `Authorization` and cookie values, the `sk-ant-`, `gho_`, `ghu_`, `ghp_`,
+`ghs_`, `ghr_` and `github_pat_` token shapes, bearer strings and token file paths, each
+replaced by `[redacted]`. If a pattern survives the masks, the test fails and the line is
+not printed. `TestM1RedactionCatchesIdentity` (`agent`, keyless) proves it, and passes in
+both lanes: a fake email, a bearer header and a `gho_` token, with the other shapes, come
+out masked, and a surviving pattern fails the test. It carries no `DH-T` tag: no test ID in
+[agent-loop.md](../../../harness/areas/agent-loop.md) names the probe's redaction, so it is
+left untagged (its DH-S-9 counterpart `TestSignedInRedaction` is tagged with the route
+failure-mapping IDs `DH-T-LLM-22` and `-26`). A second person still reviews the record
+before it is committed (R-11).
+
+**Retargeted scenarios (17.4.4).** The seven files no longer name DeepSeek or take a key; the
+recording-proxy assertions of DH-E-SESSION-1 and DH-E-AGENT-2 moved to the settled client
+invocation (M1-D-PIPE-4 A). In both lanes at `fda4b98`: `vet` with `-tags=replay,scenario,bench`
+(and the project's analyzers) passes, the `scenario-index` gate passes, and the `self` gate
+runs `TestAuthoredScenariosAreIndexedAndCompileButDoNotRun`. The retarget left two helpers
+of the recording proxy unused, which failed `staticcheck` on WSL at `1cb9026`; `fda4b98`
+removes them. DH-E-LLM-1 (DH-S-9) was aligned with the driver's cancel settlement in
+`ad21287`. **None of these scenarios has run**; they run at DH-S-17.
+
+**Scenario review line (17.4.5).** See "Scenarios" above: reviewer the owner, in the Phase 17
+PR, **pending**.
+
+#### M1 record per route (17.4.3): not run yet
+
+**Not run yet: the owner runs 17.4.3 per [DH-S-11-manual-runbook.md](DH-S-11-manual-runbook.md).**
+This table is left empty until the owner pastes the printed lines; nothing here is evidence
+yet, and Stage 17.4 stays open until it is filled (`manual`, never a scenario). Claude must
+pass; Copilot is run and recorded either way, and a Copilot failure is recorded as seen and
+stays open (M1-D-LOOP-6 A).
+
+| Route | Run | Commit | Client and version | Model | Go, OS and host | Printed lines (`M1 ` lines, redacted) | Result |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `claude-code` | one turn | | | | | | must pass |
+| `claude-code` | cancel mid-stream | | | | | | must pass |
+| `copilot-cli` | one turn | | | | | | recorded either way |
+| `copilot-cli` | cancel mid-stream | | | | | | recorded either way |
+
+### Decision outcomes (M1-D-LOOP-1 to -6)
+
+All six are in force ([decisions.md](../decisions.md) sec. 5).
+
+| Decision | Choice in force | Outcome in this phase |
+| --- | --- | --- |
+| M1-D-LOOP-1 | A: the claim writes only the splice; the driver admits at point 8 | Built (17.1.8): the system prompt is node 0; a crash between claim and admit closes the item as discarded, never run twice. See "Stage 17.1" |
+| M1-D-LOOP-2 | A: pin 100 ms as the M1 `DH-T-AGENT-28` budget; a new held-open entry pins the final figure | Pinned: the bench's compiled budget is `provisionalBudget = 100 * time.Millisecond` (`continuation_bench_test.go`), unchanged; the p99 rung measures 33.8 ms. The final figure is held open as **H-37** ("Held open" below), closing at impl.md 16.7 on the replay corpus; it is not H-10 (`budget-held-open-not-h10`) |
+| M1-D-LOOP-3 | B: `DH-T-SUBAGENT-4`, `-14` and the time-limit and interrupt legs of `-3` move to DH-S-29 | Deferred, backed by impl.md's DH-S-29 pointer line; every test kept in M1 passes; impl.md 11.6 re-ticked. See "Stage 17.2" |
+| M1-D-LOOP-4 | A: the compaction hook only, with a fake compactor | Built (17.3.1, 17.3.2). See "Stage 17.3" |
+| M1-D-LOOP-5 | Confirmed: 500 steps per turn, 8 attempts per step, no time limit | Recorded (17.4.8) in impl.md sec. 9.1 (pointer line, DC-2), [tech-spec.md](../tech-spec.md) sec. 5.5, [design.md](../../../harness/design.md#92-recommended-defaults-applied-not-confirmed-by-the-owner) sec. 9.2 and the comment in `agent/driver/budget.go`; `turn-budget-defaults-s11` is now `in force`. Because the defaults are confirmed, they stay constants; the plan's fallback (a `driver.Config` default with unexported constants, DC-4) is not needed |
+| M1-D-LOOP-6 | A: Claude must pass; Copilot is recorded either way (lead settlement) | Applied to the probe, the runbook, the seven scenarios (`forEachRoute`) and the empty M1 table above; nothing is recorded yet |
+
+### Held open
+
+A held-open entry is a part of a deliverable that is ticked as built (or will be) but is
+not done: the part that waits is not final, and its step is not done, until the closing
+step lands. H-37 is the M1 story's entry for DH-S-11, added by plan step 17.4.7 under
+decision M1-D-LOOP-2 A. A *provisional budget* is a limit taken from a measured run: the
+benchmark fails when it is missed, but the number is not final until it is pinned at its
+closing step. The entry is not H-10, which is the replay of a session with children (lead
+settlement `budget-held-open-not-h10`). The other M1 entries are H-24 to H-32
+([DH-S-6.md](DH-S-6.md#held-open)), H-34 ([DH-S-7.md](DH-S-7.md#held-open)) and H-33, H-35
+and H-36 ([DH-S-8.md](DH-S-8.md#held-open)). impl.md carries a pointer line to this list in
+its sec. 10.3 (DC-2); its table is unchanged. The closing stage records the entry it closes.
+
+| ID | Step | Deliverable | The part held open | Gap | Closing step | Status |
+| --- | --- | --- | --- | --- | --- | --- |
+| H-37 | 11.3 | DH-D-AGENT-3 | The final budget of `DH-T-AGENT-28`: the p99 continuation latency (a waking send on a resumed long session to the first model request leaving the driver), on the heavy-tailed session corpus with the replay provider, also in the memory-limited rerun. Until then the budget is the 100 ms M1-D-LOOP-2 pins, met on the synthetic ladder with the scripted model (33.8 ms at the p99 rung, Windows) | M1-G-LOOP-6 | impl.md 16.7, on the replay corpus (M1-D-LOOP-2 A) | open |
 
 ## Definition of done (tech-spec §2.3)
 
-Not confirmed at this commit:
+Filled by plan step 17.4.9 at the Phase 17 closing commit `fda4b98`, against the restated
+definition of [decisions.md](../decisions.md) sec. 1.1. This is the story's definition; the
+story closes only at plan 18.1, and DH-S-11 as a stage closes only if every row holds at
+one commit. **Rows 1, 3 and 4 do not hold, so DH-S-11 does not close in Phase 17.**
 
-| Item | Status |
-| --- | --- |
-| All 103 steps (99 deliverables) built | no: DH-S-8 (8.3 to 8.5), DH-S-9 (9.1 to 9.3) and DH-S-11 (11.3, 11.4, 11.7) are unticked |
-| Gate green on Windows (native) and Linux (WSL) (decision `platforms-windows-wsl`; historically "three OSes") | not observable from this machine (Windows only); the inherited vet-gate failure of DH-S-9's evidence still applies |
-| Eleven evidence records | ten closed or open records plus this one; DH-S-8, DH-S-9 and DH-S-11 are open |
-| M1 recorded | no: the table above is unfilled |
-| H-21 open | unchanged by this stage |
+| Item (decisions.md sec. 1.1) | Holds at `fda4b98`? | Why |
+| --- | --- | --- |
+| 1. Every impl.md step 1.1 to 11.7 (103 steps, 99 deliverables) ticked *built* under rule 2, and the story plan agrees | **no** | 97 of 103 are ticked. Unticked: 9.1 to 9.3 (they wait for the DH-S-9 check, plan 16.5.9, and the DH-S-9 scenario review) and 11.3, 11.4 and 11.7 (they wait for the M1 check, plan 17.4.3). The story plan agrees for DH-S-11 after plan 17.4.6. Ticks made while the gate was red are provisional and are re-verified at the closure commit (M1-D-CLOSE-1, plan 18.1.8) |
+| 2. The gate green on Windows native and Linux under WSL; macOS a scope change, not a pass (OWNER-1, `platforms-windows-wsl`) | **yes**, for this commit | Both lanes `PASSED all 12 gates` at `fda4b98` ([DH-S-1.md, "Phase 17 exit gate runs"](DH-S-1.md#phase-17-exit-gate-runs)). macOS: out of scope (`platforms-windows-wsl`), a scope change, not a pass and not a skip. The closure needs the same at the frozen closure commit (plan 18.1.3), with `trace-tests` wired into the `trace` gate (plan 18.1.4) |
+| 3. Every stage DH-S-1 to DH-S-11 has a complete evidence record (impl.md sec. 7.3) | **no** | All eleven read `Closure status: open`; their sec. 7.3 fields are filled at the frozen commit (plan 18.1.7). As stages, DH-S-9 and DH-S-11 are open |
+| 4. The M1 manual check recorded on the signed-in Claude route, with no API key; Copilot run and recorded either way | **no** | Not run: the owner runs plan 17.4.3 per [DH-S-11-manual-runbook.md](DH-S-11-manual-runbook.md). The table "M1 record per route" above is empty |
+| 5. H-21 listed open with its closing step impl.md 16.10, with every other held-open item a decision creates | holds as listed | H-21 is open in impl.md sec. 10.3 with closing step 16.10, unchanged. This phase adds H-37 ("Held open" above). The final list is written at plan 18.1.11 |
 
 ## Closure
 
-**Open.** DH-S-11 closes when the M1 table above is filled from a real run and the
-seven scenario files are reviewed in this stage's PR. Closing is then: tick impl.md
-steps 11.3, 11.4 and 11.7 as built, tick "Close DH-S-11 and the story" in the
-implementation plan once the definition of done above holds, and raise
-`built-through` when DH-S-8 and DH-S-9 have closed (the index's own rule, as
-`DH-S-10.md` explains).
+**Open: DH-S-11 does not close in Phase 17.** Plan step 17.4.9 closes DH-S-11 as a stage only
+when every row of its definition holds at one commit. Two of the stage's own conditions are
+not met:
+
+1. The M1 manual check (plan 17.4.3) is run by the owner on the signed-in routes and its
+   printed lines are recorded in "M1 record per route" above and in the register below
+   (`manual`). Claude must pass.
+2. The seven retargeted scenario files are reviewed by the owner in the Phase 17 PR, and the
+   review line under "Scenarios" names the reviewer and the PR number (plan 17.4.5).
+
+Until then impl.md steps 11.3, 11.4 and 11.7 stay unticked, the story plan's "Close DH-S-11
+and the story" step stays unticked, and `built-through` stays at DH-S-8: `CheckBuiltThrough`
+requires every step of DH-S-1 to DH-S-n ticked for a marker of DH-S-n. What *is* built: every
+DH-S-11 build step's tagged tests pass in both gate lanes at `fda4b98`
+(`trace-tests --stage DH-S-11` at `fda4b98`: required 24, tagged 21, deferred 2, missing 1,
+`DH-T-CONTEXT-25`; with the directive this change adds, tagged 22 and missing 0), and the
+Phase 17 work above.
+
+Closing is then: fill the M1 table and rows 11.1 to 11.4 and 11.7 of the register, record
+the review, tick impl.md steps 11.3, 11.4 and 11.7 as built and their story-plan steps
+(plan 17.4.6's rule), and raise `built-through` only as `CheckBuiltThrough` allows, which
+needs DH-S-9 closed first (plan 16.6.3).
 
 ### Operator decisions (pinned 2026-11-22)
+
+History: these were pinned before the M1 check moved to the signed-in routes; the "real
+key" below is superseded by `models-signed-in-claude-copilot` (no key), and the follow-up
+PR they name is the work of plan Stage 17.4.
 
 - `m1-operator-run`: **merge this stage with DH-S-11 Open; record M1 and close
   the story in a follow-up PR.** That PR's operator runs the runbook above with a
@@ -217,18 +556,24 @@ At closure: the lane scripts; `go -C src/harness test -race -count=1 ./internal/
 ./internal/agent/... ./internal/archtest/`; and the probe of plan steps 17.4.1 to 17.4.3,
 `go -C src/harness test -tags manual -count=1 -v -run
 'TestManualM1OneTurn|TestManualM1CancelMidStream' ./internal/agent/` with `DSH_M1_ROUTE`
-set to `claude` and then `copilot`. Historical: the DeepSeek runbook above.
+set to `claude` and then `copilot`, per [DH-S-11-manual-runbook.md](DH-S-11-manual-runbook.md).
+Historical: the DeepSeek runbook above.
 
 ### Run identifiers
 
 At closure: the run-record ids of both lanes, in the runbook's template (plan 18.1.3),
-and per route the masked client session ids. WSL lane: not run. Windows lane: not run.
-macOS: out of scope (`platforms-windows-wsl`). Historical: no request reached a provider,
-so no request id exists.
+and per route the masked client session ids. WSL lane: not run at the M1 closure commit
+yet. Windows lane: not run at the M1 closure commit yet. macOS: out of scope
+(`platforms-windows-wsl`). Phase 17 (not the M1 closure commit): `wsl-fda4b98-20261123T1244Z`
+and `win-fda4b98-20261123T1244Z`, both `PASSED all 12 gates`
+([DH-S-1.md, "Phase 17 exit gate runs"](DH-S-1.md#phase-17-exit-gate-runs)), and the failed
+`wsl-1cb9026-20261123T1242Z`, kept as history. The M1 check has no client session id yet:
+not run (plan 17.4.3). Historical: no request reached a provider, so no request id exists.
 
 ### Results
 
-At closure: not yet recorded. Historical: "Tests (TC-11a, TC-11b)" above.
+At closure: not yet recorded. Phase 17: both lanes `PASSED all 12 gates` at `fda4b98`; per
+test ID, "Gap closure (plan Phase 17)" above. Historical: "Tests (TC-11a, TC-11b)" above.
 
 ### Manual checks
 
@@ -258,7 +603,7 @@ settlement). How to run and fill the register:
 | 11.3 | M1, one prompt with one test tool: every turn and step is bracketed and closed | probe: the same run and the cancel run; record that the brackets close in both, one `turn/end` completed and one aborted | the operator's workstation | | | | `manual` |
 | 11.4 | M1, a second run cancelled mid-stream: the cause on `turn/end` | probe: `TestManualM1CancelMidStream` per route; copy the redacted `M1 cancelled log` and `M1 cancel:` lines: `turn/end` aborted with cause `user`, `step/end` cause `user`, one cancelled settlement | the operator's workstation | | | | `manual` |
 | 11.5 | rule-3 default: agents are created, resumed and torn down as one transaction | composed test: `go -C src/harness test -count=1 -v ./internal/agent/` (the lifecycle tests of DH-D-AGENT-6); record create, resume and teardown | one lane | | | | `manual` |
-| 11.6 | rule-3 default: one delegation seam; every child has one owner | composed test: `go -C src/harness test -count=1 -v ./internal/delegate/...`; runs only after plan Stage 17.2 (impl.md 11.6 is unticked by plan 17.4.6 until then) | one lane | | | | `manual` |
+| 11.6 | rule-3 default: one delegation seam; every child has one owner | composed test: `go -C src/harness test -count=1 -v ./internal/delegate/...`; plan Stage 17.2 is built (`72704a7`) and plan 17.4.6 re-ticked impl.md 11.6, so the row can run; record the M1 legs of `DH-T-SUBAGENT-1`, `-2`, `-3` and `-9` (the deferred ones are DH-S-29's) | one lane | | | | `manual` |
 | 11.7 | M1, one prompt with one test tool: the request rebuilt from the log equals the one sent | probe: the `TestManualM1OneTurn` run; copy the `M1 request N` lines (sent and rebuilt digests at the client-invocation boundary, M1-D-CLOSE-3), `M1 turn/end` and `M1 final reply` | the operator's workstation | | | | `manual` |
 
 Every printed line passes the `m1Redact` filter of plan step 17.4.2 (account name and
@@ -274,7 +619,21 @@ row 11.4), and the user's own sign-in is unchanged. Historical: none recorded.
 ### Open items
 
 At closure: plan 18.1.11 lists them, including H-21 with its closing step impl.md 16.10.
-Now open: the M1 record per route (plan Stage 17.4); the seven retargeted scenario files
-and their review (plan 17.4.4, 17.4.5); the definition-of-done table above; the decisions
-M1-D-LOOP-1 to -5 and `turn-budget-defaults-s11`; macOS, out of scope
-(`platforms-windows-wsl`).
+Built in Phase 17: Stages 17.1 to 17.3, the probe and the retargeted scenarios of 17.4;
+M1-D-LOOP-1 to -5 and `turn-budget-defaults-s11` are now in force. Now open:
+- the owner's M1 run (plan 17.4.3) and the table "M1 record per route", with rows 11.1 to
+  11.4 and 11.7 of the register;
+- the owner's review of the seven retargeted scenario files in the Phase 17 PR, and its PR
+  number (plan 17.4.5);
+- impl.md steps 11.3, 11.4 and 11.7 and their story-plan steps, unticked until the M1 run;
+- the definition-of-done rows 1, 3 and 4 above (plan 17.4.9);
+- H-37, the final `DH-T-AGENT-28` budget, closing at impl.md 16.7 ("Held open" above);
+- the deferred `DH-T-SUBAGENT-4`, `-14` and legs of `-3`, at DH-S-29 (M1-D-LOOP-3 B);
+- the `DH-T-CONTEXT-25` tag, added after `fda4b98`, re-proved at the next lane run;
+- the doc comment of `TestTurnBudgetClosesTheTurn` (`agent/driver/driver_test.go`) still
+  names `DH-T-AGENT-8`, the replay test's ID; the budget clause it proves is
+  `DH-T-AGENT-22`'s, and the comment is corrected in a later code change;
+- the DH-S-9 items this stage waits on: the DH-S-9 check (plan 16.5.9) and the DH-S-9
+  scenario review in PR #92;
+- production composition of the prompt component and the context pipeline (DH-S-16);
+- macOS, out of scope (`platforms-windows-wsl`).

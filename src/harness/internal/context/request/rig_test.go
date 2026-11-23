@@ -25,6 +25,7 @@ import (
 	fakemodel "github.com/smartpcr/agent-plugin/src/harness/internal/testkit/model"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools/core"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/tools/prompt"
 )
 
 var bg = context.Background()
@@ -121,7 +122,11 @@ type rig struct {
 	pipe   *request.Pipeline
 }
 
-func newRig(t *testing.T, turns ...fakemodel.Turn) *rig {
+func newRig(t *testing.T, turns ...fakemodel.Turn) *rig { return newRigWith(t, nil, turns...) }
+
+// newRigWith is newRig with the pipeline's options changed by opt (nil changes
+// nothing) before New.
+func newRigWith(t *testing.T, opt func(*request.Options), turns ...fakemodel.Turn) *rig {
 	t.Helper()
 	root := cordis.New()
 	root.Loggers().ClearExporters()
@@ -148,7 +153,7 @@ func newRig(t *testing.T, turns ...fakemodel.Turn) *rig {
 	sess := must(session.NewService(root, st, session.Config{}).Create(bg, nil, session.CreateOptions{Header: session.Header{ID: id}}))
 	t.Cleanup(func() { _ = sess.Close(bg) })
 	r := &rig{t: t, root: root, tab: tab, st: st, sess: sess, scopes: map[agent.Ref]scope.Key{}}
-	r.pipe, _ = must2(request.New(root, request.Options{
+	o := request.Options{
 		Table:    tab,
 		Sessions: func(agent.Ref) (request.Log, error) { return sess, nil },
 		Scopes: func(a agent.Ref) (scope.Key, error) {
@@ -156,16 +161,23 @@ func newRig(t *testing.T, turns ...fakemodel.Turn) *rig {
 			defer r.mu.Unlock()
 			return r.scopes[a], nil
 		},
-	}))
+	}
+	if opt != nil {
+		opt(&o)
+	}
+	r.pipe, _ = must2(request.New(root, o))
 
 	rt := llm.New()
 	fakemodel.Register(t, rt, route, fakemodel.NewTransport(t, turns...))
 	r.sent = &recorder{Models: rt}
 	r.inbox = must(agent.OpenInbox(bg, sess))
 	mod := must(agent.OpenModel(bg, sess, agent.ModelOptions{Initial: agent.ModelSelection{Route: route}}))
+	// The prompt assembly with an empty config: no system prompt, so the
+	// pipeline's messages are what the requests hold (plan 17.1.1).
+	ps := must(prompt.New(root, tab, prompt.Config{}))
 	r.drv = must(driver.Start(driver.Options{
 		Context: root, Agent: stubAgent{ref: agent.Ref{Session: session.ID(id), Incarnation: 1}},
-		Session: sess, Inbox: r.inbox, Model: mod, Models: r.sent, Tools: svc,
+		Session: sess, Inbox: r.inbox, Model: mod, Models: r.sent, Tools: svc, Prompt: ps,
 	}))
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(bg, 10*time.Second)

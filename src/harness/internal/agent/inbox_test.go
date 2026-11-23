@@ -90,6 +90,10 @@ func TestClaimedItemRunsAtMostOnceAcrossACrash(t *testing.T) {
 	if _, ok, err := in2.ClaimTurn(bg, 2); ok || err != nil {
 		t.Fatalf("resumed agent claimed again: %v %v", ok, err)
 	}
+	// Claimed and never admitted: reported discarded (M1-D-LOOP-1 A).
+	if d := in2.Discarded(); len(d) != 1 || d[0].Message.ID != "m1" || d[0].Turn != 1 || d[0].Cause != agent.CauseUnadmitted {
+		t.Fatalf("discarded %+v, want m1 of turn 1", d)
+	}
 	if n := count(t, h2, event.TurnStartType.Name()); n != 1 {
 		t.Fatalf("%d turns, want 1", n)
 	}
@@ -110,7 +114,8 @@ func must2[A, B any](a A, b B, err error) (A, B) {
 }
 
 // DH-T-AGENT-6: an injection while idle logs a splice and opens no turn; it is
-// claimed at the next step boundary, with its user message, in one group.
+// claimed at the next step boundary by a splice alone: its user message is the
+// driver's to admit at point 8 (M1-D-LOOP-1 A).
 func TestIdleInjectionOpensNoTurnAndIsClaimedAtTheNextStep(t *testing.T) {
 	_, h := inboxSession(t, memstore.New(), "s-idle")
 	t.Cleanup(func() { h.Close(bg) })
@@ -130,7 +135,7 @@ func TestIdleInjectionOpensNoTurnAndIsClaimedAtTheNextStep(t *testing.T) {
 	if len(got) != 1 || got[0].ID != "s1" || len(in.Pending(agent.ListNextStep)) != 0 {
 		t.Fatalf("claimed %+v", got)
 	}
-	if got := strings.Join(types(t, h, 0), ","); got != "agent/inbox/spliced,turn/start,agent/inbox/spliced,user/message" {
+	if got := strings.Join(types(t, h, 0), ","); got != "agent/inbox/spliced,turn/start,agent/inbox/spliced" {
 		t.Fatalf("log %s", got)
 	}
 	if must(in.ClaimStep(bg, 1)) != nil {

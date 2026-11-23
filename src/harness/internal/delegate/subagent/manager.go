@@ -30,6 +30,18 @@ type manager struct {
 	// refusing is closed when closing is set: the tests' signal that every
 	// later Start is refused (export_test.go). Nothing else reads it.
 	refusing chan struct{}
+
+	// trace is a test seam, nil in production: it records each settle point
+	// a run passes, S1 to S7, with the child and a detail (export_test.go).
+	// It is set before the first Start and never changed.
+	trace func(child session.ID, point, detail string)
+}
+
+// mark records point at the trace seam, if one is set.
+func (a *activation) mark(point, detail string) {
+	if t := a.m.trace; t != nil {
+		t(a.child, point, detail)
+	}
 }
 
 // activation is one run. Its fiber is a child of the owner's and holds, as
@@ -49,12 +61,17 @@ type activation struct {
 	h     agent.Handle
 	watch sync.WaitGroup
 
-	mu       sync.Mutex
-	from     session.Offset // the child's log length before it went live
-	stopped  bool           // S2 cancelled a still-working run; named in the Diagnostic when no turn end records it
-	captured *Result
-	startErr error
-	cleanErr error
+	mu      sync.Mutex
+	from    session.Offset // the child's log length before it went live
+	stopped bool           // S2 cancelled a still-working run; named in the Diagnostic when no turn end records it
+	// releasing is set by the first trigger that releases the run (S1's close,
+	// Dispose, or the release effect of an owner's teardown): a Start for the
+	// same child or name then waits for this run to settle instead of being
+	// refused (A2).
+	releasing bool
+	captured  *Result
+	startErr  error
+	cleanErr  error
 
 	once    sync.Once
 	settled chan struct{}
@@ -71,9 +88,8 @@ func (m *manager) Start(owner *cordis.Context, s Spec) (Activation, error) {
 		return nil, errorf(CodeInvalid, nil, "Start needs an owner context")
 	case strings.TrimSpace(s.Prompt) == "":
 		return nil, errorf(CodeInvalid, nil, "a delegation needs a prompt")
-	}
-	if err := owner.Lifetime().Err(); err != nil {
-		return nil, errorf(CodeInactive, err, "the owner is not active")
+	case s.Resume && s.Session == "":
+		return nil, errorf(CodeInvalid, nil, "a resume needs the stored child session")
 	}
 	if s.Session == "" {
 		s.Session = mint()
@@ -85,24 +101,14 @@ func (m *manager) Start(owner *cordis.Context, s Spec) (Activation, error) {
 	}
 
 	// A2 reserve: one run per child, one name per owner, none once the
-	// manager unloads (closeAll then sees every run admitted before).
-	m.mu.Lock()
-	if m.closing {
-		m.mu.Unlock()
-		return nil, errorf(CodeInactive, nil, "the subagent manager is unloading")
+	// manager unloads (closeAll then sees every run admitted before). The
+	// operations on one child are serialised: a start that meets a run of the
+	// same child or name which is already releasing waits for that run to
+	// settle and is then admitted, never refused for a state about to pass
+	// (DH-T-SUBAGENT-9). A run still working holds its child and name.
+	if err := m.reserve(owner, a); err != nil {
+		return nil, err
 	}
-	if _, ok := m.acts[a.child]; ok {
-		m.mu.Unlock()
-		return nil, errorf(CodeNameTaken, nil, "session %q already has an owner", a.child)
-	}
-	for _, o := range m.acts {
-		if o.owner == owner && o.name == a.name {
-			m.mu.Unlock()
-			return nil, errorf(CodeNameTaken, nil, "the owner already has a child named %q", a.name)
-		}
-	}
-	m.acts[a.child] = a
-	m.mu.Unlock()
 	defer close(a.ready)
 
 	// A4 materialise: the activation fiber under the owner, then the agent,
@@ -133,7 +139,11 @@ func (m *manager) Start(owner *cordis.Context, s Spec) (Activation, error) {
 	if s.Model != nil {
 		model = *s.Model
 	}
-	h, err := m.agents.Create(a.ctx, agent.CreateOptions{
+	create := m.agents.Create
+	if s.Resume {
+		create = m.agents.Resume
+	}
+	h, err := create(a.ctx, agent.CreateOptions{
 		Session: s.Session, Preset: s.Preset, Parent: s.Creator, Model: model, Setup: a.setup(s.Setup),
 	})
 	if err != nil {
@@ -157,6 +167,66 @@ func (m *manager) Start(owner *cordis.Context, s Spec) (Activation, error) {
 	a.watch.Add(1)
 	go a.closeWhenIdle()
 	return a, nil
+}
+
+// reserve is A2: it registers a under owner, or refuses it. A run of the same
+// child, or of the same name under owner, that is already releasing is waited
+// for, and the admission is then retried.
+func (m *manager) reserve(owner *cordis.Context, a *activation) error {
+	for {
+		if err := owner.Lifetime().Err(); err != nil {
+			return errorf(CodeInactive, err, "the owner is not active")
+		}
+		m.mu.Lock()
+		if m.closing {
+			m.mu.Unlock()
+			return errorf(CodeInactive, nil, "the subagent manager is unloading")
+		}
+		busy, err := m.conflict(owner, a)
+		if busy == nil {
+			m.acts[a.child] = a
+			m.mu.Unlock()
+			return nil
+		}
+		releasing := busy.isReleasing()
+		m.mu.Unlock()
+		if !releasing {
+			return err
+		}
+		select {
+		case <-busy.settled:
+		case <-owner.Lifetime().Done():
+		}
+	}
+}
+
+// conflict is the run that holds a's child or a's name under owner, with the
+// refusal it means; the caller holds m.mu.
+func (m *manager) conflict(owner *cordis.Context, a *activation) (*activation, error) {
+	if o, ok := m.acts[a.child]; ok {
+		return o, errorf(CodeNameTaken, nil, "session %q already has an owner", a.child)
+	}
+	for _, o := range m.acts {
+		if o.owner == owner && o.name == a.name {
+			return o, errorf(CodeNameTaken, nil, "the owner already has a child named %q", a.name)
+		}
+	}
+	return nil, nil
+}
+
+// begin marks the run as releasing; it is true for the first trigger only.
+func (a *activation) begin() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	first := !a.releasing
+	a.releasing = true
+	return first
+}
+
+func (a *activation) isReleasing() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.releasing
 }
 
 // abort is a failed start: the run settles start-failed once its fiber, and
@@ -196,18 +266,25 @@ func (a *activation) setup(user agent.SetupFunc) agent.SetupFunc {
 func (a *activation) closeWhenIdle() {
 	defer a.watch.Done()
 	_ = agent.WaitIdle(context.Background(), a.h.Agent())
+	// Another trigger that began first (Dispose, the owner's teardown) is
+	// what woke the wait; only a run that went idle by itself closes here.
+	if a.begin() {
+		a.mark("S1", "close")
+	}
 	a.fiber.Dispose()
 }
 
 // release is S2 and S4: a run still working is cancelled with cause parent
 // and its pending input discarded; then the handle is disposed, which waits
-// for the child's driver goroutine to exit.
+// for the child's driver goroutine to exit. S3 runs inside that disposal.
 func (a *activation) release() error {
+	a.begin()
 	ag := a.h.Agent()
 	if ag.Status() == agent.StatusRunning {
 		a.mu.Lock()
 		a.stopped = true
 		a.mu.Unlock()
+		a.mark("S2", "stop "+string(agent.CauseParent))
 	}
 	err := errors.Join(
 		agent.Cancel(ag, agent.CauseParent, agent.CancelOptions{Scope: agent.ScopeTurn, Inbox: agent.InboxDiscard}),
@@ -217,8 +294,11 @@ func (a *activation) release() error {
 		a.mu.Lock()
 		a.cleanErr = err
 		a.mu.Unlock()
+		a.mark("S4", "release "+string(CleanupFailed))
+		return err
 	}
-	return err
+	a.mark("S4", "release "+string(CleanupOK))
+	return nil
 }
 
 // capture is S3: the outcome of the last turn since the run's start and the
@@ -253,6 +333,7 @@ func (a *activation) capture(s session.ReadSession) {
 	a.mu.Lock()
 	a.captured = &r
 	a.mu.Unlock()
+	a.mark("S3", "capture "+string(r.Stop))
 }
 
 func stopOf(r event.Reason) (StopReason, string) {
@@ -301,7 +382,10 @@ func (a *activation) settle() {
 		}
 		a.result = r
 		a.mu.Unlock()
+		// S5, the ledger record, arrives with DH-D-SUBAGENT-2 (DH-S-29).
 		a.m.forget(a)
+		a.mark("S6", "free")
+		a.mark("S7", "deliver "+string(r.Stop)+" cleanup "+string(r.Cleanup))
 		close(a.settled)
 	})
 }
@@ -320,6 +404,7 @@ func (a *activation) Result(ctx context.Context) (Result, error) {
 }
 
 func (a *activation) Dispose(ctx context.Context) error {
+	a.begin()
 	a.fiber.Dispose()
 	if _, err := a.Result(ctx); err != nil {
 		return err
