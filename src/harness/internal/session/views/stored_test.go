@@ -70,6 +70,8 @@ func checkpointsOf(t *testing.T, st store.Store, id session.ID) map[int]store.Ch
 // Scenario: Changed fold version rebuilds (DH-D-VIEW-2, TC-08). A stored fold
 // at version 1 over 20 events, re-registered at version 2: the store opens, the
 // stored state is rebuilt, records version 2 and its seq is the log head.
+//
+//dsh:test DH-T-VIEW-6
 func TestChangedFoldVersionRebuilds(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "dsh.db")
 

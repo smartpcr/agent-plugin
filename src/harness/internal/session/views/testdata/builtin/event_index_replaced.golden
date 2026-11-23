@@ -1,0 +1,202 @@
+{
+  "events": [
+    {
+      "seq": 0,
+      "type": "turn/start",
+      "class": "log-only"
+    },
+    {
+      "seq": 1,
+      "type": "user/message",
+      "class": "shadowed",
+      "replaced": true,
+      "replaced_by": 22
+    },
+    {
+      "seq": 2,
+      "type": "step/start",
+      "class": "log-only"
+    },
+    {
+      "seq": 3,
+      "type": "assistant/attempt",
+      "class": "log-only"
+    },
+    {
+      "seq": 4,
+      "type": "step/end",
+      "class": "log-only"
+    },
+    {
+      "seq": 5,
+      "type": "step/start",
+      "class": "log-only"
+    },
+    {
+      "seq": 6,
+      "type": "assistant/message",
+      "class": "shadowed",
+      "replaced": true,
+      "replaced_by": 22
+    },
+    {
+      "seq": 7,
+      "type": "tool/call",
+      "class": "log-only",
+      "call": "call-1-2"
+    },
+    {
+      "seq": 8,
+      "type": "tool/result",
+      "class": "shadowed",
+      "replaced": true,
+      "replaced_by": 22,
+      "call": "call-1-2"
+    },
+    {
+      "seq": 9,
+      "type": "step/end",
+      "class": "log-only"
+    },
+    {
+      "seq": 10,
+      "type": "step/start",
+      "class": "log-only"
+    },
+    {
+      "seq": 11,
+      "type": "assistant/message",
+      "class": "shadowed",
+      "replaced": true,
+      "replaced_by": 22
+    },
+    {
+      "seq": 12,
+      "type": "step/end",
+      "class": "log-only"
+    },
+    {
+      "seq": 13,
+      "type": "turn/end",
+      "class": "log-only"
+    },
+    {
+      "seq": 14,
+      "type": "turn/start",
+      "class": "log-only"
+    },
+    {
+      "seq": 15,
+      "type": "user/message",
+      "class": "current"
+    },
+    {
+      "seq": 16,
+      "type": "step/start",
+      "class": "log-only"
+    },
+    {
+      "seq": 17,
+      "type": "assistant/message",
+      "class": "current"
+    },
+    {
+      "seq": 18,
+      "type": "tool/call",
+      "class": "log-only",
+      "call": "call-2-1"
+    },
+    {
+      "seq": 19,
+      "type": "tool/result",
+      "class": "shadowed",
+      "replaced": true,
+      "replaced_by": 21,
+      "call": "call-2-1"
+    },
+    {
+      "seq": 20,
+      "type": "step/end",
+      "class": "log-only"
+    },
+    {
+      "seq": 21,
+      "type": "tool/result",
+      "class": "current",
+      "cites": [
+        19
+      ],
+      "call": "call-2-1"
+    },
+    {
+      "seq": 22,
+      "type": "user/message",
+      "class": "current",
+      "cites": [
+        1,
+        6,
+        8,
+        11
+      ]
+    },
+    {
+      "seq": 23,
+      "type": "step/start",
+      "class": "log-only"
+    },
+    {
+      "seq": 24,
+      "type": "assistant/message",
+      "class": "current"
+    },
+    {
+      "seq": 25,
+      "type": "step/end",
+      "class": "log-only"
+    },
+    {
+      "seq": 26,
+      "type": "turn/end",
+      "class": "log-only"
+    },
+    {
+      "seq": 27,
+      "type": "turn/start",
+      "class": "log-only"
+    },
+    {
+      "seq": 28,
+      "type": "user/message",
+      "class": "current"
+    },
+    {
+      "seq": 29,
+      "type": "step/start",
+      "class": "log-only"
+    },
+    {
+      "seq": 30,
+      "type": "assistant/message",
+      "class": "current"
+    },
+    {
+      "seq": 31,
+      "type": "step/end",
+      "class": "log-only"
+    },
+    {
+      "seq": 32,
+      "type": "turn/end",
+      "class": "log-only"
+    }
+  ],
+  "history": [
+    22,
+    15,
+    17,
+    21,
+    24,
+    28,
+    30
+  ]
+}

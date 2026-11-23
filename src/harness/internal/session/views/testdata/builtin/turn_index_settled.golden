@@ -1,0 +1,41 @@
+{
+  "turns": [
+    {
+      "turn": 1,
+      "start": 0,
+      "start_at": 1000,
+      "settled": true,
+      "end": 13,
+      "end_at": 14000,
+      "reason": "completed",
+      "steps": 3,
+      "has_prompt": true,
+      "prompt": 1
+    },
+    {
+      "turn": 2,
+      "agent": "helper",
+      "start": 14,
+      "start_at": 15000,
+      "settled": true,
+      "end": 26,
+      "end_at": 27000,
+      "reason": "error",
+      "steps": 2,
+      "has_prompt": true,
+      "prompt": 15
+    },
+    {
+      "turn": 3,
+      "start": 27,
+      "start_at": 28000,
+      "settled": true,
+      "end": 32,
+      "end_at": 33000,
+      "reason": "aborted",
+      "steps": 1,
+      "has_prompt": true,
+      "prompt": 28
+    }
+  ]
+}
