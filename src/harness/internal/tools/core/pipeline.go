@@ -385,17 +385,17 @@ func (r *registry) prepare(ctx context.Context, b tools.Batch, ag agent.Ref, ls 
 
 // approvalSubject maps a policy's subject onto the approval service's (stage 4
 // of DH-D-TOOLS-2); nil for none or one that is not Valid, so the request offers
-// no session choice and matches no grant. The label is display only: the
-// approval request has no place for it, and nothing matches on it.
+// no session choice and matches no grant. The label goes with it, so the
+// answerer shows the scope in words; nothing matches on it.
 func approvalSubject(s *tools.Subject) *approval.Subject {
 	if s == nil || !s.Valid() {
 		return nil
 	}
 	if s.Kind == tools.SubjectApplication {
 		p, a, _ := strings.Cut(s.Name, ":")
-		return &approval.Subject{Kind: approval.ScopeApplication, Provider: p, App: a}
+		return &approval.Subject{Kind: approval.ScopeApplication, Provider: p, App: a, Label: s.Label}
 	}
-	return &approval.Subject{Kind: approval.ScopeDirectory, Path: s.Name}
+	return &approval.Subject{Kind: approval.ScopeDirectory, Path: s.Name, Label: s.Label}
 }
 
 // registered reports whether any layer holds a tool of that name.
