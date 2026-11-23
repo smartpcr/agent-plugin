@@ -45,10 +45,12 @@ func (o *jobOwner) report() Owner { return TreeOwner() }
 
 func (o *jobOwner) start(build func() *exec.Cmd) (*exec.Cmd, error) {
 	cmd := build()
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		// A pipe child gets no window (Windows rule 6).
-		CreationFlags: windows.CREATE_SUSPENDED | windows.CREATE_NO_WINDOW,
+	// The flags are added to what build set (a checked batch run's command line).
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
+	// A pipe child gets no window (Windows rule 6).
+	cmd.SysProcAttr.CreationFlags |= windows.CREATE_SUSPENDED | windows.CREATE_NO_WINDOW
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}

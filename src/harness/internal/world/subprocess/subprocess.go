@@ -5,6 +5,11 @@
 // child unless the caller put it there (SP-11). BuildEnv is the one way to derive a
 // child environment from the host's; it scrubs secrets and DSH_* names.
 //
+// On Windows a batch file (.bat, .cmd) is refused unless Spec.Batch is
+// AllowChecked; then it runs through cmd.exe and any argument cmd.exe cannot pass
+// unchanged is refused before anything starts (DH-ADR-NODEPROC-1).
+// LookupProgram finds such a file by bare name and says that it is one.
+//
 // Every child is placed in a tree owner when it starts, and StopTree stops and
 // awaits the whole tree (DH-D-EXEC-2): a Job Object on Windows; on Linux a control
 // group per command inside the host's own cgroup v2 directory when that is
@@ -80,6 +85,10 @@ type Spec struct {
 	// Grace is how long StopTree waits after the polite stop when the context
 	// that started the process ends.
 	Grace time.Duration
+	// Batch says whether a Windows batch file may be started: Refuse (the zero
+	// value) refuses it, AllowChecked runs it through cmd.exe with checked
+	// arguments. Other systems ignore it.
+	Batch BatchPolicy
 }
 
 // Process is one started child and the tree it owns.
@@ -110,19 +119,22 @@ const watchEvery = 250 * time.Millisecond
 // handle. When ctx ends, the tree is stopped with spec.Grace. The caller must call
 // StopTree or Wait.
 func Start(ctx context.Context, spec Spec) (*Process, error) {
-	if err := check(spec.Argv); err != nil {
+	l, err := check(spec.Argv, spec.Batch)
+	if err != nil {
 		return nil, err
 	}
 	build := func() *exec.Cmd {
-		return &exec.Cmd{
-			Path:   spec.Argv[0],
-			Args:   append([]string(nil), spec.Argv...),
+		cmd := &exec.Cmd{
+			Path:   l.path,
+			Args:   append([]string(nil), l.args...),
 			Dir:    spec.Dir,
 			Env:    spec.Env.block(),
 			Stdin:  spec.Stdin,
 			Stdout: spec.Stdout,
 			Stderr: spec.Stderr,
 		}
+		setCmdLine(cmd, l.cmdLine)
+		return cmd
 	}
 	owner, err := newOwner()
 	if err != nil {
@@ -169,29 +181,34 @@ func (p *Process) watch(ctx context.Context, grace time.Duration) {
 	}
 }
 
-// check applies the argv rules that hold on every system, then the Windows ones.
-func check(argv []string) error {
+// check applies the argv rules that hold on every system, then the Windows ones,
+// and returns what Start creates.
+func check(argv []string, batch BatchPolicy) (launch, error) {
 	if len(argv) == 0 || argv[0] == "" {
-		return herr.New(ReasonEmptyArgv, "no program to start")
+		return launch{}, herr.New(ReasonEmptyArgv, "no program to start")
 	}
 	if !filepath.IsAbs(argv[0]) {
-		return herr.Newf(ReasonRelativeProgram, "program %q is not an absolute path; resolve it with Lookup", filepath.Base(argv[0]))
+		return launch{}, herr.Newf(ReasonRelativeProgram, "program %q is not an absolute path; resolve it with Lookup", filepath.Base(argv[0]))
 	}
 	for i, a := range argv {
 		if strings.IndexByte(a, 0) >= 0 {
-			return herr.Newf(ReasonBadArgument, "argument %d holds a NUL byte", i)
+			return launch{}, herr.Newf(ReasonBadArgument, "argument %d holds a NUL byte", i)
 		}
 	}
+	plain := launch{path: argv[0], args: argv}
 	if runtime.GOOS != "windows" {
-		return nil
+		return plain, nil
 	}
 	if isBatch(argv[0]) {
-		return herr.Newf(ReasonBatchRefused, "%s is a batch file; cmd.exe would parse its arguments", filepath.Base(argv[0]))
+		if batch != AllowChecked {
+			return launch{}, herr.Newf(ReasonBatchRefused, "%s is a batch file; cmd.exe would parse its arguments (opt in with Spec.Batch = AllowChecked)", filepath.Base(argv[0]))
+		}
+		return batchLaunch(argv)
 	}
 	if n := windowsLineLength(argv); n > maxWindowsLine {
-		return herr.Newf(ReasonLineTooLong, "the command line is %d UTF-16 units, over %d; pass a script file instead", n, maxWindowsLine)
+		return launch{}, herr.Newf(ReasonLineTooLong, "the command line is %d UTF-16 units, over %d; pass a script file instead", n, maxWindowsLine)
 	}
-	return nil
+	return plain, nil
 }
 
 // isBatch reports whether Windows would run path through cmd.exe. Win32 path
@@ -430,14 +447,29 @@ type treeOwner interface {
 // refused (ReasonBatchRefused). A candidate is tested by its attributes and never
 // opened.
 func Lookup(name string, env Env) (string, error) {
+	prog, err := LookupProgram(name, env)
+	if err != nil {
+		return "", err
+	}
+	if prog.Batch {
+		return "", herr.Newf(ReasonBatchRefused, "%s resolves to a batch file (LookupProgram reports it for a caller that opts in)", name)
+	}
+	return prog.Path, nil
+}
+
+// LookupProgram resolves name as Lookup does, but a batch file is not refused: it
+// is reported in Program.Batch, so a caller that accepts the checked batch run
+// sets Spec.Batch to AllowChecked and starts Program.Path. Batch is only ever
+// true on Windows. An absolute name is returned as given, classified the same way.
+func LookupProgram(name string, env Env) (Program, error) {
 	if name == "" {
-		return "", herr.New(ReasonEmptyArgv, "no program name")
+		return Program{}, herr.New(ReasonEmptyArgv, "no program name")
 	}
 	if strings.ContainsAny(name, `/\`) {
 		if !filepath.IsAbs(name) {
-			return "", herr.Newf(ReasonRelativeProgram, "program %q is a relative path", name)
+			return Program{}, herr.Newf(ReasonRelativeProgram, "program %q is a relative path", name)
 		}
-		return name, nil
+		return classify(name), nil
 	}
 	exts := []string{""}
 	if runtime.GOOS == "windows" {
@@ -449,16 +481,16 @@ func Lookup(name string, env Env) (string, error) {
 		}
 		for _, ext := range exts {
 			cand := filepath.Join(dir, name+ext)
-			if !executable(cand) {
-				continue
+			if executable(cand) {
+				return classify(cand), nil
 			}
-			if runtime.GOOS == "windows" && isBatch(cand) {
-				return "", herr.Newf(ReasonBatchRefused, "%s resolves to a batch file", name)
-			}
-			return cand, nil
 		}
 	}
-	return "", herr.Newf(ReasonNotFound, "%s is not on the child's PATH", name)
+	return Program{}, herr.Newf(ReasonNotFound, "%s is not on the child's PATH", name)
+}
+
+func classify(path string) Program {
+	return Program{Path: path, Batch: runtime.GOOS == "windows" && isBatch(path)}
 }
 
 func windowsExts(name string, env Env) []string {
