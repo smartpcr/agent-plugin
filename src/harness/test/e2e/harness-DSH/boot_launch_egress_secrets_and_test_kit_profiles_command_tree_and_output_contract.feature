@@ -2,7 +2,7 @@
 Feature: Profiles, command tree and output contract
   A launch composes its configuration from a layer stack where the higher layer
   wins and the ownership index names the winner; the one command tree maps usage
-  errors to exit status 2 and generates the CLI reference committed as a golden.
+  errors to exit status 64 and generates the CLI reference committed as a golden.
 
   # TC-06a [proof: in-process; deps: none]
   Scenario: Layer stack precedence
@@ -15,10 +15,10 @@ Feature: Profiles, command tree and output contract
     And the ownership index names the bundle layer as owner of the entry
 
   # TC-06a [proof: in-process; deps: none]
-  Scenario: Usage error exits 2
+  Scenario: Usage error exits 64
     Given the command tree
     When "dsh --no-such-flag" is dispatched in process with captured streams
-    Then the mapped exit code is 2
+    Then the mapped exit code is 64
     And stderr holds one usage line naming "--no-such-flag" plus the help hint
     And stdout is empty
 

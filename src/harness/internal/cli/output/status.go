@@ -12,19 +12,19 @@ import (
 // tech-spec §5.5). Statuses 1 to 8 are result classes that mean the same in every
 // command; the others are process-level.
 //
-// Usage is 2 as Stage 6.3 of the implementation plan fixes it; app-cli.md §6.2.4
-// proposes 64 so that 2 stays with the Go runtime's panic exit. The table is the
-// one place to change if that is decided the other way.
+// Usage is 64 (EX_USAGE), as app-cli.md §6.2.4 and decision M1-D-BOOT-3 (A) fix
+// it, so that 2 stays with the Go runtime's exit after an unrecovered panic: no
+// command returns 2 (DH-T-CLI-6).
 const (
 	OK          = 0
 	Failed      = 1
-	Usage       = 2
 	Denied      = 3
 	Unavailable = 4
 	Invalid     = 5
 	Busy        = 6
 	Limit       = 7
 	Cancelled   = 8
+	Usage       = 64
 	Fatal       = 70
 	Config      = 78
 	Forced      = 124
@@ -44,13 +44,13 @@ func Statuses() []StatusInfo {
 	return []StatusInfo{
 		{OK, "ok", "Success; also help and version"},
 		{Failed, "failed", "The thing asked for ran and failed"},
-		{Usage, "usage", "Usage error: unknown command or flag, a broken rule between flags, a missing argument"},
 		{Denied, "denied", "Denied by policy, a guard or a person"},
 		{Unavailable, "unavailable", "Unavailable: no host, no endpoint, a capability that is missing"},
 		{Invalid, "invalid", "Invalid input or not found: an unknown session, tool or profile"},
 		{Busy, "busy", "Busy or conflict"},
 		{Limit, "limit", "A limit or a timeout ended the work"},
 		{Cancelled, "cancelled", "Cancelled, or the outcome is unknown"},
+		{Usage, "usage", "Usage error: unknown command or flag, a broken rule between flags, a missing argument"},
 		{Fatal, "fatal", "Fatal error with a report written"},
 		{Config, "config", "The configuration cannot be composed, or a required entry failed to load"},
 		{Forced, "forced", "Forced exit: the exit deadline passed during shutdown"},

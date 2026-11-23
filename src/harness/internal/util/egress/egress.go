@@ -160,6 +160,17 @@ func (s *Service) Client(kind string, p Permit, o Options) (*http.Client, error)
 	return &http.Client{Transport: rt, CheckRedirect: redirect}, nil
 }
 
+// Over is a client over rt that follows no redirect and checks no permit: the
+// seam under llm/transport.Over for the test kit's fake transport and recorded
+// fixtures, so that no HTTP client is built outside this package (DH-T-UNDICI-8).
+// It is not listed by Handed. The archtest seam rule allows its use only from
+// _test.go files, internal/testkit and internal/llm/transport (DH-T-HOST-19).
+func Over(rt http.RoundTripper) *http.Client {
+	return &http.Client{Transport: rt, CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+}
+
 // Release releases c: it is no longer listed, its callbacks on the permit and the
 // owner are stopped, and every later request fails with egress/not-permitted.
 // Releasing a client twice, or one this service did not build, does nothing.
