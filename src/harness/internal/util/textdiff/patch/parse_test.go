@@ -7,6 +7,7 @@ import (
 	"testing"
 )
 
+//dsh:test DH-T-FS-4
 func TestParseHunks(t *testing.T) {
 	text := strings.Join([]string{
 		"*** Begin Patch",
@@ -37,6 +38,7 @@ func TestParseHunks(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-FS-4
 func TestParseChunks(t *testing.T) {
 	text := "*** Begin Patch\n" +
 		"*** Update File: f\n" +
@@ -65,6 +67,7 @@ func TestParseChunks(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-FS-4
 func TestParseLenient(t *testing.T) {
 	body := "*** Begin Patch\n*** Delete File: a\n*** End Patch"
 	for name, text := range map[string]string{
@@ -86,6 +89,7 @@ func TestParseLenient(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-FS-4
 func TestParseErrors(t *testing.T) {
 	cases := []struct {
 		name, text string
@@ -127,6 +131,8 @@ func TestParseErrors(t *testing.T) {
 
 // TestFeedEqualsParse: feeding a patch line by line gives what Parse gives, and a
 // Parser keeps returning its first error.
+//
+//dsh:test DH-T-FS-4
 func TestFeedEqualsParse(t *testing.T) {
 	text := "*** Begin Patch\n*** Update File: f\n@@ ctx\n a\n-b\n+c\n*** Add File: g\n+1\n*** End Patch\n"
 	whole, err := Parse(text)
@@ -154,6 +160,7 @@ func TestFeedEqualsParse(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-FS-4
 func TestFormatParsesBack(t *testing.T) {
 	hunks := []Hunk{
 		Add("new.txt", "one\r\ntwo"),

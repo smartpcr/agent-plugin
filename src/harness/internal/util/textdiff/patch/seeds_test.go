@@ -28,6 +28,8 @@ var textSeeds = [][2]string{
 
 // FuzzParse: the parser never panics, and a parsed patch formats to text that
 // parses back to the same hunks.
+//
+//dsh:test DH-T-FS-4
 func FuzzParse(f *testing.F) {
 	for _, s := range parseSeeds {
 		f.Add(s)
@@ -49,6 +51,8 @@ func FuzzParse(f *testing.F) {
 
 // FuzzApply: applying any parsed patch to any text never panics, and a failure
 // returns no text.
+//
+//dsh:test DH-T-FS-5
 func FuzzApply(f *testing.F) {
 	for i, s := range parseSeeds {
 		f.Add(s, textSeeds[i%len(textSeeds)][0])
@@ -68,6 +72,8 @@ func FuzzApply(f *testing.F) {
 
 // FuzzMake: for LF texts that end in a newline, a patch made from a to b applies
 // to a and gives b.
+//
+//dsh:test DH-T-FS-5
 func FuzzMake(f *testing.F) {
 	for _, s := range textSeeds {
 		f.Add(s[0], s[1])

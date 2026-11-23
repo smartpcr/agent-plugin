@@ -58,6 +58,8 @@ var fixture = map[string]string{
 
 // TestListGolden: a .gitignore excluding build/ keeps every path under build/ (at
 // any depth) out of the listing, and the listing equals the committed golden.
+//
+//dsh:test DH-T-RIPGREP-2, DH-T-RIPGREP-7
 func TestListGolden(t *testing.T) {
 	src := tree(t, fixture)
 	got, sum, err := List(context.Background(), FilesQuery{From: src})
@@ -75,6 +77,7 @@ func TestListGolden(t *testing.T) {
 	golden.Assert(t, "list", strings.Join(got, "\n")+"\n")
 }
 
+//dsh:test DH-T-RIPGREP-2, DH-T-RIPGREP-3
 func TestListSwitches(t *testing.T) {
 	src := tree(t, fixture)
 	ctx := context.Background()
@@ -141,6 +144,7 @@ func TestListSwitches(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-RIPGREP-2
 func TestListByTime(t *testing.T) {
 	src := tree(t, map[string]string{"a": "", "b": "", "c": "", "d": ""})
 	base := time.Now().Add(-time.Hour)
@@ -166,6 +170,8 @@ func TestListByTime(t *testing.T) {
 
 // TestIgnoreRules is the rule table: nesting, negation, directory-only, anchored,
 // "**", escapes, and .ignore over .gitignore.
+//
+//dsh:test DH-T-RIPGREP-7
 func TestIgnoreRules(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -199,6 +205,8 @@ func TestIgnoreRules(t *testing.T) {
 }
 
 // TestIgnoreAboveRoot: the ignore files of the directories above a sub-root apply.
+//
+//dsh:test DH-T-RIPGREP-7
 func TestIgnoreAboveRoot(t *testing.T) {
 	src := tree(t, map[string]string{".gitignore": "*.tmp\n", "a/.gitignore": "x\n", "a/b/x": "", "a/b/y.tmp": "", "a/b/z": ""})
 	got, _, err := List(context.Background(), FilesQuery{From: src, Root: "a/b"})
@@ -207,6 +215,7 @@ func TestIgnoreAboveRoot(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-RIPGREP-1
 func TestGrep(t *testing.T) {
 	src := tree(t, fixture)
 	got := grepAll(t, GrepQuery{From: src, Pattern: "needle"})
@@ -242,6 +251,7 @@ func grepAll(t *testing.T, q GrepQuery) []Match {
 	return got
 }
 
+//dsh:test DH-T-RIPGREP-1, DH-T-RIPGREP-5
 func TestGrepLines(t *testing.T) {
 	long := strings.Repeat("é", 20) // 40 bytes
 	src := tree(t, map[string]string{
@@ -269,6 +279,7 @@ func TestGrepLines(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-RIPGREP-3
 func TestGrepLimits(t *testing.T) {
 	files := map[string]string{}
 	for _, n := range []string{"a", "b", "c", "d", "e"} {
@@ -307,6 +318,7 @@ func TestGrepLimits(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-RIPGREP-3, DH-T-RIPGREP-6
 func TestGrepErrors(t *testing.T) {
 	src := tree(t, map[string]string{"a": "x\n"})
 	ctx := context.Background()
@@ -334,6 +346,8 @@ func TestGrepErrors(t *testing.T) {
 
 // TestGrepCancelPromptly: cancelling mid-search returns promptly with the aborted
 // error, even with a large tree left.
+//
+//dsh:test DH-T-RIPGREP-3
 func TestGrepCancelPromptly(t *testing.T) {
 	files := map[string]string{}
 	for i := range 300 {
@@ -375,6 +389,7 @@ func (f failing) Open(name string) (io.ReadCloser, error) {
 	return f.Source.Open(name)
 }
 
+//dsh:test DH-T-RIPGREP-3
 func TestUnreadableIsIncomplete(t *testing.T) {
 	src := failing{tree(t, map[string]string{"a/x": "hit\n", "b": "hit\n", "c": "hit\n"}), map[string]bool{"a": true, "b": true}}
 	got, sum, err := List(context.Background(), FilesQuery{From: src})
@@ -389,6 +404,8 @@ func TestUnreadableIsIncomplete(t *testing.T) {
 }
 
 // TestConfinedSource: no name reaches outside the DirSource's directory.
+//
+//dsh:test DH-T-RIPGREP-4
 func TestConfinedSource(t *testing.T) {
 	outer := t.TempDir()
 	if err := os.WriteFile(filepath.Join(outer, "secret"), []byte("hit\n"), 0o644); err != nil {

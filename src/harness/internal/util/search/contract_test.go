@@ -17,6 +17,8 @@ import (
 
 // TestGrepNoPhantomEOFLine: the empty read after a final terminator is not a line,
 // and an empty file has none.
+//
+//dsh:test DH-T-RIPGREP-1
 func TestGrepNoPhantomEOFLine(t *testing.T) {
 	src := tree(t, map[string]string{"one": "a\n", "empty": "", "blank": "\n"})
 	got := grepAll(t, GrepQuery{From: src, Pattern: "^$"})
@@ -29,6 +31,8 @@ func TestGrepNoPhantomEOFLine(t *testing.T) {
 // TestGrepLongLine: a line over the scan cap is not searched as though complete; a
 // needle past the cap and an end anchor on the kept prefix both make the result
 // Incomplete instead of a silent miss or a false match.
+//
+//dsh:test DH-T-RIPGREP-1, DH-T-RIPGREP-3
 func TestGrepLongLine(t *testing.T) {
 	big := strings.Repeat("a", maxScanLine+10)
 	src := tree(t, map[string]string{
@@ -61,6 +65,8 @@ func TestGrepLongLine(t *testing.T) {
 
 // TestGrepBytesCountsConsumed: every byte read counts against MaxBytes, including
 // the part of a long line that is not kept.
+//
+//dsh:test DH-T-RIPGREP-3
 func TestGrepBytesCountsConsumed(t *testing.T) {
 	src := tree(t, map[string]string{"big": strings.Repeat("x", 3<<20) + "\n"})
 	sum, err := Grep(context.Background(), GrepQuery{From: src, Pattern: "y", Limits: Limits{MaxBytes: 2 << 20}},
@@ -91,6 +97,8 @@ func (r *recording) Open(name string) (io.ReadCloser, error) { return r.Source.O
 
 // TestPatternDirectedWalk: a walk for src/**/*.ts never lists directories no match
 // can lie under, so unrelated files cannot exhaust MaxFiles first.
+//
+//dsh:test DH-T-FS-7
 func TestPatternDirectedWalk(t *testing.T) {
 	files := map[string]string{"src/a.ts": "x\n", "src/deep/b.ts": "x\n", "src/c.go": "x\n"}
 	for i := range 20 {
@@ -150,6 +158,8 @@ func TestMayContain(t *testing.T) {
 
 // TestOffsetPages: concatenated pages equal the full ordered result, for listing
 // and for each content-search output.
+//
+//dsh:test DH-T-FS-7
 func TestOffsetPages(t *testing.T) {
 	files := map[string]string{}
 	for i := range 7 {
@@ -206,6 +216,8 @@ func TestOffsetPages(t *testing.T) {
 
 // TestGrepOutputs: files and counts modes give one result per matching file in walk
 // order, and MaxMatches bounds files, not lines.
+//
+//dsh:test DH-T-FS-7
 func TestGrepOutputs(t *testing.T) {
 	src := tree(t, map[string]string{"a": "hit\nhit\nhit\n", "b": "none\n", "c": "hit\n"})
 	files := grepAll(t, GrepQuery{From: src, Pattern: "hit", Output: OutputFiles})
@@ -226,6 +238,8 @@ func TestGrepOutputs(t *testing.T) {
 
 // TestSampleSpreads: over the cap, the sample is split across the children of each
 // directory at every depth, so an early sibling cannot take it all.
+//
+//dsh:test DH-T-FS-7
 func TestSampleSpreads(t *testing.T) {
 	files := map[string]string{"z.txt": "x"}
 	for i := range 30 {
@@ -323,6 +337,8 @@ func (f stalledFile) Read([]byte) (int, error) {
 
 // TestGrepCancelAfterWalk: the walk has finished and only a scan is still running
 // when the caller cancels. The search is aborted, not complete.
+//
+//dsh:test DH-T-RIPGREP-3
 func TestGrepCancelAfterWalk(t *testing.T) {
 	src := &stalled{Source: tree(t, map[string]string{"a.txt": "needle\n"}), opened: make(chan struct{}), release: make(chan struct{})}
 	ctx, cancel := context.WithCancel(t.Context())
@@ -383,6 +399,8 @@ func (l *lagging) Open(name string) (io.ReadCloser, error) {
 // TestGrepBytesDeterministic: the byte budget is spent in walk order, so a tight
 // MaxBytes returns the same matches however the workers are scheduled, even when
 // the first file is the last to be read.
+//
+//dsh:test DH-T-RIPGREP-3, DH-T-RIPGREP-5
 func TestGrepBytesDeterministic(t *testing.T) {
 	files := map[string]string{}
 	for _, name := range []string{"a", "b", "c", "d", "e"} {
@@ -417,6 +435,8 @@ func TestGrepBytesDeterministic(t *testing.T) {
 // TestIgnoreFileFailures: an ignore file that cannot be read, or is over the
 // size cap with a rule past the cap, never lets the paths it excludes through;
 // the listing is Incomplete and the Matcher reports why.
+//
+//dsh:test DH-T-RIPGREP-7
 func TestIgnoreFileFailures(t *testing.T) {
 	files := map[string]string{
 		"keep.txt":      "k",

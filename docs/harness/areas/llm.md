@@ -464,6 +464,14 @@ type Prepared interface { // what callers hold; the raw Attempt is not reachable
 - **Components and files.** `internal/llm/vocab`. **Depends on.** [DH-D-UTIL-1](util-test-support.md#dh-d-util-1) for `schema`.
 - **Priority.** P0. **Outcome.** [DH-O-8](../design.md#dh-o-8), [DH-O-4](../design.md#dh-o-4). **Done when.** DH-T-LLM-1 passes, its vocabulary clauses included.
 
+> **DC-3 override note (M1 story, 2026-11-22).** "Package `llm` re-exports each type as an
+> alias" is overridden by owner decision M1-D-FND-3 (a) in
+> [the M1 decision log](../../stories/harness-DSH-M1/decisions.md) (gap M1-G-FND-19).
+> Package `llm` declares no `llm` aliases (no `type X = vocab.X`): a consumer that names a
+> message, block or failure imports `internal/llm/vocab` directly, as the code already
+> does. One name per type keeps the vocabulary a leaf without a second spelling to keep in
+> step. The deliverable text above is unchanged (DC-2).
+
 The four cloud and sign-in deliverables below are later, lower-priority work by [DH-ADR-25](../design.md#dh-adr-25); priority does not weaken their completion criteria. Each is its own provider component that obtains a token or signs a request and then uses the shared transport and an existing driver ([DH-ADR-PIAI-3](../libs/earendil-works-pi.md#dh-adr-piai-3)). Each package is compiled only under a build tag, so the default binary links no vendor module (recommended default, not confirmed by the owner). A vendor module is allowed for authentication only, verified and recorded as a library item when the component is specified; none is named here. All four depend on [DH-D-LLM-4](#dh-d-llm-4), [DH-D-HUMAN-8](interaction-credentials.md#dh-d-human-8) (the credential store and its lock) and [DH-D-HUMAN-1](interaction-credentials.md#dh-d-human-1) (the interaction registry, for a pending sign-in), and need an account on the platform at run time.
 
 <a id="dh-d-llm-7"></a>

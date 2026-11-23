@@ -107,6 +107,8 @@ func consumer(t *testing.T, r *cordis.Context, s *watch.Service, name, f string)
 // TestUnloadClosesWatch: a consumer that never closes its watch still stops
 // receiving notices once its fiber unloads; another consumer of the same service
 // is not affected.
+//
+//dsh:test DH-T-UTIL-6
 func TestUnloadClosesWatch(t *testing.T) {
 	r, s, _, f := fixture(t)
 	a, _, h, ra := consumer(t, r, s, "a", f)
@@ -126,6 +128,8 @@ func TestUnloadClosesWatch(t *testing.T) {
 
 // TestOnlyOwnerCloses: closing a watch from another fiber is refused and the
 // watch keeps running; the owner's Close stops it, and a second Close is harmless.
+//
+//dsh:test DH-T-UTIL-6
 func TestOnlyOwnerCloses(t *testing.T) {
 	r, s, _, f := fixture(t)
 	_, actx, h, ra := consumer(t, r, s, "a", f)
@@ -152,6 +156,8 @@ func TestOnlyOwnerCloses(t *testing.T) {
 
 // TestServiceUnloadClosesAll: unloading the service's fiber closes the service
 // and every watch on it, whichever fiber asked for them.
+//
+//dsh:test DH-T-UTIL-6
 func TestServiceUnloadClosesAll(t *testing.T) {
 	r, s, owner, f := fixture(t)
 	_, _, _, ra := consumer(t, r, s, "a", f)

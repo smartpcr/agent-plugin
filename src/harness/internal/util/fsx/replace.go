@@ -81,12 +81,36 @@ func resultMode(stat statFunc, name string, opt Options, exclusive bool) (mode f
 	return opt.Perm.Perm(), false, nil
 }
 
+// The steps of a publication, in order; a test injects a failure at each through
+// faultAt (DH-T-FS-1, DH-T-NODEFS-1).
+const (
+	stepStage   = "stage"   // create the staged file
+	stepMode    = "mode"    // set its final mode
+	stepSync    = "sync"    // sync it (Durable only)
+	stepClose   = "close"   // close it
+	stepPublish = "publish" // rename or link it to the target name
+)
+
+// faultAt is consulted before each step; a non-nil error fails the step. Tests
+// replace it; it is nil otherwise.
+var faultAt func(step string) error
+
+func fault(step string) error {
+	if faultAt == nil {
+		return nil
+	}
+	return faultAt(step)
+}
+
 func publish(path string, write func(io.Writer) error, opt Options, exclusive bool) (err error) {
 	mode, keepACL, err := resultMode(os.Lstat, path, opt, exclusive)
 	if err != nil {
 		return err
 	}
 	dir := filepath.Dir(path)
+	if err := fault(stepStage); err != nil {
+		return err
+	}
 	f, err := os.CreateTemp(dir, StagePrefix+"*")
 	if err != nil {
 		return err
@@ -106,6 +130,9 @@ func publish(path string, write func(io.Writer) error, opt Options, exclusive bo
 		if err := copyACL(path, stage); err != nil {
 			return err
 		}
+	}
+	if err := fault(stepPublish); err != nil {
+		return err
 	}
 	if exclusive {
 		err = renameNoReplace(stage, path, opt.Durable)
@@ -143,13 +170,22 @@ func fill(f *os.File, write func(io.Writer) error, mode fs.FileMode, durable boo
 	if err := write(f); err != nil {
 		return err
 	}
+	if err := fault(stepMode); err != nil {
+		return err
+	}
 	if err := f.Chmod(mode); err != nil {
 		return err
 	}
 	if durable {
+		if err := fault(stepSync); err != nil {
+			return err
+		}
 		if err := f.Sync(); err != nil {
 			return err
 		}
+	}
+	if err := fault(stepClose); err != nil {
+		return err
 	}
 	return f.Close()
 }
