@@ -52,11 +52,15 @@ stages:
     # authored with the validated reload of DH-S-6 (step 6.13).
     - id: DH-E-LOADER-1
       authored: DH-S-6
-    # The model runtime against the real DeepSeek API: a turn with reasoning and a
-    # tool call, a bad key that is never retried nor routed elsewhere, and a real
+    # The model runtime on the user's signed-in Claude Code and Copilot CLI
+    # client routes (OWNER-2; re-authored from the DeepSeek API by gap-closure
+    # step 16.5.8, M1-D-CLOSE-4 A): a turn with reasoning and a tool call, a
+    # signed-out client that is never retried nor routed elsewhere, and a real
     # model titling a session (impl.md DH-S-9 "Scenarios: authored here, run in
-    # DH-S-17"). Written against the SDK boundary of the built dsh; they need the
-    # agent loop (DH-S-11) and titles and the headless launcher (DH-S-16).
+    # DH-S-17"). One subtest per route: claude-code must pass, copilot-cli is
+    # recorded either way (M1-D-LOOP-6 A). Written against the SDK boundary of the
+    # built dsh; they need the agent loop (DH-S-11) and titles and the headless
+    # launcher (DH-S-16).
     - id: DH-E-LLM-1
       authored: DH-S-9
       requires: [DH-S-11, DH-S-16]
