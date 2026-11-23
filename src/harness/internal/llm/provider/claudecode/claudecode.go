@@ -94,6 +94,11 @@ type Config struct {
 	// Grace is the cancelled tree's grace (clientroute.DefaultGrace).
 	ProbeTimeout time.Duration
 	Grace        time.Duration
+	// Tap, when set, sees each line of the client's standard output as it is read,
+	// before the route places it: a diagnostic for the operator's manual check
+	// (plan 16.5.6), never set by the harness. It must not keep the slice; the
+	// route itself never logs a line.
+	Tap func(line []byte)
 }
 
 // Route is the claude-code route over cfg.
@@ -252,7 +257,7 @@ func (c *call) Attempt(ctx context.Context, req session.Request) iter.Seq2[vocab
 		}
 		defer func() { _ = run.Stop(0) }()
 		m := newMapper(expect{sessionID: sid, version: c.version.String(), tools: tools, keySources: c.cfg.KeySources})
-		out, reading := m.stream(run.ReadLine, func(ch vocab.Chunk) bool { return yield(ch, nil) })
+		out, reading := m.stream(clientroute.Tapped(run.ReadLine, c.cfg.Tap), func(ch vocab.Chunk) bool { return yield(ch, nil) })
 		if !reading {
 			return
 		}

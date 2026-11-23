@@ -534,3 +534,32 @@ func TestRunCancelStopsTheTree(t *testing.T) {
 	defer wcancel()
 	procwait.Until(wctx, t, func() bool { return subprocesstest.Exited(child) && subprocesstest.Exited(grandchild) })
 }
+
+// TestTapped: the tap sees every line the reader returns, in order, and not
+// an error; a nil tap leaves the reader as it is.
+//
+//dsh:test DH-T-LLM-18
+func TestTapped(t *testing.T) {
+	src := []string{"a", "b"}
+	next := func() ([]byte, error) {
+		if len(src) == 0 {
+			return nil, io.EOF
+		}
+		l := src[0]
+		src = src[1:]
+		return []byte(l), nil
+	}
+	var seen []string
+	r := clientroute.Tapped(next, func(l []byte) { seen = append(seen, string(l)) })
+	for {
+		if _, err := r(); err != nil {
+			break
+		}
+	}
+	if !slices.Equal(seen, []string{"a", "b"}) {
+		t.Fatalf("tap saw %q", seen)
+	}
+	if clientroute.Tapped(nil, nil) != nil {
+		t.Fatal("a nil tap wrapped the reader")
+	}
+}
