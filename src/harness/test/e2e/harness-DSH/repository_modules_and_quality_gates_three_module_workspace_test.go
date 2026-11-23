@@ -34,6 +34,22 @@ var rm1Modules = []struct{ Dir, Path string }{
 
 const goldenRel = "src/go/cmd/cordis-sample/testdata/output.golden"
 
+// goldenReRecord is one sanctioned re-recording of goldenRel: the full commit,
+// why, and the exact lines it adds (it may remove none).
+type goldenReRecord struct {
+	commit, reason string
+	added          []string
+}
+
+// goldenReRecords are the only commits besides the introducing one allowed to
+// touch goldenRel. Each is a deliberate re-record with -update (contract rule 3)
+// whose intended diff is noted in the evidence; the check pins its exact lines.
+var goldenReRecords = []goldenReRecord{
+	{"cf6b2e72ad7b4197c09ecb7a26e47d52fd5549c1",
+		"TC-02b, cf6b2e7: step 14.1.4's loader debug line, noted in evidence/DH-S-2.md",
+		[]string{"[Debug] loader apply: beat2"}},
+}
+
 // cmdResult is one child process of the pinned go toolchain.
 type cmdResult struct {
 	Label  string
@@ -405,8 +421,9 @@ func (w *threeModuleWorkspace) goldenCommittedBeforeTheFirstDHS2Edit() error {
 	if !bytes.Equal(normalize(committed), normalize(data)) {
 		return fmt.Errorf("%s differs from its committed bytes; the golden must not be re-recorded", goldenRel)
 	}
-	// The golden must have exactly one commit in its history -- the one that
-	// added it -- so any later re-recording (a modifying commit) fails here.
+	// The golden's history must be the commit that added it and, after it, only
+	// the sanctioned re-recordings of goldenReRecords, each adding exactly its
+	// listed lines and removing none; any other modifying commit fails here.
 	gitLog := func(extra ...string) ([]string, error) {
 		args := append([]string{"log", "--format=%H"}, extra...)
 		args = append(args, "--", goldenRel)
@@ -426,8 +443,33 @@ func (w *threeModuleWorkspace) goldenCommittedBeforeTheFirstDHS2Edit() error {
 	if err != nil {
 		return fmt.Errorf("cannot read the history of %s: %w", goldenRel, err)
 	}
-	if len(touching) != 1 || len(added) != 1 || touching[0] != added[0] {
-		return fmt.Errorf("%s must be touched only by the commit that introduced it; history %v, introduced by %v: the golden was re-recorded", goldenRel, touching, added)
+	if len(added) != 1 || len(touching) == 0 || touching[len(touching)-1] != added[0] {
+		return fmt.Errorf("%s must be introduced by exactly one commit, the oldest of its history; history %v, introduced by %v", goldenRel, touching, added)
+	}
+	for _, c := range touching[:len(touching)-1] {
+		i := slices.IndexFunc(goldenReRecords, func(r goldenReRecord) bool { return r.commit == c })
+		if i < 0 {
+			return fmt.Errorf("%s must be touched only by the commit that introduced it or a sanctioned re-recording; history %v, introduced by %v: %s re-recorded the golden", goldenRel, touching, added, c)
+		}
+		show := exec.Command(gitbin, "show", "--format=", "--unified=0", c, "--", goldenRel)
+		show.Dir = w.root
+		diff, err := show.Output()
+		if err != nil {
+			return fmt.Errorf("cannot read %s's change to %s: %w", c, goldenRel, err)
+		}
+		var plus, minus []string
+		for _, line := range strings.Split(string(normalize(diff)), "\n") {
+			switch {
+			case strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---"):
+			case strings.HasPrefix(line, "+"):
+				plus = append(plus, line[1:])
+			case strings.HasPrefix(line, "-"):
+				minus = append(minus, line[1:])
+			}
+		}
+		if r := goldenReRecords[i]; len(minus) != 0 || !slices.Equal(plus, r.added) {
+			return fmt.Errorf("%s's re-recording of %s (%s) must add exactly %q and remove nothing; it added %q and removed %q", c, goldenRel, r.reason, r.added, plus, minus)
+		}
 	}
 	if bytes.Contains(data, []byte(`\`)) || !bytes.Contains(data, []byte("<TMP>/cordis-sample.json")) {
 		return fmt.Errorf("%s is not normalized (<TMP> path, / separators)", goldenRel)
