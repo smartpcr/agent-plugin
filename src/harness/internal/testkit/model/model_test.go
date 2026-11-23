@@ -104,6 +104,8 @@ func TestFakeModelScriptsATurn(t *testing.T) {
 
 // A refused status and an in-stream error each settle as a failed attempt with
 // the mapped code; a hanging stream ends when the caller cancels.
+//
+//dsh:test DH-T-UTIL-14
 func TestFakeModelScriptsFailures(t *testing.T) {
 	for _, tc := range []struct {
 		name string

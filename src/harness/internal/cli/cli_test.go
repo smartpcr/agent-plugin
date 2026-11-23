@@ -37,6 +37,8 @@ func dispatch(t *testing.T, launchFn LaunchFunc, args ...string) run {
 
 // TC-06a: an unknown launcher flag is one usage line plus the help hint on standard
 // error, nothing on standard output, and status 64 (M1-D-BOOT-3).
+//
+//dsh:test DH-T-CLI-1, DH-T-COMMANDER-1
 func TestUsageErrorExits64(t *testing.T) {
 	r := dispatch(t, nil, "--no-such-flag")
 	if r.status != 64 || output.Usage != 64 {
@@ -91,6 +93,7 @@ func TestNoCommandPathReturns2(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-COMMANDER-3
 func TestUsageErrorsOfCommands(t *testing.T) {
 	for _, args := range [][]string{
 		{},
@@ -111,6 +114,7 @@ func TestUsageErrorsOfCommands(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-CLI-5
 func TestVersion(t *testing.T) {
 	for _, args := range [][]string{{"--version"}, {"-V"}, {"version"}} {
 		r := dispatch(t, nil, args...)
@@ -125,6 +129,7 @@ func TestVersion(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-COMMANDER-3
 func TestHelpIsStatus0OnStdout(t *testing.T) {
 	for _, args := range [][]string{{"--help"}, {"-h"}, {"help"}, {"help", "catalog", "commands"}, {"catalog", "commands", "-h"},
 		{"catalog", "--help"}, {"help", "web"}} {
@@ -138,6 +143,7 @@ func TestHelpIsStatus0OnStdout(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-CLI-1, DH-T-COMMANDER-1
 func TestProfileLaunch(t *testing.T) {
 	var got Launch
 	fn := func(_ context.Context, l Launch) error { got = l; return l.Result.Line("launched") }
@@ -159,6 +165,8 @@ func TestProfileLaunch(t *testing.T) {
 
 // app-cli.md §6.2.1: after --profile <name> every remaining word is an app word,
 // even one that is also a launcher option.
+//
+//dsh:test DH-T-CLI-1
 func TestExplicitProfileEndsLauncherOptions(t *testing.T) {
 	for _, tc := range []struct {
 		args  []string
@@ -190,6 +198,8 @@ func TestExplicitProfileEndsLauncherOptions(t *testing.T) {
 
 // app-cli.md §6.2.3: under --json a usage error also ends the result stream with the
 // error document.
+//
+//dsh:test DH-T-CLI-5
 func TestJSONUsageErrorWritesErrorDocument(t *testing.T) {
 	for _, args := range [][]string{{"version", "--json", "--nope"}, {"version", "--nope", "--json=true"}, {"catalog", "commands", "--json", "extra"}} {
 		r := dispatch(t, nil, args...)
@@ -210,6 +220,8 @@ func TestJSONUsageErrorWritesErrorDocument(t *testing.T) {
 
 // A bare group lacks its required <command>: its help goes to standard error and the
 // run is a usage error, status 64.
+//
+//dsh:test DH-T-COMMANDER-3
 func TestBareGroupIsUsageError(t *testing.T) {
 	r := dispatch(t, nil, "catalog")
 	if r.status != output.Usage || r.stdout != "" {
@@ -227,6 +239,8 @@ func (closedWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
 
 // Help printed by any route goes through the result writer: a closed stdout is
 // cli/output-closed, not a silent success.
+//
+//dsh:test DH-T-CLI-5
 func TestHelpToClosedStdoutFails(t *testing.T) {
 	for _, args := range [][]string{{"--help"}, {"help"}, {"help", "web"}, {"catalog", "--help"}, {"catalog", "commands", "-h"}, {"help", "catalog"}} {
 		var errOut bytes.Buffer
@@ -238,6 +252,7 @@ func TestHelpToClosedStdoutFails(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-CLI-2
 func TestUnknownProfileAndUnwiredLaunch(t *testing.T) {
 	r := dispatch(t, nil, "no-such-profile")
 	if r.status != output.Invalid || !strings.HasPrefix(r.stderr, "dsh no-such-profile: profile/unknown: ") {
@@ -253,6 +268,7 @@ func TestUnknownProfileAndUnwiredLaunch(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-CLI-6
 func TestLaunchErrorIsMapped(t *testing.T) {
 	fn := func(context.Context, Launch) error { return context.Canceled }
 	if r := dispatch(t, fn, "web"); r.status != output.Cancelled {
@@ -269,6 +285,7 @@ func TestCompletion(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-CLI-2
 func TestReservedWordsAreNoProfiles(t *testing.T) {
 	reserved := Reserved()
 	for _, w := range []string{"help", "version", "catalog", "completion", "sandbox-launch", "ssh-helper"} {
@@ -284,6 +301,8 @@ func TestReservedWordsAreNoProfiles(t *testing.T) {
 }
 
 // The generated CLI reference equals the committed golden.
+//
+//dsh:test DH-T-CLI-3, DH-T-COMMANDER-4
 func TestReferenceIsCurrent(t *testing.T) {
 	golden.Assert(t, "reference", Reference())
 	r := dispatch(t, nil, "catalog", "commands")
@@ -311,6 +330,8 @@ func processRun(t *testing.T, ctx context.Context, args ...string) run {
 
 // The process launches a profile through boot.Run: a broken layer is boot's one
 // line and status 78, which the launcher does not print again.
+//
+//dsh:test DH-T-CLI-5
 func TestProcessLaunchRunsBoot(t *testing.T) {
 	home := t.TempDir()
 	r := processRun(t, context.Background(), "--home", home, "--layer", filepath.Join(home, "missing.yml"), "web")
@@ -324,6 +345,8 @@ func TestProcessLaunchRunsBoot(t *testing.T) {
 
 // A launch that boots and is interrupted exits 130 through the launcher with
 // boot's diagnostics only: the home is prepared, nothing is reported as a failure.
+//
+//dsh:test DH-T-BOOT-12
 func TestProcessLaunchInterrupted(t *testing.T) {
 	home := t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())

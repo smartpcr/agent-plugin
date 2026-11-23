@@ -47,6 +47,8 @@ func TestEveryKindOffByDefault(t *testing.T) {
 // TC-06a: with permits configured for every kind and the off-switch on, every kind
 // is denied and listed off, stopped by the switch; the environment variable, even
 // "0", locks the switch and clearing the config field changes nothing.
+//
+//dsh:test DH-T-HOST-18
 func TestOffSwitchOverridesPermits(t *testing.T) {
 	cfg := everyKindOn()
 	cfg.Off = true
@@ -88,6 +90,8 @@ func TestOffSwitchOverridesPermits(t *testing.T) {
 
 // Setting the switch withdraws a live permit: its context ends and the egress
 // client refuses the next request before dialling.
+//
+//dsh:test DH-T-HOST-18, DH-T-UTIL-4
 func TestSwitchWithdrawsLivePermit(t *testing.T) {
 	g := sharing.New(everyKindOn(), nil)
 	p, err := g.Permit(sharing.Telemetry)
@@ -115,6 +119,8 @@ func TestSwitchWithdrawsLivePermit(t *testing.T) {
 }
 
 // Turning one kind off or moving its endpoint withdraws that kind's permit only.
+//
+//dsh:test DH-T-HOST-19
 func TestConfigureWithdrawsChangedKindsOnly(t *testing.T) {
 	g := sharing.New(everyKindOn(), nil)
 	model, _ := g.Permit(sharing.ModelRequest)
@@ -141,6 +147,8 @@ func TestConfigureWithdrawsChangedKindsOnly(t *testing.T) {
 // A real gate's permit withdrawn while its request is in flight: the request is
 // cancelled and the error keeps egress/not-permitted as its kind (not the
 // permit's sharing/withdrawn cause), so the exit status is the egress one.
+//
+//dsh:test DH-T-HOST-18, DH-T-UTIL-4
 func TestWithdrawnInFlightKeepsEgressReason(t *testing.T) {
 	entered := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -12,6 +12,8 @@ import (
 
 // A directory with no group or other bits but without full owner rwx is not
 // mode 0700 and fails the check; Ensure does not repair it.
+//
+//dsh:test DH-T-STORAGE-4
 func TestCheckRequiresOwnerRWXOnDirectories(t *testing.T) {
 	for _, mode := range []os.FileMode{0o500, 0o600, 0o300, 0o000} {
 		l := New(t.TempDir())
@@ -33,6 +35,8 @@ func TestCheckRequiresOwnerRWXOnDirectories(t *testing.T) {
 }
 
 // A private file needs owner read: 0600 and 0400 pass, 0200 and 0000 fail.
+//
+//dsh:test DH-T-STORAGE-4
 func TestCheckRequiresOwnerReadOnFiles(t *testing.T) {
 	l := New(t.TempDir())
 	if err := Ensure(l); err != nil {

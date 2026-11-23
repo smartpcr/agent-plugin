@@ -12,6 +12,8 @@ import (
 
 // EnsurePrivateDir needs its parent, and adopts an existing directory only when
 // it is already private: a loosened one is reported, not repaired.
+//
+//dsh:test DH-T-STORAGE-4
 func TestEnsurePrivateDirRefusals(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "absent", "p")
 	if err := EnsurePrivateDir(missing); !herr.Has(err, ReasonIO) || !strings.Contains(err.Error(), "create p") {
@@ -36,6 +38,8 @@ func TestEnsurePrivateDirRefusals(t *testing.T) {
 
 // CheckPrivate and CheckPrivateFile report a loosened file by its base name;
 // CheckPrivateFile on a closed file is an I/O error.
+//
+//dsh:test DH-T-STORAGE-4
 func TestCheckPrivateOfALoosenedFile(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "p")
 	if err := EnsurePrivateDir(dir); err != nil {
@@ -64,6 +68,8 @@ func TestCheckPrivateOfALoosenedFile(t *testing.T) {
 
 // A symbolic link to a private file is not private itself: CheckPrivate never
 // follows a link.
+//
+//dsh:test DH-T-STORAGE-4
 func TestCheckPrivateRefusesASymlink(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "p")
 	if err := EnsurePrivateDir(dir); err != nil {

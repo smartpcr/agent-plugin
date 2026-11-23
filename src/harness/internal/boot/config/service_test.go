@@ -150,6 +150,8 @@ const userText = `# the user's own choices
 
 // TC-06a: preview composes and checks layers held in memory, names the layer that
 // owns each entry and value, and constructs no component.
+//
+//dsh:test DH-T-BOOT-14
 func TestPreviewWithoutStart(t *testing.T) {
 	p := newProbes(t)
 	bundle, bdoc := layer(t, "bundle:core", "core.yml", bundleText)
@@ -200,6 +202,8 @@ func TestPreviewWithoutStart(t *testing.T) {
 }
 
 // The static check places a bad value at the line of the layer that wrote it.
+//
+//dsh:test DH-T-BOOT-15
 func TestCheckPositionsBadValues(t *testing.T) {
 	p := newProbes(t)
 	bundle, bdoc := layer(t, "bundle:core", "core.yml", bundleText)
@@ -323,6 +327,8 @@ func effective(t *testing.T, ldr *loader.Service, id string) probeConfig {
 // TC-06b: a bad user-layer edit is rejected whole at reload, with a positioned
 // diagnostic, and no running component changes, not even the one the same edit
 // changed validly.
+//
+//dsh:test DH-T-BOOT-15
 func TestBadLayerEditLeavesRunningTreeUnchanged(t *testing.T) {
 	cases := map[string]struct{ text, at, path string }{
 		// Only the component's schema refuses this level: DH-D-CORDIS-5.
@@ -379,6 +385,8 @@ func TestBadLayerEditLeavesRunningTreeUnchanged(t *testing.T) {
 // TC-06b: two edit-path clients on one home edit different keys from the same
 // read; one wins, the other is told its source is stale and wrote nothing, and
 // after reading again its retry lands, so both values are on disk.
+//
+//dsh:test DH-T-BOOT-17
 func TestConcurrentSettingsEditsDoNotLoseAWrite(t *testing.T) {
 	h, p := newHome(t), newProbes(t)
 	clients := make([]*config.Service, 2)
@@ -462,6 +470,8 @@ func TestConcurrentSettingsEditsDoNotLoseAWrite(t *testing.T) {
 }
 
 // A rejected edit writes nothing.
+//
+//dsh:test DH-T-BOOT-16
 func TestRejectedEditWritesNothing(t *testing.T) {
 	h, p := newHome(t), newProbes(t)
 	cs, err := config.NewService(config.ServiceOptions{Stack: h.stack, Catalog: p.cat})
@@ -483,6 +493,8 @@ func TestRejectedEditWritesNothing(t *testing.T) {
 // A second client, which runs no tree, still validates a candidate through each
 // component's schema (DH-D-CORDIS-5): a level only Validate refuses is rejected for
 // a changed entry, for a disabled entry an edit enables and for a new entry.
+//
+//dsh:test DH-T-BOOT-16
 func TestEditWithoutRunningTreeValidatesSchema(t *testing.T) {
 	h, p := newHome(t), newProbes(t)
 	path := profile.LayerPath(h.root, h.def.Name)
@@ -521,6 +533,8 @@ func TestEditWithoutRunningTreeValidatesSchema(t *testing.T) {
 
 // A running tree rejects at reload a new entry whose config only its component's
 // schema refuses, though no fiber of it runs yet.
+//
+//dsh:test DH-T-BOOT-15
 func TestReloadRejectsInvalidNewEntry(t *testing.T) {
 	h, p := newHome(t), newProbes(t)
 	ldr, cs := boot(t, h, p)
@@ -535,6 +549,8 @@ func TestReloadRejectsInvalidNewEntry(t *testing.T) {
 
 // Of two merges of one entry in one layer, the diagnostic names the one that wrote
 // the bad field, not the last one.
+//
+//dsh:test DH-T-BOOT-15
 func TestCheckPositionsTheMergeThatWroteTheField(t *testing.T) {
 	p := newProbes(t)
 	bundle, bdoc := layer(t, "bundle:core", "core.yml", bundleText)
@@ -581,6 +597,8 @@ func TestRejectedListenerMayCallTheService(t *testing.T) {
 
 // A layer that does not parse is rejected once per content, however often it is
 // polled; new broken content is told again, and the fix is applied.
+//
+//dsh:test DH-T-BOOT-15
 func TestUnparsableLayerIsToldOncePerContent(t *testing.T) {
 	h, p := newHome(t), newProbes(t)
 	ldr, cs := boot(t, h, p)
@@ -612,6 +630,8 @@ func TestUnparsableLayerIsToldOncePerContent(t *testing.T) {
 
 // An edit replacing a value an expression computes is refused, and writes nothing,
 // unless it says to overwrite; a sibling field is not computed.
+//
+//dsh:test DH-T-BOOT-16
 func TestEditOfComputedFieldNeedsOverwrite(t *testing.T) {
 	h, p := newHome(t), newProbes(t)
 	path := profile.LayerPath(h.root, h.def.Name)
@@ -648,6 +668,8 @@ func TestEditOfComputedFieldNeedsOverwrite(t *testing.T) {
 // An entry that cannot run on its defaults is rejected when an edit inserts or
 // enables it without a config, as its load would fail: nothing is written and the
 // running tree, the valid sibling change of the same edit included, is unchanged.
+//
+//dsh:test DH-T-BOOT-15
 func TestOmittedConfigIsValidatedToo(t *testing.T) {
 	h, p := newHome(t), newProbes(t)
 	path := profile.LayerPath(h.root, h.def.Name)
@@ -793,6 +815,8 @@ func short(rev string) string { return rev[:min(len(rev), 8)] }
 
 // The edit path itself refuses an edit a higher layer shadows, whoever calls it,
 // and writes nothing; a field no higher layer sets is written.
+//
+//dsh:test DH-T-BOOT-16
 func TestApplyRefusesShadowedEdit(t *testing.T) {
 	h, p := newHome(t), newProbes(t)
 	temphome.Write(t, profile.UserLayerPath(h.root), "- id: probe\n  merge:\n    level: warn\n")
@@ -854,6 +878,8 @@ func TestEffectiveIsTheResolvedConfig(t *testing.T) {
 // A candidate that removes or disables a required entry, or a group enclosing one,
 // is rejected with the operation's position, by a reload and by an edit, before
 // anything is written or applied (DH-ADR-BOOT-6, boot.md "Required entries").
+//
+//dsh:test DH-T-BOOT-16
 func TestRequiredEntriesSurviveReloadAndEdit(t *testing.T) {
 	const text = profileText + `- insert:
     - id: core

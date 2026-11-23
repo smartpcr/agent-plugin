@@ -73,6 +73,8 @@ func wantNotPermitted(t *testing.T, err error) {
 
 // TC-06d: without a permit nothing is dialled; with a model-request permit for the
 // server's origin the request arrives once, carrying `User-Agent: dsh`.
+//
+//dsh:test DH-T-UTIL-3, DH-T-UTIL-4
 func TestNoPermitNoDial(t *testing.T) {
 	srv := newCountingServer(t, nil)
 	if !strings.HasPrefix(srv.Listener.Addr().String(), "127.0.0.1:") {
@@ -152,6 +154,8 @@ func containsLabel(list []egress.ClientInfo, label string) bool {
 
 // Withdrawing consent cancels a request in flight, the next request fails before
 // any dial, and the client leaves Handed.
+//
+//dsh:test DH-T-UTIL-3, DH-T-UTIL-4
 func TestWithdrawnPermitCancelsAndRefuses(t *testing.T) {
 	entered := make(chan struct{})
 	srv := newCountingServer(t, func(w http.ResponseWriter, r *http.Request) {
@@ -196,6 +200,8 @@ func TestWithdrawnPermitCancelsAndRefuses(t *testing.T) {
 }
 
 // A redirect is not followed by default.
+//
+//dsh:test DH-T-UNDICI-6, DH-T-UTIL-3
 func TestRedirectNotFollowed(t *testing.T) {
 	srv := newCountingServer(t, func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "https://elsewhere.invalid/", http.StatusFound)
@@ -228,6 +234,7 @@ func TestRedirectNotFollowed(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-UTIL-4
 func TestAllows(t *testing.T) {
 	for _, tc := range []struct {
 		dest, target string

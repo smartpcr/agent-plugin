@@ -85,6 +85,7 @@ func read(t *testing.T, path string) string {
 	return string(data)
 }
 
+//dsh:test DH-T-STORAGE-21
 func TestDescribeListsLiveFieldsWithTheirLayer(t *testing.T) {
 	f := newFixture(t)
 	temphome.Write(t, f.user, "- id: probe\n  merge:\n    level: warn\n")
@@ -126,6 +127,8 @@ func level(t *testing.T, form *settings.Form) settings.Field {
 
 // After a rejected reload the form shows the value the running tree keeps, not the
 // rejected one on disk, and says the disk differs and why.
+//
+//dsh:test DH-T-STORAGE-21
 func TestDescribeShowsEffectiveValueAfterRejection(t *testing.T) {
 	f := newFixture(t)
 	temphome.Write(t, f.user, "- id: probe\n  merge:\n    level: 7\n")
@@ -148,6 +151,8 @@ func TestDescribeShowsEffectiveValueAfterRejection(t *testing.T) {
 }
 
 // An edit to a field an expression computes is refused, and nothing is written.
+//
+//dsh:test DH-T-STORAGE-20, DH-T-BOOT-16
 func TestComputedFieldEditIsRefused(t *testing.T) {
 	f := newFixture(t)
 	temphome.Write(t, f.profile, profileText+"- id: probe\n  merge:\n    level: !expr '\"warn\"'\n")
@@ -170,6 +175,8 @@ func TestComputedFieldEditIsRefused(t *testing.T) {
 
 // A live edit lands as one merge in the profile layer; an edit from the same old
 // read is then stale and changes nothing.
+//
+//dsh:test DH-T-STORAGE-19, DH-T-STORAGE-20
 func TestApplyThenStaleEdit(t *testing.T) {
 	f := newFixture(t)
 	form, err := f.form.Describe()
@@ -198,6 +205,8 @@ func TestApplyThenStaleEdit(t *testing.T) {
 
 // A bad, a not-live and a shadowed edit are refused with the field path and no
 // file change.
+//
+//dsh:test DH-T-STORAGE-20
 func TestRefusedEditsChangeNothing(t *testing.T) {
 	cases := []struct {
 		name, path, value string
@@ -254,6 +263,8 @@ func TestDescribeShowsDefaults(t *testing.T) {
 
 // Over a running tree, a field an expression computes shows the value the running
 // component holds, marked computed, with the layer that holds the expression.
+//
+//dsh:test DH-T-STORAGE-21
 func TestDescribeShowsEvaluatedExpression(t *testing.T) {
 	cat := probeCatalog(t)
 	home := temphome.Dir(t)

@@ -18,6 +18,8 @@ import (
 
 // A run that outlives its bound while a grandchild holds its output returns
 // promptly with ErrTimeout, and the whole tree, grandchild included, is gone.
+//
+//dsh:test DH-T-NODEPROC-5
 func TestRunTimeoutStopsTheTreeHoldingItsOutput(t *testing.T) {
 	bin := launcher.Build(t, ".", "./testdata/echo")
 	start := time.Now()
