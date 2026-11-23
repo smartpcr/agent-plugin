@@ -336,6 +336,11 @@
       "when": "the connection is closed; every pending call fails with it once"
     },
     {
+      "reason": "jsonrpc/write-stalled",
+      "code": -32000,
+      "when": "the peer accepted no frame for WriteStall; the connection is closed and every pending call fails with it once"
+    },
+    {
       "reason": "jsonrpc/unknown-response",
       "code": -32000,
       "when": "a response names no pending request"

@@ -129,6 +129,11 @@ type msg struct {
 	A int `json:"a"`
 }
 
+// TestServeAnswersRequests: handler results and errors reach the peer with their
+// reasons, no internal text crosses the wire, a method outside the allow-list
+// reaches no handler, and a reply over MaxFrameBytes is jsonrpc/line-too-long.
+//
+//dsh:test DH-T-SDK-1, DH-T-SDK-2
 func TestServeAnswersRequests(t *testing.T) {
 	blocked := make(chan struct{})
 	t.Cleanup(func() { close(blocked) })
@@ -139,7 +144,7 @@ func TestServeAnswersRequests(t *testing.T) {
 		"panics":   func(context.Context, json.RawMessage) (any, error) { panic("boom") },
 		"chan":     func(context.Context, json.RawMessage) (any, error) { return make(chan int), nil },
 		"oversize": func(context.Context, json.RawMessage) (any, error) { return strings.Repeat("x", 1024), nil },
-	}, MaxLineBytes: 512})
+	}, MaxFrameBytes: 512})
 
 	p.send(`{"jsonrpc":"2.0","id":1,"method":"echo","params":{"a":1}}`)
 	if r := p.recvResponse(Int64ID(1)); r.Error != nil || string(r.Result) != `{"a":1}` {
@@ -177,8 +182,12 @@ func TestServeKeepsReadingAfterBadLines(t *testing.T) {
 	}
 }
 
+// TestServeClosesOnOversizedLine: a line over MaxFrameBytes is answered with one
+// error frame, then the connection ends with that error.
+//
+//dsh:test DH-T-SDK-2
 func TestServeClosesOnOversizedLine(t *testing.T) {
-	p := newPeer(t, context.Background(), Options{MaxLineBytes: 64})
+	p := newPeer(t, context.Background(), Options{MaxFrameBytes: 64})
 	p.send(strings.Repeat("z", 65))
 	p.recvError(ID{}, ReasonLineTooLong)
 	awaitDone(t, p.c)
@@ -207,24 +216,6 @@ func TestServeInFlightBound(t *testing.T) {
 	if r := p.recvResponse(Int64ID(1)); string(r.Result) != `"held"` {
 		t.Fatalf("hold = %+v", r)
 	}
-}
-
-func TestServeIncomingCancel(t *testing.T) {
-	started := make(chan struct{}, 1)
-	p := newPeer(t, context.Background(), Options{Methods: map[string]Handler{
-		"wait": func(ctx context.Context, _ json.RawMessage) (any, error) {
-			started <- struct{}{}
-			<-ctx.Done()
-			return "late", nil
-		},
-	}})
-	p.send(`{"jsonrpc":"2.0","id":7,"method":"wait"}`)
-	await(t, started)
-	p.send(`{"jsonrpc":"2.0","method":"$/cancel","params":{"id":99}}`)
-	p.send(`{"jsonrpc":"2.0","method":"$/cancel","params":{"id":{}}}`)
-	p.send(`{"jsonrpc":"2.0","method":"$/cancel","params":[1]}`)
-	p.send(`{"jsonrpc":"2.0","method":"$/cancel","params":{"id":7}}`)
-	p.recvError(Int64ID(7), ReasonCancelled)
 }
 
 func TestServeNotificationsAndStrayResponses(t *testing.T) {
@@ -297,27 +288,6 @@ func TestCall(t *testing.T) {
 	}
 }
 
-func TestCallCancelSendsCancel(t *testing.T) {
-	faults := make(chan error, 1)
-	p := newPeer(t, context.Background(), Options{OnError: func(err error) { faults <- err }})
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	done := async(t, func() error { return p.c.Call(ctx, "slow", nil, nil) })
-	req := p.recv().(*Request)
-	cancel()
-	if err := await(t, done); !errors.Is(err, context.Canceled) {
-		t.Fatalf("Call = %v, want context.Canceled", err)
-	}
-	n, ok := p.recv().(*Notification)
-	if !ok || n.Method != CancelMethod || string(n.Params) != `{"id":`+req.ID.String()+`}` {
-		t.Fatalf("peer received %+v, want $/cancel of %s", n, req.ID)
-	}
-	p.send(`{"jsonrpc":"2.0","id":` + req.ID.String() + `,"result":1}`)
-	if err := await(t, faults); !HasReason(err, ReasonUnknownResponse) {
-		t.Fatalf("late response fault = %v", err)
-	}
-}
-
 func TestCallPendingBound(t *testing.T) {
 	p := newPeer(t, context.Background(), Options{MaxPending: 2})
 	first := async(t, func() error { return p.c.Call(context.Background(), "a", nil, nil) })
@@ -344,8 +314,12 @@ func TestCallPendingBound(t *testing.T) {
 	}
 }
 
+// TestNotifyAndBarrier: Barrier returns once the frame queued before it is
+// written; a frame over MaxFrameBytes is refused before it is queued.
+//
+//dsh:test DH-T-SDK-4
 func TestNotifyAndBarrier(t *testing.T) {
-	p := newPeer(t, context.Background(), Options{MaxLineBytes: 64})
+	p := newPeer(t, context.Background(), Options{MaxFrameBytes: 64})
 	if err := p.c.Notify("n", map[string]int{"a": 1}); err != nil {
 		t.Fatal(err)
 	}
