@@ -325,6 +325,13 @@ type Registry struct {
 	byKey    map[string]*def
 	byType   map[string][]*def
 	sessions map[session.ID]*tracked
+	// bound is the store Rebuild and Status read and write (Bind); nil until
+	// bound.
+	bound *binding
+	// failures are, per fold key, the sessions whose fold this process learned
+	// failed outside its followed state: a rebuild that could not fold or write
+	// the row, or the store's derived-dropped notice (status.go).
+	failures map[string]map[session.ID]failure
 }
 
 var _ session.Folder = (*Registry)(nil)

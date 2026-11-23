@@ -325,6 +325,7 @@ func (r *Registry) baseLocked(id session.ID, at event.Seq) *folded {
 	if t.pending != nil {
 		if t.pending.next == at {
 			t.committed = t.pending
+			r.clearFailuresLocked(id, t.committed)
 		}
 		t.pending = nil
 	}

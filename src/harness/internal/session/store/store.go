@@ -10,7 +10,8 @@
 //
 // The optional interfaces DegradedNotifier, DerivedCounter and DerivedWriter
 // carry the derived-row rules of DH-D-VIEW-2: a refused derived row costs no
-// event, and a derived row is written forward without the lease.
+// event, and a derived row is written forward without the lease. FoldRows
+// counts derived rows against the logs, for the fold status and the rebuild.
 //
 // Not yet in this contract (later deliverables): FileRequest, Requests and
 // WatchRequest (DH-D-STORE-11), Follow and Changes (DH-D-STORE-8), Instances
@@ -145,7 +146,7 @@ const (
 	// OrderPrompt is the last prompt first, "as of" the first page: a session's
 	// key is the time of its last timed prompt before the cut's millisecond
 	// (PromptCut; its CreatedAt when it has none), descending, then ID; a
-	// session created after the cut is not listed. The cut travels in the
+	// session created at or after the cut is not listed. The cut travels in the
 	// cursor, so a prompt appended while a caller pages never moves a session
 	// across the cursor: no session is skipped or listed twice.
 	OrderPrompt
@@ -221,9 +222,11 @@ func PromptCut(cut int64) int64 { return time.UnixMilli(time.Unix(0, cut).UnixMi
 
 // PromptKey is a session's OrderPrompt key as of cut (Unix nanoseconds): the
 // time of its last timed PromptType record at or before cut, else its
-// creation. ok is false when the session was created after cut.
+// creation. ok is false when the session was created at or after cut: a clock
+// coarser than a nanosecond stamps a session created just after the first page
+// with the cut itself, and its key would sit above every cursor.
 func PromptKey(created time.Time, recs []Record, cut int64) (key int64, ok bool) {
-	if created.UnixNano() > cut {
+	if created.UnixNano() >= cut {
 		return 0, false
 	}
 	pcut := PromptCut(cut)
@@ -248,7 +251,11 @@ type Store interface {
 	// Create makes a new session and returns its writer, which holds the lease.
 	Create(ctx context.Context, h Header, o CreateOptions) (Writer, error)
 	// OpenWrite takes write ownership. An open is refused when a record has an
-	// undeclared required type or a newer payload version.
+	// undeclared required type or a newer payload version (CheckOpen). A
+	// provider may judge at the open only the records from the newest
+	// checkpoint to the head, what restoring reads, so the open stays bounded;
+	// its handles then judge every other record as they read it, and never
+	// return one the rule refuses.
 	OpenWrite(ctx context.Context, id string, o OpenOptions) (Writer, error)
 	// OpenRead observes without ownership; refused as OpenWrite is.
 	OpenRead(ctx context.Context, id string) (Reader, error)
@@ -348,6 +355,37 @@ type DerivedWriter interface {
 	// returns how many rows it wrote. A row with no key is session/invalid-event
 	// and writes nothing; a missing session is session/not-found.
 	UpsertDerived(ctx context.Context, id string, rows []Checkpoint) (int, error)
+}
+
+// FoldCount is how the derived rows of one key at one state version stand
+// against the logs of a store's sessions. It counts every session that is not
+// being deleted and has at least one durable event (an empty log needs no row);
+// each such session is in exactly one of Current, Behind and Pending.
+type FoldCount struct {
+	Key          string
+	StateVersion int
+	// Current is the sessions whose row reaches the durable head (its seq is the
+	// last durable seq).
+	Current int
+	// Behind is the sessions whose row is older than the durable head.
+	Behind int
+	// Pending is the sessions with no row of this key and state version: a fold
+	// that was never written, or one whose version changed and is not rebuilt.
+	Pending int
+}
+
+// FoldRows is a store that counts derived rows against its sessions' logs and
+// names the sessions a fold's rows are missing from (session-views.md,
+// "Status" and the background rebuild). Both read one consistent cut and write
+// nothing.
+type FoldRows interface {
+	// FoldCounts counts, for each key of want at the state version want maps it
+	// to, the sessions whose row is current, behind or pending; one entry per
+	// key, sorted by key.
+	FoldCounts(ctx context.Context, want map[string]int) ([]FoldCount, error)
+	// FoldPending is up to limit ids, in id order and each greater than after,
+	// of the sessions FoldCounts counts as pending for key at version.
+	FoldPending(ctx context.Context, key string, version int, after string, limit int) ([]string, error)
 }
 
 // DerivedKey names a derived row in a Degraded notice: "<key>@<state version>".
@@ -497,9 +535,11 @@ func Admit(reg *event.Registry, rec Record) error {
 	return nil
 }
 
-// CheckOpen judges every record of a session against reg before an open, as the
-// read rule of §6.2 requires: the first refusal is returned. It applies Admit, so
-// rows another build wrote are held to the same rule as appended ones.
+// CheckOpen judges recs, records of a session, against reg before an open, as
+// the read rule of §6.2 requires: the first refusal is returned. It applies
+// Admit, so rows another build wrote are held to the same rule as appended
+// ones. A provider passes every record, or (see Store.OpenWrite) those from the
+// newest checkpoint to the head and judges the rest as its handles read them.
 func CheckOpen(reg *event.Registry, recs []Record) error {
 	for _, r := range recs {
 		if err := Admit(reg, r); err != nil {
