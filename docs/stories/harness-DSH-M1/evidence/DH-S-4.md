@@ -205,3 +205,5 @@ repositories (M1-G-FND-23.1); the VS Code save on Windows, which needs an operat
 (register row 4.9); the gate run ids of Stage 14.5 (filled by the lead); the scenarios
 authored here, which run in DH-S-18; the vet findings under "Known limitations" (plan
 Phase 13).
+
+**Phase 14 gate runs (Rule 2).** Both lanes pass all 12 gates at `08233be`: run records `wsl-08233be-20261123T0215Z` and `win-08233be-20261123T0223Z` (`manual`; details in [DH-S-1.md](DH-S-1.md), "Phase 14 exit gate runs").

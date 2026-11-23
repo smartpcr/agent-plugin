@@ -737,6 +737,39 @@ Coverage for the 22 packages under 85% was lifted with behaviour-asserting tests
 - **errdiscard:** held out of vet (M1-D-TOOL-1c; M1-G-TOOL-6.1, before DH-S-12).
 - **Hosted CI:** the `harness` lanes run as supplementary regression signals, not as the evidence of record.
 
+## Phase 14 exit gate runs
+
+Gap-closure Phase 14 (stages 14.1 to 14.6), Rule 2. `manual`. **Both local lanes pass all 12
+gates at one commit, `08233be`.** Each lane script ran on a clean checkout and wrote its own
+evidence record.
+
+| Field | WSL lane (`lanes/wsl.sh`) | Windows lane (`lanes/win.ps1`) |
+| --- | --- | --- |
+| Run-record id | `wsl-08233be-20261123T0215Z` | `win-08233be-20261123T0223Z` |
+| Record file | [runs/wsl-08233be-20261123T0215Z.txt](runs/wsl-08233be-20261123T0215Z.txt) | [runs/win-08233be-20261123T0223Z.txt](runs/win-08233be-20261123T0223Z.txt) |
+| File SHA-256 | `8ecc6892a8c6bbc0e9dfd75a619e436a689ff8c0572555616dfb3f12fa15bba3` | `155679c6e5403a13dcc0fd7ac794afc70e819c897c890ee360452975ffdfed12` |
+| Output SHA-256 (`sha256:` line) | `bc983378e874cd85a807aef38db6f6ab64424d77428baae4f0d960ea7e6844db` | `2ea4a319b3be141b7c2cee947cae2f697c3b34308af0940b7c0d37783c3e467c` |
+| Times (UTC) | 2026-11-23 02:15:46 to 02:23:36 | 02:23:49 to 02:52:26 |
+| Result | `harness-gate: PASSED all 12 gates`, exit 0 | `harness-gate: PASSED all 12 gates`, exit 0 |
+| Reasoned exceptions | 36 (typeassert 33, SA1019 1, SA2001 1, U1000 1) | the same |
+| Rehearsal | [runs/wsl-08233be-20261123T0215Z-rehearse.txt](runs/wsl-08233be-20261123T0215Z-rehearse.txt), file sha256 `0c8bb73c0c4575b3488016811dd7b354856bd560836d2e4969cf8ca7b9f67f71`. Six binaries, each `vcs.modified=false`; nothing published | -- |
+
+The systems and toolchains are unchanged from the Phase 13 exit gate runs above: Ubuntu
+24.04.5 on WSL2, and Windows 10.0.28000.3501, both with go1.27.4.
+
+The earlier WSL run at `fa568a6` stopped at `test` on two Phase 14 regressions. Its record
+is kept in `runs/`. Both regressions are fixed:
+- the TC-02b golden lacked the loader debug line added in 14.1.4 (`cf6b2e7`);
+- a `tools/core` schedule test raced after the final-shaper seat (`cbc9813`).
+
+**Still open after Phase 14:**
+- The Windows VS Code save of the DH-S-4 watcher check needs an operator (14.5.5).
+- DH-T-ZOD-1 has no test (M1-G-FND-21.3). Its description clause needs product types to
+  carry `jsonschema` descriptions.
+- The DH-S-6 control-group manual row was recorded before the M1-G-BOOT-36 test fix
+  (`d4ff110`). It is to be re-recorded at the next stage commit.
+- Every held-open entry listed in `gap-analysis.md`.
+
 ## Evidence record (impl.md sec. 7.3)
 
 These are the eight fields of [impl.md sec. 7.3](../../../harness/impl.md#73-the-evidence-record),

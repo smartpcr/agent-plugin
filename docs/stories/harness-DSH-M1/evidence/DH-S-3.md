@@ -210,3 +210,5 @@ manual check above.
 
 At closure: plan 18.1.11 lists them. Now open: the loader write-back merge and proof of
 plan Stage 14.1; `DH-D-LOADER-14` ("Not in DH-S-3" above).
+
+**Phase 14 gate runs (Rule 2).** Both lanes pass all 12 gates at `08233be`: run records `wsl-08233be-20261123T0215Z` and `win-08233be-20261123T0223Z` (`manual`; details in [DH-S-1.md](DH-S-1.md), "Phase 14 exit gate runs").
