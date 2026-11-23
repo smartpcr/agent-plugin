@@ -1,0 +1,23 @@
+commit: 6e7514cdb6fbc8f105238e7e655fb20e3102166b
+tmpdir fs: ext2/ext3
+go: go version go1.27.4 linux/amd64
+uname: Linux 6.18.58.1-microsoft-standard-WSL2
+=== 15.3.5 POSIX-only tests (-v, expect PASS not SKIP)
+=== RUN   TestLivenessLockSurvivesOSOpenAndClose
+--- PASS: TestLivenessLockSurvivesOSOpenAndClose (0.04s)
+=== RUN   TestStoreFilesAreOwnerOnly
+--- PASS: TestStoreFilesAreOwnerOnly (0.01s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/session/store/sqlite	0.065s
+=== RUN   TestPlantedLinkRefused
+--- PASS: TestPlantedLinkRefused (0.00s)
+=== RUN   TestSpillFilesArePrivate
+--- PASS: TestSpillFilesArePrivate (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/storage/spill/local	0.018s
+=== 15.2 manual: Status after a fold version bump
+    status_test.go:250: manual: home /tmp/TestManualCheckStatusAfterAVersionBump211863006/001/dsh.db, test/stored bumped to version 2: before the rebuild current=0 behind=0 pending=50 failed=0
+    status_test.go:257: manual: after the views-rebuild duty current=50 behind=0 pending=0 failed=0
+--- PASS: TestManualCheckStatusAfterAVersionBump (0.51s)
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/session/views	0.527s
+=== done (light)

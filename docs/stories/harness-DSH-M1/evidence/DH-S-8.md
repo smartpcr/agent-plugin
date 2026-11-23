@@ -6,19 +6,22 @@ Closure status: open
 
 This line becomes `closed at <sha>` only in plan step 18.1.14, at the M1 closure commit.
 The stage records below are history: under M1-D-CLOSE-1 every tick made while the gate
-was red is provisional and is re-verified at that commit, and plan step 15.3.7 writes
-the Stage 8.2 closure. The fields of impl.md sec. 7.3 and the per-step manual-check
-register are at the end of this file, in "Evidence record (impl.md sec. 7.3)"; how to
-fill them is in [the evidence runbook](README.md).
+was red is provisional and is re-verified at that commit. Plan Phase 15 added the
+"Stage 8.1 addendum (M1-G-STORE)" and wrote the Stage 8.2 closure (plan step 15.3.7). The
+fields of impl.md sec. 7.3 and the per-step manual-check register are at the end of this
+file, in "Evidence record (impl.md sec. 7.3)"; how to fill them is in
+[the evidence runbook](README.md).
 
 DH-S-8 is machine state, views and spill. This file holds the evidence of its
-stages as they are built. Stage 8.1 (typed machine state and stored folds) and
-Stage 8.3 (spill store and attachments) are recorded below. **Closing DH-S-8 is
-Stage 8.2's step** (operator decision `dsh-s8-closure-waits-stage-8-2`; the step
-is in implementation-plan.md Stage 8.2): it adds the refold-equals-stored test
-for every built-in view, ticks impl.md steps 8.3 to 8.5 and raises
-`built-through` in the acceptance index to DH-S-8 (with DH-E-STORAGE-1 and -2,
-which it also authors). impl.md steps 8.1, 8.2, 8.6 and 8.7 are ticked as built.
+stages as they are built. Stage 8.1 (typed machine state and stored folds), its
+Phase 15 addendum, Stage 8.2 (built-in views, projects and listing) and Stage 8.3 (spill
+store and attachments) are recorded below. **Closing DH-S-8 was Stage 8.2's step**
+(operator decision `dsh-s8-closure-waits-stage-8-2`): plan step 15.3.7 did it, at gate
+commit `6e7514c`. It records the refold-equals-stored test for every built-in view,
+ticks impl.md steps 8.3 to 8.5 and raises `built-through` in the acceptance index to
+DH-S-8. All seven impl.md steps 8.1 to 8.7 are now ticked as built. Built is not done:
+DH-E-STORAGE-1, -2 and -3 are authored and not run, and the held-open entries H-33, H-35
+and H-36 stay open.
 
 Machine for every run below: Windows 11 Enterprise, 13th Gen Intel Core i9-13900K,
 Samsung SSD 990 PRO (NVMe), go1.27.4 windows/amd64; the module's floor is
@@ -33,6 +36,234 @@ Built and merged before this stage (#63). Its tests, rerun here with
 | --- | --- | --- |
 | 8.1 Machine state survives restart (DH-D-STORAGE-1) | `storage/workspace` `TestMachineStateSurvivesRestart`; `storage/kv` `TestUpdateCommitsAtomicallyAndSurvivesRestart` | pass |
 | 8.2 Changed fold version rebuilds (DH-D-VIEW-2) | `session/views` `TestChangedFoldVersionRebuilds` | pass |
+
+## Stage 8.1 addendum (M1-G-STORE)
+
+**What this section records.** The audit found that step 8.2 (stored fold state is never
+ahead of the log) was ticked while its tests were missing and its behaviour differed from
+the spec: a failing view rolled back its events, a reader was never told it held stale
+state, and an unheld session's rows were never refreshed (gaps M1-G-STORE-10 to -20 in
+[gap-analysis.md](../gap-analysis.md)). Plan
+[Stage 15.2](../gap-closure-plan.md#stage-152-fresh-behind-or-pending-stored-views-done-right)
+built the missing behaviour and tests. This section is the evidence of "built" for that
+stage; it is not "done" (no `DH-E` scenario of DH-D-VIEW-2 has run).
+
+**Words used here.**
+- A **view** (a fold) turns a session's log into a small state, for example the list
+  summary. Its **stored row** (a derived row in `checkpoints`) holds that state with the
+  `seq` it reflects and the view's version.
+- A reader asks for one of two **freshness** modes. `Stored` returns the stored row as it
+  is and never folds or blocks. `Exact` catches up from the row by folding at most
+  `MaxCatchUpEvents` (2,000) events, and otherwise fails with `view/behind`.
+- Every value says its **state**: `current` (the row reflects the head), `behind` (the row
+  is older than the head; its `AsOfSeq` says how old), `pending` (no row of this version
+  exists yet) or `failed` (this process failed to fold it).
+- A **cadence** says when a row is written: `EveryCommit`, or `Periodic` (every
+  `CheckpointEveryEvents`, 200, events and at each turn end).
+- The **rebuild sweep** is the once-per-home `views-rebuild` duty that folds, read-only,
+  the sessions lacking a row of the current version and writes them with
+  `UpsertDerived`. Because each row carries its `seq`, the rows are the progress record: a
+  killed sweep resumes where it stopped.
+- **Prune** deletes rows of keys this binary does not register and rows of older
+  versions, never `core/` rows, and only when every live host runs the same binary
+  (`hosts.binary_version`, added by plan 15.1.2).
+
+**Build identity.** Built in `8d8abfa` (15.2.1, 15.2.5, 15.2.7), `ec21abc` (15.2.2 to
+15.2.4), `cb1c07a` (an append's checkpoint only moves forward), `fafe8ce` (15.2.9 to
+15.2.11), `0baa7cf` (15.2.6, 15.2.8) and `3695cc2` (the prompt fix below). Decision
+M1-D-STORE-E (a) and the lead settlements `pending-sessions-listed-when-blank-hidden` and
+`fold-failed-in-process-only` ([decisions.md](../decisions.md)) apply. Gate evidence: both
+lanes `PASSED all 12 gates` at `6e7514c`, run records `wsl-6e7514c-20261123T0602Z` and
+`win-6e7514c-20261123T0602Z` (the full template is in
+[DH-S-7.md, "Gate runs at 6e7514c"](DH-S-7.md#gate-runs-at-6e7514c)); `go test -race` per
+package also passed.
+
+### Test IDs and results
+
+Every test below passed in both gate runs at `6e7514c`. Package `session/views` unless
+named.
+
+| Test ID | Plan step | Tests | What they show | Result |
+| --- | --- | --- | --- | --- |
+| `DH-T-VIEW-1` | 15.2.9 | `TestCheckpointPlusSuffixEqualsFullFold` (`property_test.go`) | 500 logs (seed `0x1529d5a`, logged): 13,521 events, 1,683 rows, 733 replaced entries. For every built-in view, a row taken at a random cut plus the rest of the log equals the full fold. One log in five comes from `corpus.Log`, the rest from a seeded generator (the test kit has no other scripted-log helper). | pass |
+| `DH-T-VIEW-5` | 15.2.1 | `session/store/sqlite` `TestMultiEventAppendIsAtomic`, `TestAppendFaultAtEachStep` | A failing view costs no event: when the database refuses a derived row, the three events commit, the row keeps its older seq, `DerivedDropped` is 1 and one `Degraded` notice is sent. That a row older than the head then reads `behind` at `Stored` is shown by `TestStoredReportsPendingBehindAndCurrent` (`DH-T-VIEW-7`), not inside these two tests. | pass |
+| `DH-T-VIEW-6` | 15.2.6, 15.2.11 | `TestInterruptedRebuildResumes` (`rebuild_test.go`), `TestChangedFoldVersionRebuilds` | 50 sessions with version-1 rows, the fold now at version 2: a sweep child is stopped by a write gate after 20 writes and killed. Readers meanwhile saw 20 `current` and 30 `pending`, never a version-1 value. The restarted sweep wrote the other 30, and all 50 rows equal a fresh fold. | pass |
+| `DH-T-VIEW-7` | 15.2.2, 15.2.3 | `TestExactRefusesALongCatchUp`, `TestStoredReportsPendingBehindAndCurrent`, `TestStoredStateOfARow` (`freshness_test.go`); `session/query` `TestListingReadsStoredSummaries`; `TestDispatchByTypeAndContainedPanic` | A session 2,500 events past its newest row, read by a process that is not the holder: `Exact` fails `view/behind` with `AsOfSeq` 1 and `HeadSeq` 2501; `Stored` returns `behind` at once, with no log read. A stale fold lists as `pending` with zero log reads. | pass |
+| `DH-T-VIEW-8` | 15.2.7, 15.2.11 | `session/store/sqlite` `TestPruneRemovesOnlyUnknownAndOldRows`, `TestPruneWaitsForAnOlderLiveHost`; `TestForkStateEqualsFoldOfItsLogicalLog`, `TestDeletedSessionLeavesNoDerivedRow` (`lineage_test.go`) | Prune removes only the unknown-key and old-version rows and keeps the known and `core/surface` rows; with a live older host it deletes nothing. A fork's state equals a fold of its logical log; a deleted session leaves no derived row. | pass |
+| `DH-T-VIEW-9` | 15.2.10, 15.2.11 | `TestBuiltinViewGoldens` (`views/testdata/builtin/*.golden`: `list_summary`, `turn_index_unsettled`, `turn_index_settled`, `stats`, `event_index_replaced`), `TestRefoldEqualsStoredForEveryBuiltinView` | Each built-in view's state over a fixed log equals its committed golden; the stored state of every built-in view equals a refold (Stage 8.2 below). | pass |
+
+**The cadence of 15.2.4** (no `DH-T` ID). Tests: `TestPeriodicAndEveryCommitCadences`,
+`TestCadenceAndConfigValidation`, `TestEventIndexIsWrittenPeriodically`. Bytes upserted
+into `checkpoints` while 10,000 events are appended:
+
+| Rows | after 2,500 events | after 5,000 | after 10,000 | Growth |
+| --- | --- | --- | --- | --- |
+| every-commit rows (list summary, statistics) | 319,513 B | 645,068 B | 1,301,826 B | linear |
+| event index (`Periodic`) | 1,704,884 B | 6,970,081 B | 28,768,077 B | about n^2/k (H-36) |
+| `core/` rows | 4,492 B | 15,467 B | 56,920 B | -- |
+
+The event index was written 101 times (100 turn ends and the close), 55.6 to 56.9 bytes
+per covered event, so each write is linear in the events it covers, and 101 writes are
+within the bound turns + n/200 + 2 (100 + 50 + 2 = 152). The views read at `Exact` after
+the close, and those a reopening process restores from the rows, equal a refold
+(`TestEventIndexIsWrittenPeriodically`). Writing the event index on every batch would
+have upserted about 675 MB. Because the built-in views are whole checkpoint
+documents (M1-D-STORE-C (a)), the event index's total grows as about n^2/k, where k is
+the turn length; under M1-D-STORE-E (a) the test asserts what holds, and linear growth is
+held open as H-36 until the view tables at DH-S-23.
+
+**Status of 15.2.8** (no `DH-T` ID). `Registry.Status` returns, per view key and version,
+the sessions `behind`, `pending` and `failed`. Tests: `TestStatusCountsBehindPendingAndFailed`
+(on SQLite and `memstore`), `TestStatusCountsADroppedRowUntilItIsWritten`,
+`TestRebuildMarksFailures`, `TestFoldCountsAndPending` (`session/store/sqlite` and
+`memstore`). `Failed` is this process's knowledge only and is lost on restart
+(`fold-failed-in-process-only`).
+
+**A defect found by the 15.2.10 golden: a compaction counted as a prompt.** A
+`user/message` with a `Replace` operation (a compaction's summary) was counted as a human
+prompt in the list summary and in `last_prompt_at`, `PromptKey` and the prompt-order
+list. It is fixed by `store.IsPrompt`; the list summary's fold version goes from 1 to 2;
+the test is `TestCompactionIsNotAPrompt` (`prompt_test.go`). Left as it is: the layout-4
+backfill step still fills `last_prompt_at` from every `user/message`, so a home upgraded
+from layout 3 or older may hold a compaction's time until its next prompt (scratch homes
+only); and `TurnIndex.Prompt` still takes the turn's first `user/message` of any
+operation.
+
+### Manual check: bump a fold's version on 50 sessions
+
+`manual`, M1-D-CLOSE-2 option A (a scripted composed test, watched): this is the 15.2 exit
+check. It does not fill the impl.md register below (plan step 18.1.5) and ticks no
+scenario box.
+
+| Step | Check | Procedure | Systems | Operator | Commit | Seen | Label |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 8.2 (plan 15.2 exit) | bump a fold's version on a scratch home with 50 sessions; record `Status` moving from `pending` to `current` | composed test: `go -C src/harness test -count=1 -v -run '^TestManualCheckStatusAfterAVersionBump$' ./internal/session/views/` | WSL (also Windows earlier) | the lead (Claude), scripted composed test | `6e7514cdb6fbc8f105238e7e655fb20e3102166b` (WSL) | "before the rebuild current=0 behind=0 pending=50 failed=0"; "after the views-rebuild duty current=50 behind=0 pending=0 failed=0". Windows, run earlier: the same lines. | `manual` |
+
+## Stage 8.2 -- Builtin Views, Projects and Session Listing
+
+**What this section records.** Stage 8.2 of the story plan builds impl.md steps 8.3 (the
+built-in views), 8.4 (projects group sessions; a hidden session never keeps working) and
+8.5 (sessions are listed, observed, traced and followed across forks), and it closes
+DH-S-8 (operator decision `dsh-s8-closure-waits-stage-8-2`). Its code and its three
+scenario tests were merged in #64; the closure was never written (gap M1-G-STORE-25).
+Plan step 15.3.7 writes it here, after Phase 15 added the tests the steps were missing
+(15.3.1 to 15.3.3) and the storage proofs of 15.3.4 and 15.3.5. Gate evidence: both lanes
+`PASSED all 12 gates` at `6e7514c` (as in the addendum above).
+
+### Step 8.3: the built-in views
+
+The four built-in views are the list summary, the turn index, the statistics and the
+event index. They stay checkpoint documents, not the spec's tables, until DH-S-23
+(M1-D-STORE-C (a)).
+
+| Scenario / ID | Test | Result |
+| --- | --- | --- |
+| Refold equals stored for every built-in view (DH-S-8 exit evidence, TC-08; `DH-T-VIEW-9`) | `session/views` `TestRefoldEqualsStoredForEveryBuiltinView`: a fixed 200-event session in a temp SQLite home; each of the four views refolded from the log equals its stored state (and the state through the row's `seq`); the event index's classes equal the surface fold's, and every shadowed entry was replaced | pass |
+| Golden state of each view (`DH-T-VIEW-9`) | `TestBuiltinViewGoldens` (addendum above) | pass |
+| A checkpoint plus the suffix equals the full fold (`DH-T-VIEW-1`) | `TestCheckpointPlusSuffixEqualsFullFold` (addendum above) | pass |
+
+### Step 8.4: projects and hidden sessions
+
+| Scenario / ID | Test | Result |
+| --- | --- | --- |
+| Listing groups by project (TC-08) | `session/views` `TestListingGroupsByProject`: three listed sessions in two projects (a fourth, archived, is not listed); the listing equals the committed golden `session/views/testdata/list_by_project.golden` (projects in registry order, the pinned session first, then by last prompt) | pass |
+| Hidden session stops working (TC-08 logic) | `storage/workspace` `TestHiddenSessionStopsWorking`: hiding the session sends its agent one stop with cause `hidden`, its next step is rejected by the workspace guard, and after unarchiving the step enters again | pass |
+
+### Step 8.5: listing, observing, tracing and following
+
+| Scenario / ID | Plan step | Test (package `session/query` unless named) | Result |
+| --- | --- | --- | --- |
+| Trace across forks (`DH-T-VIEW-13`) | 15.3.3 | `TestTraceAcrossForks` (`query_test.go`) | pass |
+| A caller sees only what it may (`DH-T-VIEW-14`) | 15.3.3 | `TestCallerSeesOnlyWhatItMay` (`visibility_test.go`) | pass |
+| List pages are bounded (`DH-T-VIEW-15`) | 15.3.3 | `TestListPagesAreBounded` (`visibility_test.go`) | pass |
+| Paging stays stable while sessions change (`DH-T-VIEW-15`) | 15.3.1 | `TestListPagingIsStableWhileSessionsChange` (`paging_test.go`): 1,000 sessions; a writer adds prompts and creates sessions between pages; every visible session appears exactly once | pass |
+| Rows read per page do not grow (`DH-T-VIEW-15`) | 15.3.1 | `TestListRowsPerPageDoNotGrow` (`paging_test.go`): summaries, opens, rows and records read per page are `[20 20 100 0]` at 100 and at 10,000 sessions, on the first and a near-last page | pass |
+| Each list statement searches its index | 15.3.1 | `session/store/sqlite` `TestListPagesSearchTheirIndex` (`listplan_test.go`): `EXPLAIN QUERY PLAN` shows `SEARCH` for every list statement | pass |
+| The listing reads stored summaries (`DH-T-VIEW-7`) | 15.2.3 | `TestListingReadsStoredSummaries` (`stored_test.go`) | pass |
+| The open is bounded (`DH-T-STORE-18`, `-10`; M1-D-STORE-F) | 15.3.1 | `session/store/sqlite` `TestOpenIsBoundedByTheNewestCheckpoint`, `TestReadsJudgeWhatTheOpenDidNot` ([DH-S-7.md, "Gap closure (M1-G-STORE)"](DH-S-7.md#gap-closure-m1-g-store)) | pass |
+| 10k-session list benchmark (`DH-T-VIEW-15`) | 15.3.1 | `BenchmarkBudgetList10k` (`paging_bench_test.go`, `-tags bench`) | pass on Windows (figures below); WSL pending |
+| First list page over the corpus; snapshot of a session above 100,000 events (`DH-T-VIEW-25`, DH-D-VIEW-5 clauses) | 15.3.2 | `BenchmarkBudgetQuery` (`budget_bench_test.go`, `-tags bench`) | pass on Windows (figures below); WSL pending; budgets provisional (H-35) |
+
+`DH-T-VIEW-25`'s ranked-search, literal-search and `TreeMessages` clauses are not part of
+step 8.5: under M1-D-STORE-B (a) they belong to DH-D-VIEW-6 at DH-S-23 (impl.md step
+23.9).
+
+**Budget figures (`DH-T-VIEW-15`, `DH-T-VIEW-25`).** Windows: i9-13900K, go1.27.4,
+`-benchtime 20x`, after the bounded open of 15.3.1; each p95 is the range over the plain
+run and the `GOMEMLIMIT=4GiB` run, which never bound (the heap after an operation stayed
+at or below 250 MB). Budgets are about 3 times the worst p95 and provisional (M1-D-STORE-B
+(a); H-35 for `DH-T-VIEW-25`). Command:
+`go -C src/harness test -tags bench -run '^$' -bench 'BudgetQuery|BudgetList10k' -benchtime 20x -timeout 60m ./internal/session/query/`.
+
+| Case | Windows p95 | WSL p95 | Budget |
+| --- | --- | --- | --- |
+| query: first list page over the corpus | 21.3-23.0 ms (7.1 MB) | 8.9-9.4 ms (6.7 MB) | 70 ms |
+| query: snapshot of a session above 100,000 events | 47.3-47.9 ms (67.5 MB) | 44.1-47.8 ms (67.3 MB) | 150 ms |
+| list: 10,000 sessions, first page | 31.3-32.1 ms | 10.4-11.5 ms | 100 ms |
+| list: 10,000 sessions, deep page | 22.0-22.6 ms | 7.0 ms | 70 ms |
+
+The WSL column is from `runs/wsl-6e7514c-bench.txt` (sha256 `2b9f3065905c822aeb921ce346713039447eb13efd133bff250bb1d6ebfe4fe6`): WSL Ubuntu-24.04 at `6e7514c`, go1.27.4, `-tags bench -benchtime 20x`, every case PASS within its budget.
+
+Before the bounded open (the first measured run, Windows): query first page 530-547 ms
+and 726 MB; snapshot 578-733 ms and 790 MB. The store's own cases (open, fork, store first
+page) are in [DH-S-7.md](DH-S-7.md#budget-figures-f-2-dh-t-store-18). Open: the
+10,000-session first page is about 40% slower than the 1,000-session home's at equal row
+counts, and the cause was not found.
+
+### Storage proofs (plan 15.3.4, 15.3.5)
+
+| Test ID | Tests | What they show | Result |
+| --- | --- | --- | --- |
+| `DH-T-STORAGE-7` | `storage/blob` `TestKilledPublisherNeverLeavesADanglingCitation` (`crash_test.go`) | 20 rounds: a re-executed child `Put`s a blob and then appends an event citing it, killed at a rotating point (between publish and append, after the append, mid `Put` or append). After each reopen every `blob_refs` object exists and verifies its length and digest, `ReferencedBy` holds, and the row count equals the event count. The seed is logged (8845788985185224334 in one run) and replays with `DSH_BLOB_CRASH_SEED`. The draft clause waits for H-33. | pass |
+| `DH-T-STORAGE-1` (tagged) | `storage/kv` `TestUpdateCommitsAtomicallyAndSurvivesRestart`, `TestUnknownCommitOutcomeReloads`; `storage/workspace` `TestMachineStateSurvivesRestart` | | pass |
+| `DH-T-STORAGE-2` (tagged) | `storage/kv` `TestFreshSeesForeignWrites`, `TestFreshRaisesAForeignDelete`, `TestRunRefreshesOnItsTimer`, `TestUnknownCommitOutcomeReloads`; `storage/workspace` `TestRegistryOverABusyDatabase` | | pass |
+| `DH-T-STORAGE-3` (tagged) | `storage/kv` `TestRecordVersions`, `TestUndecodableByAuthority`, `TestPutAndDeleteGuards`, `TestUpdateRefusesAForeignUndecodableRecord` | | pass |
+| `DH-T-STORAGE-5` (tagged) | `storage/blob` `TestPutAndReadBack`, `TestEqualBytesAreOneObject`, `TestCorruptedObjectDetected`, `TestTruncatedAndMissingObjects`, `TestTooLargeLeavesNoObject`, `TestReadDetectsAGrownObjectAndANonFile`, `TestLookupRefusesForeignShapes`, `TestSameSizeCorruptObjectNotAdopted` | | pass |
+| `DH-T-STORAGE-6` (tagged) | `storage/blob` `TestADifferentObjectUnderTheNameIsNotAdopted`, `TestPublishSyncsTheObjectDirectory`, `TestPublishFailsWhenTheDirectorySyncFails`, `TestRetryAfterFailedPublishLeavesTheObjectReadOnly` | The image-batch clause waits for DH-D-STORAGE-4. | pass |
+| POSIX tests on WSL (M1-G-STORE-30) | `session/store/sqlite` `TestLivenessLockSurvivesOSOpenAndClose` (`DH-T-STORE-7`), `TestStoreFilesAreOwnerOnly`; `storage/spill/local` `TestPlantedLinkRefused`, `TestSpillFilesArePrivate` (Unix) | Run on WSL at `6e7514c` with `TMPDIR=/tmp` on ext4, go1.27.4: each PASS, none SKIP. They also run inside the WSL gate lane. | pass |
+
+**Clauses the tagged tests do not fully assert.** A tag says which ID a test serves; it
+does not make the ID fully proven. These clauses have no test yet, so these IDs are
+**not** claimed as fully proven:
+- `DH-T-STORAGE-1`: no `Changed` listener on a second connection is asserted, and no test
+  shows that concurrent `Update` calls do not interleave.
+- `DH-T-STORAGE-2`: `storage/busy` is shown only through fake busy databases.
+- `DH-T-STORAGE-3`: "rewritten only on its next write" is not checked.
+- `DH-T-STORAGE-5`: no wrong-length or wrong-dimension `Ref` case (the dimension case
+  waits for DH-D-STORAGE-4).
+- `DH-T-STORAGE-6`: only a directory-sync fault is injected; no object-file sync fault.
+  The image-batch clause waits for DH-D-STORAGE-4.
+- `DH-T-STORAGE-7`: the draft clause waits for the draft record (H-33).
+
+### Scenarios authored
+
+| ID | File | Runs in | Status |
+| --- | --- | --- | --- |
+| DH-E-STORAGE-1 (two processes share machine state; an archive with stop ends the other process's turn) | `src/harness/internal/testkit/scenarios/storage_workspace_scenario_test.go` | DH-S-19 | authored, **not run** |
+| DH-E-STORAGE-2 (an image survives a crash mid-upload, a restart, a fork whose parent is deleted, and collection) | `src/harness/internal/testkit/scenarios/storage_image_scenario_test.go` | DH-S-23 | authored, **not run** |
+
+Both are in `test/harness/acceptance-index.yaml` (`authored: DH-S-8`), and
+`harness-gate preflight` binds each to its test. No acceptance-run evidence exists for
+either, and neither is claimed as passing.
+
+### Manual checks of steps 8.3 to 8.5
+
+impl.md DH-S-8 names no check for steps 8.3 to 8.5, so each takes the rule-3 default:
+start the step's component in a composed tree, exercise it once and record that the
+behaviour of its Result line was seen. Each row below is a scripted composed test run
+with `-v` and watched (M1-D-CLOSE-2 option A, the plan's default; the decision is still
+open). They are `manual` records of "built": they do not fill the per-step register at
+the end of this file (plan step 18.1.5) and tick no scenario box.
+
+Run on Windows (go1.27.4 windows/amd64) at `d10440b28d7628a6d84a40af79093458322d1535`,
+2026-11-23 about 06:40Z. `d10440b` adds only run records to `6e7514c`
+(`git diff 6e7514c d10440b -- src tools` is empty), so the code is the gate commit's.
+
+| Step | Check | Procedure | Systems | Operator | Commit | Seen | Label |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 8.3 | rule-3 default: the built-in views equal a refold of the log | composed test: `go -C src/harness test -count=1 -v -run '^(TestRefoldEqualsStoredForEveryBuiltinView\|TestListingGroupsByProject)$' ./internal/session/views/` | Windows | Claude (records agent for the lead), scripted composed test | `d10440b` | `--- PASS: TestRefoldEqualsStoredForEveryBuiltinView (0.08s)`. The test prints no figures; its pass means the four stored views of the 200-event session equal their refolds. | `manual` |
+| 8.4 | rule-3 default: projects group sessions; a hidden session never keeps working | the same run for `TestListingGroupsByProject`; `go -C src/harness test -count=1 -v -run '^TestHiddenSessionStopsWorking$' ./internal/storage/workspace/` | Windows | Claude (records agent for the lead), scripted composed test | `d10440b` | `--- PASS: TestListingGroupsByProject (0.08s)` (the listing equals the golden: project alpha with `s-a1` pinned first, then `s-a2`; project beta with `s-b1`; archived `s-a3` absent). `--- PASS: TestHiddenSessionStopsWorking (0.00s)`. | `manual` |
+| 8.5 | rule-3 default: sessions are listed, observed, traced and followed across forks | composed test: `go -C src/harness test -count=1 -v -run '^(TestTraceAcrossForks\|TestCallerSeesOnlyWhatItMay\|TestListPagesAreBounded\|TestListPagingIsStableWhileSessionsChange\|TestListRowsPerPageDoNotGrow\|TestListingReadsStoredSummaries)$' ./internal/session/query/` | Windows | Claude (records agent for the lead), scripted composed test | `d10440b` | All six PASS (paging-stable 3.20 s; rows-per-page 33.86 s). Printed: "100 sessions: [summaries opens rows records] first page [20 20 100 0], deep page [20 20 100 0]" and the same line for 10000 sessions (seeded in 33.3 s). | `manual` |
 
 ## Stage 8.3 -- Spill Store and Attachments
 
@@ -133,20 +364,29 @@ lists (DC-2); its table is unchanged. Each closing stage records the entries it 
 | --- | --- | --- | --- | --- | --- | --- |
 | H-33 | 8.7 | DH-D-STORAGE-3 | The draft record: one record per session in the `kv` namespace `draft` that lists its staged uploads, so an unsent draft and its files survive a reload and no file a draft names is collected; with it `DH-T-STORAGE-7`'s draft clause (a draft's staged file survives a collection run and is collected after the draft is deleted) | M1-G-STORE-28 | impl.md 21.2, DH-S-21's composer step (M1-D-STORE-D (b)) | open |
 | H-35 | 8.5 | DH-D-VIEW-5 | The final budgets of `DH-T-VIEW-25`'s DH-D-VIEW-5 clauses: the first list page over the heavy-tailed corpus and a snapshot of a session above 100,000 events, each also under `GOMEMLIMIT`. Until then the budgets are the provisional ones of plan step 15.3.2. The test's ranked-search, literal-search and `TreeMessages` clauses are not in this entry: they belong to DH-D-VIEW-6 at DH-S-23 (impl.md step 23.9) | M1-G-STORE-22, M1-G-STORE-7 | impl.md 16.7 (M1-D-STORE-B (a)) | open |
-| H-36 | 8.1 | DH-D-VIEW-2 | Linear growth of the bytes the event index upserts. The four built-in views are checkpoint documents (M1-D-STORE-C (a)), so each `Periodic` event-index write is the whole document and the total grows as about n^2/k, where k is the turn length (28.8 MB over 10,000 events, measured at plan step 15.2.4). Until then the test asserts what holds: the every-commit rows grow linearly, each event-index write is linear in the events it covers, and the writes are at most turns + n/200 + 2 | M1-G-STORE-13 | the view tables at DH-S-23 (M1-D-STORE-E (a)) | open |
+| H-36 | 8.2 | DH-D-VIEW-2 | Linear growth of the bytes the event index upserts. The four built-in views are checkpoint documents (M1-D-STORE-C (a)), so each `Periodic` event-index write is the whole document and the total grows as about n^2/k, where k is the turn length (28.8 MB over 10,000 events, measured at plan step 15.2.4). Until then the test asserts what holds: the every-commit rows grow linearly, each event-index write is linear in the events it covers, and the writes are at most turns + n/200 + 2 | M1-G-STORE-13 | the view tables at DH-S-23 (M1-D-STORE-E (a)) | open |
+
+Mechanical fix (plan step 15.3.7; allowed and noted under DC-2): H-36's step was first
+written as 8.1. Its deliverable, DH-D-VIEW-2, is step 8.2 (gap M1-G-STORE-13 also says
+step 8.2), so this table and the two impl.md pointer lines that name H-36 now read 8.2.
 
 ## Closure
 
 | Exit evidence (impl.md DH-S-8) | Where | Status |
 | --- | --- | --- |
-| Refold-equals-stored test for every built-in view | Stage 8.2 (impl.md step 8.3) | owned by Stage 8.2's closure step |
-| Manual checks | "Manual checks" above | met |
-| Scenarios authored | DH-E-STORAGE-3 (8.3) in the acceptance index; DH-E-STORAGE-1, -2 by Stage 8.2 | Stage 8.3's part met |
+| Refold-equals-stored test for every built-in view | Stage 8.2, step 8.3 (`TestRefoldEqualsStoredForEveryBuiltinView`, `DH-T-VIEW-9`) | **met** at `6e7514c`, both lanes |
+| Stored fold state never ahead of the log (step 8.2; M1-G-STORE-10 to -20) | "Stage 8.1 addendum (M1-G-STORE)" | **met** at `6e7514c`, both lanes; linear growth of the event index's writes held open (H-36) |
+| Listing, tracing and paging (step 8.5; M1-G-STORE-21 to -23) | Stage 8.2, step 8.5 | **met** at `6e7514c`, both lanes; benchmark figures met on Windows, WSL pending (lead fills); `DH-T-VIEW-25` budgets provisional (H-35) |
+| Storage proofs (step 8.7, 8.1; M1-G-STORE-27, -30) | Stage 8.2, "Storage proofs" | **met** at `6e7514c` for the asserted clauses; the clauses listed under "Clauses the tagged tests do not fully assert" are open, and the draft clause of `DH-T-STORAGE-7` is H-33 |
+| Manual checks | "Manual checks" above (historical); the 15.2 Status check (`manual`, `6e7514c`, WSL) and the 8.3 to 8.5 checks (`manual`, `d10440b`, Windows) | recorded as `manual`; the per-step register stays open until plan step 18.1.5 |
+| Scenarios authored | DH-E-STORAGE-3 (8.3); DH-E-STORAGE-1, -2 (8.2), in the acceptance index | authored, **not run**; they run in DH-S-39, DH-S-19 and DH-S-23, so no DH-S-8 deliverable that they prove is "done" |
 | Spill addressing | storage.md DH-D-STORAGE-5: owner hash + 96 random bits + safe name | **resolved** by operator decision `spill-addressing` (storage.md governs); implementation-plan.md Stage 8.3 step 8.6 amended to match |
 
-Stage 8.3's evidence is complete. DH-S-8 closes, and `built-through` is raised to
-DH-S-8, with Stage 8.2's closure step (steps 8.3 to 8.5, the refold-equals-stored
-test and DH-E-STORAGE-1 and -2).
+DH-S-8 is closed as built by plan step 15.3.7: impl.md steps 8.3 to 8.5 are ticked with
+the story plan's Stage 8.2 steps and its three scenario boxes, and `built-through` is
+DH-S-8. The gate of record is the pair of run records `wsl-6e7514c-20261123T0602Z` and
+`win-6e7514c-20261123T0602Z`, in place of a CI run id. The record's own
+`Closure status:` line stays `open` until plan step 18.1.14.
 
 M1 gate repair (plan 13.2.1, 13.2.3, 13.2.5; [DH-S-1.md, "M1 gate repair"](DH-S-1.md#m1-gate-repair)): `internal/storage/blob/gclock_test.go` `TestSaversWaitForTheCollector` runs in a `synctest` bubble ("Put still waits" is `synctest.Wait`, not a 30 ms settle) and replaces the `waitFor` poll with a signal from the lock (`SetAfterLockShared`, a test seam `afterLockShared` in `blob.go`, nil outside tests), with P-C for both savers; `storage/workspace/archive_test.go` (helper `goJoined`) and `util/fsx/replace_test.go` `TestLockShared` (the cleanup unlocks, then joins the waiter) release and join every goroutine they start. Assertions unchanged.
 
@@ -154,45 +394,63 @@ M1 gate repair (plan 13.2.1, 13.2.3, 13.2.5; [DH-S-1.md, "M1 gate repair"](DH-S-
 
 These are the eight fields of [impl.md sec. 7.3](../../../harness/impl.md#73-the-evidence-record),
 in the format of [the evidence runbook](README.md#the-evidence-record-headings). Plan step
-18.1.7 fills them at the frozen M1 closure commit; plan steps 15.2 and 15.3.7 add the
-"Stage 8.1 addendum" and Stage 8.2 sections before that. Until then each field points to
-the history above, which stays exactly as it was recorded and is not closure evidence
+18.1.7 fills them at the frozen M1 closure commit. Plan Stage 15.2 and step 15.3.7 added
+the "Stage 8.1 addendum (M1-G-STORE)" and Stage 8.2 sections and fill the Phase 15 lines
+below. The history above stays exactly as it was recorded and is not closure evidence
 (M1-D-CLOSE-1).
 
 ### Source and build identity
 
-At closure: not yet recorded (plan 18.1.7). Historical: no commit was recorded; Stage 8.1
-names its PR (#63).
+At closure: not yet recorded (plan 18.1.7). Phase 15 (gap closure): commit
+`6e7514cdb6fbc8f105238e7e655fb20e3102166b`; the 8.3 to 8.5 manual checks ran at
+`d10440b`, which adds only run records to it. Historical: no commit was recorded; Stage
+8.1 names its PR (#63) and Stage 8.2 its PR (#64).
 
 ### Environment and fixture
 
-At closure: both local lanes, from their run records. macOS: out of scope
+At closure (18.1.7): both local lanes, from their run records at the closure commit.
+Phase 15 (gap closure), from the two `6e7514c` run records: WSL lane Ubuntu 24.04.5 LTS
+on WSL2, kernel `6.18.58.1-microsoft-standard-WSL2`, go1.27.4, gcc 13.3.0, ext4 clone;
+Windows lane Windows 10.0.28000.3501, go1.27.4, gcc 16.1.0 (MSYS2), NTFS checkout (the
+full template is in [DH-S-7.md, "Gate runs at 6e7514c"](DH-S-7.md#gate-runs-at-6e7514c)).
+Bench figures: Windows i9-13900K; WSL pending. macOS: out of scope
 (`platforms-windows-wsl`). Historical: the Windows machine named at the top of this file.
-Fixtures: temporary SQLite homes; a 5,242,880-byte result.
+Fixtures: temporary SQLite homes; a 5,242,880-byte result; the committed goldens
+`session/views/testdata/list_by_project.golden` and `views/testdata/builtin/*.golden`;
+the heavy-tailed corpus `internal/testkit/corpus`.
 
 ### Exact tests and commands
 
 At closure: the lane scripts, and `go -C src/harness test -race -count=1
-./internal/storage/... ./internal/session/views/`. Historical: the commands under Stage
+./internal/storage/... ./internal/session/views/ ./internal/session/query/`. Phase 15:
+the lane scripts, `go test -race` per package, and the bench and manual-check commands in
+"Stage 8.1 addendum (M1-G-STORE)" and "Stage 8.2". Historical: the commands under Stage
 8.1 and "Tests (TC-08)".
 
 ### Run identifiers
 
-At closure: the run-record ids of both lanes, in the runbook's template (plan 18.1.3).
-WSL lane: not run. Windows lane: not run. macOS: out of scope (`platforms-windows-wsl`).
-Historical: no run id was recorded. DH-E-STORAGE-3 runs in DH-S-39 and has no run id yet.
+At closure (18.1.3, 18.1.7): the run-record ids of both lanes at the frozen closure
+commit; not yet run. Phase 15 (gap closure), at `6e7514c`: WSL lane
+`wsl-6e7514c-20261123T0602Z` (file SHA-256
+`e643fb9c05106103196578bbc483b4fa199c066baa3d3be5d7f3c5fcfbefa815`), Windows lane
+`win-6e7514c-20261123T0602Z` (file SHA-256
+`69bd371846922b7e1f30eb65c11de10da067267112447a95f8594485fc71a6cf`). macOS: out of scope
+(`platforms-windows-wsl`). Historical: no run id was recorded before Phase 15.
+DH-E-STORAGE-1, -2 and -3 run in DH-S-19, DH-S-23 and DH-S-39 and have no run id yet.
 
 ### Results
 
-At closure: not yet recorded. Historical: the test tables of Stage 8.1 and Stage 8.3.
+At closure: not yet recorded. Phase 15: both lanes `PASSED all 12 gates` at `6e7514c`;
+per test ID in "Stage 8.1 addendum (M1-G-STORE)" and "Stage 8.2". Historical: the test
+tables of Stage 8.1 and Stage 8.3.
 
 ### Manual checks
 
 impl.md DH-S-8 names two checks: change a fold's version and record that its stored
 state is rebuilt on open (step 8.2); write a five-megabyte result and record the bounded
 head and the recoverable rest (step 8.6). The other steps take the rule-3 default; for
-steps 8.3 to 8.5 the tests are written by plan Stage 15.3, so those rows cannot run before
-it. Historical record: "Manual checks of impl.md DH-S-8". How to run and fill the
+steps 8.3 to 8.5 the tests were completed by plan Stages 15.2 and 15.3, and their Phase
+15 `manual` records are in "Stage 8.2", "Manual checks of steps 8.3 to 8.5". Historical record: "Manual checks of impl.md DH-S-8". How to run and fill the
 register: [the evidence runbook](README.md#manual-checks). Composed tests run as
 `go -C src/harness test -count=1 -v -run '<names>' <package>`.
 
@@ -202,9 +460,9 @@ register: [the evidence runbook](README.md#manual-checks). Composed tests run as
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 8.1 | rule-3 default: program state survives restarts in one typed store | composed test: `TestMachineStateSurvivesRestart` in `./internal/storage/workspace/`, `TestUpdateCommitsAtomicallyAndSurvivesRestart` in `./internal/storage/kv/` | one lane | | | | `manual` |
 | 8.2 | change a fold's version: its stored state is rebuilt on open | composed test: `TestChangedFoldVersionRebuilds` in `./internal/session/views/`; record the version and seq before and after | one lane | | | | `manual` |
-| 8.3 | rule-3 default: the built-in views equal a refold of the log | composed test: `TestRefoldEqualsStoredForEveryBuiltinView`, written by plan 15.3.7 (not runnable before it) | one lane | | | | `manual` |
-| 8.4 | rule-3 default: projects group sessions; a hidden session never keeps working | composed test: the hidden-session tests of plan 15.3 (named there; not runnable before it) | one lane | | | | `manual` |
-| 8.5 | rule-3 default: sessions are listed, observed, traced and followed across forks | composed test: the listing tests of plan 15.3.1 to 15.3.3 (named there; not runnable before them) | one lane | | | | `manual` |
+| 8.3 | rule-3 default: the built-in views equal a refold of the log | composed test: `TestRefoldEqualsStoredForEveryBuiltinView` in `./internal/session/views/` | one lane | | | | `manual` |
+| 8.4 | rule-3 default: projects group sessions; a hidden session never keeps working | composed test: `TestListingGroupsByProject` in `./internal/session/views/`, `TestHiddenSessionStopsWorking` in `./internal/storage/workspace/` | one lane | | | | `manual` |
+| 8.5 | rule-3 default: sessions are listed, observed, traced and followed across forks | composed test: `TestTraceAcrossForks`, `TestCallerSeesOnlyWhatItMay`, `TestListPagesAreBounded`, `TestListPagingIsStableWhileSessionsChange`, `TestListRowsPerPageDoNotGrow`, `TestListingReadsStoredSummaries` in `./internal/session/query/`; record the rows-per-page lines | one lane | | | | `manual` |
 | 8.6 | write a five-megabyte result: the bounded head and the recoverable rest | composed test: `TestLargeResultSpilledAndRecoverable` in `./internal/storage/spill/local/`; record the result size, the logged row size and head under the bound, and the byte-identical read-back | Windows, WSL | | | | `manual` |
 | 8.7 | rule-3 default: attachments are kept durably and read back verified | composed test: `TestCorruptedObjectDetected` in `./internal/storage/blob/`, `TestCorruptedAttachmentDetected` in `./internal/storage/attachments/` | one lane | | | | `manual` |
 
@@ -215,7 +473,19 @@ Historical: none recorded.
 
 ### Open items
 
-At closure: plan 18.1.11 lists them. Now open: steps 8.3 to 8.5 and the Stage 8.2
-closure (plan Stages 15.2 and 15.3); the items under "Not built here"; the held-open
-entries H-33 and H-35 (["Held open"](#held-open)); DH-E-STORAGE-1, -2 and -3, which run
-in later stages.
+At closure: plan 18.1.11 lists them. Now open:
+- the bench figures on WSL for `DH-T-VIEW-15` and `DH-T-VIEW-25` (the lead fills them
+  after the WSL run);
+- the held-open entries H-33, H-35 and H-36 (["Held open"](#held-open));
+- the storage clauses listed under "Clauses the tagged tests do not fully assert"
+  (Stage 8.2);
+- the 10,000-session first list page being about 40% slower than the 1,000-session
+  home's at equal row counts: cause not found;
+- after the prompt fix, the layout-4 backfill of `last_prompt_at` and
+  `TurnIndex.Prompt` still treat every `user/message` as a prompt ("Stage 8.1 addendum");
+- DH-E-STORAGE-1, -2 and -3, authored and not run (DH-S-19, DH-S-23, DH-S-39);
+- the items under "Not built here";
+- the per-step manual-check register, run at plan step 18.1.5.
+
+Closed as built by Phase 15: steps 8.3 to 8.5 and the Stage 8.2 closure (plan steps
+15.3.7, 15.3.8).
