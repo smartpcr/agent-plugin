@@ -10,14 +10,17 @@
 // and again under GOMEMLIMIT (4GiB, 8GiB) for the memory-limited rerun.
 //
 // Acceptance is staged (an owner decision for Stage 11.2): until the replay
-// provider (DH-D-UTIL-7, impl.md step 16.7, held open by H-10) and the
-// measured 1,650-session corpus land, the scripted model and memstore stand in
-// for them and a synthetic ladder stands in for the corpus. On it, the
+// provider (DH-D-UTIL-7, impl.md step 16.7, held open by H-10) lands, the
+// scripted model and memstore stand in for it. The ladder is the heavy-tailed
+// corpus's (testkit/corpus.Ladder: the p50, p90, p99 and longest of the 1,650
+// measured sessions); each rung's session is made of tool-heavy driver turns,
+// as many as reach the rung's measured events (and at least its turns; the
+// unbudgeted max rung is capped, see maxTemplateTurns). The
 // 99th-percentile (nearest-rank) latency of the continuations timed at each
 // rung up to the p99 rung must stay inside provisionalBudget, in the plain run
 // and in the GOMEMLIMIT reruns; the max rung is measured, not budgeted. The final budget
-// stays unpinned until the provider and the corpus land, when this check is
-// re-run against them. Each timed continuation resumes a fresh store seeded
+// stays unpinned until the provider lands, when this check is re-run against
+// it. Each timed continuation resumes a fresh store seeded
 // with the same template session (records only: the template's checkpoints
 // are not copied), whose size is checked outside the timer. The benchmark
 // reports wall time per continuation, the p50 and p99 latency, peak heap,
@@ -41,19 +44,42 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store/memstore"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/corpus"
 	fakemodel "github.com/smartpcr/agent-plugin/src/harness/internal/testkit/model"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools"
 )
 
-// sessionSizes is the heavy-tailed ladder: the turns of a median, a long, a
-// very long and the longest session. Each turn is tool-heavy: one step with
-// two tool calls, then the answer.
-var sessionSizes = []struct {
+// recordsPerTurn is the records one tool-heavy driver turn logs (one step with
+// two tool calls, then the answer); the template check below fails if it drifts.
+const recordsPerTurn = 19
+
+// sessionSize is one rung of the ladder in driver turns.
+type sessionSize struct {
 	name     string
 	turns    int
+	events   int
 	budgeted bool
-}{
-	{"p50", 8, true}, {"p90", 64, true}, {"p99", 512, true}, {"max", 1024, false},
+}
+
+// maxTemplateTurns caps a template's driver turns. The longest measured session
+// (84,467 events) would take 4,446 driver turns, and the template is built
+// through the driver, whose scripted turns grow with the history: on the first
+// run (Windows, i9-13900K) only 570 of them finished inside the template's
+// 10-minute bound. The unbudgeted max rung is therefore capped at the previous
+// synthetic ladder's longest session, 1,024 turns (19,456 records).
+const maxTemplateTurns = 1024
+
+// sessionSizes is the heavy-tailed ladder (corpus.Ladder) in driver turns: as
+// many as reach the rung's measured events, and at least its measured turns,
+// capped at maxTemplateTurns. Every rung but the longest is budgeted.
+func sessionSizes() []sessionSize {
+	var out []sessionSize
+	for _, r := range corpus.Ladder() {
+		turns := min(maxTemplateTurns, max(r.Turns, (r.Events+recordsPerTurn-1)/recordsPerTurn))
+		out = append(out, sessionSize{name: r.Name, turns: turns, events: min(r.Events, turns*recordsPerTurn),
+			budgeted: r.Name != "max"})
+	}
+	return out
 }
 
 // provisionalBudget is the staged DH-T-AGENT-28 p99 latency budget for the
@@ -152,7 +178,7 @@ func tooled(n int) []fakemodel.Turn {
 }
 
 func BenchmarkContinuation(b *testing.B) {
-	for _, size := range sessionSizes {
+	for _, size := range sessionSizes() {
 		b.Run(size.name, func(b *testing.B) {
 			root, svc := setup(b)
 			must(svc.Register(root, tool("echo")))
@@ -169,8 +195,8 @@ func BenchmarkContinuation(b *testing.B) {
 			c.idle(b, 10*time.Minute)
 			c.close(b)
 			head, recs := snapshot(b, st, id)
-			if n := turnsIn(recs); n != size.turns {
-				b.Fatalf("the template holds %d turns, want %d", n, size.turns)
+			if n := turnsIn(recs); n != size.turns || len(recs) < size.events {
+				b.Fatalf("the template holds %d turns and %d records, want %d and at least %d", n, len(recs), size.turns, size.events)
 			}
 
 			var (
