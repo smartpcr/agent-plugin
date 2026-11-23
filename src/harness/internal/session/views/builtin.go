@@ -15,7 +15,10 @@ import (
 // stored fold families registered by RegisterBuiltins. Each Apply returns a new
 // state and never writes to its input's visible values; an append-only slice may
 // grow into spare capacity past the input's length, which the input does not see
-// (the same rule as the surface history).
+// (the same rule as the surface history). The list summary and the statistics
+// are small and EveryCommit; the turn index and the event index grow with the
+// log and are Periodic (M1-G-STORE-13), so an append does not rewrite a
+// document as large as the log.
 const (
 	ListSummaryKey = "view/list-summary"
 	TurnIndexKey   = "view/turn-index"
@@ -176,7 +179,7 @@ func (t TurnIndex) Open() (TurnEntry, bool) {
 // TurnIndexView is the turn index fold.
 func TurnIndexView() Definition[TurnIndex] {
 	return Definition[TurnIndex]{
-		Key: TurnIndexKey, Version: 1, Stored: true,
+		Key: TurnIndexKey, Version: 1, Stored: true, Cadence: Periodic,
 		Types: []string{event.TurnStartType.Name(), event.TurnEndType.Name(), event.StepStartType.Name(), event.UserMessage.Name()},
 		Init:  func(session.Header) TurnIndex { return TurnIndex{} },
 		Apply: func(s TurnIndex, ev event.Event) (TurnIndex, bool) {
@@ -393,7 +396,7 @@ func (x EventIndex) ByCall(id string) []event.Seq {
 // EventIndexView is the event index fold.
 func EventIndexView() Definition[EventIndex] {
 	return Definition[EventIndex]{
-		Key: EventIndexKey, Version: 2, Stored: true,
+		Key: EventIndexKey, Version: 2, Stored: true, Cadence: Periodic,
 		Init: func(session.Header) EventIndex { return EventIndex{} },
 		Apply: func(s EventIndex, ev event.Event) (EventIndex, bool) {
 			e := EventEntry{Seq: ev.Seq(), Type: ev.Type(), Class: ClassLogOnly, Call: callOf(ev)}

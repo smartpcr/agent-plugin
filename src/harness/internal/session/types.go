@@ -94,6 +94,16 @@ type Restorer interface {
 	Restore(ctx context.Context, s ReadSession, cps []store.Checkpoint) ([]Derived, error)
 }
 
+// ClosingFolder is a Folder with stored state due when a session closes (a
+// Periodic fold, DH-ADR-VIEW-2). Close calls Closing once, under the append
+// lock, with the session at its head, and commits the rows it returns at the
+// log head with the core's closing checkpoint; a panic is contained and drops
+// them, and a failed commit is logged, since stored state is derived.
+type ClosingFolder interface {
+	Folder
+	Closing(s ReadSession) []Derived
+}
+
 // Checkpointed is a ReadSession that can list its stored checkpoints: a live
 // session and a read-only open are.
 type Checkpointed interface {
