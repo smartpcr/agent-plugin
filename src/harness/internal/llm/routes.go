@@ -17,8 +17,12 @@ import (
 // Adapter is a provider's side of a route: a pure function of the request and
 // the call it captured. Retry is not an adapter concern.
 type Adapter interface {
-	// Prepare captures one call to model with the effective config; it does no
-	// I/O and fails with an *vocab.Failure for anything it cannot encode.
+	// Prepare captures one call to model with the effective config and fails
+	// with an *vocab.Failure for anything it cannot encode. It sends no request:
+	// a keyed route's Prepare does no I/O, and a signed-in client route
+	// (DH-D-LLM-12) only probes the installed client's version, bounded by a
+	// deadline, failing with llm/client-upgrade-required before any request
+	// text is written.
 	Prepare(ctx context.Context, route vocab.RouteID, model string, cfg vocab.CallConfig) (Call, error)
 }
 

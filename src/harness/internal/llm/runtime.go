@@ -103,7 +103,8 @@ func failure(code vocab.Code, format string, args ...any) *vocab.Failure {
 
 // Prepare resolves route r and model (the route's default model when ""),
 // materialises the route's defaults into the controls and validates them; it
-// does no I/O. An unknown route is llm/no-route, an unknown model
+// sends no request (a signed-in client route's adapter probes the installed
+// client's version, DH-D-LLM-12; see Adapter.Prepare). An unknown route is llm/no-route, an unknown model
 // llm/unknown-model, an effort the model does not list
 // llm/unsupported-reasoning-effort and an out-of-range control
 // llm/unsupported-option, each a *vocab.Failure.

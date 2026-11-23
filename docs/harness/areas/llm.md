@@ -647,4 +647,4 @@ The client name and version is decided ([DH-ADR-32](../design.md#dh-adr-32), [DH
 
 The four `carried` rows name their stage in the ledger: three name [DH-S-47](../impl.md#dh-s-47) (known limits and scope boundaries of the core areas) and one names [DH-S-35](../impl.md#dh-s-35) (keychain, vendor account and vendor services).
 
-Rows are in [../trace/fragments/A04.jsonl](../trace/fragments/A04.jsonl). Go items declared: `DH-ADR-LLM-1` to `-9`, `DH-D-LLM-1` to `-11`, `DH-T-LLM-1` to `-17`, `DH-E-LLM-1` to `-10`.
+Rows are in [../trace/fragments/A04.jsonl](../trace/fragments/A04.jsonl). Go items declared: `DH-ADR-LLM-1` to `-10`, `DH-D-LLM-1` to `-12`, `DH-T-LLM-1` to `-27`, `DH-E-LLM-1` to `-10`. `DH-ADR-LLM-10`, `DH-D-LLM-12` and `DH-T-LLM-18` to `-27` were added by plan Stage 16.5 of [the M1 gap-closure plan](../../stories/harness-DSH-M1/gap-closure-plan.md); `DH-E-LLM-3`'s ledger title was changed from "bad key" to "the client is signed out" at the same time (M1-D-CLOSE-4 A).

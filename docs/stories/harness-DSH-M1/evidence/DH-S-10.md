@@ -5,12 +5,16 @@ Decisions that govern M1 records, this one included, are logged in [decisions.md
 Closure status: open
 
 This line becomes `closed at <sha>` only in plan step 18.1.14, at the M1 closure commit.
-The "DH-S-10 is closed" statement below is the stage's own closure, kept as history:
-under M1-D-CLOSE-1 every tick made while the gate was red is provisional and is
-re-verified at that commit, and plan step 16.6.1 unticks impl.md 10.3, 10.4 and 10.6
-(known not built) until plan Stages 16.1 to 16.3 land. The fields of impl.md sec. 7.3
-and the per-step manual-check register are at the end of this file, in "Evidence record
-(impl.md sec. 7.3)"; how to fill them is in [the evidence runbook](README.md).
+The first closure of the stage (the "DH-S-10 was closed" paragraph below) is kept as
+history. It was **reopened by M1-G-PIPE-1..8**: impl.md 10.3, 10.4 and 10.6 had been
+ticked without the approval policy, the resume closer, the guarded-pipeline cases, grant
+subjects, the spill reader and images in the budget. Plan Phase 16 built those (Stages
+16.1 to 16.3) and **re-closed the stage at `f72f435`**, where both local lanes pass all
+12 gates: see [Gap closure (M1-G-PIPE-1 to -8)](#gap-closure-m1-g-pipe-1-to-8) and
+[Closure](#closure). Under M1-D-CLOSE-1 every tick is still re-verified at the M1
+closure commit. The fields of impl.md sec. 7.3 and the per-step manual-check register
+are at the end of this file, in "Evidence record (impl.md sec. 7.3)"; how to fill them
+is in [the evidence runbook](README.md).
 
 DH-S-10 is the tool pipeline, approvals and human commands. Stage 10.1 (#72/#73)
 built impl.md steps 10.1 and 10.2, Stage 10.2 (#74/#75) built 10.3 and 10.4, and
@@ -18,9 +22,13 @@ Stage 10.3 (#76, `69c5f17`, merged into this branch) built 10.5 and 10.6 and
 authored `DH-E-TOOLS-3`. Stage 10.4 built steps 10.7 to 10.10 and authored
 `DH-E-HUMAN-6`.
 
-**DH-S-10 is closed:** impl.md steps 10.1 to 10.10 are ticked as built, and the
-combined branch passes the tests below. The three manual checks below are
-scripted by tests here; their interactive runs are for the operator.
+**DH-S-10 was closed (history; reopened by M1-G-PIPE-1..8, re-closed at `f72f435`):**
+impl.md steps 10.1 to 10.10 were ticked as built, and the combined branch passed the
+tests below. The three manual checks below are scripted by tests here; their
+interactive runs are for the operator. The tables in "What was built" and "Tests" are
+that first closure's record: some outcome names in them (`no-answerer`) are the
+pre-M1-D-PIPE-1 vocabulary, which version 1 records still decode to (see the outcome
+table under Stage 16.1 below).
 
 Machine: Windows, go toolchain per `src/harness/go.mod` (floor `go 1.26.0`).
 
@@ -77,29 +85,157 @@ UI (DH-S-21), so it is for the operator once those land.
 
 ## Known limits
 
-- The guarded pipeline (`internal/tools/core`) does not pass an approval `Subject`
-  yet, so a grant takes effect only for callers that set `approval.Request.Subject`.
-  Wiring the subject from tool calls follows with the sandbox (DH-D-SANDBOX-1).
-- The inbox lives in `internal/agent`, because `internal/agent/driver` does not exist
-  yet. The driver (DH-S-11) calls `ClaimTurn` and `ClaimStep` at its boundaries.
+- The inbox lives in `internal/agent`, because `internal/agent/driver` did not exist
+  when it was built. The driver (DH-S-11) calls `ClaimTurn` and `ClaimStep` at its
+  boundaries.
+
+The earlier limit "the guarded pipeline does not pass an approval `Subject`" is removed:
+plan step 16.2.2 adds `tools.Subject{Kind, Name, Label}` and `AskFor`, and the pipeline
+maps it to `approval.Subject` (see the Stage 16.2 table below).
+
+<a id="gap-closure-m1-g-pipe-1-to-8"></a>
+## Gap closure (M1-G-PIPE-1 to -8)
+
+Plan Stages 16.1 to 16.3 of [the gap-closure plan](../gap-closure-plan.md#phase-16-tools-retry-and-signed-in-routes)
+build what the first closure ticked without building: the approval service to its spec
+(16.1), the guarded pipeline's missing cases and grant subjects (16.2), and the spill
+reader and images in the result budget (16.3). Commits: `f4e1b3d` and `cbfed95` (16.1),
+`9ddb313` with the `Subject.Label` part of `7976094` (16.2), `959eef5` (16.3). Owner
+decision M1-D-PIPE-1 A governs 16.1; the lead settlements
+`approval-subject-label-optional`, `approval-audit-failure-is-unavailable`,
+`consent-never-uses-grants` and `rule-6-additions-phase-16` are in
+[decisions.md](../decisions.md) sec. 4.
+
+**Every test named below passed in both gate runs at `f72f435`** (the record of those runs
+is in [DH-S-1.md, "Phase 16 exit gate runs"](DH-S-1.md#phase-16-exit-gate-runs)). This is
+local evidence: in-process and SQLite tests on both lanes. It proves the stated contracts
+for that build; it is not a lab or real-model run, and none of the stage's `manual` checks
+or authored scenarios ran.
+
+### Stage 16.1: the approval service to its spec
+
+**M1-D-PIPE-1 A outcome table.** An approval returns exactly one of five outcomes. Version 2
+of `approval/asked` and `approval/decided` carries them; a version 1 record is read into
+the same vocabulary (`TestVersion1RecordsUpgrade`).
+
+| Outcome (v2) | When | Tool result code | Version 1 records read as this |
+| --- | --- | --- | --- |
+| `allowed-once` | a person allowed this call; also "allow for the session" when no grant can be made (detail `grant-refused:<why>`) | none: the call runs | `approved` without a grant |
+| `allowed-by-grant` | a session grant in force covers the call's subject; nobody is asked (detail `allowed-by-grant:<id>`, field `grant`) | none: the call runs | `approved` with detail `allowed-by-grant:<id>` |
+| `rejected` | a person refused; or the session's policy is `never` (detail `policy-never`, principal `harness`, nobody asked) | `approval/rejected` | `denied`, other than the cases below |
+| `cancelled` | the caller's context ended before the decision | `approval/cancelled` | `denied` with detail `cancelled: ...` |
+| `unavailable` | nobody could answer: no binding, no answerer, a failed answerer, an unknown answer, a set timeout (detail `timeout`), a host that stopped while the request was open (detail `host-stopped`), or an audit record that could not be written (`audit-failed`, `grant-audit-failed`) | `approval/unavailable` | `timeout` (detail `timeout`), `no-answerer`, and `denied` with `audit-failed`, `grant-audit-failed` or an unexpected answer |
+
+The default timeout is 0: a request waits for its answer (`TestDefaultWaits`).
+`approval/decided` v2 names the principal, the channel and the peer the answer came from,
+and the grant id when a grant decided it; `approval/asked` v2 names the kind (approval or
+consent), the subject and the mode. `internal/agent/testdata/f2_log.golden` was
+regenerated for these events (its approval lines 9 to 11 only; Rule 6).
+
+**Tests by `DH-T` ID.**
+
+| Test ID | Plan step | Tests (package) | What they show | Result |
+| --- | --- | --- | --- | --- |
+| `DH-T-HUMAN-1` | 16.1.1 | `TestActorRoundTrip` (`human`) | `human.Actor` carries `Peer`, the carrier or connection an answer arrived from, and round-trips it | pass |
+| `DH-T-HUMAN-3` | 16.1.2, 16.1.3 | `TestAllowedOnce`, `TestAllowSessionIsAllowedOnce`, `TestRejected`, `TestTimeout`, `TestDefaultWaits`, `TestUnavailableMeansNo`, `TestFailedAnswererMeansNo`, `TestUnknownAnswerIsUnavailable`, `TestCancelled`, `TestAuditFailureRefuses`, `TestVersion1RecordsUpgrade` (`human/approval`) | each row of the outcome table above, and the v1 upgrade | pass |
+| `DH-T-HUMAN-3` (policy) | 16.1.3 | `TestNeverRefusesWithoutAskingThroughTheExecutor`, `TestNeverRejectsWithoutAsking`, `TestSetPolicyRefusals`, `TestBindRestoresThePolicy` (`human/approval`) | Scenario "never refuses without asking": under policy `never`, a tool that asks, called through the executor, ends `rejected` with code `approval/rejected`; the answerer received 0 items, the grant table was asked 0 times, the body counter is 0, and the audit pair names principal `harness`. Switching the policy ends every grant (`policy-changed`); a resumed session gets its policy back from the `approval/policy` events | pass |
+| `DH-T-HUMAN-4` | 16.1.1, 16.1.2, 16.1.4 | `TestAllowedOnce`, `TestRejected`, `TestDecisionNamesItsPeer`, `TestRequestOutsideATurn` (`human/approval`) | Scenario "the decision names its peer": an answerer whose actor has peer `p1` allows a call once, and `approval/decided` v2 names principal, channel and peer `p1`, with no grant id | pass |
+| `DH-T-HUMAN-4` (resume closer) | 16.1.4 | `TestOpenPairClosedOnResumeBeforeAnyAppend`, `TestResumeClosersDirectly` (`human/approval`); `TestApprovalHoldsACallOutOfOutcomeUnknown` (`session/surface`, `approval_hold_test.go`) | Scenario "crash during an open approval", on SQLite through the real agent registry: a log that ends with `tool/call` and `approval/asked` and no decision is resumed, and before any other append it gains, in order, `tool/result` coded `approval/unavailable` ("did not run"), `step/end`, `turn/end`, `session/end-seed`, `approval/decided{unavailable, host-stopped}` and `grant/ended{host-stopped}`. The control case, an approval allowed before the crash, still closes as `tools/outcome-unknown`, because the body may have started. The surface checkpoint carries the hold (`CheckpointVersion` 2) | pass |
+| `DH-T-HUMAN-5` | 16.1.5 | `TestGrantMatching` (`human/approval`, `grants_test.go`) | tag checked: the grant-matching test keeps `-5` | pass |
+| `DH-T-HUMAN-6` | 16.1.5 | `TestGrantDoesNotSurviveResume`, `TestGrantEndsWhenItsAgentIsDisposed`, `TestGrantRevokeChannelAndCap`, `TestGrantCreateFailures`, `TestEndAllForgetsGrantsWhoseEndCannotBeWritten` (`human/approval`) | tag checked: the other five grant tests keep `-6` | pass |
+| `DH-T-TOOLS-14` (policy section) | 16.1.3 | `TestPolicySectionGolden` (`human/approval`) | the prompt-context section that tells the model the session's approval policy equals its golden | pass |
+
+**Still open after 16.1.** `approval.Service.Bind`, `Grants.Bind` and the policy's
+`RegisterPromptSection` are wired only in tests; the product composition that mounts them
+lands at DH-S-16.
+
+### Stage 16.2: the guarded pipeline and grant subjects
+
+`tools.Settled` (a notify key carrying the encoded durable result, sent after `tool/result`
+is appended) and `tools.Subject{Kind, Name, Label}` with `AskFor` are added. The contract
+package imports no `human/approval` (`DH-T-TOOLS-18`).
+
+**Test table for Stages 10.1 to 10.3, by `DH-T` ID** (impl.md steps 10.1, 10.2, 10.4 to
+10.6; the approval rows of step 10.3 are under 16.1 above):
+
+| Test ID | impl.md step | Tests (package) | What they show | Result |
+| --- | --- | --- | --- | --- |
+| `DH-T-TOOLS-1` | 10.1 | `TestDeclarationSchema` (`tools`), `TestCatalogueAndRefusals` (`tools/core`) | a tool's schema is derived once and is byte-stable; the catalogue lists each tool once and refuses a declaration with an error | pass |
+| `DH-T-TOOLS-2` | 10.1 | `TestDuplicateRefusedInScope`, `TestScopedViews` (`tools/core`) | a duplicate name in one scope is refused and the first stays; a child scope's tool shadows only that subtree | pass |
+| `DH-T-TOOLS-3` | 10.4 | `TestStageOrderFixed`, `TestUnknownOrUnadmittedToolRefusedBeforeExecution` (`tools/core`) | the stages run resolve, validate, policy, guards, approval, flush, body, shape; an unknown or unadmitted tool ends `tools/not-started` at resolve (retagged by 16.2.3) | pass |
+| `DH-T-TOOLS-4` | 10.4 | `TestSchemaBreakingArgumentsNeverReachTheBody`, `TestLoggedArgumentsNeverRewritten`, `TestFinalShapersHaveTheLastWord` (`tools/core`) | arguments that break the schema never reach the body; logged arguments are never rewritten (retagged by 16.2.3) | pass |
+| `DH-T-TOOLS-5` | 10.4 | `TestGuardDenialHoldsUnderEveryListenerOrder`, `TestPanickingListenerRefusesTheCallAndTheTurnGoesOn`, `TestAskWithNoAgentIsUnavailable`, `TestNoAnswererMeansNoThroughTheExecutor`, `TestDenialEnforcedInTheExecutor` (`tools/core`) | a guard denial holds under all 24 orders of two policies and two guards, and the answerer is never asked; a panicking policy, guard or answerer refuses the call and the turn goes on; an `Ask` for a call with no agent is `approval/unavailable` with no request made; denial is enforced in the executor, not by hiding the tool | pass |
+| `DH-T-TOOLS-6` | 10.4 | `TestConflictingCallsSerializeAndResultsKeepModelOrder`, `TestBatchNeverExceedsMaxParallel`, `TestExclusiveCallsRunAlone`, `TestOversizedArgumentsAreNotClassified`, `TestLogFailureStopsAdmissionWhileEarlierCallsRun`, `TestDetachedBodyKeepsItsResourceKeys` (`tools/core`, `schedule_test.go`) | the batch scheduler (tagged by 16.2.3) | pass |
+| `DH-T-TOOLS-7` | 10.4, 10.6 | `TestOutputSchemaViolationIsInvalidOutput`, `TestBlockTurnsSuccessIntoFailureAndNeverTheReverse`, `TestSettledObserverCannotChangeAResult` (`tools/core`, `guarded_test.go`), `TestResultCeiling` (`deadline_test.go`) | an output that breaks its schema is `tools/invalid-output`; a post-run `Block` turns success into failure and leaves a failure a failure; Scenario "a Settled observer cannot change a result" (observers that panic, fail and record, over an approved and a denied call: both `tool/result` events unchanged, the recorder saw two settlements in commit order, the panic logged with the observer's name); the result ceiling (retagged by 16.2.3) | pass |
+| `DH-T-TOOLS-8`, `-9` | 10.5 | `TestDeadlineDoesNotHoldTheTurn`, `TestDeadlineCooperativeBodyTimesOut`, `TestDeadlineBudgetPrecedence`, `TestDeadlineDeclaredGraceIsLonger`, `TestConformanceCancellation`, `TestDeadlineGraceEndsAtExpiryPlusGrace`, `TestDeadlineReturnAtExpiryIsTimeout`, `TestDeadlineCancelledBeforeExpiryKeepsCancelCause`, `TestDeadlineReturnBeforeExpiryWithDeadlineSeen` (`tools/core`) | unchanged by Phase 16; listed so the 10.5 row is complete | pass |
+| `DH-T-TOOLS-14` | 10.2 | `TestPromptAssemblyIsDeterministic` (`tools`, golden `prompt`), `TestScopedChangesAreLocal` (`tools/prompt`), `TestPolicySectionGolden` (`human/approval`) | five tools in random order over 100 runs assemble to the committed golden; a scoped change is local | pass |
+| `DH-T-TOOLS-15` | 10.2 | `TestInterpolation`, `TestCompleteSections`, `TestToolOrder` (`tools/prompt`) | variable interpolation and escapes, complete sections, and `toolOrder` validation | pass |
+| `DH-T-TOOLS-18` | 10.1 | `TestContractImportsNoProviderNorApproval` (`tools`, `imports_test.go`) | the tools contract package imports no provider package and no `human/approval` | pass |
+| `DH-T-HUMAN-5` (subjects) | 10.10 | `TestSessionGrantMatchesALaterCall`, `TestAskSubjectReachesThePromptOnlyWhenNamed` (`tools/core`, `subject_test.go`) | Scenario "a session grant matches a later call": with directory subject `/w` and an answerer that allows for the session once, a call on `/w/a` creates `grant/created`, a call on `/w/b` is `allowed-by-grant:<id>` with no delivery, and a call on `/wx/c` asks again; also a call with no subject, an application subject, invalid kinds, and the label reaching the answerer | pass |
+| `DH-T-STORAGE-11` (pipeline) | 10.6 | `TestImagesReachTheSpillSeatAndAreKeptOrOmittedWhole` (`tools/core`, `images_test.go`) | a result's text and image parts pass the shapers, the spill seat and the ceiling through the real pipeline | pass |
+
+`harness-gate trace-tests --stage DH-S-10` reports DH-S-10 complete: required 25, tagged
+25, missing 0 (see "Closure" for what the command reports as a whole).
+
+### Stage 16.3: reading a spilled result, and images in the budget
+
+| Test ID | Plan step | Tests (package) | What they show | Result |
+| --- | --- | --- | --- | --- |
+| `DH-T-STORAGE-13` | 16.3.1 | `TestReadByOffsetAndLimit`, `TestReadByPattern`, `TestReadRefused`, `TestMountedOnlyWhereTheSpillDirCannotBeMapped` (`storage/spill/tool`), `TestNoticeNamesTheReadTool` (`storage/spill/policy`), `TestModelReadsTheRestOfASpilledResult` (`storage/spill/tool`, `scenario_test.go`) | `spill_read{ref, offset, limit, pattern}` reads a spilled result a slice at a time through the store's session-lineage check, bounds its own output, and is mounted only when no filesystem provider can map the spill directory (a fake provider covers "not mounted"). Scenario "the model reads the rest of a spilled result": a 2 MB result spilled on SQLite, read at offset 1 MiB with limit 32 KiB and then by a pattern; each result is the exact slice, within budget, with no `spill` field | pass |
+| `DH-T-STORAGE-11` | 16.3.2 | `TestImagesNeverSplitTheBudget`, `TestImagesPricedByTheRoute`, `TestImagesWithAFailingStore` (`storage/spill/policy`, `images_test.go`) | Scenario "an image never splits the budget": text plus two images priced over the budget, shaped with no route calculator, is within budget, each image is kept or omitted whole, and the saved text has an image line at each image's position; a route calculator prices the images, and one that gives no price, a negative one or panics falls back to the fixed price; with a failing store the result is still within budget, has no reference, says it was not saved and how many images were omitted, and leaves no file | pass |
+| `DH-T-STORAGE-12` | 16.3.2 | `TestImageFallbackRefused`, `TestImagesNeverOverBudget` (`storage/spill/policy`) | a negative image fallback price is refused at load; no mix of texts and images, priced by any route, gives a result over the budget, and the saved file holds every text and an image line for every image | pass |
+
+**Still open after 16.3.** `spill_read` and the spill policy are mounted only in tests;
+the product composition mounts them at DH-S-16. The "unmappable image path" case of
+`DH-T-STORAGE-11` needs an image path mapper, which does not exist yet.
 
 ## Closure
 
-Closed on the branch that combines Stage 10.3 (#76) and Stage 10.4: impl.md steps
-10.1 to 10.10 are ticked, and the Stage 10.4 "Close DH-S-10" step is ticked in
-the implementation plan.
+**Re-closed by plan step 16.6.3 at `f72f435`** (both local lanes pass all 12 gates;
+[DH-S-1.md, "Phase 16 exit gate runs"](DH-S-1.md#phase-16-exit-gate-runs)). This is the
+stage's closure as *built*; "done" is claimed only at M1 closure (plan 18.1.12), and the
+`Closure status` line at the top stays `open` until plan 18.1.14.
 
-`built-through` in `test/harness/acceptance-index.yaml` stays at `DH-S-7`, by the
-index's own rule rather than by a pending decision. The marker means that every
-stage through it is built (preflight runs a scenario only once `built-through` has
-reached every stage it requires), and a stage raises it when it closes. DH-S-8 is
-not closed: impl.md steps 8.3 to 8.5 are open, and its closure waits for Stage 8.2
-(operator decision `dsh-s8-closure-waits-stage-8-2`, `DH-S-8.md`). DH-S-9 is not
-closed either: impl.md steps 9.1 to 9.3 are open, as `DH-S-9.md` says. Raising the
-marker past DH-S-7 would claim those stages are built, and preflight would run
-scenarios that require them. The stage that closes DH-S-8 raises the marker, and
-each later closing stage, this one included, raises it in turn once everything
-before it is closed.
+- **Ticks.** Plan step 16.6.1 unticked impl.md 10.3, 10.4 and 10.6 and the story plan's
+  "Close DH-S-10" (known-false ticks: gaps M1-G-PIPE-1 to -8) and re-ticked them in the
+  same change, because Stages 16.1 to 16.3 pass at `f72f435`. The net result is all ten
+  impl.md steps 10.1 to 10.10 ticked, with a pointer line under impl.md DH-S-10 naming the
+  reopening and the evidence.
+- **Tests.** Every `DH-T` ID that impl.md steps 10.1 to 10.10 name tags at least one
+  test (`trace-tests --stage DH-S-10`: required 25, tagged 25, missing 0), and every
+  tagged test passed in both gate runs.
+- **Manual checks.** Not yet run at this commit: the register below is filled at the M1
+  closure commit (plan 18.1.5). Rows 10.3, 10.4 and 10.6 can now run, because Stages 16.1
+  to 16.3 have landed.
+- **Scenarios.** `DH-E-TOOLS-3` (DH-S-39) and `DH-E-HUMAN-6` (DH-S-22) are authored and
+  not run.
+
+**The tool defaults of tech-spec sec. 5.5.** Plan step 16.6.3 asks for "the four tool
+defaults"; the sec. 5.5 "Tool registry" row lists six values, so all six are recorded.
+The built values equal the row (`tools/core`: `DefaultMaxParallel`, `DefaultTimeout`,
+`DefaultGrace`, `DefaultMaxArgumentBytes`, `DefaultMaxResultBytes`, `Config.ForceExclusive`),
+and each is a `core.Config` field with a default, not a persisted value (DC-4, R-09).
+
+| Setting | Value | Status |
+| --- | --- | --- |
+| `maxParallel` (the one overlap cap) | 10 | open: unconfirmed by the owner |
+| `defaultTimeout` | 5 min | open: unconfirmed by the owner |
+| `grace` | 5 s | open: unconfirmed by the owner |
+| `maxArgumentBytes` | 1 MiB | open: unconfirmed by the owner |
+| `maxResultBytes` | 256 KiB | open: unconfirmed by the owner |
+| `forceExclusive` | empty | open: unconfirmed by the owner |
+
+No row of [decisions.md](../decisions.md) confirms them. Tech-spec DC-4 asked for them to
+be confirmed before DH-S-10 started; that did not happen, and it stays an open item for
+the owner (listed under "Open items").
+
+**`built-through` stays at `DH-S-8`.** `CheckBuiltThrough` requires the marker to equal
+the largest n for which every impl.md step of DH-S-1 to DH-S-n is ticked. DH-S-9's steps
+9.1 to 9.3 stay unticked until its manual check (plan 16.5.9) is recorded and its
+re-authored scenarios are reviewed ([DH-S-9.md, "Closure"](DH-S-9.md#closure)), so the
+largest such n is 8. Raising the marker to DH-S-10 would fail the check
+(`TestAuthoredScenariosAreIndexedAndCompileButDoNotRun` runs it). The marker reaches
+DH-S-10 when DH-S-9 closes; the same change then raises it past both stages.
 
 ## Evidence record (impl.md sec. 7.3)
 
@@ -111,8 +247,9 @@ it was recorded and is not closure evidence (M1-D-CLOSE-1).
 
 ### Source and build identity
 
-At closure: not yet recorded (plan 18.1.7). Historical: Stage 10.3 names commit
-`69c5f17`; the other stages name their PRs (#72 to #76).
+At closure: not yet recorded (plan 18.1.7). Phase 16 re-closure: commit
+`f72f43585c043c9ce0bc8dfe9f4fc05e64d11477`, clean tree, both lanes. Historical: Stage 10.3
+names commit `69c5f17`; the other stages name their PRs (#72 to #76).
 
 ### Environment and fixture
 
@@ -129,13 +266,19 @@ command under "Tests (TC-10a, TC-10b)".
 ### Run identifiers
 
 At closure: the run-record ids of both lanes, in the runbook's template (plan 18.1.3).
-WSL lane: not run. Windows lane: not run. macOS: out of scope (`platforms-windows-wsl`).
-Historical: no run id was recorded. DH-E-TOOLS-3 and DH-E-HUMAN-6 run in later stages
+WSL lane: not run at the M1 closure commit yet. Windows lane: not run at the M1 closure
+commit yet. macOS: out of scope (`platforms-windows-wsl`). Phase 16 re-closure (not the M1
+closure commit): `wsl-f72f435-20261123T1041Z` and `win-f72f435-20261123T1041Z`, both
+`PASSED all 12 gates`; the full template is in
+[DH-S-1.md, "Phase 16 exit gate runs"](DH-S-1.md#phase-16-exit-gate-runs). Historical: no
+run id was recorded before Phase 16. DH-E-TOOLS-3 and DH-E-HUMAN-6 run in later stages
 and have no run id yet.
 
 ### Results
 
-At closure: not yet recorded. Historical: the test table under "Tests (TC-10a, TC-10b)".
+At closure: not yet recorded. Phase 16: both lanes `PASSED all 12 gates` at `f72f435`; per
+test ID, the tables of "Gap closure (M1-G-PIPE-1 to -8)". Historical: the test table under
+"Tests (TC-10a, TC-10b)".
 
 ### Manual checks
 
@@ -145,8 +288,9 @@ answerer and record the denial (step 10.3); give a grant, end the session, resum
 record that the grant is gone (step 10.10). Under the default of M1-D-CLOSE-2 each is run
 as the scripted test that composes the real pipeline, watched by a named person; an
 interactive run through a launcher waits for DH-S-11 and DH-S-21. The other steps take
-the rule-3 default. Rows 10.3, 10.4 and 10.6 run only after plan Stages 16.1 to 16.3 have
-landed (plan 16.6.1). Historical record: "Manual checks (impl.md DH-S-10)". How to run and
+the rule-3 default. Rows 10.3, 10.4 and 10.6 could run only after plan Stages 16.1 to 16.3
+had landed (plan 16.6.1); they have landed at `f72f435`, and no row has been run yet (the
+register is filled at the M1 closure commit, plan 18.1.5). Historical record: "Manual checks (impl.md DH-S-10)". How to run and
 fill the register: [the evidence runbook](README.md#manual-checks). Composed tests run as
 `go -C src/harness test -count=1 -v -run '<names>' <package>`.
 
@@ -172,6 +316,14 @@ Historical: none recorded.
 
 ### Open items
 
-At closure: plan 18.1.11 lists them. Now open: the known-false ticks of impl.md 10.3, 10.4
-and 10.6 (plan 16.6.1) and their gaps M1-G-PIPE-1 to -8 (plan Stages 16.1 to 16.3); the
-items under "Known limits"; DH-E-TOOLS-3 (DH-S-39) and DH-E-HUMAN-6 (DH-S-22).
+At closure: plan 18.1.11 lists them. Closed by Phase 16: the known-false ticks of impl.md
+10.3, 10.4 and 10.6 and their gaps M1-G-PIPE-1 to -8 (re-ticked at `f72f435`, plan
+16.6.1). Now open:
+- the six tool defaults of tech-spec sec. 5.5, unconfirmed by the owner ("Closure");
+- production composition: `approval.Service.Bind`, `Grants.Bind`, the policy's
+  `RegisterPromptSection`, `spill_read` and the spill policy are mounted only in tests,
+  until DH-S-16;
+- the "unmappable image path" case of `DH-T-STORAGE-11`, which needs an image path mapper;
+- the manual-check register (plan 18.1.5);
+- `built-through`, held at DH-S-8 until DH-S-9 closes;
+- the items under "Known limits"; DH-E-TOOLS-3 (DH-S-39) and DH-E-HUMAN-6 (DH-S-22).
