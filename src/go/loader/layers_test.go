@@ -3,10 +3,13 @@ package loader_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
@@ -164,13 +167,28 @@ type layerHarness struct {
 	paths  map[string]string
 	mu     sync.Mutex
 	loads  map[string]int
+	// accepted are the configs a Live entry took in place, by tag
+	accepted map[string][]int
 }
 
-// loadCount counts the loads of an entry: "svc" is the one whose config has "b".
+// loadCount counts the loads of an entry: "svc" is the Values entry whose config has
+// "b", "other" any other Values entry, and a Live entry counts under its tag.
 func (h *layerHarness) loadCount(id string) int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.loads[id]
+}
+
+func (h *layerHarness) acceptedBy(tag string) []int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.accepted[tag])
+}
+
+// liveOptions is the config of Live, a component that accepts every update in place.
+type liveOptions struct {
+	Tag string `json:"tag"`
+	N   int    `json:"n"`
 }
 
 func (h *layerHarness) fiber(t *testing.T, id string) *cordis.Fiber {
@@ -202,9 +220,16 @@ type layerFile struct {
 // layer set over them, in order.
 func startSet(t *testing.T, guard loader.WriteGuard, files ...layerFile) (*layerHarness, *loader.LayerSet) {
 	t.Helper()
+	return startSetWith(t, loader.LayerSetOptions{WriteGuard: guard}, files...)
+}
+
+// startSetWith is startSet with the layer set's other options; their Layers are
+// the files.
+func startSetWith(t *testing.T, options loader.LayerSetOptions, files ...layerFile) (*layerHarness, *loader.LayerSet) {
+	t.Helper()
 	directory := t.TempDir()
 	root, logs := Quiet()
-	h := &layerHarness{root: root, logs: logs, loads: map[string]int{}, paths: map[string]string{}}
+	h := &layerHarness{root: root, logs: logs, loads: map[string]int{}, accepted: map[string][]int{}, paths: map[string]string{}}
 	var layers []loader.Layer
 	for _, file := range files {
 		path := filepath.Join(directory, file.label+".jsonc")
@@ -223,13 +248,22 @@ func startSet(t *testing.T, guard loader.WriteGuard, files ...layerFile) (*layer
 		h.loads[id]++
 		return nil
 	})
+	live := cordis.Define("Live", func(ctx *cordis.Context, config liveOptions) error {
+		h.mu.Lock()
+		h.loads[config.Tag]++
+		h.mu.Unlock()
+		_, err := cordis.AcceptUpdate(ctx, func(next liveOptions) {
+			h.mu.Lock()
+			defer h.mu.Unlock()
+			h.accepted[next.Tag] = append(h.accepted[next.Tag], next.N)
+		})
+		return err
+	})
 	t.Cleanup(func() { Within(t, "root dispose", root.Dispose) })
-	MustWait(t, Must(root.Use(loader.Component, loader.Options{Resolver: loader.Components{"Values": component}})))
+	MustWait(t, Must(root.Use(loader.Component, loader.Options{Resolver: loader.Components{"Values": component, "Live": live}})))
 	h.loader = Must(loader.Key.Get(root))
-	fiber := MustWait(t, Must(root.Use(loader.LayerSetComponent, loader.LayerSetOptions{
-		Layers:     layers,
-		WriteGuard: guard,
-	})))
+	options.Layers = layers
+	fiber := MustWait(t, Must(root.Use(loader.LayerSetComponent, options)))
 	return h, fiber.Instance().(*loader.LayerSet)
 }
 
@@ -392,28 +426,149 @@ func TestLayerSetAReadOnlyLayerFailsTheWriteUntilItIsWritable(t *testing.T) {
 	assertGolden(t, "writeback_user", readFile(t, h.user))
 }
 
-// DH-T-LOADER-15 (TC-03b)
-func TestLayerSetWriteGuardRefusesAStaleWrite(t *testing.T) {
-	h, set := startLayers(t, nil)
-	edited := strings.Replace(userLayer, `"disabled": false`, `"disabled": true`, 1)
-	writeFile(t, h.user, edited) // another writer, before the layer set reads again
+// otherWriterEdit is another writer's edit of the user layer: it disables "other",
+// an entry the runtime does not edit.
+var otherWriterEdit = strings.Replace(userLayer, `"disabled": false`, `"disabled": true`, 1)
 
+// assertBothEdits checks that the user file and the running tree hold the other
+// writer's edit and the runtime's, and that the base file was never written.
+func assertBothEdits(t *testing.T, h *layerHarness) {
+	t.Helper()
+	text := readFile(t, h.user)
+	True(t, strings.Contains(text, `"disabled": true`), "the other writer's edit was lost:\n"+text)
+	True(t, strings.Contains(text, `"b": 3`), "the runtime edit was lost:\n"+text)
+	True(t, h.loader.Options(h.loader.Find("other")).Disabled, "the other writer's edit is not in the running tree")
+	Equal(t, `{"a":1,"b":3}`, h.svc(t), "the runtime edit is not in the running tree")
+	Equal(t, baseLayer, readFile(t, h.base), "the base layer was rewritten")
+}
+
+// The guard waits, as for a lock another dsh process holds, and that process edits
+// the file meanwhile: the write re-reads and merges it inside the one guard call, so
+// one Flush saves both edits with no Reload.
+//
+//dsh:test DH-T-LOADER-15
+func TestLayerSetWriteGuardMergesAFileChangedWhileItWaits(t *testing.T) {
+	gate, entered := make(chan struct{}), make(chan struct{})
+	release := sync.OnceFunc(func() { close(gate) })
+	signal := sync.OnceFunc(func() { close(entered) })
+	var calls atomic.Int32
+	guard := func(path string, write func() error) error {
+		calls.Add(1)
+		signal()
+		<-gate
+		return write()
+	}
+	h, set := startLayers(t, guard)
+	t.Cleanup(release) // runs before the root is disposed, which joins a queued flush
+
+	// the runtime edit also queues a flush of its own; whichever flush reaches the
+	// guard first waits there, and the other waits for it
 	h.update(t, "svc", map[string]int{"a": 1, "b": 3})
 	var err error
-	Within(t, "flush", func() { err = set.Flush() })
-	True(t, errors.Is(err, loader.ErrStaleLayer), "a stale write was not refused: "+errText(err))
-	var stale *loader.StaleLayerError
-	True(t, errors.As(err, &stale) && stale.Label == "user", "not a StaleLayerError for user: "+errText(err))
-	Equal(t, edited, readFile(t, h.user), "the other writer's content was lost")
+	flushed := make(chan struct{})
+	go func() {
+		defer close(flushed)
+		err = set.Flush()
+	}()
+	t.Cleanup(func() { release(); Within(t, "flush join", func() { <-flushed }) })
 
-	// reading again merges both edits; the next write keeps them both
+	Within(t, "guard entered", func() { <-entered })
+	writeFile(t, h.user, otherWriterEdit) // the other writer, while the guard waits
+	release()
+	Within(t, "flush", func() { <-flushed })
+
+	NoError(t, err)
+	assertBothEdits(t, h)
+	Equal(t, int32(1), calls.Load(), "one guard call writes the merged file")
+	Equal(t, 0, Count(h.logs, cordis.LevelError), "the edits of different entries conflicted")
+	Equal(t, "user", owner(t, set.Index(), "other", "disabled"))
+}
+
+// intrusion is the shared state of an intrudingCodec: while armed, it writes the
+// user file before every encode, as a writer that ignores the lock would.
+type intrusion struct {
+	mu     sync.Mutex
+	path   string
+	armed  bool
+	writes int
+	last   string
+	err    error
+}
+
+func (i *intrusion) arm(path string, armed bool) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.path, i.armed = path, armed
+}
+
+func (i *intrusion) lastWrite() (string, error) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.last, i.err
+}
+
+// intrudingCodec is JSONC with an intrusion before each EncodeLayer: the write
+// encodes once to decide whether to write and once more after merging a changed
+// file, so an armed intrusion changes the file between the merge and the rename.
+// The state sits behind an unexported pointer, so the layer set's copy of its
+// options shares it.
+type intrudingCodec struct {
+	loader.LayerCodec
+	state *intrusion
+}
+
+func (c intrudingCodec) EncodeLayer(previous *loader.LayerDocument, ops []loader.Op) ([]byte, error) {
+	c.state.mu.Lock()
+	if c.state.armed {
+		c.state.writes++
+		c.state.last = fmt.Sprintf("// written outside the lock (%d)\n%s", c.state.writes, otherWriterEdit)
+		if err := os.WriteFile(c.state.path, []byte(c.state.last), 0o644); err != nil && c.state.err == nil {
+			c.state.err = err
+		}
+	}
+	c.state.mu.Unlock()
+	return c.LayerCodec.EncodeLayer(previous, ops)
+}
+
+// A writer that ignores the lock changes the file again after the write merged its
+// first change: the write is refused, the other writer's bytes are kept, Flush keeps
+// failing while it goes on, and once it stops a Reload and a Flush save both edits.
+//
+//dsh:test DH-T-LOADER-15
+func TestLayerSetAWriterOutsideTheLockIsRefusedThenRetried(t *testing.T) {
+	state := &intrusion{}
+	var calls atomic.Int32
+	guard := func(path string, write func() error) error {
+		calls.Add(1)
+		return write()
+	}
+	h, set := startSetWith(t, loader.LayerSetOptions{
+		WriteGuard: guard,
+		Codec:      intrudingCodec{LayerCodec: loader.JSONC.(loader.LayerCodec), state: state},
+	}, layerFile{"base", baseLayer, false}, layerFile{"user", userLayer, true})
+
+	writeFile(t, h.user, otherWriterEdit) // the first change, before the write
+	state.arm(h.user, true)
+	h.update(t, "svc", map[string]int{"a": 1, "b": 3})
+	for attempt := 1; attempt <= 2; attempt++ {
+		var err error
+		Within(t, "flush", func() { err = set.Flush() })
+		True(t, errors.Is(err, loader.ErrStaleLayer), "a write over a file changed after the merge was not refused: "+errText(err))
+		var stale *loader.StaleLayerError
+		True(t, errors.As(err, &stale) && stale.Label == "user", "not a StaleLayerError for user: "+errText(err))
+		last, writeErr := state.lastWrite()
+		NoError(t, writeErr)
+		Equal(t, last, readFile(t, h.user), "the other writer's bytes were not kept")
+		Equal(t, `{"a":1,"b":3}`, h.svc(t), "the unsaved runtime edit was dropped")
+	}
+	True(t, calls.Load() >= 2, "a refused write ran outside the guard")
+
+	state.arm(h.user, false)
 	Within(t, "reload", func() { NoError(t, set.Reload()) })
 	Within(t, "flush", func() { NoError(t, set.Flush()) })
-	text := readFile(t, h.user)
-	True(t, strings.Contains(text, `"disabled": true`), "the file edit was lost:\n"+text)
-	True(t, strings.Contains(text, `"b": 3`), "the runtime edit was lost:\n"+text)
-	True(t, h.loader.Options(h.loader.Find("other")).Disabled, "the file edit was not applied")
-	Equal(t, baseLayer, readFile(t, h.base))
+	assertBothEdits(t, h)
+	last, _ := state.lastWrite()
+	True(t, strings.HasPrefix(readFile(t, h.user), strings.SplitN(last, "\n", 2)[0]), "the other writer's text was not kept:\n"+readFile(t, h.user))
 }
 
 func TestLayerSetWriteGuardWrapsEveryWrite(t *testing.T) {
@@ -476,6 +631,58 @@ func TestLayerSetEditingALayerRestartsOnlyTheChangedEntry(t *testing.T) {
 	Equal(t, `{"a":1,"b":5}`, h.svc(t))
 	Equal(t, 2, h.loadCount("svc"))
 	Equal(t, 1, h.loadCount("other"), "an unchanged entry restarted")
+	Equal(t, baseLayer, readFile(t, h.base))
+}
+
+// liveLayer is the user layer with an insert of a Live entry, configured with n, and
+// an anonymous Values neighbour.
+func liveLayer(n int) string {
+	return strings.Replace(userLayer, "\n]\n", fmt.Sprintf(`,
+  { "insert": [
+    { "id": "live", "name": "Live", "config": { "tag": "live", "n": %d } },
+    { "name": "Values", "config": { "a": 9 } }
+  ] }
+]
+`, n), 1)
+}
+
+// anonymous returns the tree id of the one Values entry the layers give no id.
+func anonymous(t *testing.T, h *layerHarness) string {
+	t.Helper()
+	var ids []string
+	for _, entry := range h.loader.Entries() {
+		if id := entry.ID(); id != "svc" && id != "other" && h.loader.Options(entry).Name == "Values" {
+			ids = append(ids, id)
+		}
+	}
+	Equal(t, 1, len(ids), "anonymous Values entries")
+	return ids[0]
+}
+
+// A layer edit of an entry whose component accepts updates in place reaches it
+// without a restart, and its anonymous neighbour in the same insert keeps its fiber.
+//
+//dsh:test DH-T-LOADER-14
+func TestLayerSetAnAcceptUpdateEntryAndAnAnonymousNeighbourAreNotRestarted(t *testing.T) {
+	h, set := startLayers(t, nil)
+	writeFile(t, h.user, liveLayer(1))
+	Within(t, "reload", func() { NoError(t, set.Reload()) })
+	Equal(t, 1, h.loadCount("live"))
+	live := h.fiber(t, "live")
+	neighbour := anonymous(t, h)
+	neighbourFiber := h.fiber(t, neighbour)
+	svc := h.fiber(t, "svc")
+
+	writeFile(t, h.user, liveLayer(2))
+	Within(t, "reload", func() { NoError(t, set.Reload()) })
+	Equal(t, 1, h.loadCount("live"), "the AcceptUpdate entry was constructed again")
+	True(t, h.fiber(t, "live") == live, "the AcceptUpdate entry has a new fiber")
+	accepted := h.acceptedBy("live")
+	True(t, len(accepted) > 0 && accepted[len(accepted)-1] == 2, fmt.Sprintf("the handler did not see the new config: %v", accepted))
+	Equal(t, neighbour, anonymous(t, h), "the anonymous neighbour changed its id")
+	True(t, h.fiber(t, neighbour) == neighbourFiber, "the anonymous neighbour has a new fiber")
+	True(t, h.fiber(t, "svc") == svc, "an unchanged entry has a new fiber")
+	Equal(t, liveLayer(2), readFile(t, h.user), "a reload with no runtime edit wrote the layer")
 	Equal(t, baseLayer, readFile(t, h.base))
 }
 
