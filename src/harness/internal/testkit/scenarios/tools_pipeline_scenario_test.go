@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -19,46 +18,78 @@ import (
 
 // TestGuardedPipelineRefusesTheWrite: a real model's batch of two reads and one
 // write through the guarded pipeline (areas/tools.md DH-E-TOOLS-1; DH-D-TOOLS-2,
-// DH-D-HUMAN-2; SP-6, SP-7). Authored in DH-S-10; executed in DH-S-17, which
-// requires the agent loop (DH-S-11) and the headless launcher (DH-S-16).
+// DH-D-TOOLS-5, DH-D-HUMAN-2; SP-6, SP-7; on the signed-in client route of
+// areas/llm.md DH-D-LLM-12). Authored in DH-S-10 and retargeted onto the
+// signed-in client routes by gap-closure-plan 18.1.1 (M1-D-CLOSE-4 A); executed
+// in DH-S-17, which requires the agent loop (DH-S-11) and the headless launcher
+// (DH-S-16).
 //
-// Given the built dsh, a fresh temporary home, a real API key set at run time, a
-// workspace holding two files to read and one to write, three client tools
-// (scenario_read twice-callable, scenario_write), a layer whose policy answers Ask
-// for scenario_write, and an answerer (this client, with the approvals
-// capability) that rejects every approval, when a prompt that requires reading
-// both files and then writing the third is sent and the turn finishes, then every
-// call the model made has exactly one tool/call before its one tool/result, in the
-// model's order; both reads ran and succeeded; the write was asked about, refused
-// with an approval code, its body (this client's handler) never ran and the file
-// is byte-identical; and, with a recording proxy in front of the provider, each
-// request rebuilt from the log by replay equals the request that was sent,
-// system text and tool declarations included, one for one and in order (and two
-// replays answer the same bytes). Cleanup: the home is deleted by the launcher;
-// on failure the exported log is kept (its path is logged).
+// The boundary. A client route starts the user's own official client, which
+// talks to its vendor itself, so no proxy can sit between the client and the
+// vendor, and "the request that was sent" is what dsh handed the client: SP-1
+// holds at the client invocation (M1-D-PIPE-4 A, DH-ADR-LLM-10), as in
+// DH-E-SESSION-1 (TestRequestsReceivedEqualRequestsRebuilt). Each settlement
+// records the argument list, its digest, the digest of the standard input dsh
+// wrote and the digest of each attempt file. The system text and the tool
+// declarations are in those bytes: the tool declarations are the attempt file
+// tools.json on both routes (as MCP entries, DH-ADR-LLM-8); the system text is
+// the attempt file system.txt on claude-code and the leading <system> section
+// of standard input on copilot-cli, whose client cannot replace its own
+// (claude-code-cli.md and github-copilot-cli.md sec. 5).
 //
-// Inputs: DSH_DEEPSEEK_API_KEY is the real key, handed to the program as
-// DEEPSEEK_API_KEY; DSH_SCENARIO_TOOLS1_OFFICIAL the base URL of DeepSeek's
-// Messages endpoint, fronted by the proxy as {official};
-// DSH_SCENARIO_TOOLS1_MODEL the model id on route deepseek-official;
-// DSH_SCENARIO_TOOLS1_LAYER a configuration layer, a template over {official}
-// (where the model route points) and {workspace} (the workspace directory),
-// that makes the policy ask before scenario_write and sends no request other
-// than the turn's (no title route); DSH_SCENARIO_TOOLS1_PROMPT a prompt, a
+// Given the built dsh, a fresh temporary home, no API key anywhere, the user's
+// own installed official client signed in as themselves with its route
+// registered by a layer, a workspace holding two files to read and one to
+// write, three client tools (scenario_read twice-callable, scenario_write), a
+// layer whose policy answers Ask for scenario_write, and an answerer (this
+// client, with the approvals capability) that rejects every approval, when, per
+// route, a prompt that requires reading both files and then writing the third
+// is sent and the turn finishes, then every call the model made has exactly one
+// tool/call before its one tool/result, in the model's order; both reads ran
+// and succeeded; the write was asked about, refused with an approval code, its
+// body (this client's handler) never ran and the file is byte-identical; and
+// each client invocation rebuilt from the log by replay equals the one its
+// settlement recorded, one for one and in order: the argument list and its
+// digest, the standard input by digest and the request's attempt files by
+// digest, so the system text and tool declarations are included as above (and
+// two replays answer the same bytes). The attempt file mcp.json names the
+// attempt directory's absolute paths and is not compared, as in DH-T-LLM-20. The client runs only while an attempt runs
+// and returns each tool call unexecuted (M1-D-PIPE-6 A), so the pipeline that
+// guards the calls is dsh's. Cleanup: the home is deleted by the launcher;
+// nothing of the user's sign-in is touched; on failure the exported log is kept
+// (its path is logged) and the client invocations are logged.
+//
+// The legs: claude-code must pass; copilot-cli is run and recorded either way
+// (M1-D-LOOP-6 A; forEachRoute).
+//
+// Inputs: DSH_SCENARIO_TOOLS1_LAYER a configuration layer, a template over
+// {route} and {workspace} (the workspace directory), that registers that client
+// route, makes the policy ask before scenario_write and sends no request other
+// than the turn's (no title route); DSH_SCENARIO_<route>_MODEL (<route> is
+// CLAUDE_CODE or COPILOT_CLI) the model; DSH_SCENARIO_TOOLS1_PROMPT a prompt, a
 // template over {workspace}, that reads a.txt and b.txt with scenario_read and
 // then writes c.txt with scenario_write; DSH_SCENARIO_TOOLS1_REPLAY the
-// session/query text whose result is the provider request bodies rebuilt from
-// the log, in order, as a JSON array or an object with a "requests" array.
+// session/query text whose result is the client invocations rebuilt from the
+// log, in settlement order (rebuiltInvocations), each with the attempt files it
+// rebuilt ({name, digest} under "files"). The client is the one on the PATH,
+// signed in beforehand by the user.
 //
 //dsh:scenario DH-E-TOOLS-1
 func TestGuardedPipelineRefusesTheWrite(t *testing.T) {
-	key := need(t, "DSH_DEEPSEEK_API_KEY", "a real DeepSeek API key")
-	officialURL := need(t, "DSH_SCENARIO_TOOLS1_OFFICIAL", "the base URL of DeepSeek's Messages endpoint")
-	model := need(t, "DSH_SCENARIO_TOOLS1_MODEL", "a model on deepseek-official")
-	layerT := need(t, "DSH_SCENARIO_TOOLS1_LAYER", "a layer whose policy asks before scenario_write")
+	selfCheckInvocationOracle(t)
+	layerT := need(t, "DSH_SCENARIO_TOOLS1_LAYER", "a layer over {route} and {workspace} that registers that client route and asks before scenario_write")
 	promptT := need(t, "DSH_SCENARIO_TOOLS1_PROMPT", "a prompt that reads two files and writes a third")
-	replay := need(t, "DSH_SCENARIO_TOOLS1_REPLAY", "the session/query text that rebuilds the requests")
+	replay := need(t, "DSH_SCENARIO_TOOLS1_REPLAY", "the session/query text that rebuilds the client invocations")
+	bin := dshBinary(t)
+	forEachRoute(t, func(t *testing.T, r clientRoute) {
+		guardedPipeline(t, bin, r, layerT, promptT, replay)
+	})
+}
 
+// guardedPipeline is DH-E-TOOLS-1 on route r.
+func guardedPipeline(t *testing.T, bin string, r clientRoute, layerT, promptT, replay string) {
+	t.Helper()
+	model := r.model(t)
 	ws := t.TempDir()
 	files := map[string][]byte{"a.txt": []byte("alpha\n"), "b.txt": []byte("bravo\n"), "c.txt": []byte("charlie, untouched\n")}
 	for name, data := range files {
@@ -66,8 +97,7 @@ func TestGuardedPipelineRefusesTheWrite(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	proxy := startProxy(t, map[string]string{"official": officialURL})
-	vars := map[string]string{"workspace": filepath.ToSlash(ws), "official": proxy.base("official")}
+	vars := map[string]string{"workspace": filepath.ToSlash(ws), "route": r.ID}
 
 	var (
 		mu     sync.Mutex
@@ -138,14 +168,17 @@ func TestGuardedPipelineRefusesTheWrite(t *testing.T) {
 		return protocol.ApprovalResult{Outcome: "rejected"}
 	}}
 
-	h := startSDKWith(t, dshBinary(t), []string{"DEEPSEEK_API_KEY=" + key},
-		[]string{"--layer", writeLayer(t, expand(layerT, vars))}, reject, read, write)
-	session := h.create(t, &protocol.ModelRoute{Provider: "deepseek-official", Model: model})
+	// No environment entry: the launcher's scrubbed environment holds no
+	// credential, and the client finds the user's own sign-in in its
+	// configuration home.
+	h := startSDKWith(t, bin, nil, []string{"--layer", writeLayer(t, expand(layerT, vars))}, reject, read, write)
+	session := h.create(t, &protocol.ModelRoute{Provider: r.ID, Model: model})
 	h.keepExport(t, session)
 
 	run := h.awaitRun(t, session, h.prompt(t, session, expand(promptT, vars)), 10*time.Minute)
-	evs := inRun(h.history(t, session), run.FirstSeq, run.LastSeq)
-	logRequestIDs(t, evs)
+	all := h.history(t, session)
+	evs := inRun(all, run.FirstSeq, run.LastSeq)
+	logInvocations(t, all)
 
 	// The model's order: the tool_use blocks of its messages, in sequence.
 	var order []string
@@ -233,65 +266,110 @@ func TestGuardedPipelineRefusesTheWrite(t *testing.T) {
 		t.Fatalf("c.txt is %q (%v), want it unchanged", data, err)
 	}
 
-	// The requests rebuilt from the log are the requests that were sent, and
-	// rebuilding them is byte-stable.
-	rebuild := func() json.RawMessage {
-		var q protocol.SessionQueryResult
-		h.call(t, "session/query", protocol.SessionQueryParams{SessionID: session, Content: []protocol.ContentBlock{{Type: "text", Text: replay}}}, &q)
-		return q.Result
+	// The client invocations rebuilt from the log are the ones dsh started,
+	// rebuilding them is byte-stable, and the system text and tool declarations
+	// are among the rebuilt bytes.
+	settlements := ofType(all, "assistant/message", "assistant/attempt")
+	rebuilt := assertInvocationsRebuilt(t, h, session, replay, settlements, r)
+	var q protocol.SessionQueryResult
+	h.call(t, "session/query", protocol.SessionQueryParams{SessionID: session, Content: []protocol.ContentBlock{{Type: "text", Text: replay}}}, &q)
+	rebuiltFiles := tools1RebuiltFiles(t, q.Result)
+	if len(rebuiltFiles) != len(settlements) {
+		t.Fatalf("the replay rebuilt the attempt files of %d invocations, the log has %d settlements", len(rebuiltFiles), len(settlements))
 	}
-	first, second := rebuild(), rebuild()
-	if len(bytes.TrimSpace(first)) == 0 || strings.TrimSpace(string(first)) == "null" {
-		t.Fatalf("%q rebuilt no requests", replay)
+	// The request files only: mcp.json names the attempt directory's absolute
+	// paths, so its digest is the attempt's own and is not rebuilt.
+	content := []string{tools1ToolsFile}
+	systemFile := tools1SystemFile[r.ID]
+	if systemFile != "" {
+		content = append(content, systemFile)
 	}
-	if !bytes.Equal(first, second) {
-		t.Fatalf("two replays differ:\n%s\n---\n%s", first, second)
-	}
-	var sent []json.RawMessage
-	for _, r := range proxy.requests("official") {
-		if r.Method == "POST" {
-			sent = append(sent, r.Body)
-		}
-	}
-	rebuilt := rebuiltRequests(t, first)
-	if len(sent) == 0 || len(rebuilt) != len(sent) {
-		t.Fatalf("replay rebuilt %d requests, the provider was sent %d", len(rebuilt), len(sent))
-	}
-	for i := range sent {
-		var want, got map[string]any
-		if err := json.Unmarshal(sent[i], &want); err != nil {
-			t.Fatalf("sent request %d is not a JSON object: %v\n%s", i, err, sent[i])
-		}
-		if err := json.Unmarshal(rebuilt[i], &got); err != nil {
-			t.Fatalf("rebuilt request %d is not a JSON object: %v\n%s", i, err, rebuilt[i])
-		}
-		for _, field := range []string{"system", "tools"} {
-			if _, ok := want[field]; !ok {
-				t.Fatalf("sent request %d carries no %s", i, field)
+	for i, e := range settlements {
+		logged, again := tools1Digests(tools1SettledFiles(t, e)), tools1Digests(rebuiltFiles[i])
+		for _, name := range content {
+			if logged[name] == "" {
+				t.Fatalf("%s %d records attempt files %v, want %s (the %s)", e.Type, e.Seq, logged, name, tools1FileHolds(name))
 			}
-			if !reflect.DeepEqual(got[field], want[field]) {
-				t.Fatalf("request %d: rebuilt %s differs from the sent one\nrebuilt: %v\nsent:    %v", i, field, got[field], want[field])
+			if again[name] != logged[name] {
+				t.Fatalf("%s %d: %s (the %s) rebuilt with digest %q, logged %s", e.Type, e.Seq, name, tools1FileHolds(name), again[name], logged[name])
 			}
 		}
-		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("request %d: rebuilt differs from sent\nrebuilt: %s\nsent:    %s", i, rebuilt[i], sent[i])
+		if systemFile == "" && (rebuilt[i].Stdin == nil || !strings.HasPrefix(*rebuilt[i].Stdin, "<system>\n")) {
+			t.Fatalf("%s %d: the rebuilt standard input does not lead with the <system> section that carries the system text", e.Type, e.Seq)
 		}
 	}
 }
 
-// rebuiltRequests reads a replay's result: the rebuilt request bodies as a JSON
-// array, or an object holding them under "requests".
-func rebuiltRequests(t *testing.T, raw json.RawMessage) []json.RawMessage {
+// tools1Digests maps each attempt file's name to its digest.
+func tools1Digests(files []tools1File) map[string]string {
+	m := make(map[string]string, len(files))
+	for _, f := range files {
+		m[f.Name] = f.Digest
+	}
+	return m
+}
+
+// tools1FileHolds says what an attempt file of the content list carries.
+func tools1FileHolds(name string) string {
+	if name == tools1ToolsFile {
+		return "tool declarations"
+	}
+	return "system text"
+}
+
+// tools1File is one attempt file of a client invocation: its name inside the
+// attempt directory and the "sha256:<hex>" digest of its bytes.
+type tools1File struct {
+	Name   string `json:"name"`
+	Digest string `json:"digest"`
+}
+
+// tools1ToolsFile is the attempt file in which both client routes declare the
+// request's tools, as MCP entries (areas/llm.md DH-ADR-LLM-8).
+const tools1ToolsFile = "tools.json"
+
+// tools1SystemFile names, per route, the attempt file that carries the harness
+// system text; "" when the route writes it as the leading <system> section of
+// standard input instead (claude-code-cli.md and github-copilot-cli.md sec. 5).
+var tools1SystemFile = map[string]string{claudeCodeRoute.ID: "system.txt", copilotCLIRoute.ID: ""}
+
+// tools1SettledFiles are the attempt files the client invocation of settlement
+// e records, nil when it records none.
+func tools1SettledFiles(t *testing.T, e protocol.Event) []tools1File {
 	t.Helper()
-	var list []json.RawMessage
-	if err := json.Unmarshal(raw, &list); err == nil {
-		return list
+	var s struct {
+		Client *struct {
+			Files []tools1File `json:"files"`
+		} `json:"client"`
 	}
-	var wrapped struct {
-		Requests []json.RawMessage `json:"requests"`
+	decode(t, e, &s)
+	if s.Client == nil {
+		return nil
 	}
-	if err := json.Unmarshal(raw, &wrapped); err != nil || wrapped.Requests == nil {
-		t.Fatalf("the replay answered neither a request array nor {\"requests\": [...]}: %s", raw)
+	return s.Client.Files
+}
+
+// tools1RebuiltFiles reads the attempt files of each rebuilt invocation from a
+// replay's result, a JSON array of invocations or an object holding them under
+// "invocations" (rebuiltInvocations).
+func tools1RebuiltFiles(t *testing.T, raw json.RawMessage) [][]tools1File {
+	t.Helper()
+	type entry struct {
+		Files []tools1File `json:"files"`
 	}
-	return wrapped.Requests
+	var list []entry
+	if err := json.Unmarshal(raw, &list); err != nil {
+		var wrapped struct {
+			Invocations []entry `json:"invocations"`
+		}
+		if err := json.Unmarshal(raw, &wrapped); err != nil || wrapped.Invocations == nil {
+			t.Fatalf("the replay answered neither an invocation array nor {\"invocations\": [...]}: %s", raw)
+		}
+		list = wrapped.Invocations
+	}
+	out := make([][]tools1File, len(list))
+	for i, e := range list {
+		out[i] = e.Files
+	}
+	return out
 }

@@ -277,20 +277,3 @@ func (h *sdkHost) assertStreamsEnded(t *testing.T, turn int64) {
 		}
 	}
 }
-
-// logRequestIDs logs the provider request ids of the settlements among evs, so a
-// failed run can be traced at the provider. The keyed-route scenarios use it; the
-// client-route scenarios log the client invocations instead (logInvocations).
-func logRequestIDs(t *testing.T, evs []protocol.Event) {
-	t.Helper()
-	var ids []string
-	for _, e := range ofType(evs, "assistant/attempt") {
-		var s wireSettlement
-		if json.Unmarshal(e.Data, &s) == nil && s.Failure != nil && s.Failure.RequestID != "" {
-			ids = append(ids, s.Failure.RequestID)
-		}
-	}
-	if len(ids) > 0 {
-		t.Logf("provider request ids: %s", strings.Join(ids, ", "))
-	}
-}
