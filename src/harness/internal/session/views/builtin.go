@@ -9,13 +9,17 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store"
 )
 
 // The built-in views of docs/harness/areas/session-views.md DH-D-VIEW-3: four
 // stored fold families registered by RegisterBuiltins. Each Apply returns a new
 // state and never writes to its input's visible values; an append-only slice may
 // grow into spare capacity past the input's length, which the input does not see
-// (the same rule as the surface history).
+// (the same rule as the surface history). The list summary and the statistics
+// are small and EveryCommit; the turn index and the event index grow with the
+// log and are Periodic (M1-G-STORE-13), so an append does not rewrite a
+// document as large as the log.
 const (
 	ListSummaryKey = "view/list-summary"
 	TurnIndexKey   = "view/turn-index"
@@ -81,7 +85,10 @@ func FoldFrom[S any](d Definition[S], s S, evs []event.Event) S {
 
 // ListSummary is what the session list shows of a session: whether it is blank
 // (no prompt yet, hidden by the list), the last human prompt time it orders by,
-// and a preview of the first prompt.
+// and a preview of the first prompt. A prompt is what store.IsPrompt says, the
+// same rule as the store's last_prompt_at: a user/message that replaces history
+// (a compaction's summary) is not a human prompt and leaves the summary as it
+// was.
 type ListSummary struct {
 	Blank        bool      `json:"blank"`
 	Prompts      int       `json:"prompts"`
@@ -94,7 +101,8 @@ type ListSummary struct {
 // ListSummaryView is the list summary fold.
 func ListSummaryView() Definition[ListSummary] {
 	return Definition[ListSummary]{
-		Key: ListSummaryKey, Version: 1, Stored: true,
+		// Version 2: a replacing user/message is no longer counted as a prompt.
+		Key: ListSummaryKey, Version: 2, Stored: true,
 		Types: []string{event.UserMessage.Name(), event.TurnStartType.Name()},
 		Init:  func(session.Header) ListSummary { return ListSummary{Blank: true} },
 		Apply: func(s ListSummary, ev event.Event) (ListSummary, bool) {
@@ -103,6 +111,9 @@ func ListSummaryView() Definition[ListSummary] {
 				s.Turns++
 				return s, true
 			case event.UserMessage.Name():
+				if !store.IsPrompt(ev.Type(), ev.Op().Kind) {
+					return s, false
+				}
 				p, err := event.UserMessage.As(ev)
 				if err != nil {
 					return s, false
@@ -176,7 +187,7 @@ func (t TurnIndex) Open() (TurnEntry, bool) {
 // TurnIndexView is the turn index fold.
 func TurnIndexView() Definition[TurnIndex] {
 	return Definition[TurnIndex]{
-		Key: TurnIndexKey, Version: 1, Stored: true,
+		Key: TurnIndexKey, Version: 1, Stored: true, Cadence: Periodic,
 		Types: []string{event.TurnStartType.Name(), event.TurnEndType.Name(), event.StepStartType.Name(), event.UserMessage.Name()},
 		Init:  func(session.Header) TurnIndex { return TurnIndex{} },
 		Apply: func(s TurnIndex, ev event.Event) (TurnIndex, bool) {
@@ -393,7 +404,7 @@ func (x EventIndex) ByCall(id string) []event.Seq {
 // EventIndexView is the event index fold.
 func EventIndexView() Definition[EventIndex] {
 	return Definition[EventIndex]{
-		Key: EventIndexKey, Version: 2, Stored: true,
+		Key: EventIndexKey, Version: 2, Stored: true, Cadence: Periodic,
 		Init: func(session.Header) EventIndex { return EventIndex{} },
 		Apply: func(s EventIndex, ev event.Event) (EventIndex, bool) {
 			e := EventEntry{Seq: ev.Seq(), Type: ev.Type(), Class: ClassLogOnly, Call: callOf(ev)}

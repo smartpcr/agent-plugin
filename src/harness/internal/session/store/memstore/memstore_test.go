@@ -91,3 +91,50 @@ func TestWithRegistry(t *testing.T) {
 		t.Fatalf("OpenRead against an empty registry = %v", err)
 	}
 }
+
+// UpsertDerived writes below the durable records only, as another process
+// sees them; its rows are durable at once, so a crash keeps them while the
+// holder's undurable checkpoint goes. A refused key fails it, writing nothing
+// (M1-G-STORE-14).
+func TestUpsertDerivedIsDurableAndBelowDurable(t *testing.T) {
+	ctx := context.Background()
+	s := memstore.New()
+	w, err := s.Create(ctx, store.Header{ID: "s"}, store.CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Append(ctx, store.Batch{First: 0, Records: []event.Record{rec(t, 0), rec(t, 1)}}); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.UpsertDerived(ctx, "s", []store.Checkpoint{{Key: "view/x", Seq: 1, State: "1"}}); err != nil || n != 0 {
+		t.Fatalf("UpsertDerived over undurable records = %d, %v; want nothing written", n, err)
+	}
+	if err := w.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.UpsertDerived(ctx, "s", []store.Checkpoint{{Key: "view/x", Seq: 1, State: "1"}}); err != nil || n != 1 {
+		t.Fatalf("UpsertDerived over durable records = %d, %v; want 1", n, err)
+	}
+	if err := w.Append(ctx, store.Batch{First: 2, Records: []event.Record{rec(t, 2)},
+		Checkpoints: []store.Checkpoint{{Key: "core/a", Seq: 2, State: "2"}}}); err != nil {
+		t.Fatal(err)
+	}
+	s.Crash()
+	r, err := s.OpenRead(ctx, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cks, err := r.Checkpoints(ctx)
+	if err != nil || len(cks) != 1 || cks[0].Key != "view/x" || cks[0].Seq != 1 {
+		t.Fatalf("checkpoints after the crash = %+v, %v; want the upserted row only", cks, err)
+	}
+	if err := s.RefuseDerived("view/x"); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.UpsertDerived(ctx, "s", []store.Checkpoint{{Key: "view/y", Seq: 0}, {Key: "view/x", Seq: 1}}); err == nil || n != 0 {
+		t.Fatalf("UpsertDerived of a refused key = %d, %v; want an error", n, err)
+	}
+	if cks, _ := r.Checkpoints(ctx); len(cks) != 1 {
+		t.Fatalf("a refused UpsertDerived wrote: %+v", cks)
+	}
+}

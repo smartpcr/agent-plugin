@@ -24,8 +24,8 @@ The module has its own `go.mod` and is not part of the root `go.work`; run it wi
 | # | gate | what fails it |
 |---|------|---------------|
 | 1 | `gofmt` | any `.go` file not `gofmt`-formatted (`testdata/`, `vendor/`, nested modules skipped) |
-| 2 | `vet` | `go vet ./...`, then the own analyzers through `go vet -vettool=<harness-gate>` (QG-2), each with `-tags=`, `-tags=replay,scenario` and `-tags=e2e` (the e2e layer is vetted, never run: M1-D-GATE-25 A); then prints `exceptions: N`, the accepted `//lint:ignore` directives of the modules (see [Site exceptions](#site-exceptions-lintignore)) |
-| 3 | `staticcheck` | any finding of the pinned staticcheck (default checks), run per module with `-tags=` and `-tags=replay,scenario` from the binary of the tools module's `tool` line (`go tool -n staticcheck`); the output names the check, for example `SA4000` (M1-G-TOOL-1) |
+| 2 | `vet` | `go vet ./...`, then the own analyzers through `go vet -vettool=<harness-gate>` (QG-2), each with `-tags=`, `-tags=replay,scenario,bench` and `-tags=e2e` (the e2e layer and the `bench` files are vetted, never run: M1-D-GATE-25 A); then prints `exceptions: N`, the accepted `//lint:ignore` directives of the modules (see [Site exceptions](#site-exceptions-lintignore)) |
+| 3 | `staticcheck` | any finding of the pinned staticcheck (default checks), run per module with `-tags=` and `-tags=replay,scenario,bench` from the binary of the tools module's `tool` line (`go tool -n staticcheck`); the output names the check, for example `SA4000` (M1-G-TOOL-1) |
 | 4 | `modules` | in every product, test and tools module: `go mod tidy -diff` prints anything, or `go mod verify` fails; then a module rule of `modcheck` (RM-1 to RM-4, `src/go` requiring anything) or a pin without a reason comment (RM-10). See [Modules](#modules-modcheck) |
 | 5 | `test` | `go test -tags= -race -shuffle=on -count=1 ./...` per module with `CGO_ENABLED=1` (QG-4); the `replay` and `scenario` layers are excluded |
 | 6 | `coverage` | any package under 85% of statements, profiles merged across processes (QG-3) |
@@ -277,6 +277,12 @@ the `go list` the coverage gate plans with) pass `-tags=`, an explicit empty tag
 list that overrides any `-tags` in `GOFLAGS`, so neither layer can run in, fail or
 pass the default gate. `testdata/layer-tagged` holds an always-failing test of each
 layer; the gate passes on it, and `go test -tags scenario` (or `replay`) fails.
+
+The `bench` tag (`BenchTag`) marks the benchmark files (`*_bench_test.go`,
+`//go:build bench`) run by hand with `go test -tags bench -bench`. No gate runs
+them, but the `vet` and `staticcheck` gates compile and check them in their
+layer run (`-tags=replay,scenario,bench`), so a bench file that does not build,
+breaks an analyzer rule or has a staticcheck finding fails the gate.
 
 ## Race detector (QG-4)
 

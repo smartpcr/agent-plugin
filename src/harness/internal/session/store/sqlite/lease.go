@@ -104,42 +104,73 @@ func (s *Store) alive(ctx context.Context, tx *sql.Tx, holder string) (bool, err
 	if path == "" {
 		return true, nil
 	}
-	probeErr := func(err error) error {
-		return &store.Error{Code: CodeIO, Msg: "probe of " + holder + ": " + err.Error(), Err: err}
-	}
-	before, err := os.Stat(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return s.registered(ctx, tx, holder)
-	}
-	if err != nil {
-		return false, probeErr(err)
-	}
-	l, err := fsx.TryLockBeyondEnd(path)
-	if errors.Is(err, fsx.ErrLocked) {
+	switch st, err := s.probeLock(holder); {
+	case err != nil:
+		return false, err
+	case st == lockHeld:
 		return true, nil
-	}
-	if err != nil {
-		return false, probeErr(err)
-	}
-	// The file locked must be the one seen above, not one the lock call
-	// created after it vanished.
-	after, serr := os.Stat(path)
-	same := serr == nil && os.SameFile(before, after)
-	if err := l.Unlock(); err != nil {
-		return false, probeErr(err)
-	}
-	if !same {
-		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return false, probeErr(err)
-		}
+	case st == lockMissing:
 		return s.registered(ctx, tx, holder)
 	}
 	// The holder is proven dead. A failed removal (say a transient sharing
 	// violation on Windows) leaves a stale file whose next probe locks it and
 	// finds the holder dead again, so it must not fail the takeover.
 	_ = os.Remove(path)
-	_, err = tx.ExecContext(ctx, `DELETE FROM hosts WHERE instance = ?`, holder)
+	_, err := tx.ExecContext(ctx, `DELETE FROM hosts WHERE instance = ?`, holder)
 	return false, err
+}
+
+// lockState is what a probe of a liveness lock file found.
+type lockState int
+
+const (
+	// lockHeld: another holder has the lock, so its instance runs.
+	lockHeld lockState = iota
+	// lockFree: the file the probe found was locked by the probe, so its
+	// instance is gone. The file and the hosts row are left for the caller.
+	lockFree
+	// lockMissing: there is no lock file (or it vanished while probed); the
+	// hosts row decides.
+	lockMissing
+)
+
+// probeLock probes the liveness lock file of holder, which must have a lock
+// path, and changes nothing the database records: the only file it removes is
+// one its own lock call created after the holder's vanished. alive and the
+// layout upgrade's probe (migrate.go) both rest on it.
+func (s *Store) probeLock(holder string) (lockState, error) {
+	path := s.lockPath(holder)
+	probeErr := func(err error) error {
+		return &store.Error{Code: CodeIO, Msg: "probe of " + holder + ": " + err.Error(), Err: err}
+	}
+	before, err := os.Stat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return lockMissing, nil
+	}
+	if err != nil {
+		return 0, probeErr(err)
+	}
+	l, err := fsx.TryLockBeyondEnd(path)
+	if errors.Is(err, fsx.ErrLocked) {
+		return lockHeld, nil
+	}
+	if err != nil {
+		return 0, probeErr(err)
+	}
+	// The file locked must be the one seen above, not one the lock call
+	// created after it vanished.
+	after, serr := os.Stat(path)
+	same := serr == nil && os.SameFile(before, after)
+	if err := l.Unlock(); err != nil {
+		return 0, probeErr(err)
+	}
+	if !same {
+		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return 0, probeErr(err)
+		}
+		return lockMissing, nil
+	}
+	return lockFree, nil
 }
 
 // registered reports whether holder still has a hosts row in tx: the liveness

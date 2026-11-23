@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -110,11 +111,15 @@ func countEvents(t *testing.T, db *sql.DB, id string) (events, next int64) {
 	return events, next
 }
 
-// TC-07 / DH-D-STORE-2: an append of three events whose third the database
-// itself refuses leaves none of the three. The refusal comes from a trigger the
-// test installs, so the batch passes every check of Writer.Append and the
-// failure is the database's, met after two rows were already inserted in the
-// transaction.
+// TC-07 / DH-D-STORE-2 / DH-D-VIEW-2: an append of three events whose third the
+// database itself refuses leaves none of the three. The refusal comes from a
+// trigger the test installs, so the batch passes every check of Writer.Append
+// and the failure is the database's, met after two rows were already inserted
+// in the transaction. A refused checkpoint, the batch's derived row, is the
+// opposite case (M1-G-STORE-10): the three events commit, the stored row keeps
+// its older seq, and the drop is counted and reported.
+//
+//dsh:test DH-T-STORE-3, DH-T-VIEW-5
 func TestMultiEventAppendIsAtomic(t *testing.T) {
 	path := dbPath(t)
 	s := open(t, path)
@@ -127,53 +132,96 @@ func TestMultiEventAppendIsAtomic(t *testing.T) {
 		t.Fatal(err)
 	}
 	db := fresh(t, path)
-	batch := store.Batch{First: 1, Records: []store.Record{call(t, 1), call(t, 2), call(t, 3)},
-		Checkpoints: []store.Checkpoint{{Key: "core/x", StateVersion: 1, Seq: 3, State: `{"n":3}`}}}
-	for _, tc := range []struct{ name, trigger string }{
-		{"third event refused", `CREATE TRIGGER refuse_test BEFORE INSERT ON events WHEN NEW.seq = 3
-			BEGIN SELECT RAISE(ABORT, 'test: the third row is refused'); END`},
-		{"checkpoint refused after the events", `CREATE TRIGGER refuse_test BEFORE UPDATE ON checkpoints
-			BEGIN SELECT RAISE(ABORT, 'test: the checkpoint is refused'); END`},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if _, err := db.Exec(tc.trigger); err != nil {
+	var notices []store.Degraded
+	defer s.OnDegraded(func(d store.Degraded) { notices = append(notices, d) })()
+	batch := func(first store.Seq) store.Batch {
+		return store.Batch{First: first, Records: []store.Record{call(t, first), call(t, first+1), call(t, first+2)},
+			Checkpoints: []store.Checkpoint{{Key: "core/x", StateVersion: 1, Seq: first + 2, State: fmt.Sprintf(`{"n":%d}`, first+2)}}}
+	}
+	refuse := func(t *testing.T, trigger string) {
+		t.Helper()
+		if _, err := db.Exec(trigger); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if _, err := db.Exec(`DROP TRIGGER refuse_test`); err != nil {
 				t.Fatal(err)
-			}
-			defer func() {
-				if _, err := db.Exec(`DROP TRIGGER refuse_test`); err != nil {
-					t.Fatal(err)
-				}
-			}()
-			err := w.Append(bg, batch)
-			if !errors.Is(err, &store.Error{Code: sqlite.CodeConstraint}) || !strings.Contains(err.Error(), "test: the") {
-				t.Fatalf("Append = %v, want %s from the test trigger", err, sqlite.CodeConstraint)
-			}
-			if events, next, cks := countRows(t, fresh(t, path), "s"); events != 1 || next != 1 || cks != 1 {
-				t.Fatalf("after the refused append a fresh connection reads %d events, next seq %d, %d checkpoints; want 1, 1, 1", events, next, cks)
-			}
-			var state string
-			if err := fresh(t, path).QueryRow(`SELECT state FROM checkpoints`).Scan(&state); err != nil || state != `{"n":0}` {
-				t.Fatalf("checkpoint after the refused append = %q, %v", state, err)
-			}
-			if sum, err := s.Stat(bg, "s"); err != nil || sum.NextSeq != 1 || sum.Durable != 1 {
-				t.Fatalf("Stat after the refused append = %+v, %v", sum, err)
 			}
 		})
 	}
-	// The same batch, once nothing refuses it, commits whole.
-	if err := w.Append(bg, batch); err != nil {
-		t.Fatal(err)
+	checkpoint := func(t *testing.T) (state string, seq int64) {
+		t.Helper()
+		if err := fresh(t, path).QueryRow(`SELECT state, seq FROM checkpoints`).Scan(&state, &seq); err != nil {
+			t.Fatal(err)
+		}
+		return state, seq
 	}
-	if err := w.Close(bg); err != nil {
+	t.Run("third event refused", func(t *testing.T) {
+		refuse(t, `CREATE TRIGGER refuse_test BEFORE INSERT ON events WHEN NEW.seq = 3
+			BEGIN SELECT RAISE(ABORT, 'test: the third row is refused'); END`)
+		err := w.Append(bg, batch(1))
+		if !errors.Is(err, &store.Error{Code: sqlite.CodeConstraint}) || !strings.Contains(err.Error(), "test: the") {
+			t.Fatalf("Append = %v, want %s from the test trigger", err, sqlite.CodeConstraint)
+		}
+		if events, next, cks := countRows(t, fresh(t, path), "s"); events != 1 || next != 1 || cks != 1 {
+			t.Fatalf("after the refused append a fresh connection reads %d events, next seq %d, %d checkpoints; want 1, 1, 1", events, next, cks)
+		}
+		if state, _ := checkpoint(t); state != `{"n":0}` {
+			t.Fatalf("checkpoint after the refused append = %q", state)
+		}
+		if sum, err := s.Stat(bg, "s"); err != nil || sum.NextSeq != 1 || sum.Durable != 1 {
+			t.Fatalf("Stat after the refused append = %+v, %v", sum, err)
+		}
+	})
+	// The same batch, once nothing refuses it, commits whole.
+	if err := w.Append(bg, batch(1)); err != nil {
 		t.Fatal(err)
 	}
 	if events, next, cks := countRows(t, fresh(t, path), "s"); events != 4 || next != 4 || cks != 1 {
 		t.Fatalf("a fresh connection reads %d events, next seq %d, %d checkpoints; want 4, 4, 1", events, next, cks)
 	}
+	t.Run("checkpoint refused after the events", func(t *testing.T) {
+		refuse(t, `CREATE TRIGGER refuse_test BEFORE UPDATE ON checkpoints
+			BEGIN SELECT RAISE(ABORT, 'test: the checkpoint is refused'); END`)
+		if err := w.Append(bg, batch(4)); err != nil {
+			t.Fatalf("Append with a refused checkpoint = %v; want its three events committed", err)
+		}
+		if events, next, cks := countRows(t, fresh(t, path), "s"); events != 7 || next != 7 || cks != 1 {
+			t.Fatalf("after the refused checkpoint a fresh connection reads %d events, next seq %d, %d checkpoints; want 7, 7, 1", events, next, cks)
+		}
+		if state, seq := checkpoint(t); state != `{"n":3}` || seq != 3 {
+			t.Fatalf("checkpoint after the refused derived write = %q at seq %d; want the older row at seq 3", state, seq)
+		}
+		if sum, err := s.Stat(bg, "s"); err != nil || sum.NextSeq != 7 || sum.Durable != 7 {
+			t.Fatalf("Stat after the refused checkpoint = %+v, %v", sum, err)
+		}
+		if n := w.(store.DerivedCounter).DerivedDropped(); n != 1 {
+			t.Fatalf("DerivedDropped = %d, want 1", n)
+		}
+		if len(notices) != 1 || notices[0].Session != "s" || !slices.Equal(notices[0].Keys, []string{"core/x@1"}) ||
+			!errors.Is(notices[0].Err, &store.Error{Code: sqlite.CodeConstraint}) {
+			t.Fatalf("Degraded notices = %+v; want one for core/x@1 with the trigger's refusal", notices)
+		}
+	})
+	// The next batch, once nothing refuses its row, moves the row forward.
+	if err := w.Append(bg, batch(7)); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(bg); err != nil {
+		t.Fatal(err)
+	}
+	if events, next, cks := countRows(t, fresh(t, path), "s"); events != 10 || next != 10 || cks != 1 {
+		t.Fatalf("a fresh connection reads %d events, next seq %d, %d checkpoints; want 10, 10, 1", events, next, cks)
+	}
+	if state, seq := checkpoint(t); state != `{"n":9}` || seq != 9 {
+		t.Fatalf("checkpoint = %q at seq %d; want seq 9", state, seq)
+	}
 }
 
 // The log is immutable in the database itself: an UPDATE or DELETE of an event
 // outside a session's deletion is aborted by a trigger.
+//
+//dsh:test DH-T-STORE-3
 func TestEventsImmutableInSchema(t *testing.T) {
 	path := dbPath(t)
 	s := open(t, path)
@@ -431,6 +479,8 @@ func stop(cmd *exec.Cmd) {
 
 // TC-07 / DH-D-STORE-2: once Flush returns, the rows survive the death of the
 // process that wrote them, killed before it closed anything.
+//
+//dsh:test DH-T-STORE-4
 func TestFlushSurvivesKill(t *testing.T) {
 	path := dbPath(t)
 	c := startChild(t, path)
@@ -459,6 +509,12 @@ func TestFlushSurvivesKill(t *testing.T) {
 // the child's flush, after it, and after the child is killed. The child's
 // write connection runs synchronous=FULL, which is what makes its unflushed
 // commits durable rather than merely visible.
+//
+// This is DH-T-STORE-4's backlog clause as M1-D-STORE-A (a) amends it: appends
+// commit synchronously, so there is no backlog to bound; an event is durable
+// once Append returns, before any Flush, and survives the writer's death.
+//
+//dsh:test DH-T-STORE-4
 func TestOtherProcessSeesOnlyDurable(t *testing.T) {
 	path := dbPath(t)
 	c := startChild(t, path)

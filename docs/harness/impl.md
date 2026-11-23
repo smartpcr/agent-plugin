@@ -757,6 +757,8 @@ scratch homes only.
 SQLite, the driver measurement, and the crash-injection tests of
 [DH-D-STORE-4](areas/session-store.md#dh-d-store-4).
 
+**Held open (pointer, M1).** For the M1 story, the `DH-T-STORE-18` budgets of step 7.1 are provisional from their first measured run and held open as H-34, pinned at step 16.7 (decision M1-D-STORE-B (a) in [the M1 decision log](../stories/harness-DSH-M1/decisions.md); the entry is in [the DH-S-7 evidence record](../stories/harness-DSH-M1/evidence/DH-S-7.md#held-open)). Gap-closure plan step 15.3.8 confirmed the tick of step 7.1 against plan Stage 15.1 at commit `6e7514c`, with H-34 open ([the DH-S-7 evidence record](../stories/harness-DSH-M1/evidence/DH-S-7.md#gap-closure-m1-g-store), "Gap closure (M1-G-STORE)"). This section's text is unchanged (DC-2).
+
 <a id="dh-s-8"></a>
 ### DH-S-8: Machine state, views and spill
 
@@ -781,9 +783,9 @@ conversation API depend on attachments.
 
 - [x] **8.1** [DH-D-STORAGE-1](areas/storage.md#dh-d-storage-1) Program state survives restarts in one typed store.
 - [x] **8.2** [DH-D-VIEW-2](areas/session-views.md#dh-d-view-2) Stored state is never ahead of the log, and a changed fold rebuilds it.
-- [ ] **8.3** [DH-D-VIEW-3](areas/session-views.md#dh-d-view-3) The built-in views: list summary, turn index, statistics, event index (P1, pulled forward).
-- [ ] **8.4** [DH-D-STORAGE-7](areas/storage.md#dh-d-storage-7) Projects group sessions, and a hidden session never keeps working (P1, pulled forward).
-- [ ] **8.5** [DH-D-VIEW-5](areas/session-views.md#dh-d-view-5) Sessions can be listed, observed, traced and followed across forks.
+- [x] **8.3** [DH-D-VIEW-3](areas/session-views.md#dh-d-view-3) The built-in views: list summary, turn index, statistics, event index (P1, pulled forward).
+- [x] **8.4** [DH-D-STORAGE-7](areas/storage.md#dh-d-storage-7) Projects group sessions, and a hidden session never keeps working (P1, pulled forward).
+- [x] **8.5** [DH-D-VIEW-5](areas/session-views.md#dh-d-view-5) Sessions can be listed, observed, traced and followed across forks.
 - [x] **8.6** [DH-D-STORAGE-5](areas/storage.md#dh-d-storage-5) The full text of a large result is saved privately and can be read back.
 - [x] **8.7** [DH-D-STORAGE-3](areas/storage.md#dh-d-storage-3) Attached images and files are kept durably and read back verified (P1, pulled forward).
 
@@ -801,6 +803,8 @@ proves retention) in [DH-S-23](#dh-s-23).
 
 **Exit evidence.** The evidence record, with the refold-equals-stored test for every
 built-in view.
+
+**Held open (pointer, M1).** For the M1 story, step 8.7's draft record is held open as H-33, closing at step 21.2 (decision M1-D-STORE-D (b)), and the `DH-T-VIEW-25` budgets of step 8.5 are provisional and held open as H-35, pinned at step 16.7, with the test's search and `TreeMessages` clauses moved to [DH-D-VIEW-6](areas/session-views.md#dh-d-view-6) at [DH-S-23](#dh-s-23) (decision M1-D-STORE-B (a)); linear growth of the event index's writes (step 8.2) is held open as H-36 until the view tables at [DH-S-23](#dh-s-23) (decision M1-D-STORE-E (a)); the decisions are in [the M1 decision log](../stories/harness-DSH-M1/decisions.md) and the entries are in [the DH-S-8 evidence record](../stories/harness-DSH-M1/evidence/DH-S-8.md#held-open). Gap-closure plan step 15.3.7 ticked steps 8.3 to 8.5 as built (the Stage 8.2 closure), and step 15.3.8 confirmed the ticks of steps 8.2 and 8.7 against plan Stages 15.2 and 15.3.4, all at commit `6e7514c`; the ticks of steps 8.2 (H-36), 8.5 (H-35) and 8.7 (H-33) carry those entries ([the DH-S-8 evidence record](../stories/harness-DSH-M1/evidence/DH-S-8.md#closure), "Closure"). This section's text is unchanged (DC-2).
 
 <a id="dh-s-9"></a>
 ### DH-S-9: First model provider, retry, usage and titles
@@ -1173,6 +1177,8 @@ passing, the cleanup evidence of step 16.8 (the scratch homes and the file compa
 before and after; the deleted sessions' rows, blobs and spill files shown gone; the
 log read from the database with `seq` 0 to n and no gap), and the open list H-1 to
 H-4 and H-10.
+
+**Decision log (pointer, M1).** For the M1 story, step 16.8's "on Linux, macOS and Windows" reads Windows and Linux (WSL); macOS removed from M1 by OWNER-1 (decision `platforms-windows-wsl` in [the M1 decision log](../stories/harness-DSH-M1/decisions.md); macOS has no return stage yet, `macos-return-stage`); gap-closure plan step 15.3.6. This section's text is unchanged (DC-2).
 
 <a id="dh-s-17"></a>
 ### DH-S-17: Acceptance of the core loop, store, launchers and SDK against a real model
@@ -3610,6 +3616,8 @@ to H-18 and H-20, all on deliverables that wait for P2 work; three P1 deliverabl
 built and not done. At [M5](#m5): none.
 
 **Held open (pointer, M1).** For the M1 story, decisions M1-D-BOOT-1 (b) and M1-D-BOOT-2 (b) in [the M1 decision log](../stories/harness-DSH-M1/decisions.md) hold open the cut-short parts of steps 6.2, 6.3, 6.6, 6.7, 6.15, 6.16 and 6.17 and the test `DH-T-HOST-17` as H-24 to H-32. Each entry, with the part that waits and its closing step (gap-closure plan stages 19.3 to 19.5, and impl.md 16.7 for `DH-T-HOST-17`), is in the "Held open" list of [the DH-S-6 evidence record](../stories/harness-DSH-M1/evidence/DH-S-6.md#held-open). This section's text and table are unchanged (DC-2).
+
+**Held open (pointer, M1, store).** For the M1 story, decisions M1-D-STORE-D (b) and M1-D-STORE-B (a) in [the M1 decision log](../stories/harness-DSH-M1/decisions.md) hold open three more parts as H-33 to H-35: H-33, the draft record of step 8.7 ([DH-D-STORAGE-3](areas/storage.md#dh-d-storage-3)), closing at step 21.2, the composer step of [DH-S-21](#dh-s-21) (gap-closure plan step 15.3.9); H-34, the budgets of `DH-T-STORE-18` (step 7.1), and H-35, the budgets of `DH-T-VIEW-25` (step 8.5), both provisional from their first measured run and pinned at step 16.7 (gap-closure plan steps 15.1.5 and 15.3.2; not H-10). `DH-T-VIEW-25`'s search and `TreeMessages` clauses belong to [DH-D-VIEW-6](areas/session-views.md#dh-d-view-6) at [DH-S-23](#dh-s-23). Decision M1-D-STORE-E (a) holds open H-36: linear growth of the bytes the event index upserts (step 8.2), until the view tables at [DH-S-23](#dh-s-23) (gap-closure plan step 15.2.4). Each entry, with the part that waits and its closing step, is in the "Held open" list of [the DH-S-7 evidence record](../stories/harness-DSH-M1/evidence/DH-S-7.md#held-open) (H-34) or [the DH-S-8 evidence record](../stories/harness-DSH-M1/evidence/DH-S-8.md#held-open) (H-33, H-35, H-36). This section's text and table are unchanged (DC-2).
 
 ### 10.4 Scenarios that span stages
 

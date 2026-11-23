@@ -81,8 +81,9 @@ func (c *Config) toolBinary(ctx context.Context, name string) (string, error) {
 }
 
 // staticcheckGate runs the pinned staticcheck with its default checks in every module,
-// twice like vet: with "-tags=" and with every LayerTags tag (M1-G-TOOL-1). Any
-// finding fails it, and the output names each finding's check (for example SA4000).
+// twice like vet: with "-tags=" and with every LayerTags tag and BenchTag
+// (layerTags; M1-G-TOOL-1). Any finding fails it, and the output names each
+// finding's check (for example SA4000).
 // A finding is accepted only by a reasoned //lint:ignore at its site, counted with
 // the own analyzers' by the vet gate's "exceptions: N".
 func (c *Config) staticcheckGate(ctx context.Context, w io.Writer) error {

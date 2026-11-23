@@ -8,6 +8,11 @@
 // payload parts as immutable strings holding the stored bytes. A store never
 // re-encodes them, and neither side writes to a record after hand-over.
 //
+// The optional interfaces DegradedNotifier, DerivedCounter and DerivedWriter
+// carry the derived-row rules of DH-D-VIEW-2: a refused derived row costs no
+// event, and a derived row is written forward without the lease. FoldRows
+// counts derived rows against the logs, for the fold status and the rebuild.
+//
 // Not yet in this contract (later deliverables): FileRequest, Requests and
 // WatchRequest (DH-D-STORE-11), Follow and Changes (DH-D-STORE-8), Instances
 // (DH-D-STORE-3) and the derived rows of a batch other than checkpoints
@@ -18,8 +23,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
@@ -121,13 +128,21 @@ type Summary struct {
 	// Holder is the lease holder, nil when none.
 	Holder      *Holder
 	LastEventAt time.Time
-	// LastPromptAt is the time of the last PromptType record; zero when none.
+	// LastPromptAt is the time of the last prompt (IsPrompt); zero when none.
 	LastPromptAt time.Time
 }
 
 // PromptType is the record type of a prompt: the one that moves LastPromptAt
-// (event.UserMessage).
+// (event.UserMessage). Not every record of it is a prompt: see IsPrompt.
 var PromptType = event.UserMessage.Name()
+
+// IsPrompt reports whether a record of type typ and surface operation op is a
+// human prompt, the one rule behind LastPromptAt, PromptKey and the list
+// summary view: a PromptType record, except one that replaces history (a
+// compaction's summary is written by the harness, not the human).
+func IsPrompt(typ string, op event.OpKind) bool {
+	return typ == PromptType && op != event.OpReplace
+}
 
 // Order is the order of List's pages.
 type Order int
@@ -222,7 +237,7 @@ func PromptKey(created time.Time, recs []Record, cut int64) (key int64, ok bool)
 	}
 	pcut := PromptCut(cut)
 	for i := len(recs) - 1; i >= 0; i-- {
-		if r := recs[i]; r.Type == PromptType && r.Time > 0 {
+		if r := recs[i]; IsPrompt(r.Type, r.Op) && r.Time > 0 {
 			if at := time.UnixMilli(r.Time).UnixNano(); at <= pcut {
 				return at, true
 			}
@@ -242,7 +257,11 @@ type Store interface {
 	// Create makes a new session and returns its writer, which holds the lease.
 	Create(ctx context.Context, h Header, o CreateOptions) (Writer, error)
 	// OpenWrite takes write ownership. An open is refused when a record has an
-	// undeclared required type or a newer payload version.
+	// undeclared required type or a newer payload version (CheckOpen). A
+	// provider may judge at the open only the records from the newest
+	// checkpoint to the head, what restoring reads, so the open stays bounded;
+	// its handles then judge every other record as they read it, and never
+	// return one the rule refuses.
 	OpenWrite(ctx context.Context, id string, o OpenOptions) (Writer, error)
 	// OpenRead observes without ownership; refused as OpenWrite is.
 	OpenRead(ctx context.Context, id string) (Reader, error)
@@ -281,6 +300,145 @@ type Writer interface {
 	// Flush returns when every record accepted before the call is durable.
 	Flush(ctx context.Context) error
 	// Close (from Reader) flushes, releases the lease and keeps the epoch.
+}
+
+// The derived rows of a batch (its checkpoints) are written apart from its
+// records (DH-D-VIEW-2, session-views.md "Failure"): a derived row the database
+// refuses rolls back every derived row of that batch, as a group, and the
+// records commit anyway. The append succeeds, the refused folds' stored rows
+// keep their older seq (a reader sees them behind), and the store reports the
+// loss through a Degraded notice and the writer's DerivedDropped count. A
+// failing view therefore never costs a log event.
+
+// DegradedDerived is the Reason of a Degraded notice whose append committed its
+// records without its derived rows.
+const DegradedDerived = "derived-dropped"
+
+// DegradedUnusable is the Reason of a Degraded notice whose store became
+// unusable (a failed rollback left a transaction's outcome unknown): every
+// later call is refused until the store is reopened. Its Session is empty.
+const DegradedUnusable = "unusable"
+
+// Degraded is the notice a store sends when it did less than it was asked
+// without failing the call, or can no longer work (session-store.md §6.2,
+// "Events and errors"): an append whose records committed while its derived
+// rows were refused, or a store that became unusable.
+type Degraded struct {
+	// Session is the session the notice is about; empty for the whole store.
+	Session string
+	// Reason says what was not done: DegradedDerived or DegradedUnusable.
+	Reason string
+	// Keys are the dropped derived rows, "<key>@<state version>", in batch
+	// order.
+	Keys []string
+	// Err is the refusal.
+	Err error
+}
+
+// DegradedNotifier is a store that sends Degraded notices.
+type DegradedNotifier interface {
+	// OnDegraded calls fn with every notice from now on, after the call that
+	// caused it has committed and outside the store's locks; stop ends the
+	// subscription.
+	OnDegraded(fn func(Degraded)) (stop func())
+}
+
+// DerivedCounter is a writer that counts the derived rows its appends dropped.
+type DerivedCounter interface {
+	// DerivedDropped is the number of derived rows this writer's appends
+	// committed without.
+	DerivedDropped() uint64
+}
+
+// DerivedWriter is a store that writes derived rows without the session's lease
+// (session-views.md, "Ownership and access"): a pure fold gives every process
+// the same answer, so a row may be written by any of them. It is not a takeover:
+// the write never touches events, and it only moves a row forward.
+type DerivedWriter interface {
+	// UpsertDerived writes each row of session id whose seq is past the stored
+	// row of its key and state version (or that has none) and below the
+	// session's durable next seq; any other row is skipped, unchanged. It
+	// returns how many rows it wrote. A row with no key is session/invalid-event
+	// and writes nothing; a missing session is session/not-found.
+	UpsertDerived(ctx context.Context, id string, rows []Checkpoint) (int, error)
+}
+
+// FoldCount is how the derived rows of one key at one state version stand
+// against the logs of a store's sessions. It counts every session that is not
+// being deleted and has at least one durable event (an empty log needs no row);
+// each such session is in exactly one of Current, Behind and Pending.
+type FoldCount struct {
+	Key          string
+	StateVersion int
+	// Current is the sessions whose row reaches the durable head (its seq is the
+	// last durable seq).
+	Current int
+	// Behind is the sessions whose row is older than the durable head.
+	Behind int
+	// Pending is the sessions with no row of this key and state version: a fold
+	// that was never written, or one whose version changed and is not rebuilt.
+	Pending int
+}
+
+// FoldRows is a store that counts derived rows against its sessions' logs and
+// names the sessions a fold's rows are missing from (session-views.md,
+// "Status" and the background rebuild). Both read one consistent cut and write
+// nothing.
+type FoldRows interface {
+	// FoldCounts counts, for each key of want at the state version want maps it
+	// to, the sessions whose row is current, behind or pending; one entry per
+	// key, sorted by key.
+	FoldCounts(ctx context.Context, want map[string]int) ([]FoldCount, error)
+	// FoldPending is up to limit ids, in id order and each greater than after,
+	// of the sessions FoldCounts counts as pending for key at version.
+	FoldPending(ctx context.Context, key string, version int, after string, limit int) ([]string, error)
+}
+
+// DerivedKey names a derived row in a Degraded notice: "<key>@<state version>".
+func DerivedKey(c Checkpoint) string { return c.Key + "@" + strconv.Itoa(c.StateVersion) }
+
+// Notices is a provider's set of Degraded subscribers, behind its OnDegraded.
+// The zero value is empty and ready.
+type Notices struct {
+	mu   sync.Mutex
+	next int
+	fns  map[int]func(Degraded)
+}
+
+// Subscribe adds fn; stop removes it, and is idempotent.
+func (n *Notices) Subscribe(fn func(Degraded)) (stop func()) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.fns == nil {
+		n.fns = map[int]func(Degraded){}
+	}
+	id := n.next
+	n.next++
+	n.fns[id] = fn
+	return func() {
+		n.mu.Lock()
+		delete(n.fns, id)
+		n.mu.Unlock()
+	}
+}
+
+// Send calls every subscriber with d, in subscription order, without holding
+// n's lock, so a subscriber may call the store.
+func (n *Notices) Send(d Degraded) {
+	n.mu.Lock()
+	ids := make([]int, 0, len(n.fns))
+	for id := range n.fns {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	fns := make([]func(Degraded), 0, len(ids))
+	for _, id := range ids {
+		fns = append(fns, n.fns[id])
+	}
+	n.mu.Unlock()
+	for _, fn := range fns {
+		fn(d)
+	}
 }
 
 // Code is a "<domain>/<reason>" error code.
@@ -383,9 +541,11 @@ func Admit(reg *event.Registry, rec Record) error {
 	return nil
 }
 
-// CheckOpen judges every record of a session against reg before an open, as the
-// read rule of §6.2 requires: the first refusal is returned. It applies Admit, so
-// rows another build wrote are held to the same rule as appended ones.
+// CheckOpen judges recs, records of a session, against reg before an open, as
+// the read rule of §6.2 requires: the first refusal is returned. It applies
+// Admit, so rows another build wrote are held to the same rule as appended
+// ones. A provider passes every record, or (see Store.OpenWrite) those from the
+// newest checkpoint to the head and judges the rest as its handles read them.
 func CheckOpen(reg *event.Registry, recs []Record) error {
 	for _, r := range recs {
 		if err := Admit(reg, r); err != nil {

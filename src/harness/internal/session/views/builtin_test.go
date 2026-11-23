@@ -127,6 +127,8 @@ func refoldEqualsStored[S any](t *testing.T, d views.Definition[S], h session.He
 // TC-08). Given a fixed 200-event session in a temp home, when each built-in
 // view is refolded from the log and compared with its stored state, then all
 // four are equal; the event index's classes equal the surface fold's.
+//
+//dsh:test DH-T-VIEW-9
 func TestRefoldEqualsStoredForEveryBuiltinView(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "dsh.db")
 	reg := views.New()

@@ -1,0 +1,30 @@
+{
+  "events": 33,
+  "turns": 3,
+  "steps": 6,
+  "visible_steps": 3,
+  "user_messages": 4,
+  "assistant_messages": 5,
+  "attempts": 6,
+  "failed_attempts": 1,
+  "timed": 6,
+  "model_ms": 1550,
+  "first_token_ms": 210,
+  "tool_calls": 2,
+  "tool_results": 3,
+  "tool_errors": 1,
+  "spilled": 0,
+  "replacements": 2,
+  "usage": {
+    "input": 900,
+    "cache_read": 20,
+    "cache_write": 0,
+    "output": 130,
+    "total": 950
+  },
+  "outcomes": {
+    "aborted": 1,
+    "completed": 1,
+    "error": 1
+  }
+}

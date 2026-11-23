@@ -48,8 +48,16 @@ var LayerTags = []string{"replay", "scenario"}
 // noTags is the build-tag flag of the gate's go test runs; see LayerTags.
 const noTags = "-tags="
 
-// layerTags is the build-tag flag that selects every LayerTags file for go vet.
-var layerTags = "-tags=" + strings.Join(LayerTags, ",")
+// BenchTag is the build tag of the benchmark files (*_bench_test.go with
+// //go:build bench), run by hand with "go test -tags bench -bench". No gate runs
+// them, but vet, the own analyzers and staticcheck compile and check them with the
+// LayerTags (layerTags), so a bench file that does not build, or breaks an
+// analyzer rule, fails the gate.
+const BenchTag = "bench"
+
+// layerTags is the build-tag flag that selects every LayerTags file, and the
+// BenchTag files, for go vet and staticcheck.
+var layerTags = "-tags=" + strings.Join(append(slices.Clone(LayerTags), BenchTag), ",")
 
 // E2ETag is the build tag of the Gherkin e2e suites (test/e2e). The gate runs them
 // in no gate -- test, coverage and self pass -tags= -- but vet compiles and analyzes
@@ -57,8 +65,8 @@ var layerTags = "-tags=" + strings.Join(LayerTags, ",")
 // rule, fails the gate (M1-D-GATE-25 A).
 const E2ETag = "e2e"
 
-// vetTagSets are the build-tag flags vet runs with: no tags, the LayerTags, and
-// the e2e layer.
+// vetTagSets are the build-tag flags vet runs with: no tags, the LayerTags with
+// the bench files, and the e2e layer.
 var vetTagSets = []string{noTags, layerTags, "-tags=" + E2ETag}
 
 // Targets are the GOOS/GOARCH pairs cmd/dsh must build for with CGO_ENABLED=0 (QG-8).
@@ -176,7 +184,7 @@ func Gates(c *Config) []Gate {
 	return []Gate{
 		{Name: "gofmt", Title: "every Go file is gofmt-formatted", Run: c.gofmtGate},
 		{Name: "vet", Title: "go vet and the project's own analyzers (nosleep, onespawn, cleanup, fuzzcheck, rootcall, typeassert, lintignore), also on the e2e layer; prints the //lint:ignore exception total", Run: c.vetGate},
-		{Name: "staticcheck", Title: "the pinned staticcheck per module, with -tags= and -tags=" + strings.Join(LayerTags, ","), Run: c.staticcheckGate},
+		{Name: "staticcheck", Title: "the pinned staticcheck per module, with " + noTags + " and " + layerTags, Run: c.staticcheckGate},
 		{Name: "modules", Title: "go mod tidy -diff and go mod verify per module, the module rules (RM-1..RM-4) and a reason on every pin (RM-10)", Run: c.modulesGate},
 		{Name: "test", Title: "go test -race -shuffle=on -count=1 per module, CGO_ENABLED=1", Run: c.testGate},
 		{Name: "coverage", Title: fmt.Sprintf("coverage merged across processes, %d%% of statements per package", CoverageFloor), Run: c.coverageGate},
@@ -381,9 +389,9 @@ func goFiles(mod string) ([]string, error) {
 
 // vetGate runs the standard go vet checks, then the project's own analyzers through
 // "go vet -vettool" (QG-2). No baseline or exemption file is read. Each runs three
-// times (vetTagSets): without build tags, with every LayerTags tag and with the e2e
-// tag, so replay-, scenario- and e2e-tagged files are compiled and analyzed even
-// though the gate never runs them. Vetting needs no credentials. Last it prints "exceptions: N", the accepted //lint:ignore
+// times (vetTagSets): without build tags, with every LayerTags tag and BenchTag, and
+// with the e2e tag, so replay-, scenario-, bench- and e2e-tagged files are compiled
+// and analyzed even though the gate never runs them. Vetting needs no credentials. Last it prints "exceptions: N", the accepted //lint:ignore
 // directives of every Go file of the modules, of the own analyzers and staticcheck
 // alike (analyzers.Exceptions; DH-ADR-TOOLCHAIN-8).
 func (c *Config) vetGate(ctx context.Context, w io.Writer) error {

@@ -177,7 +177,7 @@ func TestRegistrationIsOnceAndBeforeUse(t *testing.T) {
 	}
 }
 
-//dsh:test DH-T-VIEW-3
+//dsh:test DH-T-VIEW-3, DH-T-VIEW-7
 func TestDispatchByTypeAndContainedPanic(t *testing.T) {
 	reg := views.New()
 	var calls atomic.Int32

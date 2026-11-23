@@ -38,6 +38,15 @@ type Seeder interface {
 	Seed(ctx context.Context, h store.Header, recs []store.Record) error
 }
 
+// DerivedRefuser is the fixture hook of the DerivedRowRefused case, which every
+// provider's store implements for the suite: after RefuseDerived(key), the
+// store's database refuses every write of a derived row (a checkpoint) under
+// key, as a defective fold's row would be refused. The suite uses it only to
+// prove that such a refusal costs no event (DH-D-VIEW-2).
+type DerivedRefuser interface {
+	RefuseDerived(key string) error
+}
+
 // Run runs every case of the suite against stores from factory, each case on a
 // fresh store.
 func Run(t *testing.T, factory Factory) {
@@ -55,6 +64,9 @@ func Run(t *testing.T, factory Factory) {
 		{"ReadSeqs", testReadSeqs},
 		{"ColdPart", testColdPart},
 		{"Checkpoints", testCheckpoints},
+		{"CheckpointsOnlyMoveForward", testCheckpointsForward},
+		{"DerivedRowRefused", testDerivedRefused},
+		{"UpsertDerived", testUpsertDerived},
 		{"List", testList},
 		{"ListByPrompt", testListByPrompt},
 		{"Delete", testDelete},
@@ -475,6 +487,200 @@ func testCheckpoints(t *testing.T, s store.Store) {
 	wantErr(t, "checkpoint past the log", err, store.ErrInvalidBatch)
 	if n := stat(t, s, "s1").NextSeq; n != 5 {
 		t.Fatalf("a refused batch wrote its records: NextSeq %d", n)
+	}
+}
+
+// testCheckpointsForward: an append's checkpoint never lowers a stored row's
+// seq. An older row leaves the stored one as it is (the append itself
+// succeeds, and nothing counts as dropped); a row at an equal seq replaces it;
+// a newer one moves it forward.
+func testCheckpointsForward(t *testing.T, s store.Store) {
+	w := create(t, s, "s1")
+	defer closeOK(t, w)
+	ck := func(seq store.Seq, state string) store.Checkpoint {
+		return store.Checkpoint{Key: "view/x", StateVersion: 1, Seq: seq, State: state}
+	}
+	stored := func(what string, want store.Checkpoint) {
+		t.Helper()
+		cps, err := w.Checkpoints(bg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(cps) != 1 || cps[0] != want {
+			t.Fatalf("%s: checkpoints = %+v, want %+v", what, cps, want)
+		}
+	}
+	appendOKWith(t, w, store.Batch{First: 0, Records: calls(t, 0, 4), Checkpoints: []store.Checkpoint{ck(3, `{"n":3}`)}})
+	appendOKWith(t, w, store.Batch{First: 4, Records: calls(t, 4, 1), Checkpoints: []store.Checkpoint{ck(1, `{"n":1}`)}})
+	stored("after an older row", ck(3, `{"n":3}`))
+	appendOKWith(t, w, store.Batch{First: 5, Checkpoints: []store.Checkpoint{ck(3, `{"n":3,"again":true}`)}})
+	stored("after a row at an equal seq", ck(3, `{"n":3,"again":true}`))
+	appendOKWith(t, w, store.Batch{First: 5, Checkpoints: []store.Checkpoint{ck(4, `{"n":4}`)}})
+	stored("after a newer row", ck(4, `{"n":4}`))
+	if dc, ok := w.(store.DerivedCounter); ok && dc.DerivedDropped() != 0 {
+		t.Fatalf("an older row counted as dropped: DerivedDropped = %d", dc.DerivedDropped())
+	}
+	if err := w.Flush(bg); err != nil {
+		t.Fatal(err)
+	}
+	stored("after Flush", ck(4, `{"n":4}`))
+}
+
+// testDerivedRefused: a batch whose derived row the store refuses commits its
+// records; every checkpoint of that batch is dropped as a group, so each fold's
+// stored row keeps its older seq; the writer counts the dropped rows and the
+// store sends one Degraded notice naming them, after which the writer appends
+// and flushes as before.
+func testDerivedRefused(t *testing.T, s store.Store) {
+	ref, ok := s.(DerivedRefuser)
+	if !ok {
+		t.Fatalf("%T does not implement storetest.DerivedRefuser", s)
+	}
+	dn, ok := s.(store.DegradedNotifier)
+	if !ok {
+		t.Fatalf("%T does not implement store.DegradedNotifier", s)
+	}
+	var (
+		mu      sync.Mutex
+		notices []store.Degraded
+	)
+	stop := dn.OnDegraded(func(d store.Degraded) {
+		mu.Lock()
+		notices = append(notices, d)
+		mu.Unlock()
+	})
+	defer stop()
+	w := create(t, s, "s1")
+	defer closeOK(t, w)
+	dc, ok := w.(store.DerivedCounter)
+	if !ok {
+		t.Fatalf("the writer %T does not implement store.DerivedCounter", w)
+	}
+	older := []store.Checkpoint{
+		{Key: "view/refused", StateVersion: 1, Seq: 0, State: `{"n":0}`},
+		{Key: "view/kept", StateVersion: 1, Seq: 0, State: `{"n":0}`},
+	}
+	if err := w.Append(bg, store.Batch{First: 0, Records: calls(t, 0, 1), Checkpoints: older}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ref.RefuseDerived("view/refused"); err != nil {
+		t.Fatalf("RefuseDerived: %v", err)
+	}
+	recs := calls(t, 1, 3)
+	err := w.Append(bg, store.Batch{First: 1, Records: recs, Checkpoints: []store.Checkpoint{
+		{Key: "view/kept", StateVersion: 1, Seq: 3, State: `{"n":3}`},
+		{Key: "view/refused", StateVersion: 1, Seq: 3, State: `{"n":3}`},
+	}})
+	if err != nil {
+		t.Fatalf("a refused derived row failed the append: %v", err)
+	}
+	if err := w.Flush(bg); err != nil {
+		t.Fatalf("Flush after the dropped derived rows: %v", err)
+	}
+	if sum := stat(t, s, "s1"); sum.NextSeq != 4 || sum.Durable != 4 {
+		t.Fatalf("after the dropped derived rows Stat = %+v; want the 4 records durable", sum)
+	}
+	got := readAll(t, w, store.ReadOptions{})
+	sameRecords(t, "records of the append whose derived rows were dropped", got[1:], recs)
+	cps, err := w.Checkpoints(bg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []store.Checkpoint{older[1], older[0]}; !slices.Equal(cps, want) {
+		t.Fatalf("checkpoints after the dropped batch = %+v; want both at their older seq %+v", cps, want)
+	}
+	if n := dc.DerivedDropped(); n != 2 {
+		t.Fatalf("DerivedDropped = %d, want 2", n)
+	}
+	mu.Lock()
+	got1 := slices.Clone(notices)
+	mu.Unlock()
+	if len(got1) != 1 || got1[0].Session != "s1" || got1[0].Reason != store.DegradedDerived || got1[0].Err == nil ||
+		!slices.Equal(got1[0].Keys, []string{"view/kept@1", "view/refused@1"}) {
+		t.Fatalf("Degraded notices = %+v; want one naming both rows of s1", got1)
+	}
+	// A batch the store does not refuse writes its rows as before.
+	appendOKWith(t, w, store.Batch{First: 4, Records: calls(t, 4, 1), Checkpoints: []store.Checkpoint{
+		{Key: "view/kept", StateVersion: 1, Seq: 4, State: `{"n":4}`}}})
+	cps, err = w.Checkpoints(bg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cps) != 2 || cps[0].Seq != 4 || cps[1].Seq != 0 {
+		t.Fatalf("checkpoints after an accepted batch = %+v", cps)
+	}
+	stop()
+	_ = w.Append(bg, store.Batch{First: 5, Records: calls(t, 5, 1), Checkpoints: []store.Checkpoint{
+		{Key: "view/refused", StateVersion: 1, Seq: 5, State: `{}`}}})
+	mu.Lock()
+	defer mu.Unlock()
+	if len(notices) != 1 {
+		t.Fatalf("a stopped subscription got %d notices", len(notices))
+	}
+}
+
+func appendOKWith(t *testing.T, w store.Writer, b store.Batch) {
+	t.Helper()
+	if err := w.Append(bg, b); err != nil {
+		t.Fatalf("Append at %d: %v", b.First, err)
+	}
+}
+
+// testUpsertDerived: a store that writes derived rows without the lease
+// (store.DerivedWriter) moves a row only forward and only below the durable
+// next seq, while the holder keeps its lease and appends on.
+func testUpsertDerived(t *testing.T, s store.Store) {
+	dw, ok := s.(store.DerivedWriter)
+	if !ok {
+		t.Skipf("%T does not implement the optional store.DerivedWriter", s)
+	}
+	w := create(t, s, "s1")
+	defer closeOK(t, w)
+	if err := w.Append(bg, store.Batch{First: 0, Records: calls(t, 0, 5), Checkpoints: []store.Checkpoint{
+		{Key: "view/x", StateVersion: 1, Seq: 1, State: `{"n":1}`}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Flush(bg); err != nil {
+		t.Fatal(err)
+	}
+	before := stat(t, s, "s1")
+	upsert := func(what string, want int, rows ...store.Checkpoint) {
+		t.Helper()
+		n, err := dw.UpsertDerived(bg, "s1", rows)
+		if err != nil || n != want {
+			t.Fatalf("UpsertDerived (%s) = %d, %v; want %d rows written", what, n, err, want)
+		}
+	}
+	row := func(key string, seq store.Seq, state string) store.Checkpoint {
+		return store.Checkpoint{Key: key, StateVersion: 1, Seq: seq, State: state}
+	}
+	upsert("forward", 1, row("view/x", 3, `{"n":3}`))
+	upsert("backward", 0, row("view/x", 2, `{"n":2}`))
+	upsert("equal seq", 0, row("view/x", 3, `{"other":true}`))
+	upsert("at the next seq", 0, row("view/x", 5, `{"n":5}`))
+	upsert("past the next seq", 0, row("view/x", 9, `{"n":9}`))
+	upsert("a new row at the next seq", 0, row("view/y", 5, `{}`))
+	upsert("a new row and a backward one", 1, row("view/y", 4, `{"y":4}`), row("view/x", 0, `{}`))
+	upsert("no rows", 0)
+	cps, err := w.Checkpoints(bg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []store.Checkpoint{row("view/x", 3, `{"n":3}`), row("view/y", 4, `{"y":4}`)}; !slices.Equal(cps, want) {
+		t.Fatalf("checkpoints = %+v, want %+v", cps, want)
+	}
+	if sum := stat(t, s, "s1"); sum.LeaseEpoch != before.LeaseEpoch || sum.Holder == nil || sum.NextSeq != 5 {
+		t.Fatalf("after UpsertDerived Stat = %+v; want the holder's lease untouched (%+v)", sum, before)
+	}
+	appendOK(t, w, call(t, 5))
+	_, err = dw.UpsertDerived(bg, "s1", []store.Checkpoint{{Seq: 1}})
+	wantErr(t, "UpsertDerived of a row with no key", err, store.ErrInvalidBatch)
+	_, err = dw.UpsertDerived(bg, "missing", []store.Checkpoint{row("view/x", 0, `{}`)})
+	wantErr(t, "UpsertDerived of a missing session", err, store.ErrNotFound)
+	ctx, cancel := context.WithCancel(bg)
+	cancel()
+	if _, err := dw.UpsertDerived(ctx, "s1", []store.Checkpoint{row("view/x", 4, `{}`)}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("UpsertDerived(cancelled) = %v", err)
 	}
 }
 

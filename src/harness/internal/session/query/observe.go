@@ -3,6 +3,7 @@ package query
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"time"
 
@@ -52,6 +53,8 @@ type Observation struct {
 // no lease, so it works while another process writes the session. It is one
 // committed cut: the head is read once and the window, the checkpoints and
 // every view stop at it, so records appended meanwhile appear in none of them.
+// The views are read at Exact freshness: a session whose stored rows are more
+// than the catch-up bound (WithMaxCatchUp) behind its head is view/behind.
 // A session the caller may not see is session/not-found, as a missing one.
 func (s *Service) Observe(ctx context.Context, id session.ID, w Window) (Observation, error) {
 	sum, err := s.check(ctx, id)
@@ -77,15 +80,16 @@ func (s *Service) Observe(ctx context.Context, id session.ID, w Window) (Observa
 		}
 	}
 	o.More = o.Next < head
-	if o.Views, err = snapshot(ctx, r, head); err != nil {
+	if o.Views, err = snapshot(ctx, r, head, s.maxCatchUp); err != nil {
 		return Observation{}, err
 	}
 	return o, nil
 }
 
-// snapshot is the four built-in views at head, from one read of the
-// checkpoints and one read of the records they need.
-func snapshot(ctx context.Context, r store.Reader, head event.Seq) (Snapshot, error) {
+// snapshot is the four built-in views at head at Exact freshness, from one read
+// of the checkpoints and one read of the records they need: at most maxCatchUp
+// records past the oldest usable row, else view/behind with both positions.
+func snapshot(ctx context.Context, r store.Reader, head event.Seq, maxCatchUp int) (Snapshot, error) {
 	c, err := readCut(ctx, r, head)
 	if err != nil {
 		return Snapshot{}, err
@@ -95,7 +99,12 @@ func snapshot(ctx context.Context, r store.Reader, head event.Seq) (Snapshot, er
 	s1, f1 := start(c, dt)
 	s2, f2 := start(c, dst)
 	s3, f3 := start(c, di)
-	if err := c.load(ctx, r, min(f0, f1, f2, f3)); err != nil {
+	low := min(f0, f1, f2, f3)
+	if head-low > event.Seq(maxCatchUp) {
+		return Snapshot{}, &views.Error{Code: views.CodeBehind, AsOfSeq: low, HeadSeq: head,
+			Msg: fmt.Sprintf("session %s: stored views reach %d, the log %d; catching up %d events is over the %d allowed", c.hdr.ID, low, head, head-low, maxCatchUp)}
+	}
+	if err := c.load(ctx, r, low); err != nil {
 		return Snapshot{}, err
 	}
 	return Snapshot{

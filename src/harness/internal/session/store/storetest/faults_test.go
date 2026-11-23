@@ -36,7 +36,7 @@ type faults struct {
 	neverDurable, statFails                                 bool
 	flushFails, appendFails, closeFails, createFails        bool
 	appendIgnoresCtx, createIgnoresCtx, cancelledAppendHits bool
-	emptyBatchRefused                                       bool
+	emptyBatchRefused, derivedFailsBatch                    bool
 }
 
 // variants maps a variant to its faults and to what the suite must report: each
@@ -86,6 +86,8 @@ var variants = map[string]struct {
 	"create ignores ctx":    {faults{createIgnoresCtx: true}, [][2]string{{"CancelledContext", "Create(cancelled) = <nil>"}}},
 	"cancelled append hits": {faults{cancelledAppendHits: true}, [][2]string{{"CancelledContext", "a cancelled append wrote: NextSeq 2"}}},
 	"empty batch refused":   {faults{emptyBatchRefused: true}, [][2]string{{"AppendOrderAndReadYourWrites", "empty batch: empty batch refused"}}},
+	"derived refusal fails the batch": {faults{derivedFailsBatch: true}, [][2]string{
+		{"DerivedRowRefused", "a refused derived row failed the append"}}},
 }
 
 const variantEnv = "DSH_STORETEST_FAULT"
@@ -169,7 +171,7 @@ func TestFaultyStoreChild(t *testing.T) {
 			return nil
 		}
 		m := memstore.New()
-		fs := &faultyStore{inner: m, f: v.f}
+		fs := &faultyStore{inner: m, f: v.f, refused: map[string]bool{}}
 		if v.f.noSeeder {
 			return fs
 		}
@@ -182,6 +184,38 @@ func TestFaultyStoreChild(t *testing.T) {
 type faultyStore struct {
 	inner store.Store
 	f     faults
+
+	mu      sync.Mutex
+	refused map[string]bool // the derived-row keys RefuseDerived named
+}
+
+// RefuseDerived, OnDegraded and UpsertDerived pass the derived-row hooks
+// through to the inner store.
+func (s *faultyStore) RefuseDerived(key string) error {
+	s.mu.Lock()
+	s.refused[key] = true
+	s.mu.Unlock()
+	return s.inner.(storetest.DerivedRefuser).RefuseDerived(key)
+}
+
+func (s *faultyStore) OnDegraded(fn func(store.Degraded)) func() {
+	return s.inner.(store.DegradedNotifier).OnDegraded(fn)
+}
+
+func (s *faultyStore) UpsertDerived(ctx context.Context, id string, rows []store.Checkpoint) (int, error) {
+	return s.inner.(store.DerivedWriter).UpsertDerived(ctx, id, rows)
+}
+
+// refuses reports whether a checkpoint of b is under a refused key.
+func (s *faultyStore) refuses(b store.Batch) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, c := range b.Checkpoints {
+		if s.refused[c.Key] {
+			return true
+		}
+	}
+	return false
 }
 
 type seedingStore struct {
@@ -230,7 +264,7 @@ func (s *faultyStore) OpenRead(ctx context.Context, id string) (store.Reader, er
 }
 
 func (s *faultyStore) writer(w store.Writer) store.Writer {
-	return &faultyWriter{Writer: w, r: faultyReader{Reader: w, f: s.f}, f: s.f, aliased: map[store.Seq]store.Record{}}
+	return &faultyWriter{Writer: w, r: faultyReader{Reader: w, f: s.f}, f: s.f, s: s, aliased: map[store.Seq]store.Record{}}
 }
 
 func (s *faultyStore) Stat(ctx context.Context, id string) (store.Summary, error) {
@@ -348,6 +382,7 @@ type faultyWriter struct {
 	store.Writer
 	r faultyReader
 	f faults
+	s *faultyStore
 
 	mu      sync.Mutex
 	aliased map[store.Seq]store.Record // the caller's records, kept without a copy
@@ -379,6 +414,9 @@ func (w *faultyWriter) Append(ctx context.Context, b store.Batch) error {
 	case w.f.cancelledAppendHits && ctx.Err() != nil:
 		_ = w.Writer.Append(context.WithoutCancel(ctx), b)
 		return ctx.Err()
+	case w.f.derivedFailsBatch && w.s.refuses(b):
+		// The defect M1-G-STORE-10 closed: the refusal rolls the records back.
+		return errors.New("derived row refused: the batch is rolled back")
 	}
 	if err := w.Writer.Append(ctx, b); err != nil {
 		return err
@@ -391,6 +429,10 @@ func (w *faultyWriter) Append(ctx context.Context, b store.Batch) error {
 		w.mu.Unlock()
 	}
 	return nil
+}
+
+func (w *faultyWriter) DerivedDropped() uint64 {
+	return w.Writer.(store.DerivedCounter).DerivedDropped()
 }
 
 func (w *faultyWriter) Flush(ctx context.Context) error {

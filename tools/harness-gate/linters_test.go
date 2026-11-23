@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -135,6 +136,51 @@ func TestStaticcheckFindingStopsTheGate(t *testing.T) {
 	assertStoppedAt(t, out, code, "staticcheck")
 	if code != 1 || !strings.Contains(out, "(SA4000)") {
 		t.Errorf("exit %d, want 1 with SA4000 named:\n%s", code, out)
+	}
+}
+
+// benchModule is a scratch module whose only //go:build bench file holds body.
+func benchModule(t *testing.T, body string) string {
+	t.Helper()
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{
+		"go.mod":          "module example.com/benchseeded\n\ngo 1.27.4\n",
+		"x.go":            "// Package x is seeded for the bench builds.\npackage x\n",
+		"x_bench_test.go": "//go:build bench\n\npackage x\n\nimport \"testing\"\n\n" + body,
+	})
+	return root
+}
+
+// TestBrokenBenchFileFailsVet: a scratch module whose //go:build bench file does not
+// compile passes the untagged build, yet the gate stops at vet, on the run with the
+// layer and bench tags (-tags=replay,scenario,bench), so the bench files no gate
+// runs are still compiled and analyzed (gap-closure-plan.md Phase 15, the bench tag-set fix).
+func TestBrokenBenchFileFailsVet(t *testing.T) {
+	if want := "-tags=replay,scenario,bench"; layerTags != want || !slices.Contains(vetTagSets, want) {
+		t.Fatalf("layerTags = %q, vetTagSets = %q; want %q in both", layerTags, vetTagSets, want)
+	}
+	out, code := runGate(t, benchModule(t, "func BenchmarkX(b *testing.B) { undefinedCall() }\n"))
+	assertStoppedAt(t, out, code, "vet")
+	if !strings.Contains(out, "FAIL .: go vet -tags=replay,scenario,bench ./...") || !strings.Contains(out, "undefinedCall") {
+		t.Errorf("vet did not fail on the bench file:\n%s", out)
+	}
+	if strings.Contains(out, "FAIL .: go vet -tags= ./...") {
+		t.Errorf("the untagged vet failed; only the bench build is broken:\n%s", out)
+	}
+}
+
+// TestStaticcheckChecksBenchFiles: a staticcheck finding (x == x) only in a
+// //go:build bench file fails the staticcheck gate on its layer-and-bench run and
+// not on the untagged one.
+func TestStaticcheckChecksBenchFiles(t *testing.T) {
+	cfg := newTestConfig(t, benchModule(t, "func BenchmarkX(b *testing.B) {\n\tx := b.N\n\tif x == x {\n\t\tb.Log(x)\n\t}\n}\n"))
+	var out bytes.Buffer
+	err := cfg.staticcheckGate(context.Background(), &out)
+	if err == nil || !strings.Contains(out.String(), "(SA4000)") {
+		t.Fatalf("staticcheck gate = %v, want an SA4000 finding in the bench file:\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "FAIL .: staticcheck "+layerTags+" ./...") || strings.Contains(out.String(), "FAIL .: staticcheck "+noTags+" ./...") {
+		t.Errorf("want only the %s run to fail:\n%s", layerTags, out.String())
 	}
 }
 

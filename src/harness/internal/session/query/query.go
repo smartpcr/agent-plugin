@@ -8,7 +8,6 @@ package query
 import (
 	"cmp"
 	"context"
-	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
@@ -82,12 +81,13 @@ func (c Caller) seesProject(ws string) bool { return c.AllProjects || slices.Con
 // come from the workspace registry when one is given; without it every session
 // is ungrouped and unflagged (or flagged by WithMarks).
 type Service struct {
-	st        store.Store
-	ws        *workspace.Registry
-	marks     workspace.Marks
-	caller    Caller
-	interval  time.Duration
-	maxListed int
+	st         store.Store
+	ws         *workspace.Registry
+	marks      workspace.Marks
+	caller     Caller
+	interval   time.Duration
+	maxListed  int
+	maxCatchUp int
 }
 
 // Option configures New.
@@ -127,9 +127,20 @@ func WithMaxListed(n int) Option {
 	}
 }
 
+// WithMaxCatchUp sets how many log events past the stored rows an Observe
+// (an Exact read) folds before it fails with view/behind; the default is
+// views.DefaultMaxCatchUpEvents.
+func WithMaxCatchUp(n int) Option {
+	return func(s *Service) {
+		if n > 0 {
+			s.maxCatchUp = n
+		}
+	}
+}
+
 // New is a Service over st.
 func New(st store.Store, opts ...Option) *Service {
-	s := &Service{st: st, caller: Viewer(), interval: DefaultFollowInterval, maxListed: MaxListed}
+	s := &Service{st: st, caller: Viewer(), interval: DefaultFollowInterval, maxListed: MaxListed, maxCatchUp: views.DefaultMaxCatchUpEvents}
 	for _, o := range opts {
 		o(s)
 	}
@@ -144,14 +155,20 @@ func (s *Service) As(c Caller) *Service {
 }
 
 // Entry is one listed session: its header, store summary, list summary view and
-// flags.
+// flags. The summary is read at Stored freshness (its row, never the log):
+// SummaryState says whether it is current, behind the log (AsOfSeq is then the
+// next seq it reflects) or pending (no usable row: Summary is the zero value
+// and means nothing).
 type Entry struct {
-	ID          session.ID
-	Header      store.Header
-	Events      event.Seq
-	LastEventAt time.Time
-	Summary     views.ListSummary
-	Flags       workspace.Flags
+	ID           session.ID
+	Header       store.Header
+	Events       event.Seq
+	LastEventAt  time.Time
+	Summary      views.ListSummary
+	SummaryState views.ValueState
+	// AsOfSeq is the next seq the summary reflects; zero when pending.
+	AsOfSeq event.Seq
+	Flags   workspace.Flags
 	// Workspace is the project the session is attached to, "" when ungrouped.
 	Workspace string
 }
@@ -161,6 +178,8 @@ type Entry struct {
 type ListOptions struct {
 	Cwd, Creator string
 	// IncludeBlank lists sessions with no prompt; by default they are hidden.
+	// A session whose summary is pending is listed either way: whether it is
+	// blank is not known.
 	IncludeBlank bool
 	// Limit and Cursor page List (the store's keyset); ListByProject walks all.
 	// Limit 0 (or less) is DefaultLimit, more than MaxLimit is MaxLimit.
@@ -214,7 +233,7 @@ func (s *Service) page(ctx context.Context, q store.Query, o ListOptions) (Page,
 		if err != nil {
 			return Page{}, 0, err
 		}
-		if (o.IncludeBlank || !e.Summary.Blank) && s.caller.Sees(e.Workspace, e.Flags) {
+		if (o.IncludeBlank || e.SummaryState == views.Pending || !e.Summary.Blank) && s.caller.Sees(e.Workspace, e.Flags) {
 			out.Entries = append(out.Entries, e)
 		}
 	}
@@ -231,9 +250,11 @@ func (s *Service) entry(ctx context.Context, sum store.Summary) (Entry, error) {
 	if !s.caller.Sees(e.Workspace, e.Flags) {
 		return e, nil
 	}
-	if e.Summary, err = s.summary(ctx, sum); err != nil {
+	var v views.Value
+	if e.Summary, v, err = s.summary(ctx, sum); err != nil {
 		return Entry{}, err
 	}
+	e.SummaryState, e.AsOfSeq = v.State, v.AsOfSeq
 	return e, nil
 }
 
@@ -277,23 +298,26 @@ func (s *Service) check(ctx context.Context, id session.ID) (store.Summary, erro
 	return sum, nil
 }
 
-// summary is the session's list summary at the head sum reports.
-func (s *Service) summary(ctx context.Context, sum store.Summary) (views.ListSummary, error) {
+// summary is the session's list summary at Stored freshness against the head
+// sum reports (M1-G-STORE-12): its stored row as it is, never a fold of the log,
+// so one page costs one checkpoint read per session however long its logs.
+func (s *Service) summary(ctx context.Context, sum store.Summary) (views.ListSummary, views.Value, error) {
+	d := views.ListSummaryView()
+	if sum.NextSeq == 0 {
+		st, v := views.StoredState(d, sum.Header, nil, 0)
+		return st, v, nil
+	}
 	r, err := s.st.OpenRead(ctx, sum.Header.ID)
 	if err != nil {
-		return views.ListSummary{}, err
+		return views.ListSummary{}, views.Value{}, err
 	}
 	defer func() { _ = r.Close(ctx) }()
-	c, err := readCut(ctx, r, sum.NextSeq)
+	cps, err := r.Checkpoints(ctx)
 	if err != nil {
-		return views.ListSummary{}, err
+		return views.ListSummary{}, views.Value{}, err
 	}
-	d := views.ListSummaryView()
-	st, from := start(c, d)
-	if err := c.load(ctx, r, from); err != nil {
-		return views.ListSummary{}, err
-	}
-	return finish(c, d, st, from), nil
+	st, v := views.StoredState(d, r.Header(), cps, sum.NextSeq)
+	return st, v, nil
 }
 
 // cut is one committed cut of a log: everything below head and nothing past
@@ -325,17 +349,11 @@ func readCut(ctx context.Context, r store.Reader, head event.Seq) (*cut, error) 
 // records the seq it reflects), else d's initial state; from is where the log
 // takes it up.
 func start[S any](c *cut, d views.Definition[S]) (S, event.Seq) {
-	state, from := d.Init(c.hdr), event.Seq(0)
-	for _, cp := range c.cps {
-		if cp.Key != d.Key || cp.StateVersion != d.Version {
-			continue
-		}
-		var v S
-		if json.Unmarshal([]byte(cp.State), &v) == nil && cp.Seq+1 >= from {
-			state, from = v, cp.Seq+1
-		}
+	state, v := views.StoredState(d, c.hdr, c.cps, c.head)
+	if v.State == views.Pending {
+		return d.Init(c.hdr), 0
 	}
-	return state, from
+	return state, v.AsOfSeq
 }
 
 // load reads c's records [from, head) in one read.

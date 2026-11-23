@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"sync"
+	"sync/atomic"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store"
 )
@@ -11,6 +12,11 @@ import (
 // reader is a handle on one session, bound to its uid: a session deleted and
 // re-created under the same id is another uid, so the handle reads
 // session/deleted.
+//
+// The open judged the records [lo, hi) against the read rule (checkOpen); a
+// writer's own appends extend hi, as Append admitted them. Every other record
+// is judged as it is read (judge), so the open stays bounded by what restoring
+// reads and no record the rule refuses is ever returned.
 type reader struct {
 	s      *Store
 	id     string
@@ -19,6 +25,7 @@ type reader struct {
 
 	mu     sync.Mutex
 	closed bool
+	lo, hi store.Seq
 }
 
 func (r *reader) Header() store.Header { return r.header }
@@ -27,6 +34,35 @@ func (r *reader) isClosed() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.closed
+}
+
+// judge applies the read rule (store.Admit) to each of recs the open did not
+// judge, and returns the first refusal: session/unknown-type,
+// session/newer-payload or session/invalid-event, as the open would have.
+func (r *reader) judge(recs []store.Record) error {
+	r.mu.Lock()
+	lo, hi := r.lo, r.hi
+	r.mu.Unlock()
+	for _, rec := range recs {
+		if rec.Seq >= lo && rec.Seq < hi {
+			continue
+		}
+		if err := store.Admit(r.s.reg, rec); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// admitted extends the judged range over a committed batch of this handle's
+// own, which Append admitted; a batch that does not start at the range's end
+// leaves it as it is.
+func (r *reader) admitted(b store.Batch) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if b.First == r.hi {
+		r.hi += store.Seq(len(b.Records))
+	}
 }
 
 // open is the guard of every read: the handle is open and its session lives.
@@ -60,12 +96,22 @@ func (r *reader) Read(ctx context.Context, from store.Seq, limit int, o store.Re
 		out, err = selectRecords(ctx, tx, r.uid, from, n, o.WithAux)
 		return err
 	})
+	if err == nil {
+		err = r.judge(out)
+	}
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
+// seqsGap is the widest step between two seqs ReadSeqs reads in one range: the
+// records between them are read and dropped.
+const seqsGap = 8
+
+// ReadSeqs reads each run of ascending seqs (in the order given) no more than
+// seqsGap apart with one range read, so a checkpoint restore that names most
+// of a long log reads it in a few statements instead of one per record.
 func (r *reader) ReadSeqs(ctx context.Context, seqs []store.Seq, o store.ReadOptions) ([]store.Record, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -80,17 +126,31 @@ func (r *reader) ReadSeqs(ctx context.Context, seqs []store.Seq, o store.ReadOpt
 			if q >= ss.sum.NextSeq {
 				return store.Errorf(store.CodeInvalidBoundary, "session %q has no seq %d", r.id, q)
 			}
-			recs, err := selectRecords(ctx, tx, r.uid, q, 1, o.WithAux)
+		}
+		for i := 0; i < len(seqs); {
+			j := i + 1
+			for j < len(seqs) && seqs[j] > seqs[j-1] && seqs[j]-seqs[j-1] <= seqsGap {
+				j++
+			}
+			from := seqs[i]
+			recs, err := selectRecords(ctx, tx, r.uid, from, int64(seqs[j-1]-from)+1, o.WithAux)
 			if err != nil {
 				return err
 			}
-			if len(recs) != 1 || recs[0].Seq != q {
-				return store.Errorf(CodeCorrupt, "session %q: seq %d is missing below next seq %d", r.id, q, ss.sum.NextSeq)
+			for _, q := range seqs[i:j] {
+				k := int(q - from)
+				if k >= len(recs) || recs[k].Seq != q {
+					return store.Errorf(CodeCorrupt, "session %q: seq %d is missing below next seq %d", r.id, q, ss.sum.NextSeq)
+				}
+				out = append(out, recs[k])
 			}
-			out = append(out, recs[0])
+			i = j
 		}
 		return nil
 	})
+	if err == nil {
+		err = r.judge(out)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -144,6 +204,8 @@ type writer struct {
 	reader
 	epoch  uint64
 	holder string
+	// dropped counts the derived rows this writer's appends committed without.
+	dropped atomic.Uint64
 }
 
 // afterAppend, when set, runs after each committed append, before Append
@@ -171,17 +233,33 @@ func (w *writer) check(ctx context.Context, q querier) (row, error) {
 	return r, nil
 }
 
-// Append writes the batch in one transaction: every record and checkpoint, or
-// none of them. The commit is synced before Append returns (synchronous=FULL),
-// so another process never reads a record that is not durable.
+// Append writes the batch in one transaction: every record, or none of them.
+// The checkpoints, the batch's derived rows, are written after the records in
+// SAVEPOINT derived (DH-D-VIEW-2): a row the database refuses rolls back every
+// checkpoint of the batch, the records commit anyway, and the loss is counted
+// (DerivedDropped) and reported (store.Degraded) once the append returned its
+// lock; Append itself succeeds. The commit is synced before Append returns
+// (synchronous=FULL), so another process never reads a record that is not
+// durable.
 func (w *writer) Append(ctx context.Context, b store.Batch) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	dropped, err := w.appendLocked(ctx, b)
+	if err == nil && dropped != nil {
+		w.dropDerived(b, dropped)
+	}
+	return err
+}
+
+// appendLocked is Append under s.wmu; dropped is the refusal of the batch's
+// derived rows, when its records committed without them.
+func (w *writer) appendLocked(ctx context.Context, b store.Batch) (dropped error, err error) {
 	s := w.s
 	s.wmu.Lock()
 	defer s.wmu.Unlock()
-	err := s.writeLocked(ctx, func(tx *sql.Tx) error {
+	err = s.writeLocked(ctx, func(tx *sql.Tx) error {
+		dropped = nil
 		ss, err := w.check(ctx, tx)
 		if err != nil {
 			return err
@@ -225,14 +303,6 @@ func (w *writer) Append(ctx context.Context, b store.Batch) error {
 		if err != nil {
 			return err
 		}
-		for _, c := range b.Checkpoints {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO checkpoints (session, key, state_version, seq, state)
-				VALUES (?, ?, ?, ?, ?) ON CONFLICT (session, key, state_version)
-				DO UPDATE SET seq = excluded.seq, state = excluded.state`,
-				w.uid, c.Key, c.StateVersion, int64(c.Seq), c.State); err != nil {
-				return err
-			}
-		}
 		lastAt := ss.last
 		if n := len(b.Records); n > 0 {
 			lastAt = s.eventNanos(b.Records[n-1].Time)
@@ -248,12 +318,18 @@ func (w *writer) Append(ctx context.Context, b store.Batch) error {
 		} else if n != 1 {
 			return store.Errorf(store.CodeLeaseLost, "session %q changed under the append", w.id)
 		}
-		return nil
+		dropped, err = derivedInSavepoint(ctx, tx, w.uid, b.Checkpoints)
+		return err
 	})
+	if err != nil {
+		dropped = nil
+	} else {
+		w.admitted(b)
+	}
 	if err == nil && afterAppend != nil {
 		afterAppend(w.id, b)
 	}
-	return err
+	return dropped, err
 }
 
 // Flush returns once every commit of this instance, this writer's among them,

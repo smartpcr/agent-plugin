@@ -2,6 +2,7 @@ package views
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"slices"
@@ -11,14 +12,17 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store"
 )
 
-var _ session.Restorer = (*Registry)(nil)
+var (
+	_ session.Restorer      = (*Registry)(nil)
+	_ session.ClosingFolder = (*Registry)(nil)
+)
 
 func (f *folded) clone() *folded {
-	return &folded{next: f.next, values: maps.Clone(f.values), failed: maps.Clone(f.failed)}
+	return &folded{next: f.next, values: maps.Clone(f.values), failed: maps.Clone(f.failed), written: maps.Clone(f.written)}
 }
 
 func (r *Registry) initial(h session.Header) *folded {
-	f := &folded{values: map[string]any{}, failed: map[string]error{}}
+	f := &folded{values: map[string]any{}, failed: map[string]error{}, written: map[string]event.Seq{}}
 	for _, d := range r.defs {
 		v, err := safe(d, func() any { return d.init(h) })
 		if err != nil {
@@ -50,9 +54,8 @@ func must[T any](v T, err error) T {
 
 // step folds ev into f in place; a fold that panics is failed for the session
 // from then on, and the others go on. A fold whose from is past ev (restored
-// from a later checkpoint) skips it; changed, when not nil, collects the keys
-// ev changed.
-func (r *Registry) step(f *folded, ev event.Event, from map[string]event.Seq, changed map[string]bool) {
+// from a later checkpoint) skips it.
+func (r *Registry) step(f *folded, ev event.Event, from map[string]event.Seq) {
 	for _, d := range r.foldsFor(ev.Type()) {
 		if _, failed := f.failed[d.key]; failed || ev.Seq() < from[d.key] {
 			continue
@@ -70,26 +73,31 @@ func (r *Registry) step(f *folded, ev event.Event, from map[string]event.Seq, ch
 			delete(f.values, d.key)
 		case changedOne:
 			f.values[d.key] = next
-			if changed != nil {
-				changed[d.key] = true
-			}
 		}
 	}
 	f.next = ev.Seq() + 1
 }
 
+// checkpoints is s's stored rows when s can list them and a fold is stored; nil
+// otherwise, or when listing fails (stored state is derived: fold from the log).
+func (r *Registry) checkpoints(ctx context.Context, s session.ReadSession) []store.Checkpoint {
+	c, ok := s.(session.Checkpointed)
+	if !ok || !r.anyStored() {
+		return nil
+	}
+	cps, err := c.Checkpoints(ctx)
+	if err != nil {
+		return nil
+	}
+	return cps
+}
+
 // rebuild folds s's events [0, at), each stored fold starting from its newest
 // usable checkpoint row when s can list them (a row of this fold's version
-// strictly below at, so it reflects nothing past the cut).
-func (r *Registry) rebuild(ctx context.Context, s session.ReadSession, at event.Seq) (*folded, error) {
-	var cps []store.Checkpoint
-	if c, ok := s.(session.Checkpointed); ok && r.anyStored() {
-		var err error
-		if cps, err = c.Checkpoints(ctx); err != nil {
-			cps = nil // stored state is derived: fold from the log
-		}
-	}
-	f, _, err := r.restore(ctx, s, at, cps)
+// strictly below at, so it reflects nothing past the cut). A limit above 0
+// refuses, with view/behind, a catch-up of more than limit events.
+func (r *Registry) rebuild(ctx context.Context, s session.ReadSession, at event.Seq, limit int) (*folded, error) {
+	f, _, err := r.restore(ctx, s, at, r.checkpoints(ctx, s), limit)
 	return f, err
 }
 
@@ -105,8 +113,10 @@ func (r *Registry) anyStored() bool {
 
 // restore folds s's events [0, at), taking each stored fold up from its row in
 // cps when one is usable, and reports the stored folds whose rows are missing,
-// of another version, undecodable or behind at-1: those the caller rewrites.
-func (r *Registry) restore(ctx context.Context, s session.ReadSession, at event.Seq, cps []store.Checkpoint) (*folded, []string, error) {
+// of another version, undecodable or behind at-1: those the caller rewrites. A
+// limit above 0 refuses, with view/behind and before reading the log, a
+// catch-up of more than limit events.
+func (r *Registry) restore(ctx context.Context, s session.ReadSession, at event.Seq, cps []store.Checkpoint, limit int) (*folded, []string, error) {
 	f := r.initial(s.Header())
 	from := map[string]event.Seq{}
 	var stale []string
@@ -114,14 +124,11 @@ func (r *Registry) restore(ctx context.Context, s session.ReadSession, at event.
 	for _, d := range r.defs {
 		start := event.Seq(0)
 		if d.stored {
-			if cp, ok := usable(cps, d, at); ok {
-				// A row that does not decode (or panics decoding) is unusable:
-				// the fold is rebuilt from the log and the row rewritten.
-				if v, err := safe(d, func() any { return must(d.decode(cp.State)) }); err == nil {
-					f.values[d.key] = v
-					delete(f.failed, d.key)
-					start = cp.Seq + 1
-				}
+			if v, cp, ok := decodeRow(cps, d, at); ok {
+				f.values[d.key] = v
+				delete(f.failed, d.key)
+				start = cp.Seq + 1
+				f.written[d.key] = start
 			}
 			if start != at {
 				stale = append(stale, d.key)
@@ -129,6 +136,9 @@ func (r *Registry) restore(ctx context.Context, s session.ReadSession, at event.
 		}
 		from[d.key] = start
 		low = min(low, start)
+	}
+	if limit > 0 && at-low > event.Seq(limit) {
+		return nil, nil, behind(s.ID(), low, at, limit)
 	}
 	if low < at {
 		evs, err := s.Read(ctx, low, int(at-low))
@@ -139,11 +149,26 @@ func (r *Registry) restore(ctx context.Context, s session.ReadSession, at event.
 			return nil, nil, errorf(CodeFailed, "session %q: read %d events in [%d, %d)", s.ID(), len(evs), low, at)
 		}
 		for _, ev := range evs {
-			r.step(f, ev, from, nil)
+			r.step(f, ev, from)
 		}
 	}
 	f.next = at
 	return f, stale, nil
+}
+
+// decodeRow is d's state from its newest usable row in cps below at. A row that
+// does not decode (or panics decoding) is unusable: the fold is then rebuilt
+// from the log, or pending at Stored freshness.
+func decodeRow(cps []store.Checkpoint, d *def, at event.Seq) (any, store.Checkpoint, bool) {
+	cp, ok := usable(cps, d, at)
+	if !ok {
+		return nil, cp, false
+	}
+	v, err := safe(d, func() any { return must(d.decode(cp.State)) })
+	if err != nil {
+		return nil, cp, false
+	}
+	return v, cp, true
 }
 
 // usable is d's newest checkpoint row of d's version below at.
@@ -183,6 +208,18 @@ func (r *Registry) rows(f *folded, keys func(*def) bool) []session.Derived {
 	return out
 }
 
+// due reports whether stored fold d writes its row with the batch that took f
+// to f.next: an EveryCommit fold always; a Periodic fold when no row of it is
+// known, when the batch holds a turn end, or once its row is
+// CheckpointEveryEvents events behind.
+func (r *Registry) due(f *folded, d *def, turnEnd bool) bool {
+	if d.cadence == EveryCommit {
+		return true
+	}
+	w, ok := f.written[d.key]
+	return !ok || turnEnd || f.next-w >= event.Seq(r.cfg.CheckpointEveryEvents)
+}
+
 // Restore is the session's Restorer hook, called once when a session opens:
 // each stored fold is taken up from its checkpoint row and the log after it,
 // the others are folded from the log, and the result is the base the next
@@ -196,11 +233,15 @@ func (r *Registry) Restore(ctx context.Context, s session.ReadSession, cps []sto
 	if !r.anyStored() {
 		return nil, nil
 	}
-	f, stale, err := r.restore(ctx, s, s.Len(), cps)
+	at := s.Len()
+	f, stale, err := r.restore(ctx, s, at, cps, 0)
 	if err != nil {
 		return nil, err
 	}
 	rows := r.rows(f, func(d *def) bool { return slices.Contains(stale, d.key) })
+	for _, row := range rows {
+		f.written[row.Key] = at
+	}
 	r.seed(s.ID(), f)
 	return rows, nil
 }
@@ -213,8 +254,8 @@ func (r *Registry) Restore(ctx context.Context, s session.ReadSession, cps []sto
 // before it, forgotten, or reopened after a restart): Fold folds nothing, and
 // the next Read rebuilds from the log at its cut, outside the append lock, and
 // seeds the base later batches fold from. The rows returned are the stored
-// folds the batch changed (every stored fold for a batch folded from 0), which
-// the session commits with the batch at its last seq.
+// folds due by their cadence (every stored fold for a batch folded from 0),
+// which the session commits with the batch at its last seq.
 func (r *Registry) Fold(s session.ReadSession, batch []event.Event) []session.Derived {
 	if len(batch) == 0 {
 		return nil
@@ -232,11 +273,15 @@ func (r *Registry) Fold(s session.ReadSession, batch []event.Event) []session.De
 		base = r.initial(s.Header())
 	}
 	next := base.clone()
-	changed := map[string]bool{}
+	turnEnd := false
 	for _, ev := range batch {
-		r.step(next, ev, nil, changed)
+		r.step(next, ev, nil)
+		turnEnd = turnEnd || ev.Type() == event.TurnEndType.Name()
 	}
-	rows := r.rows(next, func(d *def) bool { return rebuilt || changed[d.key] })
+	rows := r.rows(next, func(d *def) bool { return rebuilt || r.due(next, d, turnEnd) })
+	for _, row := range rows {
+		next.written[row.Key] = next.next
+	}
 	r.mu.Lock()
 	t := r.sessions[s.ID()]
 	if t == nil {
@@ -251,6 +296,25 @@ func (r *Registry) Fold(s session.ReadSession, batch []event.Event) []session.De
 	return rows
 }
 
+// Closing is the session's close hook, called under the append lock as the
+// session closes: the rows of the stored folds whose newest row is behind the
+// log head (the Periodic folds not due since), which the session commits at its
+// head. A session this registry has not followed gets none.
+func (r *Registry) Closing(s session.ReadSession) []session.Derived {
+	n := s.Len()
+	r.mu.Lock()
+	base := r.baseLocked(s.ID(), n)
+	r.mu.Unlock()
+	if base == nil || n == 0 {
+		return nil
+	}
+	f := base.clone()
+	return r.rows(f, func(d *def) bool {
+		w, ok := f.written[d.key]
+		return !ok || w < n
+	})
+}
+
 // baseLocked is the committed fold of id ending at at, promoting a pending
 // fold that ends there; nil when the registry has none. The caller holds r.mu.
 func (r *Registry) baseLocked(id session.ID, at event.Seq) *folded {
@@ -261,6 +325,7 @@ func (r *Registry) baseLocked(id session.ID, at event.Seq) *folded {
 	if t.pending != nil {
 		if t.pending.next == at {
 			t.committed = t.pending
+			r.clearFailuresLocked(id, t.committed)
 		}
 		t.pending = nil
 	}
@@ -301,9 +366,32 @@ type asOf interface {
 }
 
 // Read returns the folds named by keys (every fold when keys is empty) of s,
-// all at one cut: a live session's AsOf position, else its Len. An unregistered
-// key is view/unknown-key.
+// all at one cut: a live session's AsOf position, else its Len. It is the
+// in-lease Exact read: every value is current (or failed), and the catch-up is
+// not bounded. An unregistered key is view/unknown-key.
 func (r *Registry) Read(ctx context.Context, s session.ReadSession, keys ...string) (Snapshot, error) {
+	return r.snapshot(ctx, s, keys, Exact, 0)
+}
+
+// Snapshot returns the folds named by keys (every fold when keys is empty) of
+// s at freshness f, all at one cut: a live session's AsOf position, else its
+// Len, which is the snapshot's HeadSeq. A session this registry follows is read
+// from memory, every value current, at either freshness. Otherwise Exact folds
+// the log after the stored rows, at most Config.MaxCatchUpEvents events, and
+// fails with view/behind (both positions set) when more are missing; Stored
+// never folds and never blocks: each value is its stored row, current when the
+// row reaches the head, behind (with the row's AsOfSeq) when it does not, and
+// pending when there is no usable row (none, another version, undecodable, or a
+// fold that is not Stored). An unregistered key is view/unknown-key.
+func (r *Registry) Snapshot(ctx context.Context, s session.ReadSession, keys []string, f Freshness) (Snapshot, error) {
+	if f != Stored && f != Exact {
+		return Snapshot{}, errorf(CodeInvalid, "freshness %d is neither Stored nor Exact", f)
+	}
+	return r.snapshot(ctx, s, keys, f, r.cfg.MaxCatchUpEvents)
+}
+
+// snapshot is Read and Snapshot; limit bounds an Exact catch-up (0: none).
+func (r *Registry) snapshot(ctx context.Context, s session.ReadSession, keys []string, f Freshness, limit int) (Snapshot, error) {
 	r.mu.Lock()
 	r.sealLocked()
 	if len(keys) == 0 {
@@ -332,22 +420,112 @@ func (r *Registry) Read(ctx context.Context, s session.ReadSession, keys ...stri
 	} else {
 		at = s.Len()
 	}
+	if hit == nil && f == Stored {
+		return r.stored(ctx, s, keys, at)
+	}
 	if hit == nil {
 		var err error
-		if hit, err = r.rebuild(ctx, s, at); err != nil {
+		if hit, err = r.rebuild(ctx, s, at, limit); err != nil {
 			return Snapshot{}, err
 		}
 		if live {
 			r.seed(s.ID(), hit)
 		}
 	}
-	snap := Snapshot{AsOf: at, values: map[string]any{}, failed: map[string]error{}}
+	snap := Snapshot{AsOf: at, HeadSeq: at, values: map[string]any{}, failed: map[string]error{}, states: map[string]Value{}}
 	for _, k := range keys {
 		if err, failed := hit.failed[k]; failed {
 			snap.failed[k] = err
+			snap.states[k] = Value{State: Failed}
 			continue
 		}
 		snap.values[k] = hit.values[k]
+		snap.states[k] = Value{State: Current, AsOfSeq: at}
 	}
 	return snap, nil
+}
+
+// stored is the Stored snapshot of keys of s at head at, from its rows only.
+func (r *Registry) stored(ctx context.Context, s session.ReadSession, keys []string, at event.Seq) (Snapshot, error) {
+	snap := Snapshot{HeadSeq: at, values: map[string]any{}, failed: map[string]error{}, states: map[string]Value{}}
+	var cps []store.Checkpoint
+	if c, ok := s.(session.Checkpointed); ok && at > 0 && r.anyStored() {
+		var err error
+		if cps, err = c.Checkpoints(ctx); err != nil {
+			return Snapshot{}, err
+		}
+	}
+	low := at
+	for _, k := range keys {
+		d := r.byKey[k]
+		if at == 0 {
+			// An empty log: the initial state is exact without folding.
+			v, err := safe(d, func() any { return d.init(s.Header()) })
+			if err != nil {
+				snap.failed[k] = err
+				snap.states[k] = Value{State: Failed}
+				continue
+			}
+			snap.values[k] = v
+			snap.states[k] = Value{State: Current}
+			continue
+		}
+		v, cp, ok := decodeRow(cps, d, at)
+		if !d.stored || !ok {
+			snap.states[k] = Value{State: Pending}
+			continue
+		}
+		val := Value{State: Current, AsOfSeq: cp.Seq + 1}
+		if val.AsOfSeq < at {
+			val.State = Behind
+		}
+		snap.values[k] = v
+		snap.states[k] = val
+		low = min(low, val.AsOfSeq)
+	}
+	snap.AsOf = low
+	return snap, nil
+}
+
+// StoredState is d's state from its row in cps at Stored freshness against a
+// log whose next seq is head: no fold, no log read. It is current when the row
+// reaches the head, behind (with the row's AsOfSeq) when it does not, and
+// pending, with the zero state, when there is no usable row (none, another
+// version, a row at or past head, or one that does not decode). An empty log
+// is d's initial state, current. A reader that holds the store's rows and not a
+// session (the query service) reads its list summary so.
+func StoredState[S any](d Definition[S], h session.Header, cps []store.Checkpoint, head event.Seq) (S, Value) {
+	var zero S
+	if head == 0 {
+		return d.Init(h), Value{State: Current}
+	}
+	var best store.Checkpoint
+	found := false
+	for _, c := range cps {
+		if c.Key == d.Key && c.StateVersion == d.Version && c.Seq < head && (!found || c.Seq > best.Seq) {
+			best, found = c, true
+		}
+	}
+	if !d.Stored || !found {
+		return zero, Value{State: Pending}
+	}
+	var s S
+	if err := decodeState(best.State, &s); err != nil {
+		return zero, Value{State: Pending}
+	}
+	v := Value{State: Current, AsOfSeq: best.Seq + 1}
+	if v.AsOfSeq < head {
+		v.State = Behind
+	}
+	return s, v
+}
+
+// decodeState decodes a stored row into v; a decoder that panics is an error.
+func decodeState(raw string, v any) (err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			err = fmt.Errorf("decoding a stored row panicked: %v", p)
+		}
+	}()
+	return json.Unmarshal([]byte(raw), v)
 }

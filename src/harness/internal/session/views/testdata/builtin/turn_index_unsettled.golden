@@ -1,0 +1,26 @@
+{
+  "turns": [
+    {
+      "turn": 1,
+      "start": 0,
+      "start_at": 1000,
+      "settled": true,
+      "end": 13,
+      "end_at": 14000,
+      "reason": "completed",
+      "steps": 3,
+      "has_prompt": true,
+      "prompt": 1
+    },
+    {
+      "turn": 2,
+      "agent": "helper",
+      "start": 14,
+      "start_at": 15000,
+      "settled": false,
+      "steps": 2,
+      "has_prompt": true,
+      "prompt": 15
+    }
+  ]
+}
