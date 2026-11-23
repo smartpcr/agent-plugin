@@ -20,7 +20,8 @@ Feature: Durable inbox, questions, commands and grants
     When the agent resumes the session
     Then the resume reports the open turn as interrupted
     And the resumed inbox has nothing pending and a claim of turn 2 takes nothing
-    And the log shows 1 turn and 1 user message for "m1"
+    And the log shows 1 turn and 0 user messages for "m1"
+    And the resumed inbox reports "m1" discarded as unadmitted by turn 1
     And a resend of "m1" is refused as a duplicate with the first receipt
 
   # DH-D-HUMAN-3 [proof: in-process; deps: none]
