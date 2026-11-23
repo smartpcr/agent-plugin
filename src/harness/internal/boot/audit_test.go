@@ -16,6 +16,8 @@ import (
 
 // TC-06a: with a permit configured for every kind and the off-switch on, the boot
 // audit denies every kind and lists each one as off.
+//
+//dsh:test DH-T-HOST-18
 func TestAuditOffSwitchListsEveryKindOff(t *testing.T) {
 	cfg := sharing.Config{Off: true, Kinds: map[sharing.Kind]sharing.Setting{}}
 	for _, k := range sharing.Kinds() {
@@ -47,6 +49,8 @@ func TestAuditOffSwitchListsEveryKindOff(t *testing.T) {
 
 // The real audit builds the gate from the launch environment: DSH_SHARING_OFF set
 // to "0" locks the switch, and with nothing configured every kind is off.
+//
+//dsh:test DH-T-HOST-18
 func TestRealAuditReadsOffSwitchFromLaunchEnv(t *testing.T) {
 	s := &State{Env: launch.NewSnapshot(runtime.GOOS, []string{sharing.EnvOff + "=0"})}
 	_ = Real{}.Audit(context.Background(), s) // no loader: the permits are filled first
@@ -107,6 +111,8 @@ func bootKinds(t *testing.T, layer string, environ ...string) string {
 // entry is every kind off; a layer that turns feedback on is listed on through the
 // real boot path, and the off-switch -- the layer's sharing.off or DSH_SHARING_OFF
 // in the launch environment -- overrides it.
+//
+//dsh:test DH-T-HOST-18
 func TestComposedSharingSettingsReachTheAudit(t *testing.T) {
 	const optIn = "- id: sharing\n  merge:\n    kinds:\n      feedback:\n        enabled: true\n        endpoint: https://feedback.example\n"
 	if line := bootKinds(t, "[]\n"); strings.Contains(line, "=on") || strings.Contains(line, "off-switch") {
@@ -130,6 +136,8 @@ func TestComposedSharingSettingsReachTheAudit(t *testing.T) {
 // that is missing, or holds no certificate, fails the util.egress entry and the
 // boot ends with a configuration status, one fatal message naming the entry and
 // the cause, and no readiness.
+//
+//dsh:test DH-T-BOOT-10, DH-T-UNDICI-5
 func TestUnreadableCertificateStopsTheLaunch(t *testing.T) {
 	junk := filepath.Join(t.TempDir(), "junk.pem")
 	if err := os.WriteFile(junk, []byte("not a certificate\n"), 0o600); err != nil {

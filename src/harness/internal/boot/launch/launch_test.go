@@ -24,6 +24,8 @@ func files(m map[string]string) ReadFile {
 
 // TC-06a / DH-D-BOOT-2: in-memory launch facts with cwd /w and OS linux feed the
 // expression scope; "${{ launch.os }}" yields linux.
+//
+//dsh:test DH-T-BOOT-6
 func TestLaunchFactsFeedExpressionScope(t *testing.T) {
 	d := Data{Profile: "web", Home: "/h", Cwd: "/w", Version: "1.0.0", OS: "linux", TTY: true}
 	env := NewSnapshot("linux", []string{"EDITOR=vim", "DEEPSEEK_API_KEY=sk-x"})

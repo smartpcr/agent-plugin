@@ -21,6 +21,7 @@ func TestMain(m *testing.M) { subprocesstest.Main(m) }
 
 const secretName = "DSH_DEEPSEEK_API_KEY"
 
+//dsh:test DH-T-NODEPROC-1
 func TestArgumentsArriveLiterally(t *testing.T) {
 	args := []string{"a; echo pwned", `"quoted" \back\`, "", "$(whoami)", "with space", "%PATH%"}
 	out := subprocesstest.Output(t, subprocesstest.Spec(t, subprocesstest.RoleArgs, args...))
@@ -35,7 +36,7 @@ func TestArgumentsArriveLiterally(t *testing.T) {
 
 // TC-06c, SP-11: a secret in the host environment never reaches the child.
 //
-//dsh:test DH-T-EXEC-3
+//dsh:test DH-T-EXEC-3, DH-T-NODEPROC-4
 func TestChildEnvironmentHoldsNoSecret(t *testing.T) {
 	t.Setenv(secretName, "sk-dummy-never-leaks")
 	t.Setenv("SERVICE_TOKEN", "dummy")
@@ -65,6 +66,8 @@ func normal(s string) string { return strings.ReplaceAll(s, "\r\n", "\n") }
 
 // TC-06c: StopTree stops a child and a grandchild that ignores the polite stop,
 // and returns only after both are gone.
+//
+//dsh:test DH-T-NODEPROC-5
 func TestStopTreeStopsAndAwaitsTheTree(t *testing.T) {
 	p, child, grandchild := subprocesstest.Tree(t)
 	if !subprocesstest.Alive(child) || !subprocesstest.Alive(grandchild) {
@@ -90,6 +93,7 @@ func TestStopTreeStopsAndAwaitsTheTree(t *testing.T) {
 	t.Logf("owner %+v; stopped in %v", p.Owner(), time.Since(start))
 }
 
+//dsh:test DH-T-EXEC-5
 func TestContextEndStopsTheTree(t *testing.T) {
 	spec := subprocesstest.Spec(t, subprocesstest.RoleStubborn)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -108,6 +112,8 @@ func TestContextEndStopsTheTree(t *testing.T) {
 
 // A context that ends after the direct child exited still stops the descendants
 // it left behind.
+//
+//dsh:test DH-T-NODEPROC-5
 func TestContextEndStopsDescendantsAfterChildExit(t *testing.T) {
 	spec := subprocesstest.Spec(t, subprocesstest.RoleOrphan)
 	var out strings.Builder
@@ -150,6 +156,7 @@ func TestExitCode(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-EXEC-2
 func TestArgvRules(t *testing.T) {
 	exe, err := os.Executable()
 	if err != nil {
@@ -196,6 +203,7 @@ func TestStartFailureIsReported(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-NODEPROC-3, DH-T-WHICH-1
 func TestLookupUsesTheChildPath(t *testing.T) {
 	dir := t.TempDir()
 	name := "dsh-lookup-probe"
@@ -319,7 +327,7 @@ func TestBuildEnvRemovesSecretNames(t *testing.T) {
 // absent though the host holds it (the plan's scenario "A named reference never
 // reaches a child").
 //
-//dsh:test DH-T-EXEC-3
+//dsh:test DH-T-EXEC-3, DH-T-NODEPROC-4
 func TestChildNeverInheritsANamedSecret(t *testing.T) {
 	t.Setenv("GITHUB_PAT", "ghp-dummy-never-leaks")
 	spec := subprocesstest.Spec(t, subprocesstest.RoleEnvProbe, "GITHUB_PAT")
@@ -338,6 +346,7 @@ func hasExact(env subprocess.Env, name string) bool {
 	return false
 }
 
+//dsh:test DH-T-EXEC-4
 func TestTreeOwnerIsReported(t *testing.T) {
 	o := subprocess.TreeOwner()
 	switch runtime.GOOS {
@@ -356,6 +365,7 @@ func TestTreeOwnerIsReported(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-UTIL-8
 func TestReasonsAreDeclared(t *testing.T) {
 	for _, r := range subprocess.Reasons {
 		if !r.Valid() || r.Domain() != "subprocess" {

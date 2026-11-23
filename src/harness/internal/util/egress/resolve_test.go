@@ -43,6 +43,8 @@ func proxyServer(t *testing.T) (*httptest.Server, *atomic.Int64) {
 // requests, NO_PROXY bypasses (and loopback is never proxied), HTTPS_PROXY wins
 // over ALL_PROXY, HTTPS falls back to the HTTP proxy last, and a refused value is
 // a diagnostic that never quotes the password, with that scheme going direct.
+//
+//dsh:test DH-T-UNDICI-1, DH-T-UNDICI-2, DH-T-UNDICI-3, DH-T-UNDICI-4, DH-T-UTIL-5
 func TestResolveProxyNames(t *testing.T) {
 	proxy, seen := proxyServer(t)
 	svc, diags, err := egress.Resolve(lookup(map[string]string{
@@ -140,6 +142,8 @@ func hostOf(u *url.URL) string {
 // ExtraCACerts: a server signed by a private authority is refused by default and
 // accepted once the authority's file is configured; an unreadable file, or one
 // with no certificate, fails Resolve with egress/ca-unreadable.
+//
+//dsh:test DH-T-UNDICI-5
 func TestExtraCACerts(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "private")
@@ -191,6 +195,8 @@ func TestExtraCACerts(t *testing.T) {
 // unloading the consumer releases every one of them -- they leave Handed and
 // refuse requests without dialling -- while the permit stays live. Release does
 // the same for one client, so asking repeatedly accumulates nothing.
+//
+//dsh:test DH-T-UTIL-3
 func TestClientsAreReleasedWithTheirOwner(t *testing.T) {
 	srv := newCountingServer(t, nil)
 	r := cordis.New()
@@ -334,6 +340,8 @@ func socksServer(t *testing.T, target string) (string, *atomic.Int64) {
 // SOCKS proxies are accepted (DH-ADR-UNDICI-2): socks5 and socks5h values resolve
 // without a diagnostic, and with socks5h the request -- for a name only the proxy
 // can resolve -- reaches the server through the proxy's tunnel.
+//
+//dsh:test DH-T-UNDICI-1
 func TestSocksProxy(t *testing.T) {
 	var arrived atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

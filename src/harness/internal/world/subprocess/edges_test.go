@@ -20,6 +20,8 @@ import (
 // survivors, naming the running direct child and what its owner still holds; the
 // error keeps the context's cause. ExitCode is -1 while the child runs, and Kill
 // of a tree that is gone is a no-op.
+//
+//dsh:test DH-T-EXEC-5
 func TestTreeGoneReportsSurvivors(t *testing.T) {
 	p := subprocesstest.Start(t, subprocesstest.Spec(t, subprocesstest.RoleStubborn))
 	if got := p.ExitCode(); got != -1 {
@@ -161,6 +163,8 @@ func TestEnvEntryShapes(t *testing.T) {
 }
 
 // An owner prints its kind, and why a stronger owner was skipped when one was.
+//
+//dsh:test DH-T-EXEC-4
 func TestOwnerString(t *testing.T) {
 	if got := (subprocess.Owner{Kind: subprocess.JobObject, Exact: true}).String(); got != "job-object" {
 		t.Errorf("String = %q; want job-object", got)

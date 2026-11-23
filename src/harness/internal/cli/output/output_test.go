@@ -83,6 +83,8 @@ func isReasonType(expr ast.Expr, pkg string) bool {
 
 // Every error code the harness declares has a status, and the table names no code
 // that nobody declares.
+//
+//dsh:test DH-T-CLI-6
 func TestEveryReasonHasAStatus(t *testing.T) {
 	declared := declaredReasons(t)
 	for r, at := range declared {
@@ -97,6 +99,7 @@ func TestEveryReasonHasAStatus(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-CLI-6
 func TestStatusTableIsClosed(t *testing.T) {
 	statuses := map[int]bool{}
 	for _, s := range Statuses() {
@@ -180,6 +183,7 @@ func TestStatusTableMatchesTheAreaSpec(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-CLI-6
 func TestStatus(t *testing.T) {
 	cases := []struct {
 		err  error
@@ -201,6 +205,7 @@ func TestStatus(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-CLI-5
 func TestFailText(t *testing.T) {
 	var out, diag bytes.Buffer
 	r := New(&out, &diag, Text)
@@ -224,6 +229,7 @@ func TestFailText(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-CLI-5
 func TestFailJSONEndsResultWithError(t *testing.T) {
 	var out, diag bytes.Buffer
 	r := New(&out, &diag, JSON)
@@ -243,6 +249,7 @@ func TestFailJSONEndsResultWithError(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-CLI-5
 func TestResultModes(t *testing.T) {
 	var out bytes.Buffer
 	r := New(&out, &bytes.Buffer{}, JSON)
@@ -275,6 +282,7 @@ func (b *brokenWriter) Write([]byte) (int, error) {
 	return 0, errors.New("broken pipe")
 }
 
+//dsh:test DH-T-CLI-5
 func TestClosedResultStream(t *testing.T) {
 	w := &brokenWriter{}
 	r := New(w, &bytes.Buffer{}, Text)
@@ -288,6 +296,8 @@ func TestClosedResultStream(t *testing.T) {
 
 // An Exit status maps back to its status, wrapped or not, and Fail prints nothing
 // for it: the launch printed its own diagnostics.
+//
+//dsh:test DH-T-CLI-5
 func TestExitStatusIsNotPrintedAgain(t *testing.T) {
 	if Exit(OK) != nil {
 		t.Error("Exit(0) is not nil")

@@ -50,6 +50,8 @@ func TestDirectPrintedFormsAreRedacted(t *testing.T) {
 
 // The zero Ref names nothing and prints nothing; Resolve and Use refuse it; a
 // malformed literal panics in MustParse without quoting it.
+//
+//dsh:test DH-T-HUMAN-10
 func TestZeroRefAndMustParse(t *testing.T) {
 	var zero Ref
 	if !zero.IsZero() || zero.String() != "" || zero.Segments() != nil {
@@ -95,6 +97,8 @@ func TestReferencesKeepNamingOrder(t *testing.T) {
 
 // An env source without a lookup function has no value, so the next source
 // answers; a missing secrets directory is an absent value, not an error.
+//
+//dsh:test DH-T-HUMAN-11
 func TestSourcesWithNothingToGive(t *testing.T) {
 	ref := MustParse("secret://deepseek/api-key")
 	store := NewStore(EnvSource(nil), FileSource(filepath.Join(t.TempDir(), "absent")), &fakeSource{value: testValue})
@@ -110,6 +114,8 @@ func TestSourcesWithNothingToGive(t *testing.T) {
 
 // The file source refuses a directory where the secret file belongs and a file
 // over the size bound, naming the reference but no path or content.
+//
+//dsh:test DH-T-HUMAN-10
 func TestFileSourceRefusesDirectoryAndOversizedFile(t *testing.T) {
 	l := home.New(t.TempDir())
 	if err := home.Ensure(l); err != nil {
@@ -147,6 +153,8 @@ func TestFileSourceRefusesDirectoryAndOversizedFile(t *testing.T) {
 
 // Mask masks a released value in bytes, and also its quoted (escaped) form, so a
 // value with a quote or a newline is masked inside %q output too.
+//
+//dsh:test DH-T-HUMAN-12
 func TestMaskCoversBytesAndTheQuotedForm(t *testing.T) {
 	const tricky = "sk\"line\nend"
 	store := NewStore(&fakeSource{value: tricky})

@@ -195,6 +195,8 @@ func TestDescribeWithoutACatalog(t *testing.T) {
 
 // When a layer on disk does not parse, the form is pending with the parse
 // issues, still shows the effective values, and an edit is not saved.
+//
+//dsh:test DH-T-STORAGE-21
 func TestUnparsableLayerOnDisk(t *testing.T) {
 	f := newRich(t, false, nil)
 	form, err := f.form.Describe()
@@ -225,6 +227,8 @@ func TestUnparsableLayerOnDisk(t *testing.T) {
 
 // An edit of an entry that does not exist, or with a value that is not JSON, is
 // refused with the field's path and writes nothing.
+//
+//dsh:test DH-T-STORAGE-20
 func TestApplyRefusesUnknownEntryAndBadJSON(t *testing.T) {
 	f := newRich(t, false, nil)
 	form, err := f.form.Describe()
@@ -246,6 +250,8 @@ func TestApplyRefusesUnknownEntryAndBadJSON(t *testing.T) {
 }
 
 // A valid edit the layer write then fails is unsaved, with the write's error.
+//
+//dsh:test DH-T-STORAGE-21
 func TestApplyWhoseWriteFailsIsUnsaved(t *testing.T) {
 	diskFull := errors.New("disk full")
 	f := newRich(t, false, func(string, func() error) error { return diskFull })
@@ -266,6 +272,8 @@ func TestApplyWhoseWriteFailsIsUnsaved(t *testing.T) {
 // A nested live field is edited as one merge that sets only that field: the
 // form then shows the new value from the profile layer, at the new revision,
 // and the field beside it keeps its value.
+//
+//dsh:test DH-T-STORAGE-19
 func TestApplyANestedField(t *testing.T) {
 	f := newRich(t, false, nil)
 	form, err := f.form.Describe()

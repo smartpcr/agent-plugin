@@ -44,6 +44,8 @@ func goList(t *testing.T, module string) []Package {
 
 // TestImportDirection runs every rule against the real modules. The src/sdk rule is
 // the stage scenario "src/sdk imports nothing of the product" (DH-S-4 exit evidence).
+//
+//dsh:test DH-T-UTIL-11, DH-T-LLM-1
 func TestImportDirection(t *testing.T) {
 	listed := map[string][]Package{}
 	for _, r := range Rules {
@@ -80,6 +82,7 @@ func TestParse(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-UTIL-11
 func TestRulesCatchViolations(t *testing.T) {
 	pkg := func(path, name string, depOnly bool, files ...string) Package {
 		return Package{ImportPath: path, Name: name, DepOnly: depOnly, GoFiles: files}
@@ -204,6 +207,8 @@ func TestRulesCatchViolations(t *testing.T) {
 
 // TestRequestTypes proves the TC-05 predicate finds a request type under either
 // shape and ignores what is not one.
+//
+//dsh:test DH-T-LLM-1
 func TestRequestTypes(t *testing.T) {
 	file := func(src string) *fstest.MapFile { return &fstest.MapFile{Data: []byte("package vocab\n" + src)} }
 	for _, tc := range []struct {
@@ -239,6 +244,8 @@ func TestRequestTypes(t *testing.T) {
 // TestNoSpawnOutsideSubprocess is the source half of onespawn over the real
 // harness module: no non-test file outside internal/world/subprocess starts a
 // program (DH-D-EXEC-1).
+//
+//dsh:test DH-T-EXEC-1, DH-T-NODEPROC-10
 func TestNoSpawnOutsideSubprocess(t *testing.T) {
 	found, err := Spawns(os.DirFS(moduleDirs[HarnessModule]))
 	if err != nil {
@@ -251,6 +258,8 @@ func TestNoSpawnOutsideSubprocess(t *testing.T) {
 
 // TestSpawns proves the predicate finds every way to start a program and honours
 // its exemptions.
+//
+//dsh:test DH-T-EXEC-1, DH-T-NODEPROC-10
 func TestSpawns(t *testing.T) {
 	file := func(src string) *fstest.MapFile { return &fstest.MapFile{Data: []byte("package p\n" + src)} }
 	for _, tc := range []struct {
