@@ -647,7 +647,7 @@ storyId: "harness:DSH"
 ## Stage 10.2: Approvals and Guarded Pipeline
 
 ### Implementation Steps
-- [x] impl.md step 10.3 / DH-D-HUMAN-2: approvals in `internal/human` return one closed outcome (`approved`, `denied`, `timeout`, `no-answerer`) and append an attributed audit event; no answerer means denial (SP-7).
+- [x] impl.md step 10.3 / DH-D-HUMAN-2: approvals in `internal/human` return one closed outcome (`allowed-once`, `allowed-by-grant`, `rejected`, `cancelled`, `unavailable`; a set timeout is `unavailable` with detail `timeout`, M1-D-PIPE-1) and append an attributed audit event; no answerer means the call is refused as `unavailable` (SP-7).
 - [x] impl.md step 10.4 / DH-D-TOOLS-2: the guarded pipeline in fixed order -- (1) resolve the call by name in the step's fixed `ToolSet` (an unknown or unadmitted tool is refused with `tools/not-started` and nothing later runs), (2) bound, decode and validate arguments against schema, (3) policy listeners, (4) deny-only guards, (5) approval, (6) checkpoint flush, (7) body, (8) shape the result and append `tool/result`; logged arguments are never rewritten; denial is enforced in the executor, not by hiding the tool (architecture.md sec. 5.5; SP-6, SP-7; `DH-T-TOOLS-3`..`-7`).
 - [x] Author `DH-E-TOOLS-1` (runs DH-S-17, 17.5) as a scenario file.
 
@@ -655,11 +655,11 @@ storyId: "harness:DSH"
 - phase-tool-pipeline-approvals-and-human-commands/stage-tool-registry-and-prompt-assembly
 
 ### Test Scenarios
-- [x] Scenario: Schema-breaking arguments never reach the body -- Given tool `add(a:int,b:int)` and arguments `{a:"x"}`, When the call goes through the pipeline, Then the body counter is 0 and a validation-error result is returned to the model (`DH-T-TOOLS-3`, TC-10a) [proof: in-process; deps: none]
-- [x] Scenario: Nobody to ask means no, through the executor -- Given a tool requiring approval, registered and visible in the tool list, and no answerer, When the model calls it, Then the approval outcome is `no-answerer`, an audit event is logged, the body counter is 0, and the tool was still present in the prompt (DH-S-10 exit evidence, SP-7) [proof: in-process; deps: none]
-- [x] Scenario: Pipeline stage order fixed -- Given recording stubs at every stage, When one approved call runs, Then the recorded order is resolve, validate, policy, guards, approval, flush, body, shape (`DH-T-TOOLS-4`) [proof: in-process; deps: none]
+- [x] Scenario: Schema-breaking arguments never reach the body -- Given tool `add(a:int,b:int)` and arguments `{a:"x"}`, When the call goes through the pipeline, Then the body counter is 0 and a validation-error result is returned to the model (`DH-T-TOOLS-4`, TC-10a) [proof: in-process; deps: none]
+- [x] Scenario: Nobody to ask means no, through the executor -- Given a tool requiring approval, registered and visible in the tool list, and no answerer, When the model calls it, Then the approval outcome is `unavailable`, an audit event is logged, the body counter is 0, and the tool was still present in the prompt (DH-S-10 exit evidence, SP-7) [proof: in-process; deps: none]
+- [x] Scenario: Pipeline stage order fixed -- Given recording stubs at every stage, When one call allowed once runs, Then the recorded order is resolve, validate, policy, guards, approval, flush, body, shape (`DH-T-TOOLS-3`) [proof: in-process; deps: none]
 - [x] Scenario: Unknown or unadmitted tool refused before execution -- Given a step whose fixed `ToolSet` admits only `echo`, and recording stubs at every later stage, When the model calls `rm` (not registered) and then `grep` (registered but not admitted to this step), Then each call ends `tools/not-started` at the resolve stage, the validate/policy/guards/approval/flush/body stubs record zero invocations, and one `tool/result` per call carries the refusal (`DH-T-TOOLS-3`) [proof: in-process; deps: none]
-- [x] Scenario: Flush before body observed in the database -- Given the SQLite store in a temp home, When an approved tool runs, Then the approval audit row is durable (visible from a second connection) before the body's first instruction executes (TC-10b) [proof: service:sqlite; deps: sqlite embedded; filesystem via `t.TempDir()`]
+- [x] Scenario: Flush before body observed in the database -- Given the SQLite store in a temp home, When a tool call allowed once runs, Then the approval audit row is durable (visible from a second connection) before the body's first instruction executes (TC-10b) [proof: service:sqlite; deps: sqlite embedded; filesystem via `t.TempDir()`]
 
 ## Stage 10.3: Deadlines and Result Budget
 
@@ -672,7 +672,7 @@ storyId: "harness:DSH"
 - phase-tool-pipeline-approvals-and-human-commands/stage-approvals-and-guarded-pipeline
 
 ### Test Scenarios
-- [ ] Scenario: Deadline does not hold the turn -- Given a tool body that ignores cancellation, a 10 s deadline and 2 s grace on the virtual clock, When the clock advances 12 s, Then the call is answered `timeout` and the step continues (`DH-T-TOOLS-8`, TC-10a) [proof: in-process; deps: none -- virtual clock]
+- [ ] Scenario: Deadline does not hold the turn -- Given a tool body that ignores cancellation, a 10 s deadline and 2 s grace on the virtual clock, When the clock advances 12 s, Then the call is answered `tools/timeout` and the step continues (`DH-T-TOOLS-8`, TC-10a) [proof: in-process; deps: none -- virtual clock]
 - [ ] Scenario: Oversized result spilled before reaching the model -- Given a tool returning 2 MB and `maxResultBytes` of 64 KB on the SQLite store, When the result is shaped, Then the logged result is within 64 KB with a spill reference and the spill file in the temp home holds all 2 MB (TC-10b) [proof: service:sqlite; deps: sqlite embedded; filesystem via `t.TempDir()` home]
 
 ## Stage 10.4: Durable Inbox Questions Commands and Grants

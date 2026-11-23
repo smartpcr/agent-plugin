@@ -156,17 +156,25 @@ func Mount(ctx *cordis.Context, svc tools.Service, store spill.Store, cfg Config
 	return p, h, nil
 }
 
-// Shape is the tools.SpillShaper: the result's text is one text part shaped by
-// ShapeParts. A text within the budget is kept; a longer one is saved whole for
-// the call's session and replaced by its head, its tail and the notice. (The
-// pipeline's Outcome carries text only; a result with images goes through
-// ShapeParts.)
+// Shape is the tools.SpillShaper: the result's parts, or for a text-only result
+// its text as one part, shaped by ShapeParts. A result within the budget is
+// kept; a larger one is saved whole for the call's session and replaced by its
+// head, its tail and the notice. A result with images gets its bounded parts
+// back, each image kept or left out whole.
 func (p *Policy) Shape(ctx context.Context, c tools.Call, o tools.Outcome) tools.SpillResult {
-	r := p.ShapeParts(ctx, c, []vocab.Part{vocab.TextPart(o.Text)})
+	parts := o.Parts
+	if len(parts) == 0 {
+		parts = []vocab.Part{vocab.TextPart(o.Text)}
+	}
+	r := p.ShapeParts(ctx, c, parts)
 	if !r.Replace {
 		return tools.SpillResult{}
 	}
-	return tools.SpillResult{Replace: true, Text: TextOf(r.Parts), Ref: r.Ref}
+	sr := tools.SpillResult{Replace: true, Text: TextOf(r.Parts), Ref: r.Ref}
+	if len(o.Parts) > 0 {
+		sr.Parts = r.Parts
+	}
+	return sr
 }
 
 // Shaped is ShapeParts' answer. With Replace unset the parts are kept.

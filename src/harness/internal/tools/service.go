@@ -7,6 +7,7 @@ import (
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/agent"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/scope"
 )
 
@@ -157,3 +158,85 @@ type ChangedArgs struct {
 // Changed is notified after a registration or restriction change commits or is
 // undone; listeners see it when the changed scope is visible to them.
 var Changed = scope.NewEvent[ChangedArgs]("tools/changed")
+
+// Settled is notified once for every call that reached the pipeline, a refused
+// call included, after its tool/result is appended (stage 7 of DH-D-TOOLS-2),
+// in the batch's commit order. It is dispatched about the call's agent's scope.
+// Observers see an immutable Settlement and cannot change the result: one that
+// fails or panics is logged on its own fiber's logger, which names it, and
+// neither the result, the batch nor a later observer is affected.
+var Settled = scope.NewEvent[Settlement]("tools/settled")
+
+// Settlement is one settled call as Settled carries it. Its accessors return
+// copies, so nothing an observer does reaches the result, the log or another
+// observer.
+type Settlement struct {
+	call    Call
+	result  Result
+	value   func() any
+	durable string
+}
+
+// NewSettlement is the settlement of call c with result r, whose tool/result
+// payload was appended as durable (its encoded JSON). The result's value is
+// copied once here and again on each read; a value that cannot be copied is
+// read as nil.
+func NewSettlement(c Call, r Result, durable string) Settlement {
+	s := Settlement{call: c, result: copyResult(r), durable: durable}
+	s.result.Value = nil
+	if snap, err := isolate(r.Value); err == nil && snap != nil {
+		s.value = func() any {
+			v, _ := isolate(snap)
+			return v
+		}
+	}
+	return s
+}
+
+// Call is the settled call.
+func (s Settlement) Call() Call { return s.call }
+
+// Result is a copy of the call's result as returned to the batch's caller, the
+// Seq of its tool/result included.
+func (s Settlement) Result() Result {
+	r := copyResult(s.result)
+	if s.value != nil {
+		r.Value = s.value()
+	}
+	return r
+}
+
+// Durable is the tool/result payload exactly as appended: the result's encoded
+// durable form, produced once before Settled.
+func (s Settlement) Durable() json.RawMessage { return json.RawMessage(s.durable) }
+
+// copyResult is r with its spill reference and parts not shared.
+func copyResult(r Result) Result {
+	if r.Spill != nil {
+		sp := *r.Spill
+		r.Spill = &sp
+	}
+	r.Parts = CloneParts(r.Parts)
+	return r
+}
+
+// CloneParts is a deep copy of parts; nil stays nil.
+func CloneParts(parts []vocab.Part) []vocab.Part {
+	if parts == nil {
+		return nil
+	}
+	out := make([]vocab.Part, 0, len(parts))
+	for _, p := range parts {
+		var c vocab.Part
+		if p.Text != nil {
+			t := *p.Text
+			c.Text = &t
+		}
+		if p.Image != nil {
+			i := *p.Image
+			c.Image = &i
+		}
+		out = append(out, c)
+	}
+	return out
+}

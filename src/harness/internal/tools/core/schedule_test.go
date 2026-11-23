@@ -97,6 +97,8 @@ func resultOrder(t *testing.T, h session.Handle) (calls, results []string) {
 
 // DH-T-AGENT-26: calls 1 and 3 share a resource key and call 2 finishes first;
 // with maxParallel=3, calls 1 and 3 never overlap and results commit 1, 2, 3.
+//
+//dsh:test DH-T-AGENT-26, DH-T-TOOLS-6
 func TestConflictingCallsSerializeAndResultsKeepModelOrder(t *testing.T) {
 	e := newEnv(t)
 	act := newActivity()
@@ -157,6 +159,8 @@ func TestConflictingCallsSerializeAndResultsKeepModelOrder(t *testing.T) {
 
 // maxParallel bounds the bodies of one batch even when none conflict. The
 // batch runs in a synctest bubble, so each body's 20 ms is virtual time.
+//
+//dsh:test DH-T-TOOLS-6
 func TestBatchNeverExceedsMaxParallel(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		e := newEnv(t)
@@ -186,6 +190,8 @@ func TestBatchNeverExceedsMaxParallel(t *testing.T) {
 
 // A tool without an Overlap, and one the operator forces exclusive, overlaps
 // nothing.
+//
+//dsh:test DH-T-TOOLS-6
 func TestExclusiveCallsRunAlone(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -218,6 +224,8 @@ func TestExclusiveCallsRunAlone(t *testing.T) {
 // An argument over MaxArgumentBytes is classified without being decoded: the
 // tool's Overlap function never sees it, and the call settles
 // arguments-too-large.
+//
+//dsh:test DH-T-TOOLS-6
 func TestOversizedArgumentsAreNotClassified(t *testing.T) {
 	e := newEnv(t)
 	act := newActivity()
@@ -273,6 +281,8 @@ func (l *failCallLog) Append(ctx context.Context, d event.Draft) (event.Receipt,
 
 // A log that refuses call 2's tool/call stops admission at once: while call 1
 // still runs, call 3, though free to overlap, is neither logged nor started.
+//
+//dsh:test DH-T-TOOLS-6
 func TestLogFailureStopsAdmissionWhileEarlierCallsRun(t *testing.T) {
 	e := newEnv(t)
 	act := newActivity()
@@ -307,6 +317,8 @@ func TestLogFailureStopsAdmissionWhileEarlierCallsRun(t *testing.T) {
 // tool writing the same key, in the same batch or a later one, is refused busy
 // at once without waiting on the body, while one on another key runs. Forcing
 // either tool exclusive orders the batch but hides no key.
+//
+//dsh:test DH-T-TOOLS-6
 func TestDetachedBodyKeepsItsResourceKeys(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
