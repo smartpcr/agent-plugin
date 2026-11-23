@@ -134,3 +134,37 @@ func TestInstallRemovesAnEmptyCrashFile(t *testing.T) {
 		t.Errorf("empty crash file left behind: %v", err)
 	}
 }
+
+// maskFunc is a Masker over a function.
+type maskFunc func(string) string
+
+func (f maskFunc) MaskString(s string) string { return f(s) }
+
+// SP-11: a masker attached after New (the secret store, once it exists) masks the
+// message and the report beside the configured values; one that panics fails
+// closed, and nil removes it.
+func TestFatalMasksThroughTheMasker(t *testing.T) {
+	dir := t.TempDir()
+	var stderr bytes.Buffer
+	p := New(Config{Reports: dir, Stderr: &stderr, Secrets: []string{"configured-dummy"}})
+	p.SetMasker(maskFunc(func(s string) string { return strings.ReplaceAll(s, "released-dummy", herr.Redacted) }))
+	report, _ := p.Fatal("probe", errors.New("released-dummy and configured-dummy"))
+	data, err := os.ReadFile(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{stderr.String(), string(data)} {
+		if strings.Contains(text, "released-dummy") || strings.Contains(text, "configured-dummy") {
+			t.Errorf("unmasked: %q", text)
+		}
+	}
+
+	failing := New(Config{Masker: maskFunc(func(string) string { panic("store gone") })})
+	if got := failing.redact("released-dummy"); got != maskFailed {
+		t.Errorf("redact with a panicking masker = %q; want %q", got, maskFailed)
+	}
+	failing.SetMasker(nil)
+	if got := failing.redact("plain"); got != "plain" {
+		t.Errorf("redact after SetMasker(nil) = %q", got)
+	}
+}

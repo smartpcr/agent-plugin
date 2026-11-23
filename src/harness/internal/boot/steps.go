@@ -48,10 +48,18 @@ func (Real) Home(_ context.Context, s *State) error {
 // output of the runtime. The watchdog is the tree's status hook (step 5).
 func (Real) Guards(_ context.Context, s *State) error {
 	s.Ring = diag.NewRing(diag.RingSize)
+	// With a store, every name it reports (a named reference such as GITHUB_PAT
+	// included) is masked, and so is every value it releases later; without one,
+	// the credential shapes are the fallback.
+	isSecret := secret.SecretShaped
+	var masker diag.Masker
+	if store := s.Options.Secrets; store != nil {
+		isSecret, masker = store.IsSecretName, store
+	}
 	var secrets []string
 	if s.Env != nil {
 		for _, name := range s.Env.Names() {
-			if secret.SecretShaped(name) {
+			if isSecret(name) {
 				if v, _, ok := s.Env.Lookup(name); ok {
 					secrets = append(secrets, v)
 				}
@@ -64,6 +72,7 @@ func (Real) Guards(_ context.Context, s *State) error {
 		Facts:   diag.Facts{Version: s.Data.Version, OS: s.Data.OS, Profile: s.Data.Profile},
 		Ring:    s.Ring,
 		Secrets: secrets,
+		Masker:  masker,
 		Now:     s.Clock.Now,
 		// A fatal error during the run stops the app; Run then unloads within
 		// FatalReleaseTimeout.

@@ -13,9 +13,11 @@ import (
 type Env []string
 
 // DefaultDeny are the name patterns BuildEnv always removes (DH-ADR-EXEC-8):
-// upstream's four plus PASSPHRASE and CREDENTIAL. Patterns use path.Match syntax and
-// match without regard to case.
-var DefaultDeny = []string{"*KEY*", "*TOKEN*", "*SECRET*", "*PASSWORD*", "*PASSPHRASE*", "*CREDENTIAL*"}
+// upstream's four plus PASSPHRASE and CREDENTIAL, and PASSWD, so that with no
+// secret store BuildEnv still removes every name the store's credential shapes
+// (secret.SecretShaped) name. Patterns use path.Match syntax and match without
+// regard to case.
+var DefaultDeny = []string{"*KEY*", "*TOKEN*", "*SECRET*", "*PASSWORD*", "*PASSWD*", "*PASSPHRASE*", "*CREDENTIAL*"}
 
 // HarnessPrefix names the harness's own variables; BuildEnv removes all of them
 // from the host environment before caller entries are added.

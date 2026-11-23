@@ -20,6 +20,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/cli/output"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/host/diag"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/host/sharing"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/human/secret"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess"
@@ -64,6 +65,10 @@ type Options struct {
 	Clock Clock
 	// Steps replaces the real steps; nil runs them. A test passes fakes.
 	Steps Steps
+	// Secrets is the process's secret store, when the caller has one: the fatal
+	// path then masks every value it has released and the launch value of every
+	// name it reports (SP-11). Nil masks the credential-shaped launch values only.
+	Secrets *secret.Store
 }
 
 // Host is the live tree as shutdown sees it.

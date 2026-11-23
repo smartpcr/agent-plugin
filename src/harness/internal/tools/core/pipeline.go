@@ -109,6 +109,14 @@ func (r *registry) Shape(ctx *cordis.Context, id string, s tools.Shaper) (*cordi
 	return addListener(r, ctx, "tools shaper "+id, func(l *layer) map[uint64]named[tools.Shaper] { return l.shapers }, named[tools.Shaper]{id, s})
 }
 
+// ShapeFinal files final shaper s, named id (tools.FinalShaper).
+func (r *registry) ShapeFinal(ctx *cordis.Context, id string, s tools.Shaper) (*cordis.EffectHandle, error) {
+	if s == nil || id == "" {
+		return nil, &tools.Error{Code: tools.CodeInvalidDeclaration, Msg: "a final shaper needs its id and function"}
+	}
+	return addListener(r, ctx, "tools final shaper "+id, func(l *layer) map[uint64]named[tools.Shaper] { return l.finals }, named[tools.Shaper]{id, s})
+}
+
 // addListener files v in the layer of ctx's scope as an effect of ctx's fiber.
 func addListener[F any](r *registry, ctx *cordis.Context, label string, of func(*layer) map[uint64]named[F], v named[F]) (*cordis.EffectHandle, error) {
 	return r.layers.Add(ctx, label, func(l *layer) func() {
@@ -132,6 +140,7 @@ type listeners struct {
 	policies []named[tools.Policy]
 	guards   []named[tools.Guard]
 	shapers  []named[tools.Shaper]
+	finals   []named[tools.Shaper]
 	spill    *named[tools.SpillShaper] // the nearest layer's seat
 }
 
@@ -155,6 +164,7 @@ func (r *registry) listenersAt(t tools.Target) listeners {
 		ls.policies = append(ls.policies, collect(l.policies)...)
 		ls.guards = append(ls.guards, collect(l.guards)...)
 		ls.shapers = append(ls.shapers, collect(l.shapers)...)
+		ls.finals = append(ls.finals, collect(l.finals)...)
 		if ls.spill == nil && l.spill != nil {
 			ls.spill = l.spill
 		}
@@ -658,6 +668,23 @@ func (r *registry) settle(ctx context.Context, b tools.Batch, ls listeners, c to
 				res.IsError, res.Code, res.By, res.Stage, res.Value = true, tools.CodeFailed, s.id, tools.StageShape, nil
 				res.Text = string(tools.CodeFailed) + ": " + pd.Reason
 			}
+		}
+	}
+
+	// Final shapers have the last word on the text: they see what the ordinary
+	// shapers left, a Block's text included, and only replace it. They run on a
+	// call refused at resolve too, and never see the value.
+	for _, s := range ls.finals {
+		pd := shape(s, c, tools.Outcome{IsError: res.IsError, Code: res.Code, Text: res.Text})
+		switch pd.Kind {
+		case tools.PostAccept:
+		case tools.PostReplaceContent:
+			res.Text = pd.Text
+		default:
+			// A final shaper that cannot answer fails the call, and its text is
+			// replaced whole: what it would have changed is not shown.
+			res.IsError, res.Code, res.By, res.Stage, res.Value = true, tools.CodeFailed, s.id, tools.StageShape, nil
+			res.Text = string(tools.CodeFailed) + ": the final shaper " + s.id + " did not answer"
 		}
 	}
 
