@@ -15,6 +15,7 @@ func update(t *testing.T, text string) Hunk {
 	return p.Hunks[0]
 }
 
+//dsh:test DH-T-FS-5
 func TestApplyPasses(t *testing.T) {
 	cases := []struct {
 		name, original, patch, want string
@@ -48,6 +49,7 @@ func TestApplyPasses(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-FS-5
 func TestApplyFailures(t *testing.T) {
 	cases := []struct {
 		name, original, patch string
@@ -79,6 +81,7 @@ func TestApplyFailures(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-FS-5
 func TestApplyAddAndDelete(t *testing.T) {
 	p, err := Parse("*** Begin Patch\n*** Add File: a\n+x\n*** Delete File: b\n*** End Patch")
 	if err != nil {
@@ -94,6 +97,8 @@ func TestApplyAddAndDelete(t *testing.T) {
 
 // TestRoundTrip is TC-04a: a patch Made from a to b and applied to a gives b, byte
 // for byte.
+//
+//dsh:test DH-T-FS-5
 func TestRoundTrip(t *testing.T) {
 	cases := []struct{ name, a, b string }{
 		{"identical", "a\nb\n", "a\nb\n"},
@@ -145,6 +150,7 @@ func numbered(n int, change map[int]string) string {
 	return b.String()
 }
 
+//dsh:test DH-T-FS-6
 func TestMakeLimits(t *testing.T) {
 	// Every case is a byte change the format cannot carry: Make refuses it rather
 	// than returning a patch whose result differs from the requested text.

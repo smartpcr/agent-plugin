@@ -31,6 +31,7 @@ func shortRetries(t *testing.T) {
 	retryDelays = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}
 }
 
+//dsh:test DH-T-NODEFS-1
 func TestReplaceRetriesWhileHeldOpen(t *testing.T) {
 	shortRetries(t)
 	path := filepath.Join(t.TempDir(), "f")
@@ -56,6 +57,7 @@ func TestReplaceRetriesWhileHeldOpen(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-NODEFS-1
 func TestReplaceGivesUpWithErrInUse(t *testing.T) {
 	shortRetries(t)
 	dir := t.TempDir()

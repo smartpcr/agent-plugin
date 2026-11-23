@@ -9,6 +9,7 @@ import (
 	"testing"
 )
 
+//dsh:test DH-T-NODEFS-3
 func TestIdentity(t *testing.T) {
 	dir := t.TempDir()
 	a := filepath.Join(dir, "a")
@@ -61,6 +62,7 @@ func TestIdentity(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-FS-3, DH-T-NODEFS-3
 func TestVersion(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "f")
 	if err := os.WriteFile(path, []byte("one"), 0o644); err != nil {
@@ -107,6 +109,7 @@ func TestVersion(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-NODEFS-4
 func TestInside(t *testing.T) {
 	sep := string(filepath.Separator)
 	root := filepath.Join(sep+"a", "b")
@@ -155,6 +158,7 @@ func TestIsRemote(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-FS-2, DH-T-FS-27
 func TestIsText(t *testing.T) {
 	nulAt9000 := bytes.Repeat([]byte("a"), 9000)
 	nulAt9000 = append(nulAt9000, 0)
@@ -187,6 +191,7 @@ func TestIsText(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-FS-2
 func TestEOL(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"a\nb\n", "\n"},
@@ -211,6 +216,7 @@ func TestEOL(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-FS-27
 func TestEncoding(t *testing.T) {
 	for _, enc := range []Encoding{UTF8, UTF8BOM, UTF16LE, UTF16BE} {
 		const s = "héllo, 世界 🙂"
