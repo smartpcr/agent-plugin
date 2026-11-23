@@ -154,8 +154,10 @@ func TestPercentileAndOverBudget(t *testing.T) {
 }
 
 // Budget times at least MinSamples operations in each of its two runs (the
-// plain run and the memory-limited rerun) and restores the memory limit.
-func TestBudgetRunsBothRuns(t *testing.T) {
+// plain run and the memory-limited rerun) and restores the memory limit. The
+// name must not start with TestBudget: the coverage gate skips ^TestBudget (the
+// budget gate runs those alone), and this test is what covers Budget.
+func TestBothBudgetRunsAreTimed(t *testing.T) {
 	before := debug.SetMemoryLimit(-1)
 	limits := map[int64]int{}
 	res := testing.Benchmark(func(b *testing.B) {
