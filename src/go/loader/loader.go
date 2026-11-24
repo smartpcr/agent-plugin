@@ -172,13 +172,6 @@ func newServiceIn(ctx *cordis.Context, options Options, nested bool) (*Service, 
 	return s, nil
 }
 
-// Resolver is the resolver the loader maps entry names with, so a component that runs
-// a nested loader (New) can resolve its children like the host does.
-func (s *Service) Resolver() Resolver { return s.resolver }
-
-// Evaluator is the loader's expression evaluator, nil when it has none.
-func (s *Service) Evaluator() Evaluator { return s.evaluator }
-
 // OnChange subscribes to runtime changes of the tree that should be persisted (an
 // Update of an entry's fiber, SetDisabled). It returns a function that removes the
 // subscription.

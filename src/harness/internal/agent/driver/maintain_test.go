@@ -48,4 +48,13 @@ func TestMaintainHoldsTheTurnBack(t *testing.T) {
 		t.Fatalf("maintain under an ended context = %v, ran %v", err, ran)
 	}
 	close(out)
+
+	// With the gate free both select cases are ready; the ended context must still
+	// win every time.
+	for i := 0; i < 200; i++ {
+		ran := false
+		if err := r.drv.Maintain(ctx, func(context.Context) error { ran = true; return nil }); !errors.Is(err, context.Canceled) || ran {
+			t.Fatalf("maintain #%d under an ended context at an idle gate = %v, ran %v", i, err, ran)
+		}
+	}
 }

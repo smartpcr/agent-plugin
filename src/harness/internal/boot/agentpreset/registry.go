@@ -98,7 +98,7 @@ type targetLock struct {
 }
 
 // revision is one mounted instance of a declaration, or a declaration that cannot
-// mount (static: no scope, Broken names its issues).
+// mount (static: no scope, fault names its issues).
 type revision struct {
 	info     Info
 	children map[string]Child
@@ -107,6 +107,12 @@ type revision struct {
 	nested   *loader.Service
 	provides map[string]bool
 	static   bool
+	// fault is why the revision can never be used, fixed once built; live are the
+	// enabled children whose fibers are audited at every read, so a child waiting
+	// for a host service is usable once the service appears (DH-T-BUNDLE-7).
+	fault string
+	live  []string
+	cat   Catalogue
 
 	// guarded by Registry.mu
 	leases  int
@@ -264,13 +270,13 @@ func (r *Registry) install(cfg Config, res []resolved, static []Info) error {
 		built = append(built, rev)
 	}
 	for _, in := range static {
-		if old, ok := was[in.ID]; ok && old.static && old.info.Broken == in.Broken {
+		if old, ok := was[in.ID]; ok && old.static && old.fault == in.Broken {
 			next[in.ID] = old
 			continue
 		}
 		numbers[in.ID]++
 		in.Revision = numbers[in.ID]
-		rev := &revision{info: in, static: true, provides: map[string]bool{}}
+		rev := &revision{info: in, fault: in.Broken, static: true, provides: map[string]bool{}}
 		next[in.ID] = rev
 		built = append(built, rev)
 	}
@@ -317,13 +323,16 @@ func (r *Registry) install(cfg Config, res []resolved, static []Info) error {
 // private for every service the enabled children's catalogue items provide, and a
 // nested loader over one insert of the children. A child that fails to load, or
 // whose injections reach a Shared registry (scope.Table.CheckMount), closes the scope
-// and leaves the revision broken.
+// and faults the revision. A child still waiting for an injected service once the
+// nested tree settles is no fault: the revision is broken while it waits (health)
+// and usable once the service appears.
 func (r *Registry) build(d resolved, n int) *revision {
 	rev := &revision{
 		info: Info{ID: d.decl.ID, Name: d.decl.Name, Description: d.decl.Description, Order: d.decl.Order,
 			Revision: n, Digest: d.digest},
 		children: d.children,
 		provides: map[string]bool{},
+		cat:      r.opts.Catalogue,
 	}
 	keys := slices.Sorted(maps.Keys(d.children))
 	var entries []loader.EntryOptions
@@ -334,6 +343,7 @@ func (r *Registry) build(d resolved, n int) *revision {
 		if c.Disabled {
 			continue
 		}
+		rev.live = append(rev.live, k)
 		if item, err := r.opts.Catalogue.Lookup(c.Component); err == nil {
 			for _, p := range item.Provides {
 				rev.provides[p] = true
@@ -350,13 +360,13 @@ func (r *Registry) build(d resolved, n int) *revision {
 		for i, dg := range diags {
 			msgs[i] = dg.Message
 		}
-		rev.info.Broken = strings.Join(msgs, "; ")
+		rev.fault = strings.Join(msgs, "; ")
 		return rev
 	}
 
 	sc, err := r.opts.Scopes.New(r.ctx, "preset:"+d.decl.ID+"#"+strconv.Itoa(n))
 	if err != nil {
-		rev.info.Broken = err.Error()
+		rev.fault = err.Error()
 		return rev
 	}
 	ctx := sc.Ctx()
@@ -367,40 +377,62 @@ func (r *Registry) build(d resolved, n int) *revision {
 	nested, err := loader.New(ctx, loader.Options{Resolver: r.opts.Catalogue, Evaluator: r.opts.Evaluator},
 		loader.Layer{Label: "preset:" + d.decl.ID, Ops: []loader.Op{{Kind: loader.OpInsert, Entries: entries}}})
 	if err != nil {
-		rev.info.Broken = err.Error()
+		rev.fault = err.Error()
 		rev.close()
 		return rev
 	}
 	rev.nested = nested
 	nested.WaitAll()
 	var failed []string
-	for _, k := range keys {
-		if d.children[k].Disabled {
-			continue
-		}
-		entry := nested.Find(k)
-		if entry == nil {
-			failed = append(failed, k+": not mounted")
-			continue
-		}
-		if f := nested.Fiber(entry); f == nil {
+	for _, k := range rev.live {
+		if f := rev.fiber(k); f == nil {
 			failed = append(failed, k+": not mounted")
 		} else if err := f.Err(); err != nil {
 			failed = append(failed, k+": "+err.Error())
-		} else if st := f.State(); st != cordis.Active {
-			// A fiber waiting for an injected service settles Pending with no error.
-			failed = append(failed, k+": "+waiting(r.opts.Catalogue, d.children[k].Component, st))
 		}
 	}
 	if len(failed) > 0 {
-		rev.info.Broken = strings.Join(failed, "; ")
+		rev.fault = strings.Join(failed, "; ")
 		rev.close()
 	}
 	return rev
 }
 
-// waiting says why a settled child is not active: the services it injects, which
-// never came, for a pending one.
+func (rev *revision) fiber(key string) *cordis.Fiber {
+	if rev.nested == nil {
+		return nil
+	}
+	entry := rev.nested.Find(key)
+	if entry == nil {
+		return nil
+	}
+	return rev.nested.Fiber(entry)
+}
+
+// health is why the revision cannot be used now, "" when it can: its fault, else
+// every enabled child whose fiber is not active, audited as it stands (a child that
+// waits names the services it injects). It takes no lock of the registry.
+func (rev *revision) health() string {
+	if rev.fault != "" {
+		return rev.fault
+	}
+	var msgs []string
+	for _, k := range rev.live {
+		f := rev.fiber(k)
+		switch {
+		case f == nil:
+			msgs = append(msgs, k+": not mounted")
+		case f.Err() != nil:
+			msgs = append(msgs, k+": "+f.Err().Error())
+		case f.State() != cordis.Active:
+			msgs = append(msgs, k+": "+waiting(rev.cat, rev.children[k].Component, f.State()))
+		}
+	}
+	return strings.Join(msgs, "; ")
+}
+
+// waiting says why a settled child is not active: the services it injects, not
+// provided yet, for a pending one.
 func waiting(cat Catalogue, component string, st cordis.FiberState) string {
 	if comp, ok := cat.Resolve(component); ok && st == cordis.Pending {
 		var names []string
@@ -444,10 +476,15 @@ func (r *Registry) unload() {
 // List is every declaration's current revision in roster order (Order, then id).
 func (r *Registry) List() []Info {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	out := make([]Info, 0, len(r.order))
+	revs := make([]*revision, 0, len(r.order))
 	for _, id := range r.order {
 		out = append(out, r.current[id].info)
+		revs = append(revs, r.current[id])
+	}
+	r.mu.Unlock()
+	for i, rev := range revs {
+		out[i].Broken = rev.health()
 	}
 	return out
 }
@@ -456,14 +493,19 @@ func (r *Registry) List() []Info {
 // retired, in creation order, with its lease count.
 func (r *Registry) Revisions() []RevisionStatus {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	var out []RevisionStatus
+	var revs []*revision
 	for _, rev := range r.revs {
 		if rev.closed {
 			continue
 		}
 		out = append(out, RevisionStatus{ID: rev.info.ID, Revision: rev.info.Revision, Digest: rev.info.Digest,
-			Leases: rev.leases, Retired: rev.retired, Broken: rev.info.Broken})
+			Leases: rev.leases, Retired: rev.retired})
+		revs = append(revs, rev)
+	}
+	r.mu.Unlock()
+	for i, rev := range revs {
+		out[i].Broken = rev.health()
 	}
 	return out
 }
@@ -485,12 +527,15 @@ func (r *Registry) defaultLocked() string {
 // Resolve is the current revision of id ("" is the default) without acquiring it.
 func (r *Registry) Resolve(id string) (Info, error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	rev, err := r.lookupLocked(id)
 	if err != nil {
+		r.mu.Unlock()
 		return Info{}, err
 	}
-	return rev.info, nil
+	in := rev.info
+	r.mu.Unlock()
+	in.Broken = rev.health()
+	return in, nil
 }
 
 func (r *Registry) lookupLocked(id string) (*revision, error) {
@@ -508,21 +553,31 @@ func (r *Registry) lookupLocked(id string) (*revision, error) {
 }
 
 // Acquire leases the current revision of id ("" is the default) for owner. A broken
-// revision is refused with CodeInvalid and its diagnostic, an unknown id with
-// CodeNotFound and the available ids; neither leaves a lease.
+// revision (health, audited now) is refused with CodeInvalid and its diagnostic, an
+// unknown id with CodeNotFound and the available ids; neither leaves a lease.
 func (r *Registry) Acquire(owner *cordis.Context, id string) (Lease, error) {
-	r.mu.Lock()
-	rev, err := r.lookupLocked(id)
-	if err == nil && rev.info.Broken != "" {
-		err = &Error{Code: CodeInvalid, Msg: fmt.Sprintf("preset %q revision %d is broken: %s", rev.info.ID, rev.info.Revision, rev.info.Broken)}
-	}
-	if err != nil {
+	for {
+		r.mu.Lock()
+		rev, err := r.lookupLocked(id)
+		if err != nil {
+			r.mu.Unlock()
+			return nil, err
+		}
+		num := rev.info.Revision
 		r.mu.Unlock()
-		return nil, err
+		if why := rev.health(); why != "" {
+			return nil, &Error{Code: CodeInvalid, Msg: fmt.Sprintf("preset %q revision %d is broken: %s", rev.info.ID, num, why)}
+		}
+		r.mu.Lock()
+		// A reload may have replaced it meanwhile: audit the new current one.
+		if again, err := r.lookupLocked(id); err != nil || again != rev {
+			r.mu.Unlock()
+			continue
+		}
+		rev.leases++
+		r.mu.Unlock()
+		return r.hold(owner, rev)
 	}
-	rev.leases++
-	r.mu.Unlock()
-	return r.hold(owner, rev)
 }
 
 // AcquireFrom leases the exact revision the agent scope holder is bound to, retired
@@ -591,11 +646,15 @@ func (r *Registry) release(l *lease) {
 // Of is the revision the agent scope is bound to.
 func (r *Registry) Of(agent scope.Key) (Info, bool) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if l := r.bindings[agent]; l != nil {
-		return l.rev.info, true
+	l := r.bindings[agent]
+	if l == nil {
+		r.mu.Unlock()
+		return Info{}, false
 	}
-	return Info{}, false
+	in := l.rev.info
+	r.mu.Unlock()
+	in.Broken = l.rev.health()
+	return in, true
 }
 
 // Lookup is a service a child of the agent's revision provides privately, as the
@@ -635,8 +694,10 @@ func (l *lease) Key() scope.Key {
 // that keeps the revision refreshes its name, description and order.
 func (l *lease) Info() Info {
 	l.r.mu.Lock()
-	defer l.r.mu.Unlock()
-	return l.rev.info
+	in := l.rev.info
+	l.r.mu.Unlock()
+	in.Broken = l.rev.health()
+	return in
 }
 
 // lockTarget serialises the bindings of one agent scope; the returned func unlocks.

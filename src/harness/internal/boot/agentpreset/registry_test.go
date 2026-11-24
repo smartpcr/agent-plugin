@@ -64,7 +64,7 @@ func newFixture(t *testing.T) *fixture {
 		{Name: "tool.fail", Component: fail},
 		{Name: "tool.needs", Component: needs},
 		{Name: "session.scope", Component: scope.Component},
-	}, agentpreset.Items())
+	}, agentpreset.Items(func() agentpreset.Host { return agentpreset.Host{Catalogue: f.cat, Version: "test"} }))
 	if err != nil {
 		t.Fatal(err)
 	}

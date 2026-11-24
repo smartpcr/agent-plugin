@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/go/loader"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/agentpreset"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/config"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/profile"
 )
@@ -15,7 +16,9 @@ import (
 // is ready, when the profile reloads: a config.Service over the same stack, built
 // from the bytes the boot read so a change saved since is seen at the first poll,
 // and its watch. A rejected change is printed with its position and the running
-// tree is left as it is. shutdown stops the watch before anything else.
+// tree is left as it is. The agent presets are checked as one set
+// (agentpreset.CheckTree), so an edit that breaks their inheritance or default is
+// rejected whole. shutdown stops the watch before anything else.
 func (s *State) startReload(ctx context.Context) {
 	interval := s.Options.Profile.Reload
 	if interval <= 0 || s.Service == nil {
@@ -33,9 +36,12 @@ func (s *State) startReload(ctx context.Context) {
 		Read:      layerReader(s.Options.Request.ReadFile),
 		Baseline:  s.layerFiles,
 	}
+	presets := agentpreset.CheckTree(nil)
 	if s.catalog != nil {
 		opts.Catalog = s.catalog
+		presets = agentpreset.CheckTree(s.catalog)
 	}
+	opts.TreeChecks = []config.TreeCheck{presets}
 	svc, err := config.NewService(opts)
 	if err != nil {
 		s.note("dsh: reload off: %v\n", err)

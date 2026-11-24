@@ -208,6 +208,10 @@ func (d *Driver) Maintain(ctx context.Context, fn func(context.Context) error) e
 		return ctx.Err()
 	}
 	defer func() { <-d.maint }()
+	// select picks at random when both are ready: an ended ctx still wins.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	return fn(ctx)
 }
 

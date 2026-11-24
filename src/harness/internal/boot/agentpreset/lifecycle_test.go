@@ -151,6 +151,47 @@ func TestPendingChildIsBroken(t *testing.T) {
 	}
 }
 
+// DH-T-BUNDLE-7, D-4: a child waiting for a host service is audited as it stands,
+// not when it was built: the same revision becomes usable once the host provides
+// the service, and broken again once it is withdrawn.
+func TestLateHostServiceMakesThePresetUsable(t *testing.T) {
+	e := newEnv(t, memstore.New())
+	if err := e.reg.Load(agentpreset.Config{Default: "needy"}, []agentpreset.Declaration{
+		{ID: "needy", Children: map[string]*agentpreset.Child{"tool.needs": {}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.reg.Acquire(e.root, ""); !errors.Is(err, agentpreset.ErrInvalid) {
+		t.Fatalf("acquire before the provider = %v, want agentpreset/invalid", err)
+	}
+	h, err := e.root.Provide("tool.missing", "late")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var l agentpreset.Lease
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		if l, err = e.reg.Acquire(e.root, ""); err == nil || time.Now().After(deadline) {
+			break
+		}
+	}
+	if err != nil {
+		t.Fatalf("acquire after the host provided tool.missing = %v", err)
+	}
+	if in := l.Info(); in.Revision != 1 || in.Broken != "" {
+		t.Fatalf("lease info %+v, want the same revision 1, usable", in)
+	}
+	l.Release()
+
+	h.Dispose()
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		if in, _ := e.reg.Resolve("needy"); strings.Contains(in.Broken, "tool.missing") {
+			break
+		} else if time.Now().After(deadline) {
+			t.Fatalf("needy after tool.missing was withdrawn = %+v, want broken naming it", in)
+		}
+	}
+}
+
 // DH-ADR-BUNDLE-6: a turn that tries to start while Select is binding waits for
 // it, so the selection lands on a blank session and the turn follows it.
 func TestSelectExcludesTurnStart(t *testing.T) {
