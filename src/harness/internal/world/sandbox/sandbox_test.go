@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -224,5 +225,62 @@ func TestFakeEscalationMustWiden(t *testing.T) {
 	}
 	if next, _ := r.Resolve(ctx, sandbox.Request{Session: s}); len(next.WriteRoots()) != 1 {
 		t.Fatalf("the one-call escalation leaked into Resolve: %+v", next.WriteRoots())
+	}
+}
+
+func TestFakeSetModeHonoursCancellation(t *testing.T) {
+	const s session.ID = "s1"
+	r := &sandboxtest.Resolver{}
+	var seen []sandbox.ModeChange
+	var mu sync.Mutex
+	entered, release := make(chan struct{}), make(chan struct{})
+	r.OnModeChanging = func(c sandbox.ModeChange) error {
+		mu.Lock()
+		seen = append(seen, c)
+		mu.Unlock()
+		if c.To == sandbox.WorkspaceWrite {
+			close(entered)
+			<-release
+		}
+		return nil
+	}
+	first := make(chan error, 1)
+	go func() { first <- r.SetMode(context.Background(), s, sandbox.WorkspaceWrite) }()
+	<-entered
+
+	ctx, cancel := context.WithCancel(context.Background())
+	queued := make(chan error, 1)
+	go func() { queued <- r.SetMode(ctx, s, sandbox.DangerFullAccess) }()
+	time.Sleep(50 * time.Millisecond) // let it reach the queue
+	cancel()
+	select {
+	case err := <-queued:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled queued SetMode = %v, want an error wrapping context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a cancelled queued SetMode stayed blocked behind the running transition")
+	}
+	close(release)
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != 1 || seen[0].To != sandbox.WorkspaceWrite {
+		t.Fatalf("listeners ran for %+v; the cancelled call must not reach its listener", seen)
+	}
+	if c := r.Changes(); len(c) != 1 || c[0].To != sandbox.WorkspaceWrite {
+		t.Fatalf("changes = %+v; the cancelled call must not change the mode", c)
+	}
+	if p, _ := r.Resolve(context.Background(), sandbox.Request{Session: s}); p.Mode() != sandbox.WorkspaceWrite {
+		t.Fatalf("mode = %s, want workspace-write", p.Mode())
+	}
+
+	// Cancelled while its own listener runs: refused, nothing committed.
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	r.OnModeChanging = func(sandbox.ModeChange) error { cancel2(); return nil }
+	if err := r.SetMode(ctx2, s, sandbox.ReadOnly); !errors.Is(err, context.Canceled) || len(r.Changes()) != 1 {
+		t.Fatalf("SetMode cancelled in its listener = %v, changes %+v", err, r.Changes())
 	}
 }

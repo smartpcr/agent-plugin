@@ -66,7 +66,7 @@ type Resolver struct {
 	modes   map[session.ID]sandbox.Mode
 	grants  map[session.ID][]*string
 	changes []sandbox.ModeChange
-	setting map[session.ID]*sync.Mutex
+	setting map[session.ID]chan struct{}
 }
 
 var _ sandbox.Resolver = (*Resolver)(nil)
@@ -188,21 +188,33 @@ func (r *Resolver) SetMode(ctx context.Context, s session.ID, m sandbox.Mode) er
 	}
 	r.mu.Lock()
 	if r.setting == nil {
-		r.setting = map[session.ID]*sync.Mutex{}
+		r.setting = map[session.ID]chan struct{}{}
 	}
-	lock, ok := r.setting[s]
+	slot, ok := r.setting[s]
 	if !ok {
-		lock = &sync.Mutex{}
-		r.setting[s] = lock
+		slot = make(chan struct{}, 1)
+		r.setting[s] = slot
 	}
 	r.mu.Unlock()
-	lock.Lock()
-	defer lock.Unlock()
+	// A one-slot channel, not a mutex: a queued transition gives up when its
+	// context ends instead of running after its caller has gone.
+	select {
+	case slot <- struct{}{}:
+	case <-ctx.Done():
+		return herr.Wrap(sandbox.CodeUnavailable, ctx.Err(), "set mode: cancelled while another transition ran")
+	}
+	defer func() { <-slot }()
+	if err := ctx.Err(); err != nil {
+		return herr.Wrap(sandbox.CodeUnavailable, err, "set mode")
+	}
 	c := sandbox.ModeChange{Session: s, From: r.mode(s), To: m}
 	if r.OnModeChanging != nil {
 		if err := r.OnModeChanging(c); err != nil {
 			return err
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return herr.Wrap(sandbox.CodeUnavailable, err, "set mode: cancelled during the listener")
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
