@@ -213,7 +213,65 @@ func unregisteredProblem(p string) bool {
 // entry no lower bundle holds yet (base.yml and the spine are later stages'); the
 // composer skips such an operation, reporting it as matching no entry.
 var pendingTargets = map[string]bool{
-	"human.secrets": true, "human.authorization": true, "agent.presets": true, "session.title.llm": true,
+	"human.secrets": true, "human.authorization": true, "session.title.llm": true,
+	"preset.standard": true, "preset.script": true, "preset.minimal": true, "preset.creator": true,
+}
+
+// presetComponent is the component of a preset declaration entry (bundle-preset.md
+// §6.2, DH-D-BUNDLE-4).
+const presetComponent = "agent.preset"
+
+// effectiveChildren returns, per declaration id, the sorted names of the children
+// each agent.preset entry of the tree resolves to: its own children over those of
+// the declaration it extends, transitively (bundle-preset.md §6.2).
+func effectiveChildren(t *testing.T, entries map[string]loader.EntryOptions) map[string][]string {
+	t.Helper()
+	type decl struct {
+		ID       string
+		Extends  string
+		Children map[string]json.RawMessage
+	}
+	decls := map[string]decl{}
+	for _, e := range entries {
+		if e.Name != presetComponent {
+			continue
+		}
+		var d decl
+		if err := json.Unmarshal(e.Config, &d); err != nil {
+			t.Fatalf("%s: %v", e.ID, err)
+		}
+		decls[d.ID] = d
+	}
+	var resolve func(id string, seen map[string]bool) map[string]bool
+	resolve = func(id string, seen map[string]bool) map[string]bool {
+		d, ok := decls[id]
+		if !ok || seen[id] {
+			t.Fatalf("declaration %q is missing or extends itself", id)
+		}
+		seen[id] = true
+		out := map[string]bool{}
+		if d.Extends != "" {
+			for name := range resolve(d.Extends, seen) {
+				out[name] = true
+			}
+		}
+		for name, child := range d.Children {
+			out[name] = string(child) != "null"
+		}
+		return out
+	}
+	got := map[string][]string{}
+	for id := range decls {
+		var names []string
+		for name, on := range resolve(id, map[string]bool{}) {
+			if on {
+				names = append(names, name)
+			}
+		}
+		slices.Sort(names)
+		got[id] = names
+	}
+	return got
 }
 
 // pendingIssues splits compose issues into the skipped operations on a pending
@@ -381,6 +439,18 @@ func TestCarrierBundleMembership(t *testing.T) {
 		stub("agent.presets", `{"default":"standard"}`),
 		stub("session.title.llm", ""),
 	}
+	// The four shipped declarations, as presets/*.yml will hold them: standard and
+	// creator carry the question tool, script inherits it, minimal never had it.
+	for _, d := range []struct{ id, config string }{
+		{"preset.standard", `{"id":"standard","children":{"tool.ask-user":{"component":"tool.ask-user"},"tool.todo":{"component":"tool.todo"},"fs.tools":{"component":"fs.tools","config":{"applyPatch":true}}}}`},
+		{"preset.script", `{"id":"script","extends":"standard","children":{"program.mode":{"component":"program.mode"}}}`},
+		{"preset.minimal", `{"id":"minimal","children":{"compact.basic":{"component":"compact.basic"}}}`},
+		{"preset.creator", `{"id":"creator","extends":"standard","children":{"tool.ask-user":{"component":"tool.ask-user","config":{"timeout":"5m"}},"boot.plugins.tool":{"component":"boot.plugins.tool"}}}`},
+	} {
+		e := stub(d.id, d.config)
+		e.Name = presetComponent
+		lower = append(lower, e)
+	}
 	for _, id := range Spine {
 		if id != "agent.presets" {
 			lower = append(lower, stub(id, ""))
@@ -411,9 +481,24 @@ func TestCarrierBundleMembership(t *testing.T) {
 			if !after["human.authorization"].Disabled {
 				t.Error("human.authorization is not disabled")
 			}
-			presets := config(after["agent.presets"])
-			if presets["default"] != "standard" || !reflect.DeepEqual(presets["exclude"], []any{"tool.ask-user"}) {
-				t.Errorf("agent.presets config = %v, want tool.ask-user excluded from every preset", presets)
+			if !reflect.DeepEqual(after["agent.presets"], before["agent.presets"]) {
+				t.Errorf("headless changes the registry: %+v", after["agent.presets"])
+			}
+			want := map[string][]string{
+				"standard": {"fs.tools", "tool.todo"},
+				"script":   {"fs.tools", "program.mode", "tool.todo"},
+				"minimal":  {"compact.basic"},
+				"creator":  {"boot.plugins.tool", "fs.tools", "tool.todo"},
+			}
+			if b := effectiveChildren(t, before); !slices.Contains(b["script"], "tool.ask-user") || !slices.Contains(b["creator"], "tool.ask-user") {
+				t.Fatalf("lower presets %v: the fixture lost the question tool", b)
+			}
+			children := effectiveChildren(t, after)
+			if !reflect.DeepEqual(children, want) {
+				t.Errorf("effective preset children = %v, want %v (tool.ask-user gone, the rest kept)", children, want)
+			}
+			if c := config(after["preset.standard"])["children"].(map[string]any)["fs.tools"]; !reflect.DeepEqual(c, map[string]any{"component": "fs.tools", "config": map[string]any{"applyPatch": true}}) {
+				t.Errorf("standard fs.tools child = %v, want it unchanged", c)
 			}
 			if after["session.title.llm"].Disabled {
 				t.Error("headless switches session.title.llm off")
@@ -428,7 +513,7 @@ func TestCarrierBundleMembership(t *testing.T) {
 			if !after["session.title.llm"].Disabled {
 				t.Error("session.title.llm is not disabled")
 			}
-			for _, id := range []string{"human.secrets", "human.authorization", "agent.presets"} {
+			for _, id := range []string{"human.secrets", "human.authorization", "agent.presets", "preset.standard", "preset.creator"} {
 				if !reflect.DeepEqual(after[id], before[id]) {
 					t.Errorf("sdk changes %s: %+v", id, after[id])
 				}

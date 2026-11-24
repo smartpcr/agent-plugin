@@ -24,9 +24,27 @@
   name: human.authorization
   disabled: true
 
-# The registry leaves the listed children out of every declaration it mounts.
-- id: agent.presets
-  name: agent.presets
+# The question tool out of each shipped preset (DH-D-BUNDLE-4/5): a declaration is
+# a top-level agent.preset entry whose children are a map, so a merge reaches one
+# child and a null removes it. A preset that extends another (script, creator) also
+# loses the child it would inherit, and one that never had it is unchanged.
+- id: preset.standard
+  name: agent.preset
   merge:
-    exclude:
-      - tool.ask-user
+    children:
+      tool.ask-user: null
+- id: preset.script
+  name: agent.preset
+  merge:
+    children:
+      tool.ask-user: null
+- id: preset.minimal
+  name: agent.preset
+  merge:
+    children:
+      tool.ask-user: null
+- id: preset.creator
+  name: agent.preset
+  merge:
+    children:
+      tool.ask-user: null
