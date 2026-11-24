@@ -152,6 +152,32 @@ var codes = map[herr.Reason]int{
 	"subprocess/start-failed":     Failed,
 	"subprocess/tree-owner":       Failed,
 	"subprocess/tree-survivors":   Failed,
+
+	"fs/aborted":           Cancelled,
+	"fs/already-exists":    Busy,
+	"fs/ambiguous-edit":    Invalid,
+	"fs/edit-not-found":    Invalid,
+	"fs/invalid-path":      Invalid,
+	"fs/io":                Failed,
+	"fs/not-directory":     Invalid,
+	"fs/not-found":         Invalid,
+	"fs/not-observed":      Invalid,
+	"fs/not-regular-file":  Invalid,
+	"fs/not-text":          Invalid,
+	"fs/patch-mismatch":    Invalid,
+	"fs/permission-denied": Denied,
+	"fs/same-target":       Invalid,
+	"fs/sandbox-denied":    Denied,
+	"fs/stale-version":     Busy,
+	"fs/timeout":           Limit,
+	"fs/too-large":         Limit,
+
+	"sandbox/escalation-rejected": Denied,
+	"sandbox/invalid-mode":        Invalid,
+	"sandbox/invalid-root":        Invalid,
+	"sandbox/unavailable":         Unavailable,
+
+	"workdir/unavailable": Unavailable,
 }
 
 // Status maps err to its exit status: nil is OK, a cancelled context Cancelled, an
