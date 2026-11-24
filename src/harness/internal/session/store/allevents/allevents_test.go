@@ -32,6 +32,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/schema"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store"
+	_ "github.com/smartpcr/agent-plugin/src/harness/internal/session/workdir"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/golden"
 )
 

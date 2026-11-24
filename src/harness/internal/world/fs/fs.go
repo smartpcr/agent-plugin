@@ -7,7 +7,8 @@
 // one caller that combines it with a sandbox.Policy, and every tool goes through
 // ops. Every mutating method takes the Policy of the call and refuses with
 // fs/sandbox-denied before it touches anything; a zero Policy is refused with
-// sandbox/unavailable. Every provider passes fstest.Run.
+// sandbox/unavailable. Every provider passes fstest.Run. ops dispatches the live
+// events of events.go (BeforeMutation, Observed) around each provider call.
 package fs
 
 import (
@@ -159,6 +160,11 @@ type WriteOutcome struct {
 	Created bool
 	// Version is the new version, with its digest.
 	Version Version
+	// DurabilityUnknown is non-nil when the new content is in place but the
+	// sync after publication failed (filesystem.md sec. 6.3, "in place,
+	// durability unknown"): the write took effect, yet may not survive a power
+	// loss. It wraps the provider's cause (for fs/local, fsx.ErrDurabilityUnknown).
+	DurabilityUnknown error
 }
 
 // DeleteOutcome is the result of a delete.
@@ -193,7 +199,9 @@ type FS interface {
 	// ReadDir lists the directory r, sorted by name, at most limit entries
 	// (limit <= 0 means no limit); truncated reports whether entries were left out.
 	ReadDir(ctx context.Context, r Ref, limit int) (entries []DirEntry, truncated bool, err error)
-	// Write replaces (or creates, with missing parents) the file r with data.
+	// Write replaces (or creates, with missing parents) the file r with data. The
+	// final component is always followed (r.NoFollowFinal is ignored): the file
+	// changed, and fenced, is the one a final link points at.
 	Write(ctx context.Context, r Ref, data []byte, g Guard, p sandbox.Policy) (WriteOutcome, error)
 	// Delete removes the file r (never a directory); the final component is not
 	// followed.

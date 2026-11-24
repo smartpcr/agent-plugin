@@ -22,6 +22,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store/memstore"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store/sqlite"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/views"
 	fakemodel "github.com/smartpcr/agent-plugin/src/harness/internal/testkit/model"
 )
 
@@ -34,6 +35,7 @@ type life struct {
 	svc    session.Service
 	reg    agent.Registry
 	tr     *fakemodel.Transport
+	sent   *recorder
 
 	mu  sync.Mutex
 	log []string
@@ -46,6 +48,10 @@ type lifeOptions struct {
 	store      store.Store
 	turns      []fakemodel.Turn
 	flushLimit time.Duration
+	// folder is the session service's view registry; workdir is the driver's
+	// working-directory component, registered in it. nil is none.
+	folder  *views.Registry
+	workdir driver.Workdir
 }
 
 func newLife(t *testing.T, o lifeOptions) *life {
@@ -56,15 +62,30 @@ func newLife(t *testing.T, o lifeOptions) *life {
 		o.store = memstore.New()
 	}
 	l := &life{t: t, root: root}
-	l.svc = session.NewService(root, o.store, session.Config{})
+	cfg := session.Config{}
+	if o.folder != nil {
+		cfg.Folder = o.folder
+	}
+	l.svc = session.NewService(root, o.store, cfg)
 	l.reg = agent.NewRegistry(root)
 	rt := llm.New()
 	l.tr = fakemodel.NewTransport(t, o.turns...)
 	fakemodel.Register(t, rt, route, l.tr)
+	l.sent = &recorder{Models: rt}
 	l.drv = must(root.Apply("driver", func(c *cordis.Context) error { l.drvCtx = c; return nil }))
 	must(0, l.drv.Wait())
+	scopes := scope.NewTable(root)
+	if o.workdir != nil {
+		// The workdir guard is filed in the agent's scope, so the agents'
+		// scopes must come from the table the tools service layers by.
+		g := must(root.Inject([]string{scope.TableKey.Name()}, func(c *cordis.Context) (err error) {
+			scopes, err = scope.TableKey.Get(c)
+			return err
+		}))
+		must(0, g.Wait())
+	}
 	f := must(driver.NewFactory(driver.FactoryOptions{
-		Context: l.drvCtx, Sessions: l.svc, Scopes: scope.NewTable(root), Models: rt, Tools: tsvc,
+		Context: l.drvCtx, Sessions: l.svc, Scopes: scopes, Models: l.sent, Tools: tsvc, Workdir: o.workdir,
 		Prompt: newTestPrompt(defaultPrompt), FinalFlushTimeout: o.flushLimit,
 		Observe: func(_ agent.Ref, p string) { l.note(p) },
 	}))

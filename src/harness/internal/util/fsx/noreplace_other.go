@@ -2,6 +2,6 @@
 
 package fsx
 
-func renameNoReplace(stage, target string, _ bool) error {
+func renameNoReplace(stage, target string, _ bool, _ func() error) error {
 	return linkThenRemove(stage, target)
 }
