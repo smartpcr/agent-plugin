@@ -203,6 +203,12 @@ func TestStopRevokesEvenWhenTheTreeIsGone(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	// The root has exited, but a Windows job's process count can lag its exit on a
+	// loaded machine, and the ladder rightly treats that tree as not gone. This test
+	// is about a tree that is gone, so it waits for that first.
+	if err := p.TreeGone(ctx); err != nil {
+		t.Fatal(err)
+	}
 	if err := p.Stop(ctx, nil); err != nil {
 		t.Fatal(err)
 	}
