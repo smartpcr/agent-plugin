@@ -292,13 +292,22 @@ closes" goes through the predicates proven here.
 
 #### Feature: Records and index skeleton exist before the first build step
 
-- **Scenario:** Seven stage records and one closure record, all open
+- **Scenario:** A newly created stage record starts open
+  ```gherkin
+  @proof:golden @venue:gate
+  Given the immutable creation fixture tools/harness-gate/testdata/records/created/ (one freshly scaffolded record per stage DH-S-12 .. DH-S-18 and one closure.md), never the live evidence directory
+  When the record-shape check runs with --root pointed at that fixture
+  Then each stage record holds the impl.md sec. 7.3 fields and reads "Closure status: open"
+  And closure.md has 35 deliverable rows and rows for H-1, H-2, H-3, H-4, H-10 and H-21
+  ```
+- **Scenario:** Live records stay valid whether open or closed
   ```gherkin
   @proof:golden @venue:gate
   Given the committed docs/stories/harness-DSH-M2/evidence/
-  When the record-shape check runs
-  Then DH-S-12.md .. DH-S-18.md each hold the impl.md sec. 7.3 fields and read "Closure status: open"
-  And closure.md has 35 deliverable rows and rows for H-1, H-2, H-3, H-4, H-10 and H-21
+  When the record-shape check runs against the repository root
+  Then DH-S-12.md .. DH-S-18.md each exist and hold the impl.md sec. 7.3 fields
+  And each status line reads either "Closure status: open" or "Closure status: closed"; any other value fails naming the record
+  And a record reading closed must also satisfy "harness-gate close --stage <id>", so closing DH-S-12 legitimately keeps this check green
   ```
 - **Scenario:** Index stage keys added without moving built-through
   ```gherkin
@@ -1413,7 +1422,12 @@ Phase 8 or 9 run.
   - GitHub environment `dsh-m2-guarded`, secret `DSH_LAB_RUNNER_TOKEN`.
   - `DSH_SCENARIO_CLAUDE_CODE_MODEL` and `DSH_SCENARIO_CLAUDE_CODE_EFFORT` are
     environment variables, not secrets.
-  - The names are a proposal (open question `e2e-lab-secret-names`).
+  - These names are the binding contract for this phase and for Phases 8 and 9: one vault
+    (`kv-forge-dsh-lab`), one ADO variable group (`dsh-m2-lab`), and one GitHub
+    environment per closure stage (`dsh-m2-guarded`, `dsh-m2-s17`, `dsh-m2-s18`), so that
+    each stage's approval is independent. Provisioning them is a precondition of the
+    `harness-scenarios.yml` dispatch. A missing secret fails the job before any scenario
+    runs and the rows read `not run (runner secret missing)`.
 - **Pre-test bootstrap**: the lane preflight fails the run, never skips it, when any
   check misses:
   - Both lanes: Go 1.27.4; the lane shell; `DSH_SCENARIO_FS3_EDITOR` pointing at the
@@ -1492,9 +1506,11 @@ Phase 8 or 9 run.
   @TC-19s2 @DH-E-STORE-2 @proof:service:model-route-claude-code @proof:service:linux-sandbox-bwrap @venue:guarded @route:claude-code @platform:linux-wsl
   Given built dsh in a scratch home and workspace, workspace-write under bwrap Full
   And the signed-in Claude Code route [binding: replaces "a real model API key", M2-I-1]
+  And before the kill the test snapshots every persisted event of the session (seq, type and payload)
   When DSH_SCENARIO_STORE2_KILL kills the host and its children while a sandboxed "sleep 60; write" runs
   And DSH_SCENARIO_STORE2_RESUME resumes the session and DSH_SCENARIO_STORE2_PROMPT sends a new prompt
-  Then the cut turn shows interrupted and the tool call "outcome unknown"
+  Then every pre-kill event is still present after resume with the same seq, type and payload, and seq continues with no gap
+  And the cut turn shows interrupted and the tool call "outcome unknown"
   And the first model request read from the session log by DSH_SCENARIO_STORE2_REQUEST contains that result
   Cleanup: delete the session and show nothing remains; keep the home listing under DSH_LAB_EVIDENCE_URL; remove the workspace
   ```
@@ -1716,6 +1732,9 @@ SANDBOX-7 last (contract rule 7). The milestone's user-visible promise is proved
   Then the clock context is in Asia/Tokyo and the run result equals the last assistant message
   When it rejects a write
   Then the file is unchanged
+  When on the same connection the model asks a question (question/ask) and the program answers with "blue"
+  Then the answer is accepted, the turn continues, and the next assistant message or tool input in the persisted history contains "blue"
+  And an answer sent for an already-answered question id is rejected with an sdk/* error
   When it cancels DSH_SCENARIO_SDK1_LONG_PROMPT
   Then the cancel reply arrives after "turn/end"
   When it kills dsh
@@ -1791,7 +1810,10 @@ Each variant is recorded `passed`, `failed`, `not run (<reason>)` or `out of sco
   - `[self-hosted, linux, dsh-hypervisor]`: KVM and Hyper-V power-cut control.
 
   Triggered by `harness-scenarios.yml` `workflow_dispatch` with `stage: DH-S-18`.
-- **Secrets**: no model key. VIEW-5 and FS-2 use the signed-in route on the controller.
+- **Secrets**: no model key. The signed-in routes live on the machine that runs the
+  scenario, never on the controller: VIEW-5 and the Linux FS-2 leg use the tester's
+  Linux machine; the Windows FS-2 leg uses a natively installed, signed-in Claude Code
+  CLI on the Windows variant machine (`[self-hosted, windows, dsh-windows-host]`).
   Machine access only:
   - Azure Key Vault `kv-forge-dsh-lab` entries `dsh-lab-ssh-key`, `dsh-lab-known-hosts`,
     `dsh-lab-hyperv-cred`, `dsh-lab-second-user-cred` and `dsh-lab-runner-token`, exposed
@@ -1926,7 +1948,7 @@ Each variant is recorded `passed`, `failed`, `not run (<reason>)` or `out of sco
 
 - **Scenario:** A grandchild that ignores SIGTERM is ended (EXEC-1)
   ```gherkin
-  @TC-21s2 @DH-E-EXEC-1 @proof:service:linux-cgroup @venue:acceptance @platform:linux-e2:systemd
+  @TC-21s2 @DH-E-EXEC-1 @proof:service:linux-systemd-cgroup @venue:acceptance @platform:linux-e2:systemd
   Given a setsid grandchild that ignores SIGTERM, run with DSH_SCENARIO_EXEC1_RUN
   When the 2 s timeout fires
   Then the record reads "stop: timeout" and "owner: cgroup", and the cgroup directory is removed
@@ -1959,16 +1981,34 @@ Each variant is recorded `passed`, `failed`, `not run (<reason>)` or `out of sco
   And an escalated danger-full-access write succeeds and is logged
   Cleanup: on any outside write stop the stage and keep both listings (M2-R-03); otherwise remove the checkouts
   ```
-- **Scenario:** A long session corrects its own bad patterns (FS-2)
+- **Scenario:** A long session corrects its own bad patterns, Linux leg (FS-2)
   ```gherkin
-  @TC-21s4 @DH-E-FS-2 @proof:service:model-route-claude-code @proof:service:git-and-editor @venue:acceptance @route:claude-code @platform:linux-wsl @platform:windows
-  Given 20 tasks over DSH_SCENARIO_FS_CHECKOUTS on the signed-in route, on Linux ext4 and on Windows NTFS
-  And on Windows the mode is workspace-write with sandbox status Unconfined (no Windows backend in M2), so the fence under test is the C32 filesystem seam, recorded in the row
+  @TC-21s4 @DH-E-FS-2 @proof:service:model-route-claude-code @proof:service:git-and-editor @venue:acceptance @route:claude-code @platform:linux-wsl
+  Given the tester's Linux machine (ext4) whose s18 job preflight confirmed a signed-in Claude Code CLI (probe turn), git and the editor save script
+  And 20 tasks over DSH_SCENARIO_FS_CHECKOUTS on that machine's signed-in route
   When they run (sharded per M2-R-06 if beyond 3 h)
   Then fewer than 5% of grep calls return "search/invalid-pattern", and each one is followed by a corrected call
   And no rg child is started
   And the disk equals the logged edits, and the before/after listings show zero files outside the write roots
   Cleanup: keep both listings as artifacts; remove the scratch homes and checkouts
+  ```
+- **Scenario:** A long session corrects its own bad patterns, Windows leg (FS-2)
+  ```gherkin
+  @TC-21s4 @DH-E-FS-2 @proof:service:windows-host @proof:service:model-route-claude-code @proof:service:git-and-editor @venue:acceptance @route:claude-code @platform:windows
+  Given the Windows variant machine (NTFS) from evidence/variants.md
+  And on that machine a natively installed Claude Code CLI signed in by the tester, git and the editor save script, each confirmed by the Windows s18 job preflight
+  And the mode is workspace-write with sandbox status Unconfined (no Windows backend in M2), so the fence under test is the C32 filesystem seam, recorded in the row
+  When the same 20 tasks run on that machine's signed-in route (sharded per M2-R-06 if beyond 3 h)
+  Then the same Then clauses hold and no file appears outside the write roots in the before/after listings
+  Cleanup: keep both listings as artifacts; remove the scratch homes and checkouts
+  ```
+- **Scenario:** A Windows machine without its own signed-in client is not run
+  ```gherkin
+  @TC-21s4 @DH-E-FS-2 @venue:acceptance @platform:windows @edge
+  Given the Windows variant machine where claude is missing or signed out, or git or the editor save script is absent
+  When the Windows s18 job preflight runs
+  Then it fails naming the missing dependency, and the Windows FS-2 row reads "not run (<check> preflight failed)"
+  And a signed-in client on the controller or the Linux machine does not satisfy it, and S18 stays open
   ```
 - **Scenario:** The working directory on a real repository (VIEW-5)
   ```gherkin
@@ -2022,10 +2062,15 @@ Each variant is recorded `passed`, `failed`, `not run (<reason>)` or `out of sco
   ```gherkin
   @TC-07s @TC-21s4 @DH-E-CONTEXT-2 @proof:service:git-and-editor @venue:acceptance @platform:linux-wsl @platform:windows
   Given a session on a repository with AGENTS.md
-  When the file is saved by an editor, and separately a git branch switch changes it
-  Then each produces exactly one "updated" message
+  When the file is saved by an editor
+  Then exactly one "updated" message is produced
+  And the next model request contains the edited instruction section and no longer the replaced text
+  When separately a git branch switch changes AGENTS.md
+  Then exactly one "updated" message is produced
+  And the next model request contains the switched branch's instruction section
   And a linked sub/AGENTS.md pointing outside the root is refused and named in the diagnostics
   And no turn fails
+  Cleanup: remove the scratch repository and home
   ```
 - **Scenario:** A second account cannot read (STORAGE-6)
   ```gherkin
