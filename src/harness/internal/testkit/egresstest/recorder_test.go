@@ -45,20 +45,6 @@ func (r *recorder) Cleanup(f func()) {
 	r.cleanups = append(r.cleanups, f)
 }
 
-// run calls fn on its own goroutine, so a Fatalf ends fn alone, and waits for it.
-// It reports whether fn was ended by a Fatalf.
-func (r *recorder) run(fn func()) (fatal bool) {
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		fn()
-	}()
-	<-done
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.fatal
-}
-
 // cleanup runs the recorded cleanups, last first.
 func (r *recorder) cleanup() {
 	r.mu.Lock()
