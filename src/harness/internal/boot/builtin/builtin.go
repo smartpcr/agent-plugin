@@ -45,6 +45,15 @@ func Host() []catalog.Item {
 // fences the provider with sandbox.policy. The three families below are the one
 // unit that lands them; each injects only what the others provide plus the
 // process's session service (session.core) and fold registry (session.views).
+//
+// Not yet bootable: this unit is registered in the build catalogue only. No
+// catalogue item and nothing in boot.Real.Tree provides session.core or
+// session.views yet, so in the dsh binary session.workdir and sandbox.policy
+// (and fs.ops through them) wait on inject until Settle's StartupTimeout.
+// cyclec3_test.go provides both keys by hand on a testkit root; it proves the
+// three items compose from the catalogue, not that they boot through boot.
+// The gap closes when the session.core item (core.Component, DH-D-SESSION-2)
+// and the session.views item (DH-D-VIEW-1, DH-D-VIEW-3) join Session().
 
 // Session is the session family's items.
 func Session() []catalog.Item {
