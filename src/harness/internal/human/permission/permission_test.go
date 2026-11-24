@@ -42,6 +42,7 @@ func table() permission.Config {
 
 type world struct {
 	root     *cordis.Context
+	views    *views.Registry
 	sessions session.Service
 	resolver *policy.Resolver
 	approval *approval.Service
@@ -64,19 +65,58 @@ func owner(t *testing.T, root *cordis.Context, name string) *cordis.Context {
 
 func newWorld(t *testing.T, cfg permission.Config) *world {
 	t.Helper()
-	w := &world{root: cordis.New()}
+	return newWorldOn(t, cfg, memstore.New(), "", approval.PolicyAsk)
+}
+
+// newWorldOn is a process over st whose knob owners default to mode ("" is
+// read-only) and pol; the approval service is bound to the agent lifecycle, so
+// a resumed session's policy is read back from its log.
+func newWorldOn(t *testing.T, cfg permission.Config, st *memstore.Store, mode sandbox.Mode, pol approval.Policy) *world {
+	t.Helper()
+	w := &world{root: cordis.New(), views: views.New()}
 	t.Cleanup(w.root.Dispose)
-	w.sessions = session.NewService(w.root, memstore.New(), session.Config{})
+	w.sessions = session.NewService(w.root, st, session.Config{})
 	var err error
-	if w.resolver, err = policy.New(policy.Config{}, policy.Deps{Owner: owner(t, w.root, "world.sandbox.policy"), Sessions: w.sessions}); err != nil {
+	if w.resolver, err = policy.New(policy.Config{DefaultMode: mode}, policy.Deps{Owner: owner(t, w.root, "world.sandbox.policy"), Sessions: w.sessions}); err != nil {
 		t.Fatal(err)
 	}
 	w.grants = approval.NewGrants()
-	w.approval = approval.New(approval.Config{Registry: human.New(), Grants: w.grants, Sessions: w.sessions})
-	if w.svc, err = permission.New(cfg, permission.Deps{Sessions: w.sessions, Sandbox: w.resolver, Approval: w.approval, Grants: w.grants}); err != nil {
+	w.approval = approval.New(approval.Config{Registry: human.New(), Grants: w.grants, Sessions: w.sessions, Policy: pol})
+	if _, err := w.approval.Bind(w.root, w.sessions); err != nil {
+		t.Fatal(err)
+	}
+	if w.svc, err = permission.New(cfg, permission.Deps{Sessions: w.sessions, Sandbox: w.resolver, Approval: w.approval, Grants: w.grants, Views: w.views}); err != nil {
 		t.Fatal(err)
 	}
 	return w
+}
+
+// state is the permissions fold of h, read through the registry the service
+// registered it in.
+func (w *world) state(t *testing.T, h session.ReadSession) permission.State {
+	t.Helper()
+	snap, err := w.views.Read(bg, h, permission.ViewKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := w.svc.Handle().Get(snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
+
+// veto refuses every ModeChanging while refuse holds.
+func veto(t *testing.T, root *cordis.Context, refuse *bool) {
+	t.Helper()
+	if _, err := sandbox.ModeChanging.On(owner(t, root, "test.veto"), func(*cordis.Context, sandbox.ModeChange) error {
+		if *refuse {
+			return errors.New("a command is running")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (w *world) live(t *testing.T, id session.ID) session.Handle {
@@ -263,11 +303,14 @@ func (a *lifeAgent) Close(ctx context.Context) error {
 	return a.h.Close(ctx)
 }
 
-func lifecycle(t *testing.T, w *world) agent.Registry {
+func lifecycle(t *testing.T, w *world, stored ...session.ID) agent.Registry {
 	t.Helper()
 	tab := scope.NewTable(w.root)
 	reg := agent.NewRegistry(w.root)
 	opened := map[session.ID]bool{}
+	for _, id := range stored {
+		opened[id] = true
+	}
 	if _, err := reg.SetFactory(w.root, agent.FactoryFunc(func(owner *cordis.Context, o agent.CreateOptions, ref agent.Ref) (agent.Instance, error) {
 		var h session.Handle
 		var err error
@@ -309,8 +352,8 @@ func TestCreationPinsAFreshSession(t *testing.T) {
 	if !ok {
 		t.Fatal("the agent's session is not live")
 	}
-	if got := types(t, h, 0); !slices.Contains(got, permission.PresetType.Name()) || count(got, sandbox.ModeEventType) != 1 || count(got, approval.PolicyType.Name()) != 0 {
-		// ask is the approval service's default policy, so the pin writes no approval/policy.
+	// Both knobs are recorded, ask included although it is the approval default.
+	if got := types(t, h, 0); !slices.Equal(got, []string{permission.PresetType.Name(), sandbox.ModeEventType, approval.PolicyType.Name()}) {
 		t.Fatalf("pin appended %v", got)
 	}
 	if m, err := w.resolver.Mode(bg, ref.Session); err != nil || m != sandbox.WorkspaceWrite {
@@ -400,5 +443,198 @@ func TestCheckTreePlacesAnUnresolvableDefault(t *testing.T) {
 	}
 	if issues := check(quiet); len(issues) != 0 {
 		t.Fatalf("issues %+v", issues)
+	}
+}
+
+// DH-D-HUMAN-4 (a resumed session keeps its values): a session pinned to ask
+// (workspace-write, ask) is resumed by a new process whose knob owners default
+// to danger-full-access and never; the resume writes nothing and the session
+// still runs workspace-write under ask.
+func TestRestartKeepsThePinnedPairUnderChangedDefaults(t *testing.T) {
+	st := memstore.New()
+	w1 := newWorldOn(t, table(), st, "", approval.PolicyAsk)
+	if _, err := w1.svc.Bind(w1.root); err != nil {
+		t.Fatal(err)
+	}
+	a1, err := lifecycle(t, w1).Create(w1.root, agent.CreateOptions{Session: "s-restart"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a1.Dispose(bg); err != nil {
+		t.Fatal(err)
+	}
+	w1.root.Dispose()
+
+	w2 := newWorldOn(t, table(), st, sandbox.DangerFullAccess, approval.PolicyNever)
+	if _, err := w2.svc.Bind(w2.root); err != nil {
+		t.Fatal(err)
+	}
+	a2, err := lifecycle(t, w2, "s-restart").Create(w2.root, agent.CreateOptions{Session: "s-restart"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = a2.Dispose(bg) })
+	ref := a2.Agent().Ref()
+	h, _ := w2.sessions.Get(ref.Session)
+	if got := types(t, h, 0); len(got) != 3 {
+		t.Fatalf("the resume wrote: %v", got)
+	}
+	if m, err := w2.resolver.Mode(bg, ref.Session); err != nil || m != sandbox.WorkspaceWrite || w2.approval.Policy(ref.Session) != approval.PolicyAsk {
+		t.Fatalf("resumed knobs %s, %v, %s; want workspace-write, ask", m, err, w2.approval.Policy(ref.Session))
+	}
+	if cur, err := w2.svc.Current(bg, ref.Session); err != nil || cur != "ask" {
+		t.Fatalf("resumed preset %q, %v; want ask", cur, err)
+	}
+}
+
+// A pin whose mode write is refused fails the creation and leaves the pin owing
+// both knobs; the retried creation does not take the session as pinned: it
+// writes the owed knobs with the pin's pair (no second pin) and succeeds.
+func TestFailedPinIsFinishedOnRetry(t *testing.T) {
+	w := newWorld(t, table())
+	refuse := true
+	veto(t, w.root, &refuse)
+	if _, err := w.svc.Bind(w.root); err != nil {
+		t.Fatal(err)
+	}
+	reg := lifecycle(t, w)
+	if _, err := reg.Create(w.root, agent.CreateOptions{Session: "s-retry"}); err == nil {
+		t.Fatal("a creation whose pin was refused succeeded")
+	}
+	// Still refused: the retry fails too, and owes the same knobs.
+	if _, err := reg.Create(w.root, agent.CreateOptions{Session: "s-retry"}); err == nil {
+		t.Fatal("a retried creation whose pin is still refused succeeded")
+	}
+	refuse = false
+	a, err := reg.Create(w.root, agent.CreateOptions{Session: "s-retry"})
+	if err != nil {
+		t.Fatalf("the retried creation: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Dispose(bg) })
+	ref := a.Agent().Ref()
+	h, _ := w.sessions.Get(ref.Session)
+	if got := types(t, h, 0); !slices.Equal(got, []string{permission.PresetType.Name(), sandbox.ModeEventType, approval.PolicyType.Name()}) {
+		t.Fatalf("log %v; want one pin and then its two knobs", got)
+	}
+	if m, err := w.resolver.Mode(bg, ref.Session); err != nil || m != sandbox.WorkspaceWrite {
+		t.Fatalf("mode %s, %v", m, err)
+	}
+	if st := w.state(t, h); st.Preset != "ask" || !st.Pinned {
+		t.Fatalf("permissions %+v", st)
+	}
+	// Finished: a further creation writes nothing.
+	n := len(types(t, h, 0))
+	if err := w.svc.Pin(bg, ref); err != nil || len(types(t, h, 0)) != n {
+		t.Fatalf("a finished pin wrote again: %v", err)
+	}
+}
+
+// DH-D-HUMAN-4 (the fold folds the two knob events and the selection): a knob
+// written directly through its owner moves the permissions fold to custom while
+// Current names the entry the knobs match, or custom; a switch whose mode write
+// is refused leaves the knobs, and the fold, where they were.
+func TestFoldFollowsTheKnobs(t *testing.T) {
+	w := newWorld(t, table())
+	h := w.live(t, me.Session)
+	refuse := false
+	veto(t, w.root, &refuse)
+	if err := w.svc.Pin(bg, me); err != nil {
+		t.Fatal(err)
+	}
+	if st := w.state(t, h); st.Preset != "ask" || st.Mode != sandbox.WorkspaceWrite || st.Approval != approval.PolicyAsk {
+		t.Fatalf("pinned %+v", st)
+	}
+	if err := w.resolver.SetMode(bg, me.Session, sandbox.ReadOnly); err != nil {
+		t.Fatal(err)
+	}
+	st := w.state(t, h)
+	if st.Preset != permission.Custom || st.Selected != "ask" || st.Mode != sandbox.ReadOnly || st.Approval != approval.PolicyAsk {
+		t.Fatalf("after a direct mode write %+v", st)
+	}
+	if cur, _ := w.svc.Current(bg, me.Session); cur != "locked" {
+		t.Fatalf("current %q; want locked, the entry read-only/ask matches", cur)
+	}
+	if err := w.approval.SetPolicy(bg, me, approval.PolicyNever, approval.By{Principal: "alice"}); err != nil {
+		t.Fatal(err)
+	}
+	if st := w.state(t, h); st.Preset != permission.Custom || st.Approval != approval.PolicyNever {
+		t.Fatalf("after a direct policy write %+v", st)
+	}
+	if cur, _ := w.svc.Current(bg, me.Session); cur != permission.Custom {
+		t.Fatalf("current %q; want custom", cur)
+	}
+
+	// Back to ask, then a refused switch to auto.
+	if _, err := w.svc.Set(bg, me, "ask", approval.By{Principal: "alice"}); err != nil {
+		t.Fatal(err)
+	}
+	refuse = true
+	if _, err := w.svc.Set(bg, me, "auto", approval.By{Principal: "alice"}); err == nil {
+		t.Fatal("a refused switch succeeded")
+	}
+	st = w.state(t, h)
+	if st.Selected != "auto" || st.Preset != permission.Custom || st.Mode != sandbox.WorkspaceWrite || st.Approval != approval.PolicyAsk {
+		t.Fatalf("after a refused switch %+v", st)
+	}
+	if cur, _ := w.svc.Current(bg, me.Session); cur != "ask" {
+		t.Fatalf("current %q after a refused switch; want ask, the knobs in force", cur)
+	}
+}
+
+// The component registers the permissions fold in the process's registry
+// (views.Key), provides the service and pins at agent creation: the projection
+// reads without any manual registration.
+func TestComponentRegistersThePermissionsFold(t *testing.T) {
+	w := newWorld(t, table())
+	reg := views.New()
+	cmds := command.NewRegistry(scope.NewTable(w.root))
+	providers, err := w.root.Apply("test.providers", func(c *cordis.Context) error {
+		if _, err := session.Key.Provide(c, w.sessions); err != nil {
+			return err
+		}
+		if _, err := views.Key.Provide(c, reg); err != nil {
+			return err
+		}
+		if _, err := sandbox.ResolverKey.Provide(c, sandbox.Resolver(w.resolver)); err != nil {
+			return err
+		}
+		if _, err := approval.Key.Provide(c, w.approval); err != nil {
+			return err
+		}
+		_, err := command.Key.Provide(c, cmds)
+		return err
+	})
+	if err == nil {
+		err = providers.Wait()
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := w.root.Use(permission.Component, table())
+	if err == nil {
+		err = f.Wait()
+	}
+	if err != nil {
+		t.Fatalf("load permission.presets: %v", err)
+	}
+	a, err := lifecycle(t, w).Create(w.root, agent.CreateOptions{Session: "s-component"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = a.Dispose(bg) })
+	h, _ := w.sessions.Get(a.Agent().Ref().Session)
+	snap, err := reg.Read(bg, h, permission.ViewKey)
+	if err != nil {
+		t.Fatalf("the permissions fold is not in the registry: %v", err)
+	}
+	if !slices.ContainsFunc(cmds.List(scope.Key{}), func(c command.Command) bool { return c.Name == permission.CommandName }) {
+		t.Fatal("/permission is not registered")
+	}
+	view, err := permission.RegisterView(views.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st, err := view.Get(snap); err != nil || st.Preset != "ask" || !st.Pinned {
+		t.Fatalf("permissions %+v, %v", st, err)
 	}
 }

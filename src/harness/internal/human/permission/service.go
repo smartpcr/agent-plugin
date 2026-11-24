@@ -15,6 +15,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human/command"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/views"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox"
 )
 
@@ -47,18 +48,22 @@ type Approval interface {
 
 // Deps are the service's collaborators. Sessions, Sandbox and Approval are
 // required; Grants, when set, is the table a switch revokes even when only the
-// mode changes (SetPolicy revokes it when the policy does).
+// mode changes (SetPolicy revokes it when the policy does). Views, when set, is
+// the process's fold registry the permissions fold is registered in (New), so
+// every reader of the registry reads ViewKey.
 type Deps struct {
 	Sessions Sessions
 	Sandbox  Sandbox
 	Approval Approval
 	Grants   *approval.Grants
+	Views    *views.Registry
 }
 
 // Service is permission.Service, the one Permissions choice. It is safe for
 // concurrent use; switches are serialized.
 type Service struct {
 	deps Deps
+	view views.Handle[State]
 
 	mu  sync.Mutex // guards cfg
 	cfg Config
@@ -78,8 +83,19 @@ func New(cfg Config, deps Deps) (*Service, error) {
 	if deps.Sessions == nil || deps.Sandbox == nil || deps.Approval == nil {
 		return nil, errors.New("permission: the sessions, the sandbox resolver and the approval service are required")
 	}
-	return &Service{deps: deps, cfg: clone(cfg)}, nil
+	s := &Service{deps: deps, cfg: clone(cfg)}
+	if deps.Views != nil {
+		h, err := RegisterView(deps.Views)
+		if err != nil {
+			return nil, fmt.Errorf("permission: register the permissions fold: %w", err)
+		}
+		s.view = h
+	}
+	return s, nil
 }
+
+// Handle is the permissions fold's typed read in Deps.Views (zero without one).
+func (s *Service) Handle() views.Handle[State] { return s.view }
 
 func clone(c Config) Config {
 	c.Presets = slices.Clone(c.Presets)
@@ -148,7 +164,7 @@ func (s *Service) Current(ctx context.Context, id session.ID) (string, error) {
 		return "", err
 	}
 	c := s.config()
-	if p, ok := c.lookup(st.Preset); ok && p.matches(mode, policy) {
+	if p, ok := c.lookup(st.Selected); ok && p.matches(mode, policy) {
 		return p.Name, nil
 	}
 	for _, p := range c.Presets {
@@ -189,7 +205,7 @@ func (s *Service) Set(ctx context.Context, ag agent.Ref, name string, by approva
 	if err != nil {
 		return Preset{}, err
 	}
-	if st.Preset == p.Name && p.matches(mode, policy) {
+	if st.Selected == p.Name && p.matches(mode, policy) {
 		return p, nil
 	}
 	if err := s.write(ctx, h, ag, p, false, by); err != nil {
@@ -213,20 +229,35 @@ func (s *Service) write(ctx context.Context, h session.Session, ag agent.Ref, p 
 	if err != nil {
 		return fmt.Errorf("permission: append permission/preset: %w", err)
 	}
-	actx := sandbox.WithActor(ctx, sandbox.Actor{Principal: by.Principal, Channel: by.Channel, Peer: by.Peer})
-	if err := s.deps.Sandbox.SetMode(actx, ag.Session, p.Mode); err != nil {
-		return fmt.Errorf("permission: set the sandbox mode of %s to %s: %w", ag.Session, p.Mode, err)
+	return s.knobWrites(ctx, ag, p, by, true, true)
+}
+
+// knobWrites writes p's mode (when mode) and then its policy (when policy)
+// through their owners, attributed to by.
+func (s *Service) knobWrites(ctx context.Context, ag agent.Ref, p Preset, by approval.By, mode, policy bool) error {
+	if mode {
+		actx := sandbox.WithActor(ctx, sandbox.Actor{Principal: by.Principal, Channel: by.Channel, Peer: by.Peer})
+		if err := s.deps.Sandbox.SetMode(actx, ag.Session, p.Mode); err != nil {
+			return fmt.Errorf("permission: set the sandbox mode of %s to %s: %w", ag.Session, p.Mode, err)
+		}
 	}
-	if err := s.deps.Approval.SetPolicy(ctx, ag, p.Approval, by); err != nil {
-		return fmt.Errorf("permission: set the approval policy of %s to %s: %w", ag.Session, p.Approval, err)
+	if policy {
+		if err := s.deps.Approval.SetPolicy(ctx, ag, p.Approval, by); err != nil {
+			return fmt.Errorf("permission: set the approval policy of %s to %s: %w", ag.Session, p.Approval, err)
+		}
 	}
 	return nil
 }
 
 // Pin pins ag's session to the default preset when the session is fresh: its log
-// holds no permission/preset, sandbox/mode or approval/policy. A resumed session
-// keeps its values and nothing is written. The pin is by the harness and marked
-// Pinned; the knobs are written as by Set.
+// holds no permission/preset, sandbox/mode or approval/policy. The pin is by the
+// harness and marked Pinned; both knobs are recorded, each even when it equals
+// its owner's default, so a resume keeps the pair whatever the defaults are
+// then. A resumed session keeps its values and nothing is written, except that
+// a pin whose knob writes did not all land (a refused ModeChanging, a failed
+// append: the creation failed) is finished: the knobs it still owes are written
+// with its pair, so a retried creation establishes the pinned pair or fails
+// again, and never runs outside it.
 func (s *Service) Pin(ctx context.Context, ag agent.Ref) error {
 	h, err := s.live(ag.Session)
 	if err != nil {
@@ -234,11 +265,19 @@ func (s *Service) Pin(ctx context.Context, ag agent.Ref) error {
 	}
 	s.setMu.Lock()
 	defer s.setMu.Unlock()
-	fresh, err := isFresh(ctx, h)
-	if err != nil || !fresh {
-		return err
+	evs, err := h.Read(ctx, 0, 0)
+	if err != nil {
+		return fmt.Errorf("permission: read the log of session %s: %w", h.ID(), err)
 	}
-	return s.write(ctx, h, ag, s.Default(), true, approval.By{Principal: PrincipalHarness})
+	if isFresh(evs) {
+		return s.write(ctx, h, ag, s.Default(), true, approval.By{Principal: PrincipalHarness})
+	}
+	pin, mode, policy := owed(evs)
+	if !mode && !policy {
+		return nil
+	}
+	p := Preset{Name: pin.Preset, Mode: pin.Mode, Approval: pin.Approval}
+	return s.knobWrites(ctx, ag, p, pin.By, mode, policy)
 }
 
 // Bind pins every fresh session when its agent is created under root (Pin); a
@@ -270,12 +309,37 @@ func fold(ctx context.Context, rs session.ReadSession) (State, error) {
 // knobTypes are the events that make a session not fresh.
 var knobTypes = []string{PresetType.Name(), sandbox.ModeEventType, approval.PolicyType.Name()}
 
-func isFresh(ctx context.Context, rs session.ReadSession) (bool, error) {
-	evs, err := rs.Read(ctx, 0, 0)
-	if err != nil {
-		return false, fmt.Errorf("permission: read the log of session %s: %w", rs.ID(), err)
+func isFresh(evs []event.Event) bool {
+	return !slices.ContainsFunc(evs, func(ev event.Event) bool { return slices.Contains(knobTypes, ev.Type()) })
+}
+
+// owed is what an unfinished pin still owes: when the last permission/preset of
+// evs is a pin, mode is true while no sandbox/mode follows it and policy while
+// no approval/policy does. A pin followed by a later selection owes nothing.
+func owed(evs []event.Event) (pin PresetSet, mode, policy bool) {
+	at := -1
+	for i, ev := range evs {
+		if ev.Type() == PresetType.Name() {
+			at = i
+		}
 	}
-	return !slices.ContainsFunc(evs, func(ev event.Event) bool { return slices.Contains(knobTypes, ev.Type()) }), nil
+	if at < 0 {
+		return pin, false, false
+	}
+	pin, err := PresetType.As(evs[at])
+	if err != nil || !pin.Pinned {
+		return pin, false, false
+	}
+	mode, policy = true, true
+	for _, ev := range evs[at+1:] {
+		switch ev.Type() {
+		case sandbox.ModeEventType:
+			mode = false
+		case approval.PolicyType.Name():
+			policy = false
+		}
+	}
+	return pin, mode, policy
 }
 
 // CommandName is the name of the switch command.

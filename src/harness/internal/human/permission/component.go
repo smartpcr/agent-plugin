@@ -7,14 +7,17 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human/approval"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human/command"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/views"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox"
 )
 
 // Name is the component's catalogue name.
 const Name = "permission.presets"
 
-// Component is permission.presets (C34): the service over its Config, writing
-// permission/preset through the session service (session.Key), the mode through
+// Component is permission.presets (C34): the service over its Config,
+// registering the permissions fold in the process's fold registry (views.Key)
+// and writing permission/preset through the session service (session.Key), the
+// mode through
 // the resolver (sandbox.ResolverKey) and the policy through the approval service
 // (approval.Key), whose grant table a switch revokes. It pins each fresh session
 // at agent creation, registers /permission in the command registry
@@ -43,7 +46,11 @@ var Component = cordis.Define(Name, func(ctx *cordis.Context, cfg Config) error 
 	if err != nil {
 		return err
 	}
-	svc, err := New(cfg, Deps{Sessions: sessions, Sandbox: sb, Approval: apr, Grants: apr.Grants()})
+	reg, err := views.Key.Get(ctx)
+	if err != nil {
+		return err
+	}
+	svc, err := New(cfg, Deps{Sessions: sessions, Sandbox: sb, Approval: apr, Grants: apr.Grants(), Views: reg})
 	if err != nil {
 		return err
 	}
@@ -58,5 +65,5 @@ var Component = cordis.Define(Name, func(ctx *cordis.Context, cfg Config) error 
 	}
 	_, err = Key.Provide(ctx, svc)
 	return err
-}, cordis.WithInject(session.Key.Name(), sandbox.ResolverKey.Name(), approval.Key.Name(), command.Key.Name()),
+}, cordis.WithInject(session.Key.Name(), views.Key.Name(), sandbox.ResolverKey.Name(), approval.Key.Name(), command.Key.Name()),
 	cordis.WithDefaults(DefaultConfig))

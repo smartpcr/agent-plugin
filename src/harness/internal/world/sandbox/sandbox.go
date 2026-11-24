@@ -237,6 +237,8 @@ type Resolver interface {
 	GrantRoot(ctx context.Context, s session.ID, dir string) (release func(), err error)
 	// SetMode dispatches ModeChanging and, if no listener refuses, writes
 	// sandbox/mode to the session's log; the new mode applies to the next Resolve.
+	// A mode the log already records writes nothing; recording the mode already
+	// in force (the default) dispatches nothing and pins it.
 	SetMode(ctx context.Context, s session.ID, m Mode) error
 }
 

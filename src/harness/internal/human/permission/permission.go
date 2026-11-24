@@ -8,14 +8,19 @@
 // The enforcing services keep their own values: a switch appends
 // permission/preset and then writes each knob through its owner, the sandbox
 // resolver's SetMode and the approval service's SetPolicy, each of which writes
-// only when its value changes. A switch revokes the session's grants. A fresh
-// session is pinned to the default preset when its agent is created; a resumed
-// one keeps its values. Current reads the last selection while its knobs still
-// hold, else the first entry the knobs match, else the derived label custom.
+// only when the log does not already record its value. A switch revokes the
+// session's grants. A fresh session is pinned to the default preset when its
+// agent is created, both knobs recorded even when they equal their owners'
+// defaults, so a resumed one keeps its values whatever the defaults are then; a
+// pin whose knob writes did not all land is finished at the next creation. The
+// permissions fold folds the selection and both knob events. Current reads the
+// last selection while its knobs still hold, else the first entry the knobs
+// match, else the derived label custom.
 // The command /permission [preset] is the owner's switch.
 package permission
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -175,38 +180,81 @@ var PresetType = event.MustDefine(event.Default(), event.Spec[PresetSet]{Name: "
 const ViewKey = "permissions"
 
 // State is the permissions fold of one session (architecture.md "Permissions"):
-// the last selection, the pair it implies, who made it and, once Pinned, the seq
-// of the pin of the fresh session. An empty Preset means nothing was selected.
+// the selection and the two knobs, folded from permission/preset, sandbox/mode
+// and approval/policy. Selected is the last selection, SelectedMode and
+// SelectedApproval the pair it implies and By who made it. Mode and Approval
+// are the knobs the log records, written by a switch or directly through their
+// owners; "" is a knob the log never recorded (its owner's default applies).
+// Preset is Selected while the recorded knobs are its pair, else Custom (a
+// direct knob write, or a switch whose knob write was refused); "" means nothing
+// was selected or recorded. Service.Current refines Custom with the table. Once
+// Pinned, PinnedAt is the seq of the pin of the fresh session.
 type State struct {
-	Preset   string          `json:"preset,omitempty"`
-	Mode     sandbox.Mode    `json:"mode,omitempty"`
-	Approval approval.Policy `json:"approval,omitempty"`
-	By       approval.By     `json:"by,omitzero"`
-	Pinned   bool            `json:"pinned,omitempty"`
-	PinnedAt event.Seq       `json:"pinnedAt,omitempty"`
+	Preset           string          `json:"preset,omitempty"`
+	Selected         string          `json:"selected,omitempty"`
+	SelectedMode     sandbox.Mode    `json:"selectedMode,omitempty"`
+	SelectedApproval approval.Policy `json:"selectedApproval,omitempty"`
+	Mode             sandbox.Mode    `json:"mode,omitempty"`
+	Approval         approval.Policy `json:"approval,omitempty"`
+	By               approval.By     `json:"by,omitzero"`
+	Pinned           bool            `json:"pinned,omitempty"`
+	PinnedAt         event.Seq       `json:"pinnedAt,omitempty"`
+}
+
+// modePayload is the part of a sandbox/mode payload the fold reads: the whole
+// new mode (sandbox.ModeEventType).
+type modePayload struct {
+	Mode sandbox.Mode `json:"mode"`
 }
 
 func apply(s State, ev event.Event) (State, bool) {
-	if ev.Type() != PresetType.Name() {
+	switch ev.Type() {
+	case PresetType.Name():
+		p, err := PresetType.As(ev)
+		if err != nil {
+			return s, false
+		}
+		s.Selected, s.SelectedMode, s.SelectedApproval, s.By = p.Preset, p.Mode, p.Approval, p.By
+		if p.Pinned {
+			s.Pinned, s.PinnedAt = true, ev.Seq()
+		}
+	case sandbox.ModeEventType:
+		var m modePayload
+		if json.Unmarshal([]byte(ev.Raw()), &m) != nil || !m.Mode.Valid() {
+			return s, false
+		}
+		s.Mode = m.Mode
+	case approval.PolicyType.Name():
+		p, err := approval.PolicyType.As(ev)
+		if err != nil {
+			return s, false
+		}
+		s.Approval = p.Policy
+	default:
 		return s, false
 	}
-	p, err := PresetType.As(ev)
-	if err != nil {
-		return s, false
+	s.Preset = s.label()
+	return s, true
+}
+
+// label is the selection the recorded knobs bear out, else Custom.
+func (s State) label() string {
+	switch {
+	case s.Selected != "" && s.Mode == s.SelectedMode && s.Approval == s.SelectedApproval:
+		return s.Selected
+	case s.Selected == "" && s.Mode == "" && s.Approval == "":
+		return ""
 	}
-	next := State{Preset: p.Preset, Mode: p.Mode, Approval: p.Approval, By: p.By, Pinned: s.Pinned, PinnedAt: s.PinnedAt}
-	if p.Pinned {
-		next.Pinned, next.PinnedAt = true, ev.Seq()
-	}
-	return next, true
+	return Custom
 }
 
 // View is the permissions fold (session-views registration, DH-D-VIEW-1): the
-// last permission/preset of the log. It is the selection, not the authority:
-// the knobs in force are the sandbox-mode and approval folds.
+// selection and the two knob events. The authority stays with the knobs'
+// owners; the fold is the one projection that shows them together.
 func View() views.Definition[State] {
 	return views.Definition[State]{
-		Key: ViewKey, Version: 1, Stored: true, Types: []string{PresetType.Name()},
+		Key: ViewKey, Version: 1, Stored: true,
+		Types: []string{PresetType.Name(), sandbox.ModeEventType, approval.PolicyType.Name()},
 		Init:  func(session.Header) State { return State{} },
 		Apply: apply,
 	}
