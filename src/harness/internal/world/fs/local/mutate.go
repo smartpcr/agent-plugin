@@ -294,6 +294,23 @@ func currentIn(root *os.Root, name, p string) (v fs.Version, exists bool, err er
 	return v, true, nil
 }
 
+// guardedIn is what guard g needs to know about name: the full version (hashing
+// the content) only for ReplaceIfVersion, otherwise just whether it exists, so
+// an unguarded mutation never reads the file while holding its lock.
+func guardedIn(root *os.Root, name, p string, g fs.Guard) (fs.Version, bool, error) {
+	if _, ok := g.(fs.ReplaceIfVersion); ok {
+		return currentIn(root, name, p)
+	}
+	fi, err := root.Lstat(name)
+	if errors.Is(err, iofs.ErrNotExist) {
+		return fs.Version{}, false, nil
+	}
+	if err != nil {
+		return fs.Version{}, false, err
+	}
+	return fs.Version{Meta: meta(p, fi, fileType(p, fi))}, true, nil
+}
+
 func options() fsx.Options { return fsx.Options{Perm: filePerm, KeepPerm: true, Durable: true} }
 
 // replaceIn and createIn publish content inside a root; tests replace them to
@@ -359,7 +376,7 @@ func (l *FS) writeAt(ctx context.Context, c *pinned, p string, data []byte, g fs
 	}
 	defer root.Close()
 
-	cur, exists, err := currentIn(root, name, p)
+	cur, exists, err := guardedIn(root, name, p, g)
 	if err != nil {
 		return fs.WriteOutcome{}, rooted(err)
 	}
@@ -469,7 +486,7 @@ func (l *FS) deleteAt(ctx context.Context, c *pinned, p string, g fs.Guard) (fs.
 	}
 	defer root.Close()
 
-	cur, exists, err := currentIn(root, name, p)
+	cur, exists, err := guardedIn(root, name, p, g)
 	if err != nil {
 		return fs.DeleteOutcome{}, rooted(err)
 	}
