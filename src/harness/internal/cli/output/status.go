@@ -178,6 +178,7 @@ var codes = map[herr.Reason]int{
 	"sandbox/invalid-root":        Invalid,
 	"sandbox/unavailable":         Unavailable,
 
+	"workdir/invalid":     Invalid,
 	"workdir/unavailable": Unavailable,
 }
 

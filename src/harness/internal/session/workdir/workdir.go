@@ -2,8 +2,9 @@
 // DH-D-VIEW-10; cycle C-3 of impl.md sec. 10.2): the WorkingDirectory fold record,
 // the read-only Access view readers get, and the workdir/unavailable code. Every
 // tool of a session works in the same directory, and only the host moves it, so
-// this contract has no setter. The fold itself lands with Stage 2.2; the fake for
-// tests is session/workdir/workdirtest.
+// this contract has no setter. The fold (FoldView, fold.go) and the Service that
+// moves, checks and recovers the directory are in service.go; the fake for tests
+// is session/workdir/workdirtest.
 package workdir
 
 import (
