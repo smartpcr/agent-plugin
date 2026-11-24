@@ -37,7 +37,10 @@ func (f *files) write() *htools.Declaration {
 		Description: "Create a file, or replace a file's whole content. Parent directories are created. " +
 			"Prefer edit or apply_patch to change part of an existing file.",
 		Run:     f.runWrite,
-		Overlap: func(in WriteIn) htools.Overlap { return htools.Writes(pathKey(in.FilePath)) },
+		// Mutating tools run alone: overlap keys are exact strings, so a key on
+		// the path would miss aliases (relative vs absolute, symlinks) and the
+		// directory reads of glob and grep that contain the file.
+		Overlap: func(WriteIn) htools.Overlap { return htools.Exclusive },
 		Effects: []htools.Effect{htools.EffectFiles},
 	})
 }
@@ -63,7 +66,7 @@ func (f *files) edit() *htools.Declaration {
 		Description: "Replace literal text in a file. old_string must occur exactly once unless replace_all is true; " +
 			"include enough surrounding lines to make it unique. Line endings are matched and kept as the file has them.",
 		Run:     f.runEdit,
-		Overlap: func(in EditIn) htools.Overlap { return htools.Writes(pathKey(in.FilePath)) },
+		Overlap: func(EditIn) htools.Overlap { return htools.Exclusive },
 		Effects: []htools.Effect{htools.EffectFiles},
 	})
 }
