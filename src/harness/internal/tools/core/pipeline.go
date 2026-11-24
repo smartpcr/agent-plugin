@@ -653,7 +653,7 @@ func (r *registry) settle(ctx context.Context, b tools.Batch, ls listeners, c to
 			res.Text = string(tools.CodeInvalidOutput) + ": " + msg
 		} else {
 			res.Value, res.Text, res.Parts = e.value, text, parts
-			res.Spill = bodySpill(e.value)
+			res.Spill = bodySpill(c.Tool(), e.value)
 		}
 	} else {
 		res.Text = string(e.code) + ": " + e.msg
@@ -674,22 +674,25 @@ func (r *registry) settle(ctx context.Context, b tools.Batch, ls listeners, c to
 	if res.Value != nil && len(shapers) > 0 {
 		snap, err := tools.NewIsolatedCall(c.ID(), c.Name(), c.Arguments(), c.Origin(), c.Parent(), c.Agent(), c.Tool(), res.Value)
 		if err != nil {
-			res.IsError, res.Code, res.Stage, res.Value, res.Parts = true, tools.CodeInvalidOutput, tools.StageShape, nil, nil
+			res.IsError, res.Code, res.Stage, res.Value, res.Parts, res.Spill = true, tools.CodeInvalidOutput, tools.StageShape, nil, nil, nil
 			res.Text = string(tools.CodeInvalidOutput) + ": the value cannot be isolated from the shapers: " + err.Error()
 		} else {
 			value = snap
 		}
 	}
 	// fail ends the call as code by component id: its content is the text alone.
+	// The body's spill goes with the content it cited.
 	fail := func(code tools.Code, id, text string) {
-		res.IsError, res.Code, res.By, res.Stage, res.Value, res.Parts = true, code, id, tools.StageShape, nil, nil
+		res.IsError, res.Code, res.By, res.Stage, res.Value, res.Parts, res.Spill = true, code, id, tools.StageShape, nil, nil, nil
 		res.Text = text
 	}
 	// replace is a shaper's ReplaceContent: a changed text replaces the content
-	// whole, images included, since the shaper saw only the text.
+	// whole, images included, since the shaper saw only the text; the body's
+	// spill of the replaced content is no longer cited (a later spill seat may
+	// save the replacement).
 	replace := func(text string) {
 		if text != res.Text {
-			res.Text, res.Parts = text, nil
+			res.Text, res.Parts, res.Spill = text, nil, nil
 		}
 	}
 	for _, s := range shapers {

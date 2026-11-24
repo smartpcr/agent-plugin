@@ -89,8 +89,12 @@ func content(v any) (text string, parts []vocab.Part, msg string, ok bool) {
 }
 
 // bodySpill is a copy of the spill reference a body's tools.Content carries, nil
-// for none; the spill seat's own reference, when it replaces the text, wins.
-func bodySpill(v any) *event.Spill {
+// for none. Only a tool that bounds its own output (which the spill seat skips)
+// may cite its own save, so no seat ever replaces a body's reference.
+func bodySpill(d *tools.Declaration, v any) *event.Spill {
+	if d == nil || !d.BoundsOwnOutput() {
+		return nil
+	}
 	var sp *event.Spill
 	switch x := v.(type) {
 	case tools.Content:

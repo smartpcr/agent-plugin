@@ -5,9 +5,11 @@
 // service (world/fs/ops), so every mutation is fenced by the session's policy
 // and every read and write is observed; no tool imports a provider.
 //
-// Results are bounded: read stops at Config.ReadLimit lines, ReadMaxLineLength
-// characters a line and ReadMaxBytes bytes; glob returns GlobMaxResults paths
-// and grep GrepMaxMatches matches, each with an offset to page on. When a spill
+// Results are bounded by the tools themselves (each declares BoundsOwnOutput,
+// so the pipeline's spill seat leaves them alone): read stops at
+// Config.ReadLimit lines, ReadMaxLineLength characters a line and ReadMaxBytes
+// bytes; glob returns GlobMaxResults paths and grep GrepMaxMatches matches,
+// each within SearchMaxBytes and with an offset to page on. When a spill
 // store is given and a default read, or a search page, did not hold the whole
 // result, the complete result (the whole file; every path; every match, up to
 // SpillMaxMatches) is saved there (storage/spill): the footer cites it and the
@@ -62,6 +64,7 @@ const (
 	DefaultGrepMaxMatches    = 250
 	DefaultGrepMaxLineBytes  = 2000
 	DefaultSpillMaxMatches   = 100_000
+	DefaultSearchMaxBytes    = 51200
 )
 
 // Config configures the tools; a zero bound is its default.
@@ -85,6 +88,9 @@ type Config struct {
 	// SpillMaxMatches is the most matches the complete list grep saves to the
 	// spill store holds, when its page did not hold them all.
 	SpillMaxMatches int `json:"spillMaxMatches,omitempty"`
+	// SearchMaxBytes is the most bytes of listing one glob or grep page shows;
+	// the page then holds fewer than its count of results.
+	SearchMaxBytes int `json:"searchMaxBytes,omitempty"`
 }
 
 func or(v, def int) int {
@@ -103,6 +109,7 @@ func (c Config) normalized() Config {
 	c.GrepMaxMatches = or(c.GrepMaxMatches, DefaultGrepMaxMatches)
 	c.GrepMaxLineBytes = or(c.GrepMaxLineBytes, DefaultGrepMaxLineBytes)
 	c.SpillMaxMatches = max(or(c.SpillMaxMatches, DefaultSpillMaxMatches), c.GrepMaxMatches)
+	c.SearchMaxBytes = or(c.SearchMaxBytes, DefaultSearchMaxBytes)
 	return c
 }
 

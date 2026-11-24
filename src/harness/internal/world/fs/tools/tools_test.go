@@ -18,6 +18,7 @@ import (
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/agent"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/meter"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/checkpoint"
@@ -29,6 +30,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/spill"
 	spilllocal "github.com/smartpcr/agent-plugin/src/harness/internal/storage/spill/local"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/spill/policy"
 	htools "github.com/smartpcr/agent-plugin/src/harness/internal/tools"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools/core"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
@@ -68,10 +70,11 @@ type rig struct {
 }
 
 // rigOptions vary the rig: wrap wraps the local provider, cfg is the tools'
-// configuration.
+// configuration, policy mounts the real spill policy as the pipeline's seat.
 type rigOptions struct {
-	wrap func(fs.FS) fs.FS
-	cfg  fstools.Config
+	wrap   func(fs.FS) fs.FS
+	cfg    fstools.Config
+	policy bool
 }
 
 func newRig(t *testing.T) *rig { return newRigWith(t, rigOptions{}) }
@@ -129,6 +132,11 @@ func newRigWith(t *testing.T, opt rigOptions) *rig {
 	o := ops.New(root, provider, &sandboxtest.Resolver{Default: sandbox.WorkspaceWrite, Workdir: wd}, ops.Options{Workdir: wd})
 	if _, err := fstools.Mount(root, svc, o, sp, opt.cfg); err != nil {
 		t.Fatal(err)
+	}
+	if opt.policy {
+		if _, _, err := policy.Mount(root, svc, sp, policy.Config{MaxInlineTokens: policy.MinInlineTokens, ReadTool: "spill_read"}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return &rig{t: t, ws: ws, root: root, svc: svc, st: st, spill: sp,
 		handles: map[session.ID]session.Handle{}, seqs: map[session.ID]event.Seq{}}
@@ -451,27 +459,35 @@ func TestLargeResultSpills(t *testing.T) {
 
 	// The citation is durable: a fork of the session through the tool/result
 	// still reads the file byte-identical after the owner is deleted.
-	if err := r.handles[id].Close(bg); err != nil {
-		t.Fatal(err)
-	}
-	f, err := r.st.Create(bg, store.Header{ID: "fork-of-read"}, store.CreateOptions{ForkOf: &store.ForkOf{ID: string(id), Through: store.Seq(r.seqs[id])}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := f.Close(bg); err != nil {
-		t.Fatal(err)
-	}
-	if err := r.st.Delete(bg, string(id), store.DeleteOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	if kept := r.openSpill("fork-of-read", res.Spill.Path); string(kept) != full {
-		t.Fatalf("after the owner was deleted the fork read %d bytes, want %d", len(kept), len(full))
-	}
+	r.forkRetains(id, res.Spill.Path, full)
 
 	// A page the caller chose is not spilled.
 	page, _ := r.run(fstools.ReadName, map[string]any{"file_path": "big.txt", "offset": 10, "limit": 2})
 	if page.IsError || page.Spill != nil || spillRef.MatchString(page.Text) || !strings.Contains(page.Text, "10: 0000009 ") || !strings.Contains(page.Text, "Use offset=12 to continue.") {
 		t.Fatalf("a page: %s", page.Text)
+	}
+}
+
+// forkRetains forks session id through its tool/result, deletes id, and checks
+// the fork still reads spill path as want.
+func (r *rig) forkRetains(id session.ID, path, want string) {
+	r.t.Helper()
+	if err := r.handles[id].Close(bg); err != nil {
+		r.t.Fatal(err)
+	}
+	fork := "fork-of-" + string(id)
+	f, err := r.st.Create(bg, store.Header{ID: fork}, store.CreateOptions{ForkOf: &store.ForkOf{ID: string(id), Through: store.Seq(r.seqs[id])}})
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	if err := f.Close(bg); err != nil {
+		r.t.Fatal(err)
+	}
+	if err := r.st.Delete(bg, string(id), store.DeleteOptions{}); err != nil {
+		r.t.Fatal(err)
+	}
+	if kept := r.openSpill(fork, path); string(kept) != want {
+		r.t.Fatalf("after the owner was deleted the fork read %d bytes, want %d", len(kept), len(want))
 	}
 }
 
@@ -567,6 +583,58 @@ func TestGlobAndGrepSpillTheCompleteList(t *testing.T) {
 		if res, _ := r.run(c.tool, c.args); res.IsError || res.Spill != nil || spillRef.MatchString(res.Text) || strings.Contains(res.Text, "offset=") {
 			t.Fatalf("%s within its page: %+v", c.tool, res)
 		}
+	}
+
+	// With the real spill policy as the pipeline's seat, a page over the seat's
+	// budget is still the tools' own: the seat leaves it, and the complete list
+	// stays the cited, tracked spill a fork keeps after the owner is deleted.
+	r = newRigWith(t, rigOptions{policy: true, cfg: fstools.Config{GlobMaxResults: 40, GrepMaxMatches: 40}})
+	for i := range 60 {
+		r.put(fmt.Sprintf("s/f%02d.txt", i), "hit\nmiss\n")
+	}
+	seat := policy.MinInlineTokens * meter.CharsPerToken
+	for _, c := range []struct {
+		tool  string
+		args  map[string]any
+		check func(saved string) bool
+	}{
+		{fstools.GlobName, map[string]any{"pattern": "*.txt", "path": "s"}, func(s string) bool { return strings.Count(s, "\n") == 60 }},
+		{fstools.GrepName, map[string]any{"pattern": "hit", "path": "s"}, func(s string) bool {
+			return strings.HasPrefix(s, "Found 60 matches\n") && strings.Count(s, "  Line 1: hit") == 60
+		}},
+	} {
+		res, logged := r.run(c.tool, c.args)
+		if res.IsError || res.Truncated || len(res.Text) <= seat || !strings.Contains(res.Text, "offset=40") {
+			t.Fatalf("%s under the policy (%d bytes, budget %d): %+v", c.tool, len(res.Text), seat, res)
+		}
+		id := session.ID(fmt.Sprintf("s-fs-tools-%d", r.n))
+		saved := string(r.spilled(res, logged, id))
+		if !c.check(saved) {
+			t.Fatalf("%s saved %.300s", c.tool, saved)
+		}
+		r.forkRetains(id, res.Spill.Path, saved)
+	}
+
+	// SearchMaxBytes cuts a page short of its count; the complete list is saved.
+	r = newRigWith(t, rigOptions{cfg: fstools.Config{GlobMaxResults: 40, GrepMaxMatches: 40, SearchMaxBytes: 1500}})
+	for i := range 60 {
+		r.put(fmt.Sprintf("s/f%02d.txt", i), "hit\nmiss\n")
+	}
+	res, logged = r.run(fstools.GrepName, map[string]any{"pattern": "hit", "path": "s"})
+	listing, _, _ := strings.Cut(res.Text, "\n\n(")
+	if res.IsError || len(listing) > 1500 || !strings.Contains(res.Text, "(Output capped at 1500 bytes; showing ") {
+		t.Fatalf("grep over SearchMaxBytes (%d bytes): %s", len(listing), res.Text)
+	}
+	if all := string(r.spilled(res, logged, session.ID(fmt.Sprintf("s-fs-tools-%d", r.n)))); strings.Count(all, "  Line 1: hit") != 60 {
+		t.Fatalf("the saved grep list: %.300s", all)
+	}
+	res, logged = r.run(fstools.GlobName, map[string]any{"pattern": "*.txt", "path": "s"})
+	listing, _, _ = strings.Cut(res.Text, "\n\n(")
+	if res.IsError || len(listing) > 1500 || strings.Contains(res.Text, "(Showing 40 of") || !strings.Contains(res.Text, " of 60 paths;") {
+		t.Fatalf("glob over SearchMaxBytes (%d bytes): %s", len(listing), res.Text)
+	}
+	if saved := string(r.spilled(res, logged, session.ID(fmt.Sprintf("s-fs-tools-%d", r.n)))); strings.Count(saved, "\n") != 60 {
+		t.Fatalf("the saved glob list: %.300s", saved)
 	}
 }
 

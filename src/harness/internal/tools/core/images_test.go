@@ -322,3 +322,57 @@ func TestABodysOwnSpillReachesTheResultAndTheLog(t *testing.T) {
 		t.Fatalf("logged spill %+v", p.Spill)
 	}
 }
+
+// A shaper that blocks a body's result or replaces its text removes the content
+// the body's spill cited: neither the result nor the log keeps the reference.
+// A body that does not bound its own output cannot cite a save at all.
+func TestABodysOwnSpillGoesWithItsContent(t *testing.T) {
+	ref := &event.Spill{Path: "s1/page.txt", Bytes: 9000}
+	page := func(name string, bounds bool) *tools.Declaration {
+		return tools.Define(tools.Spec[noIn, tools.Content]{
+			Name: name, Description: "Shows a page.", BoundsOwnOutput: bounds,
+			Run: func(context.Context, noIn, tools.Run) (tools.Content, error) {
+				return tools.Content{Parts: []vocab.Part{vocab.TextPart("first page")}, Spill: ref}, nil
+			},
+		})
+	}
+	for _, tc := range []struct {
+		name   string
+		bounds bool
+		mount  func(*cordis.Context, tools.Service) error
+		text   string
+	}{
+		{"blocked", true, func(c *cordis.Context, svc tools.Service) error {
+			_, err := svc.Shape(c, "block", func(tools.Call, tools.Outcome) tools.PostDecision { return tools.Block("secret") })
+			return err
+		}, "secret"},
+		{"redacted", true, func(c *cordis.Context, svc tools.Service) error {
+			_, err := svc.Shape(c, "mask", func(tools.Call, tools.Outcome) tools.PostDecision { return tools.ReplaceContent("[masked]") })
+			return err
+		}, "[masked]"},
+		{"redacted by a final shaper", true, func(c *cordis.Context, svc tools.Service) error {
+			_, err := svc.(tools.FinalShaper).ShapeFinal(c, "mask", func(tools.Call, tools.Outcome) tools.PostDecision { return tools.ReplaceContent("[masked]") })
+			return err
+		}, "[masked]"},
+		{"not bounding its own output", false, func(*cordis.Context, tools.Service) error { return nil }, "first page"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			svc := e.pipeline(t, core.Config{Checkpoint: recCheckpoint{&trace{}}})
+			if err := tc.mount(e.root, svc); err != nil {
+				t.Fatal(err)
+			}
+			e.register(t, e.root, page("page", tc.bounds))
+			call := [2]string{"page", `{}`}
+			h := openSession(t, memstore.New(), call)
+			r := execute(t, svc, view(t, svc), h, call)[0]
+			if r.Spill != nil || !strings.Contains(r.Text, tc.text) {
+				t.Fatalf("result %+v, want %q and no spill", r, tc.text)
+			}
+			logged, _ := resultsOf(t, h)
+			if p := logged["c1"]; p.Spill != nil || len(p.BlobRefs()) != 0 {
+				t.Fatalf("logged spill %+v", p.Spill)
+			}
+		})
+	}
+}

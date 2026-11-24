@@ -40,10 +40,12 @@ func (f *files) glob() *htools.Declaration {
 	return htools.Define(htools.Spec[GlobIn, htools.Content]{
 		Name: GlobName,
 		Description: "Find files by path pattern (\"**/*.go\", \"src/*.ts\"), newest first. Hidden and ignored files are included; " +
-			"version-control directories are not. At most " + strconv.Itoa(f.cfg.GlobMaxResults) + " paths are returned; use offset to page.",
-		Run:     f.runGlob,
-		Overlap: func(in GlobIn) htools.Overlap { return htools.Reads(pathKey(in.Path)) },
-		Effects: []htools.Effect{htools.EffectNone},
+			"version-control directories are not. At most " + strconv.Itoa(f.cfg.GlobMaxResults) + " paths and " +
+			strconv.Itoa(f.cfg.SearchMaxBytes) + " bytes are returned; use offset to page.",
+		Run:             f.runGlob,
+		Overlap:         func(in GlobIn) htools.Overlap { return htools.Reads(pathKey(in.Path)) },
+		BoundsOwnOutput: true,
+		Effects:         []htools.Effect{htools.EffectNone},
 	})
 }
 
@@ -66,6 +68,13 @@ func (f *files) runGlob(ctx context.Context, in GlobIn, run htools.Run) (htools.
 		return htools.Content{}, err
 	}
 	shown := all[:min(len(all), f.cfg.GlobMaxResults)]
+	used := 0
+	for i, p := range shown {
+		if used += len(p) + 1; used > f.cfg.SearchMaxBytes && i > 0 {
+			shown = shown[:i]
+			break
+		}
+	}
 	omitted := len(all) - len(shown)
 	var b strings.Builder
 	if len(shown) == 0 {
@@ -98,10 +107,12 @@ func (f *files) grep() *htools.Declaration {
 		Name: GrepName,
 		Description: "Search file contents with a regular expression (Go RE2 syntax; start with (?i) to ignore case). " +
 			"Hidden, ignored and binary files are skipped. output is lines (matching lines, grouped by file), files (matching files) or count (matches per file). " +
-			"At most " + strconv.Itoa(f.cfg.GrepMaxMatches) + " results and " + strconv.Itoa(f.cfg.GrepMaxLineBytes) + " bytes a line are returned; use offset to page.",
-		Run:     f.runGrep,
-		Overlap: func(in GrepIn) htools.Overlap { return htools.Reads(pathKey(in.Path)) },
-		Effects: []htools.Effect{htools.EffectNone},
+			"At most " + strconv.Itoa(f.cfg.GrepMaxMatches) + " results, " + strconv.Itoa(f.cfg.GrepMaxLineBytes) + " bytes a line and " +
+			strconv.Itoa(f.cfg.SearchMaxBytes) + " bytes in all are returned; use offset to page.",
+		Run:             f.runGrep,
+		Overlap:         func(in GrepIn) htools.Overlap { return htools.Reads(pathKey(in.Path)) },
+		BoundsOwnOutput: true,
+		Effects:         []htools.Effect{htools.EffectNone},
 	})
 }
 
@@ -139,14 +150,31 @@ func (f *files) runGrep(ctx context.Context, in GrepIn, run htools.Run) (htools.
 	}
 	abs := func(p string) string { return filepath.Join(src.root, filepath.FromSlash(p)) }
 	shown := matches[:min(len(matches), page)]
+	listing := renderMatches(out, shown, abs)
+	if len(listing) > f.cfg.SearchMaxBytes {
+		// The most matches whose listing fits, at least one.
+		lo, hi := 1, len(shown)-1
+		for lo < hi {
+			mid := (lo + hi + 1) / 2
+			if len(renderMatches(out, shown[:mid], abs)) <= f.cfg.SearchMaxBytes {
+				lo = mid
+			} else {
+				hi = mid - 1
+			}
+		}
+		shown = shown[:lo]
+		listing = renderMatches(out, shown, abs)
+	}
 	var b strings.Builder
-	b.WriteString(renderMatches(out, shown, abs))
+	b.WriteString(listing)
 	capped := sum.Incomplete && sum.Reason == search.CutMatches
-	if capped || len(matches) > page {
+	if len(shown) < len(matches) && len(shown) < page {
+		fmt.Fprintf(&b, "\n\n(Output capped at %d bytes; showing %d results. Use offset=%d to see more.)", f.cfg.SearchMaxBytes, len(shown), in.Offset+len(shown))
+	} else if capped || len(matches) > page {
 		fmt.Fprintf(&b, "\n\n(Results capped at %d. Use offset=%d to see more.)", page, in.Offset+len(shown))
 	}
 	var sp *event.Spill
-	if len(matches) > page {
+	if len(matches) > len(shown) {
 		what := fmt.Sprintf("The complete list of %d results", len(matches))
 		if capped {
 			what = fmt.Sprintf("The list of the first %d results (the most saved)", len(matches))

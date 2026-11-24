@@ -133,7 +133,8 @@ type Result struct {
 	Cause Cause
 	// Truncated reports that the text was cut to the registry's ceiling.
 	Truncated bool
-	// Spill is the saved full result when the spill seat bounded the text.
+	// Spill is the saved full result when the spill seat bounded the text, or
+	// the body's own save (tools.Content.Spill) when the tool bounds its output.
 	Spill *event.Spill
 	// SpillFailure is why the spill seat gave no answer (it panicked, or its
 	// Replace grew the text), "" when it answered or did not run. It is logged
@@ -370,7 +371,9 @@ type Outcome struct {
 // read cut at its byte cap, a search page): the pipeline takes it as
 // Result.Spill and logs it in the tool/result, so the session store tracks the
 // citation as it does the spill seat's. It is not part of the model-facing
-// content; the body's text cites it.
+// content; the body's text cites it. It is honoured only from a tool declaring
+// BoundsOwnOutput (the spill seat skips those, so nothing replaces it), and it
+// is dropped when a shaper blocks the result or replaces its text.
 type Content struct {
 	Parts []vocab.Part `json:"parts"`
 	Spill *event.Spill `json:"spill,omitempty"`
