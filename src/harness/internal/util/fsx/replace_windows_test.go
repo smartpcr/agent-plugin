@@ -182,3 +182,67 @@ func daclString(t *testing.T, path string) string {
 	}
 	return sd.String()
 }
+
+// TestRefusalDuringRetryPublishesNothing: a publication another program blocks is
+// retried, and BeforePublish runs again before every retry. A refusal raised while
+// the publication waited (here: the handle is released and the call cancelled in
+// the same backoff) leaves the old bytes and no staged file, and comes back as the
+// hook's own error rather than a failed publication.
+func TestRefusalDuringRetryPublishesNothing(t *testing.T) {
+	cancelled := errors.New("cancelled during backoff")
+	for _, tc := range []struct {
+		name    string
+		publish func(dir string, opt Options) error
+	}{
+		{"replace", func(dir string, opt Options) error {
+			return Replace(filepath.Join(dir, "f"), Bytes([]byte("new")), opt)
+		}},
+		{"replace-in", func(dir string, opt Options) error {
+			return withRoot(dir, func(r *os.Root) error { return ReplaceIn(r, "f", Bytes([]byte("new")), opt) })
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			shortRetries(t)
+			dir := t.TempDir()
+			path := filepath.Join(dir, "f")
+			if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			h := holdOpen(t, path)
+			released, stop, checks := false, false, 0
+			t.Cleanup(func() {
+				if !released {
+					windows.CloseHandle(h)
+				}
+			})
+			beforeRetry = func(int) {
+				if !released {
+					released, stop = true, true
+					_ = windows.CloseHandle(h)
+				}
+			}
+			opt := Options{Durable: true, BeforePublish: func() error {
+				checks++
+				if stop {
+					return cancelled
+				}
+				return nil
+			}}
+			err := tc.publish(dir, opt)
+			if !errors.Is(err, cancelled) {
+				t.Fatalf("publish: %v, want the refusal", err)
+			}
+			var le *os.LinkError
+			if errors.As(err, &le) {
+				t.Fatalf("the refusal came back as a failed publication: %v", err)
+			}
+			if !released || checks < 2 {
+				t.Fatalf("released %v, BeforePublish ran %d times; want a blocked first attempt and a re-check", released, checks)
+			}
+			if got, _ := os.ReadFile(path); string(got) != "old" {
+				t.Fatalf("target holds %q, want the old bytes", got)
+			}
+			assertNoStaged(t, dir)
+		})
+	}
+}

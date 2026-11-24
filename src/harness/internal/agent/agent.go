@@ -78,6 +78,10 @@ type CreateOptions struct {
 	Session session.ID
 	// Preset is the preset id the agent is composed from, "" for none.
 	Preset string
+	// Cwd is the absolute project directory a created session starts in,
+	// recorded in its header: the working-directory fold's initial value. A
+	// resume keeps the stored header's. "" for none.
+	Cwd string
 	// Parent is the agent that spawned this one, zero for a root agent.
 	Parent Ref
 	// Model is the agent's initial model selection, a blank Route for none; it

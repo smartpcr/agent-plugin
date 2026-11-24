@@ -52,6 +52,11 @@ type FactoryOptions struct {
 	// Observe is a test seam: it is called at each teardown point, "T1" to
 	// "T8", after the point's action. nil is none.
 	Observe func(ref agent.Ref, point string)
+	// Workdir is the working-directory component: each agent's session is
+	// attached to it at creation step 3 (a resume's check), its tool calls are
+	// guarded by it (WorkdirGuard), its notices reach the agent's inbox, its
+	// requests carry the prompt context line, and T5 detaches it. nil is none.
+	Workdir Workdir
 }
 
 // NewFactory is the driver's agent.Factory.
@@ -114,7 +119,7 @@ func (f *factory) Build(owner *cordis.Context, o agent.CreateOptions, ref agent.
 		}
 		in.sess, in.report = h, rep
 	} else {
-		hdr := session.Header{ID: string(o.Session), Preset: o.Preset}
+		hdr := session.Header{ID: string(o.Session), Preset: o.Preset, Cwd: o.Cwd}
 		if !o.Parent.IsZero() {
 			hdr.Origin, hdr.Creator = "subagent", string(o.Parent.Session)
 		}
@@ -131,6 +136,11 @@ func (f *factory) Build(owner *cordis.Context, o agent.CreateOptions, ref agent.
 	}
 	if in.inbox, err = agent.OpenInbox(ctx, in.sess); err != nil {
 		return fail(err)
+	}
+	if f.o.Workdir != nil {
+		if err := f.attachWorkdir(ctx, in); err != nil {
+			return fail(err)
+		}
 	}
 	in.model, err = agent.OpenModel(ctx, in.sess, agent.ModelOptions{Initial: o.Model, Defaults: f.o.Defaults, Scope: sc.Key()})
 	if err != nil {
@@ -168,6 +178,9 @@ type instance struct {
 	report session.OpenReport
 	inbox  *agent.Inbox
 	model  *agent.Model
+	// wd is the working-directory component the session is attached to, nil
+	// for none.
+	wd Workdir
 
 	// admit is held for reading by a Send and for writing by T1.
 	admit   sync.RWMutex
@@ -233,7 +246,7 @@ func (in *instance) Activate() error {
 	d, err := Start(Options{
 		Context: o.Context, Agent: in, Session: in.sess, Inbox: in.inbox, Model: in.model,
 		Models: o.Models, Tools: o.Tools, Prompt: o.Prompt, Budget: o.Budget, Now: o.Now, After: o.After,
-		CleanupTimeout: o.CleanupTimeout, FinalFlushTimeout: o.FinalFlushTimeout, Hooks: o.Hooks,
+		CleanupTimeout: o.CleanupTimeout, FinalFlushTimeout: o.FinalFlushTimeout, Hooks: o.Hooks, Workdir: in.wd,
 	})
 	if err != nil {
 		return err

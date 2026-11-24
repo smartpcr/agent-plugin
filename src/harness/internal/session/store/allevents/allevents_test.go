@@ -21,6 +21,7 @@ import (
 	// Every package that declares a durable event type on event.Default. The
 	// source scan of TestEveryDeclarationIsInventoried fails when one is missing.
 	_ "github.com/smartpcr/agent-plugin/src/harness/internal/agent"
+	_ "github.com/smartpcr/agent-plugin/src/harness/internal/boot/agentpreset"
 	_ "github.com/smartpcr/agent-plugin/src/harness/internal/context/request"
 	_ "github.com/smartpcr/agent-plugin/src/harness/internal/human/approval"
 	_ "github.com/smartpcr/agent-plugin/src/harness/internal/human/command"
@@ -32,6 +33,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/schema"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store"
+	_ "github.com/smartpcr/agent-plugin/src/harness/internal/session/workdir"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/golden"
 )
 

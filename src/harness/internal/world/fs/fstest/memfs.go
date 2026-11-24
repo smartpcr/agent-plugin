@@ -308,6 +308,7 @@ func (m *MemFS) Write(ctx context.Context, r fs.Ref, data []byte, g fs.Guard, po
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	r.NoFollowFinal = false
 	p, n, err := m.lookup(ctx, r)
 	if err != nil {
 		return fs.WriteOutcome{}, err

@@ -2,6 +2,7 @@ package fstest
 
 import (
 	"context"
+	"errors"
 	"io"
 	"path/filepath"
 	"sync"
@@ -13,6 +14,13 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox/sandboxtest"
 )
+
+// ErrLinkUnsupported is returned (wrapped) by a Subject's Symlink when the
+// platform can make some links but not this one: on Windows without the
+// symlink privilege a directory junction stands in for a link to an absolute
+// directory, but a relative link or a link to a file cannot be made. The
+// subtest that needs it is skipped, naming the reason.
+var ErrLinkUnsupported = errors.New("fstest: this kind of link is not supported here")
 
 // Subject is one provider under test.
 type Subject struct {
@@ -95,6 +103,19 @@ func (e *env) symlinks() {
 	e.t.Helper()
 	if e.Symlink == nil {
 		e.t.Skip("provider has no symlinks")
+	}
+}
+
+// link makes link point at target, skipping the subtest when the platform
+// cannot make that kind of link (ErrLinkUnsupported).
+func (e *env) link(target, link string) {
+	e.t.Helper()
+	err := e.Symlink(target, link)
+	if errors.Is(err, ErrLinkUnsupported) {
+		e.t.Skipf("link %s -> %s: %v", link, target, err)
+	}
+	if err != nil {
+		e.t.Fatalf("symlink: %v", err)
 	}
 }
 
@@ -295,13 +316,9 @@ var cases = []struct {
 	{"fence-resolves-symlinks-first", func(e *env) {
 		e.symlinks()
 		ctx := context.Background()
-		if err := e.Symlink(e.out, e.in("escape")); err != nil {
-			e.t.Fatalf("symlink: %v", err)
-		}
-		if err := e.Symlink(e.in("real"), e.in("alias")); err != nil {
-			e.t.Fatalf("symlink: %v", err)
-		}
 		e.mustWrite(e.in("real/.keep"), "")
+		e.link(e.out, e.in("escape"))
+		e.link(e.in("real"), e.in("alias"))
 		_, err := e.FS.Write(ctx, ref(e.in("escape/f")), []byte("x"), fs.NoGuard, e.write)
 		e.code(err, fs.CodeSandboxDenied)
 		if e.exists(e.outside("f")) {
@@ -324,9 +341,7 @@ var cases = []struct {
 	{"fence-dangling-final-symlink-outside-root", func(e *env) {
 		e.symlinks()
 		ctx := context.Background()
-		if err := e.Symlink(e.outside("new"), e.in("link")); err != nil {
-			e.t.Fatalf("symlink: %v", err)
-		}
+		e.link(e.outside("new"), e.in("link"))
 		for _, g := range []fs.Guard{fs.NoGuard, fs.CreateIfAbsent} {
 			_, err := e.FS.Write(ctx, ref(e.in("link")), []byte("x"), g, e.write)
 			e.code(err, fs.CodeSandboxDenied)
@@ -342,9 +357,7 @@ var cases = []struct {
 		e.symlinks()
 		ctx := context.Background()
 		e.mustWrite(e.in("old/f"), "content")
-		if err := e.Symlink("f", e.in("old/link")); err != nil {
-			e.t.Fatalf("symlink: %v", err)
-		}
+		e.link("f", e.in("old/link"))
 		if _, err := e.FS.Move(ctx, ref(e.in("old")), ref(e.in("new")), fs.MoveOptions{}, e.write); err != nil {
 			e.t.Fatalf("move the directory: %v", err)
 		}
