@@ -56,15 +56,16 @@ func key(p string) string {
 
 func isRoot(p string) bool { return filepath.Dir(p) == p }
 
-// Symlink makes link a symlink to target (absolute, or relative to link's
-// directory), creating link's parents.
+// Symlink makes link a symlink to target, creating link's parents. A relative
+// target is kept relative, so it resolves against the link's directory wherever
+// that directory is moved, as a real symlink does.
 func (m *MemFS) Symlink(target, link string) error {
 	l, err := abs(fs.Ref{Path: link})
 	if err != nil {
 		return err
 	}
-	if !filepath.IsAbs(target) {
-		target = filepath.Join(filepath.Dir(l), target)
+	if target == "" {
+		return herr.New(fs.CodeInvalidPath, "empty symlink target")
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -155,7 +156,12 @@ func (m *MemFS) resolve(p string, noFollowFinal bool) (string, error) {
 				if hops > maxHops {
 					return "", herr.Newf(fs.CodeIO, "too many symlinks resolving %s", p)
 				}
-				p = filepath.Join(append([]string{n.link}, parts[i+1:]...)...)
+				base := n.link
+				if !filepath.IsAbs(base) {
+					// cur is the link's canonical parent at this moment.
+					base = filepath.Join(cur, base)
+				}
+				p = filepath.Join(append([]string{base}, parts[i+1:]...)...)
 				restarted = true
 				break
 			}

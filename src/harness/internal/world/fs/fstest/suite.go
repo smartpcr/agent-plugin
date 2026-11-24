@@ -321,6 +321,24 @@ var cases = []struct {
 			e.t.Fatal("deleting a link touched its target")
 		}
 	}},
+	{"relative-symlink-follows-its-moved-directory", func(e *env) {
+		e.symlinks()
+		ctx := context.Background()
+		e.mustWrite(e.in("old/f"), "content")
+		if err := e.Symlink("f", e.in("old/link")); err != nil {
+			e.t.Fatalf("symlink: %v", err)
+		}
+		if _, err := e.FS.Move(ctx, ref(e.in("old")), ref(e.in("new")), fs.MoveOptions{}, e.write); err != nil {
+			e.t.Fatalf("move the directory: %v", err)
+		}
+		s, in := e.read(e.in("new/link"))
+		if s != "content" || in.Target.Display != e.in("new/f") {
+			e.t.Fatalf("read through the moved relative link = %q at %q, want content at %q", s, in.Target.Display, e.in("new/f"))
+		}
+		if e.exists(e.in("old")) {
+			e.t.Fatal("the old directory still exists")
+		}
+	}},
 	{"cancelled-context-aborts", func(e *env) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()

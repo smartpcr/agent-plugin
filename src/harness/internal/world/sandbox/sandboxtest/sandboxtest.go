@@ -8,7 +8,9 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"slices"
+	"strings"
 	"sync"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
@@ -53,7 +55,9 @@ type Resolver struct {
 	// nil rejects every escalation with sandbox/escalation-rejected.
 	Approve func(sandbox.EscalationRequest) (sandbox.Mode, []string, error)
 	// OnModeChanging, when set, is called by SetMode before the change; an error
-	// refuses it, as a ModeChanging listener does.
+	// refuses it, as a ModeChanging listener does. Transitions of one session are
+	// serialized, so it sees the actual previous mode; it may call Resolve,
+	// Escalate or ForHelper, but not SetMode for the same session.
 	OnModeChanging func(sandbox.ModeChange) error
 	// UnconfinedKinds are the helper kinds allowed to run unconfined.
 	UnconfinedKinds []string
@@ -62,6 +66,7 @@ type Resolver struct {
 	modes   map[session.ID]sandbox.Mode
 	grants  map[session.ID][]*string
 	changes []sandbox.ModeChange
+	setting map[session.ID]*sync.Mutex
 }
 
 var _ sandbox.Resolver = (*Resolver)(nil)
@@ -93,10 +98,38 @@ func (r *Resolver) Escalate(ctx context.Context, req sandbox.EscalationRequest) 
 		return sandbox.Policy{}, err
 	}
 	cur := r.mode(req.Session)
-	if !m.Wider(cur) && (m != cur || len(paths) == 0) {
+	if len(paths) > 0 && m != sandbox.WorkspaceWrite {
+		return sandbox.Policy{}, herr.Newf(sandbox.CodeEscalationRejected, "extra write roots widen only a workspace-write call, not %s", m)
+	}
+	if m.Wider(cur) {
+		return r.issue(req.Session, m, paths)
+	}
+	if m != cur || len(paths) == 0 {
 		return sandbox.Policy{}, herr.Newf(sandbox.CodeEscalationRejected, "%s is not wider than %s", m, cur)
 	}
+	base, err := r.issue(req.Session, m, nil)
+	if err != nil {
+		return sandbox.Policy{}, err
+	}
+	widens := slices.ContainsFunc(paths, func(p string) bool {
+		return !slices.ContainsFunc(base.WriteRoots(), func(w sandbox.WriteRoot) bool { return within(w.Path, filepath.Clean(p)) })
+	})
+	if !widens {
+		return sandbox.Policy{}, herr.Newf(sandbox.CodeEscalationRejected, "%v are already writable; the escalation widens nothing", paths)
+	}
 	return r.issue(req.Session, m, paths)
+}
+
+// within reports whether path is root or below it, case-insensitively on Windows.
+func within(root, path string) bool {
+	if runtime.GOOS == "windows" {
+		root, path = strings.ToLower(root), strings.ToLower(path)
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil || filepath.IsAbs(rel) {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // ForHelper implements sandbox.Resolver.
@@ -153,6 +186,18 @@ func (r *Resolver) SetMode(ctx context.Context, s session.ID, m sandbox.Mode) er
 	if !m.Valid() {
 		return herr.Newf(sandbox.CodeInvalidMode, "%q is not a mode", m)
 	}
+	r.mu.Lock()
+	if r.setting == nil {
+		r.setting = map[session.ID]*sync.Mutex{}
+	}
+	lock, ok := r.setting[s]
+	if !ok {
+		lock = &sync.Mutex{}
+		r.setting[s] = lock
+	}
+	r.mu.Unlock()
+	lock.Lock()
+	defer lock.Unlock()
 	c := sandbox.ModeChange{Session: s, From: r.mode(s), To: m}
 	if r.OnModeChanging != nil {
 		if err := r.OnModeChanging(c); err != nil {

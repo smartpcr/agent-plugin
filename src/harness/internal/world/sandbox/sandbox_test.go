@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/workdir/workdirtest"
@@ -130,5 +131,98 @@ func TestFakeResolver(t *testing.T) {
 	wd.Set(s, root, root).Gone()
 	if _, err := r.Resolve(ctx, sandbox.Request{Session: s}); herr.Kind(err) != "workdir/unavailable" {
 		t.Fatalf("resolve with the directory gone: %v", err)
+	}
+}
+
+func TestFakeSetModeSerializesTransitions(t *testing.T) {
+	ctx := context.Background()
+	const s session.ID = "s1"
+	r := &sandboxtest.Resolver{}
+	entered := make(chan sandbox.ModeChange, 2)
+	release := make(chan struct{})
+	r.OnModeChanging = func(c sandbox.ModeChange) error {
+		if p, err := r.Resolve(ctx, sandbox.Request{Session: s}); err != nil || p.Mode() != c.From {
+			t.Errorf("Resolve inside the listener = %s, %v; want the previous mode %s", p.Mode(), err, c.From)
+		}
+		entered <- c
+		if c.To == sandbox.DangerFullAccess {
+			<-release
+		}
+		return nil
+	}
+	done := make(chan error, 2)
+	go func() { done <- r.SetMode(ctx, s, sandbox.DangerFullAccess) }()
+	first := <-entered
+	go func() { done <- r.SetMode(ctx, s, sandbox.WorkspaceWrite) }()
+	select {
+	case c := <-entered:
+		t.Fatalf("a second transition %+v entered while %+v was in progress", c, first)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	second := <-entered
+	for range 2 {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if first.From != sandbox.ReadOnly || second.From != sandbox.DangerFullAccess {
+		t.Fatalf("listeners saw %+v then %+v; want read-only→danger-full-access→workspace-write", first, second)
+	}
+	prev := sandbox.ReadOnly
+	for _, c := range r.Changes() {
+		if c.From != prev {
+			t.Fatalf("changes %+v do not form a chain", r.Changes())
+		}
+		prev = c.To
+	}
+	if prev != sandbox.WorkspaceWrite || len(r.Changes()) != 2 {
+		t.Fatalf("changes = %+v", r.Changes())
+	}
+
+	r.OnModeChanging = func(sandbox.ModeChange) error { return errors.New("refused") }
+	if err := r.SetMode(ctx, s, sandbox.ReadOnly); err == nil || len(r.Changes()) != 2 {
+		t.Fatalf("refused SetMode = %v, changes %+v", err, r.Changes())
+	}
+}
+
+func TestFakeEscalationMustWiden(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	extra := filepath.Join(filepath.Dir(root), filepath.Base(root)+"-extra")
+	const s session.ID = "s1"
+	wd := workdirtest.New()
+	wd.Set(s, root, root)
+	answer := func(m sandbox.Mode, paths ...string) func(sandbox.EscalationRequest) (sandbox.Mode, []string, error) {
+		return func(sandbox.EscalationRequest) (sandbox.Mode, []string, error) { return m, paths, nil }
+	}
+	for _, c := range []struct {
+		name    string
+		session sandbox.Mode
+		approve func(sandbox.EscalationRequest) (sandbox.Mode, []string, error)
+	}{
+		{"read-only plus paths", sandbox.ReadOnly, answer(sandbox.ReadOnly, extra)},
+		{"full access plus paths", sandbox.DangerFullAccess, answer(sandbox.DangerFullAccess, extra)},
+		{"wider full access plus ignored paths", sandbox.WorkspaceWrite, answer(sandbox.DangerFullAccess, extra)},
+		{"workspace-write plus an already writable path", sandbox.WorkspaceWrite, answer(sandbox.WorkspaceWrite, filepath.Join(root, "sub"))},
+		{"workspace-write plus nothing", sandbox.WorkspaceWrite, answer(sandbox.WorkspaceWrite)},
+	} {
+		r := &sandboxtest.Resolver{Default: c.session, Workdir: wd, Approve: c.approve}
+		if p, err := r.Escalate(ctx, sandbox.EscalationRequest{Session: s}); herr.Kind(err) != sandbox.CodeEscalationRejected {
+			t.Errorf("%s: Escalate = %s %v, %v; want %s", c.name, p.Mode(), p.WriteRoots(), err, sandbox.CodeEscalationRejected)
+		}
+	}
+
+	r := &sandboxtest.Resolver{Default: sandbox.WorkspaceWrite, Workdir: wd, Approve: answer(sandbox.WorkspaceWrite, extra)}
+	p, err := r.Escalate(ctx, sandbox.EscalationRequest{Session: s})
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := p.WriteRoots()
+	if len(roots) != 2 || roots[1].Path != extra || roots[1].Source != sandbox.SourceEscalation {
+		t.Fatalf("escalated roots = %+v", roots)
+	}
+	if next, _ := r.Resolve(ctx, sandbox.Request{Session: s}); len(next.WriteRoots()) != 1 {
+		t.Fatalf("the one-call escalation leaked into Resolve: %+v", next.WriteRoots())
 	}
 }
