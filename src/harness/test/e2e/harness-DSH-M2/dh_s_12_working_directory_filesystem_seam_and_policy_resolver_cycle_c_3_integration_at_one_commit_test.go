@@ -404,6 +404,7 @@ func TestE2E_dh_s_12_working_directory_filesystem_seam_and_policy_resolver_cycle
 		Options: &godog.Options{
 			Format:   "pretty",
 			Paths:    []string{"dh_s_12_working_directory_filesystem_seam_and_policy_resolver_cycle_c_3_integration_at_one_commit.feature"},
+			Strict:   true,
 			TestingT: t,
 		},
 	}
