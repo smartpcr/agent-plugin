@@ -110,7 +110,7 @@ data.
 | Launch stage, `ready`/`go` | The hidden `dsh sandbox-launch` mode: the child confines itself, tries a canary write, reports `ready`, and runs the command only after the host answers `go` | DH-D-SANDBOX-2; architecture.md sec. 4.2; INV-14 |
 | Enforcement `Full` / `Partial` / `Unconfined` | What the host computes the command actually gets, with each missing or exposed effect named; shown by `dsh sandbox status` | Never stronger than real (INV-3) |
 | Process-tree owner | What lets the host end a command and all its descendants: a delegated scope from `systemd --user`, a writable cgroup v2, or the process-group fallback, which is reported | DH-D-EXEC-2 (M1); proven by DH-E-EXEC-1, -10 |
-| Profile, bundle, preset | A profile is a product shape of the one binary (`headless`, `sdk`, `web`, `minimal`, `core`); a bundle is a set of components; a preset composes one agent's tools, prompt sections and skills | S14, step 16.1 |
+| Profile, bundle, preset | A profile is a product shape of the one binary (the five of architecture.md C42: `admin`, `core` kernel, `web`, `headless`, `sdk`; the existing `minimal.yml` and `acp.yml` bundles are not among them); a bundle is a set of components; a preset composes one agent's tools, prompt sections and skills | S14, step 16.1 |
 | Launcher, admin tree | `dsh headless`, `dsh sdk` start a profile; the admin tree runs offline commands (`dsh secret set`, `dsh config show`, `dsh sandbox status`) and constructs no agent | S16; INV-10 |
 | SDK server, Go client | JSON-RPC over the host's stdin/stdout (C48, C49); `src/sdk/sdk` (C53) starts the binary and drives it | DH-O-13 |
 | Signed-in route | dsh drives the user's installed official `claude` CLI or Copilot CLI as a child; the client signs in and dsh reads no token; no API key exists anywhere | Decisions `models-signed-in-claude-copilot`, M1-D-PIPE-3, M1-D-PIPE-4 |
@@ -178,8 +178,8 @@ M2 scenario run and no M2 stage closure happens before M1 is closed.**
 | [DH-S-12](../../harness/impl.md#dh-s-12) Working directory, filesystem seam and policy resolver | Build | 12.1-12.5 | S10, S11, S8 | VIEW-10, FS-4, SANDBOX-1, HUMAN-4 (P1), FS-6 |
 | [DH-S-13](../../harness/impl.md#dh-s-13) Sandbox and shell tools | Build | 13.1-13.8 | S12, S6, S11 | SANDBOX-2, SANDBOX-3, SANDBOX-4, EXEC-3, EXEC-4, EXEC-8, EXEC-9, CONTEXT-2 |
 | [DH-S-14](../../harness/impl.md#dh-s-14) Bundles and presets | Build | 14.1-14.5 | S6, S11 | BUNDLE-1, BUNDLE-2, BUNDLE-4, BUNDLE-5, BUNDLE-6 |
-| [DH-S-15](../../harness/impl.md#dh-s-15) Listener, SDK server and Go client | Build | 15.1-15.8 | S6, S8, S11, S12, S14 | HOST-1, HOST-2, HOST-3, API-1, SDK-3, SDK-4, SDK-5, SDK-6, SDK-8 (P1) |
-| [DH-S-16](../../harness/impl.md#dh-s-16) Launchers, admin commands and evidence runners | Build | 16.1-16.10 | S12-S15 | BUNDLE-3, CLI-2, CLI-4, CLI-5, CLI-9, UTIL-7 (P1), UTIL-8 (P1), VIEW-4 (P1) |
+| [DH-S-15](../../harness/impl.md#dh-s-15) Listener, admission, control, routes, stdio and SDK server | Build | 15.1-15.8 | S6, S8, S11, S12, S14 | HOST-1, HOST-2, HOST-3, API-1, SDK-3, SDK-4, SDK-5, SDK-6 |
+| [DH-S-16](../../harness/impl.md#dh-s-16) Launchers, admin commands, Go client and evidence runners | Build | 16.1-16.10 | S12-S15 | BUNDLE-3, CLI-2, CLI-4, CLI-5, CLI-9, SDK-8 (P1, Go client `src/sdk/sdk`, C53, step 16.6), UTIL-7 (P1), UTIL-8 (P1), VIEW-4 (P1) |
 | [DH-S-17](../../harness/impl.md#dh-s-17) Acceptance on a real model | Acceptance | 17.1-17.9 | S16 | No deliverable; closes evidence for M1 and M2 deliverables |
 | [DH-S-18](../../harness/impl.md#dh-s-18) Acceptance on real operating systems | Acceptance | 18.1-18.11 | S16 | No deliverable; same |
 
@@ -205,9 +205,12 @@ the bound it must reproduce (inconsistency check M2-I-5).
 
 ### 3.3 Order and parallelism
 
-- **Cycle C-3 lands as one unit.** Step 12.1 (`session/workdir`), 12.2 (`world/fs`)
-  and 12.3 (`human/permission` resolver) merge together or behind each other's
-  contract without an inverted import (impl.md sec. 10.2; architecture.md C31-C33).
+- **Cycle C-3 lands as one unit.** Step 12.1 (working directory, `session/workdir`,
+  C31), 12.2 (filesystem seam, `world/fs`, C32) and 12.3 (policy resolver,
+  `world/sandbox` and `world/sandbox/policy`, C33) merge together or behind each
+  other's contract without an inverted import (impl.md sec. 10.2; architecture.md
+  C31-C33). Permissions (`human/permission`, C34, HUMAN-4) is step 12.4 and sits
+  outside the cycle: it depends on C33, never the reverse.
 - **S14 may run beside S12 and S13**: its Entry line names only S6 and S11.
 - **S15 needs S12 and S14** (and S6, S8, S11), so it follows them; it may run beside
   S13.
@@ -248,7 +251,7 @@ the bound it must reproduce (inconsistency check M2-I-5).
 | M2-DOD-1 | Stages S12..S16 are *built*: every step merged, local tests and goldens green on both gate lanes, each manual check recorded | Evidence records DH-S-12..16; `built-through: DH-S-16` |
 | M2-DOD-2 | The four guarded scenarios of step 16.8 passed on scratch homes, on the platforms of sec. 4.2 | Evidence record DH-S-16 |
 | M2-DOD-3 | S17 is *closed*: its 14 scenarios ran; every *required* leg passed; every *recorded* leg's result is kept | Evidence record DH-S-17 |
-| M2-DOD-4 | S18 is *closed*: its 19 scenarios ran on every variant of sec. 4.3 that is in scope, and each out-of-scope variant is named with the decision that removed it | Evidence record DH-S-18 |
+| M2-DOD-4 | S18 is *closed*: its 19 scenarios ran on every variant of sec. 4.3 that is in scope, and each out-of-scope variant is named with the owner decision that removed it. A required variant that is in scope but *not run* leaves S18 **open**; there is no partial closure | Evidence record DH-S-18; C57 close check |
 | M2-DOD-5 | The 17 later-run scenarios of sec. 4.5 are authored, indexed with their stage, and compile under `-tags scenario` | Index; gate build |
 | M2-DOD-6 | A closure record lists each of the 35 deliverables as *done* or *built* with its finishing stage or held-open item, and each held-open item H-1..H-4, H-10 with its state | `docs/stories/harness-DSH-M2/evidence/closure.md` |
 | M2-DOD-7 | Nothing is enabled for users (sec. 4.6); no build is published | Release check; M2-C-12 |
@@ -313,8 +316,9 @@ failed (M2-Q-4; `macos-return-stage` stays open).
 plus Windows native. Hosted `ubuntu-latest` and `windows-latest` cover two; the rest
 need a fleet (M2-Q-3, `m2-e2-fleet`).
 
-**M2-EN-4 -- Power-cut host.** NODEFS-1 and STORAGE-6 need a hypervisor that can cut a
-guest's power 100 times; no hosted runner provides it.
+**M2-EN-4 -- Power-cut host.** NODEFS-1 alone needs a hypervisor that can cut a
+guest's power 100 times, with an acknowledgement recorder (architecture.md TC-21s5);
+no hosted runner provides it. No other M2 scenario needs it.
 
 **M2-EN-5 -- Two accounts and shares.** STORAGE-6 (privacy to one user) needs a
 second OS account; FS-1/FS-2 variants on network shares need an SMB share.
@@ -425,7 +429,7 @@ client-invocation boundary on client routes by M1-D-PIPE-4), **EN-1..6**
 | ID | Constraint | Enforced by |
 |---|---|---|
 | M2-C-1 | Every guarded and acceptance run uses a scratch home and scratch workspaces; takeover, deletion and process-tree tests never touch a developer's data | `testkit/scenario` home factory; evidence record field |
-| M2-C-2 | A scenario not run is recorded *not run* with a reason; *open* never counts as *passed*; a variant out of scope by decision is named with the decision | Closure record; M2-DEC-2 |
+| M2-C-2 | A scenario not run is recorded *not run* with a reason; *open* never counts as *passed*; a variant out of scope by decision is named with the decision; an in-scope variant *not run* keeps its stage *open* | Closure record; M2-DEC-2; C57 |
 | M2-C-3 | *Built* and *done* are never merged: a deliverable is done only when every proving scenario passed and its held-open items closed | Closure record (M2-DOD-6) |
 | M2-C-4 | Each unconfirmed default of impl.md sec. 9.1 is confirmed or changed by the owner **before its stage closes**: S12 full-access label (I2 Q3) and UTF-8-only text tools; S13 `partial` when delegated execution cannot be stopped (I2 Q4); S15 no SDK session grant (I2 Q5) and client time zone (U-K2-5); S16 a second `dsh web` reuses the host (I3 Q1), Windows double-click (I3 Q8), `dsh headless` progress (U-K2-4) | M2-Q-7; stage evidence record |
 | M2-C-5 | Model spend is bounded: S17 runs use the signed-in subscription route; a run states its prompt count; SANDBOX-7's 108 runs are one budgeted job | Evidence record |
@@ -458,16 +462,16 @@ the design-level risks; these are the story-level ones.
 | ID | Risk | L | I | Trigger to watch | Mitigation | Response if it fires |
 |---|---|---|---|---|---|---|
 | M2-R-01 | **No signed-in runner for S17** (amended from "no DeepSeek key"): hosted runners cannot sign in to `claude`, so S17 cannot run in CI | H | H | S17 job has no runner label | M2-EN-8: self-hosted Linux runner or a developer's WSL machine; record which | S17 stays *open*; deliverables stay *built* (M2-C-2) |
-| M2-R-02 | **E2 fleet not provided**: hosted runners cover 2 of about a dozen S18 variants | H | H | No owner answer to M2-Q-3 by S16 built | Ask now (M2-Q-3); runbooks for manual variants (sec. 3.4 item 7) | S18 closes partially, each missing variant named; affected deliverables stay *built* |
+| M2-R-02 | **E2 fleet not provided**: hosted runners cover 2 of about a dozen S18 variants | H | H | No owner answer to M2-Q-3 by S16 built | Ask now (M2-Q-3); runbooks for manual variants (sec. 3.4 item 7) | **S18 stays open** (M2-DOD-4; architecture.md C57 refuses a stage close while a listed scenario is missing, skipped or failed); each missing variant is recorded *not run*; affected deliverables stay *built*. Only an owner decision that removes a variant from scope (as `platforms-windows-wsl` removed macOS) lets S18 close without it |
 | M2-R-03 | **Fence defect writes outside the roots** during FS-1/FS-3/VIEW-5 | M | H | Hash listing of the outside directory differs | Scratch dirs only (M2-C-1); fence contract tests first (TC rows for C32) | Stop the stage; keep both listings; fix before any further S18 run |
 | M2-R-04 | **M1 not closed** delays every M2 run (sec. 1.5) | H | M | Phase 18 of the M1 gap-closure plan unmerged when S16 is built | M2-DEC-1 default lets S12..S16 build meanwhile | Runs wait; no M2 stage closes before M1 closure |
 | M2-R-05 | **WSL is not a real Linux kernel environment for every claim**: WSL2's kernel config, missing `systemd --user` or no delegated cgroup make EXEC-1/-10, NATIVESYSTEM and SANDBOX-1 report fallbacks | H | M | `dsh sandbox status` on the WSL lane shows `Partial` or process-group fallback | Run those scenarios on native Linux variants too (M2-EN-3); record WSL results as one variant | A WSL-only pass is not counted for variants it does not represent |
-| M2-R-06 | **Long scenarios exceed impl.md time limits** (SANDBOX-7 108 runs, FS-2, NODEFS-1 100 power cuts) | H | M | Job hits 2 h / 3 h | Split into sharded jobs; ask the owner for limits (M2-Q-6) | Record as *not run (time limit)*, never *passed* |
+| M2-R-06 | **Long scenarios exceed impl.md time limits** (SANDBOX-7 108 runs, FS-2, NODEFS-1 100 power cuts) | H | M | Job hits 2 h / 3 h | Split into sharded jobs; ask the owner for limits (M2-Q-6) | Record as *not run (time limit)*, never *passed*; the stage stays *open* until the run completes |
 | M2-R-07 | **Model behaviour varies**: SANDBOX-7 escalation threshold (10 of 18) or AGENT scenarios flake on a real model | M | M | Pass rate near threshold | Three runs per task as specified; keep transcripts | Re-run counts as a new run in the record; a policy text change waits (M2-C-6) |
 | M2-R-08 | **Copilot leg drifts**: signed-out line not pinned (DH-E-COPILOTCLI-1), empty `COPILOT_HOME` may not sign out | H | L | LLM-3 Copilot leg settles differently | Leg is *recorded* (M2-DEC-4) | Note in record; no stage impact |
 | M2-R-09 | **Size**: 56 steps, 12 scenarios to author, 17 more for later, plus runbooks; story points 0 gives no budget | H | M | S16 slips past the plan's estimate | Plan stages run S14 beside S12/S13 (sec. 3.3); split question M2-Q-1 | Split acceptance (S17/S18) into a follow-on story |
 | M2-R-10 | **Wire drift**: a step adds an SDK method or field | L | H | `schema.json` diff in a PR | TC-12g golden; M2-C-7 | Revert; raise an owner question |
-| M2-R-11 | **`bwrap` missing or blocked** on the WSL lane or a variant (user namespaces denied) | M | M | Lane check fails (architecture.md I-8) | `wsl.sh` provisions/checks `bwrap`; Landlock path tested separately | STORE-2 and SANDBOX-1 cannot run there; recorded not run |
+| M2-R-11 | **`bwrap` missing or blocked** on the WSL lane or a variant (user namespaces denied) | M | M | Lane check fails (architecture.md I-8) | `wsl.sh` provisions/checks `bwrap`; Landlock path tested separately | STORE-2 and SANDBOX-1 cannot run there; recorded *not run*; the stage stays *open* until they run on a variant with `bwrap` |
 | M2-R-12 | **Windows unconfined path misused**: a confined policy silently runs unconfined | L | H | `Unconfined` with a policy other than `danger-full-access` | M2-C-8 contract tests; refusal `sandbox/unavailable` | Block merge |
 
 ## 9. Assumptions
@@ -485,7 +489,7 @@ the design-level risks; these are the story-level ones.
 |---|---|---|---|
 | M2-Q-1 | Run M2 as one story or split acceptance (S17/S18) into a follow-on story | One story | Story sizing |
 | M2-Q-2 (`m2-entry-m1-closure`) | May S12..S16 build before M1 is closed | Yes, build; no run or closure before M1 closure | First M2 commit |
-| M2-Q-3 (`m2-e2-fleet`) | Who provides the S18 Linux variants, power-cut host and two-account machines | Team provides runbooks; variants without hardware are *not run* | S18 closure |
+| M2-Q-3 (`m2-e2-fleet`) | Who provides the S18 Linux variants, power-cut host and two-account machines | Team provides runbooks; variants without hardware are *not run* and S18 stays *open* | S18 closure |
 | M2-Q-4 (`m2-macos-rows`) | macOS rows: out of scope by `platforms-windows-wsl`, or provisioned | Out of scope, recorded so | S18 closure |
 | M2-Q-5 (`m2-host4-ui-clause`) | HOST-4 "reaches the UI": listener answer suffices at M2, or the clause moves to S22 | Listener answer suffices | HOST-4 result |
 | M2-Q-6 (`m2-scenario-deadlines`) | Time limits for SANDBOX-7, FS-2, NODEFS-1 | Sharded jobs within impl.md limits | S17, S18 |
