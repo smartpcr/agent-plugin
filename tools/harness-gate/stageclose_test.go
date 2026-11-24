@@ -14,7 +14,7 @@ import (
 	"github.com/smartpcr/agent-plugin/tools/harness-gate/closure"
 )
 
-var updateGolden = flag.Bool("update", false, "rewrite testdata/closure/expected.golden (refused under CI)")
+var updateGolden = flag.Bool("update", false, "rewrite testdata/closure/expected.golden and testdata/entry/m1_open.golden (refused under CI)")
 
 // closureTree copies a fixture tree into a fresh temp dir so a run cannot touch testdata.
 func closureTree(t *testing.T, dir string) string {

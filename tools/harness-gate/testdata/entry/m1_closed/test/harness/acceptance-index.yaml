@@ -1,0 +1,4 @@
+# Immutable fixture of harness-gate entry (implementation-plan Stage 1.2).
+built-through: DH-S-11
+stages:
+  DH-S-16: []
