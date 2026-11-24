@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
+	"weak"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/go/loader"
@@ -733,5 +735,25 @@ func TestComponentSurvivesASandboxProviderReplacement(t *testing.T) {
 		if st, err := after.Handle().Get(snap); err != nil || st.Preset != "ask" || !st.Pinned {
 			t.Fatalf("permissions %+v, %v", st, err)
 		}
+	}
+}
+
+// RegisterView keeps no record outside the registry: once a registry the
+// permissions fold was registered in is unreachable, it is collected.
+func TestRegisterViewDoesNotRetainTheRegistry(t *testing.T) {
+	reg := views.New()
+	if _, err := permission.RegisterView(reg); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := permission.RegisterView(reg); err != nil {
+		t.Fatalf("a second registration in one registry: %v", err)
+	}
+	wp := weak.Make(reg)
+	reg = nil
+	for i := 0; i < 20 && wp.Value() != nil; i++ {
+		runtime.GC()
+	}
+	if wp.Value() != nil {
+		t.Fatal("a retired registry is still reachable after RegisterView")
 	}
 }
