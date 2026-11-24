@@ -2,6 +2,7 @@
 # Re-record with -update only together with a line in persisted.notes.
 @envelope 1 sha256:7cc92720d16d4933ba26ccb7de37892e4d4a06e434acdaeb57a8b3d4452a4754
 @header 1 sha256:228a5ee7a7efaae3c6b6574653d093f649783882366431b4fc9bca39e853118c
+agent-preset/selected 1 sha256:6b024067f8a794ab6532228c551518ba9414063de669c665ea0300390c1d0eec
 agent/inbox/spliced 1 sha256:78343b7a036adeefd1b9733da9ff3d3d70b4e02c89a38646cddfefb210a82496
 approval/asked 2 sha256:056af99a8971c31c2e40cf31caeb257d0e305674f8cd44d7290f6f14ab348945
 approval/decided 2 sha256:52af1ea31e16ace82fb52bc4b458932f0c9adca9c27ac5e141bc0bf4bc1da365
