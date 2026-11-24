@@ -237,7 +237,32 @@ type Resolver interface {
 	GrantRoot(ctx context.Context, s session.ID, dir string) (release func(), err error)
 	// SetMode dispatches ModeChanging and, if no listener refuses, writes
 	// sandbox/mode to the session's log; the new mode applies to the next Resolve.
+	// A mode the log already records writes nothing; recording the mode already
+	// in force (the default) dispatches nothing and pins it.
 	SetMode(ctx context.Context, s session.ID, m Mode) error
+}
+
+// Actor attributes a mode change to the principal who made it, the channel it
+// came through and the peer on that channel (the shape of approval.By).
+type Actor struct {
+	Principal string `json:"principal"`
+	Channel   string `json:"channel,omitempty"`
+	Peer      string `json:"peer,omitempty"`
+}
+
+type actorKey struct{}
+
+// WithActor returns ctx carrying by, the principal a resolver's SetMode records
+// on the sandbox/mode it appends.
+func WithActor(ctx context.Context, by Actor) context.Context {
+	return context.WithValue(ctx, actorKey{}, by)
+}
+
+// ActorFrom is the actor WithActor put on ctx; false when there is none or it
+// names no principal.
+func ActorFrom(ctx context.Context) (Actor, bool) {
+	by, ok := ctx.Value(actorKey{}).(Actor)
+	return by, ok && by.Principal != ""
 }
 
 // ResolverKey is the service the resolver component provides.

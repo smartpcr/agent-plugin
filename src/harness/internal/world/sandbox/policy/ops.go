@@ -210,14 +210,18 @@ func (r *Resolver) SetMode(ctx context.Context, s session.ID, m sandbox.Mode) er
 		return err
 	}
 	from := r.modeOf(st)
-	if from == m {
+	if st.Mode == m {
 		return nil
 	}
-	if err := sandbox.ModeChanging.Emit(r.deps.Owner, live.Scope(), sandbox.ModeChange{Session: s, From: from, To: m}); err != nil {
-		return err
-	}
-	if err := ctx.Err(); err != nil {
-		return herr.Wrap(sandbox.CodeUnavailable, err, "set mode: cancelled during ModeChanging")
+	// Recording the mode already in force (the configured default) changes
+	// nothing, so nobody is asked; it pins the value against a later default.
+	if from != m {
+		if err := sandbox.ModeChanging.Emit(r.deps.Owner, live.Scope(), sandbox.ModeChange{Session: s, From: from, To: m}); err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return herr.Wrap(sandbox.CodeUnavailable, err, "set mode: cancelled during ModeChanging")
+		}
 	}
 	next := ModeSet{Mode: m, From: from, Network: r.networkOf(st), By: actorOf(ctx)}
 	d, err := ModeType.Draft(next)

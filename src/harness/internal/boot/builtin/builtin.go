@@ -9,6 +9,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/catalog"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/logging"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/host/sharing"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/human/permission"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/workdir"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/egress"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/watch"
@@ -74,9 +75,20 @@ func FS() []catalog.Item {
 // the one package allowed to import it.
 func Sandbox() []catalog.Item { return []catalog.Item{ops.PolicyItem()} }
 
+// Permission is the permission family's items: the permission preset table
+// (C34). Registered in the build catalogue so a layer's table is checked at
+// config load (a default that names no preset is status 78); like cycle C-3 it
+// waits on inject in the dsh binary until session.core, human.approval and
+// human.command have catalogue items.
+func Permission() []catalog.Item {
+	return []catalog.Item{
+		{Name: permission.Name, Component: permission.Component, Config: reflect.TypeFor[permission.Config](), Provides: []string{permission.Key.Name()}},
+	}
+}
+
 // Sets is every family's items.
 func Sets() [][]catalog.Item {
-	return [][]catalog.Item{Boot(), Host(), Util(), Session(), FS(), Sandbox()}
+	return [][]catalog.Item{Boot(), Host(), Util(), Session(), FS(), Sandbox(), Permission()}
 }
 
 // Catalog builds the catalogue of this binary.

@@ -31,8 +31,10 @@ package views
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -247,6 +249,7 @@ type def struct {
 	apply   func(any, event.Event) (any, bool)
 	encode  func(any) (string, error)
 	decode  func(string) (any, error)
+	state   reflect.Type // S, so Ensure hands out a Handle[S] only for a fold of S
 }
 
 // reservedPrefix is the session core's checkpoint keys (store.Checkpoint).
@@ -376,6 +379,7 @@ func Register[S any](r *Registry, d Definition[S]) (Handle[S], error) {
 	x := &def{
 		key:     d.Key,
 		version: d.Version,
+		state:   reflect.TypeFor[S](),
 		all:     d.Types == nil,
 		stored:  d.Stored,
 		cadence: d.Cadence,
@@ -407,6 +411,31 @@ func Register[S any](r *Registry, d Definition[S]) (Handle[S], error) {
 		r.byType[t] = append(r.byType[t], x)
 	}
 	return Handle[S]{key: d.Key}, nil
+}
+
+// Ensure is Register for a component that may load more than once over one
+// registry (it reloads when a provider it injects is replaced): when a fold
+// with d's key, version and state type is already registered, sealed or not,
+// it returns that fold's handle and registers nothing. The bookkeeping is the
+// registry's own, so it lives exactly as long as the registry. A registered
+// fold under d's key with another version or state type is view/duplicate.
+func Ensure[S any](r *Registry, d Definition[S]) (Handle[S], error) {
+	for {
+		r.mu.Lock()
+		x, ok := r.byKey[d.Key]
+		r.mu.Unlock()
+		if ok {
+			if x.version != d.Version || x.state != reflect.TypeFor[S]() {
+				return Handle[S]{}, errorf(CodeDuplicate, "fold %q is already registered at version %d over %v", d.Key, x.version, x.state)
+			}
+			return Handle[S]{key: d.Key}, nil
+		}
+		h, err := Register(r, d)
+		if errors.Is(err, ErrDuplicate) {
+			continue // a concurrent Ensure registered it first
+		}
+		return h, err
+	}
 }
 
 // seal fixes the definitions; the caller holds r.mu.

@@ -10,6 +10,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/agentpreset"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/config"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/profile"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/human/permission"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
 )
 
@@ -74,12 +75,13 @@ func (s *State) startReload(ctx context.Context) {
 }
 
 // treeChecks are the whole-tree rules the start-up tree and every reload are
-// held to: the agent presets as one set (agentpreset.CheckTree).
+// held to: the agent presets as one set (agentpreset.CheckTree) and each
+// permission preset table (permission.CheckTree).
 func (s *State) treeChecks() []config.TreeCheck {
 	if s.catalog == nil {
-		return []config.TreeCheck{agentpreset.CheckTree(nil, s.evaluator)}
+		return []config.TreeCheck{agentpreset.CheckTree(nil, s.evaluator), permission.CheckTree()}
 	}
-	return []config.TreeCheck{agentpreset.CheckTree(s.catalog, s.evaluator)}
+	return []config.TreeCheck{agentpreset.CheckTree(s.catalog, s.evaluator), permission.CheckTree()}
 }
 
 // checkTree runs the whole-tree rules over the composed tree before the first
