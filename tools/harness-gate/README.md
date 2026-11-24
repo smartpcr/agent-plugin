@@ -134,8 +134,11 @@ before M1 is closed. `harness-gate entry --story harness:DSH-M2` checks, under
 
 - every M1 record `docs/stories/harness-DSH-M1/evidence/DH-S-1.md` ..
   `DH-S-11.md` exists and its status line reads `Closure status: closed` (or
-  `closed at <sha>`). Only the first line that starts `Closure status:` is read;
-  history prose such as `**Closure status: closed.**` is not the line;
+  `closed at <sha>`). The status line is a line that starts `Closure status:`
+  outside a code fence; history prose such as `**Closure status: closed.**` is
+  not the line. A record must have exactly one: a second status line makes the
+  record invalid, so it is not closed (`reads "Closure status: a second status
+  line at line N ..."`), whatever the first line says;
 - the M1 closure record `docs/stories/harness-DSH-M1/evidence/closure.md` exists
   with a `## Deliverables` table (columns Deliverable, State, Reason) that has one
   row for each of the 99 deliverables of impl.md steps 1.1 to 11.7
