@@ -31,9 +31,9 @@ Each step's merge commit; `--built` refuses a step without one.
 
 | Step | Deliverable | Commit | Notes |
 | --- | --- | --- | --- |
-| 12.1 | DH-D-VIEW-10 | 7f56c5556ec11d9821c4419e0c248dd550b7ab4e | cycle C-3, with 12.2 and 12.3 at one commit: the implementation-plan Stage 2.5 integration commit that registers all three in the build catalogue and lands `cyclec3_test.go` (the members were merged separately before it: 90abd12 #111, 30aeb4c #110, 7b4e8cd #113); `session.workdir` in `builtin.Session()` |
-| 12.2 | DH-D-FS-4 | 7f56c5556ec11d9821c4419e0c248dd550b7ab4e | cycle C-3, same commit as 12.1; `fs.local` and `fs.ops` in `builtin.FS()` |
-| 12.3 | DH-D-SANDBOX-1 | 7f56c5556ec11d9821c4419e0c248dd550b7ab4e | cycle C-3, same commit as 12.1; `sandbox.policy` in `builtin.Sandbox()` (item exported by `fs/ops`, its one importer) |
+| 12.1 | DH-D-VIEW-10 | | cycle C-3, with 12.2 and 12.3 at one commit: the squash-merge commit of the implementation-plan Stage 2.5 integration PR (#118), recorded after merge, that registers all three in the build catalogue and lands `cyclec3_test.go` (the members were merged separately before it: 90abd12 #111, 30aeb4c #110, 7b4e8cd #113); `session.workdir` in `builtin.Session()` |
+| 12.2 | DH-D-FS-4 | | cycle C-3, same commit as 12.1; `fs.local` and `fs.ops` in `builtin.FS()` |
+| 12.3 | DH-D-SANDBOX-1 | | cycle C-3, same commit as 12.1; `sandbox.policy` in `builtin.Sandbox()` (item exported by `fs/ops`, its one importer) |
 | 12.4 | DH-D-HUMAN-4 | | P1, pulled forward |
 | 12.5 | DH-D-FS-6 | | |
 
@@ -92,8 +92,8 @@ Not yet recorded. Gate venue: both local lanes, `tools/harness-gate/lanes/win.ps
 ### Exact tests and commands
 
 Cycle C-3 integration (implementation-plan Stage 2.5, TC-01b), run from `src/harness`:
-`go test -count=1 ./internal/boot/builtin -run TestCycleC3` (`internal/boot/builtin/cyclec3_test.go`, introduced at
-the shared commit `7f56c55`). It boots `fs.local`, `session.workdir`, `sandbox.policy`
+`go test -count=1 ./internal/boot/builtin -run TestCycleC3` (`internal/boot/builtin/cyclec3_test.go`, introduced by
+the cycle C-3 integration PR #118). It boots `fs.local`, `session.workdir`, `sandbox.policy`
 (`workspace-write`) and `fs.ops` from the build catalogue over an embedded SQLite session store in
 `t.TempDir()`. A move of the session from project `A` to sibling project `B` turns a write to `A/x` into
 `fs/sandbox-denied` (file untouched) while `B/x` is written, and the resolver resolves `B` as a write root and
