@@ -95,8 +95,9 @@ func resolve(p string, noFollowFinal bool) (string, error) {
 			}
 			if !last && !fi.IsDir() {
 				nd := herr.Newf(fs.CodeNotDirectory, "%s is not a directory", next)
-				if fi.Mode()&iofs.ModeIrregular != 0 {
-					// A reparse point being made or removed: the tree is changing.
+				if fi.Mode()&(iofs.ModeIrregular|iofs.ModeSymlink) != 0 {
+					// A reparse point being made or removed, or a link removed
+					// between Lstat and Readlink: the tree is changing.
 					return "", changed{nd}
 				}
 				return "", nd

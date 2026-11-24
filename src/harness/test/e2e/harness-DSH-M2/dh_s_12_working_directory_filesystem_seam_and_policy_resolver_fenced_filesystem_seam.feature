@@ -6,8 +6,8 @@ Feature: Fenced filesystem seam on the real provider (fs/local)
 
   Scenario: Conformance on the real provider
     Given "fs/local" rooted at "t.TempDir()"
-    When "fstest.Run" executes on this lane
-    Then every subtest passes
+    When "fstest.Run" executes on the Linux and Windows lanes
+    Then every subtest passes on every lane
 
   Scenario: Fence holds through a swapped link
     Given a write root "R" and an outside directory "O" in "t.TempDir()"

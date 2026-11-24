@@ -9,12 +9,16 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/cucumber/godog"
 
@@ -45,6 +49,7 @@ type ffsWorld struct {
 	mu         sync.Mutex
 	subtests   []ffsSubtest
 	linkKinds  map[string]int
+	linux      ffsLane
 
 	// swap race
 	r, o, sub string
@@ -115,33 +120,124 @@ func (w *ffsWorld) whenRun(fn string) error {
 	if ffsSuiteT == nil {
 		return errors.New("no suite *testing.T to run the conformance suite on")
 	}
-	w.runOK = ffsSuiteT.Run("fstest-conformance-fs-local", func(t *testing.T) {
+	w.runOK = ffsSuiteT.Run(ffsConformanceName, func(t *testing.T) {
 		fstest.Run(t, w.newSubject)
 	})
+	if runtime.GOOS == "windows" && os.Getenv(ffsLinuxLaneEnv) == "" {
+		w.linux = ffsRunLinuxLane()
+	}
 	return nil
 }
 
+const (
+	ffsConformanceName = "fstest-conformance-fs-local"
+	// ffsLinuxLaneEnv marks the Linux-lane child run, so it does not recurse.
+	ffsLinuxLaneEnv = "DSH_E2E_FFS_LINUX_LANE"
+	ffsEntrypoint   = "TestE2E_dh_s_12_working_directory_filesystem_seam_and_policy_resolver_fenced_filesystem_seam"
+)
+
+// ffsLane is the outcome of the conformance suite run on the Linux lane from a
+// Windows host: the whole godog suite of this stage, run under WSL.
+type ffsLane struct {
+	ran     bool
+	err     error // the run itself failed, or the lane is unreachable
+	results map[string]string
+	summary string
+}
+
+var ffsSubtestLine = regexp.MustCompile(`--- (PASS|FAIL|SKIP): \S+/` + ffsConformanceName + `/(\S+)`)
+
+// ffsRunLinuxLane runs this suite under WSL (the Linux lane of a Windows host):
+// the same package, built and run by the Linux Go toolchain on a Linux t.TempDir.
+func ffsRunLinuxLane() ffsLane {
+	wsl, err := exec.LookPath("wsl.exe")
+	if err != nil {
+		return ffsLane{err: fmt.Errorf("no Linux lane reachable from this Windows host (wsl.exe: %v)", err)}
+	}
+	dir, err := os.Getwd()
+	if err != nil {
+		return ffsLane{err: err}
+	}
+	script := fmt.Sprintf(`%s=1 go test -tags e2e -count=1 -v -run '^%s$' .`, ffsLinuxLaneEnv, ffsEntrypoint)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	out, runErr := exec.CommandContext(ctx, wsl, "--cd", dir, "--", "bash", "-lc", script).CombinedOutput()
+	lane := ffsLane{ran: true, results: map[string]string{}}
+	for _, m := range ffsSubtestLine.FindAllStringSubmatch(string(out), -1) {
+		lane.results[m[2]] = m[1]
+	}
+	if m := regexp.MustCompile(`\d+ scenarios \([^)]*\)`).Find(out); m != nil {
+		lane.summary = string(m)
+	}
+	if runErr != nil {
+		tail := string(out)
+		if len(tail) > 4000 {
+			tail = tail[len(tail)-4000:]
+		}
+		lane.err = fmt.Errorf("linux lane: %v\n%s", runErr, tail)
+	}
+	return lane
+}
+
+func ffsShort(name string) string {
+	if i := strings.Index(name, ffsConformanceName+"/"); i >= 0 {
+		return name[i+len(ffsConformanceName)+1:]
+	}
+	return name
+}
+
+// thenEverySubtestPasses: no conformance subtest may fail or skip. On a Windows
+// lane without the symlink privilege, a subtest needing a link a junction cannot
+// stand for (a relative link, a link to a file) cannot run there; it must then
+// run and pass on the Linux lane of the same host, which runs every subtest.
 func (w *ffsWorld) thenEverySubtestPasses() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if len(w.subtests) == 0 {
 		return errors.New("fstest.Run executed no subtests")
 	}
-	var bad, junctionSkips []string
+	var bad, needLinux []string
 	for _, s := range w.subtests {
 		switch {
 		case s.failed:
 			bad = append(bad, s.name+" FAILED")
-		case s.skipped && s.linkUnsupported:
-			junctionSkips = append(junctionSkips, s.name)
+		case s.skipped && s.linkUnsupported && runtime.GOOS == "windows":
+			needLinux = append(needLinux, ffsShort(s.name))
 		case s.skipped:
 			bad = append(bad, s.name+" SKIPPED")
 		}
 	}
-	ffsSuiteT.Logf("fs/local conformance: %d subtests, link kinds %v, skipped for an unsupported link kind (junction fallback): %v",
-		len(w.subtests), w.linkKinds, junctionSkips)
+	ffsSuiteT.Logf("%s lane: fs/local conformance: %d subtests, link kinds %v, not runnable here (junction fallback): %v",
+		runtime.GOOS, len(w.subtests), w.linkKinds, needLinux)
 	if len(bad) > 0 || !w.runOK {
-		return fmt.Errorf("conformance run ok=%v; %d of %d subtests not passing: %v", w.runOK, len(bad), len(w.subtests), bad)
+		return fmt.Errorf("%s lane: conformance run ok=%v; %d of %d subtests not passing: %v", runtime.GOOS, w.runOK, len(bad), len(w.subtests), bad)
+	}
+	if runtime.GOOS != "windows" || os.Getenv(ffsLinuxLaneEnv) != "" {
+		return nil
+	}
+
+	l := w.linux
+	if !l.ran || l.err != nil {
+		if len(needLinux) == 0 && !l.ran {
+			ffsSuiteT.Logf("linux lane: %v; every subtest passed on this Windows lane", l.err)
+			return nil
+		}
+		return fmt.Errorf("subtests %v cannot run on this Windows lane and the Linux lane did not pass: %v", needLinux, l.err)
+	}
+	var linuxBad []string
+	for _, s := range w.subtests {
+		if r := l.results[ffsShort(s.name)]; r != "PASS" {
+			linuxBad = append(linuxBad, fmt.Sprintf("%s=%q", ffsShort(s.name), r))
+		}
+	}
+	for n, r := range l.results {
+		if r != "PASS" {
+			linuxBad = append(linuxBad, fmt.Sprintf("%s=%q", n, r))
+		}
+	}
+	ffsSuiteT.Logf("linux lane (WSL): %d conformance subtests, %s", len(l.results), l.summary)
+	if len(linuxBad) > 0 {
+		return fmt.Errorf("linux lane: conformance subtests not passing: %v", linuxBad)
 	}
 	return nil
 }
@@ -412,8 +508,8 @@ func InitializeScenario_dh_s_12_working_directory_filesystem_seam_and_policy_res
 	})
 
 	ctx.Step(`^"([^"]*)" rooted at "([^"]*)"$`, w.givenProvider)
-	ctx.Step(`^"([^"]*)" executes on this lane$`, w.whenRun)
-	ctx.Step(`^every subtest passes$`, w.thenEverySubtestPasses)
+	ctx.Step(`^"([^"]*)" executes on the Linux and Windows lanes$`, w.whenRun)
+	ctx.Step(`^every subtest passes on every lane$`, w.thenEverySubtestPasses)
 
 	ctx.Step(`^a write root "([^"]*)" and an outside directory "([^"]*)" in "([^"]*)"$`, w.givenRootAndOutside)
 	ctx.Step(`^a helper goroutine swaps "([^"]*)" for a link to "([^"]*)" (\d+) times while the seam writes "([^"]*)"$`, w.whenSwapRace)
