@@ -15,12 +15,18 @@ import (
 // declaration or closes a cycle, a bad child or a Default that names no declaration
 // rejects the whole edit, each issue placed at the entry at fault. The tree is one
 // set whatever its order, so a declaration may extend one that loads after it. A
-// literally disabled entry (or group) takes no part; a config that holds an
-// expression, or does not decode (the per-entry check reports that), is skipped.
-// cat may be nil, which skips the child checks.
+// literally disabled entry (or group) takes no part. A declaration is read field by
+// field (bundle-preset.md §6.1): a child config, name or order holding an os, env,
+// launch or home expression is left to the revision's loader while the literal id,
+// extends and children still take part. A declaration whose id or extends is itself
+// an expression cannot be placed statically, so the set's references are not
+// checked then; a Default that is an expression is not checked. A config that does
+// not decode is the per-entry check's issue and is skipped here. cat may be nil,
+// which skips the child checks.
 func CheckTree(cat Catalogue) func(tree []loader.EntryOptions) []loader.Issue {
 	return func(tree []loader.EntryOptions) []loader.Issue {
 		var reg *found
+		computed := false // a declaration's id or extends is an expression
 		var decls []Declaration
 		var at []found // the entry of each declaration
 		var issues []loader.Issue
@@ -33,8 +39,12 @@ func CheckTree(cat Catalogue) func(tree []loader.EntryOptions) []loader.Issue {
 				}
 				reg = &f
 			case DeclarationName:
-				var d Declaration
-				if !decodes(f.entry.Config, &d) {
+				d, known, ok := decodeDeclaration(f.entry.Config)
+				if !ok {
+					return
+				}
+				if !known {
+					computed = true
 					return
 				}
 				decls = append(decls, d)
@@ -47,8 +57,11 @@ func CheckTree(cat Catalogue) func(tree []loader.EntryOptions) []loader.Issue {
 		if reg == nil {
 			return append(issues, at[0].issue("", fmt.Sprintf("an %s entry needs an %s entry in the tree", DeclarationName, RegistryName)))
 		}
-		var cfg Config
-		if !decodes(reg.entry.Config, &cfg) {
+		if computed {
+			return issues
+		}
+		cfg, defaultExpr, ok := decodeConfig(reg.entry.Config)
+		if !ok {
 			return issues
 		}
 		last := map[string]found{}
@@ -58,6 +71,8 @@ func CheckTree(cat Catalogue) func(tree []loader.EntryOptions) []loader.Issue {
 		for _, is := range Validate(cfg, decls, cat) {
 			var i int
 			switch {
+			case defaultExpr && is.Preset == "" && is.Path == "default":
+				// A computed Default is checked when the registry loads.
 			case is.Preset != "":
 				issues = append(issues, last[is.Preset].issue(is.Path, is.String()))
 			case strings.HasPrefix(is.Path, "[") && fmtIndex(is.Path, &i) && i < len(at):
@@ -105,17 +120,114 @@ func walkTree(list []loader.EntryOptions, parent string, fn func(found)) {
 	}
 }
 
-// decodes decodes a literal config into v; false for one holding an expression or
-// that does not decode. An omitted config decodes as the zero value.
-func decodes(raw json.RawMessage, v any) bool {
+// decodeDeclaration reads a declaration's config field by field. ok is false for
+// one that does not decode; known is false when its id or extends is an
+// expression. A name, description or order that is an expression is left zero; a
+// child that is itself an expression, or whose component is, is left out; a
+// child's config is kept raw whatever it holds (checkChild leaves an expression to
+// the revision's loader) and a disabled that is an expression counts as enabled.
+func decodeDeclaration(raw json.RawMessage) (d Declaration, known, ok bool) {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 || string(raw) == "null" {
+		return d, true, true
+	}
+	if isExpr(raw) {
+		return d, false, true
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil {
+		return d, false, false
+	}
+	if !literal(fields["id"], &d.ID) || !literal(fields["extends"], &d.Extends) {
+		return Declaration{}, false, true
+	}
+	_ = literal(fields["name"], &d.Name)
+	_ = literal(fields["description"], &d.Description)
+	_ = literal(fields["order"], &d.Order)
+	children := bytes.TrimSpace(fields["children"])
+	if len(children) == 0 || string(children) == "null" || isExpr(children) {
+		return d, true, true
+	}
+	var kids map[string]json.RawMessage
+	if json.Unmarshal(children, &kids) != nil {
+		return d, true, true
+	}
+	d.Children = make(map[string]*Child, len(kids))
+	for key, kr := range kids {
+		kr = bytes.TrimSpace(kr)
+		if string(kr) == "null" {
+			d.Children[key] = nil
+			continue
+		}
+		var cf map[string]json.RawMessage
+		if isExpr(kr) || json.Unmarshal(kr, &cf) != nil {
+			continue
+		}
+		c := &Child{Config: cf["config"]}
+		if !literal(cf["component"], &c.Component) {
+			continue
+		}
+		_ = literal(cf["disabled"], &c.Disabled)
+		d.Children[key] = c
+	}
+	return d, true, true
+}
+
+// decodeConfig reads the registry's config; expr is true when its Default is an
+// expression, ok false when it does not decode.
+func decodeConfig(raw json.RawMessage) (cfg Config, expr, ok bool) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || string(raw) == "null" {
+		return cfg, false, true
+	}
+	if isExpr(raw) {
+		return cfg, true, true
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil {
+		return cfg, false, false
+	}
+	if !literal(fields["default"], &cfg.Default) {
+		expr = isExpr(bytes.TrimSpace(fields["default"]))
+		if !expr {
+			return cfg, false, false
+		}
+	}
+	_ = literal(fields["selectedDefault"], &cfg.SelectedDefault)
+	return cfg, expr, true
+}
+
+// literal decodes raw into v; true for an absent value or a literal that decodes,
+// false for an expression or a value of the wrong type (v is left as it was).
+func literal(raw json.RawMessage, v any) bool {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
 		return true
 	}
-	if bytes.Contains(raw, []byte("${{")) || bytes.Contains(raw, []byte(`"$expr"`)) {
+	if isExpr(raw) {
 		return false
 	}
 	return json.Unmarshal(raw, v) == nil
+}
+
+// isExpr reports whether raw is an expression: a string holding "${{" or an
+// object with a "$expr" key.
+func isExpr(raw json.RawMessage) bool {
+	switch {
+	case len(raw) == 0:
+		return false
+	case raw[0] == '"':
+		var str string
+		return json.Unmarshal(raw, &str) == nil && strings.Contains(str, "${{")
+	case raw[0] == '{':
+		var obj map[string]json.RawMessage
+		if json.Unmarshal(raw, &obj) != nil {
+			return false
+		}
+		_, ok := obj["$expr"]
+		return ok
+	}
+	return false
 }
 
 func fmtIndex(path string, i *int) bool {

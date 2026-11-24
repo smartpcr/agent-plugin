@@ -118,3 +118,72 @@ func TestConfigEditRejectsABrokenPresetSet(t *testing.T) {
 		})
 	}
 }
+
+// bundle-preset.md §6.1: a child's config may use os, env, launch and home
+// expressions. The declaration keeps its literal id, extends and children in the
+// set check, so it answers the Default and a child's Extends, while a reference
+// that is genuinely unknown is still an issue; an id that is itself an expression
+// cannot be placed, so the set's references are left to the load.
+func TestPresetSetCheckKeepsDeclarationsWithExpressionConfigs(t *testing.T) {
+	const base = `- insert:
+    - id: scope
+      name: session.scope
+    - id: presets
+      name: agent.presets
+      config:
+        default: %s
+    - id: derived
+      name: agent.preset
+      config:
+        id: derived
+        extends: %s
+        children:
+          tool.read:
+            config:
+              root:
+                $expr: env.HOME
+    - id: standard
+      name: agent.preset
+      config:
+        id: standard
+        children:
+          tool.read:
+            config:
+              root: ${{ env.HOME }}/work
+`
+	cases := map[string]struct {
+		text      string
+		path, msg string // the one issue wanted; empty for none
+	}{
+		"default and parent with expression configs": {text: fmt.Sprintf(base, "standard", "standard")},
+		"derived is the default":                     {text: fmt.Sprintf(base, "derived", "standard")},
+		"unknown default still refused": {text: fmt.Sprintf(base, "ghost", "standard"),
+			path: "presets.config.default", msg: `default "ghost" is not declared`},
+		"unknown parent still refused": {text: fmt.Sprintf(base, "standard", "nowhere"),
+			path: "derived.config.extends", msg: `extends "nowhere", which is not declared`},
+		"computed id leaves references to the load": {text: fmt.Sprintf(base, "standard", "standard") +
+			"    - id: computed\n      name: agent.preset\n      config:\n        id: ${{ env.PRESET }}\n"},
+		"computed default is not checked": {text: fmt.Sprintf(base, "${{ env.PRESET }}", "standard")},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			fx := newFixture(t)
+			home, def := temphome.Dir(t), profile.Definition{Name: "presets"}
+			temphome.Write(t, profile.LayerPath(home, def.Name), tc.text)
+			layers, issues, err := profile.Stack(def, profile.Sources{Home: home})
+			if err != nil || len(issues) > 0 {
+				t.Fatalf("stack: %v %v", err, issues)
+			}
+			r := config.Check(layers, config.CheckOptions{Catalog: fx.cat, TreeChecks: []config.TreeCheck{agentpreset.CheckTree(fx.cat)}})
+			if tc.path == "" {
+				if err := r.Err(); err != nil {
+					t.Fatalf("refused: %v", err)
+				}
+				return
+			}
+			if len(r.Issues) != 1 || r.Issues[0].Path != tc.path || !strings.Contains(r.Issues[0].Message, tc.msg) {
+				t.Fatalf("issues = %v, want one at %s (%s)", r.Issues, tc.path, tc.msg)
+			}
+		})
+	}
+}

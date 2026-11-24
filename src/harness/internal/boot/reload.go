@@ -10,6 +10,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/agentpreset"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/config"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/profile"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
 )
 
 // startReload starts the validated reload of the layers (DH-D-BOOT-7) once the app
@@ -36,12 +37,10 @@ func (s *State) startReload(ctx context.Context) {
 		Read:      layerReader(s.Options.Request.ReadFile),
 		Baseline:  s.layerFiles,
 	}
-	presets := agentpreset.CheckTree(nil)
 	if s.catalog != nil {
 		opts.Catalog = s.catalog
-		presets = agentpreset.CheckTree(s.catalog)
 	}
-	opts.TreeChecks = []config.TreeCheck{presets}
+	opts.TreeChecks = s.treeChecks()
 	svc, err := config.NewService(opts)
 	if err != nil {
 		s.note("dsh: reload off: %v\n", err)
@@ -72,6 +71,35 @@ func (s *State) startReload(ctx context.Context) {
 			s.note("dsh: a reload still running at shutdown was left to finish\n")
 		}
 	}
+}
+
+// treeChecks are the whole-tree rules the start-up tree and every reload are
+// held to: the agent presets as one set (agentpreset.CheckTree).
+func (s *State) treeChecks() []config.TreeCheck {
+	if s.catalog == nil {
+		return []config.TreeCheck{agentpreset.CheckTree(nil)}
+	}
+	return []config.TreeCheck{agentpreset.CheckTree(s.catalog)}
+}
+
+// checkTree runs the whole-tree rules over the composed tree before the first
+// apply, so a start-up tree is held to the rule a reload is: an agent preset set
+// whose Default or Extends names no declaration, or whose inheritance closes a
+// cycle, stops the launch (config/rejected, status 78) with every issue placed.
+func (s *State) checkTree() error {
+	var issues []loader.Issue
+	for _, check := range s.treeChecks() {
+		issues = append(issues, check(s.Composed)...)
+	}
+	if len(issues) == 0 {
+		return nil
+	}
+	for _, issue := range issues {
+		if s.Ring != nil {
+			_, _ = fmt.Fprintf(s.Ring, "boot: tree issue: %s\n", issue.Error())
+		}
+	}
+	return herr.Wrap(config.ReasonRejected, &loader.ParseError{Issues: issues}, "start-up tree rejected")
 }
 
 // note prints a line to the diagnostic stream and the log ring.
