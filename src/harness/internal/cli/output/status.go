@@ -181,6 +181,7 @@ var codes = map[herr.Reason]int{
 	"workdir/invalid":            Invalid,
 	"workdir/notice-undelivered": Unavailable,
 	"workdir/unavailable":        Unavailable,
+	"workdir/undurable":          Unavailable,
 }
 
 // Status maps err to its exit status: nil is OK, a cancelled context Cancelled, an

@@ -575,3 +575,151 @@ func TestReattachReplacesTheSession(t *testing.T) {
 		t.Fatalf("Path after Detach: %v", err)
 	}
 }
+
+// flakyFlush is a session whose next fail flushes fail after the append.
+type flakyFlush struct {
+	session.Session
+	mu   sync.Mutex
+	fail int
+}
+
+var errDiskFull = errors.New("disk full")
+
+func (f *flakyFlush) Flush(ctx context.Context) (session.Offset, error) {
+	f.mu.Lock()
+	fail := f.fail > 0
+	if fail {
+		f.fail--
+	}
+	f.mu.Unlock()
+	if fail {
+		return 0, errDiskFull
+	}
+	return f.Session.Flush(ctx)
+}
+
+// A change appended but not flushed is in force and owed: Change returns the
+// record with workdir/undurable and no notice; the next check flushes it and
+// sends its moved notice once, and a retried Change finishes it instead of
+// logging it again.
+func TestUnflushedChangeIsFinishedNotRepeated(t *testing.T) {
+	proj := canon(t, t.TempDir())
+	sub := filepath.Join(proj, "sub")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r := newRig(t, memstore.New(), osSeam{}, time.Now)
+	h := r.create(t, proj)
+	s := &flakyFlush{Session: h}
+	must(r.wd.Attach(bg, s, nil))
+
+	s.fail = 1
+	wd, err := r.wd.Change(bg, h.ID(), sub)
+	if !herr.Has(err, workdir.CodeUndurable) || !errors.Is(err, errDiskFull) {
+		t.Fatalf("Change with a failing flush: %v", err)
+	}
+	if wd.Path != sub || wd.Revision != 1 {
+		t.Fatalf("Change returned %+v, want the appended move", wd)
+	}
+	if n := len(r.in.all()); n != 0 {
+		t.Fatalf("%d notices sent for a change not yet durable", n)
+	}
+	s.fail = 1
+	if _, err := r.wd.Ensure(bg, h.ID()); !herr.Has(err, workdir.CodeUndurable) {
+		t.Fatalf("Ensure while the flush still fails: %v", err)
+	}
+	if got := must(r.wd.Ensure(bg, h.ID())); got.Path != sub || got.Revision != 1 {
+		t.Fatalf("Ensure once the flush succeeds = %+v", got)
+	}
+	got := r.in.all()
+	if len(got) != 1 || got[0].Kind != workdir.NoticeMoved || got[0].Path != sub || got[0].Revision != 1 {
+		t.Fatalf("notices %+v, want the moved notice once", got)
+	}
+
+	s.fail = 1
+	if _, err := r.wd.Change(bg, h.ID(), proj); !herr.Has(err, workdir.CodeUndurable) {
+		t.Fatalf("second Change with a failing flush: %v", err)
+	}
+	if again := must(r.wd.Change(bg, h.ID(), proj)); again.Path != proj || again.Revision != 2 {
+		t.Fatalf("retried Change = %+v, want the first attempt finished at revision 2", again)
+	}
+	if cs, _ := changes(t, h); len(cs) != 2 || cs[1].Directory != proj {
+		t.Fatalf("log %+v, want the retry not appended again", cs)
+	}
+	if got := r.in.all(); len(got) != 2 || got[1].Revision != 2 {
+		t.Fatalf("notices %+v, want one moved notice per change", got)
+	}
+}
+
+// idWorkspaces names each root with a stable registry id, not a path.
+type idWorkspaces struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (w *idWorkspaces) WorkspaceOf(_ context.Context, _ session.ID, root string) (string, error) {
+	w.mu.Lock()
+	w.calls++
+	w.mu.Unlock()
+	return "ws_" + filepath.Base(root), nil
+}
+
+// A session created in a repository subdirectory has its project root and
+// workspace id from the first attach, recorded once in the log, so a resume in
+// a fresh process reads them without looking them up again; no notice is sent,
+// since the directory did not move (TC-01b).
+func TestAttachResolvesRootAndWorkspace(t *testing.T) {
+	repo := filepath.Join(canon(t, t.TempDir()), "repo")
+	sub := filepath.Join(repo, "pkg", "sub")
+	for _, d := range []string{sub, filepath.Join(repo, ".git")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st := memstore.New()
+	open := func(ws *idWorkspaces) (session.Service, *workdir.Service, *notices) {
+		root := cordis.New()
+		root.Loggers().ClearExporters()
+		root.Loggers().AddExporter(&cordis.MemoryExporter{})
+		t.Cleanup(root.Dispose)
+		reg := views.New()
+		in := &notices{}
+		wd := must(workdir.New(reg, osSeam{}, workdir.WithWorkspaces(ws), workdir.WithNotifier(in)))
+		return session.NewService(root, st, session.Config{Folder: reg}), wd, in
+	}
+
+	svc, wd, in := open(&idWorkspaces{})
+	h := must(svc.Create(bg, nil, session.CreateOptions{Header: session.Header{Cwd: sub}, Scope: scope.Key{}}))
+	got := must(wd.Attach(bg, h, nil))
+	want := workdir.WorkingDirectory{Path: sub, Workspace: "ws_repo", Root: repo, Revision: 1, State: workdir.Available}
+	if got != want {
+		t.Fatalf("Attach of a new session = %+v, want %+v", got, want)
+	}
+	if r := must(must(wd.Access(h.ID())).Root()); r != repo {
+		t.Fatalf("Root = %q, want the repository %q", r, repo)
+	}
+	cs, _ := changes(t, h)
+	if len(cs) != 1 || cs[0].Cause != workdir.CauseResolve || cs[0].Directory != sub {
+		t.Fatalf("log %+v, want one resolve change", cs)
+	}
+	if n := len(in.all()); n != 0 {
+		t.Fatalf("resolving queued %d notices", n)
+	}
+	if err := h.Close(bg); err != nil {
+		t.Fatal(err)
+	}
+
+	ws2 := &idWorkspaces{}
+	svc2, wd2, _ := open(ws2)
+	h2, _, err := svc2.Open(bg, nil, h.ID(), session.OpenOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = h2.Close(bg) })
+	if again := must(wd2.Attach(bg, h2, nil)); again != want {
+		t.Fatalf("Attach of the resumed session = %+v, want %+v", again, want)
+	}
+	if cs, _ := changes(t, h2); len(cs) != 1 || ws2.calls != 0 {
+		t.Fatalf("the resume resolved again: %d changes, %d lookups", len(cs), ws2.calls)
+	}
+}

@@ -20,11 +20,15 @@ const (
 	// CauseRecovery is the fall back to the original project after the
 	// directory vanished.
 	CauseRecovery Cause = "recovery"
+	// CauseResolve records, when a session is first attached, the project root
+	// and workspace id of the header's project, which the fold's Init cannot
+	// look up; the directory itself does not move.
+	CauseResolve Cause = "resolve"
 )
 
 // ChangePayload is workspace-root/change: the whole new value of the session's
 // working directory. It is the only event the fold consumes, and no tool can
-// append it: only Service.Change and recovery do.
+// append it: only Service.Change, recovery and the attach-time resolve do.
 type ChangePayload struct {
 	Directory string `json:"directory"`
 	Workspace string `json:"workspace"`
@@ -33,8 +37,8 @@ type ChangePayload struct {
 }
 
 func validChange(p ChangePayload) error {
-	if p.Cause != CauseMove && p.Cause != CauseRecovery {
-		return fmt.Errorf("workspace-root/change: cause %q is not move or recovery", p.Cause)
+	if p.Cause != CauseMove && p.Cause != CauseRecovery && p.Cause != CauseResolve {
+		return fmt.Errorf("workspace-root/change: cause %q is not move, recovery or resolve", p.Cause)
 	}
 	if p.Workspace == "" {
 		return errors.New("workspace-root/change: workspace is required")

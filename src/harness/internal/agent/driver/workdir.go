@@ -9,6 +9,7 @@ package driver
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/agent"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
@@ -73,15 +74,21 @@ func (f *factory) attachWorkdir(ctx context.Context, in *instance) error {
 }
 
 // withWorkdir adds the prompt context line to a, when the driver has the
-// component and the directory is available.
-func (d *Driver) withWorkdir(a prompt.Assembly) prompt.Assembly {
+// component. A directory that is unavailable (gone, or the session detached)
+// is expected: the line is omitted, its notice is in the inbox and the guard
+// refuses tool calls. Any other failure (a failed fold read) is returned, so
+// no request goes out without the context it requires.
+func (d *Driver) withWorkdir(a prompt.Assembly) (prompt.Assembly, error) {
 	if d.o.Workdir == nil {
-		return a
+		return a, nil
 	}
 	line, err := d.o.Workdir.ContextLine(d.o.Session.ID())
+	if herr.Kind(err) == workdir.CodeUnavailable {
+		return a, nil
+	}
 	if err != nil {
-		return a
+		return a, fmt.Errorf("driver: the working-directory context: %w", err)
 	}
 	a.Contexts = append(a.Contexts, prompt.Snapshot{Name: WorkdirContext, Owner: WorkdirGuard, Text: line})
-	return a
+	return a, nil
 }

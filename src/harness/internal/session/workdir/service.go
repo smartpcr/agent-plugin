@@ -27,6 +27,12 @@ const CodeUndelivered herr.Reason = "workdir/notice-undelivered"
 // ErrUndelivered matches a CodeUndelivered error with errors.Is.
 var ErrUndelivered = herr.New(CodeUndelivered, "")
 
+// CodeUndurable: a change was appended (the fold holds it, so it is in force)
+// but the session could not flush it. It stays pending: the next Change, Ensure
+// or Attach flushes it and only then sends its moved notice; it is never
+// appended again.
+const CodeUndurable herr.Reason = "workdir/undurable"
+
 // OnlyUndelivered reports that err is a notice delivery failure and nothing
 // else: the directory is available, and only a notice is still owed.
 func OnlyUndelivered(err error) bool {
@@ -132,6 +138,16 @@ type entry struct {
 	losses int
 	// owed is the notices not yet delivered, oldest first.
 	owed []Notice
+	// pending is a change appended to the session (so its fold already holds
+	// it) whose flush failed; it is finished, never appended again, by the
+	// next Change, Ensure or Attach.
+	pending *pendingChange
+}
+
+// pendingChange is an appended change still to be made durable and announced.
+type pendingChange struct {
+	dir    string
+	notice bool
 }
 
 // New registers the workingDirectory fold in reg and returns the service that
@@ -156,9 +172,13 @@ func (s *Service) Handle() views.Handle[WorkingDirectory] { return s.h }
 
 // Attach follows a created or resumed session: the fold is rebuilt from its log
 // and the directory is checked as Ensure does. n is where the session's notices
-// go (the agent's inbox); nil uses the service's WithNotifier. Attaching a
-// session again replaces its handle and notifier for every reader, keeping the
-// notices still owed. The record is returned with Ensure's error.
+// go (the agent's inbox); nil uses the service's WithNotifier. A session whose
+// log holds no change yet has the header's project resolved through the seam
+// and the workspaces: when its project root or workspace id differs from the
+// header's path, one resolve change records them (no notice: the directory did
+// not move), so a resume reads them from the log. Attaching a session again
+// replaces its handle and notifier for every reader, keeping the notices still
+// owed. The record is returned with Ensure's error.
 func (s *Service) Attach(ctx context.Context, sess session.Session, n Notifier) (WorkingDirectory, error) {
 	if sess == nil {
 		return WorkingDirectory{}, fmt.Errorf("workdir: Attach needs the session")
@@ -173,12 +193,57 @@ func (s *Service) Attach(ctx context.Context, sess session.Session, n Notifier) 
 		s.sessions[sess.ID()] = e
 	}
 	s.mu.Unlock()
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	if ok {
-		e.mu.Lock()
 		e.s, e.notify = sess, n
-		e.mu.Unlock()
 	}
-	return s.Ensure(ctx, sess.ID())
+	if err := s.resolveLocked(ctx, e); err != nil {
+		wd, _ := s.read(ctx, e)
+		return wd, err
+	}
+	return s.ensureLocked(ctx, e)
+}
+
+// resolveLocked records the root and workspace of the header's project when
+// the log has no change yet and they differ from the fold's Init; the caller
+// holds e.mu. A directory that is gone is left to the check.
+func (s *Service) resolveLocked(ctx context.Context, e *entry) error {
+	if err := s.finishLocked(ctx, e); err != nil {
+		return err
+	}
+	wd, err := s.read(ctx, e)
+	if err != nil {
+		return fmt.Errorf("workdir: read the fold: %w", err)
+	}
+	if wd.Revision != 0 || wd.Path == "" {
+		return nil
+	}
+	ok, err := s.exists(ctx, wd.Path)
+	if err != nil || !ok {
+		return err
+	}
+	root := s.rootOf(ctx, wd.Path)
+	ws, err := s.workspaceOf(ctx, e, root)
+	if err != nil {
+		return err
+	}
+	if root == wd.Root && ws == wd.Workspace {
+		return nil
+	}
+	_, err = s.recordLocked(ctx, e, ChangePayload{Directory: wd.Path, Workspace: ws, Root: root, Cause: CauseResolve}, false)
+	return err
+}
+
+func (s *Service) workspaceOf(ctx context.Context, e *entry, root string) (string, error) {
+	if s.ws == nil {
+		return root, nil
+	}
+	ws, err := s.ws.WorkspaceOf(ctx, e.s.ID(), root)
+	if err != nil {
+		return "", fmt.Errorf("workdir: workspace of %s: %w", root, err)
+	}
+	return ws, nil
 }
 
 // Detach stops following a session; its undelivered notices are dropped, and
@@ -214,7 +279,10 @@ func (s *Service) read(ctx context.Context, e *entry) (WorkingDirectory, error) 
 // moved notice is queued. Changes of one session are serialized. When only the
 // notice could not be queued, the committed record is returned with a
 // workdir/notice-undelivered error (OnlyUndelivered): the move stands and the
-// notice is sent again by the next check.
+// notice is sent again by the next check. When the change was appended but not
+// flushed, the record is returned with workdir/undurable: the change is in
+// force and pending, and a retry (or the next check) flushes it and sends its
+// notice without appending it again.
 func (s *Service) Change(ctx context.Context, id session.ID, path string) (WorkingDirectory, error) {
 	e, err := s.entry(id)
 	if err != nil {
@@ -225,44 +293,93 @@ func (s *Service) Change(ctx context.Context, id session.ID, path string) (Worki
 	if err := ctx.Err(); err != nil {
 		return WorkingDirectory{}, err
 	}
+	if p := e.pending; p != nil {
+		// A retry of a change whose flush failed finishes it, not a second one.
+		if err := s.finishLocked(ctx, e); err != nil {
+			wd, _ := s.read(ctx, e)
+			return wd, err
+		}
+		if dir, err := s.validate(ctx, path); err == nil && dir == p.dir {
+			wd, err := s.read(ctx, e)
+			if err != nil {
+				return WorkingDirectory{}, err
+			}
+			return wd, s.deliverLocked(ctx, e)
+		}
+	}
 	return s.moveLocked(ctx, e, path, CauseMove)
 }
 
-// moveLocked validates path and records the move; the caller holds e.mu. An
-// error but notice-undelivered means nothing was recorded.
+// moveLocked validates path and records the move; the caller holds e.mu. Any
+// error other than notice-undelivered or workdir/undurable means nothing was
+// recorded.
 func (s *Service) moveLocked(ctx context.Context, e *entry, path string, cause Cause) (WorkingDirectory, error) {
 	dir, err := s.validate(ctx, path)
 	if err != nil {
 		return WorkingDirectory{}, err
 	}
 	root := s.rootOf(ctx, dir)
-	ws := root
-	if s.ws != nil {
-		if ws, err = s.ws.WorkspaceOf(ctx, e.s.ID(), root); err != nil {
-			return WorkingDirectory{}, fmt.Errorf("workdir: workspace of %s: %w", root, err)
-		}
+	ws, err := s.workspaceOf(ctx, e, root)
+	if err != nil {
+		return WorkingDirectory{}, err
 	}
-	change, err := ChangeType.Draft(ChangePayload{Directory: dir, Workspace: ws, Root: root, Cause: cause})
+	return s.recordLocked(ctx, e, ChangePayload{Directory: dir, Workspace: ws, Root: root, Cause: cause}, true)
+}
+
+// recordLocked appends the change and its context line as one group, then
+// finishes it: flushed, and with notice a moved notice queued and sent. Once
+// the append succeeds the change is in force; a failed flush keeps it pending
+// (finishLocked) and returns the record with a workdir/undurable error. The
+// caller holds e.mu.
+func (s *Service) recordLocked(ctx context.Context, e *entry, p ChangePayload, notice bool) (WorkingDirectory, error) {
+	change, err := ChangeType.Draft(p)
 	if err != nil {
 		return WorkingDirectory{}, herr.Wrap(CodeInvalid, err, "workdir: record the change")
 	}
-	line, err := event.RequestContext.Draft(event.RequestContextPayload{Key: ContextKey, Value: ContextLine(dir)})
+	line, err := event.RequestContext.Draft(event.RequestContextPayload{Key: ContextKey, Value: ContextLine(p.Directory)})
 	if err != nil {
 		return WorkingDirectory{}, err
 	}
 	if _, err := e.s.AppendGroup(ctx, []event.Draft{change, line}); err != nil {
 		return WorkingDirectory{}, fmt.Errorf("workdir: append the change: %w", err)
 	}
-	if _, err := e.s.Flush(ctx); err != nil {
-		return WorkingDirectory{}, fmt.Errorf("workdir: flush the change: %w", err)
-	}
 	e.gone = false
+	e.pending = &pendingChange{dir: p.Directory, notice: notice}
+	if err := s.finishLocked(ctx, e); err != nil {
+		wd, rerr := s.read(ctx, e)
+		if rerr != nil {
+			return WorkingDirectory{}, errors.Join(err, rerr)
+		}
+		return wd, err
+	}
 	wd, err := s.read(ctx, e)
 	if err != nil {
 		return WorkingDirectory{}, err
 	}
-	s.queue(e, wd, NoticeMoved, fmt.Sprintf("workdir-%s-r%d-moved", e.s.ID(), wd.Revision), ContextLine(wd.Path))
 	return wd, s.deliverLocked(ctx, e)
+}
+
+// finishLocked makes e's pending change durable and queues its moved notice;
+// the caller holds e.mu. With nothing pending it does nothing. A failed flush
+// leaves it pending and is returned as workdir/undurable.
+func (s *Service) finishLocked(ctx context.Context, e *entry) error {
+	p := e.pending
+	if p == nil {
+		return nil
+	}
+	if _, err := e.s.Flush(ctx); err != nil {
+		return herr.Wrap(CodeUndurable, err, fmt.Sprintf("workdir: flush the change to %q", p.dir))
+	}
+	e.pending = nil
+	if !p.notice {
+		return nil
+	}
+	wd, err := s.read(ctx, e)
+	if err != nil {
+		return fmt.Errorf("workdir: read the fold: %w", err)
+	}
+	s.queue(e, wd, NoticeMoved, fmt.Sprintf("workdir-%s-r%d-moved", e.s.ID(), wd.Revision), ContextLine(wd.Path))
+	return nil
 }
 
 // validate is path's canonical form when it is an absolute, existing directory.
@@ -327,7 +444,8 @@ func (s *Service) exists(ctx context.Context, p string) (bool, error) {
 // fold read is returned as itself and changes nothing; a failed recovery is
 // returned inside the workdir/unavailable error. Notices still owed are sent
 // after the check, and a failure to send is joined to the result as
-// workdir/notice-undelivered.
+// workdir/notice-undelivered. A change whose flush failed is flushed first; while
+// it still cannot be, Ensure returns workdir/undurable.
 func (s *Service) Ensure(ctx context.Context, id session.ID) (WorkingDirectory, error) {
 	e, err := s.entry(id)
 	if err != nil {
@@ -335,6 +453,14 @@ func (s *Service) Ensure(ctx context.Context, id session.ID) (WorkingDirectory, 
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	return s.ensureLocked(ctx, e)
+}
+
+func (s *Service) ensureLocked(ctx context.Context, e *entry) (WorkingDirectory, error) {
+	if err := s.finishLocked(ctx, e); err != nil {
+		wd, _ := s.read(ctx, e)
+		return wd, err
+	}
 	wd, err := s.read(ctx, e)
 	if err != nil {
 		return WorkingDirectory{}, fmt.Errorf("workdir: read the fold: %w", err)
@@ -357,7 +483,7 @@ func (s *Service) Ensure(ctx context.Context, id session.ID) (WorkingDirectory, 
 		}
 		if ok {
 			rec, err := s.moveLocked(ctx, e, anchor.Path, CauseRecovery)
-			if err == nil || OnlyUndelivered(err) {
+			if err == nil || OnlyUndelivered(err) || herr.Has(err, CodeUndurable) {
 				return rec, err
 			}
 			if ctx.Err() != nil {
@@ -459,7 +585,8 @@ func (a *access) Current() (WorkingDirectory, error) {
 	defer e.mu.Unlock()
 	wd, err := a.s.read(context.Background(), e)
 	if err != nil {
-		return WorkingDirectory{}, herr.Wrap(CodeUnavailable, err, "working directory")
+		// A fold that cannot be read is that failure, not a missing directory.
+		return WorkingDirectory{}, fmt.Errorf("workdir: read the fold: %w", err)
 	}
 	if e.gone {
 		wd.State = Unavailable

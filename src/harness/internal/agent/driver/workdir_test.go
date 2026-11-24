@@ -174,6 +174,37 @@ func TestWorkdirReachesRequestsToolsAndInbox(t *testing.T) {
 	}
 }
 
+// brokenContext is the service whose prompt context line cannot be read: the
+// fold's storage fails.
+type brokenContext struct {
+	*workdir.Service
+	err error
+}
+
+func (b brokenContext) ContextLine(session.ID) (string, error) { return "", b.err }
+
+// A context line that cannot be read for any reason but an unavailable
+// directory fails the step with driver/prompt: no request goes to the model
+// without the working directory it requires.
+func TestWorkdirContextReadFailureIsNotSwallowed(t *testing.T) {
+	dir := tempDirs(t, "a")[0]
+	reg := views.New()
+	svc := must(workdir.New(reg, statSeam{}))
+	broken := errors.New("checkpoint store unreadable")
+	l := newLife(t, lifeOptions{folder: reg, workdir: brokenContext{Service: svc, err: broken}})
+	h := must(l.reg.Create(l.root, agent.CreateOptions{Session: "x", Model: agent.ModelSelection{Route: route}, Cwd: dir}))
+	must(agent.Send(bg, h.Agent(), agent.ListNextTurn, agent.InboxMessage{Source: agent.SourceUser, Text: "go"}))
+	waitIdle(t, h.Agent())
+	if n := len(l.sent.requests()); n != 0 {
+		t.Fatalf("%d requests went out without the working-directory context", n)
+	}
+	ends := turnEnds(t, must(h.Agent().Session().Read(bg, 0, 0)))
+	if len(ends) != 1 || ends[0].Kind != event.ReasonError || ends[0].By != "driver/prompt" || !strings.Contains(ends[0].Detail, broken.Error()) {
+		t.Fatalf("turn ends %+v, want one driver/prompt error naming the read failure", ends)
+	}
+	must(0, h.Dispose(bg))
+}
+
 // A resume is a check: the fold is rebuilt from the log, a directory gone
 // while the agent was down puts one notice in the resumed agent's inbox, and
 // the next turn's request carries it with the context line (TC-01b).

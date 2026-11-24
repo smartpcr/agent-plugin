@@ -301,7 +301,7 @@ A `Visibility` can only be made by three constructors: from an admitted peer's p
 | `session/title` | durable, log-only, whole value | title, source, `messageSeqs`, `pinned`, `requestSeq` | upstream event of the same name |
 | `session/title-request` | durable, log-only | provider id, route, system text, messages, output cap, effort, `messageSeqs`, purpose | `session/title-llm-request` |
 | `session/title-attempt` | durable, log-only | `requestSeq`, A01's `requestAsOf` and `requestDigest`, outcome (`accepted`, `rejected`, `failed`, `cancelled`, `superseded`, `interrupted`), finish, usage, duration, returned text, error class | new |
-| `workspace-root/change` | durable, log-only, whole value | directory, cause (`move`, `recovery`) | upstream event of the same name |
+| `workspace-root/change` | durable, log-only, whole value | directory, workspace, root, cause (`move`, `recovery`, `resolve`: the first attach records the header project's root and workspace id when they differ from the header path) | upstream event of the same name |
 | `session-upload/authorised`, `/delivered`, `/ended` | durable, log-only | through `seq`, consent event `seq`, destination, rule-set fingerprint; delivered through `seq`; reason | new; replace the in-memory cursor |
 
 **Config.** Each is a Go struct with defaults as a Go value ([SCHEMA-3](../libs/zod.md#dh-adr-schema-3)); unknown keys fail the load.
