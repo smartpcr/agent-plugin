@@ -1,0 +1,14 @@
+harness-gate entry: harness:DSH-M2: harness:DSH-M1 is not closed (M2-DEC-1); no run may start, 13 blockers:
+  - DH-S-1: docs/stories/harness-DSH-M1/evidence/DH-S-1.md reads "Closure status: open"; want closed
+  - DH-S-2: docs/stories/harness-DSH-M1/evidence/DH-S-2.md reads "Closure status: open"; want closed
+  - DH-S-3: docs/stories/harness-DSH-M1/evidence/DH-S-3.md reads "Closure status: open"; want closed
+  - DH-S-4: docs/stories/harness-DSH-M1/evidence/DH-S-4.md reads "Closure status: open"; want closed
+  - DH-S-5: docs/stories/harness-DSH-M1/evidence/DH-S-5.md reads "Closure status: open"; want closed
+  - DH-S-6: docs/stories/harness-DSH-M1/evidence/DH-S-6.md reads "Closure status: open"; want closed
+  - DH-S-7: docs/stories/harness-DSH-M1/evidence/DH-S-7.md reads "Closure status: open"; want closed
+  - DH-S-8: docs/stories/harness-DSH-M1/evidence/DH-S-8.md reads "Closure status: open"; want closed
+  - DH-S-9: docs/stories/harness-DSH-M1/evidence/DH-S-9.md reads "Closure status: open"; want closed
+  - DH-S-10: docs/stories/harness-DSH-M1/evidence/DH-S-10.md reads "Closure status: open"; want closed
+  - DH-S-11: docs/stories/harness-DSH-M1/evidence/DH-S-11.md reads "Closure status: open"; want closed
+  - no harness:DSH-M1 closure record docs/stories/harness-DSH-M1/evidence/closure.md: it must list every harness:DSH-M1 deliverable as done or built with a reason
+  - built-through in test/harness/acceptance-index.yaml reads DH-S-8; want DH-S-11 or later

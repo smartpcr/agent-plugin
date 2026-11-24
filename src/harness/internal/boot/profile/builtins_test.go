@@ -3,6 +3,8 @@ package profile
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
@@ -370,6 +372,81 @@ func TestProfileDefinitions(t *testing.T) {
 	if Definitions()[1].Required[0] != Spine[0] {
 		t.Error("Definitions shares its Required list")
 	}
+}
+
+// TC-08g, INV-10: the committed layers compose admin to its section of
+// composed.golden, and that tree mounts no carrier, agent, model adapter or plugin
+// process: what A24's offline commands run in acts on nothing.
+func TestAdminCompositionIsOffline(t *testing.T) {
+	var def Definition
+	for _, d := range Definitions() {
+		if d.Name == Admin {
+			def = d
+		}
+	}
+	layers, err := BundleLayers(def)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree, issues, err := Compose(def, layers)
+	if err != nil || len(issues) > 0 {
+		t.Fatalf("admin: %v %v", err, issues)
+	}
+	got, err := json.MarshalIndent(tree, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := goldenSection(t, Admin); string(got) != want {
+		t.Errorf("admin composes to\n%s\nwant its section of composed.golden\n%s", got, want)
+	}
+	carriers := map[string]bool{"wire.acp": true}
+	for _, set := range [][]string{webCarrier, headlessCarrier, sdkCarrier} {
+		for _, id := range set {
+			carriers[id] = true
+		}
+	}
+	acting := []string{"agent.", "llm.", "wire.", "cli.", "plugin.", "boot.plugins", "subagent."}
+	walkEntries(tree, nil, func(e loader.EntryOptions, _ []loader.EntryOptions) {
+		if carriers[e.Name] || carriers[e.ID] || slices.ContainsFunc(acting, func(p string) bool { return strings.HasPrefix(e.Name, p) }) {
+			t.Errorf("admin mounts %s (%s): no carrier, agent, model adapter or plugin process (INV-10)", e.ID, e.Name)
+		}
+	})
+	if len(tree) == 0 {
+		t.Error("admin composes to nothing: it holds logging and the sharing gate")
+	}
+}
+
+// goldenSection returns the composed tree of the profile name as composed.golden
+// holds it: the lines under "# <name>" up to the next profile's header, comments
+// dropped.
+func goldenSection(t *testing.T, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("testdata", "composed.golden"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	headers := map[string]bool{}
+	for _, d := range allDefinitions() {
+		headers["# "+d.Name] = true
+	}
+	var out []string
+	in := false
+	for _, line := range strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n") {
+		if headers[line] {
+			if in {
+				break
+			}
+			in = line == "# "+name
+			continue
+		}
+		if in && !strings.HasPrefix(line, "# ") {
+			out = append(out, line)
+		}
+	}
+	if !in {
+		t.Fatalf("composed.golden has no section %s", name)
+	}
+	return strings.TrimRight(strings.Join(out, "\n"), "\n")
 }
 
 // TC-08a: a headless bundle lacking one entry of the headless Required list fails
