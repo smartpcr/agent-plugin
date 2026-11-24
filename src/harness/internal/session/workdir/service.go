@@ -174,9 +174,9 @@ func (s *Service) Handle() views.Handle[WorkingDirectory] { return s.h }
 // and the directory is checked as Ensure does. n is where the session's notices
 // go (the agent's inbox); nil uses the service's WithNotifier. A session whose
 // log holds no change yet has the header's project resolved through the seam
-// and the workspaces: when its project root or workspace id differs from the
-// header's path, one resolve change records them (no notice: the directory did
-// not move), so a resume reads them from the log. Attaching a session again
+// and the workspaces: when its canonical directory, project root or workspace
+// id differs from the header's path, one resolve change records them (no
+// notice: the directory did not move), so a resume reads them from the log. Attaching a session again
 // replaces its handle and notifier for every reader, keeping the notices still
 // owed. The record is returned with Ensure's error.
 func (s *Service) Attach(ctx context.Context, sess session.Session, n Notifier) (WorkingDirectory, error) {
@@ -205,9 +205,10 @@ func (s *Service) Attach(ctx context.Context, sess session.Session, n Notifier) 
 	return s.ensureLocked(ctx, e)
 }
 
-// resolveLocked records the root and workspace of the header's project when
-// the log has no change yet and they differ from the fold's Init; the caller
-// holds e.mu. A directory that is gone is left to the check.
+// resolveLocked records the canonical directory, root and workspace of the
+// header's project when the log has no change yet and they differ from the
+// fold's Init; the caller holds e.mu. A directory that is gone is left to the
+// check.
 func (s *Service) resolveLocked(ctx context.Context, e *entry) error {
 	if err := s.finishLocked(ctx, e); err != nil {
 		return err
@@ -223,7 +224,13 @@ func (s *Service) resolveLocked(ctx context.Context, e *entry) error {
 	if err != nil || !ok {
 		return err
 	}
-	root, err := s.rootOf(ctx, wd.Path)
+	// The header's path is canonicalized as a Change would be, so the fence
+	// and the policy resolver compare canonical targets against a canonical root.
+	dir, err := s.validate(ctx, wd.Path)
+	if err != nil {
+		return err
+	}
+	root, err := s.rootOf(ctx, dir)
 	if err != nil {
 		return err
 	}
@@ -231,10 +238,10 @@ func (s *Service) resolveLocked(ctx context.Context, e *entry) error {
 	if err != nil {
 		return err
 	}
-	if root == wd.Root && ws == wd.Workspace {
+	if dir == wd.Path && root == wd.Root && ws == wd.Workspace {
 		return nil
 	}
-	_, err = s.recordLocked(ctx, e, ChangePayload{Directory: wd.Path, Workspace: ws, Root: root, Cause: CauseResolve}, false)
+	_, err = s.recordLocked(ctx, e, ChangePayload{Directory: dir, Workspace: ws, Root: root, Cause: CauseResolve}, false)
 	return err
 }
 
