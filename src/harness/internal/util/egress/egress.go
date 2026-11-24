@@ -15,7 +15,9 @@
 // no redirect unless its caller says so, and never reads the process environment:
 // Resolve reads the proxy names through the launch lookup boot gives it (the
 // trusted view, so a project file never supplies a proxy) and the extra
-// certificate authorities of Config.ExtraCACerts.
+// certificate authorities of Config.ExtraCACerts. ChildEnv hands the same proxy
+// names to a child process, by audience; Options.Guard (DenyPrivate) refuses
+// destination addresses before anything is dialled.
 //
 // A client belongs to its asker: it is registered until the asker releases it
 // (Service.Release), the asker's Options.Owner context ends (the fiber that asked
@@ -72,6 +74,8 @@ type Config struct {
 
 	// roots is the pool Resolve builds from ExtraCACerts; nil uses the system's.
 	roots *x509.CertPool
+	// child is the launch's proxy names as ChildEnv overlays them; Resolve reads it.
+	child childProxy
 }
 
 // Options configure one client.
@@ -85,6 +89,15 @@ type Options struct {
 	// Owner is the asker's lifetime (its fiber's Lifetime): when it ends the client
 	// is released. nil leaves the release to Service.Release or the permit.
 	Owner context.Context
+	// Guard refuses destination addresses (DenyPrivate is the usual one); nil
+	// allows every address. It is checked on a literal address in the URL of each
+	// request and redirect before anything is sent, and in the dialler's Control
+	// hook on every resolved address before it is connected to. A guarded client
+	// connects directly, never through the launch's proxy, so that the guard sees
+	// the final address; whether a guarded client may use a proxy at all is the
+	// owning tool's decision (docs/harness/libs/undici.md §7). A guarded client has
+	// a transport of its own.
+	Guard Guard
 }
 
 // ClientInfo is one live client as Handed lists it.
@@ -102,6 +115,11 @@ type Service struct {
 	mu         sync.Mutex
 	transports map[time.Duration]*http.Transport
 	handed     map[*permitted]*record
+	// users counts the live clients of each transport; when the last one is
+	// released the transport's idle connections are closed (DH-LIB-UNDICI-R12).
+	users map[*http.Transport]int
+	// omitted are the proxy names ChildEnv has reported omitting for ModelRun.
+	omitted map[string]bool
 }
 
 // record is one registered client: what Handed lists, and the callbacks on the
@@ -119,14 +137,16 @@ func New(c Config) *Service {
 	if c.DialTimeout <= 0 {
 		c.DialTimeout = 30 * time.Second
 	}
-	return &Service{cfg: c, transports: map[time.Duration]*http.Transport{}, handed: map[*permitted]*record{}}
+	return &Service{cfg: c, transports: map[time.Duration]*http.Transport{}, handed: map[*permitted]*record{},
+		users: map[*http.Transport]int{}, omitted: map[string]bool{}}
 }
 
 // Client returns a client for kind under p. Without a permit, with a permit for
 // another kind, or with one already withdrawn it fails with egress/not-permitted.
 // The client is listed by Handed until it is released: by Release, by the end of
 // o.Owner, or by the end of the permit's context. A released client refuses every
-// request with egress/not-permitted.
+// request with egress/not-permitted; releasing the last client of a transport
+// closes its idle connections, while a request already in flight completes.
 func (s *Service) Client(kind string, p Permit, o Options) (*http.Client, error) {
 	if err := usable(kind, p); err != nil {
 		return nil, err
@@ -134,7 +154,8 @@ func (s *Service) Client(kind string, p Permit, o Options) (*http.Client, error)
 	if o.Owner != nil && o.Owner.Err() != nil {
 		return nil, herr.Newf(ReasonNotPermitted, "the asker of a %s client has ended", kind)
 	}
-	rt := &permitted{kind: kind, permit: p, owner: o.Owner, next: s.transport(o.HeaderWait)}
+	tr := s.transport(o.HeaderWait, o.Guard)
+	rt := &permitted{kind: kind, permit: p, owner: o.Owner, guard: o.Guard, next: tr, tr: tr}
 	redirect := o.Redirect
 	if redirect == nil {
 		redirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
@@ -142,6 +163,7 @@ func (s *Service) Client(kind string, p Permit, o Options) (*http.Client, error)
 	rec := &record{info: ClientInfo{Kind: kind, Destination: p.Destination(), Label: o.Label}}
 	s.mu.Lock()
 	s.handed[rt] = rec
+	s.users[tr]++
 	s.mu.Unlock()
 	drop := func() { s.release(rt) }
 	stops := []func() bool{context.AfterFunc(p.Context(), drop)}
@@ -173,6 +195,8 @@ func Over(rt http.RoundTripper) *http.Client {
 
 // Release releases c: it is no longer listed, its callbacks on the permit and the
 // owner are stopped, and every later request fails with egress/not-permitted.
+// When c was the last live client of its transport, the transport's idle
+// connections are closed; a request already in flight completes.
 // Releasing a client twice, or one this service did not build, does nothing.
 func (s *Service) Release(c *http.Client) {
 	if c == nil {
@@ -188,12 +212,22 @@ func (s *Service) release(rt *permitted) {
 	s.mu.Lock()
 	rec, ok := s.handed[rt]
 	delete(s.handed, rt)
+	var idle *http.Transport
+	if ok {
+		if s.users[rt.tr]--; s.users[rt.tr] <= 0 {
+			delete(s.users, rt.tr)
+			idle = rt.tr
+		}
+	}
 	s.mu.Unlock()
 	if !ok {
 		return
 	}
 	for _, stop := range rec.stops {
 		stop()
+	}
+	if idle != nil {
+		idle.CloseIdleConnections()
 	}
 }
 
@@ -224,17 +258,34 @@ func (s *Service) CloseIdleConnections() {
 	for _, t := range s.transports {
 		t.CloseIdleConnections()
 	}
+	for t := range s.users {
+		t.CloseIdleConnections()
+	}
 }
 
-func (s *Service) transport(headerWait time.Duration) *http.Transport {
+// transport is the shared transport for headerWait, or, for a guarded client, a
+// transport of its own that dials through the guard and uses no proxy.
+func (s *Service) transport(headerWait time.Duration, guard Guard) *http.Transport {
+	if guard != nil {
+		return s.newTransport(headerWait, nil, guard)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if t, ok := s.transports[headerWait]; ok {
 		return t
 	}
+	t := s.newTransport(headerWait, s.cfg.Proxy, nil)
+	s.transports[headerWait] = t
+	return t
+}
+
+func (s *Service) newTransport(headerWait time.Duration, proxy func(*http.Request) (*url.URL, error), guard Guard) *http.Transport {
 	d := &net.Dialer{Timeout: s.cfg.DialTimeout, Resolver: s.cfg.Resolver}
+	if guard != nil {
+		d.Control = control(guard)
+	}
 	t := &http.Transport{
-		Proxy:                 s.cfg.Proxy,
+		Proxy:                 proxy,
 		DialContext:           d.DialContext,
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          100,
@@ -246,7 +297,6 @@ func (s *Service) transport(headerWait time.Duration) *http.Transport {
 	if s.cfg.roots != nil {
 		t.TLSClientConfig = &tls.Config{RootCAs: s.cfg.roots, MinVersion: tls.VersionTLS12}
 	}
-	s.transports[headerWait] = t
 	return t
 }
 
@@ -271,7 +321,9 @@ type permitted struct {
 	kind     string
 	permit   Permit
 	owner    context.Context
+	guard    Guard
 	next     http.RoundTripper
+	tr       *http.Transport
 	released atomic.Bool
 }
 
@@ -283,6 +335,12 @@ func (t *permitted) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, herr.Newf(ReasonNotPermitted, "the %s client was released", t.kind)
 	}
 	if err := usable(t.kind, t.permit); err != nil {
+		closeBody(req)
+		return nil, err
+	}
+	// A literal address is guarded before the permit's destination is compared, so
+	// a redirect to a refused address reads as the guard's refusal.
+	if err := guardLiteral(t.guard, req.URL); err != nil {
 		closeBody(req)
 		return nil, err
 	}

@@ -47,19 +47,21 @@ func (d Diagnostic) String() string { return fmt.Sprintf("%s: %s [%s]", d.Name, 
 // is a diagnostic and that scheme goes direct, never borrowing another scheme's
 // proxy. The certificate authorities are the system's plus c.ExtraCACerts; an
 // unreadable certificate file is an error. A nil lookup reads nothing. A Proxy
-// already set in c is kept.
+// already set in c is kept (and the proxy names are then not reported). The
+// service's ChildEnv overlays the names read through lookup.
 func Resolve(lookup Lookup, c Config) (*Service, []Diagnostic, error) {
 	roots, err := loadRoots(c.ExtraCACerts)
 	if err != nil {
 		return nil, nil, err
 	}
 	c.roots = roots
-	var diags []Diagnostic
+	p, diags := readProxy(lookup)
 	if c.Proxy == nil {
-		var p *proxyPolicy
-		p, diags = readProxy(lookup)
 		c.Proxy = p.proxy
+	} else {
+		diags = nil
 	}
+	c.child = readChild(lookup, p)
 	return New(c), diags, nil
 }
 
