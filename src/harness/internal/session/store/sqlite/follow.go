@@ -106,8 +106,10 @@ func (s *Store) Follow(ctx context.Context, id string, from store.Seq) (*Subscri
 			err = nil // closed by Close, not by the caller's context
 		}
 		sub.err = err
-		close(sub.events)
+		// done first: Err answers from done, and a caller that sees Events close
+		// must already get the reason (Err is why Events was closed).
 		close(sub.done)
+		close(sub.events)
 	}()
 	return sub, nil
 }

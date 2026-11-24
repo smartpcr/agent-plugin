@@ -36,7 +36,7 @@ func (f *files) write() *htools.Declaration {
 		Name: WriteName,
 		Description: "Create a file, or replace a file's whole content. Parent directories are created. " +
 			"Prefer edit or apply_patch to change part of an existing file.",
-		Run:     f.runWrite,
+		Run: f.runWrite,
 		// Mutating tools run alone: overlap keys are exact strings, so a key on
 		// the path would miss aliases (relative vs absolute, symlinks) and the
 		// directory reads of glob and grep that contain the file.
