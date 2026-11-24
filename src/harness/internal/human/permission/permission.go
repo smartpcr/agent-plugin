@@ -71,6 +71,26 @@ type Config struct {
 	DefaultPreset string   `json:"defaultPreset,omitempty"`
 }
 
+// UnmarshalJSON decodes a layer onto c with presets replacing c's table
+// whole: encoding/json would otherwise decode the layer's entries into the
+// shipped ones at the same index, so an entry that leaves out its mode,
+// approval or description would inherit the shipped entry's value rather than
+// be refused by Validate. A layer without presets keeps c's table.
+func (c *Config) UnmarshalJSON(b []byte) error {
+	type plain Config
+	aux := struct {
+		*plain
+		Presets *[]Preset `json:"presets"`
+	}{plain: (*plain)(c)}
+	if err := json.Unmarshal(b, &aux); err != nil {
+		return err
+	}
+	if aux.Presets != nil {
+		c.Presets = *aux.Presets
+	}
+	return nil
+}
+
 // DefaultConfig is the shipped table: read-only, workspace-write (the default)
 // and danger-full-access.
 func DefaultConfig() Config {
