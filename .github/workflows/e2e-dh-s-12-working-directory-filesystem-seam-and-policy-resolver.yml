@@ -1,0 +1,69 @@
+# Stage 2.3 E2E (fenced filesystem seam, TC-01b): fs/local passes the fstest
+# conformance suite, the fence holds through 1,000 swaps of R/sub for a link to
+# an outside directory, and a stale-version write is refused with the newer
+# bytes kept. service:filesystem is t.TempDir() on each lane; no DSN, no secrets.
+#
+# Strict lanes (DSH_E2E_FFS_STRICT=1): no subtest may skip on either lane. The
+# hosted Windows runner runs as an administrator and holds the symbolic-link
+# privilege, so the relative-link conformance subtest runs there too (a local
+# unprivileged Windows host can make only junctions, which cannot stand for a
+# relative link to a file).
+name: e2e-dh-s-12-working-directory-filesystem-seam-and-policy-resolver
+
+on:
+  pull_request:
+    paths:
+      - src/harness/internal/world/fs/**
+      - src/harness/internal/util/fsx/**
+      - src/harness/test/e2e/harness-DSH-M2/dh_s_12_working_directory_filesystem_seam_and_policy_resolver_fenced_filesystem_seam*
+      - .github/workflows/e2e-dh-s-12-working-directory-filesystem-seam-and-policy-resolver.yml
+  push:
+    branches: [main]
+    paths:
+      - src/harness/internal/world/fs/**
+      - src/harness/internal/util/fsx/**
+      - src/harness/test/e2e/harness-DSH-M2/dh_s_12_working_directory_filesystem_seam_and_policy_resolver_fenced_filesystem_seam*
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-dh-s-12-fenced-fs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: e2e (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      GOWORK: "off"
+      DSH_E2E_FFS_STRICT: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: src/harness/go.mod
+          cache-dependency-path: src/harness/go.sum
+      - name: Godog scenarios (strict, no skip)
+        run: |
+          set -o pipefail
+          mkdir -p artifacts/e2e
+          log=artifacts/e2e/fenced-fs-${{ runner.os }}.txt
+          go -C src/harness test -tags e2e -count=1 -v \
+            -run '^TestE2E_dh_s_12_working_directory_filesystem_seam_and_policy_resolver_fenced_filesystem_seam$' \
+            ./test/e2e/harness-DSH-M2/ 2>&1 | tee "$log"
+          if grep -q -- '--- SKIP' "$log"; then echo "a required subtest skipped"; exit 1; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-fenced-fs-${{ matrix.os }}
+          path: artifacts/e2e/
+          if-no-files-found: warn

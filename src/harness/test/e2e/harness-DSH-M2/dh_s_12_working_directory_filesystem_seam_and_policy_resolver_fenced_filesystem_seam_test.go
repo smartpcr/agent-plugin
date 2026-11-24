@@ -123,7 +123,7 @@ func (w *ffsWorld) whenRun(fn string) error {
 	w.runOK = ffsSuiteT.Run(ffsConformanceName, func(t *testing.T) {
 		fstest.Run(t, w.newSubject)
 	})
-	if runtime.GOOS == "windows" && os.Getenv(ffsLinuxLaneEnv) == "" {
+	if runtime.GOOS == "windows" && os.Getenv(ffsLinuxLaneEnv) == "" && !ffsStrict() {
 		w.linux = ffsRunLinuxLane()
 	}
 	return nil
@@ -133,8 +133,14 @@ const (
 	ffsConformanceName = "fstest-conformance-fs-local"
 	// ffsLinuxLaneEnv marks the Linux-lane child run, so it does not recurse.
 	ffsLinuxLaneEnv = "DSH_E2E_FFS_LINUX_LANE"
-	ffsEntrypoint   = "TestE2E_dh_s_12_working_directory_filesystem_seam_and_policy_resolver_fenced_filesystem_seam"
+	// ffsStrictEnv (set by the CI workflow of this stage, whose hosted Windows
+	// runner holds the symlink privilege) refuses every skip on every lane: no
+	// subtest may be proven on another lane in place of this one.
+	ffsStrictEnv  = "DSH_E2E_FFS_STRICT"
+	ffsEntrypoint = "TestE2E_dh_s_12_working_directory_filesystem_seam_and_policy_resolver_fenced_filesystem_seam"
 )
+
+func ffsStrict() bool { return os.Getenv(ffsStrictEnv) == "1" }
 
 // ffsLane is the outcome of the conformance suite run on the Linux lane from a
 // Windows host: the whole godog suite of this stage, run under WSL.
@@ -201,7 +207,7 @@ func (w *ffsWorld) thenEverySubtestPasses() error {
 		switch {
 		case s.failed:
 			bad = append(bad, s.name+" FAILED")
-		case s.skipped && s.linkUnsupported && runtime.GOOS == "windows":
+		case s.skipped && s.linkUnsupported && runtime.GOOS == "windows" && !ffsStrict():
 			needLinux = append(needLinux, ffsShort(s.name))
 		case s.skipped:
 			bad = append(bad, s.name+" SKIPPED")
@@ -212,7 +218,7 @@ func (w *ffsWorld) thenEverySubtestPasses() error {
 	if len(bad) > 0 || !w.runOK {
 		return fmt.Errorf("%s lane: conformance run ok=%v; %d of %d subtests not passing: %v", runtime.GOOS, w.runOK, len(bad), len(w.subtests), bad)
 	}
-	if runtime.GOOS != "windows" || os.Getenv(ffsLinuxLaneEnv) != "" {
+	if runtime.GOOS != "windows" || os.Getenv(ffsLinuxLaneEnv) != "" || ffsStrict() {
 		return nil
 	}
 
