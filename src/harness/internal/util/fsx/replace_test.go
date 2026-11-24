@@ -528,3 +528,69 @@ func slicesEqual(a, b []string) bool {
 	}
 	return true
 }
+
+// TestBeforePublishRefusalLeavesTheTargetUntouched: an error from
+// Options.BeforePublish, raised once the content is staged, publishes nothing
+// on every path (by name and rooted, replace and create) and removes the staged
+// file.
+func TestBeforePublishRefusalLeavesTheTargetUntouched(t *testing.T) {
+	stop := errors.New("stop before publication")
+	for _, tc := range []struct {
+		name    string
+		create  bool
+		publish func(dir, name string, opt Options) error
+	}{
+		{"replace", false, func(dir, name string, opt Options) error {
+			return Replace(filepath.Join(dir, name), Bytes([]byte("new")), opt)
+		}},
+		{"create", true, func(dir, name string, opt Options) error {
+			return CreateIfAbsent(filepath.Join(dir, name), Bytes([]byte("new")), opt)
+		}},
+		{"replace-in", false, func(dir, name string, opt Options) error {
+			return withRoot(dir, func(r *os.Root) error { return ReplaceIn(r, name, Bytes([]byte("new")), opt) })
+		}},
+		{"create-in", true, func(dir, name string, opt Options) error {
+			return withRoot(dir, func(r *os.Root) error { return CreateIfAbsentIn(r, name, Bytes([]byte("new")), opt) })
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			p := filepath.Join(dir, "f")
+			if !tc.create {
+				if err := os.WriteFile(p, []byte("old"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			called := false
+			opt := Options{Perm: 0o644, Durable: true, BeforePublish: func() error { called = true; return stop }}
+			if err := tc.publish(dir, "f", opt); !errors.Is(err, stop) {
+				t.Fatalf("publish: %v, want the BeforePublish error", err)
+			}
+			if !called {
+				t.Fatal("BeforePublish was not called")
+			}
+			b, err := os.ReadFile(p)
+			if tc.create && !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("the target was created: %q, %v", b, err)
+			}
+			if !tc.create && string(b) != "old" {
+				t.Fatalf("target holds %q, %v; want the old bytes", b, err)
+			}
+			es, _ := os.ReadDir(dir)
+			for _, e := range es {
+				if strings.HasPrefix(e.Name(), StagePrefix) {
+					t.Fatalf("staged file left behind: %s", e.Name())
+				}
+			}
+		})
+	}
+}
+
+func withRoot(dir string, f func(*os.Root) error) error {
+	r, err := os.OpenRoot(dir)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	return f(r)
+}

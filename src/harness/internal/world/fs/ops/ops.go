@@ -173,12 +173,15 @@ func (s *Service) ReadDir(ctx context.Context, c Call, r fs.Ref, limit int) ([]f
 	return s.provider.ReadDir(ctx, r, limit)
 }
 
-// Write replaces or creates r with data under the call's policy.
+// Write replaces or creates r with data under the call's policy. A write always
+// follows the final link, so the pre-fence and BeforeMutation see the file the
+// provider changes, never the link naming it.
 func (s *Service) Write(ctx context.Context, c Call, r fs.Ref, data []byte, g fs.Guard) (fs.WriteOutcome, error) {
 	r, err := s.ref(c, r)
 	if err != nil {
 		return fs.WriteOutcome{}, err
 	}
+	r.NoFollowFinal = false
 	p, err := s.policy(ctx, c)
 	if err != nil {
 		return fs.WriteOutcome{}, err

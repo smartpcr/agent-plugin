@@ -62,6 +62,9 @@ func publishIn(root *os.Root, name string, write func(io.Writer) error, opt Opti
 			return err
 		}
 	}
+	if err := beforePublish(opt); err != nil {
+		return err
+	}
 	if err := fault(stepPublish); err != nil {
 		return err
 	}

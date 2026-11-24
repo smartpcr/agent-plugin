@@ -299,9 +299,12 @@ var (
 // Write implements fs.FS: the final link is followed, the resolved path fenced,
 // and the content published by a durable replace inside the write root. The
 // guard is checked under the target's lock before staging and, for
-// ReplaceIfVersion, again after the content is staged, just before the rename;
-// the lock is held until the publication is done. A sync that fails after the
-// rename is reported in WriteOutcome.DurabilityUnknown, not as success.
+// ReplaceIfVersion, again after the content is staged and synced, just before
+// the rename; the lock is held until the publication is done. Cancellation or a
+// deadline is observed at that same last moment: nothing is published, the
+// staged file is removed, and the call fails fs/aborted or fs/timeout. A sync
+// that fails after the rename is reported in WriteOutcome.DurabilityUnknown, not
+// as success.
 func (l *FS) Write(ctx context.Context, r fs.Ref, data []byte, g fs.Guard, pol sandbox.Policy) (fs.WriteOutcome, error) {
 	if err := pol.Validate(); err != nil {
 		return fs.WriteOutcome{}, err
@@ -370,25 +373,30 @@ func (l *FS) writeAt(ctx context.Context, c *pinned, p string, data []byte, g fs
 			return fs.WriteOutcome{}, err
 		}
 	}
+	// The last check before the staged file takes the name: a cancelled call or
+	// a passed deadline publishes nothing (the staged file is removed), and a
+	// ReplaceIfVersion guard is checked again against what is there now.
+	opt := options()
+	opt.BeforePublish = func() error {
+		if err := ctxErr(ctx); err != nil {
+			return err
+		}
+		if _, ok := g.(fs.ReplaceIfVersion); !ok {
+			return nil
+		}
+		now, exists, err := currentIn(root, name, p)
+		if err != nil {
+			return err
+		}
+		return fs.CheckGuard(g, exists, now)
+	}
 	if g == fs.CreateIfAbsent {
-		err = createIn(root, name, fsx.Bytes(data), options())
+		err = createIn(root, name, fsx.Bytes(data), opt)
 		if errors.Is(err, iofs.ErrExist) {
 			return fs.WriteOutcome{}, herr.Wrap(fs.CodeAlreadyExists, err, "the file already exists")
 		}
 	} else {
-		err = replaceIn(root, name, func(w io.Writer) error {
-			if err := fsx.Bytes(data)(w); err != nil {
-				return err
-			}
-			if _, ok := g.(fs.ReplaceIfVersion); !ok {
-				return nil
-			}
-			now, exists, err := currentIn(root, name, p)
-			if err != nil {
-				return err
-			}
-			return fs.CheckGuard(g, exists, now)
-		}, options())
+		err = replaceIn(root, name, fsx.Bytes(data), opt)
 	}
 	var unknown error
 	if errors.Is(err, fsx.ErrDurabilityUnknown) {

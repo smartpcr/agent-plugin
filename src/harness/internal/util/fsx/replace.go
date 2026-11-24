@@ -29,6 +29,12 @@ type Options struct {
 	// or publishes with MOVEFILE_WRITE_THROUGH (Windows), so the result survives
 	// power loss once the call returns nil.
 	Durable bool
+	// BeforePublish, when set, runs after the content is staged (written, its
+	// mode set, synced and closed) and just before the staged file takes the
+	// target's name. An error stops the publication: the staged file is removed,
+	// the target is untouched, and the error is returned as is. Callers use it to
+	// observe cancellation, or re-check a precondition, at the last moment.
+	BeforePublish func() error
 }
 
 // Replace writes path through write so that any reader sees the complete old or the
@@ -102,6 +108,13 @@ func fault(step string) error {
 	return faultAt(step)
 }
 
+func beforePublish(opt Options) error {
+	if opt.BeforePublish == nil {
+		return nil
+	}
+	return opt.BeforePublish()
+}
+
 func publish(path string, write func(io.Writer) error, opt Options, exclusive bool) (err error) {
 	mode, keepACL, err := resultMode(os.Lstat, path, opt, exclusive)
 	if err != nil {
@@ -130,6 +143,9 @@ func publish(path string, write func(io.Writer) error, opt Options, exclusive bo
 		if err := copyACL(path, stage); err != nil {
 			return err
 		}
+	}
+	if err := beforePublish(opt); err != nil {
+		return err
 	}
 	if err := fault(stepPublish); err != nil {
 		return err

@@ -232,3 +232,49 @@ func TestCallWithoutSessionIsRefused(t *testing.T) {
 		t.Fatalf("write without a session: %v (code %q), want %q", err, herr.Kind(err), sandbox.CodeUnavailable)
 	}
 }
+
+// TestWriteThroughAFinalLinkFencesAndAnnouncesTheLinkedFile: a write asking not
+// to follow its final link still writes the file the link points at (the
+// provider always follows it), so the pre-fence and BeforeMutation name that
+// file; a link to a file outside the write roots is refused before any event.
+//
+//dsh:test DH-T-FS-11
+func TestWriteThroughAFinalLinkFencesAndAnnouncesTheLinkedFile(t *testing.T) {
+	ctx := context.Background()
+	t.Run("inside", func(t *testing.T) {
+		m := fstest.NewMemFS()
+		r := newRig(t, m, sandbox.WorkspaceWrite)
+		if err := m.Symlink(filepath.Join(r.root, "real.txt"), filepath.Join(r.root, "link.txt")); err != nil {
+			t.Fatal(err)
+		}
+		out, err := r.ops.Write(ctx, call, fs.Ref{Path: "link.txt", NoFollowFinal: true}, []byte("x"), fs.NoGuard)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := filepath.Base(out.Target.Display); got != "real.txt" {
+			t.Fatalf("wrote %s, want real.txt", got)
+		}
+		want := []string{"before write real.txt present=no", "observed write real.txt present"}
+		if got := r.rec.got(); !slices.Equal(got, want) {
+			t.Fatalf("events:\n got %q\nwant %q", got, want)
+		}
+	})
+	t.Run("outside", func(t *testing.T) {
+		m := fstest.NewMemFS()
+		r := newRig(t, m, sandbox.WorkspaceWrite)
+		outside := filepath.Join(filepath.Dir(r.root), "O", "f")
+		if err := m.Symlink(outside, filepath.Join(r.root, "link.txt")); err != nil {
+			t.Fatal(err)
+		}
+		_, err := r.ops.Write(ctx, call, fs.Ref{Path: "link.txt", NoFollowFinal: true}, []byte("x"), fs.NoGuard)
+		if got := herr.Kind(err); got != fs.CodeSandboxDenied {
+			t.Fatalf("write through a link out of the root: %v (code %q), want %q", err, got, fs.CodeSandboxDenied)
+		}
+		if got := r.rec.got(); len(got) != 0 {
+			t.Fatalf("events emitted for a refused write: %q", got)
+		}
+		if in, err := m.Stat(ctx, fs.Ref{Path: outside}); err != nil || in.Exists {
+			t.Fatalf("the outside file exists: %+v, %v", in, err)
+		}
+	})
+}

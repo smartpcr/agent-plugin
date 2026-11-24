@@ -8,8 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/fsx"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
@@ -234,4 +236,64 @@ func readVersion(t testing.TB, l fs.FS, f string) (fs.Version, []byte) {
 		t.Fatal(err)
 	}
 	return in.Version, b
+}
+
+// TestCancellationAfterStagingPublishesNothing cancels the call, or lets its
+// deadline pass, once the new bytes are in the staged file: the target keeps its
+// old bytes (or stays absent), no staged file is left, and the call fails
+// fs/aborted or fs/timeout (filesystem.md sec. 6.3).
+func TestCancellationAfterStagingPublishesNothing(t *testing.T) {
+	for _, end := range []struct {
+		name string
+		code herr.Reason
+		ctx  func() (context.Context, func(), func())
+	}{
+		{name: "cancelled", code: fs.CodeAborted, ctx: func() (context.Context, func(), func()) {
+			ctx, cancel := context.WithCancel(context.Background())
+			return ctx, cancel, cancel
+		}},
+		{name: "deadline", code: fs.CodeTimeout, ctx: func() (context.Context, func(), func()) {
+			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			return ctx, func() { <-ctx.Done() }, cancel
+		}},
+	} {
+		for _, g := range []fs.Guard{fs.NoGuard, fs.CreateIfAbsent, nil} {
+			name := end.name + "/" + guardName(g)
+			if g == nil {
+				name = end.name + "/replace-if-version"
+			}
+			t.Run(name, func(t *testing.T) {
+				dir := t.TempDir()
+				p := sandboxtest.Policy(sandbox.WorkspaceWrite, dir)
+				f := filepath.Join(dir, "f")
+				l := local.New()
+				guard := g
+				if g != fs.CreateIfAbsent {
+					writeFile(t, f, "old")
+					if g == nil {
+						v, _ := readVersion(t, l, f)
+						guard = fs.ReplaceIfVersion{Version: v}
+					}
+				}
+				ctx, stop, cancel := end.ctx()
+				defer cancel()
+				t.Cleanup(local.AfterStaging(stop))
+
+				_, err := l.Write(ctx, fs.Ref{Path: f}, []byte("new"), guard, p)
+				wantCode(t, "write ended after staging", err, end.code)
+				b, rerr := os.ReadFile(f)
+				switch {
+				case g == fs.CreateIfAbsent && !errors.Is(rerr, iofs.ErrNotExist):
+					t.Fatalf("the created file exists: %q, %v", b, rerr)
+				case g != fs.CreateIfAbsent && string(b) != "old":
+					t.Fatalf("file holds %q, %v; want the old bytes", b, rerr)
+				}
+				for _, e := range entries(t, dir) {
+					if strings.HasPrefix(filepath.Base(e), fsx.StagePrefix) {
+						t.Fatalf("staged file left behind: %s", e)
+					}
+				}
+			})
+		}
+	}
 }

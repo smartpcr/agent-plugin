@@ -199,7 +199,9 @@ type FS interface {
 	// ReadDir lists the directory r, sorted by name, at most limit entries
 	// (limit <= 0 means no limit); truncated reports whether entries were left out.
 	ReadDir(ctx context.Context, r Ref, limit int) (entries []DirEntry, truncated bool, err error)
-	// Write replaces (or creates, with missing parents) the file r with data.
+	// Write replaces (or creates, with missing parents) the file r with data. The
+	// final component is always followed (r.NoFollowFinal is ignored): the file
+	// changed, and fenced, is the one a final link points at.
 	Write(ctx context.Context, r Ref, data []byte, g Guard, p sandbox.Policy) (WriteOutcome, error)
 	// Delete removes the file r (never a directory); the final component is not
 	// followed.
