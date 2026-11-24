@@ -154,6 +154,32 @@ type ffsLane struct {
 	summary      string
 }
 
+const (
+	// ffsLaneMaxBudget caps the WSL child run (provisioning included).
+	ffsLaneMaxBudget = 10 * time.Minute
+	// ffsLaneReserve is kept back from the parent's -timeout deadline for the
+	// scenarios after the conformance run (the swap race) and for reporting,
+	// so the parent never panics before the Linux-lane diagnostics are logged.
+	ffsLaneReserve = 2 * time.Minute
+	// ffsLaneMinBudget: below this the lane is reported NOT RUN, not started.
+	ffsLaneMinBudget = time.Minute
+	// ffsLaneChildSlack: the child's -timeout fires this long before we kill it.
+	ffsLaneChildSlack = 15 * time.Second
+)
+
+// ffsLaneBudget derives the WSL child's budget from the parent's remaining
+// time (go test -timeout, default 10m), capped at ffsLaneMaxBudget. ok=false
+// when too little time is left to run the lane meaningfully.
+func ffsLaneBudget() (time.Duration, bool) {
+	budget := ffsLaneMaxBudget
+	if ffsSuiteT != nil {
+		if d, has := ffsSuiteT.Deadline(); has {
+			budget = min(budget, time.Until(d)-ffsLaneReserve)
+		}
+	}
+	return budget, budget >= ffsLaneMinBudget
+}
+
 var ffsSubtestLine = regexp.MustCompile(`--- (PASS|FAIL|SKIP): \S+/` + ffsConformanceName + `/(\S+)`)
 
 // ffsRunLinuxLane runs this suite under WSL (the Linux lane of a Windows host):
@@ -167,15 +193,30 @@ func ffsRunLinuxLane() ffsLane {
 	if err != nil {
 		return ffsLane{provisionErr: err}
 	}
-	pctx, pcancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	budget, ok := ffsLaneBudget()
+	if !ok {
+		return ffsLane{provisionErr: fmt.Errorf("only %v left before the parent go test deadline, less than the %v reserve plus %v minimum lane budget; rerun with a larger -timeout", budget, ffsLaneReserve, ffsLaneMinBudget)}
+	}
+	start := time.Now()
+	pctx, pcancel := context.WithTimeout(context.Background(), min(2*time.Minute, budget))
 	defer pcancel()
 	if out, err := exec.CommandContext(pctx, wsl, "--cd", dir, "--", "bash", "-lc", "go version").CombinedOutput(); err != nil {
 		return ffsLane{provisionErr: fmt.Errorf("no WSL distro with a go toolchain at %s: %v\n%s", dir, err, bytes.TrimSpace(out))}
 	}
-	script := fmt.Sprintf(`%s=1 go test -tags e2e -count=1 -v -run '^%s$' .`, ffsLinuxLaneEnv, ffsEntrypoint)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	budget -= time.Since(start)
+	if budget < ffsLaneMinBudget {
+		return ffsLane{provisionErr: fmt.Errorf("only %v left for the WSL run after provisioning, below the %v minimum; rerun with a larger -timeout", budget, ffsLaneMinBudget)}
+	}
+	// The child's own -timeout expires before our kill deadline, so a hung
+	// child panics with its goroutine dump, which reaches the tail below.
+	childTimeout := budget - ffsLaneChildSlack
+	script := fmt.Sprintf(`%s=1 go test -tags e2e -count=1 -v -timeout %s -run '^%s$' .`, ffsLinuxLaneEnv, childTimeout, ffsEntrypoint)
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
 	out, runErr := exec.CommandContext(ctx, wsl, "--cd", dir, "--", "bash", "-lc", script).CombinedOutput()
+	if ctx.Err() != nil {
+		runErr = fmt.Errorf("WSL run killed after its %v budget (child -timeout %v): %v", budget, childTimeout, runErr)
+	}
 	tail := string(out)
 	if len(tail) > 4000 {
 		tail = tail[len(tail)-4000:]
