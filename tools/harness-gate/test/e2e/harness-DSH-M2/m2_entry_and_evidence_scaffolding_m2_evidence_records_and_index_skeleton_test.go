@@ -377,6 +377,12 @@ func InitializeScenario_m2_entry_and_evidence_scaffolding_m2_evidence_records_an
 }
 
 func TestE2E_m2_entry_and_evidence_scaffolding_m2_evidence_records_and_index_skeleton(t *testing.T) {
+	// m2BuildGate builds into an os.MkdirTemp directory; remove it once the suite finishes.
+	t.Cleanup(func() {
+		if m2GateBin != "" {
+			_ = os.RemoveAll(filepath.Dir(m2GateBin))
+		}
+	})
 	suite := godog.TestSuite{
 		ScenarioInitializer: InitializeScenario_m2_entry_and_evidence_scaffolding_m2_evidence_records_and_index_skeleton,
 		Options: &godog.Options{
