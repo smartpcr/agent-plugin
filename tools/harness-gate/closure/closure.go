@@ -40,9 +40,11 @@ var (
 // of an index-listed ID whose venue is not guarded is a blocker, not skipped.
 //
 // Without built (an acceptance close) every row counts, the stage must have an index
-// entry and at least one row. With built (a build-stage close) only guarded rows
-// count, and in addition every step has a commit SHA, every manual check its seen,
-// operator, commit and label, and every owner default its confirmation (M2-C-4).
+// entry and at least one row that ran (out of scope rows alone do not count). With
+// built (a build-stage close) only guarded rows count, and in addition every step has a
+// commit SHA, every manual check its seen, operator, commit and label, and every owner
+// default its confirmation (M2-C-4). In both modes every index-listed scenario needs a
+// counted row that ran: passed, or a recorded leg that failed.
 func Ready(x *acceptance.Index, stage string, rec *Record, built bool) []string {
 	var blockers []string
 	add := func(format string, args ...any) { blockers = append(blockers, fmt.Sprintf(format, args...)) }
@@ -81,23 +83,34 @@ func scenarioBlockers(entry acceptance.Stage, rec *Record, built bool) []string 
 		listed[e.ID] = true
 	}
 	seen := map[string]bool{}
-	counted := 0
+	// ran marks a scenario with a counted row that ran and is not a blocker: passed, or a
+	// recorded leg that failed. An "out of scope (<decision>)" row is not a blocker, but
+	// it did not run, so it never covers a scenario or the table on its own.
+	ran := map[string]bool{}
+	// flagged marks a scenario with a row-level blocker; its coverage is already refused
+	// and is not reported twice.
+	flagged := map[string]bool{}
+	rowBlocked := false
+	flag := func(id string) { flagged[id] = true; rowBlocked = true }
 	for _, r := range t.Rows {
 		id := r.Get("scenario")
 		name := rowName(r)
 		if !scenarioPattern.MatchString(id) {
 			add("line %d: scenario %q is not a scenario ID (DH-E-<AREA>-<n>)", r.Line, id)
+			rowBlocked = true
 			continue
 		}
 		seen[id] = true
 		leg := strings.ToLower(r.Get("leg"))
 		if leg != "" && leg != "required" && leg != "recorded" {
 			add("%s: leg %q is neither required nor recorded", name, r.Get("leg"))
+			flag(id)
 			continue
 		}
 		venue := strings.ToLower(r.Get("venue"))
 		if t.Has("venue") && !slices.Contains(Venues, venue) {
 			add("%s: venue %q is not one of %s; its result cannot be counted", name, r.Get("venue"), strings.Join(Venues, ", "))
+			flag(id)
 			continue
 		}
 		if built && venue != "guarded" {
@@ -105,25 +118,36 @@ func scenarioBlockers(entry acceptance.Stage, rec *Record, built bool) []string 
 				// The index lists the stage's guarded scenarios; another venue would leave
 				// the row's result unjudged while it still covers the index entry.
 				add("%s: listed under %s in %s, which a build stage runs guarded, but its venue reads %q", name, entry.ID, acceptance.IndexPath, r.Get("venue"))
+				flag(id)
 			}
 			continue
 		}
-		counted++
 		result := r.Get("result")
-		if why, ok := judge(result, r, leg == "recorded"); !ok {
+		why, ok := judge(result, r, leg == "recorded")
+		if !ok {
 			add("%s: %s", name, why)
+			flag(id)
 		}
 		if executed(result) {
-			blockers = append(blockers, evidenceBlockers(name, r)...)
+			if ev := evidenceBlockers(name, r); len(ev) > 0 {
+				blockers = append(blockers, ev...)
+				flag(id)
+			}
+			if ok {
+				ran[id] = true
+			}
 		}
 	}
 	for _, e := range entry.Scenarios {
-		if !seen[e.ID] {
+		switch {
+		case !seen[e.ID]:
 			add("%s: listed under %s in %s but has no row in the record; a missing row counts as not run (M2-C-2)", e.ID, entry.ID, acceptance.IndexPath)
+		case !ran[e.ID] && !flagged[e.ID]:
+			add("%s: listed under %s in %s but no in-scope row ran; out of scope covers a variant, not the scenario (M2-C-2)", e.ID, entry.ID, acceptance.IndexPath)
 		}
 	}
-	if !built && t.Present && counted == 0 {
-		add("%s has no scenario row: an acceptance close needs at least one passed scenario", ScenariosHeading)
+	if !built && t.Present && len(ran) == 0 && !rowBlocked {
+		add("%s has no scenario row that ran: an acceptance close needs at least one passed scenario", ScenariosHeading)
 	}
 	return blockers
 }
