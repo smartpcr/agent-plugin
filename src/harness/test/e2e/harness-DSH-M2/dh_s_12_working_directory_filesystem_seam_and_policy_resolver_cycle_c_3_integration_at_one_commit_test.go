@@ -278,21 +278,26 @@ func (w *ci3World) resolvedRoots(ctx context.Context, mode string) ([]string, er
 }
 
 func (w *ci3World) thenPolicyIncludes(ctx context.Context, mode, in string) error {
+	_, err := w.policyIncludes(ctx, mode, in)
+	return err
+}
+
+func (w *ci3World) policyIncludes(ctx context.Context, mode, in string) ([]string, error) {
 	roots, err := w.resolvedRoots(ctx, mode)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if !slices.Contains(roots, w.canon[in]) {
-		return fmt.Errorf("write roots %q; want %s (%q)", roots, in, w.canon[in])
+		return nil, fmt.Errorf("write roots %q; want %s (%q)", roots, in, w.canon[in])
 	}
-	return nil
+	return roots, nil
 }
 
 func (w *ci3World) thenPolicyIncludesExcludes(ctx context.Context, mode, in, out string) error {
-	if err := w.thenPolicyIncludes(ctx, mode, in); err != nil {
+	roots, err := w.policyIncludes(ctx, mode, in)
+	if err != nil {
 		return err
 	}
-	roots, _ := w.resolvedRoots(ctx, mode)
 	if slices.Contains(roots, w.canon[out]) {
 		return fmt.Errorf("write roots %q still contain %s (%q)", roots, out, w.canon[out])
 	}
