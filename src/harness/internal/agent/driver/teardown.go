@@ -70,7 +70,11 @@ func (in *instance) teardown(ctx context.Context, h agent.TeardownHooks) error {
 	point("T4")
 
 	// T5: close the scope, before the flush, so what its cleanups write is
-	// flushed too.
+	// flushed too. The working directory stops following the session first;
+	// the scope's close removes its guard.
+	if in.wd != nil {
+		in.wd.Detach(in.ref.Session)
+	}
 	if in.sc != nil {
 		if err := in.sc.Close(); err != nil {
 			errs = append(errs, err)

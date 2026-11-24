@@ -19,7 +19,7 @@ import (
 //
 //	harness-gate evidence record
 //	commit: <git rev-parse HEAD>
-//	tree: clean
+//	tree: clean (git status --porcelain --untracked-files=all is empty)
 //	... the system, toolchain and compiler (evidenceHeader) ...
 //	started: <UTC>
 //	--- output ---
@@ -83,7 +83,7 @@ func (c *Config) evidenceHeader(ctx context.Context, commit string, start time.T
 	}
 	b.WriteString("harness-gate evidence record\n")
 	line("commit", commit)
-	line("tree", "clean (git status --porcelain --untracked-files=all is empty)")
+	line("tree", CleanTreeField)
 	line("command", "harness-gate "+strings.Join(args, " "))
 	line("goos/goarch", read(c.Go, "env", "GOOS")+"/"+read(c.Go, "env", "GOARCH"))
 	line("go version", c.Toolchain.Line)

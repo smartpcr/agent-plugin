@@ -96,6 +96,8 @@ type ServiceOptions struct {
 	// Required are the profile's required entry ids (profile.Definition.Required):
 	// a candidate that removes or disables one is rejected (CheckOptions.Required).
 	Required []string
+	// TreeChecks are the static check's whole-tree rules (CheckOptions.TreeChecks).
+	TreeChecks []TreeCheck
 	// Guard serialises writes to a layer file across processes; nil takes the
 	// operating-system lock <layer>.lock for at most LockTimeout (DH-D-LOADER-13).
 	Guard loader.WriteGuard
@@ -939,7 +941,7 @@ func (s *Service) readWith(readFile ReadFile) (*Snapshot, error) {
 // config changes, that fiber's own candidate config with the running tree's hooks
 // (DH-D-CORDIS-5). Without a catalogue the loader's own name check stands in.
 func (s *Service) check(layers []loader.Layer, docs map[string]*loader.LayerDocument) *Report {
-	r := Check(layers, CheckOptions{Catalog: s.opts.Catalog, Evaluator: s.opts.Evaluator, Docs: docs, Required: s.opts.Required})
+	r := Check(layers, CheckOptions{Catalog: s.opts.Catalog, Evaluator: s.opts.Evaluator, Docs: docs, Required: s.opts.Required, TreeChecks: s.opts.TreeChecks})
 	svc := s.opts.Loader
 	if svc == nil {
 		return r

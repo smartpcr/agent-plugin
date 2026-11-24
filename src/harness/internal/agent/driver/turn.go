@@ -22,6 +22,13 @@ func (d *Driver) turn() (ran, aborted bool, err error) {
 	if len(d.o.Inbox.Pending(agent.ListNextTurn)) == 0 {
 		return false, false, nil
 	}
+	// A maintenance task in progress (Maintain) holds the turn back.
+	select {
+	case d.maint <- struct{}{}:
+	case <-d.life.Done():
+		return false, false, nil
+	}
+	defer func() { <-d.maint }()
 	d.setStatus(agent.StatusRunning, false)
 	s := d.o.Session
 	// Point 2: a turn a failed close left open is closed first.

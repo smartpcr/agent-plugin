@@ -196,6 +196,13 @@ func Run(ctx context.Context, o Options) (status int) {
 		s.fatal("boot", herr.Wrap(ReasonHost, err, "host preparation failed"))
 		return s.shutdown(output.Fatal, s.limits().FatalReleaseTimeout)
 	}
+	// The composed tree's whole-tree rules (the agent presets as one set), before
+	// anything is applied, whether or not the profile reloads.
+	if err := s.checkTree(); err != nil {
+		forced := s.shutdown(output.Status(err), s.limits().ShutdownTimeout)
+		s.fatal("boot", err)
+		return forced
+	}
 	// Steps 6 and 7: apply, settle and audit.
 	if err := steps.Settle(ctx, s); err != nil {
 		s.fatal("boot", herr.Wrap(ReasonHost, err, "host preparation failed"))
