@@ -949,11 +949,14 @@ the whole phase. The lead's settlements are sec. 8 of
   publish half is DH-D-TOOLCHAIN-6 at DH-S-46, `phase-19-partial-test-ids`);
   untagged `TestVerifySnapshotNamesEachBadArchive`, `TestReadChecksumsRejectsMalformedLines`,
   `TestRehearseRefusesConfigWithDist`, `TestRehearseReplaySeam`, `TestGoReleaserDshConfig`.
-- The WSL lane's rehearsal at `f7d1618` (`wsl-f7d1618-20261124T0639Z-rehearse.txt`):
-  `6 archives and checksums.txt …; every archive verified against checksums.txt`, six
-  binaries each `vcs.modified=false`, `6 binaries, nothing published`. No tag or release
-  was created: `git for-each-ref refs/tags` was unchanged across the agent's runs, and
-  `gh release list` still shows only v0.1.4 and v0.1.3.
+- The WSL lane's rehearsal at the phase commit `ab8065b`
+  ([runs/wsl-ab8065b-20261124T0708Z-rehearse.txt](runs/wsl-ab8065b-20261124T0708Z-rehearse.txt),
+  `2f12d775af7ed8eabbe6b07d156f7bdb0eb2e5441e319342a1024c70644747e9`): `6 archives and
+  checksums.txt …; every archive verified against checksums.txt`, six binaries,
+  `6 binaries, nothing published`; the same at `f7d1618`. No tag or release was created:
+  `git for-each-ref refs/tags` was unchanged across the agent's runs, and `gh release list`
+  still shows only v0.1.4 and v0.1.3. The gate runs of the phase are in
+  [DH-S-6.md "Gap closure, Phase 19"](DH-S-6.md#gap-closure-phase-19).
 - **Open: 19.1.2** (the `replay` gate and the `harness-replay` lane, `DH-T-TOOLCHAIN-5`)
   and the scenario clause "the host-matching binary passes one keyless replay" wait for
   impl.md step 16.11 on the replay runner of step 16.7 (DH-S-16, not built). The

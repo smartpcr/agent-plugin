@@ -675,7 +675,7 @@ M1 closes with these open. None is counted done; each closes at the step named.
 - **macOS**: out of this story (`macos-return-stage`); never counted as covered.
 - **Production composition** of the prompt component and the context pipeline, at DH-S-16.
 - **Carried over:** errdiscard (plan 13.5.3, M1-D-TOOL-1c) and the control-group re-record of 14.6.12.
-- **Intermittent test** `TestEditDuringStuckApplicationWaitsForItToSettle` (`boot/config`). It failed once, on the first Windows run at `2cface9`: a 10 s wall-clock wait under load. It did not reproduce in 70 runs, and the re-run passed. Its wait never reads the edit's own result, so a failed edit shows up only as a timeout. The fix, after M1, is to report the edit's error and drop the wall-clock deadline.
+- **Intermittent test** `TestEditDuringStuckApplicationWaitsForItToSettle` (`boot/config`). It failed once, on the first Windows run at `2cface9`: a 10 s wall-clock wait under load. It did not reproduce in 70 runs, and the re-run passed. Its wait never reads the edit's own result, so a failed edit shows up only as a timeout. The fix, after M1, is to report the edit's error and drop the wall-clock deadline. _Fixed after M1, in plan Phase 19 (`ab8065b`):_ the cause was the test's own 5 ms reads of `layer.yml`, which made the edit's rename fail on Windows with `fsx: file in use`; the test now waits on the accepted revision ([DH-S-6.md "Gap closure, Phase 19"](DH-S-6.md#gap-closure-phase-19)).
 
 ### Closure (Phase 17 record, kept as history)
 

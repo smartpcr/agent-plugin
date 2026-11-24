@@ -586,8 +586,51 @@ H-21 stays open.
 
 Status: **built, not done.** The plan's Phase 19 is P1 and not part of M1 closure
 (gap-closure plan "Phase 19: Before M2 Consumers"). Stages 19.3, 19.4 and 19.5 are built
-on branch `m1-phase-19`, and the gate passes on both lanes at `f7d1618`:
-WSL [`wsl-f7d1618-20261124T0639Z`](runs/wsl-f7d1618-20261124T0639Z.txt) (file `c851c5c0…`, output `e95310…`, `PASSED all 12 gates`; `trace-tests: DH-S-1..DH-S-11: required 310, tagged 301, deferred 9, missing 0`) and Windows @WIN@. The runs that failed on the way are kept under `runs/` as history: WSL `wsl-61c623f-20261124T0557Z` (staticcheck U1000 in three test helpers), `wsl-c757c9b-20261124T0615Z` (test: 13 new reasons without an exit status; the Linux starter goroutine left in a compose bubble), `wsl-88b4875-20261124T0625Z` (coverage: `human/secret/file` 83.4%, `testkit/compose` 83.3%, `subprocesstest` 80.2%); Windows `win-c757c9b-20261124T0613Z` (test: the exit statuses) and `win-88b4875-20261124T0627Z` (stopped by the lead during `coverage`, superseded by the fixes).
+on branch `m1-phase-19`, and the gate passes on both lanes at **`ab8065b`**:
+
+| Field | WSL lane | Windows lane |
+| --- | --- | --- |
+| Run-record id | `wsl-ab8065b-20261124T0708Z` | `win-ab8065b-20261124T0708Z` |
+| Record file and SHA-256 | [runs/wsl-ab8065b-20261124T0708Z.txt](runs/wsl-ab8065b-20261124T0708Z.txt), `2fe08df79c7dc523ac28670fbc4cb8f5ba5bc3b1e49179f6e7bc36bb053ada20` | [runs/win-ab8065b-20261124T0708Z.txt](runs/win-ab8065b-20261124T0708Z.txt), `4ffccd735adc1b54d0a14c872a962accdc56daee4530110ca191683cfa95c5ac` |
+| Output SHA-256 (`sha256:` line) | `f5b8043a4db7c0688fc644bd2501d7a3465a62ebeea8a31e93378065c15de31a` | `2b0a420f08d7ee81222a6810a478430baa928afe5e223472856b0f3b33ae4d41` |
+| Rehearsal | [runs/wsl-ab8065b-20261124T0708Z-rehearse.txt](runs/wsl-ab8065b-20261124T0708Z-rehearse.txt), `2f12d775…`: the goreleaser snapshot (19.1.1), six archives verified against `checksums.txt`, nothing published, the replay `OPEN` | -- (WSL lane only) |
+| Operator | the lead (lane script) | the lead (lane script) |
+| git status --porcelain | empty (`tree: clean`) | empty (`tree: clean`) |
+| System | Ubuntu 24.04.5 LTS (`Ubuntu-24.04`), kernel `6.18.58.1-microsoft-standard-WSL2`, `systemd=true` | Microsoft Windows [Version 10.0.28000.3501] |
+| Go, CC | go1.27.4 linux/amd64, gcc 13.3.0 | go1.27.4 windows/amd64, gcc (Rev5, Built by MSYS2 project) 16.1.0 |
+| Started, ended (UTC) | 2026-11-24T07:08:40Z, 07:16:51Z | 2026-11-24T07:08:35Z, 07:32:42Z |
+| Result | `harness-gate: PASSED all 12 gates` | `harness-gate: PASSED all 12 gates` |
+| `trace` | `trace-tests: DH-S-1..DH-S-11: required 310, tagged 301, deferred 9, missing 0` | the same |
+
+The runs that failed on the way are kept under `runs/` as history, each with its cause:
+- WSL `wsl-61c623f-20261124T0557Z`: `staticcheck` U1000 in three test helpers (`7b5e4fd`).
+- WSL `wsl-c757c9b-20261124T0615Z`: `test`, 13 new reasons without an exit status, and the
+  Linux Pdeathsig starter goroutine started lazily inside a compose bubble (`88b4875`).
+  Windows `win-c757c9b-20261124T0613Z`: `test`, the exit statuses.
+- WSL `wsl-88b4875-20261124T0625Z`: `coverage`, `human/secret/file` 83.4%, `testkit/compose`
+  83.3%, `subprocesstest` 80.2% (`b29fb47`, `14a3be2`, `f7d1618`). Windows
+  `win-88b4875-20261124T0627Z`: stopped by the lead during `coverage`, superseded.
+- WSL `wsl-f7d1618-20261124T0639Z` passed all 12 gates; Windows `win-f7d1618-20261124T0648Z`
+  failed `test` on the intermittent `boot/config` test (below), so `f7d1618` is not the
+  phase commit.
+- `a6b7f65` (the diagnostic for that test): Windows `win-a6b7f65-20261124T0656Z` named the
+  cause (`fsx: file in use`); WSL `wsl-a6b7f65-20261124T0656Z` failed `coverage` on
+  `TestAnEffectLeftAfterUnloadFailsTheTest` (`ab8065b`).
+
+**Two intermittent tests fixed (`ab8065b`).**
+- `TestEditDuringStuckApplicationWaitsForItToSettle` (`boot/config`, M1, listed open in
+  [DH-S-11 "Open items at M1"](DH-S-11.md#open-items-at-m1-plan-18111)): the test read
+  `layer.yml` every 5 ms while the edit renamed its staged copy over it, which Windows
+  refuses for an open file, so `fsx.Replace` correctly returned `fsx: file in use` and the
+  test waited out its 10 s. The test now waits on the accepted revision and reads the file
+  once after; 0 of 180 under 12 parallel `-race` copies. The product behaviour is as
+  designed (a reader holding the layer open makes an edit fail with "file in use").
+- `TestAnEffectLeftAfterUnloadFailsTheTest` (`testkit/compose`, new): boot's Ready could come
+  before the tree's status notifications were delivered, so a tree stopped at once lost
+  its entries' effect labels in the stuck report (170 of 300 cover runs on WSL). `compose.Start`
+  now waits for its bubble to settle (`synctest.Wait`) before it returns; 0 of 300 after.
+  The same race can drop an effect's label from a real stuck report made right after
+  ready; that is listed open below.
 Each held-open entry below stays `open` until the stage that first consumes it
 (DH-S-12, -13, -15, -16, -31) closes; a built part is enabled only there. The lead's
 settlements for this phase are sec. 8 of [decisions.md](../decisions.md#8-phase-19-settlements-2026-11-23).
@@ -609,6 +652,9 @@ settlements for this phase are sec. 8 of [decisions.md](../decisions.md#8-phase-
 | `9fc10b9` | rehearse help and README, the scenarios workflow comment |
 | `88b4875` | exit statuses for the 13 new reasons; the Linux starter goroutine starts at init; compose asks no user manager for a scope |
 | `b29fb47`, `14a3be2`, `f7d1618` | coverage: `human/secret/file` 92%, `testkit/compose` 98%, `subprocesstest` 87% |
+| `a15d938` | these records (docs only) |
+| `a6b7f65` | the `boot/config` test reports the edit's own error |
+| `ab8065b` | `compose.Start` returns a settled tree; the `boot/config` test watches the revision, not the file |
 
 <a id="gap-closure-193"></a>
 ### 19.3 Spawn package and egress for children (closes the built part of H-24 and H-30)
@@ -660,7 +706,22 @@ Deferrals removed: `DH-T-EXEC-6`, `DH-T-EXEC-17` (`world/subprocess/doc.go` now 
   (memory.max=268435456, pids.max=4096)`; on the process-group rung `limits unavailable`.
 - PeerTree: `{Trust:untrusted Exact:true Owner:control-group}` over Unix and TCP in the
   scope; `Exact:false Owner:process-group` from a login shell; Windows `{untrusted Exact:true job-object}`.
-- `systemd=false`: @SYSTEMD_FALSE@
+- `systemd=false` (the owner's choice "real toggle, at the end": `/etc/wsl.conf`
+  `[boot] systemd=false`, `wsl --terminate Ubuntu-24.04`, run, then the file restored and
+  the distro restarted with `systemd` as PID 1 again; lead session, `manual`, at `ab8065b`
+  in the lane clone, tree clean;
+  [runs/manual-ab8065b-systemd-false.txt](runs/manual-ab8065b-systemd-false.txt),
+  `69fe56f20650dc81019a6996172bb80b053e9edcd5ccdfbf64c4af746286ccfc`): PID 1 `init`,
+  cgroup `0::/non-systemd`, `systemctl --user` `offline`.
+  `TestProviderStartOwnsTreesInsideADelegatedScope` shows the one scope request refused and
+  the fallback announced once: `owner: process-group; scope unit: -; … host stderr:
+  "announce: owner process-group (fallback: own control group not writable; the user
+  service manager refused a delegated scope (U-K1-1): systemd-run exited with 1: Failed to
+  connect to bus: No such file or directory)\nlimits: unavailable (the process-group rung
+  applies no limits)"`. `TestLimitsAreAppliedByTheOwnerOrReportedUnavailable` reports
+  `limits unavailable`, `TestPeerTreeOfADialingTree` `{Trust:untrusted Exact:false …
+  Owner:process-group}` over Unix and TCP, and `TestStopTreeStopsAndAwaitsTheTree` stopped
+  the tree in 2.01 s. All five pass.
 
 **Fixed while building (c757c9b).** On Windows, `jobOwner.active()` and `newOwner` called
 `QueryInformationJobObject` and `SetInformationJobObject` through x/sys wrappers that
@@ -695,14 +756,17 @@ Deferrals removed: `DH-T-UTIL-12`, `-13`, `-15` (`testkit/doc.go`, which now lis
 no reset for a lost store key, no keychain backend (DH-D-HUMAN-8); nothing in the product
 composes `file.New` or `DotEnvSource` yet; `dsh profile reset`, the launchers' `--safe`
 flag and the plugin-list labels wait for DH-S-16's admin tree (H-28); compose has no
-`testkit` catalogue family and no fake answerer.
+`testkit` catalogue family and no fake answerer; boot's stuck report records an entry's
+effect labels when its "active" notification is delivered, which can come after the
+unload began, so a host stopped right after ready may name a stuck entry without its
+effect (`boot/shutdown.go` `newTree`; the kit settles first, the product does not).
 
 ### Held-open entries after Phase 19
 
 | ID | Built in Phase 19 | Still waits | Status |
 | --- | --- | --- | --- |
 | H-24 | 19.3.1 to 19.3.6 | `DH-T-NODEPROC-9` R6, R13 (DH-D-EXEC-3) | open: built, enabled at DH-S-13 |
-| H-25 | 19.4.1 to 19.4.3 | `DH-T-EXEC-5`'s fiber-unload row (cordis provider, DH-S-13); the real `systemd=false` record | open: built, enabled at DH-S-13 |
+| H-25 | 19.4.1 to 19.4.3 | `DH-T-EXEC-5`'s fiber-unload row (cordis provider, DH-S-13) | open: built, enabled at DH-S-13 |
 | H-26 | 19.4.4, 19.4.5 | `ControlSocket` set by the listener (DH-S-15); `Limits` used at DH-S-31 | open: built, enabled at DH-S-15 and DH-S-31 |
 | H-27 | 19.5.4 | the store watch, the product composition, the keychain backend | open: built, enabled at DH-S-16 |
 | H-28 | 19.5.5 | `dsh profile reset`, `--safe`, the labels (DH-S-16 admin tree) | open: built, enabled at DH-S-16 |
