@@ -337,8 +337,12 @@ func parse(block string) (goroutine, bool) {
 	return g, true
 }
 
-func dump(all bool) string {
-	buf := make([]byte, 64<<10)
+func dump(all bool) string { return dumpFrom(all, 64<<10) }
+
+// dumpFrom is runtime.Stack into a buffer of size bytes, doubled until the dump
+// fits.
+func dumpFrom(all bool, size int) string {
+	buf := make([]byte, size)
 	for {
 		n := runtime.Stack(buf, all)
 		if n < len(buf) {
