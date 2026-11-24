@@ -81,8 +81,8 @@ func TestRunPrintsKindsLine(t *testing.T) {
 	}
 }
 
-// bootKinds runs the real boot over the core bundle plus layer, with environ as
-// the process environment, and returns the kinds line it printed.
+// bootKinds runs the real boot over the kernel bundles (admin, core) plus layer, with
+// environ as the process environment, and returns the kinds line it printed.
 func bootKinds(t *testing.T, layer string, environ ...string) string {
 	t.Helper()
 	opts, _ := fixture(t, layer)
@@ -107,7 +107,7 @@ func bootKinds(t *testing.T, layer string, environ ...string) string {
 	return ""
 }
 
-// The sharing settings are composed configuration: the core bundle's host.sharing
+// The sharing settings are composed configuration: the admin bundle's host.sharing
 // entry is every kind off; a layer that turns feedback on is listed on through the
 // real boot path, and the off-switch -- the layer's sharing.off or DSH_SHARING_OFF
 // in the launch environment -- overrides it.

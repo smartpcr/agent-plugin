@@ -1,5 +1,21 @@
 # admin
-[]
+[
+  {
+    "id": "logging",
+    "name": "boot.logging",
+    "config": {
+      "destination": "stderr",
+      "level": "info"
+    }
+  },
+  {
+    "id": "sharing",
+    "name": "host.sharing",
+    "config": {
+      "off": false
+    }
+  }
+]
 # core
 # required: session.store, agent.registry, agent.driver, tools.registry, agent.presets
 [
@@ -21,6 +37,10 @@
   {
     "id": "egress",
     "name": "util.egress"
+  },
+  {
+    "id": "watch",
+    "name": "util.watch"
   }
 ]
 # web
@@ -44,6 +64,10 @@
   {
     "id": "egress",
     "name": "util.egress"
+  },
+  {
+    "id": "watch",
+    "name": "util.watch"
   }
 ]
 # headless
@@ -75,6 +99,10 @@
     "name": "util.egress"
   },
   {
+    "id": "watch",
+    "name": "util.watch"
+  },
+  {
     "id": "cli.headless",
     "name": "cli.headless"
   }
@@ -101,6 +129,10 @@
   {
     "id": "egress",
     "name": "util.egress"
+  },
+  {
+    "id": "watch",
+    "name": "util.watch"
   },
   {
     "id": "wire.stdio",
@@ -135,6 +167,10 @@
     "name": "util.egress"
   },
   {
+    "id": "watch",
+    "name": "util.watch"
+  },
+  {
     "id": "wire.stdio",
     "name": "wire.stdio"
   },
@@ -163,5 +199,9 @@
   {
     "id": "egress",
     "name": "util.egress"
+  },
+  {
+    "id": "watch",
+    "name": "util.watch"
   }
 ]

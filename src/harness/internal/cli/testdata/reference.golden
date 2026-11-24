@@ -121,11 +121,11 @@ Examples:
 
 | Profile | Bundles | Summary |
 |---|---|---|
-| `web` | core, web | Start the host and open the web UI |
-| `headless` | core, headless | Run one task without a UI and print the answer |
-| `sdk` | core, sdk | Serve the SDK protocol on standard input and output |
-| `sdk-minimal` | core, minimal, sdk | Serve the SDK protocol with the minimal agent preset |
-| `acp` | core, acp | Serve the Agent Client Protocol on standard input and output |
+| `web` | admin, core, base, web | Start the host and open the web UI |
+| `headless` | admin, core, base, headless | Run one task without a UI and print the answer |
+| `sdk` | admin, core, base, sdk | Serve the SDK protocol on standard input and output |
+| `sdk-minimal` | admin, core, minimal, sdk | Serve the SDK protocol with the minimal agent preset |
+| `acp` | admin, core, base, acp | Serve the Agent Client Protocol on standard input and output |
 
 ## Exit statuses
 
