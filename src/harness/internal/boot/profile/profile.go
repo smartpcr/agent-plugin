@@ -139,13 +139,20 @@ func Builtins() []Definition { return clone(builtins) }
 func Definitions() []Definition {
 	five := slices.Clone(compositions)
 	for _, name := range []string{Web, Headless, SDK} {
-		i := slices.IndexFunc(builtins, func(d Definition) bool { return d.Name == name })
-		if i < 0 {
-			panic("profile: built-in definition " + name + " is missing")
-		}
-		five = append(five, builtins[i])
+		five = append(five, builtinNamed(name))
 	}
 	return clone(five)
+}
+
+// builtinNamed returns the entry of builtins called name. The names are compiled-in
+// constants, so a miss is a programming error.
+func builtinNamed(name string) Definition {
+	for _, d := range builtins {
+		if d.Name == name {
+			return d
+		}
+	}
+	panic("profile: no built-in profile " + name)
 }
 
 func clone(defs []Definition) []Definition {
