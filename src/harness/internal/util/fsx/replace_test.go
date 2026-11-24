@@ -273,14 +273,14 @@ func TestRootedCreateWithoutLinks(t *testing.T) {
 		t.Fatal(err)
 	}
 	rootLink = func(*os.Root, string, string) error { return errors.ErrUnsupported }
-	err = linkOrReserve(root, "missing-stage", "b")
+	err = linkOrReserve(root, "missing-stage", "b", nil)
 	if err == nil {
 		t.Fatal("renaming a missing staged file succeeded")
 	}
 	if _, err := os.Stat(filepath.Join(dir, "b")); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("the reservation was not removed: %v", err)
 	}
-	if err := linkOrReserve(root, "missing-stage", "a"); !errors.Is(err, fs.ErrExist) {
+	if err := linkOrReserve(root, "missing-stage", "a", nil); !errors.Is(err, fs.ErrExist) {
 		t.Fatalf("taken name: %v, want fs.ErrExist", err)
 	}
 	assertNoStaged(t, dir)

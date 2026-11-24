@@ -31,7 +31,8 @@ type Options struct {
 	Durable bool
 	// BeforePublish, when set, runs after the content is staged (written, its
 	// mode set, synced and closed) and just before the staged file takes the
-	// target's name. An error stops the publication: the staged file is removed,
+	// target's name, and again before every retry of a publication another program
+	// blocked. An error stops the publication: the staged file is removed,
 	// the target is untouched, and the error is returned as is. Callers use it to
 	// observe cancellation, or re-check a precondition, at the last moment.
 	BeforePublish func() error
@@ -151,9 +152,12 @@ func publish(path string, write func(io.Writer) error, opt Options, exclusive bo
 		return err
 	}
 	if exclusive {
-		err = renameNoReplace(stage, path, opt.Durable)
+		err = renameNoReplace(stage, path, opt.Durable, opt.BeforePublish)
 	} else {
-		err = renameReplace(stage, path, opt.Durable)
+		err = renameReplace(stage, path, opt.Durable, opt.BeforePublish)
+	}
+	if cerr, ok := refused(err); ok {
+		return cerr
 	}
 	if err != nil {
 		var u *unflushedError
@@ -217,13 +221,36 @@ var retryDelays = []time.Duration{
 // beforeRetry is called before each wait of retryInUse; tests replace it.
 var beforeRetry = func(attempt int) {}
 
+// refusal is check's error from retryInUse, kept apart from the operation's own
+// errors so the caller returns it as is rather than as a failed publication.
+type refusal struct{ err error }
+
+func (r *refusal) Error() string { return r.err.Error() }
+func (r *refusal) Unwrap() error { return r.err }
+
+// refused is the error check returned inside err, if any.
+func refused(err error) (error, bool) {
+	var r *refusal
+	if errors.As(err, &r) {
+		return r.err, true
+	}
+	return nil, false
+}
+
 // retryInUse runs op until it succeeds, fails with an error that is not "in use",
-// or the retry window is spent.
-func retryInUse(op func() error) error {
+// or the retry window is spent. check (Options.BeforePublish, may be nil) runs
+// after every wait, before the next attempt: a call cancelled while it waited
+// publishes nothing. Its error comes back wrapped in a refusal.
+func retryInUse(check func() error, op func() error) error {
 	err := op()
 	for attempt := 0; err != nil && isInUse(err) && attempt < len(retryDelays); attempt++ {
 		beforeRetry(attempt)
 		time.Sleep(retryDelays[attempt])
+		if check != nil {
+			if cerr := check(); cerr != nil {
+				return &refusal{cerr}
+			}
+		}
 		err = op()
 	}
 	return err

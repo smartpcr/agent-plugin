@@ -48,3 +48,25 @@ func FailSyncAfterPublish() (restore func()) {
 	replaceIn, createIn = fail(fsx.ReplaceIn), fail(fsx.CreateIfAbsentIn)
 	return func() { replaceIn, createIn = fsx.ReplaceIn, fsx.CreateIfAbsentIn }
 }
+
+// AroundRecheck runs f(n) before the n-th (from zero) call of each publication's
+// BeforePublish check, so a test can act between a blocked publication attempt
+// and its retry. The returned func restores the default.
+func AroundRecheck(f func(n int)) (restore func()) {
+	wrap := func(publish func(*os.Root, string, func(io.Writer) error, fsx.Options) error) func(*os.Root, string, func(io.Writer) error, fsx.Options) error {
+		return func(root *os.Root, name string, w func(io.Writer) error, o fsx.Options) error {
+			check, n := o.BeforePublish, 0
+			o.BeforePublish = func() error {
+				f(n)
+				n++
+				if check == nil {
+					return nil
+				}
+				return check()
+			}
+			return publish(root, name, w, o)
+		}
+	}
+	replaceIn, createIn = wrap(fsx.ReplaceIn), wrap(fsx.CreateIfAbsentIn)
+	return func() { replaceIn, createIn = fsx.ReplaceIn, fsx.CreateIfAbsentIn }
+}

@@ -69,9 +69,12 @@ func publishIn(root *os.Root, name string, write func(io.Writer) error, opt Opti
 		return err
 	}
 	if exclusive {
-		err = linkOrReserve(root, stage, name)
+		err = linkOrReserve(root, stage, name, opt.BeforePublish)
 	} else {
-		err = retryInUse(func() error { return root.Rename(stage, name) })
+		err = retryInUse(opt.BeforePublish, func() error { return root.Rename(stage, name) })
+	}
+	if cerr, ok := refused(err); ok {
+		return cerr
 	}
 	if err != nil {
 		return &os.LinkError{Op: "publish", Old: stage, New: name, Err: kind(err)}
@@ -86,8 +89,9 @@ func publishIn(root *os.Root, name string, write func(io.Writer) error, opt Opti
 }
 
 // linkOrReserve publishes stage as name only if name is free. A successful link
-// leaves the staged name behind, which is then removed.
-func linkOrReserve(root *os.Root, stage, name string) error {
+// leaves the staged name behind, which is then removed. check runs before every
+// retried rename of the fallback; a refusal removes the reservation.
+func linkOrReserve(root *os.Root, stage, name string, check func() error) error {
 	err := rootLink(root, stage, name)
 	if err == nil {
 		_ = root.Remove(stage)
@@ -102,7 +106,7 @@ func linkOrReserve(root *os.Root, stage, name string) error {
 		return err
 	}
 	_ = r.Close()
-	if err := retryInUse(func() error { return root.Rename(stage, name) }); err != nil {
+	if err := retryInUse(check, func() error { return root.Rename(stage, name) }); err != nil {
 		_ = root.Remove(name)
 		return err
 	}
