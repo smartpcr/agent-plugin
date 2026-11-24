@@ -117,8 +117,10 @@ func (w *ffsWorld) whenRun(fn string) error {
 	w.runOK = ffsSuiteT.Run(ffsConformanceName, func(t *testing.T) {
 		fstest.Run(t, w.newSubject)
 	})
-	if runtime.GOOS == "windows" && os.Getenv(ffsLinuxLaneEnv) == "" {
+	if ffsWSLLaneWanted() {
 		w.linux = ffsRunLinuxLane()
+	} else {
+		w.linux = ffsLane{err: fmt.Errorf("WSL lane not requested (set %s=1 to run it from this host)", ffsWSLOptInEnv)}
 	}
 	return nil
 }
@@ -127,16 +129,29 @@ const (
 	ffsConformanceName = "fstest-conformance-fs-local"
 	// ffsLinuxLaneEnv marks the Linux-lane child run, so it does not recurse.
 	ffsLinuxLaneEnv = "DSH_E2E_FFS_LINUX_LANE"
-	ffsEntrypoint   = "TestE2E_dh_s_12_working_directory_filesystem_seam_and_policy_resolver_fenced_filesystem_seam"
+	// ffsWSLOptInEnv opts a Windows host into also running the Linux lane under
+	// WSL. Unset by default (and in CI, where Linux runs natively on its own
+	// job), so a wsl.exe without a usable Go distro cannot fail the Windows lane.
+	ffsWSLOptInEnv = "DSH_E2E_FFS_WSL"
+	ffsEntrypoint  = "TestE2E_dh_s_12_working_directory_filesystem_seam_and_policy_resolver_fenced_filesystem_seam"
 )
+
+func ffsWSLLaneWanted() bool {
+	return runtime.GOOS == "windows" && os.Getenv(ffsLinuxLaneEnv) == "" && os.Getenv(ffsWSLOptInEnv) == "1"
+}
 
 // ffsLane is the outcome of the conformance suite run on the Linux lane from a
 // Windows host: the whole godog suite of this stage, run under WSL.
 type ffsLane struct {
-	ran     bool
-	err     error // the run itself failed, or the lane is unreachable
-	results map[string]string
-	summary string
+	// ran is true only once the lane was provisioned (WSL distro with go) and
+	// the suite was launched there; ran=false means the lane was not run.
+	ran bool
+	// provisionErr: the lane was requested but could not be launched or
+	// provisioned (no wsl.exe, no distro, no go). Distinct from err.
+	provisionErr error
+	err          error // the suite ran on the lane and failed, or is not requested
+	results      map[string]string
+	summary      string
 }
 
 var ffsSubtestLine = regexp.MustCompile(`--- (PASS|FAIL|SKIP): \S+/` + ffsConformanceName + `/(\S+)`)
@@ -146,16 +161,30 @@ var ffsSubtestLine = regexp.MustCompile(`--- (PASS|FAIL|SKIP): \S+/` + ffsConfor
 func ffsRunLinuxLane() ffsLane {
 	wsl, err := exec.LookPath("wsl.exe")
 	if err != nil {
-		return ffsLane{err: fmt.Errorf("no Linux lane reachable from this Windows host (wsl.exe: %v)", err)}
+		return ffsLane{provisionErr: fmt.Errorf("wsl.exe not found: %v", err)}
 	}
 	dir, err := os.Getwd()
 	if err != nil {
-		return ffsLane{err: err}
+		return ffsLane{provisionErr: err}
+	}
+	pctx, pcancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer pcancel()
+	if out, err := exec.CommandContext(pctx, wsl, "--cd", dir, "--", "bash", "-lc", "go version").CombinedOutput(); err != nil {
+		return ffsLane{provisionErr: fmt.Errorf("no WSL distro with a go toolchain at %s: %v\n%s", dir, err, bytes.TrimSpace(out))}
 	}
 	script := fmt.Sprintf(`%s=1 go test -tags e2e -count=1 -v -run '^%s$' .`, ffsLinuxLaneEnv, ffsEntrypoint)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	out, runErr := exec.CommandContext(ctx, wsl, "--cd", dir, "--", "bash", "-lc", script).CombinedOutput()
+	tail := string(out)
+	if len(tail) > 4000 {
+		tail = tail[len(tail)-4000:]
+	}
+	// The suite never started (no entrypoint line): module download, build or
+	// launch failed, which is provisioning, not a conformance result.
+	if !bytes.Contains(out, []byte("=== RUN   "+ffsEntrypoint)) {
+		return ffsLane{provisionErr: fmt.Errorf("suite did not start under WSL: %v\n%s", runErr, tail)}
+	}
 	lane := ffsLane{ran: true, results: map[string]string{}}
 	for _, m := range ffsSubtestLine.FindAllStringSubmatch(string(out), -1) {
 		lane.results[m[2]] = m[1]
@@ -164,10 +193,6 @@ func ffsRunLinuxLane() ffsLane {
 		lane.summary = string(m)
 	}
 	if runErr != nil {
-		tail := string(out)
-		if len(tail) > 4000 {
-			tail = tail[len(tail)-4000:]
-		}
 		lane.err = fmt.Errorf("linux lane: %v\n%s", runErr, tail)
 	}
 	return lane
@@ -181,8 +206,10 @@ func ffsShort(name string) string {
 }
 
 // thenEverySubtestPasses: no conformance subtest may fail or skip, on this lane
-// or, from a Windows host, on its Linux lane (WSL), which must pass as well: one
-// lane never stands in for the other. On Windows without the symlink privilege
+// or, from a Windows host with DSH_E2E_FFS_WSL=1, on its Linux lane (WSL), which
+// must pass as well: one lane never stands in for the other. Without the opt-in
+// the Linux lane is reported not run here (CI runs it natively). On Windows
+// without the symlink privilege
 // the subject makes reparse points fs/local resolves as links (ffsMakeLink), so
 // every subtest runs there too; the kinds made are logged.
 func (w *ffsWorld) thenEverySubtestPasses() error {
@@ -208,8 +235,13 @@ func (w *ffsWorld) thenEverySubtestPasses() error {
 		return nil
 	}
 	l := w.linux
+	if l.provisionErr != nil {
+		// Requested explicitly via ffsWSLOptInEnv, so not running is an error,
+		// but reported as "not run", never as a conformance failure.
+		return fmt.Errorf("linux lane (WSL): NOT RUN, the lane could not be launched or provisioned (%s=1 was set): %v", ffsWSLOptInEnv, l.provisionErr)
+	}
 	if !l.ran {
-		ffsSuiteT.Logf("linux lane: %v (it runs natively on the Linux CI lane)", l.err)
+		ffsSuiteT.Logf("linux lane: not run: %v (it runs natively on the Linux CI lane)", l.err)
 		return nil
 	}
 	if l.err != nil {
