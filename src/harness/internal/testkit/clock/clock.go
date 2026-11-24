@@ -1,5 +1,9 @@
-// Package clock is the test kit's manual clock: time moves only when a test
-// advances it, so a bound such as the 20 s shutdown budget passes in no wall time.
+// Package clock is the test kit's virtual time. Run runs a test body in a
+// testing/synctest bubble, where the time package itself is fake and Advance and
+// Until move it; that is the form DH-D-UTIL-6 specifies, and a component under
+// test needs no clock parameter. Manual is the older explicit clock, for a
+// component that takes a boot.Clock: time moves only when a test advances it, so
+// a bound such as the 20 s shutdown budget passes in no wall time.
 package clock
 
 import (

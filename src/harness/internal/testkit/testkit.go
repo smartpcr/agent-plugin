@@ -1,7 +1,9 @@
 // Package testkit composes real harness components against scripted boundaries
-// (DH-D-UTIL-6, DH-ADR-UTIL-6). Its packages hold the shared stand-ins: clock (a
-// virtual clock), temphome (private homes), model (a scripted model behind a fake
-// transport), answerer (a scripted human channel), permit (egress permits) and
+// (DH-D-UTIL-6, DH-ADR-UTIL-6). Its packages hold the shared stand-ins: clock
+// (virtual time in a synctest bubble), temphome (private homes), model (a
+// scripted model, behind a fake transport or chunk-level), egresstest (the
+// recording egress), faultserver (a loopback HTTP/SSE fault server), answerer (a
+// scripted human channel), permit (egress permits) and
 // launcher (a program started through internal/world/subprocess and spoken to
 // over JSON-RPC on its stdio). This package holds what they all need: a disposable
 // component tree and a goroutine-safe buffer.
