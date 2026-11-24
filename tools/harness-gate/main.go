@@ -39,6 +39,10 @@
 //	                       condition and the status line reading closed
 //	records [--story s]    every stage record of the story and its closure.md
 //	                       hold their shape; a closed record also passes close
+//	entry [--story s]      the first step of every guarded and acceptance run
+//	                       (M2-DEC-1, risk M2-R-04): the prior story's records all
+//	                       read closed, its closure record lists every deliverable
+//	                       and built-through has reached its last stage (entry.go)
 //	policy-text            the M2-C-6 pre-merge rule alone (also a gate of the
 //	                       list): no file under
 //	                       src/harness/internal/world/sandbox/policy/text/
@@ -97,6 +101,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return runClose(args[1:], stdout, stderr)
 		case "records":
 			return runRecords(args[1:], stdout, stderr)
+		case "entry":
+			return runEntry(args[1:], stdout, stderr)
 		case "policy-text":
 			return runPolicyText(ctx, args[1:], stdout, stderr)
 		case "sandbox7-record":
