@@ -321,6 +321,7 @@ func TestTwoProcessesSetOneStore(t *testing.T) {
 		if err := cmd.Start(); err != nil {
 			t.Fatal(err)
 		}
+		t.Cleanup(func() { _ = cmd.Process.Kill() }) // a no-op once Wait has reaped it
 		children = append(children, cmd)
 	}
 	for i, cmd := range children {
@@ -382,6 +383,7 @@ func TestKillBetweenWriteAndRenameKeepsTheOldFile(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = cmd.Process.Kill() }) // a no-op once the test has killed and reaped it
 	line, err := bufio.NewReader(stdout).ReadString('\n')
 	if err != nil || strings.TrimSpace(line) != "staged" {
 		_ = cmd.Process.Kill()

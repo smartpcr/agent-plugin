@@ -132,9 +132,17 @@ func TestAComposedTreeThatLeaksAGoroutineFailsTheTest(t *testing.T) {
 	})
 	t.Run("owned", func(t *testing.T) {
 		clock.Run(t, func(t *testing.T) {
+			stop, done := make(chan struct{}), make(chan struct{})
+			// The effect's disposer releases the worker; this checks that it did.
+			t.Cleanup(func() {
+				select {
+				case <-done:
+				default:
+					t.Error("the owned worker outlived the tree")
+				}
+			})
 			owned := item("util.test-owned", func(ctx *cordis.Context) error {
 				_, err := ctx.Effect("worker", func() (cordis.Disposer, error) {
-					stop, done := make(chan struct{}), make(chan struct{})
 					go func() { defer close(done); leakUntil(stop) }()
 					return func() error { close(stop); <-done; return nil }, nil
 				})
