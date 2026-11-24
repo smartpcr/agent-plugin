@@ -340,14 +340,14 @@ deferred ID stays open and is never counted done.
 
 | ID | Step | Deliverable | The part held open | Gap | Closing step | Status |
 | --- | --- | --- | --- | --- | --- | --- |
-| H-24 | 6.2 | DH-D-EXEC-1 | Run and capture with a cap (`Run`), private channels, a detached launch, the confirmation helper, creation inside the Windows job in one call, and `Stdin`, `OutputMode` and a typed `Launch` on `Spec` | M1-G-BOOT-2 | gap-closure 19.3.1 to 19.3.6 (the batch-file opt-in moved to 16.5.1); tests `DH-T-EXECA-1` to `-3` and `DH-T-NODEPROC-8` deferred `later DH-S-13` (M1-D-CLOSE-5) | open |
-| H-25 | 6.3 | DH-D-EXEC-2 | The delegated Linux scope from the user service manager, the `run/owners.json` record of live owners, and the five-rung stop ladder in place of the two-rung `StopTree` | M1-G-BOOT-3 | gap-closure 19.4.1 to 19.4.3; test `DH-T-EXEC-6` deferred `later DH-S-13` (M1-D-CLOSE-5) | open |
-| H-26 | 6.3 | DH-D-EXEC-2 | The trusted or untrusted mark of each tree, `PeerTree` and `Limits` | M1-G-BOOT-4 | gap-closure 19.4.4, 19.4.5; test `DH-T-EXEC-17` deferred `later DH-S-13` (M1-D-CLOSE-5) | open |
-| H-27 | 6.6 | DH-D-HUMAN-7 | Managed secret-store writes, the `.env` source, leases with a revocation signal (the lease half of `DH-T-HUMAN-12`) and the source checks | M1-G-BOOT-7 | gap-closure 19.5.4 | open |
-| H-28 | 6.7 | DH-D-BOOT-3 | `profile reset` (rename to a backup, never delete) and the safe-mode launcher layer, so `--safe` disables the `plugins` group and the optional bundles | M1-G-BOOT-14 | gap-closure 19.5.5; tests `DH-T-BOOT-8` and `DH-T-BOOT-23` deferred `later DH-S-16` (M1-D-CLOSE-5) | open |
-| H-29 | 6.15 | DH-D-HOST-4 | The recorded proof that nothing else leaves: a recording transport and resolver that see every outbound request and name lookup (`testkit/egresstest`) | M1-G-BOOT-9, -11 | gap-closure 19.5.2; its tests are `DH-T-UTIL-15` (H-31, deferred `later DH-S-12`) and `DH-T-HOST-17` (H-32, deferred `later DH-S-16`) (M1-D-CLOSE-5) | open |
-| H-30 | 6.16 | DH-D-UTIL-2 | The child-environment proxy overlay (`egress.ChildEnv`) and the dial guard against private addresses | M1-G-BOOT-10 | gap-closure 19.3.7, 19.3.8; tests `DH-T-UNDICI-7` and `DH-T-UNDICI-9` deferred `later DH-S-13` (M1-D-CLOSE-5) | open |
-| H-31 | 6.17 | DH-D-UTIL-6 | `testkit/compose`, `testkit/egresstest`, `testkit/faultserver`, the `testing/synctest` clock and the chunk-level scripted adapter | M1-G-BOOT-11 | gap-closure 19.5.1 to 19.5.3; tests `DH-T-UTIL-12`, `-13` and `-15` deferred `later DH-S-12` (M1-D-CLOSE-5) | open |
+| H-24 | 6.2 | DH-D-EXEC-1 | Run and capture with a cap (`Run`), private channels, a detached launch, the confirmation helper, creation inside the Windows job in one call, and `Stdin`, `OutputMode` and a typed `Launch` on `Spec` | M1-G-BOOT-2 | gap-closure 19.3.1 to 19.3.6 (the batch-file opt-in moved to 16.5.1); tests `DH-T-EXECA-1` to `-3` and `DH-T-NODEPROC-8` deferred `later DH-S-13` (M1-D-CLOSE-5) | open: built in Phase 19, enabled at its consumer ([Gap closure, Phase 19](#gap-closure-phase-19)) |
+| H-25 | 6.3 | DH-D-EXEC-2 | The delegated Linux scope from the user service manager, the `run/owners.json` record of live owners, and the five-rung stop ladder in place of the two-rung `StopTree` | M1-G-BOOT-3 | gap-closure 19.4.1 to 19.4.3; test `DH-T-EXEC-6` deferred `later DH-S-13` (M1-D-CLOSE-5) | open: built in Phase 19, enabled at its consumer ([Gap closure, Phase 19](#gap-closure-phase-19)) |
+| H-26 | 6.3 | DH-D-EXEC-2 | The trusted or untrusted mark of each tree, `PeerTree` and `Limits` | M1-G-BOOT-4 | gap-closure 19.4.4, 19.4.5; test `DH-T-EXEC-17` deferred `later DH-S-13` (M1-D-CLOSE-5) | open: built in Phase 19, enabled at its consumer ([Gap closure, Phase 19](#gap-closure-phase-19)) |
+| H-27 | 6.6 | DH-D-HUMAN-7 | Managed secret-store writes, the `.env` source, leases with a revocation signal (the lease half of `DH-T-HUMAN-12`) and the source checks | M1-G-BOOT-7 | gap-closure 19.5.4 | open: built in Phase 19, enabled at its consumer ([Gap closure, Phase 19](#gap-closure-phase-19)) |
+| H-28 | 6.7 | DH-D-BOOT-3 | `profile reset` (rename to a backup, never delete) and the safe-mode launcher layer, so `--safe` disables the `plugins` group and the optional bundles | M1-G-BOOT-14 | gap-closure 19.5.5; tests `DH-T-BOOT-8` and `DH-T-BOOT-23` deferred `later DH-S-16` (M1-D-CLOSE-5) | open: built in Phase 19, enabled at its consumer ([Gap closure, Phase 19](#gap-closure-phase-19)) |
+| H-29 | 6.15 | DH-D-HOST-4 | The recorded proof that nothing else leaves: a recording transport and resolver that see every outbound request and name lookup (`testkit/egresstest`) | M1-G-BOOT-9, -11 | gap-closure 19.5.2; its tests are `DH-T-UTIL-15` (H-31, deferred `later DH-S-12`) and `DH-T-HOST-17` (H-32, deferred `later DH-S-16`) (M1-D-CLOSE-5) | open: built in Phase 19, enabled at its consumer ([Gap closure, Phase 19](#gap-closure-phase-19)) |
+| H-30 | 6.16 | DH-D-UTIL-2 | The child-environment proxy overlay (`egress.ChildEnv`) and the dial guard against private addresses | M1-G-BOOT-10 | gap-closure 19.3.7, 19.3.8; tests `DH-T-UNDICI-7` and `DH-T-UNDICI-9` deferred `later DH-S-13` (M1-D-CLOSE-5) | open: built in Phase 19, enabled at its consumer ([Gap closure, Phase 19](#gap-closure-phase-19)) |
+| H-31 | 6.17 | DH-D-UTIL-6 | `testkit/compose`, `testkit/egresstest`, `testkit/faultserver`, the `testing/synctest` clock and the chunk-level scripted adapter | M1-G-BOOT-11 | gap-closure 19.5.1 to 19.5.3; tests `DH-T-UTIL-12`, `-13` and `-15` deferred `later DH-S-12` (M1-D-CLOSE-5) | open: built in Phase 19, enabled at its consumer ([Gap closure, Phase 19](#gap-closure-phase-19)) |
 | H-32 | 6.15 | DH-D-HOST-4 | `DH-T-HOST-17`, a recorded run of each shipped profile; its inputs (the shipped profiles, the replay model) arrive in DH-S-16 and M3 | M1-G-BOOT-9 | impl.md 16.7 (M1-D-BOOT-2 (b)); test `DH-T-HOST-17` deferred `later DH-S-16` (M1-D-CLOSE-5) | open |
 
 ### Linux ownership fallback (TC-X2, U-K1-1)
@@ -580,6 +580,135 @@ required 81, tagged 63, deferred 0, missing 18. Each missing ID is a gap,
 | 6.17 | `DH-T-UTIL-15` | -- | missing: [M1-G-BOOT-35](../gap-analysis.md) (H-31, gap-closure 19.5.2) |
 
 H-21 stays open.
+
+<a id="gap-closure-phase-19"></a>
+## Gap closure, Phase 19 (before M2 consumers)
+
+Status: **built, not done.** The plan's Phase 19 is P1 and not part of M1 closure
+(gap-closure plan "Phase 19: Before M2 Consumers"). Stages 19.3, 19.4 and 19.5 are built
+on branch `m1-phase-19`, and the gate passes on both lanes at `f7d1618`:
+WSL [`wsl-f7d1618-20261124T0639Z`](runs/wsl-f7d1618-20261124T0639Z.txt) (file `c851c5c0…`, output `e95310…`, `PASSED all 12 gates`; `trace-tests: DH-S-1..DH-S-11: required 310, tagged 301, deferred 9, missing 0`) and Windows @WIN@. The runs that failed on the way are kept under `runs/` as history: WSL `wsl-61c623f-20261124T0557Z` (staticcheck U1000 in three test helpers), `wsl-c757c9b-20261124T0615Z` (test: 13 new reasons without an exit status; the Linux starter goroutine left in a compose bubble), `wsl-88b4875-20261124T0625Z` (coverage: `human/secret/file` 83.4%, `testkit/compose` 83.3%, `subprocesstest` 80.2%); Windows `win-c757c9b-20261124T0613Z` (test: the exit statuses) and `win-88b4875-20261124T0627Z` (stopped by the lead during `coverage`, superseded by the fixes).
+Each held-open entry below stays `open` until the stage that first consumes it
+(DH-S-12, -13, -15, -16, -31) closes; a built part is enabled only there. The lead's
+settlements for this phase are sec. 8 of [decisions.md](../decisions.md#8-phase-19-settlements-2026-11-23).
+
+| Commit | Steps |
+| --- | --- |
+| `4b03d16` | 19.3.7, 19.3.8 |
+| `db28fde` | 19.5.5 |
+| `6c0399f` | 19.5.4 |
+| `991bd5a` | 19.3.1, 19.3.4, 19.3.6 |
+| `07e50d7` | 19.5.2, 19.5.3 |
+| `4ce0049` | 19.5.1 |
+| `bbbe4fa` | QG-5 cleanups in the 19.5 tests |
+| `1f12a4b` | 19.3.2, 19.3.3, 19.3.5, 19.4.1, 19.4.2 |
+| `780c03d` | 19.5.2: the dial guard chained into `egresstest` (`Config.Observe`) |
+| `61c623f` | 19.4.3, 19.4.4, 19.4.5, and boot opens the registry (`OpenRegistry`) |
+| `7b5e4fd` | staticcheck U1000 in the 19.5 test helpers |
+| `c757c9b` | Windows job information through `LazyProc.Call` (the `-race` intermittent of `DH-T-NODEPROC-6`); `groupLimits` Unix only |
+| `9fc10b9` | rehearse help and README, the scenarios workflow comment |
+| `88b4875` | exit statuses for the 13 new reasons; the Linux starter goroutine starts at init; compose asks no user manager for a scope |
+| `b29fb47`, `14a3be2`, `f7d1618` | coverage: `human/secret/file` 92%, `testkit/compose` 98%, `subprocesstest` 87% |
+
+<a id="gap-closure-193"></a>
+### 19.3 Spawn package and egress for children (closes the built part of H-24 and H-30)
+
+| Step | What is built | Tests (`//dsh:test`) |
+| --- | --- | --- |
+| 19.3.1 | `subprocess.Run(ctx, Spec, RunOptions)`: captures each stream the Spec leaves nil up to `MaxOutput` (16 MiB default); the first byte past the cap stops the whole tree and returns `subprocess/output-limit` with the tail kept through `util/retain`; deadline `subprocess/deadline`, cancel `subprocess/canceled`; descendants are always stopped before it returns | `DH-T-EXECA-1` `TestRunTellsTheOutcomesApart`; `DH-T-EXECA-2` `TestRunCapsOutputAndEndsTheTree` (the stage scenario: cap error, neither pid alive), `TestRunCapturesExactBytes`; `DH-T-EXECA-3` `TestRunAppendsAStreamToAFile` |
+| 19.3.2 | `Spec.Extra []Channel`: `ExtraFiles` on POSIX (descriptor 3+i), an inherited handle listed in `AdditionalInheritedHandles` on Windows | `DH-T-NODEPROC-9` `TestChannelReachesTheChild` (private-channel row) |
+| 19.3.3 | `Spec.Detach`: no tree owner, no registry entry, its own session (POSIX) or `DETACHED_PROCESS` (Windows); stops are refused with `subprocess/detached` (`detached-stays-in-job-windows`) | `DH-T-NODEPROC-9` `TestDetachedLaunchIsNeverStopped` (the stage scenario), `TestDetachedChildOutlivesItsHost` |
+| 19.3.4 | `subprocess.Confirm`: `Refused` when the input is not a terminal, without reading it | `DH-T-NODEPROC-10` (second half) `TestConfirmRefusesWithoutATerminal` |
+| 19.3.5 | Windows: the child is created inside the job in one `CreateProcess` with `PROC_THREAD_ATTRIBUTE_JOB_LIST`; suspend-assign-resume stays as the fallback | `DH-T-NODEPROC-8` `TestNoProcessLeftWhenTheHostDiesMidStart` (the stage scenario; a control run on the fallback shows its child outliving the host), `TestBackgroundChildOpensNoWindow` |
+| 19.3.6 | `Spec.Stdin` (`StdinMode`), `Stdout`/`Stderr` (`OutputMode`), and a required `Launch sandbox.Launch` (`world/sandbox`: `Trusted(reason)`, later `Untrusted(reason)`); a zero Launch is `subprocess/no-launch`. Five callers pass `sandbox.Trusted(...)`. RM-9: one package (`subprocess-one-package`) | untagged: `TestStartRefusesAnEmptyLaunch`, `TestTrustedNeedsAReason`, `TestModesMapToTheStreams` |
+| 19.3.7 | `(*egress.Service).ChildEnv(Trusted\|ModelRun)`: "NAME=value" entries for `BuildEnv`'s `Managed`, user value first, then resolved, else empty; `NO_PROXY` gains loopback; credentials in a proxy value are cleared for `ModelRun` (`childenv-managed-entries`) | `DH-T-UNDICI-9`, `DH-T-UTIL-5` `TestChildInheritsTheProxyNotSecrets` (the stage scenario, a re-exec child), `TestChildEnvAudiences`; `DH-T-UNDICI-9` `TestReleaseClosesIdleWhileInFlightCompletes` |
+| 19.3.8 | `egress.DenyPrivate(PrivatePolicy{AllowLoopback})`: a literal check on every request and redirect, and a dialler `Control` hook on every resolved address; private, CGNAT, link-local, unspecified, `0/8` and multicast refused (`egress-reasons-reused`) | `DH-T-UNDICI-7` `TestGuardRefusesPrivateBeforeDial` (the stage scenario: literal, name and redirect refused, the listener sees only the redirecting request), `TestDenyPrivateRanges` |
+
+Deferrals removed from the package `doc.go` files: `DH-T-EXECA-1` to `-3`, `DH-T-NODEPROC-8`
+(`world/subprocess`), `DH-T-UNDICI-7`, `-9` (`util/egress`).
+
+**Open (19.3).** `DH-T-NODEPROC-9` rows R6 (collection and spill) and R13 (a long-lived
+piped child), with DH-D-EXEC-3; `DH-T-UTIL-5`'s `egress.IdleBody`; `Collect{TailBytes,
+Spill}`; whether a guarded web-tool client may use a proxy (undici.md sec. 7; a guarded
+client connects directly). These IDs are tagged but partly proven
+(`phase-19-partial-test-ids`).
+
+<a id="gap-closure-194"></a>
+### 19.4 Exact process-tree ownership (closes the built part of H-25 and H-26)
+
+| Step | What is built | Tests (`//dsh:test`) |
+| --- | --- | --- |
+| 19.4.1 | `OpenRegistry(ctx, ProviderOptions{RunDir, UserManager, ScopeTimeout, Announce, ControlSocket})`: when the own cgroup is unwritable it asks the user service manager once for a delegated scope (`linux-scope-by-attach`), through `Run` as a trusted launch with a 5 s deadline; per-command groups go inside it; on refusal or timeout the process-group rung is used and announced once. Boot's `Tree` step calls it with the home's `Run()` directory | `DH-T-EXEC-4` `TestScopeRequestedOnceThenGroupsInsideIt` (the stage scenario, fake manager), `TestScopeTimeoutOrRefusalLeavesTheGroupRung`, `TestWritableOwnGroupAsksNoScope`, `TestProviderStartOwnsTreesInsideADelegatedScope` (real manager) |
+| 19.4.2 | `run/owners.json` (pid, owner kind, cgroup path, start time), durable write under `owners.lock`; the next start reports survivors and never kills them (`leftovers-reported-each-start`) | `DH-T-EXEC-5` `TestOwnerRecordFollowsTheRegistry`, `TestLeftoverReportNamesSurvivorsOfADeadHost`, `TestKilledHostLeftoversAreReportedNotKilled` (the stage scenario) |
+| 19.4.3 | `StopPlan{Revoke, Ask, Grace, Settle}` and `Stop`: revoke, ask, close input, terminate, kill, each bounded; past settle the survivors are named and the handle stays registered; `StopTree` is a wrapper | `DH-T-EXEC-5` `TestStopRunsTheLadderInOrder` (the stage scenario), `TestStopBoundsAStuckHook`, `TestStopRevokesEvenWhenTheTreeIsGone`, `TestStopPastSettleNamesSurvivorsAndKeepsThemRegistered`, `TestInputGateClosesTheFeed`; `DH-T-EXEC-6` `TestStopCausesAreTheirOwn` |
+| 19.4.4 | A `Trusted`/`Untrusted` mark per tree from `Spec.Launch`; `Registry.PeerTree(net.Conn)` from Unix peer credentials or the loopback owner, then job or cgroup membership; `Start` refuses an environment value containing the control-socket path | `DH-T-EXEC-17` `TestPeerTreeOfADialingTree` (the stage scenario, Unix socket and loopback TCP), `TestPeerTreeAnswersFromTheTrustMark`, `TestStartKeepsTheControlSocketOutOfTheChild` |
+| 19.4.5 | `Limits`: job-object memory and process-count limits; cgroup `memory.max` and `pids.max` where delegated (the host moves to a leaf group `dsh-host-<pid>`); `unavailable` on the group rung | `DH-T-EXEC-17` `TestLimitsAreAppliedByTheOwnerOrReportedUnavailable`, `TestJobProcessLimitStopsAGrandchild` (Windows) |
+
+Deferrals removed: `DH-T-EXEC-6`, `DH-T-EXEC-17` (`world/subprocess/doc.go` now lists none).
+
+**Real runs on WSL (`systemd=true`; a `wsl -u dsh` process starts in cgroup `0::/non-systemd`),
+2026-11-24 UTC, lead session, `manual`:**
+- Scope: `owner: control-group; scope unit: dsh-1443-577fc2a8622c.scope; child 1454 in
+  0::/user.slice/user-1000.slice/user@1000.service/app.slice/dsh-1443-577fc2a8622c.scope/dsh-1443-1`.
+- Killed host: `leftovers: [tree 1432 of host 1420 (control-group .../dsh-1420-226998cd24e5.scope/dsh-1420-1,
+  recorded 2026-11-24T04:39:46Z) left running: [1438]]`; the grandchild was alive after
+  the report, and the test then killed it. No `dsh-*` user unit was left.
+- Ladder inside the scope: `revoke ran took=0s; ask took=150ms; close-input took=150ms;
+  terminate took=151ms; kill ran`, no survivors.
+- Limits: `owner control-group; limits enforced (memory.max=268435456, pids.max=64)`, the
+  child group's files reading the same; through the provider start `limits: enforced
+  (memory.max=268435456, pids.max=4096)`; on the process-group rung `limits unavailable`.
+- PeerTree: `{Trust:untrusted Exact:true Owner:control-group}` over Unix and TCP in the
+  scope; `Exact:false Owner:process-group` from a login shell; Windows `{untrusted Exact:true job-object}`.
+- `systemd=false`: @SYSTEMD_FALSE@
+
+**Fixed while building (c757c9b).** On Windows, `jobOwner.active()` and `newOwner` called
+`QueryInformationJobObject` and `SetInformationJobObject` through x/sys wrappers that
+take a plain `uintptr`; a goroutine stack move between the conversion and the call made
+the kernel write the old location, so a live job read as empty and was closed, ending a
+detached grandchild through kill-on-close (`DH-T-NODEPROC-6` failed about 7 in 235 `-race`
+runs at `61c623f`, 0 in 120 after). Both now go through `LazyProc.Call`
+(`//go:uintptrescapes`).
+
+**Open (19.4).** `DH-T-EXEC-5`'s row "a fiber unload stops every child" needs the cordis
+provider (`subprocess/local`, DH-S-13); `PeerTree` on macOS and BSD returns
+`subprocess/peer-unknown`; no caller sets `ControlSocket` yet; `DH-E-EXEC-10` stays with
+DH-S-18.
+
+<a id="gap-closure-195"></a>
+### 19.5 Test kit, secret store writes and profile safety (closes the built part of H-27, H-28, H-29 and H-31)
+
+| Step | What is built | Tests (`//dsh:test`) |
+| --- | --- | --- |
+| 19.5.1 | `testkit/compose.Start(t, Options{Bundle, Layers, Home, …})` inside `clock.Run`: `boot.Run` with the real steps, the real `profile.Stack`, `builtin`'s catalogue with `util.egress` replaced by `egresstest` and a scripted model; at the end it fails the test on a non-zero shutdown, a stuck effect, or a goroutine left in the bubble | `DH-T-UTIL-13` `TestStartComposesTheBaseBundleAndLeavesNothing`, `TestAComposedTreeThatLeaksAGoroutineFailsTheTest` (the stage scenario), `TestAnEffectLeftAfterUnloadFailsTheTest` |
+| 19.5.2 | `testkit/egresstest` (a real `egress` service recording through `Config.Observe`, an in-memory resolver, scripted `Refused`/`Reset`/`Timeout` dial failures, guarded clients included) and `testkit/faultserver` (HTTP/SSE behaviours with per-key cursors) | `DH-T-UTIL-15` `TestAnUnlistedRequestFailsTheTestNamingTheHost` (the stage scenario), `TestAGuardedClientsUnlistedRequestFailsTheTest`, `TestAGuardedClientSeesAScriptedDialFailure`, `TestTheGuardRefusesAPrivateLiteralBeforeItIsRecorded`, `TestTheResolverAnswersHostsAndFailsAnUnlistedLookup`, `TestAScriptedDialFailureIsDeterministic`, `TestEachBehaviourGivesItsWireResult`, `TestTwoKeysAdvanceSeparateCursors`, `TestUnscriptedAndLeftoverBehavioursFailTheTest` |
+| 19.5.3 | `clock.Run(t, fn)` over `testing/synctest`; `model.NewScripted`, a chunk-level `llm.Adapter`; `conform.ToolCancels` is met by `internal/tools/conform.Cancellation`, proven by `TestConformanceCancellation` (`DH-T-TOOLS-9`) | `DH-T-UTIL-14` `TestScriptedPassesTheAdapterConformanceTable`, `TestScriptedFailsOnUnscriptedAndLeftoverScript`, `TestScriptedBlockEndsWhenTheContextIsCancelled`; `DH-T-UTIL-12` `TestAFullBoundedQueueAndAnIgnoringToolBody` |
+| 19.5.4 | `human/secret/file`: `<home>/secrets/store.json`, AES-256-GCM sealed with an owner-only key, `Set`/`Unset` under `fsx.Lock` with a re-read, a generation and `ifRevision`, published by `fsx.Replace{Durable}`; a strict `.env` source; leases with a revocation signal; archtest source checks on `Reveal()` callers and `os.Setenv` | `DH-T-HUMAN-10` `TestPrintedFormsGolden`, `TestStoreParseErrorsGolden`, `TestRevealOnlyFromListedCallers`, `TestSecretChecksCatchViolations`; `DH-T-HUMAN-11` `TestTwoProcessesSetOneStore` (the stage scenario), `TestPrecedenceOverTheFourLayers`, `TestStaleRevisionIsRefused`, `TestSealedFileAndLostKey`, `TestLockWaitIsBounded`, `TestKillBetweenWriteAndRenameKeepsTheOldFile`; `DH-T-HUMAN-12` (lease half) `TestLeaseSignalOnUnsetAndRotation`, `TestSetAndDotEnvLeaveTheEnvironment`, `TestNoSetenvOutsideTheStarter` |
+| 19.5.5 | `profile.Reset` renames the layer to `layer.yml.bak-<unix ms>` under the layer lock (`config.SetAside`), never deleting it; `Sources.Safe` makes the launcher layer disable the `plugins` group and every optional (`x.`) bundle group, and a reload keeps it | `DH-T-BOOT-8` `TestResetSetsTheProfileLayerAside`; `DH-T-BOOT-23` `TestSafeModeDisablesPluginsAndOptionalBundlesOnly`, `TestSafeLaunchDisablesThePluginsGroup` (the stage scenario) |
+
+Deferrals removed: `DH-T-UTIL-12`, `-13`, `-15` (`testkit/doc.go`, which now lists none),
+`DH-T-BOOT-8`, `-23` (`boot/profile/doc.go`, deleted).
+
+**Open (19.5).** `DH-T-UTIL-14` against A04's conformance table once it exists in code
+(`DH-T-LLM-6`); `DH-T-HUMAN-11`'s record and remote-handler clauses; nothing watches
+`store.json` to call `Store.Refresh` (needs DH-D-UTIL-3 and a `human.secrets` component);
+no reset for a lost store key, no keychain backend (DH-D-HUMAN-8); nothing in the product
+composes `file.New` or `DotEnvSource` yet; `dsh profile reset`, the launchers' `--safe`
+flag and the plugin-list labels wait for DH-S-16's admin tree (H-28); compose has no
+`testkit` catalogue family and no fake answerer.
+
+### Held-open entries after Phase 19
+
+| ID | Built in Phase 19 | Still waits | Status |
+| --- | --- | --- | --- |
+| H-24 | 19.3.1 to 19.3.6 | `DH-T-NODEPROC-9` R6, R13 (DH-D-EXEC-3) | open: built, enabled at DH-S-13 |
+| H-25 | 19.4.1 to 19.4.3 | `DH-T-EXEC-5`'s fiber-unload row (cordis provider, DH-S-13); the real `systemd=false` record | open: built, enabled at DH-S-13 |
+| H-26 | 19.4.4, 19.4.5 | `ControlSocket` set by the listener (DH-S-15); `Limits` used at DH-S-31 | open: built, enabled at DH-S-15 and DH-S-31 |
+| H-27 | 19.5.4 | the store watch, the product composition, the keychain backend | open: built, enabled at DH-S-16 |
+| H-28 | 19.5.5 | `dsh profile reset`, `--safe`, the labels (DH-S-16 admin tree) | open: built, enabled at DH-S-16 |
+| H-29 | 19.5.2 | `DH-T-HOST-17` (H-32, impl.md 16.7) | open |
+| H-30 | 19.3.7, 19.3.8 | `egress.IdleBody` (`DH-T-UTIL-5`) | open: built, enabled at DH-S-13 |
+| H-31 | 19.5.1 to 19.5.3 | `DH-T-UTIL-14` on A04's table | open: built, enabled at DH-S-12 |
 
 ## Evidence record (impl.md sec. 7.3)
 

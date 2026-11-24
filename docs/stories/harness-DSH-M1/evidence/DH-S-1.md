@@ -925,6 +925,62 @@ changed.
   - It did not reproduce: 0 of 30 alone, and 0 of 40 under 8 parallel copies. The re-run above passed.
   - It is recorded as an intermittent test: the wait reports only the file, never the edit's own result. It is listed in [DH-S-11 "Open items at M1"](DH-S-11.md#open-items-at-m1-plan-18111).
 
+<a id="gap-closure-phase-19"></a>
+## Gap closure, Phase 19: rehearsal and credential preflight (19.1.1, 19.2.1)
+
+Status: **built, not done.** Plan Phase 19 is P1 and not part of M1 closure. This section
+records its two toolchain steps; Stages 19.3 to 19.5 are in
+[DH-S-6.md "Gap closure, Phase 19"](DH-S-6.md#gap-closure-phase-19), with the gate runs of
+the whole phase. The lead's settlements are sec. 8 of
+[decisions.md](../decisions.md#8-phase-19-settlements-2026-11-23).
+
+**19.1.1, a GoReleaser snapshot rehearsal (M1-G-TOOL-8, M1-D-TOOL-3 (b); commit `524509d`).**
+- `.goreleaser.dsh.yaml`, separate from `.goreleaser.yaml`, so `release.yml` publishes
+  nothing new before DH-S-46: a `dsh` build of `src/harness/cmd/dsh` with
+  `CGO_ENABLED=0`, `GOWORK=off`, empty `GOFLAGS` and `-trimpath` for linux, darwin and
+  windows on amd64 and arm64; tar.gz archives (zip on Windows) with LICENSE and README;
+  `checksums.txt` (sha256); `release.disable: true`.
+- `harness-gate rehearse` runs `goreleaser release --snapshot --clean -f` through the
+  pinned goreleaser of `tools/goreleaser` (`goreleaser-own-tools-module`, which narrows
+  M1-D-TOOL-2 (a) and waits for the owner's confirmation), writes into `--out/dist`
+  (`rehearse-owns-dist`), verifies each archive against `checksums.txt`, extracts the six
+  binaries and fails if the repository's tags change.
+- Tests: `DH-T-TOOLCHAIN-14` `TestRehearseSnapshotSixArchives` (the snapshot half; the
+  publish half is DH-D-TOOLCHAIN-6 at DH-S-46, `phase-19-partial-test-ids`);
+  untagged `TestVerifySnapshotNamesEachBadArchive`, `TestReadChecksumsRejectsMalformedLines`,
+  `TestRehearseRefusesConfigWithDist`, `TestRehearseReplaySeam`, `TestGoReleaserDshConfig`.
+- The WSL lane's rehearsal at `f7d1618` (`wsl-f7d1618-20261124T0639Z-rehearse.txt`):
+  `6 archives and checksums.txt …; every archive verified against checksums.txt`, six
+  binaries each `vcs.modified=false`, `6 binaries, nothing published`. No tag or release
+  was created: `git for-each-ref refs/tags` was unchanged across the agent's runs, and
+  `gh release list` still shows only v0.1.4 and v0.1.3.
+- **Open: 19.1.2** (the `replay` gate and the `harness-replay` lane, `DH-T-TOOLCHAIN-5`)
+  and the scenario clause "the host-matching binary passes one keyless replay" wait for
+  impl.md step 16.11 on the replay runner of step 16.7 (DH-S-16, not built). The
+  rehearsal prints `replay of dsh-linux-amd64: OPEN, not built …; not a pass` until then.
+  The plan's scenario "The snapshot yields six archives and one checksum file" stays open.
+
+**19.2.1, the signed-in credential preflight (M1-G-TOOL-16, M1-D-TOOL-6 (a); commit `524509d`).**
+- Every entry of `test/harness/acceptance-index.yaml` names `credential: none |
+  claude-session | copilot-session` (12 `claude-session`, 22 `none`); a missing, unknown
+  or doubled value fails parsing with its line.
+- `preflight` runs the sign-in check each credential names (`signin-probe-per-credential`:
+  `claude auth status --json` with key variables removed; `copilot-session` fails closed)
+  and fails naming the scenario and the client before anything starts.
+- `harness-gate scenarios --stage DH-S-n --evidence FILE` runs a credentialed stage on the
+  development host: a dirty tree exits 2; otherwise one 12.3.5 evidence record holds the
+  preflight with the sign-in checks and `go test -tags scenario` of the stage's plan, in
+  which a `--- SKIP` or a planned test without `--- PASS` fails the run.
+- DH-E-TOOLCHAIN-1's Given reads "a signed-in session on the development host" through a
+  pointer note in `toolchain.md` (DC-2); `harness-scenarios.yml`'s comment names the check.
+- Tests: `DH-T-TOOLCHAIN-6` `TestPreflightChecksTheSignIn` (the stage scenario: a signed-out
+  probe fails naming the scenario and starts nothing; `none` runs no probe; Copilot fails
+  closed), `TestScenarioGatesStopWhenSignedOut`; untagged `TestClaudeStatusProbe`,
+  `TestParseCredential`, `TestScenarioGatesRunThePlan`, `TestScenariosRefusesDirtyTree`,
+  `TestProbeEnvRemovesCredentials`. No test runs `claude` or `copilot`.
+- **Open:** DH-S-17's exit evidence, the probe output of a real `scenarios` run for each
+  client used (no token material).
+
 ## Evidence record (impl.md sec. 7.3)
 
 These are the eight fields of [impl.md sec. 7.3](../../../harness/impl.md#73-the-evidence-record),
