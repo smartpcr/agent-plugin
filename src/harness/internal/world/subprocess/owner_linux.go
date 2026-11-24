@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -129,22 +130,22 @@ func choose() Owner {
 	return Owner{Kind: ProcessGroup, Fallback: cgroupWhy}
 }
 
-func newOwner() (treeOwner, error) {
+func newOwner(l Limits) (treeOwner, error) {
 	if unit := scopeRequest.Load(); unit != nil {
 		// The scope request is under way: its own launch must not wait for the
 		// choice it is making (scope_linux.go).
-		return &requestingOwner{unit: *unit}, nil
+		return &requestingOwner{unit: *unit, lim: l}, nil
 	}
-	return chosenOwner(), nil
+	return chosenOwner(l), nil
 }
 
 // chosenOwner is a new owner of the rung chosen once for this process.
-func chosenOwner() treeOwner {
+func chosenOwner(l Limits) treeOwner {
 	probeCgroup()
 	if cgroupBase == "" {
-		return &groupOwner{fallback: cgroupWhy}
+		return &groupOwner{fallback: cgroupWhy, lim: l}
 	}
-	return &cgroupOwner{}
+	return &cgroupOwner{lim: l, group: groupOwner{lim: l}}
 }
 
 // cgroupOwner puts the child, at birth, in a fresh control group of its own; the
@@ -155,6 +156,10 @@ type cgroupOwner struct {
 	// fell is set when the control group could not be used for this child and the
 	// process group owns it instead.
 	fell bool
+	// lim are the Spec's Limits, written to the group before the child starts;
+	// limits is what was applied.
+	lim    Limits
+	limits LimitsReport
 }
 
 func (o *cgroupOwner) report() Owner {
@@ -169,6 +174,7 @@ func (o *cgroupOwner) start(build func() *exec.Cmd) (*exec.Cmd, error) {
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		return o.fallBack(build, err)
 	}
+	o.limits = applyGroupLimits(dir, o.lim)
 	fd, err := syscall.Open(dir, syscall.O_DIRECTORY|syscall.O_RDONLY|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		_ = os.Remove(dir)
@@ -329,8 +335,147 @@ func (o *cgroupOwner) describe() string {
 	return fmt.Sprintf("control group %s still holds %v", filepath.Base(o.dir), pids)
 }
 
+func (o *cgroupOwner) limitsReport() LimitsReport {
+	if o.fell {
+		return o.group.limitsReport()
+	}
+	return o.limits
+}
+
+// member is exact: pid's control group is the tree's or one below it.
+func (o *cgroupOwner) member(pid int) bool {
+	if o.fell {
+		return o.group.member(pid)
+	}
+	if o.dir == "" {
+		return false
+	}
+	rel, ok := procCgroup(pid)
+	if !ok {
+		return false
+	}
+	dir := filepath.Join("/sys/fs/cgroup", filepath.Clean("/"+rel))
+	return dir == o.dir || strings.HasPrefix(dir, o.dir+"/")
+}
+
 func (o *cgroupOwner) release() {
 	if !o.fell && o.dir != "" {
 		_ = os.Remove(o.dir)
 	}
+}
+
+// procCgroup is the cgroup v2 path of pid, relative to the hierarchy's root.
+func procCgroup(pid int) (string, bool) {
+	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/cgroup")
+	if err != nil {
+		return "", false
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if rel, ok := strings.CutPrefix(line, "0::"); ok {
+			return rel, true
+		}
+	}
+	return "", false
+}
+
+// The controllers the Limits need, enabled once for the children of the parent
+// group (cgroupBase). cgroup v2 lets a group hand controllers to its children
+// only while it holds no process itself, so the host first moves into a leaf
+// group of its own, dsh-host-<pid>, beside the per-command groups.
+var (
+	controllersOnce sync.Once
+	controllersOn   map[string]bool
+	controllersWhy  string
+)
+
+// HostLeafPrefix starts the name of the leaf group the host moves into when a
+// tree first asks for Limits.
+const HostLeafPrefix = "dsh-host-"
+
+func enableControllers() {
+	controllersOnce.Do(func() {
+		controllersOn = map[string]bool{}
+		base := cgroupBase
+		avail, err := os.ReadFile(filepath.Join(base, "cgroup.controllers"))
+		if err != nil {
+			controllersWhy = "the parent group's controllers cannot be read: " + err.Error()
+			return
+		}
+		var want []string
+		for _, c := range strings.Fields(string(avail)) {
+			if c == "memory" || c == "pids" {
+				want = append(want, c)
+			}
+		}
+		if len(want) == 0 {
+			controllersWhy = "the memory and pids controllers are not delegated to " + base
+			return
+		}
+		if !subtreeHas(base, want) {
+			if own, err := ownCgroupDir(); err == nil && own == base {
+				leaf := filepath.Join(base, HostLeafPrefix+strconv.Itoa(os.Getpid()))
+				if err := os.Mkdir(leaf, 0o755); err != nil && !errors.Is(err, os.ErrExist) {
+					controllersWhy = "the host's leaf group cannot be made: " + err.Error()
+					return
+				}
+				if err := os.WriteFile(filepath.Join(leaf, "cgroup.procs"), []byte(strconv.Itoa(os.Getpid())), 0); err != nil {
+					controllersWhy = "the host cannot move into its leaf group: " + err.Error()
+					return
+				}
+			}
+			ctl := "+" + strings.Join(want, " +")
+			if err := os.WriteFile(filepath.Join(base, "cgroup.subtree_control"), []byte(ctl), 0); err != nil {
+				controllersWhy = "the controllers cannot be enabled for the per-command groups: " + err.Error()
+			}
+		}
+		b, _ := os.ReadFile(filepath.Join(base, "cgroup.subtree_control"))
+		for _, c := range strings.Fields(string(b)) {
+			controllersOn[c] = true
+		}
+	})
+}
+
+func subtreeHas(base string, want []string) bool {
+	b, err := os.ReadFile(filepath.Join(base, "cgroup.subtree_control"))
+	if err != nil {
+		return false
+	}
+	on := strings.Fields(string(b))
+	for _, c := range want {
+		if !slices.Contains(on, c) {
+			return false
+		}
+	}
+	return true
+}
+
+// applyGroupLimits writes the Limits to a new per-command group before its child
+// starts: memory.max and pids.max, where those controllers are enabled.
+func applyGroupLimits(dir string, l Limits) LimitsReport {
+	if l.IsZero() {
+		return LimitsReport{State: LimitsNone}
+	}
+	enableControllers()
+	var applied, missing []string
+	set := func(ctl, file string, v int64) {
+		if v <= 0 {
+			return
+		}
+		if !controllersOn[ctl] {
+			why := controllersWhy
+			if why == "" {
+				why = "the " + ctl + " controller is not enabled"
+			}
+			missing = append(missing, file+" unavailable: "+why)
+			return
+		}
+		if err := os.WriteFile(filepath.Join(dir, file), []byte(strconv.FormatInt(v, 10)), 0); err != nil {
+			missing = append(missing, file+" unavailable: "+err.Error())
+			return
+		}
+		applied = append(applied, fmt.Sprintf("%s=%d", file, v))
+	}
+	set("memory", "memory.max", l.MemoryBytes)
+	set("pids", "pids.max", int64(l.Processes))
+	return limitsOf(l, applied, missing)
 }

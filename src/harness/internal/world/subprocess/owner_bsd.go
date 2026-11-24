@@ -11,7 +11,13 @@ import (
 // (DH-D-EXEC-2), not a fallback.
 func choose() Owner { return Owner{Kind: ProcessGroup} }
 
-func newOwner() (treeOwner, error) { return &groupOwner{}, nil }
+func newOwner(l Limits) (treeOwner, error) { return &groupOwner{lim: l}, nil }
+
+// groupMember reports whether pid is in the process group leader.
+func groupMember(leader, pid int) bool {
+	g, err := syscall.Getpgid(pid)
+	return err == nil && g == leader
+}
 
 // start puts the child in a process group of its own. These systems have no
 // parent-death signal, so a killed host leaves the tree running: the documented

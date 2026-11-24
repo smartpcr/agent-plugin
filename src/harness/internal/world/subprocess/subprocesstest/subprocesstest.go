@@ -84,6 +84,11 @@ const (
 	// "detached <child pid>" and waits to be killed, so a test can kill it and
 	// see the child live on.
 	RoleDetachHost = "detach-host"
+	// RoleDial connects to the address its two arguments name (a network,
+	// "unix" or "tcp", and an address), writes the line "dialed <pid>" on the
+	// connection and on standard output, and waits to be stopped with the
+	// connection open, so the host can ask which tree its peer is in.
+	RoleDial = "dial"
 )
 
 // stderr is the standard error of the roles that write to it; this package's own
@@ -147,6 +152,8 @@ func run(role string, args []string, out io.Writer) int {
 		}
 	case RoleDetachHost:
 		return detachHost(out)
+	case RoleDial:
+		return dial(args, out)
 	default:
 		return fail(fmt.Errorf("unknown role %q", role))
 	}

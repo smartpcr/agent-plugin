@@ -14,6 +14,7 @@ import (
 type groupOwner struct {
 	pid      int
 	fallback string
+	lim      Limits
 }
 
 func (o *groupOwner) report() Owner {
@@ -53,6 +54,11 @@ func (o *groupOwner) describe() string {
 }
 
 func (o *groupOwner) release() {}
+
+func (o *groupOwner) limitsReport() LimitsReport { return groupLimits(o.lim) }
+
+// member is best effort: pid is in the group, or descends from its leader.
+func (o *groupOwner) member(pid int) bool { return o.pid > 0 && groupMember(o.pid, pid) }
 
 // windowsLineLength is only meaningful on Windows.
 func windowsLineLength([]string) int { return 0 }

@@ -140,8 +140,22 @@ func TestScopeRequestedOnceThenGroupsInsideIt(t *testing.T) {
 		if err != nil || res.Owner.Kind != ProcessGroup {
 			t.Errorf("the request's own launch: %v, owner %s; want it run on a process group", err, res.Owner)
 		}
-		go func() { during <- startStubborn(t) }()
-		time.Sleep(50 * time.Millisecond)
+		// A start that comes now waits for the choice; the request goes on once
+		// it is waiting.
+		waiting := make(chan struct{}, 1)
+		waitingForScope = func() { waiting <- struct{}{} }
+		t.Cleanup(func() { waitingForScope = nil })
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			during <- startStubborn(t)
+		}()
+		t.Cleanup(func() { <-done })
+		select {
+		case <-waiting:
+		case <-ctx.Done():
+			t.Errorf("no start waited for the scope request: %v", ctx.Err())
+		}
 	}}
 	var announced atomic.Int32
 	reg, _, err := OpenRegistry(context.Background(), ProviderOptions{RunDir: t.TempDir(), UserManager: m, Announce: func(Owner) { announced.Add(1) }})

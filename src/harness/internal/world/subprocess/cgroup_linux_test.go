@@ -27,6 +27,11 @@ var inScopeTests = []string{
 	"TestInScopeSurvivorsNameTheGroup",
 	"TestInScopeStartFailureLeavesNoGroup",
 	"TestDetachedGrandchildStaysInTheTree",
+	// These run on both rungs: here on the process group, there on the control
+	// group (19.4.3 to 19.4.5).
+	"TestStopRunsTheLadderInOrder",
+	"TestPeerTreeOfADialingTree",
+	"TestLimitsAreAppliedByTheOwnerOrReportedUnavailable",
 }
 
 // A host whose own control group is writable puts each tree in a control group
@@ -80,7 +85,9 @@ func inScope(t *testing.T) {
 	}
 }
 
-// ownGroup is this process's control group directory.
+// ownGroup is the directory this process makes its per-tree groups in: its own
+// control group, or that group's parent once the host moved into its leaf group
+// for the Limits (subprocess.HostLeafPrefix).
 func ownGroup(t *testing.T) string {
 	t.Helper()
 	b, err := os.ReadFile("/proc/self/cgroup")
@@ -89,7 +96,11 @@ func ownGroup(t *testing.T) string {
 	}
 	for _, line := range strings.Split(string(b), "\n") {
 		if rel, ok := strings.CutPrefix(line, "0::"); ok {
-			return filepath.Join("/sys/fs/cgroup", filepath.Clean("/"+rel))
+			dir := filepath.Join("/sys/fs/cgroup", filepath.Clean("/"+rel))
+			if strings.HasPrefix(filepath.Base(dir), subprocess.HostLeafPrefix) {
+				dir = filepath.Dir(dir)
+			}
+			return dir
 		}
 	}
 	t.Fatalf("no cgroup v2 entry in %q", b)

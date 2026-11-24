@@ -67,3 +67,5 @@ func (noOwner) kill() error                               { return nil }
 func (noOwner) empty() (bool, error)                      { return true, nil }
 func (noOwner) describe() string                          { return "no tree owner (detached)" }
 func (noOwner) release()                                  {}
+func (noOwner) limitsReport() LimitsReport                { return LimitsReport{State: LimitsNone} }
+func (noOwner) member(int) bool                           { return false }

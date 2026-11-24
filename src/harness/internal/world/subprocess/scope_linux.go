@@ -161,14 +161,22 @@ func userBusEnv() Env {
 // other start waits for the choice and then gets the chosen rung.
 type requestingOwner struct {
 	unit string
+	lim  Limits
 	treeOwner
 }
 
+// waitingForScope, when set, is called by a start that waits for the scope
+// request; the tests use it to know a start is waiting.
+var waitingForScope func()
+
 func (o *requestingOwner) start(build func() *exec.Cmd) (*exec.Cmd, error) {
 	if slices.Contains(build().Args, o.unit) {
-		o.treeOwner = &groupOwner{}
+		o.treeOwner = &groupOwner{lim: o.lim}
 	} else {
-		o.treeOwner = chosenOwner()
+		if waitingForScope != nil {
+			waitingForScope()
+		}
+		o.treeOwner = chosenOwner(o.lim)
 	}
 	return o.treeOwner.start(build)
 }

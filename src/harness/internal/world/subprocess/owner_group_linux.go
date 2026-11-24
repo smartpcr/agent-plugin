@@ -4,6 +4,7 @@ package subprocess
 
 import (
 	"os/exec"
+	"strconv"
 	"syscall"
 )
 
@@ -25,4 +26,25 @@ func (o *groupOwner) start(build func() *exec.Cmd) (*exec.Cmd, error) {
 	}
 	o.pid = cmd.Process.Pid
 	return cmd, nil
+}
+
+// groupMember reports whether pid is in the process group leader, or has leader
+// among its ancestors (a member that left the group but not its parent chain).
+func groupMember(leader, pid int) bool {
+	group := strconv.Itoa(leader)
+	for range 64 {
+		f := procStat(pid)
+		if f == nil {
+			return false
+		}
+		if f[2] == group || pid == leader {
+			return true
+		}
+		ppid, err := strconv.Atoi(f[1])
+		if err != nil || ppid <= 1 {
+			return false
+		}
+		pid = ppid
+	}
+	return false
 }

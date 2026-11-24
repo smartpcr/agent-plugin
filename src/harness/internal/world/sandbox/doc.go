@@ -1,7 +1,8 @@
 // Package sandbox is the contract of the sandbox seam (A10, areas/sandbox-ssh.md
 // sec. 6.1) as far as the one process starter needs it before DH-S-13: the type
-// Launch, which world/subprocess requires on every Spec, and Trusted, the plan for
-// the host's own children.
+// Launch, which world/subprocess requires on every Spec, Trusted, the plan for
+// the host's own children, and Untrusted, the reported unconfined plan whose tree
+// is untrusted (step 19.4.4).
 //
 // This is the smallest part of the contract (gap-closure plan step 19.3.6). The
 // rest arrives at DH-S-13: Policy and policy.Resolver, sandbox.Service.Prepare,

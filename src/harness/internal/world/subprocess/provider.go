@@ -36,6 +36,9 @@ type ProviderOptions struct {
 	// ScopeTimeout bounds the scope request; zero is DefaultScopeTimeout. A
 	// manager that has not answered by then counts as absent.
 	ScopeTimeout time.Duration
+	// ControlSocket, when set, is the host's control-socket path, which Start
+	// keeps out of every child environment (SetControlSocket).
+	ControlSocket string
 	// Announce, when set, is called once per process with the chosen owner when
 	// that owner is a fallback (Owner.Fallback is set), so the weaker rung is
 	// announced once; every handle reports it as well.
@@ -60,6 +63,9 @@ type ProviderOptions struct {
 func OpenRegistry(ctx context.Context, o ProviderOptions) (*Registry, []Leftover, error) {
 	if o.ScopeTimeout <= 0 {
 		o.ScopeTimeout = DefaultScopeTimeout
+	}
+	if o.ControlSocket != "" {
+		SetControlSocket(o.ControlSocket)
 	}
 	prepareOwner(ctx, o)
 	if o.Announce != nil {

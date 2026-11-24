@@ -143,7 +143,7 @@ func alive(pid int) bool {
 // A child the job owner starts is created inside the job by createInJob, not by
 // the fallback; the fallback still starts a child in the job when it is used.
 func TestTheChildIsCreatedInTheJob(t *testing.T) {
-	owner, err := newOwner()
+	owner, err := newOwner(Limits{})
 	if err != nil {
 		t.Fatal(err)
 	}

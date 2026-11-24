@@ -41,9 +41,15 @@ func TestProviderStartOwnsTreesInsideADelegatedScope(t *testing.T) {
 		if announces != 0 {
 			t.Fatalf("an exact owner was announced: %s", h.stderr)
 		}
+		if !strings.Contains(h.stderr.String(), "limits: enforced (memory.max=268435456, pids.max=4096)") {
+			t.Fatalf("the delegated group did not take the limits: %s", h.stderr)
+		}
 	case string(subprocess.ProcessGroup):
 		if announces != 1 || !strings.Contains(h.stderr.String(), "own control group not writable") {
 			t.Fatalf("the process-group fallback was announced %d times; want once with its cause: %s", announces, h.stderr)
+		}
+		if !strings.Contains(h.stderr.String(), "limits: unavailable") {
+			t.Fatalf("the process-group rung did not report its limits unavailable: %s", h.stderr)
 		}
 	default:
 		t.Fatalf("owner %s on Linux", h.kind)

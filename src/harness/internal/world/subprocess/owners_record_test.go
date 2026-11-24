@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -26,7 +27,8 @@ import (
 // directory the value names ("-" for none), starts a RoleTree child, registers it
 // and prints "provider-host <child> <grandchild> <owner kind> <scope unit or ->",
 // then waits to be killed. It has no DSH_ prefix because BuildEnv removes every
-// DSH_* name. init dispatches it, before TestMain.
+// DSH_* name. init dispatches it, before TestMain. The tree asks for Limits, and
+// the host writes "limits: <outcome>" on standard error.
 const providerHostEnv = "SUBPROCESS_TEST_PROVIDER_HOST"
 
 func init() {
@@ -57,11 +59,16 @@ func providerHost(dir string) int {
 	pr, pw := io.Pipe()
 	p, err := subprocess.Start(context.Background(), subprocess.Spec{
 		Argv: []string{exe}, Env: subprocess.Env{subprocesstest.RoleEnv + "=" + subprocesstest.RoleTree},
-		Stdout: pw, Launch: subprocesstest.Launch,
+		Stdout: pw, Stderr: os.Stderr, Launch: subprocesstest.Launch,
+		Limits: hostLimits(),
 	})
 	if err != nil {
 		return fail(err)
 	}
+	go func() {
+		<-p.Exited()
+		_ = pw.CloseWithError(fmt.Errorf("the tree child exited: %v", p.Wait()))
+	}()
 	line, err := bufio.NewReader(pr).ReadString('\n')
 	var child, grandchild int
 	if _, serr := fmt.Sscanf(line, "tree %d %d", &child, &grandchild); err != nil || serr != nil {
@@ -71,6 +78,7 @@ func providerHost(dir string) int {
 	if err := reg.OwnerRecordErr(); err != nil {
 		return fail(err)
 	}
+	fmt.Fprintln(os.Stderr, "limits:", p.Limits())
 	scope := subprocess.DelegatedScope()
 	if scope == "" {
 		scope = "-"
@@ -108,6 +116,17 @@ func startProviderHost(t *testing.T, runDir string) hostRun {
 	}
 	h := subprocesstest.Start(t, subprocess.Spec{Argv: []string{exe}, Env: env, Stdout: pw, Stderr: errs, Launch: subprocesstest.Launch})
 	t.Cleanup(func() { _ = pr.Close() })
+	// A host that dies before it reports ends the read, never hangs it.
+	stop, done := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(done)
+		select {
+		case <-h.Exited():
+			_ = pw.CloseWithError(errors.New("the provider host exited"))
+		case <-stop:
+		}
+	}()
+	t.Cleanup(func() { close(stop); <-done })
 	line, err := bufio.NewReader(pr).ReadString('\n')
 	r := hostRun{host: h, stderr: errs}
 	if _, serr := fmt.Sscanf(line, "provider-host %d %d %s %s", &r.child, &r.grandchild, &r.kind, &r.scope); err != nil || serr != nil {
@@ -356,4 +375,15 @@ func (w *lockedBuilder) String() string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.b.String()
+}
+
+// hostLimits are the provider host's tree limits. Memory is capped on Linux
+// only: a Windows job's limit counts committed memory, and a binary built with
+// -race commits its shadow memory, so a small cap there stops the tree starting.
+func hostLimits() subprocess.Limits {
+	l := subprocess.Limits{Processes: 4096}
+	if runtime.GOOS == "linux" {
+		l.MemoryBytes = 256 << 20
+	}
+	return l
 }

@@ -23,9 +23,12 @@ func choose() Owner { return Owner{Kind: JobObject, Exact: true} }
 type jobOwner struct {
 	job     windows.Handle
 	streams *childStreams // the copies of a child createInJob made
+	limits  LimitsReport
 }
 
-func newOwner() (treeOwner, error) {
+// newOwner makes the job with kill-on-close and, before any child is in it, the
+// Limits: the job's committed-memory limit and its active-process limit.
+func newOwner(l Limits) (treeOwner, error) {
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("CreateJobObject: %w", err)
@@ -35,12 +38,23 @@ func newOwner() (treeOwner, error) {
 			LimitFlags: windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 		},
 	}
+	var applied []string
+	if l.MemoryBytes > 0 {
+		info.BasicLimitInformation.LimitFlags |= windows.JOB_OBJECT_LIMIT_JOB_MEMORY
+		info.JobMemoryLimit = uintptr(l.MemoryBytes)
+		applied = append(applied, fmt.Sprintf("job memory=%d", l.MemoryBytes))
+	}
+	if l.Processes > 0 {
+		info.BasicLimitInformation.LimitFlags |= windows.JOB_OBJECT_LIMIT_ACTIVE_PROCESS
+		info.BasicLimitInformation.ActiveProcessLimit = uint32(l.Processes)
+		applied = append(applied, fmt.Sprintf("active processes=%d", l.Processes))
+	}
 	if _, err := windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation,
 		uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info))); err != nil {
 		windows.CloseHandle(job)
 		return nil, fmt.Errorf("SetInformationJobObject: %w", err)
 	}
-	return &jobOwner{job: job}, nil
+	return &jobOwner{job: job, limits: limitsOf(l, applied, nil)}, nil
 }
 
 func (o *jobOwner) report() Owner { return TreeOwner() }
@@ -179,6 +193,27 @@ func (o *jobOwner) describe() string {
 		return "job state unknown: " + err.Error()
 	}
 	return fmt.Sprintf("%d processes left in the job", n)
+}
+
+func (o *jobOwner) limitsReport() LimitsReport { return o.limits }
+
+var procIsProcessInJob = windows.NewLazySystemDLL("kernel32.dll").NewProc("IsProcessInJob")
+
+// member is exact: IsProcessInJob on the tree's job.
+func (o *jobOwner) member(pid int) bool {
+	if o.job == 0 || pid <= 0 {
+		return false
+	}
+	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	if err != nil {
+		return false
+	}
+	defer windows.CloseHandle(h)
+	var in int32
+	if r, _, _ := procIsProcessInJob.Call(uintptr(h), uintptr(o.job), uintptr(unsafe.Pointer(&in))); r == 0 {
+		return false
+	}
+	return in != 0
 }
 
 func (o *jobOwner) release() {
