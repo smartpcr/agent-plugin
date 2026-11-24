@@ -68,9 +68,10 @@ var codes = map[herr.Reason]int{
 	ReasonClosed:       Failed,
 	ReasonTwoDocuments: Fatal,
 
-	"profile/unknown":    Invalid,
-	"profile/bad-layer":  Config,
-	"profile/bad-bundle": Config,
+	"profile/unknown":          Invalid,
+	"profile/bad-layer":        Config,
+	"profile/bad-bundle":       Config,
+	"profile/missing-required": Config,
 
 	"attachment/corrupt":     Failed,
 	"attachment/not-found":   Invalid,

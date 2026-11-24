@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 
 	"github.com/smartpcr/agent-plugin/src/go/loader"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/config"
@@ -121,13 +122,9 @@ func Stack(def Definition, src Sources) ([]loader.Layer, []loader.Issue, error) 
 	if read == nil {
 		read = os.ReadFile
 	}
-	var layers []loader.Layer
-	for _, name := range def.Bundles {
-		layer, err := Bundle(name)
-		if err != nil {
-			return nil, nil, err
-		}
-		layers = append(layers, layer)
+	layers, err := BundleLayers(def)
+	if err != nil {
+		return nil, nil, err
 	}
 	var issues []loader.Issue
 	file := func(label, p string, optional, writable bool) error {
@@ -158,3 +155,73 @@ func Stack(def Definition, src Sources) ([]loader.Layer, []loader.Issue, error) 
 	launcher := loader.Layer{Label: LauncherLabel, Ops: append([]loader.Op{}, src.Launcher...)}
 	return append(layers, launcher), issues, nil
 }
+
+// BundleLayers returns the embedded bundle layers of def, in its order.
+func BundleLayers(def Definition) ([]loader.Layer, error) {
+	layers := make([]loader.Layer, 0, len(def.Bundles))
+	for _, name := range def.Bundles {
+		layer, err := Bundle(name)
+		if err != nil {
+			return nil, err
+		}
+		layers = append(layers, layer)
+	}
+	return layers, nil
+}
+
+// Compose composes layers for def and applies the static Required rule (boot.md
+// §6.2, DH-ADR-BOOT-6) with no evaluator: see ComposeWith.
+func Compose(def Definition, layers []loader.Layer) ([]loader.EntryOptions, []loader.Issue, error) {
+	return ComposeWith(def, layers, nil)
+}
+
+// ComposeWith composes layers for def and applies the static Required rule by
+// running config.Check with CheckOptions.Required = def.Required, so a launch, a
+// reload and this composition share one definition of the rule: a required id is
+// written with loader.Separator from its enclosing groups, only a group's children
+// are visited, and an entry is disabled by its literal flag or by a disabled
+// expression that eval yields true for, fails, yields no boolean or cannot run (a
+// nil eval). A failure is ReasonMissingRequired naming every id the tree lacks or
+// disables, wrapping the check's issues for them; the tree and the other issues of
+// the check are returned with it.
+func ComposeWith(def Definition, layers []loader.Layer, eval loader.Evaluator) ([]loader.EntryOptions, []loader.Issue, error) {
+	r := config.Check(layers, config.CheckOptions{Evaluator: eval, Required: def.Required})
+	required := map[string]bool{}
+	for _, id := range def.Required {
+		required[id] = true
+	}
+	var issues, failed []loader.Issue
+	var missing, off []string
+	for _, issue := range r.Issues {
+		if !strings.HasPrefix(issue.Message, requiredMessage) {
+			issues = append(issues, issue)
+			continue
+		}
+		switch id := strings.TrimSuffix(issue.Path, ".disabled"); {
+		case required[issue.Path]:
+			missing = append(missing, issue.Path)
+		case id != issue.Path && required[id]:
+			off = append(off, id)
+		default:
+			issues = append(issues, issue)
+			continue
+		}
+		failed = append(failed, issue)
+	}
+	if len(failed) == 0 {
+		return r.Tree, issues, nil
+	}
+	var parts []string
+	if len(missing) > 0 {
+		parts = append(parts, "lacks "+strings.Join(missing, ", "))
+	}
+	if len(off) > 0 {
+		parts = append(parts, "disables "+strings.Join(off, ", "))
+	}
+	return r.Tree, issues, herr.Wrap(ReasonMissingRequired, &loader.ParseError{Issues: failed},
+		fmt.Sprintf("profile %s: the composed tree %s, which its Required list names", def.Name, strings.Join(parts, " and ")))
+}
+
+// requiredMessage begins the message of every issue config.Check reports for
+// CheckOptions.Required.
+const requiredMessage = "is a required entry"

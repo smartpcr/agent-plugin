@@ -1,4 +1,30 @@
+# admin
+[]
+# core
+# required: session.store, agent.registry, agent.driver, tools.registry, agent.presets
+[
+  {
+    "id": "logging",
+    "name": "boot.logging",
+    "config": {
+      "destination": "stderr",
+      "level": "info"
+    }
+  },
+  {
+    "id": "sharing",
+    "name": "host.sharing",
+    "config": {
+      "off": false
+    }
+  },
+  {
+    "id": "egress",
+    "name": "util.egress"
+  }
+]
 # web
+# required: session.store, agent.registry, agent.driver, tools.registry, agent.presets, host.listen, host.auth, host.assets, host.web, host.access, host.stream, ui.shell
 [
   {
     "id": "logging",
@@ -21,6 +47,13 @@
   }
 ]
 # headless
+# required: session.store, agent.registry, agent.driver, tools.registry, agent.presets, cli.headless
+# skipped, target not built: bundles/headless.yml:18:3: layer bundle:headless: merge "human.secrets" matches no entry
+# skipped, target not built: bundles/headless.yml:23:3: layer bundle:headless: override "human.authorization" matches no entry
+# skipped, target not built: bundles/headless.yml:31:3: layer bundle:headless: merge "preset.standard" matches no entry
+# skipped, target not built: bundles/headless.yml:36:3: layer bundle:headless: merge "preset.script" matches no entry
+# skipped, target not built: bundles/headless.yml:41:3: layer bundle:headless: merge "preset.minimal" matches no entry
+# skipped, target not built: bundles/headless.yml:46:3: layer bundle:headless: merge "preset.creator" matches no entry
 [
   {
     "id": "logging",
@@ -40,9 +73,15 @@
   {
     "id": "egress",
     "name": "util.egress"
+  },
+  {
+    "id": "cli.headless",
+    "name": "cli.headless"
   }
 ]
 # sdk
+# required: session.store, agent.registry, agent.driver, tools.registry, agent.presets, wire.stdio, wire.sdk
+# skipped, target not built: bundles/sdk.yml:19:3: layer bundle:sdk: override "session.title.llm" matches no entry
 [
   {
     "id": "logging",
@@ -62,9 +101,18 @@
   {
     "id": "egress",
     "name": "util.egress"
+  },
+  {
+    "id": "wire.stdio",
+    "name": "wire.stdio"
+  },
+  {
+    "id": "wire.sdk",
+    "name": "wire.sdk"
   }
 ]
 # sdk-minimal
+# skipped, target not built: bundles/sdk.yml:19:3: layer bundle:sdk: override "session.title.llm" matches no entry
 [
   {
     "id": "logging",
@@ -84,6 +132,14 @@
   {
     "id": "egress",
     "name": "util.egress"
+  },
+  {
+    "id": "wire.stdio",
+    "name": "wire.stdio"
+  },
+  {
+    "id": "wire.sdk",
+    "name": "wire.sdk"
   }
 ]
 # acp
