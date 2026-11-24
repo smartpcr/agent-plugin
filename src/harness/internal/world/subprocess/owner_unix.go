@@ -55,7 +55,13 @@ func (o *groupOwner) describe() string {
 
 func (o *groupOwner) release() {}
 
-func (o *groupOwner) limitsReport() LimitsReport { return groupLimits(o.lim) }
+// limitsReport: the process-group rung holds no limits.
+func (o *groupOwner) limitsReport() LimitsReport {
+	if o.lim.IsZero() {
+		return LimitsReport{State: LimitsNone}
+	}
+	return LimitsReport{State: LimitsUnavailable, Detail: "the process-group rung applies no limits"}
+}
 
 // member is best effort: pid is in the group, or descends from its leader.
 func (o *groupOwner) member(pid int) bool { return o.pid > 0 && groupMember(o.pid, pid) }

@@ -64,11 +64,3 @@ func limitsOf(l Limits, applied, missing []string) LimitsReport {
 	}
 	return LimitsReport{State: LimitsPartial, Detail: strings.Join(applied, ", ") + "; " + strings.Join(missing, "; ")}
 }
-
-// groupLimits is the process-group rung's report: it holds no limits.
-func groupLimits(l Limits) LimitsReport {
-	if l.IsZero() {
-		return LimitsReport{State: LimitsNone}
-	}
-	return LimitsReport{State: LimitsUnavailable, Detail: "the process-group rung applies no limits"}
-}

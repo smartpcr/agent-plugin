@@ -49,8 +49,8 @@ func newOwner(l Limits) (treeOwner, error) {
 		info.BasicLimitInformation.ActiveProcessLimit = uint32(l.Processes)
 		applied = append(applied, fmt.Sprintf("active processes=%d", l.Processes))
 	}
-	if _, err := windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation,
-		uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info))); err != nil {
+	if r, _, err := procSetInformationJobObject.Call(uintptr(job), windows.JobObjectExtendedLimitInformation,
+		uintptr(unsafe.Pointer(&info)), unsafe.Sizeof(info)); r == 0 {
 		windows.CloseHandle(job)
 		return nil, fmt.Errorf("SetInformationJobObject: %w", err)
 	}
@@ -177,9 +177,11 @@ type basicAccounting struct {
 
 func (o *jobOwner) active() (uint32, error) {
 	var info basicAccounting
-	err := windows.QueryInformationJobObject(o.job, windows.JobObjectBasicAccountingInformation,
-		uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)), nil)
-	return info.ActiveProcesses, err
+	if r, _, err := procQueryInformationJobObject.Call(uintptr(o.job), windows.JobObjectBasicAccountingInformation,
+		uintptr(unsafe.Pointer(&info)), unsafe.Sizeof(info), 0); r == 0 {
+		return 0, fmt.Errorf("QueryInformationJobObject: %w", err)
+	}
+	return info.ActiveProcesses, nil
 }
 
 func (o *jobOwner) empty() (bool, error) {
@@ -197,7 +199,20 @@ func (o *jobOwner) describe() string {
 
 func (o *jobOwner) limitsReport() LimitsReport { return o.limits }
 
-var procIsProcessInJob = windows.NewLazySystemDLL("kernel32.dll").NewProc("IsProcessInJob")
+// The job-object calls go through LazyProc.Call, whose //go:uintptrescapes moves
+// the information buffer to the heap for the call. x/sys's wrappers of
+// SetInformationJobObject and QueryInformationJobObject take a plain uintptr, so
+// a goroutine stack that grows between the conversion and the system call leaves
+// the kernel reading or writing the old stack: an accounting read then sees zero
+// active processes, the job is taken for empty and closed with its tree inside
+// (kill-on-close ends a detached grandchild, DH-T-NODEPROC-6 under -race), and a
+// job may be set without kill-on-close or its Limits.
+var (
+	kernel32                      = windows.NewLazySystemDLL("kernel32.dll")
+	procIsProcessInJob            = kernel32.NewProc("IsProcessInJob")
+	procQueryInformationJobObject = kernel32.NewProc("QueryInformationJobObject")
+	procSetInformationJobObject   = kernel32.NewProc("SetInformationJobObject")
+)
 
 // member is exact: IsProcessInJob on the tree's job.
 func (o *jobOwner) member(pid int) bool {
