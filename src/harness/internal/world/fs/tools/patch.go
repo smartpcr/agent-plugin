@@ -62,6 +62,9 @@ type simFile struct {
 type step struct {
 	h    patch.Hunk
 	data []byte
+	// destExisted records whether a move's destination existed when
+	// preflight planned the step, so commit can guard it accordingly.
+	destExisted bool
 }
 
 // patchRun is one apply_patch call: the simulated state of every path it
@@ -152,17 +155,19 @@ func (r *patchRun) preflight(p *patch.Patch) ([]step, error) {
 			if len(data) > r.f.cfg.TextMaxBytes {
 				return nil, herr.Newf(fs.CodeTooLarge, "Update File %s: the result is %d bytes, more than the %d a text tool writes", h.Path, len(data), r.f.cfg.TextMaxBytes)
 			}
+			destExisted := false
 			if h.MoveTo != "" && pathKey(h.MoveTo) != pathKey(h.Path) {
 				d, err := r.state(h.MoveTo, false)
 				if err != nil {
 					return nil, err
 				}
+				destExisted = d.exists
 				d.exists, d.loaded, d.text, d.bom = true, true, next, s.bom
 				s.exists, s.loaded, s.text = false, false, ""
 			} else {
 				s.text = next
 			}
-			plan = append(plan, step{h: h, data: data})
+			plan = append(plan, step{h: h, data: data, destExisted: destExisted})
 		}
 	}
 	return plan, nil
@@ -210,8 +215,13 @@ func (r *patchRun) commit(st step) (string, error) {
 		return fmt.Sprintf("M %s (version %s)%s", out.Target.Display, version(out.Version), durability(out)), nil
 	}
 	// A move is two effects (DH-ADR-FS-11 (c)): the destination is published,
-	// then the source removed.
-	out, err := r.f.ops.Write(r.ctx, r.c, fs.Ref{Path: h.MoveTo}, st.data, fs.NoGuard)
+	// then the source removed. The destination keeps the state preflight saw:
+	// its recorded version when it existed, absence otherwise.
+	var dest fs.Guard = fs.CreateIfAbsent
+	if st.destExisted {
+		dest = r.guard(h.MoveTo)
+	}
+	out, err := r.f.ops.Write(r.ctx, r.c, fs.Ref{Path: h.MoveTo}, st.data, dest)
 	if err != nil {
 		return "", err
 	}
