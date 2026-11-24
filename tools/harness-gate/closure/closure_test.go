@@ -398,7 +398,7 @@ func TestStoryReadyRefusesDeletedObligations(t *testing.T) {
 	b := s.Ready(x, "DH-S-16", parse(strings.Join(kept, "\n")), true)
 	for _, w := range [][]string{
 		{"step 16.10 has no row"},
-		{"step 16.4 owes 1 manual check", "has 0"},
+		{"step 16.4: manual check \"Ctrl-C during a tool call\" has no row"},
 		{`owner default "Windows double-click" has no row`, "M2-C-4"},
 		{"DH-E-STORE-2 [Linux (WSL)]", "has no row"},
 		{"DH-E-FS-3 [Windows] (venue guarded", "has no row"},
@@ -427,5 +427,87 @@ func TestParseRecordRefusesMissingSeparator(t *testing.T) {
 	}
 	if _, err := ParseRecord("x.md", strings.NewReader("## Scenarios\n| Scenario | Result |\n| :--- | ---: |\n")); err != nil {
 		t.Errorf("aligned separator: %v", err)
+	}
+}
+
+func readFixture(t *testing.T, parts ...string) string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(append([]string{"..", "testdata"}, parts...)...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.ReplaceAll(string(raw), "\r\n", "\n")
+}
+
+var evidencePath = []string{"docs", "stories", "harness-DSH-M2", "evidence"}
+
+// A build stage is judged with --built whatever the caller asks: DH-S-16 with every
+// scenario row passed but a step without its commit stays not ready without --built.
+func TestStoryReadyJudgesBuildStageInItsMode(t *testing.T) {
+	s := Stories[DefaultStory]
+	x := index(t, "built-through: DH-S-8\nstages:\n  DH-S-16:\n    - id: DH-E-STORE-1\n      authored: DH-S-7\n    - id: DH-E-STORE-6\n      authored: DH-S-7\n")
+	src := readFixture(t, append([]string{"closure", "closed_ready"}, append(evidencePath, "DH-S-16.md")...)...)
+	if b := s.Ready(x, "DH-S-16", record(t, src), true); len(b) != 0 {
+		t.Fatalf("closed_ready with --built: %q", b)
+	}
+	broken := strings.Replace(src, "| 16.1 | DH-D-BUNDLE-3 | 0a1b2c3 |", "| 16.1 | DH-D-BUNDLE-3 | |", 1)
+	if broken == src {
+		t.Fatal("fixture has no step 16.1 row")
+	}
+	b := s.Ready(x, "DH-S-16", record(t, broken), false)
+	for _, w := range [][]string{{"DH-S-16 is a build stage", "--built"}, {"step 16.1", "no commit SHA"}} {
+		if !slices.ContainsFunc(b, func(s string) bool { return containsAll(s, w...) }) {
+			t.Errorf("blockers name no %q:\n%s", w, strings.Join(b, "\n"))
+		}
+	}
+	if b := s.Ready(x, "DH-S-17", record(t, src), true); !slices.ContainsFunc(b, func(s string) bool { return containsAll(s, "DH-S-17 is an acceptance stage") }) {
+		t.Errorf("an acceptance stage with --built: blockers %q name no mode mismatch", b)
+	}
+}
+
+// Manual checks are owed by identity: a copy of one check of step 12.2 does not stand
+// in for the other.
+func TestManualCheckCannotBeSubstituted(t *testing.T) {
+	src := readFixture(t, append([]string{"records", "created"}, append(evidencePath, "DH-S-12.md")...)...)
+	const first = "| 12.2 | the write tool asked for a path outside the roots through a symbolic link: the denial (scratch directory) |"
+	const swap = "| 12.2 | a directory swapped for a link during a write: the fence held (scratch directory) |"
+	if !strings.Contains(src, first) || !strings.Contains(src, swap) {
+		t.Fatal("fixture DH-S-12 lacks its two 12.2 checks")
+	}
+	m := Stories[DefaultStory].Obligations["DH-S-12"].Missing(record(t, strings.Replace(src, swap, first, 1)), true)
+	for _, w := range [][]string{{"a directory swapped for a link", "has no row"}, {"symbolic link", "listed twice"}} {
+		if !slices.ContainsFunc(m, func(s string) bool { return containsAll(s, w...) }) {
+			t.Errorf("missing %q names no %q", m, w)
+		}
+	}
+}
+
+// The closure record carries every deliverable of tech-spec sec. 3.2 by ID: replacing
+// one with an unknown ID of the same priority and state is refused.
+func TestClosureRecordNeedsEveryDeliverableID(t *testing.T) {
+	s := Stories[DefaultStory]
+	src := readFixture(t, append([]string{"records", "created"}, append(evidencePath, "closure.md")...)...)
+	parse := func(src string) *Record {
+		rec, err := ParseDocument("closure.md", strings.NewReader(src), DeliverablesHeading, HeldOpenHeading)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rec
+	}
+	if p := ClosureProblems(s, parse(src)); len(p) != 0 {
+		t.Fatalf("created closure record: %q", p)
+	}
+	broken := strings.Replace(src, "| DH-D-FS-4 |", "| DH-D-FS-999 |", 1)
+	if broken == src {
+		t.Fatal("fixture closure.md has no DH-D-FS-4 row")
+	}
+	p := ClosureProblems(s, parse(broken))
+	for _, w := range []string{"DH-D-FS-999 is not a deliverable", "deliverable DH-D-FS-4 has no row"} {
+		if !slices.ContainsFunc(p, func(s string) bool { return strings.Contains(s, w) }) {
+			t.Errorf("problems %q name no %q", p, w)
+		}
+	}
+	if p := ClosureProblems(s, parse(strings.Replace(src, "| DH-D-SDK-8 | P1 |", "| DH-D-SDK-8 | P0 |", 1))); !slices.ContainsFunc(p, func(s string) bool { return strings.Contains(s, `DH-D-SDK-8: priority "P0"`) }) {
+		t.Errorf("a changed priority: problems %q", p)
 	}
 }

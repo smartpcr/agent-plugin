@@ -2,6 +2,7 @@ package closure
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -16,18 +17,44 @@ import (
 type Story struct {
 	ID             string
 	Stages         []string
-	BuildStages    []string // the stages that close with --built; the others are acceptance stages
-	Deliverables   int      // rows of the closure record's deliverable table
+	BuildStages    []string          // the stages that close with --built; the others are acceptance stages
+	Deliverables   map[string]string // every deliverable of the closure record, by ID, with its priority
 	P0, P1         int
 	DoneCandidates []string               // the only deliverables that may read done
 	HeldOpen       []string               // the H-items the closure record must list
 	Obligations    map[string]Obligations // the rows each stage record owes
 }
 
+// Built reports whether stage closes with --built: a stage of the story is a build
+// stage exactly when BuildStages lists it, whatever the caller asked for.
+func (s Story) Built(stage string) (built, known bool) {
+	return slices.Contains(s.BuildStages, stage), slices.Contains(s.Stages, stage)
+}
+
+// ModeProblem names the mismatch when built is not the mode stage closes in, or "".
+func (s Story) ModeProblem(stage string, built bool) string {
+	want, known := s.Built(stage)
+	switch {
+	case !known || want == built:
+		return ""
+	case want:
+		return fmt.Sprintf("%s is a build stage of %s: it closes with --built (steps, manual checks, owner defaults and guarded rows)", stage, s.ID)
+	default:
+		return fmt.Sprintf("%s is an acceptance stage of %s: it closes without --built", stage, s.ID)
+	}
+}
+
 // Ready is the package Ready plus the rows stage's record owes (Obligations): a
-// deleted step, manual check, owner default or scenario row is a blocker.
+// deleted step, manual check, owner default or scenario row is a blocker. A stage of
+// the story is judged in its own mode; asking for the other mode is itself a blocker,
+// so a build stage judged without --built can never skip its build tables.
 func (s Story) Ready(x *acceptance.Index, stage string, rec *Record, built bool) []string {
-	blockers := Ready(x, stage, rec, built)
+	var blockers []string
+	if p := s.ModeProblem(stage, built); p != "" {
+		blockers = append(blockers, p)
+		built, _ = s.Built(stage)
+	}
+	blockers = append(blockers, Ready(x, stage, rec, built)...)
 	if ob, ok := s.Obligations[stage]; ok {
 		blockers = append(blockers, ob.Missing(rec, built)...)
 	}
@@ -45,7 +72,7 @@ var Stories = map[string]Story{
 		ID:           "harness:DSH-M2",
 		Stages:       []string{"DH-S-12", "DH-S-13", "DH-S-14", "DH-S-15", "DH-S-16", "DH-S-17", "DH-S-18"},
 		BuildStages:  []string{"DH-S-12", "DH-S-13", "DH-S-14", "DH-S-15", "DH-S-16"},
-		Deliverables: 35, P0: 30, P1: 5,
+		Deliverables: m2Deliverables, P0: 30, P1: 5,
 		DoneCandidates: []string{
 			"DH-D-VIEW-10", "DH-D-SANDBOX-1", "DH-D-HUMAN-4", "DH-D-FS-6", "DH-D-SANDBOX-4", "DH-D-EXEC-3",
 			"DH-D-BUNDLE-1", "DH-D-SDK-6", "DH-D-CLI-9", "DH-D-SDK-8", "DH-D-VIEW-4",
@@ -53,6 +80,17 @@ var Stories = map[string]Story{
 		HeldOpen:    []string{"H-1", "H-2", "H-3", "H-4", "H-10", "H-21"},
 		Obligations: m2Obligations,
 	},
+}
+
+// m2Deliverables are the 35 deliverables of tech-spec sec. 3.2, with their priority.
+var m2Deliverables = map[string]string{
+	"DH-D-VIEW-10": "P0", "DH-D-FS-4": "P0", "DH-D-SANDBOX-1": "P0", "DH-D-HUMAN-4": "P1", "DH-D-FS-6": "P0",
+	"DH-D-SANDBOX-2": "P0", "DH-D-SANDBOX-3": "P0", "DH-D-SANDBOX-4": "P0", "DH-D-EXEC-3": "P0", "DH-D-EXEC-4": "P0",
+	"DH-D-EXEC-8": "P0", "DH-D-EXEC-9": "P0", "DH-D-CONTEXT-2": "P0", "DH-D-BUNDLE-1": "P0", "DH-D-BUNDLE-2": "P0",
+	"DH-D-BUNDLE-4": "P0", "DH-D-BUNDLE-5": "P0", "DH-D-BUNDLE-6": "P0", "DH-D-HOST-1": "P0", "DH-D-HOST-2": "P0",
+	"DH-D-HOST-3": "P0", "DH-D-API-1": "P0", "DH-D-SDK-3": "P0", "DH-D-SDK-4": "P0", "DH-D-SDK-5": "P0",
+	"DH-D-SDK-6": "P0", "DH-D-BUNDLE-3": "P0", "DH-D-CLI-2": "P0", "DH-D-CLI-4": "P0", "DH-D-CLI-5": "P0",
+	"DH-D-CLI-9": "P0", "DH-D-SDK-8": "P1", "DH-D-UTIL-7": "P1", "DH-D-UTIL-8": "P1", "DH-D-VIEW-4": "P1",
 }
 
 // DefaultStory is the story of --story when it is not given.
@@ -178,6 +216,12 @@ func ClosureProblems(s Story, rec *Record) []string {
 				add("%s is listed twice", id)
 			}
 			seen[id] = true
+			want, owed := s.Deliverables[id]
+			if !owed {
+				add("%s is not a deliverable of %s (tech-spec sec. 3.2)", id, s.ID)
+			} else if got := r.Get("priority"); got != want {
+				add("%s: priority %q, tech-spec sec. 3.2 gives %s", id, got, want)
+			}
 			switch r.Get("priority") {
 			case "P0":
 				p0++
@@ -197,8 +241,13 @@ func ClosureProblems(s Story, rec *Record) []string {
 				add("%s: %q names no finishing stage or held-open item", id, fin)
 			}
 		}
-		if len(seen) != s.Deliverables || p0 != s.P0 || p1 != s.P1 {
-			add("%s has %d deliverables (%d P0, %d P1); %s has %d (%d P0, %d P1)", DeliverablesHeading, len(seen), p0, p1, s.ID, s.Deliverables, s.P0, s.P1)
+		if len(seen) != len(s.Deliverables) || p0 != s.P0 || p1 != s.P1 {
+			add("%s has %d deliverables (%d P0, %d P1); %s has %d (%d P0, %d P1)", DeliverablesHeading, len(seen), p0, p1, s.ID, len(s.Deliverables), s.P0, s.P1)
+		}
+		for _, id := range slices.Sorted(maps.Keys(s.Deliverables)) {
+			if !seen[id] {
+				add("deliverable %s has no row (tech-spec sec. 3.2)", id)
+			}
 		}
 		for _, id := range s.DoneCandidates {
 			if !seen[id] {

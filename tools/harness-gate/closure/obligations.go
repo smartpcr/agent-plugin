@@ -12,15 +12,21 @@ type ScenarioRow struct {
 	Scenario, Variant, Venue, Leg string
 }
 
+// ManualCheck is one manual check a stage record owes: its step and the check itself,
+// so a check cannot be replaced by a second copy of another check of the same step.
+type ManualCheck struct {
+	Step, Check string
+}
+
 // Obligations are the rows a stage record owes from the day Stage 1.1 created it
 // (implementation-plan Stage 1.1: "every step has a commit SHA, manual checks and
 // owner defaults recorded"): impl.md's steps of the stage, the manual checks it names
-// (by step, one entry per check), the impl.md sec. 9.1 owner defaults whose "Confirm
+// (by step and check), the impl.md sec. 9.1 owner defaults whose "Confirm
 // before" is the stage, and the scenario rows of its run. Deleting an owed row is a
 // blocker, never a way to remove one.
 type Obligations struct {
 	Steps         []string
-	ManualChecks  []string
+	ManualChecks  []ManualCheck
 	OwnerDefaults []string
 	Scenarios     []ScenarioRow
 }
@@ -39,18 +45,16 @@ func (ob Obligations) Missing(rec *Record, built bool) []string {
 				out = append(out, fmt.Sprintf("step %s has no row in %s; the stage owes every step its commit", s, StepsHeading))
 			}
 		}
-		checks := map[string]int{}
+		checks := map[ManualCheck]int{}
 		for _, r := range rec.ManualChecks.Rows {
-			checks[r.Get("step")]++
+			c := ManualCheck{r.Get("step"), normalDefault(r.Get("check"))}
+			if checks[c]++; checks[c] == 2 {
+				out = append(out, fmt.Sprintf("step %s: manual check %q is listed twice in %s; each check is recorded once", c.Step, r.Get("check"), ManualChecksHeading))
+			}
 		}
-		owed := map[string]int{}
-		for _, s := range ob.ManualChecks {
-			owed[s]++
-		}
-		for _, s := range ob.ManualChecks {
-			if n := owed[s]; n > 0 && checks[s] < n {
-				out = append(out, fmt.Sprintf("step %s owes %d manual check(s), %s has %d", s, n, ManualChecksHeading, checks[s]))
-				owed[s] = 0
+		for _, c := range ob.ManualChecks {
+			if checks[ManualCheck{c.Step, normalDefault(c.Check)}] == 0 {
+				out = append(out, fmt.Sprintf("step %s: manual check %q has no row in %s; the stage owes it", c.Step, c.Check, ManualChecksHeading))
 			}
 		}
 		defaults := map[string]bool{}
@@ -82,27 +86,43 @@ func normalDefault(s string) string {
 // m2Obligations are the rows of the harness:DSH-M2 records as Stage 1.1 created them.
 var m2Obligations = map[string]Obligations{
 	"DH-S-12": {
-		Steps:         []string{"12.1", "12.2", "12.3", "12.4", "12.5"},
-		ManualChecks:  []string{"12.2", "12.2"},
+		Steps: []string{"12.1", "12.2", "12.3", "12.4", "12.5"},
+		ManualChecks: []ManualCheck{
+			{"12.2", "the write tool asked for a path outside the roots through a symbolic link: the denial (scratch directory)"},
+			{"12.2", "a directory swapped for a link during a write: the fence held (scratch directory)"},
+		},
 		OwnerDefaults: []string{"Full-access label", "UTF-8-only text tools"},
 	},
 	"DH-S-13": {
-		Steps:         []string{"13.1", "13.2", "13.3", "13.4", "13.5", "13.6", "13.7", "13.8"},
-		ManualChecks:  []string{"13.4", "13.3"},
+		Steps: []string{"13.1", "13.2", "13.3", "13.4", "13.5", "13.6", "13.7", "13.8"},
+		ManualChecks: []ManualCheck{
+			{"13.4", "on a Linux host, a confined command that writes outside its roots: the denial and the reported enforcement"},
+			{"13.3", "both backends removed: the command did not run"},
+		},
 		OwnerDefaults: []string{"`partial` when delegated execution cannot be stopped"},
 	},
 	"DH-S-14": {
-		Steps:        []string{"14.1", "14.2", "14.3", "14.4", "14.5"},
-		ManualChecks: []string{"14.2", "14.3"},
+		Steps: []string{"14.1", "14.2", "14.3", "14.4", "14.5"},
+		ManualChecks: []ManualCheck{
+			{"14.2", "the composed tree of each profile previewed: which layer supplied three chosen values"},
+			{"14.3", "a preset edited while a test session runs: the session keeps its revision"},
+		},
 	},
 	"DH-S-15": {
-		Steps:         []string{"15.1", "15.2", "15.3", "15.4", "15.5", "15.6", "15.7", "15.8"},
-		ManualChecks:  []string{"15.2", "15.6"},
+		Steps: []string{"15.1", "15.2", "15.3", "15.4", "15.5", "15.6", "15.7", "15.8"},
+		ManualChecks: []ManualCheck{
+			{"15.2", "a listener refuses a request without the cookie, from another origin, and from a process the host started for the model"},
+			{"15.6", "one session driven by hand over stdio with typed JSON lines"},
+		},
 		OwnerDefaults: []string{"No SDK session grant", "Client time zone"},
 	},
 	"DH-S-16": {
-		Steps:         []string{"16.1", "16.2", "16.3", "16.4", "16.5", "16.6", "16.7", "16.8", "16.9", "16.10"},
-		ManualChecks:  []string{"16.3", "16.4", "16.5"},
+		Steps: []string{"16.1", "16.2", "16.3", "16.4", "16.5", "16.6", "16.7", "16.8", "16.9", "16.10"},
+		ManualChecks: []ManualCheck{
+			{"16.3", "one `dsh headless` prompt on the signed-in Claude Code route (M2-I-1) with an approval answered on the terminal"},
+			{"16.4", "Ctrl-C during a tool call"},
+			{"16.5", "a second `dsh` beside a running host"},
+		},
 		OwnerDefaults: []string{"Second `dsh web` reuses the host", "Windows double-click", "`dsh headless` progress"},
 		Scenarios: []ScenarioRow{
 			{"DH-E-STORE-1", "Linux (WSL)", "guarded", "required"},

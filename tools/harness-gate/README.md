@@ -149,6 +149,11 @@ Without `--built`, the check is an acceptance close:
 - every index-listed ID needs a row;
 - every row of the `## Scenarios` table counts.
 
+The mode is fixed by the story, not by the caller: DH-S-12..16 close with `--built`
+and DH-S-17..18 without it. Either command given the other mode exits 2. Called as a
+library, `Story.Ready` names the mismatch as a blocker and judges the stage in its
+own mode, so a build stage never skips its build tables.
+
 `--built` is a build-stage close (DH-S-12..16), checked in addition:
 - only rows with venue `guarded` count, and every index-listed ID still needs a row;
 - every `## Steps` row needs a merge commit (a SHA of 7 to 40 lower-case hex
@@ -162,7 +167,8 @@ Without `--built`, the check is an acceptance close:
 
 Each record also owes the rows Stage 1.1 created in it (`closure/obligations.go`):
 - every step;
-- the manual checks of each step;
+- each manual check, matched on its step and its check text, so a second copy of
+  one check cannot stand in for another (a duplicate row is itself a blocker);
 - the stage's owner defaults;
 - every scenario row, matched on scenario, variant, venue and leg together.
 
@@ -197,7 +203,8 @@ sec. 7.3 headings, the four tables and their columns). A record that reads
 the story's `closure.md`:
 - a `## Deliverables` table with Deliverable, Priority, State, Finishing stage or
   held-open item, and Proving scenarios;
-- the deliverable count and the P0/P1 split;
+- every deliverable of tech-spec sec. 3.2 by ID with its priority (no unknown ID,
+  no missing one), the count and the P0/P1 split;
 - a state of `not built`, `built` or `done`, where only the done-candidates may
   read `done` and every row that is not done names a finishing stage or `H-` item;
 - a `## Held-open items` table with a row per held-open item.

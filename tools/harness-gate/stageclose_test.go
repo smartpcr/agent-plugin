@@ -103,6 +103,12 @@ func TestStageClosureUsage(t *testing.T) {
 	if code, stdout, _ := runClosureGate(t, "ready", "--root", root, "--stage", "DH-S-17"); code != 1 || !strings.Contains(stdout, "not found") && !strings.Contains(stdout, "no such file") && !strings.Contains(stdout, "cannot find") {
 		t.Errorf("a missing record exits %d, want 1 naming it; stdout:\n%s", code, stdout)
 	}
+	if code, _, stderr := runClosureGate(t, "close", "--root", root, "--stage", "DH-S-16"); code != 2 || !strings.Contains(stderr, "--built") {
+		t.Errorf("a build stage without --built exits %d, want 2 naming --built; stderr:\n%s", code, stderr)
+	}
+	if code, _, _ := runClosureGate(t, "ready", "--root", root, "--stage", "DH-S-17", "--built"); code != 2 {
+		t.Errorf("an acceptance stage with --built exits %d, want 2", code)
+	}
 	if code, _, _ := runClosureGate(t, "records", "--root", root, "--story", "harness:NOPE"); code != 2 {
 		t.Errorf("an unknown story exits %d, want 2", code)
 	}

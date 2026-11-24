@@ -47,6 +47,10 @@ func parseCloseFlags(name string, args []string, stderr io.Writer) (closeFlags, 
 		fmt.Fprintf(stderr, "harness-gate %s: unknown story %q\n", name, f.story)
 		return f, false
 	}
+	if p := s.ModeProblem(f.stage, f.built); p != "" {
+		fmt.Fprintf(stderr, "harness-gate %s: %s\n", name, p)
+		return f, false
+	}
 	f.s = s
 	return f, true
 }
