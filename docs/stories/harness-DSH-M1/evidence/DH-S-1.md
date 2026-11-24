@@ -878,6 +878,53 @@ failure was fixed before `fda4b98`:
   Windows run at `1cb9026` was stopped by the lead after the WSL result; no record was
   kept.
 
+## Phase 18 closure gate runs
+
+Plan 18.1.2 to 18.1.4 and 18.1.10, Rule 2. `manual`. **Both local lanes pass all 12 gates
+at one commit, `2cface9`**: the M1 closure commit. It holds every merged phase,
+the closure records, the ticks reconciled under rule 2, and `built-through: DH-S-11`. At
+this marker the `trace` gate runs `trace-tests` for DH-S-1 to DH-S-11, and
+`CheckBuiltThrough` (in `scenario-index`) checks all 103 steps. The manual checks of plan
+18.1.5 and 18.1.6 ran at the frozen commit `593ceaa`. `2cface9` differs from it only in
+docs, the `built-through` line of `test/harness/acceptance-index.yaml`, and three test files
+of `session/store/sqlite` (`git diff --stat 593ceaa 2cface9 -- ':!docs'`); no product code
+changed.
+
+| Field | WSL lane | Windows lane |
+| --- | --- | --- |
+| Run-record id | `wsl-2cface9-20261124T0203Z` | `win-2cface9-20261124T0214Z` |
+| Record file and SHA-256 | [runs/wsl-2cface9-20261124T0203Z.txt](runs/wsl-2cface9-20261124T0203Z.txt), `9d4ea952d442487924ee129ff42f7ac09f88cc7b3ffa55fa92095693ea9826ad` | [runs/win-2cface9-20261124T0214Z.txt](runs/win-2cface9-20261124T0214Z.txt), `903931e9ebe630e9facc99b3e7dc8fa81ec2f8c02087203bf7c696243ffc5608` |
+| Output SHA-256 (`sha256:` line) | `ea0edd98d17a6fd444bcfd8124b85b4d45ebef9eab4d8dc5a26fd4513d6be8d7` | `ae04b8edb31816aef7ae70e683e7e0009bc50101e1637329f9a1e4f47aa9361f` |
+| Rehearsal file and SHA-256 | [runs/wsl-2cface9-20261124T0203Z-rehearse.txt](runs/wsl-2cface9-20261124T0203Z-rehearse.txt), `36eb500f62dd709e8ca73cb8b4459b393c959d0ff0aadbd9ac0a3fd5f98077e3`; six binaries, each `vcs.revision=2cface9…` and `vcs.modified=false`, nothing published | -- (WSL lane only) |
+| Operator | the lead (lane script) | the lead (lane script) |
+| Commit | `2cface9` | the same |
+| git status --porcelain | empty (`tree: clean`) | empty (`tree: clean`) |
+| System | Ubuntu 24.04.5 LTS (`Ubuntu-24.04`), kernel `6.18.58.1-microsoft-standard-WSL2` | Microsoft Windows [Version 10.0.28000.3501] |
+| Go | go1.27.4 linux/amd64 (`/usr/local/go`) | go1.27.4 windows/amd64 (`C:\Program Files\Go`) |
+| CC and gcc | `gcc`, gcc 13.3.0 | `gcc`, gcc (Rev5, Built by MSYS2 project) 16.1.0 |
+| Started, ended (UTC) | 2026-11-24T02:04:00Z, 02:12:08Z | 2026-11-24T02:14:21Z, 02:44:13Z |
+| Result | `harness-gate: PASSED all 12 gates` | `harness-gate: PASSED all 12 gates` |
+| `trace` | `trace-tests: DH-S-1..DH-S-11: required 310, tagged 288, deferred 22, missing 0` | the same |
+| `scenario-index` | 34 scenario tests authored, 34 indexed in 9 stages, built through DH-S-11 | the same |
+| Gate times (selected) | test 2m48s, coverage 4m08s, self 28s | test 4m52s, coverage 13m14s, self 8m10s |
+| macOS | out of this story (`macos-return-stage`) | |
+
+**Runs in Phase 18 kept as history (not the closing runs).** Each record is under `runs/`:
+- **At the frozen commit `593ceaa` (built-through DH-S-8): both lanes passed all 12 gates.**
+  - [win-593ceaa-20261123T2122Z](runs/win-593ceaa-20261123T2122Z.txt): `deae145e…`, output `5529c439…`.
+  - [wsl-593ceaa-20261123T2122Z](runs/wsl-593ceaa-20261123T2122Z.txt): `3a95cd58…`, output `085411b8…`, with its [rehearse record](runs/wsl-593ceaa-20261123T2122Z-rehearse.txt) `02f33864…`.
+  - The manual checks ran at this commit.
+  - Both WSL files were rebuilt from the lane's tee'd output after the lead deleted the originals by mistake. The gate record's own `sha256:` line verifies it byte for byte. The rehearse record was rebuilt exactly as `wsl.sh` writes it, but nothing checks it independently.
+- **At `5a2b5d6` (the reconciliation commit):**
+  - WSL passed: [wsl-5a2b5d6-20261124T0134Z](runs/wsl-5a2b5d6-20261124T0134Z.txt).
+  - **Windows FAILED at `coverage`**: [win-5a2b5d6-20261124T0134Z](runs/win-5a2b5d6-20261124T0134Z.txt), `ba556af1…`. `TestUpgradeRefusedWhileOlderInstanceLives` saw an upgrade under a live older instance.
+  - **Cause:** the test's re-exec child discarded the store `Open` returned. The collector freed it, the `os.File` finalizer closed the liveness-lock handle, and Windows dropped the lock. This reproduced in 3 of 60 cover runs, 0 of 60 plain and 0 of 30 `-race`.
+  - **Fixed in `2cface9`:** each child now defers `runtime.KeepAlive(s)`. After the fix, 0 of 200 cover runs failed. Test files only.
+- **At `2cface9`, the first Windows run FAILED at `test`**: [win-2cface9-20261124T0203Z](runs/win-2cface9-20261124T0203Z.txt), `cdb78111…`.
+  - `TestEditDuringStuckApplicationWaitsForItToSettle` (`boot/config`, unchanged since #52) timed out after its 10 s wall-clock wait for the edit to be written. In that run the package took 35 s against about 3 s alone.
+  - It did not reproduce: 0 of 30 alone, and 0 of 40 under 8 parallel copies. The re-run above passed.
+  - It is recorded as an intermittent test: the wait reports only the file, never the edit's own result. It is listed in [DH-S-11 "Open items at M1"](DH-S-11.md#open-items-at-m1-plan-18111).
+
 ## Evidence record (impl.md sec. 7.3)
 
 These are the eight fields of [impl.md sec. 7.3](../../../harness/impl.md#73-the-evidence-record),

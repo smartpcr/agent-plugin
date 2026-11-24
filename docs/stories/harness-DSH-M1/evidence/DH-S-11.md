@@ -485,7 +485,7 @@ one commit. **Rows 1, 3 and 4 do not hold, so DH-S-11 does not close in Phase 17
 
 ## M1 closure (plan Stage 18.1)
 
-**Closure status: built at the frozen commit `593ceaa`; not yet closed.** Closing waits for
+**Closure status: built; both lanes pass all 12 gates at the closure commit `2cface9` ([DH-S-1 "Phase 18 closure gate runs"](DH-S-1.md#phase-18-closure-gate-runs)); the manual checks ran at the frozen commit `593ceaa`, whose product code `2cface9` keeps unchanged; not yet closed.** Closing waits for
 the owner, at plan 18.1.13 and 18.1.14:
 - the scenario review in the M1 closure PR (`m1-scenario-review-closure-pr`);
 - the signature on `m1-done-claims`;
@@ -500,7 +500,7 @@ The lanes rerun at the reconciliation commit, the commit that ticks the steps an
 | Item (decisions.md sec. 1.1) | Holds? | Why |
 | --- | --- | --- |
 | 1. Every impl.md step 1.1 to 11.7 ticked *built* under rule 2, and the story plan agrees | **yes, except row 4.9** | All 103 impl.md steps are ticked. 9.1 to 9.3, 11.3, 11.4 and 11.7 were ticked after the DH-S-9 and M1 checks passed on the Claude route at `593ceaa`. Step 4.9 stays ticked provisionally (M1-D-CLOSE-1 B) until register row 4.9 cases (a) and (c) are run; if they are not, 4.9 is unticked and `built-through` falls to DH-S-3. The story plan is reconciled by plan 18.1.8 (the table below) |
-| 2. The gate green on Windows native and Linux under WSL, with `trace-tests` wired in; macOS a scope change, not a pass | **yes** | Both lanes `PASSED all 12 gates` at `593ceaa`: [win-593ceaa-20261123T2122Z](runs/win-593ceaa-20261123T2122Z.txt) and [wsl-593ceaa-20261123T2122Z](runs/wsl-593ceaa-20261123T2122Z.txt). The `trace` gate ran `trace-tests` (DH-S-1 to DH-S-8 at that marker). With the marker at DH-S-11: required 310, tagged 288, deferred 22, missing 0 ([trace-tests-DH-S-11-593ceaa.txt](runs/manual-593ceaa/trace-tests-DH-S-11-593ceaa.txt)). macOS is out of this story (`macos-return-stage`) |
+| 2. The gate green on Windows native and Linux under WSL, with `trace-tests` wired in; macOS a scope change, not a pass | **yes** | Both lanes `PASSED all 12 gates` at the closure commit `2cface9` with `built-through: DH-S-11` (`trace-tests` DH-S-1 to DH-S-11 missing 0; `CheckBuiltThrough` over all 103 steps): [win-2cface9-20261124T0214Z](runs/win-2cface9-20261124T0214Z.txt) and [wsl-2cface9-20261124T0203Z](runs/wsl-2cface9-20261124T0203Z.txt). Earlier, both lanes passed at the frozen commit `593ceaa`: [win-593ceaa-20261123T2122Z](runs/win-593ceaa-20261123T2122Z.txt) and [wsl-593ceaa-20261123T2122Z](runs/wsl-593ceaa-20261123T2122Z.txt). The `trace` gate ran `trace-tests` (DH-S-1 to DH-S-8 at that marker). With the marker at DH-S-11: required 310, tagged 288, deferred 22, missing 0 ([trace-tests-DH-S-11-593ceaa.txt](runs/manual-593ceaa/trace-tests-DH-S-11-593ceaa.txt)). macOS is out of this story (`macos-return-stage`) |
 | 3. Every stage DH-S-1 to DH-S-11 has a complete evidence record (impl.md sec. 7.3) | **yes, except row 4.9** | The eleven sec. 7.3 sections are filled at `593ceaa` (plan 18.1.7), and the 103 register rows are filled; 4.9 (a) and (c) are pending |
 | 4. The M1 manual check recorded on the signed-in Claude route, with no key; Copilot run and recorded either way | **yes** | "M1 record per route" above: Claude PASS on both runs; Copilot FAIL, recorded and open (M1-D-LOOP-6) |
 | 5. H-21 listed open with its closing step impl.md 16.10, with every other held-open item a decision creates | **yes** | "Open items at M1" below |
@@ -675,6 +675,7 @@ M1 closes with these open. None is counted done; each closes at the step named.
 - **macOS**: out of this story (`macos-return-stage`); never counted as covered.
 - **Production composition** of the prompt component and the context pipeline, at DH-S-16.
 - **Carried over:** errdiscard (plan 13.5.3, M1-D-TOOL-1c) and the control-group re-record of 14.6.12.
+- **Intermittent test** `TestEditDuringStuckApplicationWaitsForItToSettle` (`boot/config`). It failed once, on the first Windows run at `2cface9`: a 10 s wall-clock wait under load. It did not reproduce in 70 runs, and the re-run passed. Its wait never reads the edit's own result, so a failed edit shows up only as a timeout. The fix, after M1, is to report the edit's error and drop the wall-clock deadline.
 
 ### Closure (Phase 17 record, kept as history)
 
