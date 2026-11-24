@@ -1,2 +1,11 @@
-# headless: bundle layer of the headless profile family; content is DH-D-BUNDLE-1's.
+# headless: the layer of the headless profile (bundle-preset.md §6.2, DH-D-BUNDLE-1).
+#
+# Membership. Each entry is inserted here by the stage that builds its component;
+# until then the catalogue of this build cannot resolve it (DH-T-BOOT-2), so the
+# layer holds nothing yet:
+#   - cli.headless          the one-shot task runner, the profile's carrier (C50, DH-S-16)
+#   - human.secrets         merged to environment sources only
+#   - human.authorization   disabled
+#   - tool.ask-user         removed from each preset
+# The Required list (profile.Spine plus cli.headless) is in profile.go.
 []

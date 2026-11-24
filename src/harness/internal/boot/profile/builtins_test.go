@@ -16,6 +16,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/scope"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/golden"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
 )
 
 // scopeComponent is the component no ancestor may inject a service for
@@ -41,7 +42,7 @@ func TestBuiltinProfilesCompose(t *testing.T) {
 	}
 	var trees bytes.Buffer
 	entries := map[string]loader.EntryOptions{} // one entry per component, for the provide check
-	for _, def := range Builtins() {
+	for _, def := range allDefinitions() {
 		var layers []loader.Layer
 		for _, name := range def.Bundles {
 			layer, err := Bundle(name)
@@ -53,9 +54,15 @@ func TestBuiltinProfilesCompose(t *testing.T) {
 			}
 			layers = append(layers, layer)
 		}
-		tree, _, issues := loader.Compose(layers)
+		tree, issues, err := Compose(def, layers)
 		if len(issues) > 0 {
 			t.Errorf("%s: compose: %v", def.Name, issues)
+		}
+		if err != nil && herr.Kind(err) != ReasonMissingRequired {
+			t.Errorf("%s: compose: %v", def.Name, err)
+		}
+		for _, p := range requiredProblems(cat, def, tree) {
+			t.Errorf("%s: %s", def.Name, p)
 		}
 		for _, p := range treeProblems(cat, ev, tree) {
 			t.Errorf("%s: %s", def.Name, p)
@@ -70,6 +77,9 @@ func TestBuiltinProfilesCompose(t *testing.T) {
 			t.Fatal(err)
 		}
 		trees.WriteString("# " + def.Name + "\n")
+		if len(def.Required) > 0 {
+			trees.WriteString("# required: " + strings.Join(def.Required, ", ") + "\n")
+		}
 		trees.Write(b)
 		trees.WriteString("\n")
 	}
@@ -148,6 +158,150 @@ func egressService(cat *catalog.Catalog) string {
 		}
 	}
 	return ""
+}
+
+// allDefinitions are the five definitions of DH-D-BUNDLE-1 followed by the other
+// launchable profiles, each once.
+func allDefinitions() []Definition {
+	out := Definitions()
+	for _, d := range Builtins() {
+		if !slices.ContainsFunc(out, func(o Definition) bool { return o.Name == d.Name }) {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// unbuilt are the Required ids whose component the build catalogue does not have
+// yet. The stage that registers such a component inserts its entry in the profile's
+// layers and takes the id off this list in the same change: the golden test fails
+// while a listed id resolves or is held, and while a missing id is not listed.
+// DH-T-BUNDLE-5 holds in full once the list is empty.
+var unbuilt = map[string]bool{
+	"session.store": true, "agent.registry": true, "agent.driver": true, "tools.registry": true, "agent.presets": true,
+	"host.listen": true, "host.auth": true, "host.assets": true, "host.web": true, "host.access": true, "host.stream": true, "ui.shell": true,
+	"cli.headless": true,
+	"wire.stdio":   true, "wire.sdk": true,
+}
+
+// requiredProblems checks def's Required list against its composed tree and the
+// catalogue: an id the tree lacks must be listed in unbuilt, and a listed id must
+// neither resolve in the catalogue nor be held by the tree.
+func requiredProblems(cat *catalog.Catalog, def Definition, tree []loader.EntryOptions) []string {
+	held := map[string]bool{}
+	walkEntries(tree, nil, func(e loader.EntryOptions, _ []loader.EntryOptions) { held[e.ID] = true })
+	var out []string
+	for _, id := range def.Required {
+		_, lookupErr := cat.Lookup(id)
+		switch {
+		case unbuilt[id] && lookupErr == nil:
+			out = append(out, "required "+id+" is in the catalogue now: insert its entry and take it off unbuilt")
+		case unbuilt[id] && held[id]:
+			out = append(out, "required "+id+" is held by the layers: take it off unbuilt")
+		case !unbuilt[id] && !held[id]:
+			out = append(out, "required "+id+" is not held by the composed layers")
+		}
+	}
+	return out
+}
+
+// The five definitions carry the content of DH-D-BUNDLE-1: profile.Spine in every
+// launchable one and in the kernel, each launchable one's carrier set after it, no
+// required entry in admin; every unbuilt id is still some profile's.
+func TestProfileDefinitions(t *testing.T) {
+	want := map[string][]string{
+		Admin:    nil,
+		Core:     Spine,
+		Web:      append(slices.Clone(Spine), "host.listen", "host.auth", "host.assets", "host.web", "host.access", "host.stream", "ui.shell"),
+		Headless: append(slices.Clone(Spine), "cli.headless"),
+		SDK:      append(slices.Clone(Spine), "wire.stdio", "wire.sdk"),
+	}
+	var names []string
+	for _, d := range Definitions() {
+		names = append(names, d.Name)
+		if !slices.Equal(d.Required, want[d.Name]) {
+			t.Errorf("%s: Required = %v, want %v", d.Name, d.Required, want[d.Name])
+		}
+		if d.Limits != DefaultLimits() {
+			t.Errorf("%s: limits = %+v", d.Name, d.Limits)
+		}
+		if (d.Reload != 0) != (d.Name == Web) {
+			t.Errorf("%s: reload = %v; only web reloads", d.Name, d.Reload)
+		}
+	}
+	if !slices.Equal(names, []string{Admin, Core, Web, Headless, SDK}) {
+		t.Errorf("definitions = %v", names)
+	}
+	for _, name := range []string{Admin, Core} {
+		if _, err := Lookup(name); herr.Kind(err) != ReasonUnknown {
+			t.Errorf("%s is launchable by name: %v", name, err)
+		}
+	}
+	required := map[string]bool{}
+	for _, d := range allDefinitions() {
+		for _, id := range d.Required {
+			required[id] = true
+		}
+	}
+	for id := range unbuilt {
+		if !required[id] {
+			t.Errorf("unbuilt %s is required by no profile", id)
+		}
+	}
+	// A definition is a copy: changing it does not change the next one returned.
+	Definitions()[1].Required[0] = "changed"
+	if Definitions()[1].Required[0] != Spine[0] {
+		t.Error("Definitions shares its Required list")
+	}
+}
+
+// TC-08a: a headless bundle lacking one entry of the headless Required list fails
+// composition naming it; one holding it disabled, alone or under a disabled group,
+// fails naming it too; the full list composes.
+func TestComposeRequiresEveryRequiredEntry(t *testing.T) {
+	def, err := Lookup(Headless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	carrier := def.Required[len(def.Required)-1]
+	entries := func(ids []string, edit func(*loader.EntryOptions)) []loader.Layer {
+		var es []loader.EntryOptions
+		for _, id := range ids {
+			e := loader.EntryOptions{ID: id, Name: id}
+			if edit != nil {
+				edit(&e)
+			}
+			es = append(es, e)
+		}
+		return []loader.Layer{{Label: BundleLabel + Headless, Ops: []loader.Op{{Kind: loader.OpInsert, Entries: es}}}}
+	}
+	if _, _, err := Compose(def, entries(def.Required, nil)); err != nil {
+		t.Fatalf("full list: %v", err)
+	}
+	for name, tc := range map[string]struct {
+		layers []loader.Layer
+		want   string
+	}{
+		"lacks the carrier": {entries(def.Required[:len(def.Required)-1], nil), "lacks " + carrier},
+		"disables the carrier": {entries(def.Required, func(e *loader.EntryOptions) {
+			e.Disabled = e.ID == carrier
+		}), "disables " + carrier},
+		"carrier under a disabled group": {[]loader.Layer{{Label: BundleLabel + Headless, Ops: []loader.Op{{Kind: loader.OpInsert,
+			Entries: append(entries(def.Required[:len(def.Required)-1], nil)[0].Ops[0].Entries,
+				loader.EntryOptions{ID: "g", Group: true, Disabled: true, Children: []loader.EntryOptions{{ID: carrier, Name: carrier}}})}}}},
+			"lacks " + carrier},
+	} {
+		_, _, err := Compose(def, tc.layers)
+		if herr.Kind(err) != ReasonMissingRequired || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v, want %s naming %q", name, err, ReasonMissingRequired, tc.want)
+		}
+	}
+	nested := Definition{Name: "nested", Required: []string{"g" + loader.Separator + carrier}}
+	group := []loader.Layer{{Label: "x", Ops: []loader.Op{{Kind: loader.OpInsert, Entries: []loader.EntryOptions{
+		{ID: "g", Group: true, Disabled: true, Children: []loader.EntryOptions{{ID: carrier, Name: carrier}}}}}}}}
+	if _, _, err := Compose(nested, group); err == nil || !strings.Contains(err.Error(), "disables g"+loader.Separator+carrier) {
+		t.Errorf("nested under a disabled group: %v", err)
+	}
 }
 
 // bundleProblems checks a bundle layer as written: every inserted entry has an

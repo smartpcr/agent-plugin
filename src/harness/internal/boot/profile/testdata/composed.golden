@@ -1,4 +1,30 @@
+# admin
+[]
+# core
+# required: session.store, agent.registry, agent.driver, tools.registry, agent.presets
+[
+  {
+    "id": "logging",
+    "name": "boot.logging",
+    "config": {
+      "destination": "stderr",
+      "level": "info"
+    }
+  },
+  {
+    "id": "sharing",
+    "name": "host.sharing",
+    "config": {
+      "off": false
+    }
+  },
+  {
+    "id": "egress",
+    "name": "util.egress"
+  }
+]
 # web
+# required: session.store, agent.registry, agent.driver, tools.registry, agent.presets, host.listen, host.auth, host.assets, host.web, host.access, host.stream, ui.shell
 [
   {
     "id": "logging",
@@ -21,6 +47,7 @@
   }
 ]
 # headless
+# required: session.store, agent.registry, agent.driver, tools.registry, agent.presets, cli.headless
 [
   {
     "id": "logging",
@@ -43,6 +70,7 @@
   }
 ]
 # sdk
+# required: session.store, agent.registry, agent.driver, tools.registry, agent.presets, wire.stdio, wire.sdk
 [
   {
     "id": "logging",

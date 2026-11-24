@@ -135,7 +135,7 @@ func TestBundlesParseAndResolve(t *testing.T) {
 		t.Fatal(err)
 	}
 	used := map[string]bool{}
-	for _, d := range Builtins() {
+	for _, d := range append(Definitions(), Builtins()...) {
 		for _, b := range d.Bundles {
 			used[b] = true
 		}

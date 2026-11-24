@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/smartpcr/agent-plugin/src/go/loader"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/builtin"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/profile"
 )
 
@@ -143,7 +144,14 @@ func TestSourceRules(t *testing.T) {
 		}
 	}
 
-	for _, def := range profile.Builtins() {
+	// A required id the shipped layers lack is a fault once its component is in the
+	// build catalogue; until then the profile does not launch (boot's audit names it)
+	// and the profile package's golden test keeps the list of such ids.
+	cat, err := builtin.Catalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, def := range append(profile.Definitions(), profile.Builtins()...) {
 		var layers []loader.Layer
 		for _, name := range def.Bundles {
 			layer, err := profile.Bundle(name)
@@ -153,7 +161,11 @@ func TestSourceRules(t *testing.T) {
 			layers = append(layers, layer)
 		}
 		tree, _, _ := loader.Compose(layers)
-		if missing := missingRequired(def.Required, tree); len(missing) > 0 {
+		missing := slices.DeleteFunc(missingRequired(def.Required, tree), func(id string) bool {
+			_, err := cat.Lookup(id)
+			return err != nil
+		})
+		if len(missing) > 0 {
 			t.Errorf("profile %s requires %v, which its shipped layers do not hold", def.Name, missing)
 		}
 	}

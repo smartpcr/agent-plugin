@@ -1,2 +1,10 @@
-# sdk: bundle layer of the sdk profile family; content is DH-D-BUNDLE-1's.
+# sdk: the layer of the sdk profile (bundle-preset.md §6.2, DH-D-BUNDLE-1).
+#
+# Membership. Each entry is inserted here by the stage that builds its component;
+# until then the catalogue of this build cannot resolve it (DH-T-BOOT-2), so the
+# layer holds nothing yet:
+#   - wire.stdio            the sole owner of standard input and output (C48, DH-S-15)
+#   - wire.sdk              the SDK protocol server, the profile's carrier (C49, DH-S-15)
+#   - session.title.llm     disabled
+# The Required list (profile.Spine plus wire.stdio and wire.sdk) is in profile.go.
 []

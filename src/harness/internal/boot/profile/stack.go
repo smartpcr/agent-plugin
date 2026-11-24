@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 
 	"github.com/smartpcr/agent-plugin/src/go/loader"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/config"
@@ -121,13 +122,9 @@ func Stack(def Definition, src Sources) ([]loader.Layer, []loader.Issue, error) 
 	if read == nil {
 		read = os.ReadFile
 	}
-	var layers []loader.Layer
-	for _, name := range def.Bundles {
-		layer, err := Bundle(name)
-		if err != nil {
-			return nil, nil, err
-		}
-		layers = append(layers, layer)
+	layers, err := BundleLayers(def)
+	if err != nil {
+		return nil, nil, err
 	}
 	var issues []loader.Issue
 	file := func(label, p string, optional, writable bool) error {
@@ -157,4 +154,62 @@ func Stack(def Definition, src Sources) ([]loader.Layer, []loader.Issue, error) 
 	}
 	launcher := loader.Layer{Label: LauncherLabel, Ops: append([]loader.Op{}, src.Launcher...)}
 	return append(layers, launcher), issues, nil
+}
+
+// BundleLayers returns the embedded bundle layers of def, in its order.
+func BundleLayers(def Definition) ([]loader.Layer, error) {
+	layers := make([]loader.Layer, 0, len(def.Bundles))
+	for _, name := range def.Bundles {
+		layer, err := Bundle(name)
+		if err != nil {
+			return nil, err
+		}
+		layers = append(layers, layer)
+	}
+	return layers, nil
+}
+
+// Compose composes layers for def and applies the static half of the Required rule
+// (boot.md §6.2): every id of def.Required is an entry of the tree and is not
+// disabled by a literal flag, its own or a group's. A nested id is written with
+// loader.Separator, as the config check writes it. A failure is
+// ReasonMissingRequired naming every such id; the tree and the compose issues are
+// returned with it. Whether an entry is enabled by its expression and active is
+// boot's audit.
+func Compose(def Definition, layers []loader.Layer) ([]loader.EntryOptions, []loader.Issue, error) {
+	tree, _, issues := loader.Compose(layers)
+	disabled := map[string]bool{}
+	var visit func(list []loader.EntryOptions, parent string, off bool)
+	visit = func(list []loader.EntryOptions, parent string, off bool) {
+		for _, e := range list {
+			id := e.ID
+			if parent != "" {
+				id = parent + loader.Separator + id
+			}
+			disabled[id] = off || e.Disabled
+			visit(e.Children, id, disabled[id])
+		}
+	}
+	visit(tree, "", false)
+	var missing, off []string
+	for _, id := range def.Required {
+		d, ok := disabled[id]
+		switch {
+		case !ok:
+			missing = append(missing, id)
+		case d:
+			off = append(off, id)
+		}
+	}
+	if len(missing) == 0 && len(off) == 0 {
+		return tree, issues, nil
+	}
+	var parts []string
+	if len(missing) > 0 {
+		parts = append(parts, "lacks "+strings.Join(missing, ", "))
+	}
+	if len(off) > 0 {
+		parts = append(parts, "disables "+strings.Join(off, ", "))
+	}
+	return tree, issues, herr.Newf(ReasonMissingRequired, "profile %s: the composed tree %s, which its Required list names", def.Name, strings.Join(parts, " and "))
 }
