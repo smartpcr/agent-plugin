@@ -5,6 +5,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools"
 )
 
@@ -85,6 +86,29 @@ func content(v any) (text string, parts []vocab.Part, msg string, ok bool) {
 		parts = nil
 	}
 	return text, parts, "", true
+}
+
+// bodySpill is a copy of the spill reference a body's tools.Content carries, nil
+// for none. Only a tool that bounds its own output (which the spill seat skips)
+// may cite its own save, so no seat ever replaces a body's reference.
+func bodySpill(d *tools.Declaration, v any) *event.Spill {
+	if d == nil || !d.BoundsOwnOutput() {
+		return nil
+	}
+	var sp *event.Spill
+	switch x := v.(type) {
+	case tools.Content:
+		sp = x.Spill
+	case *tools.Content:
+		if x != nil {
+			sp = x.Spill
+		}
+	}
+	if sp == nil || sp.Path == "" {
+		return nil
+	}
+	c := *sp
+	return &c
 }
 
 // applySpill takes the spill seat's Replace answer sr, from seat id, into res;

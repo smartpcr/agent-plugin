@@ -417,6 +417,10 @@ func (d *Driver) assemble(ctx context.Context, view tools.StepView) (prompt.Asse
 	if err != nil {
 		return prompt.Assembly{}, "", err
 	}
+	a, err = d.withWorkdir(a)
+	if err != nil {
+		return prompt.Assembly{}, "", err
+	}
 	text, err := d.o.Prompt.Render(a)
 	if err != nil {
 		return prompt.Assembly{}, "", err

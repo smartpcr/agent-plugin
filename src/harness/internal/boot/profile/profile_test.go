@@ -4,12 +4,14 @@ import (
 	"encoding/json"
 	"errors"
 	"io/fs"
+	"maps"
 	"path/filepath"
 	"slices"
 	"testing"
 
 	"github.com/smartpcr/agent-plugin/src/go/loader"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/builtin"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/config"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
 )
 
@@ -91,7 +93,7 @@ func TestStackOrderAndOneWritableLayer(t *testing.T) {
 			}
 		}
 	}
-	want := []string{"bundle:core", "bundle:minimal", "bundle:sdk", "profile", "user", "overlay:1", "launcher"}
+	want := []string{"bundle:admin", "bundle:core", "bundle:minimal", "bundle:sdk", "profile", "user", "overlay:1", "launcher"}
 	if !slices.Equal(labels, want) {
 		t.Errorf("labels = %v, want %v", labels, want)
 	}
@@ -100,8 +102,8 @@ func TestStackOrderAndOneWritableLayer(t *testing.T) {
 	}
 
 	tree, index, issues := loader.Compose(layers)
-	if len(issues) > 0 {
-		t.Fatalf("compose: %v", issues)
+	if _, problems := pendingIssues(issues, tree); len(problems) > 0 {
+		t.Fatalf("compose: %v", problems)
 	}
 	if owner, _ := index.Owner("logging", "config.level"); owner != "overlay:1" {
 		t.Errorf("owner of config.level = %q, want overlay:1", owner)
@@ -109,6 +111,129 @@ func TestStackOrderAndOneWritableLayer(t *testing.T) {
 	if owner, _ := index.Owner("logging", "disabled"); owner != LauncherLabel || !tree[0].Disabled {
 		t.Errorf("launcher override not applied: owner %q disabled %v", owner, tree[0].Disabled)
 	}
+}
+
+// TC-08a: the host-plane layers, then a user layer that removes one entry and merges
+// a map, stacked and previewed as `dsh config show` previews them: the entry is
+// gone, the map is merged key by key, and the preview names the layer that supplied
+// each entry and each value.
+func TestLayerOperations(t *testing.T) {
+	cat, err := builtin.Catalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	def := Definition{Name: "ops", Bundles: []string{"admin", "core", "base"}}
+	user := "- id: egress\n  remove: true\n- id: logging\n  merge:\n    level: debug\n"
+	for name, src := range map[string]Sources{
+		"user layer file": {Home: "h", Read: files(map[string]string{UserLayerPath("h"): user})},
+		"launcher operations": {Home: "h", Read: files(nil), Launcher: []loader.Op{
+			Remove("egress"), mustMerge(t, "logging", map[string]any{"level": "debug"}),
+		}},
+	} {
+		layers, issues, err := Stack(def, src)
+		if err != nil || len(issues) > 0 {
+			t.Fatalf("%s: stack: %v %v", name, err, issues)
+		}
+		r, err := Preview(def, layers, config.CheckOptions{Catalog: cat})
+		if err != nil || len(r.Issues) > 0 {
+			t.Fatalf("%s: preview: %v %v", name, err, r.Issues)
+		}
+		top := UserLabel
+		if src.Launcher != nil {
+			top = LauncherLabel
+		}
+		var ids []string
+		for _, e := range r.Tree {
+			ids = append(ids, e.ID)
+		}
+		if want := []string{"logging", "sharing", "watch"}; !slices.Equal(ids, want) {
+			t.Errorf("%s: tree = %v, want %v (egress removed)", name, ids, want)
+		}
+		if got := string(r.Tree[0].Config); got != `{"destination":"stderr","level":"debug"}` {
+			t.Errorf("%s: logging config = %s, want the map merged key by key", name, got)
+		}
+		for _, tc := range []struct{ id, field, layer string }{
+			{"logging", "", BundleLabel + "admin"},
+			{"logging", "config.destination", BundleLabel + "admin"},
+			{"logging", "config.level", top},
+			{"sharing", "config.off", BundleLabel + "admin"},
+			{"watch", "", BundleLabel + "core"},
+		} {
+			if ex, err := r.Explain(tc.id, tc.field); err != nil || ex.Layer != tc.layer {
+				t.Errorf("%s: %s %s supplied by %q (%v), want %q", name, tc.id, tc.field, ex.Layer, err, tc.layer)
+			}
+		}
+		if _, err := r.Explain("egress", ""); err == nil {
+			t.Errorf("%s: the removed entry is still explained", name)
+		}
+		owners := map[string]string{}
+		for _, e := range r.Entries() {
+			owners[e.ID] = e.Layer
+			if e.ID == "logging" && !slices.Contains(e.Fields, config.FieldOwner{Field: "config.level", Layer: top}) {
+				t.Errorf("%s: logging fields = %v, want config.level by %s", name, e.Fields, top)
+			}
+		}
+		if want := map[string]string{"logging": BundleLabel + "admin", "sharing": BundleLabel + "admin", "watch": BundleLabel + "core"}; !maps.Equal(owners, want) {
+			t.Errorf("%s: entry owners = %v, want %v", name, owners, want)
+		}
+	}
+}
+
+// The operation constructors compose as their file forms do: an insert into a group,
+// a merge of a nested map key by key with null deleting a key, and a remove of an
+// entry with its children and their ownership records.
+func TestLayerOperationConstructors(t *testing.T) {
+	low := loader.Layer{Label: BundleLabel + "low", Ops: []loader.Op{Insert("",
+		loader.EntryOptions{ID: "g", Group: true},
+		loader.EntryOptions{ID: "a", Name: "x.a", Config: json.RawMessage(`{"m":{"x":1,"y":2,"z":3},"k":"v"}`)},
+	)}}
+	gone := loader.EntryOptions{ID: "c", Name: "x.c", Children: []loader.EntryOptions{{ID: "d", Name: "x.d"}}}
+	high := loader.Layer{Label: UserLabel, Ops: []loader.Op{
+		Insert("g", loader.EntryOptions{ID: "b", Name: "x.b"}, gone),
+		mustMerge(t, "a", map[string]any{"m": map[string]any{"y": 20, "z": nil, "w": 4}}),
+		Remove("g" + loader.Separator + "c"),
+	}}
+	tree, index, issues := loader.Compose([]loader.Layer{low, high})
+	if len(issues) > 0 {
+		t.Fatalf("issues: %v", issues)
+	}
+	if len(tree) != 2 || len(tree[0].Children) != 1 || tree[0].Children[0].ID != "b" {
+		t.Fatalf("tree = %+v, want g holding only b, and a", tree)
+	}
+	if got := string(tree[1].Config); got != `{"m":{"x":1,"y":20,"w":4},"k":"v"}` {
+		t.Errorf("merged config = %s", got)
+	}
+	for _, tc := range []struct{ id, field, layer string }{
+		{"a", "config.m.x", BundleLabel + "low"},
+		{"a", "config.m.y", UserLabel},
+		{"a", "config.m.w", UserLabel},
+		{"a", "config.k", BundleLabel + "low"},
+		{"g" + loader.Separator + "b", "", UserLabel},
+	} {
+		if owner, _ := index.Owner(tc.id, tc.field); owner != tc.layer {
+			t.Errorf("owner of %s %s = %q, want %q", tc.id, tc.field, owner, tc.layer)
+		}
+	}
+	for _, id := range []string{"g" + loader.Separator + "c", "g" + loader.Separator + "c" + loader.Separator + "d"} {
+		if owner, ok := index.Owner(id, ""); ok {
+			t.Errorf("removed %s is still owned by %q", id, owner)
+		}
+	}
+	if gone.Children[0].ID != "d" || len(high.Ops[0].Entries[1].Children) != 1 {
+		t.Error("Insert or Compose changed the entries it was given")
+	}
+	if _, err := Merge("a", map[string]any{"bad": func() {}}); err == nil {
+		t.Error("Merge encoded a value JSON cannot hold")
+	}
+}
+
+func mustMerge(t *testing.T, id string, patch map[string]any) loader.Op {
+	t.Helper()
+	op, err := Merge(id, patch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return op
 }
 
 //dsh:test DH-T-BOOT-7
@@ -128,14 +253,16 @@ func TestStackErrors(t *testing.T) {
 }
 
 // Every embedded bundle parses, and every component it inserts is in the catalogue
-// of this binary.
+// of this binary (bar the carriers on unregistered). A bundle's other operations
+// target entries of the bundles below it, so they are checked in their profiles'
+// composition (TestBuiltinProfilesCompose), not alone.
 func TestBundlesParseAndResolve(t *testing.T) {
 	cat, err := builtin.Catalog()
 	if err != nil {
 		t.Fatal(err)
 	}
 	used := map[string]bool{}
-	for _, d := range Builtins() {
+	for _, d := range append(Definitions(), Builtins()...) {
 		for _, b := range d.Bundles {
 			used[b] = true
 		}
@@ -148,14 +275,14 @@ func TestBundlesParseAndResolve(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		tree, _, issues := loader.Compose([]loader.Layer{layer})
+		tree, _, issues := loader.Compose([]loader.Layer{insertsOf(layer)})
 		if len(issues) > 0 {
 			t.Errorf("bundle %s: %v", name, issues)
 		}
 		var walk func([]loader.EntryOptions)
 		walk = func(entries []loader.EntryOptions) {
 			for _, e := range entries {
-				if !e.Group {
+				if !e.Group && !unregistered[e.Name] {
 					if _, err := cat.Lookup(e.Name); err != nil {
 						t.Errorf("bundle %s: entry %s: %v", name, e.ID, err)
 					}
@@ -182,4 +309,15 @@ func TestLookupUnknown(t *testing.T) {
 	if err != nil || d.Limits != DefaultLimits() {
 		t.Fatalf("headless = %+v, %v", d, err)
 	}
+}
+
+// insertsOf is layer with only its root inserts.
+func insertsOf(layer loader.Layer) loader.Layer {
+	out := loader.Layer{Label: layer.Label}
+	for _, op := range layer.Ops {
+		if op.Kind == loader.OpInsert && op.ID == "" {
+			out.Ops = append(out.Ops, op)
+		}
+	}
+	return out
 }

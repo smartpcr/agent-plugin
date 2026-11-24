@@ -37,7 +37,16 @@ type CheckOptions struct {
 	// the load would: one that yields true, fails, yields no boolean or has no
 	// evaluator to run it disables; one that yields false does not.
 	Required []string
+	// TreeChecks are the rules over the whole composed tree rather than one entry
+	// (agentpreset.CheckTree: the agent.preset declarations as one set); each runs
+	// on the tree and adds its issues, so a candidate that breaks one is rejected
+	// whole like any other static issue.
+	TreeChecks []TreeCheck
 }
+
+// TreeCheck is a static rule over a whole composed tree: it returns the tree's
+// issues under it, placed at the entries at fault.
+type TreeCheck func(tree []loader.EntryOptions) []loader.Issue
 
 // Report is a composed tree that was checked without being started: the tree, the
 // index of which layer supplied each value, and every issue found, each placed at
@@ -83,6 +92,9 @@ func Check(layers []loader.Layer, opts CheckOptions) *Report {
 		r.Issues = append(r.Issues, r.checkEntry(id, e, opts, &pre)...)
 	})
 	r.Issues = append(r.Issues, r.requiredIssues(opts.Required, opts.Evaluator)...)
+	for _, check := range opts.TreeChecks {
+		r.Issues = append(r.Issues, check(tree)...)
+	}
 	return r
 }
 

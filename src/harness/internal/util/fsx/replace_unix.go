@@ -8,7 +8,7 @@ import (
 	"syscall"
 )
 
-func renameReplace(stage, target string, _ bool) error {
+func renameReplace(stage, target string, _ bool, _ func() error) error {
 	return os.Rename(stage, target)
 }
 

@@ -88,6 +88,9 @@ var Rules = []Rule{
 	{HarnessModule, "the internal/tools contract imports no llm provider, wire or transport package (DH-T-TOOLS-18)", importsNoneUnder(ToolsPackage, LLMProviderPackage, LLMWirePackage, LLMTransportPackage)},
 	{HarnessModule, "internal/context holds no Go package, so nothing shadows the standard context package (RM-8)", noPackage(ContextPackage)},
 	{HarnessModule, "no package under internal/context imports the agent driver or an llm provider, wire or transport package (DH-T-CONTEXT-25)", belowImportsNoneUnder(ContextPackage, DriverPackage, LLMProviderPackage, LLMWirePackage, LLMTransportPackage)},
+	{HarnessModule, "only internal/world/fs/ops imports internal/world/sandbox/policy: every tool reaches the fence through ops (INV-1, DH-T-FS-26)", importedOnlyBy(SandboxPolicyPackage, FSOpsPackage)},
+	{HarnessModule, "internal/session/workdir and internal/world/sandbox/policy import the world/fs contract, never world/fs/local or world/fs/ops: no inverted import across cycle C-3 (R-06, DH-T-FS-26)", allOf(belowImportsNoneUnder(WorkdirPackage, FSLocalPackage, FSOpsPackage), belowImportsNoneUnder(SandboxPolicyPackage, FSLocalPackage, FSOpsPackage))},
+	{HarnessModule, "no non-test package but another fake imports fstest, sandboxtest or workdirtest (TC-01a)", importedOnlyAmong(FstestPackage, SandboxtestPackage, WorkdirtestPackage)},
 }
 
 // Packages the rules name.
@@ -129,6 +132,16 @@ const (
 	TestkitPackage        = HarnessModule + "/internal/testkit"
 	ContextPackage        = HarnessModule + "/internal/context"
 	ExecPackage           = "os/exec"
+
+	FSPackage            = HarnessModule + "/internal/world/fs"
+	FSLocalPackage       = FSPackage + "/local"
+	FSOpsPackage         = FSPackage + "/ops"
+	FstestPackage        = FSPackage + "/fstest"
+	SandboxPackage       = HarnessModule + "/internal/world/sandbox"
+	SandboxPolicyPackage = SandboxPackage + "/policy"
+	SandboxtestPackage   = SandboxPackage + "/sandboxtest"
+	WorkdirPackage       = SessionPackage + "/workdir"
+	WorkdirtestPackage   = WorkdirPackage + "/workdirtest"
 )
 
 // Third-party modules with a single importer.
@@ -268,6 +281,61 @@ func importedOnlyFrom(under string, targets ...string) func([]Package) []string 
 					}
 				}
 			}
+		}
+		return bad
+	}
+}
+
+// importedOnlyBy fails every harness package that directly imports a package at
+// or below target, unless the importer is itself at or below target or one of
+// owners.
+func importedOnlyBy(target string, owners ...string) func([]Package) []string {
+	return func(pkgs []Package) []string {
+		var bad []string
+		for _, p := range pkgs {
+			if !within(p.ImportPath, HarnessModule) || within(p.ImportPath, target) ||
+				slices.ContainsFunc(owners, func(o string) bool { return within(p.ImportPath, o) }) {
+				continue
+			}
+			for _, imp := range p.Imports {
+				if within(imp, target) {
+					bad = append(bad, fmt.Sprintf("%s imports %s; only %s may", p.ImportPath, imp, strings.Join(owners, ", ")))
+				}
+			}
+		}
+		return bad
+	}
+}
+
+// importedOnlyAmong fails every listed package outside pkgs that directly imports
+// a package at or below one of pkgs: they import each other, and tests import
+// them (the list excludes test files).
+func importedOnlyAmong(pkgs ...string) func([]Package) []string {
+	among := func(path string) bool {
+		return slices.ContainsFunc(pkgs, func(p string) bool { return within(path, p) })
+	}
+	return func(list []Package) []string {
+		var bad []string
+		for _, p := range list {
+			if among(p.ImportPath) {
+				continue
+			}
+			for _, imp := range p.Imports {
+				if among(imp) {
+					bad = append(bad, fmt.Sprintf("%s imports %s; only tests may", p.ImportPath, imp))
+				}
+			}
+		}
+		return bad
+	}
+}
+
+// allOf is the union of checks, in order.
+func allOf(checks ...func([]Package) []string) func([]Package) []string {
+	return func(pkgs []Package) []string {
+		var bad []string
+		for _, c := range checks {
+			bad = append(bad, c(pkgs)...)
 		}
 		return bad
 	}

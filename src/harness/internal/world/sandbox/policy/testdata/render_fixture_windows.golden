@@ -1,0 +1,30 @@
+== mode read-only
+TEST-ONLY FIXTURE: no build includes this file and no model sees it. The shipped
+policy text is written in Stage 7.6 under world/sandbox/policy/text/.
+Sandbox policy (windows)
+Mode: read-only (read-only: commands and file tools may read but not write)
+Write roots: none
+Network: denied
+Escalation: If the sandbox denies an action you need, retry that exact call once with sandbox_permissions set to a wider mode and a justification; a person decides, and only that one call is widened.
+Platform note: paths are case-insensitive; a named pipe or a device path is never writable.
+== mode workspace-write
+TEST-ONLY FIXTURE: no build includes this file and no model sees it. The shipped
+policy text is written in Stage 7.6 under world/sandbox/policy/text/.
+Sandbox policy (windows)
+Mode: workspace-write (workspace-write: commands and file tools may write only below the write roots)
+Write roots:
+- C:\Users\dev\proj (workspace)
+- D:\shared\out (grant)
+- C:\Users\dev\AppData\Local\dsh\scratch\s-policy (scratch)
+Network: allowed
+Escalation: If the sandbox denies an action you need, retry that exact call once with sandbox_permissions set to a wider mode and a justification; a person decides, and only that one call is widened.
+Platform note: paths are case-insensitive; a named pipe or a device path is never writable.
+== mode danger-full-access
+TEST-ONLY FIXTURE: no build includes this file and no model sees it. The shipped
+policy text is written in Stage 7.6 under world/sandbox/policy/text/.
+Sandbox policy (windows)
+Mode: danger-full-access (<<policy.FullAccessLabel>>)
+Write roots: none
+Network: allowed
+Nothing is wider than full access; no escalation applies.
+Platform note: paths are case-insensitive; a named pipe or a device path is never writable.

@@ -1,16 +1,19 @@
-# core: the entries every profile starts with (DH-ADR-BOOT-2). The full content is
-# DH-D-BUNDLE-1's; this layer is parsed by the YAML codec like any other layer.
+# core: the kernel every launchable profile starts with, stacked over admin.yml
+# (bundle-preset.md §6.2, DH-D-BUNDLE-2). Host plane only, no model-facing entry;
+# the sharing gate is in admin.yml below it, so no layer can send before it exists.
+#
+# The entries of components this build has. Each later deliverable that builds one
+# of the others adds its entry here in the same change: the timer, session.scope
+# (top level), session.core, session.checkpoint, session.views, session.workdir,
+# attachments, spill store and policy, agent.registry, agent.driver (no configured
+# agent), agent.default-model, tools.registry, tools.prompt, llm.runtime, llm.retry,
+# llm.meter, llm.routes, llm.deepseek.api-key, human.interactions, human.approval,
+# human.commands, fs.local, fs.ops, subprocess.local, sandbox.policy, jobs.registry,
+# agent.presets and host.conversation.
 - insert:
-    - id: logging
-      name: boot.logging
-      config:
-        destination: stderr
-        level: info
-    # Outbound data (DH-D-HOST-4): every kind is off until its own setting is on,
-    # and off: true (or DSH_SHARING_OFF) denies every kind.
-    - id: sharing
-      name: host.sharing
-      config:
-        off: false
+    # Every outbound client, the resolver and child environments (util/egress).
     - id: egress
       name: util.egress
+    # File and directory watches: one service for every watcher of the host.
+    - id: watch
+      name: util.watch
