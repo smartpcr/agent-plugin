@@ -28,6 +28,9 @@ const (
 	// ReasonBadBundle: an embedded bundle is missing or does not parse; a build
 	// defect that the bundle tests keep out of a release.
 	ReasonBadBundle herr.Reason = "profile/bad-bundle"
+	// ReasonMissingRequired: a composed profile lacks an entry of its Required list,
+	// or holds it disabled.
+	ReasonMissingRequired herr.Reason = "profile/missing-required"
 )
 
 // Limits are a profile's time bounds (boot.md §6.2; tech-spec §5.5).
@@ -83,20 +86,78 @@ const (
 	ACP        = "acp"
 )
 
+// Names of the two compositions that are not launched by name (bundle-preset.md
+// §6.2): Admin is what the offline admin commands run in (A24, DH-ADR-CLI-2) and has
+// no required entry; Core is the kernel every launchable profile starts with.
+const (
+	Admin = "admin"
+	Core  = "core"
+)
+
+// Spine are the entry ids every launchable profile requires (DH-D-BUNDLE-1): the
+// store, the agent registry and driver, the tool registry and the preset registry.
+// Each Required list is Spine followed by the profile's carrier set.
+var Spine = []string{"session.store", "agent.registry", "agent.driver", "tools.registry", "agent.presets"}
+
+// Carrier sets: the carrier entry of a profile and the entries it cannot serve
+// without (bundle-preset.md §6.2).
+var (
+	webCarrier      = []string{"host.listen", "host.auth", "host.assets", "host.web", "host.access", "host.stream", "ui.shell"}
+	headlessCarrier = []string{"cli.headless"}
+	sdkCarrier      = []string{"wire.stdio", "wire.sdk"}
+)
+
+// required is Spine followed by carrier.
+func required(carrier []string) []string {
+	return append(slices.Clone(Spine), carrier...)
+}
+
 // builtins are the compiled-in profiles. There is no bundle named sdk-minimal: that
-// profile stacks core, minimal and sdk (DH-ADR-BOOT-1).
+// profile stacks core, minimal and sdk (DH-ADR-BOOT-1). sdk-minimal and acp are not
+// among the five definitions of DH-D-BUNDLE-1. sdk-minimal inherits the sdk bundle,
+// carriers included, so it requires what sdk requires; acp keeps its M1 content.
 var builtins = []Definition{
-	{Name: Web, Summary: "Start the host and open the web UI", Bundles: []string{"core", "web"}, Reload: DefaultReload},
-	{Name: Headless, Summary: "Run one task without a UI and print the answer", Bundles: []string{"core", "headless"}},
-	{Name: SDK, Summary: "Serve the SDK protocol on standard input and output", Bundles: []string{"core", "sdk"}},
-	{Name: SDKMinimal, Summary: "Serve the SDK protocol with the minimal agent preset", Bundles: []string{"core", "minimal", "sdk"}},
+	{Name: Web, Summary: "Start the host and open the web UI", Bundles: []string{"core", "web"}, Reload: DefaultReload, Required: required(webCarrier)},
+	{Name: Headless, Summary: "Run one task without a UI and print the answer", Bundles: []string{"core", "headless"}, Required: required(headlessCarrier)},
+	{Name: SDK, Summary: "Serve the SDK protocol on standard input and output", Bundles: []string{"core", "sdk"}, Required: required(sdkCarrier)},
+	{Name: SDKMinimal, Summary: "Serve the SDK protocol with the minimal agent preset", Bundles: []string{"core", "minimal", "sdk"}, Required: required(sdkCarrier)},
 	{Name: ACP, Summary: "Serve the Agent Client Protocol on standard input and output", Bundles: []string{"core", "acp"}},
 }
 
-// Builtins returns copies of the built-in profiles in a fixed order.
-func Builtins() []Definition {
-	out := make([]Definition, len(builtins))
-	for i, d := range builtins {
+// compositions are the definitions that are not launched by name.
+var compositions = []Definition{
+	{Name: Admin, Summary: "The composition the offline admin commands run in", Bundles: []string{"admin"}},
+	{Name: Core, Summary: "The kernel every launchable profile starts with", Bundles: []string{"admin", "core"}, Required: slices.Clone(Spine)},
+}
+
+// Builtins returns copies of the launchable built-in profiles in a fixed order.
+func Builtins() []Definition { return clone(builtins) }
+
+// Definitions returns copies of the five profile definitions of DH-D-BUNDLE-1, in
+// this order: admin, the core kernel, web, headless and sdk. Only the last three are
+// launched by name (Lookup).
+func Definitions() []Definition {
+	five := slices.Clone(compositions)
+	for _, name := range []string{Web, Headless, SDK} {
+		five = append(five, builtinNamed(name))
+	}
+	return clone(five)
+}
+
+// builtinNamed returns the entry of builtins called name. The names are compiled-in
+// constants, so a miss is a programming error.
+func builtinNamed(name string) Definition {
+	for _, d := range builtins {
+		if d.Name == name {
+			return d
+		}
+	}
+	panic("profile: no built-in profile " + name)
+}
+
+func clone(defs []Definition) []Definition {
+	out := make([]Definition, len(defs))
+	for i, d := range defs {
 		d.Bundles = slices.Clone(d.Bundles)
 		d.Required = slices.Clone(d.Required)
 		d.Limits = DefaultLimits()
