@@ -1,0 +1,13 @@
+== no_text (exit 0)
+policy-text: ok: no sandbox policy text under src/harness/internal/world/sandbox/policy/text/ (M2-C-6)
+== text_without_sandbox7 (exit 1)
+policy-text: REFUSED M2-C-6: src/harness/internal/world/sandbox/policy/text/linux.md (sha256 b6aafb9bf1f7d6f156af094486d3092854377da18ceddab7062f1f199a5bfe87): docs/stories/harness-DSH-M2/evidence/DH-S-17.md has no passed DH-E-SANDBOX-7 row naming linux.md with its sha256 and escalation count
+policy-text: commit containment: not checked (the root is not a git checkout's top level)
+policy-text: FAILED: M2-C-6: 1 of 1 sandbox policy text files have no passed DH-E-SANDBOX-7 run on their exact bytes; a text merges only with one (tools/harness-gate/README.md, section Sandbox policy text)
+== text_with_matching_pass (exit 0)
+policy-text: ok: src/harness/internal/world/sandbox/policy/text/linux.md (sha256 b6aafb9bf1f7d6f156af094486d3092854377da18ceddab7062f1f199a5bfe87): DH-E-SANDBOX-7 run local-20260101T0000Z-1 at 0123abc, 12/18 escalated (docs/stories/harness-DSH-M2/evidence/DH-S-17.md:10)
+policy-text: commit containment: not checked (the root is not a git checkout's top level)
+== text_edited_after_pass (exit 1)
+policy-text: REFUSED M2-C-6: src/harness/internal/world/sandbox/policy/text/linux.md (sha256 6bc32e5d5cb3c3cb7101871c6b38d414a6f94ebd1e93ff5a89ca6fd8e6225c5c): docs/stories/harness-DSH-M2/evidence/DH-S-17.md:10 records sha256 b6aafb9bf1f7d6f156af094486d3092854377da18ceddab7062f1f199a5bfe87, the file is 6bc32e5d5cb3c3cb7101871c6b38d414a6f94ebd1e93ff5a89ca6fd8e6225c5c (edited after the run)
+policy-text: commit containment: not checked (the root is not a git checkout's top level)
+policy-text: FAILED: M2-C-6: 1 of 1 sandbox policy text files have no passed DH-E-SANDBOX-7 run on their exact bytes; a text merges only with one (tools/harness-gate/README.md, section Sandbox policy text)

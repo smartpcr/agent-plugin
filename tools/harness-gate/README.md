@@ -31,14 +31,17 @@ The module has its own `go.mod` and is not part of the root `go.work`; run it wi
 | 6 | `coverage` | any package under 85% of statements, profiles merged across processes (QG-3) |
 | 7 | `trace` | `tools/harness-trace verify` (QG-9); a root without the tool fails |
 | 8 | `scenario-index` | `test/harness/acceptance-index.yaml` missing or malformed; a `*_scenario_test.go` ID not indexed, indexed twice or bound to two tests; an indexed ID authored at or before `built-through` without a file (DH-ADR-TOOLCHAIN-12) |
-| 9 | `budget` | a `TestBudget*` test over its compiled-in budget (QG-7) |
-| 10 | `cross-compile` | `GOWORK=off CGO_ENABLED=0 go build ./cmd/dsh` for linux, darwin, windows × amd64, arm64 (QG-8) |
-| 11 | `vulncheck` | `govulncheck ./...` per module reports a vulnerability the code reaches (exit 3), or the vulnerability database cannot be read or reached (exit 1): it fails and is re-run, it never skips. `Config.VulnDB` selects `-db`; the default is `https://vuln.go.dev`. It is the one gate that needs the network, so it runs after every local check (M1-G-TOOL-4, M1-D-TOOL-1 (a)) |
-| 12 | `self` | the gate's own tests: `GOWORK=off go test -tags= -count=1 -skip '^TestRepositoryPassesEveryGate$' ./...` in `tools/harness-gate`, without the `e2e` tag (that test runs this list and would recurse); a root without the module fails (M1-G-TOOL-3) |
+| 9 | `policy-text` | a file under `src/harness/internal/world/sandbox/policy/text/` without a passed `DH-E-SANDBOX-7` row of `DH-S-17.md` recording that file's SHA-256 (M2-C-6); see [Sandbox policy text](#sandbox-policy-text-m2-c-6) |
+| 10 | `budget` | a `TestBudget*` test over its compiled-in budget (QG-7) |
+| 11 | `cross-compile` | `GOWORK=off CGO_ENABLED=0 go build ./cmd/dsh` for linux, darwin, windows × amd64, arm64 (QG-8) |
+| 12 | `vulncheck` | `govulncheck ./...` per module reports a vulnerability the code reaches (exit 3), or the vulnerability database cannot be read or reached (exit 1): it fails and is re-run, it never skips. `Config.VulnDB` selects `-db`; the default is `https://vuln.go.dev`. It is the one gate that needs the network, so it runs after every local check (M1-G-TOOL-4, M1-D-TOOL-1 (a)) |
+| 13 | `self` | the gate's own tests: `GOWORK=off go test -tags= -count=1 -skip '^TestRepositoryPassesEveryGate$' ./...` in `tools/harness-gate`, without the `e2e` tag (that test runs this list and would recurse); a root without the module fails (M1-G-TOOL-3) |
 
-The list has the 12 gates of M1-D-GATE-23: plan stage 13.4 added `modules` and
-`self`, and stage 13.5 added `staticcheck` and `vulncheck`, which run the linters
-pinned in the tools module (`linters.go`). `TestGateListIsFixed` pins the order.
+The list has the 12 gates of M1-D-GATE-23 plus `policy-text`: plan stage 13.4
+added `modules` and `self`, stage 13.5 added `staticcheck` and `vulncheck`, which
+run the linters pinned in the tools module (`linters.go`), and harness:DSH-M2
+Stage 2.4 added `policy-text`. Both lanes run the whole list, so the rule is in
+force on both. `TestGateListIsFixed` pins the order.
 
 `gofmt` also checks the test modules' files. Every gate runs on the go floor.
 
@@ -99,6 +102,7 @@ GOWORK=off go -C tools/harness-gate run . preflight --root ../..
 GOWORK=off go -C tools/harness-gate run . ready     --root ../.. --stage DH-S-16 [--built]
 GOWORK=off go -C tools/harness-gate run . close     --root ../.. --stage DH-S-16 [--built]
 GOWORK=off go -C tools/harness-gate run . records   --root ../..
+GOWORK=off go -C tools/harness-gate run . policy-text --root ../..
 ```
 
 - `rehearse` (DH-D-TOOLCHAIN-5, DH-ADR-TOOLCHAIN-13) builds `cmd/dsh` with
@@ -122,6 +126,39 @@ GOWORK=off go -C tools/harness-gate run . records   --root ../..
 
 - `ready`, `close` and `records` are the stage-closure gate; see
   [Stage closure](#stage-closure).
+- `policy-text` runs the `policy-text` gate alone: exit 0 the tree may merge, 1 a
+  text is refused, 2 a usage error or an unreadable tree; see
+  [Sandbox policy text](#sandbox-policy-text-m2-c-6).
+
+## Sandbox policy text (M2-C-6)
+
+The prompt builder adds a sandbox policy section only from a shipped
+per-platform text, `src/harness/internal/world/sandbox/policy/text/<platform>.md`
+for `linux`, `darwin` or `windows` (harness:DSH-M2 implementation-plan Stage 2.4;
+the texts are written in Stage 7.6). Until one exists `policy.Text` returns
+`policy.ErrNoText` and the prompt has no such section. The `policy-text` gate
+(`policytext.go`) holds the pre-merge rule M2-C-6 from before any text exists: a
+tree with no file under that directory passes, and every file there must be
+proven by a row of `docs/stories/harness-DSH-M2/evidence/DH-S-17.md`:
+
+- the row's `Scenario` is `DH-E-SANDBOX-7` and its `Result` is `passed`;
+- its `Commit` is the run's commit (7 to 40 lower-case hex digits) and its
+  `Artifacts` name the run, `run=<id>`;
+- its `Artifacts` hold `<platform>.md sha256=<hex> escalated=<n>/18` with `n` at
+  least 10, and `<hex>` equal to the SHA-256 of the file's bytes;
+- when `--root` is a git checkout's top level, `git cat-file blob
+  <commit>:<path>` must hold the same bytes: the run was on a commit containing
+  that file. Elsewhere (a copied fixture tree) the output says
+  `commit containment: not checked`.
+
+Any other file there (not `<platform>.md`) is refused. A row may prove several
+platforms, one `<platform>.md sha256=... escalated=.../18` entry each. Every edit
+to a text changes its SHA-256, so the edited text is refused until DH-E-SANDBOX-7
+passes again on it and the row records the new hash. Each refusal is one line
+`policy-text: REFUSED M2-C-6: <path> (sha256 <hex>): <reason>`. The fixture trees
+`testdata/policytext/{no_text,text_without_sandbox7,text_with_matching_pass,text_edited_after_pass}`
+and `testdata/policytext/expected.golden` pin the behaviour
+(`TestPolicyTextGolden`).
 
 ## Stage closure
 

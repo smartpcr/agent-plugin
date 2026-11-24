@@ -1,0 +1,30 @@
+== mode read-only
+TEST-ONLY FIXTURE: no build includes this file and no model sees it. The shipped
+policy text is written in Stage 7.6 under world/sandbox/policy/text/.
+Sandbox policy (darwin)
+Mode: read-only (read-only: commands and file tools may read but not write)
+Write roots: none
+Network: denied
+Escalation: If the sandbox denies an action you need, retry that exact call once with sandbox_permissions set to a wider mode and a justification; a person decides, and only that one call is widened.
+Platform note: the temporary directories under /private are writable only when they are a write root.
+== mode workspace-write
+TEST-ONLY FIXTURE: no build includes this file and no model sees it. The shipped
+policy text is written in Stage 7.6 under world/sandbox/policy/text/.
+Sandbox policy (darwin)
+Mode: workspace-write (workspace-write: commands and file tools may write only below the write roots)
+Write roots:
+- /Users/dev/proj (workspace)
+- /Volumes/shared/out (grant)
+- /Users/dev/Library/Caches/dsh/scratch/s-policy (scratch)
+Network: allowed
+Escalation: If the sandbox denies an action you need, retry that exact call once with sandbox_permissions set to a wider mode and a justification; a person decides, and only that one call is widened.
+Platform note: the temporary directories under /private are writable only when they are a write root.
+== mode danger-full-access
+TEST-ONLY FIXTURE: no build includes this file and no model sees it. The shipped
+policy text is written in Stage 7.6 under world/sandbox/policy/text/.
+Sandbox policy (darwin)
+Mode: danger-full-access (full access: commands run unconfined and can take over the harness, including its stored keys and sessions)
+Write roots: none
+Network: allowed
+Nothing is wider than full access; no escalation applies.
+Platform note: the temporary directories under /private are writable only when they are a write root.
