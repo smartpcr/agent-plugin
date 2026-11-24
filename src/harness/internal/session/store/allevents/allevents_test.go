@@ -28,6 +28,7 @@ import (
 	_ "github.com/smartpcr/agent-plugin/src/harness/internal/human/question"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/retry"
 	_ "github.com/smartpcr/agent-plugin/src/harness/internal/tools"
+	_ "github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox/policy"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/schema"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"

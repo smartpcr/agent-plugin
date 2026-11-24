@@ -190,6 +190,7 @@ func Gates(c *Config) []Gate {
 		{Name: "coverage", Title: fmt.Sprintf("coverage merged across processes, %d%% of statements per package", CoverageFloor), Run: c.coverageGate},
 		{Name: "trace", Title: "tools/harness-trace verify", Run: c.traceGate},
 		{Name: "scenario-index", Title: "every authored DH-E-* scenario test is in " + acceptance.IndexPath + " exactly once, and every indexed one authored so far has its test", Run: c.scenarioIndexGate},
+		{Name: "policy-text", Title: "M2-C-6: no file under " + PolicyTextDir + "/ without a passed " + PolicyTextScenario + " row of " + PolicyTextStage + ".md recording its SHA-256", Run: c.policyTextGate},
 		{Name: "budget", Title: "performance budgets (TestBudget*) with DSH_* and GO* overrides cleared", Run: c.budgetGate},
 		{Name: "cross-compile", Title: "cmd/dsh for linux, darwin, windows on amd64 and arm64 with CGO_ENABLED=0", Run: c.crossCompileGate},
 		{Name: "vulncheck", Title: "govulncheck ./... per module against the vulnerability database; an unreachable database fails", Run: c.vulncheckGate},

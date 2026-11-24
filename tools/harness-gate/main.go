@@ -8,7 +8,9 @@
 // The gates, in order: gofmt, vet (go vet and the project's own analyzers), test
 // (race, shuffle), coverage (merged across processes, 85% per package),
 // trace (tools/harness-trace verify), scenario-index (test/harness/acceptance-index.yaml
-// against the authored *_scenario_test.go files), budget (performance budgets) and
+// against the authored *_scenario_test.go files), policy-text (M2-C-6: no shipped
+// sandbox policy text without a passed DH-E-SANDBOX-7 run on it), budget
+// (performance budgets) and
 // cross-compile (cmd/dsh for six targets). See README.md.
 //
 // When --root holds a go.mod, the gates run on that one module (the seeded-violation
@@ -41,6 +43,16 @@
 //	                       (M2-DEC-1, risk M2-R-04): the prior story's records all
 //	                       read closed, its closure record lists every deliverable
 //	                       and built-through has reached its last stage (entry.go)
+//	policy-text            the M2-C-6 pre-merge rule alone (also a gate of the
+//	                       list): no file under
+//	                       src/harness/internal/world/sandbox/policy/text/
+//	                       unless DH-S-17.md holds a passed DH-E-SANDBOX-7 row
+//	                       with that file's SHA-256 (policytext.go)
+//	sandbox7-record --escalated linux=<n>[,...] [--lane s17] [--ci-run id]
+//	                       the s17 job's DH-E-SANDBOX-7 acceptance record of
+//	                       the clean checkout: commit, each text's SHA-256 and
+//	                       escalations, written to evidence/runs/<id>.txt; it
+//	                       runs no gate (sandbox7record.go)
 package main
 
 import (
@@ -91,6 +103,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return runRecords(args[1:], stdout, stderr)
 		case "entry":
 			return runEntry(args[1:], stdout, stderr)
+		case "policy-text":
+			return runPolicyText(ctx, args[1:], stdout, stderr)
+		case "sandbox7-record":
+			return runSandbox7Record(ctx, args[1:], stdout, stderr)
 		}
 	}
 	flags := flag.NewFlagSet("harness-gate", flag.ContinueOnError)
