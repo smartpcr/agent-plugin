@@ -137,7 +137,14 @@ func Builtins() []Definition { return clone(builtins) }
 // this order: admin, the core kernel, web, headless and sdk. Only the last three are
 // launched by name (Lookup).
 func Definitions() []Definition {
-	five := append(slices.Clone(compositions), builtins[:3]...)
+	five := slices.Clone(compositions)
+	for _, name := range []string{Web, Headless, SDK} {
+		i := slices.IndexFunc(builtins, func(d Definition) bool { return d.Name == name })
+		if i < 0 {
+			panic("profile: built-in definition " + name + " is missing")
+		}
+		five = append(five, builtins[i])
+	}
 	return clone(five)
 }
 
