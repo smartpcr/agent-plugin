@@ -256,3 +256,35 @@ func TestFailedAppendIsNotFolded(t *testing.T) {
 		t.Fatalf("count %d at %d, len %d: the failed batch was folded", must(cnt.Get(snap)), snap.AsOf, h.Len())
 	}
 }
+
+// Ensure registers a fold once: after the registry has sealed it hands back the
+// registered fold's handle and registers nothing; another version or state type
+// under the key is view/duplicate, and an unregistered key is still sealed out.
+func TestEnsureReturnsTheRegisteredFoldAfterSeal(t *testing.T) {
+	reg := views.New()
+	first := must(views.Ensure(reg, count()))
+	e := newEnv(t, reg)
+	h := e.create(t)
+	must(h.Append(bg, ctxDraft("v")))
+	must(reg.Read(bg, h, "test/count"))
+	again, err := views.Ensure(reg, count())
+	if err != nil || again != first {
+		t.Fatalf("Ensure after seal = %v, %v; want the registered handle", again, err)
+	}
+	if got := must(again.Get(must(reg.Read(bg, h, "test/count")))); got != 1 {
+		t.Fatalf("count through the ensured handle = %d", got)
+	}
+	v2 := count()
+	v2.Version = 2
+	if _, err := views.Ensure(reg, v2); !errors.Is(err, views.ErrDuplicate) {
+		t.Fatalf("another version = %v", err)
+	}
+	other := last()
+	other.Key = "test/count"
+	if _, err := views.Ensure(reg, other); !errors.Is(err, views.ErrDuplicate) {
+		t.Fatalf("another state type = %v", err)
+	}
+	if _, err := views.Ensure(reg, last()); !errors.Is(err, views.ErrSealed) {
+		t.Fatalf("a new key after seal = %v", err)
+	}
+}

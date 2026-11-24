@@ -25,6 +25,7 @@ import (
 	_ "github.com/smartpcr/agent-plugin/src/harness/internal/context/request"
 	_ "github.com/smartpcr/agent-plugin/src/harness/internal/human/approval"
 	_ "github.com/smartpcr/agent-plugin/src/harness/internal/human/command"
+	_ "github.com/smartpcr/agent-plugin/src/harness/internal/human/permission"
 	_ "github.com/smartpcr/agent-plugin/src/harness/internal/human/question"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/retry"
 	_ "github.com/smartpcr/agent-plugin/src/harness/internal/tools"
