@@ -56,7 +56,7 @@ func TestControlGroupOwnerInADelegatedScope(t *testing.T) {
 		argv = append(argv, "-test.gocoverdir="+dir)
 	}
 	var out strings.Builder
-	p := subprocesstest.Start(t, subprocess.Spec{Argv: argv, Env: host, Stdout: &out, Stderr: &out})
+	p := subprocesstest.Start(t, subprocess.Spec{Argv: argv, Env: host, Stdout: &out, Stderr: &out, Launch: subprocesstest.Launch})
 	werr := p.Wait()
 	log := out.String()
 	if werr != nil && !strings.Contains(log, "=== RUN") {
@@ -215,6 +215,7 @@ func TestInScopeStartFailureLeavesNoGroup(t *testing.T) {
 		"missing work dir":   {Argv: []string{exe}, Dir: filepath.Join(dir, "no-such-dir")},
 		"directory as a dir": {Argv: []string{dir}},
 	} {
+		spec.Launch = subprocesstest.Launch
 		if _, err := subprocess.Start(context.Background(), spec); herr.Kind(err) != subprocess.ReasonStartFailed {
 			t.Errorf("%s: Start = %v; want %s", name, err, subprocess.ReasonStartFailed)
 		}

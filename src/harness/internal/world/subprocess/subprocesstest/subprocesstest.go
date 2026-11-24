@@ -7,7 +7,9 @@ package subprocesstest
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,8 +21,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess"
 )
+
+// Launch is the sandbox plan of every child this package starts: the test binary
+// re-executed as a fixture, which reads nothing a model can write.
+var Launch = sandbox.Trusted("subprocesstest: the test binary re-executed as a fixture")
 
 // RoleEnv selects the role of a re-executed test binary. It has no DSH_ prefix
 // because BuildEnv removes every DSH_* name.
@@ -60,7 +67,18 @@ const (
 	// subprocess.Start, so the child gets this process's tree owner, prints "host
 	// <child pid> <owner kind>" once the child is ready and waits to be killed.
 	RoleHost = "host"
+	// RoleWrite writes the bytes its second argument holds in hexadecimal to the
+	// stream its first argument names, "stdout" or "stderr", and exits.
+	RoleWrite = "write"
+	// RoleFlood starts a RoleStubborn grandchild, prints "tree <child pid>
+	// <grandchild pid>" on standard error once it is ready, writes as many bytes
+	// as its first argument says to standard output and waits to be stopped.
+	RoleFlood = "flood"
 )
+
+// stderr is the standard error of the roles that write to it; this package's own
+// tests replace it to read what a role wrote in their process.
+var stderr io.Writer = os.Stderr
 
 // Main runs the role named by RoleEnv and exits; without one it runs the tests.
 func Main(m *testing.M) {
@@ -105,6 +123,10 @@ func run(role string, args []string, out io.Writer) int {
 		}
 	case RoleHost:
 		return host(out)
+	case RoleWrite:
+		return write(args, out)
+	case RoleFlood:
+		return flood(args, out)
 	default:
 		return fail(fmt.Errorf("unknown role %q", role))
 	}
@@ -137,21 +159,72 @@ func startStubborn(stdout *os.File, sys *syscall.SysProcAttr) (*os.Process, erro
 // tree starts the grandchild so it inherits the child's process group, control
 // group or job; once it is ready it reports both pids.
 func tree(out io.Writer) int {
-	pr, pw, err := os.Pipe()
+	g, err := readyGrandchild()
 	if err != nil {
 		return fail(err)
+	}
+	fmt.Fprintf(out, "tree %d %d\n", os.Getpid(), g)
+	park()
+	return 0
+}
+
+// readyGrandchild starts a RoleStubborn grandchild in this process's tree and
+// returns its pid once it is ready.
+func readyGrandchild() (int, error) {
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		return 0, err
 	}
 	defer pr.Close()
 	g, err := startStubborn(pw, nil)
 	_ = pw.Close()
 	if err != nil {
-		return fail(err)
+		return 0, err
 	}
 	line, err := bufio.NewReader(pr).ReadString('\n')
 	if err != nil || !strings.HasPrefix(line, "ready ") {
-		return fail(fmt.Errorf("grandchild said %q: %v", line, err))
+		return 0, fmt.Errorf("grandchild said %q: %v", line, err)
 	}
-	fmt.Fprintf(out, "tree %d %d\n", os.Getpid(), g.Pid)
+	return g.Pid, nil
+}
+
+// write writes the decoded bytes to the named stream.
+func write(args []string, out io.Writer) int {
+	if len(args) != 2 {
+		return fail(fmt.Errorf("write wants a stream and hex bytes, got %d arguments", len(args)))
+	}
+	b, err := hex.DecodeString(args[1])
+	if err != nil {
+		return fail(err)
+	}
+	switch args[0] {
+	case "stdout":
+	case "stderr":
+		out = stderr
+	default:
+		return fail(fmt.Errorf("write: unknown stream %q", args[0]))
+	}
+	if _, err := out.Write(b); err != nil {
+		return fail(err)
+	}
+	return 0
+}
+
+// flood reports its tree on standard error once the grandchild is ready, then
+// writes the bytes, so the pids are known before a capture limit stops the tree.
+func flood(args []string, out io.Writer) int {
+	n, err := strconv.Atoi(firstOr(args, "0"))
+	if err != nil || n < 0 {
+		return fail(fmt.Errorf("flood wants a byte count, got %q", args))
+	}
+	g, err := readyGrandchild()
+	if err != nil {
+		return fail(err)
+	}
+	fmt.Fprintf(stderr, "tree %d %d\n", os.Getpid(), g)
+	if _, err := out.Write(bytes.Repeat([]byte{'x'}, n)); err != nil {
+		return fail(err)
+	}
 	park()
 	return 0
 }
@@ -165,7 +238,7 @@ func host(out io.Writer) int {
 		return fail(err)
 	}
 	pr, pw := io.Pipe()
-	p, err := subprocess.Start(context.Background(), subprocess.Spec{Argv: []string{exe}, Env: childEnv(RoleStubborn), Stdout: pw})
+	p, err := subprocess.Start(context.Background(), subprocess.Spec{Argv: []string{exe}, Env: childEnv(RoleStubborn), Stdout: pw, Launch: Launch})
 	if err != nil {
 		return fail(err)
 	}
@@ -244,6 +317,7 @@ func firstOr(args []string, def string) string {
 
 // Spec is the spec that re-executes the test binary in role with args. Its
 // environment holds only RoleEnv and, when set, CoverDirEnv; callers add to Env.
+// Its sandbox plan is Launch.
 func Spec(t testing.TB, role string, args ...string) subprocess.Spec {
 	t.Helper()
 	exe, err := os.Executable()
@@ -251,8 +325,9 @@ func Spec(t testing.TB, role string, args ...string) subprocess.Spec {
 		t.Fatalf("subprocesstest: %v", err)
 	}
 	return subprocess.Spec{
-		Argv: append([]string{exe}, args...),
-		Env:  subprocess.Env(childEnv(role)),
+		Argv:   append([]string{exe}, args...),
+		Env:    subprocess.Env(childEnv(role)),
+		Launch: Launch,
 	}
 }
 

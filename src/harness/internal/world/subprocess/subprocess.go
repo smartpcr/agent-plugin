@@ -21,14 +21,20 @@
 // non-test harness package other than this one that imports os/exec or calls a
 // process-creation function.
 //
-// The cordis provider (subprocess/local), confined launch plans, PTYs and output
-// collectors of the execution area are later steps; they build on Start.
+// Every Spec carries a sandbox.Launch (A10): the zero Launch is refused, and until
+// DH-S-13 builds confined plans each caller passes sandbox.Trusted with its reason.
+// Run is the run-and-capture helper on Start (DH-LIB-EXECA): a deadline, a capture
+// limit that stops the whole tree, and the tail of what passed the limit. Confirm
+// asks a person and refuses when standard input is not a terminal.
+//
+// The cordis provider (subprocess/local), confined launch plans, PTYs, private
+// channels, detached launches and the output collectors of the execution area are
+// later steps; they build on Start.
 package subprocess
 
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -38,6 +44,7 @@ import (
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox"
 )
 
 // Reasons the package raises.
@@ -51,12 +58,17 @@ const (
 	ReasonStartFailed     herr.Reason = "subprocess/start-failed"
 	ReasonTreeOwner       herr.Reason = "subprocess/tree-owner"
 	ReasonSurvivors       herr.Reason = "subprocess/tree-survivors"
+	ReasonNoLaunch        herr.Reason = "subprocess/no-launch"
+	ReasonOutputLimit     herr.Reason = "subprocess/output-limit"
+	ReasonDeadline        herr.Reason = "subprocess/deadline"
+	ReasonCanceled        herr.Reason = "subprocess/canceled"
 )
 
 // Reasons lists every reason, for the declaration test.
 var Reasons = []herr.Reason{
 	ReasonEmptyArgv, ReasonRelativeProgram, ReasonNotFound, ReasonBatchRefused,
 	ReasonBadArgument, ReasonLineTooLong, ReasonStartFailed, ReasonTreeOwner, ReasonSurvivors,
+	ReasonNoLaunch, ReasonOutputLimit, ReasonDeadline, ReasonCanceled,
 }
 
 // DefaultSettle bounds the wait for a tree to be gone after the forced stop, when
@@ -79,9 +91,11 @@ type Spec struct {
 	// snapshot (DSH_HOME, a lease's value) are deliberate. A caller that wants the
 	// host's variables gets them through BuildEnv, never by passing os.Environ().
 	Env Env
-	// Stdin, Stdout and Stderr are the standard streams; nil is the null device.
-	Stdin          io.Reader
-	Stdout, Stderr io.Writer
+	// Stdin is the standard input (StdinMode); nil is the null device.
+	Stdin StdinMode
+	// Stdout and Stderr are where the standard output and error go (OutputMode);
+	// nil is the null device, and Run captures a nil stream.
+	Stdout, Stderr OutputMode
 	// Grace is how long StopTree waits after the polite stop when the context
 	// that started the process ends.
 	Grace time.Duration
@@ -89,6 +103,17 @@ type Spec struct {
 	// value) refuses it, AllowChecked runs it through cmd.exe with checked
 	// arguments. Other systems ignore it.
 	Batch BatchPolicy
+	// Launch is the sandbox plan for this command (A10's sandbox.Launch). It is
+	// required: the zero Launch is refused with subprocess/no-launch before
+	// anything starts. Until DH-S-13 builds confined plans, every caller passes
+	// sandbox.Trusted(reason), saying why its child reads nothing the model can
+	// write.
+	Launch sandbox.Launch
+
+	// waitDelay bounds how long Wait waits for the standard streams once the
+	// direct child has exited (exec.Cmd.WaitDelay); Run sets it so a descendant
+	// holding a captured stream open cannot keep the run waiting.
+	waitDelay time.Duration
 }
 
 // Process is one started child and the tree it owns.
@@ -119,19 +144,23 @@ const watchEvery = 250 * time.Millisecond
 // handle. When ctx ends, the tree is stopped with spec.Grace. The caller must call
 // StopTree or Wait.
 func Start(ctx context.Context, spec Spec) (*Process, error) {
+	if !spec.Launch.Valid() {
+		return nil, herr.New(ReasonNoLaunch, "Spec.Launch is empty; the host's own child passes sandbox.Trusted(reason)")
+	}
 	l, err := check(spec.Argv, spec.Batch)
 	if err != nil {
 		return nil, err
 	}
 	build := func() *exec.Cmd {
 		cmd := &exec.Cmd{
-			Path:   l.path,
-			Args:   append([]string(nil), l.args...),
-			Dir:    spec.Dir,
-			Env:    spec.Env.block(),
-			Stdin:  spec.Stdin,
-			Stdout: spec.Stdout,
-			Stderr: spec.Stderr,
+			Path:      l.path,
+			Args:      append([]string(nil), l.args...),
+			Dir:       spec.Dir,
+			Env:       spec.Env.block(),
+			Stdin:     stdinOf(spec.Stdin),
+			Stdout:    outputOf(spec.Stdout, os.Stdout),
+			Stderr:    outputOf(spec.Stderr, os.Stderr),
+			WaitDelay: spec.waitDelay,
 		}
 		setCmdLine(cmd, l.cmdLine)
 		return cmd

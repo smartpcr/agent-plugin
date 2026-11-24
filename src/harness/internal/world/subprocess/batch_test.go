@@ -68,7 +68,7 @@ func toolSpec(t *testing.T, dir, role string, args ...string) (subprocess.Spec, 
 	if err != nil {
 		t.Fatalf("LookupProgram(tool) on %s: %v", dir, err)
 	}
-	return subprocess.Spec{Argv: append([]string{prog.Path}, args...), Env: env, Batch: subprocess.AllowChecked}, prog
+	return subprocess.Spec{Argv: append([]string{prog.Path}, args...), Env: env, Batch: subprocess.AllowChecked, Launch: subprocesstest.Launch}, prog
 }
 
 // runTool runs spec to completion, returns its standard output and checks that

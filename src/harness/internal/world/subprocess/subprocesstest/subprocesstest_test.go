@@ -144,7 +144,7 @@ func call(t *testing.T, fn func(tb testing.TB)) (fatals, errs []string) {
 // when the child exits with an error; the tree started is still stopped.
 func TestHelpersFailTheirTest(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "no-such-program")
-	fatals, errs := call(t, func(tb testing.TB) { Start(tb, subprocess.Spec{Argv: []string{missing}}) })
+	fatals, errs := call(t, func(tb testing.TB) { Start(tb, subprocess.Spec{Argv: []string{missing}, Launch: Launch}) })
 	if len(fatals) != 1 || !strings.Contains(fatals[0], "subprocesstest: start:") || len(errs) != 0 {
 		t.Fatalf("Start of a missing program reported fatals %q, errors %q; want one start failure", fatals, errs)
 	}
@@ -332,5 +332,51 @@ func TestHostRoleReportsItsChild(t *testing.T) {
 func killPid(pid int) {
 	if p, err := os.FindProcess(pid); err == nil {
 		_ = p.Kill()
+	}
+}
+
+// RoleWrite writes the decoded bytes to the stream it names and fails on a bad
+// stream, bad hex or a missing argument.
+func TestWriteRoleWritesTheBytes(t *testing.T) {
+	var out, errOut strings.Builder
+	saved := stderr
+	stderr = &errOut
+	t.Cleanup(func() { stderr = saved })
+	if code := run(RoleWrite, []string{"stdout", "00ff0a"}, &out); code != 0 || out.String() != "\x00\xff\n" {
+		t.Fatalf("write to stdout = %d, %q", code, out.String())
+	}
+	if code := run(RoleWrite, []string{"stderr", "6869"}, &out); code != 0 || errOut.String() != "hi" {
+		t.Fatalf("write to stderr = %d, %q", code, errOut.String())
+	}
+	for _, args := range [][]string{nil, {"stdout", "zz"}, {"stdin", "00"}} {
+		if code := run(RoleWrite, args, &out); code != 2 {
+			t.Errorf("write %q exited %d; want 2", args, code)
+		}
+	}
+}
+
+// RoleFlood reports both pids on standard error once the grandchild is ready,
+// then writes the bytes and parks; a bad count fails.
+func TestFloodRoleReportsThenWrites(t *testing.T) {
+	noPark(t)
+	var out, errOut strings.Builder
+	saved := stderr
+	stderr = &errOut
+	t.Cleanup(func() { stderr = saved })
+	if code := run(RoleFlood, []string{"5"}, &out); code != 0 || out.String() != "xxxxx" {
+		t.Fatalf("flood role = %d, %q; want 0 and five bytes", code, out.String())
+	}
+	var self, grandchild int
+	if _, err := fmt.Sscanf(errOut.String(), "tree %d %d\n", &self, &grandchild); err != nil || self != os.Getpid() {
+		t.Fatalf("flood role said %q on stderr (%v); want this pid and the grandchild's", errOut.String(), err)
+	}
+	g, err := os.FindProcess(grandchild)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = g.Kill()
+	_, _ = g.Wait()
+	if code := run(RoleFlood, []string{"-1"}, &out); code != 2 {
+		t.Fatalf("flood with a negative count exited %d; want 2", code)
 	}
 }
