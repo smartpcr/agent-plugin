@@ -89,13 +89,15 @@ func (Real) Guards(_ context.Context, s *State) error {
 }
 
 // Layers reads and parses every layer of the profile, keeping the bytes read as
-// the reload's baseline.
+// the reload's baseline, and builds the launcher layer: with --safe it disables the
+// plugins group and the optional bundles (DH-ADR-BOOT-12).
 func (Real) Layers(_ context.Context, s *State) error {
 	files := map[string][]byte{}
 	read := layerReader(s.Options.Request.ReadFile)
 	layers, issues, err := profile.Stack(s.Options.Profile, profile.Sources{
 		Home:     s.Data.Home,
 		Overlays: s.Data.Overlays,
+		Safe:     s.Data.Safe,
 		Read: func(path string) ([]byte, error) {
 			data, err := read(path)
 			switch {

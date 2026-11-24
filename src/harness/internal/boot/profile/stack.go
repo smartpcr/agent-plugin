@@ -32,6 +32,15 @@ const (
 	LauncherLabel = "launcher"
 )
 
+// PluginsGroup is the id of the group an installed plugin's entry is inserted
+// into (boot.md §6.2, "How a plugin is represented").
+const PluginsGroup = "plugins"
+
+// OptionalPrefix starts the id of an optional bundle's group: an optional bundle
+// is a bundle layer whose one operation inserts one group, disabled by default,
+// with an id "x.<feature>" (DH-ADR-BUNDLE-1, DH-T-BOOT-2).
+const OptionalPrefix = "x."
+
 // Files this package owns under <home>/config (boot.md §6.1).
 const (
 	// ProfilesDir holds one directory per profile with a layer.
@@ -107,6 +116,9 @@ type Sources struct {
 	Overlays []string
 	// Launcher are the in-memory operations of launcher flags; the top layer.
 	Launcher []loader.Op
+	// Safe is launch.Data.Safe (--safe): the launcher layer then also holds SafeOps
+	// of the layers below it (DH-ADR-BOOT-12).
+	Safe bool
 	// Read reads a layer file; nil is os.ReadFile.
 	Read ReadFile
 }
@@ -155,6 +167,10 @@ func Stack(def Definition, src Sources) ([]loader.Layer, []loader.Issue, error) 
 			return nil, nil, err
 		}
 	}
-	launcher := loader.Layer{Label: LauncherLabel, Ops: append([]loader.Op{}, src.Launcher...)}
+	ops := []loader.Op{}
+	if src.Safe {
+		ops = append(ops, SafeOps(layers)...)
+	}
+	launcher := loader.Layer{Label: LauncherLabel, Ops: append(ops, src.Launcher...)}
 	return append(layers, launcher), issues, nil
 }

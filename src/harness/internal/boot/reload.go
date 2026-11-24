@@ -24,7 +24,7 @@ func (s *State) startReload(ctx context.Context) {
 	def, data := s.Options.Profile, s.Data
 	opts := config.ServiceOptions{
 		Stack: func(read config.ReadFile) ([]loader.Layer, []loader.Issue, error) {
-			return profile.Stack(def, profile.Sources{Home: data.Home, Overlays: data.Overlays, Read: profile.ReadFile(read)})
+			return profile.Stack(def, profile.Sources{Home: data.Home, Overlays: data.Overlays, Safe: data.Safe, Read: profile.ReadFile(read)})
 		},
 		Loader:    s.Service,
 		Context:   s.root,
