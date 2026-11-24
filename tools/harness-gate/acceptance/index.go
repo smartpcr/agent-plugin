@@ -10,16 +10,22 @@
 //	  DH-S-17:
 //	    - id: DH-E-TOOLCHAIN-1
 //	      authored: DH-S-11
+//	      credential: claude-session
 //	    - id: DH-E-LLM-3
 //	      authored: DH-S-9
+//	      credential: claude-session
 //	      requires: [DH-S-11, DH-S-16]
 //	  DH-S-18:
 //	    - id: DH-E-TOOLCHAIN-2
 //	      authored: DH-S-1
+//	      credential: none
 //	  DH-S-22: []
 //
 // built-through is the last stage built at the commit: every indexed scenario
-// authored at or before it must have its scenario test. The file is read by a strict
+// authored at or before it must have its scenario test. Every entry states the
+// signed-in session it needs (credential: none, claude-session or copilot-session;
+// M1-G-TOOL-16), which the preflight checks with the client's own sign-in status
+// command before any scenario starts (signin.go). The file is read by a strict
 // line parser that accepts exactly this shape (comments and blank lines aside), so
 // the gate needs no YAML dependency.
 package acceptance
@@ -44,12 +50,14 @@ var (
 	scenarioPattern = regexp.MustCompile(`^DH-E-[A-Z][A-Z0-9]*-[1-9][0-9]*$`)
 )
 
-// Entry is one indexed scenario: its ID, the stage that authors its test, and the
-// stages that must be built before it runs (none for most entries).
+// Entry is one indexed scenario: its ID, the stage that authors its test, the
+// signed-in session it needs, and the stages that must be built before it runs
+// (none for most entries).
 type Entry struct {
-	ID       string
-	Authored string
-	Requires []string
+	ID         string
+	Authored   string
+	Credential Credential
+	Requires   []string
 }
 
 // Stage is one executing stage of the index and the scenarios it runs.
@@ -72,6 +80,18 @@ func (x *Index) Stage(id string) (Stage, bool) {
 		}
 	}
 	return Stage{}, false
+}
+
+// Entry returns the index entry of scenario id, in whichever stage lists it.
+func (x *Index) Entry(id string) (Entry, bool) {
+	for _, s := range x.Stages {
+		for _, e := range s.Scenarios {
+			if e.ID == id {
+				return e, true
+			}
+		}
+	}
+	return Entry{}, false
 }
 
 // Required returns the scenario IDs the acceptance of stage runs, the value the
@@ -130,6 +150,9 @@ func ParseIndex(r io.Reader) (*Index, error) {
 	closeEntry := func() error {
 		if entry != nil && entry.Authored == "" {
 			return fmt.Errorf("line %d: %s has no authored stage", lineNo, entry.ID)
+		}
+		if entry != nil && entry.Credential == "" {
+			return fmt.Errorf("line %d: %s has no credential (%s)", lineNo, entry.ID, credentialList())
 		}
 		entry = nil
 		return nil
@@ -200,6 +223,15 @@ func ParseIndex(r io.Reader) (*Index, error) {
 				return nil, fmt.Errorf("line %d: authored %q is not a stage ID (DH-S-n)", lineNo, value)
 			}
 			entry.Authored = value
+		case indent == 6 && entry != nil && key == "credential" && hasColon:
+			if entry.Credential != "" {
+				return nil, fmt.Errorf("line %d: %s has two credentials", lineNo, entry.ID)
+			}
+			c, err := ParseCredential(value)
+			if err != nil {
+				return nil, fmt.Errorf("line %d: %s: %w", lineNo, entry.ID, err)
+			}
+			entry.Credential = c
 		case indent == 6 && entry != nil && key == "requires" && hasColon:
 			if entry.Requires != nil {
 				return nil, fmt.Errorf("line %d: %s has two requires lists", lineNo, entry.ID)

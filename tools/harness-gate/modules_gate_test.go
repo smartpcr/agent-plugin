@@ -77,7 +77,8 @@ func TestModulesGatePassesOnRepository(t *testing.T) {
 	}
 	for _, want := range []string{
 		"ok   src/go/test/e2e: go mod tidy -diff", "ok   tools/harness-gate: go mod verify",
-		"modules: 3 product, 1 test and 2 tools modules checked",
+		"ok   tools/goreleaser: go mod tidy -diff", "ok   tools/goreleaser: go mod verify",
+		"modules: 3 product, 1 test and 3 tools modules checked",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("output lacks %q:\n%s", want, out.String())

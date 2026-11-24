@@ -9,8 +9,12 @@
 #     authored at or before built-through has its scenario test;
 #   - "harness-gate require --stage DH-S-n" derives DSH_REQUIRE_SCENARIOS for the
 #     acceptance run of that stage (.github/workflows/harness-scenarios.yml);
-#   - "harness-gate preflight" fails that run when the secret is missing, this
-#     index and the scenario tests disagree, or a required ID has no test.
+#   - "harness-gate preflight" fails that run when this index and the scenario
+#     tests disagree, a required ID has no test, or the client a required entry's
+#     credential names is not signed in on the host that runs it;
+#   - "harness-gate scenarios --stage DH-S-n --evidence FILE" runs a stage's
+#     scenarios on the development host, where the user is signed in (M1-D-TOOL-6
+#     (a)), as one evidence record: that preflight, then the scenario tests.
 #
 # A stage adds its scenarios here in the same change that authors them, and
 # raises built-through when it closes. Shape (strict; no other YAML is read):
@@ -21,7 +25,16 @@
 #     DH-S-<n>:
 #       - id: DH-E-<AREA>-<n>
 #         authored: DH-S-<n>
+#         credential: none            # none | claude-session | copilot-session
 #         requires: [DH-S-<n>, ...]   # optional: stages that must be built first
+#
+# credential (required, M1-G-TOOL-16) is the signed-in session the scenario needs.
+# Under OWNER-2 there is no API key: claude-session is the user's own signed-in
+# Claude Code, checked with "claude auth status --json"; copilot-session the
+# GitHub Copilot CLI, which has no status command at 1.0.115, so such an entry
+# fails the preflight (it fails closed). A scenario with one subtest per client
+# route names claude-session, its must-pass leg; the copilot-cli leg is recorded
+# either way (M1-D-LOOP-6 A) and is not preflighted.
 #
 # requires names the stages whose behaviour a scenario authored ahead of them
 # exercises; "harness-gate preflight" refuses to run it until built-through has
@@ -35,23 +48,28 @@ stages:
     # (impl.md step 16.8); authored by Stage 7.2 (impl.md steps 7.2, 7.3).
     - id: DH-E-STORE-1
       authored: DH-S-7
+      credential: none
     - id: DH-E-STORE-2
       authored: DH-S-7
+      credential: none
     # Deletion and its interrupted finish; guarded, deletion removes data (impl.md
     # step 16.8); authored by Stage 7.3 (impl.md step 7.6). Until 16.8 passes the
     # SQLite store is used on scratch homes only.
     - id: DH-E-STORE-6
       authored: DH-S-7
+      credential: none
   DH-S-17:
     # Its subjects (the model runtime, the replay helpers) exist from Phase 11;
     # the file is written by the DH-S-11 authoring step (impl.md DH-S-1 Scenarios),
     # in Stage 11.4: toolchain_record_replay_scenario_test.go.
     - id: DH-E-TOOLCHAIN-1
       authored: DH-S-11
+      credential: claude-session
     # A running harness following an edit to its profile patch (impl.md step 17.7);
     # authored with the validated reload of DH-S-6 (step 6.13).
     - id: DH-E-LOADER-1
       authored: DH-S-6
+      credential: none
     # The model runtime on the user's signed-in Claude Code and Copilot CLI
     # client routes (OWNER-2; re-authored from the DeepSeek API by gap-closure
     # step 16.5.8, M1-D-CLOSE-4 A): a turn with reasoning and a tool call, a
@@ -63,12 +81,15 @@ stages:
     # launcher (DH-S-16).
     - id: DH-E-LLM-1
       authored: DH-S-9
+      credential: claude-session
       requires: [DH-S-11, DH-S-16]
     - id: DH-E-LLM-3
       authored: DH-S-9
+      credential: claude-session
       requires: [DH-S-11, DH-S-16]
     - id: DH-E-VIEW-1
       authored: DH-S-9
+      credential: claude-session
       requires: [DH-S-11, DH-S-16]
     # The guarded pipeline with a real model: two reads and a write the policy asks
     # about and the answerer rejects (impl.md DH-S-10, "runs DH-S-17,
@@ -76,6 +97,7 @@ stages:
     # and the headless launcher (DH-S-16).
     - id: DH-E-TOOLS-1
       authored: DH-S-10
+      credential: claude-session
       requires: [DH-S-11, DH-S-16]
     # The session's two real-environment scenarios (impl.md DH-S-5, "authored in
     # DH-S-11", once a real model can be called) and the agent loop's four
@@ -89,96 +111,121 @@ stages:
     # shell command across a stop or a kill also need the shell tool (DH-S-13).
     - id: DH-E-SESSION-1
       authored: DH-S-11
+      credential: claude-session
       requires: [DH-S-11, DH-S-16]
     - id: DH-E-SESSION-2
       authored: DH-S-11
+      credential: claude-session
       requires: [DH-S-11, DH-S-13, DH-S-16]
     - id: DH-E-AGENT-1
       authored: DH-S-11
+      credential: claude-session
       requires: [DH-S-11, DH-S-16]
     - id: DH-E-AGENT-2
       authored: DH-S-11
+      credential: claude-session
       requires: [DH-S-11, DH-S-16]
     - id: DH-E-AGENT-3
       authored: DH-S-11
+      credential: claude-session
       requires: [DH-S-11, DH-S-13, DH-S-16]
     - id: DH-E-AGENT-4
       authored: DH-S-11
+      credential: claude-session
       requires: [DH-S-11, DH-S-16]
   DH-S-18:
     - id: DH-E-TOOLCHAIN-2
       authored: DH-S-1
+      credential: none
     # The watcher, search and durable-replace scenarios of the leaf packages built in
     # DH-S-4 (impl.md steps 18.7, 18.8, 18.11).
     - id: DH-E-CHOKIDAR-1
       authored: DH-S-4
+      credential: none
     - id: DH-E-CHOKIDAR-2
       authored: DH-S-4
+      credential: none
     - id: DH-E-NODEFS-1
       authored: DH-S-4
+      credential: none
     - id: DH-E-RIPGREP-1
       authored: DH-S-4
+      credential: none
     - id: DH-E-RIPGREP-2
       authored: DH-S-4
+      credential: none
     # Linux: a whole process tree is killed (impl.md step 18.3), and a host that
     # dies leaves a readable report on each OS (step 18.2); authored with the
     # test kit that closes circle C-1 (DH-S-6, step 6.17).
     - id: DH-E-EXEC-1
       authored: DH-S-6
+      credential: none
     - id: DH-E-HOST-4
       authored: DH-S-6
+      credential: none
     # Owed by DH-S-6 under rule 4 (impl.md sec. 7.5 places them in DH-S-18) and
     # authored late by gap-closure Stage 13.6 (M1-G-CLOSE-7): the host's delegated
     # scope over a real SSH login (impl.md step 18.3), and stored data another
     # local user cannot read (step 18.10).
     - id: DH-E-EXEC-10
       authored: DH-S-6
+      credential: none
     - id: DH-E-STORAGE-6
       authored: DH-S-6
+      credential: none
   DH-S-19:
     # Two processes share the workspace registry; an archive with stop ends the
     # other process's turn (impl.md DH-S-19); authored by Stage 8.2 (impl.md
     # steps 8.4, 8.5).
     - id: DH-E-STORAGE-1
       authored: DH-S-8
+      credential: none
   DH-S-21:
     # Two processes on one home and one profile; guarded (impl.md step 21.13).
     - id: DH-E-BOOT-2
       authored: DH-S-6
+      credential: none
   DH-S-22:
     # A launch that cannot serve fails loudly; one that can serves the UI's first
     # page (impl.md step 22.3); authored in DH-S-6.
     - id: DH-E-BOOT-1
       authored: DH-S-6
+      credential: none
     # A question that timed out survives a kill and restart and is answered once
     # through the inbox (impl.md step 10.9); authored by Stage 10.4.
     - id: DH-E-HUMAN-6
       authored: DH-S-10
+      credential: claude-session
       requires: [DH-S-11, DH-S-16, DH-S-21]
   DH-S-23:
     # An image survives a crash mid-upload, a restart, a fork whose parent is
     # deleted and collection (impl.md DH-S-23); authored by Stage 8.2.
     - id: DH-E-STORAGE-2
       authored: DH-S-8
+      credential: none
   DH-S-35:
     # A non-holder follows a session and hands its holder requests (impl.md step
     # 35.7); authored by Stage 7.3 (impl.md step 7.5), which builds the follow.
     - id: DH-E-STORE-5
       authored: DH-S-7
+      credential: none
   DH-S-39:
     # All traffic through a TLS-intercepting proxy: the model, a fetched page and an
     # MCP server over HTTP (impl.md step 39.15); authored in DH-S-6.
     - id: DH-E-UTIL-1
       authored: DH-S-6
+      credential: none
     # A five-megabyte command output bounded and recoverable under a real sandbox,
     # once per OS (storage.md DH-E-STORAGE-3); authored by Stage 8.3 (impl.md
     # DH-S-8 step "Author DH-E-STORAGE-3").
     - id: DH-E-STORAGE-3
       authored: DH-S-8
+      credential: none
     # A command that ignores termination stopped at its deadline, leaving no
     # process, once per OS (tools.md DH-E-TOOLS-3); authored by Stage 10.3
     # (impl.md DH-S-10 step "Author DH-E-TOOLS-3"). It needs the shell tool
     # (DH-S-13) and the headless launcher (DH-S-16).
     - id: DH-E-TOOLS-3
       authored: DH-S-10
+      credential: none
       requires: [DH-S-13, DH-S-16]

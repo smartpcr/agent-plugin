@@ -613,6 +613,20 @@ Real-environment scenarios (not run; a local mock is not a substitute):
 - **Then** record writes a session log and, for a file-changing scenario, the product's workspace equals `workspace.expected/`; both replays pass with no client started (no stand-in ran), no sign-in in reach and no network access to any model host; the fixture directory has no differences after the replays; the run report lists the scenario as executed, not skipped.
 - **Cleanup.** Temporary home, workspace, empty configuration-home and stand-in directories are removed by the test. Nothing of the user's sign-in is read or changed. On failure, keep the child's standard error and the unnormalised log (the copy's path is logged).
 
+> **Signed-in host (pointer, M1).** For the M1 story, gap-closure plan step 19.2.1
+> (M1-G-TOOL-16) and owner decision M1-D-TOOL-6 (a) in
+> [the M1 decision log](../../stories/harness-DSH-M1/decisions.md) read this scenario's
+> Given as **a signed-in session on the development host**: the record run executes on
+> the development host where the user signed in, through
+> `harness-gate scenarios --stage DH-S-17 --evidence <file>`, never on a hosted runner.
+> Its index entry in `test/harness/acceptance-index.yaml` carries
+> `credential: claude-session`, and the preflight runs Claude Code's own status command
+> (`claude auth status --json`) and refuses to start any scenario, naming the scenario
+> and the client, when it does not report `loggedIn: true`. The copilot-cli leg stays
+> recorded either way (M1-D-LOOP-6 A) and is not preflighted: the GitHub Copilot CLI
+> 1.0.115 has no non-interactive status command. The run is one evidence record in the
+> format of gap-closure plan step 12.3.5. The scenario text above is unchanged (DC-2).
+
 <a id="dh-e-toolchain-2"></a>
 #### DH-E-TOOLCHAIN-2 A release rehearsal yields a runnable binary on every platform
 

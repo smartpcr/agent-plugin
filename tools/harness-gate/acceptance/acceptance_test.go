@@ -1,7 +1,7 @@
 package acceptance
 
 import (
-	"errors"
+	"context"
 	"os"
 	"path/filepath"
 	"slices"
@@ -16,12 +16,15 @@ stages:
   DH-S-17:
     - id: DH-E-TOOLCHAIN-1 # trailing comment
       authored: DH-S-11
+      credential: claude-session
     - id: DH-E-LLM-3
       authored: DH-S-9
+      credential: none
       requires: [DH-S-11, DH-S-16]
   DH-S-18:
     - id: DH-E-TOOLCHAIN-2
       authored: DH-S-1
+      credential: none
 `
 
 func mustParse(t *testing.T, src string) *Index {
@@ -40,14 +43,14 @@ func TestParseIndex(t *testing.T) {
 	}
 	want := []Stage{
 		{ID: "DH-S-16"},
-		{ID: "DH-S-17", Scenarios: []Entry{{ID: "DH-E-TOOLCHAIN-1", Authored: "DH-S-11"}, {ID: "DH-E-LLM-3", Authored: "DH-S-9", Requires: []string{"DH-S-11", "DH-S-16"}}}},
-		{ID: "DH-S-18", Scenarios: []Entry{{ID: "DH-E-TOOLCHAIN-2", Authored: "DH-S-1"}}},
+		{ID: "DH-S-17", Scenarios: []Entry{{ID: "DH-E-TOOLCHAIN-1", Authored: "DH-S-11", Credential: CredentialClaude}, {ID: "DH-E-LLM-3", Authored: "DH-S-9", Credential: CredentialNone, Requires: []string{"DH-S-11", "DH-S-16"}}}},
+		{ID: "DH-S-18", Scenarios: []Entry{{ID: "DH-E-TOOLCHAIN-2", Authored: "DH-S-1", Credential: CredentialNone}}},
 	}
 	if len(x.Stages) != len(want) {
 		t.Fatalf("stages = %+v", x.Stages)
 	}
 	sameEntry := func(a, b Entry) bool {
-		return a.ID == b.ID && a.Authored == b.Authored && slices.Equal(a.Requires, b.Requires)
+		return a.ID == b.ID && a.Authored == b.Authored && a.Credential == b.Credential && slices.Equal(a.Requires, b.Requires)
 	}
 	for i := range want {
 		if x.Stages[i].ID != want[i].ID || !slices.EqualFunc(x.Stages[i].Scenarios, want[i].Scenarios, sameEntry) {
@@ -84,6 +87,9 @@ func TestParseIndexRejects(t *testing.T) {
 		"requires bad stage":  {"built-through: DH-S-1\nstages:\n  DH-S-2:\n    - id: DH-E-X-1\n      authored: DH-S-1\n      requires: [S-1]\n", `requires "S-1" is not a stage ID`},
 		"requires later":      {"built-through: DH-S-1\nstages:\n  DH-S-2:\n    - id: DH-E-X-1\n      authored: DH-S-1\n      requires: [DH-S-3]\n", "requires DH-S-3, after its executing stage DH-S-2"},
 		"requires twice":      {"built-through: DH-S-1\nstages:\n  DH-S-2:\n    - id: DH-E-X-1\n      authored: DH-S-1\n      requires: [DH-S-1, DH-S-1]\n", "requires DH-S-1 twice"},
+		"missing credential":  {"built-through: DH-S-1\nstages:\n  DH-S-2:\n    - id: DH-E-X-1\n      authored: DH-S-1\n", "DH-E-X-1 has no credential (none, claude-session, copilot-session)"},
+		"bad credential":      {"built-through: DH-S-1\nstages:\n  DH-S-2:\n    - id: DH-E-X-1\n      authored: DH-S-1\n      credential: api-key\n", `line 6: DH-E-X-1: credential "api-key" is not one of none, claude-session, copilot-session`},
+		"two credentials":     {"built-through: DH-S-1\nstages:\n  DH-S-2:\n    - id: DH-E-X-1\n      authored: DH-S-1\n      credential: none\n      credential: none\n", "DH-E-X-1 has two credentials"},
 		"two requires lists":  {"built-through: DH-S-1\nstages:\n  DH-S-2:\n    - id: DH-E-X-1\n      authored: DH-S-1\n      requires: [DH-S-1]\n      requires: [DH-S-2]\n", "two requires lists"},
 	}
 	for name, tt := range tests {
@@ -178,7 +184,7 @@ func TestCheck(t *testing.T) {
 			[]string{"DH-E-TOOLCHAIN-2 is indexed under DH-S-18, authored at DH-S-1 (built through DH-S-1), and has no scenario test"},
 		},
 		"indexed twice": {
-			goodIndex + "  DH-S-22:\n    - id: DH-E-TOOLCHAIN-2\n      authored: DH-S-1\n", []Scenario{rehearsal},
+			goodIndex + "  DH-S-22:\n    - id: DH-E-TOOLCHAIN-2\n      authored: DH-S-1\n      credential: none\n", []Scenario{rehearsal},
 			[]string{"DH-E-TOOLCHAIN-2 is indexed 2 times (DH-S-18, DH-S-22)"},
 		},
 		"two tests claim one ID": {
@@ -258,7 +264,15 @@ func TestPreflight(t *testing.T) {
 		t.Errorf("Preflight built through DH-S-11 = %v, %v; want DH-E-LLM-3 refused for DH-S-16 and no plan", plan.Tests(), err)
 	}
 	built := mustParse(t, strings.Replace(goodIndex, "built-through: DH-S-1", "built-through: DH-S-16", 1))
-	if plan, err := Preflight(need, built, authored); err != nil || !slices.Equal(plan.Tests(), []string{"TestToolchain", "TestBadKey"}) {
+	// DH-E-TOOLCHAIN-1 needs claude-session: with no probe it cannot start, and with
+	// a signed-in probe both are planned.
+	if plan, err := Preflight(need, built, authored); err == nil || !strings.Contains(err.Error(), "DH-E-TOOLCHAIN-1 needs claude-session") || len(plan.Scenarios) != 0 {
+		t.Errorf("Preflight built through DH-S-16 with no probe = %v, %v; want DH-E-TOOLCHAIN-1 refused and no plan", plan.Tests(), err)
+	}
+	signedIn := func(context.Context, Credential) (SignInStatus, error) {
+		return SignInStatus{SignedIn: true, Command: "probe", Detail: "loggedIn=true"}, nil
+	}
+	if plan, err := PreflightWith(context.Background(), need, built, authored, signedIn); err != nil || !slices.Equal(plan.Tests(), []string{"TestToolchain", "TestBadKey"}) {
 		t.Errorf("Preflight built through DH-S-16 = %v, %v; want both planned", plan.Tests(), err)
 	}
 	// The index disagreeing with the scenario tests fails the preflight too.
@@ -286,34 +300,6 @@ func TestPreflightNeedsNoModelKey(t *testing.T) {
 	}
 	if len(plan.Scenarios) != 0 {
 		t.Errorf("a failed preflight planned %v", plan.Tests())
-	}
-}
-
-// TestPreflightCallsTheCredentialHook: the hook in force passes on any environment,
-// and a failing hook (as stage 19.2's check may be) fails the preflight, named,
-// with an empty plan (M1-G-TOOL-15; DH-T-TOOLCHAIN-6).
-func TestPreflightCallsTheCredentialHook(t *testing.T) {
-	for _, env := range []map[string]string{nil, {"DSH_HOME": "/h", RequireEnv: "DH-E-X-1"}} {
-		if err := Credentials(env); err != nil {
-			t.Errorf("the credential hook in force failed on %v: %v", env, err)
-		}
-	}
-	x := mustParse(t, goodIndex)
-	scenarios := []Scenario{{ID: "DH-E-TOOLCHAIN-2", File: "s/a_scenario_test.go", Test: "TestRehearsal"}}
-	saved := Credentials
-	t.Cleanup(func() { Credentials = saved })
-	var seen map[string]string
-	Credentials = func(env map[string]string) error {
-		seen = env
-		return errors.New("route claude is signed out")
-	}
-	env := map[string]string{RequireEnv: "DH-E-TOOLCHAIN-2"}
-	plan, err := Preflight(env, x, scenarios)
-	if err == nil || !strings.Contains(err.Error(), "credentials: route claude is signed out") || len(plan.Scenarios) != 0 {
-		t.Errorf("Preflight with a failing hook = %v, %v; want the hook's failure and no plan", plan.Tests(), err)
-	}
-	if seen[RequireEnv] != "DH-E-TOOLCHAIN-2" {
-		t.Errorf("the hook saw %v, want the preflight's environment", seen)
 	}
 }
 
@@ -350,9 +336,9 @@ func TestCheckBoundary(t *testing.T) {
 	dirty := write("DH-E-A-2.go", "\t\"testing\"\n\t\""+productModule+"src/harness/internal/llm\"\n")
 	free := write("DH-E-A-3.go", "\t\""+productModule+"src/harness/internal/llm\"\n")
 	x := mustParse(t, "built-through: DH-S-1\nstages:\n  DH-S-17:\n"+
-		"    - id: DH-E-A-1\n      authored: DH-S-9\n      requires: [DH-S-16]\n"+
-		"    - id: DH-E-A-2\n      authored: DH-S-9\n      requires: [DH-S-16]\n"+
-		"    - id: DH-E-A-3\n      authored: DH-S-9\n")
+		"    - id: DH-E-A-1\n      authored: DH-S-9\n      credential: none\n      requires: [DH-S-16]\n"+
+		"    - id: DH-E-A-2\n      authored: DH-S-9\n      credential: none\n      requires: [DH-S-16]\n"+
+		"    - id: DH-E-A-3\n      authored: DH-S-9\n      credential: none\n")
 	err := CheckBoundary(root, x, []Scenario{clean, dirty, free})
 	if err == nil || !strings.Contains(err.Error(), "DH-E-A-2 (DH-E-A-2.go) imports "+productModule+"src/harness/internal/llm") {
 		t.Fatalf("CheckBoundary = %v, want DH-E-A-2's internal import named", err)
