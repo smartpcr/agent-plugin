@@ -72,10 +72,8 @@ func storeOfThree(t *testing.T) *secret.Store {
 // and as JSON, reaches the session log through the human.secret.redact shaper as
 // "[redacted]", and no event of the log holds a value.
 //
-// The other clauses of DH-T-HUMAN-12 wait for gap-closure-plan step 19.5.4: the
-// process environment unchanged after Set, no .env entry in the child, and the
-// lease's signal when a reference is unset (no store write, .env source or lease
-// exists yet).
+// The other clauses of DH-T-HUMAN-12 (gap-closure-plan step 19.5.4) are
+// TestLeaseSignalOnUnsetAndRotation and TestSetAndDotEnvLeaveTheEnvironment.
 //
 //dsh:test DH-T-HUMAN-12
 func TestNamedSecretsReachNoChildAndNoLog(t *testing.T) {
