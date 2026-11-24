@@ -584,12 +584,18 @@ func (l *FS) moveAt(ctx context.Context, c *pinned, sp, dp string, o fs.MoveOpti
 	}
 	defer root.Close()
 
-	if _, err := root.Lstat(sname); err != nil {
+	sfi, err := root.Lstat(sname)
+	if err != nil {
 		return false, rooted(err)
 	}
-	if _, err := root.Lstat(dname); err == nil {
+	if dfi, err := root.Lstat(dname); err == nil {
 		if !o.Overwrite {
 			return false, herr.Newf(fs.CodeAlreadyExists, "%s already exists", dp)
+		}
+		// Re-checked under the lock: the unlocked attempt's kinds may be stale,
+		// and a POSIX rename would let a directory replace an empty directory.
+		if fileType(sp, sfi) == fs.TypeDir || fileType(dp, dfi) == fs.TypeDir {
+			return false, herr.Newf(fs.CodeNotRegularFile, "cannot overwrite %s with %s", dp, sp)
 		}
 		replaced = true
 	} else if !errors.Is(err, iofs.ErrNotExist) {
