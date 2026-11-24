@@ -18,9 +18,11 @@
 //
 // Subcommands, each with --root:
 //
-//	rehearse [--out dir]   the release rehearsal: cmd/dsh for six targets, pure Go,
-//	                       -trimpath, SHA-256 and embedded version printed, nothing
-//	                       published (DH-D-TOOLCHAIN-5)
+//	rehearse [--out dir]   the release rehearsal: a goreleaser snapshot of
+//	                       .goreleaser.dsh.yaml (six archives, checksums.txt, each
+//	                       archive verified), SHA-256 and embedded version of each
+//	                       binary printed, nothing published (DH-D-TOOLCHAIN-5,
+//	                       gap-closure 19.1.1); the keyless replay is open (19.1.2)
 //	preflight              the scenario workflow's first step: fails when the
 //	                       index disagrees with the scenario tests, an ID of
 //	                       DSH_REQUIRE_SCENARIOS has no scenario test, its index

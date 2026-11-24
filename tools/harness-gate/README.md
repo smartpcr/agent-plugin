@@ -99,13 +99,21 @@ GOWORK=off go -C tools/harness-gate run . preflight --root ../..
 GOWORK=off go -C tools/harness-gate run . scenarios --root ../.. --stage DH-S-17 --evidence FILE
 ```
 
-- `rehearse` (DH-D-TOOLCHAIN-5, DH-ADR-TOOLCHAIN-13) builds `cmd/dsh` with
-  `GOWORK=off CGO_ENABLED=0 GOFLAGS= go build -trimpath` for linux, darwin,
-  windows × amd64, arm64 into `--out` (a removed temp directory by default) and
-  prints one line per binary: `<sha256>  <name>  version=… vcs.revision=…
-  vcs.modified=…`, read from the binary's embedded build info. It publishes
-  nothing: no tag, no upload, no network beyond the module cache. CI runs it in
-  the `harness` job on Linux; `release.yml` and `.goreleaser.yaml` are unchanged.
+- `rehearse` (DH-D-TOOLCHAIN-5, DH-ADR-TOOLCHAIN-13; gap-closure step 19.1.1) runs
+  `goreleaser release --snapshot --clean -f .goreleaser.dsh.yaml`, with goreleaser
+  pinned in its own tools module `tools/goreleaser` and run as
+  `go -C tools/goreleaser tool goreleaser` (never a goreleaser on PATH). The
+  snapshot of `cmd/dsh` (`CGO_ENABLED=0`, `-trimpath`, linux, darwin, windows ×
+  amd64, arm64) is written to `--out/dist` (a removed temp directory by default)
+  through a temporary copy of the config with `dist:` added; a committed config
+  that sets `dist:` is refused. Each of the six archives is verified against
+  `checksums.txt`, its binary extracted to `--out`, and one line per binary
+  printed: `<sha256>  <name>  version=… vcs.revision=… vcs.modified=…`. It
+  publishes nothing: `release.disable`, the forge tokens removed from goreleaser's
+  environment, and a run that changes the repository's tags fails. The keyless
+  replay of the host-matching binary is printed as `OPEN, not built` until the
+  replay runner of impl.md step 16.7 exists (step 19.1.2). CI runs it in the
+  `harness` job on Linux; `release.yml` and `.goreleaser.yaml` are unchanged.
 - `require` prints the comma-separated `DH-E-*` IDs of one stage entry of the
   acceptance index (empty for no `--stage`); an unknown stage is an error. The
   scenario workflow uses it to derive `DSH_REQUIRE_SCENARIOS`.
