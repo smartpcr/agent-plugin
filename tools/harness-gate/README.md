@@ -99,6 +99,7 @@ GOWORK=off go -C tools/harness-gate run . preflight --root ../..
 GOWORK=off go -C tools/harness-gate run . ready     --root ../.. --stage DH-S-16 [--built]
 GOWORK=off go -C tools/harness-gate run . close     --root ../.. --stage DH-S-16 [--built]
 GOWORK=off go -C tools/harness-gate run . records   --root ../..
+GOWORK=off go -C tools/harness-gate run . entry     --root ../.. --story harness:DSH-M2
 ```
 
 - `rehearse` (DH-D-TOOLCHAIN-5, DH-ADR-TOOLCHAIN-13) builds `cmd/dsh` with
@@ -122,6 +123,54 @@ GOWORK=off go -C tools/harness-gate run . records   --root ../..
 
 - `ready`, `close` and `records` are the stage-closure gate; see
   [Stage closure](#stage-closure).
+- `entry` is the story entry check; see [Story entry](#story-entry-harness-gate-entry).
+
+## Story entry (`harness-gate entry`)
+
+M2-DEC-1, as amended by M1 gap-closure step 12.1.9 (harness:DSH-M2
+implementation-plan Stage 1.2): no M2 scenario run and no M2 stage closure happens
+before M1 is closed. `harness-gate entry --story harness:DSH-M2` checks, under
+`--root`:
+
+- every M1 record `docs/stories/harness-DSH-M1/evidence/DH-S-1.md` ..
+  `DH-S-11.md` exists and its status line reads `Closure status: closed` (or
+  `closed at <sha>`). The status line is a line that starts `Closure status:`
+  outside a code fence; history prose such as `**Closure status: closed.**` is
+  not the line. A record must have exactly one: a second status line makes the
+  record invalid, so it is not closed (`reads "Closure status: a second status
+  line at line N ..."`), whatever the first line says;
+- the M1 closure record `docs/stories/harness-DSH-M1/evidence/closure.md` exists
+  with a `## Deliverables` table (columns Deliverable, State, Reason) that has one
+  row for each of the 99 deliverables of impl.md steps 1.1 to 11.7
+  (`closure/entry.go`), each `done` or `built` (built, not done), and every `built`
+  row gives its Reason (the `DH-E` and stage that finish it, or the item holding
+  it open);
+- `built-through` in `test/harness/acceptance-index.yaml` is `DH-S-11` or later.
+
+It exits 0 when all hold, 1 with one `  - ` line per unmet condition (records in
+stage order, then the closure record, then `built-through`), and 2 on a usage
+error, an unknown story, or a record or index that exists but cannot be read or
+parsed. A missing record, closure record or index is an unmet condition, named
+with every other one; a missing input never hides the rest.
+
+**Where it runs (risk M2-R-04).** `harness-gate entry` is the mandatory first step
+of every `guarded` and every `acceptance` run of harness:DSH-M2: a run whose
+`entry` exits non-zero does not start. The gate venue (the build steps, the
+default `harness-gate` gate list and the lane scripts in their default mode) does
+not call it, so S12..S16 may build on the built M1 contracts while M1 is open
+(Q `m2-entry-m1-closure`). The wiring lands with the runners themselves, when they
+exist: the lane scripts' `guarded` mode (Stage 6.12), the `s17` job (Stage 7.1) and
+the `s18` jobs (Stage 8.1). Each of those stages adds the call; nothing here
+refers forward to a runner that is not yet built.
+
+The tests never read the live records for the fixture cases:
+`testdata/entry/m1_open/` (the eleven record heads reading `open`, no closure
+record, `built-through: DH-S-8`) must produce `testdata/entry/m1_open.golden`, and
+`testdata/entry/m1_closed/` (eleven `closed` heads, a closure record,
+`built-through: DH-S-11`) must pass. A separate test runs `entry` on the
+repository and checks that its result agrees with the live records, whatever
+their state. To regenerate the golden, run `go test -run TestEntryGolden . -update`
+(refused when `CI` is set).
 
 ## Stage closure
 
