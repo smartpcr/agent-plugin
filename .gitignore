@@ -16,3 +16,6 @@ artifacts/
 
 # GoReleaser output
 dist/
+
+.worktree/
+.forge/
