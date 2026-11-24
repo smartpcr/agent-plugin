@@ -23,7 +23,7 @@ Platform note: paths are case-insensitive; a named pipe or a device path is neve
 TEST-ONLY FIXTURE: no build includes this file and no model sees it. The shipped
 policy text is written in Stage 7.6 under world/sandbox/policy/text/.
 Sandbox policy (windows)
-Mode: danger-full-access (full access: commands run unconfined and can take over the harness, including its stored keys and sessions)
+Mode: danger-full-access (<<policy.FullAccessLabel>>)
 Write roots: none
 Network: allowed
 Nothing is wider than full access; no escalation applies.

@@ -402,6 +402,9 @@ func (r *Resolver) issue(ctx context.Context, s session.ID, m sandbox.Mode, n Ne
 		return sandbox.Policy{}, err
 	}
 	for _, p := range extra {
+		if err := r.checkRoot(ctx, p); err != nil {
+			return sandbox.Policy{}, err
+		}
 		roots = addRoot(roots, p, sandbox.SourceEscalation)
 	}
 	for _, w := range roots {

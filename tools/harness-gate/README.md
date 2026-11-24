@@ -146,10 +146,22 @@ proven by a row of `docs/stories/harness-DSH-M2/evidence/DH-S-17.md`:
   `Artifacts` name the run, `run=<id>`;
 - its `Artifacts` hold `<platform>.md sha256=<hex> escalated=<n>/18` with `n` at
   least 10, and `<hex>` equal to the SHA-256 of the file's bytes;
-- when `--root` is a git checkout's top level, `git cat-file blob
-  <commit>:<path>` must hold the same bytes: the run was on a commit containing
-  that file. Elsewhere (a copied fixture tree) the output says
-  `commit containment: not checked`.
+- the run id is a run-record id, `<lane>-<sha7>-<UTC yyyymmddThhmmZ>`
+  (`local-run-record-format`), and names a committed run record
+  `docs/stories/harness-DSH-M2/evidence/runs/<id>.txt` written by
+  `harness-gate --evidence`: intact (its final `sha256:` line is the SHA-256 of
+  every byte before it), `tree: clean`, `exit: 0`, and a full `commit:` that
+  starts with the id's `<sha7>` and with the row's `Commit`;
+- `git cat-file blob <that commit>:<path>` holds the file's bytes: the run was on
+  a commit containing that same file.
+
+The rule fails closed. `--root` must be a git checkout's top level that holds
+the run's commit (a shallow CI clone must fetch it); when it is not, or git
+cannot read the commit, every text is refused (`commit containment
+unavailable`). A tree with no text needs no git. The fixtures are turned into
+temporary git checkouts by the test (`policyTextRepo`): their first commit holds
+only the text, with fixed author, committer, dates and message, so it is the
+commit `41101e7b...` the committed fixture run record names.
 
 Any other file there (not `<platform>.md`) is refused. A row may prove several
 platforms, one `<platform>.md sha256=... escalated=.../18` entry each. Every edit
@@ -158,7 +170,9 @@ passes again on it and the row records the new hash. Each refusal is one line
 `policy-text: REFUSED M2-C-6: <path> (sha256 <hex>): <reason>`. The fixture trees
 `testdata/policytext/{no_text,text_without_sandbox7,text_with_matching_pass,text_edited_after_pass}`
 and `testdata/policytext/expected.golden` pin the behaviour
-(`TestPolicyTextGolden`).
+(`TestPolicyTextGolden`); `TestPolicyTextRunProvenance` refuses a tree that is
+not a checkout, a missing, malformed, tampered or failed run record, a row whose
+commit is not the run's, and a run commit without the text.
 
 ## Stage closure
 

@@ -55,14 +55,23 @@ func TestRenderFixtureGolden(t *testing.T) {
 					t.Fatal(err)
 				}
 				fmt.Fprintf(&b, "== mode %s\n%s", c.label, out)
-				if c.res.Mode == sandbox.DangerFullAccess && !strings.Contains(out, policy.FullAccessLabel) {
-					t.Errorf("full access does not carry FullAccessLabel:\n%s", out)
+				if n := strings.Count(out, policy.FullAccessLabel); n != map[bool]int{true: 1, false: 0}[c.res.Mode == sandbox.DangerFullAccess] {
+					t.Errorf("mode %s carries FullAccessLabel %d times:\n%s", c.res.Mode, n, out)
 				}
 			}
-			golden.Assert(t, "render_fixture_"+platform, b.String())
+			if strings.Contains(string(tmpl), fullAccessToken) {
+				t.Fatalf("the fixture template holds %s itself", fullAccessToken)
+			}
+			// The goldens hold fullAccessToken where the label goes, so changing
+			// FullAccessLabel alone is the owner's one-line diff (impl.md sec. 9.1,
+			// I2 Q3); everything else is compared byte for byte.
+			golden.Assert(t, "render_fixture_"+platform, strings.ReplaceAll(b.String(), policy.FullAccessLabel, fullAccessToken))
 		})
 	}
 }
+
+// fullAccessToken stands for policy.FullAccessLabel in the render goldens.
+const fullAccessToken = "<<policy.FullAccessLabel>>"
 
 func TestRenderRefuses(t *testing.T) {
 	if _, err := policy.Render("plan9", policy.Resolved{Mode: sandbox.ReadOnly}, "x"); !errors.Is(err, policy.ErrUnknownPlatform) {

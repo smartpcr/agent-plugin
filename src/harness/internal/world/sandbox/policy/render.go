@@ -54,7 +54,8 @@ func TextVersion(text string) string {
 // FullAccessLabel is how the policy section names danger-full-access. It is the
 // unconfirmed default of impl.md sec. 9.1 (I2 Q3): in full-access mode a command
 // may take over the harness, and the label says so. An owner change is this one
-// line; the render goldens follow it.
+// line: the render goldens hold the token <<policy.FullAccessLabel>> in its place
+// (render_test.go), so they do not change with it.
 const FullAccessLabel = "full access: commands run unconfined and can take over the harness, including its stored keys and sessions"
 
 // EscalationHint is the policy section's instruction for asking one wider call.

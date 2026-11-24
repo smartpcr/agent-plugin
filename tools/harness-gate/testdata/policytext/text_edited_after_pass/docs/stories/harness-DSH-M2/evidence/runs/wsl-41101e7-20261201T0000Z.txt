@@ -1,0 +1,11 @@
+harness-gate evidence record
+commit: 41101e7b57521c233f03210ab960fd3ceb665729
+tree: clean
+started: 2026-12-01T00:00:00Z
+--- output ---
+FIXTURE: a stand-in for the DH-E-SANDBOX-7 run record; no gate wrote it.
+--- PASS: TestScenarioSandbox7 (linux.md: 12/18 escalated)
+--- end of output ---
+ended: 2026-12-01T00:30:00Z
+exit: 0
+sha256: f6134ac300a9a03e40b856a0053af3d5bc4dfb7e3efb3997a01b68bfbec2dc33

@@ -15,6 +15,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/views"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/workdir/workdirtest"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/fs"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/fs/fstest"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox/policy"
@@ -338,6 +339,61 @@ func TestEscalate(t *testing.T) {
 	none := newResolver(t, policy.Config{}, deps)
 	if _, err := none.Escalate(ctx, sandbox.EscalationRequest{Session: sid, Mode: sandbox.DangerFullAccess, Justification: "j"}); herr.Kind(err) != sandbox.CodeEscalationRejected {
 		t.Fatalf("no approver: %v", err)
+	}
+}
+
+// statFile is a MemFS on which one path stats as a regular file.
+type statFile struct {
+	*fstest.MemFS
+	file string
+}
+
+func (s statFile) Stat(ctx context.Context, r fs.Ref) (fs.Info, error) {
+	if r.Path == s.file {
+		return fs.Info{Exists: true, Type: fs.TypeFile}, nil
+	}
+	return s.MemFS.Stat(ctx, r)
+}
+
+// An escalation root is validated like every other root (sandbox-ssh.md sec.
+// 3.2): a missing path, a regular file or a symbolic link is
+// sandbox/invalid-root before the approver is asked; a real directory is
+// approved and issued.
+func TestEscalationRootsAreChecked(t *testing.T) {
+	ctx := context.Background()
+	root := cordis.New()
+	t.Cleanup(root.Dispose)
+	w := newWorld(t)
+	base := filepath.Dir(w.P)
+	out, link, file := filepath.Join(base, "out"), filepath.Join(base, "link"), filepath.Join(base, "file")
+	mem := fstest.NewMemFS()
+	for _, d := range []string{w.P, out} {
+		if err := mem.Mkdir(d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := mem.Symlink(out, link); err != nil {
+		t.Fatal(err)
+	}
+	deps := baseDeps(t, root, w)
+	deps.FS = statFile{MemFS: mem, file: file}
+	deps.Scratch = nil
+	asked := 0
+	deps.Approver = policy.ApproverFunc(func(context.Context, policy.Escalation) error { asked++; return nil })
+	r := newResolver(t, policy.Config{DefaultMode: sandbox.WorkspaceWrite}, deps)
+	for _, bad := range []string{filepath.Join(base, "missing"), file, link} {
+		_, err := r.Escalate(ctx, sandbox.EscalationRequest{Session: sid, Mode: sandbox.WorkspaceWrite, Paths: []string{out, bad}, Justification: "j"})
+		if herr.Kind(err) != sandbox.CodeInvalidRoot {
+			t.Errorf("escalation root %q: %v, want %s", bad, err, sandbox.CodeInvalidRoot)
+		}
+	}
+	if asked != 0 {
+		t.Fatalf("invalid roots reached the approver %d times", asked)
+	}
+	p, err := r.Escalate(ctx, sandbox.EscalationRequest{Session: sid, Mode: sandbox.WorkspaceWrite, Paths: []string{out}, Justification: "j"})
+	want := []sandbox.WriteRoot{{Path: w.P, Source: sandbox.SourceWorkspace}, {Path: out, Source: sandbox.SourceEscalation}}
+	if err != nil || asked != 1 || !slices.Equal(p.WriteRoots(), want) {
+		t.Fatalf("a real directory: %v, %v (asked %d)", p.WriteRoots(), err, asked)
 	}
 }
 

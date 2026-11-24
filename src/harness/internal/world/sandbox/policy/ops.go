@@ -44,6 +44,13 @@ func (r *Resolver) Escalate(ctx context.Context, req sandbox.EscalationRequest) 
 	if len(paths) > 0 && to != sandbox.WorkspaceWrite {
 		return sandbox.Policy{}, herr.Newf(sandbox.CodeEscalationRejected, "extra write roots widen only a workspace-write call, not %s", to)
 	}
+	// Checked before anyone is asked to approve a root that cannot be one; issue
+	// checks them again, as it does every root, on the call.
+	for _, p := range paths {
+		if err := r.checkRoot(ctx, p); err != nil {
+			return sandbox.Policy{}, err
+		}
+	}
 	st, err := r.state(ctx, req.Session)
 	if err != nil {
 		return sandbox.Policy{}, err

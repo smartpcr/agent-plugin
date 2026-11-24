@@ -62,7 +62,7 @@ type PolicyTextFile struct {
 type PolicyTextReport struct {
 	Files []PolicyTextFile
 	// Containment is how the run's commit was checked to contain the file:
-	// "git" or a "not checked (...)" note.
+	// "git", or why it cannot be, in which case every text is refused.
 	Containment string
 }
 
@@ -91,10 +91,11 @@ type sandbox7Proof struct {
 // PolicyTextDir passes. Every file there must be <platform>.md and must have a
 // DH-E-SANDBOX-7 row of the DH-S-17 record with Result passed, a commit, a run id
 // and, in Artifacts, "<platform>.md sha256=<hex> escalated=<n>/18" with n at least
-// 10 and the hex equal to the file's SHA-256. When root is a git checkout's top
-// level the row's commit must also contain the file with those bytes; otherwise
-// containment is reported as not checked. An error is a tree the check cannot
-// read.
+// 10 and the hex equal to the file's SHA-256. The run id must name an intact run
+// record runs/<id>.txt (runRecordCommit) whose commit is the row's, and that
+// commit must contain the file with those bytes, checked through git; root must
+// be a git checkout's top level, or every text is refused (fail closed). An error
+// is a tree the check cannot read.
 func CheckPolicyText(ctx context.Context, root string) (PolicyTextReport, error) {
 	var rep PolicyTextReport
 	dir := filepath.Join(root, filepath.FromSlash(PolicyTextDir))
@@ -137,7 +138,7 @@ func CheckPolicyText(ctx context.Context, root string) (PolicyTextReport, error)
 		case recErr != nil:
 			f.Refusal = recErr.Error()
 		default:
-			f.Proof, f.Refusal = judgePolicyText(*f, platform, proofs[platform], verify)
+			f.Proof, f.Refusal = judgePolicyText(root, *f, platform, proofs[platform], verify)
 		}
 	}
 	return rep, nil
@@ -188,7 +189,7 @@ func readSandbox7Proofs(root string) (map[string][]sandbox7Proof, error) {
 
 // judgePolicyText returns the proof of f, or the most specific reason none of
 // the platform's proofs holds.
-func judgePolicyText(f PolicyTextFile, platform string, proofs []sandbox7Proof, verify func(commit, rel, sha string) error) (string, string) {
+func judgePolicyText(root string, f PolicyTextFile, platform string, proofs []sandbox7Proof, verify func(commit, rel, sha string) error) (string, string) {
 	record := closure.RecordPath(closure.DefaultStory, PolicyTextStage)
 	if len(proofs) == 0 {
 		return "", fmt.Sprintf("%s has no passed %s row naming %s.md with its sha256 and escalation count", record, PolicyTextScenario, platform)
@@ -206,27 +207,95 @@ func judgePolicyText(f PolicyTextFile, platform string, proofs []sandbox7Proof, 
 		case !policyCommit.MatchString(p.commit):
 			reasons = append(reasons, fmt.Sprintf("%s names no commit (7 to 40 lower-case hex digits)", at))
 		default:
-			if err := verify(p.commit, f.Path, f.SHA256); err != nil {
+			commit, err := runRecordCommit(root, p.run, p.commit)
+			if err == nil {
+				err = verify(commit, f.Path, f.SHA256)
+			}
+			if err != nil {
 				reasons = append(reasons, fmt.Sprintf("%s: run %s: %v", at, p.run, err))
 				continue
 			}
-			return fmt.Sprintf("%s run %s at %s, %d/%d escalated (%s)", PolicyTextScenario, p.run, p.commit, p.escalated, p.of, at), ""
+			return fmt.Sprintf("%s run %s at %s (%s/%s.txt), %d/%d escalated (%s)", PolicyTextScenario, p.run, commit, PolicyRunsDir, p.run, p.escalated, p.of, at), ""
 		}
 	}
 	return "", strings.Join(reasons, "; ")
 }
 
-// commitVerifier checks that a commit contains a file with the given SHA-256,
-// through git when root is a checkout's top level.
+// PolicyRunsDir holds the local run records (docs/stories/harness-DSH-M1/evidence/
+// README.md, local-run-record-format): runs/<run id>.txt, written by
+// "harness-gate --evidence", is the run a row's run=<id> names.
+var PolicyRunsDir = closure.EvidenceDir(closure.DefaultStory) + "/runs"
+
+// policyRunRecordID is a run-record id, <lane>-<sha7>-<UTC yyyymmddThhmmZ>.
+var (
+	policyRunRecordID = regexp.MustCompile(`^[a-z][a-z0-9]*-([0-9a-f]{7})-\d{8}T\d{4}Z$`)
+	policyFullCommit  = regexp.MustCompile(`^[0-9a-f]{40}$`)
+)
+
+// runRecordCommit resolves run id to the full commit its run record names: the
+// record runs/<id>.txt must exist under root, be intact (its final sha256 line is
+// the SHA-256 of every byte before it), record a clean tree and exit 0, and its
+// commit must start with the id's sha7 and with the row's commit.
+func runRecordCommit(root, id, rowCommit string) (string, error) {
+	m := policyRunRecordID.FindStringSubmatch(id)
+	if m == nil {
+		return "", fmt.Errorf("%q is not a run-record id (<lane>-<sha7>-<yyyymmddThhmmZ>)", id)
+	}
+	rel := PolicyRunsDir + "/" + id + ".txt"
+	b, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+	if err != nil {
+		return "", fmt.Errorf("no run record %s", rel)
+	}
+	text := strings.TrimSuffix(strings.ReplaceAll(string(b), "\r\n", "\n"), "\n")
+	i := strings.LastIndex(text, "\nsha256: ")
+	if i < 0 {
+		return "", fmt.Errorf("run record %s is not intact: it has no final sha256 line", rel)
+	}
+	body, last := text[:i+1], text[i+len("\nsha256: "):]
+	if sum := sha256.Sum256([]byte(body)); last != hex.EncodeToString(sum[:]) {
+		return "", fmt.Errorf("run record %s is not intact: its final sha256 line is not the SHA-256 of the bytes before it", rel)
+	}
+	fields := map[string]string{}
+	lines := strings.Split(strings.TrimSuffix(body, "\n"), "\n")
+	for _, line := range lines {
+		if k, v, ok := strings.Cut(line, ": "); ok {
+			if _, seen := fields[k]; !seen {
+				fields[k] = v
+			}
+		}
+	}
+	commit := fields["commit"]
+	switch {
+	case lines[0] != "harness-gate evidence record":
+		return "", fmt.Errorf("%s is not a harness-gate evidence record", rel)
+	case !policyFullCommit.MatchString(commit):
+		return "", fmt.Errorf("run record %s names no full commit", rel)
+	case fields["tree"] != "clean":
+		return "", fmt.Errorf("run record %s was not taken on a clean tree", rel)
+	case lines[len(lines)-1] != "exit: 0":
+		return "", fmt.Errorf("run record %s did not exit 0", rel)
+	case !strings.HasPrefix(commit, m[1]):
+		return "", fmt.Errorf("the run id's commit %s is not the record's commit %s", m[1], commit)
+	case !strings.HasPrefix(commit, rowCommit):
+		return "", fmt.Errorf("the row's commit %s is not the run's commit %s (%s)", rowCommit, commit, rel)
+	}
+	return commit, nil
+}
+
+// commitVerifier checks, through git, that a commit contains a file with the
+// given SHA-256. It needs root to be a git checkout's top level holding the
+// commit; when it is not, every check fails: a text whose run cannot be
+// verified does not merge (M2-C-6 fails closed).
 func commitVerifier(ctx context.Context, root string) (func(commit, rel, sha string) error, string) {
 	top, err := exec.CommandContext(ctx, "git", "-C", root, "rev-parse", "--show-toplevel").Output()
 	if err != nil || !sameDir(strings.TrimSpace(string(top)), root) {
-		return func(string, string, string) error { return nil }, "not checked (the root is not a git checkout's top level)"
+		const why = "unavailable: the root is not a git checkout's top level, so no run's commit can be checked"
+		return func(string, string, string) error { return errors.New("commit containment " + why) }, why
 	}
 	return func(commit, rel, sha string) error {
 		b, err := exec.CommandContext(ctx, "git", "-C", root, "cat-file", "blob", commit+":"+rel).Output()
 		if err != nil {
-			return fmt.Errorf("commit %s does not contain %s", commit, rel)
+			return fmt.Errorf("commit %s does not contain %s (or is not in this clone; fetch it)", commit, rel)
 		}
 		sum := sha256.Sum256(b)
 		if got := hex.EncodeToString(sum[:]); got != sha {
