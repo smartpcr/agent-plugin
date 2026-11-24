@@ -92,12 +92,21 @@ func (f *files) readText(ctx context.Context, in ReadIn, run htools.Run) (string
 	}
 	// Two bounds cut what is shown, independently: the line and byte caps omit
 	// lines, and the character cap clips a long line in place.
-	shown, used, byteCut, clipped := 0, 0, false, false
+	shown, used, byteCut, clipped, firstCut := 0, 0, false, false, false
 	for i := start - 1; i < total && shown < limit; i++ {
 		line, cut := clipLine(strings.TrimSuffix(lines[i], "\r"), f.cfg.ReadMaxLineLength)
 		entry := strconv.Itoa(i+1) + ": " + line + "\n"
 		if used+len(entry) > f.cfg.ReadMaxBytes {
 			byteCut = true
+			if shown > 0 {
+				break
+			}
+			// At least one line is always shown, cut to the byte cap, so paging
+			// with offset always advances.
+			body, _ := clipBytes(strings.TrimSuffix(entry, "\n"), max(f.cfg.ReadMaxBytes-1, 0))
+			b.WriteString(body + "\n")
+			shown, firstCut = 1, true
+			clipped = clipped || cut
 			break
 		}
 		b.WriteString(entry)
@@ -121,11 +130,14 @@ func (f *files) readText(ctx context.Context, in ReadIn, run htools.Run) (string
 	if clipped {
 		fmt.Fprintf(&b, "\n(Lines longer than %d characters were truncated.)", f.cfg.ReadMaxLineLength)
 	}
+	if firstCut {
+		fmt.Fprintf(&b, "\n(Line %d was cut to fit the %d-byte cap.)", start, f.cfg.ReadMaxBytes)
+	}
 	// The whole file is saved when the tool's own bounds cut a read of it from
 	// the start, by omitted lines or clipped ones; a caller paging with offset
 	// and limit has already chosen its range.
 	var sp *event.Spill
-	if (end < total || clipped) && in.Offset == 0 && in.Limit == 0 {
+	if (end < total || clipped || firstCut) && in.Offset == 0 && in.Limit == 0 {
 		var note string
 		sp, note = f.spillWhole(ctx, run, "read-"+filepath.Base(info.Target.Display), "The whole file", raw)
 		b.WriteString(note)
