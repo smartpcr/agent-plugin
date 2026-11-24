@@ -24,6 +24,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
 	"reflect"
 	"slices"
@@ -291,17 +292,30 @@ func checkChild(cat Catalogue, key string, c Child) string {
 	return ""
 }
 
-// canonical is raw compacted, so two spellings of one config have one digest; raw
-// unchanged when it is not valid JSON.
+// canonical is raw re-encoded with no insignificant whitespace and object keys
+// sorted (encoding/json sorts map keys), so two spellings of one config, including
+// ones that differ only in key order, have one digest. Numbers keep their literal
+// text (UseNumber). raw unchanged when it is not a single valid JSON value.
 func canonical(raw json.RawMessage) json.RawMessage {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return nil
 	}
-	var b bytes.Buffer
-	if err := json.Compact(&b, raw); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
 		return slices.Clone(raw)
 	}
-	return b.Bytes()
+	if _, err := dec.Token(); err != io.EOF {
+		return slices.Clone(raw)
+	}
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return slices.Clone(raw)
+	}
+	return bytes.TrimSuffix(b.Bytes(), []byte("\n"))
 }
 
 // digest is "sha256:" and the hex SHA-256 of the resolved children and the harness
