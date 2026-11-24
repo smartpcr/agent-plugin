@@ -178,8 +178,9 @@ var codes = map[herr.Reason]int{
 	"sandbox/invalid-root":        Invalid,
 	"sandbox/unavailable":         Unavailable,
 
-	"workdir/invalid":     Invalid,
-	"workdir/unavailable": Unavailable,
+	"workdir/invalid":            Invalid,
+	"workdir/notice-undelivered": Unavailable,
+	"workdir/unavailable":        Unavailable,
 }
 
 // Status maps err to its exit status: nil is OK, a cancelled context Cancelled, an

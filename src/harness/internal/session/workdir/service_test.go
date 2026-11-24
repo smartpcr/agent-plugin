@@ -2,6 +2,8 @@ package workdir_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -33,15 +35,31 @@ func must[T any](v T, err error) T {
 	return v
 }
 
-// notices records what the service queues for the inbox.
+// notices records what the service queues for the inbox. Like the agent's
+// inbox adapter, an id it already holds is delivered again as a no-op, so a
+// reused id loses the notice; fail makes that many Notify calls fail first.
 type notices struct {
-	mu  sync.Mutex
-	got []workdir.Notice
+	mu    sync.Mutex
+	got   []workdir.Notice
+	fail  int
+	tries int
 }
+
+var errInboxDown = errors.New("inbox down")
 
 func (n *notices) Notify(_ context.Context, x workdir.Notice) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	n.tries++
+	if n.fail > 0 {
+		n.fail--
+		return errInboxDown
+	}
+	for _, g := range n.got {
+		if g.ID == x.ID {
+			return nil
+		}
+	}
 	n.got = append(n.got, x)
 	return nil
 }
@@ -117,7 +135,7 @@ func TestFoldRebuiltFromTheLog(t *testing.T) {
 	st := memstore.New()
 	first := newRig(t, st, seam, func() time.Time { return at })
 	h := first.create(t, base)
-	must(first.wd.Attach(bg, h))
+	must(first.wd.Attach(bg, h, nil))
 	must(first.wd.Change(bg, h.ID(), a))
 	must(first.wd.Change(bg, h.ID(), b))
 	if err := h.Close(bg); err != nil {
@@ -130,7 +148,7 @@ func TestFoldRebuiltFromTheLog(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = h2.Close(bg) })
-	got := must(second.wd.Attach(bg, h2))
+	got := must(second.wd.Attach(bg, h2, nil))
 	acc := must(second.wd.Access(h2.ID()))
 	if p := must(acc.Path()); p != b {
 		t.Fatalf("Path after the rebuild = %q, want %q", p, b)
@@ -167,7 +185,7 @@ func TestConcurrentChangesSerialize(t *testing.T) {
 		}
 		r := newRig(t, memstore.New(), seam, time.Now)
 		h := r.create(t, base)
-		must(r.wd.Attach(bg, h))
+		must(r.wd.Attach(bg, h, nil))
 
 		var wg sync.WaitGroup
 		for _, p := range []string{a, b} {
@@ -214,7 +232,7 @@ func TestChangeValidatesThroughTheSeam(t *testing.T) {
 	}
 	r := newRig(t, memstore.New(), seam, time.Now)
 	h := r.create(t, base)
-	must(r.wd.Attach(bg, h))
+	must(r.wd.Attach(bg, h, nil))
 	for _, bad := range []string{"", "rel/dir", filepath.Join(base, "missing"), file} {
 		if _, err := r.wd.Change(bg, h.ID(), bad); err == nil || !herr.Has(err, workdir.CodeInvalid) {
 			t.Errorf("Change(%q) = %v, want workdir/invalid", bad, err)
@@ -275,25 +293,28 @@ func TestDeletedDirectoryIsReportedOnce(t *testing.T) {
 	}
 	r := newRig(t, memstore.New(), osSeam{}, time.Now)
 	h := r.create(t, sub)
-	must(r.wd.Attach(bg, h))
+	must(r.wd.Attach(bg, h, nil))
 	if err := os.RemoveAll(sub); err != nil {
 		t.Fatal(err)
 	}
 
-	acc := must(r.wd.Access(h.ID()))
-	if _, err := acc.Path(); herr.Kind(err) != workdir.CodeUnavailable {
-		t.Fatalf("Path of a deleted directory: %v", err)
+	acc, err := r.wd.Access(h.ID())
+	if acc != nil || !herr.Has(err, workdir.CodeUnavailable) {
+		t.Fatalf("Access of a deleted directory = %v, %v; want workdir/unavailable", acc, err)
 	}
 	if _, err := r.wd.Ensure(bg, h.ID()); herr.Kind(err) != workdir.CodeUnavailable {
 		t.Fatalf("Ensure of a deleted directory: %v", err)
 	}
-	must(r.wd.Access(h.ID()))
+	if _, err := r.wd.Access(h.ID()); !herr.Has(err, workdir.CodeUnavailable) {
+		t.Fatalf("the next Access: %v", err)
+	}
 	got := r.in.all()
 	if len(got) != 1 || got[0].Kind != workdir.NoticeUnavailable || got[0].Path != sub {
 		t.Fatalf("notices %+v, want exactly one unavailable notice", got)
 	}
 
-	// The directory comes back: available again, and a later loss is a new notice.
+	// The directory comes back: available again, and a later loss is a new
+	// notice with its own id, which a deduplicating inbox admits.
 	if err := os.Mkdir(sub, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -303,9 +324,15 @@ func TestDeletedDirectoryIsReportedOnce(t *testing.T) {
 	if err := os.RemoveAll(sub); err != nil {
 		t.Fatal(err)
 	}
-	must(r.wd.Access(h.ID()))
-	if n := len(r.in.all()); n != 2 {
-		t.Fatalf("a second loss queued %d notices in all, want 2", n)
+	if _, err := r.wd.Access(h.ID()); !herr.Has(err, workdir.CodeUnavailable) {
+		t.Fatalf("Access after the second loss: %v", err)
+	}
+	if _, err := r.wd.Access(h.ID()); !herr.Has(err, workdir.CodeUnavailable) {
+		t.Fatalf("Access again in the second loss: %v", err)
+	}
+	got = r.in.all()
+	if len(got) != 2 || got[1].Kind != workdir.NoticeUnavailable || got[0].ID == got[1].ID {
+		t.Fatalf("notices %+v, want one more unavailable notice with a new id", got)
 	}
 }
 
@@ -319,7 +346,7 @@ func TestMovedDirectoryRecoversToTheProject(t *testing.T) {
 	}
 	r := newRig(t, memstore.New(), osSeam{}, time.Now)
 	h := r.create(t, proj)
-	must(r.wd.Attach(bg, h))
+	must(r.wd.Attach(bg, h, nil))
 	moved := must(r.wd.Change(bg, h.ID(), sub))
 	if moved.Path != sub || moved.Root != sub || moved.Revision != 1 {
 		t.Fatalf("Change = %+v", moved)
@@ -339,5 +366,212 @@ func TestMovedDirectoryRecoversToTheProject(t *testing.T) {
 	got := r.in.all()
 	if len(got) != 2 || got[1].Kind != workdir.NoticeMoved || got[1].Path != proj || got[1].Revision != 2 {
 		t.Fatalf("notices %+v, want a moved notice for the recovery", got)
+	}
+}
+
+// A notice the inbox refuses is kept, not lost: the committed move is returned
+// with workdir/notice-undelivered, and the next check sends it under the same
+// id without logging the move again; the same holds for an unavailable notice
+// (TC-01b).
+func TestUndeliveredNoticeIsKeptAndRetried(t *testing.T) {
+	proj := canon(t, t.TempDir())
+	sub := filepath.Join(proj, "sub")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r := newRig(t, memstore.New(), osSeam{}, time.Now)
+	h := r.create(t, sub)
+	must(r.wd.Attach(bg, h, nil))
+
+	r.in.fail = 1
+	wd, err := r.wd.Change(bg, h.ID(), proj)
+	if !workdir.OnlyUndelivered(err) || !errors.Is(err, workdir.ErrUndelivered) || !errors.Is(err, errInboxDown) {
+		t.Fatalf("Change with a failing inbox: %v", err)
+	}
+	if wd.Path != proj || wd.Revision != 1 {
+		t.Fatalf("Change returned %+v, want the committed move", wd)
+	}
+	if n := len(r.in.all()); n != 0 {
+		t.Fatalf("%d notices delivered by a failing inbox", n)
+	}
+	if _, err := r.wd.Ensure(bg, h.ID()); err != nil {
+		t.Fatalf("Ensure retrying the notice: %v", err)
+	}
+	if cs, _ := changes(t, h); len(cs) != 1 {
+		t.Fatalf("the retry logged the move again: %+v", cs)
+	}
+	got := r.in.all()
+	if len(got) != 1 || got[0].Kind != workdir.NoticeMoved || got[0].ID != fmt.Sprintf("workdir-%s-r1-moved", h.ID()) {
+		t.Fatalf("notices %+v, want the moved notice once", got)
+	}
+
+	// The project goes too (and the header's sub with it): unavailable, and its
+	// notice waits for the inbox.
+	if err := os.RemoveAll(proj); err != nil {
+		t.Fatal(err)
+	}
+	r.in.fail = 1
+	_, err = r.wd.Ensure(bg, h.ID())
+	if !herr.Has(err, workdir.CodeUnavailable) || !errors.Is(err, workdir.ErrUndelivered) || workdir.OnlyUndelivered(err) {
+		t.Fatalf("Ensure of a lost directory with a failing inbox: %v", err)
+	}
+	if _, err := r.wd.Ensure(bg, h.ID()); herr.Kind(err) != workdir.CodeUnavailable || errors.Is(err, workdir.ErrUndelivered) {
+		t.Fatalf("Ensure retrying the unavailable notice: %v", err)
+	}
+	// A third check owes nothing and sends nothing.
+	_, _ = r.wd.Ensure(bg, h.ID())
+	got = r.in.all()
+	if len(got) != 2 || got[1].Kind != workdir.NoticeUnavailable {
+		t.Fatalf("notices %+v, want the unavailable notice delivered once", got)
+	}
+	if r.in.tries != 4 {
+		t.Fatalf("%d deliveries tried, want 4 (two failed, two sent)", r.in.tries)
+	}
+}
+
+// faultSeam fails Stat of one path with err.
+type faultSeam struct {
+	mu   sync.Mutex
+	path string
+	err  error
+}
+
+func (f *faultSeam) set(path string, err error) {
+	f.mu.Lock()
+	f.path, f.err = path, err
+	f.mu.Unlock()
+}
+
+func (f *faultSeam) Stat(ctx context.Context, r fs.Ref) (fs.Info, error) {
+	f.mu.Lock()
+	p, err := f.path, f.err
+	f.mu.Unlock()
+	if err != nil && r.Path == p {
+		return fs.Info{}, err
+	}
+	return osSeam{}.Stat(ctx, r)
+}
+
+// A check the seam cannot answer, or whose context is cancelled, is that
+// failure, not a lost directory: Access returns it, and no notice is queued.
+func TestCheckFailuresAreNotLosses(t *testing.T) {
+	dir := canon(t, t.TempDir())
+	seam := &faultSeam{}
+	r := newRig(t, memstore.New(), seam, time.Now)
+	h := r.create(t, dir)
+	must(r.wd.Attach(bg, h, nil))
+
+	seam.set(dir, herr.Newf(fs.CodeIO, "disk on fire"))
+	acc, err := r.wd.Access(h.ID())
+	if acc != nil || !herr.Has(err, fs.CodeIO) || herr.Has(err, workdir.CodeUnavailable) {
+		t.Fatalf("Access with a failing seam = %v, %v; want the seam's fs/io", acc, err)
+	}
+	seam.set("", nil)
+
+	cancelled, cancel := context.WithCancel(bg)
+	cancel()
+	if _, err := r.wd.Ensure(cancelled, h.ID()); !errors.Is(err, context.Canceled) || herr.Has(err, workdir.CodeUnavailable) {
+		t.Fatalf("Ensure with a cancelled context: %v", err)
+	}
+	if _, err := r.wd.Change(cancelled, h.ID(), dir); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Change with a cancelled context: %v", err)
+	}
+	if p := must(must(r.wd.Access(h.ID())).Path()); p != dir {
+		t.Fatalf("Path once the seam answers = %q", p)
+	}
+	if got := r.in.all(); len(got) != 0 {
+		t.Fatalf("failed checks queued %+v", got)
+	}
+}
+
+type failingWorkspaces struct{ err error }
+
+func (f *failingWorkspaces) WorkspaceOf(_ context.Context, _ session.ID, root string) (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	return root, nil
+}
+
+// A recovery that cannot be recorded is reported inside workdir/unavailable,
+// with its cause, and leaves the log as it was (TC-01b).
+func TestFailedRecoveryIsReported(t *testing.T) {
+	proj := canon(t, t.TempDir())
+	sub := filepath.Join(proj, "sub")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root := cordis.New()
+	root.Loggers().ClearExporters()
+	root.Loggers().AddExporter(&cordis.MemoryExporter{})
+	t.Cleanup(root.Dispose)
+	reg := views.New()
+	in, ws := &notices{}, &failingWorkspaces{}
+	wd := must(workdir.New(reg, osSeam{}, workdir.WithWorkspaces(ws)))
+	svc := session.NewService(root, memstore.New(), session.Config{Folder: reg})
+	h := must(svc.Create(bg, nil, session.CreateOptions{Header: session.Header{Cwd: proj}, Scope: scope.Key{}}))
+	t.Cleanup(func() { _ = h.Close(bg) })
+	must(wd.Attach(bg, h, in))
+	must(wd.Change(bg, h.ID(), sub))
+	if err := os.RemoveAll(sub); err != nil {
+		t.Fatal(err)
+	}
+
+	ws.err = errors.New("workspace registry offline")
+	_, err := wd.Ensure(bg, h.ID())
+	if !herr.Has(err, workdir.CodeUnavailable) || !errors.Is(err, ws.err) {
+		t.Fatalf("Ensure with a failing recovery: %v", err)
+	}
+	if cs, _ := changes(t, h); len(cs) != 1 {
+		t.Fatalf("a failed recovery changed the log: %+v", cs)
+	}
+	if got := in.all(); len(got) != 2 || got[1].Kind != workdir.NoticeUnavailable {
+		t.Fatalf("notices %+v, want the move and one unavailable notice", got)
+	}
+
+	ws.err = nil
+	rec := must(wd.Ensure(bg, h.ID()))
+	if rec.Path != proj || rec.Revision != 2 {
+		t.Fatalf("recovery once the registry answers = %+v", rec)
+	}
+}
+
+// Attaching a session again swaps its notifier for every reader, while readers
+// run, and a detach ends every Access of it.
+func TestReattachReplacesTheSession(t *testing.T) {
+	dir := canon(t, t.TempDir())
+	sub := filepath.Join(dir, "sub")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r := newRig(t, memstore.New(), osSeam{}, time.Now)
+	h := r.create(t, dir)
+	must(r.wd.Attach(bg, h, nil))
+	acc := must(r.wd.Access(h.ID()))
+
+	later := &notices{}
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Go(func() {
+			for range 50 {
+				if _, err := acc.Path(); err != nil {
+					t.Error(err)
+					return
+				}
+			}
+		})
+	}
+	must(r.wd.Attach(bg, h, later))
+	wg.Wait()
+	must(r.wd.Change(bg, h.ID(), sub))
+	if len(r.in.all()) != 0 || len(later.all()) != 1 {
+		t.Fatalf("notices went to %+v and %+v, want the second notifier only", r.in.all(), later.all())
+	}
+	if p := must(acc.Path()); p != sub {
+		t.Fatalf("an Access taken before the re-attach reads %q", p)
+	}
+	r.wd.Detach(h.ID())
+	if _, err := acc.Path(); herr.Kind(err) != workdir.CodeUnavailable {
+		t.Fatalf("Path after Detach: %v", err)
 	}
 }

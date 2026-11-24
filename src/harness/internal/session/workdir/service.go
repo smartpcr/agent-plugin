@@ -2,6 +2,7 @@ package workdir
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sync"
@@ -17,6 +18,20 @@ import (
 // CodeInvalid: a Change named a path that is not an absolute, existing
 // directory. The seam's own code, when it has one, is the innermost reason.
 const CodeInvalid herr.Reason = "workdir/invalid"
+
+// CodeUndelivered: a notice could not be queued in the inbox. What caused it
+// (the move, the loss) is in force; the notice is kept and the next Ensure,
+// Change or Attach of the session sends it again under the same id.
+const CodeUndelivered herr.Reason = "workdir/notice-undelivered"
+
+// ErrUndelivered matches a CodeUndelivered error with errors.Is.
+var ErrUndelivered = herr.New(CodeUndelivered, "")
+
+// OnlyUndelivered reports that err is a notice delivery failure and nothing
+// else: the directory is available, and only a notice is still owed.
+func OnlyUndelivered(err error) bool {
+	return err != nil && herr.Has(err, CodeUndelivered) && !herr.Has(err, CodeUnavailable)
+}
 
 // Stater is the part of the filesystem seam the service validates through; every
 // fs.FS is one. The service never mutates the filesystem.
@@ -45,8 +60,10 @@ const (
 // NoticeSource is the inbox source kind of a working-directory notice.
 const NoticeSource = "workdir"
 
-// Notice is one message for the agent loop's inbox. ID is deterministic per
-// session, revision and kind, so a redelivery is refused as a duplicate.
+// Notice is one message for the agent loop's inbox. ID is stable across the
+// redeliveries of one notice, so the inbox refuses a second copy: a moved
+// notice is named by its revision (one per logged change), an unavailable one
+// by its revision and the loss it reports (each disappearance is a new loss).
 type Notice struct {
 	ID       string
 	Session  session.ID
@@ -58,7 +75,9 @@ type Notice struct {
 }
 
 // Notifier queues a notice in the session's agent inbox. Session packages
-// cannot import the agent, so the host adapts its inbox to this.
+// cannot import the agent, so the host adapts its inbox to this (the agent
+// driver attaches each session with its inbox). A notice the inbox already
+// holds is delivered: Notify returns nil for it.
 type Notifier interface {
 	Notify(ctx context.Context, n Notice) error
 }
@@ -78,7 +97,8 @@ func WithClock(now func() time.Time) Option { return func(s *Service) { s.now = 
 // WithWorkspaces sets the workspace lookup.
 func WithWorkspaces(w Workspaces) Option { return func(s *Service) { s.ws = w } }
 
-// WithNotifier sets where notices go; without one they are dropped.
+// WithNotifier sets where the notices of a session attached without its own
+// notifier go; without either they are dropped.
 func WithNotifier(n Notifier) Option { return func(s *Service) { s.notify = n } }
 
 // Service is the working-directory component (C31): it owns the fold, moves the
@@ -100,13 +120,18 @@ type Service struct {
 
 var _ Lookup = (*Service)(nil)
 
-// entry is one attached session. mu serializes its changes and checks.
+// entry is one attached session. mu guards every field and serializes the
+// session's changes, checks and reads.
 type entry struct {
-	mu sync.Mutex
-	s  session.Session
-	// gone is set when a check found the directory missing and the unavailable
-	// notice was queued; a later check that finds it, or a Change, clears it.
-	gone bool
+	mu     sync.Mutex
+	s      session.Session
+	notify Notifier
+	// gone is set when a check found the directory missing; a later check that
+	// finds it, or a Change, clears it. Each set starts a new loss.
+	gone   bool
+	losses int
+	// owed is the notices not yet delivered, oldest first.
+	owed []Notice
 }
 
 // New registers the workingDirectory fold in reg and returns the service that
@@ -130,21 +155,34 @@ func New(reg *views.Registry, seam Stater, opts ...Option) (*Service, error) {
 func (s *Service) Handle() views.Handle[WorkingDirectory] { return s.h }
 
 // Attach follows a created or resumed session: the fold is rebuilt from its log
-// and the directory is checked as Ensure does. The record is returned with a
-// workdir/unavailable error when the directory is gone.
-func (s *Service) Attach(ctx context.Context, sess session.Session) (WorkingDirectory, error) {
+// and the directory is checked as Ensure does. n is where the session's notices
+// go (the agent's inbox); nil uses the service's WithNotifier. Attaching a
+// session again replaces its handle and notifier for every reader, keeping the
+// notices still owed. The record is returned with Ensure's error.
+func (s *Service) Attach(ctx context.Context, sess session.Session, n Notifier) (WorkingDirectory, error) {
+	if sess == nil {
+		return WorkingDirectory{}, fmt.Errorf("workdir: Attach needs the session")
+	}
+	if n == nil {
+		n = s.notify
+	}
 	s.mu.Lock()
 	e, ok := s.sessions[sess.ID()]
 	if !ok {
-		e = &entry{s: sess}
+		e = &entry{s: sess, notify: n}
 		s.sessions[sess.ID()] = e
 	}
-	e.s = sess
 	s.mu.Unlock()
+	if ok {
+		e.mu.Lock()
+		e.s, e.notify = sess, n
+		e.mu.Unlock()
+	}
 	return s.Ensure(ctx, sess.ID())
 }
 
-// Detach stops following a session.
+// Detach stops following a session; its undelivered notices are dropped, and
+// every Access of it is workdir/unavailable from now on.
 func (s *Service) Detach(id session.ID) {
 	s.mu.Lock()
 	delete(s.sessions, id)
@@ -173,7 +211,10 @@ func (s *Service) read(ctx context.Context, e *entry) (WorkingDirectory, error) 
 // must be absolute and name an existing directory through the seam; its
 // canonical form is recorded with its project root and workspace. The change
 // and the prompt context line are appended as one group and flushed, then a
-// moved notice is queued. Changes of one session are serialized.
+// moved notice is queued. Changes of one session are serialized. When only the
+// notice could not be queued, the committed record is returned with a
+// workdir/notice-undelivered error (OnlyUndelivered): the move stands and the
+// notice is sent again by the next check.
 func (s *Service) Change(ctx context.Context, id session.ID, path string) (WorkingDirectory, error) {
 	e, err := s.entry(id)
 	if err != nil {
@@ -181,10 +222,14 @@ func (s *Service) Change(ctx context.Context, id session.ID, path string) (Worki
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return WorkingDirectory{}, err
+	}
 	return s.moveLocked(ctx, e, path, CauseMove)
 }
 
-// moveLocked validates path and records the move; the caller holds e.mu.
+// moveLocked validates path and records the move; the caller holds e.mu. An
+// error but notice-undelivered means nothing was recorded.
 func (s *Service) moveLocked(ctx context.Context, e *entry, path string, cause Cause) (WorkingDirectory, error) {
 	dir, err := s.validate(ctx, path)
 	if err != nil {
@@ -216,8 +261,8 @@ func (s *Service) moveLocked(ctx context.Context, e *entry, path string, cause C
 	if err != nil {
 		return WorkingDirectory{}, err
 	}
-	s.send(ctx, e, wd, NoticeMoved, ContextLine(wd.Path))
-	return wd, nil
+	s.queue(e, wd, NoticeMoved, fmt.Sprintf("workdir-%s-r%d-moved", e.s.ID(), wd.Revision), ContextLine(wd.Path))
+	return wd, s.deliverLocked(ctx, e)
 }
 
 // validate is path's canonical form when it is an absolute, existing directory.
@@ -258,18 +303,31 @@ func (s *Service) rootOf(ctx context.Context, dir string) string {
 	}
 }
 
-// exists reports whether p is an existing directory through the seam.
-func (s *Service) exists(ctx context.Context, p string) bool {
+// exists reports whether p is an existing directory through the seam. A missing
+// path, or one that is not a directory, is false with no error; any other
+// answer of the seam (a cancelled context, an I/O failure) is its error, which
+// is not taken for the directory's absence.
+func (s *Service) exists(ctx context.Context, p string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	info, err := s.seam.Stat(ctx, fs.Ref{Path: p})
-	return err == nil && info.Exists && info.Type == fs.TypeDir
+	if err != nil {
+		return false, fmt.Errorf("workdir: check %q: %w", p, err)
+	}
+	return info.Exists && info.Type == fs.TypeDir, nil
 }
 
 // Ensure checks session id's directory through the seam: the check before each
 // tool call and on resume. A directory that exists is returned. A missing one
 // recovers to the header's original project when that exists and differs (a
 // recovery change, its context line and a moved notice); otherwise the session
-// is workdir/unavailable, and the first check that finds it so queues one
-// unavailable notice.
+// is workdir/unavailable, and the check that first finds a loss queues one
+// unavailable notice for it. A seam failure, a cancelled context or a failed
+// fold read is returned as itself and changes nothing; a failed recovery is
+// returned inside the workdir/unavailable error. Notices still owed are sent
+// after the check, and a failure to send is joined to the result as
+// workdir/notice-undelivered.
 func (s *Service) Ensure(ctx context.Context, id session.ID) (WorkingDirectory, error) {
 	e, err := s.entry(id)
 	if err != nil {
@@ -279,23 +337,54 @@ func (s *Service) Ensure(ctx context.Context, id session.ID) (WorkingDirectory, 
 	defer e.mu.Unlock()
 	wd, err := s.read(ctx, e)
 	if err != nil {
-		return WorkingDirectory{}, err
+		return WorkingDirectory{}, fmt.Errorf("workdir: read the fold: %w", err)
 	}
-	if wd.Path != "" && s.exists(ctx, wd.Path) {
-		e.gone = false
-		return wd, nil
+	if wd.Path != "" {
+		ok, err := s.exists(ctx, wd.Path)
+		if err != nil {
+			return wd, err
+		}
+		if ok {
+			e.gone = false
+			return wd, s.deliverLocked(ctx, e)
+		}
 	}
-	if anchor := initial(e.s.Header()); anchor.Path != "" && anchor.Path != wd.Path && s.exists(ctx, anchor.Path) {
-		if rec, err := s.moveLocked(ctx, e, anchor.Path, CauseRecovery); err == nil {
-			return rec, nil
+	var failed error
+	if anchor := initial(e.s.Header()); anchor.Path != "" && anchor.Path != wd.Path {
+		ok, err := s.exists(ctx, anchor.Path)
+		if err != nil {
+			return wd, err
+		}
+		if ok {
+			rec, err := s.moveLocked(ctx, e, anchor.Path, CauseRecovery)
+			if err == nil || OnlyUndelivered(err) {
+				return rec, err
+			}
+			if ctx.Err() != nil {
+				return wd, err
+			}
+			failed = fmt.Errorf("recovery to %q failed: %w", anchor.Path, err)
 		}
 	}
 	wd.State = Unavailable
 	if !e.gone {
 		e.gone = true
-		s.send(ctx, e, wd, NoticeUnavailable, fmt.Sprintf("The working directory %s is no longer available; a person must choose another one before tools can run.", orNone(wd.Path)))
+		// A session that never had a directory has nothing to lose.
+		if wd.Path != "" {
+			e.losses++
+			id := fmt.Sprintf("workdir-%s-r%d-unavailable-%d-%d", e.s.ID(), wd.Revision, s.now().UnixNano(), e.losses)
+			s.queue(e, wd, NoticeUnavailable, id, fmt.Sprintf("The working directory %s is no longer available; a person must choose another one before tools can run.", orNone(wd.Path)))
+		}
 	}
-	return wd, herr.Newf(CodeUnavailable, "working directory %s is unavailable", orNone(wd.Path))
+	msg := fmt.Sprintf("working directory %s is unavailable", orNone(wd.Path))
+	unavailable := error(herr.New(CodeUnavailable, msg))
+	if failed != nil {
+		unavailable = herr.Wrap(CodeUnavailable, failed, msg)
+	}
+	if err := s.deliverLocked(ctx, e); err != nil {
+		return wd, errors.Join(unavailable, err)
+	}
+	return wd, unavailable
 }
 
 func orNone(p string) string {
@@ -305,27 +394,35 @@ func orNone(p string) string {
 	return fmt.Sprintf("%q", p)
 }
 
-// send queues a notice; a failure is not the change's failure, since the move
-// is already in the log and its context line reaches the next request.
-func (s *Service) send(ctx context.Context, e *entry, wd WorkingDirectory, kind NoticeKind, text string) {
-	if s.notify == nil {
+// queue adds a notice to the ones e owes; the caller holds e.mu.
+func (s *Service) queue(e *entry, wd WorkingDirectory, kind NoticeKind, id, text string) {
+	if e.notify == nil {
 		return
 	}
-	n := Notice{
-		ID:      fmt.Sprintf("workdir-%s-%d-%s", e.s.ID(), wd.Revision, kind),
-		Session: e.s.ID(), Kind: kind, Revision: wd.Revision, Path: wd.Path, Text: text, At: s.now(),
+	e.owed = append(e.owed, Notice{ID: id, Session: e.s.ID(), Kind: kind, Revision: wd.Revision, Path: wd.Path, Text: text, At: s.now()})
+}
+
+// deliverLocked sends e's owed notices in order. The first failure stops it:
+// that notice and the later ones stay owed, under the same ids, and the
+// failure is returned as workdir/notice-undelivered. The caller holds e.mu.
+func (s *Service) deliverLocked(ctx context.Context, e *entry) error {
+	if e.notify == nil {
+		e.owed = nil
+		return nil
 	}
-	_ = s.notify.Notify(ctx, n)
+	for len(e.owed) > 0 {
+		n := e.owed[0]
+		if err := e.notify.Notify(ctx, n); err != nil {
+			return herr.Wrap(CodeUndelivered, err, fmt.Sprintf("workdir: queue notice %s", n.ID))
+		}
+		e.owed = e.owed[1:]
+	}
+	return nil
 }
 
 // ContextLine is the prompt context line of session id's current directory.
 func (s *Service) ContextLine(id session.ID) (string, error) {
-	e, err := s.entry(id)
-	if err != nil {
-		return "", err
-	}
-	a := &access{s: s, e: e}
-	p, err := a.Path()
+	p, err := (&access{s: s, id: id}).Path()
 	if err != nil {
 		return "", err
 	}
@@ -333,32 +430,38 @@ func (s *Service) ContextLine(id session.ID) (string, error) {
 }
 
 // Access implements Lookup: the check a tool call makes before it runs. The
-// directory is checked through the seam (Ensure); the Access returned reads the
-// fold as it is now, and its methods return workdir/unavailable while the
-// directory is gone. An unattached session is workdir/unavailable.
+// directory is checked through the seam (Ensure), and its error is returned:
+// workdir/unavailable while the directory is gone (or the session is not
+// attached), or the seam's or the fold's own failure. Only a notice that could
+// not be queued yet does not fail it; the notice stays owed. The Access
+// returned reads the fold as it is now, and its methods return
+// workdir/unavailable while the directory is gone or the session detached.
 func (s *Service) Access(id session.ID) (Access, error) {
-	e, err := s.entry(id)
-	if err != nil {
+	if _, err := s.Ensure(context.Background(), id); err != nil && !OnlyUndelivered(err) {
 		return nil, err
 	}
-	_, _ = s.Ensure(context.Background(), id)
-	return &access{s: s, e: e}, nil
+	return &access{s: s, id: id}, nil
 }
 
-// access is the live read-only view of one attached session.
+// access is the live read-only view of one session; it finds the session's
+// entry on each read, so it follows a re-attach and ends with a detach.
 type access struct {
-	s *Service
-	e *entry
+	s  *Service
+	id session.ID
 }
 
 func (a *access) Current() (WorkingDirectory, error) {
-	a.e.mu.Lock()
-	defer a.e.mu.Unlock()
-	wd, err := a.s.read(context.Background(), a.e)
+	e, err := a.s.entry(a.id)
+	if err != nil {
+		return WorkingDirectory{}, err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	wd, err := a.s.read(context.Background(), e)
 	if err != nil {
 		return WorkingDirectory{}, herr.Wrap(CodeUnavailable, err, "working directory")
 	}
-	if a.e.gone {
+	if e.gone {
 		wd.State = Unavailable
 	}
 	if wd.State != Available {

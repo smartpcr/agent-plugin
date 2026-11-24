@@ -75,6 +75,10 @@ type Options struct {
 	// tech-spec.md §5.5 finalFlushTimeout); 0 is DefaultFinalFlushTimeout.
 	FinalFlushTimeout time.Duration
 	Hooks             Hooks
+	// Workdir is the working-directory component; each request then carries the
+	// session's prompt context line as the runtime context WorkdirContext. nil
+	// is none.
+	Workdir Workdir
 }
 
 // The cleanup bounds' defaults: 10 s each, confirmed by their owner for
