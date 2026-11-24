@@ -131,6 +131,26 @@ func TestRecordsCreated(t *testing.T) {
 	if code != 1 || !strings.Contains(stdout, "DH-S-13") || !strings.Contains(stdout, "Cleanup evidence") {
 		t.Errorf("a record missing a field: exit %d, want 1 naming DH-S-13 and the field\n%s", code, stdout)
 	}
+
+	// An open record may leave cells empty, but deleting an owed row is refused.
+	path16 := filepath.Join(root, filepath.FromSlash(closure.RecordPath(closure.DefaultStory, "DH-S-16")))
+	b16, err := os.ReadFile(path16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kept []string
+	for _, line := range strings.Split(strings.ReplaceAll(string(b16), "\r\n", "\n"), "\n") {
+		if !strings.HasPrefix(line, "| Windows double-click |") {
+			kept = append(kept, line)
+		}
+	}
+	if err := os.WriteFile(path16, []byte(strings.Join(kept, "\n")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, _ = runClosureGate(t, "records", "--root", root)
+	if code != 1 || !strings.Contains(stdout, `owner default "Windows double-click" has no row`) {
+		t.Errorf("a deleted owner default: exit %d, want 1 naming it\n%s", code, stdout)
+	}
 }
 
 // TestRecordsLive checks the repository's own M2 records and closure record.

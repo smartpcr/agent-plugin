@@ -24,6 +24,7 @@ import (
 type closeFlags struct {
 	root, stage, story string
 	built              bool
+	s                  closure.Story
 }
 
 func parseCloseFlags(name string, args []string, stderr io.Writer) (closeFlags, bool) {
@@ -41,10 +42,12 @@ func parseCloseFlags(name string, args []string, stderr io.Writer) (closeFlags, 
 		fmt.Fprintf(stderr, "harness-gate %s: --stage %q is not a stage ID (DH-S-n)\n", name, f.stage)
 		return f, false
 	}
-	if strings.TrimSpace(f.story) == "" {
-		fmt.Fprintf(stderr, "harness-gate %s: --story is empty\n", name)
+	s, known := closure.Stories[strings.TrimSpace(f.story)]
+	if !known {
+		fmt.Fprintf(stderr, "harness-gate %s: unknown story %q\n", name, f.story)
 		return f, false
 	}
+	f.s = s
 	return f, true
 }
 
@@ -72,7 +75,7 @@ func runReady(args []string, stdout, stderr io.Writer) int {
 		printBlockers(stdout, head+": NOT READY", []string{err.Error()})
 		return 1
 	}
-	if blockers := closure.Ready(x, f.stage, rec, f.built); len(blockers) > 0 {
+	if blockers := f.s.Ready(x, f.stage, rec, f.built); len(blockers) > 0 {
 		printBlockers(stdout, head+": NOT READY", blockers)
 		return 1
 	}
@@ -96,7 +99,7 @@ func runClose(args []string, stdout, stderr io.Writer) int {
 		printBlockers(stdout, head+": REFUSED "+closure.NotYetClosed, []string{err.Error()})
 		return 1
 	}
-	if refusal, blockers := closure.Close(x, f.stage, rec, f.built); refusal != "" {
+	if refusal, blockers := f.s.Close(x, f.stage, rec, f.built); refusal != "" {
 		printBlockers(stdout, head+": REFUSED "+refusal, blockers)
 		return 1
 	}

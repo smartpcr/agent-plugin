@@ -155,7 +155,20 @@ Without `--built`, the check is an acceptance close:
   digits);
 - every `## Manual checks register` row needs Seen, Operator, a commit and the
   label `manual`;
-- every `## Owner defaults (M2-C-4)` row needs Confirmed and By.
+- every `## Owner defaults (M2-C-4)` row needs Confirmed and By;
+- a row for an ID the index lists under the stage must have venue `guarded`. A
+  different venue would leave its result unjudged while it still covers the index
+  entry, so it is a blocker.
+
+Each record also owes the rows Stage 1.1 created in it (`closure/obligations.go`):
+- every step;
+- the manual checks of each step;
+- the stage's owner defaults;
+- every scenario row, matched on scenario, variant, venue and leg together.
+
+A deleted row, or a scenario row whose venue or leg was edited, is a blocker.
+`ready` and `close` check the scenario rows always and the other owed rows with
+`--built`. `records` checks all of them on every record, including open ones.
 
 The Scenarios table's columns are Scenario, Variant, Venue, Leg, Environment,
 Commit, Result and Artifacts. A result reads one of:
@@ -170,6 +183,13 @@ Only `passed` counts as passed. A `skipped` row is not passed (M2-DEC-3). An `ou
 of scope` row is not a blocker only when it names its decision. The Leg column
 reads `required` (or is empty) or `recorded`. A `recorded` leg must still run; a
 `failed` result there is kept and does not block (M2-DEC-4).
+
+The Venue column reads `guarded`, `acceptance` or `later`; any other value is a
+blocker. A row that ran (`passed` or `failed`, including a recorded leg's failure)
+must record its Environment, a commit SHA and its Artifacts (M2-DEC-5). A named
+`out of scope` row need not. A table whose header is not followed by a `| --- |`
+separator row with one cell per column is refused as unreadable, so a data row is
+never taken for the separator.
 
 `records` checks the shape of every stage record of the story (status line, the
 sec. 7.3 headings, the four tables and their columns). A record that reads

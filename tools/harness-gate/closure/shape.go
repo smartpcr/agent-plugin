@@ -19,8 +19,24 @@ type Story struct {
 	BuildStages    []string // the stages that close with --built; the others are acceptance stages
 	Deliverables   int      // rows of the closure record's deliverable table
 	P0, P1         int
-	DoneCandidates []string // the only deliverables that may read done
-	HeldOpen       []string // the H-items the closure record must list
+	DoneCandidates []string               // the only deliverables that may read done
+	HeldOpen       []string               // the H-items the closure record must list
+	Obligations    map[string]Obligations // the rows each stage record owes
+}
+
+// Ready is the package Ready plus the rows stage's record owes (Obligations): a
+// deleted step, manual check, owner default or scenario row is a blocker.
+func (s Story) Ready(x *acceptance.Index, stage string, rec *Record, built bool) []string {
+	blockers := Ready(x, stage, rec, built)
+	if ob, ok := s.Obligations[stage]; ok {
+		blockers = append(blockers, ob.Missing(rec, built)...)
+	}
+	return blockers
+}
+
+// Close is the package Close over Story.Ready.
+func (s Story) Close(x *acceptance.Index, stage string, rec *Record, built bool) (string, []string) {
+	return closeOn(rec, s.Ready(x, stage, rec, built))
 }
 
 // Stories are the stories whose evidence the gate checks.
@@ -34,7 +50,8 @@ var Stories = map[string]Story{
 			"DH-D-VIEW-10", "DH-D-SANDBOX-1", "DH-D-HUMAN-4", "DH-D-FS-6", "DH-D-SANDBOX-4", "DH-D-EXEC-3",
 			"DH-D-BUNDLE-1", "DH-D-SDK-6", "DH-D-CLI-9", "DH-D-SDK-8", "DH-D-VIEW-4",
 		},
-		HeldOpen: []string{"H-1", "H-2", "H-3", "H-4", "H-10", "H-21"},
+		HeldOpen:    []string{"H-1", "H-2", "H-3", "H-4", "H-10", "H-21"},
+		Obligations: m2Obligations,
 	},
 }
 
@@ -222,8 +239,12 @@ func CheckRecords(root string, s Story, x *acceptance.Index) []string {
 			continue
 		}
 		out = append(out, ShapeProblems(rec)...)
+		// An open record may have empty cells, but never fewer rows than it owes.
+		for _, m := range s.Obligations[stage].Missing(rec, true) {
+			out = append(out, rec.Path+": "+m)
+		}
 		if rec.Status == StatusClosed {
-			if refusal, blockers := Close(x, stage, rec, slices.Contains(s.BuildStages, stage)); refusal != "" {
+			if refusal, blockers := s.Close(x, stage, rec, slices.Contains(s.BuildStages, stage)); refusal != "" {
 				for _, b := range blockers {
 					out = append(out, fmt.Sprintf("%s: reads closed but close refuses it (%s): %s", rec.Path, refusal, b))
 				}

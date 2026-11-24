@@ -3,6 +3,7 @@ package closure
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/smartpcr/agent-plugin/tools/harness-gate/acceptance"
@@ -32,6 +33,10 @@ var (
 // 7.3; M2-C-2, M2-DEC-3). "out of scope (<decision>)" is not a blocker; "out of scope"
 // without a decision is. A recorded leg (M2-DEC-4) counts when it ran, passed or
 // failed.
+//
+// Every row's venue is guarded, acceptance or later, and a row that ran (passed or
+// failed) records its environment, commit and artifacts (M2-DEC-5). With built, a row
+// of an index-listed ID whose venue is not guarded is a blocker, not skipped.
 //
 // Without built (an acceptance close) every row counts, the stage must have an index
 // entry and at least one row. With built (a build-stage close) only guarded rows
@@ -70,6 +75,10 @@ func scenarioBlockers(entry acceptance.Stage, rec *Record, built bool) []string 
 			add("%s has no %q column: --built counts the guarded rows", ScenariosHeading, "venue")
 		}
 	}
+	listed := map[string]bool{}
+	for _, e := range entry.Scenarios {
+		listed[e.ID] = true
+	}
 	seen := map[string]bool{}
 	counted := 0
 	for _, r := range t.Rows {
@@ -86,12 +95,25 @@ func scenarioBlockers(entry acceptance.Stage, rec *Record, built bool) []string 
 			continue
 		}
 		venue := strings.ToLower(r.Get("venue"))
+		if t.Has("venue") && !slices.Contains(Venues, venue) {
+			add("%s: venue %q is not one of %s; its result cannot be counted", name, r.Get("venue"), strings.Join(Venues, ", "))
+			continue
+		}
 		if built && venue != "guarded" {
+			if listed[id] {
+				// The index lists the stage's guarded scenarios; another venue would leave
+				// the row's result unjudged while it still covers the index entry.
+				add("%s: listed under %s in %s, which a build stage runs guarded, but its venue reads %q", name, entry.ID, acceptance.IndexPath, r.Get("venue"))
+			}
 			continue
 		}
 		counted++
-		if why, ok := judge(r.Get("result"), leg == "recorded"); !ok {
+		result := r.Get("result")
+		if why, ok := judge(result, leg == "recorded"); !ok {
 			add("%s: %s", name, why)
+		}
+		if executed(result) {
+			blockers = append(blockers, evidenceBlockers(name, r)...)
 		}
 	}
 	for _, e := range entry.Scenarios {
@@ -103,6 +125,38 @@ func scenarioBlockers(entry acceptance.Stage, rec *Record, built bool) []string 
 		add("%s has no scenario row: an acceptance close needs at least one passed scenario", ScenariosHeading)
 	}
 	return blockers
+}
+
+// Venues are the values of a scenario row's Venue column: run inside a build stage on
+// scratch homes, at an acceptance stage, or authored here and run by a later stage.
+var Venues = []string{"guarded", "acceptance", "later"}
+
+// executed reports whether a result says the scenario ran: passed or failed. Those
+// rows need their evidence; "out of scope (<decision>)" and the open results do not.
+func executed(result string) bool {
+	lower := strings.ToLower(strings.TrimSpace(result))
+	return lower == "passed" || strings.HasPrefix(lower, "passed (") || strings.HasPrefix(lower, "failed")
+}
+
+// evidenceBlockers are the evidence a row that ran must carry: the environment, the
+// commit it ran at and its artifacts (M2-DEC-5: "an evidence record row with commit,
+// environment and artifacts"). A recorded leg's failure is kept, so it needs
+// them too.
+func evidenceBlockers(name string, r Row) []string {
+	var out []string
+	if r.Get("environment") == "" {
+		out = append(out, fmt.Sprintf("%s: ran but records no environment", name))
+	}
+	switch c := r.Get("commit"); {
+	case c == "":
+		out = append(out, fmt.Sprintf("%s: ran but records no commit", name))
+	case !shaPattern.MatchString(c):
+		out = append(out, fmt.Sprintf("%s: commit %q is not a commit SHA (7 to 40 lower-case hex digits)", name, c))
+	}
+	if r.Get("artifacts") == "" {
+		out = append(out, fmt.Sprintf("%s: ran but records no artifacts", name))
+	}
+	return out
 }
 
 // rowName is "DH-E-X-n [variant]" for messages; the variant tells two rows of one
@@ -238,7 +292,11 @@ func builtBlockers(rec *Record) []string {
 // blockers. An open record is refused NotYetClosed whether or not it is ready; its
 // ready blockers are returned with it.
 func Close(x *acceptance.Index, stage string, rec *Record, built bool) (string, []string) {
-	blockers := Ready(x, stage, rec, built)
+	return closeOn(rec, Ready(x, stage, rec, built))
+}
+
+// closeOn adds the status line to the ready blockers of rec.
+func closeOn(rec *Record, blockers []string) (string, []string) {
 	switch rec.Status {
 	case StatusMissing:
 		return StatusUnreadable, append([]string{fmt.Sprintf("no %q line; want %q or %q", statusPrefix, statusPrefix+" open", statusPrefix+" closed")}, blockers...)

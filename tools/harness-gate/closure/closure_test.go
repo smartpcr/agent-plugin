@@ -1,6 +1,8 @@
 package closure
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -317,5 +319,113 @@ func TestParseRecord(t *testing.T) {
 	}
 	if _, err := ParseRecord("x.md", strings.NewReader("## Steps\n## Steps\n")); err == nil {
 		t.Error("a section given twice parsed")
+	}
+}
+
+// Indexed guarded scenarios cannot leave judging by a venue edit, and an unknown venue
+// is refused in both modes.
+func TestVenueCannotBypassJudging(t *testing.T) {
+	x := index(t, store1Index)
+	moved := "| DH-E-STORE-1 | Linux (WSL) | acceptance | required | wsl lane | 0123abc | failed (exit 1) | run.txt |"
+	b := Ready(x, "DH-S-16", record(t, stageRecord("open", moved)), true)
+	if len(b) != 1 || !containsAll(b[0], "DH-E-STORE-1", "runs guarded", `"acceptance"`) {
+		t.Errorf("indexed row moved to acceptance: blockers %q, want one naming the venue", b)
+	}
+	typo := "| DH-E-STORE-1 | Linux (WSL) | guardd | required | wsl lane | 0123abc | not run (x) | run.txt |"
+	for _, built := range []bool{false, true} {
+		b := Ready(x, "DH-S-16", record(t, stageRecord("open", typo)), built)
+		if !slices.ContainsFunc(b, func(s string) bool { return containsAll(s, `venue "guardd"`) }) {
+			t.Errorf("built=%v: misspelt venue: blockers %q", built, b)
+		}
+	}
+}
+
+// A row that ran needs its environment, commit and artifacts (M2-DEC-5); a named
+// out-of-scope row does not.
+func TestExecutedRowsNeedEvidence(t *testing.T) {
+	x := index(t, store1Index)
+	bare := "| DH-E-STORE-1 | Linux (WSL) | guarded | required | | | passed | |"
+	b := Ready(x, "DH-S-16", record(t, stageRecord("open", bare)), false)
+	want := []string{"no environment", "no commit", "no artifacts"}
+	if len(b) != len(want) {
+		t.Fatalf("passed row without evidence: blockers %q, want %d", b, len(want))
+	}
+	for i, w := range want {
+		if !containsAll(b[i], "DH-E-STORE-1", w) {
+			t.Errorf("blocker %d = %q, want %q", i, b[i], w)
+		}
+	}
+	badSHA := "| DH-E-STORE-1 | Linux (WSL) | guarded | required | wsl lane | HEAD | passed | run.txt |"
+	if b := Ready(x, "DH-S-16", record(t, stageRecord("open", badSHA)), false); len(b) != 1 || !strings.Contains(b[0], `"HEAD" is not a commit SHA`) {
+		t.Errorf("passed row at HEAD: blockers %q", b)
+	}
+	x17 := index(t, "built-through: DH-S-8\nstages:\n  DH-S-17:\n    - id: DH-E-LLM-1\n      authored: DH-S-9\n")
+	rec := record(t, stageRecord("open",
+		"| DH-E-LLM-1 | claude-code | acceptance | required | E1 | 0123abc | passed | export.json |",
+		"| DH-E-LLM-1 | copilot-cli | acceptance | recorded | E1 | 0123abc | failed (route refused) | |"))
+	if b := Ready(x17, "DH-S-17", rec, false); len(b) != 1 || !containsAll(b[0], "copilot-cli", "no artifacts") {
+		t.Errorf("recorded failure without artifacts: blockers %q", b)
+	}
+}
+
+// Deleting an owed row is a blocker: the stage's obligations are fixed when Stage 1.1
+// creates the record, so a deleted owner default cannot remove its own blocker.
+func TestStoryReadyRefusesDeletedObligations(t *testing.T) {
+	s := Stories[DefaultStory]
+	x := index(t, "built-through: DH-S-8\nstages:\n  DH-S-16:\n    - id: DH-E-STORE-1\n      authored: DH-S-7\n")
+	raw, err := os.ReadFile(filepath.Join("..", "testdata", "records", "created", "docs", "stories", "harness-DSH-M2", "evidence", "DH-S-16.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	full := strings.ReplaceAll(string(raw), "\r\n", "\n")
+	parse := func(src string) *Record { return record(t, src) }
+	if m := s.Obligations["DH-S-16"].Missing(parse(full), true); len(m) != 0 {
+		t.Fatalf("the created record misses owed rows: %q", m)
+	}
+	var kept []string
+	for _, line := range strings.Split(full, "\n") {
+		switch {
+		case strings.HasPrefix(line, "| 16.10 |"),
+			strings.HasPrefix(line, "| 16.4 | Ctrl-C"),
+			strings.HasPrefix(line, "| Windows double-click |"),
+			strings.HasPrefix(line, "| DH-E-STORE-2 |"):
+			continue
+		case strings.HasPrefix(line, "| DH-E-FS-3 | Windows |"):
+			line = strings.Replace(line, "| guarded |", "| later |", 1)
+		}
+		kept = append(kept, line)
+	}
+	b := s.Ready(x, "DH-S-16", parse(strings.Join(kept, "\n")), true)
+	for _, w := range [][]string{
+		{"step 16.10 has no row"},
+		{"step 16.4 owes 1 manual check", "has 0"},
+		{`owner default "Windows double-click" has no row`, "M2-C-4"},
+		{"DH-E-STORE-2 [Linux (WSL)]", "has no row"},
+		{"DH-E-FS-3 [Windows] (venue guarded", "has no row"},
+	} {
+		if !slices.ContainsFunc(b, func(s string) bool { return containsAll(s, w...) }) {
+			t.Errorf("blockers name no %q:\n%s", w, strings.Join(b, "\n"))
+		}
+	}
+	// Without --built only the scenario rows are owed.
+	if m := s.Obligations["DH-S-16"].Missing(parse(strings.Join(kept, "\n")), false); len(m) != 2 {
+		t.Errorf("acceptance-mode obligations %q, want the two scenario rows", m)
+	}
+}
+
+// A data row in the separator's place is refused, never consumed: a failed row
+// followed by a passed one cannot be reduced to the passed one.
+func TestParseRecordRefusesMissingSeparator(t *testing.T) {
+	for _, src := range []string{
+		"## Scenarios\n| Scenario | Result |\n| DH-E-STORE-1 | failed |\n| DH-E-STORE-1 | passed |\n",
+		"## Scenarios\n| Scenario | Result |\n| --- |\n| DH-E-STORE-1 | passed |\n",
+		"## Scenarios\n| Scenario | Result |\n| --- | - |\n",
+	} {
+		if _, err := ParseRecord("x.md", strings.NewReader(src)); err == nil || !strings.Contains(err.Error(), "separator") {
+			t.Errorf("%q: err %v, want a separator error", src, err)
+		}
+	}
+	if _, err := ParseRecord("x.md", strings.NewReader("## Scenarios\n| Scenario | Result |\n| :--- | ---: |\n")); err != nil {
+		t.Errorf("aligned separator: %v", err)
 	}
 }

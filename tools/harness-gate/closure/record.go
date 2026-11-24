@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -111,6 +112,9 @@ type Record struct {
 }
 
 var closedAt = regexp.MustCompile(`^closed at [0-9a-f]{7,40}$`)
+
+// separatorCell is one cell of a table's separator row: dashes, optionally aligned.
+var separatorCell = regexp.MustCompile(`^:?-{3,}:?$`)
 
 // ParseRecord reads an evidence record. It fails only on a read error or a table it
 // cannot read (a section given twice, a row with more cells than its header); every
@@ -202,6 +206,11 @@ func ParseDocument(path string, r io.Reader, extra ...string) (*Record, error) {
 			}
 			header = true
 		case !sep:
+			// The line after the header must be the separator; a data row in its place is
+			// refused, never consumed, so a failed row cannot vanish from the table.
+			if len(cells) != len(cur.Columns) || slices.ContainsFunc(cells, func(c string) bool { return !separatorCell.MatchString(strings.TrimSpace(c)) }) {
+				return nil, fmt.Errorf("%s:%d: want the separator row of the %d-column table (| --- | ... |), got %q", path, lineNo, len(cur.Columns), trimmed)
+			}
 			sep = true
 		default:
 			if len(cells) > len(cur.Columns) {
