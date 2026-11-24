@@ -196,6 +196,11 @@ func Start(t testing.TB, o Options) *Tree {
 	case status := <-done:
 		t.Fatalf("compose: the launch ended before ready with status %d: %s", status, tr.Stderr.String())
 	}
+	// Ready can come before the tree's queued status notifications reach their
+	// listeners (an effect's acquisition delivers them from its own goroutine).
+	// Start returns a settled tree, so that a test stopping it at once still has
+	// every entry's effects recorded for the stuck report.
+	synctest.Wait()
 	s := steps.state
 	tr.Loader, tr.Sharing, tr.Data, tr.Layers, tr.Issues, tr.Audit = s.Service, s.Sharing, s.Data, s.Layers, s.Issues, s.Audit
 	t.Cleanup(func() { tr.end(t, done, s, bubble, baseline) })
