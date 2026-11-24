@@ -48,6 +48,9 @@
 ]
 # headless
 # required: session.store, agent.registry, agent.driver, tools.registry, agent.presets, cli.headless
+# skipped, target not built: bundles/headless.yml:18:3: layer bundle:headless: merge "human.secrets" matches no entry
+# skipped, target not built: bundles/headless.yml:23:3: layer bundle:headless: override "human.authorization" matches no entry
+# skipped, target not built: bundles/headless.yml:28:3: layer bundle:headless: merge "agent.presets" matches no entry
 [
   {
     "id": "logging",
@@ -67,10 +70,15 @@
   {
     "id": "egress",
     "name": "util.egress"
+  },
+  {
+    "id": "cli.headless",
+    "name": "cli.headless"
   }
 ]
 # sdk
 # required: session.store, agent.registry, agent.driver, tools.registry, agent.presets, wire.stdio, wire.sdk
+# skipped, target not built: bundles/sdk.yml:19:3: layer bundle:sdk: override "session.title.llm" matches no entry
 [
   {
     "id": "logging",
@@ -90,9 +98,18 @@
   {
     "id": "egress",
     "name": "util.egress"
+  },
+  {
+    "id": "wire.stdio",
+    "name": "wire.stdio"
+  },
+  {
+    "id": "wire.sdk",
+    "name": "wire.sdk"
   }
 ]
 # sdk-minimal
+# skipped, target not built: bundles/sdk.yml:19:3: layer bundle:sdk: override "session.title.llm" matches no entry
 [
   {
     "id": "logging",
@@ -112,6 +129,14 @@
   {
     "id": "egress",
     "name": "util.egress"
+  },
+  {
+    "id": "wire.stdio",
+    "name": "wire.stdio"
+  },
+  {
+    "id": "wire.sdk",
+    "name": "wire.sdk"
   }
 ]
 # acp

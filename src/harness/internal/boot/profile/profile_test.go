@@ -100,8 +100,8 @@ func TestStackOrderAndOneWritableLayer(t *testing.T) {
 	}
 
 	tree, index, issues := loader.Compose(layers)
-	if len(issues) > 0 {
-		t.Fatalf("compose: %v", issues)
+	if _, problems := pendingIssues(issues, tree); len(problems) > 0 {
+		t.Fatalf("compose: %v", problems)
 	}
 	if owner, _ := index.Owner("logging", "config.level"); owner != "overlay:1" {
 		t.Errorf("owner of config.level = %q, want overlay:1", owner)
@@ -128,7 +128,9 @@ func TestStackErrors(t *testing.T) {
 }
 
 // Every embedded bundle parses, and every component it inserts is in the catalogue
-// of this binary.
+// of this binary (bar the carriers on unregistered). A bundle's other operations
+// target entries of the bundles below it, so they are checked in their profiles'
+// composition (TestBuiltinProfilesCompose), not alone.
 func TestBundlesParseAndResolve(t *testing.T) {
 	cat, err := builtin.Catalog()
 	if err != nil {
@@ -148,14 +150,14 @@ func TestBundlesParseAndResolve(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		tree, _, issues := loader.Compose([]loader.Layer{layer})
+		tree, _, issues := loader.Compose([]loader.Layer{insertsOf(layer)})
 		if len(issues) > 0 {
 			t.Errorf("bundle %s: %v", name, issues)
 		}
 		var walk func([]loader.EntryOptions)
 		walk = func(entries []loader.EntryOptions) {
 			for _, e := range entries {
-				if !e.Group {
+				if !e.Group && !unregistered[e.Name] {
 					if _, err := cat.Lookup(e.Name); err != nil {
 						t.Errorf("bundle %s: entry %s: %v", name, e.ID, err)
 					}
@@ -182,4 +184,15 @@ func TestLookupUnknown(t *testing.T) {
 	if err != nil || d.Limits != DefaultLimits() {
 		t.Fatalf("headless = %+v, %v", d, err)
 	}
+}
+
+// insertsOf is layer with only its root inserts.
+func insertsOf(layer loader.Layer) loader.Layer {
+	out := loader.Layer{Label: layer.Label}
+	for _, op := range layer.Ops {
+		if op.Kind == loader.OpInsert && op.ID == "" {
+			out.Ops = append(out.Ops, op)
+		}
+	}
+	return out
 }

@@ -1,11 +1,32 @@
-# headless: the layer of the headless profile (bundle-preset.md §6.2, DH-D-BUNDLE-1).
+# headless: the layer of the headless profile (bundle-preset.md §6.2, DH-D-BUNDLE-1),
+# applied over core, base and presets. It mounts the one-shot runner, keeps the
+# secret store to environment sources, switches the authorization entry off and
+# takes the question tool out of every preset, so a job never reads, migrates or
+# changes a saved key or sign-in and never waits on a person (DH-ADR-BUNDLE-9).
 #
-# Membership. Each entry is inserted here by the stage that builds its component;
-# until then the catalogue of this build cannot resolve it (DH-T-BOOT-2), so the
-# layer holds nothing yet:
-#   - cli.headless          the one-shot task runner, the profile's carrier (C50, DH-S-16)
-#   - human.secrets         merged to environment sources only
-#   - human.authorization   disabled
-#   - tool.ask-user         removed from each preset
-# The Required list (profile.Spine plus cli.headless) is in profile.go.
-[]
+# The operations name their targets by catalogue name. Until a target's component
+# is registered and its entry is in a lower bundle, the composer reports the
+# operation as matching no entry and skips it; the profile does not launch before
+# DH-D-BUNDLE-3 (boot's audit names the absent required entries).
+
+# The carrier: A24's runner (C50). Required, after profile.Spine.
+- insert:
+    - id: cli.headless
+      name: cli.headless
+
+# One field merged where upstream restates the row: environment sources only.
+- id: human.secrets
+  name: human.secrets
+  merge:
+    backend: env
+
+- id: human.authorization
+  name: human.authorization
+  disabled: true
+
+# The registry leaves the listed children out of every declaration it mounts.
+- id: agent.presets
+  name: agent.presets
+  merge:
+    exclude:
+      - tool.ask-user

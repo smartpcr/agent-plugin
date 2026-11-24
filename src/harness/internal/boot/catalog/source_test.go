@@ -145,8 +145,10 @@ func TestSourceRules(t *testing.T) {
 	}
 
 	// A required id the shipped layers lack is a fault once its component is in the
-	// build catalogue; until then the profile does not launch (boot's audit names it)
-	// and the profile package's golden test keeps the list of such ids.
+	// build catalogue. Until then only a spine id, or a carrier of the web profile,
+	// may be missing (their bundles are later stages'): the profile does not launch
+	// (boot's audit names it) and the profile package's golden test keeps the list.
+	// The headless and sdk layers hold their carriers already.
 	cat, err := builtin.Catalog()
 	if err != nil {
 		t.Fatal(err)
@@ -163,7 +165,7 @@ func TestSourceRules(t *testing.T) {
 		tree, _, _ := loader.Compose(layers)
 		missing := slices.DeleteFunc(missingRequired(def.Required, tree), func(id string) bool {
 			_, err := cat.Lookup(id)
-			return err != nil
+			return err != nil && (slices.Contains(profile.Spine, id) || def.Name == profile.Web)
 		})
 		if len(missing) > 0 {
 			t.Errorf("profile %s requires %v, which its shipped layers do not hold", def.Name, missing)
