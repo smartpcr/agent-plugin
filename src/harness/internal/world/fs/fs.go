@@ -7,7 +7,8 @@
 // one caller that combines it with a sandbox.Policy, and every tool goes through
 // ops. Every mutating method takes the Policy of the call and refuses with
 // fs/sandbox-denied before it touches anything; a zero Policy is refused with
-// sandbox/unavailable. Every provider passes fstest.Run.
+// sandbox/unavailable. Every provider passes fstest.Run. ops dispatches the live
+// events of events.go (BeforeMutation, Observed) around each provider call.
 package fs
 
 import (
