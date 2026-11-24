@@ -638,3 +638,100 @@ func TestComponentRegistersThePermissionsFold(t *testing.T) {
 		t.Fatalf("permissions %+v, %v", st, err)
 	}
 }
+
+// A replaced sandbox provider reloads permission.presets (it injects
+// sandbox.ResolverKey) after the registry has served reads: the fold stays
+// registered in the one registry, and the reloaded service still registers
+// /permission, pins a new session at creation and reads the permissions fold.
+func TestComponentSurvivesASandboxProviderReplacement(t *testing.T) {
+	w := newWorld(t, table())
+	reg := views.New()
+	cmds := command.NewRegistry(scope.NewTable(w.root))
+	wait := func(f *cordis.Fiber, err error) {
+		t.Helper()
+		if err == nil {
+			err = f.Wait()
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	wait(w.root.Apply("test.providers", func(c *cordis.Context) error {
+		if _, err := session.Key.Provide(c, w.sessions); err != nil {
+			return err
+		}
+		if _, err := views.Key.Provide(c, reg); err != nil {
+			return err
+		}
+		if _, err := approval.Key.Provide(c, w.approval); err != nil {
+			return err
+		}
+		_, err := command.Key.Provide(c, cmds)
+		return err
+	}))
+	provideSandbox := func(name string, r sandbox.Resolver) *cordis.Fiber {
+		t.Helper()
+		f, err := w.root.Apply(name, func(c *cordis.Context) error {
+			_, err := sandbox.ResolverKey.Provide(c, r)
+			return err
+		})
+		wait(f, err)
+		return f
+	}
+	sb1 := provideSandbox("test.sandbox.1", w.resolver)
+	comp, err := w.root.Use(permission.Component, table())
+	wait(comp, err)
+	before, err := permission.Key.Get(w.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	life := lifecycle(t, w)
+	a1, err := life.Create(w.root, agent.CreateOptions{Session: "s-before"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = a1.Dispose(bg) })
+	h1, _ := w.sessions.Get(a1.Agent().Ref().Session)
+	if _, err := reg.Read(bg, h1, permission.ViewKey); err != nil {
+		t.Fatal(err) // the registry is sealed from here on
+	}
+
+	sb1.Dispose()
+	r2, err := policy.New(policy.Config{}, policy.Deps{Owner: owner(t, w.root, "world.sandbox.policy.2"), Sessions: w.sessions})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provideSandbox("test.sandbox.2", r2)
+	if err := comp.Wait(); err != nil {
+		t.Fatalf("permission.presets failed to reload on the new provider: %v", err)
+	}
+	after, err := permission.Key.Get(w.root)
+	if err != nil {
+		t.Fatalf("permission.presets did not come back on the new provider: %v", err)
+	}
+	if after == before {
+		t.Fatal("permission.presets was not reloaded on the new provider")
+	}
+	if !slices.ContainsFunc(cmds.List(scope.Key{}), func(c command.Command) bool { return c.Name == permission.CommandName }) {
+		t.Fatal("/permission is not registered after the reload")
+	}
+	a2, err := life.Create(w.root, agent.CreateOptions{Session: "s-after"})
+	if err != nil {
+		t.Fatalf("creation after the reload: %v", err)
+	}
+	t.Cleanup(func() { _ = a2.Dispose(bg) })
+	ref := a2.Agent().Ref()
+	h2, _ := w.sessions.Get(ref.Session)
+	if m, err := r2.Mode(bg, ref.Session); err != nil || m != sandbox.WorkspaceWrite {
+		t.Fatalf("new session's mode on the new provider %s, %v; want workspace-write", m, err)
+	}
+	for _, h := range []session.ReadSession{h1, h2} {
+		snap, err := reg.Read(bg, h, permission.ViewKey)
+		if err != nil {
+			t.Fatalf("permissions after the reload: %v", err)
+		}
+		if st, err := after.Handle().Get(snap); err != nil || st.Preset != "ask" || !st.Pinned {
+			t.Fatalf("permissions %+v, %v", st, err)
+		}
+	}
+}

@@ -24,7 +24,9 @@ const Name = "permission.presets"
 // (command.Key) and provides the service under Key. The config resolves onto
 // DefaultConfig and must validate, so a default preset that names no entry
 // fails the load and the config check (config/rejected, status 78). An update
-// is accepted in place: the table changes and no session's knobs do.
+// is accepted in place: the table changes and no session's knobs do. A replaced
+// provider reloads the component; the fold stays registered (RegisterView is
+// once per registry) and the new service rebinds the hook and the command.
 var Component = cordis.Define(Name, func(ctx *cordis.Context, cfg Config) error {
 	sessions, err := session.Key.Get(ctx)
 	if err != nil {

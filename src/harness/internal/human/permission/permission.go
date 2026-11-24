@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"sync"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human/approval"
@@ -260,7 +261,28 @@ func View() views.Definition[State] {
 	}
 }
 
-// RegisterView registers the permissions fold in r.
+// registered is, per fold registry, the permissions fold's handle in it. A
+// registry takes a key once and refuses any registration after its first fold
+// (view/duplicate, view/sealed), while permission.presets reloads whenever a
+// provider it injects is replaced; the fold is therefore registered once per
+// registry, for the process, and a reloaded service reuses the handle.
+var registered = struct {
+	sync.Mutex
+	in map[*views.Registry]views.Handle[State]
+}{in: map[*views.Registry]views.Handle[State]{}}
+
+// RegisterView registers the permissions fold in r, once: a later call with the
+// same registry returns the same handle.
 func RegisterView(r *views.Registry) (views.Handle[State], error) {
-	return views.Register(r, View())
+	registered.Lock()
+	defer registered.Unlock()
+	if h, ok := registered.in[r]; ok {
+		return h, nil
+	}
+	h, err := views.Register(r, View())
+	if err != nil {
+		return views.Handle[State]{}, err
+	}
+	registered.in[r] = h
+	return h, nil
 }
