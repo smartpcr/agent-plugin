@@ -30,9 +30,10 @@ var (
 // Always: every scenario the index lists under stage has a row, every row names a
 // scenario ID and a known leg, and every counted row has passed. "skipped",
 // "blocked", "not run", "failed" and an empty result are not passed (impl.md sec.
-// 7.3; M2-C-2, M2-DEC-3). "out of scope (<decision>)" is not a blocker; "out of scope"
-// without a decision is. A recorded leg (M2-DEC-4) counts when it ran, passed or
-// failed.
+// 7.3; M2-C-2, M2-DEC-3). "out of scope (<decision>)" is not a blocker when the
+// decision is one of ScopeDecisions and applies to the row's variant; "out of scope"
+// without a decision, or with an unknown or inapplicable one, is. A recorded leg
+// (M2-DEC-4) counts when it ran, passed or failed.
 //
 // Every row's venue is guarded, acceptance or later, and a row that ran (passed or
 // failed) records its environment, commit and artifacts (M2-DEC-5). With built, a row
@@ -109,7 +110,7 @@ func scenarioBlockers(entry acceptance.Stage, rec *Record, built bool) []string 
 		}
 		counted++
 		result := r.Get("result")
-		if why, ok := judge(result, leg == "recorded"); !ok {
+		if why, ok := judge(result, r, leg == "recorded"); !ok {
 			add("%s: %s", name, why)
 		}
 		if executed(result) {
@@ -172,8 +173,60 @@ func rowName(r Row) string {
 	return name
 }
 
-// judge decides one result cell: ok, or why it is not passed.
-func judge(result string, recorded bool) (string, bool) {
+// ScopeDecision is a named decision that puts some variants of some scenarios out of
+// scope (M2-C-2). Applies says whether it covers a row's scenario and variant; a
+// decision never covers a variant it was not made for.
+type ScopeDecision struct {
+	ID      string
+	Applies func(scenario, variant string) bool
+}
+
+// ScopeDecisions are the decisions "out of scope (<decision>)" may name. Any other
+// text in the parentheses is a blocker: an invented reason waives nothing.
+var ScopeDecisions = []ScopeDecision{
+	{
+		// Owner decision (M1 OWNER-1, M2-EN-2, Q m2-macos-rows): the gate is Windows
+		// plus Linux under WSL; macOS rows only.
+		ID: "platforms-windows-wsl",
+		Applies: func(_, variant string) bool {
+			return strings.Contains(strings.ToLower(variant), "macos")
+		},
+	},
+	{
+		// e2e-scenarios.md, Windows lane: DH-E-STORE-2 is Linux only (impl.md 16.8).
+		ID: "impl.md 16.8 Linux only; TC-19s2",
+		Applies: func(scenario, variant string) bool {
+			return scenario == "DH-E-STORE-2" && strings.Contains(strings.ToLower(variant), "windows")
+		},
+	},
+}
+
+// scopeDecision checks the decision named by an "out of scope (<decision>)" result
+// against ScopeDecisions and the row's scenario and variant.
+func scopeDecision(result string, r Row) (string, bool) {
+	named := strings.TrimSpace(result[len("out of scope"):])
+	if !decisionPattern.MatchString(named) {
+		return fmt.Sprintf("result %q names no decision; only a variant out of scope by a named decision is not a blocker (M2-C-2)", result), false
+	}
+	id := strings.TrimSpace(named[1 : len(named)-1])
+	id = strings.TrimSpace(strings.Trim(id, "`"))
+	known := make([]string, 0, len(ScopeDecisions))
+	for _, d := range ScopeDecisions {
+		known = append(known, d.ID)
+		if !strings.EqualFold(d.ID, id) {
+			continue
+		}
+		variant := r.Get("variant")
+		if d.Applies(r.Get("scenario"), variant) {
+			return "", true
+		}
+		return fmt.Sprintf("result %q: decision %q does not put variant %q of %s out of scope (M2-C-2)", result, d.ID, variant, r.Get("scenario")), false
+	}
+	return fmt.Sprintf("result %q names unknown decision %q; known: %s (M2-C-2)", result, id, strings.Join(known, ", ")), false
+}
+
+// judge decides one result cell of row r: ok, or why it is not passed.
+func judge(result string, r Row, recorded bool) (string, bool) {
 	lower := strings.ToLower(strings.TrimSpace(result))
 	switch {
 	case lower == "":
@@ -181,10 +234,7 @@ func judge(result string, recorded bool) (string, bool) {
 	case lower == "passed" || strings.HasPrefix(lower, "passed ("):
 		return "", true
 	case strings.HasPrefix(lower, "out of scope"):
-		if decisionPattern.MatchString(strings.TrimSpace(result[len("out of scope"):])) {
-			return "", true
-		}
-		return fmt.Sprintf("result %q names no decision; only a variant out of scope by a named decision is not a blocker (M2-C-2)", result), false
+		return scopeDecision(strings.TrimSpace(result), r)
 	case strings.HasPrefix(lower, "skipped"):
 		return fmt.Sprintf("result %q: skipped is not passed (M2-DEC-3)", result), false
 	case strings.HasPrefix(lower, "not run"):
