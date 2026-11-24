@@ -92,6 +92,9 @@ type Driver struct {
 	life     context.Context
 	stopLife context.CancelCauseFunc
 	done     chan struct{}
+	// maint is held by a turn from before it opens until it settles, and by a
+	// maintenance task (Maintain) while it runs: neither starts inside the other.
+	maint chan struct{}
 
 	mu      sync.Mutex
 	status  agent.Status
@@ -136,7 +139,7 @@ func Start(o Options) (*Driver, error) {
 	}
 	life, stop := context.WithCancelCause(context.Background())
 	d := &Driver{o: o, budget: b, life: life, stopLife: stop, done: make(chan struct{}),
-		status: agent.StatusIdle, changed: make(chan struct{})}
+		maint: make(chan struct{}, 1), status: agent.StatusIdle, changed: make(chan struct{})}
 	go d.run()
 	return d, nil
 }
@@ -191,6 +194,21 @@ func (d *Driver) WaitIdle(ctx context.Context) error {
 			return ctx.Err()
 		}
 	}
+}
+
+// Maintain runs fn as a maintenance task of the agent (DH-D-AGENT-8): it waits
+// for a running turn to settle, and no turn opens until fn returns, so fn sees
+// and changes the session between turns only. A waking send made meanwhile
+// opens its turn after fn. It returns ctx's error, without running fn, when ctx
+// ends first.
+func (d *Driver) Maintain(ctx context.Context, fn func(context.Context) error) error {
+	select {
+	case d.maint <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-d.maint }()
+	return fn(ctx)
 }
 
 // Close cancels the running turn with cause disposed, keeps parked input, stops

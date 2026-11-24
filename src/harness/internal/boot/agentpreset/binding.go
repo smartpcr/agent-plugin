@@ -88,12 +88,21 @@ func RegisterView(r *views.Registry) (views.Handle[Binding], error) {
 	return views.Register(r, BindingView())
 }
 
-// Target is the agent a binding is for: its session's log, its scope, and the
-// context whose unload releases the lease (the agent's own).
+// Target is the agent a binding is for: its session's log, its scope, the context
+// whose unload releases the lease (the agent's own) and, for Select, its
+// maintenance gate.
 type Target struct {
 	Session session.Session
 	Scope   *scope.Scope
 	Owner   *cordis.Context
+	// Maintainer runs Select as an agent maintenance task (DH-ADR-BUNDLE-6), so no
+	// turn starts inside it; the agent's driver is one. Select requires it.
+	Maintainer Maintainer
+}
+
+// Maintainer runs fn while no turn of the agent can open (driver.Driver.Maintain).
+type Maintainer interface {
+	Maintain(ctx context.Context, fn func(context.Context) error) error
 }
 
 // BindingOf is the preset fold of s, refolded from its log.
@@ -109,11 +118,17 @@ func BindingOf(ctx context.Context, s session.ReadSession) (Binding, error) {
 // taken, the agent scope encloses the revision's scope, and agent-preset/selected is
 // appended unless the session's fold already names that preset and digest. An
 // append that fails gives the lease back and restores the enclosing list. The lease
-// t held before, if any, is released.
+// t held before, if any, is released. Bindings of one agent scope are serialised,
+// so the last one wins in the registry, the scope and the log alike.
 func (r *Registry) Bind(ctx context.Context, t Target, id string, cause Cause) (Info, error) {
 	if t.Session == nil || t.Scope == nil || t.Owner == nil {
 		return Info{}, errors.New("agentpreset: a binding needs its session, scope and owner")
 	}
+	defer r.lockTarget(t.Scope.Key())()
+	return r.bindLocked(ctx, t, id, cause)
+}
+
+func (r *Registry) bindLocked(ctx context.Context, t Target, id string, cause Cause) (Info, error) {
 	l, err := r.Acquire(t.Owner, id)
 	if err != nil {
 		return Info{}, err
@@ -126,6 +141,7 @@ func (r *Registry) BindFrom(ctx context.Context, t Target, holder scope.Key) (In
 	if t.Session == nil || t.Scope == nil || t.Owner == nil {
 		return Info{}, errors.New("agentpreset: a binding needs its session, scope and owner")
 	}
+	defer r.lockTarget(t.Scope.Key())()
 	l, err := r.AcquireFrom(t.Owner, holder)
 	if err != nil {
 		return Info{}, err
@@ -133,6 +149,7 @@ func (r *Registry) BindFrom(ctx context.Context, t Target, holder scope.Key) (In
 	return r.attach(ctx, t, l.(*lease), CauseInherit)
 }
 
+// attach publishes l as t's binding; the target's lock is held.
 func (r *Registry) attach(ctx context.Context, t Target, l *lease, cause Cause) (Info, error) {
 	info := l.Info()
 	agent := t.Scope.Key()
@@ -171,22 +188,34 @@ func (r *Registry) attach(ctx context.Context, t Target, l *lease, cause Cause) 
 	return info, nil
 }
 
-// Select is the user's choice of preset for a blank session (DH-ADR-BUNDLE-5): a
-// session that has opened a turn is refused with CodeLocked; an agent already on
-// the current revision of id is left as it is.
+// Select is the user's choice of preset for a blank session (DH-ADR-BUNDLE-5). It
+// runs as an agent maintenance task (Target.Maintainer, DH-ADR-BUNDLE-6), so the
+// check that the session is blank and the binding it makes are one step no turn can
+// start inside: a session that has opened a turn is refused with CodeLocked, and an
+// agent already on the current revision of id is left as it is.
 func (r *Registry) Select(ctx context.Context, t Target, id string) (Info, error) {
-	if t.Session == nil || t.Scope == nil || t.Owner == nil {
-		return Info{}, errors.New("agentpreset: a selection needs its session, scope and owner")
+	if t.Session == nil || t.Scope == nil || t.Owner == nil || t.Maintainer == nil {
+		return Info{}, errors.New("agentpreset: a selection needs its session, scope, owner and maintenance gate")
 	}
-	if b := t.Session.Open(); b.TurnOpen || b.LastTurn > 0 {
-		return Info{}, &Error{Code: CodeLocked, Msg: fmt.Sprintf("session %s has started; its preset is fixed", t.Session.ID())}
-	}
-	want, err := r.Resolve(id)
+	var info Info
+	err := t.Maintainer.Maintain(ctx, func(ctx context.Context) error {
+		defer r.lockTarget(t.Scope.Key())()
+		if b := t.Session.Open(); b.TurnOpen || b.LastTurn > 0 {
+			return &Error{Code: CodeLocked, Msg: fmt.Sprintf("session %s has started; its preset is fixed", t.Session.ID())}
+		}
+		want, err := r.Resolve(id)
+		if err != nil {
+			return err
+		}
+		if have, ok := r.Of(t.Scope.Key()); ok && have.ID == want.ID && have.Revision == want.Revision {
+			info = have
+			return nil
+		}
+		info, err = r.bindLocked(ctx, t, want.ID, CauseSelect)
+		return err
+	})
 	if err != nil {
 		return Info{}, err
 	}
-	if have, ok := r.Of(t.Scope.Key()); ok && have.ID == want.ID && have.Revision == want.Revision {
-		return have, nil
-	}
-	return r.Bind(ctx, t, want.ID, CauseSelect)
+	return info, nil
 }

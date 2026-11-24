@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -28,7 +29,7 @@ type readConfig struct {
 
 // fixture is a test catalogue: tool.read provides its root as the private service
 // tool.read, tool.note provides nothing, both count their live instances, and
-// tool.fail never loads.
+// tool.fail never loads, tool.needs waits for a service nobody provides.
 type fixture struct {
 	cat  *catalog.Catalog
 	live atomic.Int32
@@ -55,11 +56,15 @@ func newFixture(t *testing.T) *fixture {
 		return err
 	})
 	fail := cordis.Define("tool.fail", func(*cordis.Context, cordis.None) error { return errors.New("boom") })
+	needs := cordis.Define("tool.needs", func(*cordis.Context, cordis.None) error { return nil },
+		cordis.WithInject("tool.missing"))
 	cat, err := catalog.Build([]catalog.Item{
 		{Name: "tool.read", Component: read, Config: reflect.TypeFor[readConfig](), Provides: []string{"tool.read"}},
 		{Name: "tool.note", Component: note, Config: reflect.TypeFor[readConfig]()},
 		{Name: "tool.fail", Component: fail},
-	})
+		{Name: "tool.needs", Component: needs},
+		{Name: "session.scope", Component: scope.Component},
+	}, agentpreset.Items())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +111,16 @@ func (e *env) agent(t *testing.T, id string) (session.Handle, *scope.Scope, agen
 	if err != nil {
 		t.Fatal(err)
 	}
-	return h, sc, agentpreset.Target{Session: h, Scope: sc, Owner: sc.Ctx()}
+	return h, sc, agentpreset.Target{Session: h, Scope: sc, Owner: sc.Ctx(), Maintainer: &gate{}}
+}
+
+// gate is a maintenance gate: a turn takes it to open (as driver.Driver does).
+type gate struct{ mu sync.Mutex }
+
+func (g *gate) Maintain(ctx context.Context, fn func(context.Context) error) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return fn(ctx)
 }
 
 func (e *env) binding(t *testing.T, h session.Handle) agentpreset.Binding {

@@ -61,6 +61,8 @@ type Options struct {
 	Evaluator loader.Evaluator
 	// Version is the harness version, part of every digest.
 	Version string
+	// Config is the registry config until a Load gives another.
+	Config Config
 }
 
 // Registry keeps the declarations and the revision list (DH-D-BUNDLE-4).
@@ -68,7 +70,14 @@ type Registry struct {
 	ctx  *cordis.Context
 	opts Options
 
-	loadMu sync.Mutex
+	// loadMu serialises every change of the declaration set and its rebuild.
+	loadMu   sync.Mutex
+	loaded   []Declaration // the set Load gave
+	declared []*declared   // the agent.preset entries, in registration order
+
+	// bindMu guards targets; a target's lock serialises the bindings of one agent.
+	bindMu  sync.Mutex
+	targets map[scope.Key]*targetLock
 
 	mu       sync.Mutex
 	closed   bool
@@ -80,7 +89,16 @@ type Registry struct {
 	bindings map[scope.Key]*lease // the lease each bound agent scope holds
 }
 
-// revision is one mounted instance of a declaration.
+// declared is one agent.preset entry's registration.
+type declared struct{ decl Declaration }
+
+type targetLock struct {
+	mu    sync.Mutex
+	users int
+}
+
+// revision is one mounted instance of a declaration, or a declaration that cannot
+// mount (static: no scope, Broken names its issues).
 type revision struct {
 	info     Info
 	children map[string]Child
@@ -88,6 +106,7 @@ type revision struct {
 	ctx      *cordis.Context
 	nested   *loader.Service
 	provides map[string]bool
+	static   bool
 
 	// guarded by Registry.mu
 	leases  int
@@ -96,13 +115,13 @@ type revision struct {
 }
 
 // New is a registry owned by ctx: every revision's scope is closed when ctx's fiber
-// unloads. It holds no declaration until Load.
+// unloads. It holds no declaration until Load or Declare.
 func New(ctx *cordis.Context, o Options) (*Registry, error) {
 	if ctx == nil || o.Catalogue == nil || o.Scopes == nil {
 		return nil, errors.New("agentpreset: a registry needs its context, a catalogue and a scope table")
 	}
-	r := &Registry{ctx: ctx, opts: o, current: map[string]*revision{}, numbers: map[string]int{},
-		bindings: map[scope.Key]*lease{}}
+	r := &Registry{ctx: ctx, opts: o, cfg: o.Config, current: map[string]*revision{}, numbers: map[string]int{},
+		bindings: map[scope.Key]*lease{}, targets: map[scope.Key]*targetLock{}}
 	if _, err := ctx.Effect("agentpreset/registry", func() (cordis.Disposer, error) {
 		return func() error { r.unload(); return nil }, nil
 	}); err != nil {
@@ -111,21 +130,118 @@ func New(ctx *cordis.Context, o Options) (*Registry, error) {
 	return r, nil
 }
 
-// Load replaces the declaration set and the registry config. A set with a static
-// issue (Validate) is refused whole with CodeInvalid and nothing changes. Otherwise
-// each declaration whose resolved children changed (an edit of it or of a base it
+// Load replaces the set of declarations given by value (those of agent.preset
+// entries, Declare, stay) and the registry config. A set with a static issue
+// (Validate) is refused whole with CodeInvalid and nothing changes. Otherwise each
+// declaration whose resolved children changed (an edit of it or of a base it
 // extends) gets a new revision, mounted eagerly by a loader of its own, and the
 // revision it replaces, like that of a removed declaration, is retired: it closes at
 // its last lease's release, at once when it has none. A revision whose child fails
-// is listed broken; that is not an error of Load.
+// or never becomes active is listed broken; that is not an error of Load.
 func (r *Registry) Load(cfg Config, decls []Declaration) error {
 	r.loadMu.Lock()
 	defer r.loadMu.Unlock()
-	res, issues := resolveAll(cfg, decls, r.opts.Catalogue, r.opts.Version)
+	all := append(slices.Clone(decls), r.declaredLocked()...)
+	res, issues := resolveAll(cfg, all, r.opts.Catalogue, r.opts.Version)
 	if len(issues) > 0 {
 		return invalid(issues)
 	}
+	if err := r.install(cfg, res, nil); err != nil {
+		return err
+	}
+	r.loaded = slices.Clone(decls)
+	return nil
+}
 
+// Declare adds the declaration of one agent.preset entry, owned by owner: when
+// owner's fiber unloads the declaration is removed and its revision retired. An
+// empty or duplicate id is refused, so that entry fails. The set is rebuilt
+// leniently, as entries register one at a time while the tree loads: a declaration
+// with a static issue, or whose Extends does not resolve yet, is listed broken
+// until the set changes, and a default not declared yet is not an error.
+func (r *Registry) Declare(owner *cordis.Context, d Declaration) error {
+	if owner == nil {
+		return errors.New("agentpreset: a declaration needs its owner context")
+	}
+	r.loadMu.Lock()
+	defer r.loadMu.Unlock()
+	if d.ID == "" || strings.Contains(d.ID, ":") {
+		return invalid([]Issue{{Preset: d.ID, Path: "id", Message: "a declaration needs an id without \":\""}})
+	}
+	for _, x := range append(slices.Clone(r.loaded), r.declaredLocked()...) {
+		if x.ID == d.ID {
+			return invalid([]Issue{{Preset: d.ID, Path: "id", Message: fmt.Sprintf("duplicate id %q", d.ID)}})
+		}
+	}
+	reg := &declared{decl: d}
+	r.declared = append(r.declared, reg)
+	if err := r.syncLocked(); err != nil {
+		r.declared = slices.DeleteFunc(r.declared, func(x *declared) bool { return x == reg })
+		return err
+	}
+	_, err := owner.Effect("agentpreset/declaration:"+d.ID, func() (cordis.Disposer, error) {
+		return func() error {
+			r.loadMu.Lock()
+			defer r.loadMu.Unlock()
+			r.declared = slices.DeleteFunc(r.declared, func(x *declared) bool { return x == reg })
+			_ = r.syncLocked()
+			return nil
+		}, nil
+	})
+	if err != nil {
+		r.declared = slices.DeleteFunc(r.declared, func(x *declared) bool { return x == reg })
+		_ = r.syncLocked()
+	}
+	return err
+}
+
+func (r *Registry) declaredLocked() []Declaration {
+	out := make([]Declaration, len(r.declared))
+	for i, x := range r.declared {
+		out[i] = x.decl
+	}
+	return out
+}
+
+// syncLocked rebuilds the whole set leniently (Declare); loadMu is held.
+func (r *Registry) syncLocked() error {
+	r.mu.Lock()
+	cfg := r.cfg
+	r.mu.Unlock()
+	all := append(slices.Clone(r.loaded), r.declaredLocked()...)
+	res, issues := resolveAll(cfg, all, r.opts.Catalogue, r.opts.Version)
+	why := map[string][]string{}
+	for _, is := range issues {
+		if is.Preset != "" {
+			why[is.Preset] = append(why[is.Preset], is.String())
+		}
+	}
+	var ok []resolved
+	got := map[string]bool{}
+	for _, d := range res {
+		if len(why[d.decl.ID]) == 0 {
+			ok = append(ok, d)
+			got[d.decl.ID] = true
+		}
+	}
+	var static []Info
+	for _, d := range all {
+		if got[d.ID] {
+			continue
+		}
+		msg := strings.Join(why[d.ID], "; ")
+		if msg == "" {
+			msg = fmt.Sprintf("preset %s: extends %q, which does not resolve", d.ID, d.Extends)
+		}
+		static = append(static, Info{ID: d.ID, Name: d.Name, Description: d.Description, Order: d.Order, Broken: msg})
+	}
+	return r.install(cfg, ok, static)
+}
+
+// install swaps in the resolved set: an unchanged declaration keeps its revision, a
+// changed one is built anew outside the locks, and every replaced or removed
+// revision is retired. static are declarations listed broken without a scope.
+func (r *Registry) install(cfg Config, res []resolved, static []Info) error {
 	r.mu.Lock()
 	if r.closed {
 		r.mu.Unlock()
@@ -138,13 +254,24 @@ func (r *Registry) Load(cfg Config, decls []Declaration) error {
 	next := map[string]*revision{}
 	var built []*revision
 	for _, d := range res {
-		if old, ok := was[d.decl.ID]; ok && old.info.Digest == d.digest {
+		if old, ok := was[d.decl.ID]; ok && !old.static && old.info.Digest == d.digest {
 			next[d.decl.ID] = old
 			continue
 		}
 		numbers[d.decl.ID]++
 		rev := r.build(d, numbers[d.decl.ID])
 		next[d.decl.ID] = rev
+		built = append(built, rev)
+	}
+	for _, in := range static {
+		if old, ok := was[in.ID]; ok && old.static && old.info.Broken == in.Broken {
+			next[in.ID] = old
+			continue
+		}
+		numbers[in.ID]++
+		in.Revision = numbers[in.ID]
+		rev := &revision{info: in, static: true, provides: map[string]bool{}}
+		next[in.ID] = rev
 		built = append(built, rev)
 	}
 
@@ -256,8 +383,13 @@ func (r *Registry) build(d resolved, n int) *revision {
 			failed = append(failed, k+": not mounted")
 			continue
 		}
-		if f := nested.Fiber(entry); f != nil && f.Err() != nil {
-			failed = append(failed, k+": "+f.Err().Error())
+		if f := nested.Fiber(entry); f == nil {
+			failed = append(failed, k+": not mounted")
+		} else if err := f.Err(); err != nil {
+			failed = append(failed, k+": "+err.Error())
+		} else if st := f.State(); st != cordis.Active {
+			// A fiber waiting for an injected service settles Pending with no error.
+			failed = append(failed, k+": "+waiting(r.opts.Catalogue, d.children[k].Component, st))
 		}
 	}
 	if len(failed) > 0 {
@@ -265,6 +397,21 @@ func (r *Registry) build(d resolved, n int) *revision {
 		rev.close()
 	}
 	return rev
+}
+
+// waiting says why a settled child is not active: the services it injects, which
+// never came, for a pending one.
+func waiting(cat Catalogue, component string, st cordis.FiberState) string {
+	if comp, ok := cat.Resolve(component); ok && st == cordis.Pending {
+		var names []string
+		for _, dep := range comp.Inject() {
+			names = append(names, dep.Name)
+		}
+		if len(names) > 0 {
+			return "not active after the tree settled: waits for " + strings.Join(names, ", ")
+		}
+	}
+	return fmt.Sprintf("not active after the tree settled (%v)", st)
 }
 
 // close unloads the revision's scope, and with it every child and the nested
@@ -287,7 +434,7 @@ func (r *Registry) unload() {
 	for _, rev := range revs {
 		rev.closed = true
 	}
-	r.revs, r.current, r.bindings = nil, map[string]*revision{}, map[scope.Key]*lease{}
+	r.revs, r.current, r.order, r.bindings = nil, map[string]*revision{}, nil, map[scope.Key]*lease{}
 	r.mu.Unlock()
 	for _, rev := range revs {
 		rev.close()
@@ -484,7 +631,34 @@ func (l *lease) Key() scope.Key {
 	return l.rev.sc.Key()
 }
 
-func (l *lease) Info() Info { return l.rev.info }
+// Info is the revision's description, read under the registry's lock: a reload
+// that keeps the revision refreshes its name, description and order.
+func (l *lease) Info() Info {
+	l.r.mu.Lock()
+	defer l.r.mu.Unlock()
+	return l.rev.info
+}
+
+// lockTarget serialises the bindings of one agent scope; the returned func unlocks.
+func (r *Registry) lockTarget(k scope.Key) func() {
+	r.bindMu.Lock()
+	tl := r.targets[k]
+	if tl == nil {
+		tl = &targetLock{}
+		r.targets[k] = tl
+	}
+	tl.users++
+	r.bindMu.Unlock()
+	tl.mu.Lock()
+	return func() {
+		tl.mu.Unlock()
+		r.bindMu.Lock()
+		if tl.users--; tl.users == 0 {
+			delete(r.targets, k)
+		}
+		r.bindMu.Unlock()
+	}
+}
 
 func (l *lease) Release() {
 	l.once.Do(func() { l.r.release(l) })
