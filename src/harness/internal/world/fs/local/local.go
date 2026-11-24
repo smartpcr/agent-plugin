@@ -28,6 +28,8 @@ import (
 	iofs "io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
+	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -69,9 +71,65 @@ type Options struct {
 	LockDir string
 }
 
-// DefaultLockDir is the lock directory of a provider given none: one per user's
-// temporary directory, so every harness process of the user shares it.
-func DefaultLockDir() string { return filepath.Join(os.TempDir(), "dsh-fs-locks") }
+// DefaultLockDir is the lock directory of a provider given none: one per user,
+// so every harness process of the user shares it and no other user can. It is
+// under the user's cache directory; when that is unknown, it is a per-uid name
+// in the temporary directory, which on Linux and macOS is often the shared /tmp.
+func DefaultLockDir() string {
+	if d, err := os.UserCacheDir(); err == nil && d != "" {
+		return filepath.Join(d, "dsh", "fs-locks")
+	}
+	name := "dsh-fs-locks"
+	if uid := os.Getuid(); uid >= 0 {
+		name = fmt.Sprintf("dsh-fs-locks-%d", uid)
+	}
+	return filepath.Join(os.TempDir(), name)
+}
+
+// ensureLockDir creates the lock directory (mode 0700) when missing, then
+// requires it to be a real directory, not a link, owned by the current user and
+// not writable by group or others, so another local user can neither deny the
+// provider's writes by pre-creating it nor plant lock files in it.
+func ensureLockDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return herr.Wrap(fs.CodeIO, err, "create the lock directory")
+	}
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		return herr.Wrap(fs.CodeIO, err, "inspect the lock directory")
+	}
+	if fi.Mode()&iofs.ModeSymlink != 0 || fi.Mode()&iofs.ModeIrregular != 0 || !fi.IsDir() {
+		return herr.Newf(fs.CodeIO, "lock directory %s is a link or not a directory", dir)
+	}
+	if uid, ok := ownerUID(fi); ok && uid != os.Geteuid() {
+		return herr.Newf(fs.CodeIO, "lock directory %s is owned by uid %d, not the current user", dir, uid)
+	}
+	if runtime.GOOS != "windows" && fi.Mode().Perm()&0o022 != 0 {
+		return herr.Newf(fs.CodeIO, "lock directory %s has mode %#o, writable by group or others", dir, fi.Mode().Perm())
+	}
+	return nil
+}
+
+// ownerUID is the owner uid of fi where the platform reports one (the Uid of
+// syscall.Stat_t on POSIX); ok is false on Windows, whose per-user cache and
+// temporary directories are already private to the user.
+func ownerUID(fi iofs.FileInfo) (int, bool) {
+	v := reflect.ValueOf(fi.Sys())
+	if v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			return 0, false
+		}
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct {
+		return 0, false
+	}
+	f := v.FieldByName("Uid")
+	if !f.IsValid() || !f.CanUint() {
+		return 0, false
+	}
+	return int(f.Uint()), true
+}
 
 // New returns the local provider with the default options.
 func New() *FS { return NewWithOptions(Options{}) }
@@ -102,9 +160,9 @@ func (l *FS) lock(ctx context.Context, keys ...fs.TargetKey) (func(), error) {
 		}
 	}
 	sort.Strings(files)
-	if err := os.MkdirAll(l.lockDir, 0o700); err != nil {
+	if err := ensureLockDir(l.lockDir); err != nil {
 		unlock()
-		return nil, herr.Wrap(fs.CodeIO, err, "create the lock directory")
+		return nil, err
 	}
 	held := make([]*fsx.FileLock, 0, len(files))
 	release := func() {
