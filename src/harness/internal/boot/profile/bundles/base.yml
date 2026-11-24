@@ -1,0 +1,19 @@
+# base: the product host plane over the core kernel (bundle-preset.md §6.2,
+# DH-D-BUNDLE-2); part of every P0 profile except sdk-minimal. Defaults send nothing:
+# no telemetry URL and no mode, vendor log upload a disabled entry, no market or
+# package-inventory rows and no model-facing row at all.
+#
+# No component of base is in this build yet. Each deliverable that builds one adds
+# its entry here in the same change: settings forms, the workspace registry,
+# session.title and session.title.llm, the secret keychain, human.authorization,
+# human.identity, human.feedback, permission.presets, human.questions,
+# subagent.manager with subagent.spawn and subagent.fork, team.board,
+# schedule.service, goal.service and goal.rounds, mcp.fleet, lsp.service,
+# web.service and web.fetch.http, skill.registry, skill.office, office.service and
+# office.libreoffice, terminal.service and both shells, shellexec.env,
+# tools.endpoint, tools.repeat-guard, compact.imageoffload, boot.plugins and its
+# plugins group, plugin.host, host.inspect, host.otlplog, host.report,
+# host.inventory and title.all-prompts; and, as disabled: true entries,
+# session.logupload, session.upload and the vendor account. Each experimental
+# feature is an optional bundle (DH-D-BUNDLE-6), not an entry here.
+[]

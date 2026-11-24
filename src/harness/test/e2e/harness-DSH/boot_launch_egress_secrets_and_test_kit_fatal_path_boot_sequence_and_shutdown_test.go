@@ -149,7 +149,7 @@ func (s *fpbsState) fixture(layer string, required ...string) error {
 	if err := os.WriteFile(s.overlay, []byte(layer), 0o600); err != nil {
 		return err
 	}
-	def := profile.Definition{Name: "probe", Bundles: []string{"core"}, Required: required}
+	def := profile.Definition{Name: "probe", Bundles: []string{profile.Admin, profile.Core}, Required: required}
 	s.opts = boot.Options{
 		Request: launch.Request{Args: []string{"dsh", "probe"}, Cwd: root, Home: s.homeDir, Profile: def.Name, Overlays: []string{s.overlay}},
 		Profile: def,

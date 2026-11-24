@@ -65,6 +65,18 @@ stage closes; `--built` refuses a row with no confirmation or no name in By.
 | Full-access label | I2 Q3 | In full-access mode a command may take over the harness, and the label says so | | | |
 | UTF-8-only text tools | core §6.3 | Text tools refuse every encoding but UTF-8 | | | |
 
+## M2 entry (implementation-plan Stage 1.2)
+
+The entry state at the first M2 commit, as `harness-gate entry --story harness:DSH-M2` reports it
+([the gate's README](../../../../tools/harness-gate/README.md#story-entry-harness-gate-entry)).
+
+| Item | Value |
+| --- | --- |
+| First M2 commit | `8ac8dc6` ([plan-architecture] #96, the first commit of story harness:DSH-M2 on `main`); the entry check itself lands on top of `c1457ed`, where M1 is in the same state |
+| M1 state at that commit | **open**: all eleven records `DH-S-1.md` .. `DH-S-11.md` read `Closure status: open`, no M1 closure record `docs/stories/harness-DSH-M1/evidence/closure.md`, `built-through: DH-S-8` |
+| `harness-gate entry` at `c1457ed` | exit 1, 13 unmet conditions (the eleven records, the closure record, `built-through`) |
+| Q `m2-entry-m1-closure` (M2-Q-2) in force | Unanswered; the default holds (tech-spec M2-DEC-1): S12..S16 may build on the built M1 contracts; no M2 scenario run (Stage 6.12 onward) and no M2 stage closure happens before `harness-gate entry` exits 0 |
+
 ## Evidence record (impl.md sec. 7.3)
 
 ### Source and build identity
