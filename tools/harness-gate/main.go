@@ -44,6 +44,11 @@
 //	                       src/harness/internal/world/sandbox/policy/text/
 //	                       unless DH-S-17.md holds a passed DH-E-SANDBOX-7 row
 //	                       with that file's SHA-256 (policytext.go)
+//	sandbox7-record --escalated linux=<n>[,...] [--lane s17] [--ci-run id]
+//	                       the s17 job's DH-E-SANDBOX-7 acceptance record of
+//	                       the clean checkout: commit, each text's SHA-256 and
+//	                       escalations, written to evidence/runs/<id>.txt; it
+//	                       runs no gate (sandbox7record.go)
 package main
 
 import (
@@ -94,6 +99,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return runRecords(args[1:], stdout, stderr)
 		case "policy-text":
 			return runPolicyText(ctx, args[1:], stdout, stderr)
+		case "sandbox7-record":
+			return runSandbox7Record(ctx, args[1:], stdout, stderr)
 		}
 	}
 	flags := flag.NewFlagSet("harness-gate", flag.ContinueOnError)

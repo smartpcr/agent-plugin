@@ -1,0 +1,9 @@
+harness-gate acceptance record
+scenario: DH-E-SANDBOX-7
+commit: 41101e7b57521c233f03210ab960fd3ceb665729
+tree: clean (git status --porcelain --untracked-files=all is empty)
+ci run: fixture
+recorded: 2026-12-01T00:30:00Z
+text: src/harness/internal/world/sandbox/policy/text/linux.md sha256=b6aafb9bf1f7d6f156af094486d3092854377da18ceddab7062f1f199a5bfe87 escalated=12/18
+result: passed
+sha256: d0b6b9aeecd630c122b97220cba472eaa94a217b1523ed042ad5988bd8276513

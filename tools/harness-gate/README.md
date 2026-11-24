@@ -129,6 +129,8 @@ GOWORK=off go -C tools/harness-gate run . policy-text --root ../..
 - `policy-text` runs the `policy-text` gate alone: exit 0 the tree may merge, 1 a
   text is refused, 2 a usage error or an unreadable tree; see
   [Sandbox policy text](#sandbox-policy-text-m2-c-6).
+- `sandbox7-record` writes the DH-E-SANDBOX-7 acceptance record the
+  `policy-text` gate requires; it runs no gate. See the same section.
 
 ## Sandbox policy text (M2-C-6)
 
@@ -147,11 +149,16 @@ proven by a row of `docs/stories/harness-DSH-M2/evidence/DH-S-17.md`:
 - its `Artifacts` hold `<platform>.md sha256=<hex> escalated=<n>/18` with `n` at
   least 10, and `<hex>` equal to the SHA-256 of the file's bytes;
 - the run id is a run-record id, `<lane>-<sha7>-<UTC yyyymmddThhmmZ>`
-  (`local-run-record-format`), and names a committed run record
-  `docs/stories/harness-DSH-M2/evidence/runs/<id>.txt` written by
-  `harness-gate --evidence`: intact (its final `sha256:` line is the SHA-256 of
-  every byte before it), `tree: clean`, `exit: 0`, and a full `commit:` that
-  starts with the id's `<sha7>` and with the row's `Commit`;
+  (`local-run-record-format`), and names a committed DH-E-SANDBOX-7 acceptance
+  record `docs/stories/harness-DSH-M2/evidence/runs/<id>.txt` written by
+  `harness-gate sandbox7-record` (below): intact (its final `sha256:` line is
+  the SHA-256 of every byte before it), `scenario: DH-E-SANDBOX-7`, the clean-tree
+  field both record producers write (`tree: clean (git status --porcelain
+  --untracked-files=all is empty)`, `CleanTreeField`), `result: passed`, a
+  `text:` line for the file with the file's SHA-256 and the row's count, and a
+  full `commit:` that starts with the id's `<sha7>` and with the row's `Commit`.
+  A quality-gate record (`harness-gate --evidence`) is refused: the quality gate
+  runs `policy-text` itself and no scenario test, so it can prove no text;
 - `git cat-file blob <that commit>:<path>` holds the file's bytes: the run was on
   a commit containing that same file.
 
@@ -161,7 +168,27 @@ cannot read the commit, every text is refused (`commit containment
 unavailable`). A tree with no text needs no git. The fixtures are turned into
 temporary git checkouts by the test (`policyTextRepo`): their first commit holds
 only the text, with fixed author, committer, dates and message, so it is the
-commit `41101e7b...` the committed fixture run record names.
+commit `41101e7b...` the committed fixture run record names. That record is
+the producer's own output (`formatSandbox7Record`;
+`TestPolicyTextFixtureRecordIsProduced`), not a hand-made format.
+
+The acceptance record is written by the s17 job (Stage 7.6) after its
+escalation runs, on the clean checkout of the branch commit it tested, before
+the PR gate runs. It runs no gate, so a first or edited text is recorded without
+first passing `policy-text`:
+
+```
+harness-gate sandbox7-record --root . --escalated linux=12,darwin=11,windows=13 [--lane s17] [--ci-run <id>]
+```
+
+It refuses (exit 2, nothing written) a dirty tree, a tree with no text, and a
+missing or extra count; it writes `runs/<lane>-<sha7>-<UTC>.txt` holding the
+commit, the CI run id, each text's path, SHA-256 and `escalated=<n>/18`, and
+`result: passed` (exit 0) or `failed` (exit 1, any text under 10). The flow is
+then: commit the text, run the scenario and `sandbox7-record` on that commit,
+add the record and the `DH-E-SANDBOX-7` row naming `run=<id>` in a later commit,
+and the PR gate admits the text. An edit is a new commit, refused until it is
+recorded and its row updated (`TestSandbox7RecordFlows`).
 
 Any other file there (not `<platform>.md`) is refused. A row may prove several
 platforms, one `<platform>.md sha256=... escalated=.../18` entry each. Every edit
@@ -171,8 +198,9 @@ passes again on it and the row records the new hash. Each refusal is one line
 `testdata/policytext/{no_text,text_without_sandbox7,text_with_matching_pass,text_edited_after_pass}`
 and `testdata/policytext/expected.golden` pin the behaviour
 (`TestPolicyTextGolden`); `TestPolicyTextRunProvenance` refuses a tree that is
-not a checkout, a missing, malformed, tampered or failed run record, a row whose
-commit is not the run's, and a run commit without the text.
+not a checkout, a missing, tampered, dirty-tree, other-scenario, other-bytes,
+other-count, quality-gate or failed run record, a row whose commit is not the
+run's, and a run commit without the text.
 
 ## Stage closure
 
