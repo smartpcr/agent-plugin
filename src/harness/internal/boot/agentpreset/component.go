@@ -23,7 +23,9 @@ type Host struct {
 // RegistryComponent is agent.presets (bundle-preset.md §6.1): it builds the
 // registry over the scope table and host's catalogue and evaluator, and provides it
 // under Key. Its fiber owns every revision, so they close when it unloads. Config is
-// its config; the declarations arrive as agent.preset entries.
+// its config; the declarations arrive as agent.preset entries. An update of Config
+// (Default, SelectedDefault) is accepted in place: the fiber does not restart, so
+// every revision, its leases and its bindings survive and only the default changes.
 func RegistryComponent(host func() Host) *cordis.Component {
 	return cordis.Define(RegistryName, func(ctx *cordis.Context, cfg Config) error {
 		scopes, err := scope.TableKey.Get(ctx)
@@ -38,9 +40,22 @@ func RegistryComponent(host func() Host) *cordis.Component {
 		if err != nil {
 			return err
 		}
+		if _, err := cordis.AcceptUpdate(ctx, r.reconfigure); err != nil {
+			return err
+		}
 		_, err = Key.Provide(ctx, r)
 		return err
 	}, cordis.WithInject(scope.TableKey.Name()))
+}
+
+// reconfigure swaps the registry config in place. Config only selects the default,
+// which no revision's digest depends on, so no revision is rebuilt or retired.
+func (r *Registry) reconfigure(cfg Config) {
+	r.loadMu.Lock()
+	defer r.loadMu.Unlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cfg = cfg
 }
 
 // DeclarationComponent is agent.preset: an ordinary top-level entry whose config is
