@@ -146,7 +146,9 @@ before M1 is closed. `harness-gate entry --story harness:DSH-M2` checks, under
 
 It exits 0 when all hold, 1 with one `  - ` line per unmet condition (records in
 stage order, then the closure record, then `built-through`), and 2 on a usage
-error, an unknown story or an unreadable record or index.
+error, an unknown story, or a record or index that exists but cannot be read or
+parsed. A missing record, closure record or index is an unmet condition, named
+with every other one; a missing input never hides the rest.
 
 **Where it runs (risk M2-R-04).** `harness-gate entry` is the mandatory first step
 of every `guarded` and every `acceptance` run of harness:DSH-M2: a run whose

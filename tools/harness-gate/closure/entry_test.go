@@ -197,3 +197,11 @@ func TestM1DeliverablesMatchImpl(t *testing.T) {
 		t.Errorf("impl.md steps 1.1 to 11.7 name %d deliverables, the M1 tech-spec 99", len(want))
 	}
 }
+
+func TestEntryIndexMissingIsACondition(t *testing.T) {
+	e := Entries["harness:DSH-M2"]
+	got := e.Check(EntryInputs{Records: map[string]*Record{}, IndexMissing: true, BuiltThrough: "DH-S-11"})
+	if len(got) != 13 || !strings.HasPrefix(got[12], "no acceptance index test/harness/acceptance-index.yaml") {
+		t.Fatalf("want 13 conditions ending in the missing index, got %d:\n%s", len(got), strings.Join(got, "\n"))
+	}
+}

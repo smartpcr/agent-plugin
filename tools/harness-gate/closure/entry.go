@@ -69,11 +69,12 @@ var EntryStates = []string{"done", "built"}
 
 // EntryInputs is what Entry.Check reads: the prior story's stage records (a stage
 // absent from Records has none), its closure record (nil when there is none) and the
-// acceptance index's built-through.
+// acceptance index's built-through (IndexMissing when there is no index).
 type EntryInputs struct {
 	Records      map[string]*Record
 	Closure      *Record
 	BuiltThrough string
+	IndexMissing bool
 }
 
 // Check returns every unmet entry condition, in a fixed order: each stage record that
@@ -95,7 +96,9 @@ func (e Entry) Check(in EntryInputs) []string {
 	}
 	out = append(out, e.closureProblems(in.Closure)...)
 	want, _ := acceptance.StageNumber(e.BuiltThrough)
-	if got, ok := acceptance.StageNumber(in.BuiltThrough); !ok || got < want {
+	if in.IndexMissing {
+		out = append(out, fmt.Sprintf("no acceptance index %s: built-through cannot be read; want %s or later", acceptance.IndexPath, e.BuiltThrough))
+	} else if got, ok := acceptance.StageNumber(in.BuiltThrough); !ok || got < want {
 		out = append(out, fmt.Sprintf("built-through in %s reads %s; want %s or later", acceptance.IndexPath, in.BuiltThrough, e.BuiltThrough))
 	}
 	return out
@@ -149,8 +152,9 @@ func (e Entry) closureProblems(rec *Record) []string {
 	return out
 }
 
-// ReadEntryInputs reads e's inputs under root. A missing record or closure record is
-// left absent, for Check to name; any other read or parse error is returned.
+// ReadEntryInputs reads e's inputs under root. A missing record, closure record or
+// acceptance index is left absent, for Check to name with every other unmet
+// condition; an input that exists but cannot be read or parsed is returned as an error.
 func ReadEntryInputs(root string, e Entry) (EntryInputs, error) {
 	in := EntryInputs{Records: map[string]*Record{}}
 	for _, stage := range e.PriorStages {
@@ -167,6 +171,10 @@ func ReadEntryInputs(root string, e Entry) (EntryInputs, error) {
 		return in, err
 	}
 	in.Closure = rec
+	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(acceptance.IndexPath))); errors.Is(err, fs.ErrNotExist) {
+		in.IndexMissing = true
+		return in, nil
+	}
 	x, err := acceptance.ReadIndex(root)
 	if err != nil {
 		return in, err
