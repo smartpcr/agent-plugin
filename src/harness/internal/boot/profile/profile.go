@@ -7,8 +7,11 @@
 //	bundle layers (in the profile's order) < profile layer (the one writable layer)
 //	< user layer (the home layer) < overlays (--layer, in order) < launcher layer
 //
-// Later layers win; the loader's ownership index names the layer that supplied each
-// field.
+// The bundles of a launchable profile begin with the kernel, admin.yml then core.yml
+// (DH-D-BUNDLE-2). A layer is written with three operations, insert, merge and
+// remove (Insert, Merge, Remove), plus the field override of the loader. Later
+// layers win; the loader's ownership index names the layer that supplied each
+// field, and Preview returns it with the composed tree for `dsh config show`.
 package profile
 
 import (
@@ -112,22 +115,32 @@ func required(carrier []string) []string {
 	return append(slices.Clone(Spine), carrier...)
 }
 
-// builtins are the compiled-in profiles. There is no bundle named sdk-minimal: that
-// profile stacks core, minimal and sdk (DH-ADR-BOOT-1). sdk-minimal and acp are not
+// kernel are the bundle files of the core kernel (bundle-preset.md §6.2): the Go
+// bundle core is admin.yml then core.yml, each its own layer so the ownership index
+// names the file that supplied a value.
+var kernel = []string{Admin, Core}
+
+// onKernel is the kernel followed by the bundles above it.
+func onKernel(above ...string) []string { return append(slices.Clone(kernel), above...) }
+
+// builtins are the compiled-in profiles, stacked as bundle-preset.md §6.2 orders:
+// the kernel, base (every P0 profile but sdk-minimal) and the mode layer; presets
+// joins them with DH-D-BUNDLE-4. There is no bundle named sdk-minimal: that profile
+// stacks the kernel, minimal and sdk (DH-ADR-BOOT-1). sdk-minimal and acp are not
 // among the five definitions of DH-D-BUNDLE-1. sdk-minimal inherits the sdk bundle,
 // carriers included, so it requires what sdk requires; acp keeps its M1 content.
 var builtins = []Definition{
-	{Name: Web, Summary: "Start the host and open the web UI", Bundles: []string{"core", "web"}, Reload: DefaultReload, Required: required(webCarrier)},
-	{Name: Headless, Summary: "Run one task without a UI and print the answer", Bundles: []string{"core", "headless"}, Required: required(headlessCarrier)},
-	{Name: SDK, Summary: "Serve the SDK protocol on standard input and output", Bundles: []string{"core", "sdk"}, Required: required(sdkCarrier)},
-	{Name: SDKMinimal, Summary: "Serve the SDK protocol with the minimal agent preset", Bundles: []string{"core", "minimal", "sdk"}, Required: required(sdkCarrier)},
-	{Name: ACP, Summary: "Serve the Agent Client Protocol on standard input and output", Bundles: []string{"core", "acp"}},
+	{Name: Web, Summary: "Start the host and open the web UI", Bundles: onKernel("base", "web"), Reload: DefaultReload, Required: required(webCarrier)},
+	{Name: Headless, Summary: "Run one task without a UI and print the answer", Bundles: onKernel("base", "headless"), Required: required(headlessCarrier)},
+	{Name: SDK, Summary: "Serve the SDK protocol on standard input and output", Bundles: onKernel("base", "sdk"), Required: required(sdkCarrier)},
+	{Name: SDKMinimal, Summary: "Serve the SDK protocol with the minimal agent preset", Bundles: onKernel("minimal", "sdk"), Required: required(sdkCarrier)},
+	{Name: ACP, Summary: "Serve the Agent Client Protocol on standard input and output", Bundles: onKernel("base", "acp")},
 }
 
 // compositions are the definitions that are not launched by name.
 var compositions = []Definition{
 	{Name: Admin, Summary: "The composition the offline admin commands run in", Bundles: []string{"admin"}},
-	{Name: Core, Summary: "The kernel every launchable profile starts with", Bundles: []string{"admin", "core"}, Required: slices.Clone(Spine)},
+	{Name: Core, Summary: "The kernel every launchable profile starts with", Bundles: onKernel(), Required: slices.Clone(Spine)},
 }
 
 // Builtins returns copies of the launchable built-in profiles in a fixed order.
