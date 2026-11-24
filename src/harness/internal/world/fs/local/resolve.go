@@ -75,7 +75,11 @@ func resolve(p string, noFollowFinal bool) (string, error) {
 				return filepath.Join(append([]string{next}, parts[i+1:]...)...), nil
 			}
 			if err != nil {
-				return "", mapErr(err, next)
+				e := mapErr(err, next)
+				if busy(err) {
+					return "", changed{e}
+				}
+				return "", e
 			}
 			last := i == len(parts)-1
 			if t, ok := linkTarget(next, fi); ok && !(last && noFollowFinal) {
@@ -90,7 +94,12 @@ func resolve(p string, noFollowFinal bool) (string, error) {
 				break
 			}
 			if !last && !fi.IsDir() {
-				return "", herr.Newf(fs.CodeNotDirectory, "%s is not a directory", next)
+				nd := herr.Newf(fs.CodeNotDirectory, "%s is not a directory", next)
+				if fi.Mode()&iofs.ModeIrregular != 0 {
+					// A reparse point being made or removed: the tree is changing.
+					return "", changed{nd}
+				}
+				return "", nd
 			}
 			cur = next
 		}

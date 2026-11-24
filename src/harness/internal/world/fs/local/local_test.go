@@ -3,7 +3,6 @@ package local_test
 import (
 	"bytes"
 	"context"
-	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -136,6 +135,10 @@ func TestFenceHoldsThroughASwappedLink(t *testing.T) {
 	p := sandboxtest.Policy(sandbox.WorkspaceWrite, r)
 	seam := local.New()
 
+	// The swapper moves the real R/sub aside and puts a link to O in its place,
+	// then removes the link and moves the directory back. It never deletes a
+	// tree through a name that may be a link.
+	keep := filepath.Join(r, "sub.keep")
 	var done atomic.Bool
 	var swapErrs, linked int
 	var wg sync.WaitGroup
@@ -143,26 +146,24 @@ func TestFenceHoldsThroughASwappedLink(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		defer done.Store(true)
-		for i := 0; i < swaps; i++ {
-			// Directory -> link.
-			if err := os.RemoveAll(sub); err != nil {
+		for attempt := 0; linked < swaps && attempt < 500*swaps; attempt++ {
+			if err := os.Rename(sub, keep); err != nil {
 				swapErrs++
 				continue
 			}
 			if _, err := makeLink(o, sub); err != nil {
 				swapErrs++
-				_ = os.Mkdir(sub, 0o755)
+				restore(sub, keep)
 				continue
 			}
 			linked++
-			// Link -> directory; os.Remove removes the link itself, never O's content.
-			if err := os.Remove(sub); err != nil {
-				swapErrs++
-				continue
+			// os.Remove removes the link itself, never O's content.
+			for j := 0; os.Remove(sub) != nil; j++ {
+				if j == 10000 {
+					panic("cannot remove the link R/sub")
+				}
 			}
-			if err := os.Mkdir(sub, 0o755); err != nil && !errors.Is(err, os.ErrExist) {
-				swapErrs++
-			}
+			restore(sub, keep)
 		}
 	}()
 
@@ -175,12 +176,8 @@ func TestFenceHoldsThroughASwappedLink(t *testing.T) {
 			counts["written"]++
 		case code == fs.CodeSandboxDenied:
 			counts["sandbox-denied"]++
-		case code == fs.CodeNotFound || code == fs.CodeNotDirectory || code == fs.CodeIO || code == fs.CodePermission || code == fs.CodeAlreadyExists:
-			// The swapper removed or recreated a component mid-write: a transient
-			// failure, never a write outside R.
-			counts[string(code)]++
 		default:
-			t.Errorf("write %d: unexpected error %v (code %q)", i, err, code)
+			t.Errorf("write %d: %v (code %q), want success or %q", i, err, code, fs.CodeSandboxDenied)
 		}
 		if leaked(t, o) {
 			t.Fatalf("write %d: a file appeared under the outside directory O", i)
@@ -191,12 +188,14 @@ func TestFenceHoldsThroughASwappedLink(t *testing.T) {
 		t.Fatal("a file appeared under the outside directory O")
 	}
 	t.Logf("swaps=%d linked=%d swapErrors=%d writes=%v", swaps, linked, swapErrs, counts)
-	if linked == 0 {
-		t.Fatal("the swapper never made a link; the race was not exercised")
+	if linked < swaps {
+		t.Fatalf("the swapper made only %d of %d links; the race was not fully exercised", linked, swaps)
 	}
 
 	// A write while R/sub is a link to O, with no race, is refused outright.
-	_ = os.RemoveAll(sub)
+	if err := os.RemoveAll(sub); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := makeLink(o, sub); err != nil {
 		t.Fatal(err)
 	}
@@ -216,4 +215,15 @@ func leaked(t *testing.T, dir string) bool {
 		t.Fatalf("read %s: %v", dir, err)
 	}
 	return len(es) > 0
+}
+
+// restore moves the directory keep back to dir; if dir was made again meanwhile
+// (a write re-created it), keep, a real directory, is removed instead.
+func restore(dir, keep string) {
+	if os.Rename(keep, dir) == nil {
+		return
+	}
+	if fi, err := os.Lstat(keep); err == nil && fi.IsDir() {
+		_ = os.RemoveAll(keep)
+	}
 }

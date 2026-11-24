@@ -160,6 +160,11 @@ type WriteOutcome struct {
 	Created bool
 	// Version is the new version, with its digest.
 	Version Version
+	// DurabilityUnknown is non-nil when the new content is in place but the
+	// sync after publication failed (filesystem.md sec. 6.3, "in place,
+	// durability unknown"): the write took effect, yet may not survive a power
+	// loss. It wraps the provider's cause (for fs/local, fsx.ErrDurabilityUnknown).
+	DurabilityUnknown error
 }
 
 // DeleteOutcome is the result of a delete.

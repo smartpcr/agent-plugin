@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"hash/fnv"
@@ -27,6 +28,7 @@ import (
 	iofs "io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -48,20 +50,85 @@ const dirPerm iofs.FileMode = 0o755
 // link that appeared on its path (filesystem.md sec. 6.1: at most eight times).
 const reenter = 8
 
-// FS is the local-disk fs.FS. It is safe for concurrent use: the guard and the
-// change of one target are serialized in process, so racing CreateIfAbsent
-// writes have one winner.
+// FS is the local-disk fs.FS. It is safe for concurrent use. The guard check and
+// the change of one target run under that target's lock, held in process (a
+// striped mutex) and across processes (an fsx.Lock on a lock file keyed by the
+// target, in LockDir), so racing guarded writes from any number of providers or
+// harness processes sharing the lock directory have one winner.
 type FS struct {
 	stripes [64]sync.Mutex
+	lockDir string
 }
 
 var _ fs.FS = (*FS)(nil)
 
-// New returns the local provider.
-func New() *FS { return &FS{} }
+// Options configure a provider. They hold nothing the fence uses.
+type Options struct {
+	// LockDir holds the cross-process lock files; every harness process sharing a
+	// workspace must use the same one. "" is DefaultLockDir().
+	LockDir string
+}
 
-// lock takes the in-process locks of the targets, in a fixed order.
-func (l *FS) lock(keys ...fs.TargetKey) func() {
+// DefaultLockDir is the lock directory of a provider given none: one per user's
+// temporary directory, so every harness process of the user shares it.
+func DefaultLockDir() string { return filepath.Join(os.TempDir(), "dsh-fs-locks") }
+
+// New returns the local provider with the default options.
+func New() *FS { return NewWithOptions(Options{}) }
+
+// NewWithOptions returns the local provider configured by o.
+func NewWithOptions(o Options) *FS {
+	if o.LockDir == "" {
+		o.LockDir = DefaultLockDir()
+	}
+	return &FS{lockDir: o.LockDir}
+}
+
+// lockFile is the cross-process lock file of the target k.
+func (l *FS) lockFile(k fs.TargetKey) string {
+	h := sha256.Sum256([]byte(k))
+	return filepath.Join(l.lockDir, hex.EncodeToString(h[:16])+".lock")
+}
+
+// lock takes the locks of the targets, in-process then cross-process, each in a
+// fixed order so two calls locking the same pair cannot deadlock. It waits for
+// another holder until ctx ends.
+func (l *FS) lock(ctx context.Context, keys ...fs.TargetKey) (func(), error) {
+	unlock := l.lockStripes(keys...)
+	files := make([]string, 0, len(keys))
+	for _, k := range keys {
+		if f := l.lockFile(k); !slices.Contains(files, f) {
+			files = append(files, f)
+		}
+	}
+	sort.Strings(files)
+	if err := os.MkdirAll(l.lockDir, 0o700); err != nil {
+		unlock()
+		return nil, herr.Wrap(fs.CodeIO, err, "create the lock directory")
+	}
+	held := make([]*fsx.FileLock, 0, len(files))
+	release := func() {
+		for j := len(held) - 1; j >= 0; j-- {
+			_ = held[j].Unlock()
+		}
+		unlock()
+	}
+	for _, f := range files {
+		fl, err := fsx.Lock(ctx, f)
+		if err != nil {
+			release()
+			if cerr := ctxErr(ctx); cerr != nil {
+				return nil, cerr
+			}
+			return nil, herr.Wrap(fs.CodeIO, err, "take the target lock")
+		}
+		held = append(held, fl)
+	}
+	return release, nil
+}
+
+// lockStripes takes the in-process locks of the targets, in a fixed order.
+func (l *FS) lockStripes(keys ...fs.TargetKey) func() {
 	idx := make([]int, 0, len(keys))
 	for _, k := range keys {
 		h := fnv.New32a()

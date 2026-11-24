@@ -8,7 +8,10 @@ import (
 	iofs "io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"syscall"
+	"time"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/fsx"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
@@ -20,50 +23,181 @@ import (
 // os.Root's escape refusal: resolve again and fence the new path.
 var errRelinked = errors.New("a link appeared on the path after it was resolved")
 
-func relinked(err error) bool { return errors.Is(err, errRelinked) || isEscape(err) }
-
-// fence is the one fence of every mutation: the canonical path against the
-// policy's write roots, each root canonicalized the same way.
-func fence(p sandbox.Policy, op fs.Op, path string) error {
-	return fs.FenceCanon(p, op, path, canon)
+func relinked(err error) bool {
+	return errors.Is(err, errRelinked) || isEscape(err) || errors.Is(err, syscall.ELOOP)
 }
 
-// rootFor is the canonical directory a mutation of the canonical path p works
-// under: the deepest write root containing p under workspace-write, the volume
-// root under danger-full-access. Fence has admitted p already.
-func rootFor(pol sandbox.Policy, p string) (string, error) {
-	if pol.Mode() == sandbox.DangerFullAccess {
-		return filepath.VolumeName(p) + string(filepath.Separator), nil
+// changed wraps an error of a rooted step that means the tree changed under the
+// call after it was resolved and fenced (a directory on the path removed,
+// renamed or replaced by a file): the attempt runs again from resolution.
+type changed struct{ err error }
+
+func (c changed) Error() string { return c.err.Error() }
+func (c changed) Unwrap() error { return c.err }
+
+// rooted marks err of a rooted step: a link refusal or a vanished directory is
+// a change of the tree since resolution; anything else is the step's failure.
+func rooted(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case relinked(err):
+		return errRelinked
+	case errors.Is(err, iofs.ErrNotExist), errors.Is(err, syscall.ENOTDIR), busy(err):
+		return changed{err}
+	}
+	return err
+}
+
+// busy: on Windows, a directory on the path is being renamed, removed or made a
+// link by someone else right now (ERROR_SHARING_VIOLATION, or ERROR_ACCESS_DENIED
+// on a delete-pending entry); the tree is changing under the call. A lasting
+// denial still ends as fs/permission-denied once mutate's budget is spent.
+func busy(err error) bool {
+	return runtime.GOOS == "windows" && (errors.Is(err, syscall.Errno(32)) || errors.Is(err, syscall.Errno(5)))
+}
+
+// pinned is one mutation's view of its policy: each write root canonicalized
+// once, when the call starts. A root (or a directory above it) swapped for a
+// link while the call runs therefore cannot move the fence with it: the next
+// attempt resolves the target through the link, and the result is outside the
+// pinned roots.
+type pinned struct {
+	pol   sandbox.Policy
+	roots map[string]string // as issued -> canonical
+}
+
+func pin(pol sandbox.Policy) *pinned {
+	c := &pinned{pol: pol, roots: map[string]string{}}
+	for _, r := range pol.WriteRoots() {
+		cr := r.Path
+		if x, err := canon(r.Path); err == nil && filepath.IsAbs(x) {
+			cr = filepath.Clean(x)
+		}
+		c.roots[r.Path] = cr
+	}
+	return c
+}
+
+// fence is the one fence of every mutation: the canonical path against the
+// pinned write roots.
+func (c *pinned) fence(op fs.Op, path string) error {
+	return fs.FenceCanon(c.pol, op, path, func(root string) (string, error) {
+		if cr, ok := c.roots[root]; ok {
+			return cr, nil
+		}
+		return canon(root)
+	})
+}
+
+// rootFor is the directory a mutation of the canonical path p works under: the
+// deepest pinned write root containing p under workspace-write, the volume root
+// under danger-full-access. The fence has admitted p already.
+func (c *pinned) rootFor(p string) (string, error) {
+	return c.rootOf(p)
+}
+
+// rootOf is the deepest pinned root containing every path of ps.
+func (c *pinned) rootOf(ps ...string) (string, error) {
+	if c.pol.Mode() == sandbox.DangerFullAccess {
+		vol := filepath.VolumeName(ps[0])
+		for _, p := range ps[1:] {
+			if !strings.EqualFold(filepath.VolumeName(p), vol) {
+				return "", herr.Newf(fs.CodeInvalidPath, "%s and %s are on different volumes", ps[0], p)
+			}
+		}
+		return vol + string(filepath.Separator), nil
 	}
 	best := ""
-	for _, r := range pol.WriteRoots() {
-		cands := []string{r.Path}
-		if c, err := canon(r.Path); err == nil && filepath.IsAbs(c) {
-			cands = append(cands, filepath.Clean(c))
-		}
-		for _, c := range cands {
-			if fs.Within(c, p) && len(c) > len(best) {
-				best = c
+	for issued, cr := range c.roots {
+		for _, cand := range []string{issued, cr} {
+			all := true
+			for _, p := range ps {
+				all = all && fs.Within(cand, p)
+			}
+			if all && len(cand) > len(best) {
+				best = cand
 			}
 		}
 	}
 	if best == "" {
-		return "", herr.Newf(fs.CodeSandboxDenied, "%s is outside the writable roots of %s", p, pol.Mode())
+		return "", herr.Newf(fs.CodeSandboxDenied, "%v is not under one writable root of %s", ps, c.pol.Mode())
 	}
 	return best, nil
 }
 
-// openRoot opens the rooted handle of dir, creating the write root itself when
-// it does not exist yet.
+// beforeOpenRoot, when set (tests only), runs just before a mutation opens the
+// handle of its root: the window between the fence and the rooted operation.
+var beforeOpenRoot func(dir string)
+
+// openRoot opens the handle of the canonical directory dir without trusting its
+// path: from the volume root it opens one component at a time through the
+// handle of its parent, refuses a component that is a link, and checks that
+// the directory it opened is the one it examined (same file identity). So a
+// root, or any directory above it, swapped for a link after the fence is
+// errRelinked and never yields a handle on the link's target. A missing
+// component (a write root not created yet) is created through its parent.
 func openRoot(dir string) (*os.Root, error) {
-	r, err := os.OpenRoot(dir)
-	if errors.Is(err, iofs.ErrNotExist) {
-		if err := os.MkdirAll(dir, dirPerm); err != nil {
+	if beforeOpenRoot != nil {
+		beforeOpenRoot(dir)
+	}
+	vol := filepath.VolumeName(dir) + string(filepath.Separator)
+	cur, err := os.OpenRoot(vol)
+	if err != nil {
+		return nil, err
+	}
+	rest, err := filepath.Rel(vol, dir)
+	if err != nil {
+		_ = cur.Close()
+		return nil, err
+	}
+	if rest == "." {
+		return cur, nil
+	}
+	for _, name := range strings.Split(rest, string(filepath.Separator)) {
+		next, err := openChild(cur, name)
+		_ = cur.Close()
+		if err != nil {
 			return nil, err
 		}
-		r, err = os.OpenRoot(dir)
+		cur = next
 	}
-	return r, err
+	return cur, nil
+}
+
+// openChild opens the directory name of parent as a root, creating it when
+// missing; a link, or a directory that is not the one Lstat saw, is
+// errRelinked.
+func openChild(parent *os.Root, name string) (*os.Root, error) {
+	fi, err := parent.Lstat(name)
+	if errors.Is(err, iofs.ErrNotExist) {
+		if err := parent.Mkdir(name, dirPerm); err != nil && !errors.Is(err, iofs.ErrExist) {
+			return nil, rooted(err)
+		}
+		fi, err = parent.Lstat(name)
+	}
+	if err != nil {
+		return nil, rooted(err)
+	}
+	if _, isLink := linkTarget(filepath.Join(parent.Name(), name), fi); isLink || fi.Mode()&iofs.ModeSymlink != 0 {
+		return nil, errRelinked
+	}
+	if !fi.IsDir() {
+		return nil, changed{herr.Newf(fs.CodeNotDirectory, "%s is not a directory", filepath.Join(parent.Name(), name))}
+	}
+	child, err := parent.OpenRoot(name)
+	if err != nil {
+		return nil, rooted(err)
+	}
+	st, err := child.Stat(".")
+	if err != nil || !os.SameFile(fi, st) {
+		_ = child.Close()
+		if err != nil {
+			return nil, rooted(err)
+		}
+		return nil, errRelinked
+	}
+	return child, nil
 }
 
 // mkdirAll makes the parents d inside root. The path was resolved link-free, so
@@ -71,10 +205,10 @@ func openRoot(dir string) (*os.Root, error) {
 // directory was) means the tree changed since: resolve and fence again.
 func mkdirAll(root *os.Root, d string) error {
 	err := root.MkdirAll(d, dirPerm)
-	if errors.Is(err, iofs.ErrExist) || errors.Is(err, syscall.ENOTDIR) {
-		return errRelinked
+	if errors.Is(err, iofs.ErrExist) {
+		return changed{err}
 	}
-	return err
+	return rooted(err)
 }
 
 // rel is the name of the canonical path p inside the root dir.
@@ -90,18 +224,40 @@ func rel(dir, p string) (string, error) {
 // while os.Root refuses a link that appeared on the path after it was resolved:
 // each attempt resolves and fences anew, so a path that now leads outside the
 // roots is fs/sandbox-denied before anything is touched.
+//
+// A directory on the path that vanished or changed kind after the fence (the
+// tree changed under the call) runs the attempt again too, within a budget of
+// its own; once that budget is spent the last such error is returned.
 func mutate(ctx context.Context, what string, attempt func() error) error {
-	for range reenter {
+	links, changes := 0, 0
+	for {
 		if err := ctxErr(ctx); err != nil {
 			return err
 		}
 		err := attempt()
-		if !relinked(err) {
+		var ch changed
+		switch {
+		case relinked(err):
+			if links++; links >= reenter {
+				return herr.Newf(fs.CodeSandboxDenied, "%s: a link kept leading out of the write root", what)
+			}
+		case errors.As(err, &ch):
+			if changes++; changes >= maxChanges {
+				return mapErr(ch.err, what)
+			}
+			if changes > 4 {
+				// Let a rename or delete in progress finish.
+				time.Sleep(time.Millisecond)
+			}
+		default:
 			return mapErr(err, what)
 		}
 	}
-	return herr.Newf(fs.CodeSandboxDenied, "%s: a link kept leading out of the write root", what)
 }
+
+// maxChanges bounds how often one mutation starts again because the tree
+// changed under it.
+const maxChanges = 64
 
 // currentIn is the version (with digest) of name in root, the canonical path
 // p; exists is false for a missing file.
@@ -133,35 +289,48 @@ func currentIn(root *os.Root, name, p string) (v fs.Version, exists bool, err er
 
 func options() fsx.Options { return fsx.Options{Perm: filePerm, KeepPerm: true, Durable: true} }
 
+// replaceIn and createIn publish content inside a root; tests replace them to
+// inject faults after publication.
+var (
+	replaceIn = fsx.ReplaceIn
+	createIn  = fsx.CreateIfAbsentIn
+)
+
 // Write implements fs.FS: the final link is followed, the resolved path fenced,
-// and the content published by a durable replace inside the write root. A
-// ReplaceIfVersion guard is checked before staging and again after the content
-// is staged, just before the rename.
+// and the content published by a durable replace inside the write root. The
+// guard is checked under the target's lock before staging and, for
+// ReplaceIfVersion, again after the content is staged, just before the rename;
+// the lock is held until the publication is done. A sync that fails after the
+// rename is reported in WriteOutcome.DurabilityUnknown, not as success.
 func (l *FS) Write(ctx context.Context, r fs.Ref, data []byte, g fs.Guard, pol sandbox.Policy) (fs.WriteOutcome, error) {
 	if err := pol.Validate(); err != nil {
 		return fs.WriteOutcome{}, err
 	}
+	c := pin(pol)
 	var out fs.WriteOutcome
 	err := mutate(ctx, r.Path, func() error {
 		p, fi, err := lookup(ctx, r, false)
 		if err != nil {
 			return err
 		}
-		if err := fence(pol, fs.OpWrite, p); err != nil {
+		if err := c.fence(fs.OpWrite, p); err != nil {
 			return err
 		}
 		if fi != nil && !fi.Mode().IsRegular() {
 			return herr.Newf(fs.CodeNotRegularFile, "%s is a %s", p, fileType(p, fi))
 		}
-		o, err := l.writeAt(ctx, pol, p, data, g)
+		o, err := l.writeAt(ctx, c, p, data, g)
 		out = o
 		return err
 	})
-	return out, err
+	if err != nil {
+		return fs.WriteOutcome{}, err
+	}
+	return out, nil
 }
 
-func (l *FS) writeAt(ctx context.Context, pol sandbox.Policy, p string, data []byte, g fs.Guard) (fs.WriteOutcome, error) {
-	dir, err := rootFor(pol, p)
+func (l *FS) writeAt(ctx context.Context, c *pinned, p string, data []byte, g fs.Guard) (fs.WriteOutcome, error) {
+	dir, err := c.rootFor(p)
 	if err != nil {
 		return fs.WriteOutcome{}, err
 	}
@@ -169,16 +338,20 @@ func (l *FS) writeAt(ctx context.Context, pol sandbox.Policy, p string, data []b
 	if err != nil {
 		return fs.WriteOutcome{}, err
 	}
+	unlock, err := l.lock(ctx, key(p))
+	if err != nil {
+		return fs.WriteOutcome{}, err
+	}
+	defer unlock()
 	root, err := openRoot(dir)
 	if err != nil {
 		return fs.WriteOutcome{}, err
 	}
 	defer root.Close()
-	defer l.lock(key(p))()
 
 	cur, exists, err := currentIn(root, name, p)
 	if err != nil {
-		return fs.WriteOutcome{}, err
+		return fs.WriteOutcome{}, rooted(err)
 	}
 	if fi, err := root.Lstat(name); err == nil && !fi.Mode().IsRegular() {
 		if _, isLink := linkTarget(p, fi); isLink {
@@ -198,12 +371,12 @@ func (l *FS) writeAt(ctx context.Context, pol sandbox.Policy, p string, data []b
 		}
 	}
 	if g == fs.CreateIfAbsent {
-		err = fsx.CreateIfAbsentIn(root, name, fsx.Bytes(data), options())
+		err = createIn(root, name, fsx.Bytes(data), options())
 		if errors.Is(err, iofs.ErrExist) {
 			return fs.WriteOutcome{}, herr.Wrap(fs.CodeAlreadyExists, err, "the file already exists")
 		}
 	} else {
-		err = fsx.ReplaceIn(root, name, func(w io.Writer) error {
+		err = replaceIn(root, name, func(w io.Writer) error {
 			if err := fsx.Bytes(data)(w); err != nil {
 				return err
 			}
@@ -217,18 +390,22 @@ func (l *FS) writeAt(ctx context.Context, pol sandbox.Policy, p string, data []b
 			return fs.CheckGuard(g, exists, now)
 		}, options())
 	}
+	var unknown error
 	if errors.Is(err, fsx.ErrDurabilityUnknown) {
 		// The new content is in place; only its survival of a power loss is unknown.
-		err = nil
+		unknown, err = err, nil
 	}
 	if err != nil {
-		return fs.WriteOutcome{}, err
+		if _, coded := herr.ReasonOf(err); coded {
+			return fs.WriteOutcome{}, err
+		}
+		return fs.WriteOutcome{}, rooted(err)
 	}
 	v := fs.Version{Digest: sha256.Sum256(data), HasDigest: true}
 	if fi, err := root.Lstat(name); err == nil {
 		v.Meta = meta(p, fi, fs.TypeFile)
 	}
-	return fs.WriteOutcome{Target: target(p), Created: !exists, Version: v}, nil
+	return fs.WriteOutcome{Target: target(p), Created: !exists, Version: v, DurabilityUnknown: unknown}, nil
 }
 
 // Delete implements fs.FS: the final component is not followed, so deleting a
@@ -237,24 +414,28 @@ func (l *FS) Delete(ctx context.Context, r fs.Ref, g fs.Guard, pol sandbox.Polic
 	if err := pol.Validate(); err != nil {
 		return fs.DeleteOutcome{}, err
 	}
+	c := pin(pol)
 	var out fs.DeleteOutcome
 	err := mutate(ctx, r.Path, func() error {
 		p, _, err := lookup(ctx, r, true)
 		if err != nil {
 			return err
 		}
-		if err := fence(pol, fs.OpDelete, p); err != nil {
+		if err := c.fence(fs.OpDelete, p); err != nil {
 			return err
 		}
-		o, err := l.deleteAt(pol, p, g)
+		o, err := l.deleteAt(ctx, c, p, g)
 		out = o
 		return err
 	})
-	return out, err
+	if err != nil {
+		return fs.DeleteOutcome{}, err
+	}
+	return out, nil
 }
 
-func (l *FS) deleteAt(pol sandbox.Policy, p string, g fs.Guard) (fs.DeleteOutcome, error) {
-	dir, err := rootFor(pol, p)
+func (l *FS) deleteAt(ctx context.Context, c *pinned, p string, g fs.Guard) (fs.DeleteOutcome, error) {
+	dir, err := c.rootFor(p)
 	if err != nil {
 		return fs.DeleteOutcome{}, err
 	}
@@ -262,21 +443,25 @@ func (l *FS) deleteAt(pol sandbox.Policy, p string, g fs.Guard) (fs.DeleteOutcom
 	if err != nil {
 		return fs.DeleteOutcome{}, err
 	}
+	unlock, err := l.lock(ctx, key(p))
+	if err != nil {
+		return fs.DeleteOutcome{}, err
+	}
+	defer unlock()
 	root, err := openRoot(dir)
 	if err != nil {
 		return fs.DeleteOutcome{}, err
 	}
 	defer root.Close()
-	defer l.lock(key(p))()
 
 	cur, exists, err := currentIn(root, name, p)
 	if err != nil {
-		return fs.DeleteOutcome{}, err
+		return fs.DeleteOutcome{}, rooted(err)
 	}
 	if exists {
 		fi, err := root.Lstat(name)
 		if err != nil {
-			return fs.DeleteOutcome{}, err
+			return fs.DeleteOutcome{}, rooted(err)
 		}
 		if fileType(p, fi) == fs.TypeDir {
 			return fs.DeleteOutcome{}, herr.Newf(fs.CodeNotRegularFile, "%s is a directory", p)
@@ -288,22 +473,29 @@ func (l *FS) deleteAt(pol sandbox.Policy, p string, g fs.Guard) (fs.DeleteOutcom
 	if !exists {
 		return fs.DeleteOutcome{Target: target(p)}, nil
 	}
+	if err := ctxErr(ctx); err != nil {
+		return fs.DeleteOutcome{}, err
+	}
 	if err := root.Remove(name); err != nil {
 		if errors.Is(err, iofs.ErrNotExist) {
 			return fs.DeleteOutcome{Target: target(p)}, nil
 		}
-		return fs.DeleteOutcome{}, err
+		return fs.DeleteOutcome{}, rooted(err)
 	}
 	return fs.DeleteOutcome{Target: target(p), Existed: true}, nil
 }
 
 // Move implements fs.FS: both ends are resolved without following the final
 // component and fenced before anything changes; a directory moves with its tree.
-// When both ends are under one write root the rename is a rooted one.
+// The rename is always a rooted one, inside the one write root that holds both
+// ends; a move between two write roots that share no root is refused with
+// fs/invalid-path before anything changes, because no single handle could
+// confine it.
 func (l *FS) Move(ctx context.Context, src, dst fs.Ref, o fs.MoveOptions, pol sandbox.Policy) (fs.MoveOutcome, error) {
 	if err := pol.Validate(); err != nil {
 		return fs.MoveOutcome{}, err
 	}
+	c := pin(pol)
 	var out fs.MoveOutcome
 	err := mutate(ctx, src.Path, func() error {
 		sp, sfi, err := lookup(ctx, src, true)
@@ -314,10 +506,10 @@ func (l *FS) Move(ctx context.Context, src, dst fs.Ref, o fs.MoveOptions, pol sa
 		if err != nil {
 			return err
 		}
-		if err := fence(pol, fs.OpMoveSource, sp); err != nil {
+		if err := c.fence(fs.OpMoveSource, sp); err != nil {
 			return err
 		}
-		if err := fence(pol, fs.OpMoveDestination, dp); err != nil {
+		if err := c.fence(fs.OpMoveDestination, dp); err != nil {
 			return err
 		}
 		if sfi == nil {
@@ -340,7 +532,7 @@ func (l *FS) Move(ctx context.Context, src, dst fs.Ref, o fs.MoveOptions, pol sa
 		if err := ctxErr(ctx); err != nil {
 			return err
 		}
-		replaced, err := l.moveAt(pol, sp, dp, o)
+		replaced, err := l.moveAt(ctx, c, sp, dp, o)
 		out = fs.MoveOutcome{Source: target(sp), Destination: target(dp), Replaced: replaced}
 		return err
 	})
@@ -350,57 +542,51 @@ func (l *FS) Move(ctx context.Context, src, dst fs.Ref, o fs.MoveOptions, pol sa
 	return out, nil
 }
 
-func (l *FS) moveAt(pol sandbox.Policy, sp, dp string, o fs.MoveOptions) (replaced bool, err error) {
-	sdir, err := rootFor(pol, sp)
+func (l *FS) moveAt(ctx context.Context, c *pinned, sp, dp string, o fs.MoveOptions) (replaced bool, err error) {
+	dir, err := c.rootOf(sp, dp)
+	if herr.Kind(err) == fs.CodeSandboxDenied {
+		return false, herr.Newf(fs.CodeInvalidPath, "cannot move %s to %s: they are under different write roots, and a move is only made inside one", sp, dp)
+	}
 	if err != nil {
 		return false, err
 	}
-	ddir, err := rootFor(pol, dp)
+	sname, err := rel(dir, sp)
 	if err != nil {
 		return false, err
 	}
-	sname, err := rel(sdir, sp)
+	dname, err := rel(dir, dp)
 	if err != nil {
 		return false, err
 	}
-	dname, err := rel(ddir, dp)
+	unlock, err := l.lock(ctx, key(sp), key(dp))
 	if err != nil {
 		return false, err
 	}
-	sroot, err := openRoot(sdir)
+	defer unlock()
+	root, err := openRoot(dir)
 	if err != nil {
 		return false, err
 	}
-	defer sroot.Close()
-	droot := sroot
-	if ddir != sdir {
-		if droot, err = openRoot(ddir); err != nil {
-			return false, err
-		}
-		defer droot.Close()
-	}
-	defer l.lock(key(sp), key(dp))()
+	defer root.Close()
 
-	if _, err := sroot.Lstat(sname); err != nil {
-		return false, err
+	if _, err := root.Lstat(sname); err != nil {
+		return false, rooted(err)
 	}
-	if _, err := droot.Lstat(dname); err == nil {
+	if _, err := root.Lstat(dname); err == nil {
 		if !o.Overwrite {
 			return false, herr.Newf(fs.CodeAlreadyExists, "%s already exists", dp)
 		}
 		replaced = true
 	} else if !errors.Is(err, iofs.ErrNotExist) {
-		return false, err
+		return false, rooted(err)
 	}
 	if d := filepath.Dir(dname); d != "." {
-		if err := mkdirAll(droot, d); err != nil {
+		if err := mkdirAll(root, d); err != nil {
 			return false, err
 		}
 	}
-	if droot == sroot {
-		return replaced, sroot.Rename(sname, dname)
+	if err := ctxErr(ctx); err != nil {
+		return false, err
 	}
-	// Two roots: os.Root cannot rename across handles. Both ends were fenced and
-	// re-checked through their roots just now; the rename itself is by path.
-	return replaced, os.Rename(sp, dp)
+	return replaced, rooted(root.Rename(sname, dname))
 }
