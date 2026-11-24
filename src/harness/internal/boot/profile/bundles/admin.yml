@@ -1,3 +1,20 @@
 # admin: what an offline admin command needs and nothing that acts (bundle-preset.md
-# §6.2); content is DH-D-BUNDLE-2's. The admin and core definitions stack it.
-[]
+# §6.2, DH-D-BUNDLE-2): the composition A24's admin tree runs in, and the first layer
+# of the core kernel. No carrier, agent, model adapter or plugin process (INV-10).
+#
+# The entries of components this build has. Each later deliverable that builds one
+# of the others adds its entry here in the same change: session.store, storage.kv,
+# storage.blob, session.projection, session.query, human.secrets, boot.config and
+# sandbox.local.
+- insert:
+    - id: logging
+      name: boot.logging
+      config:
+        destination: stderr
+        level: info
+    # Outbound data (DH-D-HOST-4): every kind is off until its own setting is on,
+    # and off: true (or DSH_SHARING_OFF) denies every kind.
+    - id: sharing
+      name: host.sharing
+      config:
+        off: false
