@@ -34,6 +34,10 @@ func abs(r fs.Ref) (string, error) {
 	return filepath.Clean(p), nil
 }
 
+// readlink is os.Readlink; tests replace it to fail a Readlink between the
+// Lstat that saw a link and the read of its target.
+var readlink = os.Readlink
+
 // linkTarget reports whether fi, the Lstat of p, is a link and what it points
 // at. On Windows a directory junction (a mount point, which Lstat reports as
 // irregular since Go 1.23) counts as a link: os.Root treats it as one, so the
@@ -43,7 +47,7 @@ func linkTarget(p string, fi iofs.FileInfo) (string, bool) {
 	if m&iofs.ModeSymlink == 0 && !(runtime.GOOS == "windows" && m&iofs.ModeIrregular != 0) {
 		return "", false
 	}
-	t, err := os.Readlink(p)
+	t, err := readlink(p)
 	if err != nil {
 		return "", false
 	}
