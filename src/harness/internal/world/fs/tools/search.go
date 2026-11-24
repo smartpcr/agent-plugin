@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
 	htools "github.com/smartpcr/agent-plugin/src/harness/internal/tools"
@@ -76,16 +77,22 @@ func (f *files) runGlob(ctx context.Context, in GlobIn, run htools.Run) (htools.
 		}
 	}
 	omitted := len(all) - len(shown)
+	// A first path longer than the whole ceiling is still shown, cut to it.
+	listing, clipped := "No files found", false
+	if len(shown) > 0 {
+		listing, clipped = clipBytes(strings.Join(shown, "\n"), f.cfg.SearchMaxBytes)
+	}
 	var b strings.Builder
-	if len(shown) == 0 {
-		b.WriteString("No files found")
-	} else {
-		b.WriteString(strings.Join(shown, "\n"))
+	b.WriteString(listing)
+	if clipped {
+		fmt.Fprintf(&b, "\n\n(Output capped at %d bytes; the path above is cut short.)", f.cfg.SearchMaxBytes)
 	}
 	var sp *event.Spill
 	if omitted > 0 {
 		fmt.Fprintf(&b, "\n\n(Showing %d of %d paths; %d omitted. Use offset=%d to see more.)",
 			len(shown), len(all), omitted, in.Offset+len(shown))
+	}
+	if omitted > 0 || clipped {
 		var note string
 		sp, note = f.spillWhole(ctx, run, "glob-paths.txt", fmt.Sprintf("The complete list of %d paths", len(all)), []byte(strings.Join(all, "\n")+"\n"))
 		b.WriteString(note)
@@ -165,16 +172,25 @@ func (f *files) runGrep(ctx context.Context, in GrepIn, run htools.Run) (htools.
 		shown = shown[:lo]
 		listing = renderMatches(out, shown, abs)
 	}
+	// A first result whose listing alone is over the ceiling is still shown,
+	// cut to it; the offset moves past it and the complete list is saved.
+	listing, clipped := clipBytes(listing, f.cfg.SearchMaxBytes)
 	var b strings.Builder
 	b.WriteString(listing)
 	capped := sum.Incomplete && sum.Reason == search.CutMatches
-	if len(shown) < len(matches) && len(shown) < page {
+	if clipped {
+		fmt.Fprintf(&b, "\n\n(Output capped at %d bytes; the result above is cut short.", f.cfg.SearchMaxBytes)
+		if len(shown) < len(matches) || capped {
+			fmt.Fprintf(&b, " Use offset=%d to see more.", in.Offset+len(shown))
+		}
+		b.WriteString(")")
+	} else if len(shown) < len(matches) && len(shown) < page {
 		fmt.Fprintf(&b, "\n\n(Output capped at %d bytes; showing %d results. Use offset=%d to see more.)", f.cfg.SearchMaxBytes, len(shown), in.Offset+len(shown))
 	} else if capped || len(matches) > page {
 		fmt.Fprintf(&b, "\n\n(Results capped at %d. Use offset=%d to see more.)", page, in.Offset+len(shown))
 	}
 	var sp *event.Spill
-	if len(matches) > len(shown) {
+	if len(matches) > len(shown) || clipped {
 		what := fmt.Sprintf("The complete list of %d results", len(matches))
 		if capped {
 			what = fmt.Sprintf("The list of the first %d results (the most saved)", len(matches))
@@ -223,3 +239,15 @@ func renderMatches(out search.Output, matches []search.Match, abs func(string) s
 // canSpill reports whether a complete result of run can be saved: a spill
 // store is mounted and the call has a session to own the file.
 func (f *files) canSpill(run htools.Run) bool { return f.spill != nil && run.Agent.Session != "" }
+
+// clipBytes keeps at most n bytes of s, cut back to a UTF-8 boundary, and
+// reports whether it cut.
+func clipBytes(s string, n int) (string, bool) {
+	if len(s) <= n {
+		return s, false
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n], true
+}

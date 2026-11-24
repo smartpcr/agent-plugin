@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/agent"
@@ -635,6 +636,40 @@ func TestGlobAndGrepSpillTheCompleteList(t *testing.T) {
 	}
 	if saved := string(r.spilled(res, logged, session.ID(fmt.Sprintf("s-fs-tools-%d", r.n)))); strings.Count(saved, "\n") != 60 {
 		t.Fatalf("the saved glob list: %.300s", saved)
+	}
+
+	// A first result longer than the whole ceiling is cut to it at a UTF-8
+	// boundary, said so, and saved whole; the offset moves past it.
+	r = newRigWith(t, rigOptions{cfg: fstools.Config{SearchMaxBytes: 16}})
+	r.put("one/only.txt", "x\n")
+	res, logged = r.run(fstools.GlobName, map[string]any{"pattern": "*.txt", "path": "one"})
+	listing, _, _ = strings.Cut(res.Text, "\n\n(")
+	if res.IsError || len(listing) > 16 || listing == "" || !strings.Contains(res.Text, "(Output capped at 16 bytes; the path above is cut short.)") || strings.Contains(res.Text, "offset=") {
+		t.Fatalf("one long path (%d bytes): %s", len(listing), res.Text)
+	}
+	if saved := string(r.spilled(res, logged, session.ID(fmt.Sprintf("s-fs-tools-%d", r.n)))); saved != r.path("one/only.txt")+"\n" {
+		t.Fatalf("the saved path %q", saved)
+	}
+	r.put("one/also.txt", "x\n")
+	if res, _ = r.run(fstools.GlobName, map[string]any{"pattern": "*.txt", "path": "one"}); !strings.Contains(res.Text, "(Showing 1 of 2 paths; 1 omitted. Use offset=1 to see more.)") {
+		t.Fatalf("two long paths: %s", res.Text)
+	}
+
+	r = newRigWith(t, rigOptions{cfg: fstools.Config{SearchMaxBytes: 200}})
+	line := "hit " + strings.Repeat("\u00e9", 700)
+	r.put("g/long.txt", line+"\n")
+	res, logged = r.run(fstools.GrepName, map[string]any{"pattern": "hit", "path": "g"})
+	listing, _, _ = strings.Cut(res.Text, "\n\n(")
+	if res.IsError || len(listing) > 200 || !utf8.ValidString(listing) || !strings.HasPrefix(listing, "Found 1 matches\n") ||
+		!strings.Contains(res.Text, "(Output capped at 200 bytes; the result above is cut short.)") || strings.Contains(res.Text, "offset=") {
+		t.Fatalf("one long match (%d bytes): %s", len(listing), res.Text)
+	}
+	if all := string(r.spilled(res, logged, session.ID(fmt.Sprintf("s-fs-tools-%d", r.n)))); !strings.Contains(all, "  Line 1: "+line+"\n") {
+		t.Fatalf("the saved grep list: %.300s", all)
+	}
+	r.put("g/long2.txt", line+"\n")
+	if res, _ = r.run(fstools.GrepName, map[string]any{"pattern": "hit", "path": "g"}); !strings.Contains(res.Text, "cut short. Use offset=1 to see more.)") {
+		t.Fatalf("two long matches: %s", res.Text)
 	}
 }
 
