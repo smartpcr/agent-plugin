@@ -143,7 +143,7 @@ func fixture(t *testing.T, layer string, required ...string) (Options, string) {
 	root := filepath.Dir(homeDir)
 	overlay := filepath.Join(root, "overlay.yml")
 	temphome.Write(t, overlay, layer)
-	def := profile.Definition{Name: "probe", Bundles: []string{"core"}, Required: required}
+	def := profile.Definition{Name: "probe", Bundles: []string{profile.Admin, profile.Core}, Required: required}
 	return Options{
 		Request: launch.Request{Args: []string{"dsh", "probe"}, Cwd: root, Home: homeDir, Profile: def.Name, Overlays: []string{overlay}},
 		Profile: def,
