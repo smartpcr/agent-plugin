@@ -71,7 +71,29 @@ func (op Op) Mutates() bool {
 // workspace-write a mutation is allowed only at or below a write root; under
 // danger-full-access it is allowed. Providers fence the path after following
 // symlinks, so a link inside a root to a file outside is refused.
+//
+// Fence compares write roots lexically as issued, so it is only correct when
+// the roots are already canonical (as in an aliasing-free fake such as MemFS).
+// A provider whose roots may be reached through a symlink or alias (macOS
+// /var -> /private/var, Windows subst drives or 8.3 short names) must call
+// FenceCanon with the same resolution it applied to path.
 func Fence(p sandbox.Policy, op Op, path string) error {
+	return FenceCanon(p, op, path, nil)
+}
+
+// Canon resolves an absolute path to its canonical form (symlinks followed,
+// aliases removed), e.g. filepath.EvalSymlinks followed by filepath.Abs.
+type Canon func(path string) (string, error)
+
+// FenceCanon is Fence with each write root canonicalized through canon before
+// the comparison, so a root issued through a symlink (ws -> realws) still
+// admits writes to the canonical paths below it. path must already have been
+// resolved through the same canon. A root canon cannot resolve (for example
+// one that does not exist yet) is compared as issued; a nil canon compares
+// every root as issued. Matching the issued root against a canonical path is
+// safe: a canonical path has no symlinked components, so a lexical match means
+// the issued root is itself canonical.
+func FenceCanon(p sandbox.Policy, op Op, path string, canon Canon) error {
 	if err := p.Validate(); err != nil {
 		return err
 	}
@@ -84,6 +106,12 @@ func Fence(p sandbox.Policy, op Op, path string) error {
 	case sandbox.WorkspaceWrite:
 		for _, r := range p.WriteRoots() {
 			if Within(r.Path, path) {
+				return nil
+			}
+			if canon == nil {
+				continue
+			}
+			if cr, err := canon(r.Path); err == nil && filepath.IsAbs(cr) && Within(filepath.Clean(cr), path) {
 				return nil
 			}
 		}
