@@ -1,0 +1,25 @@
+TEST-ONLY FIXTURE: no build includes this file and no model sees it. The shipped
+policy text is written in Stage 7.6 under world/sandbox/policy/text/.
+Sandbox policy ({{.Platform}})
+Mode: {{.Mode}} ({{.ModeLabel}})
+{{- if .WriteRoots}}
+Write roots:
+{{- range .WriteRoots}}
+- {{.Path}} ({{.Source}})
+{{- end}}
+{{- else}}
+Write roots: none
+{{- end}}
+Network: {{.Network}}
+{{- if .FullAccess}}
+Nothing is wider than full access; no escalation applies.
+{{- else}}
+Escalation: {{.EscalationHint}}
+{{- end}}
+{{- if eq .Platform "windows"}}
+Platform note: paths are case-insensitive; a named pipe or a device path is never writable.
+{{- else if eq .Platform "darwin"}}
+Platform note: the temporary directories under /private are writable only when they are a write root.
+{{- else}}
+Platform note: /tmp is writable only when it is a write root.
+{{- end}}

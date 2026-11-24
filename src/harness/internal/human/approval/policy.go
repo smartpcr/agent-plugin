@@ -115,12 +115,19 @@ func (s *Service) forgetPolicy(id session.ID) {
 // ErrNoSession is SetPolicy's error when the agent's session is not live here.
 var ErrNoSession = errors.New("approval/no-session")
 
+// Grants is the session grant table of Config.Grants, nil when grants are
+// disabled.
+func (s *Service) Grants() *Grants { return s.cfg.Grants }
+
 // SetPolicy switches the approval policy of ag's session to p, by by. A switch
-// to the policy in force writes nothing. Otherwise approval/policy is appended to
-// the session first (an append that fails changes nothing), the policy is in
-// force for the next request, and every grant of ag ends with policy-changed, so
-// a tightened session keeps no standing yes (DH-ADR-HUMAN-6); a grant whose end
-// cannot be written is still forgotten and the error returned.
+// to the policy the session's log already records writes nothing. Otherwise
+// approval/policy is appended to the session first (an append that fails changes
+// nothing) and the policy is in force for the next request. Recording the policy
+// already in force (Config.Policy, never written) pins it against a later
+// default and ends no grant; a real change ends every grant of ag with
+// policy-changed, so a tightened session keeps no standing yes
+// (DH-ADR-HUMAN-6); a grant whose end cannot be written is still forgotten and
+// the error returned.
 func (s *Service) SetPolicy(ctx context.Context, ag agent.Ref, p Policy, by By) error {
 	if !p.Valid() {
 		return fmt.Errorf("approval: policy %q is not ask or never", p)
@@ -139,9 +146,13 @@ func (s *Service) SetPolicy(ctx context.Context, ag agent.Ref, p Policy, by By) 
 	}
 	s.setMu.Lock()
 	defer s.setMu.Unlock()
-	if s.Policy(ag.Session) == p {
+	s.mu.Lock()
+	recorded, ok := s.policies[ag.Session]
+	s.mu.Unlock()
+	if ok && recorded == p {
 		return nil
 	}
+	changed := s.Policy(ag.Session) != p
 	d, err := PolicyType.Draft(PolicySet{Policy: p, By: by})
 	if err == nil {
 		_, err = log.Append(ctx, d)
@@ -150,7 +161,7 @@ func (s *Service) SetPolicy(ctx context.Context, ag agent.Ref, p Policy, by By) 
 		return fmt.Errorf("approval: append approval/policy: %w", err)
 	}
 	s.restorePolicy(ag.Session, PolicyState{Policy: p, By: by})
-	if s.cfg.Grants != nil {
+	if changed && s.cfg.Grants != nil {
 		return s.cfg.Grants.EndAll(ctx, log, ag, EndPolicyChanged)
 	}
 	return nil

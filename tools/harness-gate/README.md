@@ -31,14 +31,17 @@ The module has its own `go.mod` and is not part of the root `go.work`; run it wi
 | 6 | `coverage` | any package under 85% of statements, profiles merged across processes (QG-3) |
 | 7 | `trace` | `tools/harness-trace verify` (QG-9), then the [`trace-tests`](#test-traceability-dshtest-trace-tests-m1-g-close-9) check for DH-S-1 through the index's `built-through`: a required `DH-T` ID that no test names and no backed deferral defers, a deferral impl.md does not back, a misplaced directive or a broken deliverable link (step 18.1.4). Both checks run and both failures are named; a root without the tool, impl.md or the index fails |
 | 8 | `scenario-index` | `test/harness/acceptance-index.yaml` missing or malformed; a `*_scenario_test.go` ID not indexed, indexed twice or bound to two tests; an indexed ID authored at or before `built-through` without a file (DH-ADR-TOOLCHAIN-12) |
-| 9 | `budget` | a `TestBudget*` test over its compiled-in budget (QG-7) |
-| 10 | `cross-compile` | `GOWORK=off CGO_ENABLED=0 go build ./cmd/dsh` for linux, darwin, windows × amd64, arm64 (QG-8) |
-| 11 | `vulncheck` | `govulncheck ./...` per module reports a vulnerability the code reaches (exit 3), or the vulnerability database cannot be read or reached (exit 1): it fails and is re-run, it never skips. `Config.VulnDB` selects `-db`; the default is `https://vuln.go.dev`. It is the one gate that needs the network, so it runs after every local check (M1-G-TOOL-4, M1-D-TOOL-1 (a)) |
-| 12 | `self` | the gate's own tests: `GOWORK=off go test -tags= -count=1 -skip '^TestRepositoryPassesEveryGate$' ./...` in `tools/harness-gate`, without the `e2e` tag (that test runs this list and would recurse); a root without the module fails (M1-G-TOOL-3) |
+| 9 | `policy-text` | a file under `src/harness/internal/world/sandbox/policy/text/` without a passed `DH-E-SANDBOX-7` row of `DH-S-17.md` recording that file's SHA-256 (M2-C-6); see [Sandbox policy text](#sandbox-policy-text-m2-c-6) |
+| 10 | `budget` | a `TestBudget*` test over its compiled-in budget (QG-7) |
+| 11 | `cross-compile` | `GOWORK=off CGO_ENABLED=0 go build ./cmd/dsh` for linux, darwin, windows × amd64, arm64 (QG-8) |
+| 12 | `vulncheck` | `govulncheck ./...` per module reports a vulnerability the code reaches (exit 3), or the vulnerability database cannot be read or reached (exit 1): it fails and is re-run, it never skips. `Config.VulnDB` selects `-db`; the default is `https://vuln.go.dev`. It is the one gate that needs the network, so it runs after every local check (M1-G-TOOL-4, M1-D-TOOL-1 (a)) |
+| 13 | `self` | the gate's own tests: `GOWORK=off go test -tags= -count=1 -skip '^TestRepositoryPassesEveryGate$' ./...` in `tools/harness-gate`, without the `e2e` tag (that test runs this list and would recurse); a root without the module fails (M1-G-TOOL-3) |
 
-The list has the 12 gates of M1-D-GATE-23: plan stage 13.4 added `modules` and
-`self`, and stage 13.5 added `staticcheck` and `vulncheck`, which run the linters
-pinned in the tools module (`linters.go`). `TestGateListIsFixed` pins the order.
+The list has the 12 gates of M1-D-GATE-23 plus `policy-text`: plan stage 13.4
+added `modules` and `self`, stage 13.5 added `staticcheck` and `vulncheck`, which
+run the linters pinned in the tools module (`linters.go`), and harness:DSH-M2
+Stage 2.4 added `policy-text`. Both lanes run the whole list, so the rule is in
+force on both. `TestGateListIsFixed` pins the order.
 
 `gofmt` also checks the test modules' files. Every gate runs on the go floor.
 
@@ -97,6 +100,11 @@ GOWORK=off go -C tools/harness-gate run . rehearse  --root ../.. [--out DIR]
 GOWORK=off go -C tools/harness-gate run . require   --root ../.. --stage DH-S-18
 GOWORK=off go -C tools/harness-gate run . preflight --root ../..
 GOWORK=off go -C tools/harness-gate run . scenarios --root ../.. --stage DH-S-17 --evidence FILE
+GOWORK=off go -C tools/harness-gate run . ready     --root ../.. --stage DH-S-16 [--built]
+GOWORK=off go -C tools/harness-gate run . close     --root ../.. --stage DH-S-16 [--built]
+GOWORK=off go -C tools/harness-gate run . records   --root ../..
+GOWORK=off go -C tools/harness-gate run . entry     --root ../.. --story harness:DSH-M2
+GOWORK=off go -C tools/harness-gate run . policy-text --root ../..
 ```
 
 - `rehearse` (DH-D-TOOLCHAIN-5, DH-ADR-TOOLCHAIN-13; gap-closure step 19.1.1) runs
@@ -142,6 +150,222 @@ The sign-in checks (`acceptance/signin.go`): `claude-session` runs
 exit 0 with `loggedIn: true`; `copilot-session` fails closed, because the GitHub
 Copilot CLI 1.0.115 has no non-interactive status command; `none` runs no check.
 
+- `ready`, `close` and `records` are the stage-closure gate; see
+  [Stage closure](#stage-closure).
+- `entry` is the story entry check; see [Story entry](#story-entry-harness-gate-entry).
+- `policy-text` runs the `policy-text` gate alone: exit 0 the tree may merge, 1 a
+  text is refused, 2 a usage error or an unreadable tree; see
+  [Sandbox policy text](#sandbox-policy-text-m2-c-6).
+- `sandbox7-record` writes the DH-E-SANDBOX-7 acceptance record the
+  `policy-text` gate requires; it runs no gate. See the same section.
+
+## Story entry (`harness-gate entry`)
+
+M2-DEC-1, as amended by M1 gap-closure step 12.1.9 (harness:DSH-M2
+implementation-plan Stage 1.2): no M2 scenario run and no M2 stage closure happens
+before M1 is closed. `harness-gate entry --story harness:DSH-M2` checks, under
+`--root`:
+
+- every M1 record `docs/stories/harness-DSH-M1/evidence/DH-S-1.md` ..
+  `DH-S-11.md` exists and its status line reads `Closure status: closed` (or
+  `closed at <sha>`). The status line is a line that starts `Closure status:`
+  outside a code fence; history prose such as `**Closure status: closed.**` is
+  not the line. A record must have exactly one: a second status line makes the
+  record invalid, so it is not closed (`reads "Closure status: a second status
+  line at line N ..."`), whatever the first line says;
+- the M1 closure record `docs/stories/harness-DSH-M1/evidence/closure.md` exists
+  with a `## Deliverables` table (columns Deliverable, State, Reason) that has one
+  row for each of the 99 deliverables of impl.md steps 1.1 to 11.7
+  (`closure/entry.go`), each `done` or `built` (built, not done), and every `built`
+  row gives its Reason (the `DH-E` and stage that finish it, or the item holding
+  it open);
+- `built-through` in `test/harness/acceptance-index.yaml` is `DH-S-11` or later.
+
+It exits 0 when all hold, 1 with one `  - ` line per unmet condition (records in
+stage order, then the closure record, then `built-through`), and 2 on a usage
+error, an unknown story, or a record or index that exists but cannot be read or
+parsed. A missing record, closure record or index is an unmet condition, named
+with every other one; a missing input never hides the rest.
+
+**Where it runs (risk M2-R-04).** `harness-gate entry` is the mandatory first step
+of every `guarded` and every `acceptance` run of harness:DSH-M2: a run whose
+`entry` exits non-zero does not start. The gate venue (the build steps, the
+default `harness-gate` gate list and the lane scripts in their default mode) does
+not call it, so S12..S16 may build on the built M1 contracts while M1 is open
+(Q `m2-entry-m1-closure`). The wiring lands with the runners themselves, when they
+exist: the lane scripts' `guarded` mode (Stage 6.12), the `s17` job (Stage 7.1) and
+the `s18` jobs (Stage 8.1). Each of those stages adds the call; nothing here
+refers forward to a runner that is not yet built.
+
+The tests never read the live records for the fixture cases:
+`testdata/entry/m1_open/` (the eleven record heads reading `open`, no closure
+record, `built-through: DH-S-8`) must produce `testdata/entry/m1_open.golden`, and
+`testdata/entry/m1_closed/` (eleven `closed` heads, a closure record,
+`built-through: DH-S-11`) must pass. A separate test runs `entry` on the
+repository and checks that its result agrees with the live records, whatever
+their state. To regenerate the golden, run `go test -run TestEntryGolden . -update`
+(refused when `CI` is set).
+
+## Sandbox policy text (M2-C-6)
+
+The prompt builder adds a sandbox policy section only from a shipped
+per-platform text, `src/harness/internal/world/sandbox/policy/text/<platform>.md`
+for `linux`, `darwin` or `windows` (harness:DSH-M2 implementation-plan Stage 2.4;
+the texts are written in Stage 7.6). Until one exists `policy.Text` returns
+`policy.ErrNoText` and the prompt has no such section. The `policy-text` gate
+(`policytext.go`) holds the pre-merge rule M2-C-6 from before any text exists: a
+tree with no file under that directory passes, and every file there must be
+proven by a row of `docs/stories/harness-DSH-M2/evidence/DH-S-17.md`:
+
+- the row's `Scenario` is `DH-E-SANDBOX-7` and its `Result` is `passed`;
+- its `Commit` is the run's commit (7 to 40 lower-case hex digits) and its
+  `Artifacts` name the run, `run=<id>`;
+- its `Artifacts` hold `<platform>.md sha256=<hex> escalated=<n>/18` with `n` at
+  least 10, and `<hex>` equal to the SHA-256 of the file's bytes;
+- the run id is a run-record id, `<lane>-<sha7>-<UTC yyyymmddThhmmZ>`
+  (`local-run-record-format`), and names a committed DH-E-SANDBOX-7 acceptance
+  record `docs/stories/harness-DSH-M2/evidence/runs/<id>.txt` written by
+  `harness-gate sandbox7-record` (below): intact (its final `sha256:` line is
+  the SHA-256 of every byte before it), `scenario: DH-E-SANDBOX-7`, the clean-tree
+  field both record producers write (`tree: clean (git status --porcelain
+  --untracked-files=all is empty)`, `CleanTreeField`), `result: passed`, a
+  `text:` line for the file with the file's SHA-256 and the row's count, and a
+  full `commit:` that starts with the id's `<sha7>` and with the row's `Commit`.
+  A quality-gate record (`harness-gate --evidence`) is refused: the quality gate
+  runs `policy-text` itself and no scenario test, so it can prove no text;
+- `git cat-file blob <that commit>:<path>` holds the file's bytes: the run was on
+  a commit containing that same file.
+
+The rule fails closed. `--root` must be a git checkout's top level that holds
+the run's commit (a shallow CI clone must fetch it); when it is not, or git
+cannot read the commit, every text is refused (`commit containment
+unavailable`). A tree with no text needs no git. The fixtures are turned into
+temporary git checkouts by the test (`policyTextRepo`): their first commit holds
+only the text, with fixed author, committer, dates and message, so it is the
+commit `41101e7b...` the committed fixture run record names. That record is
+the producer's own output (`formatSandbox7Record`;
+`TestPolicyTextFixtureRecordIsProduced`), not a hand-made format.
+
+The acceptance record is written by the s17 job (Stage 7.6) after its
+escalation runs, on the clean checkout of the branch commit it tested, before
+the PR gate runs. It runs no gate, so a first or edited text is recorded without
+first passing `policy-text`:
+
+```
+harness-gate sandbox7-record --root . --escalated linux=12,darwin=11,windows=13 [--lane s17] [--ci-run <id>]
+```
+
+It refuses (exit 2, nothing written) a dirty tree, a tree with no text, and a
+missing or extra count; it writes `runs/<lane>-<sha7>-<UTC>.txt` holding the
+commit, the CI run id, each text's path, SHA-256 and `escalated=<n>/18`, and
+`result: passed` (exit 0) or `failed` (exit 1, any text under 10). The flow is
+then: commit the text, run the scenario and `sandbox7-record` on that commit,
+add the record and the `DH-E-SANDBOX-7` row naming `run=<id>` in a later commit,
+and the PR gate admits the text. An edit is a new commit, refused until it is
+recorded and its row updated (`TestSandbox7RecordFlows`).
+
+Any other file there (not `<platform>.md`) is refused. A row may prove several
+platforms, one `<platform>.md sha256=... escalated=.../18` entry each. Every edit
+to a text changes its SHA-256, so the edited text is refused until DH-E-SANDBOX-7
+passes again on it and the row records the new hash. Each refusal is one line
+`policy-text: REFUSED M2-C-6: <path> (sha256 <hex>): <reason>`. The fixture trees
+`testdata/policytext/{no_text,text_without_sandbox7,text_with_matching_pass,text_edited_after_pass}`
+and `testdata/policytext/expected.golden` pin the behaviour
+(`TestPolicyTextGolden`); `TestPolicyTextRunProvenance` refuses a tree that is
+not a checkout, a missing, tampered, dirty-tree, other-scenario, other-bytes,
+other-count, quality-gate or failed run record, a row whose commit is not the
+run's, and a run commit without the text.
+
+## Stage closure
+
+The two-step closure protocol of C57 and M2-C-2 (harness:DSH-M2
+implementation-plan Stage 1.1). The records live at
+`docs/stories/<story>/evidence/DH-S-n.md`, where `<story>` is `harness:DSH-M2`
+written as `harness-DSH-M2` (`--story` selects the story; `harness:DSH-M2` is the
+default). Each record has a status line, `Closure status: open` or
+`Closure status: closed`, and the impl.md sec. 7.3 fields as `### ...` headings.
+
+1. While the record reads `open`, the PR fills its tables until
+   `harness-gate ready --stage DH-S-n` exits 0. `ready` does not read the status
+   line.
+2. The closing PR then changes the line to `closed`. Its gate runs
+   `harness-gate close --stage DH-S-n`, which checks every `ready` condition again
+   and also requires the line to read `closed`. The refusals are:
+   - `not-yet-closed`: the line reads `open`;
+   - `closed-but-not-ready`: the line reads `closed` but a `ready` condition fails;
+   - `status-invalid`: the line is missing or unreadable.
+
+Both commands exit 0 on a pass and 1 with one `  - ` line per blocker. They exit 2
+on a usage error or an unreadable acceptance index. A missing record is a blocker.
+Without `--built`, the check is an acceptance close:
+- the stage needs an index entry;
+- every index-listed ID needs a row;
+- every row of the `## Scenarios` table counts.
+
+The mode is fixed by the story, not by the caller: DH-S-12..16 close with `--built`
+and DH-S-17..18 without it. Either command given the other mode exits 2. Called as a
+library, `Story.Ready` names the mismatch as a blocker and judges the stage in its
+own mode, so a build stage never skips its build tables.
+
+`--built` is a build-stage close (DH-S-12..16), checked in addition:
+- only rows with venue `guarded` count, and every index-listed ID still needs a row;
+- every `## Steps` row needs a merge commit (a SHA of 7 to 40 lower-case hex
+  digits);
+- every `## Manual checks register` row needs Seen, Operator, a commit and the
+  label `manual`;
+- every `## Owner defaults (M2-C-4)` row needs Confirmed and By;
+- a row for an ID the index lists under the stage must have venue `guarded`. A
+  different venue would leave its result unjudged while it still covers the index
+  entry, so it is a blocker.
+
+Each record also owes the rows Stage 1.1 created in it (`closure/obligations.go`):
+- every step;
+- each manual check, matched on its step and its check text, so a second copy of
+  one check cannot stand in for another (a duplicate row is itself a blocker);
+- the stage's owner defaults;
+- every scenario row, matched on scenario, variant, venue and leg together.
+
+A deleted row, or a scenario row whose venue or leg was edited, is a blocker.
+`ready` and `close` check the scenario rows always and the other owed rows with
+`--built`. `records` checks all of them on every record, including open ones.
+
+The Scenarios table's columns are Scenario, Variant, Venue, Leg, Environment,
+Commit, Result and Artifacts. A result reads one of:
+- `passed`;
+- `failed`;
+- `not run (<reason>)`;
+- `skipped`;
+- `blocked`;
+- `out of scope (<decision>)`.
+
+Only `passed` counts as passed. A `skipped` row is not passed (M2-DEC-3). An `out
+of scope` row is not a blocker only when it names its decision. The Leg column
+reads `required` (or is empty) or `recorded`. A `recorded` leg must still run; a
+`failed` result there is kept and does not block (M2-DEC-4).
+
+The Venue column reads `guarded`, `acceptance` or `later`; any other value is a
+blocker. A row that ran (`passed` or `failed`, including a recorded leg's failure)
+must record its Environment, a commit SHA and its Artifacts (M2-DEC-5). A named
+`out of scope` row need not. A table whose header is not followed by a `| --- |`
+separator row with one cell per column is refused as unreadable, so a data row is
+never taken for the separator.
+
+`records` checks the shape of every stage record of the story (status line, the
+sec. 7.3 headings, the four tables and their columns). A record that reads
+`closed` must also pass `close`, with `--built` for a build stage. It then checks
+the story's `closure.md`:
+- a `## Deliverables` table with Deliverable, Priority, State, Finishing stage or
+  held-open item, and Proving scenarios;
+- every deliverable of tech-spec sec. 3.2 by ID with its priority (no unknown ID,
+  no missing one), the count and the P0/P1 split;
+- a state of `not built`, `built` or `done`, where only the done-candidates may
+  read `done` and every row that is not done names a finishing stage or `H-` item;
+- a `## Held-open items` table with a row per held-open item.
+
+The story shapes (stages, build stages, deliverables, held-open items) are in
+`closure/shape.go`. The golden `testdata/closure/expected.golden` covers `ready`
+and `close` over the four record states. To regenerate it, run
+`go test -run TestStageClosureGolden . -update`; this is refused when `CI` is set.
 ## Acceptance index (`test/harness/acceptance-index.yaml`)
 
 Keyed by executing stage; each entry lists the authored `DH-E-*` IDs with their

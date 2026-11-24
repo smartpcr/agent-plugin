@@ -43,6 +43,9 @@
 built-through: DH-S-11
 
 stages:
+  # Venue: guarded (harness:DSH-M2 step 16.8, implementation-plan Stage 6.12): run
+  # on scratch homes inside the build stage DH-S-16, which does not close until they
+  # pass (impl.md sec. 7.4). DH-E-FS-3 joins when DH-S-12 authors it.
   DH-S-16:
     # The store's two-process and crash-recovery scenarios, run on scratch homes
     # (impl.md step 16.8); authored by Stage 7.2 (impl.md steps 7.2, 7.3).
@@ -58,6 +61,9 @@ stages:
     - id: DH-E-STORE-6
       authored: DH-S-7
       credential: none
+  # Venue: acceptance (harness:DSH-M2 Phase 7, E1: Linux with the signed-in Claude
+  # Code route required and the Copilot CLI route recorded). DH-E-SDK-1 and
+  # DH-E-SANDBOX-7 join when DH-S-15 and DH-S-12 author them.
   DH-S-17:
     # Its subjects (the model runtime, the replay helpers) exist from Phase 11;
     # the file is written by the DH-S-11 authoring step (impl.md DH-S-1 Scenarios),
@@ -133,6 +139,9 @@ stages:
       authored: DH-S-11
       credential: claude-session
       requires: [DH-S-11, DH-S-16]
+  # Venue: acceptance (harness:DSH-M2 Phase 8, E2 operating-system variants; macOS
+  # rows out of scope by decision platforms-windows-wsl). The NATIVESYSTEM, SANDBOX-1,
+  # FS-1, FS-2, VIEW-5 and CONTEXT-2 scenarios join when DH-S-12/-13 author them.
   DH-S-18:
     - id: DH-E-TOOLCHAIN-2
       authored: DH-S-1
@@ -185,6 +194,8 @@ stages:
     - id: DH-E-BOOT-2
       authored: DH-S-6
       credential: none
+  # Venue: later (DH-S-22, after harness:DSH-M2). M2 authors DH-E-HOST-1,
+  # DH-E-HOST-2 and DH-E-BUNDLE-3 for it (tech-spec sec. 4.5).
   DH-S-22:
     # A launch that cannot serve fails loudly; one that can serves the UI's first
     # page (impl.md step 22.3); authored in DH-S-6.
@@ -203,12 +214,19 @@ stages:
     - id: DH-E-STORAGE-2
       authored: DH-S-8
       credential: none
+  # Venue: later (DH-S-27, after harness:DSH-M2; step 27.8 needs the web UI and the
+  # macOS and Windows backends). M2 authors DH-E-CLI-1 and DH-E-CLI-2 for it in
+  # DH-S-16; they are guarded by their specification ("a stop can lose work").
+  DH-S-27: []
   DH-S-35:
     # A non-holder follows a session and hands its holder requests (impl.md step
     # 35.7); authored by Stage 7.3 (impl.md step 7.5), which builds the follow.
     - id: DH-E-STORE-5
       authored: DH-S-7
       credential: none
+  # Venue: later (DH-S-39, after harness:DSH-M2). M2 authors DH-E-SANDBOX-2,
+  # DH-E-EXEC-7, DH-E-EXEC-8, DH-E-HOST-7, DH-E-HOST-8, DH-E-HOST-9, DH-E-SDK-2 and
+  # DH-E-UTIL-2 for it (tech-spec sec. 4.5).
   DH-S-39:
     # All traffic through a TLS-intercepting proxy: the model, a fetched page and an
     # MCP server over HTTP (impl.md step 39.15); authored in DH-S-6.
@@ -229,3 +247,7 @@ stages:
       authored: DH-S-10
       credential: none
       requires: [DH-S-13, DH-S-16]
+  # Venue: later (DH-S-48, after harness:DSH-M2: the browser preset choice, the
+  # settings page and the release archive). M2 authors DH-E-BUNDLE-1, DH-E-BUNDLE-2,
+  # DH-E-BUNDLE-4 and DH-E-API-5 for it (tech-spec sec. 4.5).
+  DH-S-48: []

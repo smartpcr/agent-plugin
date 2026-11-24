@@ -9,7 +9,9 @@
 // (race, shuffle), coverage (merged across processes, 85% per package),
 // trace (tools/harness-trace verify, then the trace-tests check through built-through),
 // scenario-index (test/harness/acceptance-index.yaml
-// against the authored *_scenario_test.go files), budget (performance budgets) and
+// against the authored *_scenario_test.go files), policy-text (M2-C-6: no shipped
+// sandbox policy text without a passed DH-E-SANDBOX-7 run on it), budget
+// (performance budgets) and
 // cross-compile (cmd/dsh for six targets). See README.md.
 //
 // When --root holds a go.mod, the gates run on that one module (the seeded-violation
@@ -38,6 +40,29 @@
 //	                       preflight with the sign-in checks, then go test -tags
 //	                       scenario of the plan, as one evidence record
 //	                       (scenariorun.go)
+//	ready --stage DH-S-n [--built] [--story s]
+//	                       the first step of a stage close (C57; M2-C-2): every
+//	                       condition of docs/stories/<story>/evidence/<stage>.md
+//	                       holds; the status line is not read (stageclose.go)
+//	close --stage DH-S-n [--built] [--story s]
+//	                       the final check of the closing PR: every ready
+//	                       condition and the status line reading closed
+//	records [--story s]    every stage record of the story and its closure.md
+//	                       hold their shape; a closed record also passes close
+//	entry [--story s]      the first step of every guarded and acceptance run
+//	                       (M2-DEC-1, risk M2-R-04): the prior story's records all
+//	                       read closed, its closure record lists every deliverable
+//	                       and built-through has reached its last stage (entry.go)
+//	policy-text            the M2-C-6 pre-merge rule alone (also a gate of the
+//	                       list): no file under
+//	                       src/harness/internal/world/sandbox/policy/text/
+//	                       unless DH-S-17.md holds a passed DH-E-SANDBOX-7 row
+//	                       with that file's SHA-256 (policytext.go)
+//	sandbox7-record --escalated linux=<n>[,...] [--lane s17] [--ci-run id]
+//	                       the s17 job's DH-E-SANDBOX-7 acceptance record of
+//	                       the clean checkout: commit, each text's SHA-256 and
+//	                       escalations, written to evidence/runs/<id>.txt; it
+//	                       runs no gate (sandbox7record.go)
 package main
 
 import (
@@ -82,6 +107,18 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return runScenarios(ctx, args[1:], stdout, stderr)
 		case "trace-tests":
 			return runTraceTests(args[1:], stdout, stderr)
+		case "ready":
+			return runReady(args[1:], stdout, stderr)
+		case "close":
+			return runClose(args[1:], stdout, stderr)
+		case "records":
+			return runRecords(args[1:], stdout, stderr)
+		case "entry":
+			return runEntry(args[1:], stdout, stderr)
+		case "policy-text":
+			return runPolicyText(ctx, args[1:], stdout, stderr)
+		case "sandbox7-record":
+			return runSandbox7Record(ctx, args[1:], stdout, stderr)
 		}
 	}
 	flags := flag.NewFlagSet("harness-gate", flag.ContinueOnError)

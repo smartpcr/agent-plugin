@@ -23,12 +23,22 @@ var moduleDirs = map[string]string{
 // goList runs `go list -deps -json ./...` in the module's directory.
 func goList(t *testing.T, module string) []Package {
 	t.Helper()
+	return goListDir(t, moduleDirs[module])
+}
+
+// goListDir runs `go list -deps -json ./...` in dir, with env added to the
+// environment.
+func goListDir(t *testing.T, dir string, env ...string) []Package {
+	t.Helper()
 	tool, err := exec.LookPath("go")
 	if err != nil {
 		t.Fatalf("the go tool is required: %v", err)
 	}
 	cmd := exec.Command(tool, "list", "-deps", "-json", "./...")
-	cmd.Dir = moduleDirs[module]
+	cmd.Dir = dir
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -68,6 +78,35 @@ func TestImportDirection(t *testing.T) {
 				t.Error(v)
 			}
 		})
+	}
+}
+
+// TestSeededTreeFailsTheC3Rules loads the committed testdata/c3 module through
+// the go tool and runs every harness rule over it: exactly the seeded inverted
+// imports fail, each named by importer and import, and the allowed edges (ops
+// and the policy tree importing policy, workdir and policy importing the world/fs
+// contract, a fake importing a fake) pass. TestImportDirection is the real tree.
+//
+//dsh:test DH-T-FS-26
+func TestSeededTreeFailsTheC3Rules(t *testing.T) {
+	pkgs := goListDir(t, filepath.Join("testdata", "c3"), "GOWORK=off")
+	var got []string
+	for _, r := range Rules {
+		if r.Module == HarnessModule {
+			got = append(got, r.Check(pkgs)...)
+		}
+	}
+	in := func(rel string) string { return HarnessModule + "/internal/" + rel }
+	want := []string{
+		in("tools/files") + " imports " + in("world/sandbox/policy") + "; only " + FSOpsPackage + " may",
+		in("session/workdir") + " imports " + in("world/fs/local"),
+		in("world/sandbox/policy") + " imports " + in("world/fs/local"),
+		in("tools/files") + " imports " + in("world/fs/fstest") + "; only tests may",
+	}
+	slices.Sort(got)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Fatalf("violations over testdata/c3:\n got  %q\n want %q", got, want)
 	}
 }
 
@@ -196,6 +235,24 @@ func TestRulesCatchViolations(t *testing.T) {
 			imports(pkg(ContextPackage+"/request", "request", false, "a.go"), DriverPackage, LLMProviderPackage+"/deepseek", LLMWirePackage),
 			imports(pkg(ContextPackage+"/clock", "clock", false, "a.go"), LLMTransportPackage),
 		}, 6},
+		{"the cycle C-3 packages within their bounds", HarnessModule, []Package{
+			imports(pkg(FSOpsPackage, "ops", false, "a.go"), FSPackage, SandboxPolicyPackage, SandboxPackage),
+			imports(pkg(SandboxPolicyPackage, "policy", false, "a.go"), FSPackage, SandboxPackage, WorkdirPackage),
+			imports(pkg(SandboxPolicyPackage+"/text", "text", false, "a.go"), SandboxPolicyPackage),
+			imports(pkg(WorkdirPackage, "workdir", false, "a.go"), FSPackage, SessionPackage),
+			imports(pkg(FSLocalPackage, "local", false, "a.go"), FSPackage, SandboxPackage),
+			imports(pkg(FstestPackage, "fstest", false, "a.go"), FSPackage, SandboxtestPackage),
+			imports(pkg(SandboxtestPackage, "sandboxtest", false, "a.go"), SandboxPackage, WorkdirPackage),
+			imports(pkg(HarnessModule+"/internal/world/sandbox/policyx", "policyx", false, "a.go"), FSLocalPackage),
+		}, 0},
+		{"the cycle C-3 packages out of bounds", HarnessModule, []Package{
+			imports(pkg(WorkdirPackage, "workdir", false, "a.go"), FSLocalPackage),
+			imports(pkg(WorkdirPackage+"/fold", "fold", false, "a.go"), FSOpsPackage+"/internal"),
+			imports(pkg(SandboxPolicyPackage, "policy", false, "a.go"), FSOpsPackage),
+			imports(pkg(ToolsPackage+"/files", "files", false, "a.go"), SandboxPolicyPackage, FSOpsPackage),
+			imports(pkg(FSLocalPackage, "local", false, "a.go"), SandboxPolicyPackage+"/text", FstestPackage),
+			imports(pkg(ToolsPackage+"/shell", "shell", false, "a.go"), WorkdirtestPackage, SandboxtestPackage),
+		}, 8},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := check(tc.module, tc.pkgs...); len(got) != tc.bad {

@@ -109,7 +109,7 @@ func posixUnsupported(err error) bool {
 
 // move publishes from as to, retrying while another program blocks it: POSIX
 // rename where the filesystem has it, else MoveFileEx.
-func move(from, to string, replace, durable bool) error {
+func move(from, to string, replace, durable bool, check func() error) error {
 	src, err := windows.UTF16PtrFromString(from)
 	if err != nil {
 		return err
@@ -118,7 +118,7 @@ func move(from, to string, replace, durable bool) error {
 	if err != nil {
 		return err
 	}
-	return retryInUse(func() error {
+	return retryInUse(check, func() error {
 		if usePOSIXRename {
 			err := posixRename(from, to, replace, durable)
 			if !posixUnsupported(err) {
@@ -132,12 +132,12 @@ func move(from, to string, replace, durable bool) error {
 // usePOSIXRename is cleared by tests to take the MoveFileEx path.
 var usePOSIXRename = true
 
-func renameReplace(stage, target string, durable bool) error {
-	return move(stage, target, true, durable)
+func renameReplace(stage, target string, durable bool, check func() error) error {
+	return move(stage, target, true, durable, check)
 }
 
-func renameNoReplace(stage, target string, durable bool) error {
-	return move(stage, target, false, durable)
+func renameNoReplace(stage, target string, durable bool, check func() error) error {
+	return move(stage, target, false, durable, check)
 }
 
 // syncDir is a no-op: MOVEFILE_WRITE_THROUGH already made the rename durable, and

@@ -1,2 +1,21 @@
-# sdk: bundle layer of the sdk profile family; content is DH-D-BUNDLE-1's.
-[]
+# sdk: the layer of the sdk profile (bundle-preset.md §6.2, DH-D-BUNDLE-1), applied
+# over core, base and presets. It mounts the stdio owner and the SDK carrier and
+# switches off the model call that titles a session, which an SDK client names
+# itself.
+#
+# The operations name their targets by catalogue name. Until a target's component
+# is registered and its entry is in a lower bundle, the composer reports the
+# operation as matching no entry and skips it; the profile does not launch before
+# DH-D-BUNDLE-3 (boot's audit names the absent required entries).
+
+# The carriers (C48, C49). Required, after profile.Spine, in this order: wire.sdk
+# claims the streams wire.stdio owns.
+- insert:
+    - id: wire.stdio
+      name: wire.stdio
+    - id: wire.sdk
+      name: wire.sdk
+
+- id: session.title.llm
+  name: session.title.llm
+  disabled: true

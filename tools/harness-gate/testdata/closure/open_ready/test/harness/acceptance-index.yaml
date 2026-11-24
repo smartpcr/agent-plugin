@@ -1,0 +1,9 @@
+# Fixture acceptance index for the stage-closure golden (stageclose_test.go).
+built-through: DH-S-8
+
+stages:
+  DH-S-16:
+    - id: DH-E-STORE-1
+      authored: DH-S-7
+    - id: DH-E-STORE-6
+      authored: DH-S-7

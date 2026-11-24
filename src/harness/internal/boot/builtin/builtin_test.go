@@ -14,7 +14,10 @@ func TestSetsBuild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	families := map[string][]catalog.Item{"boot": Boot(), "host": Host(), "util": Util()}
+	families := map[string][]catalog.Item{
+		"boot": Boot(), "host": Host(), "util": Util(),
+		"session": Session(), "fs": FS(), "sandbox": Sandbox(), "permission": Permission(),
+	}
 	total := 0
 	for family, items := range families {
 		for _, item := range items {

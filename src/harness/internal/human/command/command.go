@@ -189,6 +189,10 @@ type layer = *scope.Named[Command]
 // Registry is the scoped command registry.
 type Registry struct{ layers *scope.Layers[layer] }
 
+// Key is the service a composition mounts its command registry under; a
+// component that owns a command (permission's /permission) registers through it.
+var Key = cordis.NewServiceKey[*Registry]("human.command")
+
 // NewRegistry is an empty registry over t.
 func NewRegistry(t scope.Table) *Registry {
 	return &Registry{layers: scope.NewLayers(t, func() layer { return scope.NewNamed[Command]() })}
