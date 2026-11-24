@@ -3,6 +3,7 @@ package builtin_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -28,12 +29,23 @@ import (
 // entries fs.local, session.workdir, sandbox.policy (workspace-write) and fs.ops,
 // each wired to the others only through the services they provide.
 type cycleC3 struct {
-	st       *sqlite.Store
-	svc      session.Service
-	wd       *workdir.Service
-	lookup   workdir.Lookup
-	resolver sandbox.Resolver
-	ops      *ops.Service
+	root   *cordis.Context
+	ldr    *loader.Service
+	svc    session.Service
+	wd     *workdir.Service
+	lookup workdir.Lookup
+}
+
+// entries is the cycle C-3 unit as the loader applies it; local is the
+// fs.local entry, so a test can reconfigure or disable the provider alone.
+func entries(local loader.EntryOptions) []loader.EntryOptions {
+	local.ID, local.Name = "fs.local", "fs.local"
+	return []loader.EntryOptions{
+		local,
+		{ID: "session.workdir", Name: "session.workdir"},
+		{ID: "sandbox.policy", Name: "sandbox.policy", Config: json.RawMessage(`{"defaultMode":"workspace-write"}`)},
+		{ID: "fs.ops", Name: "fs.ops"},
+	}
 }
 
 func bootCycleC3(t *testing.T, ctx context.Context, db string) *cycleC3 {
@@ -69,19 +81,14 @@ func bootCycleC3(t *testing.T, ctx context.Context, db string) *cycleC3 {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := ldr.Apply([]loader.EntryOptions{
-		{ID: "fs.local", Name: "fs.local"},
-		{ID: "session.workdir", Name: "session.workdir"},
-		{ID: "sandbox.policy", Name: "sandbox.policy", Config: json.RawMessage(`{"defaultMode":"workspace-write"}`)},
-		{ID: "fs.ops", Name: "fs.ops"},
-	}); err != nil {
+	if err := ldr.Apply(entries(loader.EntryOptions{})); err != nil {
 		t.Fatal(err)
 	}
-	b := &cycleC3{st: st, svc: svc}
+	b := &cycleC3{root: root, ldr: ldr, svc: svc}
 	b.wd = get(t, root, workdir.ServiceKey)
 	b.lookup = get(t, root, workdir.Key)
-	b.resolver = get(t, root, sandbox.ResolverKey)
-	b.ops = get(t, root, ops.Key)
+	get(t, root, sandbox.ResolverKey)
+	get(t, root, ops.Key)
 	return b
 }
 
@@ -103,9 +110,38 @@ func project(t *testing.T, dir string) string {
 	return dir
 }
 
+// write goes through the fs.ops service mounted now (a provider restart
+// replaces it); a relative path is anchored by ops at the session's directory.
 func (b *cycleC3) write(ctx context.Context, id session.ID, path, data string) error {
-	_, err := b.ops.Write(ctx, ops.Call{Session: id}, fs.Ref{Path: path}, []byte(data), fs.NoGuard)
+	o, ok := ops.Key.Lookup(b.root)
+	if !ok {
+		return fmt.Errorf("%s is not mounted", ops.Key.Name())
+	}
+	_, err := o.Write(ctx, ops.Call{Session: id}, fs.Ref{Path: path}, []byte(data), fs.NoGuard)
 	return err
+}
+
+// assertRelative writes the relative path y and checks that fs.ops anchored it
+// at cur, the session's current directory, through workdir.Access; old/y, when
+// old is given, must still hold oldWant ("" for absent).
+func (b *cycleC3) assertRelative(t *testing.T, ctx context.Context, id session.ID, cur, old, oldWant string) {
+	t.Helper()
+	if err := b.write(ctx, id, "y", "rel:"+cur); err != nil {
+		t.Fatalf("relative write y (directory %s): %v", cur, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(cur, "y")); err != nil || string(got) != "rel:"+cur {
+		t.Fatalf("%s/y = %q, %v; want the relative write anchored at the session's directory", cur, got, err)
+	}
+	if old == "" {
+		return
+	}
+	got, err := os.ReadFile(filepath.Join(old, "y"))
+	switch {
+	case oldWant == "" && !os.IsNotExist(err):
+		t.Fatalf("%s/y = %q, %v; want absent", old, got, err)
+	case oldWant != "" && (err != nil || string(got) != oldWant):
+		t.Fatalf("%s/y = %q, %v; want %q untouched by the relative write", old, got, err, oldWant)
+	}
 }
 
 // assertFence checks that a write into old is refused as fs/sandbox-denied and
@@ -132,7 +168,11 @@ func (b *cycleC3) assertFence(t *testing.T, ctx context.Context, id session.ID, 
 // the old directory nowhere among the write roots.
 func (b *cycleC3) assertResolve(t *testing.T, ctx context.Context, id session.ID, old, cur string) {
 	t.Helper()
-	p, err := b.resolver.Resolve(ctx, sandbox.Request{Session: id})
+	r, err := sandbox.ResolverKey.Get(b.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := r.Resolve(ctx, sandbox.Request{Session: id})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,6 +218,7 @@ func TestCycleC3DirectoryMoveChangesTheFenceAndResumeRestoresIt(t *testing.T) {
 			t.Fatalf("write to A/x before the move: %v", err)
 		}
 		p1.assertResolve(t, ctx, id, "", a0)
+		p1.assertRelative(t, ctx, id, a0, "", "")
 
 		moved, err := p1.wd.Change(ctx, id, bdir)
 		if err != nil {
@@ -194,6 +235,7 @@ func TestCycleC3DirectoryMoveChangesTheFenceAndResumeRestoresIt(t *testing.T) {
 		}
 		p1.assertResolve(t, ctx, id, a0, b0)
 		p1.assertFence(t, ctx, id, a0, b0, "before")
+		p1.assertRelative(t, ctx, id, b0, a0, "rel:"+a0)
 	})
 	if id == "" || t.Failed() {
 		return
@@ -213,10 +255,97 @@ func TestCycleC3DirectoryMoveChangesTheFenceAndResumeRestoresIt(t *testing.T) {
 		if w.Path != b0 || w.Root != b0 {
 			t.Fatalf("resumed working directory %+v; want %s", w, b0)
 		}
-		if err := os.Remove(filepath.Join(b0, "x")); err != nil {
-			t.Fatal(err)
+		for _, n := range []string{"x", "y"} {
+			if err := os.Remove(filepath.Join(b0, n)); err != nil {
+				t.Fatal(err)
+			}
 		}
 		p2.assertResolve(t, ctx, id, a0, b0)
 		p2.assertFence(t, ctx, id, a0, b0, "before")
+		p2.assertRelative(t, ctx, id, b0, a0, "rel:"+a0)
 	})
+}
+
+// A restart of the filesystem provider (fs.local reconfigured, then unmounted
+// and mounted again) reloads sandbox.policy and fs.ops, which inject it, but not
+// session.workdir: the fold stays registered in the one registry, the attached
+// session keeps its directory without a new Attach, and the fence holds on the
+// new provider. While no provider is mounted, a check is a seam failure (fs/io)
+// that leaves the directory as it was.
+func TestCycleC3ProviderRestartKeepsTheWorkingDirectoryAndTheFence(t *testing.T) {
+	ctx := context.Background()
+	base := t.TempDir()
+	a := project(t, filepath.Join(base, "A"))
+	bdir := project(t, filepath.Join(base, "B"))
+	p := bootCycleC3(t, ctx, filepath.Join(base, "sessions.db"))
+	h, err := p.svc.Create(ctx, nil, session.CreateOptions{Header: session.Header{Cwd: a}, Scope: scope.Key{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = h.Close(ctx) })
+	id := h.ID()
+	w, err := p.wd.Attach(ctx, h, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a0 := w.Path
+	if err := p.write(ctx, id, filepath.Join(a0, "x"), "before"); err != nil {
+		t.Fatal(err)
+	}
+	moved, err := p.wd.Change(ctx, id, bdir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b0 := moved.Path
+
+	same := func(stage string) {
+		t.Helper()
+		if got := get(t, p.root, workdir.ServiceKey); got != p.wd {
+			t.Fatalf("%s: session.workdir was reloaded (a new service lost the attached sessions)", stage)
+		}
+		got, err := p.wd.Ensure(ctx, id)
+		if err != nil || got.Path != b0 || got.State != workdir.Available {
+			t.Fatalf("%s: Ensure = %+v, %v; want %s available", stage, got, err, b0)
+		}
+		for _, n := range []string{"x", "y"} {
+			if err := os.Remove(filepath.Join(b0, n)); err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+		}
+		p.assertResolve(t, ctx, id, a0, b0)
+		p.assertFence(t, ctx, id, a0, b0, "before")
+		p.assertRelative(t, ctx, id, b0, a0, "")
+	}
+	same("before the restart")
+
+	opsBefore := get(t, p.root, ops.Key)
+	cfg, err := json.Marshal(map[string]string{"lockDir": filepath.Join(base, "locks")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.ldr.Apply(entries(loader.EntryOptions{Config: cfg})); err != nil {
+		t.Fatalf("reconfigure fs.local: %v", err)
+	}
+	if get(t, p.root, ops.Key) == opsBefore {
+		t.Fatal("fs.ops was not reloaded on the new provider")
+	}
+	same("after fs.local was reconfigured")
+
+	if err := p.ldr.Apply(entries(loader.EntryOptions{Disabled: true})); err != nil {
+		t.Fatalf("unmount fs.local: %v", err)
+	}
+	if _, ok := ops.Key.Lookup(p.root); ok {
+		t.Fatal("fs.ops is still mounted without a provider")
+	}
+	if got := get(t, p.root, workdir.ServiceKey); got != p.wd {
+		t.Fatal("session.workdir was reloaded when the provider was unmounted")
+	}
+	if _, err := p.wd.Ensure(ctx, id); herr.Kind(err) != fs.CodeIO {
+		t.Fatalf("Ensure with no provider: %v (%s), want %s", err, herr.Kind(err), fs.CodeIO)
+	}
+
+	if err := p.ldr.Apply(entries(loader.EntryOptions{})); err != nil {
+		t.Fatalf("remount fs.local: %v", err)
+	}
+	same("after fs.local was mounted again")
 }
