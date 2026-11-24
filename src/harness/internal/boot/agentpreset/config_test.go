@@ -72,7 +72,7 @@ func TestConfigEditRejectsABrokenPresetSet(t *testing.T) {
 					return profile.Stack(def, profile.Sources{Home: home, Read: profile.ReadFile(read)})
 				},
 				Loader: ldr, Catalog: fx.cat, Context: root,
-				TreeChecks: []config.TreeCheck{agentpreset.CheckTree(fx.cat)},
+				TreeChecks: []config.TreeCheck{agentpreset.CheckTree(fx.cat, nil)},
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -153,7 +153,8 @@ func TestPresetSetCheckKeepsDeclarationsWithExpressionConfigs(t *testing.T) {
 `
 	cases := map[string]struct {
 		text      string
-		path, msg string // the one issue wanted; empty for none
+		env       map[string]string // the evaluator's env; nil for no evaluator
+		path, msg string            // the one issue wanted; empty for none
 	}{
 		"default and parent with expression configs": {text: fmt.Sprintf(base, "standard", "standard")},
 		"derived is the default":                     {text: fmt.Sprintf(base, "derived", "standard")},
@@ -164,6 +165,20 @@ func TestPresetSetCheckKeepsDeclarationsWithExpressionConfigs(t *testing.T) {
 		"computed id leaves references to the load": {text: fmt.Sprintf(base, "standard", "standard") +
 			"    - id: computed\n      name: agent.preset\n      config:\n        id: ${{ env.PRESET }}\n"},
 		"computed default is not checked": {text: fmt.Sprintf(base, "${{ env.PRESET }}", "standard")},
+		"unknown id cannot hide a literal cycle": {text: strings.Replace(fmt.Sprintf(base, "standard", "standard"),
+			"        id: standard\n", "        id: standard\n        extends: derived\n", 1) + computedDecl,
+			path: "derived.config.extends", msg: "extends cycle: derived -> standard -> derived"},
+		"computed id answers the default": {text: fmt.Sprintf(base, "picked", "standard") + computedDecl,
+			env: map[string]string{"PRESET": "picked"}},
+		"computed id that answers nothing": {text: fmt.Sprintf(base, "ghost", "standard") + computedDecl,
+			env: map[string]string{"PRESET": "picked"}, path: "presets.config.default", msg: `default "ghost" is not declared`},
+		"computed extends closes a cycle": {text: strings.Replace(fmt.Sprintf(base, "standard", "standard"),
+			"        id: standard\n", "        id: standard\n        extends: ${{ env.BASE }}\n", 1),
+			env: map[string]string{"BASE": "derived"}, path: "derived.config.extends", msg: "extends cycle: derived -> standard -> derived"},
+		"computed extends names no declaration": {text: fmt.Sprintf(base, "standard", "${{ env.BASE }}"),
+			env: map[string]string{"BASE": "nowhere"}, path: "derived.config.extends", msg: `extends "nowhere", which is not declared`},
+		"computed default names no declaration": {text: fmt.Sprintf(base, "${{ env.PRESET }}", "standard"),
+			env: map[string]string{"PRESET": "ghost"}, path: "presets.config.default", msg: `default "ghost" is not declared`},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -174,7 +189,11 @@ func TestPresetSetCheckKeepsDeclarationsWithExpressionConfigs(t *testing.T) {
 			if err != nil || len(issues) > 0 {
 				t.Fatalf("stack: %v %v", err, issues)
 			}
-			r := config.Check(layers, config.CheckOptions{Catalog: fx.cat, TreeChecks: []config.TreeCheck{agentpreset.CheckTree(fx.cat)}})
+			var ev loader.Evaluator
+			if tc.env != nil {
+				ev = envEvaluator(tc.env)
+			}
+			r := config.Check(layers, config.CheckOptions{Catalog: fx.cat, TreeChecks: []config.TreeCheck{agentpreset.CheckTree(fx.cat, ev)}})
 			if tc.path == "" {
 				if err := r.Err(); err != nil {
 					t.Fatalf("refused: %v", err)
@@ -186,4 +205,22 @@ func TestPresetSetCheckKeepsDeclarationsWithExpressionConfigs(t *testing.T) {
 			}
 		})
 	}
+}
+
+// computedDecl is a declaration whose id is computed: ${{ env.PRESET }}.
+const computedDecl = "    - id: computed\n      name: agent.preset\n      config:\n        id: ${{ env.PRESET }}\n"
+
+// envEvaluator computes "env.<NAME>" from env; any other source is an error, as a
+// use name is without an entry's context.
+type envEvaluator map[string]string
+
+func (envEvaluator) Check(string, loader.ScopeKind) error { return nil }
+
+func (e envEvaluator) Eval(source string, _ loader.Scope) (any, error) {
+	if name, ok := strings.CutPrefix(source, "env."); ok {
+		if v, ok := e[name]; ok {
+			return v, nil
+		}
+	}
+	return nil, fmt.Errorf("cannot compute %q", source)
 }

@@ -15,18 +15,24 @@ import (
 // declaration or closes a cycle, a bad child or a Default that names no declaration
 // rejects the whole edit, each issue placed at the entry at fault. The tree is one
 // set whatever its order, so a declaration may extend one that loads after it. A
-// literally disabled entry (or group) takes no part. A declaration is read field by
-// field (bundle-preset.md §6.1): a child config, name or order holding an os, env,
-// launch or home expression is left to the revision's loader while the literal id,
-// extends and children still take part. A declaration whose id or extends is itself
-// an expression cannot be placed statically, so the set's references are not
-// checked then; a Default that is an expression is not checked. A config that does
+// literally disabled entry (or group) takes no part.
+//
+// A declaration is read field by field (§6.1): a child config, name or order holding
+// an expression is left to the revision's loader while the literal id, extends and
+// children take part. An id, extends or Default that is an expression is computed
+// with ev, as its load would compute it (the os, env, launch and home names need no
+// entry context), and checked with its value. One that stays unknown (no evaluator,
+// a use name, an error or a value that is not a string) only withholds the issues it
+// could answer: while an id is unknown, an Extends or Default naming no literal
+// declaration is left to the load; an unknown Extends makes its declaration a root;
+// an unknown Default is not checked. A cycle, a duplicate id or a bad child among the
+// known declarations is reported whatever else the tree holds. A config that does
 // not decode is the per-entry check's issue and is skipped here. cat may be nil,
-// which skips the child checks.
-func CheckTree(cat Catalogue) func(tree []loader.EntryOptions) []loader.Issue {
+// which skips the child checks; ev may be nil, which leaves every expression unknown.
+func CheckTree(cat Catalogue, ev loader.Evaluator) func(tree []loader.EntryOptions) []loader.Issue {
 	return func(tree []loader.EntryOptions) []loader.Issue {
 		var reg *found
-		computed := false // a declaration's id or extends is an expression
+		unknownIDs := 0 // declarations whose id could not be computed
 		var decls []Declaration
 		var at []found // the entry of each declaration
 		var issues []loader.Issue
@@ -39,12 +45,12 @@ func CheckTree(cat Catalogue) func(tree []loader.EntryOptions) []loader.Issue {
 				}
 				reg = &f
 			case DeclarationName:
-				d, known, ok := decodeDeclaration(f.entry.Config)
+				d, idKnown, ok := decodeDeclaration(f.entry.Config, ev, f.path)
 				if !ok {
 					return
 				}
-				if !known {
-					computed = true
+				if !idKnown {
+					unknownIDs++
 					return
 				}
 				decls = append(decls, d)
@@ -55,12 +61,12 @@ func CheckTree(cat Catalogue) func(tree []loader.EntryOptions) []loader.Issue {
 			return issues
 		}
 		if reg == nil {
+			if len(at) == 0 {
+				return issues
+			}
 			return append(issues, at[0].issue("", fmt.Sprintf("an %s entry needs an %s entry in the tree", DeclarationName, RegistryName)))
 		}
-		if computed {
-			return issues
-		}
-		cfg, defaultExpr, ok := decodeConfig(reg.entry.Config)
+		cfg, defaultKnown, ok := decodeConfig(reg.entry.Config, ev, reg.path)
 		if !ok {
 			return issues
 		}
@@ -71,8 +77,10 @@ func CheckTree(cat Catalogue) func(tree []loader.EntryOptions) []loader.Issue {
 		for _, is := range Validate(cfg, decls, cat) {
 			var i int
 			switch {
-			case defaultExpr && is.Preset == "" && is.Path == "default":
-				// A computed Default is checked when the registry loads.
+			case is.Path == "default" && is.Preset == "" && (!defaultKnown || unknownIDs > 0 && cfg.Default != ""):
+				// The Default is computed at load, or may name the declaration whose id is.
+			case is.Path == "extends" && unknownIDs > 0 && strings.Contains(is.Message, "which is not declared"):
+				// The parent may be the declaration whose id is computed at load.
 			case is.Preset != "":
 				issues = append(issues, last[is.Preset].issue(is.Path, is.String()))
 			case strings.HasPrefix(is.Path, "[") && fmtIndex(is.Path, &i) && i < len(at):
@@ -121,12 +129,13 @@ func walkTree(list []loader.EntryOptions, parent string, fn func(found)) {
 }
 
 // decodeDeclaration reads a declaration's config field by field. ok is false for
-// one that does not decode; known is false when its id or extends is an
-// expression. A name, description or order that is an expression is left zero; a
-// child that is itself an expression, or whose component is, is left out; a
-// child's config is kept raw whatever it holds (checkChild leaves an expression to
-// the revision's loader) and a disabled that is an expression counts as enabled.
-func decodeDeclaration(raw json.RawMessage) (d Declaration, known, ok bool) {
+// one that does not decode; idKnown is false when its id is an expression ev cannot
+// compute. An extends ev cannot compute is left empty. A name, description or order
+// that is an expression is left zero; a child that is itself an expression, or whose
+// component is, is left out; a child's config is kept raw whatever it holds
+// (checkChild leaves an expression to the revision's loader) and a disabled that is
+// an expression counts as enabled.
+func decodeDeclaration(raw json.RawMessage, ev loader.Evaluator, entry string) (d Declaration, idKnown, ok bool) {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 || string(raw) == "null" {
 		return d, true, true
@@ -138,9 +147,10 @@ func decodeDeclaration(raw json.RawMessage) (d Declaration, known, ok bool) {
 	if json.Unmarshal(raw, &fields) != nil {
 		return d, false, false
 	}
-	if !literal(fields["id"], &d.ID) || !literal(fields["extends"], &d.Extends) {
+	if d.ID, idKnown = ref(fields["id"], ev, entry); !idKnown {
 		return Declaration{}, false, true
 	}
+	d.Extends, _ = ref(fields["extends"], ev, entry)
 	_ = literal(fields["name"], &d.Name)
 	_ = literal(fields["description"], &d.Description)
 	_ = literal(fields["order"], &d.Order)
@@ -173,28 +183,77 @@ func decodeDeclaration(raw json.RawMessage) (d Declaration, known, ok bool) {
 	return d, true, true
 }
 
-// decodeConfig reads the registry's config; expr is true when its Default is an
-// expression, ok false when it does not decode.
-func decodeConfig(raw json.RawMessage) (cfg Config, expr, ok bool) {
+// decodeConfig reads the registry's config; defaultKnown is false when its Default
+// is an expression ev cannot compute, ok false when it does not decode.
+func decodeConfig(raw json.RawMessage, ev loader.Evaluator, entry string) (cfg Config, defaultKnown, ok bool) {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 || string(raw) == "null" {
-		return cfg, false, true
+		return cfg, true, true
 	}
 	if isExpr(raw) {
-		return cfg, true, true
+		return cfg, false, true
 	}
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(raw, &fields) != nil {
 		return cfg, false, false
 	}
-	if !literal(fields["default"], &cfg.Default) {
-		expr = isExpr(bytes.TrimSpace(fields["default"]))
-		if !expr {
-			return cfg, false, false
-		}
+	def := bytes.TrimSpace(fields["default"])
+	if cfg.Default, defaultKnown = ref(def, ev, entry); !defaultKnown && !isExpr(def) {
+		return cfg, false, false
 	}
-	_ = literal(fields["selectedDefault"], &cfg.SelectedDefault)
-	return cfg, expr, true
+	cfg.SelectedDefault, _ = ref(fields["selectedDefault"], ev, entry)
+	return cfg, defaultKnown, true
+}
+
+// ref is a string field's value: the literal, or what ev computes for an
+// expression that is the whole value, in the config scope of entry. known is false
+// for an expression that cannot be computed here or yields no string, and for a
+// literal that is not a string.
+func ref(raw json.RawMessage, ev loader.Evaluator, entry string) (string, bool) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || string(raw) == "null" {
+		return "", true
+	}
+	var str string
+	if !isExpr(raw) {
+		return str, json.Unmarshal(raw, &str) == nil
+	}
+	source, ok := exprSource(raw)
+	if !ok || ev == nil {
+		return "", false
+	}
+	v, err := ev.Eval(source, loader.Scope{Kind: loader.ConfigScope, EntryID: entry})
+	if err != nil {
+		return "", false
+	}
+	str, ok = v.(string)
+	return str, ok
+}
+
+// exprSource is the source of an expression that is a whole value: "${{ x }}" or
+// {"$expr": "x"}.
+func exprSource(raw json.RawMessage) (string, bool) {
+	if raw[0] == '{' {
+		var obj map[string]json.RawMessage
+		var src string
+		if json.Unmarshal(raw, &obj) != nil || len(obj) != 1 || json.Unmarshal(obj["$expr"], &src) != nil {
+			return "", false
+		}
+		return strings.TrimSpace(src), src != ""
+	}
+	var text string
+	if json.Unmarshal(raw, &text) != nil {
+		return "", false
+	}
+	text = strings.TrimSpace(text)
+	if !strings.HasPrefix(text, "${{") || !strings.HasSuffix(text, "}}") {
+		return "", false
+	}
+	inner := strings.TrimSpace(text[3 : len(text)-2])
+	if inner == "" || strings.Contains(inner, "${{") || strings.Contains(inner, "}}") {
+		return "", false
+	}
+	return inner, true
 }
 
 // literal decodes raw into v; true for an absent value or a literal that decodes,
