@@ -31,9 +31,9 @@ Each step's merge commit; `--built` refuses a step without one.
 
 | Step | Deliverable | Commit | Notes |
 | --- | --- | --- | --- |
-| 12.1 | DH-D-VIEW-10 | | cycle C-3, with 12.2 and 12.3 at one commit |
-| 12.2 | DH-D-FS-4 | | cycle C-3 |
-| 12.3 | DH-D-SANDBOX-1 | | cycle C-3 |
+| 12.1 | DH-D-VIEW-10 | 38edfd5 | cycle C-3, with 12.2 and 12.3 at one commit: the first `main` commit holding all three members (separate merges 90abd12 #111, 30aeb4c #110, 7b4e8cd #113); wired through boot as one unit by implementation-plan Stage 2.5, `session.workdir` in `builtin.Session()` |
+| 12.2 | DH-D-FS-4 | 38edfd5 | cycle C-3, same commit as 12.1; `fs.local` and `fs.ops` in `builtin.FS()` |
+| 12.3 | DH-D-SANDBOX-1 | 38edfd5 | cycle C-3, same commit as 12.1; `sandbox.policy` in `builtin.Sandbox()` (item exported by `fs/ops`, its one importer) |
 | 12.4 | DH-D-HUMAN-4 | | P1, pulled forward |
 | 12.5 | DH-D-FS-6 | | |
 
@@ -91,7 +91,16 @@ Not yet recorded. Gate venue: both local lanes, `tools/harness-gate/lanes/win.ps
 
 ### Exact tests and commands
 
-Not yet recorded: the gate runner's output, the `go test` command lines and `DSH_REQUIRE_SCENARIOS`
+Cycle C-3 integration (implementation-plan Stage 2.5, TC-01b), run from `src/harness`:
+`go test -count=1 ./internal/boot/builtin -run TestCycleC3DirectoryMoveChangesTheFenceAndResumeRestoresIt`
+(`internal/boot/builtin/cyclec3_test.go`). It boots `fs.local`, `session.workdir`, `sandbox.policy`
+(`workspace-write`) and `fs.ops` from the build catalogue over an embedded SQLite session store in
+`t.TempDir()`. A move of the session from project `A` to sibling project `B` turns a write to `A/x` into
+`fs/sandbox-denied` (file untouched) while `B/x` is written, and the resolver resolves `B` as a write root and
+not `A`. A second process reopens the store and resumes: the rebuilt working directory is `B` and the same
+decisions hold. Passed locally on Windows native at the working tree over `38edfd5` (`go1.27.4`).
+
+Not yet recorded: the gate runner's output, the remaining `go test` command lines and `DSH_REQUIRE_SCENARIOS`
 (`harness-gate require --stage DH-S-12`).
 
 ### Run identifiers

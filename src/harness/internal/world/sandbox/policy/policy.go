@@ -55,24 +55,26 @@ const (
 // Valid reports whether n is allowed or denied.
 func (n Network) Valid() bool { return n == NetworkAllowed || n == NetworkDenied }
 
-// Config is policy.Config (sandbox-ssh.md sec. 6.2).
+// Config is policy.Config (sandbox-ssh.md sec. 6.2), the config of the
+// sandbox.policy entry.
 type Config struct {
 	// DefaultMode is the mode of a session that never wrote sandbox/mode; ""
 	// is read-only.
-	DefaultMode sandbox.Mode
+	DefaultMode sandbox.Mode `json:"defaultMode,omitempty"`
 	// ExtraWriteRoots are absolute, clean directories every workspace-write call
 	// may write below (source config); each is re-checked on every call.
-	ExtraWriteRoots []string
+	ExtraWriteRoots []string `json:"extraWriteRoots,omitempty"`
 	// Network is the default network setting; "" is allowed.
-	Network Network
+	Network Network `json:"network,omitempty"`
 	// Require is the confinement level a command needs; "" is any.
-	Require sandbox.Require
+	Require sandbox.Require `json:"require,omitempty"`
 	// UnconfinedHelpers maps each helper kind a compiled-in component allows to
-	// run unconfined to its reason; any other kind asking is refused.
-	UnconfinedHelpers map[string]string
+	// run unconfined to its reason; any other kind asking is refused. Compiled
+	// in, so no configuration layer can set it.
+	UnconfinedHelpers map[string]string `json:"-"`
 	// Platform names the policy text a resolved policy is versioned with; "" is
 	// runtime.GOOS.
-	Platform string
+	Platform string `json:"platform,omitempty"`
 }
 
 // Validate reports a malformed Config.

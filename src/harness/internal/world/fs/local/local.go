@@ -68,7 +68,7 @@ var _ fs.FS = (*FS)(nil)
 type Options struct {
 	// LockDir holds the cross-process lock files; every harness process sharing a
 	// workspace must use the same one. "" is DefaultLockDir().
-	LockDir string
+	LockDir string `json:"lockDir,omitempty"`
 }
 
 // DefaultLockDir is the lock directory of a provider given none: one per user,

@@ -69,6 +69,11 @@ type service struct {
 	order []*live
 }
 
+// Key is the service the process's session Service is provided under: what the
+// session-plane components (the policy resolver, C33) read and append logs
+// through.
+var Key = cordis.NewServiceKey[Service]("session.core")
+
 // NewService is a Service over st whose live events are dispatched through base.
 func NewService(base *cordis.Context, st store.Store, cfg Config) Service {
 	if cfg.Registry == nil {
