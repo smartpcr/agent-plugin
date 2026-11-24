@@ -135,8 +135,10 @@ var beforeOpenRoot func(dir string)
 // handle of its parent, refuses a component that is a link, and checks that
 // the directory it opened is the one it examined (same file identity). So a
 // root, or any directory above it, swapped for a link after the fence is
-// errRelinked and never yields a handle on the link's target. A missing
-// component (a write root not created yet) is created through its parent.
+// errRelinked and never yields a handle on the link's target. dir is the write
+// root itself: only that last component, when missing (a write root not created
+// yet), is created through its parent. A missing directory above it is outside
+// every write root and is never created: the call fails fs/not-found.
 func openRoot(dir string) (*os.Root, error) {
 	if beforeOpenRoot != nil {
 		beforeOpenRoot(dir)
@@ -154,8 +156,9 @@ func openRoot(dir string) (*os.Root, error) {
 	if rest == "." {
 		return cur, nil
 	}
-	for _, name := range strings.Split(rest, string(filepath.Separator)) {
-		next, err := openChild(cur, name)
+	names := strings.Split(rest, string(filepath.Separator))
+	for i, name := range names {
+		next, err := openChild(cur, name, i == len(names)-1)
 		_ = cur.Close()
 		if err != nil {
 			return nil, err
@@ -166,11 +169,15 @@ func openRoot(dir string) (*os.Root, error) {
 }
 
 // openChild opens the directory name of parent as a root, creating it when
-// missing; a link, or a directory that is not the one Lstat saw, is
-// errRelinked.
-func openChild(parent *os.Root, name string) (*os.Root, error) {
+// missing only if create is set (name is the write root itself); a missing
+// directory above the write root is fs/not-found. A link, or a directory that
+// is not the one Lstat saw, is errRelinked.
+func openChild(parent *os.Root, name string, create bool) (*os.Root, error) {
 	fi, err := parent.Lstat(name)
 	if errors.Is(err, iofs.ErrNotExist) {
+		if !create {
+			return nil, herr.Wrap(fs.CodeNotFound, err, filepath.Join(parent.Name(), name)+" does not exist and is above the write root")
+		}
 		if err := parent.Mkdir(name, dirPerm); err != nil && !errors.Is(err, iofs.ErrExist) {
 			return nil, rooted(err)
 		}
