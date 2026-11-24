@@ -181,12 +181,9 @@ type Deps struct {
 const PrincipalHarness = "harness"
 
 // Actor attributes a mode change to the principal who made it, the channel it
-// came through and the peer on that channel (the shape of approval.By).
-type Actor struct {
-	Principal string `json:"principal"`
-	Channel   string `json:"channel,omitempty"`
-	Peer      string `json:"peer,omitempty"`
-}
+// came through and the peer on that channel (the shape of approval.By). It is
+// the contract's sandbox.Actor, so a caller outside fs/ops can attribute.
+type Actor = sandbox.Actor
 
 // ModeSet is the payload of sandbox/mode: the whole new value (mode and network
 // setting), the mode it replaced and who set it (architecture.md sec. 4.1).
@@ -254,16 +251,15 @@ func RegisterView(r *views.Registry) (views.Handle[ModeState], error) {
 	return views.Register(r, ModeView())
 }
 
-type actorKey struct{}
-
 // WithActor returns ctx carrying by, the principal SetMode records on the
-// sandbox/mode it appends; without it the principal is the harness.
+// sandbox/mode it appends; without it the principal is the harness. It is
+// sandbox.WithActor.
 func WithActor(ctx context.Context, by Actor) context.Context {
-	return context.WithValue(ctx, actorKey{}, by)
+	return sandbox.WithActor(ctx, by)
 }
 
 func actorOf(ctx context.Context) Actor {
-	if by, ok := ctx.Value(actorKey{}).(Actor); ok && by.Principal != "" {
+	if by, ok := sandbox.ActorFrom(ctx); ok {
 		return by
 	}
 	return Actor{Principal: PrincipalHarness}

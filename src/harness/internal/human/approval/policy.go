@@ -115,6 +115,10 @@ func (s *Service) forgetPolicy(id session.ID) {
 // ErrNoSession is SetPolicy's error when the agent's session is not live here.
 var ErrNoSession = errors.New("approval/no-session")
 
+// Grants is the session grant table of Config.Grants, nil when grants are
+// disabled.
+func (s *Service) Grants() *Grants { return s.cfg.Grants }
+
 // SetPolicy switches the approval policy of ag's session to p, by by. A switch
 // to the policy in force writes nothing. Otherwise approval/policy is appended to
 // the session first (an append that fails changes nothing), the policy is in
