@@ -54,7 +54,10 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/model"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/temphome"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/egress"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess"
 )
+
+var _ subprocess.UserManager = noUserManager{}
 
 // Route is the scripted model's route on the composed runtime.
 const Route vocab.RouteID = "testkit/scripted"
@@ -182,6 +185,9 @@ func Start(t testing.TB, o Options) *Tree {
 		Catalog: cat,
 		App:     tr.App,
 		Steps:   steps,
+		// A composed test tree never asks the developer's user service manager for
+		// a delegated scope: on Linux the provider takes the process-group rung.
+		UserManager: noUserManager{},
 	}
 	done := make(chan int, 1)
 	go func() { done <- boot.Run(context.WithoutCancel(t.Context()), opts) }()
@@ -292,6 +298,15 @@ func (st *steps) Layers(ctx context.Context, s *boot.State) error {
 	s.Layers = append(layers, s.Layers[n-1])
 	return nil
 }
+
+// noUserManager refuses every scope request (boot.Options.UserManager).
+type noUserManager struct{}
+
+func (noUserManager) DelegateScope(context.Context, string, int) error {
+	return errNoUserManager
+}
+
+var errNoUserManager = fmt.Errorf("compose: the test kit asks no user service manager for a scope")
 
 // Tree is the real tree; the state is kept for the cleanup's checks.
 func (st *steps) Tree(ctx context.Context, s *boot.State) error {

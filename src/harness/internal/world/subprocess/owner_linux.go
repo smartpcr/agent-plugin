@@ -246,8 +246,10 @@ func (o *cgroupOwner) fallBack(build func() *exec.Cmd, cause error) (*exec.Cmd, 
 
 // startLocked starts cmd from one goroutine locked to its OS thread; Pdeathsig
 // fires when the thread that started the child exits, so that thread must live as
-// long as the host.
-var starter = sync.OnceValue(func() chan func() {
+// long as the host. The goroutine is started at package initialisation, outside
+// any testing/synctest bubble: started lazily inside one, it would belong to that
+// bubble and outlive it.
+var starter = func() chan func() {
 	ch := make(chan func())
 	go func() {
 		runtime.LockOSThread()
@@ -256,11 +258,11 @@ var starter = sync.OnceValue(func() chan func() {
 		}
 	}()
 	return ch
-})
+}()
 
 func startLocked(cmd *exec.Cmd) error {
 	done := make(chan error, 1)
-	starter() <- func() { done <- cmd.Start() }
+	starter <- func() { done <- cmd.Start() }
 	return <-done
 }
 

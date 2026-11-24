@@ -259,8 +259,9 @@ func openProcesses(ctx context.Context, s *State) *subprocess.Registry {
 		runDir = s.Home.Run()
 	}
 	procs, leftovers, err := subprocess.OpenRegistry(ctx, subprocess.ProviderOptions{
-		RunDir:   runDir,
-		Announce: func(o subprocess.Owner) { logf("boot: process trees are owned by %s\n", o) },
+		RunDir:      runDir,
+		UserManager: s.Options.UserManager,
+		Announce:    func(o subprocess.Owner) { logf("boot: process trees are owned by %s\n", o) },
 	})
 	if err != nil {
 		logf("boot: owner record not kept: %v\n", err)
