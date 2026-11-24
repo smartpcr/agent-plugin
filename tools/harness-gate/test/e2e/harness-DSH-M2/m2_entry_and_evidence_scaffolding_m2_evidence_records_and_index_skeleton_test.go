@@ -80,9 +80,10 @@ func m2BuildGate() (string, error) {
 	return m2GateBin, m2BuildErr
 }
 
-// m2Record is a DH-S-16 record with the given status line and one scenario row; its
-// steps, manual checks and owner defaults are complete so only the row and the status
-// line decide the outcome.
+// m2Record is a DH-S-16 record with the given status line and one guarded scenario row.
+// DH-S-16 is a build stage judged with built (as the CLI scenario runs it with --built),
+// so its steps, manual checks and owner defaults are complete and only the row and the
+// status line decide the outcome.
 func m2Record(statusLine, id, result string) string {
 	return "# DH-S-16 evidence\n\n" + statusLine + `
 
@@ -157,7 +158,7 @@ func (s *m2State) ready(stage string) error {
 	if s.index == nil || s.record == nil {
 		return errors.New("ready needs an index and a record")
 	}
-	s.blockers = closure.Ready(s.index, stage, s.record, false)
+	s.blockers = closure.Ready(s.index, stage, s.record, true)
 	return nil
 }
 
@@ -165,7 +166,7 @@ func (s *m2State) close(stage string) error {
 	if s.index == nil || s.record == nil {
 		return errors.New("close needs an index and a record")
 	}
-	s.refusal, s.blockers = closure.Close(s.index, stage, s.record, false)
+	s.refusal, s.blockers = closure.Close(s.index, stage, s.record, true)
 	s.closed = true
 	return nil
 }
