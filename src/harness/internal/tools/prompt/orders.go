@@ -12,6 +12,8 @@ const (
 	OrderHarness = 200
 	// OrderApproval is the session's approval policy (human/approval).
 	OrderApproval = 300
+	// OrderSandbox is the session's sandbox policy (world/sandbox/policy).
+	OrderSandbox = 350
 	// OrderTools is guidance on using the tools of the step.
 	OrderTools = 400
 	// OrderEnvironment is facts about the workspace that do not change per step.
@@ -32,6 +34,11 @@ const (
 // SectionApprovalPolicy is the section human/approval registers to state the
 // session's approval policy to the model (DH-D-HUMAN-2).
 const SectionApprovalPolicy = "approval-policy"
+
+// SectionSandboxPolicy is the section world/sandbox/policy registers to state the
+// session's sandbox policy to the model; it is left out while no policy text
+// ships for the platform (M2-C-6).
+const SectionSandboxPolicy = "sandbox-policy"
 
 // IdentityLine is the fixed harness identity line (includeHarnessIdentity).
 const IdentityLine = "You are dsh, the DeepSeek harness: an agent that works in the user's workspace through the tools listed for this step."

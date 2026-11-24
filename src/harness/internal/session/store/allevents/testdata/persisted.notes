@@ -25,3 +25,4 @@ approval/asked 2->2 sha256:056af99a8971c31c2e40cf31caeb257d0e305674f8cd44d7290f6
 grant/created 1->1 sha256:ee204091da6c50082d84914fcefaedd63e1f637a1d8c9a6cdb29009641736297 compatible: subject gained the optional label (omitempty, display only, never matched; stage 16.2 follow-up to M1-G-PIPE-6); an older binary's decoder ignores the unknown field, and a record without it has no label
 agent-preset/selected 0->1 sha256:6b024067f8a794ab6532228c551518ba9414063de669c665ea0300390c1d0eec initial shape: a session's binding to one preset revision (preset, digest, cause; DH-D-BUNDLE-4, plan stage 4.3)
 workspace-root/change 0->1 sha256:681441d534deb9bbd0842f831092d6b5445cab46b5a0acd22cf802a06a4aa0e5 initial shape
+sandbox/mode 0->1 sha256:4592ef1a6a2674693a6a6cd2187a84e08df4594f7b6f7e67f957e9168b706ede initial shape (impl.md 12.3, DH-D-SANDBOX-1)
