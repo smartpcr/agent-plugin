@@ -321,6 +321,23 @@ var cases = []struct {
 			e.t.Fatal("deleting a link touched its target")
 		}
 	}},
+	{"fence-dangling-final-symlink-outside-root", func(e *env) {
+		e.symlinks()
+		ctx := context.Background()
+		if err := e.Symlink(e.outside("new"), e.in("link")); err != nil {
+			e.t.Fatalf("symlink: %v", err)
+		}
+		for _, g := range []fs.Guard{fs.NoGuard, fs.CreateIfAbsent} {
+			_, err := e.FS.Write(ctx, ref(e.in("link")), []byte("x"), g, e.write)
+			e.code(err, fs.CodeSandboxDenied)
+			if e.exists(e.outside("new")) {
+				e.t.Fatalf("a write (guard %T) through a dangling link escaped the root", g)
+			}
+			if !e.exists(e.in("link")) {
+				e.t.Fatalf("a refused write (guard %T) removed the link", g)
+			}
+		}
+	}},
 	{"relative-symlink-follows-its-moved-directory", func(e *env) {
 		e.symlinks()
 		ctx := context.Background()
