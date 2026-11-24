@@ -142,6 +142,7 @@ func TestFenceHoldsThroughASwappedLink(t *testing.T) {
 	var done atomic.Bool
 	var swapErrs, linked int
 	var wg sync.WaitGroup
+	t.Cleanup(wg.Wait) // joins the swapper (QG-5)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()

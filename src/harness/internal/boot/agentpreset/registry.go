@@ -556,6 +556,15 @@ func (r *Registry) lookupLocked(id string) (*revision, error) {
 // revision (health, audited now) is refused with CodeInvalid and its diagnostic, an
 // unknown id with CodeNotFound and the available ids; neither leaves a lease.
 func (r *Registry) Acquire(owner *cordis.Context, id string) (Lease, error) {
+	l, err := r.acquire(owner, id)
+	if err != nil {
+		return nil, err
+	}
+	return l, nil
+}
+
+// acquire is Acquire returning the concrete lease, which Bind attaches.
+func (r *Registry) acquire(owner *cordis.Context, id string) (*lease, error) {
 	for {
 		r.mu.Lock()
 		rev, err := r.lookupLocked(id)
@@ -583,6 +592,15 @@ func (r *Registry) Acquire(owner *cordis.Context, id string) (Lease, error) {
 // AcquireFrom leases the exact revision the agent scope holder is bound to, retired
 // or not (DH-ADR-BUNDLE-7): a child agent that names no preset joins its creator's.
 func (r *Registry) AcquireFrom(owner *cordis.Context, holder scope.Key) (Lease, error) {
+	l, err := r.acquireFrom(owner, holder)
+	if err != nil {
+		return nil, err
+	}
+	return l, nil
+}
+
+// acquireFrom is AcquireFrom returning the concrete lease, which BindFrom attaches.
+func (r *Registry) acquireFrom(owner *cordis.Context, holder scope.Key) (*lease, error) {
 	r.mu.Lock()
 	l := r.bindings[holder]
 	if l == nil || r.closed {
@@ -597,7 +615,7 @@ func (r *Registry) AcquireFrom(owner *cordis.Context, holder scope.Key) (Lease, 
 
 // hold wraps one counted lease on rev and ties it to owner's fiber; a failure gives
 // the count back.
-func (r *Registry) hold(owner *cordis.Context, rev *revision) (Lease, error) {
+func (r *Registry) hold(owner *cordis.Context, rev *revision) (*lease, error) {
 	l := &lease{r: r, rev: rev}
 	if owner == nil {
 		r.release(l)

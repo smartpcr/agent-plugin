@@ -3,6 +3,7 @@ package driver_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -36,8 +37,13 @@ func TestMaintainHoldsTheTurnBack(t *testing.T) {
 		t.Fatalf("turn/end after the task %+v", got)
 	}
 
-	in, out := make(chan struct{}), make(chan struct{})
+	in, out, held := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var outOnce sync.Once
+	release := func() { outOnce.Do(func() { close(out) }) }
+	t.Cleanup(func() { <-held }) // joins the holding task (QG-5) ...
+	t.Cleanup(release)           // ... after releasing it, should the test stop early
 	go func() {
+		defer close(held)
 		_ = r.drv.Maintain(bg, func(context.Context) error { close(in); <-out; return nil })
 	}()
 	<-in
@@ -47,7 +53,7 @@ func TestMaintainHoldsTheTurnBack(t *testing.T) {
 	if err := r.drv.Maintain(ctx, func(context.Context) error { ran = true; return nil }); !errors.Is(err, context.Canceled) || ran {
 		t.Fatalf("maintain under an ended context = %v, ran %v", err, ran)
 	}
-	close(out)
+	release()
 
 	// With the gate free both select cases are ready; the ended context must still
 	// win every time.

@@ -27,16 +27,18 @@ func sftNewSpawnRecorder() (*sftSpawnRecorder, error) {
 }
 
 func (r *sftSpawnRecorder) Count() (int, error) {
-	// Let the runtime deliver a signal raised by a child that just exited.
-	time.Sleep(250 * time.Millisecond)
+	// A child that just exited may raise its SIGCHLD a little later: collect
+	// signals for a grace window rather than reading only those already queued.
+	grace := time.NewTimer(250 * time.Millisecond)
+	defer grace.Stop()
+collect:
 	for {
 		select {
 		case <-r.ch:
 			r.total++
-			continue
-		default:
+		case <-grace.C:
+			break collect
 		}
-		break
 	}
 	live := 0
 	tasks, _ := filepath.Glob("/proc/self/task/*/children")

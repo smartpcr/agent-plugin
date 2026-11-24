@@ -169,25 +169,34 @@ func TestLateHostServiceMakesThePresetUsable(t *testing.T) {
 		t.Fatal(err)
 	}
 	var l agentpreset.Lease
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
-		if l, err = e.reg.Acquire(e.root, ""); err == nil || time.Now().After(deadline) {
-			break
-		}
-	}
-	if err != nil {
-		t.Fatalf("acquire after the host provided tool.missing = %v", err)
-	}
+	waitFor(t, "an acquire to succeed after the host provided tool.missing", func() bool {
+		l, err = e.reg.Acquire(e.root, "")
+		return err == nil
+	})
 	if in := l.Info(); in.Revision != 1 || in.Broken != "" {
 		t.Fatalf("lease info %+v, want the same revision 1, usable", in)
 	}
 	l.Release()
 
 	h.Dispose()
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
-		if in, _ := e.reg.Resolve("needy"); strings.Contains(in.Broken, "tool.missing") {
-			break
-		} else if time.Now().After(deadline) {
-			t.Fatalf("needy after tool.missing was withdrawn = %+v, want broken naming it", in)
+	waitFor(t, "needy to be broken naming tool.missing after it was withdrawn", func() bool {
+		in, _ := e.reg.Resolve("needy")
+		return strings.Contains(in.Broken, "tool.missing")
+	})
+}
+
+// waitFor polls cond on a ticker until it holds, failing after 5 s. The registry
+// audits a host service change asynchronously, so there is no signal to wait on.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	tick := time.NewTicker(5 * time.Millisecond)
+	defer tick.Stop()
+	limit := time.After(5 * time.Second)
+	for !cond() {
+		select {
+		case <-tick.C:
+		case <-limit:
+			t.Fatalf("timed out waiting for %s", what)
 		}
 	}
 }
@@ -205,9 +214,13 @@ func TestSelectExcludesTurnStart(t *testing.T) {
 	h, _, tg := e.agent(t, "s1")
 	g := tg.Maintainer.(*gate)
 	started := make(chan error, 1)
+	var turnJoin sync.WaitGroup
+	t.Cleanup(turnJoin.Wait) // joins the turn goroutine (QG-5)
 	hs := &hookSession{Session: h}
 	hs.onRead = func() {
+		turnJoin.Add(1)
 		go func() {
+			defer turnJoin.Done()
 			g.mu.Lock() // the driver's turn takes the gate before it opens
 			defer g.mu.Unlock()
 			d, err := event.TurnStartType.Draft(event.TurnStart{Turn: 1})
@@ -257,12 +270,15 @@ func TestConcurrentBindsOfOneAgent(t *testing.T) {
 	firstIn, release := make(chan struct{}), make(chan struct{})
 	tg.Session = &hookSession{Session: h, onAppend: func() { close(firstIn); <-release }}
 	var wg sync.WaitGroup
+	t.Cleanup(wg.Wait) // joins both binds (QG-5)
 	errs := make([]error, 2)
 	wg.Add(2)
 	go func() { defer wg.Done(); _, errs[0] = e.reg.Bind(ctx, tg, "standard", agentpreset.CauseCreate) }()
 	<-firstIn
 	go func() { defer wg.Done(); _, errs[1] = e.reg.Bind(ctx, tg, "other", agentpreset.CauseCreate) }()
-	time.Sleep(50 * time.Millisecond) // the second bind reaches the target's lock
+	waitFor(t, "the second bind to reach the target's lock", func() bool {
+		return agentpreset.TargetUsers(e.reg, sc.Key()) == 2
+	})
 	close(release)
 	wg.Wait()
 	if errs[0] != nil || errs[1] != nil {
@@ -294,6 +310,7 @@ func TestLeaseInfoDuringMetadataReloads(t *testing.T) {
 		t.Fatal(err)
 	}
 	done := make(chan struct{})
+	t.Cleanup(func() { <-done }) // joins the reload goroutine (QG-5)
 	go func() {
 		defer close(done)
 		for i := range 50 {

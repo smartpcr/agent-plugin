@@ -36,6 +36,7 @@ func TestGuardedWritesThroughDistinctProvidersHaveOneWinner(t *testing.T) {
 	v1, _ := readVersion(t, local.New(), f)
 
 	var wg sync.WaitGroup
+	t.Cleanup(wg.Wait) // joins the writers (QG-5)
 	errs := make([]error, writers)
 	start := make(chan struct{})
 	for i := range writers {
@@ -103,10 +104,18 @@ func TestGuardedWritesSerialiseAcrossProcesses(t *testing.T) {
 	cmds := make([]*exec.Cmd, helpers)
 	outs := make([]bytes.Buffer, helpers)
 	for i := range cmds {
-		cmds[i] = exec.Command(exe, "-test.run=^TestGuardedWritesSerialiseAcrossProcesses$", "-test.count=1")
-		cmds[i].Env = append(os.Environ(), helperEnv+"="+f, helperEnv+"_LOCKS="+locks)
-		cmds[i].Stdout, cmds[i].Stderr = &outs[i], &outs[i]
-		if err := cmds[i].Start(); err != nil {
+		cmd := exec.Command(exe, "-test.run=^TestGuardedWritesSerialiseAcrossProcesses$", "-test.count=1")
+		cmd.Env = append(os.Environ(), helperEnv+"="+f, helperEnv+"_LOCKS="+locks)
+		cmd.Stdout, cmd.Stderr = &outs[i], &outs[i]
+		cmds[i] = cmd
+		// A helper the test did not wait for (it stopped early) is killed and reaped (QG-5).
+		t.Cleanup(func() {
+			if cmd.Process != nil && cmd.ProcessState == nil {
+				_ = cmd.Process.Kill()
+				_ = cmd.Wait()
+			}
+		})
+		if err := cmd.Start(); err != nil {
 			t.Fatal(err)
 		}
 	}

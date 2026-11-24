@@ -129,11 +129,11 @@ func (r *Registry) Bind(ctx context.Context, t Target, id string, cause Cause) (
 }
 
 func (r *Registry) bindLocked(ctx context.Context, t Target, id string, cause Cause) (Info, error) {
-	l, err := r.Acquire(t.Owner, id)
+	l, err := r.acquire(t.Owner, id)
 	if err != nil {
 		return Info{}, err
 	}
-	return r.attach(ctx, t, l.(*lease), cause)
+	return r.attach(ctx, t, l, cause)
 }
 
 // BindFrom binds t to the exact revision holder is bound to (cause inherit).
@@ -142,11 +142,11 @@ func (r *Registry) BindFrom(ctx context.Context, t Target, holder scope.Key) (In
 		return Info{}, errors.New("agentpreset: a binding needs its session, scope and owner")
 	}
 	defer r.lockTarget(t.Scope.Key())()
-	l, err := r.AcquireFrom(t.Owner, holder)
+	l, err := r.acquireFrom(t.Owner, holder)
 	if err != nil {
 		return Info{}, err
 	}
-	return r.attach(ctx, t, l.(*lease), CauseInherit)
+	return r.attach(ctx, t, l, CauseInherit)
 }
 
 // attach publishes l as t's binding; the target's lock is held.
