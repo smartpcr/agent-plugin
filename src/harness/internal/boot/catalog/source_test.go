@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/smartpcr/agent-plugin/src/go/loader"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/builtin"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/profile"
 )
 
@@ -143,7 +144,17 @@ func TestSourceRules(t *testing.T) {
 		}
 	}
 
-	for _, def := range profile.Builtins() {
+	// A required id the shipped layers lack is a fault unless it is listed in
+	// unbuilt, and a listed id is a fault once it resolves in the build catalogue
+	// or a shipped layer holds it. Both directions are checked, so this list and
+	// the profile package's unbuilt list each equal the ids actually unbuilt and
+	// cannot drift apart.
+	cat, err := builtin.Catalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stillUnbuilt := map[string]bool{}
+	for _, def := range append(profile.Definitions(), profile.Builtins()...) {
 		var layers []loader.Layer
 		for _, name := range def.Bundles {
 			layer, err := profile.Bundle(name)
@@ -153,10 +164,35 @@ func TestSourceRules(t *testing.T) {
 			layers = append(layers, layer)
 		}
 		tree, _, _ := loader.Compose(layers)
-		if missing := missingRequired(def.Required, tree); len(missing) > 0 {
+		var missing []string
+		for _, id := range missingRequired(def.Required, tree) {
+			if !unbuilt[id] {
+				missing = append(missing, id)
+				continue
+			}
+			if _, err := cat.Lookup(id); err == nil {
+				t.Errorf("profile %s: required %s is in the catalogue now: insert its entry and take it off unbuilt", def.Name, id)
+				continue
+			}
+			stillUnbuilt[id] = true
+		}
+		if len(missing) > 0 {
 			t.Errorf("profile %s requires %v, which its shipped layers do not hold", def.Name, missing)
 		}
 	}
+	for id := range unbuilt {
+		if !stillUnbuilt[id] {
+			t.Errorf("unbuilt %s is held by the shipped layers or required by no profile: take it off unbuilt", id)
+		}
+	}
+}
+
+// unbuilt are the Required ids no shipped layer holds yet; it is the exact list of
+// the profile package's golden test (builtins_test.go), whose stage-owning change
+// takes an id off both lists together.
+var unbuilt = map[string]bool{
+	"session.store": true, "agent.registry": true, "agent.driver": true, "tools.registry": true, "agent.presets": true,
+	"host.listen": true, "host.auth": true, "host.assets": true, "host.web": true, "host.access": true, "host.stream": true, "ui.shell": true,
 }
 
 // missingRequired returns the required ids no entry of tree has, at any depth.
