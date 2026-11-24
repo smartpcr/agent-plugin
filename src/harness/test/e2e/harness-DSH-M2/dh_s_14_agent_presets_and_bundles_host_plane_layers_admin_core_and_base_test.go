@@ -31,6 +31,7 @@ type hplState struct {
 	// layer operations scenario
 	def    profile.Definition
 	files  map[string]string
+	labels []string
 	report *config.Report
 
 	// admin scenario
@@ -43,14 +44,25 @@ type hplState struct {
 
 // ---- Layer operations (TC-08a) ----
 
-func (s *hplState) bundlesStacked(a, b, c string) error {
+func hplList(list string) []string {
+	var out []string
+	for _, p := range strings.Split(list, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func (s *hplState) bundlesStacked(list string) error {
+	names := hplList(list)
 	embedded := profile.BundleNames()
-	for _, n := range []string{a, b, c} {
+	for _, n := range names {
 		if !slices.Contains(embedded, n) {
 			return fmt.Errorf("bundle %s is not embedded (embedded: %v)", n, embedded)
 		}
 	}
-	s.def = profile.Definition{Name: "hpl-ops", Bundles: []string{a, b, c}}
+	s.def = profile.Definition{Name: "hpl-ops", Bundles: names}
 	return nil
 }
 
@@ -75,13 +87,9 @@ func (s *hplState) stackedAndPreviewed() error {
 	if len(issues) > 0 {
 		return fmt.Errorf("stack issues: %v", issues)
 	}
-	var labels []string
+	s.labels = nil
 	for _, l := range layers {
-		labels = append(labels, l.Label)
-	}
-	want := []string{"bundle:admin", "bundle:core", "bundle:base", profile.ProfileLabel, profile.UserLabel, profile.LauncherLabel}
-	if !slices.Equal(labels, want) {
-		return fmt.Errorf("stack labels = %v, want %v", labels, want)
+		s.labels = append(s.labels, l.Label)
 	}
 	cat, err := builtin.Catalog()
 	if err != nil {
@@ -102,12 +110,19 @@ func (s *hplState) previewNoIssue() error {
 	return nil
 }
 
-func (s *hplState) treeHolds(a, b, c string) error {
+func (s *hplState) stackOrder(list string) error {
+	if want := hplList(list); !slices.Equal(s.labels, want) {
+		return fmt.Errorf("stack labels = %v, want %v", s.labels, want)
+	}
+	return nil
+}
+
+func (s *hplState) treeHolds(list string) error {
 	var ids []string
 	for _, e := range s.report.Tree {
 		ids = append(ids, e.ID)
 	}
-	if want := []string{a, b, c}; !slices.Equal(ids, want) {
+	if want := hplList(list); !slices.Equal(ids, want) {
 		return fmt.Errorf("tree = %v, want %v", ids, want)
 	}
 	return nil
@@ -304,11 +319,12 @@ func (s *hplState) adminActsOnNothing() error {
 
 func InitializeScenario_dh_s_14_agent_presets_and_bundles_host_plane_layers_admin_core_and_base(ctx *godog.ScenarioContext) {
 	s := &hplState{}
-	ctx.Step(`^the embedded bundles "([^"]*)", "([^"]*)" and "([^"]*)" stacked in that order$`, s.bundlesStacked)
+	ctx.Step(`^the embedded bundles "([^"]*)" stacked in that order$`, s.bundlesStacked)
 	ctx.Step(`^a user layer file that removes "([^"]*)" and merges level "([^"]*)" into the "([^"]*)" config$`, s.userLayerRemovesAndMerges)
 	ctx.Step(`^the layers are stacked and previewed$`, s.stackedAndPreviewed)
+	ctx.Step(`^the stack order is "([^"]*)"$`, s.stackOrder)
 	ctx.Step(`^the preview reports no issue$`, s.previewNoIssue)
-	ctx.Step(`^the composed tree holds "([^"]*)", "([^"]*)" and "([^"]*)" in that order$`, s.treeHolds)
+	ctx.Step(`^the composed tree holds exactly "([^"]*)"$`, s.treeHolds)
 	ctx.Step(`^the "([^"]*)" config is merged key-wise to destination "([^"]*)" and level "([^"]*)"$`, s.configMerged)
 	ctx.Step(`^the source of "([^"]*)" field "([^"]*)" is layer "([^"]*)"$`, s.fieldSource)
 	ctx.Step(`^the source of entry "([^"]*)" is layer "([^"]*)"$`, s.entrySource)
