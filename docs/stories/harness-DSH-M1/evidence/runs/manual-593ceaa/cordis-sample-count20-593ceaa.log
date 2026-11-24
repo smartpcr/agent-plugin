@@ -1,0 +1,11 @@
+commit: 593ceaa3efd55d41bf0eeaced5ba7e26acc71966 (code tree of 593ceaa; only docs changed) started: 2026-11-24T01:31:04Z
+== Windows
+ok  	github.com/smartpcr/agent-plugin/src/go/cmd/cordis-sample	38.854s
+exit 0
+== WSL ext4 clone
+593ceaa3efd55d41bf0eeaced5ba7e26acc71966
+6.18.58.1-microsoft-standard-WSL2
+ok  	github.com/smartpcr/agent-plugin/src/go/cmd/cordis-sample	34.189s
+exit 0
+golden unchanged (empty status above)
+ended: 2026-11-24T01:32:29Z

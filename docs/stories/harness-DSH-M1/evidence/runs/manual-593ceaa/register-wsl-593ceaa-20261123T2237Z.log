@@ -1,0 +1,579 @@
+== dsh M1 manual-check register run (plan step 18.1.5) ==
+script        : /mnt/c/Users/xiaodoli.REDMOND/AppData/Local/Temp/claude/095fd4c454d7f56c/32b1560e-0d49-424c-b2a5-d7e6081d5719/scratchpad/manual/run-register.sh
+script sha256 : 07e5e4b09dd9b3e2a6af596a5646325cecec8b2c7a1ba262e087918477128e09
+repository    : /home/dsh/src/agent-plugin
+commit        : 593ceaa3efd55d41bf0eeaced5ba7e26acc71966 (frozen: 593ceaa3efd55d41bf0eeaced5ba7e26acc71966)
+branch        : HEAD
+os (lane)     : wsl
+go version    : go version go1.27.4 linux/amd64
+env           : GOTOOLCHAIN=go1.27.4 GOWORK=off GOFLAGS=<unset> CGO_ENABLED(go env)=1 CC=gcc
+kernel        : Linux 6.18.58.1-microsoft-standard-WSL2 #1 SMP PREEMPT_DYNAMIC Tue Oct 27 00:24:11 UTC 2026 x86_64
+os-release    : Ubuntu 24.04.5 LTS
+wsl distro    : Ubuntu-24.04
+pid 1         : systemd (systemd in /etc/wsl.conf: systemd=true)
+checkout fs   : ext2/ext3
+user          : dsh (uid 1000)
+one-lane rows : no; only: all; supplements: 1
+started (UTC) : 2026-11-23T22:37:36Z
+log           : /mnt/c/Users/xiaodoli.REDMOND/AppData/Local/Temp/claude/095fd4c454d7f56c/32b1560e-0d49-424c-b2a5-d7e6081d5719/scratchpad/manual/register-wsl-593ceaa-20261123T2237Z.log
+
+------------------------------------------------------------------------
+ROW DH-S-1 step 1.9: seeded violation: a target that does not cross-compile (cross-broken names windows/arm64); the rehearsal (by hand)
+kind: seeded; systems: wsl; lane: wsl; commit: 593ceaa
+setup: git -C /home/dsh/src/agent-plugin worktree add --detach /tmp/dsh-register-sb3IgI/wt 593ceaa3efd55d41bf0eeaced5ba7e26acc71966
+Preparing worktree (detached HEAD 593ceaa)
+HEAD is now at 593ceaa3 [impl] 18.1.4: the trace gate runs trace-tests through built-through
+setup: GOWORK=off go -C /tmp/dsh-register-sb3IgI/wt/tools/harness-gate build -o /tmp/dsh-register-sb3IgI/bin/harness-gate .  (same program as: GOWORK=off go -C tools/harness-gate run . --root <copy>)
+  CASE cross-broken (module testdata/cross-broken)
+  CMD : cp -r /tmp/dsh-register-sb3IgI/wt/tools/harness-gate/testdata/cross-broken /tmp/dsh-register-sb3IgI/mods/cross-broken
+  CMD : (cd /tmp/dsh-register-sb3IgI/wt/tools/harness-gate &&) /tmp/dsh-register-sb3IgI/bin/harness-gate --root /tmp/dsh-register-sb3IgI/mods/cross-broken
+    | harness-gate: toolchain go1.27.4 (the go floor of go.mod; children run with GOTOOLCHAIN=go1.27.4, GOROOT=/usr/local/go)
+    | harness-gate: gate 1/12 gofmt -- every Go file is gofmt-formatted
+    | gofmt: 2 files checked
+    | harness-gate: PASS gofmt (6ms)
+    | harness-gate: gate 2/12 vet -- go vet and the project's own analyzers (nosleep, onespawn, cleanup, fuzzcheck, rootcall, typeassert, lintignore), also on the e2e layer; prints the //lint:ignore exception total
+    | ok   .: go vet -tags= ./...
+    | ok   .: go vet -tags= -vettool=/tmp/dsh-register-sb3IgI/bin/harness-gate ./...
+    | ok   .: go vet -tags=replay,scenario,bench ./...
+    | ok   .: go vet -tags=replay,scenario,bench -vettool=/tmp/dsh-register-sb3IgI/bin/harness-gate ./...
+    | ok   .: go vet -tags=e2e ./...
+    | ok   .: go vet -tags=e2e -vettool=/tmp/dsh-register-sb3IgI/bin/harness-gate ./...
+    | exceptions: 0
+    | harness-gate: PASS vet (997ms)
+    | harness-gate: gate 3/12 staticcheck -- the pinned staticcheck per module, with -tags= and -tags=replay,scenario,bench
+    | ok   .: staticcheck -tags= ./...
+    | ok   .: staticcheck -tags=replay,scenario,bench ./...
+    | harness-gate: PASS staticcheck (366ms)
+    | harness-gate: gate 4/12 modules -- go mod tidy -diff and go mod verify per module, the module rules (RM-1..RM-4) and a reason on every pin (RM-10)
+    | ok   .: go mod tidy -diff
+    | ok   .: go mod verify
+    | modules: 1 modules checked
+    | harness-gate: PASS modules (9ms)
+    | harness-gate: gate 5/12 test -- go test -race -shuffle=on -count=1 per module, CGO_ENABLED=1
+    | ok   .: go test -tags= -race -shuffle=on -count=1 ./...
+    | harness-gate: PASS test (69ms)
+    | harness-gate: gate 6/12 coverage -- coverage merged across processes, 85% of statements per package
+    | ok   .: go tool covdata textfmt -i=/tmp/harness-gate-cover-4230125865/covdata -o=/tmp/harness-gate-cover-4230125865/covdata.out
+    | ok   .: go test -tags= -cover -covermode=set -coverprofile=/tmp/harness-gate-cover-4230125865/untested.out example.com/crossbroken/cmd/dsh
+    | coverage: example.com/crossbroken/cmd/dsh 100%
+    | harness-gate: PASS coverage (251ms)
+    | harness-gate: gate 7/12 trace -- tools/harness-trace verify, and trace-tests: every DH-T ID of DH-S-1..built-through named by a test or validly deferred
+    | harness-gate: FAIL trace (0s)
+    | tools/harness-trace not found under /tmp/dsh-register-sb3IgI/mods/cross-broken: the traceability check cannot run (QG-9)
+    | trace-tests: test/harness/acceptance-index.yaml not found under /tmp/dsh-register-sb3IgI/mods/cross-broken: the acceptance index cannot be checked: open /tmp/dsh-register-sb3IgI/mods/cross-broken/test/harness/acceptance-index.yaml: no such file or directory
+    | harness-gate: FAILED at gate trace
+  exit: 1
+  case cross-broken: FAIL (failed at gate 'trace', want 'cross-compile';output lacks "windows/arm64")
+  case cross-broken: judged by TestCrossCompileNamesFailingTarget (register amended: a single-module root cannot reach this gate)
+  SUPPLEMENT (not the register procedure; the gate-level test of case cross-broken): (cd /tmp/dsh-register-sb3IgI/wt &&) GOWORK=off go -C tools/harness-gate test -count=1 -v -run '^(TestCrossCompileNamesFailingTarget)$' .
+    | === RUN   TestCrossCompileNamesFailingTarget
+    | --- PASS: TestCrossCompileNamesFailingTarget (0.45s)
+    | PASS
+    | ok  	github.com/smartpcr/agent-plugin/tools/harness-gate	0.457s
+  SUPPLEMENT RESULT TestCrossCompileNamesFailingTarget: PASS
+NOT SCRIPTED: by hand: the -rehearse.txt of the WSL lane run (checklist)
+AID (by-hand part): rehearse file at 593ceaa: none found
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-4 step 4.6: rule-3 default: fsx replaces, creates, locks and identifies files
+kind: composed; systems: both; lane: wsl; commit: 593ceaa
+CMD : (cd /home/dsh/src/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v ./internal/util/fsx/
+=== RUN   TestFailureAtEachStep
+=== RUN   TestFailureAtEachStep/Replace/stage
+=== RUN   TestFailureAtEachStep/Replace/write
+=== RUN   TestFailureAtEachStep/Replace/mode
+=== RUN   TestFailureAtEachStep/Replace/sync
+=== RUN   TestFailureAtEachStep/Replace/close
+=== RUN   TestFailureAtEachStep/Replace/publish
+=== RUN   TestFailureAtEachStep/CreateIfAbsent/stage
+=== RUN   TestFailureAtEachStep/CreateIfAbsent/write
+=== RUN   TestFailureAtEachStep/CreateIfAbsent/mode
+=== RUN   TestFailureAtEachStep/CreateIfAbsent/sync
+=== RUN   TestFailureAtEachStep/CreateIfAbsent/close
+=== RUN   TestFailureAtEachStep/CreateIfAbsent/publish
+=== RUN   TestFailureAtEachStep/ReplaceIn/stage
+=== RUN   TestFailureAtEachStep/ReplaceIn/write
+=== RUN   TestFailureAtEachStep/ReplaceIn/mode
+=== RUN   TestFailureAtEachStep/ReplaceIn/sync
+=== RUN   TestFailureAtEachStep/ReplaceIn/close
+=== RUN   TestFailureAtEachStep/ReplaceIn/publish
+=== RUN   TestFailureAtEachStep/CreateIfAbsentIn/stage
+=== RUN   TestFailureAtEachStep/CreateIfAbsentIn/write
+=== RUN   TestFailureAtEachStep/CreateIfAbsentIn/mode
+=== RUN   TestFailureAtEachStep/CreateIfAbsentIn/sync
+=== RUN   TestFailureAtEachStep/CreateIfAbsentIn/close
+=== RUN   TestFailureAtEachStep/CreateIfAbsentIn/publish
+=== RUN   TestFailureAtEachStep/CreateIfAbsentIn_without_links/stage
+=== RUN   TestFailureAtEachStep/CreateIfAbsentIn_without_links/write
+=== RUN   TestFailureAtEachStep/CreateIfAbsentIn_without_links/mode
+=== RUN   TestFailureAtEachStep/CreateIfAbsentIn_without_links/sync
+=== RUN   TestFailureAtEachStep/CreateIfAbsentIn_without_links/close
+=== RUN   TestFailureAtEachStep/CreateIfAbsentIn_without_links/publish
+--- PASS: TestFailureAtEachStep (0.03s)
+    --- PASS: TestFailureAtEachStep/Replace/stage (0.00s)
+    --- PASS: TestFailureAtEachStep/Replace/write (0.00s)
+    --- PASS: TestFailureAtEachStep/Replace/mode (0.00s)
+    --- PASS: TestFailureAtEachStep/Replace/sync (0.00s)
+    --- PASS: TestFailureAtEachStep/Replace/close (0.00s)
+    --- PASS: TestFailureAtEachStep/Replace/publish (0.00s)
+    --- PASS: TestFailureAtEachStep/CreateIfAbsent/stage (0.00s)
+    --- PASS: TestFailureAtEachStep/CreateIfAbsent/write (0.00s)
+    --- PASS: TestFailureAtEachStep/CreateIfAbsent/mode (0.00s)
+    --- PASS: TestFailureAtEachStep/CreateIfAbsent/sync (0.00s)
+    --- PASS: TestFailureAtEachStep/CreateIfAbsent/close (0.00s)
+    --- PASS: TestFailureAtEachStep/CreateIfAbsent/publish (0.00s)
+    --- PASS: TestFailureAtEachStep/ReplaceIn/stage (0.00s)
+    --- PASS: TestFailureAtEachStep/ReplaceIn/write (0.00s)
+    --- PASS: TestFailureAtEachStep/ReplaceIn/mode (0.00s)
+    --- PASS: TestFailureAtEachStep/ReplaceIn/sync (0.00s)
+    --- PASS: TestFailureAtEachStep/ReplaceIn/close (0.00s)
+    --- PASS: TestFailureAtEachStep/ReplaceIn/publish (0.00s)
+    --- PASS: TestFailureAtEachStep/CreateIfAbsentIn/stage (0.00s)
+    --- PASS: TestFailureAtEachStep/CreateIfAbsentIn/write (0.00s)
+    --- PASS: TestFailureAtEachStep/CreateIfAbsentIn/mode (0.00s)
+    --- PASS: TestFailureAtEachStep/CreateIfAbsentIn/sync (0.00s)
+    --- PASS: TestFailureAtEachStep/CreateIfAbsentIn/close (0.00s)
+    --- PASS: TestFailureAtEachStep/CreateIfAbsentIn/publish (0.00s)
+    --- PASS: TestFailureAtEachStep/CreateIfAbsentIn_without_links/stage (0.00s)
+    --- PASS: TestFailureAtEachStep/CreateIfAbsentIn_without_links/write (0.00s)
+    --- PASS: TestFailureAtEachStep/CreateIfAbsentIn_without_links/mode (0.00s)
+    --- PASS: TestFailureAtEachStep/CreateIfAbsentIn_without_links/sync (0.00s)
+    --- PASS: TestFailureAtEachStep/CreateIfAbsentIn_without_links/close (0.00s)
+    --- PASS: TestFailureAtEachStep/CreateIfAbsentIn_without_links/publish (0.00s)
+=== RUN   TestRootedCreateOneWinner
+=== RUN   TestRootedCreateOneWinner/noLink=false
+=== RUN   TestRootedCreateOneWinner/noLink=true
+--- PASS: TestRootedCreateOneWinner (0.00s)
+    --- PASS: TestRootedCreateOneWinner/noLink=false (0.00s)
+    --- PASS: TestRootedCreateOneWinner/noLink=true (0.00s)
+=== RUN   TestCreateIfAbsentAcrossProcesses
+=== RUN   TestCreateIfAbsentAcrossProcesses/plain
+=== RUN   TestCreateIfAbsentAcrossProcesses/rooted
+=== RUN   TestCreateIfAbsentAcrossProcesses/nolink
+--- PASS: TestCreateIfAbsentAcrossProcesses (0.04s)
+    --- PASS: TestCreateIfAbsentAcrossProcesses/plain (0.01s)
+    --- PASS: TestCreateIfAbsentAcrossProcesses/rooted (0.01s)
+    --- PASS: TestCreateIfAbsentAcrossProcesses/nolink (0.01s)
+=== RUN   TestVersionStaleness
+--- PASS: TestVersionStaleness (0.00s)
+=== RUN   TestVersionTokenChanges
+--- PASS: TestVersionTokenChanges (0.00s)
+=== RUN   TestUTF16RoundTrip
+=== RUN   TestUTF16RoundTrip/2
+=== RUN   TestUTF16RoundTrip/3
+--- PASS: TestUTF16RoundTrip (0.00s)
+    --- PASS: TestUTF16RoundTrip/2 (0.00s)
+    --- PASS: TestUTF16RoundTrip/3 (0.00s)
+=== RUN   TestReaderAndEditorVerdict
+--- PASS: TestReaderAndEditorVerdict (0.00s)
+=== RUN   TestContainment
+--- PASS: TestContainment (0.00s)
+=== RUN   TestIdentity
+--- PASS: TestIdentity (0.00s)
+=== RUN   TestVersion
+--- PASS: TestVersion (0.00s)
+=== RUN   TestInside
+--- PASS: TestInside (0.00s)
+=== RUN   TestIsRemote
+--- PASS: TestIsRemote (0.00s)
+=== RUN   TestIsText
+--- PASS: TestIsText (0.00s)
+=== RUN   TestEOL
+--- PASS: TestEOL (0.00s)
+=== RUN   TestEncoding
+--- PASS: TestEncoding (0.00s)
+=== RUN   TestReplaceNeverExposesPartialFile
+--- PASS: TestReplaceNeverExposesPartialFile (0.09s)
+=== RUN   TestReplaceModes
+--- PASS: TestReplaceModes (0.01s)
+=== RUN   TestReplaceWriterFailureLeavesTarget
+--- PASS: TestReplaceWriterFailureLeavesTarget (0.00s)
+=== RUN   TestCreateIfAbsentOneWinner
+--- PASS: TestCreateIfAbsentOneWinner (0.00s)
+=== RUN   TestRootedReplaceAndCreate
+--- PASS: TestRootedReplaceAndCreate (0.01s)
+=== RUN   TestRootedCreateWithoutLinks
+--- PASS: TestRootedCreateWithoutLinks (0.00s)
+=== RUN   TestSweepStaged
+--- PASS: TestSweepStaged (0.00s)
+=== RUN   TestLock
+--- PASS: TestLock (0.07s)
+=== RUN   TestLockBeyondEnd
+--- PASS: TestLockBeyondEnd (0.00s)
+=== RUN   TestLockShared
+--- PASS: TestLockShared (0.03s)
+=== RUN   TestRootedDurable
+--- PASS: TestRootedDurable (0.02s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/util/fsx	0.290s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-6 step 6.2: a child that ignores termination: started through the one spawn package (record the owner line)
+kind: composed; systems: both; lane: wsl; commit: 593ceaa
+CMD : (cd /home/dsh/src/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestStopTreeStopsAndAwaitsTheTree|TestTreeOwnerIsReported)$' ./internal/world/subprocess/
+=== RUN   TestStopTreeStopsAndAwaitsTheTree
+    subprocess_test.go:96: owner process-group (fallback: own control group not writable; delegated scope not requested (U-K1-1)); stopped in 2.011048943s
+--- PASS: TestStopTreeStopsAndAwaitsTheTree (2.01s)
+=== RUN   TestTreeOwnerIsReported
+--- PASS: TestTreeOwnerIsReported (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess	2.015s
+UNIT: PASS
+POST: pgrep -a subprocess.test; systemctl --user list-units 'run-*' --no-legend
+pgrep: none
+scopes:   run-shm.mount       loaded active mounted /run/shm   run-user-1000.mount loaded active mounted /run/user/1000   run-user.mount      loaded active mounted /run/user 
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-6 step 6.3: a child that ignores termination: the whole tree is gone within the bound (record stopped in <time>, no pid alive)
+kind: composed; systems: both; lane: wsl; commit: 593ceaa
+CMD : (cd /home/dsh/src/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestStopTreeStopsAndAwaitsTheTree|TestContextEndStopsDescendantsAfterChildExit)$' ./internal/world/subprocess/
+=== RUN   TestStopTreeStopsAndAwaitsTheTree
+    subprocess_test.go:96: owner process-group (fallback: own control group not writable; delegated scope not requested (U-K1-1)); stopped in 2.010609883s
+--- PASS: TestStopTreeStopsAndAwaitsTheTree (2.01s)
+=== RUN   TestContextEndStopsDescendantsAfterChildExit
+--- PASS: TestContextEndStopsDescendantsAfterChildExit (0.01s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess	2.026s
+UNIT: PASS
+POST: pgrep -a subprocess.test; systemctl --user list-units 'run-*' --no-legend
+pgrep: none
+scopes:   run-shm.mount       loaded active mounted /run/shm   run-user-1000.mount loaded active mounted /run/user/1000   run-user.mount      loaded active mounted /run/user 
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-6 step 6.5: rule-3 default: the storage directories exist, are private and are checked at start (non-root, non-elevated)
+kind: composed; systems: both; lane: wsl; commit: 593ceaa
+CMD : (cd /home/dsh/src/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v ./internal/storage/home/
+=== RUN   TestHomeCreatedPrivate
+--- PASS: TestHomeCreatedPrivate (0.01s)
+=== RUN   TestEnsureRefusesLoosenedExistingHome
+--- PASS: TestEnsureRefusesLoosenedExistingHome (0.00s)
+=== RUN   TestEnsureCreatesMissingParents
+--- PASS: TestEnsureCreatesMissingParents (0.00s)
+=== RUN   TestCheckMissingAndNotDirectory
+--- PASS: TestCheckMissingAndNotDirectory (0.00s)
+=== RUN   TestCheckDatabaseFile
+--- PASS: TestCheckDatabaseFile (0.00s)
+=== RUN   TestLayoutPaths
+--- PASS: TestLayoutPaths (0.00s)
+=== RUN   TestPrivateDirAndFile
+--- PASS: TestPrivateDirAndFile (0.00s)
+=== RUN   TestSafeSegment
+--- PASS: TestSafeSegment (0.00s)
+=== RUN   TestNewDirectorySyncsItsParent
+--- PASS: TestNewDirectorySyncsItsParent (0.00s)
+=== RUN   TestEnsureSyncsNewAncestors
+--- PASS: TestEnsureSyncsNewAncestors (0.00s)
+=== RUN   TestEnsurePrivateDirRefusals
+--- PASS: TestEnsurePrivateDirRefusals (0.00s)
+=== RUN   TestCheckPrivateOfALoosenedFile
+--- PASS: TestCheckPrivateOfALoosenedFile (0.00s)
+=== RUN   TestCheckPrivateRefusesASymlink
+--- PASS: TestCheckPrivateRefusesASymlink (0.00s)
+=== RUN   TestEnsureOverAFile
+--- PASS: TestEnsureOverAFile (0.00s)
+=== RUN   TestSafeSegmentCutsADeviceNameToMax
+--- PASS: TestSafeSegmentCutsADeviceNameToMax (0.00s)
+=== RUN   TestCheckRequiresOwnerRWXOnDirectories
+--- PASS: TestCheckRequiresOwnerRWXOnDirectories (0.01s)
+=== RUN   TestCheckRequiresOwnerReadOnFiles
+--- PASS: TestCheckRequiresOwnerReadOnFiles (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/storage/home	0.038s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-6 step 6.10: a broken required entry: one fatal message and one report file
+kind: composed; systems: both; lane: wsl; commit: 593ceaa
+CMD : (cd /home/dsh/src/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestFatalPrintsOneMessageAndWritesOneReport)$' ./internal/host/diag/
+=== RUN   TestFatalPrintsOneMessageAndWritesOneReport
+--- PASS: TestFatalPrintsOneMessageAndWritesOneReport (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/host/diag	0.003s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-6 step 6.11: a broken required entry fails boot once (one message naming the entry, the exit status, one report)
+kind: composed; systems: both; lane: wsl; commit: 593ceaa
+CMD : (cd /home/dsh/src/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestBrokenRequiredEntryFailsBootOnce)$' ./internal/boot/
+=== RUN   TestBrokenRequiredEntryFailsBootOnce
+--- PASS: TestBrokenRequiredEntryFailsBootOnce (0.01s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/boot	0.008s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-6 step 6.13: a bad layer edit: the running tree is unchanged (rejection file:line:col, unchanged start count)
+kind: composed; systems: both; lane: wsl; commit: 593ceaa
+CMD : (cd /home/dsh/src/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestBadLayerEditLeavesRunningTreeUnchanged|TestReloadAfterReadyAppliesValidAndRejectsInvalidLayers)$' ./internal/boot/...
+=== RUN   TestReloadAfterReadyAppliesValidAndRejectsInvalidLayers
+--- PASS: TestReloadAfterReadyAppliesValidAndRejectsInvalidLayers (0.03s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/boot	0.037s
+testing: warning: no tests to run
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/boot/builtin	0.002s [no tests to run]
+testing: warning: no tests to run
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/boot/catalog	0.002s [no tests to run]
+=== RUN   TestBadLayerEditLeavesRunningTreeUnchanged
+=== RUN   TestBadLayerEditLeavesRunningTreeUnchanged/schema
+=== RUN   TestBadLayerEditLeavesRunningTreeUnchanged/static
+--- PASS: TestBadLayerEditLeavesRunningTreeUnchanged (0.01s)
+    --- PASS: TestBadLayerEditLeavesRunningTreeUnchanged/schema (0.00s)
+    --- PASS: TestBadLayerEditLeavesRunningTreeUnchanged/static (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/boot/config	0.007s
+testing: warning: no tests to run
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/boot/expr	0.002s [no tests to run]
+testing: warning: no tests to run
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/boot/launch	0.003s [no tests to run]
+testing: warning: no tests to run
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/boot/logging	0.002s [no tests to run]
+testing: warning: no tests to run
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/boot/profile	0.003s [no tests to run]
+testing: warning: no tests to run
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/boot/yamlx	0.002s [no tests to run]
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-6 step 6.14: a bad settings edit changes nothing
+kind: composed; systems: both; lane: wsl; commit: 593ceaa
+CMD : (cd /home/dsh/src/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestRefusedEditsChangeNothing|TestDescribeShowsEffectiveValueAfterRejection)$' ./internal/storage/settings/
+=== RUN   TestDescribeShowsEffectiveValueAfterRejection
+--- PASS: TestDescribeShowsEffectiveValueAfterRejection (0.00s)
+=== RUN   TestRefusedEditsChangeNothing
+=== RUN   TestRefusedEditsChangeNothing/invalid
+=== RUN   TestRefusedEditsChangeNothing/not_live
+=== RUN   TestRefusedEditsChangeNothing/shadowed
+--- PASS: TestRefusedEditsChangeNothing (0.00s)
+    --- PASS: TestRefusedEditsChangeNothing/invalid (0.00s)
+    --- PASS: TestRefusedEditsChangeNothing/not_live (0.00s)
+    --- PASS: TestRefusedEditsChangeNothing/shadowed (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/storage/settings	0.006s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-7 step 7.1: rule-3 default: one database per home, atomic appends, a flush barrier (record the F-2 lines)
+kind: composed; systems: both; lane: wsl; commit: 593ceaa
+CMD : (cd /home/dsh/src/agent-plugin &&) DSH_E2E_STORE_HOME=/tmp/dsh-register-sb3IgI/store-home-7.1 GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestConformance|TestMultiEventAppendIsAtomic|TestBudgetStoreAppend)$' ./internal/session/store/sqlite/
+=== RUN   TestBudgetStoreAppend
+    budget_test.go:102: F-2 open (new, migrate)  n=  20 p50=10.210726ms p95=13.759236ms p99=13.759236ms max=14.079372ms
+    budget_test.go:102: F-2 open (existing)      n=  20 p50=3.290347ms p95=4.928902ms p99=4.928902ms max=5.930727ms
+    budget_test.go:102: F-2 append               n=1000 p50=1.136499ms p95=1.87198ms p99=2.865057ms max=4.508751ms
+    budget_test.go:102: F-2 flush                n=1000 p50=51.745µs p95=105.406µs p99=145.238µs max=351µs
+    budget_test.go:102: F-2 append+flush         n=1000 p50=1.181507ms p95=1.965412ms p99=2.999376ms max=4.568684ms
+--- PASS: TestBudgetStoreAppend (1.63s)
+=== RUN   TestConformance
+=== RUN   TestConformance/CreateAndStat
+=== RUN   TestConformance/AppendOrderAndReadYourWrites
+=== RUN   TestConformance/FlushBarrier
+=== RUN   TestConformance/SeqConflict
+=== RUN   TestConformance/SingleWriter
+=== RUN   TestConformance/ForceTakeover
+=== RUN   TestConformance/PagedReads
+=== RUN   TestConformance/ReadSeqs
+=== RUN   TestConformance/ColdPart
+=== RUN   TestConformance/Checkpoints
+=== RUN   TestConformance/CheckpointsOnlyMoveForward
+=== RUN   TestConformance/DerivedRowRefused
+=== RUN   TestConformance/UpsertDerived
+=== RUN   TestConformance/List
+=== RUN   TestConformance/ListByPrompt
+=== RUN   TestConformance/Delete
+=== RUN   TestConformance/OpenRefusals
+=== RUN   TestConformance/AppendAdmission
+=== RUN   TestConformance/AppendAdmission/undeclared_required_type
+=== RUN   TestConformance/AppendAdmission/newer_required_version
+=== RUN   TestConformance/AppendAdmission/payload_not_JSON
+=== RUN   TestConformance/AppendAdmission/payload_not_an_object
+=== RUN   TestConformance/AppendAdmission/payload_of_the_wrong_shape
+=== RUN   TestConformance/AppendAdmission/version_0_of_a_declared_type
+=== RUN   TestConformance/AppendAdmission/log-only_type_with_an_operation
+=== RUN   TestConformance/AppendAdmission/source_not_earlier
+=== RUN   TestConformance/UnsignedBoundaries
+=== RUN   TestConformance/IgnorableKeptByteIdentical
+=== RUN   TestConformance/ClosedHandles
+=== RUN   TestConformance/Fork
+=== RUN   TestConformance/Immutability
+=== RUN   TestConformance/Concurrent
+=== RUN   TestConformance/CancelledContext
+--- PASS: TestConformance (0.72s)
+    --- PASS: TestConformance/CreateAndStat (0.02s)
+    --- PASS: TestConformance/AppendOrderAndReadYourWrites (0.03s)
+    --- PASS: TestConformance/FlushBarrier (0.03s)
+    --- PASS: TestConformance/SeqConflict (0.02s)
+    --- PASS: TestConformance/SingleWriter (0.02s)
+    --- PASS: TestConformance/ForceTakeover (0.03s)
+    --- PASS: TestConformance/PagedReads (0.02s)
+    --- PASS: TestConformance/ReadSeqs (0.02s)
+    --- PASS: TestConformance/ColdPart (0.02s)
+    --- PASS: TestConformance/Checkpoints (0.02s)
+    --- PASS: TestConformance/CheckpointsOnlyMoveForward (0.03s)
+    --- PASS: TestConformance/DerivedRowRefused (0.02s)
+    --- PASS: TestConformance/UpsertDerived (0.02s)
+    --- PASS: TestConformance/List (0.03s)
+    --- PASS: TestConformance/ListByPrompt (0.05s)
+    --- PASS: TestConformance/Delete (0.03s)
+    --- PASS: TestConformance/OpenRefusals (0.03s)
+    --- PASS: TestConformance/AppendAdmission (0.02s)
+        --- PASS: TestConformance/AppendAdmission/undeclared_required_type (0.00s)
+        --- PASS: TestConformance/AppendAdmission/newer_required_version (0.00s)
+        --- PASS: TestConformance/AppendAdmission/payload_not_JSON (0.00s)
+        --- PASS: TestConformance/AppendAdmission/payload_not_an_object (0.00s)
+        --- PASS: TestConformance/AppendAdmission/payload_of_the_wrong_shape (0.00s)
+        --- PASS: TestConformance/AppendAdmission/version_0_of_a_declared_type (0.00s)
+        --- PASS: TestConformance/AppendAdmission/log-only_type_with_an_operation (0.00s)
+        --- PASS: TestConformance/AppendAdmission/source_not_earlier (0.00s)
+    --- PASS: TestConformance/UnsignedBoundaries (0.02s)
+    --- PASS: TestConformance/IgnorableKeptByteIdentical (0.02s)
+    --- PASS: TestConformance/ClosedHandles (0.02s)
+    --- PASS: TestConformance/Fork (0.02s)
+    --- PASS: TestConformance/Immutability (0.02s)
+    --- PASS: TestConformance/Concurrent (0.15s)
+    --- PASS: TestConformance/CancelledContext (0.02s)
+=== RUN   TestMultiEventAppendIsAtomic
+=== RUN   TestMultiEventAppendIsAtomic/third_event_refused
+=== RUN   TestMultiEventAppendIsAtomic/checkpoint_refused_after_the_events
+--- PASS: TestMultiEventAppendIsAtomic (0.03s)
+    --- PASS: TestMultiEventAppendIsAtomic/third_event_refused (0.00s)
+    --- PASS: TestMultiEventAppendIsAtomic/checkpoint_refused_after_the_events (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/session/store/sqlite	2.393s
+UNIT: PASS
+POST: ls -A /tmp/dsh-register-sb3IgI/store-home-7.1 (want empty), then remove it
+scratch home after the run: empty
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-8 step 8.6: write a five-megabyte result: the bounded head and the recoverable rest
+kind: composed; systems: both; lane: wsl; commit: 593ceaa
+CMD : (cd /home/dsh/src/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestLargeResultSpilledAndRecoverable)$' ./internal/storage/spill/local/
+=== RUN   TestLargeResultSpilledAndRecoverable
+    local_test.go:129: logged tool/result row: 16616 bytes (head 16383 of 5242880 bytes, bound 16384)
+--- PASS: TestLargeResultSpilledAndRecoverable (0.05s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/storage/spill/local	0.059s
+UNIT: PASS
+RESULT PASS
+cleanup: git worktree remove --force /tmp/dsh-register-sb3IgI/wt
+cleanup: removed /tmp/dsh-register-sb3IgI
+after the run: git status --porcelain --untracked-files=all
+after the run: git worktree list
+/home/dsh/src/agent-plugin  593ceaa (detached HEAD)
+
+======================================================================
+SUMMARY (wsl, commit 593ceaa)
+STAGE    STEP   KIND      SYSTEMS      STATUS
+DH-S-1   1.1    byhand    one          CHECKLIST
+DH-S-1   1.2    seeded    one          not run here (one-lane row; --one-lane no)
+DH-S-1   1.3    seeded    one          not run here (one-lane row; --one-lane no)
+DH-S-1   1.4    seeded    one          not run here (one-lane row; --one-lane no)
+DH-S-1   1.5    seeded    one          not run here (one-lane row; --one-lane no)
+DH-S-1   1.6    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-1   1.7    seeded    one          not run here (one-lane row; --one-lane no)
+DH-S-1   1.8    byhand    one          CHECKLIST
+DH-S-1   1.9    seeded    wsl          PASS (+ by hand: the -rehearse.txt of the WSL lane run (checklist))
+DH-S-2   2.1    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-2   2.2    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-2   2.3    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-2   2.4    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-2   2.5    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-2   2.6    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-2   2.7    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-2   2.8    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-3   3.1    byhand    one          CHECKLIST
+DH-S-3   3.2    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-3   3.3    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-3   3.4    byhand    one          CHECKLIST
+DH-S-3   3.5    byhand    one          CHECKLIST
+DH-S-3   3.6    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-3   3.7    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-3   3.8    byhand    one          CHECKLIST
+DH-S-3   3.9    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-4   4.1    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-4   4.2    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-4   4.3    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-4   4.4    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-4   4.5    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-4   4.6    composed  both         PASS
+DH-S-4   4.7    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-4   4.8    byhand    both         CHECKLIST
+DH-S-4   4.9    byhand    both         CHECKLIST
+DH-S-4   4.10   composed  one          not run here (one-lane row; --one-lane no)
+DH-S-4   4.11   composed  one          not run here (one-lane row; --one-lane no)
+DH-S-4   4.12   composed  one          not run here (one-lane row; --one-lane no)
+DH-S-4   4.13   composed  one          not run here (one-lane row; --one-lane no)
+DH-S-4   4.14   composed  one          not run here (one-lane row; --one-lane no)
+DH-S-5   5.1    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-5   5.2    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-5   5.3    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-5   5.4    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-5   5.5    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-5   5.6    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-5   5.7    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-5   5.8    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-5   5.9    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-5   5.10   composed  one          not run here (one-lane row; --one-lane no)
+DH-S-5   5.11   composed  one          not run here (one-lane row; --one-lane no)
+DH-S-5   5.12   composed  one          not run here (one-lane row; --one-lane no)
+DH-S-5   5.13   composed  one          not run here (one-lane row; --one-lane no)
+DH-S-6   6.1    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-6   6.2    composed  both         PASS
+DH-S-6   6.3    composed  both         PASS
+DH-S-6   6.4    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-6   6.5    composed  both         PASS
+DH-S-6   6.6    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-6   6.7    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-6   6.8    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-6   6.9    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-6   6.10   composed  both         PASS
+DH-S-6   6.11   composed  both         PASS
+DH-S-6   6.12   composed  one          not run here (one-lane row; --one-lane no)
+DH-S-6   6.13   composed  both         PASS
+DH-S-6   6.14   composed  both         PASS
+DH-S-6   6.15   composed  one          not run here (one-lane row; --one-lane no)
+DH-S-6   6.16   composed  one          not run here (one-lane row; --one-lane no)
+DH-S-6   6.17   composed  one          not run here (one-lane row; --one-lane no)
+DH-S-7   7.1    composed  both         PASS
+DH-S-7   7.2    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-7   7.3    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-7   7.4    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-7   7.5    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-7   7.6    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-8   8.1    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-8   8.2    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-8   8.3    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-8   8.4    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-8   8.5    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-8   8.6    composed  both         PASS
+DH-S-8   8.7    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-9   9.1    probe     workstation  SIGNED-IN (owner; not started here)
+DH-S-9   9.2    probe     workstation  SIGNED-IN (owner; not started here)
+DH-S-9   9.3    composed  one          not run here (one-lane row; --one-lane no)
+DH-S-10  10.1   composed  one          not run here (one-lane row; --one-lane no)
+DH-S-10  10.2   composed  one          not run here (one-lane row; --one-lane no)
+DH-S-10  10.3   composed  one          not run here (one-lane row; --one-lane no)
+DH-S-10  10.4   composed  one          not run here (one-lane row; --one-lane no)
+DH-S-10  10.5   composed  one          not run here (one-lane row; --one-lane no)
+DH-S-10  10.6   composed  one          not run here (one-lane row; --one-lane no)
+DH-S-10  10.7   composed  one          not run here (one-lane row; --one-lane no)
+DH-S-10  10.8   composed  one          not run here (one-lane row; --one-lane no)
+DH-S-10  10.9   composed  one          not run here (one-lane row; --one-lane no)
+DH-S-10  10.10  composed  one          not run here (one-lane row; --one-lane no)
+DH-S-11  11.1   probe     workstation  SIGNED-IN (owner; not started here)
+DH-S-11  11.2   probe     workstation  SIGNED-IN (owner; not started here)
+DH-S-11  11.3   probe     workstation  SIGNED-IN (owner; not started here)
+DH-S-11  11.4   probe     workstation  SIGNED-IN (owner; not started here)
+DH-S-11  11.5   composed  one          not run here (one-lane row; --one-lane no)
+DH-S-11  11.6   composed  one          not run here (one-lane row; --one-lane no)
+DH-S-11  11.7   probe     workstation  SIGNED-IN (owner; not started here)
+rows: 103; PASS 11; FAIL 0; DRY 0; not run on this lane 77; checklist (by hand) 8; signed-in (owner) 7
+supplement TestCrossCompileNamesFailingTarget: PASS
+ended (UTC)   : 2026-11-23T22:37:50Z
+log: /mnt/c/Users/xiaodoli.REDMOND/AppData/Local/Temp/claude/095fd4c454d7f56c/32b1560e-0d49-424c-b2a5-d7e6081d5719/scratchpad/manual/register-wsl-593ceaa-20261123T2237Z.log

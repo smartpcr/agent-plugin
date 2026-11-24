@@ -1,0 +1,61 @@
+29	TICK	impl.md 1.1 ticked; trace-tests 1.1 tagged TOOLCHAIN-11, SDK-17 (manual-593ceaa/trace-tests-DH-S-11-593ceaa.txt); both lanes PASSED all 12 gates at 593ceaa; DH-S-1.md register row 1.1 filled at 593ceaa (go line now 1.27.4 by the floor raise)
+30	TICK	impl.md 1.1 ticked; TestSDK17CommittedFilePasses, TestSDK17RejectsRequire (tools/harness-gate/modcheck) pass in the self gate of both lanes; register row 1.1 filled at 593ceaa
+31	TICK	impl.md 1.1 ticked; TestToolchain11CommittedFilesPass, TestPinsResolveToCommittedModules pass in the self gate of both lanes; register row 1.1 filled at 593ceaa
+32	TICK	impl.md 1.1 ticked; DH-T-TOOLCHAIN-11 (TestToolchain11*) and DH-T-SDK-17 (TestSDK17*) in tools/harness-gate/modcheck, self gate ok in both lanes; register row 1.1 filled at 593ceaa
+33	TICK	golden added in fcc9ec6 (Three Module Workspace, #6) before the first DH-S-2 commit 5901510; HEAD main.go has sampleEnv{Out,TempDir,Exporter,Pause,Settle}; main_test.go has the synctest bubble, the coincident-events check and the -update flag
+34	TICK	DH-S-1.md Manual checks register row 1.1 filled at 593ceaa (byhand-windows-593ceaa.log and -part2.log: build exit 0, go list -m three modules, GOWORK=off release build exit 0)
+40	TICK	TestWorkspaceBuildsThreeModules (tools/harness-gate/modcheck/toolchain_test.go: build and vet from the root, go list -m, GOWORK=off build ./... per module); self gate ok in win-/wsl-593ceaa-20261123T2122Z.txt
+41	TICK	TestReleaseBuildIgnoresWorkspace (tools/harness-gate/modcheck/toolchain_test.go: GOWORK=off build into t.TempDir, runs dsh --version); self gate ok in both lanes; also register row 1.1 by hand
+42	TICK	TestToolchain11RejectsReplace and TestToolchain11CommittedFilesPass (tools/harness-gate/modcheck/modcheck_test.go); self gate ok in both lanes
+43	TICK	TestOutputMatchesGolden, TestSameInstantIsCoincidentEvents, TestMainWiresRealEnvironment (src/go/cmd/cordis-sample/main_test.go), test gate ok in both lanes; -count=20 is historical only (DH-S-1.md:89), count=1 per lane at 593ceaa; macOS out by platforms-windows-wsl
+48	TICK	impl.md 1.2 ticked; DH-T-TOOLCHAIN-9 tagged (trace-tests); both lanes PASSED all 12 gates; register row 1.2 filled at 593ceaa
+49	TICK	impl.md 1.3 ticked; DH-T-TOOLCHAIN-2 (TestSeededViolationFailsNamedGate, TestSynctestTimerFinishesWithoutRealWaiting) in the self gate; register row 1.3 filled at 593ceaa
+50	TICK	impl.md 1.4 ticked; DH-T-TOOLCHAIN-8 tagged (trace-tests); vet gate PASS in both lanes; register row 1.4 filled at 593ceaa
+51	TICK	impl.md 1.5 ticked; DH-T-TOOLCHAIN-7 (TestCoverageFloorOverMergedProfiles, TestCoverageMergesChildProcesses) in the self gate; register row 1.5 filled at 593ceaa
+52	TICK	impl.md 1.7 ticked; DH-T-TOOLCHAIN-12 (TestBudgetGateClearsOverrides, TestBudgetEnv) in the self gate; register row 1.7 filled at 593ceaa
+53	TICK	gate 10/12 cross-compile (tools/harness-gate/gates.go:194) PASS in both lane logs; TestCrossCompileBuildsSixTargets and TestCrossCompileNamesFailingTarget in the self gate
+54	TICK	gate 7/12 trace (tools/harness-gate/gates.go:191) PASS in both lanes; tools/harness-gate/testdata/ holds race-seeded, unformatted-file and coverage-40pct (and more)
+60	TICK	TestRunStopsAtFirstFailingGate (tools/harness-gate/runner_test.go), self gate ok in both lanes
+61	TICK	TestCoverageFloorOverMergedProfiles (tools/harness-gate/coverage_test.go), self gate ok in both lanes
+62	TICK	TestNoSleepFlagsSleepInTestFile (tools/harness-gate/analyzers/analyzers_test.go), self gate ok in both lanes
+63	TICK	TestSeededViolationFailsNamedGate/race-seeded (tools/harness-gate/gates_test.go: stops at test, "data race detected"), self gate ok in both lanes; register row 1.3
+64	TICK	TestSeededViolationFailsNamedGate/unformatted-file (gofmt) and /coverage-40pct (coverage, 40% < 85%), self gate ok in both lanes
+65	TICK	TestAnalyzersOnFixtures and TestNewAnalyzersOnFixtures (tools/harness-gate/analyzers), self gate ok in both lanes
+70	TICK	impl.md 1.6 ticked; DH-T-TOOLCHAIN-4 (src/harness/internal/testkit/golden/golden_test.go), test gate ok in both lanes; register row 1.6 filled at 593ceaa
+71	TICK	impl.md 1.6 ticked; TestFuzzCheckMissingTargetIsReported, TestFuzzCheckRules, TestFuzzCheckRunsInVetGate in the self gate; register row 1.6 filled at 593ceaa
+72	TICK	impl.md 1.6 ticked; TestLayerTaggedTestsAreExcludedFromDefaultGate in the self gate; trace-tests 1.6 defers only TOOLCHAIN-1, -3, -5 (allowed by 18.1.4); register row 1.6 filled at 593ceaa
+73	TICK	DH-S-1.md "Ledger status of the DH-S-1 toolchain tests" (Stage 1.3) lists TOOLCHAIN-1, -3, -5, -6 waiting for DH-S-16 and -10, -13 for DH-S-46, open not failed
+79	TICK	TestAssertDetectsDriftAndUpdatesOnlyOnSwitch (src/harness/internal/testkit/golden), test gate ok in both lanes; the register row 1.6 log shows --- PASS
+80	TICK	TestFuzzCheckMissingTargetIsReported (tools/harness-gate/analyzers/analyzers_test.go), self gate ok in both lanes
+81	TICK	TestLayerTaggedTestsAreExcludedFromDefaultGate (tools/harness-gate/gates_test.go: the gate passes; -tags scenario and -tags replay fail), self gate ok in both lanes
+86	TICK	impl.md 1.8 ticked; register row 1.8 filled at 593ceaa (ci.yml:138 os [ubuntu-latest, windows-latest], amended by platforms-windows-wsl); TestHarnessJobRunsTheGateOnTwoSystems in the self gate
+88	TICK	impl.md 1.8 ticked; register row 1.8 filled at 593ceaa (preflight with DH-E-FAKE-9 fails naming it); the acceptance index exists; the DSH_DEEPSEEK_API_KEY clause is superseded by models-signed-in-claude-copilot (key check removed by plan 12.3.8)
+89	TICK	impl.md 1.9 ticked; register row 1.9 filled at 593ceaa (wsl-593ceaa-20261123T2122Z-rehearse.txt: six binaries, nothing published); TestRehearseBuildsSixPureGoBinaries in the self gate
+90	TICK	toolchain_rehearsal_scenario_test.go (//go:build scenario) added in da12f1e (CI and Release Rehearsal #13); acceptance-index.yaml DH-S-18 has DH-E-TOOLCHAIN-2 authored DH-S-1, and DH-S-17 has DH-E-TOOLCHAIN-1 authored DH-S-11
+91	OPEN	closes at plan 18.1.14 after the owner's review and sign-off
+98	NA	superseded by models-signed-in-claude-copilot (OWNER-2): the preflight's DSH_DEEPSEEK_API_KEY check was removed by plan 12.3.8; replaced by the gap-closure scenario "Preflight passes with no key" (TestPreflightNeedsNoModelKey)
+99	TICK	TestPreflightNeedsNoModelKey and TestPreflight (tools/harness-gate/acceptance/acceptance_test.go), TestPreflightSubcommand (scenarios_test.go), self gate ok in both lanes; register row 1.8
+100	TICK	TestRehearseBuildsSixPureGoBinaries (tools/harness-gate/rehearse_test.go: six binaries, CGO_ENABLED=0, proxy off, tags unchanged), self gate ok in both lanes
+101	OPEN	both lane logs at 593ceaa end PASSED all 12 gates (win-/wsl-593ceaa-20261123T2122Z.txt), but the Then also needs the run-record ids in the DH-S-1 evidence record, whose "Run identifiers" still read "not run" (filled by plan 18.1.7)
+102	TICK	TestAuthoredScenariosAreIndexedAndCompileButDoNotRun (tools/harness-gate/scenarios_test.go), self gate ok; scenario-index gate 8/12 PASS in both lanes
+115	TICK	impl.md 2.1 ticked; DH-T-CORDIS-1, -2, -3 tagged (src/go/cordis/unload_test.go), test gate ok in both lanes; DH-S-2.md register row 2.1 filled at 593ceaa
+116	TICK	impl.md 2.2 ticked; DH-T-CORDIS-4 TestFiberLifetimeIsCancelledByUnload, test gate ok in both lanes; register row 2.2 filled at 593ceaa
+117	TICK	DH-S-2.md register rows 2.1 and 2.2 at 593ceaa: TestOutputMatchesGolden PASS, golden unchanged (register-windows-593ceaa-20261123T2213Z.log); the intended Phase 14 re-record is noted in DH-S-2.md
+123	TICK	TestConcurrentDisposeWaitsForEveryCleanup (src/go/cordis/unload_test.go: two Dispose goroutines, three cleanups once each, a later Effect refused), test gate (-race) ok in both lanes
+124	TICK	TestDependentUnloadsBeforeItsProvider (src/go/cordis/unload_test.go), test gate ok in both lanes
+125	TICK	TestFiberLifetimeIsCancelledByUnload (src/go/cordis/unload_test.go, DH-T-CORDIS-4, checks context.Cause), test gate ok in both lanes
+126	TICK	the existing src/go/cordis tests (cordis_test.go, race_test.go) and TestOutputMatchesGolden pass in the test gate of both lanes; DH-S-2 register rows 2.1 and 2.2 show the golden unchanged at 593ceaa
+131	TICK	impl.md 2.3 ticked; DH-T-CORDIS-5, -6 (src/go/cordis/scope_test.go), test gate ok in both lanes; register row 2.3 filled at 593ceaa
+132	TICK	impl.md 2.4 ticked; DH-T-CORDIS-7 TestNotifyListenerCannotVetoTheFact, test gate ok in both lanes; register row 2.4 filled at 593ceaa
+133	TICK	impl.md 2.5 ticked; DH-T-CORDIS-12 TestAroundKeyWrapsInRegistrationOrder, test gate ok in both lanes; register row 2.5 filled at 593ceaa
+139	TICK	TestScopedDispatchReachesOneSubtree (src/go/cordis/scope_test.go, DH-T-CORDIS-6), test gate ok in both lanes
+140	TICK	TestNotifyListenerCannotVetoTheFact (src/go/cordis/scope_test.go, DH-T-CORDIS-7), test gate ok in both lanes
+141	TICK	TestAroundKeyWrapsInRegistrationOrder (src/go/cordis/scope_test.go, DH-T-CORDIS-12), test gate ok in both lanes
+146	TICK	impl.md 2.6 ticked; DH-T-CORDIS-8, -9 (src/go/cordis/config_test.go), test gate ok in both lanes; register row 2.6 filled at 593ceaa
+147	TICK	impl.md 2.7 ticked; DH-T-CORDIS-13 TestStrictConfigRejectsUnknownKeysAndTrailingData, test gate ok in both lanes; register row 2.7 filled at 593ceaa
+148	TICK	impl.md 2.8 ticked; DH-T-CORDIS-14 TestTreeLogsOnlyToTheExportersItsCreatorChose, test gate ok in both lanes; register row 2.8 filled at 593ceaa
+149	OPEN	closes at plan 18.1.14 after the owner's review and sign-off
+155	TICK	TestRejectedCandidateDoesNotLeakIntoEffectiveConfig (src/go/cordis/config_test.go, DH-T-CORDIS-8), test gate ok in both lanes
+156	TICK	TestStrictConfigRejectsUnknownKeysAndTrailingData (src/go/cordis/config_test.go: path retrys, constructed count 0), test gate ok in both lanes
+157	TICK	TestTreeLogsOnlyToTheExportersItsCreatorChose (src/go/cordis/config_test.go, DH-T-CORDIS-14), test gate ok in both lanes
+158	TICK	TestOutputMatchesGolden passes in both lanes and in DH-S-2 register rows 2.1 to 2.8 at 593ceaa; the only re-recording ([Debug] loader apply: beat2, Phase 14) is listed in DH-S-2.md

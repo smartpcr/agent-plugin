@@ -247,11 +247,15 @@ it was recorded and is not closure evidence (M1-D-CLOSE-1).
 
 ### Source and build identity
 
+**At the closure commit (plan 18.1.7).** Commit `593ceaa3efd55d41bf0eeaced5ba7e26acc71966`: one commit for the three modules, on branch `m1-phase-18` over `main` 896c760. Go `go1.27.4` (the go floor). The WSL rehearsal built six `dsh` binaries, each with `vcs.revision=593ceaa…` and `vcs.modified=false`; their SHA-256 values are in [wsl-593ceaa-20261123T2122Z-rehearse.txt](runs/wsl-593ceaa-20261123T2122Z-rehearse.txt).
+
 At closure: not yet recorded (plan 18.1.7). Phase 16 re-closure: commit
 `f72f43585c043c9ce0bc8dfe9f4fc05e64d11477`, clean tree, both lanes. Historical: Stage 10.3
 names commit `69c5f17`; the other stages name their PRs (#72 to #76).
 
 ### Environment and fixture
+
+**At the closure commit (plan 18.1.7).** Windows 11 Enterprise 10.0.28000 native, with `CC` MSYS2 gcc. WSL Ubuntu 24.04.5 LTS, kernel 6.18.58.1-microsoft-standard-WSL2, ext4 clone, gcc 13.3.0. macOS is out of this story (`macos-return-stage`). The manual checks ran on the same workstation (decision `manual-checks-run-by-lead`). Signed-in clients: Claude Code 2.1.312 and GitHub Copilot CLI 1.0.115-7, Windows only. Fixtures: those named by this stage's register rows.
 
 At closure: both local lanes, from their run records. macOS: out of scope
 (`platforms-windows-wsl`). Historical: one Windows machine. Fixtures: SQLite stores in
@@ -259,11 +263,15 @@ At closure: both local lanes, from their run records. macOS: out of scope
 
 ### Exact tests and commands
 
+**At the closure commit (plan 18.1.7).** `tools/harness-gate/lanes/win.ps1` and `tools/harness-gate/lanes/wsl.sh` (the gate with `--evidence`; `rehearse` in WSL). `DSH_REQUIRE_SCENARIOS` is unset. For the register: `evidence/runs/manual-593ceaa/run-register.sh` (Windows, and `--os wsl`), with the by-hand steps of `by-hand-checklist.md`; the per-row commands are in this record's register.
+
 At closure: the lane scripts, and `go -C src/harness test -race -count=1 ./internal/agent/
 ./internal/human/... ./internal/tools/... ./internal/storage/spill/...`. Historical: the
 command under "Tests (TC-10a, TC-10b)".
 
 ### Run identifiers
+
+**At the closure commit (plan 18.1.7).** Windows lane `win-593ceaa-20261123T2122Z` ([record](runs/win-593ceaa-20261123T2122Z.txt)) and WSL lane `wsl-593ceaa-20261123T2122Z` ([record](runs/wsl-593ceaa-20261123T2122Z.txt), [rehearse](runs/wsl-593ceaa-20261123T2122Z-rehearse.txt)). Register logs: `register-windows-593ceaa-20261123T2213Z` and `register-wsl-593ceaa-20261123T2237Z` in [runs/manual-593ceaa/](runs/manual-593ceaa/byhand-results.md). The WSL rehearse record was rebuilt from the lane's tee'd output after the original file was deleted by mistake; the gate record's own `sha256:` line verifies it byte for byte.
 
 At closure: the run-record ids of both lanes, in the runbook's template (plan 18.1.3).
 WSL lane: not run at the M1 closure commit yet. Windows lane: not run at the M1 closure
@@ -275,6 +283,8 @@ run id was recorded before Phase 16. DH-E-TOOLS-3 and DH-E-HUMAN-6 run in later 
 and have no run id yet.
 
 ### Results
+
+**At the closure commit (plan 18.1.7).** Both lanes `PASSED all 12 gates`, with `trace-tests` in the `trace` gate. `trace-tests` for DH-S-1 to DH-S-11 reports required 310, tagged 288, deferred 22, missing 0. This stage's register: see "Manual checks register" (every row PASS or recorded as seen; not run and pending rows are open, never a pass).
 
 At closure: not yet recorded. Phase 16: both lanes `PASSED all 12 gates` at `f72f435`; per
 test ID, the tables of "Gap closure (M1-G-PIPE-1 to -8)". Historical: the test table under
@@ -296,25 +306,31 @@ fill the register: [the evidence runbook](README.md#manual-checks). Composed tes
 
 #### Manual checks register
 
+**Run at the M1 closure commit (plan 18.1.5, 2026-11-23).** The lead Claude Code session ran every row below at `593ceaa3efd55d41bf0eeaced5ba7e26acc71966`, at the owner's instruction of 2026-11-23 ("you should do that"); the owner did not watch these runs. This departs from M1-D-CLOSE-2 A (a named person runs it at the recorded commit, watches it and records it `manual`) and from the runbook rule that signed-in checks are never run from an agent session, and it needs to be recorded as an owner decision. Logs: `register-windows-593ceaa-20261123T2213Z.log`, `register-wsl-593ceaa-20261123T2237Z.log`, `byhand-windows-593ceaa.log`, `byhand-windows-593ceaa-part2.log`, `byhand-wsl-593ceaa.log`, `signedin-dhs9-593ceaa.log`, `signedin-m1-claude-593ceaa.log` and `signedin-m1-copilot-593ceaa.log`. The WSL rehearse record (`wsl-593ceaa-20261123T2122Z-rehearse.txt`) was rebuilt from the lane's tee'd output after the original file was deleted by mistake.
+
 | Step | Check | Procedure | Systems | Operator | Commit | Seen | Label |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 10.1 | rule-3 default: a tool is declared once and registered in a scope | composed test: `./internal/tools/` (the declaration and registry tests) | one lane | | | | `manual` |
-| 10.2 | rule-3 default: the system prompt and tool list are assembled deterministically | composed test: `./internal/tools/prompt/` | one lane | | | | `manual` |
-| 10.3 | an approval with no answerer is denied, with an audit record | composed test: `TestNoAnswererMeansNoThroughTheExecutor` in `./internal/tools/core/`; record the outcome and the approval code | one lane | | | | `manual` |
-| 10.4 | arguments that break the schema: the body never runs | composed test: `TestSchemaBreakingArgumentsNeverReachTheBody`, `TestDenialEnforcedInTheExecutor` in `./internal/tools/core/`; record the validation code and the body counter (0) | one lane | | | | `manual` |
-| 10.5 | rule-3 default: enforced deadlines that never hold a turn | composed test: `TestDeadlineDoesNotHoldTheTurn`, `TestDeadlineGraceEndsAtExpiryPlusGrace` in `./internal/tools/core/` | one lane | | | | `manual` |
-| 10.6 | rule-3 default: no result larger than the budget reaches a model | composed test: `TestOversizedResultSpilledBeforeReachingTheModel` in `./internal/tools/core/`, `TestPolicyNeverOverBudget` in `./internal/storage/spill/policy/` | one lane | | | | `manual` |
-| 10.7 | rule-3 default: input is durable at once and runs at most once | composed test: `TestInboxSendIsDurableBeforeItReturns`, `TestClaimedItemRunsAtMostOnceAcrossACrash` in `./internal/agent/` | one lane | | | | `manual` |
-| 10.8 | rule-3 default: the model asks the user a question, waits or moves on | composed test: `TestQuestionAnsweredThroughTheInbox`, `TestTimedQuestionReturnsPendingAndTheLateAnswerIsOneUserMessage` in `./internal/human/question/` | one lane | | | | `manual` |
-| 10.9 | rule-3 default: a person runs a command against an agent from any client | composed test: `TestCommandRunsAttributedAndDeliversThroughTheInbox` in `./internal/human/command/` | one lane | | | | `manual` |
-| 10.10 | give a grant, end the session, resume it: the grant is gone | composed test: `TestGrantDoesNotSurviveResume` in `./internal/human/approval/`; record the empty grant list, the `grant/ended{session-ended}` event and that the call asks again | one lane | | | | `manual` |
+| 10.1 | rule-3 default: a tool is declared once and registered in a scope | composed test: `./internal/tools/` (the declaration and registry tests) | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): 10 tests `--- PASS`, 0 FAIL, among them `TestDeclarationSchema`, `TestDynamicDeclaration`, `TestOverlap`, `TestSettlementIsImmutable`; `internal/tools` ok. | `manual` |
+| 10.2 | rule-3 default: the system prompt and tool list are assembled deterministically | composed test: `./internal/tools/prompt/` | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `--- PASS` for `TestInterpolation`, `TestCompleteSections`, `TestScopedChangesAreLocal`, `TestToolOrder`, `TestLivePersona`, `TestToolOrderIsCopied`, `TestAssemblyUsesOneConfigSnapshot`. | `manual` |
+| 10.3 | an approval with no answerer is denied, with an audit record | composed test: `TestNoAnswererMeansNoThroughTheExecutor` in `./internal/tools/core/`; record the outcome and the approval code | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `--- PASS` for `TestNoAnswererMeansNoThroughTheExecutor`; no outcome or approval code was printed under `-v`; the denial and audit assertions passed. | `manual` |
+| 10.4 | arguments that break the schema: the body never runs | composed test: `TestSchemaBreakingArgumentsNeverReachTheBody`, `TestDenialEnforcedInTheExecutor` in `./internal/tools/core/`; record the validation code and the body counter (0) | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `--- PASS` for `TestSchemaBreakingArgumentsNeverReachTheBody`, `TestDenialEnforcedInTheExecutor`; no validation code or body counter was printed under `-v`; the body-never-runs assertions passed. | `manual` |
+| 10.5 | rule-3 default: enforced deadlines that never hold a turn | composed test: `TestDeadlineDoesNotHoldTheTurn`, `TestDeadlineGraceEndsAtExpiryPlusGrace` in `./internal/tools/core/` | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `--- PASS` for `TestDeadlineDoesNotHoldTheTurn`, `TestDeadlineGraceEndsAtExpiryPlusGrace`. | `manual` |
+| 10.6 | rule-3 default: no result larger than the budget reaches a model | composed test: `TestOversizedResultSpilledBeforeReachingTheModel` in `./internal/tools/core/`, `TestPolicyNeverOverBudget` in `./internal/storage/spill/policy/` | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `--- PASS` for `TestOversizedResultSpilledBeforeReachingTheModel`, `TestPolicyNeverOverBudget`. | `manual` |
+| 10.7 | rule-3 default: input is durable at once and runs at most once | composed test: `TestInboxSendIsDurableBeforeItReturns`, `TestClaimedItemRunsAtMostOnceAcrossACrash` in `./internal/agent/` | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `--- PASS` for `TestInboxSendIsDurableBeforeItReturns`, `TestClaimedItemRunsAtMostOnceAcrossACrash`. | `manual` |
+| 10.8 | rule-3 default: the model asks the user a question, waits or moves on | composed test: `TestQuestionAnsweredThroughTheInbox`, `TestTimedQuestionReturnsPendingAndTheLateAnswerIsOneUserMessage` in `./internal/human/question/` | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `--- PASS` for `TestQuestionAnsweredThroughTheInbox`, `TestTimedQuestionReturnsPendingAndTheLateAnswerIsOneUserMessage`. | `manual` |
+| 10.9 | rule-3 default: a person runs a command against an agent from any client | composed test: `TestCommandRunsAttributedAndDeliversThroughTheInbox` in `./internal/human/command/` | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `--- PASS` for `TestCommandRunsAttributedAndDeliversThroughTheInbox`. | `manual` |
+| 10.10 | give a grant, end the session, resume it: the grant is gone | composed test: `TestGrantDoesNotSurviveResume` in `./internal/human/approval/`; record the empty grant list, the `grant/ended{session-ended}` event and that the call asks again | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `--- PASS` for `TestGrantDoesNotSurviveResume`; no grant list or event was printed under `-v`; the empty-grants, `grant/ended{session-ended}` and asks-again assertions passed. | `manual` |
 
 ### Cleanup evidence
+
+**At the closure commit (plan 18.1.7).** Every throwaway worktree of the manual checks was removed, and `git status --porcelain` of the main tree was empty before and after. The signed-in runs left no `claude` or `copilot` process (PID sets equal before and after). The WSL clone's tags (7, all created 2026-11-17) were unchanged, and nothing was published.
 
 At closure: every temporary store is gone; `git status --porcelain` empty after the run.
 Historical: none recorded.
 
 ### Open items
+
+**At the closure commit (plan 18.1.7).** For this stage: none of its own. The M1-wide list is [DH-S-11 "Open items at M1"](DH-S-11.md#open-items-at-m1-plan-18111).
 
 At closure: plan 18.1.11 lists them. Closed by Phase 16: the known-false ticks of impl.md
 10.3, 10.4 and 10.6 and their gaps M1-G-PIPE-1 to -8 (re-ticked at `f72f435`, plan

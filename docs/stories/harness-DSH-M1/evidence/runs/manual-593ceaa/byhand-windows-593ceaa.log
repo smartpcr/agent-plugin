@@ -1,0 +1,51 @@
+commit: 593ceaa3efd55d41bf0eeaced5ba7e26acc71966  started: 2026-11-23T22:42:20Z  host: MINGW64_NT-10.0-28000 xd003 3.6.10-5a1665c8.x86_64 2026-09-28 10:40 UTC x86_64 Msys
+== row 1.1
+build exit 0
+github.com/smartpcr/agent-plugin/src/go
+github.com/smartpcr/agent-plugin/src/sdk
+github.com/smartpcr/agent-plugin/src/harness
+release build exit 0
+dsh: cli/usage: missing <profile> or <command>
+Run 'dsh --help' for usage.
+dsh exit 64
+clone HEAD 593ceaa3efd55d41bf0eeaced5ba7e26acc71966
+== rows 3.1 3.4 3.5 3.8
+=== RUN   TestManualTwoHandComposedLayersOneBroken
+    zz_manual_layers_test.go:47: TMP = C:\Users\XIAODO~1.RED\AppData\Local\Temp\TestManualTwoHandComposedLayersOneBroken422758313\001
+    zz_manual_layers_test.go:62: error: loader: C:\Users\XIAODO~1.RED\AppData\Local\Temp\TestManualTwoHandComposedLayersOneBroken422758313\001\user.json:4:7: [0].insert[0].disabeld: unknown key
+    zz_manual_layers_test.go:67: notice: created=[good] issues=[C:\Users\XIAODO~1.RED\AppData\Local\Temp\TestManualTwoHandComposedLayersOneBroken422758313\001\user.json:4:7: [0].insert[0].disabeld: unknown key]
+    zz_manual_layers_test.go:69: notices: 1
+    zz_manual_layers_test.go:70: echo: +good
+    zz_manual_layers_test.go:72: layer: label=base writable=false path=C:\Users\XIAODO~1.RED\AppData\Local\Temp\TestManualTwoHandComposedLayersOneBroken422758313\001\base.json
+    zz_manual_layers_test.go:72: layer: label=user writable=true path=C:\Users\XIAODO~1.RED\AppData\Local\Temp\TestManualTwoHandComposedLayersOneBroken422758313\001\user.json
+    zz_manual_layers_test.go:79: unchanged on disk: base.json = true
+    zz_manual_layers_test.go:79: unchanged on disk: user.json = true
+--- PASS: TestManualTwoHandComposedLayersOneBroken (0.02s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/go/loader	2.162s
+== row 6.8 by-hand
+help exit 0
+help lines 34
+Usage: dsh [options] [profile|command...]
+help stderr bytes 0
+bad exit 64
+bad stdout bytes 0
+dsh: cli/usage: unknown flag: --no-such-flag
+Run 'dsh --help' for usage.
+== coverage-child (register amended): TestCoverageMergesChildProcesses
+=== RUN   TestCoverageMergesChildProcesses
+=== RUN   TestCoverageMergesChildProcesses/both_children
+=== RUN   TestCoverageMergesChildProcesses/no_re-executed_child
+=== RUN   TestCoverageMergesChildProcesses/no_helper_binary
+--- PASS: TestCoverageMergesChildProcesses (44.85s)
+    --- PASS: TestCoverageMergesChildProcesses/both_children (14.65s)
+    --- PASS: TestCoverageMergesChildProcesses/no_re-executed_child (22.79s)
+    --- PASS: TestCoverageMergesChildProcesses/no_helper_binary (7.41s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/tools/harness-gate	47.169s
+== cleanup
+main tree status unchanged
+E:/work/github/ai/agent-plugin                                                593ceaa [m1-phase-18]
+E:/work/github/ai/agent-plugin/.worktree/plan-harness-DSH-e2e-scenarios       ddbd9cd [story/harness-DSH/plan-e2e-scenarios]
+E:/work/github/ai/agent-plugin/.worktree/plan-harness-DSH-implementation-plan ddbd9cd [story/harness-DSH/plan-implementation-plan]
+ended: 2026-11-23T22:43:49Z

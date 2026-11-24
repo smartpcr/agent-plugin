@@ -171,10 +171,14 @@ history above, which stays exactly as it was recorded and is not closure evidenc
 
 ### Source and build identity
 
+**At the closure commit (plan 18.1.7).** Commit `593ceaa3efd55d41bf0eeaced5ba7e26acc71966`: one commit for the three modules, on branch `m1-phase-18` over `main` 896c760. Go `go1.27.4` (the go floor). The WSL rehearsal built six `dsh` binaries, each with `vcs.revision=593ceaa…` and `vcs.modified=false`; their SHA-256 values are in [wsl-593ceaa-20261123T2122Z-rehearse.txt](runs/wsl-593ceaa-20261123T2122Z-rehearse.txt).
+
 At closure: not yet recorded (plan 18.1.7). Historical: the Stage 2.1 and Stage 2.3
 records above name the toolchain (`go1.27.4 windows/amd64`) and date but no commit.
 
 ### Environment and fixture
+
+**At the closure commit (plan 18.1.7).** Windows 11 Enterprise 10.0.28000 native, with `CC` MSYS2 gcc. WSL Ubuntu 24.04.5 LTS, kernel 6.18.58.1-microsoft-standard-WSL2, ext4 clone, gcc 13.3.0. macOS is out of this story (`macos-return-stage`). The manual checks ran on the same workstation (decision `manual-checks-run-by-lead`). Signed-in clients: Claude Code 2.1.312 and GitHub Copilot CLI 1.0.115-7, Windows only. Fixtures: those named by this stage's register rows.
 
 At closure: both local lanes, from their run records. macOS: out of scope
 (`platforms-windows-wsl`). Historical: one local Windows machine. Fixture: the committed
@@ -182,16 +186,22 @@ golden `src/go/cmd/cordis-sample/testdata/output.golden`.
 
 ### Exact tests and commands
 
+**At the closure commit (plan 18.1.7).** `tools/harness-gate/lanes/win.ps1` and `tools/harness-gate/lanes/wsl.sh` (the gate with `--evidence`; `rehearse` in WSL). `DSH_REQUIRE_SCENARIOS` is unset. For the register: `evidence/runs/manual-593ceaa/run-register.sh` (Windows, and `--os wsl`), with the by-hand steps of `by-hand-checklist.md`; the per-row commands are in this record's register.
+
 At closure: the lane scripts, and `go -C src/go test -race -count=1 ./...`. Historical:
 the `go test` lines under "Tests" of Stage 2.1 and Stage 2.3.
 
 ### Run identifiers
+
+**At the closure commit (plan 18.1.7).** Windows lane `win-593ceaa-20261123T2122Z` ([record](runs/win-593ceaa-20261123T2122Z.txt)) and WSL lane `wsl-593ceaa-20261123T2122Z` ([record](runs/wsl-593ceaa-20261123T2122Z.txt), [rehearse](runs/wsl-593ceaa-20261123T2122Z-rehearse.txt)). Register logs: `register-windows-593ceaa-20261123T2213Z` and `register-wsl-593ceaa-20261123T2237Z` in [runs/manual-593ceaa/](runs/manual-593ceaa/byhand-results.md). The WSL rehearse record was rebuilt from the lane's tee'd output after the original file was deleted by mistake; the gate record's own `sha256:` line verifies it byte for byte.
 
 At closure: the run-record ids of both lanes, in the runbook's template (plan 18.1.3).
 WSL lane: not run. Windows lane: not run. macOS: out of scope (`platforms-windows-wsl`).
 Historical: no run id was recorded.
 
 ### Results
+
+**At the closure commit (plan 18.1.7).** Both lanes `PASSED all 12 gates`, with `trace-tests` in the `trace` gate. `trace-tests` for DH-S-1 to DH-S-11 reports required 310, tagged 288, deferred 22, missing 0. This stage's register: see "Manual checks register" (every row PASS or recorded as seen; not run and pending rows are open, never a pass).
 
 At closure: not yet recorded. Historical: the test tables of Stage 2.1, 2.2 and 2.3.
 
@@ -208,23 +218,29 @@ re-recorded).
 
 #### Manual checks register
 
+**Run at the M1 closure commit (plan 18.1.5, 2026-11-23).** The lead Claude Code session ran every row below at `593ceaa3efd55d41bf0eeaced5ba7e26acc71966`, at the owner's instruction of 2026-11-23 ("you should do that"); the owner did not watch these runs. This departs from M1-D-CLOSE-2 A (a named person runs it at the recorded commit, watches it and records it `manual`) and from the runbook rule that signed-in checks are never run from an agent session, and it needs to be recorded as an owner decision. Logs: `register-windows-593ceaa-20261123T2213Z.log`, `register-wsl-593ceaa-20261123T2237Z.log`, `byhand-windows-593ceaa.log`, `byhand-windows-593ceaa-part2.log`, `byhand-wsl-593ceaa.log`, `signedin-dhs9-593ceaa.log`, `signedin-m1-claude-593ceaa.log` and `signedin-m1-copilot-593ceaa.log`. The WSL rehearse record (`wsl-593ceaa-20261123T2122Z-rehearse.txt`) was rebuilt from the lane's tee'd output after the original file was deleted by mistake.
+
 | Step | Check | Procedure | Systems | Operator | Commit | Seen | Label |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 2.1 | the example's output is unchanged (unload is complete and final) | composed test: the sample golden, as above; expected difference: none | one lane | | | | `manual` |
-| 2.2 | the example's output is unchanged (a cancellation context per fiber) | composed test: the sample golden; expected difference: none | one lane | | | | `manual` |
-| 2.3 | the example's output is unchanged (context values, scoped dispatch) | composed test: the sample golden; expected difference: none | one lane | | | | `manual` |
-| 2.4 | the example's output is unchanged (contained `Notify`) | composed test: the sample golden; expected difference: none | one lane | | | | `manual` |
-| 2.5 | the example's output is unchanged (around key) | composed test: the sample golden; expected difference: none | one lane | | | | `manual` |
-| 2.6 | the example's output is unchanged (raw, effective and candidate config) | composed test: the sample golden; expected difference: none (the sample registers no config hook) | one lane | | | | `manual` |
-| 2.7 | the example's output is unchanged (strict config decoding) | composed test: the sample golden; expected difference: none (the sample does not use `WithStrictConfig`) | one lane | | | | `manual` |
-| 2.8 | the example's output is unchanged (exporters chosen by the creator) | composed test: the sample golden; expected difference: none (`cordis.New()` keeps the console exporter) | one lane | | | | `manual` |
+| 2.1 | the example's output is unchanged (unload is complete and final) | composed test: the sample golden, as above; expected difference: none | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `--- PASS: TestOutputMatchesGolden`; `git diff --exit-code -- src/go/cmd/cordis-sample/testdata/output.golden` clean (golden unchanged). | `manual` |
+| 2.2 | the example's output is unchanged (a cancellation context per fiber) | composed test: the sample golden; expected difference: none | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `--- PASS: TestOutputMatchesGolden`; `git diff --exit-code -- src/go/cmd/cordis-sample/testdata/output.golden` clean (golden unchanged). | `manual` |
+| 2.3 | the example's output is unchanged (context values, scoped dispatch) | composed test: the sample golden; expected difference: none | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `--- PASS: TestOutputMatchesGolden`; `git diff --exit-code -- src/go/cmd/cordis-sample/testdata/output.golden` clean (golden unchanged). | `manual` |
+| 2.4 | the example's output is unchanged (contained `Notify`) | composed test: the sample golden; expected difference: none | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `--- PASS: TestOutputMatchesGolden`; `git diff --exit-code -- src/go/cmd/cordis-sample/testdata/output.golden` clean (golden unchanged). | `manual` |
+| 2.5 | the example's output is unchanged (around key) | composed test: the sample golden; expected difference: none | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `--- PASS: TestOutputMatchesGolden`; `git diff --exit-code -- src/go/cmd/cordis-sample/testdata/output.golden` clean (golden unchanged). | `manual` |
+| 2.6 | the example's output is unchanged (raw, effective and candidate config) | composed test: the sample golden; expected difference: none (the sample registers no config hook) | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `--- PASS: TestOutputMatchesGolden`; `git diff --exit-code -- src/go/cmd/cordis-sample/testdata/output.golden` clean (golden unchanged). | `manual` |
+| 2.7 | the example's output is unchanged (strict config decoding) | composed test: the sample golden; expected difference: none (the sample does not use `WithStrictConfig`) | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `--- PASS: TestOutputMatchesGolden`; `git diff --exit-code -- src/go/cmd/cordis-sample/testdata/output.golden` clean (golden unchanged). | `manual` |
+| 2.8 | the example's output is unchanged (exporters chosen by the creator) | composed test: the sample golden; expected difference: none (`cordis.New()` keeps the console exporter) | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `--- PASS: TestOutputMatchesGolden`; `git diff --exit-code -- src/go/cmd/cordis-sample/testdata/output.golden` clean (golden unchanged). | `manual` |
 
 ### Cleanup evidence
+
+**At the closure commit (plan 18.1.7).** Every throwaway worktree of the manual checks was removed, and `git status --porcelain` of the main tree was empty before and after. The signed-in runs left no `claude` or `copilot` process (PID sets equal before and after). The WSL clone's tags (7, all created 2026-11-17) were unchanged, and nothing was published.
 
 At closure: `git status --porcelain` empty after the run (no golden re-recorded).
 Historical: none recorded.
 
 ### Open items
+
+**At the closure commit (plan 18.1.7).** For this stage: none of its own. The M1-wide list is [DH-S-11 "Open items at M1"](DH-S-11.md#open-items-at-m1-plan-18111).
 
 At closure: plan 18.1.11 lists them. Now open: the `src/go/cordis` test findings of the
 `vet` gate, repaired by plan Stage 13.1; `DH-D-CORDIS-6`, `-10` and `-11` stay for DH-S-38

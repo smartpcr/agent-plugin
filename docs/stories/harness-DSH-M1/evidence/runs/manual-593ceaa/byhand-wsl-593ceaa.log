@@ -1,0 +1,29 @@
+commit: 593ceaa3efd55d41bf0eeaced5ba7e26acc71966 started: 2026-11-23T22:45:27Z
+6.18.58.1-microsoft-standard-WSL2
+PRETTY_NAME="Ubuntu 24.04.5 LTS"
+git version 2.43.0
+== row 4.8 WSL ext4
+dir: /home/dsh/src/agent-plugin  git: 1625  search: 1623  summary: {Files:1623 Matches:1623 Incomplete:false Reason:}
+only in git:
+.worktree/plan-harness-DSH-e2e-scenarios
+.worktree/plan-harness-DSH-implementation-plan
+only in search (top two levels):
+== row 4.8 WSL /mnt/e
+dir: /mnt/e/work/github/ai/agent-plugin  git: 1625  search: 2775  summary: {Files:2775 Matches:2775 Incomplete:false Reason:}
+only in git:
+.worktree/plan-harness-DSH-e2e-scenarios
+.worktree/plan-harness-DSH-implementation-plan
+only in search (top two levels):
+    576 .worktree/plan-harness-DSH-implementation-plan
+    576 .worktree/plan-harness-DSH-e2e-scenarios
+== row 4.9 (b) WSL ext4, vim
+VIM - Vi IMproved 9.1 (2024 Jan 02, compiled Aug 24 2026 22:13:04)
+save 1 at 22:45:33
+save 2 at 22:45:36
+save 3 at 22:45:39
+watching /home/dsh/dsh-watch/settings.json mode=notify
+notice 1 at 3.22s err=<nil> mode=notify
+notice 2 at 6.23s err=<nil> mode=notify
+notice 3 at 9.29s err=<nil> mode=notify
+total notices 3 mode=notify
+ended: 2026-11-23T22:45:50Z

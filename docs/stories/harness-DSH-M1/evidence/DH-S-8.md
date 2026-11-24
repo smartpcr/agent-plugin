@@ -401,12 +401,16 @@ below. The history above stays exactly as it was recorded and is not closure evi
 
 ### Source and build identity
 
+**At the closure commit (plan 18.1.7).** Commit `593ceaa3efd55d41bf0eeaced5ba7e26acc71966`: one commit for the three modules, on branch `m1-phase-18` over `main` 896c760. Go `go1.27.4` (the go floor). The WSL rehearsal built six `dsh` binaries, each with `vcs.revision=593ceaa…` and `vcs.modified=false`; their SHA-256 values are in [wsl-593ceaa-20261123T2122Z-rehearse.txt](runs/wsl-593ceaa-20261123T2122Z-rehearse.txt).
+
 At closure: not yet recorded (plan 18.1.7). Phase 15 (gap closure): commit
 `6e7514cdb6fbc8f105238e7e655fb20e3102166b`; the 8.3 to 8.5 manual checks ran at
 `d10440b`, which adds only run records to it. Historical: no commit was recorded; Stage
 8.1 names its PR (#63) and Stage 8.2 its PR (#64).
 
 ### Environment and fixture
+
+**At the closure commit (plan 18.1.7).** Windows 11 Enterprise 10.0.28000 native, with `CC` MSYS2 gcc. WSL Ubuntu 24.04.5 LTS, kernel 6.18.58.1-microsoft-standard-WSL2, ext4 clone, gcc 13.3.0. macOS is out of this story (`macos-return-stage`). The manual checks ran on the same workstation (decision `manual-checks-run-by-lead`). Signed-in clients: Claude Code 2.1.312 and GitHub Copilot CLI 1.0.115-7, Windows only. Fixtures: those named by this stage's register rows.
 
 At closure (18.1.7): both local lanes, from their run records at the closure commit.
 Phase 15 (gap closure), from the two `6e7514c` run records: WSL lane Ubuntu 24.04.5 LTS
@@ -421,6 +425,8 @@ the heavy-tailed corpus `internal/testkit/corpus`.
 
 ### Exact tests and commands
 
+**At the closure commit (plan 18.1.7).** `tools/harness-gate/lanes/win.ps1` and `tools/harness-gate/lanes/wsl.sh` (the gate with `--evidence`; `rehearse` in WSL). `DSH_REQUIRE_SCENARIOS` is unset. For the register: `evidence/runs/manual-593ceaa/run-register.sh` (Windows, and `--os wsl`), with the by-hand steps of `by-hand-checklist.md`; the per-row commands are in this record's register.
+
 At closure: the lane scripts, and `go -C src/harness test -race -count=1
 ./internal/storage/... ./internal/session/views/ ./internal/session/query/`. Phase 15:
 the lane scripts, `go test -race` per package, and the bench and manual-check commands in
@@ -428,6 +434,8 @@ the lane scripts, `go test -race` per package, and the bench and manual-check co
 8.1 and "Tests (TC-08)".
 
 ### Run identifiers
+
+**At the closure commit (plan 18.1.7).** Windows lane `win-593ceaa-20261123T2122Z` ([record](runs/win-593ceaa-20261123T2122Z.txt)) and WSL lane `wsl-593ceaa-20261123T2122Z` ([record](runs/wsl-593ceaa-20261123T2122Z.txt), [rehearse](runs/wsl-593ceaa-20261123T2122Z-rehearse.txt)). Register logs: `register-windows-593ceaa-20261123T2213Z` and `register-wsl-593ceaa-20261123T2237Z` in [runs/manual-593ceaa/](runs/manual-593ceaa/byhand-results.md). The WSL rehearse record was rebuilt from the lane's tee'd output after the original file was deleted by mistake; the gate record's own `sha256:` line verifies it byte for byte.
 
 At closure (18.1.3, 18.1.7): the run-record ids of both lanes at the frozen closure
 commit; not yet run. Phase 15 (gap closure), at `6e7514c`: WSL lane
@@ -439,6 +447,8 @@ commit; not yet run. Phase 15 (gap closure), at `6e7514c`: WSL lane
 DH-E-STORAGE-1, -2 and -3 run in DH-S-19, DH-S-23 and DH-S-39 and have no run id yet.
 
 ### Results
+
+**At the closure commit (plan 18.1.7).** Both lanes `PASSED all 12 gates`, with `trace-tests` in the `trace` gate. `trace-tests` for DH-S-1 to DH-S-11 reports required 310, tagged 288, deferred 22, missing 0. This stage's register: see "Manual checks register" (every row PASS or recorded as seen; not run and pending rows are open, never a pass).
 
 At closure: not yet recorded. Phase 15: both lanes `PASSED all 12 gates` at `6e7514c`;
 per test ID in "Stage 8.1 addendum (M1-G-STORE)" and "Stage 8.2". Historical: the test
@@ -456,22 +466,28 @@ register: [the evidence runbook](README.md#manual-checks). Composed tests run as
 
 #### Manual checks register
 
+**Run at the M1 closure commit (plan 18.1.5, 2026-11-23).** The lead Claude Code session ran every row below at `593ceaa3efd55d41bf0eeaced5ba7e26acc71966`, at the owner's instruction of 2026-11-23 ("you should do that"); the owner did not watch these runs. This departs from M1-D-CLOSE-2 A (a named person runs it at the recorded commit, watches it and records it `manual`) and from the runbook rule that signed-in checks are never run from an agent session, and it needs to be recorded as an owner decision. Logs: `register-windows-593ceaa-20261123T2213Z.log`, `register-wsl-593ceaa-20261123T2237Z.log`, `byhand-windows-593ceaa.log`, `byhand-windows-593ceaa-part2.log`, `byhand-wsl-593ceaa.log`, `signedin-dhs9-593ceaa.log`, `signedin-m1-claude-593ceaa.log` and `signedin-m1-copilot-593ceaa.log`. The WSL rehearse record (`wsl-593ceaa-20261123T2122Z-rehearse.txt`) was rebuilt from the lane's tee'd output after the original file was deleted by mistake.
+
 | Step | Check | Procedure | Systems | Operator | Commit | Seen | Label |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 8.1 | rule-3 default: program state survives restarts in one typed store | composed test: `TestMachineStateSurvivesRestart` in `./internal/storage/workspace/`, `TestUpdateCommitsAtomicallyAndSurvivesRestart` in `./internal/storage/kv/` | one lane | | | | `manual` |
-| 8.2 | change a fold's version: its stored state is rebuilt on open | composed test: `TestChangedFoldVersionRebuilds` in `./internal/session/views/`; record the version and seq before and after | one lane | | | | `manual` |
-| 8.3 | rule-3 default: the built-in views equal a refold of the log | composed test: `TestRefoldEqualsStoredForEveryBuiltinView` in `./internal/session/views/` | one lane | | | | `manual` |
-| 8.4 | rule-3 default: projects group sessions; a hidden session never keeps working | composed test: `TestListingGroupsByProject` in `./internal/session/views/`, `TestHiddenSessionStopsWorking` in `./internal/storage/workspace/` | one lane | | | | `manual` |
-| 8.5 | rule-3 default: sessions are listed, observed, traced and followed across forks | composed test: `TestTraceAcrossForks`, `TestCallerSeesOnlyWhatItMay`, `TestListPagesAreBounded`, `TestListPagingIsStableWhileSessionsChange`, `TestListRowsPerPageDoNotGrow`, `TestListingReadsStoredSummaries` in `./internal/session/query/`; record the rows-per-page lines | one lane | | | | `manual` |
-| 8.6 | write a five-megabyte result: the bounded head and the recoverable rest | composed test: `TestLargeResultSpilledAndRecoverable` in `./internal/storage/spill/local/`; record the result size, the logged row size and head under the bound, and the byte-identical read-back | Windows, WSL | | | | `manual` |
-| 8.7 | rule-3 default: attachments are kept durably and read back verified | composed test: `TestCorruptedObjectDetected` in `./internal/storage/blob/`, `TestCorruptedAttachmentDetected` in `./internal/storage/attachments/` | one lane | | | | `manual` |
+| 8.1 | rule-3 default: program state survives restarts in one typed store | composed test: `TestMachineStateSurvivesRestart` in `./internal/storage/workspace/`, `TestUpdateCommitsAtomicallyAndSurvivesRestart` in `./internal/storage/kv/` | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `--- PASS` for `TestMachineStateSurvivesRestart`, `TestUpdateCommitsAtomicallyAndSurvivesRestart`. | `manual` |
+| 8.2 | change a fold's version: its stored state is rebuilt on open | composed test: `TestChangedFoldVersionRebuilds` in `./internal/session/views/`; record the version and seq before and after | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `--- PASS` for `TestChangedFoldVersionRebuilds`; no version or seq lines were printed under `-v`; the rebuild assertions passed. | `manual` |
+| 8.3 | rule-3 default: the built-in views equal a refold of the log | composed test: `TestRefoldEqualsStoredForEveryBuiltinView` in `./internal/session/views/` | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `--- PASS` for `TestRefoldEqualsStoredForEveryBuiltinView`. | `manual` |
+| 8.4 | rule-3 default: projects group sessions; a hidden session never keeps working | composed test: `TestListingGroupsByProject` in `./internal/session/views/`, `TestHiddenSessionStopsWorking` in `./internal/storage/workspace/` | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `--- PASS` for `TestListingGroupsByProject`, `TestHiddenSessionStopsWorking`. | `manual` |
+| 8.5 | rule-3 default: sessions are listed, observed, traced and followed across forks | composed test: `TestTraceAcrossForks`, `TestCallerSeesOnlyWhatItMay`, `TestListPagesAreBounded`, `TestListPagingIsStableWhileSessionsChange`, `TestListRowsPerPageDoNotGrow`, `TestListingReadsStoredSummaries` in `./internal/session/query/`; record the rows-per-page lines | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `--- PASS` for `TestListPagingIsStableWhileSessionsChange`, `TestListRowsPerPageDoNotGrow`, `TestTraceAcrossForks`, `TestListingReadsStoredSummaries`, `TestCallerSeesOnlyWhatItMay`, `TestListPagesAreBounded`; rows per page: `100 sessions: [summaries opens rows records] first page [20 20 100 0], deep page [20 20 100 0]` and `10000 sessions: ... first page [20 20 100 0], deep page [20 20 100 0]`. | `manual` |
+| 8.6 | write a five-megabyte result: the bounded head and the recoverable rest | composed test: `TestLargeResultSpilledAndRecoverable` in `./internal/storage/spill/local/`; record the result size, the logged row size and head under the bound, and the byte-identical read-back | Windows, WSL | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS on both lanes. Windows (`register-windows-593ceaa-20261123T2213Z.log`) and WSL (`register-wsl-593ceaa-20261123T2237Z.log`): `--- PASS: TestLargeResultSpilledAndRecoverable`; `logged tool/result row: 16616 bytes (head 16383 of 5242880 bytes, bound 16384)` on both; the byte-identical read-back is the test's assertion. | `manual` |
+| 8.7 | rule-3 default: attachments are kept durably and read back verified | composed test: `TestCorruptedObjectDetected` in `./internal/storage/blob/`, `TestCorruptedAttachmentDetected` in `./internal/storage/attachments/` | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `--- PASS` for `TestCorruptedObjectDetected`, `TestCorruptedAttachmentDetected`. | `manual` |
 
 ### Cleanup evidence
+
+**At the closure commit (plan 18.1.7).** Every throwaway worktree of the manual checks was removed, and `git status --porcelain` of the main tree was empty before and after. The signed-in runs left no `claude` or `copilot` process (PID sets equal before and after). The WSL clone's tags (7, all created 2026-11-17) were unchanged, and nothing was published.
 
 At closure: every temporary home is gone; `git status --porcelain` empty after the run.
 Historical: none recorded.
 
 ### Open items
+
+**At the closure commit (plan 18.1.7).** For this stage: H-33, H-35 and H-36 ("Held open" above). The M1-wide list is [DH-S-11 "Open items at M1"](DH-S-11.md#open-items-at-m1-plan-18111).
 
 At closure: plan 18.1.11 lists them. Now open:
 - the bench figures on WSL for `DH-T-VIEW-15` and `DH-T-VIEW-25` (the lead fills them

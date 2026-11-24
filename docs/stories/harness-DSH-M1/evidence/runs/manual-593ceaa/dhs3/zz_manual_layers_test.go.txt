@@ -1,0 +1,81 @@
+package loader_test
+
+// Throwaway test for the DH-S-3 manual check (register rows 3.1, 3.4, 3.5, 3.8;
+// plan step 18.1.5). Copy it into src/go/loader/ of a THROWAWAY WORKTREE at the
+// frozen commit, run it once, and delete the worktree. It is never committed.
+//
+// It writes base.json and a writable user.json with one misspelled key
+// ("disabeld") into a temporary directory, loads them through
+// loader.LayerSetComponent (base, then user), and prints the lines the register
+// asks for: the error diagnostic (file:line:col), the one settled-reload notice,
+// the echo of the base entry, the writable layer, and whether either file changed.
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/smartpcr/agent-plugin/src/go/cordis"
+	. "github.com/smartpcr/agent-plugin/src/go/internal/testkit"
+	"github.com/smartpcr/agent-plugin/src/go/loader"
+)
+
+const manualBase = `[
+  { "insert": [
+    { "id": "good", "name": "EchoPlugin", "config": { "text": "good" } }
+  ] }
+]
+`
+
+const manualUser = `[
+  { "insert": [
+    { "id": "broken", "name": "EchoPlugin",
+      "disabeld": true }
+  ] }
+]
+`
+
+func TestManualTwoHandComposedLayersOneBroken(t *testing.T) {
+	dir := t.TempDir()
+	base := filepath.Join(dir, "base.json")
+	user := filepath.Join(dir, "user.json")
+	for path, text := range map[string]string{base: manualBase, user: manualUser} {
+		if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Logf("TMP = %s", dir)
+
+	root, logs := Quiet()
+	t.Cleanup(func() { Within(t, "root dispose", root.Dispose) })
+	echo := &Log{}
+	seen := listen(t, root) // nested_test.go: records every loader.Reloaded notice
+	MustWait(t, Must(root.Use(loader.Component, loader.Options{Resolver: loader.Components{"EchoPlugin": Echo(echo)}})))
+	fiber := MustWait(t, Must(root.Use(loader.LayerSetComponent, loader.LayerSetOptions{Layers: []loader.Layer{
+		{Label: "base", Path: base},
+		{Label: "user", Path: user, Writable: true},
+	}})))
+	set := fiber.Instance().(*loader.LayerSet)
+
+	for _, m := range logs.Messages() {
+		if m.Level == cordis.LevelError {
+			t.Logf("error: %s", m.Text)
+		}
+	}
+	notices := seen.all()
+	for _, n := range notices {
+		t.Logf("notice: created=%v issues=%v", n.Created, n.Issues)
+	}
+	t.Logf("notices: %d", len(notices))
+	t.Logf("echo: %s", echo.String())
+	for _, l := range set.Layers() {
+		t.Logf("layer: label=%s writable=%v path=%s", l.Label, l.Writable, l.Path)
+	}
+	for path, want := range map[string]string{base: manualBase, user: manualUser} {
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("unchanged on disk: %s = %v", filepath.Base(path), string(got) == want)
+	}
+}

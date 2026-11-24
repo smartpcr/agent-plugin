@@ -829,9 +829,9 @@ replay runner, so they are built in [DH-S-16](#dh-s-16).
 
 **Steps.**
 
-- [ ] **9.1** [DH-D-LLM-2](areas/llm.md#dh-d-llm-2) The first working provider: shared transport, the Messages driver and key authentication.
-- [ ] **9.2** [DH-D-LLM-3](areas/llm.md#dh-d-llm-3) Bounded retry, and buffered one-shot calls.
-- [ ] **9.3** [DH-D-LLM-6](areas/llm.md#dh-d-llm-6) Token usage and context occupancy from the log (P1, pulled forward).
+- [x] **9.1** [DH-D-LLM-2](areas/llm.md#dh-d-llm-2) The first working provider: shared transport, the Messages driver and key authentication.
+- [x] **9.2** [DH-D-LLM-3](areas/llm.md#dh-d-llm-3) Bounded retry, and buffered one-shot calls.
+- [x] **9.3** [DH-D-LLM-6](areas/llm.md#dh-d-llm-6) Token usage and context occupancy from the log (P1, pulled forward).
 
 **Manual checks.** One streamed request to the real API with a good key and one with
 a bad key; record one attempt event each and no retry on the bad key; `manual`.
@@ -923,11 +923,11 @@ server waits on it for a quiet tree. The context pipeline closes the stage.
 
 - [x] **11.1** [DH-D-AGENT-7](areas/agent-loop.md#dh-d-agent-7) Each step uses one logged model selection.
 - [x] **11.2** [DH-D-AGENT-10](areas/agent-loop.md#dh-d-agent-10) A step's tools are fixed once, and its calls run in a bounded, ordered batch.
-- [ ] **11.3** [DH-D-AGENT-3](areas/agent-loop.md#dh-d-agent-3) Every turn and step is bracketed, bounded and closed on every path.
-- [ ] **11.4** [DH-D-AGENT-5](areas/agent-loop.md#dh-d-agent-5) A turn or a single step can be stopped, and the log says why.
+- [x] **11.3** [DH-D-AGENT-3](areas/agent-loop.md#dh-d-agent-3) Every turn and step is bracketed, bounded and closed on every path.
+- [x] **11.4** [DH-D-AGENT-5](areas/agent-loop.md#dh-d-agent-5) A turn or a single step can be stopped, and the log says why.
 - [x] **11.5** [DH-D-AGENT-6](areas/agent-loop.md#dh-d-agent-6) Agents are created, resumed and torn down as one transaction.
 - [x] **11.6** [DH-D-SUBAGENT-1](areas/subagent-team.md#dh-d-subagent-1) Any component can delegate through one seam, and every child has one owner (P1, pulled forward).
-- [ ] **11.7** [DH-D-CONTEXT-1](areas/context-compaction-skill.md#dh-d-context-1) Context reaches the model through one logged, ordered pipeline.
+- [x] **11.7** [DH-D-CONTEXT-1](areas/context-compaction-skill.md#dh-d-context-1) Context reaches the model through one logged, ordered pipeline.
 
 **Manual checks.** From a Go test that composes the real components, send one prompt
 to the real model API with one test tool, and record the bracketed log and the

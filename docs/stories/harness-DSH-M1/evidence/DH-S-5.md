@@ -127,9 +127,13 @@ history above, which stays exactly as it was recorded and is not closure evidenc
 
 ### Source and build identity
 
+**At the closure commit (plan 18.1.7).** Commit `593ceaa3efd55d41bf0eeaced5ba7e26acc71966`: one commit for the three modules, on branch `m1-phase-18` over `main` 896c760. Go `go1.27.4` (the go floor). The WSL rehearsal built six `dsh` binaries, each with `vcs.revision=593ceaa…` and `vcs.modified=false`; their SHA-256 values are in [wsl-593ceaa-20261123T2122Z-rehearse.txt](runs/wsl-593ceaa-20261123T2122Z-rehearse.txt).
+
 At closure: not yet recorded (plan 18.1.7). Historical: no commit was recorded.
 
 ### Environment and fixture
+
+**At the closure commit (plan 18.1.7).** Windows 11 Enterprise 10.0.28000 native, with `CC` MSYS2 gcc. WSL Ubuntu 24.04.5 LTS, kernel 6.18.58.1-microsoft-standard-WSL2, ext4 clone, gcc 13.3.0. macOS is out of this story (`macos-return-stage`). The manual checks ran on the same workstation (decision `manual-checks-run-by-lead`). Signed-in clients: Claude Code 2.1.312 and GitHub Copilot CLI 1.0.115-7, Windows only. Fixtures: those named by this stage's register rows.
 
 At closure: both local lanes, from their run records. macOS: out of scope
 (`platforms-windows-wsl`). Historical: one local machine. Fixtures: memstore sessions;
@@ -137,16 +141,22 @@ At closure: both local lanes, from their run records. macOS: out of scope
 
 ### Exact tests and commands
 
+**At the closure commit (plan 18.1.7).** `tools/harness-gate/lanes/win.ps1` and `tools/harness-gate/lanes/wsl.sh` (the gate with `--evidence`; `rehearse` in WSL). `DSH_REQUIRE_SCENARIOS` is unset. For the register: `evidence/runs/manual-593ceaa/run-register.sh` (Windows, and `--os wsl`), with the by-hand steps of `by-hand-checklist.md`; the per-row commands are in this record's register.
+
 At closure: the lane scripts, and `go -C src/harness test -race -count=1 ./...`.
 Historical: the `go test` lines under "Tests" of Stage 5.3 and "DH-S-5 exit checks".
 
 ### Run identifiers
+
+**At the closure commit (plan 18.1.7).** Windows lane `win-593ceaa-20261123T2122Z` ([record](runs/win-593ceaa-20261123T2122Z.txt)) and WSL lane `wsl-593ceaa-20261123T2122Z` ([record](runs/wsl-593ceaa-20261123T2122Z.txt), [rehearse](runs/wsl-593ceaa-20261123T2122Z-rehearse.txt)). Register logs: `register-windows-593ceaa-20261123T2213Z` and `register-wsl-593ceaa-20261123T2237Z` in [runs/manual-593ceaa/](runs/manual-593ceaa/byhand-results.md). The WSL rehearse record was rebuilt from the lane's tee'd output after the original file was deleted by mistake; the gate record's own `sha256:` line verifies it byte for byte.
 
 At closure: the run-record ids of both lanes, in the runbook's template (plan 18.1.3).
 WSL lane: not run. Windows lane: not run. macOS: out of scope (`platforms-windows-wsl`).
 Historical: no run id was recorded.
 
 ### Results
+
+**At the closure commit (plan 18.1.7).** Both lanes `PASSED all 12 gates`, with `trace-tests` in the `trace` gate. `trace-tests` for DH-S-1 to DH-S-11 reports required 310, tagged 288, deferred 22, missing 0. This stage's register: see "Manual checks register" (every row PASS or recorded as seen; not run and pending rows are open, never a pass).
 
 At closure: not yet recorded. Historical: the test table of Stage 5.3 and "DH-S-5 exit
 checks".
@@ -162,21 +172,23 @@ runbook](README.md#manual-checks). Composed tests run as `go -C src/harness test
 
 #### Manual checks register
 
+**Run at the M1 closure commit (plan 18.1.5, 2026-11-23).** The lead Claude Code session ran every row below at `593ceaa3efd55d41bf0eeaced5ba7e26acc71966`, at the owner's instruction of 2026-11-23 ("you should do that"); the owner did not watch these runs. This departs from M1-D-CLOSE-2 A (a named person runs it at the recorded commit, watches it and records it `manual`) and from the runbook rule that signed-in checks are never run from an agent session, and it needs to be recorded as an owner decision. Logs: `register-windows-593ceaa-20261123T2213Z.log`, `register-wsl-593ceaa-20261123T2237Z.log`, `byhand-windows-593ceaa.log`, `byhand-windows-593ceaa-part2.log`, `byhand-wsl-593ceaa.log`, `signedin-dhs9-593ceaa.log`, `signedin-m1-claude-593ceaa.log` and `signedin-m1-copilot-593ceaa.log`. The WSL rehearse record (`wsl-593ceaa-20261123T2122Z-rehearse.txt`) was rebuilt from the lane's tee'd output after the original file was deleted by mistake.
+
 | Step | Check | Procedure | Systems | Operator | Commit | Seen | Label |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 5.1 | rule-3 default: a typed, versioned event vocabulary | composed test: `./internal/session/event/` | one lane | | | | `manual` |
-| 5.2 | rule-3 default: per-agent and per-preset registrations with one owner | composed test: `./internal/session/scope/` | one lane | | | | `manual` |
-| 5.3 | rule-3 default: the store contract and its in-memory reference | composed test: `TestConformance` in `./internal/session/store/memstore/` | one lane | | | | `manual` |
-| 5.4 | rule-3 default: a persisted type cannot change unnoticed | composed test: `TestInventory`, `TestInventoryCatchesUnbumpedChange`, `TestPersistedRowsDecode` in `./internal/session/store/` | one lane | | | | `manual` |
-| 5.5 | a hand-written sequence on an in-memory session: accepted in order, delivered once | composed test: `TestRequestRebuild` in `./internal/session/`; record the appended sequence and its seqs | one lane | | | | `manual` |
-| 5.6 | a hand-written sequence: history and the request header computed from the log | composed test: `TestRequestRebuild`; record the request's messages and header | one lane | | | | `manual` |
-| 5.7 | a hand-written sequence: the rebuilt request equals the expected one | composed test: `TestRequestRebuild`; record the sent and rebuilt digests, and that digest and `AsOf` are unchanged after more appends | one lane | | | | `manual` |
-| 5.8 | rule-3 default: brackets balance, checked on append and closed on failure | composed test: `./internal/session/` (the bracket tests of DH-D-SESSION-5) | one lane | | | | `manual` |
-| 5.9 | rule-3 default: one runtime, one settlement per attempt | composed test: `TestStreamOneAttemptOneSettlement`, `TestCompleteHandsOneRecordToTheCaller` in `./internal/llm/` | one lane | | | | `manual` |
-| 5.10 | rule-3 default: agents found, addressed and owned through one contract | composed test: `TestRegistryCreateGetList`, `TestCompositionWithAStubFactory` in `./internal/agent/` | one lane | | | | `manual` |
-| 5.11 | rule-3 default: three typed steering points | composed test: `TestPreStepRejectAndPanic`, `TestTurnStoppingKeepOpenWinsInEveryOrder` in `./internal/agent/` | one lane | | | | `manual` |
-| 5.12 | rule-3 default: one registry for pending approvals and questions | composed test: `TestPendingIsAddressableByAgent`, `TestConcurrentAnswersOneWins` in `./internal/human/` | one lane | | | | `manual` |
-| 5.13 | rule-3 default: folds registered once and read at one cut | composed test: `TestFoldsReadAtOneCut` in `./internal/session/views/` | one lane | | | | `manual` |
+| 5.1 | rule-3 default: a typed, versioned event vocabulary | composed test: `./internal/session/event/` | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): 15 tests `--- PASS`, 0 FAIL, among them `TestCoreVocabulary`, `TestRoundTripStable`, `TestOlderVersionConverts`, `TestUnknownVersionSurfaces`; `session/event` ok. | `manual` |
+| 5.2 | rule-3 default: per-agent and per-preset registrations with one owner | composed test: `./internal/session/scope/` | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `--- PASS` for `TestScopedRegistrations`, `TestScopedEvent`, `TestNoBorrowedAuthority`. | `manual` |
+| 5.3 | rule-3 default: the store contract and its in-memory reference | composed test: `TestConformance` in `./internal/session/store/memstore/` | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `--- PASS` for `TestConformance`; `memstore` ok. | `manual` |
+| 5.4 | rule-3 default: a persisted type cannot change unnoticed | composed test: `TestInventory`, `TestInventoryCatchesUnbumpedChange`, `TestPersistedRowsDecode` in `./internal/session/store/` | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `--- PASS` for `TestInventory`, `TestInventoryCatchesUnbumpedChange`, `TestPersistedRowsDecode`. | `manual` |
+| 5.5 | a hand-written sequence on an in-memory session: accepted in order, delivered once | composed test: `TestRequestRebuild` in `./internal/session/`; record the appended sequence and its seqs | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `--- PASS` for `TestRequestRebuild`; the test printed no sequence or seq lines under `-v`; the in-order, delivered-once assertions passed. | `manual` |
+| 5.6 | a hand-written sequence: history and the request header computed from the log | composed test: `TestRequestRebuild`; record the request's messages and header | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `--- PASS` for `TestRequestRebuild`; the test printed no message or header lines under `-v`; its history and header assertions passed. | `manual` |
+| 5.7 | a hand-written sequence: the rebuilt request equals the expected one | composed test: `TestRequestRebuild`; record the sent and rebuilt digests, and that digest and `AsOf` are unchanged after more appends | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `--- PASS` for `TestRequestRebuild`; the test printed no digest lines under `-v`; its sent-equals-rebuilt and unchanged-digest-and-`AsOf` assertions passed. | `manual` |
+| 5.8 | rule-3 default: brackets balance, checked on append and closed on failure | composed test: `./internal/session/` (the bracket tests of DH-D-SESSION-5) | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): 24 tests `--- PASS`, 0 FAIL, among them `TestBracketsOnAppend`, `TestOpenClosesBrackets`, `TestOpenFlushesClosersBeforePublishing`, `TestCloseReportsWriterFailure`; `internal/session` ok. | `manual` |
+| 5.9 | rule-3 default: one runtime, one settlement per attempt | composed test: `TestStreamOneAttemptOneSettlement`, `TestCompleteHandsOneRecordToTheCaller` in `./internal/llm/` | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `--- PASS` for `TestStreamOneAttemptOneSettlement`, `TestCompleteHandsOneRecordToTheCaller`. | `manual` |
+| 5.10 | rule-3 default: agents found, addressed and owned through one contract | composed test: `TestRegistryCreateGetList`, `TestCompositionWithAStubFactory` in `./internal/agent/` | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `--- PASS` for `TestRegistryCreateGetList`, `TestCompositionWithAStubFactory`. | `manual` |
+| 5.11 | rule-3 default: three typed steering points | composed test: `TestPreStepRejectAndPanic`, `TestTurnStoppingKeepOpenWinsInEveryOrder` in `./internal/agent/` | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `--- PASS` for `TestPreStepRejectAndPanic`, `TestTurnStoppingKeepOpenWinsInEveryOrder`. | `manual` |
+| 5.12 | rule-3 default: one registry for pending approvals and questions | composed test: `TestPendingIsAddressableByAgent`, `TestConcurrentAnswersOneWins` in `./internal/human/` | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `--- PASS` for `TestPendingIsAddressableByAgent`, `TestConcurrentAnswersOneWins`. | `manual` |
+| 5.13 | rule-3 default: folds registered once and read at one cut | composed test: `TestFoldsReadAtOneCut` in `./internal/session/views/` | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `--- PASS` for `TestFoldsReadAtOneCut`. | `manual` |
 
 ### Held open
 
@@ -196,10 +208,14 @@ closing stage records the entries it closes in its own evidence record.
 
 ### Cleanup evidence
 
+**At the closure commit (plan 18.1.7).** Every throwaway worktree of the manual checks was removed, and `git status --porcelain` of the main tree was empty before and after. The signed-in runs left no `claude` or `copilot` process (PID sets equal before and after). The WSL clone's tags (7, all created 2026-11-17) were unchanged, and nothing was published.
+
 At closure: in-memory sessions only; nothing to clean up beyond `git status --porcelain`
 empty after the run. Historical: none recorded.
 
 ### Open items
+
+**At the closure commit (plan 18.1.7).** For this stage: H-39 (`DH-T-AGENT-14`, DH-S-15) and H-40 (`DH-T-VIEW-4`, DH-S-12), both from M1-D-CLOSE-5. The M1-wide list is [DH-S-11 "Open items at M1"](DH-S-11.md#open-items-at-m1-plan-18111).
 
 At closure: plan 18.1.11 lists them. Now open: the deferrals under "Deviations,
 recorded" above (`Resume`, composer swap, stream frames), owned by later stages; the
