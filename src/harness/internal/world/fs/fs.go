@@ -19,6 +19,14 @@ import (
 )
 
 // Ref names a path as a call gave it.
+//
+// Resolution is lexical first: a relative Path is joined with Dir and the result
+// is cleaned (filepath.Clean: "." and ".." removed textually) before any symlink
+// is followed. So for "ws/link/../secret" with link -> /outside/dir the path is
+// "ws/secret", not the "/outside/secret" a POSIX kernel would reach from the raw
+// string. Symlinks are then resolved on that cleaned path to give the Target,
+// and a provider must fence and operate on that Target, never hand the raw Path
+// to the OS.
 type Ref struct {
 	// Path is absolute, or relative to Dir.
 	Path string
