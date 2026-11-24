@@ -1026,6 +1026,11 @@ func TestEditDuringStuckApplicationWaitsForItToSettle(t *testing.T) {
 		return err
 	})
 	waitFor("the edit to be written", func() bool {
+		select {
+		case err := <-edit: // an edit that ends before it is written says why
+			t.Fatalf("the edit returned %v before it was written, while the reload before it was still applying", err)
+		default:
+		}
 		data, _ := os.ReadFile(profile.LayerPath(h.root, h.def.Name))
 		return strings.Contains(string(data), "port: 7")
 	})
