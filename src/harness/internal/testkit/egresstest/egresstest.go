@@ -7,12 +7,13 @@
 // the permit check, the one header, the release rules and the real
 // net/http.Transport all stay the production ones:
 //
-//   - Config.Proxy is called by the transport for every request, after the
-//     permit check and before any dial. The recorder records the request there,
-//     refuses one no Allow entry names (the test fails, naming the origin, and
-//     nothing is dialled), and returns a scripted dial failure (Fail) for a
-//     chosen attempt -- refused, reset or timeout -- deterministically and with
-//     no listener.
+//   - Config.Observe is called by every client the service hands out, guarded
+//     (Options.Guard) or not, for every request after the permit check and
+//     before any lookup or dial. The recorder records the request there, refuses
+//     one no Allow entry names (the test fails, naming the origin, and nothing
+//     is dialled), and returns a scripted dial failure (Fail) for a chosen
+//     attempt -- refused, reset or timeout -- deterministically and with no
+//     listener.
 //   - Config.Resolver is a pure-Go resolver whose DNS exchange is answered in
 //     memory: a name given by Host resolves to its addresses, a name the test
 //     did not allow fails the test, and no packet leaves the process.
@@ -22,6 +23,14 @@
 // server such as faultserver is allowed by its URL. Every refusal and every
 // scripted failure that never happened is reported through the test's TB, so
 // Errorf is the whole failure surface; nothing is reported after the test ends.
+//
+// A guarded client's guard runs on both sides of the recording. A literal
+// address in the URL is judged by the guard before Observe, so a refused
+// private literal fails with egress/not-permitted and is not recorded: it was
+// never a dial attempt. A host name is recorded, and given its scripted
+// failure, before it is resolved; the guard then judges the address it resolves
+// to in the dialler, so a name the test resolves (Host) to a refused address is
+// recorded and then refused by the guard.
 //
 // What it does not see: a client built outside util/egress (the archtest rule
 // and DH-T-UTIL-22 cover that), and a request a test never exercises.
@@ -192,21 +201,21 @@ func (r *Recorder) Lookups() []Lookup {
 // itself rather than through a client.
 func (r *Recorder) Resolver() *net.Resolver { return r.resolver }
 
-// Config is base with the recorder's hooks: its Proxy records and checks each
-// request before base's Proxy (if any) chooses a proxy, and its Resolver is the
-// recording one. Other fields are base's. Extra certificate authorities are
-// loaded only by egress.Resolve, so a service built from this Config trusts the
-// system's.
+// Config is base with the recorder's hooks: its Observe records and checks each
+// request, guarded clients' included, before base's Observe (if any), and its
+// Resolver is the recording one. Other fields, Proxy among them, are base's.
+// Extra certificate authorities are loaded only by egress.Resolve, so a service
+// built from this Config trusts the system's.
 func (r *Recorder) Config(base egress.Config) egress.Config {
-	next := base.Proxy
-	base.Proxy = func(req *http.Request) (*url.URL, error) {
+	next := base.Observe
+	base.Observe = func(req *http.Request) error {
 		if err := r.check(req); err != nil {
-			return nil, err
+			return err
 		}
 		if next != nil {
 			return next(req)
 		}
-		return nil, nil
+		return nil
 	}
 	base.Resolver = r.resolver
 	return base
@@ -232,7 +241,7 @@ func (r *Recorder) Provide(ctx *cordis.Context) error {
 
 // Component is a stand-in for egress.Component under the same catalogue name:
 // each load builds a recording service from the egress.Config it is given (its
-// Proxy is chained after the recorder's check), provides it under egress.Key,
+// Observe is chained after the recorder's check), provides it under egress.Key,
 // and closes its idle connections when the fiber unloads. A composition test
 // registers it in place of the production entry.
 func (r *Recorder) Component() *cordis.Component {

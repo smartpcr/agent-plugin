@@ -287,6 +287,74 @@ func TestDenyPrivateRanges(t *testing.T) {
 	}
 }
 
+// Config.Observe runs for a guarded client, whose transport is its own and has
+// no Proxy hook: it sees each request as sent (`User-Agent: dsh`), and an error
+// it returns fails the request with that error before anything reaches the
+// server. A literal address the guard refuses never reaches it. An unguarded
+// client of the same service is observed the same way.
+func TestObserveRunsForAGuardedTransport(t *testing.T) {
+	srv := newCountingServer(t, nil)
+	refuse := errors.New("the observer refuses")
+	var mu sync.Mutex
+	var seen []string
+	svc := egress.New(egress.Config{DialTimeout: 5 * time.Second, Observe: func(req *http.Request) error {
+		mu.Lock()
+		defer mu.Unlock()
+		seen = append(seen, req.URL.Host+req.URL.Path+" "+req.Header.Get("User-Agent"))
+		if req.URL.Path == "/refused" {
+			return refuse
+		}
+		return nil
+	}})
+	t.Cleanup(svc.CloseIdleConnections)
+	observed := func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), seen...)
+	}
+	client := func(dest string, guard egress.Guard) *http.Client {
+		c, err := svc.Client("web-fetch", permit.New(t, "web-fetch", dest), egress.Options{Guard: guard})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { svc.Release(c) })
+		return c
+	}
+	host := strings.TrimPrefix(srv.URL, "http://")
+	guard := egress.DenyPrivate(egress.PrivatePolicy{AllowLoopback: true})
+
+	for _, tc := range []struct {
+		name  string
+		guard egress.Guard
+	}{{"guarded", guard}, {"unguarded", nil}} {
+		c := client(srv.URL, tc.guard)
+		before, requests := len(observed()), srv.requests.Load()
+		resp, err := c.Get(srv.URL + "/ok")
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		if _, err := c.Get(srv.URL + "/refused"); !errors.Is(err, refuse) {
+			t.Fatalf("%s: the observer's refusal returned %v", tc.name, err)
+		}
+		want := []string{host + "/ok " + egress.UserAgent, host + "/refused " + egress.UserAgent}
+		if got := observed()[before:]; strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Fatalf("%s: observed %q, want %q", tc.name, got, want)
+		}
+		if got := srv.requests.Load() - requests; got != 1 {
+			t.Fatalf("%s: the server got %d requests, want 1: the refused one was sent", tc.name, got)
+		}
+	}
+
+	before := len(observed())
+	_, err := client("10.0.0.1", guard).Get("http://10.0.0.1/inside")
+	wantNotPermitted(t, err)
+	if got := observed()[before:]; len(got) != 0 {
+		t.Fatalf("a literal the guard refuses was observed: %q", got)
+	}
+}
+
 func port(t *testing.T, hostport string) string {
 	t.Helper()
 	u, err := url.Parse("http://" + hostport)

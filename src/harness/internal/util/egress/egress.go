@@ -17,7 +17,8 @@
 // trusted view, so a project file never supplies a proxy) and the extra
 // certificate authorities of Config.ExtraCACerts. ChildEnv hands the same proxy
 // names to a child process, by audience; Options.Guard (DenyPrivate) refuses
-// destination addresses before anything is dialled.
+// destination addresses before anything is dialled; Config.Observe (the test
+// kit's recorder) sees every request of every client before it is sent.
 //
 // A client belongs to its asker: it is registered until the asker releases it
 // (Service.Release), the asker's Options.Owner context ends (the fiber that asked
@@ -71,6 +72,14 @@ type Config struct {
 	Resolver *net.Resolver `json:"-"`
 	// DialTimeout bounds one connection attempt; zero is 30 s.
 	DialTimeout time.Duration `json:"-"`
+	// Observe sees every request of every client the service hands out, guarded
+	// or not, after the permit check and the guard's check of a literal address
+	// and before the request goes to the transport: before any lookup, dial or
+	// byte sent. It sees the request as it will be sent (`User-Agent: dsh` set).
+	// A non-nil error fails the request with that error, and nothing is dialled.
+	// A guard refusal of a resolved address comes later, in the dialler. nil
+	// observes nothing; egresstest records and refuses requests here.
+	Observe func(*http.Request) error `json:"-"`
 
 	// roots is the pool Resolve builds from ExtraCACerts; nil uses the system's.
 	roots *x509.CertPool
@@ -155,7 +164,7 @@ func (s *Service) Client(kind string, p Permit, o Options) (*http.Client, error)
 		return nil, herr.Newf(ReasonNotPermitted, "the asker of a %s client has ended", kind)
 	}
 	tr := s.transport(o.HeaderWait, o.Guard)
-	rt := &permitted{kind: kind, permit: p, owner: o.Owner, guard: o.Guard, next: tr, tr: tr}
+	rt := &permitted{kind: kind, permit: p, owner: o.Owner, guard: o.Guard, observe: s.cfg.Observe, next: tr, tr: tr}
 	redirect := o.Redirect
 	if redirect == nil {
 		redirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
@@ -322,6 +331,7 @@ type permitted struct {
 	permit   Permit
 	owner    context.Context
 	guard    Guard
+	observe  func(*http.Request) error
 	next     http.RoundTripper
 	tr       *http.Transport
 	released atomic.Bool
@@ -353,6 +363,18 @@ func (t *permitted) RoundTrip(req *http.Request) (*http.Response, error) {
 	stop := context.AfterFunc(pctx, func() { cancel(context.Cause(pctx)) })
 	out := req.Clone(ctx)
 	out.Header.Set("User-Agent", UserAgent)
+	// Config.Observe runs here, in the client's round tripper rather than in a
+	// transport hook, so that it sees every request whatever transport serves it:
+	// a guarded one, which has no Proxy hook, and a request the transport would
+	// send on a reused HTTP/2 connection without consulting its Proxy hook.
+	if t.observe != nil {
+		if err := t.observe(out); err != nil {
+			stop()
+			cancel(nil)
+			closeBody(req)
+			return nil, err
+		}
+	}
 	resp, err := t.next.RoundTrip(out)
 	if err != nil {
 		stop()
