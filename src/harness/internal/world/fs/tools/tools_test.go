@@ -1,0 +1,518 @@
+package tools_test
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/smartpcr/agent-plugin/src/go/cordis"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/agent"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/checkpoint"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/scope"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store/sqlite"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/workdir"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/spill"
+	spilllocal "github.com/smartpcr/agent-plugin/src/harness/internal/storage/spill/local"
+	htools "github.com/smartpcr/agent-plugin/src/harness/internal/tools"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/tools/core"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/fs/local"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/fs/ops"
+	fstools "github.com/smartpcr/agent-plugin/src/harness/internal/world/fs/tools"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox/sandboxtest"
+)
+
+var bg = context.Background()
+
+// dirs is the session's working directory: the workspace root.
+type dirs struct{ root string }
+
+func (d dirs) Access(session.ID) (workdir.Access, error) { return d, nil }
+func (d dirs) Current() (workdir.WorkingDirectory, error) {
+	return workdir.WorkingDirectory{Path: d.root, Root: d.root}, nil
+}
+func (d dirs) Path() (string, error) { return d.root, nil }
+func (d dirs) Root() (string, error) { return d.root, nil }
+
+// rig is the real tool pipeline with the six tools mounted over the local
+// provider, fenced to a workspace in t.TempDir(), with a local spill store and a
+// SQLite session log in a temp home.
+type rig struct {
+	t     *testing.T
+	ws    string
+	root  *cordis.Context
+	svc   htools.Service
+	st    *sqlite.Store
+	spill spill.Store
+	n     int
+}
+
+func newRig(t *testing.T) *rig {
+	t.Helper()
+	ws := t.TempDir()
+	if real, err := filepath.EvalSymlinks(ws); err == nil {
+		ws = real
+	}
+	root := cordis.New()
+	root.Loggers().ClearExporters()
+	root.Loggers().AddExporter(&cordis.MemoryExporter{})
+	t.Cleanup(root.Dispose)
+	f, err := root.Use(scope.Component, cordis.None{})
+	if err == nil {
+		err = f.Wait()
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tab scope.Table
+	g, err := root.Inject([]string{scope.TableKey.Name()}, func(c *cordis.Context) error {
+		var err error
+		tab, err = scope.TableKey.Get(c)
+		return err
+	})
+	if err == nil {
+		err = g.Wait()
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := core.NewWith(root, tab, core.Config{Checkpoint: checkpoint.Default{}})
+
+	l := home.New(t.TempDir())
+	if err := home.Ensure(l); err != nil {
+		t.Fatal(err)
+	}
+	st, err := sqlite.OpenHome(bg, l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close(context.Background()) })
+	sp, err := spilllocal.New(l, spilllocal.DefaultConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wd := dirs{ws}
+	o := ops.New(root, local.New(), &sandboxtest.Resolver{Default: sandbox.WorkspaceWrite, Workdir: wd}, ops.Options{Workdir: wd})
+	if _, err := fstools.Mount(root, svc, o, sp, fstools.Config{}); err != nil {
+		t.Fatal(err)
+	}
+	return &rig{t: t, ws: ws, root: root, svc: svc, st: st, spill: sp}
+}
+
+// run executes one call in a new session step and returns its result and the
+// raw tool/result event the log holds for it.
+func (r *rig) run(name string, args map[string]any) (htools.Result, string) {
+	r.t.Helper()
+	raw, err := json.Marshal(args)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	r.n++
+	id := session.ID(fmt.Sprintf("s-fs-tools-%d", r.n))
+	c := htools.CallRequest{ID: "c1", Name: name, Arguments: string(raw)}
+	h := r.openStep(id, c)
+	v, err := r.svc.Resolve(bg, htools.Target{Agent: agent.Ref{Session: id, Incarnation: 1}})
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	defer v.Release()
+	res, err := r.svc.ExecuteBatch(bg, htools.Batch{View: v, Log: h, Calls: []htools.CallRequest{c}})
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	if len(res.Results) != 1 {
+		r.t.Fatalf("%d results", len(res.Results))
+	}
+	evs, err := h.Read(bg, 0, 0)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	for _, ev := range evs {
+		if ev.Type() == "tool/result" {
+			return res.Results[0], ev.Raw()
+		}
+	}
+	r.t.Fatal("no tool/result was logged")
+	return htools.Result{}, ""
+}
+
+func (r *rig) openStep(id session.ID, c htools.CallRequest) session.Handle {
+	r.t.Helper()
+	h, err := session.NewService(r.root, r.st, session.Config{}).Create(bg, nil, session.CreateOptions{Header: session.Header{ID: string(id)}})
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	r.t.Cleanup(func() { _ = h.Close(context.Background()) })
+	user, err := vocab.RestoreMessage("u1", vocab.RoleUser, nil, vocab.TextBlock("go"))
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	asked, err := vocab.RestoreMessage("a1", vocab.RoleAssistant, nil, vocab.ToolUseBlock(c.ID, c.Name, json.RawMessage(c.Arguments)))
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	for _, mk := range []func() (event.Draft, error){
+		func() (event.Draft, error) { return event.TurnStartType.Draft(event.TurnStart{Turn: 1}) },
+		func() (event.Draft, error) { return event.StepStartType.Draft(event.StepStart{Turn: 1, Step: 1}) },
+		func() (event.Draft, error) {
+			return event.UserMessage.Draft(event.Append(), event.UserMessagePayload{Message: user})
+		},
+		func() (event.Draft, error) {
+			return event.AssistantMessage.Draft(event.Append(), event.AssistantMessagePayload{Message: asked})
+		},
+	} {
+		d, err := mk()
+		if err != nil {
+			r.t.Fatal(err)
+		}
+		if _, err := h.Append(bg, d); err != nil {
+			r.t.Fatal(err)
+		}
+	}
+	return h
+}
+
+func (r *rig) path(name string) string { return filepath.Join(r.ws, filepath.FromSlash(name)) }
+
+func (r *rig) put(name, content string) {
+	r.t.Helper()
+	p := r.path(name)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		r.t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		r.t.Fatal(err)
+	}
+}
+
+func (r *rig) disk(name string) string {
+	r.t.Helper()
+	b, err := os.ReadFile(r.path(name))
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	return string(b)
+}
+
+// jsonText is s as it appears inside a JSON string (a Windows path's
+// backslashes are escaped in the log).
+func jsonText(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b[1 : len(b)-1])
+}
+
+func digest(s string) string {
+	d := sha256.Sum256([]byte(s))
+	return "sha256:" + hex.EncodeToString(d[:])
+}
+
+// Scenario: Tools change files exactly as logged (TC-03b). Given a workspace in
+// t.TempDir(), When write, edit and apply_patch run through the tool pipeline,
+// Then the files on disk equal the expected bytes and each tool result in the
+// log names the same path and version.
+func TestToolsChangeFilesExactlyAsLogged(t *testing.T) {
+	r := newRig(t)
+	r.put("crlf.txt", "one\r\ntwo\r\n")
+	steps := []struct {
+		tool  string
+		args  map[string]any
+		files map[string]string // the expected bytes on disk after the step
+		named []string          // the files the result names, with their versions
+	}{
+		{fstools.WriteName, map[string]any{"file_path": "a.txt", "content": "alpha\nbeta\n"},
+			map[string]string{"a.txt": "alpha\nbeta\n"}, []string{"a.txt"}},
+		{fstools.WriteName, map[string]any{"file_path": "dir/new.txt", "content": "fresh"},
+			map[string]string{"dir/new.txt": "fresh"}, []string{"dir/new.txt"}},
+		{fstools.EditName, map[string]any{"file_path": "a.txt", "old_string": "beta", "new_string": "gamma"},
+			map[string]string{"a.txt": "alpha\ngamma\n"}, []string{"a.txt"}},
+		{fstools.EditName, map[string]any{"file_path": "crlf.txt", "old_string": "one\ntwo", "new_string": "uno\ndos"},
+			map[string]string{"crlf.txt": "uno\r\ndos\r\n"}, []string{"crlf.txt"}},
+		{fstools.ApplyPatchName, map[string]any{"input": "*** Begin Patch\n" +
+			"*** Add File: b.txt\n+bee\n" +
+			"*** Update File: a.txt\n@@\n alpha\n-gamma\n+delta\n" +
+			"*** Update File: dir/new.txt\n*** Move to: moved.txt\n@@\n-fresh\n+moved\n" +
+			"*** End Patch"},
+			map[string]string{"b.txt": "bee\n", "a.txt": "alpha\ndelta\n", "moved.txt": "moved\n"}, []string{"b.txt", "a.txt", "moved.txt"}},
+	}
+	for i, s := range steps {
+		res, logged := r.run(s.tool, s.args)
+		if res.IsError {
+			t.Fatalf("step %d %s: %s", i, s.tool, res.Text)
+		}
+		for name, want := range s.files {
+			if got := r.disk(name); got != want {
+				t.Fatalf("step %d %s: %s is %q, want %q", i, s.tool, name, got, want)
+			}
+		}
+		for _, name := range s.named {
+			line := r.path(name) + " (version " + digest(r.disk(name)) + ")"
+			if !strings.Contains(res.Text, line) {
+				t.Fatalf("step %d %s: the result does not name %q:\n%s", i, s.tool, line, res.Text)
+			}
+			if !strings.Contains(logged, jsonText(line)) {
+				t.Fatalf("step %d %s: the logged result does not name %q:\n%s", i, s.tool, line, logged)
+			}
+		}
+	}
+	if _, err := os.Stat(r.path("dir/new.txt")); !os.IsNotExist(err) {
+		t.Fatalf("the moved source still exists: %v", err)
+	}
+}
+
+// A patch whose second hunk does not match changes nothing: every hunk is
+// preflighted before the first write.
+func TestApplyPatchPreflightsEveryHunk(t *testing.T) {
+	r := newRig(t)
+	r.put("a.txt", "one\n")
+	res, _ := r.run(fstools.ApplyPatchName, map[string]any{"input": "*** Begin Patch\n" +
+		"*** Add File: b.txt\n+bee\n" +
+		"*** Update File: a.txt\n@@\n-missing\n+x\n" +
+		"*** End Patch"})
+	if !res.IsError || !strings.Contains(res.Text, "fs/patch-mismatch") {
+		t.Fatalf("a mismatching patch: %+v", res)
+	}
+	if _, err := os.Stat(r.path("b.txt")); !os.IsNotExist(err) {
+		t.Fatalf("the first hunk ran before the second was checked: %v", err)
+	}
+	if got := r.disk("a.txt"); got != "one\n" {
+		t.Fatalf("a.txt is %q", got)
+	}
+}
+
+// An edit whose old_string is ambiguous, or absent, changes nothing.
+func TestEditRefusesAmbiguousAndMissingText(t *testing.T) {
+	r := newRig(t)
+	r.put("a.txt", "x x\n")
+	for _, tc := range []struct {
+		args map[string]any
+		code string
+	}{
+		{map[string]any{"file_path": "a.txt", "old_string": "x", "new_string": "y"}, "fs/ambiguous-edit"},
+		{map[string]any{"file_path": "a.txt", "old_string": "z", "new_string": "y"}, "fs/edit-not-found"},
+	} {
+		if res, _ := r.run(fstools.EditName, tc.args); !res.IsError || !strings.Contains(res.Text, tc.code) {
+			t.Fatalf("%v: %+v", tc.args, res)
+		}
+	}
+	res, _ := r.run(fstools.EditName, map[string]any{"file_path": "a.txt", "old_string": "x", "new_string": "y", "replace_all": true})
+	if res.IsError || r.disk("a.txt") != "y y\n" || !strings.Contains(res.Text, "2 occurrences") {
+		t.Fatalf("replace_all: %+v, %q", res, r.disk("a.txt"))
+	}
+}
+
+// Text tools are UTF-8 only (impl.md sec. 9.1): read and edit refuse UTF-16
+// behind a mark, Latin-1 and NUL bytes with fs/not-text, and edit writes
+// nothing; UTF-8 behind a mark is read and its mark kept by an edit.
+func TestTextToolsAreUTF8Only(t *testing.T) {
+	r := newRig(t)
+	refused := map[string]string{
+		"utf16.txt":  "\xff\xfeh\x00i\x00",
+		"latin1.txt": "caf\xe9\n",
+		"nul.txt":    "a\x00b\n",
+	}
+	for name, content := range refused {
+		r.put(name, content)
+		if res, _ := r.run(fstools.ReadName, map[string]any{"file_path": name}); !res.IsError || !strings.Contains(res.Text, "fs/not-text") {
+			t.Fatalf("read %s: %+v", name, res)
+		}
+		if res, _ := r.run(fstools.EditName, map[string]any{"file_path": name, "old_string": "a", "new_string": "b"}); !res.IsError || !strings.Contains(res.Text, "fs/not-text") {
+			t.Fatalf("edit %s: %+v", name, res)
+		}
+		if got := r.disk(name); got != content {
+			t.Fatalf("edit changed %s: %q", name, got)
+		}
+	}
+	r.put("bom.txt", "\xef\xbb\xbfh\u00e9llo\n")
+	if res, _ := r.run(fstools.ReadName, map[string]any{"file_path": "bom.txt"}); res.IsError || !strings.Contains(res.Text, "1: h\u00e9llo\n") {
+		t.Fatalf("read a UTF-8 file with a mark: %+v", res)
+	}
+	if res, _ := r.run(fstools.EditName, map[string]any{"file_path": "bom.txt", "old_string": "llo", "new_string": "y"}); res.IsError || r.disk("bom.txt") != "\xef\xbb\xbfh\u00e9y\n" {
+		t.Fatalf("edit a UTF-8 file with a mark: %+v, %q", res, r.disk("bom.txt"))
+	}
+}
+
+// spawnRecorder puts a fake rg first and alone on PATH: any start of it appends
+// to the returned log file. An in-process grep leaves the log empty.
+func spawnRecorder(t *testing.T) (log string) {
+	t.Helper()
+	bin := t.TempDir()
+	log = filepath.Join(t.TempDir(), "spawns.log")
+	if runtime.GOOS == "windows" {
+		script := "@echo off\r\necho rg %*>>\"" + log + "\"\r\n"
+		if err := os.WriteFile(filepath.Join(bin, "rg.bat"), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATHEXT", ".BAT")
+	} else {
+		script := "#!/bin/sh\necho rg \"$@\" >> '" + log + "'\n"
+		if err := os.WriteFile(filepath.Join(bin, "rg"), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin)
+	return log
+}
+
+// Scenario: grep needs no rg (TC-03b). Given PATH scrubbed to a directory that
+// holds only a recording fake rg, When grep searches 1,000 files, Then it
+// returns matches and the fake records zero spawns.
+func TestGrepNeedsNoRg(t *testing.T) {
+	r := newRig(t)
+	for i := range 1000 {
+		body := fmt.Sprintf("file %d\nnothing here\n", i)
+		if i%10 == 0 {
+			body += fmt.Sprintf("the needle %d\n", i)
+		}
+		r.put(fmt.Sprintf("tree/d%02d/f%04d.txt", i/100, i), body)
+	}
+	log := spawnRecorder(t)
+	res, _ := r.run(fstools.GrepName, map[string]any{"pattern": `needle \d+`, "path": "tree"})
+	if res.IsError || !strings.HasPrefix(res.Text, "Found 100 matches\n") || !strings.Contains(res.Text, "  Line 3: the needle 990") {
+		t.Fatalf("grep: %.500s", res.Text)
+	}
+	files, _ := r.run(fstools.GrepName, map[string]any{"pattern": `needle`, "path": "tree", "output": "count", "include": "f00[0-4]*.txt"})
+	if files.IsError || !strings.HasPrefix(files.Text, "Found matches in 5 files\n") {
+		t.Fatalf("grep count: %.500s", files.Text)
+	}
+	if b, err := os.ReadFile(log); err == nil || !os.IsNotExist(err) {
+		t.Fatalf("rg was started: %q, %v", b, err)
+	}
+}
+
+var spillRef = regexp.MustCompile(`saved to spill (\S+)\.\)`)
+
+// Scenario: Large result spills (TC-03b). Given a 5 MiB file, When read runs
+// with the default bound, Then the result is truncated at the bound and carries
+// a spill reference whose content equals the full file.
+func TestLargeResultSpills(t *testing.T) {
+	r := newRig(t)
+	var b strings.Builder
+	for i := 0; b.Len() < 5<<20; i++ {
+		fmt.Fprintf(&b, "%07d %s\n", i, strings.Repeat("x", 56))
+	}
+	full := b.String()
+	r.put("big.txt", full)
+	res, logged := r.run(fstools.ReadName, map[string]any{"file_path": "big.txt"})
+	if res.IsError {
+		t.Fatal(res.Text)
+	}
+	content := res.Text[strings.Index(res.Text, "<content>\n")+len("<content>\n"):]
+	content = content[:strings.Index(content, "\n\n(")+1]
+	if len(content) > fstools.DefaultReadMaxBytes || len(content) < fstools.DefaultReadMaxBytes-100 {
+		t.Fatalf("the numbered lines are %d bytes; the bound is %d", len(content), fstools.DefaultReadMaxBytes)
+	}
+	if !strings.Contains(res.Text, "(Output capped at 51200 bytes. Showing lines 1-") {
+		t.Fatalf("no truncation footer: %s", res.Text[len(res.Text)-300:])
+	}
+	m := spillRef.FindStringSubmatch(res.Text)
+	if m == nil || !strings.Contains(logged, jsonText(m[0])) {
+		t.Fatalf("no spill reference in the result or the log: %s", res.Text[len(res.Text)-300:])
+	}
+	rc, err := r.spill.Open(bg, fmt.Sprintf("s-fs-tools-%d", r.n), m[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rc.Close()
+	saved, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(saved) != full {
+		t.Fatalf("the spilled file is %d bytes, want the %d of the file", len(saved), len(full))
+	}
+
+	// A page the caller chose is not spilled.
+	page, _ := r.run(fstools.ReadName, map[string]any{"file_path": "big.txt", "offset": 10, "limit": 2})
+	if page.IsError || spillRef.MatchString(page.Text) || !strings.Contains(page.Text, "10: 0000009 ") || !strings.Contains(page.Text, "Use offset=12 to continue.") {
+		t.Fatalf("a page: %s", page.Text)
+	}
+}
+
+// glob lists newest first, at most the bound, and says how many it left out.
+func TestGlobNewestFirstAndBounded(t *testing.T) {
+	r := newRig(t)
+	for i := range 105 {
+		r.put(fmt.Sprintf("g/f%03d.txt", i), "x")
+	}
+	r.put("g/.hidden.txt", "x")
+	newest := r.path("g/f007.txt")
+	future := mustTime(t, r.path("g/f000.txt")).Add(time.Hour)
+	if err := os.Chtimes(newest, future, future); err != nil {
+		t.Fatal(err)
+	}
+	res, _ := r.run(fstools.GlobName, map[string]any{"pattern": "*.txt", "path": "g"})
+	if res.IsError || !strings.HasPrefix(res.Text, newest+"\n") || !strings.Contains(res.Text, "(Showing 100 of 106 paths; 6 omitted. Use offset=100 to see more.)") {
+		t.Fatalf("glob: %s", res.Text[len(res.Text)-200:])
+	}
+	none, _ := r.run(fstools.GlobName, map[string]any{"pattern": "*.go", "path": "g"})
+	if none.IsError || none.Text != "No files found" {
+		t.Fatalf("no match: %+v", none)
+	}
+}
+
+func mustTime(t *testing.T, p string) time.Time {
+	t.Helper()
+	in, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return in.ModTime()
+}
+
+// read, glob and grep declare overlapping reads on their path; the writers
+// declare writes on every path they change.
+func TestOverlapKeys(t *testing.T) {
+	r := newRig(t)
+	ds, err := fstools.Declarations(ops.New(r.root, local.New(), nil, ops.Options{}), nil, fstools.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	by := map[string]*htools.Declaration{}
+	for _, d := range ds {
+		by[d.Name()] = d
+	}
+	if len(by) != 6 {
+		t.Fatalf("%d tools", len(by))
+	}
+	classify := func(name, args string) htools.Overlap { return by[name].Classify(json.RawMessage(args)) }
+	for _, name := range []string{fstools.ReadName, fstools.GlobName, fstools.GrepName} {
+		args := `{"pattern":"x","path":"a.txt"}`
+		if name == fstools.ReadName {
+			args = `{"file_path":"a.txt"}`
+		}
+		o := classify(name, args)
+		if len(o.ReadKeys()) != 1 || len(o.WriteKeys()) != 0 {
+			t.Fatalf("%s: reads %v, writes %v", name, o.ReadKeys(), o.WriteKeys())
+		}
+		if !o.Conflicts(classify(fstools.WriteName, `{"file_path":"a.txt","content":""}`)) {
+			t.Fatalf("%s does not conflict with a write of its path", name)
+		}
+		if o.Conflicts(classify(fstools.ReadName, `{"file_path":"a.txt"}`)) {
+			t.Fatalf("%s conflicts with a read", name)
+		}
+	}
+	p := classify(fstools.ApplyPatchName, `{"input":"*** Begin Patch\n*** Add File: x.txt\n+a\n*** Update File: y.txt\n*** Move to: z.txt\n@@\n-a\n+b\n*** End Patch"}`)
+	if got := p.WriteKeys(); len(got) != 3 {
+		t.Fatalf("apply_patch writes %v", got)
+	}
+	off := false
+	ds, err = fstools.Declarations(ops.New(r.root, local.New(), nil, ops.Options{}), nil, fstools.Config{ApplyPatch: &off})
+	if err != nil || len(ds) != 5 {
+		t.Fatalf("applyPatch off: %d tools, %v", len(ds), err)
+	}
+}

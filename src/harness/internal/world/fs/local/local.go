@@ -404,7 +404,7 @@ func (l *FS) ReadDir(ctx context.Context, r fs.Ref, limit int) ([]fs.DirEntry, b
 		if err != nil {
 			continue // removed since the listing
 		}
-		d := fs.DirEntry{Name: e.Name(), Type: fileType(filepath.Join(p, e.Name()), info)}
+		d := fs.DirEntry{Name: e.Name(), Type: fileType(filepath.Join(p, e.Name()), info), ModTime: info.ModTime()}
 		if d.Type == fs.TypeFile {
 			d.Size = info.Size()
 		}
