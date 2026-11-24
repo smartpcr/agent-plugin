@@ -54,7 +54,9 @@ Feature: Six file tools (TC-03b)
 
   Scenario: grep needs no rg
     Given 1000 workspace files under "tree", every tenth holding a needle line
-    And PATH is scrubbed to a directory holding only a recording fake rg
+    And PATH is scrubbed to an empty directory
+    And a subprocess fake records every process the test process starts
+    And the subprocess fake records a control spawn of the test binary by absolute path
     When "grep" runs with arguments:
       """
       {"pattern": "needle \\d+", "path": "tree"}
@@ -68,7 +70,7 @@ Feature: Six file tools (TC-03b)
       """
     Then the call succeeds
     And the result starts with "Found matches in 5 files\n"
-    And the fake rg recorded zero spawns
+    And the subprocess fake records zero spawns since the control spawn and PATH is still the empty directory
 
   Scenario: Large result spills
     Given a 5 MiB workspace file "big.txt"

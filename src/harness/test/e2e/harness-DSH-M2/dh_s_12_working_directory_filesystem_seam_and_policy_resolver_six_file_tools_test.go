@@ -14,7 +14,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -70,9 +69,11 @@ type sftWorld struct {
 	res     htools.Result
 	logged  string
 
-	bigFull  string
-	spawnLog string
-	envSaved map[string]*string
+	bigFull   string
+	emptyPath string
+	spawns    *sftSpawnRecorder
+	spawnBase int
+	envSaved  map[string]*string
 }
 
 var sftSpillRef = regexp.MustCompile(`saved to spill (\S+)\.\)`)
@@ -109,6 +110,9 @@ func (w *sftWorld) setenv(k, v string) {
 }
 
 func (w *sftWorld) cleanup() {
+	if w.spawns != nil {
+		w.spawns.Close()
+	}
 	for k, v := range w.envSaved {
 		if v == nil {
 			_ = os.Unsetenv(k)
@@ -354,42 +358,6 @@ func (w *sftWorld) givenTree(n int, dir string) error {
 	return nil
 }
 
-// givenScrubbedPath puts PATH on one directory holding only a fake rg that
-// appends to a log on every start; an in-process grep leaves the log absent.
-func (w *sftWorld) givenScrubbedPath() error {
-	bin, err := w.mkdir("bin")
-	if err != nil {
-		return err
-	}
-	logDir, err := w.mkdir("spawns")
-	if err != nil {
-		return err
-	}
-	w.spawnLog = filepath.Join(logDir, "spawns.log")
-	if runtime.GOOS == "windows" {
-		script := "@echo off\r\necho rg %*>>\"" + w.spawnLog + "\"\r\n"
-		if err := os.WriteFile(filepath.Join(bin, "rg.bat"), []byte(script), 0o755); err != nil {
-			return err
-		}
-		w.setenv("PATHEXT", ".BAT")
-	} else {
-		script := "#!/bin/sh\necho rg \"$@\" >> '" + w.spawnLog + "'\n"
-		if err := os.WriteFile(filepath.Join(bin, "rg"), []byte(script), 0o755); err != nil {
-			return err
-		}
-	}
-	w.setenv("PATH", bin)
-	// The fake is the only rg reachable: a spawn of rg would hit it.
-	found, err := exec.LookPath("rg")
-	if err != nil {
-		return fmt.Errorf("the recording fake rg is not resolvable on the scrubbed PATH: %w", err)
-	}
-	if filepath.Dir(found) != bin {
-		return fmt.Errorf("rg resolves to %s, outside the scrubbed PATH %s", found, bin)
-	}
-	return nil
-}
-
 func (w *sftWorld) thenStartsWith(prefix string) error {
 	v, err := sftUnquote(prefix)
 	if err != nil {
@@ -412,17 +380,81 @@ func (w *sftWorld) thenContains(sub string) error {
 	return nil
 }
 
-func (w *sftWorld) thenZeroSpawns() error {
-	b, err := os.ReadFile(w.spawnLog)
-	if err == nil {
-		return fmt.Errorf("rg was started: %q", b)
+// givenEmptyPath puts PATH on one empty directory: no program (rg or any
+// other) can be found by name while it is set.
+func (w *sftWorld) givenEmptyPath() error {
+	bin, err := w.mkdir("empty-path")
+	if err != nil {
+		return err
 	}
-	if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("read spawn log: %w", err)
+	w.emptyPath = bin
+	w.setenv("PATH", bin)
+	if found, err := exec.LookPath("rg"); err == nil {
+		return fmt.Errorf("rg still resolves to %s on the scrubbed PATH", found)
+	}
+	return w.thenPathStillEmpty()
+}
+
+func (w *sftWorld) thenPathStillEmpty() error {
+	if os.Getenv("PATH") != w.emptyPath {
+		return fmt.Errorf("PATH is %q; want only the empty directory %q", os.Getenv("PATH"), w.emptyPath)
+	}
+	ents, err := os.ReadDir(w.emptyPath)
+	if err != nil {
+		return err
+	}
+	if len(ents) != 0 {
+		return fmt.Errorf("the PATH directory %s is not empty: %d entries", w.emptyPath, len(ents))
 	}
 	return nil
 }
 
+// givenSpawnRecorder arms the subprocess fake: an OS-level recorder of every
+// process the test process starts, by name or by absolute path.
+func (w *sftWorld) givenSpawnRecorder() error {
+	r, err := sftNewSpawnRecorder()
+	if err != nil {
+		return fmt.Errorf("arm the spawn recorder: %w", err)
+	}
+	w.spawns = r
+	w.spawnBase, err = r.Count()
+	return err
+}
+
+// givenControlSpawn proves the recorder is live: one deliberate start of the
+// test binary by absolute path (it runs no tests) must be recorded.
+func (w *sftWorld) givenControlSpawn() error {
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if out, err := exec.Command(self, "-test.run=^$").CombinedOutput(); err != nil {
+		return fmt.Errorf("control spawn of %s: %v\n%s", self, err, out)
+	}
+	n, err := w.spawns.Count()
+	if err != nil {
+		return err
+	}
+	if n-w.spawnBase < 1 {
+		return fmt.Errorf("the spawn recorder missed the control spawn (count %d -> %d)", w.spawnBase, n)
+	}
+	w.spawnBase = n
+	return nil
+}
+
+func (w *sftWorld) thenZeroSpawns() error {
+	if w.spawns == nil {
+		return errors.New("the spawn recorder was never armed")
+	}
+	n, err := w.spawns.Count()
+	if err != nil {
+		return err
+	}
+	if d := n - w.spawnBase; d != 0 {
+		return fmt.Errorf("the spawn recorder recorded %d process start(s) during grep", d)
+	}
+	return w.thenPathStillEmpty()
+}
 func (w *sftWorld) givenBigFile(mib int, name string) error {
 	var b strings.Builder
 	for i := 0; b.Len() < mib<<20; i++ {
@@ -515,10 +547,12 @@ func InitializeScenario_dh_s_12_working_directory_filesystem_seam_and_policy_res
 	ctx.Step(`^"([^"]*)" no longer exists on disk$`, w.thenGone)
 	ctx.Step(`^the result and its logged tool/result name "([^"]*)" at its on-disk version$`, w.thenNamesVersion)
 	ctx.Step(`^(\d+) workspace files under "([^"]*)", every tenth holding a needle line$`, w.givenTree)
-	ctx.Step(`^PATH is scrubbed to a directory holding only a recording fake rg$`, w.givenScrubbedPath)
+	ctx.Step(`^PATH is scrubbed to an empty directory$`, w.givenEmptyPath)
+	ctx.Step(`^a subprocess fake records every process the test process starts$`, w.givenSpawnRecorder)
+	ctx.Step(`^the subprocess fake records a control spawn of the test binary by absolute path$`, w.givenControlSpawn)
 	ctx.Step(`^the result starts with `+sftQ+`$`, w.thenStartsWith)
 	ctx.Step(`^the result contains `+sftQ+`$`, w.thenContains)
-	ctx.Step(`^the fake rg recorded zero spawns$`, w.thenZeroSpawns)
+	ctx.Step(`^the subprocess fake records zero spawns since the control spawn and PATH is still the empty directory$`, w.thenZeroSpawns)
 	ctx.Step(`^a (\d+) MiB workspace file "([^"]*)"$`, w.givenBigFile)
 	ctx.Step(`^the numbered lines are truncated at the default read bound of (\d+) bytes$`, w.thenTruncatedAt)
 	ctx.Step(`^the result carries a spill reference that the logged tool/result and the session store both cite$`, w.thenSpillCited)
