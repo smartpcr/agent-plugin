@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -46,6 +47,9 @@ func TestMaintChild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Reachable until the parent kills the child: a collected store drops its
+	// liveness lock (see TestMigrateChild).
+	defer runtime.KeepAlive(s)
 	switch os.Getenv(maintRoleEnv) {
 	case "append":
 		w, err := s.Create(bg, store.Header{ID: "f"}, store.CreateOptions{})
