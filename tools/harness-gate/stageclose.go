@@ -21,6 +21,11 @@ import (
 // close re-runs every ready condition and requires the line to read closed. Both exit
 // 0 when the stage passes, 1 naming each blocker, 2 on a usage or setup error.
 
+// recordUnreadable is close's refusal when the record cannot be read or parsed
+// (missing file, a section given twice, a malformed table). It is distinct from
+// closure.NotYetClosed, which means the status line was read and reads open.
+const recordUnreadable = "record-unreadable"
+
 type closeFlags struct {
 	root, stage, story string
 	built              bool
@@ -100,7 +105,7 @@ func runClose(args []string, stdout, stderr io.Writer) int {
 	head := fmt.Sprintf("harness-gate close: %s (%s, %s)", f.stage, closure.RecordPath(f.story, f.stage), f.mode())
 	rec, err := readRecordAt(f)
 	if err != nil {
-		printBlockers(stdout, head+": REFUSED "+closure.NotYetClosed, []string{err.Error()})
+		printBlockers(stdout, head+": REFUSED "+recordUnreadable, []string{err.Error()})
 		return 1
 	}
 	if refusal, blockers := f.s.Close(x, f.stage, rec, f.built); refusal != "" {
