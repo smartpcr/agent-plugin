@@ -37,6 +37,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
 )
@@ -335,6 +336,11 @@ type Registry struct {
 }
 
 var _ session.Folder = (*Registry)(nil)
+
+// Key is the service the process's fold registry is provided under: the Folder
+// of its session.Service, which every fold-registering component (the working
+// directory, C31) registers in before the first session is folded.
+var Key = cordis.NewServiceKey[*Registry]("session.views")
 
 // New is an empty registry with DefaultConfig changed by opts.
 func New(opts ...Option) *Registry {

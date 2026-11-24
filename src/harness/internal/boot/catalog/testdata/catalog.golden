@@ -1,5 +1,9 @@
-NAME          AREA  CONFIG          PROVIDES  VIEW  PLATFORMS
-boot.logging  A21   logging.Config  -         -     all
-host.sharing  A18   sharing.Config  -         -     all
-util.egress   A23   egress.Config   egress    -     all
-util.watch    A23   watch.Options   watch     -     all
+NAME             AREA  CONFIG          PROVIDES                                 VIEW  PLATFORMS
+boot.logging     A21   logging.Config  -                                        -     all
+fs.local         A08   local.Options   fs                                       -     all
+fs.ops           A08   -               fs.ops                                   -     all
+host.sharing     A18   sharing.Config  -                                        -     all
+sandbox.policy   A10   policy.Config   sandbox.policy                           -     all
+session.workdir  A01   -               session.workdir,session.workdir.service  -     all
+util.egress      A23   egress.Config   egress                                   -     all
+util.watch       A23   watch.Options   watch                                    -     all
