@@ -14,6 +14,7 @@ package fs
 import (
 	"context"
 	"io"
+	"time"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox"
@@ -152,6 +153,9 @@ type DirEntry struct {
 	Name string
 	Type FileType
 	Size int64
+	// ModTime is the entry's modification time; zero when the provider has none.
+	// The glob tool orders its paths by it, newest first.
+	ModTime time.Time
 }
 
 // WriteOutcome is the result of a write.
