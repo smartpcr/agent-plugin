@@ -86,12 +86,17 @@ func (f *files) runEdit(ctx context.Context, in EditIn, run htools.Run) (string,
 		return "", err
 	}
 	// A literal match on the bytes as they are wins; otherwise old_string is
-	// matched with line endings normalised and the file's dominant ending is
-	// restored, so a model that writes LF edits a CRLF file.
-	base, old, repl, eol := text, in.OldString, in.NewString, "\n"
-	if !strings.Contains(text, old) {
-		eol = fsx.DominantEOL(text)
-		base, old, repl = fsx.NormalizeEOL(text), fsx.NormalizeEOL(old), fsx.NormalizeEOL(repl)
+	// matched with line endings normalised. Either way the replacement takes
+	// the file's dominant ending, so a model that writes LF edits a CRLF file
+	// without mixing endings into it.
+	base, old, repl, eol := text, in.OldString, in.NewString, fsx.DominantEOL(text)
+	literal := strings.Contains(text, old)
+	if !literal {
+		base, old = fsx.NormalizeEOL(text), fsx.NormalizeEOL(old)
+	}
+	repl = fsx.NormalizeEOL(repl)
+	if literal && eol != "\n" {
+		repl = fsx.RestoreEOL(repl, eol)
 	}
 	n := strings.Count(base, old)
 	switch {
@@ -105,7 +110,7 @@ func (f *files) runEdit(ctx context.Context, in EditIn, run htools.Run) (string,
 	} else {
 		base = strings.Replace(base, old, repl, 1)
 	}
-	if eol != "\n" {
+	if !literal && eol != "\n" {
 		base = fsx.RestoreEOL(base, eol)
 	}
 	data := []byte(base)

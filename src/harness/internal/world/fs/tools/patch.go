@@ -121,6 +121,9 @@ func (r *patchRun) preflight(p *patch.Patch) ([]step, error) {
 			if s.exists {
 				return nil, herr.Newf(fs.CodeAlreadyExists, "Add File %s: the file already exists", h.Path)
 			}
+			if len(h.Contents) > r.f.cfg.TextMaxBytes {
+				return nil, herr.Newf(fs.CodeTooLarge, "Add File %s: the content is %d bytes, more than the %d a text tool writes", h.Path, len(h.Contents), r.f.cfg.TextMaxBytes)
+			}
 			s.exists, s.loaded, s.text, s.bom = true, true, h.Contents, false
 			plan = append(plan, step{h: h, data: []byte(h.Contents)})
 		case patch.OpDelete:
@@ -189,7 +192,7 @@ func (r *patchRun) commit(st step) (string, error) {
 			return "", err
 		}
 		r.wrote(h.Path, out)
-		return fmt.Sprintf("A %s (version %s)", out.Target.Display, version(out.Version)), nil
+		return fmt.Sprintf("A %s (version %s)%s", out.Target.Display, version(out.Version), durability(out)), nil
 	case patch.OpDelete:
 		out, err := r.f.ops.Delete(r.ctx, r.c, fs.Ref{Path: h.Path}, r.guard(h.Path))
 		if err != nil {
@@ -204,7 +207,7 @@ func (r *patchRun) commit(st step) (string, error) {
 			return "", err
 		}
 		r.wrote(h.Path, out)
-		return fmt.Sprintf("M %s (version %s)", out.Target.Display, version(out.Version)), nil
+		return fmt.Sprintf("M %s (version %s)%s", out.Target.Display, version(out.Version), durability(out)), nil
 	}
 	// A move is two effects (DH-ADR-FS-11 (c)): the destination is published,
 	// then the source removed.
@@ -215,10 +218,10 @@ func (r *patchRun) commit(st step) (string, error) {
 	r.wrote(h.MoveTo, out)
 	del, err := r.f.ops.Delete(r.ctx, r.c, fs.Ref{Path: h.Path}, r.guard(h.Path))
 	if err != nil {
-		return "", herr.Wrap(kindOr(err, fs.CodeIO), err, fmt.Sprintf("%s was written (version %s) but the source could not be removed", out.Target.Display, version(out.Version)))
+		return "", herr.Wrap(kindOr(err, fs.CodeIO), err, fmt.Sprintf("%s was written (version %s%s) but the source could not be removed", out.Target.Display, version(out.Version), durability(out)))
 	}
 	delete(r.sim, pathKey(h.Path))
-	return fmt.Sprintf("R %s -> %s (version %s)", del.Target.Display, out.Target.Display, version(out.Version)), nil
+	return fmt.Sprintf("R %s -> %s (version %s)%s", del.Target.Display, out.Target.Display, version(out.Version), durability(out)), nil
 }
 
 func hunkLabel(h patch.Hunk) string {

@@ -6,13 +6,16 @@
 // and every read and write is observed; no tool imports a provider.
 //
 // Results are bounded: read stops at Config.ReadLimit lines, ReadMaxLineLength
-// characters a line and ReadMaxBytes bytes and, when a spill store is given and
-// the whole file did not fit, saves the whole file there (storage/spill) and
-// cites the reference in its footer; glob returns GlobMaxResults paths and grep
-// GrepMaxMatches matches, each with an offset to page on. read, glob and grep
-// declare overlapping reads on the path they name; write, edit and apply_patch
-// declare writes on every path they change. grep runs util/search in process:
-// no external program (rg) is started.
+// characters a line and ReadMaxBytes bytes; glob returns GlobMaxResults paths
+// and grep GrepMaxMatches matches, each with an offset to page on. When a spill
+// store is given and a default read, or a search page, did not hold the whole
+// result, the complete result (the whole file; every path; every match, up to
+// SpillMaxMatches) is saved there (storage/spill): the footer cites it and the
+// result carries the reference as tools.Content.Spill, so the pipeline logs it
+// in the tool/result and the session store tracks the citation. read, glob and
+// grep declare overlapping reads on the path they name; write, edit and
+// apply_patch declare writes on every path they change. grep runs util/search
+// in process: no external program (rg) is started.
 //
 // Text is UTF-8 only (impl.md sec. 9.1, the unconfirmed default "text tools
 // refuse every encoding but UTF-8"): checkText in text.go is the one place read
@@ -58,6 +61,7 @@ const (
 	DefaultGlobMaxResults    = 100
 	DefaultGrepMaxMatches    = 250
 	DefaultGrepMaxLineBytes  = 2000
+	DefaultSpillMaxMatches   = 100_000
 )
 
 // Config configures the tools; a zero bound is its default.
@@ -78,6 +82,9 @@ type Config struct {
 	GrepMaxMatches int `json:"grepMaxMatches,omitempty"`
 	// GrepMaxLineBytes is the most bytes of one matching line grep shows.
 	GrepMaxLineBytes int `json:"grepMaxLineBytes,omitempty"`
+	// SpillMaxMatches is the most matches the complete list grep saves to the
+	// spill store holds, when its page did not hold them all.
+	SpillMaxMatches int `json:"spillMaxMatches,omitempty"`
 }
 
 func or(v, def int) int {
@@ -95,6 +102,7 @@ func (c Config) normalized() Config {
 	c.GlobMaxResults = or(c.GlobMaxResults, DefaultGlobMaxResults)
 	c.GrepMaxMatches = or(c.GrepMaxMatches, DefaultGrepMaxMatches)
 	c.GrepMaxLineBytes = or(c.GrepMaxLineBytes, DefaultGrepMaxLineBytes)
+	c.SpillMaxMatches = max(or(c.SpillMaxMatches, DefaultSpillMaxMatches), c.GrepMaxMatches)
 	return c
 }
 

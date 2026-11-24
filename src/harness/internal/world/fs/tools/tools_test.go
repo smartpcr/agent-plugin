@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -22,6 +23,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/checkpoint"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/scope"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store/sqlite"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/workdir"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
@@ -29,6 +31,8 @@ import (
 	spilllocal "github.com/smartpcr/agent-plugin/src/harness/internal/storage/spill/local"
 	htools "github.com/smartpcr/agent-plugin/src/harness/internal/tools"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools/core"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/fs"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/fs/local"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/fs/ops"
 	fstools "github.com/smartpcr/agent-plugin/src/harness/internal/world/fs/tools"
@@ -52,16 +56,27 @@ func (d dirs) Root() (string, error) { return d.root, nil }
 // provider, fenced to a workspace in t.TempDir(), with a local spill store and a
 // SQLite session log in a temp home.
 type rig struct {
-	t     *testing.T
-	ws    string
-	root  *cordis.Context
-	svc   htools.Service
-	st    *sqlite.Store
-	spill spill.Store
-	n     int
+	t       *testing.T
+	ws      string
+	root    *cordis.Context
+	svc     htools.Service
+	st      *sqlite.Store
+	spill   spill.Store
+	n       int
+	handles map[session.ID]session.Handle
+	seqs    map[session.ID]event.Seq // the seq of each session's tool/result
 }
 
-func newRig(t *testing.T) *rig {
+// rigOptions vary the rig: wrap wraps the local provider, cfg is the tools'
+// configuration.
+type rigOptions struct {
+	wrap func(fs.FS) fs.FS
+	cfg  fstools.Config
+}
+
+func newRig(t *testing.T) *rig { return newRigWith(t, rigOptions{}) }
+
+func newRigWith(t *testing.T, opt rigOptions) *rig {
 	t.Helper()
 	ws := t.TempDir()
 	if real, err := filepath.EvalSymlinks(ws); err == nil {
@@ -101,17 +116,22 @@ func newRig(t *testing.T) *rig {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close(context.Background()) })
-	sp, err := spilllocal.New(l, spilllocal.DefaultConfig)
+	sp, err := spilllocal.New(l, spilllocal.DefaultConfig, spilllocal.WithLineage(spilllocal.ForkLineage(st)))
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	wd := dirs{ws}
-	o := ops.New(root, local.New(), &sandboxtest.Resolver{Default: sandbox.WorkspaceWrite, Workdir: wd}, ops.Options{Workdir: wd})
-	if _, err := fstools.Mount(root, svc, o, sp, fstools.Config{}); err != nil {
+	var provider fs.FS = local.New()
+	if opt.wrap != nil {
+		provider = opt.wrap(provider)
+	}
+	o := ops.New(root, provider, &sandboxtest.Resolver{Default: sandbox.WorkspaceWrite, Workdir: wd}, ops.Options{Workdir: wd})
+	if _, err := fstools.Mount(root, svc, o, sp, opt.cfg); err != nil {
 		t.Fatal(err)
 	}
-	return &rig{t: t, ws: ws, root: root, svc: svc, st: st, spill: sp}
+	return &rig{t: t, ws: ws, root: root, svc: svc, st: st, spill: sp,
+		handles: map[session.ID]session.Handle{}, seqs: map[session.ID]event.Seq{}}
 }
 
 // run executes one call in a new session step and returns its result and the
@@ -144,6 +164,7 @@ func (r *rig) run(name string, args map[string]any) (htools.Result, string) {
 	}
 	for _, ev := range evs {
 		if ev.Type() == "tool/result" {
+			r.seqs[id] = ev.Seq()
 			return res.Results[0], ev.Raw()
 		}
 	}
@@ -158,6 +179,7 @@ func (r *rig) openStep(id session.ID, c htools.CallRequest) session.Handle {
 		r.t.Fatal(err)
 	}
 	r.t.Cleanup(func() { _ = h.Close(context.Background()) })
+	r.handles[id] = h
 	user, err := vocab.RestoreMessage("u1", vocab.RoleUser, nil, vocab.TextBlock("go"))
 	if err != nil {
 		r.t.Fatal(err)
@@ -242,6 +264,9 @@ func TestToolsChangeFilesExactlyAsLogged(t *testing.T) {
 			map[string]string{"a.txt": "alpha\ngamma\n"}, []string{"a.txt"}},
 		{fstools.EditName, map[string]any{"file_path": "crlf.txt", "old_string": "one\ntwo", "new_string": "uno\ndos"},
 			map[string]string{"crlf.txt": "uno\r\ndos\r\n"}, []string{"crlf.txt"}},
+		// A literal match whose replacement spans lines takes the file's CRLF.
+		{fstools.EditName, map[string]any{"file_path": "crlf.txt", "old_string": "dos", "new_string": "second\nthird"},
+			map[string]string{"crlf.txt": "uno\r\nsecond\r\nthird\r\n"}, []string{"crlf.txt"}},
 		{fstools.ApplyPatchName, map[string]any{"input": "*** Begin Patch\n" +
 			"*** Add File: b.txt\n+bee\n" +
 			"*** Update File: a.txt\n@@\n alpha\n-gamma\n+delta\n" +
@@ -419,27 +444,191 @@ func TestLargeResultSpills(t *testing.T) {
 	if !strings.Contains(res.Text, "(Output capped at 51200 bytes. Showing lines 1-") {
 		t.Fatalf("no truncation footer: %s", res.Text[len(res.Text)-300:])
 	}
-	m := spillRef.FindStringSubmatch(res.Text)
-	if m == nil || !strings.Contains(logged, jsonText(m[0])) {
-		t.Fatalf("no spill reference in the result or the log: %s", res.Text[len(res.Text)-300:])
-	}
-	rc, err := r.spill.Open(bg, fmt.Sprintf("s-fs-tools-%d", r.n), m[1])
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rc.Close()
-	saved, err := io.ReadAll(rc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(saved) != full {
+	id := session.ID(fmt.Sprintf("s-fs-tools-%d", r.n))
+	if saved := r.spilled(res, logged, id); string(saved) != full {
 		t.Fatalf("the spilled file is %d bytes, want the %d of the file", len(saved), len(full))
+	}
+
+	// The citation is durable: a fork of the session through the tool/result
+	// still reads the file byte-identical after the owner is deleted.
+	if err := r.handles[id].Close(bg); err != nil {
+		t.Fatal(err)
+	}
+	f, err := r.st.Create(bg, store.Header{ID: "fork-of-read"}, store.CreateOptions{ForkOf: &store.ForkOf{ID: string(id), Through: store.Seq(r.seqs[id])}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(bg); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.st.Delete(bg, string(id), store.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if kept := r.openSpill("fork-of-read", res.Spill.Path); string(kept) != full {
+		t.Fatalf("after the owner was deleted the fork read %d bytes, want %d", len(kept), len(full))
 	}
 
 	// A page the caller chose is not spilled.
 	page, _ := r.run(fstools.ReadName, map[string]any{"file_path": "big.txt", "offset": 10, "limit": 2})
-	if page.IsError || spillRef.MatchString(page.Text) || !strings.Contains(page.Text, "10: 0000009 ") || !strings.Contains(page.Text, "Use offset=12 to continue.") {
+	if page.IsError || page.Spill != nil || spillRef.MatchString(page.Text) || !strings.Contains(page.Text, "10: 0000009 ") || !strings.Contains(page.Text, "Use offset=12 to continue.") {
 		t.Fatalf("a page: %s", page.Text)
+	}
+}
+
+// spilled checks that res cites one saved complete result in its text, in
+// Result.Spill and in the logged tool/result's spill field, and that the
+// session store tracks the citation; it returns the saved bytes.
+func (r *rig) spilled(res htools.Result, logged string, id session.ID) []byte {
+	r.t.Helper()
+	m := spillRef.FindStringSubmatch(res.Text)
+	if m == nil || res.Spill == nil || res.Spill.Path != m[1] {
+		r.t.Fatalf("the text cites %v, Result.Spill is %+v: %s", m, res.Spill, res.Text[max(0, len(res.Text)-300):])
+	}
+	var p struct {
+		Spill *event.Spill `json:"spill"`
+	}
+	if err := json.Unmarshal([]byte(logged), &p); err != nil || p.Spill == nil || *p.Spill != *res.Spill {
+		r.t.Fatalf("the logged spill is %+v (%v), want %+v", p.Spill, err, res.Spill)
+	}
+	if ok, err := r.st.Cites(bg, string(id), "spill:"+res.Spill.Path); err != nil || !ok {
+		r.t.Fatalf("the session store does not track the citation of %s: %v", res.Spill.Path, err)
+	}
+	saved := r.openSpill(string(id), res.Spill.Path)
+	if int64(len(saved)) != res.Spill.Bytes {
+		r.t.Fatalf("the spill file is %d bytes; the reference says %d", len(saved), res.Spill.Bytes)
+	}
+	return saved
+}
+
+func (r *rig) openSpill(caller, id string) []byte {
+	r.t.Helper()
+	rc, err := r.spill.Open(bg, caller, id)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	defer rc.Close()
+	b, err := io.ReadAll(rc)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	return b
+}
+
+// A single 5 MiB line fits the line cap but not the character cap: read clips
+// it and still saves the whole file, though no line was omitted.
+func TestReadSpillsASingleLongLine(t *testing.T) {
+	r := newRig(t)
+	full := strings.Repeat("\u00e9abcdefg", 5<<20/9) + "\n"
+	r.put("one.txt", full)
+	res, logged := r.run(fstools.ReadName, map[string]any{"file_path": "one.txt"})
+	if res.IsError || !strings.Contains(res.Text, "(End of file - total 1 lines)") || !strings.Contains(res.Text, "(Lines longer than 2000 characters were truncated.)") {
+		t.Fatalf("read: %.300s ... %s", res.Text, res.Text[max(0, len(res.Text)-300):])
+	}
+	if len(res.Text) > fstools.DefaultReadMaxBytes {
+		t.Fatalf("the result is %d bytes", len(res.Text))
+	}
+	if saved := r.spilled(res, logged, session.ID(fmt.Sprintf("s-fs-tools-%d", r.n))); string(saved) != full {
+		t.Fatalf("the spilled file is %d bytes, want %d", len(saved), len(full))
+	}
+}
+
+// glob and grep over their page offer offset and, with a spill store, save the
+// complete list; a result that fits its page saves nothing.
+func TestGlobAndGrepSpillTheCompleteList(t *testing.T) {
+	r := newRigWith(t, rigOptions{cfg: fstools.Config{GlobMaxResults: 5, GrepMaxMatches: 7}})
+	for i := range 30 {
+		r.put(fmt.Sprintf("s/f%02d.txt", i), "hit\nmiss\n")
+	}
+	res, logged := r.run(fstools.GlobName, map[string]any{"pattern": "*.txt", "path": "s"})
+	if res.IsError || !strings.Contains(res.Text, "(Showing 5 of 30 paths; 25 omitted. Use offset=5 to see more.)") {
+		t.Fatalf("glob: %s", res.Text)
+	}
+	saved := strings.Split(strings.TrimSuffix(string(r.spilled(res, logged, session.ID(fmt.Sprintf("s-fs-tools-%d", r.n)))), "\n"), "\n")
+	if len(saved) != 30 || !strings.HasPrefix(res.Text, strings.Join(saved[:5], "\n")+"\n") {
+		t.Fatalf("the saved list has %d paths and does not start with the page: %v", len(saved), saved[:min(len(saved), 6)])
+	}
+
+	res, logged = r.run(fstools.GrepName, map[string]any{"pattern": "hit", "path": "s"})
+	if res.IsError || !strings.HasPrefix(res.Text, "Found 7 matches\n") || !strings.Contains(res.Text, "(Results capped at 7. Use offset=7 to see more.)") {
+		t.Fatalf("grep: %s", res.Text)
+	}
+	all := string(r.spilled(res, logged, session.ID(fmt.Sprintf("s-fs-tools-%d", r.n))))
+	if !strings.HasPrefix(all, "Found 30 matches\n") || strings.Count(all, "  Line 1: hit") != 30 {
+		t.Fatalf("the saved grep list: %.300s", all)
+	}
+
+	for _, c := range []struct {
+		tool string
+		args map[string]any
+	}{
+		{fstools.GlobName, map[string]any{"pattern": "f0[0-4].txt", "path": "s"}},
+		{fstools.GrepName, map[string]any{"pattern": "hit", "path": "s", "include": "f0[0-4].txt"}},
+	} {
+		if res, _ := r.run(c.tool, c.args); res.IsError || res.Spill != nil || spillRef.MatchString(res.Text) || strings.Contains(res.Text, "offset=") {
+			t.Fatalf("%s within its page: %+v", c.tool, res)
+		}
+	}
+}
+
+// apply_patch refuses an Add over the text ceiling before any hunk publishes.
+func TestApplyPatchAddRespectsTheTextCeiling(t *testing.T) {
+	r := newRigWith(t, rigOptions{cfg: fstools.Config{TextMaxBytes: 16}})
+	r.put("a.txt", "one\n")
+	res, _ := r.run(fstools.ApplyPatchName, map[string]any{"input": "*** Begin Patch\n" +
+		"*** Update File: a.txt\n@@\n-one\n+two\n" +
+		"*** Add File: big.txt\n+" + strings.Repeat("x", 32) + "\n" +
+		"*** End Patch"})
+	if !res.IsError || !strings.Contains(res.Text, "fs/too-large") {
+		t.Fatalf("an oversized Add: %+v", res)
+	}
+	if _, err := os.Stat(r.path("big.txt")); !os.IsNotExist(err) || r.disk("a.txt") != "one\n" {
+		t.Fatalf("a hunk published: %v, a.txt %q", err, r.disk("a.txt"))
+	}
+}
+
+// unsynced is a provider whose writes land but whose sync fails, and whose
+// deletes fail.
+type unsynced struct{ fs.FS }
+
+func (u unsynced) Write(ctx context.Context, ref fs.Ref, data []byte, g fs.Guard, p sandbox.Policy) (fs.WriteOutcome, error) {
+	out, err := u.FS.Write(ctx, ref, data, g, p)
+	if err == nil {
+		out.DurabilityUnknown = errors.New("fsync failed")
+	}
+	return out, err
+}
+
+func (unsynced) Delete(context.Context, fs.Ref, fs.Guard, sandbox.Policy) (fs.DeleteOutcome, error) {
+	return fs.DeleteOutcome{}, herr.New(fs.CodeIO, "the disk refused the delete")
+}
+
+// apply_patch says which of its writes have unknown durability, in a success
+// and in the completed part of a partial failure, as write and edit do.
+func TestApplyPatchReportsUnknownDurability(t *testing.T) {
+	r := newRigWith(t, rigOptions{wrap: func(p fs.FS) fs.FS { return unsynced{p} }})
+	const note = "the file is in place but its durability is unknown"
+	r.put("m.txt", "one\n")
+	r.put("gone.txt", "x\n")
+	res, _ := r.run(fstools.ApplyPatchName, map[string]any{"input": "*** Begin Patch\n" +
+		"*** Add File: a.txt\n+a\n" +
+		"*** Update File: m.txt\n@@\n-one\n+two\n" +
+		"*** End Patch"})
+	if res.IsError || strings.Count(res.Text, note) != 2 {
+		t.Fatalf("success: %s", res.Text)
+	}
+	// The delete fails at commit: the Add before it completed, unsynced, and
+	// the update after it never ran.
+	res, _ = r.run(fstools.ApplyPatchName, map[string]any{"input": "*** Begin Patch\n" +
+		"*** Add File: b.txt\n+b\n" +
+		"*** Delete File: gone.txt\n" +
+		"*** Update File: m.txt\n@@\n-two\n+three\n" +
+		"*** End Patch"})
+	completed := "Completed:\nA " + r.path("b.txt") + " (version " + digest("b\n") + "); " + note + "\nFailed:\nDelete File gone.txt"
+	if !res.IsError || !strings.Contains(res.Text, completed) || !strings.Contains(res.Text, "Not executed:\nUpdate File m.txt") {
+		t.Fatalf("partial failure: %s", res.Text)
+	}
+	if r.disk("b.txt") != "b\n" || r.disk("m.txt") != "two\n" || r.disk("gone.txt") != "x\n" {
+		t.Fatalf("files: b %q, m %q, gone %q", r.disk("b.txt"), r.disk("m.txt"), r.disk("gone.txt"))
 	}
 }
 

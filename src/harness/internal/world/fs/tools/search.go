@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
 	htools "github.com/smartpcr/agent-plugin/src/harness/internal/tools"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/search"
 )
@@ -36,7 +37,7 @@ type GrepIn struct {
 }
 
 func (f *files) glob() *htools.Declaration {
-	return htools.Define(htools.Spec[GlobIn, string]{
+	return htools.Define(htools.Spec[GlobIn, htools.Content]{
 		Name: GlobName,
 		Description: "Find files by path pattern (\"**/*.go\", \"src/*.ts\"), newest first. Hidden and ignored files are included; " +
 			"version-control directories are not. At most " + strconv.Itoa(f.cfg.GlobMaxResults) + " paths are returned; use offset to page.",
@@ -46,39 +47,42 @@ func (f *files) glob() *htools.Declaration {
 	})
 }
 
-func (f *files) runGlob(ctx context.Context, in GlobIn, run htools.Run) (string, error) {
+func (f *files) runGlob(ctx context.Context, in GlobIn, run htools.Run) (htools.Content, error) {
 	src, root, err := f.searchRoot(ctx, call(run), in.Path)
 	if err != nil {
-		return "", err
+		return htools.Content{}, err
 	}
-	var shown []string
-	omitted := 0
+	// Every path from the offset is kept (search bounds the files it visits),
+	// so an over-cap page can save the complete list.
+	var all []string
 	sum, err := search.Files(ctx, search.FilesQuery{
 		From: src, Root: root, Pattern: in.Pattern, Hidden: true, NoIgnore: true,
 		Order: search.ByTime, Offset: in.Offset,
 	}, func(p string) bool {
-		if len(shown) < f.cfg.GlobMaxResults {
-			shown = append(shown, filepath.Join(src.root, filepath.FromSlash(p)))
-		} else {
-			omitted++
-		}
+		all = append(all, filepath.Join(src.root, filepath.FromSlash(p)))
 		return true
 	})
 	if err != nil {
-		return "", err
+		return htools.Content{}, err
 	}
+	shown := all[:min(len(all), f.cfg.GlobMaxResults)]
+	omitted := len(all) - len(shown)
 	var b strings.Builder
 	if len(shown) == 0 {
 		b.WriteString("No files found")
 	} else {
 		b.WriteString(strings.Join(shown, "\n"))
 	}
+	var sp *event.Spill
 	if omitted > 0 {
 		fmt.Fprintf(&b, "\n\n(Showing %d of %d paths; %d omitted. Use offset=%d to see more.)",
-			len(shown), len(shown)+omitted, omitted, in.Offset+len(shown))
+			len(shown), len(all), omitted, in.Offset+len(shown))
+		var note string
+		sp, note = f.spillWhole(ctx, run, "glob-paths.txt", fmt.Sprintf("The complete list of %d paths", len(all)), []byte(strings.Join(all, "\n")+"\n"))
+		b.WriteString(note)
 	}
 	b.WriteString(incomplete(sum))
-	return b.String(), nil
+	return textContent(b.String(), sp), nil
 }
 
 // incomplete is the footer of a search a limit other than the page size cut.
@@ -90,7 +94,7 @@ func incomplete(sum search.Summary) string {
 }
 
 func (f *files) grep() *htools.Declaration {
-	return htools.Define(htools.Spec[GrepIn, string]{
+	return htools.Define(htools.Spec[GrepIn, htools.Content]{
 		Name: GrepName,
 		Description: "Search file contents with a regular expression (Go RE2 syntax; start with (?i) to ignore case). " +
 			"Hidden, ignored and binary files are skipped. output is lines (matching lines, grouped by file), files (matching files) or count (matches per file). " +
@@ -101,10 +105,10 @@ func (f *files) grep() *htools.Declaration {
 	})
 }
 
-func (f *files) runGrep(ctx context.Context, in GrepIn, run htools.Run) (string, error) {
+func (f *files) runGrep(ctx context.Context, in GrepIn, run htools.Run) (htools.Content, error) {
 	src, root, err := f.searchRoot(ctx, call(run), in.Path)
 	if err != nil {
-		return "", err
+		return htools.Content{}, err
 	}
 	out := search.OutputLines
 	switch in.Output {
@@ -113,21 +117,51 @@ func (f *files) runGrep(ctx context.Context, in GrepIn, run htools.Run) (string,
 	case "count":
 		out = search.OutputCounts
 	}
+	// With a spill store the search runs on to SpillMaxMatches, so a page that
+	// does not hold every result can save the complete list.
+	page, limit := f.cfg.GrepMaxMatches, f.cfg.GrepMaxMatches
+	if f.canSpill(run) {
+		limit = f.cfg.SpillMaxMatches
+	}
 	var matches []search.Match
 	sum, err := search.Grep(ctx, search.GrepQuery{
 		From: src, Root: root, Pattern: in.Pattern, Include: in.Include, Output: out, Offset: in.Offset,
-		Limits: search.Limits{MaxMatches: f.cfg.GrepMaxMatches, MaxLineBytes: f.cfg.GrepMaxLineBytes},
+		Limits: search.Limits{MaxMatches: limit, MaxLineBytes: f.cfg.GrepMaxLineBytes},
 	}, func(m search.Match) bool {
 		matches = append(matches, m)
 		return true
 	})
 	if err != nil {
-		return "", err
+		return htools.Content{}, err
 	}
 	if len(matches) == 0 {
-		return "No matches found" + incomplete(sum), nil
+		return textContent("No matches found"+incomplete(sum), nil), nil
 	}
 	abs := func(p string) string { return filepath.Join(src.root, filepath.FromSlash(p)) }
+	shown := matches[:min(len(matches), page)]
+	var b strings.Builder
+	b.WriteString(renderMatches(out, shown, abs))
+	capped := sum.Incomplete && sum.Reason == search.CutMatches
+	if capped || len(matches) > page {
+		fmt.Fprintf(&b, "\n\n(Results capped at %d. Use offset=%d to see more.)", page, in.Offset+len(shown))
+	}
+	var sp *event.Spill
+	if len(matches) > page {
+		what := fmt.Sprintf("The complete list of %d results", len(matches))
+		if capped {
+			what = fmt.Sprintf("The list of the first %d results (the most saved)", len(matches))
+		}
+		var note string
+		sp, note = f.spillWhole(ctx, run, "grep-results.txt", what, []byte(renderMatches(out, matches, abs)+"\n"))
+		b.WriteString(note)
+	}
+	b.WriteString(incomplete(sum))
+	return textContent(b.String(), sp), nil
+}
+
+// renderMatches is grep's listing of matches in output mode out, with no
+// trailing newline.
+func renderMatches(out search.Output, matches []search.Match, abs func(string) string) string {
 	var b strings.Builder
 	switch out {
 	case search.OutputFiles:
@@ -155,9 +189,9 @@ func (f *files) runGrep(ctx context.Context, in GrepIn, run htools.Run) (string,
 			fmt.Fprintf(&b, "  Line %d: %s\n", m.Line, text)
 		}
 	}
-	if sum.Incomplete && sum.Reason == search.CutMatches {
-		fmt.Fprintf(&b, "\n(Results capped at %d. Use offset=%d to see more.)", f.cfg.GrepMaxMatches, in.Offset+len(matches))
-	}
-	b.WriteString(incomplete(sum))
-	return strings.TrimSuffix(b.String(), "\n"), nil
+	return strings.TrimSuffix(b.String(), "\n")
 }
+
+// canSpill reports whether a complete result of run can be saved: a spill
+// store is mounted and the call has a session to own the file.
+func (f *files) canSpill(run htools.Run) bool { return f.spill != nil && run.Agent.Session != "" }

@@ -653,6 +653,7 @@ func (r *registry) settle(ctx context.Context, b tools.Batch, ls listeners, c to
 			res.Text = string(tools.CodeInvalidOutput) + ": " + msg
 		} else {
 			res.Value, res.Text, res.Parts = e.value, text, parts
+			res.Spill = bodySpill(e.value)
 		}
 	} else {
 		res.Text = string(e.code) + ": " + e.msg

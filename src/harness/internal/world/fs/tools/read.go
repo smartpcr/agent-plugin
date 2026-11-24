@@ -9,6 +9,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/spill"
 	htools "github.com/smartpcr/agent-plugin/src/harness/internal/tools"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
@@ -32,7 +34,7 @@ type ReadIn struct {
 }
 
 func (f *files) read() *htools.Declaration {
-	return htools.Define(htools.Spec[ReadIn, string]{
+	return htools.Define(htools.Spec[ReadIn, htools.Content]{
 		Name: ReadName,
 		Description: "Read a text file with numbered lines, or list one level of a directory. " + readGuidance + " " +
 			"At most " + strconv.Itoa(f.cfg.ReadLimit) + " lines, " + strconv.Itoa(f.cfg.ReadMaxLineLength) +
@@ -44,26 +46,32 @@ func (f *files) read() *htools.Declaration {
 	})
 }
 
-func (f *files) runRead(ctx context.Context, in ReadIn, run htools.Run) (string, error) {
+func (f *files) runRead(ctx context.Context, in ReadIn, run htools.Run) (htools.Content, error) {
+	text, sp, err := f.readText(ctx, in, run)
+	return textContent(text, sp), err
+}
+
+func (f *files) readText(ctx context.Context, in ReadIn, run htools.Run) (string, *event.Spill, error) {
 	c := call(run)
 	ref := fs.Ref{Path: in.FilePath}
 	st, err := f.ops.Stat(ctx, c, ref)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if !st.Exists {
-		return "", herr.Newf(fs.CodeNotFound, "%s does not exist", st.Target.Display)
+		return "", nil, herr.Newf(fs.CodeNotFound, "%s does not exist", st.Target.Display)
 	}
 	if st.Type == fs.TypeDir {
-		return f.listDir(ctx, run, ref, st.Target.Display)
+		text, err := f.listDir(ctx, run, ref, st.Target.Display)
+		return text, nil, err
 	}
 	raw, info, err := readAll(ctx, f.ops, c, ref, f.cfg.TextMaxBytes)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	text, _, err := checkText(info.Target.Display, raw)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	lines := strings.Split(text, "\n")
 	if lines[len(lines)-1] == "" {
@@ -80,11 +88,14 @@ func (f *files) runRead(ctx context.Context, in ReadIn, run htools.Run) (string,
 	fmt.Fprintf(&b, "<path>%s</path>\n<type>file</type>\n<content>\n", info.Target.Display)
 	if total > 0 && start > total {
 		fmt.Fprintf(&b, "(Offset %d is beyond the end of the file - total %d lines)\n</content>", start, total)
-		return b.String(), nil
+		return b.String(), nil, nil
 	}
-	shown, used, byteCut := 0, 0, false
+	// Two bounds cut what is shown, independently: the line and byte caps omit
+	// lines, and the character cap clips a long line in place.
+	shown, used, byteCut, clipped := 0, 0, false, false
 	for i := start - 1; i < total && shown < limit; i++ {
-		entry := strconv.Itoa(i+1) + ": " + clipLine(strings.TrimSuffix(lines[i], "\r"), f.cfg.ReadMaxLineLength) + "\n"
+		line, cut := clipLine(strings.TrimSuffix(lines[i], "\r"), f.cfg.ReadMaxLineLength)
+		entry := strconv.Itoa(i+1) + ": " + line + "\n"
 		if used+len(entry) > f.cfg.ReadMaxBytes {
 			byteCut = true
 			break
@@ -92,6 +103,7 @@ func (f *files) runRead(ctx context.Context, in ReadIn, run htools.Run) (string,
 		b.WriteString(entry)
 		used += len(entry)
 		shown++
+		clipped = clipped || cut
 	}
 	end := start + shown - 1
 	b.WriteString("\n")
@@ -105,36 +117,47 @@ func (f *files) runRead(ctx context.Context, in ReadIn, run htools.Run) (string,
 			b.WriteString("(")
 		}
 		fmt.Fprintf(&b, "Showing lines %d-%d of %d. Use offset=%d to continue.)", start, end, total, end+1)
-		// The whole file is saved only when the tool's own bounds cut a read
-		// of it from the start; a caller paging with offset and limit has
-		// already chosen its range.
-		if in.Offset == 0 && in.Limit == 0 {
-			b.WriteString(f.spillWhole(ctx, run, info.Target.Display, raw))
-		}
+	}
+	if clipped {
+		fmt.Fprintf(&b, "\n(Lines longer than %d characters were truncated.)", f.cfg.ReadMaxLineLength)
+	}
+	// The whole file is saved when the tool's own bounds cut a read of it from
+	// the start, by omitted lines or clipped ones; a caller paging with offset
+	// and limit has already chosen its range.
+	var sp *event.Spill
+	if (end < total || clipped) && in.Offset == 0 && in.Limit == 0 {
+		var note string
+		sp, note = f.spillWhole(ctx, run, "read-"+filepath.Base(info.Target.Display), "The whole file", raw)
+		b.WriteString(note)
 	}
 	b.WriteString("\n</content>")
-	return b.String(), nil
+	return b.String(), sp, nil
 }
 
-// spillWhole saves raw, the whole file, through the spill store for the
-// calling session and returns the footer line that cites it; with no store,
-// or no session, there is nothing to cite.
-func (f *files) spillWhole(ctx context.Context, run htools.Run, display string, raw []byte) string {
-	owner := string(run.Agent.Session)
-	if f.spill == nil || owner == "" {
-		return ""
+// textContent is text as a body's content, citing sp, the saved complete
+// result, when there is one.
+func textContent(text string, sp *event.Spill) htools.Content {
+	return htools.Content{Parts: []vocab.Part{vocab.TextPart(text)}, Spill: sp}
+}
+
+// spillWhole saves raw, a complete result named name, through the spill store
+// for the calling session; it returns the reference and the footer line that
+// cites it. With no store, or no session, there is nothing to cite.
+func (f *files) spillWhole(ctx context.Context, run htools.Run, name, what string, raw []byte) (*event.Spill, string) {
+	if !f.canSpill(run) {
+		return nil, ""
 	}
-	_, ref, err := spill.Save(ctx, f.spill, owner, "read-"+filepath.Base(display), raw, 0)
+	_, ref, err := spill.Save(ctx, f.spill, string(run.Agent.Session), name, raw, 0)
 	if err != nil || ref == nil {
-		return fmt.Sprintf("\n(The whole file could not be saved: %v)", err)
+		return nil, fmt.Sprintf("\n(%s could not be saved: %v)", what, err)
 	}
-	return fmt.Sprintf("\n(The whole file, %d bytes, was saved to spill %s.)", ref.Bytes, ref.Path)
+	return ref, fmt.Sprintf("\n(%s, %d bytes, was saved to spill %s.)", what, ref.Bytes, ref.Path)
 }
 
-// clipLine keeps at most n characters of line.
-func clipLine(line string, n int) string {
+// clipLine keeps at most n characters of line and reports whether it cut.
+func clipLine(line string, n int) (string, bool) {
 	if utf8.RuneCountInString(line) <= n {
-		return line
+		return line, false
 	}
 	i, count := 0, 0
 	for i < len(line) && count < n {
@@ -142,7 +165,7 @@ func clipLine(line string, n int) string {
 		i += size
 		count++
 	}
-	return line[:i] + fmt.Sprintf("... (line truncated to %d characters)", n)
+	return line[:i] + fmt.Sprintf("... (line truncated to %d characters)", n), true
 }
 
 // listDir is read on a directory: one level, sorted, directories marked with

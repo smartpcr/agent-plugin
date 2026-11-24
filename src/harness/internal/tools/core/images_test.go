@@ -11,6 +11,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/meter"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store/memstore"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/spill/local"
@@ -293,5 +294,31 @@ func TestSettledPartsAreCopies(t *testing.T) {
 	r.Parts[1].Image.Ref = "changed"
 	if got := loggedParts(t, h, "c1"); got[1].Image.Ref != "att-1" {
 		t.Fatal("the caller's parts share the logged message")
+	}
+}
+
+// A body that bounds its own output and saved its complete result cites the
+// save in tools.Content.Spill: the pipeline returns it as Result.Spill and logs
+// it in the tool/result, where the session store tracks the citation, while the
+// model is given only the parts.
+func TestABodysOwnSpillReachesTheResultAndTheLog(t *testing.T) {
+	e := newEnv(t)
+	svc := e.pipeline(t, core.Config{Checkpoint: recCheckpoint{&trace{}}})
+	ref := &event.Spill{Path: "s1/page.txt", Bytes: 9000}
+	e.register(t, e.root, tools.Define(tools.Spec[noIn, tools.Content]{
+		Name: "page", Description: "Shows a page.", BoundsOwnOutput: true,
+		Run: func(context.Context, noIn, tools.Run) (tools.Content, error) {
+			return tools.Content{Parts: []vocab.Part{vocab.TextPart("first page")}, Spill: ref}, nil
+		},
+	}))
+	call := [2]string{"page", `{}`}
+	h := openSession(t, memstore.New(), call)
+	r := execute(t, svc, view(t, svc), h, call)[0]
+	if r.IsError || r.Text != "first page" || r.Spill == nil || *r.Spill != *ref || r.Spill == ref {
+		t.Fatalf("result %+v, want the text and a copy of the body's spill", r)
+	}
+	logged, _ := resultsOf(t, h)
+	if p := logged["c1"]; p.Spill == nil || *p.Spill != *ref || len(p.BlobRefs()) != 1 || p.BlobRefs()[0] != "spill:s1/page.txt" {
+		t.Fatalf("logged spill %+v", p.Spill)
 	}
 }

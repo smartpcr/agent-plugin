@@ -365,8 +365,15 @@ type Outcome struct {
 // bounds the images with the text. A Content with no image part is a text-only
 // result, its texts joined. An image names its attachment reference; its bytes
 // are never in the result.
+//
+// Spill is the saved complete result of a body that bounded its own output (a
+// read cut at its byte cap, a search page): the pipeline takes it as
+// Result.Spill and logs it in the tool/result, so the session store tracks the
+// citation as it does the spill seat's. It is not part of the model-facing
+// content; the body's text cites it.
 type Content struct {
 	Parts []vocab.Part `json:"parts"`
+	Spill *event.Spill `json:"spill,omitempty"`
 }
 
 // PostKind is a shaper's closed answer.
