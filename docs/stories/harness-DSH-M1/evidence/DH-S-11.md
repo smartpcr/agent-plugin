@@ -487,7 +487,7 @@ one commit. **Rows 1, 3 and 4 do not hold, so DH-S-11 does not close in Phase 17
 
 **Closure status: built; both lanes pass all 12 gates at the closure commit `2cface9` ([DH-S-1 "Phase 18 closure gate runs"](DH-S-1.md#phase-18-closure-gate-runs)); the manual checks ran at the frozen commit `593ceaa`, whose product code `2cface9` keeps unchanged; not yet closed.** Closing waits for
 the owner, at plan 18.1.13 and 18.1.14:
-- the scenario review in the M1 closure PR (`m1-scenario-review-closure-pr`);
+- the scenario review in the M1 closure PR [#94](https://github.com/smartpcr/agent-plugin/pull/94) (`m1-scenario-review-closure-pr`);
 - the signature on `m1-done-claims`;
 - the review of `decisions.md`;
 - row 4.9 cases (a) and (c), the VS Code saves.

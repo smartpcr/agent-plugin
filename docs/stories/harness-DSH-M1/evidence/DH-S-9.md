@@ -299,7 +299,7 @@ Before the run, the inferences it was to settle were:
 - the DH-S-9 check passes on the Claude route;
 - impl.md steps 9.1 to 9.3 are ticked, and `built-through` is DH-S-11.
 
-DH-S-9 closes at plan 18.1.14, once the owner has reviewed its three re-authored scenario files in the M1 closure PR (`m1-scenario-review-closure-pr`). The Copilot route stays open (M1-D-LOOP-6). The Phase 16 text below is kept as history.
+DH-S-9 closes at plan 18.1.14, once the owner has reviewed its three re-authored scenario files in the M1 closure PR [#94](https://github.com/smartpcr/agent-plugin/pull/94) (`m1-scenario-review-closure-pr`). The Copilot route stays open (M1-D-LOOP-6). The Phase 16 text below is kept as history.
 
 **Open: DH-S-9 does not close in Phase 16.** Plan step 16.6.3 closes DH-S-9 only when both
 of these are done, and neither is:
