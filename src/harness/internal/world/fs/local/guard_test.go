@@ -38,6 +38,9 @@ func TestGuardedWritesThroughDistinctProvidersHaveOneWinner(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make([]error, writers)
 	start := make(chan struct{})
+	release := sync.OnceFunc(func() { close(start) })
+	// Release and join the writers however the test ends.
+	t.Cleanup(func() { release(); wg.Wait() })
 	for i := range writers {
 		l := local.NewWithOptions(local.Options{LockDir: locks})
 		wg.Add(1)
@@ -47,7 +50,7 @@ func TestGuardedWritesThroughDistinctProvidersHaveOneWinner(t *testing.T) {
 			_, errs[i] = l.Write(ctx, fs.Ref{Path: f}, []byte("writer "+strconv.Itoa(i)), fs.ReplaceIfVersion{Version: v1}, p)
 		}()
 	}
-	close(start)
+	release()
 	wg.Wait()
 
 	won := -1
@@ -103,12 +106,19 @@ func TestGuardedWritesSerialiseAcrossProcesses(t *testing.T) {
 	cmds := make([]*exec.Cmd, helpers)
 	outs := make([]bytes.Buffer, helpers)
 	for i := range cmds {
-		cmds[i] = exec.Command(exe, "-test.run=^TestGuardedWritesSerialiseAcrossProcesses$", "-test.count=1")
-		cmds[i].Env = append(os.Environ(), helperEnv+"="+f, helperEnv+"_LOCKS="+locks)
-		cmds[i].Stdout, cmds[i].Stderr = &outs[i], &outs[i]
-		if err := cmds[i].Start(); err != nil {
+		cmd := exec.Command(exe, "-test.run=^TestGuardedWritesSerialiseAcrossProcesses$", "-test.count=1")
+		cmd.Env = append(os.Environ(), helperEnv+"="+f, helperEnv+"_LOCKS="+locks)
+		cmd.Stdout, cmd.Stderr = &outs[i], &outs[i]
+		if err := cmd.Start(); err != nil {
 			t.Fatal(err)
 		}
+		// Kill and reap a helper the test did not wait for (a no-op after its
+		// Wait), so a failed test leaves no process holding the lock directory.
+		t.Cleanup(func() {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		})
+		cmds[i] = cmd
 	}
 	if err := countUp(f, locks); err != nil {
 		t.Error(err)
