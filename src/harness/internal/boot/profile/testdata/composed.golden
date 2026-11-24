@@ -112,6 +112,7 @@
   }
 ]
 # sdk-minimal
+# required: session.store, agent.registry, agent.driver, tools.registry, agent.presets, wire.stdio, wire.sdk
 # skipped, target not built: bundles/sdk.yml:19:3: layer bundle:sdk: override "session.title.llm" matches no entry
 [
   {
