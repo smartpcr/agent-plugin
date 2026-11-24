@@ -272,10 +272,15 @@ type Resolver struct {
 	cfg  Config
 	deps Deps
 
-	mu      sync.Mutex
-	modes   map[session.ID]ModeState // a live session's fold, or SetMode's
-	grants  map[session.ID][]*string
-	setting map[session.ID]chan struct{}
+	mu sync.Mutex
+	// modes and setting hold live sessions only: an entry whose session
+	// Sessions.Get no longer returns is evicted when next read, and by a sweep
+	// each time modes doubles past its size after the previous sweep, so both
+	// stay within twice the live sessions the resolver has seen.
+	modes     map[session.ID]ModeState // a live session's fold, or SetMode's
+	grants    map[session.ID][]*string
+	setting   map[session.ID]chan struct{}
+	sweptSize int
 }
 
 var _ sandbox.Resolver = (*Resolver)(nil)
@@ -350,10 +355,13 @@ func (r *Resolver) state(ctx context.Context, s session.ID) (ModeState, error) {
 	r.mu.Lock()
 	st, ok := r.modes[s]
 	r.mu.Unlock()
-	if ok || r.deps.Sessions == nil {
+	if r.deps.Sessions == nil {
 		return st, nil
 	}
-	if live, ok := r.deps.Sessions.Get(s); ok {
+	if live, isLive := r.deps.Sessions.Get(s); isLive {
+		if ok {
+			return st, nil
+		}
 		st, err := fold(ctx, live)
 		if err != nil {
 			return ModeState{}, err
@@ -365,8 +373,17 @@ func (r *Resolver) state(ctx context.Context, s session.ID) (ModeState, error) {
 		} else {
 			r.modes[s] = st
 		}
+		sweep := len(r.modes) > 2*r.sweptSize
 		r.mu.Unlock()
+		if sweep {
+			r.evictEnded()
+		}
 		return st, nil
+	}
+	if ok {
+		r.mu.Lock()
+		r.evictLocked(s)
+		r.mu.Unlock()
 	}
 	rs, release, err := r.deps.Sessions.OpenRead(ctx, s)
 	if err != nil {
@@ -374,6 +391,44 @@ func (r *Resolver) state(ctx context.Context, s session.ID) (ModeState, error) {
 	}
 	defer release()
 	return fold(ctx, rs)
+}
+
+// evictLocked drops the cached fold and transition slot of session s, an ended
+// session; a slot still held by a running SetMode is left for the next sweep.
+// r.mu must be held.
+func (r *Resolver) evictLocked(s session.ID) {
+	delete(r.modes, s)
+	if slot, ok := r.setting[s]; ok && len(slot) == 0 {
+		delete(r.setting, s)
+	}
+}
+
+// evictEnded sweeps modes and setting of every session Sessions.Get no longer
+// returns. Get is called without r.mu held.
+func (r *Resolver) evictEnded() {
+	r.mu.Lock()
+	ids := make([]session.ID, 0, len(r.modes)+len(r.setting))
+	for s := range r.modes {
+		ids = append(ids, s)
+	}
+	for s := range r.setting {
+		if _, ok := r.modes[s]; !ok {
+			ids = append(ids, s)
+		}
+	}
+	r.mu.Unlock()
+	var ended []session.ID
+	for _, s := range ids {
+		if _, ok := r.deps.Sessions.Get(s); !ok {
+			ended = append(ended, s)
+		}
+	}
+	r.mu.Lock()
+	for _, s := range ended {
+		r.evictLocked(s)
+	}
+	r.sweptSize = len(r.modes)
+	r.mu.Unlock()
 }
 
 func fold(ctx context.Context, rs session.ReadSession) (ModeState, error) {
