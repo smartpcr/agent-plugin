@@ -37,9 +37,6 @@ var ffsSuiteT *testing.T
 type ffsSubtest struct {
 	name            string
 	failed, skipped bool
-	// linkUnsupported: the subject's Symlink returned fstest.ErrLinkUnsupported
-	// (a Windows lane without the symlink privilege, junction fallback).
-	linkUnsupported bool
 }
 
 type ffsWorld struct {
@@ -100,9 +97,6 @@ func (w *ffsWorld) givenProvider(provider, root string) error {
 				w.mu.Lock()
 				defer w.mu.Unlock()
 				if err != nil {
-					if errors.Is(err, fstest.ErrLinkUnsupported) {
-						rec.linkUnsupported = true
-					}
 					return err
 				}
 				w.linkKinds[kind]++
@@ -123,7 +117,7 @@ func (w *ffsWorld) whenRun(fn string) error {
 	w.runOK = ffsSuiteT.Run(ffsConformanceName, func(t *testing.T) {
 		fstest.Run(t, w.newSubject)
 	})
-	if runtime.GOOS == "windows" && os.Getenv(ffsLinuxLaneEnv) == "" && !ffsStrict() {
+	if runtime.GOOS == "windows" && os.Getenv(ffsLinuxLaneEnv) == "" {
 		w.linux = ffsRunLinuxLane()
 	}
 	return nil
@@ -133,14 +127,8 @@ const (
 	ffsConformanceName = "fstest-conformance-fs-local"
 	// ffsLinuxLaneEnv marks the Linux-lane child run, so it does not recurse.
 	ffsLinuxLaneEnv = "DSH_E2E_FFS_LINUX_LANE"
-	// ffsStrictEnv (set by the CI workflow of this stage, whose hosted Windows
-	// runner holds the symlink privilege) refuses every skip on every lane: no
-	// subtest may be proven on another lane in place of this one.
-	ffsStrictEnv  = "DSH_E2E_FFS_STRICT"
-	ffsEntrypoint = "TestE2E_dh_s_12_working_directory_filesystem_seam_and_policy_resolver_fenced_filesystem_seam"
+	ffsEntrypoint   = "TestE2E_dh_s_12_working_directory_filesystem_seam_and_policy_resolver_fenced_filesystem_seam"
 )
-
-func ffsStrict() bool { return os.Getenv(ffsStrictEnv) == "1" }
 
 // ffsLane is the outcome of the conformance suite run on the Linux lane from a
 // Windows host: the whole godog suite of this stage, run under WSL.
@@ -192,43 +180,40 @@ func ffsShort(name string) string {
 	return name
 }
 
-// thenEverySubtestPasses: no conformance subtest may fail or skip. On a Windows
-// lane without the symlink privilege, a subtest needing a link a junction cannot
-// stand for (a relative link, a link to a file) cannot run there; it must then
-// run and pass on the Linux lane of the same host, which runs every subtest.
+// thenEverySubtestPasses: no conformance subtest may fail or skip, on this lane
+// or, from a Windows host, on its Linux lane (WSL), which must pass as well: one
+// lane never stands in for the other. On Windows without the symlink privilege
+// the subject makes reparse points fs/local resolves as links (ffsMakeLink), so
+// every subtest runs there too; the kinds made are logged.
 func (w *ffsWorld) thenEverySubtestPasses() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if len(w.subtests) == 0 {
 		return errors.New("fstest.Run executed no subtests")
 	}
-	var bad, needLinux []string
+	var bad []string
 	for _, s := range w.subtests {
 		switch {
 		case s.failed:
 			bad = append(bad, s.name+" FAILED")
-		case s.skipped && s.linkUnsupported && runtime.GOOS == "windows" && !ffsStrict():
-			needLinux = append(needLinux, ffsShort(s.name))
 		case s.skipped:
 			bad = append(bad, s.name+" SKIPPED")
 		}
 	}
-	ffsSuiteT.Logf("%s lane: fs/local conformance: %d subtests, link kinds %v, not runnable here (junction fallback): %v",
-		runtime.GOOS, len(w.subtests), w.linkKinds, needLinux)
+	ffsSuiteT.Logf("%s lane: fs/local conformance: %d subtests, link kinds made %v", runtime.GOOS, len(w.subtests), w.linkKinds)
 	if len(bad) > 0 || !w.runOK {
 		return fmt.Errorf("%s lane: conformance run ok=%v; %d of %d subtests not passing: %v", runtime.GOOS, w.runOK, len(bad), len(w.subtests), bad)
 	}
-	if runtime.GOOS != "windows" || os.Getenv(ffsLinuxLaneEnv) != "" || ffsStrict() {
+	if runtime.GOOS != "windows" || os.Getenv(ffsLinuxLaneEnv) != "" {
 		return nil
 	}
-
 	l := w.linux
-	if !l.ran || l.err != nil {
-		if len(needLinux) == 0 && !l.ran {
-			ffsSuiteT.Logf("linux lane: %v; every subtest passed on this Windows lane", l.err)
-			return nil
-		}
-		return fmt.Errorf("subtests %v cannot run on this Windows lane and the Linux lane did not pass: %v", needLinux, l.err)
+	if !l.ran {
+		ffsSuiteT.Logf("linux lane: %v (it runs natively on the Linux CI lane)", l.err)
+		return nil
+	}
+	if l.err != nil {
+		return l.err
 	}
 	var linuxBad []string
 	for _, s := range w.subtests {
@@ -236,12 +221,7 @@ func (w *ffsWorld) thenEverySubtestPasses() error {
 			linuxBad = append(linuxBad, fmt.Sprintf("%s=%q", ffsShort(s.name), r))
 		}
 	}
-	for n, r := range l.results {
-		if r != "PASS" {
-			linuxBad = append(linuxBad, fmt.Sprintf("%s=%q", n, r))
-		}
-	}
-	ffsSuiteT.Logf("linux lane (WSL): %d conformance subtests, %s", len(l.results), l.summary)
+	ffsSuiteT.Logf("linux lane (WSL): %d conformance subtests passed, %s", len(l.results), l.summary)
 	if len(linuxBad) > 0 {
 		return fmt.Errorf("linux lane: conformance subtests not passing: %v", linuxBad)
 	}

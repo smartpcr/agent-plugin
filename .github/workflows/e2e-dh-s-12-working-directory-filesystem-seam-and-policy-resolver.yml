@@ -3,11 +3,9 @@
 # an outside directory, and a stale-version write is refused with the newer
 # bytes kept. service:filesystem is t.TempDir() on each lane; no DSN, no secrets.
 #
-# Strict lanes (DSH_E2E_FFS_STRICT=1): no subtest may skip on either lane. The
-# hosted Windows runner runs as an administrator and holds the symbolic-link
-# privilege, so the relative-link conformance subtest runs there too (a local
-# unprivileged Windows host can make only junctions, which cannot stand for a
-# relative link to a file).
+# No subtest may skip on either lane. On Windows without the symbolic-link
+# privilege the suite makes mount-point reparse points (junctions, and relative
+# mount points) that fs/local resolves as links, so every subtest still runs.
 name: e2e-dh-s-12-working-directory-filesystem-seam-and-policy-resolver
 
 on:
@@ -45,14 +43,13 @@ jobs:
         shell: bash
     env:
       GOWORK: "off"
-      DSH_E2E_FFS_STRICT: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: src/harness/go.mod
           cache-dependency-path: src/harness/go.sum
-      - name: Godog scenarios (strict, no skip)
+      - name: Godog scenarios (no skip)
         run: |
           set -o pipefail
           mkdir -p artifacts/e2e
