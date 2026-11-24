@@ -20,31 +20,75 @@ import (
 const cgroup2Magic = 0x63677270
 
 // fallbackNoCgroup is the reported reason when the host's own control group is
-// not writable (register U-K1-1). The systemd delegated scope is not requested.
+// not writable (register U-K1-1) and no provider start asked the user service
+// manager for a delegated scope (scope_linux.go), as when a program starts a
+// command before, or without, OpenRegistry.
 const fallbackNoCgroup = "own control group not writable; delegated scope not requested (U-K1-1)"
 
 var (
 	cgroupOnce sync.Once
 	cgroupBase string // writable directory new per-tree groups are made in; "" when none
 	cgroupWhy  string
-	cgroupSeq  atomic.Uint64
+	// cgroupScope is the delegated scope unit the user service manager granted
+	// at provider start and cgroupBase is; "" when none was asked for or granted.
+	cgroupScope string
+	cgroupSeq   atomic.Uint64
+
+	// ownCgroupDir finds this process's control group directory; the tests of
+	// the scope request replace it to fake a granted scope (scope_linux.go).
+	ownCgroupDir = ownCgroup
+	// startIntoGroup starts a command whose SysProcAttr places it in a new
+	// control group; the same tests replace it, since a faked scope directory is
+	// no control group the kernel can start a child in.
+	startIntoGroup = startLocked
 )
 
-func probeCgroup() {
-	cgroupOnce.Do(func() {
-		dir, err := ownCgroup()
-		if err != nil {
-			cgroupWhy = fallbackNoCgroup + ": " + err.Error()
-			return
-		}
-		probe := filepath.Join(dir, fmt.Sprintf("dsh-probe-%d", os.Getpid()))
-		if err := os.Mkdir(probe, 0o755); err != nil {
-			cgroupWhy = fallbackNoCgroup
-			return
-		}
-		_ = os.Remove(probe)
+// probeCgroup chooses the parent of the per-tree groups once, without asking
+// the user service manager; the provider start asks first (requestOnce).
+func probeCgroup() { cgroupOnce.Do(func() { chooseBase(nil) }) }
+
+// chooseBase sets the directory per-tree groups are made in: the host's own
+// control group when it is writable; otherwise, when ask is given, the scope the
+// user service manager delegates to this process; otherwise none, with the
+// reason reported on every handle. ask returns the granted unit's name once this
+// process is inside it.
+func chooseBase(ask func() (string, error)) {
+	dir, err := ownCgroupDir()
+	if err != nil {
+		cgroupWhy = fallbackNoCgroup + ": " + err.Error()
+		return
+	}
+	if writableGroup(dir) == nil {
 		cgroupBase = dir
-	})
+		return
+	}
+	if ask == nil {
+		cgroupWhy = fallbackNoCgroup
+		return
+	}
+	unit, err := ask()
+	if err != nil {
+		cgroupWhy = "own control group not writable; " + err.Error()
+		return
+	}
+	if dir, err = ownCgroupDir(); err == nil {
+		err = writableGroup(dir)
+	}
+	if err != nil {
+		cgroupWhy = fmt.Sprintf("own control group not writable; delegated scope %s not usable (U-K1-1): %v", unit, err)
+		return
+	}
+	cgroupBase, cgroupScope = dir, unit
+}
+
+// writableGroup checks that a new control group can be made in dir.
+func writableGroup(dir string) error {
+	probe := filepath.Join(dir, fmt.Sprintf("dsh-probe-%d", os.Getpid()))
+	if err := os.Mkdir(probe, 0o755); err != nil {
+		return err
+	}
+	_ = os.Remove(probe)
+	return nil
 }
 
 // ownCgroup is the cgroup v2 directory of this process.
@@ -86,11 +130,21 @@ func choose() Owner {
 }
 
 func newOwner() (treeOwner, error) {
+	if unit := scopeRequest.Load(); unit != nil {
+		// The scope request is under way: its own launch must not wait for the
+		// choice it is making (scope_linux.go).
+		return &requestingOwner{unit: *unit}, nil
+	}
+	return chosenOwner(), nil
+}
+
+// chosenOwner is a new owner of the rung chosen once for this process.
+func chosenOwner() treeOwner {
 	probeCgroup()
 	if cgroupBase == "" {
-		return &groupOwner{fallback: cgroupWhy}, nil
+		return &groupOwner{fallback: cgroupWhy}
 	}
-	return &cgroupOwner{}, nil
+	return &cgroupOwner{}
 }
 
 // cgroupOwner puts the child, at birth, in a fresh control group of its own; the
@@ -128,7 +182,7 @@ func (o *cgroupOwner) start(build func() *exec.Cmd) (*exec.Cmd, error) {
 		CgroupFD:    fd,
 		Pdeathsig:   syscall.SIGKILL,
 	}
-	if err := startLocked(cmd); err != nil {
+	if err := startIntoGroup(cmd); err != nil {
 		_ = os.Remove(dir)
 		if !cgroupStartError(cmd, err) {
 			return nil, err

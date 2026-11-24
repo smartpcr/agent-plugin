@@ -380,3 +380,35 @@ func TestFloodRoleReportsThenWrites(t *testing.T) {
 		t.Fatalf("flood with a negative count exited %d; want 2", code)
 	}
 }
+
+// RoleChannel fails without a usable number and a text; RoleConsole says one of
+// its two answers; RoleDetachHost reports a detached child and parks.
+func TestChannelConsoleAndDetachHostRoles(t *testing.T) {
+	var out strings.Builder
+	for _, args := range [][]string{nil, {"x", "text"}} {
+		if code := run(RoleChannel, args, &out); code != 2 {
+			t.Errorf("channel %q exited %d; want 2", args, code)
+		}
+	}
+	out.Reset()
+	if code := run(RoleConsole, nil, &out); code != 0 || (out.String() != "window\n" && out.String() != "no-window\n") {
+		t.Fatalf("console role = %d, %q", code, out.String())
+	}
+	noPark(t)
+	out.Reset()
+	if code := run(RoleDetachHost, nil, &out); code != 0 {
+		t.Fatalf("detach-host role exited %d", code)
+	}
+	var child int
+	if _, err := fmt.Sscanf(out.String(), "detached %d\n", &child); err != nil || child <= 0 {
+		t.Fatalf("detach-host role printed %q (%v)", out.String(), err)
+	}
+	t.Cleanup(func() { killPid(child) })
+	if !Alive(child) {
+		t.Fatalf("detached child %d is not running", child)
+	}
+	killPid(child)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	procwait.Until(ctx, t, func() bool { return Exited(child) })
+}

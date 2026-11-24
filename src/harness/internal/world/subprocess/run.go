@@ -93,6 +93,9 @@ var errOutputLimit = errors.New("output limit exceeded")
 // does not outlive its call. If the tree cannot be confirmed gone, the error also
 // holds subprocess/tree-survivors.
 func Run(ctx context.Context, spec Spec, o RunOptions) (Result, error) {
+	if spec.Detach {
+		return Result{ExitCode: -1}, errDetached("Run")
+	}
 	if o.MaxOutput <= 0 {
 		o.MaxOutput = DefaultMaxOutput
 	}

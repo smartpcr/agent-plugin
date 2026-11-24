@@ -16,17 +16,23 @@ import (
 type Registry struct {
 	mu    sync.Mutex
 	procs []*Process
+	// record is the run/owners.json record OpenRegistry opened; nil keeps none.
+	record *ownerRecord
 }
 
 // NewRegistry returns an empty registry.
 func NewRegistry() *Registry { return &Registry{} }
 
 // Add registers p and returns the function that removes it again; the owner calls
-// remove once the tree is gone.
+// remove once the tree is gone. A detached launch is not registered.
 func (r *Registry) Add(p *Process) (remove func()) {
+	if p.detached {
+		return func() {} // never stopped by the host, so never held (Spec.Detach)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.procs = append(r.procs, p)
+	r.record.track(p) // recorded until its tree is gone (owners_record.go)
 	var once sync.Once
 	return func() {
 		once.Do(func() {

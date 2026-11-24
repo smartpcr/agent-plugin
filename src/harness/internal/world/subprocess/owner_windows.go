@@ -16,11 +16,13 @@ import (
 func choose() Owner { return Owner{Kind: JobObject, Exact: true} }
 
 // jobOwner is a Job Object with kill-on-close whose only handle the host holds.
-// The child is created suspended, assigned to the job, then resumed, so it cannot
-// start a grandchild outside the job. When the host dies the handle closes and the
-// job ends the tree.
+// The child is created inside the job (createInJob), or, where Windows does not
+// take a job at creation, created suspended, assigned to the job, then resumed;
+// either way it cannot start a grandchild outside the job. When the host dies the
+// handle closes and the job ends the tree.
 type jobOwner struct {
-	job windows.Handle
+	job     windows.Handle
+	streams *childStreams // the copies of a child createInJob made
 }
 
 func newOwner() (treeOwner, error) {
@@ -43,7 +45,36 @@ func newOwner() (treeOwner, error) {
 
 func (o *jobOwner) report() Owner { return TreeOwner() }
 
+// start creates the child inside the job in one CreateProcess call
+// (createInJob). Where this Windows does not take the job list, nothing has
+// started, and the child is built again and created suspended, assigned to the
+// job, then resumed (startSuspended).
 func (o *jobOwner) start(build func() *exec.Cmd) (*exec.Cmd, error) {
+	cmd := build()
+	streams, err := createInJob(cmd, o.job)
+	if err == nil {
+		o.streams = streams
+		return cmd, nil
+	}
+	if !errors.Is(err, errNoJobList) {
+		return nil, err
+	}
+	return o.startSuspended(build)
+}
+
+// drain waits for the stream copies of a child createInJob made; the fallback's
+// copies are exec.Cmd's own and Wait has drained them.
+func (o *jobOwner) drain() error {
+	if o.streams == nil {
+		return nil
+	}
+	return o.streams.drain()
+}
+
+// startSuspended is the fallback: create suspended with os/exec, assign to the
+// job, resume. A host killed between the creation and the assignment leaves the
+// suspended child outside the job; createInJob has no such moment.
+func (o *jobOwner) startSuspended(build func() *exec.Cmd) (*exec.Cmd, error) {
 	cmd := build()
 	// The flags are added to what build set (a checked batch run's command line).
 	if cmd.SysProcAttr == nil {
@@ -55,6 +86,9 @@ func (o *jobOwner) start(build func() *exec.Cmd) (*exec.Cmd, error) {
 		return nil, err
 	}
 	pid := uint32(cmd.Process.Pid)
+	if afterCreate != nil {
+		afterCreate(int(pid))
+	}
 	if err := o.adopt(pid); err != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()

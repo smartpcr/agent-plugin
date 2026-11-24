@@ -10,10 +10,12 @@
 // unchanged is refused before anything starts (DH-ADR-NODEPROC-1).
 // LookupProgram finds such a file by bare name and says that it is one.
 //
-// Every child is placed in a tree owner when it starts, and StopTree stops and
-// awaits the whole tree (DH-D-EXEC-2): a Job Object on Windows; on Linux a control
-// group per command inside the host's own cgroup v2 directory when that is
-// writable, otherwise a process group; a process group on other Unix systems. The
+// Every child but a detached one (Spec.Detach) is placed in a tree owner when it
+// starts, and StopTree stops and awaits the whole tree (DH-D-EXEC-2): a Job Object
+// on Windows, which the child is created inside in one CreateProcess call; on
+// Linux a control group per command inside the host's own cgroup v2 directory
+// when that is writable, otherwise a process group; a process group on other Unix
+// systems. The
 // owner kind is chosen once per process and reported on every handle and by
 // TreeOwner, so a fallback is visible (register U-K1-1).
 //
@@ -27,9 +29,10 @@
 // limit that stops the whole tree, and the tail of what passed the limit. Confirm
 // asks a person and refuses when standard input is not a terminal.
 //
-// The cordis provider (subprocess/local), confined launch plans, PTYs, private
-// channels, detached launches and the output collectors of the execution area are
-// later steps; they build on Start.
+// Spec.Extra hands the child private byte channels beside its standard streams.
+//
+// The cordis provider (subprocess/local), confined launch plans, PTYs and the
+// output collectors of the execution area are later steps; they build on Start.
 package subprocess
 
 import (
@@ -62,13 +65,14 @@ const (
 	ReasonOutputLimit     herr.Reason = "subprocess/output-limit"
 	ReasonDeadline        herr.Reason = "subprocess/deadline"
 	ReasonCanceled        herr.Reason = "subprocess/canceled"
+	ReasonDetached        herr.Reason = "subprocess/detached"
 )
 
 // Reasons lists every reason, for the declaration test.
 var Reasons = []herr.Reason{
 	ReasonEmptyArgv, ReasonRelativeProgram, ReasonNotFound, ReasonBatchRefused,
 	ReasonBadArgument, ReasonLineTooLong, ReasonStartFailed, ReasonTreeOwner, ReasonSurvivors,
-	ReasonNoLaunch, ReasonOutputLimit, ReasonDeadline, ReasonCanceled,
+	ReasonNoLaunch, ReasonOutputLimit, ReasonDeadline, ReasonCanceled, ReasonDetached,
 }
 
 // DefaultSettle bounds the wait for a tree to be gone after the forced stop, when
@@ -109,6 +113,18 @@ type Spec struct {
 	// sandbox.Trusted(reason), saying why its child reads nothing the model can
 	// write.
 	Launch sandbox.Launch
+	// Extra are private byte channels the child inherits beside its standard
+	// streams (ChildFD says under which number); nothing else is inherited.
+	Extra []Channel
+	// Detach starts a program meant to outlive the host (DH-LIB-NODEPROC-R12), such
+	// as the browser opener: it gets no tree owner, a session (POSIX) or console
+	// and process group (Windows) of its own, and is never stopped by the host;
+	// StopTree, Kill and TreeGone refuse it with subprocess/detached, a Registry
+	// does not hold it, and the end of the start context does not stop it. Its
+	// streams are the null device or a file (an *os.File, Discard, Inherit), since
+	// the host keeps no copy running for it. The host keeps only a waiter that
+	// reaps it when it exits.
+	Detach bool
 
 	// waitDelay bounds how long Wait waits for the standard streams once the
 	// direct child has exited (exec.Cmd.WaitDelay); Run sets it so a descendant
@@ -118,9 +134,10 @@ type Spec struct {
 
 // Process is one started child and the tree it owns.
 type Process struct {
-	cmd    *exec.Cmd
-	owner  treeOwner
-	report Owner
+	cmd      *exec.Cmd
+	owner    treeOwner
+	report   Owner
+	detached bool
 
 	exited  chan struct{}
 	waitErr error
@@ -151,6 +168,17 @@ func Start(ctx context.Context, spec Spec) (*Process, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := checkExtra(spec.Extra); err != nil {
+		return nil, err
+	}
+	if spec.Detach {
+		if err := checkDetachStreams(spec); err != nil {
+			return nil, err
+		}
+	}
+	if err := prepareExtra(spec.Extra); err != nil {
+		return nil, herr.Wrap(ReasonStartFailed, err, "pass the channels to "+filepath.Base(spec.Argv[0]))
+	}
 	build := func() *exec.Cmd {
 		cmd := &exec.Cmd{
 			Path:      l.path,
@@ -163,7 +191,11 @@ func Start(ctx context.Context, spec Spec) (*Process, error) {
 			WaitDelay: spec.waitDelay,
 		}
 		setCmdLine(cmd, l.cmdLine)
+		addExtra(cmd, spec.Extra)
 		return cmd
+	}
+	if spec.Detach {
+		return startDetachedProcess(spec, build)
 	}
 	owner, err := newOwner()
 	if err != nil {
@@ -176,7 +208,13 @@ func Start(ctx context.Context, spec Spec) (*Process, error) {
 	}
 	p := &Process{cmd: cmd, owner: owner, report: owner.report(), exited: make(chan struct{}), releasedC: make(chan struct{})}
 	go func() {
-		p.waitErr = cmd.Wait()
+		err := cmd.Wait()
+		if d, ok := owner.(drainer); ok {
+			if derr := d.drain(); err == nil {
+				err = derr
+			}
+		}
+		p.waitErr = err
 		close(p.exited)
 	}()
 	if ctx.Done() != nil {
@@ -283,6 +321,9 @@ func (p *Process) ExitCode() int {
 
 // TreeGone waits until no process of the tree is left, or ctx ends.
 func (p *Process) TreeGone(ctx context.Context) error {
+	if p.detached {
+		return errDetached("TreeGone")
+	}
 	if err := p.await(ctx); err != nil {
 		return p.survivors(err)
 	}
@@ -296,6 +337,9 @@ func (p *Process) TreeGone(ctx context.Context) error {
 // bounded by ctx and DefaultSettle. When members survive it returns
 // subprocess/tree-survivors and a later call tries again. It is idempotent.
 func (p *Process) StopTree(ctx context.Context, grace time.Duration) error {
+	if p.detached {
+		return errDetached("StopTree")
+	}
 	p.stopMu.Lock()
 	defer p.stopMu.Unlock()
 	if p.stopped {
@@ -329,6 +373,9 @@ func (p *Process) StopTree(ctx context.Context, grace time.Duration) error {
 // shutdown escalates past a graceful stop still in its grace period. TreeGone or a
 // later StopTree observe the exit.
 func (p *Process) Kill() error {
+	if p.detached {
+		return errDetached("Kill")
+	}
 	if p.gone() {
 		return nil
 	}

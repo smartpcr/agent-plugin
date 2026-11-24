@@ -74,6 +74,16 @@ const (
 	// <grandchild pid>" on standard error once it is ready, writes as many bytes
 	// as its first argument says to standard output and waits to be stopped.
 	RoleFlood = "flood"
+	// RoleChannel writes its second argument to the inherited channel whose
+	// number (subprocess.ChildFD) is its first argument, closes it and exits.
+	RoleChannel = "channel"
+	// RoleConsole prints "window" when it has a console window and "no-window"
+	// otherwise (always "no-window" outside Windows), and exits.
+	RoleConsole = "console"
+	// RoleDetachHost starts a RoleStubborn child with Spec.Detach, prints
+	// "detached <child pid>" and waits to be killed, so a test can kill it and
+	// see the child live on.
+	RoleDetachHost = "detach-host"
 )
 
 // stderr is the standard error of the roles that write to it; this package's own
@@ -127,6 +137,16 @@ func run(role string, args []string, out io.Writer) int {
 		return write(args, out)
 	case RoleFlood:
 		return flood(args, out)
+	case RoleChannel:
+		return channel(args)
+	case RoleConsole:
+		if consoleWindow() {
+			fmt.Fprintln(out, "window")
+		} else {
+			fmt.Fprintln(out, "no-window")
+		}
+	case RoleDetachHost:
+		return detachHost(out)
 	default:
 		return fail(fmt.Errorf("unknown role %q", role))
 	}
@@ -247,6 +267,41 @@ func host(out io.Writer) int {
 		return fail(fmt.Errorf("child said %q: %v", line, err))
 	}
 	fmt.Fprintf(out, "host %d %s\n", p.Pid(), p.Owner().Kind)
+	park()
+	return 0
+}
+
+// channel writes the text to the inherited channel and closes it.
+func channel(args []string) int {
+	if len(args) != 2 {
+		return fail(fmt.Errorf("channel wants a number and a text, got %d arguments", len(args)))
+	}
+	fd, err := strconv.ParseUint(args[0], 10, 64)
+	if err != nil {
+		return fail(err)
+	}
+	f := os.NewFile(uintptr(fd), "channel")
+	if _, err := io.WriteString(f, args[1]); err != nil {
+		return fail(err)
+	}
+	if err := f.Close(); err != nil {
+		return fail(err)
+	}
+	return 0
+}
+
+// detachHost starts a stubborn child detached and reports it; the child is never
+// stopped here.
+func detachHost(out io.Writer) int {
+	exe, err := os.Executable()
+	if err != nil {
+		return fail(err)
+	}
+	p, err := subprocess.Start(context.Background(), subprocess.Spec{Argv: []string{exe}, Env: childEnv(RoleStubborn), Launch: Launch, Detach: true})
+	if err != nil {
+		return fail(err)
+	}
+	fmt.Fprintf(out, "detached %d\n", p.Pid())
 	park()
 	return 0
 }
