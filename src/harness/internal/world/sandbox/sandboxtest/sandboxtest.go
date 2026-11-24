@@ -93,9 +93,17 @@ func (r *Resolver) Escalate(ctx context.Context, req sandbox.EscalationRequest) 
 	if r.Approve == nil {
 		return sandbox.Policy{}, herr.New(sandbox.CodeEscalationRejected, "escalation was not approved")
 	}
-	m, paths, err := r.Approve(req)
+	m, approved, err := r.Approve(req)
 	if err != nil {
 		return sandbox.Policy{}, err
+	}
+	// Normalize once so the widening check and Issue see the same paths.
+	paths := make([]string, 0, len(approved))
+	for _, p := range approved {
+		if !filepath.IsAbs(p) {
+			return sandbox.Policy{}, herr.Newf(sandbox.CodeEscalationRejected, "extra write root %q is not absolute", p)
+		}
+		paths = append(paths, filepath.Clean(p))
 	}
 	cur := r.mode(req.Session)
 	if len(paths) > 0 && m != sandbox.WorkspaceWrite {
@@ -112,7 +120,7 @@ func (r *Resolver) Escalate(ctx context.Context, req sandbox.EscalationRequest) 
 		return sandbox.Policy{}, err
 	}
 	widens := slices.ContainsFunc(paths, func(p string) bool {
-		return !slices.ContainsFunc(base.WriteRoots(), func(w sandbox.WriteRoot) bool { return within(w.Path, filepath.Clean(p)) })
+		return !slices.ContainsFunc(base.WriteRoots(), func(w sandbox.WriteRoot) bool { return within(w.Path, p) })
 	})
 	if !widens {
 		return sandbox.Policy{}, herr.Newf(sandbox.CodeEscalationRejected, "%v are already writable; the escalation widens nothing", paths)
