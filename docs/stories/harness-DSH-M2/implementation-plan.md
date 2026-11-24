@@ -24,21 +24,24 @@ storyId: "harness:DSH-M2"
 - [ ] Create `docs/stories/harness-DSH-M2/evidence/DH-S-12.md` .. `DH-S-18.md` in the impl.md sec. 7.3 form used by the M1 records (environment, commit, scenario, result, artifacts, closure status), each starting `Closure status: open`, with an empty "Owner defaults (M2-C-4)" table listing the impl.md sec. 9.1 defaults that stage must have confirmed before closing (S12: full-access label I2 Q3, UTF-8-only text tools; S13: `partial` when delegated execution cannot be stopped I2 Q4; S15: no SDK session grant I2 Q5, client time zone U-K2-5; S16: second `dsh web` reuses the host I3 Q1, Windows double-click I3 Q8, `dsh headless` progress U-K2-4).
 - [ ] Create `docs/stories/harness-DSH-M2/evidence/closure.md` with one row per deliverable of tech-spec sec. 3.2 (35 rows: 30 P0, 5 P1), columns *state* (`built`/`done`), *finishing stage or held-open item*, *proving scenarios*, prefilled from tech-spec sec. 3.2's "Stays built until" table (the 11 done-candidates VIEW-10, SANDBOX-1, HUMAN-4, FS-6, SANDBOX-4, EXEC-3, BUNDLE-1, SDK-6, CLI-9, SDK-8, VIEW-4 and the 24 that stay built), plus rows for held-open items H-1, H-2, H-3, H-4, H-10 and H-21 (M2-I-5).
 - [ ] Extend `test/harness/acceptance-index.yaml` (C57) with the executing-stage keys this story needs (`DH-S-16`, `DH-S-17`, `DH-S-18`, `DH-S-22`, `DH-S-27`, `DH-S-39`, `DH-S-48`) without moving `built-through` (stays `DH-S-8` until M1 closure advances it); add a YAML comment per key naming its venue (guarded / acceptance / later).
-- [ ] Add to `tools/harness-gate` acceptance check the rule "a stage close is refused while any listed scenario of that stage is missing, skipped or failed, or its evidence record says `open`" (C57; M2-C-2) as a `harness-gate close --stage <id>` subcommand reading the index and `docs/stories/<story>/evidence/<stage>.md`; it exits non-zero naming each blocker.
+- [ ] Add the two-step stage-closure protocol to `tools/harness-gate` (C57; M2-C-2), reading the index and `docs/stories/<story>/evidence/<stage>.md`: (1) `harness-gate ready --stage <id> [--built]` validates a record that still reads `Closure status: open` -- every listed scenario row `passed` (with `--built`: every step has a commit SHA, manual checks and owner defaults recorded, guarded rows passed) -- and **ignores the status line**; it exits non-zero naming each blocker. (2) Only after `ready` exits 0, the closing PR changes the status line to `Closure status: closed`. (3) `harness-gate close --stage <id> [--built]` is the final check in that PR: it re-runs every `ready` condition **and** requires the status line to read `closed`; a record reading `closed` while any `ready` condition fails is refused as `closed-but-not-ready`, and a record still reading `open` is refused as `not-yet-closed`. Both subcommands exit non-zero naming each blocker.
+- [ ] Commit immutable fixture trees for the negative and positive cases under `tools/harness-gate/testdata/closure/` (`open_not_ready/`, `open_ready/`, `closed_ready/`, `closed_not_ready/`, each holding an index and one evidence record); tests use these fixtures, never the live `docs/stories/.../evidence/` records, so later stage work cannot invalidate them.
 
 ### Dependencies
 - _none -- start stage_
 
 ### Test Scenarios
-- [ ] Scenario: Close check refuses an open stage -- Given an in-memory index listing `DH-E-STORE-1` under `DH-S-16` and an in-memory evidence record with that row `result: not run`, When the close predicate evaluates `DH-S-16`, Then it returns one blocker naming `DH-E-STORE-1` and `not run`; with the row `passed` and `Closure status: closed` it returns none (C57) [proof: in-process; deps: none -- index and record are string fixtures]
-- [ ] Scenario: Skipped counts as not passed -- Given an evidence fixture whose scenario row reads `skipped`, When the close predicate runs, Then the stage is refused and the message contains `skipped is not passed` (M2-C-2, M2-DEC-3) [proof: in-process; deps: none]
-- [ ] Scenario: Close subcommand reads committed files -- Given the committed `test/harness/acceptance-index.yaml` and the committed `evidence/DH-S-12.md` .. `DH-S-18.md` skeletons, When `GOWORK=off go -C tools/harness-gate run . close --stage DH-S-17 --root ../..` runs, Then it exits non-zero listing all 14 S17 scenarios as blockers, matching `tools/harness-gate/testdata/close_dh_s_17_open.golden` [proof: golden; deps: committed index and evidence skeletons are the inputs, committed golden is the oracle]
+- [ ] Scenario: Ready accepts an open record whose rows passed -- Given an in-memory index listing `DH-E-STORE-1` under `DH-S-16` and an in-memory record reading `Closure status: open` with that row `passed`, When the ready predicate evaluates `DH-S-16`, Then it returns no blocker; with the row `result: not run` it returns one blocker naming `DH-E-STORE-1` and `not run` (C57) [proof: in-process; deps: none -- index and record are string fixtures]
+- [ ] Scenario: Close needs ready plus the status transition -- Given in-memory records for the four states (open/not-ready, open/ready, closed/ready, closed/not-ready), When the close predicate runs on each, Then only closed/ready passes; open/ready is refused `not-yet-closed` and closed/not-ready is refused `closed-but-not-ready` (C57, M2-C-2) [proof: in-process; deps: none]
+- [ ] Scenario: Skipped counts as not passed -- Given an evidence fixture whose scenario row reads `skipped`, When the ready predicate runs, Then the stage is refused and the message contains `skipped is not passed` (M2-C-2, M2-DEC-3) [proof: in-process; deps: none]
+- [ ] Scenario: Subcommands over committed fixtures -- Given the committed fixture trees under `tools/harness-gate/testdata/closure/`, When `harness-gate ready` and `harness-gate close` run with `--root` pointed at each tree, Then their exit codes and outputs match the committed `testdata/closure/expected.golden` (C57) [proof: golden; deps: committed immutable fixture trees are the input, committed golden is the oracle; no live evidence record is read]
 
 ## Stage 1.2: M1 Closure Entry Check
 
 ### Implementation Steps
 - [ ] Add `harness-gate entry --story harness:DSH-M2` that checks M2-DEC-1 as amended by M1 gap-closure step 12.1.9: every `docs/stories/harness-DSH-M1/evidence/DH-S-1.md` .. `DH-S-11.md` reads `Closure status: closed`, the M1 closure record exists and lists every M1 deliverable as done or built-not-done with a reason, and `built-through` in `test/harness/acceptance-index.yaml` is `DH-S-11`; it exits non-zero naming each missing condition.
-- [ ] Wire the entry check as the first job step of every `guarded` and `acceptance` run (Stage 6.12 lane script, Phase 7 and Phase 8 workflow jobs) so no M2 scenario runs before M1 is closed (risk M2-R-04); the gate venue (build steps) does not call it.
+- [ ] Document in `tools/harness-gate/README.md` that `harness-gate entry` is the mandatory first step of every `guarded` and `acceptance` run (risk M2-R-04) and that the gate venue (build steps) does not call it; the wiring itself lands with the runners that exist later (Stage 6.12 lane `guarded` mode, Stage 7.1 `s17` job, Stage 8.1 `s18` jobs), so this stage has no forward reference.
+- [ ] Commit immutable fixtures `tools/harness-gate/testdata/entry/m1_open/` (copies of eleven M1 records reading `open`, index `built-through: DH-S-8`) and `testdata/entry/m1_closed/` (eleven `closed` records, a closure record, `built-through: DH-S-11`) for the entry tests.
 - [ ] Record in `evidence/DH-S-12.md` the entry state at the first M2 commit (M1 open or closed, commit SHA) and the answer to Q `m2-entry-m1-closure` in force.
 
 ### Dependencies
@@ -46,7 +49,8 @@ storyId: "harness:DSH-M2"
 
 ### Test Scenarios
 - [ ] Scenario: Entry refused while an M1 record is open -- Given eleven in-memory M1 evidence records of which `DH-S-11` reads `Closure status: open`, When the entry predicate runs, Then it fails naming `DH-S-11`; with all eleven closed, a closure record and `built-through: DH-S-11` it passes [proof: in-process; deps: none -- records are string fixtures]
-- [ ] Scenario: Entry check against the committed M1 records -- Given the repository's committed `docs/stories/harness-DSH-M1/evidence/` and index, When `harness-gate entry --story harness:DSH-M2` runs today, Then it exits non-zero and its output matches `tools/harness-gate/testdata/entry_m1_open.golden` (all eleven records open, `built-through: DH-S-8`) [proof: golden; deps: committed M1 evidence records and index are the input, committed golden is the oracle]
+- [ ] Scenario: Entry subcommand over immutable fixtures -- Given the committed fixture trees `testdata/entry/m1_open/` and `testdata/entry/m1_closed/`, When `harness-gate entry --story harness:DSH-M2 --root <tree>` runs on each, Then `m1_open` exits non-zero with output equal to `testdata/entry/m1_open.golden` (eleven records open, `built-through: DH-S-8`) and `m1_closed` exits 0 [proof: golden; deps: committed immutable fixtures are the input, committed golden is the oracle; the live M1 records are not read]
+- [ ] Scenario: Live entry result agrees with live records -- Given the repository's current `docs/stories/harness-DSH-M1/evidence/` and index (whatever their state), When `harness-gate entry` runs, Then it exits 0 if and only if all eleven records read `closed`, a closure record exists and `built-through` is at least `DH-S-11`, and otherwise names exactly the conditions that are unmet [proof: golden; deps: committed live M1 records and index are both input and oracle; the assertion is state-relative, so it stays valid as M1 closes]
 
 # Phase 2: DH-S-12 Working Directory Filesystem Seam and Policy Resolver
 
@@ -104,7 +108,8 @@ storyId: "harness:DSH-M2"
 
 ### Implementation Steps
 - [ ] impl.md 12.3 / DH-D-SANDBOX-1 (C33): implement `world/sandbox/policy` -- `Resolve(mode, workdir, workspace, grants)` with the area-spec precedence, `Escalate`, `ForHelper`, `GrantRoot`, `SetMode` (writes `sandbox/mode` to the log and dispatches `sandbox.ModeChanging`).
-- [ ] Render the model-visible policy section per platform text (Linux, macOS, Windows) from the resolver, following the `human/approval/testdata/policy_section.golden` pattern; commit `world/sandbox/policy/testdata/policy_section_{linux,darwin,windows}.golden` and record the text version string that DH-E-SANDBOX-7 will cite (M2-C-6).
+- [ ] Render the per-platform policy section text (Linux, macOS, Windows) from the resolver, following the `human/approval/testdata/policy_section.golden` pattern; commit `world/sandbox/policy/testdata/policy_section_{linux,darwin,windows}.golden`, each headed by a version line `policy-text-version: v0-provisional`. **The provisional text is not wired into any profile's model-visible prompt** in this stage: the policy section is exposed only through `policy.Text(platform)`, which SANDBOX-7 (Stage 7.6) reads directly, so no model sees the unproven text (M2-C-6; nothing is enabled for users in M2, M2-DOD-7).
+- [ ] Put the M2-C-6 pre-merge gate in force **in this stage**, before any policy text can matter: add `harness-gate policy-text` (run in every gate on both lanes) that (a) refuses a version line other than `v0-provisional` unless `docs/stories/harness-DSH-M2/evidence/DH-S-17.md` holds a `DH-E-SANDBOX-7` row `passed` (at least 10 of 18 per text) whose recorded body checksum for that platform text equals the golden's body checksum (the version line excluded), (b) refuses any edit to a golden marked `accepted-*` that does not also change the version line, and (c) refuses any change that references `policy.Text` from a prompt section or profile while the version is `v0-provisional`; document the rule in `tools/harness-gate/README.md`. The operator decision on whether a provisional, non-model-visible initial text may merge before SANDBOX-7 is Q `m2-policy-text-premerge`; until it is answered, this step's PR is held for owner review.
 - [ ] Apply the unconfirmed default "label of full access" (impl.md sec. 9.1, I2 Q3) as a single constant referenced by the golden, so an owner change is a one-line diff.
 
 ### Dependencies
@@ -113,7 +118,8 @@ storyId: "harness:DSH-M2"
 ### Test Scenarios
 - [ ] Scenario: Resolver precedence -- Given mode `workspace-write`, working directory `W`, workspace root `P` and a grant `G`, When `Resolve` runs, Then write roots are exactly `{P, G}` plus scratch, and `read-only` yields no write roots (TC-01a) [proof: in-process; deps: none -- fake workdir and seam]
 - [ ] Scenario: SetMode is logged and announced -- Given an in-memory session, When `SetMode(danger-full-access)` runs, Then one `sandbox/mode` event is appended and one `sandbox.ModeChanging` dispatch is observed before the mode takes effect (TC-01a) [proof: in-process; deps: none]
-- [ ] Scenario: Policy section text per platform -- Given the resolver for each of `linux`, `darwin`, `windows`, When the policy section is rendered, Then each output is byte-identical to its committed golden (TC-01g) [proof: golden; deps: committed `policy_section_*.golden`]
+- [ ] Scenario: Policy section text per platform -- Given the resolver for each of `linux`, `darwin`, `windows`, When the policy section is rendered, Then each output is byte-identical to its committed golden and starts with `policy-text-version: v0-provisional` (TC-01g) [proof: golden; deps: committed `policy_section_*.golden`]
+- [ ] Scenario: Policy-text gate refuses unproven promotion -- Given committed fixture trees under `tools/harness-gate/testdata/policytext/` (`provisional_unwired/`, `provisional_wired_into_prompt/`, `accepted_without_sandbox7/`, `accepted_with_sandbox7_pass/`), When `harness-gate policy-text --root <tree>` runs on each, Then only `provisional_unwired` and `accepted_with_sandbox7_pass` exit 0 and the other two exit non-zero naming M2-C-6 (output equals `testdata/policytext/expected.golden`) [proof: golden; deps: committed immutable fixtures and golden]
 
 ## Stage 2.5: Cycle C-3 Integration at One Commit
 
@@ -363,7 +369,12 @@ storyId: "harness:DSH-M2"
 
 ### Test Scenarios
 - [ ] Scenario: Persona outside a preset refused -- Given a config that enables persona at top level, When boot loads it, Then load fails with a configuration error naming persona (TC-09b) [proof: in-process; deps: none]
-- [ ] Scenario: Standard preset composes an agent -- Given `standard.yml`, When an agent is created in an embedded store, Then its tool list is exactly `read write edit apply_patch glob grep bash pwsh` and the binding is persisted (TC-09b) [proof: service:sqlite; deps: embedded modernc SQLite in `t.TempDir()`]
+- [ ] Scenario: Standard preset declaration -- Given the committed `standard.yml` and fake tool registrations for the eight names in a test registry, When the preset registry resolves `standard`, Then the declared tool list is exactly `read write edit apply_patch glob grep bash pwsh` and an unknown tool name in a fixture preset is refused naming it (TC-09b logic) [proof: in-process; deps: none -- fake tool registrations, no real tool implementation needed]
+- [ ] Scenario: Standard preset composes an agent with the real tools -- Given `standard.yml`, the six file tools of Stage 2.7 and the `bash`/`pwsh` one-shot tools of Stage 3.7 registered by their real constructors, When an agent is created in an embedded store, Then its tool list is exactly `read write edit apply_patch glob grep bash pwsh` and the binding is persisted (TC-09b) [proof: service:sqlite; deps: embedded modernc SQLite in `t.TempDir()`; runs in this stage's qa-e2e workstream only after the Cross-Stage Dependencies below have landed]
+
+### Cross-Stage Dependencies
+- phase-dh-s-12-working-directory-filesystem-seam-and-policy-resolver/stage-six-file-tools
+- phase-dh-s-13-sandbox-launch-linux-backends-and-shell-tools/stage-one-shot-shell-tools
 
 ## Stage 4.5: Bundle Coverage Check and Optional List
 
@@ -389,7 +400,7 @@ storyId: "harness:DSH-M2"
 
 ### Test Scenarios
 - [ ] Scenario: S14 gate green on both lanes -- Given the stage's merged commits, When `harness-gate` runs on both lanes, Then every gate passes including the coverage check (M2-DOD-1) [proof: service:go-toolchain; deps: go-toolchain on both lanes]
-- [ ] Scenario: Record complete -- Given `evidence/DH-S-14.md`, When `harness-gate close --stage DH-S-14 --built` runs, Then it reports no missing manual check or commit field [proof: golden; deps: committed evidence record is the input]
+- [ ] Scenario: Record complete -- Given `evidence/DH-S-14.md` (still `Closure status: open`), When `harness-gate ready --stage DH-S-14 --built` runs, Then it exits 0 and reports no missing manual check or commit field; the status line is not inspected (C57 two-step protocol, Stage 1.1) [proof: golden; deps: committed evidence record is the input]
 
 # Phase 5: DH-S-15 Listener Sign-In Stdio and SDK Server
 
@@ -454,8 +465,9 @@ storyId: "harness:DSH-M2"
 - _none -- start stage_
 
 ### Test Scenarios
-- [ ] Scenario: Stray write redirected -- Given an in-process stdio owner over pipes, When a component calls `fmt.Println("x")`, Then stdout carries no `x` and the log does (TC-12a) [proof: in-process; deps: none -- in-memory pipes]
-- [ ] Scenario: Bounded endings -- Given the built `dsh --profile sdk` with the keyless fake model route from a test layer, When stdin closes; when the client stops reading; when the forced deadline elapses, Then exit statuses are 0, 125 and 124 respectively (TC-12b) [proof: service:os-process; deps: os-process, go-toolchain via `testkit/dshbin` on both lanes]
+- [ ] Scenario: Stray write redirected -- Given a test helper process (the test binary re-exec'd with `-test.run=TestHelperStdioOwner` and `GO_WANT_HELPER=1`) that claims the real process stdin/stdout with `wire/stdio`, writes one valid frame, then calls `fmt.Println("x")` and exits, When the parent test reads the child's real stdout descriptor through `os/exec` and then the child's log file in a `t.TempDir()`, Then stdout holds only the one frame (no `x` byte) and the log holds `x` (TC-12b) [proof: service:os-process; deps: os-process and filesystem, gate-local on both lanes; the helper is the test binary itself, so no built `dsh` or later-stage kit is needed]
+- [ ] Scenario: Bounded writer logic -- Given an in-process bounded writer over an `io.Pipe` whose reader never reads, When the write deadline elapses, Then the writer reports `ClientStalled` and calls the injected stop function exactly once (TC-12a) [proof: in-process; deps: none -- injected writer and stop fake]
+- [ ] Scenario: Bounded endings -- Given the re-exec'd test helper process owning real stdio with `wire/stdio`, an injected stop function that exits with the status it is given, and a 2 s forced deadline, When the parent closes the child's stdin; when the parent stops reading while the child writes; when the deadline elapses with stdin open, Then the child's exit statuses are 0, 125 and 124 respectively (TC-12b; the same endings on the built `dsh --profile sdk` are asserted in Stage 6.4 once the SDK launcher wires this owner) [proof: service:os-process; deps: os-process, gate-local on both lanes; helper is the test binary itself]
 
 ## Stage 5.6: SDK Session Methods
 
@@ -498,7 +510,7 @@ storyId: "harness:DSH-M2"
 ## Stage 5.9: DH-S-15 Scenarios and Built Record
 
 ### Implementation Steps
-- [ ] Author `DH-E-SDK-1` (Go client over stdio against the built binary) as `sdk_stdio_scenario_test.go`, indexed under `DH-S-17`; author later-run `DH-E-SDK-2`, `DH-E-HOST-7`, `DH-E-HOST-8`, `DH-E-HOST-9` (index `DH-S-39`) and `DH-E-HOST-1`, `DH-E-HOST-2` (index `DH-S-22`), compile only.
+- [ ] Author later-run `DH-E-HOST-7`, `DH-E-HOST-8`, `DH-E-HOST-9` (index `DH-S-39`) and `DH-E-HOST-1`, `DH-E-HOST-2` (index `DH-S-22`), compile only, on the existing M1 scenario helpers in `testkit/scenarios/binary_test.go` (`dshBinary` over `testkit/launcher.Build`, `startDsh`) and raw HTTP/JSON-RPC from `src/sdk/jsonrpc` -- they need neither the Go client (Stage 6.7) nor `testkit/scenario` (Stage 6.8). `DH-E-SDK-1` and `DH-E-SDK-2` need the Go client and are authored in Stage 6.11.
 - [ ] Record the two manual checks of impl.md DH-S-15 (requests without cookie, from another origin and from a model-started process refused; one session driven by hand over stdio with typed JSON lines), the list of complete SDK methods and the H-1..H-4 open list in `evidence/DH-S-15.md`.
 
 ### Dependencies
@@ -507,7 +519,7 @@ storyId: "harness:DSH-M2"
 - phase-dh-s-15-listener-sign-in-stdio-and-sdk-server/stage-approval-and-question-answerer
 
 ### Test Scenarios
-- [ ] Scenario: Authored S15 scenarios compile and are indexed -- Given the seven new files, When `go vet -tags scenario` and the scenario-index check run, Then both exit 0 and each ID is indexed once under its executing stage (M2-DOD-5) [proof: service:go-toolchain; deps: go-toolchain on both lanes]
+- [ ] Scenario: Authored S15 scenarios compile and are indexed -- Given the five new HOST files, When `go vet -tags scenario` and the scenario-index check run, Then both exit 0, each ID is indexed once under its executing stage, and none of the files imports `src/sdk/sdk` (M2-DOD-5) [proof: service:go-toolchain; deps: go-toolchain on both lanes]
 - [ ] Scenario: S15 gate green on both lanes -- Given the stage's merged commits, When `harness-gate` runs on both lanes, Then every gate passes and TC-12g is unchanged (M2-DOD-1) [proof: service:go-toolchain; deps: go-toolchain, loopback-http, local-socket on both lanes]
 
 # Phase 6: DH-S-16 Profiles Launchers and Evidence Runners
@@ -542,7 +554,7 @@ storyId: "harness:DSH-M2"
 - phase-dh-s-16-profiles-launchers-and-evidence-runners/stage-mode-layers-and-five-profiles
 
 ### Test Scenarios
-- [ ] Scenario: Admin tree builds no agent -- Given the built `dsh` and a temp home, When `dsh sandbox status` runs beside a live `headless` process on the same home, Then it exits 0 and its component trace lists no agent, model client or carrier (TC-13b) [proof: service:os-process; deps: os-process, go-toolchain (`testkit/dshbin`), filesystem]
+- [ ] Scenario: Admin tree builds no agent -- Given the built `dsh` and a temp home, When `dsh sandbox status` runs, Then it exits 0 and its component trace lists no agent, model client or carrier (TC-13b; the "beside a live `headless` process" variant is asserted in Stage 6.4, where `headless` exists) [proof: service:os-process; deps: os-process, go-toolchain (`testkit/launcher.Build` of `./cmd/dsh`, existing since M1), filesystem]
 - [ ] Scenario: Secret only from stdin -- Given `dsh secret set k` with `v` on stdin, When it runs, Then the secret store holds `k`, and `dsh secret set k v` (value in argv) is rejected with a usage error (TC-13b) [proof: service:os-process; deps: os-process, filesystem (scratch home secret store)]
 - [ ] Scenario: Command reference -- Given the command tree, When the reference is rendered, Then it equals `reference.golden` (TC-13g) [proof: golden; deps: committed `cli/testdata/reference.golden`]
 
@@ -571,6 +583,8 @@ storyId: "harness:DSH-M2"
 ### Test Scenarios
 - [ ] Scenario: Headless prints the last assistant text -- Given the built `dsh` with the keyless fake route answering `hello`, When `dsh headless "say hello"` runs on a temp home, Then stdout is exactly `hello\n` and exit status is 0 (TC-13b) [proof: service:os-process; deps: os-process, go-toolchain, filesystem, sqlite (scratch home)]
 - [ ] Scenario: JSON export lines -- Given the same run with `--json`, When it completes, Then every stdout line parses as an export record and the last is the run result (TC-13b) [proof: service:os-process; deps: os-process, go-toolchain]
+- [ ] Scenario: Admin command beside a live headless run -- Given a `dsh headless` run on a temp home blocked on a fake-model reply, When `dsh sandbox status` runs on the same home, Then it exits 0, its component trace lists no agent, model client or carrier, and the headless run then completes with status 0 (TC-13b, INV-10) [proof: service:os-process; deps: os-process, go-toolchain, filesystem, sqlite (scratch home)]
+- [ ] Scenario: SDK launcher bounded endings -- Given the built `dsh --profile sdk` (via the existing M1 `testkit/launcher.Build` of `./cmd/dsh`) with the keyless fake model route from a test layer, When stdin closes; when the client stops reading; when the forced deadline elapses, Then exit statuses are 0, 125 and 124 respectively (TC-12b, M2-C-10) [proof: service:os-process; deps: os-process, go-toolchain, filesystem, gate-local on both lanes]
 
 ## Stage 6.5: One Bounded Stop Path
 
@@ -613,7 +627,7 @@ storyId: "harness:DSH-M2"
 
 ### Implementation Steps
 - [ ] impl.md 16.7 / DH-D-UTIL-8 (C55): add `testkit/scenario` -- starts the built binary by `DSH_BIN`, scratch home per scenario (M2-C-1), deadline, cleanup, one evidence statement per scenario to `DSH_SCENARIO_REPORT`; a required scenario that skips fails (M2-DEC-3); analyzer in `tools/harness-gate/analyzers` forbids scenario files importing `src/harness/internal/...` except the test kit launcher.
-- [ ] impl.md 16.7 / DH-D-UTIL-7 (C54): add `llm/replay`, `testkit/fixture`, `testkit/dshbin` and `test/replay` -- replay a committed recording without a key against the built binary; compare log, workspace and model requests after normalization with fixed typed tokens; H-10 (sessions with children) recorded open.
+- [ ] impl.md 16.7 / DH-D-UTIL-7 (C54): add `llm/replay`, `testkit/fixture`, `testkit/dshbin` and `test/replay` (`testkit/dshbin` is the architecture.md C54 thin wrapper over the existing M1 `testkit/launcher.Build` of `./cmd/dsh`, building once per test binary; stages before this one call `launcher.Build` directly, so none depends on `dshbin`) -- replay a committed recording without a key against the built binary; compare log, workspace and model requests after normalization with fixed typed tokens; H-10 (sessions with children) recorded open.
 - [ ] Retarget the existing scenarios in `testkit/scenarios/` (`binary_test.go`, `sdkhost_test.go`, `realenv_test.go`) to `testkit/scenario` without rewriting their bodies (architecture.md I-2); replace `DSH_SCENARIO_STORE2_KEY` in `store_crash_recovery_scenario_test.go` with the signed-in route input (M2-I-1, TC-19s2).
 - [ ] Add the `harness-replay` gate step (decision `replay-gate-step-dh-s-16`) so `DH-T-TOOLCHAIN-1`, `-3`, `-5`, `-6` run in the gate.
 
@@ -654,6 +668,7 @@ storyId: "harness:DSH-M2"
 ## Stage 6.11: Later-Stage Scenario Authoring
 
 ### Implementation Steps
+- [ ] Author `DH-E-SDK-1` (Go client `src/sdk/sdk` from Stage 6.7 over stdio against the built binary) as `sdk_stdio_scenario_test.go`, indexed under `DH-S-17` (executed in Stage 7.5), and later-run `DH-E-SDK-2` (index `DH-S-39`, compile only), both on `testkit/scenario` from Stage 6.8.
 - [ ] Author `DH-E-CLI-1`, `DH-E-CLI-2` (index `DH-S-27`, step 27.8), `DH-E-BUNDLE-3` (index `DH-S-22`), `DH-E-UTIL-2` (index `DH-S-39`) and `DH-E-BUNDLE-1`, `DH-E-BUNDLE-2`, `DH-E-BUNDLE-4`, `DH-E-API-5` (index `DH-S-48`) on `testkit/scenario`; compile only (tech-spec sec. 4.5).
 - [ ] Verify the 17 later-run scenarios of tech-spec sec. 4.5 (Stages 3.9, 5.9 and this stage) are each indexed once with their executing stage.
 
@@ -661,7 +676,7 @@ storyId: "harness:DSH-M2"
 - phase-dh-s-16-profiles-launchers-and-evidence-runners/stage-scenario-helper-and-keyless-replay
 
 ### Test Scenarios
-- [ ] Scenario: Later-run scenarios compile -- Given all 17 files, When `go vet -tags scenario ./internal/testkit/scenarios/...` runs on both lanes, Then it exits 0 (M2-DOD-5) [proof: service:go-toolchain; deps: go-toolchain on both lanes]
+- [ ] Scenario: Later-run scenarios compile -- Given all 17 later-run files plus `sdk_stdio_scenario_test.go`, When `go vet -tags scenario ./internal/testkit/scenarios/...` runs on both lanes, Then it exits 0 (M2-DOD-5) [proof: service:go-toolchain; deps: go-toolchain on both lanes]
 - [ ] Scenario: Index count -- Given the committed `acceptance-index.yaml`, When the index check counts the 17 IDs of tech-spec sec. 4.5, Then each appears once under its stated stage and none under DH-S-16..18 [proof: golden; deps: committed index is the oracle input]
 
 ## Stage 6.12: Guarded Scenarios on Scratch Homes
@@ -690,6 +705,7 @@ storyId: "harness:DSH-M2"
 - [ ] Record the manual checks of impl.md DH-S-16 in `evidence/DH-S-16.md`: one `dsh headless` prompt against the signed-in Claude Code route (M2-I-1: replaces "the real API with the key stored by `dsh secret set`"; `dsh secret set` exercised separately with a scratch value) with an approval answered on the terminal; Ctrl-C during a tool call; a second `dsh` beside a running host.
 - [ ] Record S16 owner default confirmations (I3 Q1, I3 Q8, U-K2-4; M2-C-4), the open list H-1..H-4 and H-10, and `DH-T-TOOLCHAIN-1`, `-3`, `-5`, `-6` passing.
 - [ ] Advance `built-through` in `acceptance-index.yaml` to `DH-S-16` once S12..S16 are built and M1 closure has set it to `DH-S-11` (M2-DOD-1); update `evidence/closure.md` states for S12..S16 deliverables.
+- [ ] Close S16 with the Stage 1.1 two-step protocol: run `harness-gate ready --stage DH-S-16 --built` on the record while it reads `open`; only when it exits 0 change the line to `Closure status: closed` in the same PR, whose gate then runs `harness-gate close --stage DH-S-16 --built`.
 
 ### Dependencies
 - phase-dh-s-16-profiles-launchers-and-evidence-runners/stage-config-show-and-validate-close-h-21
@@ -698,7 +714,7 @@ storyId: "harness:DSH-M2"
 - phase-dh-s-16-profiles-launchers-and-evidence-runners/stage-guarded-scenarios-on-scratch-homes
 
 ### Test Scenarios
-- [ ] Scenario: S16 close check passes -- Given the committed `evidence/DH-S-16.md` with the four guarded rows `passed`, When `harness-gate close --stage DH-S-16` runs, Then it exits 0; with any guarded row `not run` it exits non-zero naming it (M2-DOD-2) [proof: golden; deps: committed evidence record and index are the inputs]
+- [ ] Scenario: S16 ready then closed -- Given the committed `evidence/DH-S-16.md`, When `harness-gate ready --stage DH-S-16 --built` runs before the status transition and `harness-gate close --stage DH-S-16 --built` runs after it, Then both exit 0 with the four guarded rows `passed`; the committed fixture `testdata/closure/open_not_ready/` (a guarded row `not run`) makes `ready` exit non-zero naming it (M2-DOD-2) [proof: golden; deps: committed evidence record, index and immutable fixture are the inputs]
 - [ ] Scenario: Built-through advanced -- Given the committed index, When the index check runs, Then `built-through` reads `DH-S-16` and every S12..S16 evidence record carries a commit SHA for each step (M2-DOD-1) [proof: golden; deps: committed index and evidence records]
 
 # Phase 7: DH-S-17 Acceptance on a Real Model
@@ -730,7 +746,7 @@ storyId: "harness:DSH-M2"
 
 ### Test Scenarios
 - [ ] Scenario: DH-E-TOOLCHAIN-1 record and replay -- Given the S17 machine with the signed-in Claude Code route and a scratch home, When the scenario records a session and replays it with the route disabled, Then the replayed persisted log, workspace and requests equal the recording after normalization (TC-20s) [proof: service:model-route-claude-code; deps: tester's signed-in Claude Code CLI on the S17 machine (preflight: probe turn), embedded SQLite scratch store]
-- [ ] Scenario: Evidence row complete -- Given `evidence/DH-S-17.md`, When `harness-gate close --stage DH-S-17` reads the TOOLCHAIN-1 row, Then binary checksum, model id, run id and commit are present (M2-DEC-5) [proof: golden; deps: committed evidence record]
+- [ ] Scenario: Evidence row complete -- Given `evidence/DH-S-17.md` (still `open`), When `harness-gate ready --stage DH-S-17` reads the TOOLCHAIN-1 row, Then binary checksum, model id, run id and commit are present (M2-DEC-5) [proof: golden; deps: committed evidence record]
 
 ## Stage 7.3: Session and Agent Loop Acceptance
 
@@ -759,7 +775,7 @@ storyId: "harness:DSH-M2"
 ## Stage 7.5: SDK Client Acceptance
 
 ### Implementation Steps
-- [ ] impl.md 17.8: run `DH-E-SDK-1` (authored in Stage 5.9) -- the Go client `src/sdk/sdk` drives the built binary over stdio on the signed-in route, answering an approval and a question on the same connection; record run ids.
+- [ ] impl.md 17.8: run `DH-E-SDK-1` (authored in Stage 6.11) -- the Go client `src/sdk/sdk` drives the built binary over stdio on the signed-in route, answering an approval and a question on the same connection; record run ids.
 
 ### Dependencies
 - phase-dh-s-17-acceptance-on-a-real-model/stage-record-then-replay-without-a-key
@@ -772,7 +788,7 @@ storyId: "harness:DSH-M2"
 
 ### Implementation Steps
 - [ ] impl.md 17.9: run `DH-E-SANDBOX-7` last in S17 (architecture.md R-03) as one budgeted job (M2-C-5): 12 tasks x 3 runs x 3 platform texts read from the resolver (TC-01g version recorded) = 108 runs; shard per platform text if the 2 h job limit is hit (M2-R-06, Q `m2-scenario-deadlines`).
-- [ ] On pass (at least 10 of 18 escalations per text), mark `UP-DEBT-found.Q3.2` closed in `evidence/DH-S-17.md`; add the review rule that a policy-text change may not merge until SANDBOX-7 passes on it (M2-C-6) to `tools/harness-gate/README.md`.
+- [ ] On pass (at least 10 of 18 escalations per text), mark `UP-DEBT-found.Q3.2` closed in `evidence/DH-S-17.md` with the exact `v0-provisional` text checksums that were run; then, in a separate PR, promote the goldens' version line to `accepted-1` and wire the policy section into the model-visible prompt -- that PR's gate runs `harness-gate policy-text` (in force since Stage 2.4), which admits it only because the SANDBOX-7 row cites the same text (M2-C-6). On fail, the text stays `v0-provisional` and unwired, and S17 stays open.
 
 ### Dependencies
 - phase-dh-s-17-acceptance-on-a-real-model/stage-session-and-agent-loop-acceptance
@@ -781,19 +797,20 @@ storyId: "harness:DSH-M2"
 
 ### Test Scenarios
 - [ ] Scenario: DH-E-SANDBOX-7 escalation threshold -- Given the three policy texts at the recorded version, When 108 runs complete, Then for each text at least 10 of 18 denied-first tasks escalated and the transcripts are kept (TC-20s) [proof: service:model-route-claude-code; deps: signed-in Claude Code CLI on the S17 machine; no sandbox backend needed]
-- [ ] Scenario: Version binding -- Given the evidence row, When it is compared with `policy_section_*.golden`, Then the recorded text version equals the committed golden's version (M2-C-6) [proof: golden; deps: committed policy-section goldens and evidence record]
+- [ ] Scenario: Version binding -- Given the SANDBOX-7 evidence row and the committed `policy_section_*.golden`, When `harness-gate policy-text` compares them, Then the body checksum recorded for each text equals the committed golden body checksum and the golden's version line is either `v0-provisional` (unwired) or the `accepted-*` version the row cites (M2-C-6) [proof: golden; deps: committed policy-section goldens and evidence record]
 
 ## Stage 7.7: DH-S-17 Closure Record
 
 ### Implementation Steps
-- [ ] Complete `evidence/DH-S-17.md`: every one of the 14 scenarios with environment (self-hosted runner label or named WSL machine), commit, binary checksum, model id, result and artifacts; recorded legs kept; set `Closure status: closed` only when `harness-gate close --stage DH-S-17` passes (M2-DOD-3).
+- [ ] Complete `evidence/DH-S-17.md` while it reads `Closure status: open`: every one of the 14 scenarios with environment (self-hosted runner label or named WSL machine), commit, binary checksum, model id, result and artifacts; recorded legs kept; run `harness-gate ready --stage DH-S-17` until it exits 0 (M2-DOD-3).
+- [ ] In the closing PR, change the status line to `Closure status: closed`; the PR gate runs `harness-gate close --stage DH-S-17`, which re-checks every ready condition and the closed status (Stage 1.1 two-step protocol).
 - [ ] Update `evidence/closure.md` for the M1 and M2 deliverables the S17 scenarios finish.
 
 ### Dependencies
 - phase-dh-s-17-acceptance-on-a-real-model/stage-sandbox-policy-text-escalation-acceptance
 
 ### Test Scenarios
-- [ ] Scenario: S17 closes only when complete -- Given the committed record, When `harness-gate close --stage DH-S-17` runs, Then it exits 0 with all 14 required rows passed; a fixture with one required row `not run` exits non-zero (M2-C-2) [proof: golden; deps: committed evidence record and index]
+- [ ] Scenario: S17 ready then closed -- Given the committed record, When `harness-gate ready --stage DH-S-17` runs on it while `open` and `harness-gate close --stage DH-S-17` runs after the status transition, Then both exit 0 with all 14 required rows passed; the immutable fixture `testdata/closure/closed_not_ready/` (one row `not run`, status `closed`) makes `close` exit non-zero with `closed-but-not-ready` (M2-C-2) [proof: golden; deps: committed evidence record, index and immutable fixture]
 - [ ] Scenario: Copilot leg kept -- Given the record, When the close check reads LLM-1, LLM-3, VIEW-1, Then each has a `copilot-cli` result row (passed or failed, never missing) (M2-DEC-4) [proof: golden; deps: committed evidence record]
 
 # Phase 8: DH-S-18 Acceptance on Real Operating Systems
@@ -867,14 +884,16 @@ storyId: "harness:DSH-M2"
 ## Stage 8.6: File Fence and Working Directory on Real Systems
 
 ### Implementation Steps
-- [ ] impl.md 18.5 and 18.6: run `DH-E-FS-1` (10,000 calls under a link-swap helper; Linux ext4, Windows NTFS, SMB share per runbook), `DH-E-FS-2` (long-running; shard if beyond the 3 h variant limit, M2-R-06) and `DH-E-VIEW-5` (signed-in route, `workspace-write` under `bwrap`); on any outside write stop the stage and keep both listings (M2-R-03).
+- [ ] impl.md 18.5 and 18.6: run `DH-E-FS-1` (10,000 calls under a link-swap helper; Linux ext4, Windows NTFS, SMB share per runbook), `DH-E-FS-2` (long-running on Linux ext4 and Windows NTFS, tech-spec row 35; shard if beyond the 3 h variant limit, M2-R-06) and `DH-E-VIEW-5` (signed-in route, `workspace-write` under `bwrap`); on any outside write stop the stage and keep both listings (M2-R-03).
 
 ### Dependencies
 - phase-dh-s-18-acceptance-on-real-operating-systems/stage-release-rehearsal-on-every-platform
 
 ### Test Scenarios
 - [ ] Scenario: DH-E-FS-1 fence on real file systems -- Given ext4 and NTFS variants, When 10,000 tool calls run under the link-swap helper, Then the hash listing of the outside directory is unchanged before and after (TC-21s3) [proof: service:filesystem; deps: real ext4 and NTFS volumes on the Linux variant and `service:windows-host`; SMB share per runbook]
-- [ ] Scenario: DH-E-FS-2 and DH-E-VIEW-5 -- Given the tester's Linux machine with the signed-in route, `git`, an editor and `bwrap`, When FS-2 and VIEW-5 run, Then their Then clauses hold and every model-chosen write lands inside the session's working directory (TC-21s4) [proof: service:model-route-claude-code; deps: signed-in Claude Code CLI, `service:git-and-editor`, `service:linux-sandbox-bwrap` on the tester's machine]
+- [ ] Scenario: DH-E-FS-2 on Linux -- Given the tester's Linux machine (ext4) with the signed-in Claude Code route and `git` plus an editor save script, When the long-running FS-2 run completes (sharded per M2-R-06 if beyond 3 h), Then its Then clause holds and every model-chosen write through the six file tools lands inside the session's write roots, with zero files outside them in the before/after listings (TC-21s4) [proof: service:model-route-claude-code; deps: signed-in Claude Code CLI and `service:git-and-editor` on the tester's Linux machine, checked by the `s18` job preflight]
+- [ ] Scenario: DH-E-FS-2 on Windows -- Given the Windows variant machine (NTFS) with the signed-in Claude Code CLI installed natively and `git` plus an editor save script, When the same long-running FS-2 run completes under mode `workspace-write` (sandbox status `Unconfined` -- no Windows backend in M2 -- so the fence under test is the C32 filesystem seam, recorded in the row), Then its Then clause holds and no file appears outside the write roots in the before/after listings (tech-spec sec. 4.2 row 35, TC-21s4) [proof: service:windows-host; deps: `service:windows-host` variant from `variants.md` (Stage 8.1) plus signed-in Claude Code CLI and `service:git-and-editor` on that machine, checked by the Windows `s18` job preflight; preflight fails the run if absent]
+- [ ] Scenario: DH-E-VIEW-5 on Linux -- Given the tester's Linux machine with the signed-in route, a real `git` repository and `bwrap`, When VIEW-5 runs under `workspace-write`, Then its Then clause holds, `dsh sandbox status` reads backend `bwrap` state `Full`, and every model-chosen write lands inside the session's working directory (TC-21s4) [proof: service:model-route-claude-code; deps: signed-in Claude Code CLI, `service:git-and-editor`, `service:linux-sandbox-bwrap` on the tester's Linux machine]
 
 ## Stage 8.7: Search and File Watching on Real Systems
 
@@ -921,14 +940,14 @@ storyId: "harness:DSH-M2"
 
 ### Implementation Steps
 - [ ] Complete `evidence/DH-S-18.md`: one row per scenario per variant with environment, commit, result, artifacts and copied enforcement; every in-scope variant not run recorded *not run* with reason, which keeps S18 open (M2-DOD-4, M2-C-2); out-of-scope variants named with the deciding owner decision.
-- [ ] Set `Closure status: closed` only when `harness-gate close --stage DH-S-18` passes; update `evidence/closure.md` for the deliverables S18 finishes.
+- [ ] Run `harness-gate ready --stage DH-S-18` on the record while it reads `open` until it exits 0; then, in the closing PR, change the line to `Closure status: closed`, whose gate runs `harness-gate close --stage DH-S-18` (Stage 1.1 two-step protocol); update `evidence/closure.md` for the deliverables S18 finishes.
 
 ### Dependencies
 - phase-dh-s-18-acceptance-on-real-operating-systems/stage-durable-replace-under-power-loss
 
 ### Test Scenarios
-- [ ] Scenario: No partial closure -- Given a record fixture where one in-scope variant of `DH-E-EXEC-10` is `not run`, When the close check runs, Then S18 is refused naming that variant (M2-DOD-4) [proof: in-process; deps: none -- record fixture]
-- [ ] Scenario: S18 closes when complete -- Given the committed record with all 19 scenarios passed on every in-scope variant, When `harness-gate close --stage DH-S-18` runs, Then it exits 0 [proof: golden; deps: committed evidence record, `variants.md` and index]
+- [ ] Scenario: No partial closure -- Given a record fixture where one in-scope variant of `DH-E-EXEC-10` is `not run`, When the ready check runs, Then S18 is refused naming that variant (M2-DOD-4) [proof: in-process; deps: none -- record fixture]
+- [ ] Scenario: S18 ready then closed -- Given the committed record with all 19 scenarios passed on every in-scope variant, When `harness-gate ready --stage DH-S-18` runs before the status transition and `harness-gate close --stage DH-S-18` after it, Then both exit 0 [proof: golden; deps: committed evidence record, `variants.md` and index]
 
 # Phase 9: M2 Milestone Closure
 
