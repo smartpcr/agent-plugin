@@ -272,6 +272,10 @@ func (c *call) Attempt(ctx context.Context, req session.Request) iter.Seq2[vocab
 		if cerr != nil {
 			calls = -1
 		}
+		// The directory goes before the Finish is yielded, as Attempt promises: a
+		// consumer that settles on the Finish never finds it left behind. The
+		// deferred Remove is then a no-op.
+		_ = dir.Remove()
 		c.Update(func(inv *event.ClientInvocation) {
 			inv.Model, inv.Retries, inv.Denials = m.model, m.retries, len(m.denied)
 		})
