@@ -723,3 +723,43 @@ func TestAttachResolvesRootAndWorkspace(t *testing.T) {
 		t.Fatalf("the resume resolved again: %d changes, %d lookups", len(cs), ws2.calls)
 	}
 }
+
+// A project root the seam cannot find (the repository's .git lookup fails) is
+// that failure: neither the attach-time resolve nor a Change records a guessed
+// root or workspace, and once the seam answers the real root is recorded.
+func TestRootDiscoveryFailureRecordsNothing(t *testing.T) {
+	repo := filepath.Join(canon(t, t.TempDir()), "repo")
+	sub, other := filepath.Join(repo, "sub"), filepath.Join(repo, "other")
+	for _, d := range []string{sub, other, filepath.Join(repo, ".git")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seam := &faultSeam{}
+	r := newRig(t, memstore.New(), seam, time.Now)
+	h := r.create(t, sub)
+	broken := herr.Newf(fs.CodeIO, "permission denied")
+	seam.set(filepath.Join(repo, ".git"), broken)
+
+	if _, err := r.wd.Attach(bg, h, nil); !errors.Is(err, broken) {
+		t.Fatalf("Attach with a failing root lookup: %v", err)
+	}
+	if _, err := r.wd.Change(bg, h.ID(), other); !errors.Is(err, broken) {
+		t.Fatalf("Change with a failing root lookup: %v", err)
+	}
+	if cs, _ := changes(t, h); len(cs) != 0 {
+		t.Fatalf("a failed root lookup was logged: %+v", cs)
+	}
+	if n := len(r.in.all()); n != 0 {
+		t.Fatalf("a failed root lookup queued %d notices", n)
+	}
+
+	seam.set("", nil)
+	got := must(r.wd.Attach(bg, h, nil))
+	if got.Root != repo || got.Path != sub || got.Revision != 1 {
+		t.Fatalf("Attach once the seam answers = %+v, want root %q", got, repo)
+	}
+	if cs, _ := changes(t, h); len(cs) != 1 || cs[0].Root != repo || cs[0].Cause != workdir.CauseResolve {
+		t.Fatalf("log %+v, want one resolve change to the real root", cs)
+	}
+}

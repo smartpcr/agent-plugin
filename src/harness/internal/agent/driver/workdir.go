@@ -40,12 +40,14 @@ const (
 // workdirNotices queues the component's notices in the agent's inbox as
 // next-step input with source workdir, under the notice's id: the running turn
 // takes it at its next step, an idle agent with its next turn. A notice the
-// session already admitted is delivered.
+// session already admitted is delivered only once it is durable: a send whose
+// flush failed left it folded but dirty, so the duplicate is acknowledged after
+// the inbox syncs, and a failed sync keeps the notice owed.
 func workdirNotices(in *instance) workdir.Notifier {
 	return workdir.NotifierFunc(func(ctx context.Context, n workdir.Notice) error {
 		_, err := in.Send(ctx, agent.ListNextStep, agent.InboxMessage{ID: n.ID, Source: workdir.NoticeSource, By: WorkdirGuard, Text: n.Text})
 		if errors.Is(err, agent.ErrDuplicateMessage) {
-			return nil
+			return in.inbox.Sync(ctx)
 		}
 		return err
 	})

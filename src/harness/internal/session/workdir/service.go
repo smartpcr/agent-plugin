@@ -223,7 +223,10 @@ func (s *Service) resolveLocked(ctx context.Context, e *entry) error {
 	if err != nil || !ok {
 		return err
 	}
-	root := s.rootOf(ctx, wd.Path)
+	root, err := s.rootOf(ctx, wd.Path)
+	if err != nil {
+		return err
+	}
 	ws, err := s.workspaceOf(ctx, e, root)
 	if err != nil {
 		return err
@@ -318,7 +321,10 @@ func (s *Service) moveLocked(ctx context.Context, e *entry, path string, cause C
 	if err != nil {
 		return WorkingDirectory{}, err
 	}
-	root := s.rootOf(ctx, dir)
+	root, err := s.rootOf(ctx, dir)
+	if err != nil {
+		return WorkingDirectory{}, err
+	}
 	ws, err := s.workspaceOf(ctx, e, root)
 	if err != nil {
 		return WorkingDirectory{}, err
@@ -406,15 +412,25 @@ func (s *Service) validate(ctx context.Context, path string) (string, error) {
 
 // rootOf is the project root of dir: the nearest directory at or above it that
 // holds a .git entry (a repository, or a linked worktree's own root), else dir.
-func (s *Service) rootOf(ctx context.Context, dir string) string {
+// A .git lookup the seam cannot answer (an I/O or permission failure, a
+// cancelled context) is returned, not taken for absence: a guessed root would
+// record the wrong fence and workspace.
+func (s *Service) rootOf(ctx context.Context, dir string) (string, error) {
 	for d := dir; ; {
-		// An ancestor the seam cannot stat (no permission) is not a root.
-		if info, err := s.seam.Stat(ctx, fs.Ref{Path: filepath.Join(d, ".git"), NoFollowFinal: true}); err == nil && info.Exists {
-			return d
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		p := filepath.Join(d, ".git")
+		info, err := s.seam.Stat(ctx, fs.Ref{Path: p, NoFollowFinal: true})
+		if err != nil {
+			return "", fmt.Errorf("workdir: find the project root of %q: check %q: %w", dir, p, err)
+		}
+		if info.Exists {
+			return d, nil
 		}
 		up := filepath.Dir(d)
 		if up == d {
-			return dir
+			return dir, nil
 		}
 		d = up
 	}

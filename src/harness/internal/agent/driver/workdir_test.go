@@ -7,12 +7,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/agent"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store/memstore"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/views"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/workdir"
 	fakemodel "github.com/smartpcr/agent-plugin/src/harness/internal/testkit/model"
@@ -241,4 +244,101 @@ func TestWorkdirResumeChecksTheDirectory(t *testing.T) {
 		t.Fatalf("the directory's return queued more notices: %+v", ns)
 	}
 	must(0, h2.Dispose(bg))
+}
+
+// spliceStore is a store whose writers fail the flush of a batch that admits a
+// working-directory notice while fail is positive, and report whether such an
+// admission is still waiting for a flush.
+type spliceStore struct {
+	store.Store
+	fail  atomic.Int32
+	dirty atomic.Bool
+}
+
+type spliceWriter struct {
+	store.Writer
+	s *spliceStore
+	// armed: the batch since the last flush admits a workdir notice.
+	armed atomic.Bool
+}
+
+func (s *spliceStore) Create(ctx context.Context, h store.Header, o store.CreateOptions) (store.Writer, error) {
+	w, err := s.Store.Create(ctx, h, o)
+	if err != nil {
+		return nil, err
+	}
+	return &spliceWriter{Writer: w, s: s}, nil
+}
+
+func (s *spliceStore) OpenWrite(ctx context.Context, id string, o store.OpenOptions) (store.Writer, error) {
+	w, err := s.Store.OpenWrite(ctx, id, o)
+	if err != nil {
+		return nil, err
+	}
+	return &spliceWriter{Writer: w, s: s}, nil
+}
+
+func (w *spliceWriter) Append(ctx context.Context, b store.Batch) error {
+	if err := w.Writer.Append(ctx, b); err != nil {
+		return err
+	}
+	for _, r := range b.Records {
+		if r.Type == agent.SplicedType.Name() && strings.Contains(r.Payload, `"source":"`+workdir.NoticeSource+`"`) {
+			w.armed.Store(true)
+			w.s.dirty.Store(true)
+		}
+	}
+	return nil
+}
+
+var errFlushDown = errors.New("flush down")
+
+func (w *spliceWriter) Flush(ctx context.Context) error {
+	if w.armed.Load() && w.s.fail.Load() > 0 {
+		w.s.fail.Add(-1)
+		return errFlushDown
+	}
+	if err := w.Writer.Flush(ctx); err != nil {
+		return err
+	}
+	w.armed.Store(false)
+	w.s.dirty.Store(false)
+	return nil
+}
+
+// A notice the inbox admitted but could not flush is not acknowledged by the
+// duplicate the retry meets: the retry syncs the inbox first, so the notice is
+// durable before the service stops owing it, and is admitted once.
+func TestWorkdirNoticeIsDurableBeforeItIsAcknowledged(t *testing.T) {
+	dirs := tempDirs(t, "a", "b")
+	reg := views.New()
+	wd := must(workdir.New(reg, statSeam{}))
+	st := &spliceStore{Store: memstore.New()}
+	l := newLife(t, lifeOptions{folder: reg, workdir: wd, store: st})
+	h := must(l.reg.Create(l.root, agent.CreateOptions{Session: "d", Model: agent.ModelSelection{Route: route}, Cwd: dirs[0]}))
+
+	st.fail.Store(1)
+	if _, err := wd.Change(bg, "d", dirs[1]); !workdir.OnlyUndelivered(err) || !errors.Is(err, errFlushDown) {
+		t.Fatalf("Change whose notice flush fails: %v", err)
+	}
+	if !st.dirty.Load() {
+		t.Fatal("the notice's admission was not appended")
+	}
+
+	st.fail.Store(1)
+	if _, err := wd.Ensure(bg, "d"); !workdir.OnlyUndelivered(err) || !errors.Is(err, errFlushDown) {
+		t.Fatalf("Ensure while the inbox still cannot flush: %v", err)
+	}
+	if !st.dirty.Load() {
+		t.Fatal("the notice was acknowledged while its admission is not durable")
+	}
+
+	must(wd.Ensure(bg, "d"))
+	if st.dirty.Load() {
+		t.Fatal("Ensure acknowledged the notice without making the inbox durable")
+	}
+	if ns := workdirNotices(t, h.Agent().Session()); len(ns) != 1 || ns[0].Text != workdir.ContextLine(dirs[1]) {
+		t.Fatalf("inbox holds %+v, want the moved notice once", ns)
+	}
+	must(0, h.Dispose(bg))
 }
