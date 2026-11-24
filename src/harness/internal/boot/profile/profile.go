@@ -114,12 +114,13 @@ func required(carrier []string) []string {
 
 // builtins are the compiled-in profiles. There is no bundle named sdk-minimal: that
 // profile stacks core, minimal and sdk (DH-ADR-BOOT-1). sdk-minimal and acp are not
-// among the five definitions of DH-D-BUNDLE-1 and keep their M1 content.
+// among the five definitions of DH-D-BUNDLE-1. sdk-minimal inherits the sdk bundle,
+// carriers included, so it requires what sdk requires; acp keeps its M1 content.
 var builtins = []Definition{
 	{Name: Web, Summary: "Start the host and open the web UI", Bundles: []string{"core", "web"}, Reload: DefaultReload, Required: required(webCarrier)},
 	{Name: Headless, Summary: "Run one task without a UI and print the answer", Bundles: []string{"core", "headless"}, Required: required(headlessCarrier)},
 	{Name: SDK, Summary: "Serve the SDK protocol on standard input and output", Bundles: []string{"core", "sdk"}, Required: required(sdkCarrier)},
-	{Name: SDKMinimal, Summary: "Serve the SDK protocol with the minimal agent preset", Bundles: []string{"core", "minimal", "sdk"}},
+	{Name: SDKMinimal, Summary: "Serve the SDK protocol with the minimal agent preset", Bundles: []string{"core", "minimal", "sdk"}, Required: required(sdkCarrier)},
 	{Name: ACP, Summary: "Serve the Agent Client Protocol on standard input and output", Bundles: []string{"core", "acp"}},
 }
 
