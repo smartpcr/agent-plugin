@@ -109,7 +109,8 @@ func requested(req sandbox.EscalationRequest) (sandbox.Mode, error) {
 
 // ForHelper implements sandbox.Resolver: a helper child is read-only plus the
 // named write roots, whatever the session's mode; it runs unconfined only for a
-// kind in Config.UnconfinedHelpers.
+// kind in Config.UnconfinedHelpers. Its confinement level is the stricter of
+// req.Require and Config.Require.
 func (r *Resolver) ForHelper(ctx context.Context, req sandbox.HelperRequest) (sandbox.Policy, error) {
 	if err := ctx.Err(); err != nil {
 		return sandbox.Policy{}, herr.Wrap(sandbox.CodeUnavailable, err, "helper")
@@ -117,8 +118,10 @@ func (r *Resolver) ForHelper(ctx context.Context, req sandbox.HelperRequest) (sa
 	if req.Kind == "" {
 		return sandbox.Policy{}, herr.New(sandbox.CodeUnavailable, "a helper must name its kind")
 	}
+	// The deployment's level is a floor: a helper may ask for full but never
+	// loosen a configured full to any.
 	require := req.Require
-	if require == "" {
+	if require == "" || r.cfg.Require == sandbox.RequireFull {
 		require = r.cfg.Require
 	}
 	if req.Unconfined {
