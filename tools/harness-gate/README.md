@@ -96,6 +96,9 @@ pin means changing the `require` line, keeping its reason comment, and running
 GOWORK=off go -C tools/harness-gate run . rehearse  --root ../.. [--out DIR]
 GOWORK=off go -C tools/harness-gate run . require   --root ../.. --stage DH-S-18
 GOWORK=off go -C tools/harness-gate run . preflight --root ../..
+GOWORK=off go -C tools/harness-gate run . ready     --root ../.. --stage DH-S-16 [--built]
+GOWORK=off go -C tools/harness-gate run . close     --root ../.. --stage DH-S-16 [--built]
+GOWORK=off go -C tools/harness-gate run . records   --root ../..
 ```
 
 - `rehearse` (DH-D-TOOLCHAIN-5, DH-ADR-TOOLCHAIN-13) builds `cmd/dsh` with
@@ -117,6 +120,99 @@ GOWORK=off go -C tools/harness-gate run . preflight --root ../..
   key (`models-signed-in-claude-copilot`): the credential hook checks nothing until
   stage 19.2 fills it with the signed-in-route check.
 
+- `ready`, `close` and `records` are the stage-closure gate; see
+  [Stage closure](#stage-closure).
+
+## Stage closure
+
+The two-step closure protocol of C57 and M2-C-2 (harness:DSH-M2
+implementation-plan Stage 1.1). The records live at
+`docs/stories/<story>/evidence/DH-S-n.md`, where `<story>` is `harness:DSH-M2`
+written as `harness-DSH-M2` (`--story` selects the story; `harness:DSH-M2` is the
+default). Each record has a status line, `Closure status: open` or
+`Closure status: closed`, and the impl.md sec. 7.3 fields as `### ...` headings.
+
+1. While the record reads `open`, the PR fills its tables until
+   `harness-gate ready --stage DH-S-n` exits 0. `ready` does not read the status
+   line.
+2. The closing PR then changes the line to `closed`. Its gate runs
+   `harness-gate close --stage DH-S-n`, which checks every `ready` condition again
+   and also requires the line to read `closed`. The refusals are:
+   - `not-yet-closed`: the line reads `open`;
+   - `closed-but-not-ready`: the line reads `closed` but a `ready` condition fails;
+   - `status-invalid`: the line is missing or unreadable.
+
+Both commands exit 0 on a pass and 1 with one `  - ` line per blocker. They exit 2
+on a usage error or an unreadable acceptance index. A missing record is a blocker.
+Without `--built`, the check is an acceptance close:
+- the stage needs an index entry;
+- every index-listed ID needs a row;
+- every row of the `## Scenarios` table counts.
+
+The mode is fixed by the story, not by the caller: DH-S-12..16 close with `--built`
+and DH-S-17..18 without it. Either command given the other mode exits 2. Called as a
+library, `Story.Ready` names the mismatch as a blocker and judges the stage in its
+own mode, so a build stage never skips its build tables.
+
+`--built` is a build-stage close (DH-S-12..16), checked in addition:
+- only rows with venue `guarded` count, and every index-listed ID still needs a row;
+- every `## Steps` row needs a merge commit (a SHA of 7 to 40 lower-case hex
+  digits);
+- every `## Manual checks register` row needs Seen, Operator, a commit and the
+  label `manual`;
+- every `## Owner defaults (M2-C-4)` row needs Confirmed and By;
+- a row for an ID the index lists under the stage must have venue `guarded`. A
+  different venue would leave its result unjudged while it still covers the index
+  entry, so it is a blocker.
+
+Each record also owes the rows Stage 1.1 created in it (`closure/obligations.go`):
+- every step;
+- each manual check, matched on its step and its check text, so a second copy of
+  one check cannot stand in for another (a duplicate row is itself a blocker);
+- the stage's owner defaults;
+- every scenario row, matched on scenario, variant, venue and leg together.
+
+A deleted row, or a scenario row whose venue or leg was edited, is a blocker.
+`ready` and `close` check the scenario rows always and the other owed rows with
+`--built`. `records` checks all of them on every record, including open ones.
+
+The Scenarios table's columns are Scenario, Variant, Venue, Leg, Environment,
+Commit, Result and Artifacts. A result reads one of:
+- `passed`;
+- `failed`;
+- `not run (<reason>)`;
+- `skipped`;
+- `blocked`;
+- `out of scope (<decision>)`.
+
+Only `passed` counts as passed. A `skipped` row is not passed (M2-DEC-3). An `out
+of scope` row is not a blocker only when it names its decision. The Leg column
+reads `required` (or is empty) or `recorded`. A `recorded` leg must still run; a
+`failed` result there is kept and does not block (M2-DEC-4).
+
+The Venue column reads `guarded`, `acceptance` or `later`; any other value is a
+blocker. A row that ran (`passed` or `failed`, including a recorded leg's failure)
+must record its Environment, a commit SHA and its Artifacts (M2-DEC-5). A named
+`out of scope` row need not. A table whose header is not followed by a `| --- |`
+separator row with one cell per column is refused as unreadable, so a data row is
+never taken for the separator.
+
+`records` checks the shape of every stage record of the story (status line, the
+sec. 7.3 headings, the four tables and their columns). A record that reads
+`closed` must also pass `close`, with `--built` for a build stage. It then checks
+the story's `closure.md`:
+- a `## Deliverables` table with Deliverable, Priority, State, Finishing stage or
+  held-open item, and Proving scenarios;
+- every deliverable of tech-spec sec. 3.2 by ID with its priority (no unknown ID,
+  no missing one), the count and the P0/P1 split;
+- a state of `not built`, `built` or `done`, where only the done-candidates may
+  read `done` and every row that is not done names a finishing stage or `H-` item;
+- a `## Held-open items` table with a row per held-open item.
+
+The story shapes (stages, build stages, deliverables, held-open items) are in
+`closure/shape.go`. The golden `testdata/closure/expected.golden` covers `ready`
+and `close` over the four record states. To regenerate it, run
+`go test -run TestStageClosureGolden . -update`; this is refused when `CI` is set.
 ## Acceptance index (`test/harness/acceptance-index.yaml`)
 
 Keyed by executing stage; each entry lists the authored `DH-E-*` IDs with their

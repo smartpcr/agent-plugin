@@ -28,6 +28,15 @@
 //	                       (models-signed-in-claude-copilot)
 //	require --stage DH-S-n prints the index entry of the stage being accepted, the
 //	                       value of DSH_REQUIRE_SCENARIOS
+//	ready --stage DH-S-n [--built] [--story s]
+//	                       the first step of a stage close (C57; M2-C-2): every
+//	                       condition of docs/stories/<story>/evidence/<stage>.md
+//	                       holds; the status line is not read (stageclose.go)
+//	close --stage DH-S-n [--built] [--story s]
+//	                       the final check of the closing PR: every ready
+//	                       condition and the status line reading closed
+//	records [--story s]    every stage record of the story and its closure.md
+//	                       hold their shape; a closed record also passes close
 package main
 
 import (
@@ -70,6 +79,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return runRequire(args[1:], stdout, stderr)
 		case "trace-tests":
 			return runTraceTests(args[1:], stdout, stderr)
+		case "ready":
+			return runReady(args[1:], stdout, stderr)
+		case "close":
+			return runClose(args[1:], stdout, stderr)
+		case "records":
+			return runRecords(args[1:], stdout, stderr)
 		}
 	}
 	flags := flag.NewFlagSet("harness-gate", flag.ContinueOnError)

@@ -1,0 +1,22 @@
+== open_not_ready: ready --built (exit 1)
+harness-gate ready: DH-S-16 (docs/stories/harness-DSH-M2/evidence/DH-S-16.md, built): NOT READY, 1 blocker:
+  - DH-E-STORE-6 [Linux (WSL)]: result "not run (scratch home not prepared)": not run counts as open (M2-C-2)
+== open_not_ready: close --built (exit 1)
+harness-gate close: DH-S-16 (docs/stories/harness-DSH-M2/evidence/DH-S-16.md, built): REFUSED not-yet-closed, 2 blockers:
+  - the status line reads open; the closing PR changes it to closed only after ready exits 0
+  - DH-E-STORE-6 [Linux (WSL)]: result "not run (scratch home not prepared)": not run counts as open (M2-C-2)
+== open_ready: ready --built (exit 0)
+harness-gate ready: DH-S-16 (docs/stories/harness-DSH-M2/evidence/DH-S-16.md, built): ready; the status line is not read (it reads open)
+== open_ready: close --built (exit 1)
+harness-gate close: DH-S-16 (docs/stories/harness-DSH-M2/evidence/DH-S-16.md, built): REFUSED not-yet-closed, 1 blocker:
+  - the status line reads open; the closing PR changes it to closed only after ready exits 0
+== closed_ready: ready --built (exit 0)
+harness-gate ready: DH-S-16 (docs/stories/harness-DSH-M2/evidence/DH-S-16.md, built): ready; the status line is not read (it reads closed)
+== closed_ready: close --built (exit 0)
+harness-gate close: DH-S-16 (docs/stories/harness-DSH-M2/evidence/DH-S-16.md, built): closed; every ready condition holds and the status line reads "closed"
+== closed_not_ready: ready --built (exit 1)
+harness-gate ready: DH-S-16 (docs/stories/harness-DSH-M2/evidence/DH-S-16.md, built): NOT READY, 1 blocker:
+  - DH-E-STORE-6 [Linux (WSL)]: result "not run (scratch home not prepared)": not run counts as open (M2-C-2)
+== closed_not_ready: close --built (exit 1)
+harness-gate close: DH-S-16 (docs/stories/harness-DSH-M2/evidence/DH-S-16.md, built): REFUSED closed-but-not-ready, 1 blocker:
+  - DH-E-STORE-6 [Linux (WSL)]: result "not run (scratch home not prepared)": not run counts as open (M2-C-2)
