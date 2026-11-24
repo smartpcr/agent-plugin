@@ -3,6 +3,7 @@ package agentpreset
 import (
 	"errors"
 	"reflect"
+	"slices"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/go/loader"
@@ -60,14 +61,62 @@ func (r *Registry) reconfigure(cfg Config) {
 
 // DeclarationComponent is agent.preset: an ordinary top-level entry whose config is
 // one Declaration. It owns only its registration: unloading it removes the
-// declaration and retires its revision.
+// declaration and retires its revision. An update that keeps the id is accepted in
+// place: the declaration is swapped and the set rebuilt once, so the declaration and
+// every preset that extends it keep their revisions unless their resolved children
+// changed. An update that changes the id restarts the entry.
 var DeclarationComponent = cordis.Define(DeclarationName, func(ctx *cordis.Context, d Declaration) error {
 	r, err := Key.Get(ctx)
 	if err != nil {
 		return err
 	}
-	return r.Declare(ctx, d)
+	if err := r.Declare(ctx, d); err != nil {
+		return err
+	}
+	reg := r.registration(d.ID)
+	_, err = ctx.OnUpdate(func(resolved any, next func() error) error {
+		nd, ok := resolved.(Declaration)
+		if !ok || reg == nil {
+			return next()
+		}
+		accepted, err := r.redeclare(reg, nd)
+		if !accepted {
+			return next()
+		}
+		return err
+	}, false)
+	return err
 }, cordis.WithInject(RegistryName))
+
+// registration is the agent.preset registration of id.
+func (r *Registry) registration(id string) *declared {
+	r.loadMu.Lock()
+	defer r.loadMu.Unlock()
+	for _, x := range r.declared {
+		if x.decl.ID == id {
+			return x
+		}
+	}
+	return nil
+}
+
+// redeclare replaces reg's declaration in place by d and rebuilds the set once. It
+// declines (false) when reg is no longer registered or d changes the id, which the
+// registration's disposer and the duplicate check are keyed on.
+func (r *Registry) redeclare(reg *declared, d Declaration) (bool, error) {
+	r.loadMu.Lock()
+	defer r.loadMu.Unlock()
+	if !slices.Contains(r.declared, reg) || d.ID != reg.decl.ID {
+		return false, nil
+	}
+	old := reg.decl
+	reg.decl = d
+	if err := r.syncLocked(); err != nil {
+		reg.decl = old
+		return true, err
+	}
+	return true, nil
+}
 
 // Items are the catalogue items of the two components; host is read when
 // agent.presets loads.
