@@ -5,6 +5,12 @@ Feature: Bash and PowerShell executors (DH-S-13, TC-06b)
   the launch plan was confirmed under, and build the child environment so that
   no name the secret store holds ever reaches the child.
 
+  A @lane-linux row runs on Linux natively, and on a Windows host inside WSL
+  (this suite cross-compiled for linux); a @lane-windows row runs on Windows.
+  A lane row never skips: a missing shell or an unreachable lane fails it.
+  BPE_LANES narrows the lanes a host runs (the CI matrix gives each its own job).
+
+  @lane-linux
   Scenario: bash executor on Linux
     Given the Linux lane with bash found by preflight
     And a danger-full-access test layer
@@ -14,6 +20,7 @@ Feature: Bash and PowerShell executors (DH-S-13, TC-06b)
     And the stdout tail is "hi"
     And the confinement is "Unconfined"
 
+  @lane-windows
   Scenario: pwsh executor on Windows
     Given the Windows lane with pwsh found by preflight
     And a danger-full-access test layer
