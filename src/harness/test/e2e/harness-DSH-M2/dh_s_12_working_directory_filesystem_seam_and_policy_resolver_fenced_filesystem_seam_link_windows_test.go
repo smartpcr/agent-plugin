@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"unicode/utf16"
+	//lint:ignore typeassert DeviceIoControl(FSCTL_SET_REPARSE_POINT) takes the reparse buffer as a *byte made with unsafe.Pointer
 	"unsafe"
 
 	"golang.org/x/sys/windows"

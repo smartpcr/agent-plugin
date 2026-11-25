@@ -1,6 +1,7 @@
 package modcheck
 
 import (
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -365,5 +366,44 @@ func TestToolsModulePinsLinters(t *testing.T) {
 		if required[pin[0]] != pin[1] {
 			t.Errorf("tools module pins %s at %q, want %s", pin[0], required[pin[0]], pin[1])
 		}
+	}
+}
+
+// A go.mod under a testdata directory is a fixture (the archtest seeds under
+// src/harness/internal/archtest/testdata), not a module: Load skips it, as the go
+// command does, so RM-1 still counts exactly the three product modules.
+func TestLoadSkipsTestdataModules(t *testing.T) {
+	root := t.TempDir()
+	write := func(rel, body string) {
+		t.Helper()
+		p := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("go.work", fixtureWork)
+	write("src/go/go.mod", fixtureGo)
+	write("src/sdk/go.mod", fixtureSDK)
+	write("src/harness/go.mod", fixtureHarness)
+	write("src/harness/go.sum", fixtureSum)
+	write("src/harness/internal/archtest/testdata/c3/go.mod", "module example.com/c3\n\ngo 1.27.4\n")
+
+	repo, err := Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var dirs []string
+	for dir := range repo.Mods {
+		dirs = append(dirs, dir)
+	}
+	slices.Sort(dirs)
+	if want := []string{"src/go", "src/harness", "src/sdk"}; !slices.Equal(dirs, want) {
+		t.Fatalf("Load found modules %v, want %v", dirs, want)
+	}
+	if err := CheckToolchain11(repo); err != nil {
+		t.Fatalf("RM-1 with a testdata fixture module: %v", err)
 	}
 }
