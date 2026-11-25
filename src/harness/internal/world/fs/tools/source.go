@@ -57,7 +57,7 @@ type dirEntry struct{ e fs.DirEntry }
 func (d dirEntry) Name() string                 { return d.e.Name }
 func (d dirEntry) IsDir() bool                  { return d.e.Type == fs.TypeDir }
 func (d dirEntry) Type() iofs.FileMode          { return mode(d.e.Type) }
-func (d dirEntry) Info() (iofs.FileInfo, error) { return fileInfo{d.e}, nil }
+func (d dirEntry) Info() (iofs.FileInfo, error) { return fileInfo(d), nil }
 
 func mode(t fs.FileType) iofs.FileMode {
 	switch t {

@@ -163,6 +163,11 @@ func Load(root string) (Repo, error) {
 		if err != nil {
 			return err
 		}
+		// A testdata directory is invisible to the go command, so a go.mod inside
+		// one is a fixture (an archtest tree, say), not a module of the checkout.
+		if entry.IsDir() && entry.Name() == "testdata" {
+			return filepath.SkipDir
+		}
 		if entry.IsDir() || entry.Name() != "go.mod" {
 			return nil
 		}

@@ -71,11 +71,14 @@ type rig struct {
 }
 
 // rigOptions vary the rig: wrap wraps the local provider, cfg is the tools'
-// configuration, policy mounts the real spill policy as the pipeline's seat.
+// configuration, policy mounts the real spill policy as the pipeline's seat,
+// and store, when set, gives the store the tools are mounted with (nil for
+// none) from the rig's local one.
 type rigOptions struct {
 	wrap   func(fs.FS) fs.FS
 	cfg    fstools.Config
 	policy bool
+	store  func(spill.Store) spill.Store
 }
 
 func newRig(t *testing.T) *rig { return newRigWith(t, rigOptions{}) }
@@ -131,7 +134,11 @@ func newRigWith(t *testing.T, opt rigOptions) *rig {
 		provider = opt.wrap(provider)
 	}
 	o := ops.New(root, provider, &sandboxtest.Resolver{Default: sandbox.WorkspaceWrite, Workdir: wd}, ops.Options{Workdir: wd})
-	if _, err := fstools.Mount(root, svc, o, sp, opt.cfg); err != nil {
+	var store spill.Store = sp
+	if opt.store != nil {
+		store = opt.store(sp)
+	}
+	if _, err := fstools.Mount(root, svc, o, store, opt.cfg); err != nil {
 		t.Fatal(err)
 	}
 	if opt.policy {

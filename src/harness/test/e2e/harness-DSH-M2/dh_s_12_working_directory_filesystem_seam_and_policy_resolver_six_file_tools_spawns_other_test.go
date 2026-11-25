@@ -27,8 +27,14 @@ func sftNewSpawnRecorder() (*sftSpawnRecorder, error) {
 }
 
 func (r *sftSpawnRecorder) Count() (int, error) {
-	// Let the runtime deliver a signal raised by a child that just exited.
-	time.Sleep(250 * time.Millisecond)
+	// Wait on the signal itself, up to 250ms, so the runtime can deliver one
+	// raised by a child that just exited; with no spawn none comes and the
+	// window passes. Then drain the rest without waiting.
+	select {
+	case <-r.ch:
+		r.total++
+	case <-time.After(250 * time.Millisecond):
+	}
 	for {
 		select {
 		case <-r.ch:

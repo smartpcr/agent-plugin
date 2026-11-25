@@ -5,6 +5,7 @@ package e2e
 import (
 	"fmt"
 	"sync"
+	//lint:ignore typeassert SetInformationJobObject and QueryInformationJobObject take the job information struct as unsafe.Pointer and unsafe.Sizeof
 	"unsafe"
 
 	"golang.org/x/sys/windows"
