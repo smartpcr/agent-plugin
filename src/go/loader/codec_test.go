@@ -57,6 +57,7 @@ const baseJSON = `[
 ]
 `
 
+//dsh:test DH-T-LOADER-1
 func TestDiagnosticsCarryFileLineAndColumn(t *testing.T) {
 	h := start(t)
 	doc, err := loader.Parse(loader.JSON, "base.json", []byte(baseJSON))
@@ -67,6 +68,7 @@ func TestDiagnosticsCarryFileLineAndColumn(t *testing.T) {
 	assertGolden(t, "diag_position", issueTexts(issues))
 }
 
+//dsh:test DH-T-LOADER-1
 func TestConfigFileReportsAnInvalidEntryAtItsPosition(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "base.json")
 	writeFile(t, path, baseJSON)

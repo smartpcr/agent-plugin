@@ -1,0 +1,3367 @@
+== dsh M1 manual-check register run (plan step 18.1.5) ==
+script        : C:/Users/xiaodoli.REDMOND/AppData/Local/Temp/claude/095fd4c454d7f56c/32b1560e-0d49-424c-b2a5-d7e6081d5719/scratchpad/manual/run-register.sh
+script sha256 : 07e5e4b09dd9b3e2a6af596a5646325cecec8b2c7a1ba262e087918477128e09
+repository    : /e/work/github/ai/agent-plugin
+commit        : 593ceaa3efd55d41bf0eeaced5ba7e26acc71966 (frozen: 593ceaa3efd55d41bf0eeaced5ba7e26acc71966)
+branch        : m1-phase-18
+os (lane)     : windows
+go version    : go version go1.27.4 windows/amd64
+env           : GOTOOLCHAIN=go1.27.4 GOWORK=off GOFLAGS=<unset> CGO_ENABLED(go env)=1 CC=gcc
+windows       : Microsoft Windows [Version 10.0.28000.3501]
+uname         : MINGW64_NT-10.0-28000 3.6.10-5a1665c8.x86_64 2026-09-28 10:40 UTC x86_64
+user          : REDMOND+xiaodoli (uid 4096)
+one-lane rows : yes; only: all; supplements: 1
+started (UTC) : 2026-11-23T22:14:00Z
+log           : /c/Users/xiaodoli.REDMOND/AppData/Local/Temp/claude/095fd4c454d7f56c/32b1560e-0d49-424c-b2a5-d7e6081d5719/scratchpad/manual/register-windows-593ceaa-20261123T2213Z.log
+
+------------------------------------------------------------------------
+ROW DH-S-1 step 1.2: seeded violation per gate: the runner names the gate; fake-go on PATH fails setup with exit 2 naming both versions
+kind: seeded; systems: one; lane: windows; commit: 593ceaa
+setup: git -C /e/work/github/ai/agent-plugin worktree add --detach /tmp/dsh-register-iXnv7A/wt 593ceaa3efd55d41bf0eeaced5ba7e26acc71966
+Preparing worktree (detached HEAD 593ceaa)
+HEAD is now at 593ceaa [impl] 18.1.4: the trace gate runs trace-tests through built-through
+setup: GOWORK=off go -C /tmp/dsh-register-iXnv7A/wt/tools/harness-gate build -o /tmp/dsh-register-iXnv7A/bin/harness-gate.exe .  (same program as: GOWORK=off go -C tools/harness-gate run . --root <copy>)
+  CASE race-seeded (module testdata/race-seeded)
+  CMD : cp -r /tmp/dsh-register-iXnv7A/wt/tools/harness-gate/testdata/race-seeded /tmp/dsh-register-iXnv7A/mods/race-seeded
+  CMD : (cd /tmp/dsh-register-iXnv7A/wt/tools/harness-gate &&) /tmp/dsh-register-iXnv7A/bin/harness-gate.exe --root /tmp/dsh-register-iXnv7A/mods/race-seeded
+    | harness-gate: toolchain go1.27.4 (the go floor of go.mod; children run with GOTOOLCHAIN=go1.27.4, GOROOT=C:\Program Files\Go)
+    | harness-gate: gate 1/12 gofmt -- every Go file is gofmt-formatted
+    | gofmt: 1 files checked
+    | harness-gate: PASS gofmt (84ms)
+    | harness-gate: gate 2/12 vet -- go vet and the project's own analyzers (nosleep, onespawn, cleanup, fuzzcheck, rootcall, typeassert, lintignore), also on the e2e layer; prints the //lint:ignore exception total
+    | ok   .: go vet -tags= ./...
+    | ok   .: go vet -tags= -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...
+    | ok   .: go vet -tags=replay,scenario,bench ./...
+    | ok   .: go vet -tags=replay,scenario,bench -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...
+    | ok   .: go vet -tags=e2e ./...
+    | ok   .: go vet -tags=e2e -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...
+    | exceptions: 0
+    | harness-gate: PASS vet (18.061s)
+    | harness-gate: gate 3/12 staticcheck -- the pinned staticcheck per module, with -tags= and -tags=replay,scenario,bench
+    | ok   .: staticcheck -tags= ./...
+    | ok   .: staticcheck -tags=replay,scenario,bench ./...
+    | harness-gate: PASS staticcheck (3.503s)
+    | harness-gate: gate 4/12 modules -- go mod tidy -diff and go mod verify per module, the module rules (RM-1..RM-4) and a reason on every pin (RM-10)
+    | ok   .: go mod tidy -diff
+    | ok   .: go mod verify
+    | modules: 1 modules checked
+    | harness-gate: PASS modules (186ms)
+    | harness-gate: gate 5/12 test -- go test -race -shuffle=on -count=1 per module, CGO_ENABLED=1
+    | FAIL .: go test -tags= -race -shuffle=on -count=1 ./...
+    | -test.shuffle 1795472079930567600
+    | ==================
+    | WARNING: DATA RACE
+    | Read at 0x00c00000c438 by goroutine 9:
+    |   example.com/raceseeded.TestRace.func1()
+    |       C:/Users/XIAODO~1.RED/AppData/Local/Temp/dsh-register-iXnv7A/mods/race-seeded/race_test.go:16 +0x7b
+    | 
+    | Previous write at 0x00c00000c438 by goroutine 8:
+    |   example.com/raceseeded.TestRace()
+    |       C:/Users/XIAODO~1.RED/AppData/Local/Temp/dsh-register-iXnv7A/mods/race-seeded/race_test.go:18 +0x1b8
+    |   testing.tRunner()
+    |       C:/Program Files/Go/src/testing/testing.go:2195 +0x1ca
+    |   testing.(*T).Run.gowrap1()
+    |       C:/Program Files/Go/src/testing/testing.go:2260 +0x38
+    | 
+    | Goroutine 9 (running) created at:
+    |   example.com/raceseeded.TestRace()
+    |       C:/Users/XIAODO~1.RED/AppData/Local/Temp/dsh-register-iXnv7A/mods/race-seeded/race_test.go:14 +0x19c
+    |   testing.tRunner()
+    |       C:/Program Files/Go/src/testing/testing.go:2195 +0x1ca
+    |   testing.(*T).Run.gowrap1()
+    |       C:/Program Files/Go/src/testing/testing.go:2260 +0x38
+    | 
+    | Goroutine 8 (running) created at:
+    |   testing.(*T).Run()
+    |       C:/Program Files/Go/src/testing/testing.go:2260 +0xb2a
+    |   testing.runTests.func1()
+    |       C:/Program Files/Go/src/testing/testing.go:2744 +0x84
+    |   testing.tRunner()
+    |       C:/Program Files/Go/src/testing/testing.go:2195 +0x1ca
+    |   testing.runTests()
+    |       C:/Program Files/Go/src/testing/testing.go:2742 +0x9f7
+    |   testing.(*M).Run()
+    |       C:/Program Files/Go/src/testing/testing.go:2602 +0xf44
+    |   main.main()
+    |       _testmain.go:46 +0x164
+    | ==================
+    | --- FAIL: TestRace (0.00s)
+    |     testing.go:1867: race detected during execution of test
+    | FAIL
+    | FAIL	example.com/raceseeded	2.155s
+    | FAIL
+    | harness-gate: FAIL test (7.336s)
+    | .: go test -tags= -race -shuffle=on -count=1 ./...: exit status 1; failing tests: TestRace; data race detected
+    | harness-gate: FAILED at gate test
+  exit: 1
+  CASE budget-race (module testdata/budget-race)
+  CMD : cp -r /tmp/dsh-register-iXnv7A/wt/tools/harness-gate/testdata/budget-race /tmp/dsh-register-iXnv7A/mods/budget-race
+  CMD : (cd /tmp/dsh-register-iXnv7A/wt/tools/harness-gate &&) /tmp/dsh-register-iXnv7A/bin/harness-gate.exe --root /tmp/dsh-register-iXnv7A/mods/budget-race
+    | harness-gate: toolchain go1.27.4 (the go floor of go.mod; children run with GOTOOLCHAIN=go1.27.4, GOROOT=C:\Program Files\Go)
+    | harness-gate: gate 1/12 gofmt -- every Go file is gofmt-formatted
+    | gofmt: 1 files checked
+    | harness-gate: PASS gofmt (72ms)
+    | harness-gate: gate 2/12 vet -- go vet and the project's own analyzers (nosleep, onespawn, cleanup, fuzzcheck, rootcall, typeassert, lintignore), also on the e2e layer; prints the //lint:ignore exception total
+    | ok   .: go vet -tags= ./...
+    | ok   .: go vet -tags= -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...
+    | ok   .: go vet -tags=replay,scenario,bench ./...
+    | ok   .: go vet -tags=replay,scenario,bench -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...
+    | ok   .: go vet -tags=e2e ./...
+    | ok   .: go vet -tags=e2e -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...
+    | exceptions: 0
+    | harness-gate: PASS vet (2.706s)
+    | harness-gate: gate 3/12 staticcheck -- the pinned staticcheck per module, with -tags= and -tags=replay,scenario,bench
+    | ok   .: staticcheck -tags= ./...
+    | ok   .: staticcheck -tags=replay,scenario,bench ./...
+    | harness-gate: PASS staticcheck (2.325s)
+    | harness-gate: gate 4/12 modules -- go mod tidy -diff and go mod verify per module, the module rules (RM-1..RM-4) and a reason on every pin (RM-10)
+    | ok   .: go mod tidy -diff
+    | ok   .: go mod verify
+    | modules: 1 modules checked
+    | harness-gate: PASS modules (190ms)
+    | harness-gate: gate 5/12 test -- go test -race -shuffle=on -count=1 per module, CGO_ENABLED=1
+    | FAIL .: go test -tags= -race -shuffle=on -count=1 ./...
+    | -test.shuffle 1795472095049163800
+    | ==================
+    | WARNING: DATA RACE
+    | Read at 0x00c00000c438 by goroutine 9:
+    |   example.com/budgetrace.TestBudgetRacy.func1()
+    |       C:/Users/XIAODO~1.RED/AppData/Local/Temp/dsh-register-iXnv7A/mods/budget-race/budget_test.go:20 +0x7b
+    | 
+    | Previous write at 0x00c00000c438 by goroutine 8:
+    |   example.com/budgetrace.TestBudgetRacy()
+    |       C:/Users/XIAODO~1.RED/AppData/Local/Temp/dsh-register-iXnv7A/mods/budget-race/budget_test.go:22 +0x1f9
+    |   testing.tRunner()
+    |       C:/Program Files/Go/src/testing/testing.go:2195 +0x1ca
+    |   testing.(*T).Run.gowrap1()
+    |       C:/Program Files/Go/src/testing/testing.go:2260 +0x38
+    | 
+    | Goroutine 9 (running) created at:
+    |   example.com/budgetrace.TestBudgetRacy()
+    |       C:/Users/XIAODO~1.RED/AppData/Local/Temp/dsh-register-iXnv7A/mods/budget-race/budget_test.go:18 +0x1d3
+    |   testing.tRunner()
+    |       C:/Program Files/Go/src/testing/testing.go:2195 +0x1ca
+    |   testing.(*T).Run.gowrap1()
+    |       C:/Program Files/Go/src/testing/testing.go:2260 +0x38
+    | 
+    | Goroutine 8 (running) created at:
+    |   testing.(*T).Run()
+    |       C:/Program Files/Go/src/testing/testing.go:2260 +0xb2a
+    |   testing.runTests.func1()
+    |       C:/Program Files/Go/src/testing/testing.go:2744 +0x84
+    |   testing.tRunner()
+    |       C:/Program Files/Go/src/testing/testing.go:2195 +0x1ca
+    |   testing.runTests()
+    |       C:/Program Files/Go/src/testing/testing.go:2742 +0x9f7
+    |   testing.(*M).Run()
+    |       C:/Program Files/Go/src/testing/testing.go:2602 +0xf44
+    |   main.main()
+    |       _testmain.go:46 +0x164
+    | ==================
+    | --- FAIL: TestBudgetRacy (0.00s)
+    |     testing.go:1867: race detected during execution of test
+    | FAIL
+    | FAIL	example.com/budgetrace	1.977s
+    | FAIL
+    | harness-gate: FAIL test (8.408s)
+    | .: go test -tags= -race -shuffle=on -count=1 ./...: exit status 1; failing tests: TestBudgetRacy; data race detected
+    | harness-gate: FAILED at gate test
+  exit: 1
+  CASE unformatted-file (module testdata/unformatted-file)
+  CMD : cp -r /tmp/dsh-register-iXnv7A/wt/tools/harness-gate/testdata/unformatted-file /tmp/dsh-register-iXnv7A/mods/unformatted-file
+  CMD : (cd /tmp/dsh-register-iXnv7A/wt/tools/harness-gate &&) /tmp/dsh-register-iXnv7A/bin/harness-gate.exe --root /tmp/dsh-register-iXnv7A/mods/unformatted-file
+    | harness-gate: toolchain go1.27.4 (the go floor of go.mod; children run with GOTOOLCHAIN=go1.27.4, GOROOT=C:\Program Files\Go)
+    | harness-gate: gate 1/12 gofmt -- every Go file is gofmt-formatted
+    | gofmt: 2 files checked
+    | harness-gate: FAIL gofmt (70ms)
+    | not gofmt-formatted:
+    |   add.go
+    | harness-gate: FAILED at gate gofmt
+  exit: 1
+  CASE untidy-module (module testdata/untidy-module)
+  CMD : cp -r /tmp/dsh-register-iXnv7A/wt/tools/harness-gate/testdata/untidy-module /tmp/dsh-register-iXnv7A/mods/untidy-module
+  CMD : (cd /tmp/dsh-register-iXnv7A/wt/tools/harness-gate &&) /tmp/dsh-register-iXnv7A/bin/harness-gate.exe --root /tmp/dsh-register-iXnv7A/mods/untidy-module
+    | harness-gate: toolchain go1.27.4 (the go floor of go.mod; children run with GOTOOLCHAIN=go1.27.4, GOROOT=C:\Program Files\Go)
+    | harness-gate: gate 1/12 gofmt -- every Go file is gofmt-formatted
+    | gofmt: 2 files checked
+    | harness-gate: PASS gofmt (130ms)
+    | harness-gate: gate 2/12 vet -- go vet and the project's own analyzers (nosleep, onespawn, cleanup, fuzzcheck, rootcall, typeassert, lintignore), also on the e2e layer; prints the //lint:ignore exception total
+    | ok   .: go vet -tags= ./...
+    | ok   .: go vet -tags= -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...
+    | ok   .: go vet -tags=replay,scenario,bench ./...
+    | ok   .: go vet -tags=replay,scenario,bench -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...
+    | ok   .: go vet -tags=e2e ./...
+    | ok   .: go vet -tags=e2e -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...
+    | exceptions: 0
+    | harness-gate: PASS vet (2.475s)
+    | harness-gate: gate 3/12 staticcheck -- the pinned staticcheck per module, with -tags= and -tags=replay,scenario,bench
+    | ok   .: staticcheck -tags= ./...
+    | ok   .: staticcheck -tags=replay,scenario,bench ./...
+    | harness-gate: PASS staticcheck (1.842s)
+    | harness-gate: gate 4/12 modules -- go mod tidy -diff and go mod verify per module, the module rules (RM-1..RM-4) and a reason on every pin (RM-10)
+    | FAIL .: go mod tidy -diff
+    | diff current/go.mod tidy/go.mod
+    | --- current/go.mod
+    | +++ tidy/go.mod
+    | @@ -1,7 +1,3 @@
+    |  module example.com/untidy
+    |  
+    |  go 1.27.4
+    | -
+    | -// Seeded for the modules gate (Seeded-violation modules, tools/harness-gate/README.md):
+    | -// nothing imports golang.org/x/mod, so "go mod tidy -diff" removes this line.
+    | -require golang.org/x/mod v0.43.0
+    | 
+    | diff current/go.sum tidy/go.sum
+    | --- current/go.sum
+    | +++ tidy/go.sum
+    | @@ -1,2 +0,0 @@
+    | -golang.org/x/mod v0.43.0 h1:MFuq5J6s35W9D3IjkwyWc9vHh0nENOrt5K8Iof4ofmg=
+    | -golang.org/x/mod v0.43.0/go.mod h1:4ec1JnuyBz5+FIVhg86UsA39YG8BpnrZdJYSNHmGzHY=
+    | 
+    | ok   .: go mod verify
+    | modules: 1 modules checked
+    | harness-gate: FAIL modules (877ms)
+    | .: go mod tidy -diff: exit status 1; the module is not tidy (run go mod tidy)
+    | harness-gate: FAILED at gate modules
+  exit: 1
+  CASE staticcheck-seeded (module testdata/staticcheck-seeded)
+  CMD : cp -r /tmp/dsh-register-iXnv7A/wt/tools/harness-gate/testdata/staticcheck-seeded /tmp/dsh-register-iXnv7A/mods/staticcheck-seeded
+  CMD : (cd /tmp/dsh-register-iXnv7A/wt/tools/harness-gate &&) /tmp/dsh-register-iXnv7A/bin/harness-gate.exe --root /tmp/dsh-register-iXnv7A/mods/staticcheck-seeded
+    | harness-gate: toolchain go1.27.4 (the go floor of go.mod; children run with GOTOOLCHAIN=go1.27.4, GOROOT=C:\Program Files\Go)
+    | harness-gate: gate 1/12 gofmt -- every Go file is gofmt-formatted
+    | gofmt: 1 files checked
+    | harness-gate: PASS gofmt (77ms)
+    | harness-gate: gate 2/12 vet -- go vet and the project's own analyzers (nosleep, onespawn, cleanup, fuzzcheck, rootcall, typeassert, lintignore), also on the e2e layer; prints the //lint:ignore exception total
+    | ok   .: go vet -tags= ./...
+    | ok   .: go vet -tags= -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...
+    | ok   .: go vet -tags=replay,scenario,bench ./...
+    | ok   .: go vet -tags=replay,scenario,bench -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...
+    | ok   .: go vet -tags=e2e ./...
+    | ok   .: go vet -tags=e2e -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...
+    | exceptions: 0
+    | harness-gate: PASS vet (2.145s)
+    | harness-gate: gate 3/12 staticcheck -- the pinned staticcheck per module, with -tags= and -tags=replay,scenario,bench
+    | FAIL .: staticcheck -tags= ./...
+    | x.go:6:2: should use 'return x == x' instead of 'if x == x { return true }; return false' (S1008)
+    | x.go:6:5: identical expressions on the left and right side of the '==' operator (SA4000)
+    | FAIL .: staticcheck -tags=replay,scenario,bench ./...
+    | x.go:6:2: should use 'return x == x' instead of 'if x == x { return true }; return false' (S1008)
+    | x.go:6:5: identical expressions on the left and right side of the '==' operator (SA4000)
+    | harness-gate: FAIL staticcheck (1.24s)
+    | .: staticcheck -tags= ./...: exit status 1
+    | .: staticcheck -tags=replay,scenario,bench ./...: exit status 1
+    | harness-gate: FAILED at gate staticcheck
+  exit: 1
+  CASE coverage-40pct (module testdata/coverage-40pct)
+  CMD : cp -r /tmp/dsh-register-iXnv7A/wt/tools/harness-gate/testdata/coverage-40pct /tmp/dsh-register-iXnv7A/mods/coverage-40pct
+  CMD : (cd /tmp/dsh-register-iXnv7A/wt/tools/harness-gate &&) /tmp/dsh-register-iXnv7A/bin/harness-gate.exe --root /tmp/dsh-register-iXnv7A/mods/coverage-40pct
+    | harness-gate: toolchain go1.27.4 (the go floor of go.mod; children run with GOTOOLCHAIN=go1.27.4, GOROOT=C:\Program Files\Go)
+    | harness-gate: gate 1/12 gofmt -- every Go file is gofmt-formatted
+    | gofmt: 2 files checked
+    | harness-gate: PASS gofmt (202ms)
+    | harness-gate: gate 2/12 vet -- go vet and the project's own analyzers (nosleep, onespawn, cleanup, fuzzcheck, rootcall, typeassert, lintignore), also on the e2e layer; prints the //lint:ignore exception total
+    | ok   .: go vet -tags= ./...
+    | ok   .: go vet -tags= -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...
+    | ok   .: go vet -tags=replay,scenario,bench ./...
+    | ok   .: go vet -tags=replay,scenario,bench -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...
+    | ok   .: go vet -tags=e2e ./...
+    | ok   .: go vet -tags=e2e -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...
+    | exceptions: 0
+    | harness-gate: PASS vet (4.214s)
+    | harness-gate: gate 3/12 staticcheck -- the pinned staticcheck per module, with -tags= and -tags=replay,scenario,bench
+    | ok   .: staticcheck -tags= ./...
+    | ok   .: staticcheck -tags=replay,scenario,bench ./...
+    | harness-gate: PASS staticcheck (2.322s)
+    | harness-gate: gate 4/12 modules -- go mod tidy -diff and go mod verify per module, the module rules (RM-1..RM-4) and a reason on every pin (RM-10)
+    | ok   .: go mod tidy -diff
+    | ok   .: go mod verify
+    | modules: 1 modules checked
+    | harness-gate: PASS modules (187ms)
+    | harness-gate: gate 5/12 test -- go test -race -shuffle=on -count=1 per module, CGO_ENABLED=1
+    | ok   .: go test -tags= -race -shuffle=on -count=1 ./...
+    | harness-gate: PASS test (5.856s)
+    | harness-gate: gate 6/12 coverage -- coverage merged across processes, 85% of statements per package
+    | ok   .: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3570797050\bin\pkg0.test.exe example.com/cov40/p
+    | ok   p: example.com/cov40/p.test
+    | ok   .: go tool covdata textfmt -i=C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3570797050\covdata -o=C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3570797050\covdata.out
+    | coverage: example.com/cov40/p 40%
+    | harness-gate: FAIL coverage (8.661s)
+    | example.com/cov40/p: 40% < 85% of statements (2 of 5 covered)
+    | harness-gate: FAILED at gate coverage
+  exit: 1
+  CASE coverage-blocked (module testdata/coverage-blocked)
+  CMD : cp -r /tmp/dsh-register-iXnv7A/wt/tools/harness-gate/testdata/coverage-blocked /tmp/dsh-register-iXnv7A/mods/coverage-blocked
+  CMD : (cd /tmp/dsh-register-iXnv7A/wt/tools/harness-gate &&) /tmp/dsh-register-iXnv7A/bin/harness-gate.exe --root /tmp/dsh-register-iXnv7A/mods/coverage-blocked
+    | harness-gate: toolchain go1.27.4 (the go floor of go.mod; children run with GOTOOLCHAIN=go1.27.4, GOROOT=C:\Program Files\Go)
+    | harness-gate: gate 1/12 gofmt -- every Go file is gofmt-formatted
+    | gofmt: 2 files checked
+    | harness-gate: PASS gofmt (133ms)
+    | harness-gate: gate 2/12 vet -- go vet and the project's own analyzers (nosleep, onespawn, cleanup, fuzzcheck, rootcall, typeassert, lintignore), also on the e2e layer; prints the //lint:ignore exception total
+    | ok   .: go vet -tags= ./...
+    | ok   .: go vet -tags= -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...
+    | ok   .: go vet -tags=replay,scenario,bench ./...
+    | ok   .: go vet -tags=replay,scenario,bench -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...
+    | ok   .: go vet -tags=e2e ./...
+    | ok   .: go vet -tags=e2e -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...
+    | exceptions: 0
+    | harness-gate: PASS vet (2.512s)
+    | harness-gate: gate 3/12 staticcheck -- the pinned staticcheck per module, with -tags= and -tags=replay,scenario,bench
+    | ok   .: staticcheck -tags= ./...
+    | ok   .: staticcheck -tags=replay,scenario,bench ./...
+    | harness-gate: PASS staticcheck (2.29s)
+    | harness-gate: gate 4/12 modules -- go mod tidy -diff and go mod verify per module, the module rules (RM-1..RM-4) and a reason on every pin (RM-10)
+    | ok   .: go mod tidy -diff
+    | ok   .: go mod verify
+    | modules: 1 modules checked
+    | harness-gate: PASS modules (162ms)
+    | harness-gate: gate 5/12 test -- go test -race -shuffle=on -count=1 per module, CGO_ENABLED=1
+    | FAIL .: go test -tags= -race -shuffle=on -count=1 ./...
+    | -test.shuffle 1795472144928960200
+    | panic: test timed out after 10m0s
+    | 	running tests:
+    | 		TestBlocked (10m0s)
+    | 
+    | goroutine 8 [running]:
+    | testing.(*M).startAlarm.func1()
+    | 	C:/Program Files/Go/src/testing/testing.go:2961 +0x605
+    | created by time.goFunc
+    | 	C:/Program Files/Go/src/time/sleep.go:182 +0x45
+    | 
+    | goroutine 1 [chan receive]:
+    | testing.(*T).Run(0xc000002200, {0x140283aa9, 0xb}, 0x140420e30)
+    | 	C:/Program Files/Go/src/testing/testing.go:2268 +0xb56
+    | testing.runTests.func1(0xc000002200)
+    | 	C:/Program Files/Go/src/testing/testing.go:2744 +0x85
+    | testing.tRunner(0xc000002200, 0xc00003ba40)
+    | 	C:/Program Files/Go/src/testing/testing.go:2195 +0x1cb
+    | testing.runTests({0x140287a47, 0x16}, {0x140287a47, 0x16}, 0xc00000a138, {0x1402709b8, 0x1, 0x1}, {0xc2b94d3a3766c574, 0x8bb2d166ad, ...})
+    | 	C:/Program Files/Go/src/testing/testing.go:2742 +0x9f8
+    | testing.(*M).Run(0xc0000e21e0)
+    | 	C:/Program Files/Go/src/testing/testing.go:2602 +0xf45
+    | main.main()
+    | 	_testmain.go:46 +0x165
+    | 
+    | goroutine 7 [chan receive]:
+    | example.com/covblocked.Wait(...)
+    | 	C:/Users/XIAODO~1.RED/AppData/Local/Temp/dsh-register-iXnv7A/mods/coverage-blocked/blocked.go:5
+    | example.com/covblocked.TestBlocked(0xc000002400?)
+    | 	C:/Users/XIAODO~1.RED/AppData/Local/Temp/dsh-register-iXnv7A/mods/coverage-blocked/blocked_test.go:7 +0x2d
+    | testing.tRunner(0xc000002400, 0x140420e30)
+    | 	C:/Program Files/Go/src/testing/testing.go:2195 +0x1cb
+    | created by testing.(*T).Run in goroutine 1
+    | 	C:/Program Files/Go/src/testing/testing.go:2260 +0xb2b
+    | FAIL	example.com/covblocked	601.395s
+    | FAIL
+    | harness-gate: FAIL test (10m6.121s)
+    | .: go test -tags= -race -shuffle=on -count=1 ./...: exit status 1; test timed out: TestBlocked
+    | harness-gate: FAILED at gate test
+  exit: 1
+  CASE coverage-child (module testdata/coverage-child)
+  CMD : cp -r /tmp/dsh-register-iXnv7A/wt/tools/harness-gate/testdata/coverage-child /tmp/dsh-register-iXnv7A/mods/coverage-child
+  CMD : (cd /tmp/dsh-register-iXnv7A/wt/tools/harness-gate &&) /tmp/dsh-register-iXnv7A/bin/harness-gate.exe --root /tmp/dsh-register-iXnv7A/mods/coverage-child
+    | harness-gate: toolchain go1.27.4 (the go floor of go.mod; children run with GOTOOLCHAIN=go1.27.4, GOROOT=C:\Program Files\Go)
+    | harness-gate: gate 1/12 gofmt -- every Go file is gofmt-formatted
+    | gofmt: 3 files checked
+    | harness-gate: PASS gofmt (167ms)
+    | harness-gate: gate 2/12 vet -- go vet and the project's own analyzers (nosleep, onespawn, cleanup, fuzzcheck, rootcall, typeassert, lintignore), also on the e2e layer; prints the //lint:ignore exception total
+    | ok   .: go vet -tags= ./...
+    | ok   .: go vet -tags= -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...
+    | ok   .: go vet -tags=replay,scenario,bench ./...
+    | ok   .: go vet -tags=replay,scenario,bench -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...
+    | ok   .: go vet -tags=e2e ./...
+    | ok   .: go vet -tags=e2e -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...
+    | exceptions: 0
+    | harness-gate: PASS vet (4.547s)
+    | harness-gate: gate 3/12 staticcheck -- the pinned staticcheck per module, with -tags= and -tags=replay,scenario,bench
+    | ok   .: staticcheck -tags= ./...
+    | ok   .: staticcheck -tags=replay,scenario,bench ./...
+    | harness-gate: PASS staticcheck (1.879s)
+    | harness-gate: gate 4/12 modules -- go mod tidy -diff and go mod verify per module, the module rules (RM-1..RM-4) and a reason on every pin (RM-10)
+    | ok   .: go mod tidy -diff
+    | ok   .: go mod verify
+    | modules: 1 modules checked
+    | harness-gate: PASS modules (230ms)
+    | harness-gate: gate 5/12 test -- go test -race -shuffle=on -count=1 per module, CGO_ENABLED=1
+    | FAIL .: go test -tags= -race -shuffle=on -count=1 ./...
+    | ?   	example.com/covchild/cmd/helper	[no test files]
+    | -test.shuffle 1795472760461932600
+    | --- FAIL: TestHelperBinary (5.05s)
+    |     p_test.go:52: helper: <nil> "warning: GOCOVERDIR not set, no coverage data emitted\n9\n"
+    | FAIL
+    | FAIL	example.com/covchild/p	7.682s
+    | FAIL
+    | harness-gate: FAIL test (12.583s)
+    | .: go test -tags= -race -shuffle=on -count=1 ./...: exit status 1; failing tests: TestHelperBinary
+    | harness-gate: FAILED at gate test
+  exit: 1
+  CASE layer-tagged (module testdata/layer-tagged)
+  CMD : cp -r /tmp/dsh-register-iXnv7A/wt/tools/harness-gate/testdata/layer-tagged /tmp/dsh-register-iXnv7A/mods/layer-tagged
+  CMD : (cd /tmp/dsh-register-iXnv7A/wt/tools/harness-gate &&) /tmp/dsh-register-iXnv7A/bin/harness-gate.exe --root /tmp/dsh-register-iXnv7A/mods/layer-tagged
+    | harness-gate: toolchain go1.27.4 (the go floor of go.mod; children run with GOTOOLCHAIN=go1.27.4, GOROOT=C:\Program Files\Go)
+    | harness-gate: gate 1/12 gofmt -- every Go file is gofmt-formatted
+    | gofmt: 4 files checked
+    | harness-gate: PASS gofmt (89ms)
+    | harness-gate: gate 2/12 vet -- go vet and the project's own analyzers (nosleep, onespawn, cleanup, fuzzcheck, rootcall, typeassert, lintignore), also on the e2e layer; prints the //lint:ignore exception total
+    | ok   .: go vet -tags= ./...
+    | ok   .: go vet -tags= -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...
+    | ok   .: go vet -tags=replay,scenario,bench ./...
+    | ok   .: go vet -tags=replay,scenario,bench -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...
+    | ok   .: go vet -tags=e2e ./...
+    | ok   .: go vet -tags=e2e -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...
+    | exceptions: 0
+    | harness-gate: PASS vet (2.814s)
+    | harness-gate: gate 3/12 staticcheck -- the pinned staticcheck per module, with -tags= and -tags=replay,scenario,bench
+    | ok   .: staticcheck -tags= ./...
+    | ok   .: staticcheck -tags=replay,scenario,bench ./...
+    | harness-gate: PASS staticcheck (2.174s)
+    | harness-gate: gate 4/12 modules -- go mod tidy -diff and go mod verify per module, the module rules (RM-1..RM-4) and a reason on every pin (RM-10)
+    | ok   .: go mod tidy -diff
+    | ok   .: go mod verify
+    | modules: 1 modules checked
+    | harness-gate: PASS modules (185ms)
+    | harness-gate: gate 5/12 test -- go test -race -shuffle=on -count=1 per module, CGO_ENABLED=1
+    | ok   .: go test -tags= -race -shuffle=on -count=1 ./...
+    | harness-gate: PASS test (6.884s)
+    | harness-gate: gate 6/12 coverage -- coverage merged across processes, 85% of statements per package
+    | ok   .: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-95371196\bin\pkg0.test.exe example.com/layers
+    | ok   .: example.com/layers.test
+    | ok   .: go tool covdata textfmt -i=C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-95371196\covdata -o=C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-95371196\covdata.out
+    | coverage: example.com/layers 100%
+    | harness-gate: PASS coverage (6.182s)
+    | harness-gate: gate 7/12 trace -- tools/harness-trace verify, and trace-tests: every DH-T ID of DH-S-1..built-through named by a test or validly deferred
+    | harness-gate: FAIL trace (0s)
+    | tools/harness-trace not found under C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\mods\layer-tagged: the traceability check cannot run (QG-9)
+    | trace-tests: test/harness/acceptance-index.yaml not found under C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\mods\layer-tagged: the acceptance index cannot be checked: open C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\mods\layer-tagged\test\harness\acceptance-index.yaml: The system cannot find the path specified.
+    | harness-gate: FAILED at gate trace
+  exit: 1
+  CASE budget-exceeded (module testdata/budget-exceeded)
+  CMD : cp -r /tmp/dsh-register-iXnv7A/wt/tools/harness-gate/testdata/budget-exceeded /tmp/dsh-register-iXnv7A/mods/budget-exceeded
+  CMD : (cd /tmp/dsh-register-iXnv7A/wt/tools/harness-gate &&) /tmp/dsh-register-iXnv7A/bin/harness-gate.exe --root /tmp/dsh-register-iXnv7A/mods/budget-exceeded
+    | harness-gate: toolchain go1.27.4 (the go floor of go.mod; children run with GOTOOLCHAIN=go1.27.4, GOROOT=C:\Program Files\Go)
+    | harness-gate: gate 1/12 gofmt -- every Go file is gofmt-formatted
+    | gofmt: 1 files checked
+    | harness-gate: PASS gofmt (65ms)
+    | harness-gate: gate 2/12 vet -- go vet and the project's own analyzers (nosleep, onespawn, cleanup, fuzzcheck, rootcall, typeassert, lintignore), also on the e2e layer; prints the //lint:ignore exception total
+    | ok   .: go vet -tags= ./...
+    | ok   .: go vet -tags= -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...
+    | ok   .: go vet -tags=replay,scenario,bench ./...
+    | ok   .: go vet -tags=replay,scenario,bench -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...
+    | ok   .: go vet -tags=e2e ./...
+    | ok   .: go vet -tags=e2e -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...
+    | exceptions: 0
+    | harness-gate: PASS vet (2.481s)
+    | harness-gate: gate 3/12 staticcheck -- the pinned staticcheck per module, with -tags= and -tags=replay,scenario,bench
+    | ok   .: staticcheck -tags= ./...
+    | ok   .: staticcheck -tags=replay,scenario,bench ./...
+    | harness-gate: PASS staticcheck (2.884s)
+    | harness-gate: gate 4/12 modules -- go mod tidy -diff and go mod verify per module, the module rules (RM-1..RM-4) and a reason on every pin (RM-10)
+    | ok   .: go mod tidy -diff
+    | ok   .: go mod verify
+    | modules: 1 modules checked
+    | harness-gate: PASS modules (160ms)
+    | harness-gate: gate 5/12 test -- go test -race -shuffle=on -count=1 per module, CGO_ENABLED=1
+    | FAIL .: go test -tags= -race -shuffle=on -count=1 ./...
+    | -test.shuffle 1795472798611129400
+    | --- FAIL: TestBudgetX (0.00s)
+    |     budget_test.go:34: build allocates 1 times per call, budget 0
+    | FAIL
+    | FAIL	example.com/budget	1.718s
+    | FAIL
+    | harness-gate: FAIL test (5.26s)
+    | .: go test -tags= -race -shuffle=on -count=1 ./...: exit status 1; failing tests: TestBudgetX
+    | harness-gate: FAILED at gate test
+  exit: 1
+  CASE cross-broken (module testdata/cross-broken)
+  CMD : cp -r /tmp/dsh-register-iXnv7A/wt/tools/harness-gate/testdata/cross-broken /tmp/dsh-register-iXnv7A/mods/cross-broken
+  CMD : (cd /tmp/dsh-register-iXnv7A/wt/tools/harness-gate &&) /tmp/dsh-register-iXnv7A/bin/harness-gate.exe --root /tmp/dsh-register-iXnv7A/mods/cross-broken
+    | harness-gate: toolchain go1.27.4 (the go floor of go.mod; children run with GOTOOLCHAIN=go1.27.4, GOROOT=C:\Program Files\Go)
+    | harness-gate: gate 1/12 gofmt -- every Go file is gofmt-formatted
+    | gofmt: 2 files checked
+    | harness-gate: PASS gofmt (70ms)
+    | harness-gate: gate 2/12 vet -- go vet and the project's own analyzers (nosleep, onespawn, cleanup, fuzzcheck, rootcall, typeassert, lintignore), also on the e2e layer; prints the //lint:ignore exception total
+    | ok   .: go vet -tags= ./...
+    | ok   .: go vet -tags= -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...
+    | ok   .: go vet -tags=replay,scenario,bench ./...
+    | ok   .: go vet -tags=replay,scenario,bench -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...
+    | ok   .: go vet -tags=e2e ./...
+    | ok   .: go vet -tags=e2e -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...
+    | exceptions: 0
+    | harness-gate: PASS vet (2.467s)
+    | harness-gate: gate 3/12 staticcheck -- the pinned staticcheck per module, with -tags= and -tags=replay,scenario,bench
+    | ok   .: staticcheck -tags= ./...
+    | ok   .: staticcheck -tags=replay,scenario,bench ./...
+    | harness-gate: PASS staticcheck (1.622s)
+    | harness-gate: gate 4/12 modules -- go mod tidy -diff and go mod verify per module, the module rules (RM-1..RM-4) and a reason on every pin (RM-10)
+    | ok   .: go mod tidy -diff
+    | ok   .: go mod verify
+    | modules: 1 modules checked
+    | harness-gate: PASS modules (591ms)
+    | harness-gate: gate 5/12 test -- go test -race -shuffle=on -count=1 per module, CGO_ENABLED=1
+    | ok   .: go test -tags= -race -shuffle=on -count=1 ./...
+    | harness-gate: PASS test (1.359s)
+    | harness-gate: gate 6/12 coverage -- coverage merged across processes, 85% of statements per package
+    | ok   .: go tool covdata textfmt -i=C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-2366763434\covdata -o=C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-2366763434\covdata.out
+    | ok   .: go test -tags= -cover -covermode=set -coverprofile=C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-2366763434\untested.out example.com/crossbroken/cmd/dsh
+    | coverage: example.com/crossbroken/cmd/dsh 100%
+    | harness-gate: PASS coverage (4.702s)
+    | harness-gate: gate 7/12 trace -- tools/harness-trace verify, and trace-tests: every DH-T ID of DH-S-1..built-through named by a test or validly deferred
+    | harness-gate: FAIL trace (0s)
+    | tools/harness-trace not found under C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\mods\cross-broken: the traceability check cannot run (QG-9)
+    | trace-tests: test/harness/acceptance-index.yaml not found under C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\mods\cross-broken: the acceptance index cannot be checked: open C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\mods\cross-broken\test\harness\acceptance-index.yaml: The system cannot find the path specified.
+    | harness-gate: FAILED at gate trace
+  exit: 1
+  CASE vuln-stdlib (module testdata/vuln-stdlib)
+  CMD : cp -r /tmp/dsh-register-iXnv7A/wt/tools/harness-gate/testdata/vuln-stdlib /tmp/dsh-register-iXnv7A/mods/vuln-stdlib
+  CMD : (cd /tmp/dsh-register-iXnv7A/wt/tools/harness-gate &&) /tmp/dsh-register-iXnv7A/bin/harness-gate.exe --root /tmp/dsh-register-iXnv7A/mods/vuln-stdlib
+    | harness-gate: toolchain go1.27.4 (the go floor of go.mod; children run with GOTOOLCHAIN=go1.27.4, GOROOT=C:\Program Files\Go)
+    | harness-gate: gate 1/12 gofmt -- every Go file is gofmt-formatted
+    | gofmt: 1 files checked
+    | harness-gate: PASS gofmt (76ms)
+    | harness-gate: gate 2/12 vet -- go vet and the project's own analyzers (nosleep, onespawn, cleanup, fuzzcheck, rootcall, typeassert, lintignore), also on the e2e layer; prints the //lint:ignore exception total
+    | ok   .: go vet -tags= ./...
+    | ok   .: go vet -tags= -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...
+    | ok   .: go vet -tags=replay,scenario,bench ./...
+    | ok   .: go vet -tags=replay,scenario,bench -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...
+    | ok   .: go vet -tags=e2e ./...
+    | ok   .: go vet -tags=e2e -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...
+    | exceptions: 0
+    | harness-gate: PASS vet (2.555s)
+    | harness-gate: gate 3/12 staticcheck -- the pinned staticcheck per module, with -tags= and -tags=replay,scenario,bench
+    | ok   .: staticcheck -tags= ./...
+    | ok   .: staticcheck -tags=replay,scenario,bench ./...
+    | harness-gate: PASS staticcheck (1.196s)
+    | harness-gate: gate 4/12 modules -- go mod tidy -diff and go mod verify per module, the module rules (RM-1..RM-4) and a reason on every pin (RM-10)
+    | ok   .: go mod tidy -diff
+    | ok   .: go mod verify
+    | modules: 1 modules checked
+    | harness-gate: PASS modules (157ms)
+    | harness-gate: gate 5/12 test -- go test -race -shuffle=on -count=1 per module, CGO_ENABLED=1
+    | ok   .: go test -tags= -race -shuffle=on -count=1 ./...
+    | harness-gate: PASS test (379ms)
+    | harness-gate: gate 6/12 coverage -- coverage merged across processes, 85% of statements per package
+    | ok   .: go tool covdata textfmt -i=C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-650847610\covdata -o=C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-650847610\covdata.out
+    | ok   .: go test -tags= -cover -covermode=set -coverprofile=C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-650847610\untested.out example.com/vulnstdlib
+    | coverage: example.com/vulnstdlib 0%
+    | harness-gate: FAIL coverage (1.719s)
+    | example.com/vulnstdlib: 0% < 85% of statements (0 of 1 covered)
+    | harness-gate: FAILED at gate coverage
+  exit: 1
+  CASE fake-go (module testdata/unformatted-file)
+  CMD : cp -r /tmp/dsh-register-iXnv7A/wt/tools/harness-gate/testdata/unformatted-file /tmp/dsh-register-iXnv7A/mods/fake-go
+  CMD : GOWORK=off go -C /tmp/dsh-register-iXnv7A/wt/tools/harness-gate/testdata/fake-go build -o /tmp/dsh-register-iXnv7A/fakebin/go.exe .
+  CMD : (cd /tmp/dsh-register-iXnv7A/wt/tools/harness-gate &&) PATH=/tmp/dsh-register-iXnv7A/fakebin:$PATH /tmp/dsh-register-iXnv7A/bin/harness-gate.exe --root /tmp/dsh-register-iXnv7A/mods/fake-go
+    | harness-gate: toolchain go1.99.0 is not the go floor go1.27.4 of go.mod (C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\fakebin\go.exe version, with GOTOOLCHAIN=go1.27.4); install go1.27.4 or let Go fetch it
+  exit: 2
+  case race-seeded: PASS
+  case budget-race: PASS
+  case unformatted-file: PASS
+  case untidy-module: PASS
+  case staticcheck-seeded: PASS
+  case coverage-40pct: PASS
+  case coverage-blocked: PASS
+  SUPPLEMENT (not the register procedure; the gate-level test of case coverage-blocked): (cd /tmp/dsh-register-iXnv7A/wt &&) GOWORK=off go -C tools/harness-gate test -count=1 -v -run '^(TestCoverageBinaryIsBounded)$' .
+    | === RUN   TestCoverageBinaryIsBounded
+    | --- PASS: TestCoverageBinaryIsBounded (12.27s)
+    | PASS
+    | ok  	github.com/smartpcr/agent-plugin/tools/harness-gate	16.342s
+  SUPPLEMENT RESULT TestCoverageBinaryIsBounded: PASS
+  case coverage-child: note: the run then stopped at gate test (a single-module root has no tools/harness-trace)
+  case coverage-child: FAIL (no 'PASS coverage')
+  case layer-tagged: note: the run then stopped at gate trace (a single-module root has no tools/harness-trace)
+  case layer-tagged: PASS
+  case budget-exceeded: FAIL (failed at gate 'test', want 'budget')
+  case budget-exceeded: judged by TestBudgetGateClearsOverrides (register amended: a single-module root cannot reach this gate)
+  SUPPLEMENT (not the register procedure; the gate-level test of case budget-exceeded): (cd /tmp/dsh-register-iXnv7A/wt &&) GOWORK=off go -C tools/harness-gate test -count=1 -v -run '^(TestBudgetGateClearsOverrides)$' .
+    | === RUN   TestBudgetGateClearsOverrides
+    | --- PASS: TestBudgetGateClearsOverrides (7.74s)
+    | PASS
+    | ok  	github.com/smartpcr/agent-plugin/tools/harness-gate	10.336s
+  SUPPLEMENT RESULT TestBudgetGateClearsOverrides: PASS
+  case cross-broken: FAIL (failed at gate 'trace', want 'cross-compile';output lacks "windows/arm64")
+  case cross-broken: judged by TestCrossCompileNamesFailingTarget (register amended: a single-module root cannot reach this gate)
+  SUPPLEMENT (not the register procedure; the gate-level test of case cross-broken): (cd /tmp/dsh-register-iXnv7A/wt &&) GOWORK=off go -C tools/harness-gate test -count=1 -v -run '^(TestCrossCompileNamesFailingTarget)$' .
+    | === RUN   TestCrossCompileNamesFailingTarget
+    | --- PASS: TestCrossCompileNamesFailingTarget (9.51s)
+    | PASS
+    | ok  	github.com/smartpcr/agent-plugin/tools/harness-gate	12.131s
+  SUPPLEMENT RESULT TestCrossCompileNamesFailingTarget: PASS
+  case vuln-stdlib: FAIL (failed at gate 'coverage', want 'vulncheck';output lacks "GO-2099-0001")
+  case vuln-stdlib: judged by TestVulncheckGateUsesTheDatabase (register amended: a single-module root cannot reach this gate)
+  SUPPLEMENT (not the register procedure; the gate-level test of case vuln-stdlib): (cd /tmp/dsh-register-iXnv7A/wt &&) GOWORK=off go -C tools/harness-gate test -count=1 -v -run '^(TestVulncheckGateUsesTheDatabase)$' .
+    | === RUN   TestVulncheckGateUsesTheDatabase
+    | --- PASS: TestVulncheckGateUsesTheDatabase (3.76s)
+    | PASS
+    | ok  	github.com/smartpcr/agent-plugin/tools/harness-gate	6.405s
+  SUPPLEMENT RESULT TestVulncheckGateUsesTheDatabase: PASS
+  case fake-go: PASS
+RESULT FAIL
+------------------------------------------------------------------------
+ROW DH-S-1 step 1.3: seeded violation: a data race (race-seeded and budget-race fail at test)
+kind: seeded; systems: one; lane: windows; commit: 593ceaa
+  (case race-seeded already run in this log; its output is above, re-evaluated here)
+  (case budget-race already run in this log; its output is above, re-evaluated here)
+  case race-seeded: PASS
+  case budget-race: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-1 step 1.4: seeded violation: an own-analyzer finding (time.Sleep in a _test.go fails vet, nosleep)
+kind: seeded; systems: one; lane: windows; commit: 593ceaa
+  CASE vet-sleep (module testdata/coverage-40pct)
+  CMD : cp -r /tmp/dsh-register-iXnv7A/wt/tools/harness-gate/testdata/coverage-40pct /tmp/dsh-register-iXnv7A/mods/vet-sleep
+  CMD : write /tmp/dsh-register-iXnv7A/mods/vet-sleep/p/sleep_test.go (a gofmt-formatted test calling time.Sleep)
+  CMD : (cd /tmp/dsh-register-iXnv7A/wt/tools/harness-gate &&) /tmp/dsh-register-iXnv7A/bin/harness-gate.exe --root /tmp/dsh-register-iXnv7A/mods/vet-sleep
+    | harness-gate: toolchain go1.27.4 (the go floor of go.mod; children run with GOTOOLCHAIN=go1.27.4, GOROOT=C:\Program Files\Go)
+    | harness-gate: gate 1/12 gofmt -- every Go file is gofmt-formatted
+    | gofmt: 3 files checked
+    | harness-gate: PASS gofmt (173ms)
+    | harness-gate: gate 2/12 vet -- go vet and the project's own analyzers (nosleep, onespawn, cleanup, fuzzcheck, rootcall, typeassert, lintignore), also on the e2e layer; prints the //lint:ignore exception total
+    | ok   .: go vet -tags= ./...
+    | FAIL .: go vet -tags= -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...
+    | p\sleep_test.go:9:2: time.Sleep in a test file: wait on virtual time (testing/synctest) or an explicit signal (QG-4)
+    | ok   .: go vet -tags=replay,scenario,bench ./...
+    | FAIL .: go vet -tags=replay,scenario,bench -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...
+    | p\sleep_test.go:9:2: time.Sleep in a test file: wait on virtual time (testing/synctest) or an explicit signal (QG-4)
+    | ok   .: go vet -tags=e2e ./...
+    | FAIL .: go vet -tags=e2e -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...
+    | p\sleep_test.go:9:2: time.Sleep in a test file: wait on virtual time (testing/synctest) or an explicit signal (QG-4)
+    | exceptions: 0
+    | harness-gate: FAIL vet (3.517s)
+    | .: go vet -tags= -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...: exit status 1
+    | .: go vet -tags=replay,scenario,bench -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...: exit status 1
+    | .: go vet -tags=e2e -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...: exit status 1
+    | harness-gate: FAILED at gate vet
+  exit: 1
+  case vet-sleep: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-1 step 1.5: seeded violation: a package under the floor (coverage-40pct 40% < 85%; coverage-blocked names TestBlocked; coverage-child passes)
+kind: seeded; systems: one; lane: windows; commit: 593ceaa
+  (case coverage-40pct already run in this log; its output is above, re-evaluated here)
+  (case coverage-blocked already run in this log; its output is above, re-evaluated here)
+  (case coverage-child already run in this log; its output is above, re-evaluated here)
+  case coverage-40pct: PASS
+  case coverage-blocked: PASS
+  SUPPLEMENT TestCoverageBinaryIsBounded: see above (PASS)
+  case coverage-child: note: the run then stopped at gate test (a single-module root has no tools/harness-trace)
+  case coverage-child: FAIL (no 'PASS coverage')
+RESULT FAIL
+------------------------------------------------------------------------
+ROW DH-S-1 step 1.6: seeded violation: a golden drift (drift reported; -update refused with CI=1); layers excluded (layer-tagged passes test and coverage)
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v ./internal/testkit/golden
+=== RUN   TestAssertDetectsDriftAndUpdatesOnlyOnSwitch
+--- PASS: TestAssertDetectsDriftAndUpdatesOnlyOnSwitch (0.11s)
+=== RUN   TestAssertRefusesUpdateUnderCI
+--- PASS: TestAssertRefusesUpdateUnderCI (0.00s)
+=== RUN   TestAssertMissingGoldenFailsWithoutCreatingIt
+--- PASS: TestAssertMissingGoldenFailsWithoutCreatingIt (0.00s)
+=== RUN   TestAssertUpdateCreatesNestedGoldenAndKeepsIdenticalFile
+--- PASS: TestAssertUpdateCreatesNestedGoldenAndKeepsIdenticalFile (0.00s)
+=== RUN   TestAssertReportsUnwritableAndUnreadableGolden
+--- PASS: TestAssertReportsUnwritableAndUnreadableGolden (0.00s)
+=== RUN   TestAssertRejectsNamesOutsideTestdata
+--- PASS: TestAssertRejectsNamesOutsideTestdata (0.00s)
+=== RUN   TestPath
+--- PASS: TestPath (0.00s)
+=== RUN   TestDiff
+=== RUN   TestDiff/equal
+=== RUN   TestDiff/changed_line
+=== RUN   TestDiff/added
+=== RUN   TestDiff/removed
+=== RUN   TestDiff/empty_want
+=== RUN   TestDiff/missing_newline
+=== RUN   TestDiff/carriage_return
+--- PASS: TestDiff (0.00s)
+    --- PASS: TestDiff/equal (0.00s)
+    --- PASS: TestDiff/changed_line (0.00s)
+    --- PASS: TestDiff/added (0.00s)
+    --- PASS: TestDiff/removed (0.00s)
+    --- PASS: TestDiff/empty_want (0.00s)
+    --- PASS: TestDiff/missing_newline (0.00s)
+    --- PASS: TestDiff/carriage_return (0.00s)
+=== RUN   TestDiffOfLargeInputReportsFirstDifference
+--- PASS: TestDiffOfLargeInputReportsFirstDifference (0.00s)
+=== RUN   TestDiffGolden
+--- PASS: TestDiffGolden (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/testkit/golden	1.507s
+UNIT: PASS
+  (case layer-tagged already run in this log; its output is above, re-evaluated here)
+  case layer-tagged: note: the run then stopped at gate trace (a single-module root has no tools/harness-trace)
+  case layer-tagged: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-1 step 1.7: seeded violation: a budget over its limit (budget-exceeded with DSH_BUDGET_RELAX=1 still fails at budget)
+kind: seeded; systems: one; lane: windows; commit: 593ceaa
+  CASE budget-exceeded-relaxed (module testdata/budget-exceeded)
+  CMD : cp -r /tmp/dsh-register-iXnv7A/wt/tools/harness-gate/testdata/budget-exceeded /tmp/dsh-register-iXnv7A/mods/budget-exceeded-relaxed
+  CMD : (cd /tmp/dsh-register-iXnv7A/wt/tools/harness-gate &&) DSH_BUDGET_RELAX=1 /tmp/dsh-register-iXnv7A/bin/harness-gate.exe --root /tmp/dsh-register-iXnv7A/mods/budget-exceeded-relaxed
+    | harness-gate: toolchain go1.27.4 (the go floor of go.mod; children run with GOTOOLCHAIN=go1.27.4, GOROOT=C:\Program Files\Go)
+    | harness-gate: gate 1/12 gofmt -- every Go file is gofmt-formatted
+    | gofmt: 1 files checked
+    | harness-gate: PASS gofmt (299ms)
+    | harness-gate: gate 2/12 vet -- go vet and the project's own analyzers (nosleep, onespawn, cleanup, fuzzcheck, rootcall, typeassert, lintignore), also on the e2e layer; prints the //lint:ignore exception total
+    | ok   .: go vet -tags= ./...
+    | ok   .: go vet -tags= -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...
+    | ok   .: go vet -tags=replay,scenario,bench ./...
+    | ok   .: go vet -tags=replay,scenario,bench -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...
+    | ok   .: go vet -tags=e2e ./...
+    | ok   .: go vet -tags=e2e -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\bin\harness-gate.exe ./...
+    | exceptions: 0
+    | harness-gate: PASS vet (3.476s)
+    | harness-gate: gate 3/12 staticcheck -- the pinned staticcheck per module, with -tags= and -tags=replay,scenario,bench
+    | ok   .: staticcheck -tags= ./...
+    | ok   .: staticcheck -tags=replay,scenario,bench ./...
+    | harness-gate: PASS staticcheck (3.198s)
+    | harness-gate: gate 4/12 modules -- go mod tidy -diff and go mod verify per module, the module rules (RM-1..RM-4) and a reason on every pin (RM-10)
+    | ok   .: go mod tidy -diff
+    | ok   .: go mod verify
+    | modules: 1 modules checked
+    | harness-gate: PASS modules (178ms)
+    | harness-gate: gate 5/12 test -- go test -race -shuffle=on -count=1 per module, CGO_ENABLED=1
+    | ok   .: go test -tags= -race -shuffle=on -count=1 ./...
+    | harness-gate: PASS test (6.771s)
+    | harness-gate: gate 6/12 coverage -- coverage merged across processes, 85% of statements per package
+    | ok   .: go test -c -tags= -cover -covermode=set -coverpkg=./... -o C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3044913969\bin\pkg0.test.exe example.com/budget
+    | ok   .: example.com/budget.test
+    | ok   .: go tool covdata textfmt -i=C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3044913969\covdata -o=C:\Users\XIAODO~1.RED\AppData\Local\Temp\harness-gate-cover-3044913969\covdata.out
+    | harness-gate: PASS coverage (5.716s)
+    | harness-gate: gate 7/12 trace -- tools/harness-trace verify, and trace-tests: every DH-T ID of DH-S-1..built-through named by a test or validly deferred
+    | harness-gate: FAIL trace (1ms)
+    | tools/harness-trace not found under C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\mods\budget-exceeded-relaxed: the traceability check cannot run (QG-9)
+    | trace-tests: test/harness/acceptance-index.yaml not found under C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\mods\budget-exceeded-relaxed: the acceptance index cannot be checked: open C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\mods\budget-exceeded-relaxed\test\harness\acceptance-index.yaml: The system cannot find the path specified.
+    | harness-gate: FAILED at gate trace
+  exit: 1
+  case budget-exceeded-relaxed: FAIL (failed at gate 'trace', want 'budget')
+  case budget-exceeded-relaxed: judged by TestBudgetGateClearsOverrides (register amended: a single-module root cannot reach this gate)
+  SUPPLEMENT TestBudgetGateClearsOverrides: see above (PASS)
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-2 step 2.1: the example's output is unchanged (unload is complete and final)
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) CGO_ENABLED=1 GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/go test -race -count=1 -v -run '^(TestOutputMatchesGolden)$' ./cmd/cordis-sample/
+=== RUN   TestOutputMatchesGolden
+--- PASS: TestOutputMatchesGolden (0.02s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/go/cmd/cordis-sample	1.725s
+UNIT: PASS
+POST: git -C /e/work/github/ai/agent-plugin diff --exit-code -- src/go/cmd/cordis-sample/testdata/output.golden
+POST: golden unchanged
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-2 step 2.2: the example's output is unchanged (a cancellation context per fiber)
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) CGO_ENABLED=1 GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/go test -race -count=1 -v -run '^(TestOutputMatchesGolden)$' ./cmd/cordis-sample/
+=== RUN   TestOutputMatchesGolden
+--- PASS: TestOutputMatchesGolden (0.01s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/go/cmd/cordis-sample	1.650s
+UNIT: PASS
+POST: git -C /e/work/github/ai/agent-plugin diff --exit-code -- src/go/cmd/cordis-sample/testdata/output.golden
+POST: golden unchanged
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-2 step 2.3: the example's output is unchanged (context values, scoped dispatch)
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) CGO_ENABLED=1 GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/go test -race -count=1 -v -run '^(TestOutputMatchesGolden)$' ./cmd/cordis-sample/
+=== RUN   TestOutputMatchesGolden
+--- PASS: TestOutputMatchesGolden (0.01s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/go/cmd/cordis-sample	2.380s
+UNIT: PASS
+POST: git -C /e/work/github/ai/agent-plugin diff --exit-code -- src/go/cmd/cordis-sample/testdata/output.golden
+POST: golden unchanged
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-2 step 2.4: the example's output is unchanged (contained Notify)
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) CGO_ENABLED=1 GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/go test -race -count=1 -v -run '^(TestOutputMatchesGolden)$' ./cmd/cordis-sample/
+=== RUN   TestOutputMatchesGolden
+--- PASS: TestOutputMatchesGolden (0.01s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/go/cmd/cordis-sample	1.671s
+UNIT: PASS
+POST: git -C /e/work/github/ai/agent-plugin diff --exit-code -- src/go/cmd/cordis-sample/testdata/output.golden
+POST: golden unchanged
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-2 step 2.5: the example's output is unchanged (around key)
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) CGO_ENABLED=1 GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/go test -race -count=1 -v -run '^(TestOutputMatchesGolden)$' ./cmd/cordis-sample/
+=== RUN   TestOutputMatchesGolden
+--- PASS: TestOutputMatchesGolden (0.01s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/go/cmd/cordis-sample	2.428s
+UNIT: PASS
+POST: git -C /e/work/github/ai/agent-plugin diff --exit-code -- src/go/cmd/cordis-sample/testdata/output.golden
+POST: golden unchanged
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-2 step 2.6: the example's output is unchanged (raw, effective and candidate config)
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) CGO_ENABLED=1 GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/go test -race -count=1 -v -run '^(TestOutputMatchesGolden)$' ./cmd/cordis-sample/
+=== RUN   TestOutputMatchesGolden
+--- PASS: TestOutputMatchesGolden (0.01s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/go/cmd/cordis-sample	1.706s
+UNIT: PASS
+POST: git -C /e/work/github/ai/agent-plugin diff --exit-code -- src/go/cmd/cordis-sample/testdata/output.golden
+POST: golden unchanged
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-2 step 2.7: the example's output is unchanged (strict config decoding)
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) CGO_ENABLED=1 GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/go test -race -count=1 -v -run '^(TestOutputMatchesGolden)$' ./cmd/cordis-sample/
+=== RUN   TestOutputMatchesGolden
+--- PASS: TestOutputMatchesGolden (0.01s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/go/cmd/cordis-sample	2.358s
+UNIT: PASS
+POST: git -C /e/work/github/ai/agent-plugin diff --exit-code -- src/go/cmd/cordis-sample/testdata/output.golden
+POST: golden unchanged
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-2 step 2.8: the example's output is unchanged (exporters chosen by the creator)
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) CGO_ENABLED=1 GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/go test -race -count=1 -v -run '^(TestOutputMatchesGolden)$' ./cmd/cordis-sample/
+=== RUN   TestOutputMatchesGolden
+--- PASS: TestOutputMatchesGolden (0.01s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/go/cmd/cordis-sample	2.266s
+UNIT: PASS
+POST: git -C /e/work/github/ai/agent-plugin diff --exit-code -- src/go/cmd/cordis-sample/testdata/output.golden
+POST: golden unchanged
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-3 step 3.2: rule-3 default: every invalid entry is reported
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/go test -count=1 -v -run '^(TestValidateReportsEveryInvalidEntryInDocumentOrder|TestAnEntryWithThreeFaultsReportsThemAllAndIsDisposed)$' ./loader/
+=== RUN   TestValidateReportsEveryInvalidEntryInDocumentOrder
+--- PASS: TestValidateReportsEveryInvalidEntryInDocumentOrder (0.00s)
+=== RUN   TestAnEntryWithThreeFaultsReportsThemAllAndIsDisposed
+--- PASS: TestAnEntryWithThreeFaultsReportsThemAllAndIsDisposed (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/go/loader	2.484s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-3 step 3.3: rule-3 default: the expression seam calls the injected evaluator
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/go test -count=1 -v -run '^(TestTheExpressionSeamCallsTheInjectedEvaluator|TestAnExpressionTheEvaluatorRejectsIsReportedAtItsPosition)$' ./loader/
+=== RUN   TestTheExpressionSeamCallsTheInjectedEvaluator
+--- PASS: TestTheExpressionSeamCallsTheInjectedEvaluator (0.00s)
+=== RUN   TestAnExpressionTheEvaluatorRejectsIsReportedAtItsPosition
+--- PASS: TestAnExpressionTheEvaluatorRejectsIsReportedAtItsPosition (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/go/loader	1.305s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-3 step 3.6: rule-3 default: a nested loader runs under its owner's context
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/go test -count=1 -v -run '^(TestNestedLoaderUnloadsWithItsOwner|TestNestedLoaderIsPrivateToItsOwnerAndReadOnly)$' ./loader/
+=== RUN   TestNestedLoaderUnloadsWithItsOwner
+--- PASS: TestNestedLoaderUnloadsWithItsOwner (0.00s)
+=== RUN   TestNestedLoaderIsPrivateToItsOwnerAndReadOnly
+--- PASS: TestNestedLoaderIsPrivateToItsOwnerAndReadOnly (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/go/loader	1.226s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-3 step 3.7: rule-3 default: mutations are validated and logged in order
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/go test -count=1 -v -run '^(TestLifecycleLogRecordsMutationsInOrder|TestMutationAndRestartErrorsChangeNothing)$' ./loader/
+=== RUN   TestLifecycleLogRecordsMutationsInOrder
+--- PASS: TestLifecycleLogRecordsMutationsInOrder (0.00s)
+=== RUN   TestMutationAndRestartErrorsChangeNothing
+--- PASS: TestMutationAndRestartErrorsChangeNothing (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/go/loader	1.467s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-3 step 3.9: rule-3 default: the write guard merges a file changed while it waits, and refuses only a writer outside the lock
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/go test -count=1 -v -run '^(TestLayerSetWriteGuardMergesAFileChangedWhileItWaits|TestLayerSetAWriterOutsideTheLockIsRefusedThenRetried|TestLayerSetWriteGuardWrapsEveryWrite)$' ./loader/
+=== RUN   TestLayerSetWriteGuardMergesAFileChangedWhileItWaits
+--- PASS: TestLayerSetWriteGuardMergesAFileChangedWhileItWaits (0.03s)
+=== RUN   TestLayerSetAWriterOutsideTheLockIsRefusedThenRetried
+--- PASS: TestLayerSetAWriterOutsideTheLockIsRefusedThenRetried (0.08s)
+=== RUN   TestLayerSetWriteGuardWrapsEveryWrite
+--- PASS: TestLayerSetWriteGuardWrapsEveryWrite (0.01s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/go/loader	0.867s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-4 step 4.1: rule-3 default: a bounded JSON-RPC codec with one error table (record an over-limit frame refused with its table code)
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/sdk test -count=1 -v ./jsonrpc/...
+=== RUN   TestServeAnswersRequests
+--- PASS: TestServeAnswersRequests (0.00s)
+=== RUN   TestServeKeepsReadingAfterBadLines
+--- PASS: TestServeKeepsReadingAfterBadLines (0.00s)
+=== RUN   TestServeClosesOnOversizedLine
+--- PASS: TestServeClosesOnOversizedLine (0.00s)
+=== RUN   TestServeInFlightBound
+--- PASS: TestServeInFlightBound (0.00s)
+=== RUN   TestServeNotificationsAndStrayResponses
+--- PASS: TestServeNotificationsAndStrayResponses (0.00s)
+=== RUN   TestCall
+--- PASS: TestCall (0.00s)
+=== RUN   TestCallPendingBound
+--- PASS: TestCallPendingBound (0.00s)
+=== RUN   TestNotifyAndBarrier
+--- PASS: TestNotifyAndBarrier (0.00s)
+=== RUN   TestBarrierContext
+--- PASS: TestBarrierContext (0.00s)
+=== RUN   TestServeEnds
+--- PASS: TestServeEnds (0.00s)
+=== RUN   TestQueueBackpressure
+--- PASS: TestQueueBackpressure (0.00s)
+=== RUN   TestServeContextEndsEarly
+--- PASS: TestServeContextEndsEarly (0.00s)
+=== RUN   TestCallCancelWhileQueueFull
+--- PASS: TestCallCancelWhileQueueFull (0.00s)
+=== RUN   TestDecodeSeeds
+--- PASS: TestDecodeSeeds (0.00s)
+=== RUN   TestDecodeFrames
+--- PASS: TestDecodeFrames (0.00s)
+=== RUN   TestDecodeRefusals
+--- PASS: TestDecodeRefusals (0.00s)
+=== RUN   TestRequestRoundTrip
+--- PASS: TestRequestRoundTrip (0.00s)
+=== RUN   TestEncode
+--- PASS: TestEncode (0.00s)
+=== RUN   TestID
+--- PASS: TestID (0.00s)
+=== RUN   TestTable
+--- PASS: TestTable (0.00s)
+=== RUN   TestNewErrorPanicsOutsideTable
+--- PASS: TestNewErrorPanicsOutsideTable (0.00s)
+=== RUN   TestErrorForms
+--- PASS: TestErrorForms (0.00s)
+=== RUN   TestDefaultReason
+--- PASS: TestDefaultReason (0.00s)
+=== RUN   TestToWire
+--- PASS: TestToWire (0.00s)
+=== RUN   TestReaderRejectsOversizedLine
+--- PASS: TestReaderRejectsOversizedLine (0.00s)
+=== RUN   TestReaderDoesNotAllocatePastBound
+--- PASS: TestReaderDoesNotAllocatePastBound (0.00s)
+=== RUN   TestReaderLines
+--- PASS: TestReaderLines (0.00s)
+=== RUN   TestReaderLongLineWithinBound
+--- PASS: TestReaderLongLineWithinBound (0.00s)
+=== RUN   TestReaderReadError
+--- PASS: TestReaderReadError (0.00s)
+=== RUN   TestReaderRead
+--- PASS: TestReaderRead (0.00s)
+=== RUN   TestWriter
+--- PASS: TestWriter (0.00s)
+=== RUN   TestServeOneServesOneCall
+--- PASS: TestServeOneServesOneCall (0.00s)
+=== RUN   TestServeOneRefusesASecondFrame
+--- PASS: TestServeOneRefusesASecondFrame (0.00s)
+=== RUN   TestServeOneFirstFrame
+=== RUN   TestServeOneFirstFrame/notification
+=== RUN   TestServeOneFirstFrame/response
+=== RUN   TestServeOneFirstFrame/not_json
+=== RUN   TestServeOneFirstFrame/bad_envelope
+=== RUN   TestServeOneFirstFrame/over_the_bound
+=== RUN   TestServeOneFirstFrame/empty
+=== RUN   TestServeOneFirstFrame/unknown_method
+=== RUN   TestServeOneFirstFrame/half-closed
+--- PASS: TestServeOneFirstFrame (0.00s)
+    --- PASS: TestServeOneFirstFrame/notification (0.00s)
+    --- PASS: TestServeOneFirstFrame/response (0.00s)
+    --- PASS: TestServeOneFirstFrame/not_json (0.00s)
+    --- PASS: TestServeOneFirstFrame/bad_envelope (0.00s)
+    --- PASS: TestServeOneFirstFrame/over_the_bound (0.00s)
+    --- PASS: TestServeOneFirstFrame/empty (0.00s)
+    --- PASS: TestServeOneFirstFrame/unknown_method (0.00s)
+    --- PASS: TestServeOneFirstFrame/half-closed (0.00s)
+=== RUN   TestServeOneFailures
+--- PASS: TestServeOneFailures (0.00s)
+=== RUN   TestServeIncomingCancel
+--- PASS: TestServeIncomingCancel (0.00s)
+=== RUN   TestCallCancelSendsCancel
+--- PASS: TestCallCancelSendsCancel (0.00s)
+=== RUN   TestWriteStallEndsTheConnection
+--- PASS: TestWriteStallEndsTheConnection (0.00s)
+=== RUN   TestWritesWithinTheStallKeepTheConnection
+--- PASS: TestWritesWithinTheStallKeepTheConnection (0.00s)
+=== RUN   FuzzDecode
+=== RUN   FuzzDecode/seed#0
+=== RUN   FuzzDecode/seed#1
+=== RUN   FuzzDecode/seed#2
+=== RUN   FuzzDecode/seed#3
+=== RUN   FuzzDecode/seed#4
+=== RUN   FuzzDecode/seed#5
+=== RUN   FuzzDecode/seed#6
+=== RUN   FuzzDecode/seed#7
+=== RUN   FuzzDecode/seed#8
+=== RUN   FuzzDecode/seed#9
+=== RUN   FuzzDecode/seed#10
+=== RUN   FuzzDecode/seed#11
+=== RUN   FuzzDecode/seed#12
+=== RUN   FuzzDecode/seed#13
+=== RUN   FuzzDecode/seed#14
+=== RUN   FuzzDecode/seed#15
+=== RUN   FuzzDecode/seed#16
+=== RUN   FuzzDecode/seed#17
+=== RUN   FuzzDecode/seed#18
+=== RUN   FuzzDecode/seed#19
+=== RUN   FuzzDecode/seed#20
+=== RUN   FuzzDecode/seed#21
+=== RUN   FuzzDecode/batch
+=== RUN   FuzzDecode/deep-nesting
+=== RUN   FuzzDecode/not-json
+=== RUN   FuzzDecode/notification-cancel
+=== RUN   FuzzDecode/null-id-request
+=== RUN   FuzzDecode/request-roundtrip
+=== RUN   FuzzDecode/response-error-reason
+=== RUN   FuzzDecode/response-result-and-error
+=== RUN   FuzzDecode/two-lines
+--- PASS: FuzzDecode (0.63s)
+    --- PASS: FuzzDecode/seed#0 (0.00s)
+    --- PASS: FuzzDecode/seed#1 (0.00s)
+    --- PASS: FuzzDecode/seed#2 (0.00s)
+    --- PASS: FuzzDecode/seed#3 (0.00s)
+    --- PASS: FuzzDecode/seed#4 (0.00s)
+    --- PASS: FuzzDecode/seed#5 (0.00s)
+    --- PASS: FuzzDecode/seed#6 (0.00s)
+    --- PASS: FuzzDecode/seed#7 (0.00s)
+    --- PASS: FuzzDecode/seed#8 (0.00s)
+    --- PASS: FuzzDecode/seed#9 (0.00s)
+    --- PASS: FuzzDecode/seed#10 (0.00s)
+    --- PASS: FuzzDecode/seed#11 (0.00s)
+    --- PASS: FuzzDecode/seed#12 (0.00s)
+    --- PASS: FuzzDecode/seed#13 (0.00s)
+    --- PASS: FuzzDecode/seed#14 (0.00s)
+    --- PASS: FuzzDecode/seed#15 (0.00s)
+    --- PASS: FuzzDecode/seed#16 (0.00s)
+    --- PASS: FuzzDecode/seed#17 (0.00s)
+    --- PASS: FuzzDecode/seed#18 (0.00s)
+    --- PASS: FuzzDecode/seed#19 (0.00s)
+    --- PASS: FuzzDecode/seed#20 (0.00s)
+    --- PASS: FuzzDecode/seed#21 (0.00s)
+    --- PASS: FuzzDecode/batch (0.00s)
+    --- PASS: FuzzDecode/deep-nesting (0.00s)
+    --- PASS: FuzzDecode/not-json (0.00s)
+    --- PASS: FuzzDecode/notification-cancel (0.00s)
+    --- PASS: FuzzDecode/null-id-request (0.00s)
+    --- PASS: FuzzDecode/request-roundtrip (0.00s)
+    --- PASS: FuzzDecode/response-error-reason (0.00s)
+    --- PASS: FuzzDecode/response-result-and-error (0.00s)
+    --- PASS: FuzzDecode/two-lines (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/sdk/jsonrpc	3.755s
+=== RUN   TestPeerDrivesAConnection
+--- PASS: TestPeerDrivesAConnection (0.00s)
+=== RUN   TestPeerExpectationsFail
+--- PASS: TestPeerExpectationsFail (0.00s)
+=== RUN   TestPeerStall
+--- PASS: TestPeerStall (0.00s)
+=== RUN   TestPeerReleasedWhileStalled
+--- PASS: TestPeerReleasedWhileStalled (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/sdk/jsonrpc/jsonrpctest	2.582s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-4 step 4.2: rule-3 default: one package describes, checks and fingerprints shapes
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v ./internal/schema/...
+=== RUN   TestDurationRoundTrip
+--- PASS: TestDurationRoundTrip (0.00s)
+=== RUN   TestDurationsAtEveryDepth
+--- PASS: TestDurationsAtEveryDepth (0.00s)
+=== RUN   TestUnion
+--- PASS: TestUnion (0.00s)
+=== RUN   TestTolerant
+--- PASS: TestTolerant (0.00s)
+=== RUN   TestClosedOpenAndSubset
+--- PASS: TestClosedOpenAndSubset (0.00s)
+=== RUN   TestFieldsAndChanged
+--- PASS: TestFieldsAndChanged (0.00s)
+=== RUN   TestDecodeForm
+--- PASS: TestDecodeForm (0.00s)
+=== RUN   TestProject
+--- PASS: TestProject (0.00s)
+=== RUN   TestLocate
+--- PASS: TestLocate (0.00s)
+=== RUN   TestShapeScenario
+--- PASS: TestShapeScenario (0.00s)
+=== RUN   TestDocument
+--- PASS: TestDocument (0.00s)
+=== RUN   TestRawMessageIsAnyJSON
+--- PASS: TestRawMessageIsAnyJSON (0.00s)
+=== RUN   TestFingerprint
+--- PASS: TestFingerprint (0.00s)
+=== RUN   TestValidateReportsEveryIssue
+--- PASS: TestValidateReportsEveryIssue (0.00s)
+=== RUN   TestDecode
+--- PASS: TestDecode (0.00s)
+=== RUN   TestTags
+--- PASS: TestTags (0.00s)
+=== RUN   TestTagErrors
+--- PASS: TestTagErrors (0.00s)
+=== RUN   TestFromJSON
+--- PASS: TestFromJSON (0.00s)
+=== RUN   TestNumbersAreExact
+--- PASS: TestNumbersAreExact (0.00s)
+=== RUN   TestDecimal
+--- PASS: TestDecimal (0.00s)
+=== RUN   TestFromJSONOutsideSubset
+--- PASS: TestFromJSONOutsideSubset (0.00s)
+=== RUN   TestLocalRefs
+--- PASS: TestLocalRefs (0.00s)
+=== RUN   TestDeclarationsAreExact
+--- PASS: TestDeclarationsAreExact (0.00s)
+=== RUN   TestHugeExponents
+--- PASS: TestHugeExponents (0.00s)
+=== RUN   TestPointerEscapes
+--- PASS: TestPointerEscapes (0.00s)
+=== RUN   TestShaper
+--- PASS: TestShaper (0.00s)
+=== RUN   TestDefaults
+--- PASS: TestDefaults (0.00s)
+=== RUN   TestValidateAfterShapeAndDefinedTypes
+--- PASS: TestValidateAfterShapeAndDefinedTypes (0.00s)
+=== RUN   FuzzValidate
+=== RUN   FuzzValidate/seed#0
+=== RUN   FuzzValidate/seed#1
+=== RUN   FuzzValidate/seed#2
+=== RUN   FuzzValidate/seed#3
+=== RUN   FuzzValidate/seed#4
+=== RUN   FuzzValidate/seed#5
+=== RUN   FuzzValidate/seed#6
+=== RUN   FuzzValidate/seed#7
+=== RUN   FuzzValidate/seed#8
+=== RUN   FuzzValidate/seed#9
+=== RUN   FuzzValidate/seed#10
+=== RUN   FuzzValidate/seed#11
+=== RUN   FuzzValidate/seed#12
+=== RUN   FuzzValidate/seed#13
+=== RUN   FuzzValidate/seed#14
+=== RUN   FuzzValidate/seed#15
+--- PASS: FuzzValidate (0.00s)
+    --- PASS: FuzzValidate/seed#0 (0.00s)
+    --- PASS: FuzzValidate/seed#1 (0.00s)
+    --- PASS: FuzzValidate/seed#2 (0.00s)
+    --- PASS: FuzzValidate/seed#3 (0.00s)
+    --- PASS: FuzzValidate/seed#4 (0.00s)
+    --- PASS: FuzzValidate/seed#5 (0.00s)
+    --- PASS: FuzzValidate/seed#6 (0.00s)
+    --- PASS: FuzzValidate/seed#7 (0.00s)
+    --- PASS: FuzzValidate/seed#8 (0.00s)
+    --- PASS: FuzzValidate/seed#9 (0.00s)
+    --- PASS: FuzzValidate/seed#10 (0.00s)
+    --- PASS: FuzzValidate/seed#11 (0.00s)
+    --- PASS: FuzzValidate/seed#12 (0.00s)
+    --- PASS: FuzzValidate/seed#13 (0.00s)
+    --- PASS: FuzzValidate/seed#14 (0.00s)
+    --- PASS: FuzzValidate/seed#15 (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/schema	1.830s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-4 step 4.3: rule-3 default: the SDK protocol types, method table and derived schema (derived schema equals the committed file)
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/sdk test -count=1 -v ./protocol/
+=== RUN   TestNegotiate
+--- PASS: TestNegotiate (0.00s)
+=== RUN   TestGate
+--- PASS: TestGate (0.00s)
+=== RUN   TestGateInitializeRunsOnce
+--- PASS: TestGateInitializeRunsOnce (0.00s)
+=== RUN   TestDecodeParams
+--- PASS: TestDecodeParams (0.00s)
+=== RUN   TestSDKErrorPanicsOutsideTable
+--- PASS: TestSDKErrorPanicsOutsideTable (0.00s)
+=== RUN   TestRegisterMatchesTheTableBothWays
+--- PASS: TestRegisterMatchesTheTableBothWays (0.00s)
+=== RUN   TestRegisterRefusals
+--- PASS: TestRegisterRefusals (0.00s)
+=== RUN   TestHandleDecodesStrictly
+--- PASS: TestHandleDecodesStrictly (0.00s)
+=== RUN   TestRequests
+--- PASS: TestRequests (0.00s)
+=== RUN   TestEveryReasonIsDeclared
+--- PASS: TestEveryReasonIsDeclared (0.00s)
+=== RUN   TestSchemaMatchesGolden
+--- PASS: TestSchemaMatchesGolden (0.00s)
+=== RUN   TestSchemaContent
+--- PASS: TestSchemaContent (0.00s)
+=== RUN   TestTables
+--- PASS: TestTables (0.00s)
+=== RUN   TestDeriveRefusals
+--- PASS: TestDeriveRefusals (0.00s)
+=== RUN   TestDocumentRefusals
+--- PASS: TestDocumentRefusals (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/sdk/protocol	1.853s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-4 step 4.4: rule-3 default: globs, versions, instants and recurrence rules
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v ./internal/util/glob/ ./internal/util/version/ ./internal/util/caltime/ ./internal/util/recur/
+=== RUN   TestFoldIsSimpleFolding
+--- PASS: TestFoldIsSimpleFolding (0.03s)
+=== RUN   TestDialect
+--- PASS: TestDialect (0.00s)
+=== RUN   TestFromOS
+--- PASS: TestFromOS (0.00s)
+=== RUN   TestOptions
+--- PASS: TestOptions (0.00s)
+=== RUN   TestSet
+--- PASS: TestSet (0.00s)
+=== RUN   TestRefused
+--- PASS: TestRefused (0.00s)
+=== RUN   TestBoundedWork
+--- PASS: TestBoundedWork (0.00s)
+=== RUN   FuzzCompile
+=== RUN   FuzzCompile/seed#0
+=== RUN   FuzzCompile/seed#1
+=== RUN   FuzzCompile/seed#2
+=== RUN   FuzzCompile/seed#3
+=== RUN   FuzzCompile/seed#4
+=== RUN   FuzzCompile/seed#5
+=== RUN   FuzzCompile/seed#6
+--- PASS: FuzzCompile (0.00s)
+    --- PASS: FuzzCompile/seed#0 (0.00s)
+    --- PASS: FuzzCompile/seed#1 (0.00s)
+    --- PASS: FuzzCompile/seed#2 (0.00s)
+    --- PASS: FuzzCompile/seed#3 (0.00s)
+    --- PASS: FuzzCompile/seed#4 (0.00s)
+    --- PASS: FuzzCompile/seed#5 (0.00s)
+    --- PASS: FuzzCompile/seed#6 (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/util/glob	2.017s
+=== RUN   TestParse
+--- PASS: TestParse (0.00s)
+=== RUN   TestText
+--- PASS: TestText (0.00s)
+=== RUN   TestOrder
+--- PASS: TestOrder (0.00s)
+=== RUN   TestRange
+--- PASS: TestRange (0.00s)
+=== RUN   TestZeroValuesAndErrors
+--- PASS: TestZeroValuesAndErrors (0.00s)
+=== RUN   FuzzParse
+=== RUN   FuzzParse/seed#0
+=== RUN   FuzzParse/seed#1
+=== RUN   FuzzParse/seed#2
+=== RUN   FuzzParse/seed#3
+=== RUN   FuzzParse/seed#4
+=== RUN   FuzzParse/seed#5
+--- PASS: FuzzParse (0.00s)
+    --- PASS: FuzzParse/seed#0 (0.00s)
+    --- PASS: FuzzParse/seed#1 (0.00s)
+    --- PASS: FuzzParse/seed#2 (0.00s)
+    --- PASS: FuzzParse/seed#3 (0.00s)
+    --- PASS: FuzzParse/seed#4 (0.00s)
+    --- PASS: FuzzParse/seed#5 (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/util/version	1.749s
+=== RUN   TestStoredAndInput
+--- PASS: TestStoredAndInput (0.00s)
+=== RUN   TestResolve
+--- PASS: TestResolve (0.00s)
+=== RUN   TestZones
+--- PASS: TestZones (0.00s)
+=== RUN   TestElapsedAndDisplay
+--- PASS: TestElapsedAndDisplay (0.00s)
+=== RUN   TestZoneDataSource
+--- PASS: TestZoneDataSource (0.00s)
+=== RUN   FuzzParse
+=== RUN   FuzzParse/seed#0
+=== RUN   FuzzParse/seed#1
+=== RUN   FuzzParse/seed#2
+=== RUN   FuzzParse/seed#3
+=== RUN   FuzzParse/seed#4
+=== RUN   FuzzParse/seed#5
+--- PASS: FuzzParse (0.00s)
+    --- PASS: FuzzParse/seed#0 (0.00s)
+    --- PASS: FuzzParse/seed#1 (0.00s)
+    --- PASS: FuzzParse/seed#2 (0.00s)
+    --- PASS: FuzzParse/seed#3 (0.00s)
+    --- PASS: FuzzParse/seed#4 (0.00s)
+    --- PASS: FuzzParse/seed#5 (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/util/caltime	2.506s
+=== RUN   TestParse
+--- PASS: TestParse (0.05s)
+=== RUN   TestOccurrences
+=== RUN   TestOccurrences/daily_count_10
+=== RUN   TestOccurrences/every_10_days
+=== RUN   TestOccurrences/weekly_count_10
+=== RUN   TestOccurrences/every_other_week_tu_th
+=== RUN   TestOccurrences/first_friday
+=== RUN   TestOccurrences/second_to_last_monday
+=== RUN   TestOccurrences/third_to_last_day
+=== RUN   TestOccurrences/first_and_last_day
+=== RUN   TestOccurrences/friday_13th
+=== RUN   TestOccurrences/june_and_july
+=== RUN   TestOccurrences/year_days_every_third_year
+=== RUN   TestOccurrences/monday_of_week_20
+=== RUN   TestOccurrences/thursdays_in_march
+=== RUN   TestOccurrences/third_tu_we_th
+=== RUN   TestOccurrences/last_weekday_of_month
+=== RUN   TestOccurrences/wkst_monday
+=== RUN   TestOccurrences/wkst_sunday
+=== RUN   TestOccurrences/every_three_hours_until
+=== RUN   TestOccurrences/every_15_minutes
+=== RUN   TestOccurrences/week_53
+=== RUN   TestOccurrences/day_-1_of_the_year
+=== RUN   TestOccurrences/29_february
+--- PASS: TestOccurrences (0.00s)
+    --- PASS: TestOccurrences/daily_count_10 (0.00s)
+    --- PASS: TestOccurrences/every_10_days (0.00s)
+    --- PASS: TestOccurrences/weekly_count_10 (0.00s)
+    --- PASS: TestOccurrences/every_other_week_tu_th (0.00s)
+    --- PASS: TestOccurrences/first_friday (0.00s)
+    --- PASS: TestOccurrences/second_to_last_monday (0.00s)
+    --- PASS: TestOccurrences/third_to_last_day (0.00s)
+    --- PASS: TestOccurrences/first_and_last_day (0.00s)
+    --- PASS: TestOccurrences/friday_13th (0.00s)
+    --- PASS: TestOccurrences/june_and_july (0.00s)
+    --- PASS: TestOccurrences/year_days_every_third_year (0.00s)
+    --- PASS: TestOccurrences/monday_of_week_20 (0.00s)
+    --- PASS: TestOccurrences/thursdays_in_march (0.00s)
+    --- PASS: TestOccurrences/third_tu_we_th (0.00s)
+    --- PASS: TestOccurrences/last_weekday_of_month (0.00s)
+    --- PASS: TestOccurrences/wkst_monday (0.00s)
+    --- PASS: TestOccurrences/wkst_sunday (0.00s)
+    --- PASS: TestOccurrences/every_three_hours_until (0.00s)
+    --- PASS: TestOccurrences/every_15_minutes (0.00s)
+    --- PASS: TestOccurrences/week_53 (0.00s)
+    --- PASS: TestOccurrences/day_-1_of_the_year (0.00s)
+    --- PASS: TestOccurrences/29_february (0.00s)
+=== RUN   TestDaylightSaving
+--- PASS: TestDaylightSaving (0.00s)
+=== RUN   TestResolve
+--- PASS: TestResolve (0.00s)
+=== RUN   TestBoundedWork
+--- PASS: TestBoundedWork (0.01s)
+=== RUN   TestWeekNoBound
+--- PASS: TestWeekNoBound (0.05s)
+=== RUN   TestElapsedSpacing
+--- PASS: TestElapsedSpacing (0.00s)
+=== RUN   FuzzParse
+=== RUN   FuzzParse/seed#0
+=== RUN   FuzzParse/seed#1
+=== RUN   FuzzParse/seed#2
+=== RUN   FuzzParse/seed#3
+--- PASS: FuzzParse (0.00s)
+    --- PASS: FuzzParse/seed#0 (0.00s)
+    --- PASS: FuzzParse/seed#1 (0.00s)
+    --- PASS: FuzzParse/seed#2 (0.00s)
+    --- PASS: FuzzParse/seed#3 (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/util/recur	2.123s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-4 step 4.5: rule-3 default: the model vocabulary is a leaf
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v ./internal/llm/vocab/
+=== RUN   TestFailureRetryAfterIsText
+--- PASS: TestFailureRetryAfterIsText (0.00s)
+=== RUN   TestCanonicalStable
+--- PASS: TestCanonicalStable (0.00s)
+=== RUN   TestReencode
+--- PASS: TestReencode (0.00s)
+=== RUN   TestFingerprints
+--- PASS: TestFingerprints (0.00s)
+=== RUN   TestSchemasAcceptValues
+--- PASS: TestSchemasAcceptValues (0.00s)
+=== RUN   TestMessageSchema
+--- PASS: TestMessageSchema (0.00s)
+=== RUN   TestNoRequestType
+--- PASS: TestNoRequestType (0.00s)
+=== RUN   TestMessageConstructors
+--- PASS: TestMessageConstructors (0.00s)
+=== RUN   TestToolSchemaSubset
+--- PASS: TestToolSchemaSubset (0.00s)
+=== RUN   TestValues
+--- PASS: TestValues (0.00s)
+=== RUN   TestFailureClasses
+--- PASS: TestFailureClasses (0.00s)
+=== RUN   TestChunksSealed
+--- PASS: TestChunksSealed (0.00s)
+=== RUN   FuzzCanonical
+=== RUN   FuzzCanonical/seed#0
+=== RUN   FuzzCanonical/seed#1
+=== RUN   FuzzCanonical/seed#2
+=== RUN   FuzzCanonical/seed#3
+=== RUN   FuzzCanonical/seed#4
+--- PASS: FuzzCanonical (0.00s)
+    --- PASS: FuzzCanonical/seed#0 (0.00s)
+    --- PASS: FuzzCanonical/seed#1 (0.00s)
+    --- PASS: FuzzCanonical/seed#2 (0.00s)
+    --- PASS: FuzzCanonical/seed#3 (0.00s)
+    --- PASS: FuzzCanonical/seed#4 (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab	2.014s
+UNIT: PASS
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestImportDirection)$' ./internal/archtest/
+=== RUN   TestImportDirection
+=== RUN   TestImportDirection/src/sdk_imports_neither_src/go_nor_src/harness
+=== RUN   TestImportDirection/src/go_imports_neither_src/sdk_nor_src/harness
+=== RUN   TestImportDirection/harness_implementation_packages_are_under_internal/
+=== RUN   TestImportDirection/internal/llm/vocab_imports_no_harness_package_but_internal/schema_(DH-T-LLM-1)
+=== RUN   TestImportDirection/cmd/dsh_embeds_the_zone_database_through_time/tzdata_(DH-T-TEMPORAL-5)
+=== RUN   TestImportDirection/only_internal/boot/yamlx_imports_the_YAML_module_(DH-T-YAML-1)
+=== RUN   TestImportDirection/only_internal/boot/expr_imports_the_expression_module_(DH-D-LOADER-5)
+=== RUN   TestImportDirection/only_internal/session/store/sqlite_imports_the_SQLite_driver_(DH-D-STORE-2,_DH-ADR-SQLITE-1)
+=== RUN   TestImportDirection/internal/session/event_imports_no_harness_package_but_vocab_and_schema_(DH-D-SESSION-1)
+=== RUN   TestImportDirection/internal/session/scope_imports_nothing_of_the_modules_but_cordis_(DH-D-SESSION-8)
+=== RUN   TestImportDirection/internal/session/store_imports_no_harness_package_but_schema_and_event_(DH-D-STORE-1)
+=== RUN   TestImportDirection/no_non-test_package_imports_memstore_or_storetest_(DH-D-STORE-1)
+=== RUN   TestImportDirection/internal/session/surface_imports_no_harness_package_but_event,_vocab_and_schema_(DH-D-SESSION-3)
+=== RUN   TestImportDirection/nothing_outside_internal/agent/driver_imports_it_(DH-T-AGENT-27)
+=== RUN   TestImportDirection/internal/session_and_its_packages_import_no_llm_runtime,_agent_or_interaction_registry_(DH-D-LLM-1,_DH-D-AGENT-1)
+=== RUN   TestImportDirection/internal/llm_imports_no_agent,_interaction_or_view_package:_the_runtime_holds_no_session_writer_(DH-D-LLM-1);_only_the_retry_listener_sits_on_the_driver's_failed-attempt_point_(DH-D-LLM-3)_and_only_the_meter_registers_its_folds_(DH-D-LLM-6)
+=== RUN   TestImportDirection/only_internal/world/subprocess_imports_os/exec:_the_one_place_a_program_starts_(DH-D-EXEC-1,_onespawn)
+=== RUN   TestImportDirection/no_non-test_package_imports_subprocesstest_(DH-D-EXEC-1)
+=== RUN   TestImportDirection/internal/util/herr_and_internal/util/ident_import_the_standard_library_only_(RM-6,_DH-D-UTIL-5)
+=== RUN   TestImportDirection/internal/util/egress_imports_no_harness_package_but_herr,_and_of_the_modules_only_cordis:_the_permit_is_an_interface,_not_sharing's_type_(DH-ADR-UTIL-2)
+=== RUN   TestImportDirection/only_tests_and_the_test_kit's_own_packages_import_internal/testkit_(DH-T-UTIL-11,_DH-ADR-UTIL-6)
+=== RUN   TestImportDirection/no_package_outside_internal/tools_imports_internal/tools/core_or_internal/tools/endpoint_(DH-T-TOOLS-18)
+=== RUN   TestImportDirection/the_internal/tools_contract_imports_no_llm_provider,_wire_or_transport_package_(DH-T-TOOLS-18)
+=== RUN   TestImportDirection/internal/context_holds_no_Go_package,_so_nothing_shadows_the_standard_context_package_(RM-8)
+=== RUN   TestImportDirection/no_package_under_internal/context_imports_the_agent_driver_or_an_llm_provider,_wire_or_transport_package_(DH-T-CONTEXT-25)
+--- PASS: TestImportDirection (2.30s)
+    --- PASS: TestImportDirection/src/sdk_imports_neither_src/go_nor_src/harness (0.68s)
+    --- PASS: TestImportDirection/src/go_imports_neither_src/sdk_nor_src/harness (0.56s)
+    --- PASS: TestImportDirection/harness_implementation_packages_are_under_internal/ (1.06s)
+    --- PASS: TestImportDirection/internal/llm/vocab_imports_no_harness_package_but_internal/schema_(DH-T-LLM-1) (0.00s)
+    --- PASS: TestImportDirection/cmd/dsh_embeds_the_zone_database_through_time/tzdata_(DH-T-TEMPORAL-5) (0.00s)
+    --- PASS: TestImportDirection/only_internal/boot/yamlx_imports_the_YAML_module_(DH-T-YAML-1) (0.00s)
+    --- PASS: TestImportDirection/only_internal/boot/expr_imports_the_expression_module_(DH-D-LOADER-5) (0.00s)
+    --- PASS: TestImportDirection/only_internal/session/store/sqlite_imports_the_SQLite_driver_(DH-D-STORE-2,_DH-ADR-SQLITE-1) (0.00s)
+    --- PASS: TestImportDirection/internal/session/event_imports_no_harness_package_but_vocab_and_schema_(DH-D-SESSION-1) (0.00s)
+    --- PASS: TestImportDirection/internal/session/scope_imports_nothing_of_the_modules_but_cordis_(DH-D-SESSION-8) (0.00s)
+    --- PASS: TestImportDirection/internal/session/store_imports_no_harness_package_but_schema_and_event_(DH-D-STORE-1) (0.00s)
+    --- PASS: TestImportDirection/no_non-test_package_imports_memstore_or_storetest_(DH-D-STORE-1) (0.00s)
+    --- PASS: TestImportDirection/internal/session/surface_imports_no_harness_package_but_event,_vocab_and_schema_(DH-D-SESSION-3) (0.00s)
+    --- PASS: TestImportDirection/nothing_outside_internal/agent/driver_imports_it_(DH-T-AGENT-27) (0.00s)
+    --- PASS: TestImportDirection/internal/session_and_its_packages_import_no_llm_runtime,_agent_or_interaction_registry_(DH-D-LLM-1,_DH-D-AGENT-1) (0.00s)
+    --- PASS: TestImportDirection/internal/llm_imports_no_agent,_interaction_or_view_package:_the_runtime_holds_no_session_writer_(DH-D-LLM-1);_only_the_retry_listener_sits_on_the_driver's_failed-attempt_point_(DH-D-LLM-3)_and_only_the_meter_registers_its_folds_(DH-D-LLM-6) (0.00s)
+    --- PASS: TestImportDirection/only_internal/world/subprocess_imports_os/exec:_the_one_place_a_program_starts_(DH-D-EXEC-1,_onespawn) (0.00s)
+    --- PASS: TestImportDirection/no_non-test_package_imports_subprocesstest_(DH-D-EXEC-1) (0.00s)
+    --- PASS: TestImportDirection/internal/util/herr_and_internal/util/ident_import_the_standard_library_only_(RM-6,_DH-D-UTIL-5) (0.00s)
+    --- PASS: TestImportDirection/internal/util/egress_imports_no_harness_package_but_herr,_and_of_the_modules_only_cordis:_the_permit_is_an_interface,_not_sharing's_type_(DH-ADR-UTIL-2) (0.00s)
+    --- PASS: TestImportDirection/only_tests_and_the_test_kit's_own_packages_import_internal/testkit_(DH-T-UTIL-11,_DH-ADR-UTIL-6) (0.00s)
+    --- PASS: TestImportDirection/no_package_outside_internal/tools_imports_internal/tools/core_or_internal/tools/endpoint_(DH-T-TOOLS-18) (0.00s)
+    --- PASS: TestImportDirection/the_internal/tools_contract_imports_no_llm_provider,_wire_or_transport_package_(DH-T-TOOLS-18) (0.00s)
+    --- PASS: TestImportDirection/internal/context_holds_no_Go_package,_so_nothing_shadows_the_standard_context_package_(RM-8) (0.00s)
+    --- PASS: TestImportDirection/no_package_under_internal/context_imports_the_agent_driver_or_an_llm_provider,_wire_or_transport_package_(DH-T-CONTEXT-25) (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/archtest	3.711s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-4 step 4.6: rule-3 default: fsx replaces, creates, locks and identifies files
+kind: composed; systems: both; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v ./internal/util/fsx/
+=== RUN   TestFailureAtEachStep
+=== RUN   TestFailureAtEachStep/Replace/stage
+=== RUN   TestFailureAtEachStep/Replace/write
+=== RUN   TestFailureAtEachStep/Replace/mode
+=== RUN   TestFailureAtEachStep/Replace/sync
+=== RUN   TestFailureAtEachStep/Replace/close
+=== RUN   TestFailureAtEachStep/Replace/publish
+=== RUN   TestFailureAtEachStep/CreateIfAbsent/stage
+=== RUN   TestFailureAtEachStep/CreateIfAbsent/write
+=== RUN   TestFailureAtEachStep/CreateIfAbsent/mode
+=== RUN   TestFailureAtEachStep/CreateIfAbsent/sync
+=== RUN   TestFailureAtEachStep/CreateIfAbsent/close
+=== RUN   TestFailureAtEachStep/CreateIfAbsent/publish
+=== RUN   TestFailureAtEachStep/ReplaceIn/stage
+=== RUN   TestFailureAtEachStep/ReplaceIn/write
+=== RUN   TestFailureAtEachStep/ReplaceIn/mode
+=== RUN   TestFailureAtEachStep/ReplaceIn/sync
+=== RUN   TestFailureAtEachStep/ReplaceIn/close
+=== RUN   TestFailureAtEachStep/ReplaceIn/publish
+=== RUN   TestFailureAtEachStep/CreateIfAbsentIn/stage
+=== RUN   TestFailureAtEachStep/CreateIfAbsentIn/write
+=== RUN   TestFailureAtEachStep/CreateIfAbsentIn/mode
+=== RUN   TestFailureAtEachStep/CreateIfAbsentIn/sync
+=== RUN   TestFailureAtEachStep/CreateIfAbsentIn/close
+=== RUN   TestFailureAtEachStep/CreateIfAbsentIn/publish
+=== RUN   TestFailureAtEachStep/CreateIfAbsentIn_without_links/stage
+=== RUN   TestFailureAtEachStep/CreateIfAbsentIn_without_links/write
+=== RUN   TestFailureAtEachStep/CreateIfAbsentIn_without_links/mode
+=== RUN   TestFailureAtEachStep/CreateIfAbsentIn_without_links/sync
+=== RUN   TestFailureAtEachStep/CreateIfAbsentIn_without_links/close
+=== RUN   TestFailureAtEachStep/CreateIfAbsentIn_without_links/publish
+--- PASS: TestFailureAtEachStep (0.05s)
+    --- PASS: TestFailureAtEachStep/Replace/stage (0.00s)
+    --- PASS: TestFailureAtEachStep/Replace/write (0.00s)
+    --- PASS: TestFailureAtEachStep/Replace/mode (0.00s)
+    --- PASS: TestFailureAtEachStep/Replace/sync (0.00s)
+    --- PASS: TestFailureAtEachStep/Replace/close (0.00s)
+    --- PASS: TestFailureAtEachStep/Replace/publish (0.00s)
+    --- PASS: TestFailureAtEachStep/CreateIfAbsent/stage (0.00s)
+    --- PASS: TestFailureAtEachStep/CreateIfAbsent/write (0.00s)
+    --- PASS: TestFailureAtEachStep/CreateIfAbsent/mode (0.00s)
+    --- PASS: TestFailureAtEachStep/CreateIfAbsent/sync (0.00s)
+    --- PASS: TestFailureAtEachStep/CreateIfAbsent/close (0.00s)
+    --- PASS: TestFailureAtEachStep/CreateIfAbsent/publish (0.00s)
+    --- PASS: TestFailureAtEachStep/ReplaceIn/stage (0.00s)
+    --- PASS: TestFailureAtEachStep/ReplaceIn/write (0.00s)
+    --- PASS: TestFailureAtEachStep/ReplaceIn/mode (0.00s)
+    --- PASS: TestFailureAtEachStep/ReplaceIn/sync (0.00s)
+    --- PASS: TestFailureAtEachStep/ReplaceIn/close (0.00s)
+    --- PASS: TestFailureAtEachStep/ReplaceIn/publish (0.00s)
+    --- PASS: TestFailureAtEachStep/CreateIfAbsentIn/stage (0.00s)
+    --- PASS: TestFailureAtEachStep/CreateIfAbsentIn/write (0.00s)
+    --- PASS: TestFailureAtEachStep/CreateIfAbsentIn/mode (0.00s)
+    --- PASS: TestFailureAtEachStep/CreateIfAbsentIn/sync (0.00s)
+    --- PASS: TestFailureAtEachStep/CreateIfAbsentIn/close (0.00s)
+    --- PASS: TestFailureAtEachStep/CreateIfAbsentIn/publish (0.00s)
+    --- PASS: TestFailureAtEachStep/CreateIfAbsentIn_without_links/stage (0.00s)
+    --- PASS: TestFailureAtEachStep/CreateIfAbsentIn_without_links/write (0.00s)
+    --- PASS: TestFailureAtEachStep/CreateIfAbsentIn_without_links/mode (0.00s)
+    --- PASS: TestFailureAtEachStep/CreateIfAbsentIn_without_links/sync (0.00s)
+    --- PASS: TestFailureAtEachStep/CreateIfAbsentIn_without_links/close (0.00s)
+    --- PASS: TestFailureAtEachStep/CreateIfAbsentIn_without_links/publish (0.00s)
+=== RUN   TestRootedCreateOneWinner
+=== RUN   TestRootedCreateOneWinner/noLink=false
+=== RUN   TestRootedCreateOneWinner/noLink=true
+--- PASS: TestRootedCreateOneWinner (0.19s)
+    --- PASS: TestRootedCreateOneWinner/noLink=false (0.17s)
+    --- PASS: TestRootedCreateOneWinner/noLink=true (0.02s)
+=== RUN   TestCreateIfAbsentAcrossProcesses
+=== RUN   TestCreateIfAbsentAcrossProcesses/plain
+=== RUN   TestCreateIfAbsentAcrossProcesses/rooted
+=== RUN   TestCreateIfAbsentAcrossProcesses/nolink
+--- PASS: TestCreateIfAbsentAcrossProcesses (0.50s)
+    --- PASS: TestCreateIfAbsentAcrossProcesses/plain (0.12s)
+    --- PASS: TestCreateIfAbsentAcrossProcesses/rooted (0.20s)
+    --- PASS: TestCreateIfAbsentAcrossProcesses/nolink (0.18s)
+=== RUN   TestVersionStaleness
+--- PASS: TestVersionStaleness (0.00s)
+=== RUN   TestVersionTokenChanges
+--- PASS: TestVersionTokenChanges (0.00s)
+=== RUN   TestUTF16RoundTrip
+=== RUN   TestUTF16RoundTrip/2
+=== RUN   TestUTF16RoundTrip/3
+--- PASS: TestUTF16RoundTrip (0.06s)
+    --- PASS: TestUTF16RoundTrip/2 (0.03s)
+    --- PASS: TestUTF16RoundTrip/3 (0.03s)
+=== RUN   TestReaderAndEditorVerdict
+--- PASS: TestReaderAndEditorVerdict (0.07s)
+=== RUN   TestContainment
+    contract_test.go:640: no symbolic links here (symlink C:\Users\XIAODO~1.RED\AppData\Local\Temp\TestContainment533724923\001\outside C:\Users\XIAODO~1.RED\AppData\Local\Temp\TestContainment533724923\001\ws\out: A required privilege is not held by the client.); the link row is not run
+--- PASS: TestContainment (0.00s)
+=== RUN   TestIdentity
+    identity_test.go:43: no symbolic links here (symlink C:\Users\XIAODO~1.RED\AppData\Local\Temp\TestIdentity1714227311\001\a C:\Users\XIAODO~1.RED\AppData\Local\Temp\TestIdentity1714227311\001\link: A required privilege is not held by the client.); skipping the link case
+--- PASS: TestIdentity (0.00s)
+=== RUN   TestVersion
+--- PASS: TestVersion (0.00s)
+=== RUN   TestInside
+--- PASS: TestInside (0.00s)
+=== RUN   TestIsRemote
+--- PASS: TestIsRemote (0.00s)
+=== RUN   TestIsText
+--- PASS: TestIsText (0.00s)
+=== RUN   TestEOL
+--- PASS: TestEOL (0.00s)
+=== RUN   TestEncoding
+--- PASS: TestEncoding (0.00s)
+=== RUN   TestIdentityShortNameAndCase
+--- PASS: TestIdentityShortNameAndCase (0.00s)
+=== RUN   TestReplaceNeverExposesPartialFile
+--- PASS: TestReplaceNeverExposesPartialFile (1.24s)
+=== RUN   TestReplaceModes
+--- PASS: TestReplaceModes (0.01s)
+=== RUN   TestReplaceWriterFailureLeavesTarget
+--- PASS: TestReplaceWriterFailureLeavesTarget (0.82s)
+=== RUN   TestCreateIfAbsentOneWinner
+--- PASS: TestCreateIfAbsentOneWinner (0.02s)
+=== RUN   TestRootedReplaceAndCreate
+--- PASS: TestRootedReplaceAndCreate (0.01s)
+=== RUN   TestRootedCreateWithoutLinks
+--- PASS: TestRootedCreateWithoutLinks (0.01s)
+=== RUN   TestSweepStaged
+--- PASS: TestSweepStaged (0.00s)
+=== RUN   TestLock
+--- PASS: TestLock (0.07s)
+=== RUN   TestLockBeyondEnd
+--- PASS: TestLockBeyondEnd (0.00s)
+=== RUN   TestLockShared
+--- PASS: TestLockShared (0.03s)
+=== RUN   TestRootedDurable
+--- PASS: TestRootedDurable (0.01s)
+=== RUN   TestReplaceRetriesWhileHeldOpen
+--- PASS: TestReplaceRetriesWhileHeldOpen (0.00s)
+=== RUN   TestReplaceGivesUpWithErrInUse
+--- PASS: TestReplaceGivesUpWithErrInUse (0.01s)
+=== RUN   TestMoveFileExFallback
+--- PASS: TestMoveFileExFallback (0.00s)
+=== RUN   TestDurableReadOnlyReplace
+--- PASS: TestDurableReadOnlyReplace (0.00s)
+=== RUN   TestErrorKinds
+--- PASS: TestErrorKinds (0.00s)
+=== RUN   TestKeepPermCopiesACL
+--- PASS: TestKeepPermCopiesACL (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/util/fsx	5.195s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-4 step 4.7: rule-3 default: textdiff line diffs and patch format
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v ./internal/util/textdiff/
+=== RUN   TestGoldenCases
+--- PASS: TestGoldenCases (0.00s)
+=== RUN   TestLimitEdges
+--- PASS: TestLimitEdges (0.00s)
+=== RUN   TestCoarseAboveHunkLimit
+--- PASS: TestCoarseAboveHunkLimit (0.00s)
+=== RUN   TestParallelIdentical
+--- PASS: TestParallelIdentical (0.00s)
+=== RUN   TestFinalNewlineAndEmpty
+--- PASS: TestFinalNewlineAndEmpty (0.00s)
+=== RUN   TestLinesHunks
+=== RUN   TestLinesHunks/equal
+=== RUN   TestLinesHunks/empty_to_text
+=== RUN   TestLinesHunks/text_to_empty
+=== RUN   TestLinesHunks/change_middle
+=== RUN   TestLinesHunks/two_hunks
+=== RUN   TestLinesHunks/merged_hunks
+=== RUN   TestLinesHunks/final_newline_added
+=== RUN   TestLinesHunks/crlf_is_visible
+=== RUN   TestLinesHunks/insert_after_line
+--- PASS: TestLinesHunks (0.00s)
+    --- PASS: TestLinesHunks/equal (0.00s)
+    --- PASS: TestLinesHunks/empty_to_text (0.00s)
+    --- PASS: TestLinesHunks/text_to_empty (0.00s)
+    --- PASS: TestLinesHunks/change_middle (0.00s)
+    --- PASS: TestLinesHunks/two_hunks (0.00s)
+    --- PASS: TestLinesHunks/merged_hunks (0.00s)
+    --- PASS: TestLinesHunks/final_newline_added (0.00s)
+    --- PASS: TestLinesHunks/crlf_is_visible (0.00s)
+    --- PASS: TestLinesHunks/insert_after_line (0.00s)
+=== RUN   TestBeforeAfter
+--- PASS: TestBeforeAfter (0.00s)
+=== RUN   TestLimits
+--- PASS: TestLimits (0.00s)
+=== RUN   TestApplyMismatch
+--- PASS: TestApplyMismatch (0.00s)
+=== RUN   TestApplyInvertsLines
+--- PASS: TestApplyInvertsLines (0.01s)
+=== RUN   TestEqualAboveLimits
+--- PASS: TestEqualAboveLimits (0.00s)
+=== RUN   FuzzLines
+=== RUN   FuzzLines/seed#0
+=== RUN   FuzzLines/seed#1
+=== RUN   FuzzLines/seed#2
+=== RUN   FuzzLines/seed#3
+--- PASS: FuzzLines (0.00s)
+    --- PASS: FuzzLines/seed#0 (0.00s)
+    --- PASS: FuzzLines/seed#1 (0.00s)
+    --- PASS: FuzzLines/seed#2 (0.00s)
+    --- PASS: FuzzLines/seed#3 (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/util/textdiff	2.022s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-4 step 4.10: rule-3 default: the YAML codec in the harness module
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestSameEntriesThroughJSONAndYAML|TestEncodeLayerKeepsComments)$' ./internal/boot/config/
+=== RUN   TestSameEntriesThroughJSONAndYAML
+--- PASS: TestSameEntriesThroughJSONAndYAML (0.00s)
+=== RUN   TestEncodeLayerKeepsComments
+--- PASS: TestEncodeLayerKeepsComments (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/boot/config	1.382s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-4 step 4.11: rule-3 default: one YAML dialect, edits keep comments
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestEditKeepsComments|TestEditRefusesUnverifiedText)$' ./internal/boot/yamlx/
+=== RUN   TestEditKeepsComments
+--- PASS: TestEditKeepsComments (0.00s)
+=== RUN   TestEditRefusesUnverifiedText
+=== RUN   TestEditRefusesUnverifiedText/drops_a_comment
+=== RUN   TestEditRefusesUnverifiedText/changes_a_value
+=== RUN   TestEditRefusesUnverifiedText/breaks_the_syntax
+=== RUN   TestEditRefusesUnverifiedText/fails
+=== RUN   TestEditRefusesUnverifiedText/panics
+--- PASS: TestEditRefusesUnverifiedText (0.00s)
+    --- PASS: TestEditRefusesUnverifiedText/drops_a_comment (0.00s)
+    --- PASS: TestEditRefusesUnverifiedText/changes_a_value (0.00s)
+    --- PASS: TestEditRefusesUnverifiedText/breaks_the_syntax (0.00s)
+    --- PASS: TestEditRefusesUnverifiedText/fails (0.00s)
+    --- PASS: TestEditRefusesUnverifiedText/panics (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/boot/yamlx	9.012s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-4 step 4.12: rule-3 default: the expression engine has no side effects
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestNamesResolve|TestRejected)$' ./internal/boot/expr/
+=== RUN   TestNamesResolve
+--- PASS: TestNamesResolve (0.00s)
+=== RUN   TestRejected
+--- PASS: TestRejected (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/boot/expr	11.148s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-4 step 4.13: rule-3 default: logging writes to the configured destination only
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestFileDestinationKeepsStdoutClean|TestDebugLevelReachesTheDestination)$' ./internal/boot/logging/
+=== RUN   TestFileDestinationKeepsStdoutClean
+--- PASS: TestFileDestinationKeepsStdoutClean (0.01s)
+=== RUN   TestDebugLevelReachesTheDestination
+--- PASS: TestDebugLevelReachesTheDestination (0.01s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/boot/logging	1.294s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-4 step 4.14: rule-3 default: a build knows its components by name
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestCatalogListsComponentsByName|TestLookupAndPlatforms)$' ./internal/boot/catalog/
+=== RUN   TestCatalogListsComponentsByName
+--- PASS: TestCatalogListsComponentsByName (0.00s)
+=== RUN   TestLookupAndPlatforms
+--- PASS: TestLookupAndPlatforms (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/boot/catalog	0.280s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-5 step 5.1: rule-3 default: a typed, versioned event vocabulary
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v ./internal/session/event/
+=== RUN   TestDefineRefusals
+=== RUN   TestDefineRefusals/duplicate
+=== RUN   TestDefineRefusals/no_namespace
+=== RUN   TestDefineRefusals/upper_case
+=== RUN   TestDefineRefusals/plugin_prefix
+=== RUN   TestDefineRefusals/reserved_namespace
+=== RUN   TestDefineRefusals/version_zero
+=== RUN   TestDefineRefusals/gap_in_upgrades
+=== RUN   TestDefineRefusals/extra_upgrade
+=== RUN   TestDefineRefusals/queueable_not_detached
+=== RUN   TestDefineRefusals/cold_not_omitempty
+--- PASS: TestDefineRefusals (0.00s)
+    --- PASS: TestDefineRefusals/duplicate (0.00s)
+    --- PASS: TestDefineRefusals/no_namespace (0.00s)
+    --- PASS: TestDefineRefusals/upper_case (0.00s)
+    --- PASS: TestDefineRefusals/plugin_prefix (0.00s)
+    --- PASS: TestDefineRefusals/reserved_namespace (0.00s)
+    --- PASS: TestDefineRefusals/version_zero (0.00s)
+    --- PASS: TestDefineRefusals/gap_in_upgrades (0.00s)
+    --- PASS: TestDefineRefusals/extra_upgrade (0.00s)
+    --- PASS: TestDefineRefusals/queueable_not_detached (0.00s)
+    --- PASS: TestDefineRefusals/cold_not_omitempty (0.00s)
+=== RUN   TestCoreVocabulary
+--- PASS: TestCoreVocabulary (0.00s)
+=== RUN   TestRoundTripStable
+--- PASS: TestRoundTripStable (0.00s)
+=== RUN   TestOlderVersionConverts
+--- PASS: TestOlderVersionConverts (0.00s)
+=== RUN   TestRetryAfterBecomesText
+--- PASS: TestRetryAfterBecomesText (0.00s)
+=== RUN   TestUnknownVersionSurfaces
+--- PASS: TestUnknownVersionSurfaces (0.00s)
+=== RUN   TestUnknownType
+--- PASS: TestUnknownType (0.00s)
+=== RUN   TestPluginRecords
+--- PASS: TestPluginRecords (0.00s)
+=== RUN   TestInvalidEnvelopes
+=== RUN   TestInvalidEnvelopes/surface_without_op
+=== RUN   TestInvalidEnvelopes/log-only_with_op
+=== RUN   TestInvalidEnvelopes/replace_forward
+=== RUN   TestInvalidEnvelopes/replace_reversed
+=== RUN   TestInvalidEnvelopes/append_with_range
+=== RUN   TestInvalidEnvelopes/later_source
+=== RUN   TestInvalidEnvelopes/duplicate_source
+=== RUN   TestInvalidEnvelopes/sources_on_assistant
+=== RUN   TestInvalidEnvelopes/payload_not_json
+=== RUN   TestInvalidEnvelopes/plugin_with_version
+=== RUN   TestInvalidEnvelopes/plugin_not_ignorable
+=== RUN   TestInvalidEnvelopes/plugin_outside_grammar
+--- PASS: TestInvalidEnvelopes (0.00s)
+    --- PASS: TestInvalidEnvelopes/surface_without_op (0.00s)
+    --- PASS: TestInvalidEnvelopes/log-only_with_op (0.00s)
+    --- PASS: TestInvalidEnvelopes/replace_forward (0.00s)
+    --- PASS: TestInvalidEnvelopes/replace_reversed (0.00s)
+    --- PASS: TestInvalidEnvelopes/append_with_range (0.00s)
+    --- PASS: TestInvalidEnvelopes/later_source (0.00s)
+    --- PASS: TestInvalidEnvelopes/duplicate_source (0.00s)
+    --- PASS: TestInvalidEnvelopes/sources_on_assistant (0.00s)
+    --- PASS: TestInvalidEnvelopes/payload_not_json (0.00s)
+    --- PASS: TestInvalidEnvelopes/plugin_with_version (0.00s)
+    --- PASS: TestInvalidEnvelopes/plugin_not_ignorable (0.00s)
+    --- PASS: TestInvalidEnvelopes/plugin_outside_grammar (0.00s)
+=== RUN   TestReservedDraft
+--- PASS: TestReservedDraft (0.00s)
+=== RUN   TestUnknownReasonPreserved
+--- PASS: TestUnknownReasonPreserved (0.00s)
+=== RUN   TestEventCopies
+--- PASS: TestEventCopies (0.00s)
+=== RUN   TestNonObjectPayloadRefused
+=== RUN   TestNonObjectPayloadRefused/null_with_cold
+=== RUN   TestNonObjectPayloadRefused/null
+=== RUN   TestNonObjectPayloadRefused/array_with_cold
+=== RUN   TestNonObjectPayloadRefused/string
+=== RUN   TestNonObjectPayloadRefused/number
+=== RUN   TestNonObjectPayloadRefused/object_with_bad_cold
+--- PASS: TestNonObjectPayloadRefused (0.00s)
+    --- PASS: TestNonObjectPayloadRefused/null_with_cold (0.00s)
+    --- PASS: TestNonObjectPayloadRefused/null (0.00s)
+    --- PASS: TestNonObjectPayloadRefused/array_with_cold (0.00s)
+    --- PASS: TestNonObjectPayloadRefused/string (0.00s)
+    --- PASS: TestNonObjectPayloadRefused/number (0.00s)
+    --- PASS: TestNonObjectPayloadRefused/object_with_bad_cold (0.00s)
+=== RUN   TestUpgradesSnapshotted
+--- PASS: TestUpgradesSnapshotted (0.00s)
+=== RUN   TestRequestHeaderV2RoundTrip
+--- PASS: TestRequestHeaderV2RoundTrip (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/session/event	1.957s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-5 step 5.2: rule-3 default: per-agent and per-preset registrations with one owner
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v ./internal/session/scope/
+=== RUN   TestScopedRegistrations
+--- PASS: TestScopedRegistrations (0.00s)
+=== RUN   TestScopedEvent
+--- PASS: TestScopedEvent (0.00s)
+=== RUN   TestNoBorrowedAuthority
+--- PASS: TestNoBorrowedAuthority (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/session/scope	1.928s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-5 step 5.3: rule-3 default: the store contract and its in-memory reference
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestConformance)$' ./internal/session/store/memstore/
+=== RUN   TestConformance
+=== RUN   TestConformance/CreateAndStat
+=== RUN   TestConformance/AppendOrderAndReadYourWrites
+=== RUN   TestConformance/FlushBarrier
+=== RUN   TestConformance/SeqConflict
+=== RUN   TestConformance/SingleWriter
+=== RUN   TestConformance/ForceTakeover
+=== RUN   TestConformance/PagedReads
+=== RUN   TestConformance/ReadSeqs
+=== RUN   TestConformance/ColdPart
+=== RUN   TestConformance/Checkpoints
+=== RUN   TestConformance/CheckpointsOnlyMoveForward
+=== RUN   TestConformance/DerivedRowRefused
+=== RUN   TestConformance/UpsertDerived
+=== RUN   TestConformance/List
+=== RUN   TestConformance/ListByPrompt
+=== RUN   TestConformance/Delete
+=== RUN   TestConformance/OpenRefusals
+=== RUN   TestConformance/AppendAdmission
+=== RUN   TestConformance/AppendAdmission/undeclared_required_type
+=== RUN   TestConformance/AppendAdmission/newer_required_version
+=== RUN   TestConformance/AppendAdmission/payload_not_JSON
+=== RUN   TestConformance/AppendAdmission/payload_not_an_object
+=== RUN   TestConformance/AppendAdmission/payload_of_the_wrong_shape
+=== RUN   TestConformance/AppendAdmission/version_0_of_a_declared_type
+=== RUN   TestConformance/AppendAdmission/log-only_type_with_an_operation
+=== RUN   TestConformance/AppendAdmission/source_not_earlier
+=== RUN   TestConformance/UnsignedBoundaries
+=== RUN   TestConformance/IgnorableKeptByteIdentical
+=== RUN   TestConformance/ClosedHandles
+=== RUN   TestConformance/Fork
+=== RUN   TestConformance/Immutability
+=== RUN   TestConformance/Concurrent
+=== RUN   TestConformance/CancelledContext
+--- PASS: TestConformance (0.00s)
+    --- PASS: TestConformance/CreateAndStat (0.00s)
+    --- PASS: TestConformance/AppendOrderAndReadYourWrites (0.00s)
+    --- PASS: TestConformance/FlushBarrier (0.00s)
+    --- PASS: TestConformance/SeqConflict (0.00s)
+    --- PASS: TestConformance/SingleWriter (0.00s)
+    --- PASS: TestConformance/ForceTakeover (0.00s)
+    --- PASS: TestConformance/PagedReads (0.00s)
+    --- PASS: TestConformance/ReadSeqs (0.00s)
+    --- PASS: TestConformance/ColdPart (0.00s)
+    --- PASS: TestConformance/Checkpoints (0.00s)
+    --- PASS: TestConformance/CheckpointsOnlyMoveForward (0.00s)
+    --- PASS: TestConformance/DerivedRowRefused (0.00s)
+    --- PASS: TestConformance/UpsertDerived (0.00s)
+    --- PASS: TestConformance/List (0.00s)
+    --- PASS: TestConformance/ListByPrompt (0.00s)
+    --- PASS: TestConformance/Delete (0.00s)
+    --- PASS: TestConformance/OpenRefusals (0.00s)
+    --- PASS: TestConformance/AppendAdmission (0.00s)
+        --- PASS: TestConformance/AppendAdmission/undeclared_required_type (0.00s)
+        --- PASS: TestConformance/AppendAdmission/newer_required_version (0.00s)
+        --- PASS: TestConformance/AppendAdmission/payload_not_JSON (0.00s)
+        --- PASS: TestConformance/AppendAdmission/payload_not_an_object (0.00s)
+        --- PASS: TestConformance/AppendAdmission/payload_of_the_wrong_shape (0.00s)
+        --- PASS: TestConformance/AppendAdmission/version_0_of_a_declared_type (0.00s)
+        --- PASS: TestConformance/AppendAdmission/log-only_type_with_an_operation (0.00s)
+        --- PASS: TestConformance/AppendAdmission/source_not_earlier (0.00s)
+    --- PASS: TestConformance/UnsignedBoundaries (0.00s)
+    --- PASS: TestConformance/IgnorableKeptByteIdentical (0.00s)
+    --- PASS: TestConformance/ClosedHandles (0.00s)
+    --- PASS: TestConformance/Fork (0.00s)
+    --- PASS: TestConformance/Immutability (0.00s)
+    --- PASS: TestConformance/Concurrent (0.00s)
+    --- PASS: TestConformance/CancelledContext (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/session/store/memstore	2.610s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-5 step 5.4: rule-3 default: a persisted type cannot change unnoticed
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestInventory|TestInventoryCatchesUnbumpedChange|TestPersistedRowsDecode)$' ./internal/session/store/
+=== RUN   TestInventory
+--- PASS: TestInventory (0.00s)
+=== RUN   TestInventoryCatchesUnbumpedChange
+--- PASS: TestInventoryCatchesUnbumpedChange (0.00s)
+=== RUN   TestPersistedRowsDecode
+--- PASS: TestPersistedRowsDecode (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/session/store	2.141s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-5 step 5.5: a hand-written sequence on an in-memory session: accepted in order, delivered once (record the sequence and its seqs)
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestRequestRebuild)$' ./internal/session/
+=== RUN   TestRequestRebuild
+--- PASS: TestRequestRebuild (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/session	0.288s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-5 step 5.6: a hand-written sequence: history and the request header computed from the log (record messages and header)
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestRequestRebuild)$' ./internal/session/
+=== RUN   TestRequestRebuild
+--- PASS: TestRequestRebuild (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/session	0.317s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-5 step 5.7: a hand-written sequence: the rebuilt request equals the expected one (sent and rebuilt digests; digest and AsOf unchanged after more appends)
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestRequestRebuild)$' ./internal/session/
+=== RUN   TestRequestRebuild
+--- PASS: TestRequestRebuild (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/session	0.335s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-5 step 5.8: rule-3 default: brackets balance, checked on append and closed on failure (the bracket tests of DH-D-SESSION-5)
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v ./internal/session/
+=== RUN   TestDeliveryStateBounded
+--- PASS: TestDeliveryStateBounded (0.01s)
+=== RUN   TestForeignRecordOnLaterRead
+=== RUN   TestForeignRecordOnLaterRead/foreign
+=== RUN   TestForeignRecordOnLaterRead/foreign-late
+--- PASS: TestForeignRecordOnLaterRead (0.02s)
+    --- PASS: TestForeignRecordOnLaterRead/foreign (0.01s)
+    --- PASS: TestForeignRecordOnLaterRead/foreign-late (0.01s)
+=== RUN   TestCancelAfterCommit
+--- PASS: TestCancelAfterCommit (0.00s)
+=== RUN   TestCancelledAppendKeepsSession
+--- PASS: TestCancelledAppendKeepsSession (0.00s)
+=== RUN   TestHeapBoundedBehindBlockedListener
+--- PASS: TestHeapBoundedBehindBlockedListener (0.78s)
+=== RUN   TestCloseReportsWriterFailure
+--- PASS: TestCloseReportsWriterFailure (0.00s)
+=== RUN   TestOldHeadersStillReplay
+--- PASS: TestOldHeadersStillReplay (0.11s)
+=== RUN   TestPreparedSessionDiscardAndPublishOnce
+--- PASS: TestPreparedSessionDiscardAndPublishOnce (0.00s)
+=== RUN   TestClosedSessionRefusesUse
+--- PASS: TestClosedSessionRefusesUse (0.00s)
+=== RUN   TestAppendRefusalsAndPluginRecords
+--- PASS: TestAppendRefusalsAndPluginRecords (0.00s)
+=== RUN   TestReadOnlyOpenServesItsClosers
+--- PASS: TestReadOnlyOpenServesItsClosers (0.00s)
+=== RUN   TestRequestRebuild
+--- PASS: TestRequestRebuild (0.00s)
+=== RUN   TestBracketsOnAppend
+--- PASS: TestBracketsOnAppend (0.00s)
+=== RUN   TestOpenClosesBrackets
+--- PASS: TestOpenClosesBrackets (0.00s)
+=== RUN   TestOpenFlushesClosersBeforePublishing
+--- PASS: TestOpenFlushesClosersBeforePublishing (0.00s)
+=== RUN   TestOpenFromCheckpoint
+--- PASS: TestOpenFromCheckpoint (0.00s)
+=== RUN   TestBrokenStoreRead
+=== RUN   TestBrokenStoreRead/stale
+=== RUN   TestBrokenStoreRead/first
+=== RUN   TestBrokenStoreRead/gap
+=== RUN   TestBrokenStoreRead/foreign
+--- PASS: TestBrokenStoreRead (0.00s)
+    --- PASS: TestBrokenStoreRead/stale (0.00s)
+    --- PASS: TestBrokenStoreRead/first (0.00s)
+    --- PASS: TestBrokenStoreRead/gap (0.00s)
+    --- PASS: TestBrokenStoreRead/foreign (0.00s)
+=== RUN   TestLifecycle
+--- PASS: TestLifecycle (0.00s)
+=== RUN   TestRead
+--- PASS: TestRead (0.00s)
+=== RUN   TestImmutableResults
+--- PASS: TestImmutableResults (0.00s)
+=== RUN   TestOrderedOnceDelivery
+--- PASS: TestOrderedOnceDelivery (0.01s)
+=== RUN   TestGroupAtomic
+--- PASS: TestGroupAtomic (0.00s)
+=== RUN   TestListeners
+--- PASS: TestListeners (0.00s)
+=== RUN   TestListenerScopes
+--- PASS: TestListenerScopes (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/session	1.296s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-5 step 5.9: rule-3 default: one runtime, one settlement per attempt
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestStreamOneAttemptOneSettlement|TestCompleteHandsOneRecordToTheCaller)$' ./internal/llm/
+=== RUN   TestStreamOneAttemptOneSettlement
+--- PASS: TestStreamOneAttemptOneSettlement (0.00s)
+=== RUN   TestCompleteHandsOneRecordToTheCaller
+--- PASS: TestCompleteHandsOneRecordToTheCaller (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/llm	0.360s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-5 step 5.10: rule-3 default: agents found, addressed and owned through one contract
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestRegistryCreateGetList|TestCompositionWithAStubFactory)$' ./internal/agent/
+=== RUN   TestRegistryCreateGetList
+--- PASS: TestRegistryCreateGetList (0.00s)
+=== RUN   TestCompositionWithAStubFactory
+--- PASS: TestCompositionWithAStubFactory (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/agent	0.535s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-5 step 5.11: rule-3 default: three typed steering points
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestPreStepRejectAndPanic|TestTurnStoppingKeepOpenWinsInEveryOrder)$' ./internal/agent/
+=== RUN   TestPreStepRejectAndPanic
+--- PASS: TestPreStepRejectAndPanic (0.00s)
+=== RUN   TestTurnStoppingKeepOpenWinsInEveryOrder
+--- PASS: TestTurnStoppingKeepOpenWinsInEveryOrder (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/agent	0.470s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-5 step 5.12: rule-3 default: one registry for pending approvals and questions
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestPendingIsAddressableByAgent|TestConcurrentAnswersOneWins)$' ./internal/human/
+=== RUN   TestPendingIsAddressableByAgent
+--- PASS: TestPendingIsAddressableByAgent (0.00s)
+=== RUN   TestConcurrentAnswersOneWins
+--- PASS: TestConcurrentAnswersOneWins (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/human	2.686s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-5 step 5.13: rule-3 default: folds registered once and read at one cut
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestFoldsReadAtOneCut)$' ./internal/session/views/
+=== RUN   TestFoldsReadAtOneCut
+--- PASS: TestFoldsReadAtOneCut (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/session/views	0.364s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-6 step 6.1: rule-3 default: leaf packages (errors, identifiers, home location, media types)
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v ./internal/util/herr/ ./internal/util/ident/ ./internal/util/homedir/ ./internal/util/mediatype/
+=== RUN   TestFrame
+--- PASS: TestFrame (0.00s)
+=== RUN   TestKindInnermostAndNoSecret
+--- PASS: TestKindInnermostAndNoSecret (0.00s)
+=== RUN   TestReasonOfThroughJoinAndForeignTypes
+--- PASS: TestReasonOfThroughJoinAndForeignTypes (0.00s)
+=== RUN   TestReasonDeclarations
+--- PASS: TestReasonDeclarations (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/util/herr	2.770s
+=== RUN   TestNew
+--- PASS: TestNew (0.89s)
+=== RUN   TestNewPanicsOnFailedSource
+--- PASS: TestNewPanicsOnFailedSource (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/util/ident	2.700s
+=== RUN   TestResolveOrder
+=== RUN   TestResolveOrder/explicit_beats_DSH_HOME
+=== RUN   TestResolveOrder/DSH_HOME_beats_default
+=== RUN   TestResolveOrder/default
+=== RUN   TestResolveOrder/blank_explicit_is_unset
+=== RUN   TestResolveOrder/blank_DSH_HOME_is_unset
+=== RUN   TestResolveOrder/tilde_explicit
+=== RUN   TestResolveOrder/tilde_DSH_HOME
+--- PASS: TestResolveOrder (0.00s)
+    --- PASS: TestResolveOrder/explicit_beats_DSH_HOME (0.00s)
+    --- PASS: TestResolveOrder/DSH_HOME_beats_default (0.00s)
+    --- PASS: TestResolveOrder/default (0.00s)
+    --- PASS: TestResolveOrder/blank_explicit_is_unset (0.00s)
+    --- PASS: TestResolveOrder/blank_DSH_HOME_is_unset (0.00s)
+    --- PASS: TestResolveOrder/tilde_explicit (0.00s)
+    --- PASS: TestResolveOrder/tilde_DSH_HOME (0.00s)
+=== RUN   TestExpandTilde
+--- PASS: TestExpandTilde (0.00s)
+=== RUN   TestNoUserHome
+--- PASS: TestNoUserHome (0.00s)
+=== RUN   TestDisplay
+--- PASS: TestDisplay (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/util/homedir	2.226s
+=== RUN   TestTable
+--- PASS: TestTable (0.00s)
+=== RUN   TestProcessTableCannotChangeAnswers
+--- PASS: TestProcessTableCannotChangeAnswers (0.07s)
+=== RUN   TestLanguage
+--- PASS: TestLanguage (0.00s)
+=== RUN   TestSafeName
+--- PASS: TestSafeName (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/util/mediatype	2.291s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-6 step 6.2: a child that ignores termination: started through the one spawn package (record the owner line)
+kind: composed; systems: both; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestStopTreeStopsAndAwaitsTheTree|TestTreeOwnerIsReported)$' ./internal/world/subprocess/
+=== RUN   TestStopTreeStopsAndAwaitsTheTree
+    subprocess_test.go:96: owner job-object; stopped in 2.0076292s
+--- PASS: TestStopTreeStopsAndAwaitsTheTree (2.18s)
+=== RUN   TestTreeOwnerIsReported
+--- PASS: TestTreeOwnerIsReported (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess	4.090s
+UNIT: PASS
+POST: tasklist //FI "IMAGENAME eq subprocess.test.exe"
+INFO: No tasks are running which match the specified criteria.
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-6 step 6.3: a child that ignores termination: the whole tree is gone within the bound (record stopped in <time>, no pid alive)
+kind: composed; systems: both; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestStopTreeStopsAndAwaitsTheTree|TestContextEndStopsDescendantsAfterChildExit)$' ./internal/world/subprocess/
+=== RUN   TestStopTreeStopsAndAwaitsTheTree
+    subprocess_test.go:96: owner job-object; stopped in 2.0043664s
+--- PASS: TestStopTreeStopsAndAwaitsTheTree (2.16s)
+=== RUN   TestContextEndStopsDescendantsAfterChildExit
+--- PASS: TestContextEndStopsDescendantsAfterChildExit (0.56s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess	4.022s
+UNIT: PASS
+POST: tasklist //FI "IMAGENAME eq subprocess.test.exe"
+INFO: No tasks are running which match the specified criteria.
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-6 step 6.4: rule-3 default: launch facts, launch environment and expression scope
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v ./internal/boot/launch/
+=== RUN   TestLaunchFactsFeedExpressionScope
+--- PASS: TestLaunchFactsFeedExpressionScope (0.00s)
+=== RUN   TestBuildFacts
+--- PASS: TestBuildFacts (0.00s)
+=== RUN   TestBuildHomePrecedence
+--- PASS: TestBuildHomePrecedence (0.00s)
+=== RUN   TestEnvPrecedence
+--- PASS: TestEnvPrecedence (0.00s)
+=== RUN   TestEnvCaseOnWindows
+--- PASS: TestEnvCaseOnWindows (0.00s)
+=== RUN   TestDiscoveredFileCannotSetLaunchOnlyName
+--- PASS: TestDiscoveredFileCannotSetLaunchOnlyName (0.00s)
+=== RUN   TestParseDotenv
+--- PASS: TestParseDotenv (0.00s)
+=== RUN   TestBadFileNamesItsPath
+--- PASS: TestBadFileNamesItsPath (0.00s)
+=== RUN   TestClassify
+--- PASS: TestClassify (0.00s)
+=== RUN   TestProbe
+--- PASS: TestProbe (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/boot/launch	1.625s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-6 step 6.5: rule-3 default: the storage directories exist, are private and are checked at start (non-root, non-elevated)
+kind: composed; systems: both; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v ./internal/storage/home/
+=== RUN   TestHomeCreatedPrivate
+--- PASS: TestHomeCreatedPrivate (0.01s)
+=== RUN   TestEnsureRefusesLoosenedExistingHome
+--- PASS: TestEnsureRefusesLoosenedExistingHome (0.01s)
+=== RUN   TestEnsureCreatesMissingParents
+--- PASS: TestEnsureCreatesMissingParents (0.01s)
+=== RUN   TestCheckMissingAndNotDirectory
+--- PASS: TestCheckMissingAndNotDirectory (0.01s)
+=== RUN   TestCheckDatabaseFile
+--- PASS: TestCheckDatabaseFile (0.01s)
+=== RUN   TestLayoutPaths
+--- PASS: TestLayoutPaths (0.00s)
+=== RUN   TestPrivateDirAndFile
+--- PASS: TestPrivateDirAndFile (0.00s)
+=== RUN   TestSafeSegment
+--- PASS: TestSafeSegment (0.00s)
+=== RUN   TestNewDirectorySyncsItsParent
+--- PASS: TestNewDirectorySyncsItsParent (0.01s)
+=== RUN   TestEnsureSyncsNewAncestors
+--- PASS: TestEnsureSyncsNewAncestors (0.01s)
+=== RUN   TestEnsurePrivateDirRefusals
+--- PASS: TestEnsurePrivateDirRefusals (0.00s)
+=== RUN   TestCheckPrivateOfALoosenedFile
+--- PASS: TestCheckPrivateOfALoosenedFile (0.00s)
+=== RUN   TestCheckPrivateRefusesASymlink
+    private_edges_test.go:88: this host cannot create a symbolic link: symlink C:\Users\XIAODO~1.RED\AppData\Local\Temp\TestCheckPrivateRefusesASymlink2984772752\001\p\f C:\Users\XIAODO~1.RED\AppData\Local\Temp\TestCheckPrivateRefusesASymlink2984772752\001\p\link: A required privilege is not held by the client.
+--- SKIP: TestCheckPrivateRefusesASymlink (0.00s)
+=== RUN   TestEnsureOverAFile
+--- PASS: TestEnsureOverAFile (0.01s)
+=== RUN   TestSafeSegmentCutsADeviceNameToMax
+--- PASS: TestSafeSegmentCutsADeviceNameToMax (0.00s)
+=== RUN   TestCheckPrivateRefusesAnInheritingDirectory
+--- PASS: TestCheckPrivateRefusesAnInheritingDirectory (0.00s)
+=== RUN   TestCheckPrivateRefusesANullAccessList
+--- PASS: TestCheckPrivateRefusesANullAccessList (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/storage/home	2.284s
+NOTE: 1 skipped test or subtest line(s):
+--- SKIP: TestCheckPrivateRefusesASymlink (0.00s)
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-6 step 6.6: rule-3 default: configuration names a secret; the value sits behind one store
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v ./internal/human/secret/
+=== RUN   TestDirectPrintedFormsAreRedacted
+--- PASS: TestDirectPrintedFormsAreRedacted (0.00s)
+=== RUN   TestZeroRefAndMustParse
+--- PASS: TestZeroRefAndMustParse (0.00s)
+=== RUN   TestReferencesKeepNamingOrder
+--- PASS: TestReferencesKeepNamingOrder (0.00s)
+=== RUN   TestSourcesWithNothingToGive
+--- PASS: TestSourcesWithNothingToGive (0.00s)
+=== RUN   TestFileSourceRefusesDirectoryAndOversizedFile
+--- PASS: TestFileSourceRefusesDirectoryAndOversizedFile (0.50s)
+=== RUN   TestMaskCoversBytesAndTheQuotedForm
+--- PASS: TestMaskCoversBytesAndTheQuotedForm (0.00s)
+=== RUN   TestSecretResolvedPerUseAndRedacted
+--- PASS: TestSecretResolvedPerUseAndRedacted (0.00s)
+=== RUN   TestValueNeverPrints
+--- PASS: TestValueNeverPrints (0.00s)
+=== RUN   TestConfigRefusesValue
+--- PASS: TestConfigRefusesValue (0.00s)
+=== RUN   TestResolveOrderAndSources
+--- PASS: TestResolveOrderAndSources (0.01s)
+=== RUN   TestIsSecretName
+--- PASS: TestIsSecretName (0.00s)
+=== RUN   TestUseErrorFormatsMaskedForValueErrors
+--- PASS: TestUseErrorFormatsMaskedForValueErrors (0.00s)
+=== RUN   TestFileSourceRefusesLinkEscapingSecrets
+--- PASS: TestFileSourceRefusesLinkEscapingSecrets (0.13s)
+=== RUN   TestDefaultDenyCoversEveryCredentialShape
+--- PASS: TestDefaultDenyCoversEveryCredentialShape (0.00s)
+=== RUN   TestNamedSecretsReachNoChildAndNoLog
+=== RUN   TestNamedSecretsReachNoChildAndNoLog/child_environment
+=== RUN   TestNamedSecretsReachNoChildAndNoLog/a_shaper_registered_after_the_mask
+=== RUN   TestNamedSecretsReachNoChildAndNoLog/tool_result
+--- PASS: TestNamedSecretsReachNoChildAndNoLog (0.17s)
+    --- PASS: TestNamedSecretsReachNoChildAndNoLog/child_environment (0.16s)
+    --- PASS: TestNamedSecretsReachNoChildAndNoLog/a_shaper_registered_after_the_mask (0.00s)
+    --- PASS: TestNamedSecretsReachNoChildAndNoLog/tool_result (0.00s)
+=== RUN   TestMaskAndSecretNamesFailClosed
+--- PASS: TestMaskAndSecretNamesFailClosed (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/human/secret	4.347s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-6 step 6.7: rule-3 default: profiles, embedded bundles and the layer stack
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v ./internal/boot/profile/
+=== RUN   TestBuiltinProfilesCompose
+--- PASS: TestBuiltinProfilesCompose (0.00s)
+=== RUN   TestBuiltinProfileChecksCatchFaults
+--- PASS: TestBuiltinProfileChecksCatchFaults (0.00s)
+=== RUN   TestLayerStackPrecedence
+--- PASS: TestLayerStackPrecedence (0.00s)
+=== RUN   TestStackOrderAndOneWritableLayer
+--- PASS: TestStackOrderAndOneWritableLayer (0.00s)
+=== RUN   TestStackErrors
+--- PASS: TestStackErrors (0.00s)
+=== RUN   TestBundlesParseAndResolve
+--- PASS: TestBundlesParseAndResolve (0.00s)
+=== RUN   TestLookupUnknown
+--- PASS: TestLookupUnknown (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/boot/profile	0.296s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-6 step 6.8: rule-3 default: one command tree, help and usage errors (by-hand part: dsh --help and one usage error, in the checklist)
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v ./internal/cli/ ./internal/cli/cmdline/
+=== RUN   TestUsageErrorExits64
+--- PASS: TestUsageErrorExits64 (0.00s)
+=== RUN   TestNoCommandPathReturns2
+--- PASS: TestNoCommandPathReturns2 (0.45s)
+=== RUN   TestUsageErrorsOfCommands
+--- PASS: TestUsageErrorsOfCommands (0.19s)
+=== RUN   TestVersion
+--- PASS: TestVersion (0.06s)
+=== RUN   TestHelpIsStatus0OnStdout
+--- PASS: TestHelpIsStatus0OnStdout (0.18s)
+=== RUN   TestProfileLaunch
+--- PASS: TestProfileLaunch (0.00s)
+=== RUN   TestExplicitProfileEndsLauncherOptions
+--- PASS: TestExplicitProfileEndsLauncherOptions (0.00s)
+=== RUN   TestJSONUsageErrorWritesErrorDocument
+--- PASS: TestJSONUsageErrorWritesErrorDocument (0.12s)
+=== RUN   TestBareGroupIsUsageError
+--- PASS: TestBareGroupIsUsageError (0.03s)
+=== RUN   TestHelpToClosedStdoutFails
+--- PASS: TestHelpToClosedStdoutFails (0.15s)
+=== RUN   TestUnknownProfileAndUnwiredLaunch
+--- PASS: TestUnknownProfileAndUnwiredLaunch (0.00s)
+=== RUN   TestLaunchErrorIsMapped
+--- PASS: TestLaunchErrorIsMapped (0.00s)
+=== RUN   TestCompletion
+--- PASS: TestCompletion (0.12s)
+=== RUN   TestReservedWordsAreNoProfiles
+--- PASS: TestReservedWordsAreNoProfiles (0.00s)
+=== RUN   TestReferenceIsCurrent
+--- PASS: TestReferenceIsCurrent (0.06s)
+=== RUN   TestProcessLaunchRunsBoot
+--- PASS: TestProcessLaunchRunsBoot (0.01s)
+=== RUN   TestProcessLaunchInterrupted
+--- PASS: TestProcessLaunchInterrupted (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/cli	1.686s
+=== RUN   TestParseOptionsAfterFreeWords
+--- PASS: TestParseOptionsAfterFreeWords (0.00s)
+=== RUN   TestParseStopAtArgs
+--- PASS: TestParseStopAtArgs (0.00s)
+=== RUN   TestParseEnds
+--- PASS: TestParseEnds (0.00s)
+=== RUN   TestGiven
+--- PASS: TestGiven (0.00s)
+=== RUN   TestParseUsageErrors
+--- PASS: TestParseUsageErrors (0.00s)
+=== RUN   TestParseHelp
+--- PASS: TestParseHelp (0.00s)
+=== RUN   TestHelp
+--- PASS: TestHelp (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/cli/cmdline	1.734s
+UNIT: PASS
+NOT SCRIPTED: by hand: dsh --help and one usage error (checklist)
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-6 step 6.9: rule-3 default: every command prints and exits by one contract
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v ./internal/cli/output/
+=== RUN   TestEveryReasonHasAStatus
+--- PASS: TestEveryReasonHasAStatus (0.07s)
+=== RUN   TestStatusTableIsClosed
+--- PASS: TestStatusTableIsClosed (0.00s)
+=== RUN   TestStatusTableMatchesTheAreaSpec
+--- PASS: TestStatusTableMatchesTheAreaSpec (0.00s)
+=== RUN   TestStatus
+--- PASS: TestStatus (0.00s)
+=== RUN   TestFailText
+--- PASS: TestFailText (0.00s)
+=== RUN   TestFailJSONEndsResultWithError
+--- PASS: TestFailJSONEndsResultWithError (0.00s)
+=== RUN   TestResultModes
+--- PASS: TestResultModes (0.00s)
+=== RUN   TestClosedResultStream
+--- PASS: TestClosedResultStream (0.00s)
+=== RUN   TestExitStatusIsNotPrintedAgain
+--- PASS: TestExitStatusIsNotPrintedAgain (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/cli/output	2.047s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-6 step 6.10: a broken required entry: one fatal message and one report file
+kind: composed; systems: both; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestFatalPrintsOneMessageAndWritesOneReport)$' ./internal/host/diag/
+=== RUN   TestFatalPrintsOneMessageAndWritesOneReport
+--- PASS: TestFatalPrintsOneMessageAndWritesOneReport (0.02s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/host/diag	2.112s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-6 step 6.11: a broken required entry fails boot once (one message naming the entry, the exit status, one report)
+kind: composed; systems: both; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestBrokenRequiredEntryFailsBootOnce)$' ./internal/boot/
+=== RUN   TestBrokenRequiredEntryFailsBootOnce
+--- PASS: TestBrokenRequiredEntryFailsBootOnce (0.02s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/boot	0.353s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-6 step 6.12: rule-3 default: the composed tree is previewed, explained and checked without starting it
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v ./internal/boot/config/
+=== RUN   TestSameEntriesThroughJSONAndYAML
+--- PASS: TestSameEntriesThroughJSONAndYAML (0.00s)
+=== RUN   TestDecodeRejectsWithPosition
+--- PASS: TestDecodeRejectsWithPosition (0.00s)
+=== RUN   TestEncodeRoundTrips
+--- PASS: TestEncodeRoundTrips (0.00s)
+=== RUN   TestEncodeLayerKeepsComments
+--- PASS: TestEncodeLayerKeepsComments (0.00s)
+=== RUN   TestEncodeLayerReordered
+--- PASS: TestEncodeLayerReordered (0.00s)
+=== RUN   TestEncodeLayerRefusesAnUnverifiedWrite
+=== RUN   TestEncodeLayerRefusesAnUnverifiedWrite/previous_text_no_longer_parses
+=== RUN   TestEncodeLayerRefusesAnUnverifiedWrite/edit_drops_a_comment
+=== RUN   TestEncodeLayerRefusesAnUnverifiedWrite/edit_changes_another_value
+=== RUN   TestEncodeLayerRefusesAnUnverifiedWrite/edit_is_not_YAML
+--- PASS: TestEncodeLayerRefusesAnUnverifiedWrite (0.00s)
+    --- PASS: TestEncodeLayerRefusesAnUnverifiedWrite/previous_text_no_longer_parses (0.00s)
+    --- PASS: TestEncodeLayerRefusesAnUnverifiedWrite/edit_drops_a_comment (0.00s)
+    --- PASS: TestEncodeLayerRefusesAnUnverifiedWrite/edit_changes_another_value (0.00s)
+    --- PASS: TestEncodeLayerRefusesAnUnverifiedWrite/edit_is_not_YAML (0.00s)
+=== RUN   TestDiff
+=== RUN   TestDiff/index_items
+=== RUN   TestDiff/append_items
+=== RUN   TestDiff/scalars
+=== RUN   TestDiff/kind_change
+=== RUN   TestDiff/drop_and_add_ids
+=== RUN   TestDiff/duplicate_ids
+--- PASS: TestDiff (0.00s)
+    --- PASS: TestDiff/index_items (0.00s)
+    --- PASS: TestDiff/append_items (0.00s)
+    --- PASS: TestDiff/scalars (0.00s)
+    --- PASS: TestDiff/kind_change (0.00s)
+    --- PASS: TestDiff/drop_and_add_ids (0.00s)
+    --- PASS: TestDiff/duplicate_ids (0.00s)
+=== RUN   TestRegister
+--- PASS: TestRegister (0.00s)
+=== RUN   TestDiagnoseFramesAYAMLSyntaxError
+--- PASS: TestDiagnoseFramesAYAMLSyntaxError (0.00s)
+=== RUN   TestReportDiagnosticsFrameEachIssue
+--- PASS: TestReportDiagnosticsFrameEachIssue (0.00s)
+=== RUN   TestReloadDisabledFileEditWaitsWhileApplyReconciles
+--- PASS: TestReloadDisabledFileEditWaitsWhileApplyReconciles (0.04s)
+=== RUN   TestChangeSavedBeforeReadinessAppliesAtFirstPoll
+--- PASS: TestChangeSavedBeforeReadinessAppliesAtFirstPoll (0.01s)
+=== RUN   TestPreviewWithoutStart
+--- PASS: TestPreviewWithoutStart (0.00s)
+=== RUN   TestCheckPositionsBadValues
+--- PASS: TestCheckPositionsBadValues (0.00s)
+=== RUN   TestBadLayerEditLeavesRunningTreeUnchanged
+=== RUN   TestBadLayerEditLeavesRunningTreeUnchanged/schema
+=== RUN   TestBadLayerEditLeavesRunningTreeUnchanged/static
+--- PASS: TestBadLayerEditLeavesRunningTreeUnchanged (0.04s)
+    --- PASS: TestBadLayerEditLeavesRunningTreeUnchanged/schema (0.02s)
+    --- PASS: TestBadLayerEditLeavesRunningTreeUnchanged/static (0.01s)
+=== RUN   TestConcurrentSettingsEditsDoNotLoseAWrite
+--- PASS: TestConcurrentSettingsEditsDoNotLoseAWrite (0.03s)
+=== RUN   TestRejectedEditWritesNothing
+--- PASS: TestRejectedEditWritesNothing (0.00s)
+=== RUN   TestEditWithoutRunningTreeValidatesSchema
+=== RUN   TestEditWithoutRunningTreeValidatesSchema/changed
+=== RUN   TestEditWithoutRunningTreeValidatesSchema/enabled
+=== RUN   TestEditWithoutRunningTreeValidatesSchema/new
+--- PASS: TestEditWithoutRunningTreeValidatesSchema (0.01s)
+    --- PASS: TestEditWithoutRunningTreeValidatesSchema/changed (0.00s)
+    --- PASS: TestEditWithoutRunningTreeValidatesSchema/enabled (0.00s)
+    --- PASS: TestEditWithoutRunningTreeValidatesSchema/new (0.00s)
+=== RUN   TestReloadRejectsInvalidNewEntry
+--- PASS: TestReloadRejectsInvalidNewEntry (0.01s)
+=== RUN   TestCheckPositionsTheMergeThatWroteTheField
+--- PASS: TestCheckPositionsTheMergeThatWroteTheField (0.00s)
+=== RUN   TestRejectedListenerMayCallTheService
+--- PASS: TestRejectedListenerMayCallTheService (0.01s)
+=== RUN   TestUnparsableLayerIsToldOncePerContent
+--- PASS: TestUnparsableLayerIsToldOncePerContent (0.02s)
+=== RUN   TestEditOfComputedFieldNeedsOverwrite
+--- PASS: TestEditOfComputedFieldNeedsOverwrite (0.03s)
+=== RUN   TestOmittedConfigIsValidatedToo
+=== RUN   TestOmittedConfigIsValidatedToo/inserted
+=== RUN   TestOmittedConfigIsValidatedToo/enabled
+--- PASS: TestOmittedConfigIsValidatedToo (0.01s)
+    --- PASS: TestOmittedConfigIsValidatedToo/inserted (0.00s)
+    --- PASS: TestOmittedConfigIsValidatedToo/enabled (0.00s)
+=== RUN   TestReloadListenerMayCallTheService
+--- PASS: TestReloadListenerMayCallTheService (0.03s)
+=== RUN   TestApplyRefusesShadowedEdit
+--- PASS: TestApplyRefusesShadowedEdit (0.02s)
+=== RUN   TestEffectiveIsTheResolvedConfig
+--- PASS: TestEffectiveIsTheResolvedConfig (0.00s)
+=== RUN   TestRequiredEntriesSurviveReloadAndEdit
+=== RUN   TestRequiredEntriesSurviveReloadAndEdit/reload/failing_expr
+=== RUN   TestRequiredEntriesSurviveReloadAndEdit/reload/non-bool_expr
+=== RUN   TestRequiredEntriesSurviveReloadAndEdit/reload/disable
+=== RUN   TestRequiredEntriesSurviveReloadAndEdit/edit/disable
+=== RUN   TestRequiredEntriesSurviveReloadAndEdit/reload/disable_group
+=== RUN   TestRequiredEntriesSurviveReloadAndEdit/edit/disable_group
+=== RUN   TestRequiredEntriesSurviveReloadAndEdit/reload/remove_group
+=== RUN   TestRequiredEntriesSurviveReloadAndEdit/edit/remove_group
+=== RUN   TestRequiredEntriesSurviveReloadAndEdit/reload/group_by_expr
+=== RUN   TestRequiredEntriesSurviveReloadAndEdit/reload/remove
+=== RUN   TestRequiredEntriesSurviveReloadAndEdit/edit/remove
+=== RUN   TestRequiredEntriesSurviveReloadAndEdit/reload/disable_by_expr
+=== RUN   TestRequiredEntriesSurviveReloadAndEdit/reload/false_expr_probe
+=== RUN   TestRequiredEntriesSurviveReloadAndEdit/reload/false_expr_core
+--- PASS: TestRequiredEntriesSurviveReloadAndEdit (0.19s)
+    --- PASS: TestRequiredEntriesSurviveReloadAndEdit/reload/failing_expr (0.02s)
+    --- PASS: TestRequiredEntriesSurviveReloadAndEdit/reload/non-bool_expr (0.01s)
+    --- PASS: TestRequiredEntriesSurviveReloadAndEdit/reload/disable (0.02s)
+    --- PASS: TestRequiredEntriesSurviveReloadAndEdit/edit/disable (0.01s)
+    --- PASS: TestRequiredEntriesSurviveReloadAndEdit/reload/disable_group (0.02s)
+    --- PASS: TestRequiredEntriesSurviveReloadAndEdit/edit/disable_group (0.01s)
+    --- PASS: TestRequiredEntriesSurviveReloadAndEdit/reload/remove_group (0.01s)
+    --- PASS: TestRequiredEntriesSurviveReloadAndEdit/edit/remove_group (0.01s)
+    --- PASS: TestRequiredEntriesSurviveReloadAndEdit/reload/group_by_expr (0.01s)
+    --- PASS: TestRequiredEntriesSurviveReloadAndEdit/reload/remove (0.01s)
+    --- PASS: TestRequiredEntriesSurviveReloadAndEdit/edit/remove (0.01s)
+    --- PASS: TestRequiredEntriesSurviveReloadAndEdit/reload/disable_by_expr (0.02s)
+    --- PASS: TestRequiredEntriesSurviveReloadAndEdit/reload/false_expr_probe (0.01s)
+    --- PASS: TestRequiredEntriesSurviveReloadAndEdit/reload/false_expr_core (0.01s)
+=== RUN   TestEditDuringStuckApplicationWaitsForItToSettle
+--- PASS: TestEditDuringStuckApplicationWaitsForItToSettle (0.23s)
+=== RUN   TestReloadListenerMayEditValidly
+--- PASS: TestReloadListenerMayEditValidly (0.01s)
+=== RUN   TestOverlappingApplicationStaysPendingUntilItSettles
+--- PASS: TestOverlappingApplicationStaysPendingUntilItSettles (0.22s)
+=== RUN   TestEarlierObserverMayWaitForAnEditOnAnotherGoroutine
+--- PASS: TestEarlierObserverMayWaitForAnEditOnAnotherGoroutine (0.01s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/boot/config	2.832s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-6 step 6.13: a bad layer edit: the running tree is unchanged (rejection file:line:col, unchanged start count)
+kind: composed; systems: both; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestBadLayerEditLeavesRunningTreeUnchanged|TestReloadAfterReadyAppliesValidAndRejectsInvalidLayers)$' ./internal/boot/...
+=== RUN   TestReloadAfterReadyAppliesValidAndRejectsInvalidLayers
+--- PASS: TestReloadAfterReadyAppliesValidAndRejectsInvalidLayers (0.05s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/boot	0.444s
+testing: warning: no tests to run
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/boot/builtin	0.293s [no tests to run]
+testing: warning: no tests to run
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/boot/catalog	0.223s [no tests to run]
+=== RUN   TestBadLayerEditLeavesRunningTreeUnchanged
+=== RUN   TestBadLayerEditLeavesRunningTreeUnchanged/schema
+=== RUN   TestBadLayerEditLeavesRunningTreeUnchanged/static
+--- PASS: TestBadLayerEditLeavesRunningTreeUnchanged (0.01s)
+    --- PASS: TestBadLayerEditLeavesRunningTreeUnchanged/schema (0.01s)
+    --- PASS: TestBadLayerEditLeavesRunningTreeUnchanged/static (0.01s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/boot/config	1.704s
+testing: warning: no tests to run
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/boot/expr	2.172s [no tests to run]
+testing: warning: no tests to run
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/boot/launch	1.994s [no tests to run]
+testing: warning: no tests to run
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/boot/logging	1.005s [no tests to run]
+testing: warning: no tests to run
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/boot/profile	0.198s [no tests to run]
+testing: warning: no tests to run
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/boot/yamlx	1.109s [no tests to run]
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-6 step 6.14: a bad settings edit changes nothing
+kind: composed; systems: both; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestRefusedEditsChangeNothing|TestDescribeShowsEffectiveValueAfterRejection)$' ./internal/storage/settings/
+=== RUN   TestDescribeShowsEffectiveValueAfterRejection
+--- PASS: TestDescribeShowsEffectiveValueAfterRejection (0.11s)
+=== RUN   TestRefusedEditsChangeNothing
+=== RUN   TestRefusedEditsChangeNothing/invalid
+=== RUN   TestRefusedEditsChangeNothing/not_live
+=== RUN   TestRefusedEditsChangeNothing/shadowed
+--- PASS: TestRefusedEditsChangeNothing (0.02s)
+    --- PASS: TestRefusedEditsChangeNothing/invalid (0.01s)
+    --- PASS: TestRefusedEditsChangeNothing/not_live (0.01s)
+    --- PASS: TestRefusedEditsChangeNothing/shadowed (0.01s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/storage/settings	2.638s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-6 step 6.15: rule-3 default: nothing leaves by default; one off-switch per kind
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v ./internal/host/sharing/
+=== RUN   TestEveryKindOffByDefault
+--- PASS: TestEveryKindOffByDefault (0.00s)
+=== RUN   TestOffSwitchOverridesPermits
+=== RUN   TestOffSwitchOverridesPermits/config
+=== RUN   TestOffSwitchOverridesPermits/environment
+--- PASS: TestOffSwitchOverridesPermits (0.00s)
+    --- PASS: TestOffSwitchOverridesPermits/config (0.00s)
+    --- PASS: TestOffSwitchOverridesPermits/environment (0.00s)
+=== RUN   TestSwitchWithdrawsLivePermit
+--- PASS: TestSwitchWithdrawsLivePermit (0.00s)
+=== RUN   TestConfigureWithdrawsChangedKindsOnly
+--- PASS: TestConfigureWithdrawsChangedKindsOnly (0.00s)
+=== RUN   TestWithdrawnInFlightKeepsEgressReason
+--- PASS: TestWithdrawnInFlightKeepsEgressReason (0.00s)
+=== RUN   TestPermitsAreReleasedByHolderAndOwner
+--- PASS: TestPermitsAreReleasedByHolderAndOwner (0.00s)
+=== RUN   TestEverySharingClientBelongsToAListedSender
+--- PASS: TestEverySharingClientBelongsToAListedSender (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/host/sharing	2.929s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-6 step 6.16: rule-3 default: every outbound connection follows one policy
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestNoPermitNoDial|TestWithdrawnPermitCancelsAndRefuses)$' ./internal/util/egress/
+=== RUN   TestNoPermitNoDial
+--- PASS: TestNoPermitNoDial (0.00s)
+=== RUN   TestWithdrawnPermitCancelsAndRefuses
+--- PASS: TestWithdrawnPermitCancelsAndRefuses (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/util/egress	3.855s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-6 step 6.17: rule-3 default: the test kit runs real components against scripted boundaries
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestVirtualClockDrivesDeadlinesWithoutSleeping|TestFakeModelScriptsATurn|TestLaunchedProgramAndHomeTornDownByCleanup)$' ./internal/testkit/...
+testing: warning: no tests to run
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/testkit	1.479s [no tests to run]
+testing: warning: no tests to run
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/testkit/answerer	2.193s [no tests to run]
+=== RUN   TestVirtualClockDrivesDeadlinesWithoutSleeping
+--- PASS: TestVirtualClockDrivesDeadlinesWithoutSleeping (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/testkit/clock	2.036s
+testing: warning: no tests to run
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/testkit/corpus	2.303s [no tests to run]
+testing: warning: no tests to run
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/testkit/corpus/corpussqlite	3.952s [no tests to run]
+testing: warning: no tests to run
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/testkit/golden	1.256s [no tests to run]
+=== RUN   TestLaunchedProgramAndHomeTornDownByCleanup
+=== RUN   TestLaunchedProgramAndHomeTornDownByCleanup/launch
+--- PASS: TestLaunchedProgramAndHomeTornDownByCleanup (5.39s)
+    --- PASS: TestLaunchedProgramAndHomeTornDownByCleanup/launch (1.98s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/testkit/launcher	7.947s
+=== RUN   TestFakeModelScriptsATurn
+--- PASS: TestFakeModelScriptsATurn (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/testkit/model	2.611s
+?   	github.com/smartpcr/agent-plugin/src/harness/internal/testkit/permit	[no test files]
+testing: warning: no tests to run
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/testkit/procwait	1.811s [no tests to run]
+testing: warning: no tests to run
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/testkit/redact	1.584s [no tests to run]
+?   	github.com/smartpcr/agent-plugin/src/harness/internal/testkit/scenarios	[no test files]
+testing: warning: no tests to run
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/testkit/temphome	2.030s [no tests to run]
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-7 step 7.1: rule-3 default: one database per home, atomic appends, a flush barrier (record the F-2 lines)
+kind: composed; systems: both; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) DSH_E2E_STORE_HOME=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\store-home-7.1 GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestConformance|TestMultiEventAppendIsAtomic|TestBudgetStoreAppend)$' ./internal/session/store/sqlite/
+=== RUN   TestBudgetStoreAppend
+    budget_test.go:102: F-2 open (new, migrate)  n=  20 p50=9.9054ms p95=11.6501ms p99=11.6501ms max=12.0911ms
+    budget_test.go:102: F-2 open (existing)      n=  20 p50=3.6452ms p95=4.6275ms p99=4.6275ms max=5.4243ms
+    budget_test.go:102: F-2 append               n=1000 p50=511.8µs p95=1.0327ms p99=1.5109ms max=2.5638ms
+    budget_test.go:102: F-2 flush                n=1000 p50=0s p95=508.4µs p99=999.7µs max=1.5518ms
+    budget_test.go:102: F-2 append+flush         n=1000 p50=512.8µs p95=1.053ms p99=1.5215ms max=2.5638ms
+--- PASS: TestBudgetStoreAppend (1.07s)
+=== RUN   TestConformance
+=== RUN   TestConformance/CreateAndStat
+=== RUN   TestConformance/AppendOrderAndReadYourWrites
+=== RUN   TestConformance/FlushBarrier
+=== RUN   TestConformance/SeqConflict
+=== RUN   TestConformance/SingleWriter
+=== RUN   TestConformance/ForceTakeover
+=== RUN   TestConformance/PagedReads
+=== RUN   TestConformance/ReadSeqs
+=== RUN   TestConformance/ColdPart
+=== RUN   TestConformance/Checkpoints
+=== RUN   TestConformance/CheckpointsOnlyMoveForward
+=== RUN   TestConformance/DerivedRowRefused
+=== RUN   TestConformance/UpsertDerived
+=== RUN   TestConformance/List
+=== RUN   TestConformance/ListByPrompt
+=== RUN   TestConformance/Delete
+=== RUN   TestConformance/OpenRefusals
+=== RUN   TestConformance/AppendAdmission
+=== RUN   TestConformance/AppendAdmission/undeclared_required_type
+=== RUN   TestConformance/AppendAdmission/newer_required_version
+=== RUN   TestConformance/AppendAdmission/payload_not_JSON
+=== RUN   TestConformance/AppendAdmission/payload_not_an_object
+=== RUN   TestConformance/AppendAdmission/payload_of_the_wrong_shape
+=== RUN   TestConformance/AppendAdmission/version_0_of_a_declared_type
+=== RUN   TestConformance/AppendAdmission/log-only_type_with_an_operation
+=== RUN   TestConformance/AppendAdmission/source_not_earlier
+=== RUN   TestConformance/UnsignedBoundaries
+=== RUN   TestConformance/IgnorableKeptByteIdentical
+=== RUN   TestConformance/ClosedHandles
+=== RUN   TestConformance/Fork
+=== RUN   TestConformance/Immutability
+=== RUN   TestConformance/Concurrent
+=== RUN   TestConformance/CancelledContext
+--- PASS: TestConformance (1.92s)
+    --- PASS: TestConformance/CreateAndStat (0.04s)
+    --- PASS: TestConformance/AppendOrderAndReadYourWrites (0.06s)
+    --- PASS: TestConformance/FlushBarrier (0.36s)
+    --- PASS: TestConformance/SeqConflict (0.32s)
+    --- PASS: TestConformance/SingleWriter (0.17s)
+    --- PASS: TestConformance/ForceTakeover (0.14s)
+    --- PASS: TestConformance/PagedReads (0.08s)
+    --- PASS: TestConformance/ReadSeqs (0.03s)
+    --- PASS: TestConformance/ColdPart (0.04s)
+    --- PASS: TestConformance/Checkpoints (0.03s)
+    --- PASS: TestConformance/CheckpointsOnlyMoveForward (0.04s)
+    --- PASS: TestConformance/DerivedRowRefused (0.09s)
+    --- PASS: TestConformance/UpsertDerived (0.04s)
+    --- PASS: TestConformance/List (0.04s)
+    --- PASS: TestConformance/ListByPrompt (0.05s)
+    --- PASS: TestConformance/Delete (0.04s)
+    --- PASS: TestConformance/OpenRefusals (0.04s)
+    --- PASS: TestConformance/AppendAdmission (0.03s)
+        --- PASS: TestConformance/AppendAdmission/undeclared_required_type (0.02s)
+        --- PASS: TestConformance/AppendAdmission/newer_required_version (0.00s)
+        --- PASS: TestConformance/AppendAdmission/payload_not_JSON (0.00s)
+        --- PASS: TestConformance/AppendAdmission/payload_not_an_object (0.00s)
+        --- PASS: TestConformance/AppendAdmission/payload_of_the_wrong_shape (0.00s)
+        --- PASS: TestConformance/AppendAdmission/version_0_of_a_declared_type (0.00s)
+        --- PASS: TestConformance/AppendAdmission/log-only_type_with_an_operation (0.00s)
+        --- PASS: TestConformance/AppendAdmission/source_not_earlier (0.00s)
+    --- PASS: TestConformance/UnsignedBoundaries (0.03s)
+    --- PASS: TestConformance/IgnorableKeptByteIdentical (0.03s)
+    --- PASS: TestConformance/ClosedHandles (0.03s)
+    --- PASS: TestConformance/Fork (0.04s)
+    --- PASS: TestConformance/Immutability (0.04s)
+    --- PASS: TestConformance/Concurrent (0.07s)
+    --- PASS: TestConformance/CancelledContext (0.03s)
+=== RUN   TestMultiEventAppendIsAtomic
+=== RUN   TestMultiEventAppendIsAtomic/third_event_refused
+=== RUN   TestMultiEventAppendIsAtomic/checkpoint_refused_after_the_events
+--- PASS: TestMultiEventAppendIsAtomic (0.07s)
+    --- PASS: TestMultiEventAppendIsAtomic/third_event_refused (0.03s)
+    --- PASS: TestMultiEventAppendIsAtomic/checkpoint_refused_after_the_events (0.01s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/session/store/sqlite	3.355s
+UNIT: PASS
+POST: ls -A /tmp/dsh-register-iXnv7A/store-home-7.1 (want empty), then remove it
+scratch home after the run: empty
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-7 step 7.2: open one database from two test programs: the second writer is refused
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) DSH_E2E_STORE_HOME=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\store-home-7.2 GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestSecondWriterRefusedAcrossProcesses)$' ./internal/session/store/sqlite/
+=== RUN   TestSecondWriterRefusedAcrossProcesses
+--- PASS: TestSecondWriterRefusedAcrossProcesses (0.23s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/session/store/sqlite	0.474s
+UNIT: PASS
+POST: ls -A /tmp/dsh-register-iXnv7A/store-home-7.2 (want empty), then remove it
+scratch home after the run: empty
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-7 step 7.3: kill a test program between an append and its flush: what the reopened store holds
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) DSH_E2E_STORE_HOME=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\store-home-7.3 GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestCrashBetweenAppendAndFlushRecoversHonestly)$' ./internal/session/store/sqlite/
+=== RUN   TestCrashBetweenAppendAndFlushRecoversHonestly
+--- PASS: TestCrashBetweenAppendAndFlushRecoversHonestly (0.20s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/session/store/sqlite	0.452s
+UNIT: PASS
+POST: ls -A /tmp/dsh-register-iXnv7A/store-home-7.3 (want empty), then remove it
+scratch home after the run: empty
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-7 step 7.4: export a session, import it into an empty home and compare
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) DSH_E2E_STORE_HOME=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\store-home-7.4 GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestExportImportRoundTrip)$' ./internal/session/store/sqlite/
+=== RUN   TestExportImportRoundTrip
+--- PASS: TestExportImportRoundTrip (0.10s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/session/store/sqlite	0.487s
+UNIT: PASS
+POST: ls -A /tmp/dsh-register-iXnv7A/store-home-7.4 (want empty), then remove it
+scratch home after the run: empty
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-7 step 7.5: rule-3 default: a process follows a session another process writes; once-per-home duties
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) DSH_E2E_STORE_HOME=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\store-home-7.5 GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestFollowerSeesAnotherProcessesCommits|TestDutyHasOneHolderAndMovesAfterAKill)$' ./internal/session/store/sqlite/
+=== RUN   TestFollowerSeesAnotherProcessesCommits
+--- PASS: TestFollowerSeesAnotherProcessesCommits (1.35s)
+=== RUN   TestDutyHasOneHolderAndMovesAfterAKill
+--- PASS: TestDutyHasOneHolderAndMovesAfterAKill (0.17s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/session/store/sqlite	1.983s
+UNIT: PASS
+POST: ls -A /tmp/dsh-register-iXnv7A/store-home-7.5 (want empty), then remove it
+scratch home after the run: empty
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-7 step 7.6: import and delete on a scratch home only (nothing of the deleted session remains, Check clean)
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) DSH_E2E_STORE_HOME=C:\Users\XIAODO~1.RED\AppData\Local\Temp\dsh-register-iXnv7A\store-home-7.6 GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestInterruptedDeletionFinishesOnOpen|TestImportRefusals)$' ./internal/session/store/sqlite/
+=== RUN   TestImportRefusals
+--- PASS: TestImportRefusals (0.09s)
+=== RUN   TestInterruptedDeletionFinishesOnOpen
+--- PASS: TestInterruptedDeletionFinishesOnOpen (0.23s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/session/store/sqlite	0.587s
+UNIT: PASS
+POST: ls -A /tmp/dsh-register-iXnv7A/store-home-7.6 (want empty), then remove it
+scratch home after the run: empty
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-8 step 8.1: rule-3 default: program state survives restarts in one typed store
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestMachineStateSurvivesRestart)$' ./internal/storage/workspace/
+=== RUN   TestMachineStateSurvivesRestart
+--- PASS: TestMachineStateSurvivesRestart (0.06s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/storage/workspace	0.359s
+UNIT: PASS
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestUpdateCommitsAtomicallyAndSurvivesRestart)$' ./internal/storage/kv/
+=== RUN   TestUpdateCommitsAtomicallyAndSurvivesRestart
+--- PASS: TestUpdateCommitsAtomicallyAndSurvivesRestart (0.06s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/storage/kv	2.509s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-8 step 8.2: change a fold's version: its stored state is rebuilt on open (version and seq before and after)
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestChangedFoldVersionRebuilds)$' ./internal/session/views/
+=== RUN   TestChangedFoldVersionRebuilds
+--- PASS: TestChangedFoldVersionRebuilds (1.35s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/session/views	2.736s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-8 step 8.3: rule-3 default: the built-in views equal a refold of the log
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestRefoldEqualsStoredForEveryBuiltinView)$' ./internal/session/views/
+=== RUN   TestRefoldEqualsStoredForEveryBuiltinView
+--- PASS: TestRefoldEqualsStoredForEveryBuiltinView (0.05s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/session/views	0.358s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-8 step 8.4: rule-3 default: projects group sessions; a hidden session never keeps working
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestListingGroupsByProject)$' ./internal/session/views/
+=== RUN   TestListingGroupsByProject
+--- PASS: TestListingGroupsByProject (0.06s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/session/views	1.535s
+UNIT: PASS
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestHiddenSessionStopsWorking)$' ./internal/storage/workspace/
+=== RUN   TestHiddenSessionStopsWorking
+--- PASS: TestHiddenSessionStopsWorking (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/storage/workspace	0.256s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-8 step 8.5: rule-3 default: sessions are listed, observed, traced and followed across forks (record the rows-per-page lines)
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestTraceAcrossForks|TestCallerSeesOnlyWhatItMay|TestListPagesAreBounded|TestListPagingIsStableWhileSessionsChange|TestListRowsPerPageDoNotGrow|TestListingReadsStoredSummaries)$' ./internal/session/query/
+=== RUN   TestListPagingIsStableWhileSessionsChange
+--- PASS: TestListPagingIsStableWhileSessionsChange (1.52s)
+=== RUN   TestListRowsPerPageDoNotGrow
+    paging_test.go:315: seeded 100 sessions in 150.0254ms
+    paging_test.go:338: 100 sessions: [summaries opens rows records] first page [20 20 100 0], deep page [20 20 100 0]
+    paging_test.go:315: seeded 10000 sessions in 14.5481692s
+    paging_test.go:338: 10000 sessions: [summaries opens rows records] first page [20 20 100 0], deep page [20 20 100 0]
+--- PASS: TestListRowsPerPageDoNotGrow (14.81s)
+=== RUN   TestTraceAcrossForks
+--- PASS: TestTraceAcrossForks (0.00s)
+=== RUN   TestListingReadsStoredSummaries
+--- PASS: TestListingReadsStoredSummaries (0.00s)
+=== RUN   TestCallerSeesOnlyWhatItMay
+--- PASS: TestCallerSeesOnlyWhatItMay (0.14s)
+=== RUN   TestListPagesAreBounded
+--- PASS: TestListPagesAreBounded (0.55s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/session/query	17.327s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-8 step 8.6: write a five-megabyte result: the bounded head and the recoverable rest
+kind: composed; systems: both; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestLargeResultSpilledAndRecoverable)$' ./internal/storage/spill/local/
+=== RUN   TestLargeResultSpilledAndRecoverable
+    local_test.go:129: logged tool/result row: 16616 bytes (head 16383 of 5242880 bytes, bound 16384)
+--- PASS: TestLargeResultSpilledAndRecoverable (0.09s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/storage/spill/local	0.469s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-8 step 8.7: rule-3 default: attachments are kept durably and read back verified
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestCorruptedObjectDetected)$' ./internal/storage/blob/
+=== RUN   TestCorruptedObjectDetected
+--- PASS: TestCorruptedObjectDetected (0.04s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/storage/blob	1.183s
+UNIT: PASS
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestCorruptedAttachmentDetected)$' ./internal/storage/attachments/
+=== RUN   TestCorruptedAttachmentDetected
+--- PASS: TestCorruptedAttachmentDetected (0.05s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/storage/attachments	2.892s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-9 step 9.3: rule-3 default: token usage and context occupancy are read from the log (and the usage of the 9.1 settlement, from the signed-in run)
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestUsageFoldedFromSettlements|TestMeterMeasuresTheSession)$' ./internal/llm/meter/
+=== RUN   TestUsageFoldedFromSettlements
+--- PASS: TestUsageFoldedFromSettlements (0.01s)
+=== RUN   TestMeterMeasuresTheSession
+--- PASS: TestMeterMeasuresTheSession (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/llm/meter	2.285s
+UNIT: PASS
+NOT SCRIPTED: the usage of the 9.1 settlement (signed-in run)
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-10 step 10.1: rule-3 default: a tool is declared once and registered in a scope
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v ./internal/tools/
+=== RUN   TestIsolateCopiesDeeplyAndKeepsCycles
+--- PASS: TestIsolateCopiesDeeplyAndKeepsCycles (0.00s)
+=== RUN   TestIsolateCopiesPrivateState
+--- PASS: TestIsolateCopiesPrivateState (0.00s)
+=== RUN   TestIsolateRefusesWhatCannotBeCopied
+--- PASS: TestIsolateRefusesWhatCannotBeCopied (0.00s)
+=== RUN   TestPromptAssemblyIsDeterministic
+--- PASS: TestPromptAssemblyIsDeterministic (0.03s)
+=== RUN   TestDeclarationSchema
+--- PASS: TestDeclarationSchema (0.00s)
+=== RUN   TestDynamicDeclaration
+--- PASS: TestDynamicDeclaration (0.00s)
+=== RUN   TestOverlap
+--- PASS: TestOverlap (0.00s)
+=== RUN   TestContractImportsNoProviderNorApproval
+--- PASS: TestContractImportsNoProviderNorApproval (0.00s)
+=== RUN   TestSubjectValidityAndAskFor
+--- PASS: TestSubjectValidityAndAskFor (0.00s)
+=== RUN   TestSettlementIsImmutable
+--- PASS: TestSettlementIsImmutable (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/tools	2.302s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-10 step 10.2: rule-3 default: the system prompt and tool list are assembled deterministically
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v ./internal/tools/prompt/
+=== RUN   TestInterpolation
+=== RUN   TestInterpolation/plain
+=== RUN   TestInterpolation/escape
+=== RUN   TestInterpolation/no-rescan
+=== RUN   TestInterpolation/literal
+=== RUN   TestInterpolation/unknown
+=== RUN   TestInterpolation/valueless
+=== RUN   TestInterpolation/unclosed
+=== RUN   TestInterpolation/malformed
+--- PASS: TestInterpolation (0.00s)
+    --- PASS: TestInterpolation/plain (0.00s)
+    --- PASS: TestInterpolation/escape (0.00s)
+    --- PASS: TestInterpolation/no-rescan (0.00s)
+    --- PASS: TestInterpolation/literal (0.00s)
+    --- PASS: TestInterpolation/unknown (0.00s)
+    --- PASS: TestInterpolation/valueless (0.00s)
+    --- PASS: TestInterpolation/unclosed (0.00s)
+    --- PASS: TestInterpolation/malformed (0.00s)
+=== RUN   TestCompleteSections
+--- PASS: TestCompleteSections (0.00s)
+=== RUN   TestScopedChangesAreLocal
+--- PASS: TestScopedChangesAreLocal (0.00s)
+=== RUN   TestToolOrder
+--- PASS: TestToolOrder (0.00s)
+=== RUN   TestLivePersona
+--- PASS: TestLivePersona (0.00s)
+=== RUN   TestToolOrderIsCopied
+--- PASS: TestToolOrderIsCopied (0.00s)
+=== RUN   TestAssemblyUsesOneConfigSnapshot
+--- PASS: TestAssemblyUsesOneConfigSnapshot (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/tools/prompt	2.316s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-10 step 10.3: an approval with no answerer is denied, with an audit record (record the outcome and the approval code)
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestNoAnswererMeansNoThroughTheExecutor)$' ./internal/tools/core/
+=== RUN   TestNoAnswererMeansNoThroughTheExecutor
+--- PASS: TestNoAnswererMeansNoThroughTheExecutor (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/tools/core	0.260s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-10 step 10.4: arguments that break the schema: the body never runs (validation code, body counter 0)
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestSchemaBreakingArgumentsNeverReachTheBody|TestDenialEnforcedInTheExecutor)$' ./internal/tools/core/
+=== RUN   TestSchemaBreakingArgumentsNeverReachTheBody
+--- PASS: TestSchemaBreakingArgumentsNeverReachTheBody (0.00s)
+=== RUN   TestDenialEnforcedInTheExecutor
+--- PASS: TestDenialEnforcedInTheExecutor (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/tools/core	0.260s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-10 step 10.5: rule-3 default: enforced deadlines that never hold a turn
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestDeadlineDoesNotHoldTheTurn|TestDeadlineGraceEndsAtExpiryPlusGrace)$' ./internal/tools/core/
+=== RUN   TestDeadlineDoesNotHoldTheTurn
+--- PASS: TestDeadlineDoesNotHoldTheTurn (0.00s)
+=== RUN   TestDeadlineGraceEndsAtExpiryPlusGrace
+--- PASS: TestDeadlineGraceEndsAtExpiryPlusGrace (0.02s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/tools/core	0.372s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-10 step 10.6: rule-3 default: no result larger than the budget reaches a model
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestOversizedResultSpilledBeforeReachingTheModel)$' ./internal/tools/core/
+=== RUN   TestOversizedResultSpilledBeforeReachingTheModel
+--- PASS: TestOversizedResultSpilledBeforeReachingTheModel (0.50s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/tools/core	1.037s
+UNIT: PASS
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestPolicyNeverOverBudget)$' ./internal/storage/spill/policy/
+=== RUN   TestPolicyNeverOverBudget
+--- PASS: TestPolicyNeverOverBudget (0.51s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/storage/spill/policy	3.080s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-10 step 10.7: rule-3 default: input is durable at once and runs at most once
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestInboxSendIsDurableBeforeItReturns|TestClaimedItemRunsAtMostOnceAcrossACrash)$' ./internal/agent/
+=== RUN   TestInboxSendIsDurableBeforeItReturns
+--- PASS: TestInboxSendIsDurableBeforeItReturns (0.16s)
+=== RUN   TestClaimedItemRunsAtMostOnceAcrossACrash
+--- PASS: TestClaimedItemRunsAtMostOnceAcrossACrash (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/agent	0.817s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-10 step 10.8: rule-3 default: the model asks the user a question, waits or moves on
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestQuestionAnsweredThroughTheInbox|TestTimedQuestionReturnsPendingAndTheLateAnswerIsOneUserMessage)$' ./internal/human/question/
+=== RUN   TestQuestionAnsweredThroughTheInbox
+--- PASS: TestQuestionAnsweredThroughTheInbox (0.00s)
+=== RUN   TestTimedQuestionReturnsPendingAndTheLateAnswerIsOneUserMessage
+--- PASS: TestTimedQuestionReturnsPendingAndTheLateAnswerIsOneUserMessage (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/human/question	2.230s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-10 step 10.9: rule-3 default: a person runs a command against an agent from any client
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestCommandRunsAttributedAndDeliversThroughTheInbox)$' ./internal/human/command/
+=== RUN   TestCommandRunsAttributedAndDeliversThroughTheInbox
+--- PASS: TestCommandRunsAttributedAndDeliversThroughTheInbox (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/human/command	2.773s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-10 step 10.10: give a grant, end the session, resume it: the grant is gone (empty grant list, grant/ended{session-ended}, the call asks again)
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v -run '^(TestGrantDoesNotSurviveResume)$' ./internal/human/approval/
+=== RUN   TestGrantDoesNotSurviveResume
+--- PASS: TestGrantDoesNotSurviveResume (0.01s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/human/approval	0.327s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-11 step 11.5: rule-3 default: agents are created, resumed and torn down as one transaction (record create, resume and teardown)
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v ./internal/agent/
+=== RUN   TestRegistryCreateGetList
+--- PASS: TestRegistryCreateGetList (0.00s)
+=== RUN   TestInitiatorAndResolve
+--- PASS: TestInitiatorAndResolve (0.00s)
+=== RUN   TestEventsAreScopedPerAgent
+--- PASS: TestEventsAreScopedPerAgent (0.00s)
+=== RUN   TestCompositionWithAStubFactory
+--- PASS: TestCompositionWithAStubFactory (0.00s)
+=== RUN   TestOwnerUnloadDuringGuardAcquisition
+--- PASS: TestOwnerUnloadDuringGuardAcquisition (0.00s)
+=== RUN   TestM1CompletionOracleOnTheF2Turn
+--- PASS: TestM1CompletionOracleOnTheF2Turn (0.01s)
+=== RUN   TestFlowF2LogMatchesGolden
+--- PASS: TestFlowF2LogMatchesGolden (0.01s)
+=== RUN   TestF2StepPromptReachesTheModelAndTheLog
+--- PASS: TestF2StepPromptReachesTheModelAndTheLog (0.01s)
+=== RUN   TestFlowF2CheckpointsBeforeIOOnSQLite
+--- PASS: TestFlowF2CheckpointsBeforeIOOnSQLite (0.23s)
+=== RUN   TestFlowF2CheckpointOracleCatchesAMissingFlush
+--- PASS: TestFlowF2CheckpointOracleCatchesAMissingFlush (0.25s)
+=== RUN   TestFlowF2RetriedWithinTheRouteCap
+--- PASS: TestFlowF2RetriedWithinTheRouteCap (0.01s)
+=== RUN   TestFlowF2BadCredentialIsNeverRetried
+--- PASS: TestFlowF2BadCredentialIsNeverRetried (0.01s)
+=== RUN   TestInboxSendIsDurableBeforeItReturns
+--- PASS: TestInboxSendIsDurableBeforeItReturns (0.06s)
+=== RUN   TestClaimedItemRunsAtMostOnceAcrossACrash
+--- PASS: TestClaimedItemRunsAtMostOnceAcrossACrash (0.00s)
+=== RUN   TestIdleInjectionOpensNoTurnAndIsClaimedAtTheNextStep
+--- PASS: TestIdleInjectionOpensNoTurnAndIsClaimedAtTheNextStep (0.00s)
+=== RUN   TestQueuedFollowUpsAreOneTurnEach
+--- PASS: TestQueuedFollowUpsAreOneTurnEach (0.00s)
+=== RUN   TestConcurrentSendsAreOrderedAndUnique
+--- PASS: TestConcurrentSendsAreOrderedAndUnique (0.00s)
+=== RUN   TestFailedFlushOwesTheWakeUntilSync
+--- PASS: TestFailedFlushOwesTheWakeUntilSync (0.00s)
+=== RUN   TestM1RedactionCatchesIdentity
+--- PASS: TestM1RedactionCatchesIdentity (0.00s)
+=== RUN   TestModelSelectionLoggedPerStep
+--- PASS: TestModelSelectionLoggedPerStep (0.00s)
+=== RUN   TestModelSelectionPrecedence
+--- PASS: TestModelSelectionPrecedence (0.00s)
+=== RUN   TestSelectMidStepAppliesNextStep
+--- PASS: TestSelectMidStepAppliesNextStep (0.00s)
+=== RUN   TestModelSwitchNotice
+--- PASS: TestModelSwitchNotice (0.00s)
+=== RUN   TestStepStartAndCaptureAppendAtomically
+--- PASS: TestStepStartAndCaptureAppendAtomically (0.00s)
+=== RUN   TestPreStepListenerCannotChangeTheCapture
+--- PASS: TestPreStepListenerCannotChangeTheCapture (0.00s)
+=== RUN   TestPreStepRejectAndPanic
+--- PASS: TestPreStepRejectAndPanic (0.00s)
+=== RUN   TestPreStepEnterReplacesTheBatch
+--- PASS: TestPreStepEnterReplacesTheBatch (0.00s)
+=== RUN   TestTurnStoppingKeepOpenWinsInEveryOrder
+--- PASS: TestTurnStoppingKeepOpenWinsInEveryOrder (0.00s)
+=== RUN   TestAttemptFailed
+--- PASS: TestAttemptFailed (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/agent	1.073s
+UNIT: PASS
+RESULT PASS
+------------------------------------------------------------------------
+ROW DH-S-11 step 11.6: rule-3 default: one delegation seam; every child has one owner (the M1 legs of DH-T-SUBAGENT-1, -2, -3, -9)
+kind: composed; systems: one; lane: windows; commit: 593ceaa
+CMD : (cd /e/work/github/ai/agent-plugin &&) GOTOOLCHAIN=go1.27.4 GOWORK=off go -C src/harness test -count=1 -v ./internal/delegate/...
+=== RUN   TestChildTornDownWithItsOwner
+--- PASS: TestChildTornDownWithItsOwner (0.00s)
+=== RUN   TestChildCompletesAndCloses
+--- PASS: TestChildCompletesAndCloses (0.00s)
+=== RUN   TestDisposeReleasesTheRun
+--- PASS: TestDisposeReleasesTheRun (0.00s)
+=== RUN   TestStartRefusals
+--- PASS: TestStartRefusals (0.00s)
+=== RUN   TestWaitQuietWaitsForAPendingStart
+--- PASS: TestWaitQuietWaitsForAPendingStart (0.00s)
+=== RUN   TestManagerComponentProvidesTheSeam
+--- PASS: TestManagerComponentProvidesTheSeam (0.00s)
+=== RUN   TestManagerUnloadReleasesItsRuns
+--- PASS: TestManagerUnloadReleasesItsRuns (0.00s)
+=== RUN   TestChildErrorIsTheResult
+--- PASS: TestChildErrorIsTheResult (0.00s)
+=== RUN   TestOwnerChildrenAndNameTaken
+--- PASS: TestOwnerChildrenAndNameTaken (0.00s)
+=== RUN   TestStartOnAnUnloadedOwnerCarriesTheCause
+--- PASS: TestStartOnAnUnloadedOwnerCarriesTheCause (0.00s)
+=== RUN   TestResultHonoursItsContext
+--- PASS: TestResultHonoursItsContext (0.00s)
+=== RUN   TestWaitQuietHonoursItsContext
+--- PASS: TestWaitQuietHonoursItsContext (0.00s)
+=== RUN   TestStartPublishesResultBlocksDisposeIdempotent
+--- PASS: TestStartPublishesResultBlocksDisposeIdempotent (0.00s)
+=== RUN   TestRootDisposalLeavesNoGoroutine
+--- PASS: TestRootDisposalLeavesNoGoroutine (0.00s)
+=== RUN   TestConcurrentSendReleaseResumeSerialised
+    subagent_test.go:930: 12 sends receipted, 0 refused with agent/closing
+--- PASS: TestConcurrentSendReleaseResumeSerialised (0.00s)
+=== RUN   TestSettleOrderGolden
+--- PASS: TestSettleOrderGolden (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/delegate/subagent	0.337s
+UNIT: PASS
+RESULT PASS
+cleanup: git worktree remove --force /tmp/dsh-register-iXnv7A/wt
+cleanup: removed /tmp/dsh-register-iXnv7A
+after the run: git status --porcelain --untracked-files=all
+after the run: git worktree list
+E:/work/github/ai/agent-plugin                                                593ceaa [m1-phase-18]
+E:/work/github/ai/agent-plugin/.worktree/plan-harness-DSH-e2e-scenarios       ddbd9cd [story/harness-DSH/plan-e2e-scenarios]
+E:/work/github/ai/agent-plugin/.worktree/plan-harness-DSH-implementation-plan ddbd9cd [story/harness-DSH/plan-implementation-plan]
+
+======================================================================
+SUMMARY (windows, commit 593ceaa)
+STAGE    STEP   KIND      SYSTEMS      STATUS
+DH-S-1   1.1    byhand    one          CHECKLIST
+DH-S-1   1.2    seeded    one          FAIL
+DH-S-1   1.3    seeded    one          PASS
+DH-S-1   1.4    seeded    one          PASS
+DH-S-1   1.5    seeded    one          FAIL
+DH-S-1   1.6    composed  one          PASS
+DH-S-1   1.7    seeded    one          PASS
+DH-S-1   1.8    byhand    one          CHECKLIST
+DH-S-1   1.9    seeded    wsl          not run here (WSL row)
+DH-S-2   2.1    composed  one          PASS
+DH-S-2   2.2    composed  one          PASS
+DH-S-2   2.3    composed  one          PASS
+DH-S-2   2.4    composed  one          PASS
+DH-S-2   2.5    composed  one          PASS
+DH-S-2   2.6    composed  one          PASS
+DH-S-2   2.7    composed  one          PASS
+DH-S-2   2.8    composed  one          PASS
+DH-S-3   3.1    byhand    one          CHECKLIST
+DH-S-3   3.2    composed  one          PASS
+DH-S-3   3.3    composed  one          PASS
+DH-S-3   3.4    byhand    one          CHECKLIST
+DH-S-3   3.5    byhand    one          CHECKLIST
+DH-S-3   3.6    composed  one          PASS
+DH-S-3   3.7    composed  one          PASS
+DH-S-3   3.8    byhand    one          CHECKLIST
+DH-S-3   3.9    composed  one          PASS
+DH-S-4   4.1    composed  one          PASS
+DH-S-4   4.2    composed  one          PASS
+DH-S-4   4.3    composed  one          PASS
+DH-S-4   4.4    composed  one          PASS
+DH-S-4   4.5    composed  one          PASS
+DH-S-4   4.6    composed  both         PASS
+DH-S-4   4.7    composed  one          PASS
+DH-S-4   4.8    byhand    both         CHECKLIST
+DH-S-4   4.9    byhand    both         CHECKLIST
+DH-S-4   4.10   composed  one          PASS
+DH-S-4   4.11   composed  one          PASS
+DH-S-4   4.12   composed  one          PASS
+DH-S-4   4.13   composed  one          PASS
+DH-S-4   4.14   composed  one          PASS
+DH-S-5   5.1    composed  one          PASS
+DH-S-5   5.2    composed  one          PASS
+DH-S-5   5.3    composed  one          PASS
+DH-S-5   5.4    composed  one          PASS
+DH-S-5   5.5    composed  one          PASS
+DH-S-5   5.6    composed  one          PASS
+DH-S-5   5.7    composed  one          PASS
+DH-S-5   5.8    composed  one          PASS
+DH-S-5   5.9    composed  one          PASS
+DH-S-5   5.10   composed  one          PASS
+DH-S-5   5.11   composed  one          PASS
+DH-S-5   5.12   composed  one          PASS
+DH-S-5   5.13   composed  one          PASS
+DH-S-6   6.1    composed  one          PASS
+DH-S-6   6.2    composed  both         PASS
+DH-S-6   6.3    composed  both         PASS
+DH-S-6   6.4    composed  one          PASS
+DH-S-6   6.5    composed  both         PASS
+DH-S-6   6.6    composed  one          PASS
+DH-S-6   6.7    composed  one          PASS
+DH-S-6   6.8    composed  one          PASS (+ by hand: dsh --help and one usage error (checklist))
+DH-S-6   6.9    composed  one          PASS
+DH-S-6   6.10   composed  both         PASS
+DH-S-6   6.11   composed  both         PASS
+DH-S-6   6.12   composed  one          PASS
+DH-S-6   6.13   composed  both         PASS
+DH-S-6   6.14   composed  both         PASS
+DH-S-6   6.15   composed  one          PASS
+DH-S-6   6.16   composed  one          PASS
+DH-S-6   6.17   composed  one          PASS
+DH-S-7   7.1    composed  both         PASS
+DH-S-7   7.2    composed  one          PASS
+DH-S-7   7.3    composed  one          PASS
+DH-S-7   7.4    composed  one          PASS
+DH-S-7   7.5    composed  one          PASS
+DH-S-7   7.6    composed  one          PASS
+DH-S-8   8.1    composed  one          PASS
+DH-S-8   8.2    composed  one          PASS
+DH-S-8   8.3    composed  one          PASS
+DH-S-8   8.4    composed  one          PASS
+DH-S-8   8.5    composed  one          PASS
+DH-S-8   8.6    composed  both         PASS
+DH-S-8   8.7    composed  one          PASS
+DH-S-9   9.1    probe     workstation  SIGNED-IN (owner; not started here)
+DH-S-9   9.2    probe     workstation  SIGNED-IN (owner; not started here)
+DH-S-9   9.3    composed  one          PASS (+ the usage of the 9.1 settlement (signed-in run))
+DH-S-10  10.1   composed  one          PASS
+DH-S-10  10.2   composed  one          PASS
+DH-S-10  10.3   composed  one          PASS
+DH-S-10  10.4   composed  one          PASS
+DH-S-10  10.5   composed  one          PASS
+DH-S-10  10.6   composed  one          PASS
+DH-S-10  10.7   composed  one          PASS
+DH-S-10  10.8   composed  one          PASS
+DH-S-10  10.9   composed  one          PASS
+DH-S-10  10.10  composed  one          PASS
+DH-S-11  11.1   probe     workstation  SIGNED-IN (owner; not started here)
+DH-S-11  11.2   probe     workstation  SIGNED-IN (owner; not started here)
+DH-S-11  11.3   probe     workstation  SIGNED-IN (owner; not started here)
+DH-S-11  11.4   probe     workstation  SIGNED-IN (owner; not started here)
+DH-S-11  11.5   composed  one          PASS
+DH-S-11  11.6   composed  one          PASS
+DH-S-11  11.7   probe     workstation  SIGNED-IN (owner; not started here)
+rows: 103; PASS 85; FAIL 2; DRY 0; not run on this lane 1; checklist (by hand) 8; signed-in (owner) 7
+supplement TestCrossCompileNamesFailingTarget: PASS
+supplement TestVulncheckGateUsesTheDatabase: PASS
+supplement TestBudgetGateClearsOverrides: PASS
+supplement TestCoverageBinaryIsBounded: PASS
+ended (UTC)   : 2026-11-23T22:37:08Z
+log: /c/Users/xiaodoli.REDMOND/AppData/Local/Temp/claude/095fd4c454d7f56c/32b1560e-0d49-424c-b2a5-d7e6081d5719/scratchpad/manual/register-windows-593ceaa-20261123T2213Z.log

@@ -829,9 +829,9 @@ replay runner, so they are built in [DH-S-16](#dh-s-16).
 
 **Steps.**
 
-- [ ] **9.1** [DH-D-LLM-2](areas/llm.md#dh-d-llm-2) The first working provider: shared transport, the Messages driver and key authentication.
-- [ ] **9.2** [DH-D-LLM-3](areas/llm.md#dh-d-llm-3) Bounded retry, and buffered one-shot calls.
-- [ ] **9.3** [DH-D-LLM-6](areas/llm.md#dh-d-llm-6) Token usage and context occupancy from the log (P1, pulled forward).
+- [x] **9.1** [DH-D-LLM-2](areas/llm.md#dh-d-llm-2) The first working provider: shared transport, the Messages driver and key authentication.
+- [x] **9.2** [DH-D-LLM-3](areas/llm.md#dh-d-llm-3) Bounded retry, and buffered one-shot calls.
+- [x] **9.3** [DH-D-LLM-6](areas/llm.md#dh-d-llm-6) Token usage and context occupancy from the log (P1, pulled forward).
 
 **Manual checks.** One streamed request to the real API with a good key and one with
 a bad key; record one attempt event each and no retry on the bad key; `manual`.
@@ -923,11 +923,11 @@ server waits on it for a quiet tree. The context pipeline closes the stage.
 
 - [x] **11.1** [DH-D-AGENT-7](areas/agent-loop.md#dh-d-agent-7) Each step uses one logged model selection.
 - [x] **11.2** [DH-D-AGENT-10](areas/agent-loop.md#dh-d-agent-10) A step's tools are fixed once, and its calls run in a bounded, ordered batch.
-- [ ] **11.3** [DH-D-AGENT-3](areas/agent-loop.md#dh-d-agent-3) Every turn and step is bracketed, bounded and closed on every path.
-- [ ] **11.4** [DH-D-AGENT-5](areas/agent-loop.md#dh-d-agent-5) A turn or a single step can be stopped, and the log says why.
+- [x] **11.3** [DH-D-AGENT-3](areas/agent-loop.md#dh-d-agent-3) Every turn and step is bracketed, bounded and closed on every path.
+- [x] **11.4** [DH-D-AGENT-5](areas/agent-loop.md#dh-d-agent-5) A turn or a single step can be stopped, and the log says why.
 - [x] **11.5** [DH-D-AGENT-6](areas/agent-loop.md#dh-d-agent-6) Agents are created, resumed and torn down as one transaction.
 - [x] **11.6** [DH-D-SUBAGENT-1](areas/subagent-team.md#dh-d-subagent-1) Any component can delegate through one seam, and every child has one owner (P1, pulled forward).
-- [ ] **11.7** [DH-D-CONTEXT-1](areas/context-compaction-skill.md#dh-d-context-1) Context reaches the model through one logged, ordered pipeline.
+- [x] **11.7** [DH-D-CONTEXT-1](areas/context-compaction-skill.md#dh-d-context-1) Context reaches the model through one logged, ordered pipeline.
 
 **Manual checks.** From a Go test that composes the real components, send one prompt
 to the real model API with one test tool, and record the bracketed log and the
@@ -988,6 +988,8 @@ editor change one file) and runs in [DH-S-16](#dh-s-16).
 **Exit evidence.** The evidence record, with the three circle members built at one
 commit.
 
+**Deferred tests (pointer, M1).** For the M1 story, decision M1-D-CLOSE-5 in [the M1 decision log](../stories/harness-DSH-M1/decisions.md) moves five tests that no M1 code proves to this stage, the first that composes real components with the test kit and registers new folds: `DH-T-ZOD-1`, deferred from step 4.2 by M1-D-CLOSE-5 (H-38, gap M1-G-FND-21.4), the walk of every registered config, tool, message and event type for field descriptions, written with the file tools of 12.5, whose argument schemas are the first shipped ones the model reads; `DH-T-VIEW-4`, deferred from step 5.13 by M1-D-CLOSE-5 (H-40, gap M1-G-CLOSE-9.3), the import check of fold packages, the fold-twice determinism and the slow-fold report, written with the working-directory fold of 12.1 and the sandbox-mode fold of 12.3; and `DH-T-UTIL-12`, `DH-T-UTIL-13` and `DH-T-UTIL-15`, deferred from step 6.17 by M1-D-CLOSE-5 (H-31), the bounded-queue and `conform.ToolCancels` checks, `testkit/compose`, and `testkit/egresstest` with `testkit/faultserver`, which the tests of this stage use (gap-closure plan stage 19.5, which must precede this stage). They are deferred by `//dsh:test ... later DH-S-12` in the `doc.go` of `schema`, `session/views` and `testkit`. The held-open entries are in the evidence records of [DH-S-4](../stories/harness-DSH-M1/evidence/DH-S-4.md#held-open), [DH-S-5](../stories/harness-DSH-M1/evidence/DH-S-5.md#held-open) and [DH-S-6](../stories/harness-DSH-M1/evidence/DH-S-6.md#held-open). This section's text is unchanged (DC-2).
+
 <a id="dh-s-13"></a>
 ### DH-S-13: Sandbox launch, Linux backends and shell tools
 
@@ -1037,6 +1039,8 @@ isolation); it is stated in the known limits and by `dsh sandbox status`.
 
 **Exit evidence.** The evidence record, with the fake-backend tests of every security
 control; the real mechanism is proven only in [DH-S-18](#dh-s-18).
+
+**Deferred tests (pointer, M1).** For the M1 story, decision M1-D-CLOSE-5 in [the M1 decision log](../stories/harness-DSH-M1/decisions.md) moves eight tests that no M1 code proves to this stage, the first at which a command for an agent starts: `DH-T-EXECA-1`, `DH-T-EXECA-2` and `DH-T-EXECA-3`, deferred from step 6.2 by M1-D-CLOSE-5 (H-24), run and capture with a deadline and an output cap that ends the whole tree, which the output capture of 13.5 and the executors of 13.6 use (gap-closure plan step 19.3.1); `DH-T-NODEPROC-8`, deferred from step 6.3 by M1-D-CLOSE-5 (H-24), creation inside the Windows job in one call, before the launches of 13.2 (step 19.3.5); `DH-T-EXEC-6`, deferred from step 6.3 by M1-D-CLOSE-5 (H-25), the separate first causes of a timeout, a cancellation and a user stop, from the stop ladder that ends the commands of the tools of 13.7 (step 19.4.3); `DH-T-EXEC-17`, deferred from step 6.3 by M1-D-CLOSE-5 (H-26), the trusted or untrusted mark of each tree with `PeerTree` and `Limits`, first needed by the trees that 13.2 starts under a confining or unconfined plan (steps 19.4.4 and 19.4.5); `DH-T-UNDICI-9`, deferred from step 6.16 by M1-D-CLOSE-5 (H-30), the child-environment proxy overlay that the managed environment of 13.6 passes to the child (step 19.3.7); and `DH-T-UNDICI-7`, deferred from step 6.16 by M1-D-CLOSE-5 (H-30), the dial guard against private addresses, kept with the rest of gap-closure plan stage 19.3 (step 19.3.8), which must precede this stage. They are deferred by `//dsh:test ... later DH-S-13` in the `doc.go` of `world/subprocess` and `util/egress`; the held-open entries are in [the DH-S-6 evidence record](../stories/harness-DSH-M1/evidence/DH-S-6.md#held-open). This section's text is unchanged (DC-2).
 
 <a id="dh-s-14"></a>
 ### DH-S-14: Agent presets and bundles
@@ -1126,6 +1130,8 @@ system; [§7.5](#75-index-of-all-scenarios) indexes them to [DH-S-22](#dh-s-22) 
 **Exit evidence.** The evidence record, with the list of SDK methods that are
 complete and the three that wait for H-1 to H-4.
 
+**Deferred tests (pointer, M1).** For the M1 story, decision M1-D-CLOSE-5 in [the M1 decision log](../stories/harness-DSH-M1/decisions.md) moves one test that no M1 code proves to this stage: `DH-T-AGENT-14`, deferred from step 5.11 by M1-D-CLOSE-5 (H-39, gap M1-G-CLOSE-9.1), the frames of the assistant stream notice (one `Start`, dense indexes, one `End` after the record is committed, `abandoned` when the append fails). No M1 code emits the frames; their first consumer is the stream notices of step 15.7 ([DH-D-SDK-5](areas/sdk-acp-typert.md#dh-d-sdk-5), `session.stream`). It is deferred by `//dsh:test DH-T-AGENT-14 later DH-S-15` in `agent/doc.go`; the held-open entry is in [the DH-S-5 evidence record](../stories/harness-DSH-M1/evidence/DH-S-5.md#held-open). This section's text is unchanged (DC-2).
+
 <a id="dh-s-16"></a>
 ### DH-S-16: Profiles, launchers and evidence runners
 
@@ -1168,6 +1174,7 @@ is the table that checks the whole surface).
 - [ ] **16.8** Guarded scenarios, on scratch homes on Linux, macOS and Windows: [DH-E-FS-3](areas/filesystem.md#dh-e-fs-3) (two `dsh` processes and an outside editor change one file), [DH-E-STORE-1](areas/session-store.md#dh-e-store-1) (two headless hosts on one home: a second writer is refused, a killed holder's session is taken over; its specification requires the build stage; proves [DH-D-STORE-2](areas/session-store.md#dh-d-store-2) and [DH-D-STORE-3](areas/session-store.md#dh-d-store-3)), [DH-E-STORE-2](areas/session-store.md#dh-e-store-2) (a host killed mid-turn under the Linux sandbox resumes with the turn closed; then the session is deleted; proves [DH-D-STORE-4](areas/session-store.md#dh-d-store-4) and [DH-D-STORE-6](areas/session-store.md#dh-d-store-6)) and [DH-E-STORE-6](areas/session-store.md#dh-e-store-6) (a deleted session leaves nothing behind; an interrupted deletion finishes).
 - [ ] **16.9** [DH-D-VIEW-4](areas/session-views.md#dh-d-view-4) Sessions have titles, and the model call that writes one is in the log (P1, pulled forward: the conversation API of [DH-S-19](#dh-s-19) needs titles); it uses the replay runner of step 16.7.
 - [ ] **16.10** Close H-21: [DH-D-BOOT-6](areas/boot.md#dh-d-boot-6) offers its preview through `dsh config show` and `dsh config validate` in the admin tree of step 16.2; its tests that waited for the admin tree pass.
+- [ ] **16.11** Part of [DH-D-TOOLCHAIN-2] and [DH-D-TOOLCHAIN-4]: a `replay` gate in `tools/harness-gate` (`go test -tags replay` against the built binary, using the replay runner of step 16.7), and the `harness-replay` CI job, or a local lane under `platforms-windows-wsl`, that runs it ([DH-ADR-TOOLCHAIN-9], [DH-ADR-TOOLCHAIN-12]). Done when `DH-T-TOOLCHAIN-5` passes in that job or lane.
 
 **Manual checks.** One `dsh headless` prompt against the real API with an approval
 answered on the terminal, the key stored by `dsh secret set`; Ctrl-C during a tool
@@ -1185,6 +1192,8 @@ log read from the database with `seq` 0 to n and no gap), and the open list H-1 
 H-4 and H-10.
 
 **Decision log (pointer, M1).** For the M1 story, step 16.8's "on Linux, macOS and Windows" reads Windows and Linux (WSL); macOS removed from M1 by OWNER-1 (decision `platforms-windows-wsl` in [the M1 decision log](../stories/harness-DSH-M1/decisions.md); macOS has no return stage yet, `macos-return-stage`); gap-closure plan step 15.3.6. This section's text is unchanged (DC-2).
+
+**Deferred tests (pointer, M1).** For the M1 story, decision M1-D-CLOSE-5 in [the M1 decision log](../stories/harness-DSH-M1/decisions.md) moves three tests that no M1 code proves to this stage: `DH-T-BOOT-8` and `DH-T-BOOT-23`, deferred from step 6.7 by M1-D-CLOSE-5 (H-28), `profile reset` and the safe-mode launcher layer, which the admin tree of 16.2 and the launchers of 16.3 offer (gap-closure plan step 19.5.5); and `DH-T-HOST-17`, deferred from step 6.15 by M1-D-CLOSE-5 (H-32, M1-D-BOOT-2 (b)), a recorded run of each shipped profile, with the five profiles of 16.1 and the replay model of 16.7. They are deferred by `//dsh:test ... later DH-S-16` in the `doc.go` of `boot/profile` and `host/sharing`; the held-open entries are in [the DH-S-6 evidence record](../stories/harness-DSH-M1/evidence/DH-S-6.md#held-open). This section's text is unchanged (DC-2).
 
 <a id="dh-s-17"></a>
 ### DH-S-17: Acceptance of the core loop, store, launchers and SDK against a real model
@@ -3630,6 +3639,8 @@ built and not done. At [M5](#m5): none.
 **Held open (pointer, M1, store).** For the M1 story, decisions M1-D-STORE-D (b) and M1-D-STORE-B (a) in [the M1 decision log](../stories/harness-DSH-M1/decisions.md) hold open three more parts as H-33 to H-35: H-33, the draft record of step 8.7 ([DH-D-STORAGE-3](areas/storage.md#dh-d-storage-3)), closing at step 21.2, the composer step of [DH-S-21](#dh-s-21) (gap-closure plan step 15.3.9); H-34, the budgets of `DH-T-STORE-18` (step 7.1), and H-35, the budgets of `DH-T-VIEW-25` (step 8.5), both provisional from their first measured run and pinned at step 16.7 (gap-closure plan steps 15.1.5 and 15.3.2; not H-10). `DH-T-VIEW-25`'s search and `TreeMessages` clauses belong to [DH-D-VIEW-6](areas/session-views.md#dh-d-view-6) at [DH-S-23](#dh-s-23). Decision M1-D-STORE-E (a) holds open H-36: linear growth of the bytes the event index upserts (step 8.2), until the view tables at [DH-S-23](#dh-s-23) (gap-closure plan step 15.2.4). Each entry, with the part that waits and its closing step, is in the "Held open" list of [the DH-S-7 evidence record](../stories/harness-DSH-M1/evidence/DH-S-7.md#held-open) (H-34) or [the DH-S-8 evidence record](../stories/harness-DSH-M1/evidence/DH-S-8.md#held-open) (H-33, H-35, H-36). This section's text and table are unchanged (DC-2).
 
 **Held open (pointer, M1, agent loop).** For the M1 story, decision M1-D-LOOP-2 A in [the M1 decision log](../stories/harness-DSH-M1/decisions.md) pins 100 ms as the M1 budget of `DH-T-AGENT-28` (step 11.3, [DH-D-AGENT-3](areas/agent-loop.md#dh-d-agent-3)) and holds its final figure open as H-37: the p99 continuation latency on the heavy-tailed session corpus with the replay provider, pinned at step 16.7 (gap-closure plan step 17.4.7; not H-10, which is the replay of a session with children). The entry, with the part that waits and its closing step, is in the "Held open" list of [the DH-S-11 evidence record](../stories/harness-DSH-M1/evidence/DH-S-11.md#held-open). This section's text and table are unchanged (DC-2).
+
+**Held open (pointer, M1, deferred tests).** For the M1 story, decision M1-D-CLOSE-5 in [the M1 decision log](../stories/harness-DSH-M1/decisions.md) defers the 17 `DH-T` IDs of steps 4.2 to 6.17 that no M1 code proves to the stage, at or before [DH-S-18](#dh-s-18), that builds or first needs each one; the sections of [DH-S-12](#dh-s-12), [DH-S-13](#dh-s-13), [DH-S-15](#dh-s-15) and [DH-S-16](#dh-s-16) name them. Fourteen belong to H-24 to H-32; the other three are held open as H-38, `DH-T-ZOD-1` (step 4.2), in [the DH-S-4 evidence record](../stories/harness-DSH-M1/evidence/DH-S-4.md#held-open), and H-39, `DH-T-AGENT-14` (step 5.11), and H-40, `DH-T-VIEW-4` (step 5.13), in [the DH-S-5 evidence record](../stories/harness-DSH-M1/evidence/DH-S-5.md#held-open). This section's text and table are unchanged (DC-2).
 
 ### 10.4 Scenarios that span stages
 

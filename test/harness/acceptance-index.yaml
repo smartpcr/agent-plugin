@@ -27,7 +27,7 @@
 # exercises; "harness-gate preflight" refuses to run it until built-through has
 # reached every one, and none may come after the executing stage.
 
-built-through: DH-S-8
+built-through: DH-S-11
 
 stages:
   # Venue: guarded (harness:DSH-M2 step 16.8, implementation-plan Stage 6.12): run

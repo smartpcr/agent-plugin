@@ -24,7 +24,9 @@ type human6Item struct {
 }
 
 // human6Log is what the log hook prints: the tool result of the asking call, the
-// turns of the session in order, and the user messages that name a call.
+// turns of the session in order, the user messages that name a call, and the
+// client named by the invocation each model settlement (assistant/message and
+// assistant/attempt) records, in log order.
 type human6Log struct {
 	Result struct {
 		Status string `json:"status"`
@@ -34,40 +36,57 @@ type human6Log struct {
 		Call      string `json:"call"`
 		StartedBy string `json:"startedTurn"`
 	} `json:"answers"`
+	Clients []string `json:"clients"`
 }
 
 // TestQuestionTimesOutSurvivesRestartAndIsAnsweredOnce: the model asks the user
 // one question with a deadline and moves on; the answer, given after the host was
 // killed and restarted, arrives once through the inbox (areas/human.md
-// DH-E-HUMAN-6; DH-D-HUMAN-5, DH-D-HUMAN-6, DH-D-AGENT-2; SP-5). Authored in
-// DH-S-10; executed in DH-S-22, which requires the agent loop (DH-S-11), the
-// headless launcher (DH-S-16) and the web UI (DH-S-21).
+// DH-E-HUMAN-6; DH-D-HUMAN-5, DH-D-HUMAN-6, DH-D-AGENT-2; SP-5; on the signed-in
+// client route of areas/llm.md DH-D-LLM-12). Authored in DH-S-10 and retargeted
+// onto the signed-in client routes by gap-closure-plan 18.1.1 (M1-D-CLOSE-4 A);
+// executed in DH-S-22, which requires the agent loop (DH-S-11), the headless
+// launcher (DH-S-16) and the web UI (DH-S-21).
 //
-// Given the built dsh, a fresh temporary home, a real API key set at run time,
-// profile web and a prompt that asks the model to ask the user one question with
-// ask_user_question and a 10 s timeout and then continue, when (1) the deadline
-// passes, (2) the host is killed and started again on the same home and (3) the
-// question is answered in the browser, then the tool result of the asking call is
-// pending and the turn continued after it; after the restart the question is
-// listed as continued; the answer is one user message that names the asking call
-// and starts a turn; and (4) a second answer to the same question is refused.
-// Cleanup: the hosts are stopped and the home deleted; on failure the hooks'
-// output is logged.
+// Given the built dsh, a fresh temporary home, no API key anywhere, the user's
+// own installed official client signed in as themselves with its route
+// registered by a layer as the default route of a new session, profile web and
+// a prompt that asks the model to ask the user one question with
+// ask_user_question and a 10 s timeout and then continue, when, per route, (1)
+// the deadline passes, (2) the host is killed and started again on the same
+// home and (3) the question is answered in the browser, then the tool result of
+// the asking call is pending and the turn continued after it; after the restart
+// the question is listed as continued; the answer is one user message that
+// names the asking call and starts a turn; (4) a second answer to the same
+// question is refused; and every model settlement of the session records the
+// invocation of the route's client (the model was reached only through it). The
+// client runs only while an attempt runs and returns ask_user_question
+// unexecuted (M1-D-PIPE-6 A), so the question, its deadline and its answer are
+// dsh's; a kill during an attempt stops the client with the host's tree.
+// Cleanup: the hosts are stopped and the home deleted; nothing of the user's
+// sign-in is touched; on failure the hooks' output is logged.
 //
-// Inputs: DSH_DEEPSEEK_API_KEY is the real key, handed to the program as
-// DEEPSEEK_API_KEY; DSH_SCENARIO_HUMAN6_PROMPT the prompt; DSH_SCENARIO_HUMAN6_SEND
-// a command line over {page} (the first page with its token) that sends the prompt
-// in the browser and prints the session id; DSH_SCENARIO_HUMAN6_LIST a command
-// line over {page} and {session} that prints the agent's questions as a JSON
-// array of {id, call, status}; DSH_SCENARIO_HUMAN6_ANSWER a command line over
-// {page}, {session}, {question} and {text} that answers in the browser and exits
-// non-zero when the answer is refused; DSH_SCENARIO_HUMAN6_LOG a command line over
-// {home} and {session} that prints the session's log facts (human6Log);
-// DSH_SCENARIO_HUMAN6_BOUND the bound for each wait (a Go duration).
+// The legs: claude-code must pass; copilot-cli is run and recorded either way
+// (M1-D-LOOP-6 A; forEachRoute).
+//
+// Inputs: DSH_SCENARIO_HUMAN6_LAYER a web layer, a template over {route} and
+// {model}, that registers that client route and makes it, with model {model},
+// the route of a session started in the browser; DSH_SCENARIO_<route>_MODEL
+// (<route> is CLAUDE_CODE or COPILOT_CLI) the model; DSH_SCENARIO_HUMAN6_PROMPT
+// the prompt; DSH_SCENARIO_HUMAN6_SEND a command line over {page} (the first
+// page with its token) that sends the prompt in the browser and prints the
+// session id; DSH_SCENARIO_HUMAN6_LIST a command line over {page} and {session}
+// that prints the agent's questions as a JSON array of {id, call, status};
+// DSH_SCENARIO_HUMAN6_ANSWER a command line over {page}, {session}, {question}
+// and {text} that answers in the browser and exits non-zero when the answer is
+// refused; DSH_SCENARIO_HUMAN6_LOG a command line over {home} and {session} that
+// prints the session's log facts (human6Log); DSH_SCENARIO_HUMAN6_BOUND the
+// bound for each wait (a Go duration). The client is the one on the PATH,
+// signed in beforehand by the user.
 //
 //dsh:scenario DH-E-HUMAN-6
 func TestQuestionTimesOutSurvivesRestartAndIsAnsweredOnce(t *testing.T) {
-	key := need(t, "DSH_DEEPSEEK_API_KEY", "a real DeepSeek API key")
+	layerT := need(t, "DSH_SCENARIO_HUMAN6_LAYER", "a web layer over {route} and {model} that makes that client route a new session's route")
 	prompt := need(t, "DSH_SCENARIO_HUMAN6_PROMPT", "a prompt that asks one question with a 10s timeout and continues")
 	sendT := need(t, "DSH_SCENARIO_HUMAN6_SEND", "a browser driver that sends {prompt} on {page}")
 	listT := need(t, "DSH_SCENARIO_HUMAN6_LIST", "a command that lists {session}'s questions")
@@ -77,11 +96,21 @@ func TestQuestionTimesOutSurvivesRestartAndIsAnsweredOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DSH_SCENARIO_HUMAN6_BOUND: %v", err)
 	}
-
 	bin := dshBinary(t)
+	forEachRoute(t, func(t *testing.T, r clientRoute) {
+		layer := expand(layerT, map[string]string{"route": r.ID, "model": r.model(t)})
+		questionAnsweredOnce(t, bin, r, layer, prompt, sendT, listT, answerT, logT, bound)
+	})
+}
+
+// questionAnsweredOnce is DH-E-HUMAN-6 on route r.
+func questionAnsweredOnce(t *testing.T, bin string, r clientRoute, layer, prompt, sendT, listT, answerT, logT string, bound time.Duration) {
+	t.Helper()
 	home := filepath.Join(t.TempDir(), "home")
-	env := []string{"DEEPSEEK_API_KEY=" + key}
-	args := []string{"--home", home, "web"}
+	// No entry: the launcher's scrubbed environment holds no credential, and the
+	// client finds the user's own sign-in in its configuration home.
+	var env []string
+	args := []string{"--home", home, "--layer", writeLayer(t, layer), "web"}
 	promptFile := filepath.Join(t.TempDir(), "prompt.txt")
 	if err := os.WriteFile(promptFile, []byte(prompt), 0o600); err != nil {
 		t.Fatal(err)
@@ -145,6 +174,16 @@ func TestQuestionTimesOutSurvivesRestartAndIsAnsweredOnce(t *testing.T) {
 	}
 	if facts = human6Facts(t, expand(logT, vars(nil))); len(facts.Answers) != 1 {
 		t.Errorf("after the second answer there are %d answer messages, want 1", len(facts.Answers))
+	}
+
+	// The model was reached only through the route's signed-in client.
+	if len(facts.Clients) == 0 {
+		t.Errorf("the log facts name no settlement's client invocation, want one of client %s per settlement", r.Client)
+	}
+	for i, c := range facts.Clients {
+		if c != r.Client {
+			t.Errorf("settlement %d records an invocation of client %q, want %s", i, c, r.Client)
+		}
 	}
 }
 

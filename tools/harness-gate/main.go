@@ -7,7 +7,8 @@
 //
 // The gates, in order: gofmt, vet (go vet and the project's own analyzers), test
 // (race, shuffle), coverage (merged across processes, 85% per package),
-// trace (tools/harness-trace verify), scenario-index (test/harness/acceptance-index.yaml
+// trace (tools/harness-trace verify, then the trace-tests check through built-through),
+// scenario-index (test/harness/acceptance-index.yaml
 // against the authored *_scenario_test.go files), policy-text (M2-C-6: no shipped
 // sandbox policy text without a passed DH-E-SANDBOX-7 run on it), budget
 // (performance budgets) and

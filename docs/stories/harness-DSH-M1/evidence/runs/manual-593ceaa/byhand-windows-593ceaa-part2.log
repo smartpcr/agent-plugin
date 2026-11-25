@@ -1,0 +1,21 @@
+commit: 593ceaa3efd55d41bf0eeaced5ba7e26acc71966 started: 2026-11-23T22:44:07Z
+== row 1.1 version
+dsh (devel) (593ceaa3efd55d41bf0eeaced5ba7e26acc71966; go1.27.4; windows/amd64)
+exit 0
+== row 4.8 Windows
+// Throwaway program for the DH-S-4 search manual check: prints search.List of a
+// directory, hidden names included, ignore files applied, no limits.
+package main
+built
+git core.autocrlf=false
+git version 2.56.0.windows.4
+dir: /e/work/github/ai/agent-plugin git: 1625 search: 2775 summary: {Files:2775 Matches:2775 Incomplete:false Reason:}
+only in git:
+.worktree/plan-harness-DSH-e2e-scenarios
+.worktree/plan-harness-DSH-implementation-plan
+only in search (top two levels):
+    576 .worktree/plan-harness-DSH-implementation-plan
+    576 .worktree/plan-harness-DSH-e2e-scenarios
+linux build ok
+main tree status unchanged
+ended: 2026-11-23T22:44:25Z

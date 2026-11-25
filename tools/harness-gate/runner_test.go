@@ -77,8 +77,8 @@ func TestRunDoesNotStartAGateAfterCancellation(t *testing.T) {
 // TestGateListIsFixed pins the order of QG-1: the 12 gates of M1-D-GATE-23 plus
 // the policy-text gate of M2-C-6 (implementation-plan Stage 2.4): gofmt, vet + own
 // analyzers, staticcheck, module hygiene, race/shuffle tests, coverage,
-// harness-trace verify, scenario index, policy text, budgets, cross-compile,
-// vulncheck and the gate's own tests (DH-T-TOOLCHAIN-9).
+// harness-trace verify + trace-tests, scenario index, policy text, budgets,
+// cross-compile, vulncheck and the gate's own tests (DH-T-TOOLCHAIN-9).
 func TestGateListIsFixed(t *testing.T) {
 	var names []string
 	for _, g := range Gates(&Config{}) {

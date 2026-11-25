@@ -33,6 +33,8 @@ func mustParse(t *testing.T, s string) *Profile {
 // TestCoverageFloorOverMergedProfiles is the TC-01a merge scenario: the test process
 // covers 70% of p, a re-executed child covers more, and only the merge reaches the
 // floor.
+//
+//dsh:test DH-T-TOOLCHAIN-7
 func TestCoverageFloorOverMergedProfiles(t *testing.T) {
 	parent := mustParse(t, profile(50, func(i int) bool { return i < 35 }))           // 35/50 = 70%
 	child := mustParse(t, profile(50, func(i int) bool { return i >= 30 && i < 44 })) // adds 35..43

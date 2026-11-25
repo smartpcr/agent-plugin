@@ -1,0 +1,432 @@
+trace-tests: DH-S-1..DH-S-11
+DH-S-1
+  1.1 required: DH-T-TOOLCHAIN-11, DH-T-SDK-17
+       tagged: DH-T-TOOLCHAIN-11, DH-T-SDK-17
+       deferred: -
+       missing: -
+  1.2 required: DH-T-TOOLCHAIN-9
+       tagged: DH-T-TOOLCHAIN-9
+       deferred: -
+       missing: -
+  1.3 required: DH-T-TOOLCHAIN-2
+       tagged: DH-T-TOOLCHAIN-2
+       deferred: -
+       missing: -
+  1.4 required: DH-T-TOOLCHAIN-8
+       tagged: DH-T-TOOLCHAIN-8
+       deferred: -
+       missing: -
+  1.5 required: DH-T-TOOLCHAIN-7
+       tagged: DH-T-TOOLCHAIN-7
+       deferred: -
+       missing: -
+  1.6 required: DH-T-TOOLCHAIN-4, DH-T-TOOLCHAIN-1, DH-T-TOOLCHAIN-3, DH-T-TOOLCHAIN-5, DH-T-TOOLCHAIN-6
+       tagged: DH-T-TOOLCHAIN-4, DH-T-TOOLCHAIN-6
+       deferred: DH-T-TOOLCHAIN-1, DH-T-TOOLCHAIN-3, DH-T-TOOLCHAIN-5
+       missing: -
+  1.7 required: DH-T-TOOLCHAIN-12
+       tagged: DH-T-TOOLCHAIN-12
+       deferred: -
+       missing: -
+  1.8 required: -
+  1.9 required: -
+  DH-S-1 total: required 12, tagged 9, deferred 3, missing 0
+DH-S-2
+  2.1 required: DH-T-CORDIS-1, DH-T-CORDIS-2, DH-T-CORDIS-3
+       tagged: DH-T-CORDIS-1, DH-T-CORDIS-2, DH-T-CORDIS-3
+       deferred: -
+       missing: -
+  2.2 required: DH-T-CORDIS-4
+       tagged: DH-T-CORDIS-4
+       deferred: -
+       missing: -
+  2.3 required: DH-T-CORDIS-5, DH-T-CORDIS-6
+       tagged: DH-T-CORDIS-5, DH-T-CORDIS-6
+       deferred: -
+       missing: -
+  2.4 required: DH-T-CORDIS-7
+       tagged: DH-T-CORDIS-7
+       deferred: -
+       missing: -
+  2.5 required: DH-T-CORDIS-12
+       tagged: DH-T-CORDIS-12
+       deferred: -
+       missing: -
+  2.6 required: DH-T-CORDIS-8, DH-T-CORDIS-9
+       tagged: DH-T-CORDIS-8, DH-T-CORDIS-9
+       deferred: -
+       missing: -
+  2.7 required: DH-T-CORDIS-13
+       tagged: DH-T-CORDIS-13
+       deferred: -
+       missing: -
+  2.8 required: DH-T-CORDIS-14
+       tagged: DH-T-CORDIS-14
+       deferred: -
+       missing: -
+  DH-S-2 total: required 12, tagged 12, deferred 0, missing 0
+DH-S-3
+  3.1 required: DH-T-LOADER-1
+       tagged: DH-T-LOADER-1
+       deferred: -
+       missing: -
+  3.2 required: DH-T-LOADER-3
+       tagged: DH-T-LOADER-3
+       deferred: -
+       missing: -
+  3.3 required: DH-T-LOADER-4, DH-T-LOADER-5
+       tagged: DH-T-LOADER-4, DH-T-LOADER-5
+       deferred: -
+       missing: -
+  3.4 required: DH-T-LOADER-7
+       tagged: DH-T-LOADER-7
+       deferred: -
+       missing: -
+  3.5 required: DH-T-LOADER-8, DH-T-LOADER-14
+       tagged: DH-T-LOADER-8, DH-T-LOADER-14
+       deferred: -
+       missing: -
+  3.6 required: DH-T-LOADER-11
+       tagged: DH-T-LOADER-11
+       deferred: -
+       missing: -
+  3.7 required: DH-T-LOADER-9
+       tagged: DH-T-LOADER-9
+       deferred: -
+       missing: -
+  3.8 required: DH-T-LOADER-12
+       tagged: DH-T-LOADER-12
+       deferred: -
+       missing: -
+  3.9 required: DH-T-LOADER-15
+       tagged: DH-T-LOADER-15
+       deferred: -
+       missing: -
+  DH-S-3 total: required 11, tagged 11, deferred 0, missing 0
+DH-S-4
+  4.1 required: DH-T-SDK-1, DH-T-SDK-2, DH-T-SDK-3, DH-T-SDK-4
+       tagged: DH-T-SDK-1, DH-T-SDK-2, DH-T-SDK-3, DH-T-SDK-4
+       deferred: -
+       missing: -
+  4.2 required: DH-T-ZOD-1, DH-T-ZOD-2, DH-T-ZOD-3, DH-T-ZOD-4, DH-T-ZOD-5, DH-T-ZOD-6, DH-T-ZOD-7, DH-T-ZOD-8, DH-T-ZOD-9, DH-T-ZOD-10, DH-T-UTIL-1, DH-T-UTIL-2
+       tagged: DH-T-ZOD-2, DH-T-ZOD-3, DH-T-ZOD-4, DH-T-ZOD-5, DH-T-ZOD-6, DH-T-ZOD-7, DH-T-ZOD-8, DH-T-ZOD-9, DH-T-ZOD-10, DH-T-UTIL-1, DH-T-UTIL-2
+       deferred: DH-T-ZOD-1
+       missing: -
+  4.3 required: DH-T-SDK-5, DH-T-SDK-6, DH-T-SDK-7
+       tagged: DH-T-SDK-5, DH-T-SDK-6, DH-T-SDK-7
+       deferred: -
+       missing: -
+  4.4 required: DH-T-PICOMATCH-1, DH-T-PICOMATCH-2, DH-T-PICOMATCH-3, DH-T-SEMVER-1, DH-T-SEMVER-2, DH-T-SEMVER-3
+       tagged: DH-T-PICOMATCH-1, DH-T-PICOMATCH-2, DH-T-PICOMATCH-3, DH-T-SEMVER-1, DH-T-SEMVER-2, DH-T-SEMVER-3
+       deferred: -
+       missing: -
+  4.5 required: DH-T-LLM-1
+       tagged: DH-T-LLM-1
+       deferred: -
+       missing: -
+  4.6 required: DH-T-FS-1, DH-T-FS-2, DH-T-FS-3, DH-T-FS-27, DH-T-NODEFS-1, DH-T-NODEFS-2, DH-T-NODEFS-3, DH-T-NODEFS-4
+       tagged: DH-T-FS-1, DH-T-FS-2, DH-T-FS-3, DH-T-FS-27, DH-T-NODEFS-1, DH-T-NODEFS-2, DH-T-NODEFS-3, DH-T-NODEFS-4
+       deferred: -
+       missing: -
+  4.7 required: DH-T-FS-4, DH-T-FS-5, DH-T-FS-6, DH-T-DIFF-1, DH-T-DIFF-2, DH-T-DIFF-3
+       tagged: DH-T-FS-4, DH-T-FS-5, DH-T-FS-6, DH-T-DIFF-1, DH-T-DIFF-2, DH-T-DIFF-3
+       deferred: -
+       missing: -
+  4.8 required: DH-T-FS-7, DH-T-RIPGREP-1, DH-T-RIPGREP-2, DH-T-RIPGREP-3, DH-T-RIPGREP-4, DH-T-RIPGREP-5, DH-T-RIPGREP-6, DH-T-RIPGREP-7
+       tagged: DH-T-FS-7, DH-T-RIPGREP-1, DH-T-RIPGREP-2, DH-T-RIPGREP-3, DH-T-RIPGREP-4, DH-T-RIPGREP-5, DH-T-RIPGREP-6, DH-T-RIPGREP-7
+       deferred: -
+       missing: -
+  4.9 required: DH-T-CHOKIDAR-1, DH-T-CHOKIDAR-2, DH-T-CHOKIDAR-3, DH-T-CHOKIDAR-4, DH-T-CHOKIDAR-5, DH-T-CHOKIDAR-6, DH-T-UTIL-6
+       tagged: DH-T-CHOKIDAR-1, DH-T-CHOKIDAR-2, DH-T-CHOKIDAR-3, DH-T-CHOKIDAR-4, DH-T-CHOKIDAR-5, DH-T-CHOKIDAR-6, DH-T-UTIL-6
+       deferred: -
+       missing: -
+  4.10 required: DH-T-LOADER-2
+       tagged: DH-T-LOADER-2
+       deferred: -
+       missing: -
+  4.11 required: DH-T-BOOT-9, DH-T-YAML-1, DH-T-YAML-2, DH-T-YAML-3, DH-T-YAML-4, DH-T-YAML-5, DH-T-YAML-6, DH-T-YAML-7
+       tagged: DH-T-BOOT-9, DH-T-YAML-1, DH-T-YAML-2, DH-T-YAML-3, DH-T-YAML-4, DH-T-YAML-5, DH-T-YAML-6, DH-T-YAML-7
+       deferred: -
+       missing: -
+  4.12 required: DH-T-LOADER-6
+       tagged: DH-T-LOADER-6
+       deferred: -
+       missing: -
+  4.13 required: DH-T-LOADER-13
+       tagged: DH-T-LOADER-13
+       deferred: -
+       missing: -
+  4.14 required: DH-T-BOOT-1, DH-T-BOOT-2, DH-T-BOOT-3, DH-T-BOOT-22
+       tagged: DH-T-BOOT-1, DH-T-BOOT-2, DH-T-BOOT-3, DH-T-BOOT-22
+       deferred: -
+       missing: -
+  DH-S-4 total: required 70, tagged 69, deferred 1, missing 0
+DH-S-5
+  5.1 required: DH-T-SESSION-1, DH-T-SESSION-2
+       tagged: DH-T-SESSION-1, DH-T-SESSION-2
+       deferred: -
+       missing: -
+  5.2 required: DH-T-SESSION-17, DH-T-SESSION-18, DH-T-SESSION-6
+       tagged: DH-T-SESSION-17, DH-T-SESSION-18, DH-T-SESSION-6
+       deferred: -
+       missing: -
+  5.3 required: DH-T-STORE-1
+       tagged: DH-T-STORE-1
+       deferred: -
+       missing: -
+  5.4 required: DH-T-STORE-10
+       tagged: DH-T-STORE-10
+       deferred: -
+       missing: -
+  5.5 required: DH-T-SESSION-3, DH-T-SESSION-4, DH-T-SESSION-5, DH-T-SESSION-7, DH-T-SESSION-8, DH-T-SESSION-19
+       tagged: DH-T-SESSION-3, DH-T-SESSION-4, DH-T-SESSION-5, DH-T-SESSION-7, DH-T-SESSION-8, DH-T-SESSION-19
+       deferred: -
+       missing: -
+  5.6 required: DH-T-SESSION-9, DH-T-SESSION-10, DH-T-SESSION-11, DH-T-SESSION-14
+       tagged: DH-T-SESSION-9, DH-T-SESSION-10, DH-T-SESSION-11, DH-T-SESSION-14
+       deferred: -
+       missing: -
+  5.7 required: DH-T-SESSION-12
+       tagged: DH-T-SESSION-12
+       deferred: -
+       missing: -
+  5.8 required: DH-T-SESSION-13
+       tagged: DH-T-SESSION-13
+       deferred: -
+       missing: -
+  5.9 required: DH-T-LLM-2, DH-T-LLM-3, DH-T-LLM-4
+       tagged: DH-T-LLM-2, DH-T-LLM-3, DH-T-LLM-4
+       deferred: -
+       missing: -
+  5.10 required: DH-T-AGENT-1, DH-T-AGENT-2, DH-T-AGENT-3, DH-T-AGENT-27
+       tagged: DH-T-AGENT-1, DH-T-AGENT-2, DH-T-AGENT-3, DH-T-AGENT-27
+       deferred: -
+       missing: -
+  5.11 required: DH-T-AGENT-10, DH-T-AGENT-11, DH-T-AGENT-12, DH-T-AGENT-13, DH-T-AGENT-14
+       tagged: DH-T-AGENT-10, DH-T-AGENT-11, DH-T-AGENT-12, DH-T-AGENT-13
+       deferred: DH-T-AGENT-14
+       missing: -
+  5.12 required: DH-T-HUMAN-1, DH-T-HUMAN-2
+       tagged: DH-T-HUMAN-1, DH-T-HUMAN-2
+       deferred: -
+       missing: -
+  5.13 required: DH-T-VIEW-1, DH-T-VIEW-2, DH-T-VIEW-3, DH-T-VIEW-4
+       tagged: DH-T-VIEW-1, DH-T-VIEW-2, DH-T-VIEW-3
+       deferred: DH-T-VIEW-4
+       missing: -
+  DH-S-5 total: required 37, tagged 35, deferred 2, missing 0
+DH-S-6
+  6.1 required: DH-T-MIME-1, DH-T-MIME-2, DH-T-NODECRYPTO-3, DH-T-CODEFRAME-1, DH-T-UTIL-8, DH-T-UTIL-9, DH-T-UTIL-11
+       tagged: DH-T-MIME-1, DH-T-MIME-2, DH-T-NODECRYPTO-3, DH-T-CODEFRAME-1, DH-T-UTIL-8, DH-T-UTIL-9, DH-T-UTIL-11
+       deferred: -
+       missing: -
+  6.2 required: DH-T-EXEC-1, DH-T-EXEC-2, DH-T-EXEC-3, DH-T-NODEPROC-1, DH-T-NODEPROC-2, DH-T-NODEPROC-3, DH-T-NODEPROC-4, DH-T-NODEPROC-10, DH-T-WHICH-1, DH-T-EXECA-1, DH-T-EXECA-2, DH-T-EXECA-3, DH-T-CROSSSPAWN-1
+       tagged: DH-T-EXEC-1, DH-T-EXEC-2, DH-T-EXEC-3, DH-T-NODEPROC-1, DH-T-NODEPROC-2, DH-T-NODEPROC-3, DH-T-NODEPROC-4, DH-T-NODEPROC-10, DH-T-WHICH-1, DH-T-CROSSSPAWN-1
+       deferred: DH-T-EXECA-1, DH-T-EXECA-2, DH-T-EXECA-3
+       missing: -
+  6.3 required: DH-T-EXEC-4, DH-T-EXEC-5, DH-T-EXEC-6, DH-T-EXEC-17, DH-T-NODEPROC-5, DH-T-NODEPROC-6, DH-T-NODEPROC-7, DH-T-NODEPROC-8
+       tagged: DH-T-EXEC-4, DH-T-EXEC-5, DH-T-NODEPROC-5, DH-T-NODEPROC-6, DH-T-NODEPROC-7
+       deferred: DH-T-EXEC-6, DH-T-EXEC-17, DH-T-NODEPROC-8
+       missing: -
+  6.4 required: DH-T-BOOT-4, DH-T-BOOT-5, DH-T-BOOT-6
+       tagged: DH-T-BOOT-4, DH-T-BOOT-5, DH-T-BOOT-6
+       deferred: -
+       missing: -
+  6.5 required: DH-T-STORAGE-4
+       tagged: DH-T-STORAGE-4
+       deferred: -
+       missing: -
+  6.6 required: DH-T-HUMAN-10, DH-T-HUMAN-11, DH-T-HUMAN-12
+       tagged: DH-T-HUMAN-10, DH-T-HUMAN-11, DH-T-HUMAN-12
+       deferred: -
+       missing: -
+  6.7 required: DH-T-BOOT-7, DH-T-BOOT-8, DH-T-BOOT-23
+       tagged: DH-T-BOOT-7
+       deferred: DH-T-BOOT-8, DH-T-BOOT-23
+       missing: -
+  6.8 required: DH-T-CLI-1, DH-T-CLI-2, DH-T-CLI-3, DH-T-COMMANDER-1, DH-T-COMMANDER-2, DH-T-COMMANDER-3, DH-T-COMMANDER-4
+       tagged: DH-T-CLI-1, DH-T-CLI-2, DH-T-CLI-3, DH-T-COMMANDER-1, DH-T-COMMANDER-2, DH-T-COMMANDER-3, DH-T-COMMANDER-4
+       deferred: -
+       missing: -
+  6.9 required: DH-T-CLI-5, DH-T-CLI-6
+       tagged: DH-T-CLI-5, DH-T-CLI-6
+       deferred: -
+       missing: -
+  6.10 required: DH-T-HOST-23, DH-T-HOST-24, DH-T-ELECTRON-4
+       tagged: DH-T-HOST-23, DH-T-HOST-24, DH-T-ELECTRON-4
+       deferred: -
+       missing: -
+  6.11 required: DH-T-BOOT-10, DH-T-BOOT-11, DH-T-BOOT-12, DH-T-BOOT-13
+       tagged: DH-T-BOOT-10, DH-T-BOOT-11, DH-T-BOOT-12, DH-T-BOOT-13
+       deferred: -
+       missing: -
+  6.12 required: DH-T-BOOT-14
+       tagged: DH-T-BOOT-14
+       deferred: -
+       missing: -
+  6.13 required: DH-T-BOOT-15, DH-T-BOOT-16, DH-T-BOOT-17, DH-T-BOOT-18
+       tagged: DH-T-BOOT-15, DH-T-BOOT-16, DH-T-BOOT-17, DH-T-BOOT-18
+       deferred: -
+       missing: -
+  6.14 required: DH-T-STORAGE-19, DH-T-STORAGE-20, DH-T-STORAGE-21
+       tagged: DH-T-STORAGE-19, DH-T-STORAGE-20, DH-T-STORAGE-21
+       deferred: -
+       missing: -
+  6.15 required: DH-T-HOST-17, DH-T-HOST-18, DH-T-HOST-19
+       tagged: DH-T-HOST-18, DH-T-HOST-19
+       deferred: DH-T-HOST-17
+       missing: -
+  6.16 required: DH-T-UNDICI-1, DH-T-UNDICI-2, DH-T-UNDICI-3, DH-T-UNDICI-4, DH-T-UNDICI-5, DH-T-UNDICI-6, DH-T-UNDICI-7, DH-T-UNDICI-8, DH-T-UNDICI-9, DH-T-UTIL-3, DH-T-UTIL-4, DH-T-UTIL-5
+       tagged: DH-T-UNDICI-1, DH-T-UNDICI-2, DH-T-UNDICI-3, DH-T-UNDICI-4, DH-T-UNDICI-5, DH-T-UNDICI-6, DH-T-UNDICI-8, DH-T-UTIL-3, DH-T-UTIL-4, DH-T-UTIL-5
+       deferred: DH-T-UNDICI-7, DH-T-UNDICI-9
+       missing: -
+  6.17 required: DH-T-UTIL-12, DH-T-UTIL-13, DH-T-UTIL-14, DH-T-UTIL-15
+       tagged: DH-T-UTIL-14
+       deferred: DH-T-UTIL-12, DH-T-UTIL-13, DH-T-UTIL-15
+       missing: -
+  DH-S-6 total: required 81, tagged 67, deferred 14, missing 0
+DH-S-7
+  7.1 required: DH-T-STORE-2, DH-T-STORE-3, DH-T-STORE-4, DH-T-STORE-5, DH-T-STORE-18
+       tagged: DH-T-STORE-2, DH-T-STORE-3, DH-T-STORE-4, DH-T-STORE-5, DH-T-STORE-18
+       deferred: -
+       missing: -
+  7.2 required: DH-T-STORE-6, DH-T-STORE-7
+       tagged: DH-T-STORE-6, DH-T-STORE-7
+       deferred: -
+       missing: -
+  7.3 required: DH-T-STORE-8, DH-T-STORE-9
+       tagged: DH-T-STORE-8, DH-T-STORE-9
+       deferred: -
+       missing: -
+  7.4 required: DH-T-STORE-13
+       tagged: DH-T-STORE-13
+       deferred: -
+       missing: -
+  7.5 required: DH-T-STORE-14
+       tagged: DH-T-STORE-14
+       deferred: -
+       missing: -
+  7.6 required: DH-T-STORE-11, DH-T-STORE-12
+       tagged: DH-T-STORE-11, DH-T-STORE-12
+       deferred: -
+       missing: -
+  DH-S-7 total: required 13, tagged 13, deferred 0, missing 0
+DH-S-8
+  8.1 required: DH-T-STORAGE-1, DH-T-STORAGE-2, DH-T-STORAGE-3
+       tagged: DH-T-STORAGE-1, DH-T-STORAGE-2, DH-T-STORAGE-3
+       deferred: -
+       missing: -
+  8.2 required: DH-T-VIEW-5, DH-T-VIEW-6, DH-T-VIEW-7, DH-T-VIEW-8
+       tagged: DH-T-VIEW-5, DH-T-VIEW-6, DH-T-VIEW-7, DH-T-VIEW-8
+       deferred: -
+       missing: -
+  8.3 required: DH-T-VIEW-9
+       tagged: DH-T-VIEW-9
+       deferred: -
+       missing: -
+  8.4 required: DH-T-STORAGE-16, DH-T-STORAGE-17, DH-T-STORAGE-18
+       tagged: DH-T-STORAGE-16, DH-T-STORAGE-17, DH-T-STORAGE-18
+       deferred: -
+       missing: -
+  8.5 required: DH-T-VIEW-13, DH-T-VIEW-14, DH-T-VIEW-15, DH-T-VIEW-25
+       tagged: DH-T-VIEW-13, DH-T-VIEW-14, DH-T-VIEW-15, DH-T-VIEW-25
+       deferred: -
+       missing: -
+  8.6 required: DH-T-STORAGE-9
+       tagged: DH-T-STORAGE-9
+       deferred: -
+       missing: -
+  8.7 required: DH-T-STORAGE-5, DH-T-STORAGE-6, DH-T-STORAGE-7
+       tagged: DH-T-STORAGE-5, DH-T-STORAGE-6, DH-T-STORAGE-7
+       deferred: -
+       missing: -
+  DH-S-8 total: required 19, tagged 19, deferred 0, missing 0
+DH-S-9
+  9.1 required: DH-T-LLM-5, DH-T-LLM-11, DH-T-LLM-16
+       tagged: DH-T-LLM-5, DH-T-LLM-11, DH-T-LLM-16
+       deferred: -
+       missing: -
+  9.2 required: DH-T-LLM-7, DH-T-LLM-8
+       tagged: DH-T-LLM-7, DH-T-LLM-8
+       deferred: -
+       missing: -
+  9.3 required: DH-T-LLM-15
+       tagged: DH-T-LLM-15
+       deferred: -
+       missing: -
+  DH-S-9 total: required 6, tagged 6, deferred 0, missing 0
+DH-S-10
+  10.1 required: DH-T-TOOLS-1, DH-T-TOOLS-2, DH-T-TOOLS-18
+       tagged: DH-T-TOOLS-1, DH-T-TOOLS-2, DH-T-TOOLS-18
+       deferred: -
+       missing: -
+  10.2 required: DH-T-TOOLS-14, DH-T-TOOLS-15
+       tagged: DH-T-TOOLS-14, DH-T-TOOLS-15
+       deferred: -
+       missing: -
+  10.3 required: DH-T-HUMAN-3, DH-T-HUMAN-4
+       tagged: DH-T-HUMAN-3, DH-T-HUMAN-4
+       deferred: -
+       missing: -
+  10.4 required: DH-T-TOOLS-3, DH-T-TOOLS-4, DH-T-TOOLS-5, DH-T-TOOLS-6, DH-T-TOOLS-7
+       tagged: DH-T-TOOLS-3, DH-T-TOOLS-4, DH-T-TOOLS-5, DH-T-TOOLS-6, DH-T-TOOLS-7
+       deferred: -
+       missing: -
+  10.5 required: DH-T-TOOLS-8, DH-T-TOOLS-9
+       tagged: DH-T-TOOLS-8, DH-T-TOOLS-9
+       deferred: -
+       missing: -
+  10.6 required: DH-T-STORAGE-10, DH-T-STORAGE-11, DH-T-STORAGE-12, DH-T-STORAGE-13
+       tagged: DH-T-STORAGE-10, DH-T-STORAGE-11, DH-T-STORAGE-12, DH-T-STORAGE-13
+       deferred: -
+       missing: -
+  10.7 required: DH-T-AGENT-4, DH-T-AGENT-5, DH-T-AGENT-6
+       tagged: DH-T-AGENT-4, DH-T-AGENT-5, DH-T-AGENT-6
+       deferred: -
+       missing: -
+  10.8 required: DH-T-HUMAN-8
+       tagged: DH-T-HUMAN-8
+       deferred: -
+       missing: -
+  10.9 required: DH-T-HUMAN-9
+       tagged: DH-T-HUMAN-9
+       deferred: -
+       missing: -
+  10.10 required: DH-T-HUMAN-5, DH-T-HUMAN-6
+       tagged: DH-T-HUMAN-5, DH-T-HUMAN-6
+       deferred: -
+       missing: -
+  DH-S-10 total: required 25, tagged 25, deferred 0, missing 0
+DH-S-11
+  11.1 required: DH-T-AGENT-23
+       tagged: DH-T-AGENT-23
+       deferred: -
+       missing: -
+  11.2 required: DH-T-AGENT-26
+       tagged: DH-T-AGENT-26
+       deferred: -
+       missing: -
+  11.3 required: DH-T-AGENT-7, DH-T-AGENT-8, DH-T-AGENT-9, DH-T-AGENT-22, DH-T-AGENT-28
+       tagged: DH-T-AGENT-7, DH-T-AGENT-8, DH-T-AGENT-9, DH-T-AGENT-22, DH-T-AGENT-28
+       deferred: -
+       missing: -
+  11.4 required: DH-T-AGENT-15, DH-T-AGENT-16, DH-T-AGENT-17, DH-T-AGENT-18
+       tagged: DH-T-AGENT-15, DH-T-AGENT-16, DH-T-AGENT-17, DH-T-AGENT-18
+       deferred: -
+       missing: -
+  11.5 required: DH-T-AGENT-19, DH-T-AGENT-20, DH-T-AGENT-21
+       tagged: DH-T-AGENT-19, DH-T-AGENT-20, DH-T-AGENT-21
+       deferred: -
+       missing: -
+  11.6 required: DH-T-SUBAGENT-1, DH-T-SUBAGENT-2, DH-T-SUBAGENT-3, DH-T-SUBAGENT-4, DH-T-SUBAGENT-9, DH-T-SUBAGENT-14
+       tagged: DH-T-SUBAGENT-1, DH-T-SUBAGENT-2, DH-T-SUBAGENT-3, DH-T-SUBAGENT-9
+       deferred: DH-T-SUBAGENT-4, DH-T-SUBAGENT-14
+       missing: -
+  11.7 required: DH-T-CONTEXT-1, DH-T-CONTEXT-2, DH-T-CONTEXT-3, DH-T-CONTEXT-25
+       tagged: DH-T-CONTEXT-1, DH-T-CONTEXT-2, DH-T-CONTEXT-3, DH-T-CONTEXT-25
+       deferred: -
+       missing: -
+  DH-S-11 total: required 24, tagged 22, deferred 2, missing 0
+total: required 310, tagged 288, deferred 22, missing 0
+tagged by form: directive 226, doc comment 56, body comment 6
+harness-gate trace-tests: passed

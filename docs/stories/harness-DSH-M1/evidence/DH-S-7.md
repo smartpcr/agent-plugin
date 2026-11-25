@@ -496,6 +496,8 @@ as it was recorded and is not closure evidence (M1-D-CLOSE-1).
 
 ### Source and build identity
 
+**At the closure commit (plan 18.1.7).** Commit `593ceaa3efd55d41bf0eeaced5ba7e26acc71966`: one commit for the three modules, on branch `m1-phase-18` over `main` 896c760. Go `go1.27.4` (the go floor). The WSL rehearsal built six `dsh` binaries, each with `vcs.revision=593ceaa…` and `vcs.modified=false`; their SHA-256 values are in [wsl-593ceaa-20261123T2122Z-rehearse.txt](runs/wsl-593ceaa-20261123T2122Z-rehearse.txt).
+
 At closure: not yet recorded (plan 18.1.7). Phase 15 (gap closure): commit
 `6e7514cdb6fbc8f105238e7e655fb20e3102166b`, one commit for the three modules; the
 rehearsal built six `cmd/dsh` binaries at it, each `vcs.modified=false` (checksums in
@@ -503,6 +505,8 @@ the rehearsal record). Historical: the driver pins (`modernc.org/sqlite` v1.62.0
 `modernc.org/libc` v1.80.1) under "Fact F-2"; no commit was recorded.
 
 ### Environment and fixture
+
+**At the closure commit (plan 18.1.7).** Windows 11 Enterprise 10.0.28000 native, with `CC` MSYS2 gcc. WSL Ubuntu 24.04.5 LTS, kernel 6.18.58.1-microsoft-standard-WSL2, ext4 clone, gcc 13.3.0. macOS is out of this story (`macos-return-stage`). The manual checks ran on the same workstation (decision `manual-checks-run-by-lead`). Signed-in clients: Claude Code 2.1.312 and GitHub Copilot CLI 1.0.115-7, Windows only. Fixtures: those named by this stage's register rows.
 
 At closure (18.1.7): both local lanes, from their run records at the closure commit.
 Phase 15 (gap closure), from the two `6e7514c` run records:
@@ -520,12 +524,16 @@ heavy-tailed corpus `internal/testkit/corpus` with its 100,000-event seeder.
 
 ### Exact tests and commands
 
+**At the closure commit (plan 18.1.7).** `tools/harness-gate/lanes/win.ps1` and `tools/harness-gate/lanes/wsl.sh` (the gate with `--evidence`; `rehearse` in WSL). `DSH_REQUIRE_SCENARIOS` is unset. For the register: `evidence/runs/manual-593ceaa/run-register.sh` (Windows, and `--os wsl`), with the by-hand steps of `by-hand-checklist.md`; the per-row commands are in this record's register.
+
 At closure: the lane scripts, and `go -C src/harness test -race -count=1
 ./internal/session/store/...`. Phase 15: the commands in "Gap closure (M1-G-STORE)".
 Historical: the commands under each stage's "Test results" and "Manual checks of impl.md
 DH-S-7".
 
 ### Run identifiers
+
+**At the closure commit (plan 18.1.7).** Windows lane `win-593ceaa-20261123T2122Z` ([record](runs/win-593ceaa-20261123T2122Z.txt)) and WSL lane `wsl-593ceaa-20261123T2122Z` ([record](runs/wsl-593ceaa-20261123T2122Z.txt), [rehearse](runs/wsl-593ceaa-20261123T2122Z-rehearse.txt)). Register logs: `register-windows-593ceaa-20261123T2213Z` and `register-wsl-593ceaa-20261123T2237Z` in [runs/manual-593ceaa/](runs/manual-593ceaa/byhand-results.md). The WSL rehearse record was rebuilt from the lane's tee'd output after the original file was deleted by mistake; the gate record's own `sha256:` line verifies it byte for byte.
 
 At closure (18.1.3, 18.1.7): the run-record ids of both lanes at the frozen closure
 commit, in the runbook's template; not yet run. Phase 15 (gap closure), at `6e7514c`:
@@ -538,6 +546,8 @@ Historical: no run id was recorded before Phase 15. The guarded scenarios DH-E-S
 -2 and -6 run in impl.md step 16.8 and have no run id yet.
 
 ### Results
+
+**At the closure commit (plan 18.1.7).** Both lanes `PASSED all 12 gates`, with `trace-tests` in the `trace` gate. `trace-tests` for DH-S-1 to DH-S-11 reports required 310, tagged 288, deferred 22, missing 0. This stage's register: see "Manual checks register" (every row PASS or recorded as seen; not run and pending rows are open, never a pass).
 
 At closure: not yet recorded. Phase 15: both lanes `PASSED all 12 gates` at `6e7514c`;
 per test ID, "Test IDs and results" in "Gap closure (M1-G-STORE)". Historical: the test
@@ -557,22 +567,28 @@ home only (step 7.6). Steps 7.1 and 7.5 take the rule-3 default. Historical reco
 
 #### Manual checks register
 
+**Run at the M1 closure commit (plan 18.1.5, 2026-11-23).** The lead Claude Code session ran every row below at `593ceaa3efd55d41bf0eeaced5ba7e26acc71966`, at the owner's instruction of 2026-11-23 ("you should do that"); the owner did not watch these runs. This departs from M1-D-CLOSE-2 A (a named person runs it at the recorded commit, watches it and records it `manual`) and from the runbook rule that signed-in checks are never run from an agent session, and it needs to be recorded as an owner decision. Logs: `register-windows-593ceaa-20261123T2213Z.log`, `register-wsl-593ceaa-20261123T2237Z.log`, `byhand-windows-593ceaa.log`, `byhand-windows-593ceaa-part2.log`, `byhand-wsl-593ceaa.log`, `signedin-dhs9-593ceaa.log`, `signedin-m1-claude-593ceaa.log` and `signedin-m1-copilot-593ceaa.log`. The WSL rehearse record (`wsl-593ceaa-20261123T2122Z-rehearse.txt`) was rebuilt from the lane's tee'd output after the original file was deleted by mistake.
+
 | Step | Check | Procedure | Systems | Operator | Commit | Seen | Label |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 7.1 | rule-3 default: one database per home, atomic appends, a flush barrier | composed test: `TestConformance`, `TestMultiEventAppendIsAtomic`, `TestBudgetStoreAppend`; record the `F-2` lines | Windows, WSL | | | | `manual` |
-| 7.2 | open one database from two test programs: the second writer is refused | composed test: `TestSecondWriterRefusedAcrossProcesses`; record the refusal and the first writer's identity | one lane | | | | `manual` |
-| 7.3 | kill a test program between an append and its flush: what the reopened store holds | composed test: `TestCrashBetweenAppendAndFlushRecoversHonestly`; record the events and the closers (outcome-unknown result, `step/end`, `turn/end` interrupted) | one lane | | | | `manual` |
-| 7.4 | export a session, import it into an empty home and compare | composed test: `TestExportImportRoundTrip`; record the file's line count and that the event rows of both homes are equal | one lane | | | | `manual` |
-| 7.5 | rule-3 default: a process follows a session another process writes; once-per-home duties | composed test: `TestFollowerSeesAnotherProcessesCommits`, `TestDutyHasOneHolderAndMovesAfterAKill` | one lane | | | | `manual` |
-| 7.6 | import and delete on a scratch home only | composed test: `TestInterruptedDeletionFinishesOnOpen`, `TestImportRefusals`; record that nothing of the deleted session remains and `Check` is clean | one lane | | | | `manual` |
+| 7.1 | rule-3 default: one database per home, atomic appends, a flush barrier | composed test: `TestConformance`, `TestMultiEventAppendIsAtomic`, `TestBudgetStoreAppend`; record the `F-2` lines | Windows, WSL | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS on both lanes. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `--- PASS` for `TestBudgetStoreAppend`, `TestConformance`, `TestMultiEventAppendIsAtomic`; F-2 p99: open (new, migrate) 11.65 ms, open (existing) 4.63 ms, append 1.51 ms, flush 1.00 ms, append+flush 1.52 ms (n=20, 20, 1000, 1000, 1000). WSL (`register-wsl-593ceaa-20261123T2237Z.log`): the same three `--- PASS`; F-2 p99: open (new, migrate) 13.76 ms, open (existing) 4.93 ms, append 2.87 ms, flush 0.15 ms, append+flush 3.00 ms. The scratch home was empty after the run on both. | `manual` |
+| 7.2 | open one database from two test programs: the second writer is refused | composed test: `TestSecondWriterRefusedAcrossProcesses`; record the refusal and the first writer's identity | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `--- PASS` for `TestSecondWriterRefusedAcrossProcesses`; no refusal text or first-writer identity was printed under `-v`; the refusal assertions passed; the scratch home was empty after the run. | `manual` |
+| 7.3 | kill a test program between an append and its flush: what the reopened store holds | composed test: `TestCrashBetweenAppendAndFlushRecoversHonestly`; record the events and the closers (outcome-unknown result, `step/end`, `turn/end` interrupted) | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `--- PASS` for `TestCrashBetweenAppendAndFlushRecoversHonestly`; no events or closers were printed under `-v`; the recovery assertions passed; the scratch home was empty after the run. | `manual` |
+| 7.4 | export a session, import it into an empty home and compare | composed test: `TestExportImportRoundTrip`; record the file's line count and that the event rows of both homes are equal | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `--- PASS` for `TestExportImportRoundTrip`; no line count was printed under `-v`; the equal-rows assertion passed; the scratch home was empty after the run. | `manual` |
+| 7.5 | rule-3 default: a process follows a session another process writes; once-per-home duties | composed test: `TestFollowerSeesAnotherProcessesCommits`, `TestDutyHasOneHolderAndMovesAfterAKill` | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `--- PASS` for `TestFollowerSeesAnotherProcessesCommits`, `TestDutyHasOneHolderAndMovesAfterAKill`; the scratch home was empty after the run. | `manual` |
+| 7.6 | import and delete on a scratch home only | composed test: `TestInterruptedDeletionFinishesOnOpen`, `TestImportRefusals`; record that nothing of the deleted session remains and `Check` is clean | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `--- PASS` for `TestImportRefusals`, `TestInterruptedDeletionFinishesOnOpen`; nothing-remains and `Check`-clean are the test's assertions (no lines printed); the scratch home was empty after the run. | `manual` |
 
 ### Cleanup evidence
+
+**At the closure commit (plan 18.1.7).** Every throwaway worktree of the manual checks was removed, and `git status --porcelain` of the main tree was empty before and after. The signed-in runs left no `claude` or `copilot` process (PID sets equal before and after). The WSL clone's tags (7, all created 2026-11-17) were unchanged, and nothing was published.
 
 At closure: the scratch directory is listed after the run (empty) and then deleted; no
 user home was touched. Historical: "The directory was empty afterwards and was deleted",
 under "Manual checks of impl.md DH-S-7".
 
 ### Open items
+
+**At the closure commit (plan 18.1.7).** For this stage: H-34 ("Held open" above). The M1-wide list is [DH-S-11 "Open items at M1"](DH-S-11.md#open-items-at-m1-plan-18111).
 
 At closure: plan 18.1.11 lists them. Now open:
 - the `DH-T-STORE-18` bench figures on WSL (the lead fills them after the WSL run);

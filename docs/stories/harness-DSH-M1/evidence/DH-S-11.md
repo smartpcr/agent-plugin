@@ -425,20 +425,18 @@ removes them. DH-E-LLM-1 (DH-S-9) was aligned with the driver's cancel settlemen
 **Scenario review line (17.4.5).** See "Scenarios" above: reviewer the owner, in the Phase 17
 PR, **pending**.
 
-#### M1 record per route (17.4.3): not run yet
+#### M1 record per route (17.4.3, run at the frozen closure commit)
 
-**Not run yet: the owner runs 17.4.3 per [DH-S-11-manual-runbook.md](DH-S-11-manual-runbook.md).**
-This table is left empty until the owner pastes the printed lines; nothing here is evidence
-yet, and Stage 17.4 stays open until it is filled (`manual`, never a scenario). Claude must
-pass; Copilot is run and recorded either way, and a Copilot failure is recorded as seen and
-stays open (M1-D-LOOP-6 A).
+Run on 2026-11-23 at `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` (plan 18.1.6) by the lead session, at the owner's instruction (decision `manual-checks-run-by-lead`), on the owner's Windows workstation with the owner's own signed-in clients and no key (`manual`, never a scenario). Neither client is installed in WSL, so the run is Windows native only, as the runbook allows. Logs: [signedin-m1-claude-593ceaa.log](runs/manual-593ceaa/signedin-m1-claude-593ceaa.log) and [signedin-m1-copilot-593ceaa.log](runs/manual-593ceaa/signedin-m1-copilot-593ceaa.log). Under M1-D-LOOP-6 A, Claude must pass, and it does; Copilot is recorded as seen and stays open.
 
 | Route | Run | Commit | Client and version | Model | Go, OS and host | Printed lines (`M1 ` lines, redacted) | Result |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `claude-code` | one turn | | | | | | must pass |
-| `claude-code` | cancel mid-stream | | | | | | must pass |
-| `copilot-cli` | one turn | | | | | | recorded either way |
-| `copilot-cli` | cancel mid-stream | | | | | | recorded either way |
+| `claude-code` | one turn | `593ceaa` | Claude Code 2.1.312 (`claude.exe`) | `sonnet` | go1.27.4, windows/amd64, Windows 11 10.0.28000 | A 19-event bracketed log, one `model/selection` per step, one `probe` call (`allowed-once`) giving `probed: ping`. `M1 request 1: asOf=7` sent = rebuilt `sha256:f249e334…`, and `M1 request 2: asOf=15` sent = rebuilt `sha256:bbb98262…`, both `equal=true` and `invocation-equal=true`. `M1 turn/end`: completed. `M1 final reply`: "The probe tool returned: `probed: ping`" | **PASS** |
+| `claude-code` | cancel mid-stream | `593ceaa` | Claude Code 2.1.312 | `sonnet` | as above | An 11-event cancelled log: `step/end` cause `user`, `M1 cancel: turn/end reason={Kind:aborted … Cause:user …}`, `interrupted prefix kept (2 bytes)`, session `c7a904a2…`. No client process was left (the PID sets before and after are equal) | **PASS** |
+| `copilot-cli` | one turn | `593ceaa` | GitHub Copilot CLI 1.0.115-7 (`copilot.exe`) | `claude-sonnet-4.5` | as above | `M1 turn/end: … Kind:error … llm/client-contract: copilot-cli: the client exited with status 1 and printed nothing this route can place`; the answerer was asked 0 times | **FAIL, open** (M1-D-LOOP-6) |
+| `copilot-cli` | cancel mid-stream | `593ceaa` | GitHub Copilot CLI 1.0.115-7 | `claude-sonnet-4.5` | as above | `no answer text streamed within 2m`; no client process was left | **FAIL, open** (M1-D-LOOP-6) |
+
+No token text appears: the log search with the token-shape patterns finds only the `first_token` timing field names.
 
 ### Decision outcomes (M1-D-LOOP-1 to -6)
 
@@ -485,7 +483,201 @@ one commit. **Rows 1, 3 and 4 do not hold, so DH-S-11 does not close in Phase 17
 | 4. The M1 manual check recorded on the signed-in Claude route, with no API key; Copilot run and recorded either way | **no** | Not run: the owner runs plan 17.4.3 per [DH-S-11-manual-runbook.md](DH-S-11-manual-runbook.md). The table "M1 record per route" above is empty |
 | 5. H-21 listed open with its closing step impl.md 16.10, with every other held-open item a decision creates | holds as listed | H-21 is open in impl.md sec. 10.3 with closing step 16.10, unchanged. This phase adds H-37 ("Held open" above). The final list is written at plan 18.1.11 |
 
-## Closure
+## M1 closure (plan Stage 18.1)
+
+**Closure status: built; both lanes pass all 12 gates at the closure commit `2cface9` ([DH-S-1 "Phase 18 closure gate runs"](DH-S-1.md#phase-18-closure-gate-runs)); the manual checks ran at the frozen commit `593ceaa`, whose product code `2cface9` keeps unchanged; not yet closed.** Closing waits for
+the owner, at plan 18.1.13 and 18.1.14:
+- the scenario review in the M1 closure PR [#94](https://github.com/smartpcr/agent-plugin/pull/94) (`m1-scenario-review-closure-pr`);
+- the signature on `m1-done-claims`;
+- the review of `decisions.md`;
+- row 4.9 cases (a) and (c), the VS Code saves.
+
+The lanes rerun at the reconciliation commit, the commit that ticks the steps and raises
+`built-through`.
+
+### Definition of done at the closure commit (plan 18.1.9)
+
+| Item (decisions.md sec. 1.1) | Holds? | Why |
+| --- | --- | --- |
+| 1. Every impl.md step 1.1 to 11.7 ticked *built* under rule 2, and the story plan agrees | **yes, except row 4.9** | All 103 impl.md steps are ticked. 9.1 to 9.3, 11.3, 11.4 and 11.7 were ticked after the DH-S-9 and M1 checks passed on the Claude route at `593ceaa`. Step 4.9 stays ticked provisionally (M1-D-CLOSE-1 B) until register row 4.9 cases (a) and (c) are run; if they are not, 4.9 is unticked and `built-through` falls to DH-S-3. The story plan is reconciled by plan 18.1.8 (the table below) |
+| 2. The gate green on Windows native and Linux under WSL, with `trace-tests` wired in; macOS a scope change, not a pass | **yes** | Both lanes `PASSED all 12 gates` at the closure commit `2cface9` with `built-through: DH-S-11` (`trace-tests` DH-S-1 to DH-S-11 missing 0; `CheckBuiltThrough` over all 103 steps): [win-2cface9-20261124T0214Z](runs/win-2cface9-20261124T0214Z.txt) and [wsl-2cface9-20261124T0203Z](runs/wsl-2cface9-20261124T0203Z.txt). Earlier, both lanes passed at the frozen commit `593ceaa`: [win-593ceaa-20261123T2122Z](runs/win-593ceaa-20261123T2122Z.txt) and [wsl-593ceaa-20261123T2122Z](runs/wsl-593ceaa-20261123T2122Z.txt). The `trace` gate ran `trace-tests` (DH-S-1 to DH-S-8 at that marker). With the marker at DH-S-11: required 310, tagged 288, deferred 22, missing 0 ([trace-tests-DH-S-11-593ceaa.txt](runs/manual-593ceaa/trace-tests-DH-S-11-593ceaa.txt)). macOS is out of this story (`macos-return-stage`) |
+| 3. Every stage DH-S-1 to DH-S-11 has a complete evidence record (impl.md sec. 7.3) | **yes, except row 4.9** | The eleven sec. 7.3 sections are filled at `593ceaa` (plan 18.1.7), and the 103 register rows are filled; 4.9 (a) and (c) are pending |
+| 4. The M1 manual check recorded on the signed-in Claude route, with no key; Copilot run and recorded either way | **yes** | "M1 record per route" above: Claude PASS on both runs; Copilot FAIL, recorded and open (M1-D-LOOP-6) |
+| 5. H-21 listed open with its closing step impl.md 16.10, with every other held-open item a decision creates | **yes** | "Open items at M1" below |
+
+### Per-stage reconciliation (plan 18.1.9)
+
+One row per stage at the reconciliation commit. "Story plan" is the state of that stage's boxes in
+[implementation-plan.md](../implementation-plan.md) after plan 18.1.8: 141 boxes ticked on
+the evidence at `593ceaa` (each verdict and its proof is in the reconciliation files of
+`runs/manual-593ceaa/`), 1 marked superseded, and 7 left open.
+
+| Stage | impl.md steps ticked | Story plan | Evidence (lanes at `593ceaa`; register) | State |
+| --- | --- | --- | --- | --- |
+| DH-S-1 | 9 of 9 | all ticked but "Close DH-S-1" (18.1.14); the key-preflight scenario is marked superseded (`models-signed-in-claude-copilot`) | both lanes pass; register 9 of 9 rows (four seeded cases amended, `register-seeded-amendments`) | built; done claims per "Done at M1" |
+| DH-S-2 | 8 of 8 | all ticked but "Close DH-S-2" (18.1.14) | both lanes pass; register 8 of 8 | built |
+| DH-S-3 | 9 of 9 | all ticked but "Close DH-S-3" (18.1.14) | both lanes pass; register 9 of 9 | built |
+| DH-S-4 | 14 of 14 | all ticked but step 4.9 (row 4.9 (a)/(c) pending) and "Close DH-S-4" (18.1.14) | both lanes pass; register 13 of 14 complete, 4.9 (a) and (c) pending; 4.8 has the known difference M1-G-FND-23.1 | built; 4.9 provisional |
+| DH-S-5 | 13 of 13 | all ticked | both lanes pass; register 13 of 13 | built |
+| DH-S-6 | 17 of 17 | all ticked | both lanes pass; register 17 of 17 | built; H-24 to H-32 held open |
+| DH-S-7 | 6 of 6 | all ticked | both lanes pass; register 6 of 6 | built; H-34 held open |
+| DH-S-8 | 7 of 7 | all ticked | both lanes pass; register 7 of 7 | built; H-33, H-35, H-36 held open |
+| DH-S-9 | 3 of 3 | all ticked but "Close DH-S-9" (18.1.14, after the scenario review) | both lanes pass; register 3 of 3 (Claude PASS, Copilot open) | built; scenario review pending |
+| DH-S-10 | 10 of 10 | all ticked | both lanes pass; register 10 of 10 | built |
+| DH-S-11 | 7 of 7 | all ticked but "Close DH-S-11 and the story" (18.1.14) | both lanes pass; register 7 of 7 (Claude PASS, Copilot open) | built; H-37 held open; scenario review pending |
+
+### Done at M1
+
+Plan 18.1.12. The deliverables of impl.md steps 1.1 to 11.7 that M1 claims **done**: each
+Done-when line names no `DH-E-*` scenario and no deferred `DH-T` ID, the deliverable is
+not held open, and its tagged tests pass on both lanes at `593ceaa` (Windows
+`win-593ceaa-20261123T2122Z`, WSL `wsl-593ceaa-20261123T2122Z`). The list is derived by
+`evidence/runs/manual-593ceaa/done_at_m1.py` from impl.md, the area specs' Done-when
+lines, the trace-tests deferrals and the H-n tables. **Proposed; the owner signs it as
+`m1-done-claims` in [decisions.md](../decisions.md).**
+
+| Step | Deliverable | Done-when tests |
+| --- | --- | --- |
+| 1.1 | DH-D-TOOLCHAIN-1 | DH-T-TOOLCHAIN-11 |
+| 1.2 | DH-D-TOOLCHAIN-2 | DH-T-TOOLCHAIN-12, DH-T-TOOLCHAIN-2, DH-T-TOOLCHAIN-4, DH-T-TOOLCHAIN-7, DH-T-TOOLCHAIN-8, DH-T-TOOLCHAIN-9 |
+| 2.1 | DH-D-CORDIS-1 | DH-T-CORDIS-1, DH-T-CORDIS-2, DH-T-CORDIS-3 |
+| 2.2 | DH-D-CORDIS-2 | DH-T-CORDIS-4 |
+| 2.3 | DH-D-CORDIS-3 | DH-T-CORDIS-5, DH-T-CORDIS-6 |
+| 2.4 | DH-D-CORDIS-4 | DH-T-CORDIS-7 |
+| 2.5 | DH-D-CORDIS-7 | DH-T-CORDIS-12 |
+| 2.6 | DH-D-CORDIS-5 | DH-T-CORDIS-8, DH-T-CORDIS-9 |
+| 2.7 | DH-D-CORDIS-8 | DH-T-CORDIS-13 |
+| 2.8 | DH-D-CORDIS-9 | DH-T-CORDIS-14 |
+| 3.1 | DH-D-LOADER-1 | DH-T-LOADER-1 |
+| 3.2 | DH-D-LOADER-3 | DH-T-LOADER-3 |
+| 3.3 | DH-D-LOADER-4 | DH-T-LOADER-4, DH-T-LOADER-5 |
+| 3.4 | DH-D-LOADER-6 | DH-T-LOADER-7 |
+| 3.6 | DH-D-LOADER-10 | DH-T-LOADER-11 |
+| 3.7 | DH-D-LOADER-8 | DH-T-LOADER-9 |
+| 4.1 | DH-D-SDK-1 | DH-T-SDK-1, DH-T-SDK-2, DH-T-SDK-3, DH-T-SDK-4 |
+| 4.3 | DH-D-SDK-2 | DH-T-SDK-5, DH-T-SDK-6, DH-T-SDK-7 |
+| 4.4 | DH-D-UTIL-4 | DH-T-PICOMATCH-1, DH-T-PICOMATCH-2, DH-T-PICOMATCH-3, DH-T-SEMVER-1, DH-T-SEMVER-2, DH-T-SEMVER-3 |
+| 4.5 | DH-D-LLM-11 | DH-T-LLM-1 |
+| 4.7 | DH-D-FS-2 | DH-T-DIFF-1, DH-T-FS-4, DH-T-FS-5, DH-T-FS-6 |
+| 4.11 | DH-D-BOOT-4 | DH-T-BOOT-9, DH-T-YAML-1, DH-T-YAML-2, DH-T-YAML-3, DH-T-YAML-4, DH-T-YAML-5, DH-T-YAML-6, DH-T-YAML-7 |
+| 4.12 | DH-D-LOADER-5 | DH-T-LOADER-6 |
+| 4.13 | DH-D-LOADER-12 | DH-T-LOADER-13 |
+| 4.14 | DH-D-BOOT-1 | DH-T-BOOT-1, DH-T-BOOT-2, DH-T-BOOT-22, DH-T-BOOT-3 |
+| 5.2 | DH-D-SESSION-8 | DH-T-SESSION-17, DH-T-SESSION-18, DH-T-SESSION-6 |
+| 5.3 | DH-D-STORE-1 | DH-T-STORE-1 |
+| 5.4 | DH-D-STORE-5 | DH-T-STORE-10 |
+| 5.10 | DH-D-AGENT-1 | DH-T-AGENT-1 |
+| 6.1 | DH-D-UTIL-5 | DH-T-CODEFRAME-1, DH-T-MIME-1, DH-T-MIME-2, DH-T-NODECRYPTO-3, DH-T-UTIL-11, DH-T-UTIL-8, DH-T-UTIL-9 |
+| 6.4 | DH-D-BOOT-2 | DH-T-BOOT-4, DH-T-BOOT-5, DH-T-BOOT-6 |
+| 6.8 | DH-D-CLI-1 | DH-T-CLI-1, DH-T-CLI-2, DH-T-CLI-3, DH-T-COMMANDER-1, DH-T-COMMANDER-2, DH-T-COMMANDER-3, DH-T-COMMANDER-4 |
+| 6.9 | DH-D-CLI-3 | DH-T-CLI-5, DH-T-CLI-6 |
+| 7.4 | DH-D-STORE-7 | DH-T-STORE-13 |
+| 10.1 | DH-D-TOOLS-1 | DH-T-TOOLS-1, DH-T-TOOLS-18, DH-T-TOOLS-2 |
+| 10.7 | DH-D-AGENT-2 | DH-T-AGENT-4 |
+| 10.9 | DH-D-HUMAN-6 | DH-T-HUMAN-9 |
+| 11.1 | DH-D-AGENT-7 | DH-T-AGENT-23 |
+| 11.2 | DH-D-AGENT-10 | DH-T-AGENT-26 |
+
+39 of 99 deliverables.
+
+### Built, not done
+
+Plan 18.1.11. Every other deliverable of steps 1.1 to 11.7 is **built, not done**: it is
+recorded "built, done when <the item named> passes in <stage>". A `DH-E` scenario runs
+in the stage the acceptance index keys it under; a deferred test passes in the stage its
+`later` directive names; a held-open part closes at its H entry's closing step.
+
+| Step | Deliverable | Waits for | Runs in |
+| --- | --- | --- | --- |
+| 1.6 | DH-D-TOOLCHAIN-3 | names DH-E-TOOLCHAIN-1; deferred DH-T-TOOLCHAIN-1, DH-T-TOOLCHAIN-3, DH-T-TOOLCHAIN-5 | DH-S-17, the deferral's stage |
+| 1.8 | DH-D-TOOLCHAIN-4 | names DH-E-TOOLCHAIN-1, DH-E-TOOLCHAIN-2 | DH-S-17, DH-S-18 |
+| 1.9 | DH-D-TOOLCHAIN-5 | names DH-E-TOOLCHAIN-2 | DH-S-18 |
+| 3.5 | DH-D-LOADER-7 | names DH-E-LOADER-1 | DH-S-17 |
+| 3.8 | DH-D-LOADER-11 | names DH-E-LOADER-1 | DH-S-17 |
+| 3.9 | DH-D-LOADER-13 | names DH-E-BOOT-2 | DH-S-21 |
+| 4.2 | DH-D-UTIL-1 | deferred DH-T-ZOD-1; held open H-38 | the deferral's stage, the H entry's closing step |
+| 4.6 | DH-D-FS-1 | names DH-E-NODEFS-1 | DH-S-18 |
+| 4.8 | DH-D-FS-3 | names DH-E-RIPGREP-1, DH-E-RIPGREP-2 | DH-S-18 |
+| 4.9 | DH-D-UTIL-3 | names DH-E-CHOKIDAR-1, DH-E-CHOKIDAR-2 | DH-S-18 |
+| 4.10 | DH-D-LOADER-2 | names DH-E-LOADER-1 | DH-S-17 |
+| 5.1 | DH-D-SESSION-1 | names DH-E-SESSION-1 | DH-S-17 |
+| 5.5 | DH-D-SESSION-2 | names DH-E-SESSION-2 | DH-S-17 |
+| 5.6 | DH-D-SESSION-3 | names DH-E-SESSION-1 | DH-S-17 |
+| 5.7 | DH-D-SESSION-4 | names DH-E-SESSION-1 | DH-S-17 |
+| 5.8 | DH-D-SESSION-5 | names DH-E-SESSION-2 | DH-S-17 |
+| 5.9 | DH-D-LLM-1 | names DH-E-LLM-1 | DH-S-17 |
+| 5.11 | DH-D-AGENT-4 | held open H-39 | the H entry's closing step |
+| 5.12 | DH-D-HUMAN-1 | names DH-E-HUMAN-2 | not authored yet (impl.md sec. 7.5 places it) |
+| 5.13 | DH-D-VIEW-1 | names DH-E-VIEW-2; held open H-40 | not authored yet (impl.md sec. 7.5 places it), the H entry's closing step |
+| 6.2 | DH-D-EXEC-1 | names DH-E-EXEC-7; deferred DH-T-EXECA-1; held open H-24 | not authored yet (impl.md sec. 7.5 places it), the deferral's stage, the H entry's closing step |
+| 6.3 | DH-D-EXEC-2 | names DH-E-EXEC-1, DH-E-EXEC-10, DH-E-EXEC-2, DH-E-EXEC-3; deferred DH-T-EXEC-17; held open H-25 | DH-S-18, not authored yet (impl.md sec. 7.5 places it), the deferral's stage, the H entry's closing step |
+| 6.5 | DH-D-STORAGE-2 | names DH-E-STORAGE-6 | DH-S-18 |
+| 6.6 | DH-D-HUMAN-7 | held open H-27 | the H entry's closing step |
+| 6.7 | DH-D-BOOT-3 | deferred DH-T-BOOT-23, DH-T-BOOT-8; held open H-28 | the deferral's stage, the H entry's closing step |
+| 6.10 | DH-D-HOST-7 | names DH-E-HOST-4 | DH-S-18 |
+| 6.11 | DH-D-BOOT-5 | names DH-E-BOOT-1 | DH-S-22 |
+| 6.12 | DH-D-BOOT-6 | held open H-21 | the H entry's closing step |
+| 6.13 | DH-D-BOOT-7 | names DH-E-BOOT-2, DH-E-LOADER-1 | DH-S-17, DH-S-21 |
+| 6.14 | DH-D-STORAGE-8 | names DH-E-STORAGE-5 | not authored yet (impl.md sec. 7.5 places it) |
+| 6.15 | DH-D-HOST-4 | names DH-E-HOST-3; deferred DH-T-HOST-17; held open H-29 | not authored yet (impl.md sec. 7.5 places it), the deferral's stage, the H entry's closing step |
+| 6.16 | DH-D-UTIL-2 | names DH-E-UTIL-1; deferred DH-T-UNDICI-7, DH-T-UNDICI-9; held open H-30 | DH-S-39, the deferral's stage, the H entry's closing step |
+| 6.17 | DH-D-UTIL-6 | deferred DH-T-UTIL-12, DH-T-UTIL-13, DH-T-UTIL-15; held open H-31 | the deferral's stage, the H entry's closing step |
+| 7.1 | DH-D-STORE-2 | names DH-E-STORE-1, DH-E-STORE-2; held open H-34 | DH-S-16, the H entry's closing step |
+| 7.2 | DH-D-STORE-3 | names DH-E-STORE-1 | DH-S-16 |
+| 7.3 | DH-D-STORE-4 | names DH-E-STORE-2 | DH-S-16 |
+| 7.5 | DH-D-STORE-8 | names DH-E-STORE-5 | DH-S-35 |
+| 7.6 | DH-D-STORE-6 | names DH-E-STORE-6 | DH-S-16 |
+| 8.1 | DH-D-STORAGE-1 | names DH-E-STORAGE-1 | DH-S-19 |
+| 8.2 | DH-D-VIEW-2 | names DH-E-VIEW-2, DH-E-VIEW-3; held open H-36 | not authored yet (impl.md sec. 7.5 places it), the H entry's closing step |
+| 8.3 | DH-D-VIEW-3 | names DH-E-VIEW-2 | not authored yet (impl.md sec. 7.5 places it) |
+| 8.4 | DH-D-STORAGE-7 | names DH-E-STORAGE-1 | DH-S-19 |
+| 8.5 | DH-D-VIEW-5 | names DH-E-VIEW-3; held open H-35 | not authored yet (impl.md sec. 7.5 places it), the H entry's closing step |
+| 8.6 | DH-D-STORAGE-5 | names DH-E-STORAGE-3 | DH-S-39 |
+| 8.7 | DH-D-STORAGE-3 | names DH-E-STORAGE-2; held open H-33 | DH-S-23, the H entry's closing step |
+| 9.1 | DH-D-LLM-2 | names DH-E-LLM-1, DH-E-LLM-3, DH-E-LLM-5 | DH-S-17, not authored yet (impl.md sec. 7.5 places it) |
+| 9.2 | DH-D-LLM-3 | names DH-E-LLM-3 | DH-S-17 |
+| 9.3 | DH-D-LLM-6 | names DH-E-LLM-1 | DH-S-17 |
+| 10.2 | DH-D-TOOLS-5 | names DH-E-TOOLS-1 | DH-S-17 |
+| 10.3 | DH-D-HUMAN-2 | names DH-E-HUMAN-1 | not authored yet (impl.md sec. 7.5 places it) |
+| 10.4 | DH-D-TOOLS-2 | names DH-E-TOOLS-1 | DH-S-17 |
+| 10.5 | DH-D-TOOLS-3 | names DH-E-TOOLS-3, DH-E-TOOLS-4 | DH-S-39, not authored yet (impl.md sec. 7.5 places it) |
+| 10.6 | DH-D-STORAGE-6 | names DH-E-STORAGE-3, DH-E-STORAGE-4 | DH-S-39, not authored yet (impl.md sec. 7.5 places it) |
+| 10.8 | DH-D-HUMAN-5 | names DH-E-HUMAN-6 | DH-S-22 |
+| 10.10 | DH-D-HUMAN-3 | names DH-E-HUMAN-7 | not authored yet (impl.md sec. 7.5 places it) |
+| 11.3 | DH-D-AGENT-3 | names DH-E-AGENT-1, DH-E-AGENT-4; held open H-37 | DH-S-17, the H entry's closing step |
+| 11.4 | DH-D-AGENT-5 | names DH-E-AGENT-2 | DH-S-17 |
+| 11.5 | DH-D-AGENT-6 | names DH-E-AGENT-3 | DH-S-17 |
+| 11.6 | DH-D-SUBAGENT-1 | names DH-E-SUBAGENT-2; deferred DH-T-SUBAGENT-14, DH-T-SUBAGENT-4 | not authored yet (impl.md sec. 7.5 places it), the deferral's stage |
+| 11.7 | DH-D-CONTEXT-1 | names DH-E-CONTEXT-1 | not authored yet (impl.md sec. 7.5 places it) |
+
+60 of 99 deliverables.
+
+### Open items at M1 (plan 18.1.11)
+
+M1 closes with these open. None is counted done; each closes at the step named.
+
+- **H-21**: the `DH-D-BOOT-6` part held open in impl.md sec. 10.3, closing at impl.md step 16.10.
+- **Built, not done:** the 60 deliverables in "Built, not done" above, each with the `DH-E` scenario or deferred test it waits for and the stage that runs it.
+- **Held open, by decision:**
+  - H-24 to H-32 ([DH-S-6](DH-S-6.md#held-open); M1-D-BOOT-1 (b), M1-D-BOOT-2 (b); plan 14.6.11), closing in plan Phase 19 and at the deferral stages of M1-D-CLOSE-5;
+  - H-34 ([DH-S-7](DH-S-7.md#held-open); plan 15.3.2) and H-33, H-35, H-36 ([DH-S-8](DH-S-8.md#held-open); plans 15.3.9 and 15.3.2);
+  - H-37 ("Held open" above; plan 17.4.7), closing at impl.md 16.7;
+  - H-38 ([DH-S-4](DH-S-4.md#held-open)) and H-39, H-40 ([DH-S-5](DH-S-5.md#held-open)), from M1-D-CLOSE-5.
+- **Deferred tests:** 22 IDs, each backed by an impl.md pointer line. They are DH-T-TOOLCHAIN-1, -3 and -5 (DH-S-16); DH-T-SUBAGENT-4, -14 and legs of -3 (DH-S-29, M1-D-LOOP-3 B); and the 17 IDs of M1-D-CLOSE-5 (DH-S-12, -13, -15 and -16).
+- **The Copilot route** (`copilot-cli`), which fails at `593ceaa`: DH-S-9 signed-in settles `llm/client-contract`, M1 exits with status 1, and DH-E-COPILOTCLI-1 is open. It is recorded under M1-D-LOOP-6 A and fixed after M1.
+- **Register row 4.9**, cases (a) VS Code on NTFS and (c) a Windows editor saving a file that WSL watches on `/mnt/e`. Both are pending the owner's GUI saves; (a) has been carried since plan 14.5.5.
+- **M1-G-FND-23.1**: search lists the files of nested `.worktree/*` Git worktrees, which Git shows as gitlinks (register row 4.8).
+- **Partial tags**, recorded as deviations:
+  - DH-T-SDK-17 covers only the step 1.1 module-boundary clause; its other clauses are re-checked at 16.6.
+  - DH-T-BOOT-18 is proven on `config.Service`; boot builds `State.Config` only when reload is on.
+  - DH-T-TOOLCHAIN-7 is proven on the coverage-child fixture; the real replay runner comes at DH-S-16.
+- **The scenario review** of the 13 re-authored files, in the M1 closure PR (`m1-scenario-review-closure-pr`), and **the owner's signature** on `m1-done-claims` (plan 18.1.12, 18.1.13).
+- **macOS**: out of this story (`macos-return-stage`); never counted as covered.
+- **Production composition** of the prompt component and the context pipeline, at DH-S-16.
+- **Carried over:** errdiscard (plan 13.5.3, M1-D-TOOL-1c) and the control-group re-record of 14.6.12.
+- **Intermittent test** `TestEditDuringStuckApplicationWaitsForItToSettle` (`boot/config`). It failed once, on the first Windows run at `2cface9`: a 10 s wall-clock wait under load. It did not reproduce in 70 runs, and the re-run passed. Its wait never reads the edit's own result, so a failed edit shows up only as a timeout. The fix, after M1, is to report the edit's error and drop the wall-clock deadline.
+
+### Closure (Phase 17 record, kept as history)
 
 **Open: DH-S-11 does not close in Phase 17.** Plan step 17.4.9 closes DH-S-11 as a stage only
 when every row of its definition holds at one commit. Two of the stage's own conditions are
@@ -540,10 +732,14 @@ as it was recorded and is not closure evidence (M1-D-CLOSE-1).
 
 ### Source and build identity
 
+**At the closure commit (plan 18.1.7).** Commit `593ceaa3efd55d41bf0eeaced5ba7e26acc71966`: one commit for the three modules, on branch `m1-phase-18` over `main` 896c760. Go `go1.27.4` (the go floor). The WSL rehearsal built six `dsh` binaries, each with `vcs.revision=593ceaa…` and `vcs.modified=false`; their SHA-256 values are in [wsl-593ceaa-20261123T2122Z-rehearse.txt](runs/wsl-593ceaa-20261123T2122Z-rehearse.txt).
+
 At closure: not yet recorded (plan 18.1.7), with the client name and version of each
 signed-in route. Historical: no commit was recorded.
 
 ### Environment and fixture
+
+**At the closure commit (plan 18.1.7).** Windows 11 Enterprise 10.0.28000 native, with `CC` MSYS2 gcc. WSL Ubuntu 24.04.5 LTS, kernel 6.18.58.1-microsoft-standard-WSL2, ext4 clone, gcc 13.3.0. macOS is out of this story (`macos-return-stage`). The manual checks ran on the same workstation (decision `manual-checks-run-by-lead`). Signed-in clients: Claude Code 2.1.312 and GitHub Copilot CLI 1.0.115-7, Windows only. Fixtures: those named by this stage's register rows.
 
 At closure: both local lanes, from their run records; for the M1 check, the operator's
 own workstation (Windows, and WSL if run there) with the clients signed in. macOS: out of
@@ -551,6 +747,8 @@ scope (`platforms-windows-wsl`). Historical: one Windows machine. Fixtures: the 
 composition with one `probe` tool; the golden `internal/agent/testdata/f2_log.golden`.
 
 ### Exact tests and commands
+
+**At the closure commit (plan 18.1.7).** `tools/harness-gate/lanes/win.ps1` and `tools/harness-gate/lanes/wsl.sh` (the gate with `--evidence`; `rehearse` in WSL). `DSH_REQUIRE_SCENARIOS` is unset. For the register: `evidence/runs/manual-593ceaa/run-register.sh` (Windows, and `--os wsl`), with the by-hand steps of `by-hand-checklist.md`; the per-row commands are in this record's register.
 
 At closure: the lane scripts; `go -C src/harness test -race -count=1 ./internal/context/...
 ./internal/agent/... ./internal/archtest/`; and the probe of plan steps 17.4.1 to 17.4.3,
@@ -560,6 +758,8 @@ set to `claude` and then `copilot`, per [DH-S-11-manual-runbook.md](DH-S-11-manu
 Historical: the DeepSeek runbook above.
 
 ### Run identifiers
+
+**At the closure commit (plan 18.1.7).** Windows lane `win-593ceaa-20261123T2122Z` ([record](runs/win-593ceaa-20261123T2122Z.txt)) and WSL lane `wsl-593ceaa-20261123T2122Z` ([record](runs/wsl-593ceaa-20261123T2122Z.txt), [rehearse](runs/wsl-593ceaa-20261123T2122Z-rehearse.txt)). Register logs: `register-windows-593ceaa-20261123T2213Z` and `register-wsl-593ceaa-20261123T2237Z` in [runs/manual-593ceaa/](runs/manual-593ceaa/byhand-results.md). The WSL rehearse record was rebuilt from the lane's tee'd output after the original file was deleted by mistake; the gate record's own `sha256:` line verifies it byte for byte.
 
 At closure: the run-record ids of both lanes, in the runbook's template (plan 18.1.3),
 and per route the masked client session ids. WSL lane: not run at the M1 closure commit
@@ -571,6 +771,8 @@ and `win-fda4b98-20261123T1244Z`, both `PASSED all 12 gates`
 not run (plan 17.4.3). Historical: no request reached a provider, so no request id exists.
 
 ### Results
+
+**At the closure commit (plan 18.1.7).** Both lanes `PASSED all 12 gates`, with `trace-tests` in the `trace` gate. `trace-tests` for DH-S-1 to DH-S-11 reports required 310, tagged 288, deferred 22, missing 0. This stage's register: see "Manual checks register" (every row PASS or recorded as seen; not run and pending rows are open, never a pass).
 
 At closure: not yet recorded. Phase 17: both lanes `PASSED all 12 gates` at `fda4b98`; per
 test ID, "Gap closure (plan Phase 17)" above. Historical: "Tests (TC-11a, TC-11b)" above.
@@ -596,15 +798,17 @@ settlement). How to run and fill the register:
 
 #### Manual checks register
 
+**Run at the M1 closure commit (plan 18.1.5, 2026-11-23).** The lead Claude Code session ran every row below at `593ceaa3efd55d41bf0eeaced5ba7e26acc71966`, at the owner's instruction of 2026-11-23 ("you should do that"); the owner did not watch these runs. This departs from M1-D-CLOSE-2 A (a named person runs it at the recorded commit, watches it and records it `manual`) and from the runbook rule that signed-in checks are never run from an agent session, and it needs to be recorded as an owner decision. Logs: `register-windows-593ceaa-20261123T2213Z.log`, `register-wsl-593ceaa-20261123T2237Z.log`, `byhand-windows-593ceaa.log`, `byhand-windows-593ceaa-part2.log`, `byhand-wsl-593ceaa.log`, `signedin-dhs9-593ceaa.log`, `signedin-m1-claude-593ceaa.log` and `signedin-m1-copilot-593ceaa.log`. The WSL rehearse record (`wsl-593ceaa-20261123T2122Z-rehearse.txt`) was rebuilt from the lane's tee'd output after the original file was deleted by mistake.
+
 | Step | Check | Procedure | Systems | Operator | Commit | Seen | Label |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 11.1 | M1, one prompt with one test tool: each step uses one logged model selection | probe (plan 17.4.3): `TestManualM1OneTurn` per route (`DSH_M1_ROUTE=claude`, then `copilot`); from the redacted `M1 bracketed log`, record the one model selection logged per step and the route and model id | the operator's workstation (Windows; WSL if run there) | | | | `manual` |
-| 11.2 | M1, one prompt with one test tool: the step's tools are fixed once, its calls run in an ordered batch | probe: the same run; record the one `probe` call, its approval and its `tool/result` (`probed: ping`) | the operator's workstation | | | | `manual` |
-| 11.3 | M1, one prompt with one test tool: every turn and step is bracketed and closed | probe: the same run and the cancel run; record that the brackets close in both, one `turn/end` completed and one aborted | the operator's workstation | | | | `manual` |
-| 11.4 | M1, a second run cancelled mid-stream: the cause on `turn/end` | probe: `TestManualM1CancelMidStream` per route; copy the redacted `M1 cancelled log` and `M1 cancel:` lines: `turn/end` aborted with cause `user`, `step/end` cause `user`, one cancelled settlement | the operator's workstation | | | | `manual` |
-| 11.5 | rule-3 default: agents are created, resumed and torn down as one transaction | composed test: `go -C src/harness test -count=1 -v ./internal/agent/` (the lifecycle tests of DH-D-AGENT-6); record create, resume and teardown | one lane | | | | `manual` |
-| 11.6 | rule-3 default: one delegation seam; every child has one owner | composed test: `go -C src/harness test -count=1 -v ./internal/delegate/...`; plan Stage 17.2 is built (`72704a7`) and plan 17.4.6 re-ticked impl.md 11.6, so the row can run; record the M1 legs of `DH-T-SUBAGENT-1`, `-2`, `-3` and `-9` (the deferred ones are DH-S-29's) | one lane | | | | `manual` |
-| 11.7 | M1, one prompt with one test tool: the request rebuilt from the log equals the one sent | probe: the `TestManualM1OneTurn` run; copy the `M1 request N` lines (sent and rebuilt digests at the client-invocation boundary, M1-D-CLOSE-3), `M1 turn/end` and `M1 final reply` | the operator's workstation | | | | `manual` |
+| 11.1 | M1, one prompt with one test tool: each step uses one logged model selection | probe (plan 17.4.3): `TestManualM1OneTurn` per route (`DSH_M1_ROUTE=claude`, then `copilot`); from the redacted `M1 bracketed log`, record the one model selection logged per step and the route and model id | the operator's workstation (Windows; WSL if run there) | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | Claude: PASS (Windows, `signedin-m1-claude-593ceaa.log`; `TestManualM1OneTurn` `--- PASS`): the 19-event bracketed log has one `model/selection` per step, step 1 `{"model":"sonnet","route":"claude-code"}` from `options`, step 2 the same from `header`. Copilot: FAIL (`signedin-m1-copilot-593ceaa.log`): step 1 logged one selection (`claude-sonnet-4.5`, `copilot-cli`), then `turn/end` error `llm/client-contract: copilot-cli: the client exited with status 1 and printed nothing this route can place`; open (M1-D-LOOP-6). | `manual` |
+| 11.2 | M1, one prompt with one test tool: the step's tools are fixed once, its calls run in an ordered batch | probe: the same run; record the one `probe` call, its approval and its `tool/result` (`probed: ping`) | the operator's workstation | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | Claude: PASS (`signedin-m1-claude-593ceaa.log`): one `tool/call` `probe` with `{"text": "ping"}`, `approval/asked` then `approval/decided` `allowed-once`, `tool/result` `probed: ping`. Copilot: FAIL (`signedin-m1-copilot-593ceaa.log`): no tool call; the answerer was asked 0 times; open (M1-D-LOOP-6). | `manual` |
+| 11.3 | M1, one prompt with one test tool: every turn and step is bracketed and closed | probe: the same run and the cancel run; record that the brackets close in both, one `turn/end` completed and one aborted | the operator's workstation | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | Claude: PASS (`signedin-m1-claude-593ceaa.log`): one-turn log of 19 events, steps 1 and 2 each closed by `step/end`, `turn/end` completed; cancel log of 11 events, `step/end` cause `user`, `turn/end` aborted cause `user`. Copilot: FAIL (`signedin-m1-copilot-593ceaa.log`): the one-turn log (12 events) closed with `step/end` and `turn/end` error `llm/client-contract`; the cancel run failed `no answer text streamed within 2m`; open (M1-D-LOOP-6). | `manual` |
+| 11.4 | M1, a second run cancelled mid-stream: the cause on `turn/end` | probe: `TestManualM1CancelMidStream` per route; copy the redacted `M1 cancelled log` and `M1 cancel:` lines: `turn/end` aborted with cause `user`, `step/end` cause `user`, one cancelled settlement | the operator's workstation | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | Claude: PASS (`signedin-m1-claude-593ceaa.log`; `TestManualM1CancelMidStream` `--- PASS`): 11-event cancelled log, one `assistant/message` settlement (seq 8), `step/end` cause `user`, `M1 cancel: turn/end reason={Kind:aborted ... Cause:user ...}`, `interrupted prefix kept (2 bytes)`, session `c7a904a2...`. Copilot: FAIL (`signedin-m1-copilot-593ceaa.log`): `no answer text streamed within 2m`; open (M1-D-LOOP-6). | `manual` |
+| 11.5 | rule-3 default: agents are created, resumed and torn down as one transaction | composed test: `go -C src/harness test -count=1 -v ./internal/agent/` (the lifecycle tests of DH-D-AGENT-6); record create, resume and teardown | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): 29 tests `--- PASS`, 0 FAIL, among them `TestRegistryCreateGetList`, `TestCompositionWithAStubFactory`, `TestOwnerUnloadDuringGuardAcquisition`, `TestM1CompletionOracleOnTheF2Turn`, `TestClaimedItemRunsAtMostOnceAcrossACrash`; `internal/agent` ok; no create, resume or teardown lines were printed under `-v`; the lifecycle assertions passed. | `manual` |
+| 11.6 | rule-3 default: one delegation seam; every child has one owner | composed test: `go -C src/harness test -count=1 -v ./internal/delegate/...`; plan Stage 17.2 is built (`72704a7`) and plan 17.4.6 re-ticked impl.md 11.6, so the row can run; record the M1 legs of `DH-T-SUBAGENT-1`, `-2`, `-3` and `-9` (the deferred ones are DH-S-29's) | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): 16 tests `--- PASS`, 0 FAIL, among them `TestStartPublishesResultBlocksDisposeIdempotent`, `TestRootDisposalLeavesNoGoroutine`, `TestSettleOrderGolden`, `TestConcurrentSendReleaseResumeSerialised`; the M1 legs of `DH-T-SUBAGENT-1`, `-2`, `-3` and `-9` respectively; `12 sends receipted, 0 refused with agent/closing`; `delegate/subagent` ok. | `manual` |
+| 11.7 | M1, one prompt with one test tool: the request rebuilt from the log equals the one sent | probe: the `TestManualM1OneTurn` run; copy the `M1 request N` lines (sent and rebuilt digests at the client-invocation boundary, M1-D-CLOSE-3), `M1 turn/end` and `M1 final reply` | the operator's workstation | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | Claude: PASS (`signedin-m1-claude-593ceaa.log`): `M1 request 1: asOf=7` sent = rebuilt `sha256:f249e334...`, `equal=true`; `M1 request 2: asOf=15` sent = rebuilt `sha256:bbb98262...`, `equal=true`; `invocation-equal=true` for both (args and stdin digests equal); `M1 turn/end` completed; `M1 final reply`: "The probe tool returned: `probed: ping`". No claude or copilot process was left (PID sets equal before and after); the log has no token text (the only token-pattern hits are `first_token` field names). Copilot: FAIL (`signedin-m1-copilot-593ceaa.log`): request 1 sent = rebuilt (`equal=true`), but `turn/end` error `llm/client-contract`; open (M1-D-LOOP-6). | `manual` |
 
 Every printed line passes the `m1Redact` filter of plan step 17.4.2 (account name and
 email, `Authorization` and cookie values, token prefixes, token file paths); a second
@@ -613,10 +817,14 @@ is recorded `not run: <client>, <date>, <host>, <error line>`, and the row stays
 
 ### Cleanup evidence
 
+**At the closure commit (plan 18.1.7).** Every throwaway worktree of the manual checks was removed, and `git status --porcelain` of the main tree was empty before and after. The signed-in runs left no `claude` or `copilot` process (PID sets equal before and after). The WSL clone's tags (7, all created 2026-11-17) were unchanged, and nothing was published.
+
 At closure: the cancelled run leaves no client process alive (a process listing after
 row 11.4), and the user's own sign-in is unchanged. Historical: none recorded.
 
 ### Open items
+
+**At the closure commit (plan 18.1.7).** For this stage: H-37, the Copilot route (M1-D-LOOP-6), the DH-S-29 deferrals (M1-D-LOOP-3 B), and the scenario review in the M1 closure PR. The M1-wide list is [DH-S-11 "Open items at M1"](#open-items-at-m1-plan-18111).
 
 At closure: plan 18.1.11 lists them, including H-21 with its closing step impl.md 16.10.
 Built in Phase 17: Stages 17.1 to 17.3, the probe and the retargeted scenarios of 17.4;

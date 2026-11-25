@@ -3,16 +3,10 @@
 package scenarios
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"io"
-	"net/http"
-	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -352,127 +346,4 @@ func turnEnd(t *testing.T, evs []protocol.Event) wireTurnEnd {
 	var end wireTurnEnd
 	decode(t, ends[0], &end)
 	return end
-}
-
-// proxiedRequest is one request a recordingProxy forwarded.
-type proxiedRequest struct {
-	Upstream string
-	Method   string
-	Path     string
-	Body     []byte
-	// ClientClosed is set when dsh closed its connection before the upstream
-	// response ended, as a cancel does. It is final only once the handler has
-	// returned (done is closed).
-	ClientClosed bool
-	done         chan struct{} // closed when the handler has returned
-}
-
-// recordingProxy forwards {base}/<name>/... to upstream <name> and records every
-// request, body included, before forwarding it.
-type recordingProxy struct {
-	*httptest.Server
-	mu   sync.Mutex
-	seen []proxiedRequest
-	// changed is closed and replaced whenever a request is recorded.
-	changed chan struct{}
-	// hold, when set, keeps each handler from recording its outcome until it is
-	// closed, so a self-check can prove settled joins the handler rather than
-	// racing it.
-	hold chan struct{}
-}
-
-// startProxy starts a recording proxy in front of upstreams (name -> base URL).
-func startProxy(t *testing.T, upstreams map[string]string) *recordingProxy {
-	t.Helper()
-	targets := map[string]*url.URL{}
-	for name, raw := range upstreams {
-		u, err := url.Parse(raw)
-		if err != nil || u.Scheme == "" || u.Host == "" {
-			t.Fatalf("upstream %s: %q is not an absolute URL", name, raw)
-		}
-		targets[name] = u
-	}
-	p := &recordingProxy{changed: make(chan struct{})}
-	client := &http.Client{Timeout: 5 * time.Minute}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		name, rest, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/"), "/")
-		target, ok := targets[name]
-		if !ok {
-			http.Error(w, "no upstream "+name, http.StatusBadGateway)
-			return
-		}
-		body, _ := io.ReadAll(r.Body)
-		done := make(chan struct{})
-		p.mu.Lock()
-		p.seen = append(p.seen, proxiedRequest{Upstream: name, Method: r.Method, Path: "/" + rest, Body: body, done: done})
-		idx := len(p.seen) - 1
-		hold := p.hold
-		close(p.changed)
-		p.changed = make(chan struct{})
-		p.mu.Unlock()
-		defer func() {
-			if hold != nil {
-				<-hold
-			}
-			closed := r.Context().Err() != nil
-			p.mu.Lock()
-			p.seen[idx].ClientClosed = closed
-			p.mu.Unlock()
-			close(done)
-		}()
-		out := *target
-		out.Path = strings.TrimSuffix(target.Path, "/") + "/" + rest
-		out.RawQuery = r.URL.RawQuery
-		req, err := http.NewRequestWithContext(r.Context(), r.Method, out.String(), bytes.NewReader(body))
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
-		}
-		req.Header = r.Header.Clone()
-		resp, err := client.Do(req)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
-		}
-		defer resp.Body.Close()
-		for k, vs := range resp.Header {
-			for _, v := range vs {
-				w.Header().Add(k, v)
-			}
-		}
-		w.WriteHeader(resp.StatusCode)
-		flusher, _ := w.(http.Flusher)
-		buf := make([]byte, 4096)
-		for {
-			n, err := resp.Body.Read(buf)
-			if n > 0 {
-				_, _ = w.Write(buf[:n])
-				if flusher != nil {
-					flusher.Flush()
-				}
-			}
-			if err != nil {
-				return
-			}
-		}
-	}))
-	t.Cleanup(srv.Close)
-	p.Server = srv
-	return p
-}
-
-// base is the proxy's URL for upstream name.
-func (p *recordingProxy) base(name string) string { return p.URL + "/" + name }
-
-// requests returns what the proxy forwarded to upstream name so far.
-func (p *recordingProxy) requests(name string) []proxiedRequest {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	var out []proxiedRequest
-	for _, r := range p.seen {
-		if r.Upstream == name {
-			out = append(out, r)
-		}
-	}
-	return out
 }

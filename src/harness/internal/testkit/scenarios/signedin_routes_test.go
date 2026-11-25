@@ -11,10 +11,12 @@ import (
 )
 
 // The signed-in client routes the DH-S-9 scenarios (DH-E-LLM-1, DH-E-LLM-3,
-// DH-E-VIEW-1) and, since gap-closure-plan 17.4.4, the DH-S-11 scenarios
-// (DH-E-SESSION-1, -2, DH-E-AGENT-1 to -4, DH-E-TOOLCHAIN-1) run on. Under OWNER-2 (decisions.md
-// models-signed-in-claude-copilot) M1 has no API key and no DeepSeek route: a real
-// model is reached only through the user's own installed and signed-in official
+// DH-E-VIEW-1), since gap-closure-plan 17.4.4 the DH-S-11 scenarios
+// (DH-E-SESSION-1, -2, DH-E-AGENT-1 to -4, DH-E-TOOLCHAIN-1) and, since 18.1.1,
+// DH-E-HUMAN-6 and DH-E-TOOLS-1 run on. Under OWNER-2 (decisions.md
+// models-signed-in-claude-copilot) M1 has no API key and no third-party API-key
+// route: a real model is reached only through the user's own installed and
+// signed-in official
 // client, which dsh starts as a child process and never reads a token of
 // (M1-D-PIPE-3 A; areas/llm.md DH-D-LLM-12). The scenarios were re-authored onto
 // these routes by gap-closure-plan 16.5.8 (M1-D-CLOSE-4 A), "signed out"

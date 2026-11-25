@@ -29,7 +29,7 @@ The module has its own `go.mod` and is not part of the root `go.work`; run it wi
 | 4 | `modules` | in every product, test and tools module: `go mod tidy -diff` prints anything, or `go mod verify` fails; then a module rule of `modcheck` (RM-1 to RM-4, `src/go` requiring anything) or a pin without a reason comment (RM-10). See [Modules](#modules-modcheck) |
 | 5 | `test` | `go test -tags= -race -shuffle=on -count=1 ./...` per module with `CGO_ENABLED=1` (QG-4); the `replay` and `scenario` layers are excluded |
 | 6 | `coverage` | any package under 85% of statements, profiles merged across processes (QG-3); the packages of `CoverageDebt` are held to their pinned floor until they reach 85% |
-| 7 | `trace` | `tools/harness-trace verify` (QG-9); a root without the tool fails |
+| 7 | `trace` | `tools/harness-trace verify` (QG-9), then the [`trace-tests`](#test-traceability-dshtest-trace-tests-m1-g-close-9) check for DH-S-1 through the index's `built-through`: a required `DH-T` ID that no test names and no backed deferral defers, a deferral impl.md does not back, a misplaced directive or a broken deliverable link (step 18.1.4). Both checks run and both failures are named; a root without the tool, impl.md or the index fails |
 | 8 | `scenario-index` | `test/harness/acceptance-index.yaml` missing or malformed; a `*_scenario_test.go` ID not indexed, indexed twice or bound to two tests; an indexed ID authored at or before `built-through` without a file (DH-ADR-TOOLCHAIN-12) |
 | 9 | `policy-text` | a file under `src/harness/internal/world/sandbox/policy/text/` without a passed `DH-E-SANDBOX-7` row of `DH-S-17.md` recording that file's SHA-256 (M2-C-6); see [Sandbox policy text](#sandbox-policy-text-m2-c-6) |
 | 10 | `budget` | a `TestBudget*` test over its compiled-in budget (QG-7) |
@@ -415,8 +415,10 @@ Tag forms accepted while the existing tests migrate (`acceptance/tests.go`):
 | doc comment | `// TestX ... (DH-T-X-1, -2).` in the func's doc comment | legacy, migrates to the directive |
 | body comment | `func TestX(t *testing.T) { // DH-T-X-1`, or a comment inside the body | legacy, migrates to the directive |
 
-`trace-tests` is a report, not yet a gate: it joins the gate list at step 18.1.4,
-once every code stage has tagged its tests.
+The `trace` gate runs the same check with the default stage (step 18.1.4): a
+missing ID fails the gate with the lines the subcommand prints after `FAILED:`,
+and the full report is printed above them. On a pass the gate prints one totals
+line. The subcommand stays for the full report on a pass and for `--stage`.
 
 The `scenario-index` gate also runs two plan checks of `acceptance/impl.go`
 (13.6.4, 13.6.6). They are called through `acceptance.CheckBoundary` →

@@ -878,6 +878,53 @@ failure was fixed before `fda4b98`:
   Windows run at `1cb9026` was stopped by the lead after the WSL result; no record was
   kept.
 
+## Phase 18 closure gate runs
+
+Plan 18.1.2 to 18.1.4 and 18.1.10, Rule 2. `manual`. **Both local lanes pass all 12 gates
+at one commit, `2cface9`**: the M1 closure commit. It holds every merged phase,
+the closure records, the ticks reconciled under rule 2, and `built-through: DH-S-11`. At
+this marker the `trace` gate runs `trace-tests` for DH-S-1 to DH-S-11, and
+`CheckBuiltThrough` (in `scenario-index`) checks all 103 steps. The manual checks of plan
+18.1.5 and 18.1.6 ran at the frozen commit `593ceaa`. `2cface9` differs from it only in
+docs, the `built-through` line of `test/harness/acceptance-index.yaml`, and three test files
+of `session/store/sqlite` (`git diff --stat 593ceaa 2cface9 -- ':!docs'`); no product code
+changed.
+
+| Field | WSL lane | Windows lane |
+| --- | --- | --- |
+| Run-record id | `wsl-2cface9-20261124T0203Z` | `win-2cface9-20261124T0214Z` |
+| Record file and SHA-256 | [runs/wsl-2cface9-20261124T0203Z.txt](runs/wsl-2cface9-20261124T0203Z.txt), `9d4ea952d442487924ee129ff42f7ac09f88cc7b3ffa55fa92095693ea9826ad` | [runs/win-2cface9-20261124T0214Z.txt](runs/win-2cface9-20261124T0214Z.txt), `903931e9ebe630e9facc99b3e7dc8fa81ec2f8c02087203bf7c696243ffc5608` |
+| Output SHA-256 (`sha256:` line) | `ea0edd98d17a6fd444bcfd8124b85b4d45ebef9eab4d8dc5a26fd4513d6be8d7` | `ae04b8edb31816aef7ae70e683e7e0009bc50101e1637329f9a1e4f47aa9361f` |
+| Rehearsal file and SHA-256 | [runs/wsl-2cface9-20261124T0203Z-rehearse.txt](runs/wsl-2cface9-20261124T0203Z-rehearse.txt), `36eb500f62dd709e8ca73cb8b4459b393c959d0ff0aadbd9ac0a3fd5f98077e3`; six binaries, each `vcs.revision=2cface9…` and `vcs.modified=false`, nothing published | -- (WSL lane only) |
+| Operator | the lead (lane script) | the lead (lane script) |
+| Commit | `2cface9` | the same |
+| git status --porcelain | empty (`tree: clean`) | empty (`tree: clean`) |
+| System | Ubuntu 24.04.5 LTS (`Ubuntu-24.04`), kernel `6.18.58.1-microsoft-standard-WSL2` | Microsoft Windows [Version 10.0.28000.3501] |
+| Go | go1.27.4 linux/amd64 (`/usr/local/go`) | go1.27.4 windows/amd64 (`C:\Program Files\Go`) |
+| CC and gcc | `gcc`, gcc 13.3.0 | `gcc`, gcc (Rev5, Built by MSYS2 project) 16.1.0 |
+| Started, ended (UTC) | 2026-11-24T02:04:00Z, 02:12:08Z | 2026-11-24T02:14:21Z, 02:44:13Z |
+| Result | `harness-gate: PASSED all 12 gates` | `harness-gate: PASSED all 12 gates` |
+| `trace` | `trace-tests: DH-S-1..DH-S-11: required 310, tagged 288, deferred 22, missing 0` | the same |
+| `scenario-index` | 34 scenario tests authored, 34 indexed in 9 stages, built through DH-S-11 | the same |
+| Gate times (selected) | test 2m48s, coverage 4m08s, self 28s | test 4m52s, coverage 13m14s, self 8m10s |
+| macOS | out of this story (`macos-return-stage`) | |
+
+**Runs in Phase 18 kept as history (not the closing runs).** Each record is under `runs/`:
+- **At the frozen commit `593ceaa` (built-through DH-S-8): both lanes passed all 12 gates.**
+  - [win-593ceaa-20261123T2122Z](runs/win-593ceaa-20261123T2122Z.txt): `deae145e…`, output `5529c439…`.
+  - [wsl-593ceaa-20261123T2122Z](runs/wsl-593ceaa-20261123T2122Z.txt): `3a95cd58…`, output `085411b8…`, with its [rehearse record](runs/wsl-593ceaa-20261123T2122Z-rehearse.txt) `02f33864…`.
+  - The manual checks ran at this commit.
+  - Both WSL files were rebuilt from the lane's tee'd output after the lead deleted the originals by mistake. The gate record's own `sha256:` line verifies it byte for byte. The rehearse record was rebuilt exactly as `wsl.sh` writes it, but nothing checks it independently.
+- **At `5a2b5d6` (the reconciliation commit):**
+  - WSL passed: [wsl-5a2b5d6-20261124T0134Z](runs/wsl-5a2b5d6-20261124T0134Z.txt).
+  - **Windows FAILED at `coverage`**: [win-5a2b5d6-20261124T0134Z](runs/win-5a2b5d6-20261124T0134Z.txt), `ba556af1…`. `TestUpgradeRefusedWhileOlderInstanceLives` saw an upgrade under a live older instance.
+  - **Cause:** the test's re-exec child discarded the store `Open` returned. The collector freed it, the `os.File` finalizer closed the liveness-lock handle, and Windows dropped the lock. This reproduced in 3 of 60 cover runs, 0 of 60 plain and 0 of 30 `-race`.
+  - **Fixed in `2cface9`:** each child now defers `runtime.KeepAlive(s)`. After the fix, 0 of 200 cover runs failed. Test files only.
+- **At `2cface9`, the first Windows run FAILED at `test`**: [win-2cface9-20261124T0203Z](runs/win-2cface9-20261124T0203Z.txt), `cdb78111…`.
+  - `TestEditDuringStuckApplicationWaitsForItToSettle` (`boot/config`, unchanged since #52) timed out after its 10 s wall-clock wait for the edit to be written. In that run the package took 35 s against about 3 s alone.
+  - It did not reproduce: 0 of 30 alone, and 0 of 40 under 8 parallel copies. The re-run above passed.
+  - It is recorded as an intermittent test: the wait reports only the file, never the edit's own result. It is listed in [DH-S-11 "Open items at M1"](DH-S-11.md#open-items-at-m1-plan-18111).
+
 ## Evidence record (impl.md sec. 7.3)
 
 These are the eight fields of [impl.md sec. 7.3](../../../harness/impl.md#73-the-evidence-record),
@@ -888,6 +935,8 @@ history above, which stays exactly as it was recorded and is not closure evidenc
 
 ### Source and build identity
 
+**At the closure commit (plan 18.1.7).** Commit `593ceaa3efd55d41bf0eeaced5ba7e26acc71966`: one commit for the three modules, on branch `m1-phase-18` over `main` 896c760. Go `go1.27.4` (the go floor). The WSL rehearsal built six `dsh` binaries, each with `vcs.revision=593ceaa…` and `vcs.modified=false`; their SHA-256 values are in [wsl-593ceaa-20261123T2122Z-rehearse.txt](runs/wsl-593ceaa-20261123T2122Z-rehearse.txt).
+
 At closure: not yet recorded (plan 18.1.7). Historical: commits `a647d49` (Stage 1.1),
 `609c1d0` and `e13abf3` (Stage 1.2), `38969de` (Stage 1.3) and `e13abf3` (Stage 1.4, the
 DH-S-1 closing record), each with its toolchain, in the stage sections above. The
@@ -896,12 +945,16 @@ lane, DH-D-TOOLCHAIN-5)".
 
 ### Environment and fixture
 
+**At the closure commit (plan 18.1.7).** Windows 11 Enterprise 10.0.28000 native, with `CC` MSYS2 gcc. WSL Ubuntu 24.04.5 LTS, kernel 6.18.58.1-microsoft-standard-WSL2, ext4 clone, gcc 13.3.0. macOS is out of this story (`macos-return-stage`). The manual checks ran on the same workstation (decision `manual-checks-run-by-lead`). Signed-in clients: Claude Code 2.1.312 and GitHub Copilot CLI 1.0.115-7, Windows only. Fixtures: those named by this stage's register rows.
+
 At closure: both local lanes, as provisioned in "Local lanes" above; the run-record
 header gives the rest. macOS: out of scope (`platforms-windows-wsl`). Historical: the
 hosted CI lanes and the local Windows runs named in the stage sections above; the macOS
 lane there is historical.
 
 ### Exact tests and commands
+
+**At the closure commit (plan 18.1.7).** `tools/harness-gate/lanes/win.ps1` and `tools/harness-gate/lanes/wsl.sh` (the gate with `--evidence`; `rehearse` in WSL). `DSH_REQUIRE_SCENARIOS` is unset. For the register: `evidence/runs/manual-593ceaa/run-register.sh` (Windows, and `--os wsl`), with the by-hand steps of `by-hand-checklist.md`; the per-row commands are in this record's register.
 
 At closure: `lanes/wsl.sh` and `lanes/win.ps1` (each runs `GOWORK=off go -C
 tools/harness-gate run . --root ../.. --evidence <file>`; the WSL script also runs
@@ -911,12 +964,16 @@ in the stage sections above.
 
 ### Run identifiers
 
+**At the closure commit (plan 18.1.7).** Windows lane `win-593ceaa-20261123T2122Z` ([record](runs/win-593ceaa-20261123T2122Z.txt)) and WSL lane `wsl-593ceaa-20261123T2122Z` ([record](runs/wsl-593ceaa-20261123T2122Z.txt), [rehearse](runs/wsl-593ceaa-20261123T2122Z-rehearse.txt)). Register logs: `register-windows-593ceaa-20261123T2213Z` and `register-wsl-593ceaa-20261123T2237Z` in [runs/manual-593ceaa/](runs/manual-593ceaa/byhand-results.md). The WSL rehearse record was rebuilt from the lane's tee'd output after the original file was deleted by mistake; the gate record's own `sha256:` line verifies it byte for byte.
+
 At closure: the run-record ids of both lanes, in the runbook's template (plan 18.1.3).
 WSL lane: not run. Windows lane: not run. macOS: out of scope (`platforms-windows-wsl`).
 Not closure evidence: the first lane runs of 12.3.9 ("Local lanes" above). Historical:
 CI run 44670956416 (Stage 1.4), whose macOS job is historical.
 
 ### Results
+
+**At the closure commit (plan 18.1.7).** Both lanes `PASSED all 12 gates`, with `trace-tests` in the `trace` gate. `trace-tests` for DH-S-1 to DH-S-11 reports required 310, tagged 288, deferred 22, missing 0. This stage's register: see "Manual checks register" (every row PASS or recorded as seen; not run and pending rows are open, never a pass).
 
 At closure: not yet recorded. Historical: "Gate output, three operating systems
 (historical lanes)" and "Tests of this stage" under Stage 1.4.
@@ -932,25 +989,31 @@ tools/harness-gate run . --root <copy>`.
 
 #### Manual checks register
 
+**Run at the M1 closure commit (plan 18.1.5, 2026-11-23).** The lead Claude Code session ran every row below at `593ceaa3efd55d41bf0eeaced5ba7e26acc71966`, at the owner's instruction of 2026-11-23 ("you should do that"); the owner did not watch these runs. This departs from M1-D-CLOSE-2 A (a named person runs it at the recorded commit, watches it and records it `manual`) and from the runbook rule that signed-in checks are never run from an agent session, and it needs to be recorded as an owner decision. Logs: `register-windows-593ceaa-20261123T2213Z.log`, `register-wsl-593ceaa-20261123T2237Z.log`, `byhand-windows-593ceaa.log`, `byhand-windows-593ceaa-part2.log`, `byhand-wsl-593ceaa.log`, `signedin-dhs9-593ceaa.log`, `signedin-m1-claude-593ceaa.log` and `signedin-m1-copilot-593ceaa.log`. The WSL rehearse record (`wsl-593ceaa-20261123T2122Z-rehearse.txt`) was rebuilt from the lane's tee'd output after the original file was deleted by mistake.
+
 | Step | Check | Procedure | Systems | Operator | Commit | Seen | Label |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1.1 | rule-3 default: three modules build together, the release build ignores `go.work` | by hand: from a clean clone, `go build ./src/go/... ./src/sdk/... ./src/harness/...`, `go list -m` (three modules), `GOWORK=off go -C src/harness build ./cmd/dsh` and run `./src/harness/dsh` (prints `dsh (devel)`) | one lane | | | | `manual` |
-| 1.2 | seeded violation per gate: the runner names the gate | seeded gate: run each module of `testdata/` and record `harness-gate: FAILED at gate <gate>`, exit 1, and no later gate started; with `testdata/fake-go` first on `PATH`, setup fails with exit 2 naming both versions | one lane | | | | `manual` |
-| 1.3 | seeded violation: a data race | seeded gate: `race-seeded` and `budget-race` each fail at `test` (`data race detected`) | one lane | | | | `manual` |
-| 1.4 | seeded violation: an own-analyzer finding | seeded gate: add a `time.Sleep` call to a `_test.go` file of a copied module and record `FAILED at gate vet` naming the `nosleep` finding | one lane | | | | `manual` |
-| 1.5 | seeded violation: a package under the floor | seeded gate: `coverage-40pct` fails at `coverage` (`40% < 85%`); `coverage-blocked` fails naming `TestBlocked`; `coverage-child` passes | one lane | | | | `manual` |
-| 1.6 | seeded violation: a golden drift; layers excluded | composed test: `go -C src/harness test -count=1 -v ./internal/testkit/golden` (drift reported; `-update` refused with `CI=1`); seeded gate: `layer-tagged` passes `test` and `coverage` | one lane | | | | `manual` |
-| 1.7 | seeded violation: a budget over its limit | seeded gate: `budget-exceeded` with `DSH_BUDGET_RELAX=1` set still fails at `budget` | one lane | | | | `manual` |
-| 1.8 | rule-3 default: keyless CI lanes and a credentialed preflight | by hand: read the `harness` matrix of `ci.yml` and the `scenarios` matrix of `harness-scenarios.yml` (equal to the decided list, M1-D-GATE-21 / M1-D-TOOL-5); run `GOWORK=off go -C tools/harness-gate run . preflight --root ../..` with no model variable (passes) and with `DSH_REQUIRE_SCENARIOS=DH-E-FAKE-9` (fails naming the ID) | one lane | | | | `manual` |
-| 1.9 | seeded violation: a target that does not cross-compile; the rehearsal | seeded gate: `cross-broken` fails at `cross-compile` naming `windows/arm64`; by hand: the `-rehearse.txt` of a WSL lane run lists six binaries with `vcs.modified=false` and publishes nothing | WSL (rehearsal) | | | | `manual` |
+| 1.1 | rule-3 default: three modules build together, the release build ignores `go.work` | by hand: from a clean clone, `go build ./src/go/... ./src/sdk/... ./src/harness/...`, `go list -m` (three modules), `GOWORK=off go -C src/harness build ./cmd/dsh` and run `./src/harness/dsh` (prints `dsh (devel)`) | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS (by hand, Windows; `byhand-windows-593ceaa.log`, `byhand-windows-593ceaa-part2.log`): the three modules build together with the workspace (exit 0); `go list -m` printed `.../src/go`, `.../src/sdk` and `.../src/harness`; the release build with `GOWORK=off` exit 0; `dsh --version` printed `dsh (devel) (593ceaa3efd55d41bf0eeaced5ba7e26acc71966; go1.27.4; windows/amd64)`; the bare `dsh` printed `dsh: cli/usage: missing <profile> or <command>` and exited 64 (the procedure expected `dsh (devel)` there, so the `--version` line is the one recorded); clone HEAD 593ceaa3. | `manual` |
+| 1.2 | seeded violation per gate: the runner names the gate | seeded gate: run each module of `testdata/` and record `harness-gate: FAILED at gate <gate>`, exit 1, and no later gate started; with `testdata/fake-go` first on `PATH`, setup fails with exit 2 naming both versions. Amended 2026-11-23 (lead): judged by `TestBudgetGateClearsOverrides` (`budget-exceeded`), `TestCrossCompileNamesFailingTarget` (`cross-broken`), `TestVulncheckGateUsesTheDatabase` (`vuln-stdlib`) and `TestCoverageMergesChildProcesses` (`coverage-child`). | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS under the amended procedure (the log's row result is FAIL, from `coverage-child` only). Windows (`register-windows-593ceaa-20261123T2213Z.log`), each case exit 1 and no later gate started: `race-seeded` and `budget-race` `FAILED at gate test`; `unformatted-file` at `gofmt`; `untidy-module` at `modules`; `staticcheck-seeded` at `staticcheck`; `coverage-40pct` at `coverage`; `coverage-blocked` at `test` (`test timed out: TestBlocked`; supplement `TestCoverageBinaryIsBounded` PASS); `layer-tagged` passed `test` and `coverage`, then stopped at `trace`; `fake-go` first on `PATH`: setup exit 2, `toolchain go1.99.0 is not the go floor go1.27.4 of go.mod`. `budget-exceeded`: register amended (lead): judged by `TestBudgetGateClearsOverrides` PASS; a single-module root cannot reach `budget` (the run `FAILED at gate test`). `cross-broken`: register amended (lead): judged by `TestCrossCompileNamesFailingTarget` PASS; a single-module root cannot reach `cross-compile` (the run `FAILED at gate trace`). `vuln-stdlib`: register amended (lead): judged by `TestVulncheckGateUsesTheDatabase` PASS; a single-module root cannot reach `vulncheck` (the run `FAILED at gate coverage`, 0%). `coverage-child`: register amended (lead): judged by `TestCoverageMergesChildProcesses` PASS, 3 subtests (both children, no re-executed child, no helper binary; `byhand-windows-593ceaa.log`); a single-module root cannot reach `coverage` (under the full gate its `TestHelperBinary` fails at `test`: `GOCOVERDIR not set`). | `manual` |
+| 1.3 | seeded violation: a data race | seeded gate: `race-seeded` and `budget-race` each fail at `test` (`data race detected`) | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `race-seeded` and `budget-race` each `FAILED at gate test` with `WARNING: DATA RACE` and `race detected during execution of test`, exit 1. | `manual` |
+| 1.4 | seeded violation: an own-analyzer finding | seeded gate: add a `time.Sleep` call to a `_test.go` file of a copied module and record `FAILED at gate vet` naming the `nosleep` finding | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): case `vet-sleep` (a copy of `coverage-40pct` with a `time.Sleep` test) `FAILED at gate vet`, exit 1, naming `p\sleep_test.go:9:2: time.Sleep in a test file: wait on virtual time (testing/synctest) or an explicit signal (QG-4)` in each of the three `-vettool` runs. | `manual` |
+| 1.5 | seeded violation: a package under the floor | seeded gate: `coverage-40pct` fails at `coverage` (`40% < 85%`); `coverage-blocked` fails naming `TestBlocked`; `coverage-child` passes. Amended 2026-11-23 (lead): judged by `TestCoverageMergesChildProcesses` (`coverage-child`). | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS under the amended procedure (the log's row result is FAIL, from `coverage-child` only). Windows (`register-windows-593ceaa-20261123T2213Z.log`): `coverage-40pct` `FAILED at gate coverage` with `coverage: example.com/cov40/p 40%`, exit 1; `coverage-blocked` `FAILED at gate test` after 10 min, `test timed out: TestBlocked`, exit 1 (supplement `TestCoverageBinaryIsBounded` PASS); `coverage-child`: register amended (lead): judged by `TestCoverageMergesChildProcesses` PASS, 3 subtests (both children, no re-executed child, no helper binary; `byhand-windows-593ceaa.log`); a single-module root cannot reach `coverage` (under the full gate its `TestHelperBinary` fails at `test`: `GOCOVERDIR not set`). | `manual` |
+| 1.6 | seeded violation: a golden drift; layers excluded | composed test: `go -C src/harness test -count=1 -v ./internal/testkit/golden` (drift reported; `-update` refused with `CI=1`); seeded gate: `layer-tagged` passes `test` and `coverage` | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `./internal/testkit/golden` ok, 10 tests `--- PASS`, among them `TestAssertDetectsDriftAndUpdatesOnlyOnSwitch` (drift reported) and `TestAssertRefusesUpdateUnderCI` (`-update` refused with `CI=1`); seeded `layer-tagged` passed `test` and `coverage` (`coverage: example.com/layers 100%`), then stopped at `trace` (a single-module root has no `tools/harness-trace`). | `manual` |
+| 1.7 | seeded violation: a budget over its limit | seeded gate: `budget-exceeded` with `DSH_BUDGET_RELAX=1` set still fails at `budget`. Amended 2026-11-23 (lead): judged by `TestBudgetGateClearsOverrides`. | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS under the amended procedure. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `budget-exceeded-relaxed` (`DSH_BUDGET_RELAX=1`): register amended (lead): judged by `TestBudgetGateClearsOverrides` PASS; a single-module root cannot reach `budget` (the run passed `test` and `coverage`, then `FAILED at gate trace`). | `manual` |
+| 1.8 | rule-3 default: keyless CI lanes and a credentialed preflight | by hand: read the `harness` matrix of `ci.yml` and the `scenarios` matrix of `harness-scenarios.yml` (equal to the decided list, M1-D-GATE-21 / M1-D-TOOL-5); run `GOWORK=off go -C tools/harness-gate run . preflight --root ../..` with no model variable (passes) and with `DSH_REQUIRE_SCENARIOS=DH-E-FAKE-9` (fails naming the ID) | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS (by hand, Windows; `byhand-windows-593ceaa.log`): `ci.yml:138` and `harness-scenarios.yml:75` both read `os: [ubuntu-latest, windows-latest]` with the comment `platforms-windows-wsl: hosted regression lanes; no macOS.`, equal to M1-D-GATE-21 / M1-D-TOOL-5 (in force); the preflight with no key printed `passed; 0 required scenarios`, exit 0; with `DSH_REQUIRE_SCENARIOS=DH-E-FAKE-9` it printed `FAILED, no scenario is started:` and `required scenario DH-E-FAKE-9 ... has no scenario test`, exit 1. | `manual` |
+| 1.9 | seeded violation: a target that does not cross-compile; the rehearsal | seeded gate: `cross-broken` fails at `cross-compile` naming `windows/arm64`; by hand: the `-rehearse.txt` of a WSL lane run lists six binaries with `vcs.modified=false` and publishes nothing. Amended 2026-11-23 (lead): judged by `TestCrossCompileNamesFailingTarget` (`cross-broken`). | WSL (rehearsal) | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS (WSL). Seeded, `register-wsl-593ceaa-20261123T2237Z.log`: `cross-broken` passed `gofmt` to `coverage`, then: register amended (lead): judged by `TestCrossCompileNamesFailingTarget` PASS; a single-module root cannot reach `cross-compile` (the run `FAILED at gate trace`) (the same test also PASS on Windows, `register-windows-593ceaa-20261123T2213Z.log`). By hand: the rehearse record `wsl-593ceaa-20261123T2122Z-rehearse.txt` shows six binaries (linux, darwin and windows on amd64 and arm64), each `vcs.revision=593ceaa3...` and `vcs.modified=false`, `exit: 0`, `sha256: 14a4f38f...`; the record was rebuilt from the lane's tee'd output after the original file was deleted by mistake. The clone's 7 tags (all created 2026-11-17) predate the run, so the lane created no tag, and the rehearsal printed "nothing published". | `manual` |
 
 ### Cleanup evidence
+
+**At the closure commit (plan 18.1.7).** Every throwaway worktree of the manual checks was removed, and `git status --porcelain` of the main tree was empty before and after. The signed-in runs left no `claude` or `copilot` process (PID sets equal before and after). The WSL clone's tags (7, all created 2026-11-17) were unchanged, and nothing was published.
 
 At closure: not yet recorded; the comparison is `git for-each-ref refs/tags` before and
 after the rehearsal (unchanged) and `git status --porcelain` empty after the run.
 Historical: "Cleanup evidence" under Stage 1.4.
 
 ### Open items
+
+**At the closure commit (plan 18.1.7).** For this stage: the deferred DH-T-TOOLCHAIN-1, -3 and -5 (DH-S-16); DH-T-SDK-17 tagged for the step 1.1 clause only. The M1-wide list is [DH-S-11 "Open items at M1"](DH-S-11.md#open-items-at-m1-plan-18111).
 
 At closure: plan 18.1.11 lists them. Now open: the `DH-E-TOOLCHAIN-1` and `-2` scenarios
 and the `DH-T-TOOLCHAIN` tests listed under "Open items" of Stage 1.4; the toolchain

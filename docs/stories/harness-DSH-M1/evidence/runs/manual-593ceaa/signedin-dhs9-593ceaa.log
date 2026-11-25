@@ -1,0 +1,23 @@
+started: 2026-11-23T22:38:01Z
+2.1.312 (Claude Code)
+GitHub Copilot CLI 1.0.115-7.
+=== RUN   TestManualSignedIn
+=== RUN   TestManualSignedIn/claude/signed-in
+DH-S-9 claude signed-in: commit=593ceaa3efd55d41bf0eeaced5ba7e26acc71966 host=windows client=claude-code version=2.1.312 program=claude.exe route=claude-code model=sonnet reported-model=claude-sonnet-5-5 home=own prepare=ok settlements=1 seq=5 type=assistant/message finish=tool_calls code=- class=- llm-retry=0 retry-abandoned=- other-route-prepares=0 other-route-attempts=0 session=33506a25… client-retries=0 denials=1 tool-calls=1 usage=in:2,out:55,cache-read:0,cache-write:1095 api-key-source=none init-tools=[mcp__dsh__probe] message-starts=1 num-turns=2 lines=16
+=== RUN   TestManualSignedIn/claude/signed-out
+DH-S-9 claude signed-out: commit=593ceaa3efd55d41bf0eeaced5ba7e26acc71966 host=windows client=claude-code version=2.1.312 program=claude.exe route=claude-code model=sonnet reported-model=claude-sonnet-5-5 home=empty:CLAUDE_CONFIG_DIR+HOME+USERPROFILE prepare=ok settlements=1 seq=5 type=assistant/attempt finish=error code=llm/sign-in-required class=permanent llm-retry=0 retry-abandoned=not-retryable other-route-prepares=0 other-route-attempts=0 session=7555d14e… client-retries=0 denials=0 tool-calls=0 usage=in:0,out:0,cache-read:0,cache-write:0 api-key-source=none init-tools=[] message-starts=0 num-turns=1 lines=4
+=== RUN   TestManualSignedIn/copilot/signed-in
+DH-S-9 copilot signed-in: commit=593ceaa3efd55d41bf0eeaced5ba7e26acc71966 host=windows client=copilot-cli version=1.0.115 program=copilot.exe route=copilot-cli model=claude-sonnet-4.5 reported-model=- home=own prepare=ok settlements=1 seq=5 type=assistant/attempt finish=error code=llm/client-contract class=permanent llm-retry=0 retry-abandoned=not-retryable other-route-prepares=0 other-route-attempts=0 session=a13a1231… client-retries=0 denials=0 tool-calls=0 usage=- first-event=session.start last-event=result lines=12
+    manual_signedin_test.go:337: signed in settled assistant/attempt (llm/client-contract), want assistant/message
+=== RUN   TestManualSignedIn/copilot/signed-out
+DH-S-9 copilot signed-out: commit=593ceaa3efd55d41bf0eeaced5ba7e26acc71966 host=windows client=copilot-cli version=1.0.115 program=copilot.exe route=copilot-cli model=claude-sonnet-4.5 reported-model=- home=empty:COPILOT_HOME+HOME+USERPROFILE prepare=ok settlements=1 seq=5 type=assistant/attempt finish=error code=llm/client-contract class=permanent llm-retry=0 retry-abandoned=not-retryable other-route-prepares=0 other-route-attempts=0 session=c67f4b37… client-retries=0 denials=0 tool-calls=0 usage=- first-event=session.start last-event=result lines=11
+    manual_signedin_test.go:350: open (DH-E-COPILOTCLI-1): signed out settled llm/client-contract, not llm/sign-in-required; record it
+--- FAIL: TestManualSignedIn (19.13s)
+    --- PASS: TestManualSignedIn/claude/signed-in (2.33s)
+    --- PASS: TestManualSignedIn/claude/signed-out (1.06s)
+    --- FAIL: TestManualSignedIn/copilot/signed-in (9.36s)
+    --- PASS: TestManualSignedIn/copilot/signed-out (6.38s)
+FAIL
+FAIL	github.com/smartpcr/agent-plugin/src/harness/internal/llm	19.456s
+FAIL
+ended: 2026-11-23T22:38:27Z

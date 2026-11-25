@@ -1,0 +1,104 @@
+stage	step	kind	systems	deliverable	script_lane	note
+DH-S-1	1.1	by hand	one lane	checklist	-	
+DH-S-1	1.2	seeded gate	one lane	script	windows (default; or wsl with --one-lane yes)	cases budget-exceeded, cross-broken, vuln-stdlib cannot reach their gate on a single-module root (stop at trace); coverage-blocked fails at test after 10 min; supplements logged
+DH-S-1	1.3	seeded gate	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-1	1.4	seeded gate	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-1	1.5	seeded gate	one lane	script	windows (default; or wsl with --one-lane yes)	coverage-blocked fails at test (go test 10-min timeout), not coverage; coverage-child passes coverage then stops at trace
+DH-S-1	1.6	composed test + seeded gate	one lane	script	windows (default; or wsl with --one-lane yes)	layer-tagged passes test and coverage, then stops at trace
+DH-S-1	1.7	seeded gate	one lane	script	windows (default; or wsl with --one-lane yes)	the gate command stops at trace before budget: expected FAIL; supplement TestBudgetGateClearsOverrides
+DH-S-1	1.8	by hand	one lane	checklist	-	
+DH-S-1	1.9	seeded gate + by hand	WSL (rehearsal)	script+checklist	wsl	cross-broken stops at trace before cross-compile: expected FAIL; supplement TestCrossCompileNamesFailingTarget; rehearsal part in checklist
+DH-S-2	2.1	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-2	2.2	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-2	2.3	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-2	2.4	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-2	2.5	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-2	2.6	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-2	2.7	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-2	2.8	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-3	3.1	by hand	one lane	checklist	-	one run of the throwaway test dhs3/zz_manual_layers_test.go in a worktree
+DH-S-3	3.2	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-3	3.3	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-3	3.4	by hand	one lane	checklist	-	one run of the throwaway test dhs3/zz_manual_layers_test.go in a worktree
+DH-S-3	3.5	by hand	one lane	checklist	-	one run of the throwaway test dhs3/zz_manual_layers_test.go in a worktree
+DH-S-3	3.6	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-3	3.7	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-3	3.8	by hand	one lane	checklist	-	one run of the throwaway test dhs3/zz_manual_layers_test.go in a worktree
+DH-S-3	3.9	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-4	4.1	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	whole-package run as the procedure states; the Test mapping names were checked to exist, not run by name
+DH-S-4	4.2	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	whole-package run as the procedure states; the Test mapping names were checked to exist, not run by name
+DH-S-4	4.3	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	whole-package run as the procedure states; the Test mapping names were checked to exist, not run by name
+DH-S-4	4.4	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	whole-package run as the procedure states; the Test mapping names were checked to exist, not run by name
+DH-S-4	4.5	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-4	4.6	composed test	Windows, WSL	script	windows and wsl	whole-package run as the procedure states; the Test mapping names were checked to exist, not run by name
+DH-S-4	4.7	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	whole-package run as the procedure states; the Test mapping names were checked to exist, not run by name
+DH-S-4	4.8	by hand	Windows, WSL	checklist	-	
+DH-S-4	4.9	by hand	Windows, WSL	checklist	-	the Windows VS Code case still needs an operator
+DH-S-4	4.10	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-4	4.11	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-4	4.12	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-4	4.13	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-4	4.14	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-5	5.1	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-5	5.2	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-5	5.3	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-5	5.4	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-5	5.5	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-5	5.6	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-5	5.7	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-5	5.8	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	whole package ./internal/session/ (the procedure names no bracket tests)
+DH-S-5	5.9	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-5	5.10	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-5	5.11	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-5	5.12	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-5	5.13	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-6	6.1	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-6	6.2	composed test	Windows, WSL	script	windows and wsl	
+DH-S-6	6.3	composed test	Windows, WSL	script	windows and wsl	run in the shell started from; delegated-scope and no-systemd variants in checklist
+DH-S-6	6.4	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-6	6.5	composed test	Windows, WSL	script	windows and wsl	
+DH-S-6	6.6	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-6	6.7	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-6	6.8	composed test + by hand	one lane	script+checklist	windows (default; or wsl with --one-lane yes)	
+DH-S-6	6.9	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-6	6.10	composed test	Windows, WSL	script	windows and wsl	
+DH-S-6	6.11	composed test	Windows, WSL	script	windows and wsl	
+DH-S-6	6.12	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-6	6.13	composed test	Windows, WSL	script	windows and wsl	
+DH-S-6	6.14	composed test	Windows, WSL	script	windows and wsl	
+DH-S-6	6.15	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-6	6.16	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-6	6.17	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-7	7.1	composed test	Windows, WSL	script	windows and wsl	
+DH-S-7	7.2	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-7	7.3	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-7	7.4	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-7	7.5	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-7	7.6	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-8	8.1	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-8	8.2	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-8	8.3	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-8	8.4	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-8	8.5	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-8	8.6	composed test	Windows, WSL	script	windows and wsl	
+DH-S-8	8.7	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-9	9.1	probe	the operator's workstation (Windows or WSL, recorded)	signed-in	-	one TestManualSignedIn run
+DH-S-9	9.2	probe	the operator's workstation (Windows or WSL, recorded)	signed-in	-	one TestManualSignedIn run
+DH-S-9	9.3	composed test	one lane	script+signed-in	windows (default; or wsl with --one-lane yes)	the 9.1 usage comes from the signed-in run
+DH-S-10	10.1	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-10	10.2	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-10	10.3	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-10	10.4	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-10	10.5	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-10	10.6	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-10	10.7	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-10	10.8	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-10	10.9	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-10	10.10	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-11	11.1	probe	the operator's workstation (Windows; WSL if run there)	signed-in	-	TestManualM1OneTurn per route
+DH-S-11	11.2	probe	the operator's workstation	signed-in	-	TestManualM1OneTurn per route
+DH-S-11	11.3	probe	the operator's workstation	signed-in	-	TestManualM1OneTurn and TestManualM1CancelMidStream per route
+DH-S-11	11.4	probe	the operator's workstation	signed-in	-	TestManualM1CancelMidStream per route
+DH-S-11	11.5	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-11	11.6	composed test	one lane	script	windows (default; or wsl with --one-lane yes)	
+DH-S-11	11.7	probe	the operator's workstation	signed-in	-	TestManualM1OneTurn per route

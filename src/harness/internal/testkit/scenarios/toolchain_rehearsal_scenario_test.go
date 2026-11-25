@@ -35,16 +35,24 @@ var rehearsalLine = regexp.MustCompile(`^([0-9a-f]{64})  (dsh-\S+)  version=(\S+
 // TestToolchainRehearsal: a release rehearsal yields a runnable binary on every
 // platform (upstream/toolchain.md DH-E-TOOLCHAIN-2; DH-D-TOOLCHAIN-5,
 // DH-ADR-TOOLCHAIN-13, DH-ADR-15). Executed in DH-S-18 (step 18.1) on hosted Linux,
-// macOS and Windows runners at a commit where the harness job passes.
+// macOS and Windows runners at a commit where the harness job passes. Its Given
+// was aligned with the signed-in client routes of areas/llm.md DH-D-LLM-12 by
+// gap-closure-plan 18.1.1 (M1-D-CLOSE-4 A): under OWNER-2 no API key exists and a
+// real model is reached only through the user's own signed-in client, which a
+// replay never starts, so the rehearsal needs neither.
 //
-// Given a clean checkout, when "harness-gate rehearse" builds cmd/dsh for the six
-// targets (pure Go, -trimpath, nothing published), then six binaries exist, each
-// matches the SHA-256 the rehearsal printed and embeds the checked-out commit with
-// no "modified" marker; the binary of this runner's platform reports that version
-// from "dsh --version" and passes one keyless headless replay. Scope: the three
-// binaries matching the runners' processors are executed; the other three are built
-// and checksummed only. Cleanup: everything is under t.TempDir(); no tag or release
-// is created (the tag list is compared before and after).
+// Given a clean checkout, no API key anywhere and every client route signed out
+// (each client's configuration home an empty temporary directory, every
+// credential variable emptied), when "harness-gate rehearse" builds cmd/dsh for
+// the six targets (pure Go, -trimpath, nothing published), then six binaries
+// exist, each matches the SHA-256 the rehearsal printed and embeds the checked-out
+// commit with no "modified" marker; the binary of this runner's platform reports
+// that version from "dsh --version" and passes one keyless, signed-out headless
+// replay. Scope: the three binaries matching the runners' processors are executed;
+// the other three are built and checksummed only. Cleanup: everything, the empty
+// configuration homes included, is under t.TempDir(); nothing of the user's
+// sign-in is touched; no tag or release is created (the tag list is compared
+// before and after).
 //
 //dsh:scenario DH-E-TOOLCHAIN-2
 func TestToolchainRehearsal(t *testing.T) {
@@ -104,7 +112,15 @@ func TestToolchainRehearsal(t *testing.T) {
 	}
 	bin := filepath.Join(out, native)
 	home := t.TempDir()
-	env := []string{"DSH_HOME=" + home, "DSH_DEEPSEEK_API_KEY="}
+	// Keyless and signed out: every credential variable a model route could read
+	// is emptied (noKeys, as in DH-E-TOOLCHAIN-1), and every client route's
+	// configuration home is an empty directory, so the replay has no API key and
+	// no sign-in in reach whatever the operator's shell holds. Under OWNER-2 there
+	// is no API-key route at all; the replay answers from its recording.
+	env := append(slices.Clone(noKeys), "DSH_HOME="+home)
+	for _, r := range clientRoutes {
+		env = append(env, r.signedOut(t))
+	}
 	if v := strings.TrimSpace(run(t, home, env, bin, "--version")); v != "dsh "+b.version {
 		t.Errorf("%s --version = %q, want %q", native, v, "dsh "+b.version)
 	}

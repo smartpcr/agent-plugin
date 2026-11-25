@@ -264,21 +264,26 @@ Lead settlements of the same phase: `dh-d-llm-12-numbering`, `llm-client-contrac
 `copilot-usage-not-reported` (the Copilot route reports no usage at M1) and
 `rule-6-additions-phase-16` ([decisions.md](../decisions.md) sec. 4).
 
-### Manual check (16.5.9): not run yet
+### Manual check (16.5.9): run at the frozen closure commit
 
-**Not run yet: the owner runs 16.5.9.** The procedure is
-[the DH-S-9 manual-check runbook](DH-S-9-manual-runbook.md). This table is left empty until
-the owner pastes the four printed lines; nothing here is evidence yet, and Stage 16.5
-stays open until it is filled (`manual`).
+Run on 2026-11-23 at `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` (plan 18.1.6), following [the DH-S-9 manual-check runbook](DH-S-9-manual-runbook.md) (`manual`).
+- **Who and where:** the lead session ran it at the owner's instruction (decision `manual-checks-run-by-lead`), on the owner's Windows workstation with the owner's own signed-in clients.
+- **Clients:** Claude Code 2.1.312 and GitHub Copilot CLI 1.0.115-7. No key was set (`api-key-source=none`).
+- **Log:** [signedin-dhs9-593ceaa.log](runs/manual-593ceaa/signedin-dhs9-593ceaa.log).
+- **Result:** Claude must pass and does. Copilot is recorded as seen and stays open (M1-D-LOOP-6 A).
 
-| Case | Printed line | Pass? |
+| Case | Printed line (abridged; the full line is in the log) | Pass? |
 | --- | --- | --- |
-| `DH-S-9 claude signed-in` | | |
-| `DH-S-9 claude signed-out` | | |
-| `DH-S-9 copilot signed-in` | | recorded either way |
-| `DH-S-9 copilot signed-out` | | recorded either way; `llm/sign-in-required` check open |
+| `DH-S-9 claude signed-in` | `route=claude-code model=sonnet reported-model=claude-sonnet-5-5 home=own prepare=ok settlements=1 seq=5 type=assistant/message finish=tool_calls llm-retry=0 other-route-prepares=0 other-route-attempts=0 session=33506a25… denials=1 tool-calls=1 usage=in:2,out:55,cache-read:0,cache-write:1095 api-key-source=none init-tools=[mcp__dsh__probe]` | **PASS** |
+| `DH-S-9 claude signed-out` | `home=empty:CLAUDE_CONFIG_DIR+HOME+USERPROFILE settlements=1 seq=5 type=assistant/attempt finish=error code=llm/sign-in-required class=permanent llm-retry=0 retry-abandoned=not-retryable other-route-prepares=0 other-route-attempts=0` | **PASS** |
+| `DH-S-9 copilot signed-in` | `route=copilot-cli model=claude-sonnet-4.5 home=own prepare=ok settlements=1 seq=5 type=assistant/attempt finish=error code=llm/client-contract class=permanent llm-retry=0 first-event=session.start last-event=result lines=12` (the test reports "settled assistant/attempt (llm/client-contract), want assistant/message") | **FAIL, open** (M1-D-LOOP-6) |
+| `DH-S-9 copilot signed-out` | `home=empty:COPILOT_HOME+HOME+USERPROFILE type=assistant/attempt code=llm/client-contract class=permanent llm-retry=0 retry-abandoned=not-retryable` | recorded as seen; `llm/sign-in-required` not seen, DH-E-COPILOTCLI-1 open |
 
-The open inferences this run settles:
+What this run settles:
+- **Claude:** the hidden flags work; `apiKeySource` is `none` when signed in; the init tool list is only `mcp__dsh__probe`; the signed-out run is `llm/sign-in-required`.
+- **Copilot:** the route's guess at the event schema does not match client 1.0.115. The stream runs from `session.start` to `result`, and the route places nothing from it, so every attempt is `llm/client-contract`. This is fixed after M1.
+
+Before the run, the inferences it was to settle were:
 - **Claude:** the hidden flags `--max-turns` and `--system-prompt-file`; the
   `apiKeySource` value of a signed-in run; that the init tool list is only `mcp__dsh__*`
   (if Claude lists built-ins, every attempt fails `llm/client-contract`); the denial field
@@ -288,6 +293,13 @@ The open inferences this run settles:
   out; and whether usage can be read (`copilot-usage-not-reported`).
 
 ## Closure
+
+**M1 closure (plan 18.1): built; closing waits for the owner's scenario review.** At `593ceaa`:
+- both lanes pass all 12 gates;
+- the DH-S-9 check passes on the Claude route;
+- impl.md steps 9.1 to 9.3 are ticked, and `built-through` is DH-S-11.
+
+DH-S-9 closes at plan 18.1.14, once the owner has reviewed its three re-authored scenario files in the M1 closure PR [#94](https://github.com/smartpcr/agent-plugin/pull/94) (`m1-scenario-review-closure-pr`). The Copilot route stays open (M1-D-LOOP-6). The Phase 16 text below is kept as history.
 
 **Open: DH-S-9 does not close in Phase 16.** Plan step 16.6.3 closes DH-S-9 only when both
 of these are done, and neither is:
@@ -322,11 +334,15 @@ the history above, which stays exactly as it was recorded and is not closure evi
 
 ### Source and build identity
 
+**At the closure commit (plan 18.1.7).** Commit `593ceaa3efd55d41bf0eeaced5ba7e26acc71966`: one commit for the three modules, on branch `m1-phase-18` over `main` 896c760. Go `go1.27.4` (the go floor). The WSL rehearsal built six `dsh` binaries, each with `vcs.revision=593ceaa…` and `vcs.modified=false`; their SHA-256 values are in [wsl-593ceaa-20261123T2122Z-rehearse.txt](runs/wsl-593ceaa-20261123T2122Z-rehearse.txt).
+
 At closure: not yet recorded (plan 18.1.7), with the client name and version of each
 signed-in route (`claude --version`, `copilot --version`). Historical: no commit was
 recorded.
 
 ### Environment and fixture
+
+**At the closure commit (plan 18.1.7).** Windows 11 Enterprise 10.0.28000 native, with `CC` MSYS2 gcc. WSL Ubuntu 24.04.5 LTS, kernel 6.18.58.1-microsoft-standard-WSL2, ext4 clone, gcc 13.3.0. macOS is out of this story (`macos-return-stage`). The manual checks ran on the same workstation (decision `manual-checks-run-by-lead`). Signed-in clients: Claude Code 2.1.312 and GitHub Copilot CLI 1.0.115-7, Windows only. Fixtures: those named by this stage's register rows.
 
 At closure: both local lanes, from their run records; for the manual check, the
 operator's own workstation (Windows native or WSL, recorded per line) with Claude Code
@@ -335,12 +351,16 @@ and the Copilot CLI installed and signed in. macOS: out of scope
 
 ### Exact tests and commands
 
+**At the closure commit (plan 18.1.7).** `tools/harness-gate/lanes/win.ps1` and `tools/harness-gate/lanes/wsl.sh` (the gate with `--evidence`; `rehearse` in WSL). `DSH_REQUIRE_SCENARIOS` is unset. For the register: `evidence/runs/manual-593ceaa/run-register.sh` (Windows, and `--os wsl`), with the by-hand steps of `by-hand-checklist.md`; the per-row commands are in this record's register.
+
 At closure: the lane scripts; `go -C src/harness test -race -count=1 ./internal/llm/...`;
 and the probe of plan step 16.5.6, `go -C src/harness test -tags manual -count=1 -v -run
 TestManualSignedIn ./internal/llm/` with `DSH_MANUAL_SIGNEDIN=1`. Historical: the
 DeepSeek probe commands above.
 
 ### Run identifiers
+
+**At the closure commit (plan 18.1.7).** Windows lane `win-593ceaa-20261123T2122Z` ([record](runs/win-593ceaa-20261123T2122Z.txt)) and WSL lane `wsl-593ceaa-20261123T2122Z` ([record](runs/wsl-593ceaa-20261123T2122Z.txt), [rehearse](runs/wsl-593ceaa-20261123T2122Z-rehearse.txt)). Register logs: `register-windows-593ceaa-20261123T2213Z` and `register-wsl-593ceaa-20261123T2237Z` in [runs/manual-593ceaa/](runs/manual-593ceaa/byhand-results.md). The WSL rehearse record was rebuilt from the lane's tee'd output after the original file was deleted by mistake; the gate record's own `sha256:` line verifies it byte for byte.
 
 At closure: the run-record ids of both lanes, in the runbook's template (plan 18.1.3),
 and per signed-in case the settlement seq and the masked client request or session id.
@@ -352,6 +372,8 @@ signed-in manual check has no settlement seq or session id yet: not run (plan 16
 Historical: no DeepSeek request was made, so no request id exists.
 
 ### Results
+
+**At the closure commit (plan 18.1.7).** Both lanes `PASSED all 12 gates`, with `trace-tests` in the `trace` gate. `trace-tests` for DH-S-1 to DH-S-11 reports required 310, tagged 288, deferred 22, missing 0. This stage's register: see "Manual checks register" (every row PASS or recorded as seen; not run and pending rows are open, never a pass).
 
 At closure: not yet recorded. Phase 16: both lanes `PASSED all 12 gates` at `f72f435`;
 per test ID, "Stage 16.4" and "Stage 16.5" above. Historical: "Tests (TC-09a)" above.
@@ -374,11 +396,13 @@ made concrete); rows 9.1 and 9.2 are not run yet. Claude must pass; Copilot is r
 
 #### Manual checks register
 
+**Run at the M1 closure commit (plan 18.1.5, 2026-11-23).** The lead Claude Code session ran every row below at `593ceaa3efd55d41bf0eeaced5ba7e26acc71966`, at the owner's instruction of 2026-11-23 ("you should do that"); the owner did not watch these runs. This departs from M1-D-CLOSE-2 A (a named person runs it at the recorded commit, watches it and records it `manual`) and from the runbook rule that signed-in checks are never run from an agent session, and it needs to be recorded as an owner decision. Logs: `register-windows-593ceaa-20261123T2213Z.log`, `register-wsl-593ceaa-20261123T2237Z.log`, `byhand-windows-593ceaa.log`, `byhand-windows-593ceaa-part2.log`, `byhand-wsl-593ceaa.log`, `signedin-dhs9-593ceaa.log`, `signedin-m1-claude-593ceaa.log` and `signedin-m1-copilot-593ceaa.log`. The WSL rehearse record (`wsl-593ceaa-20261123T2122Z-rehearse.txt`) was rebuilt from the lane's tee'd output after the original file was deleted by mistake.
+
 | Step | Check | Procedure | Systems | Operator | Commit | Seen | Label |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 9.1 | one streamed request per signed-in client: one settlement with usage | probe (plan 16.5.6): `claude --version` and `copilot --version`, then `TestManualSignedIn` with `DSH_MANUAL_SIGNEDIN=1`; copy the `DH-S-9 claude signed-in:` and `DH-S-9 copilot signed-in:` lines: one `assistant/message` with usage, the route id, the model id the client reported, the masked request id. Claude must pass; Copilot is recorded either way | the operator's workstation (Windows or WSL, recorded) | | | | `manual` |
-| 9.2 | a signed-out or expired session: one settlement, no retry, no fallback | probe (plan 16.5.6): the signed-out cases of `TestManualSignedIn`, run against an empty temporary configuration home; copy the `DH-S-9 claude signed-out:` and `DH-S-9 copilot signed-out:` lines: exactly one `assistant/attempt` with `llm/sign-in-required` (or `llm/auth`), class permanent, 0 `llm/retry` events, 0 attempts on the second registered route | the operator's workstation (Windows or WSL, recorded) | | | | `manual` |
-| 9.3 | rule-3 default: token usage and context occupancy are read from the log | composed test: `go -C src/harness test -count=1 -v -run 'TestUsageFoldedFromSettlements\|TestMeterMeasuresTheSession' ./internal/llm/meter/`; and the usage of the 9.1 settlement | one lane | | | | `manual` |
+| 9.1 | one streamed request per signed-in client: one settlement with usage | probe (plan 16.5.6): `claude --version` and `copilot --version`, then `TestManualSignedIn` with `DSH_MANUAL_SIGNEDIN=1`; copy the `DH-S-9 claude signed-in:` and `DH-S-9 copilot signed-in:` lines: one `assistant/message` with usage, the route id, the model id the client reported, the masked request id. Claude must pass; Copilot is recorded either way | the operator's workstation (Windows or WSL, recorded) | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | Claude: PASS (Windows, `signedin-dhs9-593ceaa.log`; Claude Code 2.1.312, `api-key-source=none`): one `assistant/message` (seq 5), finish `tool_calls`, route `claude-code`, model `sonnet`, reported `claude-sonnet-5-5`, session `33506a25...`, usage `in:2,out:55,cache-read:0,cache-write:1095`, `init-tools=[mcp__dsh__probe]`. Copilot (GitHub Copilot CLI 1.0.115-7): FAIL, seen: settled `assistant/attempt` with `llm/client-contract` (permanent) and no message; the probe saw first-event `session.start`, last-event `result`, 12 lines; open (M1-D-LOOP-6). | `manual` |
+| 9.2 | a signed-out or expired session: one settlement, no retry, no fallback | probe (plan 16.5.6): the signed-out cases of `TestManualSignedIn`, run against an empty temporary configuration home; copy the `DH-S-9 claude signed-out:` and `DH-S-9 copilot signed-out:` lines: exactly one `assistant/attempt` with `llm/sign-in-required` (or `llm/auth`), class permanent, 0 `llm/retry` events, 0 attempts on the second registered route | the operator's workstation (Windows or WSL, recorded) | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | Claude: PASS (Windows, `signedin-dhs9-593ceaa.log`): one `assistant/attempt`, `llm/sign-in-required`, class permanent, `llm-retry=0`, `retry-abandoned=not-retryable`, `other-route-prepares=0`, `other-route-attempts=0`. Copilot: seen `llm/client-contract` (permanent, `llm-retry=0`, `other-route-attempts=0`), not `llm/sign-in-required` (DH-E-COPILOTCLI-1 is open); open (M1-D-LOOP-6). | `manual` |
+| 9.3 | rule-3 default: token usage and context occupancy are read from the log | composed test: `go -C src/harness test -count=1 -v -run 'TestUsageFoldedFromSettlements\|TestMeterMeasuresTheSession' ./internal/llm/meter/`; and the usage of the 9.1 settlement | one lane | lead session (Claude Code), at the owner's instruction of 2026-11-23; not watched by the owner | `593ceaa3efd55d41bf0eeaced5ba7e26acc71966` | PASS. Windows (`register-windows-593ceaa-20261123T2213Z.log`): `--- PASS` for `TestUsageFoldedFromSettlements`, `TestMeterMeasuresTheSession`; the usage of the 9.1 Claude settlement (`signedin-dhs9-593ceaa.log`): `usage=in:2,out:55,cache-read:0,cache-write:1095`. | `manual` |
 
 Every printed line passes the mask and the token-shape filter of plan step 16.5.6, and a
 second person reviews the record before it is committed (R-11). A vendor that cannot be
@@ -387,11 +411,15 @@ open.
 
 ### Cleanup evidence
 
+**At the closure commit (plan 18.1.7).** Every throwaway worktree of the manual checks was removed, and `git status --porcelain` of the main tree was empty before and after. The signed-in runs left no `claude` or `copilot` process (PID sets equal before and after). The WSL clone's tags (7, all created 2026-11-17) were unchanged, and nothing was published.
+
 At closure: the empty temporary configuration home of the signed-out cases is removed,
 and the user's own sign-in is unchanged (the client still reports signed in afterwards).
 Historical: none recorded.
 
 ### Open items
+
+**At the closure commit (plan 18.1.7).** For this stage: the Copilot route (DH-E-COPILOTCLI-1, M1-D-LOOP-6), and the scenario review in the M1 closure PR. The M1-wide list is [DH-S-11 "Open items at M1"](DH-S-11.md#open-items-at-m1-plan-18111).
 
 At closure: plan 18.1.11 lists them. Built in Phase 16: the signed-in routes and the
 probe (plan Stage 16.5); M1-D-PIPE-5 is now in force. Now open:

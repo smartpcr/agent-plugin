@@ -1,0 +1,53 @@
+168	TICK	impl.md 3.1 [x]; src/go/loader ok in both lane logs @593ceaa (PASSED all 12 gates); register row 3.1 PASS (byhand-windows-593ceaa.log) in evidence/DH-S-3.md
+169	TICK	impl.md 3.2 [x]; src/go/loader ok both lanes @593ceaa; register row 3.2 PASS (register-windows-593ceaa-20261123T2213Z.log)
+170	TICK	impl.md 3.3 [x]; src/go/loader ok both lanes @593ceaa; register row 3.3 PASS (register-windows-593ceaa-20261123T2213Z.log)
+176	TICK	TestDiagnosticsCarryFileLineAndColumn (src/go/loader/codec_test.go, //dsh:test DH-T-LOADER-1) asserts base.json:4:9 and golden src/go/loader/testdata/diag_position.golden; src/go/loader ok both lanes @593ceaa
+177	TICK	TestValidateReportsEveryInvalidEntryInDocumentOrder (src/go/loader/codec_test.go); src/go/loader ok both lanes @593ceaa
+178	TICK	TestTheExpressionSeamCallsTheInjectedEvaluator (src/go/loader/expr_test.go): effective Times=7, raw keeps ${{ env.X }}; src/go/loader ok both lanes @593ceaa
+183	TICK	impl.md 3.4 [x]; src/go/loader ok both lanes @593ceaa; register row 3.4 PASS (byhand-windows-593ceaa.log)
+184	TICK	impl.md 3.5 [x]; src/go/loader ok both lanes @593ceaa; register row 3.5 PASS (byhand-windows-593ceaa.log); DH-E-LOADER-1 is not part of this box (authored DH-S-6, runs DH-S-17)
+185	TICK	impl.md 3.9 [x]; src/go/loader ok both lanes @593ceaa; register row 3.9 PASS (register-windows-593ceaa-20261123T2213Z.log)
+191	TICK	TestComposeOwnershipIndexNamesTheSupplyingLayer (src/go/loader/layers_test.go); src/go/loader ok both lanes @593ceaa
+192	TICK	TestLayerSetWriteBackTouchesOneLayerFileOnly (src/go/loader/layers_test.go) with golden src/go/loader/testdata/writeback_user.golden; src/go/loader ok both lanes @593ceaa
+193	TICK	TestLayerSetAWriterOutsideTheLockIsRefusedThenRetried (src/go/loader/layers_test.go, DH-T-LOADER-15): ErrStaleLayer, other writer's bytes kept; src/go/loader ok both lanes @593ceaa. Note: scenario wording predates M1-G-FND-2 (a change before the guard now merges; only a writer outside the lock is refused)
+198	TICK	impl.md 3.6 [x]; src/go/loader ok both lanes @593ceaa; register row 3.6 PASS (register-windows-593ceaa-20261123T2213Z.log)
+199	TICK	impl.md 3.7 [x]; src/go/loader ok both lanes @593ceaa; register row 3.7 PASS (register-windows-593ceaa-20261123T2213Z.log)
+200	TICK	impl.md 3.8 [x]; src/go/loader ok both lanes @593ceaa; register row 3.8 PASS (byhand-windows-593ceaa.log)
+201	OPEN	closes at plan 18.1.14 after the owner's review and sign-off
+207	TICK	TestNestedLoaderUnloadsWithItsOwner (src/go/loader/nested_test.go); src/go/loader ok both lanes @593ceaa
+208	TICK	TestRestartOneEntryLeavesItsSiblingsAlone and TestAConfigEditRestartsOnlyTheChangedEntryWithOneNotice (src/go/loader/nested_test.go); src/go/loader ok both lanes @593ceaa
+209	TICK	TestLifecycleLogRecordsMutationsInOrder (src/go/loader/nested_test.go); src/go/loader ok both lanes @593ceaa
+220	TICK	impl.md 4.1 [x]; src/sdk/jsonrpc ok both lanes @593ceaa; register row 4.1 PASS (register-windows-593ceaa-20261123T2213Z.log) in evidence/DH-S-4.md
+221	TICK	impl.md 4.2 [x]; internal/schema ok both lanes @593ceaa; register row 4.2 PASS (register-windows-593ceaa-20261123T2213Z.log); DH-T-ZOD-1 held open as H-38, deferred later DH-S-12 (M1-D-CLOSE-5)
+222	TICK	impl.md 4.3 [x]; src/sdk/protocol ok both lanes @593ceaa; register row 4.3 PASS (register-windows-593ceaa-20261123T2213Z.log)
+223	TICK	src/harness/internal/archtest exists: rules.go holds sdk/go import-direction rules and "harness implementation packages are under internal/" (implementationInternal); TestImportDirection; archtest ok both lanes @593ceaa
+229	TICK	TestReaderRejectsOversizedLine (src/sdk/jsonrpc/framing_test.go): ReasonLineTooLong, cap(buf) <= bound; src/sdk/jsonrpc ok both lanes @593ceaa
+230	TICK	TestDecodeSeeds (src/sdk/jsonrpc/decode_test.go) over seeds in seeds_test.go; src/sdk/jsonrpc ok both lanes @593ceaa
+231	TICK	FuzzDecode (src/sdk/jsonrpc/seeds_test.go) replays committed corpus src/sdk/jsonrpc/testdata/fuzz/FuzzDecode/ (9 files) under plain go test; src/sdk/jsonrpc ok both lanes @593ceaa
+232	TICK	TestSchemaMatchesGolden (src/sdk/protocol/schema_test.go) vs committed src/sdk/protocol/schema.json; src/sdk/protocol ok both lanes @593ceaa
+233	TICK	TestImportDirection (src/harness/internal/archtest/archtest_test.go); archtest ok both lanes @593ceaa
+238	TICK	impl.md 4.4 [x]; util/glob, version, caltime, recur ok both lanes @593ceaa; register row 4.4 PASS (register-windows-593ceaa-20261123T2213Z.log)
+239	TICK	impl.md 4.5 [x]; llm/vocab and archtest ok both lanes @593ceaa; register row 4.5 PASS (register-windows-593ceaa-20261123T2213Z.log)
+240	TICK	committed src/harness/internal/llm/vocab/testdata/fingerprints.golden, checked by TestFingerprints (vocab_test.go); llm/vocab ok both lanes @593ceaa
+246	TICK	TestCanonicalStable (src/harness/internal/llm/vocab/vocab_test.go, DH-T-LLM-1); llm/vocab ok both lanes @593ceaa
+247	TICK	TestFingerprints (src/harness/internal/llm/vocab/vocab_test.go) vs testdata/fingerprints.golden; llm/vocab ok both lanes @593ceaa
+248	TICK	TestNoRequestType (src/harness/internal/llm/vocab/vocab_test.go: archtest.RequestTypes over the package's embedded sources) plus predicate test TestRequestTypes (archtest_test.go); both packages ok both lanes @593ceaa
+249	TICK	TestDialect (src/harness/internal/util/glob/glob_test.go) holds the scenario table; util/glob ok on Windows and WSL lanes @593ceaa; the third (darwin) lane is out of scope (platforms-windows-wsl)
+254	TICK	impl.md 4.6 [x]; util/fsx ok both lanes @593ceaa; register row 4.6 PASS on Windows and WSL (register-windows-593ceaa-20261123T2213Z.log, register-wsl-593ceaa-20261123T2237Z.log)
+255	TICK	impl.md 4.7 [x]; util/textdiff ok both lanes @593ceaa; register row 4.7 PASS (register-windows-593ceaa-20261123T2213Z.log)
+256	OPEN	row 4.8 is filled but not a pass: search vs git differs by the nested-worktree gap M1-G-FND-23.1 (gap-analysis status DECIDE); the row says a pass relies on that difference being accepted
+257	OPEN	row 4.9 (a)/(c) pending owner GUI saves
+263	TICK	TestReplaceNeverExposesPartialFile (src/harness/internal/util/fsx/replace_test.go, DH-T-NODEFS-1; 1,000 replaces); util/fsx ok both lanes @593ceaa
+264	TICK	TestRoundTrip (src/harness/internal/util/textdiff/patch/apply_test.go, DH-T-FS-5); textdiff/patch ok both lanes @593ceaa
+265	TICK	TestListGolden (src/harness/internal/util/search/search_test.go): no build/ path, golden internal/util/search/testdata/list.golden; util/search ok both lanes @593ceaa
+266	TICK	TestAtomicReplaceOneNotice (src/harness/internal/util/watch/watch_test.go, DH-T-CHOKIDAR-1; Notify, Poll, Auto); util/watch ok both lanes @593ceaa
+271	TICK	impl.md 4.10 [x]; boot/config ok both lanes @593ceaa; register row 4.10 PASS (register-windows-593ceaa-20261123T2213Z.log)
+272	TICK	impl.md 4.11 [x]; boot/yamlx ok both lanes @593ceaa; register row 4.11 PASS (register-windows-593ceaa-20261123T2213Z.log)
+273	TICK	impl.md 4.12 [x]; boot/expr ok both lanes @593ceaa; register row 4.12 PASS (register-windows-593ceaa-20261123T2213Z.log)
+274	TICK	impl.md 4.13 [x]; boot/logging ok both lanes @593ceaa; register row 4.13 PASS (register-windows-593ceaa-20261123T2213Z.log)
+275	TICK	impl.md 4.14 [x]; boot/catalog ok both lanes @593ceaa; register row 4.14 PASS (register-windows-593ceaa-20261123T2213Z.log)
+276	OPEN	closes at plan 18.1.14 after the owner's review and sign-off
+283	TICK	TestSameEntriesThroughJSONAndYAML (src/harness/internal/boot/config/yaml_test.go, DH-T-LOADER-2); boot/config ok both lanes @593ceaa
+284	TICK	TestEditKeepsComments (src/harness/internal/boot/yamlx/yamlx_test.go) vs golden internal/boot/yamlx/testdata/edit_keep_comments.golden; boot/yamlx ok both lanes @593ceaa
+285	TICK	TestNamesResolve, TestRejected, TestOnlyPureBuiltins (src/harness/internal/boot/expr/expr_test.go, DH-T-LOADER-6); boot/expr ok both lanes @593ceaa
+286	TICK	TestCatalogListsComponentsByName (src/harness/internal/boot/catalog/catalog_test.go) vs golden internal/boot/catalog/testdata/catalog.golden; boot/catalog ok both lanes @593ceaa

@@ -16,7 +16,8 @@ import (
 // require, which of them a test names or a doc.go deferral backed by impl.md
 // defers, and which are missing. It exits 1 on a missing ID or a problem (a bad
 // deferral, a misplaced directive, a broken link), 2 when its inputs cannot be
-// read. It is a report, not yet a gate (step 18.1.4 makes it one).
+// read. The trace gate runs the same check with the default stage (step 18.1.4;
+// Config.traceTests); the subcommand stays for the full report and for --stage.
 func runTraceTests(args []string, stdout, stderr io.Writer) int {
 	var stage string
 	root, ok := subcommandFlags("trace-tests", args, stderr, func(f *flag.FlagSet) {

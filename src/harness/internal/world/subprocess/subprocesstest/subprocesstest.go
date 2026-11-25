@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -46,6 +47,10 @@ const (
 	// RoleOrphan starts a RoleStubborn grandchild with standard streams of its own,
 	// prints "orphan <grandchild pid>" and exits, leaving the grandchild running.
 	RoleOrphan = "orphan"
+	// RoleDetached starts a RoleStubborn grandchild that detaches itself (a new
+	// session on Unix, a new process group on Windows), prints "detached
+	// <grandchild pid>" once it is ready and exits, leaving it running.
+	RoleDetached = "detached"
 	// RoleExit exits with the code given as its first argument.
 	RoleExit = "exit"
 	// RoleEnviron prints its whole environment, one NAME=value per line, sorted,
@@ -83,6 +88,8 @@ func run(role string, args []string, out io.Writer) int {
 		return tree(out)
 	case RoleOrphan:
 		return orphan(out)
+	case RoleDetached:
+		return detached(out)
 	case RoleStubborn:
 		ignoreStop()
 		fmt.Fprintf(out, "ready %d\n", os.Getpid())
@@ -113,8 +120,9 @@ func fail(err error) int {
 
 // startStubborn starts a RoleStubborn grandchild the way an arbitrary program
 // would, with stdout as its standard output and an explicit environment that
-// holds only the role (and the coverage directory, childEnv).
-func startStubborn(stdout *os.File) (*os.Process, error) {
+// holds only the role (and the coverage directory, childEnv). sys, when not nil,
+// is how the system starts it (detachAttr).
+func startStubborn(stdout *os.File, sys *syscall.SysProcAttr) (*os.Process, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return nil, err
@@ -122,6 +130,7 @@ func startStubborn(stdout *os.File) (*os.Process, error) {
 	return os.StartProcess(exe, []string{exe}, &os.ProcAttr{
 		Env:   childEnv(RoleStubborn),
 		Files: []*os.File{nil, stdout, nil},
+		Sys:   sys,
 	})
 }
 
@@ -133,7 +142,7 @@ func tree(out io.Writer) int {
 		return fail(err)
 	}
 	defer pr.Close()
-	g, err := startStubborn(pw)
+	g, err := startStubborn(pw, nil)
 	_ = pw.Close()
 	if err != nil {
 		return fail(err)
@@ -172,11 +181,37 @@ func host(out io.Writer) int {
 // orphan starts the grandchild without sharing the child's streams, so nothing
 // ties the child's exit to it, then exits.
 func orphan(out io.Writer) int {
-	g, err := startStubborn(nil)
+	g, err := startStubborn(nil, nil)
 	if err != nil {
 		return fail(err)
 	}
 	fmt.Fprintf(out, "orphan %d\n", g.Pid)
+	_ = g.Release()
+	return 0
+}
+
+// detached starts the grandchild in a session or process group of its own, as a
+// daemon detaches itself; once it is ready and shown to be detached, the child
+// reports it and exits.
+func detached(out io.Writer) int {
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		return fail(err)
+	}
+	defer pr.Close()
+	g, err := startStubborn(pw, detachAttr())
+	_ = pw.Close()
+	if err != nil {
+		return fail(err)
+	}
+	line, err := bufio.NewReader(pr).ReadString('\n')
+	if err != nil || !strings.HasPrefix(line, "ready ") {
+		return fail(fmt.Errorf("grandchild said %q: %v", line, err))
+	}
+	if err := checkDetached(g.Pid); err != nil {
+		return fail(err)
+	}
+	fmt.Fprintf(out, "detached %d\n", g.Pid)
 	_ = g.Release()
 	return 0
 }
