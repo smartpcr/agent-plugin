@@ -94,6 +94,10 @@ type Service struct {
 	// overwrite a newer one's statuses. It is taken before mu, never after.
 	probeMu sync.Mutex
 
+	// pending counts the re-probes failed starts handed off; Probes and Close
+	// wait for them.
+	pending sync.WaitGroup
+
 	mu       sync.Mutex
 	statuses []sandbox.Status
 	probes   int
@@ -151,8 +155,10 @@ func reduce(chain []Backend, names []sandbox.Backend) ([]Backend, error) {
 	return slices.DeleteFunc(slices.Clone(chain), func(b Backend) bool { return !slices.Contains(names, b.Name()) }), nil
 }
 
-// Close removes the canary directory New created.
+// Close waits for any re-probe in progress and removes the canary directory New
+// created.
 func (s *Service) Close() error {
+	s.pending.Wait()
 	if !s.ownDir {
 		return nil
 	}
@@ -185,8 +191,11 @@ func (s *Service) Reprobe(ctx context.Context) []sandbox.Status {
 }
 
 // Probes is the number of times the chain was probed: once by New, once per
-// Reprobe, and once after each failed confinement.
+// Reprobe, and once after each failed confinement. It first waits for the
+// re-probes failed starts handed off, so a count taken after a failed start
+// includes that start's re-probe.
 func (s *Service) Probes() int {
+	s.pending.Wait()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.probes
@@ -327,12 +336,23 @@ type decision struct {
 
 // reprobe re-probes the chain once per start, after a failed confined start
 // (sandbox-ssh.md sec. 6.1: "the command never ran; the seam re-probes once").
-// The command itself is never retried.
+// The command itself is never retried. The round runs in the background, so the
+// failed start's sandbox/launch-failed is returned at once rather than after up
+// to len(chain) x ProbeTimeout; each backend's probe is still bounded by
+// ProbeTimeout, and the round outlives the caller's ctx so the stale status is
+// always replaced.
 func (d *decision) reprobe(ctx context.Context, p launch.Plan) {
 	if p.Kind != launch.Confined {
 		return
 	}
-	d.reprobed.Do(func() { d.svc.Reprobe(context.WithoutCancel(ctx)) })
+	d.reprobed.Do(func() {
+		ctx := context.WithoutCancel(ctx)
+		d.svc.pending.Add(1)
+		go func() {
+			defer d.svc.pending.Done()
+			d.svc.Reprobe(ctx)
+		}()
+	})
 }
 
 // failed is the stage's end before ready: it died, sent a malformed frame or
