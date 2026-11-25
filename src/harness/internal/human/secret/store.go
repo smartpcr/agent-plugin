@@ -114,13 +114,15 @@ func pathless(err error) error {
 }
 
 // Store resolves references through its sources in order: the first source with a
-// value wins. It caches no value; it remembers released values only to mask them.
+// value wins. It caches no value; it remembers released values only to mask them,
+// and the live leases only to revoke them.
 type Store struct {
 	sources []Source
 
 	mu       sync.Mutex
 	named    []Ref
 	released []string
+	leases   map[Ref][]*Lease
 }
 
 // NewStore returns a store over sources, highest precedence first.

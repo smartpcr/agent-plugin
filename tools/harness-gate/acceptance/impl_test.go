@@ -160,7 +160,7 @@ func TestRule4FlagsUnauthoredPairedScenario(t *testing.T) {
 	if len(p.Placements) != 3 || p.Placements[1].Stage != "DH-S-18" || len(p.Placements[1].Scenarios) != 4 {
 		t.Fatalf("placements = %+v", p.Placements)
 	}
-	x := mustParse(t, "built-through: DH-S-10\nstages:\n  DH-S-17:\n    - id: DH-E-TOOLS-1\n      authored: DH-S-10\n  DH-S-18: []\n")
+	x := mustParse(t, "built-through: DH-S-10\nstages:\n  DH-S-17:\n    - id: DH-E-TOOLS-1\n      authored: DH-S-10\n      credential: none\n  DH-S-18: []\n")
 	err := CheckRule4Authoring(x, p, rule4Proves)
 	if err == nil {
 		t.Fatal("CheckRule4Authoring passed with DH-E-EXEC-10 and DH-E-STORAGE-6 unindexed")
@@ -179,8 +179,8 @@ func TestRule4FlagsUnauthoredPairedScenario(t *testing.T) {
 		}
 	}
 	// Indexing both makes the check pass.
-	both := mustParse(t, "built-through: DH-S-10\nstages:\n  DH-S-17:\n    - id: DH-E-TOOLS-1\n      authored: DH-S-10\n  DH-S-18:\n"+
-		"    - id: DH-E-EXEC-10\n      authored: DH-S-6\n    - id: DH-E-STORAGE-6\n      authored: DH-S-6\n")
+	both := mustParse(t, "built-through: DH-S-10\nstages:\n  DH-S-17:\n    - id: DH-E-TOOLS-1\n      authored: DH-S-10\n      credential: none\n  DH-S-18:\n"+
+		"    - id: DH-E-EXEC-10\n      authored: DH-S-6\n      credential: none\n    - id: DH-E-STORAGE-6\n      authored: DH-S-6\n      credential: none\n")
 	if err := CheckRule4Authoring(both, p, rule4Proves); err != nil {
 		t.Errorf("CheckRule4Authoring with both indexed = %v", err)
 	}
@@ -199,7 +199,7 @@ func TestRule4IgnoresScenarioMovedLater(t *testing.T) {
 	// paired stage is DH-S-17, but sec. 7.5 moved it to DH-S-22: DH-S-10 does not
 	// owe it, so it may stay unindexed. DH-E-TOOLS-1, placed in DH-S-17, is owed.
 	x := mustParse(t, "built-through: DH-S-10\nstages:\n  DH-S-18:\n"+
-		"    - id: DH-E-EXEC-10\n      authored: DH-S-6\n    - id: DH-E-STORAGE-6\n      authored: DH-S-6\n")
+		"    - id: DH-E-EXEC-10\n      authored: DH-S-6\n      credential: none\n    - id: DH-E-STORAGE-6\n      authored: DH-S-6\n      credential: none\n")
 	err := CheckRule4Authoring(x, p, rule4Proves)
 	if err == nil || !strings.Contains(err.Error(), "DH-E-TOOLS-1 is owed by DH-S-10") {
 		t.Fatalf("CheckRule4Authoring = %v, want DH-E-TOOLS-1 owed", err)
@@ -226,7 +226,7 @@ func TestCheckPlanRunsInCheckBoundary(t *testing.T) {
 	}
 	full += "## 7\n\n### 7.5 Index\n\n| [DH-S-18](#dh-s-18) | 1 | [DH-E-EXEC-10](x.md) |\n"
 	good := writeTree(t, map[string]string{ImplPath: full, LedgerPath: `{"kind":"scenario","go":"DH-E-EXEC-10","proves":["DH-D-A-61"]}` + "\n"})
-	x := mustParse(t, "built-through: DH-S-6\nstages:\n  DH-S-18:\n    - id: DH-E-EXEC-10\n      authored: DH-S-6\n")
+	x := mustParse(t, "built-through: DH-S-6\nstages:\n  DH-S-18:\n    - id: DH-E-EXEC-10\n      authored: DH-S-6\n      credential: none\n")
 	if err := CheckBoundary(good, x, nil); err != nil {
 		t.Errorf("CheckBoundary on an agreeing plan = %v", err)
 	}

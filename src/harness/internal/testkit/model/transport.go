@@ -16,6 +16,10 @@
 //
 // A provider driver's own decoder is tested against its recorded dialect by the
 // driver's area; this one exists so tests above the driver need none.
+//
+// Scripted (scripted.go) is the chunk-level scripted model: an llm.Adapter that
+// plays vocab chunks, a failure, or a block until cancelled, with no wire at
+// all, for tests that script exactly what a driver yields.
 package model
 
 import (

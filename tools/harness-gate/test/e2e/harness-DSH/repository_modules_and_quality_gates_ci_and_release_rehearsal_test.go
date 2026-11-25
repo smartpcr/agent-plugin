@@ -210,7 +210,7 @@ func (s *ciRehearsal) repo() (string, error) {
 
 func (s *ciRehearsal) anInMemoryIndex(id, stage, authored string) error {
 	x, err := acceptance.ParseIndex(strings.NewReader(fmt.Sprintf(
-		"built-through: DH-S-1\nstages:\n  %s:\n    - id: %s\n      authored: %s\n", stage, id, authored)))
+		"built-through: DH-S-1\nstages:\n  %s:\n    - id: %s\n      authored: %s\n      credential: none\n", stage, id, authored)))
 	if err != nil {
 		return fmt.Errorf("parse in-memory index: %w", err)
 	}
@@ -407,6 +407,11 @@ func (s *ciRehearsal) sixBinaries() error {
 	}
 	var names []string
 	for _, e := range entries {
+		// dist/ is goreleaser's snapshot (the archives and checksums.txt the binaries
+		// were extracted from and verified against; plan 19.1.1).
+		if e.IsDir() && e.Name() == "dist" {
+			continue
+		}
 		names = append(names, e.Name())
 	}
 	var want []string

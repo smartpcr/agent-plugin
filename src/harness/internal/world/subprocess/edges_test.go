@@ -132,7 +132,7 @@ func TestBatchRefusedThroughNameDecorations(t *testing.T) {
 		t.Skip("batch files are a Windows rule")
 	}
 	for _, prog := range []string{`C:\tools\run.cmd::$DATA`, `C:\tools\run.bat.`, `C:\tools\RUN.BAT `, `C:/tools/run.cmd:stream`} {
-		if _, err := subprocess.Start(context.Background(), subprocess.Spec{Argv: []string{prog}}); herr.Kind(err) != subprocess.ReasonBatchRefused {
+		if _, err := subprocess.Start(context.Background(), subprocess.Spec{Argv: []string{prog}, Launch: subprocesstest.Launch}); herr.Kind(err) != subprocess.ReasonBatchRefused {
 			t.Errorf("Start(%q) = %v; want %s", prog, err, subprocess.ReasonBatchRefused)
 		}
 	}

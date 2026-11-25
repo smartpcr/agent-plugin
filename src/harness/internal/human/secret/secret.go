@@ -1,13 +1,19 @@
 // Package secret is the secret-reference store of the harness (DH-D-HUMAN-7,
 // SP-11): configuration names a secret (secret://deepseek/api-key) and never holds
-// it; the value is resolved per use from the launch environment or an owner-only
-// file under <home>/secrets/, and it never enters configuration, a log line or an
-// error text. The operating-system keychain is DH-S-35's.
+// it; the value is resolved per use, in the order the store's sources are given:
+// the managed store (package secret/file, the one writable source), the launch
+// environment snapshot, the project .env and the home .env (DotEnvSource), or an
+// owner-only file under <home>/secrets/ (FileSource). It never enters
+// configuration, a log line, an error text or the process environment. The
+// operating-system keychain is DH-S-35's.
 //
 // A Value prints as "[redacted]" through every fmt verb, JSON, text and slog;
-// Reveal is the only way out. Store.Use hands a value to one operation and masks it
-// out of the error that operation returns; Store.Mask masks every value this
-// process has released.
+// Reveal is the only way out, and a source check (internal/archtest) lists the
+// packages allowed to call it. Store.Use hands a value to one operation and masks
+// it out of the error that operation returns; Store.Mask masks every value this
+// process has released. Store.Acquire returns a Lease whose Revoked channel closes
+// when Set or Unset changes the reference (or Refresh sees another process change
+// it), so a holder never keeps using a rotated key.
 package secret
 
 import (

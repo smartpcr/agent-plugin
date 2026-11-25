@@ -16,14 +16,19 @@ import (
 func choose() Owner { return Owner{Kind: JobObject, Exact: true} }
 
 // jobOwner is a Job Object with kill-on-close whose only handle the host holds.
-// The child is created suspended, assigned to the job, then resumed, so it cannot
-// start a grandchild outside the job. When the host dies the handle closes and the
-// job ends the tree.
+// The child is created inside the job (createInJob), or, where Windows does not
+// take a job at creation, created suspended, assigned to the job, then resumed;
+// either way it cannot start a grandchild outside the job. When the host dies the
+// handle closes and the job ends the tree.
 type jobOwner struct {
-	job windows.Handle
+	job     windows.Handle
+	streams *childStreams // the copies of a child createInJob made
+	limits  LimitsReport
 }
 
-func newOwner() (treeOwner, error) {
+// newOwner makes the job with kill-on-close and, before any child is in it, the
+// Limits: the job's committed-memory limit and its active-process limit.
+func newOwner(l Limits) (treeOwner, error) {
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("CreateJobObject: %w", err)
@@ -33,17 +38,57 @@ func newOwner() (treeOwner, error) {
 			LimitFlags: windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 		},
 	}
-	if _, err := windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation,
-		uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info))); err != nil {
+	var applied []string
+	if l.MemoryBytes > 0 {
+		info.BasicLimitInformation.LimitFlags |= windows.JOB_OBJECT_LIMIT_JOB_MEMORY
+		info.JobMemoryLimit = uintptr(l.MemoryBytes)
+		applied = append(applied, fmt.Sprintf("job memory=%d", l.MemoryBytes))
+	}
+	if l.Processes > 0 {
+		info.BasicLimitInformation.LimitFlags |= windows.JOB_OBJECT_LIMIT_ACTIVE_PROCESS
+		info.BasicLimitInformation.ActiveProcessLimit = uint32(l.Processes)
+		applied = append(applied, fmt.Sprintf("active processes=%d", l.Processes))
+	}
+	if r, _, err := procSetInformationJobObject.Call(uintptr(job), windows.JobObjectExtendedLimitInformation,
+		uintptr(unsafe.Pointer(&info)), unsafe.Sizeof(info)); r == 0 {
 		windows.CloseHandle(job)
 		return nil, fmt.Errorf("SetInformationJobObject: %w", err)
 	}
-	return &jobOwner{job: job}, nil
+	return &jobOwner{job: job, limits: limitsOf(l, applied, nil)}, nil
 }
 
 func (o *jobOwner) report() Owner { return TreeOwner() }
 
+// start creates the child inside the job in one CreateProcess call
+// (createInJob). Where this Windows does not take the job list, nothing has
+// started, and the child is built again and created suspended, assigned to the
+// job, then resumed (startSuspended).
 func (o *jobOwner) start(build func() *exec.Cmd) (*exec.Cmd, error) {
+	cmd := build()
+	streams, err := createInJob(cmd, o.job)
+	if err == nil {
+		o.streams = streams
+		return cmd, nil
+	}
+	if !errors.Is(err, errNoJobList) {
+		return nil, err
+	}
+	return o.startSuspended(build)
+}
+
+// drain waits for the stream copies of a child createInJob made; the fallback's
+// copies are exec.Cmd's own and Wait has drained them.
+func (o *jobOwner) drain() error {
+	if o.streams == nil {
+		return nil
+	}
+	return o.streams.drain()
+}
+
+// startSuspended is the fallback: create suspended with os/exec, assign to the
+// job, resume. A host killed between the creation and the assignment leaves the
+// suspended child outside the job; createInJob has no such moment.
+func (o *jobOwner) startSuspended(build func() *exec.Cmd) (*exec.Cmd, error) {
 	cmd := build()
 	// The flags are added to what build set (a checked batch run's command line).
 	if cmd.SysProcAttr == nil {
@@ -55,6 +100,9 @@ func (o *jobOwner) start(build func() *exec.Cmd) (*exec.Cmd, error) {
 		return nil, err
 	}
 	pid := uint32(cmd.Process.Pid)
+	if afterCreate != nil {
+		afterCreate(int(pid))
+	}
 	if err := o.adopt(pid); err != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
@@ -129,9 +177,11 @@ type basicAccounting struct {
 
 func (o *jobOwner) active() (uint32, error) {
 	var info basicAccounting
-	err := windows.QueryInformationJobObject(o.job, windows.JobObjectBasicAccountingInformation,
-		uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)), nil)
-	return info.ActiveProcesses, err
+	if r, _, err := procQueryInformationJobObject.Call(uintptr(o.job), windows.JobObjectBasicAccountingInformation,
+		uintptr(unsafe.Pointer(&info)), unsafe.Sizeof(info), 0); r == 0 {
+		return 0, fmt.Errorf("QueryInformationJobObject: %w", err)
+	}
+	return info.ActiveProcesses, nil
 }
 
 func (o *jobOwner) empty() (bool, error) {
@@ -145,6 +195,40 @@ func (o *jobOwner) describe() string {
 		return "job state unknown: " + err.Error()
 	}
 	return fmt.Sprintf("%d processes left in the job", n)
+}
+
+func (o *jobOwner) limitsReport() LimitsReport { return o.limits }
+
+// The job-object calls go through LazyProc.Call, whose //go:uintptrescapes moves
+// the information buffer to the heap for the call. x/sys's wrappers of
+// SetInformationJobObject and QueryInformationJobObject take a plain uintptr, so
+// a goroutine stack that grows between the conversion and the system call leaves
+// the kernel reading or writing the old stack: an accounting read then sees zero
+// active processes, the job is taken for empty and closed with its tree inside
+// (kill-on-close ends a detached grandchild, DH-T-NODEPROC-6 under -race), and a
+// job may be set without kill-on-close or its Limits.
+var (
+	kernel32                      = windows.NewLazySystemDLL("kernel32.dll")
+	procIsProcessInJob            = kernel32.NewProc("IsProcessInJob")
+	procQueryInformationJobObject = kernel32.NewProc("QueryInformationJobObject")
+	procSetInformationJobObject   = kernel32.NewProc("SetInformationJobObject")
+)
+
+// member is exact: IsProcessInJob on the tree's job.
+func (o *jobOwner) member(pid int) bool {
+	if o.job == 0 || pid <= 0 {
+		return false
+	}
+	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	if err != nil {
+		return false
+	}
+	defer windows.CloseHandle(h)
+	var in int32
+	if r, _, _ := procIsProcessInJob.Call(uintptr(h), uintptr(o.job), uintptr(unsafe.Pointer(&in))); r == 0 {
+		return false
+	}
+	return in != 0
 }
 
 func (o *jobOwner) release() {

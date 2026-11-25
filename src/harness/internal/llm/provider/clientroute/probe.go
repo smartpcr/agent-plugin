@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess"
 	"github.com/smartpcr/agent-plugin/src/sdk/jsonrpc"
 )
@@ -117,7 +118,7 @@ func Probe(ctx context.Context, s ProbeSpec) (Version, error) {
 		batch = subprocess.AllowChecked
 	}
 	p, err := subprocess.Start(pctx, subprocess.Spec{
-		Argv: append([]string{s.Program.Path}, s.Args...), Dir: s.Dir, Env: s.Env, Stdout: pw, Batch: batch,
+		Argv: append([]string{s.Program.Path}, s.Args...), Dir: s.Dir, Env: s.Env, Stdout: pw, Batch: batch, Launch: sandbox.Trusted("clientroute: the version probe of the operator's signed-in client"),
 	})
 	_ = pw.Close()
 	if err != nil {

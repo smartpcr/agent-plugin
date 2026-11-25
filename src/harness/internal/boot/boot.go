@@ -69,6 +69,11 @@ type Options struct {
 	// path then masks every value it has released and the launch value of every
 	// name it reports (SP-11). Nil masks the credential-shaped launch values only.
 	Secrets *secret.Store
+	// UserManager is asked for the delegated Linux scope at the process provider's
+	// start (gap-closure 19.4.1); nil is the real user service manager. The test
+	// kit passes one that refuses, so a composed test tree never asks the
+	// developer's systemd for a scope.
+	UserManager subprocess.UserManager
 }
 
 // Host is the live tree as shutdown sees it.

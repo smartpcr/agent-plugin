@@ -1,6 +1,7 @@
 package acceptance
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"go/ast"
@@ -278,25 +279,16 @@ func checkImports(root string, x *Index, scenarios []Scenario) error {
 // RequireEnv is the environment variable the preflight reads: the comma- or
 // space-separated scenario IDs the run must execute. The preflight reads no model
 // key: under decision models-signed-in-claude-copilot real-model checks use the
-// user's signed-in Claude or Copilot session, never an API key (M1-G-TOOL-15).
+// user's signed-in Claude or Copilot session, never an API key (M1-G-TOOL-15). The
+// session a scenario needs is its index entry's credential, checked by the sign-in
+// probe (M1-G-TOOL-16; signin.go).
 const RequireEnv = "DSH_REQUIRE_SCENARIOS"
 
-// CredentialHook checks, from the environment env alone, that the credentials the
-// scenario run needs are present. A non-nil error fails the preflight, named.
-type CredentialHook func(env map[string]string) error
-
-// NoCredentials is the hook in force: it checks nothing and passes. Under
-// models-signed-in-claude-copilot there is no key to look for; stage 19.2 replaces
-// it with the signed-in-route check.
-func NoCredentials(map[string]string) error { return nil }
-
-// Credentials is the credential hook Preflight calls (NoCredentials until stage
-// 19.2 fills it).
-var Credentials CredentialHook = NoCredentials
-
-// Plan is what the scenario job runs after a passing preflight.
+// Plan is what the scenario job runs after a passing preflight, and the sign-ins
+// the preflight checked for it.
 type Plan struct {
 	Scenarios []Scenario
+	SignIns   []SignIn
 }
 
 // RunPattern is the go test -run expression that selects exactly the plan's tests.
@@ -325,21 +317,26 @@ func SplitRequired(v string) []string {
 	return strings.FieldsFunc(v, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' || r == '\n' || r == '\r' })
 }
 
-// Preflight decides, from the environment env alone, whether the credentialed
-// scenario workflow may start (DH-ADR-TOOLCHAIN-6, -12): the credential hook
-// (Credentials) must pass, the index must agree with the authored scenarios, and
-// every ID of DSH_REQUIRE_SCENARIOS must have its scenario test and every stage its
-// index entry requires must be built. No model key is read
-// (models-signed-in-claude-copilot). On any failure the plan is empty, so no
-// scenario is started; every reason is named. An empty required list passes with
-// an empty plan.
+// Preflight is PreflightWith with no sign-in probe: a planned scenario whose
+// entry needs a signed-in session fails, named, so nothing that needs a sign-in
+// starts unchecked. The gate's preflight and scenarios subcommands pass the
+// client status probe (StatusProbe).
 func Preflight(env map[string]string, x *Index, scenarios []Scenario) (Plan, error) {
+	return PreflightWith(context.Background(), env, x, scenarios, nil)
+}
+
+// PreflightWith decides whether the credentialed scenario run may start
+// (DH-ADR-TOOLCHAIN-6, -12): the index must agree with the authored scenarios,
+// every ID of DSH_REQUIRE_SCENARIOS must have its scenario test and every stage
+// its index entry requires must be built, and then the client of every planned
+// scenario whose credential is not none must be signed in on this host, checked
+// once per credential through probe (M1-G-TOOL-16). No model key is read
+// (models-signed-in-claude-copilot). On any failure the plan is empty, so no
+// scenario is started; every reason is named, a sign-in failure with the
+// scenarios and the client. An empty required list passes with an empty plan and
+// probes nothing.
+func PreflightWith(ctx context.Context, env map[string]string, x *Index, scenarios []Scenario, probe SignInProbe) (Plan, error) {
 	var errs []error
-	if Credentials != nil {
-		if err := Credentials(env); err != nil {
-			errs = append(errs, fmt.Errorf("credentials: %w", err))
-		}
-	}
 	if err := Check(x, scenarios); err != nil {
 		errs = append(errs, err)
 	}
@@ -358,9 +355,14 @@ func Preflight(env map[string]string, x *Index, scenarios []Scenario) (Plan, err
 			plan.Scenarios = append(plan.Scenarios, scenarios[i])
 		}
 	}
-	if err := errors.Join(errs...); err != nil {
-		return Plan{}, err
+	signIns, err := checkSignIns(ctx, x, plan.Scenarios, probe)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("credentials: %w", err))
 	}
+	if err := errors.Join(errs...); err != nil {
+		return Plan{SignIns: signIns}, err
+	}
+	plan.SignIns = signIns
 	return plan, nil
 }
 

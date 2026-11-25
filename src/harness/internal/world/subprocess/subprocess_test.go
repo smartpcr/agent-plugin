@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess/subprocesstest"
 )
@@ -240,7 +241,7 @@ func TestArgvRules(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, err := subprocess.Start(context.Background(), subprocess.Spec{Argv: c.argv})
+			_, err := subprocess.Start(context.Background(), subprocess.Spec{Argv: c.argv, Launch: subprocesstest.Launch})
 			if got := herr.Kind(err); got != c.want {
 				t.Fatalf("Start(%q) = %v (kind %q), want kind %q", c.argv, err, got, c.want)
 			}
@@ -250,9 +251,24 @@ func TestArgvRules(t *testing.T) {
 
 func TestStartFailureIsReported(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "no-such-program")
-	_, err := subprocess.Start(context.Background(), subprocess.Spec{Argv: []string{missing}})
+	_, err := subprocess.Start(context.Background(), subprocess.Spec{Argv: []string{missing}, Launch: subprocesstest.Launch})
 	if herr.Kind(err) != subprocess.ReasonStartFailed {
 		t.Fatalf("Start(missing) = %v, want %s", err, subprocess.ReasonStartFailed)
+	}
+}
+
+// Launch is required: a Spec with no plan, or a Trusted plan without a reason, is
+// refused before anything starts (gap-closure 19.3.6).
+func TestStartRefusesAnEmptyLaunch(t *testing.T) {
+	for name, l := range map[string]sandbox.Launch{"zero": {}, "no reason": sandbox.Trusted("")} {
+		spec := subprocesstest.Spec(t, subprocesstest.RoleExit)
+		spec.Launch = l
+		if _, err := subprocess.Start(context.Background(), spec); herr.Kind(err) != subprocess.ReasonNoLaunch {
+			t.Errorf("%s: Start = %v; want %s", name, err, subprocess.ReasonNoLaunch)
+		}
+		if _, err := subprocess.Run(context.Background(), spec, subprocess.RunOptions{}); herr.Kind(err) != subprocess.ReasonNoLaunch {
+			t.Errorf("%s: Run = %v; want %s", name, err, subprocess.ReasonNoLaunch)
+		}
 	}
 }
 

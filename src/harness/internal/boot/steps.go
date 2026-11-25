@@ -89,13 +89,15 @@ func (Real) Guards(_ context.Context, s *State) error {
 }
 
 // Layers reads and parses every layer of the profile, keeping the bytes read as
-// the reload's baseline.
+// the reload's baseline, and builds the launcher layer: with --safe it disables the
+// plugins group and the optional bundles (DH-ADR-BOOT-12).
 func (Real) Layers(_ context.Context, s *State) error {
 	files := map[string][]byte{}
 	read := layerReader(s.Options.Request.ReadFile)
 	layers, issues, err := profile.Stack(s.Options.Profile, profile.Sources{
 		Home:     s.Data.Home,
 		Overlays: s.Data.Overlays,
+		Safe:     s.Data.Safe,
 		Read: func(path string) ([]byte, error) {
 			data, err := read(path)
 			switch {
@@ -135,7 +137,7 @@ func (Real) Compose(_ context.Context, s *State) error {
 
 // Tree creates the tree without the console exporter, provides the launch
 // services and mounts the loader with the catalogue and the evaluator.
-func (Real) Tree(_ context.Context, s *State) error {
+func (Real) Tree(ctx context.Context, s *State) error {
 	cat := s.Options.Catalog
 	if cat == nil {
 		var err error
@@ -154,7 +156,7 @@ func (Real) Tree(_ context.Context, s *State) error {
 		exporters = append(exporters, s.Ring)
 	}
 	root := cordis.New(cordis.WithExporters(exporters...))
-	procs := subprocess.NewRegistry()
+	procs := openProcesses(ctx, s)
 	t := newTree(root, procs)
 	s.Host = t
 	if s.Diag != nil {
@@ -239,4 +241,33 @@ func (Real) Audit(_ context.Context, s *State) error {
 	inactive, err := audit(s.Service, s.Options.Profile.Required, PolicyComponents...)
 	s.Audit.Inactive = inactive
 	return err
+}
+
+// openProcesses is the process provider's start (DH-D-EXEC-2, 19.4.1, 19.4.2):
+// the tree owner is chosen once, on Linux after asking the user service manager
+// for a delegated scope when the host's own control group is not writable, and
+// a weaker rung is logged once; the owner record in the home's run directory is
+// read, and what a crashed host left running is logged, never stopped.
+func openProcesses(ctx context.Context, s *State) *subprocess.Registry {
+	logf := func(format string, args ...any) {
+		if s.Ring != nil {
+			_, _ = fmt.Fprintf(s.Ring, format, args...)
+		}
+	}
+	runDir := ""
+	if s.Home.Root() != "" {
+		runDir = s.Home.Run()
+	}
+	procs, leftovers, err := subprocess.OpenRegistry(ctx, subprocess.ProviderOptions{
+		RunDir:      runDir,
+		UserManager: s.Options.UserManager,
+		Announce:    func(o subprocess.Owner) { logf("boot: process trees are owned by %s\n", o) },
+	})
+	if err != nil {
+		logf("boot: owner record not kept: %v\n", err)
+	}
+	for _, l := range leftovers {
+		logf("boot: left by an earlier host, not stopped: %s\n", l)
+	}
+	return procs
 }

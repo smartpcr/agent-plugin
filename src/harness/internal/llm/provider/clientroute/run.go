@@ -11,6 +11,7 @@ import (
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess"
 	"github.com/smartpcr/agent-plugin/src/sdk/jsonrpc"
 )
@@ -84,7 +85,7 @@ func Start(ctx context.Context, s RunSpec) (*Run, error) {
 	errw := &window{max: keep}
 	p, err := subprocess.Start(ctx, subprocess.Spec{
 		Argv: append([]string{s.Program.Path}, s.Args...), Dir: s.Dir, Env: s.Env,
-		Stdin: bytes.NewReader(s.Stdin), Stdout: pw, Stderr: errw, Grace: grace, Batch: batch,
+		Stdin: bytes.NewReader(s.Stdin), Stdout: pw, Stderr: errw, Grace: grace, Batch: batch, Launch: sandbox.Trusted("clientroute: the operator's signed-in client; its confinement is decided at DH-S-13"),
 	})
 	_ = pw.Close()
 	if err != nil {

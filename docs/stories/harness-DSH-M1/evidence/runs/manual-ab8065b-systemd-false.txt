@@ -1,0 +1,28 @@
+pid1: init(Ubuntu-24.
+[boot]
+systemd=false
+cgroup: 0::/non-systemd
+offline
+ab8065b tests: compose.Start returns a settled tree; the boot/config stuck-application test watches the revision, not the file
+0
+=== RUN   TestLimitsAreAppliedByTheOwnerOrReportedUnavailable
+    limits_test.go:28: owner process-group (fallback: own control group not writable; delegated scope not requested (U-K1-1)); limits unavailable (the process-group rung applies no limits)
+--- PASS: TestLimitsAreAppliedByTheOwnerOrReportedUnavailable (0.00s)
+=== RUN   TestPeerTreeOfADialingTree
+=== RUN   TestPeerTreeOfADialingTree/unix
+    peer_test.go:87: peer 123 over unix: {Trust:untrusted Exact:false Peer:123 Root:123 Owner:process-group} (owner process-group (fallback: own control group not writable; delegated scope not requested (U-K1-1)))
+=== RUN   TestPeerTreeOfADialingTree/tcp
+    peer_test.go:87: peer 135 over tcp: {Trust:untrusted Exact:false Peer:135 Root:135 Owner:process-group} (owner process-group (fallback: own control group not writable; delegated scope not requested (U-K1-1)))
+--- PASS: TestPeerTreeOfADialingTree (0.02s)
+    --- PASS: TestPeerTreeOfADialingTree/unix (0.00s)
+    --- PASS: TestPeerTreeOfADialingTree/tcp (0.01s)
+=== RUN   TestProviderStartOwnsTreesInsideADelegatedScope
+    scope_linux_test.go:34: owner: process-group; scope unit: -; child 158 in 0::/non-systemd; host stderr: "announce: owner process-group (fallback: own control group not writable; the user service manager refused a delegated scope (U-K1-1): systemd-run exited with 1: Failed to connect to bus: No such file or directory)\nlimits: unavailable (the process-group rung applies no limits)\n"
+--- PASS: TestProviderStartOwnsTreesInsideADelegatedScope (0.02s)
+=== RUN   TestStopTreeStopsAndAwaitsTheTree
+    subprocess_test.go:97: owner process-group (fallback: own control group not writable; delegated scope not requested (U-K1-1)); stopped in 2.010543849s
+--- PASS: TestStopTreeStopsAndAwaitsTheTree (2.01s)
+=== RUN   TestTreeOwnerIsReported
+--- PASS: TestTreeOwnerIsReported (0.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess	2.049s

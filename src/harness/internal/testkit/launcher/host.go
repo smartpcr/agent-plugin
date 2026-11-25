@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess"
 )
 
@@ -38,7 +39,7 @@ func Spawn(t testing.TB, p Program) *Host {
 	h := &Host{Started: time.Now()}
 	proc, err := subprocess.Start(context.Background(), subprocess.Spec{
 		Argv: p.Argv, Dir: p.Dir, Env: subprocess.Env(append(os.Environ(), p.Env...)),
-		Stdout: &h.Stdout, Stderr: &h.Stderr, Grace: Grace,
+		Stdout: &h.Stdout, Stderr: &h.Stderr, Grace: Grace, Launch: sandbox.Trusted("launcher: the program under test, run by a scenario"),
 	})
 	if err != nil {
 		t.Fatalf("launcher: start %s: %v", p.Argv[0], err)

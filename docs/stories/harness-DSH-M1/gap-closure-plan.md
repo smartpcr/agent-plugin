@@ -1213,15 +1213,15 @@ This phase is P1 and is not part of M1 closure. Each stage is work that a delive
 **Priority.** P1. **Must precede:** DH-S-18 (DH-E-TOOLCHAIN-2).
 
 ### Implementation Steps
-- [ ] 19.1.1 (M1-G-TOOL-8): add `.goreleaser.dsh.yaml` (a `dsh` build, `CGO_ENABLED=0`, six targets, archives, `checksums.txt`), separate from `.goreleaser.yaml` so that `release.yml` publishes nothing new before DH-S-46. `harness-gate rehearse` runs `goreleaser release --snapshot --clean -f .goreleaser.dsh.yaml` (pinned in the tools module of 13.4.1) and verifies each archive against the checksum file. Tests: DH-T-TOOLCHAIN-14 (snapshot half).
-- [ ] 19.1.2 (M1-G-TOOL-9): add a `replay` gate (`go test -tags replay` against the built binary) and the `harness-replay` job or local lane, per the impl.md step proposed in 12.2.3. Tests: DH-T-TOOLCHAIN-5.
+- [x] 19.1.1 (M1-G-TOOL-8): add `.goreleaser.dsh.yaml` (a `dsh` build, `CGO_ENABLED=0`, six targets, archives, `checksums.txt`), separate from `.goreleaser.yaml` so that `release.yml` publishes nothing new before DH-S-46. `harness-gate rehearse` runs `goreleaser release --snapshot --clean -f .goreleaser.dsh.yaml` (pinned in the tools module of 13.4.1) and verifies each archive against the checksum file. Tests: DH-T-TOOLCHAIN-14 (snapshot half).
+- [ ] 19.1.2 (M1-G-TOOL-9): add a `replay` gate (`go test -tags replay` against the built binary) and the `harness-replay` job or local lane, per the impl.md step proposed in 12.2.3. Tests: DH-T-TOOLCHAIN-5. **Open (Phase 19, 2026-11-23):** blocked by design until impl.md step 16.11 on the replay runner of step 16.7 (DH-S-16, not built); `rehearse` prints the replay as `OPEN, not built` ([evidence/DH-S-1.md](evidence/DH-S-1.md#gap-closure-phase-19)).
 
 ### Dependencies
 - phase-decisions-local-lanes-and-records/stage-windows-and-wsl-gate-lanes-ci-matrix-and-preflight
 - phase-gate-green/stage-tools-module-and-module-hygiene
 
 ### Test Scenarios
-- [ ] Scenario: The snapshot yields six archives and one checksum file -- Given `GOWORK=off`, When `rehearse --out <tmp>` runs, Then six archives and `checksums.txt` exist, every archive verifies, no tag or release exists afterwards, and the host-matching binary passes one keyless replay [proof: service:go-toolchain; deps: goreleaser from the tools module, filesystem; steps: 19.1.1, 19.1.2]
+- [ ] Scenario: The snapshot yields six archives and one checksum file -- Given `GOWORK=off`, When `rehearse --out <tmp>` runs, Then six archives and `checksums.txt` exist, every archive verifies, no tag or release exists afterwards, and the host-matching binary passes one keyless replay [proof: service:go-toolchain; deps: goreleaser from the tools module, filesystem; steps: 19.1.1, 19.1.2] **Open (Phase 19, 2026-11-23):** every clause holds at `ab8065b` except the keyless replay, which waits for 19.1.2.
 
 ### Exit evidence
 DH-S-16 evidence (the replay gate); DH-S-18 evidence runs DH-E-TOOLCHAIN-2 on Windows and Linux.
@@ -1235,14 +1235,14 @@ DH-S-16 evidence (the replay gate); DH-S-18 evidence runs DH-E-TOOLCHAIN-2 on Wi
 **Priority.** P1. **Must precede:** DH-S-17 (first credentialed dispatch, DH-E-TOOLCHAIN-1).
 
 ### Implementation Steps
-- [ ] 19.2.1 (M1-G-TOOL-16): add a `credential:` field (`none | claude-session | copilot-session`) to each `test/harness/acceptance-index.yaml` entry. The preflight runs the client's own non-interactive sign-in status check (the command fixed by 16.5.2) and fails naming the scenario and the client. Under M1-D-TOOL-6 (a), credentialed scenarios run through a new `harness-gate scenarios --stage` on the development host, writing the 12.3.5 evidence file; restate DH-E-TOOLCHAIN-1's Given as "a signed-in session on the development host". Tests: DH-T-TOOLCHAIN-6.
+- [x] 19.2.1 (M1-G-TOOL-16): add a `credential:` field (`none | claude-session | copilot-session`) to each `test/harness/acceptance-index.yaml` entry. The preflight runs the client's own non-interactive sign-in status check (the command fixed by 16.5.2) and fails naming the scenario and the client. Under M1-D-TOOL-6 (a), credentialed scenarios run through a new `harness-gate scenarios --stage` on the development host, writing the 12.3.5 evidence file; restate DH-E-TOOLCHAIN-1's Given as "a signed-in session on the development host". Tests: DH-T-TOOLCHAIN-6.
 
 ### Dependencies
 - phase-decisions-local-lanes-and-records/stage-windows-and-wsl-gate-lanes-ci-matrix-and-preflight
 - phase-tools-retry-and-signed-in-routes/stage-signed-in-client-routes-and-the-dh-s-9-manual-check
 
 ### Test Scenarios
-- [ ] Scenario: A missing sign-in stops the run -- Given an index entry with `credential: claude-session` and an injected status probe that reports signed out, When preflight runs, Then it fails naming the scenario and starts nothing [proof: in-process; deps: none -- probe injected; steps: 19.2.1]
+- [x] Scenario: A missing sign-in stops the run -- Given an index entry with `credential: claude-session` and an injected status probe that reports signed out, When preflight runs, Then it fails naming the scenario and starts nothing [proof: in-process; deps: none -- probe injected; steps: 19.2.1]
 
 ### Exit evidence
 DH-S-17 evidence: the probe output (no token material) for each client used.
@@ -1258,25 +1258,25 @@ A detached launch, such as opening the browser, is created on purpose with no tr
 **Priority.** P1. **Must precede:** DH-S-13 (launch, output capture, `ChildEnv` at step 13.6); DH-S-15 for `Detach`; the dial guard before the first web-fetch stage (DH-S-33).
 
 ### Implementation Steps
-- [ ] 19.3.1 (M1-G-BOOT-2): add `subprocess.Run(ctx, spec, RunOptions)`: run and capture with a deadline and an output cap, ending the whole tree, with a cap error and `retain` for the tail. Tests: DH-T-EXECA-1 to -3.
-- [ ] 19.3.2 (M1-G-BOOT-2): add `Spec.Extra []Channel`, mapped to `ExtraFiles` on POSIX and inherited handles on Windows. Tests: the private-channel row of DH-T-NODEPROC-9.
-- [ ] 19.3.3 (M1-G-BOOT-2): add `Spec.Detach`: start with no tree owner and skip registry insertion. Tests: the detach row of DH-T-NODEPROC-9.
-- [ ] 19.3.4 (M1-G-BOOT-2): add `subprocess.Confirm`, which returns "refused" when stdin is a pipe. Tests: the second half of DH-T-NODEPROC-10.
-- [ ] 19.3.5 (M1-G-BOOT-2): on Windows, create the child inside the job in one `CreateProcess` call with `PROC_THREAD_ATTRIBUTE_JOB_LIST`; the suspend-assign-resume path (`owner_windows.go:44-60`) stays as the fallback. Tests: DH-T-NODEPROC-8.
-- [ ] 19.3.6 (M1-G-BOOT-2): add `Spec.Stdin` and `OutputMode`, and make `Launch` a required field typed against A10's `sandbox.Launch`, accepting `sandbox.Trusted(reason)` until DH-S-13 lands. Record whether `world/proc` and `subprocess/local` are kept as separate packages (RM-9).
-- [ ] 19.3.7 (M1-G-BOOT-10): add `egress.ChildEnv(Trusted|ModelRun)`: it keeps user-set proxy values, adds the resolved ones and clears on request, and is passed to `BuildEnv` as `Managed`. Tests: DH-T-UTIL-5, DH-T-UNDICI-9.
-- [ ] 19.3.8 (M1-G-BOOT-10): add a dialler `Control` hook that refuses private ranges per policy, checking a literal address, a resolved name and a redirect. Tests: DH-T-UNDICI-7.
+- [x] 19.3.1 (M1-G-BOOT-2): add `subprocess.Run(ctx, spec, RunOptions)`: run and capture with a deadline and an output cap, ending the whole tree, with a cap error and `retain` for the tail. Tests: DH-T-EXECA-1 to -3.
+- [x] 19.3.2 (M1-G-BOOT-2): add `Spec.Extra []Channel`, mapped to `ExtraFiles` on POSIX and inherited handles on Windows. Tests: the private-channel row of DH-T-NODEPROC-9.
+- [x] 19.3.3 (M1-G-BOOT-2): add `Spec.Detach`: start with no tree owner and skip registry insertion. Tests: the detach row of DH-T-NODEPROC-9.
+- [x] 19.3.4 (M1-G-BOOT-2): add `subprocess.Confirm`, which returns "refused" when stdin is a pipe. Tests: the second half of DH-T-NODEPROC-10.
+- [x] 19.3.5 (M1-G-BOOT-2): on Windows, create the child inside the job in one `CreateProcess` call with `PROC_THREAD_ATTRIBUTE_JOB_LIST`; the suspend-assign-resume path (`owner_windows.go:44-60`) stays as the fallback. Tests: DH-T-NODEPROC-8.
+- [x] 19.3.6 (M1-G-BOOT-2): add `Spec.Stdin` and `OutputMode`, and make `Launch` a required field typed against A10's `sandbox.Launch`, accepting `sandbox.Trusted(reason)` until DH-S-13 lands. Record whether `world/proc` and `subprocess/local` are kept as separate packages (RM-9).
+- [x] 19.3.7 (M1-G-BOOT-10): add `egress.ChildEnv(Trusted|ModelRun)`: it keeps user-set proxy values, adds the resolved ones and clears on request, and is passed to `BuildEnv` as `Managed`. Tests: DH-T-UTIL-5, DH-T-UNDICI-9.
+- [x] 19.3.8 (M1-G-BOOT-10): add a dialler `Control` hook that refuses private ranges per policy, checking a literal address, a resolved name and a redirect. Tests: DH-T-UNDICI-7.
 
 ### Dependencies
 - phase-foundations/stage-dh-s-6-m1-blockers
 - phase-tools-retry-and-signed-in-routes/stage-signed-in-client-routes-and-the-dh-s-9-manual-check
 
 ### Test Scenarios
-- [ ] Scenario: Run caps output and ends the tree -- Given a re-exec child writing one byte over the cap and spawning a grandchild, When `Run` executes, Then the cap error is returned and neither pid is alive [proof: service:os-process; deps: re-exec; steps: 19.3.1]
-- [ ] Scenario: A host killed between create and resume leaves nothing -- Given an injected pause after creation, When the host is killed, Then no process remains [proof: service:os-process; deps: Windows lane; steps: 19.3.5]
-- [ ] Scenario: A detached launch outlives the host and is never stopped -- Given a detached child, When the host's tree is stopped, Then the detached child is still alive and absent from the registry (the test then stops it itself) [proof: service:os-process; deps: re-exec; steps: 19.3.3]
-- [ ] Scenario: A child inherits the proxy, not secrets -- Given a launch lookup with `HTTPS_PROXY` and a named secret, When a child is built with `ChildEnv(ModelRun)`, Then the proxy is present and the secret absent [proof: service:os-process; deps: re-exec; steps: 19.3.7]
-- [ ] Scenario: A private address is refused before any byte -- Given a guard denying private ranges, When a request targets `10.0.0.1`, a name resolving to it, and a redirect to it, Then all fail before dial [proof: service:loopback-http; deps: loopback listener; steps: 19.3.8]
+- [x] Scenario: Run caps output and ends the tree -- Given a re-exec child writing one byte over the cap and spawning a grandchild, When `Run` executes, Then the cap error is returned and neither pid is alive [proof: service:os-process; deps: re-exec; steps: 19.3.1]
+- [x] Scenario: A host killed between create and resume leaves nothing -- Given an injected pause after creation, When the host is killed, Then no process remains [proof: service:os-process; deps: Windows lane; steps: 19.3.5]
+- [x] Scenario: A detached launch outlives the host and is never stopped -- Given a detached child, When the host's tree is stopped, Then the detached child is still alive and absent from the registry (the test then stops it itself) [proof: service:os-process; deps: re-exec; steps: 19.3.3]
+- [x] Scenario: A child inherits the proxy, not secrets -- Given a launch lookup with `HTTPS_PROXY` and a named secret, When a child is built with `ChildEnv(ModelRun)`, Then the proxy is present and the secret absent [proof: service:os-process; deps: re-exec; steps: 19.3.7]
+- [x] Scenario: A private address is refused before any byte -- Given a guard denying private ranges, When a request targets `10.0.0.1`, a name resolving to it, and a redirect to it, Then all fail before dial [proof: service:loopback-http; deps: loopback listener; steps: 19.3.8]
 
 ### Exit evidence
 `evidence/DH-S-6.md`, section "19.3": the tagged tests run on Windows native and WSL at one commit, and the held-open entries of 14.6.11 that this stage closes.
@@ -1290,20 +1290,20 @@ A detached launch, such as opening the browser, is created on purpose with no tr
 **Priority.** P1. **Must precede:** DH-S-13 (the first untrusted trees); `PeerTree` before DH-S-15; `Limits` before DH-S-31; DH-E-EXEC-10 runs in DH-S-18.
 
 ### Implementation Steps
-- [ ] 19.4.1 (M1-G-BOOT-3): at provider start, if the own cgroup is unwritable, run `systemd-run --user --scope` once through the spawn package with a deadline as a trusted launch; per-command groups go inside the granted scope; on refusal or timeout the process-group rung is used and announced once. Tests: DH-T-EXEC-4 with a fake user manager.
-- [ ] 19.4.2 (M1-G-BOOT-3): write `run/owners.json` (pid, owner kind, cgroup path, start time) on start and remove each entry on release; the next start reads it and reports survivors without killing them. Tests: the leftover-report row of DH-T-EXEC-5.
-- [ ] 19.4.3 (M1-G-BOOT-3): add `StopPlan{Revoke, Ask, Grace, Settle}` running revoke, ask, close input, terminate and kill, each bounded; past the settle deadline it names the survivors and the handle stays registered, replacing the two-rung `StopTree` (`subprocess.go:248`). Tests: DH-T-EXEC-5, DH-T-EXEC-6.
-- [ ] 19.4.4 (M1-G-BOOT-4): record a `Trusted`/`Untrusted` mark per tree, and add `PeerTree(net.Conn)` answering from Unix peer credentials or the loopback owner, then job or cgroup membership; keep the control-socket path out of every child environment. Tests: DH-T-EXEC-17 (peer half).
-- [ ] 19.4.5 (M1-G-BOOT-4): add `Limits`: job-object memory and process-count limits, cgroup `memory.max` and `pids.max` where delegated, `unavailable` on the group rung. Tests: DH-T-EXEC-17 (limits half).
+- [x] 19.4.1 (M1-G-BOOT-3): at provider start, if the own cgroup is unwritable, run `systemd-run --user --scope` once through the spawn package with a deadline as a trusted launch; per-command groups go inside the granted scope; on refusal or timeout the process-group rung is used and announced once. Tests: DH-T-EXEC-4 with a fake user manager.
+- [x] 19.4.2 (M1-G-BOOT-3): write `run/owners.json` (pid, owner kind, cgroup path, start time) on start and remove each entry on release; the next start reads it and reports survivors without killing them. Tests: the leftover-report row of DH-T-EXEC-5.
+- [x] 19.4.3 (M1-G-BOOT-3): add `StopPlan{Revoke, Ask, Grace, Settle}` running revoke, ask, close input, terminate and kill, each bounded; past the settle deadline it names the survivors and the handle stays registered, replacing the two-rung `StopTree` (`subprocess.go:248`). Tests: DH-T-EXEC-5, DH-T-EXEC-6.
+- [x] 19.4.4 (M1-G-BOOT-4): record a `Trusted`/`Untrusted` mark per tree, and add `PeerTree(net.Conn)` answering from Unix peer credentials or the loopback owner, then job or cgroup membership; keep the control-socket path out of every child environment. Tests: DH-T-EXEC-17 (peer half).
+- [x] 19.4.5 (M1-G-BOOT-4): add `Limits`: job-object memory and process-count limits, cgroup `memory.max` and `pids.max` where delegated, `unavailable` on the group rung. Tests: DH-T-EXEC-17 (limits half).
 
 ### Dependencies
 - phase-before-m2-consumers/stage-spawn-package-and-egress-for-children
 
 ### Test Scenarios
-- [ ] Scenario: One scope request, then exact groups -- Given a fake user manager and an unwritable own cgroup, When three commands start, Then exactly one scope request was made and each owner is `control-group` inside it; with the manager timing out, the owner is `process-group`, announced once [proof: in-process; deps: none; steps: 19.4.1]
-- [ ] Scenario: Leftovers reported at the next start -- Given a host killed while an owner record is live, When a new host starts on the same home, Then it reports the survivor pids and does not kill them [proof: service:os-process; deps: re-exec; steps: 19.4.2]
-- [ ] Scenario: Ladder order and survivors -- Given a stubborn tree, When `Stop` runs, Then the rungs run in order, each bounded, and a survivor past settle is named and stays registered [proof: service:os-process; deps: re-exec; steps: 19.4.3]
-- [ ] Scenario: The peer of a model-started process is Untrusted -- Given a tree started untrusted that dials a Unix socket, When `PeerTree` resolves it, Then it is `Untrusted`, `Exact` on the job and cgroup rungs and best effort on the group rung [proof: service:os-process; deps: re-exec; steps: 19.4.4]
+- [x] Scenario: One scope request, then exact groups -- Given a fake user manager and an unwritable own cgroup, When three commands start, Then exactly one scope request was made and each owner is `control-group` inside it; with the manager timing out, the owner is `process-group`, announced once [proof: in-process; deps: none; steps: 19.4.1]
+- [x] Scenario: Leftovers reported at the next start -- Given a host killed while an owner record is live, When a new host starts on the same home, Then it reports the survivor pids and does not kill them [proof: service:os-process; deps: re-exec; steps: 19.4.2]
+- [x] Scenario: Ladder order and survivors -- Given a stubborn tree, When `Stop` runs, Then the rungs run in order, each bounded, and a survivor past settle is named and stays registered [proof: service:os-process; deps: re-exec; steps: 19.4.3]
+- [x] Scenario: The peer of a model-started process is Untrusted -- Given a tree started untrusted that dials a Unix socket, When `PeerTree` resolves it, Then it is `Untrusted`, `Exact` on the job and cgroup rungs and best effort on the group rung [proof: service:os-process; deps: re-exec; steps: 19.4.4]
 
 ### Exit evidence
 `evidence/DH-S-6.md`, section "19.4": the WSL `systemd=true` run showing `owner: control-group` and the scope unit name, and the `systemd=false` run showing the reported fallback. DH-E-EXEC-10 itself stays with DH-S-18.
@@ -1317,21 +1317,21 @@ A detached launch, such as opening the browser, is created on purpose with no tr
 **Priority.** P1. **Must precede:** DH-S-12 (`compose`, `egresstest`); DH-S-16 (secret writes, `profile reset`, `--safe`); DH-S-23 (`faultserver`).
 
 ### Implementation Steps
-- [ ] 19.5.1 (M1-G-BOOT-11): add `testkit/compose`: `compose.Start(t, Options{Bundle, Layers, Home})` uses the real loader and composition function, the scripted model and the recording egress, and fails the test if any effect or goroutine is left. Tests: DH-T-UTIL-13.
-- [ ] 19.5.2 (M1-G-BOOT-11): add `testkit/egresstest` (a recording transport and resolver behind `egress.Key`, with scripted dial failures) and `testkit/faultserver` (a real HTTP/SSE fault server with per-key cursors). Tests: DH-T-UTIL-15.
-- [ ] 19.5.3 (M1-G-BOOT-11): add `clock.Run(t, fn)` over `testing/synctest`, and a chunk-level scripted `llm.Adapter` that passes A04's conformance table; record the `conform.ToolCancels` row as met by `tools/conform`. Tests: DH-T-UTIL-14, DH-T-UTIL-12 (queue half).
-- [ ] 19.5.4 (M1-G-BOOT-7): add `human/secret/file` with `Set`/`Unset`, a lock, a revision and a durable write; a strict `.env` source; leases with a revocation signal; source checks on `Reveal()` callers and `os.Setenv`. Tests: DH-T-HUMAN-10 (golden), DH-T-HUMAN-11, and the lease half of DH-T-HUMAN-12.
-- [ ] 19.5.5 (M1-G-BOOT-14): add `profile.Reset`, which renames the layer to a unique backup name, and a launcher layer that disables the `plugins` group and the optional bundles when `Safe` is set. Tests: DH-T-BOOT-8, DH-T-BOOT-23.
+- [x] 19.5.1 (M1-G-BOOT-11): add `testkit/compose`: `compose.Start(t, Options{Bundle, Layers, Home})` uses the real loader and composition function, the scripted model and the recording egress, and fails the test if any effect or goroutine is left. Tests: DH-T-UTIL-13.
+- [x] 19.5.2 (M1-G-BOOT-11): add `testkit/egresstest` (a recording transport and resolver behind `egress.Key`, with scripted dial failures) and `testkit/faultserver` (a real HTTP/SSE fault server with per-key cursors). Tests: DH-T-UTIL-15.
+- [x] 19.5.3 (M1-G-BOOT-11): add `clock.Run(t, fn)` over `testing/synctest`, and a chunk-level scripted `llm.Adapter` that passes A04's conformance table; record the `conform.ToolCancels` row as met by `tools/conform`. Tests: DH-T-UTIL-14, DH-T-UTIL-12 (queue half).
+- [x] 19.5.4 (M1-G-BOOT-7): add `human/secret/file` with `Set`/`Unset`, a lock, a revision and a durable write; a strict `.env` source; leases with a revocation signal; source checks on `Reveal()` callers and `os.Setenv`. Tests: DH-T-HUMAN-10 (golden), DH-T-HUMAN-11, and the lease half of DH-T-HUMAN-12.
+- [x] 19.5.5 (M1-G-BOOT-14): add `profile.Reset`, which renames the layer to a unique backup name, and a launcher layer that disables the `plugins` group and the optional bundles when `Safe` is set. Tests: DH-T-BOOT-8, DH-T-BOOT-23.
 
 ### Dependencies
 - phase-foundations/stage-dh-s-6-m1-blockers
 - phase-before-m2-consumers/stage-spawn-package-and-egress-for-children
 
 ### Test Scenarios
-- [ ] Scenario: A composed tree leaves nothing -- Given `compose.Start` on the base bundle with a component that leaks a goroutine, When the test ends, Then the kit fails it; without the leak it passes and no effect remains [proof: in-process; deps: none; steps: 19.5.1, 19.5.3]
-- [ ] Scenario: An unlisted request fails the test -- Given `egresstest` allowing only the model endpoint, When a component dials another host, Then the test fails naming it [proof: in-process; deps: none; steps: 19.5.2]
-- [ ] Scenario: Two processes set one secret -- Given two re-exec processes on one temp home, When both `Set` different references, Then both survive and a stale revision is refused [proof: service:filesystem; deps: re-exec, `t.TempDir()`; steps: 19.5.4]
-- [ ] Scenario: Safe mode disables plugins only, and reset keeps a backup -- Given a composed tree with `Safe` set, When composed, Then only the `plugins` group and the optional bundles are disabled; and `profile.Reset` leaves the old layer under a backup name [proof: in-process; deps: `t.TempDir()`; steps: 19.5.5]
+- [x] Scenario: A composed tree leaves nothing -- Given `compose.Start` on the base bundle with a component that leaks a goroutine, When the test ends, Then the kit fails it; without the leak it passes and no effect remains [proof: in-process; deps: none; steps: 19.5.1, 19.5.3]
+- [x] Scenario: An unlisted request fails the test -- Given `egresstest` allowing only the model endpoint, When a component dials another host, Then the test fails naming it [proof: in-process; deps: none; steps: 19.5.2]
+- [x] Scenario: Two processes set one secret -- Given two re-exec processes on one temp home, When both `Set` different references, Then both survive and a stale revision is refused [proof: service:filesystem; deps: re-exec, `t.TempDir()`; steps: 19.5.4]
+- [x] Scenario: Safe mode disables plugins only, and reset keeps a backup -- Given a composed tree with `Safe` set, When composed, Then only the `plugins` group and the optional bundles are disabled; and `profile.Reset` leaves the old layer under a backup name [proof: in-process; deps: `t.TempDir()`; steps: 19.5.5]
 
 ### Exit evidence
 `evidence/DH-S-6.md`, section "19.5", with updated rows for DH-T-UTIL-12 to -15, DH-T-HUMAN-10 to -12 and DH-T-BOOT-8 and -23, and the held-open entries this stage closes.

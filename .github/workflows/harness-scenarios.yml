@@ -3,8 +3,11 @@
 # Runs only on workflow_dispatch and on a schedule -- never on pull_request or
 # pull_request_target -- so fork code never reaches a scenario run. No model key
 # is read: under decision models-signed-in-claude-copilot real-model checks use a
-# signed-in Claude or Copilot session, and the preflight's credential hook checks
-# nothing until stage 19.2 fills it. The keyless gate lives in ci.yml (harness job).
+# signed-in Claude or Copilot session. Since gap-closure step 19.2.1 the preflight
+# runs the sign-in check that each index entry's `credential:` names, and a hosted
+# runner holds no signed-in session, so it refuses a credentialed stage here: those
+# run through "harness-gate scenarios --stage" on the development host
+# (M1-D-TOOL-6 (a)). The keyless gate lives in ci.yml (harness job).
 #
 #   preflight  derives DSH_REQUIRE_SCENARIOS from the entry of the stage being
 #              accepted in test/harness/acceptance-index.yaml ("harness-gate

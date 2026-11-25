@@ -1,0 +1,68 @@
+# GoReleaser (free edition) for dsh, the harness binary (DH-D-TOOLCHAIN-5, plan 19.1.1,
+# M1-G-TOOL-8, M1-D-TOOL-3 (b)).
+#
+# This file is separate from .goreleaser.yaml on purpose: release.yml runs GoReleaser with
+# the default file, so a vX.Y.Z tag publishes nothing of dsh before DH-S-46 (the published
+# release, DH-D-TOOLCHAIN-6). Until then this file is only run in snapshot mode, by
+#
+#   GOWORK=off go -C tools/harness-gate run . rehearse --root ../.. [--out <dir>]
+#
+# which runs the GoReleaser pinned in tools/goreleaser/go.mod as
+# "goreleaser release --snapshot --clean -f .goreleaser.dsh.yaml", with the dist directory
+# set to <dir>/dist (the rehearsal adds the "dist:" key to a temporary copy of this file;
+# this file must not set it, so the repository's own dist/ is never cleaned or written),
+# and then verifies each archive against checksums.txt.
+#
+# The release section is disabled as well, so even a non-snapshot run of this file cannot
+# publish; DH-S-46 removes that when the dsh release is switched on.
+version: 2
+
+project_name: dsh
+
+builds:
+  - id: dsh
+    dir: src/harness
+    main: ./cmd/dsh
+    binary: dsh
+    # Pure Go (QG-8); GOWORK=off so the build list is src/harness's own (M1-D-TOOL-2),
+    # GOFLAGS empty so no flag of the caller's environment changes the binaries.
+    env:
+      - CGO_ENABLED=0
+      - GOWORK=off
+      - GOFLAGS=
+    # The six targets of the cross-compile gate (tools/harness-gate Targets).
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    # No -X main.version: the version is read from the build information the go command
+    # embeds (vcs.revision, vcs.modified; DH-ADR-TOOLCHAIN-13, DH-ADR-15).
+
+archives:
+  - id: dsh
+    ids: [dsh]
+    name_template: "dsh_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - LICENSE
+      - src/harness/README.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+git:
+  # Only vX.Y.Z tags are releases: the module tags (src/go/vX.Y.Z) and the evidence tags
+  # (evidence/m1-phase-N) are not versions.
+  ignore_tags:
+    - "src/*"
+    - "evidence/*"
+
+changelog:
+  disable: true
+
+release:
+  disable: true

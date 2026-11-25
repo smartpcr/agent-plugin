@@ -10,34 +10,55 @@
 // unchanged is refused before anything starts (DH-ADR-NODEPROC-1).
 // LookupProgram finds such a file by bare name and says that it is one.
 //
-// Every child is placed in a tree owner when it starts, and StopTree stops and
-// awaits the whole tree (DH-D-EXEC-2): a Job Object on Windows; on Linux a control
-// group per command inside the host's own cgroup v2 directory when that is
-// writable, otherwise a process group; a process group on other Unix systems. The
-// owner kind is chosen once per process and reported on every handle and by
-// TreeOwner, so a fallback is visible (register U-K1-1).
+// Every child but a detached one (Spec.Detach) is placed in a tree owner when it
+// starts (DH-D-EXEC-2): a Job Object on Windows, which the child is created
+// inside in one CreateProcess call; on Linux a control group per command inside
+// the host's own cgroup v2 directory when that is writable, or inside the scope
+// the user service manager delegates once at provider start (OpenRegistry),
+// otherwise a process group; a process group on other Unix systems. The owner
+// kind is chosen once per process and reported on every handle and by
+// TreeOwner, so a fallback is visible (register U-K1-1). The registry records the
+// live owners in run/owners.json, and the next host reports what a crashed one
+// left behind without stopping it.
+//
+// Stop runs one ladder (StopPlan): revoke, ask, close input, terminate, kill,
+// each bounded, then the settle wait; past it the survivors are named and the
+// handle stays registered. StopTree is that ladder with a grace of its own. Each
+// tree carries the trust mark of its launch plan, and Registry.PeerTree names
+// the tree of the process behind a local connection. Spec.Limits caps memory and
+// process count through the owner and is reported as enforced or unavailable.
 //
 // The archtest rule "onespawn" (and the source check DH-T-EXEC-1) fails any
 // non-test harness package other than this one that imports os/exec or calls a
 // process-creation function.
 //
-// The cordis provider (subprocess/local), confined launch plans, PTYs and output
-// collectors of the execution area are later steps; they build on Start.
+// Every Spec carries a sandbox.Launch (A10): the zero Launch is refused, and until
+// DH-S-13 builds confined plans each caller passes sandbox.Trusted with its
+// reason, or sandbox.Untrusted for an unconfined child the model can reach.
+// Run is the run-and-capture helper on Start (DH-LIB-EXECA): a deadline, a capture
+// limit that stops the whole tree, and the tail of what passed the limit. Confirm
+// asks a person and refuses when standard input is not a terminal.
+//
+// Spec.Extra hands the child private byte channels beside its standard streams.
+//
+// The cordis provider (subprocess/local), confined launch plans, PTYs and the
+// output collectors of the execution area are later steps; they build on Start.
 package subprocess
 
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox"
 )
 
 // Reasons the package raises.
@@ -51,12 +72,20 @@ const (
 	ReasonStartFailed     herr.Reason = "subprocess/start-failed"
 	ReasonTreeOwner       herr.Reason = "subprocess/tree-owner"
 	ReasonSurvivors       herr.Reason = "subprocess/tree-survivors"
+	ReasonNoLaunch        herr.Reason = "subprocess/no-launch"
+	ReasonOutputLimit     herr.Reason = "subprocess/output-limit"
+	ReasonDeadline        herr.Reason = "subprocess/deadline"
+	ReasonCanceled        herr.Reason = "subprocess/canceled"
+	ReasonDetached        herr.Reason = "subprocess/detached"
+	ReasonPeerUnknown     herr.Reason = "subprocess/peer-unknown"
 )
 
 // Reasons lists every reason, for the declaration test.
 var Reasons = []herr.Reason{
 	ReasonEmptyArgv, ReasonRelativeProgram, ReasonNotFound, ReasonBatchRefused,
 	ReasonBadArgument, ReasonLineTooLong, ReasonStartFailed, ReasonTreeOwner, ReasonSurvivors,
+	ReasonNoLaunch, ReasonOutputLimit, ReasonDeadline, ReasonCanceled, ReasonDetached,
+	ReasonPeerUnknown,
 }
 
 // DefaultSettle bounds the wait for a tree to be gone after the forced stop, when
@@ -79,30 +108,76 @@ type Spec struct {
 	// snapshot (DSH_HOME, a lease's value) are deliberate. A caller that wants the
 	// host's variables gets them through BuildEnv, never by passing os.Environ().
 	Env Env
-	// Stdin, Stdout and Stderr are the standard streams; nil is the null device.
-	Stdin          io.Reader
-	Stdout, Stderr io.Writer
-	// Grace is how long StopTree waits after the polite stop when the context
-	// that started the process ends.
+	// Stdin is the standard input (StdinMode); nil is the null device.
+	Stdin StdinMode
+	// Stdout and Stderr are where the standard output and error go (OutputMode);
+	// nil is the null device, and Run captures a nil stream.
+	Stdout, Stderr OutputMode
+	// Grace is the stop ladder's wait after each of ask, close input and
+	// terminate when Stop.Grace is zero (StopPlan).
 	Grace time.Duration
+	// Stop is how the tree is stopped: the consumer's revoke and ask hooks, the
+	// grace between rungs and the settle deadline (StopPlan). The ladder runs on
+	// Stop, StopTree, and when the start context ends.
+	Stop StopPlan
+	// Limits are optional memory and process-count caps the tree owner applies;
+	// Process.Limits reports whether they are enforced.
+	Limits Limits
 	// Batch says whether a Windows batch file may be started: Refuse (the zero
 	// value) refuses it, AllowChecked runs it through cmd.exe with checked
 	// arguments. Other systems ignore it.
 	Batch BatchPolicy
+	// Launch is the sandbox plan for this command (A10's sandbox.Launch). It is
+	// required: the zero Launch is refused with subprocess/no-launch before
+	// anything starts. Until DH-S-13 builds confined plans, every caller passes
+	// sandbox.Trusted(reason), saying why its child reads nothing the model can
+	// write.
+	Launch sandbox.Launch
+	// Extra are private byte channels the child inherits beside its standard
+	// streams (ChildFD says under which number); nothing else is inherited.
+	Extra []Channel
+	// Detach starts a program meant to outlive the host (DH-LIB-NODEPROC-R12), such
+	// as the browser opener: it gets no tree owner, a session (POSIX) or console
+	// and process group (Windows) of its own, and is never stopped by the host;
+	// StopTree, Kill and TreeGone refuse it with subprocess/detached, a Registry
+	// does not hold it, and the end of the start context does not stop it. Its
+	// streams are the null device or a file (an *os.File, Discard, Inherit), since
+	// the host keeps no copy running for it. The host keeps only a waiter that
+	// reaps it when it exits.
+	Detach bool
+
+	// waitDelay bounds how long Wait waits for the standard streams once the
+	// direct child has exited (exec.Cmd.WaitDelay); Run sets it so a descendant
+	// holding a captured stream open cannot keep the run waiting.
+	waitDelay time.Duration
 }
 
 // Process is one started child and the tree it owns.
 type Process struct {
-	cmd    *exec.Cmd
-	owner  treeOwner
-	report Owner
+	cmd      *exec.Cmd
+	owner    treeOwner
+	report   Owner
+	detached bool
 
 	exited  chan struct{}
 	waitErr error
 
+	// plan is the stop ladder's plan, input the gate of a fed standard input.
+	plan  StopPlan
+	input *inputGate
+	// trust is the mark of the tree's launch plan; limits what its owner did
+	// with Spec.Limits.
+	trust  Trust
+	limits LimitsReport
+
 	stopMu  sync.Mutex
 	stopped bool
-	stopErr error
+
+	// cause is the first stop cause; recordMu guards what the stops did.
+	cause         atomic.Pointer[causeBox]
+	recordMu      sync.Mutex
+	rungs         []RungResult
+	lastSurvivors error
 
 	// ownerMu serialises calls on owner; released is set, and releasedC closed,
 	// once the whole tree has left and the owner's handles are closed.
@@ -116,27 +191,56 @@ type Process struct {
 const watchEvery = 250 * time.Millisecond
 
 // Start validates spec, starts the program inside a new tree owner and returns its
-// handle. When ctx ends, the tree is stopped with spec.Grace. The caller must call
-// StopTree or Wait.
+// handle. When ctx ends, the stop ladder runs with the context's cause. The caller
+// must call Stop, StopTree or Wait.
 func Start(ctx context.Context, spec Spec) (*Process, error) {
+	if !spec.Launch.Valid() {
+		return nil, herr.New(ReasonNoLaunch, "Spec.Launch is empty; the host's own child passes sandbox.Trusted(reason)")
+	}
 	l, err := check(spec.Argv, spec.Batch)
 	if err != nil {
 		return nil, err
 	}
+	if err := checkExtra(spec.Extra); err != nil {
+		return nil, err
+	}
+	if spec.Detach {
+		if err := checkDetachStreams(spec); err != nil {
+			return nil, err
+		}
+	}
+	if err := prepareExtra(spec.Extra); err != nil {
+		return nil, herr.Wrap(ReasonStartFailed, err, "pass the channels to "+filepath.Base(spec.Argv[0]))
+	}
+	if err := checkControlSocket(spec.Env); err != nil {
+		return nil, err
+	}
+	var input *inputGate
+	stdin := stdinOf(spec.Stdin)
+	if !spec.Detach {
+		if input = gateInput(spec.Stdin); input != nil {
+			stdin = input
+		}
+	}
 	build := func() *exec.Cmd {
 		cmd := &exec.Cmd{
-			Path:   l.path,
-			Args:   append([]string(nil), l.args...),
-			Dir:    spec.Dir,
-			Env:    spec.Env.block(),
-			Stdin:  spec.Stdin,
-			Stdout: spec.Stdout,
-			Stderr: spec.Stderr,
+			Path:      l.path,
+			Args:      append([]string(nil), l.args...),
+			Dir:       spec.Dir,
+			Env:       spec.Env.block(),
+			Stdin:     stdin,
+			Stdout:    outputOf(spec.Stdout, os.Stdout),
+			Stderr:    outputOf(spec.Stderr, os.Stderr),
+			WaitDelay: spec.waitDelay,
 		}
 		setCmdLine(cmd, l.cmdLine)
+		addExtra(cmd, spec.Extra)
 		return cmd
 	}
-	owner, err := newOwner()
+	if spec.Detach {
+		return startDetachedProcess(spec, build)
+	}
+	owner, err := newOwner(spec.Limits)
 	if err != nil {
 		return nil, herr.Wrap(ReasonTreeOwner, err, "create the tree owner")
 	}
@@ -145,27 +249,39 @@ func Start(ctx context.Context, spec Spec) (*Process, error) {
 		owner.release()
 		return nil, herr.Wrap(ReasonStartFailed, err, "start "+filepath.Base(spec.Argv[0]))
 	}
-	p := &Process{cmd: cmd, owner: owner, report: owner.report(), exited: make(chan struct{}), releasedC: make(chan struct{})}
+	plan := spec.Stop
+	if plan.Grace <= 0 {
+		plan.Grace = spec.Grace
+	}
+	p := &Process{cmd: cmd, owner: owner, report: owner.report(), plan: plan, input: input,
+		trust: trustOf(spec.Launch), limits: owner.limitsReport(),
+		exited: make(chan struct{}), releasedC: make(chan struct{})}
 	go func() {
-		p.waitErr = cmd.Wait()
+		err := cmd.Wait()
+		if d, ok := owner.(drainer); ok {
+			if derr := d.drain(); err == nil {
+				err = derr
+			}
+		}
+		p.waitErr = err
 		close(p.exited)
 	}()
 	if ctx.Done() != nil {
-		go p.watch(ctx, spec.Grace)
+		go p.watch(ctx)
 	}
 	return p, nil
 }
 
 // watch stops the tree when ctx ends. The direct child exiting does not end the
 // watch: descendants it left behind are still the tree's, so the watch lasts until
-// the owner is empty and released.
-func (p *Process) watch(ctx context.Context, grace time.Duration) {
+// the owner is empty and released. The ladder then runs with the context's cause as the stop cause.
+func (p *Process) watch(ctx context.Context) {
 	exited := p.exited
 	var tick <-chan time.Time
 	for {
 		select {
 		case <-ctx.Done():
-			_ = p.StopTree(context.WithoutCancel(ctx), grace)
+			_ = p.stop(context.WithoutCancel(ctx), context.Cause(ctx), p.plan)
 			return
 		case <-p.releasedC:
 			return
@@ -234,7 +350,7 @@ func (p *Process) Owner() Owner { return p.report }
 func (p *Process) Exited() <-chan struct{} { return p.exited }
 
 // Wait waits for the direct child and returns its exit error, as exec.Cmd.Wait.
-// It does not wait for the rest of the tree; StopTree and TreeGone do.
+// It does not wait for the rest of the tree; Stop and TreeGone do.
 func (p *Process) Wait() error {
 	<-p.exited
 	p.releaseOwner()
@@ -254,44 +370,12 @@ func (p *Process) ExitCode() int {
 
 // TreeGone waits until no process of the tree is left, or ctx ends.
 func (p *Process) TreeGone(ctx context.Context) error {
+	if p.detached {
+		return errDetached("TreeGone")
+	}
 	if err := p.await(ctx); err != nil {
 		return p.survivors(err)
 	}
-	return nil
-}
-
-// StopTree stops the whole tree and returns only once every member has exited:
-// the polite stop (SIGTERM to every member on Unix; none for a pipe child on
-// Windows), up to grace for the tree to leave, then the forced stop (the Job
-// Object or control group is killed; SIGKILL to the process group), then a wait
-// bounded by ctx and DefaultSettle. When members survive it returns
-// subprocess/tree-survivors and a later call tries again. It is idempotent.
-func (p *Process) StopTree(ctx context.Context, grace time.Duration) error {
-	p.stopMu.Lock()
-	defer p.stopMu.Unlock()
-	if p.stopped {
-		return p.stopErr
-	}
-	if !p.gone() {
-		_ = p.withOwner(treeOwner.polite)
-		if grace > 0 {
-			gctx, cancel := context.WithTimeout(ctx, grace)
-			_ = p.await(gctx)
-			cancel()
-		}
-	}
-	if !p.gone() {
-		_ = p.withOwner(treeOwner.kill)
-	}
-	sctx, cancel := settle(ctx)
-	defer cancel()
-	if err := p.await(sctx); err != nil {
-		// One more forced stop: a member may have started after the first.
-		_ = p.withOwner(treeOwner.kill)
-		return p.survivors(err)
-	}
-	p.stopped = true
-	p.releaseOwner()
 	return nil
 }
 
@@ -300,17 +384,14 @@ func (p *Process) StopTree(ctx context.Context, grace time.Duration) error {
 // shutdown escalates past a graceful stop still in its grace period. TreeGone or a
 // later StopTree observe the exit.
 func (p *Process) Kill() error {
+	if p.detached {
+		return errDetached("Kill")
+	}
+	p.setCause(nil)
 	if p.gone() {
 		return nil
 	}
 	return p.withOwner(treeOwner.kill)
-}
-
-func settle(ctx context.Context) (context.Context, context.CancelFunc) {
-	if _, ok := ctx.Deadline(); ok {
-		return context.WithCancel(ctx)
-	}
-	return context.WithTimeout(ctx, DefaultSettle)
 }
 
 // gone reports whether the direct child has been reaped and the owner is empty.
@@ -425,7 +506,8 @@ var (
 	chosen     Owner
 )
 
-// treeOwner is one tree's owner, per system.
+// treeOwner is one tree's owner, per system. newOwner(limits) makes one for a
+// tree with the Spec's Limits.
 type treeOwner interface {
 	// start builds a command with build, configures it and starts it inside the
 	// owner; it may build again to retry with a fallback owner.
@@ -439,6 +521,11 @@ type treeOwner interface {
 	empty() (bool, error)
 	describe() string
 	release()
+	// limitsReport says what the owner did with the Spec's Limits.
+	limitsReport() LimitsReport
+	// member reports whether the process pid is in the tree, as exactly as the
+	// rung can tell (PeerTree).
+	member(pid int) bool
 }
 
 // Lookup resolves a bare program name against the PATH of the child's environment

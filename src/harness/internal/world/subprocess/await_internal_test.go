@@ -18,6 +18,8 @@ func (o *stuckOwner) kill() error                               { return nil }
 func (o *stuckOwner) empty() (bool, error)                      { o.polls.Add(1); return false, nil }
 func (o *stuckOwner) describe() string                          { return "stuck" }
 func (o *stuckOwner) release()                                  {}
+func (o *stuckOwner) limitsReport() LimitsReport                { return LimitsReport{State: LimitsNone} }
+func (o *stuckOwner) member(int) bool                           { return false }
 
 // With the direct child gone and a descendant left, await polls at pollEvery
 // rather than spinning on the closed exited channel.

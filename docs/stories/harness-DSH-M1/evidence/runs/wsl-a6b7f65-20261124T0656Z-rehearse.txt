@@ -1,0 +1,18 @@
+harness-gate rehearse record
+commit: a6b7f65eb351df2a538b01f0115a6ec616688c70
+started: 2026-11-24T06:56:07Z
+harness-gate: toolchain go1.27.4 (the go floor of src/harness/go.mod; children run with GOTOOLCHAIN=go1.27.4, GOROOT=/usr/local/go)
+rehearse: goreleaser release --snapshot --clean -f .goreleaser.dsh.yaml (cmd/dsh of src/harness) with GOWORK=off CGO_ENABLED=0 -trimpath into /tmp/harness-gate-rehearse-2861676421/dist; nothing is published
+ok   .: goreleaser release --snapshot --clean -f .goreleaser.dsh.yaml
+e23c53ba4dd89b882591afe1b63c9bd443552fe3b664b265baa31c1f10812e43  dsh-linux-amd64  version=(devel) vcs.revision=a6b7f65eb351df2a538b01f0115a6ec616688c70 vcs.modified=false
+b91a9ade40e8cdbc3e6c4f248c16b580115671cc9ca159621d83c3f57e6372e3  dsh-linux-arm64  version=(devel) vcs.revision=a6b7f65eb351df2a538b01f0115a6ec616688c70 vcs.modified=false
+4cf82c21ca4fcbe1f9b7738090698c550f11d26945860f6a32cf86269a858d83  dsh-darwin-amd64  version=(devel) vcs.revision=a6b7f65eb351df2a538b01f0115a6ec616688c70 vcs.modified=false
+117a10e7cf365a0de1c7767a99da1ab75b96c0675bd17983f132da515892f32d  dsh-darwin-arm64  version=(devel) vcs.revision=a6b7f65eb351df2a538b01f0115a6ec616688c70 vcs.modified=false
+10721e3079887e952483cc108a52233e7dc5ecdd6ac0787c19fa2b76ae3fa200  dsh-windows-amd64.exe  version=(devel) vcs.revision=a6b7f65eb351df2a538b01f0115a6ec616688c70 vcs.modified=false
+ab70ab0556890aafe828516c6dcd29b5f640903c223748fb1887913120e442dc  dsh-windows-arm64.exe  version=(devel) vcs.revision=a6b7f65eb351df2a538b01f0115a6ec616688c70 vcs.modified=false
+rehearse: 6 archives and checksums.txt in /tmp/harness-gate-rehearse-2861676421/dist; every archive verified against checksums.txt
+rehearse: replay of dsh-linux-amd64: OPEN, not built (plan 19.1.2 needs impl.md step 16.11 on the replay runner of step 16.7); not a pass
+rehearse: 6 binaries, nothing published
+exit: 0
+ended: 2026-11-24T06:56:10Z
+sha256: 49e5ca3382ac95a23ea9f2dad2ebff6705ed9d14cd4831038dc149aaed08e55c

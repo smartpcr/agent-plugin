@@ -19,6 +19,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/temphome"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess"
 	"github.com/smartpcr/agent-plugin/src/sdk/jsonrpc"
 )
@@ -51,7 +52,7 @@ func Build(t testing.TB, dir, pkg string, tags ...string) string {
 		argv = append(argv, "-tags", tagList)
 	}
 	var output testkit.Buffer
-	p, err := subprocess.Start(t.Context(), subprocess.Spec{Argv: append(argv, pkg), Dir: dir, Env: env, Stdout: &output, Stderr: &output, Grace: Grace})
+	p, err := subprocess.Start(t.Context(), subprocess.Spec{Argv: append(argv, pkg), Dir: dir, Env: env, Stdout: &output, Stderr: &output, Grace: Grace, Launch: sandbox.Trusted("launcher: go build of the program under test")})
 	if err != nil {
 		t.Fatalf("launcher: go build %s: %v", pkg, err)
 	}
@@ -130,7 +131,7 @@ func Start(t testing.TB, p Program) *Session {
 	}
 	env := subprocess.BuildEnv(os.Environ(), subprocess.EnvOptions{Secrets: store, Entries: p.Env, Managed: []string{"DSH_HOME=" + l.Root()}})
 	s := &Session{Home: l, Stderr: &testkit.Buffer{}}
-	proc, err := subprocess.Start(context.Background(), subprocess.Spec{Argv: p.Argv, Dir: dir, Env: env, Stdin: inR, Stdout: outW, Stderr: errW, Grace: Grace})
+	proc, err := subprocess.Start(context.Background(), subprocess.Spec{Argv: p.Argv, Dir: dir, Env: env, Stdin: inR, Stdout: outW, Stderr: errW, Grace: Grace, Launch: sandbox.Trusted("launcher: the program under test, built by the test")})
 	closeAll(inR, outW, errW)
 	if err != nil {
 		closeAll(inW, outR, errR)

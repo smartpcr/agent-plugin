@@ -99,6 +99,7 @@ pin means changing the `require` line, keeping its reason comment, and running
 GOWORK=off go -C tools/harness-gate run . rehearse  --root ../.. [--out DIR]
 GOWORK=off go -C tools/harness-gate run . require   --root ../.. --stage DH-S-18
 GOWORK=off go -C tools/harness-gate run . preflight --root ../..
+GOWORK=off go -C tools/harness-gate run . scenarios --root ../.. --stage DH-S-17 --evidence FILE
 GOWORK=off go -C tools/harness-gate run . ready     --root ../.. --stage DH-S-16 [--built]
 GOWORK=off go -C tools/harness-gate run . close     --root ../.. --stage DH-S-16 [--built]
 GOWORK=off go -C tools/harness-gate run . records   --root ../..
@@ -106,24 +107,48 @@ GOWORK=off go -C tools/harness-gate run . entry     --root ../.. --story harness
 GOWORK=off go -C tools/harness-gate run . policy-text --root ../..
 ```
 
-- `rehearse` (DH-D-TOOLCHAIN-5, DH-ADR-TOOLCHAIN-13) builds `cmd/dsh` with
-  `GOWORK=off CGO_ENABLED=0 GOFLAGS= go build -trimpath` for linux, darwin,
-  windows × amd64, arm64 into `--out` (a removed temp directory by default) and
-  prints one line per binary: `<sha256>  <name>  version=… vcs.revision=…
-  vcs.modified=…`, read from the binary's embedded build info. It publishes
-  nothing: no tag, no upload, no network beyond the module cache. CI runs it in
-  the `harness` job on Linux; `release.yml` and `.goreleaser.yaml` are unchanged.
+- `rehearse` (DH-D-TOOLCHAIN-5, DH-ADR-TOOLCHAIN-13; gap-closure step 19.1.1) runs
+  `goreleaser release --snapshot --clean -f .goreleaser.dsh.yaml`, with goreleaser
+  pinned in its own tools module `tools/goreleaser` and run as
+  `go -C tools/goreleaser tool goreleaser` (never a goreleaser on PATH). The
+  snapshot of `cmd/dsh` (`CGO_ENABLED=0`, `-trimpath`, linux, darwin, windows ×
+  amd64, arm64) is written to `--out/dist` (a removed temp directory by default)
+  through a temporary copy of the config with `dist:` added; a committed config
+  that sets `dist:` is refused. Each of the six archives is verified against
+  `checksums.txt`, its binary extracted to `--out`, and one line per binary
+  printed: `<sha256>  <name>  version=… vcs.revision=… vcs.modified=…`. It
+  publishes nothing: `release.disable`, the forge tokens removed from goreleaser's
+  environment, and a run that changes the repository's tags fails. The keyless
+  replay of the host-matching binary is printed as `OPEN, not built` until the
+  replay runner of impl.md step 16.7 exists (step 19.1.2). CI runs it in the
+  `harness` job on Linux; `release.yml` and `.goreleaser.yaml` are unchanged.
 - `require` prints the comma-separated `DH-E-*` IDs of one stage entry of the
   acceptance index (empty for no `--stage`); an unknown stage is an error. The
   scenario workflow uses it to derive `DSH_REQUIRE_SCENARIOS`.
 - `preflight` (DH-ADR-TOOLCHAIN-6, -12) reads `DSH_REQUIRE_SCENARIOS` from the
-  environment and fails -- starting nothing -- when the credential hook
-  (`acceptance.Credentials`) fails, when a required ID has no scenario test, when a
-  required ID's index entry `requires` a stage past `built-through`, or when the
-  `scenario-index` check fails. On success it appends `count=`, `run=` (a
-  `go test -run` expression) and `tests=` to `$GITHUB_OUTPUT`. It reads no model
-  key (`models-signed-in-claude-copilot`): the credential hook checks nothing until
-  stage 19.2 fills it with the signed-in-route check.
+  environment and fails -- starting nothing -- when a required ID has no scenario
+  test, when a required ID's index entry `requires` a stage past `built-through`,
+  when the `scenario-index` check fails, or when the client a planned entry's
+  `credential` names is not signed in on this host (M1-G-TOOL-16). On success it
+  appends `count=`, `run=` (a `go test -run` expression) and `tests=` to
+  `$GITHUB_OUTPUT`. It reads no model key (`models-signed-in-claude-copilot`); it
+  prints one `sign-in` line per checked credential, with the status command and
+  the parsed state only (no account field, no token).
+- `scenarios` (M1-D-TOOL-6 (a)) runs one stage's scenarios on the development
+  host, where the user is signed in, as one evidence record in the format of
+  `--evidence` (12.3.5; a tree that is not clean is refused, exit 2): gate
+  `preflight` (the stage's entry as `DSH_REQUIRE_SCENARIOS`, with the sign-in
+  checks), then gate `scenarios`, `go test -tags scenario -count=1 -v -run <plan>
+  ./...` per module, failing on any `--- SKIP` or a planned test without a
+  `--- PASS` line. A failed preflight starts no scenario. `--stage` and
+  `--evidence` are required.
+
+The sign-in checks (`acceptance/signin.go`): `claude-session` runs
+`claude auth status --json` (Claude Code 2.1.312) with `ANTHROPIC_API_KEY`,
+`ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `COPILOT_GITHUB_TOKEN`,
+`GH_TOKEN` and `GITHUB_TOKEN` removed from its environment, and passes only on
+exit 0 with `loggedIn: true`; `copilot-session` fails closed, because the GitHub
+Copilot CLI 1.0.115 has no non-interactive status command; `none` runs no check.
 
 - `ready`, `close` and `records` are the stage-closure gate; see
   [Stage closure](#stage-closure).
@@ -348,7 +373,8 @@ authoring stage. `built-through` is the last closed story: IDs authored at or
 before it must have a file. An optional `requires` list names the stages whose
 behaviour a scenario authored ahead of them exercises; `preflight` refuses to run
 it until `built-through` reaches every one, and none may come after the executing
-stage. Scenario files bind an ID to a test with a
+stage. Every entry states its `credential` (`none`, `claude-session` or
+`copilot-session`), the signed-in session it needs. Scenario files bind an ID to a test with a
 `//dsh:scenario <ID>` line in the doc comment of a top-level `TestXxx`. The parser
 (`acceptance/`) accepts only this shape, so no YAML dependency is needed:
 
@@ -359,10 +385,12 @@ stages:
   DH-S-17:
     - id: DH-E-LLM-3
       authored: DH-S-9
+      credential: claude-session
       requires: [DH-S-11, DH-S-16]
   DH-S-18:
     - id: DH-E-TOOLCHAIN-2
       authored: DH-S-1
+      credential: none
 ```
 
 ## Test traceability (`//dsh:test`, `trace-tests`; M1-G-CLOSE-9)

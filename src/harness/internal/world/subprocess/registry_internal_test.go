@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox"
 )
 
 // StopAll returns by its context's end even when a tree's stop cannot finish:
@@ -21,7 +23,7 @@ func TestStopAllReturnsAtTheContextEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := Start(context.Background(), Spec{Argv: []string{exe}, Env: Env{"SUBPROCESSTEST_ROLE=stubborn"}})
+	p, err := Start(context.Background(), Spec{Argv: []string{exe}, Env: Env{"SUBPROCESSTEST_ROLE=stubborn"}, Launch: sandbox.Trusted("test fixture")})
 	if err != nil {
 		t.Fatal(err)
 	}

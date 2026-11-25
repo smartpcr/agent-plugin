@@ -20,17 +20,26 @@
 //
 // Subcommands, each with --root:
 //
-//	rehearse [--out dir]   the release rehearsal: cmd/dsh for six targets, pure Go,
-//	                       -trimpath, SHA-256 and embedded version printed, nothing
-//	                       published (DH-D-TOOLCHAIN-5)
+//	rehearse [--out dir]   the release rehearsal: a goreleaser snapshot of
+//	                       .goreleaser.dsh.yaml (six archives, checksums.txt, each
+//	                       archive verified), SHA-256 and embedded version of each
+//	                       binary printed, nothing published (DH-D-TOOLCHAIN-5,
+//	                       gap-closure 19.1.1); the keyless replay is open (19.1.2)
 //	preflight              the scenario workflow's first step: fails when the
-//	                       credential hook fails, the index disagrees with the
-//	                       scenario tests, an ID of DSH_REQUIRE_SCENARIOS has no
-//	                       scenario test, or its index entry requires a stage past
-//	                       built-through (DH-D-TOOLCHAIN-4); it reads no model key
+//	                       index disagrees with the scenario tests, an ID of
+//	                       DSH_REQUIRE_SCENARIOS has no scenario test, its index
+//	                       entry requires a stage past built-through, or the client
+//	                       its credential names is not signed in on this host
+//	                       (DH-D-TOOLCHAIN-4, M1-G-TOOL-16); it reads no model key
 //	                       (models-signed-in-claude-copilot)
 //	require --stage DH-S-n prints the index entry of the stage being accepted, the
 //	                       value of DSH_REQUIRE_SCENARIOS
+//	scenarios --stage DH-S-n --evidence file
+//	                       runs that stage's scenarios on the development host,
+//	                       where the user is signed in (M1-D-TOOL-6 (a)): the
+//	                       preflight with the sign-in checks, then go test -tags
+//	                       scenario of the plan, as one evidence record
+//	                       (scenariorun.go)
 //	ready --stage DH-S-n [--built] [--story s]
 //	                       the first step of a stage close (C57; M2-C-2): every
 //	                       condition of docs/stories/<story>/evidence/<stage>.md
@@ -91,9 +100,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		case "rehearse":
 			return runRehearse(ctx, args[1:], stdout, stderr)
 		case "preflight":
-			return runPreflight(args[1:], stdout, stderr)
+			return runPreflight(ctx, args[1:], stdout, stderr)
 		case "require":
 			return runRequire(args[1:], stdout, stderr)
+		case "scenarios":
+			return runScenarios(ctx, args[1:], stdout, stderr)
 		case "trace-tests":
 			return runTraceTests(args[1:], stdout, stderr)
 		case "ready":
@@ -197,10 +208,11 @@ func runRehearse(ctx context.Context, args []string, stdout, stderr io.Writer) i
 
 // runPreflight is "harness-gate preflight [--root dir]", the first job of the
 // credentialed scenario workflow (DH-ADR-TOOLCHAIN-6, -12). It decides from the
-// process environment through acceptance.Preflight and starts nothing. When
-// GITHUB_OUTPUT is set it appends count=, run= (the go test -run expression) and
-// tests= (the test names) for the scenario job.
-func runPreflight(args []string, stdout, stderr io.Writer) int {
+// process environment through acceptance.PreflightWith, checking each planned
+// scenario's sign-in through signInProbe, prints each sign-in line and starts
+// nothing. When GITHUB_OUTPUT is set it appends count=, run= (the go test -run
+// expression) and tests= (the test names) for the scenario job.
+func runPreflight(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	root, ok := subcommandFlags("preflight", args, stderr, nil)
 	if !ok {
 		return 2
@@ -210,7 +222,10 @@ func runPreflight(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "harness-gate preflight: %v\n", err)
 		return 2
 	}
-	plan, err := acceptance.Preflight(acceptance.Environ(os.Environ()), x, scenarios)
+	plan, err := acceptance.PreflightWith(ctx, acceptance.Environ(os.Environ()), x, scenarios, signInProbe)
+	for _, s := range plan.SignIns {
+		fmt.Fprintf(stdout, "harness-gate preflight: %s\n", s)
+	}
 	if err != nil {
 		fmt.Fprintf(stdout, "harness-gate preflight: FAILED, no scenario is started:\n%v\n", err)
 		return 1

@@ -4,6 +4,8 @@ built-through: DH-S-8
 stages:
   DH-S-16:
     - id: DH-E-STORE-1
+      credential: none
       authored: DH-S-7
     - id: DH-E-STORE-6
+      credential: none
       authored: DH-S-7
