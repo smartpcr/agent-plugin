@@ -161,6 +161,11 @@ type spcWorld struct {
 	svc    *local.Service
 	policy sandbox.Policy
 	ready  launch.Ready
+
+	// probeState and probeMode are the start-up probe claim, checked against
+	// policy once the policy step has built it.
+	probeState string
+	probeMode  sandbox.Mode
 	before int
 
 	plan sandbox.Launch
@@ -272,26 +277,42 @@ func (w *spcWorld) givenPolicy(name string) error {
 	if name == "danger-full-access require full" && (w.policy.Mode() != sandbox.DangerFullAccess || w.policy.Require() != sandbox.RequireFull) {
 		return fmt.Errorf("policy is %s require %s; want danger-full-access require full", w.policy.Mode(), w.policy.Require())
 	}
-	return nil
+	return w.checkProbeClaim()
 }
 
-// givenProbeFull shows the start-up probe's evidence alone gives Full for p, so
-// a Partial at Confirm comes from the weaker ready, not the probe.
+// givenProbeFull records the scenario's claim that the start-up probe alone
+// gives state for its mode-policy. The feature states it before the policy, so
+// the claim is checked by checkProbeClaim once givenPolicy has built the very
+// policy Prepare and Start receive.
 func (w *spcWorld) givenProbeFull(state, mode string) error {
 	if mode != string(sandbox.WorkspaceWrite) {
 		return fmt.Errorf("unsupported mode %q", mode)
 	}
-	p := sandboxtest.Policy(sandbox.WorkspaceWrite, w.dir)
+	w.probeState, w.probeMode = state, sandbox.Mode(mode)
+	return nil
+}
+
+// checkProbeClaim shows the start-up probe's evidence alone gives the claimed
+// state for w.policy, so a Partial at Confirm comes from the weaker ready for
+// the same policy, not from the probe.
+func (w *spcWorld) checkProbeClaim() error {
+	if w.probeState == "" {
+		return nil
+	}
+	p := w.policy
+	if p.Mode() != w.probeMode {
+		return fmt.Errorf("the probe claim is for a %s policy; the scenario's policy is %s", w.probeMode, p.Mode())
+	}
 	if p.Network() || !slices.Contains(sandbox.Promised(p), sandbox.EffectNetwork) {
-		return errors.New("the workspace-write policy does not deny and promise the network")
+		return errors.New("the scenario's workspace-write policy does not deny and promise the network")
 	}
 	st := w.svc.Describe(context.Background())
-	if len(st) != 1 {
-		return fmt.Errorf("Describe = %+v", st)
+	if len(st) != 1 || !st[0].Available {
+		return fmt.Errorf("Describe = %+v; want the one probed backend available", st)
 	}
 	c := sandbox.Enforce(p, sandbox.Evidence{Backend: st[0].Backend, Probe: st[0].Governed, Start: st[0].Governed})
-	if string(c.State) != state || len(c.Missing) != 0 {
-		return fmt.Errorf("the probe's evidence gives %+v; want %s", c, state)
+	if string(c.State) != w.probeState || len(c.Missing) != 0 {
+		return fmt.Errorf("the probe's evidence gives %+v for the scenario's policy; want %s", c, w.probeState)
 	}
 	return nil
 }
