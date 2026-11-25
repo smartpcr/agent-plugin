@@ -31,15 +31,26 @@ Each step's merge commit; `--built` refuses a step without one.
 
 | Step | Deliverable | Commit | Notes |
 | --- | --- | --- | --- |
-| 12.1 | DH-D-VIEW-10 | | cycle C-3, with 12.2 and 12.3 at one commit: the squash-merge commit of the implementation-plan Stage 2.5 integration PR (#118), recorded after merge, that registers all three in the build catalogue and lands `cyclec3_test.go` (the members were merged separately before it: 90abd12 #111, 30aeb4c #110, 7b4e8cd #113); `session.workdir` in `builtin.Session()` |
-| 12.2 | DH-D-FS-4 | | cycle C-3, same commit as 12.1; `fs.local` and `fs.ops` in `builtin.FS()` |
-| 12.3 | DH-D-SANDBOX-1 | | cycle C-3, same commit as 12.1; `sandbox.policy` in `builtin.Sandbox()` (item exported by `fs/ops`, its one importer) |
-| 12.4 | DH-D-HUMAN-4 | | P1, pulled forward |
-| 12.5 | DH-D-FS-6 | | |
+| 12.1 | DH-D-VIEW-10 | 82a8b6e | cycle C-3, with 12.2 and 12.3 at one commit: the squash-merge commit of the implementation-plan Stage 2.5 integration PR (#118), recorded after merge, that registers all three in the build catalogue and lands `cyclec3_test.go` (the members were merged separately before it: 90abd12 #111, 30aeb4c #110, 7b4e8cd #113); `session.workdir` in `builtin.Session()` |
+| 12.2 | DH-D-FS-4 | 82a8b6e | cycle C-3, same commit as 12.1; `fs.local` and `fs.ops` in `builtin.FS()` |
+| 12.3 | DH-D-SANDBOX-1 | 82a8b6e | cycle C-3, same commit as 12.1; `sandbox.policy` in `builtin.Sandbox()` (item exported by `fs/ops`, its one importer) |
+| 12.4 | DH-D-HUMAN-4 | 1333bc8 | P1, pulled forward; squash-merge of #121 |
+| 12.5 | DH-D-FS-6 | 4aed016 | squash-merge of #120 |
 
 ## Scenarios
 
 None executed here. Authored here: DH-E-FS-1, DH-E-FS-2, DH-E-VIEW-5 (run in DH-S-18), DH-E-SANDBOX-7 (run in DH-S-17) and the guarded DH-E-FS-3 (run in DH-S-16, step 16.8).
+Each is a `//go:build scenario` test under `src/harness/internal/testkit/scenarios/` and is indexed in
+`test/harness/acceptance-index.yaml` under the stage that runs it:
+
+- DH-E-FS-1: `fs_fence_scenario_test.go`, indexed under DH-S-18. 3,334 write/edit/apply_patch cycles against a swapper process; during a swap the transient `fs/not-found` and `fs/not-directory` are accepted besides `fs/sandbox-denied` (answer `fs1-transient-refusal-codes`); at least one `fs/sandbox-denied`; read-only and escalation legs.
+- DH-E-FS-2: `fs_long_scenario_test.go`, indexed under DH-S-18. 20 tasks on fresh checkouts, `rg` off `PATH`; invalid-pattern share under 5%, git changes equal the logged edits, outside listing unchanged.
+- DH-E-FS-3: `fs_two_process_scenario_test.go`, indexed under DH-S-16. guarded; two SDK hosts, 1,000 marker edits each with an outside editor. Deviation: each launched process has its own `DSH_HOME`, so "one home" is the shared `{locks}` directory.
+- DH-E-VIEW-5: `view_workdir_scenario_test.go`, indexed under DH-S-18. move and recovery `workspace-root/change` events; `workdir/unavailable` once both directories are gone.
+- DH-E-SANDBOX-7: `sandbox_policy_text_scenario_test.go`, indexed under DH-S-17. 3 policy texts x 12 tasks x 3 runs; per-platform report to `DSH_SCENARIO_REPORT`.
+
+FS-1 and FS-3 drive dsh against a loopback scripted model endpoint (`scripted_model_test.go`); per answer
+`fs-scripted-model-vs-replay` they switch to the replay provider when DH-S-16 lands it.
 
 | Scenario | Variant | Venue | Leg | Environment | Commit | Result | Artifacts |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -51,8 +62,8 @@ which commit (impl.md sec. 7.3).
 
 | Step | Check | Seen | Operator | Commit | Label |
 | --- | --- | --- | --- | --- | --- |
-| 12.2 | the write tool asked for a path outside the roots through a symbolic link: the denial (scratch directory) | | | | `manual` |
-| 12.2 | a directory swapped for a link during a write: the fence held (scratch directory) | | | | `manual` |
+| 12.2 | the write tool asked for a path outside the roots through a symbolic link: the denial (scratch directory) | Seen on Windows 11 NTFS (junction; symbolic links not permitted to the account) and on WSL Ubuntu-24.04 ext4 (symbolic link): the write is refused `fs/sandbox-denied` and the outside directory holds only its `keep.txt` | operator-accepted agent run (answer `dh-s-12-manual-checks`: "Accept the recorded runs") | b02b689 | `manual` |
+| 12.2 | a directory swapped for a link during a write: the fence held (scratch directory) | Seen on both platforms with the `util/fsx` stage-directory pin (Open items), 1,000 writes against a swapper per run: the outside directory holds only `keep.txt` and no `.dsh-stage-*` file is left in the workspace. Windows NTFS (junction), 18,439 swaps: `sandbox-denied` 905, `not-directory` 13, `io` 5, success 77. WSL ext4 (symbolic link), 3 of 3 runs: `sandbox-denied` 981/974/992, `not-directory` 2/6/5, success 17/20/3. Before the pin the same runs left 1 to ~140 staged files | operator-accepted agent run (answer `dh-s-12-manual-checks`) | b02b689 | `manual` |
 
 ## Owner defaults (M2-C-4)
 
@@ -62,8 +73,8 @@ stage closes; `--built` refuses a row with no confirmation or no name in By.
 
 | Default | Raised in | Text (impl.md sec. 9.1) | Confirmed | By | Commit |
 | --- | --- | --- | --- | --- | --- |
-| Full-access label | I2 Q3 | In full-access mode a command may take over the harness, and the label says so | | | |
-| UTF-8-only text tools | core §6.3 | Text tools refuse every encoding but UTF-8 | | | |
+| Full-access label | I2 Q3 | In full-access mode a command may take over the harness, and the label says so | Yes, as written | operator (answer `m2-unconfirmed-defaults`: "Confirm both as written") | |
+| UTF-8-only text tools | core §6.3 | Text tools refuse every encoding but UTF-8 | Yes, as written | operator (answer `m2-unconfirmed-defaults`) | |
 
 ## M2 entry (implementation-plan Stage 1.2)
 
@@ -103,7 +114,28 @@ decisions hold. Relative-path writes land in the current directory through `work
 `session.workdir` is not reloaded (its fold and attached sessions survive), `fs.ops` and `sandbox.policy` are,
 and the fence holds on the new provider. Passed locally on Windows native (`go1.27.4`).
 
-Not yet recorded: the gate runner's output, the remaining `go test` command lines and `DSH_REQUIRE_SCENARIOS`
+Manual checks (register above): run by driving `fs.ops` booted from the build catalogue (the `bootCycleC3`
+fixture) in a scratch `t.TempDir()`, at b02b689 with this stage's diff (the check 2 re-run includes the `util/fsx` pin), on Windows native and on WSL Ubuntu-24.04 (ext4 copy of
+`src`), `go1.27.4`. Check 2 ran 1,000 writes against a goroutine swapping `A/sub` for a link to the outside
+directory and back.
+
+Scenario sources: `go -C src/harness vet -tags scenario ./internal/testkit/scenarios/...` (clean).
+
+Gate: `go -C tools/harness-gate run . --root ../..` on the working tree with this stage's diff; the lanes
+(`lanes/win.ps1`, `lanes/wsl.sh`) and `--evidence` refuse an uncommitted tree, so per answer
+`s12-lane-vet-inherited` they re-run on the merged SHA (the vet repair is on `main`: d6f699a #124, 7342079 #125).
+Local Windows result on b02b689 plus this diff: gofmt, vet, staticcheck, modules, test, coverage, trace,
+scenario-index, policy-text PASS; budget failed once under load (`TestBudgetStoreAppend` open p95 846ms over
+250ms; passed 3 of 3 re-runs alone, and the `^TestBudget` set passed); cross-compile (6 targets), govulncheck
+and self (`-skip ^TestRepositoryPassesEveryGate$`, after updating `TestRequireSubcommand`'s pinned lists to the
+new index entries) PASS, each run on its own. That full run predates the `util/fsx` pin. On the final diff
+(including the pin), only the checks that diff touches were run (operator rule `operator-standing-gate-scope`):
+`gofmt -l` on the changed files (clean); `go vet` with `-tags=` and with `-tags=replay,scenario,bench` on
+`./internal/util/fsx` and `./internal/testkit/scenarios/...` (clean); `go test ./internal/util/fsx` (ok);
+in `tools/harness-gate`, `go vet` and `TestRequireSubcommand` (ok); `harness-gate policy-text` (ok); and the
+scenario-index gate (39 scenario tests authored, 39 indexed in 11 stages, built through DH-S-11).
+
+Not yet recorded: the lane outputs on the merged SHA and `DSH_REQUIRE_SCENARIOS`
 (`harness-gate require --stage DH-S-12`).
 
 ### Run identifiers
@@ -124,5 +156,18 @@ The Manual checks register above.
 Not yet recorded: the before-and-after comparison the stage names, or what was retained.
 
 ### Open items
+
+**Fixed here: staged files leaked under a directory swap (DH-D-FS-4, `util/fsx/rooted.go`).** `publishIn`
+removed its `.dsh-stage-*` file by name through the `os.Root`; once the stage's directory had been swapped for a
+link (or moved), the remove was refused or missed, the error was dropped, and the staged file stayed in the real
+directory (`linkOrReserve` had the same shape). The fence held throughout. Now the stage's directory is opened
+as a sub-root (`dirPin`) when the stage is created; the staged file is created and every leftover removed
+through that handle, while publication stays by name through the root, so the fence decides as before. A
+refused open of the directory is the stage step's error (no by-name fallback). Regression test
+`TestReplaceInRemovesStageAfterDirectorySwap` (`util/fsx/replace_test.go`, `ReplaceIn` and
+`CreateIfAbsentIn`) fails without the pin and passes with it on Windows and WSL; manual check 2 re-run above.
+
+**Codes during a swap outside FS-1's allowed set.** Windows also returned `fs/io` (2 to 5 of 1,000) and, once,
+`fs/permission-denied`. FS-1 as authored fails on them; raised as Q `fs1-swap-io-codes`.
 
 Debt-audit item `UP-DEBT-found.Q3.2` (a real model giving up before its first tool call) closes when DH-E-SANDBOX-7 passes in DH-S-17. DH-D-FS-4 stays built until DH-S-28 (DH-E-FS-5).

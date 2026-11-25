@@ -594,3 +594,59 @@ func withRoot(dir string, f func(*os.Root) error) error {
 	defer r.Close()
 	return f(r)
 }
+
+// A publication refused after its directory was moved aside (and, where links are
+// permitted, replaced by a link to outside the root) removes its staged file from
+// the real directory: the cleanup goes through a handle on that directory, not by
+// name through the swapped path (DH-S-12 manual check 2, DH-E-FS-1).
+func TestReplaceInRemovesStageAfterDirectorySwap(t *testing.T) {
+	base := t.TempDir()
+	rootDir, outside := filepath.Join(base, "W"), filepath.Join(base, "O")
+	sub := filepath.Join(rootDir, "sub")
+	for _, d := range []string{sub, outside} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	root, err := os.OpenRoot(rootDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = root.Close() })
+	aside := sub + ".real"
+	stop := errors.New("refused after the swap")
+	for _, exclusive := range []bool{false, true} {
+		publish := ReplaceIn
+		if exclusive {
+			publish = CreateIfAbsentIn
+		}
+		linked := false
+		err = publish(root, "sub/f.txt", Bytes([]byte("x")), Options{Perm: 0o600, BeforePublish: func() error {
+			if err := os.Rename(sub, aside); err != nil {
+				t.Fatal(err)
+			}
+			linked = os.Symlink(outside, sub) == nil
+			return stop
+		}})
+		if !errors.Is(err, stop) {
+			t.Fatalf("exclusive=%v: publish = %v, want the BeforePublish refusal", exclusive, err)
+		}
+		if linked {
+			if err := os.Remove(sub); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.Rename(aside, sub); err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range []string{sub, outside} {
+			entries, err := os.ReadDir(d)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, e := range entries {
+				t.Errorf("exclusive=%v linked=%v: %s left in %s", exclusive, linked, e.Name(), d)
+			}
+		}
+	}
+}
