@@ -41,12 +41,16 @@ const fs1Batch = 99
 // process that swaps W/sub for a link to O in a tight loop (a symbolic link, or a
 // junction where Windows refuses one, recorded in the log); when a direct caller
 // issues 10,000 write, edit and apply_patch calls into W/sub through the tool
-// pipeline, then repeats one write under read-only and one under an approved
-// escalation (the danger-full-access grant of one call, answered allowed-once)
-// to a directory E outside every root; then the hash listing of O is
-// unchanged, every refused call returns fs/sandbox-denied and no staged file is
-// left in W, X or O, the read-only write is refused and the escalated write
-// succeeds and is logged with its approval.
+// pipeline, then repeats one write under read-only and, in a new
+// workspace-write session whose client answers allowed-once, one plain write to
+// a directory E outside every root followed by its escalated retry (the same
+// arguments plus sandbox_permissions danger-full-access and a justification,
+// policy.Resolver.Escalate A17); then the hash listing of O is unchanged, every
+// refused call returns fs/sandbox-denied and no staged file is left in W, X or
+// O, the read-only write is refused, the plain write to E is refused
+// fs/sandbox-denied with no approval asked, and the retry asks exactly one
+// approval (naming its call ID, its reason showing the justification), succeeds
+// and is logged with that approval.
 //
 // The direct caller is the scripted model endpoint (scripted_model_test.go):
 // each scripted call goes through dsh's whole pipeline as a model's would.
@@ -211,9 +215,17 @@ func fs1Cycle(sub string, c int) []scriptedCall {
 	}
 }
 
-// fs1Escalation is the escalated leg: in a workspace-write session whose client
-// answers every approval allowed-once, one write to E, outside every root,
-// succeeds and the log records its approval.
+// fs1Justification is the justification the escalated retry carries; its
+// approval's reason must show it.
+const fs1Justification = "DH-E-FS-1 escalation leg: write one file outside every root"
+
+// fs1Escalation is the escalated leg (policy.Resolver.Escalate, A17): in a
+// workspace-write session whose client answers every approval allowed-once, a
+// plain write to E, outside every root, is refused fs/sandbox-denied with no
+// approval asked; the retry with the same arguments plus sandbox_permissions
+// danger-full-access and a justification asks exactly one approval, naming the
+// retry's call ID and showing the justification, then succeeds, and the log
+// records that approval.
 func fs1Escalation(t *testing.T, bin, layer string, route *protocol.ModelRoute, m *scriptedModel, ws, escalate string) {
 	t.Helper()
 	var mu sync.Mutex
@@ -228,29 +240,50 @@ func fs1Escalation(t *testing.T, bin, layer string, route *protocol.ModelRoute, 
 	session := h.createIn(t, route, ws, "workspace-write")
 	h.keepExport(t, session)
 	path := filepath.Join(escalate, "escalated.txt")
-	m.script(scriptedCall{Name: "write", Args: map[string]any{"file_path": path, "content": "escalated\n"}, Tag: "escalated"})
-	evs := h.runPrompt(t, session, "Run the scripted call.", 5*time.Minute)
+	m.script(
+		scriptedCall{Name: "write", Args: map[string]any{"file_path": path, "content": "escalated\n"}, Tag: "escalation/denied"},
+		scriptedCall{Name: "write", Args: map[string]any{
+			"file_path":           path,
+			"content":             "escalated\n",
+			"sandbox_permissions": "danger-full-access",
+			"justification":       fs1Justification,
+		}, Tag: "escalation/retry"},
+	)
+	evs := h.runPrompt(t, session, "Run the scripted calls.", 5*time.Minute)
+	if n := m.pending(); n != 0 {
+		t.Fatalf("the escalation turn ended with %d scripted calls not made", n)
+	}
 	got := toolOutcomes(t, evs)
-	if len(got) != 1 || got[0].IsError {
-		t.Fatalf("the escalated write answered %+v, want one call that succeeded", got)
+	if len(got) != 2 {
+		t.Fatalf("the escalation leg answered %+v, want the denied write and its retry", got)
+	}
+	denied, retry := got[0], got[1]
+	if !denied.IsError || !denied.has(codeSandboxDenied) {
+		t.Fatalf("the plain write to E answered %+v, want it refused %s", denied, codeSandboxDenied)
+	}
+	if retry.IsError {
+		t.Fatalf("the escalated retry answered %+v, want it to succeed", retry)
 	}
 	if data, err := os.ReadFile(path); err != nil || string(data) != "escalated\n" {
-		t.Fatalf("%s is %q (%v) after the escalated write", path, data, err)
+		t.Fatalf("%s is %q (%v) after the escalated retry", path, data, err)
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(asked) != 1 || asked[0].CallID != got[0].ID {
-		t.Fatalf("approvals asked %+v, want one for the escalated call %s", asked, got[0].ID)
+	if len(asked) != 1 || asked[0].CallID != retry.ID {
+		t.Fatalf("approvals asked %+v, want exactly one, for the escalated retry %s (none for the denied call %s)", asked, retry.ID, denied.ID)
+	}
+	if !strings.Contains(asked[0].Reason, fs1Justification) {
+		t.Fatalf("the approval of %s has reason %q, want it to show the justification %q", retry.ID, asked[0].Reason, fs1Justification)
 	}
 	t.Logf("escalation reason: %q", asked[0].Reason)
 	logged := false
 	for _, e := range evs {
-		if strings.HasPrefix(e.Type, "approval/") && strings.Contains(string(e.Data), got[0].ID) {
+		if strings.HasPrefix(e.Type, "approval/") && strings.Contains(string(e.Data), retry.ID) {
 			logged = true
 		}
 	}
 	if !logged {
-		t.Fatalf("no approval/ event of the run names the escalated call %s", got[0].ID)
+		t.Fatalf("no approval/ event of the run names the escalated retry %s", retry.ID)
 	}
 }
 
