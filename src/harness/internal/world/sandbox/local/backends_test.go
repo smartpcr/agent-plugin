@@ -286,3 +286,69 @@ func TestPrepareKeepsTheHarnessUnwritable(t *testing.T) {
 		}
 	}
 }
+
+// TestPrepareSeesThroughSymlinkedAncestors pins that the refusal compares the
+// directories a backend will actually open (DH-ADR-SANDBOX-5 (a),
+// DH-T-SANDBOX-13): a root reached through a symbolic link in an ancestor is
+// judged by where it resolves, so /alias/config with /alias pointing at the
+// home is the home's config directory.
+//
+//dsh:test DH-T-SANDBOX-13
+func TestPrepareSeesThroughSymlinkedAncestors(t *testing.T) {
+	base := t.TempDir()
+	home := filepath.Join(base, "home")
+	for _, d := range []string{filepath.Join(home, "config"), filepath.Join(home, "plugins", "p1", "state")} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	links := t.TempDir()
+	link := func(name, target string) string {
+		l := filepath.Join(links, name)
+		if err := os.Symlink(target, l); err != nil {
+			t.Skipf("no symbolic links here: %v", err)
+		}
+		return l
+	}
+	toHome, toBase, toExeParent, toPlugins := link("h", home), link("b", filepath.Dir(base)), link("e", filepath.Dir(filepath.Dir(exe))), link("p", filepath.Join(home, "plugins"))
+	stage := &refusingStage{governed: sandbox.Effects}
+	service := func(b local.Backend) *local.Service {
+		s, err := local.New(context.Background(), local.Config{Home: home}, []local.Backend{b})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = s.Close() })
+		return s
+	}
+	landlock := service(local.NewLandlock(fakeKernel(5), stage.run))
+	bwrap := service(local.NewBwrap(func() (string, error) { return fixture("bwrap"), nil }, stage.run))
+	for _, tc := range []struct {
+		name                string
+		root                string
+		landlockOK, bwrapOK bool
+	}{
+		{"a config directory reached through a link to the home", filepath.Join(toHome, "config"), false, false},
+		{"a root reached through a link that holds the home", filepath.Join(toBase, filepath.Base(base)), false, true},
+		{"a root reached through a link that holds the binary", filepath.Join(toExeParent, filepath.Base(filepath.Dir(exe))), false, true},
+		{"a plugin's state directory reached through a link", filepath.Join(toPlugins, "p1", "state"), true, true},
+	} {
+		p := issue(t, mint.Spec{Mode: string(sandbox.WorkspaceWrite), Roots: []mint.Root{{Path: tc.root, Source: string(sandbox.SourceGrant)}}})
+		for _, b := range []struct {
+			name sandbox.Backend
+			s    *local.Service
+			ok   bool
+		}{{sandbox.BackendLandlock, landlock, tc.landlockOK}, {sandbox.BackendBwrap, bwrap, tc.bwrapOK}} {
+			plan, _, err := local.PreparedPrefix(context.Background(), b.s, p, command(t))
+			if b.ok && err != nil {
+				t.Errorf("%s under %s: Prepare = %v; want it prepared", tc.name, b.name, err)
+			}
+			if !b.ok && herr.Kind(err) != sandbox.CodeUnavailable {
+				t.Errorf("%s under %s: Prepare = %v, %v; want %s", tc.name, b.name, plan, err, sandbox.CodeUnavailable)
+			}
+		}
+	}
+}
