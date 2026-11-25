@@ -33,7 +33,36 @@ const (
 	CodeInvalidMode herr.Reason = "sandbox/invalid-mode"
 	// CodeEscalationRejected: a one-call widening was not approved.
 	CodeEscalationRejected herr.Reason = "sandbox/escalation-rejected"
+	// CodeLaunchFailed: the launch stage died, sent no valid ready, was refused,
+	// or the host went away before go; the command never ran (INV-14).
+	CodeLaunchFailed herr.Reason = "sandbox/launch-failed"
+	// CodeExecFailed: the host sent go, but the stage could not start the command;
+	// reported as the command's own failure to start.
+	CodeExecFailed herr.Reason = "sandbox/exec-failed"
 )
+
+// Backend names the confinement a launch stage runs under (architecture.md sec.
+// 4.2, Confinement.Backend).
+type Backend string
+
+// The backends. BackendNone is the only one of an unconfined plan.
+const (
+	BackendNone     Backend = "none"
+	BackendBwrap    Backend = "bwrap"
+	BackendLandlock Backend = "landlock"
+)
+
+// Backends lists the known backends.
+var Backends = []Backend{BackendNone, BackendBwrap, BackendLandlock}
+
+// Valid reports whether b is a known backend.
+func (b Backend) Valid() bool { return slices.Contains(Backends, b) }
+
+// Effect is one effect a policy promises to govern (a write outside the roots,
+// outbound network, delegated-execution, ...). A launch stage reports the
+// effects it governs; an effect it does not name counts as not governed
+// (DH-ADR-SANDBOX-3).
+type Effect string
 
 // Mode is the sandbox mode of a session or one call.
 type Mode string

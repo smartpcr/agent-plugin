@@ -64,3 +64,15 @@ func TestMainServesTheListingMode(t *testing.T) {
 		t.Errorf("main printed %q with status %d, want nothing and 2", got, status)
 	}
 }
+
+// TestMainServesTheSandboxLaunchMode: the hidden mode word reaches the sandbox
+// launch stage before the command tree; without a plan it ends with the stage's
+// failure status, runs nothing and prints nothing on standard output.
+//
+//dsh:test DH-T-SANDBOX-4
+func TestMainServesTheSandboxLaunchMode(t *testing.T) {
+	got, status := runMain(t, "sandbox-launch")
+	if status != 125 || got != "" {
+		t.Errorf("main printed %q with status %d, want nothing and 125", got, status)
+	}
+}
