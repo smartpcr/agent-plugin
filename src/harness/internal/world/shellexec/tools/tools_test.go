@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/agent"
@@ -21,6 +23,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store/sqlite"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/workdir"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
+	spilllocal "github.com/smartpcr/agent-plugin/src/harness/internal/storage/spill/local"
 	htools "github.com/smartpcr/agent-plugin/src/harness/internal/tools"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools/core"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
@@ -414,9 +417,12 @@ func runReal(t *testing.T, e *shellexec.Executor, name string, cases []realCase)
 	}
 }
 
-// TestTailIsBoundedWithSpill: a stream longer than OutputBytes shows its last
+// TestTailIsBoundedWithSpill: a stream longer than the bound shows its last
 // bytes, marked truncated, with its size; the whole stream's spill reference
-// is carried when the executor saved one.
+// is carried when the executor saved one; and the bound holds after invalid
+// bytes are repaired, which lengthens the text.
+//
+//dsh:test DH-T-EXEC-15
 func TestTailIsBoundedWithSpill(t *testing.T) {
 	got := shelltools.StreamOf(subprocess.Collected{Tail: []byte("aaaa\u00e9bbb"), Written: 1 << 20}, 4)
 	if got.Tail != "bbb" || !got.Truncated || got.Bytes != 1<<20 {
@@ -425,5 +431,101 @@ func TestTailIsBoundedWithSpill(t *testing.T) {
 	got = shelltools.StreamOf(subprocess.Collected{Tail: []byte("ok"), Written: 9, Truncated: true, Spill: &event.Spill{Path: "s/x.txt", Bytes: 9}}, 10)
 	if got.Tail != "ok" || !got.Truncated || got.Spill == nil || got.Spill.ID != "s/x.txt" || got.Spill.Bytes != 9 {
 		t.Fatalf("stream = %+v, want the spill reference carried", got)
+	}
+	bad := []byte{0xff, 'a', 0xff}
+	for _, c := range []struct {
+		limit     int
+		tail      string
+		truncated bool
+	}{
+		{3, "\uFFFD", true},
+		{6, "a\uFFFD", true},
+		{7, "\uFFFDa\uFFFD", false},
+	} {
+		got = shelltools.StreamOf(subprocess.Collected{Tail: bad, Written: 3}, c.limit)
+		if len(got.Tail) > c.limit || !utf8.ValidString(got.Tail) || got.Tail != c.tail || got.Truncated != c.truncated {
+			t.Fatalf("limit %d: stream = %+v (%d bytes), want %q truncated=%v", c.limit, got, len(got.Tail), c.tail, c.truncated)
+		}
+	}
+}
+
+// TestTimeoutIsCutBeforeConversion: a timeout in milliseconds too large for a
+// time.Duration (one that would overflow negative, one that would wrap to a
+// few microseconds, the largest int64) resolves to the executor's cap, not to
+// a refusal or an instant timeout.
+//
+//dsh:test DH-T-EXEC-15
+func TestTimeoutIsCutBeforeConversion(t *testing.T) {
+	reg, _ := fakeRegistry(t)
+	e, err := reg.Get(shellexec.Bash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lim := e.Limits()
+	for _, ms := range []int64{lim.MaxTimeout.Milliseconds() + 1, 9223372036855, 18446744073710, math.MaxInt64} {
+		d := shelltools.Budget(ms, lim)
+		req, err := e.Resolve(shellexec.Request{Shell: shellexec.Bash, Command: "true", Timeout: d, Policy: sandboxtest.Policy(sandbox.DangerFullAccess)})
+		if err != nil || req.Timeout != lim.MaxTimeout {
+			t.Fatalf("timeout %d ms: budget %v resolved to %v, %v; want the cap %v", ms, d, req.Timeout, err, lim.MaxTimeout)
+		}
+	}
+	if d := shelltools.Budget(1500, lim); d != 1500*time.Millisecond {
+		t.Fatalf("budget(1500) = %v", d)
+	}
+	if d := shelltools.Budget(0, lim); d != 0 {
+		t.Fatalf("budget(0) = %v, want 0 (the shell's default)", d)
+	}
+	if d := shelltools.Budget(-1, lim); d >= 0 {
+		t.Fatalf("budget(-1) = %v, want negative for Resolve to refuse", d)
+	}
+}
+
+// TestOutputPastTheRingIsSpilled: the tool shows what the executor's ring
+// holds, so output that fits the ring is shown whole, and output past it is
+// cut only where the collector spilled the whole stream (a regression for a
+// tool bound below the ring, which cut output nothing saved).
+//
+//dsh:test DH-T-EXEC-15
+func TestOutputPastTheRingIsSpilled(t *testing.T) {
+	h := shellexec.LocalHost(os.Environ())
+	if _, err := bash.Find("", h); err != nil {
+		if runtime.GOOS == "linux" {
+			t.Fatalf("bash is required on the Linux lane: %v", err)
+		}
+		t.Skipf("no bash on this lane: %v", err)
+	}
+	l := home.New(t.TempDir())
+	if err := home.Ensure(l); err != nil {
+		t.Fatal(err)
+	}
+	sp, err := spilllocal.New(l, spilllocal.DefaultConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const ring = 1000
+	e, err := bash.New(bash.Config{Timeout: 60 * time.Second, TailBytes: ring}, h,
+		shellexec.Options{Sandbox: localSandbox(t), Env: builder(), Spill: sp})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := shellexec.NewRegistry()
+	if _, err := reg.Register(e); err != nil {
+		t.Fatal(err)
+	}
+	r := newRig(t, reg, sandbox.DangerFullAccess)
+	for _, n := range []int{900, 1500} {
+		res, _ := r.run(shelltools.BashName, map[string]any{"command": fmt.Sprintf("head -c %d /dev/zero | tr '\\0' a", n)})
+		if res.IsError {
+			t.Fatalf("%d bytes: %s", n, res.Text)
+		}
+		out := res.Value.(shelltools.Result).Stdout
+		switch {
+		case out.Bytes != int64(n):
+			t.Fatalf("%d bytes: stream = %+v", n, out)
+		case n <= ring && (out.Truncated || out.Spill != nil || out.Tail != strings.Repeat("a", n)):
+			t.Fatalf("%d bytes fit the ring: stream = %+v, want it whole", n, out)
+		case n > ring && (!out.Truncated || out.Spill == nil || out.Spill.Bytes != int64(n) || out.Tail != strings.Repeat("a", ring)):
+			t.Fatalf("%d bytes past the ring: truncated=%v spill=%+v tail %d bytes, want the ring and a whole spill", n, out.Truncated, out.Spill, len(out.Tail))
+		}
 	}
 }

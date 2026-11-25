@@ -43,22 +43,11 @@ const (
 	PwshName = "pwsh"
 )
 
-// DefaultOutputBytes is the most bytes of each stream's tail a result shows.
-const DefaultOutputBytes = 32_000
-
-// OneShotConfig configures the one-shot tools; a zero field is its default.
-type OneShotConfig struct {
-	// OutputBytes is the most bytes of each stream's tail one result shows;
-	// the whole stream is behind the spill reference.
-	OutputBytes int `json:"outputBytes,omitempty"`
-}
-
-func (c OneShotConfig) normalized() OneShotConfig {
-	if c.OutputBytes <= 0 {
-		c.OutputBytes = DefaultOutputBytes
-	}
-	return c
-}
+// OneShotConfig configures the one-shot tools. It has no fields: each
+// stream's tail is bounded by its executor's Limits.TailBytes, the ring its
+// collector keeps and past which it spills, so a result never cuts output the
+// spill reference does not hold (bash.Config.TailBytes, pwsh.Config.TailBytes).
+type OneShotConfig struct{}
 
 // Deps are what the tools run with.
 type Deps struct {
@@ -121,7 +110,7 @@ type Stop struct {
 
 // Stream is one output stream.
 type Stream struct {
-	// Tail is the end of the stream, at most OneShotConfig.OutputBytes.
+	// Tail is the end of the stream, at most the executor's Limits.TailBytes.
 	Tail string `json:"tail"`
 	// Bytes is the size of the whole stream.
 	Bytes int64 `json:"bytes"`
@@ -170,7 +159,6 @@ func Declarations(deps Deps, cfg OneShotConfig) ([]*htools.Declaration, error) {
 	if deps.Resolver == nil {
 		return nil, errors.New("shellexec.tools: the policy resolver is required")
 	}
-	cfg = cfg.normalized()
 	ds := []*htools.Declaration{
 		(&shell{name: BashName, dialect: shellexec.Bash, deps: deps, cfg: cfg}).declare(),
 		(&shell{name: PwshName, dialect: shellexec.Pwsh, deps: deps, cfg: cfg}).declare(),
@@ -288,7 +276,7 @@ func (s *shell) run(ctx context.Context, in In, run htools.Run) (Result, error) 
 		Shell:       s.dialect,
 		Command:     in.Command,
 		Dir:         dir,
-		Timeout:     time.Duration(in.Timeout) * time.Millisecond,
+		Timeout:     budget(in.Timeout, e.Limits()),
 		Description: in.Description,
 		Policy:      pol,
 		Owner:       string(sess),
@@ -310,11 +298,25 @@ func (s *shell) run(ctx context.Context, in In, run htools.Run) (Result, error) 
 	if o.Kind == shellexec.Failed {
 		return Result{}, o.Err
 	}
-	return s.result(x, pol, o), nil
+	return s.result(x, pol, o, e.Limits().TailBytes), nil
+}
+
+// budget is the timeout argument as a duration, cut to lim.MaxTimeout before
+// converting so a large value cannot overflow into a short or negative one.
+// 0 is the shell's default; a negative value stays negative for Resolve to
+// refuse.
+func budget(ms int64, lim shellexec.Limits) time.Duration {
+	switch {
+	case ms < 0:
+		return -1
+	case ms > lim.MaxTimeout.Milliseconds():
+		return lim.MaxTimeout
+	}
+	return time.Duration(ms) * time.Millisecond
 }
 
 // result is the structured form of a run that started.
-func (s *shell) result(x *shellexec.Execution, pol sandbox.Policy, o shellexec.Outcome) Result {
+func (s *shell) result(x *shellexec.Execution, pol sandbox.Policy, o shellexec.Outcome, tail int) Result {
 	req, prog := x.Request(), x.Program()
 	r := Result{
 		Shell:       string(req.Shell),
@@ -326,8 +328,8 @@ func (s *shell) result(x *shellexec.Execution, pol sandbox.Policy, o shellexec.O
 		ExitCode:    o.ExitCode,
 		TimeoutMs:   o.Timeout.Milliseconds(),
 		DurationMs:  o.Duration.Milliseconds(),
-		Stdout:      stream(o.Stdout, s.cfg.OutputBytes),
-		Stderr:      stream(o.Stderr, s.cfg.OutputBytes),
+		Stdout:      stream(o.Stdout, tail),
+		Stderr:      stream(o.Stderr, tail),
 		Confinement: confinement(pol, o.Confinement),
 		Error:       errText(o.Err),
 	}
@@ -340,18 +342,22 @@ func (s *shell) result(x *shellexec.Execution, pol sandbox.Policy, o shellexec.O
 	return r
 }
 
-// stream is c with its tail cut to its last limit bytes, starting on a whole
-// UTF-8 character, and invalid bytes replaced so the text is valid.
+// stream is c with invalid bytes in its tail replaced so the text is valid,
+// then cut to its last limit bytes, starting on a whole UTF-8 character: the
+// repair can lengthen the text (one byte to three), so the bound is applied to
+// what is shown. limit is the collector's ring, so a tail cut for its length
+// alone is one the spill holds whole.
 func stream(c subprocess.Collected, limit int) Stream {
-	tail, cut := c.Tail, false
+	tail, cut := strings.ToValidUTF8(string(c.Tail), "\uFFFD"), false
 	if len(tail) > limit {
-		tail, cut = tail[len(tail)-limit:], true
-		for len(tail) > 0 && !utf8.RuneStart(tail[0]) {
-			tail = tail[1:]
+		i := len(tail) - limit
+		for i < len(tail) && !utf8.RuneStart(tail[i]) {
+			i++
 		}
+		tail, cut = tail[i:], true
 	}
 	st := Stream{
-		Tail:       strings.ToValidUTF8(string(tail), "\uFFFD"),
+		Tail:       tail,
 		Bytes:      c.Written,
 		Truncated:  c.Truncated || cut,
 		SpillError: errText(c.SpillErr),
