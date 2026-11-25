@@ -90,6 +90,10 @@ type Service struct {
 	canaryDir string
 	ownDir    bool
 
+	// probeMu serializes Reprobe rounds so an older, slower round can never
+	// overwrite a newer one's statuses. It is taken before mu, never after.
+	probeMu sync.Mutex
+
 	mu       sync.Mutex
 	statuses []sandbox.Status
 	probes   int
@@ -163,8 +167,12 @@ func (s *Service) Describe(context.Context) []sandbox.Status {
 }
 
 // Reprobe implements sandbox.Service: every backend is probed again, in chain
-// order, each bounded by ProbeTimeout.
+// order, each bounded by ProbeTimeout. Concurrent calls run one round at a
+// time, so the stored statuses are always those of the last round to run;
+// Describe and Prepare do not wait for a round in progress.
 func (s *Service) Reprobe(ctx context.Context) []sandbox.Status {
+	s.probeMu.Lock()
+	defer s.probeMu.Unlock()
 	out := make([]sandbox.Status, 0, len(s.chain))
 	for _, b := range s.chain {
 		out = append(out, s.probe(ctx, b))
