@@ -69,6 +69,16 @@ const Preamble = "try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::
 // ScriptName is the file a first-statement command is written to.
 const ScriptName = "command.ps1"
 
+// ScriptTrailer is appended to the script file so that it exits as the inline
+// `-Command` form would: 1 when the last statement failed ($? is false), else 0.
+// The caller cannot observe the script's last $? after `& script`, and a native
+// command's stale $LASTEXITCODE must not leak out, so the script decides its own
+// exit code; an explicit `exit N` or a terminating error still wins.
+const ScriptTrailer = "\nif (-not $?) { exit 1 }\nexit 0\n"
+
+// ScriptCall is appended after the quoted script path in the command string.
+const ScriptCall = "; exit $LASTEXITCODE"
+
 // Find resolves the PowerShell program on h: path when set; else, on Windows,
 // %ProgramFiles%\PowerShell\7\pwsh.exe; else pwsh on the child's PATH; else, on
 // Windows and when allow51 is set, Windows PowerShell 5.1 under %SystemRoot%.
@@ -195,8 +205,9 @@ func (s *Shell) Limits() shellexec.Limits { return s.limits }
 
 // Argv is the flags and `-Command <preamble; command>`. A first-statement
 // command is written, with a byte-order mark so Windows PowerShell reads it as
-// UTF-8, to the private script file, which the command string invokes after the
-// preamble with the script's exit code carried out; the execution policy is
+// UTF-8 and followed by ScriptTrailer, to the private script file, which the
+// command string invokes after the preamble with the script's exit code carried
+// out, so the exit code matches the inline form; the execution policy is
 // bypassed for that file only.
 func (s *Shell) Argv(command string, scratch func() (string, error)) ([]string, error) {
 	argv := append([]string{s.program.Path}, Flags...)
@@ -208,11 +219,12 @@ func (s *Shell) Argv(command string, scratch func() (string, error)) ([]string, 
 		return nil, err
 	}
 	script := filepath.Join(dir, ScriptName)
-	if err := os.WriteFile(script, append([]byte("\uFEFF"), command...), 0o600); err != nil {
+	body := "\uFEFF" + command + ScriptTrailer
+	if err := os.WriteFile(script, []byte(body), 0o600); err != nil {
 		return nil, herr.Wrap(shellexec.ReasonScript, err, "write the command's script file")
 	}
 	return append(argv, "-ExecutionPolicy", "Bypass", "-Command",
-		Preamble+"; & "+quote(script)+"; if ($LASTEXITCODE) { exit $LASTEXITCODE }"), nil
+		Preamble+"; & "+quote(script)+ScriptCall), nil
 }
 
 // Defaults are NO_COLOR=1 PAGER=cat GIT_PAGER=cat.
