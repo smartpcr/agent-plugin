@@ -146,7 +146,9 @@ func IsTestModule(dir string) bool {
 }
 
 // Load reads go.work, every go.mod below src/ and every tools/<name>/go.mod of the
-// checkout at root.
+// checkout at root. A testdata directory is skipped, as the go command and the gofmt
+// gate skip it: a go.mod there is a test fixture (such as the archtest seeds), not a
+// module of the repository.
 func Load(root string) (Repo, error) {
 	repo := Repo{Mods: map[string][]byte{}, Tests: map[string][]byte{}, Tools: map[string][]byte{}}
 	work, err := os.ReadFile(filepath.Join(root, "go.work"))
@@ -163,8 +165,6 @@ func Load(root string) (Repo, error) {
 		if err != nil {
 			return err
 		}
-		// A testdata directory is invisible to the go command, so a go.mod inside
-		// one is a fixture (an archtest tree, say), not a module of the checkout.
 		if entry.IsDir() && entry.Name() == "testdata" {
 			return filepath.SkipDir
 		}

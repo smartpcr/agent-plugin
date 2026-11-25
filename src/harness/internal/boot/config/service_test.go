@@ -1021,24 +1021,24 @@ func TestEditDuringStuckApplicationWaitsForItToSettle(t *testing.T) {
 	temphome.Write(t, profile.UserLayerPath(h.root), "- id: hold\n  remove: true\n")
 	reload := start(cs.Reload)
 	waitFor("the reload to be accepted", cs.Pending)
-	accepted := cs.Revision()
+	reloaded := cs.Revision()
 	edit := start(func() error {
-		_, err := cs.Apply(context.Background(), config.Edit{Revision: accepted, Ops: []loader.Op{{Kind: loader.OpMerge, ID: "other", Patch: json.RawMessage(`{"port":7}`)}}})
+		_, err := cs.Apply(context.Background(), config.Edit{Revision: reloaded, Ops: []loader.Op{{Kind: loader.OpMerge, ID: "other", Patch: json.RawMessage(`{"port":7}`)}}})
 		return err
 	})
-	// The edit is written, then adopted as the desired revision. The wait watches
-	// the revision, not the file: reading layer.yml while the edit renames its
-	// staged copy over it makes that rename fail on Windows (fsx: file in use).
-	waitFor("the edit to be written and accepted", func() bool {
+	// Wait on the service, not the file: Apply accepts the edit (a new revision)
+	// only after writing it. Polling layer.yml instead holds it open, and on a busy
+	// Windows host every retry of Apply's atomic replace then meets "file in use".
+	waitFor("the edit to be accepted", func() bool {
 		select {
-		case err := <-edit: // an edit that ends before it is accepted says why
-			t.Fatalf("the edit returned %v before it was accepted, while the reload before it was still applying", err)
+		case err := <-edit:
+			t.Fatalf("the edit returned %v before the stuck application settled", err)
 		default:
 		}
-		return cs.Revision() != accepted
+		return cs.Revision() != reloaded
 	})
 	if data, err := os.ReadFile(profile.LayerPath(h.root, h.def.Name)); err != nil || !strings.Contains(string(data), "port: 7") {
-		t.Fatalf("the accepted edit is not in the layer file (%v):\n%s", err, data)
+		t.Fatalf("the accepted edit is not in the layer: %v: %s", err, data)
 	}
 	select {
 	case err := <-edit:
