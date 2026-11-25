@@ -613,16 +613,75 @@ func (s *s12rState) evidenceRecordsLanes(record string) error {
 	return nil
 }
 
+// s12rEvidenceDir and s12rStageRecord are the story's evidence directory and the
+// DH-S-12 stage record "harness-gate records" checks (closure.RecordPath).
+const (
+	s12rEvidenceDir = "docs/stories/harness-DSH-M2/evidence"
+	s12rStageRecord = s12rEvidenceDir + "/DH-S-12.md"
+)
+
+var s12rRecordsOK = regexp.MustCompile(`(?m)^harness-gate records: harness:DSH-M2: ([0-9]+) stage records and ` +
+	regexp.QuoteMeta(s12rEvidenceDir+"/closure.md") + ` hold their shape\s*$`)
+
+// gateRecordsAccepts: "harness-gate records" over the checkout accepts the story's
+// stage records and closure record, and DH-S-12.md is one of the records it examines
+// -- the same run over a copy of the evidence directory without DH-S-12.md fails
+// naming it. The subcommand reads stage and closure records only; the lane run
+// records under s12rRunsDir are verified by the earlier steps of this scenario.
 func (s *s12rState) gateRecordsAccepts() error {
 	gate := filepath.Join(s.root, "tools", "harness-gate")
-	out, err := s12rCommand(gate, []string{"GOWORK=off", "GOFLAGS="}, "go", "run", ".", "records", "--root", s.root)
+	env := []string{"GOWORK=off", "GOFLAGS="}
+	if !s12rIsRegular(filepath.Join(s.root, filepath.FromSlash(s12rStageRecord))) {
+		return fmt.Errorf("%s is missing", s12rStageRecord)
+	}
+	out, err := s12rCommand(gate, env, "go", "run", ".", "records", "--root", s.root)
 	if err != nil {
 		return fmt.Errorf("harness-gate records: %v\n%s", err, out)
 	}
-	if !strings.Contains(out, "hold their shape") {
-		return fmt.Errorf("harness-gate records:\n%s", out)
+	m := s12rRecordsOK.FindStringSubmatch(out)
+	if m == nil {
+		return fmt.Errorf("harness-gate records did not report the harness:DSH-M2 stage records and closure record holding their shape:\n%s", out)
+	}
+	if n, _ := strconv.Atoi(m[1]); n < 1 {
+		return fmt.Errorf("harness-gate records examined %d stage records:\n%s", n, out)
+	}
+
+	probe := s12rOuterT.TempDir()
+	if err := s12rCopyFile(filepath.Join(s.root, "test", "harness", "acceptance-index.yaml"), filepath.Join(probe, "test", "harness", "acceptance-index.yaml")); err != nil {
+		return err
+	}
+	src := filepath.Join(s.root, filepath.FromSlash(s12rEvidenceDir))
+	ents, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+	for _, e := range ents {
+		if !e.Type().IsRegular() || e.Name() == filepath.Base(s12rStageRecord) {
+			continue
+		}
+		if err := s12rCopyFile(filepath.Join(src, e.Name()), filepath.Join(probe, filepath.FromSlash(s12rEvidenceDir), e.Name())); err != nil {
+			return err
+		}
+	}
+	out, err = s12rCommand(gate, env, "go", "run", ".", "records", "--root", probe)
+	if err == nil {
+		return fmt.Errorf("harness-gate records accepted a tree without %s, so it does not examine that record:\n%s", s12rStageRecord, out)
+	}
+	if !strings.Contains(out, "no evidence record "+s12rStageRecord) {
+		return fmt.Errorf("harness-gate records without %s failed without naming it: %v\n%s", s12rStageRecord, err, out)
 	}
 	return nil
+}
+
+func s12rCopyFile(from, to string) error {
+	b, err := os.ReadFile(from)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(to, b, 0o644)
 }
 
 func InitializeScenario_dh_s_12_working_directory_filesystem_seam_and_policy_resolver_dh_s_12_scenarios_and_built_record(ctx *godog.ScenarioContext) {
