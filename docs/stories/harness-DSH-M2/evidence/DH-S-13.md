@@ -34,7 +34,7 @@ Each step's merge commit; `--built` refuses a step without one.
 | 13.1 | DH-D-SANDBOX-2 | | |
 | 13.2 | DH-D-EXEC-4 | | |
 | 13.3 | DH-D-SANDBOX-3 | | |
-| 13.4 | DH-D-SANDBOX-4 | | |
+| 13.4 | DH-D-SANDBOX-4 | | `world/sandbox/local`: bubblewrap backend (`bwrap` resolved once by absolute path; argv from the Policy, golden `local/testdata/bwrap_argv.golden`, `TestBwrapArgvFromPolicy`) and pure-Go Landlock backend through go-landlock v0.11.2 (`launch/landlock.go`, `launch/confine_linux.go`: `NewRulesetFD`, locked thread, `no_new_privs`, `LandlockRestrictSelf`; ABI probe, rules from the Policy, applied by the stage to itself; `TestLandlockRulesFromPolicy`, `TestLandlockStageConfinesForReal`); Prepare refuses a root that would make the harness binary or home writable where the backend cannot overlay it, judging each root, the home and the binary as written and with every symbolic link resolved, and refusing a path it cannot resolve (`local/protect.go`, `TestPrepareKeepsTheHarnessUnwritable`, `TestPrepareSeesThroughSymlinkedAncestors`); order bwrap then Landlock, both failing refuses a confined policy `sandbox/unavailable` (`TestSelectionOrder`). I2 Q4 default applied, see Owner defaults. |
 | 13.5 | DH-D-EXEC-3 | | |
 | 13.6 | DH-D-EXEC-8 | | |
 | 13.7 | DH-D-EXEC-9 | | |
@@ -66,6 +66,43 @@ stage closes; `--built` refuses a row with no confirmation or no name in By.
 | Default | Raised in | Text (impl.md sec. 9.1) | Confirmed | By | Commit |
 | --- | --- | --- | --- | --- | --- |
 | `partial` when delegated execution cannot be stopped | I2 Q4 | A sandbox that cannot stop delegated execution is reported `partial` | | | |
+
+Applied, unconfirmed, in step 13.4. Both Linux confiners (`launch/observe.go` `confineBwrap` and
+`launch/confine_linux.go` `confineLandlock`) end in the shared `delegated()`, which claims
+`delegated-execution` governed only when the stage's bus observation (`launch/bus.go` `busProbe`, fed by
+`launch/bus_linux.go`) shows every session service absent: the address in `DBUS_SESSION_BUS_ADDRESS` and
+`bus` and `systemd/private` under `/run/user/<uid>` and `$XDG_RUNTIME_DIR`, each dial failing with "no
+such file", "not a directory" or "connection refused". Under bubblewrap the stage looks after the
+runtime directory is hidden by `--tmpfs`; under Landlock it looks just before restricting itself, since
+this reference set does not scope sockets, so on a desktop session with a live bus Landlock does not
+claim it. `delegated-execution` is missing, and `sandbox.Enforce` reports the start `partial` naming it,
+whenever a service answers, the address names any other transport (`tcp:`, `nonce-tcp:`, `unixexec:`,
+`launchd:`, `systemd:`, `autolaunch:`, an abstract socket, `runtime=yes` with no runtime directory) or is
+malformed, or a dial fails for any other reason (a time out, a permission denial); off Linux it is
+always missing. Tests: `TestBusProbeCountsTheUnknownReachable`, `TestSessionBusObservedForReal`,
+`TestBwrapStageClaimsOnlyWhatItSees`, `TestLandlockRulesFromPolicy`.
+
+Decisions taken from the design in step 13.4 (these are not impl.md sec. 9.1 defaults, so they have no row above).
+The operator approved all four as implemented on 2026-11-25 (Forge questions `stage-3.4-bundle`,
+`config-home-source`, `fs-write-abi-gate`, `bwrap-private-tmp`, `landlock-shared-tmp`):
+
+- **fs-write version gate.** Landlock reports `fs-write` governed only at the reference version 5;
+  below it `fs-write` is in `Missing`. This is DH-ADR-NATIVESYSTEM-2 ("a named reference version (5 at
+  first, as upstream)", `full` only "when the kernel's version is at least the reference")
+  (`launch/landlock.go`, `TestLandlockRulesFromPolicy`).
+- **Private `/tmp` under bubblewrap.** Under `workspace-write`, bubblewrap mounts `--tmpfs /tmp`, which
+  goes away when the start ends. Under `read-only` the host `/tmp` stays read-only. This follows
+  DH-ADR-SANDBOX-4 (only Seatbelt keeps upstream's shared temp areas) and the bubblewrap
+  row of sandbox-ssh.md sec. 3.2. It comes before every bind, so a root, the canary or the binary under
+  `/tmp` is still the host's (`local/bwrap.go`, `testdata/bwrap_argv.golden`, `TestBwrapArgvFromPolicy`).
+- **No shared `/tmp` under Landlock.** Landlock grants writes only beneath the policy's roots, as TC-04a
+  requires, and does not grant the shared host `/tmp`; programs find the scratch through `TMPDIR`. The
+  DH-ADR-SANDBOX-4 sentences that said Landlock keeps the shared `/tmp` were amended to match
+  (`docs/harness/areas/sandbox-ssh.md`).
+- **Where `Config.Home` comes from.** Whoever builds the sandbox service passes the resolved harness
+  home. No production code builds `world/sandbox/local` yet; every caller is a test. Until a caller
+  exists, an empty `Home` means no start claims `harness-home`, and the inside-home refusal has nothing
+  to compare against (`local/local.go` `Config.Home`).
 
 ## Evidence record (impl.md sec. 7.3)
 

@@ -70,7 +70,10 @@ type Evidence struct {
 // under backend none is Unconfined with every effect missing. A policy no
 // resolver issued, a confined policy under backend none, or danger-full-access
 // under a confining backend gives the zero Confinement, which no start may run
-// under.
+// under. Delegated execution is governed only when the stage observed that no
+// session bus or service manager is reachable; otherwise the start is Partial
+// naming it (S13 default, I2 Q4: partial when delegated execution cannot be
+// stopped).
 func Enforce(p Policy, e Evidence) Confinement {
 	if p.IsZero() || !e.Backend.Valid() {
 		return Confinement{}

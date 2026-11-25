@@ -256,7 +256,8 @@ func TestHostRefusesAWrittenCanary(t *testing.T) {
 }
 
 // TestStageEndsBeforeReady: a stage that cannot confine itself (landlock is not
-// in this build) ends before ready; the host reads end of file as
+// in this build, or on Linux its write root is missing, which ends the stage
+// before it restricts anything) ends before ready; the host reads end of file as
 // sandbox/launch-failed and nothing runs.
 //
 //dsh:test DH-T-SANDBOX-4
@@ -265,7 +266,8 @@ func TestStageEndsBeforeReady(t *testing.T) {
 	if err := os.WriteFile(canary, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	s := startStage(t, launch.Plan{Kind: launch.Confined, Backend: sandbox.BackendLandlock, Canary: canary})
+	missing := filepath.Join(t.TempDir(), "no-such-root")
+	s := startStage(t, launch.Plan{Kind: launch.Confined, Backend: sandbox.BackendLandlock, Canary: canary, Write: []string{missing}})
 	if r, err := s.ch.ReadReady(timeout(t)); !herr.Has(err, sandbox.CodeLaunchFailed) {
 		t.Fatalf("ReadReady = %+v, %v; want %s", r, err, sandbox.CodeLaunchFailed)
 	}

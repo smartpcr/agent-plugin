@@ -36,6 +36,14 @@ type Plan struct {
 	// Canary is the absolute path of the file a confined stage must fail to open
 	// for writing; empty for an unconfined plan.
 	Canary string
+	// Write are the policy's write roots (absolute, clean), in policy order: the
+	// only directories a stage that confines itself (Landlock) grants writes
+	// beneath, and what a stage checks the harness home against. Confined only.
+	Write []string
+	// Home is the harness home a confined stage keeps read-only and reports as
+	// governed when it can show it (harness-home); empty when the host did not
+	// name one. Confined only.
+	Home string
 	// Control is the stage's end the host sends go on; Status the end the stage
 	// sends ready (and exec-failed) on. Both are child descriptor numbers
 	// (subprocess.ChildFD).
@@ -56,8 +64,16 @@ func (p Plan) Validate() error {
 		if !p.Backend.Valid() || p.Backend == sandbox.BackendNone {
 			return failed("a confined plan needs a confining backend, not %q", p.Backend)
 		}
-		if p.Canary == "" || !filepath.IsAbs(p.Canary) || filepath.Clean(p.Canary) != p.Canary {
+		if !absClean(p.Canary) {
 			return failed("a confined plan needs an absolute, clean canary path, not %q", p.Canary)
+		}
+		for i, w := range p.Write {
+			if !absClean(w) || slices.Contains(p.Write[:i], w) {
+				return failed("write root %q is not a distinct, absolute, clean path", w)
+			}
+		}
+		if p.Home != "" && !absClean(p.Home) {
+			return failed("the harness home %q is not an absolute, clean path", p.Home)
 		}
 	case Unconfined:
 		if p.Backend != sandbox.BackendNone {
@@ -65,6 +81,9 @@ func (p Plan) Validate() error {
 		}
 		if p.Canary != "" {
 			return failed("an unconfined plan has no canary")
+		}
+		if len(p.Write) > 0 || p.Home != "" {
+			return failed("an unconfined plan has no write roots and no harness home to keep")
 		}
 	default:
 		return failed("plan kind %q is neither confined nor unconfined", p.Kind)
@@ -83,6 +102,10 @@ func (p Plan) Validate() error {
 	return nil
 }
 
+func absClean(path string) bool {
+	return path != "" && filepath.IsAbs(path) && filepath.Clean(path) == path
+}
+
 // channelEnd reports whether n can be a channel end. On POSIX the ends are the
 // child's extra descriptors (3 and up, subprocess.ChildFD), never stdin, stdout or
 // stderr, which the command inherits; on Windows they are handle values, and only
@@ -99,6 +122,12 @@ func (p Plan) Args() []string {
 	args := []string{"--kind", string(p.Kind), "--backend", string(p.Backend)}
 	if p.Canary != "" {
 		args = append(args, "--canary", p.Canary)
+	}
+	for _, w := range p.Write {
+		args = append(args, "--write", w)
+	}
+	if p.Home != "" {
+		args = append(args, "--home", p.Home)
 	}
 	args = append(args,
 		"--control-fd", strconv.FormatUint(uint64(p.Control), 10),
@@ -124,6 +153,16 @@ func (k *keepFlags) Set(s string) error {
 	return nil
 }
 
+// pathFlags collects a repeated path flag.
+type pathFlags []string
+
+func (f *pathFlags) String() string { return fmt.Sprint([]string(*f)) }
+
+func (f *pathFlags) Set(s string) error {
+	*f = append(*f, s)
+	return nil
+}
+
 // Parse reads the arguments after Mode back into a Plan and validates it.
 func Parse(args []string) (Plan, error) {
 	fs := flag.NewFlagSet(Mode, flag.ContinueOnError)
@@ -131,6 +170,9 @@ func Parse(args []string) (Plan, error) {
 	kind := fs.String("kind", "", "confined or unconfined")
 	backend := fs.String("backend", "", "the backend the stage runs under")
 	canary := fs.String("canary", "", "the canary path (confined only)")
+	home := fs.String("home", "", "the harness home kept read-only (confined only)")
+	var write pathFlags
+	fs.Var(&write, "write", "a write root (confined only, repeated)")
 	control := fs.Uint64("control-fd", 0, "the descriptor the host sends go on")
 	status := fs.Uint64("status-fd", 0, "the descriptor the stage sends ready on")
 	var keep keepFlags
@@ -143,6 +185,7 @@ func Parse(args []string) (Plan, error) {
 	}
 	p := Plan{
 		Kind: Kind(*kind), Backend: sandbox.Backend(*backend), Canary: *canary,
+		Write: []string(write), Home: *home,
 		Control: uintptr(*control), Status: uintptr(*status), Argv: fs.Args(), Keep: []uintptr(keep),
 	}
 	if uint64(p.Control) != *control || uint64(p.Status) != *status {

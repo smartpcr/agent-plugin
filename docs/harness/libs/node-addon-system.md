@@ -388,6 +388,8 @@ and closes it on unload. The lock file is never deleted, so the inode stays stab
 3. **Shared `/tmp`.** Under Landlock upstream grants the host's `/tmp` for writing
    (`packages/sandbox/sandbox-local/src/profiles.ts:31-35`), unlike bubblewrap's private
    one. That is a policy question for the sandbox area, not a property of the stage.
+   Settled for DH-S-13: Landlock grants no shared `/tmp`; writes stay beneath the policy's roots
+   and the scratch (DH-ADR-SANDBOX-4).
 4. **`psx` licence wording.** Dual licence; the BSD-3-Clause choice must appear in the
    third-party notice.
 5. **Hand-over details.** `PATH` search rules and ignored signals differ slightly from

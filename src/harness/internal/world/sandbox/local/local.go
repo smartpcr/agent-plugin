@@ -6,8 +6,13 @@
 // start whose policy requires full enforcement it cannot give, and only then lets
 // the stage receive go.
 //
-// The backends themselves (bubblewrap, Landlock) are DH-D-SANDBOX-4 (impl.md
-// 13.4). Windows has no backend in M2 (M2-C-8): a confined policy is refused with
+// The backends themselves are DH-D-SANDBOX-4 (impl.md 13.4): on Linux the chain
+// is bubblewrap (bwrap found once by absolute path; the stage runs as its
+// command, BwrapArgv) and then Landlock (the stage restricts itself through
+// go-landlock, launch.LandlockRules); both probe with the real stage (ProbeOn).
+// Prepare refuses a root that would make the harness binary or home writable
+// where the backend cannot keep it read-only (protect, DH-ADR-SANDBOX-5).
+// Windows has no backend in M2 (M2-C-8): a confined policy is refused with
 // sandbox/unavailable and only danger-full-access runs, reported Unconfined.
 package local
 
@@ -66,6 +71,13 @@ type Config struct {
 	// CanaryDir is the absolute directory the canaries are created in; empty is
 	// a fresh directory under the system temp directory, removed by Close.
 	CanaryDir string `json:"canaryDir,omitempty"`
+	// Home is the harness home, absolute and clean: a confined stage keeps it
+	// read-only and reports harness-home governed only when it can show that,
+	// and Prepare refuses a root that would make it writable (protect).
+	// Empty names no home, and no start governs harness-home. Whoever builds
+	// the service sets it from the resolved harness home (storage/home); no
+	// production code builds this service yet.
+	Home string `json:"home,omitempty"`
 }
 
 // Validate reports a malformed Config.
@@ -81,6 +93,9 @@ func (c Config) Validate() error {
 	if c.CanaryDir != "" && (!filepath.IsAbs(c.CanaryDir) || filepath.Clean(c.CanaryDir) != c.CanaryDir) {
 		return herr.Newf(sandbox.CodeUnavailable, "canary directory %q is not an absolute, clean path", c.CanaryDir)
 	}
+	if c.Home != "" && (!filepath.IsAbs(c.Home) || filepath.Clean(c.Home) != c.Home) {
+		return herr.Newf(sandbox.CodeUnavailable, "harness home %q is not an absolute, clean path", c.Home)
+	}
 	return nil
 }
 
@@ -88,6 +103,7 @@ func (c Config) Validate() error {
 type Service struct {
 	cfg       Config
 	chain     []Backend
+	host      Host
 	canaryDir string
 	ownDir    bool
 
@@ -124,7 +140,7 @@ func New(ctx context.Context, cfg Config, chain []Backend) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Service{cfg: cfg, chain: kept, canaryDir: cfg.CanaryDir}
+	s := &Service{cfg: cfg, chain: kept, host: resolveHost(cfg.Home), canaryDir: cfg.CanaryDir}
 	if s.canaryDir == "" {
 		dir, err := os.MkdirTemp("", "dsh-canary-")
 		if err != nil {
@@ -224,7 +240,12 @@ func (s *Service) probe(ctx context.Context, b Backend) sandbox.Status {
 	parent := ctx
 	ctx, cancel := context.WithTimeout(ctx, s.cfg.ProbeTimeout)
 	defer cancel()
-	p, err := b.Probe(ctx, canary)
+	var p Probe
+	if hb, ok := b.(HostBackend); ok {
+		p, err = hb.ProbeOn(ctx, s.host, canary)
+	} else {
+		p, err = b.Probe(ctx, canary)
+	}
 	st.Canary = string(p.Canary)
 	switch {
 	case err != nil:
@@ -279,7 +300,7 @@ func (s *Service) Prepare(ctx context.Context, p sandbox.Policy, argv []string) 
 	if err != nil {
 		return sandbox.Launch{}, err
 	}
-	l, err := launch.NewLaunch(p, plan, launch.Hooks{Confirm: d.confirm, Failed: d.failed, Release: d.release, Limit: s.cfg.LaunchTimeout})
+	l, err := launch.NewLaunch(p, plan, launch.Hooks{Confirm: d.confirm, Failed: d.failed, Release: d.release, Limit: s.cfg.LaunchTimeout, Exe: s.host.Exe, Prefix: d.prefix})
 	if err != nil {
 		_ = d.release(ctx)
 		return sandbox.Launch{}, err
@@ -317,12 +338,31 @@ func (s *Service) prepare(ctx context.Context, p sandbox.Policy, argv []string) 
 			d.scratch = r.Path
 		}
 	}
+	if err := protect(st.Backend, s.host, p.WriteRoots()); err != nil {
+		return launch.Plan{}, nil, err
+	}
 	canary, release, err := s.newCanary("start")
 	if err != nil {
 		return launch.Plan{}, nil, err
 	}
 	d.probe, d.releaseCanary = st, release
-	return launch.Plan{Kind: launch.Confined, Backend: st.Backend, Canary: canary}, d, nil
+	if hb, ok := s.backend(st.Backend).(HostBackend); ok {
+		if d.prefix, err = hb.Prefix(s.host, p, canary); err != nil {
+			release()
+			return launch.Plan{}, nil, err
+		}
+	}
+	return launch.Plan{Kind: launch.Confined, Backend: st.Backend, Canary: canary, Write: rootPaths(p), Home: s.cfg.Home}, d, nil
+}
+
+// backend is the chain entry named name; nil when there is none.
+func (s *Service) backend(name sandbox.Backend) Backend {
+	for _, b := range s.chain {
+		if b.Name() == name {
+			return b
+		}
+	}
+	return nil
 }
 
 // decision is the host's decision on one prepared start.
@@ -334,6 +374,9 @@ type decision struct {
 	// plan was prepared.
 	probe   sandbox.Status
 	scratch string
+	// prefix is the outside confiner of a confined plan's stage (bubblewrap);
+	// nil when the stage confines itself.
+	prefix []string
 
 	once          sync.Once
 	releaseCanary func()
