@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -51,6 +52,9 @@ func TestLeaseChild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Reachable until the parent kills the child: a collected store drops its
+	// liveness lock (see TestMigrateChild).
+	defer runtime.KeepAlive(s)
 	switch os.Getenv(leaseRoleEnv) {
 	case "hold":
 		w, err := s.Create(bg, store.Header{ID: "s"}, store.CreateOptions{})

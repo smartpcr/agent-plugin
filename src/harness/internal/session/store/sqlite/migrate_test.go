@@ -45,9 +45,15 @@ func TestMigrateChild(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sqlite.SetLayoutCap(n)()
-	if _, err := sqlite.Open(bg, path, sqlite.WithKind("older")); err != nil {
+	s, err := sqlite.Open(bg, path, sqlite.WithKind("older"))
+	if err != nil {
 		t.Fatal(err)
 	}
+	// The store must stay reachable until the parent kills the child: a store
+	// the collector frees takes its liveness lock with it (the os.File finalizer
+	// closes the handle), and the parent would then find the older instance dead
+	// and upgrade under it. A cover build collects early enough to show it.
+	defer runtime.KeepAlive(s)
 	os.Stdout.WriteString("ready pid=" + strconv.Itoa(os.Getpid()) + "\n")
 	in := bufio.NewScanner(os.Stdin)
 	for in.Scan() {

@@ -24,14 +24,9 @@ const CoverageFloor = 85
 // entry whose package reaches CoverageFloor, so a paid-off debt is removed. Add no
 // entries: this list only shrinks.
 var CoverageDebt = map[string]int{
-	// Measured 2026-11-24 at f1d24c1 (Ubuntu / Windows lane).
-	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/agentpreset":          79, // 79.2 / 79.2
-	"github.com/smartpcr/agent-plugin/src/harness/internal/human/permission":          83, // 83.4 / 83.4
-	"github.com/smartpcr/agent-plugin/src/harness/internal/world/fs/local":            79, // 79.7 / 79.4
-	"github.com/smartpcr/agent-plugin/src/harness/internal/world/fs/ops":              77, // 77.8 / 77.8
-	"github.com/smartpcr/agent-plugin/src/harness/internal/world/fs/tools":            77, // 77.4 / 77.4
-	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox/policy":      82, // 82.8 / 83.0
-	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox/sandboxtest": 79, // 79.5 / 80.2
+	// Empty since PR #125 (2026-11-25): the seven M2 packages pinned by #124
+	// (agentpreset, human/permission, world/fs/local, ops, tools,
+	// sandbox/policy, sandboxtest) now reach CoverageFloor on both lanes.
 }
 
 // CheckCoverageDebt is the coverage gate's check: CheckFloor at CoverageFloor for
