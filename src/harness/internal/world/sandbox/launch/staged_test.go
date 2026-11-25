@@ -161,8 +161,8 @@ func TestLateConfirmLeavesNoCommand(t *testing.T) {
 	if p != nil || herr.Kind(err) != sandbox.CodeLaunchFailed {
 		t.Fatalf("Start = %v, %v; want no handle and %s", p, err, sandbox.CodeLaunchFailed)
 	}
-	// The stage was rejected; give a wrongly released command time to show.
-	time.Sleep(300 * time.Millisecond)
+	// Start stopped the stage's tree before returning, so nothing of it is left
+	// that could still create the marker.
 	if exists(t, marker) {
 		t.Fatal("the command ran on a decision made after the launch limit")
 	}
