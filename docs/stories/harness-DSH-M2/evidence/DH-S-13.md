@@ -82,7 +82,9 @@ malformed, or a dial fails for any other reason (a time out, a permission denial
 always missing. Tests: `TestBusProbeCountsTheUnknownReachable`, `TestSessionBusObservedForReal`,
 `TestBwrapStageClaimsOnlyWhatItSees`, `TestLandlockRulesFromPolicy`.
 
-Decisions taken from the design in step 13.4 (these are not impl.md sec. 9.1 defaults, so they have no row above):
+Decisions taken from the design in step 13.4 (these are not impl.md sec. 9.1 defaults, so they have no row above).
+The operator approved all four as implemented on 2026-11-25 (Forge questions `stage-3.4-bundle`,
+`config-home-source`, `fs-write-abi-gate`, `bwrap-private-tmp`, `landlock-shared-tmp`):
 
 - **fs-write version gate.** Landlock reports `fs-write` governed only at the reference version 5;
   below it `fs-write` is in `Missing`. This is DH-ADR-NATIVESYSTEM-2 ("a named reference version (5 at
@@ -90,11 +92,13 @@ Decisions taken from the design in step 13.4 (these are not impl.md sec. 9.1 def
   (`launch/landlock.go`, `TestLandlockRulesFromPolicy`).
 - **Private `/tmp` under bubblewrap.** Under `workspace-write`, bubblewrap mounts `--tmpfs /tmp`, which
   goes away when the start ends. Under `read-only` the host `/tmp` stays read-only. This follows
-  DH-ADR-SANDBOX-4 (only Landlock and Seatbelt "keep upstream's shared temp areas") and the bubblewrap
+  DH-ADR-SANDBOX-4 (only Seatbelt keeps upstream's shared temp areas) and the bubblewrap
   row of sandbox-ssh.md sec. 3.2. It comes before every bind, so a root, the canary or the binary under
   `/tmp` is still the host's (`local/bwrap.go`, `testdata/bwrap_argv.golden`, `TestBwrapArgvFromPolicy`).
-  Landlock grants writes only beneath the policy's roots, as TC-04a requires, and does not grant the
-  shared host `/tmp`.
+- **No shared `/tmp` under Landlock.** Landlock grants writes only beneath the policy's roots, as TC-04a
+  requires, and does not grant the shared host `/tmp`; programs find the scratch through `TMPDIR`. The
+  DH-ADR-SANDBOX-4 sentences that said Landlock keeps the shared `/tmp` were amended to match
+  (`docs/harness/areas/sandbox-ssh.md`).
 - **Where `Config.Home` comes from.** Whoever builds the sandbox service passes the resolved harness
   home. No production code builds `world/sandbox/local` yet; every caller is a test. Until a caller
   exists, an empty `Home` means no start claims `harness-home`, and the inside-home refusal has nothing
