@@ -16,7 +16,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/smartpcr/agent-plugin/src/harness/internal/util/textdiff/patch"
 	"github.com/smartpcr/agent-plugin/src/sdk/protocol"
 )
 
@@ -168,6 +167,13 @@ func fs2Task(t *testing.T, h *sdkHost, route *protocol.ModelRoute, checkout, tas
 				}
 				t.Fatalf("grep %q returned %s and was followed by %s, not a corrected grep", a.Pattern, codeInvalidRegex, next)
 			}
+			var b struct {
+				Pattern string `json:"pattern"`
+			}
+			if err := json.Unmarshal(outs[i+1].Args, &b); err != nil || b.Pattern == a.Pattern || outs[i+1].IsError {
+				t.Fatalf("grep %q returned %s and the next grep (pattern %q, error %v, decode %v) is not a successful corrected search",
+					a.Pattern, codeInvalidRegex, b.Pattern, outs[i+1].IsError, err)
+			}
 		case "write", "edit":
 			if o.IsError {
 				continue
@@ -268,40 +274,159 @@ func fs2Task(t *testing.T, h *sdkHost, route *protocol.ModelRoute, checkout, tas
 	return greps, invalid
 }
 
-// fs2ApplyPatch applies a successful apply_patch call's patch to model with the
-// patch format's own text rules (util/textdiff/patch), and returns how many files
-// it touched. A patch that does not apply to the model fails the task: the tool
-// reported success, so the disk and the log disagree.
+// fs2Hunk is one file operation of a patch in the apply_patch format.
+type fs2Hunk struct {
+	op     string // "add", "delete" or "update"
+	path   string
+	moveTo string
+	lines  []string // add: the file's lines; update: the chunk lines, "@@" lines included
+}
+
+// fs2ParsePatch splits an apply_patch input into its file operations. It is the
+// scenario's own reading of the format the tool documents (Add/Delete/Update File,
+// Move to, @@ chunks of ' ', '-' and '+' lines); the scenario boundary keeps it from
+// importing the harness's parser.
+func fs2ParsePatch(t *testing.T, input string) []fs2Hunk {
+	t.Helper()
+	var hunks []fs2Hunk
+	for _, line := range strings.Split(lf(input), "\n") {
+		switch {
+		case line == "*** Begin Patch", line == "*** End Patch", line == "*** End of File":
+		case strings.HasPrefix(line, "*** Add File: "):
+			hunks = append(hunks, fs2Hunk{op: "add", path: strings.TrimPrefix(line, "*** Add File: ")})
+		case strings.HasPrefix(line, "*** Delete File: "):
+			hunks = append(hunks, fs2Hunk{op: "delete", path: strings.TrimPrefix(line, "*** Delete File: ")})
+		case strings.HasPrefix(line, "*** Update File: "):
+			hunks = append(hunks, fs2Hunk{op: "update", path: strings.TrimPrefix(line, "*** Update File: ")})
+		case strings.HasPrefix(line, "*** Move to: ") && len(hunks) > 0:
+			hunks[len(hunks)-1].moveTo = strings.TrimPrefix(line, "*** Move to: ")
+		case len(hunks) > 0 && hunks[len(hunks)-1].op != "delete":
+			h := &hunks[len(hunks)-1]
+			if h.op == "add" && strings.HasPrefix(line, "+") {
+				h.lines = append(h.lines, line[1:])
+			} else if h.op == "update" && line != "" {
+				h.lines = append(h.lines, line)
+			} else if h.op == "update" {
+				h.lines = append(h.lines, " ") // a blank context line
+			}
+		}
+	}
+	if len(hunks) == 0 {
+		t.Fatalf("a successful apply_patch call's patch names no file: %q", input)
+	}
+	return hunks
+}
+
+// fs2ApplyChunks applies an update's chunks to text: each chunk's context and '-'
+// lines are found at or after the previous chunk (after its "@@ anchor" line when it
+// names one), exactly, else ignoring trailing white space, and replaced by its
+// context and '+' lines. ok is false when a chunk is not found.
+func fs2ApplyChunks(text string, lines []string) (string, bool) {
+	file := strings.Split(text, "\n")
+	trailing := len(file) > 0 && file[len(file)-1] == ""
+	if trailing {
+		file = file[:len(file)-1]
+	}
+	at := 0
+	var anchor string
+	var old, repl []string
+	flush := func() bool {
+		if len(old) == 0 && len(repl) == 0 {
+			return true
+		}
+		if anchor != "" {
+			for k := at; k < len(file); k++ {
+				if strings.TrimSpace(file[k]) == anchor {
+					at = k + 1
+					break
+				}
+			}
+		}
+		pos := -1
+		if len(old) == 0 {
+			pos = len(file)
+		}
+		for _, eq := range []func(a, b string) bool{
+			func(a, b string) bool { return a == b },
+			func(a, b string) bool { return strings.TrimRight(a, " \t") == strings.TrimRight(b, " \t") },
+		} {
+			for k := at; pos < 0 && k+len(old) <= len(file); k++ {
+				match := true
+				for n := range old {
+					if !eq(file[k+n], old[n]) {
+						match = false
+						break
+					}
+				}
+				if match {
+					pos = k
+				}
+			}
+		}
+		if pos < 0 {
+			return false
+		}
+		file = append(file[:pos], append(append([]string(nil), repl...), file[pos+len(old):]...)...)
+		at = pos + len(repl)
+		old, repl, anchor = nil, nil, ""
+		return true
+	}
+	for _, l := range lines {
+		switch l[0] {
+		case '@':
+			if !flush() {
+				return "", false
+			}
+			anchor = strings.TrimSpace(strings.TrimPrefix(l, "@@"))
+		case '-':
+			old = append(old, l[1:])
+		case '+':
+			repl = append(repl, l[1:])
+		default:
+			old = append(old, l[1:])
+			repl = append(repl, l[1:])
+		}
+	}
+	if !flush() {
+		return "", false
+	}
+	out := strings.Join(file, "\n")
+	if trailing || len(file) > 0 {
+		out += "\n"
+	}
+	return out, true
+}
+
+// fs2ApplyPatch applies a successful apply_patch call's patch to model and returns
+// how many files it touched. A patch that does not apply to the model fails the
+// task: the tool reported success, so the disk and the log disagree.
 func fs2ApplyPatch(t *testing.T, model map[string][]byte, clone, input string) int {
 	t.Helper()
-	pt, err := patch.Parse(input)
-	if err != nil {
-		t.Fatalf("a successful apply_patch call's patch does not parse: %v", err)
-	}
-	for _, h := range pt.Hunks {
-		p := fs2Rel(t, clone, h.Path)
-		switch h.Op {
-		case patch.OpAdd:
-			model[p] = []byte(h.Contents)
-		case patch.OpDelete:
+	hunks := fs2ParsePatch(t, input)
+	for _, h := range hunks {
+		p := fs2Rel(t, clone, h.path)
+		switch h.op {
+		case "add":
+			model[p] = []byte(strings.Join(h.lines, "\n") + "\n")
+		case "delete":
 			delete(model, p)
-		case patch.OpUpdate:
+		case "update":
 			cur, ok := model[p]
 			if !ok {
 				t.Fatalf("a successful patch updates %s, which the model of the clone does not hold", p)
 			}
-			next, err := h.Apply(string(cur))
-			if err != nil {
-				t.Fatalf("a successful patch does not apply to the model of %s: %v", p, err)
+			next, ok := fs2ApplyChunks(string(cur), h.lines)
+			if !ok {
+				t.Fatalf("a successful patch does not apply to the model of %s", p)
 			}
-			if h.MoveTo != "" {
+			if h.moveTo != "" {
 				delete(model, p)
-				p = fs2Rel(t, clone, h.MoveTo)
+				p = fs2Rel(t, clone, h.moveTo)
 			}
 			model[p] = []byte(next)
 		}
 	}
-	return len(pt.Hunks)
+	return len(hunks)
 }
 
 // fs2Snapshot is every regular file of the clone outside .git, by slash path.

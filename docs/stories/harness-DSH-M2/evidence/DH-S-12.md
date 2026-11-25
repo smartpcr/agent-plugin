@@ -133,7 +133,11 @@ new index entries) PASS, each run on its own. That full run predates the `util/f
 `gofmt -l` on the changed files (clean); `go vet` with `-tags=` and with `-tags=replay,scenario,bench` on
 `./internal/util/fsx` and `./internal/testkit/scenarios/...` (clean); `go test ./internal/util/fsx` (ok);
 in `tools/harness-gate`, `go vet` and `TestRequireSubcommand` (ok); `harness-gate policy-text` (ok); and the
-scenario-index gate (39 scenario tests authored, 39 indexed in 11 stages, built through DH-S-11).
+scenario-index gate. A later revision of FS-2 imported `internal/util/textdiff/patch`. The scenario boundary
+(`acceptance.BoundaryImport`) rejects that import, so the scenario-index gate failed on that tree (commit 8daae3c).
+FS-2 now reads patches with its own standard-library reader (`fs2ParsePatch`, `fs2ApplyPatch`). On the current
+diff the scenario-index gate passes again (39 scenario tests authored, 39 indexed in 11 stages, built through
+DH-S-11), and the project analyzers (`-vettool` with the built gate) are clean on both packages.
 
 Not yet recorded: the lane outputs on the merged SHA and `DSH_REQUIRE_SCENARIOS`
 (`harness-gate require --stage DH-S-12`).

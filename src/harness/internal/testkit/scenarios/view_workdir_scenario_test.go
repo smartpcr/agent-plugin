@@ -90,7 +90,7 @@ func TestHostMoveIntoARealWorktree(t *testing.T) {
 
 	// (3) A relative write lands in the worktree; a write to the project is refused.
 	evs = h.runPrompt(t, session, "Use the write tool with the relative path view5-relative.txt and the content relative, then use the write tool on "+filepath.Join(repo, "view5-original.txt")+" with the content original. Do not use any other tool.", 10*time.Minute)
-	if !view5Carries(evs, tree) {
+	if !view5Carries(t, evs, tree) {
 		t.Fatalf("the run after the move carries no context message naming %s", tree)
 	}
 	if _, err := os.Stat(filepath.Join(tree, "view5-relative.txt")); err != nil {
@@ -173,16 +173,19 @@ func view5Same(a, b string) bool {
 	return filepath.Clean(a) == filepath.Clean(b)
 }
 
-// view5Carries reports whether an event of evs other than a tool's names dir: the
-// logged context message of the next request.
-func view5Carries(evs []protocol.Event, dir string) bool {
-	quoted, _ := json.Marshal(dir)
-	needle := strings.Trim(string(quoted), `"`)
-	for _, e := range evs {
-		if strings.HasPrefix(e.Type, "tool/") || e.Type == "workspace-root/change" {
-			continue
+// view5Carries reports whether evs hold the logged context of the next request
+// naming dir: a request/context event whose key is cwd and whose value is
+// "Working directory: " and a path naming dir (session/workdir ContextKey and
+// ContextLine). No other event, assistant text or metadata, counts.
+func view5Carries(t *testing.T, evs []protocol.Event, dir string) bool {
+	t.Helper()
+	for _, e := range ofType(evs, "request/context") {
+		var p struct {
+			Key   string `json:"key"`
+			Value string `json:"value"`
 		}
-		if strings.Contains(string(e.Data), needle) {
+		decode(t, e, &p)
+		if got, ok := strings.CutPrefix(p.Value, "Working directory: "); p.Key == "cwd" && ok && view5Same(got, dir) {
 			return true
 		}
 	}

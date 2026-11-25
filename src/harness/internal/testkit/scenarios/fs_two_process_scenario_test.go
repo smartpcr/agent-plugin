@@ -116,6 +116,9 @@ func TestTwoProcessesAndAnEditorChangeOneFile(t *testing.T) {
 						p.m.script(fs3Edit(file, fmt.Sprintf("%s%04d", p.name, i)))
 					}
 					p.outs = append(p.outs, toolOutcomes(t, p.h.runPrompt(t, p.session, "Run the scripted calls.", 10*time.Minute))...)
+					if n := p.m.pending(); n != 0 {
+						t.Fatalf("process %s left %d of its scripted edits uncalled after the batch from %d", p.name, n, first)
+					}
 				}
 			})
 		}
@@ -140,12 +143,17 @@ func TestTwoProcessesAndAnEditorChangeOneFile(t *testing.T) {
 	var applied, stale, lostToEditor int
 	var lastAt time.Time
 	var lastMarker string
+	called := map[string]bool{}
 	for _, p := range procs {
 		for _, o := range p.outs {
 			c, ok := p.m.call(o.ID)
 			if !ok {
 				t.Fatalf("call %s was not scripted", o.ID)
 			}
+			if o.calls != 1 || o.results != 1 || called[c.Tag] || !strings.HasPrefix(c.Tag, p.name) {
+				t.Fatalf("edit %s: %d calls, %d results, seen before %v, by process %s; want each marker of its own process once with one result", c.Tag, o.calls, o.results, called[c.Tag], p.name)
+			}
+			called[c.Tag] = true
 			if o.IsError {
 				if !o.has(codeStaleVersion) {
 					t.Fatalf("edit %s returned neither success nor %s: %s", c.Tag, codeStaleVersion, o.Raw)
@@ -165,6 +173,13 @@ func TestTwoProcessesAndAnEditorChangeOneFile(t *testing.T) {
 				t.Fatalf("edit %s was reported applied, is missing from the final file, and no editor save overlapped it", c.Tag)
 			}
 			lostToEditor++
+		}
+	}
+	for _, p := range procs {
+		for i := range fs3Edits {
+			if tag := fmt.Sprintf("%s%04d", p.name, i); !called[tag] {
+				t.Fatalf("edit %s was never called: process %s ran %d of its %d edits", tag, p.name, len(p.outs), fs3Edits)
+			}
 		}
 	}
 	t.Logf("%d edits applied, %d refused %s, %d applied then overwritten by an overlapping editor save; %d editor saves",
