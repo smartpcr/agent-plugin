@@ -38,25 +38,22 @@ func TestMaintainHoldsTheTurnBack(t *testing.T) {
 	}
 
 	in, out, held := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	free := sync.OnceFunc(func() { close(out) })
-	t.Cleanup(func() { free(); <-held }) // the holding task returns once out closes
+	var outOnce sync.Once
+	release := func() { outOnce.Do(func() { close(out) }) }
+	t.Cleanup(func() { <-held }) // joins the holding task (QG-5) ...
+	t.Cleanup(release)           // ... after releasing it, should the test stop early
 	go func() {
 		defer close(held)
 		_ = r.drv.Maintain(bg, func(context.Context) error { close(in); <-out; return nil })
 	}()
-	select {
-	case <-in:
-	case <-held:
-		t.Fatal("the holding maintenance task never ran")
-	}
+	<-in
 	ctx, cancel := context.WithCancel(bg)
 	cancel()
 	ran := false
 	if err := r.drv.Maintain(ctx, func(context.Context) error { ran = true; return nil }); !errors.Is(err, context.Canceled) || ran {
 		t.Fatalf("maintain under an ended context = %v, ran %v", err, ran)
 	}
-	free()
-	<-held
+	release()
 
 	// With the gate free both select cases are ready; the ended context must still
 	// win every time.

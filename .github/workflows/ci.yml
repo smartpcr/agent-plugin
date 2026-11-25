@@ -145,6 +145,11 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history: the self gate checks that every module pin in
+          # src/harness/go.mod names a commit of this checkout
+          # (TestPinsResolveToCommittedModules); a shallow clone has none.
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           # The floor of src/harness/go.mod (go 1.27.4): the gate fails setup on

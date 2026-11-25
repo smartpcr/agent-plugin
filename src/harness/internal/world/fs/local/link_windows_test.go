@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"unicode/utf16"
+	//lint:ignore typeassert DeviceIoControl(FSCTL_SET_REPARSE_POINT) takes the reparse buffer as a *byte made with unsafe.Pointer
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 
@@ -86,7 +88,7 @@ func junction(target, link string) error {
 		off += 2
 	}
 	var ret uint32
-	if err := windows.DeviceIoControl(h, fsctlSetReparsePoint, &buf[0], uint32(len(buf)), nil, 0, &ret, nil); err != nil {
+	if err := windows.DeviceIoControl(h, fsctlSetReparsePoint, (*byte)(unsafe.Pointer(&buf[0])), uint32(len(buf)), nil, 0, &ret, nil); err != nil {
 		if errors.Is(err, errorInvalidReparseData) {
 			return fmt.Errorf("%w: junction %s -> %s: %v", fstest.ErrLinkUnsupported, link, target, err)
 		}
