@@ -45,7 +45,7 @@ built-through: DH-S-11
 stages:
   # Venue: guarded (harness:DSH-M2 step 16.8, implementation-plan Stage 6.12): run
   # on scratch homes inside the build stage DH-S-16, which does not close until they
-  # pass (impl.md sec. 7.4). DH-E-FS-3 joins when DH-S-12 authors it.
+  # pass (impl.md sec. 7.4).
   DH-S-16:
     # The store's two-process and crash-recovery scenarios, run on scratch homes
     # (impl.md step 16.8); authored by Stage 7.2 (impl.md steps 7.2, 7.3).
@@ -61,9 +61,18 @@ stages:
     - id: DH-E-STORE-6
       authored: DH-S-7
       credential: none
+    # Two dsh processes and an outside editor on one file (filesystem.md
+    # DH-E-FS-3); authored by DH-S-12 (implementation-plan Stage 2.8) against the
+    # SDK boundary with a scripted model endpoint (operator decision
+    # fs-scripted-model-vs-replay: the replay provider replaces it when DH-S-16
+    # lands). It needs the headless launcher (DH-S-16).
+    - id: DH-E-FS-3
+      authored: DH-S-12
+      credential: none
+      requires: [DH-S-16]
   # Venue: acceptance (harness:DSH-M2 Phase 7, E1: Linux with the signed-in Claude
-  # Code route required and the Copilot CLI route recorded). DH-E-SDK-1 and
-  # DH-E-SANDBOX-7 join when DH-S-15 and DH-S-12 author them.
+  # Code route required and the Copilot CLI route recorded). DH-E-SDK-1 joins when
+  # DH-S-15 authors it.
   DH-S-17:
     # Its subjects (the model runtime, the replay helpers) exist from Phase 11;
     # the file is written by the DH-S-11 authoring step (impl.md DH-S-1 Scenarios),
@@ -139,9 +148,17 @@ stages:
       authored: DH-S-11
       credential: claude-session
       requires: [DH-S-11, DH-S-16]
+    # The policy text proved last in DH-S-17 (R-03, sandbox-ssh.md
+    # DH-E-SANDBOX-7): 12 tasks x 3 runs x 3 platform texts on the signed-in
+    # Claude Code route; authored by DH-S-12 (implementation-plan Stage 2.8). It
+    # needs the agent loop (DH-S-11) and the headless launcher (DH-S-16).
+    - id: DH-E-SANDBOX-7
+      authored: DH-S-12
+      credential: claude-session
+      requires: [DH-S-11, DH-S-16]
   # Venue: acceptance (harness:DSH-M2 Phase 8, E2 operating-system variants; macOS
-  # rows out of scope by decision platforms-windows-wsl). The NATIVESYSTEM, SANDBOX-1,
-  # FS-1, FS-2, VIEW-5 and CONTEXT-2 scenarios join when DH-S-12/-13 author them.
+  # rows out of scope by decision platforms-windows-wsl). The NATIVESYSTEM, SANDBOX-1
+  # and CONTEXT-2 scenarios join when DH-S-13 authors them.
   DH-S-18:
     - id: DH-E-TOOLCHAIN-2
       authored: DH-S-1
@@ -182,6 +199,26 @@ stages:
     - id: DH-E-STORAGE-6
       authored: DH-S-6
       credential: none
+    # The fence, a long real-model session and the working directory on real
+    # filesystems (filesystem.md DH-E-FS-1, DH-E-FS-2; session-views.md
+    # DH-E-VIEW-5); authored by DH-S-12 (implementation-plan Stage 2.8) against
+    # the SDK boundary. FS-1 drives the pipeline from a scripted model endpoint
+    # (operator decision fs-scripted-model-vs-replay); FS-2 and VIEW-5 run on the
+    # signed-in Claude Code route and need the agent loop (DH-S-11); VIEW-5 also
+    # reads the sandbox status command (DH-S-13). All need the headless launcher
+    # (DH-S-16).
+    - id: DH-E-FS-1
+      authored: DH-S-12
+      credential: none
+      requires: [DH-S-16]
+    - id: DH-E-FS-2
+      authored: DH-S-12
+      credential: claude-session
+      requires: [DH-S-11, DH-S-16]
+    - id: DH-E-VIEW-5
+      authored: DH-S-12
+      credential: claude-session
+      requires: [DH-S-11, DH-S-13, DH-S-16]
   DH-S-19:
     # Two processes share the workspace registry; an archive with stop ends the
     # other process's turn (impl.md DH-S-19); authored by Stage 8.2 (impl.md

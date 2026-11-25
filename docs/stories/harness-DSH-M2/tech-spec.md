@@ -280,20 +280,20 @@ platform column is after decision `platforms-windows-wsl` (sec. 4.3, M2-DEC-6).
 | 1 | DH-E-STORE-1 | 16.8 guarded | Linux (WSL), Windows | Yes | |
 | 2 | DH-E-STORE-2 | 16.8 guarded | Linux (WSL) only | Yes | Claude route plus `bwrap`; `DSH_SCENARIO_STORE2_KEY` replaced by the route input (architecture.md) |
 | 3 | DH-E-STORE-6 | 16.8 guarded | Linux (WSL), Windows | Yes | |
-| 4 | DH-E-FS-3 | 16.8 guarded | Linux (WSL), Windows | **No** | Two `dsh` processes and an editor; 1,000 edits each |
+| 4 | DH-E-FS-3 | 16.8 guarded | Linux (WSL), Windows | Yes | Two `dsh` processes and an editor; 1,000 edits each |
 | 5-16 | DH-E-TOOLCHAIN-1, LOADER-1, LLM-1, LLM-3, VIEW-1, TOOLS-1, SESSION-1, SESSION-2, AGENT-1, AGENT-2, AGENT-3, AGENT-4 | S17 | Linux (E1) | Yes | Retarget to the built binary; LLM-1/-3, VIEW-1: one subtest per route, `claude-code` must pass, `copilot-cli` is recorded |
 | 17 | DH-E-SDK-1 | S17 | Linux (E1) | **No** | Go client over stdio against the built binary |
-| 18 | DH-E-SANDBOX-7 | S17 | Linux (E1) | **No** | 12 tasks x 3 runs x 3 platform texts = 108 runs; pass needs at least 10 of 18 escalations; closes `UP-DEBT-found.Q3.2` (M2-C-6) |
+| 18 | DH-E-SANDBOX-7 | S17 | Linux (E1) | Yes | 12 tasks x 3 runs x 3 platform texts = 108 runs; pass needs at least 10 of 18 escalations; closes `UP-DEBT-found.Q3.2` (M2-C-6) |
 | 19-28 | DH-E-TOOLCHAIN-2, CHOKIDAR-1, CHOKIDAR-2, NODEFS-1, RIPGREP-1, RIPGREP-2, EXEC-1, EXEC-10, HOST-4, STORAGE-6 | S18 | Variants of sec. 4.3 | Yes | NODEFS-1 needs 100 power cuts (M2-R-06) |
 | 29-32 | DH-E-NATIVESYSTEM-1..4 | S18 | Linux variants | **No** | |
 | 33 | DH-E-SANDBOX-1 | S18 | Linux variants | **No** | |
-| 34 | DH-E-FS-1 | S18 | Linux ext4, Windows NTFS | **No** | 10,000 calls under a link-swap helper |
-| 35 | DH-E-FS-2 | S18 | Linux, Windows | **No** | Long-running (M2-R-06) |
-| 36 | DH-E-VIEW-5 | S18 | Linux | **No** | Given names "a real model API key": read as the signed-in route (M2-I-1) |
+| 34 | DH-E-FS-1 | S18 | Linux ext4, Windows NTFS | Yes | 10,000 calls under a link-swap helper |
+| 35 | DH-E-FS-2 | S18 | Linux, Windows | Yes | Long-running (M2-R-06) |
+| 36 | DH-E-VIEW-5 | S18 | Linux | Yes | Given names "a real model API key": read as the signed-in route (M2-I-1) |
 | 37 | DH-E-CONTEXT-2 | S18 | Linux, Windows | **No** | |
 
-Totals: 4 guarded (3 authored), 14 in S17 (12 authored), 19 in S18 (10 authored);
-**25 authored, 12 to author**. The mapping of each run to its TC row is
+Totals: 4 guarded (4 authored), 14 in S17 (13 authored), 19 in S18 (13 authored);
+**30 authored, 7 to author**. The mapping of each run to its TC row is
 architecture.md's contract; e2e-scenarios.md owns the scripts.
 
 ### 4.3 Environments
