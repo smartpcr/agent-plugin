@@ -3,6 +3,7 @@ package instructions
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"regexp"
 	"strconv"
 	"strings"
@@ -24,7 +25,8 @@ type Record struct {
 	Refused []Refusal `json:"refused,omitempty"`
 	// Budget is the byte budget the section was rendered with.
 	Budget int `json:"budget"`
-	// Digest is the hex SHA-256 of the rendered section.
+	// Digest is the hex SHA-256 of the rendered section and of its files and
+	// refusals: what the model saw and what was diagnosed.
 	Digest string `json:"digest,omitempty"`
 }
 
@@ -100,11 +102,25 @@ func Render(obs Observation, budget int) Section {
 		text = build(files, bodies)
 		break
 	}
-	sum := sha256.Sum256([]byte(text))
+	sum := digest(text, files, obs.Refused)
 	return Section{Text: text, Record: Record{
 		Root: obs.Root, Files: files, Refused: append([]Refusal(nil), obs.Refused...),
-		Budget: budget, Digest: hex.EncodeToString(sum[:]),
+		Budget: budget, Digest: sum,
 	}}
+}
+
+// digest is the hex SHA-256 of the text and of the record's diagnostics, so a
+// refusal or a file state that leaves the text as it was is still a change.
+func digest(text string, files []File, refused []Refusal) string {
+	h := sha256.New()
+	h.Write([]byte(text))
+	h.Write([]byte{0})
+	diag, _ := json.Marshal(struct {
+		Files   []File    `json:"files"`
+		Refused []Refusal `json:"refused"`
+	}{files, refused})
+	h.Write(diag)
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func build(files []File, bodies []string) string {

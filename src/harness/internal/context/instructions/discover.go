@@ -117,9 +117,11 @@ type Entry struct {
 // Observation is what one discovery saw.
 type Observation struct {
 	// Root is the project root as given.
-	Root    string
-	Entries []Entry
-	Refused []Refusal
+	Root string
+	// canonRoot is the root as the seam resolved it.
+	canonRoot string
+	Entries   []Entry
+	Refused   []Refusal
 	// Candidates are the absolute candidate paths looked at, in chain order:
 	// the paths a watch covers.
 	Candidates []string
@@ -145,8 +147,12 @@ func Discover(ctx context.Context, fsys fs.FS, dir, root string, c Config) (Obse
 	if !ri.Exists {
 		return Observation{}, herr.Newf(fs.CodeNotFound, "instructions: the project root %s does not exist", root)
 	}
+	bounded, ok := fsys.(fs.BoundedOpener)
+	if !ok {
+		return Observation{}, fmt.Errorf("instructions: the filesystem seam %T cannot read a bounded prefix", fsys)
+	}
 	canonRoot := ri.Target.Display
-	obs := Observation{Root: root}
+	obs := Observation{Root: root, canonRoot: canonRoot}
 	rel, _ := filepath.Rel(root, dir)
 	dirs := []string{root}
 	if rel != "." {
@@ -163,7 +169,7 @@ func Discover(ctx context.Context, fsys fs.FS, dir, root string, c Config) (Obse
 			p := filepath.Join(d, n)
 			obs.Candidates = append(obs.Candidates, p)
 			shown := filepath.ToSlash(must(filepath.Rel(root, p)))
-			e, refused, ok := readOne(ctx, fsys, p, canonRoot, c, &total)
+			e, refused, ok := readOne(ctx, fsys, bounded, p, canonRoot, c, &total)
 			if refused != "" {
 				obs.Refused = append(obs.Refused, Refusal{Path: shown, Reason: refused})
 			}
@@ -185,8 +191,9 @@ func Discover(ctx context.Context, fsys fs.FS, dir, root string, c Config) (Obse
 
 func must(s string, _ error) string { return s }
 
-// readOne reads candidate p. ok is false for an absent or refused file.
-func readOne(ctx context.Context, fsys fs.FS, p, canonRoot string, c Config, total *int) (e Entry, refused herr.Reason, ok bool) {
+// readOne reads candidate p, at most the source limit and one byte more, so a
+// longer file is known to be cut. ok is false for an absent or refused file.
+func readOne(ctx context.Context, fsys fs.FS, bounded fs.BoundedOpener, p, canonRoot string, c Config, total *int) (e Entry, refused herr.Reason, ok bool) {
 	in, err := fsys.Stat(ctx, fs.Ref{Path: p})
 	if err != nil {
 		return Entry{File: File{State: Unreadable, Reason: herr.Kind(err)}}, "", true
@@ -204,7 +211,8 @@ func readOne(ctx context.Context, fsys fs.FS, p, canonRoot string, c Config, tot
 	if left <= 0 {
 		return Entry{File: File{State: Omitted, Reason: fs.CodeTooLarge}}, "", true
 	}
-	rc, oi, err := fsys.Open(ctx, fs.Ref{Path: p})
+	limit := min(c.MaxSourceBytes, left)
+	rc, oi, err := bounded.OpenBounded(ctx, fs.Ref{Path: p}, int64(limit)+1)
 	if err != nil {
 		return Entry{File: File{State: Unreadable, Reason: herr.Kind(err)}}, "", true
 	}
@@ -213,8 +221,7 @@ func readOne(ctx context.Context, fsys fs.FS, p, canonRoot string, c Config, tot
 	if !fs.Within(canonRoot, oi.Target.Display) {
 		return Entry{}, fs.CodeSandboxDenied, false
 	}
-	limit := min(c.MaxSourceBytes, left)
-	data, err := io.ReadAll(io.LimitReader(rc, int64(limit)+1))
+	data, err := io.ReadAll(rc)
 	if err != nil {
 		return Entry{File: File{State: Unreadable, Reason: herr.Kind(err)}}, "", true
 	}

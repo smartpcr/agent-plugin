@@ -294,6 +294,12 @@ func meta(p string, fi iofs.FileInfo, typ fs.FileType) string {
 // readFile reads the regular file at canonical path p with the metadata token
 // unchanged across the read, so the digest and the token describe one content.
 func readFile(ctx context.Context, p string) ([]byte, fs.Info, error) {
+	return readUpTo(ctx, p, -1)
+}
+
+// readUpTo is readFile reading at most limit bytes (limit < 0 reads the whole
+// file); the digest is set only when the whole file was read.
+func readUpTo(ctx context.Context, p string, limit int64) ([]byte, fs.Info, error) {
 	for range 5 {
 		if err := ctxErr(ctx); err != nil {
 			return nil, fs.Info{}, err
@@ -306,7 +312,7 @@ func readFile(ctx context.Context, p string) ([]byte, fs.Info, error) {
 			return nil, fs.Info{}, herr.Newf(fs.CodeNotRegularFile, "%s is a %s", p, fileType(p, before))
 		}
 		m := meta(p, before, fs.TypeFile)
-		data, err := fsx.ReadFile(p)
+		data, err := readPrefix(p, limit)
 		if err != nil {
 			return nil, fs.Info{}, mapErr(err, p)
 		}
@@ -314,8 +320,14 @@ func readFile(ctx context.Context, p string) ([]byte, fs.Info, error) {
 		if err != nil || !after.Mode().IsRegular() || meta(p, after, fs.TypeFile) != m {
 			continue
 		}
-		in := fs.Info{Target: target(p), Exists: true, Type: fs.TypeFile, Size: int64(len(data))}
-		in.Version = fs.Version{Meta: m, Digest: sha256.Sum256(data), HasDigest: true}
+		// A short read reached the end; a full one is whole only at the size.
+		whole := limit < 0 || int64(len(data)) < limit || after.Size() == int64(len(data))
+		in := fs.Info{Target: target(p), Exists: true, Type: fs.TypeFile, Size: after.Size()}
+		in.Version = fs.Version{Meta: m}
+		if whole {
+			in.Size = int64(len(data))
+			in.Version.Digest, in.Version.HasDigest = sha256.Sum256(data), true
+		}
 		return data, in, nil
 	}
 	return nil, fs.Info{}, herr.Newf(fs.CodeIO, "%s kept changing while it was read", p)
@@ -377,6 +389,39 @@ func (l *FS) Open(ctx context.Context, r fs.Ref) (io.ReadCloser, fs.Info, error)
 		return nil, fs.Info{}, err
 	}
 	return io.NopCloser(bytes.NewReader(data)), in, nil
+}
+
+// OpenBounded implements fs.BoundedOpener: at most limit bytes are read from
+// the file, never the whole of a longer one.
+func (l *FS) OpenBounded(ctx context.Context, r fs.Ref, limit int64) (io.ReadCloser, fs.Info, error) {
+	if limit < 0 {
+		return nil, fs.Info{}, herr.Newf(fs.CodeInvalidPath, "OpenBounded: the limit %d is negative", limit)
+	}
+	p, fi, err := lookup(ctx, r, r.NoFollowFinal)
+	if err != nil {
+		return nil, fs.Info{}, err
+	}
+	if fi == nil {
+		return nil, fs.Info{}, herr.Newf(fs.CodeNotFound, "%s does not exist", p)
+	}
+	data, in, err := readUpTo(ctx, p, limit)
+	if err != nil {
+		return nil, fs.Info{}, err
+	}
+	return io.NopCloser(bytes.NewReader(data)), in, nil
+}
+
+// readPrefix reads the file p whole (limit < 0) or its first limit bytes.
+func readPrefix(p string, limit int64) ([]byte, error) {
+	if limit < 0 {
+		return fsx.ReadFile(p)
+	}
+	f, err := fsx.Open(p)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(io.LimitReader(f, limit))
 }
 
 // ReadDir implements fs.FS. Files fsx is staging are not listed.

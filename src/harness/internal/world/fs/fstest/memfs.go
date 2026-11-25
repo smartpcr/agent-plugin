@@ -268,6 +268,24 @@ func (m *MemFS) Open(ctx context.Context, r fs.Ref) (io.ReadCloser, fs.Info, err
 	return io.NopCloser(bytes.NewReader(slices.Clone(n.data))), info(p, n, true), nil
 }
 
+// OpenBounded implements fs.BoundedOpener: it copies at most limit bytes.
+func (m *MemFS) OpenBounded(ctx context.Context, r fs.Ref, limit int64) (io.ReadCloser, fs.Info, error) {
+	if limit < 0 {
+		return nil, fs.Info{}, herr.Newf(fs.CodeInvalidPath, "OpenBounded: the limit %d is negative", limit)
+	}
+	rc, in, err := m.Open(ctx, r)
+	if err != nil || in.Size <= limit {
+		return rc, in, err
+	}
+	data, err := io.ReadAll(io.LimitReader(rc, limit))
+	_ = rc.Close()
+	if err != nil {
+		return nil, fs.Info{}, err
+	}
+	in.Version.Digest, in.Version.HasDigest = [32]byte{}, false
+	return io.NopCloser(bytes.NewReader(data)), in, nil
+}
+
 // ReadDir implements fs.FS.
 func (m *MemFS) ReadDir(ctx context.Context, r fs.Ref, limit int) ([]fs.DirEntry, bool, error) {
 	m.mu.Lock()

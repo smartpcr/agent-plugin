@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/surface"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/views"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/watch"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/fs"
@@ -62,7 +64,10 @@ type Options struct {
 	Notify func()
 }
 
-// Reconciler holds the instruction chain of one session.
+// Reconciler holds the instruction chain of one session. It keeps no record of
+// what the model saw: each step passes that in, read from the current surface,
+// so a step that was never admitted, a compaction and a resume all leave it
+// right.
 type Reconciler struct {
 	ctx   context.Context
 	o     Options
@@ -74,13 +79,15 @@ type Reconciler struct {
 	obs      *Observation
 	lastGood map[string]Entry
 	watches  map[string]watch.Watch
-	shown    string
 }
 
 // NewReconciler returns a reconciler whose watches live as long as ctx.
 func NewReconciler(ctx context.Context, o Options) (*Reconciler, error) {
 	if o.FS == nil {
 		return nil, errors.New("instructions: the filesystem seam is a required injection")
+	}
+	if _, ok := o.FS.(fs.BoundedOpener); !ok {
+		return nil, errors.New("instructions: the filesystem seam cannot read a bounded prefix")
 	}
 	if err := o.Config.Validate(); err != nil {
 		return nil, err
@@ -92,56 +99,73 @@ func NewReconciler(ctx context.Context, o Options) (*Reconciler, error) {
 }
 
 // SetDirectory is a working-directory change: the chain of dir under root is
-// discovered at the next step. The root is held until the next change.
+// discovered at the next step. The same directory again changes nothing.
 func (r *Reconciler) SetDirectory(dir, root string) {
+	dir, root = filepath.Clean(dir), filepath.Clean(root)
 	r.mu.Lock()
-	r.dir, r.root = filepath.Clean(dir), filepath.Clean(root)
+	same := r.dir == dir && r.root == root
+	r.dir, r.root = dir, root
 	r.mu.Unlock()
-	r.dirty.Store(true)
-}
-
-// Resume restores what the model last saw from the fold: the next step
-// reconciles, and reports a change only if the section differs from rec.
-func (r *Reconciler) Resume(rec Record) {
-	r.mu.Lock()
-	r.shown = rec.Digest
-	r.mu.Unlock()
-	r.dirty.Store(true)
+	if !same {
+		r.dirty.Store(true)
+	}
 }
 
 // Touch is a file-tool touch (fs.Observed) or a shell call's working directory:
 // the chain is marked when path is one of its candidates or a directory of it.
+// path may be as given or as the seam resolved it.
 func (r *Reconciler) Touch(path string) {
+	if !filepath.IsAbs(path) {
+		return
+	}
 	r.mu.Lock()
 	dir, root := r.dir, r.root
+	var canonRoot string
+	if r.obs != nil {
+		canonRoot = r.obs.canonRoot
+	}
 	r.mu.Unlock()
-	if dir == "" || !filepath.IsAbs(path) {
+	if dir == "" {
 		return
 	}
 	path = filepath.Clean(path)
-	if fs.Within(root, path) && fs.Within(path, dir) {
+	if r.touches(path, dir, root) {
 		r.dirty.Store(true)
 		return
 	}
+	if canonRoot != "" && canonRoot != root {
+		rel, err := filepath.Rel(root, dir)
+		if err == nil && r.touches(path, filepath.Join(canonRoot, rel), canonRoot) {
+			r.dirty.Store(true)
+		}
+	}
+}
+
+func (r *Reconciler) touches(path, dir, root string) bool {
+	if fs.Within(root, path) && fs.Within(path, dir) {
+		return true
+	}
 	parent := filepath.Dir(path)
 	if !fs.Within(root, parent) || !fs.Within(parent, dir) {
-		return
+		return false
 	}
 	for _, n := range append(append([]string(nil), r.o.Config.Candidates...), r.o.Config.LocalCandidates...) {
 		if strings.EqualFold(n, filepath.Base(path)) {
-			r.dirty.Store(true)
-			return
+			return true
 		}
 	}
+	return false
 }
 
 // Pending reports whether the next Next discovers the chain again.
 func (r *Reconciler) Pending() bool { return r.dirty.Load() }
 
-// Next reconciles a marked chain and renders the section. changed is true when
-// the section differs from the one the model last saw, which it then is; an
-// empty first section is not a change.
-func (r *Reconciler) Next(ctx context.Context) (Section, bool, error) {
+// Next reconciles a marked chain and renders the section. seen is the record
+// of the section the model last saw (Seen of the current surface), nil when
+// none is visible. changed is true when the section differs from seen: a
+// baseline when nothing is visible and there is a file or a refusal to show, an
+// update otherwise.
+func (r *Reconciler) Next(ctx context.Context, seen *Record) (Section, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.dir == "" {
@@ -158,24 +182,39 @@ func (r *Reconciler) Next(ctx context.Context) (Section, bool, error) {
 		r.syncWatches(obs.Candidates)
 	}
 	sec := Render(*r.obs, r.o.Config.MaxBytes)
-	if sec.Record.Digest == r.shown || (r.shown == "" && !hasFiles(sec.Record)) {
+	switch {
+	case seen == nil && len(sec.Record.Files) == 0 && len(sec.Record.Refused) == 0:
 		return sec, false, nil
-	}
-	sec.Record.Form = FormUpdate
-	if r.shown == "" {
+	case seen == nil:
 		sec.Record.Form = FormBaseline
+	case seen.Digest == sec.Record.Digest:
+		return sec, false, nil
+	default:
+		sec.Record.Form = FormUpdate
 	}
-	r.shown = sec.Record.Digest
 	return sec, true, nil
 }
 
-func hasFiles(rec Record) bool {
-	for _, f := range rec.Files {
-		if f.State == Visible || f.State == Omitted {
-			return true
-		}
+// Seen is the record of the latest instructions message on h, the surface the
+// model sees: nil when none is (none was admitted, or a compaction shadowed
+// it).
+func Seen(h surface.History) (*Record, error) {
+	msgs, err := h.Messages()
+	if err != nil {
+		return nil, err
 	}
-	return false
+	for i := len(msgs) - 1; i >= 0; i-- {
+		src, ok := msgs[i].Source()
+		if !ok || src.Kind != request.KindInstructions || len(src.Data) == 0 {
+			continue
+		}
+		var rec Record
+		if err := json.Unmarshal(src.Data, &rec); err != nil {
+			return nil, fmt.Errorf("instructions: the visible record: %w", err)
+		}
+		return &rec, nil
+	}
+	return nil, nil
 }
 
 // keepLastGood gives an unreadable file its own last-good text.
@@ -239,9 +278,12 @@ func (r *Reconciler) Close() error {
 }
 
 // Contributor is the instructions contributor of the request pipeline: at each
-// step it returns the section when it changed since the model last saw it.
+// step it returns the section when it differs from the one on the current
+// surface. What the model saw is read from that surface, so a step the
+// pipeline rejected is offered again, and a baseline a compaction shadowed is
+// entered again.
 type Contributor struct {
-	// For gives the reconciler of an agent's session.
+	// For gives the reconciler of an agent's session, its directory current.
 	For func(agent.Ref) (*Reconciler, error)
 }
 
@@ -259,10 +301,14 @@ func (c Contributor) Contribute(ctx context.Context, in request.Input) (request.
 		return request.Output{}, errors.New("instructions: no reconciler lookup")
 	}
 	r, err := c.For(in.Agent)
+	if err != nil || r == nil {
+		return request.Output{}, err
+	}
+	seen, err := Seen(in.Visible)
 	if err != nil {
 		return request.Output{}, err
 	}
-	sec, changed, err := r.Next(ctx)
+	sec, changed, err := r.Next(ctx, seen)
 	if err != nil || !changed {
 		return request.Output{}, err
 	}

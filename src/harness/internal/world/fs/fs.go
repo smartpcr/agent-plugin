@@ -215,5 +215,15 @@ type FS interface {
 	Move(ctx context.Context, src, dst Ref, o MoveOptions, p sandbox.Policy) (MoveOutcome, error)
 }
 
+// BoundedOpener is a provider that reads at most a bound of a file: a caller's
+// limit bounds the read and the memory it takes, not only what it keeps. Open,
+// by contract, yields the digest of the whole content, so it reads it whole.
+type BoundedOpener interface {
+	// OpenBounded opens the regular file r and reads at most limit (>= 0) bytes
+	// of it. The Info's Size is the whole file's; its Version carries the digest
+	// only when the whole file was read.
+	OpenBounded(ctx context.Context, r Ref, limit int64) (io.ReadCloser, Info, error)
+}
+
 // Key is the service a filesystem provider provides.
 var Key = cordis.NewServiceKey[FS]("fs")
