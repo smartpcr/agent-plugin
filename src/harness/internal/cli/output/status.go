@@ -187,8 +187,10 @@ var codes = map[herr.Reason]int{
 	"fs/too-large":         Limit,
 
 	"sandbox/escalation-rejected": Denied,
+	"sandbox/exec-failed":         Failed,
 	"sandbox/invalid-mode":        Invalid,
 	"sandbox/invalid-root":        Invalid,
+	"sandbox/launch-failed":       Failed,
 	"sandbox/unavailable":         Unavailable,
 
 	"workdir/invalid":            Invalid,
