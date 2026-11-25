@@ -52,6 +52,9 @@ func ids(tr *compose.Tree) []string {
 func TestStartComposesTheBaseBundleAndLeavesNothing(t *testing.T) {
 	clock.Run(t, func(t *testing.T) {
 		rec := &recorder{TB: t}
+		// Stops the tree even when an assertion below ends the test early; the
+		// explicit rec.cleanup at the end runs it first, and a second call is a no-op.
+		t.Cleanup(rec.cleanup)
 		var svc *egress.Service
 		var rt *llm.Runtime
 		probe := item("util.test-probe", func(ctx *cordis.Context) error {
@@ -65,7 +68,9 @@ func TestStartComposesTheBaseBundleAndLeavesNothing(t *testing.T) {
 		tr := compose.Start(rec, compose.Options{Components: []catalog.Item{probe}, Layers: inserting(t, "probe", "util.test-probe")})
 
 		got := ids(tr)
-		for _, want := range []string{"logging", "sharing", "egress", "testkit-model", "probe"} {
+		// The kit's own entries: the recording egress, the scripted model and the
+		// test's component; the rest is the base bundle's, which may change.
+		for _, want := range []string{"egress", "testkit-model", "probe"} {
 			if !slices.Contains(got, want) {
 				t.Fatalf("entries %v lack %s", got, want)
 			}

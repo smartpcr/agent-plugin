@@ -54,6 +54,8 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/model"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/temphome"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/egress"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/util/watch"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/util/watch/watchtest"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess"
 )
 
@@ -107,6 +109,10 @@ type Tree struct {
 	Runtime *llm.Runtime
 	// Egress records every outbound request and lookup of the tree.
 	Egress *egresstest.Recorder
+	// Watch stands in for util.watch: the tree's file watches, fired by hand
+	// (Fire, Degrade). A real watcher blocks a goroutine in a system call, which
+	// never counts as durably blocked, so virtual time could not advance.
+	Watch *watchtest.Manual
 	// Loader is the tree's loader service.
 	Loader *loader.Service
 	// Sharing is the launch's sharing gate, every kind off unless a layer says.
@@ -167,6 +173,7 @@ func Start(t testing.TB, o Options) *Tree {
 		Model:   model.NewScripted(t, o.Scripts...),
 		Runtime: llm.New(),
 		Egress:  egresstest.New(t, o.Allow...),
+		Watch:   watchtest.NewManual(),
 		App:     launch.NewApp(),
 		Stderr:  &testkit.Buffer{},
 	}
@@ -199,7 +206,9 @@ func Start(t testing.TB, o Options) *Tree {
 	// Ready can come before the tree's queued status notifications reach their
 	// listeners (an effect's acquisition delivers them from its own goroutine).
 	// Start returns a settled tree, so that a test stopping it at once still has
-	// every entry's effects recorded for the stuck report.
+	// every entry's effects recorded for the stuck report. The bubble settles
+	// because the tree holds no goroutine blocked in a system call: util.watch is
+	// the hand-driven watcher (Tree.Watch).
 	synctest.Wait()
 	s := steps.state
 	tr.Loader, tr.Sharing, tr.Data, tr.Layers, tr.Issues, tr.Audit = s.Service, s.Sharing, s.Data, s.Layers, s.Issues, s.Audit
@@ -214,10 +223,18 @@ func (tr *Tree) end(t testing.TB, done <-chan int, s *boot.State, bubble string,
 	if status != output.OK {
 		t.Errorf("compose: the tree shut down with status %d (want %d): %s", status, output.OK, tr.Stderr.String())
 	}
+	var stuck []string
 	if s.Host != nil {
-		if stuck := s.Host.Stuck(); len(stuck) > 0 {
+		if stuck = s.Host.Stuck(); len(stuck) > 0 {
 			t.Errorf("compose: entries left after unload, with their effects: %s", strings.Join(stuck, "; "))
 		}
+	}
+	// The goroutine check needs a clean unload. After a forced one the entries
+	// still running keep their goroutines (a file watcher blocked in a system
+	// call is never durably blocked, so the bubble would not settle), and the
+	// test has already failed above.
+	if status != output.OK || len(stuck) > 0 {
+		return
 	}
 	synctest.Wait()
 	self, _ := current()
@@ -232,13 +249,23 @@ func (tr *Tree) end(t testing.TB, done <-chan int, s *boot.State, bubble string,
 	}
 }
 
+// watchName is the built-in watch entry's component name.
+const watchName = "util.watch"
+
 // catalog is the built-in catalogue with util.egress replaced by the recorder's
-// component, plus the model entry and the test's components.
+// component, util.watch by the hand-driven watcher, plus the model entry and the test's components.
 func (tr *Tree) catalog(extra []catalog.Item) (*catalog.Catalog, error) {
 	util := builtin.Util()
 	for i, item := range util {
-		if item.Name == egress.Name {
+		switch item.Name {
+		case egress.Name:
 			util[i].Component = tr.Egress.Component()
+		case watchName:
+			m := tr.Watch
+			util[i].Component = cordis.Define(watchName, func(ctx *cordis.Context, _ watch.Options) error {
+				_, err := m.Provide(ctx)
+				return err
+			})
 		}
 	}
 	rt := tr.Runtime

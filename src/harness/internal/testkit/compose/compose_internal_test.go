@@ -21,8 +21,8 @@ func TestDefinitionResolvesBundlesAndProfiles(t *testing.T) {
 	}{
 		{"", "compose", []string{"core"}},
 		{"core", "compose", []string{"core"}},
-		{profile.Headless, profile.Headless, []string{"core", "headless"}},
-		{profile.SDKMinimal, profile.SDKMinimal, []string{"core", "minimal", "sdk"}},
+		{profile.Headless, profile.Headless, []string{"admin", "core", "base", "headless"}},
+		{profile.SDKMinimal, profile.SDKMinimal, []string{"admin", "core", "minimal", "sdk"}},
 		{"minimal", "compose", []string{"core", "minimal"}},
 	} {
 		def, err := definition(tc.bundle)
