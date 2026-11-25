@@ -166,7 +166,7 @@ func TestTwoProcessesAndAnEditorChangeOneFile(t *testing.T) {
 				stale++
 				continue
 			}
-			edits = append(edits, fs3Ack{what: "edit " + c.Tag, start: fs3Time(t, o.CalledAt), end: fs3Time(t, o.DoneAt), sum: fs3Version(t, c.Tag, o.Raw), marker: c.Tag})
+			edits = append(edits, fs3Ack{what: "edit " + c.Tag, start: fs3Time(t, o.CalledAt), end: fs3StoredEnd(t, o.DoneAt), sum: fs3Version(t, c.Tag, o.Raw), marker: c.Tag})
 		}
 	}
 	for _, p := range procs {
@@ -562,6 +562,45 @@ func fs3Time(t *testing.T, s string) time.Time {
 		t.Fatalf("time %q: %v", s, err)
 	}
 	return v
+}
+
+// fs3StoredPrecision is the precision of dsh's stored event times
+// (caltime.StoredLayout truncates to milliseconds).
+const fs3StoredPrecision = time.Millisecond
+
+// fs3StoredEnd is the latest instant a truncated stored time s can stand for: the
+// real event happened before s plus the stored precision. A truncated start only
+// widens its window, so starts are used as stored.
+func fs3StoredEnd(t *testing.T, s string) time.Time {
+	t.Helper()
+	return fs3Time(t, s).Add(fs3StoredPrecision)
+}
+
+// TestFS3VersionsStoredPrecision checks that an edit whose stored acknowledgement
+// is truncated to the millisecond is not forced ahead of an editor save that
+// began inside that millisecond: the save read the starting file, the edit took
+// effect after that read, and the save wrote the starting file back.
+func TestFS3VersionsStoredPrecision(t *testing.T) {
+	start := fs3Anchor + "\n"
+	v1 := "a0000\n" + start
+	base := "2023-11-14T22:13:20."
+	// Real edit: 20.000100 to 20.000700; stored as 20.000 to 20.000.
+	edit := fs3Ack{what: "edit a0000", marker: "a0000", sum: fs3Sum(v1),
+		start: fs3Time(t, base+"000Z"), end: fs3StoredEnd(t, base+"000Z")}
+	save := fs3Save{fs3Time(t, base+"000500Z"), fs3Time(t, base+"000900Z"), fs3Sum(start)}
+	v, err := fs3CheckVersions(start, []fs3Ack{edit}, []fs3Save{save}, []byte(start))
+	if err != nil {
+		t.Fatalf("want accepted, got %v", err)
+	}
+	if v.lost != 1 {
+		t.Fatalf("lost %d, want 1", v.lost)
+	}
+	// Taken as stored, the edit ends before the save began and must go first, so
+	// the save's read of the starting file is impossible.
+	edit.end = fs3Time(t, base+"000Z")
+	if _, err := fs3CheckVersions(start, []fs3Ack{edit}, []fs3Save{save}, []byte(start)); err == nil || !strings.Contains(err.Error(), "no chronological history") {
+		t.Fatalf("with the truncated end, want no chronological history, got %v", err)
+	}
 }
 
 func fs3Read(t *testing.T, file string) []string {
