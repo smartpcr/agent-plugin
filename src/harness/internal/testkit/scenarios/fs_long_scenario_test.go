@@ -289,9 +289,27 @@ type fs2Hunk struct {
 func fs2ParsePatch(t *testing.T, input string) []fs2Hunk {
 	t.Helper()
 	var hunks []fs2Hunk
+	started := false
+parse:
 	for _, line := range strings.Split(lf(input), "\n") {
+		marker := strings.TrimSpace(line)
 		switch {
-		case line == "*** Begin Patch", line == "*** End Patch", line == "*** End of File":
+		case !started:
+			// Lines before the opening marker (a heredoc wrapper) are not patch content.
+			started = marker == "*** Begin Patch"
+			continue
+		case marker == "*** End Patch":
+			// The terminator ends the patch: what follows (the input's trailing newline,
+			// a heredoc's closing line) is not chunk content.
+			break parse
+		case marker == "*** End of File":
+			if len(hunks) > 0 && hunks[len(hunks)-1].op == "update" {
+				hunks[len(hunks)-1].lines = append(hunks[len(hunks)-1].lines, "*")
+			}
+			continue
+		}
+		line = strings.TrimRight(line, "\r")
+		switch {
 		case strings.HasPrefix(line, "*** Add File: "):
 			hunks = append(hunks, fs2Hunk{op: "add", path: strings.TrimPrefix(line, "*** Add File: ")})
 		case strings.HasPrefix(line, "*** Delete File: "):
@@ -319,8 +337,9 @@ func fs2ParsePatch(t *testing.T, input string) []fs2Hunk {
 
 // fs2ApplyChunks applies an update's chunks to text: each chunk's context and '-'
 // lines are found at or after the previous chunk (after its "@@ anchor" line when it
-// names one), exactly, else ignoring trailing white space, and replaced by its
-// context and '+' lines. ok is false when a chunk is not found.
+// names one; only at the end of the file when it ends with "*** End of File"),
+// exactly, else ignoring trailing white space, and replaced by its context and '+'
+// lines. ok is false when a chunk is not found.
 func fs2ApplyChunks(text string, lines []string) (string, bool) {
 	file := strings.Split(text, "\n")
 	trailing := len(file) > 0 && file[len(file)-1] == ""
@@ -330,6 +349,7 @@ func fs2ApplyChunks(text string, lines []string) (string, bool) {
 	at := 0
 	var anchor string
 	var old, repl []string
+	eof := false
 	flush := func() bool {
 		if len(old) == 0 && len(repl) == 0 {
 			return true
@@ -351,6 +371,9 @@ func fs2ApplyChunks(text string, lines []string) (string, bool) {
 			func(a, b string) bool { return strings.TrimRight(a, " \t") == strings.TrimRight(b, " \t") },
 		} {
 			for k := at; pos < 0 && k+len(old) <= len(file); k++ {
+				if eof && k+len(old) != len(file) {
+					continue
+				}
 				match := true
 				for n := range old {
 					if !eq(file[k+n], old[n]) {
@@ -368,7 +391,7 @@ func fs2ApplyChunks(text string, lines []string) (string, bool) {
 		}
 		file = append(file[:pos], append(append([]string(nil), repl...), file[pos+len(old):]...)...)
 		at = pos + len(repl)
-		old, repl, anchor = nil, nil, ""
+		old, repl, anchor, eof = nil, nil, "", false
 		return true
 	}
 	for _, l := range lines {
@@ -382,6 +405,8 @@ func fs2ApplyChunks(text string, lines []string) (string, bool) {
 			old = append(old, l[1:])
 		case '+':
 			repl = append(repl, l[1:])
+		case '*':
+			eof = true // "*** End of File": this chunk matches at the end of the file
 		default:
 			old = append(old, l[1:])
 			repl = append(repl, l[1:])

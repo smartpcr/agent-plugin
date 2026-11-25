@@ -10,6 +10,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -41,11 +43,13 @@ const fs3Anchor = "ANCHOR"
 // the same file throughout (write a temporary file, rename); when both sessions
 // issue 1,000 edit calls on the file, each inserting a unique marker line before
 // the anchor; then every edit either took effect or returned fs/stale-version,
-// none is reported applied and then missing unless an editor save overlapped it
-// (the editor's whole write of what it read is a sequence of whole writes, not a
-// lost edit), the final file is well formed (unique marker lines then the anchor)
-// and equals the last acknowledged version; and when one process is killed mid
-// run, the other's next edit succeeds within the lock timeout.
+// every editor save writes back a version already acknowledged, an edit reported
+// applied and then missing is one an editor save overwrote with an earlier
+// acknowledged version, the final file is well formed (unique marker lines then the
+// anchor) and its SHA-256 is the version an edit returned or an editor save logged
+// for a write no other write began after (the last acknowledged version); and when
+// one process is killed while it holds the file lock (frozen, its lock probed, then
+// killed), the other's next edit takes effect on disk within the lock timeout.
 //
 // The edits are scripted (scripted_model_test.go) and reach the file through
 // dsh's whole tool pipeline. Operator decision fs-scripted-model-vs-replay: the
@@ -59,8 +63,8 @@ const fs3Anchor = "ANCHOR"
 //
 // Inputs: DSH_SCENARIO_FS3_EDITOR an executable run as "<editor> <file> <log>
 // <stop>" that saves file with an editor's save sequence every few milliseconds
-// until stop exists, logging each save as "<start> <end> <sha256>" (RFC 3339
-// times); DSH_SCENARIO_FS3_LAYER a layer template over {endpoint} and {locks}
+// until stop exists, each save writing back the whole of what it read, logging each
+// save as "<start> <end> <sha256>" (RFC 3339 times); DSH_SCENARIO_FS3_LAYER a layer template over {endpoint} and {locks}
 // registering route DSH_SCENARIO_FS3_ROUTE on {endpoint}, enabling edit, placing
 // file locks under {locks} and allowing fs3Batch+1 steps a turn;
 // DSH_SCENARIO_FS3_ROUTE and DSH_SCENARIO_FS3_MODEL the route and model;
@@ -140,9 +144,12 @@ func TestTwoProcessesAndAnEditorChangeOneFile(t *testing.T) {
 		t.Fatalf("the final file does not end with the anchor: %q", final[len(final)-1])
 	}
 
-	var applied, stale, lostToEditor int
-	var lastAt time.Time
-	var lastMarker string
+	// acks are the acknowledged versions of the file: the starting bytes, each
+	// successful edit's returned version (the SHA-256 of the whole file it wrote)
+	// and each editor save.
+	acks := []fs3Ack{{what: "the starting file", sum: before}}
+	var applied, stale int
+	var lost []fs3Ack
 	called := map[string]bool{}
 	for _, p := range procs {
 		for _, o := range p.outs {
@@ -162,17 +169,11 @@ func TestTwoProcessesAndAnEditorChangeOneFile(t *testing.T) {
 				continue
 			}
 			applied++
-			from, to := fs3Time(t, o.CalledAt), fs3Time(t, o.DoneAt)
-			if to.After(lastAt) {
-				lastAt, lastMarker = to, c.Tag
+			a := fs3Ack{what: "edit " + c.Tag, start: fs3Time(t, o.CalledAt), end: fs3Time(t, o.DoneAt), sum: fs3Version(t, c.Tag, o.Raw), marker: c.Tag}
+			acks = append(acks, a)
+			if !present[c.Tag] {
+				lost = append(lost, a)
 			}
-			if present[c.Tag] {
-				continue
-			}
-			if !fs3Overlaps(editorSaves, from, to) {
-				t.Fatalf("edit %s was reported applied, is missing from the final file, and no editor save overlapped it", c.Tag)
-			}
-			lostToEditor++
 		}
 	}
 	for _, p := range procs {
@@ -182,37 +183,124 @@ func TestTwoProcessesAndAnEditorChangeOneFile(t *testing.T) {
 			}
 		}
 	}
-	t.Logf("%d edits applied, %d refused %s, %d applied then overwritten by an overlapping editor save; %d editor saves",
-		applied, stale, codeStaleVersion, lostToEditor, len(editorSaves))
+	for _, s := range editorSaves {
+		acks = append(acks, fs3Ack{what: "an editor save", start: s.start, end: s.end, sum: s.sum})
+	}
+	// The editor writes back the whole of a version it read: a save whose bytes are
+	// no acknowledged version is a torn or invented write.
+	for _, s := range editorSaves {
+		if fs3FirstAck(acks, s.sum) == nil {
+			t.Fatalf("an editor save (%s to %s) wrote %s, which is no acknowledged version of the file", s.start, s.end, s.sum)
+		}
+	}
+	// An edit reported applied and missing from the final file is permitted only
+	// when an editor save renamed in, after the edit began, a different version
+	// already acknowledged when the edit finished: the save wrote back what it read
+	// before the edit, so the marker is overwritten, not lost by dsh.
+	for _, e := range lost {
+		var by *fs3Save
+		for k := range editorSaves {
+			s := &editorSaves[k]
+			if s.sum == e.sum || s.end.Before(e.start) {
+				continue
+			}
+			if w := fs3FirstAck(acks, s.sum); w != nil && !w.end.After(e.end) && w.marker != e.marker {
+				by = s
+				break
+			}
+		}
+		if by == nil {
+			t.Fatalf("%s returned version %s and is missing from the final file, and no editor save wrote back an earlier version over it", e.what, e.sum)
+		}
+	}
+	t.Logf("%d edits applied, %d refused %s, %d applied then overwritten by an editor save of an earlier version; %d editor saves",
+		applied, stale, codeStaleVersion, len(lost), len(editorSaves))
 	if stale == 0 {
 		t.Logf("no edit was refused %s: the processes and the editor did not contend", codeStaleVersion)
 	}
+	// The final file must be the version of an acknowledgement that may have been
+	// the last: one that no other acknowledged write began after.
 	got := fs3Hash(t, file)
-	if last := editorSaves[len(editorSaves)-1]; last.end.After(lastAt) {
-		if got != last.sum {
-			t.Fatalf("the final file %s is not the editor's last acknowledged save %s", got, last.sum)
+	var last *fs3Ack
+	for k := range acks {
+		c := &acks[k]
+		if c.sum != got {
+			continue
 		}
-	} else if !present[lastMarker] {
-		t.Fatalf("the final file lacks %s, the last acknowledged edit", lastMarker)
+		later := false
+		for _, x := range acks {
+			if x.start.After(c.end) {
+				later = true
+				break
+			}
+		}
+		if !later {
+			last = c
+			break
+		}
 	}
+	if last == nil {
+		t.Fatalf("the final file %s is not the version of the last acknowledged write (edit result or editor save)", got)
+	}
+	t.Logf("the final file is the version %s acknowledged by %s", got, last.what)
 	t.Logf("file before %s, after %s", before, got)
 
-	fs3KillLeg(t, procs[0].h, procs[0].session, procs[0].m, procs[1].h, procs[1].session, procs[1].m, file, lockTimeout)
+	fs3KillLeg(t, procs[0].h, procs[0].session, procs[0].m, procs[1].h, procs[1].session, procs[1].m, file, locks, lockTimeout)
 }
 
-// fs3KillLeg kills a mid-run and requires b's next edit to succeed within the
-// lock timeout.
-func fs3KillLeg(t *testing.T, a *sdkHost, aSession string, am *scriptedModel, b *sdkHost, bSession string, bm *scriptedModel, file string, timeout time.Duration) {
+// fs3KillLeg kills a while it holds the file lock and requires b's next edit to
+// take effect within the lock timeout. Holding is observed, not assumed: a is
+// frozen (fs3Freeze), every lock file under locks is probed with a non-blocking
+// exclusive lock (fs3LockHeld), and a is killed while frozen only when one is
+// held; otherwise a resumes and is frozen again a moment later. b is idle and the
+// editor stopped, so the held lock is a's.
+func fs3KillLeg(t *testing.T, a *sdkHost, aSession string, am *scriptedModel, b *sdkHost, bSession string, bm *scriptedModel, file, locks string, timeout time.Duration) {
 	t.Helper()
 	for i := range fs3Batch {
 		am.script(fs3Edit(file, fmt.Sprintf("k%04d", i)))
 	}
 	a.prompt(t, aSession, "Run the scripted calls.")
 	waitUntil(t, time.Minute, "the killed process's first edit", func() bool { return am.pending() < fs3Batch-1 })
+
+	pid := a.Process.Pid()
+	held, tries := "", 0
+	// Each refreeze waits for a tick, so a runs between probes.
+	tick := time.NewTicker(3 * time.Millisecond)
+	defer tick.Stop()
+	for deadline := time.Now().Add(time.Minute); held == "" && time.Now().Before(deadline) && am.pending() > 0; tries++ {
+		resume, err := fs3Freeze(pid)
+		if err != nil {
+			t.Fatalf("freeze process %d: %v", pid, err)
+		}
+		files, err := filepath.Glob(filepath.Join(locks, "*.lock"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range files {
+			ok, err := fs3LockHeld(f)
+			if err != nil {
+				t.Fatalf("probe lock %s: %v", f, err)
+			}
+			if ok {
+				held = f
+				break
+			}
+		}
+		if held != "" {
+			break
+		}
+		if err := resume(); err != nil {
+			t.Fatalf("resume process %d: %v", pid, err)
+		}
+		<-tick.C
+	}
+	if held == "" {
+		t.Fatalf("process %d was never observed holding a file lock under %s in %d freezes", pid, locks, tries)
+	}
 	if err := a.Process.Kill(); err != nil {
 		t.Fatalf("kill: %v", err)
 	}
-	t.Logf("killed process %d with %d of its edits not made", a.Process.Pid(), am.pending())
+	t.Logf("killed process %d while it held %s (freeze %d), with %d of its edits not made", pid, filepath.Base(held), tries+1, am.pending())
 
 	bm.script(fs3Edit(file, "after-kill"))
 	started := time.Now()
@@ -224,6 +312,17 @@ func fs3KillLeg(t *testing.T, a *sdkHost, aSession string, am *scriptedModel, b 
 	if took > timeout+10*time.Second {
 		t.Fatalf("the edit after the kill took %v, over the lock timeout %v", took, timeout)
 	}
+	// The survivor's edit is on disk: the file is the version it returned and holds
+	// its marker, and the lock the killed process held is free again.
+	if v, got := fs3Version(t, "after-kill", outs[0].Raw), fs3Hash(t, file); v != got {
+		t.Fatalf("the edit after the kill returned version %s, but the file is %s", v, got)
+	}
+	if !slices.Contains(fs3Read(t, file), "after-kill") {
+		t.Fatal("the edit after the kill succeeded, but its marker is not in the file")
+	}
+	if still, err := fs3LockHeld(held); err != nil || still {
+		t.Fatalf("the killed process's lock %s is still held (%v) after the other process's edit", held, err)
+	}
 	t.Logf("the other process edited %v after the kill (lock timeout %v)", took, timeout)
 }
 
@@ -232,6 +331,39 @@ func fs3Edit(file, marker string) scriptedCall {
 	return scriptedCall{Name: "edit", Tag: marker, Args: map[string]any{
 		"file_path": file, "old_string": fs3Anchor, "new_string": marker + "\n" + fs3Anchor,
 	}}
+}
+
+// fs3Ack is one acknowledged version of the file: what wrote it, when (the write
+// call's start and acknowledgement) and the SHA-256 of the whole file; marker is
+// the marker an edit inserted.
+type fs3Ack struct {
+	what, sum, marker string
+	start, end        time.Time
+}
+
+// fs3FirstAck is the earliest acknowledgement of sum, or nil.
+func fs3FirstAck(acks []fs3Ack, sum string) *fs3Ack {
+	var first *fs3Ack
+	for k := range acks {
+		if a := &acks[k]; a.sum == sum && (first == nil || a.end.Before(first.end)) {
+			first = a
+		}
+	}
+	return first
+}
+
+// fs3VersionRE is the version a successful edit result names (world/fs/tools:
+// "Edited file <path> (version sha256:<hex>)").
+var fs3VersionRE = regexp.MustCompile(`\(version sha256:([0-9a-f]{64})\)`)
+
+// fs3Version is the SHA-256 of the whole file a successful edit result reports.
+func fs3Version(t *testing.T, tag string, raw []byte) string {
+	t.Helper()
+	m := fs3VersionRE.FindSubmatch(raw)
+	if m == nil {
+		t.Fatalf("successful edit %s returned no sha256 version: %s", tag, raw)
+	}
+	return string(m[1])
 }
 
 // fs3Save is one editor save.
@@ -290,16 +422,6 @@ func fs3StartEditor(t *testing.T, editor, file string) func() []fs3Save {
 		}
 	})
 	return stopIt
-}
-
-// fs3Overlaps reports whether a save's window overlaps from..to.
-func fs3Overlaps(saves []fs3Save, from, to time.Time) bool {
-	for _, s := range saves {
-		if !s.end.Before(from) && !s.start.After(to) {
-			return true
-		}
-	}
-	return false
 }
 
 func fs3Time(t *testing.T, s string) time.Time {

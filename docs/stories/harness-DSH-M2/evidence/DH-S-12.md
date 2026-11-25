@@ -139,6 +139,24 @@ FS-2 now reads patches with its own standard-library reader (`fs2ParsePatch`, `f
 diff the scenario-index gate passes again (39 scenario tests authored, 39 indexed in 11 stages, built through
 DH-S-11), and the project analyzers (`-vettool` with the built gate) are clean on both packages.
 
+The scenarios' own oracles have focused tests that need no live model. Run them with
+`go -C src/harness test -tags=scenario -run 'TestFS2PatchOracle|TestSandbox7Counts' ./internal/testkit/scenarios/`
+(both pass).
+- `TestFS2PatchOracleReadsTerminatedPatches` covers FS-2's patch reader. It stops at `*** End Patch`, skips a
+  heredoc wrapper and honours `*** End of File`. Seven of its eight cases failed on the previous reader.
+- `TestSandbox7CountsOnlyEscalatedRetriesOfDeniedCalls` covers SANDBOX-7's escalation count. Only an approval
+  of a retry of an `fs/sandbox-denied` call counts: the same tool and arguments, plus `sandbox_permissions`
+  `danger-full-access` and a justification that the approval shows. An ordinary tool approval does not count.
+
+FS-3 now checks the following:
+- Each edit's returned `sha256` version is compared with the final file.
+- Every editor save must write back an acknowledged version.
+- An edit that went missing must be explained by a save that rewrote an earlier version.
+- The kill leg freezes the process, probes its lock file with a non-blocking lock, and kills it only while the
+  lock is held. It uses `fs3Freeze` and `fs3LockHeld`, written with the standard library only, for Unix and
+  Windows. On Windows, a temporary self-test confirmed that the probe and the freeze work.
+- The survivor's edit must be the file's version on disk, and the lock must be free afterwards.
+
 Not yet recorded: the lane outputs on the merged SHA and `DSH_REQUIRE_SCENARIOS`
 (`harness-gate require --stage DH-S-12`).
 
