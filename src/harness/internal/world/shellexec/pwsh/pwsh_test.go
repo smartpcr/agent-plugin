@@ -67,19 +67,27 @@ func TestFindOrder(t *testing.T) {
 }
 
 // TestFirstStatement: param, using and #requires open a script, by word and
-// case-insensitively, after white space and a byte-order mark.
+// case-insensitively, after white space, a byte-order mark and leading comments.
 //
 //dsh:test DH-T-EXEC-13
 func TestFirstStatement(t *testing.T) {
 	for cmd, want := range map[string]bool{
-		"param($x) $x":            true,
-		"  \n\tPARAM ( $x )":      true,
-		"\uFEFFusing namespace X": true,
-		"#Requires -Version 7":    true,
-		"parameters":              false,
-		"param-x":                 false,
-		"Write-Output param":      false,
-		"# param":                 false,
+		"param($x) $x":                true,
+		"  \n\tPARAM ( $x )":          true,
+		"\uFEFFusing namespace X":     true,
+		"#Requires -Version 7":        true,
+		"parameters":                  false,
+		"param-x":                     false,
+		"Write-Output param":          false,
+		"# param":                     false,
+		"# c\nparam($x)":              true,
+		"# a\r\n  # b\nPARAM()":       true,
+		"<# b\n #> using namespace X": true,
+		"<#a#><#b#>param($x)":         true,
+		"# c\n#requires -Version 7":   true,
+		"<# param($x)":                false,
+		"<# param #> Write-Output":    false,
+		"# c\nWrite-Output param":     false,
 	} {
 		if got := pwsh.FirstStatement(cmd); got != want {
 			t.Errorf("FirstStatement(%q) = %v, want %v", cmd, got, want)
@@ -150,7 +158,12 @@ func TestPwshExecutor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, cmd := range []string{"Write-Output hi; exit 3", "param($x)\nWrite-Output hi\nexit 3"} {
+	for _, cmd := range []string{
+		"Write-Output hi; exit 3",
+		"param($x)\nWrite-Output hi\nexit 3",
+		"# leading comment\nparam($x)\nWrite-Output hi\nexit 3",
+		"<# block\n comment #>\nparam($x)\nWrite-Output hi\nexit 3",
+	} {
 		x, err := e.Start(context.Background(), shellexec.Request{Command: cmd, Policy: sandboxtest.Policy(sandbox.DangerFullAccess)})
 		if err != nil {
 			t.Fatal(err)

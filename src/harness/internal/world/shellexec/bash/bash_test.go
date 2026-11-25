@@ -132,3 +132,85 @@ func TestBashExecutor(t *testing.T) {
 		t.Fatal("no background reader")
 	}
 }
+
+// TestDescendantHoldingStdout: a command that leaves a descendant holding its
+// stdout (`sleep 30 & echo hi; exit 3`) ends when its shell exits plus the
+// drain bound, not when the descendant does: exit 3 and tail hi are kept, the
+// outcome is Exited (not TimedOut under a timeout longer than the drain) and
+// the descendant is stopped with the tree, which StopTree confirms (no Err).
+// On Linux the descendant's pid is checked gone too.
+//
+//dsh:test DH-T-EXEC-13
+func TestDescendantHoldingStdout(t *testing.T) {
+	h := shellexec.LocalHost(os.Environ())
+	if _, err := bash.Find("", h); err != nil {
+		if runtime.GOOS == "linux" {
+			t.Fatalf("bash is required on the Linux lane: %v", err)
+		}
+		t.Skipf("no bash on this lane: %v", err)
+	}
+	s, err := local.New(context.Background(), local.Config{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	e, err := bash.New(bash.Config{}, h, shellexec.Options{Sandbox: s, Env: &shellenv.Builder{Registry: shellenv.NewRegistry(shellenv.Builtins{})}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for cmd, code := range map[string]int{
+		"sleep 30 & echo $! >&2; echo hi; exit 3": 3,
+		"sleep 30 & echo $! >&2; echo hi":         0,
+	} {
+		x, err := e.Start(context.Background(), shellexec.Request{Command: cmd, Timeout: 20 * time.Second, Policy: sandboxtest.Policy(sandbox.DangerFullAccess)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		t.Cleanup(cancel)
+		t.Cleanup(func() { _, _ = x.Stop(ctx, nil) })
+		o, err := x.Wait(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if o.Kind != shellexec.Exited || o.ExitCode != code || o.Err != nil {
+			t.Fatalf("%q: Outcome = %+v, want exited %d with the tree stopped", cmd, o, code)
+		}
+		if o.Duration >= 15*time.Second {
+			t.Fatalf("%q: took %v: the descendant held the outcome back", cmd, o.Duration)
+		}
+		if got := strings.TrimSpace(string(o.Stdout.Tail)); got != "hi" {
+			t.Fatalf("%q: stdout tail = %q, want hi", cmd, got)
+		}
+		if runtime.GOOS == "linux" {
+			pid := strings.TrimSpace(string(o.Stderr.Tail))
+			if pid == "" {
+				t.Fatalf("%q: no descendant pid on stderr", cmd)
+			}
+			if !gone(pid, 10*time.Second) {
+				t.Fatalf("%q: descendant %s still runs", cmd, pid)
+			}
+		}
+	}
+}
+
+// gone reports whether the process pid is gone or a zombie within d.
+func gone(pid string, d time.Duration) bool {
+	deadline := time.After(d)
+	tick := time.NewTicker(20 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		b, err := os.ReadFile("/proc/" + pid + "/stat")
+		if err != nil {
+			return true
+		}
+		if f := strings.Fields(string(b[strings.LastIndexByte(string(b), ')')+1:])); len(f) > 0 && f[0] == "Z" {
+			return true
+		}
+		select {
+		case <-deadline:
+			return false
+		case <-tick.C:
+		}
+	}
+}

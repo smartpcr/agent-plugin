@@ -75,17 +75,23 @@ const (
 	DefaultTailBytes  = 64_000
 	DefaultSpillBytes = 64 << 20
 	DefaultGrace      = 3 * time.Second
+	// DefaultDrain bounds the wait for a command's streams once its shell has
+	// exited, as subprocess.Run's own bound: a descendant left holding stdout
+	// open cannot hold the outcome back.
+	DefaultDrain = 2 * time.Second
 )
 
 // Limits are a dialect's budgets: the default and the largest timeout, the bytes
-// of each stream's tail kept in memory, the cap of each stream's spill file, and
-// the stop ladder's grace.
+// of each stream's tail kept in memory, the cap of each stream's spill file, the
+// stop ladder's grace, and the bound on draining the streams after the shell
+// exits.
 type Limits struct {
 	Timeout    time.Duration
 	MaxTimeout time.Duration
 	TailBytes  int
 	SpillBytes int64
 	Grace      time.Duration
+	Drain      time.Duration
 }
 
 // WithDefaults fills every zero field with its default.
@@ -105,13 +111,16 @@ func (l Limits) WithDefaults() Limits {
 	if l.Grace == 0 {
 		l.Grace = DefaultGrace
 	}
+	if l.Drain == 0 {
+		l.Drain = DefaultDrain
+	}
 	return l
 }
 
 // Validate refuses negative budgets and a default timeout above the cap.
 func (l Limits) Validate() error {
 	switch {
-	case l.Timeout < 0, l.MaxTimeout < 0, l.TailBytes < 0, l.SpillBytes < 0, l.Grace < 0:
+	case l.Timeout < 0, l.MaxTimeout < 0, l.TailBytes < 0, l.SpillBytes < 0, l.Grace < 0, l.Drain < 0:
 		return herr.New(ReasonBadConfig, "shell budgets must not be negative")
 	case l.MaxTimeout > 0 && l.Timeout > l.MaxTimeout:
 		return herr.Newf(ReasonBadConfig, "the default timeout %s is above the cap %s", l.Timeout, l.MaxTimeout)

@@ -156,6 +156,12 @@ type Spec struct {
 	// the host keeps no copy running for it. The host keeps only a waiter that
 	// reaps it when it exits.
 	Detach bool
+	// Drain bounds how long Wait waits for the standard streams once the direct
+	// child has exited (exec.Cmd.WaitDelay): a descendant left holding a stream
+	// open then cannot keep Wait from returning, the host's pipe ends are closed
+	// and the caller stops what is left of the tree. Zero waits until every
+	// holder closes the streams. Run uses its own bound.
+	Drain time.Duration
 
 	// waitDelay bounds how long Wait waits for the standard streams once the
 	// direct child has exited (exec.Cmd.WaitDelay); Run sets it so a descendant
@@ -318,6 +324,10 @@ func startCommand(ctx context.Context, spec Spec) (*Process, error) {
 			stdin = input
 		}
 	}
+	waitDelay := spec.waitDelay
+	if waitDelay <= 0 && spec.Drain > 0 {
+		waitDelay = spec.Drain
+	}
 	build := func() *exec.Cmd {
 		spawning(spec.Argv)
 		cmd := &exec.Cmd{
@@ -328,7 +338,7 @@ func startCommand(ctx context.Context, spec Spec) (*Process, error) {
 			Stdin:     stdin,
 			Stdout:    outputOf(spec.Stdout, os.Stdout),
 			Stderr:    outputOf(spec.Stderr, os.Stderr),
-			WaitDelay: spec.waitDelay,
+			WaitDelay: waitDelay,
 		}
 		setCmdLine(cmd, l.cmdLine)
 		addExtra(cmd, spec.Extra)

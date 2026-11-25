@@ -111,13 +111,33 @@ func edition(p string) string {
 }
 
 // FirstStatement reports a command whose first statement is param, using or
-// #requires, case-insensitively and after leading white space and a byte-order
-// mark. Such a statement must open a script, so the command cannot follow the
-// preamble in one command string.
+// #requires, case-insensitively and after leading white space, a byte-order
+// mark and comments (`# ...` to the end of the line, `<# ... #>`). Such a
+// statement must open a script, so the command cannot follow the preamble in
+// one command string.
 func FirstStatement(command string) bool {
-	s := strings.ToLower(strings.TrimLeftFunc(strings.TrimPrefix(command, "\uFEFF"), unicode.IsSpace))
-	if strings.HasPrefix(s, "#requires") {
-		return true
+	s := strings.ToLower(strings.TrimPrefix(command, "\uFEFF"))
+	for {
+		s = strings.TrimLeftFunc(s, unicode.IsSpace)
+		switch {
+		case strings.HasPrefix(s, "#requires"):
+			return true
+		case strings.HasPrefix(s, "<#"):
+			_, rest, ok := strings.Cut(s[2:], "#>")
+			if !ok {
+				return false
+			}
+			s = rest
+			continue
+		case strings.HasPrefix(s, "#"):
+			_, rest, ok := strings.Cut(s, "\n")
+			if !ok {
+				return false
+			}
+			s = rest
+			continue
+		}
+		break
 	}
 	for _, kw := range []string{"param", "using"} {
 		if rest, ok := strings.CutPrefix(s, kw); ok && (rest == "" || !wordChar(rest[0])) {

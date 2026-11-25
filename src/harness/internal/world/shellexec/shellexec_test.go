@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -59,6 +60,8 @@ type fakeShell struct {
 	limits shellexec.Limits
 	unset  []string
 	argErr error
+	// scratch, when set, receives the private directory Argv asks for.
+	scratch func(dir string)
 }
 
 func (*fakeShell) Dialect() shellexec.Dialect { return shellexec.Bash }
@@ -66,9 +69,16 @@ func (s *fakeShell) Program() shellexec.Program {
 	return shellexec.Program{Path: s.path, Edition: "fake", Source: shellexec.SourceConfig}
 }
 func (s *fakeShell) Limits() shellexec.Limits { return s.limits }
-func (s *fakeShell) Argv(command string, _ func() (string, error)) ([]string, error) {
+func (s *fakeShell) Argv(command string, scratch func() (string, error)) ([]string, error) {
 	if s.argErr != nil {
 		return nil, s.argErr
+	}
+	if s.scratch != nil {
+		dir, err := scratch()
+		if err != nil {
+			return nil, err
+		}
+		s.scratch(dir)
 	}
 	return []string{s.path, childRole, command}, nil
 }
@@ -336,6 +346,111 @@ func TestFailedOutcome(t *testing.T) {
 			t.Fatalf("%s: a failed execution has a reader", name)
 		}
 	}
+}
+
+// TestPrivateDirIsVisibleUnderThePolicy: under workspace-write the command's
+// private directory (the PowerShell script file) lies below the policy's
+// scratch root, else below its first write root, so a confiner that hides the
+// host's temporary directory still shows it: in the bubblewrap argv for the
+// same policy the last mount covering it is a bind of the host's tree, after
+// the private /tmp. The policy is not widened.
+//
+//dsh:test DH-T-EXEC-13
+func TestPrivateDirIsVisibleUnderThePolicy(t *testing.T) {
+	ctx := context.Background()
+	grant, scratch, root := t.TempDir(), t.TempDir(), t.TempDir()
+	r := &sandboxtest.Resolver{Scratch: scratch}
+	release, err := r.GrantRoot(ctx, "", grant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(release)
+	withScratch, err := r.Resolve(ctx, sandbox.Request{Mode: sandbox.WorkspaceWrite})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, c := range map[string]struct {
+		policy sandbox.Policy
+		parent string
+	}{
+		"scratch root":     {withScratch, scratch},
+		"first write root": {sandboxtest.Policy(sandbox.WorkspaceWrite, root, grant), root},
+	} {
+		var dir string
+		e := newExecutor(t, &fakeShell{scratch: func(d string) { dir = d }}, nil)
+		x, err := e.Start(ctx, shellexec.Request{Command: "exit3", Policy: c.policy})
+		if err != nil {
+			t.Fatalf("%s: Start: %v", name, err)
+		}
+		t.Cleanup(func() {
+			sctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			_, _ = x.Stop(sctx, nil)
+		})
+		if filepath.Dir(dir) != c.parent {
+			t.Fatalf("%s: private dir = %q, want one below %q", name, dir, c.parent)
+		}
+		before := c.policy.WriteRoots()
+		argv := bwrapArgv(t, c.policy)
+		if !slices.Equal(c.policy.WriteRoots(), before) {
+			t.Fatalf("%s: the policy was widened", name)
+		}
+		if op := coveringMount(argv, filepath.Join(dir, "dsh-shell.ps1")); op != "--bind" {
+			t.Fatalf("%s: last mount over %q is %q, want --bind (argv %q)", name, dir, op, argv)
+		}
+	}
+	if runtime.GOOS == "linux" && os.TempDir() == "/tmp" {
+		argv := bwrapArgv(t, withScratch)
+		if op := coveringMount(argv, "/tmp/dsh-shell-x/dsh-shell.ps1"); op != "--tmpfs" {
+			t.Fatalf("host /tmp under bubblewrap: last mount %q, want --tmpfs", op)
+		}
+	}
+}
+
+func bwrapArgv(t *testing.T, p sandbox.Policy) []string {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	argv, err := local.BwrapArgv(local.BwrapArgs{
+		Bwrap:  filepath.Join(dir, "bwrap"),
+		Host:   local.Host{Exe: exe},
+		Canary: filepath.Join(dir, "canary"),
+		Policy: p,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return argv
+}
+
+// coveringMount is the last bubblewrap mount option whose destination covers
+// path: the one that decides what the command sees there.
+func coveringMount(argv []string, path string) string {
+	under := func(dst string) bool {
+		if dst == "/" {
+			return strings.HasPrefix(path, "/")
+		}
+		return path == dst || strings.HasPrefix(path, dst+string(filepath.Separator))
+	}
+	last := ""
+	for i := 1; i < len(argv) && argv[i] != "--"; i++ {
+		switch argv[i] {
+		case "--bind", "--ro-bind", "--ro-bind-try":
+			if i+2 < len(argv) && under(argv[i+2]) {
+				last = argv[i]
+			}
+			i += 2
+		case "--tmpfs", "--dev", "--proc":
+			if i+1 < len(argv) && under(argv[i+1]) {
+				last = argv[i]
+			}
+			i++
+		}
+	}
+	return last
 }
 
 // TestRegistry: one executor per dialect; a second is refused and the release

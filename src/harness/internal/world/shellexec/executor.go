@@ -156,6 +156,7 @@ func (e *Executor) Start(ctx context.Context, req Request) (*Execution, error) {
 		Stdout: x.stdout,
 		Stderr: x.stderr,
 		Grace:  e.limits.Grace,
+		Drain:  e.limits.Drain,
 		Launch: plan,
 	})
 	if err != nil {
@@ -312,18 +313,42 @@ func (x *Execution) Stop(ctx context.Context, cause error) (Outcome, error) {
 	return x.Wait(ctx)
 }
 
-// scratchDir creates the execution's private directory on first call.
+// scratchDir creates the execution's private directory on first call, where
+// the command sees it (privateParent).
 func (x *Execution) scratchDir() (string, error) {
 	x.scratchMu.Lock()
 	defer x.scratchMu.Unlock()
 	if x.scratch == "" {
-		dir, err := os.MkdirTemp("", "dsh-shell-")
+		parent, prefix := privateParent(x.req.Policy)
+		dir, err := os.MkdirTemp(parent, prefix)
 		if err != nil {
 			return "", herr.Wrap(ReasonScript, err, "create the command's private directory")
 		}
 		x.scratch = dir
 	}
 	return x.scratch, nil
+}
+
+// privateParent is where a command's private directory (the PowerShell script
+// file) is made: a place the command reads under its policy, chosen without
+// widening it. A workspace-write confiner may hide the host's temporary
+// directory (bubblewrap mounts a private /tmp and binds back only the write
+// roots), so under workspace-write the directory goes below the policy's
+// scratch root, else, hidden, below its first write root. A read-only or
+// unconfined command reads the host's temporary directory as it is.
+func privateParent(p sandbox.Policy) (dir, prefix string) {
+	if p.Mode() == sandbox.WorkspaceWrite {
+		roots := p.WriteRoots()
+		for _, r := range roots {
+			if r.Source == sandbox.SourceScratch {
+				return r.Path, "dsh-shell-"
+			}
+		}
+		if len(roots) > 0 {
+			return roots[0].Path, ".dsh-shell-"
+		}
+	}
+	return "", "dsh-shell-"
 }
 
 // cleanup removes the private directory; its error joins the outcome's only
@@ -353,7 +378,10 @@ func (x *Execution) fail(err error) *Execution {
 }
 
 // watch waits for the command, classifies the end by its first stop cause,
-// stops what is left of the tree and settles the outcome.
+// stops what is left of the tree and settles the outcome. Wait returns at most
+// Limits.Drain after the shell exits even when a descendant still holds a
+// stream, so a finished shell's outcome is not held back by what it left
+// running; that is stopped here.
 func (x *Execution) watch(cancelTimer context.CancelFunc) {
 	p := x.proc
 	_ = p.Wait() //lint:ignore errdiscard the exit error is the exit code and the stop cause, both read below
