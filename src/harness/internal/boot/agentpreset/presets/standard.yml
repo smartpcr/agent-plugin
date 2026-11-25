@@ -1,0 +1,23 @@
+# The standard agent preset (DH-D-BUNDLE-5, bundle-preset.md sec. 6.2 "Shipped
+# presets"): the coding agent a session gets when no preset is named. Its children
+# are the persona, the six file tools of fs.tools (C35) and the one-shot shell
+# tools of shellexec.tools (C40); the agent's tool list is
+#   read write edit apply_patch glob grep bash pwsh
+# Upstream's other standard children (context.instructions, context.clock,
+# skill.filesystem, skill.tool, tool.jobs, tool.todo, ...) are added here by the
+# deliverables that build them; the skills child arrives with skill.filesystem.
+id: standard
+name: Standard
+description: The coding agent with the file and shell tools.
+children:
+  persona:
+    component: agent.persona
+    config:
+      prefix: >-
+        You are a coding agent. You work in the user's workspace with the file and
+        shell tools below: read before you change, keep changes to what was asked,
+        and report what you did.
+  fs.tools:
+    config:
+      applyPatch: true
+  shellexec.tools: {}

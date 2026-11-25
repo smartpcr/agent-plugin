@@ -44,6 +44,12 @@ func TestStartupRejectsABrokenPresetSet(t *testing.T) {
         id: b
         extends: a
 `, "a.config.extends", "extends cycle: a -> b -> a"},
+		"persona outside a preset": {`- insert:
+    - id: persona
+      name: agent.persona
+      config:
+        prefix: You are a test.
+`, "persona.name", agentpreset.PersonaOutsidePreset},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

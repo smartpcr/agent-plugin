@@ -472,6 +472,11 @@ func TestCheckTreeEdges(t *testing.T) {
 			want: []string{"g" + loader.Separator + "orphan.config.extends"}},
 		"unnamed registry entry": {tree: []loader.EntryOptions{raw(t, "", agentpreset.RegistryName, `{"default":"ghost"}`), std},
 			want: []string{"agent.presets.config.default"}},
+		"persona at the top level": {tree: []loader.EntryOptions{raw(t, "who", agentpreset.PersonaName, `{"prefix":"x"}`)},
+			want: []string{"who.name: agent.persona mounts only as a child of an agent.preset declaration; a persona for every agent is tools.prompt's personaPrefix"}},
+		"persona in a group": {tree: []loader.EntryOptions{{ID: "g", Group: true, Children: []loader.EntryOptions{
+			raw(t, "who", agentpreset.PersonaName, `{"prefix":"x"}`)}}},
+			want: []string{"g" + loader.Separator + "who.name: agent.persona"}},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
