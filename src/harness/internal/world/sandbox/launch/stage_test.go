@@ -26,6 +26,9 @@ const reexecEnv = "LAUNCHTEST_REEXEC"
 // marker exists exactly when a command ran.
 const markerRole = "marker"
 
+// diesEnv makes the re-executed stage exit before it sends ready.
+const diesEnv = "LAUNCHTEST_STAGE_DIES"
+
 func TestMain(m *testing.M) {
 	if os.Getenv(reexecEnv) == "1" {
 		os.Exit(reexec(os.Args[1:]))
@@ -34,6 +37,9 @@ func TestMain(m *testing.M) {
 }
 
 func reexec(args []string) int {
+	if len(args) > 0 && args[0] == launch.Mode && os.Getenv(diesEnv) == "1" {
+		return 3
+	}
 	if code, ok := launch.ServeIfAsked(args, os.Stderr); ok {
 		return code
 	}

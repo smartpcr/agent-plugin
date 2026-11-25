@@ -141,6 +141,55 @@ func TestNewLaunchRefusesAnIncompletePlan(t *testing.T) {
 	}
 }
 
+// TestStageDeathBeforeReadyNotifiesFailed: a stage that exits before ready never
+// reaches Confirm; Failed runs once with sandbox/launch-failed and the command
+// never runs. A decision's own rejection is not such a failure.
+//
+//dsh:test DH-T-EXEC-8
+func TestStageDeathBeforeReadyNotifiesFailed(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var failedCalls, confirmCalls atomic.Int32
+	var failedErr error
+	h := launch.Hooks{
+		Confirm: func(context.Context, launch.Plan, launch.Ready) (sandbox.Confinement, error) {
+			confirmCalls.Add(1)
+			return sandbox.Confinement{}, herr.New(sandbox.CodeEnforcementInsufficient, "the test refuses")
+		},
+		Failed: func(_ context.Context, _ launch.Plan, err error) {
+			failedCalls.Add(1)
+			failedErr = err
+		},
+	}
+	marker := filepath.Join(t.TempDir(), "marker")
+	p, released, err := stagedStartWith(t, h, subprocess.Spec{Argv: []string{exe, markerRole, marker}, Env: subprocess.Env{diesEnv + "=1"}})
+	if p != nil || herr.Kind(err) != sandbox.CodeLaunchFailed {
+		t.Fatalf("Start = %v, %v; want no handle and %s", p, err, sandbox.CodeLaunchFailed)
+	}
+	if n := failedCalls.Load(); n != 1 || herr.Kind(failedErr) != sandbox.CodeLaunchFailed {
+		t.Fatalf("Failed ran %d times with %v, want once with %s", n, failedErr, sandbox.CodeLaunchFailed)
+	}
+	if n := confirmCalls.Load(); n != 0 {
+		t.Fatalf("Confirm ran %d times for a stage that sent no ready", n)
+	}
+	if exists(t, marker) {
+		t.Fatal("the command ran although the stage died before ready")
+	}
+	if n := released.Load(); n != 1 {
+		t.Fatalf("Release ran %d times, want 1", n)
+	}
+
+	failedCalls.Store(0)
+	if p, _, err := stagedStartWith(t, h, subprocess.Spec{Argv: []string{exe, markerRole, marker}}); p != nil || herr.Kind(err) != sandbox.CodeEnforcementInsufficient {
+		t.Fatalf("Start = %v, %v; want the decision's rejection", p, err)
+	}
+	if n := failedCalls.Load(); n != 0 {
+		t.Fatalf("Failed ran %d times for a rejected ready, want 0", n)
+	}
+}
+
 // TestLateConfirmLeavesNoCommand: a decision that returns a valid Confinement
 // only after the launch limit has passed authorizes nothing: the stage is
 // rejected, the marker is absent and Release ran once (DH-D-EXEC-4).

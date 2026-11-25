@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,6 +27,14 @@ const reexecEnv = "LOCALTEST_REEXEC"
 
 const markerRole = "marker"
 
+// stageEnv makes the re-executed stage fail before ready: "dies" exits at once,
+// "hangs" never sends ready. stageLogEnv names a file each such stage appends a
+// line to, so a test can count the stages started.
+const (
+	stageEnv    = "LOCALTEST_STAGE"
+	stageLogEnv = "LOCALTEST_STAGE_LOG"
+)
+
 func TestMain(m *testing.M) {
 	if os.Getenv(reexecEnv) == "1" {
 		os.Exit(reexec(os.Args[1:]))
@@ -34,6 +43,20 @@ func TestMain(m *testing.M) {
 }
 
 func reexec(args []string) int {
+	if len(args) > 0 && args[0] == launch.Mode && os.Getenv(stageEnv) != "" {
+		if log := os.Getenv(stageLogEnv); log != "" {
+			f, err := os.OpenFile(log, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+			if err != nil {
+				return 1
+			}
+			_, _ = f.WriteString("stage\n")
+			_ = f.Close()
+		}
+		if os.Getenv(stageEnv) == "hangs" {
+			<-time.After(time.Minute)
+		}
+		return 3
+	}
 	if code, ok := launch.ServeIfAsked(args, os.Stderr); ok {
 		return code
 	}
@@ -276,9 +299,10 @@ func TestCanaryBelowAWriteRootIsRefused(t *testing.T) {
 }
 
 // start runs argv through the one starter under l, the test binary re-executed.
-func start(t *testing.T, l sandbox.Launch, argv []string) (*subprocess.Process, error) {
+func start(t *testing.T, l sandbox.Launch, argv []string, extra ...string) (*subprocess.Process, error) {
 	t.Helper()
 	env := subprocess.Env{reexecEnv + "=1"}
+	env = append(env, extra...)
 	if dir := os.Getenv(subprocesstest.CoverDirEnv); dir != "" {
 		env = append(env, subprocesstest.CoverDirEnv+"="+dir)
 	}
@@ -382,5 +406,56 @@ func TestFailedConfinementRunsNothing(t *testing.T) {
 	}
 	if n := s.Probes() - before; n != 1 {
 		t.Fatalf("re-probed %d times after the failed confinement, want 1", n)
+	}
+}
+
+// TestStageFailureBeforeReadyReprobesOnce: a stage that dies or hangs before
+// ready is sandbox/launch-failed; the command never runs, it is not retried (one
+// stage started), and a confined plan's chain is re-probed exactly once while an
+// unconfined plan's is not (sandbox-ssh.md sec. 6.1).
+//
+//dsh:test DH-T-SANDBOX-7
+func TestStageFailureBeforeReadyReprobesOnce(t *testing.T) {
+	for _, row := range []struct {
+		name, stage string
+		mode        sandbox.Mode
+		reprobes    int
+	}{
+		{"confined stage dies", "dies", sandbox.ReadOnly, 1},
+		{"confined stage hangs past the launch limit", "hangs", sandbox.ReadOnly, 1},
+		{"unconfined stage dies", "dies", sandbox.DangerFullAccess, 0},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			s, err := local.New(context.Background(), local.Config{LaunchTimeout: 500 * time.Millisecond},
+				[]local.Backend{passing(sandbox.BackendBwrap, sandbox.Effects...)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = s.Close() })
+			argv := command(t)
+			l, err := s.Prepare(context.Background(), sandboxtest.Policy(row.mode), argv)
+			if err != nil {
+				t.Fatal(err)
+			}
+			log := filepath.Join(t.TempDir(), "stages")
+			before := s.Probes()
+			p, err := start(t, l, argv, stageEnv+"="+row.stage, stageLogEnv+"="+log)
+			if p != nil || herr.Kind(err) != sandbox.CodeLaunchFailed {
+				t.Fatalf("Start = %v, %v; want no handle and %s", p, err, sandbox.CodeLaunchFailed)
+			}
+			if exists(t, argv[2]) {
+				t.Fatal("the command ran although its stage failed before ready")
+			}
+			stages, err := os.ReadFile(log)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n := strings.Count(string(stages), "stage\n"); n != 1 {
+				t.Fatalf("%d stages started, want 1: the command is not retried", n)
+			}
+			if n := s.Probes() - before; n != row.reprobes {
+				t.Fatalf("re-probed %d times, want %d", n, row.reprobes)
+			}
+		})
 	}
 }

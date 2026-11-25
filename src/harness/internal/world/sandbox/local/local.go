@@ -256,7 +256,7 @@ func (s *Service) Prepare(ctx context.Context, p sandbox.Policy, argv []string) 
 	if err != nil {
 		return sandbox.Launch{}, err
 	}
-	l, err := launch.NewLaunch(p, plan, launch.Hooks{Confirm: d.confirm, Release: d.release, Limit: s.cfg.LaunchTimeout})
+	l, err := launch.NewLaunch(p, plan, launch.Hooks{Confirm: d.confirm, Failed: d.failed, Release: d.release, Limit: s.cfg.LaunchTimeout})
 	if err != nil {
 		_ = d.release(ctx)
 		return sandbox.Launch{}, err
@@ -314,6 +314,24 @@ type decision struct {
 
 	once          sync.Once
 	releaseCanary func()
+	reprobed      sync.Once
+}
+
+// reprobe re-probes the chain once per start, after a failed confined start
+// (sandbox-ssh.md sec. 6.1: "the command never ran; the seam re-probes once").
+// The command itself is never retried.
+func (d *decision) reprobe(ctx context.Context, p launch.Plan) {
+	if p.Kind != launch.Confined {
+		return
+	}
+	d.reprobed.Do(func() { d.svc.Reprobe(context.WithoutCancel(ctx)) })
+}
+
+// failed is the stage's end before ready: it died, sent a malformed frame or
+// ran out of the launch limit, so the command never ran and the backend's
+// start-up probe may be stale.
+func (d *decision) failed(ctx context.Context, p launch.Plan, _ error) {
+	d.reprobe(ctx, p)
 }
 
 // confirm is the four-step host decision (architecture.md sec. 4.2): (1) a
@@ -329,9 +347,7 @@ func (d *decision) confirm(ctx context.Context, p launch.Plan, r launch.Ready) (
 		return sandbox.Confinement{}, herr.New(sandbox.CodeLaunchFailed, "the started command is not the one the plan was prepared for")
 	}
 	if err := r.Agrees(p); err != nil {
-		if p.Kind == launch.Confined {
-			d.svc.Reprobe(context.WithoutCancel(ctx))
-		}
+		d.reprobe(ctx, p)
 		return sandbox.Confinement{}, err
 	}
 	e := sandbox.Evidence{Backend: p.Backend}
