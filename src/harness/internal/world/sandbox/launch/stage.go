@@ -67,12 +67,15 @@ func Main(args []string, stderr io.Writer) int {
 	if err != nil {
 		return report(stderr, err, ExitFailed)
 	}
-	control := os.NewFile(p.Control, "sandbox-launch control")
-	status := os.NewFile(p.Status, "sandbox-launch status")
-	if control == nil || status == nil {
-		return report(stderr, failed("the channel descriptors %d and %d are not open", p.Control, p.Status), ExitFailed)
+	control, err := openChannel(p.Control, "control")
+	if err != nil {
+		return report(stderr, err, ExitFailed)
 	}
 	defer control.Close()
+	status, err := openChannel(p.Status, "status")
+	if err != nil {
+		return report(stderr, err, ExitFailed)
+	}
 	defer status.Close()
 	if err := closeOnExec(control, status); err != nil {
 		return report(stderr, herr.Wrap(sandbox.CodeLaunchFailed, err, "mark the channel close-on-exec"), ExitFailed)
@@ -109,6 +112,22 @@ func Main(args []string, stderr io.Writer) int {
 		return report(stderr, herr.Wrap(sandbox.CodeExecFailed, err, "start the command"), code)
 	}
 	return code
+}
+
+// openChannel wraps the inherited descriptor fd and proves it is open. os.NewFile
+// does not look at the descriptor, so Stat (fstat on unix, GetFileType and
+// friends on Windows) is what turns a closed or never-inherited descriptor into
+// a precise failure before anything is written to it.
+func openChannel(fd uintptr, which string) (*os.File, error) {
+	f := os.NewFile(fd, "sandbox-launch "+which)
+	if f == nil {
+		return nil, failed("the %s descriptor %d is not valid", which, fd)
+	}
+	if _, err := f.Stat(); err != nil {
+		_ = f.Close()
+		return nil, herr.Wrap(sandbox.CodeLaunchFailed, err, fmt.Sprintf("the %s descriptor %d is not open", which, fd))
+	}
+	return f, nil
 }
 
 // prove does what the plan's kind requires before ready: nothing for an
