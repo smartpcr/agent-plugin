@@ -166,6 +166,12 @@ through that handle, while publication stays by name through the root, so the fe
 refused open of the directory is the stage step's error (no by-name fallback). Regression test
 `TestReplaceInRemovesStageAfterDirectorySwap` (`util/fsx/replace_test.go`, `ReplaceIn` and
 `CreateIfAbsentIn`) fails without the pin and passes with it on Windows and WSL; manual check 2 re-run above.
+Where links are refused, `CreateIfAbsentIn` reserves the name instead. That reservation is now made and removed
+through a handle on the directory the name resolves to at that moment, and removed only while it is still the
+reservation (`os.SameFile`). Before this, a swap between staging and reserving made a failed publication
+delete another writer's file of the same name in the original directory and leave its own reservation behind.
+Regression test `TestCreateIfAbsentInRemovesItsOwnReservationAfterDirectorySwap` fails without the change
+and passes with it (Windows); the fsx package passes on WSL.
 
 **Codes during a swap outside FS-1's allowed set.** Windows also returned `fs/io` (2 to 5 of 1,000) and, once,
 `fs/permission-denied`. FS-1 as authored fails on them; raised as Q `fs1-swap-io-codes`.

@@ -650,3 +650,54 @@ func TestReplaceInRemovesStageAfterDirectorySwap(t *testing.T) {
 		}
 	}
 }
+
+// When links are refused, CreateIfAbsentIn reserves the name and renames the stage
+// over it. If the directory is swapped between staging and reserving, the
+// reservation lands in the replacement directory while the stage stays in the
+// original. The failed publication must then remove its own reservation, not the
+// file another writer holds under the same name in the original directory.
+func TestCreateIfAbsentInRemovesItsOwnReservationAfterDirectorySwap(t *testing.T) {
+	rootDir := t.TempDir()
+	sub := filepath.Join(rootDir, "sub")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(rootDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = root.Close() })
+	aside := sub + ".orig"
+	saved := rootLink
+	t.Cleanup(func() { rootLink = saved })
+	rootLink = func(*os.Root, string, string) error {
+		if err := os.Rename(sub, aside); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(sub, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(aside, "f.txt"), []byte("other writer"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return errors.ErrUnsupported
+	}
+	if err := CreateIfAbsentIn(root, "sub/f.txt", Bytes([]byte("mine")), Options{Perm: 0o600}); err == nil {
+		t.Fatal("CreateIfAbsentIn succeeded; want the rename of the stage, missing from the replacement directory, to fail")
+	}
+	if got, err := os.ReadFile(filepath.Join(aside, "f.txt")); err != nil || string(got) != "other writer" {
+		t.Errorf("other writer's file in the original directory = %q, %v; want it untouched", got, err)
+	}
+	if entries, err := os.ReadDir(sub); err != nil || len(entries) != 0 {
+		t.Errorf("replacement directory entries = %v, %v; want the reservation removed", entries, err)
+	}
+	entries, err := os.ReadDir(aside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Name() != "f.txt" {
+			t.Errorf("%s left in the original directory", e.Name())
+		}
+	}
+}

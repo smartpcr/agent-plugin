@@ -5,6 +5,7 @@ package scenarios
 import (
 	"encoding/json"
 	"fmt"
+	iofs "io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/smartpcr/agent-plugin/src/harness/internal/util/textdiff/patch"
 	"github.com/smartpcr/agent-plugin/src/sdk/protocol"
 )
 
@@ -39,8 +41,11 @@ const fs2InvalidShare = 0.05
 // task runs as one prompt on the signed-in route; then fewer than 5% of grep
 // calls return search/invalid-pattern and each is followed by a corrected grep,
 // not a shell search; no child process named rg is started; the files the
-// clone's git reports changed are exactly the files of the logged successful
-// edits, each holding its last edit; and no file outside the write root changed.
+// clone's git reports changed are exactly the files the logged successful writes,
+// edits and patches change, and every file of the clone holds exactly the bytes those
+// operations, applied in order to the checkout, leave; each task's run finishes with
+// stop after a line-range read, an edit and a multi-file patch that succeeded; and no
+// file outside the write root changed.
 // A task that runs longer than the run's shard budget is the runner's to shard
 // (M2-R-06): the scenario runs the tasks DSH_SCENARIO_FS2_SHARD selects.
 //
@@ -119,10 +124,31 @@ func fs2Task(t *testing.T, h *sdkHost, route *protocol.ModelRoute, checkout, tas
 
 	session := h.createIn(t, route, clone, "workspace-write")
 	h.keepExport(t, session)
-	outs := toolOutcomes(t, h.runPrompt(t, session, expand(taskT, map[string]string{"checkout": filepath.ToSlash(clone)}), 3*time.Hour))
+	initial := fs2Snapshot(t, clone)
+	model := fs2Clone(initial)
+	text := expand(taskT, map[string]string{"checkout": filepath.ToSlash(clone)})
+	run := h.awaitRun(t, session, h.prompt(t, session, text), 3*time.Hour)
+	if run.FinishReason != "stop" {
+		t.Fatalf("the task's run finished %q, want stop: %s", run.FinishReason, run.FinalResponse)
+	}
+	outs := toolOutcomes(t, inRun(h.history(t, session), run.FirstSeq, run.LastSeq))
 
-	edited := map[string]string{} // file -> the new text its last successful edit left in it
+	var rangeReads, edits, multiPatches, okGreps int
 	for i, o := range outs {
+		if !o.IsError {
+			switch o.Name {
+			case "grep":
+				okGreps++
+			case "read":
+				var a struct {
+					Offset int `json:"offset"`
+					Limit  int `json:"limit"`
+				}
+				if json.Unmarshal(o.Args, &a) == nil && (a.Offset > 0 || a.Limit > 0) {
+					rangeReads++
+				}
+			}
+		}
 		switch o.Name {
 		case "grep":
 			greps++
@@ -147,14 +173,34 @@ func fs2Task(t *testing.T, h *sdkHost, route *protocol.ModelRoute, checkout, tas
 				continue
 			}
 			var a struct {
-				FilePath  string `json:"file_path"`
-				Content   string `json:"content"`
-				NewString string `json:"new_string"`
+				FilePath   string `json:"file_path"`
+				Content    string `json:"content"`
+				OldString  string `json:"old_string"`
+				NewString  string `json:"new_string"`
+				ReplaceAll bool   `json:"replace_all"`
 			}
 			if err := json.Unmarshal(o.Args, &a); err != nil {
 				t.Fatalf("%s arguments %s: %v", o.Name, o.Args, err)
 			}
-			edited[fs2Rel(t, clone, a.FilePath)] = a.Content + a.NewString
+			p := fs2Rel(t, clone, a.FilePath)
+			if o.Name == "write" {
+				model[p] = []byte(a.Content)
+				continue
+			}
+			edits++
+			cur, ok := model[p]
+			if !ok {
+				t.Fatalf("a successful edit of %s, which the model of the clone does not hold", p)
+			}
+			old, n := lf(a.OldString), strings.Count(string(cur), lf(a.OldString))
+			if n == 0 || (n > 1 && !a.ReplaceAll) {
+				t.Fatalf("a successful edit of %s replaces %q, found %d times in the model", p, old, n)
+			}
+			count := 1
+			if a.ReplaceAll {
+				count = -1
+			}
+			model[p] = []byte(strings.Replace(string(cur), old, lf(a.NewString), count))
 		case "apply_patch":
 			if o.IsError {
 				continue
@@ -165,8 +211,8 @@ func fs2Task(t *testing.T, h *sdkHost, route *protocol.ModelRoute, checkout, tas
 			if err := json.Unmarshal(o.Args, &a); err != nil {
 				t.Fatalf("apply_patch arguments %s: %v", o.Args, err)
 			}
-			for path, added := range fs2PatchFiles(a.Input) {
-				edited[fs2Rel(t, clone, path)] = added
+			if files := fs2ApplyPatch(t, model, clone, a.Input); files >= 2 {
+				multiPatches++
 			}
 		case "bash", "shell", "exec":
 			var a map[string]any
@@ -177,19 +223,43 @@ func fs2Task(t *testing.T, h *sdkHost, route *protocol.ModelRoute, checkout, tas
 		}
 	}
 
-	changed := fs2GitChanged(t, clone)
+	if okGreps == 0 || rangeReads == 0 || edits == 0 || multiPatches == 0 {
+		t.Fatalf("the task made %d successful greps, %d line-range reads, %d successful edits and %d successful multi-file patches; want at least one of each",
+			okGreps, rangeReads, edits, multiPatches)
+	}
+
+	// The disk must be exactly the checkout with the logged successful operations
+	// applied in order: same files, same bytes. A file the checkout held with CRLF
+	// line ends is compared with its line ends normalized; any other file byte for byte.
 	var want []string
-	for f := range edited {
-		want = append(want, f)
+	for p, b := range model {
+		if old, ok := initial[p]; !ok || lf(string(old)) != string(b) {
+			want = append(want, p)
+		}
+	}
+	for p := range initial {
+		if _, ok := model[p]; !ok {
+			want = append(want, p)
+		}
 	}
 	sort.Strings(want)
-	if strings.Join(changed, "\n") != strings.Join(want, "\n") {
-		t.Fatalf("git reports %v changed, the log's successful edits name %v", changed, want)
+	if changed := fs2GitChanged(t, clone); strings.Join(changed, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("git reports %v changed, the log's successful operations change %v", changed, want)
 	}
-	for f, text := range edited {
-		data, err := os.ReadFile(filepath.Join(clone, filepath.FromSlash(f)))
-		if text != "" && (err != nil || !strings.Contains(strings.ReplaceAll(string(data), "\r\n", "\n"), strings.ReplaceAll(text, "\r\n", "\n"))) {
-			t.Fatalf("%s does not hold its last logged edit %q (%v)", f, text, err)
+	after := fs2Snapshot(t, clone)
+	for p, b := range model {
+		got, ok := after[p]
+		switch {
+		case !ok:
+			t.Fatalf("%s is missing; the logged operations leave it holding %d bytes", p, len(b))
+		case strings.Contains(string(initial[p]), "\r\n") && lf(string(got)) == string(b):
+		case string(got) != string(b):
+			t.Fatalf("%s holds %q; the logged operations leave %q", p, got, b)
+		}
+	}
+	for p := range after {
+		if _, ok := model[p]; !ok {
+			t.Fatalf("%s exists; the logged operations do not create it", p)
 		}
 	}
 	if diff := listingDiff(before, outside()); len(diff) > 0 {
@@ -198,31 +268,82 @@ func fs2Task(t *testing.T, h *sdkHost, route *protocol.ModelRoute, checkout, tas
 	return greps, invalid
 }
 
-// fs2PatchFiles is each file a patch adds or updates, with the lines it adds.
-func fs2PatchFiles(patch string) map[string]string {
-	files := map[string]string{}
-	var cur string
-	for _, line := range strings.Split(strings.ReplaceAll(patch, "\r\n", "\n"), "\n") {
-		switch {
-		case strings.HasPrefix(line, "*** Add File: "):
-			cur = strings.TrimPrefix(line, "*** Add File: ")
-			files[cur] = ""
-		case strings.HasPrefix(line, "*** Update File: "):
-			cur = strings.TrimPrefix(line, "*** Update File: ")
-			files[cur] = ""
-		case strings.HasPrefix(line, "*** Delete File: "):
-			files[strings.TrimPrefix(line, "*** Delete File: ")] = ""
-			cur = ""
-		case strings.HasPrefix(line, "*** "):
-			cur = ""
-		case cur != "" && strings.HasPrefix(line, "+"):
-			if files[cur] == "" {
-				files[cur] = strings.TrimPrefix(line, "+")
+// fs2ApplyPatch applies a successful apply_patch call's patch to model with the
+// patch format's own text rules (util/textdiff/patch), and returns how many files
+// it touched. A patch that does not apply to the model fails the task: the tool
+// reported success, so the disk and the log disagree.
+func fs2ApplyPatch(t *testing.T, model map[string][]byte, clone, input string) int {
+	t.Helper()
+	pt, err := patch.Parse(input)
+	if err != nil {
+		t.Fatalf("a successful apply_patch call's patch does not parse: %v", err)
+	}
+	for _, h := range pt.Hunks {
+		p := fs2Rel(t, clone, h.Path)
+		switch h.Op {
+		case patch.OpAdd:
+			model[p] = []byte(h.Contents)
+		case patch.OpDelete:
+			delete(model, p)
+		case patch.OpUpdate:
+			cur, ok := model[p]
+			if !ok {
+				t.Fatalf("a successful patch updates %s, which the model of the clone does not hold", p)
 			}
+			next, err := h.Apply(string(cur))
+			if err != nil {
+				t.Fatalf("a successful patch does not apply to the model of %s: %v", p, err)
+			}
+			if h.MoveTo != "" {
+				delete(model, p)
+				p = fs2Rel(t, clone, h.MoveTo)
+			}
+			model[p] = []byte(next)
 		}
+	}
+	return len(pt.Hunks)
+}
+
+// fs2Snapshot is every regular file of the clone outside .git, by slash path.
+func fs2Snapshot(t *testing.T, clone string) map[string][]byte {
+	t.Helper()
+	files := map[string][]byte{}
+	err := filepath.WalkDir(clone, func(p string, d iofs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() && d.Name() == ".git" {
+			return filepath.SkipDir
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(clone, p)
+		files[filepath.ToSlash(rel)] = b
+		return err
+	})
+	if err != nil {
+		t.Fatalf("snapshot of %s: %v", clone, err)
 	}
 	return files
 }
+
+// fs2Clone is the model's start: the snapshot with CRLF line ends normalized, so
+// logged edits (whose text the model writes with LF) match.
+func fs2Clone(files map[string][]byte) map[string][]byte {
+	model := make(map[string][]byte, len(files))
+	for p, b := range files {
+		model[p] = []byte(lf(string(b)))
+	}
+	return model
+}
+
+// lf is s with CRLF line ends made LF.
+func lf(s string) string { return strings.ReplaceAll(s, "\r\n", "\n") }
 
 // fs2Rel is path relative to the clone, slash-separated.
 func fs2Rel(t *testing.T, clone, path string) string {
@@ -318,11 +439,14 @@ func fs2PathWithoutRG(t *testing.T) string {
 }
 
 // fs2WatchChildren polls the descendants of pid until cleanup; the returned func
-// reports every rg seen.
+// reports every rg seen. It fails closed: a listing that never succeeded, or that
+// failed even once, fails the scenario instead of reporting no rg.
 func fs2WatchChildren(t *testing.T, children string, pid int) func() []string {
 	t.Helper()
 	var mu sync.Mutex
 	var seen []string
+	var listed, failed int
+	var lastErr error
 	done := make(chan struct{})
 	stopped := make(chan struct{})
 	go func() {
@@ -335,9 +459,15 @@ func fs2WatchChildren(t *testing.T, children string, pid int) func() []string {
 			case <-time.After(200 * time.Millisecond):
 			}
 			out, err := shell(t, line)
+			mu.Lock()
 			if err != nil {
+				failed++
+				lastErr = fmt.Errorf("%s: %w: %s", line, err, strings.TrimSpace(out))
+				mu.Unlock()
 				continue
 			}
+			listed++
+			mu.Unlock()
 			for _, name := range strings.Fields(out) {
 				if base := strings.ToLower(filepath.Base(name)); base == "rg" || base == "rg.exe" {
 					mu.Lock()
@@ -351,6 +481,9 @@ func fs2WatchChildren(t *testing.T, children string, pid int) func() []string {
 	return func() []string {
 		mu.Lock()
 		defer mu.Unlock()
+		if listed == 0 || failed > 0 {
+			t.Fatalf("the descendant listing succeeded %d times and failed %d times (last: %v); no rg child cannot be shown", listed, failed, lastErr)
+		}
 		return append([]string(nil), seen...)
 	}
 }

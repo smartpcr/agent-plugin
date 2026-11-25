@@ -100,8 +100,9 @@ func linkOrReserve(root *os.Root, stage, name string, check func() error) error 
 	return linkOrReserveIn(dirPin{root: root}, stage, name, check)
 }
 
-// linkOrReserveIn is linkOrReserve whose leftovers (the staged name after a link,
-// the reservation after a refusal) are removed through pin, in the same directory.
+// linkOrReserveIn is linkOrReserve whose staged name, left after a link, is removed
+// through pin, in the stage's own directory. A reservation left by a failed rename
+// is removed through the directory it was made in.
 func linkOrReserveIn(pin dirPin, stage, name string, check func() error) error {
 	root := pin.root
 	err := rootLink(root, stage, name)
@@ -113,13 +114,28 @@ func linkOrReserveIn(pin dirPin, stage, name string, check func() error) error {
 		return err
 	}
 	// No links here: reserve the name, then move the content over the reservation.
-	r, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	// The reservation is made through a handle on the directory name resolves to
+	// now, which can differ from the pinned stage directory after a swap; a failed
+	// rename removes it through that handle, and only while it is still the
+	// reservation, never a file another writer holds under the same name.
+	rdir, err := root.OpenRoot(path.Dir(name))
 	if err != nil {
 		return err
 	}
+	defer func() { _ = rdir.Close() }()
+	base := path.Base(name)
+	r, err := rdir.OpenFile(base, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	reserved, serr := r.Stat()
 	_ = r.Close()
 	if err := retryInUse(check, func() error { return root.Rename(stage, name) }); err != nil {
-		pin.remove(name)
+		if serr == nil {
+			if cur, lerr := rdir.Lstat(base); lerr == nil && os.SameFile(reserved, cur) {
+				_ = rdir.Remove(base)
+			}
+		}
 		return err
 	}
 	return nil
