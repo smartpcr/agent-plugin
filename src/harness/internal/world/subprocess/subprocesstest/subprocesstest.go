@@ -89,7 +89,26 @@ const (
 	// connection and on standard output, and waits to be stopped with the
 	// connection open, so the host can ask which tree its peer is in.
 	RoleDial = "dial"
+	// RoleStream writes as many bytes as its first argument says to standard
+	// output, the stream StreamBytes describes, in 64 KiB writes, and exits.
+	RoleStream = "stream"
 )
+
+// StreamBytes fills dst with the bytes RoleStream writes from stream offset off
+// on: 16-byte lines, each the line number in 15 hexadecimal digits and a newline,
+// so every offset holds a byte a test can predict.
+func StreamBytes(dst []byte, off int64) {
+	const digits = "0123456789abcdef"
+	for i := range dst {
+		o := off + int64(i)
+		pos := o % 16
+		if pos == 15 {
+			dst[i] = '\n'
+			continue
+		}
+		dst[i] = digits[(o/16)>>(4*(14-pos))&0xf]
+	}
+}
 
 // stderr is the standard error of the roles that write to it; this package's own
 // tests replace it to read what a role wrote in their process.
@@ -154,6 +173,8 @@ func run(role string, args []string, out io.Writer) int {
 		return detachHost(out)
 	case RoleDial:
 		return dial(args, out)
+	case RoleStream:
+		return stream(args, out)
 	default:
 		return fail(fmt.Errorf("unknown role %q", role))
 	}
@@ -253,6 +274,24 @@ func flood(args []string, out io.Writer) int {
 		return fail(err)
 	}
 	park()
+	return 0
+}
+
+// stream writes n bytes of StreamBytes to out.
+func stream(args []string, out io.Writer) int {
+	n, err := strconv.ParseInt(firstOr(args, "0"), 10, 64)
+	if err != nil || n < 0 {
+		return fail(fmt.Errorf("stream wants a byte count, got %q", args))
+	}
+	buf := make([]byte, 64<<10)
+	for off := int64(0); off < n; {
+		chunk := buf[:min(int64(len(buf)), n-off)]
+		StreamBytes(chunk, off)
+		if _, err := out.Write(chunk); err != nil {
+			return fail(err)
+		}
+		off += int64(len(chunk))
+	}
 	return 0
 }
 
