@@ -129,29 +129,11 @@ func (r *Registry) Bind(ctx context.Context, t Target, id string, cause Cause) (
 }
 
 func (r *Registry) bindLocked(ctx context.Context, t Target, id string, cause Cause) (Info, error) {
-	l, err := r.Acquire(t.Owner, id)
+	l, err := r.acquire(t.Owner, id)
 	if err != nil {
 		return Info{}, err
 	}
-	held, err := r.own(l)
-	if err != nil {
-		return Info{}, err
-	}
-	return r.attach(ctx, t, held, cause)
-}
-
-// own is l as this registry's lease, which attach records as a binding. Acquire
-// and AcquireFrom only hand out *lease; any other Lease is given back and refused,
-// so no count is leaked and no foreign lease is published.
-func (r *Registry) own(l Lease) (*lease, error) {
-	own, ok := l.(*lease)
-	if !ok || own.r != r {
-		if l != nil {
-			l.Release()
-		}
-		return nil, fmt.Errorf("agentpreset: %T is not a lease of this registry", l)
-	}
-	return own, nil
+	return r.attach(ctx, t, l, cause)
 }
 
 // BindFrom binds t to the exact revision holder is bound to (cause inherit).
@@ -160,15 +142,11 @@ func (r *Registry) BindFrom(ctx context.Context, t Target, holder scope.Key) (In
 		return Info{}, errors.New("agentpreset: a binding needs its session, scope and owner")
 	}
 	defer r.lockTarget(t.Scope.Key())()
-	l, err := r.AcquireFrom(t.Owner, holder)
+	l, err := r.acquireFrom(t.Owner, holder)
 	if err != nil {
 		return Info{}, err
 	}
-	held, err := r.own(l)
-	if err != nil {
-		return Info{}, err
-	}
-	return r.attach(ctx, t, held, CauseInherit)
+	return r.attach(ctx, t, l, CauseInherit)
 }
 
 // attach publishes l as t's binding; the target's lock is held.

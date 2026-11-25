@@ -36,11 +36,9 @@ func TestGuardedWritesThroughDistinctProvidersHaveOneWinner(t *testing.T) {
 	v1, _ := readVersion(t, local.New(), f)
 
 	var wg sync.WaitGroup
+	t.Cleanup(wg.Wait) // joins the writers (QG-5)
 	errs := make([]error, writers)
 	start := make(chan struct{})
-	release := sync.OnceFunc(func() { close(start) })
-	// Release and join the writers however the test ends.
-	t.Cleanup(func() { release(); wg.Wait() })
 	for i := range writers {
 		l := local.NewWithOptions(local.Options{LockDir: locks})
 		wg.Add(1)
@@ -50,7 +48,7 @@ func TestGuardedWritesThroughDistinctProvidersHaveOneWinner(t *testing.T) {
 			_, errs[i] = l.Write(ctx, fs.Ref{Path: f}, []byte("writer "+strconv.Itoa(i)), fs.ReplaceIfVersion{Version: v1}, p)
 		}()
 	}
-	release()
+	close(start)
 	wg.Wait()
 
 	won := -1
@@ -109,16 +107,17 @@ func TestGuardedWritesSerialiseAcrossProcesses(t *testing.T) {
 		cmd := exec.Command(exe, "-test.run=^TestGuardedWritesSerialiseAcrossProcesses$", "-test.count=1")
 		cmd.Env = append(os.Environ(), helperEnv+"="+f, helperEnv+"_LOCKS="+locks)
 		cmd.Stdout, cmd.Stderr = &outs[i], &outs[i]
+		cmds[i] = cmd
+		// A helper the test did not wait for (it stopped early) is killed and reaped (QG-5).
+		t.Cleanup(func() {
+			if cmd.Process != nil && cmd.ProcessState == nil {
+				_ = cmd.Process.Kill()
+				_ = cmd.Wait()
+			}
+		})
 		if err := cmd.Start(); err != nil {
 			t.Fatal(err)
 		}
-		// Kill and reap a helper the test did not wait for (a no-op after its
-		// Wait), so a failed test leaves no process holding the lock directory.
-		t.Cleanup(func() {
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-		})
-		cmds[i] = cmd
 	}
 	if err := countUp(f, locks); err != nil {
 		t.Error(err)

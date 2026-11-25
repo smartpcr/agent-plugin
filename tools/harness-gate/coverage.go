@@ -13,8 +13,49 @@ import (
 )
 
 // CoverageFloor is the minimum share of statements, in percent, that every package
-// must cover (QG-3, DH-ADR-14). There is no exemption list.
+// must cover (QG-3, DH-ADR-14). The only exception is CoverageDebt.
 const CoverageFloor = 85
+
+// CoverageDebt is a temporary, owner-approved exception (2026-11-24, PR #124): these
+// M2 packages were already under CoverageFloor on main when the lanes first reached
+// the coverage gate, behind gofmt/vet failures. Each is pinned at its measured
+// coverage on both lanes, rounded down, so it cannot slip further while the tests
+// that raise it are written. The gate prints every entry on each run, and fails an
+// entry whose package reaches CoverageFloor, so a paid-off debt is removed. Add no
+// entries: this list only shrinks.
+var CoverageDebt = map[string]int{
+	// Empty since PR #125 (2026-11-25): the seven M2 packages pinned by #124
+	// (agentpreset, human/permission, world/fs/local, ops, tools,
+	// sandbox/policy, sandboxtest) now reach CoverageFloor on both lanes.
+}
+
+// CheckCoverageDebt is the coverage gate's check: CheckFloor at CoverageFloor for
+// every package, except that a package in debt is held to its pinned floor; and a
+// debt entry whose package now reaches CoverageFloor fails, naming the entry to
+// remove.
+func CheckCoverageDebt(coverage []PackageCoverage, debt map[string]int) error {
+	var normal []PackageCoverage
+	var errs []error
+	for _, c := range coverage {
+		pin, ok := debt[c.Package]
+		if !ok {
+			normal = append(normal, c)
+			continue
+		}
+		if c.Total > 0 && c.Covered*100 >= CoverageFloor*c.Total {
+			errs = append(errs, fmt.Errorf("%s: %s%% reaches %d%%; remove its CoverageDebt entry",
+				c.Package, formatPercent(c.Percent()), CoverageFloor))
+			continue
+		}
+		if err := CheckFloor([]PackageCoverage{c}, pin); err != nil {
+			errs = append(errs, fmt.Errorf("%w (CoverageDebt pin)", err))
+		}
+	}
+	if err := CheckFloor(normal, CoverageFloor); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
+}
 
 // Block is one block of a text coverage profile ("go tool covdata textfmt" or
 // "-coverprofile" output).

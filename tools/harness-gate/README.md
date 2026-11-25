@@ -28,7 +28,7 @@ The module has its own `go.mod` and is not part of the root `go.work`; run it wi
 | 3 | `staticcheck` | any finding of the pinned staticcheck (default checks), run per module with `-tags=` and `-tags=replay,scenario,bench` from the binary of the tools module's `tool` line (`go tool -n staticcheck`); the output names the check, for example `SA4000` (M1-G-TOOL-1) |
 | 4 | `modules` | in every product, test and tools module: `go mod tidy -diff` prints anything, or `go mod verify` fails; then a module rule of `modcheck` (RM-1 to RM-4, `src/go` requiring anything) or a pin without a reason comment (RM-10). See [Modules](#modules-modcheck) |
 | 5 | `test` | `go test -tags= -race -shuffle=on -count=1 ./...` per module with `CGO_ENABLED=1` (QG-4); the `replay` and `scenario` layers are excluded |
-| 6 | `coverage` | any package under 85% of statements, profiles merged across processes (QG-3) |
+| 6 | `coverage` | any package under 85% of statements, profiles merged across processes (QG-3); the packages of `CoverageDebt` are held to their pinned floor until they reach 85% |
 | 7 | `trace` | `tools/harness-trace verify` (QG-9); a root without the tool fails |
 | 8 | `scenario-index` | `test/harness/acceptance-index.yaml` missing or malformed; a `*_scenario_test.go` ID not indexed, indexed twice or bound to two tests; an indexed ID authored at or before `built-through` without a file (DH-ADR-TOOLCHAIN-12) |
 | 9 | `policy-text` | a file under `src/harness/internal/world/sandbox/policy/text/` without a passed `DH-E-SANDBOX-7` row of `DH-S-17.md` recording that file's SHA-256 (M2-C-6); see [Sandbox policy text](#sandbox-policy-text-m2-c-6) |
@@ -640,7 +640,12 @@ binary, every re-executed copy of it and every separately built `-cover` helper.
 (`go test -cover`'s own report keeps only the test binary's profiles, so a helper
 binary's statements would be lost.) A package without test files gets its 0%
 entries from `go test -cover -coverprofile`, so none escapes the floor. Every
-package under 85% of statements fails the gate; there is no exemption list.
+package under 85% of statements fails the gate, with one temporary exception:
+`CoverageDebt` (`coverage.go`), owner-approved on 2026-11-24 for the M2 packages
+that were already under 85% on `main` when the lanes first reached this gate. Each
+is pinned at its measured coverage, so it cannot slip further; the gate prints every
+entry (`coverage: DEBT ...`) and fails an entry whose package reaches 85%, so the
+list only shrinks.
 
 A test binary run directly has no default timeout (only `go test` applies one), so
 the gate passes `-test.timeout` (`Config.TestTimeout`, default 10m, `go test`'s own

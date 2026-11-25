@@ -139,17 +139,15 @@ func TestFenceHoldsThroughASwappedLink(t *testing.T) {
 	// then removes the link and moves the directory back. It never deletes a
 	// tree through a name that may be a link.
 	keep := filepath.Join(r, "sub.keep")
-	var done, stop atomic.Bool
+	var done atomic.Bool
 	var swapErrs, linked int
 	var wg sync.WaitGroup
-	// Stop and join the swapper however the test ends, before the temporary
-	// directories it renames inside are removed.
-	t.Cleanup(func() { stop.Store(true); wg.Wait() })
+	t.Cleanup(wg.Wait) // joins the swapper (QG-5)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		defer done.Store(true)
-		for attempt := 0; !stop.Load() && linked < swaps && attempt < 500*swaps; attempt++ {
+		for attempt := 0; linked < swaps && attempt < 500*swaps; attempt++ {
 			if err := os.Rename(sub, keep); err != nil {
 				swapErrs++
 				continue

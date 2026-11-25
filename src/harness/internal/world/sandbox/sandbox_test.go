@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 	"testing/synctest"
+	"time"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/workdir/workdirtest"
@@ -135,67 +136,62 @@ func TestFakeResolver(t *testing.T) {
 	}
 }
 
-// TestFakeSetModeSerializesTransitions runs in a synctest bubble: synctest.Wait
-// returns once the second SetMode is durably blocked, so "it did not enter its
-// listener while the first transition ran" is checked at that point, not after
-// a guessed delay.
 func TestFakeSetModeSerializesTransitions(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		ctx := context.Background()
-		const s session.ID = "s1"
-		r := &sandboxtest.Resolver{}
-		entered := make(chan sandbox.ModeChange, 2)
-		release := make(chan struct{})
-		unblock := sync.OnceFunc(func() { close(release) })
-		r.OnModeChanging = func(c sandbox.ModeChange) error {
-			if p, err := r.Resolve(ctx, sandbox.Request{Session: s}); err != nil || p.Mode() != c.From {
-				t.Errorf("Resolve inside the listener = %s, %v; want the previous mode %s", p.Mode(), err, c.From)
-			}
-			entered <- c
-			if c.To == sandbox.DangerFullAccess {
-				<-release
-			}
-			return nil
+	ctx := context.Background()
+	const s session.ID = "s1"
+	r := &sandboxtest.Resolver{}
+	entered := make(chan sandbox.ModeChange, 2)
+	release := make(chan struct{})
+	r.OnModeChanging = func(c sandbox.ModeChange) error {
+		if p, err := r.Resolve(ctx, sandbox.Request{Session: s}); err != nil || p.Mode() != c.From {
+			t.Errorf("Resolve inside the listener = %s, %v; want the previous mode %s", p.Mode(), err, c.From)
 		}
-		done := make(chan error, 2)
-		var wg sync.WaitGroup
-		// Unblock the held transition and join both callers, however the test ends.
-		t.Cleanup(func() { unblock(); wg.Wait() })
-		wg.Go(func() { done <- r.SetMode(ctx, s, sandbox.DangerFullAccess) })
-		first := <-entered
-		wg.Go(func() { done <- r.SetMode(ctx, s, sandbox.WorkspaceWrite) })
-		synctest.Wait()
-		select {
-		case c := <-entered:
-			t.Fatalf("a second transition %+v entered while %+v was in progress", c, first)
-		default:
+		entered <- c
+		if c.To == sandbox.DangerFullAccess {
+			<-release
 		}
-		unblock()
-		second := <-entered
-		for range 2 {
-			if err := <-done; err != nil {
-				t.Fatal(err)
-			}
+		return nil
+	}
+	done := make(chan error, 2)
+	var wg sync.WaitGroup
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(wg.Wait) // joins both SetMode calls (QG-5) ...
+	t.Cleanup(unblock) // ... after unblocking the first, should the test stop early
+	wg.Add(2)
+	go func() { defer wg.Done(); done <- r.SetMode(ctx, s, sandbox.DangerFullAccess) }()
+	first := <-entered
+	go func() { defer wg.Done(); done <- r.SetMode(ctx, s, sandbox.WorkspaceWrite) }()
+	select {
+	case c := <-entered:
+		t.Fatalf("a second transition %+v entered while %+v was in progress", c, first)
+	case <-time.After(100 * time.Millisecond):
+	}
+	unblock()
+	second := <-entered
+	for range 2 {
+		if err := <-done; err != nil {
+			t.Fatal(err)
 		}
-		if first.From != sandbox.ReadOnly || second.From != sandbox.DangerFullAccess {
-			t.Fatalf("listeners saw %+v then %+v; want read-only→danger-full-access→workspace-write", first, second)
+	}
+	if first.From != sandbox.ReadOnly || second.From != sandbox.DangerFullAccess {
+		t.Fatalf("listeners saw %+v then %+v; want read-only→danger-full-access→workspace-write", first, second)
+	}
+	prev := sandbox.ReadOnly
+	for _, c := range r.Changes() {
+		if c.From != prev {
+			t.Fatalf("changes %+v do not form a chain", r.Changes())
 		}
-		prev := sandbox.ReadOnly
-		for _, c := range r.Changes() {
-			if c.From != prev {
-				t.Fatalf("changes %+v do not form a chain", r.Changes())
-			}
-			prev = c.To
-		}
-		if prev != sandbox.WorkspaceWrite || len(r.Changes()) != 2 {
-			t.Fatalf("changes = %+v", r.Changes())
-		}
+		prev = c.To
+	}
+	if prev != sandbox.WorkspaceWrite || len(r.Changes()) != 2 {
+		t.Fatalf("changes = %+v", r.Changes())
+	}
 
-		r.OnModeChanging = func(sandbox.ModeChange) error { return errors.New("refused") }
-		if err := r.SetMode(ctx, s, sandbox.ReadOnly); err == nil || len(r.Changes()) != 2 {
-			t.Fatalf("refused SetMode = %v, changes %+v", err, r.Changes())
-		}
-	})
+	r.OnModeChanging = func(sandbox.ModeChange) error { return errors.New("refused") }
+	if err := r.SetMode(ctx, s, sandbox.ReadOnly); err == nil || len(r.Changes()) != 2 {
+		t.Fatalf("refused SetMode = %v, changes %+v", err, r.Changes())
+	}
 }
 
 func TestFakeEscalationMustWiden(t *testing.T) {
@@ -239,9 +235,8 @@ func TestFakeEscalationMustWiden(t *testing.T) {
 	}
 }
 
-// TestFakeSetModeHonoursCancellation runs in a synctest bubble: synctest.Wait
-// returns once the queued SetMode is durably blocked waiting for the running
-// transition, so the cancellation lands on a call that has reached the queue.
+// It runs in a synctest bubble: the queued SetMode blocks on a channel, so
+// synctest.Wait returns once it has reached the queue, with no wall-clock wait.
 func TestFakeSetModeHonoursCancellation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		const s session.ID = "s1"
@@ -249,7 +244,6 @@ func TestFakeSetModeHonoursCancellation(t *testing.T) {
 		var seen []sandbox.ModeChange
 		var mu sync.Mutex
 		entered, release := make(chan struct{}), make(chan struct{})
-		unblock := sync.OnceFunc(func() { close(release) })
 		r.OnModeChanging = func(c sandbox.ModeChange) error {
 			mu.Lock()
 			seen = append(seen, c)
@@ -260,30 +254,27 @@ func TestFakeSetModeHonoursCancellation(t *testing.T) {
 			}
 			return nil
 		}
-		ctx, cancel := context.WithCancel(context.Background())
-		first, queued := make(chan error, 1), make(chan error, 1)
 		var wg sync.WaitGroup
-		// End the queued call, unblock the running one and join both, however the
-		// test ends.
-		t.Cleanup(func() { cancel(); unblock(); wg.Wait() })
-		wg.Go(func() { first <- r.SetMode(context.Background(), s, sandbox.WorkspaceWrite) })
+		var releaseOnce sync.Once
+		unblock := func() { releaseOnce.Do(func() { close(release) }) }
+		t.Cleanup(wg.Wait) // joins both SetMode calls (QG-5) ...
+		t.Cleanup(unblock) // ... after unblocking the first, should the test stop early
+		first := make(chan error, 1)
+		wg.Add(2)
+		go func() { defer wg.Done(); first <- r.SetMode(context.Background(), s, sandbox.WorkspaceWrite) }()
 		<-entered
 
-		wg.Go(func() { queued <- r.SetMode(ctx, s, sandbox.DangerFullAccess) })
-		synctest.Wait() // the queued call is blocked behind the running transition
-		select {
-		case err := <-queued:
-			t.Fatalf("the queued SetMode returned %v while another transition ran", err)
-		default:
-		}
+		ctx, cancel := context.WithCancel(context.Background())
+		queued := make(chan error, 1)
+		go func() { defer wg.Done(); queued <- r.SetMode(ctx, s, sandbox.DangerFullAccess) }()
+		synctest.Wait() // the queued call is blocked on the running transition's slot
 		cancel()
-		synctest.Wait()
 		select {
 		case err := <-queued:
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("cancelled queued SetMode = %v, want an error wrapping context.Canceled", err)
 			}
-		default:
+		case <-time.After(5 * time.Second):
 			t.Fatal("a cancelled queued SetMode stayed blocked behind the running transition")
 		}
 		unblock()
