@@ -32,6 +32,12 @@ require (
 	// (DH-D-UTIL-1): chosen by docs/harness/libs/zod.md DH-ADR-SCHEMA-1; MIT, no
 	// non-test dependencies (RM-10).
 	github.com/google/jsonschema-go v0.4.3
+	// The Landlock ruleset of the launch stage, internal/world/sandbox/launch (DH-D-SANDBOX-4):
+	// chosen by docs/harness/libs/node-addon-system.md (DH-LIB-GOLANDLOCK, DH-ADR-NATIVESYSTEM-1)
+	// for its structure layouts and version table; only NewRulesetFD, PathAccess,
+	// LandlockRestrictSelf and LandlockGetABIVersion are called, never Restrict*; MIT,
+	// requires golang.org/x/sys and psx (RM-10).
+	github.com/landlock-lsm/go-landlock v0.11.2
 	// The cordis port (packages cordis, loader, timer) the harness is built on
 	// (design.md sec. 4.2, DH-ADR-26, RM-4): pinned to a committed revision, never
 	// replaced, so a GOWORK=off release build resolves it from this go.mod and go.sum.
@@ -73,6 +79,10 @@ require (
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.1.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+	// Required by go-landlock's all-threads path, which the harness never calls; without cgo it
+	// uses syscall.AllThreadsSyscall and compiles no C (node-addon-system.md); BSD-3-Clause OR
+	// GPL-2.0-only.
+	kernel.org/pub/linux/libs/security/libcap/psx v1.2.78 // indirect
 	// The pinned libc translation the SQLite driver is generated against
 	// (DH-ADR-SQLITE-1): modernc.org/sqlite builds only with the exact libc it was
 	// transpiled with, so the pair is pinned together and moves only together after a

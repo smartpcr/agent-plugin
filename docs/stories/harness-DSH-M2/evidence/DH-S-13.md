@@ -34,7 +34,7 @@ Each step's merge commit; `--built` refuses a step without one.
 | 13.1 | DH-D-SANDBOX-2 | | |
 | 13.2 | DH-D-EXEC-4 | | |
 | 13.3 | DH-D-SANDBOX-3 | | |
-| 13.4 | DH-D-SANDBOX-4 | | `world/sandbox/local`: bubblewrap backend (`bwrap` resolved once by absolute path; argv from the Policy, golden `local/testdata/bwrap_argv.golden`, `TestBwrapArgvFromPolicy`) and pure-Go Landlock backend (`launch/landlock.go`, `launch/confine_linux.go`; ABI probe, rules from the Policy, applied by the stage to itself; `TestLandlockRulesFromPolicy`, `TestLandlockStageConfinesForReal`); order bwrap then Landlock, both failing refuses a confined policy `sandbox/unavailable` (`TestSelectionOrder`). I2 Q4 default applied, see Owner defaults. |
+| 13.4 | DH-D-SANDBOX-4 | | `world/sandbox/local`: bubblewrap backend (`bwrap` resolved once by absolute path; argv from the Policy, golden `local/testdata/bwrap_argv.golden`, `TestBwrapArgvFromPolicy`) and pure-Go Landlock backend through go-landlock v0.11.2 (`launch/landlock.go`, `launch/confine_linux.go`: `NewRulesetFD`, locked thread, `no_new_privs`, `LandlockRestrictSelf`; ABI probe, rules from the Policy, applied by the stage to itself; `TestLandlockRulesFromPolicy`, `TestLandlockStageConfinesForReal`); Prepare refuses a root that would make the harness binary or home writable where the backend cannot overlay it (`local/protect.go`, `TestPrepareKeepsTheHarnessUnwritable`); order bwrap then Landlock, both failing refuses a confined policy `sandbox/unavailable` (`TestSelectionOrder`). I2 Q4 default applied, see Owner defaults. |
 | 13.5 | DH-D-EXEC-3 | | |
 | 13.6 | DH-D-EXEC-8 | | |
 | 13.7 | DH-D-EXEC-9 | | |
@@ -67,10 +67,20 @@ stage closes; `--built` refuses a row with no confirmation or no name in By.
 | --- | --- | --- | --- | --- | --- |
 | `partial` when delegated execution cannot be stopped | I2 Q4 | A sandbox that cannot stop delegated execution is reported `partial` | | | |
 
-Applied, unconfirmed, in step 13.4: the launch stage claims `delegated-execution` governed only when it
-observes no reachable session bus or service manager (`launch/observe.go` `delegated()`,
-`launch/bus_linux.go`); Landlock never claims it. `sandbox.Enforce` then reports the start `partial`
-naming `delegated-execution`. Tests: `TestBwrapStageClaimsOnlyWhatItSees`, `TestLandlockRulesFromPolicy`.
+Applied, unconfirmed, in step 13.4. Both Linux confiners (`launch/observe.go` `confineBwrap` and
+`launch/confine_linux.go` `confineLandlock`) end in the shared `delegated()`, which claims
+`delegated-execution` governed only when the stage's bus observation (`launch/bus.go` `busProbe`, fed by
+`launch/bus_linux.go`) shows every session service absent: the address in `DBUS_SESSION_BUS_ADDRESS` and
+`bus` and `systemd/private` under `/run/user/<uid>` and `$XDG_RUNTIME_DIR`, each dial failing with "no
+such file", "not a directory" or "connection refused". Under bubblewrap the stage looks after the
+runtime directory is hidden by `--tmpfs`; under Landlock it looks just before restricting itself, since
+this reference set does not scope sockets, so on a desktop session with a live bus Landlock does not
+claim it. `delegated-execution` is missing, and `sandbox.Enforce` reports the start `partial` naming it,
+whenever a service answers, the address names any other transport (`tcp:`, `nonce-tcp:`, `unixexec:`,
+`launchd:`, `systemd:`, `autolaunch:`, an abstract socket, `runtime=yes` with no runtime directory) or is
+malformed, or a dial fails for any other reason (a time out, a permission denial); off Linux it is
+always missing. Tests: `TestBusProbeCountsTheUnknownReachable`, `TestSessionBusObservedForReal`,
+`TestBwrapStageClaimsOnlyWhatItSees`, `TestLandlockRulesFromPolicy`.
 
 ## Evidence record (impl.md sec. 7.3)
 

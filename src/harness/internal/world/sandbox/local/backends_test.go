@@ -3,6 +3,7 @@ package local_test
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -215,5 +216,73 @@ func TestBwrapIsFoundOnceAndWrapsTheStage(t *testing.T) {
 	}
 	if _, err := local.NewBwrap(func() (string, error) { return "", errors.New("bwrap not found") }, stage.run).Probe(context.Background(), plan.Canary); err == nil {
 		t.Error("Probe without the host passed")
+	}
+}
+
+// TestPrepareKeepsTheHarnessUnwritable: Prepare refuses a policy that would let
+// the command write the running harness binary or any part of the harness home,
+// unless the backend keeps it read-only inside the root (DH-ADR-SANDBOX-5 (a),
+// DH-T-SANDBOX-13): Landlock refuses a root holding the binary or the home, which
+// bubblewrap overlays read-only; under both, the session scratch and a plugin's
+// state directory are the only roots inside the home.
+//
+//dsh:test DH-T-SANDBOX-13
+func TestPrepareKeepsTheHarnessUnwritable(t *testing.T) {
+	base := t.TempDir()
+	home := filepath.Join(base, "home")
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := func(parts ...string) string {
+		p := filepath.Join(append([]string{home}, parts...)...)
+		if err := os.MkdirAll(p, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	state, attached, scratch, config := dir("plugins", "p1", "state"), dir("plugins", "attached", "s1", "p2", "state", "db"), dir("scratch", "s1"), dir("config")
+	elsewhere := t.TempDir()
+	stage := &refusingStage{governed: sandbox.Effects}
+	service := func(b local.Backend) *local.Service {
+		s, err := local.New(context.Background(), local.Config{Home: home}, []local.Backend{b})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = s.Close() })
+		return s
+	}
+	landlock := service(local.NewLandlock(fakeKernel(5), stage.run))
+	bwrap := service(local.NewBwrap(func() (string, error) { return fixture("bwrap"), nil }, stage.run))
+	for _, tc := range []struct {
+		name                string
+		root                string
+		source              sandbox.RootSource
+		landlockOK, bwrapOK bool
+	}{
+		{"an unrelated root", elsewhere, sandbox.SourceWorkingDirectory, true, true},
+		{"a root holding the home", base, sandbox.SourceWorkingDirectory, false, true},
+		{"a root holding the binary", filepath.Dir(exe), sandbox.SourceGrant, false, true},
+		{"the home itself", home, sandbox.SourceGrant, false, false},
+		{"a config directory of the home", config, sandbox.SourceGrant, false, false},
+		{"a plugin's state directory", state, sandbox.SourceHelper, true, true},
+		{"below an attached plugin's state directory", attached, sandbox.SourceHelper, true, true},
+		{"the session scratch", scratch, sandbox.SourceScratch, true, true},
+		{"a scratch-shaped root that is not the scratch", scratch, sandbox.SourceWorkspace, false, false},
+	} {
+		p := issue(t, mint.Spec{Mode: string(sandbox.WorkspaceWrite), Roots: []mint.Root{{Path: tc.root, Source: string(tc.source)}}})
+		for _, b := range []struct {
+			name sandbox.Backend
+			s    *local.Service
+			ok   bool
+		}{{sandbox.BackendLandlock, landlock, tc.landlockOK}, {sandbox.BackendBwrap, bwrap, tc.bwrapOK}} {
+			plan, _, err := local.PreparedPrefix(context.Background(), b.s, p, command(t))
+			if b.ok && err != nil {
+				t.Errorf("%s under %s: Prepare = %v; want it prepared", tc.name, b.name, err)
+			}
+			if !b.ok && herr.Kind(err) != sandbox.CodeUnavailable {
+				t.Errorf("%s under %s: Prepare = %v, %v; want %s", tc.name, b.name, plan, err, sandbox.CodeUnavailable)
+			}
+		}
 	}
 }

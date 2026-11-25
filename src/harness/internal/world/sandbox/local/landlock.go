@@ -15,7 +15,8 @@ type Kernel interface {
 }
 
 // LandlockBackend is Landlock (DH-D-SANDBOX-4, DH-ADR-NATIVESYSTEM-2): the stage
-// restricts itself with plain system calls (no cgo, NG-4) before ready, from the
+// restricts itself through go-landlock (pure Go, no cgo, NG-4;
+// DH-ADR-NATIVESYSTEM-1) before ready, from the
 // rule set launch.LandlockRules builds for the plan. It comes after bubblewrap in
 // the Linux chain, so it is selected when bwrap is absent or fails its probe.
 type LandlockBackend struct {

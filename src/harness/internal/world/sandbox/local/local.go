@@ -8,8 +8,10 @@
 //
 // The backends themselves are DH-D-SANDBOX-4 (impl.md 13.4): on Linux the chain
 // is bubblewrap (bwrap found once by absolute path; the stage runs as its
-// command, BwrapArgv) and then Landlock (the stage restricts itself with plain
-// system calls, launch.LandlockRules); both probe with the real stage (ProbeOn).
+// command, BwrapArgv) and then Landlock (the stage restricts itself through
+// go-landlock, launch.LandlockRules); both probe with the real stage (ProbeOn).
+// Prepare refuses a root that would make the harness binary or home writable
+// where the backend cannot keep it read-only (protect, DH-ADR-SANDBOX-5).
 // Windows has no backend in M2 (M2-C-8): a confined policy is refused with
 // sandbox/unavailable and only danger-full-access runs, reported Unconfined.
 package local
@@ -332,6 +334,9 @@ func (s *Service) prepare(ctx context.Context, p sandbox.Policy, argv []string) 
 		if r.Source == sandbox.SourceScratch && d.scratch == "" {
 			d.scratch = r.Path
 		}
+	}
+	if err := protect(st.Backend, s.host, p.WriteRoots()); err != nil {
+		return launch.Plan{}, nil, err
 	}
 	canary, release, err := s.newCanary("start")
 	if err != nil {
