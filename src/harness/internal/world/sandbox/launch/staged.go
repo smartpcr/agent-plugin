@@ -39,8 +39,8 @@ type Hooks struct {
 // one starter executes (DH-D-EXEC-4): its Wrap starts `<exe> sandbox-launch`
 // with the plan's arguments in place of the command, its Confirm reads ready,
 // calls h.Confirm and sends go or closes the pair, and its Release closes the
-// host's ends and calls h.Release. Argv, Control and Status of p are filled in by
-// Wrap and must be empty. A plan executes one start.
+// host's ends and calls h.Release. Argv, Keep, Control and Status of p are filled
+// in by Wrap and must be empty. A plan executes one start.
 func NewLaunch(policy sandbox.Policy, p Plan, h Hooks) (sandbox.Launch, error) {
 	if err := policy.Validate(); err != nil {
 		return sandbox.Launch{}, err
@@ -48,7 +48,7 @@ func NewLaunch(policy sandbox.Policy, p Plan, h Hooks) (sandbox.Launch, error) {
 	if h.Confirm == nil {
 		return sandbox.Launch{}, failed("a staged plan needs a Confirm decision")
 	}
-	if p.Argv != nil || p.Control != 0 || p.Status != 0 {
+	if p.Argv != nil || p.Keep != nil || p.Control != 0 || p.Status != 0 {
 		return sandbox.Launch{}, failed("the command and the channel of a staged plan are filled in by Wrap")
 	}
 	if h.Exe == "" {
@@ -92,6 +92,7 @@ func (s *staged) Wrap(argv []string, keep []uintptr, pass sandbox.Pass) (sandbox
 	s.ch = ch
 	p := s.plan
 	p.Argv = slices.Clone(argv)
+	p.Keep = nil
 	if len(keep) > 0 {
 		p.Keep = slices.Clone(keep)
 	}
