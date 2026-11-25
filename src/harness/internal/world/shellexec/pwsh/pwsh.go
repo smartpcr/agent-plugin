@@ -122,11 +122,13 @@ func edition(p string) string {
 
 // FirstStatement reports a command whose first statement is param, using or
 // #requires, case-insensitively and after leading white space, a byte-order
-// mark and comments (`# ...` to the end of the line, `<# ... #>`). Such a
+// mark and comments (`# ...` to the end of the line, `<# ... #>`). A param
+// block may also be preceded by attribute groups (`[CmdletBinding()]`). Such a
 // statement must open a script, so the command cannot follow the preamble in
 // one command string.
 func FirstStatement(command string) bool {
 	s := strings.ToLower(strings.TrimPrefix(command, "\uFEFF"))
+	attributed := false
 	for {
 		s = strings.TrimLeftFunc(s, unicode.IsSpace)
 		switch {
@@ -146,15 +148,54 @@ func FirstStatement(command string) bool {
 			}
 			s = rest
 			continue
+		case strings.HasPrefix(s, "["):
+			n := attributeEnd(s)
+			if n < 0 {
+				return false
+			}
+			s = s[n:]
+			attributed = true
+			continue
 		}
 		break
 	}
-	for _, kw := range []string{"param", "using"} {
+	kws := []string{"param", "using"}
+	if attributed {
+		kws = kws[:1]
+	}
+	for _, kw := range kws {
 		if rest, ok := strings.CutPrefix(s, kw); ok && (rest == "" || !wordChar(rest[0])) {
 			return true
 		}
 	}
 	return false
+}
+
+// attributeEnd is the length of the balanced `[...]` group that opens s,
+// skipping brackets inside quoted strings, or -1 if it is unterminated.
+func attributeEnd(s string) int {
+	depth := 0
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; c {
+		case '[':
+			depth++
+		case ']':
+			depth--
+			if depth == 0 {
+				return i + 1
+			}
+		case '\'', '"':
+			for i++; i < len(s) && s[i] != c; i++ {
+				if c == '"' && s[i] == '`' {
+					i++
+				}
+			}
+			if i >= len(s) {
+				return -1
+			}
+		}
+	}
+	return -1
 }
 
 func wordChar(c byte) bool {
