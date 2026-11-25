@@ -2,15 +2,19 @@ package instructions
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sync"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/agent"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/context/request"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/views"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/workdir"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/tools"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/watch"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/fs"
 )
@@ -24,13 +28,17 @@ type ServiceOptions struct {
 	Workdir workdir.Lookup
 	// Pipeline is the request pipeline the contributor joins. Required.
 	Pipeline *request.Pipeline
-	Config   Config
+	// Views is the fold registry instructions.visible is registered with.
+	// Required.
+	Views  *views.Registry
+	Config Config
 	// Watch, when set, watches every candidate of each session's chain.
 	Watch watch.Engine
 }
 
 // Service is the instructions component of a host (C41): one Reconciler per
-// session, marked by the seam's fs.Observed touches and the watch and moved by
+// session, marked by the seam's fs.Observed touches, the working directory of
+// every settled shell call (tools.Settled) and the watch, and moved by
 // the working directory each step reads, and the instructions contributor of
 // the pipeline. A resumed session starts a fresh reconciler, and the
 // contributor compares it with the record on the surface. The listeners, the
@@ -38,6 +46,7 @@ type ServiceOptions struct {
 // disposed agent's reconciler is closed.
 type Service struct {
 	o      ServiceOptions
+	fold   views.Handle[Record]
 	ctx    context.Context
 	cancel context.CancelFunc
 
@@ -49,8 +58,8 @@ type Service struct {
 // Start builds the service and registers its listeners and contributor in
 // owner's scope.
 func Start(owner *cordis.Context, o ServiceOptions) (*Service, error) {
-	if owner == nil || o.FS == nil || o.Workdir == nil || o.Pipeline == nil {
-		return nil, errors.New("instructions: Start needs an owner, a filesystem seam, a working-directory lookup and a pipeline")
+	if owner == nil || o.FS == nil || o.Workdir == nil || o.Pipeline == nil || o.Views == nil {
+		return nil, errors.New("instructions: Start needs an owner, a filesystem seam, a working-directory lookup, a pipeline and a view registry")
 	}
 	if _, ok := o.FS.(fs.BoundedOpener); !ok {
 		return nil, fmt.Errorf("instructions: the filesystem seam %T cannot read a bounded prefix", o.FS)
@@ -58,15 +67,27 @@ func Start(owner *cordis.Context, o ServiceOptions) (*Service, error) {
 	if err := o.Config.Validate(); err != nil {
 		return nil, err
 	}
+	fold, err := views.Ensure(o.Views, FoldView())
+	if err != nil {
+		return nil, err
+	}
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &Service{o: o, ctx: ctx, cancel: cancel, rs: map[session.ID]*Reconciler{}}
+	s := &Service{o: o, fold: fold, ctx: ctx, cancel: cancel, rs: map[session.ID]*Reconciler{}}
 	steps := []func() (*cordis.EffectHandle, error){
 		func() (*cordis.EffectHandle, error) {
 			return owner.Effect("context.instructions", func() (cordis.Disposer, error) { return s.close, nil })
 		},
 		func() (*cordis.EffectHandle, error) {
 			return fs.Observed.On(owner, func(_ *cordis.Context, ob fs.Observation) error {
-				s.touch(ob.Session, ob.Target.Display)
+				s.touch(ob.Session, ob.Target.Display, false)
+				return nil
+			})
+		},
+		func() (*cordis.EffectHandle, error) {
+			return tools.Settled.On(owner, func(_ *cordis.Context, st tools.Settlement) error {
+				if dir := shellDir(st.Result().Value); dir != "" {
+					s.touch(st.Call().Agent().Session, dir, true)
+				}
 				return nil
 			})
 		},
@@ -126,14 +147,49 @@ func (s *Service) reconciler(a agent.Ref) (*Reconciler, error) {
 	return r, nil
 }
 
-// touch marks the chain of session id when path is one of its candidates.
-func (s *Service) touch(id session.ID, path string) {
+// Visible is the instructions.visible fold of a session: the record of the
+// latest instructions message in its log.
+func (s *Service) Visible(ctx context.Context, rs session.ReadSession) (Record, error) {
+	snap, err := s.o.Views.Read(ctx, rs, FoldKey)
+	if err != nil {
+		return Record{}, err
+	}
+	return s.fold.Get(snap)
+}
+
+// shellDir is the working directory a shell call's result names; "" for any
+// other result.
+func shellDir(v any) string {
+	if v == nil {
+		return ""
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return ""
+	}
+	var r struct {
+		Cwd string `json:"cwd"`
+	}
+	if json.Unmarshal(b, &r) != nil || !filepath.IsAbs(r.Cwd) {
+		return ""
+	}
+	return r.Cwd
+}
+
+// touch marks the chain of session id when path is one of its candidates, or,
+// for a shell, any directory under its root.
+func (s *Service) touch(id session.ID, path string, shell bool) {
 	s.mu.Lock()
 	r := s.rs[id]
 	s.mu.Unlock()
-	if r != nil {
-		r.Touch(path)
+	if r == nil {
+		return
 	}
+	if shell {
+		r.TouchShell(path)
+		return
+	}
+	r.Touch(path)
 }
 
 // forget closes the reconciler of a session whose agent was disposed.

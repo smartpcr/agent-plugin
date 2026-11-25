@@ -23,11 +23,21 @@ type Record struct {
 	Root    string    `json:"root,omitempty"`
 	Files   []File    `json:"files"`
 	Refused []Refusal `json:"refused,omitempty"`
+	// Unwatched are the candidates the watch could not cover; the chain is
+	// read again at every step until it can.
+	Unwatched []Unwatched `json:"unwatched,omitempty"`
 	// Budget is the byte budget the section was rendered with.
 	Budget int `json:"budget"`
-	// Digest is the hex SHA-256 of the rendered section and of its files and
-	// refusals: what the model saw and what was diagnosed.
+	// Digest is the hex SHA-256 of the rendered section and of its files,
+	// refusals and unwatched candidates: what the model saw and what was
+	// diagnosed.
 	Digest string `json:"digest,omitempty"`
+}
+
+// Unwatched is a candidate whose watch could not be registered.
+type Unwatched struct {
+	Path  string `json:"path"`
+	Error string `json:"error"`
 }
 
 // Section is a rendered section and its record.
@@ -49,7 +59,7 @@ const (
 
 // frameTag matches the opening of a frame tag in any case, so a file cannot
 // close the frame it is rendered in.
-var frameTag = regexp.MustCompile(`(?i)<(/?)(instructions|file)`)
+var frameTag = regexp.MustCompile(`(?i)<(/?)(instructions|file|omitted)`)
 
 // Escape makes text safe inside the frame.
 func Escape(text string) string { return frameTag.ReplaceAllString(text, "&lt;$1$2") }
@@ -61,12 +71,28 @@ func attr(s string) string {
 // Render frames obs within budget bytes (Config.Validate holds the floor of the
 // budget, Render does not). The broadest visible files are
 // omitted first; when only the most specific is left and it still does not fit,
-// it is cut at a character boundary with a marker.
+// it is cut at a character boundary with a marker. When the omitted files'
+// tags alone would overrun the budget, they are listed as one summary tag.
 func Render(obs Observation, budget int) Section {
-	files := make([]File, len(obs.Entries))
-	bodies := make([]string, len(obs.Entries))
+	files, text := fit(obs.Entries, budget, false)
+	if len(text) > budget {
+		files, text = fit(obs.Entries, budget, true)
+	}
+	rec := Record{
+		Root: obs.Root, Files: files, Refused: append([]Refusal(nil), obs.Refused...),
+		Unwatched: append([]Unwatched(nil), obs.Unwatched...), Budget: budget,
+	}
+	rec.Digest = digest(text, rec)
+	return Section{Text: text, Record: rec}
+}
+
+// fit is the files and the section of entries within budget; compact lists the
+// omitted files in one tag.
+func fit(entries []Entry, budget int, compact bool) ([]File, string) {
+	files := make([]File, len(entries))
+	bodies := make([]string, len(entries))
 	var keep []int
-	for i, e := range obs.Entries {
+	for i, e := range entries {
 		files[i] = e.File
 		if e.File.State != Visible {
 			continue
@@ -78,12 +104,35 @@ func Render(obs Observation, budget int) Section {
 		bodies[i] = b
 		keep = append(keep, i)
 	}
-	text := build(files, bodies)
+	text := build(files, bodies, compact)
+	if len(text) > budget && len(keep) > 1 {
+		// Drop the broadest files by the size each one adds, then build once.
+		size, omitted, omittedBytes := len(text), 0, 0
+		for _, f := range files {
+			if f.State == Omitted {
+				omitted, omittedBytes = omitted+1, omittedBytes+f.Bytes
+			}
+		}
+		for size > budget && len(keep) > 1 {
+			i := keep[0]
+			size -= len(fileTag(files[i].Path, bodies[i]))
+			if compact {
+				size -= summaryLen(omitted, omittedBytes)
+				omitted, omittedBytes = omitted+1, omittedBytes+files[i].Bytes
+				size += summaryLen(omitted, omittedBytes)
+			} else {
+				size += len(omittedTag(files[i].Path, files[i].Bytes))
+			}
+			files[i].State = Omitted
+			keep = keep[1:]
+		}
+		text = build(files, bodies, compact)
+	}
 	for len(text) > budget && len(keep) > 0 {
 		if len(keep) > 1 {
 			files[keep[0]].State = Omitted
 			keep = keep[1:]
-			text = build(files, bodies)
+			text = build(files, bodies, compact)
 			continue
 		}
 		last := keep[0]
@@ -99,49 +148,74 @@ func Render(obs Observation, budget int) Section {
 			bodies[last] = bodies[last][:n] + budgetMarker
 			files[last].Truncated = true
 		}
-		text = build(files, bodies)
+		text = build(files, bodies, compact)
 		break
 	}
-	sum := digest(text, files, obs.Refused)
-	return Section{Text: text, Record: Record{
-		Root: obs.Root, Files: files, Refused: append([]Refusal(nil), obs.Refused...),
-		Budget: budget, Digest: sum,
-	}}
+	return files, text
 }
 
 // digest is the hex SHA-256 of the text and of the record's diagnostics, so a
-// refusal or a file state that leaves the text as it was is still a change.
-func digest(text string, files []File, refused []Refusal) string {
+// refusal, an unwatched candidate or a file state that leaves the text as it
+// was is still a change.
+func digest(text string, r Record) string {
 	h := sha256.New()
 	h.Write([]byte(text))
 	h.Write([]byte{0})
 	diag, _ := json.Marshal(struct {
-		Files   []File    `json:"files"`
-		Refused []Refusal `json:"refused"`
-	}{files, refused})
+		Files     []File      `json:"files"`
+		Refused   []Refusal   `json:"refused"`
+		Unwatched []Unwatched `json:"unwatched"`
+	}{r.Files, r.Refused, r.Unwatched})
 	h.Write(diag)
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-func build(files []File, bodies []string) string {
+func fileTag(path, body string) string {
+	if !strings.HasSuffix(body, "\n") {
+		body += "\n"
+	}
+	return "\n<file path=\"" + attr(path) + "\">\n" + body + "</file>\n"
+}
+
+func omittedTag(path string, bytes int) string {
+	return "\n<file path=\"" + attr(path) + "\" omitted=\"budget\" bytes=\"" + strconv.Itoa(bytes) + "\"/>\n"
+}
+
+func summaryTag(files, bytes int) string {
+	return "\n<omitted reason=\"budget\" files=\"" + strconv.Itoa(files) + "\" bytes=\"" + strconv.Itoa(bytes) + "\"/>\n"
+}
+
+// summaryLen is the length of the summary tag; 0 for no file.
+func summaryLen(files, bytes int) int {
+	if files == 0 {
+		return 0
+	}
+	return len(summaryTag(files, bytes))
+}
+
+func build(files []File, bodies []string, compact bool) string {
 	var b strings.Builder
 	b.WriteString(frameOpen)
 	b.WriteString(preamble)
 	listed := false
+	omitted, omittedBytes := 0, 0
 	for i, f := range files {
 		switch f.State {
 		case Visible:
-			b.WriteString("\n<file path=\"" + attr(f.Path) + "\">\n")
-			b.WriteString(bodies[i])
-			if !strings.HasSuffix(bodies[i], "\n") {
-				b.WriteString("\n")
-			}
-			b.WriteString("</file>\n")
+			b.WriteString(fileTag(f.Path, bodies[i]))
 			listed = true
 		case Omitted:
-			b.WriteString("\n<file path=\"" + attr(f.Path) + "\" omitted=\"budget\" bytes=\"" + strconv.Itoa(f.Bytes) + "\"/>\n")
+			if compact {
+				omitted, omittedBytes = omitted+1, omittedBytes+f.Bytes
+				continue
+			}
+			b.WriteString(omittedTag(f.Path, f.Bytes))
 			listed = true
 		}
+	}
+	if omitted > 0 {
+		b.WriteString(summaryTag(omitted, omittedBytes))
+		listed = true
 	}
 	if !listed {
 		b.WriteString(noFiles)

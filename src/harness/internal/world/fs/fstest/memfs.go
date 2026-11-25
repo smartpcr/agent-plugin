@@ -273,17 +273,25 @@ func (m *MemFS) OpenBounded(ctx context.Context, r fs.Ref, limit int64) (io.Read
 	if limit < 0 {
 		return nil, fs.Info{}, herr.Newf(fs.CodeInvalidPath, "OpenBounded: the limit %d is negative", limit)
 	}
-	rc, in, err := m.Open(ctx, r)
-	if err != nil || in.Size <= limit {
-		return rc, in, err
-	}
-	data, err := io.ReadAll(io.LimitReader(rc, limit))
-	_ = rc.Close()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, n, err := m.lookup(ctx, r)
 	if err != nil {
 		return nil, fs.Info{}, err
 	}
+	if n == nil {
+		return nil, fs.Info{}, herr.Newf(fs.CodeNotFound, "%s does not exist", p)
+	}
+	if n.typ != fs.TypeFile {
+		return nil, fs.Info{}, herr.Newf(fs.CodeNotRegularFile, "%s is a %s", p, n.typ)
+	}
+	in := info(p, n, true)
+	if int64(len(n.data)) <= limit {
+		return io.NopCloser(bytes.NewReader(slices.Clone(n.data))), in, nil
+	}
+	// Only the prefix is copied; its digest would not be the file's.
 	in.Version.Digest, in.Version.HasDigest = [32]byte{}, false
-	return io.NopCloser(bytes.NewReader(data)), in, nil
+	return io.NopCloser(bytes.NewReader(slices.Clone(n.data[:limit]))), in, nil
 }
 
 // ReadDir implements fs.FS.

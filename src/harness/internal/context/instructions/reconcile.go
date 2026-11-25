@@ -104,6 +104,10 @@ func (r *Reconciler) SetDirectory(dir, root string) {
 	dir, root = filepath.Clean(dir), filepath.Clean(root)
 	r.mu.Lock()
 	same := r.dir == dir && r.root == root
+	if r.root != root {
+		// Last-good text is the text of a file of this project only.
+		r.lastGood = map[string]Entry{}
+	}
 	r.dir, r.root = dir, root
 	r.mu.Unlock()
 	if !same {
@@ -111,10 +115,17 @@ func (r *Reconciler) SetDirectory(dir, root string) {
 	}
 }
 
-// Touch is a file-tool touch (fs.Observed) or a shell call's working directory:
-// the chain is marked when path is one of its candidates or a directory of it.
-// path may be as given or as the seam resolved it.
-func (r *Reconciler) Touch(path string) {
+// Touch is a file-tool touch (fs.Observed): the chain is marked when path is
+// one of its candidates or a directory of it. path may be as given or as the
+// seam resolved it.
+func (r *Reconciler) Touch(path string) { r.touch(path, false) }
+
+// TouchShell is a shell call's working directory: a shell may have rewritten
+// any file under it, so the chain is marked when dir is under the project
+// root.
+func (r *Reconciler) TouchShell(dir string) { r.touch(dir, true) }
+
+func (r *Reconciler) touch(path string, shell bool) {
 	if !filepath.IsAbs(path) {
 		return
 	}
@@ -129,19 +140,22 @@ func (r *Reconciler) Touch(path string) {
 		return
 	}
 	path = filepath.Clean(path)
-	if r.touches(path, dir, root) {
+	if r.touches(path, dir, root, shell) {
 		r.dirty.Store(true)
 		return
 	}
 	if canonRoot != "" && canonRoot != root {
 		rel, err := filepath.Rel(root, dir)
-		if err == nil && r.touches(path, filepath.Join(canonRoot, rel), canonRoot) {
+		if err == nil && r.touches(path, filepath.Join(canonRoot, rel), canonRoot, shell) {
 			r.dirty.Store(true)
 		}
 	}
 }
 
-func (r *Reconciler) touches(path, dir, root string) bool {
+func (r *Reconciler) touches(path, dir, root string, shell bool) bool {
+	if shell {
+		return fs.Within(root, path)
+	}
 	if fs.Within(root, path) && fs.Within(path, dir) {
 		return true
 	}
@@ -178,8 +192,13 @@ func (r *Reconciler) Next(ctx context.Context, seen *Record) (Section, bool, err
 			return Section{}, false, err
 		}
 		r.keepLastGood(&obs)
+		obs.Unwatched = r.syncWatches(obs.Root, obs.Candidates)
 		r.obs = &obs
-		r.syncWatches(obs.Candidates)
+		if len(obs.Unwatched) > 0 {
+			// Without a watch the chain is polled: read again at every step,
+			// and the watch is tried again.
+			r.dirty.Store(true)
+		}
 	}
 	sec := Render(*r.obs, r.o.Config.MaxBytes)
 	switch {
@@ -235,12 +254,14 @@ func (r *Reconciler) keepLastGood(obs *Observation) {
 }
 
 // syncWatches watches each candidate path once and closes the watches of paths
-// that left the chain. A watch callback only marks the chain, so a Close here
-// never waits on r.mu.
-func (r *Reconciler) syncWatches(paths []string) {
+// that left the chain. It returns the candidates whose watch failed, relative
+// to root. A watch callback only marks the chain, so a Close here never waits
+// on r.mu.
+func (r *Reconciler) syncWatches(root string, paths []string) []Unwatched {
 	if r.o.Watch == nil {
-		return
+		return nil
 	}
+	var failed []Unwatched
 	want := map[string]bool{}
 	for _, p := range paths {
 		want[p] = true
@@ -253,9 +274,15 @@ func (r *Reconciler) syncWatches(paths []string) {
 				r.o.Notify()
 			}
 		})
-		if err == nil {
-			r.watches[p] = w
+		if err != nil {
+			rel := p
+			if q, rerr := filepath.Rel(root, p); rerr == nil {
+				rel = filepath.ToSlash(q)
+			}
+			failed = append(failed, Unwatched{Path: rel, Error: err.Error()})
+			continue
 		}
+		r.watches[p] = w
 	}
 	for p, w := range r.watches {
 		if !want[p] {
@@ -263,6 +290,7 @@ func (r *Reconciler) syncWatches(paths []string) {
 			delete(r.watches, p)
 		}
 	}
+	return failed
 }
 
 // Close stops every watch.

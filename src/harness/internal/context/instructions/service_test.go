@@ -35,6 +35,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/fs/ops"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox/sandboxtest"
+	shelltools "github.com/smartpcr/agent-plugin/src/harness/internal/world/shellexec/tools"
 )
 
 func must[T any](v T, err error) T {
@@ -178,7 +179,8 @@ func instructionsIn(msgs []vocab.Message) []string {
 // directory change brings the subdirectory's file; a compaction that shadows
 // the instructions has the baseline entered again in that step; a step a later
 // required contributor rejected does not count as seen, so the next one
-// carries the change.
+// carries the change; a shell's rewrite is seen once its settled call names its
+// working directory (tools.Settled).
 //
 //dsh:test DH-T-CONTEXT-6
 func TestServiceFollowsTheSession(t *testing.T) {
@@ -222,13 +224,14 @@ func TestServiceFollowsTheSession(t *testing.T) {
 	must(pipe.Register(root, clock))
 	wd := &dirs{path: ws, top: ws}
 	provider := local.New()
-	must(instructions.Start(root, instructions.ServiceOptions{FS: provider, Workdir: wd, Pipeline: pipe}))
+	isvc := must(instructions.Start(root, instructions.ServiceOptions{FS: provider, Workdir: wd, Pipeline: pipe, Views: views.New()}))
 	seam := ops.New(root, provider, &sandboxtest.Resolver{Default: sandbox.WorkspaceWrite, Workdir: wd}, ops.Options{Workdir: wd})
 
 	const route vocab.RouteID = "r/instr"
 	rt := llm.New()
 	fakemodel.Register(t, rt, route, fakemodel.NewTransport(t,
-		fakemodel.Reply("1"), fakemodel.Reply("2"), fakemodel.Reply("3"), fakemodel.Reply("4"), fakemodel.Reply("5")))
+		fakemodel.Reply("1"), fakemodel.Reply("2"), fakemodel.Reply("3"), fakemodel.Reply("4"), fakemodel.Reply("5"),
+		fakemodel.Reply("6"), fakemodel.Reply("7")))
 	models := &sent{Models: rt}
 	inbox := must(agent.OpenInbox(bg, sess))
 	mod := must(agent.OpenModel(bg, sess, agent.ModelOptions{Initial: agent.ModelSelection{Route: route}}))
@@ -256,7 +259,7 @@ func TestServiceFollowsTheSession(t *testing.T) {
 		if len(got) == 0 || !strings.Contains(got[len(got)-1], want) {
 			t.Fatalf("%s: the request's instructions %q do not hold %q", step, got, want)
 		}
-		rec := views.Refold(instructions.FoldView(), session.Header{}, must(sess.Read(bg, 0, 0)))
+		rec := must(isvc.Visible(bg, sess))
 		if rec.Form != form {
 			t.Fatalf("%s: instructions.visible form %q, want %q", step, rec.Form, form)
 		}
@@ -286,7 +289,22 @@ func TestServiceFollowsTheSession(t *testing.T) {
 	turn("five")
 	turn("six")
 	expect("after a rejected step", "rules v3", instructions.FormUpdate)
-	if n := len(models.reqs); n != 5 {
-		t.Fatalf("%d requests sent, want 5 (the rejected step sends none)", n)
+
+	// A shell rewrites the file: no fs.Observed, no watch; the settled shell
+	// call's working directory is the touch.
+	if err := os.WriteFile(filepath.Join(sub, "AGENTS.md"), []byte("sub rules v2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	turn("seven")
+	if got := instructionsIn(models.last(t)); len(got) != 0 && strings.Contains(got[len(got)-1], "sub rules v2") {
+		t.Fatalf("an untouched chain was read again: %q", got)
+	}
+	ref := agent.Ref{Session: id, Incarnation: 1}
+	call := tools.NewCall("c-sh", "bash", []byte("{}"), tools.OriginModel, "", ref, nil, nil)
+	tools.Settled.Notify(root, scope.Key{}, tools.NewSettlement(call, tools.Result{CallID: "c-sh", Name: "bash", Value: shelltools.Result{Cwd: sub}}, "{}"))
+	turn("eight")
+	expect("after a shell call", "sub rules v2", instructions.FormUpdate)
+	if n := len(models.reqs); n != 7 {
+		t.Fatalf("%d requests sent, want 7 (the rejected step sends none)", n)
 	}
 }

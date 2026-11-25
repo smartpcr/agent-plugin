@@ -122,6 +122,8 @@ type Observation struct {
 	canonRoot string
 	Entries   []Entry
 	Refused   []Refusal
+	// Unwatched are the candidates the reconciler's watch could not cover.
+	Unwatched []Unwatched
 	// Candidates are the absolute candidate paths looked at, in chain order:
 	// the paths a watch covers.
 	Candidates []string

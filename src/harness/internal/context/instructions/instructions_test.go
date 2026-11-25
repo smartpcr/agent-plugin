@@ -3,11 +3,13 @@ package instructions_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -323,4 +325,112 @@ func logged(t *testing.T, sec instructions.Section, seq event.Seq) event.Event {
 		t.Fatal(err)
 	}
 	return event.Of(rec)
+}
+
+// flaky is a watch engine that refuses every watch while down.
+type flaky struct {
+	down atomic.Bool
+	live atomic.Int32
+}
+
+func (f *flaky) Watch(context.Context, watch.Target, func(error)) (watch.Watch, error) {
+	if f.down.Load() {
+		return nil, watch.ErrTooMany
+	}
+	f.live.Add(1)
+	return stubWatch{f}, nil
+}
+
+type stubWatch struct{ f *flaky }
+
+func (stubWatch) Mode() watch.Mode { return watch.Notify }
+func (w stubWatch) Close() error   { w.f.live.Add(-1); return nil }
+
+// TestWatchFailureFallsBackToPolling: a candidate whose watch is refused is
+// recorded as unwatched and the chain is read at every step, so an edit no
+// touch announced is still seen; once the watch can be registered the chain
+// is watched again and polling stops.
+//
+//dsh:test DH-T-CONTEXT-6
+func TestWatchFailureFallsBackToPolling(t *testing.T) {
+	ctx := context.Background()
+	m := fstest.NewMemFS()
+	write(t, m, "/ws/AGENTS.md", "v1\n")
+	eng := &flaky{}
+	eng.down.Store(true)
+	r, err := instructions.NewReconciler(ctx, instructions.Options{FS: m, Watch: eng})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	r.SetDirectory(abs("/ws"), abs("/ws"))
+	sec, changed, err := r.Next(ctx, nil)
+	if err != nil || !changed || len(sec.Record.Unwatched) != 2 || !r.Pending() {
+		t.Fatalf("a refused watch: changed=%v err=%v unwatched=%v pending=%v", changed, err, sec.Record.Unwatched, r.Pending())
+	}
+	if u := sec.Record.Unwatched[0]; u.Path != "AGENTS.md" || !strings.Contains(u.Error, "too many") {
+		t.Fatalf("unwatched %+v", u)
+	}
+	seen := sec.Record
+	write(t, m, "/ws/AGENTS.md", "v2\n")
+	if sec, changed, _ = r.Next(ctx, &seen); !changed || !strings.Contains(sec.Text, "v2") {
+		t.Fatalf("polling missed an edit: changed=%v\n%s", changed, sec.Text)
+	}
+	seen = sec.Record
+	eng.down.Store(false)
+	if sec, changed, _ = r.Next(ctx, &seen); !changed || len(sec.Record.Unwatched) != 0 || r.Pending() || eng.live.Load() != 2 {
+		t.Fatalf("recovery: changed=%v unwatched=%v pending=%v live=%d", changed, sec.Record.Unwatched, r.Pending(), eng.live.Load())
+	}
+}
+
+// TestOmissionListIsBounded: so many candidates that their omitted-file tags
+// alone overrun the budget are listed in one summary tag, and the section
+// stays within the budget.
+//
+//dsh:test DH-T-CONTEXT-6
+func TestOmissionListIsBounded(t *testing.T) {
+	ctx := context.Background()
+	m := fstest.NewMemFS()
+	cfg := instructions.Config{}
+	for i := range 2000 {
+		n := fmt.Sprintf("RULES-%04d.md", i)
+		cfg.Candidates = append(cfg.Candidates, n)
+		write(t, m, "/ws/"+n, n+strings.Repeat("x", 100)+"\n")
+	}
+	obs, err := instructions.Discover(ctx, m, abs("/ws"), abs("/ws"), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sec := instructions.Render(obs, instructions.MinMaxBytes)
+	if len(sec.Text) > instructions.MinMaxBytes {
+		t.Fatalf("the section is %d bytes, over the budget %d", len(sec.Text), instructions.MinMaxBytes)
+	}
+	if !strings.Contains(sec.Text, `<omitted reason="budget" files="`) || !strings.Contains(sec.Text, `<file path="RULES-1999.md">`) {
+		t.Fatalf("no summary tag or no most specific file:\n%.600s", sec.Text)
+	}
+}
+
+// TestLastGoodIsPerProject: a file unreadable in project B never shows the
+// last-good text of project A's file of the same relative path.
+//
+//dsh:test DH-T-CONTEXT-6
+func TestLastGoodIsPerProject(t *testing.T) {
+	ctx := context.Background()
+	m := fstest.NewMemFS()
+	write(t, m, "/a/AGENTS.md", "project A rules\n")
+	if err := m.Mkdir(abs("/b/AGENTS.md")); err != nil {
+		t.Fatal(err)
+	}
+	r, _ := instructions.NewReconciler(ctx, instructions.Options{FS: m})
+	r.SetDirectory(abs("/a"), abs("/a"))
+	sec, _, err := r.Next(ctx, nil)
+	if err != nil || !strings.Contains(sec.Text, "project A rules") {
+		t.Fatalf("project A: err=%v\n%s", err, sec.Text)
+	}
+	seen := sec.Record
+	r.SetDirectory(abs("/b"), abs("/b"))
+	sec, _, err = r.Next(ctx, &seen)
+	if err != nil || strings.Contains(sec.Text, "project A rules") {
+		t.Fatalf("project B shows project A's text: err=%v\n%s", err, sec.Text)
+	}
 }
