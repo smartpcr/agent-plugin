@@ -140,18 +140,26 @@ diff the scenario-index gate passes again (39 scenario tests authored, 39 indexe
 DH-S-11), and the project analyzers (`-vettool` with the built gate) are clean on both packages.
 
 The scenarios' own oracles have focused tests that need no live model. Run them with
-`go -C src/harness test -tags=scenario -run 'TestFS2PatchOracle|TestSandbox7Counts' ./internal/testkit/scenarios/`
-(both pass).
+`go -C src/harness test -tags=scenario -run 'TestFS2PatchOracle|TestSandbox7Counts|TestFS3Versions' ./internal/testkit/scenarios/`
+(all pass).
 - `TestFS2PatchOracleReadsTerminatedPatches` covers FS-2's patch reader. It stops at `*** End Patch`, skips a
-  heredoc wrapper and honours `*** End of File`. Seven of its eight cases failed on the previous reader.
+  heredoc wrapper and honours `*** End of File`. Seven of its first eight cases failed on the previous reader.
+  A patch that deletes every line now leaves an empty file, as `patch.Hunk.Apply` does, while a file left with one
+  blank line stays `\n`; the two emptying cases failed on the previous reader.
 - `TestSandbox7CountsOnlyEscalatedRetriesOfDeniedCalls` covers SANDBOX-7's escalation count. Only an approval
   of a retry of an `fs/sandbox-denied` call counts: the same tool and arguments, plus `sandbox_permissions`
   `danger-full-access` and a justification that the approval shows. An ordinary tool approval does not count.
+- `TestFS3VersionsTrustOnlyDshEdits` covers FS-3's version check (`fs3CheckVersions`). An invented editor digest
+  is rejected, cannot excuse a lost edit, and an edit whose digest no derived version yields is rejected.
 
 FS-3 now checks the following:
 - Each edit's returned `sha256` version is compared with the final file.
-- Every editor save must write back an acknowledged version.
-- An edit that went missing must be explained by a save that rewrote an earlier version.
+- The valid versions are derived only from the starting file and dsh's edits: each edit's digest must equal its
+  base version with the edit's marker inserted. Editor saves never add versions, so a save cannot vouch for itself.
+- Every editor save must write one of those derived versions, one that existed before the save ended.
+- An edit that went missing must be explained by a save, ending after the edit began, of a derived version
+  without that edit's marker.
+- The final file must be a derived version, written by the last acknowledgement to begin.
 - The kill leg freezes the process, probes its lock file with a non-blocking lock, and kills it only while the
   lock is held. It uses `fs3Freeze` and `fs3LockHeld`, written with the standard library only, for Unix and
   Windows. On Windows, a temporary self-test confirmed that the probe and the freeze work.

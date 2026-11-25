@@ -20,6 +20,10 @@ func TestFS2PatchOracleReadsTerminatedPatches(t *testing.T) {
 		{"padded markers", "a\n", "  *** Begin Patch \n*** Update File: f\n@@\n-a\n+b\n *** End Patch\t\n", "b\n"},
 		{"end of file anchors the chunk", "x\ny\nx\n", "*** Begin Patch\n*** Update File: f\n@@\n-x\n+z\n*** End of File\n*** End Patch\n", "x\ny\nz\n"},
 		{"blank context line inside a chunk", "a\n\nb\n", "*** Begin Patch\n*** Update File: f\n@@\n a\n\n-b\n+c\n*** End Patch\n", "a\n\nc\n"},
+		{"deleting every line leaves an empty file", "a\n", "*** Begin Patch\n*** Update File: f\n@@\n-a\n*** End Patch\n", ""},
+		{"deleting every line of several", "a\nb\n", "*** Begin Patch\n*** Update File: f\n@@\n-a\n-b\n*** End Patch\n", ""},
+		{"one blank line left is not empty", "a\n\n", "*** Begin Patch\n*** Update File: f\n@@\n-a\n \n*** End Patch\n", "\n"},
+		{"replacing the only line with a blank line", "a\n", "*** Begin Patch\n*** Update File: f\n@@\n-a\n+\n*** End Patch\n", "\n"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

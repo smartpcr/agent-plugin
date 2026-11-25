@@ -415,8 +415,10 @@ func fs2ApplyChunks(text string, lines []string) (string, bool) {
 	if !flush() {
 		return "", false
 	}
+	// Each remaining line ends with a newline; a file with no lines left is empty
+	// (textdiff/patch Hunk.Apply), not one blank line.
 	out := strings.Join(file, "\n")
-	if trailing || len(file) > 0 {
+	if len(file) > 0 {
 		out += "\n"
 	}
 	return out, true
