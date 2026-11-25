@@ -218,18 +218,19 @@ func (w *spcWorld) givenService(backend string) error {
 	return nil
 }
 
+// givenWindowsLane uses the real platform chain, so it only runs on Windows:
+// substituting an empty chain elsewhere would record a non-Windows pass as
+// Windows-lane (@platform:windows) evidence.
 func (w *spcWorld) givenWindowsLane() error {
+	if runtime.GOOS != "windows" {
+		return godog.ErrSkip
+	}
 	if err := w.setup(); err != nil {
 		return err
 	}
 	chain := local.Platform()
-	if runtime.GOOS == "windows" {
-		if len(chain) != 0 {
-			return fmt.Errorf("the Windows chain has %d backends; M2 has none (M2-C-8)", len(chain))
-		}
-	} else {
-		// Off the Windows lane, the Windows chain is the empty one (M2-C-8).
-		chain = nil
+	if len(chain) != 0 {
+		return fmt.Errorf("the Windows chain has %d backends; M2 has none (M2-C-8)", len(chain))
 	}
 	svc, err := local.New(context.Background(), local.Config{}, chain)
 	if err != nil {
