@@ -169,8 +169,14 @@ FS-3 now checks the following:
   Windows. On Windows, a temporary self-test confirmed that the probe and the freeze work.
 - The survivor's edit must be the file's version on disk, and the lock must be free afterwards.
 
-Not yet recorded: the lane outputs on the merged SHA and `DSH_REQUIRE_SCENARIOS`
-(`harness-gate require --stage DH-S-12`).
+Lanes on the merged SHA `9dfad5d` (`9dfad5d9135d59c8fa2d126cbaca8eb86e4ca75d`, #126), each from a clean
+checkout of that commit, `go1.27.4` (records under [../../harness-DSH-M1/evidence/runs/](../../harness-DSH-M1/evidence/runs/)):
+
+- `lanes/win.ps1` (Windows native, NTFS): exit 0, PASSED all 13 gates at `9dfad5d`, record `win-9dfad5d-20261125T0847Z.txt` (sha256 `faa07f8da0c9e3ed5e592429d8f917159e2abad8febed6bb70e720238cce93ca`).
+- `lanes/wsl.sh` (WSL Ubuntu-24.04, ext4 clone): exit 0, PASSED all 13 gates at `9dfad5d`, record `wsl-9dfad5d-20261125T0803Z.txt` (sha256 `8091c4172986d10f8255ce8b523929003b0c84ef2eef5de565beea1c292c3cdc`); its release rehearsal exit 0, `wsl-9dfad5d-20261125T0803Z-rehearse.txt`.
+- Kept, not blocking: a first Windows run at the same commit, started alongside the WSL lane on the same host, failed only at `budget` (`TestBudgetStoreAppend` open p95 672ms over 250ms under that load; record `win-9dfad5d-20261125T0802Z.txt`, sha256 `3bd7da69a724cd9dc7d5049651c882d9f16443b08aa0febf763fc38b8b0ac1c7`). The re-run alone above passed every gate, `budget` included.
+
+Not yet recorded: `DSH_REQUIRE_SCENARIOS` (`harness-gate require --stage DH-S-12`).
 
 ### Run identifiers
 
