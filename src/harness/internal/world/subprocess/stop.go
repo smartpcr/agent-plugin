@@ -48,7 +48,8 @@ var ErrStopped = errors.New("stopped by the host")
 type StopPlan struct {
 	// Revoke takes back the command's authority; it runs first, even for a tree
 	// that has already left, bounded by Grace
-	// (DefaultHookBound when Grace is zero) and by Stop's context.
+	// (DefaultHookBound when Grace is zero), by Stop's context and by Run's
+	// hard limit.
 	Revoke func(ctx context.Context) error
 	// Ask is the protocol request to stop, bounded the same way; the tree then
 	// has up to Grace to leave.
@@ -147,13 +148,17 @@ func (p *Process) stop(ctx context.Context, cause error, plan StopPlan) error {
 	if hookBound <= 0 {
 		hookBound = DefaultHookBound
 	}
-	p.rung(ctx, RungRevoke, hookAct(plan.Revoke, hookBound), 0)
-	p.rung(ctx, RungAsk, hookAct(plan.Ask, hookBound), plan.Grace)
-	p.rung(ctx, RungCloseInput, p.closeInput, plan.Grace)
-	p.rung(ctx, RungTerminate, func(context.Context) (bool, string, error) {
+	// The rungs run under rctx, which a forced stop ends; the settle wait does not,
+	// so a forced ladder still waits for the tree after the kill.
+	rctx, endRungs := p.rungContext(ctx)
+	defer endRungs()
+	p.rung(rctx, RungRevoke, hookAct(plan.Revoke, hookBound), 0)
+	p.rung(rctx, RungAsk, hookAct(plan.Ask, hookBound), plan.Grace)
+	p.rung(rctx, RungCloseInput, p.closeInput, plan.Grace)
+	p.rung(rctx, RungTerminate, func(context.Context) (bool, string, error) {
 		return true, "", p.withOwner(treeOwner.polite)
 	}, plan.Grace)
-	p.rung(ctx, RungKill, func(context.Context) (bool, string, error) {
+	p.rung(rctx, RungKill, func(context.Context) (bool, string, error) {
 		return true, "", p.withOwner(treeOwner.kill)
 	}, 0)
 	sctx, cancel := settle(ctx, plan.Settle)
@@ -177,6 +182,26 @@ func (p *Process) stop(ctx context.Context, cause error, plan StopPlan) error {
 
 // rungAct performs a rung; ran is false when it had nothing to do, with a note.
 type rungAct func(ctx context.Context) (ran bool, note string, err error)
+
+// errForced is the cause the rungs' context ends with when the tree is forced.
+var errForced = errors.New("the hard limit forced the stop")
+
+// rungContext is ctx, ended with errForced once p.forced closes.
+func (p *Process) rungContext(ctx context.Context) (context.Context, func()) {
+	rctx, cancel := context.WithCancelCause(ctx)
+	if p.forced == nil {
+		return rctx, func() { cancel(nil) }
+	}
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-p.forced:
+			cancel(errForced)
+		case <-done:
+		}
+	}()
+	return rctx, func() { close(done); cancel(nil) }
+}
 
 // rung runs act unless the tree is gone, then waits up to wait for the tree to
 // leave, and records the result. The revoke rung runs even then: authority the
@@ -216,7 +241,11 @@ func hookAct(hook func(context.Context) error, bound time.Duration) rungAct {
 		case err := <-done:
 			return true, "", err
 		case <-hctx.Done():
-			return true, "the hook passed its bound", context.Cause(hctx)
+			cause := context.Cause(hctx)
+			if errors.Is(cause, errForced) {
+				return true, "the stop was forced while the hook ran", cause
+			}
+			return true, "the hook passed its bound", cause
 		}
 	}
 }
