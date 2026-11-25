@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"runtime"
 	"strconv"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox"
@@ -63,13 +64,24 @@ func (p Plan) Validate() error {
 	default:
 		return failed("plan kind %q is neither confined nor unconfined", p.Kind)
 	}
-	if p.Control == 0 || p.Status == 0 || p.Control == p.Status {
-		return failed("the plan needs two distinct channel descriptors, got %d and %d", p.Control, p.Status)
+	if !channelEnd(p.Control) || !channelEnd(p.Status) || p.Control == p.Status {
+		return failed("the plan needs two distinct channel descriptors past stdin/stdout/stderr, got %d and %d", p.Control, p.Status)
 	}
 	if len(p.Argv) == 0 || !filepath.IsAbs(p.Argv[0]) {
 		return failed("the plan needs a command whose program is an absolute path")
 	}
 	return nil
+}
+
+// channelEnd reports whether n can be a channel end. On POSIX the ends are the
+// child's extra descriptors (3 and up, subprocess.ChildFD), never stdin, stdout or
+// stderr, which the command inherits; on Windows they are handle values, and only
+// the null handle is refused.
+func channelEnd(n uintptr) bool {
+	if runtime.GOOS == "windows" {
+		return n != 0
+	}
+	return n >= 3
 }
 
 // Args is the stage's argument list after Mode: the flags, "--" and the command.
