@@ -368,10 +368,14 @@ func (s *shell) result(x *shellexec.Execution, pol sandbox.Policy, o shellexec.O
 		Confinement: confinement(pol, o.Confinement),
 		Error:       errText(o.Err),
 	}
+	// A stopped shell did not exit by itself, whatever status the host gave
+	// the killed process (Windows reports 1, not a signal).
 	switch o.Kind {
 	case shellexec.TimedOut:
+		r.ExitCode = -1
 		r.Stop = &Stop{Reason: StopTimeout, BudgetMs: o.Timeout.Milliseconds(), Cause: errText(o.Cause)}
 	case shellexec.Cancelled:
+		r.ExitCode = -1
 		r.Stop = &Stop{Reason: StopCancelled, BudgetMs: o.Timeout.Milliseconds(), Cause: errText(o.Cause)}
 	}
 	return r
