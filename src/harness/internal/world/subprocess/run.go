@@ -91,6 +91,14 @@ var errOutputLimit = errors.New("output limit exceeded")
 // passes.
 var errHardLimit = errors.New("hard limit passed")
 
+// The states of a Run with a hard limit: running, then either the direct child's
+// Wait returned first or the hard limit passed first.
+const (
+	runActive int32 = iota
+	runExited
+	runHard
+)
+
 // Run starts spec, captures each standard stream the Spec leaves nil, waits for
 // the program and returns once its whole tree is gone. The five outcomes are told
 // apart (DH-LIB-EXECA-R1):
@@ -103,9 +111,10 @@ var errHardLimit = errors.New("hard limit passed")
 //   - a captured stream passed MaxOutput: subprocess/output-limit, with the
 //     stream marked Exceeded; the caller is never handed a silently shortened
 //     result;
-//   - RunOptions.HardLimit passed before the direct child exited, or while the
-//     launch was still being confirmed: subprocess/hard-limit; the tree was
-//     killed at once.
+//   - RunOptions.HardLimit passed before the direct child exited (its exit and
+//     the bounded drain of its streams), or while the launch was still being
+//     confirmed: subprocess/hard-limit; the tree was killed at once. A limit
+//     that passes after that only bounds the stop of the leftovers.
 //
 // In the deadline, cancel and output-limit cases the tree is stopped with
 // RunOptions.Grace, zero by default; the hard limit, when set, bounds that stop
@@ -152,13 +161,16 @@ func Run(ctx context.Context, spec Spec, o RunOptions) (Result, error) {
 	// The hard limit is armed before Start, so a staged launch still waiting on
 	// its Confirm is bounded too: runCtx ends Confirm, and forced cuts short every
 	// stop ladder of the tree, the stage's included, so the kill follows at once.
-	var hard atomic.Bool
+	// state decides which came first, the hard limit or Wait's return: each side
+	// moves it out of runActive with a CompareAndSwap, and only the winner's label
+	// stands. A limit that passes after Wait still kills the leftovers at once.
+	var state atomic.Int32
 	var started atomic.Pointer[Process]
 	if !hardAt.IsZero() {
 		forced := make(chan struct{})
 		spec.forced = forced
 		t := time.AfterFunc(time.Until(hardAt), func() {
-			hard.Store(true)
+			state.CompareAndSwap(runActive, runHard)
 			close(forced)
 			cancel(errHardLimit)
 			if p := started.Load(); p != nil {
@@ -169,20 +181,24 @@ func Run(ctx context.Context, spec Spec, o RunOptions) (Result, error) {
 	}
 	p, err := Start(runCtx, spec)
 	if err != nil {
-		if hard.Load() {
+		if state.Load() == runHard {
 			err = herr.Wrap(ReasonHardLimit, errors.Join(errHardLimit, err), fmt.Sprintf("the launch passed the run's %s hard limit; it was stopped", o.HardLimit))
 		}
 		return Result{ExitCode: -1}, err
 	}
 	started.Store(p)
-	if hard.Load() {
+	if state.Load() == runHard {
 		_ = p.Kill() // the limit passed as Start returned
 	}
 	_ = p.Wait() // the exit code is read below; ErrWaitDelay only says a descendant held a stream
+	hardFired := !state.CompareAndSwap(runActive, runExited)
 	// The cause is read when the direct child is done, so a deadline that passes
-	// while the leftovers are stopped does not relabel a finished run.
+	// while the leftovers are stopped does not relabel a finished run. A hard
+	// limit that lost the race to Wait is not this run's cause either.
 	cause := context.Cause(runCtx)
-	hardFired := hard.Load()
+	if !hardFired && errors.Is(cause, errHardLimit) {
+		cause = nil
+	}
 	// Idempotent: when runCtx ended, this waits for the stop the watch started.
 	stopErr := p.StopTree(context.WithoutCancel(ctx), 0)
 
