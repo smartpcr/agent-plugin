@@ -14,12 +14,14 @@ import (
 //
 // On POSIX it replaces the process (execve) and returns only on failure; the
 // descriptors marked close-on-exec close as the program begins, and started is
-// not called. On Windows, which has no exec, it starts the program as the only
-// child of the process with the same standard streams, calls started once the
+// not called; keep, the caller's own channels, are open descriptors already and
+// stay so. On Windows, which has no exec, it starts the program as the only
+// child of the process with the same standard streams and the handles keep
+// lists (under the same values), calls started once the
 // program exists (the stage closes its channel there), waits for it and returns
 // its exit code. A program that cannot be started is an error and started is not
 // called.
-func Become(argv, env []string, started func()) (int, error) {
+func Become(argv, env []string, keep []uintptr, started func()) (int, error) {
 	if len(argv) == 0 || argv[0] == "" {
 		return 0, herr.New(ReasonEmptyArgv, "no program to become")
 	}
@@ -29,5 +31,5 @@ func Become(argv, env []string, started func()) (int, error) {
 	if started == nil {
 		started = func() {}
 	}
-	return become(argv, env, started)
+	return become(argv, env, keep, started)
 }

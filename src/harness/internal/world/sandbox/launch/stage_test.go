@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -42,8 +43,28 @@ func reexec(args []string) int {
 		}
 		return 0
 	}
+	if len(args) == 2 && args[0] == channelRole {
+		n, err := strconv.ParseUint(args[1], 10, 64)
+		if err != nil {
+			return 1
+		}
+		f := os.NewFile(uintptr(n), "kept channel")
+		if f == nil {
+			return 1
+		}
+		if _, err := f.WriteString(channelText); err != nil {
+			return 1
+		}
+		return 0
+	}
 	return 3
 }
+
+// channelRole is a command that writes channelText to the descriptor its
+// argument names: a channel the caller passed in Spec.Extra.
+const channelRole = "channel"
+
+const channelText = "through the stage"
 
 // lockedBuffer is a stage's standard error, written by the copier and read by the
 // test after Wait.

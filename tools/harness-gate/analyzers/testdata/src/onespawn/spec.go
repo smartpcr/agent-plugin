@@ -17,5 +17,14 @@ var Elided = []subprocess.Spec{{Argv: []string{"true"}}} // want `subprocess.Spe
 // Other is a Spec-like type of another package.
 type Other struct{ Argv []string }
 
+// CommandSpec is an alias of the spawn package's Spec: the same type.
+type CommandSpec = subprocess.Spec
+
+// Aliased names the Spec through the alias and sets no plan.
+var Aliased = CommandSpec{Argv: []string{"true"}} // want `subprocess.Spec without Launch`
+
+// AliasedPlanned names the Spec through the alias with its plan.
+var AliasedPlanned = CommandSpec{Argv: []string{"true"}, Launch: subprocess.Launch{Reason: "fixture"}}
+
 // NotSpawn is not the spawn package's Spec.
 var NotSpawn = Other{Argv: []string{"true"}}

@@ -243,7 +243,11 @@ func startStaged(ctx context.Context, spec Spec, st sandbox.Stage) (*Process, er
 		return nil, release(err)
 	}
 	extra := slices.Clone(spec.Extra)
-	w, err := st.Wrap(slices.Clone(spec.Argv), func(f *os.File) uintptr {
+	keep := make([]uintptr, len(extra))
+	for i := range extra {
+		keep[i] = ChildFD(extra, i)
+	}
+	w, err := st.Wrap(slices.Clone(spec.Argv), keep, func(f *os.File) uintptr {
 		extra = append(extra, Channel{File: f})
 		return ChildFD(extra, len(extra)-1)
 	})

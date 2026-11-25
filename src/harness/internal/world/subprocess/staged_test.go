@@ -29,7 +29,7 @@ type fakeStage struct {
 	order                     []string
 }
 
-func (s *fakeStage) Wrap(argv []string, pass sandbox.Pass) (sandbox.Wrapped, error) {
+func (s *fakeStage) Wrap(argv []string, _ []uintptr, pass sandbox.Pass) (sandbox.Wrapped, error) {
 	s.wraps.Add(1)
 	s.order = append(s.order, "wrap")
 	if s.wrapErr != nil {

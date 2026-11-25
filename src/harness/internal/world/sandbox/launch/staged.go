@@ -78,7 +78,7 @@ type staged struct {
 var _ sandbox.Stage = (*staged)(nil)
 
 // Wrap opens the pair, hands the child its ends and returns the stage's argv.
-func (s *staged) Wrap(argv []string, pass sandbox.Pass) (sandbox.Wrapped, error) {
+func (s *staged) Wrap(argv []string, keep []uintptr, pass sandbox.Pass) (sandbox.Wrapped, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.wrapped {
@@ -92,6 +92,9 @@ func (s *staged) Wrap(argv []string, pass sandbox.Pass) (sandbox.Wrapped, error)
 	s.ch = ch
 	p := s.plan
 	p.Argv = slices.Clone(argv)
+	if len(keep) > 0 {
+		p.Keep = slices.Clone(keep)
+	}
 	p.Control = pass(ch.child[0].File)
 	p.Status = pass(ch.child[1].File)
 	if err := p.Validate(); err != nil {
@@ -125,6 +128,12 @@ func (s *staged) Confirm(ctx context.Context) (sandbox.Confinement, error) {
 	if !c.Valid() {
 		ch.Reject()
 		return sandbox.Confinement{}, failed("the decision gave no valid confinement (%q, backend %q)", c.State, c.Backend)
+	}
+	// A decision that came after the limit, or after the caller gave up, is no
+	// decision: the stage is rejected and the command never runs.
+	if err := ctx.Err(); err != nil {
+		ch.Reject()
+		return sandbox.Confinement{}, herr.Wrap(sandbox.CodeLaunchFailed, context.Cause(ctx), "the decision came after the launch limit or the caller's end")
 	}
 	if err := ch.Go(); err != nil {
 		ch.Close()

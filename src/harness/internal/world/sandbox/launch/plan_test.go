@@ -27,6 +27,7 @@ func TestPlanArgsRoundTrip(t *testing.T) {
 	for _, p := range []Plan{
 		{Kind: Unconfined, Backend: sandbox.BackendNone, Control: 3, Status: 4, Argv: []string{exe}},
 		{Kind: Confined, Backend: sandbox.BackendBwrap, Canary: canary, Control: 7, Status: 9, Argv: []string{exe, "--kind", "x", "--", "-v"}},
+		{Kind: Unconfined, Backend: sandbox.BackendNone, Control: 5, Status: 6, Argv: []string{exe}, Keep: []uintptr{3, 4}},
 	} {
 		got, err := Parse(p.Args())
 		if err != nil || !reflect.DeepEqual(got, p) {
@@ -55,6 +56,8 @@ func TestPlanRefusesDisagreement(t *testing.T) {
 		"unconfined canary":   func(p *Plan) { p.Kind, p.Backend = Unconfined, sandbox.BackendNone },
 		"no control":          func(p *Plan) { p.Control = 0 },
 		"same descriptors":    func(p *Plan) { p.Status = p.Control },
+		"kept stage channel":  func(p *Plan) { p.Keep = []uintptr{p.Control} },
+		"kept twice":          func(p *Plan) { p.Keep = []uintptr{5, 5} },
 		"no command":          func(p *Plan) { p.Argv = nil },
 		"relative command":    func(p *Plan) { p.Argv = []string{"sh"} },
 	}

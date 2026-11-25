@@ -86,8 +86,10 @@ type Pass func(f *os.File) uintptr
 // command never ran; the starter then stops the stage's tree.
 type Stage interface {
 	// Wrap returns what to start for argv, the command: the stage and its plan.
+	// keep are the numbers the child sees the caller's own channels under
+	// (subprocess.Spec.Extra); the stage hands them on to the command it becomes.
 	// pass hands the stage the child's ends of its channel.
-	Wrap(argv []string, pass Pass) (Wrapped, error)
+	Wrap(argv []string, keep []uintptr, pass Pass) (Wrapped, error)
 	// Confirm reads the stage's ready, takes the host's decision on it and sends
 	// go or closes the channel. It returns once the command has started under the
 	// returned Confinement, or with the error that kept it from running.

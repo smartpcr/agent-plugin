@@ -62,7 +62,9 @@ func TestHelperIsAnUnconfinedPlanFromAHelperPolicy(t *testing.T) {
 
 type nopStage struct{}
 
-func (nopStage) Wrap([]string, sandbox.Pass) (sandbox.Wrapped, error) { return sandbox.Wrapped{}, nil }
+func (nopStage) Wrap([]string, []uintptr, sandbox.Pass) (sandbox.Wrapped, error) {
+	return sandbox.Wrapped{}, nil
+}
 func (nopStage) Confirm(context.Context) (sandbox.Confinement, error) {
 	return sandbox.Confinement{}, nil
 }

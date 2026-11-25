@@ -60,7 +60,8 @@ func isSpawnPath(p string) bool {
 func isSpawnSpec(file *ast.File, info *types.Info, lit *ast.CompositeLit, inside bool) bool {
 	if info != nil {
 		if t := info.TypeOf(lit); t != nil {
-			named, ok := t.(*types.Named)
+			// An alias (type CommandSpec = subprocess.Spec) names the same type.
+			named, ok := types.Unalias(t).(*types.Named)
 			if !ok {
 				return false
 			}
