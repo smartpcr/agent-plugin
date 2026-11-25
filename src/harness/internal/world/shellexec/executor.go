@@ -147,8 +147,13 @@ func (e *Executor) Start(ctx context.Context, req Request) (*Execution, error) {
 		})
 	}
 	x.stdout, x.stderr = collect("stdout"), collect("stderr")
-	run, stop := context.WithCancelCause(ctx)
-	x.stop = stop
+	// The run's context is cut from ctx's cancellation so every stop cause
+	// (ctx, the timeout, Stop) goes through x.cancel, which refuses a cause
+	// once the shell has exited: a cause that arrives after the exit does not
+	// relabel the run.
+	run, stop := context.WithCancelCause(context.WithoutCancel(ctx))
+	x.run, x.stop = run, stop
+	unwatch := context.AfterFunc(ctx, func() { x.cancel(context.Cause(ctx)) })
 	p, err := subprocess.Start(run, subprocess.Spec{
 		Argv:   argv,
 		Dir:    r.Dir,
@@ -160,14 +165,15 @@ func (e *Executor) Start(ctx context.Context, req Request) (*Execution, error) {
 		Launch: plan,
 	})
 	if err != nil {
+		unwatch()
 		stop(nil)
 		return x.fail(err), nil
 	}
 	x.proc = p
 	// The timeout runs from the confirmed start: the stage's handshake is not
 	// the command's time.
-	timer := time.AfterFunc(r.Timeout, func() { stop(ErrTimedOut) })
-	go x.watch(func() { timer.Stop() })
+	timer := time.AfterFunc(r.Timeout, func() { x.cancel(ErrTimedOut) })
+	go x.watch(func() { timer.Stop(); unwatch() })
 	return x, nil
 }
 
@@ -247,7 +253,13 @@ type Execution struct {
 
 	proc           *subprocess.Process
 	stdout, stderr *subprocess.Collector
+	run            context.Context
 	stop           context.CancelCauseFunc
+
+	// endMu orders a stop cause against the shell's exit: once ended is set,
+	// cancel records no cause.
+	endMu sync.Mutex
+	ended bool
 
 	scratchMu sync.Mutex
 	scratch   string
@@ -307,10 +319,30 @@ func (x *Execution) Stop(ctx context.Context, cause error) (Outcome, error) {
 	if cause == nil {
 		cause = ErrStopped
 	}
-	if x.stop != nil {
+	x.cancel(cause)
+	return x.Wait(ctx)
+}
+
+// cancel stops the run with cause unless the shell has already exited, in
+// which case the run ended by itself and cause is not its cause.
+func (x *Execution) cancel(cause error) {
+	if x.stop == nil {
+		return
+	}
+	x.endMu.Lock()
+	defer x.endMu.Unlock()
+	if !x.ended {
 		x.stop(cause)
 	}
-	return x.Wait(ctx)
+}
+
+// exit marks the shell as exited and returns the run's stop cause as it stood
+// then; no later cause is recorded.
+func (x *Execution) exit() error {
+	x.endMu.Lock()
+	defer x.endMu.Unlock()
+	x.ended = true
+	return context.Cause(x.run)
 }
 
 // scratchDir creates the execution's private directory on first call, where
@@ -378,14 +410,17 @@ func (x *Execution) fail(err error) *Execution {
 }
 
 // watch waits for the command, classifies the end by its first stop cause,
-// stops what is left of the tree and settles the outcome. Wait returns at most
+// stops what is left of the tree and settles the outcome. The cause is fixed
+// when Wait returns (exit): a timeout, context end or Stop that comes later
+// does not turn a finished run into TimedOut or Cancelled. Wait returns at most
 // Limits.Drain after the shell exits even when a descendant still holds a
 // stream, so a finished shell's outcome is not held back by what it left
 // running; that is stopped here.
 func (x *Execution) watch(cancelTimer context.CancelFunc) {
 	p := x.proc
 	_ = p.Wait() //lint:ignore errdiscard the exit error is the exit code and the stop cause, both read below
-	cause := p.StopCause()
+	cause := x.exit()
+	cancelTimer()
 	o := Outcome{Kind: Exited, ExitCode: p.ExitCode(), Confinement: p.Confinement(), Timeout: x.req.Timeout}
 	switch {
 	case cause == nil:
@@ -400,7 +435,6 @@ func (x *Execution) watch(cancelTimer context.CancelFunc) {
 		o.Err = err
 	}
 	x.stop(nil)
-	cancelTimer()
 	o.Stdout, o.Stderr = x.stdout.Collected(), x.stderr.Collected()
 	if err := x.cleanup(); err != nil && o.Err == nil {
 		o.Err = err
