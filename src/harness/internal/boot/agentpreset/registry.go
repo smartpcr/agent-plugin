@@ -373,6 +373,7 @@ func (r *Registry) build(d resolved, n int) *revision {
 	for _, p := range slices.Sorted(maps.Keys(rev.provides)) {
 		ctx = ctx.Isolate(p)
 	}
+	ctx = ctx.WithValue(presetKey{}, d.decl.ID)
 	rev.sc, rev.ctx = sc, ctx
 	nested, err := loader.New(ctx, loader.Options{Resolver: r.opts.Catalogue, Evaluator: r.opts.Evaluator},
 		loader.Layer{Label: "preset:" + d.decl.ID, Ops: []loader.Op{{Kind: loader.OpInsert, Entries: entries}}})
@@ -396,6 +397,19 @@ func (r *Registry) build(d resolved, n int) *revision {
 		rev.close()
 	}
 	return rev
+}
+
+// presetKey marks the context a revision mounts its children on.
+type presetKey struct{}
+
+// PresetOf is the id of the declaration whose revision mounted ctx's component, and
+// false for a component mounted anywhere else (agent.persona refuses to load then).
+func PresetOf(ctx *cordis.Context) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	id, ok := ctx.Value(presetKey{}).(string)
+	return id, ok
 }
 
 func (rev *revision) fiber(key string) *cordis.Fiber {

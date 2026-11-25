@@ -41,6 +41,17 @@ const (
 	DeclarationName = "agent.preset"
 )
 
+// PersonaName is the catalogue name of the persona component (agentpreset/persona,
+// DH-D-BUNDLE-5). It is declared here so CheckTree can refuse it at the top level
+// without importing the component.
+const PersonaName = "agent.persona"
+
+// PersonaOutsidePreset is why agent.persona is refused anywhere but as a child of an
+// agent preset (DH-ADR-BUNDLE-4, unit preset.persona.1): who the agent is belongs to
+// one composition, and the persona of every agent is the prompt component's field.
+const PersonaOutsidePreset = PersonaName + " mounts only as a child of an " + DeclarationName +
+	" declaration; a persona for every agent is tools.prompt's personaPrefix and personaSuffix"
+
 // Child is one child of a declaration: a catalogue component and its config. In a
 // declaration's Children map a nil *Child (a JSON null) removes the child of that key
 // that the declaration would inherit through Extends.
