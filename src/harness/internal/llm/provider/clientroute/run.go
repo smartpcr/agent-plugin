@@ -45,6 +45,9 @@ type RunSpec struct {
 	Grace       time.Duration
 	MaxLine     int
 	StderrBytes int
+	// Launch is the client's launch plan (HelperLaunch); the starter refuses a
+	// start without one (DH-D-EXEC-4).
+	Launch sandbox.Launch
 }
 
 // Run is one started client: its process tree, its standard output read as
@@ -85,7 +88,7 @@ func Start(ctx context.Context, s RunSpec) (*Run, error) {
 	errw := &window{max: keep}
 	p, err := subprocess.Start(ctx, subprocess.Spec{
 		Argv: append([]string{s.Program.Path}, s.Args...), Dir: s.Dir, Env: s.Env,
-		Stdin: bytes.NewReader(s.Stdin), Stdout: pw, Stderr: errw, Grace: grace, Batch: batch, Launch: sandbox.Trusted("clientroute: the operator's signed-in client; its confinement is decided at DH-S-13"),
+		Stdin: bytes.NewReader(s.Stdin), Stdout: pw, Stderr: errw, Grace: grace, Batch: batch, Launch: s.Launch,
 	})
 	_ = pw.Close()
 	if err != nil {
@@ -97,6 +100,10 @@ func Start(ctx context.Context, s RunSpec) (*Run, error) {
 	}
 	return &Run{proc: p, out: pr, lines: jsonrpc.NewReader(pr, maxLine), stderr: errw}, nil
 }
+
+// Confinement is what the client was confirmed to run under: unconfined,
+// backend none, for a helper plan.
+func (r *Run) Confinement() sandbox.Confinement { return r.proc.Confinement() }
 
 func reasonOf(err error) string {
 	if r, ok := herr.ReasonOf(err); ok {

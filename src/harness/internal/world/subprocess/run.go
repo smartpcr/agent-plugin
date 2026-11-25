@@ -9,6 +9,7 @@ import (
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/retain"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox"
 )
 
 // DefaultMaxOutput is Run's capture limit per captured stream when
@@ -69,6 +70,9 @@ type Result struct {
 	Stdout, Stderr Output
 	// Owner is the tree owner that held the run.
 	Owner Owner
+	// Confinement is what the run was confirmed under (Process.Confinement); the
+	// zero Confinement when it never started.
+	Confinement sandbox.Confinement
 }
 
 // errOutputLimit is the cause Run cancels its run with when a stream passes the
@@ -133,7 +137,7 @@ func Run(ctx context.Context, spec Spec, o RunOptions) (Result, error) {
 	// Idempotent: when runCtx ended, this waits for the stop the watch started.
 	stopErr := p.StopTree(context.WithoutCancel(ctx), 0)
 
-	res := Result{Started: true, ExitCode: p.ExitCode(), Owner: p.Owner(), Stdout: stdout.output(), Stderr: stderr.output()}
+	res := Result{Started: true, ExitCode: p.ExitCode(), Owner: p.Owner(), Confinement: p.Confinement(), Stdout: stdout.output(), Stderr: stderr.output()}
 	var outcome error
 	switch {
 	case res.Stdout.Exceeded || res.Stderr.Exceeded:

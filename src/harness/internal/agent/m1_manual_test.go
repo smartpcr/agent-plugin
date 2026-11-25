@@ -61,6 +61,8 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store/memstore"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/surface"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/redact"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox/sandboxtest"
 )
 
 // The operator's switches. No DSH_* name reaches a client (subprocess.BuildEnv).
@@ -110,12 +112,17 @@ type m1Client struct {
 	args func(model, sessionID string, tools []string) []string
 }
 
+// m1Helpers lets both signed-in clients run under their unconfined helper plan.
+func m1Helpers() sandbox.Resolver {
+	return &sandboxtest.Resolver{UnconfinedKinds: []string{string(claudecode.RouteID), string(copilot.RouteID)}}
+}
+
 var m1Clients = []m1Client{
 	{
 		key: "claude", id: claudecode.RouteID, name: claudecode.Client, program: claudecode.Program, model: "sonnet",
 		probe: []string{"--version"}, pattern: claudecode.VersionPattern, floor: claudecode.Floor, env: claudecode.Env,
 		route: func(model string) (llm.Route, error) {
-			return claudecode.Route(claudecode.Config{Models: []llm.Model{{Name: model}}})
+			return claudecode.Route(claudecode.Config{Models: []llm.Model{{Name: model}}, Sandbox: m1Helpers()})
 		},
 		args: func(model, sid string, tools []string) []string {
 			return claudecode.Args(claudecode.ArgsSpec{Dir: clientroute.AttemptPlaceholder, Model: model, SessionID: sid, Tools: len(tools) > 0})
@@ -125,7 +132,7 @@ var m1Clients = []m1Client{
 		key: "copilot", id: copilot.RouteID, name: copilot.Client, program: copilot.Program, model: copilot.Models[0].Name,
 		probe: copilot.ProbeArgs, pattern: copilot.VersionPattern, floor: copilot.Floor, env: copilot.Env, systemInPrompt: true,
 		route: func(model string) (llm.Route, error) {
-			return copilot.Route(copilot.Config{Models: []llm.Model{{Name: model}}})
+			return copilot.Route(copilot.Config{Models: []llm.Model{{Name: model}}, Sandbox: m1Helpers()})
 		},
 		args: func(model, sid string, tools []string) []string {
 			return copilot.Args(copilot.ArgsSpec{Dir: clientroute.AttemptPlaceholder, Model: model, SessionID: sid, Tools: tools})
@@ -183,8 +190,12 @@ func m1Select(t *testing.T) *m1Run {
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
+	plan, err := clientroute.HelperLaunch(ctx, m1Helpers(), c.name, string(c.id))
+	if err != nil {
+		t.Fatal(err)
+	}
 	v, err := clientroute.Probe(ctx, clientroute.ProbeSpec{
-		Client: c.name, Program: prog, Args: c.probe, Env: env, Pattern: c.pattern, Floor: c.floor,
+		Client: c.name, Program: prog, Args: c.probe, Env: env, Pattern: c.pattern, Floor: c.floor, Launch: plan,
 	})
 	if err != nil {
 		t.Skip(m1Redact(t, f, fmt.Sprintf("manual: the %s client cannot be used (%v); install %s or later (DH-S-11 runbook)", c.name, err, c.floor)))

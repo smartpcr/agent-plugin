@@ -39,6 +39,9 @@ const (
 	// CodeExecFailed: the host sent go, but the stage could not start the command;
 	// reported as the command's own failure to start.
 	CodeExecFailed herr.Reason = "sandbox/exec-failed"
+	// CodeEnforcementInsufficient: the policy requires full enforcement and the
+	// plan cannot give it (an unconfined plan never can).
+	CodeEnforcementInsufficient herr.Reason = "sandbox/enforcement-insufficient"
 )
 
 // Backend names the confinement a launch stage runs under (architecture.md sec.

@@ -463,7 +463,7 @@ The `scenario-index` gate also runs two plan checks of `acceptance/impl.go`
 | analyzer | rule |
 |----------|------|
 | `nosleep` | no reference to `time.Sleep` in a `_test.go` file |
-| `onespawn` | no `os/exec` import outside `internal/world/subprocess` (SP-12); `_test.go` files are exempt |
+| `onespawn` | no `os/exec` import outside `internal/world/subprocess` (SP-12), and no `subprocess.Spec` literal without `Launch` (DH-D-EXEC-4); `_test.go` files are exempt |
 | `cleanup` | a test that starts a goroutine, a listener (`net.Listen*`, `httptest.New*Server`) or a child process (`os.StartProcess`, `(*exec.Cmd).Start`) registers `t.Cleanup` (QG-5) |
 | `fuzzcheck` | a package with a `//dsh:untrusted-parser` line in a non-test file has a `func FuzzXxx(f *testing.F)` in its own test files, a `seeds_test.go` (no `os` / `io/ioutil` import), every target seeds the `f` it receives through `f.Add` in `seeds_test.go` (directly or via the seeded parameter of a helper there, never through a local that shadows it), and every `f.Add` argument is compiled in -- literals of unnamed types, embed bytes, `seeds_test.go` data and pure stdlib calls (`bytes`, `strings`, `strconv`, ...; not `fmt`), never a call such as `readSeed()`, a write through a local or package-level alias (`alias := b; copy(alias, readSeed())`, `var alias = seed`, also through multi-hop chains in other test files; read-only chains, number/string copies and same-named variables of other scopes are fine) or a shadowed `true`/`nil` (QG-6, DH-ADR-TOOLCHAIN-3; rules in `analyzers/fuzzseeds.go` and `src/harness/internal/testkit/README.md`) |
 | `rootcall` | no use of `(*cordis.Context).Root` -- call, method value or method expression -- outside `src/go/cordis` (DH-ADR-TOOLCHAIN-8) |

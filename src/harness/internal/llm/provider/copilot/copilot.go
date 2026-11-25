@@ -49,6 +49,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess"
 )
 
@@ -108,10 +109,17 @@ type Config struct {
 	// (plan 16.5.6), never set by the harness. It must not keep the slice; the
 	// route itself never logs a line.
 	Tap func(line []byte)
+	// Sandbox is the resolver whose ForHelper policy plans the client's launch:
+	// the explicit unconfined helper plan of kind RouteID (clientroute.HelperLaunch,
+	// DH-D-EXEC-4). It is required, and must let RouteID run unconfined.
+	Sandbox sandbox.Resolver
 }
 
 // Route is the copilot-cli route over cfg.
 func Route(cfg Config) (llm.Route, error) {
+	if cfg.Sandbox == nil {
+		return llm.Route{}, errors.New("copilot: the route needs a sandbox resolver to plan the client's launch")
+	}
 	spec := Env()
 	spec.Extra, spec.Secrets = cfg.Env, cfg.Secrets
 	if err := spec.Check(); err != nil {
@@ -174,14 +182,18 @@ func (a *adapter) Prepare(ctx context.Context, route vocab.RouteID, model string
 	if err != nil {
 		return nil, err
 	}
+	plan, err := clientroute.HelperLaunch(ctx, a.cfg.Sandbox, Client, string(RouteID))
+	if err != nil {
+		return nil, err
+	}
 	v, err := clientroute.Probe(ctx, clientroute.ProbeSpec{
 		Client: Client, Program: prog, Args: ProbeArgs, Env: env,
-		Pattern: VersionPattern, Floor: Floor, Timeout: a.cfg.ProbeTimeout,
+		Pattern: VersionPattern, Floor: Floor, Timeout: a.cfg.ProbeTimeout, Launch: plan,
 	})
 	if err != nil {
 		return nil, err
 	}
-	return &call{cfg: a.cfg, prog: prog, env: env, version: v, model: model, effort: c.Effort}, nil
+	return &call{cfg: a.cfg, prog: prog, env: env, plan: plan, version: v, model: model, effort: c.Effort}, nil
 }
 
 // call is one prepared call; its attempt's invocation record is the
@@ -191,6 +203,7 @@ type call struct {
 	cfg     Config
 	prog    subprocess.Program
 	env     subprocess.Env
+	plan    sandbox.Launch
 	version clientroute.Version
 	model   string
 	effort  string
@@ -255,7 +268,7 @@ func (c *call) Attempt(ctx context.Context, req session.Request) iter.Seq2[vocab
 			grace = clientroute.DefaultGrace
 		}
 		run, err := clientroute.Start(ctx, clientroute.RunSpec{
-			Client: Client, Program: c.prog, Args: args, Dir: dir.Path(), Env: c.env, Stdin: r.Prompt, Grace: grace,
+			Client: Client, Program: c.prog, Args: args, Dir: dir.Path(), Env: c.env, Stdin: r.Prompt, Grace: grace, Launch: c.plan,
 		})
 		if err != nil {
 			yield(nil, err)

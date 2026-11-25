@@ -66,6 +66,7 @@ type Resolver struct {
 	modes   map[session.ID]sandbox.Mode
 	grants  map[session.ID][]*string
 	changes []sandbox.ModeChange
+	helpers []sandbox.HelperRequest
 	setting map[session.ID]chan struct{}
 }
 
@@ -142,6 +143,9 @@ func within(root, path string) bool {
 
 // ForHelper implements sandbox.Resolver.
 func (r *Resolver) ForHelper(ctx context.Context, req sandbox.HelperRequest) (sandbox.Policy, error) {
+	r.mu.Lock()
+	r.helpers = append(r.helpers, req)
+	r.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return sandbox.Policy{}, herr.Wrap(sandbox.CodeUnavailable, err, "helper")
 	}
@@ -240,6 +244,13 @@ func (r *Resolver) Changes() []sandbox.ModeChange {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return slices.Clone(r.changes)
+}
+
+// Helpers returns the requests ForHelper was asked, in order.
+func (r *Resolver) Helpers() []sandbox.HelperRequest {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.helpers)
 }
 
 func (r *Resolver) mode(s session.ID) sandbox.Mode {
