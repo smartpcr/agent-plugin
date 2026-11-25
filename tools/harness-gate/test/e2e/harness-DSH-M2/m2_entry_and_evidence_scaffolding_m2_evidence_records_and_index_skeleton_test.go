@@ -132,7 +132,7 @@ type m2State struct {
 }
 
 func (s *m2State) indexListing(id, stage string) error {
-	src := fmt.Sprintf("built-through: DH-S-8\nstages:\n  %s:\n    - id: %s\n      authored: DH-S-7\n", stage, id)
+	src := fmt.Sprintf("built-through: DH-S-8\nstages:\n  %s:\n    - id: %s\n      authored: DH-S-7\n      credential: none\n", stage, id)
 	x, err := acceptance.ParseIndex(strings.NewReader(src))
 	if err != nil {
 		return fmt.Errorf("ParseIndex: %w", err)

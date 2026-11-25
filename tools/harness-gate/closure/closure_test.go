@@ -15,6 +15,7 @@ stages:
   DH-S-16:
     - id: DH-E-STORE-1
       authored: DH-S-7
+      credential: none
 `
 
 func index(t *testing.T, src string) *acceptance.Index {
@@ -159,7 +160,7 @@ func TestResultsThatAreNotPassed(t *testing.T) {
 
 // Scenario: Out of scope by decision is not the same as not run.
 func TestOutOfScopeNeedsDecision(t *testing.T) {
-	x := index(t, "built-through: DH-S-8\nstages:\n  DH-S-18:\n    - id: DH-E-STORAGE-6\n      authored: DH-S-6\n")
+	x := index(t, "built-through: DH-S-8\nstages:\n  DH-S-18:\n    - id: DH-E-STORAGE-6\n      authored: DH-S-6\n      credential: none\n")
 	rows := func(macOS string) string {
 		return stageRecord("open",
 			"| DH-E-STORAGE-6 | Windows | acceptance | required | windows-latest | 0123abc | passed | run.txt |",
@@ -176,7 +177,7 @@ func TestOutOfScopeNeedsDecision(t *testing.T) {
 }
 
 func TestIndexedScenarioWithoutRowBlocks(t *testing.T) {
-	x := index(t, store1Index+"    - id: DH-E-STORE-2\n      authored: DH-S-7\n")
+	x := index(t, store1Index+"    - id: DH-E-STORE-2\n      authored: DH-S-7\n      credential: none\n")
 	for _, built := range []bool{false, true} {
 		b := Ready(x, "DH-S-16", record(t, stageRecord("open", row("DH-E-STORE-1", "passed"))), built)
 		if len(b) != 1 || !containsAll(b[0], "DH-E-STORE-2", "no row") {
@@ -203,7 +204,7 @@ func TestAcceptanceCloseNeedsIndexEntryAndRows(t *testing.T) {
 
 // A recorded leg (M2-DEC-4) must run; its failure is kept and is not a blocker.
 func TestRecordedLeg(t *testing.T) {
-	x := index(t, "built-through: DH-S-8\nstages:\n  DH-S-17:\n    - id: DH-E-LLM-1\n      authored: DH-S-9\n")
+	x := index(t, "built-through: DH-S-8\nstages:\n  DH-S-17:\n    - id: DH-E-LLM-1\n      authored: DH-S-9\n      credential: none\n")
 	rec := func(copilot string) *Record {
 		return record(t, stageRecord("open",
 			"| DH-E-LLM-1 | claude-code | acceptance | required | E1 | 0123abc | passed | export.json |",
@@ -359,7 +360,7 @@ func TestExecutedRowsNeedEvidence(t *testing.T) {
 	if b := Ready(x, "DH-S-16", record(t, stageRecord("open", badSHA)), false); len(b) != 1 || !strings.Contains(b[0], `"HEAD" is not a commit SHA`) {
 		t.Errorf("passed row at HEAD: blockers %q", b)
 	}
-	x17 := index(t, "built-through: DH-S-8\nstages:\n  DH-S-17:\n    - id: DH-E-LLM-1\n      authored: DH-S-9\n")
+	x17 := index(t, "built-through: DH-S-8\nstages:\n  DH-S-17:\n    - id: DH-E-LLM-1\n      authored: DH-S-9\n      credential: none\n")
 	rec := record(t, stageRecord("open",
 		"| DH-E-LLM-1 | claude-code | acceptance | required | E1 | 0123abc | passed | export.json |",
 		"| DH-E-LLM-1 | copilot-cli | acceptance | recorded | E1 | 0123abc | failed (route refused) | |"))
@@ -372,7 +373,7 @@ func TestExecutedRowsNeedEvidence(t *testing.T) {
 // creates the record, so a deleted owner default cannot remove its own blocker.
 func TestStoryReadyRefusesDeletedObligations(t *testing.T) {
 	s := Stories[DefaultStory]
-	x := index(t, "built-through: DH-S-8\nstages:\n  DH-S-16:\n    - id: DH-E-STORE-1\n      authored: DH-S-7\n")
+	x := index(t, "built-through: DH-S-8\nstages:\n  DH-S-16:\n    - id: DH-E-STORE-1\n      authored: DH-S-7\n      credential: none\n")
 	raw, err := os.ReadFile(filepath.Join("..", "testdata", "records", "created", "docs", "stories", "harness-DSH-M2", "evidence", "DH-S-16.md"))
 	if err != nil {
 		t.Fatal(err)
@@ -445,7 +446,7 @@ var evidencePath = []string{"docs", "stories", "harness-DSH-M2", "evidence"}
 // scenario row passed but a step without its commit stays not ready without --built.
 func TestStoryReadyJudgesBuildStageInItsMode(t *testing.T) {
 	s := Stories[DefaultStory]
-	x := index(t, "built-through: DH-S-8\nstages:\n  DH-S-16:\n    - id: DH-E-STORE-1\n      authored: DH-S-7\n    - id: DH-E-STORE-6\n      authored: DH-S-7\n")
+	x := index(t, "built-through: DH-S-8\nstages:\n  DH-S-16:\n    - id: DH-E-STORE-1\n      authored: DH-S-7\n      credential: none\n    - id: DH-E-STORE-6\n      authored: DH-S-7\n      credential: none\n")
 	src := readFixture(t, append([]string{"closure", "closed_ready"}, append(evidencePath, "DH-S-16.md")...)...)
 	if b := s.Ready(x, "DH-S-16", record(t, src), true); len(b) != 0 {
 		t.Fatalf("closed_ready with --built: %q", b)
