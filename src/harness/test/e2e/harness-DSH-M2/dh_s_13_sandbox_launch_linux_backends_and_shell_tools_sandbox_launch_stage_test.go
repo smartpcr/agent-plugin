@@ -136,13 +136,24 @@ func (w *slsWorld) start() error {
 	return nil
 }
 
-func (w *slsWorld) wait() int {
-	if !w.exited {
+// wait returns the stage's exit code, or an error carrying the stage stderr when
+// ctx ends first; on timeout it stops the stage's tree so the step cannot hang.
+func (w *slsWorld) wait(ctx context.Context) (int, error) {
+	if w.exited {
+		return w.code, nil
+	}
+	select {
+	case <-w.p.Exited():
 		_ = w.p.Wait()
 		w.code = w.p.ExitCode()
 		w.exited = true
+		return w.code, nil
+	case <-ctx.Done():
+		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		stopErr := w.p.StopTree(stopCtx, 0)
+		cancel()
+		return -1, fmt.Errorf("the stage did not exit: %w (StopTree: %v); stage stderr %q", ctx.Err(), stopErr, w.stderr.String())
 	}
-	return w.code
 }
 
 func (w *slsWorld) markerExists() (bool, error) {
@@ -193,7 +204,11 @@ func (w *slsWorld) whenReadReadyThenClose() error {
 }
 
 func (w *slsWorld) thenMarkerNeverExists() error {
-	w.wait()
+	ctx, cancel := w.timeout()
+	defer cancel()
+	if _, err := w.wait(ctx); err != nil {
+		return err
+	}
 	ok, err := w.markerExists()
 	if err != nil {
 		return err
@@ -208,7 +223,12 @@ func (w *slsWorld) thenMarkerNeverExists() error {
 }
 
 func (w *slsWorld) thenStageExitsNonZero() error {
-	code := w.wait()
+	ctx, cancel := w.timeout()
+	defer cancel()
+	code, err := w.wait(ctx)
+	if err != nil {
+		return err
+	}
 	if code == 0 {
 		return errors.New("the stage exited 0 after the host closed the channel without go")
 	}
@@ -249,7 +269,11 @@ func (w *slsWorld) whenHostAnswersGo() error {
 	if err := w.ch.AwaitExec(ctx); err != nil {
 		return fmt.Errorf("AwaitExec: %w; stage stderr %q", err, w.stderr.String())
 	}
-	if code := w.wait(); code != 0 {
+	code, err := w.wait(ctx)
+	if err != nil {
+		return err
+	}
+	if code != 0 {
 		return fmt.Errorf("the command exited %d, want 0; stage stderr %q", code, w.stderr.String())
 	}
 	return nil
