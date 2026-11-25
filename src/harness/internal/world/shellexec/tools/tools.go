@@ -45,8 +45,11 @@ const (
 
 // OneShotConfig configures the one-shot tools. It has no fields: each
 // stream's tail is bounded by its executor's Limits.TailBytes, the ring its
-// collector keeps and past which it spills, so a result never cuts output the
-// spill reference does not hold (bash.Config.TailBytes, pwsh.Config.TailBytes).
+// collector keeps and past which it spills, and the tool cuts nothing the
+// collector kept (stream), so a truncated tail is one the collector spilled
+// whole when a spill store is mounted (shellexec.Options.Spill); without one,
+// or when the spill fails, the result says so in spill_error or by having no
+// spill (bash.Config.TailBytes, pwsh.Config.TailBytes).
 type OneShotConfig struct{}
 
 // Deps are what the tools run with.
@@ -116,6 +119,10 @@ type Stream struct {
 	Bytes int64 `json:"bytes"`
 	// Truncated says Tail does not hold the whole stream.
 	Truncated bool `json:"truncated,omitempty"`
+	// Replaced says the stream held bytes that are not UTF-8, shown as U+FFFD,
+	// or as "?" where U+FFFD would not fit the bound; the spill, when there is
+	// one, holds the bytes as written.
+	Replaced bool `json:"replaced,omitempty"`
 	// Spill is the saved whole stream, when it did not fit.
 	Spill *SpillRef `json:"spill,omitempty"`
 	// SpillError says why the whole stream was not saved.
@@ -342,24 +349,34 @@ func (s *shell) result(x *shellexec.Execution, pol sandbox.Policy, o shellexec.O
 	return r
 }
 
-// stream is c with invalid bytes in its tail replaced so the text is valid,
-// then cut to its last limit bytes, starting on a whole UTF-8 character: the
-// repair can lengthen the text (one byte to three), so the bound is applied to
-// what is shown. limit is the collector's ring, so a tail cut for its length
-// alone is one the spill holds whole.
+// stream is c's tail as valid text, never longer than limit bytes and never
+// cut shorter than the collector cut it. limit is the collector's ring, so the
+// tail is already within it; invalid bytes are replaced by U+FFFD when the
+// result still fits, else by "?" (one byte per run of invalid bytes, so the
+// text cannot grow). Truncated is then exactly the collector's truncation,
+// and a truncated tail is one the collector spilled whole when a spill store
+// is mounted. Only a tail longer than limit, which a ring of that size cannot
+// give, is cut here, on a whole character.
 func stream(c subprocess.Collected, limit int) Stream {
-	tail, cut := strings.ToValidUTF8(string(c.Tail), "\uFFFD"), false
-	if len(tail) > limit {
-		i := len(tail) - limit
-		for i < len(tail) && !utf8.RuneStart(tail[i]) {
+	raw, cut := c.Tail, false
+	if len(raw) > limit {
+		i := len(raw) - limit
+		for i < len(raw) && !utf8.RuneStart(raw[i]) {
 			i++
 		}
-		tail, cut = tail[i:], true
+		raw, cut = raw[i:], true
+	}
+	tail, replaced := string(raw), !utf8.Valid(raw)
+	if replaced {
+		if tail = strings.ToValidUTF8(string(raw), "\uFFFD"); len(tail) > limit {
+			tail = strings.ToValidUTF8(string(raw), "?")
+		}
 	}
 	st := Stream{
 		Tail:       tail,
 		Bytes:      c.Written,
 		Truncated:  c.Truncated || cut,
+		Replaced:   replaced,
 		SpillError: errText(c.SpillErr),
 	}
 	if c.Spill != nil {

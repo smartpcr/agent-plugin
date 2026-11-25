@@ -419,8 +419,8 @@ func runReal(t *testing.T, e *shellexec.Executor, name string, cases []realCase)
 
 // TestTailIsBoundedWithSpill: a stream longer than the bound shows its last
 // bytes, marked truncated, with its size; the whole stream's spill reference
-// is carried when the executor saved one; and the bound holds after invalid
-// bytes are repaired, which lengthens the text.
+// is carried when the executor saved one; and invalid bytes are repaired
+// without lengthening the tail past the bound or cutting it.
 //
 //dsh:test DH-T-EXEC-15
 func TestTailIsBoundedWithSpill(t *testing.T) {
@@ -434,18 +434,20 @@ func TestTailIsBoundedWithSpill(t *testing.T) {
 	}
 	bad := []byte{0xff, 'a', 0xff}
 	for _, c := range []struct {
-		limit     int
-		tail      string
-		truncated bool
+		limit int
+		tail  string
 	}{
-		{3, "\uFFFD", true},
-		{6, "a\uFFFD", true},
-		{7, "\uFFFDa\uFFFD", false},
+		{3, "?a?"},
+		{6, "?a?"},
+		{7, "\uFFFDa\uFFFD"},
 	} {
 		got = shelltools.StreamOf(subprocess.Collected{Tail: bad, Written: 3}, c.limit)
-		if len(got.Tail) > c.limit || !utf8.ValidString(got.Tail) || got.Tail != c.tail || got.Truncated != c.truncated {
-			t.Fatalf("limit %d: stream = %+v (%d bytes), want %q truncated=%v", c.limit, got, len(got.Tail), c.tail, c.truncated)
+		if len(got.Tail) > c.limit || !utf8.ValidString(got.Tail) || got.Tail != c.tail || got.Truncated || !got.Replaced {
+			t.Fatalf("limit %d: stream = %+v (%d bytes), want %q, whole, replaced", c.limit, got, len(got.Tail), c.tail)
 		}
+	}
+	if got = shelltools.StreamOf(subprocess.Collected{Tail: []byte("ok"), Written: 2}, 2); got.Replaced {
+		t.Fatalf("valid text marked replaced: %+v", got)
 	}
 }
 
@@ -481,9 +483,12 @@ func TestTimeoutIsCutBeforeConversion(t *testing.T) {
 }
 
 // TestOutputPastTheRingIsSpilled: the tool shows what the executor's ring
-// holds, so output that fits the ring is shown whole, and output past it is
-// cut only where the collector spilled the whole stream (a regression for a
-// tool bound below the ring, which cut output nothing saved).
+// holds and cuts nothing more, from collector to result with a spill store
+// mounted. Output that fits the ring is shown whole: 40 000 bytes under the
+// default 64 000-byte ring (a regression for a tool bound of its own below
+// the ring, which cut output nothing saved), and three non-UTF-8 bytes under a
+// 3-byte ring, whose repair would lengthen them. Output past the ring is cut
+// only where the collector spilled the whole stream.
 //
 //dsh:test DH-T-EXEC-15
 func TestOutputPastTheRingIsSpilled(t *testing.T) {
@@ -502,30 +507,42 @@ func TestOutputPastTheRingIsSpilled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const ring = 1000
-	e, err := bash.New(bash.Config{Timeout: 60 * time.Second, TailBytes: ring}, h,
-		shellexec.Options{Sandbox: localSandbox(t), Env: builder(), Spill: sp})
-	if err != nil {
-		t.Fatal(err)
-	}
-	reg := shellexec.NewRegistry()
-	if _, err := reg.Register(e); err != nil {
-		t.Fatal(err)
-	}
-	r := newRig(t, reg, sandbox.DangerFullAccess)
-	for _, n := range []int{900, 1500} {
-		res, _ := r.run(shelltools.BashName, map[string]any{"command": fmt.Sprintf("head -c %d /dev/zero | tr '\\0' a", n)})
+	as := func(n int) string { return fmt.Sprintf("head -c %d /dev/zero | tr '\\0' a", n) }
+	for _, c := range []struct {
+		ring     int // 0 is the default
+		command  string
+		bytes    int
+		tail     string
+		replaced bool
+	}{
+		{0, as(40_000), 40_000, strings.Repeat("a", 40_000), false},
+		{0, as(70_000), 70_000, strings.Repeat("a", shellexec.DefaultTailBytes), false},
+		{1000, as(900), 900, strings.Repeat("a", 900), false},
+		{1000, as(1500), 1500, strings.Repeat("a", 1000), false},
+		{3, `printf '\377a\377'`, 3, "?a?", true},
+	} {
+		e, err := bash.New(bash.Config{Timeout: 60 * time.Second, TailBytes: c.ring}, h,
+			shellexec.Options{Sandbox: localSandbox(t), Env: builder(), Spill: sp})
+		if err != nil {
+			t.Fatal(err)
+		}
+		reg := shellexec.NewRegistry()
+		if _, err := reg.Register(e); err != nil {
+			t.Fatal(err)
+		}
+		ring := e.Limits().TailBytes
+		res, _ := newRig(t, reg, sandbox.DangerFullAccess).run(shelltools.BashName, map[string]any{"command": c.command})
 		if res.IsError {
-			t.Fatalf("%d bytes: %s", n, res.Text)
+			t.Fatalf("%q: %s", c.command, res.Text)
 		}
 		out := res.Value.(shelltools.Result).Stdout
-		switch {
-		case out.Bytes != int64(n):
-			t.Fatalf("%d bytes: stream = %+v", n, out)
-		case n <= ring && (out.Truncated || out.Spill != nil || out.Tail != strings.Repeat("a", n)):
-			t.Fatalf("%d bytes fit the ring: stream = %+v, want it whole", n, out)
-		case n > ring && (!out.Truncated || out.Spill == nil || out.Spill.Bytes != int64(n) || out.Tail != strings.Repeat("a", ring)):
-			t.Fatalf("%d bytes past the ring: truncated=%v spill=%+v tail %d bytes, want the ring and a whole spill", n, out.Truncated, out.Spill, len(out.Tail))
+		past := c.bytes > ring
+		if out.Bytes != int64(c.bytes) || out.Tail != c.tail || out.Replaced != c.replaced || out.Truncated != past {
+			t.Fatalf("%q under a %d-byte ring: bytes=%d tail %d bytes %q... truncated=%v replaced=%v; want %d bytes, the tail whole unless past the ring",
+				c.command, ring, out.Bytes, len(out.Tail), out.Tail[:min(len(out.Tail), 8)], out.Truncated, out.Replaced, c.bytes)
+		}
+		if past != (out.Spill != nil) || past && out.Spill.Bytes != int64(c.bytes) {
+			t.Fatalf("%q under a %d-byte ring: spill = %+v; want the whole stream spilled exactly when cut", c.command, ring, out.Spill)
 		}
 	}
 }
