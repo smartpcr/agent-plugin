@@ -161,6 +161,8 @@ type Spec struct {
 	// direct child has exited (exec.Cmd.WaitDelay); Run sets it so a descendant
 	// holding a captured stream open cannot keep the run waiting.
 	waitDelay time.Duration
+	// forced is closed when Run's hard limit passes; see Process.forced.
+	forced <-chan struct{}
 }
 
 // Process is one started child and the tree it owns.
@@ -183,6 +185,10 @@ type Process struct {
 	confinement sandbox.Confinement
 	// collected are the Collectors of Stdout and Stderr, indexed by Stream.
 	collected [2]*Collector
+	// forced, when closed, cuts every ladder short, the one in progress and any
+	// later one: hooks lose the rest of their bound and the polite waits end, so
+	// the kill follows at once (Run's hard limit). Nil never closes.
+	forced <-chan struct{}
 
 	stopMu  sync.Mutex
 	stopped bool
@@ -346,8 +352,8 @@ func startCommand(ctx context.Context, spec Spec) (*Process, error) {
 	}
 	p := &Process{cmd: cmd, owner: owner, report: owner.report(), plan: plan, input: input,
 		trust: trustOf(spec.Launch), limits: owner.limitsReport(),
-		collected: collectorsOf(spec),
-		exited:    make(chan struct{}), releasedC: make(chan struct{})}
+		collected: collectorsOf(spec), forced: spec.forced,
+		exited: make(chan struct{}), releasedC: make(chan struct{})}
 	go func() {
 		err := cmd.Wait()
 		if d, ok := owner.(drainer); ok {

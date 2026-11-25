@@ -45,7 +45,9 @@ type RunOptions struct {
 	Grace time.Duration
 	// HardLimit, when positive, is the run's absolute bound, counted from the
 	// call: when it passes, the whole tree is killed at once, past any polite stop
-	// still in its Grace, and Run returns subprocess/hard-limit (DH-D-EXEC-3).
+	// still in its Grace and any Revoke or Ask hook still in its bound, and Run
+	// returns subprocess/hard-limit (DH-D-EXEC-3). It bounds the launch too: a
+	// staged plan still in its Confirm is ended and its stage's tree killed.
 	HardLimit time.Duration
 }
 
@@ -101,8 +103,9 @@ var errHardLimit = errors.New("hard limit passed")
 //   - a captured stream passed MaxOutput: subprocess/output-limit, with the
 //     stream marked Exceeded; the caller is never handed a silently shortened
 //     result;
-//   - RunOptions.HardLimit passed before the direct child exited:
-//     subprocess/hard-limit; the tree was killed at once.
+//   - RunOptions.HardLimit passed before the direct child exited, or while the
+//     launch was still being confirmed: subprocess/hard-limit; the tree was
+//     killed at once.
 //
 // In the deadline, cancel and output-limit cases the tree is stopped with
 // RunOptions.Grace, zero by default; the hard limit, when set, bounds that stop
@@ -146,18 +149,34 @@ func Run(ctx context.Context, spec Spec, o RunOptions) (Result, error) {
 	spec.Grace = o.Grace
 	spec.waitDelay = runDrain
 
-	p, err := Start(runCtx, spec)
-	if err != nil {
-		return Result{ExitCode: -1}, err
-	}
+	// The hard limit is armed before Start, so a staged launch still waiting on
+	// its Confirm is bounded too: runCtx ends Confirm, and forced cuts short every
+	// stop ladder of the tree, the stage's included, so the kill follows at once.
 	var hard atomic.Bool
+	var started atomic.Pointer[Process]
 	if !hardAt.IsZero() {
+		forced := make(chan struct{})
+		spec.forced = forced
 		t := time.AfterFunc(time.Until(hardAt), func() {
 			hard.Store(true)
+			close(forced)
 			cancel(errHardLimit)
-			_ = p.Kill() // StopTree below reports a tree that is not gone
+			if p := started.Load(); p != nil {
+				_ = p.Kill() // StopTree below reports a tree that is not gone
+			}
 		})
 		defer t.Stop()
+	}
+	p, err := Start(runCtx, spec)
+	if err != nil {
+		if hard.Load() {
+			err = herr.Wrap(ReasonHardLimit, errors.Join(errHardLimit, err), fmt.Sprintf("the launch passed the run's %s hard limit; it was stopped", o.HardLimit))
+		}
+		return Result{ExitCode: -1}, err
+	}
+	started.Store(p)
+	if hard.Load() {
+		_ = p.Kill() // the limit passed as Start returned
 	}
 	_ = p.Wait() // the exit code is read below; ErrWaitDelay only says a descendant held a stream
 	// The cause is read when the direct child is done, so a deadline that passes

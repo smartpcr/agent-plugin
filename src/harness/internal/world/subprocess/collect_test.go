@@ -19,6 +19,8 @@ import (
 	spilllocal "github.com/smartpcr/agent-plugin/src/harness/internal/storage/spill/local"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/procwait"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox/sandboxtest"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess/subprocesstest"
 )
@@ -299,15 +301,21 @@ func TestHardLimitEndsTheTree(t *testing.T) {
 	for name, o := range map[string]subprocess.RunOptions{
 		"hard limit alone":            {HardLimit: hardLimit, Grace: grace},
 		"past a polite stop in grace": {Timeout: 300 * time.Millisecond, HardLimit: hardLimit, Grace: grace},
+		"past a revoke hook in bound": {Timeout: 300 * time.Millisecond, HardLimit: hardLimit, Grace: grace},
 	} {
 		t.Run(name, func(t *testing.T) {
+			spec := subprocesstest.Spec(t, subprocesstest.RoleTree)
+			if strings.Contains(name, "hook") {
+				// A context-respecting hook that waits out its whole bound (Grace).
+				spec.Stop.Revoke = func(ctx context.Context) error { <-ctx.Done(); return context.Cause(ctx) }
+			}
 			start := time.Now()
-			res, err := subprocess.Run(context.Background(), subprocesstest.Spec(t, subprocesstest.RoleTree), o)
+			res, err := subprocess.Run(context.Background(), spec, o)
 			took := time.Since(start)
 			if err == nil {
 				t.Fatalf("Run = %+v with no error; want the run stopped", res)
 			}
-			if o.Timeout == 0 && herr.Kind(err) != subprocess.ReasonHardLimit {
+			if (o.Timeout == 0 || spec.Stop.Revoke != nil) && herr.Kind(err) != subprocess.ReasonHardLimit {
 				t.Fatalf("Run = %v; want %s", err, subprocess.ReasonHardLimit)
 			}
 			if herr.Has(err, subprocess.ReasonSurvivors) {
@@ -325,4 +333,55 @@ func TestHardLimitEndsTheTree(t *testing.T) {
 			procwait.Until(ctx, t, func() bool { return subprocesstest.Exited(child) && subprocesstest.Exited(grandchild) })
 		})
 	}
+}
+
+// waitingStage is a sandbox.Stage whose Confirm never decides: it waits for its
+// context, as a host decision that does not come.
+type waitingStage struct{}
+
+func (waitingStage) Wrap(argv []string, _ []uintptr, _ sandbox.Pass) (sandbox.Wrapped, error) {
+	return sandbox.Wrapped{Argv: argv}, nil
+}
+
+func (waitingStage) Confirm(ctx context.Context) (sandbox.Confinement, error) {
+	<-ctx.Done()
+	return sandbox.Confinement{}, context.Cause(ctx)
+}
+
+func (waitingStage) Release(context.Context) error { return nil }
+
+// TestHardLimitBoundsTheLaunch: Run's hard limit counts from the call, so a
+// staged launch still in its Confirm is ended when it passes, and the stage's
+// tree (a child and its grandchild) is killed past a long Grace and a revoke
+// hook that waits out its bound.
+//
+//dsh:test DH-T-EXEC-7
+func TestHardLimitBoundsTheLaunch(t *testing.T) {
+	const (
+		hardLimit = 2 * time.Second
+		bound     = 10 * time.Second
+	)
+	out := subprocess.NewCollector(subprocess.CollectOptions{})
+	t.Cleanup(func() { _ = out.Close() })
+	spec := subprocesstest.Spec(t, subprocesstest.RoleTree)
+	spec.Launch = sandbox.Staged(sandboxtest.Policy(sandbox.DangerFullAccess), waitingStage{}, "a stage never confirmed")
+	spec.Stdout = out
+	spec.Stop.Revoke = func(ctx context.Context) error { <-ctx.Done(); return context.Cause(ctx) }
+	start := time.Now()
+	res, err := subprocess.Run(context.Background(), spec, subprocess.RunOptions{HardLimit: hardLimit, Grace: 60 * time.Second})
+	took := time.Since(start)
+	if herr.Kind(err) != subprocess.ReasonHardLimit || res.Started {
+		t.Fatalf("Run = %+v, %v; want a launch ended with %s", res, err, subprocess.ReasonHardLimit)
+	}
+	if took > hardLimit+bound {
+		t.Fatalf("Run returned after %v; the hard limit %v did not bound the launch", took, hardLimit)
+	}
+	tail, _ := out.Since(0)
+	var child, grandchild int
+	if _, err := fmt.Sscanf(strings.TrimSpace(string(tail)), "tree %d %d", &child, &grandchild); err != nil {
+		t.Fatalf("the stage's tree said %q: %v", tail, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), bound)
+	defer cancel()
+	procwait.Until(ctx, t, func() bool { return subprocesstest.Exited(child) && subprocesstest.Exited(grandchild) })
 }
