@@ -13,6 +13,7 @@ package local
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -220,6 +221,7 @@ func (s *Service) probe(ctx context.Context, b Backend) sandbox.Status {
 		return st
 	}
 	defer release()
+	parent := ctx
 	ctx, cancel := context.WithTimeout(ctx, s.cfg.ProbeTimeout)
 	defer cancel()
 	p, err := b.Probe(ctx, canary)
@@ -227,8 +229,12 @@ func (s *Service) probe(ctx context.Context, b Backend) sandbox.Status {
 	switch {
 	case err != nil:
 		st.Reason = err.Error()
-	case ctx.Err() != nil:
+	case parent.Err() != nil:
+		st.Reason = fmt.Sprintf("the probe was abandoned: %v", parent.Err())
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
 		st.Reason = "the probe passed its time limit"
+	case ctx.Err() != nil:
+		st.Reason = fmt.Sprintf("the probe was abandoned: %v", ctx.Err())
 	case p.Canary != launch.CanaryRefused:
 		st.Reason = fmt.Sprintf("the probe stage reports canary %q; confinement failed", p.Canary)
 	default:
