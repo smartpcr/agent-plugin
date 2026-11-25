@@ -266,9 +266,28 @@ func (w *slsWorld) thenMarkerExists() error {
 	return nil
 }
 
+// reportedKind derives the confinement kind from the ready frame the stage sent,
+// not from the plan the test wrote: the frame must agree with exactly one kind.
+func (w *slsWorld) reportedKind() (launch.Kind, error) {
+	var agreed []launch.Kind
+	for _, k := range []launch.Kind{launch.Confined, launch.Unconfined} {
+		if w.ready.Agrees(launch.Plan{Kind: k, Backend: w.ready.Backend}) == nil {
+			agreed = append(agreed, k)
+		}
+	}
+	if len(agreed) != 1 {
+		return "", fmt.Errorf("the ready frame %+v agrees with kinds %v, want exactly one", w.ready, agreed)
+	}
+	return agreed[0], nil
+}
+
 func (w *slsWorld) thenConfinementIs(kind, canary string) error {
-	if !strings.EqualFold(string(w.plan.Kind), kind) {
-		return fmt.Errorf("plan kind = %s, want %s", w.plan.Kind, kind)
+	got, err := w.reportedKind()
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(string(got), kind) {
+		return fmt.Errorf("the stage reported kind %s, want %s", got, kind)
 	}
 	if w.ready.Canary != launch.Canary(canary) {
 		return fmt.Errorf("ready canary = %s, want %s", w.ready.Canary, canary)
