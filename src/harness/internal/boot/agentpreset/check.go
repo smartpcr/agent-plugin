@@ -29,6 +29,9 @@ import (
 // known declarations is reported whatever else the tree holds. A config that does
 // not decode is the per-entry check's issue and is skipped here. cat may be nil,
 // which skips the child checks; ev may be nil, which leaves every expression unknown.
+//
+// An agent.persona entry anywhere in the tree is an issue (PersonaOutsidePreset): a
+// persona is a child of a declaration, never an entry of its own.
 func CheckTree(cat Catalogue, ev loader.Evaluator) func(tree []loader.EntryOptions) []loader.Issue {
 	return func(tree []loader.EntryOptions) []loader.Issue {
 		var reg *found
@@ -44,6 +47,12 @@ func CheckTree(cat Catalogue, ev loader.Evaluator) func(tree []loader.EntryOptio
 					return
 				}
 				reg = &f
+			case PersonaName:
+				path := f.path
+				if path == "" {
+					path = f.entry.Name
+				}
+				issues = append(issues, loader.Issue{Pos: f.entry.Position(), Path: path + ".name", Message: PersonaOutsidePreset})
 			case DeclarationName:
 				d, idKnown, ok := decodeDeclaration(f.entry.Config, ev, f.path)
 				if !ok {

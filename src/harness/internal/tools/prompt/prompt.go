@@ -347,8 +347,12 @@ func (s *Service) Context(ctx *cordis.Context, c RuntimeContext) (*cordis.Effect
 	return add(s, ctx, "context", c.Name, func(l *layer) map[string]owned[RuntimeContext] { return l.contexts }, c)
 }
 
-// Suppress removes the optional runtime context name from every assembly at ctx's
-// scope and every scope it encloses; a non-optional context is kept.
+// AllContexts passed to Suppress removes every optional runtime context.
+const AllContexts = "*"
+
+// Suppress removes the optional runtime context name (every one for AllContexts)
+// from every assembly at ctx's scope and every scope it encloses; a non-optional
+// context is kept.
 func (s *Service) Suppress(ctx *cordis.Context, name string) (*cordis.EffectHandle, error) {
 	if ctx == nil {
 		return nil, &Error{Code: CodeInvalid, Msg: "a context is required"}
@@ -365,6 +369,13 @@ func (s *Service) Suppress(ctx *cordis.Context, name string) (*cordis.EffectHand
 			l.mu.Unlock()
 		}
 	})
+}
+
+// RuntimeContextOf reports whether the runtime context name is visible at scope k
+// and whether that nearest registration is optional.
+func (s *Service) RuntimeContextOf(k scope.Key, name string) (optional, ok bool) {
+	o, ok := visible(s.layers.Chain(k), func(l *layer) map[string]owned[RuntimeContext] { return l.contexts })[name]
+	return o.v.Optional, ok
 }
 
 // visible is the nearest binding of every name of one kind along the chain.
@@ -488,7 +499,7 @@ func (s *Service) Assemble(ctx context.Context, in Input) (Assembly, error) {
 		}
 		var list []owned[RuntimeContext]
 		for _, name := range sortedNames(ctxs) {
-			if o := ctxs[name]; !(o.v.Optional && suppressed[name]) {
+			if o := ctxs[name]; !(o.v.Optional && (suppressed[name] || suppressed[AllContexts])) {
 				list = append(list, o)
 			}
 		}
