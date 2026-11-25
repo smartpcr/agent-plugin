@@ -82,6 +82,24 @@ malformed, or a dial fails for any other reason (a time out, a permission denial
 always missing. Tests: `TestBusProbeCountsTheUnknownReachable`, `TestSessionBusObservedForReal`,
 `TestBwrapStageClaimsOnlyWhatItSees`, `TestLandlockRulesFromPolicy`.
 
+Decisions taken from the design in step 13.4 (these are not impl.md sec. 9.1 defaults, so they have no row above):
+
+- **fs-write version gate.** Landlock reports `fs-write` governed only at the reference version 5;
+  below it `fs-write` is in `Missing`. This is DH-ADR-NATIVESYSTEM-2 ("a named reference version (5 at
+  first, as upstream)", `full` only "when the kernel's version is at least the reference")
+  (`launch/landlock.go`, `TestLandlockRulesFromPolicy`).
+- **Private `/tmp` under bubblewrap.** Under `workspace-write`, bubblewrap mounts `--tmpfs /tmp`, which
+  goes away when the start ends. Under `read-only` the host `/tmp` stays read-only. This follows
+  DH-ADR-SANDBOX-4 (only Landlock and Seatbelt "keep upstream's shared temp areas") and the bubblewrap
+  row of sandbox-ssh.md sec. 3.2. It comes before every bind, so a root, the canary or the binary under
+  `/tmp` is still the host's (`local/bwrap.go`, `testdata/bwrap_argv.golden`, `TestBwrapArgvFromPolicy`).
+  Landlock grants writes only beneath the policy's roots, as TC-04a requires, and does not grant the
+  shared host `/tmp`.
+- **Where `Config.Home` comes from.** Whoever builds the sandbox service passes the resolved harness
+  home. No production code builds `world/sandbox/local` yet; every caller is a test. Until a caller
+  exists, an empty `Home` means no start claims `harness-home`, and the inside-home refusal has nothing
+  to compare against (`local/local.go` `Config.Home`).
+
 ## Evidence record (impl.md sec. 7.3)
 
 ### Source and build identity

@@ -34,6 +34,11 @@ type BwrapArgs struct {
 //     process-tree kill still reaches them.
 //   - --unshare-net when the policy denies the network: only loopback is left.
 //   - --ro-bind / /, --dev /dev, --proc /proc: everything is read-only.
+//   - --tmpfs /tmp under workspace-write: a private /tmp for programs that
+//     ignore TMPDIR, gone with the start; under read-only the host /tmp stays
+//     read-only (DH-ADR-SANDBOX-4; sandbox-ssh.md sec. 3.2, the bubblewrap row).
+//     Every bind below comes after it, so a root, the canary or the binary
+//     under /tmp is still the host's.
 //   - --tmpfs <runtime dir>: the user's session bus and systemd sockets are out of
 //     reach (delegated-execution).
 //   - --bind R R for each write root, in policy order (the working directory,
@@ -57,6 +62,9 @@ func BwrapArgv(a BwrapArgs) ([]string, error) {
 		argv = append(argv, "--unshare-net")
 	}
 	argv = append(argv, "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc")
+	if a.Policy.Mode() == sandbox.WorkspaceWrite {
+		argv = append(argv, "--tmpfs", "/tmp")
+	}
 	if a.Host.RuntimeDir != "" {
 		argv = append(argv, "--tmpfs", a.Host.RuntimeDir)
 	}

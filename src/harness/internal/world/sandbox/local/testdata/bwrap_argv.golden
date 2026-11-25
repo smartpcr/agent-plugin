@@ -10,6 +10,8 @@
 --proc
 /proc
 --tmpfs
+/tmp
+--tmpfs
 <RUNTIME>
 --bind
 <P>

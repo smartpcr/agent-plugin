@@ -79,6 +79,16 @@ func TestBwrapArgvFromPolicy(t *testing.T) {
 	if home < 0 || !slices.Equal(nested[home+3:home+6], []string{"--bind", inside, inside}) {
 		t.Errorf("a root inside the home is not bound again after it: %q", nested)
 	}
+	ro, err := local.BwrapArgv(local.BwrapArgs{
+		Bwrap: fixture("bwrap"), Host: local.Host{Exe: fixture("dsh")}, Canary: fixture("canary"),
+		Policy: sandboxtest.Policy(sandbox.ReadOnly),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if i := slices.Index(ro, "/tmp"); i > 0 && ro[i-1] == "--tmpfs" {
+		t.Errorf("read-only got a private writable /tmp; the host /tmp must stay read-only: %q", ro)
+	}
 	for _, bad := range []local.BwrapArgs{
 		{Bwrap: "bwrap", Host: local.Host{Exe: fixture("dsh")}, Canary: fixture("canary"), Policy: p},
 		{Bwrap: fixture("bwrap"), Host: local.Host{Exe: fixture("dsh")}, Canary: fixture("canary"), Policy: sandboxtest.Policy(sandbox.DangerFullAccess)},

@@ -72,8 +72,11 @@ type Config struct {
 	// a fresh directory under the system temp directory, removed by Close.
 	CanaryDir string `json:"canaryDir,omitempty"`
 	// Home is the harness home, absolute and clean: a confined stage keeps it
-	// read-only and reports harness-home governed only when it can show that.
-	// Empty names no home, and no start governs harness-home.
+	// read-only and reports harness-home governed only when it can show that,
+	// and Prepare refuses a root that would make it writable (protect).
+	// Empty names no home, and no start governs harness-home. Whoever builds
+	// the service sets it from the resolved harness home (storage/home); no
+	// production code builds this service yet.
 	Home string `json:"home,omitempty"`
 }
 
