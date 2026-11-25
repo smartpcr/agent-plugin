@@ -29,6 +29,13 @@ type Hooks struct {
 	// a scratch directory); nil when there is none. It runs once, after Confirm
 	// or after a failed start.
 	Release func(ctx context.Context) error
+	// Failed learns that the stage ended, sent a malformed frame or ran out of
+	// the launch limit before ready (err, sandbox/launch-failed): Confirm was not
+	// asked and the command never ran. The seam may re-probe its backend
+	// (sandbox-ssh.md sec. 6.1); it must not retry the command. It is not called
+	// when the caller's ctx ended first, and it runs before Release, with the
+	// caller's ctx. nil is no notification.
+	Failed func(ctx context.Context, p Plan, err error)
 	// Exe is the stage's program, the harness binary; empty is os.Executable().
 	Exe string
 	// Limit bounds Confirm (DefaultLimit when zero).
@@ -114,11 +121,15 @@ func (s *staged) Confirm(ctx context.Context) (sandbox.Confinement, error) {
 		return sandbox.Confinement{}, failed("Confirm before Wrap")
 	}
 	ch.CloseChildEnds()
+	caller := ctx
 	ctx, cancel := context.WithTimeout(ctx, s.hooks.Limit)
 	defer cancel()
 	r, err := ch.ReadReady(ctx)
 	if err != nil {
 		ch.Reject()
+		if s.hooks.Failed != nil && caller.Err() == nil {
+			s.hooks.Failed(caller, p, err)
+		}
 		return sandbox.Confinement{}, err
 	}
 	c, err := s.hooks.Confirm(ctx, p, r)
