@@ -1,10 +1,13 @@
 // Package tools is shellexec.tools (C40, DH-D-EXEC-9, docs/harness/areas/
 // execution.md sec. 6.2 "Tools"): the one-shot bash and pwsh tools. Each call
-// builds a shellexec.Request from named arguments only -- command, timeout and
-// description; the model can set neither stdin nor the environment, and
+// builds a shellexec.Request from named arguments only -- command, timeout,
+// description and the two escalation arguments sandbox_permissions and
+// justification; the model can set neither stdin nor the environment, and
 // strict decoding refuses any other argument before anything starts. The
 // session's sandbox policy (C33) and working directory (C31) are resolved per
-// call, the command runs through the dialect's executor (C39), and the result
+// call; a call that sets sandbox_permissions asks Resolver.Escalate
+// (DH-D-SANDBOX-1, A17) for a one-call wider policy instead, and runs under it
+// only if a person approves. The command runs through the dialect's executor (C39), and the result
 // is a structured value whose fields output cannot forge: outcome, exit code,
 // stop cause, each stream's tail, size, truncation and spill reference, and the
 // confinement the launch plan was confirmed under.
@@ -72,6 +75,13 @@ type In struct {
 	Timeout int64 `json:"timeout,omitempty" dsh:"min=0" jsonschema:"optional timeout in milliseconds"`
 	// Description says in a few words what the command does.
 	Description string `json:"description,omitempty" jsonschema:"what the command does, in 5 to 10 words"`
+	// SandboxPermissions asks for this one call to run under a wider sandbox
+	// mode (sandbox.EscalationRequest.Permissions); "" runs under the session's
+	// policy.
+	SandboxPermissions string `json:"sandbox_permissions,omitempty" dsh:"enum=workspace-write|danger-full-access" jsonschema:"only when the sandbox denied this exact call: the wider mode to retry it under once; a person decides"`
+	// Justification tells the approver why the wider mode is needed; required
+	// with SandboxPermissions and unused without it.
+	Justification string `json:"justification,omitempty" jsonschema:"with sandbox_permissions: why this call needs the wider mode"`
 }
 
 // Result is the structured outcome of one command.
@@ -250,6 +260,7 @@ func (s *shell) description(lim shellexec.Limits, e *shellexec.Executor) string 
 	fmt.Fprintf(&b, " Nothing carries between calls: the directory and the environment are rebuilt each time, and the command reads no input."+
 		" timeout is in milliseconds: default %d, at most %d.", lim.Timeout.Milliseconds(), lim.MaxTimeout.Milliseconds())
 	b.WriteString(" The result is JSON: outcome, exit_code, stop, the tail of stdout and stderr (with a spill id when cut) and the confinement.")
+	b.WriteString(" If the sandbox denied a command you need, retry it once with sandbox_permissions set to a wider mode and a justification; a person decides, and only that call is widened.")
 	return b.String()
 }
 
@@ -262,7 +273,7 @@ func (s *shell) run(ctx context.Context, in In, run htools.Run) (Result, error) 
 	if sess == "" {
 		return Result{}, herr.New(sandbox.CodeUnavailable, "a shell command needs a session")
 	}
-	pol, err := s.deps.Resolver.Resolve(ctx, sandbox.Request{Session: sess})
+	pol, err := s.policy(ctx, in, run)
 	if err != nil {
 		return Result{}, err
 	}
@@ -306,6 +317,23 @@ func (s *shell) run(ctx context.Context, in In, run htools.Run) (Result, error) 
 		return Result{}, o.Err
 	}
 	return s.result(x, pol, o, e.Limits().TailBytes), nil
+}
+
+// policy is the call's sandbox policy: the session's, or, when the call sets
+// sandbox_permissions, the one-call wider policy Escalate returns once
+// approved. A refused escalation fails the call before anything starts.
+func (s *shell) policy(ctx context.Context, in In, run htools.Run) (sandbox.Policy, error) {
+	sess := run.Agent.Session
+	if strings.TrimSpace(in.SandboxPermissions) == "" {
+		return s.deps.Resolver.Resolve(ctx, sandbox.Request{Session: sess})
+	}
+	return s.deps.Resolver.Escalate(ctx, sandbox.EscalationRequest{
+		Session:       sess,
+		Permissions:   in.SandboxPermissions,
+		Justification: in.Justification,
+		Tool:          s.name,
+		Call:          run.CallID,
+	})
 }
 
 // budget is the timeout argument as a duration, cut to lim.MaxTimeout before
