@@ -2,7 +2,8 @@
 // tools/harness-gate through "go vet -vettool" (QG-2; DH-T-TOOLCHAIN-8):
 //
 //   - nosleep:  no time.Sleep in a _test.go file; tests use virtual time (QG-4)
-//   - onespawn: no os/exec import outside internal/world/subprocess (SP-12)
+//   - onespawn: no os/exec import outside internal/world/subprocess (SP-12), and
+//     no subprocess.Spec literal without Launch outside tests (DH-D-EXEC-4)
 //   - cleanup:  a test that starts a goroutine, listener or child process registers
 //     its release with t.Cleanup (QG-5)
 //   - fuzzcheck: a package marked //dsh:untrusted-parser has a Fuzz* target whose

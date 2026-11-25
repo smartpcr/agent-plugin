@@ -6,6 +6,7 @@ import (
 	"io"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox"
@@ -41,6 +42,10 @@ type Plan struct {
 	Control, Status uintptr
 	// Argv is the command; Argv[0] is an absolute path.
 	Argv []string
+	// Keep are the caller's own channels (subprocess.Spec.Extra) as child
+	// numbers: the stage hands them on to the command (subprocess.Become), which
+	// sees them under the same numbers. Nil when there are none.
+	Keep []uintptr
 }
 
 // Validate refuses a plan whose kind, backend and canary disagree, or that has no
@@ -67,6 +72,11 @@ func (p Plan) Validate() error {
 	if !channelEnd(p.Control) || !channelEnd(p.Status) || p.Control == p.Status {
 		return failed("the plan needs two distinct channel descriptors past stdin/stdout/stderr, got %d and %d", p.Control, p.Status)
 	}
+	for i, k := range p.Keep {
+		if !channelEnd(k) || k == p.Control || k == p.Status || slices.Contains(p.Keep[:i], k) {
+			return failed("kept channel %d is not a distinct descriptor past stdin/stdout/stderr and the stage's own", k)
+		}
+	}
 	if len(p.Argv) == 0 || !filepath.IsAbs(p.Argv[0]) {
 		return failed("the plan needs a command whose program is an absolute path")
 	}
@@ -92,9 +102,26 @@ func (p Plan) Args() []string {
 	}
 	args = append(args,
 		"--control-fd", strconv.FormatUint(uint64(p.Control), 10),
-		"--status-fd", strconv.FormatUint(uint64(p.Status), 10),
-		"--")
+		"--status-fd", strconv.FormatUint(uint64(p.Status), 10))
+	for _, k := range p.Keep {
+		args = append(args, "--keep-fd", strconv.FormatUint(uint64(k), 10))
+	}
+	args = append(args, "--")
 	return append(args, p.Argv...)
+}
+
+// keepFlags collects the repeated --keep-fd flag.
+type keepFlags []uintptr
+
+func (k *keepFlags) String() string { return fmt.Sprint([]uintptr(*k)) }
+
+func (k *keepFlags) Set(s string) error {
+	n, err := strconv.ParseUint(s, 10, 64)
+	if err != nil || uint64(uintptr(n)) != n {
+		return fmt.Errorf("kept channel %q is not a descriptor", s)
+	}
+	*k = append(*k, uintptr(n))
+	return nil
 }
 
 // Parse reads the arguments after Mode back into a Plan and validates it.
@@ -106,6 +133,8 @@ func Parse(args []string) (Plan, error) {
 	canary := fs.String("canary", "", "the canary path (confined only)")
 	control := fs.Uint64("control-fd", 0, "the descriptor the host sends go on")
 	status := fs.Uint64("status-fd", 0, "the descriptor the stage sends ready on")
+	var keep keepFlags
+	fs.Var(&keep, "keep-fd", "a caller's channel the command inherits (repeated)")
 	if err := fs.Parse(args); err != nil {
 		return Plan{}, failed("%v", err)
 	}
@@ -114,7 +143,7 @@ func Parse(args []string) (Plan, error) {
 	}
 	p := Plan{
 		Kind: Kind(*kind), Backend: sandbox.Backend(*backend), Canary: *canary,
-		Control: uintptr(*control), Status: uintptr(*status), Argv: fs.Args(),
+		Control: uintptr(*control), Status: uintptr(*status), Argv: fs.Args(), Keep: []uintptr(keep),
 	}
 	if uint64(p.Control) != *control || uint64(p.Status) != *status {
 		return Plan{}, failed("channel descriptor out of range")

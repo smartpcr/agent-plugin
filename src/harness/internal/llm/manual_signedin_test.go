@@ -47,6 +47,8 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/scope"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store/memstore"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox/sandboxtest"
 )
 
 // The operator's switches. DSH_* names never reach a client (BuildEnv).
@@ -160,14 +162,20 @@ type manualClient struct {
 	build   func(model string, env []string, secrets *secret.Store, tap func([]byte)) (llm.Route, error)
 }
 
+// manualHelpers lets both signed-in clients run under their unconfined helper
+// plan.
+func manualHelpers() sandbox.Resolver {
+	return &sandboxtest.Resolver{UnconfinedKinds: []string{string(claudecode.RouteID), string(copilot.RouteID)}}
+}
+
 var manualClients = []manualClient{
 	{label: "claude", name: claudecode.Client, route: claudecode.RouteID, model: "sonnet", modelEnv: "DSH_MANUAL_CLAUDE_MODEL", homeVar: "CLAUDE_CONFIG_DIR", claude: true,
 		build: func(model string, env []string, secrets *secret.Store, tap func([]byte)) (llm.Route, error) {
-			return claudecode.Route(claudecode.Config{Models: []llm.Model{{Name: model}}, Env: env, Secrets: secrets, Tap: tap})
+			return claudecode.Route(claudecode.Config{Models: []llm.Model{{Name: model}}, Env: env, Secrets: secrets, Tap: tap, Sandbox: manualHelpers()})
 		}},
 	{label: "copilot", name: copilot.Client, route: copilot.RouteID, model: copilot.Models[0].Name, modelEnv: "DSH_MANUAL_COPILOT_MODEL", homeVar: "COPILOT_HOME",
 		build: func(model string, env []string, secrets *secret.Store, tap func([]byte)) (llm.Route, error) {
-			return copilot.Route(copilot.Config{Models: []llm.Model{{Name: model}}, Env: env, Secrets: secrets, Tap: tap})
+			return copilot.Route(copilot.Config{Models: []llm.Model{{Name: model}}, Env: env, Secrets: secrets, Tap: tap, Sandbox: manualHelpers()})
 		}},
 }
 

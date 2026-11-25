@@ -25,6 +25,8 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store/memstore"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/surface"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/procwait"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox/sandboxtest"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess/subprocesstest"
 )
 
@@ -57,8 +59,9 @@ var probeTool = vocab.ToolSchema{Name: "probe", Description: "Echo a text",
 // rig is one stand-in client: its record directory and the route config that
 // starts it.
 type rig struct {
-	dir string
-	cfg copilot.Config
+	dir     string
+	cfg     copilot.Config
+	sandbox *sandboxtest.Resolver
 }
 
 // newRig plays fixture (a testdata name) with the stand-in settings extra.
@@ -67,7 +70,8 @@ func newRig(t *testing.T, fixture string, extra ...string) *rig {
 	dir := t.TempDir()
 	path := must(filepath.Abs(filepath.Join("testdata", fixture+".jsonl")))
 	env := append([]string{roleEnv + "=copilot", recordEnv + "=" + dir, fixtureEnv + "=" + path, versionEnv + "=" + version}, extra...)
-	return &rig{dir: dir, cfg: copilot.Config{Program: must(os.Executable()), Env: env, TempDir: t.TempDir(), Grace: 200 * time.Millisecond}}
+	res := helpers()
+	return &rig{dir: dir, sandbox: res, cfg: copilot.Config{Program: must(os.Executable()), Env: env, TempDir: t.TempDir(), Grace: 200 * time.Millisecond, Sandbox: res}}
 }
 
 func (r *rig) runtime(t *testing.T) *llm.Runtime {
@@ -619,16 +623,19 @@ func TestCopilotBatchShim(t *testing.T) {
 //
 //dsh:test DH-T-LLM-24
 func TestCopilotRoute(t *testing.T) {
-	route := must(copilot.Route(copilot.Config{}))
+	if _, err := copilot.Route(copilot.Config{}); err == nil {
+		t.Error("a route without a sandbox resolver was accepted")
+	}
+	route := must(copilot.Route(copilot.Config{Sandbox: helpers()}))
 	if route.ID != copilot.RouteID || len(route.Models) != len(copilot.Models) || route.Models[0].Name != model || route.Retry != llm.DefaultRetry() {
 		t.Fatalf("route = %+v", route)
 	}
 	for _, kv := range []string{"GH_TOKEN=x", "COPILOT_GITHUB_TOKEN=x", "COPILOT_PROVIDER_ANY=x", "COPILOT_AUTO_UPDATE=true", "COPILOT_MODEL=x", "DSH_X=1", "nope"} {
-		if _, err := copilot.Route(copilot.Config{Env: []string{kv}}); err == nil {
+		if _, err := copilot.Route(copilot.Config{Env: []string{kv}, Sandbox: helpers()}); err == nil {
 			t.Errorf("extra %q was accepted", kv)
 		}
 	}
-	custom := must(copilot.Route(copilot.Config{Models: []llm.Model{{Name: "gpt-5.1"}}, MaxConcurrent: 2, Retry: llm.PersistentRetry()}))
+	custom := must(copilot.Route(copilot.Config{Models: []llm.Model{{Name: "gpt-5.1"}}, MaxConcurrent: 2, Retry: llm.PersistentRetry(), Sandbox: helpers()}))
 	if custom.Models[0].Name != "gpt-5.1" || custom.MaxConcurrent != 2 || custom.Retry != llm.PersistentRetry() {
 		t.Fatalf("custom route = %+v", custom)
 	}
@@ -642,4 +649,44 @@ func TestCopilotRoute(t *testing.T) {
 	if _, err := r.runtime(t).Prepare(bg, copilot.RouteID, "gpt-5", vocab.Controls{Effort: "high"}); err != nil {
 		t.Fatalf("an effort the client takes was refused: %v", err)
 	}
+}
+
+// helpers is a resolver that lets this route's client run unconfined and
+// records each helper policy it is asked for.
+func helpers() *sandboxtest.Resolver {
+	return &sandboxtest.Resolver{UnconfinedKinds: []string{string(copilot.RouteID)}}
+}
+
+// TestCopilotStartsUnderAHelperPlan: every start of the client (the version probe
+// and the attempt) runs under the explicit unconfined helper plan of the route's
+// kind, from ForHelper; a resolver that does not let the kind run unconfined
+// fails the call as llm/invalid-request before the client is started
+// (DH-D-EXEC-4, M2-C-9).
+//
+//dsh:test DH-T-EXEC-8
+func TestCopilotStartsUnderAHelperPlan(t *testing.T) {
+	r := newRig(t, "text")
+	h, _ := newSession(t, false)
+	chunks, _ := attempt(t, r.runtime(t), h)
+	if f := finishOf(t, chunks); f.Reason != vocab.FinishStop {
+		t.Fatalf("finish = %+v", f)
+	}
+	if _, ok := r.seen(t); !ok || r.probes() != 1 {
+		t.Fatalf("the client did not run (probes %d)", r.probes())
+	}
+	reqs := r.sandbox.Helpers()
+	if len(reqs) != 1 || reqs[0].Kind != string(copilot.RouteID) || !reqs[0].Unconfined {
+		t.Fatalf("helper requests = %+v; want one unconfined %s request", reqs, copilot.RouteID)
+	}
+
+	refused := newRig(t, "text")
+	refused.cfg.Sandbox = &sandboxtest.Resolver{}
+	_, err := refused.runtime(t).Prepare(bg, copilot.RouteID, copilot.Models[0].Name, vocab.Controls{})
+	if f := (*vocab.Failure)(nil); !errors.As(err, &f) || f.Code != vocab.CodeInvalidRequest {
+		t.Fatalf("a refused helper plan = %v; want llm/invalid-request", err)
+	}
+	if _, ok := refused.seen(t); ok || refused.probes() != 0 {
+		t.Fatal("the client was started without a helper plan")
+	}
+	var _ sandbox.Resolver = refused.cfg.Sandbox
 }

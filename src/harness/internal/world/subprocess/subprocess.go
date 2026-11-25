@@ -32,9 +32,12 @@
 // non-test harness package other than this one that imports os/exec or calls a
 // process-creation function.
 //
-// Every Spec carries a sandbox.Launch (A10): the zero Launch is refused, and until
-// DH-S-13 builds confined plans each caller passes sandbox.Trusted with its
-// reason, or sandbox.Untrusted for an unconfined child the model can reach.
+// Every Spec carries a sandbox.Launch (A10, DH-D-EXEC-4): the zero Launch is
+// refused before anything starts. A staged plan is executed by Start alone:
+// Wrap, start the stage, Confirm (ready, the host's decision, go or close), then
+// Release; the handle and Run's Result carry the confirmed Confinement. The host's
+// own child passes sandbox.Trusted with its reason, a helper the model can reach
+// sandbox.Helper with its ForHelper policy, or sandbox.Untrusted.
 // Run is the run-and-capture helper on Start (DH-LIB-EXECA): a deadline, a capture
 // limit that stops the whole tree, and the tail of what passed the limit. Confirm
 // asks a person and refuses when standard input is not a terminal.
@@ -47,11 +50,13 @@ package subprocess
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -129,9 +134,10 @@ type Spec struct {
 	Batch BatchPolicy
 	// Launch is the sandbox plan for this command (A10's sandbox.Launch). It is
 	// required: the zero Launch is refused with subprocess/no-launch before
-	// anything starts. Until DH-S-13 builds confined plans, every caller passes
-	// sandbox.Trusted(reason), saying why its child reads nothing the model can
-	// write.
+	// anything starts. A staged plan (sandbox.Staged) runs the launch stage in
+	// place of Argv and is confirmed before Start returns; the host's own child
+	// passes sandbox.Trusted(reason), saying why it reads nothing the model can
+	// write, and a helper child sandbox.Helper with its ForHelper policy.
 	Launch sandbox.Launch
 	// Extra are private byte channels the child inherits beside its standard
 	// streams (ChildFD says under which number); nothing else is inherited.
@@ -166,9 +172,10 @@ type Process struct {
 	plan  StopPlan
 	input *inputGate
 	// trust is the mark of the tree's launch plan; limits what its owner did
-	// with Spec.Limits.
-	trust  Trust
-	limits LimitsReport
+	// with Spec.Limits; confinement what the plan was confirmed under.
+	trust       Trust
+	limits      LimitsReport
+	confinement sandbox.Confinement
 
 	stopMu  sync.Mutex
 	stopped bool
@@ -190,13 +197,89 @@ type Process struct {
 // direct child has already exited.
 const watchEvery = 250 * time.Millisecond
 
+// spawning is called with the argv of every process about to be created, once
+// per creation attempt. It does nothing; internal tests replace it to count the
+// starts a refused Spec must not make.
+var spawning = func([]string) {}
+
 // Start validates spec, starts the program inside a new tree owner and returns its
 // handle. When ctx ends, the stop ladder runs with the context's cause. The caller
 // must call Stop, StopTree or Wait.
+//
+// spec.Launch is required: a Spec without a plan is refused with
+// subprocess/no-launch before anything starts. A staged plan is executed here and
+// nowhere else, in this order (DH-D-EXEC-4, C38): Wrap, start the stage, Confirm
+// (which reads ready, takes the host's decision and sends go or closes the
+// channel), then Release, which runs once whatever happened. Start blocks until
+// Confirm returns; when it fails the stage's tree is stopped and the command
+// never ran. The handle carries the confirmed Confinement.
 func Start(ctx context.Context, spec Spec) (*Process, error) {
 	if !spec.Launch.Valid() {
 		return nil, herr.New(ReasonNoLaunch, "Spec.Launch is empty; the host's own child passes sandbox.Trusted(reason)")
 	}
+	if st := spec.Launch.Stage(); st != nil {
+		return startStaged(ctx, spec, st)
+	}
+	p, err := startCommand(ctx, spec)
+	if err != nil {
+		return nil, err
+	}
+	p.confinement = spec.Launch.Confinement()
+	return p, nil
+}
+
+// startStaged runs the staged plan's sequence around startCommand.
+func startStaged(ctx context.Context, spec Spec, st sandbox.Stage) (*Process, error) {
+	release := func(cause error) error {
+		if err := st.Release(context.WithoutCancel(ctx)); err != nil {
+			return errors.Join(cause, herr.Wrap(sandbox.CodeLaunchFailed, err, "release the launch plan"))
+		}
+		return cause
+	}
+	if spec.Detach {
+		return nil, release(herr.New(ReasonDetached, "a staged launch plan cannot be detached: the host confirms it before the command runs"))
+	}
+	if err := checkExtra(spec.Extra); err != nil {
+		return nil, release(err)
+	}
+	extra := slices.Clone(spec.Extra)
+	keep := make([]uintptr, len(extra))
+	for i := range extra {
+		keep[i] = ChildFD(extra, i)
+	}
+	w, err := st.Wrap(slices.Clone(spec.Argv), keep, func(f *os.File) uintptr {
+		extra = append(extra, Channel{File: f})
+		return ChildFD(extra, len(extra)-1)
+	})
+	if err != nil {
+		return nil, release(err)
+	}
+	staged := spec
+	staged.Argv = w.Argv
+	staged.Env = append(slices.Clone(spec.Env), w.Env...)
+	staged.Extra = extra
+	p, err := startCommand(ctx, staged)
+	if err != nil {
+		return nil, release(err)
+	}
+	c, err := st.Confirm(ctx)
+	if err == nil && !c.Valid() {
+		err = herr.Newf(sandbox.CodeLaunchFailed, "the plan was confirmed with no valid confinement (%q, backend %q)", c.State, c.Backend)
+	}
+	if err = release(err); err != nil {
+		// The command never ran, or its plan could not be released: stop the stage's
+		// tree, which is not a command the caller holds.
+		if serr := p.StopTree(context.WithoutCancel(ctx), 0); serr != nil {
+			err = errors.Join(err, serr)
+		}
+		return nil, err
+	}
+	p.confinement = c.Clone()
+	return p, nil
+}
+
+// startCommand starts spec's argv as it is, once its plan has been checked.
+func startCommand(ctx context.Context, spec Spec) (*Process, error) {
 	l, err := check(spec.Argv, spec.Batch)
 	if err != nil {
 		return nil, err
@@ -223,6 +306,7 @@ func Start(ctx context.Context, spec Spec) (*Process, error) {
 		}
 	}
 	build := func() *exec.Cmd {
+		spawning(spec.Argv)
 		cmd := &exec.Cmd{
 			Path:      l.path,
 			Args:      append([]string(nil), l.args...),
@@ -342,6 +426,11 @@ func isBatch(path string) bool {
 
 // Pid is the direct child's process id.
 func (p *Process) Pid() int { return p.cmd.Process.Pid }
+
+// Confinement is what the command runs under: the Confinement a staged plan's
+// Confirm returned, or unconfined, backend none, for a plan that starts the
+// command itself.
+func (p *Process) Confinement() sandbox.Confinement { return p.confinement.Clone() }
 
 // Owner reports which tree owner holds this child.
 func (p *Process) Owner() Owner { return p.report }

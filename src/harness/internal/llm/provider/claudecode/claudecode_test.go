@@ -25,6 +25,8 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store/memstore"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/surface"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/procwait"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox/sandboxtest"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess/subprocesstest"
 )
 
@@ -47,8 +49,9 @@ var probeTool = vocab.ToolSchema{Name: "probe", Description: "Echo a text",
 // rig is one stand-in client: its record directory and the route config that
 // starts it.
 type rig struct {
-	dir string
-	cfg claudecode.Config
+	dir     string
+	cfg     claudecode.Config
+	sandbox *sandboxtest.Resolver
 }
 
 // newRig plays fixture (a testdata name, or an absolute path) with the stand-in
@@ -62,7 +65,8 @@ func newRig(t *testing.T, fixture string, extra ...string) *rig {
 	}
 	env := append([]string{roleEnv + "=claude", recordEnv + "=" + dir, fixtureEnv + "=" + fixture,
 		versionEnv + "=2.1.312 (Claude Code)"}, extra...)
-	return &rig{dir: dir, cfg: claudecode.Config{Program: exe, Env: env, TempDir: t.TempDir(), Grace: 200 * time.Millisecond}}
+	res := helpers()
+	return &rig{dir: dir, sandbox: res, cfg: claudecode.Config{Program: exe, Env: env, TempDir: t.TempDir(), Grace: 200 * time.Millisecond, Sandbox: res}}
 }
 
 func (r *rig) runtime(t *testing.T) *llm.Runtime {
@@ -570,20 +574,63 @@ func TestClaudeCodeCancelStopsTheTree(t *testing.T) {
 //
 //dsh:test DH-T-LLM-20
 func TestClaudeCodeRoute(t *testing.T) {
-	route := must(claudecode.Route(claudecode.Config{}))
+	if _, err := claudecode.Route(claudecode.Config{}); err == nil {
+		t.Error("a route without a sandbox resolver was accepted")
+	}
+	route := must(claudecode.Route(claudecode.Config{Sandbox: helpers()}))
 	if route.ID != claudecode.RouteID || len(route.Models) != 3 || route.Models[0].Name != "sonnet" || route.Retry != llm.DefaultRetry() {
 		t.Fatalf("route = %+v", route)
 	}
 	for _, kv := range []string{"ANTHROPIC_API_KEY=x", "ANTHROPIC_BASE_URL=http://x", "CLAUDE_CODE_MAX_RETRIES=3", "DSH_X=1", "nope"} {
-		if _, err := claudecode.Route(claudecode.Config{Env: []string{kv}}); err == nil {
+		if _, err := claudecode.Route(claudecode.Config{Env: []string{kv}, Sandbox: helpers()}); err == nil {
 			t.Errorf("extra %q was accepted", kv)
 		}
 	}
-	custom := must(claudecode.Route(claudecode.Config{Models: []llm.Model{{Name: "claude-opus-4-1"}}, MaxConcurrent: 2, Retry: llm.PersistentRetry()}))
+	custom := must(claudecode.Route(claudecode.Config{Models: []llm.Model{{Name: "claude-opus-4-1"}}, MaxConcurrent: 2, Retry: llm.PersistentRetry(), Sandbox: helpers()}))
 	if custom.Models[0].Name != "claude-opus-4-1" || custom.MaxConcurrent != 2 || custom.Retry != llm.PersistentRetry() {
 		t.Fatalf("custom route = %+v", custom)
 	}
 	if _, err := route.Adapter.Prepare(bg, "other", "sonnet", vocab.CallConfig{}); err == nil {
 		t.Fatal("a call for another route was prepared")
 	}
+}
+
+// helpers is a resolver that lets this route's client run unconfined and
+// records each helper policy it is asked for.
+func helpers() *sandboxtest.Resolver {
+	return &sandboxtest.Resolver{UnconfinedKinds: []string{string(claudecode.RouteID)}}
+}
+
+// TestClaudeCodeStartsUnderAHelperPlan: every start of the client (the version probe
+// and the attempt) runs under the explicit unconfined helper plan of the route's
+// kind, from ForHelper; a resolver that does not let the kind run unconfined
+// fails the call as llm/invalid-request before the client is started
+// (DH-D-EXEC-4, M2-C-9).
+//
+//dsh:test DH-T-EXEC-8
+func TestClaudeCodeStartsUnderAHelperPlan(t *testing.T) {
+	r := newRig(t, "text")
+	h, _ := newSession(t, false)
+	chunks, _ := attempt(t, r.runtime(t), h)
+	if f := finishOf(t, chunks); f.Reason != vocab.FinishStop {
+		t.Fatalf("finish = %+v", f)
+	}
+	if _, ok := r.seen(t); !ok || r.probes() != 1 {
+		t.Fatalf("the client did not run (probes %d)", r.probes())
+	}
+	reqs := r.sandbox.Helpers()
+	if len(reqs) != 1 || reqs[0].Kind != string(claudecode.RouteID) || !reqs[0].Unconfined {
+		t.Fatalf("helper requests = %+v; want one unconfined %s request", reqs, claudecode.RouteID)
+	}
+
+	refused := newRig(t, "text")
+	refused.cfg.Sandbox = &sandboxtest.Resolver{}
+	_, err := refused.runtime(t).Prepare(bg, claudecode.RouteID, claudecode.Models[0].Name, vocab.Controls{})
+	if f := (*vocab.Failure)(nil); !errors.As(err, &f) || f.Code != vocab.CodeInvalidRequest {
+		t.Fatalf("a refused helper plan = %v; want llm/invalid-request", err)
+	}
+	if _, ok := refused.seen(t); ok || refused.probes() != 0 {
+		t.Fatal("the client was started without a helper plan")
+	}
+	var _ sandbox.Resolver = refused.cfg.Sandbox
 }

@@ -83,6 +83,9 @@ type ProbeSpec struct {
 	// (DefaultProbeBytes).
 	Timeout  time.Duration
 	MaxBytes int
+	// Launch is the client's launch plan (HelperLaunch); without one nothing
+	// is started (DH-D-EXEC-4).
+	Launch sandbox.Launch
 }
 
 // Probe runs the client with s.Args and returns its version. A start failure, a
@@ -92,6 +95,9 @@ type ProbeSpec struct {
 func Probe(ctx context.Context, s ProbeSpec) (Version, error) {
 	if s.Pattern == nil || s.Pattern.NumSubexp() < 3 {
 		return Version{}, errors.New("clientroute: the probe has no three-group version pattern")
+	}
+	if !s.Launch.Valid() {
+		return Version{}, errors.New("clientroute: the probe has no launch plan")
 	}
 	timeout, bound := s.Timeout, s.MaxBytes
 	if timeout <= 0 {
@@ -118,7 +124,7 @@ func Probe(ctx context.Context, s ProbeSpec) (Version, error) {
 		batch = subprocess.AllowChecked
 	}
 	p, err := subprocess.Start(pctx, subprocess.Spec{
-		Argv: append([]string{s.Program.Path}, s.Args...), Dir: s.Dir, Env: s.Env, Stdout: pw, Batch: batch, Launch: sandbox.Trusted("clientroute: the version probe of the operator's signed-in client"),
+		Argv: append([]string{s.Program.Path}, s.Args...), Dir: s.Dir, Env: s.Env, Stdout: pw, Batch: batch, Launch: s.Launch,
 	})
 	_ = pw.Close()
 	if err != nil {

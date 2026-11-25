@@ -101,7 +101,7 @@ func Main(args []string, stderr io.Writer) int {
 		return report(stderr, failed("the host sent %q, not go; no command ran", f.Msg), ExitFailed)
 	}
 	_ = control.Close()
-	code, err := subprocess.Become(p.Argv, os.Environ(), func() { _ = status.Close() })
+	code, err := subprocess.Become(p.Argv, os.Environ(), p.Keep, func() { _ = status.Close() })
 	if err != nil {
 		msg := err.Error()
 		_ = writeFrame(status, frame{Msg: msgExecFailed, Error: &msg})

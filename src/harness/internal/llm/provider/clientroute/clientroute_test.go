@@ -23,6 +23,8 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/procwait"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox/sandboxtest"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess/subprocesstest"
 )
@@ -106,7 +108,7 @@ func TestProbe(t *testing.T) {
 	floor := clientroute.Version{Major: 2, Minor: 1, Patch: 259}
 	spec := func(lines []string, extra ...string) clientroute.ProbeSpec {
 		return clientroute.ProbeSpec{Client: "claude-code", Program: exe(t), Args: []string{"--version"},
-			Env: env("print", lines, extra...), Pattern: versionRE, Floor: floor, Timeout: 20 * time.Second}
+			Env: env("print", lines, extra...), Pattern: versionRE, Floor: floor, Timeout: 20 * time.Second, Launch: helperPlan(t)}
 	}
 	v, err := clientroute.Probe(ctx, spec([]string{"2.1.312 (Claude Code)", "Run update to check"}))
 	if err != nil || v != (clientroute.Version{Major: 2, Minor: 1, Patch: 312}) || v.String() != "2.1.312" {
@@ -139,7 +141,7 @@ func TestProbe(t *testing.T) {
 		}
 	}
 	hung := clientroute.ProbeSpec{Client: "claude-code", Program: exe(t), Env: subprocesstest.Spec(t, subprocesstest.RoleStubborn).Env,
-		Pattern: versionRE, Floor: floor, Timeout: 300 * time.Millisecond}
+		Pattern: versionRE, Floor: floor, Timeout: 300 * time.Millisecond, Launch: helperPlan(t)}
 	if _, err := clientroute.Probe(ctx, hung); code(err) != vocab.CodeClientUpgradeRequired || !strings.Contains(err.Error(), "did not finish") {
 		t.Errorf("a hung probe = %v; want client-upgrade-required naming the deadline", err)
 	}
@@ -148,7 +150,7 @@ func TestProbe(t *testing.T) {
 	if _, err := clientroute.Probe(cctx, spec([]string{"2.1.312 (Claude Code)"})); code(err) != vocab.CodeAborted {
 		t.Errorf("a cancelled probe = %v; want llm/aborted", err)
 	}
-	if _, err := clientroute.Probe(ctx, clientroute.ProbeSpec{Pattern: regexp.MustCompile(`x`)}); err == nil {
+	if _, err := clientroute.Probe(ctx, clientroute.ProbeSpec{Pattern: regexp.MustCompile(`x`), Launch: helperPlan(t)}); err == nil {
 		t.Error("a pattern without three groups was accepted")
 	}
 	if !(clientroute.Version{Major: 1, Minor: 9}).Less(floor) || floor.Less(floor) || !(clientroute.Version{Major: 2, Minor: 1, Patch: 258}).Less(floor) {
@@ -175,7 +177,7 @@ func TestProbeBatchShim(t *testing.T) {
 		t.Fatalf("locate = %+v, %v; want the shim, reported as a batch file", p, err)
 	}
 	v, err := clientroute.Probe(context.Background(), clientroute.ProbeSpec{Client: "claude-code", Program: p, Args: []string{"--version"},
-		Env: env, Pattern: versionRE, Floor: clientroute.Version{Major: 2, Minor: 1, Patch: 259}, Timeout: 20 * time.Second})
+		Env: env, Pattern: versionRE, Floor: clientroute.Version{Major: 2, Minor: 1, Patch: 259}, Timeout: 20 * time.Second, Launch: helperPlan(t)})
 	if err != nil || v.String() != "2.1.312" {
 		t.Fatalf("probe through the shim = %v, %v", v, err)
 	}
@@ -441,7 +443,7 @@ func TestRun(t *testing.T) {
 	ctx := context.Background()
 	spec := clientroute.RunSpec{Client: "claude-code", Program: exe(t), Args: []string{"-p", "x y"}, Dir: t.TempDir(),
 		Env:   env("print", []string{`{"type":"a"}`, "", `{"type":"b"}`}, errEnv+"=error: unknown option '--max-turns'", exitEnv+"=3"),
-		Stdin: []byte("the request")}
+		Stdin: []byte("the request"), Launch: helperPlan(t)}
 	r, err := clientroute.Start(ctx, spec)
 	if err != nil {
 		t.Fatal(err)
@@ -513,7 +515,7 @@ func TestRunCancelStopsTheTree(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	r, err := clientroute.Start(ctx, clientroute.RunSpec{Client: "claude-code", Program: exe(t), Dir: t.TempDir(),
-		Env: subprocesstest.Spec(t, subprocesstest.RoleTree).Env, Grace: 100 * time.Millisecond})
+		Env: subprocesstest.Spec(t, subprocesstest.RoleTree).Env, Grace: 100 * time.Millisecond, Launch: helperPlan(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -561,5 +563,55 @@ func TestTapped(t *testing.T) {
 	}
 	if clientroute.Tapped(nil, nil) != nil {
 		t.Fatal("a nil tap wrapped the reader")
+	}
+}
+
+// helperPlan is the explicit unconfined helper plan a signed-in client starts
+// under.
+func helperPlan(t testing.TB) sandbox.Launch {
+	t.Helper()
+	l, err := sandbox.Helper(sandboxtest.Policy(sandbox.DangerFullAccess), "claude-code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return l
+}
+
+// TestHelperLaunch: the client's plan is the unconfined helper plan of the
+// policy ForHelper issues for its kind; no resolver, or one that does not let
+// the kind run unconfined, is llm/invalid-request; a probe or a run without a
+// plan starts nothing, and a started run reports it ran unconfined (DH-D-EXEC-4).
+//
+//dsh:test DH-T-EXEC-8
+func TestHelperLaunch(t *testing.T) {
+	ctx := context.Background()
+	if _, err := clientroute.HelperLaunch(ctx, nil, "claude-code", "claude-code"); code(err) != vocab.CodeInvalidRequest {
+		t.Fatalf("no resolver = %v; want llm/invalid-request", err)
+	}
+	if _, err := clientroute.HelperLaunch(ctx, &sandboxtest.Resolver{}, "claude-code", "claude-code"); code(err) != vocab.CodeInvalidRequest {
+		t.Fatalf("a kind not allowed unconfined = %v; want llm/invalid-request", err)
+	}
+	plan, err := clientroute.HelperLaunch(ctx, &sandboxtest.Resolver{UnconfinedKinds: []string{"claude-code"}}, "claude-code", "claude-code")
+	if err != nil || !plan.Valid() || plan.IsTrusted() || plan.Reason() != "helper claude-code, unconfined by its policy" {
+		t.Fatalf("HelperLaunch = %v, %v; want the claude-code helper plan", plan, err)
+	}
+
+	probe := clientroute.ProbeSpec{Client: "claude-code", Program: exe(t), Args: []string{"--version"},
+		Env: env("print", []string{"2.1.312 (Claude Code)"}), Pattern: versionRE, Timeout: 20 * time.Second}
+	if _, err := clientroute.Probe(ctx, probe); err == nil || !strings.Contains(err.Error(), "no launch plan") {
+		t.Fatalf("a probe without a plan = %v", err)
+	}
+	run := clientroute.RunSpec{Client: "claude-code", Program: exe(t), Dir: t.TempDir(), Env: env("print", []string{"x"})}
+	if _, err := clientroute.Start(ctx, run); code(err) != vocab.CodeTransport || !strings.Contains(err.Error(), string(subprocess.ReasonNoLaunch)) {
+		t.Fatalf("a run without a plan = %v; want llm/transport naming %s", err, subprocess.ReasonNoLaunch)
+	}
+	run.Launch = plan
+	r, err := clientroute.Start(ctx, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Stop(0) })
+	if c := r.Confinement(); c.State != sandbox.StateUnconfined || c.Backend != sandbox.BackendNone {
+		t.Fatalf("Confinement = %+v; want unconfined, backend none", c)
 	}
 }
