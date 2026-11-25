@@ -1,0 +1,85 @@
+# Stage 3.6 E2E (bash and PowerShell executors, TC-06b): each shell row runs on
+# its own lane through the real sandbox seam, launch stage and os-process
+# starter under danger-full-access, and the secret scrub row runs on both.
+# service:os-process is the runner itself; no DSN, no secrets.
+#
+# Lane wiring: the ubuntu job runs the @lane-linux row natively (bash), the
+# windows job the @lane-windows row (pwsh 7). Hosted Windows runners have no WSL
+# distribution, so that job pins BPE_LANES=windows; on a developer or gate host
+# with WSL the suite reaches the Linux lane itself. A row never skips: a missing
+# shell fails it, and the log is checked for any skip.
+name: e2e-dh-s-13-sandbox-launch-linux-backends-and-shell-tools
+
+on:
+  pull_request:
+    paths:
+      - src/harness/internal/world/shellexec/**
+      - src/harness/internal/world/subprocess/**
+      - src/harness/internal/world/sandbox/**
+      - src/harness/internal/human/secret/**
+      - src/harness/internal/storage/home/**
+      - src/harness/test/e2e/harness-DSH-M2/dh_s_13_sandbox_launch_linux_backends_and_shell_tools_bash_and_powershell_executors*
+      - .github/workflows/e2e-dh-s-13-sandbox-launch-linux-backends-and-shell-tools.yml
+  push:
+    branches: [main]
+    paths:
+      - src/harness/internal/world/shellexec/**
+      - src/harness/internal/world/subprocess/**
+      - src/harness/internal/world/sandbox/**
+      - src/harness/internal/human/secret/**
+      - src/harness/internal/storage/home/**
+      - src/harness/test/e2e/harness-DSH-M2/dh_s_13_sandbox_launch_linux_backends_and_shell_tools_bash_and_powershell_executors*
+      - .github/workflows/e2e-dh-s-13-sandbox-launch-linux-backends-and-shell-tools.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-dh-s-13-shell-executors-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: e2e (${{ matrix.lane }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            lane: linux
+          - os: windows-latest
+            lane: windows
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      GOWORK: "off"
+      BPE_LANES: ${{ matrix.lane }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: src/harness/go.mod
+          cache-dependency-path: src/harness/go.sum
+      - name: Lane shell present
+        run: |
+          if [ "${{ matrix.lane }}" = linux ]; then command -v bash; else command -v pwsh && pwsh -NoProfile -Command '$PSVersionTable.PSEdition'; fi
+      - name: Godog scenarios (no skip)
+        run: |
+          set -o pipefail
+          mkdir -p artifacts/e2e
+          log=artifacts/e2e/shell-executors-${{ matrix.lane }}.txt
+          go -C src/harness test -tags e2e -count=1 -v \
+            -run '^TestE2E_dh_s_13_sandbox_launch_linux_backends_and_shell_tools_bash_and_powershell_executors$' \
+            ./test/e2e/harness-DSH-M2/ 2>&1 | tee "$log"
+          if grep -q -- '--- SKIP' "$log"; then echo "a required row skipped"; exit 1; fi
+          grep -q -- "--- PASS: .*/$( [ '${{ matrix.lane }}' = linux ] && echo bash_executor_on_Linux || echo pwsh_executor_on_Windows )" "$log" \
+            || { echo "the ${{ matrix.lane }} lane row did not run"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-shell-executors-${{ matrix.lane }}
+          path: artifacts/e2e/
+          if-no-files-found: warn
