@@ -44,11 +44,12 @@ const fs3Anchor = "ANCHOR"
 // the same file throughout (write a temporary file, rename); when both sessions
 // issue 1,000 edit calls on the file, each inserting a unique marker line before
 // the anchor; then every edit either took effect or returned fs/stale-version,
-// every editor save writes back a version already acknowledged, an edit reported
-// applied and then missing is one an editor save overwrote with an earlier
-// acknowledged version, the final file is well formed (unique marker lines then the
-// anchor) and its SHA-256 is the version an edit returned or an editor save logged
-// for a write no other write began after (the last acknowledged version); and when
+// the final file is well formed (unique marker lines then the anchor), and one
+// chronological history of the logged operations (fs3CheckVersions: each edit
+// inserting its marker into the file as it then is and returning that version's
+// SHA-256, each editor save writing back what it read) ends in the final file, so
+// an edit reported applied and then missing is one an editor save overwrote with
+// an earlier version and no edit builds on a version no longer on disk; and when
 // one process is killed while it holds the file lock (frozen, its lock probed, then
 // killed), the other's next edit takes effect on disk within the lock timeout.
 //
@@ -189,7 +190,7 @@ func TestTwoProcessesAndAnEditorChangeOneFile(t *testing.T) {
 		t.Logf("no edit was refused %s: the processes and the editor did not contend", codeStaleVersion)
 	}
 	got := fs3Hash(t, file)
-	t.Logf("the final file is the version %s acknowledged by %s", got, v.last)
+	t.Logf("the final file is the version %s, last written by %s", got, v.last)
 	t.Logf("file before %s, after %s", before, got)
 
 	fs3KillLeg(t, procs[0].h, procs[0].session, procs[0].m, procs[1].h, procs[1].session, procs[1].m, file, locks, lockTimeout)
@@ -289,117 +290,186 @@ type fs3Ack struct {
 }
 
 // fs3Verdict is what fs3CheckVersions established: how many applied edits an
-// editor save overwrote, and which acknowledgement the final file is.
+// editor save overwrote, and which write the final file is.
 type fs3Verdict struct {
 	lost int
 	last string
 }
 
-// fs3CheckVersions checks the file's history against what dsh acknowledged; it
-// takes nothing on the editor's word.
+// fs3CheckVersions requires one chronological history of the logged operations
+// that ends in final; it takes nothing on the editor's word and judges no
+// operation on its own.
 //
-// Every version's content is derived from start and dsh's edits alone: each
-// successful edit inserts its marker before the anchor of a version already
-// derived, and its returned SHA-256 must be that result's digest. An edit whose
-// version no derived version yields is an invented or torn write.
+// Each operation takes effect at one instant inside its logged window, and an
+// operation that ended before another began takes effect first. From start:
+//   - a successful edit inserts its marker before the anchor of the file as it
+//     is at that instant (which must not hold the marker yet), and its returned
+//     SHA-256 must be that result's digest;
+//   - an editor save reads the file (its logged digest must be the file's at that
+//     instant) and later writes back what it read;
+//   - a save's write may instead be replaced by the dsh edit that takes effect
+//     next, when dsh's version check passed just before the save landed and dsh's
+//     publish then replaced it; the file is then as if the save never wrote.
 //
-// An editor save writes back the whole of a version it read, so its digest must
-// be a version derived from dsh's edits (a save never vouches for itself or for
-// another save), produced before the save ended.
-//
-// An edit reported applied whose marker is missing from final is permitted only
-// when an editor save ended after the edit began and wrote back a derived version
-// that lacks the marker: the editor overwrote it with an earlier version, and
-// dsh lost nothing.
-//
-// final must be a derived version and that of an acknowledgement no other
-// acknowledged write began after (the last acknowledged version).
+// After every operation the file must be final. A version is thus reachable only
+// through the logged operations in their order: a save cannot vouch for itself,
+// an edit cannot build on a version no longer on disk, and a missing marker is
+// explained only by a save that wrote back an earlier version after the edit.
 func fs3CheckVersions(start string, edits []fs3Ack, saves []fs3Save, final []byte) (fs3Verdict, error) {
-	content := map[string]string{fs3Sum(start): start}
-	since := map[string]time.Time{fs3Sum(start): {}}
-	order := []string{fs3Sum(start)}
-	pending := append([]fs3Ack(nil), edits...)
-	sort.SliceStable(pending, func(i, j int) bool { return pending[i].end.Before(pending[j].end) })
-	for len(pending) > 0 {
-		var rest []fs3Ack
-		for _, e := range pending {
-			found := false
-			for k := len(order) - 1; k >= 0 && !found; k-- {
-				base := content[order[k]]
-				if fs3HasLine(base, e.marker) || since[order[k]].After(e.end) {
-					continue
-				}
-				next := strings.Replace(base, fs3Anchor, e.marker+"\n"+fs3Anchor, 1)
-				if fs3Sum(next) != e.sum {
-					continue
-				}
-				found = true
-				if _, dup := content[e.sum]; !dup {
-					content[e.sum], since[e.sum] = next, e.start
-					order = append(order, e.sum)
-				}
-			}
-			if !found {
-				rest = append(rest, e)
-			}
-		}
-		if len(rest) == len(pending) {
-			e := rest[0]
-			return fs3Verdict{}, fmt.Errorf("%s returned version %s, which is no version of the file with its marker inserted before the anchor: an invented or torn write", e.what, e.sum)
-		}
-		pending = rest
+	h := &fs3History{edits: edits, saves: saves, final: string(final), content: map[string]string{}, failed: map[string]bool{}, readOp: map[int]int{}}
+	for i, e := range edits {
+		h.ops = append(h.ops, fs3Op{'e', i, e.start, e.end})
 	}
-	for _, s := range saves {
-		at, ok := since[s.sum]
-		if !ok {
-			return fs3Verdict{}, fmt.Errorf("an editor save (%s to %s) wrote %s, which is no version dsh's edits produced: a torn or invented write", s.start, s.end, s.sum)
-		}
-		if at.After(s.end) {
-			return fs3Verdict{}, fmt.Errorf("an editor save ending %s wrote %s, a version first written at %s", s.end, s.sum, at)
+	for i, s := range saves {
+		h.ops = append(h.ops, fs3Op{'r', i, s.start, s.end}, fs3Op{'w', i, s.start, s.end})
+	}
+	sort.SliceStable(h.ops, func(i, j int) bool { return h.ops[i].start.Before(h.ops[j].start) })
+	for i, o := range h.ops {
+		if o.kind == 'r' {
+			h.readOp[o.n] = i
 		}
 	}
-	finalText := string(final)
-	lost := 0
+	h.applied = make([]bool, len(h.ops))
+	if !h.run(0, start, false) {
+		stuck := "the end, with the file not the final file"
+		if h.best < len(h.ops) {
+			stuck = h.describe(h.ops[h.bestNext])
+		}
+		return fs3Verdict{}, fmt.Errorf("no chronological history of the %d logged operations ends in the final file %s: the longest consistent one applies %d and cannot continue at %s",
+			len(h.ops), fs3Sum(h.final), h.best, stuck)
+	}
+	v := fs3Verdict{last: "the starting file"}
+	if len(h.found) > 0 {
+		v.last = h.found[len(h.found)-1]
+	}
 	for _, e := range edits {
-		if fs3HasLine(finalText, e.marker) {
+		if !fs3HasLine(h.final, e.marker) {
+			v.lost++
+		}
+	}
+	return v, nil
+}
+
+// fs3Op is one logged operation: an edit ('e'), or an editor save's read ('r')
+// or write ('w'); n indexes edits or saves.
+type fs3Op struct {
+	kind       byte
+	n          int
+	start, end time.Time
+}
+
+// fs3History searches the orders of ops (fs3CheckVersions), remembering the
+// states that cannot reach final.
+type fs3History struct {
+	ops           []fs3Op
+	edits         []fs3Ack
+	saves         []fs3Save
+	final         string
+	applied       []bool
+	readOp        map[int]int
+	content       map[string]string
+	failed        map[string]bool
+	writes, found []string
+	depth, best   int
+	bestNext      int
+}
+
+func (h *fs3History) describe(o fs3Op) string {
+	switch o.kind {
+	case 'e':
+		return fmt.Sprintf("%s (returned %s)", h.edits[o.n].what, h.edits[o.n].sum)
+	case 'r':
+		return fmt.Sprintf("the read of the editor save %s to %s of %s", h.saves[o.n].start, h.saves[o.n].end, h.saves[o.n].sum)
+	}
+	return fmt.Sprintf("the write of the editor save %s to %s of %s", h.saves[o.n].start, h.saves[o.n].end, h.saves[o.n].sum)
+}
+
+// run applies the remaining operations from cur; replaced is set when a save's
+// write was just replaced, so the next operation must be a dsh edit.
+func (h *fs3History) run(lo int, cur string, replaced bool) bool {
+	for lo < len(h.ops) && h.applied[lo] {
+		lo++
+	}
+	if h.depth > h.best || h.depth == h.best && lo < len(h.ops) {
+		h.best, h.bestNext = h.depth, lo
+	}
+	if lo == len(h.ops) {
+		if !replaced && cur == h.final {
+			h.found = append([]string(nil), h.writes...)
+			return true
+		}
+		return false
+	}
+	// Only operations that began before every pending one ended may go next.
+	var minEnd time.Time
+	hi := lo
+	for ; hi < len(h.ops) && (minEnd.IsZero() || !h.ops[hi].start.After(minEnd)); hi++ {
+		if !h.applied[hi] && (minEnd.IsZero() || h.ops[hi].end.Before(minEnd)) {
+			minEnd = h.ops[hi].end
+		}
+	}
+	sum := fs3Sum(cur)
+	var key strings.Builder
+	fmt.Fprintf(&key, "%d %s %v", lo, sum, replaced)
+	for j := lo; j < hi; j++ {
+		if h.applied[j] {
+			fmt.Fprintf(&key, " %d", j)
+		}
+	}
+	if h.failed[key.String()] {
+		return false
+	}
+	try := func(j int, next string, nextReplaced bool, write string) bool {
+		h.applied[j] = true
+		h.depth++
+		if write != "" {
+			h.writes = append(h.writes, write)
+		}
+		ok := h.run(lo, next, nextReplaced)
+		if write != "" {
+			h.writes = h.writes[:len(h.writes)-1]
+		}
+		h.depth--
+		h.applied[j] = false
+		return ok
+	}
+	for j := lo; j < hi; j++ {
+		if h.applied[j] {
 			continue
 		}
-		excused := false
-		for _, s := range saves {
-			if !s.end.Before(e.start) && !fs3HasLine(content[s.sum], e.marker) {
-				excused = true
-				break
+		o := h.ops[j]
+		switch o.kind {
+		case 'e':
+			e := h.edits[o.n]
+			if fs3HasLine(cur, e.marker) {
+				continue
+			}
+			next := strings.Replace(cur, fs3Anchor, e.marker+"\n"+fs3Anchor, 1)
+			if fs3Sum(next) == e.sum && try(j, next, false, e.what) {
+				return true
+			}
+		case 'r':
+			if !replaced && sum == h.saves[o.n].sum {
+				h.content[sum] = cur
+				if try(j, cur, false, "") {
+					return true
+				}
+			}
+		case 'w':
+			if replaced || !h.applied[h.readOp[o.n]] {
+				continue
+			}
+			wrote := h.content[h.saves[o.n].sum]
+			if try(j, wrote, false, "an editor save") {
+				return true
+			}
+			if wrote != cur && try(j, cur, true, "") {
+				return true
 			}
 		}
-		if !excused {
-			return fs3Verdict{}, fmt.Errorf("%s returned version %s and is missing from the final file, and no editor save after it wrote back a version without it: the edit was lost", e.what, e.sum)
-		}
-		lost++
 	}
-	got := fs3Sum(finalText)
-	if _, ok := content[got]; !ok {
-		return fs3Verdict{}, fmt.Errorf("the final file %s is no version dsh's edits produced", got)
-	}
-	acks := append([]fs3Ack{{what: "the starting file", sum: fs3Sum(start)}}, edits...)
-	for _, s := range saves {
-		acks = append(acks, fs3Ack{what: "an editor save", start: s.start, end: s.end, sum: s.sum})
-	}
-	for _, c := range acks {
-		if c.sum != got {
-			continue
-		}
-		later := false
-		for _, x := range acks {
-			if x.start.After(c.end) {
-				later = true
-				break
-			}
-		}
-		if !later {
-			return fs3Verdict{lost: lost, last: c.what}, nil
-		}
-	}
-	return fs3Verdict{}, fmt.Errorf("the final file %s is not the version of the last acknowledged write (edit result or editor save)", got)
+	h.failed[key.String()] = true
+	return false
 }
 
 // fs3HasLine reports whether text holds line as a whole line.

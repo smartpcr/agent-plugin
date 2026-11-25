@@ -151,15 +151,19 @@ The scenarios' own oracles have focused tests that need no live model. Run them 
   `danger-full-access` and a justification that the approval shows. An ordinary tool approval does not count.
 - `TestFS3VersionsTrustOnlyDshEdits` covers FS-3's version check (`fs3CheckVersions`). An invented editor digest
   is rejected, cannot excuse a lost edit, and an edit whose digest no derived version yields is rejected.
+  Its case `edit cannot build on a version no longer on disk` was accepted by the previous oracle.
 
 FS-3 now checks the following:
 - Each edit's returned `sha256` version is compared with the final file.
-- The valid versions are derived only from the starting file and dsh's edits: each edit's digest must equal its
-  base version with the edit's marker inserted. Editor saves never add versions, so a save cannot vouch for itself.
-- Every editor save must write one of those derived versions, one that existed before the save ended.
-- An edit that went missing must be explained by a save, ending after the edit began, of a derived version
-  without that edit's marker.
-- The final file must be a derived version, written by the last acknowledgement to begin.
+- `fs3CheckVersions` searches for one chronological history of all logged operations that ends in the final file.
+  Each operation takes effect at one instant inside its logged window, and an operation that ended before another
+  began comes first. An edit inserts its marker into the file as it is at that instant, and its returned digest
+  must match. An editor save reads the file (its logged digest must match at that instant) and later writes back
+  what it read. A save's write may be replaced by the next dsh edit, which models dsh publishing just after a save
+  landed past its version check.
+- So a save cannot vouch for itself, an edit cannot build on a version no longer on disk, and a missing edit is
+  explained only by a save that wrote back an earlier version after it. The previous oracle judged each operation
+  on its own and accepted a history where an edit built on a version two saves had already replaced.
 - The kill leg freezes the process, probes its lock file with a non-blocking lock, and kills it only while the
   lock is held. It uses `fs3Freeze` and `fs3LockHeld`, written with the standard library only, for Unix and
   Windows. On Windows, a temporary self-test confirmed that the probe and the freeze work.
