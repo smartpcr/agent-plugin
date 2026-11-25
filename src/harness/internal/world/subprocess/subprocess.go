@@ -83,6 +83,11 @@ const (
 	ReasonCanceled        herr.Reason = "subprocess/canceled"
 	ReasonDetached        herr.Reason = "subprocess/detached"
 	ReasonPeerUnknown     herr.Reason = "subprocess/peer-unknown"
+	ReasonHardLimit       herr.Reason = "subprocess/hard-limit"
+	// ReasonSpillDropped is the reason of Collected.SpillErr: the spill was asked
+	// for and the stream needed it, but the store refused it or the stream passed
+	// the cap, so only the tail is kept (DH-D-EXEC-3).
+	ReasonSpillDropped herr.Reason = "subprocess/spill-dropped"
 )
 
 // Reasons lists every reason, for the declaration test.
@@ -90,7 +95,7 @@ var Reasons = []herr.Reason{
 	ReasonEmptyArgv, ReasonRelativeProgram, ReasonNotFound, ReasonBatchRefused,
 	ReasonBadArgument, ReasonLineTooLong, ReasonStartFailed, ReasonTreeOwner, ReasonSurvivors,
 	ReasonNoLaunch, ReasonOutputLimit, ReasonDeadline, ReasonCanceled, ReasonDetached,
-	ReasonPeerUnknown,
+	ReasonPeerUnknown, ReasonHardLimit, ReasonSpillDropped,
 }
 
 // DefaultSettle bounds the wait for a tree to be gone after the forced stop, when
@@ -176,6 +181,8 @@ type Process struct {
 	trust       Trust
 	limits      LimitsReport
 	confinement sandbox.Confinement
+	// collected are the Collectors of Stdout and Stderr, indexed by Stream.
+	collected [2]*Collector
 
 	stopMu  sync.Mutex
 	stopped bool
@@ -339,12 +346,20 @@ func startCommand(ctx context.Context, spec Spec) (*Process, error) {
 	}
 	p := &Process{cmd: cmd, owner: owner, report: owner.report(), plan: plan, input: input,
 		trust: trustOf(spec.Launch), limits: owner.limitsReport(),
-		exited: make(chan struct{}), releasedC: make(chan struct{})}
+		collected: collectorsOf(spec),
+		exited:    make(chan struct{}), releasedC: make(chan struct{})}
 	go func() {
 		err := cmd.Wait()
 		if d, ok := owner.(drainer); ok {
 			if derr := d.drain(); err == nil {
 				err = derr
+			}
+		}
+		// The streams are drained: no write follows, so the spill can be saved. A
+		// spill that could not be is in the collector's SpillErr, not the exit.
+		for _, c := range p.collected {
+			if c != nil {
+				c.finish()
 			}
 		}
 		p.waitErr = err

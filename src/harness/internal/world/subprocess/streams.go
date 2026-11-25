@@ -30,11 +30,11 @@ func StdinData(b []byte) StdinMode { return bytes.NewReader(bytes.Clone(b)) }
 //   - an *os.File is handed to the child as it is, so the child writes to it
 //     without passing through host memory: a file opened with os.O_APPEND keeps
 //     what earlier runs wrote (DH-LIB-EXECA-R4);
+//   - a *Collector keeps the stream's tail in a bounded ring and may spill the
+//     whole stream to a capped file (collect, DH-LIB-NODEPROC-R6, DH-D-EXEC-3);
+//     Process.Collected returns it;
 //   - any other writer gets the bytes copied to it as the child writes them, such
 //     as the write end of an io.Pipe the caller reads (Pipe).
-//
-// Collection with a bounded tail and a spill file (DH-LIB-NODEPROC-R6) is a later
-// mode; Run is the capture available now.
 type OutputMode interface{ io.Writer }
 
 // Discard and Inherit are the output modes that are not writers of the caller's.
