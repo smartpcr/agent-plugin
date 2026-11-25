@@ -23,3 +23,6 @@ func closeOnExec(files ...*os.File) error {
 // readOnly has no separate meaning on Windows: a refused open is a permission
 // error.
 func readOnly(error) bool { return false }
+
+// homeReadOnly cannot be shown on Windows, which has no outside confiner in M2.
+func homeReadOnly(string) bool { return false }

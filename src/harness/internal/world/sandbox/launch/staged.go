@@ -3,6 +3,7 @@ package launch
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"slices"
 	"sync"
 	"time"
@@ -38,6 +39,10 @@ type Hooks struct {
 	Failed func(ctx context.Context, p Plan, err error)
 	// Exe is the stage's program, the harness binary; empty is os.Executable().
 	Exe string
+	// Prefix is the outside confiner the stage runs under, as an argv whose
+	// first element is an absolute path (bubblewrap: `bwrap <args> --`); nil
+	// when the stage confines itself or the plan is unconfined.
+	Prefix []string
 	// Limit bounds Confirm (DefaultLimit when zero).
 	Limit time.Duration
 }
@@ -57,6 +62,15 @@ func NewLaunch(policy sandbox.Policy, p Plan, h Hooks) (sandbox.Launch, error) {
 	}
 	if p.Argv != nil || p.Keep != nil || p.Control != 0 || p.Status != 0 {
 		return sandbox.Launch{}, failed("the command and the channel of a staged plan are filled in by Wrap")
+	}
+	if h.Prefix != nil {
+		if p.Kind != Confined {
+			return sandbox.Launch{}, failed("only a confined plan runs under an outside confiner")
+		}
+		if len(h.Prefix) == 0 || !filepath.IsAbs(h.Prefix[0]) {
+			return sandbox.Launch{}, failed("the outside confiner's program must be an absolute path")
+		}
+		h.Prefix = slices.Clone(h.Prefix)
 	}
 	if h.Exe == "" {
 		exe, err := os.Executable()
@@ -109,7 +123,8 @@ func (s *staged) Wrap(argv []string, keep []uintptr, pass sandbox.Pass) (sandbox
 		return sandbox.Wrapped{}, err
 	}
 	s.plan = p
-	return sandbox.Wrapped{Argv: append([]string{s.hooks.Exe, Mode}, p.Args()...)}, nil
+	stage := append(slices.Clone(s.hooks.Prefix), s.hooks.Exe, Mode)
+	return sandbox.Wrapped{Argv: append(stage, p.Args()...)}, nil
 }
 
 // Confirm is the exchange: ready, the decision, then go or a rejection.

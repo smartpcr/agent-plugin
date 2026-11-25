@@ -37,15 +37,16 @@ var canaryHook = func(c Canary) Canary { return c }
 
 // confiner confines the running stage for its backend and returns the effects it
 // governs. A backend that confines the stage from outside (bubblewrap wraps the
-// stage as its command) has no step of its own and claims nothing here; what it
-// governs comes from the start-up probe and the canary.
+// stage as its command) has no step of its own and claims only what the stage
+// can observe from inside; the canary still decides file writes.
 type confiner func(Plan) ([]sandbox.Effect, error)
 
-// confiners are the backends this build can run a confined stage under.
-// Landlock's self-restriction is DH-D-SANDBOX-4 (impl.md 13.4); until it lands a
-// landlock plan ends the stage before ready.
+// confiners are the backends this build can run a confined stage under:
+// bubblewrap everywhere (it confines from outside; observe.go), and Landlock on
+// Linux, registered by confine_linux.go (DH-D-SANDBOX-4, impl.md 13.4). Elsewhere
+// a landlock plan ends the stage before ready.
 var confiners = map[sandbox.Backend]confiner{
-	sandbox.BackendBwrap: func(Plan) ([]sandbox.Effect, error) { return nil, nil },
+	sandbox.BackendBwrap: confineBwrap,
 }
 
 // ServeIfAsked runs the stage when args (os.Args[1:]) start with Mode and returns

@@ -34,7 +34,7 @@ Each step's merge commit; `--built` refuses a step without one.
 | 13.1 | DH-D-SANDBOX-2 | | |
 | 13.2 | DH-D-EXEC-4 | | |
 | 13.3 | DH-D-SANDBOX-3 | | |
-| 13.4 | DH-D-SANDBOX-4 | | |
+| 13.4 | DH-D-SANDBOX-4 | | `world/sandbox/local`: bubblewrap backend (`bwrap` resolved once by absolute path; argv from the Policy, golden `local/testdata/bwrap_argv.golden`, `TestBwrapArgvFromPolicy`) and pure-Go Landlock backend (`launch/landlock.go`, `launch/confine_linux.go`; ABI probe, rules from the Policy, applied by the stage to itself; `TestLandlockRulesFromPolicy`, `TestLandlockStageConfinesForReal`); order bwrap then Landlock, both failing refuses a confined policy `sandbox/unavailable` (`TestSelectionOrder`). I2 Q4 default applied, see Owner defaults. |
 | 13.5 | DH-D-EXEC-3 | | |
 | 13.6 | DH-D-EXEC-8 | | |
 | 13.7 | DH-D-EXEC-9 | | |
@@ -66,6 +66,11 @@ stage closes; `--built` refuses a row with no confirmation or no name in By.
 | Default | Raised in | Text (impl.md sec. 9.1) | Confirmed | By | Commit |
 | --- | --- | --- | --- | --- | --- |
 | `partial` when delegated execution cannot be stopped | I2 Q4 | A sandbox that cannot stop delegated execution is reported `partial` | | | |
+
+Applied, unconfirmed, in step 13.4: the launch stage claims `delegated-execution` governed only when it
+observes no reachable session bus or service manager (`launch/observe.go` `delegated()`,
+`launch/bus_linux.go`); Landlock never claims it. `sandbox.Enforce` then reports the start `partial`
+naming `delegated-execution`. Tests: `TestBwrapStageClaimsOnlyWhatItSees`, `TestLandlockRulesFromPolicy`.
 
 ## Evidence record (impl.md sec. 7.3)
 

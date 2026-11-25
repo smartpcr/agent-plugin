@@ -28,6 +28,8 @@ func TestPlanArgsRoundTrip(t *testing.T) {
 		{Kind: Unconfined, Backend: sandbox.BackendNone, Control: 3, Status: 4, Argv: []string{exe}},
 		{Kind: Confined, Backend: sandbox.BackendBwrap, Canary: canary, Control: 7, Status: 9, Argv: []string{exe, "--kind", "x", "--", "-v"}},
 		{Kind: Unconfined, Backend: sandbox.BackendNone, Control: 5, Status: 6, Argv: []string{exe}, Keep: []uintptr{3, 4}},
+		{Kind: Confined, Backend: sandbox.BackendLandlock, Canary: canary, Control: 7, Status: 9, Argv: []string{exe},
+			Write: []string{filepath.Dir(canary), filepath.Dir(exe)}, Home: filepath.Join(filepath.Dir(canary), "home")},
 	} {
 		got, err := Parse(p.Args())
 		if err != nil || !reflect.DeepEqual(got, p) {
@@ -60,6 +62,15 @@ func TestPlanRefusesDisagreement(t *testing.T) {
 		"kept twice":          func(p *Plan) { p.Keep = []uintptr{5, 5} },
 		"no command":          func(p *Plan) { p.Argv = nil },
 		"relative command":    func(p *Plan) { p.Argv = []string{"sh"} },
+		"relative write root": func(p *Plan) { p.Write = []string{"root"} },
+		"write root twice":    func(p *Plan) { p.Write = []string{filepath.Dir(canary), filepath.Dir(canary)} },
+		"relative home":       func(p *Plan) { p.Home = "home" },
+		"unconfined writes": func(p *Plan) {
+			p.Kind, p.Backend, p.Canary, p.Write = Unconfined, sandbox.BackendNone, "", []string{filepath.Dir(canary)}
+		},
+		"unconfined home": func(p *Plan) {
+			p.Kind, p.Backend, p.Canary, p.Home = Unconfined, sandbox.BackendNone, "", filepath.Dir(canary)
+		},
 	}
 	for name, edit := range bad {
 		p := ok
@@ -164,7 +175,11 @@ func TestProveUnconfinedTriesNothing(t *testing.T) {
 	if err := os.WriteFile(canary, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := prove(Plan{Kind: Confined, Backend: sandbox.BackendLandlock, Canary: canary}); !herr.Has(err, sandbox.CodeLaunchFailed) {
+	// A missing write root ends a Landlock stage before it restricts anything, so
+	// on Linux the test process is never confined; elsewhere this build has no
+	// Landlock confiner at all.
+	missing := filepath.Join(t.TempDir(), "no-such-root")
+	if _, err := prove(Plan{Kind: Confined, Backend: sandbox.BackendLandlock, Canary: canary, Write: []string{missing}}); !herr.Has(err, sandbox.CodeLaunchFailed) {
 		t.Errorf("prove(landlock) = %v, want %s", err, sandbox.CodeLaunchFailed)
 	}
 }
