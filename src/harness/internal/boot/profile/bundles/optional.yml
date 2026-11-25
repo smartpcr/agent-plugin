@@ -1,0 +1,46 @@
+# optional: the optional list (bundle-preset.md §6.2, DH-ADR-BUNDLE-10,
+# DH-D-BUNDLE-6). Not a bundle layer: no profile stacks it and BundleNames leaves it
+# out. Each row is a catalogue component that no shipped layer mounts, as a top-level
+# entry or as a preset child, with the area that owns it and why it is compiled in
+# but not mounted. The coverage check (profile.Coverage) fails when a catalogue
+# component is neither mounted nor listed here, when a listed one is also mounted,
+# and when a row names no catalogue component. Adding a component to the build means
+# a layer entry or a row here in the same change.
+#
+# Rows of design (bundle-preset.md §6.2) join as their components are built:
+# computer.service and computer.tools, the per-host, per-server and per-connector
+# components, and subagent.sdk-child, subagent.acp, subagent.claude-code and
+# subagent.codex.
+#
+# The rows below are the components of cycle C-3 (DH-S-12) and the permission table
+# (C34). They belong to core.yml and base.yml, but each waits on inject for a
+# service no catalogue item provides yet (session.core, session.views,
+# human.approval, human.command): mounted now, every launch would wait until its
+# StartupTimeout. Each moves to its layer, and off this list, in the change that
+# registers the provider (builtin.go).
+- name: fs.local
+  owner: A08
+  reason: >-
+    Core kernel member (core.yml) of cycle C-3; mounted with fs.ops, which waits on
+    session.core and session.views, once both are in the catalogue.
+- name: fs.ops
+  owner: A08
+  reason: >-
+    Core kernel member (core.yml) of cycle C-3; fences fs.local with sandbox.policy,
+    which waits on session.core and session.views, not yet in the catalogue.
+- name: sandbox.policy
+  owner: A10
+  reason: >-
+    Core kernel member (core.yml) of cycle C-3; reads each session's directory from
+    session.workdir and waits on session.core and session.views, not yet in the
+    catalogue.
+- name: session.workdir
+  owner: A01
+  reason: >-
+    Core kernel member (core.yml) of cycle C-3; waits on session.core and
+    session.views, not yet in the catalogue.
+- name: permission.presets
+  owner: A17
+  reason: >-
+    Host-plane member (base.yml), the permission preset table (C34); waits on
+    session.core, human.approval and human.command, not yet in the catalogue.

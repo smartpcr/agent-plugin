@@ -35,7 +35,7 @@ Each step's merge commit; `--built` refuses a step without one.
 | 14.2 | DH-D-BUNDLE-2 | | |
 | 14.3 | DH-D-BUNDLE-4 | | |
 | 14.4 | DH-D-BUNDLE-5 | | |
-| 14.5 | DH-D-BUNDLE-6 | | |
+| 14.5 | DH-D-BUNDLE-6 | | Coverage check `profile.Coverage` and `bundles/optional.yml`; optional list reviewed below; `composed.golden` unchanged (the list is not a layer) |
 
 ## Scenarios
 
@@ -86,6 +86,30 @@ session ids and provider request ids for model calls.
 ### Results
 
 The Scenarios table above, and the local test results per step at closure. Not yet recorded.
+
+**Step 14.5: coverage over the components that exist so far, and the optional list
+reviewed** (DH-D-BUNDLE-6, DH-ADR-BUNDLE-10). `TestShippedBuildIsCovered`
+(`internal/boot/profile/coverage_test.go`) passes on the nine components of the build
+catalogue (`internal/boot/catalog/testdata/catalog.golden`):
+
+- Mounted by a shipped layer: `boot.logging` and `host.sharing` (`admin.yml`), `util.egress`
+  and `util.watch` (`core.yml`); in every profile through the kernel.
+- On `internal/boot/profile/bundles/optional.yml`, each with an owner and a reason:
+  `fs.local` (A08), `fs.ops` (A08), `sandbox.policy` (A10), `session.workdir` (A01) — the
+  cycle C-3 unit of DH-S-12, members of `core.yml` by design — and `permission.presets`
+  (A17), a member of `base.yml` by design. Each waits on inject for a service no catalogue
+  item provides yet (`session.core`, `session.views`, `human.approval`, `human.command`);
+  mounted now, every launch would wait out its `StartupTimeout`. Each row moves to its
+  layer in the change that registers the provider. Reviewed: no row is also mounted, and
+  every row names a catalogue component (both enforced by the check).
+- Defaults send nothing (NG-7): `TestDefaultProfilesSendNothing` composes `admin`, `core`,
+  `web`, `headless`, `sdk`, `sdk-minimal` and `acp` from their bundles with no route and no
+  home layer; `profile.Egress` of each is empty (`admin.yml` ships `host.sharing` with every
+  kind off).
+- `composed.golden` is unchanged: `optional.yml` is not a bundle layer (`BundleNames`
+  leaves it out, `Bundle("optional")` is `profile/bad-bundle`).
+
+Command: `go -C src/harness test -race -shuffle=on ./internal/boot/profile/... ./internal/boot/agentpreset/...`.
 
 ### Manual checks
 
