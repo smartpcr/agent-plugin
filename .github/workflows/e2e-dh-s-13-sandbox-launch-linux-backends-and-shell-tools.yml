@@ -16,6 +16,8 @@ on:
       - src/harness/internal/world/shellexec/**
       - src/harness/internal/world/subprocess/**
       - src/harness/internal/world/sandbox/**
+      - src/harness/internal/human/secret/**
+      - src/harness/internal/storage/home/**
       - src/harness/test/e2e/harness-DSH-M2/dh_s_13_sandbox_launch_linux_backends_and_shell_tools_bash_and_powershell_executors*
       - .github/workflows/e2e-dh-s-13-sandbox-launch-linux-backends-and-shell-tools.yml
   push:
@@ -24,7 +26,10 @@ on:
       - src/harness/internal/world/shellexec/**
       - src/harness/internal/world/subprocess/**
       - src/harness/internal/world/sandbox/**
+      - src/harness/internal/human/secret/**
+      - src/harness/internal/storage/home/**
       - src/harness/test/e2e/harness-DSH-M2/dh_s_13_sandbox_launch_linux_backends_and_shell_tools_bash_and_powershell_executors*
+      - .github/workflows/e2e-dh-s-13-sandbox-launch-linux-backends-and-shell-tools.yml
   workflow_dispatch:
 
 permissions:
