@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -474,6 +475,9 @@ func cCompilerPreflight(ctx context.Context, c *Config) error {
 // every package under the floor (QG-3).
 func (c *Config) coverageGate(ctx context.Context, w io.Writer) error {
 	var errs []error
+	for _, pkg := range slices.Sorted(maps.Keys(CoverageDebt)) {
+		fmt.Fprintf(w, "coverage: DEBT %s held to %d%% until it reaches %d%% (CoverageDebt)\n", pkg, CoverageDebt[pkg], CoverageFloor)
+	}
 	for _, mod := range c.Modules {
 		cov, err := c.moduleCoverage(ctx, w, mod)
 		if err != nil {
@@ -483,7 +487,7 @@ func (c *Config) coverageGate(ctx context.Context, w io.Writer) error {
 		for _, pc := range cov {
 			fmt.Fprintf(w, "coverage: %s %s%%\n", pc.Package, formatPercent(pc.Percent()))
 		}
-		if err := CheckFloor(cov, CoverageFloor); err != nil {
+		if err := CheckCoverageDebt(cov, CoverageDebt); err != nil {
 			errs = append(errs, err)
 		}
 	}

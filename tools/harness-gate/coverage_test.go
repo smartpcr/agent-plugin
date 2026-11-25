@@ -103,3 +103,41 @@ func TestParseProfileRejectsGarbage(t *testing.T) {
 		}
 	}
 }
+
+// CoverageDebt holds a listed package to its pin, every other package to the floor,
+// and fails an entry whose package has reached the floor so the debt is removed.
+func TestCoverageDebt(t *testing.T) {
+	debt := map[string]int{"debt/p": 77}
+	tests := []struct {
+		name string
+		cov  PackageCoverage
+		want string // "" passes
+	}{
+		{"debt package at its pin", PackageCoverage{"debt/p", 77, 100}, ""},
+		{"debt package under its pin", PackageCoverage{"debt/p", 76, 100}, "debt/p: 76% < 77% of statements (76 of 100 covered) (CoverageDebt pin)"},
+		{"debt package at the floor", PackageCoverage{"debt/p", 85, 100}, "debt/p: 85% reaches 85%; remove its CoverageDebt entry"},
+		{"other package under the floor", PackageCoverage{"other/p", 80, 100}, "other/p: 80% < 85%"},
+		{"other package at the floor", PackageCoverage{"other/p", 85, 100}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := CheckCoverageDebt([]PackageCoverage{tt.cov}, debt)
+			switch {
+			case tt.want == "" && err != nil:
+				t.Fatalf("CheckCoverageDebt = %v, want pass", err)
+			case tt.want != "" && (err == nil || !strings.Contains(err.Error(), tt.want)):
+				t.Fatalf("CheckCoverageDebt = %v, want it to name %q", err, tt.want)
+			}
+		})
+	}
+}
+
+// Every CoverageDebt entry is a pin under the floor: the list never hides a package
+// that already passes, and never lowers the bar to nothing.
+func TestCoverageDebtEntriesArePinsUnderTheFloor(t *testing.T) {
+	for pkg, pin := range CoverageDebt {
+		if pin <= 0 || pin >= CoverageFloor {
+			t.Errorf("CoverageDebt[%s] = %d, want 0 < pin < %d", pkg, pin, CoverageFloor)
+		}
+	}
+}
