@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -164,16 +165,38 @@ func TestLateHostServiceMakesThePresetUsable(t *testing.T) {
 	if _, err := e.reg.Acquire(e.root, ""); !errors.Is(err, agentpreset.ErrInvalid) {
 		t.Fatalf("acquire before the provider = %v, want agentpreset/invalid", err)
 	}
+	// The child reacts to the host's service on the tree's own schedule: wait for
+	// its state to change, then audit the revision as it stands.
+	states := make(chan cordis.FiberState, 64)
+	t.Cleanup(e.root.Internal().OnStatus(func(f *cordis.Fiber, _, next cordis.FiberState) {
+		if f.Name() == "tool.needs" {
+			select {
+			case states <- next:
+			default:
+				t.Errorf("tool.needs state %v dropped: the test's buffer is full", next)
+			}
+		}
+	}))
+	await := func(want cordis.FiberState, what string) {
+		t.Helper()
+		timeout := time.After(10 * time.Second)
+		for {
+			select {
+			case st := <-states:
+				if st == want {
+					return
+				}
+			case <-timeout:
+				t.Fatalf("tool.needs never became %v %s", want, what)
+			}
+		}
+	}
 	h, err := e.root.Provide("tool.missing", "late")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var l agentpreset.Lease
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
-		if l, err = e.reg.Acquire(e.root, ""); err == nil || time.Now().After(deadline) {
-			break
-		}
-	}
+	await(cordis.Active, "after the host provided tool.missing")
+	l, err := e.reg.Acquire(e.root, "")
 	if err != nil {
 		t.Fatalf("acquire after the host provided tool.missing = %v", err)
 	}
@@ -183,12 +206,9 @@ func TestLateHostServiceMakesThePresetUsable(t *testing.T) {
 	l.Release()
 
 	h.Dispose()
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
-		if in, _ := e.reg.Resolve("needy"); strings.Contains(in.Broken, "tool.missing") {
-			break
-		} else if time.Now().After(deadline) {
-			t.Fatalf("needy after tool.missing was withdrawn = %+v, want broken naming it", in)
-		}
+	await(cordis.Pending, "after tool.missing was withdrawn")
+	if in, _ := e.reg.Resolve("needy"); !strings.Contains(in.Broken, "tool.missing") {
+		t.Fatalf("needy after tool.missing was withdrawn = %+v, want broken naming it", in)
 	}
 }
 
@@ -205,9 +225,14 @@ func TestSelectExcludesTurnStart(t *testing.T) {
 	h, _, tg := e.agent(t, "s1")
 	g := tg.Maintainer.(*gate)
 	started := make(chan error, 1)
+	var turns sync.WaitGroup
+	// The turn waits only for the gate, which Select gives back when it returns.
+	t.Cleanup(turns.Wait)
 	hs := &hookSession{Session: h}
 	hs.onRead = func() {
+		turns.Add(1)
 		go func() {
+			defer turns.Done()
 			g.mu.Lock() // the driver's turn takes the gate before it opens
 			defer g.mu.Unlock()
 			d, err := event.TurnStartType.Draft(event.TurnStart{Turn: 1})
@@ -255,15 +280,26 @@ func TestConcurrentBindsOfOneAgent(t *testing.T) {
 	}
 	h, sc, tg := e.agent(t, "s1")
 	firstIn, release := make(chan struct{}), make(chan struct{})
+	letGo := sync.OnceFunc(func() { close(release) })
 	tg.Session = &hookSession{Session: h, onAppend: func() { close(firstIn); <-release }}
 	var wg sync.WaitGroup
+	t.Cleanup(func() { letGo(); wg.Wait() })
 	errs := make([]error, 2)
+	firstDone := make(chan struct{})
 	wg.Add(2)
-	go func() { defer wg.Done(); _, errs[0] = e.reg.Bind(ctx, tg, "standard", agentpreset.CauseCreate) }()
-	<-firstIn
+	go func() {
+		defer wg.Done()
+		defer close(firstDone)
+		_, errs[0] = e.reg.Bind(ctx, tg, "standard", agentpreset.CauseCreate)
+	}()
+	select {
+	case <-firstIn:
+	case <-firstDone:
+		t.Fatalf("the first bind returned without appending: %v", errs[0])
+	}
 	go func() { defer wg.Done(); _, errs[1] = e.reg.Bind(ctx, tg, "other", agentpreset.CauseCreate) }()
-	time.Sleep(50 * time.Millisecond) // the second bind reaches the target's lock
-	close(release)
+	awaitBlockedInLockTarget(t)
+	letGo()
 	wg.Wait()
 	if errs[0] != nil || errs[1] != nil {
 		t.Fatalf("binds = %v", errs)
@@ -281,6 +317,33 @@ func TestConcurrentBindsOfOneAgent(t *testing.T) {
 	}
 }
 
+// awaitBlockedInLockTarget returns once a goroutine is parked on a mutex inside
+// Registry.lockTarget: a bind queued behind the one that holds its target's lock.
+func awaitBlockedInLockTarget(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	buf := make([]byte, 1<<16)
+	for {
+		n := runtime.Stack(buf, true)
+		if n == len(buf) {
+			buf = make([]byte, 2*len(buf))
+			continue
+		}
+		for _, g := range strings.Split(string(buf[:n]), "\n\n") {
+			// The header names the wait: "goroutine 7 [sync.Mutex.Lock]:".
+			head, _, _ := strings.Cut(g, "\n")
+			parked := strings.Contains(head, "Mutex") || strings.Contains(head, "semacquire")
+			if parked && strings.Contains(g, ".(*Registry).lockTarget(") {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the second bind never queued on the target's lock")
+		}
+		runtime.Gosched()
+	}
+}
+
 // Lease.Info and the roster are read while reloads that keep the revision rename
 // it (run with -race).
 func TestLeaseInfoDuringMetadataReloads(t *testing.T) {
@@ -294,6 +357,7 @@ func TestLeaseInfoDuringMetadataReloads(t *testing.T) {
 		t.Fatal(err)
 	}
 	done := make(chan struct{})
+	t.Cleanup(func() { <-done }) // the reloads end on their own
 	go func() {
 		defer close(done)
 		for i := range 50 {

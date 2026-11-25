@@ -1,6 +1,7 @@
 package local
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -69,4 +70,12 @@ func AroundRecheck(f func(n int)) (restore func()) {
 	}
 	replaceIn, createIn = wrap(fsx.ReplaceIn), wrap(fsx.CreateIfAbsentIn)
 	return func() { replaceIn, createIn = fsx.ReplaceIn, fsx.CreateIfAbsentIn }
+}
+
+// FailReadlink makes every read of a link's target fail, as when the link is
+// removed between the Lstat that saw it and the Readlink. The returned func
+// restores the default.
+func FailReadlink() (restore func()) {
+	readlink = func(string) (string, error) { return "", errors.New("injected readlink failure") }
+	return func() { readlink = os.Readlink }
 }

@@ -1,6 +1,8 @@
 package modcheck
 
 import (
+	"maps"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -372,5 +374,32 @@ func TestToolsModulePinsLinters(t *testing.T) {
 		if required[pin[0]] != pin[1] {
 			t.Errorf("tools module pins %s at %q, want %s", pin[0], required[pin[0]], pin[1])
 		}
+	}
+}
+
+// A go.mod under a testdata directory is a fixture, invisible to the go command, and
+// not a module of the checkout (RM-1): Load skips it, as it skips the archtest tree
+// src/harness/internal/archtest/testdata/c3.
+func TestLoadSkipsTestdataModules(t *testing.T) {
+	root := t.TempDir()
+	write := func(rel, text string) {
+		t.Helper()
+		p := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("go.work", "go 1.27.4\n")
+	write("src/go/go.mod", fixtureGo)
+	write("src/harness/internal/archtest/testdata/c3/go.mod", "module example.com/c3\n\ngo 1.27.4\n")
+	repo, err := Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := repo.Mods["src/harness/internal/archtest/testdata/c3"]; ok || len(repo.Mods) != 1 {
+		t.Fatalf("modules = %v; want only src/go", slices.Sorted(maps.Keys(repo.Mods)))
 	}
 }
