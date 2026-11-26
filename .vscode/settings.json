@@ -19,5 +19,6 @@
     "timer.*",
     "loader.*",
     "configFile.*"
-  ]
+  ],
+  "sarif-viewer.connectToGithubCodeScanning": "off"
 }
