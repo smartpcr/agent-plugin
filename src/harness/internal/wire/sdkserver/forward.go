@@ -84,7 +84,10 @@ func (c *Conn) Attach(n Notifier) error {
 // writing early waits for it.
 type deferred struct {
 	ready chan struct{}
-	n     Notifier
+	n     *jsonrpc.Conn
+
+	mu  sync.Mutex
+	err error // the forwarding failure that ended the transport
 }
 
 func (d *deferred) Notify(method string, params any) error {
@@ -92,9 +95,52 @@ func (d *deferred) Notify(method string, params any) error {
 	return d.n.Notify(method, params)
 }
 
-func (d *deferred) set(n Notifier) {
+func (d *deferred) set(n *jsonrpc.Conn) {
 	d.n = n
 	close(d.ready)
+}
+
+// abort ends the transport for a failed forwarder, keeping the first failure
+// unless the transport had already ended.
+func (d *deferred) abort(err error) {
+	<-d.ready
+	select {
+	case <-d.n.Done():
+		return
+	default:
+	}
+	d.mu.Lock()
+	if d.err == nil {
+		d.err = err
+	}
+	d.mu.Unlock()
+	_ = d.n.Close()
+}
+
+func (d *deferred) failure() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.err
+}
+
+// abort ends the connection's transport after a forwarder failed: the client
+// would otherwise wait for events or a session.run.completed never sent, with
+// no reply to carry the failure. A notifier that cannot be closed is left as is;
+// the next watermark request still fails. A failure to write to a transport
+// already closing is not a forwarding failure.
+func (c *Conn) abort(err error) {
+	if err == nil || jsonrpc.HasReason(err, jsonrpc.ReasonClosed) {
+		return
+	}
+	c.mu.Lock()
+	out := c.out
+	c.mu.Unlock()
+	switch n := out.(type) {
+	case *deferred:
+		n.abort(err)
+	case interface{ Close() error }:
+		_ = n.Close()
+	}
 }
 
 // follow starts forwarding root session rs from seq start, the first one its
@@ -198,6 +244,7 @@ func (c *Conn) drainClosed(ctx context.Context, f *forwarder) error {
 // forwarder is one session's log tail toward one connection.
 type forwarder struct {
 	out   Notifier
+	fail  func(error) // ends the transport after a failure
 	rs    session.ReadSession
 	scope protocol.Scope
 	runs  *runTracker // nil for a subagent: its result is subagent.finished
@@ -227,7 +274,7 @@ func forwardFailed(id string, seq event.Seq, err error) error {
 
 func (c *Conn) newForwarder(rs session.ReadSession, sc protocol.Scope, runs *runTracker, start event.Offset) *forwarder {
 	return &forwarder{
-		out: c.out, rs: rs, scope: sc, runs: runs, start: start, cursor: start,
+		out: c.out, fail: c.abort, rs: rs, scope: sc, runs: runs, start: start, cursor: start,
 		wake: make(chan struct{}, 1), quit: make(chan struct{}), done: make(chan struct{}), moved: make(chan struct{}),
 	}
 }
@@ -264,11 +311,15 @@ func (f *forwarder) run() {
 	}
 	// The run ends with its session, its transport or a stop. A session closed
 	// under the client is session.closed, which is not sent yet. Anything but a
-	// stop is a failure: the client misses events from the cursor on.
+	// stop is a failure: the client misses events from the cursor on, so the
+	// transport ends rather than leave it waiting for them.
 	if f.stopping() {
 		err = nil
 	}
 	f.end(err)
+	if err != nil {
+		f.fail(err)
+	}
 }
 
 func (f *forwarder) stopping() bool {

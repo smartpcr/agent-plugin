@@ -202,6 +202,9 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer, o jsonrpc.
 	if ctx.Err() == nil && !(errors.Is(rd.failed(), io.EOF) && wr.failed() == nil && jsonrpc.HasReason(conn.Err(), jsonrpc.ReasonClosed)) {
 		ended = fmt.Errorf("sdkserver: the transport failed: %w", errors.Join(conn.Err(), ignoreEOF(rd.failed()), wr.failed()))
 	}
+	if err := out.failure(); err != nil {
+		ended = fmt.Errorf("sdkserver: forwarding failed, the transport was closed: %w", err)
+	}
 	return errors.Join(ended, c.Close(context.WithoutCancel(ctx)))
 }
 

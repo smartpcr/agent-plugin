@@ -1,9 +1,11 @@
 package sdkserver_test
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -516,5 +518,101 @@ func TestDuplicatePromptWaitsForItsEvent(t *testing.T) {
 	}
 	if len(early) > 0 {
 		t.Fatal("a prompt answered before the gate opened")
+	}
+}
+
+// closingFailer fails every notification of method once armed, like an encoder
+// refusing an oversized frame, and is closable like the transport it wraps.
+type closingFailer struct {
+	*jsonrpc.Conn
+	method string
+	armed  atomic.Bool
+}
+
+func (f *closingFailer) Notify(method string, params any) error {
+	if method == f.method && f.armed.Load() {
+		return errors.New("encode: frame too large")
+	}
+	return f.Conn.Notify(method, params)
+}
+
+// A notification that fails after its prompt was answered ends the transport:
+// a client awaiting the run's completion, sending nothing more, sees its input
+// end rather than wait for ever.
+func TestForwardFailureAfterReceiptEndsTransport(t *testing.T) {
+	var fn *closingFailer
+	cl := connectWrapped(t, newServer(t, fakemodel.Reply("unsent")), func(n sdkserver.Notifier) sdkserver.Notifier {
+		fn = &closingFailer{Conn: n.(*jsonrpc.Conn), method: sdkserver.RunCompletedNotification}
+		fn.armed.Store(true)
+		return fn
+	}, nil)
+	id, _ := cl.create()
+	var r protocol.SessionPromptResult
+	cl.call("session/prompt", protocol.SessionPromptParams{SessionID: id, Content: text("go"), MessageID: "m1"}, &r)
+	select {
+	case <-fn.Done():
+	case <-time.After(jsonrpctest.Timeout):
+		t.Fatal("the transport stayed open after session.run.completed failed")
+	}
+	if !jsonrpc.HasReason(fn.Err(), jsonrpc.ReasonClosed) {
+		t.Fatalf("transport ended with %v, want closed by this end", fn.Err())
+	}
+}
+
+// Under Serve a forwarding failure closes the transport and Serve returns it:
+// a prompt whose session.event exceeds the frame bound is never acknowledged.
+func TestServeEndsOnForwardFailure(t *testing.T) {
+	const frame = 4 << 10
+	srv := newServer(t)
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	served := make(chan error, 1)
+	go func() {
+		err := srv.Serve(t.Context(), inR, outW, jsonrpc.Options{MaxFrameBytes: frame})
+		_ = outW.Close()
+		served <- err
+	}()
+	t.Cleanup(func() { _ = inW.Close() })
+	send := func(id int, method string, params any) {
+		line, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+		go func() { _, _ = inW.Write(append(line, '\n')) }()
+	}
+	send(1, "initialize", protocol.InitializeParams{ProtocolVersions: []int{protocol.Version}, ClientInfo: protocol.Implementation{Name: "test", Version: "0"}})
+	lines := bufio.NewScanner(outR)
+	lines.Buffer(nil, 1<<20)
+	for lines.Scan() {
+		var f struct {
+			ID     int64           `json:"id"`
+			Result json.RawMessage `json:"result"`
+			Error  *jsonrpc.Error  `json:"error"`
+		}
+		if err := json.Unmarshal(lines.Bytes(), &f); err != nil {
+			t.Fatalf("frame %s: %v", lines.Bytes(), err)
+		}
+		switch {
+		case f.ID == 3 && f.Error == nil:
+			t.Fatalf("prompt acknowledged although its session.event was not sent: %s", f.Result)
+		case f.ID == 3:
+		case f.Error != nil:
+			t.Fatalf("response %d: %v", f.ID, f.Error)
+		case f.ID == 1:
+			send(2, "session/create", protocol.SessionCreateParams{Model: &protocol.ModelRoute{Provider: string(route), Model: fakemodel.ModelName}})
+		case f.ID == 2:
+			var c protocol.SessionCreateResult
+			if err := json.Unmarshal(f.Result, &c); err != nil {
+				t.Fatal(err)
+			}
+			// The request fits the bound; its event, wrapped in an envelope
+			// and a scope, does not.
+			send(3, "session/prompt", protocol.SessionPromptParams{SessionID: c.SessionID, Content: text(strings.Repeat("x", frame-200)), MessageID: "m1"})
+		}
+	}
+	select {
+	case err := <-served:
+		if err == nil || !strings.Contains(err.Error(), "forwarding failed") {
+			t.Fatalf("Serve = %v, want the forwarding failure", err)
+		}
+	case <-time.After(jsonrpctest.Timeout):
+		t.Fatal("Serve did not return after the forwarding failure")
 	}
 }
