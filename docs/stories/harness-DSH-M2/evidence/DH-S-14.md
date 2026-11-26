@@ -309,8 +309,8 @@ Under the unrelated-failure rule the two Windows-only failures are recorded and 
 here: `TestDirectoryDepth/poll` as question `dh-s-14-watch-poll-burst`, and the lane result for
 `TestCancellationDuringPublishRetryPublishesNothing` under `dh-s-14-fs-cancel-race`, whose earlier
 answer deferred the decision to this lane. Neither has an answer recorded yet. Gates 6 to 13,
-coverage included, did not run. The lane worktree `E:\tmp\s14-lane-acb5056` is kept until those
-answers are in.
+coverage included, did not run. The lane worktree `E:\tmp\s14-lane-acb5056` was removed after its
+run record was copied (Cleanup evidence); a rerun after those answers uses a fresh checkout.
 
 **Record check.** `harness-gate ready --stage DH-S-14 --built` on this record (status line
 `open`), run on the working tree that carries the operator acceptance above: exit 0,
@@ -352,10 +352,27 @@ The Manual checks register above.
 The throwaway worktree at `fb4b97d` (manual checks and Windows lane) was removed with
 `git worktree remove`; the two manual test files were never committed as Go source (kept as
 `.txt` under [runs/manual-fb4b97d/dhs14/](runs/manual-fb4b97d/README.md)); every scratch path
-was a `t.TempDir()`, removed by the test. The lane checkouts at `2441517` (`E:\tmp\s14-lane-2441517`,
-removed with `git worktree remove`; WSL `~/s14-lane-2441517`, removed with `rm -rf`) were removed
-after their run records were copied into `harness-DSH-M1/evidence/runs/`. So was the Windows lane
-worktree at `d26bb4b` (`E:\tmp\s14-lane-d26bb4b`, `git worktree remove`), together with its log.
+was a `t.TempDir()`, removed by the test.
+
+Every lane checkout, each removed after its run records were copied into
+`harness-DSH-M1/evidence/runs/` (none kept):
+
+| Commit | Lane | Checkout | Removed with |
+| --- | --- | --- | --- |
+| `2441517` | Windows | worktree `E:\tmp\s14-lane-2441517` | `git worktree remove` |
+| `2441517` | WSL | clone `~/s14-lane-2441517` | `rm -rf` |
+| `d26bb4b` | Windows | worktree `E:\tmp\s14-lane-d26bb4b` | `git worktree remove`, with its log |
+| `b792aec` | Windows | worktree `E:\tmp\s14-lane-b792aec` | removed; method not recorded at the time (absent from disk and `git worktree list`) |
+| `b792aec` | WSL | clone `~/s14-lane-b792aec` | removed; method not recorded at the time (absent; `ls -d ~/s14-lane-*` matches nothing) |
+| `acb5056` | WSL | clone `~/s14-lane-acb5056` | `rm -rf`, with its log |
+| `acb5056` | Windows | worktree `E:\tmp\s14-lane-acb5056` | `git worktree remove --force` (see below) |
+
+The `acb5056` Windows worktree was removed on 2026-11-25 (local time) after
+`win-acb5056-20261126T0110Z.txt` was copied out of it; the copy's sha256 is
+`86642d801a58a9a9aca29d1f32cb89e3a22df06064ee2f2cb425ef8b5ccea8ee`, the same as the Results
+entry. HEAD was `acb505617eb3bb39f20406e0791994a7e9afdc0f` and `git status --short` showed only
+that untracked record, which is why `--force` was needed. Afterwards `Test-Path
+E:\tmp\s14-lane-acb5056` is `False` and `git worktree list` has no `acb5056` entry.
 
 ### Open items
 
