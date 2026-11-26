@@ -279,7 +279,7 @@ None of these tests or the code under them is in this branch's diff:
 - The files come from `main`: #90, #138, #140 and #146.
 - `main` has no commit after `aa42466`, and no PR is open.
 
-Under the unrelated-failure rule they are recorded and raised (question `dh-s-14-main-test-failures`), not changed here. Gates 6 to 13, coverage included, did not run. The rehearsal record [`wsl-acb5056-20261126T0112Z-rehearse.txt`](../../harness-DSH-M1/evidence/runs/wsl-acb5056-20261126T0112Z-rehearse.txt) (sha256 `f42cf3226731db2ef9677e873526198a4c2db1d14c4d8d5ddf40f23cb252fb44`, exit 0) does not establish acceptance. The WSL clone `~/s14-lane-acb5056` and its log were removed after the records were copied.
+Under the unrelated-failure rule they are recorded and raised (question `dh-s-14-main-test-failures`), not changed here; the operator answered "Pause until fixes for them land on main". Gates 6 to 13, coverage included, did not run. The rehearsal record [`wsl-acb5056-20261126T0112Z-rehearse.txt`](../../harness-DSH-M1/evidence/runs/wsl-acb5056-20261126T0112Z-rehearse.txt) (sha256 `f42cf3226731db2ef9677e873526198a4c2db1d14c4d8d5ddf40f23cb252fb44`, exit 0) does not establish acceptance. The WSL clone `~/s14-lane-acb5056` and its log were removed after the records were copied.
 
 *Windows:* the lane at `acb5056` is still running (worktree `E:\tmp\s14-lane-acb5056`). Its log shows `PASS gofmt`, `PASS vet` and `PASS staticcheck` so far (this confirms the `bus_linux.go` U1000 fix on Windows), and it was in gate 4 (modules) when this was written; its result is to be recorded here.
 
@@ -339,11 +339,15 @@ Both are fixed on this branch (Results, SA1019 fix and Windows U1000 fix), appro
 The lanes at `b792aec` fail gate 2, both of them, on a `time.Sleep` that came in from `origin/main`
 (`internal/world/fs/local/local_test.go:309`, #146). On the operator's answer to
 `dh-s-14-fslocal-nosleep`, that sleep is replaced on this branch (Results, `local_test.go` nosleep
-fix), and the lanes are to run on that commit. Open: the Windows `-race` failure in
-`TestCancellationDuringPublishRetryPublishesNothing`, from `main` (question `dh-s-14-fs-cancel-race`).
+fix), and the lanes are to run on that commit. The Windows `-race` failure in
+`TestCancellationDuringPublishRetryPublishesNothing`, from `main` (question `dh-s-14-fs-cancel-race`):
+the operator answered "Run the lanes first and decide only if the Windows lane fails on it"; the Windows
+lane at `acb5056` decides it.
 At `acb5056` the WSL lane passes gates 1 to 4 and fails gate 5 on four `src/harness` tests from `main`
-(Results, "Lanes at `acb5056`"; question `dh-s-14-main-test-failures`). The Windows lane at `acb5056` is to be
-recorded. Both lanes must
+(Results, "Lanes at `acb5056`"; question `dh-s-14-main-test-failures`). The operator answered "Pause
+until fixes for them land on main": this record waits, unchanged in scope, for those fixes on `main`
+(still at `aa42466`, #147), and then for both lanes to run on a commit that carries them. The Windows
+lane at `acb5056` is to be recorded. Both lanes must
 pass on the final commit, with their exits, run records and coverage recorded here.
 Closed: the gofmt blocker (formatted on this branch, question `dh-s-14-gofmt-lane-blocker`), the
 nosleep blocker (question `dh-s-14-nosleep-lane-blocker`, fix kept) and the
