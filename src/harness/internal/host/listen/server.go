@@ -159,6 +159,9 @@ type Server struct {
 	trusted []string       // TrustedHosts
 	public  string         // PublicURL's origin, or ""
 	csrf    *http.CrossOriginProtection
+	trees   Trees        // nil: the peer rule is not applied
+	rule    atomic.Int32 // rank of the PeerRule
+	unnamed sync.Once    // warns the first peer that cannot be named
 
 	mu     sync.Mutex
 	mounts atomic.Pointer[[]*Mount]
@@ -184,8 +187,14 @@ var _ Listener = (*Server)(nil)
 // Start resolves cfg's address, loads the TLS pair, binds the address and serves.
 // Bad configuration or TLS material fails here, and nothing listens. ctx is the
 // context the pipeline asks listen/authenticate in and logs to; ready gates Stream
-// requests.
+// requests. With no tree lookup the peer rule is not applied (StartWithTrees).
 func Start(ctx *cordis.Context, cfg Config, ready <-chan struct{}) (*Server, error) {
+	return StartWithTrees(ctx, cfg, ready, nil)
+}
+
+// StartWithTrees is Start with the tree lookup the peer rule asks, once per accepted
+// loopback connection; nil applies no peer rule.
+func StartWithTrees(ctx *cordis.Context, cfg Config, ready <-chan struct{}, trees Trees) (*Server, error) {
 	ap, err := cfg.Address()
 	if err != nil {
 		return nil, err
@@ -202,8 +211,9 @@ func Start(ctx *cordis.Context, cfg Config, ready <-chan struct{}) (*Server, err
 		return nil, err
 	}
 	s := &Server{ctx: ctx, secure: cfg.TLS.CertFile != "", ready: ready, grace: orDefault(cfg.ShutdownGrace, DefaultShutdownGrace),
-		peers: peers, trusted: cfg.TrustedHosts, public: publicOrigin(cfg.PublicURL), csrf: http.NewCrossOriginProtection(),
+		peers: peers, trusted: cfg.TrustedHosts, public: publicOrigin(cfg.PublicURL), csrf: http.NewCrossOriginProtection(), trees: trees,
 		gzip: gz, hijacked: map[*hijackedConn]struct{}{}, served: make(chan struct{}), done: make(chan struct{})}
+	s.rule.Store(rank[initialRule(trees)])
 	if cfg.remote() {
 		s.mode = Remote
 	}
@@ -277,6 +287,9 @@ func orDefault[T comparable](v, def T) T {
 // wrapAccepted, when set, wraps the TCP listener before TLS. Only tests set it, to
 // present a connection from a source the loopback test machine cannot dial from.
 var wrapAccepted func(net.Listener) net.Listener
+
+// treesHook, when set, replaces the tree lookup Component passes. Only tests set it.
+var treesHook Trees
 
 // publicOrigin is the scheme and authority of a PublicURL, or "".
 func publicOrigin(raw string) string {
@@ -353,6 +366,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if !s.hostAllowed(r.Host) {
 		refuse(w, http.StatusForbidden, ReasonHost)
+		return
+	}
+	if fromUntrustedPeer(r) {
+		refuse(w, http.StatusForbidden, ReasonUntrustedPeer)
 		return
 	}
 	token, bad := tokenParameter(r)

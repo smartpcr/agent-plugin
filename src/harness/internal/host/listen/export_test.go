@@ -29,3 +29,10 @@ type spoofedConn struct {
 }
 
 func (c spoofedConn) RemoteAddr() net.Addr { return c.addr }
+
+// UseTrees makes every listener Component starts after it ask t for the tree of a
+// local peer. restore puts the boot tree's registry back.
+func UseTrees(t Trees) (restore func()) {
+	treesHook = t
+	return func() { treesHook = nil }
+}

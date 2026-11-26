@@ -2,6 +2,7 @@ package listen
 
 import (
 	"context"
+	"crypto/tls"
 	"net"
 	"net/http"
 	"net/netip"
@@ -10,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess"
 )
 
 // The admission steps before the credential (DH-D-HOST-2, host-telemetry.md §6.1
@@ -36,9 +38,84 @@ func parsePeers(entries []string) ([]netip.Prefix, error) {
 
 type sourceKey struct{}
 
-// connContext decides the connection's source once, when it is accepted.
+// source is a connection's verdict, decided once when it is accepted.
+type source struct {
+	allowed   bool // loopback or an allowed peer
+	untrusted bool // a local peer inside an untrusted process tree
+}
+
+// connContext decides the connection's source and, for a loopback one, the peer
+// rule, once, when it is accepted. A remote peer is not subject to the peer rule.
 func (s *Server) connContext(ctx context.Context, c net.Conn) context.Context {
-	return context.WithValue(ctx, sourceKey{}, s.sourceAllowed(c.RemoteAddr()))
+	v := source{allowed: s.sourceAllowed(c.RemoteAddr())}
+	if v.allowed && loopbackAddr(c.RemoteAddr()) {
+		v.untrusted = s.untrustedPeer(c)
+	}
+	return context.WithValue(ctx, sourceKey{}, v)
+}
+
+func loopbackAddr(a net.Addr) bool {
+	tcp, ok := a.(*net.TCPAddr)
+	return ok && tcp.AddrPort().Addr().Unmap().IsLoopback()
+}
+
+// rank orders the rules from weakest to strongest.
+var rank = map[PeerRule]int32{NotApplied: 0, BestEffort: 1, Exact: 2}
+
+// initialRule is the rule before any connection: none without a tree lookup,
+// otherwise the exactness of this machine's tree owner.
+func initialRule(t Trees) PeerRule {
+	switch {
+	case t == nil:
+		return NotApplied
+	case subprocess.TreeOwner().Exact:
+		return Exact
+	}
+	return BestEffort
+}
+
+// lower weakens the reported rule to r; it never strengthens it.
+func (s *Server) lower(r PeerRule) {
+	for {
+		cur := s.rule.Load()
+		if rank[r] >= cur || s.rule.CompareAndSwap(cur, rank[r]) {
+			return
+		}
+	}
+}
+
+// PeerRule implements Listener.
+func (s *Server) PeerRule() PeerRule {
+	for r, n := range rank {
+		if n == s.rule.Load() {
+			return r
+		}
+	}
+	return NotApplied
+}
+
+// untrustedPeer asks the tree lookup which tree the process behind c is in. A
+// process that cannot be named is served (the rule is then NotApplied, warned
+// once); one in an Untrusted tree is refused.
+func (s *Server) untrustedPeer(c net.Conn) bool {
+	if s.trees == nil {
+		return false
+	}
+	if t, ok := c.(*tls.Conn); ok {
+		c = t.NetConn()
+	}
+	tree, err := s.trees.PeerTree(c)
+	if err != nil {
+		s.lower(NotApplied)
+		s.unnamed.Do(func() {
+			s.ctx.Logger().Warnf("listen: the peer rule is not applied: %v", err)
+		})
+		return false
+	}
+	if !tree.Exact {
+		s.lower(BestEffort)
+	}
+	return tree.Trust == subprocess.Untrusted
 }
 
 // sourceAllowed reports whether a connection from a is admitted: loopback in any
@@ -63,8 +140,14 @@ func (s *Server) sourceAllowed(a net.Addr) bool {
 // fromAllowedSource reads the verdict connContext stored; a request without one
 // (never through this server's connections) is refused.
 func fromAllowedSource(r *http.Request) bool {
-	ok, _ := r.Context().Value(sourceKey{}).(bool)
-	return ok
+	v, _ := r.Context().Value(sourceKey{}).(source)
+	return v.allowed
+}
+
+// fromUntrustedPeer reports whether the connection's process is in an untrusted tree.
+func fromUntrustedPeer(r *http.Request) bool {
+	v, _ := r.Context().Value(sourceKey{}).(source)
+	return v.untrusted
 }
 
 // hostAllowed is the Host check: a loopback name or literal, the bind literal on
@@ -161,21 +244,36 @@ func (s *Server) originAllowed(r *http.Request) bool {
 }
 
 // tokenParameter applies the token-parameter rule: it returns the token of the one
-// exchange (`GET /` with exactly one non-empty token), and refuse is true for a
-// token parameter on any other request. A query that does not parse cannot hide one.
+// exchange (`GET /` with exactly one non-empty parameter spelled `token`), and
+// refuse is true for a token parameter on any other request. Every key is decoded
+// before it is compared, in any letter case, so an escaped key cannot hide one; a key
+// or a token value that does not decode refuses.
 func tokenParameter(r *http.Request) (token string, refuse bool) {
-	if !strings.Contains(r.URL.RawQuery, "token") {
+	if r.URL.RawQuery == "" {
 		return "", false
 	}
-	q, err := url.ParseQuery(r.URL.RawQuery)
-	if err != nil {
-		return "", true
+	var toks []string
+	exact := true
+	for _, pair := range strings.Split(r.URL.RawQuery, "&") {
+		k, v, _ := strings.Cut(pair, "=")
+		key, err := url.QueryUnescape(k)
+		if err != nil {
+			return "", true
+		}
+		if !strings.EqualFold(strings.TrimSpace(key), "token") {
+			continue
+		}
+		val, err := url.QueryUnescape(v)
+		if err != nil {
+			return "", true
+		}
+		exact = exact && key == "token"
+		toks = append(toks, val)
 	}
-	toks, has := q["token"]
-	if !has {
+	if len(toks) == 0 {
 		return "", false
 	}
-	if r.Method != http.MethodGet || r.URL.Path != "/" || len(toks) != 1 || toks[0] == "" {
+	if !exact || r.Method != http.MethodGet || r.URL.Path != "/" || len(toks) != 1 || toks[0] == "" {
 		return "", true
 	}
 	return toks[0], false

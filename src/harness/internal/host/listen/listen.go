@@ -5,7 +5,8 @@
 // TLS whose certificate pair is re-read when the files change. It runs one handler,
 // the admission pipeline (DH-D-HOST-1, DH-D-HOST-2): limits; the source of the
 // connection (loopback or an allowed peer, decided once per accepted connection);
-// the Host check; the token-parameter rule, whose one exchange is the
+// the Host check; the peer rule (a local peer inside an untrusted process tree,
+// resolved once per accepted connection); the token-parameter rule, whose one exchange is the
 // listen/exchange bail key; the mount chosen by longest prefix; the mount's class;
 // the origin check (not for Callback); then (for a Required mount) the
 // listen/authenticate bail key, and only then the mount's handler, with the Peer in
@@ -14,12 +15,14 @@ package listen
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"strings"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/host/access"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess"
 )
 
 // Reasons the listener refuses a configuration or a mount.
@@ -40,6 +43,9 @@ const (
 	ReasonSource herr.Reason = "auth/source"
 	// ReasonHost is a Host that is not loopback, the bind literal or a trusted host (403).
 	ReasonHost herr.Reason = "auth/host"
+	// ReasonUntrustedPeer is a local connection whose process is inside an untrusted
+	// tree, whatever it carries (403, DH-ADR-HOST-12).
+	ReasonUntrustedPeer herr.Reason = "auth/untrusted-peer"
 	// ReasonTokenParameter is a token parameter anywhere but the exchange (400).
 	ReasonTokenParameter herr.Reason = "auth/token-parameter"
 	// ReasonOrigin is a cross-site or cross-origin request (403).
@@ -122,8 +128,31 @@ func PeerFrom(ctx context.Context) (Peer, bool) {
 	return p, ok
 }
 
+// PeerRule is how well the listener tells a local peer inside an untrusted process
+// tree on this machine (DH-ADR-HOST-12).
+type PeerRule string
+
+// The peer rules.
+const (
+	// Exact: tree membership is the job object's or the control group's.
+	Exact PeerRule = "exact"
+	// BestEffort: membership is the process group's, which a member can leave.
+	BestEffort PeerRule = "best-effort"
+	// NotApplied: the connecting process cannot be identified, or there is no tree
+	// registry; local peers are served on their credential alone.
+	NotApplied PeerRule = "not-applied"
+)
+
+// Trees names the process tree behind a local connection (DH-D-EXEC-2); the boot
+// tree's *subprocess.Registry is one.
+type Trees interface {
+	PeerTree(c net.Conn) (subprocess.Tree, error)
+}
+
 // Listener is the service under Key.
 type Listener interface {
+	// PeerRule says whether the peer rule is exact, best effort or not applied here.
+	PeerRule() PeerRule
 	// Mount registers m as an effect of owner's fiber: the mount leaves when owner
 	// unloads. A prefix already mounted is an error.
 	Mount(owner *cordis.Context, m Mount) error

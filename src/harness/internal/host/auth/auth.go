@@ -124,6 +124,7 @@ type Auth struct {
 	mu      sync.Mutex
 	tokens  map[string]time.Time // hash of a launch token -> expiry
 	peers   map[string]*peer     // row key -> live peer
+	gen     uint64               // rows deleted so far; admit registers only if unchanged
 	notices map[int]func(SignIn)
 	next    int
 }
@@ -239,8 +240,17 @@ func (a *Auth) Issue(ctx context.Context, p access.Principal, ttl time.Duration)
 	if ttl <= 0 {
 		ttl = a.opts.Config.CookieMaxAge
 	}
-	c, _, err := a.create(ctx, p, "", ttl, a.cookie+"-"+p.Kind)
+	c, _, err := a.create(ctx, p, "", ttl, a.cookieFor(p))
 	return c, err
+}
+
+// cookieFor is the name of p's cookie: the owner cookie, or the owner cookie's name
+// and p's kind.
+func (a *Auth) cookieFor(p access.Principal) string {
+	if p.IsOwner() {
+		return a.cookie
+	}
+	return a.cookie + "-" + p.Kind
 }
 
 // create stores a new session row and returns its cookie.
@@ -278,43 +288,67 @@ func (a *Auth) Authenticate(c *listen.Credentials) (listen.Peer, bool, error) {
 		return nil, false, err
 	}
 	if own, err := c.Request.Cookie(a.cookie); err == nil {
-		if p := a.admit(own.Value, access.KindOwner); p != nil {
-			return p, true, nil
+		p, err := a.admit(own.Value, access.KindOwner)
+		if err != nil || p != nil {
+			return p, p != nil, err
 		}
 	}
 	for _, ck := range c.Request.Cookies() {
 		if kind, ok := strings.CutPrefix(ck.Name, a.cookie+"-"); ok && kind != access.KindOwner {
-			if p := a.admit(ck.Value, kind); p != nil {
-				return p, true, nil
+			p, err := a.admit(ck.Value, kind)
+			if err != nil || p != nil {
+				return p, p != nil, err
 			}
 		}
 	}
 	return nil, false, nil
 }
 
+// afterRead, when set, runs in admit between the row's read and the peer's
+// registration. Only tests set it, to interleave a revocation there.
+var afterRead func()
+
 // admit is the peer of the live row value's hash names, when that row is of this
-// audience and of kind; nil otherwise.
-func (a *Auth) admit(value, kind string) *peer {
+// audience and of kind; nil otherwise. A row that cannot be read is an error. The
+// peer is registered only if no row was deleted since the read (a.gen), so a
+// revocation that completes during admit leaves no live peer of a deleted row:
+// either changed saw the peer and cancelled it, or admit reads again and finds no row.
+func (a *Auth) admit(value, kind string) (*peer, error) {
 	if b, err := base64.RawURLEncoding.DecodeString(value); err != nil || len(b) != 32 {
-		return nil
+		return nil, nil
 	}
 	h := hashOf(value)
-	r, ok, err := a.ns.Get(h)
-	if err != nil || !ok || subtle.ConstantTimeCompare([]byte(r.Hash), []byte(h)) != 1 {
-		return nil
+	for {
+		a.mu.Lock()
+		gen := a.gen
+		a.mu.Unlock()
+		r, ok, err := a.ns.Get(h)
+		if err != nil {
+			return nil, err
+		}
+		if !ok || subtle.ConstantTimeCompare([]byte(r.Hash), []byte(h)) != 1 {
+			return nil, nil
+		}
+		if r.Audience != a.opts.Audience || r.Principal.Kind != kind || !a.opts.Now().Before(r.Expires) {
+			return nil, nil
+		}
+		if afterRead != nil {
+			afterRead()
+		}
+		a.mu.Lock()
+		if a.gen != gen {
+			a.mu.Unlock()
+			continue
+		}
+		p, ok := a.peers[h]
+		if !ok {
+			ctx, cancel := context.WithCancel(a.base)
+			p = &peer{id: r.ID, principal: r.Principal, formKey: r.FormKey, ctx: ctx, cancel: cancel}
+			a.peers[h] = p
+		}
+		a.mu.Unlock()
+		return p, nil
 	}
-	if r.Audience != a.opts.Audience || r.Principal.Kind != kind || !a.opts.Now().Before(r.Expires) {
-		return nil
-	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if p, ok := a.peers[h]; ok {
-		return p
-	}
-	ctx, cancel := context.WithCancel(a.base)
-	p := &peer{id: r.ID, principal: r.Principal, formKey: r.FormKey, ctx: ctx, cancel: cancel}
-	a.peers[h] = p
-	return p
 }
 
 // changed ends the peer of every deleted row, whoever deleted it.
@@ -323,6 +357,7 @@ func (a *Auth) changed(c kv.Change) {
 		return
 	}
 	a.mu.Lock()
+	a.gen++
 	p, ok := a.peers[c.Key]
 	delete(a.peers, c.Key)
 	a.mu.Unlock()
@@ -331,12 +366,17 @@ func (a *Auth) changed(c kv.Change) {
 	}
 }
 
-// SignOut implements Service.
+// SignOut implements Service. A session row that cannot be read fails the whole
+// sign-out, which then deletes nothing.
 func (a *Auth) SignOut(ctx context.Context, peerID string) error {
 	found := false
 	err := a.ns.Update(ctx, func(tx *kv.Txn[row]) error {
 		for _, k := range tx.Keys() {
-			if r, ok, err := tx.Get(k); err == nil && ok && r.ID == peerID && r.Audience == a.opts.Audience {
+			r, ok, err := tx.Get(k)
+			if err != nil {
+				return err
+			}
+			if ok && r.ID == peerID && r.Audience == a.opts.Audience {
 				found = true
 				return tx.Delete(k)
 			}
@@ -349,11 +389,17 @@ func (a *Auth) SignOut(ctx context.Context, peerID string) error {
 	return err
 }
 
-// RevokeAll implements Service.
+// RevokeAll implements Service. A session row that cannot be read fails the whole
+// revocation, which then deletes nothing: it never reports success with a session
+// left behind.
 func (a *Auth) RevokeAll(ctx context.Context) error {
 	return a.ns.Update(ctx, func(tx *kv.Txn[row]) error {
 		for _, k := range tx.Keys() {
-			if r, ok, err := tx.Get(k); err == nil && ok && r.Audience == a.opts.Audience {
+			r, ok, err := tx.Get(k)
+			if err != nil {
+				return err
+			}
+			if ok && r.Audience == a.opts.Audience {
 				if err := tx.Delete(k); err != nil {
 					return err
 				}

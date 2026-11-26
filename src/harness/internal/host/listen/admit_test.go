@@ -1,12 +1,17 @@
 package listen_test
 
 import (
+	"errors"
 	"net"
 	"net/http"
+	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 
+	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/host/listen"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess"
 )
 
 // do sends method path to l with the given headers ("Host" sets the request's Host)
@@ -144,11 +149,16 @@ func TestTokenParameterRule(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := client(t)
-	for _, p := range []string{"/api?token=x", "/?token=a&token=b", "/?token=", "/api?a=1&token=x"} {
+	for _, p := range []string{"/api?token=x", "/?token=a&token=b", "/?token=", "/api?a=1&token=x",
+		"/api?%74oken=x", "/api?%54OKEN=x", "/?%74oken=a&token=b", "/?Token=x", "/api?a=1&%74%6f%6b%65%6e=x", "/api?%zz=1", "/?token=%zz"} {
 		if code := do(t, c, l, "GET", p); code != http.StatusBadRequest {
 			t.Errorf("GET %s: %d, want 400", p, code)
 		}
 	}
+	if code := do(t, c, l, "GET", "/api?tokens=x&a=token"); code != http.StatusOK {
+		t.Errorf("GET /api?tokens=x&a=token: %d, want 200: neither key is token", code)
+	}
+	before := h.calls.Load()
 	if code := do(t, c, l, "POST", "/?token=x", "Origin", l.Origin()); code != http.StatusBadRequest {
 		t.Errorf("POST /?token=x: %d, want 400", code)
 	}
@@ -156,7 +166,126 @@ func TestTokenParameterRule(t *testing.T) {
 	if code := do(t, c, l, "GET", "/?token=x"); code != http.StatusUnauthorized {
 		t.Errorf("GET /?token=x with no exchange: %d, want 401", code)
 	}
-	if h.calls.Load() != 0 {
+	if h.calls.Load() != before {
 		t.Errorf("a token request reached the mount")
+	}
+}
+
+// fakeTrees answers every lookup with tree (or err) and counts the lookups.
+type fakeTrees struct {
+	tree  subprocess.Tree
+	err   error
+	calls atomic.Int32
+}
+
+func (f *fakeTrees) PeerTree(net.Conn) (subprocess.Tree, error) {
+	f.calls.Add(1)
+	return f.tree, f.err
+}
+
+// peerRuleHost starts a listener whose peer rule asks trees, with a mount at /api,
+// an admit-all authenticator and an exchange answerer, each counting its calls.
+func peerRuleHost(t *testing.T, trees listen.Trees) (l listen.Listener, mounted, authed, exchanged *atomic.Int32) {
+	t.Helper()
+	if trees != nil {
+		defer listen.UseTrees(trees)()
+	}
+	r := cordisRoot(t)
+	l, err := start(t, r, listen.Config{Port: anyPort()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	authed, exchanged = &atomic.Int32{}, &atomic.Int32{}
+	if err := load(t, r, "counting auth", func(ctx *cordis.Context) error {
+		if _, err := listen.Authenticate.On(ctx, func(*cordis.Context, *listen.Credentials) (listen.Peer, bool, error) {
+			authed.Add(1)
+			return peer{id: "p1"}, true, nil
+		}); err != nil {
+			return err
+		}
+		_, err := listen.Exchange.On(ctx, func(*cordis.Context, *listen.Credentials) ([]*http.Cookie, bool, error) {
+			exchanged.Add(1)
+			return []*http.Cookie{{Name: "c", Value: "v"}}, true, nil
+		})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h := &recorder{name: "api"}
+	if err := mount(t, r, l, "api", listen.Mount{Prefix: "/api", Serve: h}); err != nil {
+		t.Fatal(err)
+	}
+	return l, &h.calls, authed, exchanged
+}
+
+// TC-10b, DH-ADR-HOST-12: with a fake tree lookup, a local peer inside an untrusted
+// (model-started) tree is refused 403 auth/untrusted-peer on the token exchange and
+// on a Required request, before any credential is read: neither the exchange, the
+// authenticator nor the mount runs. The tree is asked once per accepted connection.
+// A trusted helper and a process outside every tree pass; a best-effort answer makes
+// PeerRule BestEffort; a peer that cannot be named is served and makes it NotApplied.
+//
+//dsh:test DH-T-HOST-31
+func TestPeerRule(t *testing.T) {
+	untrusted := &fakeTrees{tree: subprocess.Tree{Trust: subprocess.Untrusted, Exact: true, Peer: 4242, Root: 4240, Owner: subprocess.JobObject}}
+	l, mounted, authed, exchanged := peerRuleHost(t, untrusted)
+	c := client(t)
+	for _, p := range []string{"/api", "/?token=x", "/api"} {
+		code, body := get(t, c, l.Origin()+p)
+		if code != http.StatusForbidden || strings.TrimSpace(body) != string(listen.ReasonUntrustedPeer) {
+			t.Errorf("untrusted peer GET %s: %d %q, want 403 %s", p, code, body, listen.ReasonUntrustedPeer)
+		}
+	}
+	if n := mounted.Load() + authed.Load() + exchanged.Load(); n != 0 {
+		t.Errorf("an untrusted peer reached the mount, authenticator or exchange %d times", n)
+	}
+	if n := untrusted.calls.Load(); n != 1 {
+		t.Errorf("the tree was asked %d times over one connection, want once", n)
+	}
+	if l.PeerRule() != listen.Exact {
+		t.Errorf("PeerRule = %s after exact answers, want %s", l.PeerRule(), listen.Exact)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		trees *fakeTrees
+		rule  listen.PeerRule
+	}{
+		{"trusted helper", &fakeTrees{tree: subprocess.Tree{Trust: subprocess.Trusted, Exact: true}}, listen.Exact},
+		{"outside every tree", &fakeTrees{tree: subprocess.Tree{Trust: subprocess.Outside, Exact: true}}, listen.Exact},
+		{"best effort", &fakeTrees{tree: subprocess.Tree{Trust: subprocess.Outside, Exact: false}}, listen.BestEffort},
+		{"cannot be named", &fakeTrees{err: errors.New("subprocess/peer-unknown")}, listen.NotApplied},
+	} {
+		l, mounted, _, exchanged := peerRuleHost(t, tc.trees)
+		c := client(t)
+		c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		if code, _ := get(t, c, l.Origin()+"/api"); code != http.StatusOK || mounted.Load() != 1 {
+			t.Errorf("%s: GET /api = %d, want 200 from the mount", tc.name, code)
+		}
+		if code, _ := get(t, c, l.Origin()+"/?token=x"); code != http.StatusSeeOther || exchanged.Load() != 1 {
+			t.Errorf("%s: exchange = %d, want 303", tc.name, code)
+		}
+		if l.PeerRule() != tc.rule {
+			t.Errorf("%s: PeerRule = %s, want %s", tc.name, l.PeerRule(), tc.rule)
+		}
+	}
+
+	if l, _, _, _ := peerRuleHost(t, nil); l.PeerRule() != listen.NotApplied {
+		t.Errorf("no tree registry: PeerRule = %s, want %s", l.PeerRule(), listen.NotApplied)
+	}
+}
+
+// With the real process registry, the test's own connection is outside every tree
+// and served; PeerRule reports what this machine can tell.
+//
+//dsh:test DH-T-HOST-31
+func TestPeerRuleWithTheProcessRegistry(t *testing.T) {
+	l, mounted, _, _ := peerRuleHost(t, subprocess.NewRegistry())
+	if code, _ := get(t, client(t), l.Origin()+"/api"); code != http.StatusOK || mounted.Load() != 1 {
+		t.Errorf("own connection: GET /api = %d, want 200", code)
+	}
+	t.Logf("peer rule on %s: %s (tree owner %s)", runtime.GOOS, l.PeerRule(), subprocess.TreeOwner())
+	if runtime.GOOS == "windows" && l.PeerRule() != listen.Exact {
+		t.Errorf("PeerRule on Windows = %s, want %s: a job object is exact and loopback TCP peers are named", l.PeerRule(), listen.Exact)
 	}
 }

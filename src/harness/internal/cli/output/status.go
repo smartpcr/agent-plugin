@@ -126,6 +126,7 @@ var codes = map[herr.Reason]int{
 	"auth/token-parameter": Invalid,
 	"auth/unauthorized":    Denied,
 	"auth/unknown-peer":    Invalid,
+	"auth/untrusted-peer":  Denied,
 
 	"secret/bad-env-file":   Invalid,
 	"secret/bad-reference":  Invalid,

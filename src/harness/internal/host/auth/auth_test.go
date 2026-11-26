@@ -2,7 +2,10 @@ package auth_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -17,6 +20,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/host/listen"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store/sqlite"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/kv"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
 )
 
 var bg = context.Background()
@@ -61,6 +65,7 @@ type host struct {
 	l     listen.Listener
 	svc   auth.Service
 	db    *sqlite.Store
+	logs  *cordis.MemoryExporter
 	mu    sync.Mutex
 	peers []listen.Peer
 }
@@ -81,7 +86,8 @@ func newHost(t *testing.T) *host {
 	t.Helper()
 	r := cordis.New()
 	r.Loggers().ClearExporters()
-	h := &host{db: openDB(t)}
+	h := &host{db: openDB(t), logs: &cordis.MemoryExporter{}}
+	r.Loggers().AddExporter(h.logs)
 	if _, err := kv.DBKey.Provide(r, kv.DB(h.db)); err != nil {
 		t.Fatal(err)
 	}
@@ -416,5 +422,156 @@ func TestTokenTTLNoticeAndRestart(t *testing.T) {
 	now = now.Add(auth.DefaultCookieMaxAge)
 	if _, ok, _ := restarted.Authenticate(creds("", cookies[0])); ok {
 		t.Error("an expired session admitted")
+	}
+}
+
+// An issued principal signing out over HTTP gets its own cookie expired, not the
+// owner's, and that cookie is refused from then on.
+//
+//dsh:test DH-T-HOST-12
+func TestIssuedPrincipalSignOut(t *testing.T) {
+	h := newHost(t)
+	c := browser(t)
+	guest, err := h.svc.Issue(bg, access.Principal{Kind: "guest", ID: "g1"}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := send(t, c, "POST", h.l.Origin()+auth.SignOutPath, []*http.Cookie{guest}, "Origin", h.l.Origin())
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("guest sign-out: %d, want 204", resp.StatusCode)
+	}
+	expired := map[string]bool{}
+	for _, ck := range resp.Cookies() {
+		expired[ck.Name] = ck.MaxAge < 0
+	}
+	if want := auth.CookieName(h.l.Origin()) + "-guest"; guest.Name != want || !expired[want] || len(expired) != 1 {
+		t.Errorf("guest sign-out set %v, want only %s expired", resp.Header.Values("Set-Cookie"), want)
+	}
+	if resp := send(t, c, "GET", h.l.Origin()+"/api", []*http.Cookie{guest}); resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("guest cookie after sign-out: %d, want 401", resp.StatusCode)
+	}
+}
+
+// A revocation that completes between admit's read of the row and its registration
+// of the peer leaves no live peer: the request is refused rather than admitted with
+// the peer of a deleted session.
+//
+//dsh:test DH-T-HOST-12
+func TestRevocationDuringAdmit(t *testing.T) {
+	const aud = "http://127.0.0.1:3080"
+	for _, revoke := range []string{"revoke-all", "sign-out"} {
+		db := openDB(t)
+		first, err := auth.New(bg, db, auth.Options{Audience: aud})
+		if err != nil {
+			t.Fatal(err)
+		}
+		link, err := first.Mint()
+		if err != nil {
+			t.Fatal(err)
+		}
+		cookies, ok, err := first.Exchange(&listen.Credentials{Request: httptest.NewRequest("GET", "/", nil),
+			Token: strings.TrimPrefix(link, aud+"/?token="), Audience: aud})
+		if !ok || err != nil {
+			t.Fatalf("exchange: %v %v", ok, err)
+		}
+		creds := &listen.Credentials{Request: httptest.NewRequest("GET", "/api", nil), Audience: aud}
+		creds.Request.AddCookie(cookies[0])
+		p, ok, _ := first.Authenticate(creds)
+		if !ok {
+			t.Fatal("the session did not admit")
+		}
+		peerID := p.ID()
+		_ = first.Close()
+
+		// A new Auth over the same table holds no live peer, so admit must register one.
+		a, err := auth.New(bg, db, auth.Options{Audience: aud})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var once sync.Once
+		var rerr error
+		restore := auth.AfterRead(func() {
+			once.Do(func() {
+				if revoke == "revoke-all" {
+					rerr = a.RevokeAll(bg)
+				} else {
+					rerr = a.SignOut(bg, peerID)
+				}
+			})
+		})
+		got, ok, err := a.Authenticate(creds)
+		restore()
+		if rerr != nil || err != nil {
+			t.Fatalf("%s: %v; authenticate: %v", revoke, rerr, err)
+		}
+		if ok || got != nil {
+			t.Errorf("%s during admit: admitted as peer %v, want refused", revoke, got)
+		}
+		if got != nil && got.Context().Err() == nil {
+			t.Errorf("%s during admit: the peer of a deleted session is live", revoke)
+		}
+		_ = a.Close()
+	}
+}
+
+// newerRow stores a session row a newer build wrote, under the hash of a cookie
+// value it returns, and bumps the namespace revision so every Auth reloads it.
+func newerRow(t *testing.T, db *sqlite.Store) string {
+	t.Helper()
+	value := base64.RawURLEncoding.EncodeToString(make([]byte, 32))
+	sum := sha256.Sum256([]byte(value))
+	if err := db.WriteTx(bg, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(bg, `INSERT INTO kv (namespace, key, version, value, updated_at) VALUES (?, ?, 99, '{}', 0)`,
+			auth.Namespace, hex.EncodeToString(sum[:])); err != nil {
+			return err
+		}
+		_, err := kv.BumpRevision(bg, tx, auth.Namespace)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return value
+}
+
+// A session row the running build cannot read (storage/record-version) is an
+// authentication error the listener logs and answers 500, not an unknown cookie;
+// sign-out and revoke-all fail rather than report success with that row left, and
+// the failed revocation deletes nothing.
+//
+//dsh:test DH-T-HOST-11
+//dsh:test DH-T-HOST-12
+func TestUnreadableSessionRow(t *testing.T) {
+	h := newHost(t)
+	c := browser(t)
+	live := h.signIn(t, c)
+	value := newerRow(t, h.db)
+	api := h.l.Origin() + "/api"
+
+	resp := send(t, c, "GET", api, []*http.Cookie{{Name: live.Name, Value: value}})
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("the newer row's cookie: %d, want 500", resp.StatusCode)
+	}
+	logged := false
+	for _, m := range h.logs.Messages() {
+		logged = logged || (m.Level == cordis.LevelError && strings.Contains(m.Text, "listen: authenticate") && strings.Contains(m.Text, string(kv.ReasonRecordVersion)))
+	}
+	if !logged {
+		t.Errorf("the authentication failure was not logged with %s", kv.ReasonRecordVersion)
+	}
+	if h.calls() != 0 {
+		t.Error("a request with an unreadable session reached the mount")
+	}
+
+	if err := h.svc.SignOut(bg, "no-such-peer"); !herr.Has(err, kv.ReasonRecordVersion) {
+		t.Errorf("SignOut over an unreadable row = %v, want %s", err, kv.ReasonRecordVersion)
+	}
+	if err := h.svc.RevokeAll(bg); !herr.Has(err, kv.ReasonRecordVersion) {
+		t.Errorf("RevokeAll over an unreadable row = %v, want %s", err, kv.ReasonRecordVersion)
+	}
+	if resp := send(t, c, "POST", h.l.Origin()+auth.RevokeAllPath, []*http.Cookie{live}, "Origin", h.l.Origin()); resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("POST revoke-all over an unreadable row: %d, want 500", resp.StatusCode)
+	}
+	if resp := send(t, c, "GET", api, []*http.Cookie{live}); resp.StatusCode != http.StatusOK {
+		t.Errorf("a live session after the failed revocation: %d, want 200: nothing is deleted", resp.StatusCode)
 	}
 }
