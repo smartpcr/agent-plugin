@@ -169,28 +169,55 @@ same 5 as at `3cd3da0` before the change).
 `internal/world/sandbox/launch/confine_linux.go:62:14: github.com/landlock-lsm/go-landlock/landlock.NewConfig is deprecated: Use a struct literal instead: Config{HandledAccessFS: llsyscall.AccessFSExecute}  (SA1019)`.
 That file is DH-S-13 Linux sandbox code (#136, `fb79bbb`), outside this record. It builds only on
 Linux, and it sets up a confinement check, so it is not changed here (question
-`dh-s-14-landlock-staticcheck`). The Windows lane at `d26bb4b` was still running when this record
-was written. Gates 4 to 13 on WSL, coverage included, did not run. The S14 gate scenario
+`dh-s-14-landlock-staticcheck`). The Windows lane at `d26bb4b` finished:
+[`win-d26bb4b-20261126T0038Z.txt`](../../harness-DSH-M1/evidence/runs/win-d26bb4b-20261126T0038Z.txt)
+(sha256 `3f54d171049a5f9aaf596ad11e7ec06ad0e7650ec9caade46d19c1bf6d6dcef4`, exit 1). It passes gate 1
+(`PASS gofmt`) and gate 2 (`PASS vet`) and stops at gate 3, `harness-gate: FAIL staticcheck`, on a
+Windows-only finding, with both tag sets:
+`internal\world\sandbox\launch\bus.go:14:7: const busDialLimit is unused (U1000)` and
+`internal\world\sandbox\launch\bus.go:159:6: func dialUnix is unused (U1000)`. Both are used only by
+`bus_linux.go`. Gates 4 to 13, coverage included, did not run on either lane. The S14 gate scenario
 (M2-DOD-1) stays open until both lanes pass.
 
 **SA1019 fix on this branch** (one call site, sandbox confinement code, so it goes to human
-review under question `dh-s-14-landlock-staticcheck`). In `confineLandlock`
-(`internal/world/sandbox/launch/confine_linux.go`), the deprecated
-`landlock.NewConfig(landlock.AccessFSSet(rs.Handled))` is replaced by the struct literal the
-deprecation names, `landlock.Config{HandledAccessFS: landlock.AccessFSSet(rs.Handled)}`. No check
-is lost. In go-landlock v0.11.2, `NewConfig` with one `AccessFSSet` only tests `AccessFSSet.valid()`
-(access rights known to go-landlock). The `cfg.NewRulesetFD` call that follows
-(`createRuleset`, `restrict.go`) tests the same thing, `Config.valid()`, before it creates anything,
-and returns `EINVAL`. `confineLandlock` already turns that error into a refusal of the stage, and
-its message now carries the interface version that the dropped error used to. On WSL (kernel
-`6.18.58.1-microsoft-standard-WSL2`):
-- `gofmt -l` of the package lists nothing.
-- `go vet` with `-tags=` and with `-tags=replay,scenario,bench` passes.
-- `staticcheck@v0.8.2` on `./internal/world/sandbox/...` with both tag sets passes.
-- `go test -count=1 ./internal/world/sandbox/...` passes.
-- `go test -tags=e2e -count=1 -run TestE2E_dh_s_13 ./test/e2e/harness-DSH-M2/` passes all 7 DH-S-13 sets, the Landlock backend's 14 scenarios included. The same 5 seam-probe steps are skipped as before.
+review under question `dh-s-14-landlock-staticcheck`; the operator chose "Replace NewConfig with the
+Config struct literal here, keeping an explicit validity check, for human review"). In
+`confineLandlock` (`internal/world/sandbox/launch/confine_linux.go`), the deprecated
+`landlock.NewConfig(landlock.AccessFSSet(rs.Handled))` is replaced by `landlockConfig(rs)`, which
+builds the struct literal that the deprecation notice names,
+`landlock.Config{HandledAccessFS: landlock.AccessFSSet(rs.Handled)}`. Before it builds the config,
+it makes an explicit validity check: a handled set with any kind outside
+`LandlockHandled(LandlockReference)` is refused, with the interface version in the error. This takes
+the place of what `NewConfig` checked: in go-landlock v0.11.2, `NewConfig` with one `AccessFSSet`
+tests only `AccessFSSet.valid()`, that go-landlock knows every access right. The kinds of the
+reference set are rights go-landlock knows, and `cfg.NewRulesetFD` (`createRuleset`, `restrict.go`)
+still tests `Config.valid()` again before it creates anything. New test
+`TestLandlockConfigRefusesUnknownKinds` (`confine_linux_test.go`, `DH-T-SANDBOX-4`) checks two
+things:
+- the config for every kernel version 0 to 7 carries that version's handled set;
+- a set with an unknown bit is refused.
 
-Both lanes run once on the commit that carries this fix.
+**Windows U1000 fix on this branch** (a move with no behaviour change; the code is in the sandbox
+package, so it is named for the same review). `busDialLimit` and `dialUnix` move from `bus.go`
+(built on every platform) to `bus_linux.go`, their only user. The Windows build no longer carries
+unused code, and the Linux build is unchanged.
+
+Checks of both fixes:
+- WSL (kernel `6.18.58.1-microsoft-standard-WSL2`):
+  - `gofmt -l` of the package lists nothing.
+  - `go vet` with `-tags=` and with `-tags=replay,scenario,bench` passes, with and without the
+    gate's own analyzers (`HARNESS_GATE_VETTOOL=1`, `-vettool=<harness-gate>`).
+  - `staticcheck@v0.8.2 ./...` on `src/harness` passes with both tag sets.
+  - `go test -race` of the launch package passes, as does `go test ./internal/world/sandbox/...`.
+  - `go test -tags=e2e -count=1 -run TestE2E_dh_s_13 ./test/e2e/harness-DSH-M2/` passes all 7
+    DH-S-13 sets, the Landlock backend's 14 scenarios included. The same 5 seam-probe steps are
+    skipped as before.
+- Windows: `go vet` of `./internal/world/sandbox/...` and `staticcheck@v0.8.2 ./...` on
+  `src/harness` pass with both tag sets, and `go test ./internal/world/sandbox/...` passes.
+
+Both lanes run once on the commit that carries both fixes. The WSL lane is also run at `660f158`,
+the commit that carries the struct literal but not the move (the move changes nothing on Linux),
+to reach gates 4 to 13 early.
 
 **Record check.** `harness-gate ready --stage DH-S-14 --built` on this record (status line
 `open`), run on the working tree that carries the operator acceptance above: exit 0,
@@ -234,7 +261,8 @@ The throwaway worktree at `fb4b97d` (manual checks and Windows lane) was removed
 `.txt` under [runs/manual-fb4b97d/dhs14/](runs/manual-fb4b97d/README.md)); every scratch path
 was a `t.TempDir()`, removed by the test. The lane checkouts at `2441517` (`E:\tmp\s14-lane-2441517`,
 removed with `git worktree remove`; WSL `~/s14-lane-2441517`, removed with `rm -rf`) were removed
-after their run records were copied into `harness-DSH-M1/evidence/runs/`.
+after their run records were copied into `harness-DSH-M1/evidence/runs/`. So was the Windows lane
+worktree at `d26bb4b` (`E:\tmp\s14-lane-d26bb4b`, `git worktree remove`), together with its log.
 
 ### Open items
 
@@ -242,11 +270,12 @@ Both lanes at `2441517` fail gate 2 (`nosleep`, three `time.Sleep` calls in DH-S
 Results). The three waits are replaced on this branch, and the WSL lane at `d26bb4b` passes vet.
 It then fails gate 3, staticcheck SA1019 on `landlock.NewConfig` in
 `internal/world/sandbox/launch/confine_linux.go:62` (Results; question
-`dh-s-14-landlock-staticcheck`). That call is replaced on this branch (Results, SA1019 fix), pending
-human review. The Windows lane at `d26bb4b` is to be recorded, and both lanes are to be run on the
-commit that carries the fix. Both lanes must
+`dh-s-14-landlock-staticcheck`). The Windows lane at `d26bb4b` fails gate 3 too, U1000 in `bus.go`.
+Both are fixed on this branch (Results, SA1019 fix and Windows U1000 fix), pending human review.
+Both lanes are to be run on the commit that carries both fixes. Both lanes must
 pass on the final commit, with their exits, run records and coverage recorded here.
-Closed: the gofmt blocker (formatted on this branch, question `dh-s-14-gofmt-lane-blocker`) and the
+Closed: the gofmt blocker (formatted on this branch, question `dh-s-14-gofmt-lane-blocker`), the
+nosleep blocker (question `dh-s-14-nosleep-lane-blocker`, fix kept) and the
 operator acceptance of the two manual checks (question `dh-s-14-manual-checks`, accepted).
 
 Built-not-done: BUNDLE-2, BUNDLE-6 until DH-S-22; BUNDLE-4, BUNDLE-5 until DH-S-48 (impl.md problem S-1).
