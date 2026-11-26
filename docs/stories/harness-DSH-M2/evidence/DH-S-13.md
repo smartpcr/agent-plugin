@@ -2,6 +2,9 @@
 
 Closure status: open
 
+Current state: **open, not built.** Neither gate lane has passed all 13 gates on a final commit (the
+298dd70 WSL lane failed at gate 5/13, test); see Results.
+
 Evidence record of [impl.md DH-S-13](../../../harness/impl.md#dh-s-13) (Sandbox launch, Linux backends and shell tools) for story
 `harness:DSH-M2`, in the impl.md sec. 7.3 form of the M1 records
 ([../../harness-DSH-M1/evidence/README.md](../../harness-DSH-M1/evidence/README.md)). Plan:
@@ -31,14 +34,14 @@ Each step's merge commit; `--built` refuses a step without one.
 
 | Step | Deliverable | Commit | Notes |
 | --- | --- | --- | --- |
-| 13.1 | DH-D-SANDBOX-2 | | |
-| 13.2 | DH-D-EXEC-4 | | |
-| 13.3 | DH-D-SANDBOX-3 | | |
-| 13.4 | DH-D-SANDBOX-4 | | `world/sandbox/local`: bubblewrap backend (`bwrap` resolved once by absolute path; argv from the Policy, golden `local/testdata/bwrap_argv.golden`, `TestBwrapArgvFromPolicy`) and pure-Go Landlock backend through go-landlock v0.11.2 (`launch/landlock.go`, `launch/confine_linux.go`: `NewRulesetFD`, locked thread, `no_new_privs`, `LandlockRestrictSelf`; ABI probe, rules from the Policy, applied by the stage to itself; `TestLandlockRulesFromPolicy`, `TestLandlockStageConfinesForReal`); Prepare refuses a root that would make the harness binary or home writable where the backend cannot overlay it, judging each root, the home and the binary as written and with every symbolic link resolved, and refusing a path it cannot resolve (`local/protect.go`, `TestPrepareKeepsTheHarnessUnwritable`, `TestPrepareSeesThroughSymlinkedAncestors`); order bwrap then Landlock, both failing refuses a confined policy `sandbox/unavailable` (`TestSelectionOrder`). I2 Q4 default applied, see Owner defaults. |
-| 13.5 | DH-D-EXEC-3 | | |
-| 13.6 | DH-D-EXEC-8 | | `world/shellexec` (C39): `Resolve` fills the dialect and the default timeout (120 s), cuts a timeout above the cap (600 s) and refuses a blank or NUL command, a relative directory, a negative timeout or no policy (`TestResolveAppliesDefaultsAndCaps`, `TestResolveRefuses`); `Start` builds the dialect's argv, the child environment through `shellexec/env`, asks `sandbox.Service.Prepare` (C37) for the plan and starts through `subprocess.Start` (C38), never `os/exec`; the timeout runs from the confirmed start; one `Execution` serves the foreground `Wait` and background `Reader`s, and ending a foreground wait does not stop the command (`TestForegroundWaitLeavesABackgroundRun`); a command that cannot start (no plan, refused confinement, no environment, no argv) is an explicit `Failed` outcome (`TestFailedOutcome`); `TimedOut` and `Cancelled` carry their first cause (`TestTimeoutStopsTheCommand`); once the shell exits, the wait for its streams is bounded (`Limits.Drain`, 2 s, through the new `subprocess.Spec.Drain`), so a descendant holding stdout (`sleep 30 & echo hi; exit 3`) cannot hold back the outcome: exit code and tail kept, the descendant stopped with the tree (`TestDescendantHoldingStdout`); the private directory (PowerShell script file) is made under a workspace-write policy's scratch root, else its first write root, so a confiner hiding the host `/tmp` (bubblewrap) still binds it, without widening the policy (`TestPrivateDirIsVisibleUnderThePolicy`). `/bash`: configured path, Git for Windows, PATH (the System32 and WindowsApps WSL launcher skipped), `bash -c`, `BASH_ENV`/`ENV` unset (`TestFindOrder`, `TestBashExecutor`: `echo hi; exit 3` gives exit 3, tail `hi`, Unconfined on the Linux lane, failing if bash is missing, TC-06b). `/pwsh`: configured path, PowerShell 7 install, PATH, Windows PowerShell 5.1 when allowed, edition reported; `-NoLogo -NoProfile -NonInteractive -Command` after a UTF-8 preamble; a `param`/`using`/`#requires` first statement, after leading white space, BOM and `#`/`<# #>` comments, runs from a private BOM script file with its exit code carried (`TestFirstStatement`, `TestArgv`, `TestPwshExecutor`: `Write-Output hi; exit 3` gives exit 3, tail `hi` on the Windows lane, TC-06b). `/env`: managed-variable registry (built-ins `DSH_HOME`, `DSH_EXECUTABLE` first; duplicate, reserved `DSH_TOOL_*`, malformed and undeclared keys refused; contributor leaves with its fiber) and the scrubbed builder: every name `human/secret` holds, configured or stored, is dropped from the host, the entries and the managed snapshot, failing closed when the store cannot list them (`TestSecretsNeverReachTheChild` with `DSH_TEST_TOKEN`, `TestBuilderFailsClosed`, M2-C-11). Pwsh 5.1 non-ASCII stdin stays open: see Open items (`UP-DEBT-limit.packages.shell.pwsh-local.7`, DH-E-EXEC-7 at DH-S-39, M2-I-2). |
-| 13.7 | DH-D-EXEC-9 | | `world/shellexec/tools` (C40): the `bash` and `pwsh` tools, both always declared (`shellexec.tools` component, injects `shellexec.Key`, `sandbox.ResolverKey`, `workdir.Key`, `tools.Key`); named arguments only, `command` (required), `timeout` (milliseconds, 0 the shell's default, cut to its cap) and `description`, strict decoding refusing any other, `stdin` and `env` included, with `tools/invalid-arguments` naming it before anything starts (`TestUnknownArgumentRejected`, TC-06b logic; `TestArgumentsAreNamedOnly`); per call the session's policy (C33) and working directory are resolved and the command runs through the dialect's executor (C39); a dialect with no executor fails `shellexec/not-found` and a command that never started fails with its reason, no exit code (`TestNoExecutorIsNotFound`, `TestRefusedPlanIsAnError`); the result is structured JSON: `outcome`, `exit_code`, `stop` (timeout or cancelled, budget, cause), `timeout_ms`, `duration_ms`, each stream's `tail` (the executor's ring, `Limits.TailBytes`, 64 000 bytes, the tool cutting nothing the collector kept: bytes that are not UTF-8 are shown as U+FFFD, or as `?` where U+FFFD would not fit, and marked `replaced`, so `truncated` is exactly the collector's and, with a spill store mounted, a truncated tail is one the collector spilled whole; without a store, or when the spill fails, the result has no `spill` or a `spill_error`), `bytes`, `truncated`, `replaced` and `spill` reference, and `confinement` (`mode`, `state`, `backend`, `missing`, `exposed`) (`TestTailIsBoundedWithSpill`; `TestOutputPastTheRingIsSpilled`, collector to result with a spill store: 40 000 bytes under the default ring shown whole, 70 000 truncated to 64 000 with a 70 000-byte spill, 900 and 1 500 bytes under a 1 000-byte ring, `printf '\377a\377'` under a 3-byte ring shown whole as `?a?`; `TestTimeoutIsCutBeforeConversion`: `timeout` values that would overflow `time.Duration` resolve to the cap; `TestToolResultCarriesConfinement`: `true` logs `exit_code` 0 and `confinement.state` `unconfined` under danger-full-access, `echo hi; exit 3` exit 3 tail `hi`, failing if bash is missing on the Linux lane, TC-06b; `TestPwshToolThroughThePipeline`: `Write-Output hi; exit 3` exit 3 tail `hi` on the Windows lane, TC-06b). All tagged DH-T-EXEC-15. Not built here: promotion to a background job on timeout (`run_in_background`, DH-D-JOBS-1 is not mounted in M2) and the `workdir` argument. |
-| 13.8 | DH-D-CONTEXT-2 | | |
+| 13.1 | DH-D-SANDBOX-2 | 5ba19c4 | |
+| 13.2 | DH-D-EXEC-4 | decfd62 | |
+| 13.3 | DH-D-SANDBOX-3 | c026bce | |
+| 13.4 | DH-D-SANDBOX-4 | fb79bbb | `world/sandbox/local`: bubblewrap backend (`bwrap` resolved once by absolute path; argv from the Policy, golden `local/testdata/bwrap_argv.golden`, `TestBwrapArgvFromPolicy`) and pure-Go Landlock backend through go-landlock v0.11.2 (`launch/landlock.go`, `launch/confine_linux.go`: `NewRulesetFD`, locked thread, `no_new_privs`, `LandlockRestrictSelf`; ABI probe, rules from the Policy, applied by the stage to itself; `TestLandlockRulesFromPolicy`, `TestLandlockStageConfinesForReal`); Prepare refuses a root that would make the harness binary or home writable where the backend cannot overlay it, judging each root, the home and the binary as written and with every symbolic link resolved, and refusing a path it cannot resolve (`local/protect.go`, `TestPrepareKeepsTheHarnessUnwritable`, `TestPrepareSeesThroughSymlinkedAncestors`); order bwrap then Landlock, both failing refuses a confined policy `sandbox/unavailable` (`TestSelectionOrder`). I2 Q4 default applied, see Owner defaults. |
+| 13.5 | DH-D-EXEC-3 | ea4e559 | |
+| 13.6 | DH-D-EXEC-8 | 07b34c4 | `world/shellexec` (C39): `Resolve` fills the dialect and the default timeout (120 s), cuts a timeout above the cap (600 s) and refuses a blank or NUL command, a relative directory, a negative timeout or no policy (`TestResolveAppliesDefaultsAndCaps`, `TestResolveRefuses`); `Start` builds the dialect's argv, the child environment through `shellexec/env`, asks `sandbox.Service.Prepare` (C37) for the plan and starts through `subprocess.Start` (C38), never `os/exec`; the timeout runs from the confirmed start; one `Execution` serves the foreground `Wait` and background `Reader`s, and ending a foreground wait does not stop the command (`TestForegroundWaitLeavesABackgroundRun`); a command that cannot start (no plan, refused confinement, no environment, no argv) is an explicit `Failed` outcome (`TestFailedOutcome`); `TimedOut` and `Cancelled` carry their first cause (`TestTimeoutStopsTheCommand`); once the shell exits, the wait for its streams is bounded (`Limits.Drain`, 2 s, through the new `subprocess.Spec.Drain`), so a descendant holding stdout (`sleep 30 & echo hi; exit 3`) cannot hold back the outcome: exit code and tail kept, the descendant stopped with the tree (`TestDescendantHoldingStdout`); the private directory (PowerShell script file) is made under a workspace-write policy's scratch root, else its first write root, so a confiner hiding the host `/tmp` (bubblewrap) still binds it, without widening the policy (`TestPrivateDirIsVisibleUnderThePolicy`). `/bash`: configured path, Git for Windows, PATH (the System32 and WindowsApps WSL launcher skipped), `bash -c`, `BASH_ENV`/`ENV` unset (`TestFindOrder`, `TestBashExecutor`: `echo hi; exit 3` gives exit 3, tail `hi`, Unconfined on the Linux lane, failing if bash is missing, TC-06b). `/pwsh`: configured path, PowerShell 7 install, PATH, Windows PowerShell 5.1 when allowed, edition reported; `-NoLogo -NoProfile -NonInteractive -Command` after a UTF-8 preamble; a `param`/`using`/`#requires` first statement, after leading white space, BOM and `#`/`<# #>` comments, runs from a private BOM script file with its exit code carried (`TestFirstStatement`, `TestArgv`, `TestPwshExecutor`: `Write-Output hi; exit 3` gives exit 3, tail `hi` on the Windows lane, TC-06b). `/env`: managed-variable registry (built-ins `DSH_HOME`, `DSH_EXECUTABLE` first; duplicate, reserved `DSH_TOOL_*`, malformed and undeclared keys refused; contributor leaves with its fiber) and the scrubbed builder: every name `human/secret` holds, configured or stored, is dropped from the host, the entries and the managed snapshot, failing closed when the store cannot list them (`TestSecretsNeverReachTheChild` with `DSH_TEST_TOKEN`, `TestBuilderFailsClosed`, M2-C-11). Pwsh 5.1 non-ASCII stdin stays open: see Open items (`UP-DEBT-limit.packages.shell.pwsh-local.7`, DH-E-EXEC-7 at DH-S-39, M2-I-2). |
+| 13.7 | DH-D-EXEC-9 | 7d00271 | `world/shellexec/tools` (C40): the `bash` and `pwsh` tools, both always declared (`shellexec.tools` component, injects `shellexec.Key`, `sandbox.ResolverKey`, `workdir.Key`, `tools.Key`); named arguments only, `command` (required), `timeout` (milliseconds, 0 the shell's default, cut to its cap) and `description`, strict decoding refusing any other, `stdin` and `env` included, with `tools/invalid-arguments` naming it before anything starts (`TestUnknownArgumentRejected`, TC-06b logic; `TestArgumentsAreNamedOnly`); per call the session's policy (C33) and working directory are resolved and the command runs through the dialect's executor (C39); a dialect with no executor fails `shellexec/not-found` and a command that never started fails with its reason, no exit code (`TestNoExecutorIsNotFound`, `TestRefusedPlanIsAnError`); the result is structured JSON: `outcome`, `exit_code`, `stop` (timeout or cancelled, budget, cause), `timeout_ms`, `duration_ms`, each stream's `tail` (the executor's ring, `Limits.TailBytes`, 64 000 bytes, the tool cutting nothing the collector kept: bytes that are not UTF-8 are shown as U+FFFD, or as `?` where U+FFFD would not fit, and marked `replaced`, so `truncated` is exactly the collector's and, with a spill store mounted, a truncated tail is one the collector spilled whole; without a store, or when the spill fails, the result has no `spill` or a `spill_error`), `bytes`, `truncated`, `replaced` and `spill` reference, and `confinement` (`mode`, `state`, `backend`, `missing`, `exposed`) (`TestTailIsBoundedWithSpill`; `TestOutputPastTheRingIsSpilled`, collector to result with a spill store: 40 000 bytes under the default ring shown whole, 70 000 truncated to 64 000 with a 70 000-byte spill, 900 and 1 500 bytes under a 1 000-byte ring, `printf '\377a\377'` under a 3-byte ring shown whole as `?a?`; `TestTimeoutIsCutBeforeConversion`: `timeout` values that would overflow `time.Duration` resolve to the cap; `TestToolResultCarriesConfinement`: `true` logs `exit_code` 0 and `confinement.state` `unconfined` under danger-full-access, `echo hi; exit 3` exit 3 tail `hi`, failing if bash is missing on the Linux lane, TC-06b; `TestPwshToolThroughThePipeline`: `Write-Output hi; exit 3` exit 3 tail `hi` on the Windows lane, TC-06b). All tagged DH-T-EXEC-15. Not built here: promotion to a background job on timeout (`run_in_background`, DH-D-JOBS-1 is not mounted in M2) and the `workdir` argument. |
+| 13.8 | DH-D-CONTEXT-2 | fbbb14a | |
 
 ## Scenarios
 
@@ -54,8 +57,8 @@ which commit (impl.md sec. 7.3).
 
 | Step | Check | Seen | Operator | Commit | Label |
 | --- | --- | --- | --- | --- | --- |
-| 13.4 | on a Linux host, a confined command that writes outside its roots: the denial and the reported enforcement | | | | `manual` |
-| 13.3 | both backends removed: the command did not run | | | | `manual` |
+| 13.4 | on a Linux host, a confined command that writes outside its roots: the denial and the reported enforcement | WSL2 Ubuntu 24.04, kernel 6.18.58.1-microsoft-standard-WSL2, no `bwrap`: production chain `local.Platform()`; status bwrap unavailable ("bwrap not found"), landlock available, canary refused; `sh -c "printf x > <outside>/M"` under workspace-write exited 2, stderr `cannot create .../M: Permission denied`, confinement `partial`, `landlock`, missing [network harness-home delegated-execution]; M absent. Control: the same write beneath the root exited 0 and made M | Bao Er (agent) | 716a084 | `manual` |
+| 13.3 | both backends removed: the command did not run | Same host, no `bwrap`; Landlock made unusable to the process by an unprivileged seccomp filter (`systemd-run --user -p NoNewPrivileges=yes -p 'SystemCallFilter=~landlock_create_ruleset landlock_add_rule landlock_restrict_self' -p SystemCallErrorNumber=ENOSYS`), not disabled at boot; status both unavailable (landlock: "the kernel has no Landlock (interface version 0)"); workspace-write `Prepare` refused `sandbox/unavailable` ("...cannot be confined and was not started"); marker M inside the root absent | Bao Er (agent) | 716a084 | `manual` |
 
 ## Owner defaults (M2-C-4)
 
@@ -118,8 +121,39 @@ Not yet recorded. Gate venue: both local lanes, `tools/harness-gate/lanes/win.ps
 
 ### Exact tests and commands
 
-Not yet recorded: the gate runner's output, the `go test` command lines and `DSH_REQUIRE_SCENARIOS`
-(`harness-gate require --stage DH-S-13`).
+The manual checks were driven by a throwaway `go test` file in `world/sandbox/local` (deleted after the run;
+the backends, the service and the start are the product's), built with `go test -c` in WSL and run
+directly (13.4) and under the `systemd-run` filter above (13.3).
+
+Security-control tests with fake backends (and the two real-kernel ones), per step 13.4 to 13.7:
+
+```
+go -C src/harness test -count=1 -v -run '^(TestBwrapArgvFromPolicy|TestLandlockRulesFromPolicy|TestLandlockStageConfinesForReal|TestPrepareKeepsTheHarnessUnwritable|TestPrepareSeesThroughSymlinkedAncestors|TestSelectionOrder|TestBusProbeCountsTheUnknownReachable|TestSessionBusObservedForReal|TestBwrapStageClaimsOnlyWhatItSees|TestSecretsNeverReachTheChild|TestBuilderFailsClosed|TestRefusedPlanIsAnError|TestFailedOutcome|TestUnknownArgumentRejected|TestToolResultCarriesConfinement)$' ./internal/world/sandbox/... ./internal/world/shellexec/...
+```
+
+run on Windows 10.0.28000 (go1.27.4) and in WSL2 Ubuntu 24.04 (same command, from the checkout under
+`/mnt/e`), at 716a084 plus the uncommitted iteration-2 diff, which touches none of these packages.
+
+Launch-authorization controls (step 13.2/13.3: plan, stage, ready, canary, confirm, go) and the rest of
+the sandbox tree, every test of the packages rather than a selection, plus the forced-canary hook build
+and the process package's plan and environment controls:
+
+```
+go -C src/harness test -count=1 -v ./internal/world/sandbox/...
+go -C src/harness test -count=1 -v -tags testhook ./internal/world/sandbox/launch/
+go -C src/harness test -count=1 -v -run '^(TestSpecWithoutAPlanIsRefused|TestStartRefusesAnEmptyLaunch|TestStagedPlanSequence|TestRejectedConfirmStopsTheStage|TestStagedPlanNeedsAValidConfinement|TestUnstagedPlanReportsUnconfined|TestChildEnvironmentHoldsNoSecret|TestChildNeverInheritsANamedSecret|TestBatchRules|TestBatchToolByBareNameWithCheckedArguments)$' ./internal/world/subprocess/
+```
+
+run on Windows 10.0.28000 and in WSL2 Ubuntu 24.04 (kernel 6.18.58.1, go1.27.4, from `/mnt/e`) at c3c4a25
+plus the uncommitted iteration-3 diff, which touches only two scenario files outside these packages.
+
+Gate: `pwsh -File tools/harness-gate/lanes/win.ps1` from a temporary worktree at c3c4a25
+(`E:\work\lanes\dhs13-c3c4a25`, removed after the run, log `E:\work\lanes\win-c3c4a25.log`), and
+`tools/harness-gate/lanes/wsl.sh` from an ext4 clone at c3c4a25 (`~/src/dhs13-c3c4a25`, removed after the
+run; preflight "ext4 checkout, uid 1000, go1.27.4, CC=gcc, clean tree"; log copied to
+`E:\work\lanes\wsl-c3c4a25.log`). An earlier Windows run at 716a084 is under Results.
+`DSH_REQUIRE_SCENARIOS`: not recorded, because no closure run exists yet (see Results, 298dd70). It is
+recorded together with the lane records of the run on the final commit.
 
 ### Run identifiers
 
@@ -128,7 +162,177 @@ session ids and provider request ids for model calls.
 
 ### Results
 
-The Scenarios table above, and the local test results per step at closure. Not yet recorded.
+The Scenarios table above, and the local test results per step at closure.
+
+Security controls, fake-backend tests (Windows / Linux under WSL):
+
+| Control | Test | Windows | Linux (WSL) |
+| --- | --- | --- | --- |
+| bwrap argv from the Policy | `TestBwrapArgvFromPolicy` | passed | passed |
+| Landlock rules from the Policy | `TestLandlockRulesFromPolicy` | passed | passed |
+| Landlock confines for real | `TestLandlockStageConfinesForReal` | not run (linux build tag) | passed |
+| harness binary and home unwritable | `TestPrepareKeepsTheHarnessUnwritable` | passed | passed |
+| symlinked ancestors resolved | `TestPrepareSeesThroughSymlinkedAncestors` | skipped (no symlink privilege) | passed |
+| bwrap then Landlock; both failing refuses | `TestSelectionOrder` | passed | passed |
+| unknown bus transport counts as reachable | `TestBusProbeCountsTheUnknownReachable` | passed | passed |
+| session bus observed | `TestSessionBusObservedForReal` | not run (linux build tag) | passed |
+| bwrap stage claims only what it sees | `TestBwrapStageClaimsOnlyWhatItSees` | passed | passed |
+| secrets never reach the child | `TestSecretsNeverReachTheChild` | passed | passed |
+| env builder fails closed | `TestBuilderFailsClosed` | passed | passed |
+| refused plan is an error, no exit code | `TestRefusedPlanIsAnError` | passed | passed |
+| command that cannot start is `Failed` | `TestFailedOutcome` | passed | passed |
+| unknown tool argument rejected | `TestUnknownArgumentRejected` | passed | passed |
+| result carries the confinement | `TestToolResultCarriesConfinement` | passed | passed |
+
+Launch-authorization controls, fake stage and fake backends (Windows / Linux under WSL; `[testhook]` is the
+`-tags testhook` build of the launch package):
+
+| Control | Test | Windows | Linux (WSL) |
+| --- | --- | --- | --- |
+| no command before go | `TestNoCommandBeforeGo` | passed (both builds) | passed (both builds) |
+| host refuses a written canary | `TestHostRefusesAWrittenCanary` | passed (both builds) | passed (both builds) |
+| a forced written canary runs nothing | `TestForcedWrittenCanaryRunsNothing[testhook]` | passed | passed |
+| the hook is inert without the tag | `TestCanaryHookIsInertWithoutTheTag` | passed | passed |
+| rejected confirm leaves no command | `TestRejectedConfirmLeavesNoCommand` | passed (both builds) | passed (both builds) |
+| late confirm leaves no command | `TestLateConfirmLeavesNoCommand` | passed (both builds) | passed (both builds) |
+| confirmed plan runs the command | `TestConfirmedPlanRunsTheCommand` | passed (both builds) | passed (both builds) |
+| incomplete plan refused | `TestNewLaunchRefusesAnIncompletePlan` | passed (both builds) | passed (both builds) |
+| ready must agree with its plan | `TestPlanRefusesDisagreement`, `TestReadyAgreesWithItsPlan` | passed (both builds) | passed (both builds) |
+| malformed ready frames refused | `TestDecodeReadyRefusesMalformedFrames`, `TestEncodeReadyRefusesInvalidReady` | passed (both builds) | passed (both builds) |
+| stage end or death before ready | `TestStageEndsBeforeReady`, `TestStageDeathBeforeReadyNotifiesFailed` | passed (both builds) | passed (both builds) |
+| launch limit on ready | `TestReadReadyHonoursTheLaunchLimit` | passed (both builds) | passed (both builds) |
+| exec failure reaches the host | `TestExecFailureReachesTheHost` | passed (both builds) | passed (both builds) |
+| canary attempt; unconfined proof tries nothing | `TestTryCanary`, `TestProveUnconfinedTriesNothing` | passed (both builds) | passed (both builds) |
+| unconfined plan reaches go | `TestUnconfinedPlanReachesGo` | passed (both builds) | passed (both builds) |
+| four-step host decision | `TestFourStepHostDecision` | passed | passed |
+| failed confinement runs nothing | `TestFailedConfinementRunsNothing` | passed | passed |
+| canary below a write root refused | `TestCanaryBelowAWriteRootIsRefused` | passed | passed |
+| weaker evidence wins (seam, confirm) | `TestWeakerEvidenceWins`, `TestWeakerEvidenceWinsAtConfirm` | passed | passed |
+| enforcement never stronger than evidence | `TestEnforcementIsNeverStrongerThanTheEvidence` | passed | passed |
+| unconfined only for danger-full-access | `TestUnconfinedOnlyForDangerFullAccess` | passed | passed |
+| config may only remove backends | `TestConfigMayOnlyRemoveBackends` | passed | passed |
+| Windows refuses a confined start | `TestWindowsRefusesConfinedStart` | passed | skipped (Windows row, DH-D-SANDBOX-4) |
+| stage failure before ready reprobes once | `TestStageFailureBeforeReadyReprobesOnce` | passed | passed |
+| empty launch refused | `TestStartRefusesAnEmptyLaunch` | passed | passed |
+| process start needs a plan | `TestSpecWithoutAPlanIsRefused`, `TestStagedPlanNeedsAValidConfinement` | passed | passed |
+| staged sequence; rejected confirm stops the stage | `TestStagedPlanSequence`, `TestRejectedConfirmStopsTheStage` | passed | passed |
+| unstaged plan reports unconfined | `TestUnstagedPlanReportsUnconfined` | passed | passed |
+| child environment holds no secret | `TestChildEnvironmentHoldsNoSecret`, `TestChildNeverInheritsANamedSecret` | passed | passed |
+| batch files: rules; by bare name | `TestBatchRules`, `TestBatchToolByBareNameWithCheckedArguments` | passed, passed | passed, skipped (Windows only) |
+
+Whole runs: `world/sandbox/...` (sandbox, launch, local, policy, sandboxtest) and the testhook build, `ok` on
+every package on both systems; `TestStartRefusesAnEmptyLaunch` passed on both in the process-package run.
+Of the distinct top-level tests (with the testhook build counted
+separately), Windows 124: 123 passed, 1 skipped (`TestPrepareSeesThroughSymlinkedAncestors`, no symlink
+privilege). Linux 127: 123 passed, 4 skipped, all Windows path or Windows-only rows
+(`TestEscalateComparesPathsAsTheHostDoes`, `TestRootsCompareAsTheHostDoes`, `TestWindowsRefusesConfinedStart`,
+`TestBatchToolByBareNameWithCheckedArguments`). No test failed.
+
+Gate lanes:
+
+- 716a084, Windows: failed at gate 1/13 (gofmt) on the #135 e2e file below, one field misaligned; fixed
+  by `gofmt -w` in c3c4a25. Linux was not run.
+- c3c4a25, both lanes: gofmt passed; both **failed at gate 2/13 (vet)**, gate exit 1 (Windows vet 13m6.63s,
+  ended 2026-11-26T01:31:17Z; WSL vet 15.721s). The same four `nosleep` analyzer findings (QG-4) on both,
+  under `-tags=`, `-tags=replay,scenario,bench` and `-tags=e2e`, all in code this stage's diff does not
+  touch:
+  - `src/harness/internal/world/fs/local/local_test.go:309:77: time.Sleep in a test file: wait on virtual time (testing/synctest) or an explicit signal (QG-4)` (last changed by #146)
+  - `src/harness/test/e2e/harness-DSH-M2/dh_s_13_sandbox_launch_linux_backends_and_shell_tools_launch_plan_required_for_every_command_test.go:302:2` (same finding; #131)
+  - `src/harness/test/e2e/harness-DSH-M2/dh_s_13_sandbox_launch_linux_backends_and_shell_tools_sandbox_seam_probe_select_confirm_test.go:400:3` and `:494:2` (same finding; #135)
+  - Records (copied out of the lane checkouts, which are removed, to `E:\work\lanes\`):
+    `win-c3c4a25-20261126T0117Z.txt` (sha256
+    `5f9bb8aa0fd55caac1590b55785848e34ddcbca81c888aa39c7602df12522bd1`), `wsl-c3c4a25-20261126T0119Z.txt` and
+    `-rehearse.txt` (rehearse exit 0), with the lane logs `win-c3c4a25.log` and `wsl-c3c4a25.log`.
+  - Gates 3 to 13 did not run on either lane. The stage stays open until every gate passes on both lanes
+    on the final commit.
+  - 2026-11-26 recheck: `origin/main` at aa42466 still holds all four `time.Sleep` lines (309, 302, 400,
+    494), and no open pull request changes them. The repair belongs to the stages that own those files
+    (fs/local: Workspace Instruction Files, #146; the two e2e files: #131, #135), not to this record. Both
+    lanes run again on the commit that integrates it.
+  - Repair on this branch, since no fix reached main: the two e2e checks watch for a late marker or stage
+    log through the same window with a ticker (`watchFor`), and stop at the first one they see. They no
+    longer sleep the window out, and the assertions are unchanged. `back` in `local_test.go` now yields
+    with `runtime.Gosched` between rename retries, under the same 30 s bound. After the repair, the
+    harness-gate vettool reports nothing on both packages (`-tags=e2e` and default), and both e2e features
+    pass (3 + 6 scenarios).
+- 189b04e, WSL (`bash tools/harness-gate/lanes/wsl.sh` from an ext4 clone; preflight passed: ext4, uid
+  1000, go1.27.4, CC=gcc, clean tree): gofmt passed (1032 files) and vet passed on all three modules
+  under `-tags=`, `-tags=replay,scenario,bench` and `-tags=e2e`, with and without the vettool (exceptions:
+  48). The run **failed at gate 3/13 (staticcheck)**, gate exit 1, ended 2026-11-26T01:59:57Z; rehearse exit 0.
+  The finding is in code this stage's diff does not touch: it was added by #136, is on `origin/main`, and
+  is built only on Linux:
+  - `internal/world/sandbox/launch/confine_linux.go:62:14: github.com/landlock-lsm/go-landlock/landlock.NewConfig is deprecated: Use a struct literal instead: Config{HandledAccessFS: llsyscall.AccessFSExecute}  (SA1019)`
+    (under both `-tags=` and `-tags=replay,scenario,bench`)
+  - Record `E:\work\lanes\wsl-189b04e-20261126T0159Z.txt` (sha256
+    `d00fbde29e34f14d35eb4d30e03349324b113e6d5ac68919257425fc5826549d`), `-rehearse.txt`, and the log
+    `wsl-189b04e.log`. The clone has been removed. Gates 4 to 13 did not run on WSL.
+- 189b04e, Windows (`tools/harness-gate/lanes/win.ps1` from a temporary worktree): gofmt passed (1.0 s)
+  and vet passed (9 m 48 s). The run **failed at gate 3/13 (staticcheck)**, gate exit 1, ended
+  2026-11-26T02:13:19Z. The finding is in code this stage's diff does not touch (added by #136, on
+  `origin/main`) and shows only on Windows, where `bus_linux.go` is not built:
+  - `internal\world\sandbox\launch\bus.go:14:7: const busDialLimit is unused (U1000)`
+  - `internal\world\sandbox\launch\bus.go:159:6: func dialUnix is unused (U1000)`
+    (under both `-tags=` and `-tags=replay,scenario,bench`)
+  - Record `E:\work\lanes\win-189b04e-20261126T0155Z.txt` (sha256
+    `963d83cae55aa01154fb10f0ff434e2597d501756dc6e671c744521b81ef0c16`; in-record output hash
+    `0bbdd02026f6f9924bdf4efbe65e2e1930206d6df1cbe5bdc56e309a9761ac4a`) and the log `win-189b04e.log`.
+    The worktree has been removed. Gates 4 to 13 did not run on Windows.
+- Repair of the SA1019 finding on this branch (security code; flagged for human review): in
+  `confine_linux.go` the deprecated `landlock.NewConfig(...)` becomes the struct literal
+  `landlock.Config{HandledAccessFS: ...}`. The handled set is unchanged. `NewRulesetFD` already rejects
+  unknown access rights before it creates a ruleset (go-landlock v0.11.2 `createRuleset`: `c.valid()`),
+  which is the check `NewConfig` made, and its error now names the interface version.
+  - Checks on WSL (ext4 copy of the tree):
+    - staticcheck v0.8.2 (the gate's pin) on `internal/world/sandbox/launch/...` under `-tags=` and
+      `-tags=replay,scenario,bench`: exit 0.
+    - `go test ./internal/world/sandbox/launch/ ./internal/world/sandbox/local/`: ok, including
+      `TestLandlockStageConfinesForReal` on the real kernel.
+    - The e2e features `linux_backends_bubblewrap_and_landlock` (14 scenarios) and `sandbox_launch_stage`
+      (3 scenarios): pass.
+  - Checks on Windows: `GOOS=linux` vet under both tag sets: exit 0.
+  - 6066a1a (holds this repair), WSL, early signal only (record `wsl-6066a1a-20261126T0224Z`): gofmt,
+    vet, staticcheck (the SA1019 repair confirmed on the full lane) and modules passed; in gate 5/13 the
+    `src/go` and `src/sdk` tests passed. It was stopped during gate 5, because 298dd70 changes
+    `bus_linux.go` and replaces it. It does not count for closure. Log `E:\work\lanes\wsl-6066a1a.log`.
+- Repair of the U1000 finding on this branch (sandbox code; mechanical move, no behaviour change):
+  `busDialLimit` and `dialUnix` move from `bus.go` to `bus_linux.go`, their only caller, with
+  the `net` and `time` imports. Checks:
+  - Windows: staticcheck v0.8.2 on `internal/world/sandbox/launch/...` under `-tags=` and
+    `-tags=replay,scenario,bench`: exit 0; `go vet` under both tag sets, native and `GOOS=linux`:
+    exit 0; `go test ./internal/world/sandbox/launch/`: ok.
+  - WSL (ext4 copy): the same staticcheck runs: exit 0; `go vet`: exit 0;
+    `go test ./internal/world/sandbox/launch/ ./internal/world/sandbox/local/`: ok.
+  - Both lanes run on the commit that holds this repair; the gate counts only from that run.
+- 298dd70 (both repairs), both lanes started 2026-11-26T02:30Z. **Neither lane passed all 13 gates.**
+  - WSL (`bash tools/harness-gate/lanes/wsl.sh` from an ext4 clone): gofmt passed (324 ms), vet passed
+    (15.657 s), staticcheck passed (6.08 s; the SA1019 repair holds), modules passed (6.96 s). The run
+    **failed at gate 5/13 (test)**, gate exit 1, ended 2026-11-26T02:34:43Z; rehearse exit 0. The
+    `src/harness` run (`go test -tags= -race -shuffle=on -count=1 ./...`, 3m0.375s) had four failing tests:
+    - `internal/cli/output` `TestEveryReasonHasAStatus`: the `shellexec/*` reasons (`bad-request`,
+      `not-found`, `bad-config`, `script-failed`, `timed-out`, `stopped`) and the `shellenv/*` reasons
+      (`bad-key`, `undeclared`, `contributor-failed`, `secrets-unknown`) have no exit status in
+      `output.codes`. These are step 13.6 code, so the repair belongs to this stage.
+    - `internal/world/shellexec/pwsh` `TestArgv` (`pwsh_test.go:124`, the `param(...)` script-file case)
+      and `internal/world/shellexec/tools` `TestArgumentsAreNamedOnly` (`tools_test.go:281`: the `bash`
+      schema now also declares `sandbox_permissions` and `justification`). Both are in this stage's
+      packages, so the repair belongs to this stage.
+    - `internal/context/instructions` `TestTotalSourceBudgetStopsReading` (`instructions_test.go:615`): a
+      third file was recorded `skipped` `fs/too-large` rather than omitted unread. The cause is still to be
+      found.
+    - Gates 6 to 13 did not run on WSL. Record `wsl-298dd70-20261126T0230Z.txt` (in-record sha256
+      `4a8e14823d6e13ae4cce06f46a061f1845bddf74df941ee0e969111589d1ddbc`) and `-rehearse.txt`, in the
+      clone at `docs/stories/harness-DSH-M1/evidence/runs/`; log `~/lane-logs/wsl-298dd70.log`.
+  - Windows (`tools/harness-gate/lanes/win.ps1` from a temporary worktree): at 2026-11-26T02:54Z gofmt
+    had passed (731 ms), vet had passed (7m40.835s), staticcheck had passed (4m1.045s; the U1000 repair
+    holds), and gate 4/13 (modules) was still running. No final result or record hash exists yet. Log
+    `E:\work\lanes\win-298dd70.log`. This run cannot close the stage either, because the gate 5 failures
+    above are in code built on both systems.
+  - 298dd70 is therefore not the final source commit. Both lanes run again, from gate 1, on the commit
+    that repairs the gate 5 failures; only that run counts for closure.
+
+**Stage status: open, not built.** No commit has a lane record with all 13 gates passed on both lanes,
+`DSH_REQUIRE_SCENARIOS` has not been recorded for a closure run, and `harness-gate ready --stage DH-S-13
+--built` has not exited 0. This record does not claim the stage built.
 
 ### Manual checks
 

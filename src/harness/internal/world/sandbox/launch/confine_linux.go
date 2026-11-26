@@ -69,7 +69,7 @@ func confineLandlock(p Plan) ([]sandbox.Effect, error) {
 	}
 	fd, flags, err := cfg.NewRulesetFD(rules...)
 	if err != nil {
-		return nil, fmt.Errorf("create the Landlock ruleset: %w", err)
+		return nil, fmt.Errorf("create the Landlock ruleset for interface version %d: %w", rs.Version, err)
 	}
 	if fd < 0 {
 		return nil, errors.New("create the Landlock ruleset: go-landlock returned no ruleset, so nothing would be restricted")
