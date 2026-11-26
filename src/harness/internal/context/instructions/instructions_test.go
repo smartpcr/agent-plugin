@@ -673,6 +673,72 @@ func TestUserFileTouchMarksTheChain(t *testing.T) {
 	}
 }
 
+// TestShellTouchMarksTheChainUnderTheRoot: a shell call's working directory
+// marks the chain when it is anywhere under the project root (a shell may have
+// rewritten any file there), not when it is outside the root, the harness home
+// included, and not when it is relative.
+//
+//dsh:test DH-T-CONTEXT-5
+func TestShellTouchMarksTheChainUnderTheRoot(t *testing.T) {
+	ctx := context.Background()
+	m := fstest.NewMemFS()
+	write(t, m, "/dsh/AGENTS.md", "user rules\n")
+	write(t, m, "/ws/AGENTS.md", "project rules\n")
+	c := instructions.Default()
+	c.HarnessHome = abs("/dsh")
+	r, err := instructions.NewReconciler(ctx, instructions.Options{FS: m, Config: c})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	r.SetDirectory(abs("/ws"), abs("/ws"))
+	if _, changed, err := r.Next(ctx, nil); err != nil || !changed {
+		t.Fatalf("baseline: changed=%v err=%v", changed, err)
+	}
+	for _, dir := range []string{abs("/elsewhere"), abs("/dsh"), "ws/sub"} {
+		if r.TouchShell(dir); r.Pending() {
+			t.Fatalf("shell in %s marked the chain", dir)
+		}
+	}
+	if r.TouchShell(abs("/ws/sub/deep")); !r.Pending() {
+		t.Fatal("shell under the project root did not mark the chain")
+	}
+}
+
+// TestConfigValidateRefuses: Validate refuses a budget below the floor, a
+// candidate that is not a plain base name and a relative user-global home, and
+// accepts the defaults.
+//
+//dsh:test DH-T-CONTEXT-5
+func TestConfigValidateRefuses(t *testing.T) {
+	if err := instructions.Default().Validate(); err != nil {
+		t.Fatalf("defaults refused: %v", err)
+	}
+	for name, mutate := range map[string]func(*instructions.Config){
+		"below the floor":     func(c *instructions.Config) { c.MaxBytes = instructions.MinMaxBytes - 1 },
+		"candidate with dir":  func(c *instructions.Config) { c.Candidates = []string{"a/AGENTS.md"} },
+		"dot candidate":       func(c *instructions.Config) { c.LocalCandidates = []string{".."} },
+		"relative home":       func(c *instructions.Config) { c.HarnessHome = "dsh" },
+		"relative agent home": func(c *instructions.Config) { c.AgentsHome = "agents" },
+	} {
+		c := instructions.Default()
+		mutate(&c)
+		if err := c.Validate(); err == nil {
+			t.Errorf("%s: Validate accepted %+v", name, c)
+		}
+	}
+}
+
+// TestContributorIsOptional: the instructions contributor is not required, so
+// a failure is skipped and recorded rather than failing the request.
+//
+//dsh:test DH-T-CONTEXT-5
+func TestContributorIsOptional(t *testing.T) {
+	if (instructions.Contributor{}).Required() {
+		t.Fatal("instructions contributor is required")
+	}
+}
+
 // TestLinkedUserFileTouchMarksTheChain: with no watch, a file-tool touch that
 // the seam reports by the resolved target of a linked user-global file (as
 // fs.Observed does) marks the chain, and the next section holds the new text.
