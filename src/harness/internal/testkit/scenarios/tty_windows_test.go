@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 	"unicode/utf16"
+	//lint:ignore typeassert UpdateProcThreadAttribute takes the pseudo console handle as an unsafe.Pointer and STARTUPINFOEX needs its own size; package windows has no typed wrapper for them
 	"unsafe"
 
 	"golang.org/x/sys/windows"

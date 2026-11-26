@@ -247,7 +247,9 @@ func runTakeover(t *testing.T, bin, protection, mode, network string, p takeover
 // takeoverOutcome waits for the model to receive the bash call's structured result.
 func takeoverOutcome(t *testing.T, m *scriptedModel, within time.Duration) shellOutcome {
 	t.Helper()
-	for deadline := time.Now().Add(within); ; {
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+	for deadline := time.Now().Add(within); ; <-tick.C {
 		bodies := m.requests()
 		for i := len(bodies) - 1; i >= 0; i-- {
 			if s, ok := shellResult(t, &toolOutcome{ID: "takeover", Raw: json.RawMessage(bodies[i])}); ok {
@@ -257,7 +259,6 @@ func takeoverOutcome(t *testing.T, m *scriptedModel, within time.Duration) shell
 		if time.Now().After(deadline) {
 			t.Fatalf("the model received no result of the takeover call within %s (%d requests)", within, len(bodies))
 		}
-		time.Sleep(time.Second)
 	}
 }
 

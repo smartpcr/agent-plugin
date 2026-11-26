@@ -135,6 +135,7 @@ func TestNetworkListenerTLSPrefixAndRenewal(t *testing.T) {
 	install(renewed)
 	want := pemDER(t, renewed[0])
 	deadline := time.Now().Add(time.Minute)
+	renewTick := time.NewTicker(time.Second)
 	for {
 		got, err := presented(addr, name)
 		if err == nil && bytes.Equal(got, want) {
@@ -143,8 +144,9 @@ func TestNetworkListenerTLSPrefixAndRenewal(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatalf("(4) no handshake presented the renewed certificate within a minute (last error %v)", err)
 		}
-		time.Sleep(time.Second)
+		<-renewTick.C
 	}
+	renewTick.Stop()
 	if h.pid() != pid {
 		t.Errorf("(4) the host restarted (pid %d to %d) to pick up the certificate", pid, h.pid())
 	}
@@ -227,18 +229,21 @@ func awaitListening(t *testing.T, rawURL, line string, p *launcher.Host) {
 		hostPort = net.JoinHostPort(u.Hostname(), map[string]string{"https": "443", "http": "80"}[u.Scheme])
 	}
 	deadline := time.Now().Add(time.Minute)
+	tick := time.NewTicker(200 * time.Millisecond)
+	defer tick.Stop()
 	for {
 		if c, err := net.DialTimeout("tcp", hostPort, 3*time.Second); err == nil {
 			c.Close()
 			return
 		}
-		if p.Await(0) {
-			t.Fatalf("%s exited before %s listened:\n%s%s", line, hostPort, p.Stdout.String(), p.Stderr.String())
-		}
 		if time.Now().After(deadline) {
 			t.Fatalf("nothing listens at %s within a minute of starting %s", hostPort, line)
 		}
-		time.Sleep(200 * time.Millisecond)
+		select {
+		case <-p.Process.Exited():
+			t.Fatalf("%s exited before %s listened:\n%s%s", line, hostPort, p.Stdout.String(), p.Stderr.String())
+		case <-tick.C:
+		}
 	}
 }
 

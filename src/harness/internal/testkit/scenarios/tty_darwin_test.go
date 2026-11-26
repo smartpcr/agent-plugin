@@ -5,6 +5,7 @@ package scenarios
 import (
 	"bytes"
 	"os"
+	//lint:ignore typeassert the TIOCPTYGNAME ioctl writes the pts name through a raw pointer; package unix has no wrapper for it
 	"unsafe"
 
 	"golang.org/x/sys/unix"

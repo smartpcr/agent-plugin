@@ -224,6 +224,9 @@ fetch("%[1]s/", {credentials: "include"}).catch(function () {});
 	})
 	srv := &http.Server{Handler: mux}
 	go func() { _ = srv.Serve(ln) }()
-	t.Cleanup(func() { _ = srv.Close() })
+	t.Cleanup(func() {
+		_ = srv.Close()
+		_ = ln.Close()
+	})
 	return o
 }

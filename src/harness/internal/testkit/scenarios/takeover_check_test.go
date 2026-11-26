@@ -293,7 +293,9 @@ func TestShellTreeCleanupStopsDescendants(t *testing.T) {
 	t.Run("run", func(t *testing.T) {
 		h := startShellTree(t, line)
 		shellPID = h.Process.Pid()
-		for deadline := time.Now().Add(30 * time.Second); grandchild == 0; time.Sleep(50 * time.Millisecond) {
+		tick := time.NewTicker(50 * time.Millisecond)
+		defer tick.Stop()
+		for deadline := time.Now().Add(30 * time.Second); grandchild == 0; <-tick.C {
 			if n, err := strconv.Atoi(strings.TrimSpace(h.Stdout.String())); err == nil {
 				grandchild = n
 			} else if time.Now().After(deadline) {
