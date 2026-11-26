@@ -5,6 +5,7 @@ package e2e
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -588,8 +589,8 @@ func (s *aqaState) nothingPending() error {
 		return fmt.Errorf("pending after the withdrawal = %+v", p)
 	}
 	if err := s.hreg.Answer(context.Background(), human.Actor{Channel: sdkserver.ChannelSDK}, human.ID(s.question.InteractionID),
-		human.Answer{Outcome: human.OutcomeAnswered, Text: "a.go"}); err == nil {
-		return fmt.Errorf("a late answer to a withdrawn question was accepted")
+		human.Answer{Outcome: human.OutcomeAnswered, Text: "a.go"}); !errors.Is(err, human.ErrSettled) {
+		return fmt.Errorf("a late answer to a withdrawn question = %v, want %v", err, human.ErrSettled)
 	}
 	return nil
 }
