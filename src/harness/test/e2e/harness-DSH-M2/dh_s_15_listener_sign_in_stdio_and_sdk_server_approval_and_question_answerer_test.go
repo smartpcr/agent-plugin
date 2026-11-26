@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -249,6 +250,8 @@ type aqaState struct {
 	req      *jsonrpc.Request
 	approval protocol.ApprovalRequest
 	question protocol.QuestionRequest
+
+	cancelledIDs []json.RawMessage // ids of every $/cancel seen during cancelTurn
 }
 
 func (s *aqaState) newServer(turns ...fakemodel.Turn) error {
@@ -534,11 +537,12 @@ func (s *aqaState) cancelTurn() error {
 		switch f := f.(type) {
 		case *jsonrpc.Notification:
 			if f.Method == jsonrpc.CancelMethod {
-				var c struct {
-					ID json.RawMessage `json:"id"`
+				var c protocol.CancelParams
+				if err := json.Unmarshal(f.Params, &c); err != nil {
+					return fmt.Errorf("$/cancel params %s: %w", f.Params, err)
 				}
-				_ = json.Unmarshal(f.Params, &c)
-				withdrawn = withdrawn || string(c.ID) == s.req.ID.String()
+				s.cancelledIDs = append(s.cancelledIDs, c.ID)
+				withdrawn = withdrawn || aqaSameID(c.ID, s.req.ID)
 			}
 		case *jsonrpc.Response:
 			if f.ID != cid || f.Error != nil {
@@ -553,11 +557,36 @@ func (s *aqaState) cancelTurn() error {
 }
 
 func (s *aqaState) withdrawalReceived() error {
-	// cancelTurn already required the $/cancel naming the question/ask id.
 	if s.req == nil {
 		return fmt.Errorf("no question/ask was sent")
 	}
-	return nil
+	for _, id := range s.cancelledIDs {
+		if aqaSameID(id, s.req.ID) {
+			return nil
+		}
+	}
+	return fmt.Errorf("no $/cancel named question/ask id %v (saw %q)", s.req.ID, s.cancelledIDs)
+}
+
+// aqaSameID reports whether the wire id raw decodes to the same JSON value
+// as id: a number equals a number, a string equals a string, never across.
+func aqaSameID(raw json.RawMessage, id jsonrpc.ID) bool {
+	decode := func(b []byte) (any, bool) {
+		d := json.NewDecoder(bytes.NewReader(b))
+		d.UseNumber()
+		var v any
+		if d.Decode(&v) != nil || d.More() {
+			return nil, false
+		}
+		return v, true
+	}
+	want, err := id.MarshalJSON()
+	if err != nil {
+		return false
+	}
+	a, ok1 := decode(raw)
+	b, ok2 := decode(want)
+	return ok1 && ok2 && a == b
 }
 
 func (s *aqaState) settledWithdrawn() error {
