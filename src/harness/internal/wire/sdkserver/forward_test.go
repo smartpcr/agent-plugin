@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -12,7 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
 	fakemodel "github.com/smartpcr/agent-plugin/src/harness/internal/testkit/model"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/wire/sdkserver"
 	"github.com/smartpcr/agent-plugin/src/sdk/jsonrpc"
@@ -191,6 +194,108 @@ func lastOf(evs []protocol.Event) int64 {
 		return -1
 	}
 	return evs[len(evs)-1].Seq
+}
+
+// subagent creates a live subagent session whose creator is creator, closed
+// with the test.
+func subagent(t *testing.T, r *rig, creator string) session.Handle {
+	t.Helper()
+	h := must(r.svc.Create(t.Context(), nil, session.CreateOptions{Header: session.Header{Origin: "subagent", Creator: creator}}))
+	t.Cleanup(func() { _ = h.Close(context.Background()) })
+	return h
+}
+
+func appendRecords(t *testing.T, h session.Handle, n int) {
+	t.Helper()
+	for i := range n {
+		if _, err := h.AppendPluginRecord(t.Context(), "plugin:test/rec", json.RawMessage(fmt.Sprintf(`{"i":%d}`, i))); err != nil {
+			t.Fatalf("append to %s: %v", h.ID(), err)
+		}
+	}
+}
+
+// TC-12a: a subagent of an owned root, and its own subagent, are forwarded from
+// their first event, in order with no gap, each naming itself, the root and its
+// direct creator; neither gets a session.run.completed. Closing the root stops
+// them: what they commit afterwards is not told.
+func TestSubagentEventsCarryRootAndParent(t *testing.T) {
+	r := newRig(t)
+	cl := connectTold(t, r.server())
+	root, _ := cl.create()
+	child := subagent(t, r, root)
+	want := map[string]protocol.Scope{
+		string(child.ID()): {SessionID: string(child.ID()), RootSessionID: root, ParentSessionID: root},
+	}
+	got := map[string][]int64{}
+	// collect reads session.events until each of last's sessions has been told
+	// its seq there, checking every subagent's scope.
+	collect := func(last map[string]int64) {
+		t.Helper()
+		for done := 0; done < len(last); {
+			e := decode[protocol.SessionEventNotification](t, cl.await(sdkserver.EventNotification))
+			w, ok := want[e.SessionID]
+			if !ok {
+				continue // the root's own events
+			}
+			if e.Scope != w {
+				t.Fatalf("session.event scope = %+v, want %+v", e.Scope, w)
+			}
+			got[e.SessionID] = append(got[e.SessionID], e.Event.Seq)
+			if l, ok := last[e.SessionID]; ok && e.Event.Seq == l {
+				done++
+			}
+		}
+	}
+	appendRecords(t, child, 3)
+	// The grandchild is forwarded only once its creator is: wait for that.
+	collect(map[string]int64{string(child.ID()): int64(child.Len() - 1)})
+	grand := subagent(t, r, string(child.ID()))
+	want[string(grand.ID())] = protocol.Scope{SessionID: string(grand.ID()), RootSessionID: root, ParentSessionID: string(child.ID())}
+	appendRecords(t, grand, 2)
+	appendRecords(t, child, 2)
+	last := map[string]int64{string(child.ID()): int64(child.Len() - 1), string(grand.ID()): int64(grand.Len() - 1)}
+	collect(last)
+	for id, seqs := range got {
+		for i, s := range seqs {
+			if s != int64(i) {
+				t.Fatalf("subagent %s told seqs %v, want 0..%d", id, seqs, last[id])
+			}
+		}
+	}
+	for _, n := range cl.notes {
+		if n.Method == sdkserver.RunCompletedNotification {
+			if rc := decode[protocol.RunCompletedNotification](t, n); want[rc.SessionID] != (protocol.Scope{}) {
+				t.Fatalf("session.run.completed told for subagent %s: %s", rc.SessionID, n.Params)
+			}
+		}
+	}
+
+	var closed protocol.LastSeqResult
+	cl.call("session/close", protocol.SessionRef{SessionID: root}, &closed)
+	committed := make(chan struct{}, 1)
+	afterClose := child.Len()
+	must(session.Committed.On(r.o.Owner, func(_ *cordis.Context, a session.CommittedArgs) error {
+		if a.Session.ID() == child.ID() && a.Event.Seq() == afterClose {
+			committed <- struct{}{}
+		}
+		return nil
+	}))
+	appendRecords(t, child, 1)
+	select {
+	case <-committed:
+	case <-time.After(jsonrpctest.Timeout):
+		t.Fatal("the subagent's commit after the root's close was never delivered")
+	}
+	time.Sleep(100 * time.Millisecond) // room for a forwarder that should not exist
+	seen := len(cl.notes)
+	cl.create() // a round trip: anything sent before its reply is in cl.notes
+	for _, n := range cl.notes[seen:] {
+		if n.Method == sdkserver.EventNotification {
+			if e := decode[protocol.SessionEventNotification](t, n); want[e.SessionID] != (protocol.Scope{}) {
+				t.Fatalf("subagent %s told seq %d after its root closed", e.SessionID, e.Event.Seq)
+			}
+		}
+	}
 }
 
 // TC-12a: a run whose model replies A, calls a tool, then replies B completes
