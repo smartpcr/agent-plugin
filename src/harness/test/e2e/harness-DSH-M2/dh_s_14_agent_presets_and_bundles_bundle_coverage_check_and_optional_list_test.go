@@ -219,8 +219,28 @@ func (w *bcolWorld) defaultProfile(name string) error {
 	return nil
 }
 
+// compose builds the tree a launch would from layers via profile.Compose. The
+// spine and web carriers are later stages' entries, so a Required miss and ops
+// whose target "matches no entry" are tolerated; any other error or issue (a
+// duplicate id, a bad op) fails, so a partial tree never passes NG-7.
+func (w *bcolWorld) compose(layers []loader.Layer) ([]loader.EntryOptions, error) {
+	tree, issues, err := profile.Compose(w.def, layers)
+	if err != nil && herr.Kind(err) != profile.ReasonMissingRequired {
+		return nil, fmt.Errorf("%s: compose: %w", w.def.Name, err)
+	}
+	for _, issue := range issues {
+		if !strings.HasSuffix(issue.Message, " matches no entry") {
+			return nil, fmt.Errorf("%s: unexpected compose issue: %s", w.def.Name, issue.Error())
+		}
+	}
+	return tree, nil
+}
+
 func (w *bcolWorld) egressComputed() error {
-	tree, _, _ := loader.Compose(w.layers)
+	tree, err := w.compose(w.layers)
+	if err != nil {
+		return err
+	}
 	got, err := profile.Egress(tree)
 	if err != nil {
 		return fmt.Errorf("%s: %w", w.def.Name, err)
@@ -244,7 +264,10 @@ func (w *bcolWorld) routeAppears(kind, endpoint string) error {
 		return err
 	}
 	layers := append(slices.Clone(w.layers), loader.Layer{Label: profile.UserLabel, Ops: []loader.Op{on}})
-	tree, _, _ := loader.Compose(layers)
+	tree, err := w.compose(layers)
+	if err != nil {
+		return err
+	}
 	got, err := profile.Egress(tree)
 	if err != nil {
 		return err
