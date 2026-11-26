@@ -173,6 +173,25 @@ Linux, and it sets up a confinement check, so it is not changed here (question
 was written. Gates 4 to 13 on WSL, coverage included, did not run. The S14 gate scenario
 (M2-DOD-1) stays open until both lanes pass.
 
+**SA1019 fix on this branch** (one call site, sandbox confinement code, so it goes to human
+review under question `dh-s-14-landlock-staticcheck`). In `confineLandlock`
+(`internal/world/sandbox/launch/confine_linux.go`), the deprecated
+`landlock.NewConfig(landlock.AccessFSSet(rs.Handled))` is replaced by the struct literal the
+deprecation names, `landlock.Config{HandledAccessFS: landlock.AccessFSSet(rs.Handled)}`. No check
+is lost. In go-landlock v0.11.2, `NewConfig` with one `AccessFSSet` only tests `AccessFSSet.valid()`
+(access rights known to go-landlock). The `cfg.NewRulesetFD` call that follows
+(`createRuleset`, `restrict.go`) tests the same thing, `Config.valid()`, before it creates anything,
+and returns `EINVAL`. `confineLandlock` already turns that error into a refusal of the stage, and
+its message now carries the interface version that the dropped error used to. On WSL (kernel
+`6.18.58.1-microsoft-standard-WSL2`):
+- `gofmt -l` of the package lists nothing.
+- `go vet` with `-tags=` and with `-tags=replay,scenario,bench` passes.
+- `staticcheck@v0.8.2` on `./internal/world/sandbox/...` with both tag sets passes.
+- `go test -count=1 ./internal/world/sandbox/...` passes.
+- `go test -tags=e2e -count=1 -run TestE2E_dh_s_13 ./test/e2e/harness-DSH-M2/` passes all 7 DH-S-13 sets, the Landlock backend's 14 scenarios included. The same 5 seam-probe steps are skipped as before.
+
+Both lanes run once on the commit that carries this fix.
+
 **Record check.** `harness-gate ready --stage DH-S-14 --built` on this record (status line
 `open`), run on the working tree that carries the operator acceptance above: exit 0,
 `harness-gate ready: DH-S-14 (docs/stories/harness-DSH-M2/evidence/DH-S-14.md, built): ready; the status line is not read (it reads open)`.
@@ -223,7 +242,9 @@ Both lanes at `2441517` fail gate 2 (`nosleep`, three `time.Sleep` calls in DH-S
 Results). The three waits are replaced on this branch, and the WSL lane at `d26bb4b` passes vet.
 It then fails gate 3, staticcheck SA1019 on `landlock.NewConfig` in
 `internal/world/sandbox/launch/confine_linux.go:62` (Results; question
-`dh-s-14-landlock-staticcheck`). The Windows lane at `d26bb4b` is to be recorded. Both lanes must
+`dh-s-14-landlock-staticcheck`). That call is replaced on this branch (Results, SA1019 fix), pending
+human review. The Windows lane at `d26bb4b` is to be recorded, and both lanes are to be run on the
+commit that carries the fix. Both lanes must
 pass on the final commit, with their exits, run records and coverage recorded here.
 Closed: the gofmt blocker (formatted on this branch, question `dh-s-14-gofmt-lane-blocker`) and the
 operator acceptance of the two manual checks (question `dh-s-14-manual-checks`, accepted).

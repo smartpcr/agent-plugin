@@ -59,17 +59,16 @@ func confineLandlock(p Plan) ([]sandbox.Effect, error) {
 	if err != nil {
 		return nil, err
 	}
-	cfg, err := landlock.NewConfig(landlock.AccessFSSet(rs.Handled))
-	if err != nil {
-		return nil, fmt.Errorf("the Landlock config for interface version %d: %w", rs.Version, err)
-	}
+	// NewRulesetFD refuses a set with access rights go-landlock does not know
+	// (EINVAL) before it creates anything, the check the deprecated NewConfig made.
+	cfg := landlock.Config{HandledAccessFS: landlock.AccessFSSet(rs.Handled)}
 	rules := make([]landlock.Rule, 0, len(rs.Rules))
 	for _, r := range rs.Rules {
 		rules = append(rules, landlock.PathAccess(landlock.AccessFSSet(r.Access), r.Path))
 	}
 	fd, flags, err := cfg.NewRulesetFD(rules...)
 	if err != nil {
-		return nil, fmt.Errorf("create the Landlock ruleset: %w", err)
+		return nil, fmt.Errorf("create the Landlock ruleset for interface version %d: %w", rs.Version, err)
 	}
 	if fd < 0 {
 		return nil, errors.New("create the Landlock ruleset: go-landlock returned no ruleset, so nothing would be restricted")
