@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"sync"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
@@ -85,12 +86,13 @@ func (c *Conn) Attach(n Notifier) error {
 	return nil
 }
 
-// deferred is the notifier of a transport not started yet: Serve attaches it
+// deferred is the transport of a codec not started yet: Serve attaches it
 // before the codec can dispatch a request, then sets the codec. A forwarder
 // writing early waits for it.
 type deferred struct {
 	ready chan struct{}
 	n     *jsonrpc.Conn
+	w     *lineWriter // the codec's writer, which Fault writes past the codec
 
 	mu  sync.Mutex
 	err error // the forwarding failure that ended the transport
@@ -111,16 +113,52 @@ func (d *deferred) Call(ctx context.Context, method string, params, result any) 
 	return d.n.Call(ctx, method, params, result)
 }
 
-// Fault sends an error to the client's null id (answer.go) once the codec is
-// set. The codec is reached through faulter, not called directly, so a release
-// build (GOWORK=off, DH-ADR-26) against an SDK pin that predates
-// jsonrpc.Conn.Fault still compiles; there the rejection is not sent.
-func (d *deferred) Fault(err error) error {
+// Fault sends e to the client's null id (answer.go). jsonrpc.Conn sends no
+// error to the null id, so the line is written to the codec's writer directly,
+// between two of the codec's lines (it writes one line per Write) and after
+// every frame queued before it (a Barrier), so the client reads the rejection
+// before the request asked again.
+func (d *deferred) Fault(e *jsonrpc.Error) error {
 	<-d.ready
-	if f, ok := any(d.n).(faulter); ok {
-		return f.Fault(err)
+	if e == nil {
+		return errors.New("sdkserver: Fault needs an error")
 	}
-	return errNoFault
+	line, err := jsonrpc.Encode(&jsonrpc.Response{ID: jsonrpc.ID{}, Error: e})
+	if err != nil {
+		return fmt.Errorf("sdkserver: encode the rejection: %w", err)
+	}
+	if err := d.n.Barrier(context.Background()); err != nil {
+		return err
+	}
+	return d.w.writeLine(append(line, '\n'), d.n.Done())
+}
+
+// lineWriter serializes whole lines onto w: the codec's and Fault's.
+type lineWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (l *lineWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
+}
+
+// writeLine writes line unless the codec ends first. Like the codec's own
+// writer, a write stalled by the peer stays until the caller closes w.
+func (l *lineWriter) writeLine(line []byte, done <-chan struct{}) error {
+	written := make(chan error, 1)
+	go func() {
+		_, err := l.Write(line)
+		written <- err
+	}()
+	select {
+	case err := <-written:
+		return err
+	case <-done:
+		return fail(jsonrpc.ReasonClosed, "the connection ended before the rejection was written")
+	}
 }
 
 func (d *deferred) set(n *jsonrpc.Conn) {

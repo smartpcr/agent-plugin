@@ -74,13 +74,20 @@ type Caller interface {
 	Call(ctx context.Context, method string, params, result any) error
 }
 
-// faulter sends an error to the client's null id; *jsonrpc.Conn is one.
-type faulter interface {
-	Fault(err error) error
+// Faulter sends e to the client as an error response to the null id: the
+// rejection of a reply the client sent to a host request (invalid or late),
+// which answers none of the client's own requests. A transport given to Attach
+// carries host requests only when it is a Caller and a Faulter, so no invalid
+// answer goes unrefused; Serve's transport is both.
+type Faulter interface {
+	Fault(e *jsonrpc.Error) error
 }
 
-// errNoFault reports a codec without jsonrpc.Conn.Fault (an older SDK pin).
-var errNoFault = errors.New("sdkserver: the codec cannot send a null-id error")
+// hostTransport is a transport that carries host requests.
+type hostTransport interface {
+	Caller
+	Faulter
+}
 
 // answerer is the server's one registration on ChannelSDK.
 type answerer struct{ s *Server }
@@ -136,14 +143,14 @@ func (s *Server) ownerOf(id session.ID) (*Conn, session.ID) {
 }
 
 // answering is what the client advertised and the transport host requests go
-// over, nil before Attach or for a notifier that is no Caller.
-func (c *Conn) answering() (protocol.ClientCapabilities, Caller) {
+// over, nil before Attach or for a notifier that is no Caller and Faulter.
+func (c *Conn) answering() (protocol.ClientCapabilities, hostTransport) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
 		return c.caps, nil
 	}
-	call, _ := c.out.(Caller)
+	call, _ := c.out.(hostTransport)
 	return c.caps, call
 }
 
@@ -153,7 +160,7 @@ func (c *Conn) actor() human.Actor {
 }
 
 // ask asks it until it is answered validly, refused, or settled elsewhere.
-func (c *Conn) ask(ctx context.Context, call Caller, root session.ID, it human.Item) {
+func (c *Conn) ask(ctx context.Context, call hostTransport, root session.ID, it human.Item) {
 	reg := c.s.o.Interactions
 	for attempt := 1; ; attempt++ {
 		ans, err := c.askOnce(ctx, call, root, it)
@@ -166,8 +173,13 @@ func (c *Conn) ask(ctx context.Context, call Caller, root session.ID, it human.I
 		}
 		c.s.reportAnswer(it.ID, err)
 		if jsonrpc.HasReason(err, ReasonInvalidAnswer) {
-			reject(call, it.ID, err)
-			if attempt < MaxAnswerAttempts {
+			// A client never told its answer was refused would wait on an
+			// interaction it thinks settled, so an undelivered rejection
+			// refuses the interaction instead of asking again.
+			if rerr := reject(call, it.ID, err); rerr != nil {
+				err = fmt.Errorf("%w; the rejection could not be sent: %w", err, rerr)
+				c.s.reportAnswer(it.ID, err)
+			} else if attempt < MaxAnswerAttempts {
 				continue
 			}
 		}
@@ -185,31 +197,32 @@ func (s *Server) reportAnswer(id human.ID, err error) {
 
 // reject tells the client its reply to interaction id was refused with err's
 // reason: an error response to the null id whose details name the interaction.
-func reject(call Caller, id human.ID, err error) {
-	f, ok := call.(faulter)
-	if !ok {
-		return
-	}
+func reject(f Faulter, id human.ID, err error) error {
 	e := &jsonrpc.Error{Code: jsonrpc.CodeApplication, Reason: ReasonInvalidAnswer, Message: err.Error()}
 	if je, ok := errors.AsType[*jsonrpc.Error](err); ok {
 		e.Reason, e.Message = je.Reason, je.Message
 	}
 	e.Details, _ = json.Marshal(map[string]string{"interactionId": string(id)})
-	_ = f.Fault(e)
+	return f.Fault(e)
 }
 
 // OnFault is the connection's jsonrpc.Options.OnError (Serve sets it): a reply
 // naming no pending request is a late answer, which the client is told of with
-// sdk/late-answer; it settles nothing.
+// sdk/late-answer; it settles nothing. A rejection that cannot be sent goes to
+// Options.OnAnswerError with an empty id, the late reply naming no interaction.
 func (c *Conn) OnFault(err error) {
 	if !jsonrpc.HasReason(err, jsonrpc.ReasonUnknownResponse) {
 		return
 	}
 	c.mu.Lock()
-	f, ok := c.out.(faulter)
+	f, ok := c.out.(Faulter)
 	c.mu.Unlock()
-	if ok {
-		_ = f.Fault(fail(ReasonLateAnswer, "the reply names no pending request; the interaction was settled or withdrawn"))
+	if !ok {
+		c.s.reportAnswer("", fmt.Errorf("%w; the transport cannot refuse it", err))
+		return
+	}
+	if ferr := f.Fault(fail(ReasonLateAnswer, "the reply names no pending request; the interaction was settled or withdrawn")); ferr != nil {
+		c.s.reportAnswer("", fmt.Errorf("%w; the rejection could not be sent: %w", err, ferr))
 	}
 }
 

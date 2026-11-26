@@ -211,7 +211,15 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer, o jsonrpc.
 	if err != nil {
 		return err
 	}
-	rd, wr := &watchedReader{r: r}, &watchedWriter{w: w}
+	return c.Serve(ctx, r, w, o)
+}
+
+// Serve is Server.Serve on a connection already made: it attaches the transport
+// (which carries host requests and their rejections, answer.go) and serves the
+// client until the transport ends, then closes c.
+func (c *Conn) Serve(ctx context.Context, r io.Reader, w io.Writer, o jsonrpc.Options) error {
+	rd := &watchedReader{r: r}
+	wr := &watchedWriter{w: w}
 	o.Methods = c.Methods()
 	if onError := o.OnError; onError != nil {
 		o.OnError = func(err error) { c.OnFault(err); onError(err) }
@@ -219,11 +227,11 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer, o jsonrpc.
 		o.OnError = c.OnFault
 	}
 	// Attached before the codec can dispatch, so no session misses a forwarder.
-	out := &deferred{ready: make(chan struct{})}
+	out := &deferred{ready: make(chan struct{}), w: &lineWriter{w: wr}}
 	if err := c.Attach(out); err != nil {
 		return errors.Join(err, c.Close(context.WithoutCancel(ctx)))
 	}
-	conn := jsonrpc.Serve(ctx, rd, wr, o)
+	conn := jsonrpc.Serve(ctx, rd, out.w, o)
 	out.set(conn)
 	<-conn.Done()
 	var ended error

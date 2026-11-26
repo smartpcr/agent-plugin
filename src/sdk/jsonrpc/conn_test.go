@@ -243,20 +243,6 @@ func TestServeNotificationsAndStrayResponses(t *testing.T) {
 	}
 }
 
-// Fault answers the peer's null id; Fault(nil) sends nothing.
-func TestFault(t *testing.T) {
-	p := newPeer(t, context.Background(), Options{})
-	if err := p.c.Fault(nil); err == nil {
-		t.Fatal("Fault(nil) succeeded")
-	}
-	if err := p.c.Fault(&Error{Code: CodeApplication, Reason: "app/refused", Message: "no", Details: json.RawMessage(`{"x":1}`)}); err != nil {
-		t.Fatalf("Fault: %v", err)
-	}
-	if e := p.recvError(ID{}, "app/refused"); e.Message != "no" || string(e.Details) != `{"x":1}` {
-		t.Fatalf("fault = %+v", e)
-	}
-}
-
 func TestCall(t *testing.T) {
 	p := newPeer(t, context.Background(), Options{})
 	var got msg

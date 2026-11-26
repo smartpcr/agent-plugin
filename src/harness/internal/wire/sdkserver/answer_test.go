@@ -3,6 +3,8 @@ package sdkserver_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"strconv"
 	"strings"
 	"testing"
@@ -42,16 +44,131 @@ func newAnsRig(t *testing.T, turns ...fakemodel.Turn) *ansRig {
 
 var bothCaps = protocol.ClientCapabilities{Approvals: true, Questions: true}
 
-// ansConnect is an attached, initialized connection advertising caps.
+// pipePeer is the client end of Conn.Serve over two pipes.
+type pipePeer struct {
+	t      *testing.T
+	w      io.Writer
+	frames chan jsonrpc.Frame
+}
+
+// servePeer serves c over pipes until the test ends.
+func servePeer(t *testing.T, c *sdkserver.Conn) *pipePeer {
+	t.Helper()
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	served := make(chan error, 1)
+	go func() {
+		err := c.Serve(context.Background(), inR, outW, jsonrpc.Options{})
+		_ = outW.Close()
+		served <- err
+	}()
+	p := &pipePeer{t: t, w: inW, frames: make(chan jsonrpc.Frame, 256)}
+	go func() {
+		defer close(p.frames)
+		rd := jsonrpc.NewReader(outR, 1<<20)
+		for {
+			f, err := rd.Read()
+			if err != nil {
+				return
+			}
+			p.frames <- f
+		}
+	}()
+	t.Cleanup(func() {
+		_ = inW.Close()
+		_ = outR.Close()
+		select {
+		case <-served:
+		case <-time.After(jsonrpctest.Timeout):
+			t.Errorf("Serve did not return within %s", jsonrpctest.Timeout)
+		}
+		_ = inR.Close()
+	})
+	return p
+}
+
+func (p *pipePeer) send(f jsonrpc.Frame) {
+	p.t.Helper()
+	line, err := jsonrpc.Encode(f)
+	if err != nil {
+		p.t.Fatalf("encode %T: %v", f, err)
+	}
+	sent := make(chan error, 1)
+	go func() { _, err := p.w.Write(append(line, '\n')); sent <- err }()
+	select {
+	case err := <-sent:
+		if err != nil {
+			p.t.Fatalf("send: %v", err)
+		}
+	case <-time.After(jsonrpctest.Timeout):
+		p.t.Fatalf("send: the server read nothing within %s", jsonrpctest.Timeout)
+	}
+}
+
+func (p *pipePeer) raw(v any) json.RawMessage {
+	p.t.Helper()
+	raw, err := json.Marshal(v)
+	if err != nil {
+		p.t.Fatalf("marshal %T: %v", v, err)
+	}
+	return raw
+}
+
+func (p *pipePeer) Request(id jsonrpc.ID, method string, params any) {
+	p.t.Helper()
+	p.send(&jsonrpc.Request{ID: id, Method: method, Params: p.raw(params)})
+}
+
+func (p *pipePeer) Reply(id jsonrpc.ID, result any) {
+	p.t.Helper()
+	p.send(&jsonrpc.Response{ID: id, Result: p.raw(result)})
+}
+
+func (p *pipePeer) ReplyError(id jsonrpc.ID, e *jsonrpc.Error) {
+	p.t.Helper()
+	p.send(&jsonrpc.Response{ID: id, Error: e})
+}
+
+func (p *pipePeer) Expect() jsonrpc.Frame {
+	p.t.Helper()
+	select {
+	case f, ok := <-p.frames:
+		if !ok {
+			p.t.Fatal("the server's output ended")
+		}
+		return f
+	case <-time.After(jsonrpctest.Timeout):
+		p.t.Fatalf("no frame within %s", jsonrpctest.Timeout)
+	}
+	return nil
+}
+
+func (p *pipePeer) ExpectResponse(id jsonrpc.ID) *jsonrpc.Response {
+	p.t.Helper()
+	r, ok := p.Expect().(*jsonrpc.Response)
+	if !ok || r.ID != id {
+		p.t.Fatalf("want the response to %s, got %+v", id, r)
+	}
+	return r
+}
+
+func (p *pipePeer) ExpectError(id jsonrpc.ID, reason string) *jsonrpc.Error {
+	p.t.Helper()
+	r := p.ExpectResponse(id)
+	if r.Error == nil || r.Error.Reason != reason {
+		p.t.Fatalf("response to %s = %+v, want error %s", id, r, reason)
+	}
+	return r.Error
+}
+
+// ansConnect is an initialized connection advertising caps, served by
+// Conn.Serve over pipes: the transport production uses, which carries host
+// requests and their null-id rejections.
 func ansConnect(t *testing.T, srv *sdkserver.Server, caps protocol.ClientCapabilities, zone string) (*sdkserver.Conn, *client) {
 	t.Helper()
 	c := must(srv.Connect())
 	t.Cleanup(func() { _ = c.Close(context.Background()) })
-	conn, peer := jsonrpctest.NewPeer(t, jsonrpc.Options{Methods: c.Methods(), OnError: c.OnFault})
-	if err := c.Attach(conn); err != nil {
-		t.Fatalf("Attach: %v", err)
-	}
-	cl := &client{t: t, peer: peer}
+	cl := &client{t: t, peer: servePeer(t, c)}
 	var init protocol.InitializeResult
 	cl.call("initialize", protocol.InitializeParams{
 		ProtocolVersions: []int{protocol.Version}, ClientInfo: protocol.Implementation{Name: "test", Version: "0"},
@@ -244,6 +361,63 @@ func TestUnadvertisedKindIsNotAsked(t *testing.T) {
 	ref := ar.ref(t, cl.ansCreate(protocol.SessionCreateParams{}))
 	if a := settledWith(t, ar.ask(approvalFor(ref))); a.ans.Outcome != human.OutcomeUnavailable || !strings.Contains(a.ans.Detail, "approvals") {
 		t.Fatalf("settled %+v, want unavailable: approvals not advertised", a.ans)
+	}
+}
+
+// brokenFaults carries host requests but cannot send a rejection.
+type brokenFaults struct{ *jsonrpc.Conn }
+
+func (brokenFaults) Fault(*jsonrpc.Error) error { return errors.New("the pipe is gone") }
+
+// attachConnect is ansConnect over a jsonrpctest peer whose server end is
+// attached as t: the transport is whatever Attach is given.
+func attachConnect(t *testing.T, srv *sdkserver.Server, wrap func(*jsonrpc.Conn) sdkserver.Notifier) *client {
+	t.Helper()
+	c := must(srv.Connect())
+	t.Cleanup(func() { _ = c.Close(context.Background()) })
+	conn, peer := jsonrpctest.NewPeer(t, jsonrpc.Options{Methods: c.Methods(), OnError: c.OnFault})
+	if err := c.Attach(wrap(conn)); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	cl := &client{t: t, peer: peer}
+	var init protocol.InitializeResult
+	cl.call("initialize", protocol.InitializeParams{
+		ProtocolVersions: []int{protocol.Version}, ClientInfo: protocol.Implementation{Name: "test", Version: "0"},
+		Capabilities: bothCaps,
+	}, &init)
+	return cl
+}
+
+// A client must hear its answer was refused: a transport that cannot refuse is
+// never asked, and a rejection that cannot be sent refuses the interaction at
+// once (reported) instead of asking again.
+func TestRejectionDeliveryFailureIsExplicit(t *testing.T) {
+	ar := newAnsRig(t)
+	plain := attachConnect(t, ar.srv, func(c *jsonrpc.Conn) sdkserver.Notifier { return c })
+	ref := ar.ref(t, plain.ansCreate(protocol.SessionCreateParams{}))
+	if a := settledWith(t, ar.ask(approvalFor(ref))); a.ans.Outcome != human.OutcomeUnavailable || !strings.Contains(a.ans.Detail, "host requests") {
+		t.Fatalf("settled %+v over a transport that cannot refuse, want unavailable", a.ans)
+	}
+
+	broken := attachConnect(t, ar.srv, func(c *jsonrpc.Conn) sdkserver.Notifier { return brokenFaults{c} })
+	ref = ar.ref(t, broken.ansCreate(protocol.SessionCreateParams{}))
+	done := ar.ask(approvalFor(ref))
+	broken.peer.Reply(broken.hostRequest(sdkserver.ApprovalRequestMethod).ID, map[string]string{"outcome": "allowed-forever"})
+	a := settledWith(t, done)
+	if a.ans.Outcome != human.OutcomeDenied || !strings.Contains(a.ans.Text, "the rejection could not be sent: the pipe is gone") {
+		t.Fatalf("settled %+v, want denied naming the undelivered rejection", a.ans)
+	}
+	var sawUndelivered bool
+	for len(ar.errs) > 0 {
+		if err := <-ar.errs; strings.Contains(err.Error(), "could not be sent") {
+			sawUndelivered = true
+		}
+	}
+	if !sawUndelivered {
+		t.Fatal("the undelivered rejection was not reported to OnAnswerError")
+	}
+	if p := ar.hreg.Pending(ref); len(p) != 0 {
+		t.Fatalf("pending after an undelivered rejection = %+v, want none", p)
 	}
 }
 
