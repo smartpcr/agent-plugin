@@ -38,6 +38,9 @@ Feature: Admission by source then cookie (DH-D-HOST-2, TC-10b)
     Given a third host.listen bound on this machine's non-loopback address that allows that address as a peer
     When "GET /api" is sent to the third listener from this machine's non-loopback address
     Then the response is 401 with reason "auth/unauthorized"
-    When "GET /api" is sent with the session cookie
+    And the mount at "/api" of the third listener was reached 0 times
+    When a launch token minted by the third listener's host.auth is exchanged from this machine's non-loopback address
+    Then the third listener's exchange answers 303 to "./" and sets its own session cookie
+    When "GET /api" is sent to the third listener with its session cookie from this machine's non-loopback address
     Then the response is 200 with body "owner"
-    And the mount at "/api" was reached 1 times
+    And the mount at "/api" of the third listener was reached 1 times
