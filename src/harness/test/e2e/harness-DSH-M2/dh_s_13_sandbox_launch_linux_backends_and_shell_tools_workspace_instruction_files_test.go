@@ -44,22 +44,52 @@ func wifAbs(p string) string {
 	return p
 }
 
-// wifSeam is the fake seam, recording every bounded open so a refused link is
-// proven never read.
+// wifOpen is one bounded open the seam saw, failed or not.
+type wifOpen struct {
+	path, target string
+	err          error
+}
+
+// wifRead is one Read served from a reader the seam handed out.
+type wifRead struct {
+	path, target string
+	n            int
+}
+
+// wifSeam is the fake seam, recording every bounded open (including refused
+// ones) and every Read on a returned reader, so a refused link is proven never
+// read.
 type wifSeam struct {
 	*fstest.MemFS
-	mu     sync.Mutex
-	opened []string
+	mu    sync.Mutex
+	opens []wifOpen
+	reads []wifRead
 }
 
 func (s *wifSeam) OpenBounded(ctx context.Context, r fs.Ref, within string, limit int64) (io.ReadCloser, fs.Info, error) {
 	rc, in, err := s.MemFS.OpenBounded(ctx, r, within, limit)
-	if err == nil {
-		s.mu.Lock()
-		s.opened = append(s.opened, r.Path, in.Target.Display)
-		s.mu.Unlock()
+	s.mu.Lock()
+	s.opens = append(s.opens, wifOpen{path: r.Path, target: in.Target.Display, err: err})
+	s.mu.Unlock()
+	if rc != nil {
+		rc = &wifReader{ReadCloser: rc, seam: s, path: r.Path, target: in.Target.Display}
 	}
 	return rc, in, err
+}
+
+// wifReader records every Read so a byte served from a target is observable.
+type wifReader struct {
+	io.ReadCloser
+	seam         *wifSeam
+	path, target string
+}
+
+func (r *wifReader) Read(p []byte) (int, error) {
+	n, err := r.ReadCloser.Read(p)
+	r.seam.mu.Lock()
+	r.seam.reads = append(r.seam.reads, wifRead{path: r.path, target: r.target, n: n})
+	r.seam.mu.Unlock()
+	return n, err
 }
 
 type wifWorld struct {
@@ -142,9 +172,21 @@ func (w *wifWorld) refusedWith(path, reason string) error {
 
 func (w *wifWorld) neverOpened(p string) error {
 	want := wifAbs(p)
-	for _, o := range w.seam.opened {
-		if strings.EqualFold(filepath.Clean(o), want) {
-			return fmt.Errorf("%s was opened (opened: %v)", p, w.seam.opened)
+	is := func(s string) bool { return s != "" && strings.EqualFold(filepath.Clean(s), want) }
+	s := w.fake()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.opens) == 0 {
+		return fmt.Errorf("the seam saw no bounded open at all, so the refusal was not exercised")
+	}
+	for _, o := range s.opens {
+		if o.err == nil && (is(o.path) || is(o.target)) {
+			return fmt.Errorf("%s was opened successfully (opens: %+v)", p, s.opens)
+		}
+	}
+	for _, r := range s.reads {
+		if is(r.path) || is(r.target) {
+			return fmt.Errorf("%s was read (%d bytes; reads: %+v)", p, r.n, s.reads)
 		}
 	}
 	return nil
