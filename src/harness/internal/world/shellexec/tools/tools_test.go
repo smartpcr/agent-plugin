@@ -257,7 +257,9 @@ func TestUnknownArgumentRejected(t *testing.T) {
 }
 
 // TestArgumentsAreNamedOnly: the model-facing schema of both tools has exactly
-// command, timeout and description, and command is required.
+// command, timeout, description and the two escalation arguments
+// sandbox_permissions and justification (execution.md, the shell tools row),
+// never stdin or env, and command is required.
 //
 //dsh:test DH-T-EXEC-15
 func TestArgumentsAreNamedOnly(t *testing.T) {
@@ -277,8 +279,13 @@ func TestArgumentsAreNamedOnly(t *testing.T) {
 		if err := json.Unmarshal(d.Schema().Parameters, &doc); err != nil {
 			t.Fatal(err)
 		}
-		if len(doc.Properties) != 3 || doc.Properties["command"] == nil || doc.Properties["timeout"] == nil || doc.Properties["description"] == nil {
-			t.Fatalf("%s: properties = %v, want command, timeout, description", d.Name(), doc.Properties)
+		want := []string{"command", "timeout", "description", "sandbox_permissions", "justification"}
+		ok := len(doc.Properties) == len(want)
+		for _, p := range want {
+			ok = ok && doc.Properties[p] != nil
+		}
+		if !ok {
+			t.Fatalf("%s: properties = %v, want %v", d.Name(), doc.Properties, want)
 		}
 		if len(doc.Required) != 1 || doc.Required[0] != "command" {
 			t.Fatalf("%s: required = %v, want [command]", d.Name(), doc.Required)
