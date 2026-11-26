@@ -80,6 +80,9 @@ func (s *leaState) close() {
 	for i := len(s.fibers) - 1; i >= 0; i-- {
 		s.fibers[i].Dispose()
 	}
+	if s.root != nil {
+		s.root.Dispose()
+	}
 	if s.dir != "" {
 		os.RemoveAll(s.dir)
 	}
