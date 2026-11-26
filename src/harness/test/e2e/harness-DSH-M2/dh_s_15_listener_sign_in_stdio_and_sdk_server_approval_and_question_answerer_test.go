@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -38,11 +39,77 @@ import (
 
 const aqaRoute vocab.RouteID = "r/aqa"
 
-// aqaT is the suite's *testing.T: the fake model and the cleanups need a
-// testing.TB.
+// aqaT is the suite's *testing.T. Scenarios never register cleanups or report
+// failures on it directly; they use their own aqaTB.
 var aqaT *testing.T
 
 const aqaSettle = 10 * time.Second
+
+// aqaTB is one scenario's testing.TB. Cleanups are collected and run LIFO by
+// the scenario's After hook, and failures are returned from that hook, so
+// servers, connections and hanging model turns never outlive their scenario
+// and a leak is blamed on the scenario that caused it. Once the scenario is
+// torn down, late reports fall through to the suite.
+type aqaTB struct {
+	testing.TB // the suite's T, for Helper, Name and logging
+
+	mu       sync.Mutex
+	cleanups []func()
+	errs     []error
+	done     bool
+}
+
+func newAqaTB() *aqaTB { return &aqaTB{TB: aqaT} }
+
+func (t *aqaTB) Cleanup(f func()) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.cleanups = append(t.cleanups, f)
+}
+
+func (t *aqaTB) report(msg string) {
+	t.mu.Lock()
+	done := t.done
+	if !done {
+		t.errs = append(t.errs, errors.New(msg))
+	}
+	t.mu.Unlock()
+	if done {
+		t.TB.Errorf("after scenario teardown: %s", msg)
+	}
+}
+
+func (t *aqaTB) Error(args ...any)                 { t.report(fmt.Sprint(args...)) }
+func (t *aqaTB) Errorf(format string, args ...any) { t.report(fmt.Sprintf(format, args...)) }
+func (t *aqaTB) Fail()                             { t.report("failed") }
+
+// FailNow panics instead of calling runtime.Goexit: godog recovers a step's
+// panic into that step's error.
+func (t *aqaTB) FailNow()          { t.report("failed"); panic("aqaTB.FailNow") }
+func (t *aqaTB) Fatal(args ...any) { t.Error(args...); panic(fmt.Sprint(args...)) }
+func (t *aqaTB) Fatalf(format string, args ...any) {
+	t.Errorf(format, args...)
+	panic(fmt.Sprintf(format, args...))
+}
+
+// teardown runs the scenario's cleanups in LIFO order and returns every
+// failure reported during the scenario or its cleanups.
+func (t *aqaTB) teardown() error {
+	for {
+		t.mu.Lock()
+		n := len(t.cleanups)
+		if n == 0 {
+			t.done = true
+			errs := t.errs
+			t.mu.Unlock()
+			return errors.Join(errs...)
+		}
+		f := t.cleanups[n-1]
+		t.cleanups = t.cleanups[:n-1]
+		t.mu.Unlock()
+		f()
+	}
+}
 
 type aqaPrompt struct{}
 
@@ -73,7 +140,7 @@ type aqaPeer struct {
 	next   int64
 }
 
-func aqaServe(c *sdkserver.Conn) *aqaPeer {
+func aqaServe(t testing.TB, c *sdkserver.Conn) *aqaPeer {
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
 	p := &aqaPeer{w: inW, frames: make(chan jsonrpc.Frame, 256)}
@@ -94,13 +161,13 @@ func aqaServe(c *sdkserver.Conn) *aqaPeer {
 			p.frames <- f
 		}
 	}()
-	aqaT.Cleanup(func() {
+	t.Cleanup(func() {
 		_ = inW.Close()
 		_ = outR.Close()
 		select {
 		case <-served:
 		case <-time.After(jsonrpctest.Timeout):
-			aqaT.Errorf("Serve did not return within %s", jsonrpctest.Timeout)
+			t.Errorf("Serve did not return within %s", jsonrpctest.Timeout)
 		}
 		_ = inR.Close()
 	})
@@ -237,6 +304,7 @@ type aqaAsked struct {
 }
 
 type aqaState struct {
+	t     *aqaTB
 	reg   agent.Registry
 	hreg  human.Registry
 	tr    *fakemodel.Transport
@@ -255,7 +323,7 @@ type aqaState struct {
 }
 
 func (s *aqaState) newServer(turns ...fakemodel.Turn) error {
-	t := aqaT
+	t := s.t
 	root := cordis.New()
 	root.Loggers().ClearExporters()
 	root.Loggers().AddExporter(&cordis.MemoryExporter{})
@@ -308,8 +376,8 @@ func (s *aqaState) connect() (*sdkserver.Conn, *aqaPeer, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	aqaT.Cleanup(func() { _ = c.Close(context.Background()) })
-	p := aqaServe(c)
+	s.t.Cleanup(func() { _ = c.Close(context.Background()) })
+	p := aqaServe(s.t, c)
 	var init protocol.InitializeResult
 	if err := p.call("initialize", protocol.InitializeParams{
 		ProtocolVersions: []int{protocol.Version}, ClientInfo: protocol.Implementation{Name: "e2e", Version: "0"},
@@ -661,8 +729,11 @@ func (s *aqaState) raiseIdentical(tool string) error {
 func InitializeScenario_dh_s_15_listener_sign_in_stdio_and_sdk_server_approval_and_question_answerer(ctx *godog.ScenarioContext) {
 	var s *aqaState
 	ctx.Before(func(c context.Context, _ *godog.Scenario) (context.Context, error) {
-		s = &aqaState{}
+		s = &aqaState{t: newAqaTB()}
 		return c, nil
+	})
+	ctx.After(func(c context.Context, _ *godog.Scenario, _ error) (context.Context, error) {
+		return c, s.t.teardown()
 	})
 	ctx.Step(`^a client served over stdio pipes advertising approvals and questions against an SDK server with an interaction registry$`, func() error { return s.givenPlain() })
 	ctx.Step(`^a client served over stdio pipes advertising approvals and questions against an SDK server with an interaction registry and a model that holds the turn open$`, func() error { return s.givenHolding() })
