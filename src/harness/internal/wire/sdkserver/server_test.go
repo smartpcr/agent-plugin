@@ -48,9 +48,16 @@ func (stubPrompt) Assemble(_ context.Context, in prompt.Input) (prompt.Assembly,
 
 func (stubPrompt) Render(a prompt.Assembly) (string, error) { return a.Sections[0].Text, nil }
 
-// newServer is a server over a driven registry, a memstore and the fake model
-// replying turns in order.
-func newServer(t *testing.T, turns ...fakemodel.Turn) *sdkserver.Server {
+// rig is a driven registry over a memstore and the fake model replying turns in
+// order, and the server options over them.
+type rig struct {
+	reg agent.Registry
+	svc session.Service
+	tr  *fakemodel.Transport
+	o   sdkserver.Options
+}
+
+func newRig(t *testing.T, turns ...fakemodel.Turn) *rig {
 	t.Helper()
 	root := cordis.New()
 	root.Loggers().ClearExporters()
@@ -67,17 +74,24 @@ func newServer(t *testing.T, turns ...fakemodel.Turn) *sdkserver.Server {
 	svc := session.NewService(root, memstore.New(), session.Config{})
 	reg := agent.NewRegistry(root)
 	rt := llm.New()
-	fakemodel.Register(t, rt, route, fakemodel.NewTransport(t, turns...))
+	tr := fakemodel.NewTransport(t, turns...)
+	fakemodel.Register(t, rt, route, tr)
 	var drvCtx *cordis.Context
 	must(0, must(root.Apply("driver", func(c *cordis.Context) error { drvCtx = c; return nil })).Wait())
 	f := must(driver.NewFactory(driver.FactoryOptions{
 		Context: drvCtx, Sessions: svc, Scopes: scope.NewTable(root), Models: rt, Tools: tsvc, Prompt: stubPrompt{},
 	}))
 	must(reg.SetFactory(root, f))
-	return must(sdkserver.New(sdkserver.Options{
+	return &rig{reg: reg, svc: svc, tr: tr, o: sdkserver.Options{
 		Owner: root, Agents: reg, Sessions: svc, Routes: rt,
 		Info: protocol.Implementation{Name: "dsh", Version: "test"}, Limits: protocol.Limits{MaxFrameBytes: 1 << 20},
-	}))
+	}}
+}
+
+func (r *rig) server() *sdkserver.Server { return must(sdkserver.New(r.o)) }
+
+func newServer(t *testing.T, turns ...fakemodel.Turn) *sdkserver.Server {
+	return newRig(t, turns...).server()
 }
 
 // client is one initialized connection to the server.
@@ -87,14 +101,16 @@ type client struct {
 	next int64
 }
 
-func connect(t *testing.T, srv *sdkserver.Server) *client {
+func connect(t *testing.T, srv *sdkserver.Server) *client { return connectWith(t, srv, nil) }
+
+func connectWith(t *testing.T, srv *sdkserver.Server, d *protocol.Defaults) *client {
 	t.Helper()
 	c := must(srv.Connect())
 	t.Cleanup(func() { _ = c.Close(context.Background()) })
 	_, peer := jsonrpctest.NewPeer(t, jsonrpc.Options{Methods: c.Methods()})
 	cl := &client{t: t, peer: peer}
 	var init protocol.InitializeResult
-	cl.call("initialize", protocol.InitializeParams{ProtocolVersions: []int{protocol.Version}, ClientInfo: protocol.Implementation{Name: "test", Version: "0"}}, &init)
+	cl.call("initialize", protocol.InitializeParams{ProtocolVersions: []int{protocol.Version}, ClientInfo: protocol.Implementation{Name: "test", Version: "0"}, Defaults: d}, &init)
 	if init.ProtocolVersion != protocol.Version || init.ServerInfo.Name != "dsh" {
 		t.Fatalf("initialize = %+v", init)
 	}
@@ -103,11 +119,17 @@ func connect(t *testing.T, srv *sdkserver.Server) *client {
 
 func (c *client) id() jsonrpc.ID { c.next++; return jsonrpc.Int64ID(c.next) }
 
-func (c *client) call(method string, params, result any) {
+// respond sends one request and returns its response.
+func (c *client) respond(method string, params any) *jsonrpc.Response {
 	c.t.Helper()
 	id := c.id()
 	c.peer.Request(id, method, params)
-	r := c.peer.ExpectResponse(id)
+	return c.peer.ExpectResponse(id)
+}
+
+func (c *client) call(method string, params, result any) {
+	c.t.Helper()
+	r := c.respond(method, params)
 	if r.Error != nil {
 		c.t.Fatalf("%s: %v", method, r.Error)
 	}
@@ -125,12 +147,26 @@ func (c *client) refused(method string, params any, reason string) {
 
 func (c *client) create() string {
 	c.t.Helper()
+	return c.createWith(protocol.SessionCreateParams{})
+}
+
+func (c *client) createWith(p protocol.SessionCreateParams) string {
+	c.t.Helper()
+	p.Model = &protocol.ModelRoute{Provider: string(route), Model: fakemodel.ModelName}
 	var r protocol.SessionCreateResult
-	c.call("session/create", protocol.SessionCreateParams{Model: &protocol.ModelRoute{Provider: string(route), Model: fakemodel.ModelName}}, &r)
+	c.call("session/create", p, &r)
 	if r.SessionID == "" {
 		c.t.Fatalf("session/create = %+v", r)
 	}
 	return r.SessionID
+}
+
+// lastSeq is the session's last committed seq, read through history.
+func (c *client) lastSeq(id string) int64 {
+	c.t.Helper()
+	var page protocol.SessionHistoryResult
+	c.call("session/history", protocol.SessionHistoryParams{SessionID: id, Limit: 1}, &page)
+	return page.LastSeq
 }
 
 func text(s string) []protocol.ContentBlock { return []protocol.ContentBlock{{Type: "text", Text: s}} }
@@ -173,6 +209,31 @@ func TestCreatePromptHistory(t *testing.T) {
 	cl.call("session/history", protocol.SessionHistoryParams{SessionID: id, AfterSeq: all.Events[1].Seq, Limit: sdkserver.MaxHistoryLimit}, &rest)
 	if len(rest.Events) == 0 || rest.More || rest.Events[0].Seq != all.Events[1].Seq+1 || rest.Events[len(rest.Events)-1].Seq != rest.LastSeq {
 		t.Fatalf("next page = %+v, want every later event once", rest)
+	}
+
+	// One-event pages, the first without a cursor and each later one after the
+	// last seq seen, sent raw so the cursor after seq 0 is an explicit 0.
+	var seen []int64
+	params := map[string]any{"sessionId": id, "limit": 1}
+	for more := true; more; {
+		var one protocol.SessionHistoryResult
+		cl.call("session/history", params, &one)
+		if len(one.Events) != 1 {
+			t.Fatalf("one-event page after %v = %+v", params["afterSeq"], one)
+		}
+		seen = append(seen, one.Events[0].Seq)
+		params["afterSeq"], more = one.Events[0].Seq, one.More
+		if len(seen) > int(w.LastSeq)+1 {
+			t.Fatalf("one-event pages repeat: %v", seen)
+		}
+	}
+	for i, s := range seen {
+		if s != int64(i) {
+			t.Fatalf("one-event pages = %v, want 0 to %d once each", seen, w.LastSeq)
+		}
+	}
+	if seen[len(seen)-1] != w.LastSeq {
+		t.Fatalf("one-event pages = %v, want them to end at %d", seen, w.LastSeq)
 	}
 }
 

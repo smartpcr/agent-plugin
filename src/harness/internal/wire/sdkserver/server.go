@@ -24,6 +24,8 @@ import (
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/agent"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/human/approval"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/human/permission"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
@@ -52,6 +54,26 @@ type Routes interface {
 	Routes() []vocab.RouteID
 }
 
+// Permissions selects a session's permission preset (A17); *permission.Service
+// is one.
+type Permissions interface {
+	Lookup(name string) (permission.Preset, bool)
+	Set(ctx context.Context, ag agent.Ref, name string, by approval.By) (permission.Preset, error)
+}
+
+// The reasons this carrier adds to its owners'.
+const (
+	// ReasonPermissionUnavailable is a permissionMode on a host that serves no
+	// permission presets.
+	ReasonPermissionUnavailable = "permission/unavailable"
+	// ReasonUnknownPreset is a permissionMode the preset table does not hold.
+	ReasonUnknownPreset = "permission/unknown-preset"
+)
+
+// envelopeBytes is what a history reply reserves, beyond its result, for the
+// jsonrpc envelope and the request id.
+const envelopeBytes = 1024
+
 // Options are what a Server serves with.
 type Options struct {
 	// Owner is the context every connection's fiber is applied under; the agents
@@ -68,6 +90,10 @@ type Options struct {
 	Workdir Workdir
 	// Routes validates a requested route by exact id; nil accepts any.
 	Routes Routes
+	// Permissions applies a requested permissionMode; nil refuses one with
+	// permission/unavailable. A create or resume without one keeps the
+	// session's preset (a fresh session's is the table's default).
+	Permissions Permissions
 	// Ready is closed when boot reports the tree ready; initialize waits for it.
 	// nil is ready.
 	Ready <-chan struct{}
@@ -137,7 +163,7 @@ func (s *Server) Connect() (*Conn, error) {
 		protocol.Handle("session/wait", c.wait),
 		protocol.Handle("session/cancel", c.cancel),
 		protocol.Handle("session/close", c.closeSession),
-		protocol.Handle("session/history", c.history),
+		c.historyRegistration(),
 		protocol.Handle("session/model/set", c.setModel),
 		protocol.Handle("session/working-directory/get", c.getWorkdir),
 		protocol.Handle("session/working-directory/set", c.setWorkdir),
@@ -152,16 +178,75 @@ func (s *Server) Connect() (*Conn, error) {
 }
 
 // Serve connects and serves one client over r and w until the transport ends,
-// then closes the connection. o.Methods is replaced by the connection's.
+// then closes the connection. o.Methods is replaced by the connection's. The
+// peer ending its input (EOF) or ctx ending is a clean end and returns the
+// close's error alone; any other end (a failed read or write, a stalled writer,
+// an oversized line) is returned joined with it.
 func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer, o jsonrpc.Options) error {
 	c, err := s.Connect()
 	if err != nil {
 		return err
 	}
+	rd, wr := &watchedReader{r: r}, &watchedWriter{w: w}
 	o.Methods = c.Methods()
-	conn := jsonrpc.Serve(ctx, r, w, o)
+	conn := jsonrpc.Serve(ctx, rd, wr, o)
 	<-conn.Done()
-	return c.Close(context.WithoutCancel(ctx))
+	var ended error
+	if ctx.Err() == nil && !(errors.Is(rd.failed(), io.EOF) && wr.failed() == nil && jsonrpc.HasReason(conn.Err(), jsonrpc.ReasonClosed)) {
+		ended = fmt.Errorf("sdkserver: the transport failed: %w", errors.Join(conn.Err(), ignoreEOF(rd.failed()), wr.failed()))
+	}
+	return errors.Join(ended, c.Close(context.WithoutCancel(ctx)))
+}
+
+// firstErr keeps the first error it is given.
+type firstErr struct {
+	mu  sync.Mutex
+	err error
+}
+
+func (f *firstErr) keep(err error) error {
+	if err != nil {
+		f.mu.Lock()
+		if f.err == nil {
+			f.err = err
+		}
+		f.mu.Unlock()
+	}
+	return err
+}
+
+func (f *firstErr) failed() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.err
+}
+
+// watchedReader and watchedWriter keep their transport's first error.
+type watchedReader struct {
+	r io.Reader
+	firstErr
+}
+
+func (w *watchedReader) Read(p []byte) (int, error) {
+	n, err := w.r.Read(p)
+	return n, w.keep(err)
+}
+
+type watchedWriter struct {
+	w io.Writer
+	firstErr
+}
+
+func (w *watchedWriter) Write(p []byte) (int, error) {
+	n, err := w.w.Write(p)
+	return n, w.keep(err)
+}
+
+func ignoreEOF(err error) error {
+	if errors.Is(err, io.EOF) {
+		return nil
+	}
+	return err
 }
 
 // Methods is the connection's gated method table, for jsonrpc.Options.Methods.
@@ -299,6 +384,10 @@ func (c *Conn) create(ctx context.Context, p protocol.SessionCreateParams) (prot
 	if err != nil {
 		return protocol.SessionCreateResult{}, err
 	}
+	mode := orElse(p.PermissionMode, d.PermissionMode)
+	if err := c.s.knownPreset(mode); err != nil {
+		return protocol.SessionCreateResult{}, err
+	}
 	id := session.ID(p.SessionID)
 	if id == "" {
 		id = newID()
@@ -317,6 +406,9 @@ func (c *Conn) create(ctx context.Context, p protocol.SessionCreateParams) (prot
 	if err != nil {
 		return protocol.SessionCreateResult{}, err
 	}
+	if err := c.applyPreset(ctx, a, mode); err != nil {
+		return protocol.SessionCreateResult{}, err
+	}
 	cwd, err := c.cwdOf(ctx, a)
 	if err != nil {
 		return protocol.SessionCreateResult{}, err
@@ -326,8 +418,14 @@ func (c *Conn) create(ctx context.Context, p protocol.SessionCreateParams) (prot
 
 func (c *Conn) resume(ctx context.Context, p protocol.SessionResumeParams) (protocol.SessionResumeResult, error) {
 	id := session.ID(p.SessionID)
+	if err := c.s.knownPreset(p.PermissionMode); err != nil {
+		return protocol.SessionResumeResult{}, err
+	}
 	if a, ok := c.agent(id); ok {
 		// Idempotent for a session this connection already owns.
+		if err := c.applyPreset(ctx, a, p.PermissionMode); err != nil {
+			return protocol.SessionResumeResult{}, err
+		}
 		return c.resumed(ctx, a, false)
 	}
 	sel, err := c.s.selection(p.Model)
@@ -342,8 +440,49 @@ func (c *Conn) resume(ctx context.Context, p protocol.SessionResumeParams) (prot
 		c.s.release(id, c)
 		return protocol.SessionResumeResult{}, err
 	}
+	if err := c.applyPreset(ctx, a, p.PermissionMode); err != nil {
+		return protocol.SessionResumeResult{}, err
+	}
 	rep, _ := agent.OpenReport(a)
 	return c.resumed(ctx, a, rep.Interrupted)
+}
+
+// knownPreset refuses a permissionMode the host cannot apply before any work;
+// "" is none.
+func (s *Server) knownPreset(name string) error {
+	switch {
+	case name == "":
+		return nil
+	case s.o.Permissions == nil:
+		return fail(ReasonPermissionUnavailable, fmt.Sprintf("permissionMode %q: this host serves no permission presets", name))
+	}
+	if _, ok := s.o.Permissions.Lookup(name); !ok {
+		return fail(ReasonUnknownPreset, fmt.Sprintf("permissionMode %q is not a permission preset", name))
+	}
+	return nil
+}
+
+// applyPreset switches a's session to the permission preset name; "" keeps the
+// session's. A switch that fails closes the agent, so no session runs under a
+// preset other than the one requested.
+func (c *Conn) applyPreset(ctx context.Context, a agent.Agent, name string) error {
+	if name == "" {
+		return nil
+	}
+	_, err := c.s.o.Permissions.Set(ctx, a.Ref(), name, approval.By{Principal: c.by(), Channel: "sdk"})
+	if err == nil {
+		return nil
+	}
+	id := a.Ref().Session
+	c.mu.Lock()
+	h, ok := c.owned[id]
+	delete(c.owned, id)
+	c.mu.Unlock()
+	if ok {
+		err = errors.Join(err, h.Dispose(ctx))
+		c.s.release(id, c)
+	}
+	return wire(err)
 }
 
 // resumeClaimed resumes id, which c has claimed: a session another writer holds
@@ -448,8 +587,12 @@ func (c *Conn) shutdown(context.Context, protocol.Empty) (protocol.Empty, error)
 
 func (c *Conn) prompt(ctx context.Context, p protocol.SessionPromptParams) (protocol.SessionPromptResult, error) {
 	list := agent.ListNextTurn
-	if p.Delivery == "steer" {
+	switch p.Delivery {
+	case "", "follow-up":
+	case "steer":
 		list = agent.ListNextStep
+	default:
+		return protocol.SessionPromptResult{}, invalidParams(fmt.Sprintf("delivery: %q is not follow-up or steer", p.Delivery))
 	}
 	r, err := c.send(ctx, p.SessionID, list, p.MessageID, p.Content)
 	if err != nil {
@@ -471,11 +614,11 @@ func (c *Conn) query(ctx context.Context, p protocol.SessionQueryParams) (protoc
 // send queues content on an owned session's list. A repeated message id appends
 // nothing and answers the first receipt.
 func (c *Conn) send(ctx context.Context, id string, list agent.List, msgID string, content []protocol.ContentBlock) (agent.Receipt, error) {
-	a, err := c.driven(id)
+	text, err := textOf(content)
 	if err != nil {
 		return agent.Receipt{}, err
 	}
-	text, err := textOf(content)
+	a, err := c.driven(id)
 	if err != nil {
 		return agent.Receipt{}, err
 	}
@@ -512,16 +655,24 @@ func (c *Conn) wait(ctx context.Context, p protocol.SessionRef) (protocol.LastSe
 
 // cancel cancels with cause user; a turn cancel replies after the turn/end.
 func (c *Conn) cancel(ctx context.Context, p protocol.SessionCancelParams) (protocol.SessionCancelResult, error) {
+	scope := agent.ScopeTurn
+	switch p.Scope {
+	case "", "turn":
+	case "step":
+		scope = agent.ScopeStep
+	default:
+		return protocol.SessionCancelResult{}, invalidParams(fmt.Sprintf("scope: %q is not turn or step", p.Scope))
+	}
+	inbox := agent.InboxChoice(p.Inbox)
+	if inbox != agent.InboxKeep && inbox != agent.InboxDiscard {
+		return protocol.SessionCancelResult{}, invalidParams(fmt.Sprintf("inbox: %q is not keep or discard", p.Inbox))
+	}
 	a, err := c.driven(p.SessionID)
 	if err != nil {
 		return protocol.SessionCancelResult{}, err
 	}
-	scope := agent.ScopeTurn
-	if p.Scope == "step" {
-		scope = agent.ScopeStep
-	}
 	running := a.Status() == agent.StatusRunning
-	if err := agent.Cancel(a, agent.CauseUser, agent.CancelOptions{Scope: scope, Inbox: agent.InboxChoice(p.Inbox)}); err != nil {
+	if err := agent.Cancel(a, agent.CauseUser, agent.CancelOptions{Scope: scope, Inbox: inbox}); err != nil {
 		return protocol.SessionCancelResult{}, wire(err)
 	}
 	if running && scope == agent.ScopeTurn {
@@ -534,16 +685,47 @@ func (c *Conn) cancel(ctx context.Context, p protocol.SessionCancelParams) (prot
 
 // -------------------------------------------------------------------- history
 
+// historyRegistration is session/history with its cursor read from the raw
+// params: afterSeq is omitempty, so only the raw params tell an omitted cursor
+// (the first page, from seq 0) from an explicit afterSeq of 0 (after seq 0).
+func (c *Conn) historyRegistration() protocol.Registration {
+	r := protocol.Handle("session/history", func(ctx context.Context, p protocol.SessionHistoryParams) (protocol.SessionHistoryResult, error) {
+		return c.history(ctx, p, nil)
+	})
+	r.Handler = func(ctx context.Context, raw json.RawMessage) (any, error) {
+		p, err := protocol.DecodeParams[protocol.SessionHistoryParams](raw)
+		if err != nil {
+			return nil, err
+		}
+		var cursor struct {
+			AfterSeq *int64 `json:"afterSeq"`
+		}
+		// DecodeParams has accepted raw, so it decodes.
+		_ = json.Unmarshal(raw, &cursor)
+		return c.history(ctx, p, cursor.AfterSeq)
+	}
+	return r
+}
+
 // history pages the committed events of any session, live or stored, with no
-// lease. The first page starts at seq 0 (afterSeq absent or 0); later pages
-// start after afterSeq. A page is cut before it would exceed half a frame.
-func (c *Conn) history(ctx context.Context, p protocol.SessionHistoryParams) (protocol.SessionHistoryResult, error) {
+// lease: from seq 0 when after is nil, else from *after+1. A page is cut before
+// its serialized result would exceed half of Limits.MaxFrameBytes; an event that
+// alone exceeds half a frame is a page of its own when its reply still fits a
+// frame, and is refused jsonrpc/line-too-long when it does not.
+func (c *Conn) history(ctx context.Context, p protocol.SessionHistoryParams, after *int64) (protocol.SessionHistoryResult, error) {
 	limit := p.Limit
 	switch {
 	case limit <= 0:
 		limit = DefaultHistoryLimit
 	case limit > MaxHistoryLimit:
 		limit = MaxHistoryLimit
+	}
+	pos := event.Offset(0)
+	if after != nil {
+		if *after < -1 {
+			return protocol.SessionHistoryResult{}, invalidParams(fmt.Sprintf("afterSeq: %d is below -1", *after))
+		}
+		pos = event.Offset(*after + 1)
 	}
 	rs, release, err := c.s.read(ctx, session.ID(p.SessionID))
 	if err != nil {
@@ -557,13 +739,13 @@ func (c *Conn) history(ctx context.Context, p protocol.SessionHistoryParams) (pr
 			types[t] = true
 		}
 	}
-	budget := c.s.o.Limits.MaxFrameBytes / 2
+	frame := c.s.o.Limits.MaxFrameBytes
 	out := protocol.SessionHistoryResult{Events: []protocol.Event{}, LastSeq: lastSeq(rs)}
-	pos, head := event.Offset(0), rs.Len()
-	if p.AfterSeq > 0 {
-		pos = event.Offset(p.AfterSeq + 1)
+	head := rs.Len()
+	used, err := resultBytes(out)
+	if err != nil {
+		return protocol.SessionHistoryResult{}, err
 	}
-	var used int64
 page:
 	for pos < head && len(out.Events) < limit {
 		evs, err := rs.Read(ctx, pos, limit)
@@ -579,20 +761,44 @@ page:
 				continue
 			}
 			w := wireEvent(e)
-			size := int64(len(w.Data)) + 256
-			if budget > 0 && used+size > budget && len(out.Events) > 0 {
-				break page
+			b, err := json.Marshal(w)
+			if err != nil {
+				return protocol.SessionHistoryResult{}, fmt.Errorf("sdkserver: encode event %d: %w", e.Seq(), err)
+			}
+			size := int64(len(b)) + 1 // and its comma
+			alone := false
+			if frame > 0 && used+size > frame/2 {
+				if len(out.Events) > 0 {
+					break page
+				}
+				if used+size+envelopeBytes > frame {
+					return protocol.SessionHistoryResult{}, fail(jsonrpc.ReasonLineTooLong, fmt.Sprintf(
+						"event %d serializes to %d bytes: no reply within the frame bound of %d bytes carries it; page past it with afterSeq %d",
+						e.Seq(), size, frame, e.Seq()))
+				}
+				alone = true
 			}
 			used += size
 			out.Events = append(out.Events, w)
 			pos = e.Seq() + 1
-			if len(out.Events) == limit {
+			if alone || len(out.Events) == limit {
 				break page
 			}
 		}
 	}
 	out.More = pos < head
 	return out, nil
+}
+
+// resultBytes is the serialized size of r with no events and more false, the
+// longest the fields besides the events serialize to.
+func resultBytes(r protocol.SessionHistoryResult) (int64, error) {
+	r.Events, r.More = []protocol.Event{}, false
+	b, err := json.Marshal(r)
+	if err != nil {
+		return 0, fmt.Errorf("sdkserver: encode the history page: %w", err)
+	}
+	return int64(len(b)), nil
 }
 
 // read is session id for reading: the live session when this process holds it,
@@ -689,7 +895,7 @@ func (s *Server) selection(route *protocol.ModelRoute) (agent.ModelSelection, er
 	}
 	id := vocab.RouteID(route.Provider)
 	if err := id.Validate(); err != nil {
-		return agent.ModelSelection{}, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Reason: jsonrpc.ReasonInvalidParams, Message: "model.provider: " + err.Error()}
+		return agent.ModelSelection{}, invalidParams("model.provider: " + err.Error())
 	}
 	if s.o.Routes != nil && !slices.Contains(s.o.Routes.Routes(), id) {
 		return agent.ModelSelection{}, fail(string(vocab.CodeNoRoute), fmt.Sprintf("no route %q", id))
@@ -699,15 +905,20 @@ func (s *Server) selection(route *protocol.ModelRoute) (agent.ModelSelection, er
 	}}, nil
 }
 
-// textOf is the text of a prompt's blocks. Inline images (H-3) and attachment
+// textOf is the text of a prompt's blocks. A type outside text, image and
+// reference is jsonrpc/invalid-params; inline images (H-3) and attachment
 // references are not built: they are sdk/invalid-content.
 func textOf(blocks []protocol.ContentBlock) (string, error) {
 	var parts []string
 	for i, b := range blocks {
-		if b.Type != "text" {
+		switch b.Type {
+		case "text":
+			parts = append(parts, b.Text)
+		case "image", "reference":
 			return "", fail(protocol.ReasonInvalidContent, fmt.Sprintf("content[%d]: %q blocks are not supported by this host", i, b.Type))
+		default:
+			return "", invalidParams(fmt.Sprintf("content[%d].type: %q is not text, image or reference", i, b.Type))
 		}
-		parts = append(parts, b.Text)
 	}
 	text := strings.Join(parts, "\n\n")
 	if strings.TrimSpace(text) == "" {
@@ -749,9 +960,16 @@ func fail(reason, msg string) *jsonrpc.Error {
 	return &jsonrpc.Error{Code: jsonrpc.CodeApplication, Message: msg, Reason: reason}
 }
 
+func invalidParams(msg string) *jsonrpc.Error {
+	return &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Reason: jsonrpc.ReasonInvalidParams, Message: msg}
+}
+
 // wire is err as the peer sees it: the owner's reason, unchanged. An error that
 // names its own reason, or none, is left to the codec.
 func wire(err error) error {
+	if errors.Is(err, permission.ErrUnknownPreset) {
+		return passed(ReasonUnknownPreset, err)
+	}
 	if owned, ok := errors.AsType[*store.OwnedError](err); ok {
 		return passed(string(store.CodeOwned), owned)
 	}
