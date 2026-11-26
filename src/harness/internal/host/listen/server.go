@@ -96,15 +96,24 @@ func (c Config) remote() bool {
 		return true
 	}
 	for _, h := range c.TrustedHosts {
-		if a, err := netip.ParseAddr(h); err == nil {
-			if !isLoopback(a) {
-				return true
-			}
-		} else if !strings.EqualFold(h, "localhost") {
+		if !localHost(h) {
 			return true
 		}
 	}
 	return false
+}
+
+// localHost reports whether h, written as a bare name, an IP literal or a browser
+// Host value ("[::1]", "localhost:3080", "LOCALHOST."), names this machine only.
+func localHost(h string) bool {
+	if host, _, err := net.SplitHostPort(h); err == nil {
+		h = host
+	}
+	h = strings.TrimSuffix(strings.TrimSuffix(strings.TrimPrefix(h, "["), "]"), ".")
+	if a, err := netip.ParseAddr(h); err == nil {
+		return isLoopback(a)
+	}
+	return strings.EqualFold(h, "localhost")
 }
 
 // compressor builds the gzip wrapper, or nil when compression is off.
