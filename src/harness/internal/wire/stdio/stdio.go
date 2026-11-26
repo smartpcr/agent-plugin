@@ -6,8 +6,9 @@
 // bounded Writer.
 //
 // The owner never ends the process itself. It asks launch.App.Stop once: with
-// (InputClosed, 0) when the client's input ends or the server reports a shutdown,
-// with (ClientStalled, 125) when a write stalls. The exit bound and the forced
+// (InputClosed, 0) when the client is gone -- its input ends, a write to it fails,
+// or the server reports a shutdown -- and with (ClientStalled, 125) when a write
+// stalls. The exit bound and the forced
 // status 124 are boot's (M2-C-10).
 package stdio
 
@@ -16,8 +17,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/launch"
@@ -70,6 +73,10 @@ func Claim(cfg Config) (*Owner, error) {
 	if log == nil {
 		log = os.Stderr
 	}
+	// A Go program that writes to a closed pipe on descriptor 1 dies of SIGPIPE
+	// unless the signal is ignored; ignored, the write fails with EPIPE and the
+	// Writer turns it into the InputClosed ending.
+	signal.Ignore(syscall.SIGPIPE)
 	o := &Owner{app: cfg.App}
 	in, out := os.Stdin, os.Stdout
 	os.Stdin, os.Stdout = null, log

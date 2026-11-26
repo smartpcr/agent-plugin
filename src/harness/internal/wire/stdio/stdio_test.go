@@ -51,7 +51,7 @@ func (exitApp) Stop(_ launch.Reason, status int) {
 // TestHelperStdioOwner is the helper process; it is skipped in a normal run. It
 // claims the real stdio and acts by mode: "stray" writes one frame, prints a stray
 // line and tries a second claim, then exits 0; "read" reads its input until it
-// ends; "write" also writes to the client until a write stalls. In "read" and
+// ends; "write" also writes to the client until a write stalls or fails. In "read" and
 // "write" the forced deadline exits 124 when no ending came first.
 func TestHelperStdioOwner(t *testing.T) {
 	if os.Getenv(helperEnv) != "1" {
@@ -183,9 +183,9 @@ func TestStrayWriteGoesToTheLog(t *testing.T) {
 	}
 }
 
-// The three endings of a helper that owns real stdio: its input closed exits 0, a
-// client that stops reading exits 125, and an open input past the forced deadline
-// exits 124.
+// The endings of a helper that owns real stdio: its input closed exits 0, a client
+// that stops reading exits 125, a client that closed its output exits 0, and an
+// open input past the forced deadline exits 124.
 //
 //dsh:test DH-T-SDK-22
 func TestBoundedEndings(t *testing.T) {
@@ -227,6 +227,32 @@ func TestBoundedEndings(t *testing.T) {
 		}
 		if status := exitStatus(t, p, stderr); status != output.Stalled {
 			t.Fatalf("exit %d, want %d; stderr:\n%s", status, output.Stalled, stderr.String())
+		}
+	})
+	// A client that closed its end of the output is gone even while its input stays
+	// open: the failed write is the InputClosed ending, exit 0, not a SIGPIPE death.
+	t.Run("output closed", func(t *testing.T) {
+		inR, inW, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		outR, outW, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = inW.Close() })
+		if err := outR.Close(); err != nil {
+			t.Fatal(err)
+		}
+		p, stderr := startHelper(t, "write", inR, outW, "")
+		if err := inR.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := outW.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if status := exitStatus(t, p, stderr); status != output.OK {
+			t.Fatalf("exit %d, want %d; stderr:\n%s", status, output.OK, stderr.String())
 		}
 	})
 	t.Run("forced deadline", func(t *testing.T) {

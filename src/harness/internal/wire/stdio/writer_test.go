@@ -2,6 +2,7 @@ package stdio_test
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"testing"
 	"testing/synctest"
@@ -44,9 +45,9 @@ func TestBoundedWriterStallAsksStopOnce(t *testing.T) {
 			t.Fatal("a write after the stall waited")
 		}
 		select {
-		case <-w.Stalled():
+		case <-w.Ended():
 		default:
-			t.Fatal("Stalled is open after a stall")
+			t.Fatal("Ended is open after a stall")
 		}
 		want := []stopCall{{launch.ClientStalled, output.Stalled}}
 		if len(calls) != 1 || calls[0] != want[0] {
@@ -79,6 +80,50 @@ func TestBoundedWriterPassesWritesThrough(t *testing.T) {
 		}
 		if stops != 0 {
 			t.Fatalf("stop asked %d times without a stall", stops)
+		}
+	})
+}
+
+// failWriter fails every write with err and counts the calls.
+type failWriter struct {
+	err   error
+	calls int
+}
+
+func (f *failWriter) Write([]byte) (int, error) {
+	f.calls++
+	return 0, f.err
+}
+
+// A failed underlying write is the client gone: it fails with stdio/output-failed
+// wrapping the cause, asks stop exactly once for (InputClosed, 0), and no later
+// write reaches the failed output.
+//
+//dsh:test DH-T-SDK-22
+func TestBoundedWriterFailureAsksStopOnce(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		out := &failWriter{err: io.ErrClosedPipe}
+		var calls []stopCall
+		w := stdio.NewWriter(out, time.Second, func(r launch.Reason, status int) {
+			calls = append(calls, stopCall{r, status})
+		})
+		for range 3 {
+			_, err := w.Write([]byte("{}\n"))
+			if !herr.Has(err, stdio.ReasonOutputFailed) || !errors.Is(err, io.ErrClosedPipe) {
+				t.Fatalf("write to a failed output: %v, want %s wrapping %v", err, stdio.ReasonOutputFailed, io.ErrClosedPipe)
+			}
+		}
+		if out.calls != 1 {
+			t.Fatalf("the failed output got %d writes, want 1", out.calls)
+		}
+		select {
+		case <-w.Ended():
+		default:
+			t.Fatal("Ended is open after a failed write")
+		}
+		want := stopCall{launch.InputClosed, output.OK}
+		if len(calls) != 1 || calls[0] != want {
+			t.Fatalf("stop calls %v, want [%v]", calls, want)
 		}
 	})
 }
