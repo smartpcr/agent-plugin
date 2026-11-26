@@ -17,7 +17,8 @@ import (
 // When "dsh sandbox status" runs, and then a command creating M is asked for in
 // a read-only session, a workspace-write session and a danger-full-access
 // session,
-// Then status reports the backend unavailable before any command; both
+// Then status, before any command, reads the unconfined contract of
+// mustStatusUnconfined (verdict Unconfined, bwrap and landlock each unavailable); both
 // confined starts fail with sandbox/unavailable and M is absent after each; the
 // third creates M and its result reports the start unconfined.
 //
@@ -29,9 +30,7 @@ import (
 func TestSandboxNoBackendConfinedCommandDoesNotRun(t *testing.T) {
 	in := readSandboxInputs(t)
 	r := prepareRemote(t, sandboxMachine(t, "unconfined"), pureGo)
-	if st := strings.ToLower(r.status(t)); !strings.Contains(st, "unavailable") {
-		t.Errorf("status before any command does not report the backend unavailable:\n%s", st)
-	}
+	mustStatusUnconfined(t, r.status(t))
 	m := startScriptedModel(t)
 	h := r.sdk(t, r.bin, r.layer(t, in, m, "any", "sandbox2"), m)
 	marker := r.ws + "/M"
@@ -51,5 +50,35 @@ func TestSandboxNoBackendConfinedCommandDoesNotRun(t *testing.T) {
 	}
 	if !r.exists(t, marker) {
 		t.Errorf("the danger-full-access command did not make %s", marker)
+	}
+}
+
+// unconfinedBackends are the Linux chain's backends, each of which status must
+// list as unavailable on the unconfined machine.
+var unconfinedBackends = []string{"bwrap", "landlock"}
+
+// mustStatusUnconfined is the one status oracle for the unconfined machine,
+// shared by DH-E-SANDBOX-1 (c), DH-E-SANDBOX-2 and DH-E-NATIVESYSTEM-3 (a): the
+// overall verdict is the enforcement word Unconfined (tech-spec sec. 3,
+// Full/Partial/Unconfined) and every backend line of unconfinedBackends says
+// unavailable (sandbox.Status per backend, its Reason beside it). Neither half
+// alone passes: the verdict without the lines, or the lines without the verdict,
+// is a status that disagrees with itself.
+func mustStatusUnconfined(t *testing.T, st string) {
+	t.Helper()
+	if !strings.Contains(st, "Unconfined") {
+		t.Errorf("status on the unconfined machine does not give the verdict Unconfined:\n%s", st)
+	}
+	for _, b := range unconfinedBackends {
+		found := false
+		for _, line := range strings.Split(strings.ToLower(st), "\n") {
+			if strings.Contains(line, b) && strings.Contains(line, "unavailable") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("status on the unconfined machine has no %s line saying unavailable:\n%s", b, st)
+		}
 	}
 }
