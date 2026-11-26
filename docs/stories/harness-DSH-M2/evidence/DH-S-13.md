@@ -245,6 +245,12 @@ Gate lanes:
     494), and no open pull request changes them. The repair belongs to the stages that own those files
     (fs/local: Workspace Instruction Files, #146; the two e2e files: #131, #135), not to this record. Both
     lanes run again on the commit that integrates it.
+  - Repair on this branch, since no fix reached main: the two e2e checks watch for a late marker or stage
+    log through the same window with a ticker (`watchFor`), and stop at the first one they see. They no
+    longer sleep the window out, and the assertions are unchanged. `back` in `local_test.go` now yields
+    with `runtime.Gosched` between rename retries, under the same 30 s bound. After the repair, the
+    harness-gate vettool reports nothing on both packages (`-tags=e2e` and default), and both e2e features
+    pass (3 + 6 scenarios). Both lanes have not yet run on the commit that holds the repair.
 
 ### Manual checks
 

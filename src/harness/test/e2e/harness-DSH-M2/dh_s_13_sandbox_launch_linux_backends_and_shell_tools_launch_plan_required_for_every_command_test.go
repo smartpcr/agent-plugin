@@ -297,9 +297,15 @@ func (w *lprWorld) whenStartRunsStaged() error {
 }
 
 func (w *lprWorld) thenMarkerAbsent() error {
-	// Start stopped the stage's tree before it returned; give a stray command a
-	// moment anyway so a late marker would be seen.
-	time.Sleep(300 * time.Millisecond)
+	if err := watchFor(300*time.Millisecond, func() (bool, error) {
+		_, err := os.Stat(w.marker)
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return err == nil, err
+	}); err != nil {
+		return err
+	}
 	_, err := os.Stat(w.marker)
 	if err == nil {
 		return errors.New("the marker exists: the command ran although Confirm rejected the stage")
