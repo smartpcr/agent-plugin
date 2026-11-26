@@ -128,6 +128,18 @@ func PeerFrom(ctx context.Context) (Peer, bool) {
 	return p, ok
 }
 
+type streamKey struct{}
+
+// Streaming returns the pipeline's stream decision for the request: true when the
+// mount's Stream function said it streams, so it was gated on Ready and is not
+// compressed. ok is false for a request that did not come through the pipeline. A
+// mount whose Stream function and handler read changing state uses it to refuse a
+// request the decision no longer fits.
+func Streaming(ctx context.Context) (stream, ok bool) {
+	stream, ok = ctx.Value(streamKey{}).(bool)
+	return stream, ok
+}
+
 // PeerRule is how well the listener tells a local peer inside an untrusted process
 // tree on this machine (DH-ADR-HOST-12).
 type PeerRule string
