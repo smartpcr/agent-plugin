@@ -101,6 +101,16 @@ func (d *deferred) Notify(method string, params any) error {
 	return d.n.Notify(method, params)
 }
 
+// Call carries a host request (answer.go) once the codec is set.
+func (d *deferred) Call(ctx context.Context, method string, params, result any) error {
+	select {
+	case <-d.ready:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return d.n.Call(ctx, method, params, result)
+}
+
 func (d *deferred) set(n *jsonrpc.Conn) {
 	d.n = n
 	close(d.ready)
@@ -182,6 +192,8 @@ func (c *Conn) committed(a session.CommittedArgs) {
 			}, nil, a.Event.Seq())
 			c.fwd[id] = f
 			go f.run()
+			// Its interactions are answered here, via its creator, while it lives.
+			go c.bindChild(id, session.ID(h.Creator))
 		}
 	}
 	c.mu.Unlock()
