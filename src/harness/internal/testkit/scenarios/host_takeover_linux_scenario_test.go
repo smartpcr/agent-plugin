@@ -53,9 +53,11 @@ func TestModelCommandCannotBecomeOwnerLinux(t *testing.T) {
 		t.Fatalf("DSH_SCENARIO_HOST7_MACHINE is %q, want a, b or c", machine)
 	}
 	bin := dshBinary(t)
+	backend := map[string]string{"a": "bwrap", "b": "landlock", "c": "bwrap"}[machine]
+	p := takeoverPlatform{steps: []string{"proc-mem", "proc-fd", "list-secrets", "list-run", "service-manager"}, backends: []string{backend}}
 	for _, m := range takeoverModes {
 		t.Run(m.name, func(t *testing.T) {
-			r := runTakeover(t, bin, "file", m.mode, m.network, false)
+			r := runTakeover(t, bin, "file", m.mode, m.network, p)
 			if !r.confined() {
 				return
 			}

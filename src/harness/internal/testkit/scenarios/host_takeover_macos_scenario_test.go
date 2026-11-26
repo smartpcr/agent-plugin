@@ -40,10 +40,11 @@ func TestModelCommandCannotBecomeOwnerMacOS(t *testing.T) {
 		t.Fatalf("DH-E-HOST-8 runs on macOS, not %s", runtime.GOOS)
 	}
 	bin := dshBinary(t)
+	p := takeoverPlatform{steps: []string{"keychain-read", "debugger", "launchd", "apple-event"}}
 	for _, protection := range []string{"file", "keychain"} {
 		for _, m := range takeoverModes {
 			t.Run(protection+"/"+m.name, func(t *testing.T) {
-				r := runTakeover(t, bin, protection, m.mode, m.network, false)
+				r := runTakeover(t, bin, protection, m.mode, m.network, p)
 				if !r.confined() {
 					return
 				}

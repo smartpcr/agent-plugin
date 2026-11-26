@@ -43,10 +43,11 @@ func TestModelCommandCannotBecomeOwnerWindows(t *testing.T) {
 		t.Fatalf("DH-E-HOST-9 runs on Windows, not %s", runtime.GOOS)
 	}
 	bin := dshBinary(t)
+	p := takeoverPlatform{steps: []string{"credential-manager", "open-process", "scheduled-task", "com-server", "break-away"}, unavailableOK: true}
 	for _, protection := range []string{"file", "keychain"} {
 		for _, m := range takeoverModes {
 			t.Run(protection+"/"+m.name, func(t *testing.T) {
-				r := runTakeover(t, bin, protection, m.mode, m.network, true)
+				r := runTakeover(t, bin, protection, m.mode, m.network, p)
 				if !r.confined() {
 					return
 				}
