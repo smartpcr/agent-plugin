@@ -33,7 +33,9 @@ func native1(t *testing.T, in sandboxInputs, r *remoteDsh) []string {
 		"printf x > '" + d + "'",
 		"sh -c \"printf x > '" + d + "'\"",
 		expand(setuid, map[string]string{"path": d}),
-		"echo pid=$$; echo parent=$(readlink /proc/$PPID/exe); env; grep SigIgn /proc/self/status",
+		// Landlock denies ptrace access to processes outside the domain, so
+		// /proc/$PPID/exe is unreadable here; comm needs no ptrace check.
+		"echo pid=$$; echo parent=$(cat /proc/$PPID/comm); env; grep SigIgn /proc/self/status",
 	}
 	got := runCommands(t, h, m, h.createIn(t, in.route, r.ws, "workspace-write"), cmds...)
 	var rec []string
@@ -74,8 +76,8 @@ func native1(t *testing.T, in sandboxInputs, r *remoteDsh) []string {
 // direct (unconfined) start of the same command.
 func native1Process(t *testing.T, r *remoteDsh, h *sdkHost, m *scriptedModel, in sandboxInputs, report string) {
 	t.Helper()
-	if !strings.Contains(report, "parent="+r.bin) {
-		t.Errorf("the confined command's parent is not the host %s (a wrapper stayed between): %q", r.bin, report)
+	if comm := hostComm(r.bin); !slices.Contains(strings.Split(report, "\n"), "parent="+comm) {
+		t.Errorf("the confined command's parent is not the host %s (comm %q; a wrapper stayed between): %q", r.bin, comm, report)
 	}
 	if strings.Contains(report, "dsh-scenario-planted-key") {
 		t.Errorf("the confined command's environment carries the planted credential: %q", report)
@@ -88,6 +90,16 @@ func native1Process(t *testing.T, r *remoteDsh, h *sdkHost, m *scriptedModel, in
 	if want == "" || got != want {
 		t.Errorf("ignored signals confined %q, direct start %q; want equal", got, want)
 	}
+}
+
+// hostComm is the kernel's comm of a process executing bin: the base name of
+// the executed file, cut to TASK_COMM_LEN-1 (15) bytes.
+func hostComm(bin string) string {
+	c := bin[strings.LastIndex(bin, "/")+1:]
+	if len(c) > 15 {
+		c = c[:15]
+	}
+	return c
 }
 
 func sigIgn(s string) string {
