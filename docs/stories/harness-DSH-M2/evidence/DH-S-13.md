@@ -241,6 +241,10 @@ Gate lanes:
     `-rehearse.txt` (rehearse exit 0), with the lane logs `win-c3c4a25.log` and `wsl-c3c4a25.log`.
   - Gates 3 to 13 did not run on either lane. The stage stays open until every gate passes on both lanes
     on the final commit.
+  - 2026-11-26 recheck: `origin/main` at aa42466 still holds all four `time.Sleep` lines (309, 302, 400,
+    494), and no open pull request changes them. The repair belongs to the stages that own those files
+    (fs/local: Workspace Instruction Files, #146; the two e2e files: #131, #135), not to this record. Both
+    lanes run again on the commit that integrates it.
 
 ### Manual checks
 
