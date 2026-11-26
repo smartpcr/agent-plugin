@@ -63,9 +63,12 @@ type drtState struct {
 	owner   *cordis.Fiber
 	started chan struct{}
 	cause   chan error
-	pathID  atomic.Value
-	peerID  atomic.Value
-	resp    *http.Response
+	// handlerDoneAtDispose records whether the slow handler had already
+	// returned at the instant Dispose returned.
+	handlerDoneAtDispose bool
+	pathID               atomic.Value
+	peerID               atomic.Value
+	resp                 *http.Response
 
 	status int
 	body   string
@@ -290,6 +293,13 @@ func (s *drtState) disposeOwner() error {
 		return errors.New("no component registered the slow route")
 	}
 	s.owner.Dispose()
+	select {
+	case err := <-s.cause:
+		s.cause <- err
+		s.handlerDoneAtDispose = true
+	default:
+		s.handlerDoneAtDispose = false
+	}
 	return nil
 }
 
@@ -306,16 +316,15 @@ func (s *drtState) cancelledByUnload() error {
 	}
 }
 
-// waited holds because the handler sends its cause before returning and the
-// dispose waits for the handler: the cause is already there right after Dispose.
+// waited asserts on the snapshot disposeOwner took immediately after Dispose
+// returned: the handler sends its cause before returning, so the cause must
+// already have been there if Dispose waited for the handler. Checking later
+// would be vacuous because cancelledByUnload blocks until the cause arrives.
 func (s *drtState) waited() error {
-	select {
-	case err := <-s.cause:
-		s.cause <- err
-		return nil
-	default:
+	if !s.handlerDoneAtDispose {
 		return errors.New("the dispose returned before the slow handler did")
 	}
+	return nil
 }
 
 func (s *drtState) sawPath(name, want, peer string) error {
