@@ -608,16 +608,25 @@ func (c *Conn) closeSession(ctx context.Context, p protocol.SessionRef) (protoco
 	rs := h.Agent().Session()
 	// The forwarder stops before the close and the events the close wrote are
 	// sent after it, so the reply's lastSeq is the last event the client got.
+	// The session is closed either way; a tail not sent fails the reply.
 	f, stopped := c.unfollow(ctx, id)
 	if err := h.Dispose(ctx); err != nil {
 		return protocol.LastSeqResult{}, wire(err)
 	}
-	if stopped == nil {
-		// A failed drain leaves the client to page the tail with history; the
-		// close itself succeeded.
-		_ = c.drainClosed(ctx, f)
+	last := lastSeq(rs)
+	if f == nil {
+		return protocol.LastSeqResult{LastSeq: last}, nil
 	}
-	return protocol.LastSeqResult{LastSeq: lastSeq(rs)}, nil
+	if stopped == nil {
+		stopped = f.failure()
+	}
+	if stopped == nil {
+		stopped = c.drainClosed(ctx, f)
+	}
+	if stopped != nil {
+		return protocol.LastSeqResult{}, forwardFailed(string(id), event.Seq(max(last, 0)), stopped)
+	}
+	return protocol.LastSeqResult{LastSeq: last}, nil
 }
 
 // shutdown is replied first; the launcher unloads the tree after the reply.
@@ -666,7 +675,8 @@ func (c *Conn) send(ctx context.Context, id string, list agent.List, msgID strin
 	}
 	r, err := agent.Send(ctx, a, list, agent.InboxMessage{ID: msgID, Source: agent.SourceUser, By: c.by(), Text: text})
 	if dup, ok := errors.AsType[*agent.DuplicateError](err); ok {
-		return dup.First, nil
+		// A retry racing the first send is held to the same watermark.
+		r, err = dup.First, nil
 	}
 	if err != nil {
 		return agent.Receipt{}, wire(err)

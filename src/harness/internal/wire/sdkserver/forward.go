@@ -9,6 +9,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
+	"github.com/smartpcr/agent-plugin/src/sdk/jsonrpc"
 	"github.com/smartpcr/agent-plugin/src/sdk/protocol"
 )
 
@@ -210,6 +211,18 @@ type forwarder struct {
 	cursor event.Offset  // the next seq to send
 	moved  chan struct{} // closed and replaced when cursor moves or the forwarder ends
 	ended  bool
+	err    error // why it ended, nil for a stop
+}
+
+// forwardFailed is the reply of a request whose seq a forwarder could not send.
+func forwardFailed(id string, seq event.Seq, err error) error {
+	msg := fmt.Sprintf("session %s: event %d was not sent", id, seq)
+	if err != nil {
+		msg += ": " + err.Error()
+	} else {
+		msg += ": forwarding stopped"
+	}
+	return &jsonrpc.Error{Code: jsonrpc.CodeInternal, Reason: jsonrpc.ReasonInternal, Message: msg}
 }
 
 func (c *Conn) newForwarder(rs session.ReadSession, sc protocol.Scope, runs *runTracker, start event.Offset) *forwarder {
@@ -250,8 +263,21 @@ func (f *forwarder) run() {
 		}
 	}
 	// The run ends with its session, its transport or a stop. A session closed
-	// under the client is session.closed, which is not sent yet.
-	f.end()
+	// under the client is session.closed, which is not sent yet. Anything but a
+	// stop is a failure: the client misses events from the cursor on.
+	if f.stopping() {
+		err = nil
+	}
+	f.end(err)
+}
+
+func (f *forwarder) stopping() bool {
+	select {
+	case <-f.quit:
+		return true
+	default:
+		return false
+	}
 }
 
 // prefix folds the runs of the events before start, which the client is not
@@ -347,9 +373,9 @@ func (f *forwarder) advance(pos event.Offset) {
 	f.mu.Unlock()
 }
 
-func (f *forwarder) end() {
+func (f *forwarder) end(err error) {
 	f.mu.Lock()
-	f.ended = true
+	f.ended, f.err = true, err
 	close(f.moved)
 	f.moved = make(chan struct{})
 	f.mu.Unlock()
@@ -377,14 +403,27 @@ func (f *forwarder) stop(ctx context.Context) error {
 	}
 }
 
+// failure is why the forwarder ended short of its session's end, nil while it
+// runs or after a stop.
+func (f *forwarder) failure() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.err
+}
+
+// reached waits until seq is sent. A forwarder that ended before sending it
+// fails the caller: the reply must not claim seq while the client lacks it.
 func (f *forwarder) reached(ctx context.Context, seq event.Seq) error {
 	f.poke()
 	for {
 		f.mu.Lock()
-		ok, moved := f.cursor > seq || f.ended, f.moved
+		sent, ended, err, moved := f.cursor > seq, f.ended, f.err, f.moved
 		f.mu.Unlock()
-		if ok {
+		if sent {
 			return nil
+		}
+		if ended {
+			return forwardFailed(f.scope.SessionID, seq, err)
 		}
 		select {
 		case <-moved:
