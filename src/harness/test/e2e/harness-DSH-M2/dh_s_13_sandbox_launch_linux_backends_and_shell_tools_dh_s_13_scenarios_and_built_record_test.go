@@ -965,6 +965,19 @@ git -C "$d/r" fetch -q --depth 1 "$1" "$2"
 git -C "$d/r" -c advice.detachedHead=false checkout -q --detach FETCH_HEAD
 printf '%s\n' "$d"`
 
+// s13rWSLCheckoutDir returns the last non-empty line of out that names a
+// checkout directory made by s13rWSLSetup, or "" when there is none.
+func s13rWSLCheckoutDir(out string) string {
+	lines := strings.Split(strings.ReplaceAll(out, "\r\n", "\n"), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		l := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(l, "/") && strings.Contains(l, "/.cache/dsh-e2e/dhs13e2e.") {
+			return l
+		}
+	}
+	return ""
+}
+
 func s13rWSLBase() []string {
 	var a []string
 	if d := strings.TrimSpace(os.Getenv(s13rWSLDistroEnv)); d != "" {
@@ -1019,14 +1032,18 @@ func (s *s13rState) ensureLanes() error {
 	if err != nil {
 		return fmt.Errorf("the WSL lane is not reachable from this host (wslpath): %v\n%s", err, src)
 	}
-	out, err := s13rCommand(s.root, nil, "wsl.exe", append(base, "-e", "bash", "-c", s13rWSLSetup, "_", strings.TrimSpace(src), s.commit)...)
-	if err != nil {
-		return fmt.Errorf("checking %s out inside WSL: %v\n%s", s.commit[:7], err, out)
+	// The setup script's stdout carries only the directory; wsl.exe and git
+	// notices go to stderr and must not be mistaken for it.
+	setup := exec.Command("wsl.exe", append(base, "-e", "bash", "-c", s13rWSLSetup, "_", strings.TrimSpace(src), s.commit)...)
+	setup.Dir = s.root
+	var setupOut, setupErr bytes.Buffer
+	setup.Stdout, setup.Stderr = &setupOut, &setupErr
+	if err := setup.Run(); err != nil {
+		return fmt.Errorf("checking %s out inside WSL: %v\n%s%s", s.commit[:7], err, setupOut.String(), setupErr.String())
 	}
-	lines := s13rSplit(out)
-	dir := lines[len(lines)-1]
-	if !strings.HasPrefix(dir, "/") || !strings.Contains(dir, "/.cache/dsh-e2e/dhs13e2e.") {
-		return fmt.Errorf("checking %s out inside WSL printed no directory:\n%s", s.commit[:7], out)
+	dir := s13rWSLCheckoutDir(setupOut.String())
+	if dir == "" {
+		return fmt.Errorf("checking %s out inside WSL printed no directory:\nstdout:\n%s\nstderr:\n%s", s.commit[:7], setupOut.String(), setupErr.String())
 	}
 	goBin := "/usr/local/go/bin/go"
 	if v := strings.TrimSpace(os.Getenv(s13rWSLGoEnv)); v != "" {
