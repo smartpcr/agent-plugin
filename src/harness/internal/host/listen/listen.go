@@ -90,6 +90,18 @@ func PeerFrom(ctx context.Context) (Peer, bool) {
 	return p, ok
 }
 
+type streamKey struct{}
+
+// Streaming returns the pipeline's stream decision for the request: true when the
+// mount's Stream function said it streams, so it was gated on Ready and is not
+// compressed. ok is false for a request that did not come through the pipeline. A
+// mount whose Stream function and handler read changing state uses it to refuse a
+// request the decision no longer fits.
+func Streaming(ctx context.Context) (stream, ok bool) {
+	stream, ok = ctx.Value(streamKey{}).(bool)
+	return stream, ok
+}
+
 // Listener is the service under Key.
 type Listener interface {
 	// Mount registers m as an effect of owner's fiber: the mount leaves when owner
