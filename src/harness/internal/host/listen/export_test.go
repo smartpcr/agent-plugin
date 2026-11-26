@@ -36,3 +36,12 @@ func UseTrees(t Trees) (restore func()) {
 	treesHook = t
 	return func() { treesHook = nil }
 }
+
+// UseOwnerExact pins whether this machine's tree owner is exact for the listeners
+// started after it, so a test can run as on a job-object or control-group host
+// (exact) or a process-group fallback host (best effort). restore unpins it.
+func UseOwnerExact(exact bool) (restore func()) {
+	prev := ownerExact
+	ownerExact = func() bool { return exact }
+	return func() { ownerExact = prev }
+}

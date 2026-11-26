@@ -224,9 +224,38 @@ func peerRuleHost(t *testing.T, trees listen.Trees) (l listen.Listener, mounted,
 // authenticator nor the mount runs. The tree is asked once per accepted connection.
 // A trusted helper and a process outside every tree pass; a best-effort answer makes
 // PeerRule BestEffort; a peer that cannot be named is served and makes it NotApplied.
+// Each case runs as on an exact tree owner (job object, control group) and as on the
+// process-group fallback: the reported rule is the weaker of the owner and the answers.
 //
 //dsh:test DH-T-HOST-31
 func TestPeerRule(t *testing.T) {
+	for _, owner := range []struct {
+		name  string
+		exact bool
+		rule  listen.PeerRule
+	}{
+		{"exact owner", true, listen.Exact},
+		{"process-group fallback", false, listen.BestEffort},
+	} {
+		t.Run(owner.name, func(t *testing.T) {
+			defer listen.UseOwnerExact(owner.exact)()
+			peerRuleCases(t, owner.rule)
+		})
+	}
+}
+
+// weaker returns the weaker of two peer rules.
+func weaker(a, b listen.PeerRule) listen.PeerRule {
+	order := map[listen.PeerRule]int{listen.NotApplied: 0, listen.BestEffort: 1, listen.Exact: 2}
+	if order[a] < order[b] {
+		return a
+	}
+	return b
+}
+
+// peerRuleCases runs the fake-tree cases on a host whose tree owner allows at most
+// ownerRule.
+func peerRuleCases(t *testing.T, ownerRule listen.PeerRule) {
 	untrusted := &fakeTrees{tree: subprocess.Tree{Trust: subprocess.Untrusted, Exact: true, Peer: 4242, Root: 4240, Owner: subprocess.JobObject}}
 	l, mounted, authed, exchanged := peerRuleHost(t, untrusted)
 	c := client(t)
@@ -242,14 +271,14 @@ func TestPeerRule(t *testing.T) {
 	if n := untrusted.calls.Load(); n != 1 {
 		t.Errorf("the tree was asked %d times over one connection, want once", n)
 	}
-	if l.PeerRule() != listen.Exact {
-		t.Errorf("PeerRule = %s after exact answers, want %s", l.PeerRule(), listen.Exact)
+	if want := weaker(ownerRule, listen.Exact); l.PeerRule() != want {
+		t.Errorf("PeerRule = %s after exact answers, want %s", l.PeerRule(), want)
 	}
 
 	for _, tc := range []struct {
-		name  string
-		trees *fakeTrees
-		rule  listen.PeerRule
+		name   string
+		trees  *fakeTrees
+		answer listen.PeerRule
 	}{
 		{"trusted helper", &fakeTrees{tree: subprocess.Tree{Trust: subprocess.Trusted, Exact: true}}, listen.Exact},
 		{"outside every tree", &fakeTrees{tree: subprocess.Tree{Trust: subprocess.Outside, Exact: true}}, listen.Exact},
@@ -265,8 +294,8 @@ func TestPeerRule(t *testing.T) {
 		if code, _ := get(t, c, l.Origin()+"/?token=x"); code != http.StatusSeeOther || exchanged.Load() != 1 {
 			t.Errorf("%s: exchange = %d, want 303", tc.name, code)
 		}
-		if l.PeerRule() != tc.rule {
-			t.Errorf("%s: PeerRule = %s, want %s", tc.name, l.PeerRule(), tc.rule)
+		if want := weaker(ownerRule, tc.answer); l.PeerRule() != want {
+			t.Errorf("%s: PeerRule = %s, want %s", tc.name, l.PeerRule(), want)
 		}
 	}
 
@@ -276,7 +305,8 @@ func TestPeerRule(t *testing.T) {
 }
 
 // With the real process registry, the test's own connection is outside every tree
-// and served; PeerRule reports what this machine can tell.
+// and served; PeerRule reports what this machine can tell, never more than its tree
+// owner allows: exact only on an exact owner, at most best effort on the fallback.
 //
 //dsh:test DH-T-HOST-31
 func TestPeerRuleWithTheProcessRegistry(t *testing.T) {
@@ -284,7 +314,11 @@ func TestPeerRuleWithTheProcessRegistry(t *testing.T) {
 	if code, _ := get(t, client(t), l.Origin()+"/api"); code != http.StatusOK || mounted.Load() != 1 {
 		t.Errorf("own connection: GET /api = %d, want 200", code)
 	}
-	t.Logf("peer rule on %s: %s (tree owner %s)", runtime.GOOS, l.PeerRule(), subprocess.TreeOwner())
+	owner := subprocess.TreeOwner()
+	t.Logf("peer rule on %s: %s (tree owner %s)", runtime.GOOS, l.PeerRule(), owner)
+	if !owner.Exact && l.PeerRule() == listen.Exact {
+		t.Errorf("PeerRule = %s on a best-effort tree owner %s", l.PeerRule(), owner)
+	}
 	if runtime.GOOS == "windows" && l.PeerRule() != listen.Exact {
 		t.Errorf("PeerRule on Windows = %s, want %s: a job object is exact and loopback TCP peers are named", l.PeerRule(), listen.Exact)
 	}

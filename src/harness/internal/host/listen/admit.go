@@ -68,11 +68,16 @@ func initialRule(t Trees) PeerRule {
 	switch {
 	case t == nil:
 		return NotApplied
-	case subprocess.TreeOwner().Exact:
+	case ownerExact():
 		return Exact
 	}
 	return BestEffort
 }
+
+// ownerExact reports whether this machine's tree owner keeps every descendant in
+// its tree (a job object or a writable control group) rather than a best-effort
+// process group. Tests replace it to pin the capability.
+var ownerExact = func() bool { return subprocess.TreeOwner().Exact }
 
 // lower weakens the reported rule to r; it never strengthens it.
 func (s *Server) lower(r PeerRule) {
