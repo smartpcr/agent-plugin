@@ -32,6 +32,10 @@ require (
 	// (DH-D-UTIL-1): chosen by docs/harness/libs/zod.md DH-ADR-SCHEMA-1; MIT, no
 	// non-test dependencies (RM-10).
 	github.com/google/jsonschema-go v0.4.3
+	// Opt-in response gzip of host.listen, internal/host/listen (DH-D-HOST-1): chosen by
+	// docs/harness/libs/compression.md DH-ADR-COMPRESSION-1 (package gzhttp, zstd
+	// disabled); BSD-3-Clause and Apache-2.0, no requirements (RM-10), no cgo.
+	github.com/klauspost/compress v1.20.4
 	// The Landlock ruleset of the launch stage, internal/world/sandbox/launch (DH-D-SANDBOX-4):
 	// chosen by docs/harness/libs/node-addon-system.md (DH-LIB-GOLANDLOCK, DH-ADR-NATIVESYSTEM-1)
 	// for its structure layouts and version table; only NewRulesetFD, PathAccess,

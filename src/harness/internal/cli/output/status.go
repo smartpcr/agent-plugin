@@ -109,6 +109,14 @@ var codes = map[herr.Reason]int{
 	"launch/forbidden-name": Invalid,
 	"launch/read":           Failed,
 
+	"listen/bind-invalid":     Config,
+	"listen/bind-unspecified": Config,
+	"listen/insecure-remote":  Config,
+	"listen/mount-invalid":    Invalid,
+	"listen/mount-taken":      Busy,
+	"listen/tls":              Config,
+	"listen/compression":      Config,
+
 	"secret/bad-env-file":   Invalid,
 	"secret/bad-reference":  Invalid,
 	"secret/empty":          Invalid,
