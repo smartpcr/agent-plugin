@@ -131,11 +131,12 @@ func records(t *testing.T, runDir string) []string {
 
 func eventually(t *testing.T, what string, ok func() bool) {
 	t.Helper()
-	for deadline := time.Now().Add(5 * time.Second); !ok(); {
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for deadline := time.Now().Add(5 * time.Second); !ok(); <-tick.C {
 		if time.Now().After(deadline) {
 			t.Fatalf("timed out waiting for %s", what)
 		}
-		time.Sleep(10 * time.Millisecond)
 	}
 }
 

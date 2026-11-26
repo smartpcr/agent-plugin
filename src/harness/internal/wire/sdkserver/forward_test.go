@@ -286,7 +286,7 @@ func TestSubagentEventsCarryRootAndParent(t *testing.T) {
 	case <-time.After(jsonrpctest.Timeout):
 		t.Fatal("the subagent's commit after the root's close was never delivered")
 	}
-	time.Sleep(100 * time.Millisecond) // room for a forwarder that should not exist
+	<-time.After(100 * time.Millisecond) // room for a forwarder that should not exist
 	seen := len(cl.notes)
 	cl.create() // a round trip: anything sent before its reply is in cl.notes
 	for _, n := range cl.notes[seen:] {
