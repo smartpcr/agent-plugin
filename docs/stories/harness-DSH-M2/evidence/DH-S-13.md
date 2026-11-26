@@ -131,8 +131,25 @@ go -C src/harness test -count=1 -v -run '^(TestBwrapArgvFromPolicy|TestLandlockR
 run on Windows 10.0.28000 (go1.27.4) and in WSL2 Ubuntu 24.04 (same command, from the checkout under
 `/mnt/e`), at 716a084 plus the uncommitted iteration-2 diff, which touches none of these packages.
 
-Gate: `pwsh -File tools/harness-gate/lanes/win.ps1` from a temporary worktree at 716a084; `lanes/wsl.sh`
-not yet run. The gate runner's output and `DSH_REQUIRE_SCENARIOS` at closure are still to record.
+Launch-authorization controls (step 13.2/13.3: plan, stage, ready, canary, confirm, go) and the rest of
+the sandbox tree, every test of the packages rather than a selection, plus the forced-canary hook build
+and the process package's plan and environment controls:
+
+```
+go -C src/harness test -count=1 -v ./internal/world/sandbox/...
+go -C src/harness test -count=1 -v -tags testhook ./internal/world/sandbox/launch/
+go -C src/harness test -count=1 -v -run '^(TestSpecWithoutAPlanIsRefused|TestStartRefusesAnEmptyLaunch|TestStagedPlanSequence|TestRejectedConfirmStopsTheStage|TestStagedPlanNeedsAValidConfinement|TestUnstagedPlanReportsUnconfined|TestChildEnvironmentHoldsNoSecret|TestChildNeverInheritsANamedSecret|TestBatchRules|TestBatchToolByBareNameWithCheckedArguments)$' ./internal/world/subprocess/
+```
+
+run on Windows 10.0.28000 and in WSL2 Ubuntu 24.04 (kernel 6.18.58.1, go1.27.4, from `/mnt/e`) at c3c4a25
+plus the uncommitted iteration-3 diff, which touches only two scenario files outside these packages.
+
+Gate: `pwsh -File tools/harness-gate/lanes/win.ps1` from a temporary worktree at c3c4a25
+(`E:\work\lanes\dhs13-c3c4a25`, removed after the run, log `E:\work\lanes\win-c3c4a25.log`), and
+`tools/harness-gate/lanes/wsl.sh` from an ext4 clone at c3c4a25 (`~/src/dhs13-c3c4a25`, removed after the
+run; preflight "ext4 checkout, uid 1000, go1.27.4, CC=gcc, clean tree"; log copied to
+`E:\work\lanes\wsl-c3c4a25.log`). An earlier Windows run at 716a084 is under Results.
+`DSH_REQUIRE_SCENARIOS` at closure is still to record.
 
 ### Run identifiers
 
@@ -163,11 +180,67 @@ Security controls, fake-backend tests (Windows / Linux under WSL):
 | unknown tool argument rejected | `TestUnknownArgumentRejected` | passed | passed |
 | result carries the confinement | `TestToolResultCarriesConfinement` | passed | passed |
 
-Gate lanes: Windows at 716a084 failed at gate 1/13 (gofmt) on
-`src/harness/test/e2e/harness-DSH-M2/dh_s_13_sandbox_launch_linux_backends_and_shell_tools_sandbox_seam_probe_select_confirm_test.go`
-(one field misaligned, from #135); fixed by `gofmt -w` in the next commit. Linux (WSL): not run (the same
-gofmt stop at 716a084). Both lanes are to run on the commit carrying the fix; the stage stays open until
-every gate passes on both.
+Launch-authorization controls, fake stage and fake backends (Windows / Linux under WSL; `[testhook]` is the
+`-tags testhook` build of the launch package):
+
+| Control | Test | Windows | Linux (WSL) |
+| --- | --- | --- | --- |
+| no command before go | `TestNoCommandBeforeGo` | passed (both builds) | passed (both builds) |
+| host refuses a written canary | `TestHostRefusesAWrittenCanary` | passed (both builds) | passed (both builds) |
+| a forced written canary runs nothing | `TestForcedWrittenCanaryRunsNothing[testhook]` | passed | passed |
+| the hook is inert without the tag | `TestCanaryHookIsInertWithoutTheTag` | passed | passed |
+| rejected confirm leaves no command | `TestRejectedConfirmLeavesNoCommand` | passed (both builds) | passed (both builds) |
+| late confirm leaves no command | `TestLateConfirmLeavesNoCommand` | passed (both builds) | passed (both builds) |
+| confirmed plan runs the command | `TestConfirmedPlanRunsTheCommand` | passed (both builds) | passed (both builds) |
+| incomplete plan refused | `TestNewLaunchRefusesAnIncompletePlan` | passed (both builds) | passed (both builds) |
+| ready must agree with its plan | `TestPlanRefusesDisagreement`, `TestReadyAgreesWithItsPlan` | passed (both builds) | passed (both builds) |
+| malformed ready frames refused | `TestDecodeReadyRefusesMalformedFrames`, `TestEncodeReadyRefusesInvalidReady` | passed (both builds) | passed (both builds) |
+| stage end or death before ready | `TestStageEndsBeforeReady`, `TestStageDeathBeforeReadyNotifiesFailed` | passed (both builds) | passed (both builds) |
+| launch limit on ready | `TestReadReadyHonoursTheLaunchLimit` | passed (both builds) | passed (both builds) |
+| exec failure reaches the host | `TestExecFailureReachesTheHost` | passed (both builds) | passed (both builds) |
+| canary attempt; unconfined proof tries nothing | `TestTryCanary`, `TestProveUnconfinedTriesNothing` | passed (both builds) | passed (both builds) |
+| unconfined plan reaches go | `TestUnconfinedPlanReachesGo` | passed (both builds) | passed (both builds) |
+| four-step host decision | `TestFourStepHostDecision` | passed | passed |
+| failed confinement runs nothing | `TestFailedConfinementRunsNothing` | passed | passed |
+| canary below a write root refused | `TestCanaryBelowAWriteRootIsRefused` | passed | passed |
+| weaker evidence wins (seam, confirm) | `TestWeakerEvidenceWins`, `TestWeakerEvidenceWinsAtConfirm` | passed | passed |
+| enforcement never stronger than evidence | `TestEnforcementIsNeverStrongerThanTheEvidence` | passed | passed |
+| unconfined only for danger-full-access | `TestUnconfinedOnlyForDangerFullAccess` | passed | passed |
+| config may only remove backends | `TestConfigMayOnlyRemoveBackends` | passed | passed |
+| Windows refuses a confined start | `TestWindowsRefusesConfinedStart` | passed | skipped (Windows row, DH-D-SANDBOX-4) |
+| stage failure before ready reprobes once | `TestStageFailureBeforeReadyReprobesOnce` | passed | passed |
+| empty launch refused | `TestStartRefusesAnEmptyLaunch` | passed | passed |
+| process start needs a plan | `TestSpecWithoutAPlanIsRefused`, `TestStagedPlanNeedsAValidConfinement` | passed | passed |
+| staged sequence; rejected confirm stops the stage | `TestStagedPlanSequence`, `TestRejectedConfirmStopsTheStage` | passed | passed |
+| unstaged plan reports unconfined | `TestUnstagedPlanReportsUnconfined` | passed | passed |
+| child environment holds no secret | `TestChildEnvironmentHoldsNoSecret`, `TestChildNeverInheritsANamedSecret` | passed | passed |
+| batch files: rules; by bare name | `TestBatchRules`, `TestBatchToolByBareNameWithCheckedArguments` | passed, passed | passed, skipped (Windows only) |
+
+Whole runs: `world/sandbox/...` (sandbox, launch, local, policy, sandboxtest) and the testhook build, `ok` on
+every package on both systems; `TestStartRefusesAnEmptyLaunch` passed on both in the process-package run.
+Of the distinct top-level tests (with the testhook build counted
+separately), Windows 124: 123 passed, 1 skipped (`TestPrepareSeesThroughSymlinkedAncestors`, no symlink
+privilege). Linux 127: 123 passed, 4 skipped, all Windows path or Windows-only rows
+(`TestEscalateComparesPathsAsTheHostDoes`, `TestRootsCompareAsTheHostDoes`, `TestWindowsRefusesConfinedStart`,
+`TestBatchToolByBareNameWithCheckedArguments`). No test failed.
+
+Gate lanes:
+
+- 716a084, Windows: failed at gate 1/13 (gofmt) on the #135 e2e file below, one field misaligned; fixed
+  by `gofmt -w` in c3c4a25. Linux was not run.
+- c3c4a25, both lanes: gofmt passed; both **failed at gate 2/13 (vet)**, gate exit 1 (Windows vet 13m6.63s,
+  ended 2026-11-26T01:31:17Z; WSL vet 15.721s). The same four `nosleep` analyzer findings (QG-4) on both,
+  under `-tags=`, `-tags=replay,scenario,bench` and `-tags=e2e`, all in code this stage's diff does not
+  touch:
+  - `src/harness/internal/world/fs/local/local_test.go:309:77: time.Sleep in a test file: wait on virtual time (testing/synctest) or an explicit signal (QG-4)` (last changed by #146)
+  - `src/harness/test/e2e/harness-DSH-M2/dh_s_13_sandbox_launch_linux_backends_and_shell_tools_launch_plan_required_for_every_command_test.go:302:2` (same finding; #131)
+  - `src/harness/test/e2e/harness-DSH-M2/dh_s_13_sandbox_launch_linux_backends_and_shell_tools_sandbox_seam_probe_select_confirm_test.go:400:3` and `:494:2` (same finding; #135)
+  - Records (copied out of the lane checkouts, which are removed, to `E:\work\lanes\`):
+    `win-c3c4a25-20261126T0117Z.txt` (sha256
+    `5f9bb8aa0fd55caac1590b55785848e34ddcbca81c888aa39c7602df12522bd1`), `wsl-c3c4a25-20261126T0119Z.txt` and
+    `-rehearse.txt` (rehearse exit 0), with the lane logs `win-c3c4a25.log` and `wsl-c3c4a25.log`.
+  - Gates 3 to 13 did not run on either lane. The stage stays open until every gate passes on both lanes
+    on the final commit.
 
 ### Manual checks
 

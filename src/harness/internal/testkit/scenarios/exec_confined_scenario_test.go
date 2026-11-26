@@ -3,8 +3,10 @@
 package scenarios
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -30,8 +32,10 @@ import (
 // Inputs: DSH_SCENARIO_SANDBOX1_MACHINES and the layer inputs of
 // sandbox_remote_test.go; DSH_SCENARIO_EXEC8_BREAK and DSH_SCENARIO_EXEC8_RESTORE,
 // shell commands over {backend} that run on the machine (with sudo where the
-// runbook grants it) to make the backend unusable and to restore it. Restore runs
-// at cleanup when the scenario stopped before it.
+// runbook grants it) to make the backend unusable and to restore it. The restore
+// command must be idempotent and safe after a break that stopped part-way: it is
+// registered before the break runs and, unless the scenario restored the backend
+// itself, runs at cleanup whatever state the break left.
 //
 //dsh:scenario DH-E-EXEC-8
 func TestExecConfinedCommandNeverRunsWithoutBackend(t *testing.T) {
@@ -61,13 +65,20 @@ func TestExecConfinedCommandNeverRunsWithoutBackend(t *testing.T) {
 			}
 			t.Logf("%s: denied write %s; stderr %q", backend, res.record(), res.Stderr.Tail)
 
-			r.must(t, "make "+backend+" unusable", expand(brk, vars))
+			undo := expand(restore, vars)
 			restored := false
 			t.Cleanup(func() {
-				if !restored {
-					r.must(t, "restore "+backend, expand(restore, vars))
+				if restored {
+					return
+				}
+				// t.Context is already cancelled here, and a partial break still needs undoing.
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+				defer cancel()
+				if out, err := exec.CommandContext(ctx, "ssh", "-o", "BatchMode=yes", r.alias, undo).CombinedOutput(); err != nil {
+					t.Errorf("restore %s on %s after the scenario stopped: %s: %v\n%s\nrestore it by hand before the next run", backend, r.alias, undo, err, out)
 				}
 			})
+			r.must(t, "make "+backend+" unusable", expand(brk, vars))
 			nonce := fmt.Sprintf("exec8-%s-%d", backend, os.Getpid())
 			never := write + "; sleep 30 # " + nonce
 			m.script(bashCall(never))
@@ -86,7 +97,7 @@ func TestExecConfinedCommandNeverRunsWithoutBackend(t *testing.T) {
 				t.Errorf("a shell process was created with no backend:\n%s", ps)
 			}
 
-			r.must(t, "restore "+backend, expand(restore, vars))
+			r.must(t, "restore "+backend, undo)
 			restored = true
 			launcherLike := "echo 'dsh sandbox-launch: failed' >&2; exit 125"
 			last := mustExit(t, runCommands(t, h, m, session, launcherLike)[0], launcherLike, 125)

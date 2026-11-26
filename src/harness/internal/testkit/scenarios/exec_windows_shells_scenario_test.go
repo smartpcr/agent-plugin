@@ -6,12 +6,15 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/shellexec"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/shellexec/bash"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess"
 	"github.com/smartpcr/agent-plugin/src/sdk/protocol"
 )
@@ -27,7 +30,8 @@ import (
 // When a table of strings (spaces, double and single quotes, trailing
 // backslashes, %NAME%, &, ^, non-ASCII, and one of 40,000 characters) is printed
 // back through the pwsh tool on each edition and the bash tool on Git's bash;
-// the bash tool runs with Git for Windows off PATH; npm is started by bare name
+// the bash tool runs with no Git for Windows it can find (an empty %ProgramFiles%
+// and a PATH holding no bash but the WSL launcher's; see withoutBash); npm is started by bare name
 // through the process package by default, with opt-in and a plain argument and
 // with opt-in and a % argument; and non-ASCII text is written to the standard
 // input of Windows PowerShell 5.1 started after its input code page is set to
@@ -95,7 +99,8 @@ func TestExecWindowsShellsQuoteAndResolve(t *testing.T) {
 		})
 	}
 	t.Run("bash-without-git", func(t *testing.T) {
-		h, m, session := start(t, "bash", "", []string{"PATH=" + withoutGit(os.Getenv("PATH"))})
+		env := withoutBash(t, t.TempDir())
+		h, m, session := start(t, "bash", "", env)
 		m.script(bashCall("echo reached"))
 		got := toolOutcomes(t, h.runPrompt(t, session, "Run the scripted command.", 10*time.Minute))
 		if len(got) != 1 {
@@ -156,13 +161,46 @@ func echoBack(tool, s string) string {
 	return "printf '%s' '" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// withoutGit is path with every directory of Git for Windows removed.
-func withoutGit(path string) string {
+// withoutBash is the environment entries under which the bash tool can find no
+// bash but the WSL launcher, without uninstalling anything: every source bash.Find
+// consults on Windows is closed. %ProgramFiles% (and %ProgramW6432%) name empty,
+// whose Git\bin\bash.exe is absent, and PATH loses every directory holding a bash
+// program except %SystemRoot%\System32 and WindowsApps, the WSL launcher's, which
+// stay so that falling back to WSL is observable. The fixture is checked with
+// bash.Find over the same environment before it is used: a bash it still resolves
+// fails the scenario as a fixture fault, not as a product result.
+func withoutBash(t *testing.T, empty string) []string {
+	t.Helper()
+	launcherDir := func(d string) bool {
+		d = strings.ToUpper(filepath.Clean(d))
+		if root := os.Getenv("SystemRoot"); root != "" && d == strings.ToUpper(filepath.Join(root, "System32")) {
+			return true
+		}
+		return slices.Contains(strings.Split(d, `\`), "WINDOWSAPPS")
+	}
+	holdsBash := func(d string) string {
+		for _, ext := range []string{"", ".exe", ".com", ".bat", ".cmd"} {
+			if p := filepath.Join(d, "bash"+ext); fileExists(p) {
+				return p
+			}
+		}
+		return ""
+	}
 	var keep []string
-	for _, d := range filepath.SplitList(path) {
-		if !strings.Contains(strings.ToLower(d), `\git\`) && !strings.HasSuffix(strings.ToLower(d), `\git`) {
+	for _, d := range filepath.SplitList(os.Getenv("PATH")) {
+		if d != "" && (launcherDir(d) || holdsBash(d) == "") {
 			keep = append(keep, d)
 		}
 	}
-	return strings.Join(keep, string(os.PathListSeparator))
+	entries := []string{"PATH=" + strings.Join(keep, string(os.PathListSeparator)), "ProgramFiles=" + empty, "ProgramW6432=" + empty}
+	host := shellexec.LocalHost(subprocess.BuildEnv(os.Environ(), subprocess.EnvOptions{Entries: entries}))
+	if p, err := bash.Find("", host); !herr.Has(err, shellexec.ReasonNotFound) {
+		t.Fatalf("fixture: bash still resolves to %+v (%v) with Git for Windows hidden", p, err)
+	}
+	return entries
+}
+
+func fileExists(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && !fi.IsDir()
 }
