@@ -157,8 +157,21 @@ After it, `gofmt -l` of the package lists nothing, and `go vet` with `-tags=e2e`
 (`HARNESS_GATE_VETTOOL=1`, `-vettool=<harness-gate>`). The two scenario sets pass with
 `go test -tags=e2e -count=1 -run 'TestE2E_dh_s_13_sandbox_launch_linux_backends_and_shell_tools_(launch_plan_required_for_every_command|sandbox_seam_probe_select_confirm)$' ./test/e2e/harness-DSH-M2/`:
 on Windows 3/3 and 6/6 scenarios, on WSL 3/3 and 6/6 scenarios (5 steps skipped on WSL, the
-same 5 as at `3cd3da0` before the change). Both lanes are to run once on the commit that carries
-this fix. The S14 gate scenario (M2-DOD-1) stays open until both lanes pass.
+same 5 as at `3cd3da0` before the change).
+
+**Lanes at `d26bb4b` (the nosleep-fix commit).** WSL lane finished:
+[`wsl-d26bb4b-20261126T0039Z.txt`](../../harness-DSH-M1/evidence/runs/wsl-d26bb4b-20261126T0039Z.txt)
+(sha256 `7b2e25adba04a58dde787d1619d2646f4f62becc78eefb44b10e8687f4a49533`, exit 1) and
+[`wsl-d26bb4b-20261126T0039Z-rehearse.txt`](../../harness-DSH-M1/evidence/runs/wsl-d26bb4b-20261126T0039Z-rehearse.txt)
+(sha256 `3b9b77cb2a7d01c917ab7a87fea174763582ad5f1e31048aa659651c7ceccc89`, exit 0). It passes gate 1
+(`PASS gofmt`) and gate 2 (`PASS vet`, so the nosleep fix holds) and stops at gate 3,
+`harness-gate: FAIL staticcheck`, with `-tags=` and with `-tags=replay,scenario,bench`:
+`internal/world/sandbox/launch/confine_linux.go:62:14: github.com/landlock-lsm/go-landlock/landlock.NewConfig is deprecated: Use a struct literal instead: Config{HandledAccessFS: llsyscall.AccessFSExecute}  (SA1019)`.
+That file is DH-S-13 Linux sandbox code (#136, `fb79bbb`), outside this record. It builds only on
+Linux, and it sets up a confinement check, so it is not changed here (question
+`dh-s-14-landlock-staticcheck`). The Windows lane at `d26bb4b` was still running when this record
+was written. Gates 4 to 13 on WSL, coverage included, did not run. The S14 gate scenario
+(M2-DOD-1) stays open until both lanes pass.
 
 **Record check.** `harness-gate ready --stage DH-S-14 --built` on this record (status line
 `open`), run on the working tree that carries the operator acceptance above: exit 0,
@@ -207,9 +220,11 @@ after their run records were copied into `harness-DSH-M1/evidence/runs/`.
 ### Open items
 
 Both lanes at `2441517` fail gate 2 (`nosleep`, three `time.Sleep` calls in DH-S-13 e2e tests;
-Results). The three waits are replaced on this branch (question `dh-s-14-nosleep-lane-blocker`).
-Both lanes run once on the commit that carries that change, and their exits, run records and
-coverage are recorded here.
+Results). The three waits are replaced on this branch, and the WSL lane at `d26bb4b` passes vet.
+It then fails gate 3, staticcheck SA1019 on `landlock.NewConfig` in
+`internal/world/sandbox/launch/confine_linux.go:62` (Results; question
+`dh-s-14-landlock-staticcheck`). The Windows lane at `d26bb4b` is to be recorded. Both lanes must
+pass on the final commit, with their exits, run records and coverage recorded here.
 Closed: the gofmt blocker (formatted on this branch, question `dh-s-14-gofmt-lane-blocker`) and the
 operator acceptance of the two manual checks (question `dh-s-14-manual-checks`, accepted).
 
