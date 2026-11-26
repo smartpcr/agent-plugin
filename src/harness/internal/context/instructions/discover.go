@@ -110,6 +110,9 @@ const (
 	Omitted    State = "omitted"
 	Duplicate  State = "duplicate"
 	Unreadable State = "unreadable"
+	// Skipped: the total source-read cap was spent, so the file was never
+	// read. Unlike Omitted it is not rendered as cut by the section budget.
+	Skipped State = "skipped"
 )
 
 // The scopes of a file: its chain.
@@ -267,7 +270,7 @@ func readOne(ctx context.Context, fsys fs.FS, bounded fs.BoundedOpener, p, root,
 	}
 	left := c.MaxTotalSourceBytes - *total
 	if left <= 0 {
-		return Entry{File: File{State: Omitted, Reason: fs.CodeTooLarge}}, "", true
+		return Entry{File: File{State: Skipped, Reason: fs.CodeTooLarge}}, "", true
 	}
 	limit := min(c.MaxSourceBytes, left)
 	rc, oi, err := bounded.OpenBounded(ctx, fs.Ref{Path: p}, root, int64(limit)+1)
