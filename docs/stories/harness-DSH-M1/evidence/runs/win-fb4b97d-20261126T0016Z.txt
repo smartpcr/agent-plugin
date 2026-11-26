@@ -1,0 +1,25 @@
+harness-gate evidence record
+commit: fb4b97d137f67024d08c3ec69d0426242617c077
+tree: clean (git status --porcelain --untracked-files=all is empty)
+command: harness-gate --root ../.. --evidence E:\work\github\ai\agent-plugin\.worktree\tmp-s14-manual-fb4b97d\docs\stories\harness-DSH-M1\evidence\runs\win-fb4b97d-20261126T0016Z.txt
+goos/goarch: windows/amd64
+go version: go version go1.27.4 windows/amd64
+go floor: go1.27.4 (src/harness/go.mod); children run with GOTOOLCHAIN=go1.27.4
+goroot: C:\Program Files\Go
+cc: gcc
+cc --version: gcc (Rev5, Built by MSYS2 project) 16.1.0
+host os: Microsoft Windows [Version 10.0.28000.3501]
+children: CI=1
+started: 2026-11-26T00:17:11Z
+--- output ---
+harness-gate: toolchain go1.27.4 (the go floor of src/harness/go.mod; children run with GOTOOLCHAIN=go1.27.4, GOROOT=C:\Program Files\Go)
+harness-gate: gate 1/13 gofmt -- every Go file is gofmt-formatted
+gofmt: 1017 files checked
+harness-gate: FAIL gofmt (1.397s)
+not gofmt-formatted:
+  src/harness/test/e2e/harness-DSH-M2/dh_s_13_sandbox_launch_linux_backends_and_shell_tools_sandbox_seam_probe_select_confirm_test.go
+harness-gate: FAILED at gate gofmt
+--- end of output ---
+ended: 2026-11-26T00:17:15Z
+exit: 1
+sha256: ce89c874fc45aaf32b6a8878c1fa77ea12ef18318e2f37c38d636262cf90aadc

@@ -1,0 +1,41 @@
+=== RUN   TestManualS14PresetEditedDuringASession
+    zz_manual_s14_test.go:64: scratch = C:\Users\XIAODO~1.RED\AppData\Local\Temp\TestManualS14PresetEditedDuringASession1507058134\001
+
+===== 1. load the shipped standard.yml (scratch copy C:\Users\XIAODO~1.RED\AppData\Local\Temp\TestManualS14PresetEditedDuringASession1507058134\001\presets\standard.yml)
+s1 bound: standard rev 1 digest sha256:1b86830fd99a2b95abe720b024cbe96eab10b7ecece3f9b8a565800815b37755
+s1: registry Of = standard rev 1 digest sha256:1b86830fd99a2b95abe720b024cbe96eab10b7ecece3f9b8a565800815b37755
+s1: fold = preset standard digest sha256:1b86830fd99a2b95abe720b024cbe96eab10b7ecece3f9b8a565800815b37755 cause create
+s1: tools = apply_patch bash edit glob grep pwsh read write
+s1: persona prefix = "You are a coding agent. You work in the user's workspace with the file and shell tools below: read before you change, keep changes to what was asked, and report what you did."
+before edit: revision standard rev 1 leases 1 retired false broken ""
+
+===== 2. edit C:\Users\XIAODO~1.RED\AppData\Local\Temp\TestManualS14PresetEditedDuringASession1507058134\001\presets\standard.yml while s1 is open (persona prefix rewritten, applyPatch false), reload
+after edit: revision standard rev 1 leases 1 retired true broken ""
+after edit: revision standard rev 2 leases 0 retired false broken ""
+s1: registry Of = standard rev 1 digest sha256:1b86830fd99a2b95abe720b024cbe96eab10b7ecece3f9b8a565800815b37755
+s1: fold = preset standard digest sha256:1b86830fd99a2b95abe720b024cbe96eab10b7ecece3f9b8a565800815b37755 cause create
+s1: tools = apply_patch bash edit glob grep pwsh read write
+s1: persona prefix = "You are a coding agent. You work in the user's workspace with the file and shell tools below: read before you change, keep changes to what was asked, and report what you did."
+
+===== 3. a new session s2 after the edit
+s2 bound: standard rev 2 digest sha256:ab4e5427724ad3a154b2b872fec308d684747ca483dc78a108b226f12520e43b
+s2: registry Of = standard rev 2 digest sha256:ab4e5427724ad3a154b2b872fec308d684747ca483dc78a108b226f12520e43b
+s2: fold = preset standard digest sha256:ab4e5427724ad3a154b2b872fec308d684747ca483dc78a108b226f12520e43b cause create
+s2: tools = bash edit glob grep pwsh read write
+s2: persona prefix = "EDITED: you are a careful coding agent. You work in the user's workspace with the file and shell tools below: read before you change, keep changes to what was asked, and report what you did."
+s1: registry Of = standard rev 1 digest sha256:1b86830fd99a2b95abe720b024cbe96eab10b7ecece3f9b8a565800815b37755
+s1: fold = preset standard digest sha256:1b86830fd99a2b95abe720b024cbe96eab10b7ecece3f9b8a565800815b37755 cause create
+s1: tools = apply_patch bash edit glob grep pwsh read write
+s1: persona prefix = "You are a coding agent. You work in the user's workspace with the file and shell tools below: read before you change, keep changes to what was asked, and report what you did."
+with s1 and s2: revision standard rev 1 leases 1 retired true broken ""
+with s1 and s2: revision standard rev 2 leases 1 retired false broken ""
+
+===== 4. close s1 and s2 and the store; reopen C:\Users\XIAODO~1.RED\AppData\Local\Temp\TestManualS14PresetEditedDuringASession1507058134\001\sessions.db
+s1 reopened from SQLite: fold = preset standard digest sha256:1b86830fd99a2b95abe720b024cbe96eab10b7ecece3f9b8a565800815b37755 cause create
+s2 reopened from SQLite: fold = preset standard digest sha256:ab4e5427724ad3a154b2b872fec308d684747ca483dc78a108b226f12520e43b cause create
+
+===== 5. close s1's agent scope (its lease)
+after s1's release: revision standard rev 2 leases 1 retired false broken ""
+--- PASS: TestManualS14PresetEditedDuringASession (0.54s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/boot/agentpreset	2.819s
