@@ -327,9 +327,15 @@ func (a *Auth) admit(value, kind string) (*peer, error) {
 			return nil, err
 		}
 		if !ok || subtle.ConstantTimeCompare([]byte(r.Hash), []byte(h)) != 1 {
+			a.evict(h, nil)
 			return nil, nil
 		}
-		if r.Audience != a.opts.Audience || r.Principal.Kind != kind || !a.opts.Now().Before(r.Expires) {
+		now := a.opts.Now()
+		if !now.Before(r.Expires) {
+			a.evict(h, nil)
+			return nil, nil
+		}
+		if r.Audience != a.opts.Audience || r.Principal.Kind != kind {
 			return nil, nil
 		}
 		if afterRead != nil {
@@ -343,11 +349,35 @@ func (a *Auth) admit(value, kind string) (*peer, error) {
 		p, ok := a.peers[h]
 		if !ok {
 			ctx, cancel := context.WithCancel(a.base)
-			p = &peer{id: r.ID, principal: r.Principal, formKey: r.FormKey, ctx: ctx, cancel: cancel}
+			p = &peer{id: r.ID, principal: r.Principal, formKey: r.FormKey, ctx: ctx}
+			// The peer's context ends when its session expires, even if no request
+			// asks for it again.
+			np := p
+			timer := time.AfterFunc(r.Expires.Sub(now), func() { a.evict(h, np) })
+			p.cancel = func() {
+				timer.Stop()
+				cancel()
+			}
 			a.peers[h] = p
 		}
 		a.mu.Unlock()
 		return p, nil
+	}
+}
+
+// evict removes and ends the cached peer of row key h: any peer when only is nil,
+// otherwise only that peer (so a stale expiry timer leaves a newer peer alone).
+func (a *Auth) evict(h string, only *peer) {
+	a.mu.Lock()
+	p, ok := a.peers[h]
+	if ok && (only == nil || p == only) {
+		delete(a.peers, h)
+	} else {
+		ok = false
+	}
+	a.mu.Unlock()
+	if ok {
+		p.cancel()
 	}
 }
 
