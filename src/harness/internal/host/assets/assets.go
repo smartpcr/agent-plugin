@@ -45,8 +45,18 @@ func Files() fs.FS {
 	return sub
 }
 
-// hashed matches a base name that carries a content hash before its extension.
-var hashed = regexp.MustCompile(`^[^/]+[.-][0-9a-fA-F]{8,64}\.[A-Za-z0-9]+$`)
+// hashedName matches the bundler's naming convention: a dot, 8 to 64 lowercase
+// hex digits and a dot before the extension ("app.3f2a9c1b.js").
+var hashedName = regexp.MustCompile(`^[^/]+\.([0-9a-f]{8,64})\.[a-z0-9]+$`)
+
+// hashed reports whether a base name carries a content hash. A run of decimal
+// digits alone is a date or version stamp ("report.20240101.json"), not a hash:
+// such a file may be edited in place, so it must not be cached as immutable. A
+// real hash without a letter is merely served as no-cache, which is still correct.
+func hashed(base string) bool {
+	m := hashedName.FindStringSubmatch(base)
+	return m != nil && strings.ContainsAny(m[1], "abcdef")
+}
 
 // Immutable is the Cache-Control of a content-hashed file.
 const Immutable = "public, max-age=31536000, immutable"
@@ -95,7 +105,7 @@ func Handler(fsys fs.FS, build string) http.Handler {
 		h := w.Header()
 		h.Set("Content-Type", contentType(name))
 		h.Set("X-Content-Type-Options", "nosniff")
-		if hashed.MatchString(path.Base(name)) {
+		if hashed(path.Base(name)) {
 			h.Set("Cache-Control", Immutable)
 		} else {
 			h.Set("Cache-Control", "no-cache")
