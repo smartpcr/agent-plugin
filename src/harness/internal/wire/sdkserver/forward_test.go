@@ -521,16 +521,21 @@ func TestDuplicatePromptWaitsForItsEvent(t *testing.T) {
 	}
 }
 
-// closingFailer fails every notification of method once armed, like an encoder
-// refusing an oversized frame, and is closable like the transport it wraps.
+// closingFailer holds the first notification of method until release is closed,
+// signalling held, then fails it, like an encoder refusing an oversized frame.
+// It is closable like the transport it wraps.
 type closingFailer struct {
 	*jsonrpc.Conn
-	method string
-	armed  atomic.Bool
+	method  string
+	once    sync.Once
+	held    chan struct{}
+	release chan struct{}
 }
 
 func (f *closingFailer) Notify(method string, params any) error {
-	if method == f.method && f.armed.Load() {
+	if method == f.method {
+		f.once.Do(func() { close(f.held) })
+		<-f.release
 		return errors.New("encode: frame too large")
 	}
 	return f.Conn.Notify(method, params)
@@ -538,17 +543,34 @@ func (f *closingFailer) Notify(method string, params any) error {
 
 // A notification that fails after its prompt was answered ends the transport:
 // a client awaiting the run's completion, sending nothing more, sees its input
-// end rather than wait for ever.
+// end rather than wait for ever. The failing notification is held until the
+// receipt is in hand, so the order does not depend on scheduling.
 func TestForwardFailureAfterReceiptEndsTransport(t *testing.T) {
-	var fn *closingFailer
+	fn := &closingFailer{method: sdkserver.RunCompletedNotification, held: make(chan struct{}), release: make(chan struct{})}
+	var released sync.Once
+	release := func() { released.Do(func() { close(fn.release) }) }
 	cl := connectWrapped(t, newServer(t, fakemodel.Reply("unsent")), func(n sdkserver.Notifier) sdkserver.Notifier {
-		fn = &closingFailer{Conn: n.(*jsonrpc.Conn), method: sdkserver.RunCompletedNotification}
-		fn.armed.Store(true)
+		fn.Conn = n.(*jsonrpc.Conn)
 		return fn
 	}, nil)
+	t.Cleanup(release) // before the connection's Close, which a held notification would block
 	id, _ := cl.create()
 	var r protocol.SessionPromptResult
 	cl.call("session/prompt", protocol.SessionPromptParams{SessionID: id, Content: text("go"), MessageID: "m1"}, &r)
+	if r.MessageID != "m1" {
+		t.Fatalf("receipt = %+v", r)
+	}
+	select {
+	case <-fn.held:
+	case <-time.After(jsonrpctest.Timeout):
+		t.Fatal("session.run.completed was never written")
+	}
+	select {
+	case <-fn.Done():
+		t.Fatal("the transport ended before the notification failed")
+	default:
+	}
+	release()
 	select {
 	case <-fn.Done():
 	case <-time.After(jsonrpctest.Timeout):
