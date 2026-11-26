@@ -199,6 +199,18 @@ var codes = map[herr.Reason]int{
 	"sandbox/launch-failed":            Failed,
 	"sandbox/unavailable":              Unavailable,
 
+	"shellexec/bad-config":    Config,
+	"shellexec/bad-request":   Invalid,
+	"shellexec/not-found":     Unavailable,
+	"shellexec/script-failed": Failed,
+	"shellexec/stopped":       Cancelled,
+	"shellexec/timed-out":     Limit,
+
+	"shellenv/bad-key":            Invalid,
+	"shellenv/contributor-failed": Failed,
+	"shellenv/secrets-unknown":    Unavailable,
+	"shellenv/undeclared":         Invalid,
+
 	"workdir/invalid":            Invalid,
 	"workdir/notice-undelivered": Unavailable,
 	"workdir/unavailable":        Unavailable,
