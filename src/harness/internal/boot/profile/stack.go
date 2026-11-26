@@ -62,19 +62,26 @@ func UserLayerPath(homeRoot string) string {
 	return filepath.Join(home.New(homeRoot).Config(), LayerFile)
 }
 
-// BundleNames lists the embedded bundles, sorted.
+// BundleNames lists the embedded bundles, sorted. The optional list
+// (OptionalName) is embedded beside them but is not a bundle.
 func BundleNames() []string {
 	files, _ := fs.Glob(bundles, "bundles/*.yml")
-	names := make([]string, len(files))
-	for i, f := range files {
-		names[i] = path.Base(f[:len(f)-len(".yml")])
+	names := make([]string, 0, len(files))
+	for _, f := range files {
+		if name := path.Base(f[:len(f)-len(".yml")]); name != OptionalName {
+			names = append(names, name)
+		}
 	}
 	return names
 }
 
 // Bundle returns the embedded bundle called name as a read-only layer labelled
-// BundleLabel+name. A missing or unparsable bundle is ReasonBadBundle.
+// BundleLabel+name. A missing or unparsable bundle, and the optional list, are
+// ReasonBadBundle.
 func Bundle(name string) (loader.Layer, error) {
+	if name == OptionalName {
+		return loader.Layer{}, herr.Newf(ReasonBadBundle, "bundle %s: %s.yml is the optional list, not a bundle", name, OptionalName)
+	}
 	file := "bundles/" + name + ".yml"
 	data, err := bundles.ReadFile(file)
 	if err != nil {

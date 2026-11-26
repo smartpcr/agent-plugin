@@ -72,6 +72,9 @@ var codes = map[herr.Reason]int{
 	"profile/bad-layer":        Config,
 	"profile/bad-bundle":       Config,
 	"profile/missing-required": Config,
+	"profile/uncovered":        Config,
+	"profile/bad-optional":     Config,
+	"profile/bad-sharing":      Config,
 
 	"attachment/corrupt":     Failed,
 	"attachment/not-found":   Invalid,
