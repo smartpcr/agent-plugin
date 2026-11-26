@@ -237,7 +237,7 @@ changed here. The staticcheck fixes are not reached on this lane at `b792aec`. T
 (sha256 `5c7e3e6b2d91c879cbdca5b2cfaca3abe5f492938f9a9711eb28da0e51891dc4`, exit 1). It passes gate 1
 (`PASS gofmt`) and stops at gate 2, `harness-gate: FAIL vet`, on the same finding
 (`internal\world\fs\local\local_test.go:309:77: time.Sleep in a test file ... (QG-4)`) with the same three
-tag sets. `main` still carries that line, and no open PR changes it. Gates 3 to 13, coverage included,
+tag sets. `main` still carries that line (rechecked at `aa42466`, #147), and no PR changes it. Gates 3 to 13, coverage included,
 did not run on either lane. The lane worktree `E:\tmp\s14-lane-b792aec` and the WSL clone
 `~/s14-lane-b792aec` were removed after their records were copied.
 
