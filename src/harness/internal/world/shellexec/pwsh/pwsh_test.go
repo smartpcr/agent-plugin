@@ -3,6 +3,7 @@ package pwsh_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"runtime"
 	"slices"
@@ -92,6 +93,69 @@ func TestFirstStatement(t *testing.T) {
 		if got := pwsh.FirstStatement(cmd); got != want {
 			t.Errorf("FirstStatement(%q) = %v, want %v", cmd, got, want)
 		}
+	}
+}
+
+// TestFirstStatementAttributes: a param block may follow attributes, balanced
+// `[...]` groups that repeat, nest, span lines and comments, and hold brackets
+// inside quoted strings; after attributes only param opens a script, and an
+// unterminated group or string is not a first statement.
+//
+//dsh:test DH-T-EXEC-13
+func TestFirstStatementAttributes(t *testing.T) {
+	for cmd, want := range map[string]bool{
+		"[CmdletBinding()] param($x)":                     true,
+		"[CmdletBinding()]\n[OutputType([int])]\nparam()": true,
+		"[CmdletBinding()] <# c #>\n# d\nPARAM()":         true,
+		"[Alias('a]b')] param()":                          true,
+		"[Parameter(HelpMessage=\"x]\")] param()":         true,
+		"[CmdletBinding()] using namespace X":             false,
+		"[CmdletBinding()] #requires -Version 7":          false,
+		"[CmdletBinding( param()":                         false,
+		"[Alias('x] param()":                              false,
+		"[int]$x = 1":                                     false,
+		"[CmdletBinding()] parameters":                    false,
+	} {
+		if got := pwsh.FirstStatement(cmd); got != want {
+			t.Errorf("FirstStatement(%q) = %v, want %v", cmd, got, want)
+		}
+	}
+}
+
+// TestShellRefusals: a negative or inverted budget is shellexec/bad-config
+// and no PowerShell found is an error, for the dialect and the executor alike,
+// before anything runs; a first-statement command whose script file cannot be
+// written fails shellexec/script-failed, and a scratch failure is returned.
+//
+//dsh:test DH-T-EXEC-13
+func TestShellRefusals(t *testing.T) {
+	found := fakeHost("linux", []string{"PATH=/usr/bin"}, "/usr/bin/pwsh")
+	for name, cfg := range map[string]pwsh.Config{
+		"negative timeout":    {Timeout: -time.Second},
+		"timeout above a cap": {Timeout: time.Minute, MaxTimeout: time.Second},
+	} {
+		if _, err := pwsh.NewShell(cfg, found); !herr.Has(err, shellexec.ReasonBadConfig) {
+			t.Errorf("%s: NewShell = %v; want %s", name, err, shellexec.ReasonBadConfig)
+		}
+	}
+	missing := fakeHost("linux", []string{"PATH=/usr/bin"})
+	if _, err := pwsh.NewShell(pwsh.Config{}, missing); err == nil {
+		t.Error("NewShell found a PowerShell on a host with none")
+	}
+	if e, err := pwsh.New(pwsh.Config{}, missing, shellexec.Options{}); err == nil || e != nil {
+		t.Errorf("New = %v, %v; want no executor and an error", e, err)
+	}
+	sh, err := pwsh.NewShell(pwsh.DefaultConfig(), found)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gone := t.TempDir() + string(os.PathSeparator) + "gone"
+	if _, err := sh.Argv("param($x)", func() (string, error) { return gone, nil }); !herr.Has(err, shellexec.ReasonScript) {
+		t.Errorf("Argv into a missing directory = %v; want %s", err, shellexec.ReasonScript)
+	}
+	refused := errors.New("no scratch")
+	if _, err := sh.Argv("param($x)", func() (string, error) { return "", refused }); !errors.Is(err, refused) {
+		t.Errorf("Argv with a failing scratch = %v; want %v", err, refused)
 	}
 }
 
