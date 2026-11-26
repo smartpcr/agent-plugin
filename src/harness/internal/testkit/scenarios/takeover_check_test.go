@@ -75,6 +75,8 @@ func TestTakeoverConfinementIsWhatTheProductReports(t *testing.T) {
 		s.Confinement.State, s.Confinement.Backend, s.Confinement.Missing = state, backend, missing
 		return s
 	}
+	readOnly := out("full", "bwrap")
+	readOnly.Confinement.Mode = "read-only"
 	for name, c := range map[string]struct {
 		mode     string
 		s        shellOutcome
@@ -88,12 +90,21 @@ func TestTakeoverConfinementIsWhatTheProductReports(t *testing.T) {
 		"partial missing nothing": {"workspace-write", out("partial", "landlock"), nil, false},
 		"no backend":              {"workspace-write", out("full", "none"), nil, false},
 		"other backend":           {"workspace-write", out("full", "landlock"), []string{"bwrap"}, false},
+		"read-only for a write":   {"workspace-write", readOnly, []string{"bwrap"}, false},
+		"read-only for danger":    {"danger-full-access", readOnly, nil, false},
 		"danger unconfined":       {"danger-full-access", out("unconfined", "none"), nil, true},
 		"danger confined":         {"danger-full-access", out("full", "bwrap"), nil, false},
 	} {
+		if c.s.Confinement.Mode == "" {
+			c.s.Confinement.Mode = c.mode
+		}
 		if err := confinementError(c.mode, c.s, c.backends); (err == nil) != c.ok {
 			t.Errorf("%s: confinementError = %v, want ok %v", name, err, c.ok)
 		}
+	}
+	unreported := out("full", "bwrap")
+	if err := confinementError("workspace-write", unreported, nil); err == nil {
+		t.Error("confinementError passed a result that reports no mode")
 	}
 }
 
@@ -276,12 +287,7 @@ func TestTakeoverObservedOutcomeIsReported(t *testing.T) {
 // grandchild holding the output, lets the subtest end, and checks the cleanup
 // returned within its bound with every process of the tree gone.
 func TestShellTreeCleanupStopsDescendants(t *testing.T) {
-	echo := launcher.Build(t, filepath.Join(repositoryRoot(t), "src", "harness", "internal", "testkit", "launcher"), "./testdata/echo")
-	t.Setenv("DSH_TEST_ECHO", echo)
-	line := `"$DSH_TEST_ECHO" tree`
-	if runtime.GOOS == "windows" {
-		line = `%DSH_TEST_ECHO% tree`
-	}
+	line := echoTreeLine(t)
 	var shellPID, grandchild int
 	var ended time.Time
 	t.Run("run", func(t *testing.T) {
@@ -302,6 +308,94 @@ func TestShellTreeCleanupStopsDescendants(t *testing.T) {
 	for _, pid := range []int{shellPID, grandchild} {
 		if !subprocesstest.Exited(pid) {
 			t.Errorf("pid %d survives the cleanup", pid)
+		}
+	}
+}
+
+// echoTreeLine is a shell line running the launcher's echo program in tree
+// mode: it prints a grandchild's pid, and the grandchild holds the output open.
+func echoTreeLine(t *testing.T) string {
+	t.Helper()
+	echo := launcher.Build(t, filepath.Join(repositoryRoot(t), "src", "harness", "internal", "testkit", "launcher"), "./testdata/echo")
+	t.Setenv("DSH_TEST_ECHO", echo)
+	if runtime.GOOS == "windows" {
+		return `%DSH_TEST_ECHO% tree`
+	}
+	return `"$DSH_TEST_ECHO" tree`
+}
+
+// TestTakeoverCleanupIsBoundedWhenADescendantHoldsTheOutput runs the cleanup
+// command through shellTree with a grandchild holding the output: it returns an
+// error within its bound, and the whole tree is gone.
+func TestTakeoverCleanupIsBoundedWhenADescendantHoldsTheOutput(t *testing.T) {
+	line := echoTreeLine(t)
+	const within = 10 * time.Second
+	start := time.Now()
+	h, err := shellTree(t, line, within)
+	if took := time.Since(start); took > within+3*launcher.Grace+time.Second {
+		t.Errorf("the cleanup command returned after %s", took)
+	}
+	if !errors.Is(err, launcher.ErrTimeout) {
+		t.Errorf("shellTree = %v, want ErrTimeout", err)
+	}
+	grandchild, perr := strconv.Atoi(strings.TrimSpace(h.Stdout.String()))
+	if perr != nil || grandchild == 0 {
+		t.Fatalf("no grandchild pid in %q", h.Stdout.String())
+	}
+	for _, pid := range []int{h.Process.Pid(), grandchild} {
+		if !subprocesstest.Exited(pid) {
+			t.Errorf("pid %d survives the bounded cleanup", pid)
+		}
+	}
+}
+
+func TestTakeoverObservationMustEnd(t *testing.T) {
+	exposed := []string{"secret-read"}
+	for _, s := range []takeoverStep{
+		{Step: "credential-manager", Outcome: "succeeded"},
+		{Step: "scheduled-task", Outcome: "refused", Detail: "Access is denied."},
+		{Step: "com-server", Outcome: "failed", Detail: "class not registered"},
+	} {
+		if err := observationError(s, exposed); err != nil {
+			t.Errorf("observationError(%+v) = %v, want ok", s, err)
+		}
+	}
+	for _, s := range []takeoverStep{
+		{Step: "credential-manager", Outcome: "pending"},
+		{Step: "scheduled-task", Outcome: "unavailable", Detail: "schtasks missing"},
+		{Step: "com-server", Outcome: "pending", Detail: "waiting"},
+		{Step: "scheduled-task", Outcome: "succeeded"},
+	} {
+		if err := observationError(s, exposed); err == nil {
+			t.Errorf("observationError(%+v) passed, want an error", s)
+		}
+	}
+}
+
+func TestCredentialLeakFoundWithoutMarkers(t *testing.T) {
+	const cookie, token = "c0ffee-session-value-123", "launch-token-abcdef0123"
+	for _, s := range []string{
+		`{"token":"anything"}`,
+		`{"result":{"session":{"Cookie":"x"}}}`,
+		`[{"credential":"k"}]`,
+		cookie,
+		`ok ` + token + ` done`,
+		`{"value":"` + cookie + `"}`,
+		`https://h/?token=abc`,
+		`dsh-session-1=v`,
+	} {
+		if !holdsCredential(s, cookie, token) {
+			t.Errorf("holdsCredential(%q) = false, want the leak found", s)
+		}
+	}
+	for _, s := range []string{
+		`{"pid":42,"origin":"http://127.0.0.1:1","socket":"/run/c.sock"}`,
+		`{"token":""}`,
+		`refused auth/untrusted-peer`,
+		`{"state":"running","approvals":1}`,
+	} {
+		if holdsCredential(s, cookie, token, "short") {
+			t.Errorf("holdsCredential(%q) = true, want no leak", s)
 		}
 	}
 }

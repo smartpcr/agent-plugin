@@ -5,7 +5,6 @@ package scenarios
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -54,7 +53,8 @@ import (
 // DSH_SCENARIO_TAKEOVER_CLEANUP over {home} signs the browser out and removes
 // what the out-of-process steps created (it runs while the host still runs).
 
-// takeoverModes are the three runs of the script.
+// takeoverModes are the three runs of the script (DH-E-HOST-9 makes the two
+// with network allowed: windowsTakeoverModes).
 var takeoverModes = []struct{ name, mode, network string }{
 	{"workspace-write", "workspace-write", "allowed"},
 	{"network-denied", "workspace-write", "denied"},
@@ -128,18 +128,29 @@ func emptyListingError(s takeoverStep) error {
 
 // observedError checks a step whose outcome the backend does not decide and
 // the product must report (DH-E-HOST-8: the cookie replay, the keychain read,
-// the launchd job, the Apple Event): it ran to an end (not pending or
-// unavailable), dsh sandbox status shows its effect class, and when it succeeded
-// the result lists that class among the exposed effects, never as a pass.
+// the launchd job, the Apple Event): it is an observation (observationError) and
+// dsh sandbox status shows its effect class.
 func observedError(s takeoverStep, status string, exposed []string) error {
+	if err := observationError(s, exposed); err != nil {
+		return err
+	}
+	if effect := takeoverEffects[s.Step]; !strings.Contains(status, effect) {
+		return fmt.Errorf("%s ended %s, but dsh sandbox status does not show %s", s.Step, s.Outcome, effect)
+	}
+	return nil
+}
+
+// observationError checks a step whose outcome is recorded as observed
+// (DH-E-HOST-8, DH-E-HOST-9): it has an effect class, it ran to an end (not
+// pending or unavailable), and when it succeeded the result lists its class
+// among the exposed effects, never as a pass.
+func observationError(s takeoverStep, exposed []string) error {
 	effect, ok := takeoverEffects[s.Step]
 	switch {
 	case !ok:
 		return fmt.Errorf("%s has no effect class to report it under", s.Step)
 	case s.Outcome != "succeeded" && s.Outcome != "refused" && s.Outcome != "failed":
 		return fmt.Errorf("%s ended %s (%s), want it observed to an end", s.Step, s.Outcome, s.Detail)
-	case !strings.Contains(status, effect):
-		return fmt.Errorf("%s ended %s, but dsh sandbox status does not show %s", s.Step, s.Outcome, effect)
 	case s.Outcome == "succeeded" && !slices.Contains(exposed, effect):
 		return fmt.Errorf("%s succeeded, but the result (exposed %v) does not list %s as ungoverned", s.Step, exposed, effect)
 	}
@@ -167,6 +178,9 @@ type takeoverRun struct {
 	peerRule string // exact, best-effort or not-applied, as the status shows it
 	pending  string
 	platform takeoverPlatform
+	// secrets are the credentials planted for the run (the session cookie's
+	// value, the launch token): no harness reply may hold either, in any form.
+	secrets []string
 }
 
 // peerRuleText finds the peer rule dsh sandbox status shows.
@@ -199,7 +213,8 @@ func runTakeover(t *testing.T, bin, protection, mode, network string, p takeover
 	mustControl(t, rec.Socket, "launch.open", map[string]any{"print": true})
 	planted := h.nextLink(t, h.link)
 
-	r := takeoverRun{mode: mode, home: home, platform: p, nonce: fmt.Sprintf("takeover-nonce-%d", time.Now().UnixNano())}
+	r := takeoverRun{mode: mode, home: home, platform: p, nonce: fmt.Sprintf("takeover-nonce-%d", time.Now().UnixNano()),
+		secrets: []string{cookie, tokenOf(planted)}}
 	logPath, vars := filepath.Join(work, "takeover.log"), filepath.Join(work, "vars.json")
 	data, _ := json.Marshal(map[string]any{"home": home, "socket": rec.Socket, "origin": rec.Origin, "pid": rec.PID, "dsh": bin,
 		"cookie": cookie, "token": tokenOf(planted), "nonce": r.nonce, "log": logPath})
@@ -313,18 +328,23 @@ func parseTakeoverLog(r io.Reader, platform []string) ([]takeoverStep, error) {
 func (r takeoverRun) confined() bool { return r.mode != "danger-full-access" }
 
 // confinementError checks the confinement the shell result reports against the
-// run's mode: a confined mode needs a full or partial state (partial naming what
-// is missing) on a real backend, one of backends when given; danger-full-access
-// needs unconfined.
+// run's mode: the reported mode is the one asked for; a confined mode needs a
+// full or partial state (partial naming what is missing) on a real backend, one
+// of backends when given; danger-full-access needs unconfined.
 func confinementError(mode string, s shellOutcome, backends []string) error {
 	c := s.Confinement
 	if mode == "danger-full-access" {
+		if c.Mode != mode {
+			return fmt.Errorf("the run is reported in mode %q, want %s", c.Mode, mode)
+		}
 		if c.State != "unconfined" {
 			return fmt.Errorf("the run is reported %q, want unconfined", c.State)
 		}
 		return nil
 	}
 	switch {
+	case c.Mode != mode:
+		return fmt.Errorf("the run is reported in mode %q, want %s", c.Mode, mode)
 	case c.State != "full" && c.State != "partial":
 		return fmt.Errorf("the run is reported %q on backend %q, want full or partial confinement", c.State, c.Backend)
 	case c.State == "partial" && len(c.Missing) == 0:
@@ -412,7 +432,7 @@ func (r takeoverRun) common(t *testing.T) {
 		t.Fatalf("%s: %v (shell %s)", r.mode, err, r.shell.record())
 	}
 	for _, s := range r.steps {
-		if harnessReply(s.Step) && holdsCredential(s.Reply) {
+		if harnessReply(s.Step) && holdsCredential(s.Reply, r.secrets...) {
 			t.Errorf("%s: %s returned a credential: %s", r.mode, s.Step, s.Reply)
 		}
 	}
@@ -496,16 +516,15 @@ func denialError(s takeoverStep) error {
 // takeoverCleanupWithin bounds the cleanup command.
 const takeoverCleanupWithin = 2 * time.Minute
 
-// cleanupShell registers line to run at cleanup on a context of its own,
-// bounded by within: T.Context is canceled before cleanup callbacks run, so a
-// command bound to it would never start.
+// cleanupShell registers line to run at cleanup in a process tree of its own
+// (shellTree), bounded by within: T.Context is canceled before cleanup callbacks
+// run, so a command bound to it would never start, and a descendant that holds
+// the output must not keep the cleanup waiting.
 func cleanupShell(t *testing.T, what, line string, within time.Duration) {
 	t.Helper()
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), within)
-		defer cancel()
-		if out, err := shellContext(ctx, line); err != nil {
-			t.Errorf("%s: %v\n%s", what, err, out)
+		if h, err := shellTree(t, line, within); err != nil {
+			t.Errorf("%s: %v\n%s%s", what, err, h.Stdout.String(), h.Stderr.String())
 		}
 	})
 }

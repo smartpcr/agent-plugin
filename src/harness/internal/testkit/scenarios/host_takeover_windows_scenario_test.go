@@ -19,14 +19,15 @@ import (
 // process for memory read), scheduled-task and com-server (a task and an
 // out-of-process COM server repeating the steps from outside) and break-away
 // (leaving the job),
-// When the script runs under workspace-write, again with network denied, and
-// again under danger-full-access,
+// When the script runs under workspace-write and under danger-full-access (the
+// restricted token cannot deny the network, so there is no network-denied run),
 // Then confined: no write lands in the home; the read of secrets\ and every
 // connection to the control socket fail on the directory label; the host process
 // cannot be opened; the job cannot be left; the exchange and both posts are
 // refused auth/untrusted-peer and the peer rule is exact; the outcomes of the
-// credential-manager read, the scheduled task and the COM server are recorded and
-// listed as ungoverned where they succeed; dsh tool call either reaches the host
+// credential-manager read, the scheduled task and the COM server are recorded,
+// each run to an end, and listed as ungoverned where they succeed
+// (observationError); dsh tool call either reaches the host
 // (the approval stays pending) or reports unavailable, and the result says which.
 // Under danger-full-access the result is as in DH-E-HOST-7.
 // Cleanup: as DH-E-HOST-7; DSH_SCENARIO_TAKEOVER_CLEANUP also deletes the
@@ -45,7 +46,7 @@ func TestModelCommandCannotBecomeOwnerWindows(t *testing.T) {
 	bin := dshBinary(t)
 	p := takeoverPlatform{steps: []string{"credential-manager", "open-process", "scheduled-task", "com-server", "break-away"}, unavailableOK: true}
 	for _, protection := range []string{"file", "keychain"} {
-		for _, m := range takeoverModes {
+		for _, m := range windowsTakeoverModes() {
 			t.Run(protection+"/"+m.name, func(t *testing.T) {
 				r := runTakeover(t, bin, protection, m.mode, m.network, p)
 				if !r.confined() {
@@ -57,8 +58,25 @@ func TestModelCommandCannotBecomeOwnerWindows(t *testing.T) {
 				for _, n := range []string{"credential-manager", "scheduled-task", "com-server"} {
 					s := r.step(t, n)
 					t.Logf("%s: %s ended %s: %s", r.mode, n, s.Outcome, s.Detail)
+					if err := observationError(s, r.shell.Confinement.Exposed); err != nil {
+						t.Errorf("%s: %v", r.mode, err)
+					}
 				}
 			})
 		}
 	}
+}
+
+// windowsTakeoverModes are the runs DH-E-HOST-9 makes: workspace-write and
+// danger-full-access, both with network allowed. The restricted token cannot
+// deny the network, and a launch that asks it to is refused with
+// sandbox/network-unenforceable (sandbox-ssh.md), so there is no network-denied run.
+func windowsTakeoverModes() []struct{ name, mode, network string } {
+	var out []struct{ name, mode, network string }
+	for _, m := range takeoverModes {
+		if m.network == "allowed" {
+			out = append(out, m)
+		}
+	}
+	return out
 }

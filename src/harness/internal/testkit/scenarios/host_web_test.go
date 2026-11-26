@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -41,9 +42,52 @@ const (
 	cookieMark = "dsh-session-"
 )
 
-// holdsCredential reports whether s carries a launch token or a session cookie.
-func holdsCredential(s string) bool {
-	return strings.Contains(s, tokenMark) || strings.Contains(s, cookieMark)
+// credentialFields are the JSON member names that carry a credential: a reply
+// with one of them set to a non-empty string holds a credential, whatever its value.
+var credentialFields = []string{"token", "launch_token", "launchtoken", "cookie", "session_cookie", "set_cookie", "set-cookie",
+	"credential", "secret", "password", "bearer", "authorization"}
+
+// minCredentialLen is the shortest planted value searched for verbatim; a
+// shorter one would match by chance.
+const minCredentialLen = 8
+
+// holdsCredential reports whether s carries a credential: a launch token in a
+// URL, a session cookie by its name, one of the known planted values (the
+// cookie's value, a token) anywhere, in any position, or a JSON credential field.
+func holdsCredential(s string, known ...string) bool {
+	if strings.Contains(s, tokenMark) || strings.Contains(s, cookieMark) {
+		return true
+	}
+	for _, k := range known {
+		if k = strings.TrimSpace(k); len(k) >= minCredentialLen && strings.Contains(s, k) {
+			return true
+		}
+	}
+	var doc any
+	return json.Unmarshal([]byte(s), &doc) == nil && credentialField(doc)
+}
+
+// credentialField reports whether the decoded JSON v holds, at any depth, a
+// credentialFields member whose value is a non-empty string.
+func credentialField(v any) bool {
+	switch v := v.(type) {
+	case map[string]any:
+		for k, x := range v {
+			if s, ok := x.(string); ok && s != "" && slices.Contains(credentialFields, strings.ToLower(k)) {
+				return true
+			}
+			if credentialField(x) {
+				return true
+			}
+		}
+	case []any:
+		for _, x := range v {
+			if credentialField(x) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // webHost is a running listening host on a scratch home.
