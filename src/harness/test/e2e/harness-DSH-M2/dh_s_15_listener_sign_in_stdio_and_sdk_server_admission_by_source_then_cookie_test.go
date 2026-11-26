@@ -121,43 +121,31 @@ func (h *abscHost) rows() ([][2]string, error) {
 	return out, err
 }
 
-// abscLocalIP is a non-loopback address of this machine: IPv4 first, then IPv6
-// that is not link-local (a link-local one needs a zone the listener drops).
-func abscLocalIP() (net.IP, error) {
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return nil, err
+// abscLoopback refuses a bind that is not a loopback literal. Every listener of
+// this suite stays on loopback: on Windows a test binary that binds any other
+// address raises a firewall prompt, and opening the port without one needs an
+// administrator (TC-10b proves on service:loopback-http).
+func abscLoopback(bind string) error {
+	if ip := net.ParseIP(bind); ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("bind %s: the listeners of this suite run on loopback", bind)
 	}
-	var v6 net.IP
-	for _, a := range addrs {
-		n, ok := a.(*net.IPNet)
-		if !ok || n.IP.IsLoopback() || n.IP.IsLinkLocalUnicast() || n.IP.IsUnspecified() || n.IP.IsMulticast() {
-			continue
-		}
-		if ip4 := n.IP.To4(); ip4 != nil {
-			return ip4, nil
-		}
-		if v6 == nil {
-			v6 = n.IP
-		}
-	}
-	if v6 != nil {
-		return v6, nil
-	}
-	return nil, errors.New("this machine has no non-loopback address to present a foreign source from")
+	return nil
 }
 
 type abscState struct {
-	dir    string
-	main   *abscHost
-	second *abscHost
-	third  *abscHost
-	lan    net.IP
+	dir     string
+	main    *abscHost
+	second  *abscHost
+	third   *abscHost
+	foreign net.IP
 
 	link    string
 	first   *http.Response
 	again   *http.Response
 	session *http.Cookie
+
+	thirdFirst   *http.Response
+	thirdSession *http.Cookie
 
 	status int
 	body   string
@@ -180,13 +168,9 @@ func (s *abscState) subdir(name string) (string, error) {
 	return d, os.MkdirAll(d, 0o700)
 }
 
-// client follows no redirect and keeps no cookie jar; from, when set, is the local
-// address every connection is dialled from.
-func abscClient(from net.IP) *http.Client {
+// client follows no redirect and keeps no cookie jar.
+func abscClient() *http.Client {
 	d := &net.Dialer{Timeout: 5 * time.Second}
-	if from != nil {
-		d.LocalAddr = &net.TCPAddr{IP: from}
-	}
 	return &http.Client{
 		Timeout:       10 * time.Second,
 		Transport:     &http.Transport{DisableKeepAlives: true, DialContext: d.DialContext},
@@ -219,8 +203,8 @@ func (s *abscState) do(c *http.Client, method, url string, cookies []*http.Cooki
 }
 
 func (s *abscState) background(bind string) error {
-	if ip := net.ParseIP(bind); ip == nil || !ip.IsLoopback() {
-		return fmt.Errorf("bind %s: the main listener runs on loopback", bind)
+	if err := abscLoopback(bind); err != nil {
+		return err
 	}
 	var err error
 	if s.dir, err = os.MkdirTemp("", "dsh-absc-e2e-"); err != nil {
@@ -247,7 +231,7 @@ func (s *abscState) mint() error {
 }
 
 func (s *abscState) exchange() (*http.Response, error) {
-	resp, err := abscClient(nil).Get(s.link)
+	resp, err := abscClient().Get(s.link)
 	if err != nil {
 		return nil, err
 	}
@@ -339,7 +323,7 @@ func (s *abscState) againIs401(reason string) error {
 		return fmt.Errorf("second exchange redirected to %q", loc)
 	}
 	// The body was drained in exchange; the reason is checked by sending it again.
-	if err := s.do(abscClient(nil), "GET", s.link, nil); err != nil {
+	if err := s.do(abscClient(), "GET", s.link, nil); err != nil {
 		return err
 	}
 	return s.responseIs(http.StatusUnauthorized, reason)
@@ -347,7 +331,7 @@ func (s *abscState) againIs401(reason string) error {
 
 func (s *abscState) withCookieReaches(request, kind string) error {
 	method, path, _ := strings.Cut(request, " ")
-	if err := s.do(abscClient(nil), method, s.main.l.Origin()+path, []*http.Cookie{s.session}); err != nil {
+	if err := s.do(abscClient(), method, s.main.l.Origin()+path, []*http.Cookie{s.session}); err != nil {
 		return err
 	}
 	if s.status != http.StatusOK || s.body != kind {
@@ -374,7 +358,7 @@ func (s *abscState) send(request string, cookies []*http.Cookie, header ...strin
 	if !ok {
 		return fmt.Errorf("request %q: want METHOD PATH", request)
 	}
-	return s.do(abscClient(nil), method, s.main.l.Origin()+path, cookies, header...)
+	return s.do(abscClient(), method, s.main.l.Origin()+path, cookies, header...)
 }
 
 func (s *abscState) sendNoCookie(request string) error { return s.send(request, nil) }
@@ -415,53 +399,96 @@ func abscReached(h *abscHost, want int) error {
 	return nil
 }
 
-func (s *abscState) startLAN(name string, peers []string) (*abscHost, error) {
-	if s.lan == nil {
-		ip, err := abscLocalIP()
-		if err != nil {
-			return nil, err
-		}
-		s.lan = ip
+// startForeign starts a listener on bind whose accepted connections report the
+// foreign source as their remote address, so its admission sees a request from
+// another machine while every byte stays on loopback. The listener reads the
+// spoof when it starts; the restore runs before any other listener can start.
+func (s *abscState) startForeign(name, bind string, peers []string) (*abscHost, error) {
+	if err := abscLoopback(bind); err != nil {
+		return nil, err
+	}
+	if s.foreign == nil {
+		return nil, errors.New("no foreign source was named")
 	}
 	d, err := s.subdir(name)
 	if err != nil {
 		return nil, err
 	}
-	return abscStart(d, listen.Config{Bind: s.lan.String(), AllowInsecureRemote: true, AllowedPeers: peers})
+	restore := listen.E2ESpoofSource(&net.TCPAddr{IP: s.foreign})
+	defer restore()
+	return abscStart(d, listen.Config{Bind: bind, AllowedPeers: peers})
 }
 
-func (s *abscState) secondListener(peers string) (err error) {
+func (s *abscState) secondListener(bind, source, peers string) (err error) {
+	if s.foreign = net.ParseIP(source); s.foreign == nil || s.foreign.IsLoopback() {
+		return fmt.Errorf("foreign source %q: want a non-loopback IP literal", source)
+	}
 	list := strings.Split(peers, ",")
-	if s.lan == nil {
-		if s.lan, err = abscLocalIP(); err != nil {
-			return err
-		}
-	}
 	for _, p := range list {
-		if _, n, err := net.ParseCIDR(p); err == nil && n.Contains(s.lan) {
-			return fmt.Errorf("this machine's address %s is inside the allowed peers %s; the source would not be foreign", s.lan, p)
+		if _, n, err := net.ParseCIDR(p); err == nil && n.Contains(s.foreign) {
+			return fmt.Errorf("the foreign source %s is inside the allowed peers %s; it would not be refused", s.foreign, p)
 		}
 	}
-	s.second, err = s.startLAN("second", list)
+	s.second, err = s.startForeign("second", bind, list)
 	return err
 }
 
-func (s *abscState) thirdListener() (err error) {
-	if s.lan == nil {
-		if s.lan, err = abscLocalIP(); err != nil {
-			return err
-		}
-	}
-	s.third, err = s.startLAN("third", []string{s.lan.String()})
+func (s *abscState) thirdListener(bind string) (err error) {
+	s.third, err = s.startForeign("third", bind, []string{s.foreign.String()})
 	return err
 }
 
-func (s *abscState) fromLAN(h *abscHost, request string, cookies []*http.Cookie) error {
+func (s *abscState) fromForeign(h *abscHost, request string, cookies []*http.Cookie) error {
 	if h == nil {
 		return errors.New("that listener was not started")
 	}
 	method, path, _ := strings.Cut(request, " ")
-	return s.do(abscClient(s.lan), method, h.l.Origin()+path, cookies)
+	return s.do(abscClient(), method, h.l.Origin()+path, cookies)
+}
+
+// thirdExchange mints a launch token on the third listener's host.auth and
+// exchanges it there, from the foreign source.
+func (s *abscState) thirdExchange() error {
+	if s.third == nil {
+		return errors.New("the third listener was not started")
+	}
+	link, err := s.third.svc.Mint()
+	if err != nil {
+		return err
+	}
+	if !strings.HasPrefix(link, s.third.l.Origin()+"/?token=") {
+		return fmt.Errorf("Mint = %q, want %s/?token=...", link, s.third.l.Origin())
+	}
+	resp, err := abscClient().Get(link)
+	if err != nil {
+		return err
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	s.thirdFirst = resp
+	name := auth.CookieName(s.third.l.Origin())
+	for _, ck := range resp.Cookies() {
+		if ck.Name == name {
+			s.thirdSession = ck
+		}
+	}
+	return nil
+}
+
+func (s *abscState) thirdIs303WithOwnCookie(loc string) error {
+	if s.thirdFirst == nil {
+		return errors.New("no launch token was exchanged on the third listener")
+	}
+	if s.thirdFirst.StatusCode != http.StatusSeeOther || s.thirdFirst.Header.Get("Location") != loc {
+		return fmt.Errorf("third exchange %d to %q, want 303 to %q", s.thirdFirst.StatusCode, s.thirdFirst.Header.Get("Location"), loc)
+	}
+	if s.thirdSession == nil {
+		return fmt.Errorf("the third exchange set no %s cookie: %v", auth.CookieName(s.third.l.Origin()), s.thirdFirst.Header.Values("Set-Cookie"))
+	}
+	if s.session != nil && (s.thirdSession.Name == s.session.Name || s.thirdSession.Value == s.session.Value) {
+		return fmt.Errorf("the third listener's cookie %s is the main listener's own", s.thirdSession.Name)
+	}
+	return nil
 }
 
 func InitializeScenario_dh_s_15_listener_sign_in_stdio_and_sdk_server_admission_by_source_then_cookie(ctx *godog.ScenarioContext) {
@@ -494,12 +521,20 @@ func InitializeScenario_dh_s_15_listener_sign_in_stdio_and_sdk_server_admission_
 	ctx.Step(`^the response is (\d+) with body "([^"]*)"$`, func(c int, b string) error { return s.responseBody(c, b) })
 	ctx.Step(`^the mount at "/api" was reached (\d+) times$`, func(n int) error { return abscReached(s.main, n) })
 	ctx.Step(`^the mount at "/api" of the second listener was reached (\d+) times$`, func(n int) error { return abscReached(s.second, n) })
-	ctx.Step(`^a second host\.listen bound on this machine's non-loopback address with allowed peers "([^"]*)"$`, func(p string) error { return s.secondListener(p) })
-	ctx.Step(`^"([^"]*)" is sent with the session cookie from this machine's non-loopback address$`, func(r string) error {
-		return s.fromLAN(s.second, r, []*http.Cookie{s.session})
+	ctx.Step(`^the mount at "/api" of the third listener was reached (\d+) times$`, func(n int) error { return abscReached(s.third, n) })
+	ctx.Step(`^a second host\.listen on "([^"]*)" whose connections arrive from the foreign source "([^"]*)", with allowed peers "([^"]*)"$`, func(b, src, p string) error {
+		return s.secondListener(b, src, p)
 	})
-	ctx.Step(`^a third host\.listen bound on this machine's non-loopback address that allows that address as a peer$`, func() error { return s.thirdListener() })
-	ctx.Step(`^"([^"]*)" is sent to the third listener from this machine's non-loopback address$`, func(r string) error { return s.fromLAN(s.third, r, nil) })
+	ctx.Step(`^"([^"]*)" is sent with the session cookie from the foreign source$`, func(r string) error {
+		return s.fromForeign(s.second, r, []*http.Cookie{s.session})
+	})
+	ctx.Step(`^a third host\.listen on "([^"]*)" whose connections arrive from the foreign source, allowing that source as a peer$`, func(b string) error { return s.thirdListener(b) })
+	ctx.Step(`^"([^"]*)" is sent to the third listener from the foreign source$`, func(r string) error { return s.fromForeign(s.third, r, nil) })
+	ctx.Step(`^a launch token minted by the third listener's host\.auth is exchanged from the foreign source$`, func() error { return s.thirdExchange() })
+	ctx.Step(`^the third listener's exchange answers 303 to "([^"]*)" and sets its own session cookie$`, func(l string) error { return s.thirdIs303WithOwnCookie(l) })
+	ctx.Step(`^"([^"]*)" is sent to the third listener with its session cookie from the foreign source$`, func(r string) error {
+		return s.fromForeign(s.third, r, []*http.Cookie{s.thirdSession})
+	})
 }
 
 func TestE2E_dh_s_15_listener_sign_in_stdio_and_sdk_server_admission_by_source_then_cookie(t *testing.T) {

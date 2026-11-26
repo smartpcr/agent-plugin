@@ -31,16 +31,16 @@ Feature: Admission by source then cookie (DH-D-HOST-2, TC-10b)
     When "GET /api" is sent with the session cookie and Sec-Fetch-Site "cross-site"
     Then the response is 403 with reason "auth/origin"
     And the mount at "/api" was reached 0 times
-    Given a second host.listen bound on this machine's non-loopback address with allowed peers "192.0.2.0/24"
-    When "GET /api" is sent with the session cookie from this machine's non-loopback address
+    Given a second host.listen on "127.0.0.1" whose connections arrive from the foreign source "198.51.100.7", with allowed peers "192.0.2.0/24"
+    When "GET /api" is sent with the session cookie from the foreign source
     Then the response is 403 with reason "auth/source"
     And the mount at "/api" of the second listener was reached 0 times
-    Given a third host.listen bound on this machine's non-loopback address that allows that address as a peer
-    When "GET /api" is sent to the third listener from this machine's non-loopback address
+    Given a third host.listen on "127.0.0.1" whose connections arrive from the foreign source, allowing that source as a peer
+    When "GET /api" is sent to the third listener from the foreign source
     Then the response is 401 with reason "auth/unauthorized"
     And the mount at "/api" of the third listener was reached 0 times
-    When a launch token minted by the third listener's host.auth is exchanged from this machine's non-loopback address
+    When a launch token minted by the third listener's host.auth is exchanged from the foreign source
     Then the third listener's exchange answers 303 to "./" and sets its own session cookie
-    When "GET /api" is sent to the third listener with its session cookie from this machine's non-loopback address
+    When "GET /api" is sent to the third listener with its session cookie from the foreign source
     Then the response is 200 with body "owner"
     And the mount at "/api" of the third listener was reached 1 times
