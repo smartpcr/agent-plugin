@@ -66,8 +66,8 @@ func TestModelCommandCannotBecomeOwnerLinux(t *testing.T) {
 			case "a":
 				r.peer(t, "exact")
 				for _, n := range []string{"list-secrets", "list-run"} {
-					if s := r.step(t, n); s.Reply != "" {
-						t.Errorf("%s: %s shows %q from the model's command, want it empty", r.mode, n, s.Reply)
+					if err := emptyListingError(r.step(t, n)); err != nil {
+						t.Errorf("%s: %v", r.mode, err)
 					}
 				}
 				r.refused(t, "service-manager")

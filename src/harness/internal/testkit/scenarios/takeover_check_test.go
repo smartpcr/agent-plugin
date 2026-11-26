@@ -10,10 +10,14 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
+
+	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/launcher"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess/subprocesstest"
 )
 
 // completeTakeoverLog is a log with every common step plus platform, host.stop last.
@@ -209,6 +213,96 @@ func TestTakeoverCleanupRunsAfterTheTestContextEnds(t *testing.T) {
 	}
 	if _, err := os.Stat(mark); err != nil {
 		t.Errorf("the cleanup command did not run after the test context ended: %v", err)
+	}
+}
+
+func TestTakeoverEmptyListingNeedsACompletedListingOrADenial(t *testing.T) {
+	for _, s := range []takeoverStep{
+		{Step: "list-secrets", Outcome: "succeeded"},
+		{Step: "list-run", Outcome: "succeeded", Reply: " \n"},
+		{Step: "list-secrets", Outcome: "failed", Detail: "ls: cannot open directory: Permission denied"},
+		{Step: "list-run", Outcome: "refused", Detail: "no such directory in the sandbox"},
+	} {
+		if err := emptyListingError(s); err != nil {
+			t.Errorf("emptyListingError(%+v) = %v, want ok", s, err)
+		}
+	}
+	for _, s := range []takeoverStep{
+		{Step: "list-secrets", Outcome: "succeeded", Reply: "key"},
+		{Step: "list-secrets", Outcome: "failed", Detail: "ls: command not found"},
+		{Step: "list-run", Outcome: "failed"},
+		{Step: "list-run", Outcome: "pending"},
+		{Step: "list-run", Outcome: "unavailable", Detail: "no shell"},
+	} {
+		if err := emptyListingError(s); err == nil {
+			t.Errorf("emptyListingError(%+v) passed, want an error", s)
+		}
+	}
+}
+
+func TestTakeoverObservedOutcomeIsReported(t *testing.T) {
+	const status = "backend seatbelt\nungoverned: cookie-replay, delegated-execution\nsecret-read: refused"
+	exposed := []string{"cookie-replay", "delegated-execution"}
+	for _, s := range []takeoverStep{
+		{Step: "get-cookie", Outcome: "succeeded"},
+		{Step: "post-cookie", Outcome: "refused", Reply: "auth/untrusted-peer"},
+		{Step: "keychain-read", Outcome: "failed", Detail: "denied"},
+		{Step: "launchd", Outcome: "succeeded"},
+	} {
+		if err := observedError(s, status, exposed); err != nil {
+			t.Errorf("observedError(%+v) = %v, want ok", s, err)
+		}
+	}
+	for name, c := range map[string]struct {
+		s       takeoverStep
+		status  string
+		exposed []string
+		want    string
+	}{
+		"replay admitted, not exposed": {takeoverStep{Step: "get-cookie", Outcome: "succeeded"}, status, []string{"delegated-execution"}, "does not list cookie-replay"},
+		"replay not in status":         {takeoverStep{Step: "post-cookie", Outcome: "succeeded"}, "backend seatbelt", exposed, "does not show cookie-replay"},
+		"refused, not in status":       {takeoverStep{Step: "apple-event", Outcome: "refused", Detail: "denied"}, "backend seatbelt", nil, "does not show delegated-execution"},
+		"pending":                      {takeoverStep{Step: "launchd", Outcome: "pending"}, status, exposed, "observed to an end"},
+		"unavailable":                  {takeoverStep{Step: "get-cookie", Outcome: "unavailable"}, status, exposed, "observed to an end"},
+		"no class":                     {takeoverStep{Step: "debugger", Outcome: "succeeded"}, status, exposed, "no effect class"},
+	} {
+		if err := observedError(c.s, c.status, c.exposed); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: observedError = %v, want an error containing %q", name, err, c.want)
+		}
+	}
+}
+
+// TestShellTreeCleanupStopsDescendants starts a shell whose child keeps a
+// grandchild holding the output, lets the subtest end, and checks the cleanup
+// returned within its bound with every process of the tree gone.
+func TestShellTreeCleanupStopsDescendants(t *testing.T) {
+	echo := launcher.Build(t, filepath.Join(repositoryRoot(t), "src", "harness", "internal", "testkit", "launcher"), "./testdata/echo")
+	t.Setenv("DSH_TEST_ECHO", echo)
+	line := `"$DSH_TEST_ECHO" tree`
+	if runtime.GOOS == "windows" {
+		line = `%DSH_TEST_ECHO% tree`
+	}
+	var shellPID, grandchild int
+	var ended time.Time
+	t.Run("run", func(t *testing.T) {
+		h := startShellTree(t, line)
+		shellPID = h.Process.Pid()
+		for deadline := time.Now().Add(30 * time.Second); grandchild == 0; time.Sleep(50 * time.Millisecond) {
+			if n, err := strconv.Atoi(strings.TrimSpace(h.Stdout.String())); err == nil {
+				grandchild = n
+			} else if time.Now().After(deadline) {
+				t.Fatalf("no grandchild pid within 30s: %q %q", h.Stdout.String(), h.Stderr.String())
+			}
+		}
+		ended = time.Now()
+	})
+	if took := time.Since(ended); took > 3*launcher.Grace+time.Second {
+		t.Errorf("the cleanup took %s to stop the tree", took)
+	}
+	for _, pid := range []int{shellPID, grandchild} {
+		if !subprocesstest.Exited(pid) {
+			t.Errorf("pid %d survives the cleanup", pid)
+		}
 	}
 }
 

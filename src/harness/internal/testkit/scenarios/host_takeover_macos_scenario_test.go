@@ -24,9 +24,10 @@ import (
 // connection to the control socket are refused by the profile; the debugger cannot
 // attach; no reply holds a credential; the peer rule and the outcomes of the
 // cookie replay, the keychain read, the launchd job and the Apple Event are
-// recorded and shown by dsh sandbox status, and each that succeeds is listed as an
-// effect the backend does not govern, never as a pass. Under danger-full-access
-// the result is as in DH-E-HOST-7.
+// recorded and shown by dsh sandbox status under their effect class (cookie-replay,
+// secret-read, delegated-execution), and each that succeeds is listed in the
+// result as an effect the backend does not govern, never as a pass (observedError).
+// Under danger-full-access the result is as in DH-E-HOST-7.
 // Cleanup: as DH-E-HOST-7; DSH_SCENARIO_TAKEOVER_CLEANUP also removes the
 // submitted job and the keychain item, and logs their labels when it cannot.
 //
@@ -53,6 +54,9 @@ func TestModelCommandCannotBecomeOwnerMacOS(t *testing.T) {
 				for _, n := range []string{"get-cookie", "post-cookie", "keychain-read", "launchd", "apple-event"} {
 					s := r.step(t, n)
 					t.Logf("%s: %s ended %s: %s", r.mode, n, s.Outcome, s.Detail)
+					if err := observedError(s, r.status, r.shell.Confinement.Exposed); err != nil {
+						t.Errorf("%s: %v:\n%s", r.mode, err, r.status)
+					}
 				}
 				if r.peerRule == "" {
 					t.Errorf("%s: dsh sandbox status shows no peer rule:\n%s", r.mode, r.status)

@@ -16,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/launcher"
 )
 
 // TestNetworkListenerTLSPrefixAndRenewal is the DH-E-HOST-2 scenario
@@ -150,13 +152,15 @@ func TestNetworkListenerTLSPrefixAndRenewal(t *testing.T) {
 
 	// (5) Behind the prefix-stripping proxy every request stays under the prefix.
 	// The proxy's upstream is the bound listener, never the public URL the links
-	// carry (that is the proxy itself).
+	// carry (that is the proxy itself). The proxy runs in a tree of its own, which
+	// cleanup stops whole.
 	h = startWebHost(t, bin, root, nil, layer("on", proxyURL))
-	proxied := startShell(t, expand(proxy, map[string]string{"upstream": "https://" + addr}))
+	proxyLine := expand(proxy, map[string]string{"upstream": "https://" + addr})
+	proxied := startShellTree(t, proxyLine)
 	if !strings.HasPrefix(h.link, proxyURL+"/") {
 		t.Fatalf("(5) the host printed %s, want a link under %s", h.link, proxyURL)
 	}
-	awaitListening(t, proxyURL, proxied)
+	awaitListening(t, proxyURL, proxyLine, proxied)
 	s = step("open", h.link)
 	if s.Status != http.StatusOK || !strings.HasPrefix(s.URL, proxyURL+"/") {
 		t.Fatalf("(5) the link under the prefix ended at %s (%d), want a page under %s", s.URL, s.Status, proxyURL)
@@ -211,8 +215,8 @@ func prefixCoverageError(responses []browserResponse, prefix string) error {
 }
 
 // awaitListening waits up to a minute until rawURL's host and port accept a
-// connection, failing the scenario when the process r serving it exits first.
-func awaitListening(t *testing.T, rawURL string, r *running) {
+// connection, failing the scenario when the process p running line exits first.
+func awaitListening(t *testing.T, rawURL, line string, p *launcher.Host) {
 	t.Helper()
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -228,11 +232,11 @@ func awaitListening(t *testing.T, rawURL string, r *running) {
 			c.Close()
 			return
 		}
-		if r.exited() {
-			t.Fatalf("%s exited before %s listened:\n%s", r.line, hostPort, r.out)
+		if p.Await(0) {
+			t.Fatalf("%s exited before %s listened:\n%s%s", line, hostPort, p.Stdout.String(), p.Stderr.String())
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("nothing listens at %s within a minute of starting %s", hostPort, r.line)
+			t.Fatalf("nothing listens at %s within a minute of starting %s", hostPort, line)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}

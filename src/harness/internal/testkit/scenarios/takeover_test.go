@@ -91,13 +91,59 @@ func takeoverCommonSteps() []string {
 
 // takeoverEffects is the effect class of each step that is not a harness
 // interface: what a confined run must list as ungoverned when the step succeeds.
-// A step without a class here (proc-mem, debugger, ...) must name its own.
+// The cookie replay is a harness interface, classed here for the platforms that
+// report its outcome (observedError). A step without a class here (proc-mem,
+// debugger, ...) must name its own.
 var takeoverEffects = map[string]string{
 	"read-secrets": "secret-read", "keychain-read": "secret-read", "credential-manager": "secret-read",
 	"read-sessions": "harness-home", "list-secrets": "harness-home", "list-run": "harness-home",
 	"write-session": "harness-home", "write-layer": "harness-home",
 	"service-manager": "delegated-execution", "launchd": "delegated-execution", "scheduled-task": "delegated-execution",
 	"com-server": "delegated-execution", "apple-event": "delegated-execution",
+	"get-cookie": "cookie-replay", "post-cookie": "cookie-replay",
+}
+
+// emptyListing reports whether s is a listing of the home (list-secrets,
+// list-run) that succeeded and showed nothing: it exposed no part of the home.
+func emptyListing(s takeoverStep) bool {
+	return (s.Step == "list-secrets" || s.Step == "list-run") && s.Outcome == "succeeded" && strings.TrimSpace(s.Reply) == ""
+}
+
+// emptyListingError checks a listing the sandbox must keep empty: it completed
+// and showed nothing, or it was denied (denialError). A listing that showed an
+// entry, or that ended any other way (a broken fixture, a missing command), is
+// an error, never a pass.
+func emptyListingError(s takeoverStep) error {
+	if emptyListing(s) {
+		return nil
+	}
+	if s.Outcome == "succeeded" {
+		return fmt.Errorf("%s shows %q from the model's command, want it empty", s.Step, s.Reply)
+	}
+	if err := denialError(s); err != nil {
+		return fmt.Errorf("%s is neither an empty listing nor denied: %w", s.Step, err)
+	}
+	return nil
+}
+
+// observedError checks a step whose outcome the backend does not decide and
+// the product must report (DH-E-HOST-8: the cookie replay, the keychain read,
+// the launchd job, the Apple Event): it ran to an end (not pending or
+// unavailable), dsh sandbox status shows its effect class, and when it succeeded
+// the result lists that class among the exposed effects, never as a pass.
+func observedError(s takeoverStep, status string, exposed []string) error {
+	effect, ok := takeoverEffects[s.Step]
+	switch {
+	case !ok:
+		return fmt.Errorf("%s has no effect class to report it under", s.Step)
+	case s.Outcome != "succeeded" && s.Outcome != "refused" && s.Outcome != "failed":
+		return fmt.Errorf("%s ended %s (%s), want it observed to an end", s.Step, s.Outcome, s.Detail)
+	case !strings.Contains(status, effect):
+		return fmt.Errorf("%s ended %s, but dsh sandbox status does not show %s", s.Step, s.Outcome, effect)
+	case s.Outcome == "succeeded" && !slices.Contains(exposed, effect):
+		return fmt.Errorf("%s succeeded, but the result (exposed %v) does not list %s as ungoverned", s.Step, exposed, effect)
+	}
+	return nil
 }
 
 // takeoverPlatform is what one scenario adds to the shared run.
@@ -357,7 +403,8 @@ func harnessReply(step string) bool {
 // reported the confinement the mode asks for; no harness interface returned a
 // credential; confined, no write landed in the home and both home writes were
 // refused, each step that succeeded is listed as ungoverned under its effect
-// class (never a pass), the tool call left the approval pending for the person;
+// class (never a pass; a listing that succeeded empty exposed nothing), the tool
+// call left the approval pending for the person;
 // unconfined, whatever succeeded is logged as residual risk.
 func (r takeoverRun) common(t *testing.T) {
 	t.Helper()
@@ -386,7 +433,7 @@ func (r takeoverRun) common(t *testing.T) {
 	}
 	r.refused(t, "write-session", "write-layer")
 	for _, s := range r.steps {
-		if s.Outcome != "succeeded" || harnessReply(s.Step) {
+		if s.Outcome != "succeeded" || harnessReply(s.Step) || emptyListing(s) {
 			continue
 		}
 		if effect, err := stepEffect(s); err != nil {

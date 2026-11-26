@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/launcher"
 )
 
 // need returns the run-time input name, which an operator of the DH-S-18 run sets
@@ -97,6 +99,24 @@ func startShell(t *testing.T, line string) *running {
 	}()
 	t.Cleanup(func() { <-r.done })
 	return r
+}
+
+// startShellTree runs line through the platform shell in a process tree of its
+// own (launcher.Spawn), for a long-running command such as a server: at cleanup
+// the whole tree, every descendant included, is stopped within a bound, so a
+// child that outlives the shell can neither keep listening nor hold the output.
+func startShellTree(t *testing.T, line string) *launcher.Host {
+	t.Helper()
+	argv := []string{"sh", "-c", line}
+	if runtime.GOOS == "windows" {
+		argv = []string{"cmd", "/C", line}
+	}
+	path, err := exec.LookPath(argv[0])
+	if err != nil {
+		t.Fatalf("no shell to run %s: %v", line, err)
+	}
+	argv[0] = path
+	return launcher.Spawn(t, launcher.Program{Argv: argv})
 }
 
 // exited reports whether the command has exited.
