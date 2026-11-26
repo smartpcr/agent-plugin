@@ -3,9 +3,13 @@ package web_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -107,8 +111,9 @@ func (peer) Context() context.Context { return context.Background() }
 func (peer) FormToken() string        { return "" }
 
 // host loads host.listen on 127.0.0.1:0, an admit-all fake and host.web, and
-// returns the table and the listener's origin.
-func host(t *testing.T, r *cordis.Context) (*web.Routes, string) {
+// returns the table and the listener's origin. Each pause, if any, runs inside the
+// fake's authentication of every request, after the listener's stream decision.
+func host(t *testing.T, r *cordis.Context, pause ...func()) (*web.Routes, string) {
 	t.Helper()
 	lf, err := r.Use(listen.Component, listen.Config{Port: new(uint16(0))})
 	if err != nil {
@@ -120,6 +125,9 @@ func host(t *testing.T, r *cordis.Context) (*web.Routes, string) {
 	}
 	if _, err := load(t, r, "fake auth", func(ctx *cordis.Context) error {
 		_, err := listen.Authenticate.On(ctx, func(*cordis.Context, *listen.Credentials) (listen.Peer, bool, error) {
+			for _, p := range pause {
+				p()
+			}
 			return peer("p1"), true, nil
 		})
 		return err
@@ -278,5 +286,191 @@ func TestEffectHandleAndDispatch(t *testing.T) {
 	}
 	if got := routes.List(); len(got) != 1 || got[0].Name != "events" || !events.Alive() {
 		t.Fatalf("table %v, want events alone", got)
+	}
+}
+
+// The listener decides whether a request streams before it authenticates it. A Read
+// route replaced by a Stream route at the same path while a request is being
+// authenticated must not run the Stream handler under the old non-stream decision
+// (ungated, compressible): it is refused 503 before the handler runs. The next
+// request, decided over the new table, streams.
+//
+//dsh:test DH-T-API-1
+func TestStreamDecisionPinnedAcrossSwap(t *testing.T) {
+	r := root(t)
+	var armed atomic.Bool
+	entered, release := make(chan struct{}), make(chan struct{})
+	routes, origin := host(t, r, func() {
+		if armed.CompareAndSwap(true, false) {
+			close(entered)
+			<-release
+		}
+	})
+	read, err := load(t, r, "read route", func(ctx *cordis.Context) error {
+		_, err := routes.Handle(ctx, route("x.read", http.MethodGet, "/x", web.Read))
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ran := make(chan struct{}, 2)
+	c := client(t)
+	codes := make(chan int, 1)
+	armed.Store(true)
+	go func() {
+		resp, err := c.Get(origin + "/x")
+		if err != nil {
+			codes <- -1
+			return
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		codes <- resp.StatusCode
+	}()
+	<-entered // the listener has decided "not a stream" over the table holding x.read
+
+	read.Dispose()
+	if _, err := load(t, r, "stream route", func(ctx *cordis.Context) error {
+		_, err := routes.Handle(ctx, web.Route{Name: "x.stream", Method: http.MethodGet, Pattern: "/x", Effect: web.Stream,
+			Serve: http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				if s, ok := listen.Streaming(req.Context()); !ok || !s {
+					t.Errorf("stream handler ran with stream decision %v, %v", s, ok)
+				}
+				ran <- struct{}{}
+				io.WriteString(w, "stream")
+			})})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	if code := <-codes; code != http.StatusServiceUnavailable {
+		t.Fatalf("request decided over the old table: %d, want 503", code)
+	}
+	select {
+	case <-ran:
+		t.Fatal("the stream handler ran under a non-stream decision")
+	default:
+	}
+	if code, body := status(t, c, origin+"/x"); code != http.StatusOK || body != "stream" {
+		t.Fatalf("request over the new table: %d %q, want 200 stream", code, body)
+	}
+}
+
+// Concurrent registrations, dispatch and removals: a reader never sees a batch
+// partially published, of two conflicting registrations exactly one succeeds, and
+// an unrelated route keeps serving through every swap and cleanup.
+func TestConcurrentPublication(t *testing.T) {
+	r := root(t)
+	routes := web.New(web.Config{}, nil)
+	handle := func(name string, decls ...web.Route) (*cordis.Fiber, error) {
+		var herrs error
+		f, err := r.Apply(name, func(ctx *cordis.Context) error {
+			_, herrs = routes.Handle(ctx, decls...)
+			return herrs
+		})
+		if err != nil {
+			return nil, err
+		}
+		f.Wait()
+		return f, herrs
+	}
+	stable, err := handle("stable", route("stable", http.MethodGet, "/stable", web.Read))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stable.Dispose()
+
+	const batches, rounds, contested = 8, 15, 8
+	stop := make(chan struct{})
+	readerDone := make(chan struct{})
+	go func() {
+		defer close(readerDone)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			names := map[string]bool{}
+			for _, info := range routes.List() {
+				names[info.Name] = true
+			}
+			if !names["stable"] {
+				t.Error("the unrelated route left the table")
+				return
+			}
+			for i := range batches {
+				if a, b := names[fmt.Sprintf("b%d.a", i)], names[fmt.Sprintf("b%d.b", i)]; a != b {
+					t.Errorf("batch %d partially visible: a=%v b=%v", i, a, b)
+					return
+				}
+			}
+			rec := httptest.NewRecorder()
+			routes.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/stable", nil))
+			if rec.Code != http.StatusOK {
+				t.Errorf("GET /stable during swaps: %d", rec.Code)
+				return
+			}
+		}
+	}()
+
+	var wg sync.WaitGroup
+	for i := range batches {
+		wg.Go(func() {
+			for n := range rounds {
+				f, err := handle(fmt.Sprintf("batch %d/%d", i, n),
+					route(fmt.Sprintf("b%d.a", i), http.MethodGet, fmt.Sprintf("/b%d/a", i), web.Read),
+					route(fmt.Sprintf("b%d.b", i), http.MethodPost, fmt.Sprintf("/b%d/b", i), web.Change))
+				if err != nil {
+					t.Errorf("batch %d round %d: %v", i, n, err)
+					return
+				}
+				f.Dispose()
+			}
+		})
+	}
+	var won [contested]atomic.Int32
+	var keep sync.Mutex
+	var kept []*cordis.Fiber
+	for k := range contested {
+		for _, side := range []string{"x", "y"} {
+			wg.Go(func() {
+				f, err := handle(fmt.Sprintf("contest %d %s", k, side),
+					route(fmt.Sprintf("c%d.%s", k, side), http.MethodGet, fmt.Sprintf("/c%d", k), web.Read))
+				if err == nil {
+					won[k].Add(1)
+				} else if !herr.Has(err, web.ReasonTaken) {
+					t.Errorf("contest %d %s: %v, want %s", k, side, err, web.ReasonTaken)
+				}
+				if f != nil {
+					keep.Lock()
+					kept = append(kept, f)
+					keep.Unlock()
+				}
+			})
+		}
+	}
+	wg.Wait()
+	close(stop)
+	<-readerDone
+
+	for k := range contested {
+		if n := won[k].Load(); n != 1 {
+			t.Errorf("contest %d: %d registrations succeeded, want 1", k, n)
+		}
+	}
+	got := map[string]bool{}
+	for _, info := range routes.List() {
+		got[info.Name] = true
+	}
+	if len(got) != 1+contested || !got["stable"] {
+		t.Fatalf("table after the run %v, want stable and one route per contest", got)
+	}
+	for _, f := range kept {
+		f.Dispose()
+	}
+	if got := routes.List(); len(got) != 1 || got[0].Name != "stable" {
+		t.Fatalf("table after cleanup %v, want stable alone", got)
 	}
 }

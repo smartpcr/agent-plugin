@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/host/listen"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
 )
 
@@ -326,7 +327,8 @@ func (r *Routes) List() []Info {
 	return out
 }
 
-// ServeHTTP dispatches req over the current table.
+// ServeHTTP dispatches req over the current table, loaded once: the match and the
+// handler come from one generation.
 func (r *Routes) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	r.table.Load().mux.ServeHTTP(w, req)
 }
@@ -342,7 +344,19 @@ func (r *Routes) Streams(req *http.Request) bool {
 
 // ServeHTTP runs the route's handler with a context that also ends when the route's
 // owner unloads. A request dispatched over a table its route has just left is 404.
+// The listener decides whether a request streams (gated on Ready, never compressed)
+// over the table generation it saw before admission; the table may be swapped while
+// the request is admitted. A Stream route reached by a request the listener did not
+// treat as a stream is refused 503 before its handler runs, so no stream handler
+// runs ungated or compressed. The opposite mismatch only gates a Read route more
+// strictly and is served.
 func (e *entry) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	if e.route.Effect == Stream {
+		if stream, ok := listen.Streaming(req.Context()); ok && !stream {
+			http.Error(w, "the route changed; retry", http.StatusServiceUnavailable)
+			return
+		}
+	}
 	g := e.group
 	if !g.enter() {
 		http.NotFound(w, req)
