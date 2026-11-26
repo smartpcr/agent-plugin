@@ -27,3 +27,4 @@ agent-preset/selected 0->1 sha256:6b024067f8a794ab6532228c551518ba9414063de669c6
 workspace-root/change 0->1 sha256:681441d534deb9bbd0842f831092d6b5445cab46b5a0acd22cf802a06a4aa0e5 initial shape
 sandbox/mode 0->1 sha256:4592ef1a6a2674693a6a6cd2187a84e08df4594f7b6f7e67f957e9168b706ede initial shape (impl.md 12.3, DH-D-SANDBOX-1)
 permission/preset 0->1 sha256:813633789afa8b20e0622b99e4cda5debd663a1790bbd3a92a27092dde028c5b initial shape: a session's permission preset selection and the pair it implies (impl.md 12.4, DH-D-HUMAN-4)
+agent/inbox/spliced 1->1 sha256:1d47a2697f7c7fcf9a2dc28f7a9f0572622d864e1cc072d82ea2a215eccd85f3 compatible: inserted items gained the optional client (omitzero) and timeZone (omitempty) and their source the optional client (#169, Approval and Question Answerer); an older binary's decoder ignores the unknown fields, and a record without them has no client and no zone
