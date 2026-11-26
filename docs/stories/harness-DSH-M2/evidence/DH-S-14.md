@@ -232,7 +232,14 @@ That line came in with the merge of `origin/main` (#146, `fbbb14a`, Workspace In
 a 1 ms retry loop in a fenced-filesystem rename race test, which this record's diff does not touch, so
 under the unrelated-failure rule it is recorded and raised (question `dh-s-14-fslocal-nosleep`), not
 changed here. The staticcheck fixes are not reached on this lane at `b792aec`. The Windows lane at
-`b792aec` was still running when this was written. Gates 3 to 13, coverage included, did not run on WSL.
+`b792aec` finished:
+[`win-b792aec-20261126T0053Z.txt`](../../harness-DSH-M1/evidence/runs/win-b792aec-20261126T0053Z.txt)
+(sha256 `5c7e3e6b2d91c879cbdca5b2cfaca3abe5f492938f9a9711eb28da0e51891dc4`, exit 1). It passes gate 1
+(`PASS gofmt`) and stops at gate 2, `harness-gate: FAIL vet`, on the same finding
+(`internal\world\fs\local\local_test.go:309:77: time.Sleep in a test file ... (QG-4)`) with the same three
+tag sets. `main` still carries that line, and no open PR changes it. Gates 3 to 13, coverage included,
+did not run on either lane. The lane worktree `E:\tmp\s14-lane-b792aec` and the WSL clone
+`~/s14-lane-b792aec` were removed after their records were copied.
 
 **Record check.** `harness-gate ready --stage DH-S-14 --built` on this record (status line
 `open`), run on the working tree that carries the operator acceptance above: exit 0,
@@ -287,9 +294,9 @@ It then fails gate 3, staticcheck SA1019 on `landlock.NewConfig` in
 `internal/world/sandbox/launch/confine_linux.go:62` (Results; question
 `dh-s-14-landlock-staticcheck`). The Windows lane at `d26bb4b` fails gate 3 too, U1000 in `bus.go`.
 Both are fixed on this branch (Results, SA1019 fix and Windows U1000 fix), approved by the operator.
-The WSL lane at `b792aec` fails gate 2 on a `time.Sleep` that came in from `origin/main`
-(`internal/world/fs/local/local_test.go:309`, #146; question `dh-s-14-fslocal-nosleep`); the
-Windows lane at `b792aec` is to be recorded. Both lanes must
+The lanes at `b792aec` fail gate 2, both of them, on a `time.Sleep` that came in from `origin/main`
+(`internal/world/fs/local/local_test.go:309`, #146; question `dh-s-14-fslocal-nosleep`, awaiting
+the operator). Both lanes must
 pass on the final commit, with their exits, run records and coverage recorded here.
 Closed: the gofmt blocker (formatted on this branch, question `dh-s-14-gofmt-lane-blocker`), the
 nosleep blocker (question `dh-s-14-nosleep-lane-blocker`, fix kept) and the
