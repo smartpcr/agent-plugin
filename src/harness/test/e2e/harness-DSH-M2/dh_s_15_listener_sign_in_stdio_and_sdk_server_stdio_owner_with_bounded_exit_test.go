@@ -126,6 +126,7 @@ type sobeWorld struct {
 	writer   *stdio.Writer
 	pipeR    *io.PipeReader
 	writeErr error
+	deadline time.Duration
 	stopMu   sync.Mutex
 	stops    []sobeStopCall
 }
@@ -229,8 +230,9 @@ func (w *sobeWorld) logHolds(s string) error {
 func (w *sobeWorld) boundedWriterOverStalledPipe(ms int) error {
 	pr, pw := io.Pipe()
 	w.pipeR = pr
+	w.deadline = time.Duration(ms) * time.Millisecond
 	w.cleanups = append(w.cleanups, func() { _ = pr.Close() })
-	w.writer = stdio.NewWriter(pw, time.Duration(ms)*time.Millisecond, func(r launch.Reason, status int) {
+	w.writer = stdio.NewWriter(pw, w.deadline, func(r launch.Reason, status int) {
 		w.stopMu.Lock()
 		defer w.stopMu.Unlock()
 		w.stops = append(w.stops, sobeStopCall{r, status})
@@ -238,24 +240,45 @@ func (w *sobeWorld) boundedWriterOverStalledPipe(ms int) error {
 	return nil
 }
 
-func (w *sobeWorld) writeAttemptedUntilDeadline() error {
+// sobeWriteSlack bounds how late a stalled write may return after its deadline.
+const sobeWriteSlack = 2 * time.Second
+
+// sobeBoundedWrite runs one write in a goroutine and waits at most limit for it.
+func (w *sobeWorld) sobeBoundedWrite(limit time.Duration) (time.Duration, bool, error) {
 	done := make(chan error, 1)
+	start := time.Now()
 	go func() {
 		_, err := w.writer.Write([]byte("{}\n"))
 		done <- err
 	}()
 	select {
-	case w.writeErr = <-done:
-	case <-time.After(sobeExitWait):
-		return errors.New("the bounded write did not return after its deadline")
+	case err := <-done:
+		return time.Since(start), true, err
+	case <-time.After(limit):
+		return time.Since(start), false, nil
 	}
-	// A second write after the stall must also fail and must not ask stop again.
-	if _, err := w.writer.Write([]byte("{}\n")); !herr.Has(err, stdio.ReasonClientStalled) {
+}
+
+func (w *sobeWorld) writeAttemptedUntilDeadline() error {
+	limit := w.deadline + sobeWriteSlack
+	elapsed, ok, err := w.sobeBoundedWrite(limit)
+	if !ok {
+		return fmt.Errorf("the bounded write did not return within %v of its %v deadline", sobeWriteSlack, w.deadline)
+	}
+	w.writeErr = err
+	if elapsed < w.deadline {
+		return fmt.Errorf("the stalled write returned after %v, before its %v deadline", elapsed, w.deadline)
+	}
+	// A second write after the stall must also fail promptly and must not ask stop again.
+	_, ok, err = w.sobeBoundedWrite(limit)
+	if !ok {
+		return fmt.Errorf("the write after the stall did not return within %v", limit)
+	}
+	if !herr.Has(err, stdio.ReasonClientStalled) {
 		return fmt.Errorf("write after the stall: %v, want %s", err, stdio.ReasonClientStalled)
 	}
 	return nil
 }
-
 func (w *sobeWorld) writerReportsClientStalled() error {
 	if !herr.Has(w.writeErr, stdio.ReasonClientStalled) {
 		return fmt.Errorf("stalled write: %v, want %s", w.writeErr, stdio.ReasonClientStalled)
