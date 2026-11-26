@@ -100,6 +100,15 @@ type rig struct {
 
 func newRig(t *testing.T, shells *shellexec.Registry, mode sandbox.Mode) *rig {
 	t.Helper()
+	return newRigMounted(t, shells, mode, func(root *cordis.Context, svc htools.Service, deps shelltools.Deps) error {
+		_, err := shelltools.Mount(root, svc, deps, shelltools.OneShotConfig{})
+		return err
+	})
+}
+
+// newRigMounted is newRig with the tools registered by mount.
+func newRigMounted(t *testing.T, shells *shellexec.Registry, mode sandbox.Mode, mount func(*cordis.Context, htools.Service, shelltools.Deps) error) *rig {
+	t.Helper()
 	root := cordis.New()
 	root.Loggers().ClearExporters()
 	root.Loggers().AddExporter(&cordis.MemoryExporter{})
@@ -135,7 +144,7 @@ func newRig(t *testing.T, shells *shellexec.Registry, mode sandbox.Mode) *rig {
 	t.Cleanup(func() { _ = st.Close(context.Background()) })
 	wd := dirs{t.TempDir()}
 	deps := shelltools.Deps{Shells: shells, Resolver: &sandboxtest.Resolver{Default: mode, Workdir: wd}, Workdir: wd}
-	if _, err := shelltools.Mount(root, svc, deps, shelltools.OneShotConfig{}); err != nil {
+	if err := mount(root, svc, deps); err != nil {
 		t.Fatal(err)
 	}
 	return &rig{t: t, root: root, svc: svc, st: st}
