@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/fs"
@@ -226,5 +227,143 @@ func restore(dir, keep string) {
 	}
 	if fi, err := os.Lstat(keep); err == nil && fi.IsDir() {
 		_ = os.RemoveAll(keep)
+	}
+}
+
+// TestOpenBoundedWithinNeverReadsOutside: R/sub is a link to the outside
+// directory O. A bounded read within R of R/sub/AGENTS.md is refused with
+// fs/sandbox-denied at the open, with no reader, while the same read without
+// within yields O's bytes; a link that stays inside R is followed.
+//
+//dsh:test DH-T-CONTEXT-6
+func TestOpenBoundedWithinNeverReadsOutside(t *testing.T) {
+	ctx := context.Background()
+	tmp := t.TempDir()
+	r, o := filepath.Join(tmp, "R"), filepath.Join(tmp, "O")
+	for _, d := range []string{filepath.Join(r, "real"), o} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for p, text := range map[string]string{filepath.Join(o, "AGENTS.md"): "OUTSIDE", filepath.Join(r, "real", "AGENTS.md"): "inside"} {
+		if err := os.WriteFile(p, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for link, target := range map[string]string{filepath.Join(r, "sub"): o, filepath.Join(r, "in"): filepath.Join(r, "real")} {
+		if _, err := makeLink(target, link); err != nil {
+			t.Fatalf("cannot make a directory link on this lane: %v", err)
+		}
+	}
+	seam := local.New()
+	out := fs.Ref{Path: filepath.Join(r, "sub", "AGENTS.md")}
+	rc, _, err := seam.OpenBounded(ctx, out, r, 64)
+	if herr.Kind(err) != fs.CodeSandboxDenied || rc != nil {
+		t.Fatalf("a link outside the root: reader=%v err=%v, want fs/sandbox-denied", rc != nil, err)
+	}
+	if rc, _, err := seam.OpenBounded(ctx, fs.Ref{Path: filepath.Join(o, "AGENTS.md")}, r, 64); herr.Kind(err) != fs.CodeSandboxDenied || rc != nil {
+		t.Fatalf("a path outside the root: reader=%v err=%v, want fs/sandbox-denied", rc != nil, err)
+	}
+	if rc, _, err = seam.OpenBounded(ctx, out, "", 64); err != nil {
+		t.Fatalf("an unfenced read: %v", err)
+	} else if b, _ := io.ReadAll(rc); string(b) != "OUTSIDE" {
+		t.Fatalf("an unfenced read yields %q", b)
+	}
+	rc, in, err := seam.OpenBounded(ctx, fs.Ref{Path: filepath.Join(r, "in", "AGENTS.md")}, r, 64)
+	if err != nil {
+		t.Fatalf("a link inside the root: %v", err)
+	}
+	defer rc.Close()
+	if b, _ := io.ReadAll(rc); string(b) != "inside" || !in.Version.HasDigest || in.Size != 6 {
+		t.Fatalf("a link inside the root: %q %+v", b, in)
+	}
+}
+
+// TestBoundedReadHoldsThroughASwappedLink: while R/sub is swapped, over and
+// over, between a real directory and a link to the outside directory O, every
+// bounded read within R of R/sub/AGENTS.md yields R's bytes or fails (refused
+// with fs/sandbox-denied, or the name caught mid-swap); O's bytes are never
+// returned, the retarget between a Stat and the open that discovery races.
+//
+//dsh:test DH-T-CONTEXT-6
+func TestBoundedReadHoldsThroughASwappedLink(t *testing.T) {
+	const swaps = 50
+	ctx := context.Background()
+	tmp := t.TempDir()
+	r, o := filepath.Join(tmp, "R"), filepath.Join(tmp, "O")
+	sub := filepath.Join(r, "sub")
+	for _, d := range []string{sub, o} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for p, text := range map[string]string{filepath.Join(o, "AGENTS.md"): "OUTSIDE", filepath.Join(sub, "AGENTS.md"): "inside"} {
+		if err := os.WriteFile(p, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	keep := filepath.Join(r, "sub.keep")
+	// back renames keep to sub, retrying while a read holds either name and
+	// clearing a link or empty directory a failed makeLink left at sub.
+	back := func(sub, keep string) {
+		for end := time.Now().Add(30 * time.Second); os.Rename(keep, sub) != nil; time.Sleep(time.Millisecond) {
+			if time.Now().After(end) {
+				panic("cannot restore R/sub")
+			}
+			if _, err := os.Lstat(sub); err == nil {
+				_ = os.Remove(sub)
+			}
+		}
+	}
+	var done atomic.Bool
+	var linked int
+	var wg sync.WaitGroup
+	t.Cleanup(wg.Wait)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer done.Store(true)
+		for attempt := 0; linked < swaps && attempt < 500*swaps; attempt++ {
+			if os.Rename(sub, keep) != nil {
+				continue
+			}
+			if _, err := makeLink(o, sub); err != nil {
+				back(sub, keep)
+				continue
+			}
+			linked++
+			for j := 0; os.Remove(sub) != nil; j++ {
+				if j == 10000 {
+					panic("cannot remove the link R/sub")
+				}
+			}
+			back(sub, keep)
+		}
+	}()
+	seam := local.New()
+	ref := fs.Ref{Path: filepath.Join(sub, "AGENTS.md")}
+	counts := map[string]int{}
+	for i := 0; !done.Load() || i == 0; i++ {
+		rc, _, err := seam.OpenBounded(ctx, ref, r, 64)
+		switch code := herr.Kind(err); {
+		case err == nil:
+			b, _ := io.ReadAll(rc)
+			_ = rc.Close()
+			if string(b) != "inside" {
+				t.Fatalf("read %d yields %q: bytes from outside the root", i, b)
+			}
+			counts["read"]++
+		case code == fs.CodeSandboxDenied:
+			counts["sandbox-denied"]++
+		default:
+			// A name caught mid-swap: missing, not yet a directory, a link
+			// being made, or held by the rename.
+			counts[string(code)]++
+		}
+	}
+	wg.Wait()
+	t.Logf("swaps=%d linked=%d reads=%v", swaps, linked, counts)
+	if linked < swaps {
+		t.Fatalf("the swapper made only %d of %d links; the race was not fully exercised", linked, swaps)
 	}
 }

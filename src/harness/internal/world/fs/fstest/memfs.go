@@ -268,6 +268,41 @@ func (m *MemFS) Open(ctx context.Context, r fs.Ref) (io.ReadCloser, fs.Info, err
 	return io.NopCloser(bytes.NewReader(slices.Clone(n.data))), info(p, n, true), nil
 }
 
+// OpenBounded implements fs.BoundedOpener: it copies at most limit bytes, and
+// hashes the content only when it copies all of it. The resolution, the fence
+// and the copy happen under one lock, so nothing retargets the file between.
+func (m *MemFS) OpenBounded(ctx context.Context, r fs.Ref, within string, limit int64) (io.ReadCloser, fs.Info, error) {
+	if limit < 0 {
+		return nil, fs.Info{}, herr.Newf(fs.CodeInvalidPath, "OpenBounded: the limit %d is negative", limit)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, n, err := m.lookup(ctx, r)
+	if err != nil {
+		return nil, fs.Info{}, err
+	}
+	if within != "" {
+		w, err := m.resolve(filepath.Clean(within), false)
+		if err != nil {
+			return nil, fs.Info{}, err
+		}
+		if !fs.Within(w, p) {
+			return nil, fs.Info{}, herr.Newf(fs.CodeSandboxDenied, "%s resolves to %s, outside %s", r.Path, p, within)
+		}
+	}
+	if n == nil {
+		return nil, fs.Info{}, herr.Newf(fs.CodeNotFound, "%s does not exist", p)
+	}
+	if n.typ != fs.TypeFile {
+		return nil, fs.Info{}, herr.Newf(fs.CodeNotRegularFile, "%s is a %s", p, n.typ)
+	}
+	if int64(len(n.data)) <= limit {
+		return io.NopCloser(bytes.NewReader(slices.Clone(n.data))), info(p, n, true), nil
+	}
+	// Only the prefix is copied: metadata only, the whole content is not hashed.
+	return io.NopCloser(bytes.NewReader(slices.Clone(n.data[:limit]))), info(p, n, false), nil
+}
+
 // ReadDir implements fs.FS.
 func (m *MemFS) ReadDir(ctx context.Context, r fs.Ref, limit int) ([]fs.DirEntry, bool, error) {
 	m.mu.Lock()
