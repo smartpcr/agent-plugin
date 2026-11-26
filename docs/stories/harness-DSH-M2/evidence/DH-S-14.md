@@ -215,9 +215,24 @@ Checks of both fixes:
 - Windows: `go vet` of `./internal/world/sandbox/...` and `staticcheck@v0.8.2 ./...` on
   `src/harness` pass with both tag sets, and `go test ./internal/world/sandbox/...` passes.
 
-Both lanes run once on the commit that carries both fixes. The WSL lane is also run at `660f158`,
-the commit that carries the struct literal but not the move (the move changes nothing on Linux),
-to reach gates 4 to 13 early.
+Both lanes run once on the commit that carries both fixes. An early WSL run at `660f158` (struct
+literal only) was stopped after gate 4 (`PASS gofmt`, `PASS vet`, `PASS staticcheck`, `PASS modules`)
+once `b792aec` superseded it; no record was kept. The operator approved both sandbox changes as made
+(question `dh-s-14-sandbox-review`).
+
+**Lanes at `b792aec`** (iter-7 commit `26f8c41` merged with `origin/main`). WSL lane finished:
+[`wsl-b792aec-20261126T0054Z.txt`](../../harness-DSH-M1/evidence/runs/wsl-b792aec-20261126T0054Z.txt)
+(sha256 `6a9d0861b03011c6cc82db8ee528c474ea3ca2fef444db82a6edce0cfb7de5fd`, exit 1) and
+[`wsl-b792aec-20261126T0054Z-rehearse.txt`](../../harness-DSH-M1/evidence/runs/wsl-b792aec-20261126T0054Z-rehearse.txt)
+(sha256 `67ba961c0da38e7a255b201a9f68b0179a80199cfe6417ddcf8fbcbc02cf2d3a`, exit 0). It passes gate 1
+(`PASS gofmt`) and stops at gate 2, `harness-gate: FAIL vet`. The own analyzers flag one
+finding, with `-tags=`, `-tags=replay,scenario,bench` and `-tags=e2e`:
+`internal/world/fs/local/local_test.go:309:77: time.Sleep in a test file: wait on virtual time (testing/synctest) or an explicit signal (QG-4)`.
+That line came in with the merge of `origin/main` (#146, `fbbb14a`, Workspace Instruction Files). It is
+a 1 ms retry loop in a fenced-filesystem rename race test, which this record's diff does not touch, so
+under the unrelated-failure rule it is recorded and raised (question `dh-s-14-fslocal-nosleep`), not
+changed here. The staticcheck fixes are not reached on this lane at `b792aec`. The Windows lane at
+`b792aec` was still running when this was written. Gates 3 to 13, coverage included, did not run on WSL.
 
 **Record check.** `harness-gate ready --stage DH-S-14 --built` on this record (status line
 `open`), run on the working tree that carries the operator acceptance above: exit 0,
@@ -271,8 +286,10 @@ Results). The three waits are replaced on this branch, and the WSL lane at `d26b
 It then fails gate 3, staticcheck SA1019 on `landlock.NewConfig` in
 `internal/world/sandbox/launch/confine_linux.go:62` (Results; question
 `dh-s-14-landlock-staticcheck`). The Windows lane at `d26bb4b` fails gate 3 too, U1000 in `bus.go`.
-Both are fixed on this branch (Results, SA1019 fix and Windows U1000 fix), pending human review.
-Both lanes are to be run on the commit that carries both fixes. Both lanes must
+Both are fixed on this branch (Results, SA1019 fix and Windows U1000 fix), approved by the operator.
+The WSL lane at `b792aec` fails gate 2 on a `time.Sleep` that came in from `origin/main`
+(`internal/world/fs/local/local_test.go:309`, #146; question `dh-s-14-fslocal-nosleep`); the
+Windows lane at `b792aec` is to be recorded. Both lanes must
 pass on the final commit, with their exits, run records and coverage recorded here.
 Closed: the gofmt blocker (formatted on this branch, question `dh-s-14-gofmt-lane-blocker`), the
 nosleep blocker (question `dh-s-14-nosleep-lane-blocker`, fix kept) and the
