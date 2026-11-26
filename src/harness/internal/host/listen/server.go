@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,6 +34,10 @@ type Config struct {
 	// TrustedHosts are the further names a browser may use for this host; one that is
 	// not loopback makes the listener remote. The Host check itself is DH-D-HOST-2's.
 	TrustedHosts []string `json:"trustedHosts,omitempty"`
+	// AllowedPeers are the sources, besides loopback, a connection may come from:
+	// each an IP literal or a CIDR prefix. A connection from any other source is
+	// refused 403 before its request is read further (DH-D-HOST-2).
+	AllowedPeers []string `json:"allowedPeers,omitempty"`
 	// PublicURL is the address a proxy publishes this host under; set, it is remote.
 	PublicURL   string      `json:"publicURL,omitempty"`
 	Compression Compression `json:"compression,omitzero"`
@@ -150,6 +155,11 @@ type Server struct {
 	grace  time.Duration
 	ready  <-chan struct{}
 
+	peers   []netip.Prefix // AllowedPeers
+	trusted []string       // TrustedHosts
+	public  string         // PublicURL's origin, or ""
+	csrf    *http.CrossOriginProtection
+
 	mu     sync.Mutex
 	mounts atomic.Pointer[[]*Mount]
 
@@ -187,7 +197,12 @@ func Start(ctx *cordis.Context, cfg Config, ready <-chan struct{}) (*Server, err
 	if err != nil {
 		return nil, err
 	}
+	peers, err := parsePeers(cfg.AllowedPeers)
+	if err != nil {
+		return nil, err
+	}
 	s := &Server{ctx: ctx, secure: cfg.TLS.CertFile != "", ready: ready, grace: orDefault(cfg.ShutdownGrace, DefaultShutdownGrace),
+		peers: peers, trusted: cfg.TrustedHosts, public: publicOrigin(cfg.PublicURL), csrf: http.NewCrossOriginProtection(),
 		gzip: gz, hijacked: map[*hijackedConn]struct{}{}, served: make(chan struct{}), done: make(chan struct{})}
 	if cfg.remote() {
 		s.mode = Remote
@@ -211,6 +226,7 @@ func Start(ctx *cordis.Context, cfg Config, ready <-chan struct{}) (*Server, err
 		IdleTimeout:       orDefault(cfg.IdleTimeout, DefaultIdleTimeout),
 		MaxHeaderBytes:    cfg.MaxHeaderBytes,
 		BaseContext:       func(net.Listener) context.Context { return base },
+		ConnContext:       s.connContext,
 	}
 	if s.http.MaxHeaderBytes == 0 {
 		s.http.MaxHeaderBytes = DefaultMaxHeaderBytes
@@ -235,8 +251,11 @@ func Start(ctx *cordis.Context, cfg Config, ready <-chan struct{}) (*Server, err
 		s.bound = netip.AddrPortFrom(ap.Addr(), uint16(a.Port))
 	}
 	ln = tcp
+	if wrapAccepted != nil {
+		ln = wrapAccepted(ln)
+	}
 	if s.secure {
-		ln = tls.NewListener(tcp, s.http.TLSConfig)
+		ln = tls.NewListener(ln, s.http.TLSConfig)
 	}
 	go func() {
 		defer close(s.served)
@@ -253,6 +272,19 @@ func orDefault[T comparable](v, def T) T {
 		return def
 	}
 	return v
+}
+
+// wrapAccepted, when set, wraps the TCP listener before TLS. Only tests set it, to
+// present a connection from a source the loopback test machine cannot dial from.
+var wrapAccepted func(net.Listener) net.Listener
+
+// publicOrigin is the scheme and authority of a PublicURL, or "".
+func publicOrigin(raw string) string {
+	u, err := url.Parse(raw)
+	if raw == "" || err != nil || u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+	return strings.ToLower(u.Scheme) + "://" + u.Host
 }
 
 // Addr is the bound address: the parsed address with the port the system chose.
@@ -315,6 +347,23 @@ func (s *Server) Mount(owner *cordis.Context, m Mount) error {
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.enter()
 	defer s.leave()
+	if !fromAllowedSource(r) {
+		refuse(w, http.StatusForbidden, ReasonSource)
+		return
+	}
+	if !s.hostAllowed(r.Host) {
+		refuse(w, http.StatusForbidden, ReasonHost)
+		return
+	}
+	token, bad := tokenParameter(r)
+	if bad {
+		refuse(w, http.StatusBadRequest, ReasonTokenParameter)
+		return
+	}
+	if token != "" {
+		s.exchange(w, r, token)
+		return
+	}
 	m := longest(*s.mounts.Load(), r.URL.Path)
 	if m == nil {
 		http.NotFound(w, r)
@@ -328,20 +377,24 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
+	if class != Callback && !s.originAllowed(r) {
+		refuse(w, http.StatusForbidden, ReasonOrigin)
+		return
+	}
 	stream := streams(m, r)
 	if stream && !closed(s.ready) {
 		http.Error(w, "starting", http.StatusServiceUnavailable)
 		return
 	}
 	if class == Required {
-		peer, ok, err := Authenticate.Bail(s.ctx, &Credentials{Request: r})
+		peer, ok, err := Authenticate.Bail(s.ctx, s.credentials(r, ""))
 		if err != nil {
 			s.ctx.Logger().Errorf("listen: authenticate %s: %v", m.Prefix, err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
 		if !ok || peer == nil {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			refuse(w, http.StatusUnauthorized, ReasonUnauthorized)
 			return
 		}
 		r = r.WithContext(context.WithValue(r.Context(), peerKey{}, peer))
@@ -351,6 +404,39 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h = s.gzip(keepNoTransform(h))
 	}
 	s.serve(&trackedWriter{ResponseWriter: w, s: s}, r, m, h)
+}
+
+// credentials is what the two bail keys are asked with.
+func (s *Server) credentials(r *http.Request, token string) *Credentials {
+	return &Credentials{Request: r, Token: token, Audience: s.Origin(), Secure: s.secure}
+}
+
+// exchange is `GET /?token=`: it passes the origin check like any other request,
+// then asks listen/exchange. An answer is a 303 to "./" that sets its cookies and
+// leaves no trace of the URL in caches or referrers; no answer is 401. The token is
+// never logged.
+func (s *Server) exchange(w http.ResponseWriter, r *http.Request, token string) {
+	if !s.originAllowed(r) {
+		refuse(w, http.StatusForbidden, ReasonOrigin)
+		return
+	}
+	cookies, ok, err := Exchange.Bail(s.ctx, s.credentials(r, token))
+	if err != nil {
+		s.ctx.Logger().Errorf("listen: launch exchange: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	if !ok || len(cookies) == 0 {
+		refuse(w, http.StatusUnauthorized, ReasonUnauthorized)
+		return
+	}
+	for _, c := range cookies {
+		http.SetCookie(w, c)
+	}
+	w.Header().Set("Location", "./")
+	w.WriteHeader(http.StatusSeeOther)
 }
 
 // serve calls the handler; a panic is a server fault, answered 500 and logged.
