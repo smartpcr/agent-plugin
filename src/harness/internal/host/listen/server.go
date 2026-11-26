@@ -339,7 +339,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	var h http.Handler = m.Serve
 	if s.gzip != nil && !stream && !m.Uncompressed && r.Header.Get("Range") == "" {
-		h = s.gzip(h)
+		h = s.gzip(keepNoTransform(h))
 	}
 	s.serve(&trackedWriter{ResponseWriter: w, s: s}, r, m, h)
 }
@@ -367,19 +367,78 @@ func closed(ch <-chan struct{}) bool {
 	}
 }
 
-// closeWait is how long Close waits, after closing what remains, for handlers to
-// return when the grace period is already spent.
-const closeWait = 250 * time.Millisecond
+// keepNoTransform runs inside the gzip wrapper: a response whose Cache-Control
+// carries no-transform is marked so gzhttp leaves it as written
+// (DH-LIB-COMPRESSION-R3). gzhttp decides when the headers are committed, so the mark
+// is set on the handler's first WriteHeader, Write or Flush.
+func keepNoTransform(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.ServeHTTP(&noTransformWriter{ResponseWriter: w}, r)
+	})
+}
+
+type noTransformWriter struct {
+	http.ResponseWriter
+	checked bool
+}
+
+func (n *noTransformWriter) check() {
+	if n.checked {
+		return
+	}
+	n.checked = true
+	if noTransform(n.Header()) {
+		n.Header().Set(gzhttp.HeaderNoCompression, "1")
+	}
+}
+
+func (n *noTransformWriter) WriteHeader(code int) { n.check(); n.ResponseWriter.WriteHeader(code) }
+
+func (n *noTransformWriter) Write(b []byte) (int, error) { n.check(); return n.ResponseWriter.Write(b) }
+
+func (n *noTransformWriter) Flush() {
+	n.check()
+	if f, ok := n.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (n *noTransformWriter) Unwrap() http.ResponseWriter { return n.ResponseWriter }
+
+// noTransform reports whether any Cache-Control directive, over every header line
+// and comma-separated list, is no-transform.
+func noTransform(h http.Header) bool {
+	for _, line := range h.Values("Cache-Control") {
+		for d := range strings.SplitSeq(line, ",") {
+			if strings.EqualFold(strings.TrimSpace(d), "no-transform") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// closeBudget splits the grace period of Close into its phases so that the whole
+// unload ends inside it: Shutdown gets the grace less forceShare, forced closing and
+// the wait for handlers end returnShare before the grace ends, and that last share
+// is left for Close itself to return.
+func closeBudget(grace time.Duration) (shutdown, handlers time.Duration) {
+	forceShare := min(grace/4, 250*time.Millisecond)
+	returnShare := min(grace/10, 100*time.Millisecond)
+	return grace - forceShare, grace - returnShare
+}
 
 // Close is unload (sec. 6.3): stop accepting, close Done so Stream handlers return,
-// Shutdown within the grace period, then close what remains -- every connection,
-// hijacked ones included -- and wait, bounded, for the handlers to return.
+// Shutdown, then close what remains -- every connection, hijacked ones included --
+// and wait for the handlers to return. Every phase ends inside one grace period; a
+// handler still running when it ends is logged and left behind.
 func (s *Server) Close() error {
 	var err error
 	s.closeOnce.Do(func() {
 		close(s.done)
-		deadline := time.Now().Add(s.grace)
-		ctx, cancel := context.WithDeadline(context.Background(), deadline)
+		began := time.Now()
+		shutdownBy, handlersBy := closeBudget(s.grace)
+		ctx, cancel := context.WithDeadline(context.Background(), began.Add(shutdownBy))
 		defer cancel()
 		if shutdownErr := s.http.Shutdown(ctx); shutdownErr != nil && !errors.Is(shutdownErr, context.DeadlineExceeded) {
 			err = shutdownErr
@@ -391,15 +450,18 @@ func (s *Server) Close() error {
 		if closeErr := s.closeHijacked(); closeErr != nil && err == nil {
 			err = closeErr
 		}
-		wait := max(time.Until(deadline), closeWait)
-		timer := time.NewTimer(wait)
+		timer := time.NewTimer(time.Until(began.Add(handlersBy)))
 		defer timer.Stop()
 		select {
 		case <-s.idle():
 		case <-timer.C:
-			s.ctx.Logger().Errorf("listen: handlers still running %s after their connections closed", wait)
+			s.ctx.Logger().Errorf("listen: handlers still running when the %s grace period ended", s.grace)
+			return
 		}
-		<-s.served
+		select {
+		case <-s.served:
+		case <-timer.C:
+		}
 	})
 	return err
 }

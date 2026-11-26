@@ -140,6 +140,92 @@ func isTimeout(err error) bool {
 	return ok && ne.Timeout()
 }
 
+// A handler that ignores Done and its closed connection, beside a hijacked socket
+// whose handler does the same, cannot hold unload past the grace period: Close
+// spends Shutdown, forced closing and the wait for handlers inside one budget and
+// reports what it left running.
+//
+//dsh:test DH-T-HOST-5
+func TestUnloadWithinGraceWhenHandlersHang(t *testing.T) {
+	const grace = time.Second
+	r, logs := cordisLogs(t)
+	s, err := listen.Start(r, listen.Config{Port: anyPort(), ShutdownGrace: grace}, closedReady())
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release); s.Close() })
+	hungOpen, sockOpen := make(chan struct{}), make(chan struct{})
+	hung := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		close(hungOpen)
+		<-release
+	})
+	socket := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, rw, err := http.NewResponseController(w).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: test\r\nConnection: Upgrade\r\n\r\n")
+		rw.Flush()
+		close(sockOpen)
+		<-release
+	})
+	if err := mount(t, r, s, "hung", listen.Mount{Prefix: "/hung", Classify: anon, Serve: hung}); err != nil {
+		t.Fatal(err)
+	}
+	if err := mount(t, r, s, "socket", listen.Mount{Prefix: "/ws", Classify: anon, Stream: always, Serve: socket}); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client(t).Get(s.Origin() + "/hung")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { resp.Body.Close() })
+	raw, err := net.Dial("tcp", strings.TrimPrefix(s.Origin(), "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { raw.Close() })
+	io.WriteString(raw, "GET /ws HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: test\r\nConnection: Upgrade\r\n\r\n")
+	br := bufio.NewReader(raw)
+	if status, err := br.ReadString('\n'); err != nil || !strings.Contains(status, "101") {
+		t.Fatalf("socket status %q, %v; want 101", status, err)
+	}
+	<-hungOpen
+	<-sockOpen
+
+	began := time.Now()
+	s.Close()
+	if took := time.Since(began); took >= grace {
+		t.Errorf("Close took %s with hung handlers, want under the grace period %s", took, grace)
+	}
+	raw.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := io.ReadAll(br); isTimeout(err) {
+		t.Errorf("hijacked socket still open after Close: %v", err)
+	}
+	if !logged(logs, "handlers still running") {
+		t.Error("Close left handlers running without reporting it")
+	}
+}
+
+func closedReady() <-chan struct{} {
+	ch := make(chan struct{})
+	close(ch)
+	return ch
+}
+
+func logged(logs *cordis.MemoryExporter, text string) bool {
+	for _, m := range logs.Messages() {
+		if strings.Contains(m.Text, text) {
+			return true
+		}
+	}
+	return false
+}
+
 const page = "<!doctype html><title>dsh</title><p>hello</p>"
 
 // gzipped fetches path asking for gzip and reports whether the answer is gzip, with
@@ -204,6 +290,15 @@ func TestCompressionOptIn(t *testing.T) {
 		if err := mount(t, r, l, "events", listen.Mount{Prefix: "/events", Classify: anon, Stream: always, Serve: serveHTML}); err != nil {
 			t.Fatal(err)
 		}
+		for prefix, cc := range map[string]string{"/fixed": "no-transform", "/fixed-list": "public, max-age=60 ,No-Transform"} {
+			fixed := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Cache-Control", cc)
+				serveHTML(w, r)
+			})
+			if err := mount(t, r, l, prefix, listen.Mount{Prefix: prefix, Classify: anon, Serve: fixed}); err != nil {
+				t.Fatal(err)
+			}
+		}
 		f, err := r.Use(assets.Component, cordis.None{})
 		if err != nil || f.Wait() != nil {
 			t.Fatal(err, f.Wait())
@@ -221,6 +316,11 @@ func TestCompressionOptIn(t *testing.T) {
 		}
 		if gz, body := gzipped(t, l.Origin(), "/page", "Range", "bytes=0-9"); gz || body != html[:10] {
 			t.Errorf("compression %v: range gzip %v body %q, want the plain first 10 bytes", on, gz, body)
+		}
+		for _, path := range []string{"/fixed", "/fixed-list"} {
+			if gz, body := gzipped(t, l.Origin(), path); gz || body != html {
+				t.Errorf("compression %v: %s (Cache-Control no-transform, %d bytes) gzip %v, want it as written", on, path, len(html), gz)
+			}
 		}
 	}
 }
