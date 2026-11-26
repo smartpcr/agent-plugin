@@ -116,7 +116,7 @@ func (r *Reconciler) SetDirectory(dir, root string) {
 }
 
 // Touch is a file-tool touch (fs.Observed): the chain is marked when path is
-// one of its candidates or a directory of it. path may be as given or as the
+// one of its candidates or a directory of it, of either chain. path may be as given or as the
 // seam resolved it.
 func (r *Reconciler) Touch(path string) { r.touch(path, false) }
 
@@ -140,6 +140,12 @@ func (r *Reconciler) touch(path string, shell bool) {
 		return
 	}
 	path = filepath.Clean(path)
+	for _, u := range r.o.Config.userChain() {
+		if !shell && (path == u.path || path == filepath.Dir(u.path)) {
+			r.dirty.Store(true)
+			return
+		}
+	}
 	if r.touches(path, dir, root, shell) {
 		r.dirty.Store(true)
 		return
@@ -192,7 +198,7 @@ func (r *Reconciler) Next(ctx context.Context, seen *Record) (Section, bool, err
 			return Section{}, false, err
 		}
 		r.keepLastGood(&obs)
-		obs.Unwatched = r.syncWatches(obs.Root, obs.Candidates)
+		obs.Unwatched = r.syncWatches(obs)
 		r.obs = &obs
 		if len(obs.Unwatched) > 0 {
 			// Without a watch the chain is polled: read again at every step,
@@ -254,10 +260,11 @@ func (r *Reconciler) keepLastGood(obs *Observation) {
 }
 
 // syncWatches watches each candidate path once and closes the watches of paths
-// that left the chain. It returns the candidates whose watch failed, relative
-// to root. A watch callback only marks the chain, so a Close here never waits
-// on r.mu.
-func (r *Reconciler) syncWatches(root string, paths []string) []Unwatched {
+// that left the chain. It returns the candidates whose watch failed, by their
+// display names. A watch callback only marks the chain, so a Close here never
+// waits on r.mu.
+func (r *Reconciler) syncWatches(obs Observation) []Unwatched {
+	paths := obs.Candidates
 	if r.o.Watch == nil {
 		return nil
 	}
@@ -275,11 +282,7 @@ func (r *Reconciler) syncWatches(root string, paths []string) []Unwatched {
 			}
 		})
 		if err != nil {
-			rel := p
-			if q, rerr := filepath.Rel(root, p); rerr == nil {
-				rel = filepath.ToSlash(q)
-			}
-			failed = append(failed, Unwatched{Path: rel, Error: err.Error()})
+			failed = append(failed, Unwatched{Path: obs.shown[p], Error: err.Error()})
 			continue
 		}
 		r.watches[p] = w

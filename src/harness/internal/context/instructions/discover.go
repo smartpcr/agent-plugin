@@ -14,19 +14,40 @@ import (
 )
 
 // Config is instructions.Config (context-compaction-skill.md sec. 6.2,
-// UP-CFG-dsh-agent-instructions), project chain only. Zero fields take the
-// defaults of Default.
+// UP-CFG-dsh-agent-instructions): the user-global chain and the project chain.
+// Zero fields take the defaults of Default.
 type Config struct {
-	// MaxBytes is the byte budget of the rendered section; at least MinMaxBytes.
+	// MaxBytes is the byte budget of each chain; at least MinMaxBytes. A chain
+	// is guaranteed it, and lends what it does not use to the other.
 	MaxBytes int `json:"maxBytes,omitempty"`
 	// MaxSourceBytes bounds the read of one file.
 	MaxSourceBytes int `json:"maxSourceBytes,omitempty"`
-	// MaxTotalSourceBytes bounds the reads of one discovery.
+	// MaxTotalSourceBytes bounds the reads of one discovery, both chains.
 	MaxTotalSourceBytes int `json:"maxTotalSourceBytes,omitempty"`
 	// Candidates are the base names looked for in each directory, in order.
 	Candidates []string `json:"candidates,omitempty"`
 	// LocalCandidates are the local overlays, looked for after Candidates.
 	LocalCandidates []string `json:"localCandidates,omitempty"`
+	// HarnessHome and AgentsHome are the absolute directories of the user-global
+	// chain: HarnessHome/AGENTS.md, then AgentsHome/AGENTS.md. The host fills
+	// them (AgentsHome defaults to ~/.agents there); an empty one is not read.
+	HarnessHome string `json:"harnessHome,omitempty"`
+	AgentsHome  string `json:"agentsHome,omitempty"`
+}
+
+// userFile is a file of the user-global chain and its display name.
+type userFile struct{ path, shown string }
+
+// userChain is the user-global chain in order.
+func (c Config) userChain() []userFile {
+	var u []userFile
+	if c.HarnessHome != "" {
+		u = append(u, userFile{filepath.Join(filepath.Clean(c.HarnessHome), "AGENTS.md"), "$DSH_HOME/AGENTS.md"})
+	}
+	if c.AgentsHome != "" {
+		u = append(u, userFile{filepath.Join(filepath.Clean(c.AgentsHome), "AGENTS.md"), "$AGENTS_HOME/AGENTS.md"})
+	}
+	return u
 }
 
 // The defaults and the floor.
@@ -72,6 +93,11 @@ func (c Config) Validate() error {
 			return fmt.Errorf("instructions: candidate %q is not a base name", n)
 		}
 	}
+	for _, h := range []string{c.HarnessHome, c.AgentsHome} {
+		if h != "" && !filepath.IsAbs(h) {
+			return fmt.Errorf("instructions: the user-global home %q is not absolute", h)
+		}
+	}
 	return nil
 }
 
@@ -86,10 +112,18 @@ const (
 	Unreadable State = "unreadable"
 )
 
+// The scopes of a file: its chain.
+const (
+	ScopeUser    = "user"
+	ScopeProject = "project"
+)
+
 // File is one tracked instruction file of the fold.
 type File struct {
-	// Path is relative to the project root, with forward slashes.
-	Path string `json:"path"`
+	// Path is relative to the project root, with forward slashes; a user-global
+	// file is $DSH_HOME/AGENTS.md or $AGENTS_HOME/AGENTS.md.
+	Path  string `json:"path"`
+	Scope string `json:"scope"`
 	// Digest is the hex SHA-256 of the bytes read.
 	Digest string `json:"digest,omitempty"`
 	// Bytes is how many bytes were read.
@@ -127,9 +161,15 @@ type Observation struct {
 	// Candidates are the absolute candidate paths looked at, in chain order:
 	// the paths a watch covers.
 	Candidates []string
+	// user: the user-global chain is configured, so the section has two chains.
+	user bool
+	// shown is the display name of each candidate.
+	shown map[string]string
 }
 
-// Discover reads the project chain of dir under root through fsys.
+// Discover reads the user-global chain, then the project chain of dir under
+// root, through fsys. Only a project file is fenced to the root: the user's own
+// files may link anywhere.
 func Discover(ctx context.Context, fsys fs.FS, dir, root string, c Config) (Observation, error) {
 	c = c.withDefaults()
 	if fsys == nil {
@@ -154,7 +194,7 @@ func Discover(ctx context.Context, fsys fs.FS, dir, root string, c Config) (Obse
 		return Observation{}, fmt.Errorf("instructions: the filesystem seam %T cannot read a bounded prefix", fsys)
 	}
 	canonRoot := ri.Target.Display
-	obs := Observation{Root: root, canonRoot: canonRoot}
+	obs := Observation{Root: root, canonRoot: canonRoot, shown: map[string]string{}}
 	rel, _ := filepath.Rel(root, dir)
 	dirs := []string{root}
 	if rel != "." {
@@ -166,26 +206,33 @@ func Discover(ctx context.Context, fsys fs.FS, dir, root string, c Config) (Obse
 	}
 	names := append(append([]string(nil), c.Candidates...), c.LocalCandidates...)
 	total, seen := 0, map[string]bool{}
+	add := func(p, shown, scope, fence, canon string) {
+		obs.Candidates = append(obs.Candidates, p)
+		obs.shown[p] = shown
+		e, refused, ok := readOne(ctx, fsys, bounded, p, fence, canon, c, &total)
+		if refused != "" {
+			obs.Refused = append(obs.Refused, Refusal{Path: shown, Reason: refused})
+		}
+		if !ok {
+			return
+		}
+		e.File.Path, e.File.Scope = shown, scope
+		if e.File.State == Visible {
+			if seen[e.File.Digest] {
+				e.File.State, e.Text = Duplicate, ""
+			}
+			seen[e.File.Digest] = true
+		}
+		obs.Entries = append(obs.Entries, e)
+	}
+	for _, u := range c.userChain() {
+		obs.user = true
+		add(u.path, u.shown, ScopeUser, "", "")
+	}
 	for _, d := range dirs {
 		for _, n := range names {
 			p := filepath.Join(d, n)
-			obs.Candidates = append(obs.Candidates, p)
-			shown := filepath.ToSlash(must(filepath.Rel(root, p)))
-			e, refused, ok := readOne(ctx, fsys, bounded, p, root, canonRoot, c, &total)
-			if refused != "" {
-				obs.Refused = append(obs.Refused, Refusal{Path: shown, Reason: refused})
-			}
-			if !ok {
-				continue
-			}
-			e.File.Path = shown
-			if e.File.State == Visible {
-				if seen[e.File.Digest] {
-					e.File.State, e.Text = Duplicate, ""
-				}
-				seen[e.File.Digest] = true
-			}
-			obs.Entries = append(obs.Entries, e)
+			add(p, filepath.ToSlash(must(filepath.Rel(root, p))), ScopeProject, root, canonRoot)
 		}
 	}
 	return obs, nil
@@ -195,6 +242,7 @@ func must(s string, _ error) string { return s }
 
 // readOne reads candidate p, at most the source limit and one byte more, so a
 // longer file is known to be cut. ok is false for an absent or refused file.
+// A file is fenced to root unless root is empty (a user-global file).
 func readOne(ctx context.Context, fsys fs.FS, bounded fs.BoundedOpener, p, root, canonRoot string, c Config, total *int) (e Entry, refused herr.Reason, ok bool) {
 	in, err := fsys.Stat(ctx, fs.Ref{Path: p})
 	if err != nil {
@@ -203,7 +251,7 @@ func readOne(ctx context.Context, fsys fs.FS, bounded fs.BoundedOpener, p, root,
 	if !in.Exists {
 		return Entry{}, "", false
 	}
-	if !fs.Within(canonRoot, in.Target.Display) {
+	if root != "" && !fs.Within(canonRoot, in.Target.Display) {
 		return Entry{}, fs.CodeSandboxDenied, false
 	}
 	if in.Type != fs.TypeFile {
@@ -225,7 +273,7 @@ func readOne(ctx context.Context, fsys fs.FS, bounded fs.BoundedOpener, p, root,
 	}
 	defer rc.Close()
 	// The target may have moved between Stat and Open: fence what was opened.
-	if !fs.Within(canonRoot, oi.Target.Display) {
+	if root != "" && !fs.Within(canonRoot, oi.Target.Display) {
 		return Entry{}, fs.CodeSandboxDenied, false
 	}
 	data, err := io.ReadAll(rc)

@@ -520,3 +520,154 @@ func TestLastGoodIsPerProject(t *testing.T) {
 		t.Fatalf("project B shows project A's text: err=%v\n%s", err, sec.Text)
 	}
 }
+
+// TestChainFloorsAndLending: the user-global chain keeps its floor against a
+// large project chain (and may link outside the project), the project's
+// broadest file is omitted, and when the user's files shrink the bytes they
+// no longer use are lent to the project and the omitted file returns.
+//
+//dsh:test DH-T-CONTEXT-5
+func TestChainFloorsAndLending(t *testing.T) {
+	ctx := context.Background()
+	const F = instructions.MinMaxBytes
+	m := fstest.NewMemFS()
+	write(t, m, "/dotfiles/agents.md", strings.Repeat("u", 100_000))
+	if err := m.Mkdir(abs("/dsh")); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Symlink(abs("/dotfiles/agents.md"), abs("/dsh/AGENTS.md")); err != nil {
+		t.Fatal(err)
+	}
+	write(t, m, "/ws/AGENTS.md", strings.Repeat("r", 40_000))
+	write(t, m, "/ws/sub/AGENTS.md", strings.Repeat("s", 60_000))
+	c := instructions.Default()
+	c.HarnessHome, c.AgentsHome = abs("/dsh"), abs("/agents")
+	render := func() instructions.Section {
+		t.Helper()
+		obs, err := instructions.Discover(ctx, m, abs("/ws/sub"), abs("/ws"), c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return instructions.Render(obs, F)
+	}
+	state := func(sec instructions.Section, p string) instructions.File {
+		t.Helper()
+		f, ok := find(sec.Record, p)
+		if !ok {
+			t.Fatalf("%s is not tracked: %+v", p, sec.Record.Files)
+		}
+		return f
+	}
+
+	sec := render()
+	if u := state(sec, "$DSH_HOME/AGENTS.md"); u.State != instructions.Visible || !u.Truncated || u.Scope != instructions.ScopeUser {
+		t.Fatalf("user file %+v", u)
+	}
+	if n := strings.Count(sec.Text, "u"); n < F-300 {
+		t.Fatalf("the user chain kept %d bytes, below its floor %d", n, F)
+	}
+	if r := state(sec, "AGENTS.md"); r.State != instructions.Omitted || r.Scope != instructions.ScopeProject {
+		t.Fatalf("broad project file %+v, want omitted", r)
+	}
+	if s := state(sec, "sub/AGENTS.md"); s.State != instructions.Visible || s.Truncated {
+		t.Fatalf("specific project file %+v", s)
+	}
+	if len(sec.Text) > 2*F {
+		t.Fatalf("section is %d bytes, over two chains' budget", len(sec.Text))
+	}
+	if strings.Index(sec.Text, "uuu") > strings.Index(sec.Text, "sss") {
+		t.Fatal("the user chain is not rendered before the project chain")
+	}
+
+	write(t, m, "/dotfiles/agents.md", "user rules\n")
+	sec = render()
+	if r := state(sec, "AGENTS.md"); r.State != instructions.Visible || r.Truncated {
+		t.Fatalf("broad project file %+v, want it back once the user chain lends", r)
+	}
+	if len(sec.Text) <= F || len(sec.Text) > 2*F || !strings.Contains(sec.Text, "user rules") {
+		t.Fatalf("lent section is %d bytes", len(sec.Text))
+	}
+}
+
+// TestTotalSourceBudgetStopsReading: once the reads of a discovery reach the
+// total source budget, a later file is not opened and is omitted; it is read
+// again once an earlier file shrinks.
+//
+//dsh:test DH-T-CONTEXT-5
+func TestTotalSourceBudgetStopsReading(t *testing.T) {
+	ctx := context.Background()
+	m := fstest.NewMemFS()
+	write(t, m, "/ws/AGENTS.md", "0123456789")
+	write(t, m, "/ws/a/AGENTS.md", "abcdefghij")
+	write(t, m, "/ws/a/b/AGENTS.md", "late rules")
+	c := instructions.Default()
+	c.MaxSourceBytes, c.MaxTotalSourceBytes = 10, 15
+	seam := &counting{MemFS: m, opened: map[string]int{}}
+	obs, err := instructions.Discover(ctx, seam, abs("/ws/a/b"), abs("/ws"), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sec := instructions.Render(obs, instructions.MinMaxBytes)
+	if f, _ := find(sec.Record, "a/AGENTS.md"); f.State != instructions.Visible || f.Bytes != 5 || !f.Truncated {
+		t.Fatalf("second file %+v, want cut at the 5 bytes left", f)
+	}
+	if f, _ := find(sec.Record, "a/b/AGENTS.md"); f.State != instructions.Omitted || f.Reason != fs.CodeTooLarge || seam.opened[abs("/ws/a/b/AGENTS.md")] != 0 {
+		t.Fatalf("third file %+v opened %d times, want omitted unread", f, seam.opened[abs("/ws/a/b/AGENTS.md")])
+	}
+	write(t, m, "/ws/AGENTS.md", "01")
+	obs, err = instructions.Discover(ctx, seam, abs("/ws/a/b"), abs("/ws"), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sec = instructions.Render(obs, instructions.MinMaxBytes)
+	if f, _ := find(sec.Record, "a/b/AGENTS.md"); f.State != instructions.Visible || !strings.Contains(sec.Text, "late") {
+		t.Fatalf("third file %+v did not return\n%s", f, sec.Text)
+	}
+}
+
+// counting counts the bounded opens of each path.
+type counting struct {
+	*fstest.MemFS
+	opened map[string]int
+}
+
+func (c *counting) OpenBounded(ctx context.Context, r fs.Ref, within string, limit int64) (io.ReadCloser, fs.Info, error) {
+	c.opened[r.Path]++
+	return c.MemFS.OpenBounded(ctx, r, within, limit)
+}
+
+// TestUserFileTouchMarksTheChain: a file-tool touch of a user-global file, or
+// of its directory, marks the chain; a touch elsewhere outside the project
+// does not.
+//
+//dsh:test DH-T-CONTEXT-5
+func TestUserFileTouchMarksTheChain(t *testing.T) {
+	ctx := context.Background()
+	m := fstest.NewMemFS()
+	write(t, m, "/dsh/AGENTS.md", "user rules\n")
+	write(t, m, "/ws/AGENTS.md", "project rules\n")
+	c := instructions.Default()
+	c.HarnessHome = abs("/dsh")
+	r, err := instructions.NewReconciler(ctx, instructions.Options{FS: m, Config: c})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	r.SetDirectory(abs("/ws"), abs("/ws"))
+	sec, changed, err := r.Next(ctx, nil)
+	if err != nil || !changed || !strings.Contains(sec.Text, "user rules") || strings.Index(sec.Text, "user rules") > strings.Index(sec.Text, "project rules") {
+		t.Fatalf("baseline: changed=%v err=%v\n%s", changed, err, sec.Text)
+	}
+	for _, p := range []string{"/elsewhere/AGENTS.md", "/dsh/notes.md"} {
+		if r.Touch(abs(p)); r.Pending() {
+			t.Fatalf("touch of %s marked the chain", p)
+		}
+	}
+	for _, p := range []string{"/dsh/AGENTS.md", "/dsh"} {
+		r.Touch(abs(p))
+		if !r.Pending() {
+			t.Fatalf("touch of %s did not mark the chain", p)
+		}
+		_, _, _ = r.Next(ctx, &sec.Record)
+	}
+}
