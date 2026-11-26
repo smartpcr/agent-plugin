@@ -2,6 +2,7 @@ package launch
 
 import (
 	"context"
+	"io"
 	"os"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
@@ -40,7 +41,7 @@ var Component = cordis.Define(Name, func(ctx *cordis.Context, cfg Config) error 
 	if err != nil {
 		return err
 	}
-	o := Options{Config: cfg, Origin: l.Origin(), Mint: a.Mint, Ready: l.Ready(), Terminal: os.Stderr,
+	o := Options{Config: cfg, Origin: l.Origin(), Mint: a.Mint, Ready: l.Ready(), Terminal: terminal(os.Stderr),
 		Warn: ctx.Logger().Warnf}
 	if app, ok := bootlaunch.AppKey.Lookup(ctx); ok {
 		o.Stop = func() { app.Stop(bootlaunch.Requested, 0) }
@@ -75,3 +76,18 @@ var Component = cordis.Define(Name, func(ctx *cordis.Context, cfg Config) error 
 	_, err = Key.Provide(ctx, h)
 	return err
 }, cordis.WithInject(listen.Key.Name(), auth.Key.Name()))
+
+// terminal returns f only when it is a character device (a TTY or a console). A
+// redirected stderr (a file, a pipe, a service journal) persists what it receives,
+// and a launch link is a credential that leaves the host only on its own terminal,
+// so such a host has no print channel.
+func terminal(f *os.File) io.Writer {
+	if f == nil {
+		return nil
+	}
+	fi, err := f.Stat()
+	if err != nil || fi.Mode()&os.ModeCharDevice == 0 {
+		return nil
+	}
+	return f
+}
