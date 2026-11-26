@@ -1,0 +1,347 @@
+=== RUN   TestManualS14ComposedTreeOfEachProfile
+    zz_manual_s14_test.go:35: scratch home = C:\Users\XIAODO~1.RED\AppData\Local\Temp\TestManualS14ComposedTreeOfEachProfile3271435389\001
+
+===== profile admin
+bundles: [admin]
+layers (lowest first): [bundle:admin profile user launcher]
+required: []
+stack issues: []
+preview error (Required rule): <nil>
+composed tree and ownership index:
+{
+  "entries": [
+    {
+      "id": "logging",
+      "name": "boot.logging",
+      "config": {
+        "destination": "stderr",
+        "level": "debug"
+      },
+      "layer": "bundle:admin",
+      "fields": [
+        {
+          "field": "config.level",
+          "layer": "profile"
+        }
+      ],
+      "at": "bundles/admin.yml:10:7"
+    },
+    {
+      "id": "sharing",
+      "name": "host.sharing",
+      "config": {
+        "off": true
+      },
+      "layer": "bundle:admin",
+      "fields": [
+        {
+          "field": "config.off",
+          "layer": "user"
+        }
+      ],
+      "at": "bundles/admin.yml:17:7"
+    }
+  ],
+  "issues": []
+}
+CHOSEN admin    logging config.destination   = "stderr"   supplied by bundle:admin   at bundles/admin.yml:10:7 [ok]
+CHOSEN admin    logging config.level         = "debug"    supplied by profile        at C:\Users\XIAODO~1.RED\AppData\Local\Temp\TestManualS14ComposedTreeOfEachProfile3271435389\001\config\profiles\admin\layer.yml:1:3 [ok]
+CHOSEN admin    sharing config.off           = true       supplied by user           at C:\Users\XIAODO~1.RED\AppData\Local\Temp\TestManualS14ComposedTreeOfEachProfile3271435389\001\config\layer.yml:1:3 [ok]
+
+===== profile core
+bundles: [admin core]
+layers (lowest first): [bundle:admin bundle:core profile user launcher]
+required: [session.store agent.registry agent.driver tools.registry agent.presets]
+stack issues: []
+preview error (Required rule): profile/missing-required: profile core: the composed tree lacks session.store, agent.registry, agent.driver, tools.registry, agent.presets, which its Required list names: session.store: is a required entry and the composed tree lacks it; agent.registry: is a required entry and the composed tree lacks it; agent.driver: is a required entry and the composed tree lacks it; tools.registry: is a required entry and the composed tree lacks it; agent.presets: is a required entry and the composed tree lacks it
+composed tree and ownership index:
+{
+  "entries": [
+    {
+      "id": "logging",
+      "name": "boot.logging",
+      "config": {
+        "destination": "stderr",
+        "level": "debug"
+      },
+      "layer": "bundle:admin",
+      "fields": [
+        {
+          "field": "config.level",
+          "layer": "profile"
+        }
+      ],
+      "at": "bundles/admin.yml:10:7"
+    },
+    {
+      "id": "sharing",
+      "name": "host.sharing",
+      "config": {
+        "off": true
+      },
+      "layer": "bundle:admin",
+      "fields": [
+        {
+          "field": "config.off",
+          "layer": "user"
+        }
+      ],
+      "at": "bundles/admin.yml:17:7"
+    },
+    {
+      "id": "egress",
+      "name": "util.egress",
+      "layer": "bundle:core",
+      "at": "bundles/core.yml:15:7"
+    },
+    {
+      "id": "watch",
+      "name": "util.watch",
+      "layer": "bundle:core",
+      "at": "bundles/core.yml:18:7"
+    }
+  ],
+  "issues": [
+    "session.store: is a required entry and the composed tree lacks it",
+    "agent.registry: is a required entry and the composed tree lacks it",
+    "agent.driver: is a required entry and the composed tree lacks it",
+    "tools.registry: is a required entry and the composed tree lacks it",
+    "agent.presets: is a required entry and the composed tree lacks it"
+  ]
+}
+CHOSEN core     logging config.destination   = "stderr"   supplied by bundle:admin   at bundles/admin.yml:10:7 [ok]
+CHOSEN core     logging config.level         = "debug"    supplied by profile        at C:\Users\XIAODO~1.RED\AppData\Local\Temp\TestManualS14ComposedTreeOfEachProfile3271435389\001\config\profiles\core\layer.yml:1:3 [ok]
+CHOSEN core     sharing config.off           = true       supplied by user           at C:\Users\XIAODO~1.RED\AppData\Local\Temp\TestManualS14ComposedTreeOfEachProfile3271435389\001\config\layer.yml:1:3 [ok]
+
+===== profile web
+bundles: [admin core base web]
+layers (lowest first): [bundle:admin bundle:core bundle:base bundle:web profile user launcher]
+required: [session.store agent.registry agent.driver tools.registry agent.presets host.listen host.auth host.assets host.web host.access host.stream ui.shell]
+stack issues: []
+preview error (Required rule): profile/missing-required: profile web: the composed tree lacks session.store, agent.registry, agent.driver, tools.registry, agent.presets, host.listen, host.auth, host.assets, host.web, host.access, host.stream, ui.shell, which its Required list names: session.store: is a required entry and the composed tree lacks it; agent.registry: is a required entry and the composed tree lacks it; agent.driver: is a required entry and the composed tree lacks it; tools.registry: is a required entry and the composed tree lacks it; agent.presets: is a required entry and the composed tree lacks it; host.listen: is a required entry and the composed tree lacks it; host.auth: is a required entry and the composed tree lacks it; host.assets: is a required entry and the composed tree lacks it; host.web: is a required entry and the composed tree lacks it; host.access: is a required entry and the composed tree lacks it; host.stream: is a required entry and the composed tree lacks it; ui.shell: is a required entry and the composed tree lacks it
+composed tree and ownership index:
+{
+  "entries": [
+    {
+      "id": "logging",
+      "name": "boot.logging",
+      "config": {
+        "destination": "stderr",
+        "level": "debug"
+      },
+      "layer": "bundle:admin",
+      "fields": [
+        {
+          "field": "config.level",
+          "layer": "profile"
+        }
+      ],
+      "at": "bundles/admin.yml:10:7"
+    },
+    {
+      "id": "sharing",
+      "name": "host.sharing",
+      "config": {
+        "off": true
+      },
+      "layer": "bundle:admin",
+      "fields": [
+        {
+          "field": "config.off",
+          "layer": "user"
+        }
+      ],
+      "at": "bundles/admin.yml:17:7"
+    },
+    {
+      "id": "egress",
+      "name": "util.egress",
+      "layer": "bundle:core",
+      "at": "bundles/core.yml:15:7"
+    },
+    {
+      "id": "watch",
+      "name": "util.watch",
+      "layer": "bundle:core",
+      "at": "bundles/core.yml:18:7"
+    }
+  ],
+  "issues": [
+    "session.store: is a required entry and the composed tree lacks it",
+    "agent.registry: is a required entry and the composed tree lacks it",
+    "agent.driver: is a required entry and the composed tree lacks it",
+    "tools.registry: is a required entry and the composed tree lacks it",
+    "agent.presets: is a required entry and the composed tree lacks it",
+    "host.listen: is a required entry and the composed tree lacks it",
+    "host.auth: is a required entry and the composed tree lacks it",
+    "host.assets: is a required entry and the composed tree lacks it",
+    "host.web: is a required entry and the composed tree lacks it",
+    "host.access: is a required entry and the composed tree lacks it",
+    "host.stream: is a required entry and the composed tree lacks it",
+    "ui.shell: is a required entry and the composed tree lacks it"
+  ]
+}
+CHOSEN web      logging config.destination   = "stderr"   supplied by bundle:admin   at bundles/admin.yml:10:7 [ok]
+CHOSEN web      logging config.level         = "debug"    supplied by profile        at C:\Users\XIAODO~1.RED\AppData\Local\Temp\TestManualS14ComposedTreeOfEachProfile3271435389\001\config\profiles\web\layer.yml:1:3 [ok]
+CHOSEN web      sharing config.off           = true       supplied by user           at C:\Users\XIAODO~1.RED\AppData\Local\Temp\TestManualS14ComposedTreeOfEachProfile3271435389\001\config\layer.yml:1:3 [ok]
+
+===== profile headless
+bundles: [admin core base headless]
+layers (lowest first): [bundle:admin bundle:core bundle:base bundle:headless profile user launcher]
+required: [session.store agent.registry agent.driver tools.registry agent.presets cli.headless]
+stack issues: []
+preview error (Required rule): profile/missing-required: profile headless: the composed tree lacks session.store, agent.registry, agent.driver, tools.registry, agent.presets, which its Required list names: session.store: is a required entry and the composed tree lacks it; agent.registry: is a required entry and the composed tree lacks it; agent.driver: is a required entry and the composed tree lacks it; tools.registry: is a required entry and the composed tree lacks it; agent.presets: is a required entry and the composed tree lacks it
+composed tree and ownership index:
+{
+  "entries": [
+    {
+      "id": "logging",
+      "name": "boot.logging",
+      "config": {
+        "destination": "stderr",
+        "level": "debug"
+      },
+      "layer": "bundle:admin",
+      "fields": [
+        {
+          "field": "config.level",
+          "layer": "profile"
+        }
+      ],
+      "at": "bundles/admin.yml:10:7"
+    },
+    {
+      "id": "sharing",
+      "name": "host.sharing",
+      "config": {
+        "off": true
+      },
+      "layer": "bundle:admin",
+      "fields": [
+        {
+          "field": "config.off",
+          "layer": "user"
+        }
+      ],
+      "at": "bundles/admin.yml:17:7"
+    },
+    {
+      "id": "egress",
+      "name": "util.egress",
+      "layer": "bundle:core",
+      "at": "bundles/core.yml:15:7"
+    },
+    {
+      "id": "watch",
+      "name": "util.watch",
+      "layer": "bundle:core",
+      "at": "bundles/core.yml:18:7"
+    },
+    {
+      "id": "cli.headless",
+      "name": "cli.headless",
+      "layer": "bundle:headless",
+      "at": "bundles/headless.yml:14:7"
+    }
+  ],
+  "issues": [
+    "bundles/headless.yml:18:3: layer bundle:headless: merge \"human.secrets\" matches no entry",
+    "bundles/headless.yml:23:3: layer bundle:headless: override \"human.authorization\" matches no entry",
+    "bundles/headless.yml:31:3: layer bundle:headless: merge \"preset.standard\" matches no entry",
+    "bundles/headless.yml:36:3: layer bundle:headless: merge \"preset.script\" matches no entry",
+    "bundles/headless.yml:41:3: layer bundle:headless: merge \"preset.minimal\" matches no entry",
+    "bundles/headless.yml:46:3: layer bundle:headless: merge \"preset.creator\" matches no entry",
+    "bundles/headless.yml:14:7: cli.headless.name: unknown component: \"cli.headless\"",
+    "session.store: is a required entry and the composed tree lacks it",
+    "agent.registry: is a required entry and the composed tree lacks it",
+    "agent.driver: is a required entry and the composed tree lacks it",
+    "tools.registry: is a required entry and the composed tree lacks it",
+    "agent.presets: is a required entry and the composed tree lacks it"
+  ]
+}
+CHOSEN headless logging config.destination   = "stderr"   supplied by bundle:admin   at bundles/admin.yml:10:7 [ok]
+CHOSEN headless logging config.level         = "debug"    supplied by profile        at C:\Users\XIAODO~1.RED\AppData\Local\Temp\TestManualS14ComposedTreeOfEachProfile3271435389\001\config\profiles\headless\layer.yml:1:3 [ok]
+CHOSEN headless sharing config.off           = true       supplied by user           at C:\Users\XIAODO~1.RED\AppData\Local\Temp\TestManualS14ComposedTreeOfEachProfile3271435389\001\config\layer.yml:1:3 [ok]
+
+===== profile sdk
+bundles: [admin core base sdk]
+layers (lowest first): [bundle:admin bundle:core bundle:base bundle:sdk profile user launcher]
+required: [session.store agent.registry agent.driver tools.registry agent.presets wire.stdio wire.sdk]
+stack issues: []
+preview error (Required rule): profile/missing-required: profile sdk: the composed tree lacks session.store, agent.registry, agent.driver, tools.registry, agent.presets, which its Required list names: session.store: is a required entry and the composed tree lacks it; agent.registry: is a required entry and the composed tree lacks it; agent.driver: is a required entry and the composed tree lacks it; tools.registry: is a required entry and the composed tree lacks it; agent.presets: is a required entry and the composed tree lacks it
+composed tree and ownership index:
+{
+  "entries": [
+    {
+      "id": "logging",
+      "name": "boot.logging",
+      "config": {
+        "destination": "stderr",
+        "level": "debug"
+      },
+      "layer": "bundle:admin",
+      "fields": [
+        {
+          "field": "config.level",
+          "layer": "profile"
+        }
+      ],
+      "at": "bundles/admin.yml:10:7"
+    },
+    {
+      "id": "sharing",
+      "name": "host.sharing",
+      "config": {
+        "off": true
+      },
+      "layer": "bundle:admin",
+      "fields": [
+        {
+          "field": "config.off",
+          "layer": "user"
+        }
+      ],
+      "at": "bundles/admin.yml:17:7"
+    },
+    {
+      "id": "egress",
+      "name": "util.egress",
+      "layer": "bundle:core",
+      "at": "bundles/core.yml:15:7"
+    },
+    {
+      "id": "watch",
+      "name": "util.watch",
+      "layer": "bundle:core",
+      "at": "bundles/core.yml:18:7"
+    },
+    {
+      "id": "wire.stdio",
+      "name": "wire.stdio",
+      "layer": "bundle:sdk",
+      "at": "bundles/sdk.yml:14:7"
+    },
+    {
+      "id": "wire.sdk",
+      "name": "wire.sdk",
+      "layer": "bundle:sdk",
+      "at": "bundles/sdk.yml:16:7"
+    }
+  ],
+  "issues": [
+    "bundles/sdk.yml:19:3: layer bundle:sdk: override \"session.title.llm\" matches no entry",
+    "bundles/sdk.yml:14:7: wire.stdio.name: unknown component: \"wire.stdio\"",
+    "bundles/sdk.yml:16:7: wire.sdk.name: unknown component: \"wire.sdk\"",
+    "session.store: is a required entry and the composed tree lacks it",
+    "agent.registry: is a required entry and the composed tree lacks it",
+    "agent.driver: is a required entry and the composed tree lacks it",
+    "tools.registry: is a required entry and the composed tree lacks it",
+    "agent.presets: is a required entry and the composed tree lacks it"
+  ]
+}
+CHOSEN sdk      logging config.destination   = "stderr"   supplied by bundle:admin   at bundles/admin.yml:10:7 [ok]
+CHOSEN sdk      logging config.level         = "debug"    supplied by profile        at C:\Users\XIAODO~1.RED\AppData\Local\Temp\TestManualS14ComposedTreeOfEachProfile3271435389\001\config\profiles\sdk\layer.yml:1:3 [ok]
+CHOSEN sdk      sharing config.off           = true       supplied by user           at C:\Users\XIAODO~1.RED\AppData\Local\Temp\TestManualS14ComposedTreeOfEachProfile3271435389\001\config\layer.yml:1:3 [ok]
+--- PASS: TestManualS14ComposedTreeOfEachProfile (0.03s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/boot/profile	12.160s

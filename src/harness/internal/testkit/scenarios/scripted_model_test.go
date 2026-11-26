@@ -44,6 +44,7 @@ type scriptedModel struct {
 	sent    map[string]scriptedCall // tool_use id -> call
 	next    int
 	replies int
+	bodies  []string // every request body received, in order
 }
 
 // startScriptedModel serves a scripted endpoint on a loopback port until cleanup.
@@ -90,6 +91,13 @@ func (m *scriptedModel) call(id string) (scriptedCall, bool) {
 	return c, ok
 }
 
+// requests returns the body of every request the endpoint received, in order.
+func (m *scriptedModel) requests() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.bodies...)
+}
+
 func (m *scriptedModel) serve(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost || r.URL.Path != "/v1/messages" {
 		http.NotFound(w, r)
@@ -112,6 +120,7 @@ func (m *scriptedModel) serve(w http.ResponseWriter, r *http.Request) {
 	var id string
 	m.mu.Lock()
 	m.replies++
+	m.bodies = append(m.bodies, string(body))
 	if len(req.Tools) > 0 && len(m.queue) > 0 {
 		next := m.queue[0]
 		m.queue = m.queue[1:]

@@ -1,0 +1,86 @@
+package profile_test
+
+// Throwaway test for the DH-S-14 manual check of step 14.2 (impl.md DH-S-14
+// "Manual checks": preview the composed tree of each profile and record which layer
+// supplied three chosen values). Copy it into src/harness/internal/boot/profile/ of
+// a THROWAWAY WORKTREE at the recorded commit, run it once with -v, and delete the
+// worktree. It is never committed as Go source.
+//
+// For each of the five definitions (admin, core, web, headless, sdk) it writes a
+// real scratch home with a profile layer that merges logging.level and a user layer
+// that merges sharing.off, stacks the launch (profile.Stack, the same stack a launch
+// reads), previews it (profile.Preview, the preview `dsh config show` prints), dumps
+// the composed tree with its ownership index, and explains three chosen values:
+//   logging config.destination  -> untouched, so the bundle that inserted it
+//   logging config.level        -> the profile layer file
+//   sharing config.off          -> the user layer file
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/builtin"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/config"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/profile"
+)
+
+func TestManualS14ComposedTreeOfEachProfile(t *testing.T) {
+	cat, err := builtin.Catalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	t.Logf("scratch home = %s", home)
+	user := profile.UserLayerPath(home)
+	write := func(p, text string) {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(user, "- id: sharing\n  merge:\n    off: true\n")
+	for _, def := range profile.Definitions() {
+		write(profile.LayerPath(home, def.Name), "- id: logging\n  merge:\n    level: debug\n")
+		layers, issues, err := profile.Stack(def, profile.Sources{Home: home})
+		if err != nil {
+			t.Fatalf("%s: stack: %v", def.Name, err)
+		}
+		var labels []string
+		for _, l := range layers {
+			labels = append(labels, l.Label)
+		}
+		fmt.Printf("\n===== profile %s\n", def.Name)
+		fmt.Printf("bundles: %v\nlayers (lowest first): %v\nrequired: %v\nstack issues: %v\n", def.Bundles, labels, def.Required, issues)
+		r, perr := profile.Preview(def, layers, config.CheckOptions{Catalog: cat})
+		if r == nil {
+			t.Fatalf("%s: no report: %v", def.Name, perr)
+		}
+		fmt.Printf("preview error (Required rule): %v\n", perr)
+		dump, err := r.Dump()
+		if err != nil {
+			t.Fatal(err)
+		}
+		fmt.Printf("composed tree and ownership index:\n%s\n", dump)
+		for _, c := range []struct{ id, field, want string }{
+			{"logging", "config.destination", profile.BundleLabel + "admin"},
+			{"logging", "config.level", profile.ProfileLabel},
+			{"sharing", "config.off", profile.UserLabel},
+		} {
+			ex, err := r.Explain(c.id, c.field)
+			if err != nil {
+				t.Errorf("%s: explain %s %s: %v", def.Name, c.id, c.field, err)
+				continue
+			}
+			mark := "ok"
+			if ex.Layer != c.want {
+				mark = "MISMATCH"
+				t.Errorf("%s: %s %s supplied by %q, want %q", def.Name, c.id, c.field, ex.Layer, c.want)
+			}
+			fmt.Printf("CHOSEN %-8s %s %-20s = %-10s supplied by %-14s at %s [%s]\n", def.Name, c.id, c.field, ex.Value, ex.Layer, ex.At, mark)
+		}
+	}
+}
