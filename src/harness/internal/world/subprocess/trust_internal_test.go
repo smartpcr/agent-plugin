@@ -129,3 +129,25 @@ func TestStartKeepsTheControlSocketOutOfTheChild(t *testing.T) {
 		t.Fatalf("Wait = %v, trust %s; want an untrusted tree that ran", err, p.Trust())
 	}
 }
+
+// Each registered control socket stays protected until its own release, so
+// releasing one host's path leaves another host's path out of every child.
+func TestProtectedSocketsAreReleasedOneByOne(t *testing.T) {
+	releaseA := ProtectControlSocket("/run/dsh/web-a.sock")
+	releaseB := ProtectControlSocket("/run/dsh/web-b.sock")
+	t.Cleanup(releaseA)
+	t.Cleanup(releaseB)
+	SetControlSocket("")
+	envA, envB := Env{"X=/run/dsh/web-a.sock"}, Env{"X=/run/dsh/web-b.sock"}
+	if herr.Kind(checkControlSocket(envA)) != ReasonBadArgument || herr.Kind(checkControlSocket(envB)) != ReasonBadArgument {
+		t.Fatal("both registered paths must be refused")
+	}
+	releaseA()
+	releaseA()
+	if err := checkControlSocket(envA); err != nil {
+		t.Fatalf("a released path = %v; want allowed", err)
+	}
+	if herr.Kind(checkControlSocket(envB)) != ReasonBadArgument {
+		t.Fatal("the surviving host's path must stay refused")
+	}
+}
