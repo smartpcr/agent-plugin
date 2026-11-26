@@ -177,7 +177,10 @@ func shellDir(v any) string {
 }
 
 // touch marks the chain of session id when path is one of its candidates, or,
-// for a shell, any directory under its root.
+// for a shell, any directory under its root. A shell can write anywhere
+// whatever its final working directory (cd /tmp && echo x >> /proj/AGENTS.md,
+// or a user-global file), so without a watch to report those writes every
+// settled shell call of the session marks the chain.
 func (s *Service) touch(id session.ID, path string, shell bool) {
 	s.mu.Lock()
 	r := s.rs[id]
@@ -186,6 +189,10 @@ func (s *Service) touch(id session.ID, path string, shell bool) {
 		return
 	}
 	if shell {
+		if s.o.Watch == nil {
+			r.dirty.Store(true)
+			return
+		}
 		r.TouchShell(path)
 		return
 	}
