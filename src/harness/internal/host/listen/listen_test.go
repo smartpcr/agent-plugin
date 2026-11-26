@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/host/access"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/host/listen"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
 )
@@ -73,9 +74,11 @@ func start(t *testing.T, r *cordis.Context, cfg listen.Config) (listen.Listener,
 
 type peer struct{ id string }
 
-func (p peer) ID() string               { return p.id }
-func (p peer) Context() context.Context { return context.Background() }
-func (p peer) FormToken() string        { return "form-" + p.id }
+func (p peer) ID() string                  { return p.id }
+func (p peer) Context() context.Context    { return context.Background() }
+func (p peer) FormToken() string           { return "form-" + p.id }
+func (p peer) Principal() access.Principal { return access.Owner() }
+
 func admit(t *testing.T, r *cordis.Context, yes bool) {
 	t.Helper()
 	if err := load(t, r, "fake auth", func(ctx *cordis.Context) error {

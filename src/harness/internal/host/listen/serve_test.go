@@ -107,7 +107,7 @@ func TestUnloadEndsStreamsAndSockets(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { raw.Close() })
-	io.WriteString(raw, "GET /ws HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: test\r\nConnection: Upgrade\r\n\r\n")
+	io.WriteString(raw, "GET /ws HTTP/1.1\r\nHost: 127.0.0.1\r\nSec-Fetch-Site: same-origin\r\nUpgrade: test\r\nConnection: Upgrade\r\n\r\n")
 	if status, err := bufio.NewReader(raw).ReadString('\n'); err != nil || !strings.Contains(status, "101") {
 		t.Fatalf("socket status %q, %v; want 101", status, err)
 	}
@@ -189,7 +189,7 @@ func TestUnloadWithinGraceWhenHandlersHang(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { raw.Close() })
-	io.WriteString(raw, "GET /ws HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: test\r\nConnection: Upgrade\r\n\r\n")
+	io.WriteString(raw, "GET /ws HTTP/1.1\r\nHost: 127.0.0.1\r\nSec-Fetch-Site: same-origin\r\nUpgrade: test\r\nConnection: Upgrade\r\n\r\n")
 	br := bufio.NewReader(raw)
 	if status, err := br.ReadString('\n'); err != nil || !strings.Contains(status, "101") {
 		t.Fatalf("socket status %q, %v; want 101", status, err)

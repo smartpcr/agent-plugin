@@ -116,6 +116,17 @@ var codes = map[herr.Reason]int{
 	"listen/mount-taken":      Busy,
 	"listen/tls":              Config,
 	"listen/compression":      Config,
+	"listen/peer-invalid":     Config,
+
+	"auth/config":          Config,
+	"auth/host":            Denied,
+	"auth/origin":          Denied,
+	"auth/principal":       Invalid,
+	"auth/source":          Denied,
+	"auth/token-parameter": Invalid,
+	"auth/unauthorized":    Denied,
+	"auth/unknown-peer":    Invalid,
+	"auth/untrusted-peer":  Denied,
 
 	"secret/bad-env-file":   Invalid,
 	"secret/bad-reference":  Invalid,

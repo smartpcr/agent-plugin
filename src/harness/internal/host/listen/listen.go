@@ -3,20 +3,26 @@
 //
 // One http.Server listens on one address parsed once by ParseBind, optionally over
 // TLS whose certificate pair is re-read when the files change. It runs one handler,
-// the admission pipeline: limits, then the mount chosen by longest prefix, then the
-// mount's class, then (for a Required mount) the listen/authenticate bail key, and
-// only then the mount's handler, with the Peer in the request context. No component
-// can insert a step or reach a handler around it. The source, Host, token-parameter
-// and origin steps (DH-D-HOST-2) are added here by host.auth's stage.
+// the admission pipeline (DH-D-HOST-1, DH-D-HOST-2): limits; the source of the
+// connection (loopback or an allowed peer, decided once per accepted connection);
+// the Host check; the peer rule (a local peer inside an untrusted process tree,
+// resolved once per accepted connection); the token-parameter rule, whose one exchange is the
+// listen/exchange bail key; the mount chosen by longest prefix; the mount's class;
+// the origin check (not for Callback); then (for a Required mount) the
+// listen/authenticate bail key, and only then the mount's handler, with the Peer in
+// the request context. No component can insert a step or reach a handler around it.
 package listen
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"strings"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/host/access"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess"
 )
 
 // Reasons the listener refuses a configuration or a mount.
@@ -28,6 +34,24 @@ const (
 	ReasonMountInvalid    herr.Reason = "listen/mount-invalid"
 	ReasonMountTaken      herr.Reason = "listen/mount-taken"
 	ReasonCompression     herr.Reason = "listen/compression"
+	ReasonPeerInvalid     herr.Reason = "listen/peer-invalid"
+)
+
+// Reasons the pipeline refuses a request with; each is the body of its response.
+const (
+	// ReasonSource is a connection from neither loopback nor an allowed peer (403).
+	ReasonSource herr.Reason = "auth/source"
+	// ReasonHost is a Host that is not loopback, the bind literal or a trusted host (403).
+	ReasonHost herr.Reason = "auth/host"
+	// ReasonUntrustedPeer is a local connection whose process is inside an untrusted
+	// tree, whatever it carries (403, DH-ADR-HOST-12).
+	ReasonUntrustedPeer herr.Reason = "auth/untrusted-peer"
+	// ReasonTokenParameter is a token parameter anywhere but the exchange (400).
+	ReasonTokenParameter herr.Reason = "auth/token-parameter"
+	// ReasonOrigin is a cross-site or cross-origin request (403).
+	ReasonOrigin herr.Reason = "auth/origin"
+	// ReasonUnauthorized is a request with no credential that admits it (401).
+	ReasonUnauthorized herr.Reason = "auth/unauthorized"
 )
 
 // Class is how a mount's request is admitted. The zero value is Required; a value
@@ -65,14 +89,23 @@ type Mount struct {
 	Uncompressed bool
 }
 
-// Credentials is what listen/authenticate reads from an admitted request.
+// Credentials is what listen/authenticate and listen/exchange read from a request
+// that passed the source, Host and origin checks.
 type Credentials struct {
 	Request *http.Request
+	// Token is the launch token of an exchange; empty for listen/authenticate.
+	Token string
+	// Audience is the listener's own origin, which a session belongs to.
+	Audience string
+	// Secure is whether the listener itself speaks TLS; a forwarded header never
+	// sets it.
+	Secure bool
 }
 
 // Peer is the one browser a Required request came from.
 type Peer interface {
 	ID() string
+	Principal() access.Principal
 	// Context ends when the peer is revoked.
 	Context() context.Context
 	FormToken() string
@@ -81,6 +114,11 @@ type Peer interface {
 // Authenticate is the bail key the pipeline asks for a Required request. No answer
 // is 401; an error is 500. host.auth answers it (DH-D-HOST-2).
 var Authenticate = cordis.NewBail[*Credentials, Peer]("listen/authenticate")
+
+// Exchange is the bail key the pipeline asks for `GET /?token=`: the answer is the
+// cookies the pipeline sets with its 303 to "./". No answer (a token that is unknown,
+// used or expired) is 401; an error is 500. host.auth answers it (DH-D-HOST-2).
+var Exchange = cordis.NewBail[*Credentials, []*http.Cookie]("listen/exchange")
 
 type peerKey struct{}
 
@@ -102,8 +140,31 @@ func Streaming(ctx context.Context) (stream, ok bool) {
 	return stream, ok
 }
 
+// PeerRule is how well the listener tells a local peer inside an untrusted process
+// tree on this machine (DH-ADR-HOST-12).
+type PeerRule string
+
+// The peer rules.
+const (
+	// Exact: tree membership is the job object's or the control group's.
+	Exact PeerRule = "exact"
+	// BestEffort: membership is the process group's, which a member can leave.
+	BestEffort PeerRule = "best-effort"
+	// NotApplied: the connecting process cannot be identified, or there is no tree
+	// registry; local peers are served on their credential alone.
+	NotApplied PeerRule = "not-applied"
+)
+
+// Trees names the process tree behind a local connection (DH-D-EXEC-2); the boot
+// tree's *subprocess.Registry is one.
+type Trees interface {
+	PeerTree(c net.Conn) (subprocess.Tree, error)
+}
+
 // Listener is the service under Key.
 type Listener interface {
+	// PeerRule says whether the peer rule is exact, best effort or not applied here.
+	PeerRule() PeerRule
 	// Mount registers m as an effect of owner's fiber: the mount leaves when owner
 	// unloads. A prefix already mounted is an error.
 	Mount(owner *cordis.Context, m Mount) error
