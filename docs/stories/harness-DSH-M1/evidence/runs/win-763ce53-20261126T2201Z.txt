@@ -1,0 +1,27 @@
+harness-gate evidence record
+commit: 763ce53ec6dad933450ab9d7a811e43d4d55081c
+tree: clean (git status --porcelain --untracked-files=all is empty)
+command: harness-gate --root ../.. --evidence E:\work\github\ai\agent-plugin\.worktree\coverage-dhs15\docs\stories\harness-DSH-M1\evidence\runs\win-763ce53-20261126T2201Z.txt
+goos/goarch: windows/amd64
+go version: go version go1.27.4 windows/amd64
+go floor: go1.27.4 (src/harness/go.mod); children run with GOTOOLCHAIN=go1.27.4
+goroot: C:\Program Files\Go
+cc: gcc
+cc --version: gcc (Rev5, Built by MSYS2 project) 16.1.0
+host os: Microsoft Windows [Version 10.0.28000.3501]
+children: CI=1
+started: 2026-11-26T22:01:14Z
+--- output ---
+harness-gate: toolchain go1.27.4 (the go floor of src/harness/go.mod; children run with GOTOOLCHAIN=go1.27.4, GOROOT=C:\Program Files\Go)
+harness-gate: gate 1/13 gofmt -- every Go file is gofmt-formatted
+gofmt: 1094 files checked
+harness-gate: PASS gofmt (1.162s)
+harness-gate: gate 2/13 vet -- go vet and the project's own analyzers (nosleep, onespawn, cleanup, fuzzcheck, rootcall, typeassert, lintignore), also on the e2e layer; prints the //lint:ignore exception total
+ok   src/go: go vet -tags= ./...
+ok   src/go: go vet -tags= -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\go-build3832127900\b001\exe\harness-gate.exe ./...
+ok   src/go: go vet -tags=replay,scenario,bench ./...
+ok   src/go: go vet -tags=replay,scenario,bench -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\go-build3832127900\b001\exe\harness-gate.exe ./...
+ok   src/go: go vet -tags=e2e ./...
+ok   src/go: go vet -tags=e2e -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\go-build3832127900\b001\exe\harness-gate.exe ./...
+ok   src/sdk: go vet -tags= ./...
+ok   src/sdk: go vet -tags= -vettool=C:\Users\XIAODO~1.RED\AppData\Local\Temp\go-build3832127900\b001\exe\harness-gate.exe ./...

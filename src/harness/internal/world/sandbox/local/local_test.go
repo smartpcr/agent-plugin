@@ -43,6 +43,9 @@ func TestMain(m *testing.M) {
 }
 
 func reexec(args []string) int {
+	if mode := os.Getenv(fakeBwrapEnv); mode != "" {
+		return fakeBwrap(mode, args)
+	}
 	if len(args) > 0 && args[0] == launch.Mode && os.Getenv(stageEnv) != "" {
 		if log := os.Getenv(stageLogEnv); log != "" {
 			f, err := os.OpenFile(log, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)

@@ -108,6 +108,17 @@ var codes = map[herr.Reason]int{
 	"launch/facts":          Failed,
 	"launch/forbidden-name": Invalid,
 	"launch/read":           Failed,
+	"launch/config":         Config,
+	"launch/taken":          Busy,
+	"launch/io":             Failed,
+	"launch/no-channel":     Unavailable,
+	"launch/no-stop":        Unavailable,
+	"launch/print-failed":   Failed,
+	"launch/not-ready":      Unavailable,
+
+	"web/undeclared-effect": Invalid,
+	"web/route-invalid":     Invalid,
+	"web/route-taken":       Busy,
 
 	"listen/bind-invalid":     Config,
 	"listen/bind-unspecified": Config,
