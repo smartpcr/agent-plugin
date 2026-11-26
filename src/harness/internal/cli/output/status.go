@@ -219,6 +219,10 @@ var codes = map[herr.Reason]int{
 	"shellenv/secrets-unknown":    Unavailable,
 	"shellenv/undeclared":         Invalid,
 
+	"stdio/claimed":        Invalid,
+	"stdio/client-stalled": Stalled,
+	"stdio/output-failed":  Unavailable,
+
 	"workdir/invalid":            Invalid,
 	"workdir/notice-undelivered": Unavailable,
 	"workdir/unavailable":        Unavailable,
