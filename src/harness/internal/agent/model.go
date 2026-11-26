@@ -207,6 +207,22 @@ func (m *Model) Select(ctx context.Context, sel ModelSelection) (event.Receipt, 
 	return r, m.foldLocked(ctx)
 }
 
+// ModelSelector is an Instance whose next model selection a carrier sets
+// (session/model/set); the driver implements it.
+type ModelSelector interface {
+	SelectModel(ctx context.Context, sel ModelSelection) (event.Receipt, error)
+}
+
+// SelectModel records sel as a's next selection (Model.Select). An agent whose
+// instance is no ModelSelector refuses with agent/invalid-options.
+func SelectModel(ctx context.Context, a Agent, sel ModelSelection) (event.Receipt, error) {
+	a, _ = unwrap(a)
+	if s, ok := a.(ModelSelector); ok {
+		return s.SelectModel(ctx, sel)
+	}
+	return event.Receipt{}, errorf(CodeInvalid, "%s has no model selection", a.Ref())
+}
+
 // Current is the selection the next step would capture, and its source: a
 // recorded Select not yet used, else the latest request header's, else the
 // creation options', else the default nearest on the agent's scope chain. With

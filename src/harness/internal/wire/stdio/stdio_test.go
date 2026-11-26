@@ -16,6 +16,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/wire/stdio"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess/subprocesstest"
 	"github.com/smartpcr/agent-plugin/src/sdk/jsonrpc"
 )
 
@@ -117,6 +118,11 @@ func startHelper(t *testing.T, mode string, stdin subprocess.StdinMode, stdout s
 	env := subprocess.Env{helperEnv + "=1", modeEnv + "=" + mode, logEnv + "=" + logPath}
 	if root := os.Getenv("SYSTEMROOT"); root != "" {
 		env = append(env, "SYSTEMROOT="+root)
+	}
+	// The owner runs only in the helper: forward the coverage directory so the
+	// gate's coverage, merged across processes, counts what the helper ran.
+	if dir := os.Getenv(subprocesstest.CoverDirEnv); dir != "" {
+		env = append(env, subprocesstest.CoverDirEnv+"="+dir)
 	}
 	stderr := &testkit.Buffer{}
 	p, err := subprocess.Start(context.Background(), subprocess.Spec{

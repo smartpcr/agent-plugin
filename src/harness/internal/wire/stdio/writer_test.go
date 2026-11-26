@@ -127,3 +127,27 @@ func TestBoundedWriterFailureAsksStopOnce(t *testing.T) {
 		}
 	})
 }
+
+// refusingWriter fails every write with err.
+type refusingWriter struct{ err error }
+
+func (r refusingWriter) Write([]byte) (int, error) { return 0, r.err }
+
+// A writer with no bound uses DefaultWriteStall and may have no stop: Err is nil
+// while it runs, and after a failed write it is the stdio/output-failed ending,
+// wrapping the cause.
+//
+//dsh:test DH-T-SDK-22
+func TestWriterErrWithDefaultsAndNoStop(t *testing.T) {
+	cause := errors.New("pipe closed")
+	w := stdio.NewWriter(refusingWriter{cause}, 0, nil)
+	if err := w.Err(); err != nil {
+		t.Fatalf("Err before any write = %v", err)
+	}
+	if _, err := w.Write([]byte("{}\n")); !herr.Has(err, stdio.ReasonOutputFailed) {
+		t.Fatalf("failed write: %v, want %s", err, stdio.ReasonOutputFailed)
+	}
+	if err := w.Err(); !herr.Has(err, stdio.ReasonOutputFailed) || !errors.Is(err, cause) {
+		t.Fatalf("Err after a failed write = %v, want %s wrapping %v", err, stdio.ReasonOutputFailed, cause)
+	}
+}
