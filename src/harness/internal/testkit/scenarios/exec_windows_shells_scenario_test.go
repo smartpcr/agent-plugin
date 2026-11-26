@@ -38,7 +38,7 @@ import (
 // UTF-8,
 // Then every string within the limit prints back exactly through all three
 // shells and the over-long one is refused with no command run; without Git the
-// bash call answers unavailable and names no WSL program; npm is refused with
+// bash call fails with shellexec/not-found and names no WSL program; npm is refused with
 // subprocess/batch-refused, runs with opt-in, and is refused with
 // subprocess/bad-argument for the % argument. Whether the 5.1 input arrived
 // intact is logged for debt L:pwsh-local.7 and asserts nothing.
@@ -107,8 +107,8 @@ func TestExecWindowsShellsQuoteAndResolve(t *testing.T) {
 			t.Fatalf("the turn made %d calls; want the one scripted bash call", len(got))
 		}
 		raw := strings.ToLower(string(got[0].Raw))
-		if res, ok := shellResult(t, got[0]); (ok && res.Outcome == "exited") || !strings.Contains(raw, "unavailable") {
-			t.Errorf("bash without Git for Windows did not answer unavailable: %s", got[0].Raw)
+		if res, ok := shellResult(t, got[0]); (ok && res.Outcome == "exited") || !got[0].IsError || !strings.Contains(raw, string(shellexec.ReasonNotFound)) {
+			t.Errorf("bash without Git for Windows did not fail with %s: %s", shellexec.ReasonNotFound, got[0].Raw)
 		}
 		if strings.Contains(raw, "wsl") || strings.Contains(raw, `system32\\bash.exe`) {
 			t.Errorf("bash without Git for Windows named the WSL launcher: %s", got[0].Raw)
