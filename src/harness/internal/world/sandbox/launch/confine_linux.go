@@ -59,9 +59,10 @@ func confineLandlock(p Plan) ([]sandbox.Effect, error) {
 	if err != nil {
 		return nil, err
 	}
-	// NewRulesetFD rejects access rights go-landlock does not know before it
-	// creates anything, the check the deprecated NewConfig made.
-	cfg := landlock.Config{HandledAccessFS: landlock.AccessFSSet(rs.Handled)}
+	cfg, err := landlockConfig(rs)
+	if err != nil {
+		return nil, err
+	}
 	rules := make([]landlock.Rule, 0, len(rs.Rules))
 	for _, r := range rs.Rules {
 		rules = append(rules, landlock.PathAccess(landlock.AccessFSSet(r.Access), r.Path))
@@ -84,4 +85,15 @@ func confineLandlock(p Plan) ([]sandbox.Effect, error) {
 		return nil, fmt.Errorf("restrict the stage: %w", err)
 	}
 	return governed, nil
+}
+
+// landlockConfig is the go-landlock config for rs. It is a struct literal (the
+// deprecated NewConfig is not called), so it checks here what NewConfig checked:
+// the handled set holds only kinds of the reference set, which go-landlock knows.
+// NewRulesetFD checks the same again before it creates anything.
+func landlockConfig(rs Ruleset) (landlock.Config, error) {
+	if unknown := rs.Handled &^ LandlockHandled(LandlockReference); unknown != 0 {
+		return landlock.Config{}, fmt.Errorf("the Landlock config for interface version %d: handled access %#x is outside the reference set", rs.Version, unknown)
+	}
+	return landlock.Config{HandledAccessFS: landlock.AccessFSSet(rs.Handled)}, nil
 }

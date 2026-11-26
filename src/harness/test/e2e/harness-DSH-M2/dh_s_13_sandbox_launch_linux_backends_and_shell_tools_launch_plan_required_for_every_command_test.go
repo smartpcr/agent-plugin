@@ -297,14 +297,11 @@ func (w *lprWorld) whenStartRunsStaged() error {
 }
 
 func (w *lprWorld) thenMarkerAbsent() error {
-	if err := watchFor(300*time.Millisecond, func() (bool, error) {
-		_, err := os.Stat(w.marker)
-		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
-		}
-		return err == nil, err
-	}); err != nil {
-		return err
+	// Start stopped the stage's tree before it returned, and StopTree returns only
+	// once every member has exited, else Start's error carries tree-survivors: with
+	// none reported no process is left to write a late marker.
+	if herr.Has(w.err, subprocess.ReasonSurvivors) {
+		return fmt.Errorf("Start left members of the stage's tree running: %w", w.err)
 	}
 	_, err := os.Stat(w.marker)
 	if err == nil {

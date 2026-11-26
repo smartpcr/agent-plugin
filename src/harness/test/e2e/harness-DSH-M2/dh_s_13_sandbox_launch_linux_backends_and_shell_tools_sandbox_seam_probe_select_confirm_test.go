@@ -375,28 +375,6 @@ func (w *spcWorld) markerExists() (bool, error) {
 	return false, err
 }
 
-// watchFor polls seen until it reports a trace or an error, or window passes.
-// Start stops a refused stage's tree before it returns, so the window only
-// catches a late write that the stop missed; it ends at the first sighting
-// rather than waiting the window out (QG-4).
-func watchFor(window time.Duration, seen func() (bool, error)) error {
-	tick := time.NewTicker(10 * time.Millisecond)
-	defer tick.Stop()
-	deadline := time.NewTimer(window)
-	defer deadline.Stop()
-	for {
-		if ok, err := seen(); err != nil || ok {
-			return err
-		}
-		select {
-		case <-deadline.C:
-			_, err := seen()
-			return err
-		case <-tick.C:
-		}
-	}
-}
-
 func (w *spcWorld) stages() ([]string, error) {
 	b, err := os.ReadFile(w.log)
 	if errors.Is(err, os.ErrNotExist) {
@@ -417,8 +395,11 @@ func (w *spcWorld) thenDecision(decision, result string) error {
 		if got := herr.Kind(w.err); got != herr.Reason(result) {
 			return fmt.Errorf("Start's error = %v (reason %q), want %q", w.err, got, result)
 		}
-		if err := watchFor(200*time.Millisecond, w.markerExists); err != nil {
-			return err
+		// Start stopped the stage's tree before it returned, and StopTree returns only
+		// once every member has exited, else Start's error carries tree-survivors:
+		// with none reported no process is left to write a late marker.
+		if herr.Has(w.err, subprocess.ReasonSurvivors) {
+			return fmt.Errorf("Start left members of the stage's tree running: %w", w.err)
 		}
 		if ran, err := w.markerExists(); err != nil || ran {
 			return fmt.Errorf("the command ran (%v) although the decision rejected the start", err)
@@ -513,13 +494,10 @@ func (w *spcWorld) thenNoProcess() error {
 	if err == nil {
 		return errors.New("Start accepted the refused plan")
 	}
-	if err := watchFor(200*time.Millisecond, func() (bool, error) {
-		if s, err := w.stages(); err != nil || len(s) != 0 {
-			return true, err
-		}
-		return w.markerExists()
-	}); err != nil {
-		return err
+	// subprocess/no-launch is Start's refusal before anything starts, so no stage
+	// or command exists that could still write.
+	if got := herr.Kind(err); got != subprocess.ReasonNoLaunch {
+		return fmt.Errorf("Start's error = %v (reason %q), want %q before anything starts", err, got, subprocess.ReasonNoLaunch)
 	}
 	if s, err := w.stages(); err != nil || len(s) != 0 {
 		return fmt.Errorf("a launch stage started (%q, %v) although Prepare refused the policy", s, err)

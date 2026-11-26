@@ -1,0 +1,309 @@
+package agentpreset_test
+
+// Throwaway test for the DH-S-14 manual check of step 14.3 (impl.md DH-S-14
+// "Manual checks": edit a preset while a test session runs and record that the
+// session keeps its revision). Copy it into src/harness/internal/boot/agentpreset/
+// of a THROWAWAY WORKTREE at the recorded commit, run it once with -v, and delete
+// the worktree. It is never committed as Go source.
+//
+// It copies the shipped presets/standard.yml to a scratch presets directory, mounts
+// the real file tools (fs.tools) and one-shot shell tools (shellexec.tools) over an
+// embedded SQLite store on disk and binds session s1 to standard. With s1 still
+// open and bound it edits the scratch standard.yml (persona prefix
+// rewritten, applyPatch off), reloads, and prints what s1 and a new session s2 see:
+// the fold, the registry's revisions and leases, each agent's tool list and persona
+// prefix. It then closes s1 and the store, reopens the database file, and prints
+// s1's persisted binding.
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/smartpcr/agent-plugin/src/go/cordis"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/agentpreset"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/agentpreset/persona"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/catalog"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/scope"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store/sqlite"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/views"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/workdir"
+	htools "github.com/smartpcr/agent-plugin/src/harness/internal/tools"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/tools/core"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/tools/prompt"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/fs/local"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/fs/ops"
+	fstools "github.com/smartpcr/agent-plugin/src/harness/internal/world/fs/tools"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox/sandboxtest"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/shellexec"
+	shtools "github.com/smartpcr/agent-plugin/src/harness/internal/world/shellexec/tools"
+)
+
+type m14Dirs struct{ root string }
+
+func (d m14Dirs) Access(session.ID) (workdir.Access, error) { return d, nil }
+func (d m14Dirs) Current() (workdir.WorkingDirectory, error) {
+	return workdir.WorkingDirectory{Path: d.root, Root: d.root}, nil
+}
+func (d m14Dirs) Path() (string, error) { return d.root, nil }
+func (d m14Dirs) Root() (string, error) { return d.root, nil }
+
+type m14Maint struct{}
+
+func (m14Maint) Maintain(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) }
+
+func TestManualS14PresetEditedDuringASession(t *testing.T) {
+	ctx := context.Background()
+	scratch := t.TempDir()
+	t.Logf("scratch = %s", scratch)
+	ws, presets := filepath.Join(scratch, "ws"), filepath.Join(scratch, "presets")
+	for _, d := range []string{ws, presets} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(ws, "hello.txt"), []byte("hello from the workspace\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	shipped, err := os.ReadFile(filepath.Join("presets", "standard.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(presets, "standard.yml")
+	if err := os.WriteFile(file, shipped, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	load := func() agentpreset.Declaration {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		d, err := agentpreset.ParseDeclaration(file, data, "standard")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+
+	dbPath := filepath.Join(scratch, "sessions.db")
+	st, err := sqlite.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := cordis.New()
+	t.Cleanup(root.Dispose)
+	use := func(c *cordis.Component, cfg any) {
+		f, err := root.Use(c, cfg)
+		if err == nil {
+			err = f.Wait()
+		}
+		if err != nil {
+			t.Fatalf("%s: %v", c.Name(), err)
+		}
+	}
+	use(scope.Component, cordis.None{})
+	use(core.Component, cordis.None{})
+	use(prompt.Component, prompt.Defaults())
+	var tab scope.Table
+	var tools htools.Service
+	var prom *prompt.Service
+	g, err := root.Inject([]string{scope.TableKey.Name(), htools.Key.Name(), prompt.Key.Name()}, func(c *cordis.Context) error {
+		var err error
+		if tab, err = scope.TableKey.Get(c); err != nil {
+			return err
+		}
+		if tools, err = htools.Key.Get(c); err != nil {
+			return err
+		}
+		prom, err = prompt.Key.Get(c)
+		return err
+	})
+	if err == nil {
+		err = g.Wait()
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	wd := m14Dirs{ws}
+	res := &sandboxtest.Resolver{Default: sandbox.WorkspaceWrite, Workdir: wd}
+	fsops := ops.New(root, local.New(), res, ops.Options{Workdir: wd})
+	for _, p := range []func() error{
+		func() error { _, err := ops.Key.Provide(root, fsops); return err },
+		func() error { _, err := shellexec.Key.Provide(root, shellexec.NewRegistry()); return err },
+		func() error { _, err := sandbox.ResolverKey.Provide(root, res); return err },
+		func() error { _, err := workdir.Key.Provide(root, workdir.Lookup(wd)); return err },
+	} {
+		if err := p(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var cat *catalog.Catalog
+	cat, err = catalog.Build([]catalog.Item{persona.Item(), fstools.Item(), shtools.Item()},
+		agentpreset.Items(func() agentpreset.Host { return agentpreset.Host{Catalogue: cat, Version: "manual"} }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg, err := agentpreset.New(root, agentpreset.Options{Catalogue: cat, Scopes: tab, Version: "manual"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fold := views.New()
+	view, err := agentpreset.RegisterView(fold)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := session.NewService(root, st, session.Config{Folder: fold})
+	cfg := agentpreset.Config{Default: "standard"}
+
+	bind := func(id string) (session.Handle, *scope.Scope, agentpreset.Info) {
+		h, err := sess.Create(ctx, nil, session.CreateOptions{Header: session.Header{ID: id}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		sc, err := tab.New(root, "agent:"+id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		in, err := reg.Bind(ctx, agentpreset.Target{Session: h, Scope: sc, Owner: sc.Ctx(), Maintainer: m14Maint{}}, "", agentpreset.CauseCreate)
+		if err != nil {
+			t.Fatalf("bind %s: %v", id, err)
+		}
+		return h, sc, in
+	}
+	foldOf := func(h session.Handle) agentpreset.Binding {
+		snap, err := fold.Read(ctx, h, agentpreset.FoldKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := view.Get(snap)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	seen := func(who string, sc *scope.Scope, h session.Handle) {
+		v, err := tools.Resolve(ctx, htools.Target{Scope: sc.Key()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer v.Release()
+		var names []string
+		for _, d := range v.Tools() {
+			names = append(names, d.Name())
+		}
+		a, err := prom.Assemble(ctx, prompt.Input{View: v})
+		if err != nil {
+			t.Fatal(err)
+		}
+		prefix := ""
+		for _, s := range a.Sections {
+			if s.Name == prompt.SectionPersonaPrefix {
+				prefix = s.Text
+			}
+		}
+		in, _ := reg.Of(sc.Key())
+		b := foldOf(h)
+		fmt.Printf("%s: registry Of = %s rev %d digest %s\n", who, in.ID, in.Revision, in.Digest)
+		fmt.Printf("%s: fold = preset %s digest %s cause %s\n", who, b.Preset, b.Digest, b.Cause)
+		fmt.Printf("%s: tools = %s\n", who, strings.Join(names, " "))
+		fmt.Printf("%s: persona prefix = %q\n", who, prefix)
+	}
+	revisions := func(when string) {
+		for _, r := range reg.Revisions() {
+			fmt.Printf("%s: revision %s rev %d leases %d retired %v broken %q\n", when, r.ID, r.Revision, r.Leases, r.Retired, r.Broken)
+		}
+	}
+
+	fmt.Printf("\n===== 1. load the shipped standard.yml (scratch copy %s)\n", file)
+	if err := reg.Load(cfg, []agentpreset.Declaration{load()}); err != nil {
+		t.Fatal(err)
+	}
+	h1, sc1, rev1 := bind("s1")
+	fmt.Printf("s1 bound: %s rev %d digest %s\n", rev1.ID, rev1.Revision, rev1.Digest)
+	seen("s1", sc1, h1)
+	revisions("before edit")
+
+	fmt.Printf("\n===== 2. edit %s while s1 is open (persona prefix rewritten, applyPatch false), reload\n", file)
+	edited := strings.Replace(string(shipped), "You are a coding agent.", "EDITED: you are a careful coding agent.", 1)
+	edited = strings.Replace(edited, "applyPatch: true", "applyPatch: false", 1)
+	if edited == string(shipped) || !strings.Contains(edited, "applyPatch: false") {
+		t.Fatal("the edit did not apply")
+	}
+	if err := os.WriteFile(file, []byte(edited), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Load(cfg, []agentpreset.Declaration{load()}); err != nil {
+		t.Fatal(err)
+	}
+	revisions("after edit")
+	seen("s1", sc1, h1)
+
+	fmt.Printf("\n===== 3. a new session s2 after the edit\n")
+	h2, sc2, rev2 := bind("s2")
+	fmt.Printf("s2 bound: %s rev %d digest %s\n", rev2.ID, rev2.Revision, rev2.Digest)
+	seen("s2", sc2, h2)
+	seen("s1", sc1, h1)
+	revisions("with s1 and s2")
+
+	b1 := foldOf(h1)
+	if b1.Digest != rev1.Digest || rev2.Revision != rev1.Revision+1 || rev2.Digest == rev1.Digest {
+		t.Errorf("s1 fold %+v, rev1 %+v, rev2 %+v", b1, rev1, rev2)
+	}
+
+	fmt.Printf("\n===== 4. close s1 and s2 and the store; reopen %s\n", dbPath)
+	for _, h := range []session.Handle{h1, h2} {
+		if err := h.Close(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	st2, err := sqlite.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st2.Close(ctx)
+	fold2 := views.New()
+	view2, err := agentpreset.RegisterView(fold2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess2 := session.NewService(root, st2, session.Config{Folder: fold2})
+	for _, id := range []string{"s1", "s2"} {
+		h, _, err := sess2.Open(ctx, nil, session.ID(id), session.OpenOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		snap, err := fold2.Read(ctx, h, agentpreset.FoldKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := view2.Get(snap)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fmt.Printf("%s reopened from SQLite: fold = preset %s digest %s cause %s\n", id, b.Preset, b.Digest, b.Cause)
+		want := map[string]string{"s1": rev1.Digest, "s2": rev2.Digest}[id]
+		if b.Digest != want {
+			t.Errorf("%s reopened fold digest %s, want %s", id, b.Digest, want)
+		}
+		_ = h.Close(ctx)
+	}
+
+	fmt.Printf("\n===== 5. close s1's agent scope (its lease)\n")
+	if err := sc1.Close(); err != nil {
+		t.Fatal(err)
+	}
+	revisions("after s1's release")
+	if slices.ContainsFunc(reg.Revisions(), func(r agentpreset.RevisionStatus) bool { return r.Revision == rev1.Revision }) {
+		t.Errorf("rev %d outlived its last lease", rev1.Revision)
+	}
+	_ = sc2.Close()
+}
