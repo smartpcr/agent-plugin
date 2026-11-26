@@ -403,6 +403,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "starting", http.StatusServiceUnavailable)
 		return
 	}
+	r = r.WithContext(context.WithValue(r.Context(), streamKey{}, stream))
 	if class == Required {
 		peer, ok, err := Authenticate.Bail(s.ctx, s.credentials(r, ""))
 		if err != nil {
