@@ -10,6 +10,15 @@
 // cancels the context of every handler still serving one of them and waits for
 // those handlers to return. Dispatch is the standard library's pattern matching over
 // the current table; a path no loaded component registered is 404.
+//
+// Interim contract (impl.md step 15.4, held open). This stage delivers a
+// declared-effect table, not the full Route of api.md §6.1. Effect (Read, Change,
+// Stream) and Params stand in for Access, Kind and Activation, and Serve is a plain
+// http.Handler instead of Handle func(*Request) Response with Form. Until
+// DH-D-API-3 (host.access) exists, no access decision is made: a handler can read
+// any PathValue, and Info lists no access rule. The rule and untagged-id-field cases
+// of DH-T-API-1 are open; the tests here prove only the effect, parameter,
+// duplicate and unload cases.
 package web
 
 import (
@@ -66,7 +75,8 @@ var methods = map[Effect][]string{
 	Stream: {http.MethodGet},
 }
 
-// Route is one UI route's declaration.
+// Route is one UI route's declaration: the interim shape of api.md §6.1 (see the
+// package comment). Access, Kind, Activation, Form and Handle are held open.
 type Route struct {
 	// Name is the stable name of the route: dot-separated lower-case words
 	// ("session.prompt"). It is unique in the table.
@@ -88,7 +98,8 @@ type Route struct {
 	Serve http.Handler
 }
 
-// Info is the catalog view of one registered route.
+// Info is the catalog view of one registered route. It has no access rule until
+// Route has one.
 type Info struct {
 	Name    string
 	Method  string
