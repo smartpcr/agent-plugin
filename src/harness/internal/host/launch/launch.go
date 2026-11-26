@@ -51,6 +51,8 @@ const (
 	ReasonNoChannel herr.Reason = "launch/no-channel"
 	// ReasonNoStop: host.stop was asked of a host composed without a stop function.
 	ReasonNoStop herr.Reason = "launch/no-stop"
+	// ReasonPrint: the host's terminal refused the launch link.
+	ReasonPrint herr.Reason = "launch/print-failed"
 )
 
 // The control endpoint's methods: the complete, closed set.
@@ -189,6 +191,9 @@ type Host struct {
 	mu      sync.Mutex
 	conns   map[net.Conn]struct{}
 	once    sync.Once
+	// unprotect releases this host's control-socket path from subprocess's
+	// protected set; other hosts' paths stay protected.
+	unprotect func()
 }
 
 // Start takes the record's lock, replaces a stale record, listens on the control
@@ -232,7 +237,7 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 		_ = lock.Unlock()
 		return nil, herr.Wrap(ReasonIO, err, "launch: listen on the control socket")
 	}
-	subprocess.SetControlSocket(h.paths.Socket)
+	h.unprotect = subprocess.ProtectControlSocket(h.paths.Socket)
 	h.ctx, h.cancel = context.WithCancel(ctx)
 	if err := h.writeRecord(); err != nil {
 		_ = h.Close()
@@ -280,7 +285,7 @@ func (h *Host) Close() error {
 		}
 		h.mu.Unlock()
 		h.wg.Wait()
-		subprocess.SetControlSocket("")
+		h.unprotect()
 		err = errors.Join(removeIfPresent(h.paths.Record), removeIfPresent(h.paths.Socket), h.lock.Unlock())
 	})
 	return err
@@ -319,14 +324,23 @@ func (h *Host) announce() {
 		return
 	}
 	if canPrint {
-		h.print(link)
+		if err := h.print(link); err != nil {
+			h.o.Warn("launch: the launch link could not be printed (%s)", herr.Kind(err))
+		}
 	}
 	if canOpen {
 		h.open(link)
 	}
 }
 
-func (h *Host) print(link string) { fmt.Fprintf(h.o.Terminal, "dsh: open %s\n", link) }
+// print writes link on the host's terminal. The error never carries the link: the
+// writer's own error is reduced to its kind.
+func (h *Host) print(link string) error {
+	if _, err := fmt.Fprintf(h.o.Terminal, "dsh: open %s\n", link); err != nil {
+		return herr.Newf(ReasonPrint, "launch: the host's terminal refused the launch link (%s)", herr.Kind(err))
+	}
+	return nil
+}
 
 // open hands link to the browser; a failure warns without the link
 // (DH-LIB-OPEN-R4).
@@ -355,7 +369,9 @@ func (h *Host) Open(printOnly bool) (string, error) {
 	if !canPrint {
 		return "", herr.New(ReasonNoChannel, "launch: the browser could not be opened and the host has no terminal")
 	}
-	h.print(link)
+	if err := h.print(link); err != nil {
+		return "", err
+	}
 	return Printed, nil
 }
 

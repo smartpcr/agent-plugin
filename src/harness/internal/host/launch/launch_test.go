@@ -6,10 +6,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -23,6 +25,8 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/kv"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/temphome"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox"
+	shellenv "github.com/smartpcr/agent-plugin/src/harness/internal/world/shellexec/env"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess"
 )
 
@@ -105,6 +109,9 @@ func listening(t *testing.T, runDir string, term *syncBuf, op *opener) (*cordis.
 	t.Cleanup(func() { _ = store.Close(bg) })
 	r := root()
 	if _, err := kv.DBKey.Provide(r, kv.DB(store)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := shellenv.Key.Provide(r, shellenv.NewRegistry(shellenv.Builtins{})); err != nil {
 		t.Fatal(err)
 	}
 	use(t, r, listen.Component, listen.Config{Port: new(uint16(0))})
@@ -195,7 +202,19 @@ func TestOneRecord(t *testing.T) {
 
 	eventually(t, "the announcement", func() bool { return op.count() == 1 && strings.Contains(term.String(), l0.Origin()) })
 
+	reg, err := shellenv.Key.Get(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := reg.Snapshot(bg)
+	if err != nil || !slices.Contains(snap, launch.WebURL+"="+l0.Origin()) {
+		t.Fatalf("managed snapshot = %v %v, want %s=%s", snap, err, launch.WebURL, l0.Origin())
+	}
+
 	f.Dispose()
+	if slices.ContainsFunc(reg.List(), func(v shellenv.Var) bool { return v.Name == launch.WebURL }) {
+		t.Fatalf("%s still declared after unload", launch.WebURL)
+	}
 	if left := records(t, l.Run()); len(left) != 0 {
 		t.Fatalf("records after unload = %v", left)
 	}
@@ -373,6 +392,54 @@ func TestOpenFallback(t *testing.T) {
 	none := start(t, temphome.New(t).Run(), launch.Options{Config: launch.Config{Open: &off}, Ready: make(chan struct{})})
 	if _, err := none.Open(false); herr.Kind(err) != launch.ReasonNoChannel {
 		t.Fatalf("Open with no channel = %v", err)
+	}
+}
+
+type brokenTerm struct{}
+
+func (brokenTerm) Write([]byte) (int, error) { return 0, errors.New("broken pipe") }
+
+// A terminal that refuses the link fails launch.open and warns at announcement,
+// and neither the error nor the warning carries the link.
+func TestPrintFails(t *testing.T) {
+	var mu sync.Mutex
+	var warns []string
+	off := false
+	h := start(t, temphome.New(t).Run(), launch.Options{Config: launch.Config{Open: &off}, Terminal: brokenTerm{},
+		Warn: func(f string, a ...any) { mu.Lock(); warns = append(warns, fmt.Sprintf(f, a...)); mu.Unlock() }})
+	eventually(t, "the announcement warning", func() bool { mu.Lock(); defer mu.Unlock(); return len(warns) == 1 })
+	how, err := h.Open(true)
+	if herr.Kind(err) != launch.ReasonPrint || how != "" {
+		t.Fatalf("Open on a broken terminal = %q %v, want %s", how, err, launch.ReasonPrint)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if strings.Contains(err.Error(), "secret") || strings.Contains(warns[0], "secret") {
+		t.Fatalf("the link leaked: %v / %q", err, warns[0])
+	}
+}
+
+// Two hosts on different origins each keep their socket out of child
+// environments; closing one leaves the survivor's protected.
+func TestTwoHosts(t *testing.T) {
+	run := temphome.New(t).Run()
+	a := start(t, run, launch.Options{Origin: "http://127.0.0.1:1"})
+	b := start(t, run, launch.Options{Origin: "http://127.0.0.1:2"})
+	missing := filepath.Join(t.TempDir(), "none")
+	spawn := func(sock string) error {
+		_, err := subprocess.Start(bg, subprocess.Spec{Argv: []string{missing}, Env: subprocess.Env{"X=" + sock},
+			Launch: sandbox.Untrusted("launch test")})
+		return err
+	}
+	pa := a.Paths().Socket
+	if err := a.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if herr.Kind(spawn(b.Paths().Socket)) != subprocess.ReasonBadArgument {
+		t.Fatal("the surviving host's socket reached a child environment")
+	}
+	if herr.Kind(spawn(pa)) == subprocess.ReasonBadArgument {
+		t.Fatal("the closed host's socket is still protected")
 	}
 }
 

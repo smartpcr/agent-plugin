@@ -3,7 +3,7 @@ package subprocess
 import (
 	"net"
 	"strings"
-	"sync/atomic"
+	"sync"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox"
@@ -88,31 +88,66 @@ func (r *Registry) treeOf(pid int) Tree {
 	return Tree{Trust: Outside, Exact: exact, Peer: pid}
 }
 
-// controlSocket is the host's control-socket path, which no child environment
-// may hold (DH-ADR-EXEC-8).
-var controlSocket atomic.Pointer[string]
+// controlSockets are the host's control-socket paths, which no child environment
+// may hold (DH-ADR-EXEC-8). Slot 0 is SetControlSocket's; every other slot is one
+// ProtectControlSocket registration, so each host keeps its own path protected
+// until it releases it.
+var controlSockets = struct {
+	sync.Mutex
+	seq   int
+	paths map[int]string
+}{paths: map[int]string{}}
 
 // SetControlSocket records the host's control-socket path; from then on Start
 // refuses a Spec whose environment holds it in any value, so no child is ever
-// given the way to the host's control endpoint. An empty path clears it.
+// given the way to the host's control endpoint. An empty path clears it; paths
+// registered with ProtectControlSocket are not touched.
 func SetControlSocket(path string) {
+	controlSockets.Lock()
+	defer controlSockets.Unlock()
 	if path == "" {
-		controlSocket.Store(nil)
+		delete(controlSockets.paths, 0)
 		return
 	}
-	controlSocket.Store(&path)
+	controlSockets.paths[0] = path
 }
 
-// checkControlSocket refuses an environment that holds the control-socket path.
-func checkControlSocket(env Env) error {
-	path := controlSocket.Load()
-	if path == nil {
-		return nil
+// ProtectControlSocket adds path to the protected control-socket paths until the
+// returned release is called; releasing removes this registration only, so other
+// hosts' paths stay protected. Release is idempotent.
+func ProtectControlSocket(path string) (release func()) {
+	if path == "" {
+		return func() {}
 	}
+	controlSockets.Lock()
+	controlSockets.seq++
+	id := controlSockets.seq
+	controlSockets.paths[id] = path
+	controlSockets.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			controlSockets.Lock()
+			delete(controlSockets.paths, id)
+			controlSockets.Unlock()
+		})
+	}
+}
+
+// checkControlSocket refuses an environment that holds a control-socket path.
+func checkControlSocket(env Env) error {
+	controlSockets.Lock()
+	paths := make([]string, 0, len(controlSockets.paths))
+	for _, p := range controlSockets.paths {
+		paths = append(paths, p)
+	}
+	controlSockets.Unlock()
 	for _, kv := range env {
 		name, value, _ := strings.Cut(kv, "=")
-		if strings.Contains(value, *path) {
-			return herr.Newf(ReasonBadArgument, "the child environment's %s holds the host's control-socket path; no child is given it", name)
+		for _, p := range paths {
+			if strings.Contains(value, p) {
+				return herr.Newf(ReasonBadArgument, "the child environment's %s holds the host's control-socket path; no child is given it", name)
+			}
 		}
 	}
 	return nil

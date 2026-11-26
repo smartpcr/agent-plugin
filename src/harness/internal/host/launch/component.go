@@ -1,16 +1,22 @@
 package launch
 
 import (
+	"context"
 	"os"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	bootlaunch "github.com/smartpcr/agent-plugin/src/harness/internal/boot/launch"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/host/auth"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/host/listen"
+	shellenv "github.com/smartpcr/agent-plugin/src/harness/internal/world/shellexec/env"
 )
 
 // Name is the component's catalogue name.
 const Name = "host.launch"
+
+// WebURL is the managed variable host.launch contributes to the shell
+// environment registry (shellenv): the listener's origin.
+const WebURL = "DSH_WEB_URL"
 
 // Key is the running host.launch.
 var Key = cordis.NewServiceKey[*Host]("host.launch")
@@ -22,7 +28,9 @@ var optionsHook func(*Options)
 // profile that binds no listener (headless, sdk) never writes a runtime record. The
 // announcement waits for the listener's Ready; host.stop calls the boot App's
 // Stop(Requested, 0); the peer rule and the work summary ask the boot tree's
-// process registry. Unloading it removes the record and the socket.
+// process registry. With a managed environment registry in the tree it declares
+// DSH_WEB_URL, the origin. Unloading it removes the record, the socket and the
+// variable.
 var Component = cordis.Define(Name, func(ctx *cordis.Context, cfg Config) error {
 	l, err := listen.Key.Get(ctx)
 	if err != nil {
@@ -53,6 +61,16 @@ var Component = cordis.Define(Name, func(ctx *cordis.Context, cfg Config) error 
 		return h.Close, nil
 	}); err != nil {
 		return err
+	}
+	// DSH_WEB_URL is the origin, never a link, so a command can reach this host
+	// and still has to sign in; it leaves with this fiber.
+	if reg, ok := shellenv.Key.Lookup(ctx); ok && reg != nil {
+		origin := o.Origin
+		if _, err := shellenv.Mount(ctx, reg, shellenv.Contributor{Name: Name,
+			Decls:  []shellenv.Decl{{Name: WebURL, Description: "the listening host's origin; it carries no credential"}},
+			Values: func(context.Context) ([]string, error) { return []string{WebURL + "=" + origin}, nil }}); err != nil {
+			return err
+		}
 	}
 	_, err = Key.Provide(ctx, h)
 	return err
