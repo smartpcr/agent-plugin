@@ -139,9 +139,26 @@ file` at three places in the DH-S-13 e2e layer, the same on both lanes:
 - `test/e2e/harness-DSH-M2/dh_s_13_sandbox_launch_linux_backends_and_shell_tools_sandbox_seam_probe_select_confirm_test.go:400:3`
 - `test/e2e/harness-DSH-M2/dh_s_13_sandbox_launch_linux_backends_and_shell_tools_sandbox_seam_probe_select_confirm_test.go:494:2`
 
-Gates 3 to 13, coverage included, did not run. The WSL release rehearsal passed (exit 0). Replacing
-these waits changes how the DH-S-13 tests behave, so it is not done in this record (question
-`dh-s-14-nosleep-lane-blocker`). The S14 gate scenario (M2-DOD-1) stays open until both lanes pass.
+Gates 3 to 13, coverage included, did not run. The WSL release rehearsal passed (exit 0).
+
+**nosleep fix on this branch** (a separate change, test code only, question
+`dh-s-14-nosleep-lane-blocker`). Each of the three waits is replaced by a check of what `Start`
+guarantees, so no assertion is dropped:
+
+- The two reject paths (`lprWorld.thenMarkerAbsent`, `spcWorld.thenDecision` `reject`): `Start`
+  stops the stage's tree with `StopTree` before it returns. `StopTree` returns only once every
+  member has exited, and otherwise `Start`'s error carries `subprocess/tree-survivors`. The step now
+  fails if that reason is in the error (`herr.Has`), then checks the marker as before.
+- The refused-plan path (`spcWorld.thenNoProcess`): the step now requires `subprocess/no-launch`,
+  `Start`'s refusal before anything starts, then checks the stages and the marker as before.
+
+After it, `gofmt -l` of the package lists nothing, and `go vet` with `-tags=e2e` and
+`-tags=e2e,replay,scenario,bench` passes with and without the gate's own analyzers
+(`HARNESS_GATE_VETTOOL=1`, `-vettool=<harness-gate>`). The two scenario sets pass with
+`go test -tags=e2e -count=1 -run 'TestE2E_dh_s_13_sandbox_launch_linux_backends_and_shell_tools_(launch_plan_required_for_every_command|sandbox_seam_probe_select_confirm)$' ./test/e2e/harness-DSH-M2/`:
+on Windows 3/3 and 6/6 scenarios, on WSL 3/3 and 6/6 scenarios (5 steps skipped on WSL, the
+same 5 as at `3cd3da0` before the change). Both lanes are to run once on the commit that carries
+this fix. The S14 gate scenario (M2-DOD-1) stays open until both lanes pass.
 
 **Record check.** `harness-gate ready --stage DH-S-14 --built` on this record (status line
 `open`), run on the working tree that carries the operator acceptance above: exit 0,
@@ -190,8 +207,9 @@ after their run records were copied into `harness-DSH-M1/evidence/runs/`.
 ### Open items
 
 Both lanes at `2441517` fail gate 2 (`nosleep`, three `time.Sleep` calls in DH-S-13 e2e tests;
-Results; question `dh-s-14-nosleep-lane-blocker`). Once that is fixed, both lanes run once more on
-the commit that carries the fix, and their exits, run records and coverage are recorded here.
+Results). The three waits are replaced on this branch (question `dh-s-14-nosleep-lane-blocker`).
+Both lanes run once on the commit that carries that change, and their exits, run records and
+coverage are recorded here.
 Closed: the gofmt blocker (formatted on this branch, question `dh-s-14-gofmt-lane-blocker`) and the
 operator acceptance of the two manual checks (question `dh-s-14-manual-checks`, accepted).
 

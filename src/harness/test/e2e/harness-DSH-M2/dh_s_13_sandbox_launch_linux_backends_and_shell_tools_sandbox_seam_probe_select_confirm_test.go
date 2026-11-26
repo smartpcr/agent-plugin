@@ -395,9 +395,12 @@ func (w *spcWorld) thenDecision(decision, result string) error {
 		if got := herr.Kind(w.err); got != herr.Reason(result) {
 			return fmt.Errorf("Start's error = %v (reason %q), want %q", w.err, got, result)
 		}
-		// Start stopped the stage's tree before it returned; give a stray command a
-		// moment anyway so a late marker would be seen.
-		time.Sleep(200 * time.Millisecond)
+		// Start stopped the stage's tree before it returned, and StopTree returns only
+		// once every member has exited, else Start's error carries tree-survivors:
+		// with none reported no process is left to write a late marker.
+		if herr.Has(w.err, subprocess.ReasonSurvivors) {
+			return fmt.Errorf("Start left members of the stage's tree running: %w", w.err)
+		}
 		if ran, err := w.markerExists(); err != nil || ran {
 			return fmt.Errorf("the command ran (%v) although the decision rejected the start", err)
 		}
@@ -491,7 +494,11 @@ func (w *spcWorld) thenNoProcess() error {
 	if err == nil {
 		return errors.New("Start accepted the refused plan")
 	}
-	time.Sleep(200 * time.Millisecond)
+	// subprocess/no-launch is Start's refusal before anything starts, so no stage
+	// or command exists that could still write.
+	if got := herr.Kind(err); got != subprocess.ReasonNoLaunch {
+		return fmt.Errorf("Start's error = %v (reason %q), want %q before anything starts", err, got, subprocess.ReasonNoLaunch)
+	}
 	if s, err := w.stages(); err != nil || len(s) != 0 {
 		return fmt.Errorf("a launch stage started (%q, %v) although Prepare refused the policy", s, err)
 	}
