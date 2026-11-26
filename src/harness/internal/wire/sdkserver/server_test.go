@@ -13,6 +13,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/scope"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store/memstore"
 	fakemodel "github.com/smartpcr/agent-plugin/src/harness/internal/testkit/model"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools"
@@ -53,6 +54,7 @@ func (stubPrompt) Render(a prompt.Assembly) (string, error) { return a.Sections[
 type rig struct {
 	reg agent.Registry
 	svc session.Service
+	st  store.Store
 	tr  *fakemodel.Transport
 	o   sdkserver.Options
 }
@@ -71,7 +73,8 @@ func newRig(t *testing.T, turns ...fakemodel.Turn) *rig {
 		tsvc, err = tools.Key.Get(c)
 		return err
 	})).Wait())
-	svc := session.NewService(root, memstore.New(), session.Config{})
+	st := memstore.New()
+	svc := session.NewService(root, st, session.Config{})
 	reg := agent.NewRegistry(root)
 	rt := llm.New()
 	tr := fakemodel.NewTransport(t, turns...)
@@ -82,7 +85,7 @@ func newRig(t *testing.T, turns ...fakemodel.Turn) *rig {
 		Context: drvCtx, Sessions: svc, Scopes: scope.NewTable(root), Models: rt, Tools: tsvc, Prompt: stubPrompt{},
 	}))
 	must(reg.SetFactory(root, f))
-	return &rig{reg: reg, svc: svc, tr: tr, o: sdkserver.Options{
+	return &rig{reg: reg, svc: svc, st: st, tr: tr, o: sdkserver.Options{
 		Owner: root, Agents: reg, Sessions: svc, Routes: rt,
 		Info: protocol.Implementation{Name: "dsh", Version: "test"}, Limits: protocol.Limits{MaxFrameBytes: 1 << 20},
 	}}
