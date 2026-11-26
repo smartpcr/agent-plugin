@@ -148,7 +148,7 @@ func (s *hlceState) close() {
 			if os.RemoveAll(s.home) == nil {
 				break
 			}
-			time.Sleep(50 * time.Millisecond)
+			<-time.After(50 * time.Millisecond)
 		}
 	}
 }

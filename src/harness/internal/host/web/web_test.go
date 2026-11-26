@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/host/access"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/host/listen"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/host/web"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
@@ -106,9 +107,10 @@ func TestUndeclaredRouteRefused(t *testing.T) {
 
 type peer string
 
-func (p peer) ID() string             { return string(p) }
-func (peer) Context() context.Context { return context.Background() }
-func (peer) FormToken() string        { return "" }
+func (p peer) ID() string                { return string(p) }
+func (peer) Principal() access.Principal { return access.Owner() }
+func (peer) Context() context.Context    { return context.Background() }
+func (peer) FormToken() string           { return "" }
 
 // host loads host.listen on 127.0.0.1:0, an admit-all fake and host.web, and
 // returns the table and the listener's origin. Each pause, if any, runs inside the
@@ -317,7 +319,17 @@ func TestStreamDecisionPinnedAcrossSwap(t *testing.T) {
 	c := client(t)
 	codes := make(chan int, 1)
 	armed.Store(true)
+	requested := make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+		<-requested
+	})
 	go func() {
+		defer close(requested)
 		resp, err := c.Get(origin + "/x")
 		if err != nil {
 			codes <- -1
@@ -384,6 +396,14 @@ func TestConcurrentPublication(t *testing.T) {
 	const batches, rounds, contested = 8, 15, 8
 	stop := make(chan struct{})
 	readerDone := make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-stop:
+		default:
+			close(stop)
+		}
+		<-readerDone
+	})
 	go func() {
 		defer close(readerDone)
 		for {
