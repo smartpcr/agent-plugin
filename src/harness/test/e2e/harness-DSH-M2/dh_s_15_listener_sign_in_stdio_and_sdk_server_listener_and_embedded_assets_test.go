@@ -27,15 +27,17 @@ import (
 	"github.com/cucumber/godog"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/host/access"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/host/listen"
 )
 
 // leaPeer is the peer the admit-all fake admits every request as.
 type leaPeer struct{ id string }
 
-func (p leaPeer) ID() string               { return p.id }
-func (p leaPeer) Context() context.Context { return context.Background() }
-func (p leaPeer) FormToken() string        { return "form-" + p.id }
+func (p leaPeer) ID() string                  { return p.id }
+func (p leaPeer) Context() context.Context    { return context.Background() }
+func (p leaPeer) Principal() access.Principal { return access.Owner() }
+func (p leaPeer) FormToken() string           { return "form-" + p.id }
 
 // leaRecorder counts its calls and answers its prefix and the admitted peer.
 type leaRecorder struct {
