@@ -42,7 +42,12 @@ Each step's merge commit; `--built` refuses a step without one.
 
 ## Scenarios
 
-None executed here. Authored here: DH-E-SDK-1 (run in DH-S-17), DH-E-SDK-2 (run in DH-S-39); the browser sign-in and owner-takeover scenarios are indexed to DH-S-22 and DH-S-39.
+None executed here. Authored here: DH-E-SDK-1 (run in DH-S-17) and DH-E-SDK-2 (run in DH-S-39), in Stage 6.11 on the Go client; and, in Stage 5.9, compile only, on the M1 scenario helpers (`dshBinary`, `startDsh`) and raw JSON-RPC from `src/sdk/jsonrpc`, never `src/sdk/sdk` (M2-DOD-5):
+
+- DH-E-HOST-1 (`host_signin_scenario_test.go`) and DH-E-HOST-2 (`host_network_scenario_test.go`), indexed under DH-S-22 (impl.md step 22.2);
+- DH-E-HOST-7, DH-E-HOST-8 and DH-E-HOST-9, indexed under DH-S-39 (impl.md step 39.4): not yet authored; they follow in the next step of this stage, on the same helpers.
+
+The files are under `src/harness/internal/testkit/scenarios/`, with their shared helpers in `host_web_test.go`. What the product does not yet build (the browser, the conversation API, the takeover fixture) is a run-time input of each scenario, named in its doc comment; a missing input fails the scenario, it is never skipped.
 
 | Scenario | Variant | Venue | Leg | Environment | Commit | Result | Artifacts |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -105,3 +110,23 @@ Not yet recorded: the before-and-after comparison the stage names, or what was r
 ### Open items
 
 Not built (DH-D-SDK-4, M2-C-7): H-1 (schedule hook), H-2 (multi-route validation), H-3 (inline images). No method is added for them and `src/sdk/protocol/schema.json` is unchanged (TC-12g); an image block is refused `sdk/invalid-content`. Not built (DH-D-SDK-5): H-4 (goal stop signal); a run completes at its turn's `turn/end` only, never on a goal. Built-not-done: HOST-1, HOST-2 until DH-S-22; HOST-3, SDK-3 until DH-S-39; API-1 until DH-S-48. The exit evidence lists the SDK methods that are complete, those that wait for H-4, and H-1 to H-3 as not built.
+
+SDK methods (`wire/sdkserver` `server.go`, the registered client requests):
+
+| Method | State |
+| --- | --- |
+| `initialize`, `shutdown` | complete (`timeZone` validated on `initialize`) |
+| `session/create`, `session/resume`, `session/list`, `session/close` | complete |
+| `session/prompt`, `session/cancel` | complete; a text block only, an image block is refused `sdk/invalid-content` until H-3 |
+| `session/query`, `session/history` | complete |
+| `session/wait`, `session.run.completed` | complete for a turn (`turn/end`, with the last assistant text); completion on a goal waits for H-4 |
+| `session/model/set` | complete for the one route of the session; validation across routes waits for H-2 |
+| `session/working-directory/get`, `session/working-directory/set` | complete |
+| `approval/request`, `question/ask` (server to client) | complete, only when the client advertised them; `sdk/invalid-answer`, `sdk/late-answer`, `$/cancel` |
+| a schedule hook | not built (H-1); no method |
+
+Open list H-1..H-4: H-1 schedule hook, H-2 multi-route validation, H-3 inline images, H-4 goal stop signal: each not built in M2, none has a method or a schema entry.
+
+Manual checks: not yet seen. Both rows of the register need an operator at the built commit; no observation is recorded until one is made.
+
+Lane results: not yet recorded. The S15 gate on both lanes runs once per merged commit, outside an iteration, in a temporary worktree (product policy "Full harness gate").

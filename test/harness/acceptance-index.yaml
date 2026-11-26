@@ -275,6 +275,18 @@ stages:
       authored: DH-S-10
       credential: claude-session
       requires: [DH-S-11, DH-S-16, DH-S-21]
+    # Sign-in in two browsers, reuse, a closed window, and requests from other
+    # origins refused (impl.md step 22.2); authored in DH-S-15 (Stage 5.9).
+    - id: DH-E-HOST-1
+      authored: DH-S-15
+      credential: none
+      requires: [DH-S-16, DH-S-21]
+    # The network listener: TLS, a path prefix, a proxy and certificate renewal
+    # (impl.md step 22.2); authored in DH-S-15 (Stage 5.9).
+    - id: DH-E-HOST-2
+      authored: DH-S-15
+      credential: none
+      requires: [DH-S-16, DH-S-21]
   DH-S-23:
     # An image survives a crash mid-upload, a restart, a fork whose parent is
     # deleted and collection (impl.md DH-S-23); authored by Stage 8.2.

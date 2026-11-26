@@ -1,0 +1,220 @@
+//go:build scenario
+
+package scenarios
+
+import (
+	"bytes"
+	"crypto/tls"
+	"encoding/pem"
+	"errors"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+// TestNetworkListenerTLSPrefixAndRenewal is the DH-E-HOST-2 scenario
+// (docs/harness/areas/host-telemetry.md; DH-D-HOST-1, DH-D-HOST-2; tech-spec sec.
+// 4.5: authored in DH-S-15, run in DH-S-22 step 22.2): a network listener refuses
+// plain HTTP, serves TLS, works behind a path prefix, and picks up a new
+// certificate.
+//
+// Given two machines on one network (this one runs the host; the browser driver
+// drives a browser on the second), a certificate the second machine trusts for
+// this machine's name, a renewed pair for the same name, a real reverse proxy that
+// strips a path prefix, and the binary built from this checkout on a fresh home,
+// When (1) the host starts with a network bind and no TLS; (2) it starts with TLS
+// and the name as a trusted host, and the printed URL is opened on the second
+// machine; (3) seven tabs are opened; (4) the certificate files are replaced with
+// the renewed pair while tabs are open; (5) the proxy is put in front and the UI
+// is opened under the prefix,
+// Then (1) start-up fails with a message naming the flag and nothing listens; (2)
+// the UI loads, the cookie is Secure, directory browsing works, and the "open in"
+// route answers 404; (3) all seven update, over HTTP/2; (4) a new connection
+// presents the renewed certificate without a restart; (5) pages, assets, forms and
+// the event stream work under the prefix and the token redirect stays inside it.
+// Cleanup: the host and proxy stop and the home is deleted here; removing the
+// certificate from the trust store is the runbook's. If step 1 listened, the layer
+// and the start-up output are logged.
+//
+// Inputs: DSH_SCENARIO_WEB_ARGS (host_web_test.go); DSH_SCENARIO_HOST2_LAYER, a
+// layer over {tls} (on or off), {cert}, {key} and {public} binding
+// DSH_SCENARIO_HOST2_ADDR, trusting DSH_SCENARIO_HOST2_NAME, serving the pair when
+// {tls} is on and printing links under {public} when it is not empty;
+// DSH_SCENARIO_HOST2_PAIR and DSH_SCENARIO_HOST2_RENEWED, each "cert;key" PEM
+// paths; DSH_SCENARIO_HOST2_DRIVER, the browser driver on the second machine (its
+// {browser} is "remote"); DSH_SCENARIO_HOST2_DIRS and DSH_SCENARIO_HOST2_OPEN_IN,
+// the paths of the directory browser and of the "open in" route under the origin;
+// DSH_SCENARIO_HOST2_PROXY, a command over {upstream} that runs the reverse proxy
+// in the foreground, and DSH_SCENARIO_HOST2_PROXY_URL, the URL with the prefix the
+// second machine reaches it at.
+//
+//dsh:scenario DH-E-HOST-2
+func TestNetworkListenerTLSPrefixAndRenewal(t *testing.T) {
+	layerT := need(t, "DSH_SCENARIO_HOST2_LAYER", "layer over {tls}, {cert}, {key} and {public} binding the network address")
+	addr := need(t, "DSH_SCENARIO_HOST2_ADDR", "the network host:port the layer binds")
+	name := need(t, "DSH_SCENARIO_HOST2_NAME", "the name the certificate is for, a trusted host")
+	pair := needList(t, "DSH_SCENARIO_HOST2_PAIR", "cert;key of the trusted certificate")
+	renewed := needList(t, "DSH_SCENARIO_HOST2_RENEWED", "cert;key of the renewed certificate")
+	if len(pair) != 2 || len(renewed) != 2 {
+		t.Fatalf("DSH_SCENARIO_HOST2_PAIR and _RENEWED are each cert;key, got %v and %v", pair, renewed)
+	}
+	drive := newBrowserDriver(t, "DSH_SCENARIO_HOST2_DRIVER")
+	dirs := need(t, "DSH_SCENARIO_HOST2_DIRS", "path of the directory browser under the origin")
+	openIn := need(t, "DSH_SCENARIO_HOST2_OPEN_IN", "path of the open-in route under the origin")
+	proxy := need(t, "DSH_SCENARIO_HOST2_PROXY", "command over {upstream} running the prefix-stripping proxy")
+	proxyURL := strings.TrimRight(need(t, "DSH_SCENARIO_HOST2_PROXY_URL", "the proxy's URL with the prefix"), "/")
+	bin := dshBinary(t)
+	dir := t.TempDir()
+	root := filepath.Join(dir, "home")
+	cert, key := filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem")
+	install := func(p []string) {
+		copyFile(t, p[0], cert)
+		copyFile(t, p[1], key)
+	}
+	install(pair)
+	layer := func(tlsOn, public string) string {
+		return writeLayer(t, expand(layerT, map[string]string{"tls": tlsOn, "cert": cert, "key": key, "public": public}))
+	}
+	step := func(name, u string) browserState { return drive.step(t, "remote", name, u) }
+
+	// (1) A network bind without TLS or the explicit flag does not start.
+	plain := layer("off", "")
+	r := runDsh(t, time.Minute, []string{"DSH_HOME=" + root}, bin,
+		append([]string{"--home", root, "--layer", plain}, needList(t, webArgsEnv, "arguments starting a listening host")...)...)
+	if r.code == 0 || !strings.Contains(strings.ToLower(r.stdout+r.stderr), "allowinsecureremote") {
+		t.Errorf("(1) a plain network bind exited %d without naming the AllowInsecureRemote flag:\n%s%s", r.code, r.stdout, r.stderr)
+	}
+	if c, err := net.DialTimeout("tcp", addr, 3*time.Second); err == nil {
+		c.Close()
+		t.Fatalf("(1) %s accepts connections after the refused start; layer:\n%s", addr, plain)
+	}
+
+	// (2) With TLS the UI loads on the second machine with a Secure cookie.
+	h := startWebHost(t, bin, root, nil, layer("on", ""))
+	if !strings.HasPrefix(h.link, "https://") {
+		t.Fatalf("(2) the TLS host printed %s", h.link)
+	}
+	origin := h.origin()
+	s := step("open", h.link)
+	if s.Status != http.StatusOK {
+		t.Fatalf("(2) the link answered %d on the second machine", s.Status)
+	}
+	noTokenShown(t, "(2)", s)
+	if c, ok := s.sessionCookie(); !ok || !c.Secure {
+		t.Errorf("(2) the session cookie is %+v (present %v), want Secure", c, ok)
+	}
+	if s := step("open", origin+dirs); s.Status != http.StatusOK {
+		t.Errorf("(2) directory browsing answered %d", s.Status)
+	}
+	if s := step("open", origin+openIn); s.Status != http.StatusNotFound {
+		t.Errorf("(2) the open-in route answered %d in remote mode, want 404", s.Status)
+	}
+
+	// (3) Seven tabs all update, over HTTP/2.
+	tabs := step("seven-tabs", origin+"/")
+	if len(tabs.Tabs) != 7 {
+		t.Errorf("(3) %d of 7 tabs showed the update", len(tabs.Tabs))
+	}
+	for i, p := range tabs.Protocols {
+		if p != "h2" {
+			t.Errorf("(3) tab %d used %q, want h2", i+1, p)
+		}
+	}
+
+	// (4) Renewed files are picked up by the next handshake, without a restart.
+	pid := h.pid()
+	install(renewed)
+	want := pemDER(t, renewed[0])
+	deadline := time.Now().Add(time.Minute)
+	for {
+		got, err := presented(addr, name)
+		if err == nil && bytes.Equal(got, want) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("(4) no handshake presented the renewed certificate within a minute (last error %v)", err)
+		}
+		time.Sleep(time.Second)
+	}
+	if h.pid() != pid {
+		t.Errorf("(4) the host restarted (pid %d to %d) to pick up the certificate", pid, h.pid())
+	}
+	stopHost(t, h.dshHost)
+
+	// (5) Behind the prefix-stripping proxy every request stays under the prefix.
+	h = startWebHost(t, bin, root, nil, layer("on", proxyURL))
+	startShell(t, expand(proxy, map[string]string{"upstream": h.origin()}))
+	if !strings.HasPrefix(h.link, proxyURL+"/") {
+		t.Fatalf("(5) the host printed %s, want a link under %s", h.link, proxyURL)
+	}
+	s = step("open", h.link)
+	if s.Status != http.StatusOK || !strings.HasPrefix(s.URL, proxyURL+"/") {
+		t.Fatalf("(5) the link under the prefix ended at %s (%d), want a page under %s", s.URL, s.Status, proxyURL)
+	}
+	noTokenShown(t, "(5)", s)
+	walk := step("walk", s.URL)
+	stream := false
+	for _, resp := range walk.Responses {
+		u, err := url.Parse(resp.URL)
+		if err != nil || !strings.HasPrefix(resp.URL, proxyURL+"/") {
+			t.Errorf("(5) a request left the prefix: %s (%v)", resp.URL, err)
+			continue
+		}
+		if resp.Status >= 400 {
+			t.Errorf("(5) %s answered %d under the prefix", u.Path, resp.Status)
+		}
+		stream = stream || strings.HasPrefix(resp.ContentType, "text/event-stream")
+	}
+	if !stream {
+		t.Errorf("(5) the walk under the prefix opened no event stream: %+v", walk.Responses)
+	}
+	stopHost(t, h.dshHost)
+}
+
+// copyFile replaces dst with src's bytes.
+func copyFile(t *testing.T, src, dst string) {
+	t.Helper()
+	data, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// pemDER is the DER of the first certificate in a PEM file.
+func pemDER(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := pem.Decode(data)
+	if b == nil || b.Type != "CERTIFICATE" {
+		t.Fatalf("%s holds no PEM certificate", path)
+	}
+	return b.Bytes
+}
+
+// presented is the DER of the leaf certificate a new TLS connection to addr
+// presents for name.
+func presented(addr, name string) ([]byte, error) {
+	// The bytes are compared, so the chain is not verified here.
+	c, err := tls.DialWithDialer(&net.Dialer{Timeout: 5 * time.Second}, "tcp", addr,
+		&tls.Config{ServerName: name, InsecureSkipVerify: true})
+	if err != nil {
+		return nil, err
+	}
+	defer c.Close()
+	certs := c.ConnectionState().PeerCertificates
+	if len(certs) == 0 {
+		return nil, errors.New("no certificate presented")
+	}
+	return certs[0].Raw, nil
+}
