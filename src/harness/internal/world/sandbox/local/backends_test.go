@@ -345,6 +345,10 @@ func TestPrepareSeesThroughSymlinkedAncestors(t *testing.T) {
 		{"a root reached through a link that holds the home", filepath.Join(toBase, filepath.Base(base)), false, true},
 		{"a root reached through a link that holds the binary", filepath.Join(toExeParent, filepath.Base(filepath.Dir(exe))), false, true},
 		{"a plugin's state directory reached through a link", filepath.Join(toPlugins, "p1", "state"), true, true},
+		// A root that does not exist yet is judged by its nearest existing
+		// ancestor, resolved, with the rest appended.
+		{"a not-yet-created directory of the home reached through a link", filepath.Join(toHome, "config", "new", "deeper"), false, false},
+		{"a not-yet-created directory below a plugin's state reached through a link", filepath.Join(toPlugins, "p1", "state", "new"), true, true},
 	} {
 		p := issue(t, mint.Spec{Mode: string(sandbox.WorkspaceWrite), Roots: []mint.Root{{Path: tc.root, Source: string(sandbox.SourceGrant)}}})
 		for _, b := range []struct {
