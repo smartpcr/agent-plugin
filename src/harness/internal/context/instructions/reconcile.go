@@ -105,8 +105,13 @@ func (r *Reconciler) SetDirectory(dir, root string) {
 	r.mu.Lock()
 	same := r.dir == dir && r.root == root
 	if r.root != root {
-		// Last-good text is the text of a file of this project only.
-		r.lastGood = map[string]Entry{}
+		// A project file's last-good text is of this project only; a
+		// user-global file is the same file in every project.
+		for p, e := range r.lastGood {
+			if e.File.Scope != ScopeUser {
+				delete(r.lastGood, p)
+			}
+		}
 	}
 	r.dir, r.root = dir, root
 	r.mu.Unlock()
@@ -116,7 +121,8 @@ func (r *Reconciler) SetDirectory(dir, root string) {
 }
 
 // Touch is a file-tool touch (fs.Observed): the chain is marked when path is
-// one of its candidates or a directory of it, of either chain. path may be as given or as the
+// one of its candidates or a directory of it, of either chain, or the resolved
+// target of a linked user-global file. path may be as given or as the
 // seam resolved it.
 func (r *Reconciler) Touch(path string) { r.touch(path, false) }
 
@@ -132,8 +138,9 @@ func (r *Reconciler) touch(path string, shell bool) {
 	r.mu.Lock()
 	dir, root := r.dir, r.root
 	var canonRoot string
+	var targets []string
 	if r.obs != nil {
-		canonRoot = r.obs.canonRoot
+		canonRoot, targets = r.obs.canonRoot, r.obs.userTargets
 	}
 	r.mu.Unlock()
 	if dir == "" {
@@ -142,6 +149,13 @@ func (r *Reconciler) touch(path string, shell bool) {
 	path = filepath.Clean(path)
 	for _, u := range r.o.Config.userChain() {
 		if !shell && (path == u.path || path == filepath.Dir(u.path)) {
+			r.dirty.Store(true)
+			return
+		}
+	}
+	for _, t := range targets {
+		// The seam reports a touch by the resolved path of a linked user file.
+		if !shell && path == t {
 			r.dirty.Store(true)
 			return
 		}

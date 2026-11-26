@@ -165,6 +165,9 @@ type Observation struct {
 	user bool
 	// shown is the display name of each candidate.
 	shown map[string]string
+	// userTargets are the resolved paths of the user-global files that link
+	// elsewhere: a touch of one is a touch of the chain.
+	userTargets []string
 }
 
 // Discover reads the user-global chain, then the project chain of dir under
@@ -227,6 +230,9 @@ func Discover(ctx context.Context, fsys fs.FS, dir, root string, c Config) (Obse
 	}
 	for _, u := range c.userChain() {
 		obs.user = true
+		if in, err := fsys.Stat(ctx, fs.Ref{Path: u.path}); err == nil && in.Exists && in.Target.Display != "" && in.Target.Display != u.path {
+			obs.userTargets = append(obs.userTargets, in.Target.Display)
+		}
 		add(u.path, u.shown, ScopeUser, "", "")
 	}
 	for _, d := range dirs {

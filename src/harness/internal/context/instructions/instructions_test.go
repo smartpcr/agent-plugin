@@ -671,3 +671,92 @@ func TestUserFileTouchMarksTheChain(t *testing.T) {
 		_, _, _ = r.Next(ctx, &sec.Record)
 	}
 }
+
+// TestLinkedUserFileTouchMarksTheChain: with no watch, a file-tool touch that
+// the seam reports by the resolved target of a linked user-global file (as
+// fs.Observed does) marks the chain, and the next section holds the new text.
+//
+//dsh:test DH-T-CONTEXT-5
+func TestLinkedUserFileTouchMarksTheChain(t *testing.T) {
+	ctx := context.Background()
+	m := fstest.NewMemFS()
+	write(t, m, "/dotfiles/agents.md", "user v1\n")
+	write(t, m, "/ws/AGENTS.md", "project rules\n")
+	if err := m.Mkdir(abs("/dsh")); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Symlink(abs("/dotfiles/agents.md"), abs("/dsh/AGENTS.md")); err != nil {
+		t.Fatal(err)
+	}
+	c := instructions.Default()
+	c.HarnessHome = abs("/dsh")
+	r, err := instructions.NewReconciler(ctx, instructions.Options{FS: m, Config: c})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	r.SetDirectory(abs("/ws"), abs("/ws"))
+	sec, _, err := r.Next(ctx, nil)
+	if err != nil || !strings.Contains(sec.Text, "user v1") {
+		t.Fatalf("baseline: err=%v\n%s", err, sec.Text)
+	}
+	write(t, m, "/dotfiles/agents.md", "user v2\n")
+	if r.Pending() {
+		t.Fatal("an untouched chain is pending")
+	}
+	in, err := m.Stat(ctx, fs.Ref{Path: abs("/dsh/AGENTS.md")})
+	if err != nil || in.Target.Display == abs("/dsh/AGENTS.md") {
+		t.Fatalf("the seam does not resolve the link: %+v %v", in.Target, err)
+	}
+	r.Touch(in.Target.Display)
+	if !r.Pending() {
+		t.Fatalf("a touch of the resolved target %s did not mark the chain", in.Target.Display)
+	}
+	if sec, changed, _ := r.Next(ctx, &sec.Record); !changed || !strings.Contains(sec.Text, "user v2") {
+		t.Fatalf("after the touch: changed=%v\n%s", changed, sec.Text)
+	}
+}
+
+// TestUserLastGoodSurvivesARootChange: a user-global file that became
+// unreadable keeps its last-good text when the session moves to another
+// project, while project A's text does not follow.
+//
+//dsh:test DH-T-CONTEXT-5
+func TestUserLastGoodSurvivesARootChange(t *testing.T) {
+	ctx := context.Background()
+	m := fstest.NewMemFS()
+	write(t, m, "/dsh/AGENTS.md", "user rules\n")
+	write(t, m, "/a/AGENTS.md", "project A rules\n")
+	if err := m.Mkdir(abs("/b")); err != nil {
+		t.Fatal(err)
+	}
+	c := instructions.Default()
+	c.HarnessHome = abs("/dsh")
+	r, err := instructions.NewReconciler(ctx, instructions.Options{FS: m, Config: c})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	r.SetDirectory(abs("/a"), abs("/a"))
+	sec, _, err := r.Next(ctx, nil)
+	if err != nil || !strings.Contains(sec.Text, "user rules") || !strings.Contains(sec.Text, "project A rules") {
+		t.Fatalf("project A: err=%v\n%s", err, sec.Text)
+	}
+	// The user file becomes unreadable: a directory where the file was.
+	pol := sandboxtest.Policy(sandbox.DangerFullAccess)
+	if _, err := m.Delete(ctx, fs.Ref{Path: abs("/dsh/AGENTS.md")}, fs.NoGuard, pol); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Mkdir(abs("/dsh/AGENTS.md")); err != nil {
+		t.Fatal(err)
+	}
+	seen := sec.Record
+	r.SetDirectory(abs("/b"), abs("/b"))
+	sec, _, err = r.Next(ctx, &seen)
+	if err != nil || !strings.Contains(sec.Text, "user rules") || strings.Contains(sec.Text, "project A rules") {
+		t.Fatalf("project B: err=%v\n%s", err, sec.Text)
+	}
+	if f, ok := find(sec.Record, "$DSH_HOME/AGENTS.md"); !ok || f.State != instructions.Visible {
+		t.Fatalf("user file %+v, want its last-good text visible", f)
+	}
+}
