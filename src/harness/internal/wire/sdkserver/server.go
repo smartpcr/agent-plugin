@@ -4,8 +4,8 @@
 // it drives only those, and reads any stored session's history.
 //
 // This file is the session methods; forward.go and runs.go are the scoped event
-// forwarder and the run results (DH-D-SDK-5). The approval and question answerer
-// is a later stage (DH-D-SDK-6).
+// forwarder and the run results (DH-D-SDK-5); answer.go is the approval and
+// question answerer and the user's time zone (DH-D-SDK-6, U-K2-5).
 package sdkserver
 
 import (
@@ -25,6 +25,7 @@ import (
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/agent"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/human"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human/approval"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human/permission"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
@@ -91,6 +92,13 @@ type Options struct {
 	// permission/unavailable. A create or resume without one keeps the
 	// session's preset (a fresh session's is the table's default).
 	Permissions Permissions
+	// Interactions is the interaction registry the server answers approvals and
+	// questions on, as channel sdk (answer.go); nil answers none.
+	Interactions human.Registry
+	// OnAnswerError, when set, receives each reply to approval/request or
+	// question/ask that failed: sdk/invalid-answer, a client error or a lost
+	// transport.
+	OnAnswerError func(id human.ID, err error)
 	// Ready is closed when boot reports the tree ready; initialize waits for it.
 	// nil is ready.
 	Ready <-chan struct{}
@@ -115,13 +123,24 @@ func New(o Options) (*Server, error) {
 	if o.Owner == nil || o.Agents == nil || o.Sessions == nil {
 		return nil, errors.New("sdkserver: Owner, Agents and Sessions are required")
 	}
-	return &Server{o: o, held: map[session.ID]*Conn{}}, nil
+	s := &Server{o: o, held: map[session.ID]*Conn{}}
+	if o.Interactions != nil {
+		// One registration per channel; it leaves with Owner.
+		if _, err := o.Interactions.RegisterAnswerer(o.Owner, ChannelSDK, answerer{s: s}); err != nil {
+			return nil, fmt.Errorf("sdkserver: register the sdk answerer: %w", err)
+		}
+		if _, err := agent.Created.On(o.Owner, s.bindSubagent); err != nil {
+			return nil, fmt.Errorf("sdkserver: listen for subagents: %w", err)
+		}
+	}
+	return s, nil
 }
 
 // Conn is one client connection's state: the gate, the defaults initialize
 // gave, and the table of the sessions it owns.
 type Conn struct {
 	s       *Server
+	name    string
 	fiber   *cordis.Fiber
 	owner   *cordis.Context
 	methods map[string]jsonrpc.Handler
@@ -129,8 +148,12 @@ type Conn struct {
 	mu       sync.Mutex
 	client   protocol.Implementation
 	defaults protocol.Defaults
-	owned    map[session.ID]agent.Handle
-	closed   bool
+	caps     protocol.ClientCapabilities
+	// zone is initialize's timeZone; zones the session/create overrides.
+	zone   string
+	zones  map[session.ID]string
+	owned  map[session.ID]agent.Handle
+	closed bool
 	// out is where notifications go, nil until Attach; fwd is the forwarder of
 	// each session reported to it (forward.go).
 	out Notifier
@@ -144,7 +167,7 @@ func (s *Server) Connect() (*Conn, error) {
 	s.conns++
 	name := "sdk.conn." + strconv.Itoa(s.conns)
 	s.mu.Unlock()
-	c := &Conn{s: s, owned: map[session.ID]agent.Handle{}}
+	c := &Conn{s: s, name: name, owned: map[session.ID]agent.Handle{}, zones: map[session.ID]string{}}
 	f, err := s.o.Owner.Apply(name, func(ctx *cordis.Context) error { c.owner = ctx; return nil })
 	if err != nil {
 		return nil, fmt.Errorf("sdkserver: open the connection fiber: %w", err)
@@ -188,14 +211,33 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer, o jsonrpc.
 	if err != nil {
 		return err
 	}
-	rd, wr := &watchedReader{r: r}, &watchedWriter{w: w}
+	return c.Serve(ctx, r, w, o)
+}
+
+// Serve is Server.Serve on a connection already made: it attaches the transport
+// (which carries host requests and their rejections, answer.go) and serves the
+// client until the transport ends, then closes c.
+func (c *Conn) Serve(ctx context.Context, r io.Reader, w io.Writer, o jsonrpc.Options) error {
+	rd := &watchedReader{r: r}
+	wr := &watchedWriter{w: w}
 	o.Methods = c.Methods()
+	if onError := o.OnError; onError != nil {
+		o.OnError = func(err error) { c.OnFault(err); onError(err) }
+	} else {
+		o.OnError = c.OnFault
+	}
 	// Attached before the codec can dispatch, so no session misses a forwarder.
-	out := &deferred{ready: make(chan struct{})}
+	out := &deferred{ready: make(chan struct{}), w: &lineWriter{w: wr}, max: o.MaxFrameBytes, stall: o.WriteStall}
+	if out.max <= 0 {
+		out.max = jsonrpc.DefaultMaxLineBytes
+	}
+	if out.stall <= 0 {
+		out.stall = jsonrpc.DefaultWriteStall
+	}
 	if err := c.Attach(out); err != nil {
 		return errors.Join(err, c.Close(context.WithoutCancel(ctx)))
 	}
-	conn := jsonrpc.Serve(ctx, rd, wr, o)
+	conn := jsonrpc.Serve(ctx, rd, out.w, o)
 	out.set(conn)
 	<-conn.Done()
 	var ended error
@@ -273,6 +315,7 @@ func (c *Conn) Close(ctx context.Context) error {
 	c.closed = true
 	owned := c.owned
 	c.owned = map[session.ID]agent.Handle{}
+	c.zones = map[session.ID]string{}
 	c.mu.Unlock()
 	errs := []error{c.stopForwarders(ctx)}
 	for _, id := range slices.Sorted(maps.Keys(owned)) {
@@ -361,6 +404,9 @@ func (c *Conn) initialize(ctx context.Context, p protocol.InitializeParams) (pro
 	if err != nil {
 		return protocol.InitializeResult{}, err
 	}
+	if err := checkZone("timeZone", p.TimeZone); err != nil {
+		return protocol.InitializeResult{}, err
+	}
 	if r := c.s.o.Ready; r != nil {
 		select {
 		case <-r:
@@ -370,6 +416,8 @@ func (c *Conn) initialize(ctx context.Context, p protocol.InitializeParams) (pro
 	}
 	c.mu.Lock()
 	c.client = p.ClientInfo
+	c.caps = p.Capabilities
+	c.zone = p.TimeZone
 	if p.Defaults != nil {
 		c.defaults = *p.Defaults
 	}
@@ -398,6 +446,9 @@ func (c *Conn) create(ctx context.Context, p protocol.SessionCreateParams) (prot
 	if err := c.s.knownPreset(mode); err != nil {
 		return protocol.SessionCreateResult{}, err
 	}
+	if err := checkZone("timeZone", p.TimeZone); err != nil {
+		return protocol.SessionCreateResult{}, err
+	}
 	id := session.ID(p.SessionID)
 	if id == "" {
 		id = newID()
@@ -424,6 +475,14 @@ func (c *Conn) create(ctx context.Context, p protocol.SessionCreateParams) (prot
 	}
 	// A create that fails after adopt closes the session: the client may never
 	// have learned its id, so nothing could close, drive or resume it.
+	if err := c.bind(a); err != nil {
+		return protocol.SessionCreateResult{}, errors.Join(err, c.drop(ctx, id))
+	}
+	if p.TimeZone != "" {
+		c.mu.Lock()
+		c.zones[id] = p.TimeZone
+		c.mu.Unlock()
+	}
 	cwd, err := c.cwdOf(ctx, a)
 	if err != nil {
 		return protocol.SessionCreateResult{}, errors.Join(err, c.drop(ctx, id))
@@ -466,7 +525,11 @@ func (c *Conn) resume(ctx context.Context, p protocol.SessionResumeParams) (prot
 		return protocol.SessionResumeResult{}, err
 	}
 	rep, _ := agent.OpenReport(a)
-	// As on create, a resume that fails after filing the session closes it.
+	// As on create, a resume that fails after filing the session closes it. The
+	// binding is new: nothing answered on another connection carries over.
+	if err := c.bind(a); err != nil {
+		return protocol.SessionResumeResult{}, errors.Join(err, c.drop(ctx, id))
+	}
 	res, err := c.resumed(ctx, a, rep.Interrupted)
 	if err != nil {
 		return protocol.SessionResumeResult{}, errors.Join(err, c.drop(ctx, id))
@@ -505,6 +568,7 @@ func (c *Conn) drop(ctx context.Context, id session.ID) error {
 	c.mu.Lock()
 	h, ok := c.owned[id]
 	delete(c.owned, id)
+	delete(c.zones, id)
 	c.mu.Unlock()
 	if !ok {
 		return nil
@@ -602,6 +666,7 @@ func (c *Conn) closeSession(ctx context.Context, p protocol.SessionRef) (protoco
 	c.mu.Lock()
 	h, ok := c.owned[id]
 	delete(c.owned, id)
+	delete(c.zones, id)
 	c.mu.Unlock()
 	if !ok {
 		_, err := c.driven(p.SessionID)
@@ -676,7 +741,7 @@ func (c *Conn) send(ctx context.Context, id string, list agent.List, msgID strin
 	if err != nil {
 		return agent.Receipt{}, err
 	}
-	r, err := agent.Send(ctx, a, list, agent.InboxMessage{ID: msgID, Source: agent.SourceUser, By: c.by(), Text: text})
+	r, err := agent.Send(ctx, a, list, agent.InboxMessage{ID: msgID, Source: agent.SourceUser, By: c.by(), Client: c.clientRecord(session.ID(id)), Text: text})
 	if dup, ok := errors.AsType[*agent.DuplicateError](err); ok {
 		// A retry racing the first send is held to the same watermark.
 		r, err = dup.First, nil
@@ -732,6 +797,8 @@ func (c *Conn) cancel(ctx context.Context, p protocol.SessionCancelParams) (prot
 	if err := agent.Cancel(a, agent.CauseUser, agent.CancelOptions{Scope: scope, Inbox: inbox}); err != nil {
 		return protocol.SessionCancelResult{}, wire(err)
 	}
+	// Before waiting: a pending question would hold the turn until its deadline.
+	c.withdrawQuestions(ctx, a.Ref().Session)
 	if running && scope == agent.ScopeTurn {
 		if err := agent.WaitIdle(ctx, a); err != nil {
 			return protocol.SessionCancelResult{}, wire(err)

@@ -97,8 +97,19 @@ func newServer(t *testing.T, turns ...fakemodel.Turn) *sdkserver.Server {
 // client is one initialized connection to the server.
 type client struct {
 	t    *testing.T
-	peer *jsonrpctest.Peer
+	peer wirePeer
 	next int64
+}
+
+// wirePeer is the scripted client end of a connection: a *jsonrpctest.Peer, or
+// a pipePeer reading what Conn.Serve writes (answer_test.go).
+type wirePeer interface {
+	Request(id jsonrpc.ID, method string, params any)
+	Reply(id jsonrpc.ID, result any)
+	ReplyError(id jsonrpc.ID, e *jsonrpc.Error)
+	Expect() jsonrpc.Frame
+	ExpectResponse(id jsonrpc.ID) *jsonrpc.Response
+	ExpectError(id jsonrpc.ID, reason string) *jsonrpc.Error
 }
 
 func connect(t *testing.T, srv *sdkserver.Server) *client { return connectWith(t, srv, nil) }
