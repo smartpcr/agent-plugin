@@ -262,8 +262,17 @@ Gate lanes:
   - Record `E:\work\lanes\wsl-189b04e-20261126T0159Z.txt` (sha256
     `d00fbde29e34f14d35eb4d30e03349324b113e6d5ac68919257425fc5826549d`), `-rehearse.txt`, and the log
     `wsl-189b04e.log`. The clone has been removed. Gates 4 to 13 did not run on WSL.
-- 189b04e, Windows: running (started 2026-11-26T01:58Z, log `E:\work\lanes\win-189b04e.log`); results are
-  recorded when it ends.
+- 189b04e, Windows (`tools/harness-gate/lanes/win.ps1` from a temporary worktree): gofmt passed (1.0 s)
+  and vet passed (9 m 48 s). The run **failed at gate 3/13 (staticcheck)**, gate exit 1, ended
+  2026-11-26T02:13:19Z. The finding is in code this stage's diff does not touch (added by #136, on
+  `origin/main`) and shows only on Windows, where `bus_linux.go` is not built:
+  - `internal\world\sandbox\launch\bus.go:14:7: const busDialLimit is unused (U1000)`
+  - `internal\world\sandbox\launch\bus.go:159:6: func dialUnix is unused (U1000)`
+    (under both `-tags=` and `-tags=replay,scenario,bench`)
+  - Record `E:\work\lanes\win-189b04e-20261126T0155Z.txt` (sha256
+    `963d83cae55aa01154fb10f0ff434e2597d501756dc6e671c744521b81ef0c16`; in-record output hash
+    `0bbdd02026f6f9924bdf4efbe65e2e1930206d6df1cbe5bdc56e309a9761ac4a`) and the log `win-189b04e.log`.
+    The worktree has been removed. Gates 4 to 13 did not run on Windows.
 - Repair of the SA1019 finding on this branch (security code; flagged for human review): in
   `confine_linux.go` the deprecated `landlock.NewConfig(...)` becomes the struct literal
   `landlock.Config{HandledAccessFS: ...}`. The handled set is unchanged. `NewRulesetFD` already rejects
@@ -277,7 +286,18 @@ Gate lanes:
     - The e2e features `linux_backends_bubblewrap_and_landlock` (14 scenarios) and `sandbox_launch_stage`
       (3 scenarios): pass.
   - Checks on Windows: `GOOS=linux` vet under both tag sets: exit 0.
-  - Both lanes run again on the commit that holds this repair.
+  - 6066a1a (holds this repair), WSL: running (started 2026-11-26, log `~/lane-logs/wsl-6066a1a.log`,
+    clone `~/src/dhs13-6066a1a`). It reaches the gates after staticcheck on Linux early; it does not
+    count for closure, because 6066a1a still has the Windows U1000 finding.
+- Repair of the U1000 finding on this branch (sandbox code; mechanical move, no behaviour change):
+  `busDialLimit` and `dialUnix` move from `bus.go` to `bus_linux.go`, their only caller, with
+  the `net` and `time` imports. Checks:
+  - Windows: staticcheck v0.8.2 on `internal/world/sandbox/launch/...` under `-tags=` and
+    `-tags=replay,scenario,bench`: exit 0; `go vet` under both tag sets, native and `GOOS=linux`:
+    exit 0; `go test ./internal/world/sandbox/launch/`: ok.
+  - WSL (ext4 copy): the same staticcheck runs: exit 0; `go vet`: exit 0;
+    `go test ./internal/world/sandbox/launch/ ./internal/world/sandbox/local/`: ok.
+  - Both lanes run on the commit that holds this repair; the gate counts only from that run.
 
 ### Manual checks
 

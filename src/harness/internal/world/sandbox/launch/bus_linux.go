@@ -3,10 +3,15 @@
 package launch
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 )
+
+// busDialLimit bounds each connection attempt to a candidate bus socket.
+const busDialLimit = 200 * time.Millisecond
 
 // sessionBusUnreachable reports that the stage can reach none of the user's
 // session services that start programs on request (busProbe): the address in
@@ -20,4 +25,13 @@ func sessionBusUnreachable() bool {
 		b.dirs = append(b.dirs, d)
 	}
 	return b.unreachable()
+}
+
+// dialUnix connects to the Unix socket at path and closes the connection.
+func dialUnix(path string) error {
+	c, err := net.DialTimeout("unix", path, busDialLimit)
+	if err != nil {
+		return err
+	}
+	return c.Close()
 }

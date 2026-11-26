@@ -2,16 +2,11 @@ package launch
 
 import (
 	"errors"
-	"net"
 	"path"
 	"strconv"
 	"strings"
 	"syscall"
-	"time"
 )
-
-// busDialLimit bounds each connection attempt to a candidate bus socket.
-const busDialLimit = 200 * time.Millisecond
 
 // busProbe is the stage's look for a same-user service that starts programs on
 // request: the D-Bus session bus and the systemd user manager. It shows them
@@ -153,13 +148,4 @@ func absent(err error) bool {
 		return false
 	}
 	return errors.Is(err, syscall.ENOENT) || errors.Is(err, syscall.ENOTDIR) || errors.Is(err, syscall.ECONNREFUSED)
-}
-
-// dialUnix connects to the Unix socket at path and closes the connection.
-func dialUnix(path string) error {
-	c, err := net.DialTimeout("unix", path, busDialLimit)
-	if err != nil {
-		return err
-	}
-	return c.Close()
 }
