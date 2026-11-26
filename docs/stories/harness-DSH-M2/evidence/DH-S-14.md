@@ -51,8 +51,8 @@ which commit (impl.md sec. 7.3).
 
 | Step | Check | Seen | Operator | Commit | Label |
 | --- | --- | --- | --- | --- | --- |
-| 14.2 | the composed tree of each profile previewed: which layer supplied three chosen values | Seen on Windows 11 and on WSL Ubuntu, for each of `admin`, `core`, `web`, `headless` and `sdk` stacked by `profile.Stack` over a scratch home with a profile layer merging `logging.level: debug` and a user layer merging `sharing.off: true`, previewed by `profile.Preview` (tree and ownership index dumped): `logging config.destination` `"stderr"` supplied by `bundle:admin` (`bundles/admin.yml:10:7`), `logging config.level` `"debug"` by `profile` (`profiles/<name>/layer.yml:1:3`), `sharing config.off` `true` by `user` (`config/layer.yml:1:3`). Every profile but `admin` also reports its Required entries not yet built (`profile/missing-required`, as `composed.golden` lists them) | Forge engineer agent run, unattended (operator acceptance asked, question `dh-s-14-manual-checks`) | fb4b97d | `manual` |
-| 14.3 | a preset edited while a test session runs: the session keeps its revision | Seen on Windows 11 and on WSL Ubuntu, real `fs.tools` and `shellexec.tools` over an embedded SQLite file: session `s1` bound to the shipped `standard` rev 1 (`sha256:1b86830f...`, tools `apply_patch bash edit glob grep pwsh read write`); with `s1` open, the scratch `standard.yml` edited (persona prefix rewritten, `applyPatch: false`) and reloaded: rev 1 retired with 1 lease, rev 2 (`sha256:ab4e5427...`) current; `s1`'s fold, registry binding, tool list and persona prefix stay rev 1's; a new `s2` binds rev 2 (no `apply_patch`, the edited prefix); after closing and reopening the database `s1`'s fold still reads rev 1's digest; closing `s1`'s scope unloads rev 1 | Forge engineer agent run, unattended (operator acceptance asked, question `dh-s-14-manual-checks`) | fb4b97d | `manual` |
+| 14.2 | the composed tree of each profile previewed: which layer supplied three chosen values | Seen on Windows 11 and on WSL Ubuntu, for each of `admin`, `core`, `web`, `headless` and `sdk` stacked by `profile.Stack` over a scratch home with a profile layer merging `logging.level: debug` and a user layer merging `sharing.off: true`, previewed by `profile.Preview` (tree and ownership index dumped): `logging config.destination` `"stderr"` supplied by `bundle:admin` (`bundles/admin.yml:10:7`), `logging config.level` `"debug"` by `profile` (`profiles/<name>/layer.yml:1:3`), `sharing config.off` `true` by `user` (`config/layer.yml:1:3`). Every profile but `admin` also reports its Required entries not yet built (`profile/missing-required`, as `composed.golden` lists them) | run by the Forge engineer agent; accepted by the operator (answer to question `dh-s-14-manual-checks`: "Accept the recorded runs") | fb4b97d | `manual` |
+| 14.3 | a preset edited while a test session runs: the session keeps its revision | Seen on Windows 11 and on WSL Ubuntu, real `fs.tools` and `shellexec.tools` over an embedded SQLite file: session `s1` bound to the shipped `standard` rev 1 (`sha256:1b86830f...`, tools `apply_patch bash edit glob grep pwsh read write`); with `s1` open, the scratch `standard.yml` edited (persona prefix rewritten, `applyPatch: false`) and reloaded: rev 1 retired with 1 lease, rev 2 (`sha256:ab4e5427...`) current; `s1`'s fold, registry binding, tool list and persona prefix stay rev 1's; a new `s2` binds rev 2 (no `apply_patch`, the edited prefix); after closing and reopening the database `s1`'s fold still reads rev 1's digest; closing `s1`'s scope unloads rev 1 | run by the Forge engineer agent; accepted by the operator (answer to question `dh-s-14-manual-checks`: "Accept the recorded runs") | fb4b97d | `manual` |
 
 Logs and the throwaway test sources: [runs/manual-fb4b97d/](runs/manual-fb4b97d/README.md).
 
@@ -91,6 +91,12 @@ At `fb4b97d`, on both platforms (WSL: `GOTOOLCHAIN=local GOFLAGS=-buildvcs=false
 - The manual checks: `go -C src/harness test -count=1 -v -run TestManualS14 ./internal/boot/profile/ ./internal/boot/agentpreset/`
   with the two throwaway files of [runs/manual-fb4b97d/](runs/manual-fb4b97d/README.md) copied in: `PASS` on both.
 - Windows lane: `tools/harness-gate/lanes/win.ps1` at `fb4b97d`, see Results.
+- Both lanes at `2441517` (the branch commit carrying the gofmt fix), each once, in a throwaway
+  checkout: `pwsh -File tools/harness-gate/lanes/win.ps1` (worktree `E:\tmp\s14-lane-2441517`) and
+  `tools/harness-gate/lanes/wsl.sh` (WSL clone `~/s14-lane-2441517` on ext4), see Results. Both
+  removed after the runs.
+- The record check, on this record with `Closure status: open`:
+  `GOWORK=off go -C tools/harness-gate run . ready --stage DH-S-14 --built --root ../..`, see Results.
 
 `DSH_REQUIRE_SCENARIOS` (`harness-gate require --stage DH-S-14`): not yet recorded.
 
@@ -98,8 +104,14 @@ At `fb4b97d`, on both platforms (WSL: `GOTOOLCHAIN=local GOFLAGS=-buildvcs=false
 
 Windows lane at `fb4b97d`: local run record
 [`win-fb4b97d-20261126T0016Z.txt`](../../harness-DSH-M1/evidence/runs/win-fb4b97d-20261126T0016Z.txt),
-SHA-256 `ce89c874fc45aaf32b6a8878c1fa77ea12ef18318e2f37c38d636262cf90aadc`. WSL lane: not run (see
-Results). No session ids or provider request ids: no model call.
+SHA-256 `ce89c874fc45aaf32b6a8878c1fa77ea12ef18318e2f37c38d636262cf90aadc`. WSL lane at `fb4b97d`: not run (see
+Results). Lanes at `2441517` (the gofmt-fix commit), run once each and finished:
+[`win-2441517-20261126T0025Z.txt`](../../harness-DSH-M1/evidence/runs/win-2441517-20261126T0025Z.txt)
+(sha256 `51cc0194c841c7e0001242e7047a84b164a60bfbdb2f739b579223335579ecf8`),
+[`wsl-2441517-20261126T0029Z.txt`](../../harness-DSH-M1/evidence/runs/wsl-2441517-20261126T0029Z.txt)
+(sha256 `f92051574f6e395e2a8167fd449de9b6b484ff8d26d69626c8cadc8070b0562a`) and
+[`wsl-2441517-20261126T0029Z-rehearse.txt`](../../harness-DSH-M1/evidence/runs/wsl-2441517-20261126T0029Z-rehearse.txt)
+(sha256 `b5e96c1ddb4b0c450b71c747df02ac5f90e6de6c6e3e6078c42b3c7b543673e8`). No session ids or provider request ids: no model call.
 
 ### Results
 
@@ -113,10 +125,30 @@ platform, so the WSL lane was not started for this commit. The S14 gate scenario
 stays open until that file is formatted on `main` and both lanes pass (Open items).
 
 **Blocker fix on this branch.** The record's branch now carries the `gofmt -w` of that file. The
-change is whitespace only (`before int` aligned to `before     int`, one line). After it,
-`gofmt -l src` lists nothing, and `go vet -tags=e2e` and `-tags=e2e,replay,scenario,bench` of
-`./test/e2e/harness-DSH-M2/` pass. Both lanes are to be run once on the commit that carries
-the fix, and the results are to be recorded here.
+change is whitespace only (`before int` aligned to `before     int`, one line), kept as its own
+mechanical change (operator answer to `dh-s-14-gofmt-lane-blocker`). After it, `gofmt -l src`
+lists nothing, and `go vet -tags=e2e` and `-tags=e2e,replay,scenario,bench` of
+`./test/e2e/harness-DSH-M2/` pass.
+
+**Lanes at `2441517`: failed at gate 2, again in code outside DH-S-14.** Both lanes pass gate 1
+(`harness-gate: PASS gofmt`, 1017 files) and stop at `harness-gate: FAIL vet` (Windows 4m16.8s,
+WSL 15.2s): the `nosleep` analyzer (QG-4) under `go vet -tags=e2e` reports `time.Sleep in a test
+file` at three places in the DH-S-13 e2e layer, the same on both lanes:
+
+- `test/e2e/harness-DSH-M2/dh_s_13_sandbox_launch_linux_backends_and_shell_tools_launch_plan_required_for_every_command_test.go:302:2`
+- `test/e2e/harness-DSH-M2/dh_s_13_sandbox_launch_linux_backends_and_shell_tools_sandbox_seam_probe_select_confirm_test.go:400:3`
+- `test/e2e/harness-DSH-M2/dh_s_13_sandbox_launch_linux_backends_and_shell_tools_sandbox_seam_probe_select_confirm_test.go:494:2`
+
+Gates 3 to 13, coverage included, did not run. The WSL release rehearsal passed (exit 0). Replacing
+these waits changes how the DH-S-13 tests behave, so it is not done in this record (question
+`dh-s-14-nosleep-lane-blocker`). The S14 gate scenario (M2-DOD-1) stays open until both lanes pass.
+
+**Record check.** `harness-gate ready --stage DH-S-14 --built` on this record (status line
+`open`), run on the working tree that carries the operator acceptance above: exit 0,
+`harness-gate ready: DH-S-14 (docs/stories/harness-DSH-M2/evidence/DH-S-14.md, built): ready; the status line is not read (it reads open)`.
+No missing manual check or commit field. `harness-gate records`: exit 0, `harness:DSH-M2: 7 stage
+records and docs/stories/harness-DSH-M2/evidence/closure.md hold their shape`. The status line stays
+`open`; it is changed only by the closing PR.
 
 **Step 14.5: coverage over the components that exist so far, and the optional list
 reviewed** (DH-D-BUNDLE-6, DH-ADR-BUNDLE-10). `TestShippedBuildIsCovered`
@@ -151,13 +183,16 @@ The Manual checks register above.
 The throwaway worktree at `fb4b97d` (manual checks and Windows lane) was removed with
 `git worktree remove`; the two manual test files were never committed as Go source (kept as
 `.txt` under [runs/manual-fb4b97d/dhs14/](runs/manual-fb4b97d/README.md)); every scratch path
-was a `t.TempDir()`, removed by the test.
+was a `t.TempDir()`, removed by the test. The lane checkouts at `2441517` (`E:\tmp\s14-lane-2441517`,
+removed with `git worktree remove`; WSL `~/s14-lane-2441517`, removed with `rm -rf`) were removed
+after their run records were copied into `harness-DSH-M1/evidence/runs/`.
 
 ### Open items
 
-The lanes at `fb4b97d` fail gofmt on a DH-S-13 e2e file (Results). That file is formatted on this
-branch. Both lanes are to be run once on the commit that carries the fix (question
-`dh-s-14-gofmt-lane-blocker`). Operator acceptance of the
-two manual checks (question `dh-s-14-manual-checks`).
+Both lanes at `2441517` fail gate 2 (`nosleep`, three `time.Sleep` calls in DH-S-13 e2e tests;
+Results; question `dh-s-14-nosleep-lane-blocker`). Once that is fixed, both lanes run once more on
+the commit that carries the fix, and their exits, run records and coverage are recorded here.
+Closed: the gofmt blocker (formatted on this branch, question `dh-s-14-gofmt-lane-blocker`) and the
+operator acceptance of the two manual checks (question `dh-s-14-manual-checks`, accepted).
 
 Built-not-done: BUNDLE-2, BUNDLE-6 until DH-S-22; BUNDLE-4, BUNDLE-5 until DH-S-48 (impl.md problem S-1).
