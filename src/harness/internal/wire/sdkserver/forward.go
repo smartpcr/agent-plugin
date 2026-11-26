@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
@@ -92,10 +93,12 @@ func (c *Conn) Attach(n Notifier) error {
 type deferred struct {
 	ready chan struct{}
 	n     *jsonrpc.Conn
-	w     *lineWriter // the codec's writer, which Fault writes past the codec
+	w     *lineWriter   // the codec's writer, which Fault writes past the codec
+	max   int           // the codec's effective MaxFrameBytes
+	stall time.Duration // the codec's effective WriteStall
 
 	mu  sync.Mutex
-	err error // the forwarding failure that ended the transport
+	err error // the forwarding or write failure that ended the transport
 }
 
 func (d *deferred) Notify(method string, params any) error {
@@ -117,20 +120,46 @@ func (d *deferred) Call(ctx context.Context, method string, params, result any) 
 // error to the null id, so the line is written to the codec's writer directly,
 // between two of the codec's lines (it writes one line per Write) and after
 // every frame queued before it (a Barrier), so the client reads the rejection
-// before the request asked again.
+// before the request asked again. The codec's bounds hold for it too: a line
+// over MaxFrameBytes drops its message (which may quote the client's reply)
+// and fails if it still does not fit; a write not accepted within WriteStall
+// treats the client as gone and closes the transport (sdk-acp-typert.md §6).
 func (d *deferred) Fault(e *jsonrpc.Error) error {
 	<-d.ready
 	if e == nil {
 		return errors.New("sdkserver: Fault needs an error")
 	}
-	line, err := jsonrpc.Encode(&jsonrpc.Response{ID: jsonrpc.ID{}, Error: e})
+	line, err := boundedLine(e, d.max)
 	if err != nil {
-		return fmt.Errorf("sdkserver: encode the rejection: %w", err)
+		return err
 	}
 	if err := d.n.Barrier(context.Background()); err != nil {
 		return err
 	}
-	return d.w.writeLine(append(line, '\n'), d.n.Done())
+	err = d.w.writeLine(line, d.stall, d.n.Done())
+	if jsonrpc.HasReason(err, jsonrpc.ReasonWriteStalled) {
+		d.abort(err)
+	}
+	return err
+}
+
+// elided replaces the message of a rejection over the frame bound.
+const elided = "the reply was refused; its description is over the frame bound"
+
+// boundedLine is the null-id error line of e, newline included, within max.
+func boundedLine(e *jsonrpc.Error, max int) ([]byte, error) {
+	for _, msg := range []string{e.Message, elided} {
+		short := *e
+		short.Message = msg
+		line, err := jsonrpc.Encode(&jsonrpc.Response{ID: jsonrpc.ID{}, Error: &short})
+		if err != nil {
+			return nil, fmt.Errorf("sdkserver: encode the rejection: %w", err)
+		}
+		if len(line) <= max {
+			return append(line, '\n'), nil
+		}
+	}
+	return nil, fail(jsonrpc.ReasonLineTooLong, fmt.Sprintf("the rejection is over the frame bound of %d bytes", max))
 }
 
 // lineWriter serializes whole lines onto w: the codec's and Fault's.
@@ -145,17 +174,25 @@ func (l *lineWriter) Write(p []byte) (int, error) {
 	return l.w.Write(p)
 }
 
-// writeLine writes line unless the codec ends first. Like the codec's own
-// writer, a write stalled by the peer stays until the caller closes w.
-func (l *lineWriter) writeLine(line []byte, done <-chan struct{}) error {
+// writeLine writes line unless the codec ends first or the write is not
+// accepted within stall. Like the codec's own writer, a stalled Write stays
+// until the caller closes w.
+func (l *lineWriter) writeLine(line []byte, stall time.Duration, done <-chan struct{}) error {
 	written := make(chan error, 1)
 	go func() {
 		_, err := l.Write(line)
 		written <- err
 	}()
+	timer := time.NewTimer(stall)
+	defer timer.Stop()
 	select {
 	case err := <-written:
-		return err
+		if err != nil {
+			return fail(jsonrpc.ReasonClosed, "writing the rejection failed: "+err.Error())
+		}
+		return nil
+	case <-timer.C:
+		return fail(jsonrpc.ReasonWriteStalled, "the client accepted no rejection for "+stall.String())
 	case <-done:
 		return fail(jsonrpc.ReasonClosed, "the connection ended before the rejection was written")
 	}

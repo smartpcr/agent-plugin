@@ -208,8 +208,11 @@ func reject(f Faulter, id human.ID, err error) error {
 
 // OnFault is the connection's jsonrpc.Options.OnError (Serve sets it): a reply
 // naming no pending request is a late answer, which the client is told of with
-// sdk/late-answer; it settles nothing. A rejection that cannot be sent goes to
-// Options.OnAnswerError with an empty id, the late reply naming no interaction.
+// sdk/late-answer; it settles nothing. OnError runs on the codec's reader, so
+// the rejection is sent from its own goroutine: a client not reading it stalls
+// only that write, until WriteStall closes the transport. A rejection that
+// cannot be sent goes to Options.OnAnswerError with an empty id, the late reply
+// naming no interaction.
 func (c *Conn) OnFault(err error) {
 	if !jsonrpc.HasReason(err, jsonrpc.ReasonUnknownResponse) {
 		return
@@ -221,9 +224,11 @@ func (c *Conn) OnFault(err error) {
 		c.s.reportAnswer("", fmt.Errorf("%w; the transport cannot refuse it", err))
 		return
 	}
-	if ferr := f.Fault(fail(ReasonLateAnswer, "the reply names no pending request; the interaction was settled or withdrawn")); ferr != nil {
-		c.s.reportAnswer("", fmt.Errorf("%w; the rejection could not be sent: %w", err, ferr))
-	}
+	go func() {
+		if ferr := f.Fault(fail(ReasonLateAnswer, "the reply names no pending request; the interaction was settled or withdrawn")); ferr != nil {
+			c.s.reportAnswer("", fmt.Errorf("%w; the rejection could not be sent: %w", err, ferr))
+		}
+	}()
 }
 
 func invalidAnswer(format string, args ...any) *jsonrpc.Error {

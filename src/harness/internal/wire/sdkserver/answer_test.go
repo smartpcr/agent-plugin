@@ -1,6 +1,7 @@
 package sdkserver_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -49,23 +50,34 @@ type pipePeer struct {
 	t      *testing.T
 	w      io.Writer
 	frames chan jsonrpc.Frame
+	served chan struct{} // closed once Serve returned serveErr
+	// serveErr is what Serve returned; read it only after served is closed.
+	serveErr error
 }
 
-// servePeer serves c over pipes until the test ends.
-func servePeer(t *testing.T, c *sdkserver.Conn) *pipePeer {
+// servePeerWith serves c with o, its output passing through wrap when set. The
+// peer reads with o's frame bound, as a conforming bounded client does.
+func servePeerWith(t *testing.T, c *sdkserver.Conn, o jsonrpc.Options, wrap func(io.Writer) io.Writer) *pipePeer {
 	t.Helper()
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
-	served := make(chan error, 1)
+	var out io.Writer = outW
+	if wrap != nil {
+		out = wrap(outW)
+	}
+	p := &pipePeer{t: t, w: inW, frames: make(chan jsonrpc.Frame, 256), served: make(chan struct{})}
 	go func() {
-		err := c.Serve(context.Background(), inR, outW, jsonrpc.Options{})
+		p.serveErr = c.Serve(context.Background(), inR, out, o)
 		_ = outW.Close()
-		served <- err
+		close(p.served)
 	}()
-	p := &pipePeer{t: t, w: inW, frames: make(chan jsonrpc.Frame, 256)}
+	bound := o.MaxFrameBytes
+	if bound <= 0 {
+		bound = 1 << 20
+	}
 	go func() {
 		defer close(p.frames)
-		rd := jsonrpc.NewReader(outR, 1<<20)
+		rd := jsonrpc.NewReader(outR, bound)
 		for {
 			f, err := rd.Read()
 			if err != nil {
@@ -78,7 +90,7 @@ func servePeer(t *testing.T, c *sdkserver.Conn) *pipePeer {
 		_ = inW.Close()
 		_ = outR.Close()
 		select {
-		case <-served:
+		case <-p.served:
 		case <-time.After(jsonrpctest.Timeout):
 			t.Errorf("Serve did not return within %s", jsonrpctest.Timeout)
 		}
@@ -166,9 +178,20 @@ func (p *pipePeer) ExpectError(id jsonrpc.ID, reason string) *jsonrpc.Error {
 // requests and their null-id rejections.
 func ansConnect(t *testing.T, srv *sdkserver.Server, caps protocol.ClientCapabilities, zone string) (*sdkserver.Conn, *client) {
 	t.Helper()
+	return ansConnectOver(t, srv, caps, zone, jsonrpc.Options{}, nil)
+}
+
+// ansConnectWith is ansConnect, both kinds advertised, served with o and wrap.
+func ansConnectWith(t *testing.T, srv *sdkserver.Server, o jsonrpc.Options, wrap func(io.Writer) io.Writer) (*sdkserver.Conn, *client) {
+	t.Helper()
+	return ansConnectOver(t, srv, bothCaps, "", o, wrap)
+}
+
+func ansConnectOver(t *testing.T, srv *sdkserver.Server, caps protocol.ClientCapabilities, zone string, o jsonrpc.Options, wrap func(io.Writer) io.Writer) (*sdkserver.Conn, *client) {
+	t.Helper()
 	c := must(srv.Connect())
 	t.Cleanup(func() { _ = c.Close(context.Background()) })
-	cl := &client{t: t, peer: servePeer(t, c)}
+	cl := &client{t: t, peer: servePeerWith(t, c, o, wrap)}
 	var init protocol.InitializeResult
 	cl.call("initialize", protocol.InitializeParams{
 		ProtocolVersions: []int{protocol.Version}, ClientInfo: protocol.Implementation{Name: "test", Version: "0"},
@@ -418,6 +441,71 @@ func TestRejectionDeliveryFailureIsExplicit(t *testing.T) {
 	}
 	if p := ar.hreg.Pending(ref); len(p) != 0 {
 		t.Fatalf("pending after an undelivered rejection = %+v, want none", p)
+	}
+}
+
+// A rejection keeps the codec's bounds (sdk-acp-typert.md §6). One over
+// MaxFrameBytes, because it quotes a near-limit reply, drops the quote and still
+// reaches a client reading with that bound; the interaction is asked again.
+func TestRejectionKeepsTheFrameBound(t *testing.T) {
+	const bound = 4096
+	ar := newAnsRig(t)
+	_, cl := ansConnectWith(t, ar.srv, jsonrpc.Options{MaxFrameBytes: bound}, nil)
+	ref := ar.ref(t, cl.ansCreate(protocol.SessionCreateParams{}))
+	done := ar.ask(approvalFor(ref))
+
+	first := cl.hostRequest(sdkserver.ApprovalRequestMethod)
+	outcome := strings.Repeat("x", bound-100) // the reply fits; its rejection would not
+	cl.peer.Reply(first.ID, map[string]string{"outcome": outcome})
+	e := cl.rejected(sdkserver.ReasonInvalidAnswer, params[protocol.ApprovalRequest](t, first).InteractionID)
+	if strings.Contains(e.Message, outcome) || !strings.Contains(e.Message, "frame bound") {
+		t.Fatalf("the client was told %d bytes, want the quote dropped for the frame bound", len(e.Message))
+	}
+	cl.peer.Reply(cl.hostRequest(sdkserver.ApprovalRequestMethod).ID, protocol.ApprovalResult{Outcome: "allowed-once"})
+	if a := settledWith(t, done); a.ans.Outcome != human.OutcomeAllowedOnce {
+		t.Fatalf("settled %+v, want allowed-once after the bounded rejection", a.ans)
+	}
+}
+
+// stallFaults passes every line but the null-id rejections, which it holds
+// until release closes: a client reading frames but never the rejection.
+type stallFaults struct {
+	w       io.Writer
+	release chan struct{}
+}
+
+func (s stallFaults) Write(b []byte) (int, error) {
+	if bytes.Contains(b, []byte(`"id":null`)) {
+		<-s.release
+		return 0, io.ErrClosedPipe
+	}
+	return s.w.Write(b)
+}
+
+// A rejection the client does not accept within WriteStall treats the client as
+// gone: the interaction is refused, and the transport closes reporting the stall.
+func TestStalledRejectionClosesTheTransport(t *testing.T) {
+	ar := newAnsRig(t)
+	release := make(chan struct{})
+	_, cl := ansConnectWith(t, ar.srv, jsonrpc.Options{WriteStall: 200 * time.Millisecond},
+		func(w io.Writer) io.Writer { return stallFaults{w: w, release: release} })
+	t.Cleanup(func() { close(release) }) // runs before the peer's cleanup
+	ref := ar.ref(t, cl.ansCreate(protocol.SessionCreateParams{}))
+	done := ar.ask(approvalFor(ref))
+
+	cl.peer.Reply(cl.hostRequest(sdkserver.ApprovalRequestMethod).ID, map[string]string{"outcome": "allowed-forever"})
+	a := settledWith(t, done)
+	if a.ans.Outcome != human.OutcomeDenied || !strings.Contains(a.ans.Text, "could not be sent") {
+		t.Fatalf("settled %+v, want denied naming the undelivered rejection", a.ans)
+	}
+	p := cl.peer.(*pipePeer)
+	select {
+	case <-p.served:
+	case <-time.After(jsonrpctest.Timeout):
+		t.Fatal("the transport stayed open behind a stalled rejection")
+	}
+	if !jsonrpc.HasReason(p.serveErr, jsonrpc.ReasonWriteStalled) {
+		t.Fatalf("Serve = %v, want %s", p.serveErr, jsonrpc.ReasonWriteStalled)
 	}
 }
 

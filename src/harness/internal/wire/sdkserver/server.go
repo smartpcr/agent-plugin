@@ -227,7 +227,13 @@ func (c *Conn) Serve(ctx context.Context, r io.Reader, w io.Writer, o jsonrpc.Op
 		o.OnError = c.OnFault
 	}
 	// Attached before the codec can dispatch, so no session misses a forwarder.
-	out := &deferred{ready: make(chan struct{}), w: &lineWriter{w: wr}}
+	out := &deferred{ready: make(chan struct{}), w: &lineWriter{w: wr}, max: o.MaxFrameBytes, stall: o.WriteStall}
+	if out.max <= 0 {
+		out.max = jsonrpc.DefaultMaxLineBytes
+	}
+	if out.stall <= 0 {
+		out.stall = jsonrpc.DefaultWriteStall
+	}
 	if err := c.Attach(out); err != nil {
 		return errors.Join(err, c.Close(context.WithoutCancel(ctx)))
 	}
