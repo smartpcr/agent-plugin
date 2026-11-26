@@ -286,9 +286,10 @@ Gate lanes:
     - The e2e features `linux_backends_bubblewrap_and_landlock` (14 scenarios) and `sandbox_launch_stage`
       (3 scenarios): pass.
   - Checks on Windows: `GOOS=linux` vet under both tag sets: exit 0.
-  - 6066a1a (holds this repair), WSL: running (started 2026-11-26, log `~/lane-logs/wsl-6066a1a.log`,
-    clone `~/src/dhs13-6066a1a`). It reaches the gates after staticcheck on Linux early; it does not
-    count for closure, because 6066a1a still has the Windows U1000 finding.
+  - 6066a1a (holds this repair), WSL, early signal only (record `wsl-6066a1a-20261126T0224Z`): gofmt,
+    vet, staticcheck (the SA1019 repair confirmed on the full lane) and modules passed; in gate 5/13 the
+    `src/go` and `src/sdk` tests passed. It was stopped during gate 5, because 298dd70 changes
+    `bus_linux.go` and replaces it. It does not count for closure. Log `E:\work\lanes\wsl-6066a1a.log`.
 - Repair of the U1000 finding on this branch (sandbox code; mechanical move, no behaviour change):
   `busDialLimit` and `dialUnix` move from `bus.go` to `bus_linux.go`, their only caller, with
   the `net` and `time` imports. Checks:
@@ -298,6 +299,11 @@ Gate lanes:
   - WSL (ext4 copy): the same staticcheck runs: exit 0; `go vet`: exit 0;
     `go test ./internal/world/sandbox/launch/ ./internal/world/sandbox/local/`: ok.
   - Both lanes run on the commit that holds this repair; the gate counts only from that run.
+- 298dd70 (final source commit: both repairs), both lanes: running, started 2026-11-26T02:30Z.
+  - Windows: `tools/harness-gate/lanes/win.ps1` from a temporary worktree; log
+    `E:\work\lanes\win-298dd70.log`.
+  - WSL: `bash tools/harness-gate/lanes/wsl.sh` from an ext4 clone; log `~/lane-logs/wsl-298dd70.log`.
+  - The per-gate results and record hashes are recorded here when both runs end.
 
 ### Manual checks
 
