@@ -16,6 +16,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/agent"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/scope"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools/prompt"
@@ -289,6 +290,17 @@ func (in *instance) Cancel(c agent.Cause, o agent.CancelOptions) error {
 		return d.Cancel(c, o)
 	}
 	return agent.CheckCancel(c, o)
+}
+
+// SelectModel implements agent.ModelSelector: it applies from the next step;
+// from T1 on it is refused with agent/closing.
+func (in *instance) SelectModel(ctx context.Context, sel agent.ModelSelection) (event.Receipt, error) {
+	in.admit.RLock()
+	defer in.admit.RUnlock()
+	if in.closing {
+		return event.Receipt{}, agent.Closing(in.ref)
+	}
+	return in.model.Select(ctx, sel)
 }
 
 // Stop implements agent.Stopper.
