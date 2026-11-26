@@ -281,7 +281,36 @@ None of these tests or the code under them is in this branch's diff:
 
 Under the unrelated-failure rule they are recorded and raised (question `dh-s-14-main-test-failures`), not changed here; the operator answered "Pause until fixes for them land on main". Gates 6 to 13, coverage included, did not run. The rehearsal record [`wsl-acb5056-20261126T0112Z-rehearse.txt`](../../harness-DSH-M1/evidence/runs/wsl-acb5056-20261126T0112Z-rehearse.txt) (sha256 `f42cf3226731db2ef9677e873526198a4c2db1d14c4d8d5ddf40f23cb252fb44`, exit 0) does not establish acceptance. The WSL clone `~/s14-lane-acb5056` and its log were removed after the records were copied.
 
-*Windows:* the lane at `acb5056` is still running (worktree `E:\tmp\s14-lane-acb5056`). Its log shows `PASS gofmt`, `PASS vet` and `PASS staticcheck` so far (this confirms the `bus_linux.go` U1000 fix on Windows), and it was in gate 4 (modules) when this was written; its result is to be recorded here.
+*Windows:* [`win-acb5056-20261126T0110Z.txt`](../../harness-DSH-M1/evidence/runs/win-acb5056-20261126T0110Z.txt),
+sha256 `86642d801a58a9a9aca29d1f32cb89e3a22df06064ee2f2cb425ef8b5ccea8ee`, exit 1 (windows/amd64,
+go1.27.4, gcc 16.1.0, tree clean, started 2026-11-26T01:10:17Z).
+
+| Gate | Result |
+| --- | --- |
+| 1 gofmt | `PASS gofmt` (1026 files) |
+| 2 vet | `PASS vet`: the `local_test.go` fix clears it |
+| 3 staticcheck | `PASS staticcheck`: the `bus_linux.go` U1000 fix confirmed on Windows |
+| 4 modules | `PASS modules` |
+| 5 test | `harness-gate: FAIL test`: `src/go` and `src/sdk` pass; `src/harness` fails six tests |
+
+The six failing `src/harness` tests (record lines 88-227), each with its origin on `main`:
+- `TestEveryReasonHasAStatus` (`internal/cli/output/output_test.go:92`): the same ten `shellexec/*` and `shellenv/*` reasons as on WSL; the test from `main` #90, the reasons from #138.
+- `TestTotalSourceBudgetStopsReading` (`internal/context/instructions/instructions_test.go:615`): as on WSL; from `main` (#146).
+- `TestArgv` (`internal/world/shellexec/pwsh/pwsh_test.go:124`): as on WSL, a byte-order mark at the start of the script; from `main` (#138).
+- `TestArgumentsAreNamedOnly` (`internal/world/shellexec/tools/tools_test.go:281`): as on WSL, `justification` and `sandbox_permissions` in the bash tool's properties; from `main` (#140).
+- `TestDirectoryDepth/poll` (`internal/util/watch/watch_test.go:175`): "depth 0: burst (second notice): unexpected notice"; Windows only, not seen on WSL. The assertion is from `main` #32 (the file last changed in #90).
+- `TestCancellationDuringPublishRetryPublishesNothing/deadline/replace-if-version` (`internal/world/fs/local/cancel_windows_test.go:84`): "BeforePublish ran 1 times; the first rename was not blocked and retried"; Windows `-race` only, the failure already recorded above (question `dh-s-14-fs-cancel-race`). The test is from `main` #110.
+
+None of these tests or the code under them is in this branch's diff:
+`git diff --stat aa42466 acb5056 -- src/harness/internal/util/watch` is empty, and under
+`src/harness/internal/world/fs/local` it lists only `local_test.go` (the nosleep fix in
+`TestBoundedReadHoldsThroughASwappedLink`), not `cancel_windows_test.go` or any non-test file.
+Under the unrelated-failure rule the two Windows-only failures are recorded and raised, not changed
+here: `TestDirectoryDepth/poll` as question `dh-s-14-watch-poll-burst`, and the lane result for
+`TestCancellationDuringPublishRetryPublishesNothing` under `dh-s-14-fs-cancel-race`, whose earlier
+answer deferred the decision to this lane. Neither has an answer recorded yet. Gates 6 to 13,
+coverage included, did not run. The lane worktree `E:\tmp\s14-lane-acb5056` is kept until those
+answers are in.
 
 **Record check.** `harness-gate ready --stage DH-S-14 --built` on this record (status line
 `open`), run on the working tree that carries the operator acceptance above: exit 0,
@@ -342,12 +371,16 @@ The lanes at `b792aec` fail gate 2, both of them, on a `time.Sleep` that came in
 fix), and the lanes are to run on that commit. The Windows `-race` failure in
 `TestCancellationDuringPublishRetryPublishesNothing`, from `main` (question `dh-s-14-fs-cancel-race`):
 the operator answered "Run the lanes first and decide only if the Windows lane fails on it"; the Windows
-lane at `acb5056` decides it.
+lane at `acb5056` does fail on it (`deadline/replace-if-version`), and that result is raised under the
+same question, awaiting an answer.
 At `acb5056` the WSL lane passes gates 1 to 4 and fails gate 5 on four `src/harness` tests from `main`
 (Results, "Lanes at `acb5056`"; question `dh-s-14-main-test-failures`). The operator answered "Pause
 until fixes for them land on main": this record waits, unchanged in scope, for those fixes on `main`
 (still at `aa42466`, #147), and then for both lanes to run on a commit that carries them. The Windows
-lane at `acb5056` is to be recorded. Both lanes must
+lane at `acb5056` also passes gates 1 to 4 and fails gate 5, on the same four tests plus two
+Windows-only ones from `main`: `TestDirectoryDepth/poll` (question `dh-s-14-watch-poll-burst`, open)
+and `TestCancellationDuringPublishRetryPublishesNothing/deadline/replace-if-version` (question
+`dh-s-14-fs-cancel-race`, open). Both lanes must
 pass on the final commit, with their exits, run records and coverage recorded here.
 Closed: the gofmt blocker (formatted on this branch, question `dh-s-14-gofmt-lane-blocker`), the
 nosleep blocker (question `dh-s-14-nosleep-lane-blocker`, fix kept) and the
