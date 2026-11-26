@@ -2,6 +2,9 @@
 
 Closure status: open
 
+Current state: **open, not built.** Neither gate lane has passed all 13 gates on a final commit (the
+298dd70 WSL lane failed at gate 5/13, test); see Results.
+
 Evidence record of [impl.md DH-S-13](../../../harness/impl.md#dh-s-13) (Sandbox launch, Linux backends and shell tools) for story
 `harness:DSH-M2`, in the impl.md sec. 7.3 form of the M1 records
 ([../../harness-DSH-M1/evidence/README.md](../../harness-DSH-M1/evidence/README.md)). Plan:
@@ -149,8 +152,8 @@ Gate: `pwsh -File tools/harness-gate/lanes/win.ps1` from a temporary worktree at
 `tools/harness-gate/lanes/wsl.sh` from an ext4 clone at c3c4a25 (`~/src/dhs13-c3c4a25`, removed after the
 run; preflight "ext4 checkout, uid 1000, go1.27.4, CC=gcc, clean tree"; log copied to
 `E:\work\lanes\wsl-c3c4a25.log`). An earlier Windows run at 716a084 is under Results.
-`DSH_REQUIRE_SCENARIOS` at closure: not recorded, because no closing run has ended. It is recorded with the
-first run in which both lanes pass all 13 gates on the final source commit; until then this item stays open.
+`DSH_REQUIRE_SCENARIOS`: not recorded, because no closure run exists yet (see Results, 298dd70). It is
+recorded together with the lane records of the run on the final commit.
 
 ### Run identifiers
 
@@ -300,21 +303,36 @@ Gate lanes:
   - WSL (ext4 copy): the same staticcheck runs: exit 0; `go vet`: exit 0;
     `go test ./internal/world/sandbox/launch/ ./internal/world/sandbox/local/`: ok.
   - Both lanes run on the commit that holds this repair; the gate counts only from that run.
-- 298dd70 (final source commit: both repairs), both lanes: **not run to completion**. Both runs started at
-  2026-11-26T02:30Z and had not ended when this record was written. Their result is `not run (in
-  progress when recorded)`, which counts as open (impl.md sec. 7.3, M2-DEC-3).
-  - Windows: `tools/harness-gate/lanes/win.ps1` from a temporary worktree; log
-    `E:\work\lanes\win-298dd70.log`. Partial progress at 2026-11-26T02:41Z: gofmt, vet (exceptions 48) and
-    staticcheck passed, and gate 4/13 (modules) was running. These are progress notes, not a gate
-    result, and they do not count for closure.
-  - WSL: `bash tools/harness-gate/lanes/wsl.sh` from an ext4 clone; log `~/lane-logs/wsl-298dd70.log`. No
-    result was recorded.
-  - No record file or SHA-256 exists yet for either lane.
-- **Stage state: open, not built.** No lane has a recorded pass of all 13 gates on the final source
-  commit (298dd70, or HEAD 6bab04a), and `DSH_REQUIRE_SCENARIOS` at closure is not recorded. A later PR
-  adds the per-gate results, record names and SHA-256 hashes for both lanes and the
-  `DSH_REQUIRE_SCENARIOS` value. It changes the status line only after `harness-gate ready --stage
-  DH-S-13 --built` exits 0. This record does not claim that the stage is built.
+- 298dd70 (both repairs), both lanes started 2026-11-26T02:30Z. **Neither lane passed all 13 gates.**
+  - WSL (`bash tools/harness-gate/lanes/wsl.sh` from an ext4 clone): gofmt passed (324 ms), vet passed
+    (15.657 s), staticcheck passed (6.08 s; the SA1019 repair holds), modules passed (6.96 s). The run
+    **failed at gate 5/13 (test)**, gate exit 1, ended 2026-11-26T02:34:43Z; rehearse exit 0. The
+    `src/harness` run (`go test -tags= -race -shuffle=on -count=1 ./...`, 3m0.375s) had four failing tests:
+    - `internal/cli/output` `TestEveryReasonHasAStatus`: the `shellexec/*` reasons (`bad-request`,
+      `not-found`, `bad-config`, `script-failed`, `timed-out`, `stopped`) and the `shellenv/*` reasons
+      (`bad-key`, `undeclared`, `contributor-failed`, `secrets-unknown`) have no exit status in
+      `output.codes`. These are step 13.6 code, so the repair belongs to this stage.
+    - `internal/world/shellexec/pwsh` `TestArgv` (`pwsh_test.go:124`, the `param(...)` script-file case)
+      and `internal/world/shellexec/tools` `TestArgumentsAreNamedOnly` (`tools_test.go:281`: the `bash`
+      schema now also declares `sandbox_permissions` and `justification`). Both are in this stage's
+      packages, so the repair belongs to this stage.
+    - `internal/context/instructions` `TestTotalSourceBudgetStopsReading` (`instructions_test.go:615`): a
+      third file was recorded `skipped` `fs/too-large` rather than omitted unread. The cause is still to be
+      found.
+    - Gates 6 to 13 did not run on WSL. Record `wsl-298dd70-20261126T0230Z.txt` (in-record sha256
+      `4a8e14823d6e13ae4cce06f46a061f1845bddf74df941ee0e969111589d1ddbc`) and `-rehearse.txt`, in the
+      clone at `docs/stories/harness-DSH-M1/evidence/runs/`; log `~/lane-logs/wsl-298dd70.log`.
+  - Windows (`tools/harness-gate/lanes/win.ps1` from a temporary worktree): at 2026-11-26T02:54Z gofmt
+    had passed (731 ms), vet had passed (7m40.835s), staticcheck had passed (4m1.045s; the U1000 repair
+    holds), and gate 4/13 (modules) was still running. No final result or record hash exists yet. Log
+    `E:\work\lanes\win-298dd70.log`. This run cannot close the stage either, because the gate 5 failures
+    above are in code built on both systems.
+  - 298dd70 is therefore not the final source commit. Both lanes run again, from gate 1, on the commit
+    that repairs the gate 5 failures; only that run counts for closure.
+
+**Stage status: open, not built.** No commit has a lane record with all 13 gates passed on both lanes,
+`DSH_REQUIRE_SCENARIOS` has not been recorded for a closure run, and `harness-gate ready --stage DH-S-13
+--built` has not exited 0. This record does not claim the stage built.
 
 ### Manual checks
 
@@ -325,8 +343,5 @@ The Manual checks register above.
 Not yet recorded: the before-and-after comparison the stage names, or what was retained.
 
 ### Open items
-
-Stage closure: no two-lane pass of all 13 gates on the final source commit is recorded (298dd70 runs not
-complete), and `DSH_REQUIRE_SCENARIOS` is not recorded. See Results.
 
 Unresolved debt `UP-DEBT-limit.packages.shell.pwsh-local.7` (non-ASCII standard input under Windows PowerShell 5.1) closes with DH-E-EXEC-7 in DH-S-39. Built-not-done until DH-S-39: SANDBOX-2, SANDBOX-3, EXEC-4, EXEC-8, EXEC-9; CONTEXT-2 until DH-S-32 (DH-E-CONTEXT-1).
