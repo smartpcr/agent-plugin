@@ -255,6 +255,34 @@ timeout changes. Checks on the working tree, on Windows and WSL:
 
 Both lanes are to run once on the commit that carries this fix.
 
+**Lanes at `acb5056`** (this fix, on `main` `aa42466`).
+
+*WSL:* [`wsl-acb5056-20261126T0112Z.txt`](../../harness-DSH-M1/evidence/runs/wsl-acb5056-20261126T0112Z.txt),
+sha256 `af7afc04aa00f971995da57ac9047e2fcd681f9771ae562839090d3356a43837`, exit 1.
+
+| Gate | Result |
+| --- | --- |
+| 1 gofmt | `PASS gofmt` |
+| 2 vet | `PASS vet`: the `local_test.go` fix clears it |
+| 3 staticcheck | `PASS staticcheck`: SA1019 fix confirmed |
+| 4 modules | `PASS modules` |
+| 5 test | `harness-gate: FAIL test`: `src/go` and `src/sdk` pass; `src/harness` fails four tests |
+
+The four failing `src/harness` tests:
+- `TestEveryReasonHasAStatus` (`internal/cli/output/output_test.go:92`): eight `shellexec/*` and `shellenv/*` reasons "have no exit status in output.codes", for example `shellexec/bad-config`.
+- `TestTotalSourceBudgetStopsReading` (`internal/context/instructions/instructions_test.go:615`): "third file ... opened 0 times, want omitted unread".
+- `TestArgv` (`internal/world/shellexec/pwsh/pwsh_test.go:124`): the script starts with a byte-order mark (`"\ufeffparam($x)..."`).
+- `TestArgumentsAreNamedOnly` (`internal/world/shellexec/tools/tools_test.go:281`): the bash tool's properties also hold `justification` and `sandbox_permissions`, where the test wants `command, timeout, description`.
+
+None of these tests or the code under them is in this branch's diff:
+- `git diff --stat aa42466 HEAD -- src/harness/internal/cli/output src/harness/internal/context/instructions src/harness/internal/world/shellexec` is empty.
+- The files come from `main`: #90, #138, #140 and #146.
+- `main` has no commit after `aa42466`, and no PR is open.
+
+Under the unrelated-failure rule they are recorded and raised (question `dh-s-14-main-test-failures`), not changed here. Gates 6 to 13, coverage included, did not run. The rehearsal record [`wsl-acb5056-20261126T0112Z-rehearse.txt`](../../harness-DSH-M1/evidence/runs/wsl-acb5056-20261126T0112Z-rehearse.txt) (sha256 `f42cf3226731db2ef9677e873526198a4c2db1d14c4d8d5ddf40f23cb252fb44`, exit 0) does not establish acceptance. The WSL clone `~/s14-lane-acb5056` and its log were removed after the records were copied.
+
+*Windows:* the lane at `acb5056` is still running (worktree `E:\tmp\s14-lane-acb5056`). It had passed gate 1 when this was written; its result is to be recorded here.
+
 **Record check.** `harness-gate ready --stage DH-S-14 --built` on this record (status line
 `open`), run on the working tree that carries the operator acceptance above: exit 0,
 `harness-gate ready: DH-S-14 (docs/stories/harness-DSH-M2/evidence/DH-S-14.md, built): ready; the status line is not read (it reads open)`.
@@ -312,7 +340,10 @@ The lanes at `b792aec` fail gate 2, both of them, on a `time.Sleep` that came in
 (`internal/world/fs/local/local_test.go:309`, #146). On the operator's answer to
 `dh-s-14-fslocal-nosleep`, that sleep is replaced on this branch (Results, `local_test.go` nosleep
 fix), and the lanes are to run on that commit. Open: the Windows `-race` failure in
-`TestCancellationDuringPublishRetryPublishesNothing`, from `main` (question `dh-s-14-fs-cancel-race`). Both lanes must
+`TestCancellationDuringPublishRetryPublishesNothing`, from `main` (question `dh-s-14-fs-cancel-race`).
+At `acb5056` the WSL lane passes gates 1 to 4 and fails gate 5 on four `src/harness` tests from `main`
+(Results, "Lanes at `acb5056`"; question `dh-s-14-main-test-failures`). The Windows lane at `acb5056` is to be
+recorded. Both lanes must
 pass on the final commit, with their exits, run records and coverage recorded here.
 Closed: the gofmt blocker (formatted on this branch, question `dh-s-14-gofmt-lane-blocker`), the
 nosleep blocker (question `dh-s-14-nosleep-lane-blocker`, fix kept) and the
