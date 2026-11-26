@@ -315,6 +315,7 @@ func (c *Conn) Close(ctx context.Context) error {
 	c.closed = true
 	owned := c.owned
 	c.owned = map[session.ID]agent.Handle{}
+	c.zones = map[session.ID]string{}
 	c.mu.Unlock()
 	errs := []error{c.stopForwarders(ctx)}
 	for _, id := range slices.Sorted(maps.Keys(owned)) {
@@ -567,6 +568,7 @@ func (c *Conn) drop(ctx context.Context, id session.ID) error {
 	c.mu.Lock()
 	h, ok := c.owned[id]
 	delete(c.owned, id)
+	delete(c.zones, id)
 	c.mu.Unlock()
 	if !ok {
 		return nil
@@ -664,6 +666,7 @@ func (c *Conn) closeSession(ctx context.Context, p protocol.SessionRef) (protoco
 	c.mu.Lock()
 	h, ok := c.owned[id]
 	delete(c.owned, id)
+	delete(c.zones, id)
 	c.mu.Unlock()
 	if !ok {
 		_, err := c.driven(p.SessionID)
