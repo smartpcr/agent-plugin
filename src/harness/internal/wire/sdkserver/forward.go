@@ -73,6 +73,12 @@ func (c *Conn) Attach(n Notifier) error {
 	}); err != nil {
 		return fmt.Errorf("sdkserver: listen for commits: %w", err)
 	}
+	if _, err := session.Closed.On(c.owner, func(_ *cordis.Context, a session.ClosedArgs) error {
+		c.childClosed(a.ID)
+		return nil
+	}); err != nil {
+		return fmt.Errorf("sdkserver: listen for closes: %w", err)
+	}
 	for _, rs := range owned {
 		c.follow(rs, rs.Len())
 	}
@@ -184,17 +190,59 @@ func (c *Conn) committed(a session.CommittedArgs) {
 	}
 }
 
-// unfollow stops the forwarder of id and waits for it to end; it returns the
-// stopped forwarder, nil for none.
+// childClosed ends the forwarder of a closed subagent session once it has sent
+// the events the close wrote. A root's forwarder is left to session/close and
+// drop, which stop it with its descendants.
+func (c *Conn) childClosed(id session.ID) {
+	c.mu.Lock()
+	f := c.fwd[id]
+	c.mu.Unlock()
+	if f == nil || f.scope.ParentSessionID == "" {
+		return
+	}
+	go func() {
+		// The drain context is cancelled when the root is unfollowed or the
+		// connection closes: nothing is sent for a session no longer reported.
+		ctx := f.drainCtx
+		defer f.drainCancel()
+		if err := f.stop(ctx); err == nil && f.failure() == nil {
+			if err := c.drainClosed(ctx, f); err != nil && ctx.Err() == nil {
+				c.abort(err)
+			}
+		}
+		c.mu.Lock()
+		if c.fwd[id] == f {
+			delete(c.fwd, id)
+		}
+		c.mu.Unlock()
+	}()
+}
+
+// unfollow stops the forwarder of root id and those of its subagent
+// descendants, and waits for them to end; it returns the root's stopped
+// forwarder, nil for none.
 func (c *Conn) unfollow(ctx context.Context, id session.ID) (*forwarder, error) {
 	c.mu.Lock()
 	f := c.fwd[id]
 	delete(c.fwd, id)
-	c.mu.Unlock()
-	if f == nil {
-		return nil, nil
+	var kids []*forwarder
+	for kid, k := range c.fwd {
+		if k.scope.RootSessionID == string(id) {
+			kids = append(kids, k)
+			delete(c.fwd, kid)
+		}
 	}
-	return f, f.stop(ctx)
+	c.mu.Unlock()
+	var errs []error
+	for _, k := range kids {
+		k.drainCancel()
+		errs = append(errs, k.stop(ctx))
+	}
+	if f == nil {
+		return nil, errors.Join(errs...)
+	}
+	f.drainCancel()
+	return f, errors.Join(append([]error{f.stop(ctx)}, errs...)...)
 }
 
 // stopForwarders stops every forwarder of a closing connection.
@@ -205,6 +253,7 @@ func (c *Conn) stopForwarders(ctx context.Context) error {
 	c.mu.Unlock()
 	var errs []error
 	for _, f := range fs {
+		f.drainCancel()
 		errs = append(errs, f.stop(ctx))
 	}
 	return errors.Join(errs...)
@@ -250,6 +299,11 @@ type forwarder struct {
 	runs  *runTracker // nil for a subagent: its result is subagent.finished
 	start event.Offset
 
+	// drainCtx bounds a closed subagent's final drain; it is cancelled when
+	// the forwarder is unfollowed or its connection closes.
+	drainCtx    context.Context
+	drainCancel context.CancelFunc
+
 	wake chan struct{} // one pending wake-up
 	quit chan struct{}
 	done chan struct{}
@@ -273,8 +327,10 @@ func forwardFailed(id string, seq event.Seq, err error) error {
 }
 
 func (c *Conn) newForwarder(rs session.ReadSession, sc protocol.Scope, runs *runTracker, start event.Offset) *forwarder {
+	dctx, dcancel := context.WithCancel(context.Background())
 	return &forwarder{
 		out: c.out, fail: c.abort, rs: rs, scope: sc, runs: runs, start: start, cursor: start,
+		drainCtx: dctx, drainCancel: dcancel,
 		wake: make(chan struct{}, 1), quit: make(chan struct{}), done: make(chan struct{}), moved: make(chan struct{}),
 	}
 }
