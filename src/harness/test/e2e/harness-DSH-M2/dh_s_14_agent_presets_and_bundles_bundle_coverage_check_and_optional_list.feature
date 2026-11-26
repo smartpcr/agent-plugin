@@ -19,6 +19,20 @@ Feature: Bundle coverage check and optional list
     Then it passes
 
   # TC-08a [proof: in-process; deps: none]
+  # Guards the Examples table below: a new built-in profile fails here until
+  # it is added to both tables, so no default profile goes unchecked.
+  Scenario: Every default profile is checked for egress
+    Then the default profiles the coverage check mounts are exactly:
+      | profile     |
+      | admin       |
+      | core        |
+      | web         |
+      | headless    |
+      | sdk         |
+      | sdk-minimal |
+      | acp         |
+
+  # TC-08a [proof: in-process; deps: none]
   Scenario Outline: Defaults send nothing
     Given the default profile "<profile>" composed from its shipped bundles with no route configured
     When the egress set is computed
