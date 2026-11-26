@@ -112,6 +112,12 @@ src/harness/test/e2e/harness-DSH-M2/dh_s_13_sandbox_launch_linux_backends_and_sh
 platform, so the WSL lane was not started for this commit. The S14 gate scenario (M2-DOD-1)
 stays open until that file is formatted on `main` and both lanes pass (Open items).
 
+**Blocker fix on this branch.** The record's branch now carries the `gofmt -w` of that file. The
+change is whitespace only (`before int` aligned to `before     int`, one line). After it,
+`gofmt -l src` lists nothing, and `go vet -tags=e2e` and `-tags=e2e,replay,scenario,bench` of
+`./test/e2e/harness-DSH-M2/` pass. Both lanes are to be run once on the commit that carries
+the fix, and the results are to be recorded here.
+
 **Step 14.5: coverage over the components that exist so far, and the optional list
 reviewed** (DH-D-BUNDLE-6, DH-ADR-BUNDLE-10). `TestShippedBuildIsCovered`
 (`internal/boot/profile/coverage_test.go`) passes on the nine components of the build
@@ -149,8 +155,9 @@ was a `t.TempDir()`, removed by the test.
 
 ### Open items
 
-The lanes at `fb4b97d` fail gofmt on a DH-S-13 e2e file (Results); both lanes are to be run again
-once it is formatted on `main` (question `dh-s-14-gofmt-lane-blocker`). Operator acceptance of the
+The lanes at `fb4b97d` fail gofmt on a DH-S-13 e2e file (Results). That file is formatted on this
+branch. Both lanes are to be run once on the commit that carries the fix (question
+`dh-s-14-gofmt-lane-blocker`). Operator acceptance of the
 two manual checks (question `dh-s-14-manual-checks`).
 
 Built-not-done: BUNDLE-2, BUNDLE-6 until DH-S-22; BUNDLE-4, BUNDLE-5 until DH-S-48 (impl.md problem S-1).

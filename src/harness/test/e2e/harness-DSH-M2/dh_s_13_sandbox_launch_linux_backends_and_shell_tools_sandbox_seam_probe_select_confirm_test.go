@@ -166,7 +166,7 @@ type spcWorld struct {
 	// policy once the policy step has built it.
 	probeState string
 	probeMode  sandbox.Mode
-	before int
+	before     int
 
 	plan sandbox.Launch
 	proc *subprocess.Process
