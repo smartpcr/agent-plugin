@@ -131,11 +131,12 @@ func records(t *testing.T, runDir string) []string {
 
 func eventually(t *testing.T, what string, ok func() bool) {
 	t.Helper()
-	for deadline := time.Now().Add(5 * time.Second); !ok(); {
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for deadline := time.Now().Add(5 * time.Second); !ok(); <-tick.C {
 		if time.Now().After(deadline) {
 			t.Fatalf("timed out waiting for %s", what)
 		}
-		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -379,17 +380,30 @@ func TestStop(t *testing.T) {
 }
 
 // launch.open falls back to printing when the browser fails, and fails with no
-// channel at all.
+// channel at all. Both are checked once the host is ready; before that it
+// refuses with launch/not-ready.
 func TestOpenFallback(t *testing.T) {
 	term := &syncBuf{}
-	h := start(t, temphome.New(t).Run(), launch.Options{Terminal: term, Ready: make(chan struct{}),
+	ready := make(chan struct{})
+	h := start(t, temphome.New(t).Run(), launch.Options{Terminal: term, Ready: ready,
 		Getenv: func(k string) string { return map[string]string{"DISPLAY": ":0"}[k] },
 		Opener: func(context.Context, string) error { return herr.New("open/failed", "no browser") }})
-	if how, err := h.Open(false); err != nil || how != launch.Printed || !strings.Contains(term.String(), "#t=secret") {
+	if _, err := h.Open(false); herr.Kind(err) != launch.ReasonNotReady {
+		t.Fatalf("Open before ready = %v, want %s", err, launch.ReasonNotReady)
+	}
+	close(ready)
+	// The announcement prints the link once on its own; Open must print another.
+	eventually(t, "the announcement", func() bool { return strings.Count(term.String(), "#t=secret") == 1 })
+	if how, err := h.Open(false); err != nil || how != launch.Printed || strings.Count(term.String(), "#t=secret") != 2 {
 		t.Fatalf("Open = %q %v, terminal %q", how, err, term.String())
 	}
 	off := false
-	none := start(t, temphome.New(t).Run(), launch.Options{Config: launch.Config{Open: &off}, Ready: make(chan struct{})})
+	noneReady := make(chan struct{})
+	none := start(t, temphome.New(t).Run(), launch.Options{Config: launch.Config{Open: &off}, Ready: noneReady})
+	if _, err := none.Open(false); herr.Kind(err) != launch.ReasonNotReady {
+		t.Fatalf("Open with no channel before ready = %v, want %s", err, launch.ReasonNotReady)
+	}
+	close(noneReady)
 	if _, err := none.Open(false); herr.Kind(err) != launch.ReasonNoChannel {
 		t.Fatalf("Open with no channel = %v", err)
 	}
