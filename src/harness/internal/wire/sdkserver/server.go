@@ -422,17 +422,24 @@ func (c *Conn) resume(ctx context.Context, p protocol.SessionResumeParams) (prot
 	if err := c.s.knownPreset(p.PermissionMode); err != nil {
 		return protocol.SessionResumeResult{}, err
 	}
+	sel, err := c.s.selection(p.Model)
+	if err != nil {
+		return protocol.SessionResumeResult{}, err
+	}
 	if a, ok := c.agent(id); ok {
-		// Idempotent for a session this connection already owns; a preset that
-		// fails to apply closes it.
+		// Idempotent for a session this connection already owns. A model is
+		// selected as session/model/set does, before the preset, so a refused
+		// model leaves the session unchanged; a preset that fails to apply
+		// closes it.
+		if p.Model != nil {
+			if _, err := agent.SelectModel(ctx, a, sel); err != nil {
+				return protocol.SessionResumeResult{}, wire(err)
+			}
+		}
 		if err := c.applyPreset(ctx, a, p.PermissionMode); err != nil {
 			return protocol.SessionResumeResult{}, errors.Join(err, c.drop(ctx, id))
 		}
 		return c.resumed(ctx, a, false)
-	}
-	sel, err := c.s.selection(p.Model)
-	if err != nil {
-		return protocol.SessionResumeResult{}, err
 	}
 	if err := c.s.claim(id, c); err != nil {
 		return protocol.SessionResumeResult{}, err
