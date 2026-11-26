@@ -157,8 +157,7 @@ stages:
       credential: claude-session
       requires: [DH-S-11, DH-S-16]
   # Venue: acceptance (harness:DSH-M2 Phase 8, E2 operating-system variants; macOS
-  # rows out of scope by decision platforms-windows-wsl). The NATIVESYSTEM, SANDBOX-1
-  # and CONTEXT-2 scenarios join when DH-S-13 authors them.
+  # rows out of scope by decision platforms-windows-wsl).
   DH-S-18:
     - id: DH-E-TOOLCHAIN-2
       authored: DH-S-1
@@ -219,6 +218,37 @@ stages:
       authored: DH-S-12
       credential: claude-session
       requires: [DH-S-11, DH-S-13, DH-S-16]
+    # The Linux confinement backends on real machines over SSH (sandbox-ssh.md
+    # DH-E-SANDBOX-1; node-addon-system.md DH-E-NATIVESYSTEM-1 to -4) and an
+    # instruction file changed by a real editor and git (context-compaction-skill.md
+    # DH-E-CONTEXT-2); authored by DH-S-13 (implementation-plan Stage 3.9) against
+    # the SDK boundary, each command one bash call of the scripted model endpoint.
+    # They need the sandbox seam, its status command and the instruction files
+    # (DH-S-13) and the headless launcher (DH-S-16).
+    - id: DH-E-SANDBOX-1
+      authored: DH-S-13
+      credential: none
+      requires: [DH-S-13, DH-S-16]
+    - id: DH-E-NATIVESYSTEM-1
+      authored: DH-S-13
+      credential: none
+      requires: [DH-S-13, DH-S-16]
+    - id: DH-E-NATIVESYSTEM-2
+      authored: DH-S-13
+      credential: none
+      requires: [DH-S-13, DH-S-16]
+    - id: DH-E-NATIVESYSTEM-3
+      authored: DH-S-13
+      credential: none
+      requires: [DH-S-13, DH-S-16]
+    - id: DH-E-NATIVESYSTEM-4
+      authored: DH-S-13
+      credential: none
+      requires: [DH-S-13, DH-S-16]
+    - id: DH-E-CONTEXT-2
+      authored: DH-S-13
+      credential: none
+      requires: [DH-S-13, DH-S-16]
   DH-S-19:
     # Two processes share the workspace registry; an archive with stop ends the
     # other process's turn (impl.md DH-S-19); authored by Stage 8.2 (impl.md
