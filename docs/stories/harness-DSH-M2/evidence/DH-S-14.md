@@ -241,6 +241,20 @@ tag sets. `main` still carries that line (rechecked at `aa42466`, #147), and no 
 did not run on either lane. The lane worktree `E:\tmp\s14-lane-b792aec` and the WSL clone
 `~/s14-lane-b792aec` were removed after their records were copied.
 
+**`local_test.go` nosleep fix** (operator answer to `dh-s-14-fslocal-nosleep`: fix it in this
+workstream as a separate test-only change; for review, since this is fenced-filesystem test code).
+In `TestBoundedReadHoldsThroughASwappedLink`'s helper `back`, the retry loop's post statement
+`time.Sleep(time.Millisecond)` becomes `runtime.Gosched()`. The loop still retries the rename until
+no read holds either name, and it keeps its 30 s deadline and panic. No product code, assertion or
+timeout changes. Checks on the working tree, on Windows and WSL:
+- `gofmt -l` is clean.
+- `go vet` with `-tags=` and `-tags=replay,scenario,bench` exits 0, with and without the gate's own analyzers (`HARNESS_GATE_VETTOOL=1 -vettool=<harness-gate>`).
+- WSL: `go test -race -count=3 ./internal/world/fs/local/` is `ok`.
+- Windows: `-run TestBoundedReadHoldsThroughASwappedLink -race -count=3` passes, `swaps=50 linked=50` each run, and `go test -count=3 ./internal/world/fs/local/` is `ok`.
+- Windows, under `-race`: one other test, `TestCancellationDuringPublishRetryPublishesNothing` (`cancel_windows_test.go:84`, from `main` #110, not touched here), fails 3 of 8 runs, including when run alone: `BeforePublish ran 1 times; the first rename was not blocked and retried`. It is recorded under the unrelated-failure rule (question `dh-s-14-fs-cancel-race`). The Windows test gate runs `-race`, so this may stop that lane at gate 4.
+
+Both lanes are to run once on the commit that carries this fix.
+
 **Record check.** `harness-gate ready --stage DH-S-14 --built` on this record (status line
 `open`), run on the working tree that carries the operator acceptance above: exit 0,
 `harness-gate ready: DH-S-14 (docs/stories/harness-DSH-M2/evidence/DH-S-14.md, built): ready; the status line is not read (it reads open)`.
@@ -295,8 +309,10 @@ It then fails gate 3, staticcheck SA1019 on `landlock.NewConfig` in
 `dh-s-14-landlock-staticcheck`). The Windows lane at `d26bb4b` fails gate 3 too, U1000 in `bus.go`.
 Both are fixed on this branch (Results, SA1019 fix and Windows U1000 fix), approved by the operator.
 The lanes at `b792aec` fail gate 2, both of them, on a `time.Sleep` that came in from `origin/main`
-(`internal/world/fs/local/local_test.go:309`, #146; question `dh-s-14-fslocal-nosleep`, awaiting
-the operator). Both lanes must
+(`internal/world/fs/local/local_test.go:309`, #146). On the operator's answer to
+`dh-s-14-fslocal-nosleep`, that sleep is replaced on this branch (Results, `local_test.go` nosleep
+fix), and the lanes are to run on that commit. Open: the Windows `-race` failure in
+`TestCancellationDuringPublishRetryPublishesNothing`, from `main` (question `dh-s-14-fs-cancel-race`). Both lanes must
 pass on the final commit, with their exits, run records and coverage recorded here.
 Closed: the gofmt blocker (formatted on this branch, question `dh-s-14-gofmt-lane-blocker`), the
 nosleep blocker (question `dh-s-14-nosleep-lane-blocker`, fix kept) and the
