@@ -15,18 +15,18 @@ import (
 // TestExecConfinedCommandNeverRunsWithoutBackend is the DH-E-EXEC-8 scenario
 // (docs/harness/areas/execution.md; tech-spec sec. 4.5: authored in DH-S-13, run
 // in DH-S-39): a confined one-shot command is confined, and once the backend is
-// unusable neither a foreground nor a background call runs at all.
+// unusable a foreground call does not run at all (the background half waits for
+// DH-D-JOBS-1, not mounted in M2).
 //
 // Given one Linux machine per backend A10 ships (the bwrap= and landlock=
 // machines of DH-E-SANDBOX-1), a read-only session and a marker outside the
 // write roots,
 // When the bash tool writes the marker; then the operator's break command makes
-// the backend unusable and the same call is made in the foreground and as a
-// background job; then, the backend restored, a command exits 125 printing
-// launcher-like text,
+// the backend unusable and the same call is made in the foreground; then,
+// the backend restored, a command exits 125 printing launcher-like text,
 // Then the marker is never created; the first result is a non-zero exit that
-// carries the sandbox enforcement and a denial hint; with no backend both calls
-// fail at start with no shell process on the machine; the last is an ordinary
+// carries the sandbox enforcement and a denial hint; with no backend the call
+// fails at start with no shell process on the machine; the last is an ordinary
 // command that exited 125, its stderr its own.
 //
 // Inputs: DSH_SCENARIO_SANDBOX1_MACHINES and the layer inputs of
@@ -81,17 +81,12 @@ func TestExecConfinedCommandNeverRunsWithoutBackend(t *testing.T) {
 			r.must(t, "make "+backend+" unusable", expand(brk, vars))
 			nonce := fmt.Sprintf("exec8-%s-%d", backend, os.Getpid())
 			never := write + "; sleep 30 # " + nonce
-			m.script(bashCall(never))
-			m.script(scriptedCall{Name: "bash", Args: map[string]any{"command": never, "run_in_background": true}, Tag: "background"})
-			broken := toolOutcomes(t, h.runPrompt(t, session, "Run the scripted commands.", 10*time.Minute))
-			if n := m.pending(); n != 0 || len(broken) != 2 {
-				t.Fatalf("the turn made %d of 2 scripted calls (%d not made)", len(broken), n)
-			}
-			for i, how := range []string{"foreground", "background"} {
-				mustRefuse(t, broken[i], never+" ("+how+")", "sandbox/unavailable", "sandbox/launch-failed", "sandbox/exec-failed")
-				if !strings.Contains(strings.ToLower(string(broken[i].Raw)), "never ran") {
-					t.Errorf("the %s call with no backend does not say it never ran: %s", how, broken[i].Raw)
-				}
+			// The background half of DH-E-EXEC-8 waits for run_in_background (DH-D-JOBS-1),
+			// which M2 does not mount; the bash tool rejects that argument today.
+			broken := runCommands(t, h, m, session, never)[0]
+			mustRefuse(t, broken, never, "sandbox/unavailable", "sandbox/launch-failed", "sandbox/exec-failed")
+			if !strings.Contains(strings.ToLower(string(broken.Raw)), "not started") {
+				t.Errorf("the call with no backend does not say it was not started: %s", broken.Raw)
 			}
 			if ps := r.must(t, "look for the shell", "pgrep -af '"+nonce+"' | grep -v pgrep || true"); strings.TrimSpace(ps) != "" {
 				t.Errorf("a shell process was created with no backend:\n%s", ps)
