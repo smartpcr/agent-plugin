@@ -96,8 +96,9 @@ func TestFirstStatement(t *testing.T) {
 }
 
 // TestArgv: a command follows the flags and the UTF-8 preamble in one -Command
-// string; a first-statement command is written, with a byte-order mark, to the
-// private script file, which the command string invokes with its exit code.
+// string; a first-statement command is written, with a byte-order mark and
+// followed by ScriptTrailer, to the private script file, which the command
+// string invokes with its exit code carried out (ScriptCall).
 //
 //dsh:test DH-T-EXEC-13
 func TestArgv(t *testing.T) {
@@ -120,12 +121,12 @@ func TestArgv(t *testing.T) {
 	}
 	script := dir + string(os.PathSeparator) + pwsh.ScriptName
 	b, err := os.ReadFile(script)
-	if err != nil || !bytes.Equal(b, []byte("\uFEFFparam($x)\nexit 3")) {
+	if err != nil || !bytes.Equal(b, []byte("\uFEFFparam($x)\nexit 3"+pwsh.ScriptTrailer)) {
 		t.Fatalf("script = %q, %v", b, err)
 	}
 	last := argv[len(argv)-1]
 	if !slices.Contains(argv, "Bypass") || !strings.Contains(last, "& '"+strings.ReplaceAll(script, "'", "''")+"'") ||
-		!strings.HasSuffix(last, "if ($LASTEXITCODE) { exit $LASTEXITCODE }") {
+		!strings.HasSuffix(last, pwsh.ScriptCall) {
 		t.Fatalf("Argv = %q", argv)
 	}
 }

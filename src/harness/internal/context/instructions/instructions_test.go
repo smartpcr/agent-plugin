@@ -590,8 +590,9 @@ func TestChainFloorsAndLending(t *testing.T) {
 }
 
 // TestTotalSourceBudgetStopsReading: once the reads of a discovery reach the
-// total source budget, a later file is not opened and is omitted; it is read
-// again once an earlier file shrinks.
+// total source budget, a later file is not opened and is skipped (not omitted:
+// the section budget did not cut it); it is read again once an earlier file
+// shrinks.
 //
 //dsh:test DH-T-CONTEXT-5
 func TestTotalSourceBudgetStopsReading(t *testing.T) {
@@ -611,8 +612,8 @@ func TestTotalSourceBudgetStopsReading(t *testing.T) {
 	if f, _ := find(sec.Record, "a/AGENTS.md"); f.State != instructions.Visible || f.Bytes != 5 || !f.Truncated {
 		t.Fatalf("second file %+v, want cut at the 5 bytes left", f)
 	}
-	if f, _ := find(sec.Record, "a/b/AGENTS.md"); f.State != instructions.Omitted || f.Reason != fs.CodeTooLarge || seam.opened[abs("/ws/a/b/AGENTS.md")] != 0 {
-		t.Fatalf("third file %+v opened %d times, want omitted unread", f, seam.opened[abs("/ws/a/b/AGENTS.md")])
+	if f, _ := find(sec.Record, "a/b/AGENTS.md"); f.State != instructions.Skipped || f.Reason != fs.CodeTooLarge || seam.opened[abs("/ws/a/b/AGENTS.md")] != 0 {
+		t.Fatalf("third file %+v opened %d times, want skipped unread", f, seam.opened[abs("/ws/a/b/AGENTS.md")])
 	}
 	write(t, m, "/ws/AGENTS.md", "01")
 	obs, err = instructions.Discover(ctx, seam, abs("/ws/a/b"), abs("/ws"), c)
