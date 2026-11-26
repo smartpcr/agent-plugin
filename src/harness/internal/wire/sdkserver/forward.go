@@ -123,7 +123,8 @@ func (d *deferred) Call(ctx context.Context, method string, params, result any) 
 // before the request asked again. The codec's bounds hold for it too: a line
 // over MaxFrameBytes drops its message (which may quote the client's reply)
 // and fails if it still does not fit; a write not accepted within WriteStall
-// treats the client as gone and closes the transport (sdk-acp-typert.md §6).
+// treats the client as gone, and a write that fails is a failed transport:
+// either closes the transport, which Serve reports (sdk-acp-typert.md §6).
 func (d *deferred) Fault(e *jsonrpc.Error) error {
 	<-d.ready
 	if e == nil {
@@ -137,11 +138,17 @@ func (d *deferred) Fault(e *jsonrpc.Error) error {
 		return err
 	}
 	err = d.w.writeLine(line, d.stall, d.n.Done())
-	if jsonrpc.HasReason(err, jsonrpc.ReasonWriteStalled) {
+	if err != nil && !errors.Is(err, errEnded) {
+		// The write bypassed the codec, so the codec does not know the pipe
+		// failed: close it, or an idle connection would never end.
 		d.abort(err)
 	}
 	return err
 }
+
+// errEnded marks a rejection not written because the codec had already ended;
+// that is not a new failure of the transport.
+var errEnded = errors.New("the connection ended before the rejection was written")
 
 // elided replaces the message of a rejection over the frame bound.
 const elided = "the reply was refused; its description is over the frame bound"
@@ -188,13 +195,13 @@ func (l *lineWriter) writeLine(line []byte, stall time.Duration, done <-chan str
 	select {
 	case err := <-written:
 		if err != nil {
-			return fail(jsonrpc.ReasonClosed, "writing the rejection failed: "+err.Error())
+			return fmt.Errorf("sdkserver: writing the rejection failed: %w", err)
 		}
 		return nil
 	case <-timer.C:
 		return fail(jsonrpc.ReasonWriteStalled, "the client accepted no rejection for "+stall.String())
 	case <-done:
-		return fail(jsonrpc.ReasonClosed, "the connection ended before the rejection was written")
+		return fmt.Errorf("%w: %w", fail(jsonrpc.ReasonClosed, errEnded.Error()), errEnded)
 	}
 }
 

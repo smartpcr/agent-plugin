@@ -509,6 +509,45 @@ func TestStalledRejectionClosesTheTransport(t *testing.T) {
 	}
 }
 
+// failFaults passes every line but the null-id rejections, which fail at once:
+// a pipe that breaks under the rejection the codec never sees.
+type failFaults struct{ w io.Writer }
+
+func (f failFaults) Write(b []byte) (int, error) {
+	if bytes.Contains(b, []byte(`"id":null`)) {
+		return 0, errors.New("the pipe broke")
+	}
+	return f.w.Write(b)
+}
+
+// A rejection write that fails is a failed transport even though it bypassed the
+// codec: Serve returns naming it, and the connection's sessions are released
+// for another connection to resume.
+func TestFailedRejectionWriteClosesTheTransport(t *testing.T) {
+	ar := newAnsRig(t)
+	_, cl := ansConnectWith(t, ar.srv, jsonrpc.Options{}, func(w io.Writer) io.Writer { return failFaults{w: w} })
+	id := cl.ansCreate(protocol.SessionCreateParams{})
+	done := ar.ask(approvalFor(ar.ref(t, id)))
+
+	cl.peer.Reply(cl.hostRequest(sdkserver.ApprovalRequestMethod).ID, map[string]string{"outcome": "allowed-forever"})
+	if a := settledWith(t, done); a.ans.Outcome != human.OutcomeDenied || !strings.Contains(a.ans.Text, "the pipe broke") {
+		t.Fatalf("settled %+v, want denied naming the failed write", a.ans)
+	}
+	p := cl.peer.(*pipePeer)
+	select {
+	case <-p.served:
+	case <-time.After(jsonrpctest.Timeout):
+		t.Fatal("the transport stayed open behind a failed rejection write")
+	}
+	if p.serveErr == nil || !strings.Contains(p.serveErr.Error(), "writing the rejection failed: the pipe broke") {
+		t.Fatalf("Serve = %v, want the failed rejection write", p.serveErr)
+	}
+	_, cl2 := ansConnect(t, ar.srv, bothCaps, "")
+	if r := cl2.roundTrip("session/resume", protocol.SessionResumeParams{SessionID: id}); r.Error != nil {
+		t.Fatalf("session/resume after the transport failed: %v", r.Error)
+	}
+}
+
 // TC-12a: cancelling the turn withdraws a pending question with $/cancel; the
 // late answer changes nothing.
 func TestWithdrawalCancelsPendingQuestion(t *testing.T) {
