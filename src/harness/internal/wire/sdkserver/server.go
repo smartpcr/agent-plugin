@@ -408,9 +408,11 @@ func (c *Conn) create(ctx context.Context, p protocol.SessionCreateParams) (prot
 	if err != nil {
 		return protocol.SessionCreateResult{}, err
 	}
+	// A create that fails after adopt closes the session: the client may never
+	// have learned its id, so nothing could close, drive or resume it.
 	cwd, err := c.cwdOf(ctx, a)
 	if err != nil {
-		return protocol.SessionCreateResult{}, err
+		return protocol.SessionCreateResult{}, errors.Join(err, c.drop(ctx, id))
 	}
 	return protocol.SessionCreateResult{SessionID: string(id), Cwd: cwd, LastSeq: lastSeq(a.Session())}, nil
 }
@@ -441,7 +443,12 @@ func (c *Conn) resume(ctx context.Context, p protocol.SessionResumeParams) (prot
 		return protocol.SessionResumeResult{}, err
 	}
 	rep, _ := agent.OpenReport(a)
-	return c.resumed(ctx, a, rep.Interrupted)
+	// As on create, a resume that fails after filing the session closes it.
+	res, err := c.resumed(ctx, a, rep.Interrupted)
+	if err != nil {
+		return protocol.SessionResumeResult{}, errors.Join(err, c.drop(ctx, id))
+	}
+	return res, nil
 }
 
 // knownPreset refuses a permissionMode the host cannot apply before any work;
