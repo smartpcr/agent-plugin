@@ -37,7 +37,7 @@ Each step's merge commit; `--built` refuses a step without one.
 | 15.4 | DH-D-API-1 | | |
 | 15.5 | DH-D-SDK-3 | | |
 | 15.6 | DH-D-SDK-4 | | `wire/sdkserver`; H-1, H-2, H-3 not built: no method added, `schema.json` unchanged (M2-C-7) |
-| 15.7 | DH-D-SDK-5 | | held open: H-4 |
+| 15.7 | DH-D-SDK-5 | | `wire/sdkserver` `forward.go`, `runs.go`: scoped ordered `session.event`, `session.run.completed` with the last assistant text (TC-12a); H-4 (goal stop signal) not built |
 | 15.8 | DH-D-SDK-6 | | |
 
 ## Scenarios
@@ -104,4 +104,4 @@ Not yet recorded: the before-and-after comparison the stage names, or what was r
 
 ### Open items
 
-Not built (DH-D-SDK-4, M2-C-7): H-1 (schedule hook), H-2 (multi-route validation), H-3 (inline images). No method is added for them and `src/sdk/protocol/schema.json` is unchanged (TC-12g); an image block is refused `sdk/invalid-content`. Held open: H-4 (DH-D-SDK-5). Built-not-done: HOST-1, HOST-2 until DH-S-22; HOST-3, SDK-3 until DH-S-39; API-1 until DH-S-48. The exit evidence lists the SDK methods that are complete, those that wait for H-4, and H-1 to H-3 as not built.
+Not built (DH-D-SDK-4, M2-C-7): H-1 (schedule hook), H-2 (multi-route validation), H-3 (inline images). No method is added for them and `src/sdk/protocol/schema.json` is unchanged (TC-12g); an image block is refused `sdk/invalid-content`. Not built (DH-D-SDK-5): H-4 (goal stop signal); a run completes at its turn's `turn/end` only, never on a goal. Built-not-done: HOST-1, HOST-2 until DH-S-22; HOST-3, SDK-3 until DH-S-39; API-1 until DH-S-48. The exit evidence lists the SDK methods that are complete, those that wait for H-4, and H-1 to H-3 as not built.

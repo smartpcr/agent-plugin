@@ -3,8 +3,9 @@
 // connection per client. A connection owns the sessions it created or resumed;
 // it drives only those, and reads any stored session's history.
 //
-// This file is the session methods. The scoped event forwarder, run results and
-// the approval and question answerer are later stages (DH-D-SDK-5, -6).
+// This file is the session methods; forward.go and runs.go are the scoped event
+// forwarder and the run results (DH-D-SDK-5). The approval and question answerer
+// is a later stage (DH-D-SDK-6).
 package sdkserver
 
 import (
@@ -130,6 +131,10 @@ type Conn struct {
 	defaults protocol.Defaults
 	owned    map[session.ID]agent.Handle
 	closed   bool
+	// out is where notifications go, nil until Attach; fwd is the forwarder of
+	// each session reported to it (forward.go).
+	out Notifier
+	fwd map[session.ID]*forwarder
 }
 
 // Connect opens a connection: its fiber under Options.Owner and its method table,
@@ -185,11 +190,20 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer, o jsonrpc.
 	}
 	rd, wr := &watchedReader{r: r}, &watchedWriter{w: w}
 	o.Methods = c.Methods()
+	// Attached before the codec can dispatch, so no session misses a forwarder.
+	out := &deferred{ready: make(chan struct{})}
+	if err := c.Attach(out); err != nil {
+		return errors.Join(err, c.Close(context.WithoutCancel(ctx)))
+	}
 	conn := jsonrpc.Serve(ctx, rd, wr, o)
+	out.set(conn)
 	<-conn.Done()
 	var ended error
 	if ctx.Err() == nil && !(errors.Is(rd.failed(), io.EOF) && wr.failed() == nil && jsonrpc.HasReason(conn.Err(), jsonrpc.ReasonClosed)) {
 		ended = fmt.Errorf("sdkserver: the transport failed: %w", errors.Join(conn.Err(), ignoreEOF(rd.failed()), wr.failed()))
+	}
+	if err := out.failure(); err != nil {
+		ended = fmt.Errorf("sdkserver: forwarding failed, the transport was closed: %w", err)
 	}
 	return errors.Join(ended, c.Close(context.WithoutCancel(ctx)))
 }
@@ -260,7 +274,7 @@ func (c *Conn) Close(ctx context.Context) error {
 	owned := c.owned
 	c.owned = map[session.ID]agent.Handle{}
 	c.mu.Unlock()
-	var errs []error
+	errs := []error{c.stopForwarders(ctx)}
 	for _, id := range slices.Sorted(maps.Keys(owned)) {
 		errs = append(errs, owned[id].Dispose(ctx))
 		c.s.release(id, c)
@@ -414,7 +428,9 @@ func (c *Conn) create(ctx context.Context, p protocol.SessionCreateParams) (prot
 	if err != nil {
 		return protocol.SessionCreateResult{}, errors.Join(err, c.drop(ctx, id))
 	}
-	return protocol.SessionCreateResult{SessionID: string(id), Cwd: cwd, LastSeq: lastSeq(a.Session())}, nil
+	last := lastSeq(a.Session())
+	c.follow(a.Session(), event.Offset(last+1))
+	return protocol.SessionCreateResult{SessionID: string(id), Cwd: cwd, LastSeq: last}, nil
 }
 
 func (c *Conn) resume(ctx context.Context, p protocol.SessionResumeParams) (protocol.SessionResumeResult, error) {
@@ -494,7 +510,8 @@ func (c *Conn) drop(ctx context.Context, id session.ID) error {
 		return nil
 	}
 	defer c.s.release(id, c)
-	return h.Dispose(ctx)
+	_, err := c.unfollow(ctx, id)
+	return errors.Join(err, h.Dispose(ctx))
 }
 
 // resumeClaimed resumes id, which c has claimed, under the preset mode: a session
@@ -523,13 +540,17 @@ func (c *Conn) resumeClaimed(ctx context.Context, id session.ID, sel agent.Model
 	return c.adoptClaimed(ctx, id, h)
 }
 
+// resumed is the result of a resume, and forwards the session from after its
+// lastSeq (a no-op for one already forwarded).
 func (c *Conn) resumed(ctx context.Context, a agent.Agent, interrupted bool) (protocol.SessionResumeResult, error) {
 	cwd, err := c.cwdOf(ctx, a)
 	if err != nil {
 		return protocol.SessionResumeResult{}, err
 	}
+	last := lastSeq(a.Session())
+	c.follow(a.Session(), event.Offset(last+1))
 	return protocol.SessionResumeResult{
-		SessionID: string(a.Ref().Session), Cwd: cwd, LastSeq: lastSeq(a.Session()), ClosedInterruptedTurn: interrupted,
+		SessionID: string(a.Ref().Session), Cwd: cwd, LastSeq: last, ClosedInterruptedTurn: interrupted,
 	}, nil
 }
 
@@ -588,10 +609,27 @@ func (c *Conn) closeSession(ctx context.Context, p protocol.SessionRef) (protoco
 	}
 	defer c.s.release(id, c)
 	rs := h.Agent().Session()
+	// The forwarder stops before the close and the events the close wrote are
+	// sent after it, so the reply's lastSeq is the last event the client got.
+	// The session is closed either way; a tail not sent fails the reply.
+	f, stopped := c.unfollow(ctx, id)
 	if err := h.Dispose(ctx); err != nil {
 		return protocol.LastSeqResult{}, wire(err)
 	}
-	return protocol.LastSeqResult{LastSeq: lastSeq(rs)}, nil
+	last := lastSeq(rs)
+	if f == nil {
+		return protocol.LastSeqResult{LastSeq: last}, nil
+	}
+	if stopped == nil {
+		stopped = f.failure()
+	}
+	if stopped == nil {
+		stopped = c.drainClosed(ctx, f)
+	}
+	if stopped != nil {
+		return protocol.LastSeqResult{}, forwardFailed(string(id), event.Seq(max(last, 0)), stopped)
+	}
+	return protocol.LastSeqResult{LastSeq: last}, nil
 }
 
 // shutdown is replied first; the launcher unloads the tree after the reply.
@@ -640,12 +678,14 @@ func (c *Conn) send(ctx context.Context, id string, list agent.List, msgID strin
 	}
 	r, err := agent.Send(ctx, a, list, agent.InboxMessage{ID: msgID, Source: agent.SourceUser, By: c.by(), Text: text})
 	if dup, ok := errors.AsType[*agent.DuplicateError](err); ok {
-		return dup.First, nil
+		// A retry racing the first send is held to the same watermark.
+		r, err = dup.First, nil
 	}
 	if err != nil {
 		return agent.Receipt{}, wire(err)
 	}
-	return r, nil
+	// The watermark: the receipt's seq is written after its session.event.
+	return r, c.reached(ctx, session.ID(id), int64(r.Seq))
 }
 
 // wait returns once the root is idle and its live descendants have finished.
@@ -666,7 +706,8 @@ func (c *Conn) wait(ctx context.Context, p protocol.SessionRef) (protocol.LastSe
 			settled = settled && x.Status() == agent.StatusIdle
 		}
 	}
-	return protocol.LastSeqResult{LastSeq: lastSeq(a.Session())}, nil
+	last := lastSeq(a.Session())
+	return protocol.LastSeqResult{LastSeq: last}, c.reached(ctx, a.Ref().Session, last)
 }
 
 // cancel cancels with cause user; a turn cancel replies after the turn/end.
@@ -696,7 +737,8 @@ func (c *Conn) cancel(ctx context.Context, p protocol.SessionCancelParams) (prot
 			return protocol.SessionCancelResult{}, wire(err)
 		}
 	}
-	return protocol.SessionCancelResult{Cancelled: running, LastSeq: lastSeq(a.Session())}, nil
+	last := lastSeq(a.Session())
+	return protocol.SessionCancelResult{Cancelled: running, LastSeq: last}, c.reached(ctx, a.Ref().Session, last)
 }
 
 // -------------------------------------------------------------------- history
