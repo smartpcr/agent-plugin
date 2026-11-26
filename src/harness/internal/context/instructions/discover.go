@@ -220,7 +220,9 @@ func Discover(ctx context.Context, fsys fs.FS, dir, root string, c Config) (Obse
 			return
 		}
 		e.File.Path, e.File.Scope = shown, scope
-		if e.File.State == Visible {
+		// A limited read's digest covers only a prefix, so two different files
+		// could share it: only whole reads are deduplicated.
+		if e.File.State == Visible && !e.limited {
 			if seen[e.File.Digest] {
 				e.File.State, e.Text = Duplicate, ""
 			}
