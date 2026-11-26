@@ -70,10 +70,6 @@ const (
 	ReasonUnknownPreset = "permission/unknown-preset"
 )
 
-// envelopeBytes is what a history reply reserves, beyond its result, for the
-// jsonrpc envelope and the request id.
-const envelopeBytes = 1024
-
 // Options are what a Server serves with.
 type Options struct {
 	// Owner is the context every connection's fiber is applied under; the agents
@@ -402,11 +398,14 @@ func (c *Conn) create(ctx context.Context, p protocol.SessionCreateParams) (prot
 		c.s.release(id, c)
 		return protocol.SessionCreateResult{}, wire(err)
 	}
+	// The preset is in force before the session is filed in c.owned: until then
+	// no drive method of this connection reaches it, and no other owner can.
+	if err := c.applyPreset(ctx, h.Agent(), mode); err != nil {
+		c.s.release(id, c)
+		return protocol.SessionCreateResult{}, errors.Join(err, h.Dispose(ctx))
+	}
 	a, err := c.adopt(ctx, id, h)
 	if err != nil {
-		return protocol.SessionCreateResult{}, err
-	}
-	if err := c.applyPreset(ctx, a, mode); err != nil {
 		return protocol.SessionCreateResult{}, err
 	}
 	cwd, err := c.cwdOf(ctx, a)
@@ -422,9 +421,10 @@ func (c *Conn) resume(ctx context.Context, p protocol.SessionResumeParams) (prot
 		return protocol.SessionResumeResult{}, err
 	}
 	if a, ok := c.agent(id); ok {
-		// Idempotent for a session this connection already owns.
+		// Idempotent for a session this connection already owns; a preset that
+		// fails to apply closes it.
 		if err := c.applyPreset(ctx, a, p.PermissionMode); err != nil {
-			return protocol.SessionResumeResult{}, err
+			return protocol.SessionResumeResult{}, errors.Join(err, c.drop(ctx, id))
 		}
 		return c.resumed(ctx, a, false)
 	}
@@ -435,12 +435,9 @@ func (c *Conn) resume(ctx context.Context, p protocol.SessionResumeParams) (prot
 	if err := c.s.claim(id, c); err != nil {
 		return protocol.SessionResumeResult{}, err
 	}
-	a, err := c.resumeClaimed(ctx, id, sel)
+	a, err := c.resumeClaimed(ctx, id, sel, p.PermissionMode)
 	if err != nil {
 		c.s.release(id, c)
-		return protocol.SessionResumeResult{}, err
-	}
-	if err := c.applyPreset(ctx, a, p.PermissionMode); err != nil {
 		return protocol.SessionResumeResult{}, err
 	}
 	rep, _ := agent.OpenReport(a)
@@ -463,31 +460,33 @@ func (s *Server) knownPreset(name string) error {
 }
 
 // applyPreset switches a's session to the permission preset name; "" keeps the
-// session's. A switch that fails closes the agent, so no session runs under a
-// preset other than the one requested.
+// session's. The caller closes an agent whose switch failed, so no session runs
+// under a preset other than the one requested.
 func (c *Conn) applyPreset(ctx context.Context, a agent.Agent, name string) error {
 	if name == "" {
 		return nil
 	}
 	_, err := c.s.o.Permissions.Set(ctx, a.Ref(), name, approval.By{Principal: c.by(), Channel: "sdk"})
-	if err == nil {
-		return nil
-	}
-	id := a.Ref().Session
+	return wire(err)
+}
+
+// drop disposes the owned session id and releases c's claim.
+func (c *Conn) drop(ctx context.Context, id session.ID) error {
 	c.mu.Lock()
 	h, ok := c.owned[id]
 	delete(c.owned, id)
 	c.mu.Unlock()
-	if ok {
-		err = errors.Join(err, h.Dispose(ctx))
-		c.s.release(id, c)
+	if !ok {
+		return nil
 	}
-	return wire(err)
+	defer c.s.release(id, c)
+	return h.Dispose(ctx)
 }
 
-// resumeClaimed resumes id, which c has claimed: a session another writer holds
-// live, in this process or another, is session/owned.
-func (c *Conn) resumeClaimed(ctx context.Context, id session.ID, sel agent.ModelSelection) (agent.Agent, error) {
+// resumeClaimed resumes id, which c has claimed, under the preset mode: a session
+// another writer holds live, in this process or another, is session/owned. As on
+// create, the preset is in force before the session is filed in c.owned.
+func (c *Conn) resumeClaimed(ctx context.Context, id session.ID, sel agent.ModelSelection, mode string) (agent.Agent, error) {
 	if _, live := c.s.o.Agents.Get(id); live {
 		return nil, fail(string(store.CodeOwned), fmt.Sprintf("session %q is live in this host under another owner", id))
 	}
@@ -503,6 +502,9 @@ func (c *Conn) resumeClaimed(ctx context.Context, id session.ID, sel agent.Model
 	h, err := c.s.o.Agents.Resume(c.owner, agent.CreateOptions{Session: id, Model: sel})
 	if err != nil {
 		return nil, wire(err)
+	}
+	if err := c.applyPreset(ctx, h.Agent(), mode); err != nil {
+		return nil, errors.Join(err, h.Dispose(ctx))
 	}
 	return c.adoptClaimed(ctx, id, h)
 }
@@ -709,9 +711,9 @@ func (c *Conn) historyRegistration() protocol.Registration {
 
 // history pages the committed events of any session, live or stored, with no
 // lease: from seq 0 when after is nil, else from *after+1. A page is cut before
-// its serialized result would exceed half of Limits.MaxFrameBytes; an event that
-// alone exceeds half a frame is a page of its own when its reply still fits a
-// frame, and is refused jsonrpc/line-too-long when it does not.
+// its serialized result would exceed half of Limits.MaxFrameBytes, so no page is
+// larger; an event that alone would exceed half a frame is refused
+// jsonrpc/line-too-long, naming the seq to page past with afterSeq.
 func (c *Conn) history(ctx context.Context, p protocol.SessionHistoryParams, after *int64) (protocol.SessionHistoryResult, error) {
 	limit := p.Limit
 	switch {
@@ -766,22 +768,18 @@ page:
 				return protocol.SessionHistoryResult{}, fmt.Errorf("sdkserver: encode event %d: %w", e.Seq(), err)
 			}
 			size := int64(len(b)) + 1 // and its comma
-			alone := false
 			if frame > 0 && used+size > frame/2 {
 				if len(out.Events) > 0 {
 					break page
 				}
-				if used+size+envelopeBytes > frame {
-					return protocol.SessionHistoryResult{}, fail(jsonrpc.ReasonLineTooLong, fmt.Sprintf(
-						"event %d serializes to %d bytes: no reply within the frame bound of %d bytes carries it; page past it with afterSeq %d",
-						e.Seq(), size, frame, e.Seq()))
-				}
-				alone = true
+				return protocol.SessionHistoryResult{}, fail(jsonrpc.ReasonLineTooLong, fmt.Sprintf(
+					"event %d serializes to %d bytes: no history page within half the frame bound of %d bytes carries it; page past it with afterSeq %d",
+					e.Seq(), size, frame, e.Seq()))
 			}
 			used += size
 			out.Events = append(out.Events, w)
 			pos = e.Seq() + 1
-			if alone || len(out.Events) == limit {
+			if len(out.Events) == limit {
 				break page
 			}
 		}

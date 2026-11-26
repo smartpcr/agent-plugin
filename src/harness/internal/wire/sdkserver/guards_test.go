@@ -75,26 +75,23 @@ func TestInvalidEnumsDoNothing(t *testing.T) {
 	}
 }
 
-// Every history page's result fits half a frame, measured as serialized; an
-// event over half a frame is a page alone, and one no frame carries is refused
-// jsonrpc/line-too-long and paged past.
+// Every successful history page's result fits half a frame, measured as
+// serialized, with no exception: an event that alone would exceed half a frame
+// is refused jsonrpc/line-too-long and paged past with afterSeq.
 func TestHistoryPagesFitHalfAFrame(t *testing.T) {
 	const frame = 16 << 10
 	r := newRig(t, hang("working"))
 	r.o.Limits.MaxFrameBytes = frame
 	cl := connect(t, r.server())
 	id := cl.create()
-	var big, huge int64
+	oversized := map[int64]bool{}
 	prompts := []string{strings.Repeat("<a&", 500), strings.Repeat("<b&", 500), strings.Repeat("<c&", 500), strings.Repeat("<d&", 500),
 		strings.Repeat("b", 10_000), strings.Repeat("c", 20_000), "tail"}
 	for i, s := range prompts {
 		var rc protocol.SessionPromptResult
 		cl.call("session/prompt", protocol.SessionPromptParams{SessionID: id, Content: text(s), MessageID: fmt.Sprint("m", i)}, &rc)
-		switch i {
-		case 4:
-			big = rc.Seq
-		case 5:
-			huge = rc.Seq
+		if i == 4 || i == 5 {
+			oversized[rc.Seq] = true
 		}
 		if i == 0 {
 			running(t, r, id)
@@ -102,33 +99,26 @@ func TestHistoryPagesFitHalfAFrame(t *testing.T) {
 	}
 
 	var seen []int64
-	var cut, alone, skipped bool
+	refused := map[int64]bool{}
+	cut := false
+	next := int64(0)
 	params := map[string]any{"sessionId": id}
 	for {
 		resp := cl.respond("session/history", params)
-		next := int64(len(seen))
-		if skipped {
-			next++
-		}
 		if resp.Error != nil {
-			if resp.Error.Reason != jsonrpc.ReasonLineTooLong || next != huge || skipped {
-				t.Fatalf("history after %v: %v, want line-too-long only at %d", params["afterSeq"], resp.Error, huge)
+			if resp.Error.Reason != jsonrpc.ReasonLineTooLong || !oversized[next] || refused[next] {
+				t.Fatalf("history from %d: %v, want line-too-long only at %v", next, resp.Error, oversized)
 			}
-			skipped, params["afterSeq"] = true, huge
+			refused[next], params["afterSeq"] = true, next
+			next++
 			continue
+		}
+		if len(resp.Result) > frame/2 {
+			t.Fatalf("a %d-byte page, over half the %d-byte frame", len(resp.Result), frame)
 		}
 		var page protocol.SessionHistoryResult
 		if err := json.Unmarshal(resp.Result, &page); err != nil {
 			t.Fatal(err)
-		}
-		if len(resp.Result) > frame/2 {
-			if len(page.Events) != 1 || page.Events[0].Seq != big {
-				t.Fatalf("a %d-byte page of %d events, over half the frame", len(resp.Result), len(page.Events))
-			}
-			alone = true
-		}
-		if len(resp.Result) > frame-1024 {
-			t.Fatalf("a %d-byte page leaves no room for its envelope in a %d-byte frame", len(resp.Result), frame)
 		}
 		for _, e := range page.Events {
 			seen = append(seen, e.Seq)
@@ -137,18 +127,19 @@ func TestHistoryPagesFitHalfAFrame(t *testing.T) {
 			break
 		}
 		cut = cut || len(page.Events) > 1
-		params["afterSeq"] = page.Events[len(page.Events)-1].Seq
+		next = page.Events[len(page.Events)-1].Seq + 1
+		params["afterSeq"] = next - 1
 	}
-	if !cut || !alone || !skipped {
-		t.Fatalf("cut %v, alone %v, skipped %v: want each", cut, alone, skipped)
+	if !cut || len(refused) != len(oversized) {
+		t.Fatalf("cut %v, refused %v: want a multi-event cut and every event of %v refused", cut, refused, oversized)
 	}
 	want := int64(0)
 	for _, s := range seen {
-		if want == huge {
+		for oversized[want] {
 			want++
 		}
 		if s != want {
-			t.Fatalf("pages = %v, want every seq once except %d", seen, huge)
+			t.Fatalf("pages = %v, want every seq once except %v", seen, oversized)
 		}
 		want++
 	}
@@ -246,6 +237,85 @@ func TestPermissionModeIsApplied(t *testing.T) {
 	r.o.Permissions = nil
 	bare := connect(t, r.server())
 	bare.refused("session/create", protocol.SessionCreateParams{Model: model, PermissionMode: permission.PresetReadOnly}, sdkserver.ReasonPermissionUnavailable)
+}
+
+// gated holds each permission Set until the test releases it, failing it with
+// the error released.
+type gated struct {
+	sdkserver.Permissions
+	entered chan struct{}
+	release chan error
+}
+
+func (g *gated) Set(ctx context.Context, ag agent.Ref, name string, by approval.By) (permission.Preset, error) {
+	g.entered <- struct{}{}
+	if err := <-g.release; err != nil {
+		return permission.Preset{}, err
+	}
+	return g.Permissions.Set(ctx, ag, name, by)
+}
+
+// No drive method reaches a created or resumed session until its requested
+// preset is in force: a prompt during the switch is sdk/session-not-owned and
+// reaches no model, and a failed switch leaves no session live.
+func TestPresetAppliedBeforeAdmission(t *testing.T) {
+	r := newRig(t, fakemodel.Turn{Events: []fakemodel.Event{fakemodel.Text("ok")}})
+	k := newKnobs()
+	g := &gated{
+		Permissions: must(permission.New(permission.DefaultConfig(), permission.Deps{Sessions: r.svc, Sandbox: k, Approval: k})),
+		entered:     make(chan struct{}), release: make(chan error),
+	}
+	r.o.Permissions = g
+	cl := connect(t, r.server())
+	model := &protocol.ModelRoute{Provider: string(route), Model: fakemodel.ModelName}
+	during := func(method string, params any, id string, setErr error) *jsonrpc.Response {
+		t.Helper()
+		rid := cl.id()
+		cl.peer.Request(rid, method, params)
+		select {
+		case <-g.entered:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s never reached the permission switch", method)
+		}
+		cl.refused("session/prompt", protocol.SessionPromptParams{SessionID: id, Content: text("early")}, protocol.ReasonSessionNotOwned)
+		if n := len(r.tr.Requests()); n != 0 {
+			t.Fatalf("a prompt during the switch reached the model: %d requests", n)
+		}
+		g.release <- setErr
+		return cl.peer.ExpectResponse(rid)
+	}
+
+	failed := "ses_gated_failed"
+	if resp := during("session/create", protocol.SessionCreateParams{SessionID: failed, Model: model, PermissionMode: permission.PresetReadOnly}, failed, errors.New("switch failed")); resp.Error == nil {
+		t.Fatalf("a create whose switch failed succeeded: %s", resp.Result)
+	}
+	if _, live := r.reg.Get(session.ID(failed)); live {
+		t.Fatal("a create whose switch failed left its session live")
+	}
+	cl.refused("session/prompt", protocol.SessionPromptParams{SessionID: failed, Content: text("late")}, protocol.ReasonSessionNotOwned)
+
+	id := "ses_gated_ok"
+	if resp := during("session/create", protocol.SessionCreateParams{SessionID: id, Model: model, PermissionMode: permission.PresetReadOnly}, id, nil); resp.Error != nil {
+		t.Fatalf("create: %v", resp.Error)
+	}
+	if m := k.modeOf(t, id); m != sandbox.ReadOnly {
+		t.Fatalf("created with mode %s, want read-only", m)
+	}
+	var closed protocol.LastSeqResult
+	cl.call("session/close", protocol.SessionRef{SessionID: id}, &closed)
+	if resp := during("session/resume", protocol.SessionResumeParams{SessionID: id, Model: model, PermissionMode: permission.PresetWorkspaceWrite}, id, nil); resp.Error != nil {
+		t.Fatalf("resume: %v", resp.Error)
+	}
+	if m := k.modeOf(t, id); m != sandbox.WorkspaceWrite {
+		t.Fatalf("resumed with mode %s, want workspace-write", m)
+	}
+	var rc protocol.SessionPromptResult
+	cl.call("session/prompt", protocol.SessionPromptParams{SessionID: id, Content: text("go")}, &rc)
+	select {
+	case <-r.tr.PrefixServed(1):
+	case <-time.After(10 * time.Second):
+		t.Fatal("the admitted session's prompt never reached the model")
+	}
 }
 
 type failingWriter struct{ err error }
