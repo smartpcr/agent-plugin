@@ -149,7 +149,8 @@ Gate: `pwsh -File tools/harness-gate/lanes/win.ps1` from a temporary worktree at
 `tools/harness-gate/lanes/wsl.sh` from an ext4 clone at c3c4a25 (`~/src/dhs13-c3c4a25`, removed after the
 run; preflight "ext4 checkout, uid 1000, go1.27.4, CC=gcc, clean tree"; log copied to
 `E:\work\lanes\wsl-c3c4a25.log`). An earlier Windows run at 716a084 is under Results.
-`DSH_REQUIRE_SCENARIOS` at closure is still to record.
+`DSH_REQUIRE_SCENARIOS` at closure: not recorded, because no closing run has ended. It is recorded with the
+first run in which both lanes pass all 13 gates on the final source commit; until then this item stays open.
 
 ### Run identifiers
 
@@ -299,11 +300,21 @@ Gate lanes:
   - WSL (ext4 copy): the same staticcheck runs: exit 0; `go vet`: exit 0;
     `go test ./internal/world/sandbox/launch/ ./internal/world/sandbox/local/`: ok.
   - Both lanes run on the commit that holds this repair; the gate counts only from that run.
-- 298dd70 (final source commit: both repairs), both lanes: running, started 2026-11-26T02:30Z.
+- 298dd70 (final source commit: both repairs), both lanes: **not run to completion**. Both runs started at
+  2026-11-26T02:30Z and had not ended when this record was written. Their result is `not run (in
+  progress when recorded)`, which counts as open (impl.md sec. 7.3, M2-DEC-3).
   - Windows: `tools/harness-gate/lanes/win.ps1` from a temporary worktree; log
-    `E:\work\lanes\win-298dd70.log`.
-  - WSL: `bash tools/harness-gate/lanes/wsl.sh` from an ext4 clone; log `~/lane-logs/wsl-298dd70.log`.
-  - The per-gate results and record hashes are recorded here when both runs end.
+    `E:\work\lanes\win-298dd70.log`. Partial progress at 2026-11-26T02:41Z: gofmt, vet (exceptions 48) and
+    staticcheck passed, and gate 4/13 (modules) was running. These are progress notes, not a gate
+    result, and they do not count for closure.
+  - WSL: `bash tools/harness-gate/lanes/wsl.sh` from an ext4 clone; log `~/lane-logs/wsl-298dd70.log`. No
+    result was recorded.
+  - No record file or SHA-256 exists yet for either lane.
+- **Stage state: open, not built.** No lane has a recorded pass of all 13 gates on the final source
+  commit (298dd70, or HEAD 6bab04a), and `DSH_REQUIRE_SCENARIOS` at closure is not recorded. A later PR
+  adds the per-gate results, record names and SHA-256 hashes for both lanes and the
+  `DSH_REQUIRE_SCENARIOS` value. It changes the status line only after `harness-gate ready --stage
+  DH-S-13 --built` exits 0. This record does not claim that the stage is built.
 
 ### Manual checks
 
@@ -314,5 +325,8 @@ The Manual checks register above.
 Not yet recorded: the before-and-after comparison the stage names, or what was retained.
 
 ### Open items
+
+Stage closure: no two-lane pass of all 13 gates on the final source commit is recorded (298dd70 runs not
+complete), and `DSH_REQUIRE_SCENARIOS` is not recorded. See Results.
 
 Unresolved debt `UP-DEBT-limit.packages.shell.pwsh-local.7` (non-ASCII standard input under Windows PowerShell 5.1) closes with DH-E-EXEC-7 in DH-S-39. Built-not-done until DH-S-39: SANDBOX-2, SANDBOX-3, EXEC-4, EXEC-8, EXEC-9; CONTEXT-2 until DH-S-32 (DH-E-CONTEXT-1).
