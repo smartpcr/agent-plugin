@@ -3,7 +3,8 @@
 // configuration of its own for the fence: the mode and the write roots of every
 // mutation come only from the sandbox.Policy the call passes in.
 //
-// Reads are not fenced. A mutation resolves its Ref to the canonical path (each
+// Reads are not fenced, except a bounded read given a directory to stay within
+// (OpenBounded's within), which opens through an os.Root on it. A mutation resolves its Ref to the canonical path (each
 // link, and on Windows each junction, followed component by component), fences
 // that path with fs.FenceCanon, then performs every step by a name relative to
 // an os.Root opened on the write root that contains it (the volume root under
@@ -392,10 +393,14 @@ func (l *FS) Open(ctx context.Context, r fs.Ref) (io.ReadCloser, fs.Info, error)
 }
 
 // OpenBounded implements fs.BoundedOpener: at most limit bytes are read from
-// the file, never the whole of a longer one.
-func (l *FS) OpenBounded(ctx context.Context, r fs.Ref, limit int64) (io.ReadCloser, fs.Info, error) {
+// the file, never the whole of a longer one. With within, the file is opened
+// through an os.Root on it, see openWithin.
+func (l *FS) OpenBounded(ctx context.Context, r fs.Ref, within string, limit int64) (io.ReadCloser, fs.Info, error) {
 	if limit < 0 {
 		return nil, fs.Info{}, herr.Newf(fs.CodeInvalidPath, "OpenBounded: the limit %d is negative", limit)
+	}
+	if within != "" {
+		return openWithin(ctx, r, filepath.Clean(within), limit)
 	}
 	p, fi, err := lookup(ctx, r, r.NoFollowFinal)
 	if err != nil {
@@ -409,6 +414,84 @@ func (l *FS) OpenBounded(ctx context.Context, r fs.Ref, limit int64) (io.ReadClo
 		return nil, fs.Info{}, err
 	}
 	return io.NopCloser(bytes.NewReader(data)), in, nil
+}
+
+// openWithin is the fenced bounded read, done as a mutation is: r resolves to
+// its canonical path (every link followed), that path is fenced against the
+// canonical within, and the file is opened by its name relative to an os.Root
+// on within. The canonical name holds no link, so a directory swapped for a
+// link after the check is refused by os.Root at the open ("path escapes from
+// parent", fs/sandbox-denied): no byte of a file outside is read, however it
+// was retargeted after an earlier Stat. The content is read from the one
+// handle, with its metadata unchanged across the read.
+func openWithin(ctx context.Context, r fs.Ref, within string, limit int64) (io.ReadCloser, fs.Info, error) {
+	p, err := abs(r)
+	if err != nil {
+		return nil, fs.Info{}, err
+	}
+	cw, err := canon(within)
+	if err != nil {
+		return nil, fs.Info{}, err
+	}
+	for range 5 {
+		if err := ctxErr(ctx); err != nil {
+			return nil, fs.Info{}, err
+		}
+		cp, err := resolve(p, r.NoFollowFinal)
+		if err != nil {
+			return nil, fs.Info{}, err
+		}
+		rel, err := filepath.Rel(cw, cp)
+		if err != nil || !fs.Within(cw, cp) || !filepath.IsLocal(rel) {
+			return nil, fs.Info{}, herr.Newf(fs.CodeSandboxDenied, "%s resolves to %s, outside %s", p, cp, within)
+		}
+		data, before, after, err := readIn(cw, rel, limit)
+		if herr.Kind(err) != "" {
+			return nil, fs.Info{}, err
+		}
+		if err != nil {
+			return nil, fs.Info{}, mapErr(err, cp)
+		}
+		if after == nil || after.Size() != before.Size() || !after.ModTime().Equal(before.ModTime()) {
+			continue
+		}
+		whole := int64(len(data)) < limit || after.Size() == int64(len(data))
+		in := fs.Info{Target: target(cp), Exists: true, Type: fs.TypeFile, Size: after.Size()}
+		in.Version = fs.Version{Meta: meta(cp, after, fs.TypeFile)}
+		if whole {
+			in.Size = int64(len(data))
+			in.Version.Digest, in.Version.HasDigest = sha256.Sum256(data), true
+		}
+		return io.NopCloser(bytes.NewReader(data)), in, nil
+	}
+	return nil, fs.Info{}, herr.Newf(fs.CodeIO, "%s kept changing while it was read", p)
+}
+
+// readIn reads at most limit bytes of the regular file rel under the directory
+// root, opened through an os.Root; before and after are its metadata around
+// the read (after nil when it could not be taken).
+func readIn(root, rel string, limit int64) (data []byte, before, after iofs.FileInfo, err error) {
+	rt, err := os.OpenRoot(root)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	defer rt.Close()
+	f, err := rt.Open(rel)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	defer f.Close()
+	if before, err = f.Stat(); err != nil {
+		return nil, nil, nil, err
+	}
+	if !before.Mode().IsRegular() {
+		return nil, nil, nil, herr.Newf(fs.CodeNotRegularFile, "%s is not a regular file", filepath.Join(root, rel))
+	}
+	if data, err = io.ReadAll(io.LimitReader(f, limit)); err != nil {
+		return nil, nil, nil, err
+	}
+	after, _ = f.Stat()
+	return data, before, after, nil
 }
 
 // readPrefix reads the file p whole (limit < 0) or its first limit bytes.

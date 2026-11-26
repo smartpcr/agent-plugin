@@ -177,8 +177,8 @@ func (r *Reconciler) Pending() bool { return r.dirty.Load() }
 // Next reconciles a marked chain and renders the section. seen is the record
 // of the section the model last saw (Seen of the current surface), nil when
 // none is visible. changed is true when the section differs from seen: a
-// baseline when nothing is visible and there is a file or a refusal to show, an
-// update otherwise.
+// baseline when nothing is visible and there is a file, a refusal or an
+// unwatched candidate to record, an update otherwise.
 func (r *Reconciler) Next(ctx context.Context, seen *Record) (Section, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -202,7 +202,7 @@ func (r *Reconciler) Next(ctx context.Context, seen *Record) (Section, bool, err
 	}
 	sec := Render(*r.obs, r.o.Config.MaxBytes)
 	switch {
-	case seen == nil && len(sec.Record.Files) == 0 && len(sec.Record.Refused) == 0:
+	case seen == nil && len(sec.Record.Files) == 0 && len(sec.Record.Refused) == 0 && len(sec.Record.Unwatched) == 0:
 		return sec, false, nil
 	case seen == nil:
 		sec.Record.Form = FormBaseline

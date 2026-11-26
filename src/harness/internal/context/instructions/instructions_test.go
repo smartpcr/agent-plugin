@@ -249,6 +249,66 @@ func TestSourceReadIsBounded(t *testing.T) {
 	}
 }
 
+// TestRetargetAfterStatIsNeverRead: AGENTS.md is swapped for a link outside the
+// root after discovery stats it and before it is opened. The seam refuses the
+// open with fs/sandbox-denied before reading a byte, and the file is recorded
+// as refused.
+//
+//dsh:test DH-T-CONTEXT-6
+func TestRetargetAfterStatIsNeverRead(t *testing.T) {
+	m := fstest.NewMemFS()
+	write(t, m, "/outside/secret.md", "TOP SECRET guidance")
+	write(t, m, "/ws/AGENTS.md", "inside rules\n")
+	obs, err := instructions.Discover(context.Background(), &retarget{t: t, MemFS: m}, abs("/ws"), abs("/ws"), instructions.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(obs.Refused) != 1 || obs.Refused[0] != (instructions.Refusal{Path: "AGENTS.md", Reason: fs.CodeSandboxDenied}) {
+		t.Fatalf("refused = %+v, want AGENTS.md fs/sandbox-denied", obs.Refused)
+	}
+	for _, e := range obs.Entries {
+		if strings.Contains(e.Text, "TOP SECRET") {
+			t.Fatalf("entry %+v holds outside text", e.File)
+		}
+	}
+}
+
+// retarget swaps /ws/AGENTS.md for a link to /outside/secret.md once it has
+// been stat'ed, and fails the test if a bounded open yields outside bytes.
+type retarget struct {
+	t *testing.T
+	*fstest.MemFS
+	done bool
+}
+
+func (r *retarget) Stat(ctx context.Context, ref fs.Ref) (fs.Info, error) {
+	in, err := r.MemFS.Stat(ctx, ref)
+	if ref.Path == abs("/ws/AGENTS.md") && !r.done {
+		r.done = true
+		pol := sandboxtest.Policy(sandbox.DangerFullAccess)
+		if _, derr := r.MemFS.Delete(ctx, ref, fs.NoGuard, pol); derr != nil {
+			r.t.Fatal(derr)
+		}
+		if lerr := r.MemFS.Symlink(abs("/outside/secret.md"), ref.Path); lerr != nil {
+			r.t.Fatal(lerr)
+		}
+	}
+	return in, err
+}
+
+func (r *retarget) OpenBounded(ctx context.Context, ref fs.Ref, within string, limit int64) (io.ReadCloser, fs.Info, error) {
+	rc, in, err := r.MemFS.OpenBounded(ctx, ref, within, limit)
+	if err != nil {
+		return rc, in, err
+	}
+	b, _ := io.ReadAll(rc)
+	_ = rc.Close()
+	if strings.Contains(string(b), "TOP SECRET") {
+		r.t.Errorf("the seam read %s outside %s", ref.Path, within)
+	}
+	return io.NopCloser(strings.NewReader(string(b))), in, nil
+}
+
 // noWholeOpen is the real provider whose whole-file Open fails the test.
 type noWholeOpen struct {
 	t *testing.T
@@ -380,6 +440,32 @@ func TestWatchFailureFallsBackToPolling(t *testing.T) {
 	eng.down.Store(false)
 	if sec, changed, _ = r.Next(ctx, &seen); !changed || len(sec.Record.Unwatched) != 0 || r.Pending() || eng.live.Load() != 2 {
 		t.Fatalf("recovery: changed=%v unwatched=%v pending=%v live=%d", changed, sec.Record.Unwatched, r.Pending(), eng.live.Load())
+	}
+
+	// A workspace with no instruction file yet still records the failure.
+	if err := m.Mkdir(abs("/empty")); err != nil {
+		t.Fatal(err)
+	}
+	eng.down.Store(true)
+	e, err := instructions.NewReconciler(ctx, instructions.Options{FS: m, Watch: eng})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+	e.SetDirectory(abs("/empty"), abs("/empty"))
+	sec, changed, err = e.Next(ctx, nil)
+	if err != nil || !changed || sec.Record.Form != instructions.FormBaseline || len(sec.Record.Files) != 0 || len(sec.Record.Unwatched) != 2 || !e.Pending() {
+		t.Fatalf("empty, refused: changed=%v err=%v record=%+v pending=%v", changed, err, sec.Record, e.Pending())
+	}
+	seen = sec.Record
+	write(t, m, "/empty/AGENTS.md", "late rules\n")
+	if sec, changed, _ = e.Next(ctx, &seen); !changed || !strings.Contains(sec.Text, "late rules") {
+		t.Fatalf("polling missed a new file: changed=%v\n%s", changed, sec.Text)
+	}
+	seen = sec.Record
+	eng.down.Store(false)
+	if sec, changed, _ = e.Next(ctx, &seen); !changed || len(sec.Record.Unwatched) != 0 || e.Pending() {
+		t.Fatalf("empty, recovery: changed=%v unwatched=%v pending=%v", changed, sec.Record.Unwatched, e.Pending())
 	}
 }
 

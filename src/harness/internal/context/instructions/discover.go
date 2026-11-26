@@ -171,7 +171,7 @@ func Discover(ctx context.Context, fsys fs.FS, dir, root string, c Config) (Obse
 			p := filepath.Join(d, n)
 			obs.Candidates = append(obs.Candidates, p)
 			shown := filepath.ToSlash(must(filepath.Rel(root, p)))
-			e, refused, ok := readOne(ctx, fsys, bounded, p, canonRoot, c, &total)
+			e, refused, ok := readOne(ctx, fsys, bounded, p, root, canonRoot, c, &total)
 			if refused != "" {
 				obs.Refused = append(obs.Refused, Refusal{Path: shown, Reason: refused})
 			}
@@ -195,7 +195,7 @@ func must(s string, _ error) string { return s }
 
 // readOne reads candidate p, at most the source limit and one byte more, so a
 // longer file is known to be cut. ok is false for an absent or refused file.
-func readOne(ctx context.Context, fsys fs.FS, bounded fs.BoundedOpener, p, canonRoot string, c Config, total *int) (e Entry, refused herr.Reason, ok bool) {
+func readOne(ctx context.Context, fsys fs.FS, bounded fs.BoundedOpener, p, root, canonRoot string, c Config, total *int) (e Entry, refused herr.Reason, ok bool) {
 	in, err := fsys.Stat(ctx, fs.Ref{Path: p})
 	if err != nil {
 		return Entry{File: File{State: Unreadable, Reason: herr.Kind(err)}}, "", true
@@ -214,7 +214,12 @@ func readOne(ctx context.Context, fsys fs.FS, bounded fs.BoundedOpener, p, canon
 		return Entry{File: File{State: Omitted, Reason: fs.CodeTooLarge}}, "", true
 	}
 	limit := min(c.MaxSourceBytes, left)
-	rc, oi, err := bounded.OpenBounded(ctx, fs.Ref{Path: p}, int64(limit)+1)
+	rc, oi, err := bounded.OpenBounded(ctx, fs.Ref{Path: p}, root, int64(limit)+1)
+	if herr.Kind(err) == fs.CodeSandboxDenied {
+		// The seam fenced the file at the open: it was retargeted outside
+		// after the Stat, and not a byte of it was read.
+		return Entry{}, fs.CodeSandboxDenied, false
+	}
 	if err != nil {
 		return Entry{File: File{State: Unreadable, Reason: herr.Kind(err)}}, "", true
 	}
