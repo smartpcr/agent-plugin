@@ -53,6 +53,9 @@ const (
 	ReasonNoStop herr.Reason = "launch/no-stop"
 	// ReasonPrint: the host's terminal refused the launch link.
 	ReasonPrint herr.Reason = "launch/print-failed"
+	// ReasonNotReady: launch.open arrived before boot reported the required
+	// entries loaded, or after a stop was requested; no link is minted.
+	ReasonNotReady herr.Reason = "launch/not-ready"
 )
 
 // The control endpoint's methods: the complete, closed set.
@@ -333,6 +336,22 @@ func (h *Host) announce() {
 	}
 }
 
+// ready reports whether Ready has closed and no stop has been requested.
+func (h *Host) ready() bool {
+	if h.ctx.Err() != nil {
+		return false
+	}
+	if h.o.Ready == nil {
+		return true
+	}
+	select {
+	case <-h.o.Ready:
+		return h.ctx.Err() == nil
+	default:
+		return false
+	}
+}
+
 // print writes link on the host's terminal. The error never carries the link: the
 // writer's own error is reduced to its kind.
 func (h *Host) print(link string) error {
@@ -353,8 +372,13 @@ func (h *Host) open(link string) bool {
 }
 
 // Open is launch.open: the host mints a link itself and opens or prints it. The
-// caller learns only which happened.
+// caller learns only which happened. Until Ready closes, or once a stop was
+// requested, it refuses with launch/not-ready and mints nothing: the record and
+// socket are published before the listener is ready.
 func (h *Host) Open(printOnly bool) (string, error) {
+	if !h.ready() {
+		return "", herr.New(ReasonNotReady, "launch: the host is not ready to serve a launch link")
+	}
 	canPrint, canOpen := h.channels()
 	if !canPrint && (printOnly || !canOpen) {
 		return "", herr.New(ReasonNoChannel, "launch: the host has neither a terminal nor a display")
