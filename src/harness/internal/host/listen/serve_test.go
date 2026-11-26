@@ -211,6 +211,104 @@ func TestUnloadWithinGraceWhenHandlersHang(t *testing.T) {
 	}
 }
 
+// dropped reports how long conn stayed open before the listener closed it; a read
+// that only times out means the listener never closed it.
+func dropped(t *testing.T, conn net.Conn, r io.Reader, since time.Time) time.Duration {
+	t.Helper()
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := io.ReadAll(r); isTimeout(err) {
+		t.Fatalf("connection still open after %s", time.Since(since))
+	}
+	return time.Since(since)
+}
+
+// A slow header, an oversized header and an idle connection are cut at the
+// configured limits, and a panicking handler yields 500 without spoiling the next
+// request.
+//
+//dsh:test DH-T-HOST-8
+func TestLimits(t *testing.T) {
+	const headerBy, idleBy = 300 * time.Millisecond, 400 * time.Millisecond
+	r := cordisRoot(t)
+	s, err := listen.Start(r, listen.Config{
+		Port:              anyPort(),
+		ReadHeaderTimeout: headerBy,
+		IdleTimeout:       idleBy,
+		MaxHeaderBytes:    4 << 10,
+	}, closedReady())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	ok := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok") })
+	fault := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic("handler") })
+	if err := mount(t, r, s, "ok", listen.Mount{Prefix: "/ok", Classify: anon, Serve: ok}); err != nil {
+		t.Fatal(err)
+	}
+	if err := mount(t, r, s, "fault", listen.Mount{Prefix: "/fault", Classify: anon, Serve: fault}); err != nil {
+		t.Fatal(err)
+	}
+	addr := strings.TrimPrefix(s.Origin(), "http://")
+	dial := func() net.Conn {
+		conn, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { conn.Close() })
+		return conn
+	}
+
+	t.Run("slow header", func(t *testing.T) {
+		conn := dial()
+		began := time.Now()
+		io.WriteString(conn, "GET /ok HTTP/1.1\r\nHost: 127.0.0.1\r\n")
+		if took := dropped(t, conn, conn, began); took < headerBy || took > headerBy+2*time.Second {
+			t.Errorf("unfinished header closed after %s, want about %s", took, headerBy)
+		}
+	})
+
+	t.Run("oversized header", func(t *testing.T) {
+		conn := dial()
+		io.WriteString(conn, "GET /ok HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Big: "+strings.Repeat("a", 64<<10)+"\r\n\r\n")
+		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusRequestHeaderFieldsTooLarge {
+			t.Errorf("oversized header = %d, want 431", resp.StatusCode)
+		}
+	})
+
+	t.Run("idle", func(t *testing.T) {
+		conn := dial()
+		br := bufio.NewReader(conn)
+		io.WriteString(conn, "GET /ok HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		resp, err := http.ReadResponse(br, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.ReadAll(resp.Body)
+		resp.Body.Close()
+		began := time.Now()
+		if took := dropped(t, conn, br, began); took > idleBy+2*time.Second {
+			t.Errorf("idle connection closed after %s, want about %s", took, idleBy)
+		}
+	})
+
+	t.Run("panic", func(t *testing.T) {
+		c := client(t)
+		if code, _ := get(t, c, s.Origin()+"/fault"); code != http.StatusInternalServerError {
+			t.Errorf("GET /fault = %d, want 500", code)
+		}
+		if code, body := get(t, c, s.Origin()+"/ok"); code != http.StatusOK || body != "ok" {
+			t.Errorf("GET /ok after a panic = %d %q, want 200 ok", code, body)
+		}
+	})
+}
+
 func closedReady() <-chan struct{} {
 	ch := make(chan struct{})
 	close(ch)
