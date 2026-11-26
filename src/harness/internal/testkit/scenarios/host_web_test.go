@@ -63,7 +63,8 @@ func originOf(link string) string {
 }
 
 // startWebHost starts bin on home with the layers given and the arguments of
-// webArgsEnv, and waits until it has printed a launch link on its own terminal.
+// webArgsEnv, on a terminal of its own (startDshOnTerminal: the host prints a link
+// only there), and waits until it has printed a launch link.
 func startWebHost(t *testing.T, bin, home string, env []string, layers ...string) *webHost {
 	t.Helper()
 	args := []string{"--home", home}
@@ -71,16 +72,29 @@ func startWebHost(t *testing.T, bin, home string, env []string, layers ...string
 		args = append(args, "--layer", l)
 	}
 	args = append(args, needList(t, webArgsEnv, "arguments starting a listening host, ';'-separated")...)
-	h := startDsh(t, append([]string{"DSH_HOME=" + home}, env...), bin, args...)
-	link := h.waitFor(t, 2*time.Minute, "a printed launch link", func(out string) string { return launchLink.FindString(out) })
+	h := startDshOnTerminal(t, append([]string{"DSH_HOME=" + home}, env...), bin, args...)
+	link := h.waitFor(t, 2*time.Minute, "a printed launch link", func(out string) string { return launchLink.FindString(plainText(out)) })
 	return &webHost{dshHost: h, home: home, link: link}
+}
+
+// terminalControl matches the control sequences a terminal's rendering carries
+// (CSI, OSC up to BEL or ST, and two-byte escapes).
+var terminalControl = regexp.MustCompile(`\x1b(\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\)|[@-Z\\-_])`)
+
+// plainText is terminal output without its control sequences.
+func plainText(s string) string { return terminalControl.ReplaceAllString(s, "") }
+
+// tokenOf is a launch link's one-time token.
+func tokenOf(link string) string {
+	_, tok, _ := strings.Cut(link, tokenMark)
+	return tok
 }
 
 // nextLink waits for a launch link the host prints after the ones in seen.
 func (w *webHost) nextLink(t *testing.T, seen ...string) string {
 	t.Helper()
 	return w.waitFor(t, time.Minute, "a new launch link", func(out string) string {
-		for _, l := range launchLink.FindAllString(out, -1) {
+		for _, l := range launchLink.FindAllString(plainText(out), -1) {
 			if !contains(seen, l) {
 				return l
 			}
@@ -142,6 +156,9 @@ func oneRecord(t *testing.T, home string) runtimeRecord {
 	}
 	return recs[0]
 }
+
+// controlMethods are the control endpoint's methods (host.launch).
+var controlMethods = []string{"host.status", "host.stop", "launch.open"}
 
 // controlCall makes one call on the control endpoint at socket: newline-delimited
 // JSON-RPC over the same-user local socket, through src/sdk/jsonrpc. It returns

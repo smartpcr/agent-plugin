@@ -49,9 +49,10 @@ import (
 // paths; DSH_SCENARIO_HOST2_DRIVER, the browser driver on the second machine (its
 // {browser} is "remote"); DSH_SCENARIO_HOST2_DIRS and DSH_SCENARIO_HOST2_OPEN_IN,
 // the paths of the directory browser and of the "open in" route under the origin;
-// DSH_SCENARIO_HOST2_PROXY, a command over {upstream} that runs the reverse proxy
-// in the foreground, and DSH_SCENARIO_HOST2_PROXY_URL, the URL with the prefix the
-// second machine reaches it at.
+// DSH_SCENARIO_HOST2_PROXY, a command over {upstream} (https:// and
+// DSH_SCENARIO_HOST2_ADDR, the bound listener) that runs the reverse proxy in the
+// foreground, and DSH_SCENARIO_HOST2_PROXY_URL, the URL with the prefix the
+// second machine reaches it at, which the scenario waits on before browsing.
 //
 //dsh:scenario DH-E-HOST-2
 func TestNetworkListenerTLSPrefixAndRenewal(t *testing.T) {
@@ -115,10 +116,10 @@ func TestNetworkListenerTLSPrefixAndRenewal(t *testing.T) {
 		t.Errorf("(2) the open-in route answered %d in remote mode, want 404", s.Status)
 	}
 
-	// (3) Seven tabs all update, over HTTP/2.
+	// (3) Seven tabs all update, each over HTTP/2.
 	tabs := step("seven-tabs", origin+"/")
-	if len(tabs.Tabs) != 7 {
-		t.Errorf("(3) %d of 7 tabs showed the update", len(tabs.Tabs))
+	if len(tabs.Tabs) != 7 || len(tabs.Protocols) != 7 {
+		t.Errorf("(3) %d of 7 tabs showed the update, with %d protocol results; want 7 of each", len(tabs.Tabs), len(tabs.Protocols))
 	}
 	for i, p := range tabs.Protocols {
 		if p != "h2" {
@@ -147,11 +148,14 @@ func TestNetworkListenerTLSPrefixAndRenewal(t *testing.T) {
 	stopHost(t, h.dshHost)
 
 	// (5) Behind the prefix-stripping proxy every request stays under the prefix.
+	// The proxy's upstream is the bound listener, never the public URL the links
+	// carry (that is the proxy itself).
 	h = startWebHost(t, bin, root, nil, layer("on", proxyURL))
-	startShell(t, expand(proxy, map[string]string{"upstream": h.origin()}))
+	proxied := startShell(t, expand(proxy, map[string]string{"upstream": "https://" + addr}))
 	if !strings.HasPrefix(h.link, proxyURL+"/") {
 		t.Fatalf("(5) the host printed %s, want a link under %s", h.link, proxyURL)
 	}
+	awaitListening(t, proxyURL, proxied)
 	s = step("open", h.link)
 	if s.Status != http.StatusOK || !strings.HasPrefix(s.URL, proxyURL+"/") {
 		t.Fatalf("(5) the link under the prefix ended at %s (%d), want a page under %s", s.URL, s.Status, proxyURL)
@@ -174,6 +178,34 @@ func TestNetworkListenerTLSPrefixAndRenewal(t *testing.T) {
 		t.Errorf("(5) the walk under the prefix opened no event stream: %+v", walk.Responses)
 	}
 	stopHost(t, h.dshHost)
+}
+
+// awaitListening waits up to a minute until rawURL's host and port accept a
+// connection, failing the scenario when the process r serving it exits first.
+func awaitListening(t *testing.T, rawURL string, r *running) {
+	t.Helper()
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostPort := u.Host
+	if u.Port() == "" {
+		hostPort = net.JoinHostPort(u.Hostname(), map[string]string{"https": "443", "http": "80"}[u.Scheme])
+	}
+	deadline := time.Now().Add(time.Minute)
+	for {
+		if c, err := net.DialTimeout("tcp", hostPort, 3*time.Second); err == nil {
+			c.Close()
+			return
+		}
+		if r.exited() {
+			t.Fatalf("%s exited before %s listened:\n%s", r.line, hostPort, r.out)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("nothing listens at %s within a minute of starting %s", hostPort, r.line)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 }
 
 // copyFile replaces dst with src's bytes.

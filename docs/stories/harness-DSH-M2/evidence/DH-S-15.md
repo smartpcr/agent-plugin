@@ -45,9 +45,9 @@ Each step's merge commit; `--built` refuses a step without one.
 None executed here. Authored here: DH-E-SDK-1 (run in DH-S-17) and DH-E-SDK-2 (run in DH-S-39), in Stage 6.11 on the Go client; and, in Stage 5.9, compile only, on the M1 scenario helpers (`dshBinary`, `startDsh`) and raw JSON-RPC from `src/sdk/jsonrpc`, never `src/sdk/sdk` (M2-DOD-5):
 
 - DH-E-HOST-1 (`host_signin_scenario_test.go`) and DH-E-HOST-2 (`host_network_scenario_test.go`), indexed under DH-S-22 (impl.md step 22.2);
-- DH-E-HOST-7, DH-E-HOST-8 and DH-E-HOST-9, indexed under DH-S-39 (impl.md step 39.4): not yet authored; they follow in the next step of this stage, on the same helpers.
+- DH-E-HOST-7 (`host_takeover_linux_scenario_test.go`), DH-E-HOST-8 (`host_takeover_macos_scenario_test.go`) and DH-E-HOST-9 (`host_takeover_windows_scenario_test.go`), indexed under DH-S-39 (impl.md step 39.4), on the shared takeover runner `takeover_test.go` (the script run once per mode: workspace-write, network denied, danger-full-access).
 
-The files are under `src/harness/internal/testkit/scenarios/`, with their shared helpers in `host_web_test.go`. What the product does not yet build (the browser, the conversation API, the takeover fixture) is a run-time input of each scenario, named in its doc comment; a missing input fails the scenario, it is never skipped.
+The files are under `src/harness/internal/testkit/scenarios/`, with their shared helpers in `host_web_test.go`. `host.launch` prints its link only to a terminal (stderr a character device), so `startWebHost` runs `dsh` under a terminal host (`tty_*_test.go`: a pseudo-terminal on Linux and macOS, a ConPTY on Windows), a re-exec of the test binary started through `startDsh`; the printed link is read from that terminal's output, and the product's credential channel is unchanged. What the product does not yet build (the browser, the conversation API, the takeover fixture) is a run-time input of each scenario, named in its doc comment; a missing input fails the scenario, it is never skipped.
 
 | Scenario | Variant | Venue | Leg | Environment | Commit | Result | Artifacts |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -59,8 +59,8 @@ which commit (impl.md sec. 7.3).
 
 | Step | Check | Seen | Operator | Commit | Label |
 | --- | --- | --- | --- | --- | --- |
-| 15.2 | a listener refuses a request without the cookie, from another origin, and from a process the host started for the model | | | | `manual` |
-| 15.6 | one session driven by hand over stdio with typed JSON lines | | | | `manual` |
+| 15.2 | a listener refuses a request without the cookie, from another origin, and from a process the host started for the model | not run (blocked: `dsh --home H --layer layer.yml web` exits 78 before listening, `boot/required: required entry not active: session.store, agent.registry, agent.driver, tools.registry, agent.presets, host.listen, host.auth, host.assets, host.web, host.access, host.stream, ui.shell`; no request could be sent) | Copilot (Forge engineer agent), attempt only | c21d7f4 | `manual` |
+| 15.6 | one session driven by hand over stdio with typed JSON lines | not run (blocked: `dsh --home H sdk` exits 78 before reading stdin, `boot/required: required entry not active: session.store, agent.registry, agent.driver, tools.registry, agent.presets, wire.stdio, wire.sdk`; the typed `initialize` line got no reply) | Copilot (Forge engineer agent), attempt only | c21d7f4 | `manual` |
 
 ## Owner defaults (M2-C-4)
 
@@ -127,6 +127,6 @@ SDK methods (`wire/sdkserver` `server.go`, the registered client requests):
 
 Open list H-1..H-4: H-1 schedule hook, H-2 multi-route validation, H-3 inline images, H-4 goal stop signal: each not built in M2, none has a method or a schema entry.
 
-Manual checks: not yet seen. Both rows of the register need an operator at the built commit; no observation is recorded until one is made.
+Manual checks: attempted at c21d7f4 on a scratch home and recorded `not run (blocked)` in the register. The binary at that commit does not boot the `web` or `sdk` profile: the bundles that activate their required entries are not registered yet (profiles launch from DH-D-BUNDLE-3), so no listener answered and no stdio session started. The boot reports (`<home>/reports/report-*.txt`) name the missing entries quoted in the register. Nothing was observed, so nothing is recorded as seen. Both rows stay open until an operator repeats them on a commit whose profiles boot. Until then the component tests cover the same refusals and the same wire (`go test -count=1 ./internal/host/listen/ ./internal/host/auth/ ./internal/wire/sdkserver/`: ok at c21d7f4 plus this stage's test-only changes). They do not replace the `manual` rows.
 
 Lane results: not yet recorded. The S15 gate on both lanes runs once per merged commit, outside an iteration, in a temporary worktree (product policy "Full harness gate").

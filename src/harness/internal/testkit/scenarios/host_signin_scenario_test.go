@@ -129,11 +129,22 @@ func TestBrowserSignInReuseAndOtherOrigins(t *testing.T) {
 			if s := step("private", fresh); s.Status != http.StatusOK {
 				t.Fatalf("(6) the fresh link answered %d in a private window, want the UI", s.Status)
 			}
+			held, ok := step("current", "").sessionCookie()
+			if !ok {
+				t.Fatalf("(6) the normal window holds no session cookie before sign-out")
+			}
+			if code := replayCookie(t, origin+"/", held); code != http.StatusOK {
+				t.Fatalf("(6) the normal window's cookie replayed before sign-out answered %d, want 200", code)
+			}
 			step("sign-out", "")
-			if s := step("reload", ""); s.Status == http.StatusOK {
-				if c, ok := s.sessionCookie(); ok {
-					t.Errorf("(6) the signed-out browser still holds %s and reaches %s", c.Name, s.URL)
-				}
+			// What the UI reaches after sign-out is decided by the host, not by the
+			// cookie jar: the reload must be refused, and so must the session cookie
+			// the browser held before, replayed outside it (checked to work first).
+			if s := step("reload", ""); s.Status != http.StatusUnauthorized && s.Status != http.StatusForbidden {
+				t.Errorf("(6) after sign-out the reload answered %d at %s, want it refused", s.Status, s.URL)
+			}
+			if code := replayCookie(t, origin+"/", held); code != http.StatusUnauthorized && code != http.StatusForbidden {
+				t.Errorf("(6) the signed-out session's cookie %s still answers %d, want it refused", held.Name, code)
 			}
 			if s := step("reload-private", ""); s.Status != http.StatusOK {
 				t.Errorf("(6) signing one browser out signed the other out too (%d)", s.Status)
@@ -147,6 +158,26 @@ func TestBrowserSignInReuseAndOtherOrigins(t *testing.T) {
 			stopHost(t, h.dshHost)
 		})
 	}
+}
+
+// replayCookie requests target as a same-origin navigation carrying only c and
+// returns the status, without following a redirect.
+func replayCookie(t *testing.T, target string, c browserCookie) int {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, target, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.AddCookie(&http.Cookie{Name: c.Name, Value: c.Value})
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	req.Header.Set("Sec-Fetch-Mode", "navigate")
+	client := &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("replaying %s to %s: %v", c.Name, target, err)
+	}
+	resp.Body.Close()
+	return resp.StatusCode
 }
 
 // otherOrigin is the second local web server of DH-E-HOST-1.
