@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -306,7 +307,7 @@ func TestBoundedReadHoldsThroughASwappedLink(t *testing.T) {
 	// back renames keep to sub, retrying while a read holds either name and
 	// clearing a link or empty directory a failed makeLink left at sub.
 	back := func(sub, keep string) {
-		for end := time.Now().Add(30 * time.Second); os.Rename(keep, sub) != nil; time.Sleep(time.Millisecond) {
+		for end := time.Now().Add(30 * time.Second); os.Rename(keep, sub) != nil; runtime.Gosched() {
 			if time.Now().After(end) {
 				panic("cannot restore R/sub")
 			}
