@@ -38,7 +38,7 @@ Each step's merge commit; `--built` refuses a step without one.
 | 15.5 | DH-D-SDK-3 | | |
 | 15.6 | DH-D-SDK-4 | | `wire/sdkserver`; H-1, H-2, H-3 not built: no method added, `schema.json` unchanged (M2-C-7) |
 | 15.7 | DH-D-SDK-5 | | `wire/sdkserver` `forward.go`, `runs.go`: scoped ordered `session.event`, `session.run.completed` with the last assistant text (TC-12a); H-4 (goal stop signal) not built |
-| 15.8 | DH-D-SDK-6 | | `wire/sdkserver` `answer.go`: one `sdk` answerer routed to the owning connection; `approval/request` and `question/ask` only when advertised; an unoffered answer is `sdk/invalid-answer`, settles nothing and is asked again (at most 3 times, then refused); withdrawal is `$/cancel`; no answer creates a session grant; `timeZone` validated on `initialize` and `session/create` (TC-12a, NG-8, U-K2-5) |
+| 15.8 | DH-D-SDK-6 | | `wire/sdkserver` `answer.go`: one `sdk` answerer routed to the owning connection; `approval/request` and `question/ask` only when advertised; an unoffered answer is sent back to the client as `sdk/invalid-answer` (an error to the null id naming the `interactionId`, via `jsonrpc.Conn.Fault`), settles nothing and is asked again (at most 3 times, then refused); a late answer is `sdk/late-answer`; withdrawal is `$/cancel`; a subagent of an owned session is bound via its creator on `agent.Created`, before it is live; no answer creates a session grant; `timeZone` validated on `initialize` and `session/create` and carried in the client record (`agent.ClientRecord`) of every message the carrier queues (TC-12a, NG-8, U-K2-5) |
 
 ## Scenarios
 

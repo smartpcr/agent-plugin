@@ -3,6 +3,7 @@ package sdkserver_test
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -46,7 +47,7 @@ func ansConnect(t *testing.T, srv *sdkserver.Server, caps protocol.ClientCapabil
 	t.Helper()
 	c := must(srv.Connect())
 	t.Cleanup(func() { _ = c.Close(context.Background()) })
-	conn, peer := jsonrpctest.NewPeer(t, jsonrpc.Options{Methods: c.Methods()})
+	conn, peer := jsonrpctest.NewPeer(t, jsonrpc.Options{Methods: c.Methods(), OnError: c.OnFault})
 	if err := c.Attach(conn); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
@@ -102,6 +103,31 @@ func (c *client) hostRequest(method string) *jsonrpc.Request {
 			return f
 		default:
 			c.t.Fatalf("waiting for %s: unexpected frame %T", method, f)
+		}
+	}
+}
+
+// rejected is the next error the server sent to the null id, skipping session
+// notifications: its refusal of a reply. It names interaction when not "".
+func (c *client) rejected(reason, interaction string) *jsonrpc.Error {
+	c.t.Helper()
+	for {
+		switch f := c.peer.Expect().(type) {
+		case *jsonrpc.Notification:
+		case *jsonrpc.Response:
+			if !f.ID.IsNull() || f.Error == nil || f.Error.Reason != reason {
+				c.t.Fatalf("got %+v, want an error %s to the null id", f, reason)
+			}
+			var d struct {
+				InteractionID string `json:"interactionId"`
+			}
+			_ = json.Unmarshal(f.Error.Details, &d)
+			if d.InteractionID != interaction {
+				c.t.Fatalf("%s names interaction %q, want %q", reason, d.InteractionID, interaction)
+			}
+			return f.Error
+		default:
+			c.t.Fatalf("waiting for %s: unexpected frame %T", reason, f)
 		}
 	}
 }
@@ -177,6 +203,9 @@ func TestInvalidAnswerRejectedApprovalStaysPending(t *testing.T) {
 	if err := <-ar.errs; !jsonrpc.HasReason(err, sdkserver.ReasonInvalidAnswer) {
 		t.Fatalf("reported %v, want %s", err, sdkserver.ReasonInvalidAnswer)
 	}
+	if e := cl.rejected(sdkserver.ReasonInvalidAnswer, req.InteractionID); !strings.Contains(e.Message, "allowed-forever") {
+		t.Fatalf("the client was told %q, want the refused outcome named", e.Message)
+	}
 	again := cl.hostRequest(sdkserver.ApprovalRequestMethod)
 	if p := ar.hreg.Pending(ref); len(p) != 1 || string(p[0].ID) != req.InteractionID {
 		t.Fatalf("pending after an invalid answer = %+v, want %s", p, req.InteractionID)
@@ -193,7 +222,9 @@ func TestInvalidAnswerRejectedApprovalStaysPending(t *testing.T) {
 	// Replies invalid every time settle as refused after MaxAnswerAttempts.
 	done = ar.ask(approvalFor(ref))
 	for range sdkserver.MaxAnswerAttempts {
-		cl.peer.Reply(cl.hostRequest(sdkserver.ApprovalRequestMethod).ID, map[string]string{"outcome": "allowed-session"})
+		r := cl.hostRequest(sdkserver.ApprovalRequestMethod)
+		cl.peer.Reply(r.ID, map[string]string{"outcome": "allowed-session"})
+		cl.rejected(sdkserver.ReasonInvalidAnswer, params[protocol.ApprovalRequest](t, r).InteractionID)
 	}
 	if a := settledWith(t, done); a.ans.Outcome != human.OutcomeDenied {
 		t.Fatalf("settled %+v, want denied after %d invalid answers", a.ans, sdkserver.MaxAnswerAttempts)
@@ -260,8 +291,10 @@ func TestWithdrawalCancelsPendingQuestion(t *testing.T) {
 	if a.ans.Outcome != human.OutcomeDenied || !strings.Contains(a.ans.Text, "withdrawn") {
 		t.Fatalf("settled %+v, want denied: withdrawn", a.ans)
 	}
-	// The late answer names no pending call: nothing settles twice.
+	// The late answer names no pending call: the client is told, and nothing
+	// settles twice.
 	cl.peer.Reply(q.ID, protocol.QuestionResult{Answers: []protocol.Answer{{ID: "q1", Selected: []string{"o1"}}}})
+	cl.rejected(sdkserver.ReasonLateAnswer, "")
 	if p := ar.hreg.Pending(ref); len(p) != 0 {
 		t.Fatalf("pending after the withdrawal = %+v", p)
 	}
@@ -277,10 +310,12 @@ func TestNoSessionGrantSurvivesResume(t *testing.T) {
 	c1, cl1 := ansConnect(t, ar.srv, bothCaps, "")
 	id := cl1.ansCreate(protocol.SessionCreateParams{})
 	done := ar.ask(approvalFor(ar.ref(t, id)))
-	cl1.peer.Reply(cl1.hostRequest(sdkserver.ApprovalRequestMethod).ID, map[string]string{"outcome": "allowed-session"})
+	first := cl1.hostRequest(sdkserver.ApprovalRequestMethod)
+	cl1.peer.Reply(first.ID, map[string]string{"outcome": "allowed-session"})
 	if err := <-ar.errs; !jsonrpc.HasReason(err, sdkserver.ReasonInvalidAnswer) {
 		t.Fatalf("allow-for-session reported %v, want %s", err, sdkserver.ReasonInvalidAnswer)
 	}
+	cl1.rejected(sdkserver.ReasonInvalidAnswer, params[protocol.ApprovalRequest](t, first).InteractionID)
 	cl1.peer.Reply(cl1.hostRequest(sdkserver.ApprovalRequestMethod).ID, protocol.ApprovalResult{Outcome: "allowed-once"})
 	if a := settledWith(t, done); a.ans.Outcome != human.OutcomeAllowedOnce {
 		t.Fatalf("settled %+v, want allowed-once and never allowed-session", a.ans)
@@ -312,7 +347,7 @@ func TestNoSessionGrantSurvivesResume(t *testing.T) {
 // U-K2-5: an unknown zone is jsonrpc/invalid-params naming the field and creates
 // nothing; create's zone overrides initialize's for its session.
 func TestTimeZone(t *testing.T) {
-	ar := newAnsRig(t)
+	ar := newAnsRig(t, hang("a"), hang("b"))
 	c := must(ar.srv.Connect())
 	t.Cleanup(func() { _ = c.Close(context.Background()) })
 	_, peer := jsonrpctest.NewPeer(t, jsonrpc.Options{Methods: c.Methods()})
@@ -338,5 +373,136 @@ func TestTimeZone(t *testing.T) {
 	}
 	if got := c.TimeZone(session.ID(own)); got != "Europe/Berlin" {
 		t.Fatalf("zone of %s = %q, want its create override", own, got)
+	}
+	// The zone travels in the client record of every message queued for the session.
+	for id, want := range map[string]string{plain: "Asia/Tokyo", own: "Europe/Berlin"} {
+		var pr protocol.SessionPromptResult
+		cl.call("session/prompt", protocol.SessionPromptParams{SessionID: id, Content: text("tomorrow at nine")}, &pr)
+		m := inserted(t, ar.rig, id, pr.MessageID)
+		if m.Client.TimeZone != want {
+			t.Fatalf("message %s of %s carries client %+v, want zone %s", pr.MessageID, id, m.Client, want)
+		}
+		msg := must(m.Message())
+		if src, ok := msg.Source(); !ok || !strings.Contains(string(src.Data), `"timeZone":"`+want+`"`) {
+			t.Fatalf("the claimed message's source data = %s, want the zone %s", src.Data, want)
+		}
+	}
+	select {
+	case <-ar.tr.PrefixServed(2):
+	case <-time.After(10 * time.Second):
+		t.Fatal("the prompts never reached the model")
+	}
+}
+
+// inserted is message msgID as session id's inbox admitted it.
+func inserted(t *testing.T, r *rig, id, msgID string) agent.InboxMessage {
+	t.Helper()
+	a, ok := r.reg.Get(session.ID(id))
+	if !ok {
+		t.Fatalf("session %s is not live", id)
+	}
+	for _, ev := range must(a.Session().Read(context.Background(), 0, 0)) {
+		if ev.Type() != agent.SplicedType.Name() {
+			continue
+		}
+		for _, m := range must(agent.SplicedType.As(ev)).Inserted {
+			if m.ID == msgID {
+				return m
+			}
+		}
+	}
+	t.Fatalf("session %s admitted no message %s", id, msgID)
+	return agent.InboxMessage{}
+}
+
+// DH-T-SDK-14: a question reply settles only when it answers the one question
+// asked with an offered option or, where allowed, custom text; every malformed
+// reply is sdk/invalid-answer to the client and leaves it pending; a dismissal
+// alone settles it declined.
+func TestQuestionAnswersAreValidated(t *testing.T) {
+	ar := newAnsRig(t)
+	_, cl := ansConnect(t, ar.srv, bothCaps, "")
+	ref := ar.ref(t, cl.ansCreate(protocol.SessionCreateParams{}))
+	ask := func(choices ...string) (<-chan asked, *jsonrpc.Request, string) {
+		done := ar.ask(human.Item{Kind: human.KindQuestion, To: human.Audience{Agent: ref}, Session: ref.Session,
+			Payload: question.Prompt{Question: "Which colour?", Choices: choices}})
+		r := cl.hostRequest(sdkserver.QuestionAskMethod)
+		return done, r, params[protocol.QuestionRequest](t, r).InteractionID
+	}
+	pick := func(id string, opts ...string) protocol.Answer { return protocol.Answer{ID: id, Selected: opts} }
+	bad := []struct {
+		name  string
+		reply protocol.QuestionResult
+	}{
+		{"unknown option", protocol.QuestionResult{Answers: []protocol.Answer{pick("q1", "o9")}}},
+		{"duplicate id", protocol.QuestionResult{Answers: []protocol.Answer{pick("q1", "o1"), pick("q1", "o2")}}},
+		{"missing id", protocol.QuestionResult{Answers: []protocol.Answer{pick("q2", "o1")}}},
+		{"two options", protocol.QuestionResult{Answers: []protocol.Answer{pick("q1", "o1", "o2")}}},
+		{"custom not offered", protocol.QuestionResult{Answers: []protocol.Answer{{ID: "q1", Custom: "green"}}}},
+		{"dismissal with answers", protocol.QuestionResult{Dismissed: true, Answers: []protocol.Answer{pick("q1", "o1")}}},
+	}
+	for _, b := range bad {
+		done, r, iid := ask("red", "blue")
+		cl.peer.Reply(r.ID, b.reply)
+		if err := <-ar.errs; !jsonrpc.HasReason(err, sdkserver.ReasonInvalidAnswer) {
+			t.Fatalf("%s: reported %v, want %s", b.name, err, sdkserver.ReasonInvalidAnswer)
+		}
+		cl.rejected(sdkserver.ReasonInvalidAnswer, iid)
+		again := cl.hostRequest(sdkserver.QuestionAskMethod)
+		if p := ar.hreg.Pending(ref); len(p) != 1 || string(p[0].ID) != iid {
+			t.Fatalf("%s: pending = %+v, want %s still pending", b.name, p, iid)
+		}
+		// The re-asked question then settles on a valid option.
+		cl.peer.Reply(again.ID, protocol.QuestionResult{Answers: []protocol.Answer{pick("q1", "o2")}})
+		if a := settledWith(t, done); a.ans.Outcome != human.OutcomeAnswered || a.ans.Text != "blue" || a.by.Channel != sdkserver.ChannelSDK {
+			t.Fatalf("%s: settled %+v by %+v, want answered blue on sdk", b.name, a.ans, a.by)
+		}
+	}
+
+	done, r, _ := ask()
+	if q := params[protocol.QuestionRequest](t, r).Questions[0]; !q.AllowCustom || len(q.Options) != 0 {
+		t.Fatalf("a question with no choices = %+v, want custom text allowed", q)
+	}
+	cl.peer.Reply(r.ID, protocol.QuestionResult{Answers: []protocol.Answer{{ID: "q1", Custom: "teal"}}})
+	if a := settledWith(t, done); a.ans.Outcome != human.OutcomeAnswered || a.ans.Text != "teal" {
+		t.Fatalf("custom answer settled %+v, want answered teal", a.ans)
+	}
+
+	done, r, _ = ask("red")
+	cl.peer.Reply(r.ID, protocol.QuestionResult{Dismissed: true})
+	if a := settledWith(t, done); a.ans.Outcome != human.OutcomeDenied || a.ans.Text != "dismissed" {
+		t.Fatalf("dismissal settled %+v, want denied: dismissed", a.ans)
+	}
+}
+
+// DH-ADR-SDK-6: a subagent of an owned session is bound via its creator while it
+// is created, so a child asking the moment it is live reaches the owning client.
+func TestSubagentAsksTheOwningClientAtOnce(t *testing.T) {
+	ar := newAnsRig(t)
+	_, cl := ansConnect(t, ar.srv, bothCaps, "")
+	root := cl.ansCreate(protocol.SessionCreateParams{})
+	parent := ar.ref(t, root)
+	for i := range 20 {
+		kid := session.ID("kid-" + strconv.Itoa(i))
+		h := must(ar.reg.Create(ar.o.Owner, agent.CreateOptions{Session: kid, Parent: parent,
+			Model: agent.ModelSelection{Route: route, Model: fakemodel.ModelName}}))
+		done := ar.ask(approvalFor(h.Agent().Ref()))
+		r := cl.hostRequest(sdkserver.ApprovalRequestMethod)
+		if p := params[protocol.ApprovalRequest](t, r); p.SessionID != string(kid) || p.RootSessionID != root {
+			t.Fatalf("approval/request = %+v, want session %s under root %s", p, kid, root)
+		}
+		cl.peer.Reply(r.ID, protocol.ApprovalResult{Outcome: "allowed-once"})
+		if a := settledWith(t, done); a.ans.Outcome != human.OutcomeAllowedOnce {
+			t.Fatalf("child %s settled %+v, want allowed-once", kid, a.ans)
+		}
+		must(0, h.Dispose(context.Background()))
+	}
+
+	// A child whose creator no sdk connection owns is not bound here.
+	other := must(ar.reg.Create(ar.o.Owner, agent.CreateOptions{Session: "loner", Model: agent.ModelSelection{Route: route, Model: fakemodel.ModelName}}))
+	kid := must(ar.reg.Create(ar.o.Owner, agent.CreateOptions{Session: "loner-kid", Parent: other.Agent().Ref(),
+		Model: agent.ModelSelection{Route: route, Model: fakemodel.ModelName}}))
+	if a := settledWith(t, ar.ask(approvalFor(kid.Agent().Ref()))); a.ans.Outcome != human.OutcomeUnavailable || a.ans.Detail != "unbound" {
+		t.Fatalf("an unowned child settled %+v, want unavailable: unbound", a.ans)
 	}
 }

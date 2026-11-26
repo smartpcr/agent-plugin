@@ -111,6 +111,18 @@ func (d *deferred) Call(ctx context.Context, method string, params, result any) 
 	return d.n.Call(ctx, method, params, result)
 }
 
+// Fault sends an error to the client's null id (answer.go) once the codec is
+// set. The codec is reached through faulter, not called directly, so a release
+// build (GOWORK=off, DH-ADR-26) against an SDK pin that predates
+// jsonrpc.Conn.Fault still compiles; there the rejection is not sent.
+func (d *deferred) Fault(err error) error {
+	<-d.ready
+	if f, ok := any(d.n).(faulter); ok {
+		return f.Fault(err)
+	}
+	return errNoFault
+}
+
 func (d *deferred) set(n *jsonrpc.Conn) {
 	d.n = n
 	close(d.ready)
@@ -192,8 +204,6 @@ func (c *Conn) committed(a session.CommittedArgs) {
 			}, nil, a.Event.Seq())
 			c.fwd[id] = f
 			go f.run()
-			// Its interactions are answered here, via its creator, while it lives.
-			go c.bindChild(id, session.ID(h.Creator))
 		}
 	}
 	c.mu.Unlock()

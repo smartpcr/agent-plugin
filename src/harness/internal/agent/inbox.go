@@ -46,14 +46,33 @@ type InboxMessage struct {
 	By string `json:"by,omitempty"`
 	// Call is the tool call the message answers, "" for none.
 	Call string `json:"call,omitempty"`
-	Text string `json:"text"`
+	// Client is what the carrier knows of the client it came from; zero for none.
+	Client ClientRecord `json:"client,omitzero"`
+	Text   string       `json:"text"`
+}
+
+// ClientRecord is the client record of a message: what its carrier knows of
+// the user's client. The clock reads the zone from it before the user's
+// setting (DH-D-CONTEXT-3, U-K2-5).
+type ClientRecord struct {
+	// TimeZone is the user's IANA zone, "" when the client gave none.
+	TimeZone string `json:"timeZone,omitempty"`
+}
+
+// IsZero reports whether r records nothing.
+func (r ClientRecord) IsZero() bool { return r == ClientRecord{} }
+
+// sourceData is the data of the source a claimed message carries.
+type sourceData struct {
+	Call   string       `json:"call,omitempty"`
+	Client ClientRecord `json:"client,omitzero"`
 }
 
 // Message is m as the user message a claim appends.
 func (m InboxMessage) Message() (vocab.Message, error) {
 	src := vocab.Source{Kind: m.Source, Producers: []string{orElse(m.By, m.Source)}}
-	if m.Call != "" {
-		data, _ := json.Marshal(map[string]string{"call": m.Call})
+	if m.Call != "" || !m.Client.IsZero() {
+		data, _ := json.Marshal(sourceData{Call: m.Call, Client: m.Client})
 		src.Data = data
 	}
 	return vocab.RestoreMessage(m.ID, vocab.RoleUser, &src, vocab.TextBlock(m.Text))

@@ -274,6 +274,20 @@ func (c *Conn) Notify(method string, params any) error {
 	return c.q.push(context.Background(), line, nil, false)
 }
 
+// Fault sends err as an error response to the null id: a fault the peer made
+// that answers none of its requests (a reply the peer sent to one of ours that
+// was invalid or late). The peer's OnError receives it.
+func (c *Conn) Fault(err error) error {
+	if err == nil {
+		return errors.New("jsonrpc: Fault needs an error")
+	}
+	line, lerr := encodeLine(&Response{ID: ID{}, Error: toWire(err)}, c.o.MaxFrameBytes)
+	if lerr != nil {
+		return lerr
+	}
+	return c.q.push(context.Background(), line, nil, false)
+}
+
 // Barrier returns once every frame queued before it has been written.
 func (c *Conn) Barrier(ctx context.Context) error {
 	done := make(chan struct{})

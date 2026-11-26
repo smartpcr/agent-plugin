@@ -2,11 +2,13 @@ package sdkserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
 	"strconv"
 
+	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/agent"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human/approval"
@@ -26,10 +28,16 @@ import (
 // request's context, which sends $/cancel; a reply after that names no pending
 // call and changes nothing.
 //
-// A reply that is not one of the answers offered does not settle the item: it is
-// reported as sdk/invalid-answer and the same interaction is asked again, at most
-// MaxAnswerAttempts times in all, after which it settles as refused. An error
-// reply, a lost connection and shutdown settle as refused.
+// A reply that is not one of the answers offered does not settle the item: the
+// client gets sdk/invalid-answer (an error response to the null id, since its
+// reply was itself a response, with the interactionId in the details) and the
+// same interaction is asked again, at most MaxAnswerAttempts times in all, after
+// which it settles as refused. An error reply, a lost connection and shutdown
+// settle as refused. A reply naming no pending request (a late answer) is
+// answered sdk/late-answer the same way and changes nothing.
+//
+// A subagent of an owned agent is bound via its creator while it is created
+// (agent.Created), before it is live, so no interaction of it can run unbound.
 //
 // No answer on this channel creates a session grant (I2 Q5, NG-8): the wire
 // offers allowed-once, rejected and cancelled only, and nothing here maps to
@@ -41,6 +49,10 @@ const ChannelSDK human.Channel = "sdk"
 // ReasonInvalidAnswer is a reply to approval/request or question/ask that is not
 // one of the answers offered.
 const ReasonInvalidAnswer = "sdk/invalid-answer"
+
+// ReasonLateAnswer is a reply that names no pending host request: the
+// interaction was settled or withdrawn first.
+const ReasonLateAnswer = "sdk/late-answer"
 
 // MaxAnswerAttempts bounds how often one interaction is asked after invalid
 // replies before it settles as refused.
@@ -61,6 +73,14 @@ const questionID = "q1"
 type Caller interface {
 	Call(ctx context.Context, method string, params, result any) error
 }
+
+// faulter sends an error to the client's null id; *jsonrpc.Conn is one.
+type faulter interface {
+	Fault(err error) error
+}
+
+// errNoFault reports a codec without jsonrpc.Conn.Fault (an older SDK pin).
+var errNoFault = errors.New("sdkserver: the codec cannot send a null-id error")
 
 // answerer is the server's one registration on ChannelSDK.
 type answerer struct{ s *Server }
@@ -145,8 +165,11 @@ func (c *Conn) ask(ctx context.Context, call Caller, root session.ID, it human.I
 			return
 		}
 		c.s.reportAnswer(it.ID, err)
-		if jsonrpc.HasReason(err, ReasonInvalidAnswer) && attempt < MaxAnswerAttempts {
-			continue
+		if jsonrpc.HasReason(err, ReasonInvalidAnswer) {
+			reject(call, it.ID, err)
+			if attempt < MaxAnswerAttempts {
+				continue
+			}
 		}
 		_ = reg.Answer(ctx, c.actor(), it.ID, human.Answer{Outcome: human.OutcomeDenied, Text: "refused: " + err.Error()})
 		return
@@ -157,6 +180,36 @@ func (c *Conn) ask(ctx context.Context, call Caller, root session.ID, it human.I
 func (s *Server) reportAnswer(id human.ID, err error) {
 	if f := s.o.OnAnswerError; f != nil {
 		f(id, err)
+	}
+}
+
+// reject tells the client its reply to interaction id was refused with err's
+// reason: an error response to the null id whose details name the interaction.
+func reject(call Caller, id human.ID, err error) {
+	f, ok := call.(faulter)
+	if !ok {
+		return
+	}
+	e := &jsonrpc.Error{Code: jsonrpc.CodeApplication, Reason: ReasonInvalidAnswer, Message: err.Error()}
+	if je, ok := errors.AsType[*jsonrpc.Error](err); ok {
+		e.Reason, e.Message = je.Reason, je.Message
+	}
+	e.Details, _ = json.Marshal(map[string]string{"interactionId": string(id)})
+	_ = f.Fault(e)
+}
+
+// OnFault is the connection's jsonrpc.Options.OnError (Serve sets it): a reply
+// naming no pending request is a late answer, which the client is told of with
+// sdk/late-answer; it settles nothing.
+func (c *Conn) OnFault(err error) {
+	if !jsonrpc.HasReason(err, jsonrpc.ReasonUnknownResponse) {
+		return
+	}
+	c.mu.Lock()
+	f, ok := c.out.(faulter)
+	c.mu.Unlock()
+	if ok {
+		_ = f.Fault(fail(ReasonLateAnswer, "the reply names no pending request; the interaction was settled or withdrawn"))
 	}
 }
 
@@ -262,18 +315,28 @@ func (c *Conn) bind(a agent.Agent) error {
 	return nil
 }
 
-// bindChild routes a live subagent's interactions via its creator. A child
-// already bound, or gone, is left as is.
-func (c *Conn) bindChild(child, creator session.ID) {
-	reg := c.s.o.Interactions
-	if reg == nil {
-		return
+// bindSubagent is the agent.Created listener: a subagent whose creator's root an
+// sdk connection owns is bound via its creator, before it goes live, for as
+// long as it lives. Other agents are left alone; a binding another carrier
+// already made stands. Any other failure fails the creation: an unbound child
+// would ask nobody.
+func (s *Server) bindSubagent(_ *cordis.Context, n agent.CreatedNotice) error {
+	k := n.Agent
+	h := k.Session().Header()
+	if h.Origin != "subagent" || h.Creator == "" {
+		return nil
 	}
-	k, ok := c.s.o.Agents.Get(child)
-	p, pok := c.s.o.Agents.Get(creator)
-	if ok && pok {
-		_, _ = reg.Bind(k.Scope(), k.Ref(), human.Binding{Via: p.Ref()})
+	if c, _ := s.ownerOf(session.ID(h.Creator)); c == nil {
+		return nil
 	}
+	p, ok := s.o.Agents.Get(session.ID(h.Creator))
+	if !ok {
+		return fmt.Errorf("sdkserver: the creator %q of subagent %q is not live", h.Creator, k.Ref().Session)
+	}
+	if _, err := s.o.Interactions.Bind(k.Scope(), k.Ref(), human.Binding{Via: p.Ref()}); err != nil && !errors.Is(err, human.ErrTaken) {
+		return fmt.Errorf("sdkserver: bind subagent %q via %q: %w", k.Ref().Session, h.Creator, err)
+	}
+	return nil
 }
 
 // withdrawQuestions settles the pending questions of root's tree as declined: a
@@ -313,4 +376,10 @@ func (c *Conn) TimeZone(id session.ID) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return orElse(c.zones[id], c.zone)
+}
+
+// clientRecord is the client record send puts on every message it queues for
+// session id: the user's zone, zero when the client gave none.
+func (c *Conn) clientRecord(id session.ID) agent.ClientRecord {
+	return agent.ClientRecord{TimeZone: c.TimeZone(id)}
 }

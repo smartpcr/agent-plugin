@@ -129,6 +129,9 @@ func New(o Options) (*Server, error) {
 		if _, err := o.Interactions.RegisterAnswerer(o.Owner, ChannelSDK, answerer{s: s}); err != nil {
 			return nil, fmt.Errorf("sdkserver: register the sdk answerer: %w", err)
 		}
+		if _, err := agent.Created.On(o.Owner, s.bindSubagent); err != nil {
+			return nil, fmt.Errorf("sdkserver: listen for subagents: %w", err)
+		}
 	}
 	return s, nil
 }
@@ -210,6 +213,11 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer, o jsonrpc.
 	}
 	rd, wr := &watchedReader{r: r}, &watchedWriter{w: w}
 	o.Methods = c.Methods()
+	if onError := o.OnError; onError != nil {
+		o.OnError = func(err error) { c.OnFault(err); onError(err) }
+	} else {
+		o.OnError = c.OnFault
+	}
 	// Attached before the codec can dispatch, so no session misses a forwarder.
 	out := &deferred{ready: make(chan struct{})}
 	if err := c.Attach(out); err != nil {
@@ -716,7 +724,7 @@ func (c *Conn) send(ctx context.Context, id string, list agent.List, msgID strin
 	if err != nil {
 		return agent.Receipt{}, err
 	}
-	r, err := agent.Send(ctx, a, list, agent.InboxMessage{ID: msgID, Source: agent.SourceUser, By: c.by(), Text: text})
+	r, err := agent.Send(ctx, a, list, agent.InboxMessage{ID: msgID, Source: agent.SourceUser, By: c.by(), Client: c.clientRecord(session.ID(id)), Text: text})
 	if dup, ok := errors.AsType[*agent.DuplicateError](err); ok {
 		// A retry racing the first send is held to the same watermark.
 		r, err = dup.First, nil
