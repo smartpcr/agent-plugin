@@ -314,6 +314,27 @@ stages:
       authored: DH-S-10
       credential: none
       requires: [DH-S-13, DH-S-16]
+    # With no Linux backend a confined command does not run and only
+    # danger-full-access runs it, reported unconfined (sandbox-ssh.md
+    # DH-E-SANDBOX-2); authored by Stage 3.9 (impl.md DH-S-13).
+    - id: DH-E-SANDBOX-2
+      authored: DH-S-13
+      credential: none
+      requires: [DH-S-13, DH-S-16]
+    # Command strings reach pwsh 7, Windows PowerShell 5.1 and Git's bash as
+    # written; npm.cmd starts only with opt-in and plain arguments; bash never
+    # falls back to WSL (execution.md DH-E-EXEC-7); authored by Stage 3.9. It
+    # starts npm through the process package itself, so it has no requires.
+    - id: DH-E-EXEC-7
+      authored: DH-S-13
+      credential: none
+    # A confined command is confined, and with the backend broken neither a
+    # foreground nor a background call runs (execution.md DH-E-EXEC-8); authored
+    # by Stage 3.9.
+    - id: DH-E-EXEC-8
+      authored: DH-S-13
+      credential: none
+      requires: [DH-S-13, DH-S-16]
   # Venue: later (DH-S-48, after harness:DSH-M2: the browser preset choice, the
   # settings page and the release archive). M2 authors DH-E-BUNDLE-1, DH-E-BUNDLE-2,
   # DH-E-BUNDLE-4 and DH-E-API-5 for it (tech-spec sec. 4.5).

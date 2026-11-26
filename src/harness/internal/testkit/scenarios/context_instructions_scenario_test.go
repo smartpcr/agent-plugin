@@ -30,8 +30,9 @@ const instructionsOpen = "<instructions>\n"
 // branch switch -- reaches the model as one update, and a link out of the
 // project does not.
 //
-// Given a session in a temporary git repository whose AGENTS.md differs on two
-// branches, and a secret-looking file outside the repository,
+// Given a session working in sub/ of a temporary git repository whose root
+// AGENTS.md differs on two branches, and a secret-looking file outside the
+// repository,
 // When (1) a real editor saves a change to AGENTS.md, (2) git switches to the
 // other branch, (3) sub/AGENTS.md is added as a link to the outside file, and
 // one prompt is sent after each,
@@ -85,7 +86,10 @@ func TestContextInstructionFileChangesReachModel(t *testing.T) {
 	bin := dshBinary(t)
 	m := startScriptedModel(t)
 	h := startSDK(t, bin, nil, []string{"--layer", writeLayer(t, expand(layerT, map[string]string{"endpoint": m.URL}))})
-	session := h.createIn(t, route, repo, "workspace-write")
+	// The session works in repo/sub: discovery reads from the project root down
+	// to the working directory, so both AGENTS.md and the later sub/AGENTS.md
+	// link are in its chain.
+	session := h.createIn(t, route, filepath.Join(repo, "sub"), "workspace-write")
 	h.keepExport(t, session)
 
 	prompt := func(what string) string {
