@@ -251,7 +251,7 @@ timeout changes. Checks on the working tree, on Windows and WSL:
 - `go vet` with `-tags=` and `-tags=replay,scenario,bench` exits 0, with and without the gate's own analyzers (`HARNESS_GATE_VETTOOL=1 -vettool=<harness-gate>`).
 - WSL: `go test -race -count=3 ./internal/world/fs/local/` is `ok`.
 - Windows: `-run TestBoundedReadHoldsThroughASwappedLink -race -count=3` passes, `swaps=50 linked=50` each run, and `go test -count=3 ./internal/world/fs/local/` is `ok`.
-- Windows, under `-race`: one other test, `TestCancellationDuringPublishRetryPublishesNothing` (`cancel_windows_test.go:84`, from `main` #110, not touched here), fails 3 of 8 runs, including when run alone: `BeforePublish ran 1 times; the first rename was not blocked and retried`. It is recorded under the unrelated-failure rule (question `dh-s-14-fs-cancel-race`). The Windows test gate runs `-race`, so this may stop that lane at gate 4.
+- Windows, under `-race`: one other test, `TestCancellationDuringPublishRetryPublishesNothing` (`cancel_windows_test.go:84`, from `main` #110, not touched here), fails 3 of 8 runs, including when run alone: `BeforePublish ran 1 times; the first rename was not blocked and retried`. It is recorded under the unrelated-failure rule (question `dh-s-14-fs-cancel-race`). The Windows test gate runs `-race`; the Windows lane at `acb5056` did fail on it at gate 5 (`deadline/replace-if-version`; Results, "Lanes at `acb5056`"), so the operator's decision on this question is now due and pending (Open items).
 
 Both lanes are to run once on the commit that carries this fix.
 
@@ -370,9 +370,10 @@ The lanes at `b792aec` fail gate 2, both of them, on a `time.Sleep` that came in
 `dh-s-14-fslocal-nosleep`, that sleep is replaced on this branch (Results, `local_test.go` nosleep
 fix), and the lanes are to run on that commit. The Windows `-race` failure in
 `TestCancellationDuringPublishRetryPublishesNothing`, from `main` (question `dh-s-14-fs-cancel-race`):
-the operator answered "Run the lanes first and decide only if the Windows lane fails on it"; the Windows
-lane at `acb5056` does fail on it (`deadline/replace-if-version`), and that result is raised under the
-same question, awaiting an answer.
+the operator answered "Run the lanes first and decide only if the Windows lane fails on it". That
+condition is met: the Windows lane at `acb5056` has finished and failed gate 5 (`-race`) on this test
+(`deadline/replace-if-version`). The failure is raised under the same question; the decision is
+pending, no answer is recorded yet.
 At `acb5056` the WSL lane passes gates 1 to 4 and fails gate 5 on four `src/harness` tests from `main`
 (Results, "Lanes at `acb5056`"; question `dh-s-14-main-test-failures`). The operator answered "Pause
 until fixes for them land on main": this record waits, unchanged in scope, for those fixes on `main`
@@ -380,7 +381,7 @@ until fixes for them land on main": this record waits, unchanged in scope, for t
 lane at `acb5056` also passes gates 1 to 4 and fails gate 5, on the same four tests plus two
 Windows-only ones from `main`: `TestDirectoryDepth/poll` (question `dh-s-14-watch-poll-burst`, open)
 and `TestCancellationDuringPublishRetryPublishesNothing/deadline/replace-if-version` (question
-`dh-s-14-fs-cancel-race`, open). Both lanes must
+`dh-s-14-fs-cancel-race`, decision pending). Both lanes must
 pass on the final commit, with their exits, run records and coverage recorded here.
 Closed: the gofmt blocker (formatted on this branch, question `dh-s-14-gofmt-lane-blocker`), the
 nosleep blocker (question `dh-s-14-nosleep-lane-blocker`, fix kept) and the
