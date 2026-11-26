@@ -264,6 +264,20 @@ Gate lanes:
     `wsl-189b04e.log`. The clone has been removed. Gates 4 to 13 did not run on WSL.
 - 189b04e, Windows: running (started 2026-11-26T01:58Z, log `E:\work\lanes\win-189b04e.log`); results are
   recorded when it ends.
+- Repair of the SA1019 finding on this branch (security code; flagged for human review): in
+  `confine_linux.go` the deprecated `landlock.NewConfig(...)` becomes the struct literal
+  `landlock.Config{HandledAccessFS: ...}`. The handled set is unchanged. `NewRulesetFD` already rejects
+  unknown access rights before it creates a ruleset (go-landlock v0.11.2 `createRuleset`: `c.valid()`),
+  which is the check `NewConfig` made, and its error now names the interface version.
+  - Checks on WSL (ext4 copy of the tree):
+    - staticcheck v0.8.2 (the gate's pin) on `internal/world/sandbox/launch/...` under `-tags=` and
+      `-tags=replay,scenario,bench`: exit 0.
+    - `go test ./internal/world/sandbox/launch/ ./internal/world/sandbox/local/`: ok, including
+      `TestLandlockStageConfinesForReal` on the real kernel.
+    - The e2e features `linux_backends_bubblewrap_and_landlock` (14 scenarios) and `sandbox_launch_stage`
+      (3 scenarios): pass.
+  - Checks on Windows: `GOOS=linux` vet under both tag sets: exit 0.
+  - Both lanes run again on the commit that holds this repair.
 
 ### Manual checks
 
