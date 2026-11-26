@@ -269,7 +269,7 @@ sha256 `af7afc04aa00f971995da57ac9047e2fcd681f9771ae562839090d3356a43837`, exit 
 | 5 test | `harness-gate: FAIL test`: `src/go` and `src/sdk` pass; `src/harness` fails four tests |
 
 The four failing `src/harness` tests:
-- `TestEveryReasonHasAStatus` (`internal/cli/output/output_test.go:92`): eight `shellexec/*` and `shellenv/*` reasons "have no exit status in output.codes", for example `shellexec/bad-config`.
+- `TestEveryReasonHasAStatus` (`internal/cli/output/output_test.go:92`): ten reasons "have no exit status in output.codes" (`wsl-acb5056-20261126T0112Z.txt`, lines 92-101): six `shellexec/*` (`bad-config`, `bad-request`, `timed-out`, `script-failed`, `not-found`, `stopped`) and four `shellenv/*` (`secrets-unknown`, `bad-key`, `undeclared`, `contributor-failed`).
 - `TestTotalSourceBudgetStopsReading` (`internal/context/instructions/instructions_test.go:615`): "third file ... opened 0 times, want omitted unread".
 - `TestArgv` (`internal/world/shellexec/pwsh/pwsh_test.go:124`): the script starts with a byte-order mark (`"\ufeffparam($x)..."`).
 - `TestArgumentsAreNamedOnly` (`internal/world/shellexec/tools/tools_test.go:281`): the bash tool's properties also hold `justification` and `sandbox_permissions`, where the test wants `command, timeout, description`.
@@ -281,7 +281,7 @@ None of these tests or the code under them is in this branch's diff:
 
 Under the unrelated-failure rule they are recorded and raised (question `dh-s-14-main-test-failures`), not changed here. Gates 6 to 13, coverage included, did not run. The rehearsal record [`wsl-acb5056-20261126T0112Z-rehearse.txt`](../../harness-DSH-M1/evidence/runs/wsl-acb5056-20261126T0112Z-rehearse.txt) (sha256 `f42cf3226731db2ef9677e873526198a4c2db1d14c4d8d5ddf40f23cb252fb44`, exit 0) does not establish acceptance. The WSL clone `~/s14-lane-acb5056` and its log were removed after the records were copied.
 
-*Windows:* the lane at `acb5056` is still running (worktree `E:\tmp\s14-lane-acb5056`). It had passed gate 1 when this was written; its result is to be recorded here.
+*Windows:* the lane at `acb5056` is still running (worktree `E:\tmp\s14-lane-acb5056`). Its log shows `PASS gofmt`, `PASS vet` and `PASS staticcheck` so far (this confirms the `bus_linux.go` U1000 fix on Windows), and it was in gate 4 (modules) when this was written; its result is to be recorded here.
 
 **Record check.** `harness-gate ready --stage DH-S-14 --built` on this record (status line
 `open`), run on the working tree that carries the operator acceptance above: exit 0,
