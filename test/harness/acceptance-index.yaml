@@ -330,11 +330,13 @@ stages:
       credential: none
     # A confined command is confined, and with the backend broken neither a
     # foreground nor a background call runs (execution.md DH-E-EXEC-8); authored
-    # by Stage 3.9.
+    # by Stage 3.9. It needs the shell tool (DH-S-13), the headless launcher
+    # (DH-S-16) and, for the run_in_background call, the job registry
+    # (DH-D-JOBS-1, DH-S-26).
     - id: DH-E-EXEC-8
       authored: DH-S-13
       credential: none
-      requires: [DH-S-13, DH-S-16]
+      requires: [DH-S-13, DH-S-16, DH-S-26]
   # Venue: later (DH-S-48, after harness:DSH-M2: the browser preset choice, the
   # settings page and the release archive). M2 authors DH-E-BUNDLE-1, DH-E-BUNDLE-2,
   # DH-E-BUNDLE-4 and DH-E-API-5 for it (tech-spec sec. 4.5).
