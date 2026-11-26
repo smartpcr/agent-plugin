@@ -19,6 +19,7 @@ import (
 	"github.com/cucumber/godog"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/host/access"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/host/listen"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/host/web"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
@@ -26,9 +27,10 @@ import (
 
 type drtPeer struct{ id string }
 
-func (p drtPeer) ID() string               { return p.id }
-func (p drtPeer) Context() context.Context { return context.Background() }
-func (p drtPeer) FormToken() string        { return "" }
+func (p drtPeer) ID() string                  { return p.id }
+func (p drtPeer) Context() context.Context    { return context.Background() }
+func (p drtPeer) Principal() access.Principal { return access.Owner() }
+func (p drtPeer) FormToken() string           { return "" }
 
 var drtWildcard = regexp.MustCompile(`\{([^{}]*)\}`)
 
