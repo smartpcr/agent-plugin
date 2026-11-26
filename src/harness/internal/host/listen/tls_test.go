@@ -82,7 +82,7 @@ func TestTLSReloadsReplacedPair(t *testing.T) {
 	c1, k1 := pair(t, 1)
 	now := time.Now()
 	replace(t, certFile, keyFile, c1, k1, now)
-	l, err := start(t, cordisRoot(t), listen.Config{Address: "127.0.0.1:0", CertFile: certFile, KeyFile: keyFile})
+	l, err := start(t, cordisRoot(t), listen.Config{Port: anyPort(), TLS: listen.TLS{CertFile: certFile, KeyFile: keyFile}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,9 +126,44 @@ func TestTLSBadMaterialFailsStart(t *testing.T) {
 		"half":       {cert, ""},
 	}
 	for name, files := range cases {
-		_, err := start(t, cordisRoot(t), listen.Config{Address: "127.0.0.1:0", CertFile: files[0], KeyFile: files[1]})
+		_, err := start(t, cordisRoot(t), listen.Config{Port: anyPort(), TLS: listen.TLS{CertFile: files[0], KeyFile: files[1]}})
 		if !herr.Has(err, listen.ReasonTLS) {
 			t.Errorf("%s: err = %v, want %s", name, err, listen.ReasonTLS)
 		}
+	}
+}
+
+// A pair whose files disappear (a renewal mid-way) keeps the last good certificate
+// in service and warns once with listen/tls; when a new pair appears it is served.
+//
+//dsh:test DH-T-HOST-2
+func TestTLSKeepsPairWhileFilesMissing(t *testing.T) {
+	dir := t.TempDir()
+	certFile, keyFile := filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem")
+	c1, k1 := pair(t, 1)
+	now := time.Now()
+	replace(t, certFile, keyFile, c1, k1, now)
+	r, logs := cordisLogs(t)
+	l, err := start(t, r, listen.Config{Port: anyPort(), TLS: listen.TLS{CertFile: certFile, KeyFile: keyFile}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{certFile, keyFile} {
+		if err := os.Remove(f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range 3 {
+		if got := served(t, l); got != 1 {
+			t.Fatalf("with the files gone serial %d, want the last good pair (1)", got)
+		}
+	}
+	if n := warned(logs, string(listen.ReasonTLS)); n != 1 {
+		t.Errorf("%d listen/tls warnings for the missing files over 3 handshakes, want 1", n)
+	}
+	c2, k2 := pair(t, 2)
+	replace(t, certFile, keyFile, c2, k2, now.Add(time.Minute))
+	if got := served(t, l); got != 2 {
+		t.Errorf("after the files came back serial %d, want the new pair (2)", got)
 	}
 }

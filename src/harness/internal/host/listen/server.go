@@ -1,43 +1,136 @@
 package listen
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"errors"
 	"net"
 	"net/http"
 	"net/netip"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/klauspost/compress/gzhttp"
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
 )
 
-// Config is host.listen's entry config. The zero durations take the defaults below.
+// Config is host.listen's entry config (host-telemetry.md sec. 6.2). Zero fields take
+// the defaults below.
 type Config struct {
-	// Address is the bind address, an IP literal with a port (ParseBind).
-	Address string `json:"address"`
-	// CertFile and KeyFile name a PEM pair; both empty means no TLS.
-	CertFile string `json:"certFile,omitempty"`
-	KeyFile  string `json:"keyFile,omitempty"`
+	// Bind is one IP literal, loopback by default, never unspecified.
+	Bind string `json:"bind,omitempty"`
+	// Port is the TCP port; nil means DefaultPort and 0 asks the system for a free one.
+	Port *uint16 `json:"port,omitempty"`
+	// TLS names a PEM pair; both empty means no TLS.
+	TLS TLS `json:"tls,omitzero"`
 	// AllowInsecureRemote lets a non-loopback bind start without TLS, with a warning.
-	AllowInsecureRemote bool          `json:"allowInsecureRemote,omitempty"`
-	ReadHeaderTimeout   time.Duration `json:"readHeaderTimeout,omitempty"`
-	IdleTimeout         time.Duration `json:"idleTimeout,omitempty"`
-	MaxHeaderBytes      int           `json:"maxHeaderBytes,omitempty"`
+	AllowInsecureRemote bool `json:"allowInsecureRemote,omitempty"`
+	// TrustedHosts are the further names a browser may use for this host; one that is
+	// not loopback makes the listener remote. The Host check itself is DH-D-HOST-2's.
+	TrustedHosts []string `json:"trustedHosts,omitempty"`
+	// PublicURL is the address a proxy publishes this host under; set, it is remote.
+	PublicURL   string      `json:"publicURL,omitempty"`
+	Compression Compression `json:"compression,omitzero"`
+
+	ReadHeaderTimeout time.Duration `json:"readHeaderTimeout,omitempty"`
+	IdleTimeout       time.Duration `json:"idleTimeout,omitempty"`
+	MaxHeaderBytes    int           `json:"maxHeaderBytes,omitempty"`
 	// ShutdownGrace bounds how long Close waits for open requests.
 	ShutdownGrace time.Duration `json:"shutdownGrace,omitempty"`
 }
 
+// TLS is the certificate pair. The files are re-read when either changes.
+type TLS struct {
+	CertFile string `json:"certFile,omitempty"`
+	KeyFile  string `json:"keyFile,omitempty"`
+}
+
+// Compression is opt-in gzip of responses (DH-ADR-COMPRESSION-1). A Stream request,
+// a Range request and an Uncompressed mount are never compressed.
+type Compression struct {
+	// Mode is CompressionNone (the default) or CompressionGzip.
+	Mode string `json:"mode,omitempty"`
+	// Level is the gzip level, 1 (fastest, the default) to 9.
+	Level int `json:"level,omitempty"`
+	// MinBytes is the smallest body that is compressed.
+	MinBytes int `json:"minBytes,omitempty"`
+}
+
+// Compression modes.
+const (
+	CompressionNone = "none"
+	CompressionGzip = "gzip"
+)
+
 // Defaults for the zero fields of Config.
 const (
-	DefaultReadHeaderTimeout = 10 * time.Second
-	DefaultIdleTimeout       = 2 * time.Minute
-	DefaultMaxHeaderBytes    = 64 << 10
-	DefaultShutdownGrace     = 5 * time.Second
+	DefaultBind                     = "127.0.0.1"
+	DefaultPort              uint16 = 3080
+	DefaultLevel                    = 1
+	DefaultMinBytes                 = 1024
+	DefaultReadHeaderTimeout        = 10 * time.Second
+	DefaultIdleTimeout              = 2 * time.Minute
+	DefaultMaxHeaderBytes           = 64 << 10
+	DefaultShutdownGrace            = 5 * time.Second
 )
+
+// Address is the bind address cfg resolves to: Bind and Port with their defaults,
+// parsed once by ParseBind. The listener listens on exactly this value.
+func (c Config) Address() (netip.AddrPort, error) {
+	port := DefaultPort
+	if c.Port != nil {
+		port = *c.Port
+	}
+	return ParseBind(net.JoinHostPort(orDefault(c.Bind, DefaultBind), strconv.Itoa(int(port))))
+}
+
+// remote reports whether a trusted host or a public URL lets other machines reach
+// this listener.
+func (c Config) remote() bool {
+	if c.PublicURL != "" {
+		return true
+	}
+	for _, h := range c.TrustedHosts {
+		if a, err := netip.ParseAddr(h); err == nil {
+			if !isLoopback(a) {
+				return true
+			}
+		} else if !strings.EqualFold(h, "localhost") {
+			return true
+		}
+	}
+	return false
+}
+
+// compressor builds the gzip wrapper, or nil when compression is off.
+func (c Compression) compressor() (func(http.Handler) http.HandlerFunc, error) {
+	switch c.Mode {
+	case "", CompressionNone:
+		return nil, nil
+	case CompressionGzip:
+	default:
+		return nil, herr.Newf(ReasonCompression, "compression mode %q: want %q or %q", c.Mode, CompressionNone, CompressionGzip)
+	}
+	level := orDefault(c.Level, DefaultLevel)
+	if level < 1 || level > 9 || c.MinBytes < 0 {
+		return nil, herr.Newf(ReasonCompression, "compression level %d (1 to 9) or minBytes %d (at least 0) out of range", level, c.MinBytes)
+	}
+	wrap, err := gzhttp.NewWrapper(
+		gzhttp.EnableZstd(false),
+		gzhttp.CompressionLevel(level),
+		gzhttp.MinSize(orDefault(c.MinBytes, DefaultMinBytes)),
+		gzhttp.ExceptContentTypes([]string{"text/event-stream"}),
+	)
+	if err != nil {
+		return nil, herr.Wrap(ReasonCompression, err, "compression")
+	}
+	return wrap, nil
+}
 
 // Server is the listener. Start returns one that is serving.
 type Server struct {
@@ -51,6 +144,15 @@ type Server struct {
 	mu     sync.Mutex
 	mounts atomic.Pointer[[]*Mount]
 
+	gzip func(http.Handler) http.HandlerFunc // nil when compression is off
+
+	// conns guards the hijacked connections (WebSockets) and the open handlers,
+	// which http.Server.Shutdown neither tracks nor waits for.
+	conns    sync.Mutex
+	hijacked map[*hijackedConn]struct{}
+	open     int           // handlers running
+	drained  chan struct{} // closed when open reaches 0, once Close asks
+
 	http      *http.Server
 	served    chan struct{}
 	done      chan struct{}
@@ -60,19 +162,27 @@ type Server struct {
 
 var _ Listener = (*Server)(nil)
 
-// Start parses cfg, loads the TLS pair, binds the parsed address and serves. Bad
-// configuration or TLS material fails here, and nothing listens. ctx is the context
-// the pipeline asks listen/authenticate in and logs to; ready gates Stream requests.
+// Start resolves cfg's address, loads the TLS pair, binds the address and serves.
+// Bad configuration or TLS material fails here, and nothing listens. ctx is the
+// context the pipeline asks listen/authenticate in and logs to; ready gates Stream
+// requests.
 func Start(ctx *cordis.Context, cfg Config, ready <-chan struct{}) (*Server, error) {
-	ap, err := ParseBind(cfg.Address)
+	ap, err := cfg.Address()
 	if err != nil {
 		return nil, err
 	}
-	if (cfg.CertFile == "") != (cfg.KeyFile == "") {
-		return nil, herr.New(ReasonTLS, "certFile and keyFile are set together or not at all")
+	if (cfg.TLS.CertFile == "") != (cfg.TLS.KeyFile == "") {
+		return nil, herr.New(ReasonTLS, "tls.certFile and tls.keyFile are set together or not at all")
 	}
-	s := &Server{ctx: ctx, secure: cfg.CertFile != "", ready: ready, grace: orDefault(cfg.ShutdownGrace, DefaultShutdownGrace),
-		served: make(chan struct{}), done: make(chan struct{})}
+	gz, err := cfg.Compression.compressor()
+	if err != nil {
+		return nil, err
+	}
+	s := &Server{ctx: ctx, secure: cfg.TLS.CertFile != "", ready: ready, grace: orDefault(cfg.ShutdownGrace, DefaultShutdownGrace),
+		gzip: gz, hijacked: map[*hijackedConn]struct{}{}, served: make(chan struct{}), done: make(chan struct{})}
+	if cfg.remote() {
+		s.mode = Remote
+	}
 	if !isLoopback(ap.Addr()) {
 		s.mode = Remote
 		if !s.secure && !cfg.AllowInsecureRemote {
@@ -98,7 +208,7 @@ func Start(ctx *cordis.Context, cfg Config, ready <-chan struct{}) (*Server, err
 	}
 	var ln net.Listener
 	if s.secure {
-		certs, err := newCertSource(cfg.CertFile, cfg.KeyFile, func(err error) { ctx.Logger().Warnf("listen: %v", err) })
+		certs, err := newCertSource(cfg.TLS.CertFile, cfg.TLS.KeyFile, func(err error) { ctx.Logger().Warnf("listen: %v", err) })
 		if err != nil {
 			cancel()
 			return nil, err
@@ -194,17 +304,23 @@ func (s *Server) Mount(owner *cordis.Context, m Mount) error {
 
 // ServeHTTP is the admission pipeline.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.enter()
+	defer s.leave()
 	m := longest(*s.mounts.Load(), r.URL.Path)
 	if m == nil {
 		http.NotFound(w, r)
 		return
 	}
 	class := classify(m, r)
-	if class == Deny {
+	switch class {
+	case Required, Anonymous, Callback:
+	default:
+		// Deny, and any value that is not a class: admission fails closed.
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	if streams(m, r) && !closed(s.ready) {
+	stream := streams(m, r)
+	if stream && !closed(s.ready) {
 		http.Error(w, "starting", http.StatusServiceUnavailable)
 		return
 	}
@@ -221,11 +337,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		r = r.WithContext(context.WithValue(r.Context(), peerKey{}, peer))
 	}
-	s.serve(w, r, m)
+	var h http.Handler = m.Serve
+	if s.gzip != nil && !stream && !m.Uncompressed && r.Header.Get("Range") == "" {
+		h = s.gzip(h)
+	}
+	s.serve(&trackedWriter{ResponseWriter: w, s: s}, r, m, h)
 }
 
 // serve calls the handler; a panic is a server fault, answered 500 and logged.
-func (s *Server) serve(w http.ResponseWriter, r *http.Request, m *Mount) {
+func (s *Server) serve(w http.ResponseWriter, r *http.Request, m *Mount, h http.Handler) {
 	defer func() {
 		if v := recover(); v != nil {
 			if v == http.ErrAbortHandler {
@@ -235,7 +355,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, m *Mount) {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 		}
 	}()
-	m.Serve.ServeHTTP(w, r)
+	h.ServeHTTP(w, r)
 }
 
 func closed(ch <-chan struct{}) bool {
@@ -247,13 +367,19 @@ func closed(ch <-chan struct{}) bool {
 	}
 }
 
-// Close closes Done, waits up to the grace period for open requests, then closes
-// every connection and waits for the serve loop to end.
+// closeWait is how long Close waits, after closing what remains, for handlers to
+// return when the grace period is already spent.
+const closeWait = 250 * time.Millisecond
+
+// Close is unload (sec. 6.3): stop accepting, close Done so Stream handlers return,
+// Shutdown within the grace period, then close what remains -- every connection,
+// hijacked ones included -- and wait, bounded, for the handlers to return.
 func (s *Server) Close() error {
 	var err error
 	s.closeOnce.Do(func() {
 		close(s.done)
-		ctx, cancel := context.WithTimeout(context.Background(), s.grace)
+		deadline := time.Now().Add(s.grace)
+		ctx, cancel := context.WithDeadline(context.Background(), deadline)
 		defer cancel()
 		if shutdownErr := s.http.Shutdown(ctx); shutdownErr != nil && !errors.Is(shutdownErr, context.DeadlineExceeded) {
 			err = shutdownErr
@@ -262,7 +388,108 @@ func (s *Server) Close() error {
 		if closeErr := s.http.Close(); closeErr != nil && err == nil {
 			err = closeErr
 		}
+		if closeErr := s.closeHijacked(); closeErr != nil && err == nil {
+			err = closeErr
+		}
+		wait := max(time.Until(deadline), closeWait)
+		timer := time.NewTimer(wait)
+		defer timer.Stop()
+		select {
+		case <-s.idle():
+		case <-timer.C:
+			s.ctx.Logger().Errorf("listen: handlers still running %s after their connections closed", wait)
+		}
 		<-s.served
 	})
 	return err
+}
+
+func (s *Server) enter() {
+	s.conns.Lock()
+	defer s.conns.Unlock()
+	s.open++
+}
+
+func (s *Server) leave() {
+	s.conns.Lock()
+	defer s.conns.Unlock()
+	s.open--
+	if s.open == 0 && s.drained != nil {
+		close(s.drained)
+		s.drained = nil
+	}
+}
+
+// idle closes when no handler runs.
+func (s *Server) idle() <-chan struct{} {
+	s.conns.Lock()
+	defer s.conns.Unlock()
+	ch := make(chan struct{})
+	if s.open == 0 {
+		close(ch)
+	} else {
+		s.drained = ch
+	}
+	return ch
+}
+
+// closeHijacked closes every hijacked connection still open; one that is already
+// closed is not an error.
+func (s *Server) closeHijacked() error {
+	s.conns.Lock()
+	open := make([]*hijackedConn, 0, len(s.hijacked))
+	for c := range s.hijacked {
+		open = append(open, c)
+	}
+	s.conns.Unlock()
+	var errs []error
+	for _, c := range open {
+		if err := c.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// trackedWriter is the ResponseWriter a handler sees: hijacking through it records
+// the connection so Close can close it. Unwrap keeps http.ResponseController working.
+type trackedWriter struct {
+	http.ResponseWriter
+	s *Server
+}
+
+func (t *trackedWriter) Unwrap() http.ResponseWriter { return t.ResponseWriter }
+
+func (t *trackedWriter) Flush() {
+	if f, ok := t.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (t *trackedWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	conn, rw, err := http.NewResponseController(t.ResponseWriter).Hijack()
+	if err != nil {
+		return nil, nil, err
+	}
+	h := &hijackedConn{Conn: conn, s: t.s}
+	t.s.conns.Lock()
+	defer t.s.conns.Unlock()
+	if closed(t.s.done) {
+		return nil, nil, errors.Join(errors.New("listen: closing"), conn.Close())
+	}
+	t.s.hijacked[h] = struct{}{}
+	return h, rw, nil
+}
+
+// hijackedConn leaves the server's set when it closes.
+type hijackedConn struct {
+	net.Conn
+	s *Server
+}
+
+func (h *hijackedConn) Close() error {
+	h.s.conns.Lock()
+	delete(h.s.hijacked, h)
+	h.s.conns.Unlock()
+	return h.Conn.Close()
 }

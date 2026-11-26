@@ -32,6 +32,7 @@ type certSource struct {
 	mu      sync.Mutex
 	stamps  [2]stamp
 	current *tls.Certificate
+	statErr string // the last stat failure reported, so it is warned once
 }
 
 // newCertSource loads the pair once; bad material fails here, before anything listens.
@@ -67,7 +68,17 @@ func (c *certSource) getCertificate(*tls.ClientHelloInfo) (*tls.Certificate, err
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	stamps, err := c.stat()
-	if err != nil || stamps == c.stamps {
+	if err != nil {
+		// A missing or unreadable file (a renewal mid-way, a removed pair) keeps the last
+		// good pair in service. It is reported once per distinct failure, not per handshake.
+		if msg := err.Error(); msg != c.statErr {
+			c.statErr = msg
+			c.warn(herr.Wrap(ReasonTLS, err, "certificate pair not readable; keeping the previous one"))
+		}
+		return c.current, nil
+	}
+	c.statErr = ""
+	if stamps == c.stamps {
 		return c.current, nil
 	}
 	// Record the stamps whether or not the pair loads: a half-written pair is retried

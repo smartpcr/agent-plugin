@@ -146,5 +146,7 @@ var Component = cordis.Define(Name, func(ctx *cordis.Context, _ cordis.None) err
 		Prefix:   Prefix,
 		Classify: func(*http.Request) listen.Class { return listen.Anonymous },
 		Serve:    http.StripPrefix(strings.TrimSuffix(Prefix, "/"), Handler(files, build)),
+		// Assets are never compressed on the fly (DH-T-HOST-7).
+		Uncompressed: true,
 	})
 }, cordis.WithInject(listen.Key.Name()))

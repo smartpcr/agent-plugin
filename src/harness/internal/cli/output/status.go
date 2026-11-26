@@ -115,6 +115,7 @@ var codes = map[herr.Reason]int{
 	"listen/mount-invalid":    Invalid,
 	"listen/mount-taken":      Busy,
 	"listen/tls":              Config,
+	"listen/compression":      Config,
 
 	"secret/bad-env-file":   Invalid,
 	"secret/bad-reference":  Invalid,

@@ -86,7 +86,7 @@ func TestComponentMountsEmbeddedFiles(t *testing.T) {
 	for _, use := range []struct {
 		c   *cordis.Component
 		cfg any
-	}{{listen.Component, listen.Config{Address: "127.0.0.1:0"}}, {assets.Component, cordis.None{}}} {
+	}{{listen.Component, listen.Config{Port: new(uint16(0))}}, {assets.Component, cordis.None{}}} {
 		f, err := r.Use(use.c, use.cfg)
 		if err != nil {
 			t.Fatal(err)

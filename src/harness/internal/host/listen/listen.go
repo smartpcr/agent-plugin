@@ -27,9 +27,11 @@ const (
 	ReasonTLS             herr.Reason = "listen/tls"
 	ReasonMountInvalid    herr.Reason = "listen/mount-invalid"
 	ReasonMountTaken      herr.Reason = "listen/mount-taken"
+	ReasonCompression     herr.Reason = "listen/compression"
 )
 
-// Class is how a mount's request is admitted. The zero value is Required.
+// Class is how a mount's request is admitted. The zero value is Required; a value
+// that is none of the classes below is refused like Deny.
 type Class uint8
 
 // The classes.
@@ -58,6 +60,9 @@ type Mount struct {
 	Stream func(r *http.Request) bool
 	// Serve is called only after admission.
 	Serve http.Handler
+	// Uncompressed keeps the mount's responses out of Config.Compression: embedded
+	// assets, which carry their own caching and range semantics.
+	Uncompressed bool
 }
 
 // Credentials is what listen/authenticate reads from an admitted request.
