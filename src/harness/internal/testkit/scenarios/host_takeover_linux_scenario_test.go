@@ -73,8 +73,11 @@ func TestModelCommandCannotBecomeOwnerLinux(t *testing.T) {
 				r.refused(t, "service-manager")
 			case "b":
 				r.peer(t, "exact")
+				// The spec: on (b) the stored key file is readable (Landlock grants
+				// reads beneath /); a run where it is not has a misconfigured
+				// fixture or an incomplete attempt, never a pass.
 				if s := r.step(t, "read-secrets"); s.Outcome != "succeeded" {
-					t.Logf("%s: on Landlock only the key file read ended %s", r.mode, s.Outcome)
+					t.Errorf("%s: on Landlock only the key file read ended %s (%s), want it to succeed", r.mode, s.Outcome, s.Detail)
 				}
 				r.listed(t, "secret-read")
 				r.listed(t, "delegated-execution")

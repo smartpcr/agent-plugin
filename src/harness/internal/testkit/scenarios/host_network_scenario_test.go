@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -162,22 +163,51 @@ func TestNetworkListenerTLSPrefixAndRenewal(t *testing.T) {
 	}
 	noTokenShown(t, "(5)", s)
 	walk := step("walk", s.URL)
-	stream := false
-	for _, resp := range walk.Responses {
-		u, err := url.Parse(resp.URL)
-		if err != nil || !strings.HasPrefix(resp.URL, proxyURL+"/") {
-			t.Errorf("(5) a request left the prefix: %s (%v)", resp.URL, err)
-			continue
-		}
-		if resp.Status >= 400 {
-			t.Errorf("(5) %s answered %d under the prefix", u.Path, resp.Status)
-		}
-		stream = stream || strings.HasPrefix(resp.ContentType, "text/event-stream")
-	}
-	if !stream {
-		t.Errorf("(5) the walk under the prefix opened no event stream: %+v", walk.Responses)
+	if err := prefixCoverageError(walk.Responses, proxyURL); err != nil {
+		t.Errorf("(5) %v: %+v", err, walk.Responses)
 	}
 	stopHost(t, h.dshHost)
+}
+
+// prefixKinds are the request categories a walk under the prefix must show
+// working: a page, an asset, a form submission and the event stream.
+var prefixKinds = []string{"document", "asset", "form", "event-stream"}
+
+// prefixCoverageError checks a walk's responses: every request stays under
+// prefix and none fails, and each of prefixKinds has a successful response (a
+// form submission may redirect, if the redirect stays under the prefix).
+func prefixCoverageError(responses []browserResponse, prefix string) error {
+	var problems []string
+	ok := map[string]bool{}
+	for _, r := range responses {
+		if _, err := url.Parse(r.URL); err != nil || !strings.HasPrefix(r.URL, prefix+"/") {
+			problems = append(problems, fmt.Sprintf("a request left the prefix: %s", r.URL))
+			continue
+		}
+		if r.Status >= 400 || r.Status < 200 {
+			problems = append(problems, fmt.Sprintf("%s answered %d under the prefix", r.URL, r.Status))
+			continue
+		}
+		kind := r.Kind
+		if strings.HasPrefix(r.ContentType, "text/event-stream") {
+			kind = "event-stream"
+		}
+		switch {
+		case kind == "form" && r.Method != http.MethodPost:
+			problems = append(problems, fmt.Sprintf("the form request to %s is %q, want a POST submission", r.URL, r.Method))
+		case kind == "form" || r.Status < 300:
+			ok[kind] = true
+		}
+	}
+	for _, k := range prefixKinds {
+		if !ok[k] {
+			problems = append(problems, fmt.Sprintf("no %s request succeeded under the prefix", k))
+		}
+	}
+	if len(problems) > 0 {
+		return errors.New(strings.Join(problems, "; "))
+	}
+	return nil
 }
 
 // awaitListening waits up to a minute until rawURL's host and port accept a

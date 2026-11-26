@@ -213,7 +213,8 @@ func mustControl(t *testing.T, socket, method string, params any) json.RawMessag
 //	sign-out        sign the normal window out through the UI
 //
 // url, status, history and cookies describe the tab the step ended on;
-// responses list every response the browser received during the step; tabs list
+// responses list every response the browser received during the step, each with
+// its method and kind (browserResponse); tabs list
 // the tabs open after it, and for seven-tabs only those that showed the update,
 // with the protocol of each in protocols.
 type browserState struct {
@@ -236,6 +237,11 @@ type browserResponse struct {
 	URL         string `json:"url"`
 	Status      int    `json:"status"`
 	ContentType string `json:"contentType"`
+	// Method is the request's HTTP method; Kind is what the browser fetched it
+	// as: document, asset (script, style, image, font), form (a form
+	// submission) or event-stream.
+	Method string `json:"method"`
+	Kind   string `json:"kind"`
 }
 
 // sessionCookie is the harness session cookie of the state, if any.

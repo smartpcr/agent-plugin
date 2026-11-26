@@ -3,12 +3,17 @@
 package scenarios
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 )
 
 // completeTakeoverLog is a log with every common step plus platform, host.stop last.
@@ -143,5 +148,94 @@ func TestTakeoverHomeInspectionFailsWhenIncomplete(t *testing.T) {
 	}
 	if _, err := homeHolds(failingFS{home, "."}, "nonce-1"); err == nil {
 		t.Error("homeHolds with an unreadable home passed")
+	}
+}
+
+func TestTakeoverRefusalNeedsDenialEvidence(t *testing.T) {
+	for _, s := range []takeoverStep{
+		{Step: "control:host.status", Outcome: "refused", Reply: "connection refused"},
+		{Step: "proc-mem", Outcome: "refused", Detail: "pid 42 not found in the sandbox"},
+		{Step: "read-secrets", Outcome: "failed", Detail: "open /home/k: Permission denied"},
+		{Step: "write-layer", Outcome: "failed", Detail: "Read-only file system"},
+		{Step: "open-process", Outcome: "failed", Detail: "Access is denied."},
+	} {
+		if err := denialError(s); err != nil {
+			t.Errorf("denialError(%+v) = %v, want a denial", s, err)
+		}
+	}
+	for _, s := range []takeoverStep{
+		{Step: "proc-mem", Outcome: "succeeded"},
+		{Step: "proc-mem", Outcome: "pending", Detail: "still trying"},
+		{Step: "read-secrets", Outcome: "unavailable", Detail: "no such tool"},
+		{Step: "control:launch.open", Outcome: "refused"},
+		{Step: "debugger", Outcome: "failed", Detail: "lldb: command not found"},
+		{Step: "debugger", Outcome: "failed"},
+	} {
+		if err := denialError(s); err == nil {
+			t.Errorf("denialError(%+v) passed, want an error", s)
+		}
+	}
+}
+
+func TestTakeoverPendingCountIsANumber(t *testing.T) {
+	for in, want := range map[string]int{"0": 0, "1": 1, " 12\n": 12} {
+		if n, err := pendingCount(in); err != nil || n != want {
+			t.Errorf("pendingCount(%q) = %d, %v, want %d", in, n, err, want)
+		}
+	}
+	for _, in := range []string{"", "00", "-1", "+1", "error", "1 approval", "1.0"} {
+		if n, err := pendingCount(in); err == nil {
+			t.Errorf("pendingCount(%q) = %d, want an error", in, n)
+		}
+	}
+}
+
+// TestTakeoverCleanupRunsAfterTheTestContextEnds registers the cleanup in a
+// subtest and checks it ran once the subtest's context was canceled.
+func TestTakeoverCleanupRunsAfterTheTestContextEnds(t *testing.T) {
+	mark := filepath.Join(t.TempDir(), "ran")
+	t.Setenv("DSH_TEST_CLEANUP_MARK", mark)
+	line := `echo ran > "$DSH_TEST_CLEANUP_MARK"`
+	if runtime.GOOS == "windows" {
+		line = `echo ran>%DSH_TEST_CLEANUP_MARK%`
+	}
+	var ctx context.Context
+	t.Run("run", func(t *testing.T) {
+		ctx = t.Context()
+		cleanupShell(t, "cleanup", line, time.Minute)
+	})
+	if ctx.Err() == nil {
+		t.Fatal("the subtest's context is still live")
+	}
+	if _, err := os.Stat(mark); err != nil {
+		t.Errorf("the cleanup command did not run after the test context ended: %v", err)
+	}
+}
+
+func TestPrefixWalkCoversEveryKind(t *testing.T) {
+	const p = "https://proxy.example/dsh"
+	ok := func(kind, method string, status int) browserResponse {
+		return browserResponse{URL: p + "/x", Status: status, Kind: kind, Method: method}
+	}
+	full := []browserResponse{ok("document", "GET", 200), ok("asset", "GET", 200), ok("form", "POST", 303),
+		{URL: p + "/events", Status: 200, ContentType: "text/event-stream", Method: "GET"}}
+	if err := prefixCoverageError(full, p); err != nil {
+		t.Fatalf("complete walk: %v", err)
+	}
+	for name, c := range map[string]struct {
+		rs   []browserResponse
+		want string
+	}{
+		"stream only":   {full[3:], "no document"},
+		"no form":       {[]browserResponse{full[0], full[1], full[3]}, "no form"},
+		"no asset":      {[]browserResponse{full[0], full[2], full[3]}, "no asset"},
+		"form as GET":   {append(append([]browserResponse{}, full...), ok("form", "GET", 200)), "want a POST"},
+		"failed asset":  {append(append([]browserResponse{}, full...), ok("asset", "GET", 404)), "answered 404"},
+		"left prefix":   {append(append([]browserResponse{}, full...), browserResponse{URL: "https://proxy.example/x", Status: 200, Kind: "asset"}), "left the prefix"},
+		"asset via 302": {[]browserResponse{full[0], ok("asset", "GET", 302), full[2], full[3]}, "no asset"},
+	} {
+		if err := prefixCoverageError(c.rs, p); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: prefixCoverageError = %v, want an error containing %q", name, err, c.want)
+		}
 	}
 }

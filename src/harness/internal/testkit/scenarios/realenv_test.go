@@ -3,6 +3,7 @@
 package scenarios
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"runtime"
@@ -53,9 +54,15 @@ func expand(template string, vars map[string]string) string {
 // Windows) and returns its combined output.
 func shell(t *testing.T, line string) (string, error) {
 	t.Helper()
-	cmd := exec.CommandContext(t.Context(), "sh", "-c", line)
+	return shellContext(t.Context(), line)
+}
+
+// shellContext is shell bound to ctx instead of the test's context, for
+// commands that run in a cleanup callback (T.Context is canceled by then).
+func shellContext(ctx context.Context, line string) (string, error) {
+	cmd := exec.CommandContext(ctx, "sh", "-c", line)
 	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(t.Context(), "cmd", "/C", line)
+		cmd = exec.CommandContext(ctx, "cmd", "/C", line)
 	}
 	out, err := cmd.CombinedOutput()
 	return string(out), err

@@ -5,6 +5,7 @@ package scenarios
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -62,7 +64,10 @@ var takeoverModes = []struct{ name, mode, network string }{
 // takeoverStep is one line of the script's log. Outcome is succeeded, refused,
 // failed, pending or unavailable; Reply is what the interface answered; Effect,
 // for a step that succeeded, names the effect class it had (secret-read,
-// delegated-execution, ...).
+// delegated-execution, ...). A refused step carries the refusal in Reply or
+// Detail (a target the sandbox hides, such as the host's pid outside the pid
+// namespace, is logged refused with what was not found); a failed step carries
+// the OS error in Detail, which for a denial is the platform's denial text.
 type takeoverStep struct {
 	Step    string `json:"step"`
 	Outcome string `json:"outcome"`
@@ -142,11 +147,7 @@ func runTakeover(t *testing.T, bin, protection, mode, network string, p takeover
 	model := startScriptedModel(t)
 	layer := writeLayer(t, expand(layerT, map[string]string{"endpoint": model.URL, "mode": mode, "network": network, "workspace": work}))
 	h := startWebHost(t, bin, home, nil, layer)
-	t.Cleanup(func() {
-		if out, err := shell(t, expand(cleanup, map[string]string{"home": home})); err != nil {
-			t.Errorf("takeover cleanup: %v\n%s", err, out)
-		}
-	})
+	cleanupShell(t, "takeover cleanup", expand(cleanup, map[string]string{"home": home}), takeoverCleanupWithin)
 	cookie := strings.TrimSpace(mustShell(t, expand(signIn, map[string]string{"link": h.link})))
 	rec := oneRecord(t, home)
 	mustControl(t, rec.Socket, "launch.open", map[string]any{"print": true})
@@ -174,7 +175,7 @@ func runTakeover(t *testing.T, bin, protection, mode, network string, p takeover
 	} else {
 		r.pending = strings.TrimSpace(out)
 	}
-	t.Logf("%s: shell %s; peer rule %q; %d steps; %s pending", mode, r.shell.record(), r.peerRule, len(r.steps), r.pending)
+	t.Logf("%s: shell %s; peer rule %q; %d steps; %q pending", mode, r.shell.record(), r.peerRule, len(r.steps), r.pending)
 	for _, s := range r.steps {
 		t.Logf("  %s: %s %s %s", s.Step, s.Outcome, s.Effect, s.Detail)
 	}
@@ -398,9 +399,68 @@ func (r takeoverRun) common(t *testing.T) {
 		t.Logf("%s: the tool call reports the host unavailable: %s", r.mode, tc.Detail)
 	} else if tc.Outcome != "pending" {
 		t.Errorf("%s: the tool call ended %s (%s), want it to reach the host and wait", r.mode, tc.Outcome, tc.Detail)
-	} else if r.pending == "0" || r.pending == "" {
+	} else if n, err := pendingCount(r.pending); err != nil {
+		t.Errorf("%s: %v", r.mode, err)
+	} else if n == 0 {
 		t.Errorf("%s: no approval is pending for the person after the tool call", r.mode)
 	}
+}
+
+// pendingCount parses what DSH_SCENARIO_TAKEOVER_PENDING printed: a decimal
+// count of zero or more, digits only; anything else is an error, never a count.
+func pendingCount(out string) (int, error) {
+	s := strings.TrimSpace(out)
+	if !pendingDigits.MatchString(s) {
+		return 0, fmt.Errorf("the pending approvals read %q, want a count", out)
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, fmt.Errorf("the pending approvals read %q: %w", out, err)
+	}
+	return n, nil
+}
+
+var pendingDigits = regexp.MustCompile(`^(0|[1-9][0-9]*)$`)
+
+// denialMark is how a failed step's Detail shows that the OS denied the attempt
+// (rather than that the script broke): the error text of the platform's denial.
+var denialMark = regexp.MustCompile(`(?i)permission denied|operation not permitted|access is denied|access denied|not permitted|read-only file system|\beacces\b|\beperm\b|\berofs\b|refused|denied`)
+
+// denialError checks that s is evidence of a denial: refused with the
+// interface's answer or a detail, or failed with the OS's denial in Detail. A
+// step that succeeded, is still pending, reports unavailable, or failed for
+// another reason is not a refusal.
+func denialError(s takeoverStep) error {
+	switch s.Outcome {
+	case "refused":
+		if strings.TrimSpace(s.Reply) == "" && strings.TrimSpace(s.Detail) == "" {
+			return fmt.Errorf("%s is logged refused with no reply or detail to show it", s.Step)
+		}
+		return nil
+	case "failed":
+		if !denialMark.MatchString(s.Detail) {
+			return fmt.Errorf("%s failed with %q, which shows no denial", s.Step, s.Detail)
+		}
+		return nil
+	}
+	return fmt.Errorf("%s ended %s (%s), want it refused or denied", s.Step, s.Outcome, s.Detail)
+}
+
+// takeoverCleanupWithin bounds the cleanup command.
+const takeoverCleanupWithin = 2 * time.Minute
+
+// cleanupShell registers line to run at cleanup on a context of its own,
+// bounded by within: T.Context is canceled before cleanup callbacks run, so a
+// command bound to it would never start.
+func cleanupShell(t *testing.T, what, line string, within time.Duration) {
+	t.Helper()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), within)
+		defer cancel()
+		if out, err := shellContext(ctx, line); err != nil {
+			t.Errorf("%s: %v\n%s", what, err, out)
+		}
+	})
 }
 
 // listed fails the scenario unless effect is in the result's exposed list or the
@@ -412,12 +472,13 @@ func (r takeoverRun) listed(t *testing.T, effect string) {
 	}
 }
 
-// refused fails the scenario for each named step that succeeded.
+// refused fails the scenario for each named step that is not evidence of a
+// denial (denialError): succeeded, pending, unavailable or failed otherwise.
 func (r takeoverRun) refused(t *testing.T, names ...string) {
 	t.Helper()
 	for _, n := range names {
-		if s := r.step(t, n); s.Outcome == "succeeded" {
-			t.Errorf("%s: %s succeeded from the model's command: %s", r.mode, n, s.Detail)
+		if err := denialError(r.step(t, n)); err != nil {
+			t.Errorf("%s: %v", r.mode, err)
 		}
 	}
 }
