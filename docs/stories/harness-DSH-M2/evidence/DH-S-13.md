@@ -250,7 +250,20 @@ Gate lanes:
     longer sleep the window out, and the assertions are unchanged. `back` in `local_test.go` now yields
     with `runtime.Gosched` between rename retries, under the same 30 s bound. After the repair, the
     harness-gate vettool reports nothing on both packages (`-tags=e2e` and default), and both e2e features
-    pass (3 + 6 scenarios). Both lanes have not yet run on the commit that holds the repair.
+    pass (3 + 6 scenarios).
+- 189b04e, WSL (`bash tools/harness-gate/lanes/wsl.sh` from an ext4 clone; preflight passed: ext4, uid
+  1000, go1.27.4, CC=gcc, clean tree): gofmt passed (1032 files) and vet passed on all three modules
+  under `-tags=`, `-tags=replay,scenario,bench` and `-tags=e2e`, with and without the vettool (exceptions:
+  48). The run **failed at gate 3/13 (staticcheck)**, gate exit 1, ended 2026-11-26T01:59:57Z; rehearse exit 0.
+  The finding is in code this stage's diff does not touch: it was added by #136, is on `origin/main`, and
+  is built only on Linux:
+  - `internal/world/sandbox/launch/confine_linux.go:62:14: github.com/landlock-lsm/go-landlock/landlock.NewConfig is deprecated: Use a struct literal instead: Config{HandledAccessFS: llsyscall.AccessFSExecute}  (SA1019)`
+    (under both `-tags=` and `-tags=replay,scenario,bench`)
+  - Record `E:\work\lanes\wsl-189b04e-20261126T0159Z.txt` (sha256
+    `d00fbde29e34f14d35eb4d30e03349324b113e6d5ac68919257425fc5826549d`), `-rehearse.txt`, and the log
+    `wsl-189b04e.log`. The clone has been removed. Gates 4 to 13 did not run on WSL.
+- 189b04e, Windows: running (started 2026-11-26T01:58Z, log `E:\work\lanes\win-189b04e.log`); results are
+  recorded when it ends.
 
 ### Manual checks
 
