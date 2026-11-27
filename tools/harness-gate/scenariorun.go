@@ -29,9 +29,15 @@ import (
 //     stages and, through signInProbe, the sign-in of every planned scenario's
 //     client. It prints each sign-in line (no token material). A failure names
 //     the scenario and the client, and no scenario starts.
-//   - scenarios: per module, go test -tags scenario -count=1 -v -run <plan> ./...
-//     with its full output in the record; a skip anywhere, or a planned test that
-//     did not pass, fails the run (DH-ADR-TOOLCHAIN-6: a skip is never a pass).
+//   - scenarios: per phase (DH-S-17: TOOLCHAIN-1, the rest, SANDBOX-7) and module,
+//     go test -tags scenario -count=1 -p 1 -timeout <left> -v -run <phase> ./...
+//     with DSH_REQUIRE_SCENARIOS set to the phase's IDs, DSH_SCENARIO_ROUTES to
+//     claude-code and its full output in the record; a skip anywhere, a non-zero
+//     exit or a planned test that did not pass fails the run (DH-ADR-TOOLCHAIN-6:
+//     a skip is never a pass). The routed scenarios then run their copilot-cli
+//     legs in a recorded run whose pass or failure is kept and decides nothing; a
+//     recorded leg that did not run fails (M2-DEC-4).
+//     All runs share scenarioBudget, inside the job's 2 h.
 
 // signInProbe is the sign-in probe of the preflight and scenarios subcommands:
 // each client's own status command, run with the credential variables removed
@@ -159,18 +165,93 @@ func (c *Config) ScenarioGates(stage string, probe acceptance.SignInProbe) []Gat
 			return nil
 		}},
 		{Name: "scenarios", Title: "go test -tags scenario of the planned scenarios; a skip or a planned test that did not pass fails", Run: func(ctx context.Context, w io.Writer) error {
-			return c.runPlan(ctx, w, plan)
+			return c.runPlan(ctx, w, stage, plan)
 		}},
 	}
 }
 
-// runPlan runs the planned scenario tests, grouped by module, with the full
-// output written to w.
-func (c *Config) runPlan(ctx context.Context, w io.Writer, plan acceptance.Plan) error {
+// stageOrder is the run order of an acceptance stage whose scenarios must not run in
+// the order go test finds them: the IDs of First run, each to its end, before every
+// other planned scenario, and those of Last after all of them. DH-S-17 runs the
+// record-then-replay scenario first and the policy-text escalation last
+// (architecture.md rule 7, R-03; impl.md DH-S-17).
+var stageOrder = map[string]struct{ First, Last []string }{
+	"DH-S-17": {First: []string{"DH-E-TOOLCHAIN-1"}, Last: []string{"DH-E-SANDBOX-7"}},
+}
+
+// phases splits plan into the go test runs of stage, in order: the First IDs of
+// stageOrder, the rest in plan order, then the Last IDs. A stage with no order is one
+// phase; empty phases are dropped, and every planned scenario is in exactly one.
+func phases(stage string, plan acceptance.Plan) []acceptance.Plan {
+	order, ok := stageOrder[stage]
+	if !ok {
+		return []acceptance.Plan{plan}
+	}
+	var first, middle, last acceptance.Plan
+	for _, s := range plan.Scenarios {
+		switch {
+		case slices.Contains(order.First, s.ID):
+			first.Scenarios = append(first.Scenarios, s)
+		case slices.Contains(order.Last, s.ID):
+			last.Scenarios = append(last.Scenarios, s)
+		default:
+			middle.Scenarios = append(middle.Scenarios, s)
+		}
+	}
+	var out []acceptance.Plan
+	for _, p := range []acceptance.Plan{first, middle, last} {
+		if len(p.Scenarios) > 0 {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// runPlan runs the planned scenario tests of stage phase by phase (phases), each
+// phase grouped by module, with the full output written to w, inside
+// scenarioBudget. Every phase runs, whatever an earlier one found, so each
+// scenario's result is kept; a run the budget no longer covers is not started and
+// its scenarios are "not run", never passed.
+func (c *Config) runPlan(ctx context.Context, w io.Writer, stage string, plan acceptance.Plan) error {
 	if len(plan.Scenarios) == 0 {
 		fmt.Fprintln(w, "scenarios: the stage requires no scenario")
 		return nil
 	}
+	deadline := time.Now().Add(scenarioBudget)
+	fmt.Fprintf(w, "scenarios: budget %s for every go test run of the plan (tech-spec: 2 h per job)\n", scenarioBudget)
+	var errs []error
+	for _, phase := range phases(stage, plan) {
+		if err := c.runPhase(ctx, w, phase, deadline); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// scenarioBudget bounds all go test runs of one plan together: the s17 job has
+// two hours (tech-spec sec. 5, "2 h per job"; timeout-minutes 120), and its steps
+// before the scenarios (entry, the route preflights, preflight) take the rest. Each
+// go test run gets the budget left as its -timeout. A plan that does not fit is
+// sharded (implementation-plan Stage 7.6), never given a longer job. -p 1 keeps
+// packages from running scenarios side by side on one signed-in account.
+// TestScenarioGatesS17BudgetSpent lowers it to prove a spent budget starts no
+// further go test run, names the later phases and the recorded leg "not run", and
+// fails the gate.
+var scenarioBudget = 100 * time.Minute
+
+// The route selection of forEachRoute (signedin_routes_test.go): the
+// required run of a phase runs the claude-code legs, which decide the stage; the
+// recorded run runs the copilot-cli legs of the routed scenarios, whose results are
+// kept and decide nothing (M2-DEC-4, M1-D-LOOP-6 A).
+const (
+	routesEnv   = "DSH_SCENARIO_ROUTES"
+	requiredLeg = "claude-code"
+	recordedLeg = "copilot-cli"
+)
+
+// runPhase runs one phase of a plan, grouped by module: per module the required
+// run, then the recorded run of the scenarios the required run showed to be routed.
+func (c *Config) runPhase(ctx context.Context, w io.Writer, plan acceptance.Plan, deadline time.Time) error {
 	var mods []string
 	byMod := map[string]acceptance.Plan{}
 	for _, s := range plan.Scenarios {
@@ -188,31 +269,137 @@ func (c *Config) runPlan(ctx context.Context, w io.Writer, plan acceptance.Plan)
 	var errs []error
 	for _, mod := range mods {
 		p := byMod[mod]
-		args := []string{"test", "-tags", acceptance.BuildTag, "-count=1", "-v", "-run", p.RunPattern(), "./..."}
-		fmt.Fprintf(w, "scenarios: %s: go %s\n", c.rel(mod), strings.Join(args, " "))
-		var out bytes.Buffer
-		cmd := exec.CommandContext(ctx, c.Go, args...)
-		cmd.Dir = mod
-		cmd.Env = c.env()
-		cmd.Stdout = io.MultiWriter(w, &out)
-		cmd.Stderr = cmd.Stdout
-		runErr := cmd.Run()
-		if err := scenarioVerdict(out.String(), p.Tests(), runErr); err != nil {
+		ids := strings.Join(planIDs(p), ",")
+		// The required run: the scenarios' own verdict, with no exception for
+		// any leg; DSH_REQUIRE_SCENARIOS makes the test kit check their rows.
+		out, runErr, err := c.goTestRun(ctx, w, mod, p, deadline, acceptance.RequireEnv+"="+ids, routesEnv+"="+requiredLeg)
+		if err == nil {
+			err = scenarioVerdict(out, p.Tests(), runErr)
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", c.rel(mod), err))
+		}
+		routed := routedTests(out, p.Tests())
+		if len(routed) == 0 {
+			continue
+		}
+		// The recorded run: only the routed scenarios, only their copilot-cli
+		// legs, their rows in a report of their own. A leg that ran, passed or
+		// failed, is kept and decides nothing; a leg that did not run (a run that
+		// never started, a build failure, a skip, no result line) fails the gate,
+		// since the recorded leg must run (M2-DEC-4).
+		var rp acceptance.Plan
+		for _, s := range p.Scenarios {
+			if slices.Contains(routed, s.Test) {
+				rp.Scenarios = append(rp.Scenarios, s)
+			}
+		}
+		env := []string{acceptance.RequireEnv + "=", routesEnv + "=" + recordedLeg}
+		if r := lookupEnv(c.env(), "DSH_SCENARIO_REPORT"); r != "" {
+			env = append(env, "DSH_SCENARIO_REPORT="+r+"."+recordedLeg)
+		}
+		rout, rrun, rerr := c.goTestRun(ctx, w, mod, rp, deadline, env...)
+		if rerr != nil {
+			rrun = rerr
+		}
+		legs, err := recordedLegs(rout, rrun, routed)
+		for _, r := range legs {
+			fmt.Fprintf(w, "scenarios: recorded leg: %s (kept; does not decide the stage, M2-DEC-4)\n", r)
+		}
+		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", c.rel(mod), err))
 		}
 	}
 	return errors.Join(errs...)
 }
 
-// scenarioVerdict fails a scenario run whose output has a skip anywhere, or in
-// which a planned test has no PASS line, and names each.
+// goTestRun runs the tests of p in mod with kv set, its output to w and returned.
+// runErr is go test's own exit; err is a run that did not start because the plan's
+// budget is spent.
+func (c *Config) goTestRun(ctx context.Context, w io.Writer, mod string, p acceptance.Plan, deadline time.Time, kv ...string) (out string, runErr, err error) {
+	left := time.Until(deadline).Truncate(time.Second)
+	if left < time.Second {
+		return "", nil, fmt.Errorf("%s not run: the %s scenario budget is spent", strings.Join(planIDs(p), ", "), scenarioBudget)
+	}
+	args := []string{"test", "-tags", acceptance.BuildTag, "-count=1", "-p", "1", "-timeout", left.String(), "-v", "-run", p.RunPattern(), "./..."}
+	fmt.Fprintf(w, "scenarios: %s: %s go %s\n", c.rel(mod), strings.Join(kv, " "), strings.Join(args, " "))
+	var buf bytes.Buffer
+	cmd := exec.CommandContext(ctx, c.Go, args...)
+	cmd.Dir = mod
+	cmd.Env = c.env(kv...)
+	cmd.Stdout = io.MultiWriter(w, &buf)
+	cmd.Stderr = cmd.Stdout
+	runErr = cmd.Run()
+	return buf.String(), runErr, nil
+}
+
+// lookupEnv is the value of name in env, "" when unset.
+func lookupEnv(env []string, name string) string {
+	v := ""
+	for _, kv := range env {
+		if k, val, ok := strings.Cut(kv, "="); ok && k == name {
+			v = val
+		}
+	}
+	return v
+}
+
+// routedTests are the tests of tests whose run in out has a claude-code subtest
+// result: the scenarios forEachRoute runs per client route.
+func routedTests(out string, tests []string) []string {
+	var routed []string
+	for _, t := range tests {
+		for _, v := range []string{"PASS", "FAIL", "SKIP"} {
+			if strings.Contains(out, "--- "+v+": "+t+"/"+requiredLeg+" ") {
+				routed = append(routed, t)
+				break
+			}
+		}
+	}
+	return routed
+}
+
+// recordedLegs is, per routed test, the result of its copilot-cli leg in the
+// recorded run's output: "<Test>/copilot-cli passed" or "failed", which decide
+// nothing, or "skipped" or "not run (...)", which err names: a recorded leg must
+// run and leave its result (M2-DEC-4), so one that did not is never a pass.
+func recordedLegs(out string, runErr error, routed []string) ([]string, error) {
+	var res []string
+	var errs []error
+	for _, t := range routed {
+		result := "not run (no copilot-cli result line)"
+		if runErr != nil && out == "" {
+			result = "not run (" + runErr.Error() + ")"
+		}
+		for _, v := range []string{"PASS", "FAIL", "SKIP"} {
+			if strings.Contains(out, "--- "+v+": "+t+"/"+recordedLeg+" ") {
+				result = map[string]string{"PASS": "passed", "FAIL": "failed", "SKIP": "skipped"}[v]
+				break
+			}
+		}
+		res = append(res, t+"/"+recordedLeg+" "+result)
+		if result != "passed" && result != "failed" {
+			errs = append(errs, fmt.Errorf("recorded leg %s/%s %s; it must run and its result be kept (M2-DEC-4)", t, recordedLeg, result))
+		}
+	}
+	return res, errors.Join(errs...)
+}
+
+// scenarioVerdict fails a scenario run whose output has a skip anywhere, a build or
+// setup failure, a non-zero go test exit, or a planned test without a PASS line,
+// and names each. It makes no exception for any subtest: a recorded leg never runs
+// in a required run.
 func scenarioVerdict(out string, tests []string, runErr error) error {
 	var errs []error
 	if runErr != nil {
 		errs = append(errs, fmt.Errorf("go test: %w", runErr))
 	}
 	for _, line := range strings.Split(out, "\n") {
-		if t, ok := strings.CutPrefix(strings.TrimSpace(line), "--- SKIP: "); ok {
+		line = strings.TrimSpace(line)
+		if strings.HasSuffix(line, "[build failed]") || strings.HasSuffix(line, "[setup failed]") {
+			errs = append(errs, fmt.Errorf("go test: %s", line))
+		}
+		if t, ok := strings.CutPrefix(line, "--- SKIP: "); ok {
 			name, _, _ := strings.Cut(t, " ")
 			errs = append(errs, fmt.Errorf("%s skipped; a skipped scenario is never a pass (DH-ADR-TOOLCHAIN-6)", name))
 		}

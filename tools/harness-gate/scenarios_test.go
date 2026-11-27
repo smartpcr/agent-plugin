@@ -3,10 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"go/parser"
 	"go/token"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -365,5 +367,128 @@ func TestHarnessJobRunsTheGateOnTwoSystems(t *testing.T) {
 		if !strings.Contains(scen, want) {
 			t.Errorf("harness-scenarios.yml lacks %q", want)
 		}
+	}
+}
+
+// modelKeyMarker matches a name that holds a model key or a token standing for
+// one: the variables the signed-in routes remove (probeScrubbed) and the API-key
+// names of every provider the harness has known.
+var modelKeyMarker = regexp.MustCompile(`(?i)[a-z0-9_]*(api_key|auth_token|oauth_token|gh_token|github_token|anthropic|openai|deepseek)[a-z0-9_]*`)
+
+// modelKeyRefs is the workflow lint of harness:DSH-M2 Stage 7.1 (M2-NG-2,
+// M2-C-11): every secret reference, and every input, env name or expression that
+// names a model key, in a workflow file's non-comment text, one per line found.
+func modelKeyRefs(workflow string) []string {
+	var refs []string
+	for i, l := range strings.Split(strings.ReplaceAll(workflow, "\r\n", "\n"), "\n") {
+		if j := strings.Index(l, "#"); j >= 0 && (j == 0 || l[j-1] == ' ') {
+			l = l[:j]
+		}
+		if strings.Contains(l, "secrets.") || strings.Contains(l, "secrets[") {
+			refs = append(refs, fmt.Sprintf("line %d: secret reference: %s", i+1, strings.TrimSpace(l)))
+			continue
+		}
+		if m := modelKeyMarker.FindString(l); m != "" {
+			refs = append(refs, fmt.Sprintf("line %d: names a model key (%s): %s", i+1, m, strings.TrimSpace(l)))
+		}
+	}
+	return refs
+}
+
+func TestModelKeyRefsFindsSeededKeys(t *testing.T) {
+	seeded := "on:\n  workflow_dispatch:\n    inputs:\n      deepseek_api_key:\n        required: false\n" +
+		"jobs:\n  x:\n    env:\n      OPENAI_API_KEY: x\n    steps:\n      - run: echo ${{ secrets.LAB }}\n" +
+		"      - run: echo ok # ANTHROPIC_API_KEY in a comment is not a reference\n"
+	got := modelKeyRefs(seeded)
+	want := []string{
+		"line 4: names a model key (deepseek_api_key): deepseek_api_key:",
+		"line 9: names a model key (OPENAI_API_KEY): OPENAI_API_KEY: x",
+		"line 11: secret reference: - run: echo ${{ secrets.LAB }}",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("modelKeyRefs = %q, want %q", got, want)
+	}
+}
+
+// TestS17JobIsKeylessAndSelfHosted is scenario "Workflow carries no key"
+// (implementation-plan Stage 7.1; M2-NG-2, M2-C-11, M2-EN-8): the committed
+// harness-scenarios.yml names no model key and reads no secret; its s17 job runs on
+// workflow_dispatch of DH-S-17 only, on a self-hosted label, with "harness-gate
+// entry" and the signed-in route preflight as its first commands, and equals the
+// committed testdata/s17_job.golden.
+func TestS17JobIsKeylessAndSelfHosted(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "harness-scenarios.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scen := strings.ReplaceAll(string(data), "\r\n", "\n")
+	for _, ref := range modelKeyRefs(scen) {
+		t.Errorf("harness-scenarios.yml: %s", ref)
+	}
+	job := strings.TrimRight(workflowJob(t, scen, "s17"), "\n") + "\n"
+	var runsOn, cond string
+	for _, l := range strings.Split(job, "\n") {
+		if v, ok := strings.CutPrefix(l, "    runs-on: "); ok {
+			runsOn = v
+		} else if v, ok := strings.CutPrefix(l, "    if: "); ok {
+			cond = v
+		}
+	}
+	// After checkout and setup-go, the first two steps are the entry check and the
+	// required route preflight.
+	steps := strings.Split(job, "\n      - ")[1:]
+	if !strings.HasPrefix(runsOn, "[self-hosted, linux, ") {
+		t.Errorf("s17 runs-on = %q, want a self-hosted Linux label list (M2-EN-8)", runsOn)
+	}
+	if cond != "github.event_name == 'workflow_dispatch' && inputs.stage == 'DH-S-17'" {
+		t.Errorf("s17 if = %q, want workflow_dispatch of DH-S-17 only", cond)
+	}
+	if len(steps) < 4 || !strings.HasPrefix(steps[0], "uses: actions/checkout@") || !strings.HasPrefix(steps[1], "uses: actions/setup-go@") ||
+		!strings.Contains(steps[2], "run . entry --root ../..") || !strings.Contains(steps[3], "-run '^TestSignedInRoutePreflight$/^claude-code$'") {
+		t.Errorf("s17 does not start with harness-gate entry and the claude-code route preflight: %q", steps)
+	}
+	// The scenarios run through "harness-gate scenarios", which orders the phases
+	// and keeps the copilot-cli legs recorded (M2-DEC-4); a direct go test of the
+	// plan would do neither.
+	if len(steps) < 2 || !strings.Contains(steps[len(steps)-2], "run . scenarios --root ../.. --stage DH-S-17 --evidence ") ||
+		strings.Contains(job, `-run "$RUN"`) {
+		t.Errorf("s17 does not run its scenarios through harness-gate scenarios --stage DH-S-17: %q", steps)
+	}
+	checkGolden(t, filepath.Join("testdata", "s17_job.golden"), job)
+}
+
+// TestRequireDHS17Golden is scenario "Required list derivation" (implementation-plan
+// Stage 7.1; M2-DEC-3): "harness-gate require --stage DH-S-17" on the committed index
+// prints exactly the 14 S17 IDs of tech-spec sec. 4.2 rows 5-18, equal to the
+// committed testdata/s17_require.golden.
+func TestRequireDHS17Golden(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := run(context.Background(), []string{"require", "--root", filepath.Join("..", ".."), "--stage", "DH-S-17"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("require --stage DH-S-17 exited %d: %s", code, stderr.String())
+	}
+	if ids := strings.Split(strings.TrimSpace(stdout.String()), ","); len(ids) != 14 {
+		t.Errorf("require --stage DH-S-17 printed %d IDs, want 14: %q", len(ids), ids)
+	}
+	checkGolden(t, filepath.Join("testdata", "s17_require.golden"), stdout.String())
+}
+
+// checkGolden fails t unless got equals the committed golden file (CRLF read as
+// LF); with -update outside CI it first rewrites the file.
+func checkGolden(t *testing.T, golden, got string) {
+	t.Helper()
+	if *updateGolden {
+		if os.Getenv("CI") != "" {
+			t.Fatal("-update is refused under CI: regenerate the golden locally and review the diff")
+		}
+		if err := os.WriteFile(golden, []byte(got), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := os.ReadFile(golden)
+	if err != nil {
+		t.Fatalf("read golden (run with -update locally to create it): %v", err)
+	}
+	if norm := strings.ReplaceAll(string(want), "\r\n", "\n"); norm != got {
+		t.Errorf("output differs from %s\n--- got\n%s--- want\n%s", golden, got, norm)
 	}
 }
