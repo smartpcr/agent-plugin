@@ -168,6 +168,45 @@
       "name": "Standard",
       "description": "The coding agent."
     }
+  },
+  {
+    "id": "host.listen",
+    "name": "host.listen"
+  },
+  {
+    "id": "storage.db",
+    "name": "storage.db"
+  },
+  {
+    "id": "host.auth",
+    "name": "host.auth"
+  },
+  {
+    "id": "host.assets",
+    "name": "host.assets"
+  },
+  {
+    "id": "host.web",
+    "name": "host.web"
+  },
+  {
+    "id": "host.launch",
+    "name": "host.launch",
+    "config": {
+      "profile": "web"
+    }
+  },
+  {
+    "id": "host.access",
+    "name": "host.access"
+  },
+  {
+    "id": "host.stream",
+    "name": "host.stream"
+  },
+  {
+    "id": "ui.shell",
+    "name": "ui.shell"
   }
 ]
 # headless

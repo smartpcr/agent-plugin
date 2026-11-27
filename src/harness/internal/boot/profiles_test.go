@@ -2,7 +2,10 @@ package boot
 
 import (
 	"context"
+	"encoding/json"
 	"io"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +19,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/launch"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/profile"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/cli/output"
+	hostlaunch "github.com/smartpcr/agent-plugin/src/harness/internal/host/launch"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
@@ -47,9 +51,10 @@ func (c composedSteps) Compose(ctx context.Context, s *State) error {
 
 // DH-D-BUNDLE-3 (C42), TC-08g plus TC-11b: each of the five profiles boots through
 // boot.Process on a temp home with the built catalogue and a keyless fake route,
-// reaches ready and stops cleanly with status 0. While each runs, its tree mounts
-// no listener and the home holds no runtime record (M2-C-13): headless and sdk
-// bind no port. The sdk carrier serves its client over pipes -- initialize, a
+// reaches ready and stops cleanly with status 0. Only web binds a port: while it
+// runs its runtime record names an origin that accepts a connection, and the
+// record is gone after the stop. While each other profile runs, its tree mounts
+// no listener and the home holds no runtime record (M2-C-13). The sdk carrier serves its client over pipes -- initialize, a
 // session on the fake route, a prompt answered by it -- and the client closing its
 // input stops the process (InputClosed, 0).
 func TestFiveProfilesBootThroughProcessAndStopCleanly(t *testing.T) {
@@ -62,10 +67,6 @@ func TestFiveProfilesBootThroughProcessAndStopCleanly(t *testing.T) {
 	}
 	for _, def := range profile.Definitions() {
 		t.Run(def.Name, func(t *testing.T) {
-			if def.Name == profile.Web {
-				webNotYetLaunchable(t, def)
-				return
-			}
 			bootProfile(t, def)
 		})
 	}
@@ -73,15 +74,23 @@ func TestFiveProfilesBootThroughProcessAndStopCleanly(t *testing.T) {
 
 // launchOptions are the Options of a launch of def on a fresh temp home. A profile
 // with the model runtime (every one but admin) mounts the fake route by an
-// overlay, scripted with turns.
+// overlay, scripted with turns; web's overlay binds a free port and opens no
+// browser.
 func launchOptions(t *testing.T, def profile.Definition, tree *[]loader.EntryOptions, turns ...fakemodel.Turn) (Options, string) {
 	t.Helper()
-	homeDir := temphome.Dir(t)
+	homeDir := shortHome(t)
+	return launchOptionsAt(t, def, homeDir, tree, turns...), homeDir
+}
+
+// launchOptionsAt are the Options of a launch of def on the home homeDir, which
+// need not exist yet; its parent holds the overlay.
+func launchOptionsAt(t *testing.T, def profile.Definition, homeDir string, tree *[]loader.EntryOptions, turns ...fakemodel.Turn) Options {
+	t.Helper()
 	root := filepath.Dir(homeDir)
 	var overlays []string
 	if def.Name != profile.Admin {
 		overlay := filepath.Join(root, "route.yml")
-		temphome.Write(t, overlay, "- insert:\n    - id: route\n      name: x.route\n")
+		temphome.Write(t, overlay, routeOverlay(def.Name))
 		overlays = []string{overlay}
 	}
 	route := catalog.Item{Name: "x.route", Component: cordis.Define("x.route", func(ctx *cordis.Context, _ cordis.None) error {
@@ -108,16 +117,49 @@ func launchOptions(t *testing.T, def profile.Definition, tree *[]loader.EntryOpt
 		Profile: def,
 		Catalog: cat,
 		Steps:   composedSteps{tree: tree},
-	}, homeDir
+	}
+}
+
+// turnsOf are the fake route's turns for the profile name: the sdk client's one
+// prompt (driveSDK); no other profile calls the model.
+func turnsOf(name string) []fakemodel.Turn {
+	if name == profile.SDK {
+		return []fakemodel.Turn{fakemodel.Reply("pong")}
+	}
+	return nil
+}
+
+// shortHome is the root of a fresh home under a short temp directory: web's
+// control socket lives in <home>/run, and a Unix socket path is bounded (about
+// 100 bytes) on every OS, which a test's TempDir under its long name exceeds.
+func shortHome(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "dshp-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Errorf("removing %s: %v", dir, err)
+		}
+	})
+	return filepath.Join(dir, "home")
+}
+
+// routeOverlay is the overlay layer of a launch of the profile name: the fake
+// route, and for web a free port and no browser.
+func routeOverlay(name string) string {
+	layer := "- insert:\n    - id: route\n      name: x.route\n"
+	if name == profile.Web {
+		layer += "- id: host.listen\n  name: host.listen\n  merge:\n    port: 0\n" +
+			"- id: host.launch\n  name: host.launch\n  merge:\n    open: false\n    print: false\n"
+	}
+	return layer
 }
 
 func bootProfile(t *testing.T, def profile.Definition) {
 	var tree []loader.EntryOptions
-	var turns []fakemodel.Turn
-	if def.Name == profile.SDK {
-		turns = append(turns, fakemodel.Reply("pong"))
-	}
-	opts, homeDir := launchOptions(t, def, &tree, turns...)
+	opts, homeDir := launchOptions(t, def, &tree, turnsOf(def.Name)...)
 	app := launch.NewApp()
 	var stderr testkit.Buffer
 	opts.App, opts.Stderr = app, &stderr
@@ -140,15 +182,19 @@ func bootProfile(t *testing.T, def profile.Definition) {
 		t.Fatalf("%s never reached ready:\n%s", def.Name, stderr.String())
 	}
 
-	// While running: the session store is open, no entry binds a listener and
-	// the home holds no runtime record.
+	// While running: the session store is open; web's listener answers at the
+	// origin of its runtime record, and no other profile binds one or writes one.
 	if _, err := os.Stat(home.New(homeDir).DB()); err != nil {
 		t.Errorf("%s is ready without the session store: %v", def.Name, err)
 	}
-	if mountsListener(tree) {
-		t.Errorf("%s mounts %s: only web binds a port", def.Name, listenerComponent)
+	if web := def.Name == profile.Web; mountsListener(tree) != web {
+		t.Errorf("%s mounts %s = %v; only web binds a port", def.Name, listenerComponent, !web)
 	}
-	noRuntimeRecord(t, homeDir)
+	if def.Name == profile.Web {
+		listening(t, homeDir)
+	} else {
+		noRuntimeRecord(t, homeDir)
+	}
 
 	if def.Name == profile.SDK {
 		driveSDK(t, clientIn, clientOut)
@@ -214,21 +260,32 @@ func driveSDK(t *testing.T, in io.Writer, out io.Reader) {
 	}
 }
 
-// webNotYetLaunchable pins web's state at this step: its carriers (host.listen to
-// ui.shell) are not in the build catalogue, so boot refuses it with status 78
-// naming them. The test fails once web launches, until web boots here instead,
-// bound port and runtime record asserted while it runs (DH-S-16 16.1, part 3).
-func webNotYetLaunchable(t *testing.T, def profile.Definition) {
-	var tree []loader.EntryOptions
-	opts, _ := launchOptions(t, def, &tree)
-	var stderr testkit.Buffer
-	opts.Stderr = &stderr
-	if status := Process(context.Background(), opts); status != output.Config {
-		t.Fatalf("web ended with %d, want %d while its carriers are unbuilt:\n%s", status, output.Config, stderr.String())
+// listening fails t unless <home>/run holds exactly one runtime record and its
+// origin accepts a TCP connection; it returns the record.
+func listening(t *testing.T, homeDir string) hostlaunch.Record {
+	t.Helper()
+	recs, _ := filepath.Glob(filepath.Join(home.New(homeDir).Run(), "web-*.json"))
+	if len(recs) != 1 {
+		t.Fatalf("web is ready with runtime records %v, want one", recs)
 	}
-	if !strings.Contains(stderr.String(), listenerComponent) {
-		t.Errorf("web's refusal does not name %s:\n%s", listenerComponent, stderr.String())
+	b, err := os.ReadFile(recs[0])
+	if err != nil {
+		t.Fatal(err)
 	}
+	var rec hostlaunch.Record
+	if err := json.Unmarshal(b, &rec); err != nil {
+		t.Fatalf("runtime record %s: %v", b, err)
+	}
+	u, err := url.Parse(rec.Origin)
+	if err != nil || u.Port() == "" || u.Port() == "0" {
+		t.Fatalf("runtime record origin %q names no bound port (%v)", rec.Origin, err)
+	}
+	c, err := net.DialTimeout("tcp", u.Host, 10*time.Second)
+	if err != nil {
+		t.Fatalf("web's origin %s accepts no connection: %v", rec.Origin, err)
+	}
+	c.Close()
+	return rec
 }
 
 // mountsListener reports whether tree holds an enabled host.listen entry.

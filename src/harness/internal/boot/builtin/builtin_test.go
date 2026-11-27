@@ -18,7 +18,7 @@ func TestSetsBuild(t *testing.T) {
 		"boot": Boot(), "host": Host(), "util": Util(),
 		"session": Session(), "agent": Agent(), "llm": LLM(), "tools": Tools(),
 		"fs": FS(), "sandbox": Sandbox(), "permission": Permission(),
-		"wire": Wire(), "cli": CLI(),
+		"wire": Wire(), "cli": CLI(), "storage": Storage(), "ui": UI(),
 	}
 	total := 0
 	for family, items := range families {

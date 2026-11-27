@@ -18,7 +18,8 @@ const Name = "wire.sdk"
 
 // Component is wire.sdk (C49): the SDK server over the streams wire.stdio owns,
 // one connection for the life of the fiber. initialize waits for the tree's ready;
-// routes are checked against llm.runtime's. When the client's transport ends the
+// routes are checked against llm.runtime's, which it injects: it loads only once
+// the runtime is provided, so no connection is served with unchecked routes. When the client's transport ends the
 // owner asks the App to stop with InputClosed; disposing the fiber ends the
 // connection and waits for it to close.
 var Component = cordis.Define(Name, func(ctx *cordis.Context, _ cordis.None) error {
@@ -34,10 +35,11 @@ var Component = cordis.Define(Name, func(ctx *cordis.Context, _ cordis.None) err
 	if err != nil {
 		return err
 	}
-	o := Options{Owner: ctx, Agents: reg, Sessions: sessions, Info: protocol.Implementation{Name: "dsh"}}
-	if rt, ok := llm.RuntimeKey.Lookup(ctx); ok {
-		o.Routes = rt
+	rt, err := llm.RuntimeKey.Get(ctx)
+	if err != nil {
+		return err
 	}
+	o := Options{Owner: ctx, Agents: reg, Sessions: sessions, Routes: rt, Info: protocol.Implementation{Name: "dsh"}}
 	if app, ok := launch.AppKey.Lookup(ctx); ok {
 		o.Ready = app.Ready()
 	}
@@ -60,4 +62,4 @@ var Component = cordis.Define(Name, func(ctx *cordis.Context, _ cordis.None) err
 		return func() error { cancel(); <-done; return nil }, nil
 	})
 	return err
-}, cordis.WithInject(agent.Agents.Name(), session.Key.Name(), stdio.Key.Name()))
+}, cordis.WithInject(agent.Agents.Name(), session.Key.Name(), stdio.Key.Name(), llm.RuntimeKey.Name()))

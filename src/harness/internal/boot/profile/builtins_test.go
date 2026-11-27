@@ -96,7 +96,15 @@ func TestBuiltinProfilesCompose(t *testing.T) {
 	golden.Assert(t, "composed", trees.String())
 
 	// What each component provides when it loads alone, under the services boot
-	// provides at the root, is what its catalogue item declares.
+	// provides at the root, is what its catalogue item declares. The listener binds
+	// a free port and the launch opens no browser, so the observation neither
+	// collides with a running host nor reaches the desktop.
+	for name, config := range map[string]string{"host.listen": `{"port":0}`, "host.launch": `{"open":false,"print":false}`} {
+		if e, ok := entries[name]; ok {
+			e.Config = json.RawMessage(config)
+			entries[name] = e
+		}
+	}
 	for name, e := range entries {
 		item, _ := cat.Lookup(name)
 		got := providedBy(t, cat, e, entries)
@@ -183,13 +191,12 @@ func allDefinitions() []Definition {
 }
 
 // unbuilt are the Required ids no shipped layer holds yet: their component is not
-// in the build catalogue, and the bundle that inserts it (core, web) is a later
-// stage's. That stage inserts the entry and takes the id off this list in the same
-// change: the golden test fails while a listed id resolves or is held, and while a
-// missing id is not listed. DH-T-BUNDLE-5 holds in full once the list is empty.
-var unbuilt = map[string]bool{
-	"host.listen": true, "host.auth": true, "host.assets": true, "host.web": true, "host.access": true, "host.stream": true, "ui.shell": true,
-}
+// in the build catalogue, and the bundle that inserts it is a later stage's. That
+// stage inserts the entry and takes the id off this list in the same change: the
+// golden test fails while a listed id resolves or is held, and while a missing id
+// is not listed. Empty since the web layer (DH-D-BUNDLE-3): DH-T-BUNDLE-5 holds in
+// full.
+var unbuilt = map[string]bool{}
 
 // pendingTargets are the ids a shipped bundle merges into or switches off whose
 // entry no lower bundle holds yet (base.yml and the spine are later stages'); the
@@ -820,6 +827,9 @@ func providedBy(t *testing.T, cat *catalog.Catalog, e loader.EntryOptions, entri
 	if err := svc.Apply(deps); err != nil {
 		t.Fatalf("the providers of %s do not load: %v", e.Name, err)
 	}
+	// Providers that inject one another settle in turn; wait, so what they
+	// provide is not seen as e's.
+	svc.WaitAll()
 	var got []string
 	ch := make(chan string, 64)
 	remove := root.Internal().OnService(func(name string, value any) {
@@ -833,6 +843,7 @@ func providedBy(t *testing.T, cat *catalog.Catalog, e loader.EntryOptions, entri
 	if err := svc.Apply(append(slices.Clone(deps), e)); err != nil {
 		t.Fatalf("%s does not load over its providers: %v", e.Name, err)
 	}
+	svc.WaitAll()
 	for {
 		select {
 		case name := <-ch:

@@ -12,14 +12,23 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/catalog"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/logging"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/cli/headless"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/host/access"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/host/assets"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/host/auth"
+	hostlaunch "github.com/smartpcr/agent-plugin/src/harness/internal/host/launch"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/host/listen"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/host/sharing"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/host/stream"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/host/web"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human/permission"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/scope"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store/sqlite"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/workdir"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/kv"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools/items"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/ui/shell"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/egress"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/watch"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/wire/sdkserver"
@@ -44,10 +53,34 @@ func Util() []catalog.Item {
 	}
 }
 
-// Host is the host family's items.
+// Host is the host family's items: the sharing gate, and the host plane the web
+// profile mounts (the listener, admission, assets, the route table, the runtime
+// record, access and the stream hub).
 func Host() []catalog.Item {
 	return []catalog.Item{
 		{Name: sharing.Name, Component: sharing.Component, Config: reflect.TypeFor[sharing.Config]()},
+		{Name: listen.Name, Component: listen.Component, Config: reflect.TypeFor[listen.Config](), Provides: []string{listen.Key.Name()}},
+		{Name: auth.Name, Component: auth.Component, Config: reflect.TypeFor[auth.Config](), Provides: []string{auth.Key.Name()}},
+		{Name: assets.Name, Component: assets.Component},
+		{Name: web.Name, Component: web.Component, Config: reflect.TypeFor[web.Config](), Provides: []string{web.Key.Name()}},
+		{Name: hostlaunch.Name, Component: hostlaunch.Component, Config: reflect.TypeFor[hostlaunch.Config](), Provides: []string{hostlaunch.Key.Name()}},
+		{Name: access.Name, Component: access.Component, Provides: []string{access.Key.Name()}},
+		{Name: stream.Name, Component: stream.Component, Provides: []string{stream.Key.Name()}},
+	}
+}
+
+// Storage is the storage family's items: the home database handle, shared with
+// session.store.
+func Storage() []catalog.Item {
+	return []catalog.Item{
+		{Name: kv.Name, Component: kv.Component, Provides: []string{kv.DBKey.Name()}},
+	}
+}
+
+// UI is the ui family's items: the page shell.
+func UI() []catalog.Item {
+	return []catalog.Item{
+		{Name: shell.Name, Component: shell.Component, Provides: []string{shell.Key.Name()}},
 	}
 }
 
@@ -139,7 +172,7 @@ func CLI() []catalog.Item {
 
 // Sets is every family's items.
 func Sets() [][]catalog.Item {
-	return [][]catalog.Item{Boot(), Host(), Util(), Session(), Agent(), LLM(), Tools(), FS(), Sandbox(), Permission(), Wire(), CLI()}
+	return [][]catalog.Item{Boot(), Host(), Util(), Session(), Agent(), LLM(), Tools(), FS(), Sandbox(), Permission(), Wire(), CLI(), Storage(), UI()}
 }
 
 // Catalog builds the catalogue of this binary.
