@@ -22,6 +22,17 @@
 # built dsh's `dsh sandbox status` on a scratch home, which must report backend
 # bwrap, state Full; anything else fails (exit 3), never skips. It prints the
 # report and exits 0 without running a gate. Exit 2 on an unknown argument.
+#
+#   ~/src/agent-plugin/tools/harness-gate/lanes/wsl.sh --guarded [--inputs FILE]
+#
+# is the guarded mode (implementation-plan Stage 6.12, impl.md 16.8): the lane
+# checks and the guarded preflight above, then `harness-gate guarded --lane wsl
+# --stage DH-S-16`, which runs harness-gate entry, require --stage DH-S-16 and the
+# stage's scenarios with -tags scenario on scratch homes, recorded in
+# docs/stories/harness-DSH-M2/evidence/runs/guarded-wsl-<sha7>-<stamp>.txt.
+# FILE (outside the tree) is sourced with set -a for the DSH_SCENARIO_* inputs.
+# Exit status: the guarded run's (0 every scenario passed, 1 a gate failed, 2
+# setup); 3 when a preflight check fails.
 set -euo pipefail
 
 fail() {
@@ -29,16 +40,37 @@ fail() {
 	exit 3
 }
 
+usage="usage: wsl.sh [--guarded-preflight | --guarded [--inputs FILE]]"
 guarded_only=
-for arg in "$@"; do
-	case "$arg" in
+guarded=
+inputs=
+while [ $# -gt 0 ]; do
+	case "$1" in
 	--guarded-preflight) guarded_only=1 ;;
+	--guarded) guarded=1 ;;
+	--inputs)
+		[ $# -ge 2 ] || {
+			echo "wsl lane: --inputs needs a file ($usage)" >&2
+			exit 2
+		}
+		inputs=$2
+		shift
+		;;
 	*)
-		echo "wsl lane: unknown argument $arg (usage: wsl.sh [--guarded-preflight])" >&2
+		echo "wsl lane: unknown argument $1 ($usage)" >&2
 		exit 2
 		;;
 	esac
+	shift
 done
+if [ -n "$guarded_only" ] && [ -n "$guarded" ]; then
+	echo "wsl lane: --guarded-preflight and --guarded are exclusive ($usage)" >&2
+	exit 2
+fi
+if [ -n "$inputs" ] && [ -z "$guarded" ]; then
+	echo "wsl lane: --inputs needs --guarded ($usage)" >&2
+	exit 2
+fi
 
 # fstype prints the file-system type of a path; ext4 is reported as "ext2/ext3".
 fstype() { stat -f -c %T "$1"; }
@@ -158,6 +190,28 @@ echo "wsl lane: preflight passed: ext4 checkout, uid $(id -u), $got, CC=$cc, cle
 if [ -n "$guarded_only" ]; then
 	guarded_preflight
 	exit 0
+fi
+
+if [ -n "$guarded" ]; then
+	# The inputs file holds the scenarios' DSH_SCENARIO_* templates; it lives
+	# outside the tree (the record refuses a dirty tree) and never in the record.
+	if [ -n "$inputs" ]; then
+		[ -r "$inputs" ] || fail "inputs file $inputs is not readable"
+		set -a
+		# shellcheck disable=SC1090
+		. "$inputs"
+		set +a
+	fi
+	guarded_preflight
+	gruns="$root/docs/stories/harness-DSH-M2/evidence/runs"
+	grecord="$gruns/guarded-wsl-${sha:0:7}-$stamp.txt"
+	mkdir -p "$gruns"
+	set +e
+	GOWORK=off go -C tools/harness-gate run . guarded --root ../.. --lane wsl --stage DH-S-16 --evidence "$grecord"
+	code=$?
+	set -e
+	echo "wsl lane: guarded exit $code, record $grecord"
+	exit "$code"
 fi
 
 # The rehearsal runs first, on the clean tree, so its vcs.modified is the commit's;

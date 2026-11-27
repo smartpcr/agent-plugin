@@ -23,6 +23,8 @@ sandbox.policy      A10   policy.Config            sandbox.policy               
 session.core        A01   -                        session.core                                     -     all
 session.scope       A01   -                        session.scope                                    -     all
 session.store       A01   -                        session.store                                    -     all
+session.title       A01   title.ComponentConfig    session.title                                    -     all
+session.title.llm   A01   -                        -                                                -     all
 session.workdir     A01   -                        session.workdir,session.workdir.service          -     all
 storage.db          A07   -                        storage.db                                       -     all
 tools.prompt        A03   prompt.Config            tools.prompt                                     -     all

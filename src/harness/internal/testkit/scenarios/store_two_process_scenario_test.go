@@ -227,6 +227,7 @@ func TestTwoProcessesShareOneHomeWithOneWriter(t *testing.T) {
 		keep = true
 		t.Fatalf("the refused write changed the session: %d records epoch %d, then %d epoch %d", len(recs), sum4.LeaseEpoch, len(final), sum5.LeaseEpoch)
 	}
+	t.Logf("evidence: log of %s read from the database: seq 0 to %d (%d records), no gap; lease epoch %d", id, len(final)-1, len(final), sum5.LeaseEpoch)
 
 	for _, p := range []string{"a2", "b"} {
 		_, _ = storeStep(t, "stop "+p, expand(killT, with(p)))
