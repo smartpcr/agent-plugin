@@ -38,6 +38,10 @@ const (
 	ReasonAlreadyRunning herr.Reason = "host/already-running"
 	// ReasonNoReport: the home holds no crash report.
 	ReasonNoReport herr.Reason = "host/no-report"
+	// ReasonRecord: a runtime record could not be read (an access or I/O failure).
+	ReasonRecord herr.Reason = "host/record"
+	// ReasonBadRecord: a runtime record does not decode as a host's record.
+	ReasonBadRecord herr.Reason = "host/bad-record"
 )
 
 // CallTimeout bounds one control-endpoint call.
@@ -79,54 +83,64 @@ type Found struct {
 
 // List reads every runtime record under runDir, in name order, and probes each:
 // first the control endpoint, then, when it does not answer, the record's lock. A
-// record removed while it is probed was a clean exit and is left out. A missing
-// runDir has no records.
+// record removed while it is listed was a clean exit and is left out. A missing
+// runDir has no records. A record that cannot be read (host/record) or decoded
+// (host/bad-record) is left out too, and every such failure, naming its path, is
+// joined into the error returned with the records that could be read.
 func List(ctx context.Context, runDir string) ([]Found, error) {
 	paths, err := filepath.Glob(filepath.Join(runDir, "web-*.json"))
 	if err != nil {
-		return nil, err
+		return nil, herr.Wrap(ReasonRecord, err, "list the runtime records")
 	}
 	slices.Sort(paths)
 	var out []Found
+	var errs []error
 	for _, p := range paths {
-		if f, ok := probe(ctx, p); ok {
+		f, ok, err := probe(ctx, p)
+		if err != nil {
+			errs = append(errs, err)
+		}
+		if ok {
 			out = append(out, f)
 		}
 	}
-	return out, nil
+	return out, errors.Join(errs...)
 }
 
-func probe(ctx context.Context, path string) (Found, bool) {
+func probe(ctx context.Context, path string) (Found, bool, error) {
 	f := Found{Path: path}
 	b, err := os.ReadFile(path)
-	if err != nil {
-		return f, false
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return f, false, nil
+	case err != nil:
+		return f, false, herr.Wrap(ReasonRecord, err, "read the runtime record "+path)
 	}
 	if err := json.Unmarshal(b, &f.Record); err != nil {
 		// A host writes its record whole (fsx), so this file is no host's.
-		return f, false
+		return f, false, herr.Wrap(ReasonBadRecord, err, "the runtime record "+path+" is not a host's record")
 	}
 	// The endpoint first: testing the lock of a live host would be harmless, but
 	// testing it while a host starts could make that start launch/taken.
 	if f.Record.Socket != "" {
 		if err := Call(ctx, f.Record.Socket, launch.MethodStatus, nil, &f.Status); err == nil {
 			f.State = Live
-			return f, true
+			return f, true, nil
 		}
 	}
 	lock, err := fsx.TryLock(strings.TrimSuffix(path, ".json") + ".lock")
 	if err != nil {
 		// Held (fsx.ErrLocked), or not testable: a host may be behind it.
 		f.State = Unreachable
-		return f, true
+		return f, true, nil
 	}
 	defer func() { _ = lock.Unlock() }()
 	// A clean host removes its record before it frees the lock.
 	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
-		return f, false
+		return f, false, nil
 	}
 	f.State = Stale
-	return f, true
+	return f, true, nil
 }
 
 // Call sends one request to the control endpoint at socket and decodes the reply

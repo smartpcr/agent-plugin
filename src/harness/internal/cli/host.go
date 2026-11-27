@@ -12,6 +12,7 @@ import (
 	"io"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot"
@@ -57,6 +58,14 @@ func explain(l home.Layout, stale []hostclient.Found, stderr io.Writer) []hostcl
 	return out
 }
 
+// warnRecords prints the records List could not read, each naming its path; the
+// command or launch goes on with the records it could.
+func warnRecords(stderr io.Writer, err error) {
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "dsh: warning: %s\n", strings.Join(strings.Fields(err.Error()), " "))
+	}
+}
+
 // statusHost is one host of `dsh status --json`; its fields are part of the
 // contract.
 type statusHost struct {
@@ -70,28 +79,31 @@ type statusDoc struct {
 	Unclean []hostclient.Notice `json:"unclean"`
 }
 
-// runStatus is `dsh status`: the live hosts of the home, and the unclean-exit
-// line of every dead one. No live host is host/not-running, a record whose host
-// does not answer host/unreachable naming its process (status 4).
+// runStatus is `dsh status`: the hosts of the home, and the unclean-exit line of
+// every dead one. Every host whose record is held is listed, the one that does not
+// answer with state "unreachable". No host at all is host/not-running; a host that
+// does not answer is host/unreachable naming its process, and a record that cannot
+// be read host/record or host/bad-record naming its path: the text lines or the
+// JSON document are written first, and the status is the failure's, in both
+// output modes.
 func runStatus(st *state, _ *cmdline.Values) error {
 	l, err := st.commandLayout()
 	if err != nil {
 		return err
 	}
-	found, err := hostclient.List(st.ctx, l.Run())
-	if err != nil {
-		return herr.Wrap(output.ReasonFailed, err, "read the runtime records")
-	}
+	found, failure := hostclient.List(st.ctx, l.Run())
 	doc := statusDoc{Hosts: []statusHost{}, Unclean: []hostclient.Notice{}}
 	var stale []hostclient.Found
-	var unanswered error
 	for _, f := range found {
 		switch f.State {
 		case hostclient.Live:
 			doc.Hosts = append(doc.Hosts, statusHost{State: f.State.String(), Status: f.Status})
 		case hostclient.Unreachable:
-			if unanswered == nil {
-				unanswered = hostclient.Unanswered(f)
+			r := f.Record
+			doc.Hosts = append(doc.Hosts, statusHost{State: f.State.String(), Status: hostlaunch.Status{
+				Origin: r.Origin, PID: r.PID, StartedAt: r.StartedAt, Profile: r.Profile, Version: r.Version}})
+			if failure == nil {
+				failure = hostclient.Unanswered(f)
 			}
 		case hostclient.Stale:
 			stale = append(stale, f)
@@ -101,22 +113,33 @@ func runStatus(st *state, _ *cmdline.Values) error {
 		doc.Unclean = n
 	}
 	if len(doc.Hosts) == 0 {
-		if unanswered != nil {
-			return unanswered
+		if failure != nil {
+			return failure
 		}
 		return herr.New(hostclient.ReasonNotRunning, "no host is running on this home")
 	}
 	if st.res.JSON() {
-		return st.res.Value(doc)
-	}
-	for _, h := range doc.Hosts {
-		line := fmt.Sprintf("%s\tprocess %d\tprofile %s\tup %s\tcommands %d", h.Origin, h.PID, h.Profile,
-			(time.Duration(h.UptimeMS) * time.Millisecond).Round(time.Second), h.Work.Commands)
-		if err := st.res.Line(line); err != nil {
+		if err := st.res.Value(doc); err != nil {
 			return err
 		}
+	} else {
+		for _, h := range doc.Hosts {
+			line := fmt.Sprintf("%s\tprocess %d\tprofile %s\t%s", h.Origin, h.PID, h.Profile, h.State)
+			if h.State == hostclient.Live.String() {
+				line += fmt.Sprintf("\tup %s\tcommands %d", (time.Duration(h.UptimeMS) * time.Millisecond).Round(time.Second), h.Work.Commands)
+			}
+			if err := st.res.Line(line); err != nil {
+				return err
+			}
+		}
 	}
-	return unanswered
+	if failure == nil {
+		return nil
+	}
+	// The result is written; the failure is named on stderr and only its status
+	// is returned, so a JSON result stays one document.
+	_, _ = fmt.Fprintf(st.env.Stderr, "dsh status: %s\n", strings.Join(strings.Fields(failure.Error()), " "))
+	return output.Exit(output.Status(failure))
 }
 
 // crashDoc is the JSON form of `dsh crash --json`.
@@ -131,9 +154,9 @@ func runCrash(st *state, _ *cmdline.Values) error {
 	if err != nil {
 		return err
 	}
-	if found, err := hostclient.List(st.ctx, l.Run()); err == nil {
-		explain(l, hostclient.Decide(found, hostclient.Want{}).Stale, st.env.Stderr)
-	}
+	found, err := hostclient.List(st.ctx, l.Run())
+	warnRecords(st.env.Stderr, err)
+	explain(l, hostclient.Decide(found, hostclient.Want{}).Stale, st.env.Stderr)
 	names, _ := diag.Reports(l.Reports())
 	if len(names) == 0 {
 		return herr.New(hostclient.ReasonNoReport, "this home holds no crash report")
@@ -156,7 +179,8 @@ func beforeLaunch(ctx context.Context, l Launch) (bool, error) {
 		return false, nil
 	}
 	found, err := hostclient.List(ctx, layout.Run())
-	if err != nil || len(found) == 0 {
+	warnRecords(l.Stderr, err)
+	if len(found) == 0 {
 		return false, nil
 	}
 	want, listens := listenerWant(ctx, l)

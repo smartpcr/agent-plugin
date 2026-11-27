@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"os"
 	"os/exec"
@@ -14,9 +15,11 @@ import (
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/profile"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/cli/output"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/host/launch"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/temphome"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/util/fsx"
 )
 
 // testOpened is the line the testhook opener writes in place of a browser
@@ -26,6 +29,7 @@ const testOpened = "testkit-opener: opened"
 // webHost is a built `dsh web` running on a temp home.
 type webHost struct {
 	bin, root string
+	port      int
 	cmd       *exec.Cmd
 	stderr    *testkit.Buffer
 	done      chan struct{}
@@ -68,9 +72,16 @@ func startWeb(t *testing.T, ctx context.Context) *webHost {
 	temphome.Layer(t, root, profile.Web,
 		"- insert:\n    - id: route\n      name: llm.testkit-route\n      config:\n        id: fake\n        url: \"http://127.0.0.1:1\"\n"+
 			"- id: host.listen\n  name: host.listen\n  merge:\n    port: "+strconv.Itoa(port)+"\n")
-	w := &webHost{bin: buildTestDsh(t), root: root, stderr: &testkit.Buffer{}, done: make(chan struct{})}
-	w.cmd = exec.CommandContext(ctx, w.bin, "--home", root, "web")
-	w.cmd.Env, w.cmd.Dir, w.cmd.Stderr = webEnv(), dir, w.stderr
+	return (&webHost{bin: buildTestDsh(t), root: root, port: port}).start(t, ctx)
+}
+
+// start runs one more `dsh web` with args on w's home and waits until it opened
+// its browser.
+func (w *webHost) start(t *testing.T, ctx context.Context, args ...string) *webHost {
+	t.Helper()
+	w = &webHost{bin: w.bin, root: w.root, port: w.port, stderr: &testkit.Buffer{}, done: make(chan struct{})}
+	w.cmd = exec.CommandContext(ctx, w.bin, append([]string{"--home", w.root, "web"}, args...)...)
+	w.cmd.Env, w.cmd.Dir, w.cmd.Stderr = webEnv(), filepath.Dir(w.root), w.stderr
 	if err := w.cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -169,5 +180,91 @@ func TestCrashExplainedAtNextStart(t *testing.T) {
 	status, stdout, _ := w.run(t, ctx, "crash")
 	if status != output.OK || strings.TrimSpace(stdout) != m[1] {
 		t.Errorf("dsh crash exited %d with %q, want %s", status, stdout, m[1])
+	}
+}
+
+// freePort is a TCP port free on loopback just now.
+func freePort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	return ln.Addr().(*net.TCPAddr).Port
+}
+
+// DH-ADR-CLI-4: --port and --bind choose the listener before reuse is decided.
+// The running host's own port reuses it; another port, or port 0 (the system
+// picks), starts a second host; the upstream --host is a usage error naming --bind.
+//
+//dsh:test DH-T-CLI-7
+func TestWebAddressFlagsChooseTheHost(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	w := startWeb(t, ctx)
+	if status, _, stderr := w.run(t, ctx, "web", "--port", strconv.Itoa(w.port)); status != output.OK || !strings.Contains(stderr, "opened in the browser of the host") {
+		t.Fatalf("dsh web --port %d exited %d:\n%s", w.port, status, stderr)
+	}
+	if status, _, stderr := w.run(t, ctx, "web", "--host", "0.0.0.0"); status != output.Usage || !strings.Contains(stderr, "--bind") {
+		t.Errorf("dsh web --host exited %d:\n%s", status, stderr)
+	}
+	for i, args := range [][]string{{"--port", "0"}, {"--port=" + strconv.Itoa(freePort(t))}} {
+		second := w.start(t, ctx, args...)
+		if strings.Contains(second.stderr.String(), "opened in the browser of the host") {
+			t.Errorf("dsh web %q reused the host:\n%s", args, second.stderr)
+		}
+		if recs := records(t, w.root); len(recs) != 2+i {
+			t.Errorf("dsh web %q: runtime records %v, want %d hosts", args, recs, 2+i)
+		}
+	}
+	if n := strings.Count(w.stderr.String(), testOpened); n != 2 {
+		t.Errorf("the first host opened its browser %d times, want 2:\n%s", n, w.stderr)
+	}
+}
+
+// A host whose lock is held but which does not answer is reported in both
+// output modes: `dsh status` lists it beside the live host, names it on stderr
+// and exits 4, and --json writes one document holding both.
+//
+//dsh:test DH-T-CLI-7
+func TestStatusReportsAnUnreachableHost(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	w := startWeb(t, ctx)
+	run := home.New(w.root).Run()
+	p := launch.PathsFor(run, "http://127.0.0.1:1")
+	b, _ := json.Marshal(launch.Record{Origin: "http://127.0.0.1:1", PID: 4343, Profile: profile.Web, Socket: p.Socket})
+	if err := os.WriteFile(p.Record, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := fsx.TryLock(p.Lock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lock.Unlock() }()
+	live := "process " + strconv.Itoa(w.cmd.Process.Pid)
+
+	status, stdout, stderr := w.run(t, ctx, "status")
+	if status != output.Unavailable || !strings.Contains(stdout, live) || !strings.Contains(stdout, "process 4343") ||
+		!strings.Contains(stdout, "unreachable") || !strings.Contains(stderr, "4343") {
+		t.Errorf("dsh status exited %d:\nstdout %s\nstderr %s", status, stdout, stderr)
+	}
+	status, stdout, stderr = w.run(t, ctx, "status", "--json")
+	var doc struct {
+		Hosts []struct {
+			PID   int    `json:"pid"`
+			State string `json:"state"`
+		} `json:"hosts"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &doc); err != nil {
+		t.Fatalf("dsh status --json wrote %q: %v", stdout, err)
+	}
+	states := map[int]string{}
+	for _, h := range doc.Hosts {
+		states[h.PID] = h.State
+	}
+	if status != output.Unavailable || states[w.cmd.Process.Pid] != "live" || states[4343] != "unreachable" || !strings.Contains(stderr, "4343") {
+		t.Errorf("dsh status --json exited %d with %v:\nstderr %s", status, states, stderr)
 	}
 }

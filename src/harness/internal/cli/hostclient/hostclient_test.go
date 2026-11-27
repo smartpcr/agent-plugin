@@ -125,6 +125,38 @@ func TestListStaleAndExplain(t *testing.T) {
 	}
 }
 
+// A record that cannot be read or decoded is left out and named, by its path and
+// reason, in List's error; the readable records are still returned, and a record
+// removed before it is read is a clean exit, not a failure.
+//
+//dsh:test DH-T-CLI-7
+func TestListNamesBadRecords(t *testing.T) {
+	for name, c := range map[string]struct {
+		make   func(t *testing.T, path string)
+		reason herr.Reason
+	}{
+		"malformed":  {func(t *testing.T, p string) { temphome.Write(t, p, "{not json") }, hostclient.ReasonBadRecord},
+		"unreadable": {func(t *testing.T, p string) { _ = os.MkdirAll(p, 0o700) }, hostclient.ReasonRecord},
+	} {
+		t.Run(name, func(t *testing.T) {
+			l := temphome.New(t)
+			writeRecord(t, l.Run(), launch.Record{Origin: origin, PID: 4242})
+			bad := filepath.Join(l.Run(), "web-bad.json")
+			c.make(t, bad)
+			fs, err := hostclient.List(context.Background(), l.Run())
+			if len(fs) != 1 || fs[0].Record.PID != 4242 {
+				t.Errorf("List kept %+v, want the readable record", fs)
+			}
+			if herr.Kind(err) != c.reason || !strings.Contains(err.Error(), bad) {
+				t.Errorf("List error = %v, want %s naming %s", err, c.reason, bad)
+			}
+		})
+	}
+	if fs, err := hostclient.List(context.Background(), filepath.Join(t.TempDir(), "none")); err != nil || len(fs) != 0 {
+		t.Errorf("List of a missing run dir = %v %v", fs, err)
+	}
+}
+
 // A live host answers host.status and launch.open through the client; a host that
 // has neither channel is launch/no-channel; a clean exit leaves no record.
 //
