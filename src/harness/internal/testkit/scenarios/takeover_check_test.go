@@ -283,6 +283,22 @@ func TestTakeoverObservedOutcomeIsReported(t *testing.T) {
 	}
 }
 
+// TestListedErrorRequiresTheResult checks a confined effect counts only when
+// the structured result lists it, not when only the status text names it.
+func TestListedErrorRequiresTheResult(t *testing.T) {
+	if err := listedError("secret-read", []string{"delegated-execution", "secret-read"}); err != nil {
+		t.Errorf("listed in the result: %v, want ok", err)
+	}
+	for name, exposed := range map[string][]string{
+		"status only, result empty": nil,
+		"result lists another":      {"delegated-execution"},
+	} {
+		if err := listedError("secret-read", exposed); err == nil || !strings.Contains(err.Error(), "does not list it") {
+			t.Errorf("%s: listedError = %v, want it refused", name, err)
+		}
+	}
+}
+
 // TestShellTreeCleanupStopsDescendants starts a shell whose child keeps a
 // grandchild holding the output, lets the subtest end, and checks the cleanup
 // returned within its bound with every process of the tree gone.

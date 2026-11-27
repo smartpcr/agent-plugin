@@ -124,14 +124,23 @@ func TestBrowserSignInReuseAndOtherOrigins(t *testing.T) {
 			}
 
 			// (6) Sign one browser out; the other, signed in with a fresh link, stays in.
+			// The alias check left the normal window's active tab on its 403 page:
+			// bring that window back to the host and check it is signed in first.
+			back := step("open", origin+"/")
+			if back.Status != http.StatusOK || !strings.HasPrefix(back.URL, origin) {
+				t.Fatalf("(6) the normal window back at %s answered %s %d, want the signed-in UI", origin, back.URL, back.Status)
+			}
+			held, ok := back.sessionCookie()
+			if !ok {
+				t.Fatalf("(6) the normal window holds no session cookie before sign-out")
+			}
 			mustControl(t, oneRecord(t, root).Socket, "launch.open", map[string]any{"print": true})
 			fresh := h.nextLink(t, h.link)
 			if s := step("private", fresh); s.Status != http.StatusOK {
 				t.Fatalf("(6) the fresh link answered %d in a private window, want the UI", s.Status)
 			}
-			held, ok := step("current", "").sessionCookie()
-			if !ok {
-				t.Fatalf("(6) the normal window holds no session cookie before sign-out")
+			if cur := step("current", ""); !strings.HasPrefix(cur.URL, origin) {
+				t.Fatalf("(6) the normal window's active tab is %s, want the host before sign-out", cur.URL)
 			}
 			if code := replayCookie(t, origin+"/", held); code != http.StatusOK {
 				t.Fatalf("(6) the normal window's cookie replayed before sign-out answered %d, want 200", code)

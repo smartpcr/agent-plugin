@@ -530,13 +530,22 @@ func cleanupShell(t *testing.T, what, line string, within time.Duration) {
 	})
 }
 
-// listed fails the scenario unless effect is in the result's exposed list or the
-// sandbox status.
+// listed fails the scenario unless the result lists effect (listedError).
 func (r takeoverRun) listed(t *testing.T, effect string) {
 	t.Helper()
-	if !slices.Contains(r.shell.Confinement.Exposed, effect) && !strings.Contains(r.status, effect) {
-		t.Errorf("%s: %s happened but neither the result (exposed %v) nor dsh sandbox status lists it", r.mode, effect, r.shell.Confinement.Exposed)
+	if err := listedError(effect, r.shell.Confinement.Exposed); err != nil {
+		t.Errorf("%s: %v", r.mode, err)
 	}
+}
+
+// listedError checks that an effect which happened under confinement is in the
+// result's exposed list (host-telemetry.md DH-E-HOST-7: "the result lists
+// secret-read"); dsh sandbox status naming it does not make the result complete.
+func listedError(effect string, exposed []string) error {
+	if !slices.Contains(exposed, effect) {
+		return fmt.Errorf("%s happened but the result (exposed %v) does not list it", effect, exposed)
+	}
+	return nil
 }
 
 // refused fails the scenario for each named step that is not evidence of a
