@@ -13,12 +13,32 @@
 # docs/stories/harness-DSH-M1/evidence/runs/wsl-<sha7>-<UTC yyyymmddThhmmZ>.txt
 # (and ...-rehearse.txt). Exit status: the gate's (0 pass, 1 a gate failed, 2
 # setup), else the rehearsal's; 3 when a preflight check fails.
+#
+#   ~/src/agent-plugin/tools/harness-gate/lanes/wsl.sh --guarded-preflight
+#
+# runs the lane checks and then the guarded preflight alone (implementation-plan
+# Stage 6.10, architecture.md I-8, service:linux-sandbox-bwrap): bwrap on an
+# absolute path (installed with apt-get when sudo needs no password), then the
+# built dsh's `dsh sandbox status` on a scratch home, which must report backend
+# bwrap, state Full; anything else fails (exit 3), never skips. It prints the
+# report and exits 0 without running a gate. Exit 2 on an unknown argument.
 set -euo pipefail
 
 fail() {
 	echo "wsl lane: preflight FAILED: $*" >&2
 	exit 3
 }
+
+guarded_only=
+for arg in "$@"; do
+	case "$arg" in
+	--guarded-preflight) guarded_only=1 ;;
+	*)
+		echo "wsl lane: unknown argument $arg (usage: wsl.sh [--guarded-preflight])" >&2
+		exit 2
+		;;
+	esac
+done
 
 # fstype prints the file-system type of a path; ext4 is reported as "ext2/ext3".
 fstype() { stat -f -c %T "$1"; }
@@ -36,6 +56,41 @@ on_ext4() {
 	case "$(cd "$path" && pwd -P)" in
 	/mnt/[a-z] | /mnt/[a-z]/*) fail "$what on 9p or drvfs ($path is under /mnt/<drive>): use a WSL-native clone on ext4" ;;
 	esac
+}
+
+# guarded_preflight is the preflight of a guarded run (service:linux-sandbox-bwrap):
+# 7. bwrap resolves to an absolute path; when it is missing it is installed with
+#    apt-get if sudo needs no password, else the check fails naming the package;
+# 8. the dsh built from this checkout reports, on a scratch home under TMPDIR,
+#    backend bwrap, state Full (harness-gate sandbox-preflight); every other report
+#    fails, never skips (architecture.md I-8).
+guarded_preflight() {
+	local bw gdir report verdict
+	bw=$(command -v bwrap || true)
+	if [ -z "$bw" ] && command -v apt-get >/dev/null && sudo -n true 2>/dev/null; then
+		echo "wsl lane: bwrap is not on PATH; installing bubblewrap (sudo apt-get install -y bubblewrap)"
+		sudo -n apt-get install -y bubblewrap >&2 || fail "apt-get install bubblewrap failed"
+		bw=$(command -v bwrap || true)
+	fi
+	[ -n "$bw" ] || fail "bwrap is not on PATH; install it (sudo apt-get install bubblewrap), README.md, Provisioning the WSL lane"
+	case "$bw" in
+	/*) ;;
+	*) fail "bwrap resolves to $bw, not an absolute path" ;;
+	esac
+	[ -x "$bw" ] || fail "bwrap at $bw is not executable"
+
+	gdir=$(mktemp -d "$tmp/harness-gate-guarded.XXXXXX")
+	trap 'rm -rf "$gdir"' EXIT
+	GOWORK=off go -C src/harness build -o "$gdir/dsh" ./cmd/dsh || fail "go build ./cmd/dsh failed"
+	report=$("$gdir/dsh" --home "$gdir/home" sandbox status 2>"$gdir/stderr") ||
+		fail "dsh sandbox status exited $?: $(cat "$gdir/stderr")"
+	echo "wsl lane: dsh sandbox status (bwrap $bw):"
+	printf '%s\n' "$report" | sed 's/^/  /'
+	verdict=$(printf '%s\n' "$report" | GOWORK=off go -C tools/harness-gate run . sandbox-preflight) ||
+		fail "guarded preflight: ${verdict:-harness-gate sandbox-preflight did not run}"
+	rm -rf "$gdir"
+	trap - EXIT
+	echo "wsl lane: guarded preflight passed: bwrap $bw; ${verdict#harness-gate sandbox-preflight: passed: }"
 }
 
 # The checkout is the one holding this script, else the working directory (a script
@@ -94,6 +149,11 @@ runs="$root/docs/stories/harness-DSH-M1/evidence/runs"
 record="$runs/wsl-${sha:0:7}-$stamp.txt"
 rehearsal="$runs/wsl-${sha:0:7}-$stamp-rehearse.txt"
 echo "wsl lane: preflight passed: ext4 checkout, uid $(id -u), $got, CC=$cc, clean tree, TMPDIR=$tmp"
+
+if [ -n "$guarded_only" ]; then
+	guarded_preflight
+	exit 0
+fi
 
 # The rehearsal runs first, on the clean tree, so its vcs.modified is the commit's;
 # its output waits outside the tree until the gate has recorded the run.

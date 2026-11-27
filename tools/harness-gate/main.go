@@ -63,6 +63,12 @@
 //	                       the clean checkout: commit, each text's SHA-256 and
 //	                       escalations, written to evidence/runs/<id>.txt; it
 //	                       runs no gate (sandbox7record.go)
+//	sandbox-preflight [--status file]
+//	                       the guarded preflight of the WSL lane (Stage 6.10,
+//	                       architecture.md I-8): a "dsh sandbox status" report
+//	                       (standard input by default) passes only as backend
+//	                       bwrap, state Full; anything else exits 1, never a
+//	                       skip (sandboxpreflight.go)
 package main
 
 import (
@@ -119,6 +125,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return runPolicyText(ctx, args[1:], stdout, stderr)
 		case "sandbox7-record":
 			return runSandbox7Record(ctx, args[1:], stdout, stderr)
+		case "sandbox-preflight":
+			return runSandboxPreflight(args[1:], os.Stdin, stdout, stderr)
 		}
 	}
 	flags := flag.NewFlagSet("harness-gate", flag.ContinueOnError)
