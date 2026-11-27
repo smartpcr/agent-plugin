@@ -151,8 +151,12 @@ At `12c2be8`, Windows 11, from the worktree root:
   not committed because they are failing records. Both logged the same failure:
   `harness-gate: FAIL gofmt` / `not gofmt-formatted: src/harness/internal/testkit/scenarios/sdk_stdio_scenario_test.go`.
   The cause is a missing blank line before `awaitEvent` at line 285, from `e3da93b` (#198). That file
-  is outside this stage's diff, so it is raised as an open question (Full harness gate policy, unrelated
-  gate failures). The lanes run again once it is fixed.
+  was not changed by this stage. S16 can close only when every gate passes on both lanes at this
+  branch's final commit, so this branch applies the `gofmt -w` fix (one inserted blank line, no code
+  change) as a separate mechanical change. After the fix, `gofmt -l` reports only the intentional
+  fixture `tools/harness-gate/testdata/unformatted-file/add.go`, and `go vet` passes with `-tags=` and
+  `-tags=replay,scenario,bench` on `./internal/testkit/scenarios/`. Both lanes run again on the commit
+  that carries the fix, and their records go here.
 - Manual checks: the commands in [runs/manual-12c2be8/](runs/manual-12c2be8/README.md).
 - The record check, on this record with `Closure status: open`:
   `GOWORK=off go -C tools/harness-gate run . ready --stage DH-S-16 --built --root ../..`. Before this
@@ -220,7 +224,7 @@ at `12c2be8`:
 H-21 is closed by step 16.10 (`fe13e4e`). Built-not-done: BUNDLE-3 until DH-S-22; CLI-2, CLI-4 and CLI-5
 until DH-S-27; UTIL-8 until DH-S-39. At `12c2be8`, DH-T-TOOLCHAIN-1, -3 and -5 pass, and so does DH-T-TOOLCHAIN-6 at its
 `src/harness` and `acceptance` sites. Its gate-root site (`TestScenarioGatesStopWhenSignedOut`) has not
-run: the lanes at `a91abac` both stopped at the `gofmt` gate on a file inherited from `e3da93b` (see Exact tests and commands). The lanes must show all four passing at the closing commit. The step 16.8 cleanup evidence
+run: the lanes at `a91abac` both stopped at the `gofmt` gate on a file inherited from `e3da93b`, which this branch now formats (see Exact tests and commands). The lanes must show all four passing at the closing commit. The step 16.8 cleanup evidence
 is still owed.
 
 **Not advanced yet (implementation-plan Stage 6.13, M2-DOD-1).** `built-through` in
