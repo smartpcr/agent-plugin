@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/launcher"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/scenario"
 	"github.com/smartpcr/agent-plugin/src/sdk/jsonrpc"
 	"github.com/smartpcr/agent-plugin/src/sdk/protocol"
 )
@@ -89,7 +90,7 @@ func startSDKWith(t *testing.T, bin string, env, args []string, opts sdkOptions,
 			return opts.Approve(p), nil
 		}
 	}
-	h.Session = launcher.Start(t, launcher.Program{
+	h.Session = scenario.Start(t, launcher.Program{
 		Argv: append(append([]string{bin}, args...), "sdk"),
 		Env:  env,
 		RPC:  jsonrpc.Options{Methods: methods, OnNotify: h.notify},

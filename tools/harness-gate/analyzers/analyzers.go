@@ -12,6 +12,8 @@
 //     (DH-ADR-TOOLCHAIN-8)
 //   - typeassert: no unchecked x.(T) in non-test code, no unsafe import
 //     (DH-ADR-TOOLCHAIN-8)
+//   - scenarioimport: a test file that uses internal/testkit/scenario imports no
+//     other src/harness/internal/... package but the test kit's launcher (DH-D-UTIL-8)
 //   - lintignore: every //lint:ignore names a known check and gives a reason
 //     (DH-ADR-TOOLCHAIN-8); see directive.go
 //
@@ -44,7 +46,7 @@ import (
 
 // All is the fixed list of the project's own analyzers, in the order they report:
 // the ones the vet gate runs.
-var All = []*analysis.Analyzer{NoSleep, OneSpawn, Cleanup, FuzzCheck, RootCall, TypeAssert, LintIgnore}
+var All = []*analysis.Analyzer{NoSleep, OneSpawn, Cleanup, FuzzCheck, RootCall, TypeAssert, ScenarioImport, LintIgnore}
 
 // Pending are the analyzers that are built and tested but not yet in All, because the
 // tree is not clean under them yet (DH-ADR-TOOLCHAIN-8; plan stage 13.5).

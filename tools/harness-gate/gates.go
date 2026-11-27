@@ -184,7 +184,7 @@ func discoverModules(root string) ([]string, error) {
 func Gates(c *Config) []Gate {
 	return []Gate{
 		{Name: "gofmt", Title: "every Go file is gofmt-formatted", Run: c.gofmtGate},
-		{Name: "vet", Title: "go vet and the project's own analyzers (nosleep, onespawn, cleanup, fuzzcheck, rootcall, typeassert, lintignore), also on the e2e layer; prints the //lint:ignore exception total", Run: c.vetGate},
+		{Name: "vet", Title: "go vet and the project's own analyzers (nosleep, onespawn, cleanup, fuzzcheck, rootcall, typeassert, scenarioimport, lintignore), also on the e2e layer; prints the //lint:ignore exception total", Run: c.vetGate},
 		{Name: "staticcheck", Title: "the pinned staticcheck per module, with " + noTags + " and " + layerTags, Run: c.staticcheckGate},
 		{Name: "modules", Title: "go mod tidy -diff and go mod verify per module, the module rules (RM-1..RM-4) and a reason on every pin (RM-10)", Run: c.modulesGate},
 		{Name: "test", Title: "go test -race -shuffle=on -count=1 per module, CGO_ENABLED=1", Run: c.testGate},

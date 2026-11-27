@@ -14,18 +14,15 @@ import (
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/launcher"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/scenario"
 )
 
 // need returns the run-time input name, which an operator of the DH-S-18 run sets
-// to describe the real environment. A missing input fails the scenario: a scenario
-// that cannot run never skips (DH-O-15).
+// to describe the real environment (scenario.Need). A missing input fails the
+// scenario: a scenario that cannot run never skips (DH-O-15).
 func need(t *testing.T, name, what string) string {
 	t.Helper()
-	v := strings.TrimSpace(os.Getenv(name))
-	if v == "" {
-		t.Fatalf("%s is not set: %s", name, what)
-	}
-	return v
+	return scenario.Need(t, name, what)
 }
 
 // needList is need for a list input: it splits the value on ";", drops empty items,
