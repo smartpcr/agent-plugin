@@ -29,7 +29,11 @@ func (s *State) startReload(ctx context.Context) {
 	def, data := s.Options.Profile, s.Data
 	opts := config.ServiceOptions{
 		Stack: func(read config.ReadFile) ([]loader.Layer, []loader.Issue, error) {
-			return profile.Stack(def, profile.Sources{Home: data.Home, Overlays: data.Overlays, Safe: data.Safe, Read: profile.ReadFile(read)})
+			launcher, err := launcherOps(def, data)
+			if err != nil {
+				return nil, nil, err
+			}
+			return profile.Stack(def, profile.Sources{Home: data.Home, Overlays: data.Overlays, Safe: data.Safe, Launcher: launcher, Read: profile.ReadFile(read)})
 		},
 		Loader:    s.Service,
 		Context:   s.root,

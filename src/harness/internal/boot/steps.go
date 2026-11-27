@@ -17,6 +17,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/profile"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/cli/output"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/host/diag"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/host/listen"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/host/sharing"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human/secret"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
@@ -91,14 +92,20 @@ func (Real) Guards(_ context.Context, s *State) error {
 
 // Layers reads and parses every layer of the profile, keeping the bytes read as
 // the reload's baseline, and builds the launcher layer: with --safe it disables the
-// plugins group and the optional bundles (DH-ADR-BOOT-12).
+// plugins group and the optional bundles (DH-ADR-BOOT-12), and web's --bind and
+// --port merge into host.listen.
 func (Real) Layers(_ context.Context, s *State) error {
 	files := map[string][]byte{}
 	read := layerReader(s.Options.Request.ReadFile)
+	launcher, err := launcherOps(s.Options.Profile, s.Data)
+	if err != nil {
+		return err
+	}
 	layers, issues, err := profile.Stack(s.Options.Profile, profile.Sources{
 		Home:     s.Data.Home,
 		Overlays: s.Data.Overlays,
 		Safe:     s.Data.Safe,
+		Launcher: launcher,
 		Read: func(path string) ([]byte, error) {
 			data, err := read(path)
 			switch {
@@ -288,4 +295,24 @@ func openProcesses(ctx context.Context, s *State) *subprocess.Registry {
 		logf("boot: left by an earlier host, not stopped: %s\n", l)
 	}
 	return procs
+}
+
+// launcherOps are the launcher layer's operations of the app's own words: web's
+// --bind and --port merge into host.listen, so start-up, a reload and a second
+// launch's preview compose the same address (DH-ADR-CLI-4). A bad flag fails the
+// launch with listen/flag (status 64).
+func launcherOps(def profile.Definition, d launch.Data) ([]loader.Op, error) {
+	if def.Name != profile.Web {
+		return nil, nil
+	}
+	patch, err := listen.AddressFlags(d.Words)
+	if err != nil || patch == nil {
+		return nil, err
+	}
+	op, err := profile.Merge(listen.Name, patch)
+	if err != nil {
+		return nil, err
+	}
+	op.Name = listen.Name
+	return []loader.Op{op}, nil
 }

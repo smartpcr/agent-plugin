@@ -20,6 +20,8 @@ Commands:
   secret      Manage the stored secrets
   sandbox     Show how commands are confined on this machine
   config      Preview and check the composed configuration
+  status      Print the hosts running on this home
+  crash       Print the path of the newest crash report
 
 Profiles:
   web          Start the host and open the web UI
@@ -251,6 +253,44 @@ Examples:
   dsh config validate --profile web extra.yml
 ```
 
+## dsh status
+
+```text
+Usage: dsh status [options]
+
+Print the hosts running on this home
+
+Reads the runtime records and asks each host for its status. A host that
+exited uncleanly is named on standard error with its crash report and --safe.
+No host running exits 4.
+
+Options:
+      --json  Print the result as one JSON value
+  -h, --help  Show this help
+
+Examples:
+  dsh status
+  dsh --home ./h status --json
+```
+
+## dsh crash
+
+```text
+Usage: dsh crash [options]
+
+Print the path of the newest crash report
+
+Writes the report of every host that exited uncleanly, then prints the path
+of the newest report under reports/. No report exits 5.
+
+Options:
+      --json  Print the result as one JSON value
+  -h, --help  Show this help
+
+Examples:
+  dsh crash
+```
+
 ## Profiles
 
 | Profile | Bundles | Summary |
@@ -282,4 +322,4 @@ Examples:
 
 ## Reserved words
 
-No profile may be called: `__complete`, `__completeNoDesc`, `catalog`, `completion`, `config`, `help`, `sandbox`, `sandbox-launch`, `secret`, `ssh-helper`, `version`.
+No profile may be called: `__complete`, `__completeNoDesc`, `catalog`, `completion`, `config`, `crash`, `help`, `sandbox`, `sandbox-launch`, `secret`, `ssh-helper`, `status`, `version`.
