@@ -33,8 +33,19 @@ machine cannot cut its own power, so no `service:os-process` substitute exists.
   host for the Windows guest, reached from the `[self-hosted, linux, dsh-hypervisor]`
   runner (or the operator's shell on it) over SSH (libvirt) and PowerShell remoting
   (Hyper-V). macOS guests are out of scope (`platforms-windows-wsl`).
-- **Credential.** The scratch account of each host (`DSH_LAB_HYPERV_CRED` for Hyper-V).
-  No model key.
+- **Credentials.** No model key. Two kinds, kept apart:
+  - *Host credential*, controller to host. KVM: the libvirt host's scratch account
+    (`DSH_LAB_SSH_KEY`). Hyper-V: the SSH private key of the Hyper-V host's scratch
+    account `s18lab` (`DSH_LAB_HYPERV_CRED`). That account is a member of *Hyper-V
+    Administrators*, and the host runs OpenSSH Server with the PowerShell 7 `powershell`
+    subsystem, so `pwsh` on the Linux controller reaches it noninteractively with
+    `New-PSSession -HostName … -UserName s18lab -KeyFilePath …`.
+  - *Guest credential*, host to guest. The Windows guest's local account, which is baked
+    into the base image. PowerShell Direct (`Invoke-Command -VMName`) works only on the
+    Hyper-V host itself and needs credentials of the guest, so it is always run inside
+    the host session. The guest credential is stored once on the host, as `s18lab`:
+    `Get-Credential | Export-Clixml C:\s18\guest-cred.xml`. The file is DPAPI-encrypted,
+    readable only by `s18lab` on that host, and never leaves the host.
 - **Base images.** One per guest OS, holding the built `dsh` test binary and the writer
   loop; record each image's SHA-256.
 - **Time.** At most 3 h per variant (M2-EN-7); beyond that, shard the 100 cuts (M2-R-06).
@@ -67,21 +78,56 @@ machine cannot cut its own power, so no `service:os-process` substitute exists.
    sha256sum -c s18-base.before                  # base image unchanged
    ```
 
-   Windows guest on Hyper-V (the recorder still runs on the controller; the guest sends
-   over its network):
+   Windows guest on Hyper-V. Every step runs from the Linux controller in `pwsh` 7:
+   - Hyper-V cmdlets run in an SSH remoting session on the host (host credential).
+   - The guest is reached from inside that session over PowerShell Direct (guest
+     credential).
+   - The recorder runs on the controller at `10.20.0.5:47000`, the controller's address
+     on the guest network (`DSH_SCENARIO_NODEFS_LISTEN` of the Windows variant).
+
+   Save the acknowledgment sender as `s18-probe-ack.ps1` on the controller:
 
    ```powershell
-   Get-FileHash C:\VMs\base-windows.vhdx | Tee-Object -Variable before
-   New-VHD -Path C:\VMs\s18-probe.vhdx -ParentPath C:\VMs\base-windows.vhdx -Differencing
-   New-VM -Name s18-probe -Generation 2 -MemoryStartupBytes 2GB -VHDPath C:\VMs\s18-probe.vhdx; Start-VM s18-probe
-   Stop-VM s18-probe -TurnOff -Force             # hard power-off
-   Start-VM s18-probe                            # restart from the cut
-   # on the controller, while the guest is up:
-   #   harness-gate ack-probe --listen 192.168.122.1:47000 --token s18-probe-ack --log s18-ack.log \
-   #     --send 'pwsh -c "Invoke-Command -VMName s18-probe { $c=[Net.Sockets.TcpClient]::new(''192.168.122.1'',47000); $w=[IO.StreamWriter]::new($c.GetStream()); $w.WriteLine(''s18-probe s18-probe-ack''); $w.Close() }"'
-   Stop-VM s18-probe -TurnOff -Force; Remove-VM s18-probe -Force; Remove-Item C:\VMs\s18-probe.vhdx
-   (Get-FileHash C:\VMs\base-windows.vhdx).Hash -eq $before.Hash   # True: base image unchanged
+   $ErrorActionPreference = 'Stop'
+   $hv = New-PSSession -HostName hyperv-host -UserName s18lab -KeyFilePath ~/.ssh/s18-hyperv
+   try {
+     Invoke-Command -Session $hv -ScriptBlock {
+       $guest = Import-Clixml C:\s18\guest-cred.xml        # guest credential, host-local
+       Invoke-Command -VMName s18-probe -Credential $guest -ErrorAction Stop -ScriptBlock {
+         $c = [Net.Sockets.TcpClient]::new('10.20.0.5', 47000)
+         $w = [IO.StreamWriter]::new($c.GetStream()); $w.WriteLine('s18-probe s18-probe-ack'); $w.Close()
+       }
+     }
+   } finally { Remove-PSSession $hv }
    ```
+
+   Then run the cycle:
+
+   ```powershell
+   $hv = New-PSSession -HostName hyperv-host -UserName s18lab -KeyFilePath ~/.ssh/s18-hyperv
+   $before = Invoke-Command $hv { (Get-FileHash C:\VMs\base-windows.vhdx).Hash }
+   Invoke-Command $hv -ErrorAction Stop {
+     New-VHD -Path C:\VMs\s18-probe.vhdx -ParentPath C:\VMs\base-windows.vhdx -Differencing
+     New-VM -Name s18-probe -Generation 2 -MemoryStartupBytes 2GB -VHDPath C:\VMs\s18-probe.vhdx
+     Start-VM s18-probe
+     Stop-VM s18-probe -TurnOff -Force                  # hard power-off, no shutdown
+     Start-VM s18-probe                                 # restart from the cut
+     Wait-VM s18-probe -For Heartbeat -Timeout 300      # guest up again
+   }
+   GOWORK=off go -C tools/harness-gate run . ack-probe --listen 10.20.0.5:47000 `
+     --token s18-probe-ack --log s18-ack.log --timeout 5m --send 'pwsh -NoProfile -File s18-probe-ack.ps1'
+   Select-String -SimpleMatch s18-probe-ack s18-ack.log  # the acknowledgment, read back
+   Invoke-Command $hv {
+     Stop-VM s18-probe -TurnOff -Force; Remove-VM s18-probe -Force; Remove-Item C:\VMs\s18-probe.vhdx
+     (Get-FileHash C:\VMs\base-windows.vhdx).Hash
+   } | ForEach-Object { $_ -eq $before }                # True: base image unchanged
+   Remove-PSSession $hv
+   ```
+
+   A wrong host key or a missing Hyper-V Administrators membership fails `New-PSSession`.
+   A wrong guest credential, or a guest without the Hyper-V integration services, fails
+   the inner `Invoke-Command -VMName`. Either way `pwsh -File` exits non-zero, and so
+   `ack-probe` fails the preflight.
 
    `ack-probe` exits 0 only when the acknowledgment is in the log and read back and its
    `--send` command exited 0; it fails when none arrives within the timeout, when the
@@ -98,7 +144,7 @@ machine cannot cut its own power, so no `service:os-process` substitute exists.
    | `DSH_S18_BASE_IMAGES` | the base images, `;`-separated; their SHA-256 before and after must match |
    | `DSH_S18_PROBE_CREATE` | creates and starts `{probe}` from an overlay (the `qemu-img` and `virt-install` lines above) |
    | `DSH_S18_PROBE_DELETE` | stops `{probe}` hard if it runs, then deletes it and its overlay: `virsh destroy {probe} 2>/dev/null; virsh undefine {probe} --remove-all-storage` |
-   | `DSH_S18_PROBE_ACK` | makes `{probe}` send one line holding `{token}` to `{addr}`, e.g. `ssh {probe} "echo {probe} {token} \| nc -N 192.168.122.1 47000"` for `{addr}` `192.168.122.1:47000` |
+   | `DSH_S18_PROBE_ACK` | makes `{probe}` send one line holding `{token}` to `{addr}`, e.g. `ssh {probe} "echo {probe} {token} \| nc -N 192.168.122.1 47000"` for `{addr}` `192.168.122.1:47000`; on Hyper-V, `pwsh -NoProfile -File s18-probe-ack.ps1` (host session, then PowerShell Direct, as above) |
 
    The job checksums the base images, creates the probe, cuts it with
    `DSH_SCENARIO_NODEFS_POWEROFF`, restarts it with `DSH_SCENARIO_NODEFS_POWERON`, runs
@@ -113,7 +159,7 @@ machine cannot cut its own power, so no `service:os-process` substitute exists.
    | `DSH_SCENARIO_VMS` | the guests, `;`-separated |
    | `DSH_SCENARIO_NODEFS_LISTEN` | the recorder's `host:port` on the hypervisor host (the `service:ack-recorder` preflight: local and free) |
    | `DSH_SCENARIO_NODEFS_START` | command starting the writer role in `{vm}` in the background |
-   | `DSH_SCENARIO_NODEFS_POWEROFF` | `virsh destroy {vm}`, or `Stop-VM {vm} -TurnOff -Force` through PowerShell remoting |
+   | `DSH_SCENARIO_NODEFS_POWEROFF` | `virsh destroy {vm}`, or on Hyper-V `Stop-VM {vm} -TurnOff -Force` run in the host's SSH remoting session (`pwsh -c 'Invoke-Command (New-PSSession -HostName hyperv-host -UserName s18lab -KeyFilePath ~/.ssh/s18-hyperv) { Stop-VM {vm} -TurnOff -Force }'`) |
    | `DSH_SCENARIO_NODEFS_POWERON` | command starting `{vm}` and waiting until its guest agent answers |
    | `DSH_SCENARIO_NODEFS_READ` | command printing the replaced file of `{vm}` through the guest agent |
    | `DSH_SCENARIO_REPORT` | the file the recorder's version log is written to |

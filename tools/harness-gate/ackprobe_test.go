@@ -20,6 +20,7 @@ func TestAckProbeRecordsAndReadsBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { ln.Close() })
 	log := filepath.Join(t.TempDir(), "ack.log")
 	go func() {
 		c, err := net.Dial("tcp", ln.Addr().String())
@@ -47,6 +48,7 @@ func TestAckProbeRecordsAndReadsBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { ln2.Close() })
 	short, cancel2 := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel2()
 	if _, err := recordAcks(short, ln2, filepath.Join(t.TempDir(), "none.log"), "never", "", io.Discard); err == nil {
@@ -77,7 +79,14 @@ func TestAckProbeHelperProcess(t *testing.T) {
 		fmt.Fprintln(c, f[2])
 		c.Close()
 		if f[0] == "hang" {
-			time.Sleep(time.Minute)
+			// Block on a signal that never comes (no one dials this listener),
+			// so the process runs until the probe kills it.
+			l, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				os.Exit(4)
+			}
+			t.Cleanup(func() { l.Close() })
+			l.Accept()
 		}
 		os.Exit(0)
 	}
@@ -97,6 +106,7 @@ func TestAckProbeReleasesAnOpenConnection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { ln.Close() })
 	c, err := net.Dial("tcp", ln.Addr().String())
 	if err != nil {
 		t.Fatal(err)
@@ -126,16 +136,18 @@ func TestAckProbeJoinsTheSender(t *testing.T) {
 	for _, tc := range []struct {
 		name, send string
 		pass       bool
+		why        string
 	}{
-		{"sends and exits", "send {addr} tok-1", true},
-		{"fails", "fail", false},
-		{"still running", "hang {addr} tok-1", false},
+		{"sends and exits", "send {addr} tok-1", true, ""},
+		{"fails", "fail", false, "the send command"},
+		{"still running", "hang {addr} tok-1", false, "still running at the timeout"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ln, err := net.Listen("tcp", "127.0.0.1:0")
 			if err != nil {
 				t.Fatal(err)
 			}
+			t.Cleanup(func() { ln.Close() })
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
 			start := time.Now()
@@ -144,7 +156,7 @@ func TestAckProbeJoinsTheSender(t *testing.T) {
 			if tc.pass && (err != nil || got != "tok-1") {
 				t.Errorf("got %q, %v; want the acknowledgment read back", got, err)
 			}
-			if !tc.pass && (err == nil || !strings.Contains(err.Error(), "the send command")) {
+			if !tc.pass && (err == nil || !strings.Contains(err.Error(), tc.why)) {
 				t.Errorf("err = %v, want the send command's failure", err)
 			}
 			if d := time.Since(start); d > 15*time.Second {
