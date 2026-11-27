@@ -84,6 +84,9 @@ guarded_preflight() {
 	gdir=$(mktemp -d "$tmp/harness-gate-guarded.XXXXXX")
 	trap 'rm -rf "$gdir"' EXIT
 	GOWORK=off go -C src/harness build -o "$gdir/dsh" ./cmd/dsh || fail "go build ./cmd/dsh failed"
+	# The home must exist: the stage claims harness-home only when it sees the home
+	# read-only (EROFS); an absent home reads as Partial, missing harness-home.
+	mkdir "$gdir/home" || fail "cannot create the scratch home $gdir/home"
 	report=$("$gdir/dsh" --home "$gdir/home" sandbox status 2>"$gdir/stderr") ||
 		fail "dsh sandbox status exited $?: $(cat "$gdir/stderr")"
 	echo "wsl lane: dsh sandbox status (bwrap $bw):"
