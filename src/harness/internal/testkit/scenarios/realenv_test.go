@@ -4,6 +4,7 @@ package scenarios
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -50,22 +51,58 @@ func expand(template string, vars map[string]string) string {
 	return template
 }
 
+// cleanupShellWithin bounds a shell command run from a cleanup callback, where
+// the test's context has already ended.
+const cleanupShellWithin = time.Minute
+
 // shell runs command line through the platform shell (sh -c, or cmd /C on
-// Windows) and returns its combined output.
+// Windows) and returns its output, standard output then standard error.
 func shell(t *testing.T, line string) (string, error) {
 	t.Helper()
-	return shellContext(t.Context(), line)
+	return spawnShell(t, line).wait()
 }
 
-// shellContext is shell bound to ctx instead of the test's context, for
-// commands that run in a cleanup callback (T.Context is canceled by then).
-func shellContext(ctx context.Context, line string) (string, error) {
-	cmd := exec.CommandContext(ctx, "sh", "-c", line)
-	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(ctx, "cmd", "/C", line)
+// shellRun is a shell command line started by spawnShell.
+type shellRun struct {
+	line    string
+	host    *launcher.Host
+	ctx     context.Context
+	cleanup bool
+}
+
+// spawnShell starts line through the platform shell in a process tree of its own
+// (launcher.Spawn), registered under the test, so a scenario past its deadline
+// stops it whole (launcher.StopTrees) and the test's end stops whatever is left.
+// Started from a cleanup callback, its wait is bounded by cleanupShellWithin
+// instead of the test's ended context.
+func spawnShell(t *testing.T, line string) shellRun {
+	t.Helper()
+	return shellRun{
+		line: line, ctx: t.Context(), cleanup: t.Context().Err() != nil,
+		host: launcher.Spawn(t, launcher.Program{Argv: shellArgv(t, line)}),
 	}
-	out, err := cmd.CombinedOutput()
-	return string(out), err
+}
+
+// wait waits for the command and its output. When the test's context ends first
+// (or cleanupShellWithin passes, for a cleanup command), the whole tree, every
+// descendant included, is stopped within launcher's bound and the cause returned.
+func (s shellRun) wait() (string, error) {
+	done, bound := s.ctx.Done(), (<-chan time.Time)(nil)
+	if s.cleanup {
+		done, bound = nil, time.After(cleanupShellWithin)
+	}
+	var err error
+	select {
+	case <-s.host.Process.Exited():
+		if code := s.host.Process.ExitCode(); code != 0 {
+			err = fmt.Errorf("%s: exit %d", s.line, code)
+		}
+	case <-done:
+		err = errors.Join(s.ctx.Err(), s.host.Stop())
+	case <-bound:
+		err = errors.Join(launcher.ErrTimeout, s.host.Stop())
+	}
+	return s.host.Stdout.String() + s.host.Stderr.String(), err
 }
 
 // mustShell is shell that fails the scenario on a non-zero exit.
@@ -81,19 +118,22 @@ func mustShell(t *testing.T, line string) string {
 // running is a shell command line started by startShell.
 type running struct {
 	line string
+	run  shellRun
 	done chan struct{}
 	out  string
 	err  error
 }
 
 // startShell runs line through the platform shell without waiting for it. The
-// command is bound to the test's context and waited for at cleanup.
+// command runs in a process tree of its own (spawnShell), is bound to the test's
+// context and waited for at cleanup.
 func startShell(t *testing.T, line string) *running {
 	t.Helper()
-	r := &running{line: line, done: make(chan struct{})}
+	s := spawnShell(t, line)
+	r := &running{line: line, run: s, done: make(chan struct{})}
 	go func() {
 		defer close(r.done)
-		r.out, r.err = shell(t, line)
+		r.out, r.err = s.wait()
 	}()
 	t.Cleanup(func() { <-r.done })
 	return r
