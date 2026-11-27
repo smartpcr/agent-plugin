@@ -83,10 +83,12 @@ func Boot(ctx context.Context, l Launch) error {
 	return output.Exit(boot.Process(ctx, boot.Options{Request: l.Request, Profile: l.Profile, Stderr: l.Stderr, Terminal: isTerminal(os.Stdin)}))
 }
 
-// isTerminal reports whether f is a character device (a TTY or a console).
+// isTerminal reports whether f is a real terminal: a TTY with termios on Unix, a
+// console on Windows. A character device alone is not enough, as /dev/null and NUL
+// are character devices too, and a supervisor that starts dsh with standard input
+// on one of them must never be asked a question (DH-ADR-CLI-5).
 func isTerminal(f *os.File) bool {
-	st, err := f.Stat()
-	return err == nil && st.Mode()&os.ModeCharDevice != 0
+	return isTTY(f.Fd())
 }
 
 // launcherSpec is the launcher's own command line.
