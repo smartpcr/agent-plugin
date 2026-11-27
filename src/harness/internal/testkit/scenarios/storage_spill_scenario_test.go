@@ -13,9 +13,13 @@ import (
 	"strings"
 	"testing"
 
+	//lint:ignore scenarioimport written before testkit/scenario; its body is kept (architecture.md I-2), so it uses internal/session/event until it moves to the helper (DH-ADR-TOOLCHAIN-8)
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
+	//lint:ignore scenarioimport written before testkit/scenario; its body is kept (architecture.md I-2), so it uses internal/session/store until it moves to the helper (DH-ADR-TOOLCHAIN-8)
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store"
+	//lint:ignore scenarioimport written before testkit/scenario; its body is kept (architecture.md I-2), so it uses internal/storage/home until it moves to the helper (DH-ADR-TOOLCHAIN-8)
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
+	//lint:ignore scenarioimport written before testkit/scenario; its body is kept (architecture.md I-2), so it uses internal/storage/spill until it moves to the helper (DH-ADR-TOOLCHAIN-8)
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/spill"
 )
 

@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/launcher"
+	//lint:ignore scenarioimport checks the legacy shell helpers' process trees (StopCause, exit), which only internal/world/subprocess exposes
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess"
+	//lint:ignore scenarioimport checks the legacy shell helpers' process trees (StopCause, exit), which only internal/world/subprocess/subprocesstest exposes
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess/subprocesstest"
 )
 

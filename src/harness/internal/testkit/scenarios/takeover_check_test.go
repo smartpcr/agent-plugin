@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/launcher"
+	//lint:ignore scenarioimport checks the takeover helper's process exit, which only internal/world/subprocess/subprocesstest exposes
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess/subprocesstest"
 )
 

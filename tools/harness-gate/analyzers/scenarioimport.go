@@ -4,8 +4,6 @@ import (
 	"go/ast"
 	"go/build/constraint"
 	"go/types"
-	"path"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -30,44 +28,19 @@ const ScenariosDir = "internal/testkit/scenarios/"
 // ScenarioAllowed are the harness-internal packages a scenario file may import.
 var ScenarioAllowed = []string{ScenarioPackage, "internal/testkit/launcher"}
 
-// ScenarioLegacy are the scenario files written before the helper that still
-// import harness internals. Stage 6.8 retargets scenarios without rewriting
-// their bodies (architecture.md I-2), so each is exempt by name until it moves
-// to the helper and leaves this list (DH-ADR-TOOLCHAIN-8); the list only
-// shrinks, and any other scenario file is checked.
-var ScenarioLegacy = []string{
-	"boot_two_process_scenario_test.go",
-	"durable_replace_scenario_test.go",
-	"exec_windows_shells_scenario_test.go",
-	"host_report_scenario_test.go",
-	"loader_edit_scenario_test.go",
-	"realenv_check_test.go",
-	"search_scenario_test.go",
-	"storage_image_scenario_test.go",
-	"storage_spill_scenario_test.go",
-	"storage_workspace_scenario_test.go",
-	"store_crash_recovery_scenario_test.go",
-	"store_deletion_scenario_test.go",
-	"store_follow_request_scenario_test.go",
-	"store_two_process_scenario_test.go",
-	"takeover_check_test.go",
-	"toolchain_rehearsal_scenario_test.go",
-	"watch_scenario_test.go",
-}
-
 // ScenarioImportFindings is the scenarioimport predicate. A scenario file is a
 // test file that imports the scenario helper, carries the scenario build tag,
-// or lies in the scenario package (ScenariosDir); a ScenarioLegacy file there
-// is exempt.
+// or lies in the scenario package (ScenariosDir). There is no exemption list: a
+// scenario written before the helper that still imports an internal package
+// accepts each such import with a reasoned //lint:ignore at its site until it
+// moves to the helper (DH-ADR-TOOLCHAIN-8; architecture.md I-2).
 func ScenarioImportFindings(filename string, file *ast.File, _ *types.Info) []Finding {
 	if !isTestFile(filename) {
 		return nil
 	}
-	slash := filepath.ToSlash(filename)
-	inDir := strings.Contains("/"+slash, "/"+ScenariosDir)
-	if inDir && slices.Contains(ScenarioLegacy, path.Base(slash)) {
-		return nil
-	}
+	// Both separators are accepted on every host, as in onespawn, so the verdict
+	// for a path does not depend on the platform the analyzer runs on.
+	inDir := strings.Contains("/"+strings.ReplaceAll(filename, `\`, "/"), "/"+ScenariosDir)
 	internal := map[*ast.ImportSpec]string{}
 	scenario := inDir || scenarioTagged(file)
 	for _, imp := range file.Imports {

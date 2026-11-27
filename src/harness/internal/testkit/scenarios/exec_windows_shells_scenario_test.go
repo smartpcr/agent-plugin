@@ -11,10 +11,15 @@ import (
 	"testing"
 	"time"
 
+	//lint:ignore scenarioimport written before testkit/scenario; its body is kept (architecture.md I-2), so it uses internal/util/herr until it moves to the helper (DH-ADR-TOOLCHAIN-8)
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
+	//lint:ignore scenarioimport written before testkit/scenario; its body is kept (architecture.md I-2), so it uses internal/world/sandbox until it moves to the helper (DH-ADR-TOOLCHAIN-8)
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox"
+	//lint:ignore scenarioimport written before testkit/scenario; its body is kept (architecture.md I-2), so it uses internal/world/shellexec until it moves to the helper (DH-ADR-TOOLCHAIN-8)
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/shellexec"
+	//lint:ignore scenarioimport written before testkit/scenario; its body is kept (architecture.md I-2), so it uses internal/world/shellexec/bash until it moves to the helper (DH-ADR-TOOLCHAIN-8)
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/shellexec/bash"
+	//lint:ignore scenarioimport written before testkit/scenario; its body is kept (architecture.md I-2), so it uses internal/world/subprocess until it moves to the helper (DH-ADR-TOOLCHAIN-8)
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess"
 	"github.com/smartpcr/agent-plugin/src/sdk/protocol"
 )
