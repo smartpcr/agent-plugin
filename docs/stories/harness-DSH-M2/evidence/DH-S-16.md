@@ -82,21 +82,23 @@ which commit (impl.md sec. 7.3).
 | --- | --- | --- | --- | --- | --- |
 | 16.3 | one `dsh headless` prompt on the signed-in Claude Code route (M2-I-1) with an approval answered on the terminal | | | | `manual` |
 | 16.4 | Ctrl-C during a tool call | | | | `manual` |
-| 16.5 | a second `dsh` beside a running host | Seen on Windows 11, release build of `./cmd/dsh` (sha256 `ae03f032...46364`) on an empty scratch home: with a first `dsh web` live (pid 34596, `http://127.0.0.1:3080`), `dsh status` listed that one host; a second `dsh web` printed `opened in the browser of the host (process 34596)` and exited 0 in 160 ms, starting no host of its own. After the first host was killed, `dsh status` named the crash report `reports/report-...-34596.txt` and suggested `dsh --safe web`, then exited 4 `host/not-running`; `dsh crash` printed the same path. Seen on WSL2 Ubuntu 24.04, a release linux/amd64 build at `0420164` (product source identical to `12c2be8`; sha256 `cb2489e7...71f54`) on an ext4 scratch home: with a first `dsh web` live (pid 119241), `ss` showed one listener (`127.0.0.1:3080`, pid 119241) and `dsh status` listed one host. With no browser and a host started without a terminal, a second `dsh web` returned `launch/no-channel`, exiting 4 in 18 ms and starting no host. After `kill -9`, `dsh status` named the crash report and `--safe`, then exited 4; `dsh crash` printed the same path | | 12c2be8 | `manual` |
+| 16.5 | a second `dsh` beside a running host | Seen on Windows 11, release build of `./cmd/dsh` (sha256 `ae03f032...46364`) on an empty scratch home: with a first `dsh web` live (pid 34596, `http://127.0.0.1:3080`), `dsh status` listed that one host; a second `dsh web` printed `opened in the browser of the host (process 34596)` and exited 0 in 160 ms, starting no host of its own. After the first host was killed, `dsh status` named the crash report `reports/report-...-34596.txt` and suggested `dsh --safe web`, then exited 4 `host/not-running`; `dsh crash` printed the same path. Seen on WSL2 Ubuntu 24.04, a release linux/amd64 build at `0420164` (product source identical to `12c2be8`; sha256 `cb2489e7...71f54`) on an ext4 scratch home: with a first `dsh web` live (pid 119241), `ss` showed one listener (`127.0.0.1:3080`, pid 119241) and `dsh status` listed one host. With no browser and a host started without a terminal, a second `dsh web` returned `launch/no-channel`, exiting 4 in 18 ms and starting no host. After `kill -9`, `dsh status` named the crash report and `--safe`, then exited 4; `dsh crash` printed the same path | run by the Forge engineer agent; accepted by the operator (answer to question `dh-s-16-manual-checks`: "Accept both") | 12c2be8 | `manual` |
 
-Logs: [runs/manual-12c2be8/](runs/manual-12c2be8/README.md). Each Operator cell stays empty until the
-operator accepts the recorded run (question `dh-s-16-manual-checks`).
+Logs: [runs/manual-12c2be8/](runs/manual-12c2be8/README.md). The operator accepted the 16.5 run and
+the scratch `dsh secret set` run below (answer to `dh-s-16-manual-checks`: "Accept both").
 
 - **16.3, separate half (M2-I-1).** `dsh secret set` was run with a scratch value at `12c2be8`: the dotted
   name `llm.deepseek.api-key` was refused with usage status 64 and nothing was stored;
   `secret://scratch/check` was stored at revision 1, and `SCRATCH_CHECK --json` updated the same secret
   to revision 2 (`source: store`). The value appears in no file of the home in plain text
-  ([log](runs/manual-12c2be8/check-16.3-secret-set-windows.log)).
+  ([log](runs/manual-12c2be8/check-16.3-secret-set-windows.log)). Accepted by the operator with 16.5.
 - **16.3 headless prompt and 16.4 Ctrl-C: not seen, blocked.** The release build has no model route in its
   catalog. No catalog item wraps `llm/provider/claudecode`, and the only route a built binary can insert
   is `llm.testkit-route`, behind the `testhook` build tag. With no route, `dsh headless` cannot reach the
-  signed-in Claude Code route or make a tool call, so neither check can be seen. The question
-  `dh-s-16-claude-route` is raised to resolve this.
+  signed-in Claude Code route or make a tool call, so neither check can be seen. The operator decided
+  (answer to `dh-s-16-claude-route`: "Pause until a stage adds the Claude Code route to the release
+  build") that both rows stay empty until a later stage puts that route in the release catalog. They are
+  recorded then, on that build. Until then this record cannot pass `ready --built`.
 
 ## Owner defaults (M2-C-4)
 
@@ -106,9 +108,9 @@ stage closes; `--built` refuses a row with no confirmation or no name in By.
 
 | Default | Raised in | Text (impl.md sec. 9.1) | Confirmed | By | Commit |
 | --- | --- | --- | --- | --- | --- |
-| Second `dsh web` reuses the host | I3 Q1 | A second `dsh web` reuses the host on the same address | | | |
-| Windows double-click | I3 Q8 | Nothing special on a double-click on Windows | | | |
-| `dsh headless` progress | U-K2-4 | `dsh headless` progress | | | |
+| Second `dsh web` reuses the host | I3 Q1 | A second `dsh web` reuses the host on the same address | Yes, as written | operator (answer `dh-s-16-owner-defaults`: "Confirm all three") | 12c2be8 |
+| Windows double-click | I3 Q8 | Nothing special on a double-click on Windows | Yes, as written | operator (answer `dh-s-16-owner-defaults`: "Confirm all three") | 12c2be8 |
+| `dsh headless` progress | U-K2-4 | `dsh headless` progress | Yes, as written | operator (answer `dh-s-16-owner-defaults`: "Confirm all three") | 12c2be8 |
 
 ## Evidence record (impl.md sec. 7.3)
 
@@ -156,14 +158,28 @@ At `12c2be8`, Windows 11, from the worktree root:
   change) as a separate mechanical change. After the fix, `gofmt -l` reports only the intentional
   fixture `tools/harness-gate/testdata/unformatted-file/add.go`, and `go vet` passes with `-tags=` and
   `-tags=replay,scenario,bench` on `./internal/testkit/scenarios/`. Both lanes run again on the commit
-  that carries the fix, and their records go here. They were started on that commit, `2da0f59`, on
-  2026-11-27. The Windows lane already shows `PASS gofmt`.
+  that carries the fix, and their records go here. They ran on that commit, `2da0f59`, on 2026-11-27.
+  Both passed `gofmt` and then stopped at gate 2/14, `vet`, so the `self` gate (and with it the
+  gate-root site) still did not run. The Windows record was `win-2da0f59-20261127T1454Z.txt` (exit 1,
+  sha256 `026b007c…146a`, 76 findings) and the WSL record was `wsl-2da0f59-20261127T1454Z.txt` (exit 1,
+  sha256 `065cf279…5376`, 85 findings; the rehearsal exited 0). They are not committed because they are
+  failing records. The log line is `FAIL src/harness: go vet -tags= -vettool=…harness-gate ./...`
+  (also with `-tags=replay,scenario,bench` and `-tags=e2e`). The findings are the project's own
+  analyzers: QG-5 (`goroutine started in a test without registering its release with t.Cleanup`, 61)
+  and QG-4 (`time.Sleep in a test file`, 24). They are in 17 test files inherited from main, for example
+  `internal/cli/lifecycle/lifecycle_test.go:337:2`, `internal/cli/headless_test.go:105:12` and
+  `internal/cli/terminal_linux_test.go:72:3`, plus four `test/e2e/harness-DSH-M2/dh_s_16_*_test.go`
+  files. None of them is in this stage's diff. The one-line gofmt fix above does not cause them: its file
+  is flagged for QG-5 on lines this branch did not change. This is an unrelated gate failure (Full
+  harness gate policy, rule 4), so it is raised as `dh-s-16-vet-inherited` and not investigated here.
 - Manual checks: the commands in [runs/manual-12c2be8/](runs/manual-12c2be8/README.md).
 - The record check, on this record with `Closure status: open`:
   `GOWORK=off go -C tools/harness-gate run . ready --stage DH-S-16 --built --root ../..`. Before this
   update it found 29 blockers. Afterwards the steps are cleared, and these remain open: the seven
   guarded rows (`m1-entry-block`), the manual checks (16.3 and 16.4 not seen, every Operator cell pending)
-  and the three owner defaults.
+  and the three owner defaults. After the operator's answers, the Operator cell of 16.5 and the three
+  owner-default rows are filled, and `ready` finds 13 blockers. Still open: the seven guarded rows, and 16.3 and 16.4 (paused until
+  the release build has the Claude Code route).
 
 Not yet recorded: the lanes' output and `DSH_REQUIRE_SCENARIOS` (`harness-gate require --stage DH-S-16`).
 Step 16.8 runs, once per lane on the stage's merged commit,
@@ -225,10 +241,17 @@ at `12c2be8`:
 H-21 is closed by step 16.10 (`fe13e4e`). Built-not-done: BUNDLE-3 until DH-S-22; CLI-2, CLI-4 and CLI-5
 until DH-S-27; UTIL-8 until DH-S-39. At `12c2be8`, DH-T-TOOLCHAIN-1, -3 and -5 pass, and so does DH-T-TOOLCHAIN-6 at its
 `src/harness` and `acceptance` sites. Its gate-root site (`TestScenarioGatesStopWhenSignedOut`) has not
-run: the lanes at `a91abac` both stopped at the `gofmt` gate on a file inherited from `e3da93b`, which this branch now formats (see Exact tests and commands). The lanes must show all four passing at the closing commit. The step 16.8 cleanup evidence
+run: the lanes at `a91abac` stopped at `gofmt` on a file inherited from `e3da93b`, which this branch now formats, and the lanes at `2da0f59` stopped at `vet` on analyzer findings in 17 inherited test files (`dh-s-16-vet-inherited`; see Exact tests and commands). The lanes must show all four passing at the closing commit. The step 16.8 cleanup evidence
 is still owed.
 
 **Not advanced yet (implementation-plan Stage 6.13, M2-DOD-1).** `built-through` in
 `test/harness/acceptance-index.yaml` stays at `DH-S-11`. The S12..S16 states in
 [closure.md](closure.md) stay `not built` because none of the DH-S-12 to DH-S-16 records passes
 `ready --built` yet, and harness:DSH-M1 is not closed: every M1 record still reads `Closure status: open`.
+
+**Operator decision (answer to `dh-s-16-closure-wait`: "Merge the partial record now and finish closure
+in a later workstream").** This workstream merges the partial record with `Closure status: open`.
+A later workstream does the rest of Stage 6.13 once harness:DSH-M1 is closed, the guarded rows have
+passed and the release build has the Claude Code route. That work is: record 16.3 and 16.4, prove the
+gate-root TOOLCHAIN-6 site through green lanes, advance `built-through` to `DH-S-16`, update the
+closure.md S12..S16 states, and run `ready` then `close`.
