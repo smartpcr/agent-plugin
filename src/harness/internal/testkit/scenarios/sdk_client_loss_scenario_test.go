@@ -138,6 +138,11 @@ func sdk2Drive(mode, status, bin, home string) int {
 	if _, err := sess.Prompt(ctx, sdk.Input{Text: "run the recorded task"}); err != nil {
 		return sdk2Fail(err)
 	}
+	// The receipt only says the turn is queued: the loss is triggered once the
+	// tool's child command runs, which it shows by writing its pid.
+	if err := sdk2ChildRunning(filepath.Join(filepath.Dir(status), "child.pid"), 2*time.Minute); err != nil {
+		return sdk2Fail(err)
+	}
 	data, _ := json.Marshal(sdk2State{Session: sess.ID, Host: cmd.Process.Pid})
 	if err := os.WriteFile(status, data, 0o600); err != nil {
 		return sdk2Fail(err)
@@ -160,6 +165,19 @@ func sdk2Drive(mode, status, bin, home string) int {
 func sdk2Fail(err error) int {
 	fmt.Fprintln(os.Stderr, "sdk2 driver:", err)
 	return 2
+}
+
+// sdk2ChildRunning waits up to within for pidfile to hold a positive pid: the
+// tool's child command writes it once it is running mid-turn.
+func sdk2ChildRunning(pidfile string, within time.Duration) error {
+	for end := time.Now().Add(within); time.Now().Before(end); time.Sleep(100 * time.Millisecond) {
+		if b, err := os.ReadFile(pidfile); err == nil {
+			if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pid > 0 {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("the tool's child command wrote no pid to %s within %s", pidfile, within)
 }
 
 // stallReader reads r until stopped, then blocks every read for good.
@@ -210,6 +228,17 @@ func sdk2Exit(t *testing.T, status string, within time.Duration) int {
 // and its history holds every seq once.
 func sdk2Resumed(t *testing.T, s *scenario.S, mode, home, session string) {
 	t.Helper()
+	ctx := s.Context()
+	h, err := sdk.Start(ctx, sdk.Options{Bin: s.Bin, Home: home, Dir: s.Workspace})
+	if err != nil {
+		t.Fatalf("%s: a new host on %s: %v", mode, home, err)
+	}
+	if _, err := h.Resume(ctx, session, sdk.ResumeOptions{}); err != nil {
+		t.Errorf("%s: a new host cannot resume %s: %v", mode, session, err)
+	}
+	if err := h.Close(context.WithoutCancel(ctx)); err != nil {
+		t.Errorf("%s: close the resuming host: %v", mode, err)
+	}
 	evs := storedHistory(t, s, home, session)
 	seen := map[int64]bool{}
 	for _, e := range evs {

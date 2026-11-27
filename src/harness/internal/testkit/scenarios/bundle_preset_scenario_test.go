@@ -5,6 +5,7 @@ package scenarios
 import (
 	"bytes"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -15,67 +16,75 @@ import (
 
 // TestOneShotJobOnItsOwnKey is the DH-E-BUNDLE-1 scenario
 // (docs/harness/areas/bundle-preset.md; DH-D-BUNDLE-3; tech-spec sec. 4.5:
-// authored in DH-S-16, run in DH-S-48): a one-shot job runs on its own key and
-// resumes under its recorded preset.
+// authored in DH-S-16, run in DH-S-48): a one-shot job runs on its own
+// credential and resumes under its recorded preset. Under OWNER-2 no API key
+// exists anywhere (tech-spec sec. 4.3, M2-NG-2), so "its own key" is the
+// signed-in Claude Code client of the job's own environment: the home's earlier
+// web run is made signed out and the job succeeds only on the sign-in it brings.
 //
 // Given the built dsh with the real sandbox backend, a home in which a web run
-// saved a different, invalid key and created a blank session
-// (DSH_SCENARIO_BUNDLE1_SETUP), a profile layer declaring lean (extends standard,
-// removes the web tool), a real model API whose valid key is only in the job's
-// environment, a workspace with one text file,
+// made with the client signed out (its configuration home an empty directory)
+// saved its settings and created a blank session (DSH_SCENARIO_BUNDLE1_SETUP), a
+// profile layer declaring lean (extends standard, removes the web tool) on the
+// signed-in Claude Code route, the user signed in to that client in the job's
+// environment only, a workspace with one text file,
 // When (1) dsh headless --json runs a task reading the file; (2) that session is
 // resumed with a second task; (3) lean is selected for the blank session in the
 // browser, one prompt is sent, the web host stops and the session is resumed with
 // dsh headless; (4) lean is removed from the layer and the session resumed again,
-// Then (1) succeeds on the environment key and the saved key file is unchanged;
+// Then (1) succeeds on the environment's sign-in -- its settlement records the
+// claude-code client invocation -- and the home's saved user layer is unchanged;
 // (2) continues the same session; (3) the request header lists the lean tools,
 // not the removed one; (4) the run is refused before any model request, naming
 // the missing preset and the available ones.
-// Cleanup: the home and the workspace are removed by scenario.Run.
+// Cleanup: the home, the workspace and the empty configuration home are removed
+// by scenario.Run; nothing of the user's sign-in is read or changed.
 //
 // Inputs: DSH_SCENARIO_BUNDLE1_LAYER and _BASE_LAYER, layer template files
-// ({workspace}) with and without lean; DSH_SCENARIO_BUNDLE1_KEY, "NAME=value" of
-// the valid key; DSH_SCENARIO_BUNDLE1_KEY_FILE, the saved key file over {home};
-// DSH_SCENARIO_BUNDLE1_SETUP, a command over {home} making the invalid-key home
-// and printing the blank session id last; DSH_SCENARIO_BUNDLE1_SELECT, a command
-// over {home} and {session} selecting lean in the browser, sending one prompt and
-// stopping the web host; DSH_SCENARIO_BUNDLE1_REMOVED_TOOL, the tool lean removes.
+// ({workspace}) with and without lean; DSH_SCENARIO_BUNDLE1_SETUP, a command over
+// {home} and {signed_out} (a NAME=dir assignment the command runs dsh web
+// under) making the home and printing the blank session id last;
+// DSH_SCENARIO_BUNDLE1_SELECT, a command over {home} and {session} selecting lean
+// in the browser, sending one prompt and stopping the web host;
+// DSH_SCENARIO_BUNDLE1_REMOVED_TOOL, the tool lean removes.
 //
 //dsh:scenario DH-E-BUNDLE-1
 func TestOneShotJobOnItsOwnKey(t *testing.T) {
 	scenario.Run(t, "DH-E-BUNDLE-1", scenario.Needs{
 		Bin: true, Deadline: 45 * time.Minute,
-		Env: []string{"DSH_SCENARIO_BUNDLE1_LAYER", "DSH_SCENARIO_BUNDLE1_BASE_LAYER", "DSH_SCENARIO_BUNDLE1_KEY", "DSH_SCENARIO_BUNDLE1_KEY_FILE", "DSH_SCENARIO_BUNDLE1_SETUP", "DSH_SCENARIO_BUNDLE1_SELECT", "DSH_SCENARIO_BUNDLE1_REMOVED_TOOL"},
+		Env: []string{"DSH_SCENARIO_BUNDLE1_LAYER", "DSH_SCENARIO_BUNDLE1_BASE_LAYER", "DSH_SCENARIO_BUNDLE1_SETUP", "DSH_SCENARIO_BUNDLE1_SELECT", "DSH_SCENARIO_BUNDLE1_REMOVED_TOOL"},
 	}, func(s *scenario.S) {
-		vars := map[string]string{"workspace": s.Workspace, "home": s.Home}
+		vars := map[string]string{"workspace": s.Workspace, "home": s.Home, "signed_out": claudeCodeRoute.signedOut(t)}
 		layer := func(input string) {
 			for _, p := range []string{"web", "headless"} {
 				profileLayer(t, s.Home, p, layerInput(t, input, "a profile layer", vars))
 			}
 		}
 		layer("DSH_SCENARIO_BUNDLE1_LAYER")
-		if err := os.WriteFile(s.Workspace+string(os.PathSeparator)+"note.txt", []byte("bundle1 note\n"), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(s.Workspace, "note.txt"), []byte("bundle1 note\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		blank := lastLine(operatorStep(t, "DSH_SCENARIO_BUNDLE1_SETUP", "makes the invalid-key home", vars))
-		keyFile := expand(need(t, "DSH_SCENARIO_BUNDLE1_KEY_FILE", "the saved key file"), vars)
-		saved, err := os.ReadFile(keyFile)
-		if err != nil {
-			t.Fatalf("the saved key file: %v", err)
-		}
-		env := []string{"DSH_HOME=" + s.Home, need(t, "DSH_SCENARIO_BUNDLE1_KEY", "the valid key")}
+		blank := lastLine(operatorStep(t, "DSH_SCENARIO_BUNDLE1_SETUP", "makes the home with a signed-out web run", vars))
+		userLayer := filepath.Join(s.Home, "config", "layer.yml")
+		saved, _ := os.ReadFile(userLayer)
+		env := []string{"DSH_HOME=" + s.Home}
 		removed := strings.ToLower(need(t, "DSH_SCENARIO_BUNDLE1_REMOVED_TOOL", "the tool lean removes"))
 
 		r := dshIn(t, s, 10*time.Minute, env, "headless", "--json", "Read note.txt and quote it.")
-		lines := exportLines(t, r.stdout)
-		if r.code != 0 || len(lines) == 0 {
+		if r.code != 0 {
 			t.Fatalf("(1) the job exited %d:\n%s", r.code, r.stderr)
 		}
-		job, _ := lines[len(lines)-1]["sessionId"].(string)
-		if after, _ := os.ReadFile(keyFile); !bytes.Equal(after, saved) {
-			t.Error("(1) the job changed the saved key file")
+		job := runResultLine(t, r.stdout).Session
+		if after, _ := os.ReadFile(userLayer); !bytes.Equal(after, saved) {
+			t.Error("(1) the job changed the home's saved user layer")
 		}
-		turns := len(ofType(storedHistory(t, s, s.Home, job), "turn/end"))
+		history := storedHistory(t, s, s.Home, job)
+		settled := ofType(history, "assistant/message")
+		if len(settled) == 0 {
+			t.Fatalf("(1) session %s holds no assistant/message", job)
+		}
+		requireInvocation(t, settled[len(settled)-1], claudeCodeRoute)
+		turns := len(ofType(history, "turn/end"))
 		if r := dshIn(t, s, 10*time.Minute, env, "headless", "--session", job, "Say what you read before."); r.code != 0 {
 			t.Errorf("(2) the resumed job exited %d:\n%s", r.code, r.stderr)
 		}
@@ -110,7 +119,8 @@ func TestOneShotJobOnItsOwnKey(t *testing.T) {
 // edit while a session runs.
 //
 // Given the web profile on an empty home with the lean declaration of
-// DH-E-BUNDLE-1 in its profile layer, a real browser, a real model API, a
+// DH-E-BUNDLE-1 in its profile layer, a real browser, the signed-in Claude Code
+// route (no API key: tech-spec sec. 4.3), a
 // workspace,
 // When (1) one session is created with standard and one with lean and both are
 // prompted; (2) while the first is in a turn the web tool is removed from

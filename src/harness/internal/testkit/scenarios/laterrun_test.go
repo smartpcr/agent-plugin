@@ -5,7 +5,9 @@ package scenarios
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/launcher"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/scenario"
+	"github.com/smartpcr/agent-plugin/src/sdk/jsonrpc"
 	"github.com/smartpcr/agent-plugin/src/sdk/protocol"
 	"github.com/smartpcr/agent-plugin/src/sdk/sdk"
 )
@@ -135,29 +138,63 @@ func dshIn(t *testing.T, s *scenario.S, within time.Duration, env []string, args
 	return dshRun{stdout: h.Stdout.String(), stderr: h.Stderr.String(), code: h.Process.ExitCode(), took: time.Since(h.Started)}
 }
 
-// storedHistory reads every event of session in home, from seq 0, through the Go
-// client on a host of its own; the session is resumed, so no other host may hold
-// it.
+// historyCall is one JSON-RPC call; *jsonrpc.Conn's Call satisfies it.
+type historyCall func(ctx context.Context, method string, params, result any) error
+
+// historyPages reads every event of session from seq 0 through session/history,
+// following More until the host says the history is complete: a page is capped
+// by count and by bytes (sdkserver session/history), so one call is not enough.
+func historyPages(ctx context.Context, call historyCall, session string) ([]protocol.Event, error) {
+	var evs []protocol.Event
+	for after := int64(0); ; {
+		var page protocol.SessionHistoryResult
+		if err := call(ctx, "session/history", protocol.SessionHistoryParams{SessionID: session, AfterSeq: after, Limit: 1000}, &page); err != nil {
+			return evs, err
+		}
+		evs = append(evs, page.Events...)
+		if !page.More {
+			return evs, nil
+		}
+		if len(page.Events) == 0 {
+			return evs, fmt.Errorf("session/history of %s after seq %d said more but returned no event", session, after)
+		}
+		after = page.Events[len(page.Events)-1].Seq
+	}
+}
+
+// storedHistory reads every event of session in home, from seq 0, on an sdk
+// host of its own over raw JSON-RPC. session/history needs no lease, so it reads
+// a session another host (a running dsh web) owns, and it neither resumes nor
+// changes the session.
 func storedHistory(t *testing.T, s *scenario.S, home, session string) []protocol.Event {
 	t.Helper()
 	ctx := s.Context()
-	h, err := sdk.Start(ctx, sdk.Options{Bin: s.Bin, Home: home, Dir: s.Workspace})
+	cmd := exec.Command(s.Bin, "--home", home, "--profile", "sdk")
+	cmd.Dir, cmd.Env = s.Workspace, append(os.Environ(), "DSH_HOME="+home)
+	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		t.Fatalf("a host on %s: %v", home, err)
+		t.Fatal(err)
 	}
-	defer func() {
-		if err := h.Close(context.WithoutCancel(ctx)); err != nil {
-			t.Errorf("close the host on %s: %v", home, err)
-		}
-	}()
-	sess, err := h.Resume(ctx, session, sdk.ResumeOptions{})
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		t.Fatalf("resume %s: %v", session, err)
+		t.Fatal(err)
 	}
-	evs, err := sess.History(ctx, -1, 5000)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("a history host on %s: %v", home, err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill() })
+	c := jsonrpc.Serve(ctx, stdout, stdin, jsonrpc.Options{})
+	var init protocol.InitializeResult
+	if err := c.Call(ctx, protocol.InitializeMethod, protocol.InitializeParams{ProtocolVersions: []int{protocol.Version}, ClientInfo: protocol.Implementation{Name: "dsh-scenario-history", Version: "1"}}, &init); err != nil {
+		t.Fatalf("initialize the history host on %s: %v", home, err)
+	}
+	evs, err := historyPages(ctx, c.Call, session)
 	if err != nil {
 		t.Fatalf("history of %s: %v", session, err)
 	}
+	_ = c.Call(ctx, "shutdown", protocol.Empty{}, nil)
+	_ = stdin.Close()
+	_ = cmd.Wait()
 	return evs
 }
 
@@ -182,6 +219,30 @@ func newestSession(t *testing.T, s *scenario.S, home string) string {
 func lastLine(out string) string {
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	return strings.TrimSpace(lines[len(lines)-1])
+}
+
+// headlessResult is the run/result line dsh headless --json writes last
+// (internal/cli/headless runResult).
+type headlessResult struct {
+	Type    string `json:"type"`
+	Session string `json:"session"`
+	Turn    int    `json:"turn"`
+	Reason  string `json:"reason"`
+	Text    string `json:"text"`
+}
+
+// runResultLine decodes the last line of a --json run's stdout as its run/result
+// and fails unless it is one naming a session.
+func runResultLine(t *testing.T, stdout string) headlessResult {
+	t.Helper()
+	var r headlessResult
+	if strings.TrimSpace(stdout) == "" {
+		t.Fatal("the --json run wrote no result line")
+	}
+	if err := json.Unmarshal([]byte(lastLine(stdout)), &r); err != nil || r.Type != "run/result" || r.Session == "" {
+		t.Fatalf("the last --json line is not a run/result naming its session (%v):\n%s", err, stdout)
+	}
+	return r
 }
 
 // exportLines parses every non-blank line of out as one JSON object and returns

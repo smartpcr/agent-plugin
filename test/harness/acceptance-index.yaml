@@ -408,19 +408,20 @@ stages:
     # scenario_required_scenario_test.go.
     - id: DH-E-UTIL-2
       authored: DH-S-16
-      credential: none
+      credential: claude-session
       requires: [DH-S-16]
   # Venue: later (DH-S-48, after harness:DSH-M2: the browser preset choice, the
   # settings page and the release archive). M2 authors DH-E-BUNDLE-1, DH-E-BUNDLE-2,
   # DH-E-BUNDLE-4 and DH-E-API-5 for it (tech-spec sec. 4.5).
   DH-S-48:
-    # A one-shot job on its own key, resumed under its recorded preset, and two
+    # A one-shot job on its own sign-in, resumed under its recorded preset, and two
     # presets in one host with an edit mid-turn (bundle-preset.md DH-E-BUNDLE-1,
     # DH-E-BUNDLE-2); authored in DH-S-16 (Stage 6.11):
-    # bundle_preset_scenario_test.go. BUNDLE-1's key comes from its own input.
+    # bundle_preset_scenario_test.go. No API key exists (tech-spec sec. 4.3): both
+    # run on the signed-in Claude Code route.
     - id: DH-E-BUNDLE-1
       authored: DH-S-16
-      credential: none
+      credential: claude-session
       requires: [DH-S-16, DH-S-21, DH-S-48]
     - id: DH-E-BUNDLE-2
       authored: DH-S-16

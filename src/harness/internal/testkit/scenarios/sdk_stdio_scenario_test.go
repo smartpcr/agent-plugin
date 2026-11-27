@@ -110,22 +110,26 @@ func TestSDKDrivesBuiltBinaryOverStdio(t *testing.T) {
 		}
 		p.duplicateAnswer(t)
 
-		// The cancel: its reply must follow the turn's turn/end on the wire.
+		// The cancel: its reply must follow the turn's turn/end on the wire. The
+		// cursor is taken before the prompt, so the step/start awaited is this
+		// turn's and not one of an earlier run.
+		cursor := p.inbound.lines()
 		if _, err := sess.Prompt(ctx, sdk.Input{Text: long}); err != nil {
 			t.Fatal(err)
 		}
-		p.awaitEvent(t, "step/start", 0)
+		p.awaitEvent(t, "step/start", cursor)
 		mark := p.inbound.lines()
 		if err := sess.Cancel(ctx, sdk.CancelOptions{Inbox: "discard"}); err != nil {
 			t.Fatalf("cancel: %v", err)
 		}
 		p.cancelAfterTurnEnd(t, mark)
 
-		// The kill mid-turn.
+		// The kill mid-turn, once this turn's own step has started.
+		cursor = p.inbound.lines()
 		if _, err := sess.Prompt(ctx, sdk.Input{Text: long}); err != nil {
 			t.Fatal(err)
 		}
-		p.awaitEvent(t, "step/start", p.inbound.lines())
+		p.awaitEvent(t, "step/start", cursor)
 		pid := p.cmd.Process.Pid
 		if err := p.cmd.Process.Kill(); err != nil {
 			t.Fatal(err)
@@ -310,17 +314,9 @@ func sdk1Resume(t *testing.T, s *scenario.S, session string) ([]protocol.Event, 
 	if err := c.Call(ctx, "session/resume", protocol.SessionResumeParams{SessionID: session}, &res); err != nil {
 		t.Fatalf("resume: %v", err)
 	}
-	var evs []protocol.Event
-	for after := int64(0); ; {
-		var page protocol.SessionHistoryResult
-		if err := c.Call(ctx, "session/history", protocol.SessionHistoryParams{SessionID: session, AfterSeq: after, Limit: 1000}, &page); err != nil {
-			t.Fatal(err)
-		}
-		evs = append(evs, page.Events...)
-		if !page.More || len(page.Events) == 0 {
-			break
-		}
-		after = page.Events[len(page.Events)-1].Seq
+	evs, err := historyPages(ctx, c.Call, session)
+	if err != nil {
+		t.Fatal(err)
 	}
 	_ = c.Call(ctx, "shutdown", protocol.Empty{}, nil)
 	_ = stdin.Close()

@@ -30,7 +30,8 @@ import (
 // proxy in the foreground, one requested host per log line;
 // DSH_SCENARIO_BUNDLE3_PROXY_URL, its address; DSH_SCENARIO_BUNDLE3_MODEL_HOST, the
 // provider's host; DSH_SCENARIO_BUNDLE3_LAYER, a layer template file
-// ({workspace}) on the real API; DSH_SCENARIO_BUNDLE3_WEB_PROMPT, a command over
+// ({workspace}) on the signed-in Claude Code route (no API key: tech-spec sec.
+// 4.3); DSH_SCENARIO_BUNDLE3_WEB_PROMPT, a command over
 // {origin} and {prompt} sending one prompt through the browser and waiting for
 // its answer.
 //
@@ -44,7 +45,7 @@ func TestProfilesSendOnlyModelRequests(t *testing.T) {
 		startShellTree(t, expand(need(t, "DSH_SCENARIO_BUNDLE3_PROXY", "the recording proxy"), map[string]string{"log": log}))
 		proxy := need(t, "DSH_SCENARIO_BUNDLE3_PROXY_URL", "the proxy's address")
 		model := need(t, "DSH_SCENARIO_BUNDLE3_MODEL_HOST", "the model provider's host")
-		layer := layerInput(t, "DSH_SCENARIO_BUNDLE3_LAYER", "a layer on the real API", map[string]string{"workspace": s.Workspace})
+		layer := layerInput(t, "DSH_SCENARIO_BUNDLE3_LAYER", "a layer on the signed-in Claude Code route", map[string]string{"workspace": s.Workspace})
 		for _, p := range []string{"web", "headless", "sdk"} {
 			profileLayer(t, s.Home, p, layer)
 		}
