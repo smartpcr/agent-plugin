@@ -39,12 +39,10 @@ func runSandboxStatus(st *state, _ *cmdline.Values) error {
 		return err
 	}
 	defer t.close(st.env.Stderr)
-	t.build("sandbox.local")
-	svc, err := local.New(st.ctx, local.Config{Home: t.home.Root()}, local.Platform())
+	svc, err := adminService(t, local.Name, sandbox.ServiceKey)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = svc.Close() }()
 	statuses := svc.Describe(st.ctx)
 	c := sandbox.Expect(statuses)
 	doc := sandboxStatusDoc{State: c.State, Backend: c.Backend, Missing: orEmpty(c.Missing), Exposed: orEmpty(c.Exposed),

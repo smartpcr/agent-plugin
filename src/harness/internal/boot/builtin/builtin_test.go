@@ -17,7 +17,7 @@ func TestSetsBuild(t *testing.T) {
 	families := map[string][]catalog.Item{
 		"boot": Boot(), "host": Host(), "util": Util(),
 		"session": Session(), "agent": Agent(), "llm": LLM(), "tools": Tools(),
-		"fs": FS(), "sandbox": Sandbox(), "permission": Permission(),
+		"fs": FS(), "sandbox": Sandbox(), "human": Human(), "permission": Permission(),
 		"wire": Wire(), "cli": CLI(), "storage": Storage(), "ui": UI(),
 	}
 	total := 0

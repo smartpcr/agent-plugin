@@ -86,6 +86,7 @@ func newTree() *tree {
 					Options: []cmdline.Option{jsonOption()},
 					Args: cmdline.Args{Name: "name", Help: "The secret's name, such as DEEPSEEK_API_KEY", Min: 1, Max: 1,
 						Extra: "a secret value is read from standard input, never from an argument"},
+					Sensitive: true,
 					Examples: []cmdline.Example{
 						{Command: "printf %s \"$KEY\" | dsh secret set DEEPSEEK_API_KEY"},
 						{Command: "Get-Content key.txt | dsh secret set secret://deepseek/api-key"},

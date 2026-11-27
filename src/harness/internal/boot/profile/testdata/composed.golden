@@ -18,6 +18,17 @@
   {
     "id": "session.store",
     "name": "session.store"
+  },
+  {
+    "id": "secrets",
+    "name": "human.secrets",
+    "config": {
+      "backend": "file"
+    }
+  },
+  {
+    "id": "sandbox",
+    "name": "sandbox.local"
   }
 ]
 # core

@@ -15,8 +15,10 @@ host.listen         A18   listen.Config            host.listen                  
 host.sharing        A18   sharing.Config           -                                        -     all
 host.stream         A18   -                        host.stream                              -     all
 host.web            A18   web.Config               host.web                                 -     all
+human.secrets       A17   file.Config              secret.store                             -     all
 llm.runtime         A04   -                        llm.runtime                              -     all
 permission.presets  A17   permission.Config        permission.presets                       -     all
+sandbox.local       A10   local.Config             sandbox                                  -     all
 sandbox.policy      A10   policy.Config            sandbox.policy                           -     all
 session.core        A01   -                        session.core                             -     all
 session.scope       A01   -                        session.scope                            -     all

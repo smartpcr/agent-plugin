@@ -5,6 +5,9 @@ package cli
 // in an error, so a value typed in the wrong place does not reach a stream.
 
 import (
+	"bufio"
+	"context"
+	"errors"
 	"io"
 	"strings"
 
@@ -40,21 +43,83 @@ func secretRef(name string) (secret.Ref, error) {
 	return ref, nil
 }
 
-// readSecretValue reads the value from in, without one trailing line end.
-func readSecretValue(in io.Reader) (secret.Value, error) {
+// secretPrompt is written to standard error before a value is typed on a terminal.
+const secretPrompt = "secret value (input hidden, Enter ends it): "
+
+// fdReader is standard input when it is a file: a terminal, a pipe or a file.
+type fdReader interface {
+	io.Reader
+	Fd() uintptr
+}
+
+// readSecretValue reads the value from in, without one trailing line end. On a
+// terminal the echo is off while the one line is typed, Enter ends it, and the
+// terminal is put back as it was; a pipe or a file is read to its end.
+func readSecretValue(ctx context.Context, in io.Reader, prompt io.Writer) (secret.Value, error) {
 	if in == nil {
 		in = strings.NewReader("")
 	}
-	data, err := io.ReadAll(io.LimitReader(in, maxSecretValue+1))
+	if f, ok := in.(fdReader); ok {
+		restore, tty, err := hideEcho(f.Fd())
+		if tty {
+			if err != nil {
+				return secret.Value{}, herr.Wrap(secret.ReasonSource, err, "switch the terminal's echo off")
+			}
+			return readHidden(ctx, f, prompt, restore)
+		}
+	}
+	data, err := io.ReadAll(io.LimitReader(in, maxSecretValue+3))
 	if err != nil {
 		return secret.Value{}, herr.Wrap(secret.ReasonSource, err, "read the secret value from standard input")
 	}
-	if len(data) > maxSecretValue {
+	return secretValueOf(string(data))
+}
+
+// readHidden reads one line typed on the terminal in, whose echo is off, then
+// restores the terminal: when the line ends, and when ctx ends first.
+func readHidden(ctx context.Context, in io.Reader, prompt io.Writer, restore func() error) (secret.Value, error) {
+	if prompt == nil {
+		prompt = io.Discard
+	}
+	_, _ = io.WriteString(prompt, secretPrompt)
+	type line struct {
+		text string
+		err  error
+	}
+	done := make(chan line, 1)
+	go func() {
+		text, err := bufio.NewReader(io.LimitReader(in, maxSecretValue+2)).ReadString('\n')
+		done <- line{text, err}
+	}()
+	var l line
+	select {
+	case l = <-done:
+	case <-ctx.Done():
+		l.err = ctx.Err()
+	}
+	rerr := restore()
+	_, _ = io.WriteString(prompt, "\n")
+	if l.err != nil && !(errors.Is(l.err, io.EOF) && l.text != "") {
+		if errors.Is(l.err, io.EOF) {
+			return secretValueOf("")
+		}
+		return secret.Value{}, herr.Wrap(secret.ReasonSource, l.err, "read the secret value from the terminal")
+	}
+	if rerr != nil {
+		return secret.Value{}, herr.Wrap(secret.ReasonSource, rerr, "restore the terminal")
+	}
+	return secretValueOf(l.text)
+}
+
+// secretValueOf is the value read, without one trailing line end: refused when
+// empty or longer than maxSecretValue.
+func secretValueOf(data string) (secret.Value, error) {
+	v := strings.TrimSuffix(strings.TrimSuffix(data, "\n"), "\r")
+	if len(v) > maxSecretValue {
 		return secret.Value{}, herr.Newf(secret.ReasonSource, "the secret value on standard input is longer than %d bytes", maxSecretValue)
 	}
-	v := strings.TrimSuffix(strings.TrimSuffix(string(data), "\n"), "\r")
 	if v == "" {
-		return secret.Value{}, herr.New(secret.ReasonEmpty, "no secret value on standard input: pipe it in, e.g. `printf %s \"$KEY\" | dsh secret set DEEPSEEK_API_KEY`")
+		return secret.Value{}, herr.New(secret.ReasonEmpty, "no secret value on standard input: type it, or pipe it in, e.g. `printf %s \"$KEY\" | dsh secret set DEEPSEEK_API_KEY`")
 	}
 	return secret.NewValue(v), nil
 }
@@ -76,12 +141,14 @@ func runSecretSet(st *state, v *cmdline.Values) error {
 		return err
 	}
 	defer t.close(st.env.Stderr)
-	value, err := readSecretValue(st.env.Stdin)
+	value, err := readSecretValue(st.ctx, st.env.Stdin, st.env.Stderr)
 	if err != nil {
 		return err
 	}
-	t.build("human.secrets")
-	store := secret.NewStore(file.New(t.home.Secrets(), file.Options{}))
+	store, err := adminService(t, file.Name, secret.Key)
+	if err != nil {
+		return err
+	}
 	rev, err := store.Set(st.ctx, ref, value, secret.AnyRevision)
 	if err != nil {
 		return err

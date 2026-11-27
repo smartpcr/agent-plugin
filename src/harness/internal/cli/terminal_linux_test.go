@@ -1,0 +1,140 @@
+package cli
+
+import (
+	"bytes"
+	"context"
+	"os"
+	"runtime"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"golang.org/x/sys/unix"
+
+	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/launch"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/cli/output"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/human/secret"
+)
+
+// openPTY opens a pty pair; neither end becomes this process's controlling
+// terminal.
+func openPTY(t *testing.T) (ptm, pts *os.File) {
+	t.Helper()
+	ptm, err := os.OpenFile("/dev/ptmx", os.O_RDWR|unix.O_NOCTTY, 0)
+	if err != nil {
+		t.Skipf("no pseudo-terminal: %v", err)
+	}
+	fd := int(ptm.Fd())
+	n, err := unix.IoctlGetInt(fd, unix.TIOCGPTN)
+	if err == nil {
+		err = unix.IoctlSetPointerInt(fd, unix.TIOCSPTLCK, 0)
+	}
+	if err == nil {
+		pts, err = os.OpenFile("/dev/pts/"+strconv.Itoa(n), os.O_RDWR|unix.O_NOCTTY, 0)
+	}
+	if err != nil {
+		_ = ptm.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = pts.Close(); _ = ptm.Close() })
+	return ptm, pts
+}
+
+// lockedBuffer is a buffer two goroutines share.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+// waitFor polls until s() contains want.
+func waitFor(t *testing.T, what string, s func() string, want string) {
+	t.Helper()
+	for deadline := time.Now().Add(30 * time.Second); !strings.Contains(s(), want); {
+		if time.Now().After(deadline) {
+			t.Fatalf("no %q on %s; got %q", want, what, s())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// DH-T-CLI-16 on a pseudo-terminal: `dsh secret set` prompts on standard error,
+// the value typed is not echoed, Enter ends it (the terminal stays open), the
+// store holds it, and the terminal's modes are as they were, echo on again.
+//
+//dsh:test DH-T-CLI-16
+func TestSecretSetOnPseudoTerminalHidesInput(t *testing.T) {
+	ptm, pts := openPTY(t)
+	before, err := unix.IoctlGetTermios(int(pts.Fd()), unix.TCGETS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Lflag&unix.ECHO == 0 || before.Lflag&unix.ICANON == 0 {
+		t.Fatalf("the pty starts without echo or line input: lflag %#x", before.Lflag)
+	}
+	var screen lockedBuffer
+	go func() {
+		buf := make([]byte, 256)
+		for {
+			n, err := ptm.Read(buf)
+			_, _ = screen.Write(buf[:n])
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	root := t.TempDir()
+	var out, errOut lockedBuffer
+	env := Env{
+		Request: launch.Request{Args: []string{"dsh", "--home", root, "secret", "set", "TEST_K"}, Cwd: t.TempDir(), OS: runtime.GOOS},
+		Stdin:   pts, Stdout: &out, Stderr: &errOut,
+	}
+	status := make(chan int, 1)
+	go func() { status <- Main(context.Background(), env) }()
+	waitFor(t, "standard error", errOut.String, secretPrompt)
+	if _, err := ptm.WriteString("sk-typed-value\n"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case s := <-status:
+		if s != output.OK || out.String() != "stored secret://test/k (revision 1)\n" {
+			t.Fatalf("secret set: status %d, stdout %q, stderr %q", s, out.String(), errOut.String())
+		}
+	case <-time.After(time.Minute):
+		t.Fatal("Enter did not end the value")
+	}
+	if !stored(t, root, secret.MustParse("secret://test/k")) {
+		t.Error("the store does not hold secret://test/k")
+	}
+
+	after, err := unix.IoctlGetTermios(int(pts.Fd()), unix.TCGETS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *after != *before {
+		t.Errorf("terminal modes after = %+v, want them restored to %+v", *after, *before)
+	}
+	// Echo is back: a line typed now appears on the screen, after which anything
+	// the value would have echoed has been read.
+	if _, err := ptm.WriteString("echo-is-back\n"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the terminal", screen.String, "echo-is-back")
+	if strings.Contains(screen.String()+out.String()+errOut.String(), "sk-typed-value") {
+		t.Errorf("the typed value was shown: screen %q, stdout %q, stderr %q", screen.String(), out.String(), errOut.String())
+	}
+}

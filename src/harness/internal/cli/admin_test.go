@@ -3,15 +3,20 @@ package cli
 import (
 	"bytes"
 	"context"
+	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/launch"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/profile"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/cli/output"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human/secret"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human/secret/file"
@@ -32,6 +37,14 @@ func adminRun(t *testing.T, stdin string, args ...string) run {
 	status := Main(context.Background(), env)
 	return run{status, out.String(), errOut.String()}
 }
+
+// The components of the admin composition's active entries: all of them for a
+// writing command, and without the entries that write into the home for a
+// read-only one.
+const (
+	writeTrace = "boot.logging,host.sharing,session.store,human.secrets,sandbox.local"
+	readTrace  = "boot.logging,host.sharing,sandbox.local"
+)
 
 // stored reports whether the managed store of root holds ref.
 func stored(t *testing.T, root string, ref secret.Ref) bool {
@@ -55,8 +68,8 @@ func TestSecretSetReadsStandardInputOnly(t *testing.T) {
 	if r.status != output.OK || r.stdout != "stored secret://test/k (revision 1)\n" {
 		t.Fatalf("secret set: %+v", r)
 	}
-	if r.stderr != tracePrefix+"human.secrets\n" {
-		t.Errorf("trace = %q, want the secret store only", r.stderr)
+	if r.stderr != tracePrefix+writeTrace+"\n" {
+		t.Errorf("trace = %q, want the admin composition %s", r.stderr, writeTrace)
 	}
 	if !stored(t, root, ref) {
 		t.Fatal("the store does not hold secret://test/k")
@@ -67,10 +80,19 @@ func TestSecretSetReadsStandardInputOnly(t *testing.T) {
 		{"--home", other, "secret", "set", "TEST_K", "sk-in-argv"},
 		{"--home", other, "secret", "set", "sk-in-argv"},
 		{"--home", other, "secret", "set", "secret://test/k", "--json", "sk-in-argv"},
+		{"--home", other, "secret", "set", "TEST_K", "--json=sk-in-argv"},
+		{"--home", other, "secret", "set", "TEST_K", "--sk-in-argv"},
+		{"--home", other, "secret", "set", "TEST_K", "-sk-in-argv"},
+		{"--home", other, "secret", "set", "TEST_K", "---sk-in-argv"},
+		{"--home", other, "secret", "set", "TEST_K", "--json", "--sk-in-argv"},
+		{"--home", other, "secret", "set", "--json", "TEST_K", "--sk-in-argv=v"},
 	} {
 		r := adminRun(t, "", args...)
 		if r.status != output.Usage || strings.Contains(r.stdout+r.stderr, "sk-in-argv") {
 			t.Errorf("dsh %v: status %d, want %d without the value on a stream: %+v", args, r.status, output.Usage, r)
+		}
+		if slices.Contains(args, "--json") && !strings.Contains(r.stdout+r.stderr, `"cli/usage"`) {
+			t.Errorf("dsh %v: no JSON usage error: %+v", args, r)
 		}
 	}
 	if r := adminRun(t, "\n", "--home", other, "secret", "set", "TEST_K"); r.status == output.OK || stored(t, other, ref) {
@@ -145,20 +167,19 @@ func TestAdminTreeBuildsNoAgent(t *testing.T) {
 	}
 	trace := traceLine(t, r.stderr)
 	for _, part := range strings.Split(trace, ",") {
-		if strings.HasPrefix(part, "agent.") || strings.HasPrefix(part, "llm.") || strings.HasPrefix(part, "wire.") ||
-			strings.HasPrefix(part, "cli.") || strings.HasPrefix(part, "plugin.") || strings.HasPrefix(part, "host.") {
+		if profile.Acting(part, part) || strings.HasPrefix(part, "llm.") {
 			t.Errorf("sandbox status built %s", part)
 		}
 	}
-	if trace != "sandbox.local" {
-		t.Errorf("trace = %q, want sandbox.local only", trace)
+	if trace != readTrace {
+		t.Errorf("trace = %q, want the read-only view %s", trace, readTrace)
 	}
 	if _, err := os.Stat(root); !os.IsNotExist(err) {
 		t.Errorf("the read-only view created the home: %v", err)
 	}
 
 	r = dshProcess(t, bin, "v\n", "--home", root, "secret", "set", "TEST_K")
-	if r.status != output.OK || traceLine(t, r.stderr) != "human.secrets" {
+	if r.status != output.OK || traceLine(t, r.stderr) != writeTrace {
 		t.Fatalf("secret set: %+v", r)
 	}
 	if !stored(t, root, secret.MustParse("secret://test/k")) {
@@ -180,4 +201,53 @@ func traceLine(t *testing.T, stderr string) string {
 	}
 	t.Fatalf("no component trace on stderr:\n%s", stderr)
 	return ""
+}
+
+// The read-only view writes nothing: `dsh sandbox status` on a home that exists
+// leaves every file of it as it was and opens no session database or owner
+// record, while the same tree for a writing command loads the entries that do.
+//
+//dsh:test DH-T-CLI-16
+func TestReadOnlyViewWritesNothing(t *testing.T) {
+	root := t.TempDir()
+	if r := adminRun(t, "v\n", "--home", root, "secret", "set", "TEST_K"); r.status != output.OK {
+		t.Fatalf("secret set: %+v", r)
+	}
+	before := homeFiles(t, root)
+	r := adminRun(t, "", "--home", root, "sandbox", "status", "--json")
+	if r.status != output.OK || !strings.Contains(r.stdout, `"state":`) {
+		t.Fatalf("sandbox status: %+v", r)
+	}
+	if got := traceLine(t, r.stderr); got != readTrace {
+		t.Errorf("trace = %q, want %s", got, readTrace)
+	}
+	if after := homeFiles(t, root); !maps.Equal(before, after) {
+		t.Errorf("the read-only view changed the home:\nbefore %v\nafter  %v", before, after)
+	}
+}
+
+// homeFiles maps each file under root to its size and modification time, and
+// each directory to "dir" (a directory's time is not kept promptly everywhere).
+func homeFiles(t *testing.T, root string) map[string]string {
+	t.Helper()
+	files := map[string]string{}
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			files[path] = "dir"
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		files[path] = info.ModTime().String() + " " + strconv.FormatInt(info.Size(), 10)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return files
 }

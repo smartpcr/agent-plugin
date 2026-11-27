@@ -4,7 +4,8 @@
 #
 # The entries of components this build has. Each later deliverable that builds one
 # of the others adds its entry here in the same change: storage.kv, storage.blob,
-# session.projection, session.query, human.secrets, boot.config and sandbox.local.
+# session.projection, session.query and boot.config. human.secrets and sandbox.local
+# are in offline.yml, which only the admin profile stacks.
 - insert:
     - id: logging
       name: boot.logging

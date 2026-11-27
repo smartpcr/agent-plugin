@@ -1,21 +1,28 @@
 package cli
 
 // The admin tree (DH-D-CLI-9, C50, A24): a class admin command runs in the
-// composition of the embedded admin profile, never in a launchable one, so it
-// builds no carrier, agent, model adapter or plugin process (INV-10, M2-C-14). A
-// command declared read-only gets a view that writes nothing: the home is not
-// prepared and nothing is created in it.
+// composition of the embedded admin profile, mounted through boot's own steps,
+// never in a launchable one, so it builds no carrier, agent, model adapter or
+// plugin process (INV-10, M2-C-14). The command is the tree's owner: it reaches
+// the services the mounted entries provide through adminService. A command
+// declared read-only gets a view that writes nothing: the home is not prepared,
+// the process provider keeps no owner record and the entries that write into the
+// home (readWriters) stay unloaded.
 
 import (
+	"encoding/json"
 	"io"
-	"os"
 	"slices"
 	"strings"
+	"time"
 
+	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/go/loader"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/boot"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/launch"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/profile"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/cli/output"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/host/diag"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
 )
@@ -30,22 +37,28 @@ const (
 )
 
 // TraceEnv, when set in the launch environment, makes an admin command print the
-// components it built as one line on standard error when it ends: the evidence
-// that the admin tree acts on nothing (TC-13b).
+// components of the entries active in its tree as one line on standard error
+// when it ends: the evidence that the admin tree acts on nothing (TC-13b).
 const TraceEnv = "DSH_COMPONENT_TRACE"
 
-// tracePrefix begins the trace line; "none" follows it when nothing was built.
+// tracePrefix begins the trace line; "none" follows it when nothing is active.
 const tracePrefix = "dsh: trace: components: "
 
-// adminTree is what an admin command runs against: the launch facts and
-// environment of the admin profile, its home and the components it built.
+// readWriters are the components whose entries write into the home when they
+// load; a read-only view leaves them unloaded.
+var readWriters = []string{"session.store", "human.secrets"}
+
+// adminTree is the mounted admin tree an admin command runs against.
 type adminTree struct {
 	read  bool
-	data  launch.Data
-	env   *launch.Snapshot
-	home  home.Layout
-	built []string
+	state *boot.State
+	trace bool
 }
+
+type wallClock struct{}
+
+func (wallClock) Now() time.Time                         { return time.Now() }
+func (wallClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
 
 // adminDefinition is the admin composition's definition.
 func adminDefinition() profile.Definition {
@@ -53,10 +66,10 @@ func adminDefinition() profile.Definition {
 	return profile.Definitions()[i]
 }
 
-// openAdmin resolves the launch facts of the admin profile under --home, composes
-// the admin tree and refuses it if it holds anything that acts. The running
-// command's class decides the view: a writing command gets a prepared home, a
-// read-only one reads only. A command that is not of class admin has no tree.
+// openAdmin mounts the admin profile under --home: the launch facts, the home
+// (prepared only for a writing command), the layers, the composition, which it
+// refuses if anything in it acts, then the tree, settled. A command that is not
+// of class admin has no tree. The caller closes the tree.
 func (st *state) openAdmin() (*adminTree, error) {
 	a := st.access
 	if a == notAdmin {
@@ -68,33 +81,89 @@ func (st *state) openAdmin() (*adminTree, error) {
 	req := st.env.Request
 	req.Args = slices.Clone(req.Args)
 	req.Home, req.Profile, req.Words, req.Overlays, req.Safe = st.home, profile.Admin, nil, nil, false
-	data, env, err := launch.Build(req)
-	if err != nil {
+	s := &boot.State{
+		Options: boot.Options{Request: req, Profile: adminDefinition(), Stderr: st.env.Stderr},
+		App:     launch.NewApp(), Clock: wallClock{}, Stderr: st.env.Stderr, Ring: diag.NewRing(diag.RingSize),
+	}
+	if s.Stderr == nil {
+		s.Stderr = io.Discard
+	}
+	steps := boot.Real{}
+	if err := steps.Facts(st.ctx, s); err != nil {
 		return nil, err
 	}
-	def := adminDefinition()
-	read := profile.ReadFile(os.ReadFile)
-	if req.ReadFile != nil {
-		read = profile.ReadFile(req.ReadFile)
+	t := &adminTree{read: a == adminRead, state: s}
+	if _, _, ok := s.Env.Lookup(TraceEnv); ok {
+		t.trace = true
 	}
-	layers, _, err := profile.Stack(def, profile.Sources{Home: data.Home, Read: read})
-	if err != nil {
-		return nil, err
-	}
-	entries, _, err := profile.Compose(def, layers)
-	if err != nil {
-		return nil, err
-	}
-	if id, name, ok := acting(entries); ok {
-		return nil, herr.Newf(output.ReasonUnavailable, "the admin tree holds %s (%s): an admin command builds no carrier, agent, model adapter or plugin process", id, name)
-	}
-	t := &adminTree{read: a == adminRead, data: data, env: env, home: home.New(data.Home)}
-	if !t.read {
-		if err := home.Ensure(t.home); err != nil {
+	root := home.New(s.Data.Home)
+	if t.read {
+		// No home on the tree: the process provider reads and writes no owner
+		// record. The sandbox seam still names the home it keeps read-only.
+		s.Home = home.Layout{}
+	} else {
+		s.Home = root
+		if err := home.Ensure(root); err != nil {
 			return nil, err
 		}
 	}
+	s.Diag = diag.New(diag.Config{Stderr: s.Stderr, Ring: s.Ring, Facts: diag.Facts{Version: s.Data.Version, OS: s.Data.OS, Profile: s.Data.Profile}})
+	if err := steps.Layers(st.ctx, s); err != nil {
+		return nil, err
+	}
+	if err := steps.Compose(st.ctx, s); err != nil {
+		return nil, err
+	}
+	if id, name, ok := acting(s.Composed); ok {
+		return nil, herr.Newf(output.ReasonUnavailable, "the admin tree holds %s (%s): an admin command builds no carrier, agent, model adapter or plugin process", id, name)
+	}
+	if t.read {
+		if err := readView(s.Composed, root.Root()); err != nil {
+			return nil, err
+		}
+	}
+	if err := steps.Tree(st.ctx, s); err != nil {
+		t.unload()
+		return nil, err
+	}
+	if err := steps.Settle(st.ctx, s); err != nil {
+		t.unload()
+		return nil, err
+	}
+	if s.ApplyErr != nil {
+		t.unload()
+		return nil, s.ApplyErr
+	}
 	return t, nil
+}
+
+// readView turns composed into the read-only view in place: the entries of
+// readWriters are disabled and the sandbox seam is told the home by config.
+func readView(composed []loader.EntryOptions, root string) error {
+	for i := range composed {
+		e := &composed[i]
+		switch {
+		case slices.Contains(readWriters, e.Name):
+			e.Disabled = true
+		case e.Name == "sandbox.local":
+			cfg := map[string]any{}
+			if len(e.Config) > 0 {
+				if err := json.Unmarshal(e.Config, &cfg); err != nil {
+					return err
+				}
+			}
+			cfg["home"] = root
+			b, err := json.Marshal(cfg)
+			if err != nil {
+				return err
+			}
+			e.Config = b
+		}
+		if err := readView(e.Children, root); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // acting finds the first entry of entries, nested ones included, that acts.
@@ -110,20 +179,76 @@ func acting(entries []loader.EntryOptions) (id, name string, ok bool) {
 	return "", "", false
 }
 
-// build records that the command built the component name.
-func (t *adminTree) build(name string) { t.built = append(t.built, name) }
+// active lists the components of the tree's active entries, in tree order.
+func (t *adminTree) active() []string {
+	var names []string
+	svc := t.state.Service
+	if svc == nil {
+		return nil
+	}
+	for _, e := range svc.Entries() {
+		if f := svc.Fiber(e); f != nil && f.State() == cordis.Active {
+			names = append(names, svc.Options(e).Name)
+		}
+	}
+	return names
+}
 
-// close prints the component trace when TraceEnv is set.
+// adminService is the owner's typed access to a service the tree's entry of
+// component provides: an error names the entry that is not active or the
+// service it does not provide.
+func adminService[T any](t *adminTree, component string, key cordis.ServiceKey[T]) (T, error) {
+	var zero T
+	svc := t.state.Service
+	for _, e := range svc.Entries() {
+		if svc.Options(e).Name != component {
+			continue
+		}
+		f := svc.Fiber(e)
+		if f == nil || f.State() != cordis.Active {
+			if f != nil && f.Err() != nil {
+				return zero, herr.Wrap(output.ReasonUnavailable, f.Err(), "the admin tree's "+component+" entry is not active")
+			}
+			return zero, herr.Newf(output.ReasonUnavailable, "the admin tree's %s entry is not active", component)
+		}
+		// The owner is a fiber beside the entry that injects the one service, so
+		// the access is declared like any component's and ends with the tree.
+		var v T
+		owner := cordis.Define("cli.admin.owner", func(ctx *cordis.Context, _ cordis.None) error {
+			var err error
+			v, err = key.Get(ctx)
+			return err
+		}, cordis.WithInject(key.Name()))
+		fiber, err := f.Parent().Use(owner, nil)
+		if err == nil {
+			err = fiber.Wait()
+		}
+		if err != nil {
+			return zero, herr.Wrap(output.ReasonUnavailable, err, component+" provides no "+key.Name())
+		}
+		return v, nil
+	}
+	return zero, herr.Newf(output.ReasonUnavailable, "the admin tree has no %s entry", component)
+}
+
+// close prints the component trace when TraceEnv is set, then unloads the tree.
 func (t *adminTree) close(stderr io.Writer) {
-	if t == nil || t.env == nil {
+	if t == nil {
 		return
 	}
-	if _, _, ok := t.env.Lookup(TraceEnv); !ok {
-		return
+	if t.trace {
+		list := "none"
+		if names := t.active(); len(names) > 0 {
+			list = strings.Join(names, ",")
+		}
+		_, _ = io.WriteString(stderr, tracePrefix+list+"\n")
 	}
-	list := "none"
-	if len(t.built) > 0 {
-		list = strings.Join(t.built, ",")
+	t.unload()
+}
+
+func (t *adminTree) unload() {
+	if t.state.Host != nil {
+		t.state.Host.Unload()
+		t.state.Host = nil
 	}
-	_, _ = io.WriteString(stderr, tracePrefix+list+"\n")
 }

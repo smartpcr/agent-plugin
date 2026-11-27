@@ -155,7 +155,7 @@ var builtins = []Definition{
 
 // compositions are the definitions that are not launched by name.
 var compositions = []Definition{
-	{Name: Admin, Summary: "The composition the offline admin commands run in", Bundles: []string{"admin"}},
+	{Name: Admin, Summary: "The composition the offline admin commands run in", Bundles: []string{"admin", "offline"}},
 	{Name: Core, Summary: "The kernel every launchable profile starts with", Bundles: onKernel(), Required: slices.Clone(Spine)},
 }
 

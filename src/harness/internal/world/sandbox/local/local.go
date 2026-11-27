@@ -75,8 +75,8 @@ type Config struct {
 	// read-only and reports harness-home governed only when it can show that,
 	// and Prepare refuses a root that would make it writable (protect).
 	// Empty names no home, and no start governs harness-home. Whoever builds
-	// the service sets it from the resolved harness home (storage/home); no
-	// production code builds this service yet.
+	// the service sets it from the resolved harness home (storage/home): the
+	// sandbox.local component (Component) does.
 	Home string `json:"home,omitempty"`
 }
 

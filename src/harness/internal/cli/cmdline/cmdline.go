@@ -109,6 +109,10 @@ type Spec struct {
 	// StopAtArgs ends the options at the first free word: every later word is a free
 	// word, as the launcher stage needs (DH-ADR-COMMANDER-2).
 	StopAtArgs bool
+	// Sensitive marks a command whose words may hold a secret typed in the wrong
+	// place (M2-C-11): its usage errors quote no word, neither an option's name nor
+	// its value.
+	Sensitive bool
 }
 
 // HelpOption is the -h/--help switch every Spec has.
@@ -227,6 +231,9 @@ func Parse(spec Spec, words []string) (*Values, error) {
 		head, tail = words[:cut], words[cut:]
 	}
 	if err := fs.Parse(head); err != nil {
+		if spec.Sensitive {
+			return nil, sensitiveUsage(spec.Name, err)
+		}
 		return nil, usageFromFlag(spec.Name, err)
 	}
 	v := &Values{set: map[string]bool{}, values: map[string]string{}, lists: map[string][]string{},
@@ -316,6 +323,27 @@ func usageFromFlag(command string, err error) *UsageError {
 		ue.Option = missing.GetFlag().Name
 	}
 	return ue
+}
+
+// sensitiveUsage turns pflag's error into a UsageError that quotes no word: an
+// unknown option is not named (its name may be the secret) and an option's bad
+// value is not shown; a declared option is named by its declaration.
+func sensitiveUsage(command string, err error) *UsageError {
+	var notExist *pflag.NotExistError
+	var valueErr *pflag.InvalidValueError
+	var missing *pflag.ValueRequiredError
+	switch {
+	case errors.As(err, &notExist):
+		return &UsageError{Command: command, Message: "unknown option (not repeated: it may be a secret)"}
+	case errors.As(err, &valueErr):
+		name := valueErr.GetFlag().Name
+		return &UsageError{Command: command, Option: name, Message: "invalid value for --" + name + " (not repeated: it may be a secret)"}
+	case errors.As(err, &missing):
+		name := missing.GetFlag().Name
+		return &UsageError{Command: command, Option: name, Message: "--" + name + " needs a value"}
+	default:
+		return &UsageError{Command: command, Message: "malformed option (not repeated: it may be a secret)"}
+	}
 }
 
 // scan walks the options of words as Parse reads them, calling visit with the index

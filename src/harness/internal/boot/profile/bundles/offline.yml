@@ -1,0 +1,16 @@
+# offline: what only the offline admin commands use (DH-D-CLI-9, C50), stacked over
+# admin.yml by the admin profile alone. No carrier, agent, model adapter or plugin
+# process (INV-10). The kernel profiles do not stack it: their secret store and
+# sandbox seam join core.yml when the components they need are built (the headless
+# profile's environment-only secret backend among them).
+- insert:
+    # The secret store over the home's file backend: `dsh secret set` writes
+    # through it. Loading it creates nothing.
+    - id: secrets
+      name: human.secrets
+      config:
+        backend: file
+    # The local sandbox seam (C37): `dsh sandbox status` reads its probes. Its
+    # canaries are in the system temp directory, never in the home.
+    - id: sandbox
+      name: sandbox.local
