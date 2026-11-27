@@ -1,0 +1,105 @@
+# Stage 6.12 E2E (impl.md DH-S-16 step 16.8, guarded scenarios on scratch
+# homes; TC-19s1, TC-19s2) on Azure Pipelines. Mirrors
+# .github/workflows/e2e-dh-s-16-profiles-launchers-and-evidence-runners.yml.
+#
+# gate: Microsoft-hosted Linux and Windows agents run DH-E-STORE-1, -6, FS-3 and
+# the gate variant of DH-E-STORE-2 (embedded SQLite, keyless replay route; no
+# DSN, no secrets). Only the lab variant may skip there.
+#
+# lab_wsl: the self-hosted pool dsh-lab-wsl (the WSL lane machine, demanding
+# bwrap and claude-code capabilities) runs the @setup-lab-wsl-claude-code
+# variant of DH-E-STORE-2 on the tester's Claude Code sign-in, which stays on
+# that machine. The variable group dsh-lab-wsl-store2 declares the six
+# DSH_SCENARIO_STORE2_* command templates. The job fails when the variant skips
+# or the live scenario does not pass.
+trigger:
+  branches:
+    include: [main]
+  paths:
+    include:
+      - src/harness
+
+pr:
+  paths:
+    include:
+      - src/harness
+
+parameters:
+  - name: lab
+    displayName: Run the DH-E-STORE-2 lab variant on the WSL lane machine
+    type: boolean
+    default: true
+
+variables:
+  GOWORK: "off"
+  SUITE: '^TestE2E_dh_s_16_profiles_launchers_and_evidence_runners_guarded_scenarios_on_scratch_homes$'
+
+jobs:
+  - job: gate
+    displayName: gate ($(imageName))
+    timeoutInMinutes: 45
+    strategy:
+      matrix:
+        linux:
+          imageName: ubuntu-latest
+        windows:
+          imageName: windows-latest
+    pool:
+      vmImage: $(imageName)
+    steps:
+      - checkout: self
+      - task: GoTool@0
+        inputs:
+          version: "1.27.4"
+      - bash: |
+          set -o pipefail
+          go -C src/harness test -tags e2e -count=1 -v -timeout 30m -run "$SUITE" ./test/e2e/harness-DSH-M2/ 2>&1 | tee e2e.log
+          if grep -q -- '--- SKIP' e2e.log; then echo "a required scenario skipped"; exit 1; fi
+          for s in DH-E-STORE-1 DH-E-STORE-6 DH-E-FS-3 'DH-E-STORE-2_(gate_variant'; do
+            grep -qF -- "--- PASS: TestE2E_dh_s_16_profiles_launchers_and_evidence_runners_guarded_scenarios_on_scratch_homes/$s" e2e.log \
+              || { echo "$s did not pass"; exit 1; }
+          done
+        displayName: Godog scenarios (only the lab variant may skip)
+      - publish: e2e.log
+        artifact: e2e-guarded-$(imageName)
+        condition: always()
+
+  - job: lab_wsl
+    displayName: lab (WSL lane, bwrap Full, Claude Code sign-in)
+    condition: and(succeeded(), eq('${{ parameters.lab }}', 'true'))
+    timeoutInMinutes: 90
+    pool:
+      name: dsh-lab-wsl
+      demands:
+        - Agent.OS -equals Linux
+        - bwrap
+        - claude-code
+    variables:
+      - group: dsh-lab-wsl-store2
+    steps:
+      - checkout: self
+      - task: GoTool@0
+        inputs:
+          version: "1.27.4"
+      - bash: |
+          for v in START PROMPT RESUME REQUEST KILL DELETE; do
+            n="DSH_SCENARIO_STORE2_$v"; [ -n "${!n}" ] || { echo "variable $n is not set in dsh-lab-wsl-store2"; exit 1; }
+          done
+        displayName: Inputs declared
+      - bash: bwrap --unshare-all --die-with-parent --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp true
+        displayName: Preflight -- bwrap Full (Stage 6.10)
+      - bash: |
+          claude --version
+          out=$(claude -p 'Reply with the word ok.' --output-format json --max-turns 1)
+          echo "$out" | grep -q '"is_error":false' || { echo "the probe turn failed: the tester is not signed in"; exit 1; }
+        displayName: Preflight -- Claude Code sign-in (probe turn)
+      - bash: |
+          set -o pipefail
+          { echo "commit $(Build.SourceVersion)"; uname -a; bwrap --version; claude --version; } | tee lab.log
+          go -C src/harness test -tags e2e -count=1 -v -timeout 60m -run "$SUITE" ./test/e2e/harness-DSH-M2/ 2>&1 | tee -a lab.log
+          if grep -qE -- '--- SKIP|lab variant: skipped' lab.log; then echo "the lab variant skipped on the lab"; exit 1; fi
+          grep -q 'TestKilledHostRecoversHonestly passed through dsh on the WSL lane' lab.log || { echo "the live scenario did not pass"; exit 1; }
+        displayName: DH-E-STORE-2 lab variant (must run and pass)
+      - publish: lab.log
+        artifact: e2e-guarded-lab-wsl
+        condition: always()

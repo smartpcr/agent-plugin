@@ -71,7 +71,10 @@ Feature: Guarded scenarios on scratch homes (DH-S-16 step 16.8)
   # personal credential no gate host holds) and bwrap, which exists only on
   # Linux: it is reproducible only on the WSL lane machine, so this variant is
   # lab-only. With the lane's inputs it must pass; a partial set fails; with
-  # none, or off Linux, it is skipped as unreproducible here.
+  # none, or off Linux, it is skipped as unreproducible here. It is wired to the
+  # WSL lane machine by the lab-wsl job of .github/workflows/e2e-dh-s-16-profiles-
+  # launchers-and-evidence-runners.yml and the lab_wsl job of
+  # test/e2e/dh-s-16-profiles-launchers-and-evidence-runners/azure-pipeline.yml.
   @TC-19s2 @DH-E-STORE-2 @proof:service:model-route-claude-code @setup-lab-wsl-claude-code
   Scenario: DH-E-STORE-2 (lab variant, WSL lane) kill mid-turn under bwrap Full on the signed-in Claude Code route
     Given the WSL lane machine with bwrap Full and the tester's Claude Code sign-in, providing DSH_SCENARIO_STORE2_START, DSH_SCENARIO_STORE2_PROMPT, DSH_SCENARIO_STORE2_RESUME, DSH_SCENARIO_STORE2_REQUEST, DSH_SCENARIO_STORE2_KILL and DSH_SCENARIO_STORE2_DELETE
