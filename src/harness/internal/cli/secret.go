@@ -118,10 +118,12 @@ func readHidden(ctx context.Context, in io.Reader, prompt io.Writer, restore fun
 	}
 	rerr := restore()
 	_, _ = io.WriteString(prompt, "\n")
+	// A failed restore leaves echo off, so it is reported ahead of any read
+	// outcome (signal, EOF or read error).
+	if rerr != nil {
+		return secret.Value{}, herr.Wrap(secret.ReasonSource, rerr, "restore the terminal")
+	}
 	if sig != nil {
-		if rerr != nil {
-			return secret.Value{}, herr.Wrap(secret.ReasonSource, rerr, "restore the terminal")
-		}
 		return secret.Value{}, herr.Newf(reasonInterrupted, "interrupted (%s) while the secret value was typed: nothing was stored", sig)
 	}
 	if l.err != nil && !(errors.Is(l.err, io.EOF) && l.text != "") {
@@ -129,9 +131,6 @@ func readHidden(ctx context.Context, in io.Reader, prompt io.Writer, restore fun
 			return secretValueOf("")
 		}
 		return secret.Value{}, herr.Wrap(secret.ReasonSource, l.err, "read the secret value from the terminal")
-	}
-	if rerr != nil {
-		return secret.Value{}, herr.Wrap(secret.ReasonSource, rerr, "restore the terminal")
 	}
 	return secretValueOf(l.text)
 }
