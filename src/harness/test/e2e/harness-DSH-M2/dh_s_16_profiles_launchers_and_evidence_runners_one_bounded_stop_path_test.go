@@ -355,11 +355,11 @@ func (s *obsState) sleepRunning() error {
 }
 
 func (s *obsState) terminate() error {
-	if err := obsTerminate(s.cmd); err != nil {
-		return err
-	}
+	// Stamp before signalling: on Windows obsTerminate waits for the WM_CLOSE
+	// closer, so dsh may already be stopping when it returns. Over-counting the
+	// closer's startup keeps the ShutdownTimeout bound conservative.
 	s.sent = time.Now()
-	return nil
+	return obsTerminate(s.cmd)
 }
 
 func (s *obsState) exitsWithinBound() error {
