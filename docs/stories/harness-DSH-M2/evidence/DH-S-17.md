@@ -31,7 +31,7 @@ An acceptance step is ticked only by its scenarios; the commit is the one the sc
 
 | Step | Deliverable | Commit | Notes |
 | --- | --- | --- | --- |
-| 17.1 | DH-E-TOOLCHAIN-1 | | |
+| 17.1 | DH-E-TOOLCHAIN-1 | | not run; blocked, see [Stage 7.2 blockers](#stage-72-blockers) |
 | 17.2 | DH-E-SESSION-1, DH-E-SESSION-2 | | |
 | 17.3 | DH-E-AGENT-1 to -4 | | |
 | 17.4 | DH-E-LLM-1, DH-E-LLM-3 | | |
@@ -47,7 +47,7 @@ The 14 scenarios of the steps, on E1: Linux with the signed-in Claude Code route
 
 | Scenario | Variant | Venue | Leg | Environment | Commit | Result | Artifacts |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| DH-E-TOOLCHAIN-1 | Linux (E1) | acceptance | required | E1 | | not run (stage not started) | |
+| DH-E-TOOLCHAIN-1 | Linux (E1) | acceptance | required | E1 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
 | DH-E-SESSION-1 | Linux (E1) | acceptance | required | E1 | | not run (stage not started) | |
 | DH-E-SESSION-2 | Linux (E1) | acceptance | required | E1 | | not run (stage not started) | |
 | DH-E-AGENT-1 | Linux (E1) | acceptance | required | E1 | | not run (stage not started) | |
@@ -78,6 +78,23 @@ None: impl.md sec. 9.1 names no default to confirm before DH-S-17.
 
 | Default | Raised in | Text (impl.md sec. 9.1) | Confirmed | By | Commit |
 | --- | --- | --- | --- | --- | --- |
+
+## Stage 7.2 blockers
+
+implementation-plan Stage 7.2 (impl.md 17.1, DH-E-TOOLCHAIN-1 first, architecture.md rule 7) was taken
+up on `c5250d8` and could not run. Nothing below is evidence of a run; the TOOLCHAIN-1 row stays
+`not run` and is owed. Each blocker on its own stops the run:
+
+| Blocker | Seen | What clears it |
+| --- | --- | --- |
+| `harness-gate entry` exits 1: harness:DSH-M1 is not closed (DH-S-1 to DH-S-11 read `Closure status: open`; no `harness-DSH-M1/evidence/closure.md`). M2-DEC-1: no M2 scenario run before M1 closes. | `GOWORK=off go -C tools/harness-gate run . entry --root ../..` on `c5250d8`: 12 blockers, exit 1 | M1 closure merges and `entry` exits 0 |
+| No record command. `TestRecordThenReplayWithoutAKey` needs `DSH_SCENARIO_TOOLCHAIN1_DIR`, `DSH_SCENARIO_TOOLCHAIN1_RECORD` and `DSH_SCENARIO_TOOLCHAIN1_REPLAY`; none is committed, and the replay package (`src/harness/test/replay`) only replays committed recordings on the `replay` route (`DSH_REPLAY_REFRESH` rewrites oracles from a replay, not from a live route), so no command records a session against the `claude-code` route into a scenario directory. | `git grep DSH_SCENARIO_TOOLCHAIN1` on `c5250d8`: only the test and e2e-scenarios.md | a record mode (or driver) for the signed-in route and a committed scenario directory with manifest and workspace seed, plus the two command templates |
+| Who runs it. [runbook-s17-wsl.md](runbook-s17-wsl.md): the signed-in run is by the owner or an operator, "never an agent session". | runbook, "Who, where, and with what" | the operator runs the runbook (or the `s17` job) on a merged commit once the two blockers above clear |
+
+When it runs, the TOOLCHAIN-1 row takes the commit of step 1 of the runbook, `E1 wsl:<host>/<distro>`
+(or `E1 runner:<name>`), and in Artifacts the `dsh` SHA-256, the claude-code model id, the run id and the
+record's "request received equals request rebuilt" result (M2-DEC-5); the copilot-cli leg is recorded
+either way (M2-DEC-4).
 
 ## Evidence record (impl.md sec. 7.3)
 
