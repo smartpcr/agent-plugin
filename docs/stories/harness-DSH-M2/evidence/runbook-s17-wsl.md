@@ -115,9 +115,10 @@ count="$(sed -n 's/^count=//p' "$GITHUB_OUTPUT" | tail -n 1)"
 [ "$count" = 14 ] || { echo "DH-S-17 plans $count scenarios, want all 14 (M2-DEC-3)"; exit 1; }
 
 # 7. The 14 scenarios, through the same command as the job: TOOLCHAIN-1 first, the
-#    others, SANDBOX-7 last, one go test per phase (-p 1); a skip or a claude-code
-#    leg that did not pass fails it, a copilot-cli leg is recorded. It writes the
-#    evidence record and exits non-zero on any failure.
+#    others, SANDBOX-7 last, one go test per phase (-p 1) of the claude-code legs, which
+#    a skip, a failure or a non-zero exit fails, then a recorded go test of the
+#    copilot-cli legs; all within the 100 min budget of the 2 h job. It writes the
+#    evidence record and exits non-zero on any required failure.
 export DSH_SCENARIO_REPORT="$PWD/artifacts/harness/s17-report.txt"
 GOWORK=off go -C tools/harness-gate run . scenarios --root ../.. --stage DH-S-17 \
   --evidence "../../artifacts/harness/s17-$sha.txt"
@@ -130,7 +131,8 @@ The run passed only if the block's last lines read `S17 run on <sha>: passed` an
 `exit 0`. Any other exit is a failed run, named by the last command's output; record it as
 `failed (<reason>)`. The record `artifacts/harness/s17-<sha>.txt` holds each phase's
 `go test` command and output, and one `scenarios: recorded leg: <Test>/copilot-cli passed`
-or `... failed` line per routed scenario.
+(or `failed`, `skipped`, `not run (...)`) line per routed scenario; the copilot-cli rows
+are in `artifacts/harness/s17-report.txt.copilot-cli`.
 ## The record
 
 Fill [DH-S-17.md](DH-S-17.md) while it reads `Closure status: open`:

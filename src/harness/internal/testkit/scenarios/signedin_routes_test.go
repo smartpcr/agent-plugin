@@ -5,6 +5,8 @@ package scenarios
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -56,17 +58,49 @@ var claudeCodeRoute = clientRoute{ID: "claude-code", Client: "claude-code", Inpu
 // clientRoutes are the routes every DH-S-9 scenario runs on, Claude first.
 var clientRoutes = []clientRoute{claudeCodeRoute, copilotCLIRoute}
 
-// forEachRoute runs leg once per client route, each as a subtest named by its
-// route ID. Under M1-D-LOOP-6 A the claude-code subtest must pass and the
-// copilot-cli subtest is run and its result recorded either way: the run's
-// report (go test -json) records each subtest's own result, a Copilot failure is
-// reported and never hidden by a skip, and "-run '<Test>/claude-code'" runs the
-// required leg alone.
+// forEachRoute runs leg once per selected client route (selectedRoutes), each as
+// a subtest named by its route ID. Under M1-D-LOOP-6 A the claude-code subtest
+// must pass and the copilot-cli subtest is run and its result recorded either
+// way: the run's report (go test -json) records each subtest's own result, a
+// Copilot failure is reported and never hidden by a skip, and
+// DSH_SCENARIO_ROUTES=claude-code runs the required leg alone, leaving every
+// other subtest of the scenario in place.
 func forEachRoute(t *testing.T, leg func(t *testing.T, r clientRoute)) {
 	t.Helper()
-	for _, r := range clientRoutes {
+	for _, r := range selectedRoutes(t) {
 		t.Run(r.ID, func(t *testing.T) { leg(t, r) })
 	}
+}
+
+// routesEnv selects the client routes forEachRoute runs: comma-separated route
+// IDs, all of clientRoutes when unset or empty. "harness-gate scenarios" runs a
+// DH-S-17 phase once with claude-code, whose result decides the stage, and its
+// routed scenarios once more with copilot-cli, whose result is recorded
+// (M2-DEC-4); a parent failure of the required run is therefore never mistaken for
+// the recorded leg's. It is a selection, not a credential.
+const routesEnv = "DSH_SCENARIO_ROUTES"
+
+// selectedRoutes returns the routes of routesEnv in clientRoutes order; a name
+// that is no route fails t, so a typo never runs no leg and passes.
+func selectedRoutes(t *testing.T) []clientRoute {
+	t.Helper()
+	v := strings.TrimSpace(os.Getenv(routesEnv))
+	if v == "" {
+		return clientRoutes
+	}
+	ids := strings.FieldsFunc(v, func(r rune) bool { return r == ',' || r == ' ' })
+	for _, id := range ids {
+		if !slices.ContainsFunc(clientRoutes, func(r clientRoute) bool { return r.ID == id }) {
+			t.Fatalf("%s=%q names route %q; the routes are claude-code and copilot-cli", routesEnv, v, id)
+		}
+	}
+	var out []clientRoute
+	for _, r := range clientRoutes {
+		if slices.Contains(ids, r.ID) {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // TestSignedInRoutePreflight is the signed-in route preflight of the s17 job of

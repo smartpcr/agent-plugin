@@ -29,7 +29,9 @@
 #              M2-DEC-3), the sign-in preflight, dsh built once and the 14
 #              scenarios through "harness-gate scenarios": TOOLCHAIN-1 first,
 #              SANDBOX-7 last, claude-code legs required and copilot-cli legs
-#              recorded (M2-DEC-4). With no online runner carrying its labels the job stays
+#              recorded in runs of their own (M2-DEC-4), all inside the 2 h job
+#              budget (tech-spec: 2 h per job; a plan that does not fit is sharded,
+#              Stage 7.6). With no online runner carrying its labels the job stays
 #              queued until GitHub cancels it: S17 is "not run", never passed
 #              (M2-R-01). The route inputs (DSH_SCENARIO_*) live in the runner's
 #              own environment; this file holds no secret or key (M2-C-11,
@@ -134,7 +136,7 @@ jobs:
     # M2-EN-8: no hosted runner; without an online runner carrying these labels the
     # job is never scheduled and S17 stays "not run" (M2-R-01).
     runs-on: [self-hosted, linux, dsh-e1, dsh-signed-in-claude, dsh-signed-in-copilot]
-    timeout-minutes: 360
+    timeout-minutes: 120
     defaults:
       run:
         shell: bash
@@ -184,9 +186,10 @@ jobs:
           count="$(sed -n 's/^count=//p' "$GITHUB_OUTPUT" | tail -n 1)"
           [ "$count" = 14 ] || { echo "DH-S-17 plans $count scenarios, want all 14 (M2-DEC-3)"; exit 1; }
       - name: Run the DH-S-17 scenarios (TOOLCHAIN-1 first, SANDBOX-7 last)
-        # harness-gate scenarios runs the plan in order, one go test per phase, and
-        # writes the record: claude-code legs decide, copilot-cli legs are recorded
-        # and never fail the stage on their own (M2-DEC-4).
+        # harness-gate scenarios runs the plan in order inside its 100 min budget:
+        # per phase a required go test of the claude-code legs (DSH_SCENARIO_ROUTES),
+        # which decides, then a recorded go test of the copilot-cli legs, whose result
+        # is written to the record and never fails the stage (M2-DEC-4).
         env:
           DSH_SCENARIO_REPORT: ${{ github.workspace }}/artifacts/harness/s17-report.txt
         run: GOWORK=off go -C tools/harness-gate run . scenarios --root ../.. --stage DH-S-17 --evidence "../../artifacts/harness/s17-$GITHUB_SHA.txt"

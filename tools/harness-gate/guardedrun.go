@@ -314,7 +314,7 @@ func (g *guardedRun) scenarios(ctx context.Context, c *Config, w io.Writer) erro
 	}
 	got := reportResults(report)
 	g.rows(w, got)
-	_, verdict := scenarioVerdict(out.String(), g.plan.Tests(), runErr)
+	verdict := scenarioVerdict(out.String(), g.plan.Tests(), runErr)
 	if verdict != nil {
 		fmt.Fprintf(w, "scratch kept: %s\n", filepath.ToSlash(g.scratch))
 	}
