@@ -125,9 +125,8 @@ func (f *follower) handle(e event.Event) {
 		if f.reasoning && thought.Len() > 0 {
 			fmt.Fprintf(f.r.diag, "%s\n", strings.TrimRight(thought.String(), "\n"))
 		}
-		if text.Len() > 0 {
-			f.text = text.String()
-		}
+		// The last assistant message is the answer, even one with no text.
+		f.text = text.String()
 	case event.TurnEndType.Name():
 		if p, err := event.TurnEndType.As(e); err == nil {
 			f.turn, f.reason = p.Turn, p.Reason.Kind

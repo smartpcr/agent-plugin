@@ -81,9 +81,16 @@ func newFakeModel(t *testing.T, text string, hold bool) *fakeModel {
 func modelHome(t *testing.T, m *fakeModel, insert ...string) string {
 	t.Helper()
 	root := temphome.New(t).Root()
+	routeLayer(t, root, m, insert...)
+	return root
+}
+
+// routeLayer (re)writes the headless layer of root: the fake route of m and
+// the further insert entries.
+func routeLayer(t *testing.T, root string, m *fakeModel, insert ...string) {
+	t.Helper()
 	temphome.Layer(t, root, profile.Headless,
 		"- insert:\n    - id: route\n      name: llm.testkit-route\n      config:\n        id: fake\n        url: "+strconv.Quote(m.url)+"\n"+strings.Join(insert, ""))
-	return root
 }
 
 // headless starts bin as `dsh --home root headless args...` with the trace
@@ -292,6 +299,89 @@ func TestHeadlessRefusesAnUnknownPreset(t *testing.T) {
 	select {
 	case <-m.arrived:
 		t.Fatal("a refused run made a model request")
+	default:
+	}
+}
+
+// A command that never reaches the model runs on a home with no model route.
+//
+//dsh:test DH-T-CLI-12
+func TestHeadlessRunsACommandWithoutARoute(t *testing.T) {
+	bin := buildTestDsh(t)
+	root := temphome.New(t).Root()
+	temphome.Layer(t, root, profile.Headless, "- insert:\n    - id: echo\n      name: human.testkit-command\n")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	r := waitRun(t, headless(t, ctx, bin, root, "--command", "/echo hi"))
+	if r.status != output.OK || r.stdout != "hi\n" {
+		t.Fatalf("dsh headless --command on a route-free home: %+v", r)
+	}
+}
+
+// lastResult is the run/result line that ends a --json run's stdout.
+func lastResult(t *testing.T, r run) (res struct{ Type, Session, Reason, Text string }) {
+	t.Helper()
+	lines := strings.Split(strings.TrimSuffix(r.stdout, "\n"), "\n")
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &res); err != nil || res.Type != "run/result" {
+		t.Fatalf("no run/result line (%v): %+v", err, r)
+	}
+	return res
+}
+
+// A second process resumes the session with --session: it prints only its own
+// interval's answer and exports only that interval's records.
+//
+//dsh:test DH-T-CLI-12
+func TestHeadlessResumesASession(t *testing.T) {
+	bin := buildTestDsh(t)
+	root := modelHome(t, newFakeModel(t, "one", false))
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	first := waitRun(t, headless(t, ctx, bin, root, "--json", "first"))
+	res := lastResult(t, first)
+	if first.status != output.OK || res.Text != "one" {
+		t.Fatalf("first run: %+v", first)
+	}
+	routeLayer(t, root, newFakeModel(t, "two", false))
+	second := waitRun(t, headless(t, ctx, bin, root, "--json", "--session", res.Session, "second"))
+	got := lastResult(t, second)
+	if second.status != output.OK || got.Session != res.Session || got.Text != "two" || got.Reason != "completed" {
+		t.Fatalf("resumed run: %+v", second)
+	}
+	if strings.Contains(second.stdout, `\"one\"`) || strings.Contains(second.stdout, `\"first\"`) {
+		t.Fatalf("the resumed run exported the first interval:\n%s", second.stdout)
+	}
+	third := waitRun(t, headless(t, ctx, bin, root, "--session", res.Session, "third"))
+	if third.status != output.OK || third.stdout != "two\n" {
+		t.Fatalf("resumed text run: %+v", third)
+	}
+}
+
+// A resumed session whose recorded agent preset is no longer declared is
+// refused with status 5, with no fallback and no model request.
+//
+//dsh:test DH-T-CLI-13
+func TestHeadlessResumeRefusesARemovedPreset(t *testing.T) {
+	bin := buildTestDsh(t)
+	m := newFakeModel(t, "one", false)
+	extra := "    - id: preset.extra\n      name: agent.preset\n      config:\n        id: extra\n        name: Extra\n"
+	root := modelHome(t, m, extra)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	first := waitRun(t, headless(t, ctx, bin, root, "--json", "--agent-preset", "extra", "first"))
+	res := lastResult(t, first)
+	if first.status != output.OK {
+		t.Fatalf("first run: %+v", first)
+	}
+	later := newFakeModel(t, "two", false)
+	routeLayer(t, root, later)
+	r := waitRun(t, headless(t, ctx, bin, root, "--session", res.Session, "second"))
+	if r.status != output.Invalid || r.stdout != "" || !strings.Contains(r.stderr, `"extra"`) {
+		t.Fatalf("resume with a removed preset: %+v", r)
+	}
+	select {
+	case <-later.arrived:
+		t.Fatal("a refused resume made a model request")
 	default:
 	}
 }

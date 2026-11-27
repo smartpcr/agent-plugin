@@ -3,7 +3,9 @@ package headless
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +15,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/launch"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human/approval"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
 )
@@ -118,6 +121,42 @@ func TestParseCommand(t *testing.T) {
 	for _, words := range [][]string{{"--command", "echo"}, {"--command=/echo", "task"}} {
 		if _, err := Parse(words); err == nil {
 			t.Errorf("Parse(%q): %v, want a usage error", words, err)
+		}
+	}
+}
+
+// assistant is a committed assistant/message event with blocks.
+func assistant(t *testing.T, seq event.Seq, blocks ...vocab.Block) event.Event {
+	t.Helper()
+	m, err := vocab.NewMessage(vocab.RoleAssistant, blocks...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(event.AssistantMessagePayload{Message: m})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return event.Of(event.Record{Seq: seq, Type: event.AssistantMessage.Name(), Version: event.AssistantMessage.Version(), Payload: string(raw)})
+}
+
+// TestResultIsTheLastAssistantMessage: a later assistant message with no text
+// (tool calls only) replaces an earlier one's text, in text and JSON results.
+func TestResultIsTheLastAssistantMessage(t *testing.T) {
+	for _, asJSON := range []bool{false, true} {
+		var out bytes.Buffer
+		r := &runner{out: &out, diag: io.Discard}
+		f := &follower{r: r, json: asJSON}
+		f.handle(assistant(t, 1, vocab.TextBlock("looking")))
+		f.handle(assistant(t, 2, vocab.ToolUseBlock("c1", "read", json.RawMessage(`{}`))))
+		if f.text != "" {
+			t.Fatalf("json %v: text %q kept from an earlier message", asJSON, f.text)
+		}
+		out.Reset()
+		if err := r.result("s", f); err != nil {
+			t.Fatal(err)
+		}
+		if asJSON && strings.Contains(out.String(), "looking") || !asJSON && out.Len() != 0 {
+			t.Fatalf("json %v: result %q", asJSON, out.String())
 		}
 	}
 }

@@ -119,8 +119,10 @@ func (r *runner) once(ctx context.Context) int {
 	if args.Command == "" && strings.TrimSpace(task) == "" {
 		return r.fail(output.Usagef("the task is empty"), output.Usage)
 	}
+	// A command may never reach the model, so it runs without a route; a turn
+	// it hands the agent then fails on the missing route instead.
 	route, err := r.route()
-	if err != nil {
+	if err != nil && args.Command == "" {
 		return r.fail(err, output.Failed)
 	}
 	h, status := r.open(ctx, args, route)
@@ -140,7 +142,11 @@ func (r *runner) once(ctx context.Context) int {
 	}
 	// U-K2-4: one progress line at the start, before any token; it holds no
 	// model output.
-	fmt.Fprintf(r.diag, "dsh headless: run %s on route %s\n", rs.ID(), route)
+	shown := route
+	if shown == "" {
+		shown = "default"
+	}
+	fmt.Fprintf(r.diag, "dsh headless: run %s on route %s\n", rs.ID(), shown)
 	final, followed := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(followed)
