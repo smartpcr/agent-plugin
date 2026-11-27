@@ -10,7 +10,9 @@
 # bwrap and claude-code capabilities) runs the @setup-lab-wsl-claude-code
 # variant of DH-E-STORE-2 on the tester's Claude Code sign-in, which stays on
 # that machine. The variable group dsh-lab-wsl-store2 declares the six
-# DSH_SCENARIO_STORE2_* command templates. The job fails when the variant skips
+# DSH_SCENARIO_STORE2_* command templates and DSH_SCENARIO_CLAUDE_CODE_MODEL.
+# Preflights: dsh sandbox status reports backend bwrap in state full (Stage
+# 6.10) and a probe turn on that model answers. The job fails when the variant skips
 # or the live scenario does not pass.
 trigger:
   branches:
@@ -82,16 +84,23 @@ jobs:
         inputs:
           version: "1.27.4"
       - bash: |
-          for v in START PROMPT RESUME REQUEST KILL DELETE; do
-            n="DSH_SCENARIO_STORE2_$v"; [ -n "${!n}" ] || { echo "variable $n is not set in dsh-lab-wsl-store2"; exit 1; }
+          for n in DSH_SCENARIO_STORE2_START DSH_SCENARIO_STORE2_PROMPT DSH_SCENARIO_STORE2_RESUME DSH_SCENARIO_STORE2_REQUEST \
+                   DSH_SCENARIO_STORE2_KILL DSH_SCENARIO_STORE2_DELETE DSH_SCENARIO_CLAUDE_CODE_MODEL; do
+            [ -n "${!n}" ] || { echo "variable $n is not set in dsh-lab-wsl-store2"; exit 1; }
           done
         displayName: Inputs declared
-      - bash: bwrap --unshare-all --die-with-parent --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp true
-        displayName: Preflight -- bwrap Full (Stage 6.10)
+      - bash: |
+          command -v bwrap
+          go -C src/harness build -o "$(Agent.TempDirectory)/dsh" ./cmd/dsh
+          st=$("$(Agent.TempDirectory)/dsh" --home "$(Agent.TempDirectory)/preflight-home" sandbox status --json)
+          echo "$st"
+          echo "$st" | grep -Eq '"backend": *"bwrap"' && echo "$st" | grep -Eq '"state": *"full"' \
+            || { echo "dsh sandbox status does not report backend bwrap in state full"; exit 1; }
+        displayName: Preflight -- dsh reports backend bwrap in state full (Stage 6.10)
       - bash: |
           claude --version
-          out=$(claude -p 'Reply with the word ok.' --output-format json --max-turns 1)
-          echo "$out" | grep -q '"is_error":false' || { echo "the probe turn failed: the tester is not signed in"; exit 1; }
+          out=$(claude -p 'Reply with the word ok.' --model "$DSH_SCENARIO_CLAUDE_CODE_MODEL" --output-format json --max-turns 1)
+          echo "$out" | grep -Eq '"is_error": *false' || { echo "the probe turn failed: the tester is not signed in"; exit 1; }
         displayName: Preflight -- Claude Code sign-in (probe turn)
       - bash: |
           set -o pipefail

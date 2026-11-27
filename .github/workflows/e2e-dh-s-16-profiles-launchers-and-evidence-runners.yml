@@ -11,9 +11,10 @@
 # signed-in Claude Code route with bwrap Full. The runner must carry the labels
 # below; the tester's Claude Code sign-in lives on that machine and is never a
 # repository secret (the route reads no token). The six command templates of the
-# impl's TestKilledHostRecoversHonestly are repository variables
-# (DSH_SCENARIO_STORE2_*). Preflights: bwrap Full (Stage 6.10) and one probe
-# turn on the sign-in. The job fails if the variant skipped or did not pass.
+# impl's TestKilledHostRecoversHonestly and its Claude Code model are repository
+# variables (DSH_SCENARIO_STORE2_*, DSH_SCENARIO_CLAUDE_CODE_MODEL). Preflights:
+# dsh sandbox status reports backend bwrap in state full (Stage 6.10) and one
+# probe turn on the sign-in with that model; the suite's lab steps repeat both. The job fails if the variant skipped or did not pass.
 name: e2e-dh-s-16-profiles-launchers-and-evidence-runners
 
 on:
@@ -104,6 +105,7 @@ jobs:
       DSH_SCENARIO_STORE2_REQUEST: ${{ vars.DSH_SCENARIO_STORE2_REQUEST }}
       DSH_SCENARIO_STORE2_KILL: ${{ vars.DSH_SCENARIO_STORE2_KILL }}
       DSH_SCENARIO_STORE2_DELETE: ${{ vars.DSH_SCENARIO_STORE2_DELETE }}
+      DSH_SCENARIO_CLAUDE_CODE_MODEL: ${{ vars.DSH_SCENARIO_CLAUDE_CODE_MODEL }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -112,19 +114,24 @@ jobs:
           cache-dependency-path: src/harness/go.sum
       - name: Inputs declared
         run: |
-          for v in START PROMPT RESUME REQUEST KILL DELETE; do
-            n="DSH_SCENARIO_STORE2_$v"; [ -n "${!n}" ] || { echo "repository variable $n is not set"; exit 1; }
+          for n in DSH_SCENARIO_STORE2_START DSH_SCENARIO_STORE2_PROMPT DSH_SCENARIO_STORE2_RESUME DSH_SCENARIO_STORE2_REQUEST \
+                   DSH_SCENARIO_STORE2_KILL DSH_SCENARIO_STORE2_DELETE DSH_SCENARIO_CLAUDE_CODE_MODEL; do
+            [ -n "${!n}" ] || { echo "repository variable $n is not set"; exit 1; }
           done
-      - name: Preflight -- bwrap Full (Stage 6.10)
+      - name: Preflight -- dsh reports backend bwrap in state full (Stage 6.10)
         run: |
           command -v bwrap
-          bwrap --unshare-all --die-with-parent --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp true
+          go -C src/harness build -o "$RUNNER_TEMP/dsh" ./cmd/dsh
+          st=$("$RUNNER_TEMP/dsh" --home "$RUNNER_TEMP/preflight-home" sandbox status --json)
+          echo "$st"
+          echo "$st" | grep -Eq '"backend": *"bwrap"' && echo "$st" | grep -Eq '"state": *"full"' \
+            || { echo "dsh sandbox status does not report backend bwrap in state full"; exit 1; }
       - name: Preflight -- Claude Code sign-in (probe turn)
         run: |
           command -v claude
           claude --version
-          out=$(claude -p 'Reply with the word ok.' --output-format json --max-turns 1)
-          echo "$out" | grep -q '"is_error":false' || { echo "the probe turn failed: the tester is not signed in"; exit 1; }
+          out=$(claude -p 'Reply with the word ok.' --model "$DSH_SCENARIO_CLAUDE_CODE_MODEL" --output-format json --max-turns 1)
+          echo "$out" | grep -Eq '"is_error": *false' || { echo "the probe turn failed: the tester is not signed in"; exit 1; }
       - name: DH-E-STORE-2 lab variant (must run and pass)
         run: |
           set -o pipefail

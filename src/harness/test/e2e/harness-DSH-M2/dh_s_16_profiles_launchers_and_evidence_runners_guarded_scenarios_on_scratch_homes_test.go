@@ -276,13 +276,18 @@ type gshWorld struct {
 	stale       []string
 }
 
+// gshBin is this suite's testhook dsh, built into the running test's TempDir and
+// forgotten when it ends (never the sibling suite's shkBin, whose TempDir may be
+// gone, nor left for it).
+var gshBin string
+
 func gshBuilt() error {
-	if shkBin == "" {
+	if gshBin == "" {
 		mod, err := shkModuleDir()
 		if err != nil {
 			return err
 		}
-		shkBin = launcher.Build(gshOuterT, mod, "./cmd/dsh", "testhook")
+		gshBin = launcher.Build(gshOuterT, mod, "./cmd/dsh", "testhook")
 	}
 	return nil
 }
@@ -348,7 +353,7 @@ func gshText(s string) map[string]any {
 }
 
 func (w *gshWorld) argv(layer string, words ...string) []string {
-	return append([]string{shkBin, "--home", w.root, "--layer", layer, "headless", "--json"}, words...)
+	return append([]string{gshBin, "--home", w.root, "--layer", layer, "headless", "--json"}, words...)
 }
 
 // startLong starts a headless run whose turn runs testkit_sleep and returns once
@@ -410,7 +415,7 @@ func (w *gshWorld) refused(pid int) error {
 }
 
 func (w *gshWorld) events() ([]gshEvent, error) {
-	db, err := sql.Open("sqlite", w.layout.DB())
+	db, err := sql.Open("sqlite", w.readDSN())
 	if err != nil {
 		return nil, err
 	}
@@ -431,8 +436,14 @@ func (w *gshWorld) events() ([]gshEvent, error) {
 	return out, rs.Err()
 }
 
+// readDSN opens the home's database read-only, waiting out another process's
+// lock (a checkpoint at a child's close) instead of failing SQLITE_BUSY.
+func (w *gshWorld) readDSN() string {
+	return w.layout.DB() + "?_pragma=busy_timeout(10000)&_pragma=query_only(1)"
+}
+
 func (w *gshWorld) count(q string, args ...any) (int64, error) {
-	db, err := sql.Open("sqlite", w.layout.DB())
+	db, err := sql.Open("sqlite", w.readDSN())
 	if err != nil {
 		return 0, err
 	}
@@ -644,8 +655,32 @@ func (w *gshWorld) deleteIn(id string) error {
 	if err != nil {
 		return err
 	}
-	_, err = p.expect("deleted")
-	return err
+	if _, err = p.expect("deleted"); err != nil {
+		return err
+	}
+	return p.exited()
+}
+
+// exited waits for the child to end after its last line and requires a clean
+// exit, so the home is read only once the child's store is closed (its WAL
+// checkpointed and its hosts row gone) and never while it still writes.
+func (p *gshProc) exited() error {
+	done := make(chan error, 1)
+	go func() {
+		for line := range p.lines {
+			p.log = append(p.log, line)
+		}
+		done <- p.cmd.Wait()
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			return fmt.Errorf("the child did not exit cleanly: %v:\n%s", err, strings.Join(p.log, "\n"))
+		}
+		return nil
+	case <-time.After(gshWithin):
+		return fmt.Errorf("the child did not exit within %s after its last line", gshWithin)
+	}
 }
 
 func (w *gshWorld) deleteS() error { return w.deleteIn("S") }
@@ -746,8 +781,10 @@ func (w *gshWorld) reopen() error {
 	if err != nil {
 		return err
 	}
-	_, err = p.expect("opened")
-	return err
+	if _, err = p.expect("opened"); err != nil {
+		return err
+	}
+	return p.exited()
 }
 
 func (w *gshWorld) nothingOfSL() error {
@@ -824,7 +861,7 @@ func (w *gshWorld) gshEditSide(name string) (layout home.Layout, session string,
 		if err != nil {
 			return layout, "", err
 		}
-		argv := []string{shkBin, "--home", layout.Root(), "--layer", layer, "headless", "--json"}
+		argv := []string{gshBin, "--home", layout.Root(), "--layer", layer, "headless", "--json"}
 		if session != "" {
 			argv = append(argv, "--session", session)
 		}
@@ -1236,6 +1273,57 @@ func (w *gshWorld) labLane(vars []string) error {
 	return nil
 }
 
+// labSandbox is the Stage 6.10 preflight read from dsh itself: the production
+// build's `dsh sandbox status --json` on an empty scratch home must report the
+// wanted backend and state, so the live scenario's shell really runs confined.
+func (w *gshWorld) labSandbox(backend, state string) error {
+	if !w.lab {
+		return errors.New("the lab lane was not established")
+	}
+	mod, err := shkModuleDir()
+	if err != nil {
+		return err
+	}
+	bin := launcher.Build(gshOuterT, mod, "./cmd/dsh")
+	out, err := exec.Command(bin, "--home", filepath.Join(gshOuterT.TempDir(), "home"), "sandbox", "status", "--json").Output()
+	if err != nil {
+		return fmt.Errorf("dsh sandbox status: %v\n%s", err, out)
+	}
+	var doc struct {
+		State   string `json:"state"`
+		Backend string `json:"backend"`
+	}
+	if err := json.Unmarshal(out, &doc); err != nil {
+		return fmt.Errorf("dsh sandbox status --json: %v\n%s", err, out)
+	}
+	if doc.Backend != backend || doc.State != state {
+		return fmt.Errorf("dsh sandbox status reports backend %q in state %q, want %q in %q:\n%s", doc.Backend, doc.State, backend, state, out)
+	}
+	gshOuterT.Logf("preflight: dsh sandbox status reports backend %s in state %s", doc.Backend, doc.State)
+	return nil
+}
+
+// labProbe is the sign-in preflight: one turn on the installed Claude Code with
+// the model the live scenario will use must answer without error.
+func (w *gshWorld) labProbe(modelVar string) error {
+	if !w.lab {
+		return errors.New("the lab lane was not established")
+	}
+	model := os.Getenv(modelVar)
+	out, err := exec.Command("claude", "-p", "Reply with the word ok.", "--model", model, "--output-format", "json", "--max-turns", "1").Output()
+	if err != nil {
+		return fmt.Errorf("the probe turn on model %s failed (is the tester signed in?): %v\n%s", model, err, out)
+	}
+	var res struct {
+		IsError bool `json:"is_error"`
+	}
+	if err := json.Unmarshal(out, &res); err != nil || res.IsError {
+		return fmt.Errorf("the probe turn on model %s did not answer cleanly (%v):\n%s", model, err, out)
+	}
+	gshOuterT.Logf("preflight: the probe turn on Claude Code model %s answered", model)
+	return nil
+}
+
 // labRun runs the impl's live scenario test, which drives the built dsh on
 // the lane's Claude Code route with the sandboxed shell under bwrap Full.
 func (w *gshWorld) labRun(test string) error {
@@ -1450,6 +1538,8 @@ func InitializeScenario_dh_s_16_profiles_launchers_and_evidence_runners_guarded_
 	ctx.Step(`^the WSL lane machine with bwrap Full and the tester's Claude Code sign-in, providing (.+)$`, func(vars string) error {
 		return w.labLane(strings.FieldsFunc(strings.ReplaceAll(vars, " and ", ","), func(r rune) bool { return r == ',' || r == ' ' }))
 	})
+	ctx.Step(`^the built dsh's "sandbox status --json" on a scratch home reports backend "([^"]*)" in state "([^"]*)" \(Stage 6\.10 preflight\)$`, w.labSandbox)
+	ctx.Step(`^a probe turn on the signed-in Claude Code with model (\w+) answers without error$`, w.labProbe)
 	ctx.Step(`^the live scenario (Test\w+) kills dsh while a sandboxed "sleep 60; write" runs, resumes and prompts the session, then deletes it$`, w.labRun)
 	ctx.Step(`^the live scenario passes: the turn ended interrupted, the call's outcome is unknown, the first request read from the session log carries that result, and nothing of the session remains$`, w.labPassed)
 	ctx.Step(`^the session is deleted with no host running$`, w.deleteSession)
@@ -1462,6 +1552,8 @@ func TestE2E_dh_s_16_profiles_launchers_and_evidence_runners_guarded_scenarios_o
 		return
 	}
 	gshOuterT = t
+	gshBin = ""
+	t.Cleanup(func() { gshBin = "" })
 	suite := godog.TestSuite{
 		ScenarioInitializer: InitializeScenario_dh_s_16_profiles_launchers_and_evidence_runners_guarded_scenarios_on_scratch_homes,
 		Options: &godog.Options{

@@ -77,6 +77,8 @@ Feature: Guarded scenarios on scratch homes (DH-S-16 step 16.8)
   # test/e2e/dh-s-16-profiles-launchers-and-evidence-runners/azure-pipeline.yml.
   @TC-19s2 @DH-E-STORE-2 @proof:service:model-route-claude-code @setup-lab-wsl-claude-code
   Scenario: DH-E-STORE-2 (lab variant, WSL lane) kill mid-turn under bwrap Full on the signed-in Claude Code route
-    Given the WSL lane machine with bwrap Full and the tester's Claude Code sign-in, providing DSH_SCENARIO_STORE2_START, DSH_SCENARIO_STORE2_PROMPT, DSH_SCENARIO_STORE2_RESUME, DSH_SCENARIO_STORE2_REQUEST, DSH_SCENARIO_STORE2_KILL and DSH_SCENARIO_STORE2_DELETE
+    Given the WSL lane machine with bwrap Full and the tester's Claude Code sign-in, providing DSH_SCENARIO_STORE2_START, DSH_SCENARIO_STORE2_PROMPT, DSH_SCENARIO_STORE2_RESUME, DSH_SCENARIO_STORE2_REQUEST, DSH_SCENARIO_STORE2_KILL, DSH_SCENARIO_STORE2_DELETE and DSH_SCENARIO_CLAUDE_CODE_MODEL
+    And the built dsh's "sandbox status --json" on a scratch home reports backend "bwrap" in state "full" (Stage 6.10 preflight)
+    And a probe turn on the signed-in Claude Code with model DSH_SCENARIO_CLAUDE_CODE_MODEL answers without error
     When the live scenario TestKilledHostRecoversHonestly kills dsh while a sandboxed "sleep 60; write" runs, resumes and prompts the session, then deletes it
     Then the live scenario passes: the turn ended interrupted, the call's outcome is unknown, the first request read from the session log carries that result, and nothing of the session remains
