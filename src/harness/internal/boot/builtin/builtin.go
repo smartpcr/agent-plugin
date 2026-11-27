@@ -6,11 +6,19 @@ package builtin
 import (
 	"reflect"
 
+	"github.com/smartpcr/agent-plugin/src/harness/internal/agent"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/agent/driver"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/agentpreset"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/catalog"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/logging"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/host/sharing"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human/permission"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/llm"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/scope"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store/sqlite"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/workdir"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/tools/items"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/egress"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/watch"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/fs"
@@ -48,20 +56,44 @@ func Host() []catalog.Item {
 // process's session service (session.core) and fold registry (session.views).
 //
 // Not yet bootable: this unit is registered in the build catalogue only. No
-// catalogue item and nothing in boot.Real.Tree provides session.core or
-// session.views yet, so in the dsh binary session.workdir and sandbox.policy
-// (and fs.ops through them) wait on inject until Settle's StartupTimeout.
-// cyclec3_test.go provides both keys by hand on a testkit root; it proves the
-// three items compose from the catalogue, not that they boot through boot.
-// The gap closes when the session.core item (core.Component, DH-D-SESSION-2)
-// and the session.views item (DH-D-VIEW-1, DH-D-VIEW-3) join Session().
+// catalogue item and nothing in boot.Real.Tree provides session.views yet, so in
+// the dsh binary session.workdir and sandbox.policy (and fs.ops through them)
+// would wait on inject until Settle's StartupTimeout. cyclec3_test.go provides
+// session.core and session.views by hand on a testkit root; it proves the three
+// items compose from the catalogue, not that they boot through boot. The gap
+// closes when the session.views item (DH-D-VIEW-1, DH-D-VIEW-3) joins Session().
 
-// Session is the session family's items.
+// Session is the session family's items: the store (over the home boot
+// provides), the scope table and the session service of the spine, and
+// session.workdir of cycle C-3.
 func Session() []catalog.Item {
 	return []catalog.Item{
+		{Name: sqlite.Name, Component: sqlite.Component, Provides: []string{session.StoreKey.Name()}},
+		{Name: "session.scope", Component: scope.Component, Provides: []string{scope.TableKey.Name()}},
+		{Name: session.Name, Component: session.Component, Provides: []string{session.Key.Name()}},
 		{Name: workdir.Name, Component: workdir.Component, Provides: []string{workdir.Key.Name(), workdir.ServiceKey.Name()}},
 	}
 }
+
+// Agent is the agent family's items: the registry, the driver that fills its
+// factory seat, and the preset registry and its declarations, which read the
+// catalogue and evaluator boot provides (agentpreset.HostKey).
+func Agent() []catalog.Item {
+	return append([]catalog.Item{
+		{Name: agent.Name, Component: agent.Component, Provides: []string{agent.Agents.Name()}},
+		driver.Item(),
+	}, agentpreset.Items(nil)...)
+}
+
+// LLM is the llm family's items: the runtime, with no route.
+func LLM() []catalog.Item {
+	return []catalog.Item{
+		{Name: llm.Name, Component: llm.Component, Provides: []string{llm.RuntimeKey.Name()}},
+	}
+}
+
+// Tools is the tools family's items: the tool registry and the prompt assembly.
+func Tools() []catalog.Item { return items.Items() }
 
 // FS is the fs family's items.
 func FS() []catalog.Item {
@@ -88,7 +120,7 @@ func Permission() []catalog.Item {
 
 // Sets is every family's items.
 func Sets() [][]catalog.Item {
-	return [][]catalog.Item{Boot(), Host(), Util(), Session(), FS(), Sandbox(), Permission()}
+	return [][]catalog.Item{Boot(), Host(), Util(), Session(), Agent(), LLM(), Tools(), FS(), Sandbox(), Permission()}
 }
 
 // Catalog builds the catalogue of this binary.

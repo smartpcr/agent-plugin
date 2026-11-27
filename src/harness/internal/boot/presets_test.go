@@ -12,27 +12,23 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit"
 )
 
-// bundle-preset.md §6.2, §6.3: the start-up tree is held to the presets' set rule
+// bundle-preset.md §6.2, §6.3: the start-up tree (core's agent.presets and its
+// standard declaration, with each case's layer over them) is held to the presets' set rule
 // before anything is applied, whether or not the profile reloads: a Default that
 // names no declaration or an Extends cycle stops the launch (status 78) with one
 // fatal message naming the entry at fault.
 func TestStartupRejectsABrokenPresetSet(t *testing.T) {
 	cases := map[string]struct{ layer, path, msg string }{
-		"unknown default": {`- insert:
-    - id: presets
-      name: agent.presets
-      config:
-        default: ghost
-    - id: standard
-      name: agent.preset
-      config:
-        id: standard
-`, "presets.config.default", `default "ghost" is not declared`},
-		"extends cycle": {`- insert:
-    - id: presets
-      name: agent.presets
-      config:
-        default: a
+		"unknown default": {`- id: agent.presets
+  name: agent.presets
+  merge:
+    default: ghost
+`, "agent.presets.config.default", `default "ghost" is not declared`},
+		"extends cycle": {`- id: agent.presets
+  name: agent.presets
+  merge:
+    default: a
+- insert:
     - id: a
       name: agent.preset
       config:
@@ -57,9 +53,7 @@ func TestStartupRejectsABrokenPresetSet(t *testing.T) {
 			if opts.Profile.Reload > 0 {
 				t.Fatal("the profile reloads; this case is the boot without reload")
 			}
-			var cat *catalog.Catalog
-			items := agentpreset.Items(func() agentpreset.Host { return agentpreset.Host{Catalogue: cat, Version: "test"} })
-			cat, err := catalog.Build(append(builtin.Sets(), items)...)
+			cat, err := catalog.Build(builtin.Sets()...)
 			if err != nil {
 				t.Fatal(err)
 			}

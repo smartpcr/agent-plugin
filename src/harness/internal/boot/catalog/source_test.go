@@ -191,7 +191,6 @@ func TestSourceRules(t *testing.T) {
 // the profile package's golden test (builtins_test.go), whose stage-owning change
 // takes an id off both lists together.
 var unbuilt = map[string]bool{
-	"session.store": true, "agent.registry": true, "agent.driver": true, "tools.registry": true, "agent.presets": true,
 	"host.listen": true, "host.auth": true, "host.assets": true, "host.web": true, "host.access": true, "host.stream": true, "ui.shell": true,
 }
 

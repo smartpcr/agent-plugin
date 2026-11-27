@@ -3,13 +3,12 @@
 # the sharing gate is in admin.yml below it, so no layer can send before it exists.
 #
 # The entries of components this build has. Each later deliverable that builds one
-# of the others adds its entry here in the same change: the timer, session.scope
-# (top level), session.core, session.checkpoint, session.views, session.workdir,
-# attachments, spill store and policy, agent.registry, agent.driver (no configured
-# agent), agent.default-model, tools.registry, tools.prompt, llm.runtime, llm.retry,
-# llm.meter, llm.routes, llm.deepseek.api-key, human.interactions, human.approval,
-# human.commands, fs.local, fs.ops, subprocess.local, sandbox.policy, jobs.registry,
-# agent.presets and host.conversation.
+# of the others adds its entry here in the same change: the timer,
+# session.checkpoint, session.views, session.workdir, attachments, spill store and
+# policy, agent.default-model, llm.retry, llm.meter, llm.routes,
+# llm.deepseek.api-key, human.interactions, human.approval, human.commands,
+# fs.local, fs.ops, subprocess.local, sandbox.policy, jobs.registry and
+# host.conversation.
 - insert:
     # Every outbound client, the resolver and child environments (util/egress).
     - id: egress
@@ -17,3 +16,35 @@
     # File and directory watches: one service for every watcher of the host.
     - id: watch
       name: util.watch
+    # The scope table, top level: no ancestor injects (boot.md §6.2).
+    - id: session.scope
+      name: session.scope
+    # The spine (profile.Spine, DH-D-BUNDLE-1) and what it injects: the session
+    # service over session.store (admin.yml), the agent registry and the driver
+    # that fills its factory seat with no configured agent, the tool registry, the
+    # prompt assembly, the model runtime with no route and the preset registry.
+    - id: session.core
+      name: session.core
+    - id: agent.registry
+      name: agent.registry
+    - id: tools.registry
+      name: tools.registry
+    - id: tools.prompt
+      name: tools.prompt
+    - id: llm.runtime
+      name: llm.runtime
+    - id: agent.driver
+      name: agent.driver
+    - id: agent.presets
+      name: agent.presets
+      config:
+        default: standard
+    # The kernel's standard declaration: the default the registry needs, with no
+    # child, so the kernel holds no tool. The shipped presets (DH-D-BUNDLE-5) give
+    # it its children by merge in the layer that ships them.
+    - id: preset.standard
+      name: agent.preset
+      config:
+        id: standard
+        name: Standard
+        description: The coding agent.

@@ -3,9 +3,8 @@
 # of the core kernel. No carrier, agent, model adapter or plugin process (INV-10).
 #
 # The entries of components this build has. Each later deliverable that builds one
-# of the others adds its entry here in the same change: session.store, storage.kv,
-# storage.blob, session.projection, session.query, human.secrets, boot.config and
-# sandbox.local.
+# of the others adds its entry here in the same change: storage.kv, storage.blob,
+# session.projection, session.query, human.secrets, boot.config and sandbox.local.
 - insert:
     - id: logging
       name: boot.logging
@@ -18,3 +17,7 @@
       name: host.sharing
       config:
         off: false
+    # The SQLite store in the home boot resolved (A05): what an offline command
+    # reads, and what the kernel's session service writes through.
+    - id: session.store
+      name: session.store

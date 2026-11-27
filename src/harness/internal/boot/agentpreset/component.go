@@ -21,19 +21,30 @@ type Host struct {
 	Version   string
 }
 
+// HostKey is the service under which boot provides the launch's Host on the root,
+// before any entry loads: the catalogue and evaluator of the tree itself. A
+// RegistryComponent built with a nil host func reads it.
+var HostKey = cordis.NewServiceKey[Host]("boot.presets.host")
+
 // RegistryComponent is agent.presets (bundle-preset.md §6.1): it builds the
 // registry over the scope table and host's catalogue and evaluator, and provides it
 // under Key. Its fiber owns every revision, so they close when it unloads. Config is
 // its config; the declarations arrive as agent.preset entries. An update of Config
 // (Default, SelectedDefault) is accepted in place: the fiber does not restart, so
 // every revision, its leases and its bindings survive and only the default changes.
+// A nil host reads the Host boot provides under HostKey.
 func RegistryComponent(host func() Host) *cordis.Component {
 	return cordis.Define(RegistryName, func(ctx *cordis.Context, cfg Config) error {
 		scopes, err := scope.TableKey.Get(ctx)
 		if err != nil {
 			return err
 		}
-		h := host()
+		var h Host
+		if host != nil {
+			h = host()
+		} else {
+			h, _ = HostKey.Lookup(ctx)
+		}
 		if h.Catalogue == nil {
 			return errors.New("agentpreset: agent.presets is mounted without a catalogue")
 		}
@@ -119,7 +130,7 @@ func (r *Registry) redeclare(reg *declared, d Declaration) (bool, error) {
 }
 
 // Items are the catalogue items of the two components; host is read when
-// agent.presets loads.
+// agent.presets loads, and a nil host reads HostKey.
 func Items(host func() Host) []catalog.Item {
 	return []catalog.Item{
 		{Name: RegistryName, Component: RegistryComponent(host), Config: reflect.TypeFor[Config](), Provides: []string{RegistryName}},
