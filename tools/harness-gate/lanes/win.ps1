@@ -62,11 +62,19 @@ if ($dirty) { Fail "the tree is not clean:`n$dirty" }
 
 # (TMPDIR on ext4 is a WSL-lane check only.)
 
+# 6. pwsh resolves on PATH to an executable (architecture.md "Shells"): the pwsh
+#    executor rows run on this lane and fail, never skip, without it.
+$pwsh = Get-Command pwsh -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $pwsh) { Fail 'pwsh is not on PATH; install PowerShell 7 (winget install Microsoft.PowerShell)' }
+if (-not [IO.Path]::IsPathRooted($pwsh.Source)) { Fail "pwsh resolves to $($pwsh.Source), not an absolute path" }
+$pwshVersion = "$(& $pwsh.Source -NoLogo -NoProfile -NonInteractive -Command '$PSVersionTable.PSVersion.ToString()' 2>&1)".Trim()
+if ($LASTEXITCODE -ne 0 -or -not $pwshVersion) { Fail "pwsh at $($pwsh.Source) does not run: $pwshVersion" }
+
 $sha = "$(& git rev-parse HEAD)".Trim()
 $stamp = [DateTime]::UtcNow.ToString("yyyyMMdd'T'HHmm'Z'")
 $runs = Join-Path $root 'docs/stories/harness-DSH-M1/evidence/runs'
 $record = Join-Path $runs "win-$($sha.Substring(0, 7))-$stamp.txt"
-Write-Output "win lane: preflight passed: $($drive.DriveFormat) checkout, not elevated, $got, CC=$ccName, clean tree"
+Write-Output "win lane: preflight passed: $($drive.DriveFormat) checkout, not elevated, $got, CC=$ccName, clean tree, pwsh $pwshVersion ($($pwsh.Source))"
 
 New-Item -ItemType Directory -Force -Path $runs | Out-Null
 $env:GOWORK = 'off'

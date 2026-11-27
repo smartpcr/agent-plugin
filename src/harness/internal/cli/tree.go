@@ -106,6 +106,43 @@ func newTree() *tree {
 				access: adminRead,
 			}},
 		},
+		{
+			spec: cmdline.Spec{Name: "dsh config", Summary: "Preview and check the composed configuration"},
+			children: []*command{
+				{
+					spec: cmdline.Spec{Name: "dsh config show", Summary: "Print a profile's composed tree and the layer of each value",
+						Description: "Composes the profile's layers as a launch would and prints every entry and\n" +
+							"value with the layer that supplied it, then the issues. Starts no component\n" +
+							"and writes nothing to the home.",
+						Options: []cmdline.Option{profileOption(),
+							{Name: "defaults", Kind: cmdline.Bool, Help: "Leave the profile layer out"},
+							{Name: "format", Kind: cmdline.String, Value: "text|yaml|json", Help: "Output form; yaml is one loadable layer document"},
+							jsonOption()},
+						Args: cmdline.Args{Name: "profile", Help: "The profile, as an argument instead of --profile", Max: 1},
+						Examples: []cmdline.Example{
+							{Command: "dsh config show --profile headless"},
+							{Command: "dsh config show headless --format yaml > tree.yml"},
+							{Command: "dsh --home ./h config show web --defaults --json"},
+						}},
+					run:    runConfigShow,
+					access: adminRead,
+				},
+				{
+					spec: cmdline.Spec{Name: "dsh config validate", Summary: "Check the configuration of one or every profile",
+						Description: "Checks the composition of the profile, or of every built-in profile, with\n" +
+							"each <file> as a layer above the user layer. An issue exits 78 and names its\n" +
+							"file, line and field. Starts no component and writes nothing to the home.",
+						Options: []cmdline.Option{profileOption(), jsonOption()},
+						Args:    cmdline.Args{Name: "file", Help: "A layer file to check above the user layer", Max: -1},
+						Examples: []cmdline.Example{
+							{Command: "dsh config validate"},
+							{Command: "dsh config validate --profile web extra.yml"},
+						}},
+					run:    runConfigValidate,
+					access: adminRead,
+				},
+			},
+		},
 	}}
 }
 

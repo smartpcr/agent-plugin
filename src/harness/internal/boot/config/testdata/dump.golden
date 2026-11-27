@@ -1,0 +1,27 @@
+- insert:
+    - id: probe # bundle:core
+      name: x.probe
+      config:
+        level: !expr env.LEVEL # user
+        port: 1 # bundle:core
+        tags: [] # bundle:core
+        nested:
+          deep: true # user
+    - id: quiet # bundle:core
+      name: x.probe
+      disabled: !expr env.QUIET == "1" # user
+      inject: # user
+        - svc.a
+      isolate: # user
+        svc.a: true
+        svc.b: realm
+      intercept: # user
+        svc.c:
+          mode: !expr env.MODE
+    - id: box # bundle:core
+      group: true
+      children:
+        - id: inner # bundle:core
+          name: x.probe
+          config:
+            level: error # user
