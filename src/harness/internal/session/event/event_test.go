@@ -373,6 +373,30 @@ func TestReservedDraft(t *testing.T) {
 	}
 }
 
+// The core lends only the title names of its namespace: a lent type is declared
+// outside the core and its drafts pass the admission check; any other session/
+// name is still refused.
+func TestLentNames(t *testing.T) {
+	r := event.NewRegistry()
+	if _, err := event.DefineLent(r, event.Spec[note]{Name: "session/mine", Version: 1}); !errors.Is(err, event.ErrReservedType) {
+		t.Fatalf("DefineLent(session/mine) = %v", err)
+	}
+	if _, err := event.DefineLent(r, event.Spec[note]{Name: "session/title", Version: 0}); !errors.Is(err, event.ErrInvalidDeclaration) {
+		t.Fatalf("a lent name still gets the declaration checks: %v", err)
+	}
+	typ, err := event.DefineLent(r, event.Spec[note]{Name: "session/title", Version: 1})
+	if err != nil {
+		t.Fatalf("DefineLent(session/title) = %v", err)
+	}
+	d, err := typ.Draft(note{Text: "t"})
+	if err != nil {
+		t.Fatalf("Draft: %v", err)
+	}
+	if err := d.Check(false); err != nil || d.Reserved() {
+		t.Fatalf("a lent draft: Check(false) = %v, reserved %v", err, d.Reserved())
+	}
+}
+
 // An unknown turn/end reason kind written by a newer build is preserved.
 func TestUnknownReasonPreserved(t *testing.T) {
 	rec := event.Record{Seq: 1, Type: "turn/end", Version: 1, Payload: `{"reason":{"kind":"hibernated"},"turn":2}`}

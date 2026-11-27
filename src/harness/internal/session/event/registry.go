@@ -22,7 +22,8 @@ type Upgrade func(raw json.RawMessage) (json.RawMessage, error)
 // Spec declares one event type.
 type Spec[T any] struct {
 	// Name is "<segment>/<segment>[/...]", lower case. The "session/" namespace is
-	// reserved to the session core, and "plugin:" to plugin records.
+	// reserved to the session core, but for the names it lends (DefineLent), and
+	// "plugin:" to plugin records.
 	Name string
 	// Version is the current payload version, from 1.
 	Version int
@@ -398,7 +399,26 @@ var namePattern = regexp.MustCompile(`^[a-z][a-z0-9-]*(/[a-z][a-z0-9-]*)+$`)
 // reservedPrefix is the namespace of the session core's own types.
 const reservedPrefix = "session/"
 
-type declOpts struct{ surface, core bool }
+type declOpts struct{ surface, core, lent bool }
+
+// lent are the names under the core's namespace that the core lends to the
+// component that owns them, so those events keep their upstream names: the
+// session titles of session-views.md sec. 6.2 (C56). A lent type is declared
+// with DefineLent and, unlike a core type, any writer may append it.
+var lent = map[string]bool{"session/title": true, "session/title-request": true, "session/title-attempt": true}
+
+// DefineLent declares a log-only event type under one of the names the core
+// lends; every other name in the core's namespace is still reserved.
+func DefineLent[T any](r *Registry, s Spec[T]) (*Type[T], error) {
+	if !lent[s.Name] {
+		return nil, errorf(CodeReservedType, "type %q: the core lends no such name in its %q namespace", s.Name, reservedPrefix)
+	}
+	d, err := define(r, s, declOpts{lent: true})
+	if err != nil {
+		return nil, err
+	}
+	return &Type[T]{d}, nil
+}
 
 // Define declares a log-only event type in r.
 func Define[T any](r *Registry, s Spec[T]) (*Type[T], error) {
@@ -444,7 +464,7 @@ func define[T any](r *Registry, s Spec[T], o declOpts) (*decl[T], error) {
 	switch {
 	case !namePattern.MatchString(s.Name):
 		return nil, bad("the name is not lower-case segments separated by '/'")
-	case strings.HasPrefix(s.Name, reservedPrefix) && !o.core:
+	case strings.HasPrefix(s.Name, reservedPrefix) && !o.core && !o.lent:
 		return nil, errorf(CodeReservedType, "type %q: the %q namespace is reserved to the session core", s.Name, reservedPrefix)
 	case s.Version < 1:
 		return nil, bad("version %d is below 1", s.Version)
@@ -473,7 +493,7 @@ func define[T any](r *Registry, s Spec[T], o declOpts) (*decl[T], error) {
 	}
 	d := &decl[T]{spec: s, info: Info{
 		Name: s.Name, Version: s.Version, Ignorable: s.Ignorable, Surface: o.surface,
-		Reserved: strings.HasPrefix(s.Name, reservedPrefix), NoSources: s.NoSources,
+		Reserved: strings.HasPrefix(s.Name, reservedPrefix) && !o.lent, NoSources: s.NoSources,
 		Detached: s.Detached, Queueable: s.Queueable, Cold: s.Cold, Schema: sch,
 	}}
 	if s.Cold != "" {
