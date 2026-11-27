@@ -26,6 +26,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"sync"
@@ -110,7 +111,9 @@ type S struct {
 	// Workspace is a fresh, empty working directory, removed at cleanup.
 	Workspace string
 
-	ctx context.Context
+	ctx   context.Context
+	mu    sync.Mutex
+	hosts []*launcher.Host
 }
 
 // Context ends at the scenario's deadline, with ErrDeadline as its cause.
@@ -134,13 +137,39 @@ func (s *S) Program(env []string, args ...string) launcher.Program {
 // (Program); a tree still running at cleanup is stopped whole.
 func (s *S) Spawn(env []string, args ...string) *launcher.Host {
 	s.Helper()
-	return launcher.Spawn(s, s.Program(env, args...))
+	h := launcher.Spawn(s, s.Program(env, args...))
+	s.mu.Lock()
+	s.hosts = append(s.hosts, h)
+	s.mu.Unlock()
+	return h
 }
 
-// Run declares and runs scenario id. It returns once the body has returned, or
-// after the row of a skip or a failure is written.
+// stopHosts stops, whole, every tree Spawn started, so a body blocked on one of
+// them returns at the deadline.
+func (s *S) stopHosts() {
+	s.mu.Lock()
+	hosts := slices.Clone(s.hosts)
+	s.mu.Unlock()
+	for _, h := range hosts {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*launcher.Grace)
+		_ = h.Process.StopTree(ctx, 0)
+		cancel()
+	}
+}
+
+// abandonAfter is how long Run waits, after the deadline and the stop of the
+// scenario's trees, for the body to return before it fails the scenario and
+// leaves the body's goroutine behind.
+var abandonAfter = 30 * time.Second
+
+// Run declares and runs scenario id. The body runs on a goroutine of its own and
+// Run returns when it has returned, or at its deadline: there Run stops the trees
+// Spawn started, waits abandonAfter for the body and, if it still runs, fails the
+// scenario without waiting further (the deadline bounds the scenario, not only
+// S.Context). Every path writes exactly one row.
 func Run(t testing.TB, id string, needs Needs, body func(s *S)) {
 	t.Helper()
+	own(t)
 	start := time.Now()
 	row := Row{Kind: RowKind, ID: id, OS: runtime.GOOS}
 	required := Required(id)
@@ -173,37 +202,72 @@ func Run(t testing.TB, id string, needs Needs, body func(s *S)) {
 		deadline = DefaultDeadline
 	}
 	ctx, cancel := context.WithTimeoutCause(context.Background(), deadline, ErrDeadline)
+	defer cancel()
 	s.ctx = ctx
-	returned := false
-	// Deferred, so a body ended by FailNow or SkipNow (runtime.Goexit) or by a
-	// panic still writes its row.
-	defer func() {
-		late := errors.Is(context.Cause(ctx), ErrDeadline)
-		cancel()
-		row.DurationMS = time.Since(start).Milliseconds()
-		switch {
-		case late:
-			row.Result, row.Reason = Failed, fmt.Sprintf("deadline %s reached", deadline)
-			t.Errorf("%s: the body ran past its deadline of %s", id, deadline)
-		case t.Failed():
-			row.Result = Failed
-		case t.Skipped():
-			// A scenario does not skip itself; the needs decide. A required one
-			// that skipped anyway fails.
-			row.Result, row.Reason = Skipped, "the body skipped"
-			if required {
-				row.Result = Failed
-				t.Errorf("%s: required scenario skipped: the body skipped (listed in %s)", id, RequireEnv)
+	done := make(chan struct{})
+	var returned bool
+	var panicked any
+	var stack []byte
+	go func() {
+		defer close(done)
+		// A FailNow or SkipNow in the body ends this goroutine (runtime.Goexit)
+		// and leaves returned false; a panic is recovered and recorded.
+		defer func() {
+			if v := recover(); v != nil {
+				panicked, stack = v, debug.Stack()
 			}
-		case !returned:
-			row.Result, row.Reason = Failed, "the body panicked"
-		default:
-			row.Result = Passed
-		}
-		write(t, row)
+		}()
+		body(s)
+		returned = true
 	}()
-	body(s)
-	returned = true
+	late, abandoned := false, false
+	select {
+	case <-done:
+	case <-ctx.Done():
+		late = true
+		s.stopHosts()
+		select {
+		case <-done:
+		case <-time.After(abandonAfter):
+			abandoned = true
+		}
+	}
+	row.DurationMS = time.Since(start).Milliseconds()
+	switch {
+	case late:
+		row.Result, row.Reason = Failed, fmt.Sprintf("deadline %s reached", deadline)
+		if abandoned {
+			row.Reason += fmt.Sprintf("; the body did not return within %s after it", abandonAfter)
+		}
+		t.Errorf("%s: the body ran past its deadline of %s", id, deadline)
+	case panicked != nil:
+		row.Result, row.Reason = Failed, fmt.Sprintf("the body panicked: %v", panicked)
+		t.Errorf("%s: the body panicked: %v\n%s", id, panicked, stack)
+	case t.Failed():
+		row.Result = Failed
+	case t.Skipped():
+		// A scenario does not skip itself; the needs decide. A required one
+		// that skipped anyway fails.
+		row.Result, row.Reason = Skipped, "the body skipped"
+		if required {
+			row.Result = Failed
+			t.Errorf("%s: required scenario skipped: the body skipped (listed in %s)", id, RequireEnv)
+		}
+	case !returned:
+		row.Result, row.Reason = Failed, "the body ended without returning"
+		t.Errorf("%s: %s", id, row.Reason)
+	default:
+		row.Result = Passed
+	}
+	write(t, row)
+	// A body ended by FailNow or SkipNow, or by a panic, ends its caller the same
+	// way, as it would had it run on the test's goroutine.
+	switch {
+	case abandoned, !returned && t.Failed():
+		t.FailNow()
+	case !returned && t.Skipped():
+		t.SkipNow()
+	}
 }
 
 // Required reports whether id is on DSH_REQUIRE_SCENARIOS.
@@ -244,35 +308,44 @@ func Unmet(needs Needs) string {
 // variable: a scenario that cannot run never skips (DH-O-15).
 func Need(t testing.TB, name, what string) string {
 	t.Helper()
+	tr := track(t)
 	v := strings.TrimSpace(os.Getenv(name))
 	if v == "" {
+		tr.fail(fmt.Sprintf("%s is not set: %s", name, what))
 		t.Fatalf("%s is not set: %s", name, what)
 	}
 	return v
 }
+
+// Bin, Need and Start are the shared entry points of a scenario that does not
+// call Run: the first of them a test calls tracks it (track), so the test writes
+// exactly one row when it ends.
 
 // Bin is the built dsh a scenario starts: the file DSH_BIN names when it is set
 // (a name that is not a file fails t), else this checkout's ./cmd/dsh built once
 // per test binary (dshbin; the package's TestMain calls Main).
 func Bin(t testing.TB) string {
 	t.Helper()
-	if p := strings.TrimSpace(os.Getenv(BinEnv)); p != "" {
-		if _, err := digest(p); err != nil {
-			t.Fatalf("%s=%s: %v", BinEnv, p, err)
-		}
-		return p
+	tr := track(t)
+	p := strings.TrimSpace(os.Getenv(BinEnv))
+	if p == "" {
+		p = dshbin.Path(t)
 	}
-	return dshbin.Path(t)
+	sum, err := digest(p)
+	if err != nil {
+		tr.fail(fmt.Sprintf("%s=%s: %v", BinEnv, p, err))
+		t.Fatalf("%s=%s: %v", BinEnv, p, err)
+	}
+	tr.built(sum)
+	return p
 }
-
-// Main runs a scenario package's tests (dshbin.Main): its TestMain calls it.
-func Main(m *testing.M) { dshbin.Main(m) }
 
 // Start launches p, the built binary in SDK host mode, against a scratch home of
 // its own (launcher.Start: DSH_HOME is applied after p.Env and the home is removed
 // at cleanup), so a host scenario gets the same isolation as a Run body.
 func Start(t testing.TB, p launcher.Program) *launcher.Session {
 	t.Helper()
+	track(t)
 	return launcher.Start(t, p)
 }
 

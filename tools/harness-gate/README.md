@@ -33,14 +33,15 @@ The module has its own `go.mod` and is not part of the root `go.work`; run it wi
 | 8 | `scenario-index` | `test/harness/acceptance-index.yaml` missing or malformed; a `*_scenario_test.go` ID not indexed, indexed twice or bound to two tests; an indexed ID authored at or before `built-through` without a file (DH-ADR-TOOLCHAIN-12) |
 | 9 | `policy-text` | a file under `src/harness/internal/world/sandbox/policy/text/` without a passed `DH-E-SANDBOX-7` row of `DH-S-17.md` recording that file's SHA-256 (M2-C-6); see [Sandbox policy text](#sandbox-policy-text-m2-c-6) |
 | 10 | `budget` | a `TestBudget*` test over its compiled-in budget (QG-7) |
-| 11 | `cross-compile` | `GOWORK=off CGO_ENABLED=0 go build ./cmd/dsh` for linux, darwin, windows × amd64, arm64 (QG-8) |
-| 12 | `vulncheck` | `govulncheck ./...` per module reports a vulnerability the code reaches (exit 3), or the vulnerability database cannot be read or reached (exit 1): it fails and is re-run, it never skips. `Config.VulnDB` selects `-db`; the default is `https://vuln.go.dev`. It is the one gate that needs the network, so it runs after every local check (M1-G-TOOL-4, M1-D-TOOL-1 (a)) |
-| 13 | `self` | the gate's own tests: `GOWORK=off go test -tags= -count=1 -skip '^TestRepositoryPassesEveryGate$' ./...` in `tools/harness-gate`, without the `e2e` tag (that test runs this list and would recurse); a root without the module fails (M1-G-TOOL-3) |
+| 11 | `harness-replay` | `go test -count=1 -tags=replay ./test/replay/...` in the dsh module: a committed recording of `src/harness/test/replay/testdata` that the built `dsh` (testhook tag) replays without a key to a different normalised log, workspace or model requests, or two replays that differ (`DH-T-TOOLCHAIN-1`, `-5`; decision `replay-gate-step-dh-s-16`). `DSH_REPLAY_REFRESH` is never passed on; a dsh module without `test/replay` fails |
+| 12 | `cross-compile` | `GOWORK=off CGO_ENABLED=0 go build ./cmd/dsh` for linux, darwin, windows × amd64, arm64 (QG-8) |
+| 13 | `vulncheck` | `govulncheck ./...` per module reports a vulnerability the code reaches (exit 3), or the vulnerability database cannot be read or reached (exit 1): it fails and is re-run, it never skips. `Config.VulnDB` selects `-db`; the default is `https://vuln.go.dev`. It is the one gate that needs the network, so it runs after every local check (M1-G-TOOL-4, M1-D-TOOL-1 (a)) |
+| 14 | `self` | the gate's own tests: `GOWORK=off go test -tags= -count=1 -skip '^TestRepositoryPassesEveryGate$' ./...` in `tools/harness-gate`, without the `e2e` tag (that test runs this list and would recurse); a root without the module fails (M1-G-TOOL-3) |
 
-The list has the 12 gates of M1-D-GATE-23 plus `policy-text`: plan stage 13.4
+The list has the 12 gates of M1-D-GATE-23 plus `policy-text` and `harness-replay`: plan stage 13.4
 added `modules` and `self`, stage 13.5 added `staticcheck` and `vulncheck`, which
 run the linters pinned in the tools module (`linters.go`), and harness:DSH-M2
-Stage 2.4 added `policy-text`. Both lanes run the whole list, so the rule is in
+Stage 2.4 added `policy-text` and Stage 6.8 `harness-replay`. Both lanes run the whole list, so the rule is in
 force on both. `TestGateListIsFixed` pins the order.
 
 `gofmt` also checks the test modules' files. Every gate runs on the go floor.

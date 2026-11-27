@@ -39,7 +39,12 @@ func (r *recorder) Fatalf(format string, args ...any) {
 
 func (r *recorder) Fatal(args ...any) { r.Fatalf("%s", fmt.Sprint(args...)) }
 
-func (r *recorder) FailNow() { r.Fatalf("FailNow") }
+func (r *recorder) FailNow() {
+	if !r.Failed() {
+		r.Errorf("FailNow")
+	}
+	runtime.Goexit()
+}
 
 func (r *recorder) Skipf(format string, args ...any) {
 	r.mu.Lock()
@@ -112,6 +117,9 @@ func one(t *testing.T, p string) Row {
 }
 
 // TC-17a: a required scenario whose DSH_BIN is unset fails, it does not skip.
+//
+//dsh:test DH-T-UTIL-19
+//dsh:test DH-T-TOOLCHAIN-6
 func TestRequiredScenarioWithMissingInputFails(t *testing.T) {
 	p := report(t)
 	t.Setenv(RequireEnv, "DH-E-OTHER, DH-E-X-1")
@@ -129,6 +137,7 @@ func TestRequiredScenarioWithMissingInputFails(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-UTIL-19
 func TestUnrequiredScenarioWithMissingInputSkipsWithReason(t *testing.T) {
 	p := report(t)
 	r := &recorder{TB: t}
@@ -218,7 +227,7 @@ func TestBodyOutcomesAreRecorded(t *testing.T) {
 		{"fatal", false, func(s *S) { s.Fatalf("broken") }, Failed, 1},
 		{"skipped", false, func(s *S) { s.SkipNow() }, Skipped, 0},
 		{"required skipped", true, func(s *S) { s.SkipNow() }, Failed, 1},
-		{"panicked", false, func(*S) { panic("boom") }, Failed, 0},
+		{"panicked", false, func(*S) { panic("boom") }, Failed, 1},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -227,10 +236,7 @@ func TestBodyOutcomesAreRecorded(t *testing.T) {
 				t.Setenv(RequireEnv, "DH-E-X-5")
 			}
 			r := &recorder{TB: t}
-			r.run(func() {
-				defer func() { _ = recover() }()
-				Run(r, "DH-E-X-5", Needs{}, c.body)
-			})
+			r.run(func() { Run(r, "DH-E-X-5", Needs{}, c.body) })
 			if row := one(t, p); row.Result != c.want {
 				t.Errorf("row = %+v, want %s", row, c.want)
 			}
@@ -255,6 +261,27 @@ func TestBodyPastItsDeadlineFails(t *testing.T) {
 	}
 }
 
+// A body that ignores its context is not waited for past the deadline and the
+// grace that follows it: the scenario fails and Run returns.
+func TestBodyThatIgnoresItsDeadlineIsAbandoned(t *testing.T) {
+	p := report(t)
+	old := abandonAfter
+	abandonAfter = 10 * time.Millisecond
+	t.Cleanup(func() { abandonAfter = old })
+	stuck := make(chan struct{})
+	defer close(stuck)
+	r := &recorder{TB: t}
+	after := false
+	r.run(func() {
+		Run(r, "DH-E-X-10", Needs{Deadline: time.Millisecond}, func(*S) { <-stuck })
+		after = true
+	})
+	row := one(t, p)
+	if row.Result != Failed || !strings.Contains(row.Reason, "did not return") || after || len(r.failures) != 1 {
+		t.Errorf("row = %+v, failures %q, returned to the caller %v; want failed, abandoned, caller ended", row, r.failures, after)
+	}
+}
+
 func TestReportDefaultsToATempFile(t *testing.T) {
 	t.Setenv(ReportEnv, "")
 	t.Setenv(RequireEnv, "")
@@ -275,6 +302,8 @@ func TestUnwritableReportFails(t *testing.T) {
 	}
 }
 
+//dsh:test DH-T-UTIL-19
+//dsh:test DH-T-TOOLCHAIN-6
 func TestCheckFailsARequiredScenarioWithoutAPassedRow(t *testing.T) {
 	report := strings.Join([]string{
 		`{"kind":"scenario","id":"A","result":"passed"}`,
@@ -330,5 +359,131 @@ func TestProgramWithoutBinFails(t *testing.T) {
 	r.run(func() { (&S{TB: r, ID: "DH-E-X-9"}).Program(nil) })
 	if len(r.failures) != 1 || !strings.Contains(r.failures[0], "Needs.Bin") {
 		t.Errorf("failures %q", r.failures)
+	}
+}
+
+// A test that reaches the helper through Bin, Need or Start, not Run, writes
+// exactly one row when it ends, under the ID of its //dsh:scenario directive.
+func TestTrackedTestWritesOneRow(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "dsh")
+	if err := os.WriteFile(bin, []byte("binary"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := ids
+	ids = map[string]string{"TestTrackedTestWritesOneRow": "DH-E-T-1"}
+	t.Cleanup(func() { ids = old })
+	dir := t.TempDir()
+	cases := []struct {
+		name     string
+		required bool
+		fn       func(r *recorder)
+		want     Result
+		reason   string
+		failures int
+	}{
+		{"missing input", false, func(r *recorder) {
+			Bin(r)
+			Need(r, "DSH_SCENARIO_TEST_UNSET_VAR", "an input")
+			r.Errorf("unreachable")
+		}, Failed, "DSH_SCENARIO_TEST_UNSET_VAR is not set", 1},
+		{"passed", false, func(r *recorder) { Bin(r); Bin(r) }, Passed, "", 0},
+		{"failed", false, func(r *recorder) { Bin(r); r.Errorf("broken") }, Failed, "the test failed", 1},
+		{"skipped", false, func(r *recorder) { Bin(r); r.SkipNow() }, Skipped, "skipped", 0},
+		{"required skipped", true, func(r *recorder) { Bin(r); r.SkipNow() }, Failed, "skipped", 1},
+	}
+	for i, c := range cases {
+		p := filepath.Join(dir, fmt.Sprintf("report-%d.jsonl", i))
+		var r *recorder
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv(ReportEnv, p)
+			t.Setenv(BinEnv, bin)
+			t.Setenv(RequireEnv, "")
+			if c.required {
+				t.Setenv(RequireEnv, "DH-E-T-1")
+			}
+			r = &recorder{TB: t}
+			r.run(func() { c.fn(r) })
+		})
+		row := one(t, p)
+		if row.ID != "DH-E-T-1" || row.Result != c.want || !strings.Contains(row.Reason, c.reason) {
+			t.Errorf("%s: row = %+v, want %s with %q", c.name, row, c.want, c.reason)
+		}
+		if row.Build == "" {
+			t.Errorf("%s: row %+v has no build", c.name, row)
+		}
+		if len(r.failures) != c.failures {
+			t.Errorf("%s: failures %q, want %d", c.name, r.failures, c.failures)
+		}
+	}
+}
+
+// A Run inside a tracked test writes the rows; the test adds none.
+func TestRunOwnsTheRowsOfItsTest(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "report.jsonl")
+	t.Run("run", func(t *testing.T) {
+		t.Setenv(ReportEnv, p)
+		t.Setenv(RequireEnv, "")
+		t.Setenv(BinEnv, "")
+		Need(t, ReportEnv, "the report")
+		Run(t, "DH-E-T-2", Needs{}, func(*S) {})
+	})
+	if row := one(t, p); row.ID != "DH-E-T-2" || row.Result != Passed {
+		t.Errorf("row = %+v", row)
+	}
+}
+
+func TestDirectives(t *testing.T) {
+	dir := t.TempDir()
+	src := strings.Join([]string{
+		"package x",
+		"// TestA does a.",
+		"//",
+		"//dsh:scenario DH-E-A-1",
+		"func TestA(t *testing.T) {}",
+		"//dsh:scenario DH-E-B-1",
+		"var x = 1",
+		"func TestB(t *testing.T) {}",
+		"func TestC(t *testing.T) {}",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, "a_test.go"), []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Directives(dir)
+	if err != nil || len(got) != 1 || got["TestA"] != "DH-E-A-1" {
+		t.Errorf("Directives = %v, %v; want TestA only", got, err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "d_test.go"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Directives(dir); err == nil {
+		t.Error("Directives read a directory as a file")
+	}
+}
+
+// Main's check: a required ID this package declares fails the test binary unless
+// the report has its passed row; IDs of other packages are not this binary's.
+func TestVerify(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "report.jsonl")
+	if err := os.WriteFile(p, []byte(`{"kind":"scenario","id":"DH-E-A-1","result":"passed"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	declared := map[string]string{"TestA": "DH-E-A-1", "TestB": "DH-E-B-1"}
+	cases := []struct {
+		name          string
+		code          int
+		report, needs string
+		want          int
+	}{
+		{"tests failed", 2, p, "DH-E-B-1", 2},
+		{"no report", 0, "", "DH-E-B-1", 0},
+		{"another package's ID", 0, p, "DH-E-OTHER-1", 0},
+		{"passed", 0, p, "DH-E-A-1", 0},
+		{"did not run", 0, p, "DH-E-A-1,DH-E-B-1", 1},
+		{"unreadable report", 0, filepath.Join(t.TempDir(), "missing"), "DH-E-A-1", 1},
+	}
+	for _, c := range cases {
+		if got := verify(c.code, c.report, c.needs, declared); got != c.want {
+			t.Errorf("%s: verify = %d, want %d", c.name, got, c.want)
+		}
 	}
 }

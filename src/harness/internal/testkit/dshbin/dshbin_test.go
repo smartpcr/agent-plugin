@@ -48,24 +48,41 @@ func TestPathBuildsOncePerTestBinary(t *testing.T) {
 	if !strings.HasPrefix(first, dir) {
 		t.Errorf("binary %s is outside the build directory %s", first, dir)
 	}
+	if tagged := Path(t, "testhook"); tagged == first || !strings.HasPrefix(tagged, dir) {
+		t.Errorf("Path with testhook = %s, want a second binary under %s", tagged, dir)
+	}
 }
 
-// swap sets the package state for one test and restores it.
-func swap(t *testing.T, main bool, p, fail string) {
+// swap sets the package state for one test and restores it; fail, when set, is
+// the recorded failure of the untagged build.
+func swap(t *testing.T, main bool, fail string) {
 	t.Helper()
 	mu.Lock()
-	oldMain, oldPath, oldFailed := inMain, path, failed
-	inMain, path, failed = main, p, fail
+	oldMain, oldBuilds, oldDir := inMain, builds, dir
+	inMain, builds = main, map[string]*bin{}
+	if fail != "" {
+		builds[""] = &bin{failed: fail}
+	}
 	mu.Unlock()
 	t.Cleanup(func() {
 		mu.Lock()
-		inMain, path, failed = oldMain, oldPath, oldFailed
+		inMain, builds, dir = oldMain, oldBuilds, oldDir
 		mu.Unlock()
 	})
 }
 
+// failure is the recorded failure of the untagged build.
+func failure() string {
+	mu.Lock()
+	defer mu.Unlock()
+	if b := builds[""]; b != nil {
+		return b.failed
+	}
+	return ""
+}
+
 func TestPathOutsideMainFails(t *testing.T) {
-	swap(t, false, "", "")
+	swap(t, false, "")
 	r := &recorder{TB: t}
 	r.run(func() { Path(r) })
 	if len(r.failures) != 1 || !strings.Contains(r.failures[0], "dshbin.Main") {
@@ -74,7 +91,7 @@ func TestPathOutsideMainFails(t *testing.T) {
 }
 
 func TestPathAfterAFailedBuildFailsWithoutBuilding(t *testing.T) {
-	swap(t, true, "", "compile error")
+	swap(t, true, "compile error")
 	r := &recorder{TB: t}
 	r.run(func() { Path(r) })
 	if len(r.failures) != 1 || !strings.Contains(r.failures[0], "compile error") {
@@ -83,19 +100,20 @@ func TestPathAfterAFailedBuildFailsWithoutBuilding(t *testing.T) {
 }
 
 func TestOnceRecordsTheFatalMessage(t *testing.T) {
-	swap(t, true, "", "")
+	swap(t, true, "")
 	r := &recorder{TB: t}
-	o := &once{TB: r, dir: "d"}
+	b := &bin{}
+	o := &once{TB: r, dir: "d", b: b}
 	if o.TempDir() != "d" {
 		t.Errorf("TempDir = %s", o.TempDir())
 	}
 	r.run(func() { o.Fatalf("build %s", "broke") })
-	if failed != "build broke" {
-		t.Errorf("failed = %q", failed)
+	if b.failed != "build broke" {
+		t.Errorf("failed = %q", b.failed)
 	}
 	r.run(func() { o.Fatal("again") })
-	if failed != "again" || len(r.failures) != 2 {
-		t.Errorf("failed = %q, failures %q", failed, r.failures)
+	if b.failed != "again" || len(r.failures) != 2 {
+		t.Errorf("failed = %q, failures %q", b.failed, r.failures)
 	}
 }
 
@@ -118,27 +136,36 @@ func TestModuleDirFindsTheHarnessModule(t *testing.T) {
 	if d, err := ModuleDir(); err == nil {
 		t.Errorf("ModuleDir outside the module = %s, want an error", d)
 	}
-	swap(t, true, "", "")
+	swap(t, true, "")
 	r := &recorder{TB: t}
 	r.run(func() { Path(r) })
-	if len(r.failures) != 1 || !strings.Contains(r.failures[0], "no go.mod") || failed == "" {
-		t.Errorf("Path outside the module: failures %q, failed %q", r.failures, failed)
+	if len(r.failures) != 1 || !strings.Contains(r.failures[0], "no go.mod") || failure() == "" {
+		t.Errorf("Path outside the module: failures %q, failed %q", r.failures, failure())
 	}
 }
 
 func TestPathWithoutATempDirFails(t *testing.T) {
-	swap(t, true, "", "")
+	swap(t, true, "")
 	missing := filepath.Join(t.TempDir(), "missing")
 	for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
 		t.Setenv(name, missing)
 	}
 	mu.Lock()
-	oldDir := dir
+	dir = ""
 	mu.Unlock()
-	t.Cleanup(func() { mu.Lock(); dir = oldDir; mu.Unlock() })
 	r := &recorder{TB: t}
 	r.run(func() { Path(r) })
-	if len(r.failures) != 1 || failed == "" {
-		t.Errorf("failures %q, failed %q", r.failures, failed)
+	if len(r.failures) != 1 || failure() == "" {
+		t.Errorf("failures %q, failed %q", r.failures, failure())
+	}
+	// With the build directory made, a build directory inside it that cannot be
+	// made fails too.
+	mu.Lock()
+	dir = missing
+	mu.Unlock()
+	r = &recorder{TB: t}
+	r.run(func() { Path(r, "other") })
+	if len(r.failures) != 1 {
+		t.Errorf("failures %q", r.failures)
 	}
 }

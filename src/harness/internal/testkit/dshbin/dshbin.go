@@ -1,7 +1,8 @@
 // Package dshbin builds the dsh binary once per test binary (DH-D-UTIL-7, C54):
 // a thin wrapper over the M1 test kit's launcher.Build of ./cmd/dsh. The first
-// Path call builds it into a directory that outlives that test; every later call
-// in the same test binary returns the same path. The directory is removed when
+// Path call for a set of build tags builds it into a directory that outlives that
+// test; every later call with the same tags in the same test binary returns the
+// same path. The directory is removed when
 // the package's tests end, so a package that calls Path runs its tests through
 // Main from its TestMain; Path refuses to build otherwise.
 package dshbin
@@ -23,22 +24,30 @@ const Module = "github.com/smartpcr/agent-plugin/src/harness"
 
 var (
 	mu     sync.Mutex
-	inMain bool   // Main is running the tests
-	dir    string // the build directory, removed by Main
-	path   string // the built binary, once built
-	failed string // the first build's failure, once it failed
+	inMain bool                // Main is running the tests
+	dir    string              // the build directory, removed by Main
+	builds = map[string]*bin{} // by build tags, once built or failed
 )
 
-// Main runs the tests of m, then removes the binary Path built and exits with
-// the tests' status. A TestMain calls it:
+// bin is one build of ./cmd/dsh: its path, or the first build's failure.
+type bin struct{ path, failed string }
+
+// Main runs the tests of m through Run and exits with their status. A TestMain
+// calls it:
 //
 //	func TestMain(m *testing.M) { dshbin.Main(m) }
-func Main(m *testing.M) {
+func Main(m *testing.M) { os.Exit(Run(m)) }
+
+// Run runs the tests of m, then removes every binary Path built, and returns the
+// tests' status (1 when the removal fails); a TestMain with more to do after the
+// tests calls it in place of Main.
+func Run(m *testing.M) int {
 	mu.Lock()
 	inMain = true
 	mu.Unlock()
 	code := m.Run()
 	mu.Lock()
+	defer mu.Unlock()
 	if dir != "" {
 		if err := os.RemoveAll(dir); err != nil {
 			fmt.Fprintf(os.Stderr, "dshbin: removing %s: %v\n", dir, err)
@@ -47,38 +56,49 @@ func Main(m *testing.M) {
 			}
 		}
 	}
-	mu.Unlock()
-	os.Exit(code)
+	return code
 }
 
-// Path returns the dsh binary built from this checkout's ./cmd/dsh, building it
-// on the first call. A failed build fails t and every later caller, without a
-// second build.
-func Path(t testing.TB) string {
+// Path returns the dsh binary built from this checkout's ./cmd/dsh with the
+// build tags tags (none: the release build), building it on the first call for
+// those tags. A failed build fails t and every later caller for the same tags,
+// without a second build.
+func Path(t testing.TB, tags ...string) string {
 	t.Helper()
 	mu.Lock()
 	defer mu.Unlock()
+	key := strings.Join(tags, ",")
+	b := builds[key]
 	switch {
-	case path != "":
-		return path
-	case failed != "":
-		t.Fatalf("dshbin: the build of ./cmd/dsh failed earlier in this test binary:\n%s", failed)
+	case b != nil && b.path != "":
+		return b.path
+	case b != nil:
+		t.Fatalf("dshbin: the build of ./cmd/dsh (tags %q) failed earlier in this test binary:\n%s", key, b.failed)
 	case !inMain:
 		t.Fatal("dshbin: the package's TestMain must run its tests through dshbin.Main, which removes the binary built once per test binary")
 	}
+	b = &bin{}
+	builds[key] = b
 	mod, err := ModuleDir()
 	if err != nil {
-		failed = err.Error()
+		b.failed = err.Error()
 		t.Fatalf("dshbin: %v", err)
 	}
-	d, err := os.MkdirTemp("", "dshbin-")
+	if dir == "" {
+		d, err := os.MkdirTemp("", "dshbin-")
+		if err != nil {
+			b.failed = err.Error()
+			t.Fatalf("dshbin: %v", err)
+		}
+		dir = d
+	}
+	d, err := os.MkdirTemp(dir, "build-")
 	if err != nil {
-		failed = err.Error()
+		b.failed = err.Error()
 		t.Fatalf("dshbin: %v", err)
 	}
-	dir = d
-	path = launcher.Build(&once{TB: t, dir: d}, mod, "./cmd/dsh")
-	return path
+	b.path = launcher.Build(&once{TB: t, dir: d, b: b}, mod, "./cmd/dsh", tags...)
+	return b.path
 }
 
 // once is the test that triggers the build, with the build directory standing in
@@ -87,19 +107,20 @@ func Path(t testing.TB) string {
 type once struct {
 	testing.TB
 	dir string
+	b   *bin
 }
 
 func (o *once) TempDir() string { return o.dir }
 
 func (o *once) Fatalf(format string, args ...any) {
 	o.TB.Helper()
-	failed = fmt.Sprintf(format, args...)
+	o.b.failed = fmt.Sprintf(format, args...)
 	o.TB.Fatalf(format, args...)
 }
 
 func (o *once) Fatal(args ...any) {
 	o.TB.Helper()
-	failed = fmt.Sprint(args...)
+	o.b.failed = fmt.Sprint(args...)
 	o.TB.Fatal(args...)
 }
 

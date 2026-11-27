@@ -13,6 +13,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/catalog"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human/command"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/replay"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/model"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools"
@@ -110,5 +111,8 @@ func init() {
 	extra = append(extra,
 		catalog.Item{Name: TestRouteName, Component: testRoute, Config: reflect.TypeFor[TestRouteConfig]()},
 		catalog.Item{Name: TestCommandName, Component: testCommand},
-		catalog.Item{Name: TestSleepName, Component: testSleep})
+		catalog.Item{Name: TestSleepName, Component: testSleep},
+		// The keyless replay of a recorded session (DH-D-UTIL-7), driven by
+		// test/replay against this build.
+		catalog.Item{Name: replay.Name, Component: replay.Component, Config: reflect.TypeFor[replay.Config]()})
 }

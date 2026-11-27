@@ -193,10 +193,34 @@ func Gates(c *Config) []Gate {
 		{Name: "scenario-index", Title: "every authored DH-E-* scenario test is in " + acceptance.IndexPath + " exactly once, and every indexed one authored so far has its test", Run: c.scenarioIndexGate},
 		{Name: "policy-text", Title: "M2-C-6: no file under " + PolicyTextDir + "/ without a passed " + PolicyTextScenario + " row of " + PolicyTextStage + ".md recording its SHA-256", Run: c.policyTextGate},
 		{Name: "budget", Title: "performance budgets (TestBudget*) with DSH_* and GO* overrides cleared", Run: c.budgetGate},
+		{Name: "harness-replay", Title: "go test -count=1 -tags=" + ReplayTag + " ./" + ReplayDir + "/... in the dsh module: the committed recordings replayed by the built binary without a key (DH-T-TOOLCHAIN-1, -5)", Run: c.replayGate},
 		{Name: "cross-compile", Title: "cmd/dsh for linux, darwin, windows on amd64 and arm64 with CGO_ENABLED=0", Run: c.crossCompileGate},
 		{Name: "vulncheck", Title: "govulncheck ./... per module against the vulnerability database; an unreachable database fails", Run: c.vulncheckGate},
 		{Name: "self", Title: "the gate's own tests: go test -count=1 ./... in " + SelfModule + ", without the e2e tag", Run: c.selfGate},
 	}
+}
+
+// ReplayTag and ReplayDir are the replay layer's build tag and its package
+// directory in the dsh module (DH-D-UTIL-7; decision replay-gate-step-dh-s-16).
+const (
+	ReplayTag = "replay"
+	ReplayDir = "test/replay"
+	// replayRefreshEnv rewrites the oracle; the gate never passes it on.
+	replayRefreshEnv = "DSH_REPLAY_REFRESH"
+)
+
+// replayGate runs the replay layer of the dsh module. A dsh module without it
+// fails: the gate cannot pass by finding nothing to replay.
+func (c *Config) replayGate(ctx context.Context, w io.Writer) error {
+	mod, err := c.dshModule()
+	if err != nil {
+		return err
+	}
+	if !isDir(filepath.Join(mod, filepath.FromSlash(ReplayDir))) {
+		return fmt.Errorf("%s: no %s directory: the replay layer is missing (DH-D-UTIL-7)", c.rel(mod), ReplayDir)
+	}
+	env := slices.DeleteFunc(c.env(), func(kv string) bool { return envKey(kv) == replayRefreshEnv })
+	return c.goStep(ctx, w, mod, env, "test", "-count=1", "-tags="+ReplayTag, "./"+ReplayDir+"/...")
 }
 
 // SelfModule is the gate's own module, whose tests the self gate runs (M1-G-TOOL-3).
