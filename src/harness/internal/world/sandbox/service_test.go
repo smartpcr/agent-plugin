@@ -86,3 +86,30 @@ func TestUnconfinedOnlyForDangerFullAccess(t *testing.T) {
 		}
 	}
 }
+
+// Expect judges from the probe statuses: the first available backend is the
+// selected one and its probe stands for the start, so a probe missing the
+// network is Partial naming it; no available backend is Unconfined under none
+// with every effect missing (C37, `dsh sandbox status`).
+//
+//dsh:test DH-T-SANDBOX-3
+func TestExpectFromProbeStatuses(t *testing.T) {
+	all := sandbox.Promised(sandboxtest.Policy(sandbox.WorkspaceWrite, t.TempDir()))
+	noNet := slices.DeleteFunc(slices.Clone(all), func(e sandbox.Effect) bool { return e == sandbox.EffectNetwork })
+	statuses := []sandbox.Status{
+		{Backend: sandbox.BackendBwrap, Reason: "not installed"},
+		{Backend: sandbox.BackendLandlock, Available: true, Governed: noNet, Exposed: []sandbox.Effect{sandbox.EffectDelegatedExecution}},
+	}
+	c := sandbox.Expect(statuses)
+	if c.State != sandbox.StatePartial || c.Backend != sandbox.BackendLandlock || !slices.Equal(c.Missing, []sandbox.Effect{sandbox.EffectNetwork}) || !c.Valid() {
+		t.Errorf("Expect = %+v, want Partial under landlock missing [network]", c)
+	}
+	if c := sandbox.Expect([]sandbox.Status{{Backend: sandbox.BackendBwrap, Available: true, Governed: all}}); c.State != sandbox.StateFull || len(c.Missing) != 0 {
+		t.Errorf("Expect = %+v, want Full", c)
+	}
+	for _, none := range [][]sandbox.Status{nil, statuses[:1]} {
+		if c := sandbox.Expect(none); c.State != sandbox.StateUnconfined || c.Backend != sandbox.BackendNone || !slices.Equal(c.Missing, sandbox.Effects) {
+			t.Errorf("Expect(%v) = %+v, want Unconfined under none", none, c)
+		}
+	}
+}

@@ -17,6 +17,8 @@ Commands:
   version     Print the version of this build
   catalog     Print the generated catalogs of this build
   completion  Print a shell completion script
+  secret      Manage the stored secrets
+  sandbox     Show how commands are confined on this machine
 
 Profiles:
   web          Start the host and open the web UI
@@ -117,6 +119,71 @@ Examples:
   dsh completion powershell | Out-String | Invoke-Expression
 ```
 
+## dsh secret
+
+```text
+Usage: dsh secret [options] <command>...
+
+Manage the stored secrets
+
+Commands:
+  set  Store a secret read from standard input
+
+Options:
+  -h, --help  Show this help
+```
+
+## dsh secret set
+
+```text
+Usage: dsh secret set [options] <name>
+
+Store a secret read from standard input
+
+The value is read from standard input, without one trailing line end; it is
+never an argument and never printed. <name> is OWNER_NAME or secret://owner/name.
+
+Arguments:
+  name  The secret's name, such as DEEPSEEK_API_KEY
+
+Options:
+      --json  Print the result as one JSON value
+  -h, --help  Show this help
+
+Examples:
+  printf %s "$KEY" | dsh secret set DEEPSEEK_API_KEY
+  Get-Content key.txt | dsh secret set secret://deepseek/api-key
+```
+
+## dsh sandbox
+
+```text
+Usage: dsh sandbox [options] <command>...
+
+Show how commands are confined on this machine
+
+Commands:
+  status  Print the confinement a command gets now
+
+Options:
+  -h, --help  Show this help
+```
+
+## dsh sandbox status
+
+```text
+Usage: dsh sandbox status [options]
+
+Print the confinement a command gets now
+
+Probes the sandbox backends and prints Full, Partial or Unconfined, the
+backend, the effects it does not govern and the exposures. Writes nothing to the home.
+
+Options:
+      --json  Print the result as one JSON value
+  -h, --help  Show this help
+```
+
 ## Profiles
 
 | Profile | Bundles | Summary |
@@ -148,4 +215,4 @@ Examples:
 
 ## Reserved words
 
-No profile may be called: `__complete`, `__completeNoDesc`, `catalog`, `completion`, `help`, `sandbox-launch`, `ssh-helper`, `version`.
+No profile may be called: `__complete`, `__completeNoDesc`, `catalog`, `completion`, `help`, `sandbox`, `sandbox-launch`, `secret`, `ssh-helper`, `version`.

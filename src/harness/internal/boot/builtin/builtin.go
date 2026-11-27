@@ -21,6 +21,8 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/host/stream"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/host/web"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human/permission"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/human/secret"
+	secretfile "github.com/smartpcr/agent-plugin/src/harness/internal/human/secret/file"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/scope"
@@ -36,6 +38,8 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/fs"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/fs/local"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/fs/ops"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox"
+	sandboxlocal "github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox/local"
 )
 
 // Boot is the boot family's items.
@@ -139,9 +143,23 @@ func FS() []catalog.Item {
 	}
 }
 
-// Sandbox is the sandbox family's items. The resolver's item comes from ops,
-// the one package allowed to import it.
-func Sandbox() []catalog.Item { return []catalog.Item{ops.PolicyItem()} }
+// Sandbox is the sandbox family's items: the resolver, whose item comes from ops,
+// the one package allowed to import it, and the local seam (C37) the admin tree's
+// `dsh sandbox status` reads.
+func Sandbox() []catalog.Item {
+	return []catalog.Item{
+		ops.PolicyItem(),
+		{Name: sandboxlocal.Name, Component: sandboxlocal.Component, Config: reflect.TypeFor[sandboxlocal.Config](), Provides: []string{sandbox.ServiceKey.Name()}},
+	}
+}
+
+// Human is the human family's items: the secret store over the home's file
+// backend, which `dsh secret set` writes through.
+func Human() []catalog.Item {
+	return []catalog.Item{
+		{Name: secretfile.Name, Component: secretfile.Component, Config: reflect.TypeFor[secretfile.Config](), Provides: []string{secret.Key.Name()}},
+	}
+}
 
 // Permission is the permission family's items: the permission preset table
 // (C34). Registered in the build catalogue so a layer's table is checked at
@@ -172,7 +190,7 @@ func CLI() []catalog.Item {
 
 // Sets is every family's items.
 func Sets() [][]catalog.Item {
-	return [][]catalog.Item{Boot(), Host(), Util(), Session(), Agent(), LLM(), Tools(), FS(), Sandbox(), Permission(), Wire(), CLI(), Storage(), UI()}
+	return [][]catalog.Item{Boot(), Host(), Util(), Session(), Agent(), LLM(), Tools(), FS(), Sandbox(), Human(), Permission(), Wire(), CLI(), Storage(), UI()}
 }
 
 // Catalog builds the catalogue of this binary.

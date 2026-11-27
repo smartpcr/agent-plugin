@@ -26,6 +26,9 @@ type command struct {
 	spec     cmdline.Spec
 	children []*command
 	run      func(st *state, v *cmdline.Values) error
+	// access is the command's class: an admin command runs in the admin tree
+	// (DH-D-CLI-9), read-only or writing.
+	access access
 }
 
 // word is the command's own word: the last word of its Spec name.
@@ -73,6 +76,35 @@ func newTree() *tree {
 					{Command: "dsh completion powershell | Out-String | Invoke-Expression"},
 				}},
 			run: runCompletion,
+		},
+		{
+			spec: cmdline.Spec{Name: "dsh secret", Summary: "Manage the stored secrets"},
+			children: []*command{{
+				spec: cmdline.Spec{Name: "dsh secret set", Summary: "Store a secret read from standard input",
+					Description: "The value is read from standard input, without one trailing line end; it is\n" +
+						"never an argument and never printed. <name> is OWNER_NAME or secret://owner/name.",
+					Options: []cmdline.Option{jsonOption()},
+					Args: cmdline.Args{Name: "name", Help: "The secret's name, such as DEEPSEEK_API_KEY", Min: 1, Max: 1,
+						Extra: "a secret value is read from standard input, never from an argument"},
+					Sensitive: true,
+					Examples: []cmdline.Example{
+						{Command: "printf %s \"$KEY\" | dsh secret set DEEPSEEK_API_KEY"},
+						{Command: "Get-Content key.txt | dsh secret set secret://deepseek/api-key"},
+					}},
+				run:    runSecretSet,
+				access: adminWrite,
+			}},
+		},
+		{
+			spec: cmdline.Spec{Name: "dsh sandbox", Summary: "Show how commands are confined on this machine"},
+			children: []*command{{
+				spec: cmdline.Spec{Name: "dsh sandbox status", Summary: "Print the confinement a command gets now",
+					Description: "Probes the sandbox backends and prints Full, Partial or Unconfined, the\n" +
+						"backend, the effects it does not govern and the exposures. Writes nothing to the home.",
+					Options: []cmdline.Option{jsonOption()}},
+				run:    runSandboxStatus,
+				access: adminRead,
+			}},
 		},
 	}}
 }
@@ -210,6 +242,7 @@ func (st *state) cobraTree() *cobra.Command {
 				if v.Bool("json") {
 					useJSON()
 				}
+				st.access = c.access
 				return ran(c.run(st, v))
 			}
 		}

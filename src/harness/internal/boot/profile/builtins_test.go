@@ -889,3 +889,26 @@ func providers(cat *catalog.Catalog, e loader.EntryOptions, entries map[string]l
 	visit(e)
 	return out
 }
+
+// Acting names what the admin tree refuses: carriers by id or name, and agents,
+// model adapters, wire carriers, CLI carriers and plugin processes by name.
+func TestActing(t *testing.T) {
+	for _, c := range []struct {
+		id, name string
+		want     bool
+	}{
+		{"logging", "boot.logging", false},
+		{"sharing", "host.sharing", false},
+		{"session.store", "session.store", false},
+		{"host.web", "host.web", true},
+		{"carrier", "cli.headless", true},
+		{"wire.acp", "wire.acp", true},
+		{"driver", "agent.driver", true},
+		{"model", "llm.deepseek", true},
+		{"plugins", "boot.plugins", true},
+	} {
+		if got := Acting(c.id, c.name); got != c.want {
+			t.Errorf("Acting(%q, %q) = %v, want %v", c.id, c.name, got, c.want)
+		}
+	}
+}

@@ -115,6 +115,9 @@ type state struct {
 	res     *output.Result
 	command string
 	tree    *tree
+	// home is the launcher's --home; access is the running command's class.
+	home   string
+	access access
 	// helpErr is the failure of help printed by cobra's help func, which cannot
 	// return it.
 	helpErr error
@@ -169,6 +172,7 @@ func (st *state) run(args []string) error {
 				return cmdline.Usagef(spec.Name, "--%s applies to a profile launch, not to %q", launchOnly, words[0])
 			}
 		}
+		st.home = v.String("home")
 		return st.runCommand(words)
 	}
 	if name == "" {

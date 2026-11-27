@@ -10,6 +10,7 @@ import (
 	"slices"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox/internal/mint"
 )
 
 // The effects a confined policy can promise. The list is maintained by hand and
@@ -102,6 +103,26 @@ func Enforce(p Policy, e Evidence) Confinement {
 		c.State = StatePartial
 	}
 	return c
+}
+
+// Expect is the confinement a workspace-write start with the network denied gets
+// now, judged from the probe statuses alone (`dsh sandbox status`, C37): the first
+// available backend in chain order is the one selected, and its probe is both the
+// probe's and the start's evidence, so a real start can only be weaker. With no
+// available backend a confined start is refused and only danger-full-access runs:
+// Unconfined under backend none with every effect missing.
+func Expect(statuses []Status) Confinement {
+	for _, s := range statuses {
+		if !s.Available {
+			continue
+		}
+		p, err := Issue(mint.Spec{Mode: string(WorkspaceWrite)})
+		if err != nil {
+			return Confinement{}
+		}
+		return Enforce(p, Evidence{Backend: s.Backend, Custom: s.Custom, Probe: s.Governed, Start: s.Governed, Exposed: s.Exposed})
+	}
+	return Confinement{State: StateUnconfined, Backend: BackendNone, Missing: slices.Clone(Effects)}
 }
 
 // Status is one backend as the last probe found it (Describe, Reprobe).
