@@ -1,0 +1,152 @@
+# Stage 6.12 E2E (impl.md DH-S-16 step 16.8, guarded scenarios on scratch
+# homes; TC-19s1, TC-19s2). Mirrors
+# src/harness/test/e2e/dh-s-16-profiles-launchers-and-evidence-runners/azure-pipeline.yml.
+#
+# gate (hosted ubuntu and windows): DH-E-STORE-1, DH-E-STORE-6, DH-E-FS-3 and the
+# gate variant of DH-E-STORE-2 run on embedded SQLite in scratch homes with the
+# keyless replay route of the testhook build. No DSN, no secrets. Only the
+# @setup-lab-wsl-claude-code variant may skip here; any other skip fails.
+#
+# lab-wsl (self-hosted WSL lane machine): the lab variant of DH-E-STORE-2, the
+# signed-in Claude Code route with bwrap Full. The runner must carry the labels
+# below; the tester's Claude Code sign-in lives on that machine and is never a
+# repository secret (the route reads no token). The six command templates of the
+# impl's TestKilledHostRecoversHonestly and its Claude Code model are repository
+# variables (DSH_SCENARIO_STORE2_*, DSH_SCENARIO_CLAUDE_CODE_MODEL). Preflights:
+# dsh sandbox status reports backend bwrap in state full (Stage 6.10) and one
+# probe turn on the sign-in with that model; the suite's lab steps repeat both. The job fails if the variant skipped or did not pass.
+name: e2e-dh-s-16-profiles-launchers-and-evidence-runners
+
+on:
+  pull_request:
+    paths:
+      - src/harness/internal/storage/**
+      - src/harness/internal/session/**
+      - src/harness/internal/world/fs/**
+      - src/harness/internal/boot/builtin/**
+      - src/harness/internal/testkit/**
+      - src/harness/test/e2e/harness-DSH-M2/dh_s_16_profiles_launchers_and_evidence_runners_guarded_scenarios_on_scratch_homes*
+      - .github/workflows/e2e-dh-s-16-profiles-launchers-and-evidence-runners.yml
+  push:
+    branches: [main]
+    paths:
+      - src/harness/internal/storage/**
+      - src/harness/internal/session/**
+      - src/harness/internal/world/fs/**
+      - src/harness/internal/boot/builtin/**
+      - src/harness/internal/testkit/**
+      - src/harness/test/e2e/harness-DSH-M2/dh_s_16_profiles_launchers_and_evidence_runners_guarded_scenarios_on_scratch_homes*
+      - .github/workflows/e2e-dh-s-16-profiles-launchers-and-evidence-runners.yml
+  workflow_dispatch:
+    inputs:
+      lab:
+        description: Run the DH-E-STORE-2 lab variant on the self-hosted WSL lane machine
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-dh-s-16-guarded-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: gate (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      GOWORK: "off"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: src/harness/go.mod
+          cache-dependency-path: src/harness/go.sum
+      - name: Godog scenarios (only the lab variant may skip)
+        run: |
+          set -o pipefail
+          mkdir -p artifacts/e2e
+          log=artifacts/e2e/guarded-${{ runner.os }}.txt
+          go -C src/harness test -tags e2e -count=1 -v -timeout 30m \
+            -run '^TestE2E_dh_s_16_profiles_launchers_and_evidence_runners_guarded_scenarios_on_scratch_homes$' \
+            ./test/e2e/harness-DSH-M2/ 2>&1 | tee "$log"
+          if grep -q -- '--- SKIP' "$log"; then echo "a required scenario skipped"; exit 1; fi
+          for s in DH-E-STORE-1 DH-E-STORE-6 DH-E-FS-3 'DH-E-STORE-2_(gate_variant'; do
+            grep -qF -- "--- PASS: TestE2E_dh_s_16_profiles_launchers_and_evidence_runners_guarded_scenarios_on_scratch_homes/$s" "$log" \
+              || { echo "$s did not pass"; exit 1; }
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-guarded-${{ runner.os }}
+          path: artifacts/e2e/
+          if-no-files-found: warn
+
+  lab-wsl:
+    name: lab (WSL lane, bwrap Full, Claude Code sign-in)
+    if: github.event_name == 'workflow_dispatch' && inputs.lab || github.event_name == 'push' && vars.DSH_LAB_WSL == 'true'
+    runs-on: [self-hosted, linux, wsl, bwrap, claude-code]
+    defaults:
+      run:
+        shell: bash
+    env:
+      GOWORK: "off"
+      DSH_SCENARIO_STORE2_START: ${{ vars.DSH_SCENARIO_STORE2_START }}
+      DSH_SCENARIO_STORE2_PROMPT: ${{ vars.DSH_SCENARIO_STORE2_PROMPT }}
+      DSH_SCENARIO_STORE2_RESUME: ${{ vars.DSH_SCENARIO_STORE2_RESUME }}
+      DSH_SCENARIO_STORE2_REQUEST: ${{ vars.DSH_SCENARIO_STORE2_REQUEST }}
+      DSH_SCENARIO_STORE2_KILL: ${{ vars.DSH_SCENARIO_STORE2_KILL }}
+      DSH_SCENARIO_STORE2_DELETE: ${{ vars.DSH_SCENARIO_STORE2_DELETE }}
+      DSH_SCENARIO_CLAUDE_CODE_MODEL: ${{ vars.DSH_SCENARIO_CLAUDE_CODE_MODEL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: src/harness/go.mod
+          cache-dependency-path: src/harness/go.sum
+      - name: Inputs declared
+        run: |
+          for n in DSH_SCENARIO_STORE2_START DSH_SCENARIO_STORE2_PROMPT DSH_SCENARIO_STORE2_RESUME DSH_SCENARIO_STORE2_REQUEST \
+                   DSH_SCENARIO_STORE2_KILL DSH_SCENARIO_STORE2_DELETE DSH_SCENARIO_CLAUDE_CODE_MODEL; do
+            [ -n "${!n}" ] || { echo "repository variable $n is not set"; exit 1; }
+          done
+      - name: Preflight -- dsh reports backend bwrap in state full (Stage 6.10)
+        run: |
+          command -v bwrap
+          go -C src/harness build -o "$RUNNER_TEMP/dsh" ./cmd/dsh
+          st=$("$RUNNER_TEMP/dsh" --home "$RUNNER_TEMP/preflight-home" sandbox status --json)
+          echo "$st"
+          echo "$st" | grep -Eq '"backend": *"bwrap"' && echo "$st" | grep -Eq '"state": *"full"' \
+            || { echo "dsh sandbox status does not report backend bwrap in state full"; exit 1; }
+      - name: Preflight -- Claude Code sign-in (probe turn)
+        run: |
+          command -v claude
+          claude --version
+          out=$(claude -p 'Reply with the word ok.' --model "$DSH_SCENARIO_CLAUDE_CODE_MODEL" --output-format json --max-turns 1)
+          echo "$out" | grep -Eq '"is_error": *false' || { echo "the probe turn failed: the tester is not signed in"; exit 1; }
+      - name: DH-E-STORE-2 lab variant (must run and pass)
+        run: |
+          set -o pipefail
+          mkdir -p artifacts/e2e
+          log=artifacts/e2e/guarded-lab-wsl.txt
+          { echo "commit ${GITHUB_SHA}"; uname -a; bwrap --version; claude --version; } | tee "$log"
+          go -C src/harness test -tags e2e -count=1 -v -timeout 60m \
+            -run '^TestE2E_dh_s_16_profiles_launchers_and_evidence_runners_guarded_scenarios_on_scratch_homes$' \
+            ./test/e2e/harness-DSH-M2/ 2>&1 | tee -a "$log"
+          if grep -qE -- '--- SKIP|lab variant: skipped' "$log"; then echo "the lab variant skipped on the lab"; exit 1; fi
+          grep -q 'TestKilledHostRecoversHonestly passed through dsh on the WSL lane' "$log" \
+            || { echo "the live scenario did not pass"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-guarded-lab-wsl
+          path: artifacts/e2e/
+          if-no-files-found: warn

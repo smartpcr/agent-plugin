@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"reflect"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
@@ -15,8 +16,11 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/replay"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/workdir"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/model"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools"
+	fstools "github.com/smartpcr/agent-plugin/src/harness/internal/world/fs/tools"
 )
 
 // TestRouteName is the catalogue name of the keyless fake model route a testhook
@@ -107,8 +111,42 @@ var testSleep = cordis.Define(TestSleepName, func(ctx *cordis.Context, _ struct{
 	return err
 }, cordis.WithInject(tools.Key.Name()))
 
+// TestWorkdirName is the catalogue name of the testhook working-directory item:
+// it provides workdir.Key with one fixed directory as every session's directory
+// and project root, standing in for session.workdir, whose fold registry
+// (session.views) the binary does not boot yet, so a built-binary test layer can
+// mount the real sandbox.policy, fs.ops and fs.tools (DH-E-FS-3).
+const TestWorkdirName = "session.testkit-workdir"
+
+// TestWorkdirConfig is the working-directory item's configuration: the
+// directory, absolute and clean.
+type TestWorkdirConfig struct {
+	Root string `json:"root"`
+}
+
+type fixedDir string
+
+func (d fixedDir) Access(session.ID) (workdir.Access, error) { return d, nil }
+func (d fixedDir) Current() (workdir.WorkingDirectory, error) {
+	return workdir.WorkingDirectory{Path: string(d), Root: string(d)}, nil
+}
+func (d fixedDir) Path() (string, error) { return string(d), nil }
+func (d fixedDir) Root() (string, error) { return string(d), nil }
+
+var testWorkdir = cordis.Define(TestWorkdirName, func(ctx *cordis.Context, cfg TestWorkdirConfig) error {
+	if !filepath.IsAbs(cfg.Root) || filepath.Clean(cfg.Root) != cfg.Root {
+		return fmt.Errorf("%s: root %q is not an absolute, clean path", TestWorkdirName, cfg.Root)
+	}
+	_, err := workdir.Key.Provide(ctx, fixedDir(cfg.Root))
+	return err
+})
+
 func init() {
 	extra = append(extra,
+		catalog.Item{Name: TestWorkdirName, Component: testWorkdir, Config: reflect.TypeFor[TestWorkdirConfig](), Provides: []string{workdir.Key.Name()}},
+		// The model-facing file tools (read, write, edit, ...), which no
+		// profile mounts yet, so a built-binary test drives edit (DH-E-FS-3).
+		fstools.Item(),
 		catalog.Item{Name: TestRouteName, Component: testRoute, Config: reflect.TypeFor[TestRouteConfig]()},
 		catalog.Item{Name: TestCommandName, Component: testCommand},
 		catalog.Item{Name: TestSleepName, Component: testSleep},
