@@ -31,16 +31,16 @@ Each step's merge commit; `--built` refuses a step without one.
 
 | Step | Deliverable | Commit | Notes |
 | --- | --- | --- | --- |
-| 16.1 | DH-D-BUNDLE-3 | | |
-| 16.2 | DH-D-CLI-9 | | |
-| 16.3 | DH-D-CLI-2 | | |
-| 16.4 | DH-D-CLI-4 | | |
-| 16.5 | DH-D-CLI-5 | | |
-| 16.6 | DH-D-SDK-8 | | P1, pulled forward |
-| 16.7 | DH-D-UTIL-8, DH-D-UTIL-7 | | P1, pulled forward; UTIL-7 held open: H-10 |
-| 16.8 | guarded scenarios | | the Scenarios table below |
-| 16.9 | DH-D-VIEW-4 | | P1, pulled forward |
-| 16.10 | DH-D-BOOT-6 | | closes H-21 |
+| 16.1 | DH-D-BUNDLE-3 | 87abad2 | squash-merge of #177 (Stage 6.1, Mode Layers and Five Profiles) |
+| 16.2 | DH-D-CLI-9 | cc1d291 | squash-merge of #179 (Stage 6.2, Admin Tree and Secret Set) |
+| 16.3 | DH-D-CLI-2 | 85cfd7c | squash-merge of #185 (Stage 6.4, Headless and SDK Launchers) |
+| 16.4 | DH-D-CLI-4 | 03c59a0 | squash-merge of #188 (Stage 6.5, One Bounded Stop Path) |
+| 16.5 | DH-D-CLI-5 | c331bf8 | squash-merge of #191 (Stage 6.6, Second Launch and Crash Notice) |
+| 16.6 | DH-D-SDK-8 | 3527b3c | P1, pulled forward; squash-merge of #187 (Stage 6.7, Go Client Package) |
+| 16.7 | DH-D-UTIL-8, DH-D-UTIL-7 | 5537e0a | P1, pulled forward; UTIL-7 held open: H-10; squash-merge of #193 (Stage 6.8, Scenario Helper and Keyless Replay) |
+| 16.8 | guarded scenarios | c35a838 | the Scenarios table below; squash-merge of #195 (Stage 6.12, the guarded runner); the runs are owed (`m1-entry-block`) |
+| 16.9 | DH-D-VIEW-4 | cbfbd01 | P1, pulled forward; squash-merge of #196 (Stage 6.9, Session Titles) |
+| 16.10 | DH-D-BOOT-6 | fe13e4e | closes H-21; squash-merge of #183 (Stage 6.3, Config Show and Validate Close H-21) |
 
 ## Scenarios
 
@@ -82,7 +82,21 @@ which commit (impl.md sec. 7.3).
 | --- | --- | --- | --- | --- | --- |
 | 16.3 | one `dsh headless` prompt on the signed-in Claude Code route (M2-I-1) with an approval answered on the terminal | | | | `manual` |
 | 16.4 | Ctrl-C during a tool call | | | | `manual` |
-| 16.5 | a second `dsh` beside a running host | | | | `manual` |
+| 16.5 | a second `dsh` beside a running host | Seen on Windows 11, release build of `./cmd/dsh` (sha256 `ae03f032...46364`) on an empty scratch home: with a first `dsh web` live (pid 34596, `http://127.0.0.1:3080`), `dsh status` listed that one host; a second `dsh web` printed `opened in the browser of the host (process 34596)` and exited 0 in 160 ms, starting no host of its own. After the first host was killed, `dsh status` named the crash report `reports/report-...-34596.txt` and suggested `dsh --safe web`, then exited 4 `host/not-running`; `dsh crash` printed the same path. WSL leg not yet run | | 12c2be8 | `manual` |
+
+Logs: [runs/manual-12c2be8/](runs/manual-12c2be8/README.md). Each Operator cell stays empty until the
+operator accepts the recorded run (question `dh-s-16-manual-checks`).
+
+- **16.3, separate half (M2-I-1).** `dsh secret set` was run with a scratch value at `12c2be8`: the dotted
+  name `llm.deepseek.api-key` was refused with usage status 64 and nothing was stored;
+  `secret://scratch/check` was stored at revision 1, and `SCRATCH_CHECK --json` updated the same secret
+  to revision 2 (`source: store`). The value appears in no file of the home in plain text
+  ([log](runs/manual-12c2be8/check-16.3-secret-set-windows.log)).
+- **16.3 headless prompt and 16.4 Ctrl-C: not seen, blocked.** The release build has no model route in its
+  catalog. No catalog item wraps `llm/provider/claudecode`, and the only route a built binary can insert
+  is `llm.testkit-route`, behind the `testhook` build tag. With no route, `dsh headless` cannot reach the
+  signed-in Claude Code route or make a tool call, so neither check can be seen. The question
+  `dh-s-16-claude-route` is raised to resolve this.
 
 ## Owner defaults (M2-C-4)
 
@@ -100,8 +114,11 @@ stage closes; `--built` refuses a row with no confirmation or no name in By.
 
 ### Source and build identity
 
-Not yet recorded. At closure: the commit of the three modules (one commit), the Go version (`go1.27.4`),
-the binary's SHA-256 and embedded version.
+Manual checks and package tests at `12c2be8` (main, every step above merged). Go `go1.27.4`
+windows/amd64. The binary is `go -C src/harness build ./cmd/dsh` (release, no tags), embedded version
+`dsh (devel) (12c2be8d83b487422ce7115951361b8a1fb367d1; go1.27.4; windows/amd64)`, SHA-256
+`ae03f032229965bc2088a2c9d1d17489551062c384237bbd91f22c89db546364`. At closure: the commit of the three
+modules (one commit), with the binary's SHA-256 and embedded version on both lanes.
 
 ### Environment and fixture
 
@@ -110,8 +127,29 @@ Not yet recorded. Gate venue: both local lanes, `tools/harness-gate/lanes/win.ps
 
 ### Exact tests and commands
 
-Not yet recorded: the gate runner's output, the `go test` command lines and `DSH_REQUIRE_SCENARIOS`
-(`harness-gate require --stage DH-S-16`). Step 16.8 runs, once per lane on the stage's merged commit,
+At `12c2be8`, Windows 11, from the worktree root:
+
+- DH-T-TOOLCHAIN-1, -3, -5 (the tests the `harness-replay` gate step runs):
+  `go -C src/harness test -tags=replay -v ./test/replay/...`. `ok` (63.6 s). These pass:
+  `TestLayerFilesCarryTheirTag` and `TestReplayChildGetsNoKey` (TOOLCHAIN-1),
+  `TestBoundaryParsersRunTheirCommittedCrashers` (TOOLCHAIN-3),
+  `TestReplayIsDeterministicAndLeavesTheFixture` (TOOLCHAIN-5), `TestReplayMatchesTheCommittedOracle`,
+  `TestLaunchReplayStopsATreeHoldingItsOutput` and `TestLaunchReplayCapsItsOutput`.
+- DH-T-TOOLCHAIN-6: `go -C src/harness test -v ./internal/testkit/scenario/`. `ok`, all 22 tests `PASS`,
+  among them `TestRequiredScenarioWithMissingInputFails` and
+  `TestCheckFailsARequiredScenarioWithoutAPassedRow`. Also
+  `GOWORK=off go -C tools/harness-gate test -run TestPreflightChecksTheSignIn ./acceptance/`, which is `ok`.
+  The other TOOLCHAIN-6 site, `scenariorun_test.go` in the gate's root package, runs with the lanes (Full
+  harness gate policy).
+- Manual checks: the commands in [runs/manual-12c2be8/](runs/manual-12c2be8/README.md).
+- The record check, on this record with `Closure status: open`:
+  `GOWORK=off go -C tools/harness-gate run . ready --stage DH-S-16 --built --root ../..`. Before this
+  update it found 29 blockers. Afterwards the steps are cleared, and these remain open: the seven
+  guarded rows (`m1-entry-block`), the manual checks (16.3 and 16.4 not seen, every Operator cell pending)
+  and the three owner defaults.
+
+Not yet recorded: the lanes' output and `DSH_REQUIRE_SCENARIOS` (`harness-gate require --stage DH-S-16`).
+Step 16.8 runs, once per lane on the stage's merged commit,
 `tools/harness-gate/lanes/wsl.sh --guarded --inputs FILE` and `lanes/win.ps1 -Guarded -Inputs FILE`
 ([the gate's README](../../../../tools/harness-gate/README.md#guarded-mode---guarded--guarded-stage-612)):
 `harness-gate entry`, `harness-gate require --stage DH-S-16`, then `go test -tags scenario -count=1 -p 1
@@ -156,4 +194,23 @@ directory before and after the run):
 
 ### Open items
 
-Held open: H-10 (DH-D-UTIL-7); H-1 to H-4 from DH-S-15; H-21 closes with step 16.10. Built-not-done: BUNDLE-3 until DH-S-22; CLI-2, CLI-4, CLI-5 until DH-S-27; UTIL-8 until DH-S-39. Exit evidence also needs DH-T-TOOLCHAIN-1, -3, -5 and -6 passing and the step 16.8 cleanup evidence.
+Held open across M2 (the rows of [closure.md, Held-open items](closure.md#held-open-items)), all `open`
+at `12c2be8`:
+
+| Item | Deliverable | What waits | Closes at |
+| --- | --- | --- | --- |
+| H-1 | DH-D-SDK-4 | the schedule activation hook | the stage that builds schedules (after M2) |
+| H-2 | DH-D-SDK-4 | validation against more than one provider route | after M2 |
+| H-3 | DH-D-SDK-4 | inline image admission | after M2 |
+| H-4 | DH-D-SDK-5 | a goal's stop signal | after M2 |
+| H-10 | DH-D-UTIL-7 | replay of sessions with children, until the lineage records exist | after M2 |
+
+H-21 is closed by step 16.10 (`fe13e4e`). Built-not-done: BUNDLE-3 until DH-S-22; CLI-2, CLI-4 and CLI-5
+until DH-S-27; UTIL-8 until DH-S-39. DH-T-TOOLCHAIN-1, -3, -5 and -6 pass at `12c2be8` (Exact tests and
+commands); the lanes must still show them passing at the closing commit. The step 16.8 cleanup evidence
+is still owed.
+
+**Not advanced yet (implementation-plan Stage 6.13, M2-DOD-1).** `built-through` in
+`test/harness/acceptance-index.yaml` stays at `DH-S-11`. The S12..S16 states in
+[closure.md](closure.md) stay `not built` because none of the DH-S-12 to DH-S-16 records passes
+`ready --built` yet, and harness:DSH-M1 is not closed: every M1 record still reads `Closure status: open`.
