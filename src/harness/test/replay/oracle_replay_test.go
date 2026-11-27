@@ -310,6 +310,9 @@ func TestReplayIsDeterministicAndLeavesTheFixture(t *testing.T) {
 			if d := fixture.Diff("log", a.log, b.log); d != "" {
 				t.Error("two replays differ: " + d)
 			}
+			if !sameKeys(a.requests, b.requests) {
+				t.Errorf("two replays sent different requests: %v, then %v", keys(a.requests), keys(b.requests))
+			}
 			for name := range a.requests {
 				if d := fixture.Diff(name, a.requests[name], b.requests[name]); d != "" {
 					t.Error("two replays differ: " + d)
