@@ -13,7 +13,9 @@
 # DSH_SCENARIO_STORE2_* command templates and DSH_SCENARIO_CLAUDE_CODE_MODEL.
 # Preflights: dsh sandbox status reports backend bwrap in state full (Stage
 # 6.10) and a probe turn on that model answers. The job fails when the variant skips
-# or the live scenario does not pass.
+# or the live scenario does not pass. Like the GitHub mirror, lab_wsl never runs
+# for pull request builds (PR code, possibly from forks, must not reach the
+# self-hosted pool holding the sign-in); it runs on main pushes and manual runs.
 trigger:
   branches:
     include: [main]
@@ -68,7 +70,7 @@ jobs:
 
   - job: lab_wsl
     displayName: lab (WSL lane, bwrap Full, Claude Code sign-in)
-    condition: and(succeeded(), eq('${{ parameters.lab }}', 'true'))
+    condition: and(succeeded(), eq('${{ parameters.lab }}', 'true'), ne(variables['Build.Reason'], 'PullRequest'))
     timeoutInMinutes: 90
     pool:
       name: dsh-lab-wsl
