@@ -440,6 +440,11 @@ func (s *Service) requestLocked(ctx context.Context, e *entry, refresh bool) (ev
 	if refresh && t.Pinned {
 		return 0, 0, nil, herr.New(CodePinned, "title: the title is pinned; Unpin it first")
 	}
+	// Auto decided under an earlier hold of e.mu; a Rename, Pin or Refresh
+	// since then must stop the automatic request before it is logged or sent.
+	if !refresh && !s.due(ctx, e) {
+		return 0, 0, nil, errNotDue
+	}
 	p, err := s.providers.Get(s.cfg.Provider)
 	if err != nil {
 		return 0, 0, nil, err
@@ -560,6 +565,14 @@ func (s *Service) due(ctx context.Context, e *entry) bool {
 	return t.Requests == 0
 }
 
+// errNotDue stops an automatic generation that stopped being due between Auto's
+// decision and its request; it is not a failure and is not reported.
+var errNotDue = errors.New("title: the automatic title is no longer due")
+
+// autoGap, when set by a test, runs after Auto releases e.mu and before the
+// generation takes it again.
+var autoGap func()
+
 // Auto starts an automatic generation of session id's title when it is due and
 // a model is bound, in the background (Wait waits for it). A failure is
 // reported to WithWarn and leaves the fallback in place.
@@ -582,11 +595,14 @@ func (s *Service) Auto(id session.ID) {
 	e.mu.Unlock()
 	go func() {
 		defer s.end(b)
+		if autoGap != nil {
+			autoGap()
+		}
 		_, err := s.generate(e.ctx, e, b, false)
 		e.mu.Lock()
 		e.running = false
 		e.mu.Unlock()
-		if err != nil {
+		if err != nil && !errors.Is(err, errNotDue) {
 			s.warn("title: session %s: %v", id, err)
 		}
 	}()
