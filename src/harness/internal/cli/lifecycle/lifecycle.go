@@ -90,6 +90,9 @@ func (t Trigger) Stop() (launch.Reason, int) {
 // forces it.
 func (t Trigger) signal() bool { return t == Interrupt || t == Terminate }
 
+// valid reports whether t is one of the triggers; any other value stops nothing.
+func (t Trigger) valid() bool { return t >= Interrupt && t <= Request }
+
 // Of is the trigger of an operating-system signal, 0 for one that stops nothing.
 func Of(sig os.Signal) Trigger {
 	switch sig {
@@ -177,6 +180,8 @@ func Watch(ctx context.Context, app launch.App, in Inputs) State {
 	}
 	w := &watcher{ctx: ctx, app: app, in: in, answers: make(chan answer, 1)}
 	stopping := app.Stopping()
+	// A closed input is switched off: its end is no request.
+	signals, triggers := in.Signals, in.Triggers
 	for w.state != Forced {
 		select {
 		case <-ctx.Done():
@@ -187,12 +192,18 @@ func Watch(ctx context.Context, app launch.App, in Inputs) State {
 				w.window = nil
 				w.enter(Stopping)
 			}
-		case sig := <-in.Signals:
-			if t := Of(sig); t != 0 {
+		case sig, ok := <-signals:
+			if !ok {
+				signals = nil
+			} else if t := Of(sig); t != 0 {
 				w.on(t)
 			}
-		case t := <-in.Triggers:
-			w.on(t)
+		case t, ok := <-triggers:
+			if !ok {
+				triggers = nil
+			} else if t.valid() {
+				w.on(t)
+			}
 		case a := <-w.answers:
 			w.answered(a)
 		case <-w.window:
@@ -279,13 +290,15 @@ func (w *watcher) answered(a answer) {
 }
 
 // Process runs run with the process's stop signals watched against app, and
-// returns run's status. run is boot.Run: it owns the tree and the bound.
+// returns run's status. run is boot.Run: it owns the tree and the bound. The
+// watch lasts until run returns, not until ctx ends: run turns the end of ctx
+// into a stop and shuts down, and a Ctrl-C during that shutdown still forces it.
 func Process(ctx context.Context, app launch.App, in Inputs, run func(ctx context.Context) int) int {
 	sigs := make(chan os.Signal, 2)
 	signal.Notify(sigs, Signals...)
 	defer signal.Stop(sigs)
 	in.Signals = sigs
-	watchCtx, cancel := context.WithCancel(ctx)
+	watchCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	done := make(chan struct{})
 	go func() {
 		defer close(done)

@@ -272,6 +272,97 @@ func TestSignalNeverConfirms(t *testing.T) {
 	})
 }
 
+// A closed input is no request: closing the triggers or the signals, before or
+// during the stop, calls no Stop and leaves Watch serving the other input, so a
+// later Ctrl-C still stops or forces. (A closed input that stayed selected would
+// keep Watch busy, and Settle would never return.)
+//
+//dsh:test DH-T-CLI-8
+func TestClosedInputsStopNothing(t *testing.T) {
+	for _, closed := range []string{"triggers", "signals"} {
+		for _, phase := range []string{"running", "stopping"} {
+			t.Run(closed+" while "+phase, func(t *testing.T) {
+				clock.Run(t, func(t *testing.T) {
+					m := start(t, nil)
+					ctrlC := func() { m.signal(os.Interrupt) }
+					if closed == "signals" {
+						ctrlC = func() { m.fire(Interrupt) }
+					}
+					want := 0
+					if phase == "stopping" {
+						m.app.Stop(launch.Requested, output.OK)
+						clock.Settle()
+						want = 1
+					}
+					if closed == "triggers" {
+						close(m.triggers)
+					} else {
+						close(m.signals)
+					}
+					clock.Settle()
+					if got := m.app.stops(); len(got) != want {
+						t.Fatalf("closing the %s made Stop calls %v", closed, got)
+					}
+					ctrlC()
+					switch phase {
+					case "running":
+						if got := m.app.stops(); len(got) != 1 || got[0] != (stopCall{launch.Interrupted, output.Interrupted}) {
+							t.Fatalf("Ctrl-C after the close: Stop calls %v, want one Interrupted", got)
+						}
+						if s := m.current(); s != Stopping {
+							t.Errorf("state %s, want stopping", s)
+						}
+					case "stopping":
+						if !urgent(m.app) || m.current() != Forced {
+							t.Fatalf("Ctrl-C during the stop after the close did not force (state %s)", m.current())
+						}
+					}
+				})
+			})
+		}
+	}
+}
+
+// The watch outlives ctx: when ctx ends, run (boot.Run) stops the launch and
+// shuts down, and a Ctrl-C during that shutdown still forces it instead of
+// waiting, unread, for the whole bound.
+//
+//dsh:test DH-T-CLI-8
+func TestProcessWatchesThroughContextShutdown(t *testing.T) {
+	app := launch.NewApp()
+	triggers := make(chan Trigger)
+	ctx, cancel := context.WithCancel(context.Background())
+	status := make(chan int, 1)
+	go func() {
+		status <- Process(ctx, app, Inputs{Triggers: triggers}, func(ctx context.Context) int {
+			<-ctx.Done()
+			app.Stop(launch.Interrupted, output.Interrupted)
+			// The cleanup is blocked: only a forced stop ends it.
+			select {
+			case <-app.Urgent():
+				return output.Forced
+			case <-time.After(time.Minute):
+				return output.OK
+			}
+		})
+	}()
+	cancel()
+	<-app.Stopping()
+	select {
+	case triggers <- Interrupt:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no watcher read the Ctrl-C after the context ended")
+	}
+	select {
+	case got := <-status:
+		if got != output.Forced {
+			t.Fatalf("status %d, want %d (forced)", got, output.Forced)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Process did not return after the forcing Ctrl-C")
+	}
+}
+
 // DH-T-CLI-9, over the source: lifecycle starts no exit timer, disposes no tree
 // and never exits the process; the bound is boot's.
 //

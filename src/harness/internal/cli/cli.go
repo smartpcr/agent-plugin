@@ -80,7 +80,13 @@ func ProcessEnv(version string) Env {
 // process's stop signals, and its status passes through output.Exit, as boot
 // already printed the launch's diagnostics.
 func Boot(ctx context.Context, l Launch) error {
-	return output.Exit(boot.Process(ctx, boot.Options{Request: l.Request, Profile: l.Profile, Stderr: l.Stderr}))
+	return output.Exit(boot.Process(ctx, boot.Options{Request: l.Request, Profile: l.Profile, Stderr: l.Stderr, Terminal: isTerminal(os.Stdin)}))
+}
+
+// isTerminal reports whether f is a character device (a TTY or a console).
+func isTerminal(f *os.File) bool {
+	st, err := f.Stat()
+	return err == nil && st.Mode()&os.ModeCharDevice != 0
 }
 
 // launcherSpec is the launcher's own command line.
