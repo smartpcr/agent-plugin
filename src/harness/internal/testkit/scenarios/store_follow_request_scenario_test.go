@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	//lint:ignore scenarioimport written before testkit/scenario; its body is kept (architecture.md I-2), so it uses internal/storage/home until it moves to the helper (DH-ADR-TOOLCHAIN-8)
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
 )
 

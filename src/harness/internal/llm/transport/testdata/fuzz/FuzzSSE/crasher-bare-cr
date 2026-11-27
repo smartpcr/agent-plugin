@@ -1,0 +1,2 @@
+go test fuzz v1
+string("data: x\r\rdata: y\r\n\n")

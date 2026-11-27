@@ -218,19 +218,21 @@ func Check(x *Index, scenarios []Scenario) error {
 
 // The import paths a scenario authored ahead of the stages it requires may use:
 // the standard library, the client-facing SDK and the test kit's scenario
-// launcher. Such a scenario asserts behaviour that does not exist yet; reaching
-// into the product's internal packages would let it substitute that behaviour
-// (a title, a loop) for what the product boundary returns.
+// launcher and scenario helper (architecture.md sec. 3.4 rule 5). Such a scenario
+// asserts behaviour that does not exist yet; reaching into the product's internal
+// packages would let it substitute that behaviour (a title, a loop) for what the
+// product boundary returns.
 const (
 	productModule  = "github.com/smartpcr/agent-plugin/"
 	sdkPrefix      = productModule + "src/sdk/"
 	launcherImport = productModule + "src/harness/internal/testkit/launcher"
+	scenarioImport = productModule + "src/harness/internal/testkit/scenario"
 )
 
 // BoundaryImport reports whether a scenario with a requires list may import path.
 func BoundaryImport(path string) bool {
 	first, _, _ := strings.Cut(path, "/")
-	return !strings.Contains(first, ".") || strings.HasPrefix(path, sdkPrefix) || path == launcherImport
+	return !strings.Contains(first, ".") || strings.HasPrefix(path, sdkPrefix) || path == launcherImport || path == scenarioImport
 }
 
 // CheckBoundary reads, under root, the file of every authored scenario whose index
@@ -269,7 +271,7 @@ func checkImports(root string, x *Index, scenarios []Scenario) error {
 				continue
 			}
 			if !BoundaryImport(path) {
-				errs = append(errs, fmt.Errorf("%s (%s) imports %s: a scenario authored ahead of the stages it requires imports only the standard library, src/sdk/... and the test kit's launcher", s.ID, s.File, path))
+				errs = append(errs, fmt.Errorf("%s (%s) imports %s: a scenario authored ahead of the stages it requires imports only the standard library, src/sdk/... and the test kit's launcher and scenario helper", s.ID, s.File, path))
 			}
 		}
 	}

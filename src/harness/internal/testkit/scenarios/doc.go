@@ -5,14 +5,10 @@
 // .github/workflows/harness-scenarios.yml, at the stage impl.md assigns (EV-4); the
 // keyless gate never compiles them into a test run.
 //
-// Deferred tests (impl.md's DH-S-1 "Scenarios" paragraph and the DH-S-16 exit
-// evidence name each one). Step 1.6 fixed the test layers, but the layer-tag check
-// over test/replay and test/scenario (DH-T-TOOLCHAIN-1), the fuzz targets of the
-// listed boundary parsers with a committed crasher (DH-T-TOOLCHAIN-3) and the
-// byte-identical replay of one fixture (DH-T-TOOLCHAIN-5) need the replay and
-// scenario helpers, so they pass in DH-S-16.
-//
-//dsh:test DH-T-TOOLCHAIN-1 later DH-S-16
-//dsh:test DH-T-TOOLCHAIN-3 later DH-S-16
-//dsh:test DH-T-TOOLCHAIN-5 later DH-S-16
+// Step 1.6 fixed the test layers; step 16.7 built the replay and scenario
+// helpers, so the layer-tag check (DH-T-TOOLCHAIN-1), the committed crashers of
+// the listed boundary parsers run by plain go test (DH-T-TOOLCHAIN-3) and the
+// byte-identical replay of a fixture (DH-T-TOOLCHAIN-5) run in the harness-replay
+// gate (src/harness/test/replay), and a required scenario that skips fails
+// (DH-T-TOOLCHAIN-6, testkit/scenario).
 package scenarios

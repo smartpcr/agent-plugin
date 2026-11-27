@@ -10,7 +10,9 @@ import (
 	"testing"
 	"time"
 
+	//lint:ignore scenarioimport written before testkit/scenario; its body is kept (architecture.md I-2), so it uses internal/storage/home until it moves to the helper (DH-ADR-TOOLCHAIN-8)
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
+	//lint:ignore scenarioimport written before testkit/scenario; its body is kept (architecture.md I-2), so it uses internal/testkit/procwait until it moves to the helper (DH-ADR-TOOLCHAIN-8)
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/procwait"
 )
 
@@ -19,7 +21,9 @@ import (
 // DH-E-STORE-2; DH-D-STORE-4, DH-D-STORE-2). Guarded; executed in DH-S-16 (step
 // 16.8) on scratch homes; authored in DH-S-7.
 //
-// Given the built binary started as a headless host with a real model API key, a
+// Given the built binary started as a headless host on the signed-in Claude Code
+// route (M2-I-1: decision models-signed-in-claude-copilot reads "a real model API
+// key" as that route; no key exists), a
 // real shell under the platform's sandbox, an empty home and a workspace with one
 // file, when (1) the agent is prompted to run a shell command that sleeps for a
 // minute and then writes a file, (2) the host is killed once the tool call is
@@ -28,19 +32,21 @@ import (
 // the tool call with an outcome-unknown result, no event recorded before the kill
 // is missing, and the first model request after (4) contains that result.
 //
-// Inputs are shell command lines over {home}, {workspace}, {session} and
-// {prompt}: DSH_SCENARIO_STORE2_START starts the headless host on {home} in
-// {workspace} in the foreground; DSH_SCENARIO_STORE2_PROMPT sends {prompt} to a
+// Inputs are shell command lines over {home}, {workspace}, {session}, {prompt},
+// {route} and {model}: DSH_SCENARIO_STORE2_START starts the headless host on
+// {home} in {workspace} on route {route} with model {model} in the foreground;
+// DSH_SCENARIO_STORE2_PROMPT sends {prompt} to a
 // new session (when {session} is empty, printing "session=<id>") or to {session},
 // returning once the prompt is accepted; DSH_SCENARIO_STORE2_RESUME makes the
 // host resume {session}; DSH_SCENARIO_STORE2_REQUEST prints the body of the last
 // model request sent for {session}; DSH_SCENARIO_STORE2_KILL kills the host and
-// any child it started without a clean stop. DSH_SCENARIO_STORE2_KEY is the
-// model API key, checked here and passed to the commands by the environment.
+// any child it started without a clean stop. The route input is the Claude leg's
+// DSH_SCENARIO_CLAUDE_CODE_MODEL (signedin_routes_test.go): the model the user's
+// signed-in Claude Code accepts. The client's own sign-in is the only credential.
 //
 //dsh:scenario DH-E-STORE-2
 func TestKilledHostRecoversHonestly(t *testing.T) {
-	need(t, "DSH_SCENARIO_STORE2_KEY", "the real model API key")
+	model := claudeCodeRoute.model(t)
 	startT := need(t, "DSH_SCENARIO_STORE2_START", "command starting the headless host on {home} in {workspace}")
 	promptT := need(t, "DSH_SCENARIO_STORE2_PROMPT", "command sending {prompt} to {session} (or a new session)")
 	resumeT := need(t, "DSH_SCENARIO_STORE2_RESUME", "command making the host resume {session}")
@@ -61,7 +67,7 @@ func TestKilledHostRecoversHonestly(t *testing.T) {
 	marker := filepath.Join(ws, "late.txt")
 	var id string
 	with := func(prompt string) map[string]string {
-		return map[string]string{"home": root, "workspace": ws, "session": id, "prompt": prompt}
+		return map[string]string{"home": root, "workspace": ws, "session": id, "prompt": prompt, "route": claudeCodeRoute.ID, "model": model}
 	}
 	kill := func() {
 		if out, err := storeStep(t, "kill the host", expand(killT, with(""))); err != nil {

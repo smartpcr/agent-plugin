@@ -76,6 +76,16 @@ func TestPredicatesOnInMemorySource(t *testing.T) {
 		{"onespawn spec of a lookalike", OneSpawnFindings, "internal/tools/a.go", "package tools\nimport \"example.com/m/internal/world/subprocessx\"\nvar s = subprocessx.Spec{}", 0},
 		{"onespawn bare spec inside", OneSpawnFindings, "internal/world/subprocess/a.go", "package subprocess\nvar s = Spec{Argv: nil}", 1},
 		{"onespawn bare spec elsewhere", OneSpawnFindings, "internal/cli/a.go", "package cli\nvar s = Spec{Argv: nil}", 0},
+		{"scenarioimport internal", ScenarioImportFindings, "s_test.go", "package s\nimport (\"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/scenario\"; \"github.com/smartpcr/agent-plugin/src/harness/internal/agent\")", 1},
+		{"scenarioimport allowed", ScenarioImportFindings, "s_test.go", "package s\nimport (\"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/scenario\"; \"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/launcher\"; \"github.com/smartpcr/agent-plugin/src/sdk/sdk\"; \"os\")", 0},
+		{"scenarioimport bare internal", ScenarioImportFindings, "s_test.go", "package s\nimport (\"internal/testkit/scenario\"; \"internal/agent\"; \"internal/testkit/scenariox\")", 2},
+		{"scenarioimport unit test without helper", ScenarioImportFindings, "s_test.go", "package s\nimport \"github.com/smartpcr/agent-plugin/src/harness/internal/agent\"", 0},
+		{"scenarioimport tagged without helper", ScenarioImportFindings, "s_test.go", "//go:build scenario\n\npackage s\nimport \"github.com/smartpcr/agent-plugin/src/harness/internal/agent\"", 1},
+		{"scenarioimport tag expression without helper", ScenarioImportFindings, "s_test.go", "//go:build linux && (scenario || bench)\n\npackage s\nimport \"github.com/smartpcr/agent-plugin/src/harness/internal/agent\"", 1},
+		{"scenarioimport other tag", ScenarioImportFindings, "s_test.go", "//go:build replay\n\npackage s\nimport \"github.com/smartpcr/agent-plugin/src/harness/internal/agent\"", 0},
+		{"scenarioimport scenarios dir slash path", ScenarioImportFindings, "/r/src/harness/internal/testkit/scenarios/watch_scenario_test.go", "package scenarios\nimport \"github.com/smartpcr/agent-plugin/src/harness/internal/util/watch\"", 1},
+		{"scenarioimport scenarios dir without helper", ScenarioImportFindings, `C:\r\src\harness\internal\testkit\scenarios\new_scenario_test.go`, "package scenarios\nimport \"github.com/smartpcr/agent-plugin/src/harness/internal/agent\"", 1},
+		{"scenarioimport other module internal", ScenarioImportFindings, "s_test.go", "package s\nimport (\"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/scenario\"; \"github.com/smartpcr/agent-plugin/src/go/internal/x\")", 0},
 		{"cleanup missing", CleanupFindings, "y_test.go", "package y\nimport \"testing\"\nfunc TestY(t *testing.T){ go func(){}() }", 1},
 		{"cleanup registered", CleanupFindings, "y_test.go", "package y\nimport \"testing\"\nfunc TestY(t *testing.T){ t.Cleanup(func(){}); go func(){}() }", 0},
 		{"cleanup other receiver", CleanupFindings, "y_test.go", "package y\nimport \"testing\"\nfunc TestY(t *testing.T){ u := t; u.Cleanup(func(){}); go func(){}() }", 1},
@@ -103,6 +113,7 @@ func TestAnalyzersOnFixtures(t *testing.T) {
 	analysistest.Run(t, dir, OneSpawn, "onespawn", "internal/world/subprocess")
 	analysistest.Run(t, dir, Cleanup, "cleanup")
 	analysistest.Run(t, dir, FuzzCheck, "fuzzcheck/...")
+	analysistest.Run(t, dir, ScenarioImport, "scenarioimport", "internal/testkit/scenarios")
 }
 
 // TestCleanupFieldAssignedListener is the stage 13.1 scenario "Field-assigned

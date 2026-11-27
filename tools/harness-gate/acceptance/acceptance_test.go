@@ -310,6 +310,8 @@ func TestBoundaryImport(t *testing.T) {
 		productModule + "src/sdk/protocol":                      true,
 		productModule + "src/sdk/jsonrpc":                       true,
 		productModule + "src/harness/internal/testkit/launcher": true,
+		productModule + "src/harness/internal/testkit/scenario": true,
+		productModule + "src/harness/internal/testkit/dshbin":   false,
 		productModule + "src/harness/internal/llm":              false,
 		productModule + "src/harness/internal/agent":            false,
 		productModule + "src/harness/internal/session/views":    false,

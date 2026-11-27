@@ -38,7 +38,7 @@ const (
 
 // ownChecks are the names the own analyzers report under: every analyzer of All and
 // of Pending (TestOwnChecksNameEveryAnalyzer keeps this list in step).
-var ownChecks = []string{"nosleep", "onespawn", "cleanup", "fuzzcheck", "rootcall", "lintignore", "errdiscard", "typeassert"}
+var ownChecks = []string{"nosleep", "onespawn", "cleanup", "fuzzcheck", "rootcall", "lintignore", "errdiscard", "typeassert", "scenarioimport"}
 
 // staticcheckCheck matches the check names of staticcheck's analyzers: SA, S, ST and
 // QF followed by four digits, and U1000.

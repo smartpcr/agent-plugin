@@ -184,7 +184,7 @@ func discoverModules(root string) ([]string, error) {
 func Gates(c *Config) []Gate {
 	return []Gate{
 		{Name: "gofmt", Title: "every Go file is gofmt-formatted", Run: c.gofmtGate},
-		{Name: "vet", Title: "go vet and the project's own analyzers (nosleep, onespawn, cleanup, fuzzcheck, rootcall, typeassert, lintignore), also on the e2e layer; prints the //lint:ignore exception total", Run: c.vetGate},
+		{Name: "vet", Title: "go vet and the project's own analyzers (nosleep, onespawn, cleanup, fuzzcheck, rootcall, typeassert, scenarioimport, lintignore), also on the e2e layer; prints the //lint:ignore exception total", Run: c.vetGate},
 		{Name: "staticcheck", Title: "the pinned staticcheck per module, with " + noTags + " and " + layerTags, Run: c.staticcheckGate},
 		{Name: "modules", Title: "go mod tidy -diff and go mod verify per module, the module rules (RM-1..RM-4) and a reason on every pin (RM-10)", Run: c.modulesGate},
 		{Name: "test", Title: "go test -race -shuffle=on -count=1 per module, CGO_ENABLED=1", Run: c.testGate},
@@ -193,10 +193,34 @@ func Gates(c *Config) []Gate {
 		{Name: "scenario-index", Title: "every authored DH-E-* scenario test is in " + acceptance.IndexPath + " exactly once, and every indexed one authored so far has its test", Run: c.scenarioIndexGate},
 		{Name: "policy-text", Title: "M2-C-6: no file under " + PolicyTextDir + "/ without a passed " + PolicyTextScenario + " row of " + PolicyTextStage + ".md recording its SHA-256", Run: c.policyTextGate},
 		{Name: "budget", Title: "performance budgets (TestBudget*) with DSH_* and GO* overrides cleared", Run: c.budgetGate},
+		{Name: "harness-replay", Title: "go test -count=1 -tags=" + ReplayTag + " ./" + ReplayDir + "/... in the dsh module: the committed recordings replayed by the built binary without a key (DH-T-TOOLCHAIN-1, -5)", Run: c.replayGate},
 		{Name: "cross-compile", Title: "cmd/dsh for linux, darwin, windows on amd64 and arm64 with CGO_ENABLED=0", Run: c.crossCompileGate},
 		{Name: "vulncheck", Title: "govulncheck ./... per module against the vulnerability database; an unreachable database fails", Run: c.vulncheckGate},
 		{Name: "self", Title: "the gate's own tests: go test -count=1 ./... in " + SelfModule + ", without the e2e tag", Run: c.selfGate},
 	}
+}
+
+// ReplayTag and ReplayDir are the replay layer's build tag and its package
+// directory in the dsh module (DH-D-UTIL-7; decision replay-gate-step-dh-s-16).
+const (
+	ReplayTag = "replay"
+	ReplayDir = "test/replay"
+	// replayRefreshEnv rewrites the oracle; the gate never passes it on.
+	replayRefreshEnv = "DSH_REPLAY_REFRESH"
+)
+
+// replayGate runs the replay layer of the dsh module. A dsh module without it
+// fails: the gate cannot pass by finding nothing to replay.
+func (c *Config) replayGate(ctx context.Context, w io.Writer) error {
+	mod, err := c.dshModule()
+	if err != nil {
+		return err
+	}
+	if !isDir(filepath.Join(mod, filepath.FromSlash(ReplayDir))) {
+		return fmt.Errorf("%s: no %s directory: the replay layer is missing (DH-D-UTIL-7)", c.rel(mod), ReplayDir)
+	}
+	env := slices.DeleteFunc(c.env(), func(kv string) bool { return envKey(kv) == replayRefreshEnv })
+	return c.goStep(ctx, w, mod, env, "test", "-count=1", "-tags="+ReplayTag, "./"+ReplayDir+"/...")
 }
 
 // SelfModule is the gate's own module, whose tests the self gate runs (M1-G-TOOL-3).

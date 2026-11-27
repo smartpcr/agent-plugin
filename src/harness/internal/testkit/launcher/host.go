@@ -37,6 +37,8 @@ func Spawn(t testing.TB, p Program) *Host {
 		t.Fatal("launcher: no program")
 	}
 	h := &Host{Started: time.Now()}
+	h.Stdout.SetLimit(p.MaxOutput)
+	h.Stderr.SetLimit(p.MaxOutput)
 	proc, err := subprocess.Start(context.Background(), subprocess.Spec{
 		Argv: p.Argv, Dir: p.Dir, Env: subprocess.Env(append(os.Environ(), p.Env...)),
 		Stdout: &h.Stdout, Stderr: &h.Stderr, Grace: Grace, Launch: sandbox.Trusted("launcher: the program under test, run by a scenario"),
@@ -45,13 +47,14 @@ func Spawn(t testing.TB, p Program) *Host {
 		t.Fatalf("launcher: start %s: %v", p.Argv[0], err)
 	}
 	h.Process = proc
+	register(t, proc)
 	t.Cleanup(func() {
 		select {
 		case <-proc.Exited():
 		default:
 			t.Logf("launcher: stopping the surviving tree of %s; stderr:\n%s", p.Argv[0], h.Stderr.String())
 		}
-		if err := h.stop(); err != nil {
+		if err := h.Stop(); err != nil {
 			t.Errorf("launcher: the tree of %s outlives the test: %v", p.Argv[0], err)
 		}
 	})
@@ -70,7 +73,7 @@ func Run(t testing.TB, within time.Duration, p Program) (*Host, error) {
 		return h, nil
 	case <-time.After(within):
 	}
-	if err := h.stop(); err != nil {
+	if err := h.Stop(); err != nil {
 		return h, err
 	}
 	return h, ErrTimeout
@@ -86,9 +89,9 @@ func (h *Host) Await(within time.Duration) bool {
 	}
 }
 
-// stop force-stops the tree, then waits for the program and its output, all
+// Stop force-stops the tree, then waits for the program and its output, all
 // within 3*Grace. It is idempotent.
-func (h *Host) stop() error {
+func (h *Host) Stop() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*Grace)
 	defer cancel()
 	if err := h.Process.StopTree(ctx, 0); err != nil {
