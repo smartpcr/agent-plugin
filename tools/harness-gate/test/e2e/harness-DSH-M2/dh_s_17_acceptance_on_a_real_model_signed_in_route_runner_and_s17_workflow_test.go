@@ -247,15 +247,22 @@ func (s *s17wState) lintScans() error {
 // gateLintTestsPass runs the lint tests of the harness-gate module itself on the
 // committed workflow: the seeded-key test of the lint and the s17 job check.
 func (s *s17wState) gateLintTestsPass() error {
-	cmd := exec.Command("go", "test", "-run", "^(TestModelKeyRefsFindsSeededKeys|TestS17JobIsKeylessAndSelfHosted)$", ".")
+	cmd := exec.Command("go", "test", "-v", "-count=1", "-run", "^(TestModelKeyRefsFindsSeededKeys|TestS17JobIsKeylessAndSelfHosted)$", ".")
 	cmd.Dir = s.module
 	cmd.Env = s17wGoEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("harness-gate workflow lint tests failed: %v\n%s", err, out)
 	}
-	if !bytes.Contains(out, []byte("ok")) {
-		return fmt.Errorf("harness-gate workflow lint tests reported no result:\n%s", out)
+	// A test that did not run is not a pass: reject an empty match and
+	// require each named test to report its own PASS line.
+	if bytes.Contains(out, []byte("no tests to run")) {
+		return fmt.Errorf("harness-gate workflow lint tests did not run:\n%s", out)
+	}
+	for _, name := range []string{"TestModelKeyRefsFindsSeededKeys", "TestS17JobIsKeylessAndSelfHosted"} {
+		if !bytes.Contains(out, []byte("--- PASS: "+name+" ")) {
+			return fmt.Errorf("harness-gate workflow lint test %s did not report PASS:\n%s", name, out)
+		}
 	}
 	return nil
 }
