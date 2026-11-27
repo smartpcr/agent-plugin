@@ -79,6 +79,7 @@ type mlpState struct {
 	joined    chan struct{}
 	status    int
 	stopped   bool
+	reply     string // the fake route's scripted reply; empty scripts no turn
 
 	// golden scenario
 	defs     []profile.Definition
@@ -126,6 +127,7 @@ func (s *mlpState) tempHomeScripted(name, reply string) error {
 		return err
 	}
 	s.def = def
+	s.reply = reply
 	s.tmp, err = os.MkdirTemp("", "dshm-")
 	if err != nil {
 		return err
@@ -308,6 +310,21 @@ func (s *mlpState) driveSDK() error {
 	}
 	if len(history.Events) != 1 {
 		return fmt.Errorf("history holds %d assistant messages, want the fake route's one: %+v", len(history.Events), history)
+	}
+	var payload struct {
+		Message vocab.Message `json:"message"`
+	}
+	if err := json.Unmarshal(history.Events[0].Data, &payload); err != nil {
+		return fmt.Errorf("decode assistant/message: %w (%s)", err, history.Events[0].Data)
+	}
+	var text strings.Builder
+	for _, b := range payload.Message.Blocks() {
+		if b.Kind == vocab.KindText && b.Text != nil {
+			text.WriteString(b.Text.Text)
+		}
+	}
+	if text.String() != s.reply {
+		return fmt.Errorf("assistant message text = %q, want the scripted reply %q", text.String(), s.reply)
 	}
 	if recs := s.runtimeRecords(); len(recs) > 0 {
 		return fmt.Errorf("sdk wrote runtime records %v", recs)
