@@ -284,11 +284,36 @@ func (s *s15rState) vetExits0() error {
 	return nil
 }
 
+// s15rGoDirective returns the `go` directive of a go.mod so the temporary
+// module tracks the repository's toolchain pin instead of a copied literal.
+func s15rGoDirective(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		fields := strings.Fields(sc.Text())
+		if len(fields) == 2 && fields[0] == "go" {
+			return fields[1], nil
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return "", err
+	}
+	return "", fmt.Errorf("%s: no go directive", path)
+}
+
 func (s *s15rState) runIndexCheck() error {
 	tmp := s15rOuterT.TempDir()
 	gate := filepath.Join(s.root, "tools", "harness-gate")
-	gomod := fmt.Sprintf("module dsh.e2e/s15rindex\n\ngo 1.27.4\n\nrequire github.com/smartpcr/agent-plugin/tools/harness-gate v0.0.0\n\nreplace github.com/smartpcr/agent-plugin/tools/harness-gate => %s\n",
-		strconv.Quote(filepath.ToSlash(gate)))
+	goVersion, err := s15rGoDirective(filepath.Join(gate, "go.mod"))
+	if err != nil {
+		return err
+	}
+	gomod := fmt.Sprintf("module dsh.e2e/s15rindex\n\ngo %s\n\nrequire github.com/smartpcr/agent-plugin/tools/harness-gate v0.0.0\n\nreplace github.com/smartpcr/agent-plugin/tools/harness-gate => %s\n",
+		goVersion, strconv.Quote(filepath.ToSlash(gate)))
 	if err := os.WriteFile(filepath.Join(tmp, "go.mod"), []byte(gomod), 0o644); err != nil {
 		return err
 	}
