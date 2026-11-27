@@ -211,44 +211,53 @@ func traceLine(t *testing.T, stderr string) string {
 // The read-only view writes nothing: `dsh sandbox status` on a home that exists
 // leaves every file of it as it was and opens no session database or owner
 // record, while the same tree for a writing command loads the entries that do.
+// A user layer that logs to a file at a path that does not exist yet, with the
+// destination written literally or as an expression, and puts the sandbox
+// canaries in the home, changes nothing of that.
 //
 //dsh:test DH-T-CLI-16
 func TestReadOnlyViewWritesNothing(t *testing.T) {
-	root := t.TempDir()
-	if r := adminRun(t, "v\n", "--home", root, "secret", "set", "TEST_K"); r.status != output.OK {
-		t.Fatalf("secret set: %+v", r)
-	}
-	// A user layer that sends the log to a file in the home and puts the
-	// sandbox canaries in the home: the read-only view creates neither.
-	logPath, canaries := filepath.Join(root, "logs", "dsh.log"), filepath.Join(root, "canaries")
-	if err := os.Mkdir(canaries, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	temphome.UserLayer(t, root, "- id: logging\n  merge:\n    destination: file\n    path: "+strconv.Quote(logPath)+
-		"\n- id: sandbox\n  merge:\n    canaryDir: "+strconv.Quote(canaries)+"\n")
-	before := homeFiles(t, root)
-	r := adminRun(t, "", "--home", root, "sandbox", "status", "--json")
-	if r.status != output.OK || !strings.Contains(r.stdout, `"state":`) {
-		t.Fatalf("sandbox status: %+v", r)
-	}
-	if got := traceLine(t, r.stderr); got != readTrace {
-		t.Errorf("trace = %q, want %s", got, readTrace)
-	}
-	if after := homeFiles(t, root); !maps.Equal(before, after) {
-		t.Errorf("the read-only view changed the home:\nbefore %v\nafter  %v", before, after)
-	}
-	// The layer is in force: the writing tree logs to the file it names.
-	if r := adminRun(t, "v\n", "--home", root, "secret", "set", "TEST_K"); r.status != output.OK {
-		t.Fatalf("secret set under the layer: %+v", r)
-	}
-	if _, err := os.Stat(logPath); err != nil {
-		t.Errorf("the writing tree did not open the configured log: %v", err)
+	for name, destination := range map[string]string{
+		"literal destination":    "file",
+		"expression destination": `!expr '"fi" + "le"'`,
+		"template destination":   `'${{ env.DSH_TEST_UNSET_DESTINATION ?? "file" }}'`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			if r := adminRun(t, "v\n", "--home", root, "secret", "set", "TEST_K"); r.status != output.OK {
+				t.Fatalf("secret set: %+v", r)
+			}
+			logPath, canaries := filepath.Join(root, "logs", "deep", "dsh.log"), filepath.Join(root, "canaries")
+			if err := os.Mkdir(canaries, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			temphome.UserLayer(t, root, "- id: logging\n  merge:\n    destination: "+destination+"\n    path: "+strconv.Quote(logPath)+
+				"\n- id: sandbox\n  merge:\n    canaryDir: "+strconv.Quote(canaries)+"\n")
+			before := homeFiles(t, root)
+			r := adminRun(t, "", "--home", root, "sandbox", "status", "--json")
+			if r.status != output.OK || !strings.Contains(r.stdout, `"state":`) {
+				t.Fatalf("sandbox status: %+v", r)
+			}
+			if got := traceLine(t, r.stderr); got != readTrace {
+				t.Errorf("trace = %q, want %s", got, readTrace)
+			}
+			if after := homeFiles(t, root); !maps.Equal(before, after) {
+				t.Errorf("the read-only view changed the home:\nbefore %v\nafter  %v", before, after)
+			}
+			// The layer is in force: the writing tree logs to the file it names.
+			if r := adminRun(t, "v\n", "--home", root, "secret", "set", "TEST_K"); r.status != output.OK {
+				t.Fatalf("secret set under the layer: %+v", r)
+			}
+			if _, err := os.Stat(logPath); err != nil {
+				t.Errorf("the writing tree did not open the configured log: %v", err)
+			}
+		})
 	}
 }
 
 // readView keeps configured writes out of the read-only tree: a file log
 // becomes standard error, a configured canary directory a fresh temporary one,
-// a nested entry included, while other settings stay as configured.
+// a nested entry included, while the settings that name no path stay.
 //
 //dsh:test DH-T-CLI-16
 func TestReadViewRedirectsConfiguredWrites(t *testing.T) {
@@ -274,6 +283,22 @@ func TestReadViewRedirectsConfiguredWrites(t *testing.T) {
 	}
 	if !composed[1].Children[1].Disabled {
 		t.Error("the nested human.secrets entry is not disabled")
+	}
+
+	// An expression, in a field or as the whole config, cannot bring a path or a
+	// file destination back.
+	for raw, want := range map[string]string{
+		`{"destination":{"$expr":"env.D"},"path":"${{ env.P }}","format":"json"}`: `{"destination":"stderr","format":"json"}`,
+		`{"$expr":"env.LOGGING"}`: `{"destination":"stderr"}`,
+	} {
+		e := []loader.EntryOptions{{ID: "logging", Name: logging.Name, Config: json.RawMessage(raw)}}
+		if err := readView(e, "/h"); err != nil || string(e[0].Config) != want {
+			t.Errorf("readView(%s) = %s, %v; want %s", raw, e[0].Config, err, want)
+		}
+	}
+	e := []loader.EntryOptions{{ID: "sandbox", Name: local.Name, Config: json.RawMessage(`{"$expr":"env.SANDBOX"}`)}}
+	if err := readView(e, "/h"); err != nil || string(e[0].Config) != `{"home":"/h"}` {
+		t.Errorf("readView of a whole sandbox expression = %s, %v", e[0].Config, err)
 	}
 }
 

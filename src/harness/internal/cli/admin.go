@@ -13,6 +13,7 @@ package cli
 import (
 	"encoding/json"
 	"io"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -141,10 +142,12 @@ func (st *state) openAdmin() (*adminTree, error) {
 }
 
 // readView turns composed into the read-only view in place: the entries of
-// readWriters are disabled, boot.logging writes to standard error instead of a
-// configured file, and the sandbox seam is told the home by config and makes its
-// canaries in a fresh temporary directory rather than a configured one, so no
-// configured path, inside the home or not, is created or written.
+// readWriters are disabled, and the configs of boot.logging and sandbox.local
+// are rebuilt from the fields of readFields only, which name no path, with a
+// fixed destination standard error and the home. However a configured log path,
+// log destination or canary directory is written, as a literal, a ${{ }} string
+// or a {"$expr"} object, the field itself or the whole config, it is not in the
+// view's config, so no configured file or directory is created or written.
 func readView(composed []loader.EntryOptions, root string) error {
 	for i := range composed {
 		e := &composed[i]
@@ -153,17 +156,9 @@ func readView(composed []loader.EntryOptions, root string) error {
 		case slices.Contains(readWriters, e.Name):
 			e.Disabled = true
 		case e.Name == logging.Name:
-			err = editConfig(e, func(cfg map[string]any) {
-				if d, _ := cfg["destination"].(string); strings.EqualFold(d, logging.File) {
-					cfg["destination"] = logging.Stderr
-					delete(cfg, "path")
-				}
-			})
+			err = readConfig(e, map[string]any{"destination": logging.Stderr})
 		case e.Name == local.Name:
-			err = editConfig(e, func(cfg map[string]any) {
-				cfg["home"] = root
-				delete(cfg, "canaryDir")
-			})
+			err = readConfig(e, map[string]any{"home": root})
 		}
 		if err != nil {
 			return err
@@ -175,16 +170,33 @@ func readView(composed []loader.EntryOptions, root string) error {
 	return nil
 }
 
-// editConfig applies edit to the decoded config of e and stores the result.
-func editConfig(e *loader.EntryOptions, edit func(map[string]any)) error {
+// readFields are the config fields a read-only view keeps, per component: none
+// of them names a path, so none, whatever its value, makes the entry write.
+var readFields = map[string][]string{
+	logging.Name: {"level", "format"},
+	local.Name:   {"probeTimeout", "launchTimeout", "backends"},
+}
+
+// readConfig replaces the config of e with fixed plus the readFields of its
+// component taken from the configured object. A config that is an expression
+// as a whole keeps nothing of it.
+func readConfig(e *loader.EntryOptions, fixed map[string]any) error {
 	cfg := map[string]any{}
 	if len(e.Config) > 0 {
 		if err := json.Unmarshal(e.Config, &cfg); err != nil {
 			return err
 		}
 	}
-	edit(cfg)
-	b, err := json.Marshal(cfg)
+	if _, whole := cfg["$expr"]; whole {
+		cfg = nil
+	}
+	out := maps.Clone(fixed)
+	for _, k := range readFields[e.Name] {
+		if v, ok := cfg[k]; ok {
+			out[k] = v
+		}
+	}
+	b, err := json.Marshal(out)
 	if err != nil {
 		return err
 	}
