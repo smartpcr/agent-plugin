@@ -7,12 +7,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/printer"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -112,7 +117,8 @@ func s17wReadLF(path string) (string, error) {
 }
 
 // s17wModelKeyRefs mirrors the harness-gate workflow lint: every secret reference,
-// and every non-comment line naming a model key.
+// and every non-comment line naming a model key. s17wLintParity proves the mirror
+// still equals the lint before any scenario relies on it.
 func s17wModelKeyRefs(workflow string) []string {
 	var refs []string
 	for i, l := range strings.Split(workflow, "\n") {
@@ -128,6 +134,107 @@ func s17wModelKeyRefs(workflow string) []string {
 		}
 	}
 	return refs
+}
+
+// s17wLoopBody is the printed per-line loop body of function name in file path,
+// with identifier renames applied, and the source of the regexp literal assigned
+// to variable marker ("" when marker is "").
+func s17wLoopBody(path, name, marker string, renames map[string]string) (body, pattern string, err error) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, path, nil, 0)
+	if err != nil {
+		return "", "", err
+	}
+	var fn *ast.FuncDecl
+	for _, d := range f.Decls {
+		switch d := d.(type) {
+		case *ast.FuncDecl:
+			if d.Recv == nil && d.Name.Name == name {
+				fn = d
+			}
+		case *ast.GenDecl:
+			for _, sp := range d.Specs {
+				vs, ok := sp.(*ast.ValueSpec)
+				if !ok || marker == "" {
+					continue
+				}
+				for k, id := range vs.Names {
+					if id.Name != marker || k >= len(vs.Values) {
+						continue
+					}
+					call, ok := vs.Values[k].(*ast.CallExpr)
+					if !ok || len(call.Args) != 1 {
+						return "", "", fmt.Errorf("%s: %s is not a regexp.MustCompile call", path, marker)
+					}
+					lit, ok := call.Args[0].(*ast.BasicLit)
+					if !ok || lit.Kind != token.STRING {
+						return "", "", fmt.Errorf("%s: %s is not compiled from a string literal", path, marker)
+					}
+					if pattern, err = strconv.Unquote(lit.Value); err != nil {
+						return "", "", err
+					}
+				}
+			}
+		}
+	}
+	if fn == nil || fn.Body == nil {
+		return "", "", fmt.Errorf("%s has no function %s", path, name)
+	}
+	if marker != "" && pattern == "" {
+		return "", "", fmt.Errorf("%s has no variable %s", path, marker)
+	}
+	var loop *ast.RangeStmt
+	for _, st := range fn.Body.List {
+		if r, ok := st.(*ast.RangeStmt); ok {
+			if loop != nil {
+				return "", "", fmt.Errorf("%s: %s has more than one range loop", path, name)
+			}
+			loop = r
+		}
+	}
+	if loop == nil || len(fn.Body.List) != 3 {
+		return "", "", fmt.Errorf("%s: %s is no longer declare/range/return; update the e2e mirror", path, name)
+	}
+	ast.Inspect(loop.Body, func(n ast.Node) bool {
+		if id, ok := n.(*ast.Ident); ok {
+			if to, ok := renames[id.Name]; ok {
+				id.Name = to
+			}
+		}
+		return true
+	})
+	var buf bytes.Buffer
+	if err := printer.Fprint(&buf, fset, loop.Body); err != nil {
+		return "", "", err
+	}
+	return buf.String(), pattern, nil
+}
+
+// s17wLintParity fails when the e2e mirror has drifted from the harness-gate
+// workflow lint (scenarios_test.go modelKeyMarker and modelKeyRefs): the
+// model-key pattern must be the same source string and the per-line rule
+// (comment stripping, secret references, key names) must be the same code.
+func s17wLintParity(module string) error {
+	lintBody, lintPattern, err := s17wLoopBody(filepath.Join(module, "scenarios_test.go"), "modelKeyRefs", "modelKeyMarker",
+		map[string]string{"modelKeyMarker": "s17wKeyMarker"})
+	if err != nil {
+		return err
+	}
+	if lintPattern != s17wKeyMarker.String() {
+		return fmt.Errorf("model-key pattern drifted from the harness-gate lint:\n lint: %s\n e2e:  %s", lintPattern, s17wKeyMarker.String())
+	}
+	_, self, _, ok := runtime.Caller(0)
+	if !ok {
+		return errors.New("cannot locate the e2e source file")
+	}
+	mirrorBody, _, err := s17wLoopBody(self, "s17wModelKeyRefs", "", nil)
+	if err != nil {
+		return err
+	}
+	if lintBody != mirrorBody {
+		return fmt.Errorf("s17wModelKeyRefs drifted from the harness-gate lint modelKeyRefs:\n--- lint\n%s\n--- e2e\n%s", lintBody, mirrorBody)
+	}
+	return nil
 }
 
 // s17wJob is the body of a top-level job of a workflow (the lines after "  name:"
@@ -235,6 +342,9 @@ func (s *s17wState) replaceRunsOn(job, value string) error {
 }
 
 func (s *s17wState) lintScans() error {
+	if err := s17wLintParity(s.module); err != nil {
+		return err
+	}
 	s.refs = s17wModelKeyRefs(s.workflow)
 	job, err := s17wJob(s.workflow, "s17")
 	if err != nil {
