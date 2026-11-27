@@ -5,6 +5,7 @@ package scenarios
 import (
 	"bytes"
 	"os"
+	"syscall"
 	//lint:ignore typeassert the TIOCPTYGNAME ioctl writes the pts name through a raw pointer; package unix has no wrapper for it
 	"unsafe"
 
@@ -42,3 +43,8 @@ func openPTY() (ptm, pts *os.File, err error) {
 	}
 	return ptm, pts, nil
 }
+
+// bindToHost is a no-op: darwin has no parent-death signal, so an interactive
+// bin outlives a killed terminal host until its terminal closes (the pty
+// hangup on the host's exit signals it).
+func bindToHost(*syscall.SysProcAttr) {}

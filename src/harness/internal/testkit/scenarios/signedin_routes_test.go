@@ -4,9 +4,11 @@ package scenarios
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/scenario"
 	"github.com/smartpcr/agent-plugin/src/sdk/protocol"
 )
 
@@ -148,5 +150,43 @@ func logInvocations(t *testing.T, evs []protocol.Event) {
 	}
 	if len(lines) > 0 {
 		t.Logf("client invocations: %s", strings.Join(lines, "; "))
+	}
+}
+
+// codeSignInRequired is the failure code of a client route whose client is not
+// signed in (internal/llm/vocab CodeSignInRequired).
+const codeSignInRequired = "llm/sign-in-required"
+
+// signInFailure describes the first event among evs that failed for a missing
+// sign-in -- an attempt or message settlement, or a turn end, whose failure code
+// is codeSignInRequired -- and is empty when none did.
+func signInFailure(evs []protocol.Event) string {
+	for _, e := range evs {
+		var f *wireFailure
+		switch e.Type {
+		case "assistant/attempt", "assistant/message":
+			var s wireSettlement
+			if json.Unmarshal(e.Data, &s) == nil {
+				f = s.Failure
+			}
+		case "turn/end":
+			var end wireTurnEnd
+			if json.Unmarshal(e.Data, &end) == nil {
+				f = end.Reason.Failure
+			}
+		}
+		if f != nil && f.Code == codeSignInRequired {
+			return fmt.Sprintf("%s: event %d %s: the route's client is not signed in", codeSignInRequired, e.Seq, e.Type)
+		}
+	}
+	return ""
+}
+
+// noteSignIn records a missing sign-in among evs as the cause of t's scenario
+// (scenario.Cause), so a scenario that then fails on it has a report row whose
+// reason names it; a scenario that expects the failure and passes is unaffected.
+func noteSignIn(t testing.TB, evs []protocol.Event) {
+	if why := signInFailure(evs); why != "" {
+		scenario.Cause(t, why)
 	}
 }

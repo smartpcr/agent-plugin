@@ -49,6 +49,12 @@ func hostTerminal(bin string, args []string) int {
 	}
 	_, _ = inR.Close(), outW.Close() // the pseudoconsole holds its own copies
 	defer inW.Close()
+	input := os.Getenv(terminalInputEnv)
+	if input != "" {
+		done := make(chan struct{})
+		defer close(done)
+		go feedTerminal(input, inW, done)
+	}
 	copied := make(chan struct{})
 	go func() {
 		defer close(copied)
@@ -63,7 +69,7 @@ func hostTerminal(bin string, args []string) int {
 	}
 	defer closePC()
 
-	attrs, err := windows.NewProcThreadAttributeList(1)
+	attrs, err := windows.NewProcThreadAttributeList(2)
 	if err != nil {
 		return fail(err)
 	}
@@ -77,6 +83,22 @@ func hostTerminal(bin string, args []string) int {
 	// Null standard handles with STARTF_USESTDHANDLES, so bin's streams are the
 	// pseudoconsole's and not this process's redirected pipes.
 	si.Flags = windows.STARTF_USESTDHANDLES
+	inherit := false
+	if input != "" {
+		// Interactive: bin's standard output is this process's, the result
+		// stream kept apart from the console; only that handle is inherited.
+		var out windows.Handle
+		self := windows.CurrentProcess()
+		if err := windows.DuplicateHandle(self, windows.Handle(os.Stdout.Fd()), self, &out, 0, true, windows.DUPLICATE_SAME_ACCESS); err != nil {
+			return fail(err)
+		}
+		defer windows.CloseHandle(out)
+		handles := []windows.Handle{out}
+		if err := attrs.Update(windows.PROC_THREAD_ATTRIBUTE_HANDLE_LIST, unsafe.Pointer(&handles[0]), uintptr(len(handles))*unsafe.Sizeof(handles[0])); err != nil {
+			return fail(err)
+		}
+		si.StdOutput, inherit = out, true
+	}
 	line, err := windows.UTF16PtrFromString(windows.ComposeCommandLine(append([]string{bin}, args...)))
 	if err != nil {
 		return fail(err)
@@ -87,7 +109,7 @@ func hostTerminal(bin string, args []string) int {
 	}
 	block = append(block, 0)
 	var pi windows.ProcessInformation
-	if err := windows.CreateProcess(nil, line, nil, nil, false,
+	if err := windows.CreateProcess(nil, line, nil, nil, inherit,
 		windows.EXTENDED_STARTUPINFO_PRESENT|windows.CREATE_UNICODE_ENVIRONMENT, &block[0], nil, &si.StartupInfo, &pi); err != nil {
 		return fail(err)
 	}

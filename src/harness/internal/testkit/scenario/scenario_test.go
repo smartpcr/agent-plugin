@@ -263,6 +263,37 @@ func TestBodyPastItsDeadlineFails(t *testing.T) {
 	}
 }
 
+// A body that records why it fails (Cause, or Need for a missing input) has its
+// failed row name that reason; one that only fails has no reason; a recorded
+// cause on a body that then passes leaves the row passed.
+func TestBodyCauseIsTheRowReason(t *testing.T) {
+	cases := []struct {
+		name   string
+		body   func(*S)
+		want   Result
+		reason string
+	}{
+		{"cause", func(s *S) {
+			Cause(s, "llm/sign-in-required: the route is signed out")
+			Cause(s, "a later cause")
+			s.Fatalf("the turn failed")
+		}, Failed, "llm/sign-in-required: the route is signed out"},
+		{"need", func(s *S) { Need(s, "DSH_SCENARIO_TEST_UNSET_VAR", "an input") }, Failed, "DSH_SCENARIO_TEST_UNSET_VAR is not set: an input"},
+		{"no cause", func(s *S) { s.Errorf("broken") }, Failed, ""},
+		{"passed", func(s *S) { Cause(s, "noted") }, Passed, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p := report(t)
+			r := &recorder{TB: t}
+			r.run(func() { Run(r, "DH-E-X-11", Needs{}, c.body) })
+			if row := one(t, p); row.Result != c.want || row.Reason != c.reason {
+				t.Errorf("row = %+v, want %s with reason %q", row, c.want, c.reason)
+			}
+		})
+	}
+}
+
 // A body that ignores its context is not waited for past the deadline and the
 // grace that follows it: the scenario fails and Run returns.
 func TestBodyThatIgnoresItsDeadlineIsAbandoned(t *testing.T) {
@@ -390,6 +421,11 @@ func TestTrackedTestWritesOneRow(t *testing.T) {
 		}, Failed, "DSH_SCENARIO_TEST_UNSET_VAR is not set", 1},
 		{"passed", false, func(r *recorder) { Bin(r); Bin(r) }, Passed, "", 0},
 		{"failed", false, func(r *recorder) { Bin(r); r.Errorf("broken") }, Failed, "the test failed", 1},
+		{"caused", false, func(r *recorder) {
+			Bin(r)
+			Cause(r, "llm/sign-in-required: signed out")
+			r.Errorf("broken")
+		}, Failed, "llm/sign-in-required", 1},
 		{"skipped", false, func(r *recorder) { Bin(r); r.SkipNow() }, Skipped, "skipped", 0},
 		{"required skipped", true, func(r *recorder) { Bin(r); r.SkipNow() }, Failed, "skipped", 1},
 	}
