@@ -1,0 +1,62 @@
+DH-S-16 manual check 16.5: a second dsh beside a running host
+Windows 11 (10.0.28000), go1.27.4 windows/amd64, 2026-11-27 (local -08:00)
+Binary: go -C src/harness build -o %TEMP%\s16-manual\dsh.exe ./cmd/dsh at 12c2be8 (main, all ten DH-S-16 steps merged)
+  dsh version: dsh (devel) (12c2be8d83b487422ce7115951361b8a1fb367d1; go1.27.4; windows/amd64)
+  sha256: ae03f032229965bc2088a2c9d1d17489551062c384237bbd91f22c89db546364
+Home: %TEMP%\s16-manual\home, empty scratch directory, removed afterwards
+
+$ Start-Process dsh.exe --home <home> web      (first host, hidden window, stderr to web1.err)
+first pid 34596 alive: True (8 s later)
+web1.err:
+dsh: audit: outbound permits: none
+dsh: audit: outbound kinds: model-request=off, session-upload=off, session-log-contribution=off, model-request-extras=off, feedback=off, analytics=off, telemetry=off, update-check=off, account-notices=off, translation=off, speech-audio=off
+dsh: a browser signed in as owner (Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)) at 2026-11-27T06:36:24-08:00; to sign every browser out, POST http://127.0.0.1:3080/auth/revoke-all
+
+$ dsh --home <home> status
+http://127.0.0.1:3080	process 34596	profile web	live	up 8s	commands 0
+status exit 0
+
+$ dsh --home <home> web      (second launch beside the running host)
+dsh web: opened in the browser of the host (process 34596)
+second web exit 0 in 160 ms
+
+$ Get-Process dsh (binaries under %TEMP%\s16-manual)
+34596   (only the first host; the second launch started no host of its own)
+
+$ Stop-Process -Id 34596      (unclean exit of the first host)
+
+$ dsh --home <home> status
+dsh: the host of http://127.0.0.1:3080 (process 34596) did not stop cleanly; report: <home>\reports\report-20261127T143643.434325800Z-34596.txt; start with --safe (dsh --safe web) to turn plugins and optional bundles off
+dsh status: host/not-running: no host is running on this home
+status exit 4
+
+$ dsh --home <home> crash
+<home>\reports\report-20261127T143643.434325800Z-34596.txt
+crash exit 0
+
+report-20261127T143643.434325800Z-34596.txt:
+dsh unclean exit report
+
+time:    2026-11-27T14:36:43.4343258Z
+version: 
+profile: web
+origin:  http://127.0.0.1:3080
+pid:     34596
+started: 2026-11-27T14:36:24.3994154Z
+
+== error
+The host ended without a clean stop: it was killed, lost its machine, or
+crashed before it could write a report. Its runtime record was left behind.
+
+== reviewer annotation (added after the run; the transcript above is unchanged)
+Finding: the report's "version:" line is empty, here and in check-16.5-wsl.log, although the
+binary reports "dsh (devel) (12c2be8...)". This is a defect, not intended (devel) behaviour:
+a devel build's version is "(devel)" (boot/launch.DevelVersion), never empty.
+Cause: cli/hostclient/hostclient.go:316 copies Record.Version, which host/launch writes from
+Config.Version (host/launch/launch.go:264). host/launch/component.go defaults only RunDir from
+the launch; nothing in production sets Config.Version from launch.Data.Version, so the runtime
+record, host.status and the unclean-exit report all carry no version.
+Status: 16.5's second-launch and crash-notice behaviour stands as seen; the empty version is an
+open defect against DH-D-CLI-5 (follow-up: fill host.launch Config.Version from the launch's
+build version and assert a non-empty version in the hostclient unclean-exit test). It is to be
+listed in the 16.5 row and Open items of DH-S-16.md.

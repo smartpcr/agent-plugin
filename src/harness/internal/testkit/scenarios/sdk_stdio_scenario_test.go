@@ -282,6 +282,7 @@ func sdk1History(t *testing.T, ctx context.Context, sess *sdk.Session) []protoco
 		after = page[len(page)-1].Seq
 	}
 }
+
 // awaitEvent waits for a session.event of typ on the wire after line from.
 func (p *sdk1Pipes) awaitEvent(t *testing.T, typ string, from int) {
 	t.Helper()

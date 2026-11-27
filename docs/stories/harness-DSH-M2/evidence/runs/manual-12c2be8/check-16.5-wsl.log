@@ -1,0 +1,59 @@
+DH-S-16 manual check 16.5: a second dsh beside a running host (WSL leg)
+WSL2 Ubuntu 24.04 (Linux 6.18.58.1-microsoft-standard-WSL2), 2026-11-27 (local -08:00)
+Binary: GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go -C src/harness build ./cmd/dsh at 0420164
+  (0420164 = 12c2be8 plus the doc-only DH-S-16 record update; no product source differs from 12c2be8)
+  dsh version: dsh (devel) (0420164476527c9bab1eb4a27f85e3a35d79faa2; go1.27.4; linux/amd64)
+  sha256: cb2489e768815da546b5c3484e627f74da382a40cbac88baa209a55e2b971f54
+Home: mktemp -d /tmp/s16-wsl.XXXXXX (ext4), empty, removed afterwards ("scratch removed: yes")
+Note: stdout and stderr reached the log through one pipe, so a command's stderr can print after the
+next command's echo; each stderr line below is put back under the command that wrote it.
+
+$ dsh --home <home> web </dev/null &        (first host)
+first pid 119241 alive: true (8 s later)
+web1.err:
+dsh: audit: outbound permits: none
+dsh: audit: outbound kinds: model-request=off, session-upload=off, session-log-contribution=off, model-request-extras=off, feedback=off, analytics=off, telemetry=off, update-check=off, account-notices=off, translation=off, speech-audio=off
+time=2026-11-27T06:43:19.747-08:00 level=WARN msg="launch: the browser could not be opened (subprocess/not-found); use the link printed on the host's terminal" logger=host.launch
+
+$ dsh --home <home> status
+http://127.0.0.1:3080	process 119241	profile web	live	up 8s	commands 0
+status exit 0
+
+$ dsh --home <home> web </dev/null           (second launch beside the running host)
+dsh web: launch/no-channel: launch: the browser could not be opened and the host has no terminal
+second web exit 4 in 18 ms
+  (WSL has no browser and the host was started without a terminal, so launch.open on the running host
+   returns launch/no-channel, the third outcome of DH-D-CLI-5; no second host is started)
+
+$ ss -ltnp | grep 3080
+LISTEN 0      4096       127.0.0.1:3080      0.0.0.0:*    users:(("dsh",pid=119241,fd=17))
+  (one listener, owned by the first host)
+
+$ pgrep -af <scratch>/dsh
+119241 /tmp/s16-wsl.9HhsdI/dsh --home /tmp/s16-wsl.9HhsdI/home web
+  (only the first host)
+
+$ kill -9 119241                               (unclean exit of the first host)
+
+$ dsh --home <home> status
+dsh: the host of http://127.0.0.1:3080 (process 119241) did not stop cleanly; report: /tmp/s16-wsl.9HhsdI/home/reports/report-20261127T144328.635358105Z-119241.txt; start with --safe (dsh --safe web) to turn plugins and optional bundles off
+dsh status: host/not-running: no host is running on this home
+status exit 4
+
+$ dsh --home <home> crash
+/tmp/s16-wsl.9HhsdI/home/reports/report-20261127T144328.635358105Z-119241.txt
+crash exit 0
+
+report-20261127T144328.635358105Z-119241.txt:
+dsh unclean exit report
+
+time:    2026-11-27T14:43:28.635358105Z
+version: 
+profile: web
+origin:  http://127.0.0.1:3080
+pid:     119241
+started: 2026-11-27T14:43:19.746644628Z
+
+== error
+The host ended without a clean stop: it was killed, lost its machine, or
+crashed before it could write a report. Its runtime record was left behind.
