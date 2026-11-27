@@ -1,0 +1,7 @@
+state:   Unconfined
+backend: none
+missing: fs-write, network, harness-home, delegated-execution
+exposed: fs-write, network, harness-home, delegated-execution
+backends:
+  bwrap: unavailable: bwrap not found
+  landlock: unavailable: the kernel has no Landlock ABI

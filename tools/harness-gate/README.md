@@ -105,6 +105,7 @@ GOWORK=off go -C tools/harness-gate run . close     --root ../.. --stage DH-S-16
 GOWORK=off go -C tools/harness-gate run . records   --root ../..
 GOWORK=off go -C tools/harness-gate run . entry     --root ../.. --story harness:DSH-M2
 GOWORK=off go -C tools/harness-gate run . policy-text --root ../..
+dsh sandbox status | GOWORK=off go -C tools/harness-gate run . sandbox-preflight [--status FILE]
 ```
 
 - `rehearse` (DH-D-TOOLCHAIN-5, DH-ADR-TOOLCHAIN-13; gap-closure step 19.1.1) runs
@@ -158,6 +159,12 @@ Copilot CLI 1.0.115 has no non-interactive status command; `none` runs no check.
   [Sandbox policy text](#sandbox-policy-text-m2-c-6).
 - `sandbox7-record` writes the DH-E-SANDBOX-7 acceptance record the
   `policy-text` gate requires; it runs no gate. See the same section.
+- `sandbox-preflight` is the guarded sandbox check of `lanes/wsl.sh
+  --guarded-preflight` (see [Guarded preflights](#guarded-preflights)). It reads
+  a `dsh sandbox status` text report from `--status FILE`, or standard input,
+  and exits 0 only when the report's `backend:` line is `bwrap` and its `state:`
+  line is `Full` (`sandboxstatus/`). Any other report fails with exit 1, as does
+  one with a missing or repeated line. It never skips. Exit 2 is a usage error.
 
 ## Story entry (`harness-gate entry`)
 
@@ -797,6 +804,7 @@ Each script checks its lane and stops at the first check not met, naming it
 | C compiler | `go env CC` resolves | `go env CC` resolves (MSYS2 UCRT64 `gcc`) |
 | tree | clean, `core.autocrlf` unset or `false` | clean, `core.autocrlf` unset or `false` |
 | `TMPDIR` | on ext4 | (WSL only) |
+| `pwsh` | (Windows only) | `pwsh` resolves on `PATH` to an absolute path and runs (architecture.md "Shells": the pwsh executor rows run here and fail, never skip, without it) |
 
 Then each runs `GOWORK=off go -C tools/harness-gate run . --root ../.. --evidence
 <file>`, with the record at
@@ -806,6 +814,40 @@ is still clean (an untracked record would make every binary `vcs.modified=true`)
 and writes its output next to the record as `...-rehearse.txt`, ending with the
 same kind of `sha256` line. The script exits with the gate's status, else the
 rehearsal's.
+
+### Guarded preflights
+
+A guarded run (implementation-plan Stages 6.10 and 6.12) needs more of each
+machine than the gate does. Every check fails the run with exit 3. None is
+skipped.
+
+```sh
+~/src/agent-plugin/tools/harness-gate/lanes/wsl.sh --guarded-preflight
+```
+
+`wsl.sh --guarded-preflight` runs the lane checks above, then the
+`service:linux-sandbox-bwrap` checks (architecture.md I-8), and exits 0 without
+running a gate:
+
+1. `bwrap` resolves on `PATH` to an absolute, executable path. This is the
+   same lookup the bubblewrap backend makes. When `bwrap` is missing and `sudo`
+   needs no password, the script installs it with `sudo apt-get install -y
+   bubblewrap`. Otherwise the check fails and names the package.
+2. The script builds `cmd/dsh` from the checkout into a scratch directory under
+   `TMPDIR`. It runs `dsh --home <scratch>/home sandbox status`, a read-only view
+   that creates nothing in the home, and prints the report. It then pipes the
+   report to `harness-gate sandbox-preflight`. Only backend `bwrap` with state
+   `Full` passes. `landlock Partial`, `Unconfined` or anything else fails, so a
+   machine whose user namespaces are restricted can never pass silently.
+
+On success it prints, for example:
+
+```text
+wsl lane: guarded preflight passed: bwrap /usr/bin/bwrap; backend bwrap, state Full
+```
+
+`win.ps1` has no sandbox check: no Windows backend exists in M2. Its `pwsh`
+check (the table above) runs on every Windows lane run.
 
 ### Provisioning the WSL lane
 
@@ -818,6 +860,10 @@ rehearsal's.
   `/etc/wsl.conf`, set `[interop] appendWindowsPath=false`, so the Windows
   `go.exe` can never be picked up.
 - `build-essential` (gcc, for `-race` with `CGO_ENABLED=1`) and `git`.
+- `bubblewrap` (`sudo apt-get install bubblewrap`, giving `/usr/bin/bwrap`) and
+  unprivileged user namespaces, for guarded runs
+  (`service:linux-sandbox-bwrap`). `wsl.sh --guarded-preflight` installs the
+  package when `sudo` needs no password, and fails otherwise.
 - `GOCACHE`, `GOMODCACHE` and `TMPDIR` on ext4 (the defaults under `~` and `/tmp`
   are).
 - Optional: `[boot] systemd=true` in `/etc/wsl.conf`; it enables the Linux
@@ -850,5 +896,6 @@ Why:
   may be another release; `win.ps1` sets the variable from `src/harness/go.mod`,
   and the gate pins every child to the floor itself.
 - MSYS2 UCRT64 `gcc` on `PATH` (for `-race`), as in `.github/workflows/ci.yml`.
+- PowerShell 7 (`pwsh`) on `PATH`; `win.ps1` fails without it.
 - A non-elevated shell, and the checkout on a local NTFS or ReFS (Dev Drive)
   volume.
