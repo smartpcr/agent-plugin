@@ -385,9 +385,27 @@ jobs:
               ;;
             systemd-ssh)
               alias="${!TARGET}"
+              ssh -o BatchMode=yes "$alias" true || fail "ssh $alias failed"
               state=$(ssh -o BatchMode=yes "$alias" 'systemctl --user is-system-running 2>&1' || true)
               cgroup=$(ssh -o BatchMode=yes "$alias" 'cat /proc/self/cgroup') || fail "ssh $alias failed"
               echo "$alias: systemctl --user: ${state:-<none>}; cgroup: $cgroup"
+              # The variant must actually provide the state EXEC-1/EXEC-10 are credited for
+              # (M2-EN-2: systemd --user present and absent, cgroup v2 delegated and not).
+              case "$TARGET" in
+                DSH_SCENARIO_EXEC10_SSH)
+                  case "$state" in running|degraded) ;; *) fail "$alias has no running user manager (systemctl --user: ${state:-<none>})" ;; esac
+                  fs=$(ssh -o BatchMode=yes "$alias" 'stat -fc %T /sys/fs/cgroup') || fail "ssh $alias failed"
+                  [ "$fs" = cgroup2fs ] || fail "$alias is not on cgroup v2 (/sys/fs/cgroup is $fs)"
+                  ctl=$(ssh -o BatchMode=yes "$alias" 'u=$(id -u); cat /sys/fs/cgroup/user.slice/user-$u.slice/user@$u.service/cgroup.controllers' 2>/dev/null) || fail "$alias has no user@ service cgroup"
+                  [ -n "$ctl" ] || fail "$alias delegates no cgroup controllers to user@ service"
+                  echo "$alias: delegated controllers: $ctl"
+                  ;;
+                DSH_SCENARIO_EXEC10_SSH_NOMANAGER)
+                  case "$state" in running|degraded|starting|initializing) fail "$alias has a user manager (systemctl --user: $state)" ;; esac
+                  grep -qiE 'failed to connect|offline|no such file|not found' <<<"$state" || fail "$alias: unexpected systemctl --user result: ${state:-<none>}"
+                  ;;
+                *) fail "no expected systemd state for target $TARGET" ;;
+              esac
               ;;
             second-account)
               if [ "$RUNNER_OS" = Windows ]; then
