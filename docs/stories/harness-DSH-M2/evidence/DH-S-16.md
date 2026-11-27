@@ -59,6 +59,20 @@ The four guarded scenarios of step 16.8, on scratch homes (M2-EN-6); this stage 
 | DH-E-FS-3 | Windows | guarded | required | scratch home | | not run (M1 not closed, M2-DEC-1; recorded by a later workstream) | |
 | DH-E-FS-3 | macOS | guarded | required | | | out of scope (platforms-windows-wsl) | |
 
+## Operator decisions for Stage 6.12
+
+Answers the operator gave in the Forge open-question wizard for workstream
+`ws-harness-dsh-m2-phase-dh-s-16-profiles-launchers-and-evidence-runners-stage-guarded-scenarios-on-scratch-homes`
+(after iteration 2), quoted verbatim. They narrow that workstream to building the runner; they do not
+close a row, waive a run or change M2-DEC-1.
+
+| Question id | Question | Answer (verbatim) | Effect on this record |
+| --- | --- | --- | --- |
+| `m1-entry-block` | `harness-gate entry` fails (harness:DSH-M1 not closed), so no guarded run can start. How should this workstream proceed? | "Merge the runner now; record runs in a later workstream" | Step 16.8's runner merges; the seven required rows above stay `not run` and remain owed. A later workstream runs both guarded lanes on a merged commit after `harness-gate entry` exits 0 and fills the rows, the run records and the cleanup evidence below. Stage 6.12's run and cleanup-evidence steps stay unticked until then. |
+| `store-command-templates` | Who provides the `DSH_SCENARIO_*` command templates for DH-E-STORE-1/-6/-2 (create/resume/fork/delete/attach image), which no current dsh CLI or SDK method supports? | "Add a follow-up workstream for a scenario driver" | The guarded inputs file is written by that workstream; `harness-gate guarded` refuses to run while any input is missing. |
+| `requires-executing-stage` | May a guarded run include a scenario whose index `requires` is the stage it is closing (DH-E-FS-3 requires DH-S-16)? | "Yes, the executing stage only" | `guarded.RequiresBuilt` admits the `--stage` being closed and no other unbuilt stage. |
+| `store2-cleanup-coverage` | DH-E-STORE-2's closing deletion and spill-file cleanup are not checked by any test. Should this workstream add them? | "Add them in this workstream next iteration" | Done: STORE-2 step (5) and STORE-6's spill checks. |
+
 ## Manual checks register
 
 The manual checks impl.md DH-S-16 names, each `manual`, on scratch data: what was seen, by whom, at
@@ -104,8 +118,9 @@ Not yet recorded: the gate runner's output, the `go test` command lines and `DSH
 -run <plan> ./internal/testkit/scenarios` on scratch homes, recorded in
 `runs/guarded-<wsl|win>-<sha7>-<stamp>.txt`. Each record prints one `row:` line per scenario, copied into
 the Scenarios table with the record named in Artifacts. Not yet run: `harness-gate entry` fails while
-harness:DSH-M1 is not closed (M2-DEC-1); by operator decision (m1-entry-block) the runner merges with this stage
-and a later workstream runs both lanes and records their rows, records and cleanup evidence here.
+harness:DSH-M1 is not closed (M2-DEC-1); per [Operator decisions](#operator-decisions-for-stage-612)
+(`m1-entry-block`) the runner merges with this stage and a later workstream runs both lanes and records
+their rows, records and cleanup evidence here.
 
 ### Run identifiers
 
