@@ -4,7 +4,7 @@ agent.preset        A02   agentpreset.Declaration  -                            
 agent.presets       A02   agentpreset.Config       agent.presets                            -     all
 agent.registry      A02   -                        agent.agents                             -     all
 boot.logging        A21   logging.Config           -                                        -     all
-cli.headless        A24   -                        -                                        -     all
+cli.headless        A24   headless.Config          -                                        -     all
 fs.local            A08   local.Options            fs                                       -     all
 fs.ops              A08   -                        fs.ops                                   -     all
 host.access         A18   -                        host.access                              -     all
@@ -31,4 +31,4 @@ ui.shell            C1    -                        ui.shell                     
 util.egress         A23   egress.Config            egress                                   -     all
 util.watch          A23   watch.Options            watch                                    -     all
 wire.sdk            A20   -                        -                                        -     all
-wire.stdio          A20   -                        wire.stdio                               -     all
+wire.stdio          A20   stdio.Settings           wire.stdio                               -     all
