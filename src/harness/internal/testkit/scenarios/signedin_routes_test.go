@@ -80,18 +80,32 @@ func forEachRoute(t *testing.T, leg func(t *testing.T, r clientRoute)) {
 // the recorded leg's. It is a selection, not a credential.
 const routesEnv = "DSH_SCENARIO_ROUTES"
 
-// selectedRoutes returns the routes of routesEnv in clientRoutes order; a name
-// that is no route fails t, so a typo never runs no leg and passes.
+// selectedRoutes returns the routes routesEnv selects (parseRoutes); a value that
+// selects no route, or names one that is not a route, fails t, so a typo or a
+// separator alone never runs no leg and passes.
 func selectedRoutes(t *testing.T) []clientRoute {
 	t.Helper()
-	v := strings.TrimSpace(os.Getenv(routesEnv))
-	if v == "" {
-		return clientRoutes
+	routes, err := parseRoutes(os.Getenv(routesEnv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return routes
+}
+
+// parseRoutes is the routes of a routesEnv value v in clientRoutes order: all of
+// them when v is unset or blank; otherwise the comma- or space-separated route IDs,
+// at least one, each a route of clientRoutes.
+func parseRoutes(v string) ([]clientRoute, error) {
+	if strings.TrimSpace(v) == "" {
+		return clientRoutes, nil
 	}
 	ids := strings.FieldsFunc(v, func(r rune) bool { return r == ',' || r == ' ' })
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("%s=%q selects no route; name claude-code, copilot-cli or both, or leave it unset for both", routesEnv, v)
+	}
 	for _, id := range ids {
 		if !slices.ContainsFunc(clientRoutes, func(r clientRoute) bool { return r.ID == id }) {
-			t.Fatalf("%s=%q names route %q; the routes are claude-code and copilot-cli", routesEnv, v, id)
+			return nil, fmt.Errorf("%s=%q names route %q; the routes are claude-code and copilot-cli", routesEnv, v, id)
 		}
 	}
 	var out []clientRoute
@@ -100,7 +114,38 @@ func selectedRoutes(t *testing.T) []clientRoute {
 			out = append(out, r)
 		}
 	}
-	return out
+	return out, nil
+}
+
+// TestParseRoutes: DSH_SCENARIO_ROUTES selects routes in clientRoutes order, all
+// of them when unset; a value of separators alone or an unknown ID is refused, so
+// forEachRoute never runs zero legs. It starts no client.
+func TestParseRoutes(t *testing.T) {
+	ids := func(rs []clientRoute) []string {
+		var out []string
+		for _, r := range rs {
+			out = append(out, r.ID)
+		}
+		return out
+	}
+	for v, want := range map[string][]string{
+		"":                        {"claude-code", "copilot-cli"},
+		"  ":                      {"claude-code", "copilot-cli"},
+		"claude-code":             {"claude-code"},
+		"copilot-cli":             {"copilot-cli"},
+		"copilot-cli,claude-code": {"claude-code", "copilot-cli"},
+		" claude-code , ":         {"claude-code"},
+	} {
+		got, err := parseRoutes(v)
+		if err != nil || !slices.Equal(ids(got), want) {
+			t.Errorf("parseRoutes(%q) = %q, %v; want %q", v, ids(got), err, want)
+		}
+	}
+	for _, v := range []string{",", " , ,", ",,", "claude", "claude-code,codex"} {
+		if got, err := parseRoutes(v); err == nil {
+			t.Errorf("parseRoutes(%q) = %q, want an error", v, ids(got))
+		}
+	}
 }
 
 // TestSignedInRoutePreflight is the signed-in route preflight of the s17 job of

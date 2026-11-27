@@ -189,7 +189,8 @@ jobs:
         # harness-gate scenarios runs the plan in order inside its 100 min budget:
         # per phase a required go test of the claude-code legs (DSH_SCENARIO_ROUTES),
         # which decides, then a recorded go test of the copilot-cli legs, whose result
-        # is written to the record and never fails the stage (M2-DEC-4).
+        # is written to the record; its pass or failure never fails the stage, a leg
+        # that did not run (skip, no result) does (M2-DEC-4).
         env:
           DSH_SCENARIO_REPORT: ${{ github.workspace }}/artifacts/harness/s17-report.txt
         run: GOWORK=off go -C tools/harness-gate run . scenarios --root ../.. --stage DH-S-17 --evidence "../../artifacts/harness/s17-$GITHUB_SHA.txt"

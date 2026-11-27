@@ -35,7 +35,8 @@ import (
 //     claude-code and its full output in the record; a skip anywhere, a non-zero
 //     exit or a planned test that did not pass fails the run (DH-ADR-TOOLCHAIN-6:
 //     a skip is never a pass). The routed scenarios then run their copilot-cli
-//     legs in a recorded run whose result is kept and never fails (M2-DEC-4).
+//     legs in a recorded run whose pass or failure is kept and decides nothing; a
+//     recorded leg that did not run fails (M2-DEC-4).
 //     All runs share scenarioBudget, inside the job's 2 h.
 
 // signInProbe is the sign-in probe of the preflight and scenarios subcommands:
@@ -280,8 +281,10 @@ func (c *Config) runPhase(ctx context.Context, w io.Writer, plan acceptance.Plan
 			continue
 		}
 		// The recorded run: only the routed scenarios, only their copilot-cli
-		// legs, their rows in a report of their own; its result is kept, never
-		// counted.
+		// legs, their rows in a report of their own. A leg that ran, passed or
+		// failed, is kept and decides nothing; a leg that did not run (a run that
+		// never started, a build failure, a skip, no result line) fails the gate,
+		// since the recorded leg must run (M2-DEC-4).
 		var rp acceptance.Plan
 		for _, s := range p.Scenarios {
 			if slices.Contains(routed, s.Test) {
@@ -292,9 +295,16 @@ func (c *Config) runPhase(ctx context.Context, w io.Writer, plan acceptance.Plan
 		if r := lookupEnv(c.env(), "DSH_SCENARIO_REPORT"); r != "" {
 			env = append(env, "DSH_SCENARIO_REPORT="+r+"."+recordedLeg)
 		}
-		rout, _, rerr := c.goTestRun(ctx, w, mod, rp, deadline, env...)
-		for _, r := range recordedLegs(rout, rerr, routed) {
+		rout, rrun, rerr := c.goTestRun(ctx, w, mod, rp, deadline, env...)
+		if rerr != nil {
+			rrun = rerr
+		}
+		legs, err := recordedLegs(rout, rrun, routed)
+		for _, r := range legs {
 			fmt.Fprintf(w, "scenarios: recorded leg: %s (kept; does not decide the stage, M2-DEC-4)\n", r)
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", c.rel(mod), err))
 		}
 	}
 	return errors.Join(errs...)
@@ -347,10 +357,12 @@ func routedTests(out string, tests []string) []string {
 }
 
 // recordedLegs is, per routed test, the result of its copilot-cli leg in the
-// recorded run's output: "<Test>/copilot-cli passed", "failed", "skipped", or
-// "not run (...)" when the run has no result line for it.
-func recordedLegs(out string, runErr error, routed []string) []string {
+// recorded run's output: "<Test>/copilot-cli passed" or "failed", which decide
+// nothing, or "skipped" or "not run (...)", which err names: a recorded leg must
+// run and leave its result (M2-DEC-4), so one that did not is never a pass.
+func recordedLegs(out string, runErr error, routed []string) ([]string, error) {
 	var res []string
+	var errs []error
 	for _, t := range routed {
 		result := "not run (no copilot-cli result line)"
 		if runErr != nil && out == "" {
@@ -363,8 +375,11 @@ func recordedLegs(out string, runErr error, routed []string) []string {
 			}
 		}
 		res = append(res, t+"/"+recordedLeg+" "+result)
+		if result != "passed" && result != "failed" {
+			errs = append(errs, fmt.Errorf("recorded leg %s/%s %s; it must run and its result be kept (M2-DEC-4)", t, recordedLeg, result))
+		}
 	}
-	return res
+	return res, errors.Join(errs...)
 }
 
 // scenarioVerdict fails a scenario run whose output has a skip anywhere, a build or

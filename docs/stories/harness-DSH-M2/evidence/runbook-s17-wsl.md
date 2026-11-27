@@ -117,8 +117,9 @@ count="$(sed -n 's/^count=//p' "$GITHUB_OUTPUT" | tail -n 1)"
 # 7. The 14 scenarios, through the same command as the job: TOOLCHAIN-1 first, the
 #    others, SANDBOX-7 last, one go test per phase (-p 1) of the claude-code legs, which
 #    a skip, a failure or a non-zero exit fails, then a recorded go test of the
-#    copilot-cli legs; all within the 100 min budget of the 2 h job. It writes the
-#    evidence record and exits non-zero on any required failure.
+#    copilot-cli legs, whose pass or failure is kept and whose skip or missing result
+#    fails; all within the 100 min budget of the 2 h job. It writes the evidence
+#    record and exits non-zero on any required failure or recorded leg not run.
 export DSH_SCENARIO_REPORT="$PWD/artifacts/harness/s17-report.txt"
 GOWORK=off go -C tools/harness-gate run . scenarios --root ../.. --stage DH-S-17 \
   --evidence "../../artifacts/harness/s17-$sha.txt"

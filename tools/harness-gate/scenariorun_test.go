@@ -158,11 +158,24 @@ func TestRecordedLegs(t *testing.T) {
 	if got := routedTests(req, []string{"TestA", "TestB", "TestC"}); !slices.Equal(got, []string{"TestA", "TestC"}) {
 		t.Errorf("routed = %q, want TestA and TestC", got)
 	}
-	rec := "    --- FAIL: TestA/copilot-cli (1.00s)\n--- FAIL: TestA (1.00s)\nFAIL\n"
-	got := recordedLegs(rec, errors.New("exit status 1"), []string{"TestA", "TestC"})
-	want := []string{"TestA/copilot-cli failed", "TestC/copilot-cli not run (no copilot-cli result line)"}
-	if !slices.Equal(got, want) {
-		t.Errorf("recorded = %q, want %q", got, want)
+	exit1 := errors.New("exit status 1")
+	rec := "    --- FAIL: TestA/copilot-cli (1.00s)\n--- FAIL: TestA (1.00s)\n    --- PASS: TestC/copilot-cli (1.00s)\n--- PASS: TestC (1.00s)\nFAIL\n"
+	got, err := recordedLegs(rec, exit1, []string{"TestA", "TestC"})
+	if want := []string{"TestA/copilot-cli failed", "TestC/copilot-cli passed"}; !slices.Equal(got, want) || err != nil {
+		t.Errorf("recorded = %q, %v; want %q and no error: a leg that ran decides nothing", got, err, want)
+	}
+	for name, c := range map[string]struct {
+		out  string
+		want string
+	}{
+		"a skipped leg":          {"    --- SKIP: TestA/copilot-cli (0.00s)\n--- PASS: TestA (0.00s)\n", "TestA/copilot-cli skipped"},
+		"no result line":         {"FAIL\texample.com/s [build failed]\n", "TestA/copilot-cli not run (no copilot-cli result line)"},
+		"a run that never began": {"", "TestA/copilot-cli not run (exit status 1)"},
+	} {
+		got, err := recordedLegs(c.out, exit1, []string{"TestA"})
+		if !slices.Equal(got, []string{c.want}) || err == nil || !strings.Contains(err.Error(), "must run") {
+			t.Errorf("%s: recorded = %q, %v; want %q and an error", name, got, err, c.want)
+		}
 	}
 }
 
@@ -264,6 +277,35 @@ func TestScenarioGatesS17OrderAndRecordedLeg(t *testing.T) {
 	}
 	if strings.Contains(o, "DSH_SCENARIO_ROUTES=copilot-cli go test -tags scenario -count=1 -p 1 -timeout <left> -v -run ^(TestToolchain)$") {
 		t.Errorf("an unrouted scenario got a recorded run:\n%s", o)
+	}
+}
+
+// TestScenarioGatesS17RecordedLegNeverRan: the required claude-code run passes but
+// the recorded copilot-cli run dies before its leg leaves a result; the gate fails,
+// naming the leg not run, since the recorded leg must run (M2-DEC-4).
+func TestScenarioGatesS17RecordedLegNeverRan(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs go test on a scratch module")
+	}
+	index := "built-through: DH-S-17\nstages:\n  DH-S-17:\n    - id: DH-E-LLM-1\n      authored: DH-S-9\n      credential: claude-session\n"
+	dying := strings.Replace(routesSrc, "\t\tt.Run(id,", "\t\tif id == \"copilot-cli\" {\n\t\t\tos.Exit(3)\n\t\t}\n\t\tt.Run(id,", 1)
+	c := scenarioRoot(t, index, map[string]string{
+		"b_llm_scenario_test.go": scenarioSrc("DH-E-LLM-1", "TestLLM", copilotFails),
+		"routes_test.go":         dying,
+	})
+	p := &countingProbe{signedIn: true}
+	var out bytes.Buffer
+	results := Run(context.Background(), &out, c.ScenarioGates("DH-S-17", p.probe))
+	if ExitCode(results) != 1 || results[len(results)-1].Name != "scenarios" {
+		t.Fatalf("results = %+v, want the scenarios gate failed:\n%s", results, out.String())
+	}
+	if err := results[len(results)-1].Err.Error(); !strings.Contains(err, "recorded leg TestLLM/copilot-cli not run") || strings.Contains(err, "required scenario TestLLM did not pass") {
+		t.Errorf("scenarios gate = %s, want only the recorded leg not run", err)
+	}
+	for _, want := range []string{"--- PASS: TestLLM/claude-code ", "scenarios: recorded leg: TestLLM/copilot-cli not run"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output lacks %q:\n%s", want, out.String())
+		}
 	}
 }
 

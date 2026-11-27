@@ -152,7 +152,8 @@ dsh sandbox status | GOWORK=off go -C tools/harness-gate run . sandbox-preflight
   sets `DSH_SCENARIO_ROUTES=claude-code` and its verdict has no exception; the
   scenarios it shows to be routed then run again with `DSH_SCENARIO_ROUTES=copilot-cli`,
   their report rows in `<DSH_SCENARIO_REPORT>.copilot-cli`, and that run's result is
-  recorded and never fails the gate (M2-DEC-4). A failed preflight starts no scenario. `--stage` and
+  recorded: a leg that passed or failed never fails the gate, and one that did not run
+  (skipped, no result line, a run that never started) does (M2-DEC-4: it must run). A failed preflight starts no scenario. `--stage` and
   `--evidence` are required.
 
 The sign-in checks (`acceptance/signin.go`): `claude-session` runs
