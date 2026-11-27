@@ -77,6 +77,13 @@ type Options struct {
 	// Stdio replaces the process's standard streams for the stdio carrier; nil
 	// lets wire.stdio claim them. An in-process boot passes pipes.
 	Stdio *launch.Stdio
+	// Terminal reports that the launch runs on a terminal: Process then has a
+	// host (web) launch's first Ctrl-C print the running work and stop only on a
+	// second press (DH-ADR-CLI-5).
+	Terminal bool
+
+	// onHost, set by Process, receives the live tree once the Tree step built it.
+	onHost func(Host)
 }
 
 // Host is the live tree as shutdown sees it.
@@ -203,6 +210,9 @@ func Run(ctx context.Context, o Options) (status int) {
 	if err := steps.Tree(ctx, s); err != nil {
 		s.fatal("boot", herr.Wrap(ReasonHost, err, "host preparation failed"))
 		return s.shutdown(output.Fatal, s.limits().FatalReleaseTimeout)
+	}
+	if o.onHost != nil && s.Host != nil {
+		o.onHost(s.Host)
 	}
 	// The composed tree's whole-tree rules (the agent presets as one set), before
 	// anything is applied, whether or not the profile reloads.

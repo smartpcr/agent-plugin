@@ -80,7 +80,15 @@ func ProcessEnv(version string) Env {
 // process's stop signals, and its status passes through output.Exit, as boot
 // already printed the launch's diagnostics.
 func Boot(ctx context.Context, l Launch) error {
-	return output.Exit(boot.Process(ctx, boot.Options{Request: l.Request, Profile: l.Profile, Stderr: l.Stderr}))
+	return output.Exit(boot.Process(ctx, boot.Options{Request: l.Request, Profile: l.Profile, Stderr: l.Stderr, Terminal: isTerminal(os.Stdin)}))
+}
+
+// isTerminal reports whether f is a real terminal: a TTY with termios on Unix, a
+// console on Windows. A character device alone is not enough, as /dev/null and NUL
+// are character devices too, and a supervisor that starts dsh with standard input
+// on one of them must never be asked a question (DH-ADR-CLI-5).
+func isTerminal(f *os.File) bool {
+	return isTTY(f.Fd())
 }
 
 // launcherSpec is the launcher's own command line.

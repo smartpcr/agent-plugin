@@ -22,7 +22,8 @@
 // cli, so with no answerer an approval settles unavailable and the call is
 // denied. --approval-policy is recorded on the session before the task is sent.
 //
-// A Ctrl-C stops the launch with boot's Interrupted status (130) at once; the
+// A Ctrl-C stops the launch through the one stop path (cli/lifecycle) with the
+// Interrupted status (130) at once, and a second one forces the exit (124); the
 // app-cli.md rule that the runner first waits for turn/end and prints what text
 // exists is the open alignment I-6.
 package headless
