@@ -275,8 +275,12 @@ func runConfigValidate(st *state, v *cmdline.Values) error {
 			// A layer that cannot be read fails every profile alike.
 			return err
 		case err != nil:
-			// The Required failure names the profile and the ids.
+			// The Required failure names the profile and the ids; the report's
+			// other issues follow it, so one run names every fault, as show does.
 			fails = append(fails, err)
+			if rest := withoutIssues(p.Report.Issues, err); len(rest) > 0 {
+				fails = append(fails, herr.Wrap(config.ReasonRejected, &loader.ParseError{Issues: rest}, "profile "+def.Name+": the configuration is invalid"))
+			}
 		case !p.Report.OK():
 			fails = append(fails, herr.Wrap(config.ReasonRejected, p.Report.Err(), "profile "+def.Name+": the configuration is invalid"))
 		}
@@ -288,4 +292,24 @@ func runConfigValidate(st *state, v *cmdline.Values) error {
 		return st.res.Value(configValidateDoc{Valid: true, Profiles: names})
 	}
 	return st.res.Line("valid: " + strings.Join(names, ", "))
+}
+
+// withoutIssues is issues less those err carries in its *loader.ParseError (the
+// Required issues of profile.Preview's failure), so none is reported twice.
+func withoutIssues(issues []loader.Issue, err error) []loader.Issue {
+	var pe *loader.ParseError
+	if !errors.As(err, &pe) {
+		return issues
+	}
+	drop := make(map[loader.Issue]bool, len(pe.Issues))
+	for _, i := range pe.Issues {
+		drop[i] = true
+	}
+	var rest []loader.Issue
+	for _, i := range issues {
+		if !drop[i] {
+			rest = append(rest, i)
+		}
+	}
+	return rest
 }
