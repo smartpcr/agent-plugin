@@ -108,7 +108,7 @@ func TestSDKDrivesBuiltBinaryOverStdio(t *testing.T) {
 		if asked.Load() == asked0 {
 			t.Fatal("the model asked no question (question/ask)")
 		}
-		p.duplicateAnswer(t, ctx, h, sess, answered.LastSeq)
+		p.duplicateAnswer(t, ctx, h, sess)
 
 		// The cancel: its reply must follow the turn's turn/end on the wire. The
 		// cursor is taken before the prompt, so the step/start awaited is this
@@ -216,16 +216,11 @@ func sdk1Start(t *testing.T, s *scenario.S, handlers sdk.Handlers) (*sdk.Harness
 
 // duplicateAnswer sends the answer of the last question/ask again, to the same
 // request id: the host must not apply it, and stays up and answering. The
-// session is idle (the asking run returned at seq after), so applying the
-// duplicate would add events after it: a question or answer, a model input or
-// a new turn; a session/history round trip proves the host still answers and
-// shows no such event.
-func (p *sdk1Pipes) duplicateAnswer(t *testing.T, ctx context.Context, h *sdk.Harness, sess *sdk.Session, after int64) {
+// session is idle (the run that asked has ended), so applying the duplicate
+// shows as a new stored event or a session.event on the wire; neither may
+// appear, and the host must still answer session/history.
+func (p *sdk1Pipes) duplicateAnswer(t *testing.T, ctx context.Context, h *sdk.Harness, sess *sdk.Session) {
 	t.Helper()
-	before, err := sess.History(ctx, after, 1000)
-	if err != nil {
-		t.Fatalf("history before the duplicate answer: %v", err)
-	}
 	var ask, answer json.RawMessage
 	for _, f := range p.inbound.frames() {
 		if f.Method == "question/ask" {
@@ -240,6 +235,8 @@ func (p *sdk1Pipes) duplicateAnswer(t *testing.T, ctx context.Context, h *sdk.Ha
 	if answer == nil {
 		t.Fatal("no answer to question/ask on the wire")
 	}
+	before := sdk1History(t, ctx, sess)
+	mark := p.inbound.lines()
 	if _, err := p.in.Write(append(bytes.Clone(answer), '\n')); err != nil {
 		t.Fatal(err)
 	}
@@ -252,22 +249,39 @@ func (p *sdk1Pipes) duplicateAnswer(t *testing.T, ctx context.Context, h *sdk.Ha
 	if !pidAlive(t, p.cmd.Process.Pid) {
 		t.Fatalf("the host (pid %d) exited after a duplicate answer\nstderr:\n%s", p.cmd.Process.Pid, p.stderr.String())
 	}
-	now, err := sess.History(ctx, after, 1000)
-	if err != nil {
-		t.Fatalf("the host does not answer session/history after a duplicate answer: %v\nstderr:\n%s", err, p.stderr.String())
+	after := sdk1History(t, ctx, sess)
+	if len(after) != len(before) {
+		var added []string
+		for _, e := range after[min(len(before), len(after)):] {
+			added = append(added, e.Type)
+		}
+		t.Errorf("the duplicate answer was applied: history went from %d to %d events (added %v)", len(before), len(after), added)
 	}
-	if len(now) < len(before) {
-		t.Fatalf("history after seq %d shrank from %d to %d events after a duplicate answer", after, len(before), len(now))
-	}
-	for _, e := range now[len(before):] {
-		switch e.Type {
-		case "question/asked", "question/answered", "user/message", "turn/start", "step/start", "request/context", "tool/call", "tool/result", "assistant/message":
-			t.Errorf("the duplicate answer was applied: %s at seq %d after the answered run", e.Type, e.Seq)
+	for _, f := range p.inbound.frames()[mark:] {
+		if typ := f.eventType(); typ != "" {
+			t.Errorf("the duplicate answer was applied: the host sent a %s event after it", typ)
 		}
 	}
 	t.Logf("host diagnostics after the duplicate answer:\n%s", p.stderr.String())
 }
 
+// sdk1History reads every stored event of sess from seq 0; the call doubles as
+// a round trip the host must answer.
+func sdk1History(t *testing.T, ctx context.Context, sess *sdk.Session) []protocol.Event {
+	t.Helper()
+	var evs []protocol.Event
+	for after := int64(-1); ; {
+		page, err := sess.History(ctx, after, 1000)
+		if err != nil {
+			t.Fatalf("session/history: %v", err)
+		}
+		if len(page) == 0 {
+			return evs
+		}
+		evs = append(evs, page...)
+		after = page[len(page)-1].Seq
+	}
+}
 // awaitEvent waits for a session.event of typ on the wire after line from.
 func (p *sdk1Pipes) awaitEvent(t *testing.T, typ string, from int) {
 	t.Helper()
