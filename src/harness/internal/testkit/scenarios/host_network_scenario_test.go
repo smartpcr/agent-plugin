@@ -131,7 +131,9 @@ func TestNetworkListenerTLSPrefixAndRenewal(t *testing.T) {
 	}
 
 	// (4) Renewed files are picked up by the next handshake, without a restart.
-	pid := h.pid()
+	// h.pid() is the terminal host's, which a dsh that re-execs or hands its
+	// listener to a successor would keep; the runtime record is dsh's own.
+	before := oneRecord(t, root)
 	install(renewed)
 	want := pemDER(t, renewed[0])
 	deadline := time.Now().Add(time.Minute)
@@ -147,8 +149,14 @@ func TestNetworkListenerTLSPrefixAndRenewal(t *testing.T) {
 		<-renewTick.C
 	}
 	renewTick.Stop()
-	if h.pid() != pid {
-		t.Errorf("(4) the host restarted (pid %d to %d) to pick up the certificate", pid, h.pid())
+	select {
+	case <-h.Process.Exited():
+		t.Errorf("(4) the host exited (code %d) while picking up the certificate", h.code())
+	default:
+	}
+	if after := oneRecord(t, root); after.PID != before.PID || after.Origin != before.Origin {
+		t.Errorf("(4) the host restarted to pick up the certificate: runtime record pid %d at %s became pid %d at %s",
+			before.PID, before.Origin, after.PID, after.Origin)
 	}
 	stopHost(t, h.dshHost)
 
