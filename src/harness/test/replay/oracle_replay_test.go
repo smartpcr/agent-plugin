@@ -179,8 +179,10 @@ func play(t *testing.T, bin, dir string, refresh bool) outcome {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, b := range files {
-		o.requests[name] = n.Normalize(b)
+	// Normalize assigns identity tokens in first-seen order, so the requests
+	// are normalised in NNN.json order rather than random map order.
+	for _, name := range keys(files) {
+		o.requests[name] = n.Normalize(files[name])
 	}
 	return o
 }
