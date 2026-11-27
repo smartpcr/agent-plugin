@@ -80,6 +80,8 @@ type mlpState struct {
 	status    int
 	stopped   bool
 	reply     string // the fake route's scripted reply; empty scripts no turn
+	transport *fakemodel.Transport
+	scripted  int // number of turns scripted on transport
 
 	// golden scenario
 	defs     []profile.Definition
@@ -154,6 +156,7 @@ func (s *mlpState) tempHomeScripted(name, reply string) error {
 		turns = []fakemodel.Turn{fakemodel.Reply(reply)}
 	}
 	transport := fakemodel.NewTransport(mlpT, turns...)
+	s.transport, s.scripted = transport, len(turns)
 	route := catalog.Item{Name: "x.route", Component: cordis.Define("x.route", func(ctx *cordis.Context, _ cordis.None) error {
 		rt, err := llm.RuntimeKey.Get(ctx)
 		if err != nil {
@@ -326,8 +329,24 @@ func (s *mlpState) driveSDK() error {
 	if text.String() != s.reply {
 		return fmt.Errorf("assistant message text = %q, want the scripted reply %q", text.String(), s.reply)
 	}
+	if err := s.requestsMatchScript(); err != nil {
+		return err
+	}
 	if recs := s.runtimeRecords(); len(recs) > 0 {
 		return fmt.Errorf("sdk wrote runtime records %v", recs)
+	}
+	return nil
+}
+
+// requestsMatchScript fails the scenario unless the fake transport received
+// exactly its scripted turns. The transport's own leftover and unscripted checks
+// report through the suite-level mlpT, so only this ties them to the scenario.
+func (s *mlpState) requestsMatchScript() error {
+	if s.transport == nil {
+		return nil
+	}
+	if got := len(s.transport.Requests()); got != s.scripted {
+		return fmt.Errorf("%s: fake model received %d request(s), want exactly the %d scripted", s.def.Name, got, s.scripted)
 	}
 	return nil
 }
@@ -479,7 +498,8 @@ func (s *mlpState) equalsGolden() error {
 func InitializeScenario_dh_s_16_profiles_launchers_and_evidence_runners_mode_layers_and_five_profiles(ctx *godog.ScenarioContext) {
 	s := &mlpState{}
 	ctx.After(func(c context.Context, _ *godog.Scenario, err error) (context.Context, error) {
-		if cerr := s.cleanup(); cerr != nil && err == nil {
+		// cleanup stops the profile first, so no request can arrive after the check.
+		if cerr := errors.Join(s.cleanup(), s.requestsMatchScript()); cerr != nil && err == nil {
 			return c, cerr
 		}
 		return c, err
