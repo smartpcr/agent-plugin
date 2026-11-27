@@ -125,6 +125,12 @@ with `head -n -1 <record> | sha256sum`:
 | Windows | `win-6422ca4-20261127T0146Z.txt` | `82bbad948a12722fa9e0f55f0a5fd97d9020ce878f130e53f6719e84bb224f9d` | 2026-11-27T02:20:25Z | passed, 13/13 gates |
 | WSL | `wsl-6422ca4-20261127T0145Z.txt` | `abcad3846907adf9cbdcee338b2ae23377387a4ba34e67792dad0dbeb04d37e7` | 2026-11-27T01:56:59Z | passed, 13/13 gates |
 | WSL rehearsal | `wsl-6422ca4-20261127T0145Z-rehearse.txt` | | 2026-11-27T01:46:00Z | exit 0 |
+| Windows (merged 4ea6a65, 1st) | `win-4ea6a65-20261127T0229Z.txt` | `057648db178de4893c497654c77a9e4e58d4de74b60ac776309447bab431b0b8` | 2026-11-27T02:41:16Z | failed at gate 5/13 `test` (exit 1) |
+| Windows (merged 4ea6a65, 2nd) | `win-4ea6a65-20261127T0251Z.txt` | `769aeaeb07a568ebfb95915ae4986068302b50eb25d504dfb788980399fb2f59` | 2026-11-27T03:39:54Z | passed, 13/13 gates |
+| WSL (merged 4ea6a65) | `wsl-4ea6a65-20261127T0230Z.txt` | `9ca0f8f383a42aefb02fc2a7d94d2c736dcddf287eb8ef0d7463b293ee7f2730` | 2026-11-27T02:40:59Z | passed, 13/13 gates |
+| WSL rehearsal (merged 4ea6a65) | `wsl-4ea6a65-20261127T0230Z-rehearse.txt` | | 2026-11-27T02:30:15Z | exit 0 |
+
+The four 4ea6a65 records are committed under `docs/stories/harness-DSH-M1/evidence/runs/`.
 
 No CI run; no model calls (the HOST scenarios are compile only here).
 
@@ -169,5 +175,14 @@ Lane results: the S15 gate on both lanes runs once per commit, outside an iterat
 - **TC-12g:** `git diff origin/main...6422ca4 -- src/sdk/protocol/` is empty, so `schema.json` is unchanged.
 
 Both temporary checkouts are removed, and the records are kept outside the tree (`E:\work\lanes\` and WSL `~/src/lane-records/`). The S15 gate record (M2-DOD-1) **passes** at 6422ca4. Commits after it change only this file. The two `manual` rows stay open, as decided above. No attempt before the eighth counts as a pass.
+
+Merged commit 4ea6a65 ("[impl] DH-S-15 Scenarios and Built Record (#174)", the squash merge on `main`) is the stage's merged commit. Its tree differs from 6422ca4 in this file and in one more `host_network_scenario_test.go` change. So both lanes were run again on it, for the DH-S-15 E2E stage. Each lane ran once per commit, detached, in a clean temporary checkout (`E:\work\lanes\dhs15-4ea6a65`, then `E:\work\lanes\dhs15-4ea6a65-r2`, and `~/src/dhs15-4ea6a65` under WSL), outside any iteration. The records are committed under `docs/stories/harness-DSH-M1/evidence/runs/`, and the E2E checks each one byte for byte against its SHA-256 trailer:
+
+- WSL: `bash tools/harness-gate/lanes/wsl.sh` at 4ea6a65, record `wsl-4ea6a65-20261127T0230Z.txt`, passed all 13 gates, exit 0 (`lane-exit: 0`; gate 5/13 `test` 3m2.562s, 8/13 `scenario-index` passed). The rehearsal `wsl-4ea6a65-20261127T0230Z-rehearse.txt` also exited 0.
+- Windows, first run: `pwsh -NoProfile -File tools\harness-gate\lanes\win.ps1` at 4ea6a65, record `win-4ea6a65-20261127T0229Z.txt`, failed at gate 5/13 `test` (exit 1) on one test outside this stage, `internal/world/subprocess` `TestChannelReachesTheChild` (`extra_detach_test.go:53: a child without the channel wrote to number 912 ... want a failed write`). The cause was the test reusing a handle value under load, a test-only race. It is fixed on `main` by #175 (48b7a91) and this stage does not touch it. The record is kept.
+- Windows, second run: `pwsh -NoProfile -File tools\harness-gate\lanes\win.ps1` at 4ea6a65, record `win-4ea6a65-20261127T0251Z.txt`, passed all 13 gates, exit 0 (`lane-exit: 0`; gate 5/13 `test` 5m10.149s, 6/13 `coverage` 20m5.14s, 8/13 `scenario-index` passed). Its checkout `dhs15-4ea6a65-r2` was removed before the record was copied out. The committed file is the record's text from the lane log `E:\work\lanes\dhs15-4ea6a65-win2.log`, from `harness-gate evidence record` through its `sha256:` line, with the console's CRLF turned back into the gate's LF. Its trailer `769aeaeb…2f59` matches the SHA-256 of every line before it, so the text is the gate's own output, unedited.
+- TC-12g: `git diff-tree -r --name-only 4ea6a65 -- src/sdk/protocol` is empty, so `schema.json` is unchanged by the merged commit.
+
+So at the merged commit 4ea6a65, the latest record of each lane passes every gate with exit 0, and the S15 gate (M2-DOD-1) passes. The temporary checkouts are removed.
 
 Where the repairs live: the formatting, vet and gate-5 repairs named above (`host/launch/component.go`, `host/web/web_test.go`, `host/launch/launch_test.go`, `wire/sdkserver/forward_test.go`, the DH-S-15 e2e test, `cli/output/status.go`, `allevents/testdata/persisted.notes` and `persisted.golden`) were made on this branch in earlier iterations and then landed on `main` in #172 (3e631e9), together with the coverage tests. That commit was merged back here as bd1260b. They are history already in the merge target, so the branch diff against `origin/main` no longer contains them.
