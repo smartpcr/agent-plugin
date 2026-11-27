@@ -21,12 +21,13 @@ package e2e
 //     request after the resume from the stored log (surface.Rebuild), matching
 //     the digest the host recorded as sent. It checks the guarded runner's lane
 //     plan, which binds the Claude Code route and bwrap Full to the WSL lane.
-//   - dsh boots no shell tool and no Claude Code route, and bwrap is Linux only,
-//     so STORE-2's literal path (sandboxed sleep 60; write on the signed-in
-//     route) exists only as the impl's lane scenario (internal/testkit/scenarios,
-//     -tags scenario). On a lane that sets its DSH_SCENARIO_STORE2_* inputs the
-//     suite runs it and requires it to pass; a partial set fails; with none it
-//     logs that the path is not covered here.
+//   - dsh boots no shell tool and no Claude Code route, bwrap is Linux only, and
+//     the sign-in is the tester's own credential, so STORE-2's literal path
+//     (sandboxed sleep 60; write on the signed-in route) is a separate lab-only
+//     scenario (@setup-lab-wsl-claude-code). It runs the impl's lane scenario
+//     (internal/testkit/scenarios, -tags scenario) when the WSL lane sets every
+//     DSH_SCENARIO_STORE2_* input and requires it to pass; a partial set fails;
+//     with none, or off Linux, it is skipped as unreproducible on this host.
 
 import (
 	"bufio"
@@ -41,6 +42,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -249,6 +251,11 @@ type gshAck struct {
 }
 
 type gshWorld struct {
+	// The STORE-2 lab variant: the lane was established, and the live run.
+	lab             bool
+	labTest, labOut string
+	labErr          error
+
 	root    string
 	layout  home.Layout
 	ws      string
@@ -1206,25 +1213,34 @@ func (w *gshWorld) requestFromLog() error {
 	return nil
 }
 
-// gshLive runs the impl's live scenario test through dsh when the lane provides
-// its inputs (the Claude Code sign-in and bwrap); a partial set fails. Off such
-// a lane the live path is NOT covered by this suite and the step says so in the
-// log; it only checks that the stage's evidence (docs/stories/harness-DSH-M2/
-// evidence/DH-S-16.md) claims no lane result of scenario without a commit SHA.
-// The lane rows themselves are the committed harness-gate lane records.
-func gshLive(scenario, test string, vars ...string) error {
+// labLane is the lab variant's precondition: the WSL lane machine (Linux, for
+// bwrap) providing every DSH_SCENARIO_STORE2_* input, which carry the tester's
+// Claude Code sign-in route. A partial set fails. With none, or off Linux, the
+// lab-only scenario is unreproducible on this host and is skipped
+// (godog.ErrSkip, the lab-* exception); the gate variant above still runs.
+func (w *gshWorld) labLane(vars []string) error {
 	var missing []string
 	for _, v := range vars {
 		if os.Getenv(v) == "" {
 			missing = append(missing, v)
 		}
 	}
-	if len(missing) == len(vars) {
-		gshOuterT.Logf("%s: NOT COVERED on this host (no lane inputs); its lane path is evidenced only by the lane records", test)
-		return gshEvidenceOwed(scenario, test)
+	if len(missing) > 0 && len(missing) < len(vars) {
+		return fmt.Errorf("the lane provides only part of its inputs; missing %s", strings.Join(missing, ", "))
 	}
-	if len(missing) > 0 {
-		return fmt.Errorf("%s: the lane provides only part of its inputs; missing %s", test, strings.Join(missing, ", "))
+	if len(missing) == len(vars) || runtime.GOOS != "linux" {
+		gshOuterT.Logf("DH-E-STORE-2 lab variant: skipped on %s (lab-only: needs the WSL lane's bwrap and the tester's Claude Code sign-in; inputs set: %v)", runtime.GOOS, len(missing) == 0)
+		return godog.ErrSkip
+	}
+	w.lab = true
+	return nil
+}
+
+// labRun runs the impl's live scenario test, which drives the built dsh on
+// the lane's Claude Code route with the sandboxed shell under bwrap Full.
+func (w *gshWorld) labRun(test string) error {
+	if !w.lab {
+		return errors.New("the lab lane was not established")
 	}
 	mod, err := shkModuleDir()
 	if err != nil {
@@ -1233,10 +1249,15 @@ func gshLive(scenario, test string, vars ...string) error {
 	cmd := exec.Command("go", "test", "-tags", "scenario", "-timeout", "40m", "-v", "-run", "^"+test+"$", "./internal/testkit/scenarios/")
 	cmd.Dir = mod
 	out, err := cmd.CombinedOutput()
-	if err != nil || !strings.Contains(string(out), "--- PASS: "+test) || strings.Contains(string(out), "--- SKIP: "+test) {
-		return fmt.Errorf("the live scenario %s did not pass (%v):\n%s", test, err, out)
+	w.labTest, w.labOut, w.labErr = test, string(out), err
+	return nil
+}
+
+func (w *gshWorld) labPassed() error {
+	if w.labErr != nil || !strings.Contains(w.labOut, "--- PASS: "+w.labTest) || strings.Contains(w.labOut, "--- SKIP: "+w.labTest) {
+		return fmt.Errorf("the live scenario %s did not pass (%v):\n%s", w.labTest, w.labErr, w.labOut)
 	}
-	gshOuterT.Logf("%s passed through dsh on this lane", test)
+	gshOuterT.Logf("%s passed through dsh on the WSL lane", w.labTest)
 	return nil
 }
 
@@ -1423,9 +1444,14 @@ func InitializeScenario_dh_s_16_profiles_launchers_and_evidence_runners_guarded_
 	ctx.Step(`^the cut tool call's result is "([^"]*)"$`, w.outcomeUnknown)
 	ctx.Step(`^the first model request after the resume, rebuilt from the session log, has the digest the host sent and carries that result$`, w.requestFromLog)
 	ctx.Step(`^the replay provider received that request carrying the result$`, w.firstRequestCarries)
-	ctx.Step(`^on a lane providing (.+), the live scenario (Test\w+) .+ and passes; off it the lane path is not covered here, and the stage evidence must claim no (DH-E-[A-Z0-9-]+) lane result without a commit$`, func(vars, test, scenario string) error {
-		return gshLive(scenario, test, strings.FieldsFunc(strings.ReplaceAll(vars, " and ", ","), func(r rune) bool { return r == ',' || r == ' ' })...)
+	ctx.Step(`^the stage evidence claims no (DH-E-[A-Z0-9-]+) lane result without a commit SHA$`, func(scenario string) error {
+		return gshEvidenceOwed(scenario, "TestKilledHostRecoversHonestly")
 	})
+	ctx.Step(`^the WSL lane machine with bwrap Full and the tester's Claude Code sign-in, providing (.+)$`, func(vars string) error {
+		return w.labLane(strings.FieldsFunc(strings.ReplaceAll(vars, " and ", ","), func(r rune) bool { return r == ',' || r == ' ' }))
+	})
+	ctx.Step(`^the live scenario (Test\w+) kills dsh while a sandboxed "sleep 60; write" runs, resumes and prompts the session, then deletes it$`, w.labRun)
+	ctx.Step(`^the live scenario passes: the turn ended interrupted, the call's outcome is unknown, the first request read from the session log carries that result, and nothing of the session remains$`, w.labPassed)
 	ctx.Step(`^the session is deleted with no host running$`, w.deleteSession)
 	ctx.Step(`^no row or spill file of the session remains in the scratch home$`, w.sessionGone)
 	ctx.Step(`^the guarded runner plans DH-E-STORE-2 on the WSL lane only, behind the Claude Code sign-in, and records the Windows row "([^"]*)"$`, w.lanePlan)

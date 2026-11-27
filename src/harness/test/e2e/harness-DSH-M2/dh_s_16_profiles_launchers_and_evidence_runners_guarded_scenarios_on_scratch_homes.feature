@@ -52,7 +52,7 @@ Feature: Guarded scenarios on scratch homes (DH-S-16 step 16.8)
     And the final file equals the last acknowledged version
 
   @TC-19s2 @DH-E-STORE-2 @proof:service:model-route-claude-code
-  Scenario: DH-E-STORE-2 a host killed mid-tool-call recovers honestly
+  Scenario: DH-E-STORE-2 (gate variant, replay route and testkit_sleep) a host killed mid-tool-call recovers honestly
     Given dsh built from this checkout with the keyless replay route
     And a scratch home with its embedded SQLite store
     When a headless host's turn is running a tool call and the host and its children are killed
@@ -65,4 +65,15 @@ Feature: Guarded scenarios on scratch homes (DH-S-16 step 16.8)
     When the session is deleted with no host running
     Then no row or spill file of the session remains in the scratch home
     And the guarded runner plans DH-E-STORE-2 on the WSL lane only, behind the Claude Code sign-in, and records the Windows row "out of scope (impl.md 16.8 Linux only; TC-19s2)"
-    And on a lane providing DSH_SCENARIO_STORE2_START, DSH_SCENARIO_STORE2_PROMPT, DSH_SCENARIO_STORE2_RESUME, DSH_SCENARIO_STORE2_REQUEST, DSH_SCENARIO_STORE2_KILL and DSH_SCENARIO_STORE2_DELETE, the live scenario TestKilledHostRecoversHonestly runs sandboxed sleep 60; write under bwrap Full on the Claude Code route and passes; off it the lane path is not covered here, and the stage evidence must claim no DH-E-STORE-2 lane result without a commit
+    And the stage evidence claims no DH-E-STORE-2 lane result without a commit SHA
+
+  # The literal STORE-2 path needs the tester's own Claude Code sign-in (a
+  # personal credential no gate host holds) and bwrap, which exists only on
+  # Linux: it is reproducible only on the WSL lane machine, so this variant is
+  # lab-only. With the lane's inputs it must pass; a partial set fails; with
+  # none, or off Linux, it is skipped as unreproducible here.
+  @TC-19s2 @DH-E-STORE-2 @proof:service:model-route-claude-code @setup-lab-wsl-claude-code
+  Scenario: DH-E-STORE-2 (lab variant, WSL lane) kill mid-turn under bwrap Full on the signed-in Claude Code route
+    Given the WSL lane machine with bwrap Full and the tester's Claude Code sign-in, providing DSH_SCENARIO_STORE2_START, DSH_SCENARIO_STORE2_PROMPT, DSH_SCENARIO_STORE2_RESUME, DSH_SCENARIO_STORE2_REQUEST, DSH_SCENARIO_STORE2_KILL and DSH_SCENARIO_STORE2_DELETE
+    When the live scenario TestKilledHostRecoversHonestly kills dsh while a sandboxed "sleep 60; write" runs, resumes and prompts the session, then deletes it
+    Then the live scenario passes: the turn ended interrupted, the call's outcome is unknown, the first request read from the session log carries that result, and nothing of the session remains
