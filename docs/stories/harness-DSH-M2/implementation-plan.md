@@ -687,6 +687,8 @@ storyId: "harness:DSH-M2"
 - [ ] Run `DH-E-STORE-1`, `DH-E-STORE-6`, `DH-E-FS-3` on both lanes (TC-19s1) and `DH-E-STORE-2` on the WSL lane only (TC-19s2, architecture.md I-7); macOS rows recorded out of scope by `platforms-windows-wsl`.
 - [ ] Record the cleanup evidence in `evidence/DH-S-16.md`: scratch homes and the file compared before and after; the deleted sessions' rows, blobs and spill files shown gone; the log read from the database with `seq` 0 to n and no gap (impl.md DH-S-16 exit evidence).
 
+> **Open after the runner merges.** By operator decision `m1-entry-block` ([evidence/DH-S-16.md, Operator decisions](evidence/DH-S-16.md#operator-decisions-for-stage-612)), the guarded runner (step 16.8) merges while `harness-gate entry` still fails on M1. The run step and the cleanup-evidence step above stay unticked and are owed by a later workstream. That workstream runs both guarded lanes after M1 closes, using the inputs from the follow-up scenario-driver workstream (`store-command-templates`).
+
 ### Dependencies
 - phase-m2-entry-and-evidence-scaffolding/stage-m1-closure-entry-check
 - phase-dh-s-12-working-directory-filesystem-seam-and-policy-resolver/stage-dh-s-12-scenarios-and-built-record

@@ -53,6 +53,13 @@
 //	                       (M2-DEC-1, risk M2-R-04): the prior story's records all
 //	                       read closed, its closure record lists every deliverable
 //	                       and built-through has reached its last stage (entry.go)
+//	guarded --lane wsl|windows [--stage DH-S-16] --evidence file
+//	                       the lane scripts' guarded mode (Stage 6.12, impl.md
+//	                       16.8): entry, require --stage, the lane's selection
+//	                       and inputs, dsh built once, then go test -tags
+//	                       scenario of the plan on scratch homes, as one evidence
+//	                       record with the scratch tree listed before and after
+//	                       and one Scenarios-table row per ID (guardedrun.go)
 //	policy-text            the M2-C-6 pre-merge rule alone (also a gate of the
 //	                       list): no file under
 //	                       src/harness/internal/world/sandbox/policy/text/
@@ -121,6 +128,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return runRecords(args[1:], stdout, stderr)
 		case "entry":
 			return runEntry(args[1:], stdout, stderr)
+		case "guarded":
+			return runGuarded(ctx, args[1:], stdout, stderr)
 		case "policy-text":
 			return runPolicyText(ctx, args[1:], stdout, stderr)
 		case "sandbox7-record":

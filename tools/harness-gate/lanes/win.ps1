@@ -8,12 +8,36 @@
 # docs/stories/harness-DSH-M1/evidence/runs/win-<sha7>-<UTC yyyymmddThhmmZ>.txt.
 # Exit status: the gate's (0 pass, 1 a gate failed, 2 setup); 3 when a preflight
 # check fails.
+#
+#   pwsh -File tools/harness-gate/lanes/win.ps1 -Guarded [-Inputs FILE]
+#
+# is the guarded mode (implementation-plan Stage 6.12, impl.md 16.8): the lane
+# checks, then `harness-gate guarded --lane windows --stage DH-S-16`, which runs
+# harness-gate entry, require --stage DH-S-16 and the stage's scenarios with -tags
+# scenario on scratch homes; DH-E-STORE-2 is recorded out of scope (impl.md 16.8
+# Linux only; TC-19s2). The record is
+# docs/stories/harness-DSH-M2/evidence/runs/guarded-win-<sha7>-<stamp>.txt. FILE
+# (outside the tree) holds KEY=VALUE lines, the DSH_SCENARIO_* inputs, set in the
+# environment of the run; blank lines and lines starting with # are ignored. So
+# one file serves both lanes, a leading `export ` is dropped and one level of
+# matching surrounding '...' or "..." quotes is stripped from the value; no $VAR
+# expansion or escape processing is done (unlike wsl.sh, which sources the file),
+# so keep values literal.
+param(
+    [switch] $Guarded,
+    [string] $Inputs
+)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 function Fail([string] $Message) {
     [Console]::Error.WriteLine("win lane: preflight FAILED: $Message")
     exit 3
+}
+
+if ($Inputs -and -not $Guarded) {
+    [Console]::Error.WriteLine('win lane: -Inputs needs -Guarded (usage: win.ps1 [-Guarded [-Inputs FILE]])')
+    exit 2
 }
 
 $root = (& git -C $PSScriptRoot rev-parse --show-toplevel 2>$null)
@@ -78,6 +102,38 @@ Write-Output "win lane: preflight passed: $($drive.DriveFormat) checkout, not el
 
 New-Item -ItemType Directory -Force -Path $runs | Out-Null
 $env:GOWORK = 'off'
+
+if ($Guarded) {
+    if ($Inputs) {
+        if (-not (Test-Path -LiteralPath $Inputs -PathType Leaf)) { Fail "inputs file $Inputs is not readable" }
+        foreach ($line in Get-Content -LiteralPath $Inputs) {
+            $t = $line.Trim()
+            if (-not $t -or $t.StartsWith('#')) { continue }
+            if ($t -match '^export\s+') { $t = $t -replace '^export\s+', '' }
+            $eq = $t.IndexOf('=')
+            if ($eq -lt 1) { Fail "inputs file ${Inputs}: not KEY=VALUE: $t" }
+            $key = $t.Substring(0, $eq).Trim()
+            if ($key -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') { Fail "inputs file ${Inputs}: bad key: $key" }
+            $value = $t.Substring($eq + 1).Trim()
+            # Accept the same file wsl.sh sources: strip one level of matching quotes.
+            if ($value.Length -ge 2 -and ($value[0] -eq "'" -or $value[0] -eq '"') -and $value[-1] -eq $value[0]) {
+                $value = $value.Substring(1, $value.Length - 2)
+            }
+            elseif ($value.StartsWith("'") -or $value.StartsWith('"')) {
+                Fail "inputs file ${Inputs}: unmatched quote in value of $key"
+            }
+            [Environment]::SetEnvironmentVariable($key, $value, 'Process')
+        }
+    }
+    $gruns = Join-Path $root 'docs/stories/harness-DSH-M2/evidence/runs'
+    $grecord = Join-Path $gruns "guarded-win-$($sha.Substring(0, 7))-$stamp.txt"
+    New-Item -ItemType Directory -Force -Path $gruns | Out-Null
+    & go -C tools/harness-gate run . guarded --root ../.. --lane windows --stage DH-S-16 --evidence $grecord
+    $code = $LASTEXITCODE
+    Write-Output "win lane: guarded exit $code, record $grecord"
+    exit $code
+}
+
 & go -C tools/harness-gate run . --root ../.. --evidence $record
 $gate = $LASTEXITCODE
 Write-Output "win lane: gate exit $gate, record $record"
