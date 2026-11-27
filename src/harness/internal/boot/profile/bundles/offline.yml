@@ -3,6 +3,10 @@
 # process (INV-10). The kernel profiles do not stack it: their secret store and
 # sandbox seam join core.yml when the components they need are built (the headless
 # profile's environment-only secret backend among them).
+#
+# Each entry here is command-scoped (cli.commandScoped): the admin tree mounts it
+# only for a command that uses it and disables the others, so `dsh secret set`
+# loads no sandbox.local and `dsh sandbox status` no human.secrets.
 - insert:
     # The secret store over the home's file backend: `dsh secret set` writes
     # through it. Loading it creates nothing.
