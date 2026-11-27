@@ -156,7 +156,8 @@ At `12c2be8`, Windows 11, from the worktree root:
   change) as a separate mechanical change. After the fix, `gofmt -l` reports only the intentional
   fixture `tools/harness-gate/testdata/unformatted-file/add.go`, and `go vet` passes with `-tags=` and
   `-tags=replay,scenario,bench` on `./internal/testkit/scenarios/`. Both lanes run again on the commit
-  that carries the fix, and their records go here.
+  that carries the fix, and their records go here. They were started on that commit, `2da0f59`, on
+  2026-11-27. The Windows lane already shows `PASS gofmt`.
 - Manual checks: the commands in [runs/manual-12c2be8/](runs/manual-12c2be8/README.md).
 - The record check, on this record with `Closure status: open`:
   `GOWORK=off go -C tools/harness-gate run . ready --stage DH-S-16 --built --root ../..`. Before this
