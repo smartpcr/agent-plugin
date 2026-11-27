@@ -44,40 +44,67 @@ machine cannot cut its own power, so no `service:os-process` substitute exists.
 1. **Record the hosts.** Paste into the record: `virsh version` and the kernel of the KVM
    host; `Get-VMHost | Select-Object Name, VirtualMachineMigrationEnabled` and the build
    of the Hyper-V host; each base image's SHA-256 and the guest disk cache mode.
-2. **Preflight the controller** (the `service:vm-power-cut` preflight). Per host, create
-   a throw-away guest from a copy-on-write overlay of the base image, power it off hard
-   and delete it:
+2. **Preflight the controller** (the `service:vm-power-cut` and `service:ack-recorder`
+   preflights, before iteration 1). Per host, from the controller: record the base images'
+   checksums, create a throw-away guest from a copy-on-write overlay, power it off hard,
+   restart it, have it send a test acknowledgment that the recorder writes to its log and
+   reads back, stop it and delete it, then check the base images are unchanged. Run it
+   only while no `vm:*` s18 job runs (they hold the `hypervisor` lock for the same guests
+   and recorder address). Linux guest on KVM/libvirt (`{addr}` is
+   `DSH_SCENARIO_NODEFS_LISTEN`, here `192.168.122.1:47000`):
 
    ```bash
+   sha256sum base-linux.qcow2 | tee s18-base.before
    qemu-img create -f qcow2 -F qcow2 -b base-linux.qcow2 /var/lib/libvirt/images/s18-probe.qcow2
    virt-install --import --name s18-probe --memory 1024 --disk /var/lib/libvirt/images/s18-probe.qcow2 --noautoconsole --os-variant generic
-   virsh destroy s18-probe && virsh undefine s18-probe --remove-all-storage
+   virsh destroy s18-probe                       # hard power-off, no shutdown
+   virsh start s18-probe                         # restart from the cut
+   GOWORK=off go -C tools/harness-gate run . ack-probe --listen 192.168.122.1:47000 \
+     --token s18-probe-ack --log s18-ack.log --timeout 2m \
+     --send 'ssh s18-probe "echo s18-probe s18-probe-ack | nc -N 192.168.122.1 47000"'
+   grep -F s18-probe-ack s18-ack.log             # the acknowledgment, read back
+   virsh destroy s18-probe; virsh undefine s18-probe --remove-all-storage
+   sha256sum -c s18-base.before                  # base image unchanged
    ```
+
+   Windows guest on Hyper-V (the recorder still runs on the controller; the guest sends
+   over its network):
 
    ```powershell
+   Get-FileHash C:\VMs\base-windows.vhdx | Tee-Object -Variable before
    New-VHD -Path C:\VMs\s18-probe.vhdx -ParentPath C:\VMs\base-windows.vhdx -Differencing
    New-VM -Name s18-probe -Generation 2 -MemoryStartupBytes 2GB -VHDPath C:\VMs\s18-probe.vhdx; Start-VM s18-probe
+   Stop-VM s18-probe -TurnOff -Force             # hard power-off
+   Start-VM s18-probe                            # restart from the cut
+   # on the controller, while the guest is up:
+   #   harness-gate ack-probe --listen 192.168.122.1:47000 --token s18-probe-ack --log s18-ack.log \
+   #     --send 'pwsh -c "Invoke-Command -VMName s18-probe { $c=[Net.Sockets.TcpClient]::new(''192.168.122.1'',47000); $w=[IO.StreamWriter]::new($c.GetStream()); $w.WriteLine(''s18-probe s18-probe-ack''); $w.Close() }"'
    Stop-VM s18-probe -TurnOff -Force; Remove-VM s18-probe -Force; Remove-Item C:\VMs\s18-probe.vhdx
+   (Get-FileHash C:\VMs\base-windows.vhdx).Hash -eq $before.Hash   # True: base image unchanged
    ```
 
-   A host where any of these fails is recorded `not run (hyperv preflight failed)` or
-   `not run (libvirt preflight failed)`, and the stage stays open (M2-C-2).
+   `ack-probe` exits 0 only when the acknowledgment is in the log and read back and its
+   `--send` command exited 0; it fails when none arrives within the timeout, when the
+   sender fails, or when the sender is still running at the timeout. A host where any step
+   fails is recorded `not run (libvirt preflight failed)` or `not run (hyperv preflight
+   failed)`, and the stage stays open (M2-C-2). Paste the commands' output, the log line and
+   both checksums into the record.
 
-   The `vm:*` s18 jobs run this preflight themselves (`check: power-cut`) from these
+   The `vm:*` s18 jobs run this same cycle themselves (`check: power-cut`) from these
    environment variables, `{probe}` (also `{vm}`) being a fresh guest name per run:
 
    | Variable | Value |
    |---|---|
    | `DSH_S18_BASE_IMAGES` | the base images, `;`-separated; their SHA-256 before and after must match |
-   | `DSH_S18_PROBE_CREATE` | creates and starts `{probe}` from an overlay (the first two commands above) |
-   | `DSH_S18_PROBE_DELETE` | deletes `{probe}` and its overlay (`virsh undefine {probe} --remove-all-storage`) |
+   | `DSH_S18_PROBE_CREATE` | creates and starts `{probe}` from an overlay (the `qemu-img` and `virt-install` lines above) |
+   | `DSH_S18_PROBE_DELETE` | stops `{probe}` hard if it runs, then deletes it and its overlay: `virsh destroy {probe} 2>/dev/null; virsh undefine {probe} --remove-all-storage` |
    | `DSH_S18_PROBE_ACK` | makes `{probe}` send one line holding `{token}` to `{addr}`, e.g. `ssh {probe} "echo {probe} {token} \| nc -N 192.168.122.1 47000"` for `{addr}` `192.168.122.1:47000` |
 
-   The job creates the probe, cuts it with `DSH_SCENARIO_NODEFS_POWEROFF`, restarts it with
-   `DSH_SCENARIO_NODEFS_POWERON`, then checks `service:ack-recorder`: `harness-gate
-   ack-probe --listen $DSH_SCENARIO_NODEFS_LISTEN` records the probe's acknowledgment to a
-   log and reads it back. It then deletes the probe and compares the base image checksums.
-   Any failure is `not run (power-cut preflight failed)`.
+   The job checksums the base images, creates the probe, cuts it with
+   `DSH_SCENARIO_NODEFS_POWEROFF`, restarts it with `DSH_SCENARIO_NODEFS_POWERON`, runs
+   `harness-gate ack-probe --listen $DSH_SCENARIO_NODEFS_LISTEN` with `DSH_S18_PROBE_ACK` as
+   `--send`, deletes the probe with `DSH_S18_PROBE_DELETE` and compares the checksums. Any
+   failure is `not run (power-cut preflight failed)`.
 3. **Create the run's guests.** One fresh overlay per guest OS, named in `DSH_SCENARIO_VMS`.
 4. **Set the inputs** on the controller (`{vm}` is replaced by each guest's name):
 

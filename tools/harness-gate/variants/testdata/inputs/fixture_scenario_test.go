@@ -4,6 +4,7 @@ package fixture
 
 import (
 	"os"
+	"runtime"
 	"testing"
 )
 
@@ -29,6 +30,14 @@ func child(t *testing.T) {
 	need(t, "DSH_SCENARIO_FIX_SUB", "set by the scenario for its child")
 }
 
+type route struct{ ID, Input string }
+
+var claude = route{ID: "c", Input: "FIX_C"}
+
+func (r route) model(t *testing.T) string {
+	return need(t, "DSH_SCENARIO_"+r.Input+"_MODEL", "a model")
+}
+
 //dsh:scenario DH-E-FIX-1
 func TestFixture(t *testing.T) {
 	if os.Getenv("DSH_SCENARIO_FIX_ROLE") == "writer" {
@@ -42,6 +51,13 @@ func TestFixture(t *testing.T) {
 	helper(t)
 	child(t)
 	func() { need(t, "DSH_SCENARIO_FIX_INNER", "in a closure") }()
+	_ = claude.model(t)
+	posix := runtime.GOOS != "windows"
+	if posix {
+		need(t, "DSH_SCENARIO_FIX_POSIX", "POSIX only")
+	} else {
+		need(t, "DSH_SCENARIO_FIX_WINDOWS", "Windows only")
+	}
 }
 
 //dsh:scenario DH-E-FIX-2

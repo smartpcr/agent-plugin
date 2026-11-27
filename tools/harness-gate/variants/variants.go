@@ -77,6 +77,15 @@ type Variant struct {
 // InScope reports whether the variant must run.
 func (v Variant) InScope() bool { return v.Scope == InScope }
 
+// GOOS is the operating system the variant's scenarios run on, from its runner:
+// windows for a Windows runner, linux otherwise (macOS rows are out of scope).
+func (v Variant) GOOS() string {
+	if strings.Contains(strings.ToLower(v.Runner), "windows") {
+		return "windows"
+	}
+	return "linux"
+}
+
 // RunsOn is the runner of the variant as the JSON value of a job's runs-on: a
 // hosted image name, or the self-hosted labels as an array.
 func (v Variant) RunsOn() string {

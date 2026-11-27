@@ -321,6 +321,7 @@ func runRequire(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "harness-gate require: %v\n", err)
 		return 1
 	}
+	goos := ""
 	if variant != "" {
 		fleet, err := variants.Read(abs, story)
 		if err != nil {
@@ -331,6 +332,8 @@ func runRequire(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "harness-gate require: %v\n", err)
 			return 1
 		}
+		v, _ := fleet.Variant(variant)
+		goos = v.GOOS()
 	}
 	if inputs {
 		_, scenarios, err := readAcceptance(abs)
@@ -338,7 +341,7 @@ func runRequire(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "harness-gate require: %v\n", err)
 			return 2
 		}
-		names, err := variants.InputsFor(abs, scenarios, ids)
+		names, err := variants.InputsFor(abs, scenarios, ids, goos)
 		if err != nil {
 			fmt.Fprintf(stderr, "harness-gate require: %v\n", err)
 			return 1

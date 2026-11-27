@@ -24,9 +24,12 @@ const InputPrefix = "DSH_SCENARIO_"
 // (realenv_test.go), directly, through a package constant, or through a helper
 // that forwards one of its parameters as the name. Names the package sets itself
 // ("DSH_SCENARIO_X=..." literals: the inputs of a role a scenario starts in a
-// child process) are not run-time inputs. root is the directory the scenario files
-// are relative to.
-func Inputs(root string, scenarios []acceptance.Scenario, tests []string) (map[string][]string, error) {
+// child process) are not run-time inputs, nor those of a branch on runtime.GOOS that
+// goos (the variant's machine; "" for any) never takes. Input names may be built
+// with + from constants and the string fields of a package value whose method
+// reads them (clientRoute.model). root is the directory the scenario files are
+// relative to.
+func Inputs(root string, scenarios []acceptance.Scenario, tests []string, goos string) (map[string][]string, error) {
 	want := map[string]bool{}
 	for _, t := range tests {
 		want[t] = true
@@ -49,7 +52,7 @@ func Inputs(root string, scenarios []acceptance.Scenario, tests []string) (map[s
 		if p.funcs[sc.Test] == nil {
 			return nil, fmt.Errorf("%s: no function %s", sc.File, sc.Test)
 		}
-		out[sc.Test] = p.inputsOf(sc.Test)
+		out[sc.Test] = p.inputsOf(sc.Test, goos)
 	}
 	for _, t := range tests {
 		if _, ok := out[t]; !ok {
@@ -60,9 +63,9 @@ func Inputs(root string, scenarios []acceptance.Scenario, tests []string) (map[s
 }
 
 // InputsFor returns the sorted union of the run-time inputs of the scenario tests
-// that prove ids (the variant's required scenarios); an ID no scenario test proves
+// that prove ids (the variant's required scenarios) on goos; an ID no scenario test proves
 // is an error, as in acceptance.Preflight.
-func InputsFor(root string, scenarios []acceptance.Scenario, ids []string) ([]string, error) {
+func InputsFor(root string, scenarios []acceptance.Scenario, ids []string, goos string) ([]string, error) {
 	var tests []string
 	for _, id := range ids {
 		found := false
@@ -76,7 +79,7 @@ func InputsFor(root string, scenarios []acceptance.Scenario, ids []string) ([]st
 			return nil, fmt.Errorf("%s: no scenario test proves it", id)
 		}
 	}
-	per, err := Inputs(root, scenarios, tests)
+	per, err := Inputs(root, scenarios, tests, goos)
 	if err != nil {
 		return nil, err
 	}
@@ -100,6 +103,15 @@ type inputPkg struct {
 	set    map[string]bool
 	// forwards[f] lists the parameter indices of f whose value is an input name.
 	forwards map[string][]int
+	// methods[T][m] is method m of type T; vars[v] is a package variable of a
+	// struct type initialised by a composite literal, with its string fields.
+	methods map[string]map[string]*ast.FuncDecl
+	vars    map[string]structVar
+}
+
+type structVar struct {
+	typ    string
+	fields map[string]string
 }
 
 func loadInputPkg(dir string) (*inputPkg, error) {
@@ -107,7 +119,8 @@ func loadInputPkg(dir string) (*inputPkg, error) {
 	if err != nil {
 		return nil, err
 	}
-	p := &inputPkg{funcs: map[string]*ast.FuncDecl{}, consts: map[string]string{}, set: map[string]bool{}, forwards: map[string][]int{}}
+	p := &inputPkg{funcs: map[string]*ast.FuncDecl{}, consts: map[string]string{}, set: map[string]bool{},
+		forwards: map[string][]int{}, methods: map[string]map[string]*ast.FuncDecl{}, vars: map[string]structVar{}}
 	fset := token.NewFileSet()
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
@@ -120,20 +133,32 @@ func loadInputPkg(dir string) (*inputPkg, error) {
 		for _, d := range f.Decls {
 			switch d := d.(type) {
 			case *ast.FuncDecl:
-				if d.Recv == nil && d.Body != nil {
-					p.funcs[d.Name.Name] = d
-				}
-			case *ast.GenDecl:
-				if d.Tok != token.CONST {
+				if d.Body == nil {
 					continue
 				}
+				if d.Recv == nil {
+					p.funcs[d.Name.Name] = d
+				} else if t := recvType(d); t != "" {
+					if p.methods[t] == nil {
+						p.methods[t] = map[string]*ast.FuncDecl{}
+					}
+					p.methods[t][d.Name.Name] = d
+				}
+			case *ast.GenDecl:
 				for _, s := range d.Specs {
-					vs := s.(*ast.ValueSpec)
+					vs, ok := s.(*ast.ValueSpec)
+					if !ok {
+						continue
+					}
 					for i, n := range vs.Names {
-						if i < len(vs.Values) {
-							if v, ok := stringLit(vs.Values[i]); ok {
-								p.consts[n.Name] = v
-							}
+						if i >= len(vs.Values) {
+							continue
+						}
+						if v, ok := stringLit(vs.Values[i]); ok && d.Tok == token.CONST {
+							p.consts[n.Name] = v
+						}
+						if sv, ok := structLit(vs.Values[i]); ok && d.Tok == token.VAR {
+							p.vars[n.Name] = sv
 						}
 					}
 				}
@@ -152,6 +177,54 @@ func loadInputPkg(dir string) (*inputPkg, error) {
 	p.forwards["needList"] = []int{1}
 	p.findForwards()
 	return p, nil
+}
+
+func recvType(fd *ast.FuncDecl) string {
+	if len(fd.Recv.List) != 1 {
+		return ""
+	}
+	t := fd.Recv.List[0].Type
+	if s, ok := t.(*ast.StarExpr); ok {
+		t = s.X
+	}
+	if id, ok := t.(*ast.Ident); ok {
+		return id.Name
+	}
+	return ""
+}
+
+func recvName(fd *ast.FuncDecl) string {
+	if fd.Recv == nil || len(fd.Recv.List) != 1 || len(fd.Recv.List[0].Names) != 1 {
+		return ""
+	}
+	return fd.Recv.List[0].Names[0].Name
+}
+
+// structLit reads T{F: "lit", ...}: the type and its string-literal fields.
+func structLit(e ast.Expr) (structVar, bool) {
+	cl, ok := e.(*ast.CompositeLit)
+	if !ok {
+		return structVar{}, false
+	}
+	id, ok := cl.Type.(*ast.Ident)
+	if !ok {
+		return structVar{}, false
+	}
+	sv := structVar{typ: id.Name, fields: map[string]string{}}
+	for _, el := range cl.Elts {
+		kv, ok := el.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		k, ok := kv.Key.(*ast.Ident)
+		if !ok {
+			continue
+		}
+		if v, ok := stringLit(kv.Value); ok {
+			sv.fields[k.Name] = v
+		}
+	}
+	return sv, true
 }
 
 // findForwards marks, to a fixpoint, each function that passes one of its
@@ -208,37 +281,100 @@ func (p *inputPkg) nameArgs(call *ast.CallExpr) []int {
 	return out
 }
 
-func (p *inputPkg) inputsOf(test string) []string {
+// work is one function body to walk: a function, or a method bound to the
+// string fields of one value of its type (recv names the receiver in the body).
+type work struct {
+	fd     *ast.FuncDecl
+	recv   string
+	fields map[string]string
+}
+
+// inputsOf walks test and every package function and method it reaches. goos
+// ("linux", "windows", "darwin"; "" for any) prunes branches on runtime.GOOS the
+// variant's machine never takes.
+func (p *inputPkg) inputsOf(test, goos string) []string {
 	seen := map[string]bool{test: true}
-	queue := []string{test}
+	queue := []work{{fd: p.funcs[test]}}
 	names := map[string]bool{}
-	var visit func(n ast.Node) bool
-	visit = func(n ast.Node) bool {
-		if is, ok := n.(*ast.IfStmt); ok && roleGuard(is.Cond) {
-			if is.Else != nil {
-				ast.Inspect(is.Else, visit)
-			}
-			return false
+	enqueue := func(key string, w work) {
+		if !seen[key] {
+			seen[key] = true
+			queue = append(queue, w)
 		}
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		for _, ai := range p.nameArgs(call) {
-			if v, ok := p.value(call.Args[ai]); ok && strings.HasPrefix(v, InputPrefix) && !p.set[v] {
-				names[v] = true
-			}
-		}
-		if id, ok := call.Fun.(*ast.Ident); ok && p.funcs[id.Name] != nil && !seen[id.Name] {
-			seen[id.Name] = true
-			queue = append(queue, id.Name)
-		}
-		return true
 	}
 	for len(queue) > 0 {
-		fd := p.funcs[queue[0]]
+		w := queue[0]
 		queue = queue[1:]
-		ast.Inspect(fd.Body, visit)
+		locals := goosLocals(w.fd.Body)
+		var visit func(n ast.Node) bool
+		visit = func(n ast.Node) bool {
+			if is, ok := n.(*ast.IfStmt); ok {
+				if roleGuard(is.Cond) {
+					if is.Else != nil {
+						ast.Inspect(is.Else, visit)
+					}
+					return false
+				}
+				if v, known := goosCond(is.Cond, goos, locals); known {
+					if is.Init != nil {
+						ast.Inspect(is.Init, visit)
+					}
+					if v {
+						ast.Inspect(is.Body, visit)
+					} else if is.Else != nil {
+						ast.Inspect(is.Else, visit)
+					}
+					return false
+				}
+			}
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			for _, ai := range p.nameArgs(call) {
+				if v, ok := p.value(call.Args[ai], w); ok && strings.HasPrefix(v, InputPrefix) && !p.set[v] {
+					names[v] = true
+				}
+			}
+			switch fn := call.Fun.(type) {
+			case *ast.Ident:
+				if fd := p.funcs[fn.Name]; fd != nil {
+					enqueue(fn.Name, work{fd: fd})
+				}
+			case *ast.SelectorExpr:
+				x, ok := fn.X.(*ast.Ident)
+				if !ok {
+					break
+				}
+				if sv, ok := p.vars[x.Name]; ok {
+					if fd := p.methods[sv.typ][fn.Sel.Name]; fd != nil {
+						enqueue(sv.typ+"."+fn.Sel.Name+"@"+x.Name, work{fd: fd, recv: recvName(fd), fields: sv.fields})
+					}
+					break
+				}
+				if x.Name == w.recv && w.fields != nil {
+					if fd := p.methods[recvType(w.fd)][fn.Sel.Name]; fd != nil {
+						enqueue(recvType(w.fd)+"."+fn.Sel.Name+"@"+fmt.Sprint(w.fields), work{fd: fd, recv: recvName(fd), fields: w.fields})
+					}
+					break
+				}
+				// A method on a value not known here (a loop or parameter value):
+				// every package value of the one type with that method.
+				for typ, ms := range p.methods {
+					fd := ms[fn.Sel.Name]
+					if fd == nil {
+						continue
+					}
+					for vn, sv := range p.vars {
+						if sv.typ == typ {
+							enqueue(typ+"."+fn.Sel.Name+"@"+vn, work{fd: fd, recv: recvName(fd), fields: sv.fields})
+						}
+					}
+				}
+			}
+			return true
+		}
+		ast.Inspect(w.fd.Body, visit)
 	}
 	out := make([]string, 0, len(names))
 	for n := range names {
@@ -248,15 +384,113 @@ func (p *inputPkg) inputsOf(test string) []string {
 	return out
 }
 
-func (p *inputPkg) value(e ast.Expr) (string, bool) {
-	if v, ok := stringLit(e); ok {
-		return v, true
-	}
-	if id, ok := e.(*ast.Ident); ok {
-		v, ok := p.consts[id.Name]
+// value evaluates a constant input name: a literal, a package constant, the
+// receiver's string field, or their concatenation with +.
+func (p *inputPkg) value(e ast.Expr, w work) (string, bool) {
+	switch e := e.(type) {
+	case *ast.BasicLit:
+		return stringLit(e)
+	case *ast.Ident:
+		v, ok := p.consts[e.Name]
 		return v, ok
+	case *ast.ParenExpr:
+		return p.value(e.X, w)
+	case *ast.SelectorExpr:
+		x, ok := e.X.(*ast.Ident)
+		if !ok {
+			return "", false
+		}
+		if x.Name == w.recv && w.fields != nil {
+			v, ok := w.fields[e.Sel.Name]
+			return v, ok
+		}
+		if sv, ok := p.vars[x.Name]; ok {
+			v, ok := sv.fields[e.Sel.Name]
+			return v, ok
+		}
+	case *ast.BinaryExpr:
+		if e.Op != token.ADD {
+			return "", false
+		}
+		l, ok := p.value(e.X, w)
+		if !ok {
+			return "", false
+		}
+		r, ok := p.value(e.Y, w)
+		return l + r, ok
 	}
 	return "", false
+}
+
+// goosLocals collects the function's "x := <runtime.GOOS condition>" variables.
+func goosLocals(body *ast.BlockStmt) map[string]ast.Expr {
+	out := map[string]ast.Expr{}
+	ast.Inspect(body, func(n ast.Node) bool {
+		as, ok := n.(*ast.AssignStmt)
+		if !ok || len(as.Lhs) != len(as.Rhs) {
+			return true
+		}
+		for i, l := range as.Lhs {
+			if id, ok := l.(*ast.Ident); ok {
+				if _, known := goosCond(as.Rhs[i], "linux", nil); known {
+					out[id.Name] = as.Rhs[i]
+				}
+			}
+		}
+		return true
+	})
+	return out
+}
+
+// goosCond evaluates a condition built of runtime.GOOS ==/!= "os", !, && and ||
+// (and locals holding one) for goos; known is false for anything else or goos "".
+func goosCond(e ast.Expr, goos string, locals map[string]ast.Expr) (v, known bool) {
+	if goos == "" {
+		return false, false
+	}
+	switch e := e.(type) {
+	case *ast.ParenExpr:
+		return goosCond(e.X, goos, locals)
+	case *ast.Ident:
+		if x, ok := locals[e.Name]; ok {
+			return goosCond(x, goos, nil)
+		}
+	case *ast.UnaryExpr:
+		if e.Op == token.NOT {
+			v, known := goosCond(e.X, goos, locals)
+			return !v, known
+		}
+	case *ast.BinaryExpr:
+		switch e.Op {
+		case token.LAND, token.LOR:
+			l, lk := goosCond(e.X, goos, locals)
+			r, rk := goosCond(e.Y, goos, locals)
+			if e.Op == token.LAND {
+				if (lk && !l) || (rk && !r) {
+					return false, true
+				}
+				return l && r, lk && rk
+			}
+			if (lk && l) || (rk && r) {
+				return true, true
+			}
+			return l || r, lk && rk
+		case token.EQL, token.NEQ:
+			sel, ok := e.X.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "GOOS" {
+				return false, false
+			}
+			if x, ok := sel.X.(*ast.Ident); !ok || x.Name != "runtime" {
+				return false, false
+			}
+			os, ok := stringLit(e.Y)
+			if !ok {
+				return false, false
+			}
+			return (os == goos) == (e.Op == token.EQL), true
+		}
+	}
+	return false, false
 }
 
 // roleGuard reports whether cond is os.Getenv("DSH_SCENARIO_..._ROLE") == "...":

@@ -134,14 +134,16 @@ dsh sandbox status | GOWORK=off go -C tools/harness-gate run . sandbox-preflight
   unknown or out-of-scope variant fails with exit 1. With `--inputs` it prints
   instead the space-separated `DSH_SCENARIO_*` inputs the scenario tests of those
   IDs read (`variants.InputsFor`: the names each test and the package helpers it
-  calls pass to `need`/`needList`, not those of a role branch or that the package
-  sets for a child); the `s18` job fails when one is unset, and
+  calls pass to `need`/`needList`, including names a route method builds from its
+  value's fields, not those of a role branch, of a `runtime.GOOS` branch the variant's
+  runner OS never takes, or that the package sets for a child); the `s18` job fails when one is unset, and
   `TestWorkflowBindsEveryVariantInput` keeps each bound in the job's env.
 - `ack-probe --listen addr --token t --log file [--timeout 2m] [--send cmd]` is the
   `service:ack-recorder` preflight of the `vm:*` s18 jobs: it listens on `addr`,
   appends every received line to the log, runs `--send` (the throw-away guest's test
   acknowledgment) and exits 0 once a line holding the token is recorded and read
-  back; 1 otherwise; 2 on a usage error or an address it cannot listen on.
+  back and `--send` exited 0; 1 otherwise (a sender still running at the timeout is
+  killed and fails it; every connection is closed and joined); 2 on a usage error or an address it cannot listen on.
 - `variants` (Stage 8.1, M2-DOD-4) cross-references
   `docs/stories/<story>/evidence/variants.md` with the `DH-S-18` index entry
   (`variants/`): every scenario has an in-scope variant or an owner removal whose

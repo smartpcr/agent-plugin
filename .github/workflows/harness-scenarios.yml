@@ -128,6 +128,14 @@ jobs:
     name: s18 (${{ matrix.variant }})
     environment: dsh-m2-s18
     timeout-minutes: 180 # the 3 h variant limit (M2-EN-7); NODEFS-1 shards past it (M2-R-06)
+    # A matrix job with a lock holds it from its service preflight through the
+    # scenario's cleanup: the vm:* jobs share one hypervisor's guests (DSH_SCENARIO_VMS),
+    # recorder address and power commands, so they run one at a time, across runs too.
+    # GitHub keeps one pending job per group, so a lock has at most two variants
+    # (TestWorkflowLocksSharedHypervisor).
+    concurrency:
+      group: ${{ matrix.lock && format('dsh-s18-lock-{0}', matrix.lock) || format('dsh-s18-{0}-{1}', github.run_id, strategy.job-index) }}
+      cancel-in-progress: false
     strategy:
       fail-fast: false
       max-parallel: 4
@@ -196,9 +204,11 @@ jobs:
           - variant: vm:linux-guest
             runner: '["self-hosted","linux","dsh-hypervisor"]'
             check: power-cut
+            lock: hypervisor
           - variant: vm:windows-guest
             runner: '["self-hosted","linux","dsh-hypervisor"]'
             check: power-cut
+            lock: hypervisor
     runs-on: ${{ fromJSON(matrix.runner) }}
     defaults:
       run:
@@ -208,6 +218,7 @@ jobs:
       # every input require --inputs derives for an in-scope variant, bound from the
       # environment's variables (TestWorkflowBindsEveryVariantInput).
       DSH_SCENARIO_REPORT: ${{ github.workspace }}/artifacts/harness/report.txt
+      DSH_SCENARIO_CLAUDE_CODE_MODEL: ${{ vars.DSH_SCENARIO_CLAUDE_CODE_MODEL }}
       DSH_SCENARIO_CONTEXT2_EDITOR: ${{ vars.DSH_SCENARIO_CONTEXT2_EDITOR }}
       DSH_SCENARIO_CONTEXT2_LAYER: ${{ vars.DSH_SCENARIO_CONTEXT2_LAYER }}
       DSH_SCENARIO_CONTEXT2_MODEL: ${{ vars.DSH_SCENARIO_CONTEXT2_MODEL }}
