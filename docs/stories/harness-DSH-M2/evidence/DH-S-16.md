@@ -122,14 +122,20 @@ The Manual checks register above.
 ### Cleanup evidence
 
 Not yet recorded. Step 16.8: the scratch homes and the edited file compared before and after; the deleted
-sessions' rows, blobs and spill files shown gone; the log read with `seq` 0 to n and no gap. Where each
-comes from in a guarded record: the `scenarios` gate lists the scratch directory (every scenario's home is
-under its `TMPDIR`) before and after the run; DH-E-STORE-6 checks, in the test, that no row of a deleted
-session remains, that the image only it held is collected, that the interrupted deletion finishes and that
-the store check reports no damage; DH-E-FS-3 compares the file with the last acknowledged version;
-DH-E-STORE-1 reads the log from the database and fails on a `seq` gap or duplicate. Each is a passed row in
-the record's report. Not covered by a test yet: DH-E-STORE-2's closing deletion ("then the session is
-deleted and nothing remains") and spill files of a deleted session (open question).
+sessions' rows, blobs and spill files shown gone; the log read with `seq` 0 to n and no gap. Each scenario
+logs these observations as `evidence:` lines while its scratch home still exists, and the guarded record
+copies them into its `cleanup evidence:` section (with the `scenarios` gate's listing of the scratch
+directory before and after the run):
+
+- DH-E-STORE-6: the home's files before and after the deletions; the spill files of both deleted sessions
+  before (a fixture precondition); after the deletion and after the interrupted deletion's restart, each
+  session gone (not listed, not tombstoned), its spill directory absent and its unshared images absent; the
+  fork's log `seq` 0 to n before and after; the store check clean.
+- DH-E-STORE-2 (WSL lane): after the resume and the second prompt, the host killed and the session deleted;
+  its log `seq` 0 to n; its spill files and blobs before; afterwards no session, no tombstone, no blob and no
+  spill file in the home, and the home's files before and after.
+- DH-E-STORE-1: the log read from the database, `seq` 0 to n with no gap, and the lease epoch.
+- DH-E-FS-3: the file's SHA-256 before, after, and the last acknowledged write.
 
 ### Open items
 

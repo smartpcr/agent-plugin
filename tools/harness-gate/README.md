@@ -877,11 +877,16 @@ Its gates, in order, stop at the first failure:
    them: `set -a`-sourced on WSL, `KEY=VALUE` lines on Windows); the editor
    save script (`DSH_SCENARIO_FS3_EDITOR`) resolves, else `service:git-and-editor`
    is named; DH-E-STORE-2 probes the Claude Code sign-in.
-4. `build`: `dsh` built once into the scratch directory (`DSH_BIN`), its SHA-256 printed.
+4. `build`: `dsh` built once with `-tags testhook` into the scratch directory
+   (`DSH_BIN`), its SHA-256 printed: the keyless replay provider (`llm.replay`)
+   DH-E-STORE-1, -STORE-6 and -FS-3 load is registered only in that build.
 5. `scenarios`: the scratch tree listed before; `go test -tags scenario -count=1
    -p 1 -run <plan> ./internal/testkit/scenarios` with `TMPDIR` in the scratch
    directory, `DSH_REQUIRE_SCENARIOS` and `DSH_SCENARIO_REPORT`; the scratch tree
-   listed after; one `row: | ... |` line per ID, the Scenarios-table row of
+   listed after; the scenarios' `evidence:` log lines (home files before and
+   after, deleted sessions' rows, blobs and spill files gone, the log's `seq`
+   range), observed before each removes its scratch home, under
+   `cleanup evidence:`; one `row: | ... |` line per ID, the Scenarios-table row of
    `evidence/DH-S-16.md`, taken from the report (an ID with no report row is
    `not run`).
 

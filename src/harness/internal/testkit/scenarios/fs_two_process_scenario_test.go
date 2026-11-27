@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -53,9 +54,10 @@ const fs3Anchor = "ANCHOR"
 // one process is killed while it holds the file lock (frozen, its lock probed, then
 // killed), the other's next edit takes effect on disk within the lock timeout.
 //
-// The edits are scripted (scripted_model_test.go) and reach the file through
-// dsh's whole tool pipeline. Operator decision fs-scripted-model-vs-replay: the
-// scripted endpoint switches to the replay provider when DH-S-16 lands. Each
+// The edits are played by the keyless replay provider (llm.replay, DH-D-UTIL-7;
+// operator decision fs-scripted-model-vs-replay, switched now that DH-S-16 has
+// landed it) from a script the test writes (fs3Replay), and reach the file
+// through dsh's whole tool pipeline. Each
 // launched process gets its own home (launcher.Start); "one harness home" is met
 // for the file lock by the layer's {locks} directory both processes share, and
 // this deviation is recorded in evidence/DH-S-12.md.
@@ -66,18 +68,19 @@ const fs3Anchor = "ANCHOR"
 // Inputs: DSH_SCENARIO_FS3_EDITOR an executable run as "<editor> <file> <log>
 // <stop>" that saves file with an editor's save sequence every few milliseconds
 // until stop exists, each save writing back the whole of what it read, logging each
-// save as "<start> <end> <sha256>" (RFC 3339 times); DSH_SCENARIO_FS3_LAYER a layer template over {endpoint} and {locks}
-// registering route DSH_SCENARIO_FS3_ROUTE on {endpoint}, enabling edit, placing
-// file locks under {locks} and allowing fs3Batch+1 steps a turn;
+// save as "<start> <end> <sha256>" (RFC 3339 times); DSH_SCENARIO_FS3_LAYER a
+// layer template over {scenario}, {route}, {model} and {locks} inserting llm.replay
+// with config scenario {scenario}, route {route} and model {model}, enabling edit,
+// placing file locks under {locks} and allowing fs3Batch+1 steps a turn;
 // DSH_SCENARIO_FS3_ROUTE and DSH_SCENARIO_FS3_MODEL the route and model;
 // DSH_SCENARIO_FS3_LOCK_TIMEOUT the configured lock timeout (a Go duration).
 //
 //dsh:scenario DH-E-FS-3
 func TestTwoProcessesAndAnEditorChangeOneFile(t *testing.T) {
 	editor := need(t, "DSH_SCENARIO_FS3_EDITOR", "the editor save script")
-	layerT := need(t, "DSH_SCENARIO_FS3_LAYER", "a layer over {endpoint} and {locks}")
+	layerT := need(t, "DSH_SCENARIO_FS3_LAYER", "a layer inserting llm.replay over {scenario}, {route}, {model} and {locks}")
 	route := &protocol.ModelRoute{
-		Provider: need(t, "DSH_SCENARIO_FS3_ROUTE", "the route the layer registers on the scripted endpoint"),
+		Provider: need(t, "DSH_SCENARIO_FS3_ROUTE", "the route the replay registers"),
 		Model:    need(t, "DSH_SCENARIO_FS3_MODEL", "a model of that route"),
 	}
 	lockTimeout, err := time.ParseDuration(need(t, "DSH_SCENARIO_FS3_LOCK_TIMEOUT", "the configured lock timeout"))
@@ -98,15 +101,34 @@ func TestTwoProcessesAndAnEditorChangeOneFile(t *testing.T) {
 
 	type proc struct {
 		name    string
-		m       *scriptedModel
+		r       *fs3Replay
 		h       *sdkHost
 		session string
 		outs    []*toolOutcome
 	}
 	procs := []*proc{{name: "a"}, {name: "b"}}
 	for _, p := range procs {
-		p.m = startScriptedModel(t)
-		layer := writeLayer(t, expand(layerT, map[string]string{"endpoint": p.m.URL, "locks": filepath.ToSlash(locks)}))
+		// The whole script is written before the process starts: the batches,
+		// then the kill leg's (fs3KillLeg) — a batch for a, one edit for b.
+		p.r = newFS3Replay(p.name)
+		for first := 0; first < fs3Edits; first += fs3Batch {
+			var calls []scriptedCall
+			for i := first; i < min(first+fs3Batch, fs3Edits); i++ {
+				calls = append(calls, fs3Edit(file, fmt.Sprintf("%s%04d", p.name, i)))
+			}
+			p.r.turn(calls...)
+		}
+		if p.name == "a" {
+			var calls []scriptedCall
+			for i := range fs3Batch {
+				calls = append(calls, fs3Edit(file, fmt.Sprintf("k%04d", i)))
+			}
+			p.r.turn(calls...)
+		} else {
+			p.r.turn(fs3Edit(file, "after-kill"))
+		}
+		layer := writeLayer(t, expand(layerT, map[string]string{
+			"scenario": filepath.ToSlash(p.r.write(t)), "route": route.Provider, "model": route.Model, "locks": filepath.ToSlash(locks)}))
 		p.h = startSDK(t, bin, nil, []string{"--layer", layer})
 		p.session = p.h.createIn(t, route, ws, "workspace-write")
 		p.h.keepExport(t, p.session)
@@ -118,13 +140,11 @@ func TestTwoProcessesAndAnEditorChangeOneFile(t *testing.T) {
 			t.Run(p.name, func(t *testing.T) {
 				t.Parallel()
 				for first := 0; first < fs3Edits; first += fs3Batch {
-					for i := first; i < min(first+fs3Batch, fs3Edits); i++ {
-						p.m.script(fs3Edit(file, fmt.Sprintf("%s%04d", p.name, i)))
+					outs := toolOutcomes(t, p.h.runPrompt(t, p.session, "Run the scripted calls.", 10*time.Minute))
+					if want := min(fs3Batch, fs3Edits-first); len(outs) != want {
+						t.Fatalf("process %s made %d of the %d scripted edits of the batch from %d", p.name, len(outs), want, first)
 					}
-					p.outs = append(p.outs, toolOutcomes(t, p.h.runPrompt(t, p.session, "Run the scripted calls.", 10*time.Minute))...)
-					if n := p.m.pending(); n != 0 {
-						t.Fatalf("process %s left %d of its scripted edits uncalled after the batch from %d", p.name, n, first)
-					}
+					p.outs = append(p.outs, outs...)
 				}
 			})
 		}
@@ -151,7 +171,7 @@ func TestTwoProcessesAndAnEditorChangeOneFile(t *testing.T) {
 	called := map[string]bool{}
 	for _, p := range procs {
 		for _, o := range p.outs {
-			c, ok := p.m.call(o.ID)
+			c, ok := p.r.call(o.ID)
 			if !ok {
 				t.Fatalf("call %s was not scripted", o.ID)
 			}
@@ -191,9 +211,21 @@ func TestTwoProcessesAndAnEditorChangeOneFile(t *testing.T) {
 	}
 	got := fs3Hash(t, file)
 	t.Logf("the final file is the version %s, last written by %s", got, v.last)
-	t.Logf("file before %s, after %s", before, got)
+	t.Logf("evidence: file %s before %s, after %s, last acknowledged %s", filepath.Base(file), before, got, v.last)
 
-	fs3KillLeg(t, procs[0].h, procs[0].session, procs[0].m, procs[1].h, procs[1].session, procs[1].m, file, locks, lockTimeout)
+	fs3KillLeg(t, procs[0].h, procs[0].session, procs[1].h, procs[1].session, file, locks, lockTimeout)
+}
+
+// fs3KillMade counts the kill batch's edits in the file (a is its only writer
+// then).
+func fs3KillMade(t *testing.T, file string) int {
+	n := 0
+	for _, l := range fs3Read(t, file) {
+		if len(l) == 5 && l[0] == 'k' {
+			n++
+		}
+	}
+	return n
 }
 
 // fs3KillLeg kills a while it holds the file lock and requires b's next edit to
@@ -201,21 +233,19 @@ func TestTwoProcessesAndAnEditorChangeOneFile(t *testing.T) {
 // frozen (fs3Freeze), every lock file under locks is probed with a non-blocking
 // exclusive lock (fs3LockHeld), and a is killed while frozen only when one is
 // held; otherwise a resumes and is frozen again a moment later. b is idle and the
-// editor stopped, so the held lock is a's.
-func fs3KillLeg(t *testing.T, a *sdkHost, aSession string, am *scriptedModel, b *sdkHost, bSession string, bm *scriptedModel, file, locks string, timeout time.Duration) {
+// editor stopped, so the held lock is a's. Both scripts already hold the leg's
+// turns: a's kill batch and b's one edit.
+func fs3KillLeg(t *testing.T, a *sdkHost, aSession string, b *sdkHost, bSession string, file, locks string, timeout time.Duration) {
 	t.Helper()
-	for i := range fs3Batch {
-		am.script(fs3Edit(file, fmt.Sprintf("k%04d", i)))
-	}
 	a.prompt(t, aSession, "Run the scripted calls.")
-	waitUntil(t, time.Minute, "the killed process's first edit", func() bool { return am.pending() < fs3Batch-1 })
+	waitUntil(t, time.Minute, "the killed process's first edit", func() bool { return fs3KillMade(t, file) > 0 })
 
 	pid := a.Process.Pid()
 	held, tries := "", 0
 	// Each refreeze waits for a tick, so a runs between probes.
 	tick := time.NewTicker(3 * time.Millisecond)
 	defer tick.Stop()
-	for deadline := time.Now().Add(time.Minute); held == "" && time.Now().Before(deadline) && am.pending() > 0; tries++ {
+	for deadline := time.Now().Add(time.Minute); held == "" && time.Now().Before(deadline) && fs3KillMade(t, file) < fs3Batch; tries++ {
 		resume, err := fs3Freeze(pid)
 		if err != nil {
 			t.Fatalf("freeze process %d: %v", pid, err)
@@ -248,9 +278,8 @@ func fs3KillLeg(t *testing.T, a *sdkHost, aSession string, am *scriptedModel, b 
 	if err := a.Process.Kill(); err != nil {
 		t.Fatalf("kill: %v", err)
 	}
-	t.Logf("killed process %d while it held %s (freeze %d), with %d of its edits not made", pid, filepath.Base(held), tries+1, am.pending())
+	t.Logf("killed process %d while it held %s (freeze %d), with %d of its edits made", pid, filepath.Base(held), tries+1, fs3KillMade(t, file))
 
-	bm.script(fs3Edit(file, "after-kill"))
 	started := time.Now()
 	outs := toolOutcomes(t, b.runPrompt(t, bSession, "Run the scripted call.", timeout+time.Minute))
 	took := time.Since(started)
@@ -279,6 +308,64 @@ func fs3Edit(file, marker string) scriptedCall {
 	return scriptedCall{Name: "edit", Tag: marker, Args: map[string]any{
 		"file_path": file, "old_string": fs3Anchor, "new_string": marker + "\n" + fs3Anchor,
 	}}
+}
+
+// fs3Replay is one process's replay script (llm.replay, replay.SessionFile in
+// the product's export format): each prompt's turn is one model step a call,
+// as the scripted endpoint answered, then "Done.". Only the agent's steps call
+// the model, so the script is consumed in order; the request digests are not
+// sha256 ones, so the requests are not compared.
+type fs3Replay struct {
+	name  string
+	lines []string
+	calls map[string]scriptedCall
+}
+
+func newFS3Replay(name string) *fs3Replay {
+	return &fs3Replay{name: name, lines: []string{`{"dsh_export":1}`}, calls: map[string]scriptedCall{}}
+}
+
+// turn scripts one prompt's steps.
+func (r *fs3Replay) turn(calls ...scriptedCall) {
+	for _, c := range calls {
+		id := fmt.Sprintf("fs3-%s-%05d", r.name, len(r.calls))
+		r.calls[id] = c
+		r.step(map[string]any{"kind": "tool_use", "tool_use": map[string]any{"id": id, "name": c.Name, "args": c.Args}})
+	}
+	r.step(map[string]any{"kind": "text", "text": map[string]any{"text": "Done."}})
+}
+
+func (r *fs3Replay) step(block map[string]any) {
+	n := len(r.lines)
+	data, err := json.Marshal(map[string]any{
+		"message":        map[string]any{"id": fmt.Sprintf("fs3-%s-msg-%05d", r.name, n), "role": "assistant", "blocks": []any{block}},
+		"request_digest": "authored",
+		"usage":          map[string]int{"input": 1, "output": 1},
+	})
+	if err != nil {
+		panic(err)
+	}
+	line, err := json.Marshal(map[string]any{"seq": n - 1, "type": "assistant/message", "pv": 4, "data": string(data)})
+	if err != nil {
+		panic(err)
+	}
+	r.lines = append(r.lines, string(line))
+}
+
+// call is the scripted call a tool-call id names.
+func (r *fs3Replay) call(id string) (scriptedCall, bool) {
+	c, ok := r.calls[id]
+	return c, ok
+}
+
+// write puts the script in a fresh scenario directory and returns it.
+func (r *fs3Replay) write(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "session.jsonl"), []byte(strings.Join(r.lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }
 
 // fs3Ack is one acknowledged version of the file: what wrote it, when (the write

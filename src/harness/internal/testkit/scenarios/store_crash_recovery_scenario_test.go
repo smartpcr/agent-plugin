@@ -30,7 +30,11 @@ import (
 // recorded, (3) the host is started again and resumes the session and (4) a new
 // prompt is sent, then after (3) the session shows the turn as interrupted and
 // the tool call with an outcome-unknown result, no event recorded before the kill
-// is missing, and the first model request after (4) contains that result.
+// is missing, and the first model request after (4) contains that result; then
+// (5) the host is killed and the session deleted, and nothing of it remains: no
+// session in the home's database, no spill file and no blob. The home's files
+// before and after (5), the log's seq range and the session's absence are logged
+// as "evidence:" lines.
 //
 // Inputs are shell command lines over {home}, {workspace}, {session}, {prompt},
 // {route} and {model}: DSH_SCENARIO_STORE2_START starts the headless host on
@@ -40,7 +44,8 @@ import (
 // returning once the prompt is accepted; DSH_SCENARIO_STORE2_RESUME makes the
 // host resume {session}; DSH_SCENARIO_STORE2_REQUEST prints the body of the last
 // model request sent for {session}; DSH_SCENARIO_STORE2_KILL kills the host and
-// any child it started without a clean stop. The route input is the Claude leg's
+// any child it started without a clean stop; DSH_SCENARIO_STORE2_DELETE deletes
+// {session} of {home} with no host running and returns when it is done. The route input is the Claude leg's
 // DSH_SCENARIO_CLAUDE_CODE_MODEL (signedin_routes_test.go): the model the user's
 // signed-in Claude Code accepts. The client's own sign-in is the only credential.
 //
@@ -52,6 +57,7 @@ func TestKilledHostRecoversHonestly(t *testing.T) {
 	resumeT := need(t, "DSH_SCENARIO_STORE2_RESUME", "command making the host resume {session}")
 	requestT := need(t, "DSH_SCENARIO_STORE2_REQUEST", "command printing the last model request of {session}")
 	killT := need(t, "DSH_SCENARIO_STORE2_KILL", "command killing the host and its children")
+	deleteT := need(t, "DSH_SCENARIO_STORE2_DELETE", "command deleting {session} with no host running")
 
 	dir := t.TempDir()
 	root, ws := filepath.Join(dir, "home"), filepath.Join(dir, "workspace")
@@ -112,7 +118,7 @@ func TestKilledHostRecoversHonestly(t *testing.T) {
 	}
 
 	// (3)
-	startShell(t, expand(startT, with("")))
+	host = startShell(t, expand(startT, with("")))
 	if out, err := storeStep(t, "resume", expand(resumeT, with(""))); err != nil {
 		t.Fatalf("the resume failed: %v\n%s", err, out)
 	}
@@ -159,4 +165,30 @@ func TestKilledHostRecoversHonestly(t *testing.T) {
 	if _, err := os.Stat(marker); err == nil {
 		t.Log("the killed host's command finished anyway; the result stays outcome-unknown")
 	}
+	select {
+	case <-host.done:
+	case <-time.After(storeStepTimeout):
+		t.Fatal("the resumed host did not exit after the kill")
+	}
+
+	// (5)
+	storeSeq(t, root, id)
+	blobs := home.New(root).Blobs()
+	var owned []string
+	for _, f := range storeFiles(t, blobs) {
+		owned = append(owned, filepath.Join(blobs, filepath.FromSlash(f)))
+	}
+	t.Logf("evidence: session %s before its deletion: spill files %v, blobs %v", id, storeFiles(t, storeSpillDir(root, id)), owned)
+	storeTree(t, root, "before the deletion")
+	if out, err := storeStep(t, "delete the session", expand(deleteT, with(""))); err != nil {
+		t.Fatalf("deleting %s: %v\n%s", id, err, out)
+	}
+	storeGone(t, root, id, owned)
+	if rep, _ := storeCheck(t, root); rep.Sessions != 0 || len(rep.Deleting) != 0 || !rep.Clean() {
+		t.Fatalf("after the deletion the home holds %d sessions, deleting %v, problems %v %v", rep.Sessions, rep.Deleting, rep.Integrity, rep.Problems)
+	}
+	if left := append(storeFiles(t, blobs), storeFiles(t, home.New(root).Spill())...); len(left) != 0 {
+		t.Fatalf("blob or spill files remain after the only session's deletion: %v", left)
+	}
+	storeTree(t, root, "after the deletion")
 }

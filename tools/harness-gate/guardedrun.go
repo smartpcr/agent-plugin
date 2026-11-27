@@ -246,6 +246,13 @@ func (g *guardedRun) inputs(ctx context.Context, c *Config, w io.Writer) error {
 	return nil
 }
 
+// guardedBuildArgs builds the guarded lane's dsh in src/harness with the
+// testhook tag: the keyless replay provider (llm.replay) the stage's scenarios
+// load is registered only in that build (internal/boot/builtin/testhook.go).
+func guardedBuildArgs(bin string) []string {
+	return []string{"build", "-tags", "testhook", "-o", bin, "./cmd/dsh"}
+}
+
 func (g *guardedRun) build(ctx context.Context, c *Config, w io.Writer) error {
 	mod := c.moduleOf(filepath.Join(c.Root, "src", "harness", "cmd", "dsh"))
 	if mod == "" {
@@ -255,7 +262,7 @@ func (g *guardedRun) build(ctx context.Context, c *Config, w io.Writer) error {
 	if runtime.GOOS == "windows" {
 		g.bin += ".exe"
 	}
-	if err := c.goStep(ctx, w, mod, c.env(), "build", "-o", g.bin, "./cmd/dsh"); err != nil {
+	if err := c.goStep(ctx, w, mod, c.env(), guardedBuildArgs(g.bin)...); err != nil {
 		return err
 	}
 	sum, err := fileSHA256(g.bin)
@@ -291,6 +298,11 @@ func (g *guardedRun) scenarios(ctx context.Context, c *Config, w io.Writer) erro
 	cmd.Stderr = cmd.Stdout
 	runErr := cmd.Run()
 	listScratch(w, "after", tmp)
+	ev := evidenceLines(out.String())
+	fmt.Fprintf(w, "cleanup evidence: %d lines the scenarios logged before removing their scratch homes\n", len(ev))
+	for _, l := range ev {
+		fmt.Fprintln(w, "cleanup evidence:", l)
+	}
 	got := reportResults(report)
 	g.rows(w, got)
 	return scenarioVerdict(out.String(), g.plan.Tests(), runErr)
@@ -317,6 +329,26 @@ func (g *guardedRun) rows(w io.Writer, got map[string]string) {
 	for _, e := range g.out {
 		row(e.ID, e.Result())
 	}
+}
+
+// evidenceLines picks the scenarios' "evidence:" log lines out of `go test -v`
+// output, each after the test that logged it: the home's files, the deleted
+// sessions' absence and the log's seq range, observed before the scenario's
+// cleanup removed its scratch home.
+func evidenceLines(out string) []string {
+	var lines []string
+	test := ""
+	for _, l := range strings.Split(out, "\n") {
+		l = strings.TrimRight(l, "\r")
+		if f := strings.Fields(l); len(f) == 3 && f[0] == "===" && (f[1] == "RUN" || f[1] == "CONT") {
+			test = f[2]
+			continue
+		}
+		if _, ev, ok := strings.Cut(l, ": evidence: "); ok {
+			lines = append(lines, test+": "+ev)
+		}
+	}
+	return lines
 }
 
 func planIDs(p acceptance.Plan) []string {

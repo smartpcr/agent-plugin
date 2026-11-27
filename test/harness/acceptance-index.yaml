@@ -63,9 +63,9 @@ stages:
       credential: none
     # Two dsh processes and an outside editor on one file (filesystem.md
     # DH-E-FS-3); authored by DH-S-12 (implementation-plan Stage 2.8) against the
-    # SDK boundary with a scripted model endpoint (operator decision
-    # fs-scripted-model-vs-replay: the replay provider replaces it when DH-S-16
-    # lands). It needs the headless launcher (DH-S-16).
+    # SDK boundary, its edits played by the keyless replay provider since DH-S-16
+    # (operator decision fs-scripted-model-vs-replay; Stage 6.12). It needs the
+    # headless launcher (DH-S-16).
     - id: DH-E-FS-3
       authored: DH-S-12
       credential: none
