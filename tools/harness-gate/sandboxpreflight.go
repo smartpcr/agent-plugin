@@ -14,7 +14,9 @@ import (
 // 6.10, architecture.md I-8). It reads a `dsh sandbox status` text report from
 // file, or standard input when file is "-" or unset, prints the backend and
 // state it read and exits 0 only for backend bwrap, state Full; 1 for any other
-// report or one it cannot read (never a skip); 2 on a usage error.
+// report or one it cannot read (never a skip); 2 on a usage error. wsl.sh
+// strips the "harness-gate sandbox-preflight: passed: " prefix from stdout to
+// build its success line, so TestSandboxPreflight pins that wording.
 func runSandboxPreflight(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	var status *string
 	if _, ok := subcommandFlags("sandbox-preflight", args, stderr, func(f *flag.FlagSet) {
