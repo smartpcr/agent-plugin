@@ -118,6 +118,7 @@ type wbpState struct {
 	reports  map[string]string
 	verdicts map[string]wbpVerdict
 	lane     wbpRun
+	commit   string
 }
 
 func (s *wbpState) givenRecordedOutputs(a, b, c string) error {
@@ -262,7 +263,7 @@ func (s *wbpState) thenCommandExitsOne(ctx context.Context) error {
 	return nil
 }
 
-// wbpLaneScript runs on the WSL lane machine: it unpacks the committed tree
+// wbpLaneScript runs on the WSL lane machine: it unpacks the committed HEAD tree
 // (a tar on standard input) into a scratch ext4 directory under TMPDIR,
 // commits it so the lane's clean-tree check holds, and runs the lane script's
 // guarded preflight there, exiting with its status.
@@ -308,16 +309,25 @@ func (s *wbpState) whenLaneRuns(ctx context.Context, script string) error {
 		return fmt.Errorf("git rev-parse: %v %s", err, top.stderr)
 	}
 	root := strings.TrimSpace(top.stdout)
-	// The tracked working tree (git stash create), else HEAD when it is clean.
-	tree := "HEAD"
-	if st, err := wbpExec(runCtx, nil, "git", "-C", root, "stash", "create"); err == nil && st.code == 0 && strings.TrimSpace(st.stdout) != "" {
-		tree = strings.TrimSpace(st.stdout)
+	// Evidence must tie to a commit: only a clean checkout is archived, by SHA.
+	head, err := wbpExec(runCtx, nil, "git", "-C", root, "rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil || head.code != 0 {
+		return fmt.Errorf("git rev-parse HEAD: %v %s", err, head.stderr)
 	}
-	arch := exec.CommandContext(runCtx, "git", "-C", root, "archive", "--format=tar", tree)
+	s.commit = strings.TrimSpace(head.stdout)
+	st, err := wbpExec(runCtx, nil, "git", "-C", root, "status", "--porcelain", "--untracked-files=all")
+	if err != nil || st.code != 0 {
+		return fmt.Errorf("git status (commit %s): %v %s", s.commit, err, st.stderr)
+	}
+	if dirty := strings.TrimSpace(st.stdout); dirty != "" {
+		return fmt.Errorf("the working tree is not the committed tree %s; commit or stash these changes before running the lane (service:linux-sandbox-bwrap):\n%s", s.commit, dirty)
+	}
+	fmt.Printf("wsl lane e2e: archived commit %s\n", s.commit)
+	arch := exec.CommandContext(runCtx, "git", "-C", root, "archive", "--format=tar", s.commit)
 	var tarball, archErr bytes.Buffer
 	arch.Stdout, arch.Stderr = &tarball, &archErr
 	if err := arch.Run(); err != nil {
-		return fmt.Errorf("git archive %s: %v\n%s", tree, err, archErr.String())
+		return fmt.Errorf("git archive %s: %v\n%s", s.commit, err, archErr.String())
 	}
 	var name string
 	var args []string
@@ -337,7 +347,7 @@ func (s *wbpState) whenLaneRuns(ctx context.Context, script string) error {
 
 func (s *wbpState) thenLaneExits(code int) error {
 	if s.lane.code != code {
-		return fmt.Errorf("wsl.sh --guarded-preflight exited %d, want %d\nstdout:\n%s\nstderr:\n%s", s.lane.code, code, s.lane.stdout, s.lane.stderr)
+		return fmt.Errorf("wsl.sh --guarded-preflight on commit %s exited %d, want %d\nstdout:\n%s\nstderr:\n%s", s.commit, s.lane.code, code, s.lane.stdout, s.lane.stderr)
 	}
 	return nil
 }
