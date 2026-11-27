@@ -74,9 +74,19 @@ func PreviewLaunch(ctx context.Context, o Options, defaults bool) (*Preview, err
 			docs[l.Label] = doc
 		}
 	}
+	tree := map[loader.Issue]bool{}
+	checks := []config.TreeCheck{agentpreset.CheckTree(cat, ev), permission.CheckTree()}
+	for k, check := range checks {
+		checks[k] = func(t []loader.EntryOptions) []loader.Issue {
+			issues := check(t)
+			for _, i := range issues {
+				tree[i] = true
+			}
+			return issues
+		}
+	}
 	r, err := profile.Preview(o.Profile, layers, config.CheckOptions{
-		Catalog: cat, Evaluator: ev, Docs: docs,
-		TreeChecks: []config.TreeCheck{agentpreset.CheckTree(cat, ev), permission.CheckTree()},
+		Catalog: cat, Evaluator: ev, Docs: docs, TreeChecks: checks,
 	})
 	p := &Preview{Report: r, Env: s.Env}
 	if r != nil {
@@ -96,19 +106,37 @@ func PreviewLaunch(ctx context.Context, o Options, defaults bool) (*Preview, err
 			}
 		}
 		r.Issues = append(faults, r.Issues[n:]...)
-		// The entry's own schema and a tree check can name one fault twice.
-		seen := map[[2]string]bool{}
-		r.Issues = slices.DeleteFunc(r.Issues, func(i loader.Issue) bool {
-			key := [2]string{i.Path, i.Message}
-			dup := seen[key]
-			seen[key] = true
-			return dup
-		})
+		r.Issues = dedupe(r.Issues, tree)
 	}
 	for _, l := range layers {
 		p.Layers = append(p.Layers, l.Label)
 	}
 	return p, err
+}
+
+// dedupe drops the second report of one fault: an issue identical to an earlier
+// one, position included, or an issue of a tree check whose path and message an
+// issue outside the tree checks carries, since the entry's own schema places that
+// fault at its value and the tree check at the entry. Two faults with the same
+// path and message at different positions (the same bad operation on two lines,
+// or in two layers) both stay.
+func dedupe(issues []loader.Issue, tree map[loader.Issue]bool) []loader.Issue {
+	type text struct{ path, message string }
+	named := map[text]bool{}
+	for _, i := range issues {
+		if !tree[i] {
+			named[text{i.Path, i.Message}] = true
+		}
+	}
+	seen := map[loader.Issue]bool{}
+	return slices.DeleteFunc(issues, func(i loader.Issue) bool {
+		if tree[i] && named[text{i.Path, i.Message}] {
+			return true
+		}
+		dup := seen[i]
+		seen[i] = true
+		return dup
+	})
 }
 
 // Tolerated reports whether a layer issue is one a valid configuration carries: a
