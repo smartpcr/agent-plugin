@@ -37,6 +37,8 @@ func Spawn(t testing.TB, p Program) *Host {
 		t.Fatal("launcher: no program")
 	}
 	h := &Host{Started: time.Now()}
+	h.Stdout.SetLimit(p.MaxOutput)
+	h.Stderr.SetLimit(p.MaxOutput)
 	proc, err := subprocess.Start(context.Background(), subprocess.Spec{
 		Argv: p.Argv, Dir: p.Dir, Env: subprocess.Env(append(os.Environ(), p.Env...)),
 		Stdout: &h.Stdout, Stderr: &h.Stderr, Grace: Grace, Launch: sandbox.Trusted("launcher: the program under test, run by a scenario"),
@@ -45,6 +47,7 @@ func Spawn(t testing.TB, p Program) *Host {
 		t.Fatalf("launcher: start %s: %v", p.Argv[0], err)
 	}
 	h.Process = proc
+	register(t, proc)
 	t.Cleanup(func() {
 		select {
 		case <-proc.Exited():

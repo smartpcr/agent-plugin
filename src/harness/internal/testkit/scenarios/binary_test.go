@@ -12,7 +12,9 @@ import (
 )
 
 // dshBinary is the built dsh under test (scenario.Bin): the binary DSH_BIN names,
-// else cmd/dsh from this checkout built once per test binary. With tags, cmd/dsh
+// else cmd/dsh from this checkout built once per test binary and build variant
+// (a test that sets GOOS, GOARCH, CGO_ENABLED or GOFLAGS gets that build, checked
+// against its build information). With tags, cmd/dsh
 // is built with them through the test kit's launcher (DH-D-UTIL-6) into a
 // temporary directory removed at cleanup.
 func dshBinary(t *testing.T, tags ...string) string {

@@ -391,12 +391,14 @@ func Need(t testing.TB, name, what string) string {
 
 // Bin is the built dsh a scenario starts: the file DSH_BIN names when it is set
 // (a name that is not a file fails t), else this checkout's ./cmd/dsh built once
-// per test binary (dshbin; the package's TestMain calls Main).
+// per test binary (dshbin; the package's TestMain calls Main). A test that set a
+// build variable (dshbin.VariantEnv: GOOS, GOARCH, CGO_ENABLED, GOFLAGS, ...) gets
+// the build of that variant, never DSH_BIN or the default build.
 func Bin(t testing.TB) string {
 	t.Helper()
 	tr := track(t)
 	p := strings.TrimSpace(os.Getenv(BinEnv))
-	if p == "" {
+	if p == "" || !dshbin.Default() {
 		p = dshbin.Path(t)
 	}
 	sum, err := digest(p)

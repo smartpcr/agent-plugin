@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/launcher"
 )
 
 // recorder is a testing.TB that records failures and skips instead of ending the
@@ -517,6 +519,72 @@ func TestDeclaredTestIsTrackedFromEntry(t *testing.T) {
 	})
 	if row := one(t, p); row.ID != "DH-E-T-3" || row.Result != Failed {
 		t.Errorf("row = %+v, want DH-E-T-3 failed", row)
+	}
+}
+
+// A tracked test blocked on a child past its deadline gets one failed row at the
+// deadline and its tree stopped, so it returns; a test that is still running
+// abandonAfter later ends the test binary.
+func TestTrackedTestPastItsDeadline(t *testing.T) {
+	oldDeadline, oldAfter, oldAbandon := trackDeadline, abandonAfter, abandon
+	trackDeadline, abandonAfter = 3*time.Second, 2*time.Second
+	abandoned := make(chan string, 1)
+	abandon = func(msg string) { abandoned <- msg }
+	t.Cleanup(func() { trackDeadline, abandonAfter, abandon = oldDeadline, oldAfter, oldAbandon })
+	dir := t.TempDir()
+	sleeper := launcher.Build(t, "../launcher", "./testdata/echo")
+
+	p := filepath.Join(dir, "blocked.jsonl")
+	exited := false
+	start := time.Now()
+	t.Run("blocked child", func(t *testing.T) {
+		t.Setenv(ReportEnv, p)
+		t.Setenv(RequireEnv, "")
+		r := &recorder{TB: t}
+		r.run(func() {
+			track(r)
+			h := launcher.Spawn(r, launcher.Program{Argv: []string{sleeper, "sleep"}})
+			select {
+			case <-h.Process.Exited():
+				exited = true
+			case <-time.After(time.Minute):
+			}
+		})
+		if len(r.failures) != 1 || !strings.Contains(r.failures[0], "past the scenario deadline") {
+			t.Errorf("failures = %q, want the deadline", r.failures)
+		}
+	})
+	if took := time.Since(start); !exited || took > 30*time.Second {
+		t.Errorf("the child exited %v after %s; want it stopped soon after the deadline", exited, took)
+	}
+	if row := one(t, p); row.Result != Failed || !strings.Contains(row.Reason, "deadline") {
+		t.Errorf("row = %+v, want failed at its deadline", row)
+	}
+	select {
+	case msg := <-abandoned:
+		t.Errorf("the released test was abandoned: %s", msg)
+	default:
+	}
+
+	q := filepath.Join(dir, "stuck.jsonl")
+	t.Run("stuck", func(t *testing.T) {
+		t.Setenv(ReportEnv, q)
+		t.Setenv(RequireEnv, "")
+		r := &recorder{TB: t}
+		r.run(func() {
+			track(r)
+			select {
+			case msg := <-abandoned:
+				if !strings.Contains(msg, "still runs") {
+					t.Errorf("abandon(%q), want the test still running", msg)
+				}
+			case <-time.After(time.Minute):
+				t.Error("the stuck test was not abandoned")
+			}
+		})
+	})
+	if row := one(t, q); row.Result != Failed {
+		t.Errorf("row = %+v, want failed", row)
 	}
 }
 

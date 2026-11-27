@@ -32,17 +32,41 @@ func Tree(t testing.TB) *cordis.Context {
 }
 
 // Buffer is a bytes.Buffer safe for one writer goroutine racing a reader, the
-// shape of a component's output stream read by the test.
+// shape of a component's output stream read by the test. With a limit set it
+// keeps at most that many bytes and counts the rest as dropped.
 type Buffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
+	mu      sync.Mutex
+	buf     bytes.Buffer
+	limit   int
+	dropped int64
 }
 
-// Write appends p.
+// SetLimit makes the buffer keep at most n bytes (0: no limit); a write past the
+// limit is accepted in full, so the writer never blocks, and its excess is dropped.
+func (b *Buffer) SetLimit(n int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.limit = n
+}
+
+// Write appends p, up to the limit.
 func (b *Buffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.limit > 0 && b.buf.Len()+len(p) > b.limit {
+		keep := max(b.limit-b.buf.Len(), 0)
+		b.dropped += int64(len(p) - keep)
+		b.buf.Write(p[:keep])
+		return len(p), nil
+	}
 	return b.buf.Write(p)
+}
+
+// Dropped is how many written bytes the limit dropped.
+func (b *Buffer) Dropped() int64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.dropped
 }
 
 // String is everything written so far.

@@ -16,6 +16,7 @@ import (
 	"unsafe"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/dshbin"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/launcher"
 )
 
 // tracker is the evidence row of one top-level test that reaches the helper
@@ -25,11 +26,31 @@ type tracker struct {
 	id    string
 	start time.Time
 
-	mu     sync.Mutex
-	reason string
-	build  string
-	byRun  bool // Run writes the rows of this test
+	mu      sync.Mutex
+	reason  string
+	build   string
+	byRun   bool // Run writes the rows of this test
+	done    bool // finish has run
+	written bool // expire wrote the row
+	timer   *time.Timer
+
+	// deadline, after and abandon are trackDeadline, abandonAfter and abandon
+	// when the test was first tracked.
+	deadline, after time.Duration
+	abandon         func(string)
 }
+
+var (
+	// trackDeadline is the deadline of a tracked test, DefaultDeadline outside
+	// this package's own tests.
+	trackDeadline = DefaultDeadline
+	// abandon ends the test binary when a tracked test is still running
+	// abandonAfter past its deadline and the stop of its trees.
+	abandon = func(msg string) {
+		fmt.Fprintln(os.Stderr, msg)
+		os.Exit(1)
+	}
+)
 
 var (
 	trackMu sync.Mutex
@@ -61,7 +82,8 @@ func topName(name string) string {
 
 // track returns the tracker of t's top-level test. The first call registers, on
 // t, the cleanup that writes the row; it runs after every cleanup registered
-// later, so it sees their failures too.
+// later, so it sees their failures too. It also starts the test's deadline
+// (expire).
 func track(t testing.TB) *tracker {
 	name := topName(t.Name())
 	trackMu.Lock()
@@ -73,10 +95,46 @@ func track(t testing.TB) *tracker {
 	if id == "" {
 		id = name
 	}
-	tr := &tracker{id: id, start: time.Now()}
+	tr := &tracker{id: id, start: time.Now(), deadline: trackDeadline, after: abandonAfter, abandon: abandon}
 	tracked[name] = tr
+	tr.mu.Lock()
+	tr.timer = time.AfterFunc(tr.deadline, func() { tr.expire(t, name) })
+	tr.mu.Unlock()
 	t.Cleanup(func() { tr.finish(t, name) })
 	return tr
+}
+
+// expire ends a tracked test that is still running at its deadline: it writes
+// the test's failed row at once, fails the test and force-stops every process
+// tree the test started through the launcher, so a test blocked on a child is
+// released. A test still running abandonAfter later ends the test binary
+// (abandon), its row already written. Run's tests keep Run's own deadline.
+func (tr *tracker) expire(t testing.TB, name string) {
+	tr.mu.Lock()
+	if tr.done || tr.byRun {
+		tr.mu.Unlock()
+		return
+	}
+	if tr.reason == "" {
+		tr.reason = fmt.Sprintf("deadline %s reached", tr.deadline)
+	}
+	tr.written = true
+	write(t, Row{Kind: RowKind, ID: tr.id, OS: runtime.GOOS, Build: tr.build, Result: Failed, Reason: tr.reason, DurationMS: time.Since(tr.start).Milliseconds()})
+	t.Errorf("%s: the test ran past the scenario deadline of %s; stopping its process trees", tr.id, tr.deadline)
+	if err := launcher.StopTrees(name); err != nil {
+		t.Errorf("%s: stopping its process trees: %v", tr.id, err)
+	}
+	tr.mu.Unlock()
+	end, after := tr.abandon, tr.after
+	msg := fmt.Sprintf("scenario: %s (%s) still runs %s after its deadline of %s and the stop of its trees", tr.id, name, after, tr.deadline)
+	time.AfterFunc(after, func() {
+		tr.mu.Lock()
+		done := tr.done
+		tr.mu.Unlock()
+		if !done {
+			end(msg)
+		}
+	})
 }
 
 // own marks t's test as one whose rows Run writes.
@@ -95,7 +153,9 @@ func (tr *tracker) finish(t testing.TB, name string) {
 	trackMu.Unlock()
 	tr.mu.Lock()
 	defer tr.mu.Unlock()
-	if tr.byRun {
+	tr.done = true
+	tr.timer.Stop()
+	if tr.byRun || tr.written {
 		return
 	}
 	took := time.Since(tr.start)
@@ -112,9 +172,9 @@ func (tr *tracker) finish(t testing.TB, name string) {
 			row.Result = Failed
 			t.Errorf("%s: required scenario skipped (listed in %s)", tr.id, RequireEnv)
 		}
-	case took > DefaultDeadline:
-		row.Result, row.Reason = Failed, fmt.Sprintf("deadline %s reached", DefaultDeadline)
-		t.Errorf("%s: the test ran past the scenario deadline of %s", tr.id, DefaultDeadline)
+	case took > tr.deadline:
+		row.Result, row.Reason = Failed, fmt.Sprintf("deadline %s reached", tr.deadline)
+		t.Errorf("%s: the test ran past the scenario deadline of %s", tr.id, tr.deadline)
 	default:
 		row.Result = Passed
 	}

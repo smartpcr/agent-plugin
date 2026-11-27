@@ -3,7 +3,9 @@
 // whether each name of its params is set, and "spawn" starts a copy of itself
 // that sleeps in the home (a grandchild the launcher's cleanup must reap) and
 // answers its pid. "echo tree" starts a grandchild holding
-// its output streams, prints the grandchild's pid and hangs. "echo tags" prints
+// its output streams, prints the grandchild's pid and hangs; "echo hold" does the
+// same but exits, leaving the grandchild holding the streams. "echo flood" writes
+// 64 KiB to its standard output. "echo tags" prints
 // the build tags of tags_*.go it was built with, sorted, comma-separated.
 package main
 
@@ -32,8 +34,12 @@ func main() {
 		time.Sleep(time.Hour)
 		return
 	}
-	if len(os.Args) > 1 && os.Args[1] == "tree" {
-		hang()
+	if len(os.Args) > 1 && (os.Args[1] == "tree" || os.Args[1] == "hold") {
+		hang(os.Args[1] == "tree")
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "flood" {
+		_, _ = os.Stdout.WriteString(strings.Repeat("x", 64<<10))
 		return
 	}
 	conn := jsonrpc.Serve(context.Background(), os.Stdin, os.Stdout, jsonrpc.Options{Methods: map[string]jsonrpc.Handler{
@@ -70,9 +76,10 @@ func main() {
 	<-conn.Done()
 }
 
-// hang starts a sleeping grandchild that inherits this process's output streams,
-// prints its pid, and never exits: a run whose tree outlives its bound.
-func hang() {
+// hang starts a sleeping grandchild that inherits this process's output streams
+// and prints its pid; with forever it never exits: either way a run whose tree
+// outlives its bound.
+func hang(forever bool) {
 	exe, err := os.Executable()
 	if err != nil {
 		os.Exit(2)
@@ -82,5 +89,7 @@ func hang() {
 		os.Exit(2)
 	}
 	fmt.Println(p.Pid)
-	time.Sleep(time.Hour)
+	if forever {
+		time.Sleep(time.Hour)
+	}
 }

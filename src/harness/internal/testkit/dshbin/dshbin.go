@@ -9,9 +9,14 @@ package dshbin
 
 import (
 	"bufio"
+	"cmp"
+	"debug/buildinfo"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -26,8 +31,36 @@ var (
 	mu     sync.Mutex
 	inMain bool                // Main is running the tests
 	dir    string              // the build directory, removed by Main
-	builds = map[string]*bin{} // by build tags, once built or failed
+	builds = map[string]*bin{} // by build tags and variant, once built or failed
 )
+
+// VariantEnv are the variables that select a build other than the host's default
+// one (a target platform, cgo, -race and other go flags, a C toolchain). A test
+// that sets one of them (t.Setenv) before Path gets a build of its own.
+var VariantEnv = []string{"GOOS", "GOARCH", "GOARM", "GOARM64", "GOAMD64", "GO386", "CGO_ENABLED", "GOFLAGS", "CC", "CGO_CFLAGS", "CGO_LDFLAGS"}
+
+// base is the variant of the test binary's own environment, before any test ran.
+var base = variant()
+
+// variant is the current value of every VariantEnv variable.
+func variant() string {
+	var b strings.Builder
+	for _, k := range VariantEnv {
+		b.WriteString(k + "=" + os.Getenv(k) + "\n")
+	}
+	return b.String()
+}
+
+// buildKey is the key of builds for tags and the current variant.
+func buildKey(tags []string) string { return strings.Join(tags, ",") + "\n" + variant() }
+
+// Default reports whether no VariantEnv variable changed since the test binary started,
+// so a binary built for the host's default build (DSH_BIN) stands for Path(t).
+func Default() bool {
+	mu.Lock()
+	defer mu.Unlock()
+	return variant() == base
+}
 
 // bin is one build of ./cmd/dsh: its path, or the first build's failure.
 type bin struct{ path, failed string }
@@ -60,14 +93,15 @@ func Run(m *testing.M) int {
 }
 
 // Path returns the dsh binary built from this checkout's ./cmd/dsh with the
-// build tags tags (none: the release build), building it on the first call for
-// those tags. A failed build fails t and every later caller for the same tags,
-// without a second build.
+// build tags tags (none: the release build) and the current VariantEnv values,
+// building it on the first call for that pair; the build's embedded build
+// information must show the requested platform, cgo, -race and tags. A failed
+// build fails t and every later caller for the same pair, without a second build.
 func Path(t testing.TB, tags ...string) string {
 	t.Helper()
 	mu.Lock()
 	defer mu.Unlock()
-	key := strings.Join(tags, ",")
+	key := buildKey(tags)
 	b := builds[key]
 	switch {
 	case b != nil && b.path != "":
@@ -97,8 +131,40 @@ func Path(t testing.TB, tags ...string) string {
 		b.failed = err.Error()
 		t.Fatalf("dshbin: %v", err)
 	}
-	b.path = launcher.Build(&once{TB: t, dir: d, b: b}, mod, "./cmd/dsh", tags...)
-	return b.path
+	p := launcher.Build(&once{TB: t, dir: d, b: b}, mod, "./cmd/dsh", tags...)
+	if err := Verify(p, tags); err != nil {
+		b.failed = err.Error()
+		t.Fatalf("dshbin: %v", err)
+	}
+	b.path = p
+	return p
+}
+
+// Verify checks the build information embedded in the binary at p against the
+// build tags tags and the current VariantEnv values: GOOS and GOARCH (the host's
+// when unset), CGO_ENABLED when set, -race when GOFLAGS asks for it, and -tags.
+func Verify(p string, tags []string) error {
+	info, err := buildinfo.ReadFile(p)
+	if err != nil {
+		return fmt.Errorf("%s: %w", p, err)
+	}
+	got := map[string]string{}
+	for _, s := range info.Settings {
+		got[s.Key] = s.Value
+	}
+	want := map[string]string{"GOOS": cmp.Or(os.Getenv("GOOS"), runtime.GOOS), "GOARCH": cmp.Or(os.Getenv("GOARCH"), runtime.GOARCH), "-tags": strings.Join(tags, ",")}
+	if v := os.Getenv("CGO_ENABLED"); v != "" {
+		want["CGO_ENABLED"] = v
+	}
+	if slices.Contains(strings.Fields(os.Getenv("GOFLAGS")), "-race") {
+		want["-race"] = "true"
+	}
+	for _, k := range slices.Sorted(maps.Keys(want)) {
+		if got[k] != want[k] {
+			return fmt.Errorf("%s was built with %s=%q, want %q", p, k, got[k], want[k])
+		}
+	}
+	return nil
 }
 
 // once is the test that triggers the build, with the build directory standing in

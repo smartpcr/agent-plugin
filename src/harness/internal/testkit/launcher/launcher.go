@@ -79,6 +79,10 @@ type Program struct {
 	Dir string
 	// RPC configures the client; its methods answer the program's requests.
 	RPC jsonrpc.Options
+	// MaxOutput, when positive, caps each of the standard output and error Spawn
+	// and Run capture at that many bytes; the rest is dropped and counted
+	// (Host.Stdout.Dropped). Start ignores it.
+	MaxOutput int
 }
 
 // Session is one launched program.
@@ -143,6 +147,7 @@ func Start(t testing.TB, p Program) *Session {
 		_, _ = io.Copy(s.Stderr, errR)
 	}()
 	s.Process = proc
+	register(t, proc)
 	s.Client = jsonrpc.Serve(context.Background(), outR, inW, p.RPC)
 	t.Cleanup(func() {
 		_ = s.Client.Close()

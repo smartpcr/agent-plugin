@@ -6,9 +6,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"go/build/constraint"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -21,6 +21,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/dshbin"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/fixture"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/launcher"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/temphome"
 )
 
@@ -55,6 +56,31 @@ type outcome struct {
 	workspace string
 }
 
+// replayWithin bounds one replay run of the binary, its whole tree included.
+const replayWithin = 2 * time.Minute
+
+// maxReplayOutput caps each of the standard output and error a replay keeps.
+const maxReplayOutput = 4 << 20
+
+// launchReplay runs p in a process tree of its own (launcher.Run) and returns its
+// standard output. A tree that outlives within -- the binary hangs, or a
+// descendant holds its output -- is force-stopped whole; that, a non-zero exit
+// and output past p.MaxOutput are errors carrying what the run wrote.
+func launchReplay(t testing.TB, within time.Duration, p launcher.Program) (string, error) {
+	t.Helper()
+	h, err := launcher.Run(t, within, p)
+	out, errOut := h.Stdout.String(), h.Stderr.String()
+	switch {
+	case err != nil:
+		return out, fmt.Errorf("%w within %s\nstdout:\n%s\nstderr:\n%s", err, within, out, errOut)
+	case h.Process.ExitCode() != 0:
+		return out, fmt.Errorf("exit %d\nstdout:\n%s\nstderr:\n%s", h.Process.ExitCode(), out, errOut)
+	case h.Stdout.Dropped() > 0 || h.Stderr.Dropped() > 0:
+		return out, fmt.Errorf("the run wrote past its output cap of %d bytes (%d and %d bytes dropped)", p.MaxOutput, h.Stdout.Dropped(), h.Stderr.Dropped())
+	}
+	return out, nil
+}
+
 // play replays the scenario at dir with the built bin into a scratch home.
 func play(t *testing.T, bin, dir string, refresh bool) outcome {
 	t.Helper()
@@ -79,21 +105,18 @@ func play(t *testing.T, bin, dir string, refresh bool) outcome {
 		"        scenario: "+strconv.Quote(abs)+"\n        mode: "+mode+"\n        route: "+strconv.Quote(m.Route)+"\n"+
 		"        model: "+strconv.Quote(m.Model)+"\n        requests: "+strconv.Quote(reqs)+"\n")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), replayWithin)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, bin, "--home", root, "headless", "--json", m.Input)
-	cmd.Dir = ws
-	var out, errOut bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &errOut
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("%s: %v\nstdout:\n%s\nstderr:\n%s", dir, err, out.String(), errOut.String())
+	out, err := launchReplay(t, replayWithin, launcher.Program{Argv: []string{bin, "--home", root, "headless", "--json", m.Input}, Dir: ws, MaxOutput: maxReplayOutput})
+	if err != nil {
+		t.Fatalf("%s: %v", dir, err)
 	}
-	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	lines := strings.Split(strings.TrimSpace(out), "\n")
 	var res struct {
 		Type, Session, Reason string
 	}
 	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &res); err != nil || res.Type != "run/result" || res.Session == "" {
-		t.Fatalf("%s: the last stdout line is not a run/result (%v):\n%s", dir, err, out.String())
+		t.Fatalf("%s: the last stdout line is not a run/result (%v):\n%s", dir, err, out)
 	}
 
 	st, err := sqlite.Open(ctx, home.New(root).DB())

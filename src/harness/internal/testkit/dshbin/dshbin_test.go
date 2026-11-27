@@ -1,6 +1,7 @@
 package dshbin
 
 import (
+	"debug/buildinfo"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -53,6 +54,71 @@ func TestPathBuildsOncePerTestBinary(t *testing.T) {
 	}
 }
 
+// A test that sets a build variable gets a build of its own, built once and
+// carrying that variant in its build information; DSH_BIN stands for the default
+// build only.
+func TestPathBuildsEachVariantOnce(t *testing.T) {
+	host := Path(t)
+	if !Default() {
+		t.Fatal("Default = false before any build variable changed")
+	}
+	t.Run("linux pure Go", func(t *testing.T) {
+		t.Setenv("GOOS", "linux")
+		t.Setenv("GOARCH", "amd64")
+		t.Setenv("CGO_ENABLED", "0")
+		if Default() {
+			t.Error("Default = true with GOOS, GOARCH and CGO_ENABLED set")
+		}
+		p := Path(t)
+		if p == host {
+			t.Fatalf("the linux/amd64 pure-Go build is the host build %s", host)
+		}
+		if again := Path(t); again != p {
+			t.Errorf("second Path = %s, want %s", again, p)
+		}
+		info, err := buildinfo.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]string{}
+		for _, s := range info.Settings {
+			got[s.Key] = s.Value
+		}
+		if got["GOOS"] != "linux" || got["GOARCH"] != "amd64" || got["CGO_ENABLED"] != "0" {
+			t.Errorf("build settings %v, want linux/amd64 with cgo off", got)
+		}
+	})
+	if !Default() {
+		t.Error("Default = false after the variables were restored")
+	}
+}
+
+func TestVerifyRejectsABuildOfAnotherVariant(t *testing.T) {
+	host := Path(t)
+	if err := Verify(host, nil); err != nil {
+		t.Fatalf("Verify(host build) = %v", err)
+	}
+	if err := Verify(host, []string{"testhook"}); err == nil || !strings.Contains(err.Error(), "-tags") {
+		t.Errorf("Verify with tags the build lacks = %v, want a -tags mismatch", err)
+	}
+	other := "linux"
+	if runtime.GOOS == other {
+		other = "windows"
+	}
+	t.Setenv("GOOS", other)
+	if err := Verify(host, nil); err == nil || !strings.Contains(err.Error(), "GOOS") {
+		t.Errorf("Verify for GOOS=%s = %v, want a GOOS mismatch", other, err)
+	}
+	t.Setenv("GOOS", "")
+	t.Setenv("GOFLAGS", "-race")
+	if err := Verify(host, nil); err == nil || !strings.Contains(err.Error(), "-race") {
+		t.Errorf("Verify for GOFLAGS=-race = %v, want a -race mismatch", err)
+	}
+	if err := Verify(filepath.Join(t.TempDir(), "missing"), nil); err == nil {
+		t.Error("Verify of a missing file passed")
+	}
+}
+
 // swap sets the package state for one test and restores it; fail, when set, is
 // the recorded failure of the untagged build.
 func swap(t *testing.T, main bool, fail string) {
@@ -61,7 +127,7 @@ func swap(t *testing.T, main bool, fail string) {
 	oldMain, oldBuilds, oldDir := inMain, builds, dir
 	inMain, builds = main, map[string]*bin{}
 	if fail != "" {
-		builds[""] = &bin{failed: fail}
+		builds[buildKey(nil)] = &bin{failed: fail}
 	}
 	mu.Unlock()
 	t.Cleanup(func() {
@@ -75,7 +141,7 @@ func swap(t *testing.T, main bool, fail string) {
 func failure() string {
 	mu.Lock()
 	defer mu.Unlock()
-	if b := builds[""]; b != nil {
+	if b := builds[buildKey(nil)]; b != nil {
 		return b.failed
 	}
 	return ""
