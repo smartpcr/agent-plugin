@@ -29,28 +29,41 @@ func TestChannelReachesTheChild(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer r.Close()
+	// w stays open until the child without the channel has run. On Windows the
+	// number ChildFD gives is the host's own handle value; once closed, that
+	// value can be reused for the next child's standard streams, which the child
+	// inherits under the same number, so its write to the number succeeds into
+	// its own stderr (seen 2026-11-27 on a Windows lane: stderr "leak", exit 0).
+	// Holding w keeps the number taken in the host.
+	defer w.Close()
+	const status = "status: ready"
 	extra := []subprocess.Channel{{File: w}}
 	fd := fmt.Sprint(subprocess.ChildFD(extra, 0))
-	spec := subprocesstest.Spec(t, subprocesstest.RoleChannel, fd, "status: ready")
+	spec := subprocesstest.Spec(t, subprocesstest.RoleChannel, fd, status)
 	spec.Extra = extra
 	var out strings.Builder
 	spec.Stdout = &out
 	p := subprocesstest.Start(t, spec)
-	_ = w.Close() // the child's copy is the only writer left
-	got, err := io.ReadAll(r)
-	if err != nil {
+	got := make([]byte, len(status))
+	if _, err := io.ReadFull(r, got); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.Wait(); err != nil {
 		t.Fatalf("channel child: %v", err)
 	}
-	if string(got) != "status: ready" || out.Len() != 0 {
+	if string(got) != status || out.Len() != 0 {
 		t.Fatalf("channel carried %q and stdout %q; want the status on the channel alone", got, out.String())
 	}
 
 	without := subprocesstest.Spec(t, subprocesstest.RoleChannel, fd, "leak")
 	if res, err := subprocess.Run(context.Background(), without, subprocess.RunOptions{}); err != nil || res.ExitCode == 0 {
 		t.Fatalf("a child without the channel wrote to number %s: %+v, %v; want a failed write", fd, res, err)
+	}
+	// The channel child was the only other writer and has exited: once the host's
+	// end is closed, the channel holds nothing after the status.
+	_ = w.Close()
+	if rest, err := io.ReadAll(r); err != nil || len(rest) != 0 {
+		t.Fatalf("channel carried %q after the status, %v; want nothing", rest, err)
 	}
 	bad := subprocesstest.Spec(t, subprocesstest.RoleExit)
 	bad.Extra = []subprocess.Channel{{}}
