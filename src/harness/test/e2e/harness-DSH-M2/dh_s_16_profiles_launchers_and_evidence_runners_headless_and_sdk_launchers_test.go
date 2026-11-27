@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -406,10 +407,51 @@ func (s *hslState) sdkStart(line, ending string) error {
 	start := time.Now()
 	switch ending {
 	case "the client closes stdin", "the forced deadline elapses":
-		// One answered request proves the server is up before the client ends.
-		go func() { _, _ = io.Copy(io.Discard, s.sdkOut) }()
+		// One answered request proves the server is up before the client ends:
+		// stdin is closed only after the error reply for id "x...-0" arrives.
 		if _, err := io.WriteString(s.sdkIn, hslPing(0)); err != nil {
 			return err
+		}
+		answered := make(chan error, 1)
+		go func() {
+			sc := bufio.NewScanner(s.sdkOut)
+			sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
+			wantID := strings.Repeat("x", 2048) + "-0"
+			got := false
+			for sc.Scan() {
+				if got {
+					continue
+				}
+				var msg struct {
+					JSONRPC string          `json:"jsonrpc"`
+					ID      json.RawMessage `json:"id"`
+					Error   json.RawMessage `json:"error"`
+				}
+				if json.Unmarshal(sc.Bytes(), &msg) != nil || msg.JSONRPC != "2.0" {
+					continue
+				}
+				got = true
+				var id string
+				switch {
+				case json.Unmarshal(msg.ID, &id) != nil || id != wantID:
+					answered <- fmt.Errorf("first JSON-RPC reply has id %.40s..., want x...-0", string(msg.ID))
+				case len(msg.Error) == 0 || string(msg.Error) == "null":
+					answered <- errors.New("first JSON-RPC reply to x...-0 carries no error")
+				default:
+					answered <- nil
+				}
+			}
+			if !got {
+				answered <- fmt.Errorf("stdout closed before any JSON-RPC reply (scan err: %v)", sc.Err())
+			}
+		}()
+		select {
+		case err := <-answered:
+			if err != nil {
+				return fmt.Errorf("dsh --profile sdk: %w:\n%s", err, s.sdkErr.String())
+			}
+		case <-time.After(hslBound):
+			return fmt.Errorf("dsh --profile sdk did not answer x...-0 within %s:\n%s", hslBound, s.sdkErr.String())
 		}
 		_ = s.sdkIn.Close()
 	case "the client stops reading":
