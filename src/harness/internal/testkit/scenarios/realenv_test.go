@@ -94,7 +94,12 @@ func (s shellRun) wait() (string, error) {
 	var err error
 	select {
 	case <-s.host.Process.Exited():
-		if code := s.host.Process.ExitCode(); code != 0 {
+		// The exit code is the direct shell's alone: a shell that exited 0 while a
+		// descendant held its output, until a stop ended that descendant, was
+		// stopped all the same.
+		if cause := s.host.Process.StopCause(); cause != nil {
+			err = fmt.Errorf("%s: stopped: %w", s.line, cause)
+		} else if code := s.host.Process.ExitCode(); code != 0 {
 			err = fmt.Errorf("%s: exit %d", s.line, code)
 		}
 	case <-done:

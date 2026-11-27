@@ -3,12 +3,14 @@
 package scenarios
 
 import (
+	"errors"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/launcher"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess/subprocesstest"
 )
 
@@ -18,13 +20,17 @@ const abandonAfter = 30 * time.Second
 
 // A shell command still running when its scenario's trees are stopped -- what
 // the scenario deadline does -- ends with its whole tree, a descendant holding
-// its output included, well before the test binary would be abandoned.
+// its output included, well before the test binary would be abandoned. The
+// stop comes only once the shell itself has exited 0 (echo hold leaves the
+// grandchild holding the output), so the command must report the stop rather
+// than the shell's own clean exit.
 func TestShellTreeStopsAtTheScenarioDeadline(t *testing.T) {
 	bin := launcher.Build(t, "../launcher", "./testdata/echo")
 	r := startShell(t, bin+" hold") // unquoted: cmd /C gets quotes escaped
 	tick := time.NewTicker(10 * time.Millisecond)
 	defer tick.Stop()
-	for r.run.host.Stdout.String() == "" {
+	shellPid := r.run.host.Process.Pid()
+	for r.run.host.Stdout.String() == "" || !subprocesstest.Exited(shellPid) {
 		select {
 		case <-r.done:
 			t.Fatalf("%s ended before its tree was stopped: %v\n%s", r.line, r.err, r.out)
@@ -43,8 +49,11 @@ func TestShellTreeStopsAtTheScenarioDeadline(t *testing.T) {
 	if took := time.Since(start); took > 3*launcher.Grace {
 		t.Errorf("the stopped shell ended after %s; want within %s", took, 3*launcher.Grace)
 	}
-	if r.err == nil {
-		t.Errorf("the stopped shell reported success")
+	if code := r.run.host.Process.ExitCode(); code != 0 {
+		t.Errorf("the shell exited %d; want 0, the case where only the stop cause tells", code)
+	}
+	if !errors.Is(r.err, subprocess.ErrStopped) {
+		t.Errorf("the stopped shell reported %v; want %v", r.err, subprocess.ErrStopped)
 	}
 	fields := strings.Fields(r.out)
 	if len(fields) == 0 {
