@@ -96,6 +96,10 @@ func runConfigShow(st *state, v *cmdline.Values) error {
 	default:
 		return cmdline.Usagef("dsh config show", "--format %s: want text, yaml or json", format)
 	}
+	// --json makes the result one JSON value, so only --format json agrees with it.
+	if st.res.JSON() && format != "" && format != "json" {
+		return cmdline.Usagef("dsh config show", "--format %s conflicts with --json", format)
+	}
 	p, err := st.preview(def, nil, v.Bool("defaults"))
 	st.previewTrace(p)
 	if p == nil || p.Report == nil {
@@ -113,8 +117,7 @@ func runConfigShow(st *state, v *cmdline.Values) error {
 		for _, note := range p.Notes {
 			fmt.Fprintf(st.env.Stderr, "dsh: note: %s\n", note.Error())
 		}
-		_, werr := st.env.Stdout.Write(out)
-		return werr
+		return st.res.Text(string(out))
 	}
 	// A tree that breaks its Required list is still shown, with the issue.
 	doc := configShowDoc{Profile: def.Name, Layers: p.Layers, Entries: p.Report.Entries(), Issues: issueTexts(p.Report.Issues), Notes: issueTexts(p.Notes)}

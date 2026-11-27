@@ -205,6 +205,21 @@ func TestConfigShowKeepsEveryValue(t *testing.T) {
 	if r := adminRun(t, "", "--home", root, "config", "show", "headless", "--format", "toml"); r.status != output.Usage {
 		t.Errorf("--format toml: %+v", r)
 	}
+	// --json is one JSON value: a text or YAML format with it is a usage error
+	// reported as JSON, and --format json agrees with it.
+	for _, format := range []string{"yaml", "text"} {
+		r := adminRun(t, "", "--home", root, "config", "show", "headless", "--format", format, "--json")
+		var failure struct {
+			Error struct{ Code string } `json:"error"`
+		}
+		if r.status != output.Usage || json.Unmarshal([]byte(r.stdout), &failure) != nil || failure.Error.Code != "cli/usage" || strings.Contains(r.stdout, "- insert:") {
+			t.Errorf("--format %s --json: %+v", format, r)
+		}
+	}
+	r = adminRun(t, "", "--home", root, "config", "show", "headless", "--format", "json", "--json")
+	if r.status != output.OK || json.Unmarshal([]byte(r.stdout), &doc) != nil || doc.Profile != "headless" {
+		t.Errorf("--format json --json: %+v", r)
+	}
 }
 
 func assertGhost(t *testing.T, r run, profiles int) {
