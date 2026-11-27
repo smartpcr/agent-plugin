@@ -234,6 +234,7 @@ func (c *Config) runPlan(ctx context.Context, w io.Writer, stage string, plan ac
 // go test run gets the budget left as its -timeout. A plan that does not fit is
 // sharded (implementation-plan Stage 7.6), never given a longer job. -p 1 keeps
 // packages from running scenarios side by side on one signed-in account.
+// TestScenarioGatesS17BudgetSpent lowers it to prove a spent budget is "not run".
 var scenarioBudget = 100 * time.Minute
 
 // The route selection of forEachRoute (signedin_routes_test.go): the
