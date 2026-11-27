@@ -47,3 +47,16 @@ started: 2026-11-27T14:36:24.3994154Z
 == error
 The host ended without a clean stop: it was killed, lost its machine, or
 crashed before it could write a report. Its runtime record was left behind.
+
+== reviewer annotation (added after the run; the transcript above is unchanged)
+Finding: the report's "version:" line is empty, here and in check-16.5-wsl.log, although the
+binary reports "dsh (devel) (12c2be8...)". This is a defect, not intended (devel) behaviour:
+a devel build's version is "(devel)" (boot/launch.DevelVersion), never empty.
+Cause: cli/hostclient/hostclient.go:316 copies Record.Version, which host/launch writes from
+Config.Version (host/launch/launch.go:264). host/launch/component.go defaults only RunDir from
+the launch; nothing in production sets Config.Version from launch.Data.Version, so the runtime
+record, host.status and the unclean-exit report all carry no version.
+Status: 16.5's second-launch and crash-notice behaviour stands as seen; the empty version is an
+open defect against DH-D-CLI-5 (follow-up: fill host.launch Config.Version from the launch's
+build version and assert a non-empty version in the hostclient unclean-exit test). It is to be
+listed in the 16.5 row and Open items of DH-S-16.md.
