@@ -233,9 +233,10 @@ func (s *s16mState) readyRuns(command string) error {
 	if command != "harness-gate ready --stage DH-S-16 --built" {
 		return fmt.Errorf("unexpected command %q", command)
 	}
-	// ready does not read the status line, so the committed record is the input
-	// whether it still reads open (before the transition) or already reads closed.
-	return s.runOn("ready", s.text)
+	// ready runs before the status transition, so its input is the pre-transition
+	// record (status open) whatever HEAD reads, including after the closing PR lands.
+	open := s16mStatusLine.ReplaceAllLiteralString(s.text, "Closure status: open")
+	return s.runOn("ready", open)
 }
 
 func (s *s16mState) exits0Reporting(what string) error {
