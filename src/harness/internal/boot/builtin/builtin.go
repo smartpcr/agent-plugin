@@ -20,6 +20,9 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/host/sharing"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/host/stream"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/host/web"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/human"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/human/approval"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/human/command"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human/permission"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human/secret"
 	secretfile "github.com/smartpcr/agent-plugin/src/harness/internal/human/secret/file"
@@ -176,7 +179,7 @@ func Permission() []catalog.Item {
 // over it, the carriers of the sdk profile.
 func Wire() []catalog.Item {
 	return []catalog.Item{
-		{Name: stdio.Name, Component: stdio.Component, Provides: []string{stdio.Key.Name()}},
+		{Name: stdio.Name, Component: stdio.Component, Config: reflect.TypeFor[stdio.Settings](), Provides: []string{stdio.Key.Name()}},
 		{Name: sdkserver.Name, Component: sdkserver.Component},
 	}
 }
@@ -184,13 +187,20 @@ func Wire() []catalog.Item {
 // CLI is the cli family's items: the carrier of the headless profile.
 func CLI() []catalog.Item {
 	return []catalog.Item{
-		{Name: headless.Name, Component: headless.Component},
+		{Name: headless.Name, Component: headless.Component, Config: reflect.TypeFor[headless.Config](), Provides: []string{human.Key.Name(), approval.Key.Name(), command.Key.Name()}},
 	}
 }
 
+// extra is the items a testhook build adds (testhook.go); empty otherwise.
+var extra []catalog.Item
+
 // Sets is every family's items.
 func Sets() [][]catalog.Item {
-	return [][]catalog.Item{Boot(), Host(), Util(), Session(), Agent(), LLM(), Tools(), FS(), Sandbox(), Human(), Permission(), Wire(), CLI(), Storage(), UI()}
+	sets := [][]catalog.Item{Boot(), Host(), Util(), Session(), Agent(), LLM(), Tools(), FS(), Sandbox(), Human(), Permission(), Wire(), CLI(), Storage(), UI()}
+	if len(extra) > 0 {
+		sets = append(sets, extra)
+	}
+	return sets
 }
 
 // Catalog builds the catalogue of this binary.

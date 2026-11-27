@@ -168,6 +168,9 @@ func (Real) Tree(ctx context.Context, s *State) error {
 	if _, err := launch.AppKey.Provide(root, launch.App(s.App)); err != nil {
 		return err
 	}
+	if _, err := launch.DataKey.Provide(root, s.Data.Clone()); err != nil {
+		return err
+	}
 	if _, err := launch.ProcessesKey.Provide(root, procs); err != nil {
 		return err
 	}

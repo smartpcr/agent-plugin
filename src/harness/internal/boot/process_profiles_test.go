@@ -58,6 +58,13 @@ func TestHelperProfileProcess(t *testing.T) {
 		fmt.Fprintln(os.Stderr, readyMarker)
 	}()
 	if name != profile.SDK {
+		// The headless runner reads its task from an input nobody writes, so the
+		// process's own standard input stays the helper's stop signal.
+		if name == profile.Headless {
+			in, w := io.Pipe()
+			defer w.Close()
+			opts.Stdio = &launch.Stdio{In: in, Out: io.Discard}
+		}
 		go func() {
 			_, _ = io.Copy(io.Discard, os.Stdin)
 			app.Stop(launch.Completed, output.OK)

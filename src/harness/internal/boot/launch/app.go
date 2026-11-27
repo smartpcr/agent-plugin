@@ -34,6 +34,10 @@ type App interface {
 // AppKey is the service under which the boot tree provides the App.
 var AppKey = cordis.NewServiceKey[App]("boot.app")
 
+// DataKey is the service under which the boot tree provides the launch's data: an
+// app's start-up component (cli.headless) reads its own words there.
+var DataKey = cordis.NewServiceKey[Data]("boot.launch")
+
 // ProcessesKey is the service under which the boot tree provides the registry of the
 // process trees its components started; shutdown force-stops what is still there
 // when the bound passes.

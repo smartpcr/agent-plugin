@@ -173,6 +173,13 @@ func bootProfile(t *testing.T, def profile.Definition) {
 		t.Cleanup(func() { cin.Close(); serverOut.Close() })
 		opts.Stdio = &launch.Stdio{In: serverIn, Out: serverOut}
 	}
+	// The headless runner, given no task words, reads its task from an input
+	// nobody writes, so the launch runs until the test stops it.
+	if def.Name == profile.Headless {
+		in, w := io.Pipe()
+		t.Cleanup(func() { w.Close() })
+		opts.Stdio = &launch.Stdio{In: in, Out: io.Discard}
+	}
 	done := runJoined(t, app, func() int { return Process(context.Background(), opts) })
 	select {
 	case <-app.Ready():

@@ -198,6 +198,13 @@ func (s *mlpState) processRuns(name string) error {
 		s.clientIn, s.clientOut, s.serverOut = cin, cout, serverOut
 		s.opts.Stdio = &launch.Stdio{In: serverIn, Out: serverOut}
 	}
+	// The headless runner, given no task words, reads its task from an input
+	// nobody writes, so the launch runs until the client ends it.
+	if name == profile.Headless {
+		in, w := io.Pipe()
+		s.clientIn, s.serverOut = w, w
+		s.opts.Stdio = &launch.Stdio{In: in, Out: io.Discard}
+	}
 	s.done, s.joined = make(chan int, 1), make(chan struct{})
 	opts := s.opts
 	go func() {

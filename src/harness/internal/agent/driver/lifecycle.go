@@ -204,6 +204,11 @@ func (in *instance) Session() session.ReadSession { return in.sess }
 func (in *instance) Scope() *cordis.Context       { return in.sc.Ctx() }
 func (in *instance) ScopeKey() scope.Key          { return in.sc.Key() }
 
+// OwnScope is the agent's scope itself, which alone can change what it encloses:
+// the creator's CreateOptions.Setup binds the agent's preset with it
+// (agentpreset.Target), before the agent goes live.
+func (in *instance) OwnScope() *scope.Scope { return in.sc }
+
 // OpenReport is what a resume's open closed; zero for a created agent.
 func (in *instance) OpenReport() session.OpenReport { return in.report }
 
