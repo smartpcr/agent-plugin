@@ -48,16 +48,30 @@ The four guarded scenarios of step 16.8, on scratch homes (M2-EN-6); this stage 
 
 | Scenario | Variant | Venue | Leg | Environment | Commit | Result | Artifacts |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| DH-E-STORE-1 | Linux (WSL) | guarded | required | scratch home | | not run (stage not built) | |
-| DH-E-STORE-1 | Windows | guarded | required | scratch home | | not run (stage not built) | |
+| DH-E-STORE-1 | Linux (WSL) | guarded | required | scratch home | | not run (M1 not closed, M2-DEC-1; recorded by a later workstream) | |
+| DH-E-STORE-1 | Windows | guarded | required | scratch home | | not run (M1 not closed, M2-DEC-1; recorded by a later workstream) | |
 | DH-E-STORE-1 | macOS | guarded | required | | | out of scope (platforms-windows-wsl) | |
-| DH-E-STORE-2 | Linux (WSL) | guarded | required | scratch home | | not run (stage not built) | |
-| DH-E-STORE-6 | Linux (WSL) | guarded | required | scratch home | | not run (stage not built) | |
-| DH-E-STORE-6 | Windows | guarded | required | scratch home | | not run (stage not built) | |
+| DH-E-STORE-2 | Linux (WSL) | guarded | required | scratch home | | not run (M1 not closed, M2-DEC-1; recorded by a later workstream) | |
+| DH-E-STORE-6 | Linux (WSL) | guarded | required | scratch home | | not run (M1 not closed, M2-DEC-1; recorded by a later workstream) | |
+| DH-E-STORE-6 | Windows | guarded | required | scratch home | | not run (M1 not closed, M2-DEC-1; recorded by a later workstream) | |
 | DH-E-STORE-6 | macOS | guarded | required | | | out of scope (platforms-windows-wsl) | |
-| DH-E-FS-3 | Linux (WSL) | guarded | required | scratch home | | not run (stage not built) | |
-| DH-E-FS-3 | Windows | guarded | required | scratch home | | not run (stage not built) | |
+| DH-E-FS-3 | Linux (WSL) | guarded | required | scratch home | | not run (M1 not closed, M2-DEC-1; recorded by a later workstream) | |
+| DH-E-FS-3 | Windows | guarded | required | scratch home | | not run (M1 not closed, M2-DEC-1; recorded by a later workstream) | |
 | DH-E-FS-3 | macOS | guarded | required | | | out of scope (platforms-windows-wsl) | |
+
+## Operator decisions for Stage 6.12
+
+Answers the operator gave in the Forge open-question wizard for workstream
+`ws-harness-dsh-m2-phase-dh-s-16-profiles-launchers-and-evidence-runners-stage-guarded-scenarios-on-scratch-homes`
+(after iteration 2), quoted verbatim. They narrow that workstream to building the runner; they do not
+close a row, waive a run or change M2-DEC-1.
+
+| Question id | Question | Answer (verbatim) | Effect on this record |
+| --- | --- | --- | --- |
+| `m1-entry-block` | `harness-gate entry` fails (harness:DSH-M1 not closed), so no guarded run can start. How should this workstream proceed? | "Merge the runner now; record runs in a later workstream" | Step 16.8's runner merges; the seven required rows above stay `not run` and remain owed. A later workstream runs both guarded lanes on a merged commit after `harness-gate entry` exits 0 and fills the rows, the run records and the cleanup evidence below. Stage 6.12's run and cleanup-evidence steps stay unticked until then. |
+| `store-command-templates` | Who provides the `DSH_SCENARIO_*` command templates for DH-E-STORE-1/-6/-2 (create/resume/fork/delete/attach image), which no current dsh CLI or SDK method supports? | "Add a follow-up workstream for a scenario driver" | The guarded inputs file is written by that workstream; `harness-gate guarded` refuses to run while any input is missing. |
+| `requires-executing-stage` | May a guarded run include a scenario whose index `requires` is the stage it is closing (DH-E-FS-3 requires DH-S-16)? | "Yes, the executing stage only" | `guarded.RequiresBuilt` admits the `--stage` being closed and no other unbuilt stage. |
+| `store2-cleanup-coverage` | DH-E-STORE-2's closing deletion and spill-file cleanup are not checked by any test. Should this workstream add them? | "Add them in this workstream next iteration" | Done: STORE-2 step (5) and STORE-6's spill checks. |
 
 ## Manual checks register
 
@@ -97,7 +111,16 @@ Not yet recorded. Gate venue: both local lanes, `tools/harness-gate/lanes/win.ps
 ### Exact tests and commands
 
 Not yet recorded: the gate runner's output, the `go test` command lines and `DSH_REQUIRE_SCENARIOS`
-(`harness-gate require --stage DH-S-16`).
+(`harness-gate require --stage DH-S-16`). Step 16.8 runs, once per lane on the stage's merged commit,
+`tools/harness-gate/lanes/wsl.sh --guarded --inputs FILE` and `lanes/win.ps1 -Guarded -Inputs FILE`
+([the gate's README](../../../../tools/harness-gate/README.md#guarded-mode---guarded--guarded-stage-612)):
+`harness-gate entry`, `harness-gate require --stage DH-S-16`, then `go test -tags scenario -count=1 -p 1
+-run <plan> ./internal/testkit/scenarios` on scratch homes, recorded in
+`runs/guarded-<wsl|win>-<sha7>-<stamp>.txt`. Each record prints one `row:` line per scenario, copied into
+the Scenarios table with the record named in Artifacts. Not yet run: `harness-gate entry` fails while
+harness:DSH-M1 is not closed (M2-DEC-1); per [Operator decisions](#operator-decisions-for-stage-612)
+(`m1-entry-block`) the runner merges with this stage and a later workstream runs both lanes and records
+their rows, records and cleanup evidence here.
 
 ### Run identifiers
 
@@ -115,7 +138,21 @@ The Manual checks register above.
 ### Cleanup evidence
 
 Not yet recorded. Step 16.8: the scratch homes and the edited file compared before and after; the deleted
-sessions' rows, blobs and spill files shown gone; the log read with `seq` 0 to n and no gap.
+sessions' rows, blobs and spill files shown gone; the log read with `seq` 0 to n and no gap. Each scenario
+logs these observations as `evidence:` lines while its scratch home still exists, and the guarded record
+copies them into its `cleanup evidence:` section (with the `scenarios` gate's listing of the scratch
+directory before and after the run):
+
+- DH-E-STORE-6: the home's files before and after the deletions; the spill files of both deleted sessions
+  before (a fixture precondition); after the deletion and after the interrupted deletion's restart, each
+  session gone (not listed, not tombstoned), its spill directory absent and its unshared images absent; the
+  fork's log `seq` 0 to n before and after; the store check clean.
+- DH-E-STORE-2 (WSL lane): the first model request sent after the resume's prompt (counted from the
+  requests already sent, never the latest one) carries the outcome-unknown result; after it, the host killed and the session deleted;
+  its log `seq` 0 to n; its spill files and blobs before; afterwards no session, no tombstone, no blob and no
+  spill file in the home, and the home's files before and after.
+- DH-E-STORE-1: the log read from the database, `seq` 0 to n with no gap, and the lease epoch.
+- DH-E-FS-3: the file's SHA-256 before, after, and the last acknowledged write.
 
 ### Open items
 
