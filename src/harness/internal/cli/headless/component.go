@@ -126,6 +126,14 @@ var Component = cordis.Define(Name, func(ctx *cordis.Context, cfg Config) error 
 	// --json. A parse error is reported by the run.
 	if args, perr := Parse(data.Words); perr == nil && !args.JSON {
 		if tty, err := openTerminal(); err == nil {
+			// Closing the terminal on release unblocks the answerer's reader,
+			// which then closes its line channel and exits.
+			if _, err := ctx.Effect("cli.headless.terminal", func() (cordis.Disposer, error) {
+				return func() error { return tty.Close() }, nil
+			}); err != nil {
+				tty.Close()
+				return err
+			}
 			if _, err := h.interactions.RegisterAnswerer(ctx, ChannelCLI, newTerminal(h.interactions, tty, r.diag)); err != nil {
 				return err
 			}
