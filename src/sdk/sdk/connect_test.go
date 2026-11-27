@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -315,5 +316,58 @@ func TestCloseReturnsAFailedTransportCloser(t *testing.T) {
 	}
 	if _, err := cw.Write([]byte("x")); !errors.Is(err, io.ErrClosedPipe) {
 		t.Fatalf("write after Close = %v, want the pipe closed", err)
+	}
+}
+
+// DH-T-SDK-12: History sends its cursor even when it is 0, so paging one event
+// at a time by the last seq seen returns every event once. The fake host reads
+// the cursor as sdkserver does: omitted is from seq 0, afterSeq n is from n+1.
+//
+//dsh:test DH-T-SDK-16
+func TestHistoryPagesEveryEventOnce(t *testing.T) {
+	stored := []protocol.Event{{Seq: 0}, {Seq: 1}, {Seq: 2}}
+	h, _, wire := pipeHost(t, Options{}, map[string]jsonrpc.Handler{
+		"session/history": func(_ context.Context, raw json.RawMessage) (any, error) {
+			var p struct {
+				AfterSeq *int64 `json:"afterSeq"`
+				Limit    int    `json:"limit"`
+			}
+			if err := json.Unmarshal(raw, &p); err != nil {
+				return nil, err
+			}
+			from := int64(0)
+			if p.AfterSeq != nil {
+				from = *p.AfterSeq + 1
+			}
+			var r protocol.SessionHistoryResult
+			for _, e := range stored {
+				if e.Seq >= from && len(r.Events) < p.Limit {
+					r.Events = append(r.Events, e)
+				}
+			}
+			return r, nil
+		},
+	})
+	s := &Session{h: h, ID: "s1"}
+	var seen []int64
+	for after := int64(-1); ; {
+		page, err := s.History(t.Context(), after, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page) == 0 {
+			break
+		}
+		if len(seen) > len(stored) {
+			t.Fatalf("paging does not advance: %v", seen)
+		}
+		seen = append(seen, page[0].Seq)
+		after = page[0].Seq
+	}
+	if fmt.Sprint(seen) != "[0 1 2]" {
+		t.Fatalf("paged seqs %v, want [0 1 2]", seen)
+	}
+	if !strings.Contains(wire.String(), `"afterSeq":0`) {
+		t.Fatalf("afterSeq 0 was not sent:\n%s", wire)
 	}
 }

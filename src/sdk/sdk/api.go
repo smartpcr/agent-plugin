@@ -66,11 +66,21 @@ func (s *Session) Cancel(ctx context.Context, o CancelOptions) error {
 	return s.call(ctx, "session/cancel", protocol.SessionCancelParams{SessionID: s.ID, Scope: o.Scope, Inbox: o.Inbox}, &protocol.SessionCancelResult{})
 }
 
-// History returns up to limit stored events after afterSeq; limit 0 takes the
-// host's default page.
+// historyParams are protocol.SessionHistoryParams with the cursor always sent:
+// the shared type omits an afterSeq of 0, which the host reads as no cursor
+// (from seq 0) instead of "after seq 0".
+type historyParams struct {
+	SessionID string `json:"sessionId"`
+	AfterSeq  int64  `json:"afterSeq"`
+	Limit     int    `json:"limit,omitempty"`
+}
+
+// History returns up to limit stored events with a seq above afterSeq, so
+// passing the last seq seen pages through every event once; afterSeq -1 starts
+// at seq 0. Limit 0 takes the host's default page.
 func (s *Session) History(ctx context.Context, afterSeq int64, limit int) ([]protocol.Event, error) {
 	var r protocol.SessionHistoryResult
-	if err := s.call(ctx, "session/history", protocol.SessionHistoryParams{SessionID: s.ID, AfterSeq: afterSeq, Limit: limit}, &r); err != nil {
+	if err := s.call(ctx, "session/history", historyParams{SessionID: s.ID, AfterSeq: afterSeq, Limit: limit}, &r); err != nil {
 		return nil, err
 	}
 	return r.Events, nil
