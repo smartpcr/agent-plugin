@@ -11,12 +11,14 @@ package e2e
 //     embedded SQLite store back row by row.
 //   - DH-E-STORE-6 runs the store's deletions in re-executed child processes
 //     (service:os-process), one killed between two chunks.
-//   - DH-E-FS-3 runs two re-executed edit processes over the real fs.local
-//     provider with one shared lock directory, each edit a read and a
-//     ReplaceIfVersion write (the edit tool's guard), with an editor save process
-//     beside them. dsh's own fs.ops cannot boot in the binary yet
-//     (internal/boot/builtin: "Not yet bootable"), so the edits do not go through
-//     dsh's tool pipeline. DSH_SCENARIO_FS3_EDITOR, when set, is the lane's editor
+//   - DH-E-FS-3 runs two re-executed processes, each booting dsh's model-facing
+//     tool pipeline (tools/core, fs.tools' edit over fs.ops, the sandbox fence
+//     and fs.local with one lock directory shared by both) with a SQLite session
+//     log, and plays 1,000 edit calls from a replay script (llm/replay.Load, the
+//     product's export format) through it, with an editor save process beside
+//     them. The dsh binary cannot mount fs.tools yet (internal/boot/builtin: "Not
+//     yet bootable"), so the processes host the same components the binary
+//     would. DSH_SCENARIO_FS3_EDITOR, when set, is the lane's editor
 //     save script ("<editor> <file> <log> <stop>", logging "<start> <end>
 //     <sha256>" per save); otherwise the suite's own editor role saves the same
 //     way.
@@ -51,17 +53,28 @@ import (
 
 	"github.com/cucumber/godog"
 
+	"github.com/smartpcr/agent-plugin/src/go/cordis"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/agent"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/replay"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/checkpoint"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/scope"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store/sqlite"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/surface"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/workdir"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
+	spilllocal "github.com/smartpcr/agent-plugin/src/harness/internal/storage/spill/local"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/launcher"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/temphome"
-	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
+	htools "github.com/smartpcr/agent-plugin/src/harness/internal/tools"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/tools/core"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/fs"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/fs/local"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/fs/ops"
+	fstools "github.com/smartpcr/agent-plugin/src/harness/internal/world/fs/tools"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox/sandboxtest"
 )
@@ -128,7 +141,7 @@ func gshChild(role string, a []string) error {
 		}
 		fmt.Println("opened")
 		return s.Close(gshBG)
-	case "edit": // file locks versions name
+	case "edit": // file locks versions script
 		return gshEditChild(a[0], a[1], a[2], a[3])
 	case "editor": // file log stop
 		return gshEditorChild(a[0], a[1], a[2])
@@ -136,62 +149,212 @@ func gshChild(role string, a []string) error {
 	return fmt.Errorf("unknown role %q", role)
 }
 
-// gshEditChild is one process's edits: each reads the file and writes it back
-// with its marker before the anchor, guarded by the version it read. It reports
-// "ack <marker> <start> <end> <sha>" or "stale <marker>"; each acknowledged
-// version is kept under versions by its SHA-256.
-func gshEditChild(file, locks, versions, name string) error {
-	l := local.NewWithOptions(local.Options{LockDir: locks})
-	p := sandboxtest.Policy(sandbox.WorkspaceWrite, filepath.Dir(file))
+// gshDirs is the edit session's working directory: the workspace.
+type gshDirs struct{ root string }
+
+func (d gshDirs) Access(session.ID) (workdir.Access, error) { return d, nil }
+func (d gshDirs) Current() (workdir.WorkingDirectory, error) {
+	return workdir.WorkingDirectory{Path: d.root, Root: d.root}, nil
+}
+func (d gshDirs) Path() (string, error) { return d.root, nil }
+func (d gshDirs) Root() (string, error) { return d.root, nil }
+
+// gshKeep is the fs.local provider under fs.ops, keeping each version a write
+// put in place under dir by its SHA-256, so the oracle can read the version an
+// editor save later copied.
+type gshKeep struct {
+	fs.FS
+	dir string
+}
+
+func (k gshKeep) Write(ctx context.Context, r fs.Ref, data []byte, g fs.Guard, p sandbox.Policy) (fs.WriteOutcome, error) {
+	out, err := k.FS.Write(ctx, r, data, g, p)
+	if err == nil {
+		err = os.WriteFile(filepath.Join(k.dir, gshSum(data)), data, 0o600)
+	}
+	return out, err
+}
+
+// gshEditChild is one edit process: dsh's model-facing tool pipeline
+// (tools/core) with fs.tools mounted over fs.ops, the sandbox fence and the
+// real fs.local provider (one lock directory shared by both processes), a
+// SQLite session log in a home of its own, and the assistant steps of a replay
+// script (llm/replay, the product's export format) as the model. Each step's
+// edit call is logged as the model's message and executed as a batch, the
+// tool/result logged; it reports "ack <marker> <start> <end> <sha>" from the
+// version the result names, "stale <marker>" for fs/stale-version, else "fail".
+func gshEditChild(file, locks, versions, script string) error {
+	sf, err := os.Open(script)
+	if err != nil {
+		return err
+	}
+	turns, err := replay.Load(sf)
+	sf.Close()
+	if err != nil {
+		return err
+	}
+	ws := filepath.Dir(file)
+	root := cordis.New()
+	root.Loggers().ClearExporters()
+	defer root.Dispose()
+	f, err := root.Use(scope.Component, cordis.None{})
+	if err == nil {
+		err = f.Wait()
+	}
+	if err != nil {
+		return err
+	}
+	var tab scope.Table
+	g, err := root.Inject([]string{scope.TableKey.Name()}, func(c *cordis.Context) (err error) {
+		tab, err = scope.TableKey.Get(c)
+		return err
+	})
+	if err == nil {
+		err = g.Wait()
+	}
+	if err != nil {
+		return err
+	}
+	svc := core.NewWith(root, tab, core.Config{Checkpoint: checkpoint.Default{}})
+	l := home.New(filepath.Join(versions, "..", "home-"+filepath.Base(script)))
+	if err := home.Ensure(l); err != nil {
+		return err
+	}
+	st, err := sqlite.OpenHome(gshBG, l)
+	if err != nil {
+		return err
+	}
+	defer st.Close(gshBG)
+	sp, err := spilllocal.New(l, spilllocal.DefaultConfig, spilllocal.WithLineage(spilllocal.ForkLineage(st)))
+	if err != nil {
+		return err
+	}
+	wd := gshDirs{ws}
+	provider := gshKeep{local.NewWithOptions(local.Options{LockDir: locks}), versions}
+	o := ops.New(root, provider, &sandboxtest.Resolver{Default: sandbox.WorkspaceWrite, Workdir: wd}, ops.Options{Workdir: wd})
+	if _, err := fstools.Mount(root, svc, o, sp, fstools.Config{}); err != nil {
+		return err
+	}
+	id := session.ID("ses_gsh_" + strings.TrimSuffix(filepath.Base(script), ".jsonl"))
+	h, err := session.NewService(root, st, session.Config{}).Create(gshBG, nil, session.CreateOptions{Header: session.Header{ID: string(id)}})
+	if err != nil {
+		return err
+	}
+	defer h.Close(gshBG)
+	user, err := vocab.RestoreMessage("u1", vocab.RoleUser, nil, vocab.TextBlock("Insert your markers before the anchor."))
+	if err != nil {
+		return err
+	}
+	appendDraft := func(mk func() (event.Draft, error)) error {
+		d, err := mk()
+		if err == nil {
+			_, err = h.Append(gshBG, d)
+		}
+		return err
+	}
+	if err := errors.Join(
+		appendDraft(func() (event.Draft, error) { return event.TurnStartType.Draft(event.TurnStart{Turn: 1}) }),
+		appendDraft(func() (event.Draft, error) {
+			return event.UserMessage.Draft(event.Append(), event.UserMessagePayload{Message: user})
+		}),
+	); err != nil {
+		return err
+	}
 	out := bufio.NewWriter(os.Stdout)
 	defer out.Flush()
-	for i := range gshEdits {
-		marker := fmt.Sprintf("%s%04d", name, i)
-		start := time.Now()
-		var data []byte
-		var info fs.Info
-		var err error
-		for try := 0; try < 200; try++ { // a read racing the editor's rename is retried; it changes nothing
-			if data, info, err = gshRead(l, file); err == nil {
-				break
+	for step, turn := range turns {
+		var calls []htools.CallRequest
+		for _, b := range turn.Message.Blocks() {
+			if b.ToolUse != nil {
+				calls = append(calls, htools.CallRequest{ID: b.ToolUse.ID, Name: b.ToolUse.Name, Arguments: string(b.ToolUse.Args)})
 			}
-			time.Sleep(time.Millisecond)
 		}
+		if len(calls) != 1 || calls[0].Name != fstools.EditName {
+			continue // the script's closing text step
+		}
+		if err := errors.Join(
+			appendDraft(func() (event.Draft, error) {
+				return event.StepStartType.Draft(event.StepStart{Turn: 1, Step: step + 1})
+			}),
+			appendDraft(func() (event.Draft, error) {
+				return event.AssistantMessage.Draft(event.Append(), event.AssistantMessagePayload{Message: *turn.Message})
+			}),
+		); err != nil {
+			return err
+		}
+		var a struct {
+			NewString string `json:"new_string"`
+		}
+		if err := json.Unmarshal([]byte(calls[0].Arguments), &a); err != nil {
+			return err
+		}
+		marker, _, _ := strings.Cut(a.NewString, "\n")
+		v, err := svc.Resolve(gshBG, htools.Target{Agent: agent.Ref{Session: id, Incarnation: 1}})
 		if err != nil {
-			return fmt.Errorf("read for %s: %v", marker, err)
+			return err
 		}
-		next := strings.Replace(string(data), gshAnchor, marker+"\n"+gshAnchor, 1)
-		w, err := l.Write(gshBG, fs.Ref{Path: file}, []byte(next), fs.ReplaceIfVersion{Version: info.Version}, p)
+		start := time.Now()
+		res, err := svc.ExecuteBatch(gshBG, htools.Batch{View: v, Log: h, Calls: calls})
 		end := time.Now()
-		switch {
-		case err == nil:
-			sum := hex.EncodeToString(w.Version.Digest[:])
-			if sum != gshSum([]byte(next)) {
-				return fmt.Errorf("edit %s returned version %s, not its content's", marker, sum)
-			}
-			if err := os.WriteFile(filepath.Join(versions, sum), []byte(next), 0o600); err != nil {
-				return err
-			}
-			fmt.Fprintf(out, "ack %s %d %d %s\n", marker, start.UnixNano(), end.UnixNano(), sum)
-		case herr.Kind(err) == fs.CodeStaleVersion:
+		v.Release()
+		if err != nil {
+			return err
+		}
+		if len(res.Results) != 1 {
+			return fmt.Errorf("edit %s: %d results", marker, len(res.Results))
+		}
+		r := res.Results[0]
+		if err := appendDraft(func() (event.Draft, error) {
+			return event.StepEndType.Draft(event.StepEnd{Turn: 1, Step: step + 1})
+		}); err != nil {
+			return err
+		}
+		switch m := gshVersionRe.FindStringSubmatch(r.Text); {
+		case !r.IsError && m != nil:
+			fmt.Fprintf(out, "ack %s %d %d %s\n", marker, start.UnixNano(), end.UnixNano(), m[1])
+		case r.IsError && strings.Contains(r.Text, string(fs.CodeStaleVersion)+":"):
 			fmt.Fprintf(out, "stale %s %d %d\n", marker, start.UnixNano(), end.UnixNano())
 		default:
-			fmt.Fprintf(out, "fail %s %v\n", marker, err)
+			fmt.Fprintf(out, "fail %s %s %s\n", marker, r.Code, strings.ReplaceAll(r.Text, "\n", " "))
 		}
 	}
 	fmt.Fprintln(out, "done")
 	return nil
 }
 
-func gshRead(l *local.FS, file string) ([]byte, fs.Info, error) {
-	rc, info, err := l.Open(gshBG, fs.Ref{Path: file})
-	if err != nil {
-		return nil, info, err
+var gshVersionRe = regexp.MustCompile(`\(version sha256:([0-9a-f]{64})\)`)
+
+// gshEditScript writes one process's replay script: an assistant step a call,
+// each an edit inserting the process's next marker before the anchor, then
+// "Done.".
+func gshEditScript(dir, file, name string) (string, error) {
+	lines := []string{`{"dsh_export":1}`}
+	step := func(block map[string]any) error {
+		n := len(lines)
+		data, err := json.Marshal(map[string]any{
+			"message":        map[string]any{"id": fmt.Sprintf("gsh-%s-msg-%05d", name, n), "role": "assistant", "blocks": []any{block}},
+			"request_digest": "authored",
+			"usage":          map[string]int{"input": 1, "output": 1},
+		})
+		if err != nil {
+			return err
+		}
+		line, err := json.Marshal(map[string]any{"seq": n - 1, "type": "assistant/message", "pv": 4, "data": string(data)})
+		lines = append(lines, string(line))
+		return err
 	}
-	defer rc.Close()
-	var b strings.Builder
-	_, err = bufio.NewReader(rc).WriteTo(&b)
-	return []byte(b.String()), info, err
+	for i := range gshEdits {
+		marker := fmt.Sprintf("%s%04d", name, i)
+		args := map[string]any{"file_path": file, "old_string": gshAnchor, "new_string": marker + "\n" + gshAnchor}
+		if err := step(map[string]any{"kind": "tool_use", "tool_use": map[string]any{"id": "gsh-" + marker, "name": fstools.EditName, "args": args}}); err != nil {
+			return "", err
+		}
+	}
+	if err := step(map[string]any{"kind": "text", "text": map[string]any{"text": "Done."}}); err != nil {
+		return "", err
+	}
+	p := filepath.Join(dir, name+".jsonl")
+	return p, os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
 }
 
 // gshEditorChild saves file as an editor does until stop exists: read it whole,
@@ -870,8 +1033,13 @@ func (w *gshWorld) editsRun(n int) error {
 		err   error
 	}
 	results := make(chan result, 2)
+	scripts := gshOuterT.TempDir()
 	for _, name := range []string{"a", "b"} {
-		p, err := gshSpawn("edit", w.file, w.locks, versions, name)
+		script, err := gshEditScript(scripts, w.file, name)
+		if err != nil {
+			return err
+		}
+		p, err := gshSpawn("edit", w.file, w.locks, versions, script)
 		if err != nil {
 			return err
 		}
@@ -1162,9 +1330,13 @@ func (w *gshWorld) requestFromLog() error {
 }
 
 // gshLive runs the impl's live scenario test through dsh when the lane provides
-// its inputs (the editor save script, the replay layer, the Claude Code sign-in
-// and bwrap); off such a lane the scratch-home proof above is the evidence.
-func gshLive(test string, vars ...string) error {
+// its inputs (the Claude Code sign-in and bwrap); a partial set fails. Off such
+// a lane it checks the stage's evidence (docs/stories/harness-DSH-M2/evidence/
+// DH-S-16.md) instead: every lane row of scenario must be either recorded with
+// a commit SHA or "not run" and owed to the later workstream that records the
+// lane runs (operator decisions m1-entry-block and store-command-templates), so
+// no row claims a result this host did not produce.
+func gshLive(scenario, test string, vars ...string) error {
 	var missing []string
 	for _, v := range vars {
 		if os.Getenv(v) == "" {
@@ -1172,8 +1344,7 @@ func gshLive(test string, vars ...string) error {
 		}
 	}
 	if len(missing) == len(vars) {
-		gshOuterT.Logf("%s: no lane input set; the live dsh path runs on the lane that provides %s", test, strings.Join(vars, ", "))
-		return nil
+		return gshEvidenceOwed(scenario, test)
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("%s: the lane provides only part of its inputs; missing %s", test, strings.Join(missing, ", "))
@@ -1189,6 +1360,42 @@ func gshLive(test string, vars ...string) error {
 		return fmt.Errorf("the live scenario %s did not pass (%v):\n%s", test, err, out)
 	}
 	gshOuterT.Logf("%s passed through dsh on this lane", test)
+	return nil
+}
+
+var gshSHARe = regexp.MustCompile(`\b[0-9a-f]{7,40}\b`)
+
+func gshEvidenceOwed(scenario, test string) error {
+	mod, err := shkModuleDir()
+	if err != nil {
+		return err
+	}
+	doc := filepath.Join(mod, "..", "..", "docs", "stories", "harness-DSH-M2", "evidence", "DH-S-16.md")
+	data, err := os.ReadFile(doc)
+	if err != nil {
+		return fmt.Errorf("the stage evidence: %v", err)
+	}
+	rows := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		cells := strings.Split(line, "|")
+		if len(cells) < 9 || strings.TrimSpace(cells[1]) != scenario || strings.TrimSpace(cells[3]) != "guarded" {
+			continue
+		}
+		result := strings.TrimSpace(cells[7])
+		switch {
+		case strings.HasPrefix(result, "out of scope"):
+			continue
+		case strings.HasPrefix(result, "not run") && strings.Contains(result, "recorded by a later workstream"):
+		case gshSHARe.MatchString(cells[6]):
+		default:
+			return fmt.Errorf("%s's %s row records %q with no commit SHA", scenario, strings.TrimSpace(cells[2]), result)
+		}
+		rows++
+		gshOuterT.Logf("%s (%s) on %s: %s", scenario, test, strings.TrimSpace(cells[2]), result)
+	}
+	if rows == 0 {
+		return fmt.Errorf("the stage evidence has no guarded lane row for %s", scenario)
+	}
 	return nil
 }
 
@@ -1325,7 +1532,7 @@ func InitializeScenario_dh_s_16_profiles_launchers_and_evidence_runners_guarded_
 
 	ctx.Step(`^a scratch workspace file ending in the anchor line and one lock directory both processes share$`, w.workspaceFile)
 	ctx.Step(`^the editor save script \(DSH_SCENARIO_FS3_EDITOR, else the suite's own editor save process\)$`, w.editorReady)
-	ctx.Step(`^two processes each drive (\d+) version-guarded edits on the file while the editor saves it$`, w.editsRun)
+	ctx.Step(`^two processes each play (\d+) edit calls from a replay script through dsh's edit tool on the file while the editor saves it$`, w.editsRun)
 	ctx.Step(`^every edit either took effect or returned "([^"]*)"$`, w.everyEditAnswered)
 	ctx.Step(`^at least one conflicting edit was refused "([^"]*)"$`, w.someStale)
 	ctx.Step(`^the final file is unique marker lines then the anchor, holding no refused edit's marker$`, w.finalWellFormed)
@@ -1339,8 +1546,8 @@ func InitializeScenario_dh_s_16_profiles_launchers_and_evidence_runners_guarded_
 	ctx.Step(`^the cut tool call's result is "([^"]*)"$`, w.outcomeUnknown)
 	ctx.Step(`^the first model request after the resume, rebuilt from the session log, has the digest the host sent and carries that result$`, w.requestFromLog)
 	ctx.Step(`^the replay provider received that request carrying the result$`, w.firstRequestCarries)
-	ctx.Step(`^on a lane providing (.+), the live scenario (Test\w+) .+ and passes$`, func(vars, test string) error {
-		return gshLive(test, strings.FieldsFunc(strings.ReplaceAll(vars, " and ", ","), func(r rune) bool { return r == ',' || r == ' ' })...)
+	ctx.Step(`^on a lane providing (.+), the live scenario (Test\w+) .+ and passes; off it, the stage evidence records every (DH-E-[A-Z0-9-]+) lane row with a commit or owed to the lane run$`, func(vars, test, scenario string) error {
+		return gshLive(scenario, test, strings.FieldsFunc(strings.ReplaceAll(vars, " and ", ","), func(r rune) bool { return r == ',' || r == ' ' })...)
 	})
 	ctx.Step(`^the session is deleted with no host running$`, w.deleteSession)
 	ctx.Step(`^no row or spill file of the session remains in the scratch home$`, w.sessionGone)

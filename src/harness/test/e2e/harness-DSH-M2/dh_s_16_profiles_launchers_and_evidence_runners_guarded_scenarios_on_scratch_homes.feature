@@ -43,14 +43,14 @@ Feature: Guarded scenarios on scratch homes (DH-S-16 step 16.8)
   Scenario: DH-E-FS-3 two processes and an editor lose no edit
     Given a scratch workspace file ending in the anchor line and one lock directory both processes share
     And the editor save script (DSH_SCENARIO_FS3_EDITOR, else the suite's own editor save process)
-    When two processes each drive 1000 version-guarded edits on the file while the editor saves it
+    When two processes each play 1000 edit calls from a replay script through dsh's edit tool on the file while the editor saves it
     Then every edit either took effect or returned "fs/stale-version"
     And at least one conflicting edit was refused "fs/stale-version"
     And the final file is unique marker lines then the anchor, holding no refused edit's marker
     And every editor save wrote back a version some process acknowledged
     And every acknowledged edit missing from the final file was overwritten by an overlapping editor save of a version without it
     And the final file equals the last acknowledged version
-    And on a lane providing DSH_SCENARIO_FS3_EDITOR, DSH_SCENARIO_FS3_LAYER, DSH_SCENARIO_FS3_LOCK_TIMEOUT, DSH_SCENARIO_FS3_MODEL and DSH_SCENARIO_FS3_ROUTE, the live scenario TestTwoProcessesAndAnEditorChangeOneFile drives edit through two dsh processes and passes
+    And on a lane providing DSH_SCENARIO_FS3_EDITOR, DSH_SCENARIO_FS3_LAYER, DSH_SCENARIO_FS3_LOCK_TIMEOUT, DSH_SCENARIO_FS3_MODEL and DSH_SCENARIO_FS3_ROUTE, the live scenario TestTwoProcessesAndAnEditorChangeOneFile drives edit through two dsh processes and passes; off it, the stage evidence records every DH-E-FS-3 lane row with a commit or owed to the lane run
 
   @TC-19s2 @DH-E-STORE-2 @proof:service:model-route-claude-code
   Scenario: DH-E-STORE-2 a host killed mid-tool-call recovers honestly
@@ -66,4 +66,4 @@ Feature: Guarded scenarios on scratch homes (DH-S-16 step 16.8)
     When the session is deleted with no host running
     Then no row or spill file of the session remains in the scratch home
     And the guarded runner plans DH-E-STORE-2 on the WSL lane only, behind the Claude Code sign-in, and records the Windows row "out of scope (impl.md 16.8 Linux only; TC-19s2)"
-    And on a lane providing DSH_SCENARIO_STORE2_START, DSH_SCENARIO_STORE2_PROMPT, DSH_SCENARIO_STORE2_RESUME, DSH_SCENARIO_STORE2_REQUEST, DSH_SCENARIO_STORE2_KILL and DSH_SCENARIO_STORE2_DELETE, the live scenario TestKilledHostRecoversHonestly runs sandboxed sleep 60; write under bwrap Full on the Claude Code route and passes
+    And on a lane providing DSH_SCENARIO_STORE2_START, DSH_SCENARIO_STORE2_PROMPT, DSH_SCENARIO_STORE2_RESUME, DSH_SCENARIO_STORE2_REQUEST, DSH_SCENARIO_STORE2_KILL and DSH_SCENARIO_STORE2_DELETE, the live scenario TestKilledHostRecoversHonestly runs sandboxed sleep 60; write under bwrap Full on the Claude Code route and passes; off it, the stage evidence records every DH-E-STORE-2 lane row with a commit or owed to the lane run
