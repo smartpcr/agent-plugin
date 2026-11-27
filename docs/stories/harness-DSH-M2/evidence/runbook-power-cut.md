@@ -62,6 +62,22 @@ machine cannot cut its own power, so no `service:os-process` substitute exists.
 
    A host where any of these fails is recorded `not run (hyperv preflight failed)` or
    `not run (libvirt preflight failed)`, and the stage stays open (M2-C-2).
+
+   The `vm:*` s18 jobs run this preflight themselves (`check: power-cut`) from these
+   environment variables, `{probe}` (also `{vm}`) being a fresh guest name per run:
+
+   | Variable | Value |
+   |---|---|
+   | `DSH_S18_BASE_IMAGES` | the base images, `;`-separated; their SHA-256 before and after must match |
+   | `DSH_S18_PROBE_CREATE` | creates and starts `{probe}` from an overlay (the first two commands above) |
+   | `DSH_S18_PROBE_DELETE` | deletes `{probe}` and its overlay (`virsh undefine {probe} --remove-all-storage`) |
+   | `DSH_S18_PROBE_ACK` | makes `{probe}` send one line holding `{token}` to `{addr}`, e.g. `ssh {probe} "echo {probe} {token} \| nc -N 192.168.122.1 47000"` for `{addr}` `192.168.122.1:47000` |
+
+   The job creates the probe, cuts it with `DSH_SCENARIO_NODEFS_POWEROFF`, restarts it with
+   `DSH_SCENARIO_NODEFS_POWERON`, then checks `service:ack-recorder`: `harness-gate
+   ack-probe --listen $DSH_SCENARIO_NODEFS_LISTEN` records the probe's acknowledgment to a
+   log and reads it back. It then deletes the probe and compares the base image checksums.
+   Any failure is `not run (power-cut preflight failed)`.
 3. **Create the run's guests.** One fresh overlay per guest OS, named in `DSH_SCENARIO_VMS`.
 4. **Set the inputs** on the controller (`{vm}` is replaced by each guest's name):
 

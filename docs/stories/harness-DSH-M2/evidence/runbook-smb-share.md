@@ -52,20 +52,41 @@ not prove other servers or options; record them so a later run can be compared.
    Test-Path S:\ ; New-Item -ItemType Directory S:\scratch -Force
    ```
 
-2. **Set the inputs:**
+2. **Set the inputs.** `harness-gate require --root ../.. --stage DH-S-18 --variant <label>
+   --inputs` (run in `tools/harness-gate`) prints every input the variant's scenario tests
+   read; the s18 job fails before any scenario when one is unset. The share-specific ones:
 
    | Variable | Value |
    |---|---|
    | `DSH_SCENARIO_FS1_SHARE` | a base directory on the SMB share (`/mnt/dsh-smb/scratch`, `S:\scratch`) |
-   | `DSH_SCENARIO_WATCH_SHARES` | the SMB and NFS directories and, on WSL, the `/mnt/c` directory, `;`-separated |
+   | `DSH_SCENARIO_FS1_DIRS`, `_LAYER`, `_ROUTE`, `_MODEL` | FS-1's local directories and scripted route (`fs_fence_scenario_test.go`) |
+   | `DSH_SCENARIO_REMOTE_DIRS` | CHOKIDAR-2: the SMB and NFS directories and, on WSL, the `/mnt/c` directory, `;`-separated, as this machine sees them |
+   | `DSH_SCENARIO_REMOTE_CHANGE` | CHOKIDAR-2: a shell command changing `{name}` in `{dir}` from the other machine or side, e.g. `ssh share-host "echo {marker} >> /srv/dsh-s18/$(basename {dir})/{name}"`, or on WSL for `/mnt/c` `cmd.exe /c "echo {marker}>> C:\Users\%USERNAME%\dsh-s18\{name}"` |
+   | `DSH_SCENARIO_FS_CHECKOUTS`, `DSH_SCENARIO_FS2_TASKS`, `_CHILDREN`, `_LAYER`, `_SHARD` | FS-2 (Windows host): the repositories, the 20 tasks, the descendant-process command, the layer and the shard (`fs_long_scenario_test.go`) |
 
-3. **Run** from the repository root (FS-2 on the Windows host only):
+   The `share` preflight checks `DSH_SCENARIO_FS1_SHARE` is writable and, for each
+   `DSH_SCENARIO_REMOTE_DIRS` directory, writes a probe file, runs
+   `DSH_SCENARIO_REMOTE_CHANGE` on it and fails unless the marker shows on this side.
+
+3. **Run** from the repository root. FS-1 and CHOKIDAR-2 (both machines):
 
    ```bash
-   GOWORK=off go -C src/harness test -tags scenario -p 1 -count=1 -v -run 'TestFenceHoldsUnderALinkSwap' ./internal/testkit/scenarios/
+   GOWORK=off go -C src/harness test -tags scenario -p 1 -count=1 -v -run 'TestFenceHoldsUnderALinkSwap|TestWatchRemoteFilesystemsPoll' ./internal/testkit/scenarios/
    ```
 
-   or dispatch `harness-scenarios.yml` with `stage: DH-S-18` and let the `*:smb` s18 jobs
+   FS-2 on the Windows host, its checkouts on the share: FS-2 clones each task's checkout
+   into `t.TempDir()`, so the run points the temporary directory at the share and keeps
+   the go build local (`GOTMPDIR`); the `windows-host:smb` job does the same (`scratch:
+   share`):
+
+   ```bash
+   tmp="$(cygpath -w "$DSH_SCENARIO_FS1_SHARE")\\s18-tmp"; mkdir -p "$tmp"
+   TMP="$tmp" TEMP="$tmp" GOTMPDIR="$(cygpath -w "$RUNNER_TEMP")" GOWORK=off go -C src/harness test -tags scenario -p 1 -count=1 -timeout 175m -v -run 'TestLongSessionCorrectsItsOwnPatterns' ./internal/testkit/scenarios/
+   ```
+
+   (in PowerShell: `$env:TMP=$env:TEMP='S:\scratch\s18-tmp'; $env:GOTMPDIR="$env:LOCALAPPDATA\Temp"`).
+   Record in the table below that the clone paths in the log are under the share.
+   Or dispatch `harness-scenarios.yml` with `stage: DH-S-18` and let the `*:smb` s18 jobs
    run every scenario `harness-gate require --stage DH-S-18 --variant <label>` prints.
 4. **Clean up.** Remove the scratch directories from the share and unmount
    (`sudo umount /mnt/dsh-smb /mnt/dsh-nfs`; `Remove-SmbMapping S: -Force`).

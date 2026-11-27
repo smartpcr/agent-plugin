@@ -98,8 +98,9 @@ pin means changing the `require` line, keeping its reason comment, and running
 
 ```sh
 GOWORK=off go -C tools/harness-gate run . rehearse  --root ../.. [--out DIR]
-GOWORK=off go -C tools/harness-gate run . require   --root ../.. --stage DH-S-18 [--variant linux-e2:landlock]
+GOWORK=off go -C tools/harness-gate run . require   --root ../.. --stage DH-S-18 [--variant linux-e2:landlock [--inputs]]
 GOWORK=off go -C tools/harness-gate run . variants  --root ../.. [--story harness:DSH-M2]
+GOWORK=off go -C tools/harness-gate run . ack-probe --listen 192.168.122.1:47000 --token t --log ack.log [--send cmd]
 GOWORK=off go -C tools/harness-gate run . preflight --root ../..
 GOWORK=off go -C tools/harness-gate run . scenarios --root ../.. --stage DH-S-17 --evidence FILE
 GOWORK=off go -C tools/harness-gate run . ready     --root ../.. --stage DH-S-16 [--built]
@@ -130,7 +131,17 @@ dsh sandbox status | GOWORK=off go -C tools/harness-gate run . sandbox-preflight
   scenario workflow uses it to derive `DSH_REQUIRE_SCENARIOS`. With `--variant`
   (each `s18` job, Stage 8.1) it prints only the IDs that variant of the story's
   `evidence/variants.md` runs, in index order, after `variants`' check passes; an
-  unknown or out-of-scope variant fails with exit 1.
+  unknown or out-of-scope variant fails with exit 1. With `--inputs` it prints
+  instead the space-separated `DSH_SCENARIO_*` inputs the scenario tests of those
+  IDs read (`variants.InputsFor`: the names each test and the package helpers it
+  calls pass to `need`/`needList`, not those of a role branch or that the package
+  sets for a child); the `s18` job fails when one is unset, and
+  `TestWorkflowBindsEveryVariantInput` keeps each bound in the job's env.
+- `ack-probe --listen addr --token t --log file [--timeout 2m] [--send cmd]` is the
+  `service:ack-recorder` preflight of the `vm:*` s18 jobs: it listens on `addr`,
+  appends every received line to the log, runs `--send` (the throw-away guest's test
+  acknowledgment) and exits 0 once a line holding the token is recorded and read
+  back; 1 otherwise; 2 on a usage error or an address it cannot listen on.
 - `variants` (Stage 8.1, M2-DOD-4) cross-references
   `docs/stories/<story>/evidence/variants.md` with the `DH-S-18` index entry
   (`variants/`): every scenario has an in-scope variant or an owner removal whose
