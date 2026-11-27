@@ -23,8 +23,30 @@ prints (this row's Scenarios, in index order).
 Scenarios that compare machines (DH-E-SANDBOX-1, DH-E-NATIVESYSTEM-3 and -4, DH-E-EXEC-1,
 DH-E-EXEC-10, DH-E-NODEFS-1) read every machine from one variable
 (`DSH_SCENARIO_SANDBOX1_MACHINES`, `DSH_SCENARIO_EXEC1_*`, `DSH_SCENARIO_EXEC10_SSH*`,
-`DSH_SCENARIO_VMS`), so they are listed under each variant they touch; a variant's job
-checks its own machine, and a failed check leaves only that variant not run.
+`DSH_SCENARIO_VMS`), so they are listed under each variant they touch. A variant's job
+preflights only its own machine, but the scenario test it then runs is the whole test
+against every machine in that variable. So:
+
+- **Shared machine sets.** DH-E-SANDBOX-1 needs the `bwrap=`, `landlock=` and
+  `unconfined=` machines of `DSH_SCENARIO_SANDBOX1_MACHINES` in one test, and
+  DH-E-EXEC-1 and DH-E-EXEC-10 need both the `DSH_SCENARIO_EXEC10_SSH` (systemd) and
+  `DSH_SCENARIO_EXEC10_SSH_NOMANAGER` machines. If one machine of a set is down, the
+  scenario fails in **every** variant that lists it (`linux-e2:bwrap`, `:landlock` and
+  `:unconfined` for SANDBOX-1; `linux-e2:systemd` and `:no-user-manager` for EXEC-1/10),
+  not only in the variant whose machine is down.
+- **Repeated and overlapping runs.** The same multi-machine test runs once per listing
+  variant (three times for SANDBOX-1, twice for EXEC-1/10). These `linux-e2:*` jobs have
+  no `lock` (only the hypervisor variants share `lock: hypervisor`), and with
+  `max-parallel: 4` the repeats can run at the same time against the same remote
+  machines.
+
+Recording rule for these scenarios (M2-C-2): a variant whose own preflight fails is
+recorded `not run (<check> preflight failed)`. A shared-set scenario that fails because
+another machine of its set is down, or because repeats overlapped, is recorded
+`failed (<machine> unavailable)` or `failed (overlapping run)` against **each** variant
+that ran it, naming the machine, never `not run` for that variant alone and never a pass.
+A shared-set scenario counts as passed only when every listing variant's run of it passed
+in the same workflow run; otherwise it stays open and S18 stays open.
 
 The manual variants have runbooks: [power-cut host](runbook-power-cut.md),
 [two-account machine](runbook-two-account.md) and [SMB share](runbook-smb-share.md).
