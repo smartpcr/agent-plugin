@@ -91,6 +91,11 @@ func Parse(words []string) (Args, error) {
 			return Args{}, output.Usagef("%s is not supported by this build", name)
 		}
 	}
+	// A resumed session keeps its recorded preset (app-cli.md: --agent-preset
+	// is the preset of a fresh run), so the pair is refused rather than ignored.
+	if a.Session != "" && a.AgentPreset != "" {
+		return Args{}, output.Usagef("--agent-preset applies to a fresh run, not --session")
+	}
 	if a.Command != "" {
 		if len(task) > 0 {
 			return Args{}, output.Usagef("--command runs instead of a task: give no task words")
