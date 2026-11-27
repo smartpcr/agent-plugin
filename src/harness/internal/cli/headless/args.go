@@ -13,8 +13,11 @@ type Args struct {
 	AgentPreset string
 	// Reasoning is auto, show or hide: where the model's reasoning is written.
 	Reasoning string
-	// ApprovalPolicy is ask or never.
+	// ApprovalPolicy is ask or never; "" keeps the session's policy.
 	ApprovalPolicy string
+	// Command is the "/name input" line of --command, run through the command
+	// registry instead of a task; "" for a task.
+	Command string
 	// Task is the joined task words; Stdin is set when the task is read from
 	// standard input ("-" or no task word).
 	Task  string
@@ -30,7 +33,7 @@ var valued = map[string]bool{
 // Parse reads the app words. A flag's value is the next word or follows "=";
 // "--" ends the flags. A usage error is status 64.
 func Parse(words []string) (Args, error) {
-	a := Args{Reasoning: "auto", ApprovalPolicy: "ask"}
+	a := Args{Reasoning: "auto"}
 	var task []string
 	flags := true
 	for i := 0; i < len(words); i++ {
@@ -76,12 +79,23 @@ func Parse(words []string) (Args, error) {
 				return Args{}, output.Usagef("--approval-policy is ask or never, not %q", value)
 			}
 			a.ApprovalPolicy = value
+		case "--command":
+			if !strings.HasPrefix(strings.TrimSpace(value), "/") {
+				return Args{}, output.Usagef(`--command is "/name input", not %q`, value)
+			}
+			a.Command = value
 		default:
-			// --permission-mode, --add-dir and --command need A17's registry and
-			// A10's per-session roots, which this build's headless profile does
-			// not mount yet: refused rather than ignored.
+			// --permission-mode and --add-dir need A17's preset table and A10's
+			// per-session roots, which this build's headless profile does not
+			// mount yet: refused rather than ignored.
 			return Args{}, output.Usagef("%s is not supported by this build", name)
 		}
+	}
+	if a.Command != "" {
+		if len(task) > 0 {
+			return Args{}, output.Usagef("--command runs instead of a task: give no task words")
+		}
+		return a, nil
 	}
 	if len(task) == 0 || (len(task) == 1 && task[0] == "-") {
 		a.Stdin = true

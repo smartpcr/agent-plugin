@@ -17,6 +17,9 @@ import (
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/profile"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/cli/output"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store/sqlite"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/launcher"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/temphome"
 )
@@ -75,11 +78,11 @@ func newFakeModel(t *testing.T, text string, hold bool) *fakeModel {
 }
 
 // modelHome is a temp home whose headless profile layer inserts the fake route.
-func modelHome(t *testing.T, m *fakeModel) string {
+func modelHome(t *testing.T, m *fakeModel, insert ...string) string {
 	t.Helper()
 	root := temphome.New(t).Root()
 	temphome.Layer(t, root, profile.Headless,
-		"- insert:\n    - id: route\n      name: llm.testkit-route\n      config:\n        id: fake\n        url: "+strconv.Quote(m.url)+"\n")
+		"- insert:\n    - id: route\n      name: llm.testkit-route\n      config:\n        id: fake\n        url: "+strconv.Quote(m.url)+"\n"+strings.Join(insert, ""))
 	return root
 }
 
@@ -207,5 +210,88 @@ func TestAdminCommandBesideALiveHeadlessRun(t *testing.T) {
 	close(m.release)
 	if h := waitRun(t, p); h.status != output.OK || h.stdout != "hello\n" {
 		t.Fatalf("the headless run: %+v", h)
+	}
+}
+
+// The run binds its agent preset (the default, standard) and applies
+// --approval-policy never: the session's log records both.
+//
+//dsh:test DH-T-CLI-13
+func TestHeadlessBindsThePresetAndPolicy(t *testing.T) {
+	bin := buildTestDsh(t)
+	root := modelHome(t, newFakeModel(t, "hello", false))
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	r := waitRun(t, headless(t, ctx, bin, root, "--json", "--approval-policy", "never", "say hello"))
+	lines := strings.Split(strings.TrimSuffix(r.stdout, "\n"), "\n")
+	var res struct{ Session string }
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &res); r.status != output.OK || err != nil {
+		t.Fatalf("dsh headless: %+v (%v)", r, err)
+	}
+	st, err := sqlite.Open(ctx, home.New(root).DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close(ctx) }()
+	rd, err := st.OpenRead(ctx, res.Session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rd.Close(ctx) }()
+	recs, err := rd.Read(ctx, 0, 0, store.ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var preset, policy bool
+	for _, rec := range recs {
+		preset = preset || rec.Type == "agent-preset/selected" && strings.Contains(rec.Payload, `"preset":"standard"`)
+		policy = policy || rec.Type == "approval/policy" && strings.Contains(rec.Payload, `"policy":"never"`)
+	}
+	if !preset || !policy {
+		t.Fatalf("preset standard bound %v, policy never set %v in %+v", preset, policy, recs)
+	}
+}
+
+// `dsh headless --command` runs the command through the registry: its output is
+// printed, command/run is logged and no model request is made.
+//
+//dsh:test DH-T-CLI-12
+func TestHeadlessRunsACommand(t *testing.T) {
+	bin := buildTestDsh(t)
+	m := newFakeModel(t, "hello", false)
+	root := modelHome(t, m, "    - id: echo\n      name: human.testkit-command\n")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	r := waitRun(t, headless(t, ctx, bin, root, "--command", "/echo hi"))
+	if r.status != output.OK || r.stdout != "hi\n" {
+		t.Fatalf("dsh headless --command: %+v", r)
+	}
+	r = waitRun(t, headless(t, ctx, bin, root, "--json", "--command", "/echo hi"))
+	if r.status != output.OK || !strings.Contains(r.stdout, `"type":"command/run"`) || !strings.Contains(r.stdout, `"type":"command/done"`) {
+		t.Fatalf("dsh headless --json --command: %+v", r)
+	}
+	select {
+	case <-m.arrived:
+		t.Fatal("a command made a model request")
+	default:
+	}
+}
+
+// An --agent-preset the registry does not hold is refused with status 5 before
+// any model request.
+func TestHeadlessRefusesAnUnknownPreset(t *testing.T) {
+	bin := buildTestDsh(t)
+	m := newFakeModel(t, "hello", false)
+	root := modelHome(t, m)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	r := waitRun(t, headless(t, ctx, bin, root, "--agent-preset", "ghost", "say hello"))
+	if r.status != output.Invalid || r.stdout != "" {
+		t.Fatalf("dsh headless --agent-preset ghost: %+v", r)
+	}
+	select {
+	case <-m.arrived:
+		t.Fatal("a refused run made a model request")
+	default:
 	}
 }

@@ -20,6 +20,9 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/host/sharing"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/host/stream"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/host/web"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/human"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/human/approval"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/human/command"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human/permission"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human/secret"
 	secretfile "github.com/smartpcr/agent-plugin/src/harness/internal/human/secret/file"
@@ -184,7 +187,7 @@ func Wire() []catalog.Item {
 // CLI is the cli family's items: the carrier of the headless profile.
 func CLI() []catalog.Item {
 	return []catalog.Item{
-		{Name: headless.Name, Component: headless.Component, Config: reflect.TypeFor[headless.Config]()},
+		{Name: headless.Name, Component: headless.Component, Config: reflect.TypeFor[headless.Config](), Provides: []string{human.Key.Name(), approval.Key.Name(), command.Key.Name()}},
 	}
 }
 
