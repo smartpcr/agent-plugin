@@ -2,7 +2,8 @@
 // the runtime records of a home, tells a live host from a dead one by its record's
 // lock, calls the control endpoint (host.status, launch.open), decides what a
 // second launch does (DH-ADR-CLI-4) and explains an unclean exit with its report
-// and --safe. It only reads the records; the host (host/launch) owns them.
+// and --safe. The host (host/launch) owns the records; this package only reads
+// them, except that it retires a dead host's record once its exit is explained.
 package hostclient
 
 import (
@@ -306,6 +307,9 @@ type Notice struct {
 
 // Explain returns the notice of the stale record f under the home l: the report
 // the dead host wrote, else the one written for it once (diag.UncleanReport).
+// Once the report exists the record is retired (retire), so the unclean exit is
+// explained by this start only; a record whose report could not be written is
+// kept for the next start to try again.
 func Explain(l home.Layout, f Found, now time.Time) Notice {
 	r := f.Record
 	u := diag.Unclean{Origin: r.Origin, PID: r.PID, Profile: r.Profile, Version: r.Version, StartedAt: r.StartedAt}
@@ -315,7 +319,37 @@ func Explain(l home.Layout, f Found, now time.Time) Notice {
 	}
 	n := Notice{Origin: r.Origin, PID: r.PID}
 	n.Report, _ = diag.UncleanReport(l.Reports(), u, now)
+	if n.Report != "" && f.Path != "" {
+		retire(f)
+	}
 	return n
+}
+
+// retire removes the stale record f and its control socket while holding the
+// record's lock, record first, as a clean host.Close does. A lock now held means a
+// host started on the origin and replaces the record itself; a record that is
+// gone or is no longer the dead host's (another host wrote it since) is left
+// alone. The lock file stays, as after a clean exit: removing a lock file another
+// process may be opening could hand the lock to two hosts.
+func retire(f Found) {
+	base := strings.TrimSuffix(f.Path, ".json")
+	lock, err := fsx.TryLock(base + ".lock")
+	if err != nil {
+		return
+	}
+	defer func() { _ = lock.Unlock() }()
+	b, err := os.ReadFile(f.Path)
+	if err != nil {
+		return
+	}
+	var cur launch.Record
+	if json.Unmarshal(b, &cur) != nil || cur.PID != f.Record.PID || cur.Origin != f.Record.Origin || !cur.StartedAt.Equal(f.Record.StartedAt) {
+		return
+	}
+	if err := os.Remove(f.Path); err != nil {
+		return
+	}
+	_ = os.Remove(base + ".sock")
 }
 
 // Line is the unclean-exit line printed on the diagnostic stream.
