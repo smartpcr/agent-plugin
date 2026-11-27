@@ -114,7 +114,8 @@ func UI() []catalog.Item {
 // and session.title.llm, the model call the sdk profile switches off. Like
 // cycle C-3, session.title injects session.views, so the titles wait on inject
 // in the dsh binary until the session.views item lands; their bundle entries
-// (base.yml) land with it, and until then both sit on the optional list.
+// (base.yml) land with it, a follow-up by operator decision (title-boot-wiring),
+// and until then both sit on the optional list.
 // titles_test.go composes both from the catalogue, with and without the model.
 func Session() []catalog.Item {
 	return []catalog.Item{
