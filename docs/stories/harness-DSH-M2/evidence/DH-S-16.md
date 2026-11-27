@@ -172,11 +172,15 @@ At `12c2be8`, Windows 11, from the worktree root:
   files. None of them is in this stage's diff. The one-line gofmt fix above does not cause them: its file
   is flagged for QG-5 on lines this branch did not change. This is an unrelated gate failure (Full
   harness gate policy, rule 4), so it is raised as `dh-s-16-vet-inherited` and not investigated here.
+  This branch does not try to fix the findings. Under the operator's answer to `dh-s-16-closure-wait`
+  ("Merge the partial record now and finish closure in a later workstream"), green lanes and the
+  gate-root TOOLCHAIN-6 site belong to the later workstream. That workstream cannot get green lanes
+  until these findings are repaired on main. Who repairs them is the question `dh-s-16-vet-inherited`.
 - Manual checks: the commands in [runs/manual-12c2be8/](runs/manual-12c2be8/README.md).
 - The record check, on this record with `Closure status: open`:
   `GOWORK=off go -C tools/harness-gate run . ready --stage DH-S-16 --built --root ../..`. Before this
   update it found 29 blockers. Afterwards the steps are cleared, and these remain open: the seven
-  guarded rows (`m1-entry-block`), the manual checks (16.3 and 16.4 not seen, every Operator cell pending)
+  guarded rows (`m1-entry-block`), the manual checks (16.3 and 16.4 not seen, every Operator cell then pending)
   and the three owner defaults. After the operator's answers, the Operator cell of 16.5 and the three
   owner-default rows are filled, and `ready` finds 13 blockers. Still open: the seven guarded rows, and 16.3 and 16.4 (paused until
   the release build has the Claude Code route).
