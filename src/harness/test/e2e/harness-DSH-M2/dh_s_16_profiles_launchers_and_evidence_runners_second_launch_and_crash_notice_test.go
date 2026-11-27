@@ -20,6 +20,8 @@ import (
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/profile"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/cli/output"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/host/auth"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store/sqlite"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/launcher"
@@ -151,9 +153,38 @@ func (s *slcState) reusedHost() error {
 	return nil
 }
 
+// slcLink matches a sign-in link as auth.(*Auth).Mint shapes it:
+// <audience>/?token=<tok>.
+var slcLink = regexp.MustCompile(`https?://\S+/\?token=\S+|\?token=`)
+
+// realLink mints a link with the real host.auth, on the scenario's port, so
+// slcLink is known to match what a host prints and cannot drift from it.
+func (s *slcState) realLink() (string, error) {
+	db, err := sqlite.Open(s.ctx, filepath.Join(s.tmp, "mint.db"))
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = db.Close(s.ctx) }()
+	a, err := auth.New(s.ctx, db, auth.Options{Audience: "http://127.0.0.1:" + strconv.Itoa(s.port)})
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = a.Close() }()
+	return a.Mint()
+}
+
 func (s *slcState) noLink() error {
-	if strings.Contains(s.errout, "#t=") {
-		return fmt.Errorf("the second launch printed a sign-in link:\n%s", s.errout)
+	link, err := s.realLink()
+	if err != nil {
+		return fmt.Errorf("mint a real sign-in link: %w", err)
+	}
+	if !slcLink.MatchString("dsh: open " + link + "\n") {
+		return fmt.Errorf("the link pattern %s does not match a real sign-in link %q", slcLink, link)
+	}
+	for name, out := range map[string]string{"stdout": s.stdout, "stderr": s.errout} {
+		if slcLink.MatchString(out) {
+			return fmt.Errorf("the second launch printed a sign-in link on %s:\n%s", name, out)
+		}
 	}
 	return nil
 }
