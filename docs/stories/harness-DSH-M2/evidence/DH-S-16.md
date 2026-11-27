@@ -82,7 +82,7 @@ which commit (impl.md sec. 7.3).
 | --- | --- | --- | --- | --- | --- |
 | 16.3 | one `dsh headless` prompt on the signed-in Claude Code route (M2-I-1) with an approval answered on the terminal | | | | `manual` |
 | 16.4 | Ctrl-C during a tool call | | | | `manual` |
-| 16.5 | a second `dsh` beside a running host | Seen on Windows 11, release build of `./cmd/dsh` (sha256 `ae03f032...46364`) on an empty scratch home: with a first `dsh web` live (pid 34596, `http://127.0.0.1:3080`), `dsh status` listed that one host; a second `dsh web` printed `opened in the browser of the host (process 34596)` and exited 0 in 160 ms, starting no host of its own. After the first host was killed, `dsh status` named the crash report `reports/report-...-34596.txt` and suggested `dsh --safe web`, then exited 4 `host/not-running`; `dsh crash` printed the same path. WSL leg not yet run | | 12c2be8 | `manual` |
+| 16.5 | a second `dsh` beside a running host | Seen on Windows 11, release build of `./cmd/dsh` (sha256 `ae03f032...46364`) on an empty scratch home: with a first `dsh web` live (pid 34596, `http://127.0.0.1:3080`), `dsh status` listed that one host; a second `dsh web` printed `opened in the browser of the host (process 34596)` and exited 0 in 160 ms, starting no host of its own. After the first host was killed, `dsh status` named the crash report `reports/report-...-34596.txt` and suggested `dsh --safe web`, then exited 4 `host/not-running`; `dsh crash` printed the same path. Seen on WSL2 Ubuntu 24.04, a release linux/amd64 build at `0420164` (product source identical to `12c2be8`; sha256 `cb2489e7...71f54`) on an ext4 scratch home: with a first `dsh web` live (pid 119241), `ss` showed one listener (`127.0.0.1:3080`, pid 119241) and `dsh status` listed one host. With no browser and a host started without a terminal, a second `dsh web` returned `launch/no-channel`, exiting 4 in 18 ms and starting no host. After `kill -9`, `dsh status` named the crash report and `--safe`, then exited 4; `dsh crash` printed the same path | | 12c2be8 | `manual` |
 
 Logs: [runs/manual-12c2be8/](runs/manual-12c2be8/README.md). Each Operator cell stays empty until the
 operator accepts the recorded run (question `dh-s-16-manual-checks`).
@@ -139,8 +139,11 @@ At `12c2be8`, Windows 11, from the worktree root:
   among them `TestRequiredScenarioWithMissingInputFails` and
   `TestCheckFailsARequiredScenarioWithoutAPassedRow`. Also
   `GOWORK=off go -C tools/harness-gate test -run TestPreflightChecksTheSignIn ./acceptance/`, which is `ok`.
-  The other TOOLCHAIN-6 site, `scenariorun_test.go` in the gate's root package, runs with the lanes (Full
-  harness gate policy).
+  These cover two of TOOLCHAIN-6's three sites. The third, `TestScenarioGatesStopWhenSignedOut` in
+  `tools/harness-gate/scenariorun_test.go` (the gate's root package), has **not run** for this record.
+  That package also holds `TestRepositoryPassesEveryGate`, so it runs only with the lanes (Full harness
+  gate policy). TOOLCHAIN-6 therefore counts as passing only at those two sites until a lane record at
+  the closing commit shows the root package `ok`.
 - Manual checks: the commands in [runs/manual-12c2be8/](runs/manual-12c2be8/README.md).
 - The record check, on this record with `Closure status: open`:
   `GOWORK=off go -C tools/harness-gate run . ready --stage DH-S-16 --built --root ../..`. Before this
@@ -206,8 +209,9 @@ at `12c2be8`:
 | H-10 | DH-D-UTIL-7 | replay of sessions with children, until the lineage records exist | after M2 |
 
 H-21 is closed by step 16.10 (`fe13e4e`). Built-not-done: BUNDLE-3 until DH-S-22; CLI-2, CLI-4 and CLI-5
-until DH-S-27; UTIL-8 until DH-S-39. DH-T-TOOLCHAIN-1, -3, -5 and -6 pass at `12c2be8` (Exact tests and
-commands); the lanes must still show them passing at the closing commit. The step 16.8 cleanup evidence
+until DH-S-27; UTIL-8 until DH-S-39. At `12c2be8`, DH-T-TOOLCHAIN-1, -3 and -5 pass, and so does DH-T-TOOLCHAIN-6 at its
+`src/harness` and `acceptance` sites. Its gate-root site (`TestScenarioGatesStopWhenSignedOut`) has not
+run (see Exact tests and commands). The lanes must show all four passing at the closing commit. The step 16.8 cleanup evidence
 is still owed.
 
 **Not advanced yet (implementation-plan Stage 6.13, M2-DOD-1).** `built-through` in
