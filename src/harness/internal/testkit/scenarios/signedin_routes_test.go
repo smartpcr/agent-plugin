@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/scenario"
 	"github.com/smartpcr/agent-plugin/src/sdk/protocol"
@@ -66,6 +67,54 @@ func forEachRoute(t *testing.T, leg func(t *testing.T, r clientRoute)) {
 	for _, r := range clientRoutes {
 		t.Run(r.ID, func(t *testing.T) { leg(t, r) })
 	}
+}
+
+// TestSignedInRoutePreflight is the signed-in route preflight of the s17 job of
+// .github/workflows/harness-scenarios.yml (harness:DSH-M2 Stage 7.1, M2-EN-8):
+// one probe turn per client route against the built dsh, run right after
+// "harness-gate entry" and before any DH-S-17 scenario starts. It is not a
+// scenario: it carries no //dsh:scenario directive and is in no index entry. The
+// job runs its claude-code leg as a required step, so a client that is not
+// signed in stops the job before the first scenario, and its copilot-cli leg as
+// a recorded step whose failure the record keeps as "failed (route preflight)"
+// (M2-DEC-4). The same commands run by hand on a signed-in WSL machine
+// (docs/stories/harness-DSH-M2/evidence/runbook-s17-wsl.md).
+//
+// Given the built dsh, a fresh temporary home, no API key anywhere and the
+// user's own installed client signed in as themselves, with its route
+// registered by a layer, when one prompt the model answers in text is sent,
+// then the turn ends completed and its last assistant/message records an
+// invocation of the route's client with its version and digests. A signed-out
+// client fails the leg naming llm/sign-in-required (noteSignIn). Cleanup: the
+// launcher stops dsh and deletes the home; nothing of the user's sign-in is
+// read or changed; on failure the export is kept.
+//
+// Inputs: DSH_SCENARIO_PREFLIGHT_LAYER a headless layer, a template over
+// {route}, that registers that client route; DSH_SCENARIO_<route>_MODEL
+// (<route> is CLAUDE_CODE or COPILOT_CLI) the model; DSH_SCENARIO_PREFLIGHT_PROMPT
+// a prompt answered in text without a tool.
+func TestSignedInRoutePreflight(t *testing.T) {
+	layerT := need(t, "DSH_SCENARIO_PREFLIGHT_LAYER", "a headless layer over {route} that registers that client route")
+	prompt := need(t, "DSH_SCENARIO_PREFLIGHT_PROMPT", "a prompt answered in text without a tool")
+	bin := dshBinary(t)
+	forEachRoute(t, func(t *testing.T, r clientRoute) {
+		route := &protocol.ModelRoute{Provider: r.ID, Model: r.model(t)}
+		h := startSDK(t, bin, nil, []string{"--layer", writeLayer(t, expand(layerT, map[string]string{"route": r.ID}))})
+		session := h.create(t, route)
+		h.keepExport(t, session)
+		run := h.awaitRun(t, session, h.prompt(t, session, prompt), 5*time.Minute)
+		evs := inRun(h.history(t, session), run.FirstSeq, run.LastSeq)
+		logInvocations(t, evs)
+		noteSignIn(t, evs)
+		if end := turnEnd(t, evs); end.Reason.Kind != "completed" {
+			t.Fatalf("the probe turn on %s ended %+v, want completed", r.ID, end.Reason)
+		}
+		msgs := ofType(evs, "assistant/message")
+		if len(msgs) == 0 {
+			t.Fatalf("the probe turn on %s holds no assistant/message", r.ID)
+		}
+		requireInvocation(t, msgs[len(msgs)-1], r)
+	})
 }
 
 // model is the route's model, a run-time input: a model id or alias the

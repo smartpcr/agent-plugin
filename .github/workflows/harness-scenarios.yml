@@ -18,6 +18,21 @@
 #   scenarios  runs exactly the required scenario tests (-tags scenario) on hosted
 #              Linux and Windows (platforms-windows-wsl: regression signals; no
 #              macOS); a skipped or missing required test fails the run.
+#   s17        DH-S-17 acceptance (harness:DSH-M2 Stage 7.1; M2-EN-8, M2-DEC-2):
+#              dispatched with stage DH-S-17 only, it runs on a labelled
+#              self-hosted Linux runner whose user is signed in to claude and the
+#              Copilot CLI (no hosted runner holds a sign-in, so preflight and
+#              scenarios stand aside for DH-S-17). Its first steps are
+#              "harness-gate entry" and the signed-in route preflight
+#              (TestSignedInRoutePreflight, signedin_routes_test.go); then
+#              DSH_REQUIRE_SCENARIOS from the DH-S-17 index entry (all 14 IDs,
+#              M2-DEC-3), the sign-in preflight, dsh built once and the 14
+#              scenarios. With no online runner carrying its labels the job stays
+#              queued until GitHub cancels it: S17 is "not run", never passed
+#              (M2-R-01). The route inputs (DSH_SCENARIO_*) live in the runner's
+#              own environment; this file holds no secret or key (M2-C-11,
+#              M2-NG-2). The same steps by hand on a signed-in WSL machine:
+#              docs/stories/harness-DSH-M2/evidence/runbook-s17-wsl.md.
 #
 # A scheduled run accepts no stage, so the required list is empty and only the index
 # is checked.
@@ -42,6 +57,7 @@ concurrency:
 
 jobs:
   preflight:
+    if: inputs.stage != 'DH-S-17'
     runs-on: ubuntu-latest
     outputs:
       count: ${{ steps.preflight.outputs.count }}
@@ -108,5 +124,82 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: harness-scenarios-${{ matrix.os }}
+          path: artifacts/harness/
+          if-no-files-found: warn
+
+  s17:
+    if: github.event_name == 'workflow_dispatch' && inputs.stage == 'DH-S-17'
+    # M2-EN-8: no hosted runner; without an online runner carrying these labels the
+    # job is never scheduled and S17 stays "not run" (M2-R-01).
+    runs-on: [self-hosted, linux, dsh-e1, dsh-signed-in-claude, dsh-signed-in-copilot]
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: src/harness/go.mod
+          cache-dependency-path: |
+            src/harness/go.sum
+            tools/harness-gate/go.sum
+      - name: Entry
+        run: GOWORK=off go -C tools/harness-gate run . entry --root ../..
+      - name: Signed-in route preflight (claude-code, required)
+        env:
+          DSH_REQUIRE_SCENARIOS: ""
+        run: |
+          set -o pipefail
+          mkdir -p artifacts/harness
+          GOWORK=off go -C src/harness build -o "$RUNNER_TEMP/dsh" ./cmd/dsh
+          sha256sum "$RUNNER_TEMP/dsh" | tee artifacts/harness/s17-dsh.sha256
+          echo "DSH_BIN=$RUNNER_TEMP/dsh" >> "$GITHUB_ENV"
+          claude --version | tee artifacts/harness/s17-clients.txt
+          DSH_BIN="$RUNNER_TEMP/dsh" GOWORK=off go -C src/harness test -tags scenario -count=1 -v -run '^TestSignedInRoutePreflight$/^claude-code$' ./internal/testkit/scenarios/ 2>&1 | tee artifacts/harness/s17-preflight-claude-code.txt
+      - name: Signed-in route preflight (copilot-cli, recorded)
+        env:
+          DSH_REQUIRE_SCENARIOS: ""
+        run: |
+          set -o pipefail
+          log=artifacts/harness/s17-preflight-copilot-cli.txt
+          copilot --version | tee -a artifacts/harness/s17-clients.txt || true
+          if GOWORK=off go -C src/harness test -tags scenario -count=1 -v -run '^TestSignedInRoutePreflight$/^copilot-cli$' ./internal/testkit/scenarios/ 2>&1 | tee "$log"; then
+            result=passed
+          else
+            result="failed (route preflight)"
+          fi
+          echo "copilot-cli route preflight: $result" | tee -a "$log"
+      - name: Derive the required scenarios from the DH-S-17 index entry
+        run: |
+          list="$(GOWORK=off go -C tools/harness-gate run . require --root ../.. --stage DH-S-17)"
+          echo "stage=DH-S-17 DSH_REQUIRE_SCENARIOS=$list"
+          echo "DSH_REQUIRE_SCENARIOS=$list" >> "$GITHUB_ENV"
+      - name: Preflight
+        id: preflight
+        run: |
+          GOWORK=off go -C tools/harness-gate run . preflight --root ../..
+          count="$(sed -n 's/^count=//p' "$GITHUB_OUTPUT" | tail -n 1)"
+          [ "$count" = 14 ] || { echo "DH-S-17 plans $count scenarios, want all 14 (M2-DEC-3)"; exit 1; }
+      - name: Run the DH-S-17 scenarios
+        env:
+          RUN: ${{ steps.preflight.outputs.run }}
+          TESTS: ${{ steps.preflight.outputs.tests }}
+        run: |
+          set -o pipefail
+          log=artifacts/harness/s17-scenarios.txt
+          export DSH_SCENARIO_REPORT="$PWD/artifacts/harness/s17-report.txt"
+          GOWORK=off go -C src/harness test -tags scenario -count=1 -p 1 -timeout 110m -v -run "$RUN" ./... 2>&1 | tee "$log"
+          if grep -q -- '--- SKIP' "$log"; then
+            echo "a required scenario skipped"; exit 1
+          fi
+          for t in ${TESTS//,/ }; do
+            grep -q -- "--- PASS: $t " "$log" || { echo "required scenario $t did not pass"; exit 1; }
+          done
+      - name: Upload S17 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: harness-s17
           path: artifacts/harness/
           if-no-files-found: warn
