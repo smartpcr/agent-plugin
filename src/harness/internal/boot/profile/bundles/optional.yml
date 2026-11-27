@@ -12,8 +12,8 @@
 # components, and subagent.sdk-child, subagent.acp, subagent.claude-code and
 # subagent.codex.
 #
-# The rows below are the components of cycle C-3 (DH-S-12) and the permission table
-# (C34). They belong to core.yml and base.yml, but each waits on inject for a
+# The rows below are the components of cycle C-3 (DH-S-12), the permission table
+# (C34) and session titles (C56). They belong to core.yml and base.yml, but each waits on inject for a
 # service no catalogue item provides yet (session.core, session.views,
 # human.approval, human.command): mounted now, every launch would wait until its
 # StartupTimeout. Each moves to its layer, and off this list, in the change that
@@ -39,6 +39,17 @@
   reason: >-
     Core kernel member (core.yml) of cycle C-3; waits on session.core and
     session.views, not yet in the catalogue.
+- name: session.title
+  owner: A01
+  reason: >-
+    Host-plane member (base.yml), session titles (C56); waits on session.views, not
+    yet in the catalogue. By operator decision (title-boot-wiring) it moves to
+    base.yml in the follow-up that makes session.views bootable.
+- name: session.title.llm
+  owner: A01
+  reason: >-
+    Host-plane member (base.yml), the title model over the llm runtime (C56); the
+    SDK layer disables it; waits on session.title.
 - name: permission.presets
   owner: A17
   reason: >-
