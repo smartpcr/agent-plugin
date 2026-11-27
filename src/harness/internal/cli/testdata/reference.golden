@@ -19,6 +19,7 @@ Commands:
   completion  Print a shell completion script
   secret      Manage the stored secrets
   sandbox     Show how commands are confined on this machine
+  config      Preview and check the composed configuration
 
 Profiles:
   web          Start the host and open the web UI
@@ -184,6 +185,72 @@ Options:
   -h, --help  Show this help
 ```
 
+## dsh config
+
+```text
+Usage: dsh config [options] <command>...
+
+Preview and check the composed configuration
+
+Commands:
+  show      Print a profile's composed tree and the layer of each value
+  validate  Check the configuration of one or every profile
+
+Options:
+  -h, --help  Show this help
+```
+
+## dsh config show
+
+```text
+Usage: dsh config show [options] [profile]
+
+Print a profile's composed tree and the layer of each value
+
+Composes the profile's layers as a launch would and prints every entry and
+value with the layer that supplied it, then the issues. Starts no component
+and writes nothing to the home.
+
+Arguments:
+  profile  The profile, as an argument instead of --profile
+
+Options:
+      --profile <name>           The profile whose composition is read
+      --defaults                 Leave the profile layer out
+      --format <text|yaml|json>  Output form; yaml is one loadable layer document
+      --json                     Print the result as one JSON value
+  -h, --help                     Show this help
+
+Examples:
+  dsh config show --profile headless
+  dsh config show headless --format yaml > tree.yml
+  dsh --home ./h config show web --defaults --json
+```
+
+## dsh config validate
+
+```text
+Usage: dsh config validate [options] [file...]
+
+Check the configuration of one or every profile
+
+Checks the composition of the profile, or of every built-in profile, with
+each <file> as a layer above the user layer. An issue exits 78 and names its
+file, line and field. Starts no component and writes nothing to the home.
+
+Arguments:
+  file  A layer file to check above the user layer
+
+Options:
+      --profile <name>  The profile whose composition is read
+      --json            Print the result as one JSON value
+  -h, --help            Show this help
+
+Examples:
+  dsh config validate
+  dsh config validate --profile web extra.yml
+```
+
 ## Profiles
 
 | Profile | Bundles | Summary |
@@ -215,4 +282,4 @@ Options:
 
 ## Reserved words
 
-No profile may be called: `__complete`, `__completeNoDesc`, `catalog`, `completion`, `help`, `sandbox`, `sandbox-launch`, `secret`, `ssh-helper`, `version`.
+No profile may be called: `__complete`, `__completeNoDesc`, `catalog`, `completion`, `config`, `help`, `sandbox`, `sandbox-launch`, `secret`, `ssh-helper`, `version`.
