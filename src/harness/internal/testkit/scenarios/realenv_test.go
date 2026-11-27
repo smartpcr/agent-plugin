@@ -3,6 +3,8 @@
 package scenarios
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"runtime"
@@ -10,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/launcher"
 )
 
 // need returns the run-time input name, which an operator of the DH-S-18 run sets
@@ -53,9 +57,15 @@ func expand(template string, vars map[string]string) string {
 // Windows) and returns its combined output.
 func shell(t *testing.T, line string) (string, error) {
 	t.Helper()
-	cmd := exec.CommandContext(t.Context(), "sh", "-c", line)
+	return shellContext(t.Context(), line)
+}
+
+// shellContext is shell bound to ctx instead of the test's context, for
+// commands that run in a cleanup callback (T.Context is canceled by then).
+func shellContext(ctx context.Context, line string) (string, error) {
+	cmd := exec.CommandContext(ctx, "sh", "-c", line)
 	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(t.Context(), "cmd", "/C", line)
+		cmd = exec.CommandContext(ctx, "cmd", "/C", line)
 	}
 	out, err := cmd.CombinedOutput()
 	return string(out), err
@@ -90,6 +100,44 @@ func startShell(t *testing.T, line string) *running {
 	}()
 	t.Cleanup(func() { <-r.done })
 	return r
+}
+
+// startShellTree runs line through the platform shell in a process tree of its
+// own (launcher.Spawn), for a long-running command such as a server: at cleanup
+// the whole tree, every descendant included, is stopped within a bound, so a
+// child that outlives the shell can neither keep listening nor hold the output.
+func startShellTree(t *testing.T, line string) *launcher.Host {
+	t.Helper()
+	return launcher.Spawn(t, launcher.Program{Argv: shellArgv(t, line)})
+}
+
+// shellTree runs line through the platform shell in a process tree of its own
+// (launcher.Run) and waits up to within for it and its output. A tree that
+// outlives within -- a descendant still holds the output -- is stopped whole,
+// within launcher's bound, and returned with the error; so is a non-zero exit.
+// It needs no live test context, so a cleanup callback can use it.
+func shellTree(t *testing.T, line string, within time.Duration) (*launcher.Host, error) {
+	t.Helper()
+	h, err := launcher.Run(t, within, launcher.Program{Argv: shellArgv(t, line)})
+	if err == nil && h.Process.ExitCode() != 0 {
+		err = fmt.Errorf("%s: exit %d", line, h.Process.ExitCode())
+	}
+	return h, err
+}
+
+// shellArgv is the platform shell's argv running line, the shell found on PATH.
+func shellArgv(t *testing.T, line string) []string {
+	t.Helper()
+	argv := []string{"sh", "-c", line}
+	if runtime.GOOS == "windows" {
+		argv = []string{"cmd", "/C", line}
+	}
+	path, err := exec.LookPath(argv[0])
+	if err != nil {
+		t.Fatalf("no shell to run %s: %v", line, err)
+	}
+	argv[0] = path
+	return argv
 }
 
 // exited reports whether the command has exited.

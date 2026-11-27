@@ -275,6 +275,18 @@ stages:
       authored: DH-S-10
       credential: claude-session
       requires: [DH-S-11, DH-S-16, DH-S-21]
+    # Sign-in in two browsers, reuse, a closed window, and requests from other
+    # origins refused (impl.md step 22.2); authored in DH-S-15 (Stage 5.9).
+    - id: DH-E-HOST-1
+      authored: DH-S-15
+      credential: none
+      requires: [DH-S-16, DH-S-21]
+    # The network listener: TLS, a path prefix, a proxy and certificate renewal
+    # (impl.md step 22.2); authored in DH-S-15 (Stage 5.9).
+    - id: DH-E-HOST-2
+      authored: DH-S-15
+      credential: none
+      requires: [DH-S-16, DH-S-21]
   DH-S-23:
     # An image survives a crash mid-upload, a restart, a fork whose parent is
     # deleted and collection (impl.md DH-S-23); authored by Stage 8.2.
@@ -337,6 +349,25 @@ stages:
       authored: DH-S-13
       credential: none
       requires: [DH-S-13, DH-S-16, DH-S-26]
+    # A command run for the model cannot make itself the host's owner, on three
+    # Linux machines (host-telemetry.md DH-E-HOST-7, impl.md step 39.4); authored
+    # in DH-S-15 (Stage 5.9). It needs the shell tool (DH-S-13), the headless
+    # launcher (DH-S-16) and the web host on one home (DH-S-21).
+    - id: DH-E-HOST-7
+      authored: DH-S-15
+      credential: none
+      requires: [DH-S-13, DH-S-16, DH-S-21]
+    # The same attempt under Seatbelt (DH-E-HOST-8) and under the restricted token
+    # (DH-E-HOST-9), impl.md step 39.4; authored in DH-S-15 (Stage 5.9). They also
+    # need the macOS and Windows backends (DH-S-27).
+    - id: DH-E-HOST-8
+      authored: DH-S-15
+      credential: none
+      requires: [DH-S-13, DH-S-16, DH-S-21, DH-S-27]
+    - id: DH-E-HOST-9
+      authored: DH-S-15
+      credential: none
+      requires: [DH-S-13, DH-S-16, DH-S-21, DH-S-27]
   # Venue: later (DH-S-48, after harness:DSH-M2: the browser preset choice, the
   # settings page and the release archive). M2 authors DH-E-BUNDLE-1, DH-E-BUNDLE-2,
   # DH-E-BUNDLE-4 and DH-E-API-5 for it (tech-spec sec. 4.5).
