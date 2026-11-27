@@ -27,10 +27,10 @@ var ScenarioAllowed = []string{ScenarioPackage, "internal/testkit/launcher"}
 // test files that import the scenario helper: the scenarios written before it
 // (src/harness/internal/testkit/scenarios) move to it one by one, each leaving the
 // tree clean under the check as it does (DH-ADR-TOOLCHAIN-8). This import-based
-// scope is the operator's pinned decision (scenarioimport-scope-pin, Stage 6.8):
-// it supersedes implementation-plan.md's "forbids scenario files importing
-// src/harness/internal/..." for the legacy files that do not use the helper, so
-// a file without the helper import is deliberately not checked.
+// scope is the Stage 6.8 scope amendment recorded in
+// docs/stories/harness-DSH-M2/implementation-plan.md (operator decisions
+// scenarioimport-scope and scenarioimport-scope-pin), so a file without the
+// helper import is deliberately not checked.
 func ScenarioImportFindings(filename string, file *ast.File, _ *types.Info) []Finding {
 	if !isTestFile(filename) {
 		return nil
