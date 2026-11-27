@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io/fs"
 	"maps"
 	"os"
@@ -15,13 +16,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/smartpcr/agent-plugin/src/go/loader"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/launch"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/logging"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/profile"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/cli/output"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human/secret"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human/secret/file"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/launcher"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/temphome"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox/local"
 )
 
 // adminRun runs one command line in process with stdin, a working directory and
@@ -213,6 +218,14 @@ func TestReadOnlyViewWritesNothing(t *testing.T) {
 	if r := adminRun(t, "v\n", "--home", root, "secret", "set", "TEST_K"); r.status != output.OK {
 		t.Fatalf("secret set: %+v", r)
 	}
+	// A user layer that sends the log to a file in the home and puts the
+	// sandbox canaries in the home: the read-only view creates neither.
+	logPath, canaries := filepath.Join(root, "logs", "dsh.log"), filepath.Join(root, "canaries")
+	if err := os.Mkdir(canaries, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	temphome.UserLayer(t, root, "- id: logging\n  merge:\n    destination: file\n    path: "+strconv.Quote(logPath)+
+		"\n- id: sandbox\n  merge:\n    canaryDir: "+strconv.Quote(canaries)+"\n")
 	before := homeFiles(t, root)
 	r := adminRun(t, "", "--home", root, "sandbox", "status", "--json")
 	if r.status != output.OK || !strings.Contains(r.stdout, `"state":`) {
@@ -223,6 +236,44 @@ func TestReadOnlyViewWritesNothing(t *testing.T) {
 	}
 	if after := homeFiles(t, root); !maps.Equal(before, after) {
 		t.Errorf("the read-only view changed the home:\nbefore %v\nafter  %v", before, after)
+	}
+	// The layer is in force: the writing tree logs to the file it names.
+	if r := adminRun(t, "v\n", "--home", root, "secret", "set", "TEST_K"); r.status != output.OK {
+		t.Fatalf("secret set under the layer: %+v", r)
+	}
+	if _, err := os.Stat(logPath); err != nil {
+		t.Errorf("the writing tree did not open the configured log: %v", err)
+	}
+}
+
+// readView keeps configured writes out of the read-only tree: a file log
+// becomes standard error, a configured canary directory a fresh temporary one,
+// a nested entry included, while other settings stay as configured.
+//
+//dsh:test DH-T-CLI-16
+func TestReadViewRedirectsConfiguredWrites(t *testing.T) {
+	composed := []loader.EntryOptions{
+		{ID: "logging", Name: logging.Name, Config: json.RawMessage(`{"destination":"FILE","path":"/h/logs/dsh.log","level":"debug"}`)},
+		{ID: "group", Name: "x.group", Children: []loader.EntryOptions{
+			{ID: "sandbox", Name: local.Name, Config: json.RawMessage(`{"canaryDir":"/h/canaries","probeTimeout":5}`)},
+			{ID: "secrets", Name: file.Name},
+		}},
+	}
+	if err := readView(composed, "/h"); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"logging": `{"destination":"stderr","level":"debug"}`,
+		"sandbox": `{"home":"/h","probeTimeout":5}`,
+	}
+	if got := string(composed[0].Config); got != want["logging"] {
+		t.Errorf("logging config = %s, want %s", got, want["logging"])
+	}
+	if got := string(composed[1].Children[0].Config); got != want["sandbox"] {
+		t.Errorf("sandbox config = %s, want %s", got, want["sandbox"])
+	}
+	if !composed[1].Children[1].Disabled {
+		t.Error("the nested human.secrets entry is not disabled")
 	}
 }
 

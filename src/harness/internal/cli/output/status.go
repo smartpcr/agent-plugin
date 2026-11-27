@@ -63,6 +63,7 @@ func Statuses() []StatusInfo {
 // here is status Failed; TestEveryReasonHasAStatus keeps the table complete.
 var codes = map[herr.Reason]int{
 	ReasonUsage:        Usage,
+	"cli/interrupted":  Interrupted,
 	ReasonFailed:       Failed,
 	ReasonUnavailable:  Unavailable,
 	ReasonClosed:       Failed,

@@ -9,7 +9,10 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/cli/cmdline"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human/secret"
@@ -19,6 +22,13 @@ import (
 
 // maxSecretValue bounds the value read from standard input.
 const maxSecretValue = 64 << 10
+
+// reasonInterrupted is a hidden entry ended by a signal (status 130): the
+// terminal is restored and nothing is stored.
+const reasonInterrupted herr.Reason = "cli/interrupted"
+
+// stopSignals end a hidden entry: Ctrl-C, Ctrl-\, a closed terminal, a stop.
+var stopSignals = []os.Signal{os.Interrupt, syscall.SIGQUIT, syscall.SIGHUP, syscall.SIGTERM}
 
 // secretRef reads a secret name: a reference (secret://deepseek/api-key), its
 // path (deepseek/api-key) or its environment name (DEEPSEEK_API_KEY), the first
@@ -60,13 +70,19 @@ func readSecretValue(ctx context.Context, in io.Reader, prompt io.Writer) (secre
 		in = strings.NewReader("")
 	}
 	if f, ok := in.(fdReader); ok {
+		// The signals are caught before the echo goes off, so none arriving while
+		// it is off ends the process before the terminal is put back.
+		sigs := make(chan os.Signal, 1)
+		signal.Notify(sigs, stopSignals...)
+		defer signal.Stop(sigs)
 		restore, tty, err := hideEcho(f.Fd())
 		if tty {
 			if err != nil {
 				return secret.Value{}, herr.Wrap(secret.ReasonSource, err, "switch the terminal's echo off")
 			}
-			return readHidden(ctx, f, prompt, restore)
+			return readHidden(ctx, f, prompt, restore, sigs)
 		}
+		signal.Stop(sigs)
 	}
 	data, err := io.ReadAll(io.LimitReader(in, maxSecretValue+3))
 	if err != nil {
@@ -76,8 +92,9 @@ func readSecretValue(ctx context.Context, in io.Reader, prompt io.Writer) (secre
 }
 
 // readHidden reads one line typed on the terminal in, whose echo is off, then
-// restores the terminal: when the line ends, and when ctx ends first.
-func readHidden(ctx context.Context, in io.Reader, prompt io.Writer, restore func() error) (secret.Value, error) {
+// restores the terminal: when the line ends, when ctx ends first, and when a
+// signal arrives on sigs first, which ends the entry interrupted.
+func readHidden(ctx context.Context, in io.Reader, prompt io.Writer, restore func() error, sigs <-chan os.Signal) (secret.Value, error) {
 	if prompt == nil {
 		prompt = io.Discard
 	}
@@ -92,13 +109,21 @@ func readHidden(ctx context.Context, in io.Reader, prompt io.Writer, restore fun
 		done <- line{text, err}
 	}()
 	var l line
+	var sig os.Signal
 	select {
 	case l = <-done:
 	case <-ctx.Done():
 		l.err = ctx.Err()
+	case sig = <-sigs:
 	}
 	rerr := restore()
 	_, _ = io.WriteString(prompt, "\n")
+	if sig != nil {
+		if rerr != nil {
+			return secret.Value{}, herr.Wrap(secret.ReasonSource, rerr, "restore the terminal")
+		}
+		return secret.Value{}, herr.Newf(reasonInterrupted, "interrupted (%s) while the secret value was typed: nothing was stored", sig)
+	}
 	if l.err != nil && !(errors.Is(l.err, io.EOF) && l.text != "") {
 		if errors.Is(l.err, io.EOF) {
 			return secretValueOf("")

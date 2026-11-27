@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -136,5 +138,81 @@ func TestSecretSetOnPseudoTerminalHidesInput(t *testing.T) {
 	waitFor(t, "the terminal", screen.String, "echo-is-back")
 	if strings.Contains(screen.String()+out.String()+errOut.String(), "sk-typed-value") {
 		t.Errorf("the typed value was shown: screen %q, stdout %q, stderr %q", screen.String(), out.String(), errOut.String())
+	}
+}
+
+// DH-T-CLI-16, interrupted, with the built binary on a pseudo-terminal that is
+// its controlling terminal: Ctrl-C typed while the hidden value is half entered
+// ends `dsh secret set` with status 130, the terminal's modes are as they were,
+// echo on again, nothing typed was shown and nothing is stored.
+//
+//dsh:test DH-T-CLI-16
+func TestSecretSetInterruptedOnPseudoTerminalRestoresIt(t *testing.T) {
+	bin := buildDsh(t)
+	ptm, pts := openPTY(t)
+	before, err := unix.IoctlGetTermios(int(pts.Fd()), unix.TCGETS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Lflag&unix.ISIG == 0 || before.Cc[unix.VINTR] != 3 {
+		t.Fatalf("the pty does not turn Ctrl-C into SIGINT: lflag %#x, intr %d", before.Lflag, before.Cc[unix.VINTR])
+	}
+	var screen lockedBuffer
+	go func() {
+		buf := make([]byte, 256)
+		for {
+			n, err := ptm.Read(buf)
+			_, _ = screen.Write(buf[:n])
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	root := t.TempDir()
+	cmd := exec.Command(bin, "--home", root, "secret", "set", "TEST_K")
+	cmd.Dir = t.TempDir()
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = pts, pts, pts
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
+	t.Cleanup(func() { _ = cmd.Process.Kill() })
+
+	waitFor(t, "the terminal", screen.String, secretPrompt)
+	if _, err := ptm.WriteString("sk-half-typed"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ptm.Write([]byte{before.Cc[unix.VINTR]}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-exited:
+	case <-time.After(time.Minute):
+		t.Fatal("Ctrl-C did not end secret set")
+	}
+	if code := cmd.ProcessState.ExitCode(); code != output.Interrupted {
+		t.Errorf("exit status = %d, want %d; screen %q", code, output.Interrupted, screen.String())
+	}
+	waitFor(t, "the terminal", screen.String, "interrupted")
+
+	after, err := unix.IoctlGetTermios(int(pts.Fd()), unix.TCGETS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *after != *before {
+		t.Errorf("terminal modes after = %+v, want them restored to %+v", *after, *before)
+	}
+	if _, err := ptm.WriteString("echo-is-back\n"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the terminal", screen.String, "echo-is-back")
+	if strings.Contains(screen.String(), "sk-half-typed") {
+		t.Errorf("the typed value was shown: %q", screen.String())
+	}
+	if stored(t, root, secret.MustParse("secret://test/k")) {
+		t.Error("an interrupted entry stored secret://test/k")
 	}
 }

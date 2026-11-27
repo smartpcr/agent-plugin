@@ -7,7 +7,8 @@ package cli
 // the services the mounted entries provide through adminService. A command
 // declared read-only gets a view that writes nothing: the home is not prepared,
 // the process provider keeps no owner record and the entries that write into the
-// home (readWriters) stay unloaded.
+// home (readWriters) stay unloaded, and no configured file log or canary
+// directory is written (readView).
 
 import (
 	"encoding/json"
@@ -20,11 +21,13 @@ import (
 	"github.com/smartpcr/agent-plugin/src/go/loader"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/launch"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/logging"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/profile"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/cli/output"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/host/diag"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox/local"
 )
 
 // access is a command's class: not admin, admin read-only, or admin writing.
@@ -138,31 +141,54 @@ func (st *state) openAdmin() (*adminTree, error) {
 }
 
 // readView turns composed into the read-only view in place: the entries of
-// readWriters are disabled and the sandbox seam is told the home by config.
+// readWriters are disabled, boot.logging writes to standard error instead of a
+// configured file, and the sandbox seam is told the home by config and makes its
+// canaries in a fresh temporary directory rather than a configured one, so no
+// configured path, inside the home or not, is created or written.
 func readView(composed []loader.EntryOptions, root string) error {
 	for i := range composed {
 		e := &composed[i]
+		var err error
 		switch {
 		case slices.Contains(readWriters, e.Name):
 			e.Disabled = true
-		case e.Name == "sandbox.local":
-			cfg := map[string]any{}
-			if len(e.Config) > 0 {
-				if err := json.Unmarshal(e.Config, &cfg); err != nil {
-					return err
+		case e.Name == logging.Name:
+			err = editConfig(e, func(cfg map[string]any) {
+				if d, _ := cfg["destination"].(string); strings.EqualFold(d, logging.File) {
+					cfg["destination"] = logging.Stderr
+					delete(cfg, "path")
 				}
-			}
-			cfg["home"] = root
-			b, err := json.Marshal(cfg)
-			if err != nil {
-				return err
-			}
-			e.Config = b
+			})
+		case e.Name == local.Name:
+			err = editConfig(e, func(cfg map[string]any) {
+				cfg["home"] = root
+				delete(cfg, "canaryDir")
+			})
+		}
+		if err != nil {
+			return err
 		}
 		if err := readView(e.Children, root); err != nil {
 			return err
 		}
 	}
+	return nil
+}
+
+// editConfig applies edit to the decoded config of e and stores the result.
+func editConfig(e *loader.EntryOptions, edit func(map[string]any)) error {
+	cfg := map[string]any{}
+	if len(e.Config) > 0 {
+		if err := json.Unmarshal(e.Config, &cfg); err != nil {
+			return err
+		}
+	}
+	edit(cfg)
+	b, err := json.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	e.Config = b
 	return nil
 }
 
