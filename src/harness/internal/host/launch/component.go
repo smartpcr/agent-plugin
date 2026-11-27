@@ -9,6 +9,7 @@ import (
 	bootlaunch "github.com/smartpcr/agent-plugin/src/harness/internal/boot/launch"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/host/auth"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/host/listen"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
 	shellenv "github.com/smartpcr/agent-plugin/src/harness/internal/world/shellexec/env"
 )
 
@@ -25,7 +26,8 @@ var Key = cordis.NewServiceKey[*Host]("host.launch")
 // optionsHook, set by tests, adjusts the options before Start.
 var optionsHook func(*Options)
 
-// Component is host.launch. It loads only beside a listener and host.auth, so a
+// Component is host.launch. Its runtime record goes under the launch home's run
+// directory unless RunDir names another. It loads only beside a listener and host.auth, so a
 // profile that binds no listener (headless, sdk) never writes a runtime record. The
 // announcement waits for the listener's Ready; host.stop calls the boot App's
 // Stop(Requested, 0); the peer rule and the work summary ask the boot tree's
@@ -40,6 +42,10 @@ var Component = cordis.Define(Name, func(ctx *cordis.Context, cfg Config) error 
 	a, err := auth.Key.Get(ctx)
 	if err != nil {
 		return err
+	}
+	// A layer cannot know the home, so an empty RunDir is the launch's (home.Key).
+	if layout, ok := home.Key.Lookup(ctx); ok && cfg.RunDir == "" && layout.Root() != "" {
+		cfg.RunDir = layout.Run()
 	}
 	o := Options{Config: cfg, Origin: l.Origin(), Mint: a.Mint, Ready: l.Ready(), Terminal: terminal(os.Stderr),
 		Warn: ctx.Logger().Warnf}

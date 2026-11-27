@@ -6,13 +6,33 @@ package builtin
 import (
 	"reflect"
 
+	"github.com/smartpcr/agent-plugin/src/harness/internal/agent"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/agent/driver"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/agentpreset"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/catalog"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/logging"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/cli/headless"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/host/access"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/host/assets"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/host/auth"
+	hostlaunch "github.com/smartpcr/agent-plugin/src/harness/internal/host/launch"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/host/listen"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/host/sharing"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/host/stream"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/host/web"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human/permission"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/llm"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/scope"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store/sqlite"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/workdir"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/kv"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/tools/items"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/ui/shell"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/egress"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/watch"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/wire/sdkserver"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/wire/stdio"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/fs"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/fs/local"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/fs/ops"
@@ -33,10 +53,34 @@ func Util() []catalog.Item {
 	}
 }
 
-// Host is the host family's items.
+// Host is the host family's items: the sharing gate, and the host plane the web
+// profile mounts (the listener, admission, assets, the route table, the runtime
+// record, access and the stream hub).
 func Host() []catalog.Item {
 	return []catalog.Item{
 		{Name: sharing.Name, Component: sharing.Component, Config: reflect.TypeFor[sharing.Config]()},
+		{Name: listen.Name, Component: listen.Component, Config: reflect.TypeFor[listen.Config](), Provides: []string{listen.Key.Name()}},
+		{Name: auth.Name, Component: auth.Component, Config: reflect.TypeFor[auth.Config](), Provides: []string{auth.Key.Name()}},
+		{Name: assets.Name, Component: assets.Component},
+		{Name: web.Name, Component: web.Component, Config: reflect.TypeFor[web.Config](), Provides: []string{web.Key.Name()}},
+		{Name: hostlaunch.Name, Component: hostlaunch.Component, Config: reflect.TypeFor[hostlaunch.Config](), Provides: []string{hostlaunch.Key.Name()}},
+		{Name: access.Name, Component: access.Component, Provides: []string{access.Key.Name()}},
+		{Name: stream.Name, Component: stream.Component, Provides: []string{stream.Key.Name()}},
+	}
+}
+
+// Storage is the storage family's items: the home database handle, shared with
+// session.store.
+func Storage() []catalog.Item {
+	return []catalog.Item{
+		{Name: kv.Name, Component: kv.Component, Provides: []string{kv.DBKey.Name()}},
+	}
+}
+
+// UI is the ui family's items: the page shell.
+func UI() []catalog.Item {
+	return []catalog.Item{
+		{Name: shell.Name, Component: shell.Component, Provides: []string{shell.Key.Name()}},
 	}
 }
 
@@ -48,20 +92,44 @@ func Host() []catalog.Item {
 // process's session service (session.core) and fold registry (session.views).
 //
 // Not yet bootable: this unit is registered in the build catalogue only. No
-// catalogue item and nothing in boot.Real.Tree provides session.core or
-// session.views yet, so in the dsh binary session.workdir and sandbox.policy
-// (and fs.ops through them) wait on inject until Settle's StartupTimeout.
-// cyclec3_test.go provides both keys by hand on a testkit root; it proves the
-// three items compose from the catalogue, not that they boot through boot.
-// The gap closes when the session.core item (core.Component, DH-D-SESSION-2)
-// and the session.views item (DH-D-VIEW-1, DH-D-VIEW-3) join Session().
+// catalogue item and nothing in boot.Real.Tree provides session.views yet, so in
+// the dsh binary session.workdir and sandbox.policy (and fs.ops through them)
+// would wait on inject until Settle's StartupTimeout. cyclec3_test.go provides
+// session.core and session.views by hand on a testkit root; it proves the three
+// items compose from the catalogue, not that they boot through boot. The gap
+// closes when the session.views item (DH-D-VIEW-1, DH-D-VIEW-3) joins Session().
 
-// Session is the session family's items.
+// Session is the session family's items: the store (over the home boot
+// provides), the scope table and the session service of the spine, and
+// session.workdir of cycle C-3.
 func Session() []catalog.Item {
 	return []catalog.Item{
+		{Name: sqlite.Name, Component: sqlite.Component, Provides: []string{session.StoreKey.Name()}},
+		{Name: "session.scope", Component: scope.Component, Provides: []string{scope.TableKey.Name()}},
+		{Name: session.Name, Component: session.Component, Provides: []string{session.Key.Name()}},
 		{Name: workdir.Name, Component: workdir.Component, Provides: []string{workdir.Key.Name(), workdir.ServiceKey.Name()}},
 	}
 }
+
+// Agent is the agent family's items: the registry, the driver that fills its
+// factory seat, and the preset registry and its declarations, which read the
+// catalogue and evaluator boot provides (agentpreset.HostKey).
+func Agent() []catalog.Item {
+	return append([]catalog.Item{
+		{Name: agent.Name, Component: agent.Component, Provides: []string{agent.Agents.Name()}},
+		driver.Item(),
+	}, agentpreset.Items(nil)...)
+}
+
+// LLM is the llm family's items: the runtime, with no route.
+func LLM() []catalog.Item {
+	return []catalog.Item{
+		{Name: llm.Name, Component: llm.Component, Provides: []string{llm.RuntimeKey.Name()}},
+	}
+}
+
+// Tools is the tools family's items: the tool registry and the prompt assembly.
+func Tools() []catalog.Item { return items.Items() }
 
 // FS is the fs family's items.
 func FS() []catalog.Item {
@@ -86,9 +154,25 @@ func Permission() []catalog.Item {
 	}
 }
 
+// Wire is the wire family's items: the stdio stream owner and the SDK server
+// over it, the carriers of the sdk profile.
+func Wire() []catalog.Item {
+	return []catalog.Item{
+		{Name: stdio.Name, Component: stdio.Component, Provides: []string{stdio.Key.Name()}},
+		{Name: sdkserver.Name, Component: sdkserver.Component},
+	}
+}
+
+// CLI is the cli family's items: the carrier of the headless profile.
+func CLI() []catalog.Item {
+	return []catalog.Item{
+		{Name: headless.Name, Component: headless.Component},
+	}
+}
+
 // Sets is every family's items.
 func Sets() [][]catalog.Item {
-	return [][]catalog.Item{Boot(), Host(), Util(), Session(), FS(), Sandbox(), Permission()}
+	return [][]catalog.Item{Boot(), Host(), Util(), Session(), Agent(), LLM(), Tools(), FS(), Sandbox(), Permission(), Wire(), CLI(), Storage(), UI()}
 }
 
 // Catalog builds the catalogue of this binary.

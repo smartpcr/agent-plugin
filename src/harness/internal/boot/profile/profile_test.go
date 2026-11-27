@@ -146,7 +146,9 @@ func TestLayerOperations(t *testing.T) {
 		for _, e := range r.Tree {
 			ids = append(ids, e.ID)
 		}
-		if want := []string{"logging", "sharing", "watch"}; !slices.Equal(ids, want) {
+		admin := []string{"logging", "sharing", "session.store"}
+		core := []string{"watch", "session.scope", "session.core", "agent.registry", "tools.registry", "tools.prompt", "llm.runtime", "agent.driver", "agent.presets", "preset.standard"}
+		if want := slices.Concat(admin, core); !slices.Equal(ids, want) {
 			t.Errorf("%s: tree = %v, want %v (egress removed)", name, ids, want)
 		}
 		if got := string(r.Tree[0].Config); got != `{"destination":"stderr","level":"debug"}` {
@@ -173,7 +175,14 @@ func TestLayerOperations(t *testing.T) {
 				t.Errorf("%s: logging fields = %v, want config.level by %s", name, e.Fields, top)
 			}
 		}
-		if want := map[string]string{"logging": BundleLabel + "admin", "sharing": BundleLabel + "admin", "watch": BundleLabel + "core"}; !maps.Equal(owners, want) {
+		want := map[string]string{}
+		for _, id := range admin {
+			want[id] = BundleLabel + "admin"
+		}
+		for _, id := range core {
+			want[id] = BundleLabel + "core"
+		}
+		if !maps.Equal(owners, want) {
 			t.Errorf("%s: entry owners = %v, want %v", name, owners, want)
 		}
 	}
@@ -282,7 +291,7 @@ func TestBundlesParseAndResolve(t *testing.T) {
 		var walk func([]loader.EntryOptions)
 		walk = func(entries []loader.EntryOptions) {
 			for _, e := range entries {
-				if !e.Group && !unregistered[e.Name] {
+				if !e.Group {
 					if _, err := cat.Lookup(e.Name); err != nil {
 						t.Errorf("bundle %s: entry %s: %v", name, e.ID, err)
 					}

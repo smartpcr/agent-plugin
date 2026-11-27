@@ -11,7 +11,7 @@ Feature: Host-plane layers admin, core and base
     When the layers are stacked and previewed
     Then the stack order is "bundle:base, bundle:admin, profile, user, launcher"
     And the preview reports no issue
-    And the composed tree holds exactly "logging"
+    And the composed tree holds exactly "logging, session.store"
     And the "logging" config is merged key-wise to destination "stderr" and level "debug"
     And the source of entry "logging" is layer "bundle:admin"
     And the source of "logging" field "config.destination" is layer "bundle:admin"

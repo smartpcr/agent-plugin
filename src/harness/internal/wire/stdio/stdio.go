@@ -85,6 +85,18 @@ func Claim(cfg Config) (*Owner, error) {
 	return o, nil
 }
 
+// Attach is an owner over the client streams in and out, leaving the process's
+// streams alone: an in-process boot hands the carrier pipes (launch.Stdio).
+func Attach(cfg Config, in io.Reader, out io.Writer) (*Owner, error) {
+	if cfg.App == nil {
+		return nil, errors.New("stdio: Attach needs the App to stop")
+	}
+	o := &Owner{app: cfg.App}
+	o.in = &input{r: in, end: o.InputClosed}
+	o.out = NewWriter(out, cfg.WriteStall, o.end)
+	return o, nil
+}
+
 // Input is the client's input. Its first read error, end of file included, is the
 // InputClosed ending.
 func (o *Owner) Input() io.Reader { return o.in }

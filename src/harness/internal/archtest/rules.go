@@ -76,7 +76,7 @@ var Rules = []Rule{
 	{HarnessModule, "internal/session/store imports no harness package but schema and event (DH-D-STORE-1)", importsOnly(StorePackage, SchemaPackage, EventPackage)},
 	{HarnessModule, "no non-test package imports memstore or storetest (DH-D-STORE-1)", noImporter(MemstorePackage, StoretestPackage)},
 	{HarnessModule, "internal/session/surface imports no harness package but event, vocab and schema (DH-D-SESSION-3)", importsOnly(SurfacePackage, EventPackage, VocabPackage, SchemaPackage)},
-	{HarnessModule, "nothing outside internal/agent/driver imports it (DH-T-AGENT-27)", onlyImporter(DriverPackage, DriverPackage)},
+	{HarnessModule, "nothing outside internal/agent/driver imports it but the build catalogue, which lists its one item (DH-T-AGENT-27, DH-ADR-BOOT-3)", importedOnlyBy(DriverPackage, BuiltinPackage)},
 	{HarnessModule, "internal/session and its packages import no llm runtime, agent or interaction registry (DH-D-LLM-1, DH-D-AGENT-1)", importsNone(SessionPackage, LLMPackage, AgentPackage, HumanPackage)},
 	{HarnessModule, "internal/llm imports no agent, interaction or view package: the runtime holds no session writer (DH-D-LLM-1); only the retry listener sits on the driver's failed-attempt point (DH-D-LLM-3) and only the meter registers its folds (DH-D-LLM-6)", importsNoneExcept(LLMPackage, map[string]string{LLMRetryPackage: AgentPackage, LLMMeterPackage: ViewsPackage}, AgentPackage, HumanPackage, ViewsPackage)},
 	{HarnessModule, "only internal/world/subprocess imports os/exec: the one place a program starts (DH-D-EXEC-1, onespawn)", onlyImporter(ExecPackage, SubprocessPackage)},
@@ -115,6 +115,7 @@ const (
 	LLMMeterPackage  = LLMPackage + "/meter"
 	AgentPackage     = HarnessModule + "/internal/agent"
 	DriverPackage    = AgentPackage + "/driver"
+	BuiltinPackage   = HarnessModule + "/internal/boot/builtin"
 	HumanPackage     = HarnessModule + "/internal/human"
 
 	LLMProviderPackage   = LLMPackage + "/provider"

@@ -167,10 +167,9 @@ func (w *spspWorld) topLevelPersonaLayer(component, id string) error {
 
 func (w *spspWorld) bootLoads() error {
 	// The real persona component is in the catalogue: the refusal must come from the
-	// whole-tree rule, not from an unknown component name.
-	var cat *catalog.Catalog
-	items := agentpreset.Items(func() agentpreset.Host { return agentpreset.Host{Catalogue: cat, Version: "e2e"} })
-	cat, err := catalog.Build(append(builtin.Sets(), items, []catalog.Item{persona.Item()})...)
+	// whole-tree rule, not from an unknown component name. The build catalogue
+	// holds the preset registry and declaration items already (DH-D-BUNDLE-3).
+	cat, err := catalog.Build(append(builtin.Sets(), []catalog.Item{persona.Item()})...)
 	if err != nil {
 		return fmt.Errorf("build catalogue: %w", err)
 	}

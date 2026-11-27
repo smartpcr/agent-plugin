@@ -1,2 +1,36 @@
-# web: bundle layer of the web profile family; content is DH-D-BUNDLE-1's.
-[]
+# web: the layer of the web profile (bundle-preset.md §6.2, DH-D-BUNDLE-1), applied
+# over core, base and presets. It mounts the host plane: the listener on loopback,
+# admission over the home database, the static assets, the route table, the
+# runtime record and control endpoint, access, the stream hub and the page shell.
+#
+# The entries of components this build has. Each later deliverable that builds one
+# of the others adds its entry here in the same change: boot.reload, the route
+# components, host.userterm, host.wsfiles, dirbrowse.local, host.openpath,
+# deliver.changes, context.fileref, context.sessionref, update.check (off) and the
+# page components of areas C1 to C7.
+
+# The carriers (C38 to C41). Required, after profile.Spine.
+- insert:
+    # Loopback on the default port (DH-D-HOST-1).
+    - id: host.listen
+      name: host.listen
+    # The home database session.store opened, shared: host.auth's session table.
+    - id: storage.db
+      name: storage.db
+    - id: host.auth
+      name: host.auth
+    - id: host.assets
+      name: host.assets
+    - id: host.web
+      name: host.web
+    # The runtime record under the home's run directory, and the launch link.
+    - id: host.launch
+      name: host.launch
+      config:
+        profile: web
+    - id: host.access
+      name: host.access
+    - id: host.stream
+      name: host.stream
+    - id: ui.shell
+      name: ui.shell

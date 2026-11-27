@@ -189,11 +189,8 @@ func TestSourceRules(t *testing.T) {
 
 // unbuilt are the Required ids no shipped layer holds yet; it is the exact list of
 // the profile package's golden test (builtins_test.go), whose stage-owning change
-// takes an id off both lists together.
-var unbuilt = map[string]bool{
-	"session.store": true, "agent.registry": true, "agent.driver": true, "tools.registry": true, "agent.presets": true,
-	"host.listen": true, "host.auth": true, "host.assets": true, "host.web": true, "host.access": true, "host.stream": true, "ui.shell": true,
-}
+// takes an id off both lists together. Stage 6.1 built the web plane, so it is empty.
+var unbuilt = map[string]bool{}
 
 // missingRequired returns the required ids no entry of tree has, at any depth.
 func missingRequired(required []string, tree []loader.EntryOptions) []string {

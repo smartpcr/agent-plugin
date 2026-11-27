@@ -9,6 +9,7 @@ import (
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/go/loader"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/agentpreset"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/builtin"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/config"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/expr"
@@ -180,6 +181,20 @@ func (Real) Tree(ctx context.Context, s *State) error {
 	}
 	if _, err := egress.LaunchKey.Provide(root, egress.Lookup(s.Env.Trusted().Func())); err != nil {
 		return err
+	}
+	// The launch's home (session.store opens its database there) and what
+	// agent.presets resolves its declarations' children in: this tree's catalogue
+	// and evaluator.
+	if _, err := home.Key.Provide(root, s.Home); err != nil {
+		return err
+	}
+	if _, err := agentpreset.HostKey.Provide(root, agentpreset.Host{Catalogue: cat, Evaluator: ev, Version: s.Data.Version}); err != nil {
+		return err
+	}
+	if o := s.Options.Stdio; o != nil {
+		if _, err := launch.StdioKey.Provide(root, *o); err != nil {
+			return err
+		}
 	}
 	fiber, err := root.Use(loader.Component, loader.Options{Resolver: cat, Evaluator: ev})
 	if err != nil {

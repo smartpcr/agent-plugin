@@ -14,6 +14,10 @@
     "config": {
       "off": false
     }
+  },
+  {
+    "id": "session.store",
+    "name": "session.store"
   }
 ]
 # core
@@ -35,12 +39,60 @@
     }
   },
   {
+    "id": "session.store",
+    "name": "session.store"
+  },
+  {
     "id": "egress",
     "name": "util.egress"
   },
   {
     "id": "watch",
     "name": "util.watch"
+  },
+  {
+    "id": "session.scope",
+    "name": "session.scope"
+  },
+  {
+    "id": "session.core",
+    "name": "session.core"
+  },
+  {
+    "id": "agent.registry",
+    "name": "agent.registry"
+  },
+  {
+    "id": "tools.registry",
+    "name": "tools.registry"
+  },
+  {
+    "id": "tools.prompt",
+    "name": "tools.prompt"
+  },
+  {
+    "id": "llm.runtime",
+    "name": "llm.runtime"
+  },
+  {
+    "id": "agent.driver",
+    "name": "agent.driver"
+  },
+  {
+    "id": "agent.presets",
+    "name": "agent.presets",
+    "config": {
+      "default": "standard"
+    }
+  },
+  {
+    "id": "preset.standard",
+    "name": "agent.preset",
+    "config": {
+      "id": "standard",
+      "name": "Standard",
+      "description": "The coding agent."
+    }
   }
 ]
 # web
@@ -62,19 +114,105 @@
     }
   },
   {
+    "id": "session.store",
+    "name": "session.store"
+  },
+  {
     "id": "egress",
     "name": "util.egress"
   },
   {
     "id": "watch",
     "name": "util.watch"
+  },
+  {
+    "id": "session.scope",
+    "name": "session.scope"
+  },
+  {
+    "id": "session.core",
+    "name": "session.core"
+  },
+  {
+    "id": "agent.registry",
+    "name": "agent.registry"
+  },
+  {
+    "id": "tools.registry",
+    "name": "tools.registry"
+  },
+  {
+    "id": "tools.prompt",
+    "name": "tools.prompt"
+  },
+  {
+    "id": "llm.runtime",
+    "name": "llm.runtime"
+  },
+  {
+    "id": "agent.driver",
+    "name": "agent.driver"
+  },
+  {
+    "id": "agent.presets",
+    "name": "agent.presets",
+    "config": {
+      "default": "standard"
+    }
+  },
+  {
+    "id": "preset.standard",
+    "name": "agent.preset",
+    "config": {
+      "id": "standard",
+      "name": "Standard",
+      "description": "The coding agent."
+    }
+  },
+  {
+    "id": "host.listen",
+    "name": "host.listen"
+  },
+  {
+    "id": "storage.db",
+    "name": "storage.db"
+  },
+  {
+    "id": "host.auth",
+    "name": "host.auth"
+  },
+  {
+    "id": "host.assets",
+    "name": "host.assets"
+  },
+  {
+    "id": "host.web",
+    "name": "host.web"
+  },
+  {
+    "id": "host.launch",
+    "name": "host.launch",
+    "config": {
+      "profile": "web"
+    }
+  },
+  {
+    "id": "host.access",
+    "name": "host.access"
+  },
+  {
+    "id": "host.stream",
+    "name": "host.stream"
+  },
+  {
+    "id": "ui.shell",
+    "name": "ui.shell"
   }
 ]
 # headless
 # required: session.store, agent.registry, agent.driver, tools.registry, agent.presets, cli.headless
 # skipped, target not built: bundles/headless.yml:18:3: layer bundle:headless: merge "human.secrets" matches no entry
 # skipped, target not built: bundles/headless.yml:23:3: layer bundle:headless: override "human.authorization" matches no entry
-# skipped, target not built: bundles/headless.yml:31:3: layer bundle:headless: merge "preset.standard" matches no entry
 # skipped, target not built: bundles/headless.yml:36:3: layer bundle:headless: merge "preset.script" matches no entry
 # skipped, target not built: bundles/headless.yml:41:3: layer bundle:headless: merge "preset.minimal" matches no entry
 # skipped, target not built: bundles/headless.yml:46:3: layer bundle:headless: merge "preset.creator" matches no entry
@@ -95,12 +233,61 @@
     }
   },
   {
+    "id": "session.store",
+    "name": "session.store"
+  },
+  {
     "id": "egress",
     "name": "util.egress"
   },
   {
     "id": "watch",
     "name": "util.watch"
+  },
+  {
+    "id": "session.scope",
+    "name": "session.scope"
+  },
+  {
+    "id": "session.core",
+    "name": "session.core"
+  },
+  {
+    "id": "agent.registry",
+    "name": "agent.registry"
+  },
+  {
+    "id": "tools.registry",
+    "name": "tools.registry"
+  },
+  {
+    "id": "tools.prompt",
+    "name": "tools.prompt"
+  },
+  {
+    "id": "llm.runtime",
+    "name": "llm.runtime"
+  },
+  {
+    "id": "agent.driver",
+    "name": "agent.driver"
+  },
+  {
+    "id": "agent.presets",
+    "name": "agent.presets",
+    "config": {
+      "default": "standard"
+    }
+  },
+  {
+    "id": "preset.standard",
+    "name": "agent.preset",
+    "config": {
+      "id": "standard",
+      "name": "Standard",
+      "description": "The coding agent.",
+      "children": {}
+    }
   },
   {
     "id": "cli.headless",
@@ -127,12 +314,60 @@
     }
   },
   {
+    "id": "session.store",
+    "name": "session.store"
+  },
+  {
     "id": "egress",
     "name": "util.egress"
   },
   {
     "id": "watch",
     "name": "util.watch"
+  },
+  {
+    "id": "session.scope",
+    "name": "session.scope"
+  },
+  {
+    "id": "session.core",
+    "name": "session.core"
+  },
+  {
+    "id": "agent.registry",
+    "name": "agent.registry"
+  },
+  {
+    "id": "tools.registry",
+    "name": "tools.registry"
+  },
+  {
+    "id": "tools.prompt",
+    "name": "tools.prompt"
+  },
+  {
+    "id": "llm.runtime",
+    "name": "llm.runtime"
+  },
+  {
+    "id": "agent.driver",
+    "name": "agent.driver"
+  },
+  {
+    "id": "agent.presets",
+    "name": "agent.presets",
+    "config": {
+      "default": "standard"
+    }
+  },
+  {
+    "id": "preset.standard",
+    "name": "agent.preset",
+    "config": {
+      "id": "standard",
+      "name": "Standard",
+      "description": "The coding agent."
+    }
   },
   {
     "id": "wire.stdio",
@@ -163,12 +398,60 @@
     }
   },
   {
+    "id": "session.store",
+    "name": "session.store"
+  },
+  {
     "id": "egress",
     "name": "util.egress"
   },
   {
     "id": "watch",
     "name": "util.watch"
+  },
+  {
+    "id": "session.scope",
+    "name": "session.scope"
+  },
+  {
+    "id": "session.core",
+    "name": "session.core"
+  },
+  {
+    "id": "agent.registry",
+    "name": "agent.registry"
+  },
+  {
+    "id": "tools.registry",
+    "name": "tools.registry"
+  },
+  {
+    "id": "tools.prompt",
+    "name": "tools.prompt"
+  },
+  {
+    "id": "llm.runtime",
+    "name": "llm.runtime"
+  },
+  {
+    "id": "agent.driver",
+    "name": "agent.driver"
+  },
+  {
+    "id": "agent.presets",
+    "name": "agent.presets",
+    "config": {
+      "default": "standard"
+    }
+  },
+  {
+    "id": "preset.standard",
+    "name": "agent.preset",
+    "config": {
+      "id": "standard",
+      "name": "Standard",
+      "description": "The coding agent."
+    }
   },
   {
     "id": "wire.stdio",
@@ -197,11 +480,59 @@
     }
   },
   {
+    "id": "session.store",
+    "name": "session.store"
+  },
+  {
     "id": "egress",
     "name": "util.egress"
   },
   {
     "id": "watch",
     "name": "util.watch"
+  },
+  {
+    "id": "session.scope",
+    "name": "session.scope"
+  },
+  {
+    "id": "session.core",
+    "name": "session.core"
+  },
+  {
+    "id": "agent.registry",
+    "name": "agent.registry"
+  },
+  {
+    "id": "tools.registry",
+    "name": "tools.registry"
+  },
+  {
+    "id": "tools.prompt",
+    "name": "tools.prompt"
+  },
+  {
+    "id": "llm.runtime",
+    "name": "llm.runtime"
+  },
+  {
+    "id": "agent.driver",
+    "name": "agent.driver"
+  },
+  {
+    "id": "agent.presets",
+    "name": "agent.presets",
+    "config": {
+      "default": "standard"
+    }
+  },
+  {
+    "id": "preset.standard",
+    "name": "agent.preset",
+    "config": {
+      "id": "standard",
+      "name": "Standard",
+      "description": "The coding agent."
+    }
   }
 ]
