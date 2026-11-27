@@ -2,6 +2,12 @@ package cli
 
 import "golang.org/x/sys/windows"
 
+// isTTY reports whether fd is a console handle: one with a console mode.
+func isTTY(fd uintptr) bool {
+	var mode uint32
+	return windows.GetConsoleMode(windows.Handle(fd), &mode) == nil
+}
+
 // hideEcho switches echo off on the console input handle fd, keeping line input
 // so Enter ends the line, and returns the function that puts the console mode
 // back as it was. ok is false when fd is not a console.

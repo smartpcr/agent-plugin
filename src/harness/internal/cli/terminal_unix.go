@@ -4,6 +4,12 @@ package cli
 
 import "golang.org/x/sys/unix"
 
+// isTTY reports whether fd is a terminal: one with termios.
+func isTTY(fd uintptr) bool {
+	_, err := unix.IoctlGetTermios(int(fd), ioctlGetTermios)
+	return err == nil
+}
+
 // hideEcho switches echo off on the terminal fd, keeping line input so Enter ends
 // the line, and returns the function that puts the terminal back as it was. ok is
 // false when fd is not a terminal.
