@@ -99,10 +99,19 @@ func runGuarded(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		fmt.Fprintf(stderr, "harness-gate guarded: %v\n", err)
 		return 2
 	}
-	defer os.RemoveAll(scratch)
 	record := append([]string{"guarded"}, args...)
 	run := &guardedRun{lane: lane, stage: stage, commit: commit, scratch: scratch, probe: signInProbe}
-	return cfg.RunEvidence(ctx, evidence, commit, record, run.gates, stdout, stderr)
+	code := cfg.RunEvidence(ctx, evidence, commit, record, run.gates, stdout, stderr)
+	// A failed run keeps the scratch tree (TMPDIR, the homes a failing scenario
+	// left and the built dsh) for inspection; only a passing run removes it.
+	if code == 0 {
+		if err := os.RemoveAll(scratch); err != nil {
+			fmt.Fprintf(stderr, "harness-gate guarded: removing scratch %s: %v\n", scratch, err)
+		}
+		return code
+	}
+	fmt.Fprintf(stderr, "harness-gate guarded: scratch kept: %s\n", scratch)
+	return code
 }
 
 // guardedRun is the state one guarded run's gates share.
@@ -305,7 +314,11 @@ func (g *guardedRun) scenarios(ctx context.Context, c *Config, w io.Writer) erro
 	}
 	got := reportResults(report)
 	g.rows(w, got)
-	return scenarioVerdict(out.String(), g.plan.Tests(), runErr)
+	verdict := scenarioVerdict(out.String(), g.plan.Tests(), runErr)
+	if verdict != nil {
+		fmt.Fprintf(w, "scratch kept: %s\n", filepath.ToSlash(g.scratch))
+	}
+	return verdict
 }
 
 // rows prints one Scenarios-table row of the stage record per required ID: the
