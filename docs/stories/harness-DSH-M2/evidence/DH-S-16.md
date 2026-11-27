@@ -156,45 +156,23 @@ At `12c2be8`, Windows 11, from the worktree root:
   among them `TestRequiredScenarioWithMissingInputFails` and
   `TestCheckFailsARequiredScenarioWithoutAPassedRow`. Also
   `GOWORK=off go -C tools/harness-gate test -run TestPreflightChecksTheSignIn ./acceptance/`, which is `ok`.
-  These cover two of TOOLCHAIN-6's three sites. The third, `TestScenarioGatesStopWhenSignedOut` in
-  `tools/harness-gate/scenariorun_test.go` (the gate's root package), has **not run** for this record.
-  That package also holds `TestRepositoryPassesEveryGate`, so it runs only with the lanes (Full harness
-  gate policy). TOOLCHAIN-6 therefore counts as passing only at those two sites until a lane record at
-  the closing commit shows the root package `ok`. Both lanes ran at `a91abac`, a clean tree that
-  changes only docs from `12c2be8`, outside the iteration on 2026-11-27. Both stopped at gate 1/14 before
-  the `self` gate ran, so the gate-root site is still unproven. The Windows record was
-  `win-a91abac-20261127T1447Z.txt` (exit 1, sha256 `534742a5…c0b`) and the WSL record was
-  `wsl-a91abac-20261127T1447Z.txt` (exit 1, sha256 `31581c6d…c8d`; the rehearsal exited 0). They are
-  not committed because they are failing records. Both logged the same failure:
-  `harness-gate: FAIL gofmt` / `not gofmt-formatted: src/harness/internal/testkit/scenarios/sdk_stdio_scenario_test.go`.
-  The cause is a missing blank line before `awaitEvent` at line 285, from `e3da93b` (#198). That file
-  was not changed by this stage. S16 can close only when every gate passes on both lanes at this
-  branch's final commit, so this branch applies the `gofmt -w` fix (one inserted blank line, no code
-  change) as a separate mechanical change. After the fix, `gofmt -l` reports only the intentional
-  fixture `tools/harness-gate/testdata/unformatted-file/add.go`, and `go vet` passes with `-tags=` and
-  `-tags=replay,scenario,bench` on `./internal/testkit/scenarios/`. Both lanes run again on the commit
-  that carries the fix, and their records go here. They ran on that commit, `2da0f59`, on 2026-11-27.
-  Both passed `gofmt` and then stopped at gate 2/14, `vet`, so the `self` gate (and with it the
-  gate-root site) still did not run. The Windows record was `win-2da0f59-20261127T1454Z.txt` (exit 1,
-  sha256 `026b007c…146a`, 76 findings) and the WSL record was `wsl-2da0f59-20261127T1454Z.txt` (exit 1,
-  sha256 `065cf279…5376`, 85 findings; the rehearsal exited 0). They are not committed because they are
-  failing records. The log line is `FAIL src/harness: go vet -tags= -vettool=…harness-gate ./...`
-  (also with `-tags=replay,scenario,bench` and `-tags=e2e`). The findings are the project's own
-  analyzers: QG-5 (`goroutine started in a test without registering its release with t.Cleanup`, 61)
-  and QG-4 (`time.Sleep in a test file`, 24). They are in 17 test files inherited from main, for example
-  `internal/cli/lifecycle/lifecycle_test.go:337:2`, `internal/cli/headless_test.go:105:12` and
-  `internal/cli/terminal_linux_test.go:72:3`, plus four `test/e2e/harness-DSH-M2/dh_s_16_*_test.go`
-  files. None of them is in this stage's diff. The one-line gofmt fix above does not cause them: its file
-  is flagged for QG-5 on lines this branch did not change. This is an unrelated gate failure (Full
-  harness gate policy, rule 4), so it is raised as `dh-s-16-vet-inherited` and not investigated here.
-  This branch does not try to fix the findings. Under the operator's answer to `dh-s-16-closure-wait`
-  ("Merge the partial record now and finish closure in a later workstream"), green lanes and the
-  gate-root TOOLCHAIN-6 site belong to the later workstream. That workstream cannot get green lanes
-  until these findings are repaired on main. Operator decision (answer to question
-  `dh-s-16-vet-inherited`: "A separate repair workstream fixes them; this branch merges as is"): the
-  QG-4/QG-5 findings are assigned to a separate repair workstream on main, and this branch merges
-  without fixing them. The lanes, and with them the gate-root TOOLCHAIN-6 site, are rerun by the later
-  S16 closure workstream after that repair merges.
+  Status of TOOLCHAIN-6's three sites:
+
+  | Site | Run? | Result | Commit |
+  | --- | --- | --- | --- |
+  | `src/harness` `./internal/testkit/scenario/` | yes | `ok` | `12c2be8` |
+  | `tools/harness-gate` `./acceptance/` (`TestPreflightChecksTheSignIn`) | yes | `ok` | `12c2be8` |
+  | gate root (`TestScenarioGatesStopWhenSignedOut`, `tools/harness-gate/scenariorun_test.go`) | **no** | not run; it runs only inside the lanes (Full harness gate policy), which have not reached the `self` gate | owed at the closing commit |
+
+  Lane stops (pre-merge branch commits; failing records, not committed):
+  at `a91abac` both lanes stopped at gate 1/14 `gofmt` on
+  `src/harness/internal/testkit/scenarios/sdk_stdio_scenario_test.go` (a missing blank line inherited
+  from `e3da93b`, which `2da0f59` formats), records `win-a91abac-20261127T1447Z.txt` (sha256
+  `534742a5…c0b`) and `wsl-a91abac-20261127T1447Z.txt` (sha256 `31581c6d…c8d`).
+  At `2da0f59` both lanes passed `gofmt` and stopped at gate 2/14 `vet` on QG-4/QG-5 analyzer findings in
+  17 test files inherited from main, records `win-2da0f59-20261127T1454Z.txt` (sha256 `026b007c…146a`,
+  76 findings) and `wsl-2da0f59-20261127T1454Z.txt` (sha256 `065cf279…5376`, 85 findings); see the
+  [`dh-s-16-vet-inherited` decision](#decision-dh-s-16-vet-inherited).
 - Manual checks: the commands in [runs/manual-12c2be8/](runs/manual-12c2be8/README.md).
 - The record check, on this record with `Closure status: open`:
   `GOWORK=off go -C tools/harness-gate run . ready --stage DH-S-16 --built --root ../..`. Before this
@@ -272,6 +250,14 @@ is still owed.
 [closure.md](closure.md) stay `not built` because none of the DH-S-12 to DH-S-16 records passes
 `ready --built` yet, and harness:DSH-M1 is not closed: every M1 record still reads `Closure status: open`.
 
+<a id="decision-dh-s-16-vet-inherited"></a>
+**Operator decision (answer to `dh-s-16-vet-inherited`: "A separate repair workstream fixes them; this
+branch merges as is").** The `vet` findings at `2da0f59` are the project's own analyzers, QG-5
+(goroutine in a test without a `t.Cleanup` release, 61) and QG-4 (`time.Sleep` in a test file, 24), in
+17 test files inherited from main, none in this stage's diff (Full harness gate policy, rule 4). A
+separate repair workstream fixes them on main; this branch merges without fixing them. The later S16
+closure workstream reruns both lanes, and with them the gate-root TOOLCHAIN-6 site, after that repair
+merges.
 **Operator decision (answer to `dh-s-16-closure-wait`: "Merge the partial record now and finish closure
 in a later workstream").** This workstream merges the partial record with `Closure status: open`.
 A later workstream does the rest of Stage 6.13 once harness:DSH-M1 is closed, the guarded rows have
