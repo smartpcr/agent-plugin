@@ -48,15 +48,15 @@ The four guarded scenarios of step 16.8, on scratch homes (M2-EN-6); this stage 
 
 | Scenario | Variant | Venue | Leg | Environment | Commit | Result | Artifacts |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| DH-E-STORE-1 | Linux (WSL) | guarded | required | scratch home | | not run (stage not built) | |
-| DH-E-STORE-1 | Windows | guarded | required | scratch home | | not run (stage not built) | |
+| DH-E-STORE-1 | Linux (WSL) | guarded | required | scratch home | | not run (M1 not closed, M2-DEC-1; recorded by a later workstream) | |
+| DH-E-STORE-1 | Windows | guarded | required | scratch home | | not run (M1 not closed, M2-DEC-1; recorded by a later workstream) | |
 | DH-E-STORE-1 | macOS | guarded | required | | | out of scope (platforms-windows-wsl) | |
-| DH-E-STORE-2 | Linux (WSL) | guarded | required | scratch home | | not run (stage not built) | |
-| DH-E-STORE-6 | Linux (WSL) | guarded | required | scratch home | | not run (stage not built) | |
-| DH-E-STORE-6 | Windows | guarded | required | scratch home | | not run (stage not built) | |
+| DH-E-STORE-2 | Linux (WSL) | guarded | required | scratch home | | not run (M1 not closed, M2-DEC-1; recorded by a later workstream) | |
+| DH-E-STORE-6 | Linux (WSL) | guarded | required | scratch home | | not run (M1 not closed, M2-DEC-1; recorded by a later workstream) | |
+| DH-E-STORE-6 | Windows | guarded | required | scratch home | | not run (M1 not closed, M2-DEC-1; recorded by a later workstream) | |
 | DH-E-STORE-6 | macOS | guarded | required | | | out of scope (platforms-windows-wsl) | |
-| DH-E-FS-3 | Linux (WSL) | guarded | required | scratch home | | not run (stage not built) | |
-| DH-E-FS-3 | Windows | guarded | required | scratch home | | not run (stage not built) | |
+| DH-E-FS-3 | Linux (WSL) | guarded | required | scratch home | | not run (M1 not closed, M2-DEC-1; recorded by a later workstream) | |
+| DH-E-FS-3 | Windows | guarded | required | scratch home | | not run (M1 not closed, M2-DEC-1; recorded by a later workstream) | |
 | DH-E-FS-3 | macOS | guarded | required | | | out of scope (platforms-windows-wsl) | |
 
 ## Manual checks register
@@ -104,7 +104,8 @@ Not yet recorded: the gate runner's output, the `go test` command lines and `DSH
 -run <plan> ./internal/testkit/scenarios` on scratch homes, recorded in
 `runs/guarded-<wsl|win>-<sha7>-<stamp>.txt`. Each record prints one `row:` line per scenario, copied into
 the Scenarios table with the record named in Artifacts. Not yet run: `harness-gate entry` fails while
-harness:DSH-M1 is not closed (M2-DEC-1).
+harness:DSH-M1 is not closed (M2-DEC-1); by operator decision (m1-entry-block) the runner merges with this stage
+and a later workstream runs both lanes and records their rows, records and cleanup evidence here.
 
 ### Run identifiers
 
@@ -131,7 +132,8 @@ directory before and after the run):
   before (a fixture precondition); after the deletion and after the interrupted deletion's restart, each
   session gone (not listed, not tombstoned), its spill directory absent and its unshared images absent; the
   fork's log `seq` 0 to n before and after; the store check clean.
-- DH-E-STORE-2 (WSL lane): after the resume and the second prompt, the host killed and the session deleted;
+- DH-E-STORE-2 (WSL lane): the first model request sent after the resume's prompt (counted from the
+  requests already sent, never the latest one) carries the outcome-unknown result; after it, the host killed and the session deleted;
   its log `seq` 0 to n; its spill files and blobs before; afterwards no session, no tombstone, no blob and no
   spill file in the home, and the home's files before and after.
 - DH-E-STORE-1: the log read from the database, `seq` 0 to n with no gap, and the lease epoch.

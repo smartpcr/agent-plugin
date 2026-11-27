@@ -42,8 +42,9 @@ import (
 // DSH_SCENARIO_STORE2_PROMPT sends {prompt} to a
 // new session (when {session} is empty, printing "session=<id>") or to {session},
 // returning once the prompt is accepted; DSH_SCENARIO_STORE2_RESUME makes the
-// host resume {session}; DSH_SCENARIO_STORE2_REQUEST prints the body of the last
-// model request sent for {session}; DSH_SCENARIO_STORE2_KILL kills the host and
+// host resume {session}; DSH_SCENARIO_STORE2_REQUEST prints the body of every
+// model request sent for {session}, in the order sent, one JSON document a line
+// (store2Requests); DSH_SCENARIO_STORE2_KILL kills the host and
 // any child it started without a clean stop; DSH_SCENARIO_STORE2_DELETE deletes
 // {session} of {home} with no host running and returns when it is done. The route input is the Claude leg's
 // DSH_SCENARIO_CLAUDE_CODE_MODEL (signedin_routes_test.go): the model the user's
@@ -55,7 +56,7 @@ func TestKilledHostRecoversHonestly(t *testing.T) {
 	startT := need(t, "DSH_SCENARIO_STORE2_START", "command starting the headless host on {home} in {workspace}")
 	promptT := need(t, "DSH_SCENARIO_STORE2_PROMPT", "command sending {prompt} to {session} (or a new session)")
 	resumeT := need(t, "DSH_SCENARIO_STORE2_RESUME", "command making the host resume {session}")
-	requestT := need(t, "DSH_SCENARIO_STORE2_REQUEST", "command printing the last model request of {session}")
+	requestT := need(t, "DSH_SCENARIO_STORE2_REQUEST", "command printing every model request of {session}, one a line, in order")
 	killT := need(t, "DSH_SCENARIO_STORE2_KILL", "command killing the host and its children")
 	deleteT := need(t, "DSH_SCENARIO_STORE2_DELETE", "command deleting {session} with no host running")
 
@@ -144,23 +145,36 @@ func TestKilledHostRecoversHonestly(t *testing.T) {
 		t.Fatalf("after the resume: outcome-unknown result %v, interrupted turn %v", unknown, interrupted)
 	}
 
-	// (4)
-	if out, err := storeStep(t, "second prompt", expand(promptT, with("What happened to the last command?"))); err != nil {
+	// (4) The requests already sent are the boundary: the one checked is the first
+	// sent after the second prompt, not whichever is last when polled.
+	const second = "What happened to the last command?"
+	listed, err := shell(t, expand(requestT, with("")))
+	if err != nil {
+		t.Fatalf("listing the model requests of %s: %v\n%s", id, err, listed)
+	}
+	before := len(store2Requests(listed))
+	if out, err := storeStep(t, "second prompt", expand(promptT, with(second))); err != nil {
 		t.Fatalf("the second prompt was not accepted: %v\n%s", err, out)
 	}
-	// The host's last model request is another process's state: polled.
-	var req string
+	// The host's requests are another process's state: polled.
+	var (
+		req      string
+		ready    bool
+		firstErr error
+	)
 	rctx, rcancel := context.WithTimeout(context.Background(), storeStepTimeout)
 	defer rcancel()
 	if err := procwait.Poll(rctx, func() bool {
-		req, _ = shell(t, expand(requestT, with("")))
-		return strings.Contains(req, "What happened to the last command?")
+		out, _ := shell(t, expand(requestT, with("")))
+		req, ready, firstErr = store2FirstRequest(store2Requests(out), before, second)
+		return ready
 	}); err != nil {
-		t.Fatalf("no model request for the second prompt within %s: %v", storeStepTimeout, err)
+		t.Fatalf("no model request after the second prompt within %s (%d before it): %v", storeStepTimeout, before, err)
 	}
-	if !strings.Contains(req, "tools/outcome-unknown") && !strings.Contains(strings.ToLower(req), "outcome unknown") {
-		t.Fatalf("the first model request after the resume lacks the interrupted call's result:\n%s", req)
+	if firstErr != nil {
+		t.Fatalf("%v:\n%s", firstErr, req)
 	}
+	t.Logf("evidence: model request %d of %s, the first after the resume's prompt, carries the outcome-unknown result", before+1, id)
 	kill()
 	if _, err := os.Stat(marker); err == nil {
 		t.Log("the killed host's command finished anyway; the result stays outcome-unknown")
