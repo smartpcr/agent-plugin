@@ -18,6 +18,25 @@
 #   scenarios  runs exactly the required scenario tests (-tags scenario) on hosted
 #              Linux and Windows (platforms-windows-wsl: regression signals; no
 #              macOS); a skipped or missing required test fails the run.
+#   s17        DH-S-17 acceptance (harness:DSH-M2 Stage 7.1; M2-EN-8, M2-DEC-2):
+#              dispatched with stage DH-S-17 only, it runs on a labelled
+#              self-hosted Linux runner whose user is signed in to claude and the
+#              Copilot CLI (no hosted runner holds a sign-in, so preflight and
+#              scenarios stand aside for DH-S-17). Its first steps are
+#              "harness-gate entry" and the signed-in route preflight
+#              (TestSignedInRoutePreflight, signedin_routes_test.go); then
+#              DSH_REQUIRE_SCENARIOS from the DH-S-17 index entry (all 14 IDs,
+#              M2-DEC-3), the sign-in preflight, dsh built once and the 14
+#              scenarios through "harness-gate scenarios": TOOLCHAIN-1 first,
+#              SANDBOX-7 last, claude-code legs required and copilot-cli legs
+#              recorded in runs of their own (M2-DEC-4), all inside the 2 h job
+#              budget (tech-spec: 2 h per job; a plan that does not fit is sharded,
+#              Stage 7.6). With no online runner carrying its labels the job stays
+#              queued until GitHub cancels it: S17 is "not run", never passed
+#              (M2-R-01). The route inputs (DSH_SCENARIO_*) live in the runner's
+#              own environment; this file holds no secret or key (M2-C-11,
+#              M2-NG-2). The same steps by hand on a signed-in WSL machine:
+#              docs/stories/harness-DSH-M2/evidence/runbook-s17-wsl.md.
 #
 # A scheduled run accepts no stage, so the required list is empty and only the index
 # is checked.
@@ -42,6 +61,7 @@ concurrency:
 
 jobs:
   preflight:
+    if: inputs.stage != 'DH-S-17'
     runs-on: ubuntu-latest
     outputs:
       count: ${{ steps.preflight.outputs.count }}
@@ -108,5 +128,84 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: harness-scenarios-${{ matrix.os }}
+          path: artifacts/harness/
+          if-no-files-found: warn
+
+  s17:
+    if: github.event_name == 'workflow_dispatch' && inputs.stage == 'DH-S-17'
+    # M2-EN-8: no hosted runner; without an online runner carrying these labels the
+    # job is never scheduled and S17 stays "not run" (M2-R-01).
+    runs-on: [self-hosted, linux, dsh-e1, dsh-signed-in-claude, dsh-signed-in-copilot]
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: src/harness/go.mod
+          cache-dependency-path: |
+            src/harness/go.sum
+            tools/harness-gate/go.sum
+      - name: Entry
+        run: GOWORK=off go -C tools/harness-gate run . entry --root ../..
+      - name: Signed-in route preflight (claude-code, required)
+        env:
+          DSH_REQUIRE_SCENARIOS: ""
+          DSH_SCENARIO_ROUTES: claude-code
+        run: |
+          set -o pipefail
+          mkdir -p artifacts/harness
+          log=artifacts/harness/s17-preflight-claude-code.txt
+          GOWORK=off go -C src/harness build -o "$RUNNER_TEMP/dsh" ./cmd/dsh
+          sha256sum "$RUNNER_TEMP/dsh" | tee artifacts/harness/s17-dsh.sha256
+          echo "DSH_BIN=$RUNNER_TEMP/dsh" >> "$GITHUB_ENV"
+          claude --version | tee artifacts/harness/s17-clients.txt
+          DSH_BIN="$RUNNER_TEMP/dsh" GOWORK=off go -C src/harness test -tags scenario -count=1 -v -run '^TestSignedInRoutePreflight$/^claude-code$' ./internal/testkit/scenarios/ 2>&1 | tee "$log"
+          # go test exits 0 when the filter matches no subtest; a leg that did not run is not a pass.
+          grep -q -- '--- PASS: TestSignedInRoutePreflight/claude-code ' "$log" || { echo "claude-code route preflight: not run"; exit 1; }
+      - name: Signed-in route preflight (copilot-cli, recorded)
+        env:
+          DSH_REQUIRE_SCENARIOS: ""
+          DSH_SCENARIO_ROUTES: copilot-cli
+        run: |
+          set -o pipefail
+          log=artifacts/harness/s17-preflight-copilot-cli.txt
+          copilot --version | tee -a artifacts/harness/s17-clients.txt || true
+          GOWORK=off go -C src/harness test -tags scenario -count=1 -v -run '^TestSignedInRoutePreflight$/^copilot-cli$' ./internal/testkit/scenarios/ 2>&1 | tee "$log" || true
+          if grep -q -- '--- PASS: TestSignedInRoutePreflight/copilot-cli ' "$log"; then
+            result=passed
+          elif grep -q -- '--- FAIL: TestSignedInRoutePreflight/copilot-cli ' "$log"; then
+            result="failed (route preflight)"
+          else
+            result="not run"
+          fi
+          echo "copilot-cli route preflight: $result" | tee -a "$log"
+      - name: Derive the required scenarios from the DH-S-17 index entry
+        run: |
+          list="$(GOWORK=off go -C tools/harness-gate run . require --root ../.. --stage DH-S-17)"
+          echo "stage=DH-S-17 DSH_REQUIRE_SCENARIOS=$list"
+          echo "DSH_REQUIRE_SCENARIOS=$list" >> "$GITHUB_ENV"
+      - name: Preflight
+        id: preflight
+        run: |
+          GOWORK=off go -C tools/harness-gate run . preflight --root ../..
+          count="$(sed -n 's/^count=//p' "$GITHUB_OUTPUT" | tail -n 1)"
+          [ "$count" = 14 ] || { echo "DH-S-17 plans $count scenarios, want all 14 (M2-DEC-3)"; exit 1; }
+      - name: Run the DH-S-17 scenarios (TOOLCHAIN-1 first, SANDBOX-7 last)
+        # harness-gate scenarios runs the plan in order inside its 100 min budget:
+        # per phase a required go test of the claude-code legs (DSH_SCENARIO_ROUTES),
+        # which decides, then a recorded go test of the copilot-cli legs, whose result
+        # is written to the record; its pass or failure never fails the stage, a leg
+        # that did not run (skip, no result) does (M2-DEC-4).
+        env:
+          DSH_SCENARIO_REPORT: ${{ github.workspace }}/artifacts/harness/s17-report.txt
+        run: GOWORK=off go -C tools/harness-gate run . scenarios --root ../.. --stage DH-S-17 --evidence "../../artifacts/harness/s17-$GITHUB_SHA.txt"
+      - name: Upload S17 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: harness-s17
           path: artifacts/harness/
           if-no-files-found: warn

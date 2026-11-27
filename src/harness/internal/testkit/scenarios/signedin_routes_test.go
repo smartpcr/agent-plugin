@@ -5,8 +5,11 @@ package scenarios
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/scenario"
 	"github.com/smartpcr/agent-plugin/src/sdk/protocol"
@@ -55,17 +58,142 @@ var claudeCodeRoute = clientRoute{ID: "claude-code", Client: "claude-code", Inpu
 // clientRoutes are the routes every DH-S-9 scenario runs on, Claude first.
 var clientRoutes = []clientRoute{claudeCodeRoute, copilotCLIRoute}
 
-// forEachRoute runs leg once per client route, each as a subtest named by its
-// route ID. Under M1-D-LOOP-6 A the claude-code subtest must pass and the
-// copilot-cli subtest is run and its result recorded either way: the run's
-// report (go test -json) records each subtest's own result, a Copilot failure is
-// reported and never hidden by a skip, and "-run '<Test>/claude-code'" runs the
-// required leg alone.
+// forEachRoute runs leg once per selected client route (selectedRoutes), each as
+// a subtest named by its route ID. Under M1-D-LOOP-6 A the claude-code subtest
+// must pass and the copilot-cli subtest is run and its result recorded either
+// way: the run's report (go test -json) records each subtest's own result, a
+// Copilot failure is reported and never hidden by a skip, and
+// DSH_SCENARIO_ROUTES=claude-code runs the required leg alone, leaving every
+// other subtest of the scenario in place.
 func forEachRoute(t *testing.T, leg func(t *testing.T, r clientRoute)) {
 	t.Helper()
-	for _, r := range clientRoutes {
+	for _, r := range selectedRoutes(t) {
 		t.Run(r.ID, func(t *testing.T) { leg(t, r) })
 	}
+}
+
+// routesEnv selects the client routes forEachRoute runs: comma-separated route
+// IDs, all of clientRoutes when unset or empty. "harness-gate scenarios" runs a
+// DH-S-17 phase once with claude-code, whose result decides the stage, and its
+// routed scenarios once more with copilot-cli, whose result is recorded
+// (M2-DEC-4); a parent failure of the required run is therefore never mistaken for
+// the recorded leg's. It is a selection, not a credential.
+const routesEnv = "DSH_SCENARIO_ROUTES"
+
+// selectedRoutes returns the routes routesEnv selects (parseRoutes); a value that
+// selects no route, or names one that is not a route, fails t, so a typo or a
+// separator alone never runs no leg and passes.
+func selectedRoutes(t *testing.T) []clientRoute {
+	t.Helper()
+	routes, err := parseRoutes(os.Getenv(routesEnv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return routes
+}
+
+// parseRoutes is the routes of a routesEnv value v in clientRoutes order: all of
+// them when v is unset or blank; otherwise the comma- or space-separated route IDs,
+// at least one, each a route of clientRoutes.
+func parseRoutes(v string) ([]clientRoute, error) {
+	if strings.TrimSpace(v) == "" {
+		return clientRoutes, nil
+	}
+	ids := strings.FieldsFunc(v, func(r rune) bool { return r == ',' || r == ' ' })
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("%s=%q selects no route; name claude-code, copilot-cli or both, or leave it unset for both", routesEnv, v)
+	}
+	for _, id := range ids {
+		if !slices.ContainsFunc(clientRoutes, func(r clientRoute) bool { return r.ID == id }) {
+			return nil, fmt.Errorf("%s=%q names route %q; the routes are claude-code and copilot-cli", routesEnv, v, id)
+		}
+	}
+	var out []clientRoute
+	for _, r := range clientRoutes {
+		if slices.Contains(ids, r.ID) {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
+// TestParseRoutes: DSH_SCENARIO_ROUTES selects routes in clientRoutes order, all
+// of them when unset; a value of separators alone or an unknown ID is refused, so
+// forEachRoute never runs zero legs. It starts no client.
+func TestParseRoutes(t *testing.T) {
+	ids := func(rs []clientRoute) []string {
+		var out []string
+		for _, r := range rs {
+			out = append(out, r.ID)
+		}
+		return out
+	}
+	for v, want := range map[string][]string{
+		"":                        {"claude-code", "copilot-cli"},
+		"  ":                      {"claude-code", "copilot-cli"},
+		"claude-code":             {"claude-code"},
+		"copilot-cli":             {"copilot-cli"},
+		"copilot-cli,claude-code": {"claude-code", "copilot-cli"},
+		" claude-code , ":         {"claude-code"},
+	} {
+		got, err := parseRoutes(v)
+		if err != nil || !slices.Equal(ids(got), want) {
+			t.Errorf("parseRoutes(%q) = %q, %v; want %q", v, ids(got), err, want)
+		}
+	}
+	for _, v := range []string{",", " , ,", ",,", "claude", "claude-code,codex"} {
+		if got, err := parseRoutes(v); err == nil {
+			t.Errorf("parseRoutes(%q) = %q, want an error", v, ids(got))
+		}
+	}
+}
+
+// TestSignedInRoutePreflight is the signed-in route preflight of the s17 job of
+// .github/workflows/harness-scenarios.yml (harness:DSH-M2 Stage 7.1, M2-EN-8):
+// one probe turn per client route against the built dsh, run right after
+// "harness-gate entry" and before any DH-S-17 scenario starts. It is not a
+// scenario: it carries no //dsh:scenario directive and is in no index entry. The
+// job runs its claude-code leg as a required step, so a client that is not
+// signed in stops the job before the first scenario, and its copilot-cli leg as
+// a recorded step whose failure the record keeps as "failed (route preflight)"
+// (M2-DEC-4). The same commands run by hand on a signed-in WSL machine
+// (docs/stories/harness-DSH-M2/evidence/runbook-s17-wsl.md).
+//
+// Given the built dsh, a fresh temporary home, no API key anywhere and the
+// user's own installed client signed in as themselves, with its route
+// registered by a layer, when one prompt the model answers in text is sent,
+// then the turn ends completed and its last assistant/message records an
+// invocation of the route's client with its version and digests. A signed-out
+// client fails the leg naming llm/sign-in-required (noteSignIn). Cleanup: the
+// launcher stops dsh and deletes the home; nothing of the user's sign-in is
+// read or changed; on failure the export is kept.
+//
+// Inputs: DSH_SCENARIO_PREFLIGHT_LAYER a headless layer, a template over
+// {route}, that registers that client route; DSH_SCENARIO_<route>_MODEL
+// (<route> is CLAUDE_CODE or COPILOT_CLI) the model; DSH_SCENARIO_PREFLIGHT_PROMPT
+// a prompt answered in text without a tool.
+func TestSignedInRoutePreflight(t *testing.T) {
+	layerT := need(t, "DSH_SCENARIO_PREFLIGHT_LAYER", "a headless layer over {route} that registers that client route")
+	prompt := need(t, "DSH_SCENARIO_PREFLIGHT_PROMPT", "a prompt answered in text without a tool")
+	bin := dshBinary(t)
+	forEachRoute(t, func(t *testing.T, r clientRoute) {
+		route := &protocol.ModelRoute{Provider: r.ID, Model: r.model(t)}
+		h := startSDK(t, bin, nil, []string{"--layer", writeLayer(t, expand(layerT, map[string]string{"route": r.ID}))})
+		session := h.create(t, route)
+		h.keepExport(t, session)
+		run := h.awaitRun(t, session, h.prompt(t, session, prompt), 5*time.Minute)
+		evs := inRun(h.history(t, session), run.FirstSeq, run.LastSeq)
+		logInvocations(t, evs)
+		noteSignIn(t, evs)
+		if end := turnEnd(t, evs); end.Reason.Kind != "completed" {
+			t.Fatalf("the probe turn on %s ended %+v, want completed", r.ID, end.Reason)
+		}
+		msgs := ofType(evs, "assistant/message")
+		if len(msgs) == 0 {
+			t.Fatalf("the probe turn on %s holds no assistant/message", r.ID)
+		}
+		requireInvocation(t, msgs[len(msgs)-1], r)
+	})
 }
 
 // model is the route's model, a run-time input: a model id or alias the
