@@ -85,43 +85,65 @@ machine cannot cut its own power, so no `service:os-process` substitute exists.
    - The recorder runs on the controller at `10.20.0.5:47000`, the controller's address
      on the guest network (`DSH_SCENARIO_NODEFS_LISTEN` of the Windows variant).
 
-   Save the acknowledgment sender as `s18-probe-ack.ps1` on the controller:
+   Save the acknowledgment sender on the controller as
+   `/opt/dsh-s18/s18-probe-ack.ps1`. It takes the guest, the token and the recorder's
+   `host:port` as parameters, so the manual cycle below and the `vm:*` job
+   (`DSH_S18_PROBE_ACK`) run the same script:
 
    ```powershell
+   param(
+     [Parameter(Mandatory)][string] $Probe,   # guest name ({probe})
+     [Parameter(Mandatory)][string] $Token,   # acknowledgment token ({token})
+     [Parameter(Mandatory)][string] $Addr     # recorder host:port ({addr})
+   )
    $ErrorActionPreference = 'Stop'
+   $i = $Addr.LastIndexOf(':'); $rhost = $Addr.Substring(0, $i); $rport = [int]$Addr.Substring($i + 1)
    $hv = New-PSSession -HostName hyperv-host -UserName s18lab -KeyFilePath ~/.ssh/s18-hyperv
    try {
-     Invoke-Command -Session $hv -ScriptBlock {
+     Invoke-Command -Session $hv -ArgumentList $Probe, $Token, $rhost, $rport -ScriptBlock {
+       param($probe, $token, $rhost, $rport)
        $guest = Import-Clixml C:\s18\guest-cred.xml        # guest credential, host-local
-       Invoke-Command -VMName s18-probe -Credential $guest -ErrorAction Stop -ScriptBlock {
-         $c = [Net.Sockets.TcpClient]::new('10.20.0.5', 47000)
-         $w = [IO.StreamWriter]::new($c.GetStream()); $w.WriteLine('s18-probe s18-probe-ack'); $w.Close()
-       }
+       Invoke-Command -VMName $probe -Credential $guest -ErrorAction Stop `
+         -ArgumentList $probe, $token, $rhost, $rport -ScriptBlock {
+           param($probe, $token, $rhost, $rport)
+           $c = [Net.Sockets.TcpClient]::new($rhost, $rport)
+           $w = [IO.StreamWriter]::new($c.GetStream()); $w.WriteLine("$probe $token"); $w.Close()
+         }
      }
    } finally { Remove-PSSession $hv }
    ```
 
-   Then run the cycle:
+   Then run the cycle. Every failure stops it, and the probe guest is deleted in any case:
 
    ```powershell
+   $ErrorActionPreference = 'Stop'
    $hv = New-PSSession -HostName hyperv-host -UserName s18lab -KeyFilePath ~/.ssh/s18-hyperv
    $before = Invoke-Command $hv { (Get-FileHash C:\VMs\base-windows.vhdx).Hash }
-   Invoke-Command $hv -ErrorAction Stop {
-     New-VHD -Path C:\VMs\s18-probe.vhdx -ParentPath C:\VMs\base-windows.vhdx -Differencing
-     New-VM -Name s18-probe -Generation 2 -MemoryStartupBytes 2GB -VHDPath C:\VMs\s18-probe.vhdx
-     Start-VM s18-probe
-     Stop-VM s18-probe -TurnOff -Force                  # hard power-off, no shutdown
-     Start-VM s18-probe                                 # restart from the cut
-     Wait-VM s18-probe -For Heartbeat -Timeout 300      # guest up again
+   try {
+     Invoke-Command $hv {
+       New-VHD -Path C:\VMs\s18-probe.vhdx -ParentPath C:\VMs\base-windows.vhdx -Differencing
+       New-VM -Name s18-probe -Generation 2 -MemoryStartupBytes 2GB -VHDPath C:\VMs\s18-probe.vhdx
+       Start-VM s18-probe
+       Stop-VM s18-probe -TurnOff -Force                # hard power-off, no shutdown
+       Start-VM s18-probe                               # restart from the cut
+       Wait-VM s18-probe -For Heartbeat -Timeout 300    # guest up again
+     }
+     Remove-Item s18-ack.log -ErrorAction SilentlyContinue   # no stale line can pass the read-back
+     $env:GOWORK = 'off'
+     go -C tools/harness-gate run . ack-probe --listen 10.20.0.5:47000 --token s18-probe-ack `
+       --log s18-ack.log --timeout 5m `
+       --send 'pwsh -NoProfile -File /opt/dsh-s18/s18-probe-ack.ps1 -Probe s18-probe -Token s18-probe-ack -Addr 10.20.0.5:47000'
+     if ($LASTEXITCODE -ne 0) { throw "ack-probe failed (exit $LASTEXITCODE): hyperv preflight failed" }
+     Select-String -SimpleMatch 's18-probe s18-probe-ack' s18-ack.log   # the acknowledgment, read back
+   } finally {
+     Invoke-Command $hv {
+       if (Get-VM s18-probe -ErrorAction SilentlyContinue) { Stop-VM s18-probe -TurnOff -Force; Remove-VM s18-probe -Force }
+       Remove-Item C:\VMs\s18-probe.vhdx -ErrorAction SilentlyContinue
+     }
    }
-   GOWORK=off go -C tools/harness-gate run . ack-probe --listen 10.20.0.5:47000 `
-     --token s18-probe-ack --log s18-ack.log --timeout 5m --send 'pwsh -NoProfile -File s18-probe-ack.ps1'
-   Select-String -SimpleMatch s18-probe-ack s18-ack.log  # the acknowledgment, read back
-   Invoke-Command $hv {
-     Stop-VM s18-probe -TurnOff -Force; Remove-VM s18-probe -Force; Remove-Item C:\VMs\s18-probe.vhdx
-     (Get-FileHash C:\VMs\base-windows.vhdx).Hash
-   } | ForEach-Object { $_ -eq $before }                # True: base image unchanged
+   $after = Invoke-Command $hv { (Get-FileHash C:\VMs\base-windows.vhdx).Hash }
    Remove-PSSession $hv
+   if ($after -ne $before) { throw "base image changed: $after" }   # base image unchanged
    ```
 
    A wrong host key or a missing Hyper-V Administrators membership fails `New-PSSession`.
@@ -141,10 +163,10 @@ machine cannot cut its own power, so no `service:os-process` substitute exists.
 
    | Variable | Value |
    |---|---|
-   | `DSH_S18_BASE_IMAGES` | the base images, `;`-separated; their SHA-256 before and after must match |
+   | `DSH_S18_BASE_IMAGES` | the base images as paths the controller can read, `;`-separated; their SHA-256 before and after must match. For Hyper-V, the host's `C:\VMs` mounted read-only on the controller, e.g. `/mnt/hyperv-vms/base-windows.vhdx` |
    | `DSH_S18_PROBE_CREATE` | creates and starts `{probe}` from an overlay (the `qemu-img` and `virt-install` lines above) |
    | `DSH_S18_PROBE_DELETE` | stops `{probe}` hard if it runs, then deletes it and its overlay: `virsh destroy {probe} 2>/dev/null; virsh undefine {probe} --remove-all-storage` |
-   | `DSH_S18_PROBE_ACK` | makes `{probe}` send one line holding `{token}` to `{addr}`, e.g. `ssh {probe} "echo {probe} {token} \| nc -N 192.168.122.1 47000"` for `{addr}` `192.168.122.1:47000`; on Hyper-V, `pwsh -NoProfile -File s18-probe-ack.ps1` (host session, then PowerShell Direct, as above) |
+   | `DSH_S18_PROBE_ACK` | makes `{probe}` send one line holding `{token}` to `{addr}`, e.g. `ssh {probe} "echo {probe} {token} \| nc -N 192.168.122.1 47000"` for `{addr}` `192.168.122.1:47000`; on Hyper-V, `pwsh -NoProfile -File /opt/dsh-s18/s18-probe-ack.ps1 -Probe {probe} -Token {token} -Addr {addr}` (host session, then PowerShell Direct, as above) |
 
    The job checksums the base images, creates the probe, cuts it with
    `DSH_SCENARIO_NODEFS_POWEROFF`, restarts it with `DSH_SCENARIO_NODEFS_POWERON`, runs
