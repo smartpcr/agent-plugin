@@ -83,6 +83,9 @@ type Args struct {
 	Help string
 	Min  int
 	Max  int
+	// Extra, when set, is the usage error's message for words beyond Max, which
+	// it then does not quote: they may be a secret typed in the wrong place.
+	Extra string
 }
 
 // Example is one example of the help text.
@@ -273,6 +276,8 @@ func argsError(spec Spec, args []string) *UsageError {
 	switch {
 	case len(args) < a.Min:
 		return Usagef(spec.Name, "missing <%s>", argName(a))
+	case a.Extra != "":
+		return Usagef(spec.Name, "%s", a.Extra)
 	case a.Max == 0:
 		return Usagef(spec.Name, "unexpected argument %q", args[0])
 	default:

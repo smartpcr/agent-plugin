@@ -110,6 +110,22 @@ var (
 	sdkCarrier      = []string{"wire.stdio", "wire.sdk"}
 )
 
+// actingPrefixes are the component-name prefixes of what acts: agents, model
+// adapters, carriers and plugin processes.
+var actingPrefixes = []string{"agent.", "llm.", "wire.", "cli.", "plugin.", "boot.plugins", "subagent."}
+
+// Acting reports whether the entry of id and component name is a carrier, an
+// agent, a model adapter or a plugin process: what the admin composition never
+// mounts (INV-10, M2-C-14).
+func Acting(id, name string) bool {
+	for _, set := range [][]string{webCarrier, headlessCarrier, sdkCarrier, {"wire.acp"}} {
+		if slices.Contains(set, id) || slices.Contains(set, name) {
+			return true
+		}
+	}
+	return slices.ContainsFunc(actingPrefixes, func(p string) bool { return strings.HasPrefix(name, p) })
+}
+
 // required is Spine followed by carrier.
 func required(carrier []string) []string {
 	return append(slices.Clone(Spine), carrier...)
