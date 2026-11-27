@@ -188,10 +188,7 @@ func Watch(ctx context.Context, app launch.App, in Inputs) State {
 			return w.state
 		case <-stopping:
 			stopping = nil
-			if w.state < Stopping {
-				w.window = nil
-				w.enter(Stopping)
-			}
+			w.observeStop()
 		case sig, ok := <-signals:
 			if !ok {
 				signals = nil
@@ -224,6 +221,9 @@ func (w *watcher) enter(s State) {
 
 // on moves the machine for one trigger.
 func (w *watcher) on(t Trigger) {
+	// The app is the truth: select may hand over a trigger before a stop by
+	// another caller, and a Ctrl-C then forces instead of asking.
+	w.observeStop()
 	switch w.state {
 	case Running:
 		if t == Interrupt && w.in.Busy != nil {
@@ -239,6 +239,21 @@ func (w *watcher) on(t Trigger) {
 			w.app.Stop(launch.Interrupted, output.Interrupted)
 			w.enter(Forced)
 		}
+	}
+}
+
+// observeStop enters Stopping when the app is stopping, by whatever caller, and
+// drops a pending confirmation.
+func (w *watcher) observeStop() {
+	if w.state >= Stopping {
+		return
+	}
+	select {
+	case <-w.app.Stopping():
+		w.window = nil
+		w.gen++
+		w.enter(Stopping)
+	default:
 	}
 }
 
@@ -278,6 +293,7 @@ func (w *watcher) confirm() {
 // answered prints the running work and opens the window, or stops when nothing
 // would be interrupted. An answer for an earlier press is dropped.
 func (w *watcher) answered(a answer) {
+	w.observeStop()
 	if a.gen != w.gen || w.state != Confirming {
 		return
 	}

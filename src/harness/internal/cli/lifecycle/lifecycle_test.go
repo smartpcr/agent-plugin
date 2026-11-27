@@ -2,6 +2,7 @@ package lifecycle
 
 import (
 	"context"
+	"io"
 	"os"
 	"strings"
 	"sync"
@@ -361,6 +362,47 @@ func TestProcessWatchesThroughContextShutdown(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("Process did not return after the forcing Ctrl-C")
 	}
+}
+
+// A Ctrl-C that select hands over before it observes another caller's stop
+// still forces, on a host with Busy too: the machine reads the app's stopping
+// state before it would ask. The first case drives exactly that interleaving;
+// the second leaves the order to select, with the interrupt ready from the
+// start.
+//
+//dsh:test DH-T-CLI-8
+func TestCtrlCDuringAnotherCallersStopForcesWithBusy(t *testing.T) {
+	busy := func(context.Context) []string { return []string{"agent a1"} }
+	t.Run("interrupt first", func(t *testing.T) {
+		app := newApp()
+		app.Stop(launch.Requested, output.OK)
+		w := &watcher{ctx: context.Background(), app: app, in: Inputs{Busy: busy, Notify: io.Discard}, answers: make(chan answer, 1)}
+		w.on(Interrupt)
+		if w.state != Forced || !urgent(app) {
+			t.Fatalf("state %s, urgent %v: a Ctrl-C during the stop asked instead of forcing", w.state, urgent(app))
+		}
+		if r, status, _ := app.Result(); r != launch.Requested || status != output.OK {
+			t.Errorf("the first stop's result became (%s, %d)", r, status)
+		}
+	})
+	t.Run("ready interrupt", func(t *testing.T) {
+		for i := range 50 {
+			app := newApp()
+			app.Stop(launch.Requested, output.OK)
+			triggers := make(chan Trigger, 1)
+			triggers <- Interrupt
+			done := make(chan State, 1)
+			go func() { done <- Watch(context.Background(), app, Inputs{Triggers: triggers, Busy: busy}) }()
+			select {
+			case s := <-done:
+				if s != Forced || !urgent(app) {
+					t.Fatalf("run %d: state %s, urgent %v", i, s, urgent(app))
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatalf("run %d: the Ctrl-C during the stop never forced", i)
+			}
+		}
+	})
 }
 
 // DH-T-CLI-9, over the source: lifecycle starts no exit timer, disposes no tree
