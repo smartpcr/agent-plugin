@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -27,13 +26,9 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/launcher"
 )
 
-// atsT is the suite's testing.T: the dsh build and its temp directory belong to it.
-var atsT *testing.T
-
-var (
-	atsBuildOnce sync.Once
-	atsBin       string
-)
+// atsBin is the dsh binary built once by the suite's test function before
+// godog starts, so a build failure fails that test on its own goroutine.
+var atsBin string
 
 // atsReferenceGolden is the committed golden of TC-13g, relative to this package.
 var atsReferenceGolden = filepath.Join("..", "..", "..", "internal", "cli", "testdata", "reference.golden")
@@ -51,11 +46,8 @@ type atsState struct {
 	stderr  string
 }
 
-// atsBuild builds ./cmd/dsh of this checkout once per suite (testkit/launcher.Build).
+// atsBuild returns the dsh binary the suite built before running scenarios.
 func atsBuild() (string, error) {
-	atsBuildOnce.Do(func() {
-		atsBin = launcher.Build(atsT, filepath.Join("..", "..", ".."), "./cmd/dsh")
-	})
 	if atsBin == "" {
 		return "", errors.New("the dsh build produced no binary")
 	}
@@ -329,7 +321,9 @@ func InitializeScenario_dh_s_16_profiles_launchers_and_evidence_runners_admin_tr
 }
 
 func TestE2E_dh_s_16_profiles_launchers_and_evidence_runners_admin_tree_and_secret_set(t *testing.T) {
-	atsT = t
+	// Build ./cmd/dsh of this checkout here, on t's own goroutine: launcher.Build
+	// fails t directly, which must not happen from a godog scenario subtest.
+	atsBin = launcher.Build(t, filepath.Join("..", "..", ".."), "./cmd/dsh")
 	suite := godog.TestSuite{
 		ScenarioInitializer: InitializeScenario_dh_s_16_profiles_launchers_and_evidence_runners_admin_tree_and_secret_set,
 		Options: &godog.Options{
