@@ -1,0 +1,50 @@
+DH-S-18: 19 scenarios, 18 variants (16 in scope, 2 out of scope), 0 owner removals
+DH-E-TOOLCHAIN-2
+  runs on: linux-wsl, windows-hosted
+  not run: macos out of scope (platforms-windows-wsl)
+DH-E-CHOKIDAR-1
+  runs on: linux-wsl, windows-hosted
+  not run: macos out of scope (platforms-windows-wsl)
+DH-E-CHOKIDAR-2
+  runs on: linux-wsl:smb, windows-host:smb
+  not run: macos out of scope (platforms-windows-wsl)
+DH-E-NODEFS-1
+  runs on: vm:linux-guest, vm:windows-guest
+  not run: vm:macos-guest out of scope (platforms-windows-wsl)
+DH-E-RIPGREP-1
+  runs on: linux-wsl, windows-hosted
+  not run: macos out of scope (platforms-windows-wsl)
+DH-E-RIPGREP-2
+  runs on: linux-wsl, windows-hosted
+  not run: macos out of scope (platforms-windows-wsl)
+DH-E-EXEC-1
+  runs on: linux-e2:systemd, linux-e2:no-user-manager
+DH-E-HOST-4
+  runs on: linux-wsl, windows-hosted
+  not run: macos out of scope (platforms-windows-wsl)
+DH-E-EXEC-10
+  runs on: linux-e2:systemd, linux-e2:no-user-manager
+DH-E-STORAGE-6
+  runs on: linux-wsl:two-account, windows-host:two-account
+  not run: macos out of scope (platforms-windows-wsl)
+DH-E-FS-1
+  runs on: linux-wsl, linux-wsl:smb, windows-hosted, windows-host:smb
+  not run: macos out of scope (platforms-windows-wsl)
+DH-E-FS-2
+  runs on: linux-wsl, windows-host, windows-host:smb
+  not run: macos out of scope (platforms-windows-wsl)
+DH-E-VIEW-5
+  runs on: linux-wsl
+DH-E-SANDBOX-1
+  runs on: linux-e2:bwrap, linux-e2:landlock, linux-e2:unconfined
+DH-E-NATIVESYSTEM-1
+  runs on: linux-e2:landlock
+DH-E-NATIVESYSTEM-2
+  runs on: linux-e2:landlock-abi1-4
+DH-E-NATIVESYSTEM-3
+  runs on: linux-e2:landlock, linux-e2:unconfined
+DH-E-NATIVESYSTEM-4
+  runs on: linux-e2:landlock, linux-e2:musl
+DH-E-CONTEXT-2
+  runs on: linux-wsl, windows-hosted
+  not run: macos out of scope (platforms-windows-wsl)

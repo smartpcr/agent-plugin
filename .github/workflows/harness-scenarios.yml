@@ -18,6 +18,16 @@
 #   scenarios  runs exactly the required scenario tests (-tags scenario) on hosted
 #              Linux and Windows (platforms-windows-wsl: regression signals; no
 #              macOS); a skipped or missing required test fails the run.
+#   s18        stage DH-S-18 only (implementation-plan Stage 8.1), in place of the
+#              two jobs above: one job per in-scope variant of
+#              docs/stories/harness-DSH-M2/evidence/variants.md, on that variant's
+#              runner (TestWorkflowRunsEveryInScopeVariant binds the matrix to the
+#              file). Each runs "harness-gate entry", the variant's service
+#              preflight, then DSH_REQUIRE_SCENARIOS from "harness-gate require
+#              --stage DH-S-18 --variant <label>", the preflight and the scenarios.
+#              A failed service preflight fails only that variant's job: it is
+#              recorded "not run (<check> preflight failed)" and S18 stays open
+#              (M2-C-2). Machine identities come from the dsh-m2-s18 environment.
 #
 # A scheduled run accepts no stage, so the required list is empty and only the index
 # is checked.
@@ -42,6 +52,7 @@ concurrency:
 
 jobs:
   preflight:
+    if: inputs.stage != 'DH-S-18'
     runs-on: ubuntu-latest
     outputs:
       count: ${{ steps.preflight.outputs.count }}
@@ -108,5 +119,251 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: harness-scenarios-${{ matrix.os }}
+          path: artifacts/harness/
+          if-no-files-found: warn
+
+  s18:
+    # Stage 8.1: one job per in-scope variant of evidence/variants.md (M2-EN-2..8).
+    if: inputs.stage == 'DH-S-18'
+    name: s18 (${{ matrix.variant }})
+    environment: dsh-m2-s18
+    timeout-minutes: 180 # the 3 h variant limit (M2-EN-7); NODEFS-1 shards past it (M2-R-06)
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        # check: the service preflight of variants.md's Preflight column; target: the
+        # machine role or SSH variable it checks; needs: the inputs the scenarios read.
+        include:
+          - variant: linux-wsl
+            runner: '["self-hosted","linux","dsh-wsl"]'
+            check: sandbox-local
+            service: service:linux-sandbox-bwrap
+            needs: DSH_SCENARIO_HOST4_LAYER DSH_SCENARIO_HOST4_READY DSH_SCENARIO_SEARCH_BUDGET
+          - variant: linux-wsl:two-account
+            runner: '["self-hosted","linux","dsh-wsl"]'
+            check: second-account
+            needs: DSH_SCENARIO_STORAGE6_USER DSH_SCENARIO_STORAGE6_PUBLIC DSH_SCENARIO_STORAGE6_SEED DSH_SCENARIO_STORAGE6_LIST DSH_SCENARIO_STORAGE6_READ DSH_SCENARIO_STORAGE6_START DSH_SCENARIO_STORAGE6_STATUS DSH_SCENARIO_STORAGE6_STOP
+          - variant: linux-wsl:smb
+            runner: '["self-hosted","linux","dsh-wsl"]'
+            check: share
+            needs: DSH_SCENARIO_FS1_SHARE DSH_SCENARIO_WATCH_SHARES
+          - variant: linux-e2:bwrap
+            runner: '["self-hosted","linux","dsh-e2-controller"]'
+            check: sandbox-ssh
+            service: service:linux-sandbox-bwrap
+            target: bwrap
+            needs: DSH_SCENARIO_SANDBOX1_MACHINES
+          - variant: linux-e2:landlock
+            runner: '["self-hosted","linux","dsh-e2-controller"]'
+            check: sandbox-ssh
+            service: service:linux-landlock-only
+            target: landlock
+            needs: DSH_SCENARIO_SANDBOX1_MACHINES
+          - variant: linux-e2:landlock-abi1-4
+            runner: '["self-hosted","linux","dsh-e2-controller"]'
+            check: sandbox-ssh
+            service: service:linux-landlock-only
+            target: landlock-abi1-4
+            needs: DSH_SCENARIO_SANDBOX1_MACHINES
+          - variant: linux-e2:unconfined
+            runner: '["self-hosted","linux","dsh-e2-controller"]'
+            check: sandbox-ssh
+            service: service:linux-unconfined
+            target: unconfined
+            needs: DSH_SCENARIO_SANDBOX1_MACHINES
+          - variant: linux-e2:musl
+            runner: '["self-hosted","linux","dsh-e2-controller"]'
+            check: sandbox-ssh
+            service: service:linux-landlock-only
+            target: musl
+            needs: DSH_SCENARIO_SANDBOX1_MACHINES
+          - variant: linux-e2:systemd
+            runner: '["self-hosted","linux","dsh-e2-controller"]'
+            check: systemd-ssh
+            target: DSH_SCENARIO_EXEC10_SSH
+            needs: DSH_SCENARIO_EXEC1_RUN DSH_SCENARIO_EXEC1_START DSH_SCENARIO_EXEC1_NOCGROUP DSH_SCENARIO_EXEC10_SSH DSH_SCENARIO_EXEC10_SSH_NOMANAGER
+          - variant: linux-e2:no-user-manager
+            runner: '["self-hosted","linux","dsh-e2-controller"]'
+            check: systemd-ssh
+            target: DSH_SCENARIO_EXEC10_SSH_NOMANAGER
+            needs: DSH_SCENARIO_EXEC1_RUN DSH_SCENARIO_EXEC1_START DSH_SCENARIO_EXEC1_NOCGROUP DSH_SCENARIO_EXEC10_SSH DSH_SCENARIO_EXEC10_SSH_NOMANAGER
+          - variant: windows-hosted
+            runner: '"windows-latest"'
+            check: windows-host
+            needs: DSH_SCENARIO_HOST4_LAYER DSH_SCENARIO_HOST4_READY DSH_SCENARIO_SEARCH_BUDGET
+          - variant: windows-host
+            runner: '["self-hosted","windows","dsh-windows-host"]'
+            check: windows-host
+            needs: ""
+          - variant: windows-host:two-account
+            runner: '["self-hosted","windows","dsh-windows-host"]'
+            check: second-account
+            needs: DSH_SCENARIO_STORAGE6_USER DSH_SCENARIO_STORAGE6_PUBLIC DSH_SCENARIO_STORAGE6_SEED DSH_SCENARIO_STORAGE6_LIST DSH_SCENARIO_STORAGE6_READ
+          - variant: windows-host:smb
+            runner: '["self-hosted","windows","dsh-windows-host"]'
+            check: share
+            needs: DSH_SCENARIO_FS1_SHARE DSH_SCENARIO_WATCH_SHARES
+          - variant: vm:linux-guest
+            runner: '["self-hosted","linux","dsh-hypervisor"]'
+            check: power-cut
+            needs: DSH_SCENARIO_VMS DSH_SCENARIO_NODEFS_LISTEN DSH_SCENARIO_NODEFS_START DSH_SCENARIO_NODEFS_POWEROFF DSH_SCENARIO_NODEFS_POWERON DSH_SCENARIO_NODEFS_READ DSH_SCENARIO_REPORT
+          - variant: vm:windows-guest
+            runner: '["self-hosted","linux","dsh-hypervisor"]'
+            check: power-cut
+            needs: DSH_SCENARIO_VMS DSH_SCENARIO_NODEFS_LISTEN DSH_SCENARIO_NODEFS_START DSH_SCENARIO_NODEFS_POWEROFF DSH_SCENARIO_NODEFS_POWERON DSH_SCENARIO_NODEFS_READ DSH_SCENARIO_REPORT
+    runs-on: ${{ fromJSON(matrix.runner) }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      # Machine identities and scenario inputs only (e2e-scenarios.md Phase 9 Secrets).
+      DSH_SCENARIO_SANDBOX1_MACHINES: ${{ vars.DSH_SCENARIO_SANDBOX1_MACHINES }}
+      DSH_SCENARIO_EXEC1_RUN: ${{ vars.DSH_SCENARIO_EXEC1_RUN }}
+      DSH_SCENARIO_EXEC1_START: ${{ vars.DSH_SCENARIO_EXEC1_START }}
+      DSH_SCENARIO_EXEC1_NOCGROUP: ${{ vars.DSH_SCENARIO_EXEC1_NOCGROUP }}
+      DSH_SCENARIO_EXEC10_SSH: ${{ vars.DSH_SCENARIO_EXEC10_SSH }}
+      DSH_SCENARIO_EXEC10_SSH_NOMANAGER: ${{ vars.DSH_SCENARIO_EXEC10_SSH_NOMANAGER }}
+      DSH_SCENARIO_HOST4_LAYER: ${{ vars.DSH_SCENARIO_HOST4_LAYER }}
+      DSH_SCENARIO_HOST4_READY: ${{ vars.DSH_SCENARIO_HOST4_READY }}
+      DSH_SCENARIO_SEARCH_BUDGET: ${{ vars.DSH_SCENARIO_SEARCH_BUDGET }}
+      DSH_SCENARIO_STORAGE6_USER: ${{ vars.DSH_SCENARIO_STORAGE6_USER }}
+      DSH_SCENARIO_STORAGE6_PUBLIC: ${{ vars.DSH_SCENARIO_STORAGE6_PUBLIC }}
+      DSH_SCENARIO_STORAGE6_SEED: ${{ vars.DSH_SCENARIO_STORAGE6_SEED }}
+      DSH_SCENARIO_STORAGE6_LIST: ${{ vars.DSH_SCENARIO_STORAGE6_LIST }}
+      DSH_SCENARIO_STORAGE6_READ: ${{ vars.DSH_SCENARIO_STORAGE6_READ }}
+      DSH_SCENARIO_STORAGE6_START: ${{ vars.DSH_SCENARIO_STORAGE6_START }}
+      DSH_SCENARIO_STORAGE6_STATUS: ${{ vars.DSH_SCENARIO_STORAGE6_STATUS }}
+      DSH_SCENARIO_STORAGE6_STOP: ${{ vars.DSH_SCENARIO_STORAGE6_STOP }}
+      DSH_SCENARIO_FS1_SHARE: ${{ vars.DSH_SCENARIO_FS1_SHARE }}
+      DSH_SCENARIO_WATCH_SHARES: ${{ vars.DSH_SCENARIO_WATCH_SHARES }}
+      DSH_SCENARIO_VMS: ${{ vars.DSH_SCENARIO_VMS }}
+      DSH_SCENARIO_NODEFS_LISTEN: ${{ vars.DSH_SCENARIO_NODEFS_LISTEN }}
+      DSH_SCENARIO_NODEFS_START: ${{ vars.DSH_SCENARIO_NODEFS_START }}
+      DSH_SCENARIO_NODEFS_POWEROFF: ${{ vars.DSH_SCENARIO_NODEFS_POWEROFF }}
+      DSH_SCENARIO_NODEFS_POWERON: ${{ vars.DSH_SCENARIO_NODEFS_POWERON }}
+      DSH_SCENARIO_NODEFS_READ: ${{ vars.DSH_SCENARIO_NODEFS_READ }}
+      DSH_SCENARIO_REPORT: ${{ vars.DSH_SCENARIO_REPORT }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: src/harness/go.mod
+          cache-dependency-path: |
+            src/harness/go.sum
+            tools/harness-gate/go.sum
+      - name: Entry (M2-DEC-1)
+        run: GOWORK=off go -C tools/harness-gate run . entry --root ../.. --story harness:DSH-M2
+      - name: Load the lab SSH key
+        if: contains(matrix.check, 'ssh')
+        env:
+          KEY: ${{ secrets.DSH_LAB_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DSH_LAB_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          eval "$(ssh-agent -s)"
+          printf '%s\n' "$KEY" | ssh-add -
+          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> "$GITHUB_ENV"
+          echo "SSH_AGENT_PID=$SSH_AGENT_PID" >> "$GITHUB_ENV"
+      - name: Service preflight (${{ matrix.check }})
+        env:
+          CHECK: ${{ matrix.check }}
+          SERVICE: ${{ matrix.service }}
+          TARGET: ${{ matrix.target }}
+          NEEDS: ${{ matrix.needs }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$CHECK preflight failed: $*"; echo "record the variant 'not run ($CHECK preflight failed)'"; exit 1; }
+          for v in $NEEDS; do [ -n "${!v:-}" ] || fail "$v is not set in environment dsh-m2-s18"; done
+          gate() { GOWORK=off go -C tools/harness-gate run . "$@"; }
+          dsh="$RUNNER_TEMP/dsh"
+          case "$CHECK" in
+            sandbox-local)
+              GOWORK=off go -C src/harness build -o "$dsh" ./cmd/dsh
+              "$dsh" --home "$RUNNER_TEMP/home" sandbox status | gate sandbox-preflight --service "$SERVICE" || fail "dsh sandbox status is not $SERVICE"
+              ;;
+            sandbox-ssh)
+              alias=$(tr ';' '\n' <<<"$DSH_SCENARIO_SANDBOX1_MACHINES" | sed -n "s/^ *$TARGET *= *//p" | head -n1)
+              [ -n "$alias" ] || fail "DSH_SCENARIO_SANDBOX1_MACHINES names no $TARGET machine"
+              CGO_ENABLED=0 GOOS=linux GOWORK=off go -C src/harness build -o "$dsh" ./cmd/dsh
+              dir=$(ssh -o BatchMode=yes "$alias" mktemp -d) || fail "ssh $alias failed"
+              scp -q -o BatchMode=yes "$dsh" "$alias:$dir/dsh" || fail "scp to $alias failed"
+              report=$(ssh -o BatchMode=yes "$alias" "env DSH_HOME=$dir/home $dir/dsh sandbox status") || true
+              ssh -o BatchMode=yes "$alias" "rm -rf $dir" || true
+              printf '%s\n' "$report" | gate sandbox-preflight --service "$SERVICE" || fail "$alias is not $SERVICE"
+              ;;
+            systemd-ssh)
+              alias="${!TARGET}"
+              state=$(ssh -o BatchMode=yes "$alias" 'systemctl --user is-system-running 2>&1' || true)
+              cgroup=$(ssh -o BatchMode=yes "$alias" 'cat /proc/self/cgroup') || fail "ssh $alias failed"
+              echo "$alias: systemctl --user: ${state:-<none>}; cgroup: $cgroup"
+              ;;
+            second-account)
+              if [ "$RUNNER_OS" = Windows ]; then
+                net user "$DSH_SCENARIO_STORAGE6_USER" >/dev/null || fail "no local account $DSH_SCENARIO_STORAGE6_USER"
+              else
+                id "$DSH_SCENARIO_STORAGE6_USER" || fail "no local account $DSH_SCENARIO_STORAGE6_USER"
+                [ "$(id -u "$DSH_SCENARIO_STORAGE6_USER")" != "$(id -u)" ] || fail "the second account is the runner's own"
+              fi
+              ;;
+            share)
+              for s in $DSH_SCENARIO_FS1_SHARE ${DSH_SCENARIO_WATCH_SHARES//[,;]/ }; do
+                [ -d "$s" ] && [ -w "$s" ] || fail "share $s is not mounted and writable"
+                echo "share mounted: $s"
+              done
+              ;;
+            windows-host)
+              GOWORK=off go -C src/harness build -o "$dsh.exe" ./cmd/dsh
+              sha256sum "$dsh.exe"
+              ;;
+            power-cut)
+              # The recorder is the scenario process on this host: its address must be
+              # local and free. Each guest must start and answer (runbook-power-cut.md
+              # step 2 creates, cuts and deletes the throw-away guest by hand).
+              host="${DSH_SCENARIO_NODEFS_LISTEN%:*}"; port="${DSH_SCENARIO_NODEFS_LISTEN##*:}"
+              ip -o addr | grep -qF " ${host}/" || fail "recorder address $host is not on this host"
+              ! (exec 3<>"/dev/tcp/$host/$port") 2>/dev/null || fail "$DSH_SCENARIO_NODEFS_LISTEN is already in use"
+              for vm in ${DSH_SCENARIO_VMS//;/ }; do
+                sh -c "${DSH_SCENARIO_NODEFS_POWERON//\{vm\}/$vm}" || fail "guest $vm did not start"
+                echo "guest reachable: $vm"
+              done
+              ;;
+            *) fail "unknown check" ;;
+          esac
+      - name: Derive the variant's required scenarios
+        id: require
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          list="$(GOWORK=off go -C tools/harness-gate run . require --root ../.. --stage DH-S-18 --variant "$VARIANT")"
+          echo "variant=$VARIANT DSH_REQUIRE_SCENARIOS=$list"
+          echo "list=$list" >> "$GITHUB_OUTPUT"
+      - name: Preflight
+        id: preflight
+        env:
+          DSH_REQUIRE_SCENARIOS: ${{ steps.require.outputs.list }}
+        run: GOWORK=off go -C tools/harness-gate run . preflight --root ../..
+      - name: Run the variant's scenarios
+        env:
+          RUN: ${{ steps.preflight.outputs.run }}
+          TESTS: ${{ steps.preflight.outputs.tests }}
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          set -o pipefail
+          mkdir -p artifacts/harness
+          log="artifacts/harness/s18-${VARIANT//:/-}.txt"
+          GOWORK=off go -C src/harness test -tags scenario -p 1 -count=1 -timeout 175m -v -run "$RUN" ./... 2>&1 | tee "$log"
+          if grep -q -- '--- SKIP' "$log"; then
+            echo "a required scenario skipped"; exit 1
+          fi
+          for t in ${TESTS//,/ }; do
+            grep -q -- "--- PASS: $t " "$log" || { echo "required scenario $t did not pass"; exit 1; }
+          done
+      - name: Upload variant evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: harness-s18-${{ strategy.job-index }}
           path: artifacts/harness/
           if-no-files-found: warn

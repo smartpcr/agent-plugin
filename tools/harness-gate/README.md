@@ -98,7 +98,8 @@ pin means changing the `require` line, keeping its reason comment, and running
 
 ```sh
 GOWORK=off go -C tools/harness-gate run . rehearse  --root ../.. [--out DIR]
-GOWORK=off go -C tools/harness-gate run . require   --root ../.. --stage DH-S-18
+GOWORK=off go -C tools/harness-gate run . require   --root ../.. --stage DH-S-18 [--variant linux-e2:landlock]
+GOWORK=off go -C tools/harness-gate run . variants  --root ../.. [--story harness:DSH-M2]
 GOWORK=off go -C tools/harness-gate run . preflight --root ../..
 GOWORK=off go -C tools/harness-gate run . scenarios --root ../.. --stage DH-S-17 --evidence FILE
 GOWORK=off go -C tools/harness-gate run . ready     --root ../.. --stage DH-S-16 [--built]
@@ -106,7 +107,7 @@ GOWORK=off go -C tools/harness-gate run . close     --root ../.. --stage DH-S-16
 GOWORK=off go -C tools/harness-gate run . records   --root ../..
 GOWORK=off go -C tools/harness-gate run . entry     --root ../.. --story harness:DSH-M2
 GOWORK=off go -C tools/harness-gate run . policy-text --root ../..
-dsh sandbox status | GOWORK=off go -C tools/harness-gate run . sandbox-preflight [--status FILE]
+dsh sandbox status | GOWORK=off go -C tools/harness-gate run . sandbox-preflight [--status FILE] [--service service:linux-landlock-only]
 ```
 
 - `rehearse` (DH-D-TOOLCHAIN-5, DH-ADR-TOOLCHAIN-13; gap-closure step 19.1.1) runs
@@ -126,7 +127,22 @@ dsh sandbox status | GOWORK=off go -C tools/harness-gate run . sandbox-preflight
   `harness` job on Linux; `release.yml` and `.goreleaser.yaml` are unchanged.
 - `require` prints the comma-separated `DH-E-*` IDs of one stage entry of the
   acceptance index (empty for no `--stage`); an unknown stage is an error. The
-  scenario workflow uses it to derive `DSH_REQUIRE_SCENARIOS`.
+  scenario workflow uses it to derive `DSH_REQUIRE_SCENARIOS`. With `--variant`
+  (each `s18` job, Stage 8.1) it prints only the IDs that variant of the story's
+  `evidence/variants.md` runs, in index order, after `variants`' check passes; an
+  unknown or out-of-scope variant fails with exit 1.
+- `variants` (Stage 8.1, M2-DOD-4) cross-references
+  `docs/stories/<story>/evidence/variants.md` with the `DH-S-18` index entry
+  (`variants/`): every scenario has an in-scope variant or an owner removal whose
+  decision covers it, every listed ID is in the entry, labels are unique, services
+  are architecture.md's, a sandbox service's preflight is its
+  `sandboxstatus.Expectations` text, an in-scope row names a hosted or
+  `self-hosted, linux|windows, <label>` runner and a provider, and an out-of-scope
+  row's decision covers it (macOS rows read `out of scope (platforms-windows-wsl)`).
+  It prints the per-scenario coverage (`variants/testdata/coverage.golden`) and
+  exits 0; 1 with one `FAILED:` line per problem; 2 on an unreadable file.
+  `TestWorkflowRunsEveryInScopeVariant` binds the `s18` matrix of
+  `harness-scenarios.yml` to the file.
 - `preflight` (DH-ADR-TOOLCHAIN-6, -12) reads `DSH_REQUIRE_SCENARIOS` from the
   environment and fails -- starting nothing -- when a required ID has no scenario
   test, when a required ID's index entry `requires` a stage past `built-through`,
@@ -166,6 +182,12 @@ Copilot CLI 1.0.115 has no non-interactive status command; `none` runs no check.
   and exits 0 only when the report's `backend:` line is `bwrap` and its `state:`
   line is `Full` (`sandboxstatus/`). Any other report fails with exit 1, as does
   one with a missing or repeated line. It never skips. Exit 2 is a usage error.
+  With `--service` it decides that S18 sandbox service's preflight instead
+  (`sandboxstatus.Preflight`): `service:linux-sandbox-bwrap` backend `bwrap`,
+  state `Full`; `service:linux-landlock-only` backend `landlock`, state `Full` or
+  `Partial`; `service:linux-unconfined` state `Unconfined` with the missing
+  effects named. A wrong machine, or an unknown service, exits 1 naming the
+  service and the expected state.
 
 ## Story entry (`harness-gate entry`)
 
@@ -202,7 +224,7 @@ default `harness-gate` gate list and the lane scripts in their default mode) doe
 not call it, so S12..S16 may build on the built M1 contracts while M1 is open
 (Q `m2-entry-m1-closure`). The wiring lands with the runners themselves, when they
 exist: the lane scripts' `guarded` mode (Stage 6.12), the `s17` job (Stage 7.1) and
-the `s18` jobs (Stage 8.1). Each of those stages adds the call; nothing here
+the `s18` jobs (Stage 8.1, wired: each job's first step after checkout). Each of those stages adds the call; nothing here
 refers forward to a runner that is not yet built.
 
 The tests never read the live records for the fixture cases:
