@@ -254,6 +254,19 @@ var codes = map[herr.Reason]int{
 	"stdio/client-stalled": Stalled,
 	"stdio/output-failed":  Unavailable,
 
+	"replay/request-mismatch": Invalid,
+	"replay/unconsumed":       Failed,
+	"replay/unscripted":       Invalid,
+
+	"title/invalid":          Invalid,
+	"title/no-input":         Invalid,
+	"title/no-route":         Unavailable,
+	"title/pinned":           Busy,
+	"title/rejected":         Failed,
+	"title/superseded":       Busy,
+	"title/unavailable":      Unavailable,
+	"title/unknown-provider": Config,
+
 	"workdir/invalid":            Invalid,
 	"workdir/notice-undelivered": Unavailable,
 	"workdir/unavailable":        Unavailable,

@@ -74,6 +74,13 @@ func (tr *tracker) fail(reason string) {
 	}
 }
 
+// cause is the first recorded reason, empty when none is.
+func (tr *tracker) cause() string {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	return tr.reason
+}
+
 func (tr *tracker) built(sum string) {
 	tr.mu.Lock()
 	defer tr.mu.Unlock()

@@ -71,9 +71,16 @@ stages:
       credential: none
       requires: [DH-S-16]
   # Venue: acceptance (harness:DSH-M2 Phase 7, E1: Linux with the signed-in Claude
-  # Code route required and the Copilot CLI route recorded). DH-E-SDK-1 joins when
-  # DH-S-15 authors it.
+  # Code route required and the Copilot CLI route recorded). DH-E-SDK-1 is authored
+  # in DH-S-16 (implementation-plan Stage 6.11) and run here in Stage 7.5.
   DH-S-17:
+    # The Go client over stdio against the built binary: allow, reject, a question,
+    # a duplicate answer, cancel, a killed host and a resume (sdk.md DH-E-SDK-1);
+    # authored in DH-S-16 (Stage 6.11): sdk_stdio_scenario_test.go.
+    - id: DH-E-SDK-1
+      authored: DH-S-16
+      credential: claude-session
+      requires: [DH-S-16]
     # Its subjects (the model runtime, the replay helpers) exist from Phase 11;
     # the file is written by the DH-S-11 authoring step (impl.md DH-S-1 Scenarios),
     # in Stage 11.4: toolchain_record_replay_scenario_test.go.
@@ -287,6 +294,13 @@ stages:
       authored: DH-S-15
       credential: none
       requires: [DH-S-16, DH-S-21]
+    # The web, headless and sdk profiles send nothing but model requests through a
+    # recording proxy (bundle-preset.md DH-E-BUNDLE-3); authored in DH-S-16
+    # (Stage 6.11): bundle_egress_scenario_test.go.
+    - id: DH-E-BUNDLE-3
+      authored: DH-S-16
+      credential: claude-session
+      requires: [DH-S-16, DH-S-21]
   DH-S-23:
     # An image survives a crash mid-upload, a restart, a fork whose parent is
     # deleted and collection (impl.md DH-S-23); authored by Stage 8.2.
@@ -296,7 +310,21 @@ stages:
   # Venue: later (DH-S-27, after harness:DSH-M2; step 27.8 needs the web UI and the
   # macOS and Windows backends). M2 authors DH-E-CLI-1 and DH-E-CLI-2 for it in
   # DH-S-16; they are guarded by their specification ("a stop can lose work").
-  DH-S-27: []
+  DH-S-27:
+    # One launch command across a second launch, Ctrl-C, termination and a crash
+    # (app-cli.md DH-E-CLI-1); authored in DH-S-16 (Stage 6.11):
+    # cli_launch_scenario_test.go.
+    - id: DH-E-CLI-1
+      authored: DH-S-16
+      credential: none
+      requires: [DH-S-16, DH-S-21, DH-S-27]
+    # A headless run on the signed-in route: approval on a terminal, a piped
+    # refusal, --json, Ctrl-C and a resume (app-cli.md DH-E-CLI-2); authored in
+    # DH-S-16 (Stage 6.11): cli_headless_scenario_test.go.
+    - id: DH-E-CLI-2
+      authored: DH-S-16
+      credential: claude-session
+      requires: [DH-S-13, DH-S-16, DH-S-27]
   DH-S-35:
     # A non-holder follows a session and hands its holder requests (impl.md step
     # 35.7); authored by Stage 7.3 (impl.md step 7.5), which builds the follow.
@@ -368,7 +396,48 @@ stages:
       authored: DH-S-15
       credential: none
       requires: [DH-S-13, DH-S-16, DH-S-21, DH-S-27]
+    # A lost SDK client (killed, closed, stalled) leaves no host and the session
+    # resumes (sdk.md DH-E-SDK-2); authored in DH-S-16 (Stage 6.11):
+    # sdk_client_loss_scenario_test.go.
+    - id: DH-E-SDK-2
+      authored: DH-S-16
+      credential: none
+      requires: [DH-S-16]
+    # A required scenario cannot pass by skipping, and its report names the build
+    # (testing.md DH-E-UTIL-2); authored in DH-S-16 (Stage 6.11):
+    # scenario_required_scenario_test.go.
+    - id: DH-E-UTIL-2
+      authored: DH-S-16
+      credential: claude-session
+      requires: [DH-S-16]
   # Venue: later (DH-S-48, after harness:DSH-M2: the browser preset choice, the
   # settings page and the release archive). M2 authors DH-E-BUNDLE-1, DH-E-BUNDLE-2,
   # DH-E-BUNDLE-4 and DH-E-API-5 for it (tech-spec sec. 4.5).
-  DH-S-48: []
+  DH-S-48:
+    # A one-shot job on its own sign-in, resumed under its recorded preset, and two
+    # presets in one host with an edit mid-turn (bundle-preset.md DH-E-BUNDLE-1,
+    # DH-E-BUNDLE-2); authored in DH-S-16 (Stage 6.11):
+    # bundle_preset_scenario_test.go. No API key exists (tech-spec sec. 4.3): both
+    # run on the signed-in Claude Code route.
+    - id: DH-E-BUNDLE-1
+      authored: DH-S-16
+      credential: claude-session
+      requires: [DH-S-16, DH-S-21, DH-S-48]
+    - id: DH-E-BUNDLE-2
+      authored: DH-S-16
+      credential: claude-session
+      requires: [DH-S-16, DH-S-21, DH-S-48]
+    # The release binary agrees with its own layers on every platform
+    # (bundle-preset.md DH-E-BUNDLE-4); authored in DH-S-16 (Stage 6.11):
+    # bundle_release_scenario_test.go.
+    - id: DH-E-BUNDLE-4
+      authored: DH-S-16
+      credential: none
+      requires: [DH-S-16, DH-S-48]
+    # Disabling the jobs route component removes its routes from a running host
+    # (api.md DH-E-API-5); authored in DH-S-16 (Stage 6.11):
+    # api_feature_routes_scenario_test.go.
+    - id: DH-E-API-5
+      authored: DH-S-16
+      credential: none
+      requires: [DH-S-21, DH-S-26, DH-S-48]

@@ -313,7 +313,8 @@ func Run(t testing.TB, id string, needs Needs, body func(s *S)) {
 		row.Result, row.Reason = Failed, fmt.Sprintf("the body panicked: %v", panicked)
 		t.Errorf("%s: the body panicked: %v\n%s", id, panicked, stack)
 	case t.Failed():
-		row.Result = Failed
+		// The first cause the body recorded (Cause, Need), if any.
+		row.Result, row.Reason = Failed, track(t).cause()
 	case t.Skipped():
 		// A scenario does not skip itself; the needs decide. A required one
 		// that skipped anyway fails.
@@ -383,6 +384,14 @@ func Need(t testing.TB, name, what string) string {
 		t.Fatalf("%s is not set: %s", name, what)
 	}
 	return v
+}
+
+// Cause records reason as why t's scenario fails, the reason of its report row
+// when it fails: the first one recorded (Cause or Need) wins, and it does not fail
+// t itself. A scenario calls it for a diagnosed failure -- a refused sign-in, say
+// -- whose report row must name it, under Run or not.
+func Cause(t testing.TB, reason string) {
+	track(t).fail(reason)
 }
 
 // Bin, Need and Start are the shared entry points of a scenario that does not
