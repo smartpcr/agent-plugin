@@ -3,6 +3,7 @@
 package scenarios
 
 import (
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -41,27 +42,45 @@ import (
 // DSH_SCENARIO_CLI1_BROWSER, the browser driver (host_web_test.go browserState)
 // over the browser "default"; DSH_SCENARIO_CLI1_TURN, a command over {home} and
 // {origin} that starts the fixture session's sleeping turn in the running host
-// and prints the session id last; DSH_SCENARIO_TERMINAL_KEYS, a command over
-// {pid} (the terminal host) and {keys} ("ctrl-c") typing into its terminal.
+// and prints the session id last; on Windows DSH_SCENARIO_TERMINAL_KEYS, a
+// command over {pid} (the terminal host) and {keys} ("ctrl-c", "ctrl-c ctrl-c")
+// pressing them on its terminal.
+//
+// Every web host runs on the scenario's own terminal
+// (startDshOnInteractiveTerminal), dsh's controlling terminal, so on POSIX step
+// (3) types Ctrl-C into it and the pty raises SIGINT for dsh. A pseudoconsole
+// raises no console event for a typed Ctrl-C, so on Windows the operator command
+// presses it.
 //
 //dsh:scenario DH-E-CLI-1
 func TestOneLaunchCommandAcrossStops(t *testing.T) {
+	inputs := []string{"DSH_SCENARIO_CLI1_LAYER", "DSH_SCENARIO_CLI1_BROWSER", "DSH_SCENARIO_CLI1_TURN"}
+	if runtime.GOOS == "windows" {
+		inputs = append(inputs, "DSH_SCENARIO_TERMINAL_KEYS")
+	}
 	scenario.Run(t, "DH-E-CLI-1", scenario.Needs{
-		Bin: true, Deadline: 45 * time.Minute,
-		Env: []string{"DSH_SCENARIO_CLI1_LAYER", "DSH_SCENARIO_CLI1_BROWSER", "DSH_SCENARIO_CLI1_TURN", "DSH_SCENARIO_TERMINAL_KEYS"},
+		Bin: true, Deadline: 45 * time.Minute, Env: inputs,
 	}, func(s *scenario.S) {
 		profileLayer(t, s.Home, "web", layerInput(t, "DSH_SCENARIO_CLI1_LAYER", "a replay layer", map[string]string{"workspace": s.Workspace}))
 		browser := newBrowserDriver(t, "DSH_SCENARIO_CLI1_BROWSER")
 		env := []string{"DSH_HOME=" + s.Home}
+		typers := map[*dshHost]func(string){}
 		web := func(args ...string) (*dshHost, string) {
-			h := startDshOnTerminal(t, env, s.Bin, append([]string{"--home", s.Home}, append(args, "web")...)...)
+			h, k := startDshOnInteractiveTerminal(t, env, s.Bin, append([]string{"--home", s.Home}, append(args, "web")...)...)
+			typers[h] = k
 			return h, h.waitFor(t, 2*time.Minute, "a launch link", func(out string) string { return launchLink.FindString(plainText(out)) })
 		}
 		turn := func(link string) string {
 			return lastLine(operatorStep(t, "DSH_SCENARIO_CLI1_TURN", "starts the sleeping turn", map[string]string{"home": s.Home, "origin": originOf(link)}))
 		}
-		keys := func(h *dshHost, k string) {
-			operatorStep(t, "DSH_SCENARIO_TERMINAL_KEYS", "types keys into a terminal", map[string]string{"pid": strconv.Itoa(h.Process.Pid()), "keys": k})
+		// ctrlC presses Ctrl-C presses times in a row on h's terminal.
+
+		ctrlC := func(h *dshHost, presses int) {
+			if runtime.GOOS == "windows" {
+				operatorStep(t, "DSH_SCENARIO_TERMINAL_KEYS", "types keys into a terminal", map[string]string{"pid": strconv.Itoa(h.Process.Pid()), "keys": strings.TrimSpace(strings.Repeat("ctrl-c ", presses))})
+				return
+			}
+			typers[h](strings.Repeat("\x03", presses))
 		}
 		s.Cleanup(func() { _, _ = launcher.Run(t, time.Minute, s.Program(env, "--home", s.Home, "stop", "--yes")) })
 
@@ -91,11 +110,11 @@ func TestOneLaunchCommandAcrossStops(t *testing.T) {
 		}
 
 		session := turn(link)
-		keys(h, "ctrl-c")
+		ctrlC(h, 1)
 		if h.await(5 * time.Second) {
 			t.Fatalf("(3) one Ctrl-C ended the host (exit %d)", h.code())
 		}
-		keys(h, "ctrl-c ctrl-c")
+		ctrlC(h, 2)
 		if !h.await(30*time.Second) || h.code() != 130 {
 			t.Errorf("(3) the double Ctrl-C left exit %d, want 130", h.code())
 		}
