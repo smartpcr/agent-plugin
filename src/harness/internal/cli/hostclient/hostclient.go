@@ -121,8 +121,9 @@ func probe(ctx context.Context, path string) (Found, bool, error) {
 		// A host writes its record whole (fsx), so this file is no host's.
 		return f, false, herr.Wrap(ReasonBadRecord, err, "the runtime record "+path+" is not a host's record")
 	}
-	// The endpoint first: testing the lock of a live host would be harmless, but
-	// testing it while a host starts could make that start launch/taken.
+	// The endpoint first, so a live host's lock is never tested. A host starting
+	// over a stale record waits out this brief hold (launch.TakenWait) rather than
+	// reporting launch/taken.
 	if f.Record.Socket != "" {
 		if err := Call(ctx, f.Record.Socket, launch.MethodStatus, nil, &f.Status); err == nil {
 			f.State = Live
