@@ -1,3 +1,4 @@
+//dsh:untrusted-parser session-log export files read by import
 package sqlite
 
 import (

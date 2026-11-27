@@ -2,14 +2,18 @@ package scenario
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	//lint:ignore typeassert testing.M has no per-test hook; enter reads its unexported test list to track each scenario from entry (C55 one row per scenario)
+	"unsafe"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/dshbin"
 )
@@ -171,7 +175,42 @@ func Main(m *testing.M) {
 		os.Exit(1)
 	}
 	ids = found
+	if err := enter(m, found); err != nil {
+		fmt.Fprintf(os.Stderr, "scenario: %v\n", err)
+		os.Exit(1)
+	}
 	os.Exit(verify(dshbin.Run(m), os.Getenv(ReportEnv), os.Getenv(RequireEnv), found))
+}
+
+// enter makes each test of m that carries a //dsh:scenario directive tracked
+// from its first line (track), so the test writes exactly one row whether or not
+// it reaches Bin, Need or Start, and a failure before any of them is recorded
+// too; the test bodies are unchanged (architecture.md I-2). The testing package
+// offers no per-test hook, so enter rewrites the test list testing.M holds; a Go
+// release that changes that field fails Main here rather than dropping rows.
+func enter(m *testing.M, declared map[string]string) error {
+	f := reflect.ValueOf(m).Elem().FieldByName("tests")
+	if !f.IsValid() || f.Type() != reflect.TypeFor[[]testing.InternalTest]() {
+		return errors.New("testing.M has no tests field of []testing.InternalTest: Main cannot track the scenarios from their entry")
+	}
+	tests := *(*[]testing.InternalTest)(unsafe.Pointer(f.UnsafeAddr()))
+	wrapTests(tests, declared)
+	return nil
+}
+
+// wrapTests replaces, in place, the function of each test in declared by one that
+// tracks the test before it runs.
+func wrapTests(tests []testing.InternalTest, declared map[string]string) {
+	for i := range tests {
+		if _, ok := declared[tests[i].Name]; !ok {
+			continue
+		}
+		body := tests[i].F
+		tests[i].F = func(t *testing.T) {
+			track(t)
+			body(t)
+		}
+	}
 }
 
 // verify is Main's check after the tests ended with code.

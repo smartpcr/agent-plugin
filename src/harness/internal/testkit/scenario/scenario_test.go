@@ -432,6 +432,94 @@ func TestRunOwnsTheRowsOfItsTest(t *testing.T) {
 	}
 }
 
+// The row is written after the scenario's cleanups: a body that passed followed
+// by a cleanup that fails, or that ends its goroutine, gives one failed row, and
+// the cleanups after it, the home and the workspace still go.
+func TestCleanupFailureFailsThePassedRow(t *testing.T) {
+	cases := map[string]func(s *S){
+		"error": func(s *S) { s.Errorf("cleanup failed") },
+		"fatal": func(s *S) { s.Fatalf("cleanup failed") },
+	}
+	for name, fail := range cases {
+		t.Run(name, func(t *testing.T) {
+			p := report(t)
+			r := &recorder{TB: t}
+			var home, workspace string
+			ran := false
+			r.run(func() {
+				Run(r, "DH-E-X-11", Needs{}, func(s *S) {
+					home, workspace = s.Home, s.Workspace
+					s.Cleanup(func() { ran = true })
+					s.Cleanup(func() { fail(s) })
+				})
+			})
+			row := one(t, p)
+			if row.Result != Failed || !strings.Contains(row.Reason, "cleanup") || len(r.failures) != 1 {
+				t.Errorf("row = %+v, failures %q; want one failed row naming the cleanup", row, r.failures)
+			}
+			if !ran {
+				t.Error("a cleanup registered before the failing one did not run")
+			}
+			for _, d := range []string{home, workspace} {
+				if _, err := os.Stat(d); !os.IsNotExist(err) {
+					t.Errorf("%s survives the scenario (%v)", d, err)
+				}
+			}
+		})
+	}
+}
+
+// A test with a //dsh:scenario directive is tracked from its first line (Main
+// wraps it through enter), so one that never calls Bin, Need or Start, or fails
+// before it would, still writes exactly one row; an undeclared test writes none.
+func TestDeclaredTestIsTrackedFromEntry(t *testing.T) {
+	if err := enter(&testing.M{}, nil); err != nil {
+		t.Fatalf("enter: %v", err)
+	}
+	old := ids
+	ids = map[string]string{"TestDeclaredTestIsTrackedFromEntry": "DH-E-T-3"}
+	t.Cleanup(func() { ids = old })
+	dir := t.TempDir()
+	ran := 0
+	tests := []testing.InternalTest{
+		{Name: "TestDeclaredTestIsTrackedFromEntry", F: func(*testing.T) { ran++ }},
+		{Name: "TestUndeclared", F: func(*testing.T) { ran++ }},
+	}
+	wrapTests(tests, ids)
+	for i, tc := range tests {
+		p := filepath.Join(dir, fmt.Sprintf("report-%d.jsonl", i))
+		t.Run("no helper", func(t *testing.T) {
+			t.Setenv(ReportEnv, p)
+			t.Setenv(RequireEnv, "")
+			tc.F(t)
+		})
+		_, err := os.Stat(p)
+		if declared := i == 0; declared {
+			if row := one(t, p); row.ID != "DH-E-T-3" || row.Result != Passed {
+				t.Errorf("row = %+v, want DH-E-T-3 passed", row)
+			}
+		} else if !os.IsNotExist(err) {
+			t.Errorf("%s wrote a row (%v)", tc.Name, err)
+		}
+	}
+	if ran != 2 {
+		t.Errorf("the bodies ran %d times, want 2", ran)
+	}
+	p := filepath.Join(dir, "report-early.jsonl")
+	t.Run("fails first", func(t *testing.T) {
+		t.Setenv(ReportEnv, p)
+		t.Setenv(RequireEnv, "")
+		r := &recorder{TB: t}
+		r.run(func() {
+			track(r)
+			r.Fatalf("broken before any helper")
+		})
+	})
+	if row := one(t, p); row.ID != "DH-E-T-3" || row.Result != Failed {
+		t.Errorf("row = %+v, want DH-E-T-3 failed", row)
+	}
+}
+
 func TestDirectives(t *testing.T) {
 	dir := t.TempDir()
 	src := strings.Join([]string{

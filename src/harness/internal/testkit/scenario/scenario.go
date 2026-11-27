@@ -111,9 +111,64 @@ type S struct {
 	// Workspace is a fresh, empty working directory, removed at cleanup.
 	Workspace string
 
-	ctx   context.Context
-	mu    sync.Mutex
-	hosts []*launcher.Host
+	ctx      context.Context
+	mu       sync.Mutex
+	hosts    []*launcher.Host
+	cleanups []func()
+}
+
+// Cleanup registers f to run when the scenario ends, before Run writes its row,
+// so a cleanup that fails fails the scenario's row too. Cleanups run last first.
+func (s *S) Cleanup(f func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cleanups = append(s.cleanups, f)
+}
+
+// TempDir is a fresh directory removed by the scenario's cleanup (Cleanup).
+func (s *S) TempDir() string {
+	s.Helper()
+	d, err := os.MkdirTemp("", "dsh-scenario-")
+	if err != nil {
+		s.Fatalf("scenario: %v", err)
+	}
+	s.Cleanup(func() {
+		// A process just stopped may hold a file for a moment on Windows.
+		for i := 0; ; i++ {
+			err := os.RemoveAll(d)
+			if err == nil {
+				return
+			}
+			if i == 50 {
+				s.Errorf("scenario: removing %s: %v", d, err)
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	})
+	return d
+}
+
+// cleanup runs the scenario's cleanups, last first, each on a goroutine of its
+// own so a FailNow in one ends that cleanup alone.
+func (s *S) cleanup() {
+	for {
+		s.mu.Lock()
+		n := len(s.cleanups)
+		if n == 0 {
+			s.mu.Unlock()
+			return
+		}
+		f := s.cleanups[n-1]
+		s.cleanups = s.cleanups[:n-1]
+		s.mu.Unlock()
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			f()
+		}()
+		<-done
+	}
 }
 
 // Context ends at the scenario's deadline, with ErrDeadline as its cause.
@@ -166,37 +221,52 @@ var abandonAfter = 30 * time.Second
 // Run returns when it has returned, or at its deadline: there Run stops the trees
 // Spawn started, waits abandonAfter for the body and, if it still runs, fails the
 // scenario without waiting further (the deadline bounds the scenario, not only
-// S.Context). Every path writes exactly one row.
+// S.Context). Every path writes exactly one row, after the scenario's cleanups
+// (S.Cleanup, its home and workspace, the trees Spawn started) have run, so a
+// cleanup that fails turns a passed row into a failed one.
 func Run(t testing.TB, id string, needs Needs, body func(s *S)) {
 	t.Helper()
 	own(t)
 	start := time.Now()
 	row := Row{Kind: RowKind, ID: id, OS: runtime.GOOS}
+	var s *S
+	// Every path ends here, a Fatalf or SkipNow on this goroutine included.
+	defer func() {
+		if s != nil {
+			failed := t.Failed()
+			s.cleanup()
+			if !failed && t.Failed() && row.Result != Failed {
+				row.Result, row.Reason = Failed, "a cleanup of the scenario failed"
+			}
+		}
+		if row.Result == "" {
+			row.Result, row.Reason = Failed, "the scenario ended before its body returned"
+		}
+		row.DurationMS = time.Since(start).Milliseconds()
+		write(t, row)
+	}()
 	required := Required(id)
 	if reason := Unmet(needs); reason != "" {
 		row.Reason = reason
 		if required {
 			row.Result = Failed
-			write(t, row)
 			t.Fatalf("%s: required scenario skipped: %s (listed in %s)", id, reason, RequireEnv)
 		}
 		row.Result = Skipped
-		write(t, row)
 		t.Skipf("%s: %s", id, reason)
 	}
-	s := &S{TB: t, ID: id}
+	s = &S{TB: t, ID: id}
 	if needs.Bin {
 		s.Bin = os.Getenv(BinEnv)
 		sum, err := digest(s.Bin)
 		if err != nil {
 			row.Result, row.Reason = Failed, fmt.Sprintf("%s=%s: %v", BinEnv, s.Bin, err)
-			write(t, row)
 			t.Fatalf("%s: %s", id, row.Reason)
 		}
 		row.Build = sum
 	}
-	s.Home = temphome.New(t).Root()
-	s.Workspace = t.TempDir()
+	s.Home = temphome.New(s).Root()
+	s.Workspace = s.TempDir()
 	deadline := needs.Deadline
 	if deadline <= 0 {
 		deadline = DefaultDeadline
@@ -232,7 +302,6 @@ func Run(t testing.TB, id string, needs Needs, body func(s *S)) {
 			abandoned = true
 		}
 	}
-	row.DurationMS = time.Since(start).Milliseconds()
 	switch {
 	case late:
 		row.Result, row.Reason = Failed, fmt.Sprintf("deadline %s reached", deadline)
@@ -259,7 +328,6 @@ func Run(t testing.TB, id string, needs Needs, body func(s *S)) {
 	default:
 		row.Result = Passed
 	}
-	write(t, row)
 	// A body ended by FailNow or SkipNow, or by a panic, ends its caller the same
 	// way, as it would had it run on the test's goroutine.
 	switch {
