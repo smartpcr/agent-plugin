@@ -129,9 +129,8 @@ jobs:
     environment: dsh-m2-s18
     timeout-minutes: 180 # the 3 h variant limit (M2-EN-7); NODEFS-1 shards past it (M2-R-06)
     # A matrix job with a lock holds it from its service preflight through the
-    # scenario's cleanup: the vm:* jobs share the dsh-hypervisor controller, its
-    # recorder port and the lab's guest network, so they run one at a time, across
-    # runs too. Each drives its own hypervisor (target kvm or hyperv).
+    # scenario's cleanup: the vm:* jobs share the dsh-hypervisor controller that drives
+    # both hypervisors' guests and recorders, so they run one at a time, across runs too.
     # GitHub keeps one pending job per group, so a lock has at most two variants
     # (TestWorkflowLocksSharedHypervisor).
     concurrency:
@@ -202,8 +201,8 @@ jobs:
             runner: '["self-hosted","windows","dsh-windows-host"]'
             check: share
             scratch: share
-          # target: the hypervisor the variant's guests run on; its inputs are the
-          # environment's DSH_S18_<TARGET>_* variables (step "Select the hypervisor's inputs").
+          # target: the hypervisor whose DSH_S18_<TARGET>_* variables the job uses
+          # (runbook-power-cut.md step 2) and that its power-cut preflight asserts.
           - variant: vm:linux-guest
             runner: '["self-hosted","linux","dsh-hypervisor"]'
             check: power-cut
@@ -278,43 +277,47 @@ jobs:
       DSH_SCENARIO_VIEW5_LAYER: ${{ vars.DSH_SCENARIO_VIEW5_LAYER }}
       DSH_SCENARIO_VIEW5_MOVE: ${{ vars.DSH_SCENARIO_VIEW5_MOVE }}
       DSH_SCENARIO_VMS: ${{ vars.DSH_SCENARIO_VMS }}
-      # The service preflight's own inputs (architecture.md provided services):
-      # service:vm-power-cut and service:ack-recorder (runbook-power-cut.md step 2).
-      # For a vm:* job these, and the NODEFS-1 inputs, are replaced by its
-      # hypervisor's DSH_S18_<TARGET>_* values (step "Select the hypervisor's inputs").
-      DSH_S18_BASE_IMAGES: ${{ vars.DSH_S18_BASE_IMAGES }}
-      DSH_S18_HYPERVISOR: ${{ vars.DSH_S18_HYPERVISOR }}
-      DSH_S18_PROBE_CREATE: ${{ vars.DSH_S18_PROBE_CREATE }}
-      DSH_S18_PROBE_DELETE: ${{ vars.DSH_S18_PROBE_DELETE }}
-      DSH_S18_PROBE_ACK: ${{ vars.DSH_S18_PROBE_ACK }}
     steps:
+      - uses: actions/checkout@v4
       - name: Select the hypervisor's inputs (${{ matrix.target }})
+        # The vm:* variants run on different hypervisors (KVM, Hyper-V) with their own
+        # guests, recorder address and power commands: each job takes them from
+        # DSH_S18_<TARGET>_* and never falls back to the shared DSH_SCENARIO_* values.
+        # GITHUB_ENV overrides the job env for the later steps. The service
+        # preflight's own inputs (service:vm-power-cut, service:ack-recorder;
+        # runbook-power-cut.md step 2) come only from here.
         if: matrix.check == 'power-cut'
         env:
           TARGET: ${{ matrix.target }}
-          VARS: ${{ toJSON(vars) }}
+          SEL_VMS: ${{ vars[format('DSH_S18_{0}_VMS', matrix.target)] }}
+          SEL_NODEFS_LISTEN: ${{ vars[format('DSH_S18_{0}_NODEFS_LISTEN', matrix.target)] }}
+          SEL_NODEFS_POWEROFF: ${{ vars[format('DSH_S18_{0}_NODEFS_POWEROFF', matrix.target)] }}
+          SEL_NODEFS_POWERON: ${{ vars[format('DSH_S18_{0}_NODEFS_POWERON', matrix.target)] }}
+          SEL_NODEFS_READ: ${{ vars[format('DSH_S18_{0}_NODEFS_READ', matrix.target)] }}
+          SEL_NODEFS_START: ${{ vars[format('DSH_S18_{0}_NODEFS_START', matrix.target)] }}
+          SEL_BASE_IMAGES: ${{ vars[format('DSH_S18_{0}_BASE_IMAGES', matrix.target)] }}
+          SEL_PROBE_CREATE: ${{ vars[format('DSH_S18_{0}_PROBE_CREATE', matrix.target)] }}
+          SEL_PROBE_DELETE: ${{ vars[format('DSH_S18_{0}_PROBE_DELETE', matrix.target)] }}
+          SEL_PROBE_ACK: ${{ vars[format('DSH_S18_{0}_PROBE_ACK', matrix.target)] }}
+          SEL_PROBE_SHOW: ${{ vars[format('DSH_S18_{0}_PROBE_SHOW', matrix.target)] }}
         run: |
           set -euo pipefail
-          # vm:linux-guest (KVM/libvirt) and vm:windows-guest (Hyper-V) need different
-          # guests, recorder address, power and probe commands (runbook-power-cut.md):
-          # each job reads only DSH_S18_<TARGET>_<NAME>, e.g. DSH_S18_HYPERV_NODEFS_LISTEN,
-          # and exports it under the name the preflight and the scenario read. A missing
-          # one fails the job; it never falls back to another hypervisor's value.
-          case "$TARGET" in kvm|hyperv) ;; *) echo "::error::power-cut variant has no target kvm or hyperv: '$TARGET'"; exit 1 ;; esac
-          prefix="DSH_S18_${TARGET^^}_"
+          case "$TARGET" in kvm|hyperv) ;; *) echo "::error::power-cut variant has no hypervisor target (kvm|hyperv): '$TARGET'"; exit 1 ;; esac
+          prefix="DSH_S18_${TARGET^^}"
           missing=""
-          for n in DSH_SCENARIO_VMS DSH_SCENARIO_NODEFS_LISTEN DSH_SCENARIO_NODEFS_START \
-                   DSH_SCENARIO_NODEFS_POWEROFF DSH_SCENARIO_NODEFS_POWERON DSH_SCENARIO_NODEFS_READ \
-                   DSH_S18_BASE_IMAGES DSH_S18_HYPERVISOR DSH_S18_PROBE_CREATE DSH_S18_PROBE_DELETE DSH_S18_PROBE_ACK; do
-            s="${n#DSH_SCENARIO_}"; src="$prefix${s#DSH_S18_}"
-            val="$(jq -r --arg k "$src" '.[$k] // ""' <<<"$VARS")"
-            [ -n "$val" ] || { missing="$missing $src"; continue; }
+          for pair in DSH_SCENARIO_VMS:VMS DSH_SCENARIO_NODEFS_LISTEN:NODEFS_LISTEN \
+            DSH_SCENARIO_NODEFS_POWEROFF:NODEFS_POWEROFF DSH_SCENARIO_NODEFS_POWERON:NODEFS_POWERON \
+            DSH_SCENARIO_NODEFS_READ:NODEFS_READ DSH_SCENARIO_NODEFS_START:NODEFS_START \
+            DSH_S18_BASE_IMAGES:BASE_IMAGES DSH_S18_PROBE_CREATE:PROBE_CREATE \
+            DSH_S18_PROBE_DELETE:PROBE_DELETE DSH_S18_PROBE_ACK:PROBE_ACK DSH_S18_PROBE_SHOW:PROBE_SHOW; do
+            name="${pair%%:*}"; sel="SEL_${pair#*:}"; value="${!sel:-}"
+            [ -n "$value" ] || { missing="$missing ${prefix}_${pair#*:}"; continue; }
             delim="EOF_$RANDOM$RANDOM"
-            printf '%s<<%s\n%s\n%s\n' "$n" "$delim" "$val" "$delim" >> "$GITHUB_ENV"
-            echo "$n <- $src"
+            { echo "$name<<$delim"; printf '%s\n' "$value"; echo "$delim"; } >> "$GITHUB_ENV"
+            echo "$name <- ${prefix}_${pair#*:}"
           done
           [ -z "$missing" ] || { echo "::error::not set in environment dsh-m2-s18:$missing"; exit 1; }
-      - uses: actions/checkout@v4
+          echo "DSH_S18_HYPERVISOR=$TARGET" >> "$GITHUB_ENV"
       - uses: actions/setup-go@v5
         with:
           go-version-file: src/harness/go.mod
@@ -425,25 +428,20 @@ jobs:
               # service:vm-power-cut: a throw-away guest from an overlay is created,
               # powered off hard, restarted and deleted, the base images unchanged.
               # service:ack-recorder: a test acknowledgment from it is recorded and
-              # read back. The scenario's own commands drive the probe guest.
-              for v in DSH_S18_HYPERVISOR DSH_S18_BASE_IMAGES DSH_S18_PROBE_CREATE DSH_S18_PROBE_DELETE DSH_S18_PROBE_ACK; do
-                [ -n "${!v:-}" ] || fail "$v is not set in environment dsh-m2-s18"
+              # read back. The scenario's own commands drive the probe guest. The probe
+              # must be seen by the hypervisor the variant names (matrix target), so a
+              # variant wired to the other hypervisor's commands fails here.
+              [ "${DSH_S18_HYPERVISOR:-}" = "$TARGET" ] || fail "the inputs were not selected for hypervisor $TARGET"
+              for v in DSH_S18_BASE_IMAGES DSH_S18_PROBE_CREATE DSH_S18_PROBE_DELETE DSH_S18_PROBE_ACK DSH_S18_PROBE_SHOW; do
+                [ -n "${!v:-}" ] || fail "${v/DSH_S18_/DSH_S18_${TARGET^^}_} is not set in environment dsh-m2-s18"
               done
-              # The variant's commands must reach the hypervisor it names, not the other
-              # one: DSH_S18_HYPERVISOR prints the host's identity, e.g. `virsh version`
-              # ("Running against hypervisor: QEMU ...") for kvm, or for hyperv, in the
-              # host's remoting session, `(Get-Module -ListAvailable Hyper-V).Name;
-              # (Get-VMHost).Name` (runbook-power-cut.md step 1).
-              ident="$(sh -c "$DSH_S18_HYPERVISOR" 2>&1)" || fail "DSH_S18_HYPERVISOR failed: $ident"
-              printf 'hypervisor (%s): %s\n' "$TARGET" "$ident"
-              case "$TARGET" in
-                kvm) want='QEMU|KVM'; other='Hyper-V' ;;
-                hyperv) want='Hyper-V'; other='QEMU|KVM|libvirt' ;;
-                *) fail "power-cut variant has no target kvm or hyperv: '$TARGET'" ;;
-              esac
-              grep -qE "$want" <<<"$ident" || fail "DSH_S18_HYPERVISOR does not report a $TARGET host"
-              ! grep -qE "$other" <<<"$ident" || fail "DSH_S18_HYPERVISOR reports another hypervisor than $TARGET"
               IFS=';' read -ra images <<<"$DSH_S18_BASE_IMAGES"
+              for i in "${images[@]}"; do
+                case "$TARGET:${i,,}" in
+                  kvm:*.qcow2|kvm:*.img|kvm:*.raw|hyperv:*.vhdx|hyperv:*.vhd) ;;
+                  *) fail "base image $i is not a $TARGET disk image" ;;
+                esac
+              done
               before="$(sha256sum "${images[@]}")" || fail "a base image is not readable"
               printf '%s\n' "$before"
               probe="dsh-s18-probe-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$RANDOM"
@@ -451,6 +449,16 @@ jobs:
               token="$probe-ack"
               trap 'sh -c "$(sub "$DSH_S18_PROBE_DELETE")" || echo "::warning::delete $probe by hand"' EXIT
               sh -c "$(sub "$DSH_S18_PROBE_CREATE")" || fail "the probe guest $probe was not created"
+              # DSH_S18_PROBE_SHOW: KVM `virsh dominfo {probe}`; Hyper-V `Get-VM -Name {probe}
+              # | Format-List Name,Generation,State` in the host's remoting session.
+              shown="$(sh -c "$(sub "$DSH_S18_PROBE_SHOW")")" || fail "the probe guest $probe is not shown by $TARGET"
+              printf '%s\n' "$shown"
+              case "$TARGET" in
+                kvm) grep -Eq "^Name: +$probe\$" <<<"$shown" && grep -Eq '^OS Type: +hvm' <<<"$shown" \
+                       || fail "$probe is not a libvirt/KVM domain (virsh dominfo)" ;;
+                hyperv) grep -Eq "^Name +: +$probe\s*\$" <<<"$shown" && grep -Eq '^Generation +: +[12]' <<<"$shown" \
+                       || fail "$probe is not a Hyper-V VM (Get-VM)" ;;
+              esac
               sh -c "$(sub "$DSH_SCENARIO_NODEFS_POWEROFF")" || fail "the probe guest $probe was not powered off"
               sh -c "$(sub "$DSH_SCENARIO_NODEFS_POWERON")" || fail "the probe guest $probe did not restart"
               log="$RUNNER_TEMP/s18-ack.log"
