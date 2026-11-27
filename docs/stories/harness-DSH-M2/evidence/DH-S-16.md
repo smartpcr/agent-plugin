@@ -97,7 +97,14 @@ Not yet recorded. Gate venue: both local lanes, `tools/harness-gate/lanes/win.ps
 ### Exact tests and commands
 
 Not yet recorded: the gate runner's output, the `go test` command lines and `DSH_REQUIRE_SCENARIOS`
-(`harness-gate require --stage DH-S-16`).
+(`harness-gate require --stage DH-S-16`). Step 16.8 runs, once per lane on the stage's merged commit,
+`tools/harness-gate/lanes/wsl.sh --guarded --inputs FILE` and `lanes/win.ps1 -Guarded -Inputs FILE`
+([the gate's README](../../../../tools/harness-gate/README.md#guarded-mode---guarded--guarded-stage-612)):
+`harness-gate entry`, `harness-gate require --stage DH-S-16`, then `go test -tags scenario -count=1 -p 1
+-run <plan> ./internal/testkit/scenarios` on scratch homes, recorded in
+`runs/guarded-<wsl|win>-<sha7>-<stamp>.txt`. Each record prints one `row:` line per scenario, copied into
+the Scenarios table with the record named in Artifacts. Not yet run: `harness-gate entry` fails while
+harness:DSH-M1 is not closed (M2-DEC-1).
 
 ### Run identifiers
 
@@ -115,7 +122,14 @@ The Manual checks register above.
 ### Cleanup evidence
 
 Not yet recorded. Step 16.8: the scratch homes and the edited file compared before and after; the deleted
-sessions' rows, blobs and spill files shown gone; the log read with `seq` 0 to n and no gap.
+sessions' rows, blobs and spill files shown gone; the log read with `seq` 0 to n and no gap. Where each
+comes from in a guarded record: the `scenarios` gate lists the scratch directory (every scenario's home is
+under its `TMPDIR`) before and after the run; DH-E-STORE-6 checks, in the test, that no row of a deleted
+session remains, that the image only it held is collected, that the interrupted deletion finishes and that
+the store check reports no damage; DH-E-FS-3 compares the file with the last acknowledged version;
+DH-E-STORE-1 reads the log from the database and fails on a `seq` gap or duplicate. Each is a passed row in
+the record's report. Not covered by a test yet: DH-E-STORE-2's closing deletion ("then the session is
+deleted and nothing remains") and spill files of a deleted session (open question).
 
 ### Open items
 

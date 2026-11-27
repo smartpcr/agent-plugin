@@ -853,6 +853,40 @@ wsl lane: guarded preflight passed: bwrap /usr/bin/bwrap; backend bwrap, state F
 `win.ps1` has no sandbox check: no Windows backend exists in M2. Its `pwsh`
 check (the table above) runs on every Windows lane run.
 
+### Guarded mode (`--guarded`, `-Guarded`; Stage 6.12)
+
+```sh
+~/src/agent-plugin/tools/harness-gate/lanes/wsl.sh --guarded [--inputs FILE]
+pwsh -File tools/harness-gate/lanes/win.ps1 -Guarded [-Inputs FILE]
+```
+
+impl.md step 16.8. After the lane checks (and, on WSL, the guarded preflight
+above) the script runs `harness-gate guarded --lane wsl|windows --stage DH-S-16
+--evidence <record>`, which is one evidence record at
+`docs/stories/harness-DSH-M2/evidence/runs/guarded-<wsl|win>-<sha7>-<stamp>.txt`.
+Its gates, in order, stop at the first failure:
+
+1. `entry`: [Story entry](#story-entry-harness-gate-entry); while harness:DSH-M1
+   is not closed nothing runs (M2-DEC-1).
+2. `require`: the stage's IDs (`harness-gate require --stage DH-S-16`), checked
+   against the index; an ID may require the stage itself (DH-E-FS-3 requires
+   DH-S-16) but no later one. The Windows lane drops DH-E-STORE-2 and records
+   it `out of scope (impl.md 16.8 Linux only; TC-19s2)`.
+3. `inputs`: every `DSH_SCENARIO_*` input the planned tests read, found by
+   reading their source, is set (the inputs file, outside the tree, supplies
+   them: `set -a`-sourced on WSL, `KEY=VALUE` lines on Windows); the editor
+   save script (`DSH_SCENARIO_FS3_EDITOR`) resolves, else `service:git-and-editor`
+   is named; DH-E-STORE-2 probes the Claude Code sign-in.
+4. `build`: `dsh` built once into the scratch directory (`DSH_BIN`), its SHA-256 printed.
+5. `scenarios`: the scratch tree listed before; `go test -tags scenario -count=1
+   -p 1 -run <plan> ./internal/testkit/scenarios` with `TMPDIR` in the scratch
+   directory, `DSH_REQUIRE_SCENARIOS` and `DSH_SCENARIO_REPORT`; the scratch tree
+   listed after; one `row: | ... |` line per ID, the Scenarios-table row of
+   `evidence/DH-S-16.md`, taken from the report (an ID with no report row is
+   `not run`).
+
+Exit 0 only when every planned scenario passed.
+
 ### Provisioning the WSL lane
 
 - `wsl --install -d Ubuntu-24.04` under WSL2, with a **non-root** default user:
