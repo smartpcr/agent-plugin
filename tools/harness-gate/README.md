@@ -834,8 +834,10 @@ running a gate:
    needs no password, the script installs it with `sudo apt-get install -y
    bubblewrap`. Otherwise the check fails and names the package.
 2. The script builds `cmd/dsh` from the checkout into a scratch directory under
-   `TMPDIR`. It runs `dsh --home <scratch>/home sandbox status`, a read-only view
-   that creates nothing in the home, and prints the report. It then pipes the
+   `TMPDIR`. It creates an empty `<scratch>/home` (the stage claims
+   `harness-home` only when it sees an existing home read-only; an absent home
+   reports `Partial`), runs `dsh --home <scratch>/home sandbox status`, a
+   read-only view that creates nothing in the home, and prints the report. It then pipes the
    report to `harness-gate sandbox-preflight`. Only backend `bwrap` with state
    `Full` passes. `landlock Partial`, `Unconfined` or anything else fails, so a
    machine whose user namespaces are restricted can never pass silently.
