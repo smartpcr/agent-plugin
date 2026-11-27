@@ -143,7 +143,16 @@ At `12c2be8`, Windows 11, from the worktree root:
   `tools/harness-gate/scenariorun_test.go` (the gate's root package), has **not run** for this record.
   That package also holds `TestRepositoryPassesEveryGate`, so it runs only with the lanes (Full harness
   gate policy). TOOLCHAIN-6 therefore counts as passing only at those two sites until a lane record at
-  the closing commit shows the root package `ok`.
+  the closing commit shows the root package `ok`. Both lanes ran at `a91abac`, a clean tree that
+  changes only docs from `12c2be8`, outside the iteration on 2026-11-27. Both stopped at gate 1/14 before
+  the `self` gate ran, so the gate-root site is still unproven. The Windows record was
+  `win-a91abac-20261127T1447Z.txt` (exit 1, sha256 `534742a5…c0b`) and the WSL record was
+  `wsl-a91abac-20261127T1447Z.txt` (exit 1, sha256 `31581c6d…c8d`; the rehearsal exited 0). They are
+  not committed because they are failing records. Both logged the same failure:
+  `harness-gate: FAIL gofmt` / `not gofmt-formatted: src/harness/internal/testkit/scenarios/sdk_stdio_scenario_test.go`.
+  The cause is a missing blank line before `awaitEvent` at line 285, from `e3da93b` (#198). That file
+  is outside this stage's diff, so it is raised as an open question (Full harness gate policy, unrelated
+  gate failures). The lanes run again once it is fixed.
 - Manual checks: the commands in [runs/manual-12c2be8/](runs/manual-12c2be8/README.md).
 - The record check, on this record with `Closure status: open`:
   `GOWORK=off go -C tools/harness-gate run . ready --stage DH-S-16 --built --root ../..`. Before this
@@ -211,7 +220,7 @@ at `12c2be8`:
 H-21 is closed by step 16.10 (`fe13e4e`). Built-not-done: BUNDLE-3 until DH-S-22; CLI-2, CLI-4 and CLI-5
 until DH-S-27; UTIL-8 until DH-S-39. At `12c2be8`, DH-T-TOOLCHAIN-1, -3 and -5 pass, and so does DH-T-TOOLCHAIN-6 at its
 `src/harness` and `acceptance` sites. Its gate-root site (`TestScenarioGatesStopWhenSignedOut`) has not
-run (see Exact tests and commands). The lanes must show all four passing at the closing commit. The step 16.8 cleanup evidence
+run: the lanes at `a91abac` both stopped at the `gofmt` gate on a file inherited from `e3da93b` (see Exact tests and commands). The lanes must show all four passing at the closing commit. The step 16.8 cleanup evidence
 is still owed.
 
 **Not advanced yet (implementation-plan Stage 6.13, M2-DOD-1).** `built-through` in
