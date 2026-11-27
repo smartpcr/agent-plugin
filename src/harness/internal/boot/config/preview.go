@@ -10,8 +10,8 @@ import (
 )
 
 // Preview composes and checks layers without starting anything (DH-D-BOOT-6). It
-// is Check under the name the design gives it; no component is constructed. The
-// `dsh config` commands that print it wait for the admin tree (DH-S-16, H-21).
+// is Check under the name the design gives it; no component is constructed.
+// `dsh config show` and `dsh config validate` print it (boot.PreviewLaunch).
 func Preview(layers []loader.Layer, opts CheckOptions) *Report { return Check(layers, opts) }
 
 // FieldOwner is one field of a previewed entry and the layer that supplied it.

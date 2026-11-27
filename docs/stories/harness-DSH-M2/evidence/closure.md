@@ -71,7 +71,7 @@ DH-S-48.
 
 ## Held-open items
 
-Items impl.md holds open across M2 (M2-I-5). H-21 is the M1 item DH-S-16 step 16.10 closes.
+Items impl.md holds open across M2 (M2-I-5). H-21 is the M1 item DH-S-16 step 16.10 closes: `dsh config show` and `dsh config validate` run in the admin tree, construct no component, and DH-T-BOOT-14's command tests (`cli`: `TestConfigShowConstructsNothing`, `TestConfigValidateRejectsBadConfig`, `TestConfigCommandsProcess`) pass.
 
 | Item | Deliverable | What waits | State | Closes at |
 | --- | --- | --- | --- | --- |
@@ -80,4 +80,4 @@ Items impl.md holds open across M2 (M2-I-5). H-21 is the M1 item DH-S-16 step 16
 | H-3 | DH-D-SDK-4 | inline image admission | open | after M2 |
 | H-4 | DH-D-SDK-5 | a goal's stop signal | open | after M2 |
 | H-10 | DH-D-UTIL-7 | replay of sessions with children, until the lineage records exist | open | after M2 |
-| H-21 | DH-D-BOOT-6 | the boot preview through `dsh config show` and `dsh config validate` in the admin tree | open | DH-S-16 (step 16.10) |
+| H-21 | DH-D-BOOT-6 | the boot preview through `dsh config show` and `dsh config validate` in the admin tree | closed | DH-S-16 (step 16.10) |
