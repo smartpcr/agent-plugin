@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/smartpcr/agent-plugin/src/go/loader"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/yamlx"
 )
 
 // Preview composes and checks layers without starting anything (DH-D-BOOT-6). It
@@ -24,14 +25,18 @@ type FieldOwner struct {
 // it is disabled, its composed config, the layer that inserted it and the layers
 // that supplied its fields.
 type PreviewEntry struct {
-	ID       string          `json:"id"`
-	Name     string          `json:"name,omitempty"`
-	Group    bool            `json:"group,omitempty"`
-	Disabled bool            `json:"disabled,omitempty"`
-	Config   json.RawMessage `json:"config,omitempty"`
-	Layer    string          `json:"layer,omitempty"`
-	Fields   []FieldOwner    `json:"fields,omitempty"`
-	At       string          `json:"at,omitempty"`
+	ID           string                     `json:"id"`
+	Name         string                     `json:"name,omitempty"`
+	Group        bool                       `json:"group,omitempty"`
+	Disabled     bool                       `json:"disabled,omitempty"`
+	DisabledExpr string                     `json:"disabledExpr,omitempty"`
+	Config       json.RawMessage            `json:"config,omitempty"`
+	Inject       []string                   `json:"inject,omitempty"`
+	Isolate      map[string]string          `json:"isolate,omitempty"`
+	Intercept    map[string]json.RawMessage `json:"intercept,omitempty"`
+	Layer        string                     `json:"layer,omitempty"`
+	Fields       []FieldOwner               `json:"fields,omitempty"`
+	At           string                     `json:"at,omitempty"`
 }
 
 // Entries lists the composed entries in tree order, children after their group,
@@ -45,7 +50,14 @@ func (r *Report) Entries() []PreviewEntry {
 	}
 	var out []PreviewEntry
 	r.walk(r.Tree, "", func(id string, e loader.EntryOptions) {
-		pe := PreviewEntry{ID: id, Name: e.Name, Group: e.Group, Disabled: e.Disabled, Config: compact(e.Config), Fields: fields[id]}
+		pe := PreviewEntry{ID: id, Name: e.Name, Group: e.Group, Disabled: e.Disabled, DisabledExpr: e.DisabledExpr,
+			Config: compact(e.Config), Inject: e.Inject, Isolate: e.Isolate, Fields: fields[id]}
+		if len(e.Intercept) > 0 {
+			pe.Intercept = make(map[string]json.RawMessage, len(e.Intercept))
+			for name, raw := range e.Intercept {
+				pe.Intercept[name] = compact(raw)
+			}
+		}
 		if label, ok := r.Index.Owner(id, ""); ok && id != "" {
 			pe.Layer = label
 		}
@@ -108,6 +120,80 @@ func (r *Report) Dump() ([]byte, error) {
 		Entries []PreviewEntry `json:"entries"`
 		Issues  []string       `json:"issues"`
 	}{r.Entries(), issues}, "", "  ")
+}
+
+// DumpYAML prints the composed tree as one loadable YAML layer document
+// (DH-D-BOOT-6): a single insert of every entry at the root, expressions in their
+// `!expr` source form, each entry's id commented with the layer that inserted it
+// and each value with the layer that supplied it. Composed as the only layer, the
+// document gives the same tree.
+func (r *Report) DumpYAML() ([]byte, error) {
+	entries := r.Tree
+	if entries == nil {
+		entries = []loader.EntryOptions{}
+	}
+	node, err := fileForm([]loader.Op{{Kind: loader.OpInsert, Entries: entries}})
+	if err != nil {
+		return nil, err
+	}
+	doc := toValue(node)
+	for i := range doc.Items[0].Fields {
+		if f := &doc.Items[0].Fields[i]; f.Key == string(loader.OpInsert) {
+			r.annotate(&f.Value, entries, "")
+		}
+	}
+	return yamlx.Dump(doc)
+}
+
+// annotate comments the entries of seq, the file form of entries under the group
+// with the tree id parent, with the layers that supplied them.
+func (r *Report) annotate(seq *yamlx.Value, entries []loader.EntryOptions, parent string) {
+	for i := range seq.Items {
+		if i >= len(entries) || seq.Items[i].Kind != yamlx.Map {
+			return
+		}
+		id := entries[i].ID
+		if parent != "" {
+			id = parent + loader.Separator + id
+		}
+		for j := range seq.Items[i].Fields {
+			f := &seq.Items[i].Fields[j]
+			switch f.Key {
+			case "name", "group":
+			case "id":
+				f.Comment = r.owner(id, "")
+			case "children":
+				r.annotate(&f.Value, entries[i].Children, id)
+			case "config":
+				if f.Value.Kind == yamlx.Map && len(f.Value.Fields) > 0 {
+					r.annotateLeaves(&f.Value, id, "config")
+				} else {
+					f.Comment = r.owner(id, "config")
+				}
+			default:
+				f.Comment = r.owner(id, f.Key)
+			}
+		}
+	}
+}
+
+// annotateLeaves comments each leaf of a config mapping with the layer that
+// supplied it.
+func (r *Report) annotateLeaves(m *yamlx.Value, id, path string) {
+	for i := range m.Fields {
+		f := &m.Fields[i]
+		field := path + "." + f.Key
+		if f.Value.Kind == yamlx.Map && len(f.Value.Fields) > 0 {
+			r.annotateLeaves(&f.Value, id, field)
+			continue
+		}
+		f.Comment = r.owner(id, field)
+	}
+}
+
+func (r *Report) owner(id, field string) string {
+	label, _ := r.Index.Owner(id, field)
+	return label
 }
 
 // fieldValue extracts the composed value of the entry's field.

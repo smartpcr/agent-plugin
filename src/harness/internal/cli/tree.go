@@ -115,10 +115,13 @@ func newTree() *tree {
 							"value with the layer that supplied it, then the issues. Starts no component\n" +
 							"and writes nothing to the home.",
 						Options: []cmdline.Option{profileOption(),
-							{Name: "defaults", Kind: cmdline.Bool, Help: "Leave the profile layer out"}, jsonOption()},
+							{Name: "defaults", Kind: cmdline.Bool, Help: "Leave the profile layer out"},
+							{Name: "format", Kind: cmdline.String, Value: "text|yaml|json", Help: "Output form; yaml is one loadable layer document"},
+							jsonOption()},
 						Args: cmdline.Args{Name: "profile", Help: "The profile, as an argument instead of --profile", Max: 1},
 						Examples: []cmdline.Example{
 							{Command: "dsh config show --profile headless"},
+							{Command: "dsh config show headless --format yaml > tree.yml"},
 							{Command: "dsh --home ./h config show web --defaults --json"},
 						}},
 					run:    runConfigShow,

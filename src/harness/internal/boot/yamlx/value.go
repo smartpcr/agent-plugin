@@ -76,6 +76,9 @@ type Field struct {
 	Key    string
 	KeyPos Pos
 	Value  Value
+	// Comment, when set, is written by Dump as a comment on the member's line; Parse
+	// does not fill it.
+	Comment string
 }
 
 // TaggedScalar is the plain form of a Tagged value, and how a caller asks Edit or

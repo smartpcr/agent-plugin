@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"slices"
+	"strings"
 
 	"github.com/smartpcr/agent-plugin/src/go/loader"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/agentpreset"
@@ -18,9 +19,10 @@ import (
 
 // Preview is one previewed launch of a profile (DH-D-BOOT-6): the report of the
 // static check over its composed tree, the labels of the layers it composed, in
-// order, the launch environment it was read under, and the layer issues a launch
-// logs and goes on past (an operation that matches no entry, a layer file issue),
-// which the report's issues leave out.
+// order, the launch environment it was read under, and the layer issues a valid
+// configuration carries (a built-in bundle's operation that matches no entry,
+// see Tolerated), which the report's issues leave out. Every other layer issue is
+// in the report.
 type Preview struct {
 	Report *config.Report
 	Layers []string
@@ -76,14 +78,24 @@ func PreviewLaunch(ctx context.Context, o Options, defaults bool) (*Preview, err
 		Catalog: cat, Evaluator: ev, Docs: docs,
 		TreeChecks: []config.TreeCheck{agentpreset.CheckTree(cat, ev), permission.CheckTree()},
 	})
-	p := &Preview{Report: r, Env: s.Env, Notes: slices.Clone(s.Issues)}
+	p := &Preview{Report: r, Env: s.Env}
 	if r != nil {
-		// Check reports the composition issues first; a launch logs those and
-		// goes on (Real.Compose), so they are notes, not failures.
+		// Check reports the composition issues first. A built-in bundle's
+		// operation on an entry the profile does not carry is a note; every other
+		// layer fault (an invalid or duplicate operation, a layer file issue) is
+		// an issue, so validate rejects it.
 		_, _, composed := loader.Compose(layers)
 		n := min(len(composed), len(r.Issues))
-		p.Notes = append(p.Notes, r.Issues[:n]...)
-		r.Issues = slices.Clone(r.Issues[n:])
+		issues := append(slices.Clone(s.Issues), r.Issues[:n]...)
+		var faults []loader.Issue
+		for _, i := range issues {
+			if Tolerated(i) {
+				p.Notes = append(p.Notes, i)
+			} else {
+				faults = append(faults, i)
+			}
+		}
+		r.Issues = append(faults, r.Issues[n:]...)
 		// The entry's own schema and a tree check can name one fault twice.
 		seen := map[[2]string]bool{}
 		r.Issues = slices.DeleteFunc(r.Issues, func(i loader.Issue) bool {
@@ -97,4 +109,11 @@ func PreviewLaunch(ctx context.Context, o Options, defaults bool) (*Preview, err
 		p.Layers = append(p.Layers, l.Label)
 	}
 	return p, err
+}
+
+// Tolerated reports whether a layer issue is one a valid configuration carries: a
+// built-in bundle's operation on an entry the profile leaves out, which matches no
+// entry (headless drops human.secrets). Any other layer issue is a fault.
+func Tolerated(i loader.Issue) bool {
+	return strings.HasPrefix(i.Path, "layer bundle:") && strings.HasSuffix(i.Message, "matches no entry")
 }

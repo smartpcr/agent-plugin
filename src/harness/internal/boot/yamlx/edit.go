@@ -574,7 +574,17 @@ func buildValue(v Value) (*yaml.Node, error) {
 			if err != nil {
 				return nil, err
 			}
-			m.Content = append(m.Content, keyNode(field.Key), n)
+			key := keyNode(field.Key)
+			if field.Comment != "" {
+				// A scalar or an empty (flow) collection carries the comment after
+				// itself; a block collection carries it after its key.
+				target := n
+				if (n.Kind == yaml.MappingNode || n.Kind == yaml.SequenceNode) && len(n.Content) > 0 {
+					target = key
+				}
+				target.LineComment = "# " + strings.ReplaceAll(field.Comment, "\n", " ")
+			}
+			m.Content = append(m.Content, key, n)
 		}
 		return m, nil
 	}

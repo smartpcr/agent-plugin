@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"maps"
 	"os"
@@ -106,6 +107,103 @@ func TestConfigValidateRejectsBadConfig(t *testing.T) {
 	assertGhost(t, r, 5)
 	if !strings.Contains(r.stdout+r.stderr, `"config/rejected"`) {
 		t.Errorf("no JSON config/rejected error: %+v", r)
+	}
+}
+
+// TC-13b, in process: validate rejects an invalid or duplicate operation of a
+// user or overlay layer with status 78, naming it; only a built-in bundle's
+// operation on an entry the profile leaves out is a note.
+//
+//dsh:test DH-T-BOOT-14
+func TestConfigValidateRejectsLayerFaults(t *testing.T) {
+	root := t.TempDir()
+	cases := []struct{ name, file, text, want string }{
+		{"bundle-again", "", "", `insert: entry "cli.headless" already exists`},
+		{"duplicate", "dup.yml", "- insert:\n    - id: cli.headless\n      name: cli.headless\n", `insert: entry "cli.headless" already exists`},
+		{"malformed", "malformed.yml", "- id: logging\n  merge: 5\n", "malformed.yml:"},
+		{"unmatched", "u.yml", "- id: nobody\n  merge:\n    level: debug\n", `merge "nobody" matches no entry`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			file := filepath.Join("..", "boot", "profile", "bundles", "headless.yml")
+			if c.file != "" {
+				file = filepath.Join(t.TempDir(), c.file)
+				if err := os.WriteFile(file, []byte(c.text), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			r := adminRun(t, "", "--home", root, "config", "validate", "--profile", "headless", file)
+			if r.status != output.Config || !strings.Contains(r.stderr, c.want) || strings.Contains(r.stdout, "valid") {
+				t.Fatalf("status %d, want %d naming %q: %+v", r.status, output.Config, c.want, r)
+			}
+		})
+	}
+}
+
+// TC-13b, in process: show keeps every composition-affecting value of an entry
+// with the layer that supplied it (an expression that disables it in its
+// source form, inject, isolate, intercept), in text and JSON, and --format yaml
+// prints the tree as one loadable layer with the layers as comments.
+//
+//dsh:test DH-T-BOOT-14
+func TestConfigShowKeepsEveryValue(t *testing.T) {
+	root := t.TempDir()
+	temphome.UserLayer(t, root, "- id: logging\n  disabled: !expr 'env.QUIET == \"1\"'\n"+
+		"- id: session.core\n  inject: [session.store]\n  isolate:\n    util.egress: true\n  intercept:\n    util.egress:\n      mode: deny\n")
+
+	r := adminRun(t, "", "--home", root, "config", "show", "headless")
+	for _, want := range []string{
+		`    disabled = !expr env.QUIET == "1"  # user` + "\n",
+		"    inject = [session.store]  # user\n",
+		"    isolate.util.egress = true  # user\n",
+		`    intercept.util.egress = {"mode":"deny"}  # user` + "\n",
+	} {
+		if r.status != output.OK || !strings.Contains(r.stdout, want) {
+			t.Errorf("config show lacks %q: %+v", want, r)
+		}
+	}
+
+	r = adminRun(t, "", "--home", root, "config", "show", "headless", "--format", "json")
+	var doc configShowDoc
+	if r.status != output.OK || json.Unmarshal([]byte(r.stdout), &doc) != nil {
+		t.Fatalf("config show --format json: %+v", r)
+	}
+	seen := 0
+	for _, e := range doc.Entries {
+		switch e.ID {
+		case "logging":
+			seen++
+			if e.DisabledExpr != `env.QUIET == "1"` || e.Disabled {
+				t.Errorf("logging = %+v", e)
+			}
+		case "session.core":
+			seen++
+			var intercept bytes.Buffer
+			_ = json.Compact(&intercept, e.Intercept["util.egress"])
+			if len(e.Inject) != 1 || e.Isolate["util.egress"] != "true" || intercept.String() != `{"mode":"deny"}` {
+				t.Errorf("session.core = %+v", e)
+			}
+		}
+	}
+	if seen != 2 {
+		t.Errorf("the JSON lacks logging or session.core: %s", r.stdout)
+	}
+
+	r = adminRun(t, "", "--home", root, "config", "show", "headless", "--format", "yaml")
+	for _, want := range []string{
+		"- insert:\n    - id: logging # bundle:admin\n",
+		`      disabled: !expr env.QUIET == "1" # user` + "\n",
+		"      inject: # user\n        - session.store\n",
+	} {
+		if r.status != output.OK || !strings.Contains(r.stdout, want) {
+			t.Errorf("config show --format yaml lacks %q: %+v", want, r)
+		}
+	}
+	if strings.Contains(r.stdout, "matches no entry") || !strings.Contains(r.stderr, "dsh: note: ") || traceLine(t, r.stderr) != "none" {
+		t.Errorf("the dump mixes in the notes, or a trace: %+v", r)
+	}
+	if r := adminRun(t, "", "--home", root, "config", "show", "headless", "--format", "toml"); r.status != output.Usage {
+		t.Errorf("--format toml: %+v", r)
 	}
 }
 

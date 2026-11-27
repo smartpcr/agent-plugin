@@ -71,7 +71,7 @@ DH-S-48.
 
 ## Held-open items
 
-Items impl.md holds open across M2 (M2-I-5). H-21 is the M1 item DH-S-16 step 16.10 closes: `dsh config show` and `dsh config validate` run in the admin tree, construct no component, and DH-T-BOOT-14's command tests (`cli`: `TestConfigShowConstructsNothing`, `TestConfigValidateRejectsBadConfig`, `TestConfigCommandsProcess`) pass.
+Items impl.md holds open across M2 (M2-I-5). H-21 is the M1 item DH-S-16 step 16.10 closes: `dsh config show` and `dsh config validate` run in the admin tree, construct no component, and DH-T-BOOT-14's command tests (`cli`: `TestConfigShowConstructsNothing`, `TestConfigShowKeepsEveryValue`, `TestConfigValidateRejectsBadConfig`, `TestConfigValidateRejectsLayerFaults`, `TestConfigCommandsProcess`; `boot/config`: `TestDumpYAMLRoundTrips`, the loadable `--format yaml` dump against its golden and composed back to the same tree) pass.
 
 | Item | Deliverable | What waits | State | Closes at |
 | --- | --- | --- | --- | --- |

@@ -90,10 +90,31 @@ func runConfigShow(st *state, v *cmdline.Values) error {
 	if err != nil {
 		return err
 	}
+	format := v.String("format")
+	switch format {
+	case "", "text", "yaml", "json":
+	default:
+		return cmdline.Usagef("dsh config show", "--format %s: want text, yaml or json", format)
+	}
 	p, err := st.preview(def, nil, v.Bool("defaults"))
 	st.previewTrace(p)
 	if p == nil || p.Report == nil {
 		return err
+	}
+	if format == "yaml" {
+		// The dump is the tree alone; the issues and notes go to stderr.
+		out, derr := p.Report.DumpYAML()
+		if derr != nil {
+			return derr
+		}
+		for _, issue := range p.Report.Issues {
+			fmt.Fprintf(st.env.Stderr, "dsh: issue: %s\n", issue.Error())
+		}
+		for _, note := range p.Notes {
+			fmt.Fprintf(st.env.Stderr, "dsh: note: %s\n", note.Error())
+		}
+		_, werr := st.env.Stdout.Write(out)
+		return werr
 	}
 	// A tree that breaks its Required list is still shown, with the issue.
 	doc := configShowDoc{Profile: def.Name, Layers: p.Layers, Entries: p.Report.Entries(), Issues: issueTexts(p.Report.Issues), Notes: issueTexts(p.Notes)}
@@ -102,6 +123,13 @@ func runConfigShow(st *state, v *cmdline.Values) error {
 	}
 	if st.res.JSON() {
 		return st.res.Value(doc)
+	}
+	if format == "json" {
+		out, err := json.MarshalIndent(doc, "", "  ")
+		if err != nil {
+			return err
+		}
+		return st.res.Line(string(out))
 	}
 	return st.res.Text(configReport(doc, p.Report.Index))
 }
@@ -131,16 +159,37 @@ func configReport(d configShowDoc, index *loader.Index) string {
 			}
 			return layer
 		}
-		if e.Disabled {
+		switch {
+		case e.DisabledExpr != "":
+			fmt.Fprintf(&b, "    disabled = !expr %s  # %s\n", e.DisabledExpr, owner("disabled"))
+		case e.Disabled:
 			fmt.Fprintf(&b, "    disabled = true  # %s\n", owner("disabled"))
 		}
 		for _, leaf := range leaves("config", e.Config) {
 			fmt.Fprintf(&b, "    %s = %s  # %s\n", leaf[0], leaf[1], owner(leaf[0]))
 		}
+		if len(e.Inject) > 0 {
+			fmt.Fprintf(&b, "    inject = [%s]  # %s\n", strings.Join(e.Inject, ", "), owner("inject"))
+		}
+		for _, svc := range sortedKeys(e.Isolate) {
+			fmt.Fprintf(&b, "    isolate.%s = %s  # %s\n", svc, e.Isolate[svc], owner("isolate"))
+		}
+		for _, svc := range sortedKeys(e.Intercept) {
+			fmt.Fprintf(&b, "    intercept.%s = %s  # %s\n", svc, e.Intercept[svc], owner("intercept"))
+		}
 	}
 	section(&b, "issues", d.Issues)
 	section(&b, "notes", d.Notes)
 	return b.String()
+}
+
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func section(b *strings.Builder, title string, lines []string) {

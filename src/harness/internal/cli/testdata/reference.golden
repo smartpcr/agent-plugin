@@ -215,13 +215,15 @@ Arguments:
   profile  The profile, as an argument instead of --profile
 
 Options:
-      --profile <name>  The profile whose composition is read
-      --defaults        Leave the profile layer out
-      --json            Print the result as one JSON value
-  -h, --help            Show this help
+      --profile <name>           The profile whose composition is read
+      --defaults                 Leave the profile layer out
+      --format <text|yaml|json>  Output form; yaml is one loadable layer document
+      --json                     Print the result as one JSON value
+  -h, --help                     Show this help
 
 Examples:
   dsh config show --profile headless
+  dsh config show headless --format yaml > tree.yml
   dsh --home ./h config show web --defaults --json
 ```
 
