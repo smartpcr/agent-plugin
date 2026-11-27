@@ -5,6 +5,7 @@ package scenarios
 import (
 	"os"
 	"strconv"
+	"syscall"
 
 	"golang.org/x/sys/unix"
 )
@@ -30,3 +31,7 @@ func openPTY() (ptm, pts *os.File, err error) {
 	}
 	return ptm, pts, nil
 }
+
+// bindToHost kills bin when the terminal host dies, so a session of its own
+// does not outlive the launcher's kill of the host's group.
+func bindToHost(a *syscall.SysProcAttr) { a.Pdeathsig = syscall.SIGKILL }

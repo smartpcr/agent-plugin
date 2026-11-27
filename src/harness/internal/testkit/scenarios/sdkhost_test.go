@@ -199,20 +199,20 @@ func (h *sdkHost) awaitRun(t *testing.T, session string, receipt protocol.Sessio
 	return got
 }
 
-// history reads every stored event of session, following the pages.
+// history reads every stored event of session, following the pages
+// (historyPages), and records a sign-in failure among them (noteSignIn).
 func (h *sdkHost) history(t *testing.T, session string) []protocol.Event {
 	t.Helper()
-	var all []protocol.Event
-	after := int64(0)
-	for {
-		var page protocol.SessionHistoryResult
-		h.call(t, "session/history", protocol.SessionHistoryParams{SessionID: session, AfterSeq: after, Limit: 1000}, &page)
-		all = append(all, page.Events...)
-		if !page.More || len(page.Events) == 0 {
-			return all
-		}
-		after = page.Events[len(page.Events)-1].Seq
+	evs, err := historyPages(t.Context(), func(ctx context.Context, method string, params, result any) error {
+		ctx, cancel := context.WithTimeout(ctx, sdkCall)
+		defer cancel()
+		return h.Client.Call(ctx, method, params, result)
+	}, session)
+	if err != nil {
+		t.Fatalf("session/history: %v\nstderr:\n%s", err, h.Stderr.String())
 	}
+	noteSignIn(t, evs)
+	return evs
 }
 
 // inRun keeps the events whose seq lies in [first, last].

@@ -31,14 +31,19 @@ import (
 // (DSH_SCENARIO_UTIL2_TESTS) with a report of its own -- and then the checker
 // (scenario.Check) run, once per run,
 // Then signed out the job fails, the report has a failed row for a required
-// scenario whose reason names the missing sign-in, and no row says passed;
+// scenario whose reason names the missing sign-in (llm/sign-in-required, which the
+// scenario's history read records as its cause: noteSignIn, scenario.Cause), and
+// no row says passed;
 // signed in the job passes only if both rows say passed and carry the digest of
 // the binary under test.
 // Cleanup: the reports and the empty configuration home are removed with the
 // scenario's temporary directories.
 //
-// Inputs: DSH_SCENARIO_UTIL2_IDS, the two required IDs, comma-separated;
-// DSH_SCENARIO_UTIL2_TESTS, a -test.run pattern selecting exactly their tests.
+// Inputs: DSH_SCENARIO_UTIL2_IDS, the two required IDs, comma-separated, the other
+// one a scenario on the signed-in Claude Code route that reads its turn's history
+// through the shared helpers (sdkHost.history, storedHistory) before asserting on
+// it -- DH-E-LLM-1, say; DSH_SCENARIO_UTIL2_TESTS, a -test.run pattern selecting
+// exactly their tests (for DH-E-LLM-1 its claude-code leg).
 //
 //dsh:scenario DH-E-UTIL-2
 func TestRequiredScenarioCannotSkip(t *testing.T) {
@@ -98,9 +103,7 @@ func TestRequiredScenarioCannotSkip(t *testing.T) {
 			if r.Result == scenario.Passed {
 				t.Errorf("signed out %s says passed", r.ID)
 			}
-			reason := strings.ToLower(r.Reason)
-			named = named || (contains(ids, r.ID) && r.Result == scenario.Failed &&
-				(strings.Contains(reason, "sign-in") || strings.Contains(reason, "signed out") || strings.Contains(r.Reason, claudeCodeRoute.HomeVar)))
+			named = named || (contains(ids, r.ID) && r.Result == scenario.Failed && strings.Contains(r.Reason, codeSignInRequired))
 		}
 		if !named {
 			t.Errorf("signed out no failed row of a required scenario names the missing sign-in: %+v", rows)

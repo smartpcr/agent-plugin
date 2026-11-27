@@ -36,16 +36,21 @@ import (
 // Cleanup: the home, the workspace and the outside file are removed by
 // scenario.Run; a failure keeps both streams in the test log.
 //
+// The terminal is the scenario's own (startDshOnInteractiveTerminal): dsh's
+// controlling terminal, where headless reads the answer (/dev/tty, CONIN$), takes
+// the typed "y" and, on Linux, the typed Ctrl-C; dsh's standard output is
+// captured apart from it. A pseudoconsole raises no console event for a typed
+// Ctrl-C, so on Windows step (4) presses it through DSH_SCENARIO_TERMINAL_KEYS.
+//
 // Inputs: DSH_SCENARIO_CLI2_LAYER, a layer template file ({workspace});
-// DSH_SCENARIO_CLI2_LONG_PROMPT, a task whose turn runs for minutes;
-// DSH_SCENARIO_TERMINAL_KEYS (cli_launch_scenario_test.go), with the keys
-// "allow-once" and "ctrl-c".
+// DSH_SCENARIO_CLI2_LONG_PROMPT, a task whose turn runs for minutes; on Windows
+// DSH_SCENARIO_TERMINAL_KEYS (cli_launch_scenario_test.go), with the key "ctrl-c".
 //
 //dsh:scenario DH-E-CLI-2
 func TestHeadlessRunOnRealModel(t *testing.T) {
 	scenario.Run(t, "DH-E-CLI-2", scenario.Needs{
 		Bin: true, OS: []string{"linux", "windows"}, Deadline: 45 * time.Minute,
-		Env: []string{"DSH_SCENARIO_CLI2_LAYER", "DSH_SCENARIO_CLI2_LONG_PROMPT", "DSH_SCENARIO_TERMINAL_KEYS"},
+		Env: []string{"DSH_SCENARIO_CLI2_LAYER", "DSH_SCENARIO_CLI2_LONG_PROMPT"},
 	}, func(s *scenario.S) {
 		profileLayer(t, s.Home, "headless", layerInput(t, "DSH_SCENARIO_CLI2_LAYER", "a headless layer on the signed-in route", map[string]string{"workspace": s.Workspace}))
 		if err := os.WriteFile(filepath.Join(s.Workspace, "note.txt"), []byte("note\n"), 0o600); err != nil {
@@ -54,28 +59,25 @@ func TestHeadlessRunOnRealModel(t *testing.T) {
 		outside := filepath.Join(s.TempDir(), "outside.txt")
 		task := "Write the single word written to the file " + filepath.ToSlash(outside) + " with your file tool, then answer done."
 		env := []string{"DSH_HOME=" + s.Home}
-		keys := func(h *dshHost, k string) {
-			operatorStep(t, "DSH_SCENARIO_TERMINAL_KEYS", "types keys into a terminal", map[string]string{"pid": strconv.Itoa(h.Process.Pid()), "keys": k})
-		}
-		terminal := func(text string) *dshHost {
-			return startDshOnTerminal(t, env, s.Bin, "--home", s.Home, "headless", text)
+		terminal := func(text string) (*dshHost, func(string)) {
+			return startDshOnInteractiveTerminal(t, env, s.Bin, "--home", s.Home, "headless", text)
 		}
 
-		h := terminal(task)
-		h.waitFor(t, 5*time.Minute, "the approval prompt", func(out string) string {
-			if strings.Contains(strings.ToLower(plainText(out)), "allow") {
+		h, typeKeys := terminal(task)
+		h.waitFor(t, 5*time.Minute, "the approval prompt", func(string) string {
+			if strings.Contains(strings.ToLower(plainText(h.Stderr.String())), "allow once") {
 				return "prompt"
 			}
 			return ""
 		})
-		keys(h, "allow-once")
+		typeKeys("y\r")
 		if !h.await(10*time.Minute) || h.code() != 0 {
 			t.Fatalf("(1) the approved run exited %d:\n%s", h.code(), h.output())
 		}
 		if data, _ := os.ReadFile(outside); !strings.Contains(string(data), "written") {
 			t.Errorf("(1) the approved write did not happen: %q", data)
 		}
-		if runtime.GOOS != "windows" && (strings.TrimSpace(h.Stdout.String()) == "" || strings.Contains(strings.ToLower(h.Stdout.String()), "allow")) {
+		if strings.TrimSpace(h.Stdout.String()) == "" || strings.Contains(strings.ToLower(h.Stdout.String()), "allow") {
 			t.Errorf("(1) the result stream holds %q, want the answer only", h.Stdout.String())
 		}
 		first := newestSession(t, s, s.Home)
@@ -102,9 +104,13 @@ func TestHeadlessRunOnRealModel(t *testing.T) {
 			t.Errorf("(3) the last --json result line is not run/result:\n%s", r.stdout)
 		}
 
-		h = terminal(need(t, "DSH_SCENARIO_CLI2_LONG_PROMPT", "a task whose turn runs for minutes"))
+		h, typeKeys = terminal(need(t, "DSH_SCENARIO_CLI2_LONG_PROMPT", "a task whose turn runs for minutes"))
 		time.Sleep(20 * time.Second)
-		keys(h, "ctrl-c")
+		if runtime.GOOS == "windows" {
+			operatorStep(t, "DSH_SCENARIO_TERMINAL_KEYS", "types keys into a terminal", map[string]string{"pid": strconv.Itoa(h.Process.Pid()), "keys": "ctrl-c"})
+		} else {
+			typeKeys("\x03")
+		}
 		if !h.await(time.Minute) || h.code() != 130 {
 			t.Errorf("(4) Ctrl-C mid-turn left exit %d, want 130", h.code())
 		}

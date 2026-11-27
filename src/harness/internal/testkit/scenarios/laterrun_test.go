@@ -141,14 +141,24 @@ func dshIn(t *testing.T, s *scenario.S, within time.Duration, env []string, args
 // historyCall is one JSON-RPC call; *jsonrpc.Conn's Call satisfies it.
 type historyCall func(ctx context.Context, method string, params, result any) error
 
+// historyParams are protocol.SessionHistoryParams with the cursor always sent
+// (as src/sdk/sdk historyParams): the shared type omits an afterSeq of 0, which
+// the host reads as no cursor (from seq 0) instead of "after seq 0".
+type historyParams struct {
+	SessionID string `json:"sessionId"`
+	AfterSeq  int64  `json:"afterSeq"`
+	Limit     int    `json:"limit,omitempty"`
+}
+
 // historyPages reads every event of session from seq 0 through session/history,
 // following More until the host says the history is complete: a page is capped
 // by count and by bytes (sdkserver session/history), so one call is not enough.
+// The first cursor is -1 (from seq 0); each next is the last seq read, 0 included.
 func historyPages(ctx context.Context, call historyCall, session string) ([]protocol.Event, error) {
 	var evs []protocol.Event
-	for after := int64(0); ; {
+	for after := int64(-1); ; {
 		var page protocol.SessionHistoryResult
-		if err := call(ctx, "session/history", protocol.SessionHistoryParams{SessionID: session, AfterSeq: after, Limit: 1000}, &page); err != nil {
+		if err := call(ctx, "session/history", historyParams{SessionID: session, AfterSeq: after, Limit: 1000}, &page); err != nil {
 			return evs, err
 		}
 		evs = append(evs, page.Events...)
@@ -165,7 +175,8 @@ func historyPages(ctx context.Context, call historyCall, session string) ([]prot
 // storedHistory reads every event of session in home, from seq 0, on an sdk
 // host of its own over raw JSON-RPC. session/history needs no lease, so it reads
 // a session another host (a running dsh web) owns, and it neither resumes nor
-// changes the session.
+// changes the session. A missing sign-in among the events is recorded as the
+// scenario's cause (noteSignIn).
 func storedHistory(t *testing.T, s *scenario.S, home, session string) []protocol.Event {
 	t.Helper()
 	ctx := s.Context()
@@ -192,6 +203,7 @@ func storedHistory(t *testing.T, s *scenario.S, home, session string) []protocol
 	if err != nil {
 		t.Fatalf("history of %s: %v", session, err)
 	}
+	noteSignIn(t, evs)
 	_ = c.Call(ctx, "shutdown", protocol.Empty{}, nil)
 	_ = stdin.Close()
 	_ = cmd.Wait()
