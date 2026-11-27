@@ -447,6 +447,13 @@ func TestS17JobIsKeylessAndSelfHosted(t *testing.T) {
 		!strings.Contains(steps[2], "run . entry --root ../..") || !strings.Contains(steps[3], "-run '^TestSignedInRoutePreflight$/^claude-code$'") {
 		t.Errorf("s17 does not start with harness-gate entry and the claude-code route preflight: %q", steps)
 	}
+	// The scenarios run through "harness-gate scenarios", which orders the phases
+	// and keeps the copilot-cli legs recorded (M2-DEC-4); a direct go test of the
+	// plan would do neither.
+	if len(steps) < 2 || !strings.Contains(steps[len(steps)-2], "run . scenarios --root ../.. --stage DH-S-17 --evidence ") ||
+		strings.Contains(job, `-run "$RUN"`) {
+		t.Errorf("s17 does not run its scenarios through harness-gate scenarios --stage DH-S-17: %q", steps)
+	}
 	checkGolden(t, filepath.Join("testdata", "s17_job.golden"), job)
 }
 

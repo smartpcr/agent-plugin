@@ -140,9 +140,14 @@ dsh sandbox status | GOWORK=off go -C tools/harness-gate run . sandbox-preflight
   host, where the user is signed in, as one evidence record in the format of
   `--evidence` (12.3.5; a tree that is not clean is refused, exit 2): gate
   `preflight` (the stage's entry as `DSH_REQUIRE_SCENARIOS`, with the sign-in
-  checks), then gate `scenarios`, `go test -tags scenario -count=1 -v -run <plan>
-  ./...` per module, failing on any `--- SKIP` or a planned test without a
-  `--- PASS` line. A failed preflight starts no scenario. `--stage` and
+  checks), then gate `scenarios`, `go test -tags scenario -count=1 -p 1 -timeout
+  110m -v -run <phase> ./...` per phase and module with `DSH_REQUIRE_SCENARIOS` set
+  to the phase's IDs, failing on any `--- SKIP` or a planned test without a
+  `--- PASS` line. `DH-S-17` runs in three phases: `DH-E-TOOLCHAIN-1` first,
+  the other scenarios, then `DH-E-SANDBOX-7` (architecture.md rule 7, R-03). Of a
+  scenario with route subtests the `claude-code` leg must pass and the
+  `copilot-cli` leg is recorded (`scenarios: recorded leg: ...`): its failure
+  alone does not fail the run (M2-DEC-4). A failed preflight starts no scenario. `--stage` and
   `--evidence` are required.
 
 The sign-in checks (`acceptance/signin.go`): `claude-session` runs

@@ -100,7 +100,7 @@ func TestScenarioGatesRunThePlan(t *testing.T) {
 		if code := ExitCode(Run(context.Background(), &out, c.ScenarioGates("DH-S-17", p.probe))); code != 0 {
 			t.Fatalf("exit %d:\n%s", code, out.String())
 		}
-		for _, want := range []string{"--- PASS: TestLLM ", "--- PASS: TestStore ", "go test -tags scenario -count=1 -v -run ^(TestLLM|TestStore)$ ./..."} {
+		for _, want := range []string{"--- PASS: TestLLM ", "--- PASS: TestStore ", "go test -tags scenario -count=1 -p 1 -timeout 110m -v -run ^(TestLLM|TestStore)$ ./..."} {
 			if !strings.Contains(out.String(), want) {
 				t.Errorf("output lacks %q:\n%s", want, out.String())
 			}
@@ -125,10 +125,10 @@ func TestScenarioGatesRunThePlan(t *testing.T) {
 }
 
 func TestScenarioVerdict(t *testing.T) {
-	if err := scenarioVerdict("--- PASS: TestA (0.01s)\n--- PASS: TestB (0.00s)\n", []string{"TestA", "TestB"}, nil); err != nil {
+	if _, err := scenarioVerdict("--- PASS: TestA (0.01s)\n--- PASS: TestB (0.00s)\n", []string{"TestA", "TestB"}, nil); err != nil {
 		t.Errorf("verdict on passes = %v", err)
 	}
-	err := scenarioVerdict("    --- SKIP: TestA/copilot-cli (0.00s)\n--- PASS: TestA (0.01s)\n--- FAIL: TestB (0.00s)\n", []string{"TestA", "TestB"}, errors.New("exit status 1"))
+	_, err := scenarioVerdict("    --- SKIP: TestA/copilot-cli (0.00s)\n--- PASS: TestA (0.01s)\n--- FAIL: TestB (0.00s)\n", []string{"TestA", "TestB"}, errors.New("exit status 1"))
 	for _, want := range []string{"go test: exit status 1", "TestA/copilot-cli skipped", "required scenario TestB did not pass"} {
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("verdict = %v, want %q", err, want)
@@ -136,6 +136,114 @@ func TestScenarioVerdict(t *testing.T) {
 	}
 }
 
+// TestScenarioVerdictRoutes: the claude-code leg of a routed scenario decides it and
+// the copilot-cli leg is recorded (M2-DEC-4): a copilot-cli failure alone, and the
+// non-zero exit it causes, pass with the failure kept; a claude-code failure, a
+// failure outside the legs or an exit no recorded leg explains fails.
+func TestScenarioVerdictRoutes(t *testing.T) {
+	exit1 := errors.New("exit status 1")
+	copilotFails := "    --- PASS: TestA/claude-code (1.00s)\n    --- FAIL: TestA/copilot-cli (1.00s)\n--- FAIL: TestA (2.00s)\n--- PASS: TestB (0.00s)\nFAIL\n"
+	recorded, err := scenarioVerdict(copilotFails, []string{"TestA", "TestB"}, exit1)
+	if err != nil {
+		t.Errorf("claude-code passed, copilot-cli failed: verdict = %v, want a pass", err)
+	}
+	if !slices.Equal(recorded, []string{"TestA/copilot-cli failed"}) {
+		t.Errorf("recorded = %q, want the copilot-cli failure kept", recorded)
+	}
+	recorded, err = scenarioVerdict("    --- PASS: TestA/claude-code (1.00s)\n    --- PASS: TestA/copilot-cli (1.00s)\n--- PASS: TestA (2.00s)\n", []string{"TestA"}, nil)
+	if err != nil || !slices.Equal(recorded, []string{"TestA/copilot-cli passed"}) {
+		t.Errorf("both legs passed: recorded = %q, verdict = %v", recorded, err)
+	}
+	for name, c := range map[string]struct {
+		out  string
+		want string
+	}{
+		"claude-code fails":       {"    --- FAIL: TestA/claude-code (1.00s)\n    --- PASS: TestA/copilot-cli (1.00s)\n--- FAIL: TestA (2.00s)\n", "TestA/claude-code failed"},
+		"both legs fail":          {"    --- FAIL: TestA/claude-code (1.00s)\n    --- FAIL: TestA/copilot-cli (1.00s)\n--- FAIL: TestA (2.00s)\n", "required scenario TestA did not pass"},
+		"a non-route subtest":     {"    --- PASS: TestA/claude-code (1.00s)\n    --- FAIL: TestA/copilot-cli (1.00s)\n    --- FAIL: TestA/setup (0.00s)\n--- FAIL: TestA (2.00s)\n", "TestA/setup failed"},
+		"no claude-code leg":      {"    --- FAIL: TestA/copilot-cli (1.00s)\n--- FAIL: TestA (2.00s)\n", "required scenario TestA did not pass"},
+		"exit with all passing":   {"    --- PASS: TestA/claude-code (1.00s)\n    --- PASS: TestA/copilot-cli (1.00s)\n--- PASS: TestA (2.00s)\nscenario: report: DH-E-A has no row\n", "go test: exit status 1"},
+		"panic after the leg ran": {"    --- PASS: TestA/claude-code (1.00s)\n    --- FAIL: TestA/copilot-cli (1.00s)\npanic: boom\n", "required scenario TestA did not pass"},
+	} {
+		if _, err := scenarioVerdict(c.out, []string{"TestA"}, exit1); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: verdict = %v, want %q", name, err, c.want)
+		}
+	}
+}
+
+// TestPhasesOrderDHS17: DH-S-17 runs TOOLCHAIN-1 first and SANDBOX-7 last, each in its
+// own go test run, with every other planned scenario between them in plan order
+// (architecture.md rule 7, R-03); another stage is one run in plan order.
+func TestPhasesOrderDHS17(t *testing.T) {
+	var plan acceptance.Plan
+	for _, id := range []string{"DH-E-SDK-1", "DH-E-SANDBOX-7", "DH-E-LLM-1", "DH-E-TOOLCHAIN-1", "DH-E-AGENT-4"} {
+		plan.Scenarios = append(plan.Scenarios, acceptance.Scenario{ID: id, Test: "Test" + id})
+	}
+	var got [][]string
+	for _, p := range phases("DH-S-17", plan) {
+		var ids []string
+		for _, s := range p.Scenarios {
+			ids = append(ids, s.ID)
+		}
+		got = append(got, ids)
+	}
+	want := [][]string{{"DH-E-TOOLCHAIN-1"}, {"DH-E-SDK-1", "DH-E-LLM-1", "DH-E-AGENT-4"}, {"DH-E-SANDBOX-7"}}
+	if !slices.EqualFunc(got, want, slices.Equal) {
+		t.Errorf("DH-S-17 phases = %q, want %q", got, want)
+	}
+	if p := phases("DH-S-13", plan); len(p) != 1 || len(p[0].Scenarios) != len(plan.Scenarios) {
+		t.Errorf("DH-S-13 phases = %+v, want the plan as one run", p)
+	}
+	if p := phases("DH-S-17", acceptance.Plan{Scenarios: plan.Scenarios[2:3]}); len(p) != 1 || p[0].Scenarios[0].ID != "DH-E-LLM-1" {
+		t.Errorf("phases of one middle scenario = %+v, want one run", p)
+	}
+}
+
+// TestScenarioGatesS17OrderAndRecordedLeg runs a scratch DH-S-17 plan: TOOLCHAIN-1
+// runs to its end before the others, SANDBOX-7 after them, each run requiring only
+// its own IDs; a scenario whose claude-code leg passes and copilot-cli leg fails
+// passes the gate with the copilot-cli failure in the record (M2-DEC-4).
+func TestScenarioGatesS17OrderAndRecordedLeg(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs go test on a scratch module")
+	}
+	index := "built-through: DH-S-17\nstages:\n  DH-S-17:\n" +
+		"    - id: DH-E-SANDBOX-7\n      authored: DH-S-15\n      credential: none\n" +
+		"    - id: DH-E-LLM-1\n      authored: DH-S-9\n      credential: claude-session\n" +
+		"    - id: DH-E-TOOLCHAIN-1\n      authored: DH-S-11\n      credential: none\n"
+	routes := `
+	t.Run("claude-code", func(t *testing.T) {})
+	t.Run("copilot-cli", func(t *testing.T) { t.Error("copilot signed out") })
+`
+	c := scenarioRoot(t, index, map[string]string{
+		"a_sandbox_scenario_test.go":   scenarioSrc("DH-E-SANDBOX-7", "TestSandbox", ""),
+		"b_llm_scenario_test.go":       scenarioSrc("DH-E-LLM-1", "TestLLM", routes),
+		"c_toolchain_scenario_test.go": scenarioSrc("DH-E-TOOLCHAIN-1", "TestToolchain", ""),
+	})
+	p := &countingProbe{signedIn: true}
+	var out bytes.Buffer
+	if code := ExitCode(Run(context.Background(), &out, c.ScenarioGates("DH-S-17", p.probe))); code != 0 {
+		t.Fatalf("exit %d, want a pass with the copilot-cli leg recorded:\n%s", code, out.String())
+	}
+	o := out.String()
+	order := []string{
+		"DSH_REQUIRE_SCENARIOS=DH-E-TOOLCHAIN-1 go test -tags scenario -count=1 -p 1 -timeout 110m -v -run ^(TestToolchain)$ ./...",
+		"--- PASS: TestToolchain ",
+		"DSH_REQUIRE_SCENARIOS=DH-E-LLM-1 go test -tags scenario -count=1 -p 1 -timeout 110m -v -run ^(TestLLM)$ ./...",
+		"--- FAIL: TestLLM/copilot-cli ",
+		"scenarios: recorded leg: TestLLM/copilot-cli failed",
+		"DSH_REQUIRE_SCENARIOS=DH-E-SANDBOX-7 go test -tags scenario -count=1 -p 1 -timeout 110m -v -run ^(TestSandbox)$ ./...",
+		"--- PASS: TestSandbox ",
+	}
+	at := 0
+	for _, want := range order {
+		i := strings.Index(o[at:], want)
+		if i < 0 {
+			t.Fatalf("output lacks %q after offset %d (order %q):\n%s", want, at, order, o)
+		}
+		at += i + len(want)
+	}
+}
 func TestScenariosSubcommandUsage(t *testing.T) {
 	for _, args := range [][]string{
 		{"scenarios", "--evidence", "x.txt"},

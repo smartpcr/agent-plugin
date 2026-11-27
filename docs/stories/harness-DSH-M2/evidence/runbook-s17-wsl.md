@@ -58,78 +58,79 @@ One stage record may mix both, row by row; a row with no machine named does not 
 
 ## Steps
 
-All commands are bash, from the repository root.
+Run the whole block below in one go, from the repository root, exactly as written. It is the
+job's steps in the job's order, and it fails closed as the job does (GitHub runs a
+`shell: bash` step as `bash -eo pipefail`; the block adds `-u`): the first failing
+command ends the run with a non-zero status, and nothing after it starts. The one command
+allowed to fail and carry on is the copilot-cli route preflight of step 4, which is
+recorded (M2-DEC-4). Do not paste the steps one by one into an interactive shell; a step
+that failed there would leave the next one running on an empty plan.
 
-1. **Name the machine and the commit.** Paste each line into the record:
+```bash
+bash -euo pipefail <<'EOF'
+mkdir -p artifacts/harness
 
-   ```bash
-   echo "E1 wsl:$(cmd.exe /c hostname | tr -d '\r')/$WSL_DISTRO_NAME"
-   grep PRETTY_NAME /etc/os-release; uname -r; go version; bwrap --version
-   git status --porcelain   # must print nothing: a dirty tree is not the commit under test
-   git rev-parse HEAD
-   ```
+# 1. Name the machine and the commit; a dirty tree is not the commit under test.
+echo "E1 wsl:$(cmd.exe /c hostname | tr -d '\r')/$WSL_DISTRO_NAME"
+grep PRETTY_NAME /etc/os-release; uname -r; go version; bwrap --version
+[ -z "$(git status --porcelain)" ] || { echo "the tree is not clean"; exit 1; }
+sha="$(git rev-parse HEAD)"; echo "commit $sha"
 
-2. **Entry** (the job's first step; M2-DEC-1). It must exit 0:
+# 2. Entry (M2-DEC-1).
+GOWORK=off go -C tools/harness-gate run . entry --root ../..
 
-   ```bash
-   GOWORK=off go -C tools/harness-gate run . entry --root ../..
-   ```
+# 3. Signed-in route preflight, claude-code (required): dsh built once, its checksum,
+#    one probe turn. A failure ends the run here; no scenario starts.
+GOWORK=off go -C src/harness build -o "$PWD/artifacts/harness/dsh" ./cmd/dsh
+export DSH_BIN="$PWD/artifacts/harness/dsh"
+sha256sum "$DSH_BIN" | tee artifacts/harness/s17-dsh.sha256
+claude --version | tee artifacts/harness/s17-clients.txt
+DSH_REQUIRE_SCENARIOS= GOWORK=off go -C src/harness test -tags scenario -count=1 -v \
+  -run '^TestSignedInRoutePreflight$/^claude-code$' ./internal/testkit/scenarios/ 2>&1 \
+  | tee artifacts/harness/s17-preflight-claude-code.txt
 
-3. **Signed-in route preflight, claude-code (required).** Build `dsh` once, record its
-   checksum, then one probe turn on the Claude Code route. A failure here stops the run;
-   no scenario starts:
+# 4. Signed-in route preflight, copilot-cli (recorded): the only step allowed to fail.
+log=artifacts/harness/s17-preflight-copilot-cli.txt
+copilot --version | tee -a artifacts/harness/s17-clients.txt || true
+if DSH_REQUIRE_SCENARIOS= GOWORK=off go -C src/harness test -tags scenario -count=1 -v \
+  -run '^TestSignedInRoutePreflight$/^copilot-cli$' ./internal/testkit/scenarios/ 2>&1 | tee "$log"; then
+  result=passed
+else
+  result="failed (route preflight)"
+fi
+echo "copilot-cli route preflight: $result" | tee -a "$log"
 
-   ```bash
-   set -o pipefail; mkdir -p artifacts/harness
-   GOWORK=off go -C src/harness build -o "$PWD/artifacts/harness/dsh" ./cmd/dsh
-   export DSH_BIN="$PWD/artifacts/harness/dsh"
-   sha256sum "$DSH_BIN" | tee artifacts/harness/s17-dsh.sha256
-   claude --version | tee artifacts/harness/s17-clients.txt
-   DSH_REQUIRE_SCENARIOS= GOWORK=off go -C src/harness test -tags scenario -count=1 -v \
-     -run '^TestSignedInRoutePreflight$/^claude-code$' ./internal/testkit/scenarios/ 2>&1 \
-     | tee artifacts/harness/s17-preflight-claude-code.txt
-   ```
+# 5. The required list from the DH-S-17 index entry (M2-DEC-3). A failing require
+#    ends the run (a plain assignment keeps its status under -e; export "$(...)"
+#    would not).
+list="$(GOWORK=off go -C tools/harness-gate run . require --root ../.. --stage DH-S-17)"
+export DSH_REQUIRE_SCENARIOS="$list"
+echo "stage=DH-S-17 DSH_REQUIRE_SCENARIOS=$list"
 
-4. **Signed-in route preflight, copilot-cli (recorded).** Its result is kept either way; a
-   failure makes the copilot-cli legs read `failed (route preflight)`:
+# 6. Preflight: the index, the authored tests, built-through and the Claude sign-in.
+#    The plan must hold all 14 scenarios.
+export GITHUB_OUTPUT="$PWD/artifacts/harness/s17-plan.txt"; : > "$GITHUB_OUTPUT"
+GOWORK=off go -C tools/harness-gate run . preflight --root ../..
+count="$(sed -n 's/^count=//p' "$GITHUB_OUTPUT" | tail -n 1)"
+[ "$count" = 14 ] || { echo "DH-S-17 plans $count scenarios, want all 14 (M2-DEC-3)"; exit 1; }
 
-   ```bash
-   copilot --version | tee -a artifacts/harness/s17-clients.txt
-   DSH_REQUIRE_SCENARIOS= GOWORK=off go -C src/harness test -tags scenario -count=1 -v \
-     -run '^TestSignedInRoutePreflight$/^copilot-cli$' ./internal/testkit/scenarios/ 2>&1 \
-     | tee artifacts/harness/s17-preflight-copilot-cli.txt
-   ```
+# 7. The 14 scenarios, through the same command as the job: TOOLCHAIN-1 first, the
+#    others, SANDBOX-7 last, one go test per phase (-p 1); a skip or a claude-code
+#    leg that did not pass fails it, a copilot-cli leg is recorded. It writes the
+#    evidence record and exits non-zero on any failure.
+export DSH_SCENARIO_REPORT="$PWD/artifacts/harness/s17-report.txt"
+GOWORK=off go -C tools/harness-gate run . scenarios --root ../.. --stage DH-S-17 \
+  --evidence "../../artifacts/harness/s17-$sha.txt"
+echo "S17 run on $sha: passed"
+EOF
+echo "exit $?"
+```
 
-5. **Derive the required list** from the `DH-S-17` index entry (M2-DEC-3). It prints the 14
-   IDs of `tools/harness-gate/testdata/s17_require.golden`:
-
-   ```bash
-   export DSH_REQUIRE_SCENARIOS="$(GOWORK=off go -C tools/harness-gate run . require --root ../.. --stage DH-S-17)"
-   echo "$DSH_REQUIRE_SCENARIOS"
-   ```
-
-6. **Preflight.** The index, the authored tests, built-through and the Claude sign-in; it
-   writes the test plan to the file `GITHUB_OUTPUT` names, as on a runner. `count` must
-   read 14:
-
-   ```bash
-   export GITHUB_OUTPUT="$PWD/artifacts/harness/s17-plan.txt"; : > "$GITHUB_OUTPUT"
-   GOWORK=off go -C tools/harness-gate run . preflight --root ../..
-   cat "$GITHUB_OUTPUT"
-   ```
-
-7. **Run the 14 scenarios** with the plan of step 6, one package at a time:
-
-   ```bash
-   RUN="$(sed -n 's/^run=//p' "$GITHUB_OUTPUT")"
-   export DSH_SCENARIO_REPORT="$PWD/artifacts/harness/s17-report.txt"
-   GOWORK=off go -C src/harness test -tags scenario -count=1 -p 1 -timeout 110m -v -run "$RUN" ./... 2>&1 \
-     | tee artifacts/harness/s17-scenarios.txt
-   ```
-
-   The run fails if any line reads `--- SKIP`, or if a test of the plan's `tests=` line has
-   no `--- PASS:` line.
-
+The run passed only if the block's last lines read `S17 run on <sha>: passed` and
+`exit 0`. Any other exit is a failed run, named by the last command's output; record it as
+`failed (<reason>)`. The record `artifacts/harness/s17-<sha>.txt` holds each phase's
+`go test` command and output, and one `scenarios: recorded leg: <Test>/copilot-cli passed`
+or `... failed` line per routed scenario.
 ## The record
 
 Fill [DH-S-17.md](DH-S-17.md) while it reads `Closure status: open`:
@@ -138,7 +139,8 @@ Fill [DH-S-17.md](DH-S-17.md) while it reads `Closure status: open`:
   (`passed`, `failed (<reason>)`, `not run (<reason>)`), and in Artifacts the `dsh`
   SHA-256, the model id and the scenario's report row;
 - the copilot-cli rows kept whatever their result (M2-DEC-4);
-- Exact tests and commands: steps 2 to 7 as run, and `DSH_REQUIRE_SCENARIOS`.
+- Exact tests and commands: the block of Steps as run, its exit status, and
+  `DSH_REQUIRE_SCENARIOS`.
 
 Keep `artifacts/harness/` outside the commit; copy only the lines the record quotes. Never
 paste a token, a cookie or an account e-mail.
