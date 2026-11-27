@@ -19,25 +19,33 @@
       - name: Signed-in route preflight (claude-code, required)
         env:
           DSH_REQUIRE_SCENARIOS: ""
+          DSH_SCENARIO_ROUTES: claude-code
         run: |
           set -o pipefail
           mkdir -p artifacts/harness
+          log=artifacts/harness/s17-preflight-claude-code.txt
           GOWORK=off go -C src/harness build -o "$RUNNER_TEMP/dsh" ./cmd/dsh
           sha256sum "$RUNNER_TEMP/dsh" | tee artifacts/harness/s17-dsh.sha256
           echo "DSH_BIN=$RUNNER_TEMP/dsh" >> "$GITHUB_ENV"
           claude --version | tee artifacts/harness/s17-clients.txt
-          DSH_BIN="$RUNNER_TEMP/dsh" GOWORK=off go -C src/harness test -tags scenario -count=1 -v -run '^TestSignedInRoutePreflight$/^claude-code$' ./internal/testkit/scenarios/ 2>&1 | tee artifacts/harness/s17-preflight-claude-code.txt
+          DSH_BIN="$RUNNER_TEMP/dsh" GOWORK=off go -C src/harness test -tags scenario -count=1 -v -run '^TestSignedInRoutePreflight$/^claude-code$' ./internal/testkit/scenarios/ 2>&1 | tee "$log"
+          # go test exits 0 when the filter matches no subtest; a leg that did not run is not a pass.
+          grep -q -- '--- PASS: TestSignedInRoutePreflight/claude-code ' "$log" || { echo "claude-code route preflight: not run"; exit 1; }
       - name: Signed-in route preflight (copilot-cli, recorded)
         env:
           DSH_REQUIRE_SCENARIOS: ""
+          DSH_SCENARIO_ROUTES: copilot-cli
         run: |
           set -o pipefail
           log=artifacts/harness/s17-preflight-copilot-cli.txt
           copilot --version | tee -a artifacts/harness/s17-clients.txt || true
-          if GOWORK=off go -C src/harness test -tags scenario -count=1 -v -run '^TestSignedInRoutePreflight$/^copilot-cli$' ./internal/testkit/scenarios/ 2>&1 | tee "$log"; then
+          GOWORK=off go -C src/harness test -tags scenario -count=1 -v -run '^TestSignedInRoutePreflight$/^copilot-cli$' ./internal/testkit/scenarios/ 2>&1 | tee "$log" || true
+          if grep -q -- '--- PASS: TestSignedInRoutePreflight/copilot-cli ' "$log"; then
             result=passed
-          else
+          elif grep -q -- '--- FAIL: TestSignedInRoutePreflight/copilot-cli ' "$log"; then
             result="failed (route preflight)"
+          else
+            result="not run"
           fi
           echo "copilot-cli route preflight: $result" | tee -a "$log"
       - name: Derive the required scenarios from the DH-S-17 index entry
