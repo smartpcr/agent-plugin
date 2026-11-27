@@ -80,6 +80,9 @@ func ProcessEnv(version string) Env {
 // process's stop signals, and its status passes through output.Exit, as boot
 // already printed the launch's diagnostics.
 func Boot(ctx context.Context, l Launch) error {
+	if done, err := beforeLaunch(ctx, l); done {
+		return err
+	}
 	return output.Exit(boot.Process(ctx, boot.Options{Request: l.Request, Profile: l.Profile, Stderr: l.Stderr, Terminal: isTerminal(os.Stdin)}))
 }
 

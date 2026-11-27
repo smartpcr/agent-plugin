@@ -191,8 +191,7 @@ func (p *Path) write(source string, err error, text string) (string, error) {
 		return "", errors.New("no report directory")
 	}
 	now := p.c.Now().UTC()
-	name := fmt.Sprintf("%s%s-%d%s", reportPrefix, now.Format("20060102T150405.000000000Z"), os.Getpid(), reportExt)
-	path := filepath.Join(p.c.Reports, name)
+	path := filepath.Join(p.c.Reports, reportName(now, os.Getpid()))
 	var b bytes.Buffer
 	fmt.Fprintf(&b, "dsh fatal report\n\n")
 	fmt.Fprintf(&b, "time:    %s\n", now.Format(time.RFC3339Nano))
@@ -288,6 +287,74 @@ func Reports(dir string) ([]string, error) {
 	}
 	slices.Sort(names) // the UTC timestamp sorts by name
 	return names, nil
+}
+
+// reportTime is the time layout of a report file name.
+const reportTime = "20060102T150405.000000000Z"
+
+func reportName(at time.Time, pid int) string {
+	return fmt.Sprintf("%s%s-%d%s", reportPrefix, at.UTC().Format(reportTime), pid, reportExt)
+}
+
+// ReportOf returns the path of the newest report under dir that process pid wrote
+// at or after since, or "" when it wrote none.
+func ReportOf(dir string, pid int, since time.Time) string {
+	names, err := Reports(dir)
+	if err != nil {
+		return ""
+	}
+	suffix := fmt.Sprintf("-%d%s", pid, reportExt)
+	for _, n := range slices.Backward(names) {
+		stamp, ok := strings.CutSuffix(strings.TrimPrefix(n, reportPrefix), suffix)
+		if !ok {
+			continue
+		}
+		if at, err := time.Parse(reportTime, stamp); err == nil && !at.Before(since.UTC().Truncate(time.Second)) {
+			return filepath.Join(dir, n)
+		}
+	}
+	return ""
+}
+
+// Unclean describes a host that ended without a clean stop: its runtime record was
+// left behind with a free lock.
+type Unclean struct {
+	Origin    string
+	PID       int
+	Profile   string
+	Version   string
+	StartedAt time.Time
+	// CrashFile is the runtime's crash output of the home when it holds bytes.
+	CrashFile string
+}
+
+// UncleanReport returns the report of the dead host u: the one it wrote itself
+// (Fatal, at or after its start), else the one an earlier start wrote for it, else
+// a new one written now under dir naming what is known. It is written once per dead
+// host, so every later start names the same file.
+func UncleanReport(dir string, u Unclean, now time.Time) (string, error) {
+	if path := ReportOf(dir, u.PID, u.StartedAt); path != "" {
+		return path, nil
+	}
+	var b bytes.Buffer
+	fmt.Fprintf(&b, "dsh unclean exit report\n\n")
+	fmt.Fprintf(&b, "time:    %s\n", now.UTC().Format(time.RFC3339Nano))
+	fmt.Fprintf(&b, "version: %s\n", u.Version)
+	fmt.Fprintf(&b, "profile: %s\n", u.Profile)
+	fmt.Fprintf(&b, "origin:  %s\n", u.Origin)
+	fmt.Fprintf(&b, "pid:     %d\n", u.PID)
+	fmt.Fprintf(&b, "started: %s\n", u.StartedAt.UTC().Format(time.RFC3339Nano))
+	b.WriteString("\n== error\nThe host ended without a clean stop: it was killed, lost its machine, or\n" +
+		"crashed before it could write a report. Its runtime record was left behind.\n")
+	if u.CrashFile != "" {
+		fmt.Fprintf(&b, "\n== crash output\n%s\n", u.CrashFile)
+	}
+	path := filepath.Join(dir, reportName(now, u.PID))
+	if err := fsx.CreateIfAbsent(path, fsx.Bytes(b.Bytes()), fsx.Options{Perm: 0o600}); err != nil {
+		return "", err
+	}
+	prune(dir)
+	return path, nil
 }
 
 // prune removes the oldest reports beyond MaxReports.

@@ -117,6 +117,11 @@ var codes = map[herr.Reason]int{
 	"launch/print-failed":   Failed,
 	"launch/not-ready":      Unavailable,
 
+	"host/not-running":     Unavailable,
+	"host/unreachable":     Unavailable,
+	"host/already-running": Busy,
+	"host/no-report":       Invalid,
+
 	"web/undeclared-effect": Invalid,
 	"web/route-invalid":     Invalid,
 	"web/route-taken":       Busy,

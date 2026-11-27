@@ -143,6 +143,23 @@ func newTree() *tree {
 				},
 			},
 		},
+		{
+			spec: cmdline.Spec{Name: "dsh status", Summary: "Print the hosts running on this home",
+				Description: "Reads the runtime records and asks each host for its status. A host that\n" +
+					"exited uncleanly is named on standard error with its crash report and --safe.\n" +
+					"No host running exits 4.",
+				Options:  []cmdline.Option{jsonOption()},
+				Examples: []cmdline.Example{{Command: "dsh status"}, {Command: "dsh --home ./h status --json"}}},
+			run: runStatus,
+		},
+		{
+			spec: cmdline.Spec{Name: "dsh crash", Summary: "Print the path of the newest crash report",
+				Description: "Writes the report of every host that exited uncleanly, then prints the path\n" +
+					"of the newest report under reports/. No report exits 5.",
+				Options:  []cmdline.Option{jsonOption()},
+				Examples: []cmdline.Example{{Command: "dsh crash"}}},
+			run: runCrash,
+		},
 	}}
 }
 
