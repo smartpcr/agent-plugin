@@ -63,13 +63,16 @@ type Shell interface {
 type shell struct {
 	mu      sync.Mutex
 	regions map[string]Region
-	placed  map[string]map[string]Contribution // region -> id -> contribution
+	placed  map[string]*placed // region name -> the declared instance's contributions
 	epoch   atomic.Uint64
 }
 
+// placed is one declared instance of a region: redeclaring a name makes a new one.
+type placed struct{ items map[string]Contribution }
+
 // New returns an empty shell.
 func New() Shell {
-	return &shell{regions: map[string]Region{}, placed: map[string]map[string]Contribution{}}
+	return &shell{regions: map[string]Region{}, placed: map[string]*placed{}}
 }
 
 func (s *shell) Declare(owner *cordis.Context, r Region) error {
@@ -82,7 +85,7 @@ func (s *shell) Declare(owner *cordis.Context, r Region) error {
 		if _, ok := s.regions[r.Name]; ok {
 			return nil, fmt.Errorf("shell: region %q is already declared", r.Name)
 		}
-		s.regions[r.Name], s.placed[r.Name] = r, map[string]Contribution{}
+		s.regions[r.Name], s.placed[r.Name] = r, &placed{items: map[string]Contribution{}}
 		s.epoch.Add(1)
 		return func() error {
 			s.mu.Lock()
@@ -107,16 +110,20 @@ func (s *shell) Contribute(owner *cordis.Context, c Contribution) error {
 		if !ok {
 			return nil, fmt.Errorf("shell: region %q is not declared", c.Region)
 		}
-		if _, ok := in[c.ID]; ok {
+		if _, ok := in.items[c.ID]; ok {
 			return nil, fmt.Errorf("shell: region %q already holds %q", c.Region, c.ID)
 		}
-		in[c.ID] = c
+		in.items[c.ID] = c
 		s.epoch.Add(1)
+		// The disposer is bound to the region instance this contribution joined
+		// (the instance captured as in), never to whatever region holds the name at
+		// disposal: a region unloaded and redeclared is a new instance whose
+		// contributions this one must not touch.
 		return func() error {
 			s.mu.Lock()
 			defer s.mu.Unlock()
-			if in, ok := s.placed[c.Region]; ok {
-				delete(in, c.ID)
+			delete(in.items, c.ID)
+			if s.placed[c.Region] == in {
 				s.epoch.Add(1)
 			}
 			return nil

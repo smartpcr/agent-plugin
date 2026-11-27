@@ -54,3 +54,38 @@ func TestRegionsAndContributionsFollowTheirOwners(t *testing.T) {
 		t.Error("sidebar outlived its owner")
 	}
 }
+
+// A contributor that outlives its region's owner must, when it unloads, leave the
+// redeclared region alone: the replacement's contribution with the same id stays
+// placed, so a further contribution with that id is still refused.
+func TestStaleContributorLeavesTheReplacementRegionAlone(t *testing.T) {
+	root, s := testkit.Tree(t), shell.New()
+	load := func(name string, body func(*cordis.Context) error) *cordis.Fiber {
+		t.Helper()
+		f, err := root.Apply(name, body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Wait(); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		return f
+	}
+	declare := func(c *cordis.Context) error { return s.Declare(c, shell.Region{Name: "sidebar", Kind: shell.List}) }
+	contribute := func(c *cordis.Context) error { return s.Contribute(c, shell.Contribution{Region: "sidebar", ID: "x"}) }
+
+	first := load("region-1", declare)
+	stale := load("old-x", contribute)
+	first.Dispose()
+	load("region-2", declare)
+	load("new-x", contribute)
+
+	stale.Dispose()
+	f, err := root.Apply("dup-x", contribute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Wait(); err == nil {
+		t.Fatal("the stale contributor's unload removed the replacement region's x: a duplicate x loaded")
+	}
+}
