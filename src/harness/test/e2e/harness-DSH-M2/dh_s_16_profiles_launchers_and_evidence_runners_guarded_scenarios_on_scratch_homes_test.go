@@ -1334,7 +1334,7 @@ func (w *gshWorld) labRun(test string) error {
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command("go", "test", "-tags", "scenario", "-timeout", "40m", "-v", "-run", "^"+test+"$", "./internal/testkit/scenarios/")
+	cmd := exec.Command("go", "test", "-count=1", "-tags", "scenario", "-timeout", "40m", "-v", "-run", "^"+test+"$", "./internal/testkit/scenarios/")
 	cmd.Dir = mod
 	out, err := cmd.CombinedOutput()
 	w.labTest, w.labOut, w.labErr = test, string(out), err
@@ -1342,6 +1342,10 @@ func (w *gshWorld) labRun(test string) error {
 }
 
 func (w *gshWorld) labPassed() error {
+	// A cached replay never touched the lab, so it cannot count as a live pass.
+	if strings.Contains(w.labOut, "(cached)") {
+		return fmt.Errorf("the live scenario %s was replayed from the Go test cache, not run against the lab:\n%s", w.labTest, w.labOut)
+	}
 	if w.labErr != nil || !strings.Contains(w.labOut, "--- PASS: "+w.labTest) || strings.Contains(w.labOut, "--- SKIP: "+w.labTest) {
 		return fmt.Errorf("the live scenario %s did not pass (%v):\n%s", w.labTest, w.labErr, w.labOut)
 	}
