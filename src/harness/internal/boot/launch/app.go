@@ -1,6 +1,7 @@
 package launch
 
 import (
+	"io"
 	"sync"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
@@ -37,6 +38,18 @@ var AppKey = cordis.NewServiceKey[App]("boot.app")
 // process trees its components started; shutdown force-stops what is still there
 // when the bound passes.
 var ProcessesKey = cordis.NewServiceKey[*subprocess.Registry]("boot.processes")
+
+// Stdio is a client stream pair the launcher hands the stdio carrier in place of
+// the process's standard input and output: an in-process boot (a test) runs the
+// sdk profile over pipes without claiming the process's streams.
+type Stdio struct {
+	In  io.Reader
+	Out io.Writer
+}
+
+// StdioKey is the service under which the boot tree provides Stdio when the
+// launcher passed one; absent, wire.stdio claims the process's streams.
+var StdioKey = cordis.NewServiceKey[Stdio]("boot.stdio")
 
 // Control is the App that boot.Run owns: it closes Ready and reads the stop.
 type Control struct {

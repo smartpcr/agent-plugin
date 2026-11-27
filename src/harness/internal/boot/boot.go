@@ -74,6 +74,9 @@ type Options struct {
 	// kit passes one that refuses, so a composed test tree never asks the
 	// developer's systemd for a scope.
 	UserManager subprocess.UserManager
+	// Stdio replaces the process's standard streams for the stdio carrier; nil
+	// lets wire.stdio claim them. An in-process boot passes pipes.
+	Stdio *launch.Stdio
 }
 
 // Host is the live tree as shutdown sees it.

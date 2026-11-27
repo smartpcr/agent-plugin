@@ -191,6 +191,11 @@ func (Real) Tree(ctx context.Context, s *State) error {
 	if _, err := agentpreset.HostKey.Provide(root, agentpreset.Host{Catalogue: cat, Evaluator: ev, Version: s.Data.Version}); err != nil {
 		return err
 	}
+	if o := s.Options.Stdio; o != nil {
+		if _, err := launch.StdioKey.Provide(root, *o); err != nil {
+			return err
+		}
+	}
 	fiber, err := root.Use(loader.Component, loader.Options{Resolver: cat, Evaluator: ev})
 	if err != nil {
 		return err

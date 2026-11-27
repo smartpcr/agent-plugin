@@ -291,7 +291,7 @@ func TestBundlesParseAndResolve(t *testing.T) {
 		var walk func([]loader.EntryOptions)
 		walk = func(entries []loader.EntryOptions) {
 			for _, e := range entries {
-				if !e.Group && !unregistered[e.Name] {
+				if !e.Group {
 					if _, err := cat.Lookup(e.Name); err != nil {
 						t.Errorf("bundle %s: entry %s: %v", name, e.ID, err)
 					}

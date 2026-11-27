@@ -11,6 +11,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/agentpreset"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/catalog"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/logging"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/cli/headless"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/host/sharing"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human/permission"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm"
@@ -21,6 +22,8 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools/items"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/egress"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/util/watch"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/wire/sdkserver"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/wire/stdio"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/fs"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/fs/local"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/fs/ops"
@@ -118,9 +121,25 @@ func Permission() []catalog.Item {
 	}
 }
 
+// Wire is the wire family's items: the stdio stream owner and the SDK server
+// over it, the carriers of the sdk profile.
+func Wire() []catalog.Item {
+	return []catalog.Item{
+		{Name: stdio.Name, Component: stdio.Component, Provides: []string{stdio.Key.Name()}},
+		{Name: sdkserver.Name, Component: sdkserver.Component},
+	}
+}
+
+// CLI is the cli family's items: the carrier of the headless profile.
+func CLI() []catalog.Item {
+	return []catalog.Item{
+		{Name: headless.Name, Component: headless.Component},
+	}
+}
+
 // Sets is every family's items.
 func Sets() [][]catalog.Item {
-	return [][]catalog.Item{Boot(), Host(), Util(), Session(), Agent(), LLM(), Tools(), FS(), Sandbox(), Permission()}
+	return [][]catalog.Item{Boot(), Host(), Util(), Session(), Agent(), LLM(), Tools(), FS(), Sandbox(), Permission(), Wire(), CLI()}
 }
 
 // Catalog builds the catalogue of this binary.

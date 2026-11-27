@@ -3,6 +3,7 @@ package profile
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -16,6 +17,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/builtin"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/catalog"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/expr"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/launch"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/host/sharing"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit"
@@ -70,12 +72,10 @@ func TestBuiltinProfilesCompose(t *testing.T) {
 			t.Errorf("%s: %s", def.Name, p)
 		}
 		for _, p := range treeProblems(cat, ev, tree) {
-			if !unregisteredProblem(p) {
-				t.Errorf("%s: %s", def.Name, p)
-			}
+			t.Errorf("%s: %s", def.Name, p)
 		}
 		walkEntries(tree, nil, func(e loader.EntryOptions, _ []loader.EntryOptions) {
-			if !e.Group && !unregistered[e.Name] {
+			if !e.Group {
 				entries[e.Name] = e
 			}
 		})
@@ -94,11 +94,6 @@ func TestBuiltinProfilesCompose(t *testing.T) {
 		trees.WriteString("\n")
 	}
 	golden.Assert(t, "composed", trees.String())
-	for name := range unregistered {
-		if _, err := cat.Lookup(name); err == nil {
-			t.Errorf("%s is in the catalogue now: take it off unregistered", name)
-		}
-	}
 
 	// What each component provides when it loads alone, under the services boot
 	// provides at the root, is what its catalogue item declares.
@@ -194,21 +189,6 @@ func allDefinitions() []Definition {
 // missing id is not listed. DH-T-BUNDLE-5 holds in full once the list is empty.
 var unbuilt = map[string]bool{
 	"host.listen": true, "host.auth": true, "host.assets": true, "host.web": true, "host.access": true, "host.stream": true, "ui.shell": true,
-}
-
-// unregistered are the component names a shipped bundle inserts that the build
-// catalogue does not register yet: the carriers headless.yml and sdk.yml mount
-// (C48 to C50). Only these may fail to resolve, and the golden test fails once
-// one resolves, until it is taken off.
-var unregistered = map[string]bool{"cli.headless": true, "wire.stdio": true, "wire.sdk": true}
-
-func unregisteredProblem(p string) bool {
-	for name := range unregistered {
-		if strings.HasPrefix(p, name+": "+name+" does not resolve:") {
-			return true
-		}
-	}
-	return false
 }
 
 // pendingTargets are the ids a shipped bundle merges into or switches off whose
@@ -813,6 +793,16 @@ func providedBy(t *testing.T, cat *catalog.Catalog, e loader.EntryOptions, entri
 		t.Fatal(err)
 	}
 	if _, err := agentpreset.HostKey.Provide(root, agentpreset.Host{Catalogue: cat, Version: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	// The stop control and a client stream pair, so wire.stdio attaches to pipes
+	// and never claims the test process's standard streams.
+	if _, err := launch.AppKey.Provide(root, launch.App(launch.NewApp())); err != nil {
+		t.Fatal(err)
+	}
+	in, client := io.Pipe()
+	t.Cleanup(func() { client.Close() })
+	if _, err := launch.StdioKey.Provide(root, launch.Stdio{In: in, Out: io.Discard}); err != nil {
 		t.Fatal(err)
 	}
 	fiber, err := root.Use(loader.Component, loader.Options{Resolver: cat})
