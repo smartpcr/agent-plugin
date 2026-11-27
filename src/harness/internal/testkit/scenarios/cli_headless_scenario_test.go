@@ -48,9 +48,13 @@ import (
 //
 //dsh:scenario DH-E-CLI-2
 func TestHeadlessRunOnRealModel(t *testing.T) {
+	needEnv := []string{"DSH_SCENARIO_CLI2_LAYER", "DSH_SCENARIO_CLI2_LONG_PROMPT"}
+	if runtime.GOOS == "windows" {
+		needEnv = append(needEnv, "DSH_SCENARIO_TERMINAL_KEYS")
+	}
 	scenario.Run(t, "DH-E-CLI-2", scenario.Needs{
 		Bin: true, OS: []string{"linux", "windows"}, Deadline: 45 * time.Minute,
-		Env: []string{"DSH_SCENARIO_CLI2_LAYER", "DSH_SCENARIO_CLI2_LONG_PROMPT"},
+		Env: needEnv,
 	}, func(s *scenario.S) {
 		profileLayer(t, s.Home, "headless", layerInput(t, "DSH_SCENARIO_CLI2_LAYER", "a headless layer on the signed-in route", map[string]string{"workspace": s.Workspace}))
 		if err := os.WriteFile(filepath.Join(s.Workspace, "note.txt"), []byte("note\n"), 0o600); err != nil {
