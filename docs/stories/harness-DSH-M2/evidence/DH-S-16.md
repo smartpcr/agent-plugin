@@ -82,7 +82,7 @@ which commit (impl.md sec. 7.3).
 | --- | --- | --- | --- | --- | --- |
 | 16.3 | one `dsh headless` prompt on the signed-in Claude Code route (M2-I-1) with an approval answered on the terminal | | | | `manual` |
 | 16.4 | Ctrl-C during a tool call | | | | `manual` |
-| 16.5 | a second `dsh` beside a running host | Seen on Windows 11, release build of `./cmd/dsh` (sha256 `ae03f032...46364`) on an empty scratch home: with a first `dsh web` live (pid 34596, `http://127.0.0.1:3080`), `dsh status` listed that one host; a second `dsh web` printed `opened in the browser of the host (process 34596)` and exited 0 in 160 ms, starting no host of its own. After the first host was killed, `dsh status` named the crash report `reports/report-...-34596.txt` and suggested `dsh --safe web`, then exited 4 `host/not-running`; `dsh crash` printed the same path. Seen on WSL2 Ubuntu 24.04, a release linux/amd64 build at `0420164` (product source identical to `12c2be8`; sha256 `cb2489e7...71f54`) on an ext4 scratch home: with a first `dsh web` live (pid 119241), `ss` showed one listener (`127.0.0.1:3080`, pid 119241) and `dsh status` listed one host. With no browser and a host started without a terminal, a second `dsh web` returned `launch/no-channel`, exiting 4 in 18 ms and starting no host. After `kill -9`, `dsh status` named the crash report and `--safe`, then exited 4; `dsh crash` printed the same path | run by the Forge engineer agent; accepted by the operator (answer to question `dh-s-16-manual-checks`: "Accept both") | 12c2be8 | `manual` |
+| 16.5 | a second `dsh` beside a running host | Seen on Windows 11, release build of `./cmd/dsh` (sha256 `ae03f032...46364`) on an empty scratch home: with a first `dsh web` live (pid 34596, `http://127.0.0.1:3080`), `dsh status` listed that one host; a second `dsh web` printed `opened in the browser of the host (process 34596)` and exited 0 in 160 ms, starting no host of its own. After the first host was killed, `dsh status` named the crash report `reports/report-...-34596.txt` and suggested `dsh --safe web`, then exited 4 `host/not-running`; `dsh crash` printed the same path. Seen on WSL2 Ubuntu 24.04, a release linux/amd64 build at `0420164`, a pre-merge branch commit equal to `12c2be8` plus docs (same `src/harness` tree `aeb078f9`; see Source and build identity; sha256 `cb2489e7...71f54`) on an ext4 scratch home: with a first `dsh web` live (pid 119241), `ss` showed one listener (`127.0.0.1:3080`, pid 119241) and `dsh status` listed one host. With no browser and a host started without a terminal, a second `dsh web` returned `launch/no-channel`, exiting 4 in 18 ms and starting no host. After `kill -9`, `dsh status` named the crash report and `--safe`, then exited 4; `dsh crash` printed the same path | run by the Forge engineer agent; accepted by the operator (answer to question `dh-s-16-manual-checks`: "Accept both") | 12c2be8 | `manual` |
 
 Logs: [runs/manual-12c2be8/](runs/manual-12c2be8/README.md). The operator accepted the 16.5 run and
 the scratch `dsh secret set` run below (answer to `dh-s-16-manual-checks`: "Accept both").
@@ -119,7 +119,22 @@ stage closes; `--built` refuses a row with no confirmation or no name in By.
 Manual checks and package tests at `12c2be8` (main, every step above merged). Go `go1.27.4`
 windows/amd64. The binary is `go -C src/harness build ./cmd/dsh` (release, no tags), embedded version
 `dsh (devel) (12c2be8d83b487422ce7115951361b8a1fb367d1; go1.27.4; windows/amd64)`, SHA-256
-`ae03f032229965bc2088a2c9d1d17489551062c384237bbd91f22c89db546364`. At closure: the commit of the three
+`ae03f032229965bc2088a2c9d1d17489551062c384237bbd91f22c89db546364`.
+
+The WSL leg of 16.5 used a linux/amd64 release build (same command, no tags, go1.27.4) made at
+`0420164476527c9bab1eb4a27f85e3a35d79faa2`, embedded version
+`dsh (devel) (0420164476527c9bab1eb4a27f85e3a35d79faa2; go1.27.4; linux/amd64)`, SHA-256
+`cb2489e768815da546b5c3484e627f74da382a40cbac88baa209a55e2b971f54`
+([log](runs/manual-12c2be8/check-16.5-wsl.log)). `0420164` is a pre-merge commit on this PR's branch
+and is not on main; after a squash-merge it may be unreachable. Its parent chain starts at `12c2be8`
+and `git diff 12c2be8 0420164` touches only `docs/`. The checkable identity is the product tree:
+`12c2be8^{tree}` is `3c13d019550ad8a2c9b58bde75716552255ae4f5`, and `12c2be8:src/harness` and
+`0420164:src/harness` are both tree `aeb078f9b774620f56bc96dda9b8e7aca67d3eea`, so the WSL binary was
+built from the `src/harness` that `12c2be8` holds. Its embedded version names `0420164`, not `12c2be8`,
+so the binary's bytes cannot be reproduced from main; the claim rests on the tree equality above.
+The lane records cited below at `a91abac` (also docs-only over `12c2be8`, `src/harness` tree
+`aeb078f9`) and `2da0f59` (`src/harness` tree `6cfdf5bd`, which adds the one-line gofmt fix) are
+likewise pre-merge branch commits; they are failing, uncommitted records and prove no row. At closure: the commit of the three
 modules (one commit), with the binary's SHA-256 and embedded version on both lanes.
 
 ### Environment and fixture
