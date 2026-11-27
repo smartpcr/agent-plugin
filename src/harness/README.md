@@ -7,7 +7,7 @@ modules (RM-1), all on the same `go 1.27.4` floor (RM-2):
 | Module | Holds | Requires |
 | --- | --- | --- |
 | `src/go` | cordis, loader, timer | nothing |
-| `src/sdk` | jsonrpc, protocol | nothing (`DH-T-SDK-17`) |
+| `src/sdk` | jsonrpc, protocol, sdk (the Go client) | nothing (`DH-T-SDK-17`) |
 | `src/harness` | `cmd/dsh` and `internal/...` | `src/go`, `src/sdk` -- never through `replace` (RM-4) |
 
 `cmd/dsh` holds `main` only; every implementation package lives under `internal/`
