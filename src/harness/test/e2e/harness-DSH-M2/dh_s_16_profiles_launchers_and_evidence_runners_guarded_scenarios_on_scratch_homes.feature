@@ -50,6 +50,7 @@ Feature: Guarded scenarios on scratch homes (DH-S-16 step 16.8)
     And every editor save wrote back a version some process acknowledged
     And every acknowledged edit missing from the final file was overwritten by an overlapping editor save of a version without it
     And the final file equals the last acknowledged version
+    And on a lane providing DSH_SCENARIO_FS3_EDITOR, DSH_SCENARIO_FS3_LAYER, DSH_SCENARIO_FS3_LOCK_TIMEOUT, DSH_SCENARIO_FS3_MODEL and DSH_SCENARIO_FS3_ROUTE, the live scenario TestTwoProcessesAndAnEditorChangeOneFile drives edit through two dsh processes and passes
 
   @TC-19s2 @DH-E-STORE-2 @proof:service:model-route-claude-code
   Scenario: DH-E-STORE-2 a host killed mid-tool-call recovers honestly
@@ -60,7 +61,9 @@ Feature: Guarded scenarios on scratch homes (DH-S-16 step 16.8)
     Then every event persisted before the kill is unchanged and seq continues with no gap
     And the turn cut by the kill ended "interrupted"
     And the cut tool call's result is "tools/outcome-unknown"
-    And the first model request after the resume, read from the replay's request log, carries that result
+    And the first model request after the resume, rebuilt from the session log, has the digest the host sent and carries that result
+    And the replay provider received that request carrying the result
     When the session is deleted with no host running
     Then no row or spill file of the session remains in the scratch home
     And the guarded runner plans DH-E-STORE-2 on the WSL lane only, behind the Claude Code sign-in, and records the Windows row "out of scope (impl.md 16.8 Linux only; TC-19s2)"
+    And on a lane providing DSH_SCENARIO_STORE2_START, DSH_SCENARIO_STORE2_PROMPT, DSH_SCENARIO_STORE2_RESUME, DSH_SCENARIO_STORE2_REQUEST, DSH_SCENARIO_STORE2_KILL and DSH_SCENARIO_STORE2_DELETE, the live scenario TestKilledHostRecoversHonestly runs sandboxed sleep 60; write under bwrap Full on the Claude Code route and passes

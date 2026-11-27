@@ -20,9 +20,15 @@ package e2e
 //     save script ("<editor> <file> <log> <stop>", logging "<start> <end>
 //     <sha256>" per save); otherwise the suite's own editor role saves the same
 //     way.
-//   - DH-E-STORE-2 plays the cut turn on the replay route, not the signed-in
-//     Claude Code route. It also checks the guarded runner's lane plan, which
-//     binds the live route and bwrap to the WSL lane.
+//   - DH-E-STORE-2 plays the cut turn on the replay route and rebuilds the first
+//     request after the resume from the stored log (surface.Rebuild), matching
+//     the digest the host recorded as sent. It checks the guarded runner's lane
+//     plan, which binds the Claude Code route and bwrap Full to the WSL lane.
+//   - This tree has no edit tool, no shell tool and no booted Claude Code route
+//     in dsh, so the literal dsh paths of FS-3 and STORE-2 exist only as the
+//     impl's lane scenarios (internal/testkit/scenarios, -tags scenario). On a
+//     lane that sets their DSH_SCENARIO_* inputs, the suite runs them and
+//     requires them to pass; a partial set of inputs fails the step.
 
 import (
 	"bufio"
@@ -49,6 +55,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store/sqlite"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/surface"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/launcher"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/temphome"
@@ -219,7 +226,7 @@ func gshEditorChild(file, logPath, stop string) error {
 			return err
 		}
 		fmt.Fprintf(log, "%s %s %s\n", start.Format(time.RFC3339Nano), time.Now().Format(time.RFC3339Nano), gshSum(data))
-		time.Sleep(2 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -1109,6 +1116,82 @@ func (w *gshWorld) firstRequestCarries() error {
 	return nil
 }
 
+// requestFromLog rebuilds, from the stored log alone, the request of the first
+// model call after the resume (surface.Rebuild at the assistant/message's
+// request_as_of): its digest must be the one the host recorded as sent, and its
+// messages must carry the cut call's unknown outcome.
+func (w *gshWorld) requestFromLog() error {
+	evs, err := w.events()
+	if err != nil {
+		return err
+	}
+	var m struct {
+		AsOf   *int64 `json:"request_as_of"`
+		Digest string `json:"request_digest"`
+	}
+	i := slices.IndexFunc(evs[len(w.before):], func(e gshEvent) bool {
+		return e.typ == "assistant/message" && json.Unmarshal([]byte(e.data), &m) == nil && m.AsOf != nil
+	})
+	if i < 0 {
+		return errors.New("no model call after the resume recorded its request in the session log")
+	}
+	s, err := sqlite.OpenHome(gshBG, w.layout, sqlite.WithKind("e2e-probe"))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = s.Close(gshBG) }()
+	rd, err := s.OpenRead(gshBG, w.session)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rd.Close(gshBG) }()
+	read := func(ctx context.Context, from event.Offset, limit int) ([]event.Record, error) {
+		return rd.Read(ctx, from, limit, store.ReadOptions{WithAux: true})
+	}
+	b, err := surface.Rebuild(gshBG, event.Default(), read, w.session, event.Seq(*m.AsOf))
+	if err != nil {
+		return fmt.Errorf("rebuilding the request as of %d from the log: %v", *m.AsOf, err)
+	}
+	if b.Digest() != m.Digest {
+		return fmt.Errorf("the request rebuilt from the log has digest %s; the host sent %s", b.Digest(), m.Digest)
+	}
+	if !strings.Contains(b.Canonical(), gshUnknown) {
+		return fmt.Errorf("the first request after the resume, rebuilt from the log, does not carry the unknown outcome:\n%s", b.Canonical())
+	}
+	return nil
+}
+
+// gshLive runs the impl's live scenario test through dsh when the lane provides
+// its inputs (the editor save script, the replay layer, the Claude Code sign-in
+// and bwrap); off such a lane the scratch-home proof above is the evidence.
+func gshLive(test string, vars ...string) error {
+	var missing []string
+	for _, v := range vars {
+		if os.Getenv(v) == "" {
+			missing = append(missing, v)
+		}
+	}
+	if len(missing) == len(vars) {
+		gshOuterT.Logf("%s: no lane input set; the live dsh path runs on the lane that provides %s", test, strings.Join(vars, ", "))
+		return nil
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("%s: the lane provides only part of its inputs; missing %s", test, strings.Join(missing, ", "))
+	}
+	mod, err := shkModuleDir()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command("go", "test", "-tags", "scenario", "-timeout", "40m", "-v", "-run", "^"+test+"$", "./internal/testkit/scenarios/")
+	cmd.Dir = mod
+	out, err := cmd.CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "--- PASS: "+test) || strings.Contains(string(out), "--- SKIP: "+test) {
+		return fmt.Errorf("the live scenario %s did not pass (%v):\n%s", test, err, out)
+	}
+	gshOuterT.Logf("%s passed through dsh on this lane", test)
+	return nil
+}
+
 func (w *gshWorld) deleteSession() error {
 	s, err := sqlite.OpenHome(gshBG, w.layout)
 	if err != nil {
@@ -1254,7 +1337,11 @@ func InitializeScenario_dh_s_16_profiles_launchers_and_evidence_runners_guarded_
 	ctx.Step(`^a new headless host resumes the session and sends a new prompt$`, w.resumedAndPrompted)
 	ctx.Step(`^every event persisted before the kill is unchanged and seq continues with no gap$`, w.prefixKept)
 	ctx.Step(`^the cut tool call's result is "([^"]*)"$`, w.outcomeUnknown)
-	ctx.Step(`^the first model request after the resume, read from the replay's request log, carries that result$`, w.firstRequestCarries)
+	ctx.Step(`^the first model request after the resume, rebuilt from the session log, has the digest the host sent and carries that result$`, w.requestFromLog)
+	ctx.Step(`^the replay provider received that request carrying the result$`, w.firstRequestCarries)
+	ctx.Step(`^on a lane providing (.+), the live scenario (Test\w+) .+ and passes$`, func(vars, test string) error {
+		return gshLive(test, strings.FieldsFunc(strings.ReplaceAll(vars, " and ", ","), func(r rune) bool { return r == ',' || r == ' ' })...)
+	})
 	ctx.Step(`^the session is deleted with no host running$`, w.deleteSession)
 	ctx.Step(`^no row or spill file of the session remains in the scratch home$`, w.sessionGone)
 	ctx.Step(`^the guarded runner plans DH-E-STORE-2 on the WSL lane only, behind the Claude Code sign-in, and records the Windows row "([^"]*)"$`, w.lanePlan)
@@ -1271,6 +1358,7 @@ func TestE2E_dh_s_16_profiles_launchers_and_evidence_runners_guarded_scenarios_o
 			Format:   "pretty",
 			Paths:    []string{"dh_s_16_profiles_launchers_and_evidence_runners_guarded_scenarios_on_scratch_homes.feature"},
 			TestingT: t,
+			Strict:   true, // an undefined step fails the suite
 		},
 	}
 	if suite.Run() != 0 {
