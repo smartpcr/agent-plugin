@@ -68,7 +68,9 @@ guarded_preflight() {
 	local bw gdir report verdict
 	bw=$(command -v bwrap || true)
 	if [ -z "$bw" ] && command -v apt-get >/dev/null && sudo -n true 2>/dev/null; then
-		echo "wsl lane: bwrap is not on PATH; installing bubblewrap (sudo apt-get install -y bubblewrap)"
+		echo "wsl lane: bwrap is not on PATH; installing bubblewrap (sudo apt-get update && sudo apt-get install -y bubblewrap)"
+		# A fresh WSL image may have empty or stale package lists.
+		sudo -n apt-get update -qq >&2 || fail "apt-get update failed"
 		sudo -n apt-get install -y bubblewrap >&2 || fail "apt-get install bubblewrap failed"
 		bw=$(command -v bwrap || true)
 	fi
