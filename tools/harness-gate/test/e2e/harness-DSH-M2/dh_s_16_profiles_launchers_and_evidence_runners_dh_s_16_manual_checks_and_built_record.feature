@@ -8,16 +8,27 @@ Feature: DH-S-16 manual checks and built record
   index's built-through to DH-S-16 (M2-DOD-1, M2-DOD-2).
 
   # Open, not a pass: the HEAD-state assertions of M2-DOD-1 and M2-DOD-2 are
-  # deferred to the PR that records the DH-S-16 evidence and flips its status
-  # line. They are: ready --built exits 0 on the committed record; the guarded
-  # rows of DH-E-STORE-1, DH-E-STORE-2, DH-E-STORE-6 and DH-E-FS-3 read "passed"
-  # with a commit SHA; close --built then exits 0; built-through reads DH-S-16;
-  # and every step of the DH-S-12..DH-S-16 records carries a commit SHA. Today
-  # those rows read "not run" (M1 not closed, M2-DEC-1), the manual checks for
-  # steps 16.3 and 16.4 are unrecorded, the DH-S-15 steps have no commit and
-  # built-through reads DH-S-11, so only the records' evidence can clear them.
-  # The step definitions stay in the _test.go file for that PR; until it
-  # lands, the stage record keeps those scenarios visibly open.
+  # deferred, and they land in two separate PRs because they have different
+  # preconditions:
+  #
+  # 1. The PR that records the DH-S-16 evidence and flips its status line adds:
+  #    ready --built exits 0 on the committed record; the guarded rows of
+  #    DH-E-STORE-1, DH-E-STORE-2, DH-E-STORE-6 and DH-E-FS-3 read "passed" with
+  #    a commit SHA; close --built then exits 0. Today those rows read "not run"
+  #    (M1 not closed, M2-DEC-1) and the manual checks for steps 16.3 and 16.4
+  #    are unrecorded.
+  # 2. The PR that bumps the acceptance index adds: built-through reads
+  #    DH-S-16, and every step of the DH-S-12..DH-S-16 records carries a commit
+  #    SHA. Precondition (closing order): built-through only advances over a
+  #    contiguous run of closed build stages, so this PR may land only after
+  #    DH-S-12, DH-S-13, DH-S-14, DH-S-15 and DH-S-16 all read "Closure status:
+  #    closed"; the assertion lands together with the index bump, never before.
+  #    Today built-through reads DH-S-11, all five records read open and the
+  #    DH-S-15 step rows have no commit, so closing DH-S-16 alone cannot clear it.
+  #
+  # The step definitions ("built-through reads", "every step of each of those
+  # records carries a commit SHA") stay in the _test.go file for those PRs;
+  # until they land, the stage record keeps those scenarios visibly open.
 
   # M2-DOD-2 (gate side); proof: golden (the immutable fixture
   # tools/harness-gate/testdata/closure/open_not_ready with its committed
