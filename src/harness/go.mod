@@ -48,7 +48,7 @@ require (
 	github.com/smartpcr/agent-plugin/src/go v0.1.5-0.20261120142542-a7caf0f79ab0
 	// The SDK module (jsonrpc codec, protocol message types and schema) the harness
 	// serves (design.md sec. 4.2, DH-ADR-26, RM-4): pinned the same way.
-	github.com/smartpcr/agent-plugin/src/sdk v0.0.0-20261126034948-3b6397db949b
+	github.com/smartpcr/agent-plugin/src/sdk v0.0.0-20261127083844-3527b3c66344
 	// The fixed command tree, help routing and completion scripts of internal/cli
 	// (DH-D-CLI-1): chosen by docs/harness/libs/commander.md section 5
 	// (DH-LIB-COMMANDER); Apache-2.0, links pflag and, on Windows only, mousetrap.
