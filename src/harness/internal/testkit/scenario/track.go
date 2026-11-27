@@ -34,16 +34,19 @@ type tracker struct {
 	written bool // expire wrote the row
 	timer   *time.Timer
 
-	// deadline, after and abandon are trackDeadline, abandonAfter and abandon
-	// when the test was first tracked.
+	// deadline is the test's declared deadline (//dsh:deadline), else
+	// trackDeadline, when the test was first tracked; zero is none. after and
+	// abandon are abandonAfter and abandon then.
 	deadline, after time.Duration
 	abandon         func(string)
 }
 
 var (
-	// trackDeadline is the deadline of a tracked test, DefaultDeadline outside
-	// this package's own tests.
-	trackDeadline = DefaultDeadline
+	// trackDeadline is the deadline of a tracked test that declares none: zero
+	// (none, the test is bounded by go test -timeout alone) outside this
+	// package's own tests. Long scenarios that predate Run must not be failed
+	// and their binary ended at a fixed bound they never declared.
+	trackDeadline time.Duration
 	// abandon ends the test binary when a tracked test is still running
 	// abandonAfter past its deadline and the stop of its trees.
 	abandon = func(msg string) {
@@ -58,6 +61,9 @@ var (
 	// ids maps a test name to the DH-E ID of its //dsh:scenario directive,
 	// read by Main from the package's files.
 	ids map[string]string
+	// deadlines maps a test name to the deadline its //dsh:deadline line
+	// declares, read by Main with ids.
+	deadlines map[string]time.Duration
 )
 
 func (tr *tracker) fail(reason string) {
@@ -83,7 +89,7 @@ func topName(name string) string {
 // track returns the tracker of t's top-level test. The first call registers, on
 // t, the cleanup that writes the row; it runs after every cleanup registered
 // later, so it sees their failures too. It also starts the test's deadline
-// (expire).
+// (expire), when it has one.
 func track(t testing.TB) *tracker {
 	name := topName(t.Name())
 	trackMu.Lock()
@@ -95,16 +101,23 @@ func track(t testing.TB) *tracker {
 	if id == "" {
 		id = name
 	}
-	tr := &tracker{id: id, start: time.Now(), deadline: trackDeadline, after: abandonAfter, abandon: abandon}
+	deadline := deadlines[name]
+	if deadline <= 0 {
+		deadline = trackDeadline
+	}
+	tr := &tracker{id: id, start: time.Now(), deadline: deadline, after: abandonAfter, abandon: abandon}
 	tracked[name] = tr
-	tr.mu.Lock()
-	tr.timer = time.AfterFunc(tr.deadline, func() { tr.expire(t, name) })
-	tr.mu.Unlock()
+	if tr.deadline > 0 {
+		tr.mu.Lock()
+		tr.timer = time.AfterFunc(tr.deadline, func() { tr.expire(t, name) })
+		tr.mu.Unlock()
+	}
 	t.Cleanup(func() { tr.finish(t, name) })
 	return tr
 }
 
-// expire ends a tracked test that is still running at its deadline: it writes
+// expire ends a tracked test that is still running at its declared deadline: it
+// writes
 // the test's failed row at once, fails the test and force-stops every process
 // tree the test started through the launcher, so a test blocked on a child is
 // released. A test still running abandonAfter later ends the test binary
@@ -146,7 +159,7 @@ func own(t testing.TB) {
 }
 
 // finish writes the row of a tracked test: failed with the first recorded
-// reason, skipped (failed when required), failed past DefaultDeadline, or passed.
+// reason, skipped (failed when required), failed past its deadline, or passed.
 func (tr *tracker) finish(t testing.TB, name string) {
 	trackMu.Lock()
 	delete(tracked, name)
@@ -154,7 +167,9 @@ func (tr *tracker) finish(t testing.TB, name string) {
 	tr.mu.Lock()
 	defer tr.mu.Unlock()
 	tr.done = true
-	tr.timer.Stop()
+	if tr.timer != nil {
+		tr.timer.Stop()
+	}
 	if tr.byRun || tr.written {
 		return
 	}
@@ -172,7 +187,7 @@ func (tr *tracker) finish(t testing.TB, name string) {
 			row.Result = Failed
 			t.Errorf("%s: required scenario skipped (listed in %s)", tr.id, RequireEnv)
 		}
-	case took > tr.deadline:
+	case tr.deadline > 0 && took > tr.deadline:
 		row.Result, row.Reason = Failed, fmt.Sprintf("deadline %s reached", tr.deadline)
 		t.Errorf("%s: the test ran past the scenario deadline of %s", tr.id, tr.deadline)
 	default:
@@ -184,46 +199,76 @@ func (tr *tracker) finish(t testing.TB, name string) {
 // Directives maps each test of the *_test.go files in dir that carries a
 // //dsh:scenario directive in its doc comment to the directive's ID.
 func Directives(dir string) (map[string]string, error) {
+	out, _, err := directives(dir)
+	return out, err
+}
+
+// DeadlineDirective, followed by a Go duration (//dsh:deadline 4h), in the doc
+// comment of a test with a //dsh:scenario directive declares the deadline Main
+// tracks that test against. A test that declares none has no tracked deadline:
+// go test -timeout bounds it. It is a line of its own, so the parsers that read
+// //dsh:scenario <ID> are unaffected.
+const DeadlineDirective = "//dsh:deadline"
+
+// directives is Directives with the declared deadlines (DeadlineDirective) of
+// the same tests.
+func directives(dir string) (map[string]string, map[string]time.Duration, error) {
 	files, err := filepath.Glob(filepath.Join(dir, "*_test.go"))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	out := map[string]string{}
+	limits := map[string]time.Duration{}
 	for _, p := range files {
 		f, err := os.Open(p)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		pending := ""
+		var limit time.Duration
 		sc := bufio.NewScanner(f)
+		line := 0
 		for sc.Scan() {
-			line := strings.TrimSpace(sc.Text())
+			line++
+			text := strings.TrimSpace(sc.Text())
 			switch {
-			case strings.HasPrefix(line, "//dsh:scenario "):
-				if fields := strings.Fields(line); len(fields) > 1 {
+			case strings.HasPrefix(text, "//dsh:scenario "):
+				if fields := strings.Fields(text); len(fields) > 1 {
 					pending = fields[1]
 				}
-			case strings.HasPrefix(line, "//"):
-			case strings.HasPrefix(line, "func Test"):
-				if name, _, ok := strings.Cut(strings.TrimPrefix(line, "func "), "("); ok && pending != "" {
-					out[name] = pending
+			case strings.HasPrefix(text, DeadlineDirective+" "):
+				fields := strings.Fields(text)
+				d, perr := time.ParseDuration(fields[len(fields)-1])
+				if len(fields) != 2 || perr != nil || d <= 0 {
+					f.Close()
+					return nil, nil, fmt.Errorf("%s:%d: %s wants one positive duration, got %q", p, line, DeadlineDirective, text)
 				}
-				pending = ""
+				limit = d
+			case strings.HasPrefix(text, "//"):
+			case strings.HasPrefix(text, "func Test"):
+				if name, _, ok := strings.Cut(strings.TrimPrefix(text, "func "), "("); ok && pending != "" {
+					out[name] = pending
+					if limit > 0 {
+						limits[name] = limit
+					}
+				}
+				pending, limit = "", 0
 			default:
-				pending = ""
+				pending, limit = "", 0
 			}
 		}
 		err = sc.Err()
 		f.Close()
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", p, err)
+			return nil, nil, fmt.Errorf("%s: %w", p, err)
 		}
 	}
-	return out, nil
+	return out, limits, nil
 }
 
 // Main runs a scenario package's tests: its TestMain calls it. It reads the
-// package's //dsh:scenario directives (the IDs of the rows its tests write), runs
+// package's //dsh:scenario directives (the IDs of the rows its tests write) and
+// their //dsh:deadline lines (DeadlineDirective), runs
 // the tests through dshbin.Run, then, when DSH_SCENARIO_REPORT and
 // DSH_REQUIRE_SCENARIOS are set, checks the report for the required IDs this
 // package declares (Check), so a required scenario that did not pass, or did not
@@ -231,12 +276,12 @@ func Directives(dir string) (map[string]string, error) {
 // detail file beside the report (DetailSuffix), so a scenario's own detail output
 // never truncates the rows.
 func Main(m *testing.M) {
-	found, err := Directives(".")
+	found, limits, err := directives(".")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "scenario: %v\n", err)
 		os.Exit(1)
 	}
-	ids = found
+	ids, deadlines = found, limits
 	if err := enter(m, found); err != nil {
 		fmt.Fprintf(os.Stderr, "scenario: %v\n", err)
 		os.Exit(1)
