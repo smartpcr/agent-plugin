@@ -335,7 +335,7 @@ func (s *s16mState) readyRunsOnFixture(command string) error {
 	if err != nil {
 		return err
 	}
-	s.run, err = s16mExec(bin, "ready", "--stage", s16mStage, "--built", "--root", s.fixture)
+	s.run, err = s16mExec(bin, "ready", "--stage", s16mStage, "--built", "--story", s16mStory, "--root", s.fixture)
 	s.ran = "ready"
 	return err
 }
