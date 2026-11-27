@@ -643,3 +643,40 @@ func TestVerify(t *testing.T) {
 		}
 	}
 }
+
+// A scenario written before the helper that creates DSH_SCENARIO_REPORT afresh
+// (search_scenario_test.go's os.Create, durable_replace's os.WriteFile) writes
+// the detail file once Main separated it, so the row of a scenario that ran
+// before it survives and Main's check still finds it.
+func TestLegacyReportWriterKeepsEarlierRows(t *testing.T) {
+	p := report(t)
+	t.Cleanup(func() { evidence = "" })
+	got, err := separate()
+	if err != nil || got != p {
+		t.Fatalf("separate = %q, %v; want %q", got, err, p)
+	}
+	write(t, Row{Kind: RowKind, ID: "DH-E-A-1", Result: Passed, OS: runtime.GOOS})
+
+	legacy, err := os.Create(os.Getenv(ReportEnv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.WriteString("{\"pattern\":\"x\",\"ms\":3}\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	write(t, Row{Kind: RowKind, ID: "DH-E-B-1", Result: Passed, OS: runtime.GOOS})
+
+	if rs := rows(t, p); len(rs) != 2 || rs[0].ID != "DH-E-A-1" || rs[1].ID != "DH-E-B-1" {
+		t.Fatalf("report rows = %+v, want DH-E-A-1 then DH-E-B-1", rs)
+	}
+	if b, err := os.ReadFile(p + DetailSuffix); err != nil || string(b) != "{\"pattern\":\"x\",\"ms\":3}\n" {
+		t.Errorf("detail file = %q, %v; want the legacy output", b, err)
+	}
+	declared := map[string]string{"TestA": "DH-E-A-1", "TestB": "DH-E-B-1"}
+	if code := verify(0, p, "DH-E-A-1,DH-E-B-1", declared); code != 0 {
+		t.Errorf("verify = %d, want 0: the earlier row was lost", code)
+	}
+}

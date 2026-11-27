@@ -441,6 +441,38 @@ func digest(p string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
+// DetailSuffix names the detail file beside the report: while Main runs a
+// package's tests, DSH_SCENARIO_REPORT names <report>.detail, so a scenario
+// written before the helper that creates or overwrites "the report" with its own
+// detail output (a timing log, a version log, escalation counts) writes there and
+// never truncates the rows of the scenarios that ran before it (architecture.md
+// I-2 keeps those bodies).
+const DetailSuffix = ".detail"
+
+// evidence is the report Main took from DSH_SCENARIO_REPORT before the tests ran;
+// empty when Main did not run.
+var evidence string
+
+// separate takes the report DSH_SCENARIO_REPORT names as the evidence the rows
+// are appended to and points the variable, as the tests read it, at the detail
+// file beside it. It returns the report.
+func separate() (string, error) {
+	evidence = os.Getenv(ReportEnv)
+	if evidence == "" {
+		return "", nil
+	}
+	return evidence, os.Setenv(ReportEnv, evidence+DetailSuffix)
+}
+
+// reportPath is the file rows are appended to: the report Main took, else the
+// one DSH_SCENARIO_REPORT names.
+func reportPath() string {
+	if evidence != "" {
+		return evidence
+	}
+	return os.Getenv(ReportEnv)
+}
+
 // reportMu serializes this process's appends to a report.
 var reportMu sync.Mutex
 
@@ -453,7 +485,7 @@ func write(t testing.TB, row Row) {
 		t.Errorf("scenario: %v", err)
 		return
 	}
-	p := os.Getenv(ReportEnv)
+	p := reportPath()
 	if p == "" {
 		p = filepath.Join(t.TempDir(), "scenario-report.jsonl")
 	}

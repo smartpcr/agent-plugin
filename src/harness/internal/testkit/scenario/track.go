@@ -227,7 +227,9 @@ func Directives(dir string) (map[string]string, error) {
 // the tests through dshbin.Run, then, when DSH_SCENARIO_REPORT and
 // DSH_REQUIRE_SCENARIOS are set, checks the report for the required IDs this
 // package declares (Check), so a required scenario that did not pass, or did not
-// run, fails the test binary.
+// run, fails the test binary. While the tests run, DSH_SCENARIO_REPORT names the
+// detail file beside the report (DetailSuffix), so a scenario's own detail output
+// never truncates the rows.
 func Main(m *testing.M) {
 	found, err := Directives(".")
 	if err != nil {
@@ -239,7 +241,12 @@ func Main(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "scenario: %v\n", err)
 		os.Exit(1)
 	}
-	os.Exit(verify(dshbin.Run(m), os.Getenv(ReportEnv), os.Getenv(RequireEnv), found))
+	report, err := separate()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "scenario: %v\n", err)
+		os.Exit(1)
+	}
+	os.Exit(verify(dshbin.Run(m), report, os.Getenv(RequireEnv), found))
 }
 
 // enter makes each test of m that carries a //dsh:scenario directive tracked
