@@ -175,7 +175,11 @@ At `12c2be8`, Windows 11, from the worktree root:
   This branch does not try to fix the findings. Under the operator's answer to `dh-s-16-closure-wait`
   ("Merge the partial record now and finish closure in a later workstream"), green lanes and the
   gate-root TOOLCHAIN-6 site belong to the later workstream. That workstream cannot get green lanes
-  until these findings are repaired on main. Who repairs them is the question `dh-s-16-vet-inherited`.
+  until these findings are repaired on main. Operator decision (answer to question
+  `dh-s-16-vet-inherited`: "A separate repair workstream fixes them; this branch merges as is"): the
+  QG-4/QG-5 findings are assigned to a separate repair workstream on main, and this branch merges
+  without fixing them. The lanes, and with them the gate-root TOOLCHAIN-6 site, are rerun by the later
+  S16 closure workstream after that repair merges.
 - Manual checks: the commands in [runs/manual-12c2be8/](runs/manual-12c2be8/README.md).
 - The record check, on this record with `Closure status: open`:
   `GOWORK=off go -C tools/harness-gate run . ready --stage DH-S-16 --built --root ../..`. Before this
