@@ -90,18 +90,25 @@ type Ending struct {
 
 // Harness is one connection to a host, and the child process when Start made it.
 type Harness struct {
-	conn   *jsonrpc.Conn
-	out    io.Closer
-	grace  time.Duration
-	info   protocol.InitializeResult
-	cmd    *exec.Cmd
-	exited chan struct{}
+	conn  *jsonrpc.Conn
+	out   io.WriteCloser
+	ownIn io.ReadCloser // the host's output when Start made the pipe; Connect's In stays the caller's
+	grace time.Duration
+	info  protocol.InitializeResult
+
+	cmd       *exec.Cmd
+	exited    chan struct{}
+	terminate func() error
+	kill      func() error
 
 	handlers sync.WaitGroup
 	mu       sync.Mutex
+	closing  bool // set once Close has stopped admitting handlers
 	running  int
 	ending   Ending
 	runs     map[runKey]chan protocol.RunCompletedNotification
+	subs     map[string][]*Subscription
+	subsErr  error // why the subscriptions ended; set when the connection ends
 
 	closeOnce sync.Once
 	closeErr  error
@@ -146,7 +153,9 @@ func Start(ctx context.Context, o Options) (*Harness, error) {
 		return nil, fmt.Errorf("sdk: start %s: %w", bin, err)
 	}
 	h := newHarness(o, in, out)
-	h.cmd, h.exited = cmd, make(chan struct{})
+	h.ownIn, h.cmd, h.exited = in, cmd, make(chan struct{})
+	h.terminate = func() error { return terminate(cmd.Process) }
+	h.kill = cmd.Process.Kill
 	go func() {
 		_ = cmd.Wait()
 		h.mu.Lock()
@@ -173,7 +182,7 @@ func Connect(ctx context.Context, t Transport, o Options) (*Harness, error) {
 }
 
 func newHarness(o Options, in io.Reader, out io.WriteCloser) *Harness {
-	h := &Harness{out: out, grace: o.ShutdownGrace, runs: map[runKey]chan protocol.RunCompletedNotification{}}
+	h := &Harness{out: out, grace: o.ShutdownGrace, runs: map[runKey]chan protocol.RunCompletedNotification{}, subs: map[string][]*Subscription{}}
 	if h.grace <= 0 {
 		h.grace = DefaultShutdownGrace
 	}
@@ -197,13 +206,27 @@ func newHarness(o Options, in io.Reader, out io.WriteCloser) *Harness {
 		})
 	}
 	h.conn = jsonrpc.Serve(context.Background(), in, out, jsonrpc.Options{Methods: methods, OnNotify: h.notify})
+	go func() {
+		<-h.conn.Done()
+		h.endSubscriptions(fmt.Errorf("sdk: the connection ended: %w", h.conn.Err()))
+	}()
 	return h
 }
 
+// errClosing refuses a handler that would start after Close stopped admitting
+// them; the connection is closed by then, so the answer is never sent.
+var errClosing = errors.New("sdk: the client is closed")
+
 // handler counts f while it runs, so Close can report handlers that outlive it.
+// Admission and counting share the lock Close takes to stop admitting, so a
+// request the codec dispatched before closing but scheduled after it never runs.
 func (h *Harness) handler(f jsonrpc.Handler) jsonrpc.Handler {
 	return func(ctx context.Context, raw json.RawMessage) (any, error) {
 		h.mu.Lock()
+		if h.closing {
+			h.mu.Unlock()
+			return nil, errClosing
+		}
 		h.running++
 		h.handlers.Add(1)
 		h.mu.Unlock()
@@ -264,76 +287,107 @@ func (h *Harness) Ending() Ending {
 
 // Close runs the close ladder once: `shutdown` and the end of the host's input,
 // then a wait of ShutdownGrace; terminate (SIGTERM; nothing to send on
-// Windows) and a wait; kill. Ending ctx skips to the kill. It returns once the
-// child has exited, with an error naming the handlers still running.
+// Windows) and a wait; kill and a wait. Ending ctx skips to the kill. It always
+// releases the pipes it owns, and returns an error for a failed rung, a child
+// still alive after the kill wait, or handlers still running.
 func (h *Harness) Close(ctx context.Context) error {
 	h.closeOnce.Do(func() { h.closeErr = h.close(ctx) })
 	return h.closeErr
 }
 
 func (h *Harness) close(ctx context.Context) error {
-	var errs []error
-	h.rung(ctx, RungShutdown, func() error {
-		select {
-		case <-h.conn.Done():
-		default:
-			sctx, cancel := context.WithTimeout(ctx, h.grace)
-			err := h.conn.Call(sctx, "shutdown", protocol.Empty{}, nil)
-			cancel()
-			if err != nil && !jsonrpc.HasReason(err, jsonrpc.ReasonClosed) {
-				errs = append(errs, fmt.Errorf("sdk: shutdown: %w", err))
-			}
-		}
-		return h.out.Close()
-	})
+	errs := []error{h.rung(ctx, RungShutdown, func() error { return h.shutdown(ctx) })}
 	if h.cmd != nil {
-		h.rung(ctx, RungTerminate, func() error { return terminate(h.cmd.Process) })
-		h.rung(ctx, RungKill, h.cmd.Process.Kill)
-		<-h.exited
+		errs = append(errs, h.rung(ctx, RungTerminate, h.terminate), h.rung(ctx, RungKill, h.kill))
+		select {
+		case <-h.exited:
+		default:
+			errs = append(errs, fmt.Errorf("sdk: pid %d did not exit after the close ladder", h.cmd.Process.Pid))
+		}
 	}
-	_ = h.conn.Close()
+	h.mu.Lock()
+	h.closing = true
+	h.mu.Unlock()
+	errs = append(errs, h.conn.Close())
+	if h.ownIn != nil {
+		errs = append(errs, h.ownIn.Close())
+	}
 	if n := h.stragglers(); n > 0 {
 		errs = append(errs, fmt.Errorf("sdk: %d handler(s) still running after close; a handler that ignores its context cannot be stopped", n))
 	}
 	return errors.Join(errs...)
 }
 
-// rung acts unless the child is gone, then waits up to the grace (the kill
-// until the exit), or until ctx ends, and records the rung the child exited in.
+// shutdown asks the host to stop, unless the connection has already ended, and
+// always closes the host's input, which the client owns either way.
+func (h *Harness) shutdown(ctx context.Context) error {
+	var err error
+	select {
+	case <-h.conn.Done():
+	default:
+		sctx, cancel := context.WithTimeout(ctx, h.grace)
+		err = h.conn.Call(sctx, "shutdown", protocol.Empty{}, nil)
+		cancel()
+		if err != nil && !jsonrpc.HasReason(err, jsonrpc.ReasonClosed) {
+			err = fmt.Errorf("sdk: shutdown: %w", err)
+		} else {
+			err = nil
+		}
+	}
+	if cerr := h.out.Close(); cerr != nil {
+		err = errors.Join(err, fmt.Errorf("sdk: close the host's input: %w", cerr))
+	}
+	return err
+}
+
+// rung acts, then waits up to the grace for the child to exit, and records the
+// rung it exited in. Only the shutdown rung acts on a child already gone (it
+// releases the host's input); a signal to a child that exited meanwhile
+// (os.ErrProcessDone) is no failure. A signal that fails is returned without
+// the wait. The terminate wait also ends with ctx; the kill wait does not, so
+// Close returns once the child is gone or the grace says it will not go.
 // Without a child only the act runs.
-func (h *Harness) rung(ctx context.Context, r Rung, act func() error) {
+func (h *Harness) rung(ctx context.Context, r Rung, act func() error) error {
 	if h.cmd == nil {
-		_ = act()
-		return
+		return act()
 	}
 	select {
 	case <-h.exited:
-		return
+		if r == RungShutdown {
+			return act()
+		}
+		return nil
 	default:
 	}
-	if err := act(); errors.Is(err, errNothingToSend) {
-		return
-	}
-	if r == RungKill {
-		<-h.exited
-	} else {
-		timer := time.NewTimer(h.grace)
-		defer timer.Stop()
-		select {
-		case <-h.exited:
-		case <-timer.C:
-			return
-		case <-ctx.Done():
-			return
+	err := act()
+	switch {
+	case errors.Is(err, errNothingToSend), errors.Is(err, os.ErrProcessDone):
+		err = nil
+		if r != RungKill {
+			return nil
 		}
+	case err != nil && r != RungShutdown:
+		return fmt.Errorf("sdk: %s pid %d: %w", r, h.cmd.Process.Pid, err)
 	}
-	h.mu.Lock()
-	h.ending.Rung = r
-	h.mu.Unlock()
+	var stop <-chan struct{}
+	if r != RungKill {
+		stop = ctx.Done()
+	}
+	timer := time.NewTimer(h.grace)
+	defer timer.Stop()
+	select {
+	case <-h.exited:
+		h.mu.Lock()
+		h.ending.Rung = r
+		h.mu.Unlock()
+	case <-timer.C:
+	case <-stop:
+	}
+	return err
 }
 
 // stragglers waits up to the grace for handlers to return and counts the rest.
-// The connection is closed by then, so no handler starts after the wait begins.
+// Admission is closed by then, so no handler starts after the wait begins.
 func (h *Harness) stragglers() int {
 	done := make(chan struct{})
 	go func() { h.handlers.Wait(); close(done) }()

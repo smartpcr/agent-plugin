@@ -3,6 +3,7 @@ package sdk
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -165,4 +166,76 @@ func TestCloseLadderEscalates(t *testing.T) {
 			waitPidGone(t, h.Pid())
 		})
 	}
+}
+
+// released reports whether Close released both pipes Start made.
+func released(t *testing.T, h *Harness) {
+	t.Helper()
+	if _, err := h.ownIn.Read(make([]byte, 1)); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("read of the host's output after Close = %v, want os.ErrClosed", err)
+	}
+	if _, err := h.out.Write([]byte("x")); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("write of the host's input after Close = %v, want os.ErrClosed", err)
+	}
+}
+
+// Close releases the pipes Start made whether the child is alive at Close or
+// already gone, and a child gone before Close is no failure.
+//
+//dsh:test DH-T-SDK-16
+func TestCloseReleasesThePipesStartMade(t *testing.T) {
+	h, err := Start(t.Context(), fakeOptions(t, "serve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	released(t, h)
+
+	h, err = Start(t.Context(), fakeOptions(t, "ignore-term"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	<-h.exited
+	if err := h.Close(t.Context()); err != nil {
+		t.Fatalf("Close of a child gone before it = %v", err)
+	}
+	if got := h.Ending().Rung; got != RungNone {
+		t.Fatalf("rung %q, want none", got)
+	}
+	released(t, h)
+}
+
+// A terminate or kill that fails is returned by Close, which does not wait for
+// an exit the failed kill will not bring, and still releases its pipes.
+//
+//dsh:test DH-T-SDK-16
+func TestCloseReturnsAFailedSignal(t *testing.T) {
+	h, err := Start(t.Context(), fakeOptions(t, "ignore-term"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid := h.Pid()
+	t.Cleanup(func() {
+		_ = h.cmd.Process.Kill()
+		<-h.exited
+		waitPidGone(t, pid)
+	})
+	h.terminate = func() error { return errors.New("no terminate") }
+	h.kill = func() error { return errors.New("no kill") }
+	start := time.Now()
+	err = h.Close(t.Context())
+	for _, want := range []string{"terminate pid", "no terminate", "kill pid", "no kill", "did not exit after the close ladder"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("Close = %v, want %q", err, want)
+		}
+	}
+	if took := time.Since(start); took > 5*time.Second {
+		t.Fatalf("Close took %v after a failed kill", took)
+	}
+	released(t, h)
 }

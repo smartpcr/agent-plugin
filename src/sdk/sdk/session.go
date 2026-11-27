@@ -47,10 +47,15 @@ type RunResult struct {
 // runKey names the run a waiter waits for.
 type runKey struct{ session, message string }
 
-// notify delivers each session.run.completed to the Run waiting for it; a run
-// nobody waits for is dropped. Other notifications are not consumed here yet.
+// notify delivers each session.run.completed to the Run waiting for it (a run
+// nobody waits for is dropped) and each session.event to the subscriptions.
 func (h *Harness) notify(method string, raw json.RawMessage) {
-	if method != "session.run.completed" {
+	switch method {
+	case "session.event":
+		h.event(raw)
+		return
+	case "session.run.completed":
+	default:
 		return
 	}
 	var n protocol.RunCompletedNotification
