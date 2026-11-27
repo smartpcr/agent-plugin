@@ -15,8 +15,9 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/title"
 )
 
-// Name is the component's catalogue name.
-const Name = "llm.title-model"
+// Name is the component's catalogue name: the entry the sdk profile switches
+// off, so an SDK client names its sessions itself.
+const Name = "session.title.llm"
 
 // errOnce ends Complete after the first attempt that did not succeed: a title
 // request has exactly one attempt, so the route's retry policy is not used.
@@ -46,13 +47,21 @@ func (m model) Attempt(ctx context.Context, req session.Request) (title.Attempt,
 	}, nil
 }
 
-// Component is llm.title-model: it provides New over the runtime under
-// title.ModelKey.
+// Component is session.title.llm: it binds New over the runtime into the
+// session.title service (title.Service.Use) and releases it when it unloads,
+// which cancels and settles the generations it was serving.
 var Component = cordis.Define(Name, func(ctx *cordis.Context, _ cordis.None) error {
 	rt, err := llm.RuntimeKey.Get(ctx)
 	if err != nil {
 		return err
 	}
-	_, err = title.ModelKey.Provide(ctx, New(rt))
+	s, err := title.Key.Get(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = ctx.Effect("session.title.model", func() (cordis.Disposer, error) {
+		release := s.Use(New(rt))
+		return func() error { release(); return nil }, nil
+	})
 	return err
-}, cordis.WithInject(llm.RuntimeKey.Name()))
+}, cordis.WithInject(llm.RuntimeKey.Name(), title.Key.Name()))

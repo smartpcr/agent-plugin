@@ -56,8 +56,9 @@ type Title struct {
 	Revision    int64       `json:"revision"`
 	MessageSeqs []event.Seq `json:"messageSeqs,omitempty"`
 	RequestSeq  *event.Seq  `json:"requestSeq,omitempty"`
-	// Pending is the newest request no attempt has settled yet.
-	Pending *event.Seq `json:"pending,omitempty"`
+	// Pending is every request no attempt has settled yet, in log order: a
+	// Refresh may overlap an automatic generation, and each needs its attempt.
+	Pending []event.Seq `json:"pending,omitempty"`
 	// Requests counts the session's own requests (after a fork's cut); Covered
 	// is the newest prompt seq a request covered.
 	Requests int       `json:"requests"`

@@ -27,9 +27,11 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human/secret"
 	secretfile "github.com/smartpcr/agent-plugin/src/harness/internal/human/secret/file"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/titlemodel"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/scope"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store/sqlite"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/title"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/workdir"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/kv"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools/items"
@@ -107,14 +109,21 @@ func UI() []catalog.Item {
 // closes when the session.views item (DH-D-VIEW-1, DH-D-VIEW-3) joins Session().
 
 // Session is the session family's items: the store (over the home boot
-// provides), the scope table and the session service of the spine, and
-// session.workdir of cycle C-3.
+// provides), the scope table and the session service of the spine,
+// session.workdir of cycle C-3, and the session titles (C56): session.title
+// and session.title.llm, the model call the sdk profile switches off. Like
+// cycle C-3, session.title injects session.views, so the titles wait on inject
+// in the dsh binary until the session.views item lands; their bundle entries
+// (base.yml) land with it, and until then both sit on the optional list.
+// titles_test.go composes both from the catalogue, with and without the model.
 func Session() []catalog.Item {
 	return []catalog.Item{
 		{Name: sqlite.Name, Component: sqlite.Component, Provides: []string{session.StoreKey.Name()}},
 		{Name: "session.scope", Component: scope.Component, Provides: []string{scope.TableKey.Name()}},
 		{Name: session.Name, Component: session.Component, Provides: []string{session.Key.Name()}},
 		{Name: workdir.Name, Component: workdir.Component, Provides: []string{workdir.Key.Name(), workdir.ServiceKey.Name()}},
+		{Name: title.Name, Component: title.Component, Config: reflect.TypeFor[title.ComponentConfig](), Provides: []string{title.Key.Name()}},
+		{Name: titlemodel.Name, Component: titlemodel.Component},
 	}
 }
 

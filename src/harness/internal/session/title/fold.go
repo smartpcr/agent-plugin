@@ -89,7 +89,7 @@ func TitleFold(cfg Config) views.Definition[Title] {
 					return t, false
 				}
 				seq := ev.Seq()
-				t.Pending = &seq
+				t.Pending = append(slices.Clone(t.Pending), seq)
 				t.Revision++
 				if seq >= t.Own {
 					t.Requests++
@@ -100,10 +100,17 @@ func TitleFold(cfg Config) views.Definition[Title] {
 				return t, true
 			case AttemptType.Name():
 				p, err := AttemptType.As(ev)
-				if err != nil || t.Pending == nil || *t.Pending != p.RequestSeq {
+				if err != nil {
 					return t, false
 				}
-				t.Pending = nil
+				i := slices.Index(t.Pending, p.RequestSeq)
+				if i < 0 {
+					return t, false
+				}
+				t.Pending = slices.Delete(slices.Clone(t.Pending), i, i+1)
+				if len(t.Pending) == 0 {
+					t.Pending = nil
+				}
 				return t, true
 			}
 			return t, false

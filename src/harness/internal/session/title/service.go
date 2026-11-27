@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
@@ -41,11 +40,11 @@ type Attempt struct {
 	ServedBy string
 }
 
-// ModelKey is where the component finds the Model.
-var ModelKey = cordis.NewServiceKey[Model]("session.title.model")
-
 // Option configures a Service.
 type Option func(*Service)
+
+// WithModel binds m from the start, as Use does; its binding lasts until Close.
+func WithModel(m Model) Option { return func(s *Service) { s.initial = m } }
 
 // WithConfig sets title.Config.
 func WithConfig(c Config) Option { return func(s *Service) { s.cfg = c } }
@@ -69,14 +68,29 @@ type Service struct {
 	reg       *views.Registry
 	th        views.Handle[Title]
 	ih        views.Handle[TitleInput]
-	model     Model
+	initial   Model
 	providers *Providers
 	warn      func(string, ...any)
+	// life is the service's lifetime: every generation runs under it, and
+	// Close cancels it.
+	life context.Context
+	stop context.CancelFunc
 
 	mu       sync.Mutex
 	sessions map[session.ID]*entry
-	inflight int        // automatic generations running, under mu
-	idle     *sync.Cond // signalled when inflight drops to 0
+	bound    *binding   // the model generations call; nil when none is bound
+	closed   bool       // Close ran
+	inflight int        // generations running, under mu
+	idle     *sync.Cond // signalled whenever a generation ends
+}
+
+// binding is one Use of a model: its generations run under ctx and are counted
+// in running (under Service.mu), so its release can cancel and join them.
+type binding struct {
+	m       Model
+	ctx     context.Context
+	cancel  context.CancelFunc
+	running int
 }
 
 // entry is one attached session. mu serializes the appends and decisions of
@@ -89,14 +103,16 @@ type entry struct {
 	running bool // an automatic generation is in flight
 }
 
-// New registers the title and titleInput folds in reg and returns the service
-// that generates through m.
-func New(reg *views.Registry, m Model, opts ...Option) (*Service, error) {
-	if reg == nil || m == nil {
-		return nil, errors.New("title: the service needs the view registry and the model")
+// New registers the title and titleInput folds in reg and returns the service.
+// It generates only while a model is bound (WithModel, Use); without one, titles
+// keep their fallback and still rename, unpin and fold.
+func New(reg *views.Registry, opts ...Option) (*Service, error) {
+	if reg == nil {
+		return nil, errors.New("title: the service needs the view registry")
 	}
-	s := &Service{reg: reg, model: m, providers: NewProviders(), warn: func(string, ...any) {}, sessions: map[session.ID]*entry{}}
+	s := &Service{reg: reg, providers: NewProviders(), warn: func(string, ...any) {}, sessions: map[session.ID]*entry{}}
 	s.idle = sync.NewCond(&s.mu)
+	s.life, s.stop = context.WithCancel(context.Background())
 	for _, o := range opts {
 		o(s)
 	}
@@ -116,20 +132,86 @@ func New(reg *views.Registry, m Model, opts ...Option) (*Service, error) {
 	if s.ih, err = views.Register(reg, InputFold(s.gen)); err != nil {
 		return nil, err
 	}
+	if s.initial != nil {
+		s.Use(s.initial)
+	}
 	return s, nil
 }
 
-// Attach follows sess. A request no attempt settled (the process stopped
+// Use binds m as the model generations call, in place of any bound one, and
+// returns its release: release cancels the generations m serves, waits until
+// each has settled its attempt, and unbinds m. Component session.title.llm
+// binds the runtime's model this way and releases it when it unloads.
+func (s *Service) Use(m Model) (release func()) {
+	b := &binding{m: m}
+	b.ctx, b.cancel = context.WithCancel(s.life)
+	s.mu.Lock()
+	s.bound = b
+	s.mu.Unlock()
+	return func() {
+		b.cancel()
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.bound == b {
+			s.bound = nil
+		}
+		for b.running > 0 {
+			s.idle.Wait()
+		}
+	}
+}
+
+// Close ends the service with its component: it stops following sessions,
+// cancels every generation and waits until each has settled its attempt. An
+// operation after Close is title/unavailable.
+func (s *Service) Close() {
+	s.mu.Lock()
+	s.closed = true
+	s.sessions = map[session.ID]*entry{}
+	s.mu.Unlock()
+	s.stop()
+	s.Wait()
+}
+
+// begin counts a generation on the bound model, or refuses it when none is
+// bound or the service is closed.
+func (s *Service) begin() (*binding, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch {
+	case s.closed:
+		return nil, herr.New(CodeUnavailable, "title: the service is closed")
+	case s.bound == nil:
+		return nil, herr.New(CodeUnavailable, "title: no title model is bound (session.title.llm is off)")
+	}
+	s.bound.running++
+	s.inflight++
+	return s.bound, nil
+}
+
+func (s *Service) end(b *binding) {
+	s.mu.Lock()
+	b.running--
+	s.inflight--
+	s.idle.Broadcast()
+	s.mu.Unlock()
+}
+
+// Attach follows sess. Every request no attempt settled (the process stopped
 // mid-generation) is settled interrupted, so the next turn may try again.
 func (s *Service) Attach(ctx context.Context, sess session.Session) error {
 	if sess == nil {
 		return errors.New("title: Attach needs the session")
 	}
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return herr.New(CodeUnavailable, "title: the service is closed")
+	}
 	e, ok := s.sessions[sess.ID()]
 	if !ok {
 		e = &entry{s: sess}
-		e.ctx, e.cancel = context.WithCancel(context.Background())
+		e.ctx, e.cancel = context.WithCancel(s.life)
 		s.sessions[sess.ID()] = e
 	}
 	s.mu.Unlock()
@@ -140,10 +222,14 @@ func (s *Service) Attach(ctx context.Context, sess session.Session) error {
 		return nil
 	}
 	t, err := s.title(ctx, e)
-	if err != nil || t.Pending == nil {
+	if err != nil || len(t.Pending) == 0 {
 		return err
 	}
-	return s.settleLocked(ctx, e, AttemptPayload{RequestSeq: *t.Pending, Outcome: OutcomeInterrupted}, nil)
+	as := make([]AttemptPayload, len(t.Pending))
+	for i, seq := range t.Pending {
+		as[i] = AttemptPayload{RequestSeq: seq, Outcome: OutcomeInterrupted}
+	}
+	return s.settleLocked(ctx, e, nil, as...)
 }
 
 // Detach stops following session id and cancels its automatic generation.
@@ -157,7 +243,7 @@ func (s *Service) Detach(id session.ID) {
 	}
 }
 
-// Wait blocks until every automatic generation started has ended.
+// Wait blocks until every generation started has ended.
 func (s *Service) Wait() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -245,19 +331,30 @@ func (s *Service) record(ctx context.Context, id session.ID, next func(Title) (T
 
 // Refresh generates session id's title now, from all its own prompts. A pinned
 // title is title/pinned and unchanged; a reply that is not a title is
-// title/rejected; a model failure is returned as itself.
+// title/rejected; a model failure is returned as itself; with no model bound it
+// is title/unavailable.
 func (s *Service) Refresh(ctx context.Context, id session.ID) (Title, error) {
 	e, err := s.entry(id)
 	if err != nil {
 		return Title{}, err
 	}
-	return s.generate(ctx, e, true)
+	b, err := s.begin()
+	if err != nil {
+		return Title{}, err
+	}
+	defer s.end(b)
+	return s.generate(ctx, e, b, true)
 }
 
-// generate is one title generation: the request is appended and flushed, the
-// request rebuilt from it is sent, and exactly one attempt settles it, with the
-// title in the same group when the reply is accepted and nothing moved meanwhile.
-func (s *Service) generate(ctx context.Context, e *entry, refresh bool) (Title, error) {
+// generate is one title generation on b, counted by the caller: the request is
+// appended and flushed, the request rebuilt from it is sent, and exactly one
+// attempt settles it, with the title in the same group when the reply is
+// accepted and nothing moved meanwhile. Releasing b or closing the service
+// cancels it; the attempt still settles, as cancelled.
+func (s *Service) generate(ctx context.Context, e *entry, b *binding, refresh bool) (Title, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	defer context.AfterFunc(b.ctx, cancel)()
 	e.mu.Lock()
 	seq, rev, seqs, err := s.requestLocked(ctx, e, refresh)
 	sess := e.s
@@ -270,7 +367,7 @@ func (s *Service) generate(ctx context.Context, e *entry, refresh bool) (Title, 
 	req, err := sess.RequestFrom(seq)
 	if err == nil {
 		cctx, cancel := context.WithTimeout(ctx, s.gen.Timeout)
-		rec, err = s.model.Attempt(cctx, req)
+		rec, err = b.m.Attempt(cctx, req)
 		cancel()
 	}
 	a := AttemptPayload{RequestSeq: seq, DurationMs: time.Since(start).Milliseconds()}
@@ -308,6 +405,11 @@ func (s *Service) generate(ctx context.Context, e *entry, refresh bool) (Title, 
 		if errors.As(err, &f) {
 			a.ErrorCode, a.ErrorClass = string(f.Code), string(f.Class)
 		}
+	case a.Finish != vocab.FinishStop:
+		// A reply cut at max_tokens or one that calls a tool is not a title,
+		// whatever its text (session-views.md sec. 6.2, Titles).
+		a.Outcome, a.Text = OutcomeRejected, clip(reply, s.cfg.MaxTitleBytes)
+		out = herr.Newf(CodeRejected, "title: the reply finished %q, not stop", a.Finish)
 	case !ok:
 		a.Outcome, a.Text = OutcomeRejected, clip(reply, s.cfg.MaxTitleBytes)
 		out = herr.Newf(CodeRejected, "title: the reply %q is not a title", a.Text)
@@ -318,7 +420,7 @@ func (s *Service) generate(ctx context.Context, e *entry, refresh bool) (Title, 
 		a.Outcome, a.Text = OutcomeAccepted, text
 		title = &TitlePayload{Title: text, Source: SourceGenerated, MessageSeqs: seqs, RequestSeq: &seq}
 	}
-	if err := s.settleLocked(context.WithoutCancel(ctx), e, a, title); err != nil {
+	if err := s.settleLocked(context.WithoutCancel(ctx), e, title, a); err != nil {
 		return Title{}, errors.Join(out, err)
 	}
 	t, rerr := s.title(context.WithoutCancel(ctx), e)
@@ -383,14 +485,17 @@ func (s *Service) requestLocked(ctx context.Context, e *entry, refresh bool) (ev
 	return r.Seq, t.Revision, rp.MessageSeqs, err
 }
 
-// settleLocked appends the attempt, and the title when one is accepted, as one
+// settleLocked appends the attempts, and the title when one is accepted, as one
 // group and flushes it; the caller holds e.mu.
-func (s *Service) settleLocked(ctx context.Context, e *entry, a AttemptPayload, t *TitlePayload) error {
-	d, err := AttemptType.Draft(a)
-	if err != nil {
-		return err
+func (s *Service) settleLocked(ctx context.Context, e *entry, t *TitlePayload, as ...AttemptPayload) error {
+	var ds []event.Draft
+	for _, a := range as {
+		d, err := AttemptType.Draft(a)
+		if err != nil {
+			return err
+		}
+		ds = append(ds, d)
 	}
-	ds := []event.Draft{d}
 	if t != nil {
 		td, err := TitleType.Draft(*t)
 		if err != nil {
@@ -401,7 +506,7 @@ func (s *Service) settleLocked(ctx context.Context, e *entry, a AttemptPayload, 
 	if _, err := e.s.AppendGroup(ctx, ds); err != nil {
 		return err
 	}
-	_, err = e.s.Flush(ctx)
+	_, err := e.s.Flush(ctx)
 	return err
 }
 
@@ -446,7 +551,7 @@ func (s *Service) due(ctx context.Context, e *entry) bool {
 	t, err1 := s.th.Get(snap)
 	in, err2 := s.ih.Get(snap)
 	p, err3 := s.providers.Get(s.cfg.Provider)
-	if err1 != nil || err2 != nil || err3 != nil || t.Pinned || t.Pending != nil || in.Count == 0 {
+	if err1 != nil || err2 != nil || err3 != nil || t.Pinned || len(t.Pending) != 0 || in.Count == 0 {
 		return false
 	}
 	if p.Cadence() == EveryPrompt {
@@ -455,9 +560,9 @@ func (s *Service) due(ctx context.Context, e *entry) bool {
 	return t.Requests == 0
 }
 
-// Auto starts an automatic generation of session id's title when it is due,
-// in the background (Wait waits for it). A failure is reported to WithWarn and
-// leaves the fallback in place.
+// Auto starts an automatic generation of session id's title when it is due and
+// a model is bound, in the background (Wait waits for it). A failure is
+// reported to WithWarn and leaves the fallback in place.
 func (s *Service) Auto(id session.ID) {
 	e, err := s.entry(id)
 	if err != nil {
@@ -468,20 +573,16 @@ func (s *Service) Auto(id session.ID) {
 		e.mu.Unlock()
 		return
 	}
+	b, err := s.begin()
+	if err != nil {
+		e.mu.Unlock()
+		return
+	}
 	e.running = true
 	e.mu.Unlock()
-	s.mu.Lock()
-	s.inflight++
-	s.mu.Unlock()
 	go func() {
-		defer func() {
-			s.mu.Lock()
-			if s.inflight--; s.inflight == 0 {
-				s.idle.Broadcast()
-			}
-			s.mu.Unlock()
-		}()
-		_, err := s.generate(e.ctx, e, false)
+		defer s.end(b)
+		_, err := s.generate(e.ctx, e, b, false)
 		e.mu.Lock()
 		e.running = false
 		e.mu.Unlock()

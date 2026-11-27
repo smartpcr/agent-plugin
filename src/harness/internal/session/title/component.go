@@ -20,20 +20,24 @@ type ComponentConfig struct {
 }
 
 // Component is session.title (C56): it registers the title and titleInput folds
-// in the process's fold registry (views.Key), generates through the Model under
-// ModelKey (llm/titlemodel's adapter over the runtime), provides the *Service
-// under Key, and follows every session the session service creates (Listen).
+// in the process's fold registry (views.Key), provides the *Service under Key and
+// follows every session the session service creates (Listen). It generates only
+// while session.title.llm has bound a model; with that entry off (the sdk
+// profile) titles keep their fallback and still rename and unpin. Unloading it
+// closes the service: generations are cancelled and settled before the fiber
+// is gone.
 var Component = cordis.Define(Name, func(ctx *cordis.Context, cfg ComponentConfig) error {
 	reg, err := views.Key.Get(ctx)
 	if err != nil {
 		return err
 	}
-	m, err := ModelKey.Get(ctx)
+	s, err := New(reg, WithConfig(cfg.Title), WithGenerator(cfg.Generator), WithWarn(ctx.Logger().Warnf))
 	if err != nil {
 		return err
 	}
-	s, err := New(reg, m, WithConfig(cfg.Title), WithGenerator(cfg.Generator), WithWarn(ctx.Logger().Warnf))
-	if err != nil {
+	if _, err := ctx.Effect("session.title.service", func() (cordis.Disposer, error) {
+		return func() error { s.Close(); return nil }, nil
+	}); err != nil {
 		return err
 	}
 	if err := s.Listen(ctx); err != nil {
@@ -41,7 +45,7 @@ var Component = cordis.Define(Name, func(ctx *cordis.Context, cfg ComponentConfi
 	}
 	_, err = Key.Provide(ctx, s)
 	return err
-}, cordis.WithInject(views.Key.Name(), ModelKey.Name()))
+}, cordis.WithInject(views.Key.Name()))
 
 // Listen follows the sessions created under ctx: each is attached when created,
 // due an automatic title after each turn/end, and detached when closed.

@@ -3,6 +3,7 @@ package title_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -72,6 +73,8 @@ type rig struct {
 	ended  chan struct{}
 	// during, when set, runs as the title request is sent.
 	during func()
+	// fake, when set, answers in place of the replay route.
+	fake modelFunc
 }
 
 type modelFunc func(context.Context, session.Request) (title.Attempt, error)
@@ -111,12 +114,15 @@ func newRigWith(t *testing.T, opts []title.Option, replies ...string) *rig {
 	reg := views.New()
 	r := &rig{}
 	m := titlemodel.New(rt)
-	ts := must(title.New(reg, modelFunc(func(ctx context.Context, req session.Request) (title.Attempt, error) {
+	ts := must(title.New(reg, append([]title.Option{title.WithWarn(t.Logf), title.WithModel(modelFunc(func(ctx context.Context, req session.Request) (title.Attempt, error) {
 		if r.during != nil {
 			r.during()
 		}
+		if r.fake != nil {
+			return r.fake(ctx, req)
+		}
 		return m.Attempt(ctx, req)
-	}), append([]title.Option{title.WithWarn(t.Logf)}, opts...)...))
+	}))}, opts...)...))
 	if err := ts.Listen(root); err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +219,7 @@ func TestFallbackThenGenerated(t *testing.T) {
 	}
 	end(t, h, 1)
 	got = r.settled(t, h)
-	if got.Text != "Fix the login bug" || got.Pinned || got.RequestSeq == nil || got.Pending != nil {
+	if got.Text != "Fix the login bug" || got.Pinned || got.RequestSeq == nil || len(got.Pending) != 0 {
 		t.Fatalf("generated = %+v", got)
 	}
 	evs := titleLog(t, h)
@@ -294,7 +300,7 @@ func TestRejectedReplyKeepsTheFallback(t *testing.T) {
 	if reason(err) != title.CodeRejected {
 		t.Fatalf("Refresh: %v", err)
 	}
-	if got := r.get(t, h); got.Source != title.SourceFallback || got.Pending != nil {
+	if got := r.get(t, h); got.Source != title.SourceFallback || len(got.Pending) != 0 {
 		t.Errorf("title = %+v", got)
 	}
 	evs := titleLog(t, h)
@@ -304,24 +310,102 @@ func TestRejectedReplyKeepsTheFallback(t *testing.T) {
 }
 
 // A request left unsettled by a stopped process is settled interrupted on
-// Attach, and a later turn may title the session again.
+// Attach, every one of them when two overlapped, and a later turn may title the
+// session again.
 func TestAttachSettlesAnInterruptedRequest(t *testing.T) {
 	r := newRig(t)
 	h := r.create(t)
 	prompt(t, h, 1, "hello there")
 	seqs := []event.Seq{3}
-	must(h.Append(bg, must(title.RequestType.Draft(title.RequestPayload{Provider: title.FirstPromptID, Route: "replay", Messages: []string{"hello there"}, MessageSeqs: seqs, Purpose: title.Purpose}))))
+	req := func() event.Seq {
+		return must(h.Append(bg, must(title.RequestType.Draft(title.RequestPayload{Provider: title.FirstPromptID, Route: "replay", Messages: []string{"hello there"}, MessageSeqs: seqs, Purpose: title.Purpose})))).Seq
+	}
+	first, second := req(), req()
 	must(h.Flush(bg))
+	if got := r.get(t, h); len(got.Pending) != 2 || got.Pending[0] != first || got.Pending[1] != second {
+		t.Fatalf("pending = %v, want [%d %d]", got.Pending, first, second)
+	}
 	r.titles.Detach(h.ID())
 	if err := r.titles.Attach(bg, h); err != nil {
 		t.Fatal(err)
 	}
 	evs := titleLog(t, h)
-	if len(evs) != 2 || must(title.AttemptType.As(evs[1])).Outcome != title.OutcomeInterrupted {
-		t.Fatalf("title events = %d", len(evs))
+	if len(evs) != 4 {
+		t.Fatalf("title events = %d, want two requests and two attempts", len(evs))
 	}
-	if got := r.get(t, h); got.Pending != nil {
+	for i, want := range []event.Seq{first, second} {
+		if a := must(title.AttemptType.As(evs[2+i])); a.Outcome != title.OutcomeInterrupted || a.RequestSeq != want {
+			t.Errorf("attempt %d = %+v, want interrupted for %d", i, a, want)
+		}
+	}
+	if got := r.get(t, h); len(got.Pending) != 0 {
 		t.Errorf("still pending: %+v", got)
+	}
+}
+
+// A Refresh that overlaps another leaves both requests pending in the fold
+// until each one's own attempt settles it.
+func TestOverlappingRefreshesEachSettle(t *testing.T) {
+	r := newRig(t, "Outer", "Inner")
+	h := r.create(t)
+	prompt(t, h, 1, "please fix the login bug")
+	must(h.Flush(bg))
+	depth := 0
+	r.during = func() {
+		depth++
+		if depth == 1 {
+			if _, err := r.titles.Refresh(bg, h.ID()); err != nil {
+				t.Errorf("inner Refresh: %v", err)
+			}
+			return
+		}
+		if got := r.get(t, h); len(got.Pending) != 2 {
+			t.Errorf("pending during the overlap = %v, want both requests", got.Pending)
+		}
+	}
+	if _, err := r.titles.Refresh(bg, h.ID()); reason(err) != title.CodeSuperseded {
+		t.Fatalf("outer Refresh: %v", err)
+	}
+	// Replies play in order: the inner Refresh, sent second, settles first
+	// with the first reply, and the outer one is then superseded.
+	if got := r.get(t, h); got.Text != "Outer" || len(got.Pending) != 0 {
+		t.Errorf("title = %+v", got)
+	}
+	attempts := 0
+	for _, ev := range titleLog(t, h) {
+		if ev.Type() == title.AttemptType.Name() {
+			attempts++
+		}
+	}
+	if attempts != 2 {
+		t.Errorf("attempts = %d, want one per request", attempts)
+	}
+}
+
+// A reply that did not finish stop is no title, whatever its text: a reply cut
+// at max_tokens and one that calls a tool are rejected and the fallback stays.
+func TestNonStopFinishIsRejected(t *testing.T) {
+	for _, fin := range []vocab.FinishReason{vocab.FinishMaxTokens, vocab.FinishToolCalls} {
+		t.Run(string(fin), func(t *testing.T) {
+			r := newRig(t)
+			r.fake = func(context.Context, session.Request) (title.Attempt, error) {
+				m := must(vocab.RestoreMessage("a1", vocab.RoleAssistant, nil, vocab.TextBlock("Looks like a title")))
+				return title.Attempt{Message: &m, Finish: vocab.Finish{Reason: fin}}, nil
+			}
+			h := r.create(t)
+			prompt(t, h, 1, "hello there")
+			must(h.Flush(bg))
+			if _, err := r.titles.Refresh(bg, h.ID()); reason(err) != title.CodeRejected {
+				t.Fatalf("Refresh: %v", err)
+			}
+			if got := r.get(t, h); got.Source != title.SourceFallback || got.Text != "hello there" {
+				t.Errorf("title = %+v", got)
+			}
+			evs := titleLog(t, h)
+			if a := must(title.AttemptType.As(evs[len(evs)-1])); a.Outcome != title.OutcomeRejected || a.Finish != fin {
+				t.Errorf("attempt = %+v", a)
+			}
+		})
 	}
 }
 
@@ -380,7 +464,7 @@ func TestFailedAttemptKeepsTheFallback(t *testing.T) {
 	prompt(t, h, 1, "hello there")
 	end(t, h, 1)
 	got := r.settled(t, h)
-	if got.Source != title.SourceFallback || got.Pending != nil || got.Requests != 1 {
+	if got.Source != title.SourceFallback || len(got.Pending) != 0 || got.Requests != 1 {
 		t.Fatalf("title = %+v", got)
 	}
 	evs := titleLog(t, h)
@@ -419,10 +503,10 @@ func TestOperationsRefuse(t *testing.T) {
 	if _, err := r.titles.Rename(bg, h.ID(), "x"); reason(err) != title.CodeUnavailable {
 		t.Errorf("Rename of a detached session: %v", err)
 	}
-	if _, err := title.New(views.New(), nil); err == nil {
-		t.Error("New with no runtime")
+	if _, err := title.New(nil); err == nil {
+		t.Error("New with no registry")
 	}
-	if _, err := title.New(views.New(), titlemodel.New(llm.New()), title.WithConfig(title.Config{Provider: "nope"})); reason(err) != title.CodeUnknownProvider {
+	if _, err := title.New(views.New(), title.WithConfig(title.Config{Provider: "nope"})); reason(err) != title.CodeUnknownProvider {
 		t.Errorf("New with an unknown provider: %v", err)
 	}
 }
@@ -450,11 +534,98 @@ func TestStaleResultCannotAppend(t *testing.T) {
 		t.Fatalf("Refresh: %v", err)
 	}
 	got := r.get(t, h)
-	if got.Text != "Mine" || !got.Pinned || got.Pending != nil {
+	if got.Text != "Mine" || !got.Pinned || len(got.Pending) != 0 {
 		t.Errorf("title = %+v", got)
 	}
 	evs := titleLog(t, h)
 	if len(evs) != 3 || must(title.AttemptType.As(evs[2])).Outcome != title.OutcomeSuperseded {
 		t.Errorf("title events = %d", len(evs))
+	}
+}
+
+// Unloading session.title while a generation is blocked in the model cancels
+// the call and settles its attempt, cancelled, before the unload returns; the
+// service is gone after it and generates nothing more.
+func TestUnloadCancelsAndSettlesAGeneration(t *testing.T) {
+	root := cordis.New()
+	t.Cleanup(root.Dispose)
+	reg := views.New()
+	must(0, must(root.Apply("views", func(c *cordis.Context) error {
+		_, err := views.Key.Provide(c, reg)
+		return err
+	})).Wait())
+	fiber := must(root.Use(title.Component, title.ComponentConfig{}))
+	if err := fiber.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	s := must(title.Key.Get(root))
+	entered, cancelled := make(chan struct{}), make(chan struct{})
+	release := s.Use(modelFunc(func(ctx context.Context, _ session.Request) (title.Attempt, error) {
+		close(entered)
+		<-ctx.Done()
+		close(cancelled)
+		return title.Attempt{}, ctx.Err()
+	}))
+	defer release()
+	h := must(session.NewService(root, memstore.New(), session.Config{Folder: reg}).Create(bg, nil, session.CreateOptions{Scope: scope.Key{}}))
+	t.Cleanup(func() { _ = h.Close(bg) })
+	prompt(t, h, 1, "please fix the login bug")
+	end(t, h, 1)
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no generation started after the turn")
+	}
+	fiber.Dispose()
+	select {
+	case <-cancelled:
+	default:
+		t.Fatal("the unload returned with the model call still running")
+	}
+	evs := titleLog(t, h)
+	if len(evs) != 2 || must(title.AttemptType.As(evs[1])).Outcome != title.OutcomeCancelled {
+		t.Fatalf("title events after the unload = %d, want the request and its cancelled attempt", len(evs))
+	}
+	if _, ok := title.Key.Lookup(root); ok {
+		t.Error("session.title is still provided after the unload")
+	}
+	if _, err := s.Refresh(bg, h.ID()); reason(err) != title.CodeUnavailable {
+		t.Errorf("Refresh after the unload: %v", err)
+	}
+	if n := len(titleLog(t, h)); n != 2 {
+		t.Errorf("%d title events after the unload, want 2", n)
+	}
+}
+
+// Releasing the model cancels and settles its generations; with none bound,
+// Refresh is title/unavailable and the fallback stays.
+func TestReleasedModelGeneratesNothing(t *testing.T) {
+	r := newRig(t)
+	h := r.create(t)
+	prompt(t, h, 1, "hello there")
+	must(h.Flush(bg))
+	entered := make(chan struct{})
+	release := r.titles.Use(modelFunc(func(ctx context.Context, _ session.Request) (title.Attempt, error) {
+		close(entered)
+		<-ctx.Done()
+		return title.Attempt{}, ctx.Err()
+	}))
+	t.Cleanup(release)
+	done := make(chan error, 1)
+	go func() { _, err := r.titles.Refresh(bg, h.ID()); done <- err }()
+	select {
+	case <-entered:
+	case err := <-done:
+		t.Fatalf("Refresh ended before its model call: %v", err)
+	}
+	release()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Errorf("Refresh on a released model: %v", err)
+	}
+	if _, err := r.titles.Refresh(bg, h.ID()); reason(err) != title.CodeUnavailable {
+		t.Errorf("Refresh with no model: %v", err)
+	}
+	if got := r.get(t, h); got.Source != title.SourceFallback || len(got.Pending) != 0 {
+		t.Errorf("title = %+v", got)
 	}
 }
