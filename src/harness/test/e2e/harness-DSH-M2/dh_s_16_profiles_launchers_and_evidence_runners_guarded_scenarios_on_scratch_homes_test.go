@@ -11,26 +11,22 @@ package e2e
 //     embedded SQLite store back row by row.
 //   - DH-E-STORE-6 runs the store's deletions in re-executed child processes
 //     (service:os-process), one killed between two chunks.
-//   - DH-E-FS-3 runs two re-executed processes, each booting dsh's model-facing
-//     tool pipeline (tools/core, fs.tools' edit over fs.ops, the sandbox fence
-//     and fs.local with one lock directory shared by both) with a SQLite session
-//     log, and plays 1,000 edit calls from a replay script (llm/replay.Load, the
-//     product's export format) through it, with an editor save process beside
-//     them. The dsh binary cannot mount fs.tools yet (internal/boot/builtin: "Not
-//     yet bootable"), so the processes host the same components the binary
-//     would. DSH_SCENARIO_FS3_EDITOR, when set, is the lane's editor
-//     save script ("<editor> <file> <log> <stop>", logging "<start> <end>
-//     <sha256>" per save); otherwise the suite's own editor role saves the same
-//     way.
+//   - DH-E-FS-3 runs two built dsh headless processes (testhook build, whose
+//     catalogue mounts fs.tools' edit over fs.ops, sandbox.policy, fs.local and
+//     a fixed workdir) through llm.replay, 1,000 edit calls each in runs of 100
+//     resuming one session per process, with one lock directory both share and
+//     the suite's editor save process beside them. Each edit's outcome and its
+//     call/result times are read back from the session log in each home.
 //   - DH-E-STORE-2 plays the cut turn on the replay route and rebuilds the first
 //     request after the resume from the stored log (surface.Rebuild), matching
 //     the digest the host recorded as sent. It checks the guarded runner's lane
 //     plan, which binds the Claude Code route and bwrap Full to the WSL lane.
-//   - This tree has no edit tool, no shell tool and no booted Claude Code route
-//     in dsh, so the literal dsh paths of FS-3 and STORE-2 exist only as the
-//     impl's lane scenarios (internal/testkit/scenarios, -tags scenario). On a
-//     lane that sets their DSH_SCENARIO_* inputs, the suite runs them and
-//     requires them to pass; a partial set of inputs fails the step.
+//   - dsh boots no shell tool and no Claude Code route, and bwrap is Linux only,
+//     so STORE-2's literal path (sandboxed sleep 60; write on the signed-in
+//     route) exists only as the impl's lane scenario (internal/testkit/scenarios,
+//     -tags scenario). On a lane that sets its DSH_SCENARIO_STORE2_* inputs the
+//     suite runs it and requires it to pass; a partial set fails; with none it
+//     logs that the path is not covered here.
 
 import (
 	"bufio"
@@ -53,30 +49,15 @@ import (
 
 	"github.com/cucumber/godog"
 
-	"github.com/smartpcr/agent-plugin/src/go/cordis"
-	"github.com/smartpcr/agent-plugin/src/harness/internal/agent"
-	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/replay"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
-	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
-	"github.com/smartpcr/agent-plugin/src/harness/internal/session/checkpoint"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
-	"github.com/smartpcr/agent-plugin/src/harness/internal/session/scope"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store/sqlite"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/surface"
-	"github.com/smartpcr/agent-plugin/src/harness/internal/session/workdir"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
-	spilllocal "github.com/smartpcr/agent-plugin/src/harness/internal/storage/spill/local"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/launcher"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/temphome"
-	htools "github.com/smartpcr/agent-plugin/src/harness/internal/tools"
-	"github.com/smartpcr/agent-plugin/src/harness/internal/tools/core"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/fs"
-	"github.com/smartpcr/agent-plugin/src/harness/internal/world/fs/local"
-	"github.com/smartpcr/agent-plugin/src/harness/internal/world/fs/ops"
-	fstools "github.com/smartpcr/agent-plugin/src/harness/internal/world/fs/tools"
-	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox"
-	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox/sandboxtest"
 )
 
 const (
@@ -141,225 +122,18 @@ func gshChild(role string, a []string) error {
 		}
 		fmt.Println("opened")
 		return s.Close(gshBG)
-	case "edit": // file locks versions script
-		return gshEditChild(a[0], a[1], a[2], a[3])
-	case "editor": // file log stop
-		return gshEditorChild(a[0], a[1], a[2])
+	case "editor": // file log stop versions
+		return gshEditorChild(a[0], a[1], a[2], a[3])
 	}
 	return fmt.Errorf("unknown role %q", role)
 }
 
-// gshDirs is the edit session's working directory: the workspace.
-type gshDirs struct{ root string }
-
-func (d gshDirs) Access(session.ID) (workdir.Access, error) { return d, nil }
-func (d gshDirs) Current() (workdir.WorkingDirectory, error) {
-	return workdir.WorkingDirectory{Path: d.root, Root: d.root}, nil
-}
-func (d gshDirs) Path() (string, error) { return d.root, nil }
-func (d gshDirs) Root() (string, error) { return d.root, nil }
-
-// gshKeep is the fs.local provider under fs.ops, keeping each version a write
-// put in place under dir by its SHA-256, so the oracle can read the version an
-// editor save later copied.
-type gshKeep struct {
-	fs.FS
-	dir string
-}
-
-func (k gshKeep) Write(ctx context.Context, r fs.Ref, data []byte, g fs.Guard, p sandbox.Policy) (fs.WriteOutcome, error) {
-	out, err := k.FS.Write(ctx, r, data, g, p)
-	if err == nil {
-		err = os.WriteFile(filepath.Join(k.dir, gshSum(data)), data, 0o600)
-	}
-	return out, err
-}
-
-// gshEditChild is one edit process: dsh's model-facing tool pipeline
-// (tools/core) with fs.tools mounted over fs.ops, the sandbox fence and the
-// real fs.local provider (one lock directory shared by both processes), a
-// SQLite session log in a home of its own, and the assistant steps of a replay
-// script (llm/replay, the product's export format) as the model. Each step's
-// edit call is logged as the model's message and executed as a batch, the
-// tool/result logged; it reports "ack <marker> <start> <end> <sha>" from the
-// version the result names, "stale <marker>" for fs/stale-version, else "fail".
-func gshEditChild(file, locks, versions, script string) error {
-	sf, err := os.Open(script)
-	if err != nil {
-		return err
-	}
-	turns, err := replay.Load(sf)
-	sf.Close()
-	if err != nil {
-		return err
-	}
-	ws := filepath.Dir(file)
-	root := cordis.New()
-	root.Loggers().ClearExporters()
-	defer root.Dispose()
-	f, err := root.Use(scope.Component, cordis.None{})
-	if err == nil {
-		err = f.Wait()
-	}
-	if err != nil {
-		return err
-	}
-	var tab scope.Table
-	g, err := root.Inject([]string{scope.TableKey.Name()}, func(c *cordis.Context) (err error) {
-		tab, err = scope.TableKey.Get(c)
-		return err
-	})
-	if err == nil {
-		err = g.Wait()
-	}
-	if err != nil {
-		return err
-	}
-	svc := core.NewWith(root, tab, core.Config{Checkpoint: checkpoint.Default{}})
-	l := home.New(filepath.Join(versions, "..", "home-"+filepath.Base(script)))
-	if err := home.Ensure(l); err != nil {
-		return err
-	}
-	st, err := sqlite.OpenHome(gshBG, l)
-	if err != nil {
-		return err
-	}
-	defer st.Close(gshBG)
-	sp, err := spilllocal.New(l, spilllocal.DefaultConfig, spilllocal.WithLineage(spilllocal.ForkLineage(st)))
-	if err != nil {
-		return err
-	}
-	wd := gshDirs{ws}
-	provider := gshKeep{local.NewWithOptions(local.Options{LockDir: locks}), versions}
-	o := ops.New(root, provider, &sandboxtest.Resolver{Default: sandbox.WorkspaceWrite, Workdir: wd}, ops.Options{Workdir: wd})
-	if _, err := fstools.Mount(root, svc, o, sp, fstools.Config{}); err != nil {
-		return err
-	}
-	id := session.ID("ses_gsh_" + strings.TrimSuffix(filepath.Base(script), ".jsonl"))
-	h, err := session.NewService(root, st, session.Config{}).Create(gshBG, nil, session.CreateOptions{Header: session.Header{ID: string(id)}})
-	if err != nil {
-		return err
-	}
-	defer h.Close(gshBG)
-	user, err := vocab.RestoreMessage("u1", vocab.RoleUser, nil, vocab.TextBlock("Insert your markers before the anchor."))
-	if err != nil {
-		return err
-	}
-	appendDraft := func(mk func() (event.Draft, error)) error {
-		d, err := mk()
-		if err == nil {
-			_, err = h.Append(gshBG, d)
-		}
-		return err
-	}
-	if err := errors.Join(
-		appendDraft(func() (event.Draft, error) { return event.TurnStartType.Draft(event.TurnStart{Turn: 1}) }),
-		appendDraft(func() (event.Draft, error) {
-			return event.UserMessage.Draft(event.Append(), event.UserMessagePayload{Message: user})
-		}),
-	); err != nil {
-		return err
-	}
-	out := bufio.NewWriter(os.Stdout)
-	defer out.Flush()
-	for step, turn := range turns {
-		var calls []htools.CallRequest
-		for _, b := range turn.Message.Blocks() {
-			if b.ToolUse != nil {
-				calls = append(calls, htools.CallRequest{ID: b.ToolUse.ID, Name: b.ToolUse.Name, Arguments: string(b.ToolUse.Args)})
-			}
-		}
-		if len(calls) != 1 || calls[0].Name != fstools.EditName {
-			continue // the script's closing text step
-		}
-		if err := errors.Join(
-			appendDraft(func() (event.Draft, error) {
-				return event.StepStartType.Draft(event.StepStart{Turn: 1, Step: step + 1})
-			}),
-			appendDraft(func() (event.Draft, error) {
-				return event.AssistantMessage.Draft(event.Append(), event.AssistantMessagePayload{Message: *turn.Message})
-			}),
-		); err != nil {
-			return err
-		}
-		var a struct {
-			NewString string `json:"new_string"`
-		}
-		if err := json.Unmarshal([]byte(calls[0].Arguments), &a); err != nil {
-			return err
-		}
-		marker, _, _ := strings.Cut(a.NewString, "\n")
-		v, err := svc.Resolve(gshBG, htools.Target{Agent: agent.Ref{Session: id, Incarnation: 1}})
-		if err != nil {
-			return err
-		}
-		start := time.Now()
-		res, err := svc.ExecuteBatch(gshBG, htools.Batch{View: v, Log: h, Calls: calls})
-		end := time.Now()
-		v.Release()
-		if err != nil {
-			return err
-		}
-		if len(res.Results) != 1 {
-			return fmt.Errorf("edit %s: %d results", marker, len(res.Results))
-		}
-		r := res.Results[0]
-		if err := appendDraft(func() (event.Draft, error) {
-			return event.StepEndType.Draft(event.StepEnd{Turn: 1, Step: step + 1})
-		}); err != nil {
-			return err
-		}
-		switch m := gshVersionRe.FindStringSubmatch(r.Text); {
-		case !r.IsError && m != nil:
-			fmt.Fprintf(out, "ack %s %d %d %s\n", marker, start.UnixNano(), end.UnixNano(), m[1])
-		case r.IsError && strings.Contains(r.Text, string(fs.CodeStaleVersion)+":"):
-			fmt.Fprintf(out, "stale %s %d %d\n", marker, start.UnixNano(), end.UnixNano())
-		default:
-			fmt.Fprintf(out, "fail %s %s %s\n", marker, r.Code, strings.ReplaceAll(r.Text, "\n", " "))
-		}
-	}
-	fmt.Fprintln(out, "done")
-	return nil
-}
-
 var gshVersionRe = regexp.MustCompile(`\(version sha256:([0-9a-f]{64})\)`)
 
-// gshEditScript writes one process's replay script: an assistant step a call,
-// each an edit inserting the process's next marker before the anchor, then
-// "Done.".
-func gshEditScript(dir, file, name string) (string, error) {
-	lines := []string{`{"dsh_export":1}`}
-	step := func(block map[string]any) error {
-		n := len(lines)
-		data, err := json.Marshal(map[string]any{
-			"message":        map[string]any{"id": fmt.Sprintf("gsh-%s-msg-%05d", name, n), "role": "assistant", "blocks": []any{block}},
-			"request_digest": "authored",
-			"usage":          map[string]int{"input": 1, "output": 1},
-		})
-		if err != nil {
-			return err
-		}
-		line, err := json.Marshal(map[string]any{"seq": n - 1, "type": "assistant/message", "pv": 4, "data": string(data)})
-		lines = append(lines, string(line))
-		return err
-	}
-	for i := range gshEdits {
-		marker := fmt.Sprintf("%s%04d", name, i)
-		args := map[string]any{"file_path": file, "old_string": gshAnchor, "new_string": marker + "\n" + gshAnchor}
-		if err := step(map[string]any{"kind": "tool_use", "tool_use": map[string]any{"id": "gsh-" + marker, "name": fstools.EditName, "args": args}}); err != nil {
-			return "", err
-		}
-	}
-	if err := step(map[string]any{"kind": "text", "text": map[string]any{"text": "Done."}}); err != nil {
-		return "", err
-	}
-	p := filepath.Join(dir, name+".jsonl")
-	return p, os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
-}
-
 // gshEditorChild saves file as an editor does until stop exists: read it whole,
-// write a temporary file beside it, rename it over the file.
-func gshEditorChild(file, logPath, stop string) error {
+// write a temporary file beside it, rename it over the file. Each saved content
+// is kept under versions by its SHA-256, so the oracle knows what a save wrote.
+func gshEditorChild(file, logPath, stop, versions string) error {
 	log, err := os.Create(logPath)
 	if err != nil {
 		return err
@@ -386,6 +160,9 @@ func gshEditorChild(file, logPath, stop string) error {
 			time.Sleep(time.Millisecond)
 		}
 		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(versions, gshSum(data)), data, 0o600); err != nil {
 			return err
 		}
 		fmt.Fprintf(log, "%s %s %s\n", start.Format(time.RFC3339Nano), time.Now().Format(time.RFC3339Nano), gshSum(data))
@@ -513,6 +290,20 @@ func (w *gshWorld) scratchHome() error {
 // overlay writes a launcher layer inserting llm.replay over a script of steps
 // (each one assistant message block) and the long fake tool, and returns its path.
 func gshOverlay(requests string, blocks ...map[string]any) (string, error) {
+	return gshLayer(requests, "    - id: sleep\n      name: tools.testkit-sleep\n", blocks)
+}
+
+// gshFSOverlay is the layer of one FS-3 run: llm.replay over the script, and
+// the real edit tool (fs.tools over fs.ops, fs.local and sandbox.policy) in
+// the workspace ws, guarded by the lock directory both processes share.
+func gshFSOverlay(ws, locks string, blocks []map[string]any) (string, error) {
+	return gshLayer("", "    - id: fs.local\n      name: fs.local\n      config:\n        lockDir: "+strconv.Quote(locks)+
+		"\n    - id: wd\n      name: session.testkit-workdir\n      config:\n        root: "+strconv.Quote(ws)+
+		"\n    - id: sandbox.policy\n      name: sandbox.policy\n      config:\n        defaultMode: workspace-write"+
+		"\n    - id: fs.ops\n      name: fs.ops\n    - id: fs.tools\n      name: fs.tools\n", blocks)
+}
+
+func gshLayer(requests, items string, blocks []map[string]any) (string, error) {
 	dir := gshOuterT.TempDir()
 	lines := []string{`{"dsh_export":1}`}
 	for i, b := range blocks {
@@ -537,8 +328,7 @@ func gshOverlay(requests string, blocks ...map[string]any) (string, error) {
 	}
 	layer := filepath.Join(gshOuterT.TempDir(), "overlay.yml")
 	text := "- insert:\n    - id: replay\n      name: llm.replay\n      config:\n        scenario: " + strconv.Quote(dir) +
-		"\n        mode: replay\n        route: gsh\n        model: replay\n        requests: " + strconv.Quote(requests) +
-		"\n    - id: sleep\n      name: tools.testkit-sleep\n"
+		"\n        mode: replay\n        route: gsh\n        model: replay\n        requests: " + strconv.Quote(requests) + "\n" + items
 	return layer, os.WriteFile(layer, []byte(text), 0o600)
 }
 
@@ -1000,26 +790,123 @@ func (w *gshWorld) checkClean() error {
 // ---- DH-E-FS-3 ----
 
 func (w *gshWorld) workspaceFile() error {
-	w.ws, w.locks = gshOuterT.TempDir(), gshOuterT.TempDir()
+	ws, err := filepath.EvalSymlinks(gshOuterT.TempDir())
+	if err != nil {
+		return err
+	}
+	w.ws, w.locks = filepath.Clean(ws), gshOuterT.TempDir()
 	w.file = filepath.Join(w.ws, "shared.txt")
 	return os.WriteFile(w.file, []byte(gshAnchor+"\n"), 0o600)
 }
 
 func (w *gshWorld) editorReady() error { return nil }
 
+// gshEditSide is one built `dsh headless` process line of FS-3: a session on
+// its own scratch home driven through gshEdits edit calls of the replay
+// provider, gshChunk per run (the replay player restarts with each process).
+func (w *gshWorld) gshEditSide(name string) (layout home.Layout, session string, err error) {
+	layout = temphome.New(gshOuterT)
+	for run := 0; run*gshChunk < gshEdits; run++ {
+		var blocks []map[string]any
+		for i := run * gshChunk; i < (run+1)*gshChunk; i++ {
+			m := fmt.Sprintf("%s%04d", name, i)
+			blocks = append(blocks, map[string]any{"kind": "tool_use", "tool_use": map[string]any{"id": "gsh-" + m, "name": "edit",
+				"args": map[string]any{"file_path": w.file, "old_string": gshAnchor, "new_string": m + "\n" + gshAnchor}}})
+		}
+		layer, err := gshFSOverlay(w.ws, w.locks, append(blocks, gshText("Done.")))
+		if err != nil {
+			return layout, "", err
+		}
+		argv := []string{shkBin, "--home", layout.Root(), "--layer", layer, "headless", "--json"}
+		if session != "" {
+			argv = append(argv, "--session", session)
+		}
+		h, err := launcher.Run(gshOuterT, gshEditsWithin, launcher.Program{Argv: append(argv, "Edit the shared file."), Dir: w.ws, Env: shkKeylessEnv(os.Environ())})
+		if err != nil {
+			return layout, "", fmt.Errorf("dsh %s run %d: %v", name, run, err)
+		}
+		if session == "" {
+			m := gshRunRe.FindStringSubmatch(h.Stderr.String())
+			if m == nil {
+				return layout, "", fmt.Errorf("dsh %s named no session:\n%s", name, h.Stderr.String())
+			}
+			session = m[1]
+		}
+		if err := gshCompleted(h, session); err != nil {
+			return layout, "", fmt.Errorf("dsh %s run %d: %v", name, run, err)
+		}
+	}
+	return layout, session, nil
+}
+
+// gshEditOutcomes reads each edit's outcome from the session log dsh stored:
+// start is its tool/call time and end its tool/result time plus the 1ms of
+// stored precision.
+func (w *gshWorld) gshEditOutcomes(layout home.Layout, session string) error {
+	db, err := sql.Open("sqlite", layout.DB())
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	rs, err := db.Query(`SELECT e.time, e.type, e.data FROM events e JOIN sessions s ON s.uid = e.session WHERE s.id = ? AND e.type IN ('tool/call', 'tool/result') ORDER BY e.seq`, session)
+	if err != nil {
+		return err
+	}
+	defer rs.Close()
+	calls, results := map[string]int64{}, 0
+	for rs.Next() {
+		var at int64
+		var typ, data string
+		if err := rs.Scan(&at, &typ, &data); err != nil {
+			return err
+		}
+		var ev struct {
+			CallID  string `json:"call_id"`
+			IsError bool   `json:"is_error"`
+		}
+		if err := json.Unmarshal([]byte(data), &ev); err != nil {
+			return err
+		}
+		marker, ok := strings.CutPrefix(ev.CallID, "gsh-")
+		if !ok {
+			return fmt.Errorf("a tool event of no edit call: %s", data)
+		}
+		if typ == "tool/call" {
+			calls[ev.CallID] = at
+			continue
+		}
+		start, ok := calls[ev.CallID]
+		if !ok {
+			return fmt.Errorf("edit %s has a result and no stored call", marker)
+		}
+		results++
+		m := gshVersionRe.FindStringSubmatch(data)
+		switch {
+		case !ev.IsError && m != nil:
+			w.acks = append(w.acks, gshAck{what: "edit " + marker, marker: marker, start: start * int64(time.Millisecond), end: (at + 1) * int64(time.Millisecond), sum: m[1]})
+		case ev.IsError && strings.Contains(data, string(fs.CodeStaleVersion)+":"):
+			w.stale = append(w.stale, marker)
+		default:
+			return fmt.Errorf("edit %s returned neither success nor %s: %s", marker, fs.CodeStaleVersion, data)
+		}
+	}
+	if err := rs.Err(); err != nil {
+		return err
+	}
+	if results != gshEdits || len(calls) != gshEdits {
+		return fmt.Errorf("session %s stored %d edit calls and %d results; want %d", session, len(calls), results, gshEdits)
+	}
+	return nil
+}
+
 func (w *gshWorld) editsRun(n int) error {
 	if n != gshEdits {
-		return fmt.Errorf("each edit process issues %d edits", gshEdits)
+		return fmt.Errorf("each dsh process issues %d edits", gshEdits)
 	}
 	versions := gshOuterT.TempDir()
 	logPath, stop := filepath.Join(gshOuterT.TempDir(), "saves.log"), filepath.Join(gshOuterT.TempDir(), "stop")
-	var editor *exec.Cmd
-	if script := os.Getenv("DSH_SCENARIO_FS3_EDITOR"); script != "" {
-		editor = exec.Command(script, w.file, logPath, stop)
-	} else {
-		editor = exec.Command(os.Args[0], "-test.run=^$", "-test.count=1")
-		editor.Env = append(os.Environ(), gshRoleEnv+"=editor", gshArgsEnv+"="+strings.Join([]string{w.file, logPath, stop}, "\t"))
-	}
+	editor := exec.Command(os.Args[0], "-test.run=^$", "-test.count=1")
+	editor.Env = append(os.Environ(), gshRoleEnv+"=editor", gshArgsEnv+"="+strings.Join([]string{w.file, logPath, stop, versions}, "\t"))
 	editor.Stdout, editor.Stderr = os.Stderr, os.Stderr
 	if err := editor.Start(); err != nil {
 		return fmt.Errorf("the editor save script (service:git-and-editor): %v", err)
@@ -1028,43 +915,24 @@ func (w *gshWorld) editsRun(n int) error {
 	go func() { editorDone <- editor.Wait() }()
 	defer func() { _ = editor.Process.Kill() }()
 
-	type result struct {
-		lines []string
-		err   error
+	type side struct {
+		layout  home.Layout
+		session string
+		err     error
 	}
-	results := make(chan result, 2)
-	scripts := gshOuterT.TempDir()
+	sides := make(chan side, 2)
 	for _, name := range []string{"a", "b"} {
-		script, err := gshEditScript(scripts, w.file, name)
-		if err != nil {
-			return err
-		}
-		p, err := gshSpawn("edit", w.file, w.locks, versions, script)
-		if err != nil {
-			return err
-		}
 		go func() {
-			_, err := p.expectWithin("done", gshEditsWithin)
-			results <- result{p.log, err}
+			l, s, err := w.gshEditSide(name)
+			sides <- side{l, s, err}
 		}()
 	}
 	var errs []error
+	var done []side
 	for range 2 {
-		r := <-results
-		errs = append(errs, r.err)
-		for _, line := range r.lines {
-			f := strings.Fields(line)
-			switch f[0] {
-			case "ack":
-				s, _ := strconv.ParseInt(f[2], 10, 64)
-				e, _ := strconv.ParseInt(f[3], 10, 64)
-				w.acks = append(w.acks, gshAck{what: "edit " + f[1], marker: f[1], start: s, end: e, sum: f[4]})
-			case "stale":
-				w.stale = append(w.stale, f[1])
-			case "fail":
-				errs = append(errs, fmt.Errorf("an edit returned neither success nor %s: %s", fs.CodeStaleVersion, line))
-			}
-		}
+		s := <-sides
+		errs = append(errs, s.err)
+		done = append(done, s)
 	}
 	if err := os.WriteFile(stop, nil, 0o600); err != nil {
 		return err
@@ -1077,6 +945,11 @@ func (w *gshWorld) editsRun(n int) error {
 	}
 	if err := errors.Join(errs...); err != nil {
 		return err
+	}
+	for _, s := range done {
+		if err := w.gshEditOutcomes(s.layout, s.session); err != nil {
+			return err
+		}
 	}
 	data, err := os.ReadFile(logPath)
 	if err != nil {
@@ -1144,8 +1017,8 @@ func (w *gshWorld) finalWellFormed() error {
 	return nil
 }
 
-// version is the set of marker lines of the acknowledged version sum (or the
-// initial file); ok is false for a version no process acknowledged.
+// version is the set of lines of version sum: the initial file, or a content
+// the editor saved (kept by its sum); ok is false for an unknown version.
 func (w *gshWorld) version(sum string) (lines map[string]bool, ok bool) {
 	if v, ok := w.versions[sum]; ok {
 		return v, v != nil
@@ -1170,8 +1043,12 @@ func (w *gshWorld) version(sum string) (lines map[string]bool, ok bool) {
 }
 
 func (w *gshWorld) savesKnown() error {
+	known := map[string]bool{gshSum([]byte(gshAnchor + "\n")): true}
+	for _, a := range w.acks {
+		known[a.sum] = true
+	}
 	for _, s := range w.saves {
-		if _, ok := w.version(s.sum); !ok {
+		if _, ok := w.version(s.sum); !ok || !known[s.sum] {
 			return fmt.Errorf("an editor save wrote %s, a version no process acknowledged", s.sum)
 		}
 	}
@@ -1331,11 +1208,10 @@ func (w *gshWorld) requestFromLog() error {
 
 // gshLive runs the impl's live scenario test through dsh when the lane provides
 // its inputs (the Claude Code sign-in and bwrap); a partial set fails. Off such
-// a lane it checks the stage's evidence (docs/stories/harness-DSH-M2/evidence/
-// DH-S-16.md) instead: every lane row of scenario must be either recorded with
-// a commit SHA or "not run" and owed to the later workstream that records the
-// lane runs (operator decisions m1-entry-block and store-command-templates), so
-// no row claims a result this host did not produce.
+// a lane the live path is NOT covered by this suite and the step says so in the
+// log; it only checks that the stage's evidence (docs/stories/harness-DSH-M2/
+// evidence/DH-S-16.md) claims no lane result of scenario without a commit SHA.
+// The lane rows themselves are the committed harness-gate lane records.
 func gshLive(scenario, test string, vars ...string) error {
 	var missing []string
 	for _, v := range vars {
@@ -1344,6 +1220,7 @@ func gshLive(scenario, test string, vars ...string) error {
 		}
 	}
 	if len(missing) == len(vars) {
+		gshOuterT.Logf("%s: NOT COVERED on this host (no lane inputs); its lane path is evidenced only by the lane records", test)
 		return gshEvidenceOwed(scenario, test)
 	}
 	if len(missing) > 0 {
@@ -1531,8 +1408,8 @@ func InitializeScenario_dh_s_16_profiles_launchers_and_evidence_runners_guarded_
 	ctx.Step(`^the store's integrity check reports clean$`, w.checkClean)
 
 	ctx.Step(`^a scratch workspace file ending in the anchor line and one lock directory both processes share$`, w.workspaceFile)
-	ctx.Step(`^the editor save script \(DSH_SCENARIO_FS3_EDITOR, else the suite's own editor save process\)$`, w.editorReady)
-	ctx.Step(`^two processes each play (\d+) edit calls from a replay script through dsh's edit tool on the file while the editor saves it$`, w.editsRun)
+	ctx.Step(`^the suite's editor save process, which keeps every version it saves$`, w.editorReady)
+	ctx.Step(`^two built dsh headless processes each play (\d+) edit calls through the replay provider and dsh's edit tool on the file while the editor saves it$`, w.editsRun)
 	ctx.Step(`^every edit either took effect or returned "([^"]*)"$`, w.everyEditAnswered)
 	ctx.Step(`^at least one conflicting edit was refused "([^"]*)"$`, w.someStale)
 	ctx.Step(`^the final file is unique marker lines then the anchor, holding no refused edit's marker$`, w.finalWellFormed)
@@ -1546,7 +1423,7 @@ func InitializeScenario_dh_s_16_profiles_launchers_and_evidence_runners_guarded_
 	ctx.Step(`^the cut tool call's result is "([^"]*)"$`, w.outcomeUnknown)
 	ctx.Step(`^the first model request after the resume, rebuilt from the session log, has the digest the host sent and carries that result$`, w.requestFromLog)
 	ctx.Step(`^the replay provider received that request carrying the result$`, w.firstRequestCarries)
-	ctx.Step(`^on a lane providing (.+), the live scenario (Test\w+) .+ and passes; off it, the stage evidence records every (DH-E-[A-Z0-9-]+) lane row with a commit or owed to the lane run$`, func(vars, test, scenario string) error {
+	ctx.Step(`^on a lane providing (.+), the live scenario (Test\w+) .+ and passes; off it the lane path is not covered here, and the stage evidence must claim no (DH-E-[A-Z0-9-]+) lane result without a commit$`, func(vars, test, scenario string) error {
 		return gshLive(scenario, test, strings.FieldsFunc(strings.ReplaceAll(vars, " and ", ","), func(r rune) bool { return r == ',' || r == ' ' })...)
 	})
 	ctx.Step(`^the session is deleted with no host running$`, w.deleteSession)
