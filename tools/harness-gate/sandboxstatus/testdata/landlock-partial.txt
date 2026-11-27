@@ -1,0 +1,7 @@
+state:   Partial
+backend: landlock
+missing: network, delegated-execution
+exposed: network, delegated-execution
+backends:
+  bwrap: unavailable: bwrap not found
+  landlock: available, canary refused, governs fs-write, harness-home

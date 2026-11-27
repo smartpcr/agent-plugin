@@ -1,0 +1,7 @@
+state:   Full
+backend: bwrap
+missing: none
+exposed: none
+backends:
+  bwrap: available, canary refused, governs fs-write, network, harness-home, delegated-execution
+  landlock: available, canary refused, governs fs-write, harness-home
