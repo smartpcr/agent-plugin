@@ -9,7 +9,8 @@
 // "dsh status" names that process live, kills it with no grace, starts dsh again on
 // the same home and waits for the unclean-exit line, checks the report that line
 // names, runs "dsh crash", then starts "dsh --safe web" and waits until its listener
-// answers. It prints one JSON object (host4Result) on standard output; the step
+// answers. Kill names the forced kill only when the killed host's wait status and
+// leftover runtime record prove it. It prints one JSON object (host4Result) on standard output; the step
 // definitions assert on it. It exits 0 unless its own arguments are wrong.
 package main
 
@@ -27,6 +28,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
@@ -50,6 +52,12 @@ type host4Result struct {
 	FirstReady  string `json:"firstReady"`
 	FirstStderr string `json:"firstStderr"`
 	KilledExit  bool   `json:"killedExit"`
+	// What the kill left behind, as observed: the wait status of the killed host
+	// and how many runtime records (run/web-*.json, removed by a clean stop) remain.
+	KilledCode     int    `json:"killedCode"`
+	KilledSignaled bool   `json:"killedSignaled"`
+	KilledSignal   string `json:"killedSignal"`
+	KilledRecords  int    `json:"killedRecords"`
 
 	NextStderr  string `json:"nextStderr"`
 	UncleanLine string `json:"uncleanLine"`
@@ -104,6 +112,34 @@ func (h *host) exited(within time.Duration) bool {
 // kill is the forced rung alone: Process.Kill is SIGKILL on POSIX and
 // TerminateProcess on Windows, so the host cannot remove its runtime record.
 func (h *host) kill() { _ = h.cmd.Process.Kill() }
+
+// killedBy names the forced kill the observed evidence shows, or describes the
+// evidence when it shows none: on POSIX the host must have died of SIGKILL; on
+// Windows it must have exited with TerminateProcess's code 1 (the code
+// Process.Kill passes) and left its runtime record, so its clean stop never ran.
+func killedBy(r *host4Result) string {
+	switch {
+	case runtime.GOOS != "windows" && r.KilledSignaled && r.KilledSignal == syscall.SIGKILL.String():
+		return "SIGKILL"
+	case runtime.GOOS == "windows" && !r.KilledSignaled && r.KilledCode == 1 && r.KilledRecords > 0:
+		return "TerminateProcess"
+	}
+	return fmt.Sprintf("unproven (exit %d, signaled %t, signal %q, runtime records left %d)",
+		r.KilledCode, r.KilledSignaled, r.KilledSignal, r.KilledRecords)
+}
+
+// observeKill records the killed host's wait status and the runtime records it
+// left, then sets r.Kill from that evidence.
+func (d *driver) observeKill(h *host, r *host4Result) {
+	st := h.cmd.ProcessState
+	r.KilledCode = st.ExitCode()
+	if ws, ok := st.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+		r.KilledSignaled, r.KilledSignal = true, ws.Signal().String()
+	}
+	recs, _ := filepath.Glob(filepath.Join(home.New(d.root).Run(), "web-*.json"))
+	r.KilledRecords = len(recs)
+	r.Kill = killedBy(r)
+}
 
 type driver struct {
 	bin, root string
@@ -215,6 +251,7 @@ func (d *driver) sequence(r *host4Result) error {
 	if r.KilledExit = first.exited(exitWithin); !r.KilledExit {
 		return fmt.Errorf("the killed host %d did not exit within %s", r.FirstPID, exitWithin)
 	}
+	d.observeKill(first, r)
 
 	next, err := d.start("web", "--no-open", "--port", "0")
 	if err != nil {
@@ -276,10 +313,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "host4drive: -bin is required")
 		os.Exit(2)
 	}
-	r := &host4Result{GOOS: runtime.GOOS, Kill: "SIGKILL"}
-	if runtime.GOOS == "windows" {
-		r.Kill = "TerminateProcess"
-	}
+	r := &host4Result{GOOS: runtime.GOOS, Kill: "not observed"}
 	// A short home: the web host's control socket lives in <home>/run and a Unix
 	// socket path is bounded (about 108 bytes).
 	dir, err := os.MkdirTemp("", "dsh-h4e-")
