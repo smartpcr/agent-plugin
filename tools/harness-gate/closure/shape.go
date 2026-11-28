@@ -21,6 +21,8 @@ type Story struct {
 	Deliverables   map[string]string // every deliverable of the closure record, by ID, with its priority
 	P0, P1         int
 	DoneCandidates []string               // the only deliverables that may read done
+	BuiltIn        map[string]string      // the stage that builds each deliverable (tech-spec sec. 3.2)
+	Finishing      map[string]string      // the stage whose closure proves each done-candidate
 	HeldOpen       []string               // the H-items the closure record must list
 	Obligations    map[string]Obligations // the rows each stage record owes
 }
@@ -78,8 +80,37 @@ var Stories = map[string]Story{
 			"DH-D-BUNDLE-1", "DH-D-SDK-6", "DH-D-CLI-9", "DH-D-SDK-8", "DH-D-VIEW-4",
 		},
 		HeldOpen:    []string{"H-1", "H-2", "H-3", "H-4", "H-10", "H-21"},
+		BuiltIn:     m2BuiltIn,
+		Finishing:   m2Finishing,
 		Obligations: m2Obligations,
 	},
+}
+
+// m2BuiltIn is the stage that builds each deliverable: the "Delivers" column of
+// tech-spec sec. 3.2.
+var m2BuiltIn = func() map[string]string {
+	out := map[string]string{}
+	for stage, ids := range map[string][]string{
+		"DH-S-12": {"VIEW-10", "FS-4", "SANDBOX-1", "HUMAN-4", "FS-6"},
+		"DH-S-13": {"SANDBOX-2", "SANDBOX-3", "SANDBOX-4", "EXEC-3", "EXEC-4", "EXEC-8", "EXEC-9", "CONTEXT-2"},
+		"DH-S-14": {"BUNDLE-1", "BUNDLE-2", "BUNDLE-4", "BUNDLE-5", "BUNDLE-6"},
+		"DH-S-15": {"HOST-1", "HOST-2", "HOST-3", "API-1", "SDK-3", "SDK-4", "SDK-5", "SDK-6"},
+		"DH-S-16": {"BUNDLE-3", "CLI-2", "CLI-4", "CLI-5", "CLI-9", "SDK-8", "UTIL-7", "UTIL-8", "VIEW-4"},
+	} {
+		for _, id := range ids {
+			out["DH-D-"+id] = stage
+		}
+	}
+	return out
+}()
+
+// m2Finishing is the stage whose closure proves each done-candidate: the stage that
+// runs its proving scenario, or for one proved by local tests only, the stage that
+// builds it (implementation-plan steps 6.12, 7.x and 8.x).
+var m2Finishing = map[string]string{
+	"DH-D-VIEW-10": "DH-S-18", "DH-D-SANDBOX-1": "DH-S-17", "DH-D-HUMAN-4": "DH-S-12", "DH-D-FS-6": "DH-S-18",
+	"DH-D-SANDBOX-4": "DH-S-18", "DH-D-EXEC-3": "DH-S-13", "DH-D-BUNDLE-1": "DH-S-14", "DH-D-SDK-6": "DH-S-17",
+	"DH-D-CLI-9": "DH-S-16", "DH-D-SDK-8": "DH-S-17", "DH-D-VIEW-4": "DH-S-17",
 }
 
 // m2Deliverables are the 35 deliverables of tech-spec sec. 3.2, with their priority.

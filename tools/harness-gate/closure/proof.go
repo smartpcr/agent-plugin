@@ -12,6 +12,7 @@ import (
 var (
 	proofScenarioPattern = regexp.MustCompile(`\bDH-E-[A-Z][A-Z0-9]*-[1-9][0-9]*\b`)
 	stageIDPattern       = regexp.MustCompile(`\bDH-S-[1-9][0-9]*\b`)
+	localTestPattern     = regexp.MustCompile(`\bDH-T-[A-Z][A-Z0-9]*-[1-9][0-9]*\b`)
 )
 
 // ProofProblems is the closure predicate (M2-C-3, M2-DEC-5): what a closure record's
@@ -19,12 +20,16 @@ var (
 // merged and neither is claimed ahead of its evidence. records holds the story's stage
 // records by stage ID; a stage with no record is not built and not closed.
 //
-//   - A row reading built or done needs its "Built in" stage to be a build stage of s
+//   - Every row's Built in is the stage s.BuiltIn assigns it, when s assigns one; that
+//     stage, not the cell, is the one judged.
+//   - A row reading built or done needs its building stage to be a build stage of s
 //     whose record passes ready --built.
-//   - A row reading done also needs every proving DH-E scenario to have a counted row
+//   - A row reading done also needs at least one proving DH-E scenario or DH-T local
+//     test named; every proving DH-E scenario to have a counted row
 //     in some stage record (venue other than later), every such row judged passed
 //     (or a recorded leg, M2-DEC-4) with its evidence, and at least one that passed;
-//     every stage its finishing column names to read closed and pass close (local
+//     at least one finishing stage, including the one s.Finishing assigns it; every
+//     such stage to read closed and pass close (local
 //     tests are recorded only by their stage's closure); and every held-open item that
 //     column names to read closed in the held-open table.
 //
@@ -64,11 +69,17 @@ func ProofProblems(s Story, x *acceptance.Index, rec *Record, records map[string
 	}
 	for _, r := range d.Rows {
 		id, state := r.Get("deliverable"), r.Get("state")
+		stage := r.Get("built in")
+		if want, ok := s.BuiltIn[id]; ok {
+			if d.Has("built in") && stage != want {
+				add("%s: Built in reads %q; tech-spec sec. 3.2 builds it in %s", id, stage, want)
+			}
+			stage = want
+		}
 		if state != "built" && state != "done" {
 			continue
 		}
-		if d.Has("built in") {
-			stage := r.Get("built in")
+		if stage != "" || d.Has("built in") {
 			if b := notBuilt(stage); len(b) > 0 {
 				add("%s reads %s but %s is not built (harness-gate ready --stage %s --built): %s", id, state, stage, stage, summarize(b))
 			}
@@ -76,13 +87,26 @@ func ProofProblems(s Story, x *acceptance.Index, rec *Record, records map[string
 		if state != "done" {
 			continue
 		}
-		for _, sc := range proofScenarioPattern.FindAllString(r.Get("proving scenarios"), -1) {
+		proofs := r.Get("proving scenarios")
+		if !proofScenarioPattern.MatchString(proofs) && !localTestPattern.MatchString(proofs) {
+			add("%s reads done but names no proving scenario or local test (M2-C-3)", id)
+		}
+		for _, sc := range proofScenarioPattern.FindAllString(proofs, -1) {
 			if why := scenarioUnproven(s, records, sc); why != "" {
 				add("%s reads done but proving scenario %s %s (M2-C-3)", id, sc, why)
 			}
 		}
 		fin := r.Get("finishing stage or held-open item")
-		for _, stage := range stageIDPattern.FindAllString(fin, -1) {
+		stages := stageIDPattern.FindAllString(fin, -1)
+		if want, ok := s.Finishing[id]; ok && !slices.Contains(stages, want) {
+			// The proof is the closure of the stage the story assigns, whatever the cell names.
+			add("%s reads done but its finishing column %q does not name %s, the stage whose closure proves it (M2-C-3)", id, fin, want)
+			stages = append(stages, want)
+		}
+		if len(stages) == 0 {
+			add("%s reads done but its finishing column %q names no finishing stage (M2-C-3)", id, fin)
+		}
+		for _, stage := range stages {
 			sr := records[stage]
 			if sr == nil {
 				add("%s reads done but its finishing stage %s has no evidence record in %s (M2-C-3)", id, stage, s.ID)

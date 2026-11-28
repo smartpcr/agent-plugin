@@ -101,6 +101,96 @@ func TestBuiltNeedsReadyBuilt(t *testing.T) {
 	}
 }
 
+// committed reads the committed closure record (after edit) and stage records.
+func committed(t *testing.T, edit func(string) string) (*acceptance.Index, *Record, map[string]*Record) {
+	t.Helper()
+	root := filepath.Join("..", "..", "..")
+	s := Stories[DefaultStory]
+	x, err := acceptance.ReadIndex(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recs := map[string]*Record{}
+	for _, stage := range s.Stages {
+		r, err := ReadRecord(root, s.ID, stage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		recs[stage] = r
+	}
+	raw, err := os.ReadFile(filepath.Join(append([]string{root}, append(evidencePath, "closure.md")...)...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := strings.ReplaceAll(string(raw), "\r\n", "\n")
+	edited := edit(src)
+	if edited == src {
+		t.Fatal("edit changed nothing in the committed closure.md")
+	}
+	rec, err := ParseDocument("closure.md", strings.NewReader(edited), DeliverablesHeading, HeldOpenHeading)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return x, rec, recs
+}
+
+// A done-candidate's finishing stage is the story's, not the cell's: clearing or
+// substituting the finishing column, or clearing the proofs, does not skip the check
+// that DH-S-12 (open) has closed.
+func TestDoneNeedsTheStorysFinishingStage(t *testing.T) {
+	s := Stories[DefaultStory]
+	const human4 = "| DH-D-HUMAN-4 | P1 | DH-S-12 | built | DH-S-12 (local tests) | DH-T-HUMAN-7 (no DH-E scenario) |"
+	for _, tc := range []struct {
+		name, row string
+		want      [][]string
+	}{
+		{"finishing cleared", "| DH-D-HUMAN-4 | P1 | DH-S-12 | done |  | DH-T-HUMAN-7 (no DH-E scenario) |",
+			[][]string{{"DH-D-HUMAN-4", "does not name DH-S-12"}, {"DH-D-HUMAN-4", "DH-S-12 is not closed"}}},
+		{"finishing substituted", "| DH-D-HUMAN-4 | P1 | DH-S-12 | done | DH-S-14 (local tests) | DH-T-HUMAN-7 (no DH-E scenario) |",
+			[][]string{{"DH-D-HUMAN-4", "does not name DH-S-12"}, {"DH-D-HUMAN-4", "DH-S-12 is not closed"}}},
+		{"as recorded", "| DH-D-HUMAN-4 | P1 | DH-S-12 | done | DH-S-12 (local tests) | DH-T-HUMAN-7 (no DH-E scenario) |",
+			[][]string{{"DH-D-HUMAN-4", "DH-S-12 is not closed", NotYetClosed}}},
+		{"proofs cleared", "| DH-D-HUMAN-4 | P1 | DH-S-12 | done | DH-S-12 (local tests) | |",
+			[][]string{{"DH-D-HUMAN-4", "names no proving scenario or local test"}}},
+	} {
+		x, rec, recs := committed(t, func(src string) string { return strings.Replace(src, human4, tc.row, 1) })
+		p := ProofProblems(s, x, rec, recs)
+		for _, w := range tc.want {
+			if !slices.ContainsFunc(p, func(s string) bool { return containsAll(s, w...) }) {
+				t.Errorf("%s: problems %q name no %q", tc.name, p, w)
+			}
+		}
+	}
+}
+
+// Built in is the deliverable's own stage: HOST-1 marked built in DH-S-12 (which passes
+// ready --built) is refused, and judged against DH-S-15, which does not.
+func TestBuiltInCannotBeSubstituted(t *testing.T) {
+	s := Stories[DefaultStory]
+	x, rec, recs := committed(t, func(src string) string {
+		return strings.Replace(src, "| DH-D-HOST-1 | P0 | DH-S-15 | not built |", "| DH-D-HOST-1 | P0 | DH-S-12 | built |", 1)
+	})
+	p := ProofProblems(s, x, rec, recs)
+	for _, w := range [][]string{{"DH-D-HOST-1", `Built in reads "DH-S-12"`, "DH-S-15"}, {"DH-D-HOST-1 reads built", "DH-S-15 is not built"}} {
+		if !slices.ContainsFunc(p, func(s string) bool { return containsAll(s, w...) }) {
+			t.Errorf("problems %q name no %q", p, w)
+		}
+	}
+	if len(s.BuiltIn) != len(s.Deliverables) {
+		t.Errorf("BuiltIn has %d deliverables; the story has %d", len(s.BuiltIn), len(s.Deliverables))
+	}
+	for id := range s.BuiltIn {
+		if _, ok := s.Deliverables[id]; !ok {
+			t.Errorf("BuiltIn names %s, not a deliverable", id)
+		}
+	}
+	for _, id := range s.DoneCandidates {
+		if _, ok := s.Finishing[id]; !ok {
+			t.Errorf("done-candidate %s has no finishing stage", id)
+		}
+	}
+}
+
 // Scenario: Counts match tech-spec -- the committed closure.md has the 35 deliverables,
 // at most 11 done, every row not done names its tech-spec sec. 3.2 stage or H-item, the
 // held-open items in their M2 states, and every built or done state holds against the
