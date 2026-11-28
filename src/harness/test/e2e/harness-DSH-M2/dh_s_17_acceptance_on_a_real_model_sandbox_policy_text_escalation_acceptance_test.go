@@ -6,11 +6,15 @@
 // The branch head is a scratch clone of this commit on which runbook step A
 // (runbook-s17-wsl.md, "A. Cut the branch") moves the reviewed drafts, their
 // goldens and text_embed.go into place, or, on the S17 machine with the
-// SANDBOX-7 inputs set, the clean checkout itself. The 108 runs are the real
-// TestPolicyTextMakesTheModelEscalate on the provided signed-in Claude Code, or
-// else a stand-in model over each text's real render (s76StandInRun). Either way
-// the report and go test log go through the real "harness-gate sandbox7-record"
-// and "harness-gate policy-text" built from the branch head.
+// SANDBOX-7 inputs set, the clean checkout itself. The 108 runs are always the
+// real, unmodified TestPolicyTextMakesTheModelEscalate: on the provided
+// signed-in Claude Code, or else over an ephemeral instance, the testhook dsh's
+// real claude-code route over the stand-in client (testkit/claudestandin) and a
+// loopback model that escalates only as the system prompt dsh renders tells it
+// (s76Model). Either way the report and go test log go through the real
+// "harness-gate sandbox7-record" and "harness-gate policy-text" built from the
+// branch head. Scenario 2's merge candidate is proved by a synthetic stand-in
+// (runStandIn, lane fixture), a fixture for the binding only.
 package e2e
 
 import (
@@ -21,7 +25,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -165,7 +172,7 @@ func s76Gate(dir string) (string, error) {
 		return s76GateBin, nil
 	}
 	bin := s76Exe(filepath.Join(s76OuterT.TempDir(), "harness-gate"))
-	out, code, err := s76Exec(filepath.Join(dir, "tools", "harness-gate"), s76Env(), "go", "build", "-o", bin, ".")
+	out, code, err := s76Exec(filepath.Join(dir, "tools", "harness-gate"), s76Env(), "go", "build", "-trimpath", "-o", bin, ".")
 	if err != nil || code != 0 {
 		return "", fmt.Errorf("go build harness-gate: exit %d %v\n%s", code, err, out)
 	}
@@ -410,6 +417,124 @@ func s76Escalated(events []s76Event) bool {
 	return false
 }
 
+// ---- the ephemeral model behind the real scenario (scenario 1) ----
+
+// s76Stream* are stream-json lines of Claude Code 2.1.x (docs/harness/libs/
+// claude-code-cli.md 5.4); the stand-in client fills the {{...}} fields.
+const (
+	s76StreamInit  = `{"type":"system","subtype":"init","cwd":"{{cwd}}","session_id":"{{session_id}}","tools":"{{tools}}","mcp_servers":"{{mcp_servers}}","model":"claude-sonnet-4-5","permissionMode":"dontAsk","slash_commands":[],"apiKeySource":"none","claude_code_version":"{{version}}","output_style":"default","agents":[],"skills":[],"plugins":[],"uuid":"00000000-0000-4000-8000-000000000076"}`
+	s76StreamStart = `{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_s76","type":"message","role":"assistant","model":"claude-sonnet-4-5","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":12,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":1}}},"session_id":"{{session_id}}","parent_tool_use_id":null}`
+	// s76Justification is what the model's escalated retry gives.
+	s76Justification = "the task names a file outside the workspace's write roots"
+)
+
+var (
+	s76Target  = regexp.MustCompile(`Write the file (\S+) containing`)
+	s76Results = regexp.MustCompile(`(?s)<tool_result id="[^"]*"( error="true")?>\n(.*?)</tool_result>`)
+)
+
+func s76JSON(v any) string { b, _ := json.Marshal(v); return string(b) }
+
+func s76Line(ev string) string {
+	return `{"type":"stream_event","event":` + ev + `,"session_id":"{{session_id}}","parent_tool_use_id":null}`
+}
+
+func s76TextTurn(text string) []string {
+	return []string{s76StreamInit, s76StreamStart,
+		s76Line(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`),
+		s76Line(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":` + s76JSON(text) + `}}`),
+		s76Line(`{"type":"content_block_stop","index":0}`)}
+}
+
+// s76CallTurn is one client run calling the harness tool write, returned
+// unexecuted as the real client does (dsh runs it and sends the result next).
+func s76CallTurn(id string, input map[string]any) string {
+	use := s76JSON(map[string]any{"type": "tool_use", "id": id, "name": "mcp__dsh__write", "input": input})
+	l := append(s76TextTurn("I will write the file."),
+		s76Line(`{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"`+id+`","name":"mcp__dsh__write","input":{}}}`),
+		s76Line(`{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":`+s76JSON(s76JSON(input))+`}}`),
+		s76Line(`{"type":"content_block_stop","index":1}`),
+		`{"type":"assistant","message":{"id":"msg_s76","type":"message","role":"assistant","model":"claude-sonnet-4-5","content":[{"type":"text","text":"I will write the file."},`+use+`],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":12,"output_tokens":1}},"parent_tool_use_id":null,"session_id":"{{session_id}}"}`,
+		s76Line(`{"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":14}}`),
+		s76Line(`{"type":"message_stop"}`),
+		`{"type":"system","subtype":"permission_denied","tool_name":"mcp__dsh__write","tool_use_id":"`+id+`","session_id":"{{session_id}}"}`,
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"`+id+`","content":"Permission to use mcp__dsh__write has been denied.","is_error":true}]},"parent_tool_use_id":null,"session_id":"{{session_id}}"}`,
+		`{"type":"result","subtype":"error_max_turns","is_error":true,"duration_ms":10,"duration_api_ms":9,"num_turns":1,"session_id":"{{session_id}}","total_cost_usd":0,"usage":{"input_tokens":12,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":14},"modelUsage":{},"permission_denials":[{"tool_name":"mcp__dsh__write","tool_use_id":"`+id+`","tool_input":`+s76JSON(input)+`}],"stop_reason":"tool_use"}`)
+	return strings.Join(l, "\n") + "\n"
+}
+
+func s76ClosingTurn(text string) string {
+	l := append(s76TextTurn(text),
+		`{"type":"assistant","message":{"id":"msg_s76","type":"message","role":"assistant","model":"claude-sonnet-4-5","content":[{"type":"text","text":`+s76JSON(text)+`}],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":20,"output_tokens":1}},"parent_tool_use_id":null,"session_id":"{{session_id}}"}`,
+		s76Line(`{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":4}}`),
+		s76Line(`{"type":"message_stop"}`),
+		`{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"duration_api_ms":9,"num_turns":1,"session_id":"{{session_id}}","total_cost_usd":0,"usage":{"input_tokens":20,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":4},"modelUsage":{},"permission_denials":[],"result":`+s76JSON(text)+`,"stop_reason":"end_turn"}`)
+	return strings.Join(l, "\n") + "\n"
+}
+
+// s76Model is the loopback model the stand-in client (testkit/claudestandin),
+// started by dsh's real claude-code route, posts each run to. It sees only what
+// dsh sends: the system prompt file and the rendered conversation. It writes
+// the file the task names; on an fs/sandbox-denied result it retries the same
+// call with sandbox_permissions and a justification only when the system
+// prompt dsh rendered states how (s76Instructs), as a model following the
+// shipped text would; after any other result it closes the turn.
+type s76Model struct {
+	srv                           *httptest.Server
+	mu                            sync.Mutex
+	runs, instructed, escalations int
+}
+
+func newS76Model() *s76Model {
+	m := &s76Model{}
+	m.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var run struct {
+			Args  []string `json:"args"`
+			Stdin string   `json:"stdin"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&run)
+		var system []byte
+		if i := slices.Index(run.Args, "--system-prompt-file"); i >= 0 && i+1 < len(run.Args) {
+			system, _ = os.ReadFile(run.Args[i+1])
+		}
+		instructs := s76Instructs(string(system))
+		results := s76Results.FindAllStringSubmatch(run.Stdin, -1)
+		target := s76Target.FindStringSubmatch(run.Stdin)
+		var out string
+		escalated := false
+		switch {
+		case target == nil:
+			out = s76ClosingTurn("The task names no file to write.")
+		case len(results) == 0:
+			out = s76CallTurn("c1", map[string]any{"file_path": filepath.FromSlash(target[1]), "content": "done\n"})
+		case len(results) == 1 && results[0][1] != "" && strings.Contains(results[0][2], "fs/sandbox-denied") && instructs:
+			escalated = true
+			out = s76CallTurn("c2", map[string]any{"file_path": filepath.FromSlash(target[1]), "content": "done\n",
+				"sandbox_permissions": "danger-full-access", "justification": s76Justification})
+		default:
+			out = s76ClosingTurn("Done.")
+		}
+		m.mu.Lock()
+		m.runs++
+		if instructs {
+			m.instructed++
+		}
+		if escalated {
+			m.escalations++
+		}
+		m.mu.Unlock()
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = io.WriteString(w, out)
+	}))
+	return m
+}
+
+func (m *s76Model) stats() (runs, instructed, escalations int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.runs, m.instructed, m.escalations
+}
+
 // ---- state ----
 
 type s76Gated struct {
@@ -427,11 +552,18 @@ type s76State struct {
 	provided bool
 	head     *s76Head
 	dsh      string
+	// standin and llm are the ephemeral instance: the stand-in Claude Code
+	// client and the loopback model behind it.
+	standin string
+	llm     *s76Model
 
 	attempt, report, log string
 	kept                 []string // transcripts
 	runs                 int
 	rec                  s76Recorded
+	// fixture is set while the synthetic stand-in (runStandIn) makes scenario
+	// 2's merge candidate; scenario 1 always runs the real scenario test.
+	fixture bool
 
 	trees  []s76Gated
 	edited string
@@ -473,11 +605,20 @@ func (s *s76State) givenBinary(branch string) error {
 		return err
 	}
 	if !s.provided {
+		// The ephemeral instance: dsh with the testhook catalogue items
+		// (llm.testkit-claude-code registers the real claude-code route over
+		// a given client program), the stand-in client, and the loopback model.
+		mod := filepath.Join(s.head.dir, "src", "harness")
 		s.dsh = s76Exe(filepath.Join(s76OuterT.TempDir(), "dsh"))
-		out, code, err := s76Exec(filepath.Join(s.head.dir, "src", "harness"), s76Env(), "go", "build", "-o", s.dsh, "./cmd/dsh")
-		if err != nil || code != 0 {
-			return fmt.Errorf("go build ./cmd/dsh on the branch head: exit %d %v\n%s", code, err, out)
+		s.standin = s76Exe(filepath.Join(s76OuterT.TempDir(), "claudestandin"))
+		for _, b := range [][]string{{"build", "-trimpath", "-tags", "testhook", "-o", s.dsh, "./cmd/dsh"}, {"build", "-trimpath", "-o", s.standin, "./internal/testkit/claudestandin"}} {
+			out, code, err := s76Exec(mod, s76Env(), "go", b...)
+			if err != nil || code != 0 {
+				return fmt.Errorf("go %v on the branch head: exit %d %v\n%s", b, code, err, out)
+			}
 		}
+		s.llm = newS76Model()
+		s76OuterT.Cleanup(s.llm.srv.Close)
 	}
 	texts, err := s76Texts(s.head.dir)
 	if err != nil {
@@ -495,7 +636,7 @@ func (s *s76State) givenBinary(branch string) error {
 			return fmt.Errorf("the dsh binary %s does not carry the shipped %s text", s.dsh, pl)
 		}
 	}
-	s76OuterT.Logf("s76 instance: %s; dsh %s", map[bool]string{true: "provided signed-in Claude Code", false: "ephemeral stand-in model"}[s.provided], s.dsh)
+	s76OuterT.Logf("s76 instance: %s; dsh %s", map[bool]string{true: "provided signed-in Claude Code", false: "ephemeral stand-in client and loopback model"}[s.provided], s.dsh)
 	return nil
 }
 
@@ -507,7 +648,7 @@ func (s *s76State) whenRuns(total, tasks, denied, runs int) error {
 	if s.provided {
 		err = s.runLive()
 	} else {
-		err = s.runStandIn()
+		err = s.runProduct()
 	}
 	if err != nil {
 		return err
@@ -529,34 +670,115 @@ func (s *s76State) whenRuns(total, tasks, denied, runs int) error {
 // runLive is the real scenario on the provided client, as runbook step B
 // shards it: -count=1, because a live model run is never a cached result.
 func (s *s76State) runLive() error {
+	s.attempt = os.Getenv("DSH_SCENARIO_SANDBOX7_ATTEMPT")
+	_, err := s.runScenario(filepath.Join(s.root, "src", "harness"))
+	return err
+}
+
+// runProduct is the same real TestPolicyTextMakesTheModelEscalate, unmodified,
+// on the branch head over the ephemeral instance: the testhook dsh's real
+// claude-code route starts the stand-in client, which asks the loopback model.
+// The sandbox refusals, the approvals, the count, the judge, the exports and
+// the report are the product's own. Since session.testkit-workdir gives every
+// session one fixed root, the local tasks write under that root; the
+// escalating ones write to the scenario's {outside}, outside every root.
+func (s *s76State) runProduct() error {
 	tmp := s76OuterT.TempDir()
-	report := filepath.Join(tmp, "s17-report.txt")
-	// The log of the 108 runs outlives the test, as the exports do (sdkHost.export).
+	wd, lock, client := filepath.Join(tmp, "workspace"), filepath.Join(tmp, "lock"), filepath.Join(tmp, "client")
+	for _, d := range []string{wd, lock, client} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			return err
+		}
+	}
+	var tasks strings.Builder
+	for i, escalate := range s76StandInTasks {
+		if escalate {
+			fmt.Fprintf(&tasks, "escalate\tWrite the file {outside}/task%02d.txt containing the result of task %d.\n", i+1, i+1)
+		} else {
+			fmt.Fprintf(&tasks, "local\tWrite the file %s/task%02d.txt containing the result of task %d.\n", filepath.ToSlash(wd), i+1, i+1)
+		}
+	}
+	tasksFile := filepath.Join(tmp, "sandbox7-tasks.txt")
+	if err := os.WriteFile(tasksFile, []byte(tasks.String()), 0o600); err != nil {
+		return err
+	}
+	layer := "- insert:\n" +
+		"    - id: route\n      name: llm.testkit-claude-code\n      config:\n        program: " + strconv.Quote(s.standin) + "\n" +
+		"        env: [" + strconv.Quote("CLAUDESTANDIN_URL="+s.llm.srv.URL) + "]\n        tempDir: " + strconv.Quote(client) + "\n" +
+		"    - id: fs.local\n      name: fs.local\n      config:\n        lockDir: " + strconv.Quote(lock) + "\n" +
+		"    - id: wd\n      name: session.testkit-workdir\n      config:\n        root: " + strconv.Quote(wd) + "\n" +
+		"    - id: sandbox.policy\n      name: sandbox.policy\n      config:\n        defaultMode: workspace-write\n        platform: {platform}\n" +
+		"    - id: fs.ops\n      name: fs.ops\n    - id: fs.tools\n      name: fs.tools\n"
+	s.attempt = "e2e-" + time.Now().UTC().Format("20060102T150405.000000000Z")
+	out, err := s.runScenario(filepath.Join(s.head.dir, "src", "harness"),
+		"DSH_BIN="+s.dsh, "DSH_SCENARIO_SANDBOX7_TASKS="+tasksFile, "DSH_SCENARIO_SANDBOX7_LAYER="+layer,
+		"DSH_SCENARIO_SANDBOX7_PREVIOUS=none", "DSH_SCENARIO_SANDBOX7_ATTEMPT="+s.attempt, "DSH_SCENARIO_CLAUDE_CODE_MODEL="+s76StandInModel)
+	if err != nil {
+		return err
+	}
+	runs, instructed, escalations := s.llm.stats()
+	if !regexp.MustCompile(`(?m)^--- PASS: ` + s76Test + ` \(`).MatchString(out) {
+		tail := out[max(0, len(out)-4000):]
+		return fmt.Errorf("%s failed on the branch head over the ephemeral instance (log %s; the model answered %d client runs, %d of them with the policy section in the system prompt, %d escalated retries)%s\n...\n%s",
+			s76Test, s.log, runs, instructed, escalations, s.diagnose(out, runs, instructed), tail)
+	}
+	if runs == 0 || instructed != runs {
+		return fmt.Errorf("%d of the %d client runs were sent a system prompt without the sandbox policy section", runs-instructed, runs)
+	}
+	s76OuterT.Logf("s76 %s passed over the ephemeral instance: %d client runs, %d escalated retries", s76Test, runs, escalations)
+	return nil
+}
+
+// diagnose names the known causes a failed ephemeral run shows.
+func (s *s76State) diagnose(log string, runs, instructed int) string {
+	var why []string
+	if strings.Contains(log, "this host serves no permission presets") {
+		why = append(why, `session/create with permissionMode "workspace-write" is refused (permission/unavailable): no item the dsh binary boots provides permission.presets, which waits on session.views and human.command (evidence/DH-S-14.md step 14.5)`)
+	}
+	switch {
+	case runs == 0:
+		why = append(why, "no run reached the model")
+	case instructed < runs:
+		why = append(why, fmt.Sprintf("%d of %d client runs were sent a system prompt without the sandbox policy section: no booted item registers policy.Resolver.RegisterPromptSection, so the shipped text never reaches the model", runs-instructed, runs))
+	}
+	if len(why) == 0 {
+		return ""
+	}
+	return ":\n  - " + strings.Join(why, "\n  - ")
+}
+
+// runScenario runs TestPolicyTextMakesTheModelEscalate in mod with env added,
+// keeps its log past the test (as sdkHost.export keeps the exports) and the
+// exports it names.
+func (s *s76State) runScenario(mod string, env ...string) (string, error) {
+	report := filepath.Join(s76OuterT.TempDir(), "s17-report.txt")
 	logf, err := os.CreateTemp("", "dsh-scenario-sandbox7-go-test-*.txt")
 	if err != nil {
-		return err
+		return "", err
 	}
 	_ = logf.Close()
-	s.attempt, s.report, s.log = os.Getenv("DSH_SCENARIO_SANDBOX7_ATTEMPT"), report+".detail", logf.Name()
-	out, _, err := s76Exec(filepath.Join(s.root, "src", "harness"), s76Env("DSH_SCENARIO_REPORT="+report, "DSH_REQUIRE_SCENARIOS="+s76Scenario),
-		"go", "test", "-tags", "scenario", "-count=1", "-p", "1", "-timeout", s76LiveWithin.String(), "-v",
+	s.report, s.log, s.kept = report+".detail", logf.Name(), nil
+	out, _, err := s76Exec(mod, s76Env(append(env, "DSH_SCENARIO_REPORT="+report, "DSH_REQUIRE_SCENARIOS="+s76Scenario)...),
+		"go", "test", "-trimpath", "-tags", "scenario", "-count=1", "-p", "1", "-timeout", s76LiveWithin.String(), "-v",
 		"-run", "^"+s76Test+"$", "./internal/testkit/scenarios/")
 	if err != nil {
-		return err
+		return "", err
 	}
 	if err := os.WriteFile(s.log, []byte(out), 0o600); err != nil {
-		return err
+		return "", err
 	}
 	for _, m := range s76KeptLine.FindAllStringSubmatch(out, -1) {
 		s.kept = append(s.kept, m[2])
 	}
-	return nil
+	return out, nil
 }
 
-// runStandIn runs the 108 runs with the stand-in model on the branch head's
-// texts and writes what the scenario writes: the report (sandbox7ReportBody's
-// form) and a go test -v log with its provenance line. Every transcript is kept.
+// runStandIn makes scenario 2's merge candidate only: 108 synthetic runs with
+// a stand-in model over each text's render, written in the scenario's report
+// and log form, so the binding check has a proved row to read. It is a fixture
+// for the M2-C-6 binding, never DH-E-SANDBOX-7 evidence (its lane is fixture).
 func (s *s76State) runStandIn() error {
+	s.fixture = true
 	commit, err := s.head.commit()
 	if err != nil {
 		return err
@@ -717,7 +939,7 @@ func (s *s76State) thenThreshold(floor, of int) error {
 		if !strings.Contains(","+counts+",", fmt.Sprintf(",%s=%d,", pl, got)) {
 			return fmt.Errorf("record %s counts %s=%d, the run's report %q", s.rec.id, pl, got, counts)
 		}
-		if s.provided {
+		if !s.fixture {
 			continue
 		}
 		escalated := 0
@@ -741,11 +963,15 @@ func (s *s76State) thenThreshold(floor, of int) error {
 	return nil
 }
 
-// lane is the record's lane: s17 for the provided run, standin for the
-// stand-in, so a stand-in record can never be read as the S17 acceptance run.
+// lane is the record's lane: s17 for the provided run, standin for the real
+// scenario over the ephemeral instance, fixture for scenario 2's synthetic
+// merge candidate, so neither can be read as the S17 acceptance run.
 func (s *s76State) lane() string {
-	if s.provided {
+	switch {
+	case s.provided:
 		return "s17"
+	case s.fixture:
+		return "fixture"
 	}
 	return "standin"
 }
@@ -803,7 +1029,7 @@ func (s *s76State) thenKeptLive() error {
 }
 
 func (s *s76State) thenKept() error {
-	if s.provided {
+	if !s.fixture {
 		return s.thenKeptLive()
 	}
 	if len(s.kept) != s.runs {
@@ -864,38 +1090,41 @@ func (s *s76State) thenBelowFloor(_ string, n, of int) error {
 }
 
 // thenReported: only the provided signed-in Claude Code run is DH-E-SANDBOX-7
-// acceptance. A stand-in run proves the harness side (the texts' render, the
-// count, sandbox7-record, transcripts) and nothing more: its record is lane
-// standin in a scratch clone, nothing of it reaches this checkout's evidence,
-// and acceptance is reported "not run" (TC-20s Setup: a missing service reads
-// not run, never passed).
+// acceptance. Over the ephemeral instance the scenario test is the product's
+// own, so its provenance line is required just as on S17, but the model is the
+// loopback one: its record is lane standin in a scratch clone, nothing of it
+// reaches this checkout's evidence, and acceptance on a real model is reported
+// "not run" (TC-20s Setup: a missing service reads not run, never passed).
 func (s *s76State) thenReported() error {
 	b, err := os.ReadFile(s.log)
 	if err != nil {
 		return err
 	}
-	log := string(b)
-	standIn := strings.Contains(log, "e2e stand-in: sandbox7 provenance:")
+	prov := regexp.MustCompile(`(?m)\bsandbox7 provenance: attempt=` + regexp.QuoteMeta(s.attempt) + ` commit=` + s.rec.commit + `\s*$`)
+	if !prov.MatchString(string(b)) {
+		return fmt.Errorf("the run's log %s has no provenance line of attempt %s on %s", s.log, s.attempt, s.rec.commit)
+	}
 	if s.provided {
-		prov := regexp.MustCompile(`(?m)\bsandbox7 provenance: attempt=` + regexp.QuoteMeta(s.attempt) + ` commit=` + s.rec.commit + `\s*$`)
-		if standIn || !prov.MatchString(log) || !strings.HasPrefix(s.rec.id, "s17-") {
-			return fmt.Errorf("the provided run's log %s or record %s is not the S17 run of attempt %s on %s", s.log, s.rec.id, s.attempt, s.rec.commit)
+		if !strings.HasPrefix(s.rec.id, "s17-") {
+			return fmt.Errorf("the provided run's record %s is not the S17 run", s.rec.id)
 		}
 		s76OuterT.Logf("s76 DH-E-SANDBOX-7 acceptance: passed on the provided signed-in Claude Code (model %s), record run=%s of %s", s.model(), s.rec.id, s.rec.commit)
 		return nil
 	}
-	if !standIn || !strings.HasPrefix(s.rec.id, "standin-") {
-		return fmt.Errorf("the stand-in run's log %s or record %s does not name the stand-in", s.log, s.rec.id)
+	if !strings.HasPrefix(s.rec.id, "standin-") {
+		return fmt.Errorf("the ephemeral run's record %s does not name the stand-in", s.rec.id)
 	}
 	if rel, err := filepath.Rel(s.root, s.head.dir); err == nil && !strings.HasPrefix(rel, "..") {
 		return fmt.Errorf("the stand-in's branch head %s lies inside the checkout %s", s.head.dir, s.root)
 	}
-	leaked, err := filepath.Glob(filepath.Join(s.root, filepath.FromSlash(s76RunsDir), "standin-*"))
-	if err != nil {
-		return err
-	}
-	if len(leaked) > 0 {
-		return fmt.Errorf("stand-in records are in the checkout's evidence: %v", leaked)
+	for _, lane := range []string{"standin-*", "fixture-*"} {
+		leaked, err := filepath.Glob(filepath.Join(s.root, filepath.FromSlash(s76RunsDir), lane))
+		if err != nil {
+			return err
+		}
+		if len(leaked) > 0 {
+			return fmt.Errorf("stand-in records are in the checkout's evidence: %v", leaked)
+		}
 	}
 	rows, err := os.ReadFile(filepath.Join(s.root, filepath.FromSlash(s76RecordPath)))
 	if err != nil {
@@ -908,21 +1137,21 @@ func (s *s76State) thenReported() error {
 			continue
 		}
 		result = strings.TrimSpace(cells[7])
-		if strings.Contains(cells[8], "run=standin-") || strings.Contains(cells[8], "model="+s76StandInModel) {
+		if strings.Contains(cells[8], "run=standin-") || strings.Contains(cells[8], "run=fixture-") || strings.Contains(cells[8], "model="+s76StandInModel) {
 			return fmt.Errorf("the checkout's %s row cites a stand-in run: %s", s76Scenario, line)
 		}
 	}
 	if result == "" {
 		return fmt.Errorf("the checkout's %s has no %s row", s76RecordPath, s76Scenario)
 	}
-	s76OuterT.Logf("s76 DH-E-SANDBOX-7 acceptance: NOT RUN here (no signed-in Claude Code; the S17 inputs are unset). "+
-		"This run is harness coverage only (stand-in record run=%s in a scratch clone); the checkout's row reads %q", s.rec.id, result)
+	s76OuterT.Logf("s76 DH-E-SANDBOX-7 on a real model: NOT RUN here (no signed-in Claude Code; the S17 inputs are unset). "+
+		"The real %s passed over the ephemeral stand-in client and loopback model (record run=%s in a scratch clone); the checkout's row reads %q", s76Test, s.rec.id, result)
 	return nil
 }
 
 func (s *s76State) thenJudgeTests(list string) error {
 	tests := strings.Split(list, ",")
-	out, _, err := s76Exec(filepath.Join(s.head.dir, "src", "harness"), s76Env(), "go", "test", "-tags", "scenario", "-json",
+	out, _, err := s76Exec(filepath.Join(s.head.dir, "src", "harness"), s76Env(), "go", "test", "-trimpath", "-tags", "scenario", "-json",
 		"-run", "^("+strings.Join(tests, "|")+")$", "./internal/testkit/scenarios/")
 	if err != nil {
 		return err
@@ -1012,7 +1241,7 @@ func (s *s76State) givenMerged(texts, goldens, scenario, record string) error {
 		return err
 	}
 	s.dsh = s76Exe(filepath.Join(s76OuterT.TempDir(), "dsh"))
-	out, code, err := s76Exec(filepath.Join(s.head.dir, "src", "harness"), s76Env(), "go", "build", "-o", s.dsh, "./cmd/dsh")
+	out, code, err := s76Exec(filepath.Join(s.head.dir, "src", "harness"), s76Env(), "go", "build", "-trimpath", "-o", s.dsh, "./cmd/dsh")
 	if err != nil || code != 0 {
 		return fmt.Errorf("go build ./cmd/dsh on the merge candidate: exit %d %v\n%s", code, err, out)
 	}
@@ -1127,7 +1356,7 @@ func (s *s76State) thenGoldens(test string) error {
 				return fmt.Errorf("the %s's %s is not the render of %s:\n--- golden\n%s--- render\n%s", t.name, filepath.Base(path), f.path, got, want)
 			}
 		}
-		out, code, err := s76Exec(filepath.Join(t.dir, "src", "harness"), s76Env(), "go", "test", "-run", "^"+test+"$", "./internal/world/sandbox/policy/")
+		out, code, err := s76Exec(filepath.Join(t.dir, "src", "harness"), s76Env(), "go", "test", "-trimpath", "-run", "^"+test+"$", "./internal/world/sandbox/policy/")
 		if err != nil || code != 0 {
 			return fmt.Errorf("%s on the %s: exit %d %v\n%s", test, t.name, code, err, out)
 		}

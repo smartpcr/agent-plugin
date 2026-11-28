@@ -16,19 +16,23 @@ Feature: Sandbox policy text escalation acceptance (DH-E-SANDBOX-7, M2-C-6)
   checkout must be the clean s17/policy-text head and the real scenario test
   TestPolicyTextMakesTheModelEscalate runs its 108 runs on it. With none set, the
   instance is an ephemeral one: a scratch clone of this commit on which runbook
-  step A cuts s17/policy-text (moves only), the dsh binary built there, and a
-  stand-in model that reads each text's rendered section, makes the call, and on
-  fs/sandbox-denied retries it as the section instructs. A partial set fails and
-  names what is missing. Either way the counts go through the real
-  harness-gate sandbox7-record and policy-text on the branch head. A stand-in run
-  is harness coverage, not acceptance: its record is lane "standin" in a scratch
-  clone, its rows name model e2e-stand-in, nothing of it reaches this checkout's
-  evidence, and the suite reports DH-E-SANDBOX-7 acceptance as not run (TC-20s:
-  a missing service reads not run, never passed). Acceptance of the route itself
-  is only the provided run on the S17 machine, which keeps the log of its 108
-  runs and the exports TC-20s requires: every run that fails alone, and every
-  run of a text below the floor. Proof golden for the binding.
-
+  step A cuts s17/policy-text (moves only), dsh built there with the testhook
+  items, and the same real, unmodified TestPolicyTextMakesTheModelEscalate run
+  on it: dsh's real claude-code route starts the stand-in client
+  (testkit/claudestandin), which asks a loopback model. That model sees only
+  what dsh sends; it makes the task's write and, on fs/sandbox-denied, retries
+  it with sandbox_permissions and a justification only when the system prompt
+  dsh rendered says how. The sandbox refusals, approvals, count, judge, exports
+  and report are the product's own. A partial set fails and names what is
+  missing. Either way the counts go through the real harness-gate
+  sandbox7-record and policy-text on the branch head. The ephemeral run is not
+  real-model acceptance: its record is lane "standin" in a scratch clone,
+  nothing of it reaches this checkout's evidence, and the suite reports
+  DH-E-SANDBOX-7 on a real model as not run (TC-20s: a missing service reads
+  not run, never passed). Both instances keep the log of the 108 runs and the
+  exports TC-20s requires: every run that fails alone, and every run of a text
+  below the floor. Proof golden for the binding; its merge candidate is proved
+  by a synthetic stand-in (lane "fixture"), a fixture for the binding only.
   Scenario: DH-E-SANDBOX-7 escalation threshold
     Given the binary built from the "s17/policy-text" branch head carrying the three shipped texts: the provided S17 checkout when its SANDBOX-7 inputs are set, or else a scratch branch cut by runbook step A
     When 108 runs complete: 12 tasks, 6 of them denied first, 3 runs of each on each text
