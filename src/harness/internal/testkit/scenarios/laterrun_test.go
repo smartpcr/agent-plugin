@@ -103,28 +103,48 @@ func pidAlive(t *testing.T, pid int) bool {
 // goneWithin fails the scenario when pid still runs after within.
 func goneWithin(t *testing.T, pid int, what string, within time.Duration) {
 	t.Helper()
-	for end := time.Now().Add(within); pidAlive(t, pid); time.Sleep(200 * time.Millisecond) {
-		if time.Now().After(end) {
-			t.Errorf("%s (pid %d) still runs %s later", what, pid, within)
-			return
+	if !pollUntil(within, 200*time.Millisecond, func() bool { return !pidAlive(t, pid) }) {
+		t.Errorf("%s (pid %d) still runs %s later", what, pid, within)
+	}
+}
+
+// pollUntil checks cond now and then every period until it holds or within
+// passes; it reports whether cond held.
+func pollUntil(within, every time.Duration, cond func() bool) bool {
+	tick := time.NewTicker(every)
+	defer tick.Stop()
+	deadline := time.After(within)
+	for !cond() {
+		select {
+		case <-deadline:
+			return cond()
+		case <-tick.C:
 		}
 	}
+	return true
 }
 
 // readPid reads the process id a fixture command wrote to path, waiting up to
 // within for it.
 func readPid(t *testing.T, path string, within time.Duration) int {
 	t.Helper()
-	for end := time.Now().Add(within); ; time.Sleep(100 * time.Millisecond) {
-		if data, err := os.ReadFile(path); err == nil {
-			if pid, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil && pid > 0 {
-				return pid
-			}
-		}
-		if time.Now().After(end) {
-			t.Fatalf("no process id in %s within %s", path, within)
-		}
+	var pid int
+	if !pollUntil(within, 100*time.Millisecond, func() bool { pid = pidIn(path); return pid > 0 }) {
+		t.Fatalf("no process id in %s within %s", path, within)
 	}
+	return pid
+}
+
+// pidIn is the positive process id path holds, or 0.
+func pidIn(path string) int {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	if pid, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil && pid > 0 {
+		return pid
+	}
+	return 0
 }
 
 // dshIn runs the built binary in the scenario's home and workspace (S.Program)

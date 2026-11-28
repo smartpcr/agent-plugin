@@ -65,11 +65,15 @@ func (l *lockedBuffer) String() string {
 // waitFor polls until s() contains want.
 func waitFor(t *testing.T, what string, s func() string, want string) {
 	t.Helper()
-	for deadline := time.Now().Add(30 * time.Second); !strings.Contains(s(), want); {
-		if time.Now().After(deadline) {
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	deadline := time.After(30 * time.Second)
+	for !strings.Contains(s(), want) {
+		select {
+		case <-deadline:
 			t.Fatalf("no %q on %s; got %q", want, what, s())
+		case <-tick.C:
 		}
-		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -88,7 +92,15 @@ func TestSecretSetOnPseudoTerminalHidesInput(t *testing.T) {
 		t.Fatalf("the pty starts without echo or line input: lflag %#x", before.Lflag)
 	}
 	var screen lockedBuffer
+	read, ran := make(chan struct{}), make(chan struct{})
+	t.Cleanup(func() {
+		// Closing both ends ends the reader and any read Main still blocks on.
+		_, _ = pts.Close(), ptm.Close()
+		<-read
+		<-ran
+	})
 	go func() {
+		defer close(read)
 		buf := make([]byte, 256)
 		for {
 			n, err := ptm.Read(buf)
@@ -106,7 +118,7 @@ func TestSecretSetOnPseudoTerminalHidesInput(t *testing.T) {
 		Stdin:   pts, Stdout: &out, Stderr: &errOut,
 	}
 	status := make(chan int, 1)
-	go func() { status <- Main(context.Background(), env) }()
+	go func() { defer close(ran); status <- Main(context.Background(), env) }()
 	waitFor(t, "standard error", errOut.String, secretPrompt)
 	if _, err := ptm.WriteString("sk-typed-value\n"); err != nil {
 		t.Fatal(err)
@@ -158,7 +170,15 @@ func TestSecretSetInterruptedOnPseudoTerminalRestoresIt(t *testing.T) {
 		t.Fatalf("the pty does not turn Ctrl-C into SIGINT: lflag %#x, intr %d", before.Lflag, before.Cc[unix.VINTR])
 	}
 	var screen lockedBuffer
+	read, ran := make(chan struct{}), make(chan struct{})
+	t.Cleanup(func() {
+		// Closing both ends ends the reader and any read Main still blocks on.
+		_, _ = pts.Close(), ptm.Close()
+		<-read
+		<-ran
+	})
 	go func() {
+		defer close(read)
 		buf := make([]byte, 256)
 		for {
 			n, err := ptm.Read(buf)

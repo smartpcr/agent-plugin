@@ -31,6 +31,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/launcher"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/procwait"
 )
 
 // obsBin is dsh built once with the testhook tag (fake route llm.testkit-route
@@ -441,12 +442,11 @@ func (s *obsState) cleanup() error {
 	}
 	// Windows releases a stopped process's handles on the home shortly after
 	// the process is reported gone.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 	var err error
-	for range 40 {
-		if err = os.RemoveAll(s.tmp); err == nil {
-			return nil
-		}
-		time.Sleep(50 * time.Millisecond)
+	if procwait.Poll(ctx, func() bool { err = os.RemoveAll(s.tmp); return err == nil }) == nil {
+		return nil
 	}
 	return err
 }

@@ -58,6 +58,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/surface"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/launcher"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/procwait"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/temphome"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/fs"
 )
@@ -141,6 +142,9 @@ func gshEditorChild(file, logPath, stop, versions string) error {
 		return err
 	}
 	defer log.Close()
+	// pause waits a full d from the call, as each retry after a lost race with
+	// the oracle's own rename needs its whole window; it also spaces the saves.
+	pause := func(d time.Duration) { <-time.After(d) }
 	for n := 0; ; n++ {
 		if _, err := os.Stat(stop); err == nil {
 			return nil
@@ -148,7 +152,7 @@ func gshEditorChild(file, logPath, stop, versions string) error {
 		start := time.Now()
 		data, err := os.ReadFile(file)
 		if err != nil {
-			time.Sleep(time.Millisecond)
+			pause(time.Millisecond)
 			continue
 		}
 		tmp := fmt.Sprintf("%s.~%d", file, n)
@@ -159,7 +163,7 @@ func gshEditorChild(file, logPath, stop, versions string) error {
 			if err = os.Rename(tmp, file); err == nil || try == 500 {
 				break
 			}
-			time.Sleep(time.Millisecond)
+			pause(time.Millisecond)
 		}
 		if err != nil {
 			return err
@@ -168,7 +172,7 @@ func gshEditorChild(file, logPath, stop, versions string) error {
 			return err
 		}
 		fmt.Fprintf(log, "%s %s %s\n", start.Format(time.RFC3339Nano), time.Now().Format(time.RFC3339Nano), gshSum(data))
-		time.Sleep(10 * time.Millisecond)
+		pause(10 * time.Millisecond)
 	}
 }
 
@@ -364,26 +368,24 @@ func (w *gshWorld) startLong(id string, words ...string) (*launcher.Host, error)
 		return nil, err
 	}
 	h := launcher.Spawn(gshOuterT, launcher.Program{Argv: w.argv(layer, words...), Dir: w.ws, Env: shkKeylessEnv(os.Environ())})
-	deadline := time.Now().Add(gshWithin)
-	for !strings.Contains(h.Stderr.String(), gshSleepLine) {
-		if time.Now().After(deadline) || h.Await(0) {
-			return nil, fmt.Errorf("the long tool never ran (exit %d):\n%s", h.Process.ExitCode(), h.Stderr.String())
-		}
-		time.Sleep(20 * time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), gshWithin)
+	defer cancel()
+	ran := func() bool { return strings.Contains(h.Stderr.String(), gshSleepLine) }
+	if procwait.Poll(ctx, func() bool { return ran() || h.Await(0) }) != nil || !ran() {
+		return nil, fmt.Errorf("the long tool never ran (exit %d):\n%s", h.Process.ExitCode(), h.Stderr.String())
 	}
 	if m := gshRunRe.FindStringSubmatch(h.Stderr.String()); m != nil && w.session == "" {
 		w.session = m[1]
 	}
-	for {
-		evs, err := w.events()
-		if err == nil && slices.ContainsFunc(evs, func(e gshEvent) bool { return e.typ == "tool/call" && strings.Contains(e.data, id) }) {
-			return h, nil
-		}
-		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("the tool call %s was never stored (%v)", id, err)
-		}
-		time.Sleep(20 * time.Millisecond)
+	stored := func() bool {
+		var evs []gshEvent
+		evs, err = w.events()
+		return err == nil && slices.ContainsFunc(evs, func(e gshEvent) bool { return e.typ == "tool/call" && strings.Contains(e.data, id) })
 	}
+	if procwait.Poll(ctx, stored) != nil {
+		return nil, fmt.Errorf("the tool call %s was never stored (%v)", id, err)
+	}
+	return h, nil
 }
 
 // refused runs a resume that must be refused session/owned naming pid.

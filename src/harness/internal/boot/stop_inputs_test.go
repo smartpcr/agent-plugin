@@ -55,7 +55,13 @@ func TestHostOnATerminalConfirmsTheFirstCtrlC(t *testing.T) {
 	triggers := make(chan lifecycle.Trigger)
 	in.Triggers = triggers
 	status := make(chan int, 1)
+	exited := make(chan struct{})
+	t.Cleanup(func() {
+		app.Stop(launch.Requested, output.OK)
+		<-exited
+	})
 	go func() {
+		defer close(exited)
 		status <- lifecycle.Process(context.Background(), app, in, func(ctx context.Context) int { return Run(ctx, o) })
 	}()
 	select {

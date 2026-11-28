@@ -19,15 +19,18 @@ import (
 var variantBudget = 175 * time.Minute
 
 // runVariantRun is "harness-gate variant-run [--root dir] --stage DH-S-n
-// --scenarios IDS", the scenario step of an s18 variant job: IDS are the
-// variant's required scenarios ("require --variant"), run in the stage's order
-// (stageOrder) by Config.runVariant. It returns 2 on a usage or setup error, 1
+// --scenarios IDS [--rehearsal DIR]", the scenario step of an s18 variant job:
+// IDS are the variant's required scenarios ("require --variant"), run in the
+// stage's order (stageOrder) by Config.runVariant. DIR is the rehearsal
+// directory: a variant holding DH-E-TOOLCHAIN-2 rehearses into it, and one
+// without is handed the verified binary a rehearsing run left there (runOrdered). It returns 2 on a usage or setup error, 1
 // when a scenario did not pass and 0 when every one did.
 func runVariantRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	var stage, ids string
+	var stage, ids, rehearsed string
 	root, ok := subcommandFlags("variant-run", args, stderr, func(f *flag.FlagSet) {
 		f.StringVar(&stage, "stage", "", "the acceptance stage of the variant, e.g. DH-S-18")
 		f.StringVar(&ids, "scenarios", "", "the variant's comma-separated scenario IDs (require --variant)")
+		f.StringVar(&rehearsed, "rehearsal", "", "the rehearsal directory: written by a variant that rehearses, read by one that does not")
 	})
 	if !ok {
 		return 2
@@ -41,6 +44,12 @@ func runVariantRun(ctx context.Context, args []string, stdout, stderr io.Writer)
 	if err != nil {
 		fmt.Fprintf(stderr, "harness-gate variant-run: %v\n", err)
 		return 2
+	}
+	if rehearsed != "" {
+		if rehearsed, err = filepath.Abs(rehearsed); err != nil {
+			fmt.Fprintf(stderr, "harness-gate variant-run: %v\n", err)
+			return 2
+		}
 	}
 	cfg, err := NewConfig(abs)
 	if err != nil {
@@ -61,7 +70,7 @@ func runVariantRun(ctx context.Context, args []string, stdout, stderr io.Writer)
 		fmt.Fprintln(stderr, "harness-gate variant-run: --scenarios names no scenario")
 		return 2
 	}
-	if err := cfg.runVariant(ctx, stdout, stage, plan); err != nil {
+	if err := cfg.runVariant(ctx, stdout, stage, plan, rehearsed); err != nil {
 		fmt.Fprintf(stdout, "harness-gate variant-run: FAILED:\n%v\n", err)
 		return 1
 	}
@@ -71,12 +80,13 @@ func runVariantRun(ctx context.Context, args []string, stdout, stderr io.Writer)
 
 // runVariant runs plan, one variant's scenarios of stage, phase by phase
 // (runOrdered): on DH-S-18 a variant holding DH-E-TOOLCHAIN-2 runs it first and
-// every later scenario on the binary it verified (impl.md 18.1). Per phase and
+// every later scenario on the binary it verified, and a variant without it runs
+// every scenario on the binary verified in rehearsed (impl.md 18.1). Per phase and
 // module one go test -tags scenario run, judged by scenarioVerdict: a skip, a
 // non-zero exit or a planned test without a PASS line fails it.
-func (c *Config) runVariant(ctx context.Context, w io.Writer, stage string, plan acceptance.Plan) error {
+func (c *Config) runVariant(ctx context.Context, w io.Writer, stage string, plan acceptance.Plan, rehearsed string) error {
 	deadline := time.Now().Add(variantBudget)
-	return runOrdered(w, stage, plan, func(phase acceptance.Plan, extra ...string) error {
+	return runOrdered(w, stage, plan, rehearsed, func(phase acceptance.Plan, extra ...string) error {
 		mods, byMod, err := c.modulePlans(phase)
 		if err != nil {
 			return err

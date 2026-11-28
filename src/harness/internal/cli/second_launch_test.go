@@ -63,12 +63,7 @@ func startWeb(t *testing.T, ctx context.Context) *webHost {
 	if err := home.Ensure(home.New(root)); err != nil {
 		t.Fatal(err)
 	}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	port := ln.Addr().(*net.TCPAddr).Port
-	_ = ln.Close()
+	port := freePort(t)
 	temphome.Layer(t, root, profile.Web,
 		"- insert:\n    - id: route\n      name: llm.testkit-route\n      config:\n        id: fake\n        url: \"http://127.0.0.1:1\"\n"+
 			"- id: host.listen\n  name: host.listen\n  merge:\n    port: "+strconv.Itoa(port)+"\n")
@@ -80,13 +75,15 @@ func startWeb(t *testing.T, ctx context.Context) *webHost {
 func (w *webHost) start(t *testing.T, ctx context.Context, args ...string) *webHost {
 	t.Helper()
 	w = &webHost{bin: w.bin, root: w.root, port: w.port, stderr: &testkit.Buffer{}, done: make(chan struct{})}
-	w.cmd = exec.CommandContext(ctx, w.bin, append([]string{"--home", w.root, "web"}, args...)...)
-	w.cmd.Env, w.cmd.Dir, w.cmd.Stderr = webEnv(), filepath.Dir(w.root), w.stderr
-	if err := w.cmd.Start(); err != nil {
+	cmd := exec.CommandContext(ctx, w.bin, append([]string{"--home", w.root, "web"}, args...)...)
+	cmd.Env, cmd.Dir, cmd.Stderr = webEnv(), filepath.Dir(w.root), w.stderr
+	w.cmd = cmd
+	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	go func() { defer close(w.done); _ = w.cmd.Wait() }()
-	t.Cleanup(func() { _ = w.cmd.Process.Kill(); <-w.done })
+	done := w.done
+	go func() { defer close(done); _ = cmd.Wait() }()
+	t.Cleanup(func() { _ = cmd.Process.Kill(); <-done })
 	for !strings.Contains(w.stderr.String(), testOpened) {
 		select {
 		case <-w.done:
@@ -138,9 +135,16 @@ func TestSecondWebReusesTheHost(t *testing.T) {
 	if strings.Contains(stderr, "#t=") {
 		t.Errorf("the second launch printed a link:\n%s", stderr)
 	}
-	deadline := time.Now().Add(10 * time.Second)
-	for strings.Count(w.stderr.String(), testOpened) < 2 && time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
+	tick := time.NewTicker(20 * time.Millisecond)
+	defer tick.Stop()
+	deadline := time.After(10 * time.Second)
+opened:
+	for strings.Count(w.stderr.String(), testOpened) < 2 {
+		select {
+		case <-deadline:
+			break opened
+		case <-tick.C:
+		}
 	}
 	if n := strings.Count(w.stderr.String(), testOpened); n != 2 {
 		t.Errorf("the running host opened its browser %d times, want 2:\n%s", n, w.stderr)
@@ -190,8 +194,12 @@ func freePort(t *testing.T) int {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = ln.Close() }()
-	return ln.Addr().(*net.TCPAddr).Port
+	port := ln.Addr().(*net.TCPAddr).Port
+	// Closed now so the port is free for the caller; the Cleanup is the
+	// registered release (a second Close is a no-op).
+	_ = ln.Close()
+	t.Cleanup(func() { _ = ln.Close() })
+	return port
 }
 
 // DH-ADR-CLI-4: --port and --bind choose the listener before reuse is decided.

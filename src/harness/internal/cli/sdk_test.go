@@ -38,25 +38,36 @@ type sdkProcess struct {
 func startSDK(t *testing.T, ctx context.Context, bin, root string) *sdkProcess {
 	t.Helper()
 	p := &sdkProcess{done: make(chan struct{})}
-	p.cmd = exec.CommandContext(ctx, bin, "--home", root, "--profile", "sdk")
-	p.cmd.Env = os.Environ()
-	p.cmd.Dir = t.TempDir()
-	p.cmd.Stderr = &p.stderr
+	cmd := exec.CommandContext(ctx, bin, "--home", root, "--profile", "sdk")
+	cmd.Env = os.Environ()
+	cmd.Dir = t.TempDir()
+	cmd.Stderr = &p.stderr
+	p.cmd = cmd
 	var err error
-	if p.stdin, err = p.cmd.StdinPipe(); err != nil {
+	if p.stdin, err = cmd.StdinPipe(); err != nil {
 		t.Fatal(err)
 	}
-	if p.stdout, err = p.cmd.StdoutPipe(); err != nil {
+	if p.stdout, err = cmd.StdoutPipe(); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.cmd.Start(); err != nil {
+	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); <-p.done })
 	go func() {
 		defer close(p.done)
-		_ = p.cmd.Wait()
+		_ = cmd.Wait()
 	}()
 	return p
+}
+
+// background runs f beside the test and joins it at cleanup, after killing the
+// process f talks to so its pipes end.
+func (p *sdkProcess) background(t *testing.T, f func()) {
+	t.Helper()
+	ran := make(chan struct{})
+	t.Cleanup(func() { _ = p.cmd.Process.Kill(); <-ran })
+	go func() { defer close(ran); f() }()
 }
 
 // status waits for the process and returns its exit status and how long the
@@ -93,7 +104,7 @@ func TestSDKLauncherBoundedEndings(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		p := startSDK(t, ctx, bin, sdkHome(t, m, "", ""))
-		go func() { _, _ = io.Copy(io.Discard, p.stdout) }()
+		p.background(t, func() { _, _ = io.Copy(io.Discard, p.stdout) })
 		// One answered request proves the server is up before the client ends.
 		if _, err := io.WriteString(p.stdin, ping(0)); err != nil {
 			t.Fatal(err)
@@ -109,13 +120,13 @@ func TestSDKLauncherBoundedEndings(t *testing.T) {
 		defer cancel()
 		p := startSDK(t, ctx, bin, sdkHome(t, m, "", "- id: wire.stdio\n  name: wire.stdio\n  merge:\n    writeStall: 1s\n"))
 		// The client writes requests and never reads an answer.
-		go func() {
+		p.background(t, func() {
 			for i := 0; ; i++ {
 				if _, err := io.WriteString(p.stdin, ping(i)); err != nil {
 					return
 				}
 			}
-		}()
+		})
 		if got, _ := p.status(t, time.Minute); got != output.Stalled {
 			t.Fatalf("status %d, want %d:\n%s", got, output.Stalled, p.stderr.String())
 		}
@@ -125,7 +136,7 @@ func TestSDKLauncherBoundedEndings(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		p := startSDK(t, ctx, bin, sdkHome(t, m, "        holdStop: true\n", ""))
-		go func() { _, _ = io.Copy(io.Discard, p.stdout) }()
+		p.background(t, func() { _, _ = io.Copy(io.Discard, p.stdout) })
 		if _, err := io.WriteString(p.stdin, ping(0)); err != nil {
 			t.Fatal(err)
 		}
@@ -152,7 +163,7 @@ func TestSDKLauncherBoundedEndings(t *testing.T) {
 			defer cancel()
 			p := startSDK(t, ctx, bin, sdkHome(t, m, "", c.extra))
 			defer p.stdin.Close()
-			go func() { _, _ = io.Copy(io.Discard, p.stdout) }()
+			p.background(t, func() { _, _ = io.Copy(io.Discard, p.stdout) })
 			if got, _ := p.status(t, time.Minute); got != c.want {
 				t.Fatalf("status %d, want %d:\n%s", got, c.want, p.stderr.String())
 			}

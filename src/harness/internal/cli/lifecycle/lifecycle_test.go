@@ -334,7 +334,14 @@ func TestProcessWatchesThroughContextShutdown(t *testing.T) {
 	triggers := make(chan Trigger)
 	ctx, cancel := context.WithCancel(context.Background())
 	status := make(chan int, 1)
+	exited := make(chan struct{})
+	t.Cleanup(func() {
+		cancel()
+		app.Stop(launch.Interrupted, output.Forced)
+		<-exited
+	})
 	go func() {
+		defer close(exited)
 		status <- Process(ctx, app, Inputs{Triggers: triggers}, func(ctx context.Context) int {
 			<-ctx.Done()
 			app.Stop(launch.Interrupted, output.Interrupted)
@@ -392,7 +399,16 @@ func TestCtrlCDuringAnotherCallersStopForcesWithBusy(t *testing.T) {
 			triggers := make(chan Trigger, 1)
 			triggers <- Interrupt
 			done := make(chan State, 1)
-			go func() { done <- Watch(context.Background(), app, Inputs{Triggers: triggers, Busy: busy}) }()
+			ctx, cancel := context.WithCancel(context.Background())
+			exited := make(chan struct{})
+			t.Cleanup(func() {
+				cancel()
+				<-exited
+			})
+			go func() {
+				defer close(exited)
+				done <- Watch(ctx, app, Inputs{Triggers: triggers, Busy: busy})
+			}()
 			select {
 			case s := <-done:
 				if s != Forced || !urgent(app) {

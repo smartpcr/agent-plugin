@@ -49,7 +49,7 @@
 //	                       preflight with the sign-in checks, then go test -tags
 //	                       scenario of the plan, as one evidence record
 //	                       (scenariorun.go)
-//	variant-run --stage DH-S-n --scenarios IDS
+//	variant-run --stage DH-S-n --scenarios IDS [--rehearsal DIR]
 //	                       the scenario step of an s18 variant job: IDS (require
 //	                       --variant) in the stage's order, DH-E-TOOLCHAIN-2 first
 //	                       and every later scenario on the rehearsal binary it

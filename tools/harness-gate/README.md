@@ -192,7 +192,13 @@ dsh sandbox status | GOWORK=off go -C tools/harness-gate run . sandbox-preflight
   (`variantrun.go`): one plain `go test` per phase, a skip or a test without a
   `--- PASS` line failing, in a 175-minute budget (`variantBudget`). The variants
   holding `DH-E-TOOLCHAIN-2` (`linux-wsl`, `windows-hosted`) rehearse first and
-  hand the binary on; a variant without it runs as one phase. Of a
+  hand the binary on; `--rehearsal DIR` makes them rehearse into `DIR`, and a
+  variant without `DH-E-TOOLCHAIN-2` runs every scenario on the binary verified in
+  its `--rehearsal DIR` (printed as for the hand-off). With no `--rehearsal`, or a
+  directory whose binary does not verify, none of its scenarios run. The workflow's
+  `s18-rehearsal` job (a `linux` and a `windows` lane) rehearses first into
+  `--rehearsal DIR` and uploads `DIR`; `s18` waits for it, and its variants without
+  `DH-E-TOOLCHAIN-2` download their OS's `DIR` and pass it. Of a
   scenario with route subtests the `claude-code` leg must pass and the
   `copilot-cli` leg is recorded (`scenarios: recorded leg: ...`): the required run
   sets `DSH_SCENARIO_ROUTES=claude-code` and its verdict has no exception; the

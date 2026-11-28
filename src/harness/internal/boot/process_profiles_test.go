@@ -53,6 +53,7 @@ func TestHelperProfileProcess(t *testing.T) {
 	opts := launchOptionsAt(t, def, os.Getenv(profileHomeEnv), &tree, turnsOf(name)...)
 	app := launch.NewApp()
 	opts.App, opts.Stderr = app, os.Stderr
+	//lint:ignore cleanup the helper process ends in os.Exit, which releases it; no Cleanup would run
 	go func() {
 		<-app.Ready()
 		fmt.Fprintln(os.Stderr, readyMarker)
@@ -65,6 +66,7 @@ func TestHelperProfileProcess(t *testing.T) {
 			defer w.Close()
 			opts.Stdio = &launch.Stdio{In: in, Out: io.Discard}
 		}
+		//lint:ignore cleanup the helper process ends in os.Exit, which releases it; no Cleanup would run
 		go func() {
 			_, _ = io.Copy(io.Discard, os.Stdin)
 			app.Stop(launch.Completed, output.OK)
