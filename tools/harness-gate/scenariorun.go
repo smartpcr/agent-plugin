@@ -176,16 +176,23 @@ func (c *Config) ScenarioGates(stage string, probe acceptance.SignInProbe) []Gat
 
 // stageOrder is the run order of an acceptance stage whose scenarios must not run in
 // the order go test finds them: the IDs of First run, each to its end, before every
-// other planned scenario, and those of Last after all of them. DH-S-17 runs the
-// record-then-replay scenario first and the policy-text escalation last
-// (architecture.md rule 7, R-03; impl.md DH-S-17). DH-S-18 runs the release
-// rehearsal first, and every later scenario runs on the binary it verified
-// (Handoff; impl.md 18.1).
+// other planned scenario, those of Late after the rest, and those of Last after all
+// of them. DH-S-17 runs the record-then-replay scenario first, then the
+// single-process scenarios, then the two that kill a host (SESSION-2 kills and
+// resumes it, AGENT-3 stops and kills it), and the policy-text escalation last
+// (architecture.md rule 7, R-03; impl.md DH-S-17 Sequence). Without Late, go test
+// would run them in file order, agent_stop_kill before agent_turn. DH-S-18 runs
+// the release rehearsal first, and every later scenario runs on the binary it
+// verified (Handoff; impl.md 18.1).
 var stageOrder = map[string]struct {
-	First, Last []string
-	Handoff     bool
+	First, Late, Last []string
+	Handoff           bool
 }{
-	"DH-S-17": {First: []string{"DH-E-TOOLCHAIN-1"}, Last: []string{"DH-E-SANDBOX-7"}},
+	"DH-S-17": {
+		First: []string{"DH-E-TOOLCHAIN-1"},
+		Late:  []string{"DH-E-SESSION-2", "DH-E-AGENT-3"},
+		Last:  []string{"DH-E-SANDBOX-7"},
+	},
 	"DH-S-18": {First: []string{"DH-E-TOOLCHAIN-2"}, Handoff: true},
 }
 
