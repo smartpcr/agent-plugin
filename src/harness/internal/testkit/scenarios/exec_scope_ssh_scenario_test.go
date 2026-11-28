@@ -51,6 +51,8 @@ var (
 // directory the scenario made there, and the paths below it.
 type exec10Machine struct {
 	alias, dir, home, log string
+	// shell, when set, runs a line in place of ssh (the helpers' own tests).
+	shell func(ctx context.Context, line, stdin string) ([]byte, error)
 }
 
 // exec10CleanupBound bounds one SSH command run by a cleanup.
@@ -74,6 +76,10 @@ func (m *exec10Machine) ssh(t *testing.T, line, stdin string) (string, error) {
 	t.Helper()
 	ctx, cancel := exec10Context(t)
 	defer cancel()
+	if m.shell != nil {
+		out, err := m.shell(ctx, line, stdin)
+		return string(out), err
+	}
 	cmd := exec.CommandContext(ctx, "ssh", "-o", "BatchMode=yes", m.alias, line)
 	cmd.Stdin = strings.NewReader(stdin)
 	out, err := cmd.CombinedOutput()

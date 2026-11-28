@@ -27,19 +27,67 @@ func exec1Quote(s string) string {
 }
 
 // exec1Wait waits on the target, up to secs seconds, until every named file of
-// dir is non-empty, and returns the pids they hold, by file name.
-func exec1Wait(t *testing.T, m *exec10Machine, dir string, secs int, names ...string) map[string]int {
+// dir is non-empty, and returns the pids they hold, by file name. Every pid found
+// goes into into, under prefix plus its name, before it fails on a missing one,
+// so the cleanup kills what a half-ready fixture started.
+func exec1Wait(t *testing.T, m *exec10Machine, dir string, secs int, into map[string]int, prefix string, names ...string) map[string]int {
+	t.Helper()
+	pids, ok := exec1Ready(t, m, dir, secs, names...)
+	for k, pid := range pids {
+		into[prefix+k] = pid
+	}
+	if !ok {
+		t.Fatalf("after %d s the fixture on %s wrote %v, want %v", secs, m.alias, pids, names)
+	}
+	return pids
+}
+
+// exec1Ready waits like exec1Wait but returns what it found and whether every
+// named file held a pid, instead of failing.
+func exec1Ready(t *testing.T, m *exec10Machine, dir string, secs int, names ...string) (map[string]int, bool) {
 	t.Helper()
 	var cond []string
 	for _, n := range names {
 		cond = append(cond, "[ -s "+exec1Quote(dir+"/"+n)+" ]")
 	}
-	m.must(t, "wait for the fixture pids", fmt.Sprintf("i=0; until %s; do i=$((i+1)); [ $i -gt %d ] && break; sleep 0.05; done; true", strings.Join(cond, " && "), secs*20))
+	m.must(t, "wait for the pids", fmt.Sprintf("i=0; until %s; do i=$((i+1)); [ $i -gt %d ] && break; sleep 0.05; done; true", strings.Join(cond, " && "), secs*20))
 	pids := m.pids(t, dir, names...)
-	if len(pids) != len(names) {
-		t.Fatalf("after %d s the fixture on %s wrote %v, want %v", secs, m.alias, pids, names)
+	return pids, len(pids) == len(names)
+}
+
+// exec1Sweep is the line that kills, on the target, everything a launch in the
+// scratch directory dir may have left: the launch's session (its leader's pid in
+// dir/start.pid; the start line runs in a session of its own) and every pid
+// recorded in a pid file of pidDir or in home/dsh.pid, read from the files, so it
+// needs no readiness to have been reached.
+func exec1Sweep(dir, home, pidDir string) string {
+	return "p=$(cat " + exec1Quote(dir+"/start.pid") + ` 2>/dev/null) && [ -n "$p" ] && kill -9 -"$p" 2>/dev/null; ` +
+		"for f in " + exec1Quote(pidDir) + "/* " + exec1Quote(home+"/dsh.pid") + `; do [ -s "$f" ] && kill -9 $(cat "$f") 2>/dev/null; done; true`
+}
+
+// exec1Launch starts line on the target detached from the SSH session (so a
+// survivor holding its output cannot hold the session open), in a session of its
+// own whose leader's pid goes to m.dir/start.pid, and registers the cleanup that
+// runs exec1Sweep before it waits for anything: a launch whose fixture or dsh.pid
+// never appears is still ended. It returns the fixture's child and grandchild pids
+// and dsh's, or an error naming what did not appear within secs seconds.
+func exec1Launch(t *testing.T, m *exec10Machine, line, pidDir string, secs int) (map[string]int, int, error) {
+	t.Helper()
+	t.Cleanup(func() {
+		if out, err := m.ssh(t, exec1Sweep(m.dir, m.home, pidDir), ""); err != nil {
+			t.Logf("sweeping the launch on %s: %v\n%s", m.alias, err, out)
+		}
+	})
+	m.must(t, "start dsh", "nohup setsid sh -c "+exec1Quote(line)+" </dev/null >"+exec1Quote(m.dir+"/start.out")+" 2>&1 & echo $! > "+exec1Quote(m.dir+"/start.pid"))
+	tree, ok := exec1Ready(t, m, pidDir, secs, "child", "grandchild")
+	if !ok {
+		return tree, 0, fmt.Errorf("after %d s the fixture on %s wrote %v, want a child and a grandchild pid", secs, m.alias, tree)
 	}
-	return pids
+	host, ok := exec1Ready(t, m, m.home, secs, "dsh.pid")
+	if !ok {
+		return tree, 0, fmt.Errorf("after %d s dsh on %s wrote no %s/dsh.pid", secs, m.alias, m.home)
+	}
+	return tree, host["dsh.pid"], nil
 }
 
 // exec1Gone waits on the target, up to secs seconds, until pid runs nothing (gone
@@ -149,10 +197,7 @@ func TestLinuxWholeProcessTreeIsKilled(t *testing.T) {
 	t.Run("timeout kills the tree", func(t *testing.T) {
 		v, pidDir := exec1Vars(t, m, dsh, "timeout")
 		out := m.must(t, "run the bash tool", expand(run, v))
-		tree := exec1Wait(t, m, pidDir, 1, "child", "grandchild")
-		for k, pid := range tree {
-			pids["timeout-"+k] = pid
-		}
+		tree := exec1Wait(t, m, pidDir, 1, pids, "timeout-", "child", "grandchild")
 		if alive := m.alive(t, tree); len(alive) > 0 {
 			t.Errorf("after the timeout the fixture's %v are alive on %s", alive, m.alias)
 		}
@@ -178,14 +223,13 @@ func TestLinuxWholeProcessTreeIsKilled(t *testing.T) {
 	t.Run("SIGKILL of dsh leaves survivors the next start lists", func(t *testing.T) {
 		v, pidDir := exec1Vars(t, m, dsh, "sigkill")
 		v["timeout"] = "60s"
-		// Detached from the SSH session, so a survivor holding the line's output
-		// cannot hold the session open.
-		m.must(t, "start dsh", "nohup sh -c "+exec1Quote(expand(start, v))+" </dev/null >"+exec1Quote(m.dir+"/start.out")+" 2>&1 &")
-		tree := exec1Wait(t, m, pidDir, 10, "child", "grandchild")
+		tree, host, err := exec1Launch(t, m, expand(start, v), pidDir, 10)
 		for k, pid := range tree {
 			pids["sigkill-"+k] = pid
 		}
-		host := exec1Wait(t, m, m.home, 10, "dsh.pid")["dsh.pid"]
+		if err != nil {
+			t.Fatal(err)
+		}
 		pids["dsh"] = host
 		m.must(t, "SIGKILL dsh", fmt.Sprintf("kill -9 %d", host))
 		exec1Gone(t, m, host, 10)
@@ -214,9 +258,7 @@ func TestLinuxWholeProcessTreeIsKilled(t *testing.T) {
 		n, ndsh := exec1Prepare(t, unmanaged, left, &none)
 		v, pidDir := exec1Vars(t, n, ndsh, "nocgroup")
 		out := n.must(t, "run the bash tool", expand(run, v))
-		for k, pid := range exec1Wait(t, n, pidDir, 1, "child", "grandchild") {
-			left[k] = pid
-		}
+		exec1Wait(t, n, pidDir, 1, left, "", "child", "grandchild")
 		if !strings.Contains(out, "owner: process-group") {
 			t.Errorf("the result does not say owner: process-group:\n%s", out)
 		}
