@@ -59,8 +59,10 @@ const (
 	s17rRecordRel = "docs/stories/harness-DSH-M2/evidence/DH-S-17.md"
 	s17rIndexRel  = "test/harness/acceptance-index.yaml"
 	s17rWithin    = 2 * time.Minute
-	s17rMaxOutput = 4 << 20
-	s17rReplays   = 2
+	// s17rLiveWithin bounds the live signed-in-route run of s17rTest.
+	s17rLiveWithin = 15 * time.Minute
+	s17rMaxOutput  = 4 << 20
+	s17rReplays    = 2
 )
 
 // s17rRouteInputs are the inputs TestRecordThenReplayWithoutAKey needs from the S17
@@ -493,7 +495,12 @@ func (s *s17rState) thenLiveOnS17() error {
 			return nil
 		}
 	}
-	cmd := exec.Command("go", "test", "-tags", "scenario", "-v", "-run", "^"+s17rTest+"$", "./internal/testkit/scenarios/")
+	// -count=1 defeats the test cache so the signed-in route is contacted afresh;
+	// -timeout and the context deadline bound the run so it cannot hang the suite.
+	ctx, cancel := context.WithTimeout(context.Background(), s17rLiveWithin+time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "go", "test", "-tags", "scenario", "-count=1", "-timeout", s17rLiveWithin.String(), "-v", "-run", "^"+s17rTest+"$", "./internal/testkit/scenarios/")
+	cmd.WaitDelay = 10 * time.Second
 	cmd.Dir = s.module
 	cmd.Env = s17rEnv("DSH_REQUIRE_SCENARIOS=" + s17rScenario)
 	out, err := cmd.CombinedOutput()
