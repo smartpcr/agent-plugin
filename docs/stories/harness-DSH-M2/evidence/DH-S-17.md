@@ -34,11 +34,11 @@ An acceptance step is ticked only by its scenarios; the commit is the one the sc
 | 17.1 | DH-E-TOOLCHAIN-1 | | not run; blocked, see [Stage 7.2 blockers](#stage-72-blockers) |
 | 17.2 | DH-E-SESSION-1, DH-E-SESSION-2 | | not run; blocked, see [Stage 7.3 blockers](#stage-73-blockers) |
 | 17.3 | DH-E-AGENT-1 to -4 | | not run; blocked, see [Stage 7.3 blockers](#stage-73-blockers) |
-| 17.4 | DH-E-LLM-1, DH-E-LLM-3 | | |
-| 17.5 | DH-E-TOOLS-1 | | |
-| 17.6 | DH-E-VIEW-1 | | |
-| 17.7 | DH-E-LOADER-1 | | |
-| 17.8 | DH-E-SDK-1 | | |
+| 17.4 | DH-E-LLM-1, DH-E-LLM-3 | | not run; blocked, see [Stage 7.4 blockers](#stage-74-blockers) |
+| 17.5 | DH-E-TOOLS-1 | | not run; blocked, see [Stage 7.4 blockers](#stage-74-blockers) |
+| 17.6 | DH-E-VIEW-1 | | not run; blocked, see [Stage 7.4 blockers](#stage-74-blockers) |
+| 17.7 | DH-E-LOADER-1 | | not run; blocked, see [Stage 7.4 blockers](#stage-74-blockers) |
+| 17.8 | DH-E-SDK-1 | | not run; blocked, see [Stage 7.5 blockers](#stage-75-blockers) |
 | 17.9 | DH-E-SANDBOX-7 | | closes `UP-DEBT-found.Q3.2` |
 
 ## Scenarios
@@ -54,15 +54,15 @@ The 14 scenarios of the steps, on E1: Linux with the signed-in Claude Code route
 | DH-E-AGENT-2 | Linux (E1) | acceptance | required | E1 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
 | DH-E-AGENT-3 | Linux (E1) | acceptance | required | E1 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
 | DH-E-AGENT-4 | Linux (E1) | acceptance | required | E1 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
-| DH-E-LLM-1 | claude-code | acceptance | required | E1 | | not run (stage not started) | |
-| DH-E-LLM-1 | copilot-cli | acceptance | recorded | E1 | | not run (stage not started) | |
-| DH-E-LLM-3 | claude-code | acceptance | required | E1 | | not run (stage not started) | |
-| DH-E-LLM-3 | copilot-cli | acceptance | recorded | E1 | | not run (stage not started) | |
-| DH-E-TOOLS-1 | Linux (E1) | acceptance | required | E1 | | not run (stage not started) | |
-| DH-E-VIEW-1 | claude-code | acceptance | required | E1 | | not run (stage not started) | |
-| DH-E-VIEW-1 | copilot-cli | acceptance | recorded | E1 | | not run (stage not started) | |
-| DH-E-LOADER-1 | Linux (E1) | acceptance | required | E1 | | not run (stage not started) | |
-| DH-E-SDK-1 | Linux (E1) | acceptance | required | E1 | | not run (stage not started) | |
+| DH-E-LLM-1 | claude-code | acceptance | required | E1 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
+| DH-E-LLM-1 | copilot-cli | acceptance | recorded | E1 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
+| DH-E-LLM-3 | claude-code | acceptance | required | E1 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
+| DH-E-LLM-3 | copilot-cli | acceptance | recorded | E1 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
+| DH-E-TOOLS-1 | Linux (E1) | acceptance | required | E1 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
+| DH-E-VIEW-1 | claude-code | acceptance | required | E1 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
+| DH-E-VIEW-1 | copilot-cli | acceptance | recorded | E1 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
+| DH-E-LOADER-1 | Linux (E1) | acceptance | required | E1 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
+| DH-E-SDK-1 | Linux (E1) | acceptance | required | E1 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
 | DH-E-SANDBOX-7 | Linux (E1) | acceptance | required | E1 | | not run (stage not started) | |
 
 ## Manual checks register
