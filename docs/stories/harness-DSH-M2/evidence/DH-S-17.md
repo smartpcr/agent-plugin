@@ -122,7 +122,8 @@ When they run, each of the six rows takes the commit of step 1 of the runbook an
 (`E1 wsl:<host>/<distro>` or `E1 runner:<name>`); in Artifacts, the `dsh` SHA-256, the claude-code
 model id, the run id, the session export and the prompt count of the run (M2-C-5); the
 `DH-E-SESSION-2` row also records that the resumed session's log read from the scratch store runs
-`seq` 0 to n with no gap. The copilot-cli legs are recorded either way (M2-DEC-4).
+`seq` 0 to n with no gap. These six scenarios are single required `Linux (E1)` legs; none has a
+recorded `copilot-cli` leg.
 
 ## Stage 7.4 blockers
 
