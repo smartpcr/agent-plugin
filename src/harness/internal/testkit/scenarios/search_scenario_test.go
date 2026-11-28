@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"os/exec"
@@ -83,8 +84,12 @@ func TestSearchMeetsBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = report.Close() })
-	enc := json.NewEncoder(report)
+	timings := newTimingReport(report)
+	t.Cleanup(func() {
+		if err := timings.close(); err != nil {
+			t.Errorf("the timing report %s is incomplete: %v", reportPath, err)
+		}
+	})
 
 	for _, repo := range repos {
 		src, err := search.OpenDir(repo)
@@ -116,9 +121,11 @@ func TestSearchMeetsBudget(t *testing.T) {
 				continue
 			}
 			ratio := took.Seconds() / max(rgTook.Seconds(), 1e-6)
-			_ = enc.Encode(map[string]any{"repo": repo, "pattern": pattern, "budget_ms": budget.Milliseconds(),
+			if err := timings.add(map[string]any{"repo": repo, "pattern": pattern, "budget_ms": budget.Milliseconds(),
 				"first_ms": first.Milliseconds(), "first_lines": lines, "harness_ms": took.Milliseconds(),
-				"rg_ms": rgTook.Milliseconds(), "ratio": ratio, "files": len(files), "rg_files": len(rgFiles), "visited": summary.Files})
+				"rg_ms": rgTook.Milliseconds(), "ratio": ratio, "files": len(files), "rg_files": len(rgFiles), "visited": summary.Files}); err != nil {
+				t.Errorf("%s %q: the timing report %s: %v", repo, pattern, reportPath, err)
+			}
 			t.Logf("%s %q: first %d lines in %v (budget %v); whole %v (rg %v, ratio %.2f), %d files (rg %d)",
 				repo, pattern, lines, first, budget, took, rgTook, ratio, len(files), len(rgFiles))
 			if first > budget {
@@ -304,19 +311,14 @@ func gitFiles(t *testing.T, repo string, args ...string) []string {
 // an error, never a zero.
 func runRG(t *testing.T, rg, repo, pattern string) (map[string]bool, time.Duration, error) {
 	t.Helper()
-	cmd := exec.CommandContext(t.Context(), rg, "--no-config", "--no-ignore-global", "--files-with-matches", "--", pattern, ".")
+	cmd := exec.CommandContext(t.Context(), rg, "--no-config", "--no-ignore-global", "--files-with-matches", "--null", "--", pattern, ".")
 	cmd.Dir = repo
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	start := time.Now()
 	err := cmd.Run()
 	took := time.Since(start)
-	files := map[string]bool{}
-	for _, line := range strings.Split(stdout.String(), "\n") {
-		if line = strings.TrimRight(line, "\r"); line != "" {
-			files[strings.TrimPrefix(filepath.ToSlash(line), "./")] = true
-		}
-	}
+	files := rgFileList(stdout.Bytes())
 	var exit *exec.ExitError
 	switch {
 	case err == nil && len(files) > 0:
@@ -330,6 +332,47 @@ func runRG(t *testing.T, rg, repo, pattern string) (map[string]bool, time.Durati
 		return nil, took, fmt.Errorf("rg reported problems, so its list is not comparable:\n%s", stderr.String())
 	}
 	return files, took, nil
+}
+
+// timingReport writes one JSON line per measurement. The first write error is
+// kept and every later line refused, so a report cut short by a full disk can
+// never pass as complete: add returns the error and close returns it again,
+// joined with the file's own close error.
+type timingReport struct {
+	w   io.WriteCloser
+	enc *json.Encoder
+	err error
+}
+
+func newTimingReport(w io.WriteCloser) *timingReport {
+	return &timingReport{w: w, enc: json.NewEncoder(w)}
+}
+
+func (r *timingReport) add(v any) error {
+	if r.err == nil {
+		r.err = r.enc.Encode(v)
+	}
+	return r.err
+}
+
+func (r *timingReport) close() error {
+	return errors.Join(r.err, r.w.Close())
+}
+
+// rgFileList parses the output of rg --files-with-matches --null: each path ends
+// in a NUL, so newlines and carriage returns, valid in Linux names, stay part of
+// the name. Only rg's leading "./" is removed.
+func rgFileList(out []byte) map[string]bool {
+	files := map[string]bool{}
+	sc := bufio.NewScanner(bytes.NewReader(out))
+	sc.Buffer(nil, 1<<20)
+	sc.Split(splitNUL)
+	for sc.Scan() {
+		if name := sc.Text(); name != "" {
+			files[strings.TrimPrefix(filepath.ToSlash(name), "./")] = true
+		}
+	}
+	return files
 }
 
 // hidden reports whether a slash path has a segment starting with a dot.

@@ -154,15 +154,21 @@ and could not run as evidence. All eight rows stay `not run` and are owed:
 
 Cleared on this stage's branch (each would have failed or misjudged the scenario):
 
-| Defect | Seen on `7b5133d` | Fix |
+| Defect | Seen on `7b5133d` (the last three on `2745e4c`) | Fix |
 | --- | --- | --- |
 | On Windows the shell helper passed the line to `cmd /C` as an argument; Go escapes `"` as `\"`, which cmd does not read, so a quoted editor path failed. | `DSH_SCENARIO_EDITORS="C:\Program Files\Git\usr\bin\vim.exe" ...`: `is not recognized`, CHOKIDAR-1 failed | the line runs from a temporary `.cmd` file (`cmd /d /c <file>`) removed in cleanup (`TestShellLineQuotesAPathWithASpace`) |
 | RIPGREP-1 timed the whole unbounded search against the budget; vscode-ripgrep.md sec. 7 asks for the first 250 matches within it, with the ratio to rg recorded. | the report's `durationMs` was the whole search | the first 250 matching lines are timed against the budget; the whole search and rg's are reported as the ratio |
 | RIPGREP-1 searched under the default limits (100,000 files, 1 GiB), which cut a large repository short, and compared counts only. | `search.Limits{}` in the scenario | the whole search runs with no bound and fails when cut; the file sets must equal rg's (`--no-config --no-ignore-global`), each difference listed |
 | RIPGREP-1 never proved that no external `rg` is spawned. | no check | a decoy `rg` first on `PATH` and a `RIPGREP_CONFIG_PATH` naming it; the scenario fails if the decoy ran |
 | RIPGREP-2 failed on a tracked file that `.gitignore` matches: git lists it from the index, the harness reads ignore files, not the index. | deepseek-harness `snapshots/web/changed-files-turn/workspace.expected/app.local` (`*.local`) | the files `git ls-files --cached --ignored --exclude-standard` names are explained and logged; any other difference fails |
+| CHOKIDAR-1 and -2 drove only edits; implementation-plan Stage 8.7 asks for create, rename, delete and burst. | the scenario bodies on `2745e4c` | after the saves (CHOKIDAR-1) and the remote change (CHOKIDAR-2, in a new directory on each remote directory), a watched directory sees a file created, written in a burst of 100 appends, renamed and deleted; each is reported exactly once within the bound (1 s; two polls) and nothing more within the quiet window (`TestWatchTransitionsCheck`, notify and poll) |
+| RIPGREP-1 ignored the timing report's write and close errors, so a full disk could leave a passing run with a cut report. | `_ = enc.Encode(...)`, `_ = report.Close()` on `2745e4c` | the first write error is kept and refused writes after it; each write and the close fail the scenario (`TestTimingReportSurfacesWriteAndCloseErrors`) |
+| The rg oracle split rg's list on newlines and trimmed carriage returns, misreading Linux names containing either. | `strings.Split(..., "\n")` on `2745e4c` | rg runs with `--null` and its list is split on NUL only (`TestRGFileListKeepsNewlinesAndCarriageReturns`; on WSL a tree with `line\nbreak.txt` and `cr\rname.txt` lists the same 3 files for both) |
 
-Probes, not evidence (M2-DEC-1; a modified tree on `7b5133d`): on Windows (NTFS) CHOKIDAR-1 passed in
+Probes, not evidence (M2-DEC-1; a modified tree on `2745e4c`, after the three fixes above): on Windows
+CHOKIDAR-1 with the transitions passed in notify mode, and RIPGREP-1 on CopilotOAuthSample passed with the
+NUL-delimited oracle; on WSL CHOKIDAR-1 and CHOKIDAR-2 with the transitions passed (notify; poll on
+`/mnt/e`). Earlier probes (a modified tree on `7b5133d`): on Windows (NTFS) CHOKIDAR-1 passed in
 notify mode for four save strategies (vim, append, copy then append, write-temp-and-move), RIPGREP-2
 passed, and RIPGREP-1 matched rg's file lists for all 30 searches with the decoy unused, missing only the
 budget above. On WSL (Ubuntu-24.04, ext4 clones of CopilotOAuthSample, agent-plugin and deepseek-harness)

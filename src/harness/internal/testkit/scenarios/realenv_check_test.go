@@ -4,8 +4,10 @@ package scenarios
 
 import (
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -107,5 +109,73 @@ func TestShellRunsFromACleanup(t *testing.T) {
 	})
 	if err != nil || !strings.Contains(out, "ran") {
 		t.Errorf("shell from a cleanup = %q, %v; want ran", out, err)
+	}
+}
+
+// failingFile fails every write after the first n bytes, as a full disk does,
+// and can fail its close too.
+type failingFile struct {
+	room     int
+	closeErr error
+	closed   bool
+}
+
+var errDiskFull = errors.New("no space left on device")
+
+func (f *failingFile) Write(p []byte) (int, error) {
+	if len(p) > f.room {
+		n := f.room
+		f.room = 0
+		return n, errDiskFull
+	}
+	f.room -= len(p)
+	return len(p), nil
+}
+
+func (f *failingFile) Close() error { f.closed = true; return f.closeErr }
+
+func TestTimingReportSurfacesWriteAndCloseErrors(t *testing.T) {
+	full := &failingFile{room: 20}
+	r := newTimingReport(full)
+	if err := r.add(map[string]int{"a": 1}); err != nil {
+		t.Fatalf("first line fits, got %v", err)
+	}
+	if err := r.add(map[string]string{"repo": strings.Repeat("x", 40)}); !errors.Is(err, errDiskFull) {
+		t.Fatalf("a short write: add returned %v, want %v", err, errDiskFull)
+	}
+	if err := r.add(map[string]int{"b": 2}); !errors.Is(err, errDiskFull) {
+		t.Fatalf("after a failed write add must keep failing, got %v", err)
+	}
+	if err := r.close(); !errors.Is(err, errDiskFull) || !full.closed {
+		t.Fatalf("close after a failed write returned %v (closed %v), want %v", err, full.closed, errDiskFull)
+	}
+
+	errClose := errors.New("close: input/output error")
+	r = newTimingReport(&failingFile{room: 1 << 10, closeErr: errClose})
+	if err := r.add(map[string]int{"a": 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.close(); !errors.Is(err, errClose) {
+		t.Fatalf("a failed close returned %v, want %v", err, errClose)
+	}
+
+	r = newTimingReport(&failingFile{room: 1 << 10})
+	if err := r.add(map[string]int{"a": 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.close(); err != nil {
+		t.Fatalf("a complete report: close returned %v", err)
+	}
+}
+
+func TestRGFileListKeepsNewlinesAndCarriageReturns(t *testing.T) {
+	out := []byte("./plain.go\x00./dir/line\nbreak.txt\x00./ends-in-cr\r\x00./\r\nboth\x00no-prefix.md\x00")
+	got := rgFileList(out)
+	want := map[string]bool{"plain.go": true, "dir/line\nbreak.txt": true, "ends-in-cr\r": true, "\r\nboth": true, "no-prefix.md": true}
+	if !maps.Equal(got, want) {
+		t.Fatalf("rgFileList = %q, want %q", slices.Sorted(maps.Keys(got)), slices.Sorted(maps.Keys(want)))
+	}
+	if got := rgFileList(nil); len(got) != 0 {
+		t.Fatalf("no output: got %q", slices.Sorted(maps.Keys(got)))
 	}
 }
