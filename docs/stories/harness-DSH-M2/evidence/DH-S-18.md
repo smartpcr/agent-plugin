@@ -179,6 +179,88 @@ When it runs, each HOST-4 row takes the run's commit, `E2 runner:<name>` (or `E2
 `passed` only if every leg of `TestDyingHostLeavesReadableReport` passed, and in Artifacts the SHA-256 of
 the binary it ran (one of the [rehearsal binaries](#rehearsal-binaries-step-181)) and the run id.
 
+## Stage 8.5 confinement runs (step 18.4)
+
+implementation-plan Stage 8.5 (impl.md 18.4) refines the five `Linux (E2)` rows above into one row per
+machine of [variants.md](variants.md). A `Linux (E2)` row reads `passed` only when every machine row of
+its scenario below passed in one workflow run on the merged commit (the variants.md recording rule for
+shared machine sets); its Artifacts then take the run id. Each row copies the reported enforcement from
+the run's log, never from the preflight:
+
+- **Status**: the `<alias>: enforcement <State> <backend>, missing [..], exposed [..]` line, the head of
+  `dsh sandbox status` on that machine (`sandboxVerdict`).
+- **Denied write**: the `<alias>: enforcement ...` (SANDBOX-1) or `<alias>: denied write ...`
+  (NATIVESYSTEM-1, -2) line, `<state>, <backend>, exit <n>, missing [..], exposed [..]`, the result of
+  the confined write outside the roots, with its stderr; for a refused start, the `refused` line.
+
+| Scenario | Variant | Preflight | Commit | Result | Status | Denied write |
+| --- | --- | --- | --- | --- | --- | --- |
+| DH-E-SANDBOX-1 | `linux-e2:bwrap` | bwrap Full | | not run (blocked, below) | | |
+| DH-E-SANDBOX-1 | `linux-e2:landlock` | landlock ABI >= 5 | | not run (blocked, below) | | |
+| DH-E-SANDBOX-1 | `linux-e2:unconfined` | Unconfined | | not run (blocked, below) | | |
+| DH-E-NATIVESYSTEM-1 | `linux-e2:landlock` | landlock ABI >= 5 | | not run (blocked, below) | | |
+| DH-E-NATIVESYSTEM-2 | `linux-e2:landlock-abi1-4` | landlock ABI 1-4 | | not run (blocked, below) | | |
+| DH-E-NATIVESYSTEM-3 | `linux-e2:unconfined` (Landlock disabled) | Unconfined | | not run (blocked, below) | | |
+| DH-E-NATIVESYSTEM-3 | `linux-e2:landlock` (missing grant) | landlock ABI >= 5 | | not run (blocked, below) | | |
+| DH-E-NATIVESYSTEM-4 | `linux-e2:landlock` (pure Go) | landlock ABI >= 5 | | not run (blocked, below) | | |
+| DH-E-NATIVESYSTEM-4 | `linux-e2:landlock` (cgo `-race`) | landlock ABI >= 5 | | not run (blocked, below) | | |
+| DH-E-NATIVESYSTEM-4 | `linux-e2:musl` | landlock ABI >= 5 | | not run (blocked, below) | | |
+
+Taken up on `7b5133d`; nothing above is evidence of a run. Each open blocker on its own stops it:
+
+| Blocker | Seen | What clears it |
+| --- | --- | --- |
+| `harness-gate entry` exits 1: harness:DSH-M1 is not closed (M2-DEC-1), as for [Stage 8.2](#stage-82-blockers). | `GOWORK=off go -C tools/harness-gate run . entry --root ../..` on `7b5133d`: 12 blockers, exit 1 | M1 closure merges and `entry` exits 0 |
+| No rehearsed binary: step 18.1 has not run, so there is no `rehearsal.sha256` for `variant-run --rehearsal` to check the `linux-e2:*` jobs' binary against (impl.md DH-S-18 Sequence). | [Rehearsal binaries](#rehearsal-binaries-step-181): empty | the `s18-rehearsal` job passes on the merged commit |
+| The machines: SANDBOX-1 needs the `bwrap=`, `landlock=` and `unconfined=` machines of `DSH_SCENARIO_SANDBOX1_MACHINES` in one test, NATIVESYSTEM-2 and -4 add `landlock-abi1-4=` and `musl=`; each is a team-kept VM over SSH on `dsh-e2-controller` (Q `m2-e2-fleet`). | the workstation that took the stage up has no SSH alias for any `linux-e2:*` machine and `DSH_SCENARIO_SANDBOX1_MACHINES` is unset | the team's five VMs pass their preflights on the `s18` `linux-e2:*` jobs |
+
+Cleared on this stage's branch (it would have let a wrong machine pass):
+
+| Defect | Seen on `7b5133d` | Fix |
+| --- | --- | --- |
+| SANDBOX-1 took a machine's status as matching when the report text contained the backend's name anywhere; the report lists every backend of the chain, so the bwrap machine (`landlock: available`) passed as the landlock machine and any Linux machine (`bwrap: unavailable: ...`) passed as the bwrap machine. NATIVESYSTEM-1 and -2 did not read status at all, SANDBOX-1 (c) and NATIVESYSTEM-3 (a) checked only the word `Unconfined`, and no result line carried the exposures the step copies. | `dsh sandbox status` of the pure-Go build under WSL2 (a probe, not evidence: `linux-wsl`, not `linux-e2:bwrap`): `state: Full`, `backend: bwrap`, `missing: none`, `exposed: none`, then `bwrap: available ...` and `landlock: available ...` | the scenarios read the report's head (`readVerdict`): bwrap `Full`; landlock `Full` or `Partial` naming a missing effect in SANDBOX-1, and `Partial` in NATIVESYSTEM-1 to -4 (status judges a network-denied start, `sandbox.Expect`, and Landlock governs no network on any ABI, so `network` is named missing; the ABI is told apart by each start's own record), NATIVESYSTEM-3 (b) read before its grant is removed; the unconfined machine through `mustStatusUnconfined`; the verdict and each denied write are logged with missing and exposed effects (`TestVerdictIsTheReportHead`) |
+
+## Stage 8.8 blockers
+
+implementation-plan Stage 8.8 (impl.md 18.9 `DH-E-CONTEXT-2` and 18.10 `DH-E-STORAGE-6`) was taken up on
+`7b5133d` and could not run. Nothing below is evidence of a run: the two CONTEXT-2 rows and the two
+in-scope STORAGE-6 rows stay `not run` and are owed. Each open blocker on its own stops its scenario:
+
+| Blocker | Scenario | Seen on `7b5133d` | What clears it |
+| --- | --- | --- | --- |
+| `harness-gate entry` exits 1: harness:DSH-M1 is not closed (M2-DEC-1), as in [Stage 8.2 blockers](#stage-82-blockers). | both | `GOWORK=off go -C tools/harness-gate run . entry --root ../..`: 12 blockers, exit 1 | M1 closure merges and `entry` exits 0 |
+| No rehearsed binary: every S18 row runs the binary of the TOOLCHAIN-2 run (impl.md DH-S-18 Sequence), which has not run; `variant-run` without `--rehearsal` runs nothing. | both | [Rehearsal binaries](#rehearsal-binaries-step-181) is empty | TOOLCHAIN-2 passes on both lanes |
+| No component reads instruction files. `internal/context/instructions` is imported only by its own tests and one DH-S-13 e2e test; `context.instructions` is no item of the binary's catalogue (`builtin.Sets()`, `internal/boot/builtin/builtin.go:208`, locked by `internal/boot/catalog/testdata/catalog.golden`, DH-T-BOOT-3, 35 items) and the standard preset names it as a child still to come (`internal/boot/agentpreset/presets/standard.yml:6`). [closure.md](closure.md) has DH-D-CONTEXT-2 `not built`, finishing stage DH-S-32. | CONTEXT-2 | the catalogue golden; `grep -r 'internal/context/instructions"' src/harness`: three test files | the stage that mounts DH-D-CONTEXT-2 in the release build (DH-S-32 per closure.md), or an owner decision moving that wiring into M2 (open question [`s18-context2-storage6-unbuilt`](#open-questions-stage-88)) |
+| No route the layer can register. `DSH_SCENARIO_CONTEXT2_LAYER` must register `DSH_SCENARIO_CONTEXT2_ROUTE` on the scripted endpoint; the catalogue's one model item is `llm.runtime` "with no route" (`builtin.LLM`, `builtin.go:142`): no keyed or HTTP route item and no `llm.replay` item. The same gap blocks DH-S-16 checks 16.3 and 16.4 (answer to `dh-s-16-claude-route`). | CONTEXT-2 | the catalogue golden: `llm.runtime` is the only `llm.*` row | a stage puts a layer-registered route (keyed, or `llm.replay`) in the release catalogue |
+| No session working directory. The scenario creates its session in `repo/sub` under `workspace-write`; `session.workdir`, `fs.local`, `fs.ops` and `sandbox.policy` are on `internal/boot/profile/bundles/optional.yml` (lines 21 to 37), waiting on `session.views`, which no item provides (DH-S-14 record). | CONTEXT-2 | `optional.yml` on `7b5133d` | the `session.views` item lands and the four move to `core.yml` |
+| Nothing for the seed to run. `DSH_SCENARIO_STORAGE6_SEED` must store one attachment and one spill file through `{dsh}`; no command of `dsh --help` (help, version, catalog, completion, secret, sandbox, config, status, crash, five profiles) and no catalogue item writes either: `internal/storage/attachments` and `internal/storage/spill/...` have no item, and `core.yml` lists "attachments, spill store and policy" among the entries still to add. | STORAGE-6 | a fresh home of a `7b5133d` build after `sdk`: `blobs`, `config`, `reports`, `run`, `secrets`, `spill`, `dsh.db`, with `blobs/` and `spill/` empty | the attachment and spill stores join the release catalogue with a dsh path that stores each, or an owner decision moving that wiring into M2 (open question [`s18-context2-storage6-unbuilt`](#open-questions-stage-88)) |
+| No `cache` directory. The scenario lists and reads `blobs`, `spill` and `cache` (areas/storage.md DH-E-STORAGE-6 *When*; layout `<home>/cache/request-images`) and fails when the seeded home has no `cache/`; `home.Layout.Dirs()` (`internal/storage/home/home.go:76`) has none and nothing creates it (the request cache of DH-D-STORAGE-4, P1). | STORAGE-6 | the fresh home above | the request cache creates `cache/` private, or an owner decision on the directory list (open question [`s18-storage6-cache-dir`](#open-questions-stage-88)) |
+| POSIX step 2 contradicts the boot check. The scenario wants a group-writable `spill/` refused by the spill component "while the rest of the host runs"; `home.Check` (`home.go:158`) checks every layout directory at boot, so the whole home is refused `home/not-private` naming `spill/` (`TestHomeCreatedPrivate`, `private_unix_test.go`) and `DSH_SCENARIO_STORAGE6_STATUS` cannot exit 0. | STORAGE-6 (Linux) | `checkPrivate` (`private_unix.go`): any group or other bit on a layout directory is a problem | owner decision (open question [`s18-storage6-spill-refusal`](#open-questions-stage-88)) |
+| Who and where. The second account is created and kept by the tester (WSL) and the Windows host keeper, never by an agent session ([runbook-two-account.md](runbook-two-account.md)); CONTEXT-2 runs on `linux-wsl` and `windows-hosted`. | both | `require --stage DH-S-18 --variant` on `7b5133d`: `linux-wsl` and `windows-hosted` lists end `DH-E-CONTEXT-2`; `linux-wsl:two-account` and `windows-host:two-account` print `DH-E-STORAGE-6`; each exit 0 | the `s18` jobs of `harness-scenarios.yml` (or the lanes' `--acceptance DH-S-18`) run on the merged commit once the blockers above clear |
+
+Checked and consistent (no change): the CONTEXT-2 scenario's oracles match the package it will exercise,
+`frameOpen = "<instructions>\n"` (`internal/context/instructions/render.go:51`) and the record's
+`refused[].path` (`render.go:26`, `:40`); STORAGE-6's input contract matches
+`tools/harness-gate/variants/inputs_test.go` (the host commands on POSIX only).
+
+When they run, each CONTEXT-2 row takes the run's commit, the environment (`E2 wsl:<host>/<distro>` or
+`E2 runner:<name>`), the versions of `git` and the editor, `passed` only if
+`TestContextInstructionFileChangesReachModel` passed, and in Artifacts the SHA-256 of the binary it
+executed (one of the rehearsal binaries) and the run id; each STORAGE-6 row the same for
+`TestAnotherLocalUserCannotReadStoredData`, plus the filled record of the two-account runbook.
+
+### Open questions (Stage 8.8)
+
+Raised by the blockers above and owed an owner answer; tech-spec.md
+[sec. 10](../tech-spec.md#10-open-questions) holds the story-wide M2-Q-1 to M2-Q-7. Each default stands
+until answered, and none lets a row read anything but `not run`:
+
+| ID | Question | Default until answered | Blocks |
+| --- | --- | --- | --- |
+| `s18-context2-storage6-unbuilt` | CONTEXT-2 and STORAGE-6 exercise components the release build does not mount (DH-D-CONTEXT-2 `not built`, finishing DH-S-32 per [closure.md](closure.md); the attachment and spill stores have no catalogue item or dsh path). Does M2 take on that wiring, or do the two scenarios wait for the stages that build it? | They wait: no wiring moves into M2; the CONTEXT-2 and STORAGE-6 rows stay `not run` | DH-E-CONTEXT-2 and DH-E-STORAGE-6 rows; S18 closure (M2-Q-3 pattern: S18 stays *open*) |
+| `s18-storage6-cache-dir` | STORAGE-6 lists and reads `blobs`, `spill` and `cache`, but `home.Layout.Dirs()` has no `cache/` and only the P1 request cache (DH-D-STORAGE-4) would create it. Does the scenario drop `cache` until that cache lands, or must the layout create `cache/` private now? | The scenario text stands (areas/storage.md unchanged, DC-2): `cache/` is required, so the row waits for the request cache | DH-E-STORAGE-6 rows; S18 closure |
+| `s18-storage6-spill-refusal` | POSIX step 2 wants a group-writable `spill/` refused by the spill component while the rest of the host runs; `home.Check` refuses the whole home `home/not-private` at boot. Which behaviour is correct: a per-component refusal (change `home.Check`), or the boot refusal (change the scenario's expectation)? | The boot refusal stands (no code change); the Linux STORAGE-6 row cannot pass and stays `not run` | DH-E-STORAGE-6 (Linux) row; S18 closure |
+
 ## Evidence record (impl.md sec. 7.3)
 
 ### Source and build identity
