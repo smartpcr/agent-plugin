@@ -69,6 +69,23 @@ runs in DH-S-48, while tech-spec sec. 3.2 keeps BUNDLE-6 built until DH-S-22. Th
 tech-spec (the plan's bound, M2-I-5); the S22 close must either run BUNDLE-4 or move the row to
 DH-S-48.
 
+## Phase 7 (DH-S-17)
+
+implementation-plan Stage 7.7, taken up on `ac85a1f`: DH-S-17 is not closed (its record reads
+`Closure status: open`; `harness-gate ready --stage DH-S-17` exits 1, every scenario row `not run`
+because harness:DSH-M1 is not closed, M2-DEC-1), so S17 finishes no deliverable and no row above
+changes. When the S17 rows pass, these move:
+
+- M2 done-candidates S17 finishes: DH-D-SANDBOX-1 (step 17.9, DH-E-SANDBOX-7), DH-D-SDK-6 and
+  DH-D-SDK-8 (step 17.8, DH-E-SDK-1) and DH-D-VIEW-4 (step 17.6, DH-E-VIEW-1) read `done` only once
+  they are `built` and their rows in [DH-S-17.md](DH-S-17.md) read `passed`; DH-D-SDK-4 and
+  DH-D-SDK-5 keep H-1 to H-4 and DH-D-UTIL-7 keeps H-10 whatever DH-E-SDK-1 and DH-E-TOOLCHAIN-1 show.
+- M1 deliverables S17 finishes: the M1 scenarios it runs (DH-E-TOOLCHAIN-1, DH-E-SESSION-1, -2,
+  DH-E-AGENT-1 to -4, DH-E-LLM-1, -3, DH-E-TOOLS-1, DH-E-VIEW-1, DH-E-LOADER-1) are recorded in
+  [DH-S-17.md](DH-S-17.md); harness:DSH-M1 has no closure record yet
+  (`docs/stories/harness-DSH-M1/evidence/closure.md` does not exist), so they are marked there when
+  that record is written.
+
 ## Held-open items
 
 Items impl.md holds open across M2 (M2-I-5). H-21 is the M1 item DH-S-16 step 16.10 closes: `dsh config show` and `dsh config validate` run in the admin tree, construct no component, and DH-T-BOOT-14's command tests (`cli`: `TestConfigShowConstructsNothing`, `TestConfigShowKeepsEveryValue`, `TestConfigValidateRejectsBadConfig`, `TestConfigValidateRejectsLayerFaults`, `TestConfigCommandsProcess`; `boot/config`: `TestDumpYAMLRoundTrips`, the loadable `--format yaml` dump against its golden and composed back to the same tree) pass.
