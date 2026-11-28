@@ -182,7 +182,8 @@ func s76Gate(dir string) (string, error) {
 
 // ---- the branch head ----
 
-// s76Head is a scratch clone whose HEAD is the s17/policy-text head.
+// s76Head is the s17/policy-text head: a scratch clone for the stand-in and
+// fixture lanes, the checkout itself for the provided S17 run.
 type s76Head struct{ dir string }
 
 func (h *s76Head) commit() (string, error) { return s76Git(h.dir, "rev-parse", "HEAD") }
@@ -600,8 +601,11 @@ func (s *s76State) givenBinary(branch string) error {
 			return fmt.Errorf("DH-E-SANDBOX-7 runs on a clean %s head: %w", s76BranchName, err)
 		}
 		s.dsh = os.Getenv("DSH_BIN")
-	}
-	if s.head, err = s76Cut(root); err != nil {
+		// The S17 run's record is acceptance evidence: it is written and
+		// committed on the checkout itself (the clean s17 head), never in a
+		// scratch clone that is deleted with the test.
+		s.head = &s76Head{dir: root}
+	} else if s.head, err = s76Cut(root); err != nil {
 		return err
 	}
 	if !s.provided {
@@ -1108,7 +1112,25 @@ func (s *s76State) thenReported() error {
 		if !strings.HasPrefix(s.rec.id, "s17-") {
 			return fmt.Errorf("the provided run's record %s is not the S17 run", s.rec.id)
 		}
-		s76OuterT.Logf("s76 DH-E-SANDBOX-7 acceptance: passed on the provided signed-in Claude Code (model %s), record run=%s of %s", s.model(), s.rec.id, s.rec.commit)
+		if s.head.dir != s.root {
+			return fmt.Errorf("the S17 record %s was written in %s, not the checkout %s", s.rec.id, s.head.dir, s.root)
+		}
+		rel := s76RunsDir + "/" + s.rec.id + ".txt"
+		kept, err := s76ReadRecord(s.root, s.rec.id)
+		if err != nil {
+			return fmt.Errorf("the S17 record is not in the checkout's evidence: %w", err)
+		}
+		if kept.commit != s.rec.commit || kept.result != "passed" {
+			return fmt.Errorf("the checkout's record %s is %s of %s, want passed of %s", rel, kept.result, kept.commit, s.rec.commit)
+		}
+		if _, err := s76Git(s.root, "ls-files", "--error-unmatch", "--", rel); err != nil {
+			return fmt.Errorf("the S17 record %s is not committed on the checkout: %w", rel, err)
+		}
+		if err := s.head.clean(); err != nil {
+			return err
+		}
+		s76OuterT.Logf("s76 DH-E-SANDBOX-7 acceptance: passed on the provided signed-in Claude Code (model %s), record run=%s of %s at %s",
+			s.model(), s.rec.id, s.rec.commit, filepath.Join(s.root, filepath.FromSlash(rel)))
 		return nil
 	}
 	if !strings.HasPrefix(s.rec.id, "standin-") {
