@@ -20,10 +20,12 @@ package e2e
 // The machines (proof service:linux-systemd-cgroup), always reached over SSH:
 // when DSH_SCENARIO_EXEC10_SSH / DSH_SCENARIO_EXEC10_SSH_NOMANAGER name an SSH
 // alias (variants.md: EXEC-1 and EXEC-10 share that machine set), that machine,
-// the provided instance, is used as it is. Otherwise the suite stands up an
-// ephemeral one on this host's systemd Linux (native through sudo -n, or WSL
-// from Windows as root): two fresh scratch accounts, a private sshd on
-// 127.0.0.1 with its own host key, and a client key. Each SSH login opens a real
+// the provided instance, is used as it is. Otherwise, on a Linux host, the
+// suite stands up an ephemeral one on this host's systemd Linux through sudo -n:
+// two fresh scratch accounts, a private sshd on
+// 127.0.0.1 with its own host key, and a client key. On Windows with neither
+// variable set the scenario fails: a WSL machine counts only as the WSL variant
+// (M2-R-05), never as linux-e2. Each SSH login opens a real
 // PAM/logind session. The no-user-manager account's user@<uid>.service is
 // stopped and masked and the account never lingers, so its login has no
 // systemd --user at all. Teardown ends the logins, stops sshd, unmasks the unit
@@ -440,11 +442,19 @@ func ptoTargetFor(machine string) (lcssTarget, error) {
 	if alias := strings.TrimSpace(os.Getenv(m.env)); alias != "" {
 		return lcssSSH{alias}, nil
 	}
+	if runtime.GOOS == "windows" {
+		return nil, fmt.Errorf("no %s machine: %s is unset, and an ephemeral machine on this Windows host would run in WSL, "+
+			"whose results count only as the WSL variant (M2-R-05), never as %s; name a team-kept VM in %s", machine, m.env, machine, m.env)
+	}
 	p, err := ptoProvisioned()
 	if err != nil {
 		return nil, fmt.Errorf("no %s machine: %s is unset and an ephemeral one could not be stood up: %w", machine, m.env, err)
 	}
-	return p.machine(m.role), nil
+	t := p.machine(m.role)
+	if t.emulated() {
+		return nil, fmt.Errorf("no %s machine: %s is unset and the ephemeral one is on %s, which counts only as the WSL variant (M2-R-05)", machine, m.env, p.venue)
+	}
+	return t, nil
 }
 
 // ptoRootFn runs argv as root on this host's Linux.
@@ -577,6 +587,7 @@ exit $fail
 type ptoProvision struct {
 	root          ptoRootFn
 	venue         string
+	wsl           bool // stood up in WSL: the WSL variant only (M2-R-05)
 	port          string
 	key, known    string
 	users         map[string]string // role to account
@@ -584,7 +595,7 @@ type ptoProvision struct {
 }
 
 func (p *ptoProvision) machine(role string) ptoSSHMachine {
-	return ptoSSHMachine{root: p.root, venue: p.venue, port: p.port, key: p.key, known: p.known, user: p.users[role]}
+	return ptoSSHMachine{root: p.root, venue: p.venue, wsl: p.wsl, port: p.port, key: p.key, known: p.known, user: p.users[role]}
 }
 
 var (
@@ -631,7 +642,7 @@ func ptoStandUp() (*ptoProvision, error) {
 	if runErr != nil {
 		return nil, runErr
 	}
-	p := &ptoProvision{root: root, venue: venue, port: kv["port"], key: kv["key"], known: kv["known"],
+	p := &ptoProvision{root: root, venue: venue, wsl: runtime.GOOS == "windows", port: kv["port"], key: kv["key"], known: kv["known"],
 		users: map[string]string{"systemd": kv["systemd"], "nomanager": kv["nomanager"]}, nomanagerUnit: kv["nomanager-unit"]}
 	if p.port == "" || p.key == "" || p.users["systemd"] == "" || p.users["nomanager"] == "" {
 		return nil, fmt.Errorf("the provisioning printed no machine:\n%s", out)
@@ -649,13 +660,14 @@ func ptoStandUp() (*ptoProvision, error) {
 type ptoSSHMachine struct {
 	root                    ptoRootFn
 	venue, port, key, known string
+	wsl                     bool
 	user                    string
 }
 
 func (m ptoSSHMachine) name() string {
 	return fmt.Sprintf("ephemeral machine %s@127.0.0.1:%s (scratch account over SSH, %s)", m.user, m.port, m.venue)
 }
-func (ptoSSHMachine) emulated() bool { return false }
+func (m ptoSSHMachine) emulated() bool { return m.wsl }
 func (m ptoSSHMachine) shell(ctx context.Context, stdin []byte, argv ...string) (string, error) {
 	quoted := make([]string, len(argv))
 	for i, a := range argv {
