@@ -35,6 +35,7 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -797,6 +798,7 @@ const (
 	s87NFSBackingEnv = "S87_NFS_BACKING"
 	s87NFSReady      = "s87-nfs-ready"
 	s87Share         = "dsh-s87"
+	s87Runbook       = "docs/stories/harness-DSH-M2/evidence/runbook-smb-share.md (the linux-wsl:smb and windows-host:smb variants)"
 )
 
 // e2eBinary is this package's test binary for v, as v names it: this process's
@@ -839,12 +841,20 @@ type s87Proc struct {
 	lines  chan string
 	stderr bytes.Buffer
 	exited chan struct{}
+	pid    string // the server's own process ID on v, when it is signalled
 }
 
-// spawn starts argv on v with env, its stdout lines on lines; stop, run at the
-// end, closes its stdin, runs kill on v when set and waits.
-func (v *s87Variant) spawn(env []string, kill []string, argv ...string) (*s87Proc, error) {
+const s87PIDLine = "s87-pid "
+
+// spawn starts argv on v with env, its stdout lines on lines. At the end it
+// closes argv's stdin and, when signal is set, sends SIGTERM to argv's own
+// process ID on v (then SIGKILL after 15s), and waits. That ID is the shell's
+// that execs argv, so the suite signals exactly the process it started.
+func (v *s87Variant) spawn(env []string, signal bool, argv ...string) (*s87Proc, error) {
 	p := &s87Proc{lines: make(chan string, 64), exited: make(chan struct{})}
+	if signal {
+		argv = append([]string{"sh", "-c", `echo "` + s87PIDLine + `$$"; exec "$@"`, "sh"}, argv...)
+	}
 	if v.wsl {
 		p.cmd = exec.Command("wsl.exe", append(append([]string{"-e", "env"}, env...), argv...)...)
 		p.cmd.Env = s87Env()
@@ -876,21 +886,48 @@ func (v *s87Variant) spawn(env []string, kill []string, argv ...string) (*s87Pro
 	}()
 	done := make(chan error, 1)
 	go func() { done <- p.cmd.Wait(); close(p.exited) }()
-	s87OuterT.Cleanup(func() {
+	stop := func() {
 		_ = p.stdin.Close()
-		if len(kill) > 0 {
-			if out, err := v.must(kill...); err != nil && !strings.Contains(err.Error(), "exit 1") {
-				s87OuterT.Logf("s87 stopping %v on %s: %v %s", argv, v, err, out)
+		if p.pid != "" {
+			if out, err := v.must("kill", "-TERM", p.pid); err != nil && !s87Exited(p) {
+				s87OuterT.Logf("s87 stopping %v (pid %s) on %s: %v %s", argv, p.pid, v, err, out)
 			}
 		}
 		select {
 		case <-done:
 		case <-time.After(15 * time.Second):
+			if p.pid != "" {
+				_, _ = v.must("kill", "-KILL", p.pid)
+			}
 			_ = p.cmd.Process.Kill()
 			<-done
 		}
-	})
+	}
+	s87OuterT.Cleanup(stop)
+	if signal {
+		select {
+		case line, ok := <-p.lines:
+			if rest, found := strings.CutPrefix(line, s87PIDLine); ok && found {
+				if _, err := strconv.Atoi(rest); err == nil {
+					p.pid = rest
+					return p, nil
+				}
+			}
+			return nil, fmt.Errorf("starting %v on %s: no process ID, said %q: %s", argv, v, line, p.stderr.String())
+		case <-time.After(30 * time.Second):
+			return nil, fmt.Errorf("starting %v on %s: no process ID within 30s", argv, v)
+		}
+	}
 	return p, nil
+}
+
+func s87Exited(p *s87Proc) bool {
+	select {
+	case <-p.exited:
+		return true
+	default:
+		return false
+	}
 }
 
 type s87SMB struct {
@@ -903,7 +940,7 @@ type s87SMB struct {
 func serveSMB(v *s87Variant, host string) (*s87SMB, error) {
 	for _, p := range []string{"smbd", "pdbedit"} {
 		if v.lookPath(p) == "" {
-			return nil, fmt.Errorf("service:filesystem: no %s on %s: the suite's SMB share is served by Samba's smbd as the run's own user (the samba package; its system service need not run)", p, v)
+			return nil, fmt.Errorf("service:filesystem: no %s on %s: the suite's SMB share is served by Samba's smbd as the run's own user (the samba package; its system service need not run), or set DSH_SCENARIO_REMOTE_DIRS with DSH_SCENARIO_REMOTE_CHANGE for shares kept per %s", p, v, s87Runbook)
 		}
 	}
 	base, err := v.tempDir("dsh-s87-smb-")
@@ -959,11 +996,7 @@ func serveSMB(v *s87Variant, host string) (*s87SMB, error) {
 				return nil, fmt.Errorf("service:filesystem: adding %s to the share's own user database on %s: %v %s", s.user, v, err, out)
 			}
 		}
-		uid, err := v.must("id", "-u")
-		if err != nil {
-			return nil, err
-		}
-		p, err := v.spawn(nil, []string{"pkill", "-u", uid, "-f", "--", "smbd -s " + conf}, "smbd", "-s", conf, "--foreground", "--no-process-group")
+		p, err := v.spawn(nil, true, "smbd", "-s", conf, "--foreground", "--no-process-group")
 		if err != nil {
 			return nil, err
 		}
@@ -1019,7 +1052,7 @@ func (l *s87Leg) serveNFS() (*s87NFS, error) {
 	if _, err := v.must("mkdir", n.backing); err != nil {
 		return nil, err
 	}
-	p, err := v.spawn([]string{s87NFSBackingEnv + "=" + n.backing}, nil, bin)
+	p, err := v.spawn([]string{s87NFSBackingEnv + "=" + n.backing}, false, bin)
 	if err != nil {
 		return nil, err
 	}
@@ -1049,7 +1082,7 @@ func (l *s87Leg) serveNFS() (*s87NFS, error) {
 func (l *s87Leg) mount(fstype, source, opts, secret, at string, want ...string) (string, error) {
 	v := l.v
 	if _, err := v.root(secret, "mount", "-i", "-t", fstype, "-o", opts, source, at); err != nil {
-		return "", fmt.Errorf("service:filesystem: %w", err)
+		return "", fmt.Errorf("service:filesystem: the kernel's %s client mounts only as root (CAP_SYS_ADMIN); the suite runs mount and umount, and nothing else, as root (wsl.exe -u root, root itself, or sudo -n, so a sudoers grant of just mount and umount suffices), or set DSH_SCENARIO_REMOTE_DIRS with DSH_SCENARIO_REMOTE_CHANGE for shares kept per %s: %w", fstype, s87Runbook, err)
 	}
 	s87OuterT.Cleanup(func() {
 		if _, err := v.root("", "umount", at); err != nil {
@@ -1123,9 +1156,25 @@ while ([System.IO.FileInfo]::new($path).Length -eq $size) {
 // and gives the Windows variant a directory on it, and a directory of the WSL
 // distribution seen from Windows through \\wsl.localhost.
 func (l *s87Leg) remoteWindows() error {
+	ps := func(script string, env ...string) (string, error) {
+		cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference = 'Stop'; "+script)
+		cmd.Env = s87Env(env...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return string(out), fmt.Errorf("%s: %v\n%s", script, err, out)
+		}
+		return string(out), nil
+	}
+	// A user maps a share on a port other than 445 only through New-SmbMapping's
+	// TcpPort (Windows 11 24H2 and later), and only root binds 445; checked before
+	// anything is served.
+	if out, err := ps(`[bool](Get-Command New-SmbMapping).Parameters['TcpPort']`); err != nil || strings.TrimSpace(out) != "True" {
+		build, _ := ps(`[Environment]::OSVersion.Version.ToString()`)
+		return fmt.Errorf("service:filesystem: this Windows (%s) has no New-SmbMapping -TcpPort (Windows 11 24H2 and later), so a user cannot map the suite's SMB share served on its own port: run on a Windows that has it, or set DSH_SCENARIO_REMOTE_DIRS with DSH_SCENARIO_REMOTE_CHANGE for a share kept per %s: %v", strings.TrimSpace(build), s87Runbook, err)
+	}
 	wv, err := s87Reach("linux")
 	if err != nil || !wv.wsl {
-		return fmt.Errorf("service:filesystem: the Windows variant's SMB server and cross-OS directory are in WSL, and no WSL distribution answers: %v", err)
+		return fmt.Errorf("service:filesystem: the Windows variant's SMB server and cross-OS directory are in WSL, and no WSL distribution answers; set DSH_SCENARIO_REMOTE_DIRS with DSH_SCENARIO_REMOTE_CHANGE for a share kept per %s: %v", s87Runbook, err)
 	}
 	ips, err := wv.must("hostname", "-I")
 	if err != nil || len(strings.Fields(ips)) == 0 {
@@ -1136,15 +1185,6 @@ func (l *s87Leg) remoteWindows() error {
 		return err
 	}
 	share := `\\` + smb.host + `\` + s87Share
-	ps := func(script string, env ...string) (string, error) {
-		cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference = 'Stop'; "+script)
-		cmd.Env = s87Env(env...)
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			return string(out), fmt.Errorf("%s: %v\n%s", script, err, out)
-		}
-		return string(out), nil
-	}
 	if _, err := ps(fmt.Sprintf(`New-SmbMapping -RemotePath '%s' -TcpPort %d -UserName '%s' -Password $env:S87_SMB_PASSWORD -Persistent $false | Out-Null`, share, smb.port, smb.user),
 		"S87_SMB_PASSWORD="+smb.password); err != nil {
 		return fmt.Errorf("service:filesystem: mapping the suite's SMB share as this user (New-SmbMapping -TcpPort needs Windows 11 24H2 or later): %v", err)
@@ -1212,9 +1252,6 @@ func s87IsDir(p string) bool {
 // through WSL interop.
 func (l *s87Leg) remoteLinux() error {
 	v := l.v
-	if _, err := v.root("", "true"); err != nil {
-		return fmt.Errorf("service:filesystem: the kernel's SMB and NFS clients mount only as root, and %s gives none without a password: allow mount and umount through sudo -n, or mount the shares per evidence/runbook-smb-share.md and set DSH_SCENARIO_REMOTE_DIRS with DSH_SCENARIO_REMOTE_CHANGE: %v", v, err)
-	}
 	smb, err := serveSMB(v, "127.0.0.1")
 	if err != nil {
 		return err
