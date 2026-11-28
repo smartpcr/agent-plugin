@@ -225,7 +225,7 @@ test/e2e/harness-DSH-M3/      (new)  godog suites mirroring e2e-scenarios.md
 | C78 | `ui.chat` (`internal/ui/chat`) | UICHAT-6 | Row planner: turns, groups, hidden rows; stable positions for streamed inserts | C79 | S21 |
 | C79 | `ui.transcript`, `ui/transcript/live` | UICONV-1 (H-8), UICONV-3 | Node definitions and the `transcript` projection keyed by `(session, node key)`; `Page`/`Body` for first paint; implements `stream.Renderer` (`Events`, `Live`); the live tail from C65; page-vs-stream equivalence | C60, C65, C76, C67 | S21 |
 | C80 | `ui.toolcard` (`internal/ui/toolcard`) | UICONV-4 | Tool call facts to one card per call; honest state machine (sec. 4.6) | C79 | S21 |
-| C81 | `ui.interaction` (`internal/ui/interaction`) | UICONV-6 | Inline approvals and questions from `Registry.Pending`; registers the `ui` answerer; "Allow once" default; "Allow for this session" for one directory, app or origin; grant strip; `grant/created`, `grant/ended` notices | human.Registry, approval.Grants, C64, C79 | S21 |
+| C81 | `ui.interaction` (`internal/ui/interaction`) | UICONV-6 | Inline approvals and questions from `Registry.Pending`; registers the `ui` answerer; "Allow once" default; "Allow for this session" for one directory, app or origin; grant strip; `grant/created`, `grant/ended` notices; late-question card and the `question.read`/`question.reply` routes delegating to `question.Service.Reply`; wires `question.Service.Restore` into session resume | human.Registry, human/question, approval.Grants, C64, C79 | S21 |
 | C82 | `ui.nav` (`internal/ui/nav`) | UISIDE-1 | Live session list in `#nav`; status precedence Pending > Running > Unread; `reading.Record` | session.query, C60, C67 | S21 |
 | C83 | `ui.dirpick` (`internal/ui/dirpick`) | UISIDE-8 | Directory chooser over `directory.browse/create`; add workspace | C63, C64, C72 | S21 |
 | C84 | web product (`web.yml` entries, `internal/ui/product` tests) | WEBAPP-1, WEBAPP-2 | The composed `web` profile equals the inventory; readiness before the URL is printed; every embedded file referenced, manifest complete, total under the byte budget | boot.profile, C68, C69 | S21 |
@@ -286,6 +286,7 @@ from the cursor after a restart.
 | `access.Resource` | `Kind` (`session`, `workspace`, `directory`, `interaction`, `grant`), `ID` | Existing type |
 | `access.Rule` | one of `Owner()`, `On(from ...From)` (none = global), `Admitted()`, `Public(class, reason)` (class is A18's `anonymous` or `callback`) | Zero value is rejected at `Handle` |
 | `access.From` | `Session(param)`, `Workspace(param)`, `Opaque(param)` | Resolves the resource from the request; an `Opaque` param is readable only through `rq.Param` |
+| `access.Decision` | `Allowed`, `Reason` (`access/owner`, `access/no-policy`, ...) | Denial -> 403 `access/denied` |
 
 **Principal migration (explicit).** Today `access.Owner()` returns the owner
 `Principal`; api.md sec. 6.1 gives the name `Owner()` to the owner-only `Rule`. C59
@@ -296,7 +297,6 @@ fakes in `host/auth/auth_test.go`, `host/web/web_test.go`, `host/listen/listen_t
 their shape, so host.auth's cookie model and host.listen's `Peer` are otherwise
 unchanged. `Service.Decide(ctx, p, action, rs)` and `Allows(ctx, p, action, r)` keep
 their M2 signatures; `Invalidate(p *Principal)` (raises `access.Changed`) is added.
-| `access.Decision` | `Allowed`, `Reason` (`access/owner`, `access/no-policy`, ...) | Denial -> 403 `access/denied` |
 
 ### 4.3 Stream (C60)
 
@@ -310,7 +310,7 @@ their M2 signatures; `Invalidate(p *Principal)` (raises `access.Changed`) is add
 | `stream.Connection` | `Tab`, `Peer`, `Started`, `Writer` (flusher), `Heartbeat` timer | Max `StreamsPerPeer` (4) session and shell streams per peer on plain HTTP (unlimited under TLS); one more sends `park` to the longest-open stream and closes it; the attention stream counts but is never parked |
 | `stream.Cursor` | `Session`, `Seq` | Event id on the wire is `<sid>:<seq>`; the page carries it in `#stream-cursor` |
 | `stream.Event` | `Name` (`session`, `live`, `interaction`, `shell`, `view`, `notice`, `reset`, `park`, `attention`), `ID`, `Data SafeHTML` (OOB fragments) | Named SSE events carrying HTML (DH-ADR-GOUISTACK-4) |
-| `stream.Renderer` | `Events(env, []Event) SafeHTML`, `Live(env, sid, LiveCursor) SafeHTML` | Set once by C79 via `Hub.SetRenderer`; fallback placeholder on error never stalls the cursor |
+| `stream.Renderer` | `Events(env, []Event) SafeHTML`, `Live(env, sid, live.TailPosition) SafeHTML` | Set once by C79 via `Hub.SetRenderer`; fallback placeholder on error never stalls the cursor |
 
 ### 4.4 Conversation (C61, C65)
 
@@ -344,7 +344,8 @@ their M2 signatures; `Invalidate(p *Principal)` (raises `access.Changed`) is add
 |---|---|---|
 | `transcript.NodeDef` | `Kind`, `Types` (event types folded), `Place`, `Match`, `Fold`, `View`, `Body` | Registered by C79, C80, C81 |
 | `transcript` projection row (persisted) | `Session`, `NodeKey`, `Kind`, `Seq`, `Turn`, `Body` (folded state) | Same rows serve the page and the stream (equivalence test) |
-| `live.LiveCursor` | `Session`, `Turn`, `Attempt`, `FrameSeq` | `?after=` on `/sessions/{sid}/live` |
+| `live.TailPosition` (internal) | `Session`, `Turn`, `Attempt`, `FrameSeq` | **Not a wire cursor.** Orders `StreamFrame` chunks (C65) inside one model attempt so C60 can coalesce them and `Renderer.Live` can draw the tail; it lives in memory only and is reset when the attempt settles. It never appears in a URL, in `Last-Event-ID` or in `#stream-cursor`. The only cursor a client sends is `stream.Cursor` (journal `Seq`, see sec. 4.3): `?after=` on `/sessions/{sid}/live` and the `<sid>:<seq>` event id. On reconnect the tail is rebuilt from the current attempt's state baseline, never replayed by `FrameSeq` |
+| question item | `Call` (opaque in the URL), `ID` (question id from `question/asked`), `Session`, `Text`, `Choices`, `State` (`open` / `pending` (timed out, still answerable) / `answered`) | From the `questions` fold over `question/asked` and `question/answered`; `{call}` resolves to `ID` through `Asked.Call` |
 | `toolcard.Facts` | `Call`, `Parent`, `Name`, `Args`, `State`, `Result`, `Cwd`, `Home` | `Card{Call, Result, Body}` |
 | tool card state | `preparing` -> `waiting-approval` -> `running` -> `finished` / `failed` / `denied` / `cancelled`; `not-started`; `outcome-unknown` (host restarted while running) | No state is drawn that the journal has not recorded |
 | interaction item | `ID` (iid), `Session`, `Kind` (`approval` / `question`), `Subject`, `Options`, `Default` ("Allow once") | From `human.Registry.Pending` |
@@ -434,7 +435,9 @@ func Start(t testing.TB, o Options) *Instance
 | agent driver | C60 | `agent.StreamFrame` notice (C65) | Live text chunks |
 | C60 | C79 | `stream.Renderer` | Events -> OOB HTML fragments |
 | C79, C80, C81 | C76 | `render.Markdown(env, text) SafeHTML` | Model text |
-| C81 | human | `Registry.RegisterAnswerer("ui")`, `Pending`, `Answer` | Interaction answers |
+| C81 | human | `Registry.RegisterAnswerer("ui")`, `Pending`, `Answer` | Live interaction answers (`interaction.answer`) |
+| C81 | human/question | `question.Service.Reply(ctx, id, by human.Actor, text) (agent.Receipt, error)`; `Open() []string` | Late answers (`question.reply`): one steering user message through the inbox; errors `question/reply-queued`, `question/unknown`, `question/invalid` |
+| C62 resume hook | human/question | `question.Service.Restore(ctx, log, inbox) ([]string, error)` | Reopens every `question/asked` without `question/answered` when a session resumes; today only tests call it, so C81 wires it into the MayResume path |
 | C64 | approval | `Grants.List`, `Grants.Revoke` | Grants per live session |
 | C64, C83 | C63 | `dirbrowse.Browser` | Directory windows |
 | C67 | C60 | `shell` state source | Region re-render after `Epoch` change |
@@ -478,7 +481,9 @@ resource; `S` = `On(Session("sid"))`; `W` = `On(Workspace("wid"))`.
 | `workspace.sessions-order`* | `PUT /workspaces/{wid}/sessions/order` (session ids are checked typed fields) | Action | `W` | None |
 | `directory.browse` | `GET /directories?path=` | Fragment | `Owner()` | None |
 | `directory.create` | `POST /directories` | Action | `Owner()` | None |
-| `interaction.answer`* | `POST /interactions/{iid}` (A17's four kinds and `plan-review`) | Action | `On(Opaque("iid"))` | None (answers reach the live registry; a settled item answers 409) |
+| `interaction.answer`* | `POST /interactions/{iid}` (A17's four kinds and `plan-review`) | Action | `On(Opaque("iid"))` | None (answers reach the live registry; a settled item answers 409). A timed question past its deadline is no longer in the registry: its card posts to `question.reply` instead |
+| `question.read` | `GET /sessions/{sid}/questions/{call}` (ui-conversation.md sec. 6.2) | Fragment | `On(Session("sid"), Opaque("call"))` | None (read-only review of an open, pending or settled question) |
+| `question.reply` | `POST /sessions/{sid}/questions/{call}` (form: `text`, request id) | Action | `On(Session("sid"), Opaque("call"))` | MayResume (resumes a closed session's root agent, then calls `question.Service.Reply`) |
 | `grant.list`, `grant.revoke` | `GET /sessions/{sid}/grants`, `DELETE /sessions/{sid}/grants/{gid}` (area C4) | Fragment, Action | `S`; revoke adds `Opaque("gid")` | None |
 | `gallery`* | `GET /gallery` | Page | `Owner()` | None (mounted only with `ui.gallery`) |
 
@@ -491,8 +496,9 @@ the import-map and island hashes, built at table swap, no nonce),
 `same-origin`, `Permissions-Policy` denying every feature.
 
 Error mapping: 400 `web/bad-request`; 401 and 403 from admission (A18); 403
-`access/denied`; 403 `web/forgery`; 404; 409 (`session/writer-held`, stale draft
-`Rev`); 413 and 422 (form limits and schema); 429 and 503 with `Retry-After`; 500
+`access/denied`; 403 `web/forgery`; 404 (including `question/unknown`); 409
+(`session/writer-held`, stale draft `Rev`, `question/reply-queued` for a second
+answer); 422 also for `question/invalid` (empty answer); 413 and 422 (form limits and schema); 429 and 503 with `Retry-After`; 500
 `web/internal` with the request id.
 
 ### 5.4 SSE events
@@ -585,12 +591,47 @@ Each flow names the stage that builds it and the scenario or test that proves it
    registered channel. An `interaction` event draws the inline approval with
    "Allow once" focused.
 3. The operator chooses "Allow for this session" for one directory. `POST
-   /interactions/{iid}` (LiveOnly, forgery-checked) -> `Registry.Answer` -> the grant
+   /interactions/{iid}` (`interaction.answer`, activation None, forgery-checked; a
+   settled item answers 409) -> `Registry.Answer` -> the grant
    is created; a `grant/created` notice goes into the transcript; the card moves to
    `running` then `finished`.
 4. `GET /sessions/{sid}/grants` lists it; `DELETE .../grants/{gid}` revokes it
    (`Grants.Revoke`); `grant/ended` is journaled. Resume, fork and subagents start
    with no grant.
+
+### F4b Timed question, restart, late answer (S21, S22; DH-E-HUMAN-6, DH-D-HUMAN-5)
+
+1. The model calls the ask-user tool with a ten-second timeout and `Wait` false.
+   `question.Service.Ask` journals `question/asked{ID, Call}` and asks through
+   `Registry.Ask`; the `ui` answerer (C81) draws an inline question card via an
+   `interaction` event. The tool result is **pending** at once and the turn carries on.
+2. The deadline passes: the service withdraws the registry interaction. The card
+   re-renders from the `questions` fold as `pending` (still answerable) and its form
+   now targets `POST /sessions/{sid}/questions/{call}`. It no longer targets
+   `/interactions/{iid}`, because that route serves only live registry items and
+   would answer 409.
+3. The host is killed and started again. Registry state is memory only, so nothing
+   about the question survives there. The journal still holds `question/asked`
+   with no `question/answered`.
+4. The operator opens `GET /sessions/{sid}`. C79 renders the transcript; the
+   `questions` fold lists the question as continued (pending).
+   `GET /sessions/{sid}/questions/{call}` (`question.read`) returns the card.
+5. The operator answers: `POST /sessions/{sid}/questions/{call}` (`question.reply`;
+   forgery check, access `On(Session("sid"), Opaque("call"))`). Activation
+   **MayResume** resumes the session's root agent. The resume hook runs
+   `question.Service.Restore(ctx, log, inbox)`, which reopens the question. C81
+   resolves `{call}` to the question `ID` via `Asked.Call` and calls
+   `question.Service.Reply(ctx, id, actor, text)`.
+6. `Reply` journals `question/answered` and sends **one** steering user message
+   (`agent.InboxMessage{ID: "ans-<id>", Source: SourceQuestion, Call}`), which
+   names the call and starts a turn. That message reaches the transcript through
+   the normal journal stream, so the browser draws exactly one user message.
+7. A second answer, from the same tab or another, gets `question/reply-queued` ->
+   409, and the card shows the settled answer. A `{call}` the session never asked
+   gets `question/unknown` -> 404. The registry answer route is never used for a
+   restored question.
+8. Proof: TC-13s (in-tree route to `Reply` on the ephemeral services) and TC-24s
+   (real model and real browser, DH-E-HUMAN-6).
 
 ### F5 Reload, network cut, host restart (S19, S21; DH-E-API-1, DH-E-UICONV-1, DH-E-GOUISTACK-2)
 
@@ -774,7 +815,7 @@ manual record (never closes a step on its own).
 | TC-11g | Sanitizer corpus: hostile inputs to expected HTML | golden | committed `ui/render/testdata/corpus/*` | gate (inline) |
 | TC-12g | Page-vs-stream equivalence of transcript nodes; tool card states | golden | committed `ui/transcript/testdata`, `ui/toolcard/testdata` | gate (inline) |
 | TC-13a | Chat planner, nav status precedence, interaction option set ("Allow once" default), grant scope rules, composer request-id minting | in-process | none | gate (inline) |
-| TC-13s | Draft `Rev` 409, reading records, prefs persistence, `POST /interactions/{iid}` to `Registry.Answer`, grant list and revoke (DH-T-UICHAT-1/-7/-8/-13/-14, DH-T-UISIDE-1..-3/-17, DH-T-UICONV-*) | service:sqlite-embedded + service:loopback-http | ephemeral | gate |
+| TC-13s | Draft `Rev` 409, reading records, prefs persistence, `POST /interactions/{iid}` to `Registry.Answer`, `POST /sessions/{sid}/questions/{call}` to `question.Service.Reply` after `Restore` (one inbox message; second answer 409), grant list and revoke (DH-T-UICHAT-1/-7/-8/-13/-14, DH-T-UISIDE-1..-3/-17, DH-T-UICONV-*) | service:sqlite-embedded + service:loopback-http | ephemeral | gate |
 | TC-14g | Composed `web` profile | golden | `boot/profile/testdata/composed.golden` | gate (inline) |
 | TC-14a | Inventory equals composition; asset manifest complete and total under the byte budget over the embedded tree (DH-T-WEBAPP-1, -3) | in-process | none; `embed.FS` | gate (inline) |
 | TC-14s | Readiness before the URL (DH-T-WEBAPP-2); no chromedp in the product's `go list -deps` (DH-T-WEBAPP-4) | service:dsh-process + service:go-toolchain | ephemeral | gate |
@@ -787,7 +828,7 @@ manual record (never closes a step on its own).
 | TC-21s | DH-E-HOST-1 (Windows and Linux desktops) | service:chromium + service:windows-host | provided | acceptance |
 | TC-22s | DH-E-HOST-2, DH-E-API-2 | service:second-machine + service:trusted-tls-proxy + service:chromium | provided (E5) | acceptance |
 | TC-23s | DH-E-BOOT-1 (Windows 11 and Linux) | service:windows-host + service:linux-scratch-home + service:chromium | provided | acceptance |
-| TC-24s | **Real-model** browser scenarios: DH-E-HUMAN-1, DH-E-HUMAN-6, DH-E-HUMAN-7, DH-E-BUNDLE-3 | service:model-route-claude-code + service:chromium | provided; real model turns; a replay run is recorded separately and never counts | acceptance |
+| TC-24s | **Real-model** browser scenarios: DH-E-HUMAN-1, DH-E-HUMAN-6 (flow F4b: timed question, host kill and restart, late answer through `question.reply`), DH-E-HUMAN-7, DH-E-BUNDLE-3 | service:model-route-claude-code + service:chromium | provided; real model turns; a replay run is recorded separately and never counts | acceptance |
 | TC-25m | Step 22.12: DH-E-UIKIT-5 and the engine-sensitive repeats of 22.4 and 22.6 in Firefox and Safari | service:firefox-geckodriver (written checklist); Safari has no machine | recorded `manual`; **leaves 22.12 open** (impl.md DH-S-22 "Manual checks") | acceptance (open) |
 | TC-26m | Manual SSE-reconnect, forgery and gallery walks of S19 and S20 | service:chromium | operator on a lane machine; recorded `manual` | acceptance |
 
