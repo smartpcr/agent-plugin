@@ -452,7 +452,16 @@ the story's `closure.md`:
   no missing one), the count and the P0/P1 split;
 - a state of `not built`, `built` or `done`, where only the done-candidates may
   read `done` and every row that is not done names a finishing stage or `H-` item;
-- a `## Held-open items` table with a row per held-open item.
+- a `## Held-open items` table with a row per held-open item;
+- every state against the stage records (`closure/proof.go`, M2-C-3): every
+  row's Built in must be the stage tech-spec sec. 3.2 builds it in
+  (`Story.BuiltIn`); a `built` or `done` row needs that stage to pass
+  `ready --built`; a `done` row also needs a proving `DH-E-*` scenario or
+  `DH-T-*` local test named, every proving `DH-E-*` scenario with a counted (not
+  `later`) row in a stage record, every such row passed with its evidence, its
+  finishing column naming the stage whose closure proves it
+  (`Story.Finishing`), every finishing stage closed (`close` passes, judged even
+  when the cell omits it), and every `H-` item it names reading `closed`.
 
 The story shapes (stages, build stages, deliverables, held-open items) are in
 `closure/shape.go`. The golden `testdata/closure/expected.golden` covers `ready`
