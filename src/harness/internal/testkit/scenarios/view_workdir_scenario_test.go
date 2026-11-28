@@ -36,14 +36,18 @@ import (
 // R with one workspace-root/change of cause recovery, and (5) the turn is
 // rejected workdir/unavailable. The UI directory-picker clause of (5) waits for
 // the UI stage (binding in e2e-scenarios.md). Throughout, every model-chosen
-// write that succeeds (write, edit and each path of apply_patch) lands inside
-// the session's working directory of its run (R before the move, T after it),
-// and the hash listing of the scratch directory outside R and T is unchanged
-// (implementation-plan Stage 8.6, TC-21s4).
+// write lands inside the session's working directory of its run (R before the
+// move, T after it, R after the recovery; implementation-plan Stage 8.6,
+// TC-21s4): each path a write, edit or apply_patch call wrote, links resolved,
+// is inside it, a failed apply_patch counting the mutations its result reports
+// as completed; and the hash listing of the scratch directory outside the
+// working directory of the phase (the inactive one of R and T included) is
+// unchanged across the phase.
 //
 // Cleanup: the repository, the worktree and the home are removed (t.TempDir);
-// the session log is kept (keepExport). When a file outside R and T changed, the
-// stage stops (M2-R-03) and both listings are kept (keepListings).
+// the session log is kept (keepExport). When a file outside the working
+// directory changed, the stage stops (M2-R-03) and both listings are kept
+// (keepListings).
 //
 // Inputs: DSH_SCENARIO_VIEW5_LAYER a layer enabling the default tool set under
 // the bwrap backend with no title route; DSH_SCENARIO_VIEW5_MOVE the host
@@ -77,17 +81,22 @@ func TestHostMoveIntoARealWorktree(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(scratch, "outside", "keep.txt"), []byte("outside\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	outside := func() map[string]string { return view5Outside(t, scratch) }
-	before := outside()
-	keepListings(t, "view5-outside", before, outside)
-	unchanged := func(when string) {
-		t.Helper()
-		if diff := listingDiff(before, outside()); len(diff) > 0 {
-			t.Fatalf("%s, files outside the project and the worktree changed (M2-R-03: the stage stops): %v", when, diff)
+	// phase takes the listing outside the working directory active and returns
+	// the check that it is unchanged.
+	phase := func(name, active string, skip ...string) func(when string) {
+		outside := func() map[string]string { return view5Outside(t, scratch, active, skip...) }
+		before := outside()
+		keepListings(t, "view5-outside-"+name, before, outside)
+		return func(when string) {
+			t.Helper()
+			if diff := listingDiff(before, outside()); len(diff) > 0 {
+				t.Fatalf("%s, files outside the working directory %s changed (M2-R-03: the stage stops): %v", when, active, diff)
+			}
 		}
 	}
 
 	h := startSDK(t, bin, nil, []string{"--layer", layer})
+	unchanged := phase("project", repo)
 	session := h.createIn(t, route, repo, "workspace-write")
 	h.keepExport(t, session)
 
@@ -109,6 +118,10 @@ func TestHostMoveIntoARealWorktree(t *testing.T) {
 	if len(moves) != 1 || !view5Same(moves[0], tree) {
 		t.Fatalf("workspace-root/change of cause move: %v, want exactly one naming %s", moves, tree)
 	}
+	unchanged("after the move")
+	// T's own git administration lives in R (git's worktree metadata, updated by
+	// git commands run in T); everything else of R is outside from here.
+	unchanged = phase("worktree", tree, filepath.Join("repo", ".git", "worktrees", filepath.Base(tree)))
 
 	// (3) A relative write lands in the worktree; a write to the project is refused.
 	evs = h.runPrompt(t, session, "Use the write tool with the relative path view5-relative.txt and the content relative, then use the write tool on "+filepath.Join(repo, "view5-original.txt")+" with the content original. Do not use any other tool.", 10*time.Minute)
@@ -140,6 +153,7 @@ func TestHostMoveIntoARealWorktree(t *testing.T) {
 	if err := os.RemoveAll(tree); err != nil {
 		t.Fatal(err)
 	}
+	unchanged = phase("recovered", repo)
 	evs = h.runPrompt(t, session, "Reply with the word ready.", 10*time.Minute)
 	rec := view5Changes(t, h.history(t, session), "recovery")
 	if len(rec) != 1 || !view5Same(rec[0], repo) {
@@ -155,6 +169,7 @@ func TestHostMoveIntoARealWorktree(t *testing.T) {
 	if err := os.RemoveAll(repo); err != nil {
 		t.Fatal(err)
 	}
+	unchanged = phase("gone", "")
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
 	var r protocol.SessionPromptResult
@@ -174,55 +189,40 @@ func TestHostMoveIntoARealWorktree(t *testing.T) {
 	unchanged("after the rejected turn")
 }
 
-// view5Outside is the hash listing of scratch without the project (repo) and the
-// worktree (tree): what no write of the session may change.
-func view5Outside(t *testing.T, scratch string) map[string]string {
+// view5Outside is the hash listing of scratch without the working directory
+// active (none when empty) and the scratch-relative paths skip: what no write of
+// the session may change while active is its working directory.
+func view5Outside(t *testing.T, scratch, active string, skip ...string) map[string]string {
 	t.Helper()
+	var drop []string
+	if active != "" {
+		rel, err := filepath.Rel(scratch, active)
+		if err != nil {
+			t.Fatal(err)
+		}
+		drop = append(drop, filepath.ToSlash(rel))
+	}
+	for _, s := range skip {
+		drop = append(drop, filepath.ToSlash(s))
+	}
 	all := hashListing(t, scratch)
 	for k := range all {
-		if top, _, _ := strings.Cut(k, "/"); top == "repo" || top == "tree" {
-			delete(all, k)
+		for _, d := range drop {
+			if k == d || strings.HasPrefix(k, d+"/") {
+				delete(all, k)
+			}
 		}
 	}
 	return all
 }
 
-// view5WritesInside fails unless every successful write, edit and apply_patch
-// path of evs, relative ones resolved against dir, names a file inside dir (the
-// session's working directory of that run). A refused call wrote nothing.
+// view5WritesInside fails unless every path a write, edit or apply_patch call
+// of evs wrote lies inside dir (the session's working directory of that run),
+// links resolved (view5Inside).
 func view5WritesInside(t *testing.T, evs []protocol.Event, dir string) {
 	t.Helper()
 	for _, o := range toolOutcomes(t, evs) {
-		if o.IsError {
-			continue
-		}
-		var paths []string
-		switch o.Name {
-		case "write", "edit":
-			var a struct {
-				FilePath string `json:"file_path"`
-			}
-			if err := json.Unmarshal(o.Args, &a); err != nil {
-				t.Fatalf("%s arguments %s: %v", o.Name, o.Args, err)
-			}
-			paths = []string{a.FilePath}
-		case "apply_patch":
-			var a struct {
-				Input string `json:"input"`
-			}
-			if err := json.Unmarshal(o.Args, &a); err != nil {
-				t.Fatalf("apply_patch arguments %s: %v", o.Args, err)
-			}
-			for _, h := range fs2ParsePatch(t, a.Input) {
-				paths = append(paths, h.path)
-				if h.moveTo != "" {
-					paths = append(paths, h.moveTo)
-				}
-			}
-		default:
-			continue
-		}
-		for _, p := range paths {
+		for _, p := range view5Written(t, o) {
 			if !view5Inside(dir, p) {
 				t.Fatalf("call %s (%s) wrote %s, outside the session's working directory %s", o.ID, o.Name, p, dir)
 			}
@@ -230,22 +230,167 @@ func view5WritesInside(t *testing.T, evs []protocol.Event, dir string) {
 	}
 }
 
-// view5Inside reports whether p, resolved against dir when relative, is dir or
-// below it; dir is compared as given and with its links resolved.
+// view5Written names the paths call o wrote, relative ones as the model gave
+// them. A successful write or edit wrote its file_path and a successful
+// apply_patch every path and move destination of its hunks. A failed write or
+// edit wrote nothing (one atomic publish; the listings catch any breach). A
+// failed apply_patch keeps what it completed (DH-ADR-FS-11): its result's
+// Completed lines, with the canonical paths the host published, and a move
+// whose destination was written before its source could not be removed.
+// Attempted paths a failed call names under Failed or Not executed are not
+// writes.
+func view5Written(t *testing.T, o *toolOutcome) []string {
+	t.Helper()
+	switch o.Name {
+	case "write", "edit":
+		if o.IsError {
+			return nil
+		}
+		var a struct {
+			FilePath string `json:"file_path"`
+		}
+		if err := json.Unmarshal(o.Args, &a); err != nil {
+			t.Fatalf("%s arguments %s: %v", o.Name, o.Args, err)
+		}
+		return []string{a.FilePath}
+	case "apply_patch":
+		if o.IsError {
+			return view5Completed(view5ResultText(o.Raw))
+		}
+		var a struct {
+			Input string `json:"input"`
+		}
+		if err := json.Unmarshal(o.Args, &a); err != nil {
+			t.Fatalf("apply_patch arguments %s: %v", o.Args, err)
+		}
+		var paths []string
+		for _, h := range fs2ParsePatch(t, a.Input) {
+			paths = append(paths, h.path)
+			if h.moveTo != "" {
+				paths = append(paths, h.moveTo)
+			}
+		}
+		return paths
+	}
+	return nil
+}
+
+// view5ResultText joins every text string of a tool/result payload.
+func view5ResultText(raw json.RawMessage) string {
+	var v any
+	if json.Unmarshal(raw, &v) != nil {
+		return string(raw)
+	}
+	var b strings.Builder
+	var walk func(any)
+	walk = func(v any) {
+		switch x := v.(type) {
+		case map[string]any:
+			for k, e := range x {
+				if s, ok := e.(string); ok && k == "text" {
+					b.WriteString(s + "\n")
+				} else {
+					walk(e)
+				}
+			}
+		case []any:
+			for _, e := range x {
+				walk(e)
+			}
+		}
+	}
+	walk(v)
+	return b.String()
+}
+
+// view5Completed names the paths a part-way apply_patch report says were
+// written: each Completed line (A, M and D name one path, R its source and
+// destination) and the destination of a failed move whose destination was
+// written before its source could not be removed.
+func view5Completed(text string) []string {
+	var paths []string
+	section := ""
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimRight(line, "\r")
+		switch line {
+		case "Completed:", "Failed:", "Not executed:":
+			section = line
+			continue
+		}
+		switch section {
+		case "Completed:":
+			op, rest, ok := strings.Cut(line, " ")
+			if !ok {
+				continue
+			}
+			rest, _, _ = strings.Cut(rest, " (version ")
+			switch op {
+			case "A", "M", "D":
+				paths = append(paths, rest)
+			case "R":
+				from, to, _ := strings.Cut(rest, " -> ")
+				paths = append(paths, from, to)
+			}
+		case "Failed:":
+			if !strings.Contains(line, " was written (version ") {
+				continue
+			}
+			if _, after, ok := strings.Cut(line, " (move to "); ok {
+				if to, _, ok := strings.Cut(after, "): "); ok {
+					paths = append(paths, to)
+				}
+			}
+		}
+	}
+	return paths
+}
+
+// view5Inside reports whether p, resolved against dir when relative, lands at
+// dir or below it once every link on the way, the last one included, is
+// followed (view5Real); dir is compared with its own links followed.
 func view5Inside(dir, p string) bool {
 	if !filepath.IsAbs(p) {
 		p = filepath.Join(dir, p)
 	}
-	dirs := []string{filepath.Clean(dir)}
-	if real, err := filepath.EvalSymlinks(dir); err == nil {
-		dirs = append(dirs, filepath.Clean(real))
+	rel, err := filepath.Rel(view5Real(dir), view5Real(p))
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+}
+
+// view5Real is the absolute path p reaches when each component is resolved in
+// turn as the kernel walks it: a link (dangling ones too) is replaced by its
+// target before the next component, ".." climbs from where the walk is, and
+// missing components are taken as named.
+func view5Real(p string) string {
+	split := func(s string) []string {
+		return strings.FieldsFunc(s, func(r rune) bool { return r < 128 && os.IsPathSeparator(uint8(r)) })
 	}
-	for _, d := range dirs {
-		if rel, err := filepath.Rel(d, filepath.Clean(p)); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return true
+	vol := filepath.VolumeName(p)
+	cur := vol + string(filepath.Separator)
+	todo := split(p[len(vol):])
+	for hops := 0; len(todo) > 0; {
+		c := todo[0]
+		todo = todo[1:]
+		switch c {
+		case ".":
+			continue
+		case "..":
+			cur = filepath.Dir(cur)
+			continue
 		}
+		next := filepath.Join(cur, c)
+		target, err := os.Readlink(next)
+		if err != nil || hops > 40 {
+			cur = next
+			continue
+		}
+		hops++
+		if filepath.IsAbs(target) {
+			v := filepath.VolumeName(target)
+			cur, target = v+string(filepath.Separator), target[len(v):]
+		}
+		todo = append(split(target), todo...)
 	}
-	return false
+	return cur
 }
 
 // view5Changes is the directory of every workspace-root/change of cause in evs.

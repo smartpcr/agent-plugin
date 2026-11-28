@@ -157,15 +157,15 @@ up on `7b5133d` and could not run. Nothing below is evidence of a run: the FS-1,
 
 On an outside write the stage stops and both listings are kept (M2-R-03): FS-1 keeps its scratch
 directory, both listings of O and the session log; FS-2 both listings of each task's parent directory and
-the session logs; VIEW-5, since this branch, both listings of the scratch directory outside the project and
-the worktree. The listing paths are in the test log (`kept the before and after listings of ...`).
+the session logs; VIEW-5, since this branch, both listings of each phase's scratch directory outside the session's
+working directory of that phase. The listing paths are in the test log (`kept the before and after listings of ...`).
 
 Cleared on this stage's branch (it would have left VIEW-5's Then clause unproved on its variant; the commit
 is this stage's merge):
 
 | Defect | Seen on `7b5133d` | Fix |
 | --- | --- | --- |
-| VIEW-5 did not check "every model-chosen write lands inside the session's working directory" (Stage 8.6, TC-21s4) and listed nothing outside it, so a stray write elsewhere passed and M2-R-03 had no listing to keep. | `view_workdir_scenario_test.go`: only `view5-relative.txt` (in T) and `view5-original.txt` (not in R) were looked at | after each run, every successful `write`, `edit` and `apply_patch` path (relative ones resolved) must lie inside that run's working directory, R before the move and T after it (`view5WritesInside`); the hash listing of the scratch directory without R and T is taken before the session and compared after each step, both kept on failure (`TestView5InsideJudgesWritePaths`) |
+| VIEW-5 did not check "every model-chosen write lands inside the session's working directory" (Stage 8.6, TC-21s4) and listed nothing outside it, so a stray write elsewhere passed and M2-R-03 had no listing to keep. | `view_workdir_scenario_test.go`: only `view5-relative.txt` (in T) and `view5-original.txt` (not in R) were looked at | after each run, every path a `write`, `edit` or `apply_patch` call wrote must land inside that run's working directory (R before the move, T after it, R after the recovery), each link on the way followed, a dangling or last-component one included (`view5Written`, `view5Inside`, `view5Real`); a failed `apply_patch` counts the mutations its part-way report lists as completed and a move destination written before its source could not be removed, not the paths it failed on or never ran (DH-ADR-FS-11). Each phase takes the hash listing of the scratch directory without only its working directory, so the inactive one of R and T is watched (after the move only T's git administration under `R/.git/worktrees` is left out), compared after each step and kept on failure (`view5Outside`). Tests: `TestView5InsideJudgesWritePaths`, `TestView5InsideFollowsLinks` (runs where symbolic links can be made: Linux, as VIEW-5), `TestView5OutsideWatchesTheInactiveDirectory`, `TestView5WrittenCountsPartialPatches` |
 
 Probes, not evidence: none. FS-2 and VIEW-5 are signed-in runs (see "Who" above), and FS-1 has no committed
 layer to probe with; `entry` forbids a recorded run either way.
