@@ -108,7 +108,7 @@ GOWORK=off go -C tools/harness-gate run . close     --root ../.. --stage DH-S-16
 GOWORK=off go -C tools/harness-gate run . records   --root ../..
 GOWORK=off go -C tools/harness-gate run . entry     --root ../.. --story harness:DSH-M2
 GOWORK=off go -C tools/harness-gate run . policy-text --root ../..
-dsh sandbox status | GOWORK=off go -C tools/harness-gate run . sandbox-preflight [--status FILE] [--service service:linux-landlock-only]
+dsh sandbox status | GOWORK=off go -C tools/harness-gate run . sandbox-preflight [--status FILE] [--service service:linux-landlock-only --preflight "landlock ABI 1-4"]
 ```
 
 - `rehearse` (DH-D-TOOLCHAIN-5, DH-ADR-TOOLCHAIN-13; gap-closure step 19.1.1) runs
@@ -174,8 +174,9 @@ dsh sandbox status | GOWORK=off go -C tools/harness-gate run . sandbox-preflight
   to the phase's IDs, failing on any `--- SKIP`, a non-zero exit or a planned test
   without a `--- PASS` line. All runs of a plan share one 100-minute budget
   (`scenarioBudget`; the S17 job has 2 h): each gets the time left as its
-  `-timeout`, and a run the budget no longer covers is not started and fails. `DH-S-17` runs in three phases: `DH-E-TOOLCHAIN-1` first,
-  the other scenarios, then `DH-E-SANDBOX-7` (architecture.md rule 7, R-03). Of a
+  `-timeout`, and a run the budget no longer covers is not started and fails. `DH-S-17` runs in four phases: `DH-E-TOOLCHAIN-1` first,
+  the single-process scenarios, the host-killing `DH-E-SESSION-2` and `DH-E-AGENT-3`,
+  then `DH-E-SANDBOX-7` (architecture.md rule 7, R-03; impl.md DH-S-17 Sequence). Of a
   scenario with route subtests the `claude-code` leg must pass and the
   `copilot-cli` leg is recorded (`scenarios: recorded leg: ...`): the required run
   sets `DSH_SCENARIO_ROUTES=claude-code` and its verdict has no exception; the
@@ -208,10 +209,14 @@ Copilot CLI 1.0.115 has no non-interactive status command; `none` runs no check.
   one with a missing or repeated line. It never skips. Exit 2 is a usage error.
   With `--service` it decides that S18 sandbox service's preflight instead
   (`sandboxstatus.Preflight`): `service:linux-sandbox-bwrap` backend `bwrap`,
-  state `Full`; `service:linux-landlock-only` backend `landlock`, state `Full` or
-  `Partial`; `service:linux-unconfined` state `Unconfined` with the missing
-  effects named. A wrong machine, or an unknown service, exits 1 naming the
-  service and the expected state.
+  state `Full`; `service:linux-landlock-only` backend `landlock`, with
+  `--preflight` naming the machine kind as variants.md's Preflight column does:
+  `landlock ABI >= 5` (state `Full` or `Partial`, `fs-write` and `harness-home`
+  not missing) or `landlock ABI 1-4` (state `Partial`, `fs-write` missing);
+  `service:linux-unconfined` state `Unconfined` with the missing
+  effects named. A wrong machine, or an unknown service or preflight, exits 1
+  naming the service and the expected state; a landlock check without
+  `--preflight` fails too, since the service has two.
 
 ## Story entry (`harness-gate entry`)
 

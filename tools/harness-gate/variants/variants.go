@@ -265,8 +265,10 @@ func checkInScope(v Variant) []string {
 		if !slices.Contains(Services, s) {
 			p = append(p, fmt.Sprintf("service %q is not a service of architecture.md", s))
 		}
-		if e, ok := sandboxstatus.ExpectationOf(s); ok && v.Preflight != e.Text {
-			p = append(p, fmt.Sprintf("names %s, whose preflight is %q, not %q", s, e.Text, v.Preflight))
+		if es := sandboxstatus.ExpectationsOf(s); len(es) > 0 {
+			if _, ok := sandboxstatus.ExpectationOf(s, v.Preflight); !ok {
+				p = append(p, fmt.Sprintf("names %s, whose preflight is one of %s, not %q", s, sandboxstatus.Texts(es), v.Preflight))
+			}
 		}
 	}
 	if v.Preflight == "" {
