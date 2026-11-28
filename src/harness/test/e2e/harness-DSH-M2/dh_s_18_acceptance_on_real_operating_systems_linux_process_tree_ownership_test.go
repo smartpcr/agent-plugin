@@ -17,16 +17,19 @@ package e2e
 // outcome, each member's control group while alive and which members outlived
 // the stop. The steps assert on it here.
 //
-// The machines (proof service:linux-systemd-cgroup): when
-// DSH_SCENARIO_EXEC10_SSH / DSH_SCENARIO_EXEC10_SSH_NOMANAGER name an SSH
+// The machines (proof service:linux-systemd-cgroup), always reached over SSH:
+// when DSH_SCENARIO_EXEC10_SSH / DSH_SCENARIO_EXEC10_SSH_NOMANAGER name an SSH
 // alias (variants.md: EXEC-1 and EXEC-10 share that machine set), that machine,
-// the provided instance, is used as it is. Otherwise the machine is ephemeral,
-// on this host's Linux (native, or WSL from Windows), logged in as an ordinary
-// user: the systemd machine is that login as it is; the no-user-manager machine
-// is the same login with the user bus out of reach (XDG_RUNTIME_DIR an empty
-// directory, DBUS_SESSION_BUS_ADDRESS a socket that does not exist), as for an
-// account whose manager is stopped. Either way the preflight must hold, or the
-// scenario fails; it never skips.
+// the provided instance, is used as it is. Otherwise the suite stands up an
+// ephemeral one on this host's systemd Linux (native through sudo -n, or WSL
+// from Windows as root): two fresh scratch accounts, a private sshd on
+// 127.0.0.1 with its own host key, and a client key. Each SSH login opens a real
+// PAM/logind session. The no-user-manager account's user@<uid>.service is
+// stopped and masked and the account never lingers, so its login has no
+// systemd --user at all. Teardown ends the logins, stops sshd, unmasks the unit
+// and removes both accounts. The agent's preflight records the account's
+// user@<uid>.service state, linger and systemctl --user over that SSH login;
+// it must hold, or the scenario fails. It never skips.
 
 import (
 	"context"
@@ -53,11 +56,10 @@ import (
 
 // The agent's inputs, set by the host on the machine.
 const (
-	ptoAgentEnv   = "PTO_E2E_AGENT"   // the machine role: systemd or nomanager
-	ptoEmulateEnv = "PTO_E2E_EMULATE" // "1": make this login the role's machine
-	ptoBaseEnv    = "PTO_E2E_BASE"    // the scratch directory on the machine
-	ptoDepthEnv   = "PTO_E2E_DEPTH"   // levels of the fixture tree
-	ptoMemoryEnv  = "PTO_E2E_MEMORY"  // memory limit in MiB; "" or 0 for none
+	ptoAgentEnv  = "PTO_E2E_AGENT"  // the machine role: systemd or nomanager
+	ptoBaseEnv   = "PTO_E2E_BASE"   // the scratch directory on the machine
+	ptoDepthEnv  = "PTO_E2E_DEPTH"  // levels of the fixture tree
+	ptoMemoryEnv = "PTO_E2E_MEMORY" // memory limit in MiB; "" or 0 for none
 )
 
 // ptoReportMark prefixes the agent's one report line on its stdout.
@@ -105,23 +107,28 @@ while :; do sleep 1; done
 // --- the report ---
 
 type ptoReport struct {
-	Role     string `json:"role"`
-	Emulated bool   `json:"emulated"`
-	Kernel   string `json:"kernel"`
-	UID      int    `json:"uid"`
+	Role   string `json:"role"`
+	Kernel string `json:"kernel"`
+	UID    int    `json:"uid"`
+	User   string `json:"user"`
 
 	// The preflight.
-	UserManager string   `json:"userManager"` // systemctl --user is-system-running, or why it failed
-	ManagerUp   bool     `json:"managerUp"`   // running or degraded
-	CgroupFS    string   `json:"cgroupFS"`
-	OwnCgroup   string   `json:"ownCgroup"` // before the provider start
-	OwnWritable bool     `json:"ownWritable"`
-	WritableWhy string   `json:"writableWhy,omitempty"`
-	AfterCgroup string   `json:"afterCgroup"` // after the provider start
-	RegistryErr string   `json:"registryErr,omitempty"`
-	Announced   []string `json:"announced"`
-	Scope       string   `json:"scope"` // subprocess.DelegatedScope
-	TreeOwner   string   `json:"treeOwner"`
+	SSHConnection string   `json:"sshConnection"` // $SSH_CONNECTION: the agent runs in an SSH login
+	Session       string   `json:"session"`       // $XDG_SESSION_ID: a logind session
+	ManagerUnit   string   `json:"managerUnit"`   // systemctl is-active user@<uid>.service
+	ManagerFile   string   `json:"managerFile"`   // systemctl is-enabled user@<uid>.service
+	Linger        string   `json:"linger"`        // loginctl show-user <uid> -p Linger
+	UserManager   string   `json:"userManager"`   // systemctl --user is-system-running, or why it failed
+	ManagerUp     bool     `json:"managerUp"`     // running or degraded
+	CgroupFS      string   `json:"cgroupFS"`
+	OwnCgroup     string   `json:"ownCgroup"` // before the provider start
+	OwnWritable   bool     `json:"ownWritable"`
+	WritableWhy   string   `json:"writableWhy,omitempty"`
+	AfterCgroup   string   `json:"afterCgroup"` // after the provider start
+	RegistryErr   string   `json:"registryErr,omitempty"`
+	Announced     []string `json:"announced"`
+	Scope         string   `json:"scope"` // subprocess.DelegatedScope
+	TreeOwner     string   `json:"treeOwner"`
 
 	// The tree.
 	OwnerKind     string            `json:"ownerKind"`
@@ -172,23 +179,17 @@ func ptoAgent(rep *ptoReport) error {
 			return fmt.Errorf("%s = %q: %w", ptoMemoryEnv, v, err)
 		}
 	}
-	if os.Getenv(ptoEmulateEnv) == "1" {
-		rep.Emulated = true
-		if rep.Role == "nomanager" {
-			// The account's user manager is out of reach: no bus in the runtime
-			// directory and no session bus address that answers.
-			xdg := filepath.Join(base, "xdg")
-			if err := os.MkdirAll(xdg, 0o700); err != nil {
-				return err
-			}
-			_ = os.Setenv("XDG_RUNTIME_DIR", xdg)
-			_ = os.Setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path="+filepath.Join(xdg, "no-bus"))
-		}
-	}
 	rep.UID = os.Getuid()
+	rep.User = os.Getenv("USER")
+	rep.SSHConnection = os.Getenv("SSH_CONNECTION")
+	rep.Session = os.Getenv("XDG_SESSION_ID")
 	if out, err := exec.Command("uname", "-r").Output(); err == nil {
 		rep.Kernel = strings.TrimSpace(string(out))
 	}
+	unit := fmt.Sprintf("user@%d.service", rep.UID)
+	rep.ManagerUnit = ptoOutput("systemctl", "is-active", unit)
+	rep.ManagerFile = ptoOutput("systemctl", "is-enabled", unit)
+	rep.Linger = ptoOutput("loginctl", "show-user", strconv.Itoa(rep.UID), "-p", "Linger", "--value")
 	out, err := exec.Command("systemctl", "--user", "is-system-running").CombinedOutput()
 	rep.UserManager = strings.TrimSpace(string(out))
 	if err != nil && rep.UserManager == "" {
@@ -327,6 +328,19 @@ func ptoAgent(rep *ptoReport) error {
 // ptoSelfCgroup is this process's cgroup v2 path, relative to the hierarchy.
 func ptoSelfCgroup() string { return ptoCgroupOf(os.Getpid()) }
 
+// ptoOutput is a command's trimmed output (a failing query still prints its
+// answer, "inactive" or "masked"), or why it gave none.
+func ptoOutput(argv ...string) string {
+	out, err := exec.Command(argv[0], argv[1:]...).CombinedOutput()
+	if s := strings.TrimSpace(string(out)); s != "" {
+		return s
+	}
+	if err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
 func ptoCgroupOf(pid int) string {
 	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/cgroup")
 	if err != nil {
@@ -408,25 +422,258 @@ func ptoBuild(arch string) (string, error) {
 	return bin, nil
 }
 
-// ptoTargetFor is the machine: the provided SSH alias, else this host's Linux.
+// ptoTargetFor is the machine: the provided SSH alias, else the ephemeral
+// scratch account over SSH this run provisions.
 func ptoTargetFor(machine string) (lcssTarget, error) {
 	m := ptoMachines[machine]
 	if alias := strings.TrimSpace(os.Getenv(m.env)); alias != "" {
 		return lcssSSH{alias}, nil
 	}
-	switch rt := runtime.GOOS; rt {
-	case "linux":
-		return lcssLocal{}, nil
-	case "windows":
-		out, err := lcssWSL{}.shell(context.Background(), nil, "uname", "-s")
-		if err != nil || strings.TrimSpace(out) != "Linux" {
-			return nil, fmt.Errorf("no %s machine: %s is unset and WSL has no running Linux distribution (uname -s = %q): %v",
-				machine, m.env, strings.TrimSpace(out), err)
-		}
-		return lcssWSL{}, nil
-	default:
-		return nil, fmt.Errorf("no %s machine: %s is unset and this %s host has no Linux to stand one up on", machine, m.env, rt)
+	p, err := ptoProvisioned()
+	if err != nil {
+		return nil, fmt.Errorf("no %s machine: %s is unset and an ephemeral one could not be stood up: %w", machine, m.env, err)
 	}
+	return p.machine(m.role), nil
+}
+
+// ptoRootFn runs argv as root on this host's Linux.
+type ptoRootFn func(ctx context.Context, stdin []byte, argv ...string) (string, error)
+
+// ptoRootRunner is root on this host's Linux: WSL's root from Windows, or
+// sudo -n (no password prompt) on Linux.
+func ptoRootRunner() (ptoRootFn, string, error) {
+	switch rt := runtime.GOOS; rt {
+	case "windows":
+		root := func(ctx context.Context, stdin []byte, argv ...string) (string, error) {
+			return lcssRun(exec.CommandContext(ctx, "wsl.exe", append([]string{"-u", "root", "-e"}, argv...)...), stdin)
+		}
+		out, err := root(context.Background(), nil, "uname", "-s")
+		if err != nil || strings.TrimSpace(out) != "Linux" {
+			return nil, "", fmt.Errorf("WSL has no running Linux distribution reachable as root (uname -s = %q): %v", strings.TrimSpace(out), err)
+		}
+		return root, "WSL on this Windows host", nil
+	case "linux":
+		root := func(ctx context.Context, stdin []byte, argv ...string) (string, error) {
+			if os.Geteuid() == 0 {
+				return lcssRun(exec.CommandContext(ctx, argv[0], argv[1:]...), stdin)
+			}
+			return lcssRun(exec.CommandContext(ctx, "sudo", append([]string{"-n", "--"}, argv...)...), stdin)
+		}
+		if _, err := root(context.Background(), nil, "true"); err != nil {
+			return nil, "", fmt.Errorf("root on this Linux host is not available without a password (sudo -n): %v", err)
+		}
+		return root, "this Linux host", nil
+	default:
+		return nil, "", fmt.Errorf("this %s host has no Linux to stand a machine up on", rt)
+	}
+}
+
+// ptoProvisionScript, run as root, stands up the ephemeral machine and prints
+// key=value lines. Everything it makes is listed in $W/state for the teardown,
+// which runs even when this fails part way. With no installed sshd it unpacks
+// the distribution's openssh-server package into a cache directory, without
+// installing it.
+const ptoProvisionScript = `set -eu
+W=$(mktemp -d /tmp/dsh-e2e-pto-sshd.XXXXXX)
+chmod 711 "$W"; : > "$W/state"
+echo "dir=$W"
+SSHD=/usr/sbin/sshd; L=
+if [ ! -x "$SSHD" ]; then
+  C=/var/cache/dsh-e2e/openssh-server
+  if [ ! -x "$C/usr/sbin/sshd" ]; then
+    command -v apt-get >/dev/null || { echo "no sshd installed and no apt-get to fetch openssh-server" >&2; exit 3; }
+    rm -rf "$C" "$C.deb"; mkdir -p "$C.deb"
+    (cd "$C.deb" && apt-get download openssh-server >&2 && { apt-get download libwrap0 >&2 || true; })
+    for d in "$C.deb"/*.deb; do dpkg -x "$d" "$C"; done
+  fi
+  SSHD=$C/usr/sbin/sshd
+  L=$(find "$C" -name 'libwrap.so.0' -printf '%h' -quit)
+fi
+[ -n "$L" ] && export LD_LIBRARY_PATH="$L"
+echo "sshd=$SSHD"
+if ! getent passwd sshd >/dev/null; then
+  useradd -r -M -d /run/sshd -s /usr/sbin/nologin sshd; echo "created-sshd-user -" >> "$W/state"
+fi
+if [ ! -d /run/sshd ]; then mkdir -p /run/sshd; echo "created-run-sshd -" >> "$W/state"; fi
+chmod 755 /run/sshd
+R=$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
+S=dshptos$R; N=dshpton$R
+for u in "$S" "$N"; do useradd -m -s /bin/sh "$u"; echo "user $u" >> "$W/state"; done
+ssh-keygen -q -t ed25519 -N '' -C dsh-e2e-pto-host -f "$W/host"
+ssh-keygen -q -t ed25519 -N '' -C dsh-e2e-pto-client -f "$W/client"
+for u in "$S" "$N"; do
+  h=$(getent passwd "$u" | cut -d: -f6)
+  install -d -o "$u" -g "$u" -m 700 "$h/.ssh"
+  install -o "$u" -g "$u" -m 600 "$W/client.pub" "$h/.ssh/authorized_keys"
+done
+NU=$(id -u "$N")
+loginctl disable-linger "$N" 2>/dev/null || true
+systemctl stop "user@$NU.service" 2>/dev/null || true
+systemctl mask --runtime "user@$NU.service" >&2
+echo "masked user@$NU.service" >> "$W/state"
+ok=
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  P=$(( $(od -An -N2 -tu2 /dev/urandom | tr -d ' ') % 20000 + 20000 ))
+  cat > "$W/sshd_config" <<EOF
+Port $P
+ListenAddress 127.0.0.1
+HostKey $W/host
+PidFile $W/sshd.pid
+UsePAM yes
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no
+AllowUsers $S $N
+EOF
+  if "$SSHD" -f "$W/sshd_config" -E "$W/sshd.log"; then ok=1; break; fi
+done
+[ -n "$ok" ] || { cat "$W/sshd.log" >&2; echo "sshd did not start" >&2; exit 4; }
+for i in $(seq 50); do [ -s "$W/sshd.pid" ] && break; sleep 0.1; done
+echo "[127.0.0.1]:$P $(cut -d' ' -f1,2 "$W/host.pub")" > "$W/known_hosts"
+echo "port=$P"
+echo "key=$W/client"
+echo "known=$W/known_hosts"
+echo "systemd=$S"
+echo "nomanager=$N"
+echo "nomanager-unit=user@$NU.service $(systemctl is-active "user@$NU.service" || true) $(systemctl is-enabled "user@$NU.service" || true)"
+`
+
+// ptoTeardownScript, run as root with $W, removes what the provisioning made.
+const ptoTeardownScript = `W=$1
+case "$W" in /tmp/dsh-e2e-pto-sshd.*) ;; *) echo "refusing to tear down $W" >&2; exit 2;; esac
+[ -s "$W/sshd.pid" ] && kill "$(cat "$W/sshd.pid")" 2>/dev/null
+users=$(awk '$1=="user"{print $2}' "$W/state")
+for u in $users; do loginctl terminate-user "$u" 2>/dev/null; done
+sleep 1
+for u in $users; do pkill -KILL -u "$u" 2>/dev/null; done
+sleep 0.5
+fail=0
+while read -r k v; do
+  case $k in
+    masked) systemctl unmask --runtime "$v" >/dev/null 2>&1 || fail=1;;
+    user) userdel -r "$v" >/dev/null 2>&1; ! id "$v" >/dev/null 2>&1 || fail=1;;
+    created-sshd-user) userdel sshd >/dev/null 2>&1;;
+    created-run-sshd) rmdir /run/sshd 2>/dev/null;;
+  esac
+done < "$W/state"
+rm -rf "$W"
+exit $fail
+`
+
+// ptoProvision is the ephemeral machine: both scratch accounts behind one
+// private sshd.
+type ptoProvision struct {
+	root          ptoRootFn
+	venue         string
+	port          string
+	key, known    string
+	users         map[string]string // role to account
+	nomanagerUnit string            // the unit, is-active and is-enabled as root read them
+}
+
+func (p *ptoProvision) machine(role string) ptoSSHMachine {
+	return ptoSSHMachine{root: p.root, venue: p.venue, port: p.port, key: p.key, known: p.known, user: p.users[role]}
+}
+
+var (
+	ptoProvMu  sync.Mutex
+	ptoProv    *ptoProvision
+	ptoProvErr error
+)
+
+// ptoProvisioned stands the ephemeral machine up once per run; the outer
+// test's cleanup tears it down.
+func ptoProvisioned() (*ptoProvision, error) {
+	ptoProvMu.Lock()
+	defer ptoProvMu.Unlock()
+	if ptoProv != nil || ptoProvErr != nil {
+		return ptoProv, ptoProvErr
+	}
+	ptoProv, ptoProvErr = ptoStandUp()
+	return ptoProv, ptoProvErr
+}
+
+func ptoStandUp() (*ptoProvision, error) {
+	root, venue, err := ptoRootRunner()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	out, runErr := root(ctx, []byte(ptoProvisionScript), "sh", "-s")
+	kv := map[string]string{}
+	for _, line := range strings.Split(out, "\n") {
+		if k, v, ok := strings.Cut(strings.TrimSpace(line), "="); ok {
+			kv[k] = v
+		}
+	}
+	if dir := kv["dir"]; strings.HasPrefix(dir, "/tmp/dsh-e2e-pto-sshd.") {
+		ptoOuterT.Cleanup(func() {
+			tctx, tcancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer tcancel()
+			if out, err := root(tctx, []byte(ptoTeardownScript), "sh", "-s", "--", dir); err != nil {
+				ptoOuterT.Errorf("tearing down the ephemeral machine %s: %v\n%s", dir, err, out)
+			}
+		})
+	}
+	if runErr != nil {
+		return nil, runErr
+	}
+	p := &ptoProvision{root: root, venue: venue, port: kv["port"], key: kv["key"], known: kv["known"],
+		users: map[string]string{"systemd": kv["systemd"], "nomanager": kv["nomanager"]}, nomanagerUnit: kv["nomanager-unit"]}
+	if p.port == "" || p.key == "" || p.users["systemd"] == "" || p.users["nomanager"] == "" {
+		return nil, fmt.Errorf("the provisioning printed no machine:\n%s", out)
+	}
+	if f := strings.Fields(p.nomanagerUnit); len(f) != 3 || f[1] == "active" || f[2] != "masked-runtime" {
+		return nil, fmt.Errorf("the no-user-manager account's unit reads %q as root; want it inactive and masked-runtime", p.nomanagerUnit)
+	}
+	fmt.Printf("    [ephemeral machine on %s: sshd 127.0.0.1:%s, scratch accounts %s (user manager on login) and %s (%s)]\n",
+		venue, p.port, p.users["systemd"], p.users["nomanager"], p.nomanagerUnit)
+	return p, nil
+}
+
+// ptoSSHMachine is one scratch account of the ephemeral machine, reached by a
+// real SSH login (key auth, pinned host key) from root on this host's Linux.
+type ptoSSHMachine struct {
+	root                    ptoRootFn
+	venue, port, key, known string
+	user                    string
+}
+
+func (m ptoSSHMachine) name() string {
+	return fmt.Sprintf("ephemeral machine %s@127.0.0.1:%s (scratch account over SSH, %s)", m.user, m.port, m.venue)
+}
+func (ptoSSHMachine) emulated() bool { return false }
+func (m ptoSSHMachine) shell(ctx context.Context, stdin []byte, argv ...string) (string, error) {
+	quoted := make([]string, len(argv))
+	for i, a := range argv {
+		quoted[i] = "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
+	}
+	return m.root(ctx, stdin, "ssh", "-F", "/dev/null", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes",
+		"-o", "StrictHostKeyChecking=yes", "-o", "UserKnownHostsFile="+m.known, "-o", "LogLevel=ERROR",
+		"-i", m.key, "-p", m.port, m.user+"@127.0.0.1", strings.Join(quoted, " "))
+}
+func (m ptoSSHMachine) put(ctx context.Context, src, dst string) error {
+	b, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	_, err = m.shell(ctx, b, "sh", "-c", "cat > \"$0\" && chmod 0755 \"$0\"", dst)
+	return err
+}
+
+// ptoScopeCgroups lists cgroup directories named unit on the ephemeral
+// machine, read as root; a provided machine is not asked ("", false).
+func ptoScopeCgroups(t lcssTarget, unit string) (string, bool, error) {
+	m, ok := t.(ptoSSHMachine)
+	if !ok {
+		return "", false, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	out, err := m.root(ctx, nil, "find", "/sys/fs/cgroup/user.slice", "-type", "d", "-name", unit)
+	return strings.TrimSpace(out), true, err
 }
 
 // ptoRunAgent copies the agent to a scratch directory on t and runs it as role;
@@ -462,9 +709,6 @@ func ptoRunAgent(t lcssTarget, role string, depth int, mib int) (*ptoReport, str
 	argv := []string{"env", ptoAgentEnv + "=" + role, ptoBaseEnv + "=" + dir, ptoDepthEnv + "=" + strconv.Itoa(depth)}
 	if mib > 0 {
 		argv = append(argv, ptoMemoryEnv+"="+strconv.Itoa(mib))
-	}
-	if t.emulated() {
-		argv = append(argv, ptoEmulateEnv+"=1")
 	}
 	actx, acancel := context.WithTimeout(ctx, ptoAgentWithin)
 	defer acancel()
@@ -521,16 +765,20 @@ func (w *ptoWorld) run(depth, mib int) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("    [%s (%s), kernel %s, uid %d; preflight: systemctl --user %q, %s, own cgroup %s writable=%v; scope %q; owner %s]\n",
-		w.machine, w.target.name(), r.Kernel, r.UID, r.UserManager, r.CgroupFS, r.OwnCgroup, r.OwnWritable, r.Scope, r.TreeOwner)
+	fmt.Printf("    [%s, %s, kernel %s, %s uid %d over SSH %q session %q; preflight: user@%d.service %q (%s), linger %q, systemctl --user %q, %s, own cgroup %s writable=%v; scope %q; owner %s]\n",
+		w.machine, w.target.name(), r.Kernel, r.User, r.UID, r.SSHConnection, r.Session, r.UID, r.ManagerUnit, r.ManagerFile, r.Linger,
+		r.UserManager, r.CgroupFS, r.OwnCgroup, r.OwnWritable, r.Scope, r.TreeOwner)
 	return w.preflight()
 }
 
-// preflight checks the machine is the variant's (variants.md): cgroup v2, an
-// ordinary login whose own control group it cannot write, and the user manager
-// running or not.
+// preflight checks the machine is the variant's (variants.md): an SSH login,
+// cgroup v2, an ordinary account whose own control group it cannot write, and
+// its user manager running, or stopped with no lingering to start it.
 func (w *ptoWorld) preflight() error {
 	r := w.report
+	if r.SSHConnection == "" {
+		return fmt.Errorf("preflight: the agent on %s is not in an SSH login (SSH_CONNECTION unset)", w.target.name())
+	}
 	if r.CgroupFS != "cgroup2fs" {
 		return fmt.Errorf("preflight: /sys/fs/cgroup on %s is %q, not cgroup v2", w.target.name(), r.CgroupFS)
 	}
@@ -538,11 +786,13 @@ func (w *ptoWorld) preflight() error {
 		return fmt.Errorf("preflight: the login on %s (uid %d) can write its own control group %s: not an ordinary login, no scope would be requested",
 			w.target.name(), r.UID, r.OwnCgroup)
 	}
-	if w.wantManager == "running" && !r.ManagerUp {
-		return fmt.Errorf("preflight: systemctl --user on %s reads %q; want running or degraded", w.target.name(), r.UserManager)
+	if w.wantManager == "running" && (!r.ManagerUp || r.ManagerUnit != "active") {
+		return fmt.Errorf("preflight: on %s user@%d.service is %q and systemctl --user reads %q; want the user manager active and running",
+			w.target.name(), r.UID, r.ManagerUnit, r.UserManager)
 	}
-	if w.wantManager == "stopped" && r.ManagerUp {
-		return fmt.Errorf("preflight: systemctl --user on %s reads %q; want the user manager stopped", w.target.name(), r.UserManager)
+	if w.wantManager == "stopped" && (r.ManagerUp || r.ManagerUnit == "active" || r.ManagerUnit == "activating" || r.Linger == "yes") {
+		return fmt.Errorf("preflight: on %s user@%d.service is %q (%s), linger %q, systemctl --user reads %q; want the user manager stopped and not lingering",
+			w.target.name(), r.UID, r.ManagerUnit, r.ManagerFile, r.Linger, r.UserManager)
 	}
 	return nil
 }
@@ -618,6 +868,15 @@ func (w *ptoWorld) thenScopeGone() error {
 			return err
 		}
 		if !strings.Contains(out, unit) {
+			// The user manager no longer lists it; on the ephemeral machine its
+			// control group must be gone from the hierarchy too.
+			dirs, asked, err := ptoScopeCgroups(w.target, unit)
+			if err != nil {
+				return err
+			}
+			if asked && dirs != "" {
+				return fmt.Errorf("after the host exited the scope %s is unlisted but its control group remains: %s", unit, dirs)
+			}
 			return nil
 		}
 		time.Sleep(200 * time.Millisecond)
@@ -683,7 +942,7 @@ func InitializeScenario_dh_s_18_acceptance_on_real_operating_systems_linux_proce
 		}
 		return c, nil
 	})
-	ctx.Step(`^the "([^"]*)" machine whose preflight records the user manager "(running|stopped)"$`, w.givenMachine)
+	ctx.Step(`^the "([^"]*)" machine, an account reached over SSH, whose preflight records the user manager "(running|stopped)"$`, w.givenMachine)
 	ctx.Step(`^a command forks a tree (\d+) levels deep with a setsid grandchild and an orphan that ignore SIGTERM, and is stopped$`, w.whenTree)
 	ctx.Step(`^a command forks a tree (\d+) levels deep with a setsid grandchild and an orphan that ignore SIGTERM, under a (\d+) MiB memory limit, and is stopped$`, w.whenTreeLimited)
 	ctx.Step(`^the tree's owner is reported as "([^"]*)", exact, with no fallback$`, w.thenOwnerExact)
