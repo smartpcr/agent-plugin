@@ -184,13 +184,15 @@ machine cannot cut its own power, so no `service:os-process` substitute exists.
    | `DSH_SCENARIO_NODEFS_POWEROFF` | `virsh destroy {vm}`, or on Hyper-V `Stop-VM {vm} -TurnOff -Force` run in the host's SSH remoting session (`pwsh -c 'Invoke-Command (New-PSSession -HostName hyperv-host -UserName s18lab -KeyFilePath ~/.ssh/s18-hyperv) { Stop-VM {vm} -TurnOff -Force }'`) |
    | `DSH_SCENARIO_NODEFS_POWERON` | command starting `{vm}` and waiting until its guest agent answers |
    | `DSH_SCENARIO_NODEFS_READ` | command printing the replaced file of `{vm}` through the guest agent on its **standard output** only (diagnostics go to standard error); the bytes must equal one version exactly, one trailing line ending allowed |
-   | `DSH_SCENARIO_REPORT` | the recorder's version log, appended to and kept whatever the result |
+   | `DSH_SCENARIO_REPORT` | the report `<report>`. The package's `TestMain` (`scenario.Main`) keeps `<report>` for the scenario rows and points the variable, as the test reads it, at `<report>.detail` (`scenario.DetailSuffix`): **the recorder's version log is `<report>.detail`**, appended to and kept whatever the result. Keep both files |
    | `DSH_SCENARIO_NODEFS_ROUNDS` | optional: `i-j` runs rounds i to j of 1-100 (a shard, M2-R-06); empty or `all` runs every round |
 
    Each round: the controller starts the writer, waits (at most 5 min) for its first new
    acknowledgement, cuts the power at a random moment within 5 s after it, restarts the
    guest, reads the file, and judges it against every version acknowledged before the
-   cut, acknowledgements still in flight at the cut included. The log has one line per
+   cut, acknowledgements still in flight at the cut included: after the read, the writer's
+   connections open at the cut are read for 2 s more and then closed, before the bound is
+   taken. The log has one line per
    event, `<sequence> <UTC time> <event> key=value...`, the events being `start`, `seed`,
    `round`, `ack`, `cut`, `read`, `fail` and `junk`.
 
@@ -206,11 +208,17 @@ machine cannot cut its own power, so no `service:os-process` substitute exists.
 
    **Sharding.** If 100 rounds would pass 3 h, run shards, e.g. `1-40`, `41-80`, `81-100`,
    each a separate run with the same `DSH_SCENARIO_VMS` guests (their overlays kept between
-   shards) and the same `DSH_SCENARIO_REPORT` log. A shard past round 1 refuses to start
-   unless the log ends with every guest's round i-1 read and judged; it takes each guest's
-   acknowledged version from the log and continues its sequence. Record each shard's run.
+   shards) and the same `DSH_SCENARIO_REPORT`, so every shard appends to the same
+   `<report>.detail` version log. A shard past round 1 refuses to start unless that log ends
+   with every guest's round i-1 read and judged; it takes each guest's acknowledged version
+   from the log and continues its sequence. A shard stopped after a round's `round` or `cut`
+   line, before its `read`, cannot be continued: that round's file is unjudged evidence a
+   new writer would replace, so keep the overlay, judge its file by hand against the log's
+   last `ack`, record it, and rerun all rounds on a fresh overlay. Record each shard's run.
 6. **Clean up.** After the last shard, delete each passing overlay, its guest definition
-   and disk. Keep the recorder log under `DSH_SCENARIO_REPORT`. On a failure (a `fail` line
+   and disk. Keep the recorder's version log `<report>.detail` and the report `<report>`
+   (both under `DSH_SCENARIO_REPORT`; deleting the `.detail` file discards the
+   acknowledgement evidence). On a failure (a `fail` line
    in the log, naming the guest and round) keep the failing overlay and name it in the
    record and in [DH-S-18.md](DH-S-18.md).
 
@@ -225,7 +233,8 @@ machine cannot cut its own power, so no `service:os-process` substitute exists.
 | Hyper-V host (build, disk cache mode) | |
 | Base image SHA-256 (Linux; Windows) | |
 | Preflight (step 2) per host | |
-| Recorder log path | |
+| Recorder version log path (`<report>.detail`) and its SHA-256 | |
+| Report path (`<report>`, the scenario rows) | |
 
 | Variant | Guest | Expected | Cuts run | Last acknowledged version / read version (last cut) | Result |
 |---|---|---|---|---|---|

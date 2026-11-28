@@ -29,8 +29,6 @@ type standInGuest struct {
 	cuts int
 	// lose, when set, replaces what read returns (a disk that loses writes).
 	lose func(vm string, data string) string
-	// afterCut, when set, runs after each cut, before the restart.
-	afterCut func(vm string)
 }
 
 func newStandInGuest(t *testing.T, addr string) *standInGuest {
@@ -76,11 +74,7 @@ func (g *standInGuest) machine() nodefsMachine {
 			if stop == nil {
 				return nil
 			}
-			err := stop()
-			if g.afterCut != nil {
-				g.afterCut(vm)
-			}
-			return err
+			return stop()
 		},
 		powerOn: func(string) error { return nil },
 		read: func(vm string) (string, error) {
@@ -169,7 +163,7 @@ func TestNodefsDriveAgainstAStandInGuest(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "nodefs.log")
 	vms := []string{"linux-guest", "windows-guest"}
 	rec, g := standInRun(t, logPath, vms, 1, 3)
-	if err := nodefsDrive(t.Context(), rec, g.machine(), vms, 1, 3, 10*time.Second, 50*time.Millisecond); err != nil {
+	if err := nodefsDrive(t.Context(), rec, g.machine(), vms, 1, 3, 10*time.Second, 50*time.Millisecond, time.Second); err != nil {
 		t.Fatal(err)
 	}
 	if err := rec.close(); err != nil {
@@ -217,7 +211,7 @@ func TestNodefsDriveCatchesALostAcknowledgedVersion(t *testing.T) {
 		}
 		return string(nodefsVersion(n - 1))
 	}
-	err := nodefsDrive(t.Context(), rec, g.machine(), []string{"vm1"}, 1, 3, 10*time.Second, 50*time.Millisecond)
+	err := nodefsDrive(t.Context(), rec, g.machine(), []string{"vm1"}, 1, 3, 10*time.Second, 50*time.Millisecond, time.Second)
 	if err == nil || !strings.Contains(err.Error(), "older than the acknowledged") || !strings.Contains(err.Error(), "keep the overlay of vm1") {
 		t.Fatalf("drive = %v, want the lost version", err)
 	}
@@ -227,27 +221,41 @@ func TestNodefsDriveCatchesALostAcknowledgedVersion(t *testing.T) {
 	}
 }
 
-// An acknowledgement still in flight at the cut counts: the file is judged against
-// the versions acknowledged by the time it is read, not those seen at the cut.
-func TestNodefsJudgesAgainstAcksInFlightAtTheCut(t *testing.T) {
+// An acknowledgement the host has not read when the read returns still counts:
+// the writer's connection open at the cut is read until it settles, and the file
+// is judged against what it carried.
+func TestNodefsJudgesAgainstAcksDeliveredAfterTheRead(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "nodefs.log")
-	rec, g := standInRun(t, logPath, []string{"vm1"}, 1, 1)
-	g.afterCut = func(vm string) {
-		conn, err := net.Dial("tcp", rec.addr())
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		defer conn.Close()
-		late := rec.last(vm) + 1000
-		fmt.Fprintf(conn, "%s %d\n", vm, late)
-		if err := rec.waitAbove(t.Context(), vm, late-1, 10*time.Second); err != nil {
-			t.Error(err)
-		}
+	rec, _ := standInRun(t, logPath, []string{"vm1"}, 1, 1)
+	var conn net.Conn
+	m := nodefsMachine{
+		start: func(vm string) error {
+			c, err := net.Dial("tcp", rec.addr())
+			if err != nil {
+				return err
+			}
+			conn = c
+			t.Cleanup(func() { _ = c.Close() })
+			_, err = fmt.Fprintf(c, "%s 1\n", vm)
+			return err
+		},
+		// The guest acknowledged version 1000 before the cut; its line reaches the
+		// recorder only after the read below returned version 1.
+		powerOff: func(vm string) error {
+			late := time.AfterFunc(300*time.Millisecond, func() { fmt.Fprintf(conn, "%s 1000\n", vm) })
+			t.Cleanup(func() { late.Stop() })
+			return nil
+		},
+		powerOn: func(string) error { return nil },
+		read:    func(string) (string, error) { return string(nodefsVersion(1)), nil },
 	}
-	err := nodefsDrive(t.Context(), rec, g.machine(), []string{"vm1"}, 1, 1, 10*time.Second, 50*time.Millisecond)
-	if err == nil || !strings.Contains(err.Error(), "older than the acknowledged") {
-		t.Fatalf("drive = %v, want the version acknowledged after the cut to count", err)
+	err := nodefsDrive(t.Context(), rec, m, []string{"vm1"}, 1, 1, 10*time.Second, 50*time.Millisecond, 2*time.Second)
+	if err == nil || !strings.Contains(err.Error(), "older than the acknowledged 1000") {
+		t.Fatalf("drive = %v, want the acknowledgement delivered after the read to count", err)
+	}
+	_ = rec.close()
+	if log := readLog(t, logPath); !strings.Contains(log, " ack vm=vm1 round=1 version=1000\n") {
+		t.Errorf("the log has no late acknowledgement in round 1:\n%.2000s", log)
 	}
 }
 
@@ -256,7 +264,7 @@ func TestNodefsDriveNeedsTheWriterRunningBeforeTheCut(t *testing.T) {
 	rec, g := standInRun(t, filepath.Join(t.TempDir(), "nodefs.log"), []string{"vm1"}, 1, 1)
 	m := g.machine()
 	m.start = func(string) error { return nil }
-	err := nodefsDrive(t.Context(), rec, m, []string{"vm1"}, 1, 1, 200*time.Millisecond, 50*time.Millisecond)
+	err := nodefsDrive(t.Context(), rec, m, []string{"vm1"}, 1, 1, 200*time.Millisecond, 50*time.Millisecond, time.Second)
 	if err == nil || !strings.Contains(err.Error(), "acknowledged no version") {
 		t.Fatalf("drive = %v, want no acknowledgement", err)
 	}
@@ -271,7 +279,7 @@ func TestNodefsShardContinuesTheLog(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "nodefs.log")
 	rec, g := standInRun(t, logPath, []string{"vm1"}, 1, 2)
-	if err := nodefsDrive(t.Context(), rec, g.machine(), []string{"vm1"}, 1, 2, 10*time.Second, 50*time.Millisecond); err != nil {
+	if err := nodefsDrive(t.Context(), rec, g.machine(), []string{"vm1"}, 1, 2, 10*time.Second, 50*time.Millisecond, time.Second); err != nil {
 		t.Fatal(err)
 	}
 	acked := rec.last("vm1")
@@ -297,7 +305,7 @@ func TestNodefsShardContinuesTheLog(t *testing.T) {
 		t.Errorf("the shard starts from acknowledged %d, want %d", got, acked)
 	}
 	g.addr = next.addr()
-	if err := nodefsDrive(t.Context(), next, g.machine(), []string{"vm1"}, 3, 4, 10*time.Second, 50*time.Millisecond); err != nil {
+	if err := nodefsDrive(t.Context(), next, g.machine(), []string{"vm1"}, 3, 4, 10*time.Second, 50*time.Millisecond, time.Second); err != nil {
 		t.Fatal(err)
 	}
 	if err := next.close(); err != nil {
@@ -317,5 +325,23 @@ func TestNodefsShardContinuesTheLog(t *testing.T) {
 	}
 	if _, err := openNodefsRecorder(t, "127.0.0.1:0", failed, []string{"vm1"}, 3, 4); err == nil {
 		t.Error("a shard after a failed round opened")
+	}
+
+	// A shard stopped after round 41's cut, before its read: the file on the
+	// guest is round 41's unjudged evidence, which a new writer would replace.
+	for name, tail := range map[string]string{
+		"after the cut":    "3 t round vm=vm1 round=41\n4 t ack vm=vm1 round=41 version=12\n5 t cut vm=vm1 round=41 acked=12\n",
+		"before the cut":   "3 t round vm=vm1 round=41\n",
+		"a later shard on": "3 t round vm=vm1 round=41\n4 t cut vm=vm1 round=41 acked=11\n5 t start rounds=41-60 vms=vm1\n",
+	} {
+		interrupted := filepath.Join(dir, "interrupted.log")
+		if err := os.WriteFile(interrupted, []byte("1 t start rounds=1-40 vms=vm1\n2 t read vm=vm1 round=40 version=11 acked=11\n"+tail), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for _, from := range []int{41, 42} {
+			if _, err := openNodefsRecorder(t, "127.0.0.1:0", interrupted, []string{"vm1"}, from, 60); err == nil || !strings.Contains(err.Error(), "never judged") {
+				t.Errorf("%s: a shard from %d after an interrupted round 41 opened: %v", name, from, err)
+			}
+		}
 	}
 }
