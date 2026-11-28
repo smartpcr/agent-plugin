@@ -48,6 +48,7 @@ Feature: Session and agent loop acceptance (DH-E-SESSION-1, -2, DH-E-AGENT-1 to 
     And the turn has at least 2 steps, each step/start closed by its step/end in order
     And every tool/call has its tool/result and every step settles exactly once
     And every request rebuilt from the persisted log has the digest the route received, one per settlement in log order
+    And rebuilding the requests twice gives the same bytes
     And the record of "DH-E-AGENT-1" cites a prompt count of 1, equal to the user messages in its persisted log
 
   # The sdk host does not send session.stream yet (wire/sdkserver/forward.go):
@@ -63,11 +64,12 @@ Feature: Session and agent loop acceptance (DH-E-SESSION-1, -2, DH-E-AGENT-1 to 
     And the record of "DH-E-AGENT-2" cites a prompt count of 2, equal to the user messages in its persisted log
 
   Scenario: DH-E-AGENT-3 stopping and killing the host leave an honest log
-    Given an sdk host on the scratch home with the long tool "testkit_sleep"
-    When run A stops the host gracefully while "testkit_sleep" runs
+    Given an sdk host on the scratch home with the real shell tool, whose command records its pid and sleeps 60 seconds
+    When run A stops the host gracefully while "the shell command" runs
     Then before any resume the persisted log of run A holds the call's tool/result, step/end and turn/end aborted with cause disposed
+    And the shell command run A started no longer runs
     And the persisted log of run A runs seq 0 to n with no gap
-    When run B kills a fresh host on a fresh home while "testkit_sleep" runs, and a new host resumes the session
+    When run B kills a fresh host on a fresh home while "the shell command" runs, and a new host resumes the session
     Then the resume of run B appends an outcome-unknown tool/result and the closers, and the turn is not continued
     And the persisted log of run B runs seq 0 to n with no gap
     And the record of "DH-E-AGENT-3" cites a prompt count of 2, equal to the user messages in its persisted logs

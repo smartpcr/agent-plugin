@@ -11,7 +11,9 @@ package e2e
 // "claude-code" is an in-process loopback model instance scripted per scenario;
 // files are read by the real read tool (fs.tools, mounted by a testhook layer,
 // since the sdk host serves no client tools yet) and
-// the long tool is the testhook's testkit_sleep. The persisted log is read back
+// the long tool is the testhook's testkit_sleep, and the shell child of
+// DH-E-AGENT-3 a real pwsh or bash process started by shellexec.tools over the
+// testhook shell registry. The persisted log is read back
 // from the scratch home's SQLite store with the host stopped. The evidence rows
 // are read from the committed DH-S-17 record and the gate's order from
 // tools/harness-gate. Helpers shared with the Stage 7.2 suite: s17rPersisted,
@@ -29,6 +31,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -302,6 +305,7 @@ type s17aState struct {
 	digests      []string
 	cutOff       bool // dsh closed the cancelled turn's response (AGENT-2)
 	sleepCall    string
+	children     []int // the pids the shell commands recorded (AGENT-3)
 
 	gateOut string
 }
@@ -491,20 +495,37 @@ func (s *s17aState) givenRoute(id string) error {
 	return nil
 }
 
-// layer writes the sdk layer of root: the route instance; with files the real
-// read tool (fs.tools over fs.ops, fs.local and sandbox.policy) in the
-// workspace; with sleep the long tool testkit_sleep.
-func (s *s17aState) layer(files, sleep bool) {
+// The layer kinds: the real read tool (fs.tools over fs.ops, fs.local and
+// sandbox.policy) in the workspace; the long tool testkit_sleep; the real shell
+// tools (shellexec.tools over the testhook shell registry and sandbox.local)
+// running in the workspace.
+const (
+	s17aPlain = iota
+	s17aFiles
+	s17aSleep
+	s17aShell
+)
+
+// layer writes the sdk layer of root: the route instance and the tools of kind.
+func (s *s17aState) layer(kind int) {
 	text := "- insert:\n    - id: route\n      name: llm.testkit-route\n      config:\n        id: " + strconv.Quote(s17aRoute) +
 		"\n        url: " + strconv.Quote(s.route.srv.URL) + "\n"
-	if files {
-		text += "    - id: fs.local\n      name: fs.local\n      config:\n        lockDir: " + strconv.Quote(s17aOuterT.TempDir()) +
-			"\n    - id: wd\n      name: session.testkit-workdir\n      config:\n        root: " + strconv.Quote(s.ws) +
-			"\n    - id: sandbox.policy\n      name: sandbox.policy\n      config:\n        defaultMode: workspace-write" +
+	wd := "    - id: wd\n      name: session.testkit-workdir\n      config:\n        root: " + strconv.Quote(s.ws) + "\n"
+	switch kind {
+	case s17aFiles:
+		text += "    - id: fs.local\n      name: fs.local\n      config:\n        lockDir: " + strconv.Quote(s17aOuterT.TempDir()) + "\n" + wd +
+			"    - id: sandbox.policy\n      name: sandbox.policy\n      config:\n        defaultMode: workspace-write" +
 			"\n    - id: fs.ops\n      name: fs.ops\n    - id: fs.tools\n      name: fs.tools\n"
-	}
-	if sleep {
+	case s17aSleep:
 		text += "    - id: sleep\n      name: tools.testkit-sleep\n"
+	case s17aShell:
+		// danger-full-access: the stop and kill paths are under test, not the
+		// confinement, and an unconfined start runs on every lane's chain.
+		text += "    - id: fs.local\n      name: fs.local\n      config:\n        lockDir: " + strconv.Quote(s17aOuterT.TempDir()) + "\n" + wd +
+			"    - id: sandbox.policy\n      name: sandbox.policy\n      config:\n        defaultMode: danger-full-access" +
+			"\n    - id: sandbox.local\n      name: sandbox.local\n      config:\n        canaryDir: " + strconv.Quote(s17aOuterT.TempDir()) +
+			"\n    - id: shells\n      name: shellexec.testkit-shells" +
+			"\n    - id: shellexec.tools\n      name: shellexec.tools\n"
 	}
 	temphome.Layer(s17aOuterT, s.root, profile.SDK, text)
 }
@@ -518,7 +539,7 @@ func (s *s17aState) givenToolHost(tool, files string) error {
 			return err
 		}
 	}
-	s.layer(true, false)
+	s.layer(s17aFiles)
 	if err := s.start(false); err != nil {
 		return err
 	}
@@ -529,7 +550,7 @@ func (s *s17aState) givenSleepHost(tool string) error {
 	if tool != "testkit_sleep" {
 		return fmt.Errorf("the long tool is testkit_sleep, not %s", tool)
 	}
-	s.layer(false, true)
+	s.layer(s17aSleep)
 	s.route.setScript(func(i int, w http.ResponseWriter, _ *http.Request) {
 		if i == 0 {
 			s17aTool(w, i, "testkit_sleep", "{}")
@@ -544,11 +565,79 @@ func (s *s17aState) givenSleepHost(tool string) error {
 }
 
 func (s *s17aState) givenStreamHost() error {
-	s.layer(false, false)
+	s.layer(s17aPlain)
 	if err := s.start(true); err != nil {
 		return err
 	}
 	return s.create("")
+}
+
+// s17aShellTool is the shell tool of this lane and the command it runs: the
+// command writes its own process id to pid.txt in the workspace, then sleeps 60
+// seconds in that same process.
+func s17aShellTool() (name, command string) {
+	if runtime.GOOS == "windows" {
+		return "pwsh", "Set-Content -NoNewline -Path pid.txt -Value $PID; Start-Sleep -Seconds 60"
+	}
+	return "bash", "echo $$ > pid.txt; exec sleep 60"
+}
+
+func (s *s17aState) givenShellHost() error {
+	s.layer(s17aShell)
+	name, command := s17aShellTool()
+	args, _ := json.Marshal(map[string]string{"command": command, "description": "record the pid and sleep 60 seconds"})
+	s.route.setScript(func(i int, w http.ResponseWriter, _ *http.Request) {
+		if i == 0 {
+			s17aTool(w, i, name, string(args))
+			return
+		}
+		s17aText(w, "The command was cut off when the host stopped.")
+	})
+	if err := s.start(false); err != nil {
+		return err
+	}
+	return s.create("")
+}
+
+// shellRunning prompts the shell command and waits until its process has
+// recorded its id and its tool/call is durable; the child is killed at cleanup
+// should it outlive the scenario.
+func (s *s17aState) shellRunning() error {
+	if _, err := s.prompt("Run the long shell command."); err != nil {
+		return err
+	}
+	pidFile := filepath.Join(s.ws, "pid.txt")
+	var pid int
+	if err := s.host.until(time.Minute, "the shell child's pid.txt", func() bool {
+		data, err := os.ReadFile(pidFile)
+		if err != nil {
+			return false
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(string(data)))
+		pid = n
+		return err == nil && n > 0
+	}); err != nil {
+		return err
+	}
+	s.children = append(s.children, pid)
+	s17aOuterT.Cleanup(func() {
+		if p, err := os.FindProcess(pid); err == nil && s17aAlive(pid) {
+			_ = p.Kill()
+		}
+	})
+	return s.host.until(time.Minute, "a durable tool/call of the shell command", func() bool {
+		evs, err := s.host.history(s.session)
+		return err == nil && len(s17aOf(evs, "tool/call")) == 1
+	})
+}
+
+// s17aAlive reports whether process pid runs.
+func s17aAlive(pid int) bool {
+	if runtime.GOOS == "windows" {
+		out, err := exec.Command("tasklist", "/FI", fmt.Sprintf("PID eq %d", pid), "/FO", "CSV", "/NH").Output()
+		return err == nil && strings.Contains(string(out), fmt.Sprintf(`"%d"`, pid))
+	}
+	return exec.Command("kill", "-0", strconv.Itoa(pid)).Run() == nil
 }
 
 // ---- DH-E-SESSION-1 ----
@@ -636,9 +725,22 @@ func (s *s17aState) thenDigestsReceived() error {
 	return nil
 }
 
+// thenRebuildTwice rebuilds the requests from the persisted log until there are
+// two rebuilds and holds the last two to the same bytes, request for request.
 func (s *s17aState) thenRebuildTwice() error {
-	if len(s.rebuilt) < 2 || !slices.Equal(s.rebuilt[0], s.rebuilt[1]) || len(s.rebuilt[0]) == 0 {
-		return fmt.Errorf("%d rebuilds, not two equal non-empty ones", len(s.rebuilt))
+	for len(s.rebuilt) < 2 {
+		if _, err := s.persist(true); err != nil {
+			return err
+		}
+	}
+	a, b := s.rebuilt[len(s.rebuilt)-2], s.rebuilt[len(s.rebuilt)-1]
+	if len(a) == 0 || len(a) != len(b) {
+		return fmt.Errorf("the two rebuilds hold %d and %d requests, want the same non-zero number", len(a), len(b))
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return fmt.Errorf("request %d rebuilt twice differs:\n%s\n---\n%s", i, a[i], b[i])
+		}
 	}
 	return nil
 }
@@ -1035,10 +1137,7 @@ func (s *s17aState) thenNextRequestCarriesShown() error {
 // ---- DH-E-AGENT-3 ----
 
 func (s *s17aState) whenRunAStops(_ string) error {
-	if _, err := s.prompt("Run the long command with testkit_sleep."); err != nil {
-		return err
-	}
-	if err := s.host.sleeping(); err != nil {
+	if err := s.shellRunning(); err != nil {
 		return err
 	}
 	if err := s.host.stop(); err != nil {
@@ -1046,6 +1145,24 @@ func (s *s17aState) whenRunAStops(_ string) error {
 	}
 	_, err := s.persist(false)
 	return err
+}
+
+// thenChildGone: the shell command run A started does not outlive the stopped
+// host. dsh has exited when stop returns; a moment is left for the system to
+// reap the process the stop ladder ended.
+func (s *s17aState) thenChildGone() error {
+	if len(s.children) == 0 {
+		return errors.New("no shell child recorded its pid")
+	}
+	pid := s.children[len(s.children)-1]
+	deadline := time.Now().Add(3 * time.Second)
+	for s17aAlive(pid) {
+		if time.Now().After(deadline) {
+			return fmt.Errorf("the shell command (pid %d) outlived the stopped host", pid)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return nil
 }
 
 func (s *s17aState) thenRunAHonest() error {
@@ -1084,13 +1201,10 @@ func (s *s17aState) whenRunBKills(_ string) error {
 	s.route.srv.Close() // run A's host has exited
 	s.route = newS17aServer()
 	s.root, s.ws = temphome.New(s17aOuterT).Root(), s17aOuterT.TempDir()
-	if err := s.givenSleepHost("testkit_sleep"); err != nil {
+	if err := s.givenShellHost(); err != nil {
 		return err
 	}
-	if _, err := s.prompt("Run the long command with testkit_sleep."); err != nil {
-		return err
-	}
-	if err := s.host.sleeping(); err != nil {
+	if err := s.shellRunning(); err != nil {
 		return err
 	}
 	var err error
@@ -1488,6 +1602,8 @@ func InitializeScenario_dh_s_17_acceptance_on_a_real_model_session_and_agent_loo
 	ctx.Step(`^the request of the second turn rebuilt from the persisted log carries the text shown before the cancel$`, s.thenNextRequestCarriesShown)
 
 	ctx.Step(`^run A stops the host gracefully while "([^"]*)" runs$`, s.whenRunAStops)
+	ctx.Step(`^an sdk host on the scratch home with the real shell tool, whose command records its pid and sleeps 60 seconds$`, s.givenShellHost)
+	ctx.Step(`^the shell command run A started no longer runs$`, s.thenChildGone)
 	ctx.Step(`^before any resume the persisted log of run A holds the call's tool/result, step/end and turn/end aborted with cause disposed$`, s.thenRunAHonest)
 	ctx.Step(`^the persisted log of run [AB] runs seq 0 to n with no gap$`, s.thenLogNoGap)
 	ctx.Step(`^run B kills a fresh host on a fresh home while "([^"]*)" runs, and a new host resumes the session$`, s.whenRunBKills)
