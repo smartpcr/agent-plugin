@@ -50,6 +50,7 @@ import (
 
 	"github.com/cucumber/godog"
 
+	"github.com/smartpcr/agent-plugin/src/harness/internal/util/herr"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/subprocess"
 )
@@ -140,10 +141,17 @@ type ptoReport struct {
 	Cgroups       map[string]string `json:"cgroups"` // member to its cgroup while alive
 	TreeDir       string            `json:"treeDir"` // the direct child's group directory
 	StopErr       string            `json:"stopErr,omitempty"`
+	StopReason    string            `json:"stopReason,omitempty"` // herr.Kind of StopTree's error
 	StopCause     string            `json:"stopCause,omitempty"`
 	Rungs         []string          `json:"rungs"`
-	Survivors     []string          `json:"survivors"`
-	TreeDirGone   bool              `json:"treeDirGone"`
+	// What the product reports as left running: StopRecord().Survivors after the
+	// stop, and its reason (subprocess/tree-survivors).
+	RecordSurvivors string `json:"recordSurvivors,omitempty"`
+	RecordReason    string `json:"recordReason,omitempty"`
+	// ScanSurvivors is the agent's own /proc scan of the members after the stop:
+	// corroboration only, never the product's report.
+	ScanSurvivors []string `json:"scanSurvivors"`
+	TreeDirGone   bool     `json:"treeDirGone"`
 	Swept         []string          `json:"swept,omitempty"` // survivors the agent killed before exiting
 	Error         string            `json:"error,omitempty"`
 }
@@ -293,12 +301,15 @@ func ptoAgent(rep *ptoReport) error {
 	sctx, scancel := context.WithTimeout(ctx, 30*time.Second)
 	defer scancel()
 	if err := p.StopTree(sctx, 500*time.Millisecond); err != nil {
-		rep.StopErr = err.Error()
+		rep.StopErr, rep.StopReason = err.Error(), string(herr.Kind(err))
 	}
 	_ = p.Wait()
 	rec := p.StopRecord()
 	if rec.Cause != nil {
 		rep.StopCause = rec.Cause.Error()
+	}
+	if rec.Survivors != nil {
+		rep.RecordSurvivors, rep.RecordReason = rec.Survivors.Error(), string(herr.Kind(rec.Survivors))
 	}
 	for _, r := range rec.Rungs {
 		rep.Rungs = append(rep.Rungs, fmt.Sprintf("%s ran=%v gone=%v", r.Rung, r.Ran, r.Gone))
@@ -306,18 +317,18 @@ func ptoAgent(rep *ptoReport) error {
 	// A killed member is a zombie until its parent, or init, reaps it.
 	settle := time.Now().Add(3 * time.Second)
 	for {
-		rep.Survivors = rep.Survivors[:0]
+		rep.ScanSurvivors = rep.ScanSurvivors[:0]
 		for name, pid := range rep.Members {
 			if ptoAlive(pid) {
-				rep.Survivors = append(rep.Survivors, name)
+				rep.ScanSurvivors = append(rep.ScanSurvivors, name)
 			}
 		}
-		if len(rep.Survivors) == 0 || time.Now().After(settle) {
+		if len(rep.ScanSurvivors) == 0 || time.Now().After(settle) {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	slices.Sort(rep.Survivors)
+	slices.Sort(rep.ScanSurvivors)
 	if rep.TreeDir != "" {
 		_, err := os.Stat(rep.TreeDir)
 		rep.TreeDirGone = errors.Is(err, os.ErrNotExist)
@@ -836,8 +847,11 @@ func (w *ptoWorld) thenNoSurvivor() error {
 	if r.StopErr != "" {
 		return fmt.Errorf("StopTree: %s", r.StopErr)
 	}
-	if len(r.Survivors) > 0 {
-		return fmt.Errorf("after the stop %v of %v run on (the agent then killed %v)", r.Survivors, r.Members, r.Swept)
+	if r.RecordSurvivors != "" {
+		return fmt.Errorf("StopRecord reports survivors: %s", r.RecordSurvivors)
+	}
+	if len(r.ScanSurvivors) > 0 {
+		return fmt.Errorf("after the stop %v of %v run on (the agent then killed %v)", r.ScanSurvivors, r.Members, r.Swept)
 	}
 	for _, name := range []string{"setsid", "orphan"} {
 		if r.Members[name] == 0 {
@@ -917,16 +931,31 @@ func (w *ptoWorld) thenLimits(state string) error {
 
 func (w *ptoWorld) thenGroupEndedSetsidSurvives() error {
 	r := w.report
-	if r.StopErr != "" {
-		return fmt.Errorf("StopTree: %s", r.StopErr)
+	pid := r.Members["setsid"]
+	if pid == 0 {
+		return fmt.Errorf("the fixture never started its setsid grandchild (members %v)", r.Members)
 	}
-	if !slices.Equal(r.Survivors, []string{"setsid"}) {
-		return fmt.Errorf("after the stop the survivors are %v of %v; want the setsid grandchild alone", r.Survivors, r.Members)
+	// The product's report: StopTree's error and StopRecord().Survivors must both
+	// carry subprocess/tree-survivors naming the setsid grandchild's pid. A
+	// product that sees the group empty and reports nothing fails here, whatever
+	// the agent's own scan finds.
+	named := regexp.MustCompile(`\b` + strconv.Itoa(pid) + `\b`)
+	want := string(subprocess.ReasonSurvivors)
+	if r.StopReason != want || !named.MatchString(r.StopErr) {
+		return fmt.Errorf("StopTree returned %q (reason %q); want %s naming the setsid grandchild pid %d", r.StopErr, r.StopReason, want, pid)
+	}
+	if r.RecordReason != want || !named.MatchString(r.RecordSurvivors) {
+		return fmt.Errorf("StopRecord().Survivors = %q (reason %q); want %s naming the setsid grandchild pid %d", r.RecordSurvivors, r.RecordReason, want, pid)
+	}
+	// Corroboration from /proc: the group's members were ended and only the
+	// grandchild that left it runs on.
+	if !slices.Equal(r.ScanSurvivors, []string{"setsid"}) {
+		return fmt.Errorf("after the stop /proc shows %v of %v running; want the setsid grandchild alone", r.ScanSurvivors, r.Members)
 	}
 	if !slices.Contains(r.Swept, "setsid") {
 		return fmt.Errorf("the agent did not end the reported survivor (swept %v)", r.Swept)
 	}
-	fmt.Printf("    [survivor reported: setsid grandchild pid %d]\n", r.Members["setsid"])
+	fmt.Printf("    [survivor reported by the product: setsid grandchild pid %d: %s]\n", pid, r.RecordSurvivors)
 	return nil
 }
 
