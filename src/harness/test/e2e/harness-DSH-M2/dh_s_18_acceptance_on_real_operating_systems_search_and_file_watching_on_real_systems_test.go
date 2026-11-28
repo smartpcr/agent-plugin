@@ -1032,7 +1032,7 @@ func (s *s87State) whenSearch(budget string) error {
 		return err
 	}
 	s.budget = d
-	for _, l := range s.legs {
+	for _, l := range s.reached() {
 		l.set("DSH_SCENARIO_SEARCH_BUDGET", budget)
 		if b, err := time.ParseDuration(l.inputs["DSH_SCENARIO_SEARCH_BUDGET"]); err == nil && b != d {
 			s87OuterT.Logf("s87 %s: the operator's search budget %v replaces %v", l.v, b, d)
