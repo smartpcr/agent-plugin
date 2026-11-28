@@ -20,6 +20,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -773,29 +774,30 @@ func s87IsFile(p string) bool {
 	return err == nil && st.Mode().IsRegular()
 }
 
-// ---- remote directories: a FUSE filesystem the suite serves, and cross-OS directories ----
+// ---- remote directories: a real SMB share and NFS export the suite serves, and cross-OS directories ----
 
-// The suite's network filesystem is a FUSE loopback it serves itself on the Linux
-// variant, unprivileged: this package's test binary, built for the variant, serves
-// a backing directory at a mount point through the system's setuid fusermount3
-// (s87ServeFUSE, in the _fuse_linux_test.go file beside this one). Nothing is
-// installed, no system service is started or stopped and nothing runs as root;
-// the mount, its server and both directories go at the end. Windows has no
-// network filesystem an unprivileged process can serve (its SMB server, share
-// creation and NFS client need administrators), so the Windows variant watches a
-// WSL directory through \\wsl.localhost, the Plan 9 redirector, a remote drive.
-// An operator's SMB share or NFS mount is the provided instance
-// (DSH_SCENARIO_REMOTE_DIRS with DSH_SCENARIO_REMOTE_CHANGE; see
-// evidence/runbook-smb-share.md).
+// DH-E-CHOKIDAR-2 (libs/chokidar.md) watches a workspace on a real SMB share, on
+// a real NFS mount and a Windows directory opened from WSL, each changed from the
+// other side. With no operator shares (DSH_SCENARIO_REMOTE_DIRS with
+// DSH_SCENARIO_REMOTE_CHANGE; evidence/runbook-smb-share.md) the suite serves
+// both itself on the Linux variant, private to the run: Samba's smbd as the
+// run's own user, on a free port of one interface, with its own configuration,
+// user database and share directory in a temporary directory; and an NFSv3
+// export of a temporary directory, served on loopback by this package's test
+// binary (s87ServeNFS, in the _nfs_linux_test.go file beside this one). Nothing
+// is installed and no system service is started, stopped or reconfigured. The
+// Windows variant maps the share as the signed-in user (New-SmbMapping on the
+// server's port, no administrator). The Linux variant mounts the share and the
+// export with the kernel's own CIFS and NFS clients, which mount only with
+// CAP_SYS_ADMIN: mount and umount, and nothing else, run as root (wsl.exe -u
+// root under WSL, else root itself or sudo -n), on mount points in the run's
+// temporary directory, with no mount helper (mount -i), and are unmounted at the
+// end. Each change is written behind the server, on its own filesystem.
 const (
-	s87FUSEBackingEnv = "S87_FUSE_BACKING"
-	s87FUSEMountEnv   = "S87_FUSE_MOUNT"
-	s87FUSEReady      = "s87-fuse-ready"
+	s87NFSBackingEnv = "S87_NFS_BACKING"
+	s87NFSReady      = "s87-nfs-ready"
+	s87Share         = "dsh-s87"
 )
-
-type s87FUSE struct {
-	backing, mount, fsType string
-}
 
 // e2eBinary is this package's test binary for v, as v names it: this process's
 // own on a native variant, else built for v once per suite.
@@ -806,90 +808,264 @@ func (v *s87Variant) e2eBinary() (string, error) {
 	return v.buildTest("e2e", "./test/e2e/harness-DSH-M2")
 }
 
-// serveFUSE mounts a FUSE loopback of a fresh backing directory on the Linux
-// variant, served by this package's test binary as the variant's own user.
-func (l *s87Leg) serveFUSE() (*s87FUSE, error) {
-	v := l.v
-	if v.lookPath("fusermount3") == "" && v.lookPath("fusermount") == "" {
-		return nil, fmt.Errorf("service:filesystem: no fusermount3 on %s: the unprivileged FUSE mount needs the fuse3 package", v)
+// root runs argv as root on the Linux variant; the suite uses it for mount and
+// umount only. secret, when set, is kept out of the error.
+func (v *s87Variant) root(secret string, argv ...string) (string, error) {
+	var cmd *exec.Cmd
+	switch {
+	case v.wsl:
+		cmd = exec.Command("wsl.exe", append([]string{"-u", "root", "-e"}, argv...)...)
+	case os.Geteuid() == 0:
+		cmd = exec.Command(argv[0], argv[1:]...)
+	default:
+		cmd = exec.Command("sudo", append([]string{"-n", "--"}, argv...)...)
 	}
+	cmd.Env = s87Env()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := fmt.Sprintf("%v as root on %s: %v\n%s", argv, v, err, out)
+		if secret != "" {
+			msg = strings.ReplaceAll(msg, secret, "***")
+		}
+		return string(out), errors.New(msg)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// s87Proc is a server the suite runs on a variant until the end of the run.
+type s87Proc struct {
+	cmd    *exec.Cmd
+	stdin  io.WriteCloser
+	lines  chan string
+	stderr bytes.Buffer
+	exited chan struct{}
+}
+
+// spawn starts argv on v with env, its stdout lines on lines; stop, run at the
+// end, closes its stdin, runs kill on v when set and waits.
+func (v *s87Variant) spawn(env []string, kill []string, argv ...string) (*s87Proc, error) {
+	p := &s87Proc{lines: make(chan string, 64), exited: make(chan struct{})}
+	if v.wsl {
+		p.cmd = exec.Command("wsl.exe", append(append([]string{"-e", "env"}, env...), argv...)...)
+		p.cmd.Env = s87Env()
+	} else {
+		p.cmd = exec.Command(argv[0], argv[1:]...)
+		p.cmd.Env = s87Env(env...)
+	}
+	var err error
+	if p.stdin, err = p.cmd.StdinPipe(); err != nil {
+		return nil, err
+	}
+	stdout, err := p.cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	p.cmd.Stderr = &p.stderr
+	if err := p.cmd.Start(); err != nil {
+		return nil, fmt.Errorf("starting %v on %s: %v", argv, v, err)
+	}
+	go func() {
+		sc := bufio.NewScanner(stdout)
+		for sc.Scan() {
+			select {
+			case p.lines <- strings.TrimSpace(sc.Text()):
+			default:
+			}
+		}
+		close(p.lines)
+	}()
+	done := make(chan error, 1)
+	go func() { done <- p.cmd.Wait(); close(p.exited) }()
+	s87OuterT.Cleanup(func() {
+		_ = p.stdin.Close()
+		if len(kill) > 0 {
+			if out, err := v.must(kill...); err != nil && !strings.Contains(err.Error(), "exit 1") {
+				s87OuterT.Logf("s87 stopping %v on %s: %v %s", argv, v, err, out)
+			}
+		}
+		select {
+		case <-done:
+		case <-time.After(15 * time.Second):
+			_ = p.cmd.Process.Kill()
+			<-done
+		}
+	})
+	return p, nil
+}
+
+type s87SMB struct {
+	host, backing, user, password string
+	port                          int
+}
+
+// serveSMB serves a fresh share directory over SMB from Samba's smbd, run on the
+// Linux variant v as v's own user and bound to host only.
+func serveSMB(v *s87Variant, host string) (*s87SMB, error) {
+	for _, p := range []string{"smbd", "pdbedit"} {
+		if v.lookPath(p) == "" {
+			return nil, fmt.Errorf("service:filesystem: no %s on %s: the suite's SMB share is served by Samba's smbd as the run's own user (the samba package; its system service need not run)", p, v)
+		}
+	}
+	base, err := v.tempDir("dsh-s87-smb-")
+	if err != nil {
+		return nil, err
+	}
+	s := &s87SMB{host: host, backing: v.join(base, "share")}
+	if _, err := v.must("mkdir", s.backing, v.join(base, "state")); err != nil {
+		return nil, err
+	}
+	if s.user, err = v.must("id", "-un"); err != nil {
+		return nil, err
+	}
+	s.password = s87Secret()
+	var errs []error
+	for try := range 5 {
+		s.port = 40000 + int((time.Now().UnixNano()/1000+int64(try)*7919)%20000)
+		conf := v.join(base, fmt.Sprintf("smb-%d.conf", s.port))
+		st := v.join(base, "state")
+		body := strings.Join([]string{
+			"[global]",
+			fmt.Sprintf("smb ports = %d", s.port),
+			"interfaces = " + host,
+			"bind interfaces only = yes",
+			"disable netbios = yes",
+			"server role = standalone server",
+			"server min protocol = SMB2_10",
+			"passdb backend = tdbsam:" + st + "/passdb.tdb",
+			"private dir = " + st,
+			"lock directory = " + st,
+			"state directory = " + st,
+			"cache directory = " + st,
+			"pid directory = " + st,
+			"ncalrpc dir = " + st + "/ncalrpc",
+			"log file = " + st + "/log.%m",
+			"load printers = no",
+			"printcap name = /dev/null",
+			// The change is written behind smbd, on its own filesystem, where an
+			// unprivileged smbd cannot break a client's oplock or lease.
+			"oplocks = no",
+			"level2 oplocks = no",
+			"smb2 leases = no",
+			"[" + s87Share + "]",
+			"path = " + s.backing,
+			"read only = no",
+			"",
+		}, "\n")
+		if err := v.writeFile(conf, []byte(body)); err != nil {
+			return nil, err
+		}
+		if try == 0 {
+			if out, err := v.pipe([]byte(s.password+"\n"+s.password+"\n"), "pdbedit", "-s", conf, "-a", "-u", s.user, "-t"); err != nil {
+				return nil, fmt.Errorf("service:filesystem: adding %s to the share's own user database on %s: %v %s", s.user, v, err, out)
+			}
+		}
+		uid, err := v.must("id", "-u")
+		if err != nil {
+			return nil, err
+		}
+		p, err := v.spawn(nil, []string{"pkill", "-u", uid, "-f", "--", "smbd -s " + conf}, "smbd", "-s", conf, "--foreground", "--no-process-group")
+		if err != nil {
+			return nil, err
+		}
+		if err := v.listening(s.port, p); err == nil {
+			return s, nil
+		} else {
+			errs = append(errs, err)
+		}
+	}
+	return nil, fmt.Errorf("service:filesystem: smbd on %s did not listen: %w", v, errors.Join(errs...))
+}
+
+// listening waits until a TCP port listens on v, or p exits.
+func (v *s87Variant) listening(port int, p *s87Proc) error {
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if out, _ := v.must("ss", "-Hltn", fmt.Sprintf("sport = :%d", port)); strings.TrimSpace(out) != "" {
+			return nil
+		}
+		select {
+		case <-p.exited:
+			return fmt.Errorf("port %d: exited: %s", port, p.stderr.String())
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	return fmt.Errorf("port %d: not listening after 30s", port)
+}
+
+func s87Secret() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+type s87NFS struct {
+	backing string
+	port    int
+}
+
+// serveNFS exports a fresh directory over NFSv3 on the Linux variant's loopback,
+// served by this package's test binary as the variant's own user.
+func (l *s87Leg) serveNFS() (*s87NFS, error) {
+	v := l.v
 	bin, err := v.e2eBinary()
 	if err != nil {
 		return nil, err
 	}
-	base, err := v.tempDir("dsh-s87-fuse-")
+	base, err := v.tempDir("dsh-s87-nfs-")
 	if err != nil {
 		return nil, err
 	}
-	f := &s87FUSE{backing: v.join(base, "backing"), mount: v.join(base, "mnt")}
-	if _, err := v.must("mkdir", f.backing, f.mount); err != nil {
+	n := &s87NFS{backing: v.join(base, "export")}
+	if _, err := v.must("mkdir", n.backing); err != nil {
 		return nil, err
 	}
-	env := []string{s87FUSEBackingEnv + "=" + f.backing, s87FUSEMountEnv + "=" + f.mount}
-	var cmd *exec.Cmd
-	if v.wsl {
-		cmd = exec.Command("wsl.exe", append(append([]string{"-e", "env"}, env...), bin)...)
-		cmd.Env = s87Env()
-	} else {
-		cmd = exec.Command(bin)
-		cmd.Env = s87Env(env...)
-	}
-	stdin, err := cmd.StdinPipe()
+	p, err := v.spawn([]string{s87NFSBackingEnv + "=" + n.backing}, nil, bin)
 	if err != nil {
 		return nil, err
 	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
+	timeout := time.After(60 * time.Second)
+	for {
+		select {
+		case line, ok := <-p.lines:
+			if !ok {
+				<-p.exited
+				return nil, fmt.Errorf("service:filesystem: the NFS server on %s exited: %s", v, p.stderr.String())
+			}
+			if rest, found := strings.CutPrefix(line, s87NFSReady+" "); found {
+				if _, err := fmt.Sscan(rest, &n.port); err != nil {
+					return nil, fmt.Errorf("service:filesystem: the NFS server on %s said %q", v, line)
+				}
+				return n, nil
+			}
+		case <-timeout:
+			return nil, fmt.Errorf("service:filesystem: the NFS server on %s did not start within a minute: %s", v, p.stderr.String())
+		}
 	}
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("service:filesystem: starting the FUSE server on %s: %v", v, err)
+}
+
+// mount mounts source at the mount point at with the kernel's fstype client, as
+// root, and unmounts it at the end; it requires the mount's filesystem to be
+// one of want.
+func (l *s87Leg) mount(fstype, source, opts, secret, at string, want ...string) (string, error) {
+	v := l.v
+	if _, err := v.root(secret, "mount", "-i", "-t", fstype, "-o", opts, source, at); err != nil {
+		return "", fmt.Errorf("service:filesystem: %w", err)
 	}
-	ready := make(chan bool, 1)
-	go func() {
-		sc := bufio.NewScanner(stdout)
-		for sc.Scan() {
-			if strings.TrimSpace(sc.Text()) == s87FUSEReady {
-				ready <- true
-				_, _ = io.Copy(io.Discard, stdout)
-				return
+	s87OuterT.Cleanup(func() {
+		if _, err := v.root("", "umount", at); err != nil {
+			if _, err := v.root("", "umount", "-l", at); err != nil {
+				s87OuterT.Logf("s87 unmounting %s on %s: %v", at, v, err)
 			}
 		}
-		ready <- false
-	}()
-	// Registered after the temporary directory, so it runs first: the server
-	// unmounts when its stdin closes; fusermount3 -u is the fallback.
-	s87OuterT.Cleanup(func() {
-		_ = stdin.Close()
-		done := make(chan error, 1)
-		go func() { done <- cmd.Wait() }()
-		select {
-		case <-done:
-		case <-time.After(15 * time.Second):
-			_ = cmd.Process.Kill()
-			<-done
-		}
-		if out, err := v.must("sh", "-c", `! mountpoint -q "$1" || fusermount3 -u "$1" || fusermount -u "$1"`, "sh", f.mount); err != nil {
-			s87OuterT.Logf("s87 unmounting the FUSE loopback %s: %v %s", f.mount, err, out)
-		}
 	})
-	select {
-	case ok := <-ready:
-		if !ok {
-			return nil, fmt.Errorf("service:filesystem: the FUSE server on %s exited before mounting %s:\n%s", v, f.mount, stderr.String())
-		}
-	case <-time.After(60 * time.Second):
-		return nil, fmt.Errorf("service:filesystem: the FUSE server on %s did not mount %s within a minute:\n%s", v, f.mount, stderr.String())
+	fs, err := v.fsType(at)
+	if err != nil {
+		return "", err
 	}
-	if f.fsType, err = v.fsType(f.mount); err != nil {
-		return nil, err
+	if !slices.Contains(want, fs) {
+		return "", fmt.Errorf("service:filesystem: %s is on %s after mounting %s, not %v", at, fs, fstype, want)
 	}
-	if !strings.HasPrefix(f.fsType, "fuse") {
-		return nil, fmt.Errorf("service:filesystem: %s is on %s after mounting, not FUSE", f.mount, f.fsType)
-	}
-	return f, nil
+	return fs, nil
 }
 
 func (s *s87State) givenRemoteDirs() error {
@@ -912,28 +1088,81 @@ func (s *s87State) givenRemoteDirs() error {
 	})
 }
 
-// s87ChangePS changes {name} in {dir}, a WSL directory seen from Windows, from
-// the WSL side: the WSL distribution itself appends the marker, so the size
-// changes.
+// s87ChangePS changes {name} in {dir}, seen from Windows, from the other side:
+// the WSL distribution appends the marker to the file behind the directory (the
+// share's backing directory, or the WSL directory itself), so the size changes.
+// Windows' SMB client keeps a file's metadata for its FileInfoCacheLifetime (ten
+// seconds by default), so the command returns once this machine sees the
+// change, which is when the scenario times it.
 const s87ChangePS = `param([string]$Dir, [string]$Name, [string]$Marker)
 $ErrorActionPreference = 'Stop'
-if ($Dir -notmatch '^\\\\wsl(?:\.localhost|\$)\\([^\\]+)(\\.*)$') {
+$target = $null
+foreach ($s in $Sides) {
+  if ($Dir.StartsWith($s[0], [StringComparison]::OrdinalIgnoreCase)) { $target = $s; break }
+}
+if (-not $target) {
   Write-Error "no other side is known for $Dir"
   exit 3
 }
-$distro = $Matches[1]
-$p = $Matches[2] -replace '\\', '/'
-& wsl.exe -d $distro -e sh -c 'printf %s $1 >> $2' sh $Marker ($p + '/' + $Name)
-exit $LASTEXITCODE
+$path = Join-Path $Dir $Name
+$size = [System.IO.FileInfo]::new($path).Length
+$behind = $target[2] + ($Dir.Substring($target[0].Length) -replace '\\', '/') + '/' + $Name
+& wsl.exe -d $target[1] -e sh -c 'printf %s $1 >> $2' sh $Marker $behind
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+$t = [System.Diagnostics.Stopwatch]::StartNew()
+while ([System.IO.FileInfo]::new($path).Length -eq $size) {
+  if ($t.Elapsed.TotalSeconds -gt 60) {
+    Write-Error "$path did not change on this machine within 60s"
+    exit 4
+  }
+  Start-Sleep -Milliseconds 20
+}
 `
 
-// remoteWindows gives the Windows variant a directory of the WSL distribution
-// seen from Windows through \\wsl.localhost.
+// remoteWindows maps the suite's SMB share, served from the WSL distribution,
+// and gives the Windows variant a directory on it, and a directory of the WSL
+// distribution seen from Windows through \\wsl.localhost.
 func (l *s87Leg) remoteWindows() error {
 	wv, err := s87Reach("linux")
 	if err != nil || !wv.wsl {
-		return fmt.Errorf("service:filesystem: the Windows variant's cross-OS directory is a WSL one, and no WSL distribution answers: %v", err)
+		return fmt.Errorf("service:filesystem: the Windows variant's SMB server and cross-OS directory are in WSL, and no WSL distribution answers: %v", err)
 	}
+	ips, err := wv.must("hostname", "-I")
+	if err != nil || len(strings.Fields(ips)) == 0 {
+		return fmt.Errorf("service:filesystem: no address of WSL %s for the SMB server: %v", wv.distro, err)
+	}
+	smb, err := serveSMB(wv, strings.Fields(ips)[0])
+	if err != nil {
+		return err
+	}
+	share := `\\` + smb.host + `\` + s87Share
+	ps := func(script string, env ...string) (string, error) {
+		cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference = 'Stop'; "+script)
+		cmd.Env = s87Env(env...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return string(out), fmt.Errorf("%s: %v\n%s", script, err, out)
+		}
+		return string(out), nil
+	}
+	if _, err := ps(fmt.Sprintf(`New-SmbMapping -RemotePath '%s' -TcpPort %d -UserName '%s' -Password $env:S87_SMB_PASSWORD -Persistent $false | Out-Null`, share, smb.port, smb.user),
+		"S87_SMB_PASSWORD="+smb.password); err != nil {
+		return fmt.Errorf("service:filesystem: mapping the suite's SMB share as this user (New-SmbMapping -TcpPort needs Windows 11 24H2 or later): %v", err)
+	}
+	s87OuterT.Cleanup(func() {
+		if out, err := ps(fmt.Sprintf(`Remove-SmbMapping -RemotePath '%s' -Force -UpdateProfile`, share)); err != nil {
+			s87OuterT.Logf("s87 removing the SMB mapping %s: %v %s", share, err, out)
+		}
+	})
+	name := "windows-" + s87RunID
+	dir := share + `\` + name
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		return fmt.Errorf("service:filesystem: the SMB share %s: %v", share, err)
+	}
+	l.volumes = append(l.volumes, fmt.Sprintf("SMB %s (smbd in WSL %s, from %s)", dir, wv.distro, wv.join(smb.backing, name)))
+	l.remote = append(l.remote, "smb")
+	sides := [][3]string{{share, wv.distro, smb.backing}}
+
 	d, err := wv.tempDir("dsh-s87-crossed-")
 	if err != nil {
 		return err
@@ -942,6 +1171,7 @@ func (l *s87Leg) remoteWindows() error {
 	for _, root := range []string{`\\wsl.localhost\`, `\\wsl$\`} {
 		if p := root + wv.distro + strings.ReplaceAll(d, "/", `\`); s87IsDir(p) {
 			seen = p
+			sides = append(sides, [3]string{root + wv.distro, wv.distro, ""})
 			break
 		}
 	}
@@ -950,15 +1180,23 @@ func (l *s87Leg) remoteWindows() error {
 	}
 	l.volumes = append(l.volumes, "WSL "+seen)
 	l.remote = append(l.remote, "cross-os")
+
+	q := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
+	var table strings.Builder
+	table.WriteString("$Sides = @()\n")
+	for _, s := range sides {
+		fmt.Fprintf(&table, "$Sides += ,@(%s, %s, %s)\n", q(s[0]), q(s[1]), q(s[2]))
+	}
+	body := strings.Replace(s87ChangePS, "$ErrorActionPreference = 'Stop'\n", "$ErrorActionPreference = 'Stop'\n"+table.String(), 1)
 	scratch, err := l.v.tempDir("dsh-s87-change-")
 	if err != nil {
 		return err
 	}
 	script := filepath.Join(scratch, "change.ps1")
-	if err := os.WriteFile(script, []byte(s87ChangePS), 0o600); err != nil {
+	if err := os.WriteFile(script, []byte(body), 0o600); err != nil {
 		return err
 	}
-	l.set("DSH_SCENARIO_REMOTE_DIRS", seen)
+	l.set("DSH_SCENARIO_REMOTE_DIRS", dir+";"+seen)
 	l.set("DSH_SCENARIO_REMOTE_CHANGE", `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "`+script+`" "{dir}" "{name}" "{marker}"`)
 	return nil
 }
@@ -968,55 +1206,95 @@ func s87IsDir(p string) bool {
 	return err == nil && st.IsDir()
 }
 
-// remoteLinux gives the Linux variant a directory on the suite's FUSE loopback,
-// changed in the backing directory behind it, and under WSL a directory of this
-// Windows host seen from WSL (drvfs, 9p), changed from Windows through WSL interop.
+// remoteLinux mounts the suite's SMB share and NFS export on the Linux variant
+// and gives it a directory on each, changed behind the server, and under WSL a
+// directory of this Windows host seen from WSL (drvfs, 9p), changed from Windows
+// through WSL interop.
 func (l *s87Leg) remoteLinux() error {
-	f, err := l.serveFUSE()
+	v := l.v
+	if _, err := v.root("", "true"); err != nil {
+		return fmt.Errorf("service:filesystem: the kernel's SMB and NFS clients mount only as root, and %s gives none without a password: allow mount and umount through sudo -n, or mount the shares per evidence/runbook-smb-share.md and set DSH_SCENARIO_REMOTE_DIRS with DSH_SCENARIO_REMOTE_CHANGE: %v", v, err)
+	}
+	smb, err := serveSMB(v, "127.0.0.1")
+	if err != nil {
+		return err
+	}
+	nfs, err := l.serveNFS()
+	if err != nil {
+		return err
+	}
+	base, err := v.tempDir("dsh-s87-mnt-")
+	if err != nil {
+		return err
+	}
+	smbAt, nfsAt := v.join(base, "smb"), v.join(base, "nfs")
+	if _, err := v.must("mkdir", smbAt, nfsAt); err != nil {
+		return err
+	}
+	ids, err := v.must("sh", "-c", "id -u; id -g")
+	if err != nil {
+		return err
+	}
+	uid, gid, _ := strings.Cut(ids, "\n")
+	// The runbook's CIFS options (vers=3.1.1, the user's uid and gid), else the
+	// kernel's defaults; ip, unc and the password are what mount.cifs would pass.
+	smbFS, err := l.mount("cifs", "//127.0.0.1/"+s87Share,
+		fmt.Sprintf(`ip=127.0.0.1,unc=\\127.0.0.1\%s,port=%d,username=%s,password=%s,vers=3.1.1,uid=%s,gid=%s`,
+			s87Share, smb.port, smb.user, smb.password, strings.TrimSpace(uid), strings.TrimSpace(gid)),
+		smb.password, smbAt, "smb2", "cifs")
+	if err != nil {
+		return err
+	}
+	// NFSv3, the export's protocol, on its one port; no lock manager runs.
+	nfsFS, err := l.mount("nfs", "127.0.0.1:/",
+		fmt.Sprintf("vers=3,proto=tcp,port=%d,mountport=%d,mountproto=tcp,nolock,addr=127.0.0.1", nfs.port, nfs.port),
+		"", nfsAt, "nfs")
 	if err != nil {
 		return err
 	}
 	name := "linux-" + s87RunID
-	dir := l.v.join(f.mount, name)
-	if _, err := l.v.must("mkdir", dir); err != nil {
-		return fmt.Errorf("service:filesystem: the FUSE mount %s: %v", f.mount, err)
+	dirs := []string{v.join(smbAt, name), v.join(nfsAt, name)}
+	if _, err := v.must("mkdir", dirs[0], dirs[1]); err != nil {
+		return fmt.Errorf("service:filesystem: the SMB and NFS mounts: %v", err)
 	}
-	dirs := []string{dir}
-	l.volumes = append(l.volumes, fmt.Sprintf("%s %s (served from %s)", f.fsType, dir, l.v.join(f.backing, name)))
-	l.remote = append(l.remote, "fuse")
-	scratch, err := l.v.tempDir("dsh-s87-change-")
+	l.volumes = append(l.volumes,
+		fmt.Sprintf("%s %s (smbd, from %s)", smbFS, dirs[0], v.join(smb.backing, name)),
+		fmt.Sprintf("%s %s (NFSv3 export, from %s)", nfsFS, dirs[1], v.join(nfs.backing, name)))
+	l.remote = append(l.remote, "smb", "nfs")
+	scratch, err := v.tempDir("dsh-s87-change-")
 	if err != nil {
 		return err
 	}
 	q := func(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 	body := "#!/bin/sh\nset -e\nd=$1 n=$2 m=$3\ncase \"$d\" in\n" +
-		q(f.mount) + "/*) p=" + q(f.backing) + "\"${d#" + q(f.mount) + "}\" ;;\n"
-	if l.v.wsl {
+		q(smbAt) + "/*) p=" + q(smb.backing) + "\"${d#" + q(smbAt) + "}\" ;;\n" +
+		q(nfsAt) + "/*) p=" + q(nfs.backing) + "\"${d#" + q(nfsAt) + "}\" ;;\n"
+	if v.wsl {
 		host, err := os.MkdirTemp("", "dsh-s87-crossed-")
 		if err != nil {
 			return err
 		}
 		s87OuterT.Cleanup(func() { _ = os.RemoveAll(host) })
-		dir, err := l.v.path(host)
+		dir, err := v.path(host)
 		if err != nil {
 			return err
 		}
-		fs, err := l.v.fsType(dir)
+		fs, err := v.fsType(dir)
 		if err != nil {
 			return err
 		}
 		dirs = append(dirs, dir)
 		l.volumes = append(l.volumes, fs+" "+dir)
 		l.remote = append(l.remote, "cross-os")
-		ps, err := l.v.path(filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe"))
+		ps, err := v.path(filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe"))
 		if err != nil {
 			return err
 		}
 		body += "/mnt/*) w=$(wslpath -w \"$d/$n\")\n  exec " + q(ps) + " -NoProfile -NonInteractive -Command \"[System.IO.File]::AppendAllText('$w', '$m')\" ;;\n"
 	}
 	body += "*) echo \"no other side is known for $d\" >&2; exit 3 ;;\nesac\nprintf %s \"$m\" >> \"$p/$n\"\n"
-	script := l.v.join(scratch, "change.sh")
-	if err := l.v.writeFile(script, []byte(body)); err != nil {
+	script := v.join(scratch, "change.sh")
+	if err := v.writeFile(script, []byte(body)); err != nil {
 		return err
 	}
 	l.set("DSH_SCENARIO_REMOTE_DIRS", strings.Join(dirs, ";"))
@@ -1344,9 +1622,9 @@ func (s *s87State) thenPoll() error {
 		if _, ok := l.op["DSH_SCENARIO_REMOTE_DIRS"]; ok {
 			return nil
 		}
-		want := []string{"cross-os"}
+		want := []string{"smb", "cross-os"}
 		if l.v.goos == "linux" {
-			want = []string{"fuse"}
+			want = []string{"smb", "nfs"}
 			if l.v.wsl {
 				want = append(want, "cross-os")
 			}
@@ -1402,7 +1680,7 @@ func InitializeScenario_dh_s_18_acceptance_on_real_operating_systems_search_and_
 	ctx.Step(`^both the Linux and the Windows variant were reached and ran$`, s.thenReached)
 
 	ctx.Step(`^the same variants, each with editor saves by vim, rename, in place and backup-then-write$`, s.givenEditorVariants)
-	ctx.Step(`^on Linux a FUSE network filesystem the suite serves unprivileged, and on each variant a cross-OS directory, each changed from its other side$`, s.givenRemoteDirs)
+	ctx.Step(`^on each variant a real SMB share, on Linux a real NFS mount too, and a cross-OS directory, each served by the suite and changed from its other side$`, s.givenRemoteDirs)
 	ctx.Step(`^CHOKIDAR-1 and CHOKIDAR-2 run on each variant$`, s.run)
 	ctx.Step(`^on each variant every save was reported exactly once within "([^"]*)"$`, s.thenSaves)
 	ctx.Step(`^on each variant the create, burst, rename and delete of a watched tree were each reported exactly once within the bound$`, s.thenTransitions)

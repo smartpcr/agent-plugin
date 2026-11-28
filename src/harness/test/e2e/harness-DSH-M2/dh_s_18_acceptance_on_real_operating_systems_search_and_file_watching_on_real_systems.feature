@@ -9,29 +9,32 @@ Feature: Search and file watching on real systems (DH-E-RIPGREP-1, -2, DH-E-CHOK
   # scenario tests (internal/testkit/scenarios, -tags scenario) on each variant:
   # this host when its OS matches, else the default WSL distribution through
   # wsl.exe from a Windows host. The variants this host reaches run and are
-  # asserted; a variant it cannot reach, or one lacking a dependency, then fails
-  # the scenario in its last step. Nothing is skipped. When the operator sets a
+  # asserted; a variant it cannot reach fails the scenario in its last step, and
+  # a missing dependency fails the step that needs it. Nothing is skipped. When the operator sets a
   # scenario's inputs (DSH_SCENARIO_REPOS, DSH_SCENARIO_EDITORS,
   # DSH_SCENARIO_REMOTE_DIRS with DSH_SCENARIO_REMOTE_CHANGE, ...; a
   # DSH_S18_<LINUX|WINDOWS>_<NAME without DSH_> overrides one per variant) they are
   # the provided instance, e.g. an SMB share or NFS mount per
   # evidence/runbook-smb-share.md. Else the suite stands up an ephemeral instance
-  # on the variant's real volumes, unprivileged and private to the run: it
-  # installs nothing, starts or stops no system service and runs nothing as root
-  # or administrator. For search: three Git checkouts on the variant's own
+  # on the variant's real volumes, private to the run: it installs nothing and
+  # starts, stops or reconfigures no system service. For search: three Git checkouts on the variant's own
   # filesystem, each read through once so it is at rest as a working checkout
   # is -- small, fsnotify v1.10.1 (pinned commit, under 1,000 files); medium,
   # this repository at HEAD; very large, one commit holding side-by-side copies
   # of this repository's HEAD tree, at least 100,000 files (the size the budget
   # is agreed on) -- and rg for the comparison only, the variant's own or a
   # pinned, checksum-verified ripgrep release. For watching: saves by vim, by
-  # rename, in place and backup-then-write; on Linux a FUSE network filesystem
-  # the suite serves itself (a loopback of a private directory, mounted through
-  # the system's setuid fusermount3 as the run's own user, which the product
-  # classes as remote and polls), and on each variant a cross-OS directory (a
-  # Windows one seen from WSL, a WSL one seen from Windows through
-  # \\wsl.localhost). Each change is written from the other side: in the backing
-  # directory behind the mount, or across WSL interop. The verdict is the
+  # rename, in place and backup-then-write; a real SMB share, served by Samba's
+  # smbd run as the Linux user with its own configuration, user database and
+  # share directory on a free port (the Windows variant maps it from WSL with
+  # New-SmbMapping as the signed-in user, no administrator); on Linux a real
+  # NFSv3 export the suite serves on loopback; the Linux variant mounts both with
+  # the kernel's CIFS and NFS clients, which mount only as root, so mount and
+  # umount alone run as root (wsl.exe -u root, or sudo -n), on the run's own
+  # mount points; and a cross-OS directory (a Windows one seen from WSL, a WSL
+  # one seen from Windows through \\wsl.localhost). Each change is written from
+  # the other side: behind the server, on its own filesystem, or across WSL
+  # interop. The verdict is the
   # scenario tests' own rows (DSH_SCENARIO_REPORT) read back, plus the timing
   # report and the log lines that show each clause ran; each leg keeps an
   # evidence row (DSH_S18_EVIDENCE_DIR).
@@ -50,7 +53,7 @@ Feature: Search and file watching on real systems (DH-E-RIPGREP-1, -2, DH-E-CHOK
   @TC-21s3 @DH-E-CHOKIDAR-1 @DH-E-CHOKIDAR-2 @platform:linux-wsl @platform:windows
   Scenario: Watching on real trees
     Given the same variants, each with editor saves by vim, rename, in place and backup-then-write
-    And on Linux a FUSE network filesystem the suite serves unprivileged, and on each variant a cross-OS directory, each changed from its other side
+    And on each variant a real SMB share, on Linux a real NFS mount too, and a cross-OS directory, each served by the suite and changed from its other side
     When CHOKIDAR-1 and CHOKIDAR-2 run on each variant
     Then each variant's "DH-E-CHOKIDAR-1" and "DH-E-CHOKIDAR-2" rows read passed on its OS
     And on each variant every save was reported exactly once within "1s"
