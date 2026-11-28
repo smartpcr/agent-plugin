@@ -122,9 +122,70 @@ jobs:
           path: artifacts/harness/
           if-no-files-found: warn
 
+  s18-rehearsal:
+    # Stage 8.2 (impl.md 18.1): DH-E-TOOLCHAIN-2 runs first in S18, once per OS, and
+    # its verified binaries (the directory with rehearsal.sha256) go to every s18
+    # variant without the rehearsal, which runs on them (variant-run --rehearsal).
+    # Matrix entries of one job cannot wait on each other, so this is its own job.
+    if: inputs.stage == 'DH-S-18'
+    name: s18-rehearsal (${{ matrix.lane }})
+    environment: dsh-m2-s18
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lane: linux
+            runner: '["self-hosted","linux","dsh-wsl"]'
+          - lane: windows
+            runner: '"windows-latest"'
+    runs-on: ${{ fromJSON(matrix.runner) }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      DSH_SCENARIO_REPORT: ${{ github.workspace }}/artifacts/harness/report.txt
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: src/harness/go.mod
+          cache-dependency-path: |
+            src/harness/go.sum
+            tools/harness-gate/go.sum
+      - name: Entry (M2-DEC-1)
+        run: GOWORK=off go -C tools/harness-gate run . entry --root ../.. --story harness:DSH-M2
+      - name: Rehearse (DH-E-TOOLCHAIN-2)
+        env:
+          LANE: ${{ matrix.lane }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/harness
+          dir="$RUNNER_TEMP/s18-rehearsal"
+          GOWORK=off go -C tools/harness-gate run . variant-run --root ../.. --stage DH-S-18 --scenarios DH-E-TOOLCHAIN-2 --rehearsal "$dir" 2>&1 | tee "artifacts/harness/s18-rehearsal-$LANE.txt"
+          # tar keeps the binaries' mode, which an artifact does not.
+          (cd "$dir" && tar -cf - .) > "$RUNNER_TEMP/s18-rehearsal.tar"
+      - name: Upload the rehearsal
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsh-s18-rehearsal-${{ matrix.lane }}
+          path: ${{ runner.temp }}/s18-rehearsal.tar
+          if-no-files-found: error
+      - name: Upload rehearsal evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: harness-s18-rehearsal-${{ matrix.lane }}
+          path: artifacts/harness/
+          if-no-files-found: warn
+
   s18:
     # Stage 8.1: one job per in-scope variant of evidence/variants.md (M2-EN-2..8).
-    if: inputs.stage == 'DH-S-18'
+    # Stage 8.2: after s18-rehearsal, whose binaries the variants run on. A failed
+    # rehearsal lane does not skip the variants: each still runs, and variant-run
+    # fails one without a verified rehearsal ("not run: no verified rehearsal binary").
+    if: inputs.stage == 'DH-S-18' && !cancelled()
+    needs: s18-rehearsal
     name: s18 (${{ matrix.variant }})
     environment: dsh-m2-s18
     timeout-minutes: 180 # the 3 h variant limit (M2-EN-7); NODEFS-1 shards past it (M2-R-06)
@@ -503,9 +564,29 @@ jobs:
         env:
           DSH_REQUIRE_SCENARIOS: ${{ steps.require.outputs.list }}
         run: GOWORK=off go -C tools/harness-gate run . preflight --root ../..
+      - name: Fetch the rehearsal (impl.md 18.1)
+        # A variant without DH-E-TOOLCHAIN-2 runs on s18-rehearsal's binaries for its
+        # OS; variant-run checks them against rehearsal.sha256 and never builds its own.
+        # A missing artifact (its lane failed) is left to variant-run, which records
+        # the variant's scenarios not run, so it is the scenario failure.
+        id: fetch
+        if: ${{ !contains(steps.require.outputs.list, 'DH-E-TOOLCHAIN-2') }}
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: dsh-s18-rehearsal-${{ runner.os == 'Windows' && 'windows' || 'linux' }}
+          path: ${{ runner.temp }}/s18-rehearsal-download
+      - name: Unpack the rehearsal
+        if: ${{ !contains(steps.require.outputs.list, 'DH-E-TOOLCHAIN-2') && steps.fetch.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/s18-rehearsal"
+          mkdir -p "$dir"
+          (cd "$dir" && tar -xf -) < "$RUNNER_TEMP/s18-rehearsal-download/s18-rehearsal.tar"
+          echo "REHEARSAL=$dir" >> "$GITHUB_ENV"
       - name: Run the variant's scenarios
         env:
-          RUN: ${{ steps.preflight.outputs.run }}
+          LIST: ${{ steps.require.outputs.list }}
           TESTS: ${{ steps.preflight.outputs.tests }}
           VARIANT: ${{ matrix.variant }}
         run: |
@@ -517,7 +598,10 @@ jobs:
             export TMPDIR="$SCRATCH_DIR" TMP="$SCRATCH_DIR" TEMP="$SCRATCH_DIR" GOTMPDIR="$RUNNER_TEMP"
             trap 'rm -rf "$SCRATCH_DIR"' EXIT
           fi
-          GOWORK=off go -C src/harness test -tags scenario -p 1 -count=1 -timeout 175m -v -run "$RUN" ./... 2>&1 | tee "$log"
+          # In the stage's order (impl.md 18.1): DH-E-TOOLCHAIN-2 first, every later
+          # scenario on the rehearsal binary it verified (DSH_BIN), never a rebuild; a
+          # variant without it on s18-rehearsal's (REHEARSAL), or on none.
+          GOWORK=off go -C tools/harness-gate run . variant-run --root ../.. --stage DH-S-18 --scenarios "$LIST" ${REHEARSAL:+--rehearsal "$REHEARSAL"} 2>&1 | tee "$log"
           if grep -q -- '--- SKIP' "$log"; then
             echo "a required scenario skipped"; exit 1
           fi

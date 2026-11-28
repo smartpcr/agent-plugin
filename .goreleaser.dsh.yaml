@@ -35,8 +35,14 @@ builds:
     goarch: [amd64, arm64]
     flags:
       - -trimpath
-    # No -X main.version: the version is read from the build information the go command
-    # embeds (vcs.revision, vcs.modified; DH-ADR-TOOLCHAIN-13, DH-ADR-15).
+    # Explicit, so GoReleaser's defaults (which also stamp main.commit, main.date and
+    # main.builtBy, variables cmd/dsh does not have, into the recorded -ldflags) do not
+    # apply. main.version is the one value cmd/dsh reads from the linker; revision and
+    # modified state are read from the build information the go command embeds
+    # (vcs.revision, vcs.modified; DH-ADR-TOOLCHAIN-13, DH-ADR-15). harness-gate
+    # rehearse records the same version, so "dsh --version" can be checked against it.
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
 
 archives:
   - id: dsh

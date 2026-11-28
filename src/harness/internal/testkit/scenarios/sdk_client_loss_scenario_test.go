@@ -150,11 +150,13 @@ func sdk2Drive(mode, status, bin, home string) int {
 	switch mode {
 	case "close":
 		_ = stdin.Close()
+		tick := time.NewTicker(100 * time.Millisecond)
+		defer tick.Stop()
 		for {
 			if _, err := os.Stat(status + ".exit"); err == nil {
 				return 0
 			}
-			time.Sleep(100 * time.Millisecond)
+			<-tick.C
 		}
 	case "stall":
 		in.stopped.Store(true)
@@ -170,12 +172,8 @@ func sdk2Fail(err error) int {
 // sdk2ChildRunning waits up to within for pidfile to hold a positive pid: the
 // tool's child command writes it once it is running mid-turn.
 func sdk2ChildRunning(pidfile string, within time.Duration) error {
-	for end := time.Now().Add(within); time.Now().Before(end); time.Sleep(100 * time.Millisecond) {
-		if b, err := os.ReadFile(pidfile); err == nil {
-			if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pid > 0 {
-				return nil
-			}
-		}
+	if pollUntil(within, 100*time.Millisecond, func() bool { return pidIn(pidfile) > 0 }) {
+		return nil
 	}
 	return fmt.Errorf("the tool's child command wrote no pid to %s within %s", pidfile, within)
 }
@@ -196,16 +194,27 @@ func (s *stallReader) Read(b []byte) (int, error) {
 // sdk2Status waits for the driver's report.
 func sdk2Status(t *testing.T, path string, driver *launcher.Host) sdk2State {
 	t.Helper()
-	for end := time.Now().Add(5 * time.Minute); time.Now().Before(end); time.Sleep(100 * time.Millisecond) {
-		var st sdk2State
-		if data, err := os.ReadFile(path); err == nil && json.Unmarshal(data, &st) == nil && st.Host > 0 {
-			return st
+	var st sdk2State
+	reported := func() bool {
+		data, err := os.ReadFile(path)
+		return err == nil && json.Unmarshal(data, &st) == nil && st.Host > 0
+	}
+	exited := false
+	if pollUntil(5*time.Minute, 100*time.Millisecond, func() bool {
+		if reported() {
+			return true
 		}
 		select {
 		case <-driver.Process.Exited():
-			t.Fatalf("the driver exited %d before its turn started:\n%s", driver.Process.ExitCode(), driver.Stderr.String())
+			exited = true
 		default:
 		}
+		return exited
+	}) && !exited {
+		return st
+	}
+	if exited {
+		t.Fatalf("the driver exited %d before its turn started:\n%s", driver.Process.ExitCode(), driver.Stderr.String())
 	}
 	t.Fatalf("no driver report within 5m:\n%s", driver.Stderr.String())
 	return sdk2State{}
@@ -214,11 +223,14 @@ func sdk2Status(t *testing.T, path string, driver *launcher.Host) sdk2State {
 // sdk2Exit is the host's exit status the driver recorded.
 func sdk2Exit(t *testing.T, status string, within time.Duration) int {
 	t.Helper()
-	for end := time.Now().Add(within); time.Now().Before(end); time.Sleep(100 * time.Millisecond) {
-		if data, err := os.ReadFile(status + ".exit"); err == nil {
-			code, _ := strconv.Atoi(strings.TrimSpace(string(data)))
-			return code
-		}
+	var data []byte
+	if pollUntil(within, 100*time.Millisecond, func() bool {
+		var err error
+		data, err = os.ReadFile(status + ".exit")
+		return err == nil
+	}) {
+		code, _ := strconv.Atoi(strings.TrimSpace(string(data)))
+		return code
 	}
 	t.Fatalf("the driver recorded no host exit within %s", within)
 	return 0

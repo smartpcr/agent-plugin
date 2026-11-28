@@ -106,7 +106,9 @@ func headless(t *testing.T, ctx context.Context, bin, root string, args ...strin
 		t.Fatal(err)
 	}
 	p := &proc{cmd: cmd, out: &out, errOut: &errOut, done: make(chan error, 1)}
-	go func() { p.done <- cmd.Wait() }()
+	exited := make(chan struct{})
+	t.Cleanup(func() { _ = cmd.Process.Kill(); <-exited })
+	go func() { defer close(exited); p.done <- cmd.Wait() }()
 	return p
 }
 

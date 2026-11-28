@@ -90,9 +90,7 @@ func TestDisablingFeatureRemovesRoutes(t *testing.T) {
 			return resp.StatusCode
 		}
 		settle := func(want int) {
-			for deadline := time.Now().Add(time.Minute); status() != want && time.Now().Before(deadline); {
-				time.Sleep(time.Second)
-			}
+			pollUntil(time.Minute, time.Second, func() bool { return status() == want })
 		}
 		if got := status(); got != http.StatusOK {
 			t.Fatalf("the jobs URL answers %d before the edit, want 200", got)

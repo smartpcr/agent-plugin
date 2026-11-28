@@ -78,6 +78,7 @@ func TestSignalDuringAToolCallClosesTheTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	done := make(chan struct{})
+	t.Cleanup(func() { _ = cmd.Process.Kill(); <-done })
 	go func() { defer close(done); _ = cmd.Wait() }()
 	for !strings.Contains(stderr.String(), sleepRunning) {
 		select {

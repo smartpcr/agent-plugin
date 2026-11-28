@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -10,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -178,13 +181,62 @@ func (c *Config) ScenarioGates(stage string, probe acceptance.SignInProbe) []Gat
 // single-process scenarios, then the two that kill a host (SESSION-2 kills and
 // resumes it, AGENT-3 stops and kills it), and the policy-text escalation last
 // (architecture.md rule 7, R-03; impl.md DH-S-17 Sequence). Without Late, go test
-// would run them in file order, agent_stop_kill before agent_turn.
-var stageOrder = map[string]struct{ First, Late, Last []string }{
+// would run them in file order, agent_stop_kill before agent_turn. DH-S-18 runs
+// the release rehearsal first, and every later scenario runs on the binary it
+// verified (Handoff; impl.md 18.1).
+var stageOrder = map[string]struct {
+	First, Late, Last []string
+	Handoff           bool
+}{
 	"DH-S-17": {
 		First: []string{"DH-E-TOOLCHAIN-1"},
 		Late:  []string{"DH-E-SESSION-2", "DH-E-AGENT-3"},
 		Last:  []string{"DH-E-SANDBOX-7"},
 	},
+	"DH-S-18": {First: []string{"DH-E-TOOLCHAIN-2"}, Handoff: true},
+}
+
+// The rehearsal hand-off of a Handoff stage: the First phase runs with
+// RehearsalDirEnv naming a directory the run owns, where TestToolchainRehearsal
+// leaves the six binaries and, only when every check passed, RehearsalManifest
+// ("<sha256>  <name>" per binary). The later phases run with DSH_BIN naming this
+// host's binary from it, its SHA-256 checked against the manifest; with no verified
+// binary they are not run, so no scenario of the stage falls back to a build.
+const (
+	RehearsalDirEnv   = "DSH_REHEARSAL_DIR"
+	RehearsalManifest = "rehearsal.sha256"
+)
+
+// rehearsalBinary is the binary of goos/goarch the rehearsal left in dir and its
+// SHA-256, which must be the one RehearsalManifest records.
+func rehearsalBinary(dir, goos, goarch string) (string, string, error) {
+	name := "dsh-" + goos + "-" + goarch
+	if goos == "windows" {
+		name += ".exe"
+	}
+	data, err := os.ReadFile(filepath.Join(dir, RehearsalManifest))
+	if err != nil {
+		return "", "", fmt.Errorf("no verified rehearsal (%s): %w", RehearsalManifest, err)
+	}
+	want := ""
+	for _, line := range strings.Split(string(data), "\n") {
+		if sum, n, ok := strings.Cut(strings.TrimSpace(line), "  "); ok && n == name {
+			want = sum
+		}
+	}
+	if want == "" {
+		return "", "", fmt.Errorf("%s records no %s", RehearsalManifest, name)
+	}
+	bin := filepath.Join(dir, name)
+	bdata, err := os.ReadFile(bin)
+	if err != nil {
+		return "", "", fmt.Errorf("rehearsal binary: %w", err)
+	}
+	sum := sha256.Sum256(bdata)
+	if got := hex.EncodeToString(sum[:]); got != want {
+		return "", "", fmt.Errorf("rehearsal binary %s: SHA-256 %s, %s records %s", name, got, RehearsalManifest, want)
+	}
+	return bin, want, nil
 }
 
 // phases splits plan into the go test runs of stage, in order: the First IDs of
@@ -230,13 +282,94 @@ func (c *Config) runPlan(ctx context.Context, w io.Writer, stage string, plan ac
 	}
 	deadline := time.Now().Add(scenarioBudget)
 	fmt.Fprintf(w, "scenarios: budget %s for every go test run of the plan (tech-spec: 2 h per job)\n", scenarioBudget)
+	return runOrdered(w, stage, plan, "", func(phase acceptance.Plan, extra ...string) error {
+		return c.runPhase(ctx, w, phase, deadline, extra...)
+	})
+}
+
+// runOrdered runs the phases of plan (phases) through run, every phase whatever an
+// earlier one found. On a Handoff stage every scenario after the First phase runs
+// with DSH_BIN naming this host's rehearsal binary, its SHA-256 checked against
+// RehearsalManifest (handOff); without one those phases are not run and fail, so
+// no later S18 step builds its own binary (impl.md 18.1).
+//
+// A plan that holds a First ID rehearses into rehearsed, or into a directory this
+// run owns when rehearsed is empty. A plan without one (an S18 variant that does
+// not rehearse) is handed the rehearsal another run left in rehearsed: with no
+// rehearsed directory, or one that does not verify, none of its phases run.
+func runOrdered(w io.Writer, stage string, plan acceptance.Plan, rehearsed string, run func(phase acceptance.Plan, extra ...string) error) error {
+	order := stageOrder[stage]
+	isFirst := func(s acceptance.Scenario) bool { return slices.Contains(order.First, s.ID) }
+	if !order.Handoff {
+		var errs []error
+		for _, phase := range phases(stage, plan) {
+			if err := run(phase); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		return errors.Join(errs...)
+	}
+	rehearses := slices.ContainsFunc(plan.Scenarios, isFirst)
+	var handoff []string
+	var missing error
+	switch {
+	case rehearses && rehearsed == "":
+		d, err := os.MkdirTemp("", "harness-gate-rehearsal-")
+		if err != nil {
+			return fmt.Errorf("rehearsal hand-off: %w", err)
+		}
+		defer os.RemoveAll(d)
+		rehearsed = d
+	case rehearses:
+		if err := os.MkdirAll(rehearsed, 0o755); err != nil {
+			return fmt.Errorf("rehearsal hand-off: %w", err)
+		}
+	case rehearsed == "":
+		missing = fmt.Errorf("no rehearsal directory: this plan does not hold %s, so it needs the one a rehearsing run left (--rehearsal)", strings.Join(order.First, ", "))
+	default:
+		handoff, missing = handOff(w, rehearsed)
+	}
+	if missing == nil && handoff == nil {
+		missing = fmt.Errorf("%s did not pass first", strings.Join(order.First, ", "))
+	}
 	var errs []error
 	for _, phase := range phases(stage, plan) {
-		if err := c.runPhase(ctx, w, phase, deadline); err != nil {
+		var err error
+		switch {
+		case slices.ContainsFunc(phase.Scenarios, isFirst):
+			if err = run(phase, RehearsalDirEnv+"="+rehearsed); err != nil {
+				break
+			}
+			handoff, err = handOff(w, rehearsed)
+			missing = err
+		case handoff == nil:
+			err = fmt.Errorf("%s not run: no verified rehearsal binary (%v; impl.md 18.1)", strings.Join(planIDs(phase), ", "), missing)
+			fmt.Fprintf(w, "scenarios: %v\n", err)
+		default:
+			err = run(phase, handoff...)
+		}
+		if err != nil {
 			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// handOff verifies this host's binary in the rehearsal directory dir
+// (rehearsalBinary), prints it and the manifest's checksums, and returns the
+// DSH_BIN setting of the later phases.
+func handOff(w io.Writer, dir string) ([]string, error) {
+	bin, sum, err := rehearsalBinary(dir, runtime.GOOS, runtime.GOARCH)
+	if err != nil {
+		return nil, fmt.Errorf("rehearsal hand-off: %w", err)
+	}
+	fmt.Fprintf(w, "scenarios: rehearsal hand-off: %s=%s sha256 %s\n", "DSH_BIN", bin, sum)
+	if m, rerr := os.ReadFile(filepath.Join(dir, RehearsalManifest)); rerr == nil {
+		for _, l := range strings.Split(strings.TrimSpace(string(m)), "\n") {
+			fmt.Fprintf(w, "scenarios: rehearsal checksum: %s\n", strings.TrimSpace(l))
+		}
+	}
+	return []string{"DSH_BIN=" + bin}, nil
 }
 
 // scenarioBudget bounds all go test runs of one plan together: the s17 job has
@@ -262,20 +395,11 @@ const (
 
 // runPhase runs one phase of a plan, grouped by module: per module the required
 // run, then the recorded run of the scenarios the required run showed to be routed.
-func (c *Config) runPhase(ctx context.Context, w io.Writer, plan acceptance.Plan, deadline time.Time) error {
-	var mods []string
-	byMod := map[string]acceptance.Plan{}
-	for _, s := range plan.Scenarios {
-		mod := c.moduleOf(filepath.Join(c.Root, filepath.FromSlash(s.File)))
-		if mod == "" {
-			return fmt.Errorf("%s (%s) is in none of the modules", s.ID, s.File)
-		}
-		if _, ok := byMod[mod]; !ok {
-			mods = append(mods, mod)
-		}
-		p := byMod[mod]
-		p.Scenarios = append(p.Scenarios, s)
-		byMod[mod] = p
+// extra ("KEY=value") is set in both runs (the rehearsal hand-off).
+func (c *Config) runPhase(ctx context.Context, w io.Writer, plan acceptance.Plan, deadline time.Time, extra ...string) error {
+	mods, byMod, err := c.modulePlans(plan)
+	if err != nil {
+		return err
 	}
 	var errs []error
 	for _, mod := range mods {
@@ -283,7 +407,7 @@ func (c *Config) runPhase(ctx context.Context, w io.Writer, plan acceptance.Plan
 		ids := strings.Join(planIDs(p), ",")
 		// The required run: the scenarios' own verdict, with no exception for
 		// any leg; DSH_REQUIRE_SCENARIOS makes the test kit check their rows.
-		out, runErr, err := c.goTestRun(ctx, w, mod, p, deadline, acceptance.RequireEnv+"="+ids, routesEnv+"="+requiredLeg)
+		out, runErr, err := c.goTestRun(ctx, w, mod, p, deadline, append([]string{acceptance.RequireEnv + "=" + ids, routesEnv + "=" + requiredLeg}, extra...)...)
 		if err == nil {
 			err = scenarioVerdict(out, p.Tests(), runErr)
 		}
@@ -305,7 +429,7 @@ func (c *Config) runPhase(ctx context.Context, w io.Writer, plan acceptance.Plan
 				rp.Scenarios = append(rp.Scenarios, s)
 			}
 		}
-		env := []string{acceptance.RequireEnv + "=", routesEnv + "=" + recordedLeg}
+		env := append([]string{acceptance.RequireEnv + "=", routesEnv + "=" + recordedLeg}, extra...)
 		if r := lookupEnv(c.env(), "DSH_SCENARIO_REPORT"); r != "" {
 			env = append(env, "DSH_SCENARIO_REPORT="+r+"."+recordedLeg)
 		}
@@ -322,6 +446,26 @@ func (c *Config) runPhase(ctx context.Context, w io.Writer, plan acceptance.Plan
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// modulePlans groups plan by the module holding each scenario's file, the modules
+// in plan order.
+func (c *Config) modulePlans(plan acceptance.Plan) ([]string, map[string]acceptance.Plan, error) {
+	var mods []string
+	byMod := map[string]acceptance.Plan{}
+	for _, s := range plan.Scenarios {
+		mod := c.moduleOf(filepath.Join(c.Root, filepath.FromSlash(s.File)))
+		if mod == "" {
+			return nil, nil, fmt.Errorf("%s (%s) is in none of the modules", s.ID, s.File)
+		}
+		if _, ok := byMod[mod]; !ok {
+			mods = append(mods, mod)
+		}
+		p := byMod[mod]
+		p.Scenarios = append(p.Scenarios, s)
+		byMod[mod] = p
+	}
+	return mods, byMod, nil
 }
 
 // goTestRun runs the tests of p in mod with kv set, its output to w and returned.

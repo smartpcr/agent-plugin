@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"debug/buildinfo"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -26,7 +27,7 @@ type Artifact struct {
 	GOOS, GOARCH string
 	Path         string
 	SHA256       string
-	Version      string // the main module version the go command stamped
+	Version      string // the version dsh --version prints: the snapshot's main.version (snapshotVersion) after Rehearse, else the main module version
 	Revision     string // vcs.revision, empty when the build had no VCS
 	Modified     string // vcs.modified
 	Settings     map[string]string
@@ -84,7 +85,8 @@ func (c *Config) dshModule() (string, error) {
 // archive holding LicenseFile and a pure-Go, -trimpath dsh for its target. Each binary
 // is extracted to out as dsh-<goos>-<goarch>[.exe] and printed as one line,
 // "<sha256>  <name>  version=... vcs.revision=... vcs.modified=...", in the format of
-// sha256sum.
+// sha256sum; the version is the snapshot's (snapshotVersion), the one each binary
+// prints with --version.
 //
 // It publishes nothing: the configuration disables the release, snapshot mode skips
 // every publishing step, goreleaser gets no publishing token, and the repository's
@@ -143,6 +145,13 @@ func (c *Config) Rehearse(ctx context.Context, w io.Writer, out string) ([]Artif
 		arts, err = VerifySnapshot(dist, out)
 		if err != nil {
 			errs = append(errs, err)
+		}
+		if v, err := snapshotVersion(dist); err != nil {
+			errs = append(errs, err)
+		} else {
+			for i := range arts {
+				arts[i].Version = v
+			}
 		}
 	}
 	if tagsAfter, err := c.tags(ctx); err != nil {
@@ -305,6 +314,30 @@ func readChecksums(path string) (map[string]string, error) {
 		return nil, fmt.Errorf("%s lists no file", path)
 	}
 	return sums, sc.Err()
+}
+
+// MetadataFile is the file goreleaser writes into the dist directory naming the run's
+// version, the {{ .Version }} GoReleaserConfig links into cmd/dsh as main.version.
+const MetadataFile = "metadata.json"
+
+// snapshotVersion reads the version of the snapshot in dist from MetadataFile: the
+// version every rehearsed dsh prints with --version. -trimpath keeps -ldflags out of
+// the binaries' build information, so the snapshot is the only place it is recorded.
+func snapshotVersion(dist string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(dist, MetadataFile))
+	if err != nil {
+		return "", fmt.Errorf("the snapshot's version: %w", err)
+	}
+	var m struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return "", fmt.Errorf("the snapshot's version: %s: %w", MetadataFile, err)
+	}
+	if m.Version == "" || strings.ContainsAny(m.Version, " \t\r\n") {
+		return "", fmt.Errorf("the snapshot's version: %s names version %q", MetadataFile, m.Version)
+	}
+	return m.Version, nil
 }
 
 // verifyArchive checks archive against want, its SHA-256 from the checksum file, and

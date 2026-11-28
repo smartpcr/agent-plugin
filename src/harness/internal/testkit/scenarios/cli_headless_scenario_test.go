@@ -109,7 +109,13 @@ func TestHeadlessRunOnRealModel(t *testing.T) {
 		}
 
 		h, typeKeys = terminal(need(t, "DSH_SCENARIO_CLI2_LONG_PROMPT", "a task whose turn runs for minutes"))
-		time.Sleep(20 * time.Second)
+		// Ctrl-C goes in once the long turn is under way: its first step is shown.
+		h.waitFor(t, 5*time.Minute, "the long turn's first step", func(string) string {
+			if strings.Contains(plainText(h.Stderr.String()), "dsh headless: turn ") {
+				return "step"
+			}
+			return ""
+		})
 		if runtime.GOOS == "windows" {
 			operatorStep(t, "DSH_SCENARIO_TERMINAL_KEYS", "types keys into a terminal", map[string]string{"pid": strconv.Itoa(h.Process.Pid()), "keys": "ctrl-c"})
 		} else {

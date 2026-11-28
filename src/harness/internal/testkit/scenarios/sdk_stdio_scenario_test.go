@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -191,7 +192,8 @@ type sdk1Pipes struct {
 func sdk1Start(t *testing.T, s *scenario.S, handlers sdk.Handlers) (*sdk.Harness, *sdk1Pipes) {
 	t.Helper()
 	p := &sdk1Pipes{inbound: &frameLog{}, outbound: &frameLog{}, stderr: &frameLog{}}
-	p.cmd = exec.Command(s.Bin, "--home", s.Home, "--profile", "sdk")
+	cmd := exec.Command(s.Bin, "--home", s.Home, "--profile", "sdk")
+	p.cmd = cmd
 	p.cmd.Dir, p.cmd.Env, p.cmd.Stderr = s.Workspace, append(os.Environ(), "TZ=UTC", "DSH_HOME="+s.Home), p.stderr
 	stdin, err := p.cmd.StdinPipe()
 	if err != nil {
@@ -201,10 +203,10 @@ func sdk1Start(t *testing.T, s *scenario.S, handlers sdk.Handlers) (*sdk.Harness
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := p.cmd.Start(); err != nil {
+	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = p.cmd.Process.Kill() })
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
 	p.in = &lockedWriter{w: io.MultiWriter(stdin, p.outbound)}
 	h, err := sdk.Connect(s.Context(), sdk.Transport{In: io.TeeReader(stdout, p.inbound), Out: writeCloser{p.in, stdin}},
 		sdk.Options{TimeZone: "Asia/Tokyo", Handlers: handlers, ClientInfo: protocol.Implementation{Name: "dsh-sdk1", Version: "1"}})
@@ -240,11 +242,12 @@ func (p *sdk1Pipes) duplicateAnswer(t *testing.T, ctx context.Context, h *sdk.Ha
 	if _, err := p.in.Write(append(bytes.Clone(answer), '\n')); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(2 * time.Second)
+	// The host gets 2s to (wrongly) act on the duplicate; a connection that ends
+	// in that window fails at once.
 	select {
 	case <-h.Done():
 		t.Fatalf("the connection ended after a duplicate answer: %v\nstderr:\n%s", h.Err(), p.stderr.String())
-	default:
+	case <-time.After(2 * time.Second):
 	}
 	if !pidAlive(t, p.cmd.Process.Pid) {
 		t.Fatalf("the host (pid %d) exited after a duplicate answer\nstderr:\n%s", p.cmd.Process.Pid, p.stderr.String())
@@ -286,12 +289,10 @@ func sdk1History(t *testing.T, ctx context.Context, sess *sdk.Session) []protoco
 // awaitEvent waits for a session.event of typ on the wire after line from.
 func (p *sdk1Pipes) awaitEvent(t *testing.T, typ string, from int) {
 	t.Helper()
-	for end := time.Now().Add(5 * time.Minute); time.Now().Before(end); time.Sleep(100 * time.Millisecond) {
-		for _, f := range p.inbound.frames()[from:] {
-			if f.eventType() == typ {
-				return
-			}
-		}
+	if pollUntil(5*time.Minute, 100*time.Millisecond, func() bool {
+		return slices.ContainsFunc(p.inbound.frames()[from:], func(f frame) bool { return f.eventType() == typ })
+	}) {
+		return
 	}
 	t.Fatalf("no %s event within 5m\nstderr:\n%s", typ, p.stderr.String())
 }

@@ -148,9 +148,18 @@ func TestRehearseSnapshotSixArchives(t *testing.T) {
 		if _, race := a.Settings["-race"]; race {
 			t.Errorf("%s: built with the parent's GOFLAGS -race", name)
 		}
-		line := regexp.MustCompile(`(?m)^` + a.SHA256 + `  ` + regexp.QuoteMeta(name) + `  version=\S+ vcs\.revision=\S+ vcs\.modified=\S+$`)
-		if !line.MatchString(stdout.String()) {
+		line := regexp.MustCompile(`(?m)^` + a.SHA256 + `  ` + regexp.QuoteMeta(name) + `  version=(\S+) vcs\.revision=\S+ vcs\.modified=\S+$`)
+		m := line.FindStringSubmatch(stdout.String())
+		if m == nil {
 			t.Errorf("output lacks the SHA-256 and version line of %s:\n%s", name, stdout.String())
+			continue
+		}
+		if tgt.GOOS == runtime.GOOS && tgt.GOARCH == runtime.GOARCH {
+			// DH-E-TOOLCHAIN-2: the unpacked binary prints the version the rehearsal recorded.
+			out, err := exec.Command(filepath.Join(dir, name), "--version").Output()
+			if want := "dsh " + m[1] + " ("; err != nil || !strings.HasPrefix(string(out), want) {
+				t.Errorf("%s --version = %q (err %v), want the recorded version, %q...", name, out, err, want)
+			}
 		}
 	}
 	for _, text := range []string{
@@ -413,5 +422,36 @@ func TestGoReleaserDshConfig(t *testing.T) {
 	}
 	if regexp.MustCompile(`(?m)cmd/dsh|binary:\s*dsh\b`).Match(main) {
 		t.Errorf(".goreleaser.yaml builds dsh; release.yml would publish it before DH-S-46")
+	}
+}
+
+// TestSnapshotVersion: the version a rehearsal records is the one goreleaser linked
+// into every dsh as main.version, read from the snapshot's metadata.json; a snapshot
+// without a usable version fails the rehearsal rather than recording "(devel)"
+// (DH-E-TOOLCHAIN-2: "dsh --version" prints the version matching the record).
+func TestSnapshotVersion(t *testing.T) {
+	for _, tc := range []struct{ name, metadata, want, err string }{
+		{"snapshot", `{"project_name":"dsh","version":"0.1.4-SNAPSHOT-fa1186d","commit":"fa1186d"}`, "0.1.4-SNAPSHOT-fa1186d", ""},
+		{"absent", "", "", "the snapshot's version"},
+		{"not json", "version: 1", "", MetadataFile},
+		{"empty version", `{"version":""}`, "", `names version ""`},
+		{"spaced version", `{"version":"0.1 4"}`, "", `names version "0.1 4"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dist := t.TempDir()
+			if tc.metadata != "" {
+				if err := os.WriteFile(filepath.Join(dist, MetadataFile), []byte(tc.metadata), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := snapshotVersion(dist)
+			if tc.err == "" {
+				if err != nil || got != tc.want {
+					t.Errorf("snapshotVersion = %q, %v; want %q", got, err, tc.want)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tc.err) {
+				t.Errorf("snapshotVersion = %q, %v; want an error containing %q", got, err, tc.err)
+			}
+		})
 	}
 }

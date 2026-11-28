@@ -120,7 +120,10 @@ dsh sandbox status | GOWORK=off go -C tools/harness-gate run . sandbox-preflight
   through a temporary copy of the config with `dist:` added; a committed config
   that sets `dist:` is refused. Each of the six archives is verified against
   `checksums.txt`, its binary extracted to `--out`, and one line per binary
-  printed: `<sha256>  <name>  version=… vcs.revision=… vcs.modified=…`. It
+  printed: `<sha256>  <name>  version=… vcs.revision=… vcs.modified=…`, where
+  `version` is the snapshot's (`dist/metadata.json`), the `main.version` the config
+  links into every binary and so what `dsh --version` prints (`-trimpath` keeps
+  `-ldflags` out of the build information). It
   publishes nothing: `release.disable`, the forge tokens removed from goreleaser's
   environment, and a run that changes the repository's tags fails. The keyless
   replay of the host-matching binary is printed as `OPEN, not built` until the
@@ -174,9 +177,28 @@ dsh sandbox status | GOWORK=off go -C tools/harness-gate run . sandbox-preflight
   to the phase's IDs, failing on any `--- SKIP`, a non-zero exit or a planned test
   without a `--- PASS` line. All runs of a plan share one 100-minute budget
   (`scenarioBudget`; the S17 job has 2 h): each gets the time left as its
-  `-timeout`, and a run the budget no longer covers is not started and fails. `DH-S-17` runs in four phases: `DH-E-TOOLCHAIN-1` first,
-  the single-process scenarios, the host-killing `DH-E-SESSION-2` and `DH-E-AGENT-3`,
-  then `DH-E-SANDBOX-7` (architecture.md rule 7, R-03; impl.md DH-S-17 Sequence). Of a
+  `-timeout`, and a run the budget no longer covers is not started and fails. `DH-S-17` runs in three phases: `DH-E-TOOLCHAIN-1` first,
+  the other scenarios, then `DH-E-SANDBOX-7` (architecture.md rule 7, R-03).
+  `DH-S-18` runs `DH-E-TOOLCHAIN-2` alone first with `DSH_REHEARSAL_DIR` naming a
+  directory the run owns (removed when the plan ends); the rehearsal leaves its six
+  binaries there and, only when every check passed, `rehearsal.sha256`. The other
+  scenarios then run with `DSH_BIN` naming this host's binary from it, its SHA-256
+  checked against the manifest (`scenarios: rehearsal hand-off: DSH_BIN=... sha256
+  ...`); without a verified binary they are not run and fail, never run on a build of
+  their own (impl.md 18.1). The manifest's six lines follow in the output
+  (`scenarios: rehearsal checksum: <sha256>  <name>`). Each s18 variant job of
+  `harness-scenarios.yml` runs its scenarios the same way through `harness-gate
+  variant-run --stage DH-S-18 --scenarios <require --variant list>`
+  (`variantrun.go`): one plain `go test` per phase, a skip or a test without a
+  `--- PASS` line failing, in a 175-minute budget (`variantBudget`). The variants
+  holding `DH-E-TOOLCHAIN-2` (`linux-wsl`, `windows-hosted`) rehearse first and
+  hand the binary on; `--rehearsal DIR` makes them rehearse into `DIR`, and a
+  variant without `DH-E-TOOLCHAIN-2` runs every scenario on the binary verified in
+  its `--rehearsal DIR` (printed as for the hand-off). With no `--rehearsal`, or a
+  directory whose binary does not verify, none of its scenarios run. The workflow's
+  `s18-rehearsal` job (a `linux` and a `windows` lane) rehearses first into
+  `--rehearsal DIR` and uploads `DIR`; `s18` waits for it, and its variants without
+  `DH-E-TOOLCHAIN-2` download their OS's `DIR` and pass it. Of a
   scenario with route subtests the `claude-code` leg must pass and the
   `copilot-cli` leg is recorded (`scenarios: recorded leg: ...`): the required run
   sets `DSH_SCENARIO_ROUTES=claude-code` and its verdict has no exception; the
