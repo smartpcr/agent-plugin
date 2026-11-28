@@ -37,8 +37,8 @@ An acceptance step is ticked only by its scenarios; the commit is the one the sc
 | 18.4 | DH-E-NATIVESYSTEM-1 to -4, DH-E-SANDBOX-1 | | |
 | 18.5 | DH-E-FS-1, DH-E-FS-2 | | |
 | 18.6 | DH-E-VIEW-5 | | |
-| 18.7 | DH-E-RIPGREP-1, DH-E-RIPGREP-2 | | |
-| 18.8 | DH-E-CHOKIDAR-1, DH-E-CHOKIDAR-2 | | |
+| 18.7 | DH-E-RIPGREP-1, DH-E-RIPGREP-2 | | not run; blocked, see [Stage 8.7 blockers](#stage-87-blockers) |
+| 18.8 | DH-E-CHOKIDAR-1, DH-E-CHOKIDAR-2 | | not run; blocked, see [Stage 8.7 blockers](#stage-87-blockers) |
 | 18.9 | DH-E-CONTEXT-2 | | |
 | 18.10 | DH-E-STORAGE-6 | | |
 | 18.11 | DH-E-NODEFS-1 | | run last |
@@ -68,17 +68,17 @@ The 19 scenarios of the steps, one row per operating-system variant (M2-DOD-4). 
 | DH-E-FS-2 | Windows | acceptance | required | E2 | | not run (stage not started) | |
 | DH-E-FS-2 | macOS | acceptance | required | | | out of scope (platforms-windows-wsl) | |
 | DH-E-VIEW-5 | Linux (WSL) | acceptance | required | E2 | | not run (stage not started) | |
-| DH-E-RIPGREP-1 | Linux (WSL) | acceptance | required | E2 | | not run (stage not started) | |
-| DH-E-RIPGREP-1 | Windows | acceptance | required | E2 | | not run (stage not started) | |
+| DH-E-RIPGREP-1 | Linux (WSL) | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
+| DH-E-RIPGREP-1 | Windows | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
 | DH-E-RIPGREP-1 | macOS | acceptance | required | | | out of scope (platforms-windows-wsl) | |
-| DH-E-RIPGREP-2 | Linux (WSL) | acceptance | required | E2 | | not run (stage not started) | |
-| DH-E-RIPGREP-2 | Windows | acceptance | required | E2 | | not run (stage not started) | |
+| DH-E-RIPGREP-2 | Linux (WSL) | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
+| DH-E-RIPGREP-2 | Windows | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
 | DH-E-RIPGREP-2 | macOS | acceptance | required | | | out of scope (platforms-windows-wsl) | |
-| DH-E-CHOKIDAR-1 | Linux (WSL) | acceptance | required | E2 | | not run (stage not started) | |
-| DH-E-CHOKIDAR-1 | Windows | acceptance | required | E2 | | not run (stage not started) | |
+| DH-E-CHOKIDAR-1 | Linux (WSL) | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
+| DH-E-CHOKIDAR-1 | Windows | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
 | DH-E-CHOKIDAR-1 | macOS | acceptance | required | | | out of scope (platforms-windows-wsl) | |
-| DH-E-CHOKIDAR-2 | Linux (WSL) | acceptance | required | E2 | | not run (stage not started) | |
-| DH-E-CHOKIDAR-2 | Windows | acceptance | required | E2 | | not run (stage not started) | |
+| DH-E-CHOKIDAR-2 | Linux (WSL) | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
+| DH-E-CHOKIDAR-2 | Windows | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
 | DH-E-CHOKIDAR-2 | macOS | acceptance | required | | | out of scope (platforms-windows-wsl) | |
 | DH-E-CONTEXT-2 | Linux (WSL) | acceptance | required | E2 | | not run (stage not started) | |
 | DH-E-CONTEXT-2 | Windows | acceptance | required | E2 | | not run (stage not started) | |
@@ -138,6 +138,37 @@ When it runs, each TOOLCHAIN-2 row takes the run's commit, `E2 runner:<name>` (o
 SHA-256 of the binary it executed and the run id. The six checksums go into
 [Rehearsal binaries](#rehearsal-binaries-step-181) below, and every later S18 row records the SHA-256 of
 the binary it ran, which must be one of them.
+
+## Stage 8.7 blockers
+
+implementation-plan Stage 8.7 (impl.md 18.7 and 18.8: `DH-E-RIPGREP-1`, `DH-E-RIPGREP-2`,
+`DH-E-CHOKIDAR-1`, `DH-E-CHOKIDAR-2` on the Linux (WSL) and Windows variants) was taken up on `7b5133d`
+and could not run as evidence. All eight rows stay `not run` and are owed:
+
+| Blocker | Seen | What clears it |
+| --- | --- | --- |
+| `harness-gate entry` exits 1 (harness:DSH-M1 not closed, M2-DEC-1), and the S18 rows run on the rehearsal's binaries, which are owed (see [Stage 8.2 blockers](#stage-82-blockers)). | `GOWORK=off go -C tools/harness-gate run . entry --root ../..` on `7b5133d`: 12 blockers, exit 1 | M1 closure merges, `entry` exits 0 and `DH-E-TOOLCHAIN-2` has passed |
+| RIPGREP-1 misses its budget on Windows: the first 250 matches of sparse patterns take longer than 3 s on deepseek-harness (22,247 files, NTFS). Linux ext4 meets it on every repository and pattern (at most 0.41 s). DH-ADR-RIPGREP-1 settles a budget miss with a new decision. | Windows probe: `TODO` 19.2 s, `return nil` 9.9 s, `license` 5.4 s, `(foo\|bar\|baz)\w*\(` 5.3 s; whole searches 7-46x rg | operator answer to `ripgrep1-windows-budget` |
+| RIPGREP-1 differs from rg on Linux where a tracked file is a symbolic link: the harness reads an in-root file link through `os.Root`, while rg skips links without `--follow`. Windows checkouts (`core.symlinks=false`) have no links, so the lists match there. The specification does not say which is right; the scenario keeps failing on the difference. | WSL probe, deepseek-harness: `+ CLAUDE.md`, `+ packages/CLAUDE.md` (links to `AGENTS.md`) and two `tool-schemas.expected.json` links, listed by the harness only | operator answer to `ripgrep1-symlinked-files` |
+| Who and where. The rows run on `linux-wsl` and `windows-hosted`; CHOKIDAR-2 runs on `linux-wsl:smb` and `windows-host:smb` of [variants.md](variants.md), with `DSH_SCENARIO_REPOS`, `DSH_SCENARIO_SEARCH_BUDGET`, `DSH_SCENARIO_EDITORS`, `DSH_SCENARIO_REMOTE_DIRS` and `DSH_SCENARIO_REMOTE_CHANGE` bound by the `s18` jobs of `harness-scenarios.yml`. | `harness-scenarios.yml` on `7b5133d` | the `s18` jobs run on the merged commit once the blockers above clear |
+
+Cleared on this stage's branch (each would have failed or misjudged the scenario):
+
+| Defect | Seen on `7b5133d` | Fix |
+| --- | --- | --- |
+| On Windows the shell helper passed the line to `cmd /C` as an argument; Go escapes `"` as `\"`, which cmd does not read, so a quoted editor path failed. | `DSH_SCENARIO_EDITORS="C:\Program Files\Git\usr\bin\vim.exe" ...`: `is not recognized`, CHOKIDAR-1 failed | the line runs from a temporary `.cmd` file (`cmd /d /c <file>`) removed in cleanup (`TestShellLineQuotesAPathWithASpace`) |
+| RIPGREP-1 timed the whole unbounded search against the budget; vscode-ripgrep.md sec. 7 asks for the first 250 matches within it, with the ratio to rg recorded. | the report's `durationMs` was the whole search | the first 250 matching lines are timed against the budget; the whole search and rg's are reported as the ratio |
+| RIPGREP-1 searched under the default limits (100,000 files, 1 GiB), which cut a large repository short, and compared counts only. | `search.Limits{}` in the scenario | the whole search runs with no bound and fails when cut; the file sets must equal rg's (`--no-config --no-ignore-global`), each difference listed |
+| RIPGREP-1 never proved that no external `rg` is spawned. | no check | a decoy `rg` first on `PATH` and a `RIPGREP_CONFIG_PATH` naming it; the scenario fails if the decoy ran |
+| RIPGREP-2 failed on a tracked file that `.gitignore` matches: git lists it from the index, the harness reads ignore files, not the index. | deepseek-harness `snapshots/web/changed-files-turn/workspace.expected/app.local` (`*.local`) | the files `git ls-files --cached --ignored --exclude-standard` names are explained and logged; any other difference fails |
+
+Probes, not evidence (M2-DEC-1; a modified tree on `7b5133d`): on Windows (NTFS) CHOKIDAR-1 passed in
+notify mode for four save strategies (vim, append, copy then append, write-temp-and-move), RIPGREP-2
+passed, and RIPGREP-1 matched rg's file lists for all 30 searches with the decoy unused, missing only the
+budget above. On WSL (Ubuntu-24.04, ext4 clones of CopilotOAuthSample, agent-plugin and deepseek-harness)
+CHOKIDAR-1 passed in notify mode, CHOKIDAR-2 passed in poll mode on a `/mnt/e` directory changed from
+Windows, RIPGREP-2 passed, and RIPGREP-1 met the budget everywhere, failing only on the symbolic links
+above. CHOKIDAR-2 over SMB (`windows-host:smb`, `linux-wsl:smb`) was not probed.
 
 ## Evidence record (impl.md sec. 7.3)
 

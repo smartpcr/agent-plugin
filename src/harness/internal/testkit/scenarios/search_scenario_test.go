@@ -9,9 +9,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -36,6 +38,15 @@ var searchSet = []string{
 	`(foo|bar|baz)\w*\(`,
 }
 
+// firstMatches is how many matching lines the budget is measured to: the grep
+// tool's default MaxMatches, the "first 250 matches" of the agreed budget
+// (libs/vscode-ripgrep.md sec. 7; e2e-scenarios.md, RIPGREP-1).
+const firstMatches = 250
+
+// unbounded lifts every bound of a search but the deadline, so a very large
+// checkout (past the default 100,000 files or 1 GiB) is searched whole.
+var unbounded = search.Limits{MaxMatches: -1, MaxFiles: -1, MaxBytes: -1}
+
 // TestSearchMeetsBudget: in-process search meets the agreed budget on real
 // checkouts (libs/vscode-ripgrep.md DH-E-RIPGREP-1; DH-LIB-RIPGREP-R4; DH-D-FS-3).
 // Executed in DH-S-18 (step 18.7) on Linux, macOS and Windows.
@@ -43,9 +54,14 @@ var searchSet = []string{
 // Given real checkouts of a small, a medium and a very large public repository and
 // an rg installed for comparison only, when the fixed set of plain-word and regular
 // expression searches runs through the harness search and through rg, then every
-// search meets the agreed budget and is not cut short, and the ratio to rg is
-// recorded per search. An rg run that fails or reports a problem fails that search's
-// comparison rather than counting as zero matches. Inputs: DSH_SCENARIO_REPOS, the ";"-separated checkouts;
+// search returns its first 250 matching lines (or, with fewer, all of them) within
+// the agreed budget, not cut short by anything but that count; the whole search,
+// unbounded, lists the same matching files as rg; and the ratio of the whole
+// search's time to rg's is recorded per search. No rg is started by the harness: a
+// decoy rg first on PATH and a decoy RIPGREP_CONFIG_PATH must stay unused, and the
+// comparison runs the real rg by its path with --no-config. An rg run that fails
+// or reports a problem fails that search's comparison rather than counting as zero
+// matches. Inputs: DSH_SCENARIO_REPOS, the ";"-separated checkouts;
 // DSH_SCENARIO_SEARCH_BUDGET, the agreed budget per search as a Go duration;
 // DSH_SCENARIO_REPORT, the file the timing report (JSON lines) is written to.
 // Cleanup: removing the checkouts is the operator's; the report is kept.
@@ -53,7 +69,7 @@ var searchSet = []string{
 //dsh:scenario DH-E-RIPGREP-1
 func TestSearchMeetsBudget(t *testing.T) {
 	repos := needList(t, "DSH_SCENARIO_REPOS", "real checkouts: small, medium and very large, ';'-separated")
-	budget, err := time.ParseDuration(need(t, "DSH_SCENARIO_SEARCH_BUDGET", "the agreed budget per search, e.g. 2s"))
+	budget, err := time.ParseDuration(need(t, "DSH_SCENARIO_SEARCH_BUDGET", "the agreed budget per search, e.g. 3s"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,6 +78,7 @@ func TestSearchMeetsBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rg is needed for the comparison: %v", err)
 	}
+	spawned := decoyRG(t)
 	report, err := os.Create(reportPath)
 	if err != nil {
 		t.Fatal(err)
@@ -76,34 +93,115 @@ func TestSearchMeetsBudget(t *testing.T) {
 		}
 		t.Cleanup(func() { _ = src.Close() })
 		for _, pattern := range searchSet {
-			ctx, cancel := context.WithTimeout(t.Context(), 10*budget)
-			start := time.Now()
-			matches := 0
-			summary, err := search.Grep(ctx, search.GrepQuery{From: src, Pattern: pattern, Output: search.OutputFiles,
-				Limits: search.Limits{MaxMatches: 1 << 30}}, func(search.Match) bool { matches++; return true })
-			took := time.Since(start)
-			cancel()
+			first, lines, err := timeFirstMatches(t, src, pattern, budget)
 			if err != nil {
-				t.Errorf("%s %q: %v", repo, pattern, err)
+				t.Errorf("%s %q: first %d matches: %v", repo, pattern, firstMatches, err)
 				continue
 			}
-			rgMatches, rgTook, err := runRG(t, rg, repo, pattern)
+			start := time.Now()
+			files := map[string]bool{}
+			summary, err := search.Grep(t.Context(), search.GrepQuery{From: src, Pattern: pattern, Output: search.OutputFiles,
+				Limits: unbounded}, func(m search.Match) bool { files[filepath.ToSlash(m.Path)] = true; return true })
+			took := time.Since(start)
+			if err == nil && summary.Incomplete {
+				err = fmt.Errorf("cut short: %s", summary.Reason)
+			}
+			if err != nil {
+				t.Errorf("%s %q: whole search: %v", repo, pattern, err)
+				continue
+			}
+			rgFiles, rgTook, err := runRG(t, rg, repo, pattern)
 			if err != nil {
 				t.Errorf("%s %q: the rg comparison did not run: %v", repo, pattern, err)
 				continue
 			}
 			ratio := took.Seconds() / max(rgTook.Seconds(), 1e-6)
-			_ = enc.Encode(map[string]any{"repo": repo, "pattern": pattern, "harness_ms": took.Milliseconds(),
-				"rg_ms": rgTook.Milliseconds(), "ratio": ratio, "files": matches, "rg_files": rgMatches, "visited": summary.Files})
-			t.Logf("%s %q: %v (rg %v, ratio %.2f), %d files (rg %d)", repo, pattern, took, rgTook, ratio, matches, rgMatches)
-			if took > budget {
-				t.Errorf("%s %q took %v, over the budget %v", repo, pattern, took, budget)
+			_ = enc.Encode(map[string]any{"repo": repo, "pattern": pattern, "budget_ms": budget.Milliseconds(),
+				"first_ms": first.Milliseconds(), "first_lines": lines, "harness_ms": took.Milliseconds(),
+				"rg_ms": rgTook.Milliseconds(), "ratio": ratio, "files": len(files), "rg_files": len(rgFiles), "visited": summary.Files})
+			t.Logf("%s %q: first %d lines in %v (budget %v); whole %v (rg %v, ratio %.2f), %d files (rg %d)",
+				repo, pattern, lines, first, budget, took, rgTook, ratio, len(files), len(rgFiles))
+			if first > budget {
+				t.Errorf("%s %q: the first %d lines took %v, over the budget %v", repo, pattern, lines, first, budget)
 			}
-			if summary.Incomplete {
-				t.Errorf("%s %q was cut short: %s", repo, pattern, summary.Reason)
+			if diff := setDiff(files, rgFiles, nil); len(diff) > 0 {
+				t.Errorf("%s %q: %d files differ from rg's (+ matched by the harness only, - by rg only):\n%s",
+					repo, pattern, len(diff), strings.Join(diff, "\n"))
 			}
 		}
 	}
+	if spawned() {
+		t.Errorf("an rg was started: the decoy rg first on PATH ran during the harness searches")
+	}
+}
+
+// timeFirstMatches times a content search for pattern until its first
+// firstMatches matching lines are out, or until the whole of src is searched when
+// it has fewer; it returns the time and the lines. A search cut short by anything
+// but that count (a deadline of ten budgets, an unreadable directory) is an error.
+func timeFirstMatches(t *testing.T, src search.Source, pattern string, budget time.Duration) (time.Duration, int, error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*budget)
+	defer cancel()
+	lim := unbounded
+	lim.MaxMatches = firstMatches
+	lines := 0
+	start := time.Now()
+	summary, err := search.Grep(ctx, search.GrepQuery{From: src, Pattern: pattern, Output: search.OutputLines, Limits: lim},
+		func(search.Match) bool { lines++; return true })
+	took := time.Since(start)
+	if err == nil && summary.Incomplete && summary.Reason != search.CutMatches {
+		err = fmt.Errorf("cut short: %s", summary.Reason)
+	}
+	return took, lines, err
+}
+
+// decoyRG puts a decoy rg first on PATH and points RIPGREP_CONFIG_PATH at a decoy
+// configuration that would run it as a preprocessor, for the rest of the test. The
+// returned func reports whether the decoy ever ran.
+func decoyRG(t *testing.T) func() bool {
+	t.Helper()
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "rg-started")
+	name, body := "rg", "#!/bin/sh\necho started >> '"+marker+"'\nexit 2\n"
+	if runtime.GOOS == "windows" {
+		name, body = "rg.cmd", "@echo off\r\necho started>> \""+marker+"\"\r\nexit /b 2\r\n"
+	}
+	decoy := filepath.Join(dir, name)
+	if err := os.WriteFile(decoy, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(dir, "ripgreprc")
+	if err := os.WriteFile(config, []byte("--pre="+decoy+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("RIPGREP_CONFIG_PATH", config)
+	if found, err := exec.LookPath("rg"); err != nil || !strings.EqualFold(found, decoy) {
+		t.Fatalf("the decoy rg is not first on PATH: %q, %v", found, err)
+	}
+	return func() bool {
+		_, err := os.Stat(marker)
+		return err == nil
+	}
+}
+
+// setDiff lists, sorted, each path of ours missing from theirs ("+ path") and of
+// theirs missing from ours ("- path"), leaving out the explained ones.
+func setDiff(ours, theirs, explained map[string]bool) []string {
+	var diff []string
+	for p := range ours {
+		if !theirs[p] && !explained[p] {
+			diff = append(diff, "+ "+p)
+		}
+	}
+	for p := range theirs {
+		if !ours[p] && !explained[p] {
+			diff = append(diff, "- "+p)
+		}
+	}
+	slices.Sort(diff)
+	return diff
 }
 
 // TestFileListingMatchesGit: the file listing with ignore rules equals Git's view
@@ -114,8 +212,10 @@ func TestSearchMeetsBudget(t *testing.T) {
 // with ignore rules on, then the set equals `git ls-files --cached --others
 // --exclude-standard` minus hidden files. Every difference is printed for
 // triage; an explained one is listed, one slash path per line, in the file named by
-// DSH_SCENARIO_LISTING_EXPLAINED (optional). Inputs: DSH_SCENARIO_REPOS. Cleanup:
-// none beyond removing the checkouts.
+// DSH_SCENARIO_LISTING_EXPLAINED (optional). A tracked file an ignore rule matches
+// (`git ls-files --cached --ignored --exclude-standard`) is explained by Git itself
+// and logged: Git lists what it tracks, the harness follows the ignore files.
+// Inputs: DSH_SCENARIO_REPOS. Cleanup: none beyond removing the checkouts.
 //
 //dsh:scenario DH-E-RIPGREP-2
 func TestFileListingMatchesGit(t *testing.T) {
@@ -147,17 +247,8 @@ func TestFileListingMatchesGit(t *testing.T) {
 			ours[filepath.ToSlash(p)] = true
 		}
 
-		cmd := exec.CommandContext(t.Context(), "git", "ls-files", "--cached", "--others", "--exclude-standard", "-z")
-		cmd.Dir = repo
-		out, err := cmd.Output()
-		if err != nil {
-			t.Fatalf("%s: git ls-files: %v", repo, err)
-		}
 		git := map[string]bool{}
-		sc := bufio.NewScanner(strings.NewReader(string(out)))
-		sc.Split(splitNUL)
-		for sc.Scan() {
-			p := sc.Text()
+		for _, p := range gitFiles(t, repo, "--cached", "--others", "--exclude-standard") {
 			if hidden(p) {
 				continue
 			}
@@ -166,52 +257,77 @@ func TestFileListingMatchesGit(t *testing.T) {
 			}
 			git[p] = true
 		}
+		// A tracked file an ignore rule matches is listed by Git, which never
+		// ignores what it tracks; the harness reads the ignore files, not Git's
+		// index (DH-LIB-RIPGREP-R1, libs/vscode-ripgrep.md sec. 6 "Ignore rules"),
+		// so it leaves the file out. Git names each one itself.
+		why := maps.Clone(explained)
+		for _, p := range gitFiles(t, repo, "--cached", "--ignored", "--exclude-standard") {
+			if git[p] && !ours[p] && !why[p] {
+				why[p] = true
+				t.Logf("%s: explained: %s is tracked though an ignore rule matches it", repo, p)
+			}
+		}
 
-		var diff []string
-		for p := range ours {
-			if !git[p] && !explained[p] {
-				diff = append(diff, "+ "+p)
-			}
-		}
-		for p := range git {
-			if !ours[p] && !explained[p] {
-				diff = append(diff, "- "+p)
-			}
-		}
-		slices.Sort(diff)
-		if len(diff) > 0 {
+		if diff := setDiff(ours, git, why); len(diff) > 0 {
 			t.Errorf("%s: %d unexplained differences (+ listed by the harness only, - by Git only):\n%s",
 				repo, len(diff), strings.Join(diff, "\n"))
 		}
 	}
 }
 
-// runRG runs rg over repo for pattern and returns the number of files it matched
-// and how long it took. rg exits 0 with matches and 1 with none; any other outcome
-// (exit 2 for a bad pattern or an unreadable path, a signal, a timeout, a missing
-// binary), output on its standard error, or exit 1 with output, means the
-// comparison did not run correctly and is an error, never a zero.
-func runRG(t *testing.T, rg, repo, pattern string) (int, time.Duration, error) {
+// gitFiles runs git ls-files -z with args in repo and returns the slash paths.
+func gitFiles(t *testing.T, repo string, args ...string) []string {
 	t.Helper()
-	cmd := exec.CommandContext(t.Context(), rg, "--files-with-matches", "--", pattern, ".")
+	cmd := exec.CommandContext(t.Context(), "git", append(append([]string{"ls-files"}, args...), "-z")...)
+	cmd.Dir = repo
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("%s: git ls-files %s: %v", repo, strings.Join(args, " "), err)
+	}
+	var paths []string
+	sc := bufio.NewScanner(bytes.NewReader(out))
+	sc.Split(splitNUL)
+	for sc.Scan() {
+		paths = append(paths, sc.Text())
+	}
+	return paths
+}
+
+// runRG runs rg over repo for pattern and returns the slash paths, from repo, of
+// the files it matched and how long it took. --no-config and --no-ignore-global
+// keep rg to what the harness reads: no configuration file (RIPGREP_CONFIG_PATH is
+// the decoy's) and no user-wide ignore file (DH-LIB-RIPGREP-R5). rg exits 0 with
+// matches and 1 with none; any other outcome (exit 2 for a bad pattern or an
+// unreadable path, a signal, a timeout, a missing binary), output on its standard
+// error, or exit 1 with output, means the comparison did not run correctly and is
+// an error, never a zero.
+func runRG(t *testing.T, rg, repo, pattern string) (map[string]bool, time.Duration, error) {
+	t.Helper()
+	cmd := exec.CommandContext(t.Context(), rg, "--no-config", "--no-ignore-global", "--files-with-matches", "--", pattern, ".")
 	cmd.Dir = repo
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	start := time.Now()
 	err := cmd.Run()
 	took := time.Since(start)
-	files := strings.Count(stdout.String(), "\n")
+	files := map[string]bool{}
+	for _, line := range strings.Split(stdout.String(), "\n") {
+		if line = strings.TrimRight(line, "\r"); line != "" {
+			files[strings.TrimPrefix(filepath.ToSlash(line), "./")] = true
+		}
+	}
 	var exit *exec.ExitError
 	switch {
-	case err == nil && files > 0:
-	case errors.As(err, &exit) && exit.ExitCode() == 1 && files == 0:
+	case err == nil && len(files) > 0:
+	case errors.As(err, &exit) && exit.ExitCode() == 1 && len(files) == 0:
 	case err == nil:
-		return 0, took, errors.New("rg exited 0 with no files listed")
+		return nil, took, errors.New("rg exited 0 with no files listed")
 	default:
-		return 0, took, fmt.Errorf("rg: %v (%d files listed)\n%s", err, files, stderr.String())
+		return nil, took, fmt.Errorf("rg: %v (%d files listed)\n%s", err, len(files), stderr.String())
 	}
 	if stderr.Len() > 0 {
-		return 0, took, fmt.Errorf("rg reported problems, so its count is not comparable:\n%s", stderr.String())
+		return nil, took, fmt.Errorf("rg reported problems, so its list is not comparable:\n%s", stderr.String())
 	}
 	return files, took, nil
 }

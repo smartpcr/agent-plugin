@@ -4,6 +4,8 @@ package scenarios
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -28,7 +30,7 @@ const abandonAfter = 30 * time.Second
 // than the shell's own clean exit.
 func TestShellTreeStopsAtTheScenarioDeadline(t *testing.T) {
 	bin := launcher.Build(t, "../launcher", "./testdata/echo")
-	r := startShell(t, bin+" hold") // unquoted: cmd /C gets quotes escaped
+	r := startShell(t, bin+" hold")
 	tick := time.NewTicker(10 * time.Millisecond)
 	defer tick.Stop()
 	shellPid := r.run.host.Process.Pid()
@@ -67,6 +69,31 @@ func TestShellTreeStopsAtTheScenarioDeadline(t *testing.T) {
 	}
 	if !subprocesstest.Exited(grandchild) {
 		t.Errorf("the grandchild %d holding the output survives the stopped shell", grandchild)
+	}
+}
+
+// A shell command line reaches the shell unchanged: a quoted program path with a
+// space runs (on Windows the editor commands quote C:\Program Files), and the
+// line's exit code is the command's.
+func TestShellLineQuotesAPathWithASpace(t *testing.T) {
+	bin := launcher.Build(t, "../launcher", "./testdata/echo")
+	dir := filepath.Join(t.TempDir(), "with space")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spaced := filepath.Join(dir, filepath.Base(bin))
+	if err := os.WriteFile(spaced, data, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := shell(t, `"`+spaced+`" tags`); err != nil {
+		t.Errorf("quoted path with a space: %v\n%s", err, out)
+	}
+	if out, err := shell(t, "exit 3"); err == nil || !strings.Contains(err.Error(), "exit 3") {
+		t.Errorf("exit 3 = %v (%q); want exit 3", err, out)
 	}
 }
 

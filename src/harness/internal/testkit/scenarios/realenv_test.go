@@ -55,8 +55,8 @@ func expand(template string, vars map[string]string) string {
 // the test's context has already ended.
 const cleanupShellWithin = time.Minute
 
-// shell runs command line through the platform shell (sh -c, or cmd /C on
-// Windows) and returns its output, standard output then standard error.
+// shell runs command line through the platform shell (sh -c, or cmd on a batch
+// file on Windows; shellArgv) and returns its output, standard output then standard error.
 func shell(t *testing.T, line string) (string, error) {
 	t.Helper()
 	return spawnShell(t, line).wait()
@@ -167,12 +167,17 @@ func shellTree(t *testing.T, line string, within time.Duration) (*launcher.Host,
 	return h, err
 }
 
-// shellArgv is the platform shell's argv running line, the shell found on PATH.
+// shellArgv is the platform shell's argv running line, the shell found on PATH:
+// sh -c line, or on Windows cmd /d /c on a batch file holding line. cmd.exe does
+// not undo the quoting Go gives an argument (a " becomes \"), so a line passed as
+// an argument could not quote a path with spaces, such as an editor under
+// C:\Program Files; a batch file reaches cmd.exe unchanged. It is read as a batch
+// line: a literal percent sign is written %%.
 func shellArgv(t *testing.T, line string) []string {
 	t.Helper()
 	argv := []string{"sh", "-c", line}
 	if runtime.GOOS == "windows" {
-		argv = []string{"cmd", "/C", line}
+		argv = []string{"cmd", "/d", "/c", batchFile(t, line)}
 	}
 	path, err := exec.LookPath(argv[0])
 	if err != nil {
@@ -180,6 +185,22 @@ func shellArgv(t *testing.T, line string) []string {
 	}
 	argv[0] = path
 	return argv
+}
+
+// batchFile writes line to a new batch file that exits with line's exit code,
+// removed when the test ends; it may be called from a cleanup callback.
+func batchFile(t *testing.T, line string) string {
+	t.Helper()
+	f, err := os.CreateTemp("", "dsh-shell-*.cmd")
+	if err != nil {
+		t.Fatalf("batch file for %s: %v", line, err)
+	}
+	t.Cleanup(func() { _ = os.Remove(f.Name()) })
+	_, err = f.WriteString("@echo off\r\n" + line + "\r\n@exit /b %errorlevel%\r\n")
+	if err = errors.Join(err, f.Close()); err != nil {
+		t.Fatalf("batch file for %s: %v", line, err)
+	}
+	return f.Name()
 }
 
 // exited reports whether the command has exited.
