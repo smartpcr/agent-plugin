@@ -673,20 +673,99 @@ func (s *s17rState) blockers() []string {
 	return out
 }
 
+// verdict is the M2-DEC-5 evidence verdict on s.row after ready ran on s.root: the
+// row counts only when it reads passed, the identity check finds nothing missing
+// and ready names no blocker of it. why lists every reason it does not count.
+func (s *s17rState) verdict() (counted bool, why []string) {
+	if !s17rPassed(s.row) {
+		why = append(why, fmt.Sprintf("result %q", s.row["result"]))
+	}
+	for _, m := range s17rMissing(s.row) {
+		why = append(why, "no valid "+m)
+	}
+	why = append(why, s.blockers()...)
+	return len(why) == 0, why
+}
+
+// thenCommittedIdentities checks the committed row's own commit and artifacts, not
+// just its result: a copy of the record promotes the row to passed with exactly
+// those cells, ready runs on it, and the verdict must count it iff the identity
+// check finds all four. The checkout's ready output is restored afterwards.
+func (s *s17rState) thenCommittedIdentities() error {
+	miss := s17rMissing(s.row)
+	if s17rPassed(s.row) && len(miss) > 0 {
+		return fmt.Errorf("the committed row reads passed but lacks %s (M2-DEC-5): %v", strings.Join(miss, ", "), s.row)
+	}
+	row, record, root, stdout, code := s.row, s.record, s.root, s.stdout, s.code
+	defer func() { s.row, s.record, s.root, s.stdout, s.code = row, record, root, stdout, code }()
+	if err := s.givenCopy(s17rScenario, row["commit"], row["artifacts"]); err != nil {
+		return err
+	}
+	if err := s.runReady(); err != nil {
+		return err
+	}
+	counted, why := s.verdict()
+	if counted != (len(miss) == 0) {
+		return fmt.Errorf("the committed cells promoted to passed: counted=%v but identity check misses %q (why %q)", counted, miss, why)
+	}
+	if b := s.blockers(); strings.TrimSpace(row["commit"]) == "" && !slices.ContainsFunc(b, func(l string) bool { return strings.HasSuffix(l, ": ran but records no commit") }) {
+		return fmt.Errorf("the committed row has no commit, yet ready on it promoted to passed does not say so: %q", b)
+	}
+	return nil
+}
+
 func (s *s17rState) thenCountedOnlyComplete() error {
-	blocked := s.blockers()
+	counted, why := s.verdict()
+	if complete := s17rPassed(s.row) && len(s17rMissing(s.row)) == 0; counted != complete {
+		return fmt.Errorf("verdict counted=%v for a row that is complete=%v: %q", counted, complete, why)
+	}
 	if s17rPassed(s.row) {
-		if miss := s17rMissing(s.row); len(miss) > 0 {
-			return fmt.Errorf("the committed row reads passed but lacks %s (M2-DEC-5): %v", strings.Join(miss, ", "), s.row)
-		}
-		if len(blocked) > 0 {
-			return fmt.Errorf("the committed row is complete but ready blocks it: %q", blocked)
-		}
 		return nil
 	}
 	want := fmt.Sprintf("  - %s [%s]: result %q: not run counts as open", s17rScenario, s.row["variant"], s.row["result"])
-	if s.code != 1 || !slices.ContainsFunc(blocked, func(l string) bool { return strings.HasPrefix(l, want) }) {
+	if s.code != 1 || !slices.ContainsFunc(s.blockers(), func(l string) bool { return strings.HasPrefix(l, want) }) {
 		return fmt.Errorf("ready (exit %d) does not hold the open row with %q:\n%s", s.code, want, s.stdout)
+	}
+	return nil
+}
+
+func (s *s17rState) thenCopiedComplete() error {
+	if miss := s17rMissing(s.row); len(miss) > 0 {
+		return fmt.Errorf("the copied row lacks %q: %v", miss, s.row)
+	}
+	return nil
+}
+
+func (s *s17rState) thenCopiedCounted() error {
+	if counted, why := s.verdict(); !counted {
+		return fmt.Errorf("the complete copied row is not counted: %q", why)
+	}
+	return nil
+}
+
+func (s *s17rState) thenCopiedNotCounted() error {
+	if counted, _ := s.verdict(); counted {
+		return fmt.Errorf("the incomplete copied row is counted: %v\n%s", s.row, s.stdout)
+	}
+	return nil
+}
+
+func (s *s17rState) thenMissingExactly(what string) error {
+	if miss := s17rMissing(s.row); !slices.Equal(miss, []string{what}) {
+		return fmt.Errorf("identity check misses %q, want exactly [%s]: artifacts %q", miss, what, s.row["artifacts"])
+	}
+	return nil
+}
+
+// thenReadyGap pins ready's own verdict on an identity-incomplete row: today it
+// names no blocker, because closure.evidenceBlockers only requires Artifacts to be
+// non-empty. It fails once ready learns the check, so the gap cannot close silently.
+func (s *s17rState) thenReadyGap(id string) error {
+	if b := s.blockers(); id != s17rScenario || len(b) > 0 {
+		return fmt.Errorf("ready now names %s for a missing identity, the gap closed; move this case to the refusal outline: %q", id, b)
+	}
+	if s.code != 1 || !strings.Contains(s.stdout, "NOT READY") {
+		return fmt.Errorf("ready exit %d, want 1 for the other open rows:\n%s", s.code, s.stdout)
 	}
 	return nil
 }
@@ -698,6 +777,9 @@ func (s *s17rState) thenOwed(heading string) error {
 	res := strings.TrimSpace(s.row["result"])
 	if !strings.HasPrefix(res, "not run (") || !strings.HasSuffix(res, ")") || len(res) <= len("not run ()") {
 		return fmt.Errorf("row result %q is neither passed nor \"not run (<reason>)\"", res)
+	}
+	if c, a := strings.TrimSpace(s.row["commit"]), strings.TrimSpace(s.row["artifacts"]); c != "" || a != "" {
+		return fmt.Errorf("a row that did not run claims commit %q and artifacts %q", c, a)
 	}
 	body, ok := s17rSection(s.record, "## "+heading)
 	if !ok || !strings.Contains(body, "What clears it") || strings.Count(body, "\n|") < 3 {
@@ -754,7 +836,9 @@ func (s *s17rState) givenCopy(scenario, commit, artifacts string) error {
 			return err
 		}
 	}
-	return nil
+	s.record = strings.Join(lines, "\n")
+	_, s.row, err = s17rToolchainRow(s.record)
+	return err
 }
 
 func (s *s17rState) thenExitsOne() error {
@@ -811,8 +895,14 @@ func InitializeScenario_dh_s_17_acceptance_on_a_real_model_record_then_replay_wi
 
 	ctx.Step(`^the committed record "([^"]*)" still reading "([^"]*)"$`, s.givenRecordOpen)
 	ctx.Step(`^"harness-gate ready --stage DH-S-17" reads the "DH-E-TOOLCHAIN-1" row of the checkout$`, s.runReady)
-	ctx.Step(`^the row is counted only when it reads passed with commit, binary checksum, model id and run id$`, s.thenCountedOnlyComplete)
-	ctx.Step(`^a row that is not passed reads "not run \(<reason>\)" and the "([^"]*)" section names what clears it$`, s.thenOwed)
+	ctx.Step(`^the M2-DEC-5 identity check of the committed row finds every one of commit, binary checksum, model id and run id, or the row is not passed$`, s.thenCommittedIdentities)
+	ctx.Step(`^the evidence verdict counts the committed row only when it reads passed with commit, binary checksum, model id and run id$`, s.thenCountedOnlyComplete)
+	ctx.Step(`^a row that is not passed claims no commit and no artifacts, reads "not run \(<reason>\)" and the "([^"]*)" section names what clears it$`, s.thenOwed)
+	ctx.Step(`^the M2-DEC-5 identity check of the copied row finds nothing missing$`, s.thenCopiedComplete)
+	ctx.Step(`^the evidence verdict counts the copied row$`, s.thenCopiedCounted)
+	ctx.Step(`^the evidence verdict does not count the copied row$`, s.thenCopiedNotCounted)
+	ctx.Step(`^the M2-DEC-5 identity check of the copied row finds exactly its (binary checksum|model id|run id) missing$`, s.thenMissingExactly)
+	ctx.Step(`^ready itself names no blocker of "([^"]*)", the gate gap: it checks only that Artifacts is non-empty$`, s.thenReadyGap)
 	ctx.Step(`^a copy of the committed index and record whose "([^"]*)" row reads passed at commit "([^"]*)" with artifacts "([^"]*)"$`, s.givenCopy)
 	ctx.Step(`^"harness-gate ready --stage DH-S-17" runs on the copy$`, s.runReady)
 	ctx.Step(`^it exits 1 for the other open rows$`, s.thenExitsOne)
