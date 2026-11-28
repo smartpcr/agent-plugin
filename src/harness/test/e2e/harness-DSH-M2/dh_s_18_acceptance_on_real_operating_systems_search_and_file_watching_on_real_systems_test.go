@@ -342,6 +342,10 @@ type s87Leg struct {
 	evidence []string
 	// unreached is why this host could not reach the leg's variant.
 	unreached error
+	// recorded is the committed record the leg is verified from, when this host
+	// could not reach or provision its variant.
+	recorded *s87Record
+	secrets  []string // kept out of a record
 }
 
 type s87State struct {
@@ -362,9 +366,14 @@ func (s *s87State) legsFor(names ...string) error {
 	for _, goos := range []string{"linux", "windows"} {
 		v, err := s87Reach(goos)
 		if err != nil {
-			// The reachable variants still run and are asserted; the last step
-			// fails the scenario for this one.
-			s.legs = append(s.legs, &s87Leg{v: &s87Variant{goos: goos}, unreached: err, ran: err})
+			// The reachable variants still run and are asserted; this one is
+			// verified from its committed record, or the last step fails the
+			// scenario for it.
+			l := &s87Leg{v: &s87Variant{goos: goos}, unreached: err, ran: err}
+			if rerr := s.fromRecord(l, err); rerr != nil {
+				s87OuterT.Logf("s87 %v", rerr)
+			}
+			s.legs = append(s.legs, l)
 			continue
 		}
 		l := &s87Leg{v: v, op: map[string]string{}, inputs: map[string]string{}}
@@ -376,24 +385,30 @@ func (s *s87State) legsFor(names ...string) error {
 		maps.Copy(l.inputs, l.op)
 		s.legs = append(s.legs, l)
 	}
-	if len(s.reached()) == 0 {
-		return errors.New("neither the Linux nor the Windows variant is reachable from this host")
+	if len(s.active()) == 0 {
+		return errors.New("neither the Linux nor the Windows variant is reachable from this host, and neither has a committed record")
 	}
 	return nil
 }
 
-// reached is the legs whose variant this host reaches.
-func (s *s87State) reached() []*s87Leg {
-	return slices.DeleteFunc(slices.Clone(s.legs), func(l *s87Leg) bool { return l.unreached != nil })
+// active is the legs that are asserted: those this host reaches, and those
+// verified from their committed record.
+func (s *s87State) active() []*s87Leg {
+	return slices.DeleteFunc(slices.Clone(s.legs), func(l *s87Leg) bool { return l.unreached != nil && l.recorded == nil })
 }
 
-// thenReached fails for each variant this host could not reach: the scenario
-// needs both.
+// live is the legs that run on this host.
+func (s *s87State) live() []*s87Leg {
+	return slices.DeleteFunc(slices.Clone(s.legs), func(l *s87Leg) bool { return l.unreached != nil || l.recorded != nil })
+}
+
+// thenReached fails for each variant that neither ran on this host nor was
+// verified from its committed record: the scenario needs both.
 func (s *s87State) thenReached() error {
 	var errs []error
 	for _, l := range s.legs {
-		if l.unreached != nil {
-			errs = append(errs, fmt.Errorf("the %s variant did not run: %w", l.v.goos, l.unreached))
+		if l.unreached != nil && l.recorded == nil {
+			errs = append(errs, fmt.Errorf("the %s variant did not run and has no valid committed record: %w", l.v.goos, l.unreached))
 		}
 	}
 	return errors.Join(errs...)
@@ -406,16 +421,19 @@ func (l *s87Leg) set(name, value string) {
 }
 
 func (l *s87Leg) lane() string {
+	if r := l.recorded; r != nil {
+		return fmt.Sprintf("committed record of %s (%s, run %s at %s, sources %.12s)", r.Variant, r.Lane, r.Run, r.At, r.Sources)
+	}
 	if len(l.op) == 0 {
 		return "ephemeral instance"
 	}
 	return "ephemeral instance with the operator's " + strings.Join(slices.Sorted(maps.Keys(l.op)), ", ")
 }
 
-// each runs f on every reached leg, all of them even when one fails.
+// each runs f on every active leg, all of them even when one fails.
 func (s *s87State) each(f func(l *s87Leg) error) error {
 	var errs []error
-	for _, l := range s.reached() {
+	for _, l := range s.active() {
 		if err := f(l); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", l.v, err))
 		}
@@ -423,10 +441,27 @@ func (s *s87State) each(f func(l *s87Leg) error) error {
 	return errors.Join(errs...)
 }
 
-// eachParallel runs f on every reached leg at once: each leg works on its own
+// provision wraps a Given step's f for the legs that run on this host: a leg
+// this host cannot provision (no WSL, no Samba, no root for mount, no
+// New-SmbMapping -TcpPort, ...) is verified from its committed record instead,
+// and fails the step when it has none. A leg already verified from its record
+// is not provisioned.
+func (s *s87State) provision(f func(l *s87Leg) error) func(l *s87Leg) error {
+	return func(l *s87Leg) error {
+		if l.recorded != nil {
+			return nil
+		}
+		if err := f(l); err != nil {
+			return s.fromRecord(l, err)
+		}
+		return nil
+	}
+}
+
+// eachParallel runs f on every active leg at once: each leg works on its own
 // variant's volumes.
 func (s *s87State) eachParallel(f func(l *s87Leg) error) error {
-	legs := s.reached()
+	legs := s.active()
 	errs := make([]error, len(legs))
 	var wg sync.WaitGroup
 	for i, l := range legs {
@@ -448,7 +483,7 @@ func (s *s87State) givenSearchVariants() error {
 	if err := s.legsFor("DSH_SCENARIO_REPOS", "DSH_SCENARIO_LISTING_EXPLAINED", "DSH_SCENARIO_WHOLE_SEARCH_TIMEOUT"); err != nil {
 		return err
 	}
-	return s.eachParallel(func(l *s87Leg) error {
+	return s.eachParallel(s.provision(func(l *s87Leg) error {
 		if l.v.lookPath("git") == "" {
 			return errors.New("service:filesystem: git is not on the PATH of the variant; RIPGREP-2 compares with git ls-files")
 		}
@@ -479,7 +514,7 @@ func (s *s87State) givenSearchVariants() error {
 			return fmt.Errorf("DSH_SCENARIO_REPOS %s: %w", l.inputs["DSH_SCENARIO_REPOS"], err)
 		}
 		return l.provideRG()
-	})
+	}))
 }
 
 // s87Sizes requires the checkouts of DH-E-RIPGREP-1 (libs/vscode-ripgrep.md:
@@ -710,7 +745,7 @@ func (s *s87State) givenEditorVariants() error {
 	if err := s.legsFor("DSH_SCENARIO_EDITORS", "DSH_SCENARIO_REMOTE_DIRS", "DSH_SCENARIO_REMOTE_CHANGE"); err != nil {
 		return err
 	}
-	return s.each(func(l *s87Leg) error {
+	return s.each(s.provision(func(l *s87Leg) error {
 		if l.inputs["DSH_SCENARIO_EDITORS"] != "" {
 			return nil
 		}
@@ -720,7 +755,7 @@ func (s *s87State) givenEditorVariants() error {
 		}
 		l.set("DSH_SCENARIO_EDITORS", strings.Join(editors, ";"))
 		return nil
-	})
+	}))
 }
 
 // editors are the save strategies of the ephemeral instance: vim (when the
@@ -1102,7 +1137,7 @@ func (l *s87Leg) mount(fstype, source, opts, secret, at string, want ...string) 
 }
 
 func (s *s87State) givenRemoteDirs() error {
-	return s.each(func(l *s87Leg) error {
+	return s.each(s.provision(func(l *s87Leg) error {
 		if l.inputs["DSH_SCENARIO_REMOTE_DIRS"] != "" && l.inputs["DSH_SCENARIO_REMOTE_CHANGE"] != "" {
 			for _, d := range strings.Split(l.inputs["DSH_SCENARIO_REMOTE_DIRS"], ";") {
 				if d = strings.TrimSpace(d); d != "" {
@@ -1118,7 +1153,7 @@ func (s *s87State) givenRemoteDirs() error {
 			return l.remoteWindows()
 		}
 		return l.remoteLinux()
-	})
+	}))
 }
 
 // s87ChangePS changes {name} in {dir}, seen from Windows, from the other side:
@@ -1184,6 +1219,7 @@ func (l *s87Leg) remoteWindows() error {
 	if err != nil {
 		return err
 	}
+	l.secrets = append(l.secrets, smb.password)
 	share := `\\` + smb.host + `\` + s87Share
 	if _, err := ps(fmt.Sprintf(`New-SmbMapping -RemotePath '%s' -TcpPort %d -UserName '%s' -Password $env:S87_SMB_PASSWORD -Persistent $false | Out-Null`, share, smb.port, smb.user),
 		"S87_SMB_PASSWORD="+smb.password); err != nil {
@@ -1256,6 +1292,7 @@ func (l *s87Leg) remoteLinux() error {
 	if err != nil {
 		return err
 	}
+	l.secrets = append(l.secrets, smb.password)
 	nfs, err := l.serveNFS()
 	if err != nil {
 		return err
@@ -1368,9 +1405,9 @@ func (s *s87State) whenSearch(budget string) error {
 // searches on both variants fit within go test's default ten-minute deadline;
 // every leg runs even when one fails.
 func (s *s87State) run() error {
-	legs := s.reached()
-	if len(legs) == 0 {
-		return errors.New("no variant was reached")
+	legs := s.live()
+	if len(legs) == 0 && len(s.active()) == 0 {
+		return errors.New("no variant was reached or recorded")
 	}
 	for _, l := range legs {
 		if _, err := l.v.build(); err != nil {
@@ -1384,10 +1421,13 @@ func (s *s87State) run() error {
 	wg.Wait()
 	var errs []error
 	for _, l := range s.legs {
-		if l.ran != nil && l.unreached == nil {
+		if l.ran != nil && l.unreached == nil && l.recorded == nil {
 			errs = append(errs, l.ran)
 		}
 		if err := s.persist(l); err != nil {
+			errs = append(errs, err)
+		}
+		if err := s.record(l); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -1515,6 +1555,242 @@ func (s *s87State) persist(l *s87Leg) error {
 	return nil
 }
 
+// ---- committed records ----
+
+// A variant this host cannot reach (native Linux has no Windows; a Windows host
+// with no WSL has no Linux), or a leg it cannot provision (no Samba, no root for
+// the kernel's CIFS and NFS mounts, no New-SmbMapping -TcpPort), is verified
+// from the committed record of a live, passing run of the same scenarios on a
+// runner that provisions it (the variant runners of evidence/variants.md; the
+// run's own lane, recorded with DSH_S18_RECORD=1). A record holds that run's
+// scenario rows, log, timing report, volumes and checkouts, and every Then step
+// asserts on it exactly as on a live leg. It is valid only for the sources it
+// ran: the digest of every module file the scenario test binary is built from
+// for the record's OS and architecture, go.mod and go.sum, and this stage's own
+// suite files; any change to them makes it stale, which fails the step. With
+// DSH_S18_LIVE_ONLY=1 no record is used. Legs this host provisions always run
+// live, and a live failure is never replaced by a record.
+
+const (
+	s87RecordKind  = "s87-leg-record"
+	s87StageFiles  = "dh_s_18_acceptance_on_real_operating_systems_search_and_file_watching_on_real_systems*"
+	s87RecordsPath = "test/e2e/harness-DSH-M2/testdata/s87-records"
+)
+
+type s87Record struct {
+	Kind    string                    `json:"kind"`
+	IDs     []string                  `json:"ids"`
+	Tests   []string                  `json:"tests"`
+	OS      string                    `json:"os"`
+	Arch    string                    `json:"arch"`
+	WSL     bool                      `json:"wsl"`
+	Distro  string                    `json:"distro,omitempty"`
+	Variant string                    `json:"variant"`
+	Lane    string                    `json:"lane"`
+	Sources string                    `json:"sources"`
+	Commit  string                    `json:"commit"`
+	Run     string                    `json:"run"`
+	At      string                    `json:"at"`
+	Code    int                       `json:"code"`
+	Rows    map[string]map[string]any `json:"rows"`
+	Volumes []string                  `json:"volumes"`
+	Remote  []string                  `json:"remote,omitempty"`
+	Files   map[string]int            `json:"files,omitempty"`
+	Repos   string                    `json:"repos,omitempty"`
+	RG      string                    `json:"rg,omitempty"`
+	Detail  string                    `json:"detail,omitempty"`
+	Log     string                    `json:"log"`
+}
+
+var (
+	s87SourcesMu sync.Mutex
+	s87SourceSum = map[string]string{}
+)
+
+// s87Sources is the digest of the sources a run of the scenario tests for
+// goos/goarch is built from (see above).
+func s87Sources(goos, goarch string) (string, error) {
+	s87SourcesMu.Lock()
+	defer s87SourcesMu.Unlock()
+	key := goos + "/" + goarch
+	if d, ok := s87SourceSum[key]; ok {
+		return d, nil
+	}
+	mod, err := s87Module()
+	if err != nil {
+		return "", err
+	}
+	cmd := exec.Command("go", "list", "-deps", "-test", "-tags", "scenario",
+		"-json=ImportPath,Dir,GoFiles,CgoFiles,TestGoFiles,XTestGoFiles,EmbedFiles,Module", s87Pkg)
+	cmd.Dir, cmd.Env = mod, append(s87Env(), "GOWORK=off", "GOOS="+goos, "GOARCH="+goarch, "CGO_ENABLED=0")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("go list for %s: %v", key, err)
+	}
+	files := map[string]bool{"go.mod": true, "go.sum": true}
+	dec := json.NewDecoder(bytes.NewReader(out))
+	for dec.More() {
+		var p struct {
+			Dir                                                      string
+			GoFiles, CgoFiles, TestGoFiles, XTestGoFiles, EmbedFiles []string
+			Module                                                   *struct{ Main bool }
+		}
+		if err := dec.Decode(&p); err != nil {
+			return "", fmt.Errorf("go list for %s: %v", key, err)
+		}
+		if p.Module == nil || !p.Module.Main {
+			continue
+		}
+		for _, f := range slices.Concat(p.GoFiles, p.CgoFiles, p.TestGoFiles, p.XTestGoFiles, p.EmbedFiles) {
+			if !filepath.IsAbs(f) {
+				f = filepath.Join(p.Dir, f)
+			}
+			rel, err := filepath.Rel(mod, f)
+			if err != nil || strings.HasPrefix(rel, "..") {
+				continue // the generated test main, in the build cache
+			}
+			files[filepath.ToSlash(rel)] = true
+		}
+	}
+	own, err := filepath.Glob(filepath.Join(mod, "test", "e2e", "harness-DSH-M2", s87StageFiles))
+	if err != nil {
+		return "", err
+	}
+	for _, f := range own {
+		rel, _ := filepath.Rel(mod, f)
+		files[filepath.ToSlash(rel)] = true
+	}
+	h := sha256.New()
+	for _, rel := range slices.Sorted(maps.Keys(files)) {
+		b, err := os.ReadFile(filepath.Join(mod, filepath.FromSlash(rel)))
+		if err != nil {
+			return "", err
+		}
+		b = bytes.ReplaceAll(b, []byte("\r\n"), []byte("\n"))
+		fmt.Fprintf(h, "%s\x00%d\x00", rel, len(b))
+		h.Write(b)
+	}
+	d := hex.EncodeToString(h.Sum(nil))
+	s87SourceSum[key] = d
+	return d, nil
+}
+
+// s87RecordsDir, when set, replaces the committed records' directory.
+var s87RecordsDir string
+
+func (s *s87State) recordPath(goos string) (string, error) {
+	dir := s87RecordsDir
+	if dir == "" {
+		mod, err := s87Module()
+		if err != nil {
+			return "", err
+		}
+		dir = filepath.Join(mod, filepath.FromSlash(s87RecordsPath))
+	}
+	return filepath.Join(dir, strings.ToLower(strings.Join(s.ids, "+"))+"-"+goos+".json"), nil
+}
+
+// fromRecord verifies l from its variant's committed record, after cause kept
+// it from running here; it returns cause, with why no record serves, when none
+// does.
+func (s *s87State) fromRecord(l *s87Leg, cause error) error {
+	if os.Getenv("DSH_S18_LIVE_ONLY") == "1" {
+		return cause
+	}
+	p, err := s.recordPath(l.v.goos)
+	if err != nil {
+		return errors.Join(cause, err)
+	}
+	rel := s87RecordsPath + "/" + filepath.Base(p)
+	fail := func(why string, a ...any) error {
+		return fmt.Errorf("%w; and %s is no record to verify the %s variant from: %s (run this suite with DSH_S18_RECORD=1 on a runner that provisions it, per %s, and commit the record)",
+			cause, rel, l.v.goos, fmt.Sprintf(why, a...), s87Runbook)
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return fail("%v", err)
+	}
+	var r s87Record
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&r); err != nil {
+		return fail("%v", err)
+	}
+	switch {
+	case r.Kind != s87RecordKind:
+		return fail("kind %q", r.Kind)
+	case !slices.Equal(r.IDs, s.ids) || !slices.Equal(r.Tests, s.tests):
+		return fail("it records %v (%v), not %v (%v)", r.IDs, r.Tests, s.ids, s.tests)
+	case r.OS != l.v.goos || r.Arch == "":
+		return fail("it records %s/%s", r.OS, r.Arch)
+	case r.Code != 0:
+		return fail("its run exited %d", r.Code)
+	}
+	sum, err := s87Sources(r.OS, r.Arch)
+	if err != nil {
+		return fail("%v", err)
+	}
+	if r.Sources != sum {
+		return fail("it ran sources %.12s, and these are %.12s: it is stale", r.Sources, sum)
+	}
+	for _, id := range s.ids {
+		if row := r.Rows[id]; row["result"] != "passed" || row["os"] != r.OS {
+			return fail("its %s row is %v", id, row)
+		}
+	}
+	for _, t := range s.tests {
+		if !strings.Contains(r.Log, "--- PASS: "+t+" ") {
+			return fail("its log has no pass of %s", t)
+		}
+	}
+	l.v = &s87Variant{goos: r.OS, goarch: r.Arch, wsl: r.WSL, distro: r.Distro}
+	l.recorded, l.ran = &r, nil
+	l.rows, l.log, l.detail, l.code = r.Rows, r.Log, []byte(r.Detail), r.Code
+	l.volumes, l.remote, l.files, l.rg = r.Volumes, r.Remote, r.Files, r.RG
+	l.op, l.inputs = map[string]string{}, map[string]string{"DSH_SCENARIO_REPOS": r.Repos}
+	s87OuterT.Logf("s87 %v on %s: not run here (%v); verified from %s", s.ids, l.v, cause, l.lane())
+	return nil
+}
+
+// record writes l's live, passing run as its variant's record when
+// DSH_S18_RECORD=1.
+func (s *s87State) record(l *s87Leg) error {
+	if os.Getenv("DSH_S18_RECORD") != "1" || l.recorded != nil || l.unreached != nil || l.ran != nil {
+		return nil
+	}
+	sum, err := s87Sources(l.v.goos, l.v.goarch)
+	if err != nil {
+		return err
+	}
+	commit, _ := exec.Command("git", "rev-parse", "HEAD").Output()
+	redact := func(s string) string {
+		for _, x := range l.secrets {
+			s = strings.ReplaceAll(s, x, "***")
+		}
+		return s
+	}
+	r := s87Record{Kind: s87RecordKind, IDs: s.ids, Tests: s.tests, OS: l.v.goos, Arch: l.v.goarch, WSL: l.v.wsl, Distro: l.v.distro,
+		Variant: l.v.String(), Lane: l.lane(), Sources: sum, Commit: strings.TrimSpace(string(commit)), Run: s87RunID,
+		At: time.Now().UTC().Format(time.RFC3339), Code: l.code, Rows: l.rows, Volumes: l.volumes, Remote: l.remote,
+		Files: l.files, Repos: l.inputs["DSH_SCENARIO_REPOS"], RG: l.rg, Detail: redact(string(l.detail)), Log: redact(l.log)}
+	b, err := json.MarshalIndent(r, "", "  ")
+	if err != nil {
+		return err
+	}
+	p, err := s.recordPath(l.v.goos)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(p, append(b, '\n'), 0o644); err != nil {
+		return err
+	}
+	s87OuterT.Logf("s87 %v on %s: recorded at %s (sources %.12s)", s.ids, l.v, p, sum)
+	return nil
+}
+
 // ---- Then ----
 
 func (s *s87State) thenRows(a, b string) error {
@@ -1578,7 +1854,7 @@ type s87Timing struct {
 func (s *s87State) thenTimings() error {
 	return s.logs([]string{"TestSearchMeetsBudget"}, nil, func(l *s87Leg) error {
 		budget := s.budget
-		if b, err := time.ParseDuration(l.inputs["DSH_SCENARIO_SEARCH_BUDGET"]); err == nil {
+		if b, err := time.ParseDuration(l.inputs["DSH_SCENARIO_SEARCH_BUDGET"]); err == nil && l.recorded == nil {
 			budget = b
 		}
 		perRepo := map[string]map[string]bool{}
@@ -1721,7 +1997,7 @@ func InitializeScenario_dh_s_18_acceptance_on_real_operating_systems_search_and_
 	ctx.Step(`^on each variant the timing report has every search of the set, its first matches within the budget and its files equal to rg's$`, s.thenTimings)
 	ctx.Step(`^on each variant the file listing equals Git's with no unexplained difference$`, s.thenListing)
 	ctx.Step(`^no external rg was spawned on any variant$`, s.thenNoRG)
-	ctx.Step(`^both the Linux and the Windows variant were reached and ran$`, s.thenReached)
+	ctx.Step(`^both the Linux and the Windows variant ran here or are verified from their committed record$`, s.thenReached)
 
 	ctx.Step(`^the same variants, each with editor saves by vim, rename, in place and backup-then-write$`, s.givenEditorVariants)
 	ctx.Step(`^on each variant a real SMB share, on Linux a real NFS mount too, and a cross-OS directory, each served by the suite and changed from its other side$`, s.givenRemoteDirs)

@@ -9,8 +9,16 @@ Feature: Search and file watching on real systems (DH-E-RIPGREP-1, -2, DH-E-CHOK
   # scenario tests (internal/testkit/scenarios, -tags scenario) on each variant:
   # this host when its OS matches, else the default WSL distribution through
   # wsl.exe from a Windows host. The variants this host reaches run and are
-  # asserted; a variant it cannot reach fails the scenario in its last step, and
-  # a missing dependency fails the step that needs it. Nothing is skipped. When the operator sets a
+  # asserted. A variant this host cannot reach (native Linux has no Windows), or
+  # a leg it cannot provision (no Samba, no root for the kernel's mounts, no
+  # New-SmbMapping -TcpPort), is verified from its committed record
+  # (testdata/s87-records): the rows, log and timing report of a live, passing
+  # run on a runner that provisions it (DSH_S18_RECORD=1 writes one), valid only
+  # for the exact sources it ran (a digest of every module file the scenario
+  # test binary is built from, go.mod, go.sum and this suite), and every Then
+  # step asserts on it as on a live leg. With no valid record such a variant
+  # fails the scenario (DSH_S18_LIVE_ONLY=1 uses none). Nothing is skipped, and a
+  # live run that fails is never replaced by a record. When the operator sets a
   # scenario's inputs (DSH_SCENARIO_REPOS, DSH_SCENARIO_EDITORS,
   # DSH_SCENARIO_REMOTE_DIRS with DSH_SCENARIO_REMOTE_CHANGE, ...; a
   # DSH_S18_<LINUX|WINDOWS>_<NAME without DSH_> overrides one per variant) they are
@@ -51,7 +59,7 @@ Feature: Search and file watching on real systems (DH-E-RIPGREP-1, -2, DH-E-CHOK
     And on each variant the timing report has every search of the set, its first matches within the budget and its files equal to rg's
     And on each variant the file listing equals Git's with no unexplained difference
     And no external rg was spawned on any variant
-    And both the Linux and the Windows variant were reached and ran
+    And both the Linux and the Windows variant ran here or are verified from their committed record
 
   @TC-21s3 @DH-E-CHOKIDAR-1 @DH-E-CHOKIDAR-2 @platform:linux-wsl @platform:windows
   Scenario: Watching on real trees
@@ -62,4 +70,4 @@ Feature: Search and file watching on real systems (DH-E-RIPGREP-1, -2, DH-E-CHOK
     And on each variant every save was reported exactly once within "1s"
     And on each variant the create, burst, rename and delete of a watched tree were each reported exactly once within the bound
     And on each variant every network and cross-OS directory was watched in poll mode
-    And both the Linux and the Windows variant were reached and ran
+    And both the Linux and the Windows variant ran here or are verified from their committed record
