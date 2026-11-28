@@ -140,7 +140,9 @@ jobs:
       fail-fast: false
       max-parallel: 4
       matrix:
-        # check: the service preflight of variants.md's Preflight column; target: the
+        # check: the service preflight of variants.md's Preflight column; service and
+        # preflight: a sandbox job's sandbox service and Preflight text, verbatim from
+        # variants.md (TestWorkflowRunsEveryInScopeVariant); target: the
         # machine role or SSH variable it checks; scratch: share puts the scenarios'
         # temporary directories (FS-2's checkouts) on DSH_SCENARIO_FS1_SHARE. The
         # inputs each job needs are derived from its scenario tests (require --inputs).
@@ -149,6 +151,7 @@ jobs:
             runner: '["self-hosted","linux","dsh-wsl"]'
             check: sandbox-local
             service: service:linux-sandbox-bwrap
+            preflight: bwrap Full
           - variant: linux-wsl:two-account
             runner: '["self-hosted","linux","dsh-wsl"]'
             check: second-account
@@ -160,6 +163,7 @@ jobs:
             check: sandbox-ssh
             service: service:linux-sandbox-bwrap
             target: bwrap
+            preflight: bwrap Full
           - variant: linux-e2:landlock
             runner: '["self-hosted","linux","dsh-e2-controller"]'
             check: sandbox-ssh
@@ -177,6 +181,7 @@ jobs:
             check: sandbox-ssh
             service: service:linux-unconfined
             target: unconfined
+            preflight: Unconfined
           - variant: linux-e2:musl
             runner: '["self-hosted","linux","dsh-e2-controller"]'
             check: sandbox-ssh
