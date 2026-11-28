@@ -70,27 +70,46 @@ var s87RG = map[string][2]string{
 
 // ---- variants ----
 
+// s87Variant is a variant this host reaches. wsl is the transport: the variant
+// is driven from Windows through wsl.exe. inWSL is the environment: the variant
+// is a WSL distribution, whether driven through wsl.exe or running this test
+// binary itself (the linux-wsl variants), so it sees this Windows machine's
+// directories under /mnt and changes them through WSL interop.
 type s87Variant struct {
 	goos, goarch string
-	wsl          bool
+	wsl, inWSL   bool
 	distro       string
 }
 
 func (v *s87Variant) String() string {
-	if v.wsl {
-		return "linux (WSL " + v.distro + ")"
+	if v.inWSL {
+		return strings.TrimSpace("linux (WSL "+v.distro) + ")"
 	}
 	return v.goos
 }
 
+// s87InWSL reports whether this Linux host is a WSL distribution, and its name.
+func s87InWSL() (bool, string) {
+	d := os.Getenv("WSL_DISTRO_NAME")
+	if _, err := os.Stat("/proc/sys/fs/binfmt_misc/WSLInterop"); err == nil || d != "" {
+		return true, d
+	}
+	b, _ := os.ReadFile("/proc/sys/kernel/osrelease")
+	return strings.Contains(strings.ToLower(string(b)), "microsoft"), d
+}
+
 func s87Reach(goos string) (*s87Variant, error) {
 	if runtime.GOOS == goos {
-		return &s87Variant{goos: goos, goarch: runtime.GOARCH}, nil
+		v := &s87Variant{goos: goos, goarch: runtime.GOARCH}
+		if goos == "linux" {
+			v.inWSL, v.distro = s87InWSL()
+		}
+		return v, nil
 	}
 	if goos != "linux" || runtime.GOOS != "windows" {
 		return nil, fmt.Errorf("the %s variant is not reachable from this %s host", goos, runtime.GOOS)
 	}
-	v := &s87Variant{goos: "linux", wsl: true}
+	v := &s87Variant{goos: "linux", wsl: true, inWSL: true}
 	out, err := v.must("sh", "-c", `uname -m; printf '%s\n' "$WSL_DISTRO_NAME"`)
 	if err != nil {
 		return nil, fmt.Errorf("the Linux variant is not reachable through wsl.exe: %v", err)
@@ -824,7 +843,7 @@ func (l *s87Leg) wantRemote() []string {
 	switch {
 	case l.v.goos == "windows":
 		return []string{"smb"}
-	case l.v.wsl:
+	case l.v.inWSL:
 		return []string{"smb", "nfs", "cross-os"}
 	}
 	return []string{"smb", "nfs"}
@@ -845,7 +864,7 @@ func (s *s87State) givenRemoteDirs() error {
 			if wv, err := s87Reach("linux"); err == nil && wv.wsl {
 				return l.crossedWindows(wv)
 			}
-		case l.v.wsl:
+		case l.v.inWSL:
 			return l.crossedLinux()
 		}
 		// No operator share and no other OS side on this runner (native Linux, a
@@ -908,7 +927,7 @@ func (v *s87Variant) remoteKind(dir string) (kind, fs string, err error) {
 	case "nfs", "nfs4":
 		return "nfs", fs, nil
 	case "v9fs", "9p", "drvfs":
-		if v.wsl {
+		if v.inWSL {
 			return "cross-os", fs, nil
 		}
 	}
@@ -979,6 +998,45 @@ func (l *s87Leg) crossedWindows(wv *s87Variant) error {
 	return nil
 }
 
+// windowsSide is a scratch directory of this Windows machine as the WSL variant
+// names it, removed at the end, and Windows PowerShell's path there. Driven
+// through wsl.exe, the directory is this Windows process's; running inside WSL,
+// it is under the Windows user's temporary directory, found through interop.
+func (v *s87Variant) windowsSide() (dir, ps string, err error) {
+	if v.wsl {
+		host, err := os.MkdirTemp("", "dsh-s87-crossed-")
+		if err != nil {
+			return "", "", err
+		}
+		s87OuterT.Cleanup(func() { _ = os.RemoveAll(host) })
+		if dir, err = v.path(host); err != nil {
+			return "", "", err
+		}
+		ps, err = v.path(filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe"))
+		return dir, ps, err
+	}
+	if ps = v.lookPath("powershell.exe"); ps == "" {
+		if p := "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"; s87IsFile(p) {
+			ps = p
+		} else {
+			return "", "", errors.New("powershell.exe is not reachable through WSL interop")
+		}
+	}
+	wt, err := v.must(ps, "-NoProfile", "-NonInteractive", "-Command", "[System.IO.Path]::GetTempPath()")
+	if err != nil {
+		return "", "", fmt.Errorf("the Windows temporary directory through WSL interop: %w", err)
+	}
+	root, err := v.must("wslpath", "-a", strings.TrimSpace(wt))
+	if err != nil {
+		return "", "", err
+	}
+	if dir, err = os.MkdirTemp(root, "dsh-s87-crossed-"); err != nil {
+		return "", "", err
+	}
+	s87OuterT.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir, ps, nil
+}
+
 func s87IsDir(p string) bool {
 	st, err := os.Stat(p)
 	return err == nil && st.IsDir()
@@ -988,14 +1046,9 @@ func s87IsDir(p string) bool {
 // host seen from WSL (drvfs, 9p), changed from Windows through WSL interop.
 func (l *s87Leg) crossedLinux() error {
 	v := l.v
-	host, err := os.MkdirTemp("", "dsh-s87-crossed-")
+	dir, ps, err := v.windowsSide()
 	if err != nil {
-		return err
-	}
-	s87OuterT.Cleanup(func() { _ = os.RemoveAll(host) })
-	dir, err := v.path(host)
-	if err != nil {
-		return err
+		return fmt.Errorf("service:filesystem: the Windows side of this WSL variant: %w", err)
 	}
 	kind, fs, err := v.remoteKind(dir)
 	if err != nil {
@@ -1003,10 +1056,6 @@ func (l *s87Leg) crossedLinux() error {
 	}
 	l.volumes = append(l.volumes, fs+" "+dir)
 	l.remote = append(l.remote, kind)
-	ps, err := v.path(filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe"))
-	if err != nil {
-		return err
-	}
 	q := func(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 	body := "#!/bin/sh\nset -e\nd=$1 n=$2 m=$3\ncase \"$d\" in\n" +
 		"/mnt/*) w=$(wslpath -w \"$d/$n\")\n  exec " + q(ps) + " -NoProfile -NonInteractive -Command \"[System.IO.File]::AppendAllText('$w', '$m')\" ;;\n" +
