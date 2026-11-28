@@ -1551,7 +1551,7 @@ func (s *s74State) thenNextTurn(level string) error {
 }
 
 func (s *s74State) whenSavedBad(level string) error {
-	if err := os.WriteFile(s.user, []byte("- id: probe\n  merge:\n    level: "+level+"\n"), 0o600); err != nil {
+	if err := fsx.WriteFile(s.user, []byte("- id: probe\n  merge:\n    level: "+level+"\n"), fsx.Options{Perm: 0o600}); err != nil {
 		return err
 	}
 	select {
