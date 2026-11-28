@@ -9,3 +9,47 @@ stages:
     - id: DH-E-STORE-6
       credential: none
       authored: DH-S-7
+  # The 14 scenarios of DH-S-17 (tech-spec sec. 4.2 rows 5-18), for the DH-S-17 closure golden.
+  DH-S-17:
+    - id: DH-E-SDK-1
+      credential: claude-session
+      authored: DH-S-16
+    - id: DH-E-TOOLCHAIN-1
+      credential: claude-session
+      authored: DH-S-11
+    - id: DH-E-LOADER-1
+      credential: none
+      authored: DH-S-6
+    - id: DH-E-LLM-1
+      credential: claude-session
+      authored: DH-S-9
+    - id: DH-E-LLM-3
+      credential: claude-session
+      authored: DH-S-9
+    - id: DH-E-VIEW-1
+      credential: claude-session
+      authored: DH-S-9
+    - id: DH-E-TOOLS-1
+      credential: claude-session
+      authored: DH-S-10
+    - id: DH-E-SESSION-1
+      credential: claude-session
+      authored: DH-S-11
+    - id: DH-E-SESSION-2
+      credential: claude-session
+      authored: DH-S-11
+    - id: DH-E-AGENT-1
+      credential: claude-session
+      authored: DH-S-11
+    - id: DH-E-AGENT-2
+      credential: claude-session
+      authored: DH-S-11
+    - id: DH-E-AGENT-3
+      credential: claude-session
+      authored: DH-S-11
+    - id: DH-E-AGENT-4
+      credential: claude-session
+      authored: DH-S-11
+    - id: DH-E-SANDBOX-7
+      credential: claude-session
+      authored: DH-S-12

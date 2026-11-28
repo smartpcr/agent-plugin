@@ -239,6 +239,38 @@ What this stage did change on `main` (no shipped text, so `harness-gate policy-t
   The runbook runs S17 once on the branch head, SANDBOX-7 last; if time runs out it starts a new,
   separately named shard attempt, and step C records from the attempt file, failing closed.
 
+## Stage 7.7 closure
+
+implementation-plan Stage 7.7 (this record's two-step close, M2-DOD-3) was taken up on `ac85a1f` and
+cannot complete: no row above has run, so the record stays `Closure status: open` and its status line is
+not changed (a `closed` line on this record would be refused `closed-but-not-ready`). Nothing below is
+evidence of a run.
+
+| Step | State on `ac85a1f` | What clears it |
+| --- | --- | --- |
+| 1. Fill the 14 scenarios (17 rows) while `open`; `ready` exits 0 | `GOWORK=off go -C tools/harness-gate run . ready --stage DH-S-17 --root ../..`: NOT READY, 17 blockers, exit 1 (every row `not run`). `harness-gate entry`: 12 blockers, exit 1 (harness:DSH-M1 not closed, M2-DEC-1). | the Stage 7.2 to 7.6 blockers above clear and the operator's signed-in run fills every row |
+| 2. Closing PR sets `Closure status: closed`; its gate runs `close` | not taken: `close --stage DH-S-17` reads REFUSED not-yet-closed, 18 blockers, exit 1 | step 1 exits 0 first |
+| 3. `closure.md` for the deliverables S17 finishes | updated: none is finished, see [closure.md](closure.md#phase-7-dh-s-17) | the rows of DH-E-SANDBOX-7, DH-E-SDK-1 and DH-E-VIEW-1 read `passed` |
+
+What this stage did change: the gate side of the close is proved on fixtures, so the closing PR's
+check is known to admit a full record and refuse a short one.
+
+- `tools/harness-gate/testdata/closure/{open_not_ready,open_ready,closed_ready,closed_not_ready}/`
+  each carry a DH-S-17 record in this record's form and a DH-S-17 index entry of the 14 IDs;
+  `TestStageClosureS17Golden` and `TestStageClosureS17ExitCodes` run `ready` and `close --stage DH-S-17`
+  over them against `testdata/closure/expected_s17.golden`: open and ready, `ready` exits 0 and `close`
+  is refused not-yet-closed; closed and ready, both exit 0 with every row passed; `closed_not_ready`
+  (DH-E-SANDBOX-7 `not run`, status `closed`) makes `close` exit 1 `closed-but-not-ready` (M2-C-2).
+- `TestS17CopilotLegKept`: on the closed and ready fixture, a `copilot-cli` row of DH-E-LLM-1,
+  DH-E-LLM-3 or DH-E-VIEW-1 that is deleted or `not run` makes `close` refuse `closed-but-not-ready`
+  naming it, though the `claude-code` leg passed; one that `failed` is kept and does not block (M2-DEC-4).
+- `TestRecordLiveS17`: on this record, while it reads `open`, `close` is refused not-yet-closed; once it
+  reads `closed`, `ready` and `close` must both exit 0.
+
+When the rows are filled, each takes its commit, `E1 runner:<label>` or `E1 wsl:<host>/<distro>`, and
+in Artifacts the `dsh` SHA-256, the route's model id and the run id (M2-DEC-5); the three `copilot-cli`
+legs keep their result, `failed (<reason>)` included.
+
 ## Evidence record (impl.md sec. 7.3)
 
 ### Source and build identity
@@ -276,3 +308,6 @@ Not yet recorded: the before-and-after comparison the stage names, or what was r
 ### Open items
 
 Manual checks: none count here (impl.md DH-S-17).
+
+Owed: all 17 scenario rows (`not run`, see the Stage 7.2 to 7.6 blockers) and the status line's change
+to `closed` ([Stage 7.7 closure](#stage-77-closure)); `UP-DEBT-found.Q3.2` stays open with DH-E-SANDBOX-7.
