@@ -1,0 +1,46 @@
+{
+  "kind": "s87-leg-record",
+  "ids": [
+    "DH-E-CHOKIDAR-1",
+    "DH-E-CHOKIDAR-2"
+  ],
+  "tests": [
+    "TestWatchRealEditorSaves",
+    "TestWatchRemoteFilesystemsPoll"
+  ],
+  "os": "windows",
+  "arch": "amd64",
+  "wsl": false,
+  "variant": "windows",
+  "lane": "ephemeral instance",
+  "sources": "a5269eb3c3c5ee624db74a8201888198c24c219df71aa8ad38a2d50d338e7606",
+  "commit": "d70b47b86a39ca5a9f2a4943ed3725f5cf54364f",
+  "run": "1795869905113704600",
+  "at": "2026-11-28T12:52:51Z",
+  "code": 0,
+  "rows": {
+    "DH-E-CHOKIDAR-1": {
+      "durationMs": 37667,
+      "id": "DH-E-CHOKIDAR-1",
+      "kind": "scenario",
+      "os": "windows",
+      "result": "passed"
+    },
+    "DH-E-CHOKIDAR-2": {
+      "durationMs": 22506,
+      "id": "DH-E-CHOKIDAR-2",
+      "kind": "scenario",
+      "os": "windows",
+      "result": "passed"
+    }
+  },
+  "volumes": [
+    "SMB \\\\172.22.176.208\\dsh-s87\\windows-1795869905113704600 (smbd in WSL Ubuntu-24.04, from /tmp/dsh-s87-smb-mR8RbE/share/windows-1795869905113704600)",
+    "WSL \\\\wsl.localhost\\Ubuntu-24.04\\tmp\\dsh-s87-crossed-qby0o8"
+  ],
+  "remote": [
+    "smb",
+    "cross-os"
+  ],
+  "log": "=== RUN   TestWatchRealEditorSaves\n    watch_scenario_test.go:182: credentials watch in notify mode\n    watch_scenario_test.go:182: workspace watch in notify mode\n    watch_scenario_test.go:216: workspace tree watch in notify mode\n    track.go:203: scenario report C:\\Users\\XIAODO~1.RED\\AppData\\Local\\Temp\\dsh-s87-report-259938878\\report.jsonl: {\"kind\":\"scenario\",\"id\":\"DH-E-CHOKIDAR-1\",\"result\":\"passed\",\"os\":\"windows\",\"durationMs\":37667}\n--- PASS: TestWatchRealEditorSaves (37.67s)\n=== RUN   TestWatchRemoteFilesystemsPoll\n    track.go:203: scenario report C:\\Users\\XIAODO~1.RED\\AppData\\Local\\Temp\\dsh-s87-report-259938878\\report.jsonl: {\"kind\":\"scenario\",\"id\":\"DH-E-CHOKIDAR-2\",\"result\":\"passed\",\"os\":\"windows\",\"durationMs\":22506}\n--- PASS: TestWatchRemoteFilesystemsPoll (22.51s)\nPASS\n"
+}
