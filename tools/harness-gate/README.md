@@ -312,14 +312,18 @@ first passing `policy-text`:
 
 ```
 harness-gate sandbox7-record --root . --escalated linux=12,darwin=11,windows=13 [--lane s17] [--ci-run <id>]
-harness-gate sandbox7-record --root . --report <file> [--report <file> ...] [--go-test-log <file> ...] [--lane s17] [--ci-run <id>]
+harness-gate sandbox7-record --root . --attempt <id> --report <file> [--report <file> ...] [--go-test-log <file> ...] [--lane s17] [--ci-run <id>]
 ```
 
 The counts come from `--escalated` or from `--report` files (the scenario's
-`DSH_SCENARIO_REPORT` of the run, or one per shard: one line each, a platform
-named once across them), never both. Each `--go-test-log` must show the scenario
-passed (its `--- PASS:` line, an `ok` package line, no `FAIL`), or nothing is
-recorded (`TestSandbox7RecordReadsShardReports`).
+`DSH_SCENARIO_REPORT` of the run, or one per shard; a platform named once across
+them), never both; a relative `--report` or `--go-test-log` is read under
+`--root`. Each report is the counts line, then `commit: <sha>`, `attempt: <id>`
+and `text: <platform>.md sha256=<hex>` per counted text; it must name HEAD, the
+`--attempt` given and each text's current SHA-256. Each `--go-test-log` must hold
+the scenario's `sandbox7 provenance: attempt=<id> commit=<sha>` line and show the
+scenario passed (its `--- PASS:` line, an `ok` package line, no `FAIL`), or
+nothing is recorded (`TestSandbox7RecordReadsShardReports`).
 
 It refuses (exit 2, nothing written) a dirty tree, a tree with no text, and a
 missing or extra count; it writes `runs/<lane>-<sha7>-<UTC>.txt` holding the

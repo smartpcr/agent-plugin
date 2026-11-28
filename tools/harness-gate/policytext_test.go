@@ -413,10 +413,11 @@ func TestSandbox7RecordFlows(t *testing.T) {
 	gate(1, `is "failed", not passed`)
 }
 
-// The shards of one run are recorded from their own report files, each platform
-// once: the three files of one commit are joined, a stale or second report of
-// a platform and a report of more than one line are refused, and counts from a
-// go test log that does not show the scenario passed record nothing.
+// The shards of one attempt are recorded from their own report files, each
+// platform once, read under --root when relative: the files of one attempt on
+// HEAD are joined; a stale or second report of a platform, a report of another
+// commit or attempt, a report of a text since edited, a malformed report and a
+// go test log that is not a passed run of that attempt record nothing.
 func TestSandbox7RecordReadsShardReports(t *testing.T) {
 	root := closureTree(t, filepath.Join("testdata", "policytext", "text_without_sandbox7"))
 	textDir := filepath.Join(root, filepath.FromSlash(PolicyTextDir))
@@ -427,39 +428,73 @@ func TestSandbox7RecordReadsShardReports(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(textDir, "darwin.md"), linux, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("artifacts/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	policyGit(t, root, "init", "-q", "--object-format=sha1")
 	policyGit(t, root, "add", "-A")
 	policyGit(t, root, "commit", "-q", "--no-verify", "-m", "two shipped texts")
+	head := strings.TrimSpace(policyGit(t, root, "rev-parse", "HEAD"))
+	other := strings.Repeat("a", 40)
+	sum := sha256Hex(t, filepath.Join(textDir, "linux.md"))
 
-	out := t.TempDir()
+	out := filepath.Join(root, "artifacts", "harness")
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// write puts a file under root/artifacts/harness and returns its path
+	// relative to root, as the runbook passes it.
 	write := func(name, body string) string {
 		t.Helper()
-		p := filepath.Join(out, name)
-		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(out, name), []byte(body), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		return p
+		return "artifacts/harness/" + name
 	}
-	linuxR := write("report-linux.txt", "linux=12\n")
-	darwinR := write("report-darwin.txt", "darwin=11\r\n")
-	staleR := write("report.txt", "linux=9,darwin=9\n")
-	pasted := write("pasted.txt", "linux=12\ndarwin=11\n")
-	passLog := write("pass.txt", "=== RUN   "+sandbox7Test+"\n--- PASS: "+sandbox7Test+" (1.00s)\nPASS\nok  \tscenarios\t1.0s\n")
-	shardLog := write("shard.txt", "--- PASS: "+sandbox7Test+" (1.00s)\n    --- PASS: "+sandbox7Test+"/darwin (1.00s)\nok  \tscenarios\t1.0s\n")
-	failLog := write("fail.txt", "--- FAIL: "+sandbox7Test+" (1.00s)\n    --- FAIL: "+sandbox7Test+"/linux/task07/run1 (1.00s)\nFAIL\nFAIL\tscenarios\t1.0s\n")
-	emptyLog := write("empty.txt", "no test ran\n")
+	report := func(counts, commit, attempt string, texts ...string) string {
+		s := counts + "\ncommit: " + commit + "\nattempt: " + attempt + "\n"
+		for _, p := range texts {
+			s += "text: " + p + ".md sha256=" + sum + "\n"
+		}
+		return s
+	}
+	const attempt = "s17-shard-20250101T0000Z"
+	linuxR := write("report-linux.txt", report("linux=12", head, attempt, "linux"))
+	darwinR := write("report-darwin.txt", strings.ReplaceAll(report("darwin=11", head, attempt, "darwin"), "\n", "\r\n"))
+	staleR := write("report.txt", report("linux=9,darwin=9", head, attempt, "linux", "darwin"))
+	oldCommit := write("old-commit.txt", report("darwin=11", other, attempt, "darwin"))
+	oldAttempt := write("old-attempt.txt", report("darwin=11", head, "s17-shard-20240101T0000Z", "darwin"))
+	edited := write("edited.txt", strings.Replace(report("darwin=11", head, attempt, "darwin"), sum, strings.Repeat("0", 64), 1))
+	unnamed := write("unnamed.txt", report("darwin=11", head, attempt))
+	pasted := write("pasted.txt", "linux=12\ndarwin=11\ncommit: "+head+"\nattempt: "+attempt+"\n")
+	bare := write("bare.txt", "darwin=11\n")
+	prov := "    sandbox_policy_text_scenario_test.go:1: " + sandbox7Provenance(attempt, head) + "\n"
+	passLog := write("pass.txt", "=== RUN   "+sandbox7Test+"\n"+prov+"--- PASS: "+sandbox7Test+" (1.00s)\nPASS\nok  \tscenarios\t1.0s\n")
+	shardLog := write("shard.txt", prov+"--- PASS: "+sandbox7Test+" (1.00s)\n    --- PASS: "+sandbox7Test+"/darwin (1.00s)\nok  \tscenarios\t1.0s\n")
+	foreignLog := write("foreign.txt", "    x.go:1: "+sandbox7Provenance("s17-shard-20240101T0000Z", head)+"\n--- PASS: "+sandbox7Test+" (1.00s)\nok  \tscenarios\t1.0s\n")
+	failLog := write("fail.txt", prov+"--- FAIL: "+sandbox7Test+" (1.00s)\n    --- FAIL: "+sandbox7Test+"/linux/task07/run1 (1.00s)\nFAIL\nFAIL\tscenarios\t1.0s\n")
+	emptyLog := write("empty.txt", prov+"no test ran\n")
 
+	shards := []string{"--attempt", attempt, "--report", linuxR}
 	for _, c := range []struct {
 		name string
 		args []string
 		want string
 	}{
-		{"stale aggregate", []string{"--report", linuxR, "--report", darwinR, "--report", staleR}, "names linux twice"},
-		{"pasted lines", []string{"--report", pasted}, "want one line"},
-		{"both sources", []string{"--escalated", "linux=12", "--report", darwinR}, "one of the two"},
+		{"stale aggregate", append(shards, "--report", darwinR, "--report", staleR), "names linux twice"},
+		{"other commit", append(shards, "--report", oldCommit), "is of commit " + other + ", not HEAD " + head},
+		{"earlier attempt", append(shards, "--report", oldAttempt), "is of attempt s17-shard-20240101T0000Z, not --attempt " + attempt},
+		{"edited text", append(shards, "--report", edited), "not the current file"},
+		{"count without text line", append(shards, "--report", unnamed), "has no text: line for it"},
+		{"pasted lines", []string{"--attempt", attempt, "--report", pasted}, "line \"darwin=11\""},
+		{"no provenance", append(shards, "--report", bare), "no commit: or attempt: line"},
+		{"missing file", append(shards, "--report", "artifacts/harness/none.txt"), "none.txt"},
+		{"both sources", []string{"--escalated", "linux=12", "--attempt", attempt, "--report", darwinR}, "one of the two"},
 		{"no source", nil, "one of the two"},
-		{"failed scenario", []string{"--report", linuxR, "--report", darwinR, "--go-test-log", passLog, "--go-test-log", failLog}, "the scenario failed"},
-		{"no passed run", []string{"--report", linuxR, "--report", darwinR, "--go-test-log", emptyLog}, "no passed " + sandbox7Test},
+		{"no attempt", []string{"--report", linuxR}, "--attempt goes with --report"},
+		{"log of another attempt", append(shards, "--report", darwinR, "--go-test-log", foreignLog), "not a log of attempt " + attempt},
+		{"failed scenario", append(shards, "--report", darwinR, "--go-test-log", passLog, "--go-test-log", failLog), "the scenario failed"},
+		{"no passed run", append(shards, "--report", darwinR, "--go-test-log", emptyLog), "no passed " + sandbox7Test},
 	} {
 		if id, stderr := sandbox7RecordRun(t, root, 2, c.args...); id != "" || !strings.Contains(stderr, c.want) {
 			t.Errorf("%s: run %q, stderr %q, want %q", c.name, id, stderr, c.want)
@@ -469,7 +504,7 @@ func TestSandbox7RecordReadsShardReports(t *testing.T) {
 		t.Fatalf("a refused input wrote %d records", len(entries))
 	}
 
-	id, _ := sandbox7RecordRun(t, root, 0, "--report", linuxR, "--report", darwinR, "--go-test-log", passLog, "--go-test-log", shardLog)
+	id, _ := sandbox7RecordRun(t, root, 0, append(shards, "--report", darwinR, "--go-test-log", passLog, "--go-test-log", filepath.Join(root, filepath.FromSlash(shardLog)))...)
 	rec, err := os.ReadFile(runRecordPath(root, id))
 	if err != nil {
 		t.Fatal(err)

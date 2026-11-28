@@ -3,9 +3,12 @@
 package scenarios
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -54,9 +57,10 @@ const (
 // naming a mode wider than workspace-write and a non-empty justification, which
 // the approval's reason shows (sandbox7Escalated). An ordinary tool approval does
 // not count. The counts are written to
-// DSH_SCENARIO_REPORT as "linux=n,darwin=n,windows=n", the --escalated argument
-// of "harness-gate sandbox7-record", which records them beside each text's
-// SHA-256 on the branch commit.
+// DSH_SCENARIO_REPORT as "linux=n,darwin=n,windows=n", then the commit, the
+// attempt and each text's SHA-256 (sandbox7Provenance), the --report input of
+// "harness-gate sandbox7-record", which refuses a report of another commit,
+// attempt or text bytes and records the counts beside each text's SHA-256.
 //
 // Cleanup: W, the outside directory and the home are removed; the transcript of
 // every failed run is kept (keepExport), and of every run of a text below the
@@ -68,6 +72,7 @@ const (
 // {platform} selecting that platform's policy text, with no title route;
 // DSH_SCENARIO_SANDBOX7_PREVIOUS the previous text's counts in the report's form,
 // or "none"; DSH_SCENARIO_REPORT the file the counts are written to;
+// DSH_SCENARIO_SANDBOX7_ATTEMPT the attempt id the report and log name;
 // DSH_SCENARIO_CLAUDE_CODE_MODEL the route's model.
 //
 //dsh:scenario DH-E-SANDBOX-7
@@ -76,6 +81,7 @@ func TestPolicyTextMakesTheModelEscalate(t *testing.T) {
 	layerT := need(t, "DSH_SCENARIO_SANDBOX7_LAYER", "a layer over {platform} selecting the policy text")
 	previous := sandbox7Previous(t, need(t, "DSH_SCENARIO_SANDBOX7_PREVIOUS", `the previous text's counts, or "none"`))
 	report := need(t, "DSH_SCENARIO_REPORT", "the file the escalation counts are written to")
+	prov := sandbox7Provenance(t, need(t, "DSH_SCENARIO_SANDBOX7_ATTEMPT", "the attempt id the run is recorded under"))
 	route := &protocol.ModelRoute{Provider: claudeCodeRoute.ID, Model: claudeCodeRoute.model(t)}
 	bin := dshBinary(t)
 
@@ -156,10 +162,53 @@ func TestPolicyTextMakesTheModelEscalate(t *testing.T) {
 		t.Fatal("no platform text ran")
 	}
 	line := strings.Join(parts, ",")
-	if err := os.WriteFile(report, []byte(line+"\n"), 0o600); err != nil {
+	body := line + "\ncommit: " + prov.commit + "\nattempt: " + prov.attempt + "\n"
+	for _, p := range sandbox7Texts {
+		if sum, ok := prov.texts[p]; ok && ran[p] {
+			body += fmt.Sprintf("text: %s.md sha256=%s\n", p, sum)
+		}
+	}
+	if err := os.WriteFile(report, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Logf("escalated of %d: %s (previous %v)", sandbox7Escalating*sandbox7Runs, line, previous)
+}
+
+// sandbox7Run is what a report names its run by: the attempt, the commit of the
+// clean checkout the binary was built from, and the SHA-256 of each platform
+// text on it.
+type sandbox7Run struct {
+	attempt, commit string
+	texts           map[string]string
+}
+
+// sandbox7Provenance reads the run's provenance before any run starts and logs
+// it as the line "harness-gate sandbox7-record" requires of the run's go test
+// log; a checkout with changes is refused, its HEAD not being what ran.
+func sandbox7Provenance(t *testing.T, attempt string) sandbox7Run {
+	t.Helper()
+	root := repositoryRoot(t)
+	git := func(args ...string) string {
+		out, err := exec.Command("git", append([]string{"-C", root}, args...)...).Output()
+		if err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	if dirty := git("status", "--porcelain", "--untracked-files=all"); dirty != "" {
+		t.Fatalf("the checkout has changes; DH-E-SANDBOX-7 runs on a clean commit:\n%s", dirty)
+	}
+	run := sandbox7Run{attempt: attempt, commit: git("rev-parse", "HEAD"), texts: map[string]string{}}
+	for _, p := range sandbox7Texts {
+		b, err := os.ReadFile(filepath.Join(root, "src", "harness", "internal", "world", "sandbox", "policy", "text", p+".md"))
+		if err != nil {
+			continue // no text: the report names none and sandbox7-record refuses its count
+		}
+		sum := sha256.Sum256(b)
+		run.texts[p] = hex.EncodeToString(sum[:])
+	}
+	t.Logf("sandbox7 provenance: attempt=%s commit=%s", run.attempt, run.commit)
+	return run
 }
 
 // sandbox7Judge fails t when a text's escalations are below want, and then
