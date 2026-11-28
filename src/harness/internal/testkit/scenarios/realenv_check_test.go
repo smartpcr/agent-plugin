@@ -99,6 +99,55 @@ func TestShellLineQuotesAPathWithASpace(t *testing.T) {
 	}
 }
 
+// A modification time that moves, size unchanged, to a time before the change
+// started is this client's attribute cache catching up on its own earlier write
+// (CIFS does it a few milliseconds after a write), not the change; the change
+// itself, and a time from its start on, are. Each case is a real stat of a file.
+func TestStatChangeTellsTheClientsOwnRefreshFromTheChange(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "watched.txt")
+	if err := os.WriteFile(path, []byte("start\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stat := func() os.FileInfo {
+		t.Helper()
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return info
+	}
+	setTime := func(at time.Time) os.FileInfo {
+		t.Helper()
+		if err := os.Chtimes(path, at, at); err != nil {
+			t.Fatal(err)
+		}
+		return stat()
+	}
+	before := stat()
+	started := before.ModTime().Add(time.Hour)
+	if got := statChange(before, stat(), started); got != unchanged {
+		t.Errorf("the same stat = %v, want unchanged", got)
+	}
+	refreshed := setTime(started.Add(-30 * time.Minute))
+	if got := statChange(before, refreshed, started); got != ownRefresh {
+		t.Errorf("a time-only move to before the change started = %v, want the client's own refresh (%v)", got, ownRefresh)
+	}
+	if got := statChange(refreshed, setTime(started.Add(time.Second)), started); got != changeSeen {
+		t.Errorf("a time-only move to after the change started = %v, want the change (%v)", got, changeSeen)
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.WriteString("changed\n")
+	if err = errors.Join(err, f.Close()); err != nil {
+		t.Fatal(err)
+	}
+	if got := statChange(refreshed, setTime(started.Add(-30*time.Minute)), started); got != changeSeen {
+		t.Errorf("a size change with an earlier time = %v, want the change (%v)", got, changeSeen)
+	}
+}
+
 // A shell command run from a cleanup callback, where the test's context has
 // ended, still runs to completion instead of being canceled at once.
 func TestShellRunsFromACleanup(t *testing.T) {

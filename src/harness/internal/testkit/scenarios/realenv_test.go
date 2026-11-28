@@ -122,11 +122,12 @@ func mustShell(t *testing.T, line string) string {
 
 // running is a shell command line started by startShell.
 type running struct {
-	line string
-	run  shellRun
-	done chan struct{}
-	out  string
-	err  error
+	line    string
+	run     shellRun
+	started time.Time // just before the command was started
+	done    chan struct{}
+	out     string
+	err     error
 }
 
 // startShell runs line through the platform shell without waiting for it. The
@@ -134,8 +135,9 @@ type running struct {
 // context and waited for at cleanup.
 func startShell(t *testing.T, line string) *running {
 	t.Helper()
+	started := time.Now()
 	s := spawnShell(t, line)
-	r := &running{line: line, run: s, done: make(chan struct{})}
+	r := &running{line: line, run: s, started: started, done: make(chan struct{})}
 	go func() {
 		defer close(r.done)
 		r.out, r.err = s.wait()
@@ -222,22 +224,67 @@ func (r *running) wait(t *testing.T) {
 	}
 }
 
+type statDiff int
+
+const (
+	unchanged  statDiff = iota
+	changeSeen          // the change itself: size, identity, or a time from its start on
+	ownRefresh          // only the modification time, moved to before the change started
+)
+
+// statChange is how info, a later stat of the file, differs from before for a
+// change started at started (see changedAt).
+//
+// started is this machine's clock, while a remote change's modification time is
+// the server's (or the other OS side's). A same-size change whose time lands
+// before started, because that clock is behind this one, is taken for the
+// client's own refresh. So a change command must change the file's size, as
+// DH-E-CHOKIDAR-2's DSH_SCENARIO_REMOTE_CHANGE must (append {marker}); a size
+// change is seen whatever the clocks say.
+func statChange(before, info os.FileInfo, started time.Time) statDiff {
+	switch {
+	case info.Size() != before.Size() || !os.SameFile(info, before):
+		return changeSeen
+	case info.ModTime().Equal(before.ModTime()):
+		return unchanged
+	case info.ModTime().Before(started):
+		return ownRefresh
+	}
+	return changeSeen
+}
+
 // changedAt returns the moment this machine first sees path differ from before
 // (size, modification time or identity), polled every millisecond while r runs, so
 // a command that lingers after saving does not move the moment later. Once r has
 // exited the poll goes on for grace (a remote change may take that long to be
 // visible here); a command that fails, or changes nothing, fails the scenario. Stat
 // does not open the file, so the poll cannot get in the way of an editor's save.
+//
+// A modification time alone (same size, same file) that moves to a time before r
+// started is not r's change but this client catching up on its own earlier
+// write: a network client's attribute cache, refreshed, shows the server's time
+// of that write instead of the one it kept (CIFS a few milliseconds after the
+// write). It becomes the new before, and the poll waits for r's own change.
+// Because that test uses the other side's clock, r must change the file's size
+// (see statChange); if it only moved the time, the failure says so.
 func changedAt(t *testing.T, path string, before os.FileInfo, r *running, grace time.Duration) time.Time {
 	t.Helper()
 	tick := time.NewTicker(time.Millisecond)
 	defer tick.Stop()
 	var exitedAt time.Time
+	refreshes := 0
 	for {
 		exited := r.exited()
-		if info, err := os.Stat(path); err == nil &&
-			(info.Size() != before.Size() || !info.ModTime().Equal(before.ModTime()) || !os.SameFile(info, before)) {
-			return time.Now()
+		if info, err := os.Stat(path); err == nil {
+			switch statChange(before, info, r.started) {
+			case changeSeen:
+				return time.Now()
+			case ownRefresh:
+				t.Logf("%s: modification time %v -> %v, before the change started: this client's own refresh, not the change",
+					path, before.ModTime().Format(time.RFC3339Nano), info.ModTime().Format(time.RFC3339Nano))
+				before = info
+				refreshes++
+			}
 		}
 		if exited {
 			if r.err != nil {
@@ -246,6 +293,10 @@ func changedAt(t *testing.T, path string, before os.FileInfo, r *running, grace 
 			if exitedAt.IsZero() {
 				exitedAt = time.Now()
 			} else if time.Since(exitedAt) > grace {
+				if refreshes > 0 {
+					t.Fatalf("%s exited without changing the size of %s; only its modification time moved, to before the change started (%d times), "+
+						"which may be the change itself under a clock behind this machine's: the change command must change the file's size", r.line, path, refreshes)
+				}
 				t.Fatalf("%s exited without changing %s", r.line, path)
 			}
 		}

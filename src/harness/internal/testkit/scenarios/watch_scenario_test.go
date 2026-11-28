@@ -266,10 +266,14 @@ func TestWatchRemoteFilesystemsPoll(t *testing.T) {
 		r := startShell(t, expand(change, map[string]string{"dir": dir, "name": name, "marker": fmt.Sprint(started.UnixNano())}))
 		// The change is timed when this machine first sees it, which a lingering
 		// remote command cannot delay; the report is timed when its callback runs.
-		changed := changedAt(t, path, before, r, remoteGrace)
+		from, changed := changeVisible(t, path, before, r, remoteGrace)
 		r.wait(t)
 		<-time.After(time.Until(changed.Add(2 * poll)))
-		reports := got.since(started)
+		// A report of this client's own refresh is not a report of the change: only
+		// reports after the last stat that still showed the file unchanged count,
+		// so a slow stat (a network round trip) cannot push the cutoff past a
+		// report the watcher made of the change itself.
+		reports := got.since(from)
 		switch {
 		case len(reports) == 0:
 			t.Errorf("%s: the remote change was not reported within %v", dir, 2*poll)
@@ -282,5 +286,43 @@ func TestWatchRemoteFilesystemsPoll(t *testing.T) {
 		if mode := checkTransitions(t, svc, tree, watch.Auto, 2*poll); mode != watch.Poll {
 			t.Errorf("%s: directory watch is in %s mode, want poll", tree, mode)
 		}
+	}
+}
+
+// changeVisible is changedAt that also returns from, the moment the last stat
+// still showing path unchanged (or showing only this client's own refresh)
+// returned. The change became visible here no earlier than from, whatever the
+// stat latency, so a report at or after from may be of the change, and a report
+// before it cannot be.
+func changeVisible(t *testing.T, path string, before os.FileInfo, r *running, grace time.Duration) (from, seen time.Time) {
+	t.Helper()
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	from = time.Now()
+	var exitedAt time.Time
+	for {
+		exited := r.exited()
+		if info, err := os.Stat(path); err == nil {
+			switch statChange(before, info, r.started) {
+			case changeSeen:
+				return from, time.Now()
+			case ownRefresh:
+				t.Logf("%s: modification time %v -> %v, before the change started: this client's own refresh, not the change",
+					path, before.ModTime().Format(time.RFC3339Nano), info.ModTime().Format(time.RFC3339Nano))
+				before = info
+			}
+			from = time.Now()
+		}
+		if exited {
+			if r.err != nil {
+				r.wait(t)
+			}
+			if exitedAt.IsZero() {
+				exitedAt = time.Now()
+			} else if time.Since(exitedAt) > grace {
+				t.Fatalf("%s exited without changing %s", r.line, path)
+			}
+		}
+		<-tick.C
 	}
 }
