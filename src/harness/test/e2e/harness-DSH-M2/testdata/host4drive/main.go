@@ -40,7 +40,7 @@ const (
 	lineWithin  = time.Minute
 )
 
-var unclean = regexp.MustCompile(`did not stop cleanly; report: (\S+);.*--safe`)
+var unclean = regexp.MustCompile(`did not stop cleanly; report: (.+?); .*--safe`)
 
 type host4Result struct {
 	GOOS       string `json:"goos"`
