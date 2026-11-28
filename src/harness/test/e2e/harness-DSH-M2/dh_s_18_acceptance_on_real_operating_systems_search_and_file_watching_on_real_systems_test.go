@@ -1094,19 +1094,19 @@ func (s *s87State) whenSearch(budget string) error {
 // run builds each variant's binary, then runs the scenario tests on every leg at
 // once, each on its own variant's volumes, so the very large checkout's
 // searches on both variants fit within go test's default ten-minute deadline;
-// every leg runs even when one fails.
+// every leg runs even when another fails (a leg whose build fails records the
+// build error), and every leg's evidence is persisted.
 func (s *s87State) run() error {
 	legs := s.reached()
 	if len(legs) == 0 {
 		return errors.New("no variant was reached")
 	}
-	for _, l := range legs {
-		if _, err := l.v.build(); err != nil {
-			return err
-		}
-	}
 	var wg sync.WaitGroup
 	for _, l := range legs {
+		if _, err := l.v.build(); err != nil {
+			l.ran = err
+			continue
+		}
 		wg.Go(func() { l.ran = s.runLeg(l) })
 	}
 	wg.Wait()
