@@ -32,6 +32,9 @@ const replayScenario = "src/harness/internal/testkit/scenarios/testdata/rehearsa
 // "<sha256>  <name>  version=<v> vcs.revision=<rev> vcs.modified=<bool>".
 var rehearsalLine = regexp.MustCompile(`^([0-9a-f]{64})  (dsh-\S+)  version=(\S+) vcs\.revision=(\S+) vcs\.modified=(\S+)$`)
 
+// versionLine is what "dsh --version" prints: version, revision, Go, platform.
+var versionLine = regexp.MustCompile(`^dsh (\S+) \((\S+); go\S+; (\S+/\S+)\)$`)
+
 // TestToolchainRehearsal: a release rehearsal yields a runnable binary on every
 // platform (upstream/toolchain.md DH-E-TOOLCHAIN-2; DH-D-TOOLCHAIN-5,
 // DH-ADR-TOOLCHAIN-13, DH-ADR-15). Executed in DH-S-18 (step 18.1) on hosted Linux,
@@ -121,8 +124,14 @@ func TestToolchainRehearsal(t *testing.T) {
 	for _, r := range clientRoutes {
 		env = append(env, r.signedOut(t))
 	}
-	if v := strings.TrimSpace(run(t, home, env, bin, "--version")); v != "dsh "+b.version {
-		t.Errorf("%s --version = %q, want %q", native, v, "dsh "+b.version)
+	// "dsh <version> (<revision>[-modified]; <go>; <os>/<arch>)" (cli.versionLine):
+	// the version and revision must be the ones the rehearsal recorded, unmodified.
+	v := strings.TrimSpace(run(t, home, env, bin, "--version"))
+	if m := versionLine.FindStringSubmatch(v); m == nil {
+		t.Errorf("%s --version = %q, want \"dsh <version> (<revision>; <go>; <os>/<arch>)\"", native, v)
+	} else if m[1] != b.version || m[2] != b.revision || m[3] != runtime.GOOS+"/"+runtime.GOARCH {
+		t.Errorf("%s --version = %q, want version %s, revision %s (no -modified) and %s/%s as recorded",
+			native, v, b.version, b.revision, runtime.GOOS, runtime.GOARCH)
 	}
 
 	t.Run("keyless headless replay", func(t *testing.T) {

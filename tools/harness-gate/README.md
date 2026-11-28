@@ -120,7 +120,10 @@ dsh sandbox status | GOWORK=off go -C tools/harness-gate run . sandbox-preflight
   through a temporary copy of the config with `dist:` added; a committed config
   that sets `dist:` is refused. Each of the six archives is verified against
   `checksums.txt`, its binary extracted to `--out`, and one line per binary
-  printed: `<sha256>  <name>  version=… vcs.revision=… vcs.modified=…`. It
+  printed: `<sha256>  <name>  version=… vcs.revision=… vcs.modified=…`, where
+  `version` is the snapshot's (`dist/metadata.json`), the `main.version` the config
+  links into every binary and so what `dsh --version` prints (`-trimpath` keeps
+  `-ldflags` out of the build information). It
   publishes nothing: `release.disable`, the forge tokens removed from goreleaser's
   environment, and a run that changes the repository's tags fails. The keyless
   replay of the host-matching binary is printed as `OPEN, not built` until the
