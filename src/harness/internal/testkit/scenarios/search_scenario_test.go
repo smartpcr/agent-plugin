@@ -304,14 +304,17 @@ func gitFiles(t *testing.T, repo string, args ...string) []string {
 // runRG runs rg over repo for pattern and returns the slash paths, from repo, of
 // the files it matched and how long it took. --no-config and --no-ignore-global
 // keep rg to what the harness reads: no configuration file (RIPGREP_CONFIG_PATH is
-// the decoy's) and no user-wide ignore file (DH-LIB-RIPGREP-R5). rg exits 0 with
+// the decoy's) and no user-wide ignore file (DH-LIB-RIPGREP-R5). --follow makes rg
+// read a linked file as the harness does through os.Root (operator decision
+// ripgrep1-symlinked-files); a link rg cannot follow is reported on its standard
+// error and fails the comparison below rather than passing unseen. rg exits 0 with
 // matches and 1 with none; any other outcome (exit 2 for a bad pattern or an
 // unreadable path, a signal, a timeout, a missing binary), output on its standard
 // error, or exit 1 with output, means the comparison did not run correctly and is
 // an error, never a zero.
 func runRG(t *testing.T, rg, repo, pattern string) (map[string]bool, time.Duration, error) {
 	t.Helper()
-	cmd := exec.CommandContext(t.Context(), rg, "--no-config", "--no-ignore-global", "--files-with-matches", "--null", "--", pattern, ".")
+	cmd := exec.CommandContext(t.Context(), rg, "--no-config", "--no-ignore-global", "--follow", "--files-with-matches", "--null", "--", pattern, ".")
 	cmd.Dir = repo
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
