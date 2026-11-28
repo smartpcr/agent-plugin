@@ -478,7 +478,8 @@ refused when `CI` is set.
 
 `harness-gate milestone [--root DIR]` judges the story's milestone predicate
 (`closure/milestone.go`, `Story.Milestone`). For M2 the predicate is:
-- DH-S-17 and DH-S-18 pass `close` (DH-S-18 with `--built`);
+- DH-S-17 and DH-S-18 pass `close` in their mode (both are acceptance stages, closed
+  without `--built`);
 - every guarded scenario of DH-S-16 has a row that ran and passed. These are the
   Stage 6.12 / step 16.8 STORE-1, STORE-2, STORE-6 and FS-3 rows, plus any guarded
   scenario the index lists for it.

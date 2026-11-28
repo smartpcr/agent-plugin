@@ -35,9 +35,10 @@ func (m Milestone) BuiltThrough() string {
 }
 
 // Check is the milestone predicate: every stage of m.Closed has a record that reads
-// closed and passes close in its mode, and every guarded scenario has a passed row of
-// venue guarded in m.GuardedStage's record (with its evidence), as do the scenarios the
-// index lists under that stage. It returns the built-through the milestone advances to
+// closed and passes close in its mode, m.GuardedStage's record has every scenario row
+// its Obligations owe (each platform's row), and every guarded scenario has a passed
+// row of venue guarded there (with its evidence), as do the scenarios the index lists
+// under that stage. It returns the built-through the milestone advances to
 // when it is reached, or the problems that refuse it. records holds the story's stage
 // records by stage ID; a stage with no record is neither closed nor guarded.
 func (s Story) Check(x *acceptance.Index, records map[string]*Record) (string, []string) {
@@ -72,7 +73,12 @@ func (s Story) Check(x *acceptance.Index, records map[string]*Record) (string, [
 		if rec := records[m.GuardedStage]; rec == nil {
 			out = append(out, fmt.Sprintf("%s refused: the guarded scenarios have no evidence record %s", m.Name, RecordPath(s.ID, m.GuardedStage)))
 		} else {
-			for _, b := range scenarioBlockers(entry, rec, true) {
+			// The owed scenario rows (one per scenario and platform) as well as coverage by
+			// scenario ID: a deleted Windows row is not hidden by its passed Linux row. Only
+			// the scenario rows are read (built false), not the stage's build tables.
+			blockers := Obligations{Scenarios: s.Obligations[m.GuardedStage].Scenarios}.Missing(rec, false)
+			blockers = append(blockers, scenarioBlockers(entry, rec, true)...)
+			for _, b := range blockers {
 				out = append(out, fmt.Sprintf("%s refused: guarded scenarios of %s: %s", m.Name, m.GuardedStage, b))
 			}
 		}

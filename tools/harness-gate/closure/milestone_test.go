@@ -85,6 +85,36 @@ func TestMilestonePredicate(t *testing.T) {
 	}
 }
 
+// The guarded stage's production obligations hold per platform: deleting the Windows
+// row of DH-E-STORE-1 while its Linux (WSL) row passed refuses M2 (M2-C-2).
+func TestMilestoneOwesEveryGuardedPlatformRow(t *testing.T) {
+	s, x := m2Fixture(), index(t, milestoneIndex)
+	s.Obligations = map[string]Obligations{"DH-S-16": Stories[DefaultStory].Obligations["DH-S-16"]}
+	var rows []string
+	for _, ob := range s.Obligations["DH-S-16"].Scenarios {
+		result, env := "passed", "lane | 0123abc"
+		if ob.Variant == "macOS" {
+			result, env = "out of scope (platforms-windows-wsl)", " | "
+		}
+		rows = append(rows, "| "+ob.Scenario+" | "+ob.Variant+" | guarded | required | "+env+" | "+result+" | run.txt |")
+	}
+	recs := milestoneRecords(t, true, "closed", "closed")
+	recs["DH-S-16"] = record(t, stageRecord("open", rows...))
+	through, p := s.Check(x, recs)
+	if len(p) != 0 || through != "DH-S-18" {
+		t.Fatalf("every owed row passed: built-through %q, problems %q; want DH-S-18 and none", through, p)
+	}
+	windows := "| DH-E-STORE-1 | Windows | guarded | required | lane | 0123abc | passed | run.txt |"
+	if !slices.Contains(rows, windows) {
+		t.Fatalf("fixture has no row %q", windows)
+	}
+	recs["DH-S-16"] = record(t, stageRecord("open", slices.DeleteFunc(rows, func(r string) bool { return r == windows })...))
+	through, p = s.Check(x, recs)
+	if through != "" || len(p) != 1 || !containsAll(p[0], "M2 refused", "guarded scenarios of DH-S-16", "DH-E-STORE-1 [Windows]", "has no row") {
+		t.Errorf("Windows row deleted: built-through %q, problems %q; want one naming DH-E-STORE-1 [Windows]", through, p)
+	}
+}
+
 // The closure record's declaration: one line, yes or no; yes only while the predicate
 // holds and built-through has reached DH-S-18.
 func TestMilestoneDeclaration(t *testing.T) {
