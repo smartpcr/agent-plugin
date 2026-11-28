@@ -50,7 +50,9 @@ var Component = cordis.Define(Name, func(ctx *cordis.Context, _ cordis.None) err
 	}
 	// The carrier owns the human plane, as cli.headless does for its profile: the
 	// interaction registry the server answers on the sdk channel, and the approval
-	// service over it that the tool pipeline asks (approval.Key).
+	// service over it that the tool pipeline asks (approval.Key). human.Key, the
+	// approval service and Options.Interactions must all be this one registry, or
+	// a tools.Ask decision never reaches the client as approval/request.
 	interactions := human.New()
 	grants := approval.NewGrants()
 	approvals := approval.New(approval.Config{Registry: interactions, Grants: grants, Sessions: sessions})
