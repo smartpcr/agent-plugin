@@ -397,6 +397,9 @@ func (s *s17cState) liveGateAgrees() error {
 		if !allPassed && ready.code != 1 {
 			return fmt.Errorf("the committed record has required rows not passed but ready exits %d\n%s", ready.code, ready.stdout)
 		}
+		if allPassed && (ready.code != 0 || !strings.Contains(ready.stdout, ": ready; the status line is not read (it reads open)")) {
+			return fmt.Errorf("the committed record reads open with every required row passed: ready exit %d, want 0 ready\n%s", ready.code, ready.stdout)
+		}
 		for _, r := range s.liveRows {
 			if strings.HasPrefix(r.result, "not run") && !strings.Contains(ready.stdout, r.id+" ["+r.variant+"]") {
 				return fmt.Errorf("ready does not name the not-run row %s [%s]\n%s", r.id, r.variant, ready.stdout)
