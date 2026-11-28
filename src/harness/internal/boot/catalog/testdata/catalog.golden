@@ -32,5 +32,5 @@ tools.registry      A03   -                        tools                        
 ui.shell            C1    -                        ui.shell                                         -     all
 util.egress         A23   egress.Config            egress                                           -     all
 util.watch          A23   watch.Options            watch                                            -     all
-wire.sdk            A20   -                        -                                                -     all
+wire.sdk            A20   -                        human.interactions,human.approval                -     all
 wire.stdio          A20   stdio.Settings           wire.stdio                                       -     all

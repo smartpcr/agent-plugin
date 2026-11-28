@@ -190,7 +190,7 @@ func Permission() []catalog.Item {
 func Wire() []catalog.Item {
 	return []catalog.Item{
 		{Name: stdio.Name, Component: stdio.Component, Config: reflect.TypeFor[stdio.Settings](), Provides: []string{stdio.Key.Name()}},
-		{Name: sdkserver.Name, Component: sdkserver.Component},
+		{Name: sdkserver.Name, Component: sdkserver.Component, Provides: []string{human.Key.Name(), approval.Key.Name()}},
 	}
 }
 

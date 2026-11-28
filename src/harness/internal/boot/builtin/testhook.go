@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/catalog"
@@ -111,6 +112,32 @@ var testSleep = cordis.Define(TestSleepName, func(ctx *cordis.Context, _ struct{
 	return err
 }, cordis.WithInject(tools.Key.Name()))
 
+// TestAskName is the catalogue name of the testhook approval policy item: it
+// puts every call of the named tools to approval, standing in for the permission
+// presets (C34) the binary does not boot yet, so a built-binary test drives the
+// approval round trip (DH-E-SDK-1).
+const TestAskName = "tools.testkit-ask"
+
+// TestAskConfig is the approval policy item's configuration: the tools to ask
+// before.
+type TestAskConfig struct {
+	Tools []string `json:"tools"`
+}
+
+var testAsk = cordis.Define(TestAskName, func(ctx *cordis.Context, cfg TestAskConfig) error {
+	reg, err := tools.Key.Get(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = reg.Decide(ctx, TestAskName, func(_ context.Context, c tools.Call) tools.Decision {
+		if slices.Contains(cfg.Tools, c.Name()) {
+			return tools.Ask(TestAskName+" asks before "+c.Name(), "")
+		}
+		return tools.Allow()
+	})
+	return err
+}, cordis.WithInject(tools.Key.Name()))
+
 // TestWorkdirName is the catalogue name of the testhook working-directory item:
 // it provides workdir.Key with one fixed directory as every session's directory
 // and project root, standing in for session.workdir, whose fold registry
@@ -150,6 +177,7 @@ func init() {
 		catalog.Item{Name: TestRouteName, Component: testRoute, Config: reflect.TypeFor[TestRouteConfig]()},
 		catalog.Item{Name: TestCommandName, Component: testCommand},
 		catalog.Item{Name: TestSleepName, Component: testSleep},
+		catalog.Item{Name: TestAskName, Component: testAsk, Config: reflect.TypeFor[TestAskConfig]()},
 		// The keyless replay of a recorded session (DH-D-UTIL-7), driven by
 		// test/replay against this build.
 		catalog.Item{Name: replay.Name, Component: replay.Component, Config: reflect.TypeFor[replay.Config]()})
