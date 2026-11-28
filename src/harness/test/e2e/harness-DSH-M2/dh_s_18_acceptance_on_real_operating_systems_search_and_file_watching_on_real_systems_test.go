@@ -20,7 +20,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -35,7 +34,6 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -331,7 +329,7 @@ type s87Leg struct {
 	rg       string            // the comparison rg, and where it came from
 	volumes  []string          // the filesystems the leg's directories are on
 	files    map[string]int    // the files of each checkout searched
-	remote   []string          // the kinds of remote directory the suite stood up
+	remote   []string          // the kinds of remote directory watched (smb, nfs, cross-os)
 	report   string
 	log      string
 	logPath  string
@@ -342,10 +340,6 @@ type s87Leg struct {
 	evidence []string
 	// unreached is why this host could not reach the leg's variant.
 	unreached error
-	// recorded is the committed record the leg is verified from, when this host
-	// could not reach or provision its variant.
-	recorded *s87Record
-	secrets  []string // kept out of a record
 }
 
 type s87State struct {
@@ -366,14 +360,9 @@ func (s *s87State) legsFor(names ...string) error {
 	for _, goos := range []string{"linux", "windows"} {
 		v, err := s87Reach(goos)
 		if err != nil {
-			// The reachable variants still run and are asserted; this one is
-			// verified from its committed record, or the last step fails the
-			// scenario for it.
-			l := &s87Leg{v: &s87Variant{goos: goos}, unreached: err, ran: err}
-			if rerr := s.fromRecord(l, err); rerr != nil {
-				s87OuterT.Logf("s87 %v", rerr)
-			}
-			s.legs = append(s.legs, l)
+			// The reachable variants still run and are asserted; the last step
+			// fails the scenario for this one.
+			s.legs = append(s.legs, &s87Leg{v: &s87Variant{goos: goos}, unreached: err, ran: err})
 			continue
 		}
 		l := &s87Leg{v: v, op: map[string]string{}, inputs: map[string]string{}}
@@ -385,30 +374,23 @@ func (s *s87State) legsFor(names ...string) error {
 		maps.Copy(l.inputs, l.op)
 		s.legs = append(s.legs, l)
 	}
-	if len(s.active()) == 0 {
-		return errors.New("neither the Linux nor the Windows variant is reachable from this host, and neither has a committed record")
+	if len(s.reached()) == 0 {
+		return errors.New("neither the Linux nor the Windows variant is reachable from this host")
 	}
 	return nil
 }
 
-// active is the legs that are asserted: those this host reaches, and those
-// verified from their committed record.
-func (s *s87State) active() []*s87Leg {
-	return slices.DeleteFunc(slices.Clone(s.legs), func(l *s87Leg) bool { return l.unreached != nil && l.recorded == nil })
+func (s *s87State) reached() []*s87Leg {
+	return slices.DeleteFunc(slices.Clone(s.legs), func(l *s87Leg) bool { return l.unreached != nil })
 }
 
-// live is the legs that run on this host.
-func (s *s87State) live() []*s87Leg {
-	return slices.DeleteFunc(slices.Clone(s.legs), func(l *s87Leg) bool { return l.unreached != nil || l.recorded != nil })
-}
-
-// thenReached fails for each variant that neither ran on this host nor was
-// verified from its committed record: the scenario needs both.
+// thenReached fails for each variant this host could not reach: the scenario
+// needs both.
 func (s *s87State) thenReached() error {
 	var errs []error
 	for _, l := range s.legs {
-		if l.unreached != nil && l.recorded == nil {
-			errs = append(errs, fmt.Errorf("the %s variant did not run and has no valid committed record: %w", l.v.goos, l.unreached))
+		if l.unreached != nil {
+			errs = append(errs, fmt.Errorf("the %s variant was not reached: %w", l.v.goos, l.unreached))
 		}
 	}
 	return errors.Join(errs...)
@@ -421,19 +403,16 @@ func (l *s87Leg) set(name, value string) {
 }
 
 func (l *s87Leg) lane() string {
-	if r := l.recorded; r != nil {
-		return fmt.Sprintf("committed record of %s (%s, run %s at %s, sources %.12s)", r.Variant, r.Lane, r.Run, r.At, r.Sources)
-	}
 	if len(l.op) == 0 {
 		return "ephemeral instance"
 	}
 	return "ephemeral instance with the operator's " + strings.Join(slices.Sorted(maps.Keys(l.op)), ", ")
 }
 
-// each runs f on every active leg, all of them even when one fails.
+// each runs f on every reached leg, all of them even when one fails.
 func (s *s87State) each(f func(l *s87Leg) error) error {
 	var errs []error
-	for _, l := range s.active() {
+	for _, l := range s.reached() {
 		if err := f(l); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", l.v, err))
 		}
@@ -441,27 +420,10 @@ func (s *s87State) each(f func(l *s87Leg) error) error {
 	return errors.Join(errs...)
 }
 
-// provision wraps a Given step's f for the legs that run on this host: a leg
-// this host cannot provision (no WSL, no Samba, no root for mount, no
-// New-SmbMapping -TcpPort, ...) is verified from its committed record instead,
-// and fails the step when it has none. A leg already verified from its record
-// is not provisioned.
-func (s *s87State) provision(f func(l *s87Leg) error) func(l *s87Leg) error {
-	return func(l *s87Leg) error {
-		if l.recorded != nil {
-			return nil
-		}
-		if err := f(l); err != nil {
-			return s.fromRecord(l, err)
-		}
-		return nil
-	}
-}
-
-// eachParallel runs f on every active leg at once: each leg works on its own
+// eachParallel runs f on every reached leg at once: each leg works on its own
 // variant's volumes.
 func (s *s87State) eachParallel(f func(l *s87Leg) error) error {
-	legs := s.active()
+	legs := s.reached()
 	errs := make([]error, len(legs))
 	var wg sync.WaitGroup
 	for i, l := range legs {
@@ -483,7 +445,7 @@ func (s *s87State) givenSearchVariants() error {
 	if err := s.legsFor("DSH_SCENARIO_REPOS", "DSH_SCENARIO_LISTING_EXPLAINED", "DSH_SCENARIO_WHOLE_SEARCH_TIMEOUT"); err != nil {
 		return err
 	}
-	return s.eachParallel(s.provision(func(l *s87Leg) error {
+	return s.eachParallel(func(l *s87Leg) error {
 		if l.v.lookPath("git") == "" {
 			return errors.New("service:filesystem: git is not on the PATH of the variant; RIPGREP-2 compares with git ls-files")
 		}
@@ -514,7 +476,7 @@ func (s *s87State) givenSearchVariants() error {
 			return fmt.Errorf("DSH_SCENARIO_REPOS %s: %w", l.inputs["DSH_SCENARIO_REPOS"], err)
 		}
 		return l.provideRG()
-	}))
+	})
 }
 
 // s87Sizes requires the checkouts of DH-E-RIPGREP-1 (libs/vscode-ripgrep.md:
@@ -745,7 +707,7 @@ func (s *s87State) givenEditorVariants() error {
 	if err := s.legsFor("DSH_SCENARIO_EDITORS", "DSH_SCENARIO_REMOTE_DIRS", "DSH_SCENARIO_REMOTE_CHANGE"); err != nil {
 		return err
 	}
-	return s.each(s.provision(func(l *s87Leg) error {
+	return s.each(func(l *s87Leg) error {
 		if l.inputs["DSH_SCENARIO_EDITORS"] != "" {
 			return nil
 		}
@@ -755,7 +717,7 @@ func (s *s87State) givenEditorVariants() error {
 		}
 		l.set("DSH_SCENARIO_EDITORS", strings.Join(editors, ";"))
 		return nil
-	}))
+	})
 }
 
 // editors are the save strategies of the ephemeral instance: vim (when the
@@ -810,360 +772,129 @@ func s87IsFile(p string) bool {
 	return err == nil && st.Mode().IsRegular()
 }
 
-// ---- remote directories: a real SMB share and NFS export the suite serves, and cross-OS directories ----
+// ---- remote directories: the operator's shares on the *:smb variants, and a cross-OS directory ----
 
 // DH-E-CHOKIDAR-2 (libs/chokidar.md) watches a workspace on a real SMB share, on
-// a real NFS mount and a Windows directory opened from WSL, each changed from the
-// other side. With no operator shares (DSH_SCENARIO_REMOTE_DIRS with
-// DSH_SCENARIO_REMOTE_CHANGE; evidence/runbook-smb-share.md) the suite serves
-// both itself on the Linux variant, private to the run: Samba's smbd as the
-// run's own user, on a free port of one interface, with its own configuration,
-// user database and share directory in a temporary directory; and an NFSv3
-// export of a temporary directory, served on loopback by this package's test
-// binary (s87ServeNFS, in the _nfs_linux_test.go file beside this one). Nothing
-// is installed and no system service is started, stopped or reconfigured. The
-// Windows variant maps the share as the signed-in user (New-SmbMapping on the
-// server's port, no administrator). The Linux variant mounts the share and the
-// export with the kernel's own CIFS and NFS clients, which mount only with
-// CAP_SYS_ADMIN: mount and umount, and nothing else, run as root (wsl.exe -u
-// root under WSL, else root itself or sudo -n), on mount points in the run's
-// temporary directory, with no mount helper (mount -i), and are unmounted at the
-// end. Each change is written behind the server, on its own filesystem.
-const (
-	s87NFSBackingEnv = "S87_NFS_BACKING"
-	s87NFSReady      = "s87-nfs-ready"
-	s87Share         = "dsh-s87"
-	s87Runbook       = "docs/stories/harness-DSH-M2/evidence/runbook-smb-share.md (the linux-wsl:smb and windows-host:smb variants)"
-)
+// a real NFS mount and a Windows directory opened from WSL, each changed from its
+// other side. The SMB and NFS shares are the operator's, kept per the runbook on
+// the self-hosted linux-wsl:smb and windows-host:smb variants (variants.md):
+// mounted there by the operator, whose sudo grant covers mount and umount of
+// those shares only, and handed to the suite as DSH_SCENARIO_REMOTE_DIRS with
+// DSH_SCENARIO_REMOTE_CHANGE. The suite serves no share, mounts nothing and runs
+// nothing as root. Each operator directory is classified by the filesystem its
+// OS reports, and the variant must watch every kind it holds. On any other
+// variant the suite provides the cross-OS directory alone, as the run's own
+// user: a WSL directory seen from Windows through \\wsl.localhost, or a Windows
+// directory seen from WSL under /mnt, changed from its other side across WSL
+// interop. A variant labelled *:smb (DSH_S18_<LINUX|WINDOWS>_VARIANT) without its
+// shares fails the share preflight: a missing share is never a pass.
+const s87Runbook = "docs/stories/harness-DSH-M2/evidence/runbook-smb-share.md (the linux-wsl:smb and windows-host:smb variants)"
 
-// e2eBinary is this package's test binary for v, as v names it: this process's
-// own on a native variant, else built for v once per suite.
-func (v *s87Variant) e2eBinary() (string, error) {
-	if !v.wsl {
-		return os.Executable()
+// s87Label is the variants.md label the operator gives the leg's runner, or "".
+func s87Label(v *s87Variant) string {
+	if s := strings.TrimSpace(os.Getenv("DSH_S18_" + strings.ToUpper(v.goos) + "_VARIANT")); s != "" {
+		return s
 	}
-	return v.buildTest("e2e", "./test/e2e/harness-DSH-M2")
+	return strings.TrimSpace(os.Getenv("DSH_S18_VARIANT"))
 }
 
-// root runs argv as root on the Linux variant; the suite uses it for mount and
-// umount only. secret, when set, is kept out of the error.
-func (v *s87Variant) root(secret string, argv ...string) (string, error) {
-	var cmd *exec.Cmd
+// wantRemote is the kinds of remote directory the leg must watch: on the
+// operator's shares those of its *:smb variant (runbook-smb-share.md), else the
+// cross-OS directory the suite provides.
+func (l *s87Leg) wantRemote() []string {
+	if l.op["DSH_SCENARIO_REMOTE_DIRS"] == "" {
+		return []string{"cross-os"}
+	}
 	switch {
-	case v.wsl:
-		cmd = exec.Command("wsl.exe", append([]string{"-u", "root", "-e"}, argv...)...)
-	case os.Geteuid() == 0:
-		cmd = exec.Command(argv[0], argv[1:]...)
-	default:
-		cmd = exec.Command("sudo", append([]string{"-n", "--"}, argv...)...)
+	case l.v.goos == "windows":
+		return []string{"smb"}
+	case l.v.wsl:
+		return []string{"smb", "nfs", "cross-os"}
 	}
-	cmd.Env = s87Env()
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		msg := fmt.Sprintf("%v as root on %s: %v\n%s", argv, v, err, out)
-		if secret != "" {
-			msg = strings.ReplaceAll(msg, secret, "***")
-		}
-		return string(out), errors.New(msg)
-	}
-	return strings.TrimSpace(string(out)), nil
-}
-
-// s87Proc is a server the suite runs on a variant until the end of the run.
-type s87Proc struct {
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	lines  chan string
-	stderr bytes.Buffer
-	exited chan struct{}
-	pid    string // the server's own process ID on v, when it is signalled
-}
-
-const s87PIDLine = "s87-pid "
-
-// spawn starts argv on v with env, its stdout lines on lines. At the end it
-// closes argv's stdin and, when signal is set, sends SIGTERM to argv's own
-// process ID on v (then SIGKILL after 15s), and waits. That ID is the shell's
-// that execs argv, so the suite signals exactly the process it started; with
-// signal set, argv runs in a session and process group of its own (setsid), so
-// a signal argv sends its group (smbd's on SIGTERM) reaches nothing of this run.
-func (v *s87Variant) spawn(env []string, signal bool, argv ...string) (*s87Proc, error) {
-	p := &s87Proc{lines: make(chan string, 64), exited: make(chan struct{})}
-	if signal {
-		argv = append([]string{"setsid", "-w", "sh", "-c", `echo "` + s87PIDLine + `$$"; exec "$@"`, "sh"}, argv...)
-	}
-	if v.wsl {
-		p.cmd = exec.Command("wsl.exe", append(append([]string{"-e", "env"}, env...), argv...)...)
-		p.cmd.Env = s87Env()
-	} else {
-		p.cmd = exec.Command(argv[0], argv[1:]...)
-		p.cmd.Env = s87Env(env...)
-	}
-	var err error
-	if p.stdin, err = p.cmd.StdinPipe(); err != nil {
-		return nil, err
-	}
-	stdout, err := p.cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
-	p.cmd.Stderr = &p.stderr
-	if err := p.cmd.Start(); err != nil {
-		return nil, fmt.Errorf("starting %v on %s: %v", argv, v, err)
-	}
-	go func() {
-		sc := bufio.NewScanner(stdout)
-		for sc.Scan() {
-			select {
-			case p.lines <- strings.TrimSpace(sc.Text()):
-			default:
-			}
-		}
-		close(p.lines)
-	}()
-	done := make(chan error, 1)
-	go func() { done <- p.cmd.Wait(); close(p.exited) }()
-	stop := func() {
-		_ = p.stdin.Close()
-		if p.pid != "" {
-			if out, err := v.must("kill", "-TERM", p.pid); err != nil && !s87Exited(p) {
-				s87OuterT.Logf("s87 stopping %v (pid %s) on %s: %v %s", argv, p.pid, v, err, out)
-			}
-		}
-		select {
-		case <-done:
-		case <-time.After(15 * time.Second):
-			if p.pid != "" {
-				_, _ = v.must("kill", "-KILL", p.pid)
-			}
-			_ = p.cmd.Process.Kill()
-			<-done
-		}
-	}
-	s87OuterT.Cleanup(stop)
-	if signal {
-		select {
-		case line, ok := <-p.lines:
-			if rest, found := strings.CutPrefix(line, s87PIDLine); ok && found {
-				if _, err := strconv.Atoi(rest); err == nil {
-					p.pid = rest
-					return p, nil
-				}
-			}
-			return nil, fmt.Errorf("starting %v on %s: no process ID, said %q: %s", argv, v, line, p.stderr.String())
-		case <-time.After(30 * time.Second):
-			return nil, fmt.Errorf("starting %v on %s: no process ID within 30s", argv, v)
-		}
-	}
-	return p, nil
-}
-
-func s87Exited(p *s87Proc) bool {
-	select {
-	case <-p.exited:
-		return true
-	default:
-		return false
-	}
-}
-
-type s87SMB struct {
-	host, backing, user, password string
-	port                          int
-}
-
-// serveSMB serves a fresh share directory over SMB from Samba's smbd, run on the
-// Linux variant v as v's own user and bound to host only.
-func serveSMB(v *s87Variant, host string) (*s87SMB, error) {
-	for _, p := range []string{"smbd", "pdbedit", "setsid"} {
-		if v.lookPath(p) == "" {
-			return nil, fmt.Errorf("service:filesystem: no %s on %s: the suite's SMB share is served by Samba's smbd as the run's own user (the samba package; its system service need not run), or set DSH_SCENARIO_REMOTE_DIRS with DSH_SCENARIO_REMOTE_CHANGE for shares kept per %s", p, v, s87Runbook)
-		}
-	}
-	base, err := v.tempDir("dsh-s87-smb-")
-	if err != nil {
-		return nil, err
-	}
-	s := &s87SMB{host: host, backing: v.join(base, "share")}
-	if _, err := v.must("mkdir", s.backing, v.join(base, "state")); err != nil {
-		return nil, err
-	}
-	if s.user, err = v.must("id", "-un"); err != nil {
-		return nil, err
-	}
-	s.password = s87Secret()
-	var errs []error
-	for try := range 5 {
-		s.port = 40000 + int((time.Now().UnixNano()/1000+int64(try)*7919)%20000)
-		conf := v.join(base, fmt.Sprintf("smb-%d.conf", s.port))
-		st := v.join(base, "state")
-		body := strings.Join([]string{
-			"[global]",
-			fmt.Sprintf("smb ports = %d", s.port),
-			"interfaces = " + host,
-			"bind interfaces only = yes",
-			"disable netbios = yes",
-			"server role = standalone server",
-			"server min protocol = SMB2_10",
-			"passdb backend = tdbsam:" + st + "/passdb.tdb",
-			"private dir = " + st,
-			"lock directory = " + st,
-			"state directory = " + st,
-			"cache directory = " + st,
-			"pid directory = " + st,
-			"ncalrpc dir = " + st + "/ncalrpc",
-			"log file = " + st + "/log.%m",
-			"load printers = no",
-			"printcap name = /dev/null",
-			// The change is written behind smbd, on its own filesystem, where an
-			// unprivileged smbd cannot break a client's oplock or lease.
-			"oplocks = no",
-			"level2 oplocks = no",
-			"smb2 leases = no",
-			"[" + s87Share + "]",
-			"path = " + s.backing,
-			"read only = no",
-			"",
-		}, "\n")
-		if err := v.writeFile(conf, []byte(body)); err != nil {
-			return nil, err
-		}
-		if try == 0 {
-			if out, err := v.pipe([]byte(s.password+"\n"+s.password+"\n"), "pdbedit", "-s", conf, "-a", "-u", s.user, "-t"); err != nil {
-				return nil, fmt.Errorf("service:filesystem: adding %s to the share's own user database on %s: %v %s", s.user, v, err, out)
-			}
-		}
-		p, err := v.spawn(nil, true, "smbd", "-s", conf, "--foreground", "--no-process-group")
-		if err != nil {
-			return nil, err
-		}
-		if err := v.listening(s.port, p); err == nil {
-			return s, nil
-		} else {
-			errs = append(errs, err)
-		}
-	}
-	return nil, fmt.Errorf("service:filesystem: smbd on %s did not listen: %w", v, errors.Join(errs...))
-}
-
-// listening waits until a TCP port listens on v, or p exits.
-func (v *s87Variant) listening(port int, p *s87Proc) error {
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		if out, _ := v.must("ss", "-Hltn", fmt.Sprintf("sport = :%d", port)); strings.TrimSpace(out) != "" {
-			return nil
-		}
-		select {
-		case <-p.exited:
-			return fmt.Errorf("port %d: exited: %s", port, p.stderr.String())
-		case <-time.After(200 * time.Millisecond):
-		}
-	}
-	return fmt.Errorf("port %d: not listening after 30s", port)
-}
-
-func s87Secret() string {
-	b := make([]byte, 16)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
-}
-
-type s87NFS struct {
-	backing string
-	port    int
-}
-
-// serveNFS exports a fresh directory over NFSv3 on the Linux variant's loopback,
-// served by this package's test binary as the variant's own user.
-func (l *s87Leg) serveNFS() (*s87NFS, error) {
-	v := l.v
-	bin, err := v.e2eBinary()
-	if err != nil {
-		return nil, err
-	}
-	base, err := v.tempDir("dsh-s87-nfs-")
-	if err != nil {
-		return nil, err
-	}
-	n := &s87NFS{backing: v.join(base, "export")}
-	if _, err := v.must("mkdir", n.backing); err != nil {
-		return nil, err
-	}
-	p, err := v.spawn([]string{s87NFSBackingEnv + "=" + n.backing}, false, bin)
-	if err != nil {
-		return nil, err
-	}
-	timeout := time.After(60 * time.Second)
-	for {
-		select {
-		case line, ok := <-p.lines:
-			if !ok {
-				<-p.exited
-				return nil, fmt.Errorf("service:filesystem: the NFS server on %s exited: %s", v, p.stderr.String())
-			}
-			if rest, found := strings.CutPrefix(line, s87NFSReady+" "); found {
-				if _, err := fmt.Sscan(rest, &n.port); err != nil {
-					return nil, fmt.Errorf("service:filesystem: the NFS server on %s said %q", v, line)
-				}
-				return n, nil
-			}
-		case <-timeout:
-			return nil, fmt.Errorf("service:filesystem: the NFS server on %s did not start within a minute: %s", v, p.stderr.String())
-		}
-	}
-}
-
-// mount mounts source at the mount point at with the kernel's fstype client, as
-// root, and unmounts it at the end; it requires the mount's filesystem to be
-// one of want.
-func (l *s87Leg) mount(fstype, source, opts, secret, at string, want ...string) (string, error) {
-	v := l.v
-	if _, err := v.root(secret, "mount", "-i", "-t", fstype, "-o", opts, source, at); err != nil {
-		return "", fmt.Errorf("service:filesystem: the kernel's %s client mounts only as root (CAP_SYS_ADMIN); the suite runs mount and umount, and nothing else, as root (wsl.exe -u root, root itself, or sudo -n, so a sudoers grant of just mount and umount suffices), or set DSH_SCENARIO_REMOTE_DIRS with DSH_SCENARIO_REMOTE_CHANGE for shares kept per %s: %w", fstype, s87Runbook, err)
-	}
-	s87OuterT.Cleanup(func() {
-		if _, err := v.root("", "umount", at); err != nil {
-			if _, err := v.root("", "umount", "-l", at); err != nil {
-				s87OuterT.Logf("s87 unmounting %s on %s: %v", at, v, err)
-			}
-		}
-	})
-	fs, err := v.fsType(at)
-	if err != nil {
-		return "", err
-	}
-	if !slices.Contains(want, fs) {
-		return "", fmt.Errorf("service:filesystem: %s is on %s after mounting %s, not %v", at, fs, fstype, want)
-	}
-	return fs, nil
+	return []string{"smb", "nfs"}
 }
 
 func (s *s87State) givenRemoteDirs() error {
-	return s.each(s.provision(func(l *s87Leg) error {
-		if l.inputs["DSH_SCENARIO_REMOTE_DIRS"] != "" && l.inputs["DSH_SCENARIO_REMOTE_CHANGE"] != "" {
-			for _, d := range strings.Split(l.inputs["DSH_SCENARIO_REMOTE_DIRS"], ";") {
-				if d = strings.TrimSpace(d); d != "" {
-					l.volumes = append(l.volumes, "the operator's "+d)
-				}
-			}
-			return nil
+	return s.each(func(l *s87Leg) error {
+		dirs, change := l.op["DSH_SCENARIO_REMOTE_DIRS"], l.op["DSH_SCENARIO_REMOTE_CHANGE"]
+		label := s87Label(l.v)
+		switch {
+		case dirs != "" && change != "":
+			return l.operatorDirs(dirs)
+		case dirs != "" || change != "":
+			return errors.New("DSH_SCENARIO_REMOTE_DIRS and DSH_SCENARIO_REMOTE_CHANGE go together: set both for the operator's shares, or neither")
+		case strings.HasSuffix(label, ":smb"):
+			return fmt.Errorf("service:filesystem: share preflight failed: this runner is the %s variant, whose shares are the operator's, and DSH_SCENARIO_REMOTE_DIRS with DSH_SCENARIO_REMOTE_CHANGE is not set; mount them per %s", label, s87Runbook)
+		case l.v.goos == "windows":
+			return l.crossedWindows()
+		case l.v.wsl:
+			return l.crossedLinux()
 		}
-		if len(l.op) > 0 && (l.op["DSH_SCENARIO_REMOTE_DIRS"] != "" || l.op["DSH_SCENARIO_REMOTE_CHANGE"] != "") {
-			return errors.New("DSH_SCENARIO_REMOTE_DIRS and DSH_SCENARIO_REMOTE_CHANGE go together: set both, or neither for the ephemeral instance")
-		}
-		if l.v.goos == "windows" {
-			return l.remoteWindows()
-		}
-		return l.remoteLinux()
-	}))
+		return fmt.Errorf("service:filesystem: native Linux has no cross-OS directory, and DSH_SCENARIO_REMOTE_DIRS with DSH_SCENARIO_REMOTE_CHANGE is not set; run under WSL, or on the linux-wsl:smb variant with the shares of %s", s87Runbook)
+	})
 }
 
-// s87ChangePS changes {name} in {dir}, seen from Windows, from the other side:
-// the WSL distribution appends the marker to the file behind the directory (the
-// share's backing directory, or the WSL directory itself), so the size changes.
-// Windows' SMB client keeps a file's metadata for its FileInfoCacheLifetime (ten
-// seconds by default), so the command returns once this machine sees the
-// change, which is when the scenario times it.
+// operatorDirs classifies each of the operator's directories by its filesystem.
+func (l *s87Leg) operatorDirs(dirs string) error {
+	var errs []error
+	for _, d := range strings.Split(dirs, ";") {
+		if d = strings.TrimSpace(d); d == "" {
+			continue
+		}
+		kind, fs, err := l.v.remoteKind(d)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("service:filesystem: share preflight failed for the operator's %s: %w", d, err))
+			continue
+		}
+		l.volumes = append(l.volumes, fmt.Sprintf("the operator's %s %s", fs, d))
+		l.remote = append(l.remote, kind)
+	}
+	return errors.Join(errs...)
+}
+
+// remoteKind is the kind of remote directory dir is (smb, nfs or cross-os) and
+// the filesystem its OS reports.
+func (v *s87Variant) remoteKind(dir string) (kind, fs string, err error) {
+	if v.goos == "windows" {
+		low := strings.ToLower(dir)
+		switch {
+		case strings.HasPrefix(low, `\\wsl.localhost\`), strings.HasPrefix(low, `\\wsl$\`):
+			return "cross-os", "WSL", nil
+		case strings.HasPrefix(dir, `\\`):
+			// A UNC path is opened by Windows' SMB redirector.
+			return "smb", "SMB", nil
+		}
+		out, err := v.must("powershell", "-NoProfile", "-NonInteractive", "-Command",
+			"[System.IO.DriveInfo]::new([System.IO.Path]::GetPathRoot('"+strings.ReplaceAll(dir, "'", "''")+"')).DriveType")
+		if err != nil {
+			return "", "", err
+		}
+		if out == "Network" {
+			return "smb", "SMB (mapped drive)", nil
+		}
+		return "", out, fmt.Errorf("%s is on a %s drive, not a network share or a WSL directory", dir, out)
+	}
+	fs, err = v.fsType(dir)
+	if err != nil {
+		return "", "", err
+	}
+	switch fs {
+	case "smb2", "smb", "cifs":
+		return "smb", fs, nil
+	case "nfs", "nfs4":
+		return "nfs", fs, nil
+	case "v9fs", "9p", "drvfs":
+		if v.wsl {
+			return "cross-os", fs, nil
+		}
+	}
+	return "", fs, fmt.Errorf("%s is on %s, not SMB, NFS or a Windows directory seen from WSL", dir, fs)
+}
+
+// s87ChangePS changes {name} in {dir}, a WSL directory seen from Windows, from
+// the other side: the WSL distribution appends the marker to the file, so the
+// size changes, and the command returns once this machine sees the change,
+// which is when the scenario times it.
 const s87ChangePS = `param([string]$Dir, [string]$Name, [string]$Marker)
 $ErrorActionPreference = 'Stop'
 $target = $null
@@ -1176,7 +907,7 @@ if (-not $target) {
 }
 $path = Join-Path $Dir $Name
 $size = [System.IO.FileInfo]::new($path).Length
-$behind = $target[2] + ($Dir.Substring($target[0].Length) -replace '\\', '/') + '/' + $Name
+$behind = ($Dir.Substring($target[0].Length) -replace '\\', '/') + '/' + $Name
 & wsl.exe -d $target[1] -e sh -c 'printf %s $1 >> $2' sh $Marker $behind
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $t = [System.Diagnostics.Stopwatch]::StartNew()
@@ -1189,67 +920,21 @@ while ([System.IO.FileInfo]::new($path).Length -eq $size) {
 }
 `
 
-// remoteWindows maps the suite's SMB share, served from the WSL distribution,
-// and gives the Windows variant a directory on it, and a directory of the WSL
-// distribution seen from Windows through \\wsl.localhost.
-func (l *s87Leg) remoteWindows() error {
-	ps := func(script string, env ...string) (string, error) {
-		cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference = 'Stop'; "+script)
-		cmd.Env = s87Env(env...)
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			return string(out), fmt.Errorf("%s: %v\n%s", script, err, out)
-		}
-		return string(out), nil
-	}
-	// A user maps a share on a port other than 445 only through New-SmbMapping's
-	// TcpPort (Windows 11 24H2 and later), and only root binds 445; checked before
-	// anything is served.
-	if out, err := ps(`[bool](Get-Command New-SmbMapping).Parameters['TcpPort']`); err != nil || strings.TrimSpace(out) != "True" {
-		build, _ := ps(`[Environment]::OSVersion.Version.ToString()`)
-		return fmt.Errorf("service:filesystem: this Windows (%s) has no New-SmbMapping -TcpPort (Windows 11 24H2 and later), so a user cannot map the suite's SMB share served on its own port: run on a Windows that has it, or set DSH_SCENARIO_REMOTE_DIRS with DSH_SCENARIO_REMOTE_CHANGE for a share kept per %s: %v", strings.TrimSpace(build), s87Runbook, err)
-	}
+// crossedWindows gives the Windows variant a directory of the WSL distribution
+// seen from Windows through \\wsl.localhost, changed from WSL.
+func (l *s87Leg) crossedWindows() error {
 	wv, err := s87Reach("linux")
 	if err != nil || !wv.wsl {
-		return fmt.Errorf("service:filesystem: the Windows variant's SMB server and cross-OS directory are in WSL, and no WSL distribution answers; set DSH_SCENARIO_REMOTE_DIRS with DSH_SCENARIO_REMOTE_CHANGE for a share kept per %s: %v", s87Runbook, err)
+		return fmt.Errorf("service:filesystem: the Windows variant's cross-OS directory is a WSL directory seen from Windows, and no WSL distribution answers: %v", err)
 	}
-	ips, err := wv.must("hostname", "-I")
-	if err != nil || len(strings.Fields(ips)) == 0 {
-		return fmt.Errorf("service:filesystem: no address of WSL %s for the SMB server: %v", wv.distro, err)
-	}
-	smb, err := serveSMB(wv, strings.Fields(ips)[0])
-	if err != nil {
-		return err
-	}
-	l.secrets = append(l.secrets, smb.password)
-	share := `\\` + smb.host + `\` + s87Share
-	if _, err := ps(fmt.Sprintf(`New-SmbMapping -RemotePath '%s' -TcpPort %d -UserName '%s' -Password $env:S87_SMB_PASSWORD -Persistent $false | Out-Null`, share, smb.port, smb.user),
-		"S87_SMB_PASSWORD="+smb.password); err != nil {
-		return fmt.Errorf("service:filesystem: mapping the suite's SMB share as this user (New-SmbMapping -TcpPort needs Windows 11 24H2 or later): %v", err)
-	}
-	s87OuterT.Cleanup(func() {
-		if out, err := ps(fmt.Sprintf(`Remove-SmbMapping -RemotePath '%s' -Force -UpdateProfile`, share)); err != nil {
-			s87OuterT.Logf("s87 removing the SMB mapping %s: %v %s", share, err, out)
-		}
-	})
-	name := "windows-" + s87RunID
-	dir := share + `\` + name
-	if err := os.Mkdir(dir, 0o700); err != nil {
-		return fmt.Errorf("service:filesystem: the SMB share %s: %v", share, err)
-	}
-	l.volumes = append(l.volumes, fmt.Sprintf("SMB %s (smbd in WSL %s, from %s)", dir, wv.distro, wv.join(smb.backing, name)))
-	l.remote = append(l.remote, "smb")
-	sides := [][3]string{{share, wv.distro, smb.backing}}
-
 	d, err := wv.tempDir("dsh-s87-crossed-")
 	if err != nil {
 		return err
 	}
-	var seen string
-	for _, root := range []string{`\\wsl.localhost\`, `\\wsl$\`} {
-		if p := root + wv.distro + strings.ReplaceAll(d, "/", `\`); s87IsDir(p) {
-			seen = p
-			sides = append(sides, [3]string{root + wv.distro, wv.distro, ""})
+	var seen, root string
+	for _, r := range []string{`\\wsl.localhost\`, `\\wsl$\`} {
+		if p := r + wv.distro + strings.ReplaceAll(d, "/", `\`); s87IsDir(p) {
+			seen, root = p, r+wv.distro
 			break
 		}
 	}
@@ -1258,14 +943,9 @@ func (l *s87Leg) remoteWindows() error {
 	}
 	l.volumes = append(l.volumes, "WSL "+seen)
 	l.remote = append(l.remote, "cross-os")
-
 	q := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
-	var table strings.Builder
-	table.WriteString("$Sides = @()\n")
-	for _, s := range sides {
-		fmt.Fprintf(&table, "$Sides += ,@(%s, %s, %s)\n", q(s[0]), q(s[1]), q(s[2]))
-	}
-	body := strings.Replace(s87ChangePS, "$ErrorActionPreference = 'Stop'\n", "$ErrorActionPreference = 'Stop'\n"+table.String(), 1)
+	table := fmt.Sprintf("$Sides = @(,@(%s, %s))\n", q(root), q(wv.distro))
+	body := strings.Replace(s87ChangePS, "$ErrorActionPreference = 'Stop'\n", "$ErrorActionPreference = 'Stop'\n"+table, 1)
 	scratch, err := l.v.tempDir("dsh-s87-change-")
 	if err != nil {
 		return err
@@ -1274,7 +954,7 @@ func (l *s87Leg) remoteWindows() error {
 	if err := os.WriteFile(script, []byte(body), 0o600); err != nil {
 		return err
 	}
-	l.set("DSH_SCENARIO_REMOTE_DIRS", dir+";"+seen)
+	l.set("DSH_SCENARIO_REMOTE_DIRS", seen)
 	l.set("DSH_SCENARIO_REMOTE_CHANGE", `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "`+script+`" "{dir}" "{name}" "{marker}"`)
 	return nil
 }
@@ -1284,103 +964,42 @@ func s87IsDir(p string) bool {
 	return err == nil && st.IsDir()
 }
 
-// remoteLinux mounts the suite's SMB share and NFS export on the Linux variant
-// and gives it a directory on each, changed behind the server, and under WSL a
-// directory of this Windows host seen from WSL (drvfs, 9p), changed from Windows
-// through WSL interop.
-func (l *s87Leg) remoteLinux() error {
+// crossedLinux gives the Linux variant under WSL a directory of this Windows
+// host seen from WSL (drvfs, 9p), changed from Windows through WSL interop.
+func (l *s87Leg) crossedLinux() error {
 	v := l.v
-	smb, err := serveSMB(v, "127.0.0.1")
+	host, err := os.MkdirTemp("", "dsh-s87-crossed-")
 	if err != nil {
 		return err
 	}
-	l.secrets = append(l.secrets, smb.password)
-	nfs, err := l.serveNFS()
+	s87OuterT.Cleanup(func() { _ = os.RemoveAll(host) })
+	dir, err := v.path(host)
 	if err != nil {
 		return err
 	}
-	base, err := v.tempDir("dsh-s87-mnt-")
+	kind, fs, err := v.remoteKind(dir)
 	if err != nil {
-		return err
+		return fmt.Errorf("service:filesystem: the Windows directory %s seen from WSL: %w", dir, err)
 	}
-	smbAt, nfsAt := v.join(base, "smb"), v.join(base, "nfs")
-	if _, err := v.must("mkdir", smbAt, nfsAt); err != nil {
-		return err
-	}
-	ids, err := v.must("sh", "-c", "id -u; id -g")
-	if err != nil {
-		return err
-	}
-	uid, gid, _ := strings.Cut(ids, "\n")
-	// The runbook's CIFS options (vers=3.1.1, the user's uid and gid), else the
-	// kernel's defaults; ip, unc and the password are what mount.cifs would pass.
-	// actimeo=0: the scenario times the change when this machine first sees the
-	// file differ, and with the default one-second attribute cache the client
-	// refreshes the mtime of the file it just wrote a few milliseconds later (to
-	// the server's), which the test would take for the remote change, while the
-	// change itself shows only when the cache expires. With no attribute cache
-	// each stat is the server's, so the change is timed when it is visible and
-	// the two-interval bound is measured from there, unchanged.
-	smbFS, err := l.mount("cifs", "//127.0.0.1/"+s87Share,
-		fmt.Sprintf(`ip=127.0.0.1,unc=\\127.0.0.1\%s,port=%d,username=%s,password=%s,vers=3.1.1,uid=%s,gid=%s,actimeo=0`,
-			s87Share, smb.port, smb.user, smb.password, strings.TrimSpace(uid), strings.TrimSpace(gid)),
-		smb.password, smbAt, "smb2", "cifs")
-	if err != nil {
-		return err
-	}
-	// NFSv3, the export's protocol, on its one port; no lock manager runs.
-	nfsFS, err := l.mount("nfs", "127.0.0.1:/",
-		fmt.Sprintf("vers=3,proto=tcp,port=%d,mountport=%d,mountproto=tcp,nolock,addr=127.0.0.1", nfs.port, nfs.port),
-		"", nfsAt, "nfs")
-	if err != nil {
-		return err
-	}
-	name := "linux-" + s87RunID
-	dirs := []string{v.join(smbAt, name), v.join(nfsAt, name)}
-	if _, err := v.must("mkdir", dirs[0], dirs[1]); err != nil {
-		return fmt.Errorf("service:filesystem: the SMB and NFS mounts: %v", err)
-	}
-	l.volumes = append(l.volumes,
-		fmt.Sprintf("%s %s (smbd, from %s)", smbFS, dirs[0], v.join(smb.backing, name)),
-		fmt.Sprintf("%s %s (NFSv3 export, from %s)", nfsFS, dirs[1], v.join(nfs.backing, name)))
-	l.remote = append(l.remote, "smb", "nfs")
-	scratch, err := v.tempDir("dsh-s87-change-")
+	l.volumes = append(l.volumes, fs+" "+dir)
+	l.remote = append(l.remote, kind)
+	ps, err := v.path(filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe"))
 	if err != nil {
 		return err
 	}
 	q := func(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 	body := "#!/bin/sh\nset -e\nd=$1 n=$2 m=$3\ncase \"$d\" in\n" +
-		q(smbAt) + "/*) p=" + q(smb.backing) + "\"${d#" + q(smbAt) + "}\" ;;\n" +
-		q(nfsAt) + "/*) p=" + q(nfs.backing) + "\"${d#" + q(nfsAt) + "}\" ;;\n"
-	if v.wsl {
-		host, err := os.MkdirTemp("", "dsh-s87-crossed-")
-		if err != nil {
-			return err
-		}
-		s87OuterT.Cleanup(func() { _ = os.RemoveAll(host) })
-		dir, err := v.path(host)
-		if err != nil {
-			return err
-		}
-		fs, err := v.fsType(dir)
-		if err != nil {
-			return err
-		}
-		dirs = append(dirs, dir)
-		l.volumes = append(l.volumes, fs+" "+dir)
-		l.remote = append(l.remote, "cross-os")
-		ps, err := v.path(filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe"))
-		if err != nil {
-			return err
-		}
-		body += "/mnt/*) w=$(wslpath -w \"$d/$n\")\n  exec " + q(ps) + " -NoProfile -NonInteractive -Command \"[System.IO.File]::AppendAllText('$w', '$m')\" ;;\n"
+		"/mnt/*) w=$(wslpath -w \"$d/$n\")\n  exec " + q(ps) + " -NoProfile -NonInteractive -Command \"[System.IO.File]::AppendAllText('$w', '$m')\" ;;\n" +
+		"*) echo \"no other side is known for $d\" >&2; exit 3 ;;\nesac\n"
+	scratch, err := v.tempDir("dsh-s87-change-")
+	if err != nil {
+		return err
 	}
-	body += "*) echo \"no other side is known for $d\" >&2; exit 3 ;;\nesac\nprintf %s \"$m\" >> \"$p/$n\"\n"
 	script := v.join(scratch, "change.sh")
 	if err := v.writeFile(script, []byte(body)); err != nil {
 		return err
 	}
-	l.set("DSH_SCENARIO_REMOTE_DIRS", strings.Join(dirs, ";"))
+	l.set("DSH_SCENARIO_REMOTE_DIRS", dir)
 	l.set("DSH_SCENARIO_REMOTE_CHANGE", "sh "+script+" {dir} {name} {marker}")
 	return nil
 }
@@ -1407,9 +1026,9 @@ func (s *s87State) whenSearch(budget string) error {
 // searches on both variants fit within go test's default ten-minute deadline;
 // every leg runs even when one fails.
 func (s *s87State) run() error {
-	legs := s.live()
-	if len(legs) == 0 && len(s.active()) == 0 {
-		return errors.New("no variant was reached or recorded")
+	legs := s.reached()
+	if len(legs) == 0 {
+		return errors.New("no variant was reached")
 	}
 	for _, l := range legs {
 		if _, err := l.v.build(); err != nil {
@@ -1423,13 +1042,10 @@ func (s *s87State) run() error {
 	wg.Wait()
 	var errs []error
 	for _, l := range s.legs {
-		if l.ran != nil && l.unreached == nil && l.recorded == nil {
+		if l.ran != nil && l.unreached == nil {
 			errs = append(errs, l.ran)
 		}
 		if err := s.persist(l); err != nil {
-			errs = append(errs, err)
-		}
-		if err := s.record(l); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -1557,242 +1173,6 @@ func (s *s87State) persist(l *s87Leg) error {
 	return nil
 }
 
-// ---- committed records ----
-
-// A variant this host cannot reach (native Linux has no Windows; a Windows host
-// with no WSL has no Linux), or a leg it cannot provision (no Samba, no root for
-// the kernel's CIFS and NFS mounts, no New-SmbMapping -TcpPort), is verified
-// from the committed record of a live, passing run of the same scenarios on a
-// runner that provisions it (the variant runners of evidence/variants.md; the
-// run's own lane, recorded with DSH_S18_RECORD=1). A record holds that run's
-// scenario rows, log, timing report, volumes and checkouts, and every Then step
-// asserts on it exactly as on a live leg. It is valid only for the sources it
-// ran: the digest of every module file the scenario test binary is built from
-// for the record's OS and architecture, go.mod and go.sum, and this stage's own
-// suite files; any change to them makes it stale, which fails the step. With
-// DSH_S18_LIVE_ONLY=1 no record is used. Legs this host provisions always run
-// live, and a live failure is never replaced by a record.
-
-const (
-	s87RecordKind  = "s87-leg-record"
-	s87StageFiles  = "dh_s_18_acceptance_on_real_operating_systems_search_and_file_watching_on_real_systems*"
-	s87RecordsPath = "test/e2e/harness-DSH-M2/testdata/s87-records"
-)
-
-type s87Record struct {
-	Kind    string                    `json:"kind"`
-	IDs     []string                  `json:"ids"`
-	Tests   []string                  `json:"tests"`
-	OS      string                    `json:"os"`
-	Arch    string                    `json:"arch"`
-	WSL     bool                      `json:"wsl"`
-	Distro  string                    `json:"distro,omitempty"`
-	Variant string                    `json:"variant"`
-	Lane    string                    `json:"lane"`
-	Sources string                    `json:"sources"`
-	Commit  string                    `json:"commit"`
-	Run     string                    `json:"run"`
-	At      string                    `json:"at"`
-	Code    int                       `json:"code"`
-	Rows    map[string]map[string]any `json:"rows"`
-	Volumes []string                  `json:"volumes"`
-	Remote  []string                  `json:"remote,omitempty"`
-	Files   map[string]int            `json:"files,omitempty"`
-	Repos   string                    `json:"repos,omitempty"`
-	RG      string                    `json:"rg,omitempty"`
-	Detail  string                    `json:"detail,omitempty"`
-	Log     string                    `json:"log"`
-}
-
-var (
-	s87SourcesMu sync.Mutex
-	s87SourceSum = map[string]string{}
-)
-
-// s87Sources is the digest of the sources a run of the scenario tests for
-// goos/goarch is built from (see above).
-func s87Sources(goos, goarch string) (string, error) {
-	s87SourcesMu.Lock()
-	defer s87SourcesMu.Unlock()
-	key := goos + "/" + goarch
-	if d, ok := s87SourceSum[key]; ok {
-		return d, nil
-	}
-	mod, err := s87Module()
-	if err != nil {
-		return "", err
-	}
-	cmd := exec.Command("go", "list", "-deps", "-test", "-tags", "scenario",
-		"-json=ImportPath,Dir,GoFiles,CgoFiles,TestGoFiles,XTestGoFiles,EmbedFiles,Module", s87Pkg)
-	cmd.Dir, cmd.Env = mod, append(s87Env(), "GOWORK=off", "GOOS="+goos, "GOARCH="+goarch, "CGO_ENABLED=0")
-	out, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("go list for %s: %v", key, err)
-	}
-	files := map[string]bool{"go.mod": true, "go.sum": true}
-	dec := json.NewDecoder(bytes.NewReader(out))
-	for dec.More() {
-		var p struct {
-			Dir                                                      string
-			GoFiles, CgoFiles, TestGoFiles, XTestGoFiles, EmbedFiles []string
-			Module                                                   *struct{ Main bool }
-		}
-		if err := dec.Decode(&p); err != nil {
-			return "", fmt.Errorf("go list for %s: %v", key, err)
-		}
-		if p.Module == nil || !p.Module.Main {
-			continue
-		}
-		for _, f := range slices.Concat(p.GoFiles, p.CgoFiles, p.TestGoFiles, p.XTestGoFiles, p.EmbedFiles) {
-			if !filepath.IsAbs(f) {
-				f = filepath.Join(p.Dir, f)
-			}
-			rel, err := filepath.Rel(mod, f)
-			if err != nil || strings.HasPrefix(rel, "..") {
-				continue // the generated test main, in the build cache
-			}
-			files[filepath.ToSlash(rel)] = true
-		}
-	}
-	own, err := filepath.Glob(filepath.Join(mod, "test", "e2e", "harness-DSH-M2", s87StageFiles))
-	if err != nil {
-		return "", err
-	}
-	for _, f := range own {
-		rel, _ := filepath.Rel(mod, f)
-		files[filepath.ToSlash(rel)] = true
-	}
-	h := sha256.New()
-	for _, rel := range slices.Sorted(maps.Keys(files)) {
-		b, err := os.ReadFile(filepath.Join(mod, filepath.FromSlash(rel)))
-		if err != nil {
-			return "", err
-		}
-		b = bytes.ReplaceAll(b, []byte("\r\n"), []byte("\n"))
-		fmt.Fprintf(h, "%s\x00%d\x00", rel, len(b))
-		h.Write(b)
-	}
-	d := hex.EncodeToString(h.Sum(nil))
-	s87SourceSum[key] = d
-	return d, nil
-}
-
-// s87RecordsDir, when set, replaces the committed records' directory.
-var s87RecordsDir string
-
-func (s *s87State) recordPath(goos string) (string, error) {
-	dir := s87RecordsDir
-	if dir == "" {
-		mod, err := s87Module()
-		if err != nil {
-			return "", err
-		}
-		dir = filepath.Join(mod, filepath.FromSlash(s87RecordsPath))
-	}
-	return filepath.Join(dir, strings.ToLower(strings.Join(s.ids, "+"))+"-"+goos+".json"), nil
-}
-
-// fromRecord verifies l from its variant's committed record, after cause kept
-// it from running here; it returns cause, with why no record serves, when none
-// does.
-func (s *s87State) fromRecord(l *s87Leg, cause error) error {
-	if os.Getenv("DSH_S18_LIVE_ONLY") == "1" {
-		return cause
-	}
-	p, err := s.recordPath(l.v.goos)
-	if err != nil {
-		return errors.Join(cause, err)
-	}
-	rel := s87RecordsPath + "/" + filepath.Base(p)
-	fail := func(why string, a ...any) error {
-		return fmt.Errorf("%w; and %s is no record to verify the %s variant from: %s (run this suite with DSH_S18_RECORD=1 on a runner that provisions it, per %s, and commit the record)",
-			cause, rel, l.v.goos, fmt.Sprintf(why, a...), s87Runbook)
-	}
-	b, err := os.ReadFile(p)
-	if err != nil {
-		return fail("%v", err)
-	}
-	var r s87Record
-	dec := json.NewDecoder(bytes.NewReader(b))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&r); err != nil {
-		return fail("%v", err)
-	}
-	switch {
-	case r.Kind != s87RecordKind:
-		return fail("kind %q", r.Kind)
-	case !slices.Equal(r.IDs, s.ids) || !slices.Equal(r.Tests, s.tests):
-		return fail("it records %v (%v), not %v (%v)", r.IDs, r.Tests, s.ids, s.tests)
-	case r.OS != l.v.goos || r.Arch == "":
-		return fail("it records %s/%s", r.OS, r.Arch)
-	case r.Code != 0:
-		return fail("its run exited %d", r.Code)
-	}
-	sum, err := s87Sources(r.OS, r.Arch)
-	if err != nil {
-		return fail("%v", err)
-	}
-	if r.Sources != sum {
-		return fail("it ran sources %.12s, and these are %.12s: it is stale", r.Sources, sum)
-	}
-	for _, id := range s.ids {
-		if row := r.Rows[id]; row["result"] != "passed" || row["os"] != r.OS {
-			return fail("its %s row is %v", id, row)
-		}
-	}
-	for _, t := range s.tests {
-		if !strings.Contains(r.Log, "--- PASS: "+t+" ") {
-			return fail("its log has no pass of %s", t)
-		}
-	}
-	l.v = &s87Variant{goos: r.OS, goarch: r.Arch, wsl: r.WSL, distro: r.Distro}
-	l.recorded, l.ran = &r, nil
-	l.rows, l.log, l.detail, l.code = r.Rows, r.Log, []byte(r.Detail), r.Code
-	l.volumes, l.remote, l.files, l.rg = r.Volumes, r.Remote, r.Files, r.RG
-	l.op, l.inputs = map[string]string{}, map[string]string{"DSH_SCENARIO_REPOS": r.Repos}
-	s87OuterT.Logf("s87 %v on %s: not run here (%v); verified from %s", s.ids, l.v, cause, l.lane())
-	return nil
-}
-
-// record writes l's live, passing run as its variant's record when
-// DSH_S18_RECORD=1.
-func (s *s87State) record(l *s87Leg) error {
-	if os.Getenv("DSH_S18_RECORD") != "1" || l.recorded != nil || l.unreached != nil || l.ran != nil {
-		return nil
-	}
-	sum, err := s87Sources(l.v.goos, l.v.goarch)
-	if err != nil {
-		return err
-	}
-	commit, _ := exec.Command("git", "rev-parse", "HEAD").Output()
-	redact := func(s string) string {
-		for _, x := range l.secrets {
-			s = strings.ReplaceAll(s, x, "***")
-		}
-		return s
-	}
-	r := s87Record{Kind: s87RecordKind, IDs: s.ids, Tests: s.tests, OS: l.v.goos, Arch: l.v.goarch, WSL: l.v.wsl, Distro: l.v.distro,
-		Variant: l.v.String(), Lane: l.lane(), Sources: sum, Commit: strings.TrimSpace(string(commit)), Run: s87RunID,
-		At: time.Now().UTC().Format(time.RFC3339), Code: l.code, Rows: l.rows, Volumes: l.volumes, Remote: l.remote,
-		Files: l.files, Repos: l.inputs["DSH_SCENARIO_REPOS"], RG: l.rg, Detail: redact(string(l.detail)), Log: redact(l.log)}
-	b, err := json.MarshalIndent(r, "", "  ")
-	if err != nil {
-		return err
-	}
-	p, err := s.recordPath(l.v.goos)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		return err
-	}
-	if err := os.WriteFile(p, append(b, '\n'), 0o644); err != nil {
-		return err
-	}
-	s87OuterT.Logf("s87 %v on %s: recorded at %s (sources %.12s)", s.ids, l.v, p, sum)
-	return nil
-}
-
 // ---- Then ----
 
 func (s *s87State) thenRows(a, b string) error {
@@ -1856,7 +1236,7 @@ type s87Timing struct {
 func (s *s87State) thenTimings() error {
 	return s.logs([]string{"TestSearchMeetsBudget"}, nil, func(l *s87Leg) error {
 		budget := s.budget
-		if b, err := time.ParseDuration(l.inputs["DSH_SCENARIO_SEARCH_BUDGET"]); err == nil && l.recorded == nil {
+		if b, err := time.ParseDuration(l.inputs["DSH_SCENARIO_SEARCH_BUDGET"]); err == nil {
 			budget = b
 		}
 		perRepo := map[string]map[string]bool{}
@@ -1941,20 +1321,13 @@ func (s *s87State) thenPoll() error {
 		if len(l.volumes) == 0 {
 			return errors.New("no network or cross-OS directory was watched")
 		}
-		if _, ok := l.op["DSH_SCENARIO_REMOTE_DIRS"]; ok {
-			return nil
-		}
-		want := []string{"smb", "cross-os"}
-		if l.v.goos == "linux" {
-			want = []string{"smb", "nfs"}
-			if l.v.wsl {
-				want = append(want, "cross-os")
-			}
-		}
-		for _, k := range want {
+		for _, k := range l.wantRemote() {
 			if !slices.Contains(l.remote, k) {
 				return fmt.Errorf("no %s directory was watched (watched %v)", k, l.volumes)
 			}
+		}
+		if l.op["DSH_SCENARIO_REMOTE_DIRS"] == "" {
+			s87OuterT.Logf("s87 %s: not a *:smb variant, so CHOKIDAR-2 watched the cross-OS directory; SMB and NFS are watched on the operator's shares of the linux-wsl:smb and windows-host:smb variants (%s)", l.v, s87Runbook)
 		}
 		return nil
 	})
@@ -1999,10 +1372,10 @@ func InitializeScenario_dh_s_18_acceptance_on_real_operating_systems_search_and_
 	ctx.Step(`^on each variant the timing report has every search of the set, its first matches within the budget and its files equal to rg's$`, s.thenTimings)
 	ctx.Step(`^on each variant the file listing equals Git's with no unexplained difference$`, s.thenListing)
 	ctx.Step(`^no external rg was spawned on any variant$`, s.thenNoRG)
-	ctx.Step(`^both the Linux and the Windows variant ran here or are verified from their committed record$`, s.thenReached)
+	ctx.Step(`^both the Linux and the Windows variant were reached and ran$`, s.thenReached)
 
 	ctx.Step(`^the same variants, each with editor saves by vim, rename, in place and backup-then-write$`, s.givenEditorVariants)
-	ctx.Step(`^on each variant a real SMB share, on Linux a real NFS mount too, and a cross-OS directory, each served by the suite and changed from its other side$`, s.givenRemoteDirs)
+	ctx.Step(`^on each variant its remote directories, the operator's SMB share and on Linux NFS mount on the smb variants and a cross-OS directory, each changed from its other side$`, s.givenRemoteDirs)
 	ctx.Step(`^CHOKIDAR-1 and CHOKIDAR-2 run on each variant$`, s.run)
 	ctx.Step(`^on each variant every save was reported exactly once within "([^"]*)"$`, s.thenSaves)
 	ctx.Step(`^on each variant the create, burst, rename and delete of a watched tree were each reported exactly once within the bound$`, s.thenTransitions)

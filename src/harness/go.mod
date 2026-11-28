@@ -28,9 +28,6 @@ require (
 	// docs/harness/libs/chokidar.md DH-ADR-CHOKIDAR-1; BSD-3-Clause, requires only
 	// golang.org/x/sys.
 	github.com/fsnotify/fsnotify v1.10.1
-	// The filesystem the Stage 8.7 e2e suite's NFS export serves (go-nfs below);
-	// Apache-2.0. Test code only: never linked into the binary.
-	github.com/go-git/go-billy/v5 v5.9.2
 	// Schema inference and full JSON Schema validation for internal/schema
 	// (DH-D-UTIL-1): chosen by docs/harness/libs/zod.md DH-ADR-SCHEMA-1; MIT, no
 	// non-test dependencies (RM-10).
@@ -59,12 +56,6 @@ require (
 	// Option parsing of internal/cli/cmdline in both stages (DH-ADR-COMMANDER-1):
 	// chosen by docs/harness/libs/commander.md section 5; BSD-3-Clause, no requirements.
 	github.com/spf13/pflag v1.0.10
-	// The NFSv3 server of the Stage 8.7 e2e suite's real NFS mount on Linux, served
-	// as the run's own user (test/e2e/harness-DSH-M2, DH-E-CHOKIDAR-2); Apache-2.0,
-	// requires go-billy, go-nfs-client (BSD-2-Clause), go-xdr (ISC), golang-lru/v2
-	// (MPL-2.0) and filepath-securejoin (BSD-3-Clause, MPL-2.0), no cgo. Test code
-	// only: no package of dsh imports it, so it is never linked into the binary.
-	github.com/willscott/go-nfs v0.0.4
 	// The one YAML dialect, imported only by internal/boot/yamlx (DH-D-BOOT-4,
 	// DH-D-LOADER-2): chosen by docs/harness/libs/yaml.md DH-ADR-YAML-1 for comments
 	// on nodes and positions; Apache-2.0 and MIT, no dependencies (RM-10).
@@ -83,19 +74,15 @@ require (
 require (
 	github.com/cucumber/gherkin/go/v42 v42.0.0 // indirect
 	github.com/cucumber/messages/go/v34 v34.2.0 // indirect
-	github.com/cyphar/filepath-securejoin v0.6.1 // indirect
 	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/hashicorp/go-immutable-radix v1.3.1 // indirect
 	github.com/hashicorp/go-memdb v1.3.5 // indirect
 	github.com/hashicorp/golang-lru v0.5.4 // indirect
-	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.1.0 // indirect
-	github.com/rasky/go-xdr v0.0.0-20170124162913-1a41d1a06c93 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	github.com/willscott/go-nfs-client v0.0.0-20240104095149-b44639837b00 // indirect
 	// Required by go-landlock's all-threads path, which the harness never calls; without cgo it
 	// uses syscall.AllThreadsSyscall and compiles no C (node-addon-system.md); BSD-3-Clause OR
 	// GPL-2.0-only.
