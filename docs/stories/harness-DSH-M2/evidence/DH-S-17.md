@@ -32,8 +32,8 @@ An acceptance step is ticked only by its scenarios; the commit is the one the sc
 | Step | Deliverable | Commit | Notes |
 | --- | --- | --- | --- |
 | 17.1 | DH-E-TOOLCHAIN-1 | | not run; blocked, see [Stage 7.2 blockers](#stage-72-blockers) |
-| 17.2 | DH-E-SESSION-1, DH-E-SESSION-2 | | |
-| 17.3 | DH-E-AGENT-1 to -4 | | |
+| 17.2 | DH-E-SESSION-1, DH-E-SESSION-2 | | not run; blocked, see [Stage 7.3 blockers](#stage-73-blockers) |
+| 17.3 | DH-E-AGENT-1 to -4 | | not run; blocked, see [Stage 7.3 blockers](#stage-73-blockers) |
 | 17.4 | DH-E-LLM-1, DH-E-LLM-3 | | |
 | 17.5 | DH-E-TOOLS-1 | | |
 | 17.6 | DH-E-VIEW-1 | | |
@@ -48,12 +48,12 @@ The 14 scenarios of the steps, on E1: Linux with the signed-in Claude Code route
 | Scenario | Variant | Venue | Leg | Environment | Commit | Result | Artifacts |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | DH-E-TOOLCHAIN-1 | Linux (E1) | acceptance | required | E1 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
-| DH-E-SESSION-1 | Linux (E1) | acceptance | required | E1 | | not run (stage not started) | |
-| DH-E-SESSION-2 | Linux (E1) | acceptance | required | E1 | | not run (stage not started) | |
-| DH-E-AGENT-1 | Linux (E1) | acceptance | required | E1 | | not run (stage not started) | |
-| DH-E-AGENT-2 | Linux (E1) | acceptance | required | E1 | | not run (stage not started) | |
-| DH-E-AGENT-3 | Linux (E1) | acceptance | required | E1 | | not run (stage not started) | |
-| DH-E-AGENT-4 | Linux (E1) | acceptance | required | E1 | | not run (stage not started) | |
+| DH-E-SESSION-1 | Linux (E1) | acceptance | required | E1 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
+| DH-E-SESSION-2 | Linux (E1) | acceptance | required | E1 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
+| DH-E-AGENT-1 | Linux (E1) | acceptance | required | E1 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
+| DH-E-AGENT-2 | Linux (E1) | acceptance | required | E1 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
+| DH-E-AGENT-3 | Linux (E1) | acceptance | required | E1 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
+| DH-E-AGENT-4 | Linux (E1) | acceptance | required | E1 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
 | DH-E-LLM-1 | claude-code | acceptance | required | E1 | | not run (stage not started) | |
 | DH-E-LLM-1 | copilot-cli | acceptance | recorded | E1 | | not run (stage not started) | |
 | DH-E-LLM-3 | claude-code | acceptance | required | E1 | | not run (stage not started) | |
@@ -95,6 +95,34 @@ When it runs, the TOOLCHAIN-1 row takes the commit of step 1 of the runbook, `E1
 (or `E1 runner:<name>`), and in Artifacts the `dsh` SHA-256, the claude-code model id, the run id and the
 record's "request received equals request rebuilt" result (M2-DEC-5); the copilot-cli leg is recorded
 either way (M2-DEC-4).
+
+## Stage 7.3 blockers
+
+implementation-plan Stage 7.3 (impl.md 17.2 and 17.3: `DH-E-SESSION-1`, `DH-E-SESSION-2`,
+`DH-E-AGENT-1` to `-4`) was taken up on `aa11dac` and could not run. Nothing below is evidence of
+a run; the six rows stay `not run` and are owed. Each blocker on its own stops the run:
+
+| Blocker | Seen | What clears it |
+| --- | --- | --- |
+| `harness-gate entry` exits 1: harness:DSH-M1 is not closed (DH-S-1 to DH-S-11 read `Closure status: open`; no `harness-DSH-M1/evidence/closure.md`). M2-DEC-1: no M2 scenario run before M1 closes. | `GOWORK=off go -C tools/harness-gate run . entry --root ../..` on `aa11dac`: 12 blockers, exit 1 | M1 closure merges and `entry` exits 0 |
+| `DH-E-TOOLCHAIN-1` has not run. impl.md DH-S-17 Sequence and architecture.md rule 7 run the keyless replay first, so a wrong build is found before a prompt is spent; its row reads `not run` ([Stage 7.2 blockers](#stage-72-blockers)). | Scenarios table, TOOLCHAIN-1 row | the TOOLCHAIN-1 row reads `passed` in the same run |
+| No committed scenario inputs. The tests need `DSH_SCENARIO_SESSION1_{LAYER,PROMPT,REPLAY}`, `DSH_SCENARIO_SESSION2_{LAYER,PROMPT}`, `DSH_SCENARIO_AGENT1_{LAYER,PROMPT,REPLAY}`, `DSH_SCENARIO_AGENT2_{LAYER,PROMPT,REPLAY}`, `DSH_SCENARIO_AGENT3_{LAYER,PROMPT,STOP,LOG,ALIVE}`, `DSH_SCENARIO_AGENT4_{LAYER,PROMPT}` and `DSH_SCENARIO_CLAUDE_CODE_MODEL` (each test's doc comment). The runbook takes them from the operator's shell or the runner's environment; none is committed. | `git grep -l -e DSH_SCENARIO_SESSION1_ -e DSH_SCENARIO_SESSION2_ -e DSH_SCENARIO_AGENT` on `aa11dac`: only the six tests and e2e-scenarios.md | the operator (or the runner's environment) supplies the inputs; none is a credential |
+| Who runs it. [runbook-s17-wsl.md](runbook-s17-wsl.md): the signed-in run is by the owner or an operator, "never an agent session". | runbook, "Who, where, and with what" | the operator runs the runbook (or the `s17` job) on a merged commit once the blockers above clear |
+
+What this stage did change: `harness-gate scenarios` ran the six scenarios in one `go test` run
+with the other single-process scenarios, and `go test` runs a package's tests in file order
+(`agent_stop_kill` before `agent_turn`, `session_kill_resume` before `session_rebuild`), so the
+host-killing scenarios would have started first. `stageOrder` in
+`tools/harness-gate/scenariorun.go` now gives DH-S-17 four phases: `DH-E-TOOLCHAIN-1`, the
+single-process scenarios (`DH-E-SESSION-1`, `DH-E-AGENT-1`, `-2`, `-4` and the others), the
+host-killing `DH-E-SESSION-2` and `DH-E-AGENT-3`, then `DH-E-SANDBOX-7` (impl.md DH-S-17
+Sequence; `TestPhasesOrderDHS17`).
+
+When they run, each of the six rows takes the commit of step 1 of the runbook and its machine
+(`E1 wsl:<host>/<distro>` or `E1 runner:<name>`); in Artifacts, the `dsh` SHA-256, the claude-code
+model id, the run id, the session export and the prompt count of the run (M2-C-5); the
+`DH-E-SESSION-2` row also records that the resumed session's log read from the scratch store runs
+`seq` 0 to n with no gap. The copilot-cli legs are recorded either way (M2-DEC-4).
 
 ## Evidence record (impl.md sec. 7.3)
 
