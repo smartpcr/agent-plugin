@@ -144,6 +144,49 @@ func runRecords(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// runMilestone is "harness-gate milestone": the milestone predicate over the story's
+// committed stage records (impl.md sec. 3.3; implementation-plan Stage 9.2). It exits 0
+// when the closure record may declare the milestone reached, naming the built-through
+// it advances to, and 1 naming each condition that refuses it.
+func runMilestone(args []string, stdout, stderr io.Writer) int {
+	var story string
+	root, ok := subcommandFlags("milestone", args, stderr, func(fs *flag.FlagSet) {
+		fs.StringVar(&story, "story", closure.DefaultStory, "the story whose milestone is checked")
+	})
+	if !ok {
+		return 2
+	}
+	s, known := closure.Stories[story]
+	if !known || s.Milestone.Name == "" {
+		fmt.Fprintf(stderr, "harness-gate milestone: story %q has no milestone rule\n", story)
+		return 2
+	}
+	x, code := readIndexFor("milestone", root, stderr)
+	if x == nil {
+		return code
+	}
+	abs, _ := filepath.Abs(root)
+	records := map[string]*closure.Record{}
+	var problems []string
+	for _, stage := range s.Stages {
+		rec, err := closure.ReadRecord(abs, s.ID, stage)
+		if err != nil {
+			problems = append(problems, err.Error())
+			continue
+		}
+		records[stage] = rec
+	}
+	through, refused := s.Check(x, records)
+	problems = append(problems, refused...)
+	head := fmt.Sprintf("harness-gate milestone: %s %s", story, s.Milestone.Name)
+	if len(problems) > 0 {
+		printBlockers(stdout, head+": REFUSED", problems)
+		return 1
+	}
+	fmt.Fprintf(stdout, "%s: reached; %s may read %q and built-through advances to %s\n", head, closure.ClosureRecordPath(story), s.Milestone.DeclarationPrefix()+" yes", through)
+	return 0
+}
+
 func readIndexFor(name, root string, stderr io.Writer) (*acceptance.Index, int) {
 	abs, err := filepath.Abs(root)
 	if err != nil {

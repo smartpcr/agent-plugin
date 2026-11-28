@@ -64,7 +64,17 @@
 //	                       the final check of the closing PR: every ready
 //	                       condition and the status line reading closed
 //	records [--story s]    every stage record of the story and its closure.md
-//	                       hold their shape; a closed record also passes close
+//	                       hold their shape; a closed record also passes close;
+//	                       the milestone declaration reads yes only when the
+//	                       milestone predicate holds
+//	milestone [--story s]  the milestone predicate (impl.md sec. 3.3; Stage 9.2):
+//	                       for M2, DH-S-17 and DH-S-18 closed and the step 16.8
+//	                       guarded rows of DH-S-16 passed; exit 0 names the
+//	                       built-through it advances to (stageclose.go)
+//	release                nothing is published (M2-DOD-7, NG-7): the release
+//	                       files equal testdata/release_base.golden, no dsh
+//	                       release job, every default egress set empty
+//	                       (release.go)
 //	entry [--story s]      the first step of every guarded and acceptance run
 //	                       (M2-DEC-1, risk M2-R-04): the prior story's records all
 //	                       read closed, its closure record lists every deliverable
@@ -148,6 +158,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return runClose(args[1:], stdout, stderr)
 		case "records":
 			return runRecords(args[1:], stdout, stderr)
+		case "milestone":
+			return runMilestone(args[1:], stdout, stderr)
+		case "release":
+			return runRelease(args[1:], stdout, stderr)
 		case "entry":
 			return runEntry(args[1:], stdout, stderr)
 		case "guarded":

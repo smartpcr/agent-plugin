@@ -106,6 +106,8 @@ GOWORK=off go -C tools/harness-gate run . scenarios --root ../.. --stage DH-S-17
 GOWORK=off go -C tools/harness-gate run . ready     --root ../.. --stage DH-S-16 [--built]
 GOWORK=off go -C tools/harness-gate run . close     --root ../.. --stage DH-S-16 [--built]
 GOWORK=off go -C tools/harness-gate run . records   --root ../..
+GOWORK=off go -C tools/harness-gate run . milestone --root ../..
+GOWORK=off go -C tools/harness-gate run . release   --root ../..
 GOWORK=off go -C tools/harness-gate run . entry     --root ../.. --story harness:DSH-M2
 GOWORK=off go -C tools/harness-gate run . policy-text --root ../..
 dsh sandbox status | GOWORK=off go -C tools/harness-gate run . sandbox-preflight [--status FILE] [--service service:linux-landlock-only --preflight "landlock ABI 1-4"]
@@ -471,6 +473,39 @@ scenarios, the `copilot-cli` legs of DH-E-LLM-1, DH-E-LLM-3 and DH-E-VIEW-1
 recorded) over the same four trees. To regenerate them, run
 `go test -run 'TestStageClosureGolden|TestStageClosureS17Golden' . -update`; this is
 refused when `CI` is set.
+
+### Milestone (`harness-gate milestone`; impl.md sec. 3.3, Stage 9.2)
+
+`harness-gate milestone [--root DIR]` judges the story's milestone predicate
+(`closure/milestone.go`, `Story.Milestone`). For M2 the predicate is:
+- DH-S-17 and DH-S-18 pass `close` (DH-S-18 with `--built`);
+- every guarded scenario of DH-S-16 has a row that ran and passed. These are the
+  Stage 6.12 / step 16.8 STORE-1, STORE-2, STORE-6 and FS-3 rows, plus any guarded
+  scenario the index lists for it.
+
+It exits 0 and prints the built-through the milestone reaches (DH-S-18). Otherwise
+it exits 1 and lists every blocker. `records` also checks the `M2 reached:` line of
+`closure.md`:
+- it appears once and reads `yes` or `no`;
+- `yes` holds only when the predicate passes and the index `built-through` has
+  advanced to the milestone's stage.
+
+### Nothing published (`harness-gate release`; M2-DOD-7, NG-7)
+
+`harness-gate release [--root DIR]` checks that the story enables nothing for users:
+- `.github/workflows/release.yml` and `.goreleaser.yaml` equal their copies at the
+  story's base commit in `testdata/release_base.golden`. Each copy carries its git
+  blob ID, which is recomputed, so the golden cannot drift with the file.
+- No line of either file names `dsh`, `src/harness` or `cmd/dsh`.
+- No other workflow runs on a tag push or a release, or uses goreleaser.
+- The default egress set in `src/harness/internal/boot/profile/testdata/egress.golden`
+  is empty for every default profile, including `headless` and `sdk`. The product
+  test `TestDefaultProfilesSendNothing` computes that set and compares it with this
+  golden, because this module cannot import the product.
+
+The release tag and `release.yml` run checks are made against GitHub and are
+recorded in `closure.md`; they are not committed state.
+
 ## Acceptance index (`test/harness/acceptance-index.yaml`)
 
 Keyed by executing stage; each entry lists the authored `DH-E-*` IDs with their

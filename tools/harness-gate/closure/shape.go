@@ -1,6 +1,7 @@
 package closure
 
 import (
+	"bytes"
 	"fmt"
 	"maps"
 	"os"
@@ -25,6 +26,7 @@ type Story struct {
 	Finishing      map[string]string      // the stage whose closure proves each done-candidate
 	HeldOpen       []string               // the H-items the closure record must list
 	Obligations    map[string]Obligations // the rows each stage record owes
+	Milestone      Milestone              // when the closure record may declare the milestone reached
 }
 
 // Built reports whether stage closes with --built: a stage of the story is a build
@@ -83,6 +85,14 @@ var Stories = map[string]Story{
 		BuiltIn:     m2BuiltIn,
 		Finishing:   m2Finishing,
 		Obligations: m2Obligations,
+		// impl.md sec. 3.3, M2 row: S17 and S18 closed, and the four step 16.8 guarded
+		// scenarios (implementation-plan Stage 6.12) passed in the DH-S-16 record.
+		Milestone: Milestone{
+			Name:         "M2",
+			Closed:       []string{"DH-S-17", "DH-S-18"},
+			GuardedStage: "DH-S-16",
+			Guarded:      []string{"DH-E-STORE-1", "DH-E-STORE-2", "DH-E-STORE-6", "DH-E-FS-3"},
+		},
 	},
 }
 
@@ -309,8 +319,9 @@ func ClosureProblems(s Story, rec *Record) []string {
 // CheckRecords is "harness-gate records": every stage record of story exists and has
 // its shape; a record reading closed must also pass Close (so a legitimate close keeps
 // the check green and a premature one does not); the closure record has its rows,
-// and its built and done states hold against the stage records (ProofProblems).
-// A build stage's close runs with --built.
+// and its built and done states hold against the stage records (ProofProblems), and its
+// milestone declaration reads yes only while the milestone predicate holds
+// (DeclarationProblems). A build stage's close runs with --built.
 func CheckRecords(root string, s Story, x *acceptance.Index) []string {
 	var out []string
 	records := map[string]*Record{}
@@ -335,15 +346,15 @@ func CheckRecords(root string, s Story, x *acceptance.Index) []string {
 		}
 	}
 	rel := ClosureRecordPath(s.ID)
-	f, err := os.Open(filepath.Join(root, filepath.FromSlash(rel)))
+	src, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
 	if err != nil {
 		return append(out, fmt.Sprintf("no closure record %s: %v", rel, err))
 	}
-	defer f.Close()
-	rec, err := ParseDocument(rel, f, DeliverablesHeading, HeldOpenHeading)
+	rec, err := ParseDocument(rel, bytes.NewReader(src), DeliverablesHeading, HeldOpenHeading)
 	if err != nil {
 		return append(out, err.Error())
 	}
 	out = append(out, ClosureProblems(s, rec)...)
-	return append(out, ProofProblems(s, x, rec, records)...)
+	out = append(out, ProofProblems(s, x, rec, records)...)
+	return append(out, s.DeclarationProblems(rel, src, x, records)...)
 }

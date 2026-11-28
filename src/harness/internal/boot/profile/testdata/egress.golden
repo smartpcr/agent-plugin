@@ -1,0 +1,13 @@
+# The egress set of each default profile, composed from its shipped bundles with no
+# route and no home layer (NG-7, DH-ADR-BUNDLE-10): Egress over the composed tree, one
+# line per profile as "<profile>: [<kind> <endpoint>, ...]". TestDefaultProfilesSendNothing
+# computes the sets and compares them with this file; "harness-gate release" reads it as
+# the default egress set and refuses any profile that sends (M2-DOD-7). Edited by hand,
+# in the change that changes a bundle.
+admin: []
+core: []
+web: []
+headless: []
+sdk: []
+sdk-minimal: []
+acp: []
