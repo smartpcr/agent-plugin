@@ -8,16 +8,20 @@ Feature: SDK client acceptance (DH-E-SDK-1)
   docs/stories/harness-DSH-M2/evidence/DH-S-17.md keeps the run's commit and
   artifacts (M2-DEC-5).
 
-  # Fixture proof (the first two scenarios): the testhook build of dsh runs as a
-  # real child process (os-process) on a scratch home; route "claude-code" is a
-  # loopback stand-in model server, not the Claude Code CLI provider, and
-  # tools.testkit-ask puts every write to approval. The signed-in provider is
-  # exercised only by the @lab-s17 scenario, which is never reported passed off
-  # the S17 machine.
+  # proof: service:model-route-claude-code, as an ephemeral instance. The
+  # testhook build of dsh runs as a real child process (os-process) on a scratch
+  # home, and llm.testkit-claude-code mounts the real claude-code route
+  # (llm/provider/claudecode: argument list, environment stripping, helper launch
+  # plan, version probe, listing-only MCP server, stream-json mapping, tree stop)
+  # over testkit/claudestandin, a stand-in claude started per model request
+  # that starts dsh's listing server and replays the loopback model's
+  # stream-json. tools.testkit-ask puts every write to approval. The signed-in
+  # client itself (no stand-in) is TestSDKDrivesBuiltBinaryOverStdio, run on the
+  # S17 machine per DH-S-17.md.
 
-  Scenario: DH-E-SDK-1 -- create, prompt, approval, cancel and close on the built binary (loopback stand-in route)
+  Scenario: DH-E-SDK-1 -- create, prompt, approval, cancel and close on the built binary
     Given DSH_BIN set to dsh built from this checkout with the testhook tag
-    And a scratch home whose sdk profile layer serves route "claude-code" from a loopback stand-in model, asks before every write, and mounts the file tools on a scratch workspace holding note.txt
+    And a scratch home whose sdk profile layer mounts the real claude-code route over an ephemeral stand-in Claude Code client, asks before every write, and mounts the file tools on a scratch workspace holding note.txt
     When a Go program on src/sdk/sdk starts "$DSH_BIN --home <scratch> --profile sdk" over stdio with an approval handler answering "allowed-once" then "rejected"
     And it creates a session on route "claude-code" in the scratch workspace
     And it runs a prompt whose model writes "allowed" to note.txt
@@ -25,6 +29,7 @@ Feature: SDK client acceptance (DH-E-SDK-1)
     And it prompts a turn the model holds open and cancels it with inbox discard once the turn's request reached the model
     And it closes the session and the connection
     Then create answered a session id whose cwd is the scratch workspace
+    And every model request went through the claude-code route's client, which listed the harness tool "write" and was sent the prompt
     And the host sent approval/request once per write, each for tool "write" on the session, and the handler answered each
     And the allowed write changed note.txt to "allowed" and the rejected write left it so with a refused tool result
     And both runs completed with the model's closing text
@@ -35,7 +40,7 @@ Feature: SDK client acceptance (DH-E-SDK-1)
   # proof: service:sqlite -- the embedded SQLite store in the scratch home.
   Scenario: Run result equals last assistant message
     Given DSH_BIN set to dsh built from this checkout with the testhook tag
-    And a scratch home whose sdk profile layer serves route "claude-code" from a loopback stand-in model, asks before every write, and mounts the file tools on a scratch workspace holding note.txt
+    And a scratch home whose sdk profile layer mounts the real claude-code route over an ephemeral stand-in Claude Code client, asks before every write, and mounts the file tools on a scratch workspace holding note.txt
     When a Go program on src/sdk/sdk starts "$DSH_BIN --home <scratch> --profile sdk" over stdio with an approval handler answering "allowed-once"
     And it creates a session on route "claude-code" in the scratch workspace
     And it runs a prompt whose model writes "allowed" to note.txt
@@ -43,13 +48,3 @@ Feature: SDK client acceptance (DH-E-SDK-1)
     Then the run's session.run.completed text is the model's closing text
     And it equals the last assistant message of the run in the persisted history read back from the scratch home's SQLite store
     And the persisted history read back has no gap or duplicate seq
-
-  # proof: service:model-route-claude-code -- the signed-in Claude Code CLI exists
-  # only on the S17 machine (DSH_SCENARIO_SDK1_* set). Elsewhere the suite leaves
-  # this scenario out and reports it as a skipped Go subtest (not proven, never
-  # passed); a partly configured machine runs it and fails.
-  @lab-s17
-  Scenario: DH-E-SDK-1 on the signed-in Claude Code CLI route (S17 machine)
-    Given the S17 machine's signed-in Claude Code CLI inputs DSH_SCENARIO_SDK1_LAYER, DSH_SCENARIO_SDK1_LONG_PROMPT, DSH_SCENARIO_CLAUDE_CODE_MODEL and DSH_SCENARIO_CLAUDE_CODE_EFFORT
-    When TestSDKDrivesBuiltBinaryOverStdio runs against the release dsh named by DSH_BIN with DSH_REQUIRE_SCENARIOS=DH-E-SDK-1
-    Then it passes

@@ -6,15 +6,15 @@ package e2e
 // dh_s_17_acceptance_on_a_real_model_sdk_client_acceptance.feature (DH-S-17
 // Stage 7.5, DH-E-SDK-1, TC-20s, M2-C-10).
 //
-//   - Fixture proof: the testhook dsh named by DSH_BIN runs as a child process
-//     (`--profile sdk`) on a scratch home whose sdk layer serves route
-//     "claude-code" from a loopback stand-in model, puts every write to approval
-//     (tools.testkit-ask) and mounts the file tools on a scratch workspace. The Go
-//     client (src/sdk/sdk) drives it over the child's stdio and answers the
-//     host's approval/request; both directions are recorded, and after the close
-//     the persisted history is read back from the home's SQLite store.
-//   - Acceptance on the signed-in route (@lab-s17): the real scenario test runs
-//     where the S17 inputs are set, and is skipped (never passed) elsewhere.
+//   - The testhook dsh named by DSH_BIN runs as a child process (`--profile
+//     sdk`) on a scratch home whose sdk layer mounts the real claude-code route
+//     (llm.testkit-claude-code) over an ephemeral stand-in Claude Code client
+//     (testkit/claudestandin) that replays a loopback model's stream-json, puts
+//     every write to approval (tools.testkit-ask) and mounts the file tools on a
+//     scratch workspace. The Go client (src/sdk/sdk) drives it over the child's
+//     stdio and answers the host's approval/request; both directions are
+//     recorded, and after the close the persisted history is read back from the
+//     home's SQLite store.
 
 import (
 	"bytes"
@@ -28,7 +28,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -42,7 +41,6 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store/sqlite"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/launcher"
-	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/model"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/temphome"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/wire/sdkserver"
 	"github.com/smartpcr/agent-plugin/src/sdk/protocol"
@@ -50,17 +48,13 @@ import (
 )
 
 const (
-	scaRoute    = "claude-code"
-	scaScenario = "DH-E-SDK-1"
-	scaLiveTest = "TestSDKDrivesBuiltBinaryOverStdio"
-	scaWithin   = 2 * time.Minute
-	// scaLiveWithin bounds the live signed-in-route run (its scenario.Needs
-	// Deadline is 30m).
-	scaLiveWithin = 35 * time.Minute
+	scaRoute = "claude-code"
+	// scaModelName is a model alias of the claude-code route's catalogue.
+	scaModelName = "sonnet"
+	// scaStandinURLEnv is claudestandin.URLEnv (a main package, not importable).
+	scaStandinURLEnv = "CLAUDESTANDIN_URL"
+	scaWithin        = 2 * time.Minute
 )
-
-// scaLiveInputs are the S17 machine's inputs of TestSDKDrivesBuiltBinaryOverStdio.
-var scaLiveInputs = []string{"DSH_SCENARIO_SDK1_LAYER", "DSH_SCENARIO_SDK1_LONG_PROMPT", "DSH_SCENARIO_CLAUDE_CODE_MODEL", "DSH_SCENARIO_CLAUDE_CODE_EFFORT"}
 
 // scaWrite is one write run of the stand-in model: its tool call writes content
 // to note.txt, and closing is its closing text, which the run's result must be
@@ -72,30 +66,73 @@ var scaWrites = map[string]scaWrite{
 	"rejected": {"toolu_scar", "rejected", "The write was rejected."},
 }
 
-func (w scaWrite) turns() []string {
-	args, _ := json.Marshal(map[string]string{"file_path": "note.txt", "content": w.content + "\n"})
+// The Claude Code client's stream-json lines (claude-code-cli.md sec. 5.2 and
+// 5.4, as the route's own fixtures in llm/provider/claudecode/testdata); the
+// stand-in client fills the {{...}} fields of its run.
+const (
+	scaInit  = `{"type":"system","subtype":"init","cwd":"{{cwd}}","session_id":"{{session_id}}","tools":"{{tools}}","mcp_servers":"{{mcp_servers}}","model":"claude-sonnet-4-5","permissionMode":"dontAsk","slash_commands":[],"apiKeySource":"none","claude_code_version":"{{version}}","output_style":"default","agents":[],"skills":[],"plugins":[],"uuid":"00000000-0000-4000-8000-000000000001"}`
+	scaStart = `{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_sca","type":"message","role":"assistant","model":"claude-sonnet-4-5","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":12,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":1}}},"session_id":"{{session_id}}","parent_tool_use_id":null}`
+)
+
+func scaEventLine(ev string) string {
+	return `{"type":"stream_event","event":` + ev + `,"session_id":"{{session_id}}","parent_tool_use_id":null}`
+}
+
+func scaJSON(v any) string {
+	b, _ := json.Marshal(v)
+	return string(b)
+}
+
+func scaLines(lines ...string) string { return strings.Join(lines, "\n") + "\n" }
+
+func scaTextBlock(i int, text string) []string {
 	return []string{
-		"event: text\ndata: {\"text\":\"I will write the note.\"}\n\n" +
-			"event: tool\ndata: {\"id\":\"" + w.call + "\",\"name\":\"write\",\"args\":" + string(args) + "}\n\n" +
-			"event: usage\ndata: {\"input\":10,\"output\":5}\n\n" +
-			"event: finish\ndata: {\"reason\":\"tool_calls\"}\n\n",
-		"event: text\ndata: {\"text\":" + strconv.Quote(w.closing) + "}\n\n" +
-			"event: usage\ndata: {\"input\":20,\"output\":4}\n\n" +
-			"event: finish\ndata: {\"reason\":\"stop\"}\n\n",
+		scaEventLine(fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"text","text":""}}`, i)),
+		scaEventLine(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"text_delta","text":%s}}`, i, scaJSON(text))),
+		scaEventLine(fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, i)),
 	}
+}
+
+// turns are the two client runs of one write: the model's call of the harness
+// tool write (denied by the client's own rules and returned unexecuted, as the
+// real client does), then its closing text.
+func (w scaWrite) turns() []string {
+	input := map[string]string{"file_path": "note.txt", "content": w.content + "\n"}
+	use := scaJSON(map[string]any{"type": "tool_use", "id": w.call, "name": "mcp__dsh__write", "input": input})
+	call := append([]string{scaInit, scaStart}, scaTextBlock(0, "I will write the note.")...)
+	call = append(call,
+		scaEventLine(`{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"`+w.call+`","name":"mcp__dsh__write","input":{}}}`),
+		scaEventLine(`{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":`+scaJSON(scaJSON(input))+`}}`),
+		scaEventLine(`{"type":"content_block_stop","index":1}`),
+		`{"type":"assistant","message":{"id":"msg_sca","type":"message","role":"assistant","model":"claude-sonnet-4-5","content":[{"type":"text","text":"I will write the note."},`+use+`],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":12,"output_tokens":1}},"parent_tool_use_id":null,"session_id":"{{session_id}}"}`,
+		scaEventLine(`{"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":14}}`),
+		scaEventLine(`{"type":"message_stop"}`),
+		`{"type":"system","subtype":"permission_denied","tool_name":"mcp__dsh__write","tool_use_id":"`+w.call+`","session_id":"{{session_id}}"}`,
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"`+w.call+`","content":"Permission to use mcp__dsh__write has been denied.","is_error":true}]},"parent_tool_use_id":null,"session_id":"{{session_id}}"}`,
+		`{"type":"result","subtype":"error_max_turns","is_error":true,"duration_ms":10,"duration_api_ms":9,"num_turns":1,"session_id":"{{session_id}}","total_cost_usd":0,"usage":{"input_tokens":12,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":14},"modelUsage":{},"permission_denials":[{"tool_name":"mcp__dsh__write","tool_use_id":"`+w.call+`","tool_input":`+scaJSON(input)+`}],"stop_reason":"tool_use"}`)
+	closing := append([]string{scaInit, scaStart}, scaTextBlock(0, w.closing)...)
+	closing = append(closing,
+		`{"type":"assistant","message":{"id":"msg_sca","type":"message","role":"assistant","model":"claude-sonnet-4-5","content":[{"type":"text","text":`+scaJSON(w.closing)+`}],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":20,"output_tokens":1}},"parent_tool_use_id":null,"session_id":"{{session_id}}"}`,
+		scaEventLine(`{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":4}}`),
+		scaEventLine(`{"type":"message_stop"}`),
+		`{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"duration_api_ms":9,"num_turns":1,"session_id":"{{session_id}}","total_cost_usd":0,"usage":{"input_tokens":20,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":4},"modelUsage":{},"permission_denials":[],"result":`+scaJSON(w.closing)+`,"stop_reason":"end_turn"}`)
+	return []string{scaLines(call...), scaLines(closing...)}
 }
 
 var (
 	scaOuterT *testing.T
 	// scaTesthookBin is dsh built with the testhook tag by the suite's test
-	// function; scaOperatorBin is DSH_BIN as the suite found it (the S17 build).
+	// function; scaStandinBin is the ephemeral stand-in Claude Code client.
 	scaTesthookBin string
-	scaOperatorBin string
+	scaStandinBin  string
 )
 
-// scaModel is the loopback stand-in of route "claude-code": it answers the
-// queued turns in request order and holds any later request open until the host
-// drops it (the turn the client cancels).
+// scaModel is the loopback model behind the ephemeral stand-in client
+// (testkit/claudestandin) that the real claude-code route starts in dsh: each
+// client run POSTs its arguments, rendered request and listed tools, and is
+// answered with the queued turns' stream-json lines in request order; any later
+// run is held open after its first lines until the route stops the client (the
+// turn the SDK client cancels).
 type scaModel struct {
 	srv      *httptest.Server
 	stop     chan struct{}
@@ -103,14 +140,24 @@ type scaModel struct {
 	heldOnce sync.Once
 	mu       sync.Mutex
 	turns    []string
+	runs     []scaClientRun
+}
+
+// scaClientRun is what one run of the stand-in client posted.
+type scaClientRun struct {
+	Args  []string `json:"args"`
+	Stdin string   `json:"stdin"`
+	Tools []string `json:"tools"`
 }
 
 func newScaModel() *scaModel {
 	m := &scaModel{stop: make(chan struct{}), held: make(chan struct{})}
 	m.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.ReadAll(r.Body)
-		w.Header().Set("Content-Type", "text/event-stream")
+		var run scaClientRun
+		_ = json.NewDecoder(r.Body).Decode(&run)
+		w.Header().Set("Content-Type", "application/x-ndjson")
 		m.mu.Lock()
+		m.runs = append(m.runs, run)
 		next, ok := "", len(m.turns) > 0
 		if ok {
 			next, m.turns = m.turns[0], m.turns[1:]
@@ -120,7 +167,7 @@ func newScaModel() *scaModel {
 			_, _ = io.WriteString(w, next)
 			return
 		}
-		_, _ = io.WriteString(w, "event: text\ndata: {\"text\":\"thinking\"}\n\n")
+		_, _ = io.WriteString(w, scaLines(append([]string{scaInit, scaStart}, scaTextBlock(0, "thinking")[:2]...)...))
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
 		}
@@ -131,6 +178,12 @@ func newScaModel() *scaModel {
 		}
 	}))
 	return m
+}
+
+func (m *scaModel) clientRuns() []scaClientRun {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return slices.Clone(m.runs)
 }
 
 func (m *scaModel) queue(turns ...string) {
@@ -270,7 +323,8 @@ func (s *scaState) givenHome() error {
 		return err
 	}
 	temphome.Layer(scaOuterT, s.root, profile.SDK, "- insert:\n"+
-		"    - id: route\n      name: llm.testkit-route\n      config:\n        id: "+scaRoute+"\n        url: "+strconv.Quote(s.model.srv.URL)+"\n"+
+		"    - id: route\n      name: llm.testkit-claude-code\n      config:\n        program: "+strconv.Quote(scaStandinBin)+"\n"+
+		"        env: ["+strconv.Quote(scaStandinURLEnv+"="+s.model.srv.URL)+"]\n        tempDir: "+strconv.Quote(scaOuterT.TempDir())+"\n"+
 		"    - id: fs.local\n      name: fs.local\n      config:\n        lockDir: "+strconv.Quote(scaOuterT.TempDir())+"\n"+
 		"    - id: wd\n      name: session.testkit-workdir\n      config:\n        root: "+strconv.Quote(s.ws)+"\n"+
 		"    - id: sandbox.policy\n      name: sandbox.policy\n      config:\n        defaultMode: workspace-write\n"+
@@ -325,7 +379,7 @@ func (s *scaState) whenStarts(answers string) error {
 
 func (s *scaState) whenCreates(route string) error {
 	var err error
-	s.sess, err = s.h.Create(s.ctx, sdk.CreateOptions{Cwd: s.ws, Model: &protocol.ModelRoute{Provider: route, Model: model.ModelName}})
+	s.sess, err = s.h.Create(s.ctx, sdk.CreateOptions{Cwd: s.ws, Model: &protocol.ModelRoute{Provider: route, Model: scaModelName}})
 	if err != nil {
 		return fmt.Errorf("%v\nstderr:\n%s", err, s.stderr.String())
 	}
@@ -605,75 +659,33 @@ func (s *scaState) thenNoGap() error {
 	return nil
 }
 
-// ---- @lab-s17: the signed-in Claude Code CLI route ----
-
-type scaLive struct {
-	out []byte
-	err error
-}
-
-// givenLiveInputs fails a partly configured machine, naming what is missing.
-// Off the S17 machine (no input set) the suite does not run the scenario at all.
-func (l *scaLive) givenLiveInputs() error {
-	var missing []string
-	for _, name := range scaLiveInputs {
-		if strings.TrimSpace(os.Getenv(name)) == "" {
-			missing = append(missing, name)
+// thenThroughClient checks that every model request of the session went through
+// the real claude-code route to its client: each run of the stand-in client was
+// started with the route's session id and MCP configuration, listed the harness
+// tool from dsh's listing server, and was sent the prompt it answered.
+func (s *scaState) thenThroughClient(tool string) error {
+	runs := s.model.clientRuns()
+	if want := 2*len(s.runs) + 1; len(runs) != want {
+		return fmt.Errorf("the claude-code client ran %d times, want %d (two per write, one held turn)", len(runs), want)
+	}
+	prompts := []string{}
+	for _, r := range s.runs {
+		prompts = append(prompts, "Write the line '"+r.write.content+"' to note.txt", "Write the line '"+r.write.content+"' to note.txt")
+	}
+	prompts = append(prompts, "Think about the note for a long while.")
+	for i, r := range runs {
+		if !slices.Contains(r.Args, "--session-id") || !slices.Contains(r.Args, "--mcp-config") || !slices.Contains(r.Args, "-p") {
+			return fmt.Errorf("client run %d started with %q, not the route's print-mode arguments", i+1, r.Args)
 		}
-	}
-	if len(missing) == len(scaLiveInputs) {
-		return errors.New("not the S17 machine: no signed-in route input is set (the suite filters @lab-s17 out here)")
-	}
-	if len(missing) > 0 {
-		return fmt.Errorf("the signed-in route is partly configured: %s unset", strings.Join(missing, ", "))
+		if !slices.Contains(r.Tools, "mcp__dsh__"+tool) {
+			return fmt.Errorf("client run %d listed %q from dsh's listing server, want mcp__dsh__%s", i+1, r.Tools, tool)
+		}
+		if !strings.Contains(r.Stdin, prompts[i]) {
+			return fmt.Errorf("client run %d was not sent the prompt %q:\n%s", i+1, prompts[i], r.Stdin)
+		}
 	}
 	return nil
 }
-
-func (l *scaLive) whenLiveRuns() error {
-	mod, err := filepath.Abs(filepath.Join("..", "..", ".."))
-	if err != nil {
-		return err
-	}
-	bin := scaOperatorBin
-	if bin == "" {
-		bin = filepath.Join(scaOuterT.TempDir(), "dsh")
-		if runtime.GOOS == "windows" {
-			bin += ".exe"
-		}
-		build := exec.Command("go", "build", "-o", bin, "./cmd/dsh")
-		build.Dir, build.Env = mod, scaEnv()
-		if out, err := build.CombinedOutput(); err != nil {
-			return fmt.Errorf("build dsh: %v\n%s", err, out)
-		}
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), scaLiveWithin+time.Minute)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "go", "test", "-tags", "scenario", "-count=1", "-timeout", scaLiveWithin.String(), "-v", "-run", "^"+scaLiveTest+"$", "./internal/testkit/scenarios/")
-	cmd.WaitDelay = 10 * time.Second
-	cmd.Dir = mod
-	cmd.Env = scaEnv(sdk.BinEnv+"="+bin, "DSH_REQUIRE_SCENARIOS="+scaScenario)
-	l.out, l.err = cmd.CombinedOutput()
-	return nil
-}
-
-func (l *scaLive) thenLivePasses() error {
-	if l.err != nil || !strings.Contains(string(l.out), "--- PASS: "+scaLiveTest) {
-		return fmt.Errorf("on the signed-in route %s must pass (%v):\n%s", scaLiveTest, l.err, l.out)
-	}
-	return nil
-}
-
-// scaEnv is the host environment with GOWORK=off, no inherited GOFLAGS or
-// DSH_BIN, plus set.
-func scaEnv(set ...string) []string {
-	env := slices.DeleteFunc(os.Environ(), func(kv string) bool {
-		u := strings.ToUpper(kv)
-		return strings.HasPrefix(u, "GOWORK=") || strings.HasPrefix(u, "GOFLAGS=") || strings.HasPrefix(u, sdk.BinEnv+"=")
-	})
-	return append(append(env, "GOWORK=off"), set...)
-}
-
 func (s *scaState) cleanup() {
 	if s.cmd != nil && s.done != nil {
 		select {
@@ -695,19 +707,20 @@ func (s *scaState) cleanup() {
 }
 
 func InitializeScenario_dh_s_17_acceptance_on_a_real_model_sdk_client_acceptance(ctx *godog.ScenarioContext) {
-	s, l := &scaState{}, &scaLive{}
+	s := &scaState{}
 	ctx.After(func(c context.Context, _ *godog.Scenario, err error) (context.Context, error) {
 		s.cleanup()
 		return c, err
 	})
 	ctx.Step(`^DSH_BIN set to dsh built from this checkout with the testhook tag$`, s.givenBin)
-	ctx.Step(`^a scratch home whose sdk profile layer serves route "claude-code" from a loopback stand-in model, asks before every write, and mounts the file tools on a scratch workspace holding note\.txt$`, s.givenHome)
+	ctx.Step(`^a scratch home whose sdk profile layer mounts the real claude-code route over an ephemeral stand-in Claude Code client, asks before every write, and mounts the file tools on a scratch workspace holding note\.txt$`, s.givenHome)
 	ctx.Step(`^a Go program on src/sdk/sdk starts "\$DSH_BIN --home <scratch> --profile sdk" over stdio with an approval handler answering (.+)$`, s.whenStarts)
 	ctx.Step(`^it creates a session on route "([^"]*)" in the scratch workspace$`, s.whenCreates)
 	ctx.Step(`^it runs a prompt whose model writes "([^"]*)" to note\.txt$`, s.whenRunsWrite)
 	ctx.Step(`^it prompts a turn the model holds open and cancels it with inbox discard once the turn's request reached the model$`, s.whenCancelsHeld)
 	ctx.Step(`^it closes the session and the connection$`, s.whenCloses)
 	ctx.Step(`^create answered a session id whose cwd is the scratch workspace$`, s.thenCreated)
+	ctx.Step(`^every model request went through the claude-code route's client, which listed the harness tool "([^"]*)" and was sent the prompt$`, s.thenThroughClient)
 	ctx.Step(`^the host sent approval/request once per write, each for tool "([^"]*)" on the session, and the handler answered each$`, s.thenAsked)
 	ctx.Step(`^the allowed write changed note\.txt to "([^"]*)" and the rejected write left it so with a refused tool result$`, s.thenWriteOutcomes)
 	ctx.Step(`^both runs completed with the model's closing text$`, s.thenRunsCompleted)
@@ -717,33 +730,20 @@ func InitializeScenario_dh_s_17_acceptance_on_a_real_model_sdk_client_acceptance
 	ctx.Step(`^the run's session\.run\.completed text is the model's closing text$`, s.thenResultClosing)
 	ctx.Step(`^it equals the last assistant message of the run in the persisted history read back from the scratch home's SQLite store$`, s.thenResultPersisted)
 	ctx.Step(`^the persisted history read back has no gap or duplicate seq$`, s.thenNoGap)
-	ctx.Step(`^the S17 machine's signed-in Claude Code CLI inputs DSH_SCENARIO_SDK1_LAYER, DSH_SCENARIO_SDK1_LONG_PROMPT, DSH_SCENARIO_CLAUDE_CODE_MODEL and DSH_SCENARIO_CLAUDE_CODE_EFFORT$`, l.givenLiveInputs)
-	ctx.Step(`^TestSDKDrivesBuiltBinaryOverStdio runs against the release dsh named by DSH_BIN with DSH_REQUIRE_SCENARIOS=DH-E-SDK-1$`, l.whenLiveRuns)
-	ctx.Step(`^it passes$`, l.thenLivePasses)
 }
 
 func TestE2E_dh_s_17_acceptance_on_a_real_model_sdk_client_acceptance(t *testing.T) {
 	scaOuterT = t
-	scaOperatorBin = os.Getenv(sdk.BinEnv)
 	// Build here, on t's own goroutine: launcher.Build fails t directly, which
 	// must not happen from a godog scenario subtest.
-	scaTesthookBin = launcher.Build(t, filepath.Join("..", "..", ".."), "./cmd/dsh", "testhook")
-	// Off the S17 machine the signed-in route does not exist: @lab-s17 is left
-	// out of the run and reported as a skipped subtest, so it never counts as a
-	// passed scenario. Any input set (even partly) runs it.
-	tags := ""
-	if !slices.ContainsFunc(scaLiveInputs, func(n string) bool { return strings.TrimSpace(os.Getenv(n)) != "" }) {
-		tags = "~@lab-s17"
-		t.Run("lab-s17 DH-E-SDK-1 on the signed-in Claude Code CLI route", func(t *testing.T) {
-			t.Skipf("not run, not proven: %s unset (the S17 machine's signed-in route)", strings.Join(scaLiveInputs, ", "))
-		})
-	}
+	mod := filepath.Join("..", "..", "..")
+	scaTesthookBin = launcher.Build(t, mod, "./cmd/dsh", "testhook")
+	scaStandinBin = launcher.Build(t, mod, "./internal/testkit/claudestandin")
 	suite := godog.TestSuite{
 		ScenarioInitializer: InitializeScenario_dh_s_17_acceptance_on_a_real_model_sdk_client_acceptance,
 		Options: &godog.Options{
 			Format:   "pretty",
 			Paths:    []string{"dh_s_17_acceptance_on_a_real_model_sdk_client_acceptance.feature"},
-			Tags:     tags,
 			TestingT: t,
 			Strict:   true,
 		},
