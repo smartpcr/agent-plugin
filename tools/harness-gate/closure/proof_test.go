@@ -101,60 +101,53 @@ func TestBuiltNeedsReadyBuilt(t *testing.T) {
 	}
 }
 
-// committed reads the committed closure record (after edit) and stage records.
-func committed(t *testing.T, edit func(string) string) (*acceptance.Index, *Record, map[string]*Record) {
-	t.Helper()
-	root := filepath.Join("..", "..", "..")
+// m2Fixture is the story's shape (its BuiltIn and Finishing maps) without the rows its
+// committed records owe, so in-memory stage records judge only what each case varies.
+func m2Fixture() Story {
 	s := Stories[DefaultStory]
-	x, err := acceptance.ReadIndex(root)
-	if err != nil {
-		t.Fatal(err)
+	s.Obligations = nil
+	return s
+}
+
+// fixtureRecord is a build-stage record that passes ready --built (ready true) or lacks
+// a step commit (ready false), reading status.
+func fixtureRecord(t *testing.T, status string, ready bool) *Record {
+	t.Helper()
+	src := stageRecord(status, row("DH-E-STORE-1", "passed"))
+	if !ready {
+		src = strings.Replace(src, "| 16.1 | DH-D-BUNDLE-3 | 0123abc |", "| 16.1 | DH-D-BUNDLE-3 | |", 1)
 	}
-	recs := map[string]*Record{}
-	for _, stage := range s.Stages {
-		r, err := ReadRecord(root, s.ID, stage)
-		if err != nil {
-			t.Fatal(err)
-		}
-		recs[stage] = r
-	}
-	raw, err := os.ReadFile(filepath.Join(append([]string{root}, append(evidencePath, "closure.md")...)...))
-	if err != nil {
-		t.Fatal(err)
-	}
-	src := strings.ReplaceAll(string(raw), "\r\n", "\n")
-	edited := edit(src)
-	if edited == src {
-		t.Fatal("edit changed nothing in the committed closure.md")
-	}
-	rec, err := ParseDocument("closure.md", strings.NewReader(edited), DeliverablesHeading, HeldOpenHeading)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return x, rec, recs
+	return record(t, src)
 }
 
 // A done-candidate's finishing stage is the story's, not the cell's: clearing or
-// substituting the finishing column, or clearing the proofs, does not skip the check
-// that DH-S-12 (open) has closed.
+// substituting the finishing column, or clearing the proofs, never skips the check that
+// DH-S-12 has closed; once DH-S-12 closes, the row as recorded holds.
 func TestDoneNeedsTheStorysFinishingStage(t *testing.T) {
-	s := Stories[DefaultStory]
-	const human4 = "| DH-D-HUMAN-4 | P1 | DH-S-12 | built | DH-S-12 (local tests) | DH-T-HUMAN-7 (no DH-E scenario) |"
+	s, x := m2Fixture(), index(t, store1Index)
+	const recorded = "| DH-D-HUMAN-4 | P1 | DH-S-12 | done | DH-S-12 (local tests) | DH-T-HUMAN-7 (no DH-E scenario) |"
+	const cleared = "| DH-D-HUMAN-4 | P1 | DH-S-12 | done |  | DH-T-HUMAN-7 (no DH-E scenario) |"
+	const substituted = "| DH-D-HUMAN-4 | P1 | DH-S-12 | done | DH-S-14 (local tests) | DH-T-HUMAN-7 (no DH-E scenario) |"
+	const noProof = "| DH-D-HUMAN-4 | P1 | DH-S-12 | done | DH-S-12 (local tests) | |"
+	// DH-S-12 is built but open; DH-S-14, the substitute, is closed.
+	open := map[string]*Record{"DH-S-12": fixtureRecord(t, "open", true), "DH-S-14": fixtureRecord(t, "closed", true)}
+	closed := map[string]*Record{"DH-S-12": fixtureRecord(t, "closed", true), "DH-S-14": fixtureRecord(t, "closed", true)}
 	for _, tc := range []struct {
 		name, row string
-		want      [][]string
+		recs      map[string]*Record
+		want      [][]string // each a problem's parts; none means no problem
 	}{
-		{"finishing cleared", "| DH-D-HUMAN-4 | P1 | DH-S-12 | done |  | DH-T-HUMAN-7 (no DH-E scenario) |",
-			[][]string{{"DH-D-HUMAN-4", "does not name DH-S-12"}, {"DH-D-HUMAN-4", "DH-S-12 is not closed"}}},
-		{"finishing substituted", "| DH-D-HUMAN-4 | P1 | DH-S-12 | done | DH-S-14 (local tests) | DH-T-HUMAN-7 (no DH-E scenario) |",
-			[][]string{{"DH-D-HUMAN-4", "does not name DH-S-12"}, {"DH-D-HUMAN-4", "DH-S-12 is not closed"}}},
-		{"as recorded", "| DH-D-HUMAN-4 | P1 | DH-S-12 | done | DH-S-12 (local tests) | DH-T-HUMAN-7 (no DH-E scenario) |",
-			[][]string{{"DH-D-HUMAN-4", "DH-S-12 is not closed", NotYetClosed}}},
-		{"proofs cleared", "| DH-D-HUMAN-4 | P1 | DH-S-12 | done | DH-S-12 (local tests) | |",
-			[][]string{{"DH-D-HUMAN-4", "names no proving scenario or local test"}}},
+		{"cleared, S12 open", cleared, open, [][]string{{"DH-D-HUMAN-4", "does not name DH-S-12"}, {"DH-D-HUMAN-4", "DH-S-12 is not closed"}}},
+		{"substituted, S12 open", substituted, open, [][]string{{"DH-D-HUMAN-4", "does not name DH-S-12"}, {"DH-D-HUMAN-4", "DH-S-12 is not closed"}}},
+		{"recorded, S12 open", recorded, open, [][]string{{"DH-D-HUMAN-4", "DH-S-12 is not closed", NotYetClosed}}},
+		{"no proof, S12 closed", noProof, closed, [][]string{{"DH-D-HUMAN-4", "names no proving scenario or local test"}}},
+		{"substituted, S12 closed", substituted, closed, [][]string{{"DH-D-HUMAN-4", "does not name DH-S-12"}}},
+		{"recorded, S12 closed", recorded, closed, nil},
 	} {
-		x, rec, recs := committed(t, func(src string) string { return strings.Replace(src, human4, tc.row, 1) })
-		p := ProofProblems(s, x, rec, recs)
+		p := ProofProblems(s, x, closureTable(t, tc.row, ""), tc.recs)
+		if len(p) != len(tc.want) {
+			t.Errorf("%s: problems %q, want %d", tc.name, p, len(tc.want))
+		}
 		for _, w := range tc.want {
 			if !slices.ContainsFunc(p, func(s string) bool { return containsAll(s, w...) }) {
 				t.Errorf("%s: problems %q name no %q", tc.name, p, w)
@@ -163,29 +156,46 @@ func TestDoneNeedsTheStorysFinishingStage(t *testing.T) {
 	}
 }
 
-// Built in is the deliverable's own stage: HOST-1 marked built in DH-S-12 (which passes
-// ready --built) is refused, and judged against DH-S-15, which does not.
+// Built in is the deliverable's own stage: HOST-1 marked built in DH-S-12 (ready) is
+// refused and judged against DH-S-15; once DH-S-15 is ready only the wrong cell is
+// refused, and the row as tech-spec sec. 3.2 writes it holds.
 func TestBuiltInCannotBeSubstituted(t *testing.T) {
-	s := Stories[DefaultStory]
-	x, rec, recs := committed(t, func(src string) string {
-		return strings.Replace(src, "| DH-D-HOST-1 | P0 | DH-S-15 | not built |", "| DH-D-HOST-1 | P0 | DH-S-12 | built |", 1)
-	})
-	p := ProofProblems(s, x, rec, recs)
-	for _, w := range [][]string{{"DH-D-HOST-1", `Built in reads "DH-S-12"`, "DH-S-15"}, {"DH-D-HOST-1 reads built", "DH-S-15 is not built"}} {
-		if !slices.ContainsFunc(p, func(s string) bool { return containsAll(s, w...) }) {
-			t.Errorf("problems %q name no %q", p, w)
+	s, x := m2Fixture(), index(t, store1Index)
+	const substituted = "| DH-D-HOST-1 | P0 | DH-S-12 | built | DH-S-22 | DH-E-HOST-2 |"
+	const correct = "| DH-D-HOST-1 | P0 | DH-S-15 | built | DH-S-22 | DH-E-HOST-2 |"
+	unready := map[string]*Record{"DH-S-12": fixtureRecord(t, "open", true), "DH-S-15": fixtureRecord(t, "open", false)}
+	ready := map[string]*Record{"DH-S-12": fixtureRecord(t, "open", true), "DH-S-15": fixtureRecord(t, "open", true)}
+	for _, tc := range []struct {
+		name, row string
+		recs      map[string]*Record
+		want      [][]string
+	}{
+		{"substituted, S15 unready", substituted, unready, [][]string{{"DH-D-HOST-1", `Built in reads "DH-S-12"`, "DH-S-15"}, {"DH-D-HOST-1 reads built", "DH-S-15 is not built"}}},
+		{"correct, S15 unready", correct, unready, [][]string{{"DH-D-HOST-1 reads built", "DH-S-15 is not built"}}},
+		{"substituted, S15 ready", substituted, ready, [][]string{{"DH-D-HOST-1", `Built in reads "DH-S-12"`, "DH-S-15"}}},
+		{"correct, S15 ready", correct, ready, nil},
+	} {
+		p := ProofProblems(s, x, closureTable(t, tc.row, ""), tc.recs)
+		if len(p) != len(tc.want) {
+			t.Errorf("%s: problems %q, want %d", tc.name, p, len(tc.want))
+		}
+		for _, w := range tc.want {
+			if !slices.ContainsFunc(p, func(s string) bool { return containsAll(s, w...) }) {
+				t.Errorf("%s: problems %q name no %q", tc.name, p, w)
+			}
 		}
 	}
-	if len(s.BuiltIn) != len(s.Deliverables) {
-		t.Errorf("BuiltIn has %d deliverables; the story has %d", len(s.BuiltIn), len(s.Deliverables))
+	m2 := Stories[DefaultStory]
+	if len(m2.BuiltIn) != len(m2.Deliverables) {
+		t.Errorf("BuiltIn has %d deliverables; the story has %d", len(m2.BuiltIn), len(m2.Deliverables))
 	}
-	for id := range s.BuiltIn {
-		if _, ok := s.Deliverables[id]; !ok {
+	for id := range m2.BuiltIn {
+		if _, ok := m2.Deliverables[id]; !ok {
 			t.Errorf("BuiltIn names %s, not a deliverable", id)
 		}
 	}
-	for _, id := range s.DoneCandidates {
-		if _, ok := s.Finishing[id]; !ok {
+	for _, id := range m2.DoneCandidates {
+		if _, ok := m2.Finishing[id]; !ok {
 			t.Errorf("done-candidate %s has no finishing stage", id)
 		}
 	}
