@@ -182,8 +182,8 @@ func (c *Config) ScenarioGates(stage string, probe acceptance.SignInProbe) []Gat
 // resumes it, AGENT-3 stops and kills it), and the policy-text escalation last
 // (architecture.md rule 7, R-03; impl.md DH-S-17 Sequence). Without Late, go test
 // would run them in file order, agent_stop_kill before agent_turn. DH-S-18 runs
-// the release rehearsal first, and every later scenario runs on the binary it
-// verified (Handoff; impl.md 18.1).
+// the release rehearsal first, every later scenario on the binary it verified
+// (Handoff; impl.md 18.1), and the power cuts last (impl.md 18.11).
 var stageOrder = map[string]struct {
 	First, Late, Last []string
 	Handoff           bool
@@ -193,7 +193,7 @@ var stageOrder = map[string]struct {
 		Late:  []string{"DH-E-SESSION-2", "DH-E-AGENT-3"},
 		Last:  []string{"DH-E-SANDBOX-7"},
 	},
-	"DH-S-18": {First: []string{"DH-E-TOOLCHAIN-2"}, Handoff: true},
+	"DH-S-18": {First: []string{"DH-E-TOOLCHAIN-2"}, Last: []string{"DH-E-NODEFS-1"}, Handoff: true},
 }
 
 // The rehearsal hand-off of a Handoff stage: the First phase runs with

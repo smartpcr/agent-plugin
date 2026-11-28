@@ -401,7 +401,7 @@ func TestExecRunner(t *testing.T) {
 // (impl.md 18.1).
 func TestPhasesOrderDHS18(t *testing.T) {
 	var plan acceptance.Plan
-	for _, id := range []string{"DH-E-SDK-1", "DH-E-AGENT-4", "DH-E-TOOLCHAIN-2"} {
+	for _, id := range []string{"DH-E-SDK-1", "DH-E-NODEFS-1", "DH-E-AGENT-4", "DH-E-TOOLCHAIN-2"} {
 		plan.Scenarios = append(plan.Scenarios, acceptance.Scenario{ID: id, Test: "Test" + id})
 	}
 	var got [][]string
@@ -412,7 +412,8 @@ func TestPhasesOrderDHS18(t *testing.T) {
 		}
 		got = append(got, ids)
 	}
-	if want := [][]string{{"DH-E-TOOLCHAIN-2"}, {"DH-E-SDK-1", "DH-E-AGENT-4"}}; !slices.EqualFunc(got, want, slices.Equal) {
+	// TOOLCHAIN-2 first and NODEFS-1 last (architecture.md rule 7; impl.md 18.11).
+	if want := [][]string{{"DH-E-TOOLCHAIN-2"}, {"DH-E-SDK-1", "DH-E-AGENT-4"}, {"DH-E-NODEFS-1"}}; !slices.EqualFunc(got, want, slices.Equal) {
 		t.Errorf("DH-S-18 phases = %q, want %q", got, want)
 	}
 }
