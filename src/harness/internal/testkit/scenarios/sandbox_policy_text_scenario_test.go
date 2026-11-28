@@ -3,9 +3,12 @@
 package scenarios
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -54,19 +57,23 @@ const (
 // naming a mode wider than workspace-write and a non-empty justification, which
 // the approval's reason shows (sandbox7Escalated). An ordinary tool approval does
 // not count. The counts are written to
-// DSH_SCENARIO_REPORT as "linux=n,darwin=n,windows=n", the --escalated argument
-// of "harness-gate sandbox7-record", which records them beside each text's
-// SHA-256 on the branch commit.
+// DSH_SCENARIO_REPORT as "linux=n,darwin=n,windows=n", then the commit, the
+// attempt and each text's SHA-256 (sandbox7Provenance), the --report input of
+// "harness-gate sandbox7-record", which refuses a report of another commit,
+// attempt or text bytes and records the counts beside each text's SHA-256.
 //
 // Cleanup: W, the outside directory and the home are removed; the transcript of
-// every failed run is kept (keepExport).
+// every failed run is kept (keepExport), and of every run of a text below the
+// floor, judged in that text's subtest while its host still runs (sandbox7Judge).
 //
 // Inputs: DSH_SCENARIO_SANDBOX7_TASKS a file of the twelve tasks, one per line,
 // "escalate<TAB>prompt" or "local<TAB>prompt", each prompt a template over
 // {workspace} and {outside}; DSH_SCENARIO_SANDBOX7_LAYER a layer template over
 // {platform} selecting that platform's policy text, with no title route;
 // DSH_SCENARIO_SANDBOX7_PREVIOUS the previous text's counts in the report's form,
-// or "none"; DSH_SCENARIO_REPORT the file the counts are written to;
+// or "none"; DSH_SCENARIO_REPORT the file the counts are written to (its
+// .detail file: scenario.Main keeps the unsuffixed one for the scenario rows);
+// DSH_SCENARIO_SANDBOX7_ATTEMPT the attempt id the report and log name;
 // DSH_SCENARIO_CLAUDE_CODE_MODEL the route's model.
 //
 //dsh:scenario DH-E-SANDBOX-7
@@ -75,12 +82,15 @@ func TestPolicyTextMakesTheModelEscalate(t *testing.T) {
 	layerT := need(t, "DSH_SCENARIO_SANDBOX7_LAYER", "a layer over {platform} selecting the policy text")
 	previous := sandbox7Previous(t, need(t, "DSH_SCENARIO_SANDBOX7_PREVIOUS", `the previous text's counts, or "none"`))
 	report := need(t, "DSH_SCENARIO_REPORT", "the file the escalation counts are written to")
+	prov := sandbox7Provenance(t, need(t, "DSH_SCENARIO_SANDBOX7_ATTEMPT", "the attempt id the run is recorded under"))
 	route := &protocol.ModelRoute{Provider: claudeCodeRoute.ID, Model: claudeCodeRoute.model(t)}
 	bin := dshBinary(t)
 
 	escalated := map[string]int{}
+	ran := map[string]bool{}
 	for _, platform := range sandbox7Texts {
 		t.Run(platform, func(t *testing.T) {
+			ran[platform] = true
 			var mu sync.Mutex
 			var asked []protocol.ApprovalRequest
 			allow := sdkOptions{Approve: func(r protocol.ApprovalRequest) protocol.ApprovalResult {
@@ -91,6 +101,7 @@ func TestPolicyTextMakesTheModelEscalate(t *testing.T) {
 			}}
 			layer := writeLayer(t, expand(layerT, map[string]string{"platform": platform}))
 			h := startSDKWith(t, bin, nil, []string{"--layer", layer}, allow)
+			var kept []string
 			for ti, task := range tasks {
 				for run := 1; run <= sandbox7Runs; run++ {
 					t.Run(fmt.Sprintf("task%02d/run%d", ti+1, run), func(t *testing.T) {
@@ -106,6 +117,15 @@ func TestPolicyTextMakesTheModelEscalate(t *testing.T) {
 						}
 						session := h.createIn(t, route, ws, "workspace-write")
 						h.keepExport(t, session)
+						// A run that passes on its own is kept only if its text
+						// falls below the floor, judged once the text's runs end.
+						t.Cleanup(func() {
+							if !t.Failed() {
+								mu.Lock()
+								kept = append(kept, session)
+								mu.Unlock()
+							}
+						})
 						prompt := expand(task.prompt, map[string]string{"workspace": filepath.ToSlash(ws), "outside": filepath.ToSlash(outside)})
 						outs := toolOutcomes(t, h.runPrompt(t, session, prompt, 15*time.Minute))
 						if len(outs) == 0 {
@@ -124,23 +144,121 @@ func TestPolicyTextMakesTheModelEscalate(t *testing.T) {
 					})
 				}
 			}
+			mu.Lock()
+			defer mu.Unlock()
+			sandbox7Judge(t, platform, escalated[platform], max(sandbox7Floor, previous[platform]), kept, func(s string) { h.export(t, s) })
 		})
 	}
 
+	// A shard runs one text (-run '.../^linux$', M2-R-06): only the texts that
+	// ran are reported and judged; harness-gate sandbox7-record needs the counts
+	// of all three on one commit, so the shards' report lines are joined there.
 	var parts []string
 	for _, p := range sandbox7Texts {
-		parts = append(parts, fmt.Sprintf("%s=%d", p, escalated[p]))
+		if ran[p] {
+			parts = append(parts, fmt.Sprintf("%s=%d", p, escalated[p]))
+		}
 	}
-	line := strings.Join(parts, ",")
-	if err := os.WriteFile(report, []byte(line+"\n"), 0o600); err != nil {
+	if len(parts) == 0 {
+		t.Fatal("no platform text ran")
+	}
+	// report is <DSH_SCENARIO_REPORT>.detail: scenario.Main moves the variable
+	// to the detail file beside the rows (scenario.DetailSuffix).
+	if err := os.WriteFile(report, []byte(sandbox7ReportBody(prov, ran, escalated)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("escalated of %d: %s (previous %v)", sandbox7Escalating*sandbox7Runs, line, previous)
+	t.Logf("escalated of %d: %s (previous %v); report %s", sandbox7Escalating*sandbox7Runs, strings.Join(parts, ","), previous, report)
+}
+
+// sandbox7ReportBody is the report "harness-gate sandbox7-record --report"
+// reads: the counts of the texts that ran, then the commit, the attempt and a
+// text line per text that ran. The gate's
+// tools/harness-gate/testdata/policytext/sandbox7_scenario/s17-report.txt.detail
+// is this output for a fixed run, read by both sides' tests.
+func sandbox7ReportBody(prov sandbox7Run, ran map[string]bool, escalated map[string]int) string {
+	var parts []string
 	for _, p := range sandbox7Texts {
-		want := max(sandbox7Floor, previous[p])
-		if escalated[p] < want {
-			t.Errorf("the %s text: %d of %d escalating runs asked for escalation, want at least %d", p, escalated[p], sandbox7Escalating*sandbox7Runs, want)
+		if ran[p] {
+			parts = append(parts, fmt.Sprintf("%s=%d", p, escalated[p]))
 		}
+	}
+	body := strings.Join(parts, ",") + "\ncommit: " + prov.commit + "\nattempt: " + prov.attempt + "\n"
+	for _, p := range sandbox7Texts {
+		if ran[p] {
+			body += fmt.Sprintf("text: %s.md sha256=%s\n", p, prov.texts[p])
+		}
+	}
+	return body
+}
+
+// sandbox7Run is what a report names its run by: the attempt, the commit of the
+// clean checkout the binary was built from, and the SHA-256 of each platform
+// text on it.
+type sandbox7Run struct {
+	attempt, commit string
+	texts           map[string]string
+}
+
+// sandbox7Provenance reads the run's provenance before any run starts and logs
+// it as the line "harness-gate sandbox7-record" requires of the run's go test
+// log; a checkout with changes is refused, its HEAD not being what ran.
+func sandbox7Provenance(t *testing.T, attempt string) sandbox7Run {
+	t.Helper()
+	root := repositoryRoot(t)
+	git := func(args ...string) string {
+		out, err := exec.Command("git", append([]string{"-C", root}, args...)...).Output()
+		if err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	if dirty := git("status", "--porcelain", "--untracked-files=all"); dirty != "" {
+		t.Fatalf("the checkout has changes; DH-E-SANDBOX-7 runs on a clean commit:\n%s", dirty)
+	}
+	texts, err := sandbox7ReadTexts(filepath.Join(root, "src", "harness", "internal", "world", "sandbox", "policy", "text"))
+	if err != nil {
+		t.Fatalf("DH-E-SANDBOX-7 runs on the s17/policy-text head, which ships all three texts: %v", err)
+	}
+	run := sandbox7Run{attempt: attempt, commit: git("rev-parse", "HEAD"), texts: texts}
+	t.Log(sandbox7ProvenanceLine(run.attempt, run.commit))
+	return run
+}
+
+// sandbox7ProvenanceLine is the line the run's go test log must hold for
+// "harness-gate sandbox7-record --go-test-log" (its sandbox7Provenance).
+func sandbox7ProvenanceLine(attempt, commit string) string {
+	return fmt.Sprintf("sandbox7 provenance: attempt=%s commit=%s", attempt, commit)
+}
+
+// sandbox7ReadTexts returns the SHA-256 of each platform text in dir. A missing
+// or unreadable text is an error, so no model run starts without the text it
+// is meant to measure.
+func sandbox7ReadTexts(dir string) (map[string]string, error) {
+	texts := map[string]string{}
+	for _, p := range sandbox7Texts {
+		path := filepath.Join(dir, p+".md")
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("the %s text %s: %w", p, path, err)
+		}
+		sum := sha256.Sum256(b)
+		texts[p] = hex.EncodeToString(sum[:])
+	}
+	return texts, nil
+}
+
+// sandbox7Judge fails t when a text's escalations are below want, and then
+// keeps the transcript of every run of that text not already kept by its own
+// failure (TC-20s): a below-floor text is diagnosed from all its runs, not only
+// those that failed alone.
+func sandbox7Judge(t testing.TB, platform string, got, want int, sessions []string, keep func(session string)) {
+	t.Helper()
+	if got >= want {
+		return
+	}
+	t.Errorf("the %s text: %d of %d escalating runs asked for escalation, want at least %d", platform, got, sandbox7Escalating*sandbox7Runs, want)
+	for _, s := range sessions {
+		keep(s)
 	}
 }
 

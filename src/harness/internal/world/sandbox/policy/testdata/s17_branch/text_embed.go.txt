@@ -1,0 +1,23 @@
+package policy
+
+import (
+	"embed"
+	"io/fs"
+)
+
+// shippedFS is the shipped policy texts, world/sandbox/policy/text/*.md
+// (Stage 7.6; M2-C-6: each merged only with a passed DH-E-SANDBOX-7 run on its
+// exact bytes, harness-gate policy-text).
+//
+//go:embed text/*.md
+var shippedFS embed.FS
+
+func init() {
+	dir, err := fs.Sub(shippedFS, "text")
+	if err == nil {
+		texts, err = loadTexts(dir)
+	}
+	if err != nil {
+		panic(err)
+	}
+}

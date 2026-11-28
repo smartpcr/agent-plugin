@@ -26,9 +26,10 @@ var ErrNoText = errors.New("policy: no sandbox policy text ships for this platfo
 var ErrUnknownPlatform = errors.New("policy: unknown platform")
 
 // texts are the shipped per-platform policy texts, keyed by platform. None ships
-// yet: under M2-C-6 a text merges only with a passed DH-E-SANDBOX-7 run on it
-// (Stage 7.6, world/sandbox/policy/text/), and harness-gate policy-text refuses
-// any tree with a text file that has none.
+// on main: under M2-C-6 a text merges only with a passed DH-E-SANDBOX-7 run on it
+// (Stage 7.6), and harness-gate policy-text refuses any tree with a text file
+// that has none. The branch s17/policy-text moves testdata/draft_text/*.md to
+// text/ and adds text_embed.go, which sets texts from loadTexts in init.
 var texts = map[string]string{}
 
 // Text is the shipped policy text template of platform: ErrNoText while none

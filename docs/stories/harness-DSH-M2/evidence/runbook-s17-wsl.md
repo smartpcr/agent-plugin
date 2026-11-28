@@ -125,11 +125,11 @@ GOWORK=off go -C tools/harness-gate run . scenarios --root ../.. --stage DH-S-17
   --evidence "../../artifacts/harness/s17-$sha.txt"
 echo "S17 run on $sha: passed"
 EOF
-echo "exit $?"
+status=$?; echo "exit $status"; echo "exit $status $(git rev-parse HEAD)" > artifacts/harness/s17-exit.txt
 ```
 
 The run passed only if the block's last lines read `S17 run on <sha>: passed` and
-`exit 0`. Any other exit is a failed run, named by the last command's output; record it as
+`exit 0` (also saved, with the commit, in `artifacts/harness/s17-exit.txt`). Any other exit is a failed run, named by the last command's output; record it as
 `failed (<reason>)`. The record `artifacts/harness/s17-<sha>.txt` holds each phase's
 `go test` command and output, and one `scenarios: recorded leg: <Test>/copilot-cli passed`
 (or `failed`, `skipped`, `not run (...)`) line per routed scenario; the copilot-cli rows
@@ -147,3 +147,152 @@ Fill [DH-S-17.md](DH-S-17.md) while it reads `Closure status: open`:
 
 Keep `artifacts/harness/` outside the commit; copy only the lines the record quotes. Never
 paste a token, a cookie or an account e-mail.
+
+## DH-E-SANDBOX-7 on s17/policy-text (implementation-plan Stage 7.6)
+
+DH-E-SANDBOX-7 (impl.md 17.9) runs last in S17 (architecture.md R-03), on the binary built
+from the head of the unmerged PR branch `s17/policy-text`, the only commit that carries
+shipped sandbox policy text: none may exist on `main` until the scenario has passed on its
+exact bytes (M2-C-6). `main` already carries every byte the branch ships, kept out of
+`policy/text/` so nothing embeds them:
+
+- `src/harness/internal/world/sandbox/policy/testdata/draft_text/{linux,darwin,windows}.md`,
+  the texts (`TestDraftTextsLoad`: each loads and renders);
+- `.../policy/testdata/s17_branch/policy_section_{linux,darwin,windows}.golden`, their goldens
+  (`TestDraftTextGolden`: each equals the render of its draft);
+- `.../policy/testdata/s17_branch/text_embed.go.txt`, the loader that embeds `text/*.md`.
+
+The branch only moves them, so its commit carries the reviewed bytes, the texts and their
+goldens together. S17 therefore runs once, on the branch head: steps 1 to 7 above run all 14
+scenarios with SANDBOX-7 last, and SANDBOX-7 runs nowhere else.
+
+### A. Cut the branch (moves only, one commit)
+
+```bash
+bash -euo pipefail <<'EOF'
+p=src/harness/internal/world/sandbox/policy
+git switch -c s17/policy-text origin/main
+git mv "$p/testdata/draft_text" "$p/text"
+git mv "$p"/testdata/s17_branch/policy_section_*.golden "$p/testdata/"
+git mv "$p/testdata/s17_branch/text_embed.go.txt" "$p/text_embed.go"
+# The goldens are moved, not re-recorded: TestShippedTextGolden must pass as is.
+GOWORK=off go -C src/harness test ./internal/world/sandbox/policy/ ./internal/tools/prompt/...
+sha256sum "$p"/text/*.md
+git commit -m "Stage 7.6: ship the sandbox policy texts (DH-E-SANDBOX-7 pending)"
+git push -u origin s17/policy-text
+EOF
+echo "exit $?"
+```
+
+On this commit `harness-gate policy-text` refuses all three texts (no passed row yet); that is
+expected, and is why the branch is not merged before step C.
+
+### B. Run S17 once, on the branch head
+
+From a clean checkout of the branch head, export the SANDBOX-7 inputs (none is a credential,
+none is committed): `DSH_SCENARIO_SANDBOX7_TASKS` (the twelve tasks, `escalate<TAB>prompt` or
+`local<TAB>prompt`, six of each, over `{workspace}` and `{outside}`),
+`DSH_SCENARIO_SANDBOX7_LAYER` (a layer over `{platform}` setting `sandbox.policy`
+`platform: {platform}`, no title route), `DSH_SCENARIO_SANDBOX7_PREVIOUS=none`, and name the
+attempt:
+
+```bash
+mkdir -p artifacts/harness
+export DSH_SCENARIO_SANDBOX7_ATTEMPT="s17-full-$(date -u +%Y%m%dT%H%M%SZ)"
+echo "mode=full attempt=$DSH_SCENARIO_SANDBOX7_ATTEMPT commit=$(git rev-parse HEAD)" > artifacts/harness/s17-attempt.txt
+```
+
+Then run the block of steps 1 to 7 above, as written, on that commit. Step 7 runs the 13 other
+scenarios and then SANDBOX-7, once, inside the 100 min budget; SANDBOX-7 logs
+`sandbox7 provenance: attempt=<id> commit=<sha>` first (and stops before any model call if a
+text is missing or unreadable) and writes `artifacts/harness/s17-report.txt.detail` last: the
+counts line `linux=n,darwin=n,windows=n`, then `commit:`, `attempt:` and one
+`text: <platform>.md sha256=<hex>` line per text, read from the clean checkout. The file is the
+`.detail` one because the package's `TestMain` (`scenario.Main`) points `DSH_SCENARIO_REPORT` at
+`<report>.detail` while the tests run and keeps `s17-report.txt` itself for the scenario rows
+(JSON), which `sandbox7-record` refuses as a report. The block passed
+only if it ends `S17 run on <sha>: passed` and `exit 0`, which it saves with the commit in
+`artifacts/harness/s17-exit.txt` for step C.
+
+**Shard (M2-R-06), only when time ran out.** If the block failed and every scenario before
+SANDBOX-7 passed, and SANDBOX-7 either never started (`DH-E-SANDBOX-7 not run: the ... scenario
+budget is spent`) or was stopped by time (go test's `panic: test timed out after ...`, the
+budget left to it by `harness-gate scenarios`), the full attempt is incomplete: record nothing
+from it. Start a new attempt on the same commit, each text its own fail-closed shard and job
+slot. Its id is new, so a count of the incomplete attempt (whose report names the old id) is
+refused by step C rather than mixed in. Any other SANDBOX-7 failure (a run failed, a text below
+the floor) is a result, not a timeout: do not shard it away; record it `failed (<reason>)` in
+DH-S-17.md and fix the text.
+
+```bash
+mkdir -p artifacts/harness
+export DSH_SCENARIO_SANDBOX7_ATTEMPT="s17-shard-$(date -u +%Y%m%dT%H%M%SZ)"
+echo "mode=shard attempt=$DSH_SCENARIO_SANDBOX7_ATTEMPT commit=$(git rev-parse HEAD)" > artifacts/harness/s17-attempt.txt
+for text in linux darwin windows; do
+bash -euo pipefail -s "$text" <<'EOF'
+text="$1"
+a=artifacts/harness
+[ -z "$(git status --porcelain)" ] || { echo "the tree is not clean"; exit 1; }
+export DSH_BIN="$PWD/$a/dsh"
+export DSH_SCENARIO_REPORT="$PWD/$a/s17-sandbox7-report-$text.txt"
+rm -f "$DSH_SCENARIO_REPORT" "$DSH_SCENARIO_REPORT.detail" "$a/s17-sandbox7-exit-$text.txt"
+# -count=1: a live real-model run, never a cached result.
+GOWORK=off go -C src/harness test -tags scenario -count=1 -p 1 -timeout 110m -v \
+  -run "^TestPolicyTextMakesTheModelEscalate\$/^$text\$" ./internal/testkit/scenarios/ 2>&1 \
+  | tee "$a/s17-go-test-sandbox7-$text.txt"
+echo "exit 0 $(git rev-parse HEAD) $DSH_SCENARIO_SANDBOX7_ATTEMPT" > "$a/s17-sandbox7-exit-$text.txt"
+EOF
+echo "shard $text: exit $?"
+done
+```
+
+With `pipefail` a failing `go test` fails the block through `tee` before its exit file is
+written. Each shard reports and judges only its text; a run that fails alone keeps its
+transcript, and a text below the floor keeps the transcript of every run (TC-20s).
+
+### C. Record, and merge only on pass
+
+Record from the attempt named in `artifacts/harness/s17-attempt.txt`, never by which files
+happen to exist. `sandbox7-record --attempt <id>` reads each `--report` and `--go-test-log`
+under `--root` when relative, and records nothing when a report names another commit than HEAD,
+another attempt, or a text SHA-256 that is not the file's now; when a platform is named twice or
+missing; or when a log lacks that attempt's provenance line or does not show the scenario passed.
+
+```bash
+bash -euo pipefail <<'EOF'
+a=artifacts/harness
+sha="$(git rev-parse HEAD)"
+read -r mode attempt commit < "$a/s17-attempt.txt"
+mode="${mode#mode=}"; attempt="${attempt#attempt=}"; commit="${commit#commit=}"
+[ "$commit" = "$sha" ] || { echo "attempt $attempt is of $commit, not HEAD $sha"; exit 1; }
+set -- --attempt "$attempt"
+case "$mode" in
+full)
+  [ "$(cat "$a/s17-exit.txt")" = "exit 0 $sha" ] || { echo "S17 did not pass on $sha"; exit 1; }
+  set -- "$@" --report "$a/s17-report.txt.detail" ;;
+shard)
+  for text in linux darwin windows; do
+    [ "$(cat "$a/s17-sandbox7-exit-$text.txt")" = "exit 0 $sha $attempt" ] \
+      || { echo "shard $text did not pass in $attempt on $sha"; exit 1; }
+    set -- "$@" --report "$a/s17-sandbox7-report-$text.txt.detail" --go-test-log "$a/s17-go-test-sandbox7-$text.txt"
+  done ;;
+*) echo "unknown attempt mode $mode"; exit 1 ;;
+esac
+GOWORK=off go -C tools/harness-gate run . sandbox7-record --root ../.. --lane s17 "$@"
+EOF
+echo "exit $?"
+```
+It writes `docs/stories/harness-DSH-M2/evidence/runs/s17-<sha7>-<UTC>.txt` (commit, the SHA-256
+of each text, its count; exit 0 only when every text has at least 10 of 18).
+
+- **Pass.** On the same branch, in [DH-S-17.md](DH-S-17.md): the `DH-E-SANDBOX-7` row reads
+  `E1 wsl:<host>/<distro>` | `<sha7>` | `passed` | `run=<id>; dsh sha256=<hex>; model=<id>;
+  linux.md sha256=<hex> escalated=<n>/18; darwin.md sha256=<hex> escalated=<n>/18;
+  windows.md sha256=<hex> escalated=<n>/18`; step 17.9 takes the commit; `UP-DEBT-found.Q3.2`
+  is marked closed. Commit the record and the row, then
+  `GOWORK=off go -C tools/harness-gate run . policy-text --root ../..` must print `ok` for the
+  three texts; the PR merges only then (M2-C-6, no exception).
+- **Fail.** Commit nothing to `main`. The row on `main` reads `failed (<text>=<n>/18 ...)`
+  with the failing log, the branch stays unmerged, no shipped text exists on `main`, and S17
+  stays open. A re-worded draft is reviewed on `main` (its golden re-recorded there with
+  `-run '^TestDraftTextGolden$' -update`) and the branch is cut again.

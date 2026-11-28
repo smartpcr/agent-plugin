@@ -1,0 +1,6 @@
+linux=12,darwin=11,windows=13
+commit: 0123456789abcdef0123456789abcdef01234567
+attempt: s17-full-20260101T000000Z
+text: linux.md sha256=dd4a974b87b958c84b6cf453ba8ffc0a1ea8cb64390579d83043b9485fc8857c
+text: darwin.md sha256=fd4649a3890a8687af8914e236994b2bacfba3ffbac5b004c5bb29a07e6441dd
+text: windows.md sha256=26cd09e944ad13f796cc9886fa618c5793ebdd91c1ff9f033268f7db39c423d2
