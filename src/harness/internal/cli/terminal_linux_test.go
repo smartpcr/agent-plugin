@@ -170,12 +170,12 @@ func TestSecretSetInterruptedOnPseudoTerminalRestoresIt(t *testing.T) {
 		t.Fatalf("the pty does not turn Ctrl-C into SIGINT: lflag %#x, intr %d", before.Lflag, before.Cc[unix.VINTR])
 	}
 	var screen lockedBuffer
-	read, ran := make(chan struct{}), make(chan struct{})
+	read := make(chan struct{})
 	t.Cleanup(func() {
-		// Closing both ends ends the reader and any read Main still blocks on.
+		// Closing both ends ends the reader; the child is gone by now (its
+		// cleanup, registered later, runs first).
 		_, _ = pts.Close(), ptm.Close()
 		<-read
-		<-ran
 	})
 	go func() {
 		defer close(read)
@@ -197,9 +197,14 @@ func TestSecretSetInterruptedOnPseudoTerminalRestoresIt(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	exited := make(chan error, 1)
-	go func() { exited <- cmd.Wait() }()
-	t.Cleanup(func() { _ = cmd.Process.Kill() })
+	exited, waited := make(chan error, 1), make(chan struct{})
+	go func() { defer close(waited); exited <- cmd.Wait() }()
+	t.Cleanup(func() {
+		// Joins the child on success and failure alike: a no-op kill once it
+		// exited, then Wait's return.
+		_ = cmd.Process.Kill()
+		<-waited
+	})
 
 	waitFor(t, "the terminal", screen.String, secretPrompt)
 	if _, err := ptm.WriteString("sk-half-typed"); err != nil {
