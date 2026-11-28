@@ -13,10 +13,14 @@ Feature: Release rehearsal on every platform (DH-E-TOOLCHAIN-2)
   # per suite into a scratch directory. The Linux variant is this host when it is
   # Linux, else the default WSL distribution through wsl.exe; the Windows host is
   # this host when it is Windows, else the Windows side of WSL interop. A variant
-  # that cannot be reached fails the scenario; it is never skipped.
+  # that cannot be reached fails the scenario; it is never skipped. Each system also
+  # runs one keyless headless replay scenario (TC-21s3); while the rehearsal reports
+  # that clause OPEN (ReplayCheck nil) the scenario fails, so DH-E-TOOLCHAIN-2 is never
+  # recorded as passing with the replay unproven.
   Background:
     Given the release rehearsal of this checkout ran with nothing published
 
+  @TC-21s3 @DH-E-TOOLCHAIN-2 @platform:linux-wsl
   Scenario: DH-E-TOOLCHAIN-2 on Linux
     Given a Linux variant
     When the rehearsal archive for the variant is unpacked and "dsh --version" runs on it
@@ -25,7 +29,9 @@ Feature: Release rehearsal on every platform (DH-E-TOOLCHAIN-2)
     And "dsh --version" exits 0
     And it prints the embedded version matching the record
     And it names the recorded revision of the checked-out commit and the variant's platform
+    And the rehearsal reports the keyless headless replay of the variant's binary passed, not OPEN
 
+  @TC-21s3 @DH-E-TOOLCHAIN-2 @platform:windows
   Scenario: DH-E-TOOLCHAIN-2 on Windows
     Given the Windows host
     When the rehearsal archive for the variant is unpacked and "dsh --version" runs on it
@@ -34,6 +40,7 @@ Feature: Release rehearsal on every platform (DH-E-TOOLCHAIN-2)
     And "dsh --version" exits 0
     And it prints the embedded version matching the record
     And it names the recorded revision of the checked-out commit and the variant's platform
+    And the rehearsal reports the keyless headless replay of the variant's binary passed, not OPEN
 
   # Negative path: the checksum preflight has teeth. A copy of an archive with one
   # byte changed is refused before anything of it runs.
