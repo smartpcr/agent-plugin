@@ -8,9 +8,13 @@ Feature: Search and file watching on real systems (DH-E-RIPGREP-1, -2, DH-E-CHOK
   # proof: service:filesystem. Each scenario runs the product's own, unmodified
   # scenario tests (internal/testkit/scenarios, -tags scenario) on each variant:
   # this host when its OS matches, else the default WSL distribution through
-  # wsl.exe from a Windows host. Both variants must be reached and run here;
-  # a variant this host cannot reach fails the scenario, and nothing is skipped
-  # or stood in for. When the operator sets a scenario's inputs
+  # wsl.exe from a Windows host. The variant of this host's OS must run, and
+  # the other one too wherever this host reaches it (a Windows host reaches
+  # Linux through WSL). A variant this host cannot reach at all (native Linux
+  # has no Windows; a Windows runner without WSL has no Linux) runs this same
+  # suite on its own variant runner (variants.md: windows-hosted, linux-wsl);
+  # DSH_S18_BOTH=1 makes this host run both. Nothing is skipped or stood in
+  # for. When the operator sets a scenario's inputs
   # (DSH_SCENARIO_REPOS, DSH_SCENARIO_EDITORS, DSH_SCENARIO_REMOTE_DIRS with
   # DSH_SCENARIO_REMOTE_CHANGE, ...; a DSH_S18_<LINUX|WINDOWS>_<NAME without
   # DSH_> overrides one per variant) they are the provided instance. Else the
@@ -36,7 +40,9 @@ Feature: Search and file watching on real systems (DH-E-RIPGREP-1, -2, DH-E-CHOK
   # the cross-OS directory alone (a Windows one seen from WSL under /mnt, a WSL
   # one seen from Windows through \\wsl.localhost), changed from its other side
   # across WSL interop; a variant labelled *:smb (DSH_S18_<LINUX|WINDOWS>_VARIANT)
-  # without its shares fails the share preflight. The verdict is the scenario
+  # without its shares fails the share preflight. A runner with neither (native
+  # Linux, Windows without WSL) runs CHOKIDAR-1, and CHOKIDAR-2 runs on the
+  # *:smb variants variants.md assigns it to. The verdict is the scenario
   # tests' own rows (DSH_SCENARIO_REPORT) read back, plus the timing report and
   # the log lines that show each clause ran; each leg keeps an evidence row
   # (DSH_S18_EVIDENCE_DIR).
@@ -50,7 +56,7 @@ Feature: Search and file watching on real systems (DH-E-RIPGREP-1, -2, DH-E-CHOK
     And on each variant the timing report has every search of the set, its first matches within the budget and its files equal to rg's
     And on each variant the file listing equals Git's with no unexplained difference
     And no external rg was spawned on any variant
-    And both the Linux and the Windows variant were reached and ran
+    And the variant of this host's OS ran, and the other variant too wherever this host reaches it
 
   @TC-21s3 @DH-E-CHOKIDAR-1 @DH-E-CHOKIDAR-2 @platform:linux-wsl @platform:windows
   Scenario: Watching on real trees
@@ -61,4 +67,4 @@ Feature: Search and file watching on real systems (DH-E-RIPGREP-1, -2, DH-E-CHOK
     And on each variant every save was reported exactly once within "1s"
     And on each variant the create, burst, rename and delete of a watched tree were each reported exactly once within the bound
     And on each variant every network and cross-OS directory was watched in poll mode
-    And both the Linux and the Windows variant were reached and ran
+    And the variant of this host's OS ran, and the other variant too wherever this host reaches it

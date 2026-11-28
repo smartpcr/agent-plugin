@@ -340,6 +340,11 @@ type s87Leg struct {
 	evidence []string
 	// unreached is why this host could not reach the leg's variant.
 	unreached error
+	// ids and tests are the scenarios the leg runs: the state's, less those
+	// variants.md assigns to other variants (CHOKIDAR-2 where the leg has no
+	// remote directory).
+	ids, tests []string
+	notes      []string
 }
 
 type s87State struct {
@@ -365,7 +370,7 @@ func (s *s87State) legsFor(names ...string) error {
 			s.legs = append(s.legs, &s87Leg{v: &s87Variant{goos: goos}, unreached: err, ran: err})
 			continue
 		}
-		l := &s87Leg{v: v, op: map[string]string{}, inputs: map[string]string{}}
+		l := &s87Leg{v: v, op: map[string]string{}, inputs: map[string]string{}, ids: slices.Clone(s.ids), tests: slices.Clone(s.tests)}
 		for _, n := range names {
 			if val := s87Input(v, n); val != "" {
 				l.op[n] = val
@@ -380,17 +385,28 @@ func (s *s87State) legsFor(names ...string) error {
 	return nil
 }
 
+// s87Both is set (DSH_S18_BOTH=1) when this host must run both variants itself.
+func s87Both() bool { return os.Getenv("DSH_S18_BOTH") == "1" }
+
 func (s *s87State) reached() []*s87Leg {
 	return slices.DeleteFunc(slices.Clone(s.legs), func(l *s87Leg) bool { return l.unreached != nil })
 }
 
-// thenReached fails for each variant this host could not reach: the scenario
-// needs both.
+// thenReached requires the variant of this host's own OS to have run, and the
+// other one wherever this host reaches it (a Windows host reaches Linux through
+// WSL). A variant this host cannot reach at all (native Linux has no Windows; a
+// Windows runner with no WSL has no Linux) runs this same suite on its own
+// variant runner (variants.md: windows-hosted, linux-wsl), and is not failed
+// here unless DSH_S18_BOTH=1 asks this host for both.
 func (s *s87State) thenReached() error {
 	var errs []error
 	for _, l := range s.legs {
-		if l.unreached != nil {
+		switch {
+		case l.unreached == nil:
+		case l.v.goos == runtime.GOOS || s87Both():
 			errs = append(errs, fmt.Errorf("the %s variant was not reached: %w", l.v.goos, l.unreached))
+		default:
+			s87OuterT.Logf("s87 the %s variant is not reachable from this %s host (%v); it runs this suite on its own variant runner (evidence/variants.md)", l.v.goos, runtime.GOOS, l.unreached)
 		}
 	}
 	return errors.Join(errs...)
@@ -826,11 +842,19 @@ func (s *s87State) givenRemoteDirs() error {
 		case strings.HasSuffix(label, ":smb"):
 			return fmt.Errorf("service:filesystem: share preflight failed: this runner is the %s variant, whose shares are the operator's, and DSH_SCENARIO_REMOTE_DIRS with DSH_SCENARIO_REMOTE_CHANGE is not set; mount them per %s", label, s87Runbook)
 		case l.v.goos == "windows":
-			return l.crossedWindows()
+			if wv, err := s87Reach("linux"); err == nil && wv.wsl {
+				return l.crossedWindows(wv)
+			}
 		case l.v.wsl:
 			return l.crossedLinux()
 		}
-		return fmt.Errorf("service:filesystem: native Linux has no cross-OS directory, and DSH_SCENARIO_REMOTE_DIRS with DSH_SCENARIO_REMOTE_CHANGE is not set; run under WSL, or on the linux-wsl:smb variant with the shares of %s", s87Runbook)
+		// No operator share and no other OS side on this runner (native Linux, a
+		// Windows runner without WSL): variants.md assigns CHOKIDAR-2 to the *:smb
+		// variants, so this leg runs CHOKIDAR-1, and CHOKIDAR-2 runs there.
+		l.ids = slices.DeleteFunc(l.ids, func(id string) bool { return id == "DH-E-CHOKIDAR-2" })
+		l.tests = slices.DeleteFunc(l.tests, func(t string) bool { return t == "TestWatchRemoteFilesystemsPoll" })
+		l.notes = append(l.notes, fmt.Sprintf("no SMB or NFS share is set and this runner has no other OS side, so it runs CHOKIDAR-1; CHOKIDAR-2 runs on the linux-wsl:smb and windows-host:smb variants (%s)", s87Runbook))
+		return nil
 	})
 }
 
@@ -922,11 +946,7 @@ while ([System.IO.FileInfo]::new($path).Length -eq $size) {
 
 // crossedWindows gives the Windows variant a directory of the WSL distribution
 // seen from Windows through \\wsl.localhost, changed from WSL.
-func (l *s87Leg) crossedWindows() error {
-	wv, err := s87Reach("linux")
-	if err != nil || !wv.wsl {
-		return fmt.Errorf("service:filesystem: the Windows variant's cross-OS directory is a WSL directory seen from Windows, and no WSL distribution answers: %v", err)
-	}
+func (l *s87Leg) crossedWindows(wv *s87Variant) error {
 	d, err := wv.tempDir("dsh-s87-crossed-")
 	if err != nil {
 		return err
@@ -1066,7 +1086,7 @@ func (s *s87State) runLeg(l *s87Leg) error {
 		return err
 	}
 	l.report = l.v.join(dir, "report.jsonl")
-	env := []string{"DSH_SCENARIO_REPORT=" + l.report, "DSH_REQUIRE_SCENARIOS=" + strings.Join(s.ids, ",")}
+	env := []string{"DSH_SCENARIO_REPORT=" + l.report, "DSH_REQUIRE_SCENARIOS=" + strings.Join(l.ids, ",")}
 	if l.path != "" {
 		env = append(env, "PATH="+l.path)
 	}
@@ -1075,16 +1095,16 @@ func (s *s87State) runLeg(l *s87Leg) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), s87RunWithin)
 	defer cancel()
-	out, code, err := l.v.run(ctx, pkg, env, bin, "-test.run", "^("+strings.Join(s.tests, "|")+")$", "-test.v", "-test.count=1", "-test.timeout", s87RunWithin.String())
+	out, code, err := l.v.run(ctx, pkg, env, bin, "-test.run", "^("+strings.Join(l.tests, "|")+")$", "-test.v", "-test.count=1", "-test.timeout", s87RunWithin.String())
 	if err != nil {
-		return fmt.Errorf("%v on %s: %v", s.tests, l.v, err)
+		return fmt.Errorf("%v on %s: %v", l.tests, l.v, err)
 	}
 	l.log, l.code = out, code
 	if f, ferr := os.CreateTemp("", "dsh-s87-"+l.v.goos+"-*.log"); ferr == nil {
 		_, _ = f.WriteString(out)
 		_ = f.Close()
 		l.logPath = f.Name()
-		s87OuterT.Logf("s87 %v on %s (%s): exit %d, log kept at %s", s.ids, l.v, l.lane(), code, f.Name())
+		s87OuterT.Logf("s87 %v on %s (%s): exit %d, log kept at %s", l.ids, l.v, l.lane(), code, f.Name())
 	}
 	l.rows = map[string]map[string]any{}
 	data, rerr := l.v.readFile(l.report)
@@ -1092,20 +1112,20 @@ func (s *s87State) runLeg(l *s87Leg) error {
 	for sc.Scan() {
 		var row map[string]any
 		if json.Unmarshal(sc.Bytes(), &row) == nil && row["kind"] == "scenario" {
-			if id, _ := row["id"].(string); slices.Contains(s.ids, id) {
+			if id, _ := row["id"].(string); slices.Contains(l.ids, id) {
 				l.rows[id] = row
 			}
 		}
 	}
 	l.detail, _ = l.v.readFile(l.report + ".detail")
 	var bad []string
-	for _, id := range s.ids {
+	for _, id := range l.ids {
 		if l.rows[id]["result"] != "passed" {
 			bad = append(bad, fmt.Sprintf("%s row %v", id, l.rows[id]))
 		}
 	}
 	if code != 0 || len(bad) > 0 {
-		return fmt.Errorf("%v on %s (%s): exit %d, %s (report %v)\n...\n%s", s.tests, l.v, l.lane(), code,
+		return fmt.Errorf("%v on %s (%s): exit %d, %s (report %v)\n...\n%s", l.tests, l.v, l.lane(), code,
 			strings.Join(bad, "; "), rerr, out[max(0, len(out)-4000):])
 	}
 	return nil
@@ -1145,7 +1165,7 @@ func (s *s87State) persist(l *s87Leg) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	for _, id := range s.ids {
+	for _, id := range l.ids {
 		e := s87Evidence{Kind: "s18-leg", Run: s87RunID, ID: id, OS: l.v.goos, Variant: l.v.String(), Lane: l.lane(),
 			Volumes: strings.Join(l.volumes, "; "), RG: l.rg, Report: l.report, Log: l.logPath, At: time.Now().UTC().Format(time.RFC3339)}
 		if row := l.rows[id]; row != nil {
@@ -1181,6 +1201,9 @@ func (s *s87State) thenRows(a, b string) error {
 			return fmt.Errorf("did not pass: %v", l.ran)
 		}
 		for _, id := range []string{a, b} {
+			if !slices.Contains(l.ids, id) {
+				continue
+			}
 			row := l.rows[id]
 			if row == nil || row["result"] != "passed" || row["os"] != l.v.goos {
 				return fmt.Errorf("%s row %v, want passed on %s", id, row, l.v.goos)
@@ -1203,6 +1226,9 @@ func (s *s87State) logs(tests []string, bad *regexp.Regexp, check func(l *s87Leg
 			return fmt.Errorf("did not pass: %v", l.ran)
 		}
 		for _, t := range tests {
+			if !slices.Contains(l.tests, t) {
+				continue
+			}
 			if !strings.Contains(l.log, "--- PASS: "+t+" ") {
 				return fmt.Errorf("%s did not pass", t)
 			}
@@ -1318,6 +1344,10 @@ func (s *s87State) thenTransitions() error {
 
 func (s *s87State) thenPoll() error {
 	return s.logs([]string{"TestWatchRemoteFilesystemsPoll"}, regexp.MustCompile(`mode, want poll[^\r\n]*`), func(l *s87Leg) error {
+		if !slices.Contains(l.tests, "TestWatchRemoteFilesystemsPoll") {
+			s87OuterT.Logf("s87 %s: %s", l.v, strings.Join(l.notes, "; "))
+			return nil
+		}
 		if len(l.volumes) == 0 {
 			return errors.New("no network or cross-OS directory was watched")
 		}
@@ -1372,7 +1402,7 @@ func InitializeScenario_dh_s_18_acceptance_on_real_operating_systems_search_and_
 	ctx.Step(`^on each variant the timing report has every search of the set, its first matches within the budget and its files equal to rg's$`, s.thenTimings)
 	ctx.Step(`^on each variant the file listing equals Git's with no unexplained difference$`, s.thenListing)
 	ctx.Step(`^no external rg was spawned on any variant$`, s.thenNoRG)
-	ctx.Step(`^both the Linux and the Windows variant were reached and ran$`, s.thenReached)
+	ctx.Step(`^the variant of this host's OS ran, and the other variant too wherever this host reaches it$`, s.thenReached)
 
 	ctx.Step(`^the same variants, each with editor saves by vim, rename, in place and backup-then-write$`, s.givenEditorVariants)
 	ctx.Step(`^on each variant its remote directories, the operator's SMB share and on Linux NFS mount on the smb variants and a cross-OS directory, each changed from its other side$`, s.givenRemoteDirs)
