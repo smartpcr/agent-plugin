@@ -64,7 +64,10 @@ var unbounded = search.Limits{MaxMatches: -1, MaxFiles: -1, MaxBytes: -1}
 // or reports a problem fails that search's comparison rather than counting as zero
 // matches. Inputs: DSH_SCENARIO_REPOS, the ";"-separated checkouts;
 // DSH_SCENARIO_SEARCH_BUDGET, the agreed budget per search as a Go duration;
-// DSH_SCENARIO_REPORT, the file the timing report (JSON lines) is written to.
+// DSH_SCENARIO_REPORT, the file the timing report (JSON lines) is written to;
+// DSH_SCENARIO_WHOLE_SEARCH_TIMEOUT (optional, default 100 budgets), the deadline
+// of each whole, unbounded search: one that passes it fails with its repo and
+// pattern, gets a "timed_out" line in the report, and the rest of the set runs.
 // Cleanup: removing the checkouts is the operator's; the report is kept.
 //
 //dsh:scenario DH-E-RIPGREP-1
@@ -75,6 +78,12 @@ func TestSearchMeetsBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	reportPath := need(t, "DSH_SCENARIO_REPORT", "file the timing report is written to")
+	wholeTimeout := wholeSearchFactor * budget
+	if v := os.Getenv("DSH_SCENARIO_WHOLE_SEARCH_TIMEOUT"); v != "" {
+		if wholeTimeout, err = time.ParseDuration(v); err != nil || wholeTimeout <= 0 {
+			t.Fatalf("DSH_SCENARIO_WHOLE_SEARCH_TIMEOUT %q: want a positive Go duration (%v)", v, err)
+		}
+	}
 	rg, err := exec.LookPath("rg")
 	if err != nil {
 		t.Fatalf("rg is needed for the comparison: %v", err)
@@ -103,13 +112,16 @@ func TestSearchMeetsBudget(t *testing.T) {
 				t.Errorf("%s %q: first %d matches: %v", repo, pattern, firstMatches, err)
 				continue
 			}
-			start := time.Now()
-			files := map[string]bool{}
-			summary, err := search.Grep(t.Context(), search.GrepQuery{From: src, Pattern: pattern, Output: search.OutputFiles,
-				Limits: unbounded}, func(m search.Match) bool { files[filepath.ToSlash(m.Path)] = true; return true })
-			took := time.Since(start)
-			if err == nil && summary.Incomplete {
-				err = fmt.Errorf("cut short: %s", summary.Reason)
+			files, summary, took, timedOut, err := wholeSearch(t, src, pattern, wholeTimeout)
+			if timedOut {
+				if rerr := timings.add(map[string]any{"repo": repo, "pattern": pattern, "budget_ms": budget.Milliseconds(),
+					"first_ms": first.Milliseconds(), "first_lines": lines, "harness_ms": took.Milliseconds(),
+					"timed_out": true, "timeout_ms": wholeTimeout.Milliseconds(), "files": len(files), "visited": summary.Files}); rerr != nil {
+					t.Errorf("%s %q: the timing report %s: %v", repo, pattern, reportPath, rerr)
+				}
+				t.Errorf("%s %q: whole search timed out after %v (DSH_SCENARIO_WHOLE_SEARCH_TIMEOUT %v), %d files visited: %v",
+					repo, pattern, took, wholeTimeout, summary.Files, err)
+				continue
 			}
 			if err != nil {
 				t.Errorf("%s %q: whole search: %v", repo, pattern, err)
@@ -140,6 +152,35 @@ func TestSearchMeetsBudget(t *testing.T) {
 	if spawned() {
 		t.Errorf("an rg was started: the decoy rg first on PATH ran during the harness searches")
 	}
+}
+
+// wholeSearchFactor sets the default deadline of one whole, unbounded search to
+// this many budgets; DSH_SCENARIO_WHOLE_SEARCH_TIMEOUT overrides it.
+const wholeSearchFactor = 100
+
+// wholeSearch runs the whole, unbounded files search for pattern under timeout and
+// returns the matched slash paths, the summary and the time taken. timedOut
+// reports that the deadline, not the search, ended it, so a stalled search fails
+// on its own and the rest of the set still runs. Any other cut is an error.
+func wholeSearch(t *testing.T, src search.Source, pattern string, timeout time.Duration) (map[string]bool, search.Summary, time.Duration, bool, error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), timeout)
+	defer cancel()
+	files := map[string]bool{}
+	start := time.Now()
+	summary, err := search.Grep(ctx, search.GrepQuery{From: src, Pattern: pattern, Output: search.OutputFiles,
+		Limits: unbounded}, func(m search.Match) bool { files[filepath.ToSlash(m.Path)] = true; return true })
+	took := time.Since(start)
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) && t.Context().Err() == nil {
+		if err == nil {
+			err = fmt.Errorf("cut short: %s", summary.Reason)
+		}
+		return files, summary, took, true, err
+	}
+	if err == nil && summary.Incomplete {
+		err = fmt.Errorf("cut short: %s", summary.Reason)
+	}
+	return files, summary, took, false, err
 }
 
 // timeFirstMatches times a content search for pattern until its first
