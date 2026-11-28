@@ -38,26 +38,25 @@ import (
 func TestSandboxLinuxBackendsConfineShellOnRealMachines(t *testing.T) {
 	in := readSandboxInputs(t)
 	cases := []struct {
-		role, status, backend string
-		states                []string
+		role, backend string
+		verdicts      []string // the status report's states
+		states        []string // the shell results' states
 	}{
-		{"bwrap", "bwrap", "bwrap", []string{"full"}},
-		{"landlock", "landlock", "landlock", []string{"full", "partial"}},
+		{"bwrap", "bwrap", []string{"Full"}, []string{"full"}},
+		{"landlock", "landlock", []string{"Full", "Partial"}, []string{"full", "partial"}},
 	}
 	for _, c := range cases {
 		t.Run(c.role, func(t *testing.T) {
 			r := prepareRemote(t, sandboxMachine(t, c.role), pureGo)
-			if st := r.status(t); !strings.Contains(strings.ToLower(st), c.status) {
-				t.Errorf("status on the %s machine does not name %s:\n%s", c.role, c.status, st)
-			}
+			r.mustVerdict(t, c.backend, c.verdicts...)
 			sandbox1Confined(t, in, r, c.backend, c.states)
 		})
 	}
 	t.Run("unconfined", func(t *testing.T) {
 		r := prepareRemote(t, sandboxMachine(t, "unconfined"), pureGo)
-		if st := r.status(t); !strings.Contains(st, "Unconfined") {
-			t.Errorf("status on the unconfined machine does not read Unconfined:\n%s", st)
-		}
+		st := r.status(t)
+		t.Logf("%s: enforcement %s", r.alias, readVerdict(st))
+		mustStatusUnconfined(t, st)
 		m := startScriptedModel(t)
 		h := r.sdk(t, r.bin, r.layer(t, in, m, "full", "full"), m)
 		marker := r.ws + "/M"

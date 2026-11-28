@@ -25,6 +25,7 @@ const native1Planted = "ANTHROPIC_API_KEY=dsh-scenario-planted-key"
 func native1(t *testing.T, in sandboxInputs, r *remoteDsh) []string {
 	t.Helper()
 	setuid := need(t, "DSH_SCENARIO_NATIVESYSTEM1_SETUID", "a command template over {path} that runs a set-user-ID helper present on every Landlock machine and has it try to write {path}")
+	r.mustVerdict(t, "landlock", "Full")
 	m := startScriptedModel(t)
 	h := r.sdk(t, r.bin, r.layer(t, in, m, "any", "native1"), m, native1Planted)
 	d := r.outside + "/D"
@@ -57,6 +58,9 @@ func native1(t *testing.T, in sandboxInputs, r *remoteDsh) []string {
 			t.Errorf("%q %s (exit %d), want %s: %s", c, kind, res.ExitCode, want, got[i].Raw)
 		}
 		rec = append(rec, fmt.Sprintf("%s, %s, %s", kind, res.Confinement.State, res.Confinement.Backend))
+		if i == 1 {
+			t.Logf("%s: denied write %s; stderr %q", r.alias, res.record(), res.Stderr.Tail)
+		}
 		if i == 4 {
 			native1Process(t, r, h, m, in, res.Stdout.Tail)
 		}
@@ -152,6 +156,7 @@ func TestNativeSystemLandlockConfinesOnCurrentKernel(t *testing.T) {
 func TestNativeSystemOlderKernelReportsPartial(t *testing.T) {
 	in := readSandboxInputs(t)
 	r := prepareRemote(t, sandboxMachine(t, "landlock-abi1-4"), pureGo)
+	r.mustVerdict(t, "landlock", "Partial")
 	m := startScriptedModel(t)
 	h := r.sdk(t, r.bin, r.layer(t, in, m, "any", "native2"), m)
 	outside := r.outside + "/written"
@@ -176,6 +181,9 @@ func TestNativeSystemOlderKernelReportsPartial(t *testing.T) {
 		}
 		if c == fatal && (!strings.Contains(res.Stderr.Tail, "landlock-run: fatal") || !strings.Contains(res.Stderr.Tail, "dsh sandbox-launch: failed")) {
 			t.Errorf("the command's stderr did not reach the caller unchanged: %q", res.Stderr.Tail)
+		}
+		if code < 0 {
+			t.Logf("%s: denied write %s; stderr %q", r.alias, res.record(), res.Stderr.Tail)
 		}
 	}
 	if r.exists(t, outside) {
@@ -205,9 +213,9 @@ func TestNativeSystemNoLandlockRefusesBeforeExec(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			r := prepareRemote(t, sandboxMachine(t, c.role), pureGo)
 			if c.role == "unconfined" {
-				if st := r.status(t); !strings.Contains(st, "Unconfined") {
-					t.Errorf("status does not report the machine unconfined:\n%s", st)
-				}
+				st := r.status(t)
+				t.Logf("%s: enforcement %s", r.alias, readVerdict(st))
+				mustStatusUnconfined(t, st)
 			} else {
 				r.must(t, "remove the extra write root", "rmdir '"+r.extra+"'")
 			}
