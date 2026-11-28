@@ -1,0 +1,94 @@
+# Stage 8.9 E2E (impl.md DH-S-18, durable replace under power loss;
+# DH-E-NODEFS-1, TC-21s5). Mirrors
+# src/harness/test/e2e/dh-s-18-acceptance-on-real-operating-systems/azure-pipeline.yml.
+#
+# The proof service (service:vm-power-cut with service:ack-recorder) is
+# team-kept infrastructure: a KVM/libvirt host and a Hyper-V host, both reached
+# from the dsh-hypervisor controller runner. Their inputs are the DSH_S18_KVM_*
+# and DSH_S18_HYPERV_* variables of environment dsh-m2-s18 that the vm:* s18
+# jobs of harness-scenarios.yml use (runbook-power-cut.md step 2). The job takes
+# the same hypervisor lock as those jobs. The job fails if any input is unset, if
+# either scenario skips, or if either scenario does not pass.
+name: e2e-dh-s-18-acceptance-on-real-operating-systems
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dsh-s18-lock-hypervisor
+  cancel-in-progress: false
+
+jobs:
+  power-cut:
+    name: DH-E-NODEFS-1 (KVM Linux guest, Hyper-V Windows guest)
+    runs-on: [self-hosted, linux, dsh-hypervisor]
+    environment: dsh-m2-s18
+    timeout-minutes: 370
+    defaults:
+      run:
+        shell: bash
+    env:
+      GOWORK: "off"
+      DSH_E2E_NODEFS_ARTIFACTS: ${{ github.workspace }}/artifacts/e2e/nodefs
+      DSH_S18_KVM_NODEFS_LISTEN: ${{ vars.DSH_S18_KVM_NODEFS_LISTEN }}
+      DSH_S18_KVM_NODEFS_START: ${{ vars.DSH_S18_KVM_NODEFS_START }}
+      DSH_S18_KVM_NODEFS_POWEROFF: ${{ vars.DSH_S18_KVM_NODEFS_POWEROFF }}
+      DSH_S18_KVM_NODEFS_POWERON: ${{ vars.DSH_S18_KVM_NODEFS_POWERON }}
+      DSH_S18_KVM_NODEFS_READ: ${{ vars.DSH_S18_KVM_NODEFS_READ }}
+      DSH_S18_KVM_BASE_IMAGES: ${{ vars.DSH_S18_KVM_BASE_IMAGES }}
+      DSH_S18_KVM_PROBE_CREATE: ${{ vars.DSH_S18_KVM_PROBE_CREATE }}
+      DSH_S18_KVM_PROBE_SHOW: ${{ vars.DSH_S18_KVM_PROBE_SHOW }}
+      DSH_S18_KVM_PROBE_ACK: ${{ vars.DSH_S18_KVM_PROBE_ACK }}
+      DSH_S18_KVM_PROBE_DELETE: ${{ vars.DSH_S18_KVM_PROBE_DELETE }}
+      DSH_S18_HYPERV_NODEFS_LISTEN: ${{ vars.DSH_S18_HYPERV_NODEFS_LISTEN }}
+      DSH_S18_HYPERV_NODEFS_START: ${{ vars.DSH_S18_HYPERV_NODEFS_START }}
+      DSH_S18_HYPERV_NODEFS_POWEROFF: ${{ vars.DSH_S18_HYPERV_NODEFS_POWEROFF }}
+      DSH_S18_HYPERV_NODEFS_POWERON: ${{ vars.DSH_S18_HYPERV_NODEFS_POWERON }}
+      DSH_S18_HYPERV_NODEFS_READ: ${{ vars.DSH_S18_HYPERV_NODEFS_READ }}
+      DSH_S18_HYPERV_BASE_IMAGES: ${{ vars.DSH_S18_HYPERV_BASE_IMAGES }}
+      DSH_S18_HYPERV_PROBE_CREATE: ${{ vars.DSH_S18_HYPERV_PROBE_CREATE }}
+      DSH_S18_HYPERV_PROBE_SHOW: ${{ vars.DSH_S18_HYPERV_PROBE_SHOW }}
+      DSH_S18_HYPERV_PROBE_ACK: ${{ vars.DSH_S18_HYPERV_PROBE_ACK }}
+      DSH_S18_HYPERV_PROBE_DELETE: ${{ vars.DSH_S18_HYPERV_PROBE_DELETE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: src/harness/go.mod
+          cache-dependency-path: |
+            src/harness/go.sum
+            tools/harness-gate/go.sum
+      - name: Inputs declared
+        run: |
+          missing=""
+          for t in KVM HYPERV; do
+            for k in NODEFS_LISTEN NODEFS_START NODEFS_POWEROFF NODEFS_POWERON NODEFS_READ \
+                     BASE_IMAGES PROBE_CREATE PROBE_SHOW PROBE_ACK PROBE_DELETE; do
+              n="DSH_S18_${t}_${k}"
+              [ -n "${!n}" ] || missing="$missing $n"
+            done
+          done
+          [ -z "$missing" ] || { echo "::error::not set in environment dsh-m2-s18:$missing"; exit 1; }
+      - name: DH-E-NODEFS-1 on both guests (must run and pass)
+        run: |
+          set -o pipefail
+          mkdir -p "$DSH_E2E_NODEFS_ARTIFACTS"
+          log=artifacts/e2e/nodefs.txt
+          { echo "commit ${GITHUB_SHA}"; uname -a; } | tee "$log"
+          go -C src/harness test -tags e2e -v -timeout 355m \
+            -run '^TestE2E_dh_s_18_acceptance_on_real_operating_systems_durable_replace_under_power_loss$' \
+            ./test/e2e/harness-DSH-M2/ 2>&1 | tee -a "$log"
+          if grep -q -- '--- SKIP' "$log"; then echo "a required scenario skipped"; exit 1; fi
+          for s in DH-E-NODEFS-1_Linux_guest DH-E-NODEFS-1_Windows_guest; do
+            grep -qF -- "--- PASS: TestE2E_dh_s_18_acceptance_on_real_operating_systems_durable_replace_under_power_loss/$s" "$log" \
+              || { echo "$s did not pass"; exit 1; }
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-nodefs-power-cut
+          path: artifacts/e2e/
+          if-no-files-found: warn
