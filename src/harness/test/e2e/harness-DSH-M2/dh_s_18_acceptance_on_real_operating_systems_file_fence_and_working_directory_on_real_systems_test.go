@@ -308,6 +308,7 @@ type s86Leg struct {
 	status   string
 	notRun   string // the preflight check that stopped the leg, if one did
 	reason   string
+	volumes  string // FS-1: the filesystem each checked directory and the share are on
 	log      string
 	logPath  string
 	report   string
@@ -455,9 +456,36 @@ func (s *s86State) givenFS1Variants(fsLinux, fsWindows string) error {
 // Anthropic Messages endpoint, the scripted endpoint's dialect
 // (llm/wire/anthropic), so none is named in its place.
 func (l *s86Leg) provisionFS1() error {
-	if l.provided {
-		return nil
+	var checks []string
+	var why []error
+	if l.inputs["DSH_SCENARIO_FS1_DIRS"] == "" {
+		if err := l.ephemeralFS1(); err != nil {
+			return err
+		}
 	}
+	if l.inputs["DSH_SCENARIO_FS1_SHARE"] == "" {
+		if share, err := l.smbShare(); err != nil {
+			checks, why = append(checks, "share"), append(why, err)
+		} else {
+			l.set("DSH_SCENARIO_FS1_SHARE", share)
+		}
+	}
+	if missing := l.unset("DSH_SCENARIO_FS1_LAYER", "DSH_SCENARIO_FS1_ROUTE", "DSH_SCENARIO_FS1_MODEL"); len(missing) > 0 {
+		checks = append(checks, "route")
+		why = append(why, fmt.Errorf("%s unset: no item of the dsh binary registers a route on an Anthropic Messages endpoint (the scripted endpoint's dialect, llm/wire/anthropic), so only the operator's layer, route and model name one (runbook-smb-share.md step 2)", strings.Join(missing, ", ")))
+	}
+	if fs := l.checkFS1(); len(fs) > 0 {
+		checks, why = append([]string{"filesystem"}, checks...), append(fs, why...)
+	}
+	if len(checks) > 0 {
+		return l.preflight(strings.Join(checks, ", "), errors.Join(why...))
+	}
+	s86OuterT.Logf("s86 %s on %s: filesystems checked: %s", l.id, l.v, l.volumes)
+	return nil
+}
+
+// ephemeralFS1 makes the directories of the ephemeral instance.
+func (l *s86Leg) ephemeralFS1() error {
 	dir, err := l.scratch("dsh-s86-fs1-")
 	if err != nil {
 		return err
@@ -479,21 +507,103 @@ func (l *s86Leg) provisionFS1() error {
 		dirs = append(dirs, p)
 	}
 	l.set("DSH_SCENARIO_FS1_DIRS", strings.Join(dirs, ";"))
-	var checks []string
+	return nil
+}
+
+// s86FS1Need are the filesystems FS-1's directories must cover on each variant:
+// ext4 and NTFS volumes on the Linux variant, NTFS on the Windows host.
+var s86FS1Need = map[string][]string{"linux": {"ext4", "NTFS"}, "windows": {"NTFS"}}
+
+// checkFS1 proves what the run will use, whoever supplied it: every directory
+// of DSH_SCENARIO_FS1_DIRS exists on the variant and is on a real filesystem,
+// together they cover the variant's filesystems, and DSH_SCENARIO_FS1_SHARE is
+// a writable directory on an SMB mount. Any gap fails the filesystem preflight
+// before a call runs, so a directory on another filesystem is never reported
+// as ext4 or NTFS.
+func (l *s86Leg) checkFS1() []error {
 	var why []error
-	if l.inputs["DSH_SCENARIO_FS1_SHARE"] == "" {
-		if share, err := l.smbShare(); err != nil {
-			checks, why = append(checks, "share"), append(why, err)
-		} else {
-			l.set("DSH_SCENARIO_FS1_SHARE", share)
+	seen := map[string]bool{}
+	var kinds []string
+	for _, d := range strings.Split(l.inputs["DSH_SCENARIO_FS1_DIRS"], ";") {
+		if d = strings.TrimSpace(d); d == "" {
+			continue
+		}
+		kind, err := l.v.volumeKind(d)
+		if err != nil {
+			why = append(why, fmt.Errorf("DSH_SCENARIO_FS1_DIRS entry %s: %v", d, err))
+			continue
+		}
+		seen[strings.ToLower(kind)] = true
+		kinds = append(kinds, kind+" "+d)
+	}
+	for _, need := range s86FS1Need[l.v.goos] {
+		if !seen[strings.ToLower(need)] {
+			why = append(why, fmt.Errorf("no directory of DSH_SCENARIO_FS1_DIRS is on %s on the %s variant (got: %s)", need, l.v, strings.Join(kinds, "; ")))
 		}
 	}
-	if missing := l.unset("DSH_SCENARIO_FS1_LAYER", "DSH_SCENARIO_FS1_ROUTE", "DSH_SCENARIO_FS1_MODEL"); len(missing) > 0 {
-		checks = append(checks, "route")
-		why = append(why, fmt.Errorf("%s unset: no item of the dsh binary registers a route on an Anthropic Messages endpoint (the scripted endpoint's dialect, llm/wire/anthropic), so only the operator's layer, route and model name one (runbook-smb-share.md step 2)", strings.Join(missing, ", ")))
+	if share := l.inputs["DSH_SCENARIO_FS1_SHARE"]; share != "" {
+		if err := l.v.checkSMB(share); err != nil {
+			why = append(why, fmt.Errorf("DSH_SCENARIO_FS1_SHARE %s: %v", share, err))
+		} else {
+			kinds = append(kinds, "SMB "+share)
+		}
 	}
-	if len(checks) > 0 {
-		return l.preflight(strings.Join(checks, ", "), errors.Join(why...))
+	l.volumes = strings.Join(kinds, "; ")
+	return why
+}
+
+// volumeKind names the filesystem under an existing directory, as fsType
+// does, but through a WSL drvfs mount (9p, v9fs) to the host volume behind it.
+func (v *s86Variant) volumeKind(dir string) (string, error) {
+	if v.goos == "windows" {
+		if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+			return "", fmt.Errorf("not a directory (%v)", err)
+		}
+	} else if _, err := v.must("test", "-d", dir); err != nil {
+		return "", errors.New("not a directory on the variant")
+	}
+	kind, err := v.fsType(dir)
+	if err != nil {
+		return "", err
+	}
+	switch strings.ToLower(kind) {
+	case "ntfs", "ntfs3":
+		return "NTFS", nil
+	case "v9fs", "9p":
+		if !v.wsl {
+			return kind, nil
+		}
+		host, err := v.must("wslpath", "-w", dir)
+		if err != nil {
+			return "", err
+		}
+		return (&s86Variant{goos: runtime.GOOS}).fsType(host)
+	}
+	return kind, nil
+}
+
+// checkSMB requires share to be a directory on an SMB mount that takes a file.
+func (v *s86Variant) checkSMB(share string) error {
+	if v.goos == "windows" {
+		if !strings.HasPrefix(share, `\\`) {
+			return errors.New(`not a UNC path (\\server\share\...)`)
+		}
+		f, err := os.CreateTemp(share, "dsh-s86-smb-")
+		if err != nil {
+			return fmt.Errorf("not writable: %v", err)
+		}
+		_ = f.Close()
+		return os.Remove(f.Name())
+	}
+	kind, err := v.fsType(share)
+	if err != nil {
+		return err
+	}
+	if k := strings.ToLower(kind); k != "cifs" && k != "smb2" && k != "smb3" && k != "smb" {
+		return fmt.Errorf("on %s, not an SMB (cifs, smb2, smb3) mount", kind)
+	}
+	if _, err := v.must("sh", "-c", `p=$(mktemp "$1/dsh-s86-smb-XXXXXX") && rm -f "$p"`, "sh", share); err != nil {
+		return fmt.Errorf("not writable: %v", err)
 	}
 	return nil
 }
@@ -912,6 +1022,7 @@ type s86Evidence struct {
 	SandboxState   string `json:"sandboxState,omitempty"`
 	SandboxBackend string `json:"sandboxBackend,omitempty"`
 	Fence          string `json:"fence,omitempty"`
+	Volumes        string `json:"volumes,omitempty"`
 	Claude         string `json:"claude,omitempty"`
 	Tester         string `json:"tester,omitempty"`
 	Report         string `json:"report,omitempty"`
@@ -934,7 +1045,7 @@ func (l *s86Leg) persist() error {
 		return nil
 	}
 	e := s86Evidence{Kind: "s18-leg", Run: s86RunID, ID: l.id, OS: l.v.goos, Variant: l.v.String(), FS: l.fs, Lane: l.lane(),
-		SandboxState: l.state, SandboxBackend: l.backend, Claude: l.claude, Tester: l.tester, Report: l.report, Log: l.logPath,
+		SandboxState: l.state, SandboxBackend: l.backend, Volumes: l.volumes, Claude: l.claude, Tester: l.tester, Report: l.report, Log: l.logPath,
 		At: time.Now().UTC().Format(time.RFC3339)}
 	if l.state != "" {
 		e.Fence = l.fence()

@@ -18,7 +18,11 @@ Feature: File fence and working directory on real systems (DH-E-FS-1, DH-E-FS-2,
   # variant's own claude, which the s18 preflight requires installed there, signed
   # in (claude auth status), answering one probe turn, on a run the tester
   # declares theirs (DSH_S18_TESTER); an input nothing provides fails its
-  # preflight, and the leg reads "not run (<check> preflight failed)".
+  # preflight, and the leg reads "not run (<check> preflight failed)". FS-1's
+  # directories and share are checked on every lane, the operator's included:
+  # each directory must exist on a real filesystem, together they must cover ext4
+  # and NTFS on Linux (NTFS on Windows), and the share must be a writable SMB
+  # mount, else the filesystem preflight fails before any call runs.
   # The verdict is the scenario test's own row (DSH_SCENARIO_REPORT) read back:
   # passed, on the variant's OS, for the dsh binary the run used. Each leg also
   # keeps an evidence row (DSH_S18_EVIDENCE_DIR) with that verdict, the sandbox
