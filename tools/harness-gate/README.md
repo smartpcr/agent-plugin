@@ -316,7 +316,7 @@ harness-gate sandbox7-record --root . --attempt <id> --report <file> [--report <
 ```
 
 The counts come from `--escalated` or from `--report` files (the scenario's
-`DSH_SCENARIO_REPORT` of the run, or one per shard; a platform named once across
+`DSH_SCENARIO_REPORT` plus `.detail` of the run, or one per shard, since `scenario.Main` keeps the unsuffixed file for scenario rows, which are refused; a platform named once across
 them), never both; a relative `--report` or `--go-test-log` is read under
 `--root`. Each report is the counts line, then `commit: <sha>`, `attempt: <id>`
 and `text: <platform>.md sha256=<hex>` per counted text; it must name HEAD, the

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -513,5 +514,36 @@ func TestSandbox7RecordReadsShardReports(t *testing.T) {
 		if !strings.Contains(string(rec), want) {
 			t.Errorf("the record has no %q:\n%s", want, rec)
 		}
+	}
+}
+
+// The files the scenario writes are the files sandbox7-record reads. While
+// scenario.Main runs the tests, DSH_SCENARIO_REPORT names <report>.detail, so
+// TestPolicyTextMakesTheModelEscalate writes its counts there and the
+// unsuffixed report holds scenario rows. testdata/policytext/sandbox7_scenario
+// is that pair and the run's go test log; the scenario package's
+// TestSandbox7ReportIsWhatTheGateReads requires its writer to produce the
+// .detail file byte for byte, so the producer and this reader share one format.
+func TestSandbox7RecordReadsTheScenarioDetailReport(t *testing.T) {
+	dir := filepath.Join("testdata", "policytext", "sandbox7_scenario")
+	const commit, attempt = "0123456789abcdef0123456789abcdef01234567", "s17-full-20260101T000000Z"
+	rep, err := readReport(filepath.Join(dir, "s17-report.txt"+sandbox7DetailSuffix))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := sandbox7Report{Counts: "linux=12,darwin=11,windows=13", Commit: commit, Attempt: attempt, Texts: map[string]string{
+		"linux":   "dd4a974b87b958c84b6cf453ba8ffc0a1ea8cb64390579d83043b9485fc8857c",
+		"darwin":  "fd4649a3890a8687af8914e236994b2bacfba3ffbac5b004c5bb29a07e6441dd",
+		"windows": "26cd09e944ad13f796cc9886fa618c5793ebdd91c1ff9f033268f7db39c423d2",
+	}}
+	if !reflect.DeepEqual(rep, want) {
+		t.Errorf("readReport = %+v, want %+v", rep, want)
+	}
+	rows := filepath.Join(dir, "s17-report.txt")
+	if _, err := readReport(rows); err == nil || !strings.Contains(err.Error(), rows+sandbox7DetailSuffix) {
+		t.Errorf("readReport of the rows report: %v, want an error naming %s", err, rows+sandbox7DetailSuffix)
+	}
+	if why, err := goTestPassed(filepath.Join(dir, "go-test.log"), attempt, commit); err != nil || why != "" {
+		t.Errorf("goTestPassed of the scenario's log: %q, %v; want a pass", why, err)
 	}
 }

@@ -204,9 +204,13 @@ echo "mode=full attempt=$DSH_SCENARIO_SANDBOX7_ATTEMPT commit=$(git rev-parse HE
 
 Then run the block of steps 1 to 7 above, as written, on that commit. Step 7 runs the 13 other
 scenarios and then SANDBOX-7, once, inside the 100 min budget; SANDBOX-7 logs
-`sandbox7 provenance: attempt=<id> commit=<sha>` first and writes `artifacts/harness/s17-report.txt`
-last: the counts line `linux=n,darwin=n,windows=n`, then `commit:`, `attempt:` and one
-`text: <platform>.md sha256=<hex>` line per text, read from the clean checkout. The block passed
+`sandbox7 provenance: attempt=<id> commit=<sha>` first (and stops before any model call if a
+text is missing or unreadable) and writes `artifacts/harness/s17-report.txt.detail` last: the
+counts line `linux=n,darwin=n,windows=n`, then `commit:`, `attempt:` and one
+`text: <platform>.md sha256=<hex>` line per text, read from the clean checkout. The file is the
+`.detail` one because the package's `TestMain` (`scenario.Main`) points `DSH_SCENARIO_REPORT` at
+`<report>.detail` while the tests run and keeps `s17-report.txt` itself for the scenario rows
+(JSON), which `sandbox7-record` refuses as a report. The block passed
 only if it ends `S17 run on <sha>: passed` and `exit 0`, which it saves with the commit in
 `artifacts/harness/s17-exit.txt` for step C.
 
@@ -231,7 +235,7 @@ a=artifacts/harness
 [ -z "$(git status --porcelain)" ] || { echo "the tree is not clean"; exit 1; }
 export DSH_BIN="$PWD/$a/dsh"
 export DSH_SCENARIO_REPORT="$PWD/$a/s17-sandbox7-report-$text.txt"
-rm -f "$DSH_SCENARIO_REPORT" "$a/s17-sandbox7-exit-$text.txt"
+rm -f "$DSH_SCENARIO_REPORT" "$DSH_SCENARIO_REPORT.detail" "$a/s17-sandbox7-exit-$text.txt"
 # -count=1: a live real-model run, never a cached result.
 GOWORK=off go -C src/harness test -tags scenario -count=1 -p 1 -timeout 110m -v \
   -run "^TestPolicyTextMakesTheModelEscalate\$/^$text\$" ./internal/testkit/scenarios/ 2>&1 \
@@ -265,12 +269,12 @@ set -- --attempt "$attempt"
 case "$mode" in
 full)
   [ "$(cat "$a/s17-exit.txt")" = "exit 0 $sha" ] || { echo "S17 did not pass on $sha"; exit 1; }
-  set -- "$@" --report "$a/s17-report.txt" ;;
+  set -- "$@" --report "$a/s17-report.txt.detail" ;;
 shard)
   for text in linux darwin windows; do
     [ "$(cat "$a/s17-sandbox7-exit-$text.txt")" = "exit 0 $sha $attempt" ] \
       || { echo "shard $text did not pass in $attempt on $sha"; exit 1; }
-    set -- "$@" --report "$a/s17-sandbox7-report-$text.txt" --go-test-log "$a/s17-go-test-sandbox7-$text.txt"
+    set -- "$@" --report "$a/s17-sandbox7-report-$text.txt.detail" --go-test-log "$a/s17-go-test-sandbox7-$text.txt"
   done ;;
 *) echo "unknown attempt mode $mode"; exit 1 ;;
 esac

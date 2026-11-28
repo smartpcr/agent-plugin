@@ -186,7 +186,7 @@ open. Each blocker on its own stops the run:
 | Order: SANDBOX-7 runs last in S17 (architecture.md R-03), after the 13 other scenarios; every one of them is `not run`. | Scenarios table above | the other 13 rows are run (the copilot-cli legs recorded) |
 | No `s17` job to dispatch. `.github/workflows/harness-scenarios.yml` has `preflight`, `scenarios` and `s18`, no `s17` job (Stage 7.1); a CI file is not changed by this stage. | `git grep -n s17 -- .github` on `6edc2a3`: no match | the `s17` job lands, or the operator runs [runbook-s17-wsl.md](runbook-s17-wsl.md) section "DH-E-SANDBOX-7 on s17/policy-text" by hand |
 | No committed scenario inputs: `DSH_SCENARIO_SANDBOX7_TASKS` (the twelve tasks), `DSH_SCENARIO_SANDBOX7_LAYER`, `DSH_SCENARIO_SANDBOX7_PREVIOUS`, `DSH_SCENARIO_SANDBOX7_ATTEMPT`, `DSH_SCENARIO_CLAUDE_CODE_MODEL`. | `TestPolicyTextMakesTheModelEscalate` doc comment | the operator supplies them (none is a credential) |
-| Who, and where the text lives. The signed-in run is by the owner or an operator, never an agent session. The branch `s17/policy-text` is a git commit and push that the Forge engineer brief for this stage does not allow ("DO NOT run `git add`, `git commit`, `git push` ..."; Forge commits only the workstream branch, which merges to `main`, where M2-C-6 forbids the text). Every byte the branch ships is therefore on `main` already, outside `policy/text/`, and the branch is moves only. | runbook, "Who, where, and with what"; Forge engineer brief | the operator follows the runbook section, steps A to C (A is three `git mv` and one commit) |
+| Who, and where the text lives. The signed-in run is by the owner or an operator, never an agent session. The branch `s17/policy-text` is a git commit and push that the Forge engineer brief for this stage does not allow ("DO NOT run `git add`, `git commit`, `git push` ..."; Forge commits only the workstream branch, which merges to `main`, where M2-C-6 forbids the text). Every byte the branch ships is therefore on `main` already, outside `policy/text/`, and the branch is moves only. These files are preparation, not the deliverable: Stage 7.6 step 1 stays open until the branch `s17/policy-text` exists, by an operator-approved handoff (open question `s17-branch-handoff`). | runbook, "Who, where, and with what"; Forge engineer brief | the operator follows the runbook section, steps A to C (A is three `git mv` and one commit) |
 
 What this stage did change on `main` (no shipped text, so `harness-gate policy-text` prints
 `ok: no sandbox policy text`):
@@ -218,7 +218,8 @@ What this stage did change on `main` (no shipped text, so `harness-gate policy-t
   per text (M2-R-06) is not failed for the two texts it did not run. Each text is judged in its own
   subtest, and a text below the floor keeps the transcript of every one of its runs, not only of
   runs that failed alone (TC-20s; `TestSandbox7KeepsEveryTranscriptOfATextBelowTheFloor`).
-- `harness-gate sandbox7-record --attempt <id>` takes the counts from `--report` files (one per
+- `harness-gate sandbox7-record --attempt <id>` takes the counts from `--report` files (the
+  scenario's `<DSH_SCENARIO_REPORT>.detail`, where `scenario.Main` moves the variable; one per
   run or shard, each platform once, read under `--root` when relative). Each report names the
   commit, the attempt (`DSH_SCENARIO_SANDBOX7_ATTEMPT`) and each text's SHA-256 as the scenario
   read them; a report of another commit, attempt or text bytes, or a `--go-test-log` without that

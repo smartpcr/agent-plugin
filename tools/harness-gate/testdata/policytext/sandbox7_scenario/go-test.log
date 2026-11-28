@@ -1,0 +1,10 @@
+=== RUN   TestPolicyTextMakesTheModelEscalate
+    sandbox_policy_text_scenario_test.go:205: sandbox7 provenance: attempt=s17-full-20260101T000000Z commit=0123456789abcdef0123456789abcdef01234567
+=== RUN   TestPolicyTextMakesTheModelEscalate/linux
+    sandbox_policy_text_scenario_test.go:168: escalated of 18: linux=12,darwin=11,windows=13 (previous map[]); report /w/artifacts/harness/s17-report.txt.detail
+--- PASS: TestPolicyTextMakesTheModelEscalate (5400.00s)
+    --- PASS: TestPolicyTextMakesTheModelEscalate/linux (1800.00s)
+    --- PASS: TestPolicyTextMakesTheModelEscalate/darwin (1800.00s)
+    --- PASS: TestPolicyTextMakesTheModelEscalate/windows (1800.00s)
+PASS
+ok  	github.com/smartpcr/agent-plugin/src/harness/internal/testkit/scenarios	5401.2s

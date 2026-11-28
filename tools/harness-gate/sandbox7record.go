@@ -289,6 +289,10 @@ type sandbox7Report struct {
 	Texts                   map[string]string // platform -> sha256
 }
 
+// sandbox7DetailSuffix is scenario.DetailSuffix (src/harness/internal/testkit/
+// scenario): the report a scenario writes is DSH_SCENARIO_REPORT plus it.
+const sandbox7DetailSuffix = ".detail"
+
 // sandbox7ReportText is a report's text line.
 var sandbox7ReportText = regexp.MustCompile(`^text: ([a-z]+)\.md sha256=([0-9a-f]{64})$`)
 
@@ -302,6 +306,9 @@ func readReport(path string) (sandbox7Report, error) {
 	lines := strings.Split(strings.TrimRight(strings.ReplaceAll(string(b), "\r\n", "\n"), "\n"), "\n")
 	bad := func(why string) (sandbox7Report, error) {
 		return r, fmt.Errorf("--report %s: %s (want the counts line, then commit:, attempt: and one text: line per text that ran)", path, why)
+	}
+	if strings.HasPrefix(lines[0], "{") {
+		return r, fmt.Errorf("--report %s holds scenario rows, not the counts: the scenario writes them to %s%s, where scenario.Main points DSH_SCENARIO_REPORT while the tests run", path, path, sandbox7DetailSuffix)
 	}
 	if strings.ContainsAny(lines[0], ": ") || lines[0] == "" {
 		return bad(fmt.Sprintf("first line %q is not <platform>=<n>[,...]", lines[0]))
