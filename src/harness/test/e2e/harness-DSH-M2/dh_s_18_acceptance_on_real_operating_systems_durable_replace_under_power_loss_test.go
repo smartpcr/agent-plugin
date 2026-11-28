@@ -75,6 +75,9 @@ const (
 	drpMinRun = 20 * time.Minute
 	// drpReserve is kept back from the outer go test deadline for the checks.
 	drpReserve = 2 * time.Minute
+	// drpSetup is the least a guest's slot must hold, beyond drpMinRun, for
+	// its preflight, its run guest's create and cycle, and the scenario build.
+	drpSetup = 20 * time.Minute
 	// drpCommandWithin bounds one hypervisor command or the scenario build.
 	drpCommandWithin = 15 * time.Minute
 	// drpAckWithin is the ack-probe timeout of the vm:* jobs.
@@ -116,12 +119,20 @@ var drpInputs = []string{
 
 var drpOuterT *testing.T
 
+// drpStarted holds the guest OSes whose scenario has begun. The guests run one
+// after the other under one go test deadline (-timeout 355m in the runbook and
+// jobs), so each guest is given an equal slot of what is left when it begins,
+// shared with the guests not yet begun: its preflight, build and run must fit
+// in that slot, and an earlier guest can never eat into a later one's slot.
+var drpStarted = map[string]bool{}
+
 type drpState struct {
-	guest  string
-	target string
-	in     map[string]string // drpInputs -> value
-	vm     string            // the run's guest, created from a fresh overlay
-	made   bool              // the run's guest exists and is the suite's to delete
+	guest   string
+	target  string
+	in      map[string]string // drpInputs -> value
+	vm      string            // the run's guest, created from a fresh overlay
+	made    bool              // the run's guest exists and is the suite's to delete
+	slotEnd time.Time         // this guest's share of the go test deadline (zero: none)
 
 	report string // DSH_SCENARIO_REPORT given to the run
 	detail string // the recorder's version log: report + ".detail"
@@ -315,9 +326,38 @@ func (s *drpState) preflight() (err error) {
 	return nil
 }
 
+// slot gives guest its equal share of the time left before the go test
+// deadline, among itself and the guest OSes not yet begun.
+func (s *drpState) slot(guest string) error {
+	left := 1
+	for g := range drpGuests {
+		if g != guest && !drpStarted[g] {
+			left++
+		}
+	}
+	drpStarted[guest] = true
+	if drpOuterT == nil {
+		return nil
+	}
+	d, ok := drpOuterT.Deadline()
+	if !ok {
+		return nil
+	}
+	share := (time.Until(d) - drpReserve) / time.Duration(left)
+	s.slotEnd = time.Now().Add(share)
+	if share < drpMinRun+drpSetup {
+		return fmt.Errorf("not run: the %s guest's slot is %v (the time left before the go test deadline, shared with %d guest(s) not yet run), below %v for its preflight, build and %d power cuts: rerun with a larger -timeout (the runbook uses 355m, %v per guest)",
+			guest, share.Round(time.Second), left-1, drpMinRun+drpSetup, drpRounds, drpMaxRun+drpReserve)
+	}
+	return nil
+}
+
 func (s *drpState) givenGuest(guest string) error {
 	g := drpGuests[guest]
 	s.guest, s.target, s.in = guest, g.target, map[string]string{}
+	if err := s.slot(guest); err != nil {
+		return err
+	}
 	var missing []string
 	for _, k := range drpInputs {
 		name := "DSH_S18_" + g.target + "_" + k
@@ -367,16 +407,21 @@ func (s *drpState) givenRecorder() error {
 
 // --- When ---
 
+// budget is the run's time: the runbook's bound, cut to what is left of this
+// guest's slot (after its preflight and build) and of the go test deadline.
 func (s *drpState) budget() (time.Duration, error) {
 	budget := drpMaxRun
+	if !s.slotEnd.IsZero() {
+		budget = min(budget, time.Until(s.slotEnd))
+	}
 	if drpOuterT != nil {
 		if d, ok := drpOuterT.Deadline(); ok {
 			budget = min(budget, time.Until(d)-drpReserve)
 		}
 	}
 	if budget < drpMinRun {
-		return 0, fmt.Errorf("only %v left before the go test deadline for %d power cuts of %s, below %v: rerun with a larger -timeout (the runbook uses 175m)",
-			budget.Round(time.Second), drpRounds, s.vm, drpMinRun)
+		return 0, fmt.Errorf("only %v left of the %s guest's slot of the go test deadline for %d power cuts of %s, below %v: rerun with a larger -timeout (the runbook uses 355m, %v per guest)",
+			budget.Round(time.Second), s.guest, drpRounds, s.vm, drpMinRun, drpMaxRun+drpReserve)
 	}
 	return budget, nil
 }
@@ -389,8 +434,7 @@ func (s *drpState) whenCuts() error {
 	if err != nil {
 		return err
 	}
-	budget, err := s.budget()
-	if err != nil {
+	if _, err := s.budget(); err != nil {
 		return err
 	}
 	dir := os.Getenv(drpArtifactsEnv)
@@ -417,6 +461,11 @@ func (s *drpState) whenCuts() error {
 	build.Dir, build.Env = mod, append(os.Environ(), "GOWORK=off")
 	if out, err := build.CombinedOutput(); err != nil {
 		return fmt.Errorf("go test -c -tags scenario %s: %w\n%s", drpScenarioPkg, err, out)
+	}
+	// The build came out of this guest's slot; the run gets what is left of it.
+	budget, err := s.budget()
+	if err != nil {
+		return err
 	}
 
 	env := []string{}
@@ -696,6 +745,7 @@ func InitializeScenario_dh_s_18_acceptance_on_real_operating_systems_durable_rep
 
 func TestE2E_dh_s_18_acceptance_on_real_operating_systems_durable_replace_under_power_loss(t *testing.T) {
 	drpOuterT = t
+	drpStarted = map[string]bool{}
 	suite := godog.TestSuite{
 		ScenarioInitializer: InitializeScenario_dh_s_18_acceptance_on_real_operating_systems_durable_replace_under_power_loss,
 		Options: &godog.Options{
