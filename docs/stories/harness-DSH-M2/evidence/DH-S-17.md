@@ -259,7 +259,8 @@ check is known to admit a full record and refuse a short one.
   each carry a DH-S-17 record in this record's form and a DH-S-17 index entry of the 14 IDs;
   `TestStageClosureS17Golden` and `TestStageClosureS17ExitCodes` run `ready` and `close --stage DH-S-17`
   over them against `testdata/closure/expected_s17.golden`: open and ready, `ready` exits 0 and `close`
-  is refused not-yet-closed; closed and ready, both exit 0 with every row passed; `closed_not_ready`
+  is refused not-yet-closed; closed and ready, both exit 0 with every required leg passed and every
+  recorded `copilot-cli` leg run with its result kept (DH-E-LLM-3's reads `failed`, M2-DEC-4); `closed_not_ready`
   (DH-E-SANDBOX-7 `not run`, status `closed`) makes `close` exit 1 `closed-but-not-ready` (M2-C-2).
 - `TestS17CopilotLegKept`: on the closed and ready fixture, a `copilot-cli` row of DH-E-LLM-1,
   DH-E-LLM-3 or DH-E-VIEW-1 that is deleted or `not run` makes `close` refuse `closed-but-not-ready`
