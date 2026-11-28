@@ -21,6 +21,18 @@ Feature: Linux process tree ownership (DH-S-18 Stage 8.4, impl.md 18.3, TC-21s2)
     And the delegated scope is gone once the host exits
 
   @TC-21s2 @DH-E-EXEC-10 @proof:service:linux-systemd-cgroup
+  Scenario: DH-E-EXEC-10 memory limit enforced in the delegated scope
+    Given the "linux-e2:systemd" machine, an account reached over SSH, whose preflight records the user manager "running"
+    When a command forks a tree 5 levels deep with a setsid grandchild and an orphan that ignore SIGTERM, under a 256 MiB memory limit, and is stopped
+    Then the tree's owner is reported as "control-group", exact, with no fallback
+    And the owner is the delegated scope the user service manager granted, holding every member
+    And the memory limit is reported "enforced"
+    And the tree's control group has memory.max 268435456
+    And no descendant survives the stop
+    And the tree's control group is removed
+    And the delegated scope is gone once the host exits
+
+  @TC-21s2 @DH-E-EXEC-10 @proof:service:linux-systemd-cgroup
   Scenario: DH-E-EXEC-10 fallback reported
     Given the "linux-e2:no-user-manager" machine, an account reached over SSH, whose preflight records the user manager "stopped"
     When a command forks a tree 5 levels deep with a setsid grandchild and an orphan that ignore SIGTERM, under a 256 MiB memory limit, and is stopped
