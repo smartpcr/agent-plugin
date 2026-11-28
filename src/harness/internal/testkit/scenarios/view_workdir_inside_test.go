@@ -35,7 +35,7 @@ func TestView5InsideJudgesWritePaths(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := view5Inside(tree, c.path); got != c.inside {
+			if got := view5MustInside(t, tree, c.path); got != c.inside {
 				t.Fatalf("view5Inside(%s, %s) = %v, want %v", tree, c.path, got, c.inside)
 			}
 		})
@@ -63,6 +63,9 @@ func TestView5InsideFollowsLinks(t *testing.T) {
 		"dangling": filepath.Join(repo, "new.txt"),
 		"relout":   filepath.Join("..", "repo"),
 		"stay":     "in",
+		"loopa":    "loopb",
+		"loopb":    "loopa",
+		"self":     filepath.Join(tree, "self"),
 	}
 	for name, target := range links {
 		if err := os.Symlink(target, filepath.Join(tree, name)); err != nil {
@@ -87,8 +90,9 @@ func TestView5InsideFollowsLinks(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := view5Inside(tree, c.path); got != c.inside {
-				t.Fatalf("view5Inside(%s, %s) = %v (lands at %s), want %v", tree, c.path, got, view5Real(filepath.Join(tree, c.path)), c.inside)
+			if got := view5MustInside(t, tree, c.path); got != c.inside {
+				at, _ := view5Real(filepath.Join(tree, c.path))
+				t.Fatalf("view5Inside(%s, %s) = %v (lands at %s), want %v", tree, c.path, got, at, c.inside)
 			}
 		})
 	}
@@ -96,9 +100,42 @@ func TestView5InsideFollowsLinks(t *testing.T) {
 	if err := os.Symlink(tree, via); err != nil {
 		t.Fatal(err)
 	}
-	if !view5Inside(via, filepath.Join(tree, "x.txt")) || view5Inside(via, filepath.Join(via, "out", "x.txt")) {
+	if !view5MustInside(t, via, filepath.Join(tree, "x.txt")) || view5MustInside(t, via, filepath.Join(via, "out", "x.txt")) {
 		t.Fatal("a working directory named through a link is not judged by where it lands")
 	}
+
+	// A cycle, or a link that cannot be looked at, leaves the landing place
+	// unknown: an error, never an inside path by its spelling.
+	unresolved := []string{filepath.Join("loopa", "x.txt"), "loopb", filepath.Join("self", "x.txt")}
+	if runtime.GOOS != "windows" && os.Geteuid() != 0 {
+		locked := filepath.Join(tree, "locked")
+		if err := os.Mkdir(locked, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(repo, filepath.Join(locked, "esc")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(locked, 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+		unresolved = append(unresolved, filepath.Join("locked", "esc", "x.txt"))
+	}
+	for _, p := range unresolved {
+		if in, err := view5Inside(tree, p); err == nil {
+			t.Errorf("view5Inside(%s, %s) = %v with no error, want a resolution error", tree, p, in)
+		}
+	}
+}
+
+// view5MustInside is view5Inside failing the test on a resolution error.
+func view5MustInside(t *testing.T, dir, p string) bool {
+	t.Helper()
+	in, err := view5Inside(dir, p)
+	if err != nil {
+		t.Fatalf("view5Inside(%s, %s): %v", dir, p, err)
+	}
+	return in
 }
 
 // TestView5OutsideWatchesTheInactiveDirectory checks that the listing of a
@@ -223,7 +260,7 @@ func TestView5WrittenCountsPartialPatches(t *testing.T) {
 	o := toolOutcome{Name: "apply_patch", IsError: true, Raw: result(strings.ReplaceAll(partial, "/scratch/repo/", filepath.Join(filepath.Dir(dir), "elsewhere")+string(filepath.Separator)), true)}
 	outside := 0
 	for _, p := range view5Written(t, &o) {
-		if !view5Inside(dir, p) {
+		if !view5MustInside(t, dir, p) {
 			outside++
 		}
 	}

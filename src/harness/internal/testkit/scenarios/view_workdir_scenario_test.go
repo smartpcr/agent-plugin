@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -223,7 +225,11 @@ func view5WritesInside(t *testing.T, evs []protocol.Event, dir string) {
 	t.Helper()
 	for _, o := range toolOutcomes(t, evs) {
 		for _, p := range view5Written(t, o) {
-			if !view5Inside(dir, p) {
+			in, err := view5Inside(dir, p)
+			if err != nil {
+				t.Fatalf("call %s (%s) wrote %s, whose landing place is unknown (its containment in %s is unproved): %v", o.ID, o.Name, p, dir, err)
+			}
+			if !in {
 				t.Fatalf("call %s (%s) wrote %s, outside the session's working directory %s", o.ID, o.Name, p, dir)
 			}
 		}
@@ -347,20 +353,35 @@ func view5Completed(text string) []string {
 
 // view5Inside reports whether p, resolved against dir when relative, lands at
 // dir or below it once every link on the way, the last one included, is
-// followed (view5Real); dir is compared with its own links followed.
-func view5Inside(dir, p string) bool {
+// followed (view5Real); dir is compared with its own links followed. A path
+// whose links cannot be followed to the end is an error, never inside.
+func view5Inside(dir, p string) (bool, error) {
 	if !filepath.IsAbs(p) {
 		p = filepath.Join(dir, p)
 	}
-	rel, err := filepath.Rel(view5Real(dir), view5Real(p))
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+	d, err := view5Real(dir)
+	if err != nil {
+		return false, err
+	}
+	r, err := view5Real(p)
+	if err != nil {
+		return false, err
+	}
+	rel, err := filepath.Rel(d, r)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel), nil
 }
+
+// view5MaxHops bounds the links one path may follow, as the kernel's own
+// limit (Linux 40) and the host's resolver do.
+const view5MaxHops = 40
 
 // view5Real is the absolute path p reaches when each component is resolved in
 // turn as the kernel walks it: a link (dangling ones too) is replaced by its
-// target before the next component, ".." climbs from where the walk is, and
-// missing components are taken as named.
-func view5Real(p string) string {
+// target before the next component, ".." climbs from where the walk is, and a
+// missing component is taken as named. Any other failure to look at a
+// component or read a link, and more than view5MaxHops links (a cycle), is an
+// error: the landing place is then unknown.
+func view5Real(p string) (string, error) {
 	split := func(s string) []string {
 		return strings.FieldsFunc(s, func(r rune) bool { return r < 128 && os.IsPathSeparator(uint8(r)) })
 	}
@@ -378,19 +399,32 @@ func view5Real(p string) string {
 			continue
 		}
 		next := filepath.Join(cur, c)
-		target, err := os.Readlink(next)
-		if err != nil || hops > 40 {
+		fi, err := os.Lstat(next)
+		if errors.Is(err, fs.ErrNotExist) {
 			cur = next
 			continue
 		}
-		hops++
+		if err != nil {
+			return "", fmt.Errorf("resolving %s: %w", p, err)
+		}
+		if fi.Mode()&(os.ModeSymlink|os.ModeIrregular) == 0 {
+			cur = next
+			continue
+		}
+		target, err := os.Readlink(next)
+		if err != nil {
+			return "", fmt.Errorf("resolving %s: reading the link %s: %w", p, next, err)
+		}
+		if hops++; hops > view5MaxHops {
+			return "", fmt.Errorf("resolving %s: more than %d links (a cycle?)", p, view5MaxHops)
+		}
 		if filepath.IsAbs(target) {
 			v := filepath.VolumeName(target)
 			cur, target = v+string(filepath.Separator), target[len(v):]
 		}
 		todo = append(split(target), todo...)
 	}
-	return cur
+	return cur, nil
 }
 
 // view5Changes is the directory of every workspace-root/change of cause in evs.
