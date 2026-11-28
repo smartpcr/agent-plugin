@@ -387,7 +387,20 @@ func s18rRun(ctx context.Context, v s18rVariant, bin, home string) (string, int,
 		if err != nil {
 			return "", -1, err
 		}
-		cmd = exec.CommandContext(ctx, "wsl.exe", "-e", strings.TrimSpace(p), "--version")
+		h, err := s18rCommand(ctx, "", nil, "wsl.exe", "-e", "wslpath", "-a", filepath.ToSlash(home))
+		if err != nil {
+			return "", -1, err
+		}
+		// The Windows environment does not cross into WSL, so DSH_HOME is set on the Linux side.
+		cmd = exec.CommandContext(ctx, "wsl.exe", "-e", "env", "DSH_HOME="+strings.TrimSpace(h), strings.TrimSpace(p), "--version")
+	case "interop":
+		cmd = exec.CommandContext(ctx, bin, "--version")
+		// WSL forwards only the variables named in WSLENV to Windows; /p translates the path.
+		wslenv := "DSH_HOME/p"
+		if cur := os.Getenv("WSLENV"); cur != "" {
+			wslenv = cur + ":" + wslenv
+		}
+		cmd.Env = append(os.Environ(), "DSH_HOME="+home, "WSLENV="+wslenv)
 	default:
 		cmd = exec.CommandContext(ctx, bin, "--version")
 		cmd.Env = append(os.Environ(), "DSH_HOME="+home)
