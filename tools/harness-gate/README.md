@@ -178,7 +178,14 @@ dsh sandbox status | GOWORK=off go -C tools/harness-gate run . sandbox-preflight
   without a `--- PASS` line. All runs of a plan share one 100-minute budget
   (`scenarioBudget`; the S17 job has 2 h): each gets the time left as its
   `-timeout`, and a run the budget no longer covers is not started and fails. `DH-S-17` runs in three phases: `DH-E-TOOLCHAIN-1` first,
-  the other scenarios, then `DH-E-SANDBOX-7` (architecture.md rule 7, R-03). Of a
+  the other scenarios, then `DH-E-SANDBOX-7` (architecture.md rule 7, R-03).
+  `DH-S-18` runs `DH-E-TOOLCHAIN-2` alone first with `DSH_REHEARSAL_DIR` naming a
+  directory the run owns (removed when the plan ends); the rehearsal leaves its six
+  binaries there and, only when every check passed, `rehearsal.sha256`. The other
+  scenarios then run with `DSH_BIN` naming this host's binary from it, its SHA-256
+  checked against the manifest (`scenarios: rehearsal hand-off: DSH_BIN=... sha256
+  ...`); without a verified binary they are not run and fail, never run on a build of
+  their own (impl.md 18.1). Of a
   scenario with route subtests the `claude-code` leg must pass and the
   `copilot-cli` leg is recorded (`scenarios: recorded leg: ...`): the required run
   sets `DSH_SCENARIO_ROUTES=claude-code` and its verdict has no exception; the

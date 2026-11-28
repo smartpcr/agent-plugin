@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -389,4 +391,144 @@ func TestExecRunner(t *testing.T) {
 	if _, _, err := run(ctx, "harness-gate-no-such-program"); err == nil {
 		t.Error("a missing program ran")
 	}
+}
+
+// TestPhasesOrderDHS18: DH-S-18 runs the release rehearsal (TOOLCHAIN-2) alone and
+// first, whatever its place in the plan, and every other scenario after it
+// (impl.md 18.1).
+func TestPhasesOrderDHS18(t *testing.T) {
+	var plan acceptance.Plan
+	for _, id := range []string{"DH-E-SDK-1", "DH-E-AGENT-4", "DH-E-TOOLCHAIN-2"} {
+		plan.Scenarios = append(plan.Scenarios, acceptance.Scenario{ID: id, Test: "Test" + id})
+	}
+	var got [][]string
+	for _, p := range phases("DH-S-18", plan) {
+		var ids []string
+		for _, s := range p.Scenarios {
+			ids = append(ids, s.ID)
+		}
+		got = append(got, ids)
+	}
+	if want := [][]string{{"DH-E-TOOLCHAIN-2"}, {"DH-E-SDK-1", "DH-E-AGENT-4"}}; !slices.EqualFunc(got, want, slices.Equal) {
+		t.Errorf("DH-S-18 phases = %q, want %q", got, want)
+	}
+}
+
+// TestRehearsalBinary: the hand-off names the host's binary only when the manifest
+// records it with the SHA-256 the file has.
+func TestRehearsalBinary(t *testing.T) {
+	dir := t.TempDir()
+	if _, _, err := rehearsalBinary(dir, "linux", "amd64"); err == nil || !strings.Contains(err.Error(), "no verified rehearsal") {
+		t.Errorf("no manifest: %v", err)
+	}
+	writeFile(t, filepath.Join(dir, "dsh-windows-amd64.exe"), "rehearsed")
+	good := "5ed1a8c7b1fca6e4ba9a7d7d93d4e7a5b5f0eb2ae1fd5be6b6e3ffd7b8e3c0a1"
+	writeFile(t, filepath.Join(dir, RehearsalManifest), good+"  dsh-linux-amd64\n")
+	if _, _, err := rehearsalBinary(dir, "windows", "amd64"); err == nil || !strings.Contains(err.Error(), "records no dsh-windows-amd64.exe") {
+		t.Errorf("binary not in manifest: %v", err)
+	}
+	writeFile(t, filepath.Join(dir, RehearsalManifest), good+"  dsh-windows-amd64.exe\n")
+	if _, _, err := rehearsalBinary(dir, "windows", "amd64"); err == nil || !strings.Contains(err.Error(), "SHA-256") {
+		t.Errorf("checksum mismatch: %v", err)
+	}
+	sum := sha256.Sum256([]byte("rehearsed"))
+	want := hex.EncodeToString(sum[:])
+	writeFile(t, filepath.Join(dir, RehearsalManifest), want+"  dsh-windows-amd64.exe\n")
+	if bin, got, err := rehearsalBinary(dir, "windows", "amd64"); err != nil || got != want || bin != filepath.Join(dir, "dsh-windows-amd64.exe") {
+		t.Errorf("verified binary = %s, %s, %v", bin, got, err)
+	}
+}
+
+// s18Src is a scratch scenario file with the imports a hand-off scenario uses.
+func s18Src(id, test, body string) string {
+	return "//go:build scenario\n\npackage s\n\nimport (\n\t\"crypto/sha256\"\n\t\"encoding/hex\"\n\t\"os\"\n\t\"path/filepath\"\n\t\"runtime\"\n\t\"testing\"\n)\n\n" +
+		"var _ = sha256.Sum256\nvar _ = hex.EncodeToString\nvar _ = filepath.Join\nvar _ = runtime.GOOS\n\n" +
+		"//dsh:scenario " + id + "\nfunc " + test + "(t *testing.T) {" + body + "}\n"
+}
+
+// rehearsalBody is a scratch TOOLCHAIN-2: it leaves this host's "binary" in
+// DSH_REHEARSAL_DIR and, when verified, the manifest.
+func rehearsalBody(verified bool) string {
+	b := `
+	dir := os.Getenv("DSH_REHEARSAL_DIR")
+	if dir == "" {
+		t.Fatal("DSH_REHEARSAL_DIR unset")
+	}
+	name := "dsh-" + runtime.GOOS + "-" + runtime.GOARCH
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), []byte("rehearsed"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+`
+	if verified {
+		b += `	sum := sha256.Sum256([]byte("rehearsed"))
+	if err := os.WriteFile(filepath.Join(dir, "rehearsal.sha256"), []byte(hex.EncodeToString(sum[:])+"  "+name+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+`
+	} else {
+		b += "\tt.Error(\"replay failed\")\n"
+	}
+	return b
+}
+
+// laterBody is a scratch later DH-S-18 scenario: it passes only on the rehearsed
+// binary, never a build of its own.
+const laterBody = `
+	b, err := os.ReadFile(os.Getenv("DSH_BIN"))
+	if err != nil || string(b) != "rehearsed" {
+		t.Fatalf("DSH_BIN=%q is not the rehearsal's binary (%q, %v)", os.Getenv("DSH_BIN"), b, err)
+	}
+`
+
+const s18Index = "built-through: DH-S-18\nstages:\n  DH-S-18:\n" +
+	"    - id: DH-E-STORE-1\n      authored: DH-S-7\n      credential: none\n" +
+	"    - id: DH-E-TOOLCHAIN-2\n      authored: DH-S-11\n      credential: none\n"
+
+// TestScenarioGatesS18RehearsalHandoff: DH-S-18 runs TOOLCHAIN-2 to its end first,
+// and the later scenario runs with DSH_BIN naming the binary it verified; a
+// rehearsal that did not pass hands nothing on, and the later scenario is not run
+// rather than run on a build of its own (impl.md 18.1).
+func TestScenarioGatesS18RehearsalHandoff(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs go test on a scratch module")
+	}
+	t.Run("verified", func(t *testing.T) {
+		c := scenarioRoot(t, s18Index, map[string]string{
+			"a_store_scenario_test.go":     s18Src("DH-E-STORE-1", "TestStore", laterBody),
+			"b_toolchain_scenario_test.go": s18Src("DH-E-TOOLCHAIN-2", "TestRehearsal", rehearsalBody(true)),
+		})
+		var out bytes.Buffer
+		if code := ExitCode(Run(context.Background(), &out, c.ScenarioGates("DH-S-18", (&countingProbe{}).probe))); code != 0 {
+			t.Fatalf("exit %d:\n%s", code, out.String())
+		}
+		o := out.String()
+		at := 0
+		for _, want := range []string{"DSH_REHEARSAL_DIR=", "--- PASS: TestRehearsal ", "scenarios: rehearsal hand-off: DSH_BIN=", "DSH_BIN=", "--- PASS: TestStore "} {
+			i := strings.Index(o[at:], want)
+			if i < 0 {
+				t.Fatalf("output lacks %q after offset %d:\n%s", want, at, o)
+			}
+			at += i + len(want)
+		}
+	})
+	t.Run("not verified", func(t *testing.T) {
+		c := scenarioRoot(t, s18Index, map[string]string{
+			"a_store_scenario_test.go":     s18Src("DH-E-STORE-1", "TestStore", laterBody),
+			"b_toolchain_scenario_test.go": s18Src("DH-E-TOOLCHAIN-2", "TestRehearsal", rehearsalBody(false)),
+		})
+		var out bytes.Buffer
+		results := Run(context.Background(), &out, c.ScenarioGates("DH-S-18", (&countingProbe{}).probe))
+		if ExitCode(results) != 1 {
+			t.Fatalf("exit %d, want 1:\n%s", ExitCode(results), out.String())
+		}
+		if err := results[len(results)-1].Err.Error(); !strings.Contains(err, "DH-E-STORE-1 not run: no verified rehearsal binary") {
+			t.Errorf("scenarios gate = %s", err)
+		}
+		if strings.Contains(out.String(), "-run ^(TestStore)$") {
+			t.Errorf("a later scenario ran without a verified rehearsal:\n%s", out.String())
+		}
+	})
 }

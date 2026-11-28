@@ -53,7 +53,10 @@ var versionLine = regexp.MustCompile(`^dsh (\S+) \((\S+); go\S+; (\S+/\S+)\)$`)
 // that version from "dsh --version" and passes one keyless, signed-out headless
 // replay. Scope: the three binaries matching the runners' processors are executed;
 // the other three are built and checksummed only. Cleanup: everything, the empty
-// configuration homes included, is under t.TempDir(); nothing of the user's
+// configuration homes included, is under t.TempDir(), except the binaries of a
+// DH-S-18 run, which go to the directory DSH_REHEARSAL_DIR names (the runner owns
+// and removes it) with a manifest of their SHA-256s once every check passed, so the
+// later DH-S-18 scenarios run on them; nothing of the user's
 // sign-in is touched; no tag or release is created (the tag list is compared
 // before and after).
 //
@@ -66,7 +69,15 @@ func TestToolchainRehearsal(t *testing.T) {
 	}
 	tagsBefore := run(t, root, nil, "git", "tag", "--list")
 
-	out := t.TempDir()
+	// Under "harness-gate scenarios --stage DH-S-18" the binaries go to the
+	// directory the run owns (rehearsalDirEnv), so every later DH-S-18 scenario
+	// runs on them (impl.md 18.1); otherwise they die with the test.
+	out := strings.TrimSpace(os.Getenv(rehearsalDirEnv))
+	if out == "" {
+		out = t.TempDir()
+	} else if entries, err := os.ReadDir(out); err != nil || len(entries) != 0 {
+		t.Fatalf("%s=%s must name an empty directory (%d entries, %v)", rehearsalDirEnv, out, len(entries), err)
+	}
 	report := run(t, filepath.Join(root, "tools", "harness-gate"), []string{"GOWORK=off"},
 		"go", "run", ".", "rehearse", "--root", "../..", "--out", out)
 	t.Logf("rehearse:\n%s", report)
@@ -145,7 +156,26 @@ func TestToolchainRehearsal(t *testing.T) {
 	if after := run(t, root, nil, "git", "tag", "--list"); after != tagsBefore {
 		t.Errorf("the rehearsal changed the tags:\nbefore:\n%s\nafter:\n%s", tagsBefore, after)
 	}
+
+	// The hand-off: the manifest exists only for a rehearsal whose every check
+	// passed, so the runner never hands a later scenario an unverified binary.
+	if !t.Failed() {
+		var manifest strings.Builder
+		for _, name := range rehearsalTargets {
+			manifest.WriteString(got[name].sha + "  " + name + "\n")
+		}
+		if err := os.WriteFile(filepath.Join(out, rehearsalManifest), []byte(manifest.String()), 0o644); err != nil {
+			t.Fatalf("rehearsal manifest: %v", err)
+		}
+	}
 }
+
+// The rehearsal hand-off of "harness-gate scenarios" (tools/harness-gate
+// scenariorun.go RehearsalDirEnv, RehearsalManifest).
+const (
+	rehearsalDirEnv   = "DSH_REHEARSAL_DIR"
+	rehearsalManifest = "rehearsal.sha256"
+)
 
 // repositoryRoot is the checkout this package lives in.
 func repositoryRoot(t *testing.T) string {
