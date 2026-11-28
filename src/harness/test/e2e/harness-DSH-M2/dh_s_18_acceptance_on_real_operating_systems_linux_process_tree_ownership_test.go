@@ -154,8 +154,9 @@ type ptoReport struct {
 	// corroboration only, never the product's report.
 	ScanSurvivors []string `json:"scanSurvivors"`
 	TreeDirGone   bool     `json:"treeDirGone"`
-	Swept         []string          `json:"swept,omitempty"` // survivors the agent killed before exiting
-	Error         string            `json:"error,omitempty"`
+	Swept         []string `json:"swept,omitempty"`   // survivors the agent killed and saw gone before exiting
+	Unswept       []string `json:"unswept,omitempty"` // survivors still running after the agent's kill, with why
+	Error         string   `json:"error,omitempty"`
 }
 
 // --- the agent, on the machine ---
@@ -254,14 +255,44 @@ func ptoAgent(rep *ptoReport) error {
 		names = append(names, fmt.Sprintf("level-%d", n))
 	}
 	defer func() {
-		// Whatever happened, nothing the fixture started outlives the agent.
+		// Whatever happened, nothing the fixture started outlives the agent. A
+		// member counts as swept only once /proc shows it gone; one still
+		// running after a bounded wait is reported, so the scenario fails
+		// rather than leaving it on the machine.
+		killed := map[string]int{}
 		for _, name := range names {
-			if pid := ptoReadPid(filepath.Join(pids, name)); pid > 0 && ptoAlive(pid) {
-				if p, err := os.FindProcess(pid); err == nil && p.Kill() == nil {
+			pid := ptoReadPid(filepath.Join(pids, name))
+			if pid <= 0 || !ptoAlive(pid) {
+				continue
+			}
+			p, err := os.FindProcess(pid)
+			if err == nil {
+				err = p.Kill()
+			}
+			if err != nil && ptoAlive(pid) {
+				rep.Unswept = append(rep.Unswept, fmt.Sprintf("%s (pid %d): kill: %v", name, pid, err))
+				continue
+			}
+			killed[name] = pid
+		}
+		gone := time.Now().Add(5 * time.Second)
+		for len(killed) > 0 {
+			for name, pid := range killed {
+				if !ptoAlive(pid) {
 					rep.Swept = append(rep.Swept, name)
+					delete(killed, name)
 				}
 			}
+			if len(killed) == 0 || time.Now().After(gone) {
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
 		}
+		for name, pid := range killed {
+			rep.Unswept = append(rep.Unswept, fmt.Sprintf("%s (pid %d): still running 5 s after SIGKILL", name, pid))
+		}
+		slices.Sort(rep.Swept)
+		slices.Sort(rep.Unswept)
 	}()
 	p, err := subprocess.Start(ctx, subprocess.Spec{
 		Argv:   []string{"/bin/sh", fixture, pids, strconv.Itoa(depth)},
@@ -745,6 +776,9 @@ func ptoRunAgent(t lcssTarget, role string, depth int, mib int) (*ptoReport, str
 			if err := json.Unmarshal([]byte(rest), &r); err != nil {
 				return nil, out, fmt.Errorf("the agent's report: %w", err)
 			}
+			if len(r.Unswept) > 0 {
+				return &r, out, fmt.Errorf("the agent on %s could not end fixture processes, which are left running (error %q): %v", t.name(), r.Error, r.Unswept)
+			}
 			if r.Error != "" {
 				return &r, out, fmt.Errorf("the agent on %s failed: %s", t.name(), r.Error)
 			}
@@ -964,8 +998,8 @@ func (w *ptoWorld) thenGroupEndedSetsidSurvives() error {
 	if !slices.Equal(r.ScanSurvivors, []string{"setsid"}) {
 		return fmt.Errorf("after the stop /proc shows %v of %v running; want the setsid grandchild alone", r.ScanSurvivors, r.Members)
 	}
-	if !slices.Contains(r.Swept, "setsid") {
-		return fmt.Errorf("the agent did not end the reported survivor (swept %v)", r.Swept)
+	if len(r.Unswept) > 0 || !slices.Contains(r.Swept, "setsid") {
+		return fmt.Errorf("the agent did not confirm the reported survivor ended (swept %v, still running %v)", r.Swept, r.Unswept)
 	}
 	fmt.Printf("    [survivor reported by the product: setsid grandchild pid %d: %s]\n", pid, r.RecordSurvivors)
 	return nil
