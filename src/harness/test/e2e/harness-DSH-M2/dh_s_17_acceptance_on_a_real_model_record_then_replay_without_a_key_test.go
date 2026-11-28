@@ -822,7 +822,15 @@ func (s *s17rState) givenCopy(scenario, commit, artifacts string) error {
 	lines, edited := strings.Split(md, "\n"), 0
 	for i, l := range lines {
 		cells := s17rCells(l)
-		if !strings.HasPrefix(strings.TrimSpace(l), "|") || len(cells) != len(header) || cells[0] != s17rScenario {
+		if !strings.HasPrefix(strings.TrimSpace(l), "|") || len(cells) != len(header) {
+			continue
+		}
+		r := map[string]string{}
+		for j, h := range header {
+			r[h] = cells[j]
+		}
+		// Same selection rule as s17rToolchainRow: scenario column by name, required leg only.
+		if r["scenario"] != s17rScenario || !strings.EqualFold(r["leg"], "required") {
 			continue
 		}
 		for j, h := range header {
