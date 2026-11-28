@@ -180,11 +180,13 @@ func TestRecordedLegs(t *testing.T) {
 }
 
 // TestPhasesOrderDHS17: DH-S-17 runs TOOLCHAIN-1 first and SANDBOX-7 last, each in its
-// own go test run, with every other planned scenario between them in plan order
-// (architecture.md rule 7, R-03); another stage is one run in plan order.
+// own go test run, with the single-process scenarios after TOOLCHAIN-1 in plan order
+// and the host-killing SESSION-2 and AGENT-3 after them in their own run
+// (architecture.md rule 7, R-03; impl.md DH-S-17 Sequence); another stage is one run
+// in plan order.
 func TestPhasesOrderDHS17(t *testing.T) {
 	var plan acceptance.Plan
-	for _, id := range []string{"DH-E-SDK-1", "DH-E-SANDBOX-7", "DH-E-LLM-1", "DH-E-TOOLCHAIN-1", "DH-E-AGENT-4"} {
+	for _, id := range []string{"DH-E-SDK-1", "DH-E-SANDBOX-7", "DH-E-LLM-1", "DH-E-AGENT-3", "DH-E-TOOLCHAIN-1", "DH-E-SESSION-2", "DH-E-AGENT-4"} {
 		plan.Scenarios = append(plan.Scenarios, acceptance.Scenario{ID: id, Test: "Test" + id})
 	}
 	var got [][]string
@@ -195,7 +197,7 @@ func TestPhasesOrderDHS17(t *testing.T) {
 		}
 		got = append(got, ids)
 	}
-	want := [][]string{{"DH-E-TOOLCHAIN-1"}, {"DH-E-SDK-1", "DH-E-LLM-1", "DH-E-AGENT-4"}, {"DH-E-SANDBOX-7"}}
+	want := [][]string{{"DH-E-TOOLCHAIN-1"}, {"DH-E-SDK-1", "DH-E-LLM-1", "DH-E-AGENT-4"}, {"DH-E-AGENT-3", "DH-E-SESSION-2"}, {"DH-E-SANDBOX-7"}}
 	if !slices.EqualFunc(got, want, slices.Equal) {
 		t.Errorf("DH-S-17 phases = %q, want %q", got, want)
 	}

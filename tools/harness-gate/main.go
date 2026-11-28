@@ -79,7 +79,7 @@
 //	                       the clean checkout: commit, each text's SHA-256 and
 //	                       escalations, written to evidence/runs/<id>.txt; it
 //	                       runs no gate (sandbox7record.go)
-//	sandbox-preflight [--status file] [--service s]
+//	sandbox-preflight [--status file] [--service s [--preflight text]]
 //	                       the guarded preflight of the WSL lane (Stage 6.10,
 //	                       architecture.md I-8): a "dsh sandbox status" report
 //	                       (standard input by default) passes only as backend

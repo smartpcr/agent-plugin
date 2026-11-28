@@ -115,7 +115,7 @@ count="$(sed -n 's/^count=//p' "$GITHUB_OUTPUT" | tail -n 1)"
 [ "$count" = 14 ] || { echo "DH-S-17 plans $count scenarios, want all 14 (M2-DEC-3)"; exit 1; }
 
 # 7. The 14 scenarios, through the same command as the job: TOOLCHAIN-1 first, the
-#    others, SANDBOX-7 last, one go test per phase (-p 1) of the claude-code legs, which
+#    single-process ones, the host-killing SESSION-2 and AGENT-3, SANDBOX-7 last, one go test per phase (-p 1) of the claude-code legs, which
 #    a skip, a failure or a non-zero exit fails, then a recorded go test of the
 #    copilot-cli legs, whose pass or failure is kept and whose skip or missing result
 #    fails; all within the 100 min budget of the 2 h job. It writes the evidence
