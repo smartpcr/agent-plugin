@@ -1031,7 +1031,9 @@ func serveSMB(v *s87Variant, host string) (*s87SMB, error) {
 				return nil, fmt.Errorf("service:filesystem: adding %s to the share's own user database on %s: %v %s", s.user, v, err, out)
 			}
 		}
-		p, err := v.spawn(nil, true, "smbd", "-s", conf, "--foreground", "--no-process-group")
+		// smbd leads its own process group: on SIGTERM it signals its group, which
+		// with --no-process-group would be this test's own when run natively.
+		p, err := v.spawn(nil, true, "smbd", "-s", conf, "--foreground")
 		if err != nil {
 			return nil, err
 		}
