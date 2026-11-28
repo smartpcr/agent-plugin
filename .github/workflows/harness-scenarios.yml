@@ -505,7 +505,7 @@ jobs:
         run: GOWORK=off go -C tools/harness-gate run . preflight --root ../..
       - name: Run the variant's scenarios
         env:
-          RUN: ${{ steps.preflight.outputs.run }}
+          LIST: ${{ steps.require.outputs.list }}
           TESTS: ${{ steps.preflight.outputs.tests }}
           VARIANT: ${{ matrix.variant }}
         run: |
@@ -517,7 +517,9 @@ jobs:
             export TMPDIR="$SCRATCH_DIR" TMP="$SCRATCH_DIR" TEMP="$SCRATCH_DIR" GOTMPDIR="$RUNNER_TEMP"
             trap 'rm -rf "$SCRATCH_DIR"' EXIT
           fi
-          GOWORK=off go -C src/harness test -tags scenario -p 1 -count=1 -timeout 175m -v -run "$RUN" ./... 2>&1 | tee "$log"
+          # In the stage's order (impl.md 18.1): DH-E-TOOLCHAIN-2 first, every later
+          # scenario on the rehearsal binary it verified (DSH_BIN), never a rebuild.
+          GOWORK=off go -C tools/harness-gate run . variant-run --root ../.. --stage DH-S-18 --scenarios "$LIST" 2>&1 | tee "$log"
           if grep -q -- '--- SKIP' "$log"; then
             echo "a required scenario skipped"; exit 1
           fi

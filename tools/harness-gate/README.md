@@ -185,7 +185,14 @@ dsh sandbox status | GOWORK=off go -C tools/harness-gate run . sandbox-preflight
   scenarios then run with `DSH_BIN` naming this host's binary from it, its SHA-256
   checked against the manifest (`scenarios: rehearsal hand-off: DSH_BIN=... sha256
   ...`); without a verified binary they are not run and fail, never run on a build of
-  their own (impl.md 18.1). Of a
+  their own (impl.md 18.1). The manifest's six lines follow in the output
+  (`scenarios: rehearsal checksum: <sha256>  <name>`). Each s18 variant job of
+  `harness-scenarios.yml` runs its scenarios the same way through `harness-gate
+  variant-run --stage DH-S-18 --scenarios <require --variant list>`
+  (`variantrun.go`): one plain `go test` per phase, a skip or a test without a
+  `--- PASS` line failing, in a 175-minute budget (`variantBudget`). The variants
+  holding `DH-E-TOOLCHAIN-2` (`linux-wsl`, `windows-hosted`) rehearse first and
+  hand the binary on; a variant without it runs as one phase. Of a
   scenario with route subtests the `claude-code` leg must pass and the
   `copilot-cli` leg is recorded (`scenarios: recorded leg: ...`): the required run
   sets `DSH_SCENARIO_ROUTES=claude-code` and its verdict has no exception; the

@@ -49,6 +49,12 @@
 //	                       preflight with the sign-in checks, then go test -tags
 //	                       scenario of the plan, as one evidence record
 //	                       (scenariorun.go)
+//	variant-run --stage DH-S-n --scenarios IDS
+//	                       the scenario step of an s18 variant job: IDS (require
+//	                       --variant) in the stage's order, DH-E-TOOLCHAIN-2 first
+//	                       and every later scenario on the rehearsal binary it
+//	                       verified (DSH_BIN; impl.md 18.1); a skip or a test
+//	                       that did not pass fails (variantrun.go)
 //	ready --stage DH-S-n [--built] [--story s]
 //	                       the first step of a stage close (C57; M2-C-2): every
 //	                       condition of docs/stories/<story>/evidence/<stage>.md
@@ -130,6 +136,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return runRequire(args[1:], stdout, stderr)
 		case "scenarios":
 			return runScenarios(ctx, args[1:], stdout, stderr)
+		case "variant-run":
+			return runVariantRun(ctx, args[1:], stdout, stderr)
 		case "trace-tests":
 			return runTraceTests(args[1:], stdout, stderr)
 		case "ready":

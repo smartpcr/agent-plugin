@@ -532,3 +532,108 @@ func TestScenarioGatesS18RehearsalHandoff(t *testing.T) {
 		}
 	})
 }
+
+// variantPlan is the plan of ids on the scratch root of c, as "variant-run
+// --scenarios ids" builds it.
+func variantPlan(t *testing.T, c *Config, ids string) acceptance.Plan {
+	t.Helper()
+	x, scenarios, err := c.acceptance()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := acceptance.Preflight(map[string]string{acceptance.RequireEnv: ids}, x, scenarios)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return plan
+}
+
+// TestVariantRunS18Handoff is the s18 variant path (the workflow's "Run the
+// variant's scenarios" step): a variant holding TOOLCHAIN-2 runs it first and the
+// later scenario on the binary it verified, its checksums in the log; a rehearsal
+// that did not pass leaves the later scenario not run; a variant without
+// TOOLCHAIN-2 runs as one phase with nothing handed on (impl.md 18.1).
+func TestVariantRunS18Handoff(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs go test on a scratch module")
+	}
+	files := func(verified bool, later string) map[string]string {
+		return map[string]string{
+			"a_store_scenario_test.go":     s18Src("DH-E-STORE-1", "TestStore", later),
+			"b_toolchain_scenario_test.go": s18Src("DH-E-TOOLCHAIN-2", "TestRehearsal", rehearsalBody(verified)),
+		}
+	}
+	t.Run("rehearsing variant", func(t *testing.T) {
+		c := scenarioRoot(t, s18Index, files(true, laterBody))
+		var out bytes.Buffer
+		if err := c.runVariant(context.Background(), &out, "DH-S-18", variantPlan(t, c, "DH-E-STORE-1,DH-E-TOOLCHAIN-2")); err != nil {
+			t.Fatalf("%v:\n%s", err, out.String())
+		}
+		o := out.String()
+		at := 0
+		for _, want := range []string{"DSH_REHEARSAL_DIR=", "--- PASS: TestRehearsal ", "scenarios: rehearsal hand-off: DSH_BIN=", "scenarios: rehearsal checksum: ", "DSH_BIN=", "-run ^(TestStore)$", "--- PASS: TestStore "} {
+			i := strings.Index(o[at:], want)
+			if i < 0 {
+				t.Fatalf("output lacks %q after offset %d:\n%s", want, at, o)
+			}
+			at += i + len(want)
+		}
+	})
+	t.Run("not verified", func(t *testing.T) {
+		c := scenarioRoot(t, s18Index, files(false, laterBody))
+		var out bytes.Buffer
+		err := c.runVariant(context.Background(), &out, "DH-S-18", variantPlan(t, c, "DH-E-STORE-1,DH-E-TOOLCHAIN-2"))
+		if err == nil || !strings.Contains(err.Error(), "DH-E-STORE-1 not run: no verified rehearsal binary") {
+			t.Errorf("runVariant = %v", err)
+		}
+		if strings.Contains(out.String(), "-run ^(TestStore)$") {
+			t.Errorf("a later scenario ran without a verified rehearsal:\n%s", out.String())
+		}
+	})
+	t.Run("variant without rehearsal", func(t *testing.T) {
+		c := scenarioRoot(t, s18Index, files(true, "\n\tif os.Getenv(\"DSH_REHEARSAL_DIR\") != \"\" {\n\t\tt.Fatal(\"handed a rehearsal\")\n\t}\n"))
+		var out bytes.Buffer
+		if err := c.runVariant(context.Background(), &out, "DH-S-18", variantPlan(t, c, "DH-E-STORE-1")); err != nil {
+			t.Fatalf("%v:\n%s", err, out.String())
+		}
+		if o := out.String(); strings.Contains(o, "TestRehearsal") || strings.Contains(o, "hand-off") || !strings.Contains(o, "--- PASS: TestStore ") {
+			t.Errorf("variant without TOOLCHAIN-2:\n%s", o)
+		}
+	})
+}
+
+// TestS18JobRunsVariantsThroughVariantRun binds the s18 job of
+// harness-scenarios.yml to the ordered variant path: after the entry check and
+// "require --variant", its scenario step runs "harness-gate variant-run" on the
+// variant's IDs, never a direct go test of the plan, which would neither run
+// TOOLCHAIN-2 first nor hand its binary on (impl.md 18.1).
+func TestS18JobRunsVariantsThroughVariantRun(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "harness-scenarios.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := workflowJob(t, strings.ReplaceAll(string(data), "\r\n", "\n"), "s18")
+	entry := strings.Index(job, "run . entry --root ../..")
+	require := strings.Index(job, "require --root ../.. --stage DH-S-18 --variant \"$VARIANT\"")
+	step := strings.Index(job, "- name: Run the variant's scenarios\n")
+	if entry < 0 || require < entry || step < require {
+		t.Fatalf("s18 lacks entry, then require --variant, then its scenario step (%d, %d, %d)", entry, require, step)
+	}
+	body, _, _ := strings.Cut(job[step+1:], "\n      - ")
+	for _, want := range []string{"LIST: ${{ steps.require.outputs.list }}", `run . variant-run --root ../.. --stage DH-S-18 --scenarios "$LIST"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("s18 scenario step lacks %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(job, "go -C src/harness test -tags scenario") {
+		t.Errorf("s18 runs go test of the plan directly, outside variant-run:\n%s", job)
+	}
+}
+
+// TestVariantRunUsage: a stage that is not a stage ID is a usage error.
+func TestVariantRunUsage(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := run(context.Background(), []string{"variant-run", "--root", filepath.Join("..", ".."), "--stage", "S18", "--scenarios", "DH-E-TOOLCHAIN-2"}, &stdout, &stderr); code != 2 {
+		t.Errorf("exit %d, want 2: %s", code, stderr.String())
+	}
+}

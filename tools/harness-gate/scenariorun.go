@@ -271,10 +271,25 @@ func (c *Config) runPlan(ctx context.Context, w io.Writer, stage string, plan ac
 	}
 	deadline := time.Now().Add(scenarioBudget)
 	fmt.Fprintf(w, "scenarios: budget %s for every go test run of the plan (tech-spec: 2 h per job)\n", scenarioBudget)
+	return runOrdered(w, stage, plan, func(phase acceptance.Plan, extra ...string) error {
+		return c.runPhase(ctx, w, phase, deadline, extra...)
+	})
+}
+
+// runOrdered runs the phases of plan (phases) through run, every phase whatever an
+// earlier one found. On a Handoff stage whose plan holds a First ID, the First
+// phase runs with RehearsalDirEnv naming a directory owned by this run, and every
+// later phase runs with DSH_BIN naming the rehearsal binary of this host checked
+// against RehearsalManifest; without one the later phases are not run and fail. A
+// plan without a First ID (an S18 variant that does not rehearse) is not handed
+// anything.
+func runOrdered(w io.Writer, stage string, plan acceptance.Plan, run func(phase acceptance.Plan, extra ...string) error) error {
 	order := stageOrder[stage]
+	isFirst := func(s acceptance.Scenario) bool { return slices.Contains(order.First, s.ID) }
+	handoffStage := order.Handoff && slices.ContainsFunc(plan.Scenarios, isFirst)
 	var handoff []string
 	dir := ""
-	if order.Handoff {
+	if handoffStage {
 		d, err := os.MkdirTemp("", "harness-gate-rehearsal-")
 		if err != nil {
 			return fmt.Errorf("rehearsal hand-off: %w", err)
@@ -286,10 +301,10 @@ func (c *Config) runPlan(ctx context.Context, w io.Writer, stage string, plan ac
 	for _, phase := range phases(stage, plan) {
 		var err error
 		switch {
-		case !order.Handoff:
-			err = c.runPhase(ctx, w, phase, deadline)
-		case slices.ContainsFunc(phase.Scenarios, func(s acceptance.Scenario) bool { return slices.Contains(order.First, s.ID) }):
-			if err = c.runPhase(ctx, w, phase, deadline, RehearsalDirEnv+"="+dir); err != nil {
+		case !handoffStage:
+			err = run(phase)
+		case slices.ContainsFunc(phase.Scenarios, isFirst):
+			if err = run(phase, RehearsalDirEnv+"="+dir); err != nil {
 				break
 			}
 			bin, sum, herr := rehearsalBinary(dir, runtime.GOOS, runtime.GOARCH)
@@ -298,12 +313,17 @@ func (c *Config) runPlan(ctx context.Context, w io.Writer, stage string, plan ac
 				break
 			}
 			fmt.Fprintf(w, "scenarios: rehearsal hand-off: %s=%s sha256 %s\n", "DSH_BIN", bin, sum)
+			if m, rerr := os.ReadFile(filepath.Join(dir, RehearsalManifest)); rerr == nil {
+				for _, l := range strings.Split(strings.TrimSpace(string(m)), "\n") {
+					fmt.Fprintf(w, "scenarios: rehearsal checksum: %s\n", strings.TrimSpace(l))
+				}
+			}
 			handoff = []string{"DSH_BIN=" + bin}
 		case handoff == nil:
 			err = fmt.Errorf("%s not run: no verified rehearsal binary (%s did not pass first; impl.md 18.1)", strings.Join(planIDs(phase), ", "), strings.Join(order.First, ", "))
 			fmt.Fprintf(w, "scenarios: %v\n", err)
 		default:
-			err = c.runPhase(ctx, w, phase, deadline, handoff...)
+			err = run(phase, handoff...)
 		}
 		if err != nil {
 			errs = append(errs, err)
@@ -337,19 +357,9 @@ const (
 // run, then the recorded run of the scenarios the required run showed to be routed.
 // extra ("KEY=value") is set in both runs (the rehearsal hand-off).
 func (c *Config) runPhase(ctx context.Context, w io.Writer, plan acceptance.Plan, deadline time.Time, extra ...string) error {
-	var mods []string
-	byMod := map[string]acceptance.Plan{}
-	for _, s := range plan.Scenarios {
-		mod := c.moduleOf(filepath.Join(c.Root, filepath.FromSlash(s.File)))
-		if mod == "" {
-			return fmt.Errorf("%s (%s) is in none of the modules", s.ID, s.File)
-		}
-		if _, ok := byMod[mod]; !ok {
-			mods = append(mods, mod)
-		}
-		p := byMod[mod]
-		p.Scenarios = append(p.Scenarios, s)
-		byMod[mod] = p
+	mods, byMod, err := c.modulePlans(plan)
+	if err != nil {
+		return err
 	}
 	var errs []error
 	for _, mod := range mods {
@@ -396,6 +406,26 @@ func (c *Config) runPhase(ctx context.Context, w io.Writer, plan acceptance.Plan
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// modulePlans groups plan by the module holding each scenario's file, the modules
+// in plan order.
+func (c *Config) modulePlans(plan acceptance.Plan) ([]string, map[string]acceptance.Plan, error) {
+	var mods []string
+	byMod := map[string]acceptance.Plan{}
+	for _, s := range plan.Scenarios {
+		mod := c.moduleOf(filepath.Join(c.Root, filepath.FromSlash(s.File)))
+		if mod == "" {
+			return nil, nil, fmt.Errorf("%s (%s) is in none of the modules", s.ID, s.File)
+		}
+		if _, ok := byMod[mod]; !ok {
+			mods = append(mods, mod)
+		}
+		p := byMod[mod]
+		p.Scenarios = append(p.Scenarios, s)
+		byMod[mod] = p
+	}
+	return mods, byMod, nil
 }
 
 // goTestRun runs the tests of p in mod with kv set, its output to w and returned.
