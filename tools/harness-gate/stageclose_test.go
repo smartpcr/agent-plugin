@@ -13,6 +13,7 @@ import (
 
 	"github.com/smartpcr/agent-plugin/tools/harness-gate/acceptance"
 	"github.com/smartpcr/agent-plugin/tools/harness-gate/closure"
+	"github.com/smartpcr/agent-plugin/tools/harness-gate/variants"
 )
 
 var updateGolden = flag.Bool("update", false, "rewrite the committed goldens under testdata/ (refused under CI)")
@@ -156,6 +157,277 @@ func TestStageClosureS17ExitCodes(t *testing.T) {
 				t.Errorf("exit %d, want %d; stdout must contain %q\nstdout:\n%s\nstderr:\n%s", code, c.code, c.marker, stdout, stderr)
 			}
 		})
+	}
+}
+
+// s18States are the four record states of the DH-S-18 close. Each is the committed
+// fixture (every in-scope variant passed) with its status line and, when not ready, the
+// linux-e2:no-user-manager row of DH-E-EXEC-10 set to not run.
+type s18State struct {
+	name, status string
+	ready        bool
+}
+
+var s18States = []s18State{
+	{"open_not_ready", "open", false},
+	{"open_ready", "open", true},
+	{"closed_ready", "closed", true},
+	{"closed_not_ready", "closed", false},
+}
+
+const s18NotRunRow = "| DH-E-EXEC-10 | linux-e2:no-user-manager | acceptance | required |"
+
+// s18Tree is a root holding the committed acceptance index and variants.md and the
+// fixture DH-S-18 record in the given state.
+func s18Tree(t *testing.T, status string, ready bool) string {
+	t.Helper()
+	repo := filepath.Join("..", "..")
+	root := closureTree(t, filepath.Join("testdata", "closure", "s18"))
+	for _, rel := range []string{acceptance.IndexPath, variants.Path(closure.DefaultStory)} {
+		b, err := os.ReadFile(filepath.Join(repo, filepath.FromSlash(rel)))
+		if err != nil {
+			t.Skipf("not run inside the repository: %v", err)
+		}
+		dst := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(dst, b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	recPath := filepath.Join(root, filepath.FromSlash(closure.RecordPath(closure.DefaultStory, "DH-S-18")))
+	b, err := os.ReadFile(recPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := strings.ReplaceAll(string(b), "\r\n", "\n")
+	src = strings.Replace(src, "\nClosure status: open\n", "\nClosure status: "+status+"\n", 1)
+	if !ready {
+		lines := strings.Split(src, "\n")
+		idx := slices.IndexFunc(lines, func(l string) bool { return strings.HasPrefix(l, s18NotRunRow) })
+		if idx < 0 {
+			t.Fatalf("fixture has no row %q", s18NotRunRow)
+		}
+		lines[idx] = s18NotRunRow + " E2 linux-e2-no-user-manager |  | not run (no-user-manager machine not provisioned) |  |"
+		src = strings.Join(lines, "\n")
+	}
+	if err := os.WriteFile(recPath, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+// TestStageClosureS18Golden is the DH-S-18 acceptance close (implementation-plan Stage
+// 8.10, M2-DOD-4, M2-C-2): ready then close, without --built, over the four record
+// states, against the committed index and variants.md. The committed record itself is
+// judged by TestRecordLiveS18 once its runs are recorded.
+func TestStageClosureS18Golden(t *testing.T) {
+	var got strings.Builder
+	for _, st := range s18States {
+		for _, sub := range []string{"ready", "close"} {
+			root := s18Tree(t, st.status, st.ready)
+			code, stdout, stderr := runClosureGate(t, sub, "--root", root, "--stage", "DH-S-18")
+			fmt.Fprintf(&got, "== %s: %s --stage DH-S-18 (exit %d)\n%s", st.name, sub, code, stdout)
+			if stderr != "" {
+				fmt.Fprintf(&got, "stderr: %s", stderr)
+			}
+		}
+	}
+	golden := filepath.Join("testdata", "closure", "expected_s18.golden")
+	if *updateGolden {
+		if os.Getenv("CI") != "" {
+			t.Fatal("-update is refused under CI: regenerate the golden locally and review the diff")
+		}
+		if err := os.WriteFile(golden, []byte(got.String()), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := os.ReadFile(golden)
+	if err != nil {
+		t.Fatalf("read golden (run with -update locally to create it): %v", err)
+	}
+	if norm := strings.ReplaceAll(string(want), "\r\n", "\n"); norm != got.String() {
+		t.Errorf("DH-S-18 closure output differs from %s\n--- got\n%s--- want\n%s", golden, got.String(), norm)
+	}
+}
+
+// The DH-S-18 exit codes, asserted directly so a regenerated golden cannot flip a
+// refusal into a pass; a not-ready state names the variant not run (M2-DOD-4).
+func TestStageClosureS18ExitCodes(t *testing.T) {
+	cases := []struct {
+		state, sub string
+		code       int
+		marker     string
+	}{
+		{"open_not_ready", "ready", 1, "NOT READY"},
+		{"open_ready", "ready", 0, ": ready;"},
+		{"closed_ready", "ready", 0, ": ready;"},
+		{"closed_not_ready", "ready", 1, "NOT READY"},
+		{"open_not_ready", "close", 1, "REFUSED " + closure.NotYetClosed},
+		{"open_ready", "close", 1, "REFUSED " + closure.NotYetClosed},
+		{"closed_ready", "close", 0, ": closed;"},
+		{"closed_not_ready", "close", 1, "REFUSED " + closure.ClosedButNotReady},
+	}
+	for _, c := range cases {
+		t.Run(c.state+"/"+c.sub, func(t *testing.T) {
+			i := slices.IndexFunc(s18States, func(s s18State) bool { return s.name == c.state })
+			root := s18Tree(t, s18States[i].status, s18States[i].ready)
+			code, stdout, stderr := runClosureGate(t, c.sub, "--root", root, "--stage", "DH-S-18")
+			if code != c.code || !strings.Contains(stdout, c.marker) {
+				t.Errorf("exit %d, want %d; stdout must contain %q\nstdout:\n%s\nstderr:\n%s", code, c.code, c.marker, stdout, stderr)
+			}
+			if !s18States[i].ready && !strings.Contains(stdout, "DH-E-EXEC-10 [linux-e2:no-user-manager]") {
+				t.Errorf("the refusal must name the variant not run\n%s", stdout)
+			}
+		})
+	}
+}
+
+// s18Variant maps a DH-S-18 row's variant to its variants.md label: the labels the
+// record was created with (Stage 1.1) read as the record's Scenarios intro says, and
+// the Linux (E2) aggregate rows map to none.
+func s18Variant(scenario, label string) string {
+	switch label {
+	case "Linux (WSL)":
+		switch scenario {
+		case "DH-E-CHOKIDAR-2":
+			return "linux-wsl:smb"
+		case "DH-E-STORAGE-6":
+			return "linux-wsl:two-account"
+		}
+		return "linux-wsl"
+	case "Windows":
+		switch scenario {
+		case "DH-E-FS-2":
+			return "windows-host"
+		case "DH-E-CHOKIDAR-2":
+			return "windows-host:smb"
+		case "DH-E-STORAGE-6":
+			return "windows-host:two-account"
+		}
+		return "windows-hosted"
+	case "Linux ext4":
+		return "linux-wsl"
+	case "Windows NTFS":
+		return "windows-hosted"
+	case "Linux guest":
+		return "vm:linux-guest"
+	case "Windows guest":
+		return "vm:windows-guest"
+	case "macOS":
+		return "macos"
+	case "Linux (E2)", "Linux (E2, over SSH)":
+		return ""
+	}
+	return label
+}
+
+// s18Uncovered returns each in-scope variant and scenario pair of the committed
+// variants.md that has no row in rec (with passed, a passed row), and each scenario of
+// the index's DH-S-18 entry the record has no row of.
+func s18Uncovered(t *testing.T, repo string, rec *closure.Record, passed bool) []string {
+	t.Helper()
+	fleet, err := variants.Read(repo, closure.DefaultStory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	x, err := acceptance.ReadIndex(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	have, scenarios := map[[2]string]bool{}, map[string]bool{}
+	for _, r := range rec.Scenarios.Rows {
+		scenarios[r.Get("scenario")] = true
+		if !passed || r.Get("result") == "passed" {
+			have[[2]string{r.Get("scenario"), s18Variant(r.Get("scenario"), r.Get("variant"))}] = true
+		}
+	}
+	var out []string
+	for _, v := range fleet.Variants {
+		if !v.InScope() {
+			continue
+		}
+		label := strings.Trim(v.Label, "`")
+		for _, s := range v.Scenarios {
+			if !have[[2]string{s, label}] {
+				out = append(out, s+" ["+label+"]")
+			}
+		}
+	}
+	ids, err := x.Required("DH-S-18")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range ids {
+		if !scenarios[id] {
+			out = append(out, id+" has no row")
+		}
+	}
+	return out
+}
+
+// TestS18EveryVariantHasARow: the fixture the golden closes passes all 19 scenarios on
+// every in-scope variant of the committed variants.md, and the committed record has a
+// row for each of them (implementation-plan Stage 8.10 step 1; M2-DOD-4).
+func TestS18EveryVariantHasARow(t *testing.T) {
+	repo, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := s18Tree(t, "open", true)
+	fixture, err := closure.ReadRecord(root, closure.DefaultStory, "DH-S-18")
+	if err != nil {
+		t.Fatal(err)
+	}
+	x, err := acceptance.ReadIndex(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ids, err := x.Required("DH-S-18"); err != nil || len(ids) != 19 {
+		t.Fatalf("the index's DH-S-18 entry lists %d scenarios (%v), want 19", len(ids), err)
+	}
+	if missing := s18Uncovered(t, repo, fixture, true); len(missing) > 0 {
+		t.Errorf("the fixture has no passed row of: %s", strings.Join(missing, "; "))
+	}
+	live, err := closure.ReadRecord(repo, closure.DefaultStory, "DH-S-18")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if missing := s18Uncovered(t, repo, live, false); len(missing) > 0 {
+		t.Errorf("the committed record has no row of: %s", strings.Join(missing, "; "))
+	}
+}
+
+// TestRecordLiveS18 runs the two-step protocol on the committed DH-S-18 record: while
+// it reads open, close is refused not-yet-closed; once it reads closed, ready and close
+// both exit 0 (implementation-plan Stage 8.10).
+func TestRecordLiveS18(t *testing.T) {
+	root := filepath.Join("..", "..")
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(abs, filepath.FromSlash(closure.RecordPath(closure.DefaultStory, "DH-S-18")))); err != nil {
+		t.Skipf("not run inside the repository: %v", err)
+	}
+	rec, err := closure.ReadRecord(abs, closure.DefaultStory, "DH-S-18")
+	if err != nil {
+		t.Fatal(err)
+	}
+	readyCode, readyOut, _ := runClosureGate(t, "ready", "--root", root, "--stage", "DH-S-18")
+	closeCode, closeOut, _ := runClosureGate(t, "close", "--root", root, "--stage", "DH-S-18")
+	switch rec.Status {
+	case closure.StatusOpen:
+		if closeCode != 1 || !strings.Contains(closeOut, "REFUSED "+closure.NotYetClosed) {
+			t.Errorf("open record: close exit %d, want 1 refused %s\n%s", closeCode, closure.NotYetClosed, closeOut)
+		}
+	case closure.StatusClosed:
+		if readyCode != 0 || closeCode != 0 {
+			t.Errorf("closed record: ready exit %d, close exit %d; want both 0\n%s%s", readyCode, closeCode, readyOut, closeOut)
+		}
+	default:
+		t.Errorf("status line reads %q; want open or closed", rec.StatusValue)
 	}
 }
 

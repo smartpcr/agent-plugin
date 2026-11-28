@@ -430,6 +430,14 @@ Done on this stage's branch:
 - `TestNoPartialClosureNamesTheVariantNotRun` (`tools/harness-gate/closure`): a record with
   `linux-e2:systemd` passed and `linux-e2:no-user-manager` not run is refused naming
   `DH-E-EXEC-10 [linux-e2:no-user-manager]`, and its `closed` line `closed-but-not-ready`.
+- `TestStageClosureS18Golden` and `TestStageClosureS18ExitCodes` (`tools/harness-gate`, golden
+  `testdata/closure/expected_s18.golden`): the command-level `ready` then `close --stage DH-S-18` over a
+  fixture of this record with all 19 scenarios passed on every in-scope variant, against the committed
+  acceptance index and variants.md. Open and ready, ready exits 0 and close is refused `not-yet-closed`;
+  closed and ready, both exit 0; with the `linux-e2:no-user-manager` row of EXEC-10 not run, both are
+  refused naming it. `TestS18EveryVariantHasARow` checks that the fixture passes, and this record has a row
+  of, every in-scope variant and scenario of variants.md. `TestRecordLiveS18` runs the protocol on this
+  record: while it reads open, close is refused `not-yet-closed`.
 
 When every in-scope row has passed: `ready --stage DH-S-18` exits 0 on the record reading `open`; the
 closing PR changes only the status line to `Closure status: closed`, and its gate runs
