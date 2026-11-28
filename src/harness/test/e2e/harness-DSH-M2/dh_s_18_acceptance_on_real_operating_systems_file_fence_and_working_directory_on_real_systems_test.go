@@ -11,9 +11,14 @@ package e2e
 // else the default WSL distribution through wsl.exe (a Windows host's Linux
 // variant). The test's inputs are the operator's when all of them are set (the
 // provided instance; DSH_S18_<LINUX|WINDOWS>_<NAME without DSH_> overrides one per
-// variant), else an ephemeral instance this file stands up. The verdict is the
-// row the test writes to DSH_SCENARIO_REPORT, read back, plus the log lines that
-// show each clause ran.
+// variant), else an ephemeral instance this file stands up for the inputs it can
+// give. No stand-in replaces a dependency: the model route is the variant's own
+// signed-in claude (the s18 preflight: installed, claude auth status, one probe
+// turn, on a run the tester declares theirs via DSH_S18_TESTER), and an input
+// nothing provides fails its preflight, naming it. The verdict is the row the
+// test writes to DSH_SCENARIO_REPORT, read back, plus the log lines that show
+// each clause ran; each leg also keeps an evidence row (s86Evidence) with the
+// verdict or failed preflight, the sandbox status and the fence under test.
 
 import (
 	"bufio"
@@ -24,10 +29,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"maps"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -44,9 +46,8 @@ import (
 )
 
 const (
-	s86Pkg          = "./internal/testkit/scenarios"
-	s86StandInModel = "e2e-stand-in"
-	s86RunWithin    = 24 * time.Hour
+	s86Pkg       = "./internal/testkit/scenarios"
+	s86RunWithin = 24 * time.Hour
 )
 
 var s86OuterT *testing.T
@@ -261,8 +262,7 @@ func s86Module() (string, error) {
 	}
 }
 
-// build builds what (the scenario test binary, the testhook dsh or the stand-in
-// client) for v once per suite and returns its path as v names it.
+// build builds what (the scenario test binary or the testhook dsh) for v once per suite and returns its path as v names it.
 func (v *s86Variant) build(what string) (string, error) {
 	s86BuildMu.Lock()
 	defer s86BuildMu.Unlock()
@@ -276,9 +276,8 @@ func (v *s86Variant) build(what string) (string, error) {
 	}
 	out := v.exe(filepath.Join(s86OuterT.TempDir(), strings.ReplaceAll(key, "/", "-")))
 	args := map[string][]string{
-		"scenarios":     {"test", "-c", "-trimpath", "-tags", "scenario", "-o", out, s86Pkg},
-		"dsh":           {"build", "-trimpath", "-tags", "testhook", "-o", out, "./cmd/dsh"},
-		"claudestandin": {"build", "-trimpath", "-o", out, "./internal/testkit/claudestandin"},
+		"scenarios": {"test", "-c", "-trimpath", "-tags", "scenario", "-o", out, s86Pkg},
+		"dsh":       {"build", "-trimpath", "-tags", "testhook", "-o", out, "./cmd/dsh"},
 	}[what]
 	cmd := exec.Command("go", args...)
 	cmd.Dir, cmd.Env = mod, append(s86Env(), "GOWORK=off", "GOOS="+v.goos, "GOARCH="+v.goarch, "CGO_ENABLED=0")
@@ -292,159 +291,34 @@ func (v *s86Variant) build(what string) (string, error) {
 	return p, err
 }
 
-// ---- the ephemeral model behind the stand-in client ----
-
-// s86Model is the loopback model the stand-in Claude Code client, started by the
-// testhook dsh's real claude-code route, posts each client run to. It plays the
-// FS-2 task (grep, line-range read, edit, multi-file patch, stop) and the VIEW-5
-// prompts, deciding from the conversation dsh rendered.
-type s86Model struct {
-	srv  *httptest.Server
-	mu   sync.Mutex
-	runs int
-	ids  int
-}
-
-var (
-	s86FS2Task    = regexp.MustCompile(`FS-2 task \d+: in (\S+), search`)
-	s86View5Write = regexp.MustCompile(`then use the write tool on (\S+) with the content original`)
-)
-
-func s86JSON(v any) string { b, _ := json.Marshal(v); return string(b) }
-
-func s86Event(ev string) string {
-	return `{"type":"stream_event","event":` + ev + `,"session_id":"{{session_id}}","parent_tool_use_id":null}`
-}
-
-func s86Head(text string) []string {
-	return []string{
-		`{"type":"system","subtype":"init","cwd":"{{cwd}}","session_id":"{{session_id}}","tools":"{{tools}}","mcp_servers":"{{mcp_servers}}","model":"claude-sonnet-4-5","permissionMode":"dontAsk","slash_commands":[],"apiKeySource":"none","claude_code_version":"{{version}}","output_style":"default","agents":[],"skills":[],"plugins":[],"uuid":"00000000-0000-4000-8000-000000000086"}`,
-		s86Event(`{"type":"message_start","message":{"id":"msg_s86","type":"message","role":"assistant","model":"claude-sonnet-4-5","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":12,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":1}}}`),
-		s86Event(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`),
-		s86Event(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":` + s86JSON(text) + `}}`),
-		s86Event(`{"type":"content_block_stop","index":0}`),
-	}
-}
-
-// s86Call is one client run calling the harness tool, returned unexecuted as the
-// real client does: dsh runs it and sends the result in the next run.
-func s86Call(id, tool string, input map[string]any) string {
-	name := "mcp__dsh__" + tool
-	use := s86JSON(map[string]any{"type": "tool_use", "id": id, "name": name, "input": input})
-	l := append(s86Head("Calling "+tool+"."),
-		s86Event(`{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"`+id+`","name":"`+name+`","input":{}}}`),
-		s86Event(`{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":`+s86JSON(s86JSON(input))+`}}`),
-		s86Event(`{"type":"content_block_stop","index":1}`),
-		`{"type":"assistant","message":{"id":"msg_s86","type":"message","role":"assistant","model":"claude-sonnet-4-5","content":[{"type":"text","text":"Calling `+tool+`."},`+use+`],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":12,"output_tokens":1}},"parent_tool_use_id":null,"session_id":"{{session_id}}"}`,
-		s86Event(`{"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":14}}`),
-		s86Event(`{"type":"message_stop"}`),
-		`{"type":"system","subtype":"permission_denied","tool_name":"`+name+`","tool_use_id":"`+id+`","session_id":"{{session_id}}"}`,
-		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"`+id+`","content":"Permission to use `+name+` has been denied.","is_error":true}]},"parent_tool_use_id":null,"session_id":"{{session_id}}"}`,
-		`{"type":"result","subtype":"error_max_turns","is_error":true,"duration_ms":10,"duration_api_ms":9,"num_turns":1,"session_id":"{{session_id}}","total_cost_usd":0,"usage":{"input_tokens":12,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":14},"modelUsage":{},"permission_denials":[{"tool_name":"`+name+`","tool_use_id":"`+id+`","tool_input":`+s86JSON(input)+`}],"stop_reason":"tool_use"}`)
-	return strings.Join(l, "\n") + "\n"
-}
-
-func s86Close(text string) string {
-	l := append(s86Head(text),
-		`{"type":"assistant","message":{"id":"msg_s86","type":"message","role":"assistant","model":"claude-sonnet-4-5","content":[{"type":"text","text":`+s86JSON(text)+`}],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":20,"output_tokens":1}},"parent_tool_use_id":null,"session_id":"{{session_id}}"}`,
-		s86Event(`{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":4}}`),
-		s86Event(`{"type":"message_stop"}`),
-		`{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"duration_api_ms":9,"num_turns":1,"session_id":"{{session_id}}","total_cost_usd":0,"usage":{"input_tokens":20,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":4},"modelUsage":{},"permission_denials":[],"result":`+s86JSON(text)+`,"stop_reason":"end_turn"}`)
-	return strings.Join(l, "\n") + "\n"
-}
-
-func newS86Model() *s86Model {
-	m := &s86Model{}
-	m.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var run struct {
-			Stdin string `json:"stdin"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&run)
-		m.mu.Lock()
-		m.runs++
-		m.ids++
-		id := fmt.Sprintf("s86c%d", m.ids)
-		m.mu.Unlock()
-		w.Header().Set("Content-Type", "application/x-ndjson")
-		_, _ = io.WriteString(w, s86Answer(id, run.Stdin))
-	}))
-	return m
-}
-
-func (m *s86Model) count() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.runs
-}
-
-// s86Answer is the model's next move: the prompt is the latest one the
-// conversation holds, the step the number of tool results after it.
-func s86Answer(id, conv string) string {
-	prompts := []string{"FS-2 task ", "Change this session's working directory", "Use the write tool with the relative path", "Reply with the word ready."}
-	at, prompt := -1, ""
-	for _, p := range prompts {
-		if i := strings.LastIndex(conv, p); i > at {
-			at, prompt = i, p
-		}
-	}
-	if at < 0 {
-		return s86Close("Nothing to do.")
-	}
-	rest := conv[at:]
-	step := strings.Count(rest, "<tool_result ")
-	switch prompt {
-	case "FS-2 task ":
-		m := s86FS2Task.FindStringSubmatch(rest)
-		if m == nil {
-			return s86Close("The task names no checkout.")
-		}
-		co := m[1]
-		switch step {
-		case 0:
-			return s86Call(id, "grep", map[string]any{"pattern": `be(ta|TA)\b`, "path": co})
-		case 1:
-			return s86Call(id, "read", map[string]any{"file_path": co + "/notes.txt", "offset": 2, "limit": 1})
-		case 2:
-			return s86Call(id, "edit", map[string]any{"file_path": co + "/notes.txt", "old_string": "beta", "new_string": "BETA"})
-		case 3:
-			patch := "*** Begin Patch\n*** Update File: " + co + "/notes.txt\n@@\n-gamma\n+GAMMA\n*** Update File: " + co + "/extra.txt\n@@\n-one\n+ONE\n*** End Patch\n"
-			return s86Call(id, "apply_patch", map[string]any{"input": patch})
-		}
-		return s86Close("Done.")
-	case "Change this session's working directory":
-		return s86Close("None of my tools changes this session's working directory.")
-	case "Use the write tool with the relative path":
-		switch step {
-		case 0:
-			return s86Call(id, "write", map[string]any{"file_path": "view5-relative.txt", "content": "relative"})
-		case 1:
-			if m := s86View5Write.FindStringSubmatch(rest); m != nil {
-				return s86Call(id, "write", map[string]any{"file_path": m[1], "content": "original"})
-			}
-		}
-		return s86Close("Done.")
-	}
-	return s86Close("ready")
-}
-
 // ---- state ----
 
 // s86Leg is one run of a scenario test on one variant.
 type s86Leg struct {
+	id       string
 	v        *s86Variant
 	fs       string
-	provided bool
+	provided bool              // every input is the operator's
+	op       map[string]string // the inputs the operator set
 	inputs   map[string]string // the run's DSH_* inputs
-	model    *s86Model
+	claude   string            // the variant's own signed-in claude, as the variant names it
+	tester   string            // DSH_S18_TESTER, who declared the signed-in run theirs
+	state    string            // the head of "dsh sandbox status" on the variant
+	backend  string
+	status   string
+	notRun   string // the preflight check that stopped the leg, if one did
+	reason   string
 	log      string
+	logPath  string
+	report   string
 	row      map[string]any
 	ran      error
+	evidence string // the file holding the leg's persisted evidence row
 }
 
 type s86State struct {
 	id, test string
 	legs     []*s86Leg
-	status   string
 }
 
 // s86Inputs are what each scenario test reads (their doc comments), with DSH_BIN.
@@ -461,37 +335,58 @@ func s86Input(v *s86Variant, name string) string {
 	return strings.TrimSpace(os.Getenv(name))
 }
 
-// leg reaches the variant, checks its filesystem and takes the provided inputs
-// when every one is set; partly set inputs fail.
+// leg reaches the variant and takes every input the operator set; the
+// ephemeral instance gives the others the values it can (set), and a preflight
+// fails, naming it, for any input neither provides.
 func (s *s86State) leg(goos, fs string) (*s86Leg, error) {
 	v, err := s86Reach(goos)
 	if err != nil {
 		return nil, err
 	}
-	l := &s86Leg{v: v, fs: fs, inputs: map[string]string{}}
-	var set, missing []string
+	l := &s86Leg{id: s.id, v: v, fs: fs, op: map[string]string{}, inputs: map[string]string{}}
 	for _, n := range s86Inputs[s.id] {
 		if val := s86Input(v, n); val != "" {
-			l.inputs[n] = val
-			set = append(set, n)
-		} else {
-			missing = append(missing, n)
+			l.op[n] = val
 		}
 	}
-	if len(set) > 0 && len(missing) > 0 {
-		return nil, fmt.Errorf("%s on %s: the provided inputs are partly set: %s unset while %s are set", s.id, v, strings.Join(missing, ", "), strings.Join(set, ", "))
-	}
-	l.provided = len(missing) == 0
-	if !l.provided {
-		l.inputs = map[string]string{}
+	l.provided = len(l.op) == len(s86Inputs[s.id])
+	maps.Copy(l.inputs, l.op)
+	if l.inputs["DSH_BIN"] == "" {
 		if l.inputs["DSH_BIN"], err = v.build("dsh"); err != nil {
 			return nil, err
 		}
 	}
 	s.legs = append(s.legs, l)
-	lane := map[bool]string{true: "provided instance", false: "ephemeral instance (testhook dsh)"}[l.provided]
-	s86OuterT.Logf("s86 %s on %s: %s", s.id, v, lane)
+	s86OuterT.Logf("s86 %s on %s: %s", s.id, v, l.lane())
 	return l, nil
+}
+
+func (l *s86Leg) lane() string {
+	switch {
+	case l.provided:
+		return "provided instance"
+	case len(l.op) == 0:
+		return "ephemeral instance (testhook dsh)"
+	}
+	return "ephemeral instance (testhook dsh) with the operator's " + strings.Join(slices.Sorted(maps.Keys(l.op)), ", ")
+}
+
+// set gives an input its ephemeral value unless the operator set it.
+func (l *s86Leg) set(name, value string) {
+	if _, ok := l.op[name]; !ok {
+		l.inputs[name] = value
+	}
+}
+
+func (l *s86Leg) unset(names ...string) []string {
+	return slices.DeleteFunc(slices.Clone(names), func(n string) bool { return l.inputs[n] != "" })
+}
+
+// preflight stops the leg before its run: its evidence row reads "not run
+// (<check> preflight failed)" (e2e-scenarios.md, the FS-2 edge scenario).
+func (l *s86Leg) preflight(check string, err error) error {
+	l.notRun, l.reason = check, err.Error()
+	return fmt.Errorf("%s on %s: not run (%s preflight failed): %w", l.id, l.v, check, err)
 }
 
 // scratch is a directory on the variant's filesystem under test.
@@ -510,22 +405,23 @@ func (l *s86Leg) scratch(prefix string) (string, error) {
 	return d, nil
 }
 
-func (l *s86Leg) writeLayer(dir, text string) (string, error) {
-	p := l.v.join(dir, "layer.yml")
-	return p, l.v.writeFile(p, []byte(text))
-}
-
 func s86Quote(s string) string { return strconv.Quote(s) }
+
+// s86RouteItem is the testhook item registering the real claude-code route
+// over client, the variant's own signed-in claude.
+func s86RouteItem(client, temp string) string {
+	return "    - id: route\n      name: llm.testkit-claude-code\n      config:\n        program: " + s86Quote(client) +
+		"\n        tempDir: " + s86Quote(temp) + "\n"
+}
 
 // fileLayer is the configuration layer of the ephemeral instance: the six file
 // tools over the fenced seam in workspace-write, with extra write roots, and the
-// real claude-code route over the stand-in client when client is set.
+// real claude-code route over the variant's signed-in claude when client is set.
 func (l *s86Leg) fileLayer(client, clientTemp string, extra ...string) string {
 	var b strings.Builder
 	b.WriteString("- insert:\n")
 	if client != "" {
-		b.WriteString("    - id: route\n      name: llm.testkit-claude-code\n      config:\n        program: " + s86Quote(client) +
-			"\n        env: [" + s86Quote("CLAUDESTANDIN_URL="+l.model.srv.URL) + "]\n        tempDir: " + s86Quote(clientTemp) + "\n")
+		b.WriteString(s86RouteItem(client, clientTemp))
 	}
 	b.WriteString("    - id: fs.local\n      name: fs.local\n")
 	b.WriteString("    - id: session.workdir\n      name: session.workdir\n")
@@ -537,56 +433,100 @@ func (l *s86Leg) fileLayer(client, clientTemp string, extra ...string) string {
 	return b.String()
 }
 
-// standIn starts the loopback model and returns the stand-in client's path and
-// temporary directory on the variant.
-func (l *s86Leg) standIn(dir string) (string, string, error) {
-	client, err := l.v.build("claudestandin")
-	if err != nil {
-		return "", "", err
-	}
-	l.model = newS86Model()
-	s86OuterT.Cleanup(l.model.srv.Close)
-	return client, l.v.join(dir, "client"), nil
-}
-
 // ---- provisioning ----
 
 func (s *s86State) givenFS1Variants(fsLinux, fsWindows string) error {
 	s.id, s.test = "DH-E-FS-1", "TestFenceHoldsUnderALinkSwap"
+	var errs []error
 	for _, want := range [][2]string{{"linux", fsLinux}, {"windows", fsWindows}} {
 		l, err := s.leg(want[0], want[1])
+		if err == nil {
+			err = l.provisionFS1()
+		}
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
+}
+
+// provisionFS1 gives FS-1 its directories: one on the variant's own filesystem
+// and, on the Linux variant of a Windows host, one on this host's NTFS volume
+// through drvfs; the share is an SMB mount of the variant (smbShare). The route
+// is the operator's alone: no item of the dsh binary registers a route on an
+// Anthropic Messages endpoint, the scripted endpoint's dialect
+// (llm/wire/anthropic), so none is named in its place.
+func (l *s86Leg) provisionFS1() error {
+	if l.provided {
+		return nil
+	}
+	dir, err := l.scratch("dsh-s86-fs1-")
+	if err != nil {
+		return err
+	}
+	dirs := []string{dir}
+	if l.v.wsl {
+		nt, err := os.MkdirTemp("", "dsh-s86-fs1-ntfs-")
 		if err != nil {
 			return err
 		}
-		if l.provided {
-			continue
+		s86OuterT.Cleanup(func() { _ = os.RemoveAll(nt) })
+		if got, err := (&s86Variant{goos: runtime.GOOS}).fsType(nt); err != nil || !strings.EqualFold(got, "NTFS") {
+			return fmt.Errorf("%s is on %q, not NTFS (%v)", nt, got, err)
 		}
-		dir, err := l.scratch("dsh-s86-fs1-")
+		p, err := l.v.path(nt)
 		if err != nil {
 			return err
 		}
-		l.inputs["DSH_SCENARIO_FS1_DIRS"] = dir
-		if l.v.goos == "windows" {
-			// The loopback SMB share of this host: the same NTFS directory
-			// reached through the SMB client (\\localhost\<drive>$\...).
-			share, err := l.scratch("dsh-s86-fs1-share-")
-			if err != nil {
-				return err
-			}
-			unc := `\\localhost\` + share[:1] + `$` + share[2:]
-			if _, err := os.Stat(unc); err != nil {
-				return fmt.Errorf("the loopback SMB share %s is not reachable: %v", unc, err)
-			}
-			l.inputs["DSH_SCENARIO_FS1_SHARE"] = unc
+		dirs = append(dirs, p)
+	}
+	l.set("DSH_SCENARIO_FS1_DIRS", strings.Join(dirs, ";"))
+	var checks []string
+	var why []error
+	if l.inputs["DSH_SCENARIO_FS1_SHARE"] == "" {
+		if share, err := l.smbShare(); err != nil {
+			checks, why = append(checks, "share"), append(why, err)
+		} else {
+			l.set("DSH_SCENARIO_FS1_SHARE", share)
 		}
-		// No catalogue item registers a route on an Anthropic Messages endpoint
-		// (the scripted endpoint's dialect), so the layer names none: the
-		// scenario test's session on the route fails, naming it.
-		l.inputs["DSH_SCENARIO_FS1_LAYER"] = l.fileLayer("", "", "{extra}")
-		l.inputs["DSH_SCENARIO_FS1_ROUTE"] = "fs1-scripted"
-		l.inputs["DSH_SCENARIO_FS1_MODEL"] = "scripted"
+	}
+	if missing := l.unset("DSH_SCENARIO_FS1_LAYER", "DSH_SCENARIO_FS1_ROUTE", "DSH_SCENARIO_FS1_MODEL"); len(missing) > 0 {
+		checks = append(checks, "route")
+		why = append(why, fmt.Errorf("%s unset: no item of the dsh binary registers a route on an Anthropic Messages endpoint (the scripted endpoint's dialect, llm/wire/anthropic), so only the operator's layer, route and model name one (runbook-smb-share.md step 2)", strings.Join(missing, ", ")))
+	}
+	if len(checks) > 0 {
+		return l.preflight(strings.Join(checks, ", "), errors.Join(why...))
 	}
 	return nil
+}
+
+// smbShare is a scratch directory on an SMB share of the variant: on Windows
+// this host's loopback share (\\localhost\<drive>$, the SMB client over the
+// NTFS volume); on Linux the first writable cifs or smb3 mount in /proc/mounts.
+// A missing share is never a pass (runbook-smb-share.md).
+func (l *s86Leg) smbShare() (string, error) {
+	if l.v.goos == "windows" {
+		share, err := l.scratch("dsh-s86-fs1-share-")
+		if err != nil {
+			return "", err
+		}
+		unc := `\\localhost\` + share[:1] + `$` + share[2:]
+		if _, err := os.Stat(unc); err != nil {
+			return "", fmt.Errorf("the loopback SMB share %s is not reachable: %v", unc, err)
+		}
+		return unc, nil
+	}
+	mounts, err := l.v.readFile("/proc/mounts")
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(string(mounts), "\n") {
+		if f := strings.Fields(line); len(f) >= 3 && (f[2] == "cifs" || f[2] == "smb3") {
+			if d, err := l.v.must("mktemp", "-d", f[1]+"/dsh-s86-fs1-XXXXXX"); err == nil {
+				s86OuterT.Cleanup(func() { _, _ = l.v.must("rm", "-rf", d) })
+				return d, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("the %s variant has no writable SMB (cifs, smb3) mount: mount the team share per runbook-smb-share.md step 1, or set DSH_S18_LINUX_SCENARIO_FS1_SHARE", l.v)
 }
 
 func s86Children(goos string) string {
@@ -632,12 +572,81 @@ func (l *s86Leg) gitAndEditor(dir string) error {
 	return nil
 }
 
-// signedIn checks the provided Claude Code client is installed on the variant.
-func (l *s86Leg) signedIn() error {
-	if l.provided && !l.v.has("claude") {
-		return fmt.Errorf("service:model-route-claude-code: the claude client is not installed on the %s variant", l.v)
+// signedIn is the s18 job's signed-in route preflight on the variant (M2-EN-8):
+// the variant's own claude, installed there (a Windows client reached through
+// WSL interop does not count), signed in (claude auth status) and answering one
+// probe turn through dsh (TestSignedInRoutePreflight). No stand-in takes its
+// place. The probe and the run spend prompts of the tester's subscription, so
+// they run only on a run the tester declares theirs (DSH_S18_TESTER, recorded
+// in the row): never an agent session (runbook-smb-share.md, Who).
+func (l *s86Leg) signedIn(dir string) error {
+	var path string
+	var err error
+	if l.v.wsl {
+		path, err = l.v.must("sh", "-c", "command -v claude")
+		if err == nil && strings.HasPrefix(path, "/mnt/") {
+			err = fmt.Errorf("%s is this Windows host's client through interop, not one installed on the Linux variant", path)
+		}
+	} else if path, err = exec.LookPath("claude"); err == nil {
+		path, err = filepath.Abs(path)
 	}
+	if err != nil {
+		return l.preflight("signed-in", fmt.Errorf("service:model-route-claude-code: claude is not installed on the %s variant: %v", l.v, err))
+	}
+	ver, err := l.v.must(path, "--version")
+	if err != nil {
+		return l.preflight("signed-in", err)
+	}
+	out, err := l.v.must(path, "auth", "status")
+	var auth struct {
+		LoggedIn   bool   `json:"loggedIn"`
+		AuthMethod string `json:"authMethod"`
+	}
+	if err != nil || json.Unmarshal([]byte(out), &auth) != nil || !auth.LoggedIn {
+		return l.preflight("signed-in", fmt.Errorf("service:model-route-claude-code: claude %s on %s is not signed in (claude auth status: %v %s)", ver, l.v, err, out))
+	}
+	l.claude = path
+	s86OuterT.Logf("s86 %s: claude %s at %s, signed in (%s)", l.v, ver, path, auth.AuthMethod)
+	if l.tester = strings.TrimSpace(os.Getenv("DSH_S18_TESTER")); l.tester == "" {
+		return l.preflight("signed-in", errors.New("DSH_S18_TESTER is not set: the probe turn and the run spend the tester's signed-in subscription, so only a run the tester declares theirs drives them (runbook-smb-share.md, Who: never an agent session)"))
+	}
+	return l.probe(dir)
+}
+
+// probe runs the product's probe turn, TestSignedInRoutePreflight, on route
+// claude-code over the variant's claude (or the operator's preflight layer).
+func (l *s86Leg) probe(dir string) error {
+	bin, err := l.v.build("scenarios")
+	if err != nil {
+		return err
+	}
+	pkg, err := l.pkgDir()
+	if err != nil {
+		return err
+	}
+	layer := s86Input(l.v, "DSH_SCENARIO_PREFLIGHT_LAYER")
+	if layer == "" {
+		layer = "- insert:\n" + s86RouteItem(l.claude, l.v.join(dir, "probe-client"))
+	}
+	env := []string{"DSH_BIN=" + l.inputs["DSH_BIN"], "DSH_SCENARIO_ROUTES=claude-code", "DSH_SCENARIO_PREFLIGHT_LAYER=" + layer,
+		"DSH_SCENARIO_PREFLIGHT_PROMPT=Reply with the word ready.", "DSH_SCENARIO_CLAUDE_CODE_MODEL=" + l.model()}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer cancel()
+	out, code, err := l.v.run(ctx, pkg, env, nil, bin, "-test.run", "^TestSignedInRoutePreflight$", "-test.v", "-test.count=1", "-test.timeout", "10m")
+	if err != nil || code != 0 {
+		return l.preflight("signed-in", fmt.Errorf("the probe turn on claude-code failed: exit %d %v\n%s", code, err, out[max(0, len(out)-2000):]))
+	}
+	s86OuterT.Logf("s86 %s: the probe turn on claude-code passed (tester %s)", l.v, l.tester)
 	return nil
+}
+
+// model is the claude-code model of the run: the operator's, else the client's
+// first alias.
+func (l *s86Leg) model() string {
+	if m := l.inputs["DSH_SCENARIO_CLAUDE_CODE_MODEL"]; m != "" {
+		return m
+	}
+	return "sonnet"
 }
 
 func (s *s86State) givenFS2(goos, fs string) error {
@@ -646,29 +655,29 @@ func (s *s86State) givenFS2(goos, fs string) error {
 	if err != nil {
 		return err
 	}
-	if err := l.signedIn(); err != nil {
+	if err := l.readStatus(); err != nil {
 		return err
 	}
 	dir, err := l.scratch("dsh-s86-fs2-")
 	if err != nil {
 		return err
 	}
-	if err := l.gitAndEditor(dir); err != nil || l.provided {
+	if err := l.gitAndEditor(dir); err != nil {
+		return l.preflight("git-and-editor", err)
+	}
+	if err := l.signedIn(dir); err != nil || l.provided {
 		return err
 	}
 	var checkouts []string
 	for i := range 2 {
 		co := l.v.join(dir, fmt.Sprintf("repo%d", i))
-		for _, argv := range [][]string{{"git", "init", "--quiet", co}} {
-			if _, err := l.v.must(argv...); err != nil {
+		if _, err := l.v.must("git", "init", "--quiet", co); err != nil {
+			return err
+		}
+		for name, text := range map[string]string{"notes.txt": "alpha\nbeta\ngamma\n", "extra.txt": "one\ntwo\n"} {
+			if err := l.v.writeFile(l.v.join(co, name), []byte(text)); err != nil {
 				return err
 			}
-		}
-		if err := l.v.writeFile(l.v.join(co, "notes.txt"), []byte("alpha\nbeta\ngamma\n")); err != nil {
-			return err
-		}
-		if err := l.v.writeFile(l.v.join(co, "extra.txt"), []byte("one\ntwo\n")); err != nil {
-			return err
 		}
 		for _, argv := range [][]string{{"git", "-C", co, "add", "."}, {"git", "-C", co, "-c", "user.name=dsh", "-c", "user.email=dsh@example.invalid", "commit", "--quiet", "-m", "seed"}} {
 			if _, err := l.v.must(argv...); err != nil {
@@ -685,17 +694,13 @@ func (s *s86State) givenFS2(goos, fs string) error {
 	if err := l.v.writeFile(tasksFile, []byte(tasks.String())); err != nil {
 		return err
 	}
-	client, temp, err := l.standIn(dir)
-	if err != nil {
-		return err
-	}
-	l.inputs["DSH_SCENARIO_FS2_TASKS"] = tasksFile
-	l.inputs["DSH_SCENARIO_FS_CHECKOUTS"] = strings.Join(checkouts, ";")
-	l.inputs["DSH_SCENARIO_FS2_CHILDREN"] = s86Children(l.v.goos)
-	l.inputs["DSH_SCENARIO_FS2_LAYER"] = l.fileLayer(client, temp)
-	l.inputs["DSH_SCENARIO_FS2_SHARD"] = "all"
-	l.inputs["DSH_SCENARIO_CLAUDE_CODE_MODEL"] = s86StandInModel
-	l.inputs["DSH_SCENARIO_FS3_EDITOR"] = s86Editor(l.v.goos)
+	l.set("DSH_SCENARIO_FS2_TASKS", tasksFile)
+	l.set("DSH_SCENARIO_FS_CHECKOUTS", strings.Join(checkouts, ";"))
+	l.set("DSH_SCENARIO_FS2_CHILDREN", s86Children(l.v.goos))
+	l.set("DSH_SCENARIO_FS2_LAYER", l.fileLayer(l.claude, l.v.join(dir, "client")))
+	l.set("DSH_SCENARIO_FS2_SHARD", "all")
+	l.set("DSH_SCENARIO_CLAUDE_CODE_MODEL", l.model())
+	l.set("DSH_SCENARIO_FS3_EDITOR", s86Editor(l.v.goos))
 	return nil
 }
 
@@ -708,38 +713,33 @@ func (s *s86State) givenView5() error {
 	if err != nil {
 		return err
 	}
-	if err := l.signedIn(); err != nil {
+	if err := l.readStatus(); err != nil {
 		return err
 	}
 	if !l.v.has("bwrap") {
-		return fmt.Errorf("service:linux-sandbox-bwrap: bwrap is not on the PATH of the %s variant", l.v)
+		return l.preflight("bwrap", fmt.Errorf("service:linux-sandbox-bwrap: bwrap is not on the PATH of the %s variant", l.v))
 	}
 	dir, err := l.scratch("dsh-s86-view5-")
 	if err != nil {
 		return err
 	}
-	if err := l.gitAndEditor(dir); err != nil || l.provided {
+	if err := l.gitAndEditor(dir); err != nil {
+		return l.preflight("git-and-editor", err)
+	}
+	if err := l.signedIn(dir); err != nil {
 		return err
 	}
-	client, temp, err := l.standIn(dir)
-	if err != nil {
-		return err
-	}
-	l.inputs["DSH_SCENARIO_VIEW5_LAYER"] = l.fileLayer(client, temp)
-	l.inputs["DSH_SCENARIO_CLAUDE_CODE_MODEL"] = s86StandInModel
-	// DSH_SCENARIO_VIEW5_MOVE stays the operator's: no host operation of the
-	// product moves a session through session/query yet, so no value exists.
-	if mv := s86Input(l.v, "DSH_SCENARIO_VIEW5_MOVE"); mv != "" {
-		l.inputs["DSH_SCENARIO_VIEW5_MOVE"] = mv
+	l.set("DSH_SCENARIO_VIEW5_LAYER", l.fileLayer(l.claude, l.v.join(dir, "client")))
+	l.set("DSH_SCENARIO_CLAUDE_CODE_MODEL", l.model())
+	if l.inputs["DSH_SCENARIO_VIEW5_MOVE"] == "" {
+		return l.preflight("host-move", errors.New("DSH_SCENARIO_VIEW5_MOVE is not set: no host operation of the product moves a session through session/query yet, so only the operator's command does (evidence/DH-S-18.md, Stage 8.6 blockers)"))
 	}
 	return nil
 }
 
-// sandboxStatus runs "dsh sandbox status" on the variant (a fresh home; the CLI
-// takes no --layer for it) and requires the report's head to read state (and
-// backend when set).
-func (s *s86State) sandboxStatus(backend, state string) error {
-	l := s.legs[len(s.legs)-1]
+// readStatus runs "dsh sandbox status" on the variant (a fresh home; the CLI
+// takes no --layer for it) and keeps the head of its report for the row.
+func (l *s86Leg) readStatus() error {
 	dir, err := l.v.tempDir("dsh-s86-status-")
 	if err != nil {
 		return err
@@ -757,12 +757,32 @@ func (s *s86State) sandboxStatus(backend, state string) error {
 			}
 		}
 	}
-	if head["state"] != state || (backend != "" && head["backend"] != backend) {
-		return fmt.Errorf("dsh sandbox status on %s reads state %q backend %q, want state %q%s:\n%s", l.v, head["state"], head["backend"], state,
-			map[bool]string{true: " backend " + strconv.Quote(backend)}[backend != ""], out)
+	if head["state"] == "" {
+		return fmt.Errorf("dsh sandbox status on %s names no state:\n%s", l.v, out)
 	}
-	s.status = fmt.Sprintf("state: %s, backend: %s", head["state"], head["backend"])
-	s86OuterT.Logf("s86 %s row on %s records dsh sandbox status %s (the fence under test is the C32 filesystem seam when Unconfined)", s.id, l.v, s.status)
+	l.state, l.backend, l.status = head["state"], head["backend"], out
+	s86OuterT.Logf("s86 %s on %s: dsh sandbox status reads state %s, backend %s; fence under test: %s", l.id, l.v, l.state, l.backend, l.fence())
+	return nil
+}
+
+// fence is the fence under test the row records: the C32 filesystem seam when
+// no backend confines (Windows in M2, tech-spec sec. 4.2 row 35), else the
+// backend and its state.
+func (l *s86Leg) fence() string {
+	if l.state == "Unconfined" {
+		return "C32 filesystem seam"
+	}
+	return strings.TrimSpace(l.backend + " " + l.state)
+}
+
+// sandboxStatus requires the status read on the leg's variant to read state
+// (and backend when set).
+func (s *s86State) sandboxStatus(backend, state string) error {
+	l := s.legs[len(s.legs)-1]
+	if l.state != state || (backend != "" && l.backend != backend) {
+		return fmt.Errorf("dsh sandbox status on %s reads state %q backend %q, want state %q%s:\n%s", l.v, l.state, l.backend, state,
+			map[bool]string{true: " backend " + strconv.Quote(backend)}[backend != ""], l.status)
+	}
 	return nil
 }
 
@@ -778,6 +798,9 @@ func (s *s86State) run() error {
 		if l.ran = s.runLeg(l); l.ran != nil {
 			failed = append(failed, l.ran.Error())
 		}
+		if err := l.persist(); err != nil {
+			failed = append(failed, err.Error())
+		}
 	}
 	if len(failed) > 0 {
 		return errors.New(strings.Join(failed, "\n\n"))
@@ -785,16 +808,22 @@ func (s *s86State) run() error {
 	return nil
 }
 
+// pkgDir is the scenario package's source directory as the variant names it
+// (scenario.Main runs there).
+func (l *s86Leg) pkgDir() (string, error) {
+	mod, err := s86Module()
+	if err != nil {
+		return "", err
+	}
+	return l.v.path(filepath.Join(mod, filepath.FromSlash(strings.TrimPrefix(s86Pkg, "./"))))
+}
+
 func (s *s86State) runLeg(l *s86Leg) error {
 	bin, err := l.v.build("scenarios")
 	if err != nil {
 		return err
 	}
-	mod, err := s86Module()
-	if err != nil {
-		return err
-	}
-	pkg, err := l.v.path(filepath.Join(mod, filepath.FromSlash(strings.TrimPrefix(s86Pkg, "./"))))
+	pkg, err := l.pkgDir()
 	if err != nil {
 		return err
 	}
@@ -803,6 +832,7 @@ func (s *s86State) runLeg(l *s86Leg) error {
 		return err
 	}
 	report := l.v.join(dir, "report.jsonl")
+	l.report = report
 	env := []string{"DSH_SCENARIO_REPORT=" + report, "DSH_REQUIRE_SCENARIOS=" + s.id}
 	for _, k := range slices.Sorted(maps.Keys(l.inputs)) {
 		env = append(env, k+"="+l.inputs[k])
@@ -817,6 +847,7 @@ func (s *s86State) runLeg(l *s86Leg) error {
 	if ferr == nil {
 		_, _ = f.WriteString(out)
 		_ = f.Close()
+		l.logPath = f.Name()
 		s86OuterT.Logf("s86 %s on %s: exit %d, log kept at %s", s.id, l.v, code, f.Name())
 	}
 	l.log = out
@@ -848,16 +879,127 @@ func (s *s86State) diagnose(l *s86Leg) string {
 	if strings.Contains(l.log, "this host serves no permission presets") {
 		why = append(why, `session/create with permissionMode "workspace-write" is refused (permission/unavailable): no item the dsh binary boots provides permission.presets (evidence/DH-S-14.md step 14.5)`)
 	}
-	if !l.provided && s.id == "DH-E-FS-1" {
-		why = append(why, "no catalogue item registers a route on an Anthropic Messages endpoint, the scripted endpoint's dialect, so the ephemeral FS-1 layer names no route")
-	}
-	if !l.provided && l.model != nil && l.model.count() == 0 {
-		why = append(why, "no client run reached the loopback model"+map[bool]string{true: " (from WSL the Windows loopback is reachable only under mirrored networking)"}[l.v.wsl])
+	if strings.Contains(l.log, "llm/sign-in-required") {
+		why = append(why, "the claude-code client is signed out (llm/sign-in-required)")
 	}
 	if len(why) == 0 {
 		return ""
 	}
 	return ":\n  - " + strings.Join(why, "\n  - ")
+}
+
+// ---- evidence ----
+
+// s86RunID tells this suite run's evidence rows from earlier ones in the same file.
+var s86RunID string
+
+// s86Evidence is the row the suite keeps for each leg past the run, beside the
+// scenario test's own (DSH_SCENARIO_REPORT, which has no field for them): the
+// verdict, or the preflight that stopped the leg, and the sandbox status the
+// run had with the fence under test.
+type s86Evidence struct {
+	Kind           string `json:"kind"`
+	Run            string `json:"run"`
+	ID             string `json:"id"`
+	OS             string `json:"os"`
+	Variant        string `json:"variant"`
+	FS             string `json:"fs"`
+	Lane           string `json:"lane"`
+	Result         string `json:"result"`
+	Reason         string `json:"reason,omitempty"`
+	Build          string `json:"build,omitempty"`
+	DurationMS     any    `json:"durationMs,omitempty"`
+	SandboxState   string `json:"sandboxState,omitempty"`
+	SandboxBackend string `json:"sandboxBackend,omitempty"`
+	Fence          string `json:"fence,omitempty"`
+	Claude         string `json:"claude,omitempty"`
+	Tester         string `json:"tester,omitempty"`
+	Report         string `json:"report,omitempty"`
+	Log            string `json:"log,omitempty"`
+	At             string `json:"at"`
+}
+
+// s86EvidenceDir holds the rows: DSH_S18_EVIDENCE_DIR, else a directory under
+// this host's temporary directory that the suite never removes.
+func s86EvidenceDir() string {
+	if d := strings.TrimSpace(os.Getenv("DSH_S18_EVIDENCE_DIR")); d != "" {
+		return d
+	}
+	return filepath.Join(os.TempDir(), "dsh-s18-evidence")
+}
+
+// persist appends the leg's row to <dir>/<id>-<os>.jsonl, once.
+func (l *s86Leg) persist() error {
+	if l.evidence != "" {
+		return nil
+	}
+	e := s86Evidence{Kind: "s18-leg", Run: s86RunID, ID: l.id, OS: l.v.goos, Variant: l.v.String(), FS: l.fs, Lane: l.lane(),
+		SandboxState: l.state, SandboxBackend: l.backend, Claude: l.claude, Tester: l.tester, Report: l.report, Log: l.logPath,
+		At: time.Now().UTC().Format(time.RFC3339)}
+	if l.state != "" {
+		e.Fence = l.fence()
+	}
+	switch {
+	case l.notRun != "":
+		e.Result, e.Reason = "not run ("+l.notRun+" preflight failed)", l.reason
+	case l.row != nil:
+		e.Result, _ = l.row["result"].(string)
+		e.Reason, _ = l.row["reason"].(string)
+		e.Build, _ = l.row["build"].(string)
+		e.DurationMS = l.row["durationMs"]
+	case l.ran != nil:
+		e.Result, e.Reason = "failed", l.ran.Error()
+	default:
+		e.Result, e.Reason = "not run", l.reason
+	}
+	dir := s86EvidenceDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	p := filepath.Join(dir, strings.ToLower(l.id)+"-"+l.v.goos+".jsonl")
+	f, err := os.OpenFile(p, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	b, _ := json.Marshal(e)
+	if _, err := f.Write(append(b, '\n')); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	l.evidence = p
+	s86OuterT.Logf("s86 %s on %s: evidence row %q kept in %s", l.id, l.v, e.Result, p)
+	return nil
+}
+
+// thenEvidence reads each leg's persisted row back and requires it to record
+// the sandbox state and the fence under test.
+func (s *s86State) thenEvidence(state, fence string) error {
+	for _, l := range s.legs {
+		if l.evidence == "" {
+			return fmt.Errorf("%s on %s: no evidence row was kept", s.id, l.v)
+		}
+		b, err := os.ReadFile(l.evidence)
+		if err != nil {
+			return err
+		}
+		var got *s86Evidence
+		for _, line := range bytes.Split(b, []byte("\n")) {
+			var e s86Evidence
+			if json.Unmarshal(line, &e) == nil && e.Run == s86RunID && e.ID == s.id && e.OS == l.v.goos {
+				got = &e
+			}
+		}
+		if got == nil {
+			return fmt.Errorf("%s on %s: %s holds no row of run %s", s.id, l.v, l.evidence, s86RunID)
+		}
+		if got.SandboxState != state || got.Fence != fence {
+			return fmt.Errorf("%s on %s: the evidence row in %s records sandbox state %q and fence %q, want %q and %q", s.id, l.v, l.evidence, got.SandboxState, got.Fence, state, fence)
+		}
+	}
+	return nil
 }
 
 // ---- Then ----
@@ -876,9 +1018,6 @@ func (s *s86State) thenRowPassed() error {
 		}
 		if l.row["build"] != sum {
 			return fmt.Errorf("%s on %s: row build %v is not the SHA-256 %s of the dsh it ran", s.id, l.v, l.row["build"], sum)
-		}
-		if s.status != "" {
-			s86OuterT.Logf("s86 %s on %s passed; its row records dsh sandbox status %s", s.id, l.v, s.status)
 		}
 	}
 	return nil
@@ -942,9 +1081,6 @@ func (s *s86State) thenTasksPassed() error {
 				return fmt.Errorf("task %02d of the shard did not pass", i)
 			}
 		}
-		if !l.provided && l.model.count() == 0 {
-			return errors.New("no client run reached the loopback model")
-		}
 		return nil
 	})
 }
@@ -972,6 +1108,19 @@ func InitializeScenario_dh_s_18_acceptance_on_real_operating_systems_file_fence_
 		s = &s86State{}
 		return c, nil
 	})
+	// A leg stopped before its run keeps its evidence row too.
+	ctx.After(func(c context.Context, _ *godog.Scenario, err error) (context.Context, error) {
+		for _, l := range s.legs {
+			if err != nil && l.notRun == "" && l.row == nil && l.ran == nil && l.reason == "" {
+				l.reason = err.Error()
+			}
+			if perr := l.persist(); perr != nil {
+				return c, perr
+			}
+		}
+		return c, nil
+	})
+	ctx.Step(`^the variant's evidence row records sandbox state "([^"]*)" and the fence under test "([^"]*)"$`, func(st, fence string) error { return s.thenEvidence(st, fence) })
 	ctx.Step(`^the "([^"]*)" variant on Linux and the "([^"]*)" variant on Windows$`, func(a, b string) error { return s.givenFS1Variants(a, b) })
 	ctx.Step(`^10,000 tool calls run under the link-swap helper on each variant$`, func() error { return s.run() })
 	ctx.Step(`^each variant's DH-E-FS-1 row reads passed for the binary it ran$`, func() error { return s.thenRowPassed() })
@@ -996,6 +1145,7 @@ func InitializeScenario_dh_s_18_acceptance_on_real_operating_systems_file_fence_
 
 func TestE2E_dh_s_18_acceptance_on_real_operating_systems_file_fence_and_working_directory_on_real_systems(t *testing.T) {
 	s86OuterT = t
+	s86RunID = time.Now().UTC().Format("20060102T150405Z") + "-" + strconv.Itoa(os.Getpid())
 	suite := godog.TestSuite{
 		ScenarioInitializer: InitializeScenario_dh_s_18_acceptance_on_real_operating_systems_file_fence_and_working_directory_on_real_systems,
 		Options: &godog.Options{

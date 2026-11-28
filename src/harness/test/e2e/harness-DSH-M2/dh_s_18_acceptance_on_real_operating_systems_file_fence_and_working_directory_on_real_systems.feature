@@ -12,12 +12,17 @@ Feature: File fence and working directory on real systems (DH-E-FS-1, DH-E-FS-2,
   # names, fails the scenario; it is never skipped. When the operator's inputs of a
   # scenario are all set (DSH_BIN, DSH_SCENARIO_*), they are the provided instance:
   # the signed-in Claude Code client, the share and the layers of the runbook. Else
-  # the suite stands up an ephemeral instance: the testhook dsh, the stand-in
-  # Claude Code client (testkit/claudestandin) over a loopback model, local git
-  # checkouts and scratch directories on the variant's own filesystem; an input no
-  # product part can provide is left unset, so the scenario test fails naming it.
+  # the suite stands up an ephemeral instance for what it can give: the testhook
+  # dsh, local git checkouts and scratch directories on the variant's own
+  # filesystem. No stand-in replaces a dependency: the model route is the
+  # variant's own claude, which the s18 preflight requires installed there, signed
+  # in (claude auth status), answering one probe turn, on a run the tester
+  # declares theirs (DSH_S18_TESTER); an input nothing provides fails its
+  # preflight, and the leg reads "not run (<check> preflight failed)".
   # The verdict is the scenario test's own row (DSH_SCENARIO_REPORT) read back:
-  # passed, on the variant's OS, for the dsh binary the run used.
+  # passed, on the variant's OS, for the dsh binary the run used. Each leg also
+  # keeps an evidence row (DSH_S18_EVIDENCE_DIR) with that verdict, the sandbox
+  # status and the fence under test.
 
   @TC-21s3 @DH-E-FS-1 @platform:linux-wsl @platform:windows
   Scenario: DH-E-FS-1 fence on real file systems
@@ -40,7 +45,8 @@ Feature: File fence and working directory on real systems (DH-E-FS-1, DH-E-FS-2,
     Given the Windows variant machine on "NTFS" with the signed-in Claude Code CLI installed natively, git and an editor save script
     And "dsh sandbox status" on the variant reads state "Unconfined", recorded in the row
     When the long-running FS-2 run completes on the variant under mode "workspace-write"
-    Then the variant's DH-E-FS-2 row reads passed for the binary it ran
+    Then the variant's evidence row records sandbox state "Unconfined" and the fence under test "C32 filesystem seam"
+    And the variant's DH-E-FS-2 row reads passed for the binary it ran
     And every task of the run's shard passed
     And no file appears outside the write roots in the before and after listings
 
@@ -49,5 +55,6 @@ Feature: File fence and working directory on real systems (DH-E-FS-1, DH-E-FS-2,
     Given the tester's Linux machine with the signed-in route, a real git repository and bwrap
     And "dsh sandbox status" on the variant reads backend "bwrap" state "Full"
     When VIEW-5 runs on the variant under "workspace-write"
-    Then the variant's DH-E-VIEW-5 row reads passed for the binary it ran
+    Then the variant's evidence row records sandbox state "Full" and the fence under test "bwrap Full"
+    And the variant's DH-E-VIEW-5 row reads passed for the binary it ran
     And every model-chosen write lands inside the session's working directory
