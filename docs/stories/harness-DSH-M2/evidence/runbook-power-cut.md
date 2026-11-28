@@ -180,11 +180,19 @@ machine cannot cut its own power, so no `service:os-process` substitute exists.
    |---|---|
    | `DSH_SCENARIO_VMS` | the guests, `;`-separated |
    | `DSH_SCENARIO_NODEFS_LISTEN` | the recorder's `host:port` on the hypervisor host (the `service:ack-recorder` preflight: local and free) |
-   | `DSH_SCENARIO_NODEFS_START` | command starting the writer role in `{vm}` in the background |
+   | `DSH_SCENARIO_NODEFS_START` | command starting the writer role in `{vm}` in the background (`DSH_SCENARIO_NODEFS_ROLE=writer`, `DSH_SCENARIO_NODEFS_FILE`, `DSH_SCENARIO_NODEFS_ACK`, `DSH_SCENARIO_NODEFS_VM={vm}`). The writer must **not** start on its own at boot: every version it acknowledges after a restart, before the round's read, would be missed by the judge |
    | `DSH_SCENARIO_NODEFS_POWEROFF` | `virsh destroy {vm}`, or on Hyper-V `Stop-VM {vm} -TurnOff -Force` run in the host's SSH remoting session (`pwsh -c 'Invoke-Command (New-PSSession -HostName hyperv-host -UserName s18lab -KeyFilePath ~/.ssh/s18-hyperv) { Stop-VM {vm} -TurnOff -Force }'`) |
    | `DSH_SCENARIO_NODEFS_POWERON` | command starting `{vm}` and waiting until its guest agent answers |
-   | `DSH_SCENARIO_NODEFS_READ` | command printing the replaced file of `{vm}` through the guest agent |
-   | `DSH_SCENARIO_REPORT` | the file the recorder's version log is written to |
+   | `DSH_SCENARIO_NODEFS_READ` | command printing the replaced file of `{vm}` through the guest agent on its **standard output** only (diagnostics go to standard error); the bytes must equal one version exactly, one trailing line ending allowed |
+   | `DSH_SCENARIO_REPORT` | the recorder's version log, appended to and kept whatever the result |
+   | `DSH_SCENARIO_NODEFS_ROUNDS` | optional: `i-j` runs rounds i to j of 1-100 (a shard, M2-R-06); empty or `all` runs every round |
+
+   Each round: the controller starts the writer, waits (at most 5 min) for its first new
+   acknowledgement, cuts the power at a random moment within 5 s after it, restarts the
+   guest, reads the file, and judges it against every version acknowledged before the
+   cut, acknowledgements still in flight at the cut included. The log has one line per
+   event, `<sequence> <UTC time> <event> key=value...`, the events being `start`, `seed`,
+   `round`, `ack`, `cut`, `read`, `fail` and `junk`.
 
 5. **Run** from the repository root on the controller:
 
@@ -192,10 +200,19 @@ machine cannot cut its own power, so no `service:os-process` substitute exists.
    GOWORK=off go -C src/harness test -tags scenario -p 1 -count=1 -timeout 175m -v -run 'TestDurableReplaceSurvivesPowerLoss' ./internal/testkit/scenarios/
    ```
 
-   or dispatch `harness-scenarios.yml` with `stage: DH-S-18` and let the `vm:*` s18 jobs run.
-6. **Clean up.** Delete each passing overlay, its guest definition and disk. Keep the
-   recorder log under `DSH_SCENARIO_REPORT`. On a failure keep the failing overlay and name
-   it in the record and in [DH-S-18.md](DH-S-18.md).
+   or dispatch `harness-scenarios.yml` with `stage: DH-S-18` and let the `vm:*` s18 jobs run
+   (they run all 100 rounds; they do not bind `DSH_SCENARIO_NODEFS_ROUNDS`). Within a run
+   `harness-gate variant-run` puts `DH-E-NODEFS-1` last (impl.md 18.11).
+
+   **Sharding.** If 100 rounds would pass 3 h, run shards, e.g. `1-40`, `41-80`, `81-100`,
+   each a separate run with the same `DSH_SCENARIO_VMS` guests (their overlays kept between
+   shards) and the same `DSH_SCENARIO_REPORT` log. A shard past round 1 refuses to start
+   unless the log ends with every guest's round i-1 read and judged; it takes each guest's
+   acknowledged version from the log and continues its sequence. Record each shard's run.
+6. **Clean up.** After the last shard, delete each passing overlay, its guest definition
+   and disk. Keep the recorder log under `DSH_SCENARIO_REPORT`. On a failure (a `fail` line
+   in the log, naming the guest and round) keep the failing overlay and name it in the
+   record and in [DH-S-18.md](DH-S-18.md).
 
 ## Record
 

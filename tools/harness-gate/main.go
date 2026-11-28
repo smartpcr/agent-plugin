@@ -53,7 +53,8 @@
 //	                       the scenario step of an s18 variant job: IDS (require
 //	                       --variant) in the stage's order, DH-E-TOOLCHAIN-2 first
 //	                       and every later scenario on the rehearsal binary it
-//	                       verified (DSH_BIN; impl.md 18.1); a skip or a test
+//	                       verified (DSH_BIN; impl.md 18.1), DH-E-NODEFS-1 last
+//	                       (impl.md 18.11); a skip or a test
 //	                       that did not pass fails (variantrun.go)
 //	ready --stage DH-S-n [--built] [--story s]
 //	                       the first step of a stage close (C57; M2-C-2): every

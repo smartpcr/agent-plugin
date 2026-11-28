@@ -41,7 +41,7 @@ An acceptance step is ticked only by its scenarios; the commit is the one the sc
 | 18.8 | DH-E-CHOKIDAR-1, DH-E-CHOKIDAR-2 | | not run; blocked, see [Stage 8.7 blockers](#stage-87-blockers) |
 | 18.9 | DH-E-CONTEXT-2 | | |
 | 18.10 | DH-E-STORAGE-6 | | |
-| 18.11 | DH-E-NODEFS-1 | | run last |
+| 18.11 | DH-E-NODEFS-1 | | run last; not run, see [Stage 8.9 blockers](#stage-89-blockers) |
 
 ## Scenarios
 
@@ -85,8 +85,8 @@ The 19 scenarios of the steps, one row per operating-system variant (M2-DOD-4). 
 | DH-E-STORAGE-6 | Linux (WSL) | acceptance | required | E2 | | not run (blocked: harness-gate entry fails, M2-DEC-1; dsh cannot seed an attachment or a spill file, see Stage 8.8 blockers) | |
 | DH-E-STORAGE-6 | Windows | acceptance | required | E2 | | not run (blocked: harness-gate entry fails, M2-DEC-1; dsh cannot seed an attachment or a spill file, see Stage 8.8 blockers) | |
 | DH-E-STORAGE-6 | macOS | acceptance | required | | | out of scope (platforms-windows-wsl) | |
-| DH-E-NODEFS-1 | Linux guest | acceptance | required | E2 | | not run (stage not started) | |
-| DH-E-NODEFS-1 | Windows guest | acceptance | required | E2 | | not run (stage not started) | |
+| DH-E-NODEFS-1 | Linux guest | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
+| DH-E-NODEFS-1 | Windows guest | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
 
 ## Manual checks register
 
@@ -177,6 +177,29 @@ budget above. On WSL (Ubuntu-24.04, ext4 clones of CopilotOAuthSample, agent-plu
 CHOKIDAR-1 passed in notify mode, CHOKIDAR-2 passed in poll mode on a `/mnt/e` directory changed from
 Windows, RIPGREP-2 passed, and RIPGREP-1 met the budget everywhere, failing only on the symbolic links
 above. CHOKIDAR-2 over SMB (`windows-host:smb`, `linux-wsl:smb`) was not probed.
+
+## Stage 8.9 blockers
+
+implementation-plan Stage 8.9 (impl.md 18.11: `DH-E-NODEFS-1`, 100 hard power cuts per guest OS, run
+last) was taken up on `a4e9837` and could not run as evidence. Both rows stay `not run` and are owed:
+
+| Blocker | Seen | What clears it |
+| --- | --- | --- |
+| `harness-gate entry` exits 1 (harness:DSH-M1 not closed, M2-DEC-1), and the S18 rows run on the rehearsal's binaries, which are owed (see [Stage 8.2 blockers](#stage-82-blockers)). | `GOWORK=off go -C tools/harness-gate run . entry --root ../..` on `a4e9837`: 12 blockers, exit 1 | M1 closure merges, `entry` exits 0 and `DH-E-TOOLCHAIN-2` has passed |
+| Who and where. The rows run on the team-kept KVM/libvirt and Hyper-V hosts from the `[self-hosted, linux, dsh-hypervisor]` runner (Q `m2-e2-fleet`), never in an agent session; none is reachable from this stage's session. | [runbook-power-cut.md](runbook-power-cut.md) | the hosts are provisioned, the `power-cut` preflight passes, and the `vm:*` s18 jobs (or the runbook's step 5) run on the merged commit |
+| Sharding past 3 h (M2-R-06) is a manual run: the `vm:*` jobs of `harness-scenarios.yml` run all 100 rounds and do not bind the optional `DSH_SCENARIO_NODEFS_ROUNDS`. | `harness-scenarios.yml` on `a4e9837` | a run within 3 h, or the runbook's manual shards, or a workflow change binding the input |
+
+Cleared on this stage's branch (each would have failed or misjudged the scenario):
+
+| Defect | Seen on `a4e9837` | Fix |
+| --- | --- | --- |
+| `variant-run` ran `DH-E-NODEFS-1` in file order, not last (impl.md 18.11, architecture.md rule 7). | `stageOrder["DH-S-18"]` had no `Last` | NODEFS-1 is the stage's last phase (`TestPhasesOrderDHS18`) |
+| The cut came 1-5 s after the writer was started and the round failed if nothing was acknowledged yet, so a slow guest boot failed the scenario. | fixed delay after START | each round waits (at most 5 min) for the writer's first new acknowledgement, then cuts at a random moment within 5 s (`TestNodefsDriveAgainstAStandInGuest`, `TestNodefsDriveNeedsTheWriterRunningBeforeTheCut`) |
+| The acknowledged bound was taken right after the power-off, so an acknowledgement in flight at the cut was not judged against. | bound sampled at the cut | the bound is taken after the read, the writer not running again until the next round (`TestNodefsJudgesAgainstAcksInFlightAtTheCut`) |
+| The recorder kept its log in memory and wrote it only on a failure; architecture.md asks for an append-only log, kept. | log written at the end | every event is appended with a sequence number and the round, synced and kept whatever the result (`TestNodefsDriveCatchesALostAcknowledgedVersion`) |
+| No sharding (M2-R-06). | 100 rounds per run | optional `DSH_SCENARIO_NODEFS_ROUNDS=i-j`; a shard continues the previous shard's log and refuses unless it ends with every guest's round i-1 read (`TestNodefsShardContinuesTheLog`, `TestNodefsRoundsOf`) |
+| READ's standard error was judged with the file; a CRLF header was refused; trailing bytes after the payload were not checked. | combined output, `\n` only | standard output only; the version must match byte for byte, one trailing line ending allowed (`TestNodefsJudge`) |
+| The writer replaced the file with `fsx.WriteFile`, not `fsx.Replace` as DH-E-NODEFS-1 names. | writer loop | `fsx.Replace` with `Durable: true`; a version is acknowledged only once it returned nil |
 
 ## Evidence record (impl.md sec. 7.3)
 

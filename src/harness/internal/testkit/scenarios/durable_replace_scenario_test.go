@@ -4,9 +4,12 @@ package scenarios
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io"
 	"math/rand/v2"
 	"net"
 	"os"
@@ -24,8 +27,20 @@ import (
 // nodefsRounds is the number of power cuts per machine (DH-E-NODEFS-1).
 const nodefsRounds = 100
 
+const (
+	// nodefsWriterUp bounds the time from DSH_SCENARIO_NODEFS_START to the round's
+	// first new acknowledgement: the writer of a guest just restarted from a cut
+	// (a Windows guest boots for minutes) must be replacing the file before the cut.
+	nodefsWriterUp = 5 * time.Minute
+	// nodefsCutWithin: the cut comes at a random moment within this after that
+	// acknowledgement, while the loop replaces the file.
+	nodefsCutWithin = 5 * time.Second
+)
+
 // nodefsHeader starts every version the writer publishes; the payload follows it.
-var nodefsHeader = regexp.MustCompile(`^dsh-nodefs v=(\d+) len=(\d+) sha=([0-9a-f]{64})\n`)
+// A guest agent that prints the file with Windows line endings turns the header's
+// newline into CRLF, which is accepted.
+var nodefsHeader = regexp.MustCompile(`^dsh-nodefs v=(\d+) len=(\d+) sha=([0-9a-f]{64})\r?\n`)
 
 // nodefsVersion is version n of the replaced file: a header naming the payload's
 // length and SHA-256, then 64 KiB of payload, so a torn file is detected.
@@ -37,25 +52,40 @@ func nodefsVersion(n int) []byte {
 
 // TestDurableReplaceSurvivesPowerLoss: a durable replace is complete and never
 // older than its acknowledgement after a power cut (libs/node-fs-path-os-zlib.md
-// DH-E-NODEFS-1; DH-LIB-NODEFS-R1; DH-D-FS-1). Executed in DH-S-18 (step 18.11).
+// DH-E-NODEFS-1; DH-LIB-NODEFS-R1; DH-D-FS-1; TC-21s5). Executed last in DH-S-18
+// (step 18.11; architecture.md rule 7).
 //
-// Given a virtual machine for each of Linux, macOS and Windows with a disk that can
-// be cut off (a power-off, not a clean shutdown), running a loop that replaces a
-// file durably with fsx.WriteFile and records each acknowledged version on this
-// second machine, when the machine is powered off at a random moment and restarted,
-// 100 times, then the file is always complete and never older than the last
-// acknowledged version. Cleanup: deleting the virtual disks is the operator's; the
-// version log of a failing run is written to DSH_SCENARIO_REPORT.
+// Given a virtual machine per guest OS (Linux on KVM/libvirt, Windows on Hyper-V;
+// macOS out of scope by platforms-windows-wsl) with a disk that can be cut off (a
+// power-off, not a clean shutdown), running a loop that replaces a file durably with
+// fsx.Replace and sends each acknowledged version to this second machine (the ack
+// recorder), when the machine is powered off at a random moment and restarted, 100
+// times, then the file is always complete and never older than the last
+// acknowledged version. Cleanup: deleting the virtual disks is the operator's (a
+// failing guest's overlay is kept); the recorder's version log is kept, in
+// DSH_SCENARIO_REPORT.
 //
 // The test has two roles. Inside a machine (DSH_SCENARIO_NODEFS_ROLE=writer) it is
 // the loop: it replaces DSH_SCENARIO_NODEFS_FILE durably and sends each published
 // version to DSH_SCENARIO_NODEFS_ACK until the machine loses power. On the second
-// machine it is the controller, with DSH_SCENARIO_VMS (";"-separated machine names),
-// DSH_SCENARIO_NODEFS_LISTEN (the address the acknowledgements arrive at) and shell
-// command lines over {vm}: DSH_SCENARIO_NODEFS_START starts the writer role in the
-// machine in the background, DSH_SCENARIO_NODEFS_POWEROFF cuts its power,
-// DSH_SCENARIO_NODEFS_POWERON starts it and returns once it is reachable, and
-// DSH_SCENARIO_NODEFS_READ prints the file.
+// machine it is the controller and the recorder, with DSH_SCENARIO_VMS
+// (";"-separated machine names), DSH_SCENARIO_NODEFS_LISTEN (the address the
+// acknowledgements arrive at) and shell command lines over {vm}:
+// DSH_SCENARIO_NODEFS_START starts the writer role in the machine in the background
+// (the writer must not start on its own at boot), DSH_SCENARIO_NODEFS_POWEROFF cuts
+// its power, DSH_SCENARIO_NODEFS_POWERON starts it and returns once it is
+// reachable, and DSH_SCENARIO_NODEFS_READ prints the file on its standard output.
+//
+// Each round waits for the writer's first new acknowledgement, cuts at a random
+// moment within nodefsCutWithin after it, restarts, reads, and judges the file
+// against every version acknowledged before the cut, those still in flight at the
+// cut included (the writer does not run again until the next round starts it).
+//
+// A run that would pass the 3 h variant limit is sharded (M2-R-06): the optional
+// DSH_SCENARIO_NODEFS_ROUNDS selects rounds "i-j" of 1-100 (default all). A shard
+// past round 1 continues the log of the shard before it, on the same guests:
+// it refuses to start unless that log ends with every guest's round i-1 read and
+// judged, and takes its acknowledged versions from it.
 //
 //dsh:scenario DH-E-NODEFS-1
 func TestDurableReplaceSurvivesPowerLoss(t *testing.T) {
@@ -69,104 +99,363 @@ func TestDurableReplaceSurvivesPowerLoss(t *testing.T) {
 	powerOff := need(t, "DSH_SCENARIO_NODEFS_POWEROFF", "command cutting the power of {vm}")
 	powerOn := need(t, "DSH_SCENARIO_NODEFS_POWERON", "command starting {vm} and waiting until it is reachable")
 	read := need(t, "DSH_SCENARIO_NODEFS_READ", "command printing the replaced file of {vm}")
-	reportPath := need(t, "DSH_SCENARIO_REPORT", "file the version log is written to")
-
-	ln, err := net.Listen("tcp", listen)
+	reportPath := need(t, "DSH_SCENARIO_REPORT", "file the recorder's version log is appended to")
+	from, to, err := nodefsRoundsOf(os.Getenv("DSH_SCENARIO_NODEFS_ROUNDS"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var mu sync.Mutex
-	acked := map[string]int{} // vm -> last acknowledged version
-	var log []string
-	var conns []net.Conn
-	var wg sync.WaitGroup
-	// A writer's connection dies with its machine and never closes: close them all.
-	t.Cleanup(func() {
-		_ = ln.Close()
-		mu.Lock()
-		for _, conn := range conns {
-			_ = conn.Close()
-		}
-		mu.Unlock()
-		wg.Wait()
-	})
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			mu.Lock()
-			conns = append(conns, conn)
-			mu.Unlock()
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				defer conn.Close()
-				sc := bufio.NewScanner(conn)
-				for sc.Scan() {
-					vm, v, ok := strings.Cut(sc.Text(), " ")
-					n, err := strconv.Atoi(v)
-					if !ok || err != nil {
-						continue
-					}
-					mu.Lock()
-					acked[vm] = max(acked[vm], n)
-					log = append(log, fmt.Sprintf("%s ack %s %d", time.Now().Format(time.RFC3339Nano), vm, n))
-					mu.Unlock()
-				}
-			}()
-		}
-	}()
-	t.Cleanup(func() {
-		if t.Failed() {
-			mu.Lock()
-			defer mu.Unlock()
-			_ = os.WriteFile(reportPath, []byte(strings.Join(log, "\n")+"\n"), 0o600)
-		}
-	})
 
-	for _, vm := range vms {
-		vars := map[string]string{"vm": vm}
-		for round := 1; round <= nodefsRounds; round++ {
-			mustShell(t, expand(start, vars))
-			<-time.After(time.Second + rand.N(4*time.Second))
-			mustShell(t, expand(powerOff, vars))
-			mu.Lock()
-			last := acked[vm]
-			log = append(log, fmt.Sprintf("%s cut %s round %d after ack %d", time.Now().Format(time.RFC3339Nano), vm, round, last))
-			mu.Unlock()
-			if last == 0 {
-				t.Fatalf("%s round %d: no version was acknowledged before the cut", vm, round)
-			}
-			mustShell(t, expand(powerOn, vars))
-			data := mustShell(t, expand(read, vars))
-			m := nodefsHeader.FindStringSubmatch(data)
-			if m == nil {
-				t.Fatalf("%s round %d: the file is not a complete version: %.80q", vm, round, data)
-			}
-			n, _ := strconv.Atoi(m[1])
-			size, _ := strconv.Atoi(m[2])
-			payload := data[len(m[0]):]
-			sum := sha256.Sum256([]byte(payload[:min(size, len(payload))]))
-			if len(payload) < size || hex.EncodeToString(sum[:]) != m[3] {
-				t.Fatalf("%s round %d: version %d is torn", vm, round, n)
-			}
-			if n < last {
-				t.Fatalf("%s round %d: the file holds version %d, older than the acknowledged %d", vm, round, n, last)
-			}
-			mu.Lock()
-			log = append(log, fmt.Sprintf("%s read %s round %d version %d", time.Now().Format(time.RFC3339Nano), vm, round, n))
-			mu.Unlock()
+	rec, err := openNodefsRecorder(t, listen, reportPath, vms, from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("recorder on %s, version log %s, rounds %d-%d", rec.addr(), reportPath, from, to)
+	run := func(template, vm string) error {
+		line := expand(template, map[string]string{"vm": vm})
+		if out, err := shell(t, line); err != nil {
+			return fmt.Errorf("%w\n%s", err, out)
 		}
+		return nil
+	}
+	machine := nodefsMachine{
+		start:    func(vm string) error { return run(start, vm) },
+		powerOff: func(vm string) error { return run(powerOff, vm) },
+		powerOn:  func(vm string) error { return run(powerOn, vm) },
+		read: func(vm string) (string, error) {
+			// Standard output only: a guest agent's warnings on standard error are
+			// not the file.
+			s := spawnShell(t, expand(read, map[string]string{"vm": vm}))
+			_, err := s.wait()
+			if err != nil {
+				return "", fmt.Errorf("%w\n%s", err, s.host.Stderr.String())
+			}
+			return s.host.Stdout.String(), nil
+		},
+	}
+	driveErr := nodefsDrive(t.Context(), rec, machine, vms, from, to, nodefsWriterUp, nodefsCutWithin)
+	if err := errors.Join(driveErr, rec.close()); err != nil {
+		t.Fatalf("%v\nthe recorder's version log: %s", err, reportPath)
 	}
 }
 
+// nodefsRoundsOf parses DSH_SCENARIO_NODEFS_ROUNDS: empty or "all" for every
+// round, or "i-j" within 1-nodefsRounds.
+func nodefsRoundsOf(s string) (int, int, error) {
+	if s == "" || s == "all" {
+		return 1, nodefsRounds, nil
+	}
+	var from, to int
+	if n, err := fmt.Sscanf(s, "%d-%d", &from, &to); err != nil || n != 2 || fmt.Sprintf("%d-%d", from, to) != s ||
+		from < 1 || to > nodefsRounds || from > to {
+		return 0, 0, fmt.Errorf("DSH_SCENARIO_NODEFS_ROUNDS %q: want \"all\" or i-j within 1-%d", s, nodefsRounds)
+	}
+	return from, to, nil
+}
+
+// nodefsMachine drives the guests: the scenario's shell command lines, or a
+// stand-in in the scenario's own checks.
+type nodefsMachine struct {
+	start, powerOff, powerOn func(vm string) error
+	read                     func(vm string) (string, error)
+}
+
+// nodefsDrive runs rounds from-to on each guest in turn. The first round that
+// fails ends the run: it is recorded as a fail line naming the guest, whose
+// overlay is to be kept.
+func nodefsDrive(ctx context.Context, rec *nodefsRecorder, m nodefsMachine, vms []string, from, to int, up, cutWithin time.Duration) error {
+	for _, vm := range vms {
+		for round := from; round <= to; round++ {
+			if err := nodefsRound(ctx, rec, m, vm, round, up, cutWithin); err != nil {
+				rec.record("fail vm=%s round=%d acked=%d: %s", vm, round, rec.last(vm), strings.ReplaceAll(err.Error(), "\n", " "))
+				return fmt.Errorf("%s round %d: %w (keep the overlay of %s)", vm, round, err, vm)
+			}
+		}
+	}
+	return nil
+}
+
+// nodefsRound is one power cut of vm.
+func nodefsRound(ctx context.Context, rec *nodefsRecorder, m nodefsMachine, vm string, round int, up, cutWithin time.Duration) error {
+	rec.begin(vm, round)
+	before := rec.last(vm)
+	if err := m.start(vm); err != nil {
+		return fmt.Errorf("starting the writer: %w", err)
+	}
+	if err := rec.waitAbove(ctx, vm, before, up); err != nil {
+		return err
+	}
+	select {
+	case <-time.After(rand.N(cutWithin)):
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	if err := m.powerOff(vm); err != nil {
+		return fmt.Errorf("cutting the power: %w", err)
+	}
+	rec.record("cut vm=%s round=%d acked=%d", vm, round, rec.last(vm))
+	if err := m.powerOn(vm); err != nil {
+		return fmt.Errorf("restarting: %w", err)
+	}
+	data, err := m.read(vm)
+	if err != nil {
+		return fmt.Errorf("reading the file: %w", err)
+	}
+	// Read after the restart: every version acknowledged before the cut, those in
+	// flight at the cut included, has arrived, and no writer runs to add more.
+	acked := rec.last(vm)
+	n, err := nodefsJudge(data, acked)
+	if err != nil {
+		return err
+	}
+	rec.record("read vm=%s round=%d version=%d acked=%d", vm, round, n, acked)
+	return nil
+}
+
+// nodefsJudge returns the version data holds, or why it is not a complete version
+// at least as new as acked. One trailing line ending, which a guest agent may add
+// when it prints the file, is not part of the file.
+func nodefsJudge(data string, acked int) (int, error) {
+	m := nodefsHeader.FindStringSubmatch(data)
+	if m == nil {
+		return 0, fmt.Errorf("the file is not a complete version: %.80q", data)
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil || n < 1 {
+		return 0, fmt.Errorf("the file names version %q, which the writer never publishes", m[1])
+	}
+	body := strings.TrimSuffix(strings.TrimSuffix(data[len(m[0]):], "\n"), "\r")
+	if got := strings.TrimRight(m[0], "\r\n") + "\n" + body; got != string(nodefsVersion(n)) {
+		return n, fmt.Errorf("version %d is torn: %d bytes after its header, want its %s", n, len(body), m[2])
+	}
+	if n < acked {
+		return n, fmt.Errorf("the file holds version %d, older than the acknowledged %d", n, acked)
+	}
+	return n, nil
+}
+
+// nodefsRecorder is service:ack-recorder: it listens for the writers'
+// acknowledgements ("<vm> <version>" lines) and appends each, with the run's
+// events, to an append-only version log on this machine's disk, one line each:
+// "<sequence> <UTC time> <event> key=value...". Its events are start, seed (a
+// shard's acknowledged version taken from the log), round, ack, cut, read (a round
+// judged complete and new enough), fail and junk (a line that is no
+// acknowledgement). The log is kept whatever the result.
+type nodefsRecorder struct {
+	ln       net.Listener
+	wg       sync.WaitGroup
+	mu       sync.Mutex
+	conns    []net.Conn
+	acked    map[string]int // vm -> highest acknowledged version
+	round    map[string]int // vm -> the round in progress
+	seq      int
+	log      *os.File
+	err      error // the first write error of the log
+	closed   bool
+	closeErr error
+}
+
+// openNodefsRecorder listens on listen and appends to the log at logPath for
+// rounds from-to of vms; from > 1 continues a sharded run (continueLog). The
+// recorder is closed when t ends, if not before.
+func openNodefsRecorder(t testing.TB, listen, logPath string, vms []string, from, to int) (*nodefsRecorder, error) {
+	r := &nodefsRecorder{acked: map[string]int{}, round: map[string]int{}}
+	if from > 1 {
+		if err := r.continueLog(logPath, vms, from); err != nil {
+			return nil, err
+		}
+	}
+	f, err := os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("the recorder's version log: %w", err)
+	}
+	ln, err := net.Listen("tcp", listen)
+	if err != nil {
+		return nil, errors.Join(err, f.Close())
+	}
+	r.log, r.ln = f, ln
+	// close closes ln; closing it again is a no-op error, and names it for QG-5.
+	t.Cleanup(func() { _ = r.close(); _ = ln.Close() })
+	r.record("start rounds=%d-%d vms=%s", from, to, strings.Join(vms, ";"))
+	for _, vm := range vms {
+		if n := r.acked[vm]; n > 0 {
+			r.record("seed vm=%s acked=%d", vm, n)
+		}
+	}
+	r.wg.Add(1)
+	go r.accept()
+	return r, nil
+}
+
+// continueLog takes the acknowledged versions of a sharded run from the log at
+// path, refusing unless the log ends each of vms with round from-1 read: a shard
+// neither skips a round nor follows a failed one. The run's lines start at its
+// last "start rounds=1-..." line; the sequence continues the log's.
+func (r *nodefsRecorder) continueLog(path string, vms []string, from int) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("rounds from %d continue a sharded run, whose version log is unreadable: %w", from, err)
+	}
+	acked, judged := map[string]int{}, map[string]string{}
+	for _, line := range strings.Split(string(data), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 3 {
+			continue
+		}
+		if s, err := strconv.Atoi(f[0]); err == nil {
+			r.seq = max(r.seq, s)
+		}
+		kv := map[string]string{}
+		for _, field := range f[3:] {
+			if k, v, ok := strings.Cut(field, "="); ok {
+				kv[k] = strings.TrimSuffix(v, ":")
+			}
+		}
+		vm := kv["vm"]
+		switch f[2] {
+		case "start":
+			if strings.HasPrefix(kv["rounds"], "1-") {
+				acked, judged = map[string]int{}, map[string]string{}
+			}
+		case "ack", "seed":
+			v := kv["version"]
+			if f[2] == "seed" {
+				v = kv["acked"]
+			}
+			if n, err := strconv.Atoi(v); err == nil {
+				acked[vm] = max(acked[vm], n)
+			}
+		case "read", "fail":
+			judged[vm] = f[2] + " round " + kv["round"]
+		}
+	}
+	for _, vm := range vms {
+		if want := fmt.Sprintf("read round %d", from-1); judged[vm] != want {
+			return fmt.Errorf("rounds from %d continue a sharded run, but the version log %s ends %s's rounds with %q, want %q",
+				from, path, vm, judged[vm], want)
+		}
+	}
+	r.acked = acked
+	return nil
+}
+
+// addr is the address the recorder listens on.
+func (r *nodefsRecorder) addr() string { return r.ln.Addr().String() }
+
+func (r *nodefsRecorder) accept() {
+	defer r.wg.Done()
+	for {
+		conn, err := r.ln.Accept()
+		if err != nil {
+			return
+		}
+		r.mu.Lock()
+		if r.closed {
+			r.mu.Unlock()
+			_ = conn.Close()
+			return
+		}
+		r.conns = append(r.conns, conn)
+		r.wg.Add(1)
+		r.mu.Unlock()
+		go r.serve(conn)
+	}
+}
+
+// serve reads one writer's acknowledgements. A writer's connection dies with its
+// machine and never closes: close closes it.
+func (r *nodefsRecorder) serve(conn net.Conn) {
+	defer r.wg.Done()
+	defer conn.Close()
+	sc := bufio.NewScanner(conn)
+	for sc.Scan() {
+		vm, v, ok := strings.Cut(strings.TrimSpace(sc.Text()), " ")
+		n, err := strconv.Atoi(v)
+		if !ok || err != nil || n < 1 || strings.ContainsAny(vm, " =") {
+			r.record("junk %q", sc.Text())
+			continue
+		}
+		r.mu.Lock()
+		r.acked[vm] = max(r.acked[vm], n)
+		r.writeLocked("ack vm=%s round=%d version=%d", vm, r.round[vm], n)
+		r.mu.Unlock()
+	}
+}
+
+// writeLocked appends one event to the log; r.mu is held.
+func (r *nodefsRecorder) writeLocked(format string, args ...any) {
+	if r.err != nil {
+		return
+	}
+	r.seq++
+	_, r.err = fmt.Fprintf(r.log, "%d %s "+format+"\n", append([]any{r.seq, time.Now().UTC().Format(time.RFC3339Nano)}, args...)...)
+}
+
+// record appends one event to the log.
+func (r *nodefsRecorder) record(format string, args ...any) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.writeLocked(format, args...)
+}
+
+// begin marks round as vm's round in progress.
+func (r *nodefsRecorder) begin(vm string, round int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.round[vm] = round
+	r.writeLocked("round vm=%s round=%d", vm, round)
+}
+
+// last is vm's highest acknowledged version.
+func (r *nodefsRecorder) last(vm string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.acked[vm]
+}
+
+// waitAbove waits until vm has acknowledged a version above above.
+func (r *nodefsRecorder) waitAbove(ctx context.Context, vm string, above int, within time.Duration) error {
+	deadline := time.After(within)
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for r.last(vm) <= above {
+		select {
+		case <-tick.C:
+		case <-deadline:
+			return fmt.Errorf("the writer acknowledged no version after %d within %s of its start", above, within)
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
+// close stops listening, closes every writer's connection, waits for them, and
+// syncs and closes the log; it returns the log's first write error, if any.
+func (r *nodefsRecorder) close() error {
+	r.mu.Lock()
+	if r.closed {
+		defer r.mu.Unlock()
+		return r.closeErr
+	}
+	r.closed = true
+	conns := r.conns
+	r.mu.Unlock()
+	_ = r.ln.Close()
+	for _, conn := range conns {
+		_ = conn.Close()
+	}
+	r.wg.Wait()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.closeErr = errors.Join(r.err, r.log.Sync(), r.log.Close())
+	if r.closeErr != nil {
+		r.closeErr = fmt.Errorf("the recorder's version log: %w", r.closeErr)
+	}
+	return r.closeErr
+}
+
 // nodefsWriter is the writer role: replace the file durably, acknowledge each
-// published version, until the machine loses power. It continues from the version
-// on disk, so versions only grow across rounds.
+// published version, until the machine loses power.
 func nodefsWriter(t *testing.T) {
 	path := need(t, "DSH_SCENARIO_NODEFS_FILE", "the file the writer replaces")
 	ack := need(t, "DSH_SCENARIO_NODEFS_ACK", "address of the controller's acknowledgement listener")
@@ -176,19 +465,31 @@ func nodefsWriter(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
+	if err := nodefsWrite(t.Context(), path, vm, conn); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// nodefsWrite replaces path with version after version through fsx.Replace,
+// durably, sending "<vm> <version>" to ack after each returns, until ctx ends. It
+// continues from the version on disk, so versions only grow across rounds. A
+// version is acknowledged only once Replace has returned nil: an error, including
+// fsx.ErrDurabilityUnknown, ends the loop unacknowledged.
+func nodefsWrite(ctx context.Context, path, vm string, ack io.Writer) error {
 	n := 0
 	if data, err := os.ReadFile(path); err == nil {
 		if m := nodefsHeader.FindSubmatch(data); m != nil {
 			n, _ = strconv.Atoi(string(m[1]))
 		}
 	}
-	for t.Context().Err() == nil {
+	for ctx.Err() == nil {
 		n++
-		if err := fsx.WriteFile(path, nodefsVersion(n), fsx.Options{Perm: 0o600, Durable: true}); err != nil {
-			t.Fatalf("version %d: %v", n, err)
+		if err := fsx.Replace(path, fsx.Bytes(nodefsVersion(n)), fsx.Options{Perm: 0o600, Durable: true}); err != nil {
+			return fmt.Errorf("version %d: %w", n, err)
 		}
-		if _, err := fmt.Fprintf(conn, "%s %d\n", vm, n); err != nil {
-			t.Fatalf("acknowledging %d: %v", n, err)
+		if _, err := fmt.Fprintf(ack, "%s %d\n", vm, n); err != nil {
+			return fmt.Errorf("acknowledging %d: %w", n, err)
 		}
 	}
+	return nil
 }
