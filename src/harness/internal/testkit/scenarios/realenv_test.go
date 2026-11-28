@@ -122,11 +122,12 @@ func mustShell(t *testing.T, line string) string {
 
 // running is a shell command line started by startShell.
 type running struct {
-	line string
-	run  shellRun
-	done chan struct{}
-	out  string
-	err  error
+	line    string
+	run     shellRun
+	started time.Time // just before the command was started
+	done    chan struct{}
+	out     string
+	err     error
 }
 
 // startShell runs line through the platform shell without waiting for it. The
@@ -134,8 +135,9 @@ type running struct {
 // context and waited for at cleanup.
 func startShell(t *testing.T, line string) *running {
 	t.Helper()
+	started := time.Now()
 	s := spawnShell(t, line)
-	r := &running{line: line, run: s, done: make(chan struct{})}
+	r := &running{line: line, run: s, started: started, done: make(chan struct{})}
 	go func() {
 		defer close(r.done)
 		r.out, r.err = s.wait()
@@ -228,6 +230,12 @@ func (r *running) wait(t *testing.T) {
 // exited the poll goes on for grace (a remote change may take that long to be
 // visible here); a command that fails, or changes nothing, fails the scenario. Stat
 // does not open the file, so the poll cannot get in the way of an editor's save.
+//
+// A modification time alone (same size, same file) that moves to a time before r
+// started is not r's change but this client catching up on its own earlier
+// write: a network client's attribute cache, refreshed, shows the server's time
+// of that write instead of the one it kept (CIFS a few milliseconds after the
+// write). It becomes the new before, and the poll waits for r's own change.
 func changedAt(t *testing.T, path string, before os.FileInfo, r *running, grace time.Duration) time.Time {
 	t.Helper()
 	tick := time.NewTicker(time.Millisecond)
@@ -235,9 +243,18 @@ func changedAt(t *testing.T, path string, before os.FileInfo, r *running, grace 
 	var exitedAt time.Time
 	for {
 		exited := r.exited()
-		if info, err := os.Stat(path); err == nil &&
-			(info.Size() != before.Size() || !info.ModTime().Equal(before.ModTime()) || !os.SameFile(info, before)) {
-			return time.Now()
+		if info, err := os.Stat(path); err == nil {
+			switch {
+			case info.Size() != before.Size() || !os.SameFile(info, before):
+				return time.Now()
+			case !info.ModTime().Equal(before.ModTime()):
+				if !info.ModTime().Before(r.started) {
+					return time.Now()
+				}
+				t.Logf("%s: modification time %v -> %v, before the change started: this client's own refresh, not the change",
+					path, before.ModTime().Format(time.RFC3339Nano), info.ModTime().Format(time.RFC3339Nano))
+				before = info
+			}
 		}
 		if exited {
 			if r.err != nil {

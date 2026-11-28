@@ -269,7 +269,10 @@ func TestWatchRemoteFilesystemsPoll(t *testing.T) {
 		changed := changedAt(t, path, before, r, remoteGrace)
 		r.wait(t)
 		<-time.After(time.Until(changed.Add(2 * poll)))
-		reports := got.since(started)
+		// A report of this client's own refresh (changedAt) is not a report of the
+		// change: only reports from the moment the change is visible count, less
+		// the millisecond the two polls may be apart.
+		reports := got.since(changed.Add(-2 * time.Millisecond))
 		switch {
 		case len(reports) == 0:
 			t.Errorf("%s: the remote change was not reported within %v", dir, 2*poll)
