@@ -456,8 +456,12 @@ the story's `closure.md`:
 
 The story shapes (stages, build stages, deliverables, held-open items) are in
 `closure/shape.go`. The golden `testdata/closure/expected.golden` covers `ready`
-and `close` over the four record states. To regenerate it, run
-`go test -run TestStageClosureGolden . -update`; this is refused when `CI` is set.
+and `close --built` of DH-S-16 over the four record states, and
+`testdata/closure/expected_s17.golden` the acceptance close of DH-S-17 (all 14
+scenarios, the `copilot-cli` legs of DH-E-LLM-1, DH-E-LLM-3 and DH-E-VIEW-1
+recorded) over the same four trees. To regenerate them, run
+`go test -run 'TestStageClosureGolden|TestStageClosureS17Golden' . -update`; this is
+refused when `CI` is set.
 ## Acceptance index (`test/harness/acceptance-index.yaml`)
 
 Keyed by executing stage; each entry lists the authored `DH-E-*` IDs with their

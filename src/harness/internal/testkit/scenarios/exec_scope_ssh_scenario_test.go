@@ -3,13 +3,24 @@
 package scenarios
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/scenario"
 )
 
 // exec10Tree is the first fixture, the one of DH-E-EXEC-1: it starts a child, which
@@ -40,13 +51,36 @@ var (
 // directory the scenario made there, and the paths below it.
 type exec10Machine struct {
 	alias, dir, home, log string
+	// shell, when set, runs a line in place of ssh (the helpers' own tests).
+	shell func(ctx context.Context, line, stdin string) ([]byte, error)
+}
+
+// exec10CleanupBound bounds one SSH command run by a cleanup.
+const exec10CleanupBound = 2 * time.Minute
+
+// exec10Context is the context of one SSH command: the test's, or, once the test
+// has ended and its context is canceled (testing cancels it just before the
+// cleanups run), a fresh one bounded by exec10CleanupBound, so a cleanup can still
+// stop the host and remove what it made.
+func exec10Context(t *testing.T) (context.Context, context.CancelFunc) {
+	ctx := t.Context()
+	if ctx.Err() == nil {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), exec10CleanupBound)
 }
 
 // ssh runs line on the target through "ssh -o BatchMode=yes", with stdin as its
 // standard input, and returns its combined output.
 func (m *exec10Machine) ssh(t *testing.T, line, stdin string) (string, error) {
 	t.Helper()
-	cmd := exec.CommandContext(t.Context(), "ssh", "-o", "BatchMode=yes", m.alias, line)
+	ctx, cancel := exec10Context(t)
+	defer cancel()
+	if m.shell != nil {
+		out, err := m.shell(ctx, line, stdin)
+		return string(out), err
+	}
+	cmd := exec.CommandContext(ctx, "ssh", "-o", "BatchMode=yes", m.alias, line)
 	cmd.Stdin = strings.NewReader(stdin)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
@@ -161,6 +195,88 @@ func exec10Arch(t *testing.T, machine string) string {
 	return ""
 }
 
+// exec10Pick is the rehearsal binary the scenario copies to a linux/arch target,
+// given bin, the DSH_BIN of the DH-S-18 hand-off, which names the runner's
+// (runnerOS/runnerArch) binary in the rehearsal directory. That directory holds
+// every rehearsed binary and their SHA-256s in rehearsal.sha256, and every S18
+// step after DH-E-TOOLCHAIN-2 runs one of them (impl.md 18.1), never a build of
+// its own. same says the pick is bin itself. A target the rehearsal did not
+// build, or a binary whose SHA-256 is not the manifest's, is an error.
+func exec10Pick(bin, runnerOS, runnerArch, arch string) (path, sum string, same bool, err error) {
+	name := "dsh-linux-" + arch
+	dir := filepath.Dir(bin)
+	data, merr := os.ReadFile(filepath.Join(dir, rehearsalManifest))
+	if errors.Is(merr, fs.ErrNotExist) {
+		if runnerOS == "linux" && runnerArch == arch {
+			// DSH_BIN outside a rehearsal directory: a binary for this very
+			// platform, used as given (scenario.Bin records its SHA-256).
+			return bin, "", true, nil
+		}
+		return "", "", false, fmt.Errorf("DSH_BIN=%s is a %s/%s binary and no %s beside it names %s for the linux/%s target: %v", bin, runnerOS, runnerArch, rehearsalManifest, name, arch, merr)
+	}
+	if merr != nil {
+		// A manifest that exists but cannot be read is never a reason to skip
+		// the checksum.
+		return "", "", false, fmt.Errorf("reading the rehearsal manifest: %w", merr)
+	}
+	want := ""
+	for _, line := range strings.Split(string(data), "\n") {
+		if s, n, ok := strings.Cut(strings.TrimSpace(line), "  "); ok && n == name {
+			want = s
+		}
+	}
+	if want == "" {
+		return "", "", false, fmt.Errorf("the rehearsal in %s built no %s for the linux/%s target (%s)", dir, name, arch, rehearsalManifest)
+	}
+	path = filepath.Join(dir, name)
+	b, rerr := os.ReadFile(path)
+	if rerr != nil {
+		return "", "", false, fmt.Errorf("rehearsal binary: %w", rerr)
+	}
+	h := sha256.Sum256(b)
+	if got := hex.EncodeToString(h[:]); got != want {
+		return "", "", false, fmt.Errorf("rehearsal binary %s: SHA-256 %s, %s records %s", path, got, rehearsalManifest, want)
+	}
+	return path, want, filepath.Clean(path) == filepath.Clean(bin), nil
+}
+
+// exec10Binary is the dsh copied to a linux/arch target. With DSH_BIN set (the
+// DH-S-18 hand-off) it is the rehearsal's binary for arch (exec10Pick); without
+// it, a developer run, this checkout cross-built for the target.
+func exec10Binary(t *testing.T, arch string) []byte {
+	t.Helper()
+	bin := strings.TrimSpace(os.Getenv(scenario.BinEnv))
+	if bin == "" {
+		// The variables are restored when the subtest ends.
+		t.Setenv("GOOS", "linux")
+		t.Setenv("GOARCH", arch)
+		t.Setenv("CGO_ENABLED", "0")
+		data, err := os.ReadFile(dshBinary(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	path, sum, same, err := exec10Pick(bin, runtime.GOOS, runtime.GOARCH, arch)
+	if err != nil {
+		scenario.Cause(t, err.Error())
+		t.Fatal(err)
+	}
+	if same {
+		path = dshBinary(t)
+	} else {
+		// The report row records the runner's hand-off binary; the target's is
+		// logged, and is one of the same manifest's.
+		dshBinary(t)
+		t.Logf("the linux/%s target runs the rehearsal binary %s, SHA-256 %s", arch, path, sum)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
 // TestLinuxSSHLoginDelegatedScopeOwnsTree: Linux over a real SSH login, the host
 // obtains a delegated scope from the user service manager and owns the process
 // tree (areas/execution.md DH-E-EXEC-10; DH-D-EXEC-2, DH-ADR-EXEC-2, DH-ADR-40).
@@ -171,8 +287,9 @@ func exec10Arch(t *testing.T, machine string) string {
 // Given two Linux machines with systemd and cgroup v2, each reached by a real SSH
 // login as an ordinary user (so the login's own control group is not writable by
 // that user): on the first the user manager runs, on the second it is stopped; the
-// binary built from this checkout for the target's architecture, copied to a
-// scratch directory there; the first fixture (a grandchild that calls setsid and
+// rehearsal's binary for the target's architecture (exec10Binary; a developer run
+// without DSH_BIN cross-builds this checkout), copied to a scratch directory there;
+// the first fixture (a grandchild that calls setsid and
 // ignores SIGTERM, as in DH-E-EXEC-1) and a second fixture that allocates memory
 // without bound. When, on the first machine, (1) dsh is started in the SSH
 // session and the owner it reports is read, (2) the first fixture runs through the
@@ -197,7 +314,7 @@ func exec10Arch(t *testing.T, machine string) string {
 // of the user scope unit the host requests matches (for example
 // `^dsh-.*\.scope$`). The dsh command lines run on the target over {dsh}, {home},
 // {log}, {command}, {timeout} and {memory}, where {dsh} is the binary this
-// scenario built and copied (each line that runs dsh must run {dsh}):
+// scenario copied (each line that runs dsh must run {dsh}):
 // DSH_SCENARIO_EXEC10_START starts the host on {home} in the background, logging
 // to {log}, and returns once it is ready, printing the owner it reports;
 // DSH_SCENARIO_EXEC10_RUN runs the one-shot bash tool through that host with
@@ -222,7 +339,7 @@ func TestLinuxSSHLoginDelegatedScopeOwnsTree(t *testing.T) {
 	}
 	for name, line := range map[string]string{"DSH_SCENARIO_EXEC10_START": startT, "DSH_SCENARIO_EXEC10_RUN": runT, "DSH_SCENARIO_EXEC10_STOP": stopT} {
 		if !strings.Contains(line, "{dsh}") {
-			t.Fatalf("%s does not run {dsh}, the binary built from this checkout: %s", name, line)
+			t.Fatalf("%s does not run {dsh}, the binary under test: %s", name, line)
 		}
 	}
 
@@ -233,15 +350,7 @@ func TestLinuxSSHLoginDelegatedScopeOwnsTree(t *testing.T) {
 	prepare := func(t *testing.T, alias string, pids map[string]int, leftover func() []string) (*exec10Machine, map[string]string) {
 		m := &exec10Machine{alias: alias}
 		arch := exec10Arch(t, m.must(t, "read the machine type", "uname -m"))
-		// The binary is cross-built for the target; the variables are restored when
-		// the subtest ends.
-		t.Setenv("GOOS", "linux")
-		t.Setenv("GOARCH", arch)
-		t.Setenv("CGO_ENABLED", "0")
-		bin, err := os.ReadFile(dshBinary(t))
-		if err != nil {
-			t.Fatal(err)
-		}
+		bin := exec10Binary(t, arch)
 		m.dir = strings.TrimSpace(m.must(t, "make the scratch directory", "mktemp -d"))
 		m.home, m.log = m.dir+"/home", m.dir+"/host.log"
 		vars := map[string]string{"dsh": m.dir + "/dsh", "home": m.home, "log": m.log}

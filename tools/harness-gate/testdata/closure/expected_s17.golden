@@ -1,0 +1,22 @@
+== open_not_ready: ready --stage DH-S-17 (exit 1)
+harness-gate ready: DH-S-17 (docs/stories/harness-DSH-M2/evidence/DH-S-17.md, acceptance): NOT READY, 1 blocker:
+  - DH-E-SDK-1 [Linux (E1)]: result "not run (S17 machine not signed in)": not run counts as open (M2-C-2)
+== open_not_ready: close --stage DH-S-17 (exit 1)
+harness-gate close: DH-S-17 (docs/stories/harness-DSH-M2/evidence/DH-S-17.md, acceptance): REFUSED not-yet-closed, 2 blockers:
+  - the status line reads open; the closing PR changes it to closed only after ready exits 0
+  - DH-E-SDK-1 [Linux (E1)]: result "not run (S17 machine not signed in)": not run counts as open (M2-C-2)
+== open_ready: ready --stage DH-S-17 (exit 0)
+harness-gate ready: DH-S-17 (docs/stories/harness-DSH-M2/evidence/DH-S-17.md, acceptance): ready; the status line is not read (it reads open)
+== open_ready: close --stage DH-S-17 (exit 1)
+harness-gate close: DH-S-17 (docs/stories/harness-DSH-M2/evidence/DH-S-17.md, acceptance): REFUSED not-yet-closed, 1 blocker:
+  - the status line reads open; the closing PR changes it to closed only after ready exits 0
+== closed_ready: ready --stage DH-S-17 (exit 0)
+harness-gate ready: DH-S-17 (docs/stories/harness-DSH-M2/evidence/DH-S-17.md, acceptance): ready; the status line is not read (it reads closed)
+== closed_ready: close --stage DH-S-17 (exit 0)
+harness-gate close: DH-S-17 (docs/stories/harness-DSH-M2/evidence/DH-S-17.md, acceptance): closed; every ready condition holds and the status line reads "closed"
+== closed_not_ready: ready --stage DH-S-17 (exit 1)
+harness-gate ready: DH-S-17 (docs/stories/harness-DSH-M2/evidence/DH-S-17.md, acceptance): NOT READY, 1 blocker:
+  - DH-E-SANDBOX-7 [Linux (E1)]: result "not run (s17 job not dispatched)": not run counts as open (M2-C-2)
+== closed_not_ready: close --stage DH-S-17 (exit 1)
+harness-gate close: DH-S-17 (docs/stories/harness-DSH-M2/evidence/DH-S-17.md, acceptance): REFUSED closed-but-not-ready, 1 blocker:
+  - DH-E-SANDBOX-7 [Linux (E1)]: result "not run (s17 job not dispatched)": not run counts as open (M2-C-2)

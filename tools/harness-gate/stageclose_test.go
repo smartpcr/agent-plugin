@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -95,12 +96,152 @@ func TestStageClosureExitCodes(t *testing.T) {
 	}
 }
 
+// TestStageClosureS17Golden is the DH-S-17 acceptance close (implementation-plan Stage
+// 7.7, M2-C-2, M2-DOD-3): ready then close, without --built, over the four record
+// states. closed_not_ready (one row not run, status closed) is refused
+// closed-but-not-ready.
+func TestStageClosureS17Golden(t *testing.T) {
+	trees := []string{"open_not_ready", "open_ready", "closed_ready", "closed_not_ready"}
+	var got strings.Builder
+	for _, tree := range trees {
+		for _, sub := range []string{"ready", "close"} {
+			root := closureTree(t, filepath.Join("testdata", "closure", tree))
+			code, stdout, stderr := runClosureGate(t, sub, "--root", root, "--stage", "DH-S-17")
+			fmt.Fprintf(&got, "== %s: %s --stage DH-S-17 (exit %d)\n%s", tree, sub, code, stdout)
+			if stderr != "" {
+				fmt.Fprintf(&got, "stderr: %s", stderr)
+			}
+		}
+	}
+	golden := filepath.Join("testdata", "closure", "expected_s17.golden")
+	if *updateGolden {
+		if os.Getenv("CI") != "" {
+			t.Fatal("-update is refused under CI: regenerate the golden locally and review the diff")
+		}
+		if err := os.WriteFile(golden, []byte(got.String()), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := os.ReadFile(golden)
+	if err != nil {
+		t.Fatalf("read golden (run with -update locally to create it): %v", err)
+	}
+	if norm := strings.ReplaceAll(string(want), "\r\n", "\n"); norm != got.String() {
+		t.Errorf("DH-S-17 closure output differs from %s\n--- got\n%s--- want\n%s", golden, got.String(), norm)
+	}
+}
+
+// The DH-S-17 exit codes, asserted directly so a regenerated golden cannot flip a
+// refusal into a pass.
+func TestStageClosureS17ExitCodes(t *testing.T) {
+	cases := []struct {
+		tree, sub string
+		code      int
+		marker    string
+	}{
+		{"open_not_ready", "ready", 1, "NOT READY"},
+		{"open_ready", "ready", 0, ": ready;"},
+		{"closed_ready", "ready", 0, ": ready;"},
+		{"closed_not_ready", "ready", 1, "NOT READY"},
+		{"open_not_ready", "close", 1, "REFUSED " + closure.NotYetClosed},
+		{"open_ready", "close", 1, "REFUSED " + closure.NotYetClosed},
+		{"closed_ready", "close", 0, ": closed;"},
+		{"closed_not_ready", "close", 1, "REFUSED " + closure.ClosedButNotReady},
+	}
+	for _, c := range cases {
+		t.Run(c.tree+"/"+c.sub, func(t *testing.T) {
+			root := closureTree(t, filepath.Join("testdata", "closure", c.tree))
+			code, stdout, stderr := runClosureGate(t, c.sub, "--root", root, "--stage", "DH-S-17")
+			if code != c.code || !strings.Contains(stdout, c.marker) {
+				t.Errorf("exit %d, want %d; stdout must contain %q\nstdout:\n%s\nstderr:\n%s", code, c.code, c.marker, stdout, stderr)
+			}
+		})
+	}
+}
+
+// TestS17CopilotLegKept: the close of DH-S-17 reads a copilot-cli result for each of
+// DH-E-LLM-1, DH-E-LLM-3 and DH-E-VIEW-1 (M2-DEC-4). A failed leg is kept and does not
+// block (closed_ready records LLM-3's as failed); a missing or not-run leg does, even
+// while the claude-code leg of the same scenario passed.
+func TestS17CopilotLegKept(t *testing.T) {
+	const tree = "closed_ready"
+	recPath := filepath.FromSlash(closure.RecordPath(closure.DefaultStory, "DH-S-17"))
+	src, err := os.ReadFile(filepath.Join("testdata", "closure", tree, recPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.ReplaceAll(string(src), "\r\n", "\n"), "\n")
+	for _, id := range []string{"DH-E-LLM-1", "DH-E-LLM-3", "DH-E-VIEW-1"} {
+		prefix := "| " + id + " | copilot-cli | acceptance | recorded |"
+		idx := slices.IndexFunc(lines, func(l string) bool { return strings.HasPrefix(l, prefix) })
+		if idx < 0 {
+			t.Fatalf("fixture %s has no copilot-cli row of %s", tree, id)
+		}
+		edits := map[string][]string{
+			"missing": slices.Delete(slices.Clone(lines), idx, idx+1),
+			"not run": slices.Replace(slices.Clone(lines), idx, idx+1, prefix+" E1 runner:s17-linux |  | not run (copilot not signed in) |  |"),
+			"failed":  slices.Replace(slices.Clone(lines), idx, idx+1, prefix+" E1 runner:s17-linux | 0a1b2c3 | failed (route refused) | run-copilot |"),
+		}
+		for name, edited := range edits {
+			t.Run(id+"/"+name, func(t *testing.T) {
+				root := closureTree(t, filepath.Join("testdata", "closure", tree))
+				if err := os.WriteFile(filepath.Join(root, recPath), []byte(strings.Join(edited, "\n")), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				code, stdout, _ := runClosureGate(t, "close", "--root", root, "--stage", "DH-S-17")
+				if name == "failed" {
+					if code != 0 {
+						t.Errorf("a failed recorded leg is kept and does not block: exit %d\n%s", code, stdout)
+					}
+					return
+				}
+				if code != 1 || !strings.Contains(stdout, "REFUSED "+closure.ClosedButNotReady) || !strings.Contains(stdout, id+" [copilot-cli]") {
+					t.Errorf("a %s copilot-cli leg of %s: exit %d, want 1 refused %s naming it\n%s", name, id, code, closure.ClosedButNotReady, stdout)
+				}
+			})
+		}
+	}
+}
+
+// TestRecordLiveS17 runs the two-step protocol on the committed DH-S-17 record: while
+// it reads open, close is refused not-yet-closed; once it reads closed, ready and close
+// both exit 0 (implementation-plan Stage 7.7).
+func TestRecordLiveS17(t *testing.T) {
+	root := filepath.Join("..", "..")
+	recPath := filepath.Join(root, filepath.FromSlash(closure.RecordPath(closure.DefaultStory, "DH-S-17")))
+	if _, err := os.Stat(recPath); err != nil {
+		t.Skipf("not run inside the repository: %v", err)
+	}
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := closure.ReadRecord(abs, closure.DefaultStory, "DH-S-17")
+	if err != nil {
+		t.Fatal(err)
+	}
+	readyCode, readyOut, _ := runClosureGate(t, "ready", "--root", root, "--stage", "DH-S-17")
+	closeCode, closeOut, _ := runClosureGate(t, "close", "--root", root, "--stage", "DH-S-17")
+	switch rec.Status {
+	case closure.StatusOpen:
+		if closeCode != 1 || !strings.Contains(closeOut, "REFUSED "+closure.NotYetClosed) {
+			t.Errorf("open record: close exit %d, want 1 refused %s\n%s", closeCode, closure.NotYetClosed, closeOut)
+		}
+	case closure.StatusClosed:
+		if readyCode != 0 || closeCode != 0 {
+			t.Errorf("closed record: ready exit %d, close exit %d; want both 0\n%s%s", readyCode, closeCode, readyOut, closeOut)
+		}
+	default:
+		t.Errorf("status line reads %q; want open or closed", rec.StatusValue)
+	}
+}
+
 func TestStageClosureUsage(t *testing.T) {
 	root := closureTree(t, filepath.Join("testdata", "closure", "open_ready"))
 	if code, _, _ := runClosureGate(t, "ready", "--root", root, "--stage", "S16"); code != 2 {
 		t.Errorf("a bad --stage exits %d, want 2", code)
 	}
-	if code, stdout, _ := runClosureGate(t, "ready", "--root", root, "--stage", "DH-S-17"); code != 1 || !strings.Contains(stdout, "not found") && !strings.Contains(stdout, "no such file") && !strings.Contains(stdout, "cannot find") {
+	if code, stdout, _ := runClosureGate(t, "ready", "--root", root, "--stage", "DH-S-18"); code != 1 || !strings.Contains(stdout, "not found") && !strings.Contains(stdout, "no such file") && !strings.Contains(stdout, "cannot find") {
 		t.Errorf("a missing record exits %d, want 1 naming it; stdout:\n%s", code, stdout)
 	}
 	if code, _, stderr := runClosureGate(t, "close", "--root", root, "--stage", "DH-S-16"); code != 2 || !strings.Contains(stderr, "--built") {
