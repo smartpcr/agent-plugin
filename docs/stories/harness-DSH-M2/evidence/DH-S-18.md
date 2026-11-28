@@ -32,7 +32,7 @@ An acceptance step is ticked only by its scenarios; the commit is the one the sc
 | Step | Deliverable | Commit | Notes |
 | --- | --- | --- | --- |
 | 18.1 | DH-E-TOOLCHAIN-2 | | not run; blocked, see [Stage 8.2 blockers](#stage-82-blockers) |
-| 18.2 | DH-E-HOST-4 | | |
+| 18.2 | DH-E-HOST-4 | | not run; blocked, see [Stage 8.3 blockers](#stage-83-blockers) |
 | 18.3 | DH-E-EXEC-1, DH-E-EXEC-10 | | |
 | 18.4 | DH-E-NATIVESYSTEM-1 to -4, DH-E-SANDBOX-1 | | |
 | 18.5 | DH-E-FS-1, DH-E-FS-2 | | |
@@ -51,8 +51,8 @@ The 19 scenarios of the steps, one row per operating-system variant (M2-DOD-4). 
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | DH-E-TOOLCHAIN-2 | Linux (WSL) | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
 | DH-E-TOOLCHAIN-2 | Windows | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
-| DH-E-HOST-4 | Linux (WSL) | acceptance | required | E2 | | not run (stage not started) | |
-| DH-E-HOST-4 | Windows | acceptance | required | E2 | | not run (stage not started) | |
+| DH-E-HOST-4 | Linux (WSL) | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1; no crash component, see Stage 8.3 blockers) | |
+| DH-E-HOST-4 | Windows | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1; no crash component, see Stage 8.3 blockers) | |
 | DH-E-HOST-4 | macOS | acceptance | required | | | out of scope (platforms-windows-wsl) | |
 | DH-E-EXEC-1 | Linux (E2) | acceptance | required | E2 | | not run (stage not started) | |
 | DH-E-EXEC-10 | Linux (E2, over SSH) | acceptance | required | E2 | | not run (stage not started) | |
@@ -138,6 +138,46 @@ When it runs, each TOOLCHAIN-2 row takes the run's commit, `E2 runner:<name>` (o
 SHA-256 of the binary it executed and the run id. The six checksums go into
 [Rehearsal binaries](#rehearsal-binaries-step-181) below, and every later S18 row records the SHA-256 of
 the binary it ran, which must be one of them.
+
+## Stage 8.3 blockers
+
+implementation-plan Stage 8.3 (impl.md 18.2, `DH-E-HOST-4` on Linux and Windows; "reaches the UI" is
+the readiness probe answering until S22, M2-DEC-6) was taken up on `7b5133d` and could not run.
+Nothing below is evidence of a run: both HOST-4 rows stay `not run` and are owed. Each open blocker on
+its own stops the run:
+
+| Blocker | Seen | What clears it |
+| --- | --- | --- |
+| `harness-gate entry` exits 1: harness:DSH-M1 is not closed (M2-DEC-1), as for [Stage 8.2](#stage-82-blockers). | `GOWORK=off go -C tools/harness-gate run . entry --root ../..` on `7b5133d`: 12 blockers, exit 1 | M1 closure merges and `entry` exits 0 |
+| No rehearsed binary: every later S18 step runs on the binaries of `DH-E-TOOLCHAIN-2` (impl.md DH-S-18 Sequence), and `variant-run` runs nothing without a verified `--rehearsal` directory. | Stage 8.2's rows read `not run` | Stage 8.2's blockers clear and its rehearsal runs on the merged commit |
+| The crash component of the Given does not exist. impl.md DH-E-HOST-4 names "a test-only component, enabled by configuration, that can fail at load, panic in a goroutine, or trigger a runtime fault on request"; no such component is built, so `DSH_SCENARIO_HOST4_LAYER` has nothing to enable, and the `load`, `panic`, `fault` and twelve-failure legs fail on every variant. A goroutine panic or a runtime fault also never reaches the fatal path today: only `boot.Run`'s own goroutine recovers into `diag.Fatal`, and nothing uses `diag.Key`, so the Go runtime prints the panic (and `<home>/run/crash.txt`) and standard error names no report, which the legs require. | a search of `src/harness/internal` for a crash component and for `diag.Key` consumers: none outside `boot/steps.go`'s provider | operator answer to `s18-host4-crash-component`: a follow-up workstream builds the test-only component (its goroutine recovering into `diag.Fatal`, `debug.SetPanicOnFault` for the fault) behind a build tag or a configuration key that no shipped profile sets |
+| The run-time inputs are unset: the repository holds no `DSH_SCENARIO_HOST4_ARGS`, `_READY` or `_LAYER` variable, which the `s18` job passes from `vars`. | `gh variable list` on this repository: none of the three | set `DSH_SCENARIO_HOST4_ARGS=web;--no-open;--port;0` and `DSH_SCENARIO_HOST4_READY={bin} --home {home} status` (the values of the probes below; `sh -c` and `cmd /C` both run it), and `_LAYER` once the component exists |
+
+Cleared on this stage's branch (they would have failed the scenario on every variant or left the plan's
+Given unproved; the commit is this stage's merge):
+
+| Defect | Seen on `7b5133d` | Fix |
+| --- | --- | --- |
+| The scenario had no killed host. implementation-plan Stage 8.3's Given is "a killed host", and TC-11b's crash is SIGKILL / `TerminateProcess`; `TestDyingHostLeavesReadableReport` only ran the crash component's three failures, each of which the host survives long enough to report itself. | `host_report_scenario_test.go`: no leg kills the host | a `killed` leg runs first: the host answers the readiness probe, its tree is killed with no grace (`StopTree(ctx, 0)`), and the next start must print the unclean-exit line naming a report under `<home>/reports` with `--safe`; the report must be owner-only (`home.CheckPrivateFile`) and name the unclean exit of the killed pid |
+| A missing layer failed the whole scenario before any leg ran: `need(DSH_SCENARIO_HOST4_LAYER)` was the first line, so neither the safe-mode leg nor a killed host could be seen without the crash component. | a run without `_LAYER`: `DSH_SCENARIO_HOST4_LAYER is not set`, no subtest run | the layer is read by the legs that use it (`load`, `panic`, `fault`, twelve failures), which still fail without it; the scenario still fails, never skips (DH-O-15) |
+| On Windows the web host could not start on the scenario's home: `t.TempDir()` under the test's long name put `<home>/run/web-<id>.sock` past the Unix socket path bound (108 bytes), and `host.launch` failed `bind: invalid argument`, so no start ever answered. | Windows, `-run TestDyingHostLeavesReadableReport`: `listen unix C:\Users\...\TestDyingHostLeavesReadableReport45692014\001\home\run\web-919f83cf77ce.sock: bind: invalid argument`; `killed` and `safe mode` timed out after 30 s | the home lives under `os.MkdirTemp("", "dsh-h4-")` (`host4Dir`), as `internal/boot`'s `shortHome` does; removal is retried for ten seconds while a killed process lets go of its files |
+| The readiness probe could not name the binary under test, so an operator had to hard-code a path that `DSH_BIN` or the rehearsal hand-off changes. | `DSH_SCENARIO_HOST4_READY` expanded only `{home}` | `{bin}` expands to the binary the scenario runs |
+
+Probes, not evidence (M2-DEC-1; a modified tree): with `DSH_SCENARIO_HOST4_ARGS=web;--no-open;--port;0`,
+`DSH_SCENARIO_HOST4_READY={bin} --home {home} status` and no `_LAYER`, `go test -tags scenario -run
+TestDyingHostLeavesReadableReport ./internal/testkit/scenarios/` on this branch's edits over `7b5133d`
+passed `killed` and `safe mode reaches the UI` and failed the four crash-component legs on
+`DSH_SCENARIO_HOST4_LAYER is not set`, on Windows native (a Windows workstation, scenario build
+`3017edcf...`) and on Ubuntu 24.04 under WSL2 (kernel `6.18.58.1-microsoft-standard-WSL2`, `DSH_BIN` built
+with `-buildvcs=false` from the Windows checkout, scenario build `997f1512...`). By hand on Windows, the
+restart after `TerminateProcess` printed `dsh: the host of http://127.0.0.1:64675 (process 29296) did not
+stop cleanly; report: <home>\reports\report-20261128T063346.772282000Z-29296.txt; start with --safe (dsh
+--safe web) ...`, the report's ACL held only the user, SYSTEM and Administrators, and `dsh --safe web` was
+`live` in `dsh status`.
+
+When it runs, each HOST-4 row takes the run's commit, `E2 runner:<name>` (or `E2 wsl:<host>/<distro>`),
+`passed` only if every leg of `TestDyingHostLeavesReadableReport` passed, and in Artifacts the SHA-256 of
+the binary it ran (one of the [rehearsal binaries](#rehearsal-binaries-step-181)) and the run id.
 
 ## Evidence record (impl.md sec. 7.3)
 
