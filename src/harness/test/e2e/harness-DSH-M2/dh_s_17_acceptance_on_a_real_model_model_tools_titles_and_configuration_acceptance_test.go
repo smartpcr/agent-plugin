@@ -132,6 +132,11 @@ func s74StandIn(role string) int {
 	}
 	n := s74Count("runs")
 	_, _ = io.ReadAll(os.Stdin)
+	if i := slices.Index(args, "--system-prompt-file"); i >= 0 && i+1 < len(args) {
+		if sys, err := os.ReadFile(args[i+1]); err == nil {
+			_ = os.WriteFile(filepath.Join(os.Getenv(s74RecordEnv), "system-"+strconv.Itoa(n)), sys, 0o600)
+		}
+	}
 	cwd, _ := os.Getwd()
 	flag := "--mcp-config"
 	if role == "copilot" {
@@ -411,16 +416,28 @@ func s74Finish(chunks []vocab.Chunk) vocab.Finish {
 // ---- Scenario 1: the two-route legs ----
 
 type s74Result struct {
-	Route, Leg, Err string
+	Source, Route, Leg, Err string
 }
+
+const (
+	s74Ephemeral = "ephemeral stand-in"
+	s74Provided  = "provided signed-in client"
+)
 
 type s74State struct {
 	results []s74Result
+
+	// The scenario's client instance: the provided signed-in clients when every
+	// S17 input of its live tests is set, else ephemeral stand-ins.
+	provided bool
+	tests    []string
+	liveRun  bool
 
 	// TOOLS-1
 	ws     string
 	before map[string][]byte
 	events []event.Event
+	tools  *s74Rig
 
 	// LOADER-1
 	ldr      *loader.Service
@@ -430,12 +447,70 @@ type s74State struct {
 	log      []string
 	reloaded chan struct{}
 	rejected chan error
+	h        *s74Harness
+	rig      *s74Rig
 }
 
 func (s *s74State) note(line string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.log = append(s.log, line)
+}
+
+// givenInstance picks the scenario's client instance (the proof strategy
+// service:model-route-claude-code): with every S17 input of tests set it is the
+// provided signed-in clients, which must be installed; with none set it stands up
+// an ephemeral stand-in client per route and checks it answers the route's
+// version probe; a partial set fails and names what is missing.
+func (s *s74State) givenInstance(routes, list string) error {
+	s.tests = strings.Split(list, ",")
+	var set, missing []string
+	for _, t := range s.tests {
+		if _, ok := s74LiveScenario[t]; !ok {
+			return fmt.Errorf("%s is not a DH-S-17 scenario test", t)
+		}
+		for _, name := range s74LiveInputs[t] {
+			if strings.TrimSpace(os.Getenv(name)) == "" {
+				missing = append(missing, name)
+			} else {
+				set = append(set, name)
+			}
+		}
+	}
+	if len(set) > 0 && len(missing) > 0 {
+		return fmt.Errorf("the S17 inputs are partly set: %s unset while %s are set", strings.Join(missing, ", "), strings.Join(set, ", "))
+	}
+	s.provided = len(set) > 0
+	for _, name := range strings.Split(routes, ",") {
+		id, ok := s74Routes[name]
+		if !ok {
+			return fmt.Errorf("%s is not a client route", name)
+		}
+		if s.provided {
+			if id == claudecode.RouteID {
+				if _, err := exec.LookPath(claudecode.Program); err != nil {
+					return fmt.Errorf("the provided claude-code client is not installed: %v", err)
+				}
+			}
+			continue
+		}
+		r, err := s74NewRig(id, nil, "text")
+		if err != nil {
+			return err
+		}
+		rt, err := s74Runtime(r)
+		if err != nil {
+			return err
+		}
+		if _, err := rt.Prepare(s74Bg, r.id, r.model, vocab.Controls{}); err != nil {
+			return fmt.Errorf("the ephemeral %s client did not come up: %v", name, err)
+		}
+		if n := r.count("probes"); n != 1 {
+			return fmt.Errorf("the ephemeral %s client was probed %d times, want 1", name, n)
+		}
+	}
+	s74OuterT.Logf("s74 instance for %s: %s", list, map[bool]string{true: s74Provided, false: s74Ephemeral}[s.provided])
+	return nil
 }
 
 func (s *s74State) givenRoutes(a, b string) error {
@@ -448,7 +523,13 @@ func (s *s74State) givenRoutes(a, b string) error {
 	return err
 }
 
+// runLegs runs the legs on the scenario's instance: the real scenario tests
+// against the provided clients, and the in-process legs over the real route
+// packages, whose clients are the stand-ins.
 func (s *s74State) runLegs() error {
+	if err := s.runLive(); err != nil {
+		return err
+	}
 	for _, name := range []string{"claude-code", "copilot-cli"} {
 		id := s74Routes[name]
 		other := copilot.RouteID
@@ -463,11 +544,11 @@ func (s *s74State) runLegs() error {
 			{"LLM-3 signed out", s74SignedOut}, {"LLM-3 output cap", s74OutputCap}, {"LLM-3 plain turn", s74Plain},
 			{"VIEW-1 generated title", s74TitleGenerated}, {"VIEW-1 failing title route", s74TitleFails},
 		} {
-			r := s74Result{Route: name, Leg: leg.name}
+			r := s74Result{Source: s74Ephemeral, Route: name, Leg: leg.name}
 			if err := leg.run(id, other); err != nil {
 				r.Err = err.Error()
 			}
-			s74OuterT.Logf("s74 kept result: %s / %s: %s", r.Route, r.Leg, cmpOr(r.Err, "pass"))
+			s74OuterT.Logf("s74 kept result: %s / %s / %s: %s", r.Source, r.Route, r.Leg, cmpOr(r.Err, "pass"))
 			s.results = append(s.results, r)
 		}
 	}
@@ -827,6 +908,15 @@ func s74TitleFails(_, other vocab.RouteID) error {
 	return nil
 }
 
+// s74Want is how many results route name must have from the scenario's
+// instance: the in-process legs, plus one per live test when provided.
+func (s *s74State) s74Want(legs int) int {
+	if s.provided {
+		return legs + len(s.tests)
+	}
+	return legs
+}
+
 func (s *s74State) thenRoutePassed(name string) error {
 	var failed []string
 	n := 0
@@ -834,12 +924,12 @@ func (s *s74State) thenRoutePassed(name string) error {
 		if r.Route == name {
 			n++
 			if r.Err != "" {
-				failed = append(failed, r.Leg+": "+r.Err)
+				failed = append(failed, r.Source+" / "+r.Leg+": "+r.Err)
 			}
 		}
 	}
-	if n != s74Legs || len(failed) > 0 {
-		return fmt.Errorf("%s ran %d of %d legs; failed:\n%s", name, n, s74Legs, strings.Join(failed, "\n"))
+	if want := s.s74Want(s74Legs); n != want || len(failed) > 0 {
+		return fmt.Errorf("%s ran %d of %d legs; failed:\n%s", name, n, want, strings.Join(failed, "\n"))
 	}
 	return nil
 }
@@ -851,34 +941,24 @@ func (s *s74State) thenRouteKept(name string) error {
 			n++
 		}
 	}
-	if n != s74Legs {
-		return fmt.Errorf("%s kept %d of %d leg results", name, n, s74Legs)
+	if want := s.s74Want(s74Legs); n != want {
+		return fmt.Errorf("%s kept %d of %d leg results", name, n, want)
 	}
 	return nil
 }
 
-// s74Live runs the real scenario tests where their S17 inputs are set: a
-// claude-code subtest must pass, a copilot-cli subtest must have a pass or fail
-// result (kept in the log), and a test without route legs must pass. With no
-// input set the in-process legs above are the proof; a partial set fails.
-func (s *s74State) thenLive(list string) error {
-	tests := strings.Split(list, ",")
-	var set, missing, scenarios []string
-	for _, t := range tests {
-		for _, name := range s74LiveInputs[t] {
-			if strings.TrimSpace(os.Getenv(name)) == "" {
-				missing = append(missing, name)
-			} else {
-				set = append(set, name)
-			}
-		}
-		scenarios = append(scenarios, s74LiveScenario[t])
-	}
-	if len(set) == 0 {
+// runLive runs the real scenario tests once on the provided clients and keeps
+// one result per test and route: a claude-code subtest's pass or fail, a
+// copilot-cli subtest's result whatever it is (a missing one is a failure), and
+// for a test without route legs its own result as the claude-code one.
+func (s *s74State) runLive() error {
+	if !s.provided || s.liveRun {
 		return nil
 	}
-	if len(missing) > 0 {
-		return fmt.Errorf("the S17 inputs are partly set: %s unset while %s are set", strings.Join(missing, ", "), strings.Join(set, ", "))
+	s.liveRun = true
+	scenarios := make([]string, len(s.tests))
+	for i, t := range s.tests {
+		scenarios[i] = s74LiveScenario[t]
 	}
 	mod, err := s17rModuleDir()
 	if err != nil {
@@ -887,7 +967,7 @@ func (s *s74State) thenLive(list string) error {
 	ctx, cancel := context.WithTimeout(s74Bg, s74LiveWithin+time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "go", "test", "-tags", "scenario", "-count=1", "-json", "-timeout", s74LiveWithin.String(),
-		"-run", "^("+strings.Join(tests, "|")+")$", "./internal/testkit/scenarios/")
+		"-run", "^("+strings.Join(s.tests, "|")+")$", "./internal/testkit/scenarios/")
 	cmd.WaitDelay = 10 * time.Second
 	cmd.Dir = mod
 	cmd.Env = s17rEnv("DSH_REQUIRE_SCENARIOS=" + strings.Join(scenarios, ","))
@@ -899,21 +979,63 @@ func (s *s74State) thenLive(list string) error {
 			action[ev.Test] = ev.Action
 		}
 	}
-	var problems []string
-	for _, t := range tests {
+	for _, t := range s.tests {
 		claude, hasLegs := action[t+"/claude-code"]
-		switch {
-		case !hasLegs && action[t] != "pass":
-			problems = append(problems, fmt.Sprintf("%s: %q, want pass", t, action[t]))
-		case hasLegs && claude != "pass":
-			problems = append(problems, fmt.Sprintf("%s/claude-code: %q, want pass", t, claude))
-		case hasLegs && action[t+"/copilot-cli"] != "pass" && action[t+"/copilot-cli"] != "fail":
-			problems = append(problems, fmt.Sprintf("%s/copilot-cli: %q, want a kept pass or fail", t, action[t+"/copilot-cli"]))
+		keep := func(route, got string, ok bool) {
+			r := s74Result{Source: s74Provided, Route: route, Leg: t}
+			if !ok {
+				r.Err = fmt.Sprintf("%q, want pass", got)
+			}
+			s74OuterT.Logf("s74 kept result: %s / %s / %s: %s", r.Source, r.Route, r.Leg, cmpOr(r.Err, got))
+			s.results = append(s.results, r)
 		}
-		s74OuterT.Logf("s74 live kept result: %s claude-code=%s copilot-cli=%s", t, action[t+"/claude-code"], action[t+"/copilot-cli"])
+		if !hasLegs {
+			keep("claude-code", action[t], action[t] == "pass")
+			continue
+		}
+		keep("claude-code", claude, claude == "pass")
+		co := action[t+"/copilot-cli"]
+		if co == "" {
+			keep("copilot-cli", co, false)
+			s.results[len(s.results)-1].Leg = ""
+		} else {
+			keep("copilot-cli", co, co == "pass")
+		}
 	}
-	if len(problems) > 0 {
-		return fmt.Errorf("on the S17 machine:\n%s\n%s", strings.Join(problems, "\n"), out)
+	if len(action) == 0 {
+		return fmt.Errorf("the live scenario tests reported nothing:\n%s", out)
+	}
+	return nil
+}
+
+// thenProof: the claude-code proof of TOOLS-1 and LOADER-1 is complete. The
+// in-process turns ran on the route's client (each one a client run), and on a
+// provided instance the live scenario tests passed too.
+func (s *s74State) thenProof(name string) error {
+	if err := s.runLive(); err != nil {
+		return err
+	}
+	if s.tools == nil || s.rig == nil {
+		return errors.New("the guarded turn and the configuration turns did not both run")
+	}
+	if got := s.tools.count("runs"); got != 2 {
+		return fmt.Errorf("the guarded turn ran the client %d times, want 2 (the tool step and the reply)", got)
+	}
+	if got := s.rig.count("runs"); got != s.turns {
+		return fmt.Errorf("the configuration turns ran the client %d times for %d turns", got, s.turns)
+	}
+	var failed []string
+	n := 0
+	for _, r := range s.results {
+		if r.Route == name {
+			n++
+			if r.Err != "" {
+				failed = append(failed, r.Leg+": "+r.Err)
+			}
+		}
+	}
+	if want := s.s74Want(0); n != want || len(failed) > 0 {
+		return fmt.Errorf("%s has %d of %d live results; failed:\n%s", name, n, want, strings.Join(failed, "\n"))
 	}
 	return nil
 }
@@ -1004,16 +1126,59 @@ func (s *s74State) whenGuardedTurn(a, b, c string) error {
 	if err != nil {
 		return err
 	}
-	rt, err := s74Runtime(r)
+	s.tools = r
+	h, err := s74Compose(s74Root(), r, "s-s74-tools", func(root *cordis.Context, svc tools.Service) error {
+		if _, err := svc.Register(root, tools.Define(tools.Spec[s74ReadIn, string]{Name: "scenario_read", Description: "Reads a workspace file.",
+			Run: func(_ context.Context, in s74ReadIn, _ tools.Run) (string, error) {
+				b, err := os.ReadFile(filepath.Join(s.ws, filepath.Base(in.Path)))
+				return string(b), err
+			}})); err != nil {
+			return err
+		}
+		if _, err := svc.Register(root, tools.Define(tools.Spec[s74WriteIn, string]{Name: "scenario_write", Description: "Writes a workspace file.",
+			Run: func(_ context.Context, in s74WriteIn, _ tools.Run) (string, error) {
+				return "written", os.WriteFile(filepath.Join(s.ws, filepath.Base(in.Path)), []byte(in.Text), 0o600)
+			}})); err != nil {
+			return err
+		}
+		_, err := svc.Decide(root, "s74.ask-write", func(_ context.Context, c tools.Call) tools.Decision {
+			if c.Name() == "scenario_write" {
+				return tools.Ask("writes need a person", "")
+			}
+			return tools.Allow()
+		})
+		return err
+	})
 	if err != nil {
 		return err
 	}
-	root := s74Root()
-	if err := s74Wait1(root.Use(scope.Component, cordis.None{})); err != nil {
+	if err := h.turn("read a and b, then write c"); err != nil {
 		return err
 	}
+	s.events, err = h.sess.Read(s74Bg, 0, 0)
+	return err
+}
+
+// s74Harness is the agent loop on one claude-code rig: scope and prompt
+// components, the guarded tool service with a denying answerer, a session in a
+// scratch SQLite store, the request seat and a driver.
+type s74Harness struct {
+	sess  session.Handle
+	inbox *agent.Inbox
+	drv   *driver.Driver
+}
+
+// s74Compose builds the harness on root; register adds tools and policies.
+func s74Compose(root *cordis.Context, r *s74Rig, id string, register func(*cordis.Context, tools.Service) error) (*s74Harness, error) {
+	rt, err := s74Runtime(r)
+	if err != nil {
+		return nil, err
+	}
+	if err := s74Wait1(root.Use(scope.Component, cordis.None{})); err != nil {
+		return nil, err
+	}
 	if err := s74Wait1(root.Use(prompt.Component, prompt.Defaults())); err != nil {
-		return err
+		return nil, err
 	}
 	var tab scope.Table
 	var ps *prompt.Service
@@ -1024,77 +1189,66 @@ func (s *s74State) whenGuardedTurn(a, b, c string) error {
 		ps, err = prompt.Key.Get(cx)
 		return err
 	})); err != nil {
-		return err
+		return nil, err
 	}
-	const id, ch = "s-s74-tools", human.Channel("ui")
-	ref := agent.Ref{Session: id, Incarnation: 1}
+	const ch = human.Channel("ui")
+	ref := agent.Ref{Session: session.ID(id), Incarnation: 1}
 	reg := human.New()
 	s74OuterT.Cleanup(reg.Close)
 	answerer.Register(s74OuterT, root, reg, ch, answerer.Deny())
 	if _, err := reg.Bind(root, ref, human.Binding{Channel: ch}); err != nil {
-		return err
+		return nil, err
 	}
 	svc := core.NewWith(root, tab, core.Config{Approval: approval.New(approval.Config{Registry: reg})})
-	if _, err := svc.Register(root, tools.Define(tools.Spec[s74ReadIn, string]{Name: "scenario_read", Description: "Reads a workspace file.",
-		Run: func(_ context.Context, in s74ReadIn, _ tools.Run) (string, error) {
-			b, err := os.ReadFile(filepath.Join(s.ws, filepath.Base(in.Path)))
-			return string(b), err
-		}})); err != nil {
-		return err
-	}
-	if _, err := svc.Register(root, tools.Define(tools.Spec[s74WriteIn, string]{Name: "scenario_write", Description: "Writes a workspace file.",
-		Run: func(_ context.Context, in s74WriteIn, _ tools.Run) (string, error) {
-			return "written", os.WriteFile(filepath.Join(s.ws, filepath.Base(in.Path)), []byte(in.Text), 0o600)
-		}})); err != nil {
-		return err
-	}
-	if _, err := svc.Decide(root, "s74.ask-write", func(_ context.Context, c tools.Call) tools.Decision {
-		if c.Name() == "scenario_write" {
-			return tools.Ask("writes need a person", "")
+	if register != nil {
+		if err := register(root, svc); err != nil {
+			return nil, err
 		}
-		return tools.Allow()
-	}); err != nil {
-		return err
 	}
 	st, err := s74Store()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	sess, err := session.NewService(root, st, session.Config{}).Create(s74Bg, nil, session.CreateOptions{Header: session.Header{ID: id}})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	s74OuterT.Cleanup(func() { _ = sess.Close(s74Bg) })
 	_, seat, err := request.New(root, request.Options{Table: tab,
 		Sessions: func(agent.Ref) (request.Log, error) { return sess, nil },
 		Scopes:   func(agent.Ref) (scope.Key, error) { return scope.Key{}, nil }})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	s74OuterT.Cleanup(seat.Dispose)
 	inbox, err := agent.OpenInbox(s74Bg, sess)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	mod, err := agent.OpenModel(s74Bg, sess, agent.ModelOptions{Initial: agent.ModelSelection{Route: claudecode.RouteID, Model: r.model}})
+	mod, err := agent.OpenModel(s74Bg, sess, agent.ModelOptions{Initial: agent.ModelSelection{Route: r.id, Model: r.model}})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	drv, err := driver.Start(driver.Options{Context: root, Agent: s74Agent{ref: ref}, Session: sess, Inbox: inbox, Model: mod, Models: rt, Tools: svc, Prompt: ps})
 	if err != nil {
-		return err
+		return nil, err
 	}
+	s74OuterT.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(s74Bg, s74Wait)
+		defer cancel()
+		_ = drv.Close(ctx)
+	})
+	return &s74Harness{sess: sess, inbox: inbox, drv: drv}, nil
+}
+
+// turn sends text as the next user turn and waits for the driver to go idle.
+func (h *s74Harness) turn(text string) error {
 	ctx, cancel := context.WithTimeout(s74Bg, s74Wait)
 	defer cancel()
-	defer func() { _ = drv.Close(ctx) }()
-	if _, err := inbox.Send(s74Bg, agent.ListNextTurn, agent.InboxMessage{Source: agent.SourceUser, Text: "read a and b, then write c"}); err != nil {
+	if _, err := h.inbox.Send(s74Bg, agent.ListNextTurn, agent.InboxMessage{Source: agent.SourceUser, Text: text}); err != nil {
 		return err
 	}
-	if err := drv.WaitIdle(ctx); err != nil {
-		return err
-	}
-	s.events, err = sess.Read(s74Bg, 0, 0)
-	return err
+	return h.drv.WaitIdle(ctx)
 }
 
 func s74Wait1(f interface{ Wait() error }, err error) error {
@@ -1230,10 +1384,17 @@ func (c s74Probe) Validate() error {
 }
 
 func (s *s74State) givenWatch(level string) error {
-	comp := cordis.Define("x.s74probe", func(_ *cordis.Context, c s74Probe) error {
+	comp := cordis.Define("x.s74probe", func(ctx *cordis.Context, c s74Probe) error {
+		ps, err := prompt.Key.Get(ctx)
+		if err != nil {
+			return err
+		}
+		if _, err := ps.Section(ctx, prompt.Section{Name: "s74.level", Order: prompt.OrderHarness, Text: s74LevelLine(c.Level), Literal: true}); err != nil {
+			return err
+		}
 		s.note("x.s74probe applied level=" + c.Level)
 		return nil
-	})
+	}, cordis.WithInject(prompt.Key.Name()))
 	cat, err := catalog.Build([]catalog.Item{{Name: "x.s74probe", Component: comp, Config: reflect.TypeFor[s74Probe]()}})
 	if err != nil {
 		return err
@@ -1242,6 +1403,12 @@ func (s *s74State) givenWatch(level string) error {
 	temphome.Write(s74OuterT, profile.LayerPath(dir, def.Name), "- insert:\n    - id: probe\n      name: x.s74probe\n      config:\n        level: "+level+"\n")
 	s.user = profile.UserLayerPath(dir)
 	root := testkit.Tree(s74OuterT)
+	if s.rig, err = s74NewRig(claudecode.RouteID, nil, "text"); err != nil {
+		return err
+	}
+	if s.h, err = s74Compose(root, s.rig, "s-s74-loader", nil); err != nil {
+		return err
+	}
 	if err := s74Wait1(root.Use(loader.Component, loader.Options{Resolver: cat})); err != nil {
 		return err
 	}
@@ -1281,21 +1448,57 @@ func (s *s74State) givenWatch(level string) error {
 	return s.turnSees(level)
 }
 
-// turnSees runs the next turn, which reads the probe's effective config.
+// s74LevelLine is the system-prompt line the probe contributes for level.
+func s74LevelLine(level string) string { return "Log level: " + level + "." }
+
+// turnSees runs the next harness turn on claude-code and checks the probe's
+// level reached it: in the system prompt the turn logged and in the system
+// prompt file the client was started with.
 func (s *s74State) turnSees(level string) error {
-	entry := s.ldr.Find("probe")
-	if entry == nil {
-		return errors.New("no probe entry")
-	}
-	cfg, ok := s.ldr.Fiber(entry).EffectiveConfig()
-	if !ok {
-		return errors.New("the probe holds no effective config")
-	}
 	s.turns++
-	got := cfg.(s74Probe).Level
+	if err := s.h.turn(fmt.Sprintf("turn %d", s.turns)); err != nil {
+		return fmt.Errorf("turn %d: %v", s.turns, err)
+	}
+	evs, err := s.h.sess.Read(s74Bg, 0, 0)
+	if err != nil {
+		return err
+	}
+	var logged string
+	ends := 0
+	for _, ev := range evs {
+		switch ev.Type() {
+		case event.SystemMessage.Name():
+			p, err := event.SystemMessage.As(ev)
+			if err != nil {
+				return err
+			}
+			logged = s74ResultText(p.Message)
+		case event.TurnEndType.Name():
+			p, err := event.TurnEndType.As(ev)
+			if err != nil {
+				return err
+			}
+			if ends++; ends == s.turns && p.Reason.Kind != event.ReasonCompleted {
+				return fmt.Errorf("turn %d ended %q, want completed", s.turns, p.Reason.Kind)
+			}
+		}
+	}
+	if ends != s.turns {
+		return fmt.Errorf("%d turns ended, want %d", ends, s.turns)
+	}
+	sent, err := os.ReadFile(filepath.Join(s.rig.dir, "system-"+strconv.Itoa(s.turns)))
+	if err != nil {
+		return fmt.Errorf("turn %d did not start the client with a system prompt: %v", s.turns, err)
+	}
+	got := "none"
+	for _, l := range []string{"debug", "info", "warn"} {
+		if strings.Contains(string(sent), s74LevelLine(l)) {
+			got = l
+		}
+	}
 	s.note(fmt.Sprintf("turn %d level=%s", s.turns, got))
-	if got != level {
-		return fmt.Errorf("turn %d sees level %q, want %q", s.turns, got, level)
+	if got != level || !strings.Contains(logged, s74LevelLine(level)) {
+		return fmt.Errorf("turn %d sent the client level %q and logged the system prompt %q, want level %q in both", s.turns, got, logged, level)
 	}
 	return nil
 }
@@ -1361,11 +1564,12 @@ func (s *s74State) thenRejected(level string) error {
 
 func InitializeScenario_dh_s_17_acceptance_on_a_real_model_model_tools_titles_and_configuration_acceptance(ctx *godog.ScenarioContext) {
 	s := &s74State{}
+	ctx.Step(`^the clients of "([^"]*)" for "([^"]*)": the provided signed-in clients when their S17 inputs are set, or else ephemeral stand-ins$`, s.givenInstance)
 	ctx.Step(`^both client routes "([^"]*)" and "([^"]*)" with a scratch store$`, s.givenRoutes)
 	ctx.Step(`^the LLM-1, LLM-3 and VIEW-1 legs run on each route$`, s.runLegs)
 	ctx.Step(`^every "([^"]*)" leg passed$`, s.thenRoutePassed)
 	ctx.Step(`^every "([^"]*)" leg has a kept result$`, s.thenRouteKept)
-	ctx.Step(`^on the S17 machine the live "([^"]*)" legs agree$`, s.thenLive)
+	ctx.Step(`^the "([^"]*)" proof is complete: every turn ran on the client and every live scenario passed$`, s.thenProof)
 	ctx.Step(`^the claude-code route over a workspace holding "([^"]*)"$`, s.givenWorkspace)
 	ctx.Step(`^the model reads "([^"]*)" and "([^"]*)" and asks to write "([^"]*)" through the guarded pipeline and the write is rejected$`, s.whenGuardedTurn)
 	ctx.Step(`^each tool/call precedes its tool/result in the order the model sent them$`, s.thenCallsInOrder)
