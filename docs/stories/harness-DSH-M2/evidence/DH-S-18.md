@@ -33,7 +33,7 @@ An acceptance step is ticked only by its scenarios; the commit is the one the sc
 | --- | --- | --- | --- |
 | 18.1 | DH-E-TOOLCHAIN-2 | | not run; blocked, see [Stage 8.2 blockers](#stage-82-blockers) |
 | 18.2 | DH-E-HOST-4 | | not run; blocked, see [Stage 8.3 blockers](#stage-83-blockers) |
-| 18.3 | DH-E-EXEC-1, DH-E-EXEC-10 | | |
+| 18.3 | DH-E-EXEC-1, DH-E-EXEC-10 | | not run; blocked, see [Stage 8.4 blockers](#stage-84-blockers) |
 | 18.4 | DH-E-NATIVESYSTEM-1 to -4, DH-E-SANDBOX-1 | | not run; blocked, see [Stage 8.5 confinement runs](#stage-85-confinement-runs-step-184) |
 | 18.5 | DH-E-FS-1, DH-E-FS-2 | | not run; blocked, see [Stage 8.6 blockers](#stage-86-blockers) |
 | 18.6 | DH-E-VIEW-5 | | not run; blocked, see [Stage 8.6 blockers](#stage-86-blockers) |
@@ -54,8 +54,8 @@ The 19 scenarios of the steps, one row per operating-system variant (M2-DOD-4). 
 | DH-E-HOST-4 | Linux (WSL) | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1; no crash component, see Stage 8.3 blockers) | |
 | DH-E-HOST-4 | Windows | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1; no crash component, see Stage 8.3 blockers) | |
 | DH-E-HOST-4 | macOS | acceptance | required | | | out of scope (platforms-windows-wsl) | |
-| DH-E-EXEC-1 | Linux (E2) | acceptance | required | E2 | | not run (stage not started) | |
-| DH-E-EXEC-10 | Linux (E2, over SSH) | acceptance | required | E2 | | not run (stage not started) | |
+| DH-E-EXEC-1 | Linux (E2) | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
+| DH-E-EXEC-10 | Linux (E2, over SSH) | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
 | DH-E-NATIVESYSTEM-1 | Linux (E2) | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | per machine: [Stage 8.5 confinement runs](#stage-85-confinement-runs-step-184) |
 | DH-E-NATIVESYSTEM-2 | Linux (E2) | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | per machine: [Stage 8.5 confinement runs](#stage-85-confinement-runs-step-184) |
 | DH-E-NATIVESYSTEM-3 | Linux (E2) | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | per machine: [Stage 8.5 confinement runs](#stage-85-confinement-runs-step-184) |
@@ -178,6 +178,36 @@ stop cleanly; report: <home>\reports\report-20261128T063346.772282000Z-29296.txt
 When it runs, each HOST-4 row takes the run's commit, `E2 runner:<name>` (or `E2 wsl:<host>/<distro>`),
 `passed` only if every leg of `TestDyingHostLeavesReadableReport` passed, and in Artifacts the SHA-256 of
 the binary it ran (one of the [rehearsal binaries](#rehearsal-binaries-step-181)) and the run id.
+
+## Stage 8.4 blockers
+
+implementation-plan Stage 8.4 (impl.md 18.3, `DH-E-EXEC-1` and `DH-E-EXEC-10` on team-kept VMs over
+SSH, including the machine whose user manager is stopped) was taken up on `7b5133d` and could not run.
+Nothing below is evidence of a run: both rows stay `not run` and are owed. A WSL result would count
+only as the WSL variant (M2-R-05), so none is offered for the `Linux (E2)` rows. Each open blocker on
+its own stops the run:
+
+| Blocker | Seen | What clears it |
+| --- | --- | --- |
+| `harness-gate entry` exits 1: harness:DSH-M1 is not closed (M2-DEC-1), as in [Stage 8.2 blockers](#stage-82-blockers). | `GOWORK=off go -C tools/harness-gate run . entry --root ../..` on `7b5133d`: 12 blockers, exit 1 | M1 closure merges and `entry` exits 0 |
+| No rehearsed binary: the `linux-e2:*` jobs of `harness-scenarios.yml` run on the `s18-rehearsal` job's directory, which Stage 8.2 left unbuilt (its replay blocker is open). | [Stage 8.2 blockers](#stage-82-blockers) | Stage 8.2's blockers clear and `s18-rehearsal` uploads `dsh-s18-rehearsal-linux` |
+| No lab: the repository has no `dsh-m2-s18` environment, so the variables `DSH_SCENARIO_EXEC1_*` and `DSH_SCENARIO_EXEC10_*` (the VM hosts, including `DSH_SCENARIO_EXEC10_SSH_NOMANAGER`) and the secrets `DSH_LAB_SSH_KEY` and `DSH_LAB_KNOWN_HOSTS` are unset; no team-kept VM is reachable from the workstation that took the stage up (the two SSH hosts it knows are personal machines and time out). | `gh api repos/smartpcr/agent-plugin/environments/dsh-m2-s18/variables`: HTTP 404; `ssh -o ConnectTimeout=10 <host> true` for both hosts: timed out | operator answer to `s18-exec-lab-machines`: the environment, the delegated cgroup v2 VM, the VM with its user manager stopped, and a scratch account on each |
+| The product does not say what both scenarios read (docs/harness/areas/execution.md, DH-E-EXEC-1 and DH-E-EXEC-10). The bash tool's result (`shellexec/tools.Result`) has no owner, limits or survivors field, so "owner: cgroup" and "limits: enforced" cannot appear; the owner kinds are named `control-group`, `job-object`, `process-group` (`subprocess.ControlGroup` and siblings), not `cgroup`/`job`; no memory limit reaches a tree (`shellexec.Executor.Start` builds `subprocess.Spec` without `Limits`; neither the bash input nor `bash.Config` carries one; only `subprocess/limits.go` writes `memory.max`); the host announces its owner only on a fallback (`boot/steps.go`), never the delegated scope (`subprocess.DelegatedScope` is read only by tests), and that line has no `warn` word, which both scenarios' fallback pattern requires; no CLI path runs the bash tool without a model turn. These belong to build stage DH-S-6 and are past this step's boundary. | reading the code on `7b5133d` against the scenarios' assertions | operator answer to `s18-exec-product-gaps` |
+
+Cleared on this stage's branch (each would have failed its scenario on every variant; the commit is
+this stage's merge):
+
+| Defect | Seen on `7b5133d` | Fix |
+| --- | --- | --- |
+| `TestLinuxSSHLoginDelegatedScopeOwnsTree` (DH-E-EXEC-10) set `GOOS`/`GOARCH` before `scenario.Bin`, which then ignores `DSH_BIN` and cross-builds `./cmd/dsh`: the VM never ran the rehearsal's binary (impl.md 18.1), and the row could record no manifest SHA-256. | `scenario.Bin` returns `DSH_BIN` only when no build variable is set | the scenario copies `dsh-linux-<arch>` (the VM's `uname -m`) from the rehearsal directory beside `DSH_BIN`, checked against `rehearsal.sha256`, and logs its SHA-256; with no manifest (absent, not unreadable: an unreadable one fails) it uses `DSH_BIN` only when the runner is `linux/<arch>`, and fails otherwise; without `DSH_BIN` (development) it cross-builds as before (`exec10Binary`, `TestExec10PickRehearsalBinary`) |
+| `TestLinuxWholeProcessTreeIsKilled` (DH-E-EXEC-1) checked the runner itself (local `/proc`, cgroup directories, fixtures, the binary built on the runner) and ran its no-cgroup clause in a container, while impl.md 18.3 runs it on the team-kept VMs over SSH: on `linux-e2:*` it would have tested `dsh-e2-controller`, not the VM. | `exec_tree_scenario_test.go` on `7b5133d`: `os.ReadFile("/proc/<pid>/stat")`, `os.Stat` of each cgroup, `DSH_SCENARIO_EXEC1_NOCGROUP` | every clause runs on the VM over SSH, on the machine set variants.md gives EXEC-1 and EXEC-10 (`DSH_SCENARIO_EXEC10_SSH` for clauses 1 and 2, `DSH_SCENARIO_EXEC10_SSH_NOMANAGER`, no writable cgroup and no user manager, for clause 3): the VM's binary (`exec10Binary`), fixtures, pids, cgroups and log; `DSH_SCENARIO_EXEC1_START` runs detached from the SSH session; `DSH_SCENARIO_EXEC1_NOCGROUP` is no longer read (the s18 job still passes it; harmless) |
+| Every cleanup of both scenarios ran its SSH commands on `t.Context()`, which `testing` cancels just before the cleanups run: stopping the host, the leftover-scope check and the scratch removal would each have failed at once. | `exec10Machine.ssh` on `7b5133d` | a cleanup's command gets a fresh context bounded by two minutes (`exec10Context`, `TestExec10ContextLiveInCleanup`) |
+| EXEC-1's detached `nohup` start (the SIGKILL clause) entered the cleanup's kill list only after both fixture pids and `dsh.pid` were read: a launch that never became ready failed the clause and left dsh and its partial tree running on the VM. The synchronous clauses also dropped the pids they had found when one was missing. | `exec_tree_scenario_test.go` in this stage | `exec1Launch` starts the line under `setsid`, records the session leader in `start.pid`, and registers a sweep before any wait. The sweep kills the session's group plus every pid file of the step and `dsh.pid`, read on the target. `exec1Wait` records found pids before failing. Covered by `TestExec1LaunchSweepsHalfReadyLaunch` (portable) and `TestExec1SweepKillsHalfReadyLaunch` (Linux, real `sh`, passed under WSL). That test also caught dash's `kill` rejecting `--`. |
+
+When they run, the EXEC-1 row takes the run's commit, `E2 runner:<name>` and the variant's preflight
+(`systemctl --user` state, cgroup v2 and delegation), and the EXEC-10 row the same for each VM, the
+no-user-manager VM's row reporting the process-group fallback; Artifacts carry the SHA-256 of the
+binary the VM ran (one of the [Rehearsal binaries](#rehearsal-binaries-step-181)) and the run id.
 
 ## Stage 8.5 confinement runs (step 18.4)
 
