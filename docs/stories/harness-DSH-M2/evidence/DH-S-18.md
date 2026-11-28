@@ -32,15 +32,15 @@ An acceptance step is ticked only by its scenarios; the commit is the one the sc
 | Step | Deliverable | Commit | Notes |
 | --- | --- | --- | --- |
 | 18.1 | DH-E-TOOLCHAIN-2 | | not run; blocked, see [Stage 8.2 blockers](#stage-82-blockers) |
-| 18.2 | DH-E-HOST-4 | | |
+| 18.2 | DH-E-HOST-4 | | not run; blocked, see [Stage 8.3 blockers](#stage-83-blockers) |
 | 18.3 | DH-E-EXEC-1, DH-E-EXEC-10 | | |
 | 18.4 | DH-E-NATIVESYSTEM-1 to -4, DH-E-SANDBOX-1 | | |
 | 18.5 | DH-E-FS-1, DH-E-FS-2 | | not run; blocked, see [Stage 8.6 blockers](#stage-86-blockers) |
 | 18.6 | DH-E-VIEW-5 | | not run; blocked, see [Stage 8.6 blockers](#stage-86-blockers) |
 | 18.7 | DH-E-RIPGREP-1, DH-E-RIPGREP-2 | | |
 | 18.8 | DH-E-CHOKIDAR-1, DH-E-CHOKIDAR-2 | | |
-| 18.9 | DH-E-CONTEXT-2 | | |
-| 18.10 | DH-E-STORAGE-6 | | |
+| 18.9 | DH-E-CONTEXT-2 | | not run; blocked, see [Stage 8.8 blockers](#stage-88-blockers) |
+| 18.10 | DH-E-STORAGE-6 | | not run; blocked, see [Stage 8.8 blockers](#stage-88-blockers) |
 | 18.11 | DH-E-NODEFS-1 | | run last |
 
 ## Scenarios
@@ -51,8 +51,8 @@ The 19 scenarios of the steps, one row per operating-system variant (M2-DOD-4). 
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | DH-E-TOOLCHAIN-2 | Linux (WSL) | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
 | DH-E-TOOLCHAIN-2 | Windows | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
-| DH-E-HOST-4 | Linux (WSL) | acceptance | required | E2 | | not run (stage not started) | |
-| DH-E-HOST-4 | Windows | acceptance | required | E2 | | not run (stage not started) | |
+| DH-E-HOST-4 | Linux (WSL) | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1; no crash component, see Stage 8.3 blockers) | |
+| DH-E-HOST-4 | Windows | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1; no crash component, see Stage 8.3 blockers) | |
 | DH-E-HOST-4 | macOS | acceptance | required | | | out of scope (platforms-windows-wsl) | |
 | DH-E-EXEC-1 | Linux (E2) | acceptance | required | E2 | | not run (stage not started) | |
 | DH-E-EXEC-10 | Linux (E2, over SSH) | acceptance | required | E2 | | not run (stage not started) | |
@@ -80,10 +80,10 @@ The 19 scenarios of the steps, one row per operating-system variant (M2-DOD-4). 
 | DH-E-CHOKIDAR-2 | Linux (WSL) | acceptance | required | E2 | | not run (stage not started) | |
 | DH-E-CHOKIDAR-2 | Windows | acceptance | required | E2 | | not run (stage not started) | |
 | DH-E-CHOKIDAR-2 | macOS | acceptance | required | | | out of scope (platforms-windows-wsl) | |
-| DH-E-CONTEXT-2 | Linux (WSL) | acceptance | required | E2 | | not run (stage not started) | |
-| DH-E-CONTEXT-2 | Windows | acceptance | required | E2 | | not run (stage not started) | |
-| DH-E-STORAGE-6 | Linux (WSL) | acceptance | required | E2 | | not run (stage not started) | |
-| DH-E-STORAGE-6 | Windows | acceptance | required | E2 | | not run (stage not started) | |
+| DH-E-CONTEXT-2 | Linux (WSL) | acceptance | required | E2 | | not run (blocked: harness-gate entry fails, M2-DEC-1; the release build has no instruction-file component and no route, see Stage 8.8 blockers) | |
+| DH-E-CONTEXT-2 | Windows | acceptance | required | E2 | | not run (blocked: harness-gate entry fails, M2-DEC-1; the release build has no instruction-file component and no route, see Stage 8.8 blockers) | |
+| DH-E-STORAGE-6 | Linux (WSL) | acceptance | required | E2 | | not run (blocked: harness-gate entry fails, M2-DEC-1; dsh cannot seed an attachment or a spill file, see Stage 8.8 blockers) | |
+| DH-E-STORAGE-6 | Windows | acceptance | required | E2 | | not run (blocked: harness-gate entry fails, M2-DEC-1; dsh cannot seed an attachment or a spill file, see Stage 8.8 blockers) | |
 | DH-E-STORAGE-6 | macOS | acceptance | required | | | out of scope (platforms-windows-wsl) | |
 | DH-E-NODEFS-1 | Linux guest | acceptance | required | E2 | | not run (stage not started) | |
 | DH-E-NODEFS-1 | Windows guest | acceptance | required | E2 | | not run (stage not started) | |
@@ -221,3 +221,5 @@ Not yet recorded: the before-and-after comparison the stage names, or what was r
 ### Open items
 
 Manual checks: none count here (impl.md DH-S-18).
+
+Owner answers owed: the three [Stage 8.8 open questions](#open-questions-stage-88).

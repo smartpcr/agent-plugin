@@ -1,7 +1,9 @@
 # DH-S-18 manual runbook: the two-account machine (DH-E-STORAGE-6)
 
 Status: **runbook written (implementation-plan Stage 8.1), not run.** Nothing in this file
-is evidence until the record below is filled from a real run. The result goes to the
+is evidence until the record below is filled from a real run. Stage 8.8 took it up on
+`7b5133d` and could not run it: see [Stage 8.8 blockers](DH-S-18.md#stage-88-blockers)
+(no dsh path seeds an attachment or a spill file; the home has no `cache/`). The result goes to the
 `linux-wsl:two-account` and `windows-host:two-account` rows of [DH-S-18.md](DH-S-18.md);
 the variants are listed in [variants.md](variants.md).
 
