@@ -305,6 +305,11 @@ func TestNodefsJudgesAcksReadAfterTheirRoundWasJudged(t *testing.T) {
 			if strings.Contains(log, " ack vm=vm1 round=2 version=1000") || rec.last("vm1") != 2 {
 				t.Errorf("a late acknowledgement counted in round 2 (acked %d):\n%.2000s", rec.last("vm1"), log)
 			}
+			// The log ends with round 2 read, after round 1's fail: a shard from 3
+			// must not resume the failed run.
+			if _, err := openNodefsRecorder(t, "127.0.0.1:0", logPath, []string{"vm1"}, 3, 4); err == nil || !strings.Contains(err.Error(), `"fail round 1" of vm1: the run failed`) {
+				t.Errorf("a shard continuing a run that failed late opened: %v", err)
+			}
 		})
 	}
 }
@@ -405,6 +410,24 @@ func TestNodefsShardContinuesTheLog(t *testing.T) {
 	}
 	if _, err := openNodefsRecorder(t, "127.0.0.1:0", failed, []string{"vm1"}, 3, 4); err == nil {
 		t.Error("a shard after a failed round opened")
+	}
+	// A fail line before a later read still refuses; only a fresh run's start
+	// clears it.
+	lateFail := "1 t start rounds=1-100 vms=vm1\n2 t read vm=vm1 round=1 version=3 acked=3\n3 t fail vm=vm1 round=1 acked=9: late\n4 t read vm=vm1 round=2 version=4 acked=4\n"
+	if err := os.WriteFile(failed, []byte(lateFail), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := openNodefsRecorder(t, "127.0.0.1:0", failed, []string{"vm1"}, 3, 4); err == nil || !strings.Contains(err.Error(), `"fail round 1"`) {
+		t.Errorf("a shard after a late failure opened: %v", err)
+	}
+	fresh := lateFail + "5 t start rounds=1-2 vms=vm1\n6 t read vm=vm1 round=1 version=5 acked=5\n7 t ack vm=vm1 round=2 version=6\n8 t read vm=vm1 round=2 version=6 acked=6\n"
+	if err := os.WriteFile(failed, []byte(fresh), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := openNodefsRecorder(t, "127.0.0.1:0", failed, []string{"vm1"}, 3, 4); err != nil {
+		t.Errorf("a shard after a fresh, passing run refused: %v", err)
+	} else if got := r.last("vm1"); got != 6 {
+		t.Errorf("the shard after a fresh run starts from %d, want 6", got)
 	}
 
 	// A shard stopped after round 41's cut, before its read: the file on the

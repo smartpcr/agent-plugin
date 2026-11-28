@@ -218,7 +218,10 @@ machine cannot cut its own power, so no `service:os-process` substitute exists.
    from the log and continues its sequence. A shard stopped after a round's `round` or `cut`
    line, before its `read`, cannot be continued: that round's file is unjudged evidence a
    new writer would replace, so keep the overlay, judge its file by hand against the log's
-   last `ack`, record it, and rerun all rounds on a fresh overlay. Record each shard's run.
+   last `ack`, record it, and rerun all rounds on a fresh overlay. A run with any `fail`
+   line, even one logged after a later `read` (an acknowledgement read late), cannot be
+   continued either: keep the overlay of the guest it names and rerun all rounds on a fresh
+   overlay (a new `start rounds=1-...` line). Record each shard's run.
 6. **Clean up.** After the last shard, delete each passing overlay, its guest definition
    and disk. Keep the recorder's version log `<report>.detail` and the report `<report>`
    (both under `DSH_SCENARIO_REPORT`; deleting the `.detail` file discards the

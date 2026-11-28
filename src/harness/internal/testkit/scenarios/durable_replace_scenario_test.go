@@ -314,14 +314,18 @@ func openNodefsRecorder(t testing.TB, listen, logPath string, vms []string, from
 // continueLog takes the acknowledged versions of a sharded run from the log at
 // path, refusing unless the log ends each of vms with round from-1 read: a shard
 // neither skips a round, follows a failed one, nor resumes after one interrupted
-// before its read (a round or cut line last). The run's lines start at its
-// last "start rounds=1-..." line; the sequence continues the log's.
+// before its read (a round or cut line last). Any fail line of the run refuses
+// it, wherever it stands: a late acknowledgement fails a round already read. The
+// run's lines start at its last "start rounds=1-..." line, the only boundary
+// that clears a failure; the sequence continues the log's.
 func (r *nodefsRecorder) continueLog(path string, vms []string, from int) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("rounds from %d continue a sharded run, whose version log is unreadable: %w", from, err)
 	}
 	acked, ended := map[string]int{}, map[string]string{}
+	failed := "" // the run's first fail line: sticky until a fresh run starts
+	failedVM := ""
 	for _, line := range strings.Split(string(data), "\n") {
 		f := strings.Fields(line)
 		if len(f) < 3 {
@@ -341,6 +345,7 @@ func (r *nodefsRecorder) continueLog(path string, vms []string, from int) error 
 		case "start":
 			if strings.HasPrefix(kv["rounds"], "1-") {
 				acked, ended = map[string]int{}, map[string]string{}
+				failed, failedVM = "", ""
 			}
 		case "ack", "seed":
 			v := kv["version"]
@@ -354,7 +359,16 @@ func (r *nodefsRecorder) continueLog(path string, vms []string, from int) error 
 			// A round or cut after the last read is a round left unjudged: its
 			// file, written before a cut, is the evidence a new writer would replace.
 			ended[vm] = f[2] + " round " + kv["round"]
+			// A failure is final for the run, even one logged before a later read
+			// (an acknowledgement read late, after its round was judged).
+			if f[2] == "fail" && failed == "" {
+				failed, failedVM = "fail round "+kv["round"], vm
+			}
 		}
+	}
+	if failed != "" {
+		return fmt.Errorf("rounds from %d continue a sharded run, but the version log %s records %q of %s: the run failed; keep the overlay of %s and rerun all rounds on a fresh overlay",
+			from, path, failed, failedVM, failedVM)
 	}
 	for _, vm := range vms {
 		if want := fmt.Sprintf("read round %d", from-1); ended[vm] != want {
