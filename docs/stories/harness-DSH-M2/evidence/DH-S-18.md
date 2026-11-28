@@ -34,7 +34,7 @@ An acceptance step is ticked only by its scenarios; the commit is the one the sc
 | 18.1 | DH-E-TOOLCHAIN-2 | | not run; blocked, see [Stage 8.2 blockers](#stage-82-blockers) |
 | 18.2 | DH-E-HOST-4 | | |
 | 18.3 | DH-E-EXEC-1, DH-E-EXEC-10 | | |
-| 18.4 | DH-E-NATIVESYSTEM-1 to -4, DH-E-SANDBOX-1 | | |
+| 18.4 | DH-E-NATIVESYSTEM-1 to -4, DH-E-SANDBOX-1 | | not run; blocked, see [Stage 8.5 confinement runs](#stage-85-confinement-runs-step-184) |
 | 18.5 | DH-E-FS-1, DH-E-FS-2 | | |
 | 18.6 | DH-E-VIEW-5 | | |
 | 18.7 | DH-E-RIPGREP-1, DH-E-RIPGREP-2 | | |
@@ -56,11 +56,11 @@ The 19 scenarios of the steps, one row per operating-system variant (M2-DOD-4). 
 | DH-E-HOST-4 | macOS | acceptance | required | | | out of scope (platforms-windows-wsl) | |
 | DH-E-EXEC-1 | Linux (E2) | acceptance | required | E2 | | not run (stage not started) | |
 | DH-E-EXEC-10 | Linux (E2, over SSH) | acceptance | required | E2 | | not run (stage not started) | |
-| DH-E-NATIVESYSTEM-1 | Linux (E2) | acceptance | required | E2 | | not run (stage not started) | |
-| DH-E-NATIVESYSTEM-2 | Linux (E2) | acceptance | required | E2 | | not run (stage not started) | |
-| DH-E-NATIVESYSTEM-3 | Linux (E2) | acceptance | required | E2 | | not run (stage not started) | |
-| DH-E-NATIVESYSTEM-4 | Linux (E2) | acceptance | required | E2 | | not run (stage not started) | |
-| DH-E-SANDBOX-1 | Linux (E2) | acceptance | required | E2 | | not run (stage not started) | |
+| DH-E-NATIVESYSTEM-1 | Linux (E2) | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | per machine: [Stage 8.5 confinement runs](#stage-85-confinement-runs-step-184) |
+| DH-E-NATIVESYSTEM-2 | Linux (E2) | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | per machine: [Stage 8.5 confinement runs](#stage-85-confinement-runs-step-184) |
+| DH-E-NATIVESYSTEM-3 | Linux (E2) | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | per machine: [Stage 8.5 confinement runs](#stage-85-confinement-runs-step-184) |
+| DH-E-NATIVESYSTEM-4 | Linux (E2) | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | per machine: [Stage 8.5 confinement runs](#stage-85-confinement-runs-step-184) |
+| DH-E-SANDBOX-1 | Linux (E2) | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | per machine: [Stage 8.5 confinement runs](#stage-85-confinement-runs-step-184) |
 | DH-E-FS-1 | Linux ext4 | acceptance | required | E2 | | not run (stage not started) | |
 | DH-E-FS-1 | Windows NTFS | acceptance | required | E2 | | not run (stage not started) | |
 | DH-E-FS-1 | macOS | acceptance | required | | | out of scope (platforms-windows-wsl) | |
