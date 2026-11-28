@@ -1251,8 +1251,13 @@ func (s *s76State) writeRow() error {
 }
 
 // prove runs DH-E-SANDBOX-7 with the stand-in on the head's current texts,
-// records it and writes the row: the merge candidate of runbook step C.
+// records it and writes the row: the merge candidate of runbook step C. It
+// rebuilds ./cmd/dsh from the head first, so the row's dsh sha256 is that of
+// a binary carrying the texts the row proves, including after an edit.
 func (s *s76State) prove() error {
+	if err := s.buildHead(); err != nil {
+		return err
+	}
 	if err := s.runStandIn(); err != nil {
 		return err
 	}
@@ -1260,6 +1265,30 @@ func (s *s76State) prove() error {
 		return err
 	}
 	return s.writeRow()
+}
+
+// buildHead builds ./cmd/dsh from the merge candidate's current commit into a
+// fresh s.dsh and checks that it carries each shipped text's bytes.
+func (s *s76State) buildHead() error {
+	s.dsh = s76Exe(filepath.Join(s76OuterT.TempDir(), "dsh"))
+	out, code, err := s76Exec(filepath.Join(s.head.dir, "src", "harness"), s76Env(), "go", "build", "-trimpath", "-o", s.dsh, "./cmd/dsh")
+	if err != nil || code != 0 {
+		return fmt.Errorf("go build ./cmd/dsh on the merge candidate: exit %d %v\n%s", code, err, out)
+	}
+	texts, err := s76Texts(s.head.dir)
+	if err != nil {
+		return err
+	}
+	bin, err := os.ReadFile(s.dsh)
+	if err != nil {
+		return err
+	}
+	for pl, f := range texts {
+		if !bytes.Contains(bin, []byte(f.text)) {
+			return fmt.Errorf("the dsh binary %s built from the merge candidate does not carry its %s text", s.dsh, pl)
+		}
+	}
+	return nil
 }
 
 func (s *s76State) givenMerged(texts, goldens, scenario, record string) error {
@@ -1280,11 +1309,6 @@ func (s *s76State) givenMerged(texts, goldens, scenario, record string) error {
 	}
 	if s.head, err = s76Cut(root); err != nil {
 		return err
-	}
-	s.dsh = s76Exe(filepath.Join(s76OuterT.TempDir(), "dsh"))
-	out, code, err := s76Exec(filepath.Join(s.head.dir, "src", "harness"), s76Env(), "go", "build", "-trimpath", "-o", s.dsh, "./cmd/dsh")
-	if err != nil || code != 0 {
-		return fmt.Errorf("go build ./cmd/dsh on the merge candidate: exit %d %v\n%s", code, err, out)
 	}
 	if err := s.prove(); err != nil {
 		return err
