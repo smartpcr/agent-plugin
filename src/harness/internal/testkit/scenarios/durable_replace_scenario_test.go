@@ -462,6 +462,10 @@ func (r *nodefsRecorder) serve(conn net.Conn) {
 // judgement, all under one hold of r.mu: an acknowledgement is either in the
 // bound or checked against the version judged when it is read (serve). The
 // round's writer is among those connections: its acknowledgement started the cut.
+// The writer publishes no version before the last is confirmed, so the file holds
+// at most one version past the bound; a newer one was published bypassing the
+// recorder (a writer started at boot, or acknowledging elsewhere), which would let
+// the judge miss lost versions, and fails.
 func (r *nodefsRecorder) judge(vm string, round int, data string) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -469,6 +473,10 @@ func (r *nodefsRecorder) judge(vm string, round int, data string) (int, error) {
 	n, err := nodefsJudge(data, acked)
 	if err != nil {
 		return n, err
+	}
+	if n > acked+1 {
+		return n, fmt.Errorf("the file holds version %d, but versions %d-%d were never acknowledged: the writer publishes at most one version past the acknowledged %d, so it bypassed the recorder's confirmation",
+			n, acked+1, n, acked)
 	}
 	for conn, j := range r.conns {
 		if j == nil {
@@ -516,6 +524,35 @@ func (r *nodefsRecorder) begin(vm string, round int) {
 	defer r.mu.Unlock()
 	r.round[vm] = round
 	r.writeLocked("round vm=%s round=%d", vm, round)
+}
+
+// The judge bounds the file from above too: at most one version past the
+// acknowledged one is a correct run; more were published bypassing the recorder.
+func TestNodefsJudgeRefusesVersionsPublishedPastTheConfirmation(t *testing.T) {
+	rec, err := openNodefsRecorder(t, "127.0.0.1:0", t.TempDir()+string(os.PathSeparator)+"nodefs.log", []string{"vm1"}, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.mu.Lock()
+	rec.acked["vm1"] = 5
+	rec.mu.Unlock()
+	for v, want := range map[int]string{
+		5: "",
+		6: "",
+		7: "versions 6-7 were never acknowledged",
+		9: "versions 6-9 were never acknowledged",
+	} {
+		_, err := rec.judge("vm1", 1, string(nodefsVersion(v)))
+		switch {
+		case want == "" && err != nil:
+			t.Errorf("version %d judged %v, want it to pass", v, err)
+		case want != "" && (err == nil || !strings.Contains(err.Error(), want)):
+			t.Errorf("version %d judged %v, want an error containing %q", v, err, want)
+		}
+	}
+	if err := rec.close(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // last is vm's highest acknowledged version.
