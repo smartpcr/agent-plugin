@@ -443,8 +443,13 @@ func (r *nodefsRecorder) serve(conn net.Conn) {
 		}
 		r.acked[vm] = max(r.acked[vm], n)
 		r.writeLocked("ack vm=%s round=%d version=%d", vm, r.round[vm], n)
+		logged := r.err == nil
 		r.mu.Unlock()
-		// Confirmed only once logged; a writer gone with its machine never reads it.
+		if !logged {
+			// Not durably logged: left unconfirmed; close reports r.err.
+			continue
+		}
+		// Confirmed only once logged and synced; a writer gone with its machine never reads it.
 		_ = conn.SetWriteDeadline(time.Now().Add(nodefsConfirmWithin))
 		if _, err := fmt.Fprintf(conn, "ok %d\n", n); err != nil {
 			r.record("unconfirmed vm=%s version=%d: %s", vm, n, strings.ReplaceAll(err.Error(), "\n", " "))
@@ -482,13 +487,20 @@ func (r *nodefsRecorder) violated() error {
 	return r.violation
 }
 
-// writeLocked appends one event to the log; r.mu is held.
+// writeLocked appends one event to the log and syncs it, so an event survives a
+// crash of the recorder's host once writeLocked returns with r.err nil; r.mu is
+// held.
 func (r *nodefsRecorder) writeLocked(format string, args ...any) {
 	if r.err != nil {
 		return
 	}
 	r.seq++
-	_, r.err = fmt.Fprintf(r.log, "%d %s "+format+"\n", append([]any{r.seq, time.Now().UTC().Format(time.RFC3339Nano)}, args...)...)
+	if _, r.err = fmt.Fprintf(r.log, "%d %s "+format+"\n", append([]any{r.seq, time.Now().UTC().Format(time.RFC3339Nano)}, args...)...); r.err != nil {
+		return
+	}
+	if err := r.log.Sync(); err != nil {
+		r.err = fmt.Errorf("syncing the recorder's version log: %w", err)
+	}
 }
 
 // record appends one event to the log.
