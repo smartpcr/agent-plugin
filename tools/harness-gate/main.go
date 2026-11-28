@@ -80,7 +80,8 @@
 //	                       src/harness/internal/world/sandbox/policy/text/
 //	                       unless DH-S-17.md holds a passed DH-E-SANDBOX-7 row
 //	                       with that file's SHA-256 (policytext.go)
-//	sandbox7-record --escalated linux=<n>[,...] [--lane s17] [--ci-run id]
+//	sandbox7-record --escalated linux=<n>[,...] | --attempt id --report file ...
+//	                [--go-test-log file ...] [--lane s17] [--ci-run id]
 //	                       the s17 job's DH-E-SANDBOX-7 acceptance record of
 //	                       the clean checkout: commit, each text's SHA-256 and
 //	                       escalations, written to evidence/runs/<id>.txt; it

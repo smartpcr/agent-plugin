@@ -253,25 +253,32 @@ func decode(t *testing.T, e protocol.Event, v any) {
 func (h *sdkHost) keepExport(t *testing.T, session string) {
 	t.Helper()
 	t.Cleanup(func() {
-		if !t.Failed() {
-			return
+		if t.Failed() {
+			h.export(t, session)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), sdkCall)
-		defer cancel()
-		var page protocol.SessionHistoryResult
-		if err := h.Client.Call(ctx, "session/history", protocol.SessionHistoryParams{SessionID: session, Limit: 5000}, &page); err != nil {
-			t.Logf("export of %s: %v", session, err)
-			return
-		}
-		f, err := os.CreateTemp("", "dsh-scenario-"+session+"-*.json")
-		if err != nil {
-			t.Logf("export of %s: %v", session, err)
-			return
-		}
-		defer f.Close()
-		_ = json.NewEncoder(f).Encode(page.Events)
-		t.Logf("kept the exported log of %s at %s", session, f.Name())
 	})
+}
+
+// export keeps the exported log of session in a temp file, whatever t's state;
+// a test whose failure is judged after its runs end (a threshold over many
+// runs) calls it while the host still runs.
+func (h *sdkHost) export(t testing.TB, session string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), sdkCall)
+	defer cancel()
+	var page protocol.SessionHistoryResult
+	if err := h.Client.Call(ctx, "session/history", protocol.SessionHistoryParams{SessionID: session, Limit: 5000}, &page); err != nil {
+		t.Logf("export of %s: %v", session, err)
+		return
+	}
+	f, err := os.CreateTemp("", "dsh-scenario-"+session+"-*.json")
+	if err != nil {
+		t.Logf("export of %s: %v", session, err)
+		return
+	}
+	defer f.Close()
+	_ = json.NewEncoder(f).Encode(page.Events)
+	t.Logf("kept the exported log of %s at %s", session, f.Name())
 }
 
 // writeLayer writes a configuration layer to a temp file and returns its path.

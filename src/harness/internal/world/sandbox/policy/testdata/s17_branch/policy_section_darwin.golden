@@ -1,0 +1,50 @@
+== mode read-only
+# Sandbox policy (macOS)
+
+This is the sandbox policy of your commands and file tools.
+
+- Mode: read-only: commands and file tools may read but not write
+- You may write nowhere.
+- Network: denied
+
+The sandbox decides what a call may do when the call runs; it never decides whether you should try. Work the task with your tools as you would without a sandbox. Do not refuse or skip a step because you expect the sandbox to deny it: make the call, and let the sandbox answer.
+
+When the sandbox refuses a call, the result says fs/sandbox-denied. That is not the end of the task. If the sandbox denies an action you need, retry that exact call once with sandbox_permissions set to a wider mode and a justification; a person decides, and only that one call is widened. Repeat the refused call with the same tool and the same arguments, and add:
+
+- sandbox_permissions: workspace-write, or danger-full-access when the write is outside the directories above
+- justification: one sentence saying what the call does and why the task needs it
+
+If the person declines, say which step could not be done and why, and go on with the rest of the task. Never report a step as done unless a tool call did it.
+
+On macOS, /tmp, /private/tmp, /private/var/folders and your home directory are writable only when they are listed above.
+== mode workspace-write
+# Sandbox policy (macOS)
+
+This is the sandbox policy of your commands and file tools.
+
+- Mode: workspace-write: commands and file tools may write only below the write roots
+- You may write below these directories:
+  - /Users/dev/proj (workspace)
+  - /Volumes/shared/out (grant)
+  - /Users/dev/Library/Caches/dsh/scratch/s-policy (scratch)
+- Network: denied
+
+The sandbox decides what a call may do when the call runs; it never decides whether you should try. Work the task with your tools as you would without a sandbox. Do not refuse or skip a step because you expect the sandbox to deny it: make the call, and let the sandbox answer.
+
+When the sandbox refuses a call, the result says fs/sandbox-denied. That is not the end of the task. If the sandbox denies an action you need, retry that exact call once with sandbox_permissions set to a wider mode and a justification; a person decides, and only that one call is widened. Repeat the refused call with the same tool and the same arguments, and add:
+
+- sandbox_permissions: danger-full-access
+- justification: one sentence saying what the call does and why the task needs it
+
+If the person declines, say which step could not be done and why, and go on with the rest of the task. Never report a step as done unless a tool call did it.
+
+On macOS, /tmp, /private/tmp, /private/var/folders and your home directory are writable only when they are listed above.
+== mode danger-full-access
+# Sandbox policy (macOS)
+
+This is the sandbox policy of your commands and file tools.
+
+- Mode: <<policy.FullAccessLabel>>
+- Network: allowed
+
+Nothing is wider than full access, so no call is refused by the sandbox and there is nothing to escalate.

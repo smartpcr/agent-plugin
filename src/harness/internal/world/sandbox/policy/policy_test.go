@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sync/atomic"
 	"testing"
@@ -101,8 +102,13 @@ func TestResolvePrecedence(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []sandbox.WriteRoot{{Path: w.P, Source: sandbox.SourceWorkspace}, {Path: w.G, Source: sandbox.SourceGrant}, {Path: w.Scratch, Source: sandbox.SourceScratch}}
-	if p.Mode() != sandbox.WorkspaceWrite || !slices.Equal(p.WriteRoots(), want) || !p.Network() || p.Require() != sandbox.RequireAny || p.TextVersion() != "" {
-		t.Fatalf("workspace-write policy = %s %v net=%v require=%q text=%q", p.Mode(), p.WriteRoots(), p.Network(), p.Require(), p.TextVersion())
+	// The version of this host's shipped text: none on main (M2-C-6).
+	wantText := ""
+	if text, err := policy.Text(runtime.GOOS); err == nil {
+		wantText = policy.TextVersion(text)
+	}
+	if p.Mode() != sandbox.WorkspaceWrite || !slices.Equal(p.WriteRoots(), want) || !p.Network() || p.Require() != sandbox.RequireAny || p.TextVersion() != wantText {
+		t.Fatalf("workspace-write policy = %s %v net=%v require=%q text=%q, want text %q", p.Mode(), p.WriteRoots(), p.Network(), p.Require(), p.TextVersion(), wantText)
 	}
 	for _, m := range []sandbox.Mode{sandbox.ReadOnly, sandbox.DangerFullAccess} {
 		p, err := r.Resolve(ctx, sandbox.Request{Session: sid, Mode: m})

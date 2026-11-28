@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -254,33 +255,266 @@ func readSandbox7Run(root, id string) (sandbox7Run, error) {
 	return run, nil
 }
 
-// runSandbox7Record is "harness-gate sandbox7-record [--root dir] --escalated
-// linux=<n>[,darwin=<n>,...] [--lane s17] [--ci-run id]": the s17 job's record of
-// a DH-E-SANDBOX-7 run on the checkout at root. Exit 0 when every text met the
-// bar, 1 when the run is recorded failed, 2 when nothing is recorded.
+// multiFlag is a flag that may be given more than once.
+type multiFlag []string
+
+func (m *multiFlag) String() string     { return strings.Join(*m, ",") }
+func (m *multiFlag) Set(v string) error { *m = append(*m, v); return nil }
+
+// addCounts adds the "<platform>=<n>[,...]" counts of s, read from src, to
+// escalated; a platform named twice, here or by an earlier source, is refused.
+func addCounts(escalated map[string]int, src, s string) error {
+	for _, kv := range strings.Split(s, ",") {
+		k, v, ok := strings.Cut(strings.TrimSpace(kv), "=")
+		n, err := strconv.Atoi(v)
+		if !ok || err != nil || k == "" {
+			return fmt.Errorf("%s %q: want <platform>=<n>[,...]", src, s)
+		}
+		if _, dup := escalated[k]; dup {
+			return fmt.Errorf("%s names %s twice", src, k)
+		}
+		escalated[k] = n
+	}
+	return nil
+}
+
+// sandbox7Report is one DH-E-SANDBOX-7 report file (DSH_SCENARIO_REPORT of the
+// whole run or of one shard), as TestPolicyTextMakesTheModelEscalate writes it:
+//
+//	linux=<n>[,darwin=<n>,...]
+//	commit: <full sha of the checkout the binary was built from>
+//	attempt: <the attempt id the run was started under>
+//	text: <platform>.md sha256=<hex>      (one per text that ran)
+type sandbox7Report struct {
+	Counts, Commit, Attempt string
+	Texts                   map[string]string // platform -> sha256
+}
+
+// sandbox7DetailSuffix is scenario.DetailSuffix (src/harness/internal/testkit/
+// scenario): the report a scenario writes is DSH_SCENARIO_REPORT plus it.
+const sandbox7DetailSuffix = ".detail"
+
+// sandbox7ReportText is a report's text line.
+var sandbox7ReportText = regexp.MustCompile(`^text: ([a-z]+)\.md sha256=([0-9a-f]{64})$`)
+
+// readReport reads and parses one report file.
+func readReport(path string) (sandbox7Report, error) {
+	r := sandbox7Report{Texts: map[string]string{}}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return r, err
+	}
+	lines := strings.Split(strings.TrimRight(strings.ReplaceAll(string(b), "\r\n", "\n"), "\n"), "\n")
+	bad := func(why string) (sandbox7Report, error) {
+		return r, fmt.Errorf("--report %s: %s (want the counts line, then commit:, attempt: and one text: line per text that ran)", path, why)
+	}
+	if strings.HasPrefix(lines[0], "{") {
+		return r, fmt.Errorf("--report %s holds scenario rows, not the counts: the scenario writes them to %s%s, where scenario.Main points DSH_SCENARIO_REPORT while the tests run", path, path, sandbox7DetailSuffix)
+	}
+	if strings.ContainsAny(lines[0], ": ") || lines[0] == "" {
+		return bad(fmt.Sprintf("first line %q is not <platform>=<n>[,...]", lines[0]))
+	}
+	r.Counts = lines[0]
+	for _, line := range lines[1:] {
+		switch k, v, _ := strings.Cut(line, ": "); {
+		case k == "commit" && r.Commit == "" && policyFullCommit.MatchString(v):
+			r.Commit = v
+		case k == "attempt" && r.Attempt == "" && v != "":
+			r.Attempt = v
+		case sandbox7ReportText.MatchString(line):
+			m := sandbox7ReportText.FindStringSubmatch(line)
+			if _, dup := r.Texts[m[1]]; dup {
+				return bad("text " + m[1] + " named twice")
+			}
+			r.Texts[m[1]] = m[2]
+		default:
+			return bad(fmt.Sprintf("line %q", line))
+		}
+	}
+	if r.Commit == "" || r.Attempt == "" {
+		return bad("no commit: or attempt: line")
+	}
+	return r, nil
+}
+
+// sandbox7Provenance is the line the scenario logs naming its attempt and
+// commit; a go test log without it is not of that attempt.
+func sandbox7Provenance(attempt, commit string) string {
+	return fmt.Sprintf("sandbox7 provenance: attempt=%s commit=%s", attempt, commit)
+}
+
+// goTestPassed reports why the go test -v log at path is not a passed run of
+// the DH-E-SANDBOX-7 test (TestPolicyTextMakesTheModelEscalate, or one shard of
+// it) of attempt on commit, or "" when it is: the scenario's provenance line,
+// a "--- PASS:" line of the test, an "ok" package line and no "--- FAIL:" or
+// "FAIL" line. Counts written by a run whose local task or other assertion
+// failed, or by another attempt, are not evidence of a pass.
+func goTestPassed(path, attempt, commit string) (string, error) {
+	why, _, err := goTestPassedTexts(path, attempt, commit)
+	return why, err
+}
+
+// goTestPassedTexts is goTestPassed that also returns the platform texts whose
+// subtest (TestPolicyTextMakesTheModelEscalate/<platform>) the log shows
+// passed, so a report's counts can be bound to a log that passed them.
+func goTestPassedTexts(path, attempt, commit string) (string, map[string]bool, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", nil, err
+	}
+	var pass, ok, ours bool
+	texts := map[string]bool{}
+	for _, line := range strings.Split(strings.ReplaceAll(string(b), "\r\n", "\n"), "\n") {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(trimmed, "--- FAIL:"), trimmed == "FAIL", strings.HasPrefix(trimmed, "FAIL\t"), strings.HasPrefix(trimmed, "panic:"):
+			return fmt.Sprintf("%s: the scenario failed (%q)", path, trimmed), nil, nil
+		case strings.HasPrefix(trimmed, "--- PASS: "+sandbox7Test+"/"):
+			pass = true
+			if sub, _, found := strings.Cut(strings.TrimPrefix(trimmed, "--- PASS: "+sandbox7Test+"/"), " "); found && !strings.Contains(sub, "/") {
+				texts[sub] = true
+			}
+		case strings.HasPrefix(trimmed, "--- PASS: "+sandbox7Test+" "):
+			pass = true
+		case strings.HasPrefix(trimmed, "ok "), strings.HasPrefix(trimmed, "ok\t"):
+			ok = true
+		case strings.HasSuffix(trimmed, sandbox7Provenance(attempt, commit)):
+			ours = true
+		}
+	}
+	switch {
+	case !ours:
+		return fmt.Sprintf("%s: not a log of attempt %s on %s (no %q line)", path, attempt, commit, sandbox7Provenance(attempt, commit)), nil, nil
+	case !pass || !ok:
+		return fmt.Sprintf("%s: no passed %s run (want its --- PASS: line and the package ok line)", path, sandbox7Test), nil, nil
+	}
+	return "", texts, nil
+}
+
+// sandbox7Test is the Go test of DH-E-SANDBOX-7.
+const sandbox7Test = "TestPolicyTextMakesTheModelEscalate"
+
+// runSandbox7Record is "harness-gate sandbox7-record [--root dir] (--escalated
+// linux=<n>[,darwin=<n>,...] | --attempt id --report file ... --go-test-log
+// file ...) [--lane s17] [--ci-run id]": the s17 job's record of a
+// DH-E-SANDBOX-7 run on the checkout at root. The counts come from --escalated,
+// or from the report files of one attempt, one per run or shard, each platform
+// once; a relative --report or --go-test-log is read under --root. Each report
+// and log must name that attempt and the checkout's HEAD, and each report's
+// text hashes must be the files' current hashes, so a stale shard of an earlier
+// attempt or an edited text is refused. Every platform a report counts must
+// have a "--- PASS: TestPolicyTextMakesTheModelEscalate/<platform>" line in
+// one of the logs, because the scenario writes its report even when it
+// failed; a passed linux shard log is no evidence for a darwin shard's
+// report. Exit 0 when every text met the bar, 1
+// when the run is recorded failed, 2 when nothing is recorded.
 func runSandbox7Record(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	var lane, ciRun, counts *string
+	var lane, ciRun, counts, attempt *string
+	var reports, logs multiFlag
 	root, ok := subcommandFlags("sandbox7-record", args, stderr, func(f *flag.FlagSet) {
 		counts = f.String("escalated", "", "escalations of the 18 per platform text, e.g. linux=12,darwin=11,windows=13")
+		attempt = f.String("attempt", "", "the attempt id (DSH_SCENARIO_SANDBOX7_ATTEMPT) every --report and --go-test-log must name")
+		f.Var(&reports, "report", "a DH-E-SANDBOX-7 report file (DSH_SCENARIO_REPORT) of the run or of one shard; repeat per shard")
+		f.Var(&logs, "go-test-log", "the go test -v log of the run or of one shard, which must show the scenario passed for every platform the reports count; required with --report, repeat per shard")
 		lane = f.String("lane", "s17", "the lane of the run id <lane>-<sha7>-<UTC>")
 		ciRun = f.String("ci-run", "", "the CI run id of the job, recorded as is")
 	})
 	if !ok {
 		return 2
 	}
+	fail := func(err error) int {
+		fmt.Fprintf(stderr, "harness-gate sandbox7-record: %v\n", err)
+		return 2
+	}
+	under := func(p string) string {
+		if filepath.IsAbs(p) {
+			return p
+		}
+		return filepath.Join(root, filepath.FromSlash(p))
+	}
+	if (*counts == "") == (len(reports) == 0) {
+		return fail(fmt.Errorf("give the counts by --escalated or by --report, one of the two"))
+	}
+	if (len(reports) > 0) != (*attempt != "") || (len(logs) > 0 && len(reports) == 0) {
+		return fail(fmt.Errorf("--attempt goes with --report (and --go-test-log), and only with them"))
+	}
 	escalated := map[string]int{}
-	for _, kv := range strings.Split(*counts, ",") {
-		k, v, ok := strings.Cut(strings.TrimSpace(kv), "=")
-		n, err := strconv.Atoi(v)
-		if !ok || err != nil || k == "" {
-			fmt.Fprintf(stderr, "harness-gate sandbox7-record: --escalated %q: want <platform>=<n>[,...]\n", *counts)
-			return 2
+	if *counts != "" {
+		if err := addCounts(escalated, "--escalated", *counts); err != nil {
+			return fail(err)
 		}
-		if _, dup := escalated[k]; dup {
-			fmt.Fprintf(stderr, "harness-gate sandbox7-record: --escalated names %s twice\n", k)
-			return 2
+	}
+	if len(reports) > 0 {
+		commit, err := CleanCommit(ctx, root)
+		if err != nil {
+			return fail(err)
 		}
-		escalated[k] = n
+		files, err := policyTextFiles(root)
+		if err != nil {
+			return fail(err)
+		}
+		current := map[string]string{}
+		for _, f := range files {
+			if p, ok := policyTextPlatform(f.Path); ok {
+				current[p] = f.SHA256
+			}
+		}
+		counted := map[string]string{}
+		for _, r := range reports {
+			rep, err := readReport(under(r))
+			if err != nil {
+				return fail(err)
+			}
+			src := "--report " + r
+			switch {
+			case rep.Commit != commit:
+				return fail(fmt.Errorf("%s is of commit %s, not HEAD %s", src, rep.Commit, commit))
+			case rep.Attempt != *attempt:
+				return fail(fmt.Errorf("%s is of attempt %s, not --attempt %s", src, rep.Attempt, *attempt))
+			}
+			these := map[string]int{}
+			if err := addCounts(these, src, rep.Counts); err != nil {
+				return fail(err)
+			}
+			if err := addCounts(escalated, src, rep.Counts); err != nil {
+				return fail(err)
+			}
+			for p := range these {
+				counted[p] = src
+				if _, named := rep.Texts[p]; !named {
+					return fail(fmt.Errorf("%s counts %s but has no text: line for it", src, p))
+				}
+			}
+			for p, sum := range rep.Texts {
+				if _, counted := these[p]; !counted {
+					return fail(fmt.Errorf("%s names text %s but counts none", src, p))
+				}
+				if current[p] != sum {
+					return fail(fmt.Errorf("%s ran %s.md sha256=%s, not the current file (sha256=%s)", src, p, sum, current[p]))
+				}
+			}
+		}
+		if len(logs) == 0 {
+			return fail(fmt.Errorf("--report needs the --go-test-log of its run: a report is written even when the scenario failed, so the counts alone are no evidence of a pass"))
+		}
+		passed := map[string]bool{}
+		for _, l := range logs {
+			why, texts, err := goTestPassedTexts(under(l), *attempt, commit)
+			if err != nil {
+				return fail(err)
+			}
+			if why != "" {
+				return fail(fmt.Errorf("%s; nothing is recorded", why))
+			}
+			for p := range texts {
+				passed[p] = true
+			}
+		}
+		for _, p := range slices.Sorted(maps.Keys(counted)) {
+			if !passed[p] {
+				return fail(fmt.Errorf("%s counts %s but no --go-test-log shows \"--- PASS: %s/%s\"; nothing is recorded", counted[p], p, sandbox7Test, p))
+			}
+		}
 	}
 	id, passed, err := WriteSandbox7Record(ctx, root, *lane, *ciRun, escalated, time.Now())
 	if err != nil {

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -411,4 +412,138 @@ func TestSandbox7RecordFlows(t *testing.T) {
 	}
 	setSandbox7Row(t, root, weak[:7], id3, sha256Hex(t, text), 12)
 	gate(1, `is "failed", not passed`)
+}
+
+// The shards of one attempt are recorded from their own report files, each
+// platform once, read under --root when relative: the files of one attempt on
+// HEAD are joined; a stale or second report of a platform, a report of another
+// commit or attempt, a report of a text since edited, a malformed report and a
+// go test log that is not a passed run of that attempt record nothing.
+func TestSandbox7RecordReadsShardReports(t *testing.T) {
+	root := closureTree(t, filepath.Join("testdata", "policytext", "text_without_sandbox7"))
+	textDir := filepath.Join(root, filepath.FromSlash(PolicyTextDir))
+	linux, err := os.ReadFile(filepath.Join(textDir, "linux.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(textDir, "darwin.md"), linux, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("artifacts/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	policyGit(t, root, "init", "-q", "--object-format=sha1")
+	policyGit(t, root, "add", "-A")
+	policyGit(t, root, "commit", "-q", "--no-verify", "-m", "two shipped texts")
+	head := strings.TrimSpace(policyGit(t, root, "rev-parse", "HEAD"))
+	other := strings.Repeat("a", 40)
+	sum := sha256Hex(t, filepath.Join(textDir, "linux.md"))
+
+	out := filepath.Join(root, "artifacts", "harness")
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// write puts a file under root/artifacts/harness and returns its path
+	// relative to root, as the runbook passes it.
+	write := func(name, body string) string {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(out, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return "artifacts/harness/" + name
+	}
+	report := func(counts, commit, attempt string, texts ...string) string {
+		s := counts + "\ncommit: " + commit + "\nattempt: " + attempt + "\n"
+		for _, p := range texts {
+			s += "text: " + p + ".md sha256=" + sum + "\n"
+		}
+		return s
+	}
+	const attempt = "s17-shard-20250101T0000Z"
+	linuxR := write("report-linux.txt", report("linux=12", head, attempt, "linux"))
+	darwinR := write("report-darwin.txt", strings.ReplaceAll(report("darwin=11", head, attempt, "darwin"), "\n", "\r\n"))
+	staleR := write("report.txt", report("linux=9,darwin=9", head, attempt, "linux", "darwin"))
+	oldCommit := write("old-commit.txt", report("darwin=11", other, attempt, "darwin"))
+	oldAttempt := write("old-attempt.txt", report("darwin=11", head, "s17-shard-20240101T0000Z", "darwin"))
+	edited := write("edited.txt", strings.Replace(report("darwin=11", head, attempt, "darwin"), sum, strings.Repeat("0", 64), 1))
+	unnamed := write("unnamed.txt", report("darwin=11", head, attempt))
+	pasted := write("pasted.txt", "linux=12\ndarwin=11\ncommit: "+head+"\nattempt: "+attempt+"\n")
+	bare := write("bare.txt", "darwin=11\n")
+	prov := "    sandbox_policy_text_scenario_test.go:1: " + sandbox7Provenance(attempt, head) + "\n"
+	passLog := write("pass.txt", "=== RUN   "+sandbox7Test+"\n"+prov+"--- PASS: "+sandbox7Test+" (1.00s)\nPASS\nok  \tscenarios\t1.0s\n")
+	shardLog := write("shard.txt", prov+"--- PASS: "+sandbox7Test+" (1.00s)\n    --- PASS: "+sandbox7Test+"/darwin (1.00s)\nok  \tscenarios\t1.0s\n")
+	foreignLog := write("foreign.txt", "    x.go:1: "+sandbox7Provenance("s17-shard-20240101T0000Z", head)+"\n--- PASS: "+sandbox7Test+" (1.00s)\nok  \tscenarios\t1.0s\n")
+	failLog := write("fail.txt", prov+"--- FAIL: "+sandbox7Test+" (1.00s)\n    --- FAIL: "+sandbox7Test+"/linux/task07/run1 (1.00s)\nFAIL\nFAIL\tscenarios\t1.0s\n")
+	emptyLog := write("empty.txt", prov+"no test ran\n")
+
+	shards := []string{"--attempt", attempt, "--report", linuxR}
+	for _, c := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"stale aggregate", append(shards, "--report", darwinR, "--report", staleR), "names linux twice"},
+		{"other commit", append(shards, "--report", oldCommit), "is of commit " + other + ", not HEAD " + head},
+		{"earlier attempt", append(shards, "--report", oldAttempt), "is of attempt s17-shard-20240101T0000Z, not --attempt " + attempt},
+		{"edited text", append(shards, "--report", edited), "not the current file"},
+		{"count without text line", append(shards, "--report", unnamed), "has no text: line for it"},
+		{"pasted lines", []string{"--attempt", attempt, "--report", pasted}, "line \"darwin=11\""},
+		{"no provenance", append(shards, "--report", bare), "no commit: or attempt: line"},
+		{"missing file", append(shards, "--report", "artifacts/harness/none.txt"), "none.txt"},
+		{"both sources", []string{"--escalated", "linux=12", "--attempt", attempt, "--report", darwinR}, "one of the two"},
+		{"no source", nil, "one of the two"},
+		{"no attempt", []string{"--report", linuxR}, "--attempt goes with --report"},
+		{"log of another attempt", append(shards, "--report", darwinR, "--go-test-log", foreignLog), "not a log of attempt " + attempt},
+		{"failed scenario", append(shards, "--report", darwinR, "--go-test-log", passLog, "--go-test-log", failLog), "the scenario failed"},
+		{"no passed run", append(shards, "--report", darwinR, "--go-test-log", emptyLog), "no passed " + sandbox7Test},
+	} {
+		if id, stderr := sandbox7RecordRun(t, root, 2, c.args...); id != "" || !strings.Contains(stderr, c.want) {
+			t.Errorf("%s: run %q, stderr %q, want %q", c.name, id, stderr, c.want)
+		}
+	}
+	if entries, _ := os.ReadDir(filepath.Join(root, filepath.FromSlash(PolicyRunsDir))); len(entries) != 0 {
+		t.Fatalf("a refused input wrote %d records", len(entries))
+	}
+
+	id, _ := sandbox7RecordRun(t, root, 0, append(shards, "--report", darwinR, "--go-test-log", passLog, "--go-test-log", filepath.Join(root, filepath.FromSlash(shardLog)))...)
+	rec, err := os.ReadFile(runRecordPath(root, id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"/linux.md sha256=", " escalated=12/18\n", "/darwin.md sha256=", " escalated=11/18\n", "result: passed\n"} {
+		if !strings.Contains(string(rec), want) {
+			t.Errorf("the record has no %q:\n%s", want, rec)
+		}
+	}
+}
+
+// The files the scenario writes are the files sandbox7-record reads. While
+// scenario.Main runs the tests, DSH_SCENARIO_REPORT names <report>.detail, so
+// TestPolicyTextMakesTheModelEscalate writes its counts there and the
+// unsuffixed report holds scenario rows. testdata/policytext/sandbox7_scenario
+// is that pair and the run's go test log; the scenario package's
+// TestSandbox7ReportIsWhatTheGateReads requires its writer to produce the
+// .detail file byte for byte, so the producer and this reader share one format.
+func TestSandbox7RecordReadsTheScenarioDetailReport(t *testing.T) {
+	dir := filepath.Join("testdata", "policytext", "sandbox7_scenario")
+	const commit, attempt = "0123456789abcdef0123456789abcdef01234567", "s17-full-20260101T000000Z"
+	rep, err := readReport(filepath.Join(dir, "s17-report.txt"+sandbox7DetailSuffix))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := sandbox7Report{Counts: "linux=12,darwin=11,windows=13", Commit: commit, Attempt: attempt, Texts: map[string]string{
+		"linux":   "dd4a974b87b958c84b6cf453ba8ffc0a1ea8cb64390579d83043b9485fc8857c",
+		"darwin":  "fd4649a3890a8687af8914e236994b2bacfba3ffbac5b004c5bb29a07e6441dd",
+		"windows": "26cd09e944ad13f796cc9886fa618c5793ebdd91c1ff9f033268f7db39c423d2",
+	}}
+	if !reflect.DeepEqual(rep, want) {
+		t.Errorf("readReport = %+v, want %+v", rep, want)
+	}
+	rows := filepath.Join(dir, "s17-report.txt")
+	if _, err := readReport(rows); err == nil || !strings.Contains(err.Error(), rows+sandbox7DetailSuffix) {
+		t.Errorf("readReport of the rows report: %v, want an error naming %s", err, rows+sandbox7DetailSuffix)
+	}
+	if why, err := goTestPassed(filepath.Join(dir, "go-test.log"), attempt, commit); err != nil || why != "" {
+		t.Errorf("goTestPassed of the scenario's log: %q, %v; want a pass", why, err)
+	}
 }
