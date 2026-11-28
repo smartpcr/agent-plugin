@@ -25,14 +25,23 @@ import (
 	"github.com/smartpcr/agent-plugin/tools/harness-gate/closure"
 )
 
-// m2dIndex lists the step 16.8 guarded scenario DH-E-STORE-1 under DH-S-16 and one
-// acceptance scenario each under DH-S-17 and DH-S-18 (the closure package's own
-// milestone fixture shape).
+// m2dIndex lists the four step 16.8 guarded scenarios (DH-E-STORE-1, DH-E-STORE-2,
+// DH-E-STORE-6 and DH-E-FS-3) under DH-S-16 and one acceptance scenario each under
+// DH-S-17 and DH-S-18.
 const m2dIndex = `built-through: DH-S-16
 stages:
   DH-S-16:
     - id: DH-E-STORE-1
       authored: DH-S-7
+      credential: none
+    - id: DH-E-STORE-2
+      authored: DH-S-7
+      credential: none
+    - id: DH-E-STORE-6
+      authored: DH-S-7
+      credential: none
+    - id: DH-E-FS-3
+      authored: DH-S-12
       credential: none
   DH-S-17:
     - id: DH-E-SDK-1
