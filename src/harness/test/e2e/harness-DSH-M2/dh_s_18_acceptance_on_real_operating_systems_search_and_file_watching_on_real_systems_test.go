@@ -884,11 +884,13 @@ const s87PIDLine = "s87-pid "
 // spawn starts argv on v with env, its stdout lines on lines. At the end it
 // closes argv's stdin and, when signal is set, sends SIGTERM to argv's own
 // process ID on v (then SIGKILL after 15s), and waits. That ID is the shell's
-// that execs argv, so the suite signals exactly the process it started.
+// that execs argv, so the suite signals exactly the process it started; with
+// signal set, argv runs in a session and process group of its own (setsid), so
+// a signal argv sends its group (smbd's on SIGTERM) reaches nothing of this run.
 func (v *s87Variant) spawn(env []string, signal bool, argv ...string) (*s87Proc, error) {
 	p := &s87Proc{lines: make(chan string, 64), exited: make(chan struct{})}
 	if signal {
-		argv = append([]string{"sh", "-c", `echo "` + s87PIDLine + `$$"; exec "$@"`, "sh"}, argv...)
+		argv = append([]string{"setsid", "-w", "sh", "-c", `echo "` + s87PIDLine + `$$"; exec "$@"`, "sh"}, argv...)
 	}
 	if v.wsl {
 		p.cmd = exec.Command("wsl.exe", append(append([]string{"-e", "env"}, env...), argv...)...)
@@ -973,7 +975,7 @@ type s87SMB struct {
 // serveSMB serves a fresh share directory over SMB from Samba's smbd, run on the
 // Linux variant v as v's own user and bound to host only.
 func serveSMB(v *s87Variant, host string) (*s87SMB, error) {
-	for _, p := range []string{"smbd", "pdbedit"} {
+	for _, p := range []string{"smbd", "pdbedit", "setsid"} {
 		if v.lookPath(p) == "" {
 			return nil, fmt.Errorf("service:filesystem: no %s on %s: the suite's SMB share is served by Samba's smbd as the run's own user (the samba package; its system service need not run), or set DSH_SCENARIO_REMOTE_DIRS with DSH_SCENARIO_REMOTE_CHANGE for shares kept per %s", p, v, s87Runbook)
 		}
@@ -1031,9 +1033,7 @@ func serveSMB(v *s87Variant, host string) (*s87SMB, error) {
 				return nil, fmt.Errorf("service:filesystem: adding %s to the share's own user database on %s: %v %s", s.user, v, err, out)
 			}
 		}
-		// smbd leads its own process group: on SIGTERM it signals its group, which
-		// with --no-process-group would be this test's own when run natively.
-		p, err := v.spawn(nil, true, "smbd", "-s", conf, "--foreground")
+		p, err := v.spawn(nil, true, "smbd", "-s", conf, "--foreground", "--no-process-group")
 		if err != nil {
 			return nil, err
 		}
