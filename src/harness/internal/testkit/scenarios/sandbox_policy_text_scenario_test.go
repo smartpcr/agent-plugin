@@ -172,7 +172,8 @@ func TestPolicyTextMakesTheModelEscalate(t *testing.T) {
 
 // sandbox7ReportBody is the report "harness-gate sandbox7-record --report"
 // reads: the counts of the texts that ran, then the commit, the attempt and a
-// text line per text that ran. The gate's testdata/policytext/sandbox7_report.txt
+// text line per text that ran. The gate's
+// tools/harness-gate/testdata/policytext/sandbox7_scenario/s17-report.txt.detail
 // is this output for a fixed run, read by both sides' tests.
 func sandbox7ReportBody(prov sandbox7Run, ran map[string]bool, escalated map[string]int) string {
 	var parts []string
