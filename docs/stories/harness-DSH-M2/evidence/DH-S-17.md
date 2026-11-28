@@ -34,10 +34,10 @@ An acceptance step is ticked only by its scenarios; the commit is the one the sc
 | 17.1 | DH-E-TOOLCHAIN-1 | | not run; blocked, see [Stage 7.2 blockers](#stage-72-blockers) |
 | 17.2 | DH-E-SESSION-1, DH-E-SESSION-2 | | |
 | 17.3 | DH-E-AGENT-1 to -4 | | |
-| 17.4 | DH-E-LLM-1, DH-E-LLM-3 | | |
-| 17.5 | DH-E-TOOLS-1 | | |
-| 17.6 | DH-E-VIEW-1 | | |
-| 17.7 | DH-E-LOADER-1 | | |
+| 17.4 | DH-E-LLM-1, DH-E-LLM-3 | | not run; blocked, see [Stage 7.4 blockers](#stage-74-blockers) |
+| 17.5 | DH-E-TOOLS-1 | | not run; blocked, see [Stage 7.4 blockers](#stage-74-blockers) |
+| 17.6 | DH-E-VIEW-1 | | not run; blocked, see [Stage 7.4 blockers](#stage-74-blockers) |
+| 17.7 | DH-E-LOADER-1 | | not run; blocked, see [Stage 7.4 blockers](#stage-74-blockers) |
 | 17.8 | DH-E-SDK-1 | | |
 | 17.9 | DH-E-SANDBOX-7 | | closes `UP-DEBT-found.Q3.2` |
 
@@ -54,14 +54,14 @@ The 14 scenarios of the steps, on E1: Linux with the signed-in Claude Code route
 | DH-E-AGENT-2 | Linux (E1) | acceptance | required | E1 | | not run (stage not started) | |
 | DH-E-AGENT-3 | Linux (E1) | acceptance | required | E1 | | not run (stage not started) | |
 | DH-E-AGENT-4 | Linux (E1) | acceptance | required | E1 | | not run (stage not started) | |
-| DH-E-LLM-1 | claude-code | acceptance | required | E1 | | not run (stage not started) | |
-| DH-E-LLM-1 | copilot-cli | acceptance | recorded | E1 | | not run (stage not started) | |
-| DH-E-LLM-3 | claude-code | acceptance | required | E1 | | not run (stage not started) | |
-| DH-E-LLM-3 | copilot-cli | acceptance | recorded | E1 | | not run (stage not started) | |
-| DH-E-TOOLS-1 | Linux (E1) | acceptance | required | E1 | | not run (stage not started) | |
-| DH-E-VIEW-1 | claude-code | acceptance | required | E1 | | not run (stage not started) | |
-| DH-E-VIEW-1 | copilot-cli | acceptance | recorded | E1 | | not run (stage not started) | |
-| DH-E-LOADER-1 | Linux (E1) | acceptance | required | E1 | | not run (stage not started) | |
+| DH-E-LLM-1 | claude-code | acceptance | required | E1 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
+| DH-E-LLM-1 | copilot-cli | acceptance | recorded | E1 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
+| DH-E-LLM-3 | claude-code | acceptance | required | E1 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
+| DH-E-LLM-3 | copilot-cli | acceptance | recorded | E1 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
+| DH-E-TOOLS-1 | Linux (E1) | acceptance | required | E1 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
+| DH-E-VIEW-1 | claude-code | acceptance | required | E1 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
+| DH-E-VIEW-1 | copilot-cli | acceptance | recorded | E1 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
+| DH-E-LOADER-1 | Linux (E1) | acceptance | required | E1 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
 | DH-E-SDK-1 | Linux (E1) | acceptance | required | E1 | | not run (stage not started) | |
 | DH-E-SANDBOX-7 | Linux (E1) | acceptance | required | E1 | | not run (stage not started) | |
 
@@ -95,6 +95,29 @@ When it runs, the TOOLCHAIN-1 row takes the commit of step 1 of the runbook, `E1
 (or `E1 runner:<name>`), and in Artifacts the `dsh` SHA-256, the claude-code model id, the run id and the
 record's "request received equals request rebuilt" result (M2-DEC-5); the copilot-cli leg is recorded
 either way (M2-DEC-4).
+
+## Stage 7.4 blockers
+
+implementation-plan Stage 7.4 (impl.md 17.4 to 17.7: `DH-E-LLM-1`, `DH-E-LLM-3` and `DH-E-VIEW-1` with
+one subtest per route, then `DH-E-TOOLS-1` and `DH-E-LOADER-1`) was taken up on `aa11dac` and could not
+run. Nothing below is evidence of a run: the eight rows stay `not run`, and that includes the three
+`copilot-cli` legs, because a recorded leg must run before its result is kept (M2-DEC-4) and a
+recorded leg not run counts as open. Each blocker on its own stops the run:
+
+| Blocker | Seen | What clears it |
+| --- | --- | --- |
+| `harness-gate entry` exits 1: harness:DSH-M1 is not closed (DH-S-1 to DH-S-11 read `Closure status: open`; no `harness-DSH-M1/evidence/closure.md`). M2-DEC-1: no M2 scenario run before M1 closes. | `GOWORK=off go -C tools/harness-gate run . entry --root ../..` on `aa11dac`: 12 blockers, exit 1 | M1 closure merges and `entry` exits 0 |
+| Stage order: Stage 7.4 depends on Stage 7.2, and `DH-E-TOOLCHAIN-1` runs first in S17 (architecture.md rule 7). Its row is `not run`, see [Stage 7.2 blockers](#stage-72-blockers). | Steps table, row 17.1 | the TOOLCHAIN-1 row reads `passed` |
+| No committed scenario inputs. Each test stops at `need` without its inputs, none of which is committed (`git grep` on `aa11dac` finds them only in the tests and e2e-scenarios.md): `TestTurnWithReasoningAndToolCall` (LLM-1) `DSH_SCENARIO_LLM1_LAYER`, `_PROMPT`, `_PROMPT2`, `_USAGE`; `TestSignedOutIsAFact` (LLM-3) `DSH_SCENARIO_LLM3_LAYER`, `_PROMPT`, `_MAX_TOKENS`; `TestModelTitlesSession` (VIEW-1) `DSH_SCENARIO_VIEW1_LAYER`, `_BAD_LAYER`, `_PROMPT`; `TestGuardedPipelineRefusesTheWrite` (TOOLS-1) `DSH_SCENARIO_TOOLS1_LAYER`, `_PROMPT`, `_REPLAY`; `TestRunningHarnessFollowsProfilePatchEdit` (LOADER-1) `DSH_SCENARIO_LOADER_PROFILE`, `_START`, `_INSPECT`, `_DISABLE`, `_STOP`. | `src/harness/internal/testkit/scenarios/{llm_turn,llm_signed_out,view_title,tools_pipeline,loader_edit}_scenario_test.go` doc comments | the operator exports them per [runbook-s17-wsl.md](runbook-s17-wsl.md) "Route inputs", or the runner's environment carries them |
+| Who runs it. [runbook-s17-wsl.md](runbook-s17-wsl.md): the signed-in run is by the owner or an operator, "never an agent session"; both clients (`claude`, required; `copilot`, recorded) must be signed in on the S17 machine. | runbook, "Who, where, and with what" | the operator runs the runbook (or the `s17` job) on a merged commit once the blockers above clear |
+
+When they run (step 7 of the runbook, one `harness-gate scenarios --stage DH-S-17` run), each of the
+eight rows takes the run's commit and `E1 wsl:<host>/<distro>` (or `E1 runner:<name>`), and in Artifacts
+the `dsh` SHA-256, the route's model id and the scenario's report row. The `claude-code` legs of LLM-1,
+LLM-3 and VIEW-1, and TOOLS-1 and LOADER-1, must read `passed`; the `copilot-cli` legs keep the result
+the run's `scenarios: recorded leg: <Test>/copilot-cli ...` line gives, `failed (<reason>)` included
+(M2-DEC-4). The LOADER-1 artifacts quote the log line showing the edited configuration in force on the
+next turn.
 
 ## Evidence record (impl.md sec. 7.3)
 
