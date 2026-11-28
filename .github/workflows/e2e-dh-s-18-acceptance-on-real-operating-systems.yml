@@ -78,9 +78,10 @@ jobs:
           mkdir -p "$DSH_E2E_NODEFS_ARTIFACTS"
           log=artifacts/e2e/nodefs.txt
           { echo "commit ${GITHUB_SHA}"; uname -a; } | tee "$log"
-          go -C src/harness test -tags e2e -v -timeout 355m \
+          go -C src/harness test -tags e2e -count=1 -v -timeout 355m \
             -run '^TestE2E_dh_s_18_acceptance_on_real_operating_systems_durable_replace_under_power_loss$' \
             ./test/e2e/harness-DSH-M2/ 2>&1 | tee -a "$log"
+          if grep -qF -- '(cached)' "$log"; then echo "::error::go test replayed a cached result; no guest was cut"; exit 1; fi
           if grep -q -- '--- SKIP' "$log"; then echo "a required scenario skipped"; exit 1; fi
           for s in DH-E-NODEFS-1_Linux_guest DH-E-NODEFS-1_Windows_guest; do
             grep -qF -- "--- PASS: TestE2E_dh_s_18_acceptance_on_real_operating_systems_durable_replace_under_power_loss/$s" "$log" \
