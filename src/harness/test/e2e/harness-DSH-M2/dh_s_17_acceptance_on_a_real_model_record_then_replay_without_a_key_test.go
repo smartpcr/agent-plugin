@@ -488,12 +488,20 @@ func (s *s17rState) thenRequestsEqual() error {
 }
 
 // thenLiveOnS17 runs the real scenario test where the signed-in route's inputs are
-// set; elsewhere the in-process route instance above is the proof.
+// set; where none is set the in-process route instance above is the proof. A partly
+// configured machine fails and names the missing inputs rather than passing silently.
 func (s *s17rState) thenLiveOnS17() error {
+	var missing []string
 	for _, name := range s17rRouteInputs {
 		if strings.TrimSpace(os.Getenv(name)) == "" {
-			return nil
+			missing = append(missing, name)
 		}
+	}
+	if len(missing) == len(s17rRouteInputs) {
+		return nil
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("the signed-in route is partly configured: %s unset while the other route inputs are set", strings.Join(missing, ", "))
 	}
 	// -count=1 defeats the test cache so the signed-in route is contacted afresh;
 	// -timeout and the context deadline bound the run so it cannot hang the suite.
