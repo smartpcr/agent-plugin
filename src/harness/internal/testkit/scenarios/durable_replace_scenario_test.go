@@ -37,10 +37,9 @@ const (
 	// nodefsCutWithin: the cut comes at a random moment within this after that
 	// acknowledgement, while the loop replaces the file.
 	nodefsCutWithin = 5 * time.Second
-	// nodefsSettle: after the read, the writer's connections open at the cut are
-	// read for this long, for an acknowledgement the hypervisor host received but
-	// the recorder has not yet read, and then closed.
-	nodefsSettle = 2 * time.Second
+	// nodefsConfirmWithin bounds the recorder's write of its confirmation to a
+	// writer; a writer that is gone does not hold the recorder up.
+	nodefsConfirmWithin = 10 * time.Second
 )
 
 // nodefsHeader starts every version the writer publishes; the payload follows it.
@@ -85,10 +84,13 @@ func nodefsVersion(n int) []byte {
 //
 // Each round waits for the writer's first new acknowledgement, cuts at a random
 // moment within nodefsCutWithin after it, restarts, reads, and judges the file
-// against every version acknowledged before the cut. Acknowledgements still in
-// flight are counted: the writer's connections open at the cut are read for
-// nodefsSettle after the read and then closed, before the bound is taken (the
-// writer does not run again until the next round starts it).
+// against every version the recorder acknowledged. A version counts as
+// acknowledged once the recorder has logged it and confirmed it to the writer,
+// which writes no next version before that confirmation; so the boundary is the
+// recorder's own, not a wait. The judgement and the bound are taken under one
+// lock, which ties the round's writer connections to the version judged: an
+// acknowledgement read on them later, however late, newer than that version fails
+// the run (nodefsRecorder.serve).
 //
 // A run that would pass the 3 h variant limit is sharded (M2-R-06): the optional
 // DSH_SCENARIO_NODEFS_ROUNDS selects rounds "i-j" of 1-100 (default all). A shard
@@ -142,7 +144,7 @@ func TestDurableReplaceSurvivesPowerLoss(t *testing.T) {
 			return s.host.Stdout.String(), nil
 		},
 	}
-	driveErr := nodefsDrive(t.Context(), rec, machine, vms, from, to, nodefsWriterUp, nodefsCutWithin, nodefsSettle)
+	driveErr := nodefsDrive(t.Context(), rec, machine, vms, from, to, nodefsWriterUp, nodefsCutWithin)
 	if err := errors.Join(driveErr, rec.close()); err != nil {
 		t.Fatalf("%v\nthe recorder's version log: %s", err, reportPath)
 	}
@@ -171,21 +173,25 @@ type nodefsMachine struct {
 
 // nodefsDrive runs rounds from-to on each guest in turn. The first round that
 // fails ends the run: it is recorded as a fail line naming the guest, whose
-// overlay is to be kept.
-func nodefsDrive(ctx context.Context, rec *nodefsRecorder, m nodefsMachine, vms []string, from, to int, up, cutWithin, settle time.Duration) error {
+// overlay is to be kept. An acknowledgement that arrives after its round was
+// judged, newer than the version judged, fails the run at the next check.
+func nodefsDrive(ctx context.Context, rec *nodefsRecorder, m nodefsMachine, vms []string, from, to int, up, cutWithin time.Duration) error {
 	for _, vm := range vms {
 		for round := from; round <= to; round++ {
-			if err := nodefsRound(ctx, rec, m, vm, round, up, cutWithin, settle); err != nil {
+			if err := rec.violated(); err != nil {
+				return err
+			}
+			if err := nodefsRound(ctx, rec, m, vm, round, up, cutWithin); err != nil {
 				rec.record("fail vm=%s round=%d acked=%d: %s", vm, round, rec.last(vm), strings.ReplaceAll(err.Error(), "\n", " "))
 				return fmt.Errorf("%s round %d: %w (keep the overlay of %s)", vm, round, err, vm)
 			}
 		}
 	}
-	return nil
+	return rec.violated()
 }
 
 // nodefsRound is one power cut of vm.
-func nodefsRound(ctx context.Context, rec *nodefsRecorder, m nodefsMachine, vm string, round int, up, cutWithin, settle time.Duration) error {
+func nodefsRound(ctx context.Context, rec *nodefsRecorder, m nodefsMachine, vm string, round int, up, cutWithin time.Duration) error {
 	rec.begin(vm, round)
 	before := rec.last(vm)
 	if err := m.start(vm); err != nil {
@@ -202,9 +208,6 @@ func nodefsRound(ctx context.Context, rec *nodefsRecorder, m nodefsMachine, vm s
 	if err := m.powerOff(vm); err != nil {
 		return fmt.Errorf("cutting the power: %w", err)
 	}
-	// The writer's connections open at the cut carry every acknowledgement it
-	// sent; none opens before the next round starts a writer.
-	writers := rec.writers()
 	rec.record("cut vm=%s round=%d acked=%d", vm, round, rec.last(vm))
 	if err := m.powerOn(vm); err != nil {
 		return fmt.Errorf("restarting: %w", err)
@@ -213,19 +216,11 @@ func nodefsRound(ctx context.Context, rec *nodefsRecorder, m nodefsMachine, vm s
 	if err != nil {
 		return fmt.Errorf("reading the file: %w", err)
 	}
-	// The bound is taken once those connections have ended: an acknowledgement
-	// still in flight when the read returned is read within settle, and none
-	// arrives later, to pass this round unchecked or count in the next.
-	if err := rec.settle(ctx, writers, settle); err != nil {
-		return err
-	}
-	acked := rec.last(vm)
-	n, err := nodefsJudge(data, acked)
-	if err != nil {
-		return err
-	}
-	rec.record("read vm=%s round=%d version=%d acked=%d", vm, round, n, acked)
-	return nil
+	// The bound is every version the recorder confirmed before judge holds its
+	// lock; any acknowledgement read later on this round's connections is checked
+	// against the version judged here (serve), however late it arrives.
+	_, err = rec.judge(vm, round, data)
+	return err
 }
 
 // nodefsJudge returns the version data holds, or why it is not a complete version
@@ -251,31 +246,44 @@ func nodefsJudge(data string, acked int) (int, error) {
 }
 
 // nodefsRecorder is service:ack-recorder: it listens for the writers'
-// acknowledgements ("<vm> <version>" lines) and appends each, with the run's
-// events, to an append-only version log on this machine's disk, one line each:
+// acknowledgements ("<vm> <version>" lines), appends each, with the run's events,
+// to an append-only version log on this machine's disk, and only then confirms
+// it to the writer ("ok <version>"), which writes no next version before that
+// confirmation. A version is acknowledged once the recorder has logged it, so at
+// most one version the writer published is unacknowledged at a cut. Log lines are
 // "<sequence> <UTC time> <event> key=value...". Its events are start, seed (a
 // shard's acknowledged version taken from the log), round, ack, cut, read (a round
-// judged complete and new enough), fail and junk (a line that is no
+// judged complete and new enough), late (an acknowledgement read after its round
+// was judged, no newer than the version judged), fail, unconfirmed (a confirmation
+// the writer's connection did not take) and junk (a line that is no
 // acknowledgement). The log is kept whatever the result.
 type nodefsRecorder struct {
-	ln       net.Listener
-	wg       sync.WaitGroup
-	mu       sync.Mutex
-	conns    map[net.Conn]chan struct{} // each writer's connection -> closed when its reader ends
-	acked    map[string]int             // vm -> highest acknowledged version
-	round    map[string]int             // vm -> the round in progress
-	seq      int
-	log      *os.File
-	err      error // the first write error of the log
-	closed   bool
-	closeErr error
+	ln        net.Listener
+	wg        sync.WaitGroup
+	mu        sync.Mutex
+	conns     map[net.Conn]*nodefsJudged // each writer's connection -> its round's judgement, nil until judged
+	acked     map[string]int             // vm -> highest acknowledged version
+	round     map[string]int             // vm -> the round in progress
+	violation error                      // the first acknowledgement newer than its round's judged version
+	seq       int
+	log       *os.File
+	err       error // the first write error of the log
+	closed    bool
+	closeErr  error
+}
+
+// nodefsJudged is the judgement of the round a writer's connection served: its
+// acknowledgements read afterwards must be no newer than version.
+type nodefsJudged struct {
+	vm             string
+	round, version int
 }
 
 // openNodefsRecorder listens on listen and appends to the log at logPath for
 // rounds from-to of vms; from > 1 continues a sharded run (continueLog). The
 // recorder is closed when t ends, if not before.
 func openNodefsRecorder(t testing.TB, listen, logPath string, vms []string, from, to int) (*nodefsRecorder, error) {
-	r := &nodefsRecorder{acked: map[string]int{}, round: map[string]int{}, conns: map[net.Conn]chan struct{}{}}
+	r := &nodefsRecorder{acked: map[string]int{}, round: map[string]int{}, conns: map[net.Conn]*nodefsJudged{}}
 	if from > 1 {
 		if err := r.continueLog(logPath, vms, from); err != nil {
 			return nil, err
@@ -378,19 +386,19 @@ func (r *nodefsRecorder) accept() {
 			_ = conn.Close()
 			return
 		}
-		done := make(chan struct{})
-		r.conns[conn] = done
+		r.conns[conn] = nil
 		r.wg.Add(1)
 		r.mu.Unlock()
-		go r.serve(conn, done)
+		go r.serve(conn)
 	}
 }
 
-// serve reads one writer's acknowledgements. A writer's connection dies with its
-// machine and never closes: settle or close ends it.
-func (r *nodefsRecorder) serve(conn net.Conn, done chan struct{}) {
+// serve reads one writer's acknowledgements and confirms each it logged. A
+// writer's connection dies with its machine and never closes: close closes it.
+// An acknowledgement read after its connection's round was judged confirms
+// nothing; newer than the version judged, it is a version the file lost.
+func (r *nodefsRecorder) serve(conn net.Conn) {
 	defer r.wg.Done()
-	defer close(done)
 	defer func() {
 		r.mu.Lock()
 		delete(r.conns, conn)
@@ -406,10 +414,58 @@ func (r *nodefsRecorder) serve(conn net.Conn, done chan struct{}) {
 			continue
 		}
 		r.mu.Lock()
+		if j := r.conns[conn]; j != nil {
+			if n > j.version {
+				msg := fmt.Sprintf("%s acknowledged version %d after round %d was judged at version %d", vm, n, j.round, j.version)
+				r.writeLocked("fail vm=%s round=%d acked=%d: %s", j.vm, j.round, n, msg)
+				if r.violation == nil {
+					r.violation = fmt.Errorf("%s (keep the overlay of %s)", msg, j.vm)
+				}
+			} else {
+				r.writeLocked("late vm=%s round=%d version=%d", vm, j.round, n)
+			}
+			r.mu.Unlock()
+			continue
+		}
 		r.acked[vm] = max(r.acked[vm], n)
 		r.writeLocked("ack vm=%s round=%d version=%d", vm, r.round[vm], n)
 		r.mu.Unlock()
+		// Confirmed only once logged; a writer gone with its machine never reads it.
+		_ = conn.SetWriteDeadline(time.Now().Add(nodefsConfirmWithin))
+		if _, err := fmt.Fprintf(conn, "ok %d\n", n); err != nil {
+			r.record("unconfirmed vm=%s version=%d: %s", vm, n, strings.ReplaceAll(err.Error(), "\n", " "))
+		}
 	}
+}
+
+// judge judges data, vm's file read after round's cut, against every version the
+// recorder acknowledged, and ties each writer's connection open now to this
+// judgement, all under one hold of r.mu: an acknowledgement is either in the
+// bound or checked against the version judged when it is read (serve). The
+// round's writer is among those connections: its acknowledgement started the cut.
+func (r *nodefsRecorder) judge(vm string, round int, data string) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	acked := r.acked[vm]
+	n, err := nodefsJudge(data, acked)
+	if err != nil {
+		return n, err
+	}
+	for conn, j := range r.conns {
+		if j == nil {
+			r.conns[conn] = &nodefsJudged{vm: vm, round: round, version: n}
+		}
+	}
+	r.writeLocked("read vm=%s round=%d version=%d acked=%d", vm, round, n, acked)
+	return n, nil
+}
+
+// violated is the first acknowledgement read newer than its round's judged
+// version, if any.
+func (r *nodefsRecorder) violated() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.violation
 }
 
 // writeLocked appends one event to the log; r.mu is held.
@@ -460,37 +516,9 @@ func (r *nodefsRecorder) waitAbove(ctx context.Context, vm string, above int, wi
 	return nil
 }
 
-// writers is the writers' connections open now, each with the channel closed when
-// its reader ends.
-func (r *nodefsRecorder) writers() map[net.Conn]chan struct{} {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return maps.Clone(r.conns)
-}
-
-// settle reads conns for at most within more, then waits until each reader has
-// ended: every acknowledgement they carry is recorded and none comes after.
-func (r *nodefsRecorder) settle(ctx context.Context, conns map[net.Conn]chan struct{}, within time.Duration) error {
-	deadline := time.Now().Add(within)
-	for conn := range conns {
-		_ = conn.SetReadDeadline(deadline)
-	}
-	// A reader ends at the deadline; the margin is for the goroutine to notice.
-	limit := time.After(within + 5*time.Second)
-	for _, done := range conns {
-		select {
-		case <-done:
-		case <-limit:
-			return fmt.Errorf("an acknowledgement connection did not end within %s of the read", within)
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-	return nil
-}
-
 // close stops listening, closes every writer's connection, waits for them, and
-// syncs and closes the log; it returns the log's first write error, if any.
+// syncs and closes the log; it returns the log's first write error and the first
+// acknowledgement read newer than its round's judged version, if any.
 func (r *nodefsRecorder) close() error {
 	r.mu.Lock()
 	if r.closed {
@@ -511,6 +539,7 @@ func (r *nodefsRecorder) close() error {
 	if r.closeErr != nil {
 		r.closeErr = fmt.Errorf("the recorder's version log: %w", r.closeErr)
 	}
+	r.closeErr = errors.Join(r.closeErr, r.violation)
 	return r.closeErr
 }
 
@@ -531,17 +560,20 @@ func nodefsWriter(t *testing.T) {
 }
 
 // nodefsWrite replaces path with version after version through fsx.Replace,
-// durably, sending "<vm> <version>" to ack after each returns, until ctx ends. It
-// continues from the version on disk, so versions only grow across rounds. A
-// version is acknowledged only once Replace has returned nil: an error, including
-// fsx.ErrDurabilityUnknown, ends the loop unacknowledged.
-func nodefsWrite(ctx context.Context, path, vm string, ack io.Writer) error {
+// durably, sending "<vm> <version>" to ack after each returns and waiting for the
+// recorder's "ok <version>" before the next, until ctx ends. It continues from
+// the version on disk, so versions only grow across rounds. A version is
+// acknowledged only once Replace has returned nil: an error, including
+// fsx.ErrDurabilityUnknown, ends the loop unacknowledged; so does any reply but
+// the confirmation of the version sent.
+func nodefsWrite(ctx context.Context, path, vm string, ack io.ReadWriter) error {
 	n := 0
 	if data, err := os.ReadFile(path); err == nil {
 		if m := nodefsHeader.FindSubmatch(data); m != nil {
 			n, _ = strconv.Atoi(string(m[1]))
 		}
 	}
+	replies := bufio.NewReader(ack)
 	for ctx.Err() == nil {
 		n++
 		if err := fsx.Replace(path, fsx.Bytes(nodefsVersion(n)), fsx.Options{Perm: 0o600, Durable: true}); err != nil {
@@ -549,6 +581,13 @@ func nodefsWrite(ctx context.Context, path, vm string, ack io.Writer) error {
 		}
 		if _, err := fmt.Fprintf(ack, "%s %d\n", vm, n); err != nil {
 			return fmt.Errorf("acknowledging %d: %w", n, err)
+		}
+		reply, err := replies.ReadString('\n')
+		if err != nil {
+			return fmt.Errorf("version %d unconfirmed: %w", n, err)
+		}
+		if want := fmt.Sprintf("ok %d", n); strings.TrimSpace(reply) != want {
+			return fmt.Errorf("version %d unconfirmed: the recorder replied %q, not %q", n, strings.TrimSpace(reply), want)
 		}
 	}
 	return nil

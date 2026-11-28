@@ -189,12 +189,16 @@ machine cannot cut its own power, so no `service:os-process` substitute exists.
 
    Each round: the controller starts the writer, waits (at most 5 min) for its first new
    acknowledgement, cuts the power at a random moment within 5 s after it, restarts the
-   guest, reads the file, and judges it against every version acknowledged before the
-   cut, acknowledgements still in flight at the cut included: after the read, the writer's
-   connections open at the cut are read for 2 s more and then closed, before the bound is
-   taken. The log has one line per
+   guest, reads the file, and judges it against every version the recorder acknowledged.
+   A version is acknowledged once the recorder has appended it to the log and replied
+   `ok <version>` to the writer, which writes no next version before that reply; so at a
+   cut at most the one version in flight is unacknowledged, and no wait decides the
+   bound. The judgement ties each writer connection then open to the version judged: an
+   acknowledgement read on it later, however late, is logged `late` if no newer, and
+   otherwise logged `fail` and fails the run (keep that guest's overlay). The log has one line per
    event, `<sequence> <UTC time> <event> key=value...`, the events being `start`, `seed`,
-   `round`, `ack`, `cut`, `read`, `fail` and `junk`.
+   `round`, `ack`, `cut`, `read`, `late`, `fail`, `unconfirmed` (a reply the writer's
+   connection did not take) and `junk`.
 
 5. **Run** from the repository root on the controller:
 
