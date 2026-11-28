@@ -60,6 +60,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools/core"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools/prompt"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/util/fsx"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox/sandboxtest"
 )
 
@@ -1513,13 +1514,11 @@ func (s *s74State) turnSees(level string) error {
 	return nil
 }
 
-// whenSaved saves the user layer as an editor does: a temporary file renamed over it.
+// whenSaved saves the user layer as an editor does: a staged file renamed over
+// it, through fsx (which retries a publication the running watch briefly blocks
+// on Windows).
 func (s *s74State) whenSaved(level string) error {
-	tmp := s.user + ".s74~"
-	if err := os.WriteFile(tmp, []byte("- id: probe\n  merge:\n    level: "+level+"\n"), 0o600); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, s.user); err != nil {
+	if err := fsx.WriteFile(s.user, []byte("- id: probe\n  merge:\n    level: "+level+"\n"), fsx.Options{Perm: 0o600}); err != nil {
 		return err
 	}
 	select {
