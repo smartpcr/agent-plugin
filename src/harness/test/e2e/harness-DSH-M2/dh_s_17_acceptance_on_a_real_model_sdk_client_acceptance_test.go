@@ -42,10 +42,12 @@ import (
 	"github.com/cucumber/godog"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/profile"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/session/event"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session/store/sqlite"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/launcher"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/temphome"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/tools"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/wire/sdkserver"
 	"github.com/smartpcr/agent-plugin/src/sdk/protocol"
 	"github.com/smartpcr/agent-plugin/src/sdk/sdk"
@@ -599,19 +601,56 @@ func (s *scaState) thenWriteOutcomes(want string) error {
 	if err != nil {
 		return err
 	}
+	allowed, rejected := s.runs[0].write.call, s.runs[1].write.call
+	results := map[string][]event.ToolResultPayload{}
 	for _, e := range log {
-		if e.Type != "tool/result" {
+		if e.Type != event.ToolResult.Name() {
 			continue
 		}
-		d := strings.ToLower(e.Data)
-		if strings.Contains(d, s.runs[0].write.call) && strings.Contains(d, `"is_error":true`) {
-			return fmt.Errorf("the allowed write failed: %s", e.Data)
+		var p event.ToolResultPayload
+		if err := json.Unmarshal([]byte(e.Data), &p); err != nil {
+			return fmt.Errorf("tool/result %d: %v", e.Seq, err)
 		}
-		if strings.Contains(d, s.runs[1].write.call) && strings.Contains(d, "reject") {
-			return nil
+		results[p.CallID] = append(results[p.CallID], p)
+	}
+	for _, call := range []string{allowed, rejected} {
+		if n := len(results[call]); n != 1 {
+			return fmt.Errorf("the persisted log holds %d tool/result for %s, want exactly 1 (results by call: %v)", n, call, scaResultCalls(results))
 		}
 	}
-	return errors.New("the rejected write left no refused tool/result in the persisted log")
+	if p := results[allowed][0]; p.IsError {
+		return fmt.Errorf("the allowed write %s failed: %q", allowed, scaResultText(p))
+	}
+	p := results[rejected][0]
+	refusal := string(tools.CodeApprovalRejected) + ": "
+	if text := scaResultText(p); !p.IsError || !strings.HasPrefix(text, refusal) {
+		return fmt.Errorf("the rejected write %s settled is_error=%v with %q, want is_error=true with the approval refusal %q...", rejected, p.IsError, text, refusal)
+	}
+	return nil
+}
+
+// scaResultText is the text of a tool/result's tool_result blocks.
+func scaResultText(p event.ToolResultPayload) string {
+	var text strings.Builder
+	for _, b := range p.Message.Blocks() {
+		if b.ToolResult == nil {
+			continue
+		}
+		for _, part := range b.ToolResult.Parts {
+			if part.Text != nil {
+				text.WriteString(part.Text.Text)
+			}
+		}
+	}
+	return text.String()
+}
+
+func scaResultCalls(results map[string][]event.ToolResultPayload) map[string]int {
+	n := map[string]int{}
+	for call, ps := range results {
+		n[call] = len(ps)
+	}
+	return n
 }
 
 func (s *scaState) thenRunsCompleted() error {
