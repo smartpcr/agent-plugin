@@ -9,11 +9,13 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 
 	"github.com/smartpcr/agent-plugin/src/go/cordis"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/catalog"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human/command"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/provider/claudecode"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/replay"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm/vocab"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
@@ -21,6 +23,13 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/model"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools"
 	fstools "github.com/smartpcr/agent-plugin/src/harness/internal/world/fs/tools"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox/policy"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/shellexec"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/shellexec/bash"
+	shellenv "github.com/smartpcr/agent-plugin/src/harness/internal/world/shellexec/env"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/shellexec/pwsh"
+	shelltools "github.com/smartpcr/agent-plugin/src/harness/internal/world/shellexec/tools"
 )
 
 // TestRouteName is the catalogue name of the keyless fake model route a testhook
@@ -58,6 +67,52 @@ var testRoute = cordis.Define(TestRouteName, func(ctx *cordis.Context, cfg TestR
 			}
 			return nil
 		}, nil
+	})
+	return err
+}, cordis.WithInject(llm.RuntimeKey.Name()))
+
+// TestClaudeCodeName is the catalogue name of the testhook claude-code route
+// item: it registers the real claude-code route (claudecode.Route) over the
+// client program it names, so a built-binary test runs the route adapter against
+// an ephemeral stand-in client (DH-E-SDK-1). No release build mounts the route
+// yet, and no configuration layer can let a helper run unconfined, so the item
+// plans the client's launch with a resolver of its own that lets only
+// claudecode.RouteID run unconfined.
+const TestClaudeCodeName = "llm.testkit-claude-code"
+
+// TestClaudeCodeConfig is the item's configuration: the client's absolute path,
+// extra NAME=value entries for it (each still checked by claudecode.Route) and
+// its temporary directory.
+type TestClaudeCodeConfig struct {
+	Program string   `json:"program"`
+	Env     []string `json:"env,omitempty"`
+	TempDir string   `json:"tempDir,omitempty"`
+}
+
+var testClaudeCode = cordis.Define(TestClaudeCodeName, func(ctx *cordis.Context, cfg TestClaudeCodeConfig) error {
+	rt, err := llm.RuntimeKey.Get(ctx)
+	if err != nil {
+		return err
+	}
+	if !filepath.IsAbs(cfg.Program) {
+		return fmt.Errorf("%s: program %q is not an absolute path", TestClaudeCodeName, cfg.Program)
+	}
+	res, err := policy.New(policy.Config{UnconfinedHelpers: map[string]string{
+		string(claudecode.RouteID): TestClaudeCodeName + ": the stand-in client of a testhook build",
+	}}, policy.Deps{Owner: ctx})
+	if err != nil {
+		return err
+	}
+	route, err := claudecode.Route(claudecode.Config{Program: cfg.Program, Env: cfg.Env, TempDir: cfg.TempDir, Sandbox: res})
+	if err != nil {
+		return err
+	}
+	_, err = ctx.Effect("llm.testkit-claude-code.register", func() (cordis.Disposer, error) {
+		reg, err := rt.Register(TestClaudeCodeName, route)
+		if err != nil {
+			return nil, err
+		}
+		return func() error { reg.Close(); return nil }, nil
 	})
 	return err
 }, cordis.WithInject(llm.RuntimeKey.Name()))
@@ -111,6 +166,32 @@ var testSleep = cordis.Define(TestSleepName, func(ctx *cordis.Context, _ struct{
 	return err
 }, cordis.WithInject(tools.Key.Name()))
 
+// TestAskName is the catalogue name of the testhook approval policy item: it
+// puts every call of the named tools to approval, standing in for the permission
+// presets (C34) the binary does not boot yet, so a built-binary test drives the
+// approval round trip (DH-E-SDK-1).
+const TestAskName = "tools.testkit-ask"
+
+// TestAskConfig is the approval policy item's configuration: the tools to ask
+// before.
+type TestAskConfig struct {
+	Tools []string `json:"tools"`
+}
+
+var testAsk = cordis.Define(TestAskName, func(ctx *cordis.Context, cfg TestAskConfig) error {
+	reg, err := tools.Key.Get(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = reg.Decide(ctx, TestAskName, func(_ context.Context, c tools.Call) tools.Decision {
+		if slices.Contains(cfg.Tools, c.Name()) {
+			return tools.Ask(TestAskName+" asks before "+c.Name(), "")
+		}
+		return tools.Allow()
+	})
+	return err
+}, cordis.WithInject(tools.Key.Name()))
+
 // TestWorkdirName is the catalogue name of the testhook working-directory item:
 // it provides workdir.Key with one fixed directory as every session's directory
 // and project root, standing in for session.workdir, whose fold registry
@@ -141,15 +222,55 @@ var testWorkdir = cordis.Define(TestWorkdirName, func(ctx *cordis.Context, cfg T
 	return err
 })
 
+// TestShellsName is the catalogue name of the testhook shell-registry item: it
+// provides shellexec.Key with the PowerShell and bash executors this machine has,
+// each over the mounted sandbox seam (sandbox.local), standing in for the
+// executor items no profile mounts yet, so a built-binary test layer can mount
+// the real shellexec.tools and stop or kill a launch while a real shell child
+// runs (DH-E-AGENT-3).
+const TestShellsName = "shellexec.testkit-shells"
+
+var testShells = cordis.Define(TestShellsName, func(ctx *cordis.Context, _ struct{}) error {
+	seam, err := sandbox.ServiceKey.Get(ctx)
+	if err != nil {
+		return err
+	}
+	h := shellexec.LocalHost(os.Environ())
+	o := shellexec.Options{Sandbox: seam, Env: &shellenv.Builder{Registry: shellenv.NewRegistry(shellenv.Builtins{})}}
+	reg := shellexec.NewRegistry()
+	var found []error
+	if e, err := pwsh.New(pwsh.DefaultConfig(), h, o); err != nil {
+		found = append(found, err)
+	} else if _, err := reg.Register(e); err != nil {
+		return err
+	}
+	if e, err := bash.New(bash.Config{}, h, o); err != nil {
+		found = append(found, err)
+	} else if _, err := reg.Register(e); err != nil {
+		return err
+	}
+	if len(found) == 2 {
+		return fmt.Errorf("%s: no shell on this machine: %v; %v", TestShellsName, found[0], found[1])
+	}
+	_, err = shellexec.Key.Provide(ctx, reg)
+	return err
+}, cordis.WithInject(sandbox.ServiceKey.Name()))
+
 func init() {
 	extra = append(extra,
+		catalog.Item{Name: TestShellsName, Component: testShells, Provides: []string{shellexec.Key.Name()}},
+		// The model-facing shell tools (bash, pwsh), which no profile mounts
+		// yet, over the registry above (DH-E-AGENT-3).
+		shelltools.Item(),
 		catalog.Item{Name: TestWorkdirName, Component: testWorkdir, Config: reflect.TypeFor[TestWorkdirConfig](), Provides: []string{workdir.Key.Name()}},
 		// The model-facing file tools (read, write, edit, ...), which no
 		// profile mounts yet, so a built-binary test drives edit (DH-E-FS-3).
 		fstools.Item(),
 		catalog.Item{Name: TestRouteName, Component: testRoute, Config: reflect.TypeFor[TestRouteConfig]()},
+		catalog.Item{Name: TestClaudeCodeName, Component: testClaudeCode, Config: reflect.TypeFor[TestClaudeCodeConfig]()},
 		catalog.Item{Name: TestCommandName, Component: testCommand},
 		catalog.Item{Name: TestSleepName, Component: testSleep},
+		catalog.Item{Name: TestAskName, Component: testAsk, Config: reflect.TypeFor[TestAskConfig]()},
 		// The keyless replay of a recorded session (DH-D-UTIL-7), driven by
 		// test/replay against this build.
 		catalog.Item{Name: replay.Name, Component: replay.Component, Config: reflect.TypeFor[replay.Config]()})

@@ -7,8 +7,11 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/agent"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/boot/launch"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/cli/output"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/human"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/human/approval"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/tools/prompt"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/wire/stdio"
 	"github.com/smartpcr/agent-plugin/src/sdk/jsonrpc"
 	"github.com/smartpcr/agent-plugin/src/sdk/protocol"
@@ -23,8 +26,11 @@ const Name = "wire.sdk"
 // the runtime is provided, so no connection is served with unchecked routes. When the client's transport ends
 // cleanly the owner asks the App to stop with InputClosed (status 0); when the
 // connection fails (a framing error, a forwarding failure) the App is asked to stop
-// with status Failed, so a broken connection never exits 0. Disposing the fiber
-// ends the connection and waits for it to close.
+// with status Failed, so a broken connection never exits 0. It provides the
+// interaction registry (human.Key) and the approval service (approval.Key), so a
+// tool call a policy puts to approval reaches the client as approval/request, and
+// registers the approval-policy prompt section on prompt.Key as cli.headless does.
+// Disposing the fiber ends the connection and waits for it to close.
 var Component = cordis.Define(Name, func(ctx *cordis.Context, _ cordis.None) error {
 	reg, err := agent.Agents.Get(ctx)
 	if err != nil {
@@ -42,7 +48,41 @@ var Component = cordis.Define(Name, func(ctx *cordis.Context, _ cordis.None) err
 	if err != nil {
 		return err
 	}
-	o := Options{Owner: ctx, Agents: reg, Sessions: sessions, Routes: rt, Info: protocol.Implementation{Name: "dsh"}}
+	// The carrier owns the human plane, as cli.headless does for its profile: the
+	// interaction registry the server answers on the sdk channel, and the approval
+	// service over it that the tool pipeline asks (approval.Key). human.Key, the
+	// approval service and Options.Interactions must all be this one registry, or
+	// a tools.Ask decision never reaches the client as approval/request.
+	interactions := human.New()
+	grants := approval.NewGrants()
+	approvals := approval.New(approval.Config{Registry: interactions, Grants: grants, Sessions: sessions})
+	if _, err := approvals.Bind(ctx, sessions); err != nil {
+		return err
+	}
+	if _, err := grants.Bind(ctx, sessions); err != nil {
+		return err
+	}
+	// The approval-policy prompt section, as cli.headless registers it, so the
+	// model on this carrier sees the same policy and standing grants.
+	ps, err := prompt.Key.Get(ctx)
+	if err != nil {
+		return err
+	}
+	if _, err := approvals.RegisterPromptSection(ctx, ps); err != nil {
+		return err
+	}
+	if _, err := human.Key.Provide(ctx, interactions); err != nil {
+		return err
+	}
+	if _, err := approval.Key.Provide(ctx, approvals); err != nil {
+		return err
+	}
+	if _, err := ctx.Effect("wire.sdk.interactions", func() (cordis.Disposer, error) {
+		return func() error { interactions.Close(); return nil }, nil
+	}); err != nil {
+		return err
+	}
+	o := Options{Owner: ctx, Agents: reg, Sessions: sessions, Routes: rt, Info: protocol.Implementation{Name: "dsh"}, Interactions: interactions}
 	app, hasApp := launch.AppKey.Lookup(ctx)
 	if hasApp {
 		o.Ready = app.Ready()
@@ -76,4 +116,4 @@ var Component = cordis.Define(Name, func(ctx *cordis.Context, _ cordis.None) err
 		return func() error { cancel(); <-done; return nil }, nil
 	})
 	return err
-}, cordis.WithInject(agent.Agents.Name(), session.Key.Name(), stdio.Key.Name(), llm.RuntimeKey.Name()))
+}, cordis.WithInject(agent.Agents.Name(), session.Key.Name(), stdio.Key.Name(), llm.RuntimeKey.Name(), prompt.Key.Name()))

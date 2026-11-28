@@ -32,7 +32,8 @@ import (
 //     stages and, through signInProbe, the sign-in of every planned scenario's
 //     client. It prints each sign-in line (no token material). A failure names
 //     the scenario and the client, and no scenario starts.
-//   - scenarios: per phase (DH-S-17: TOOLCHAIN-1, the rest, SANDBOX-7) and module,
+//   - scenarios: per phase (DH-S-17: TOOLCHAIN-1, the single-process rest, the
+//     host-killing SESSION-2 and AGENT-3, SANDBOX-7) and module,
 //     go test -tags scenario -count=1 -p 1 -timeout <left> -v -run <phase> ./...
 //     with DSH_REQUIRE_SCENARIOS set to the phase's IDs, DSH_SCENARIO_ROUTES to
 //     claude-code and its full output in the record; a skip anywhere, a non-zero
@@ -232,18 +233,21 @@ func rehearsalBinary(dir, goos, goarch string) (string, string, error) {
 }
 
 // phases splits plan into the go test runs of stage, in order: the First IDs of
-// stageOrder, the rest in plan order, then the Last IDs. A stage with no order is one
-// phase; empty phases are dropped, and every planned scenario is in exactly one.
+// stageOrder, the rest in plan order, the Late IDs, then the Last IDs. A stage with
+// no order is one phase; empty phases are dropped, and every planned scenario is in
+// exactly one.
 func phases(stage string, plan acceptance.Plan) []acceptance.Plan {
 	order, ok := stageOrder[stage]
 	if !ok {
 		return []acceptance.Plan{plan}
 	}
-	var first, middle, last acceptance.Plan
+	var first, middle, late, last acceptance.Plan
 	for _, s := range plan.Scenarios {
 		switch {
 		case slices.Contains(order.First, s.ID):
 			first.Scenarios = append(first.Scenarios, s)
+		case slices.Contains(order.Late, s.ID):
+			late.Scenarios = append(late.Scenarios, s)
 		case slices.Contains(order.Last, s.ID):
 			last.Scenarios = append(last.Scenarios, s)
 		default:
@@ -251,7 +255,7 @@ func phases(stage string, plan acceptance.Plan) []acceptance.Plan {
 		}
 	}
 	var out []acceptance.Plan
-	for _, p := range []acceptance.Plan{first, middle, last} {
+	for _, p := range []acceptance.Plan{first, middle, late, last} {
 		if len(p.Scenarios) > 0 {
 			out = append(out, p)
 		}
