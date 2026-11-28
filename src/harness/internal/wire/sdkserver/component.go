@@ -11,6 +11,7 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/human/approval"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/llm"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/session"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/tools/prompt"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/wire/stdio"
 	"github.com/smartpcr/agent-plugin/src/sdk/jsonrpc"
 	"github.com/smartpcr/agent-plugin/src/sdk/protocol"
@@ -27,7 +28,8 @@ const Name = "wire.sdk"
 // connection fails (a framing error, a forwarding failure) the App is asked to stop
 // with status Failed, so a broken connection never exits 0. It provides the
 // interaction registry (human.Key) and the approval service (approval.Key), so a
-// tool call a policy puts to approval reaches the client as approval/request.
+// tool call a policy puts to approval reaches the client as approval/request, and
+// registers the approval-policy prompt section on prompt.Key as cli.headless does.
 // Disposing the fiber ends the connection and waits for it to close.
 var Component = cordis.Define(Name, func(ctx *cordis.Context, _ cordis.None) error {
 	reg, err := agent.Agents.Get(ctx)
@@ -56,6 +58,15 @@ var Component = cordis.Define(Name, func(ctx *cordis.Context, _ cordis.None) err
 		return err
 	}
 	if _, err := grants.Bind(ctx, sessions); err != nil {
+		return err
+	}
+	// The approval-policy prompt section, as cli.headless registers it, so the
+	// model on this carrier sees the same policy and standing grants.
+	ps, err := prompt.Key.Get(ctx)
+	if err != nil {
+		return err
+	}
+	if _, err := approvals.RegisterPromptSection(ctx, ps); err != nil {
 		return err
 	}
 	if _, err := human.Key.Provide(ctx, interactions); err != nil {
@@ -103,4 +114,4 @@ var Component = cordis.Define(Name, func(ctx *cordis.Context, _ cordis.None) err
 		return func() error { cancel(); <-done; return nil }, nil
 	})
 	return err
-}, cordis.WithInject(agent.Agents.Name(), session.Key.Name(), stdio.Key.Name(), llm.RuntimeKey.Name()))
+}, cordis.WithInject(agent.Agents.Name(), session.Key.Name(), stdio.Key.Name(), llm.RuntimeKey.Name(), prompt.Key.Name()))
