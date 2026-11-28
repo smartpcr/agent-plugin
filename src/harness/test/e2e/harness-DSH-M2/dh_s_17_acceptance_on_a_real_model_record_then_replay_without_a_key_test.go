@@ -522,11 +522,9 @@ func (s *s17rState) thenLiveOnS17() error {
 
 func (s *s17rState) gate() (string, error) {
 	s17rGateOnce.Do(func() {
-		dir, err := os.MkdirTemp("", "harness-gate-s17r-e2e-")
-		if err != nil {
-			s17rGateErr = err
-			return
-		}
+		// The outer test's TempDir is removed when the test ends, so the built binary
+		// does not accumulate in the system temp folder across runs.
+		dir := s17rOuterT.TempDir()
 		s17rGateBin = filepath.Join(dir, "harness-gate")
 		if runtime.GOOS == "windows" {
 			s17rGateBin += ".exe"
@@ -927,6 +925,8 @@ func InitializeScenario_dh_s_17_acceptance_on_a_real_model_record_then_replay_wi
 
 func TestE2E_dh_s_17_acceptance_on_a_real_model_record_then_replay_without_a_key(t *testing.T) {
 	s17rOuterT = t
+	// The gate binary lives in this test's TempDir, so rebuild it on every run.
+	s17rGateOnce, s17rGateBin, s17rGateErr = sync.Once{}, "", nil
 	suite := godog.TestSuite{
 		ScenarioInitializer: InitializeScenario_dh_s_17_acceptance_on_a_real_model_record_then_replay_without_a_key,
 		Options: &godog.Options{
