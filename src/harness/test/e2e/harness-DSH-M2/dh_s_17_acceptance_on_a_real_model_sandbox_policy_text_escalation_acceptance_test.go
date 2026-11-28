@@ -21,6 +21,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"debug/buildinfo"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -600,7 +601,25 @@ func (s *s76State) givenBinary(branch string) error {
 		if err := (&s76Head{dir: root}).clean(); err != nil {
 			return fmt.Errorf("DH-E-SANDBOX-7 runs on a clean %s head: %w", s76BranchName, err)
 		}
+		if cur, err := s76Git(root, "symbolic-ref", "--short", "HEAD"); err != nil || cur != s76BranchName {
+			return fmt.Errorf("DH-E-SANDBOX-7 runs on the %s head, but the checkout %s is on %q (%v)", s76BranchName, root, cur, err)
+		}
+		head, err := s76Git(root, "rev-parse", "HEAD")
+		if err != nil {
+			return err
+		}
 		s.dsh = os.Getenv("DSH_BIN")
+		info, err := buildinfo.ReadFile(s.dsh)
+		if err != nil {
+			return fmt.Errorf("DSH_BIN %s carries no Go build info: %v", s.dsh, err)
+		}
+		vcs := map[string]string{}
+		for _, kv := range info.Settings {
+			vcs[kv.Key] = kv.Value
+		}
+		if vcs["vcs.revision"] != head || vcs["vcs.modified"] != "false" {
+			return fmt.Errorf("DSH_BIN %s is not built from the clean %s head %s: vcs.revision %q, vcs.modified %q", s.dsh, s76BranchName, head, vcs["vcs.revision"], vcs["vcs.modified"])
+		}
 		// The S17 run's record is acceptance evidence: it is written and
 		// committed on the checkout itself (the clean s17 head), never in a
 		// scratch clone that is deleted with the test.
