@@ -35,8 +35,8 @@ An acceptance step is ticked only by its scenarios; the commit is the one the sc
 | 18.2 | DH-E-HOST-4 | | |
 | 18.3 | DH-E-EXEC-1, DH-E-EXEC-10 | | |
 | 18.4 | DH-E-NATIVESYSTEM-1 to -4, DH-E-SANDBOX-1 | | |
-| 18.5 | DH-E-FS-1, DH-E-FS-2 | | |
-| 18.6 | DH-E-VIEW-5 | | |
+| 18.5 | DH-E-FS-1, DH-E-FS-2 | | not run; blocked, see [Stage 8.6 blockers](#stage-86-blockers) |
+| 18.6 | DH-E-VIEW-5 | | not run; blocked, see [Stage 8.6 blockers](#stage-86-blockers) |
 | 18.7 | DH-E-RIPGREP-1, DH-E-RIPGREP-2 | | |
 | 18.8 | DH-E-CHOKIDAR-1, DH-E-CHOKIDAR-2 | | |
 | 18.9 | DH-E-CONTEXT-2 | | |
@@ -61,13 +61,13 @@ The 19 scenarios of the steps, one row per operating-system variant (M2-DOD-4). 
 | DH-E-NATIVESYSTEM-3 | Linux (E2) | acceptance | required | E2 | | not run (stage not started) | |
 | DH-E-NATIVESYSTEM-4 | Linux (E2) | acceptance | required | E2 | | not run (stage not started) | |
 | DH-E-SANDBOX-1 | Linux (E2) | acceptance | required | E2 | | not run (stage not started) | |
-| DH-E-FS-1 | Linux ext4 | acceptance | required | E2 | | not run (stage not started) | |
-| DH-E-FS-1 | Windows NTFS | acceptance | required | E2 | | not run (stage not started) | |
+| DH-E-FS-1 | Linux ext4 | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
+| DH-E-FS-1 | Windows NTFS | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
 | DH-E-FS-1 | macOS | acceptance | required | | | out of scope (platforms-windows-wsl) | |
-| DH-E-FS-2 | Linux (WSL) | acceptance | required | E2 | | not run (stage not started) | |
-| DH-E-FS-2 | Windows | acceptance | required | E2 | | not run (stage not started) | |
+| DH-E-FS-2 | Linux (WSL) | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
+| DH-E-FS-2 | Windows | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
 | DH-E-FS-2 | macOS | acceptance | required | | | out of scope (platforms-windows-wsl) | |
-| DH-E-VIEW-5 | Linux (WSL) | acceptance | required | E2 | | not run (stage not started) | |
+| DH-E-VIEW-5 | Linux (WSL) | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
 | DH-E-RIPGREP-1 | Linux (WSL) | acceptance | required | E2 | | not run (stage not started) | |
 | DH-E-RIPGREP-1 | Windows | acceptance | required | E2 | | not run (stage not started) | |
 | DH-E-RIPGREP-1 | macOS | acceptance | required | | | out of scope (platforms-windows-wsl) | |
@@ -138,6 +138,37 @@ When it runs, each TOOLCHAIN-2 row takes the run's commit, `E2 runner:<name>` (o
 SHA-256 of the binary it executed and the run id. The six checksums go into
 [Rehearsal binaries](#rehearsal-binaries-step-181) below, and every later S18 row records the SHA-256 of
 the binary it ran, which must be one of them.
+
+## Stage 8.6 blockers
+
+implementation-plan Stage 8.6 (impl.md 18.5 and 18.6: `DH-E-FS-1`, `DH-E-FS-2`, `DH-E-VIEW-5`) was taken
+up on `7b5133d` and could not run. Nothing below is evidence of a run: the FS-1, FS-2 and VIEW-5 rows stay
+`not run` and are owed, on `linux-wsl`, `linux-wsl:smb`, `windows-hosted`, `windows-host` and
+`windows-host:smb` of [variants.md](variants.md). Each open blocker on its own stops the run:
+
+| Blocker | Seen | What clears it |
+| --- | --- | --- |
+| `harness-gate entry` exits 1: harness:DSH-M1 is not closed (M2-DEC-1); every `s18` job runs `entry` first. | `GOWORK=off go -C tools/harness-gate run . entry --root ../..` on `7b5133d`: 12 blockers, exit 1 | M1 closure merges and `entry` exits 0 |
+| No rehearsed binary: step 18.1 has not run ([Stage 8.2 blockers](#stage-82-blockers)), and `variant-run` runs no later S18 scenario without a binary verified against `rehearsal.sha256`. | both TOOLCHAIN-2 rows `not run` | both TOOLCHAIN-2 rows read `passed` |
+| One value per input for every `s18` job. `harness-scenarios.yml` binds each `DSH_SCENARIO_*` once from environment `dsh-m2-s18` into the job env of every variant; only the `vm:*` jobs select their own (`DSH_S18_<TARGET>_*`). FS-1's `DSH_SCENARIO_FS1_DIRS` and `DSH_SCENARIO_FS1_SHARE` are paths (an ext4 directory on `linux-wsl`, an NTFS one on `windows-hosted`; `/mnt/dsh-smb/scratch` and `S:\scratch` per [runbook-smb-share.md](runbook-smb-share.md)) and `DSH_SCENARIO_FS2_CHILDREN` is a per-OS command, so one value cannot serve the Linux and the Windows jobs. | the `s18` job's `env` block and its "Select the hypervisor's inputs" step | operator answer to `s18-per-variant-inputs` |
+| FS-1 needs a share on every variant. `TestFenceHoldsUnderALinkSwap` always appends `need(DSH_SCENARIO_FS1_SHARE)` to the local directories, so `windows-hosted` (GitHub-hosted, no share; variants.md gives it FS-1) fails at that input (a missing input never skips, DH-O-15), and `linux-wsl` runs the share leg that `linux-wsl:smb` owns. | `harness-gate require --stage DH-S-18 --variant windows-hosted --inputs` on `7b5133d` lists `DSH_SCENARIO_FS1_SHARE`; so do `linux-wsl` and `linux-wsl:smb` | operator answer to `s18-per-variant-inputs` |
+| Refusal codes outside FS-1's allowed set on Windows. The DH-S-12 probes (1,000 calls) saw `fs/io` (2 to 5 per 1,000) and once `fs/permission-denied` while the link was swapped; FS-1 fails on any refusal other than `fs/sandbox-denied`, `fs/not-found`, `fs/not-directory` or a dependent call. Q `fs1-swap-io-codes` was never answered; accepting more codes changes the assertion, which this stage does not do on its own. | [DH-S-12.md](DH-S-12.md) Open items | operator answer to `fs1-swap-io-codes` |
+| Who, and the inputs. FS-2 and VIEW-5 run on the tester's Linux machine and the Windows host, each on its own signed-in Claude Code, by the owner or an operator, never an agent session (runbook-smb-share.md "Who"; the DH-S-17 precedent). No input of the three scenarios is committed (layers, the 20 tasks, the checkouts, the descendant command, the move text). | `require --variant linux-wsl --inputs` and `--variant windows-host --inputs` on `7b5133d` | the operator or the runner's environment supplies them; none is a credential |
+
+On an outside write the stage stops and both listings are kept (M2-R-03): FS-1 keeps its scratch
+directory, both listings of O and the session log; FS-2 both listings of each task's parent directory and
+the session logs; VIEW-5, since this branch, both listings of the scratch directory outside the project and
+the worktree. The listing paths are in the test log (`kept the before and after listings of ...`).
+
+Cleared on this stage's branch (it would have left VIEW-5's Then clause unproved on its variant; the commit
+is this stage's merge):
+
+| Defect | Seen on `7b5133d` | Fix |
+| --- | --- | --- |
+| VIEW-5 did not check "every model-chosen write lands inside the session's working directory" (Stage 8.6, TC-21s4) and listed nothing outside it, so a stray write elsewhere passed and M2-R-03 had no listing to keep. | `view_workdir_scenario_test.go`: only `view5-relative.txt` (in T) and `view5-original.txt` (not in R) were looked at | after each run, every successful `write`, `edit` and `apply_patch` path (relative ones resolved) must lie inside that run's working directory, R before the move and T after it (`view5WritesInside`); the hash listing of the scratch directory without R and T is taken before the session and compared after each step, both kept on failure (`TestView5InsideJudgesWritePaths`) |
+
+Probes, not evidence: none. FS-2 and VIEW-5 are signed-in runs (see "Who" above), and FS-1 has no committed
+layer to probe with; `entry` forbids a recorded run either way.
 
 ## Evidence record (impl.md sec. 7.3)
 

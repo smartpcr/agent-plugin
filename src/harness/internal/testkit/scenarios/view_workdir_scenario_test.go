@@ -35,10 +35,15 @@ import (
 // T and the write to R is refused fs/sandbox-denied, (4) the session recovers to
 // R with one workspace-root/change of cause recovery, and (5) the turn is
 // rejected workdir/unavailable. The UI directory-picker clause of (5) waits for
-// the UI stage (binding in e2e-scenarios.md).
+// the UI stage (binding in e2e-scenarios.md). Throughout, every model-chosen
+// write that succeeds (write, edit and each path of apply_patch) lands inside
+// the session's working directory of its run (R before the move, T after it),
+// and the hash listing of the scratch directory outside R and T is unchanged
+// (implementation-plan Stage 8.6, TC-21s4).
 //
 // Cleanup: the repository, the worktree and the home are removed (t.TempDir);
-// the session log is kept (keepExport).
+// the session log is kept (keepExport). When a file outside R and T changed, the
+// stage stops (M2-R-03) and both listings are kept (keepListings).
 //
 // Inputs: DSH_SCENARIO_VIEW5_LAYER a layer enabling the default tool set under
 // the bwrap backend with no title route; DSH_SCENARIO_VIEW5_MOVE the host
@@ -66,6 +71,21 @@ func TestHostMoveIntoARealWorktree(t *testing.T) {
 	view5Git(t, repo, "add", "README.md")
 	view5Git(t, repo, "-c", "user.name=dsh", "-c", "user.email=dsh@example.invalid", "commit", "--quiet", "-m", "seed")
 	view5Git(t, repo, "worktree", "add", "--quiet", tree)
+	if err := os.MkdirAll(filepath.Join(scratch, "outside"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scratch, "outside", "keep.txt"), []byte("outside\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outside := func() map[string]string { return view5Outside(t, scratch) }
+	before := outside()
+	keepListings(t, "view5-outside", before, outside)
+	unchanged := func(when string) {
+		t.Helper()
+		if diff := listingDiff(before, outside()); len(diff) > 0 {
+			t.Fatalf("%s, files outside the project and the worktree changed (M2-R-03: the stage stops): %v", when, diff)
+		}
+	}
 
 	h := startSDK(t, bin, nil, []string{"--layer", layer})
 	session := h.createIn(t, route, repo, "workspace-write")
@@ -76,6 +96,8 @@ func TestHostMoveIntoARealWorktree(t *testing.T) {
 	if moves := view5Changes(t, evs, "move"); len(moves) != 0 {
 		t.Fatalf("a tool call moved the session: %v", moves)
 	}
+	view5WritesInside(t, evs, repo)
+	unchanged("after the run asking for a directory change")
 
 	// (2) The host moves the session to the worktree.
 	var q protocol.SessionQueryResult
@@ -111,6 +133,8 @@ func TestHostMoveIntoARealWorktree(t *testing.T) {
 	if !denied {
 		t.Fatalf("no write of the run was refused %s", codeSandboxDenied)
 	}
+	view5WritesInside(t, evs, tree)
+	unchanged("after the writes in the worktree")
 
 	// (4) The worktree is deleted; the session recovers to the project.
 	if err := os.RemoveAll(tree); err != nil {
@@ -124,6 +148,8 @@ func TestHostMoveIntoARealWorktree(t *testing.T) {
 	if len(ofType(evs, "turn/end")) == 0 {
 		t.Fatal("the turn after the worktree was deleted did not end")
 	}
+	view5WritesInside(t, evs, repo)
+	unchanged("after the recovery")
 
 	// (5) The repository is deleted too; the turn is rejected.
 	if err := os.RemoveAll(repo); err != nil {
@@ -137,6 +163,7 @@ func TestHostMoveIntoARealWorktree(t *testing.T) {
 		if !strings.Contains(err.Error(), codeWorkdirGone) {
 			t.Fatalf("the prompt with every directory gone failed with %v, want %s", err, codeWorkdirGone)
 		}
+		unchanged("after the rejected prompt")
 		return
 	}
 	run := h.awaitRun(t, session, r, 10*time.Minute)
@@ -144,6 +171,81 @@ func TestHostMoveIntoARealWorktree(t *testing.T) {
 	if !strings.Contains(string(raw), codeWorkdirGone) {
 		t.Fatalf("the turn with every directory gone was not rejected %s: %s", codeWorkdirGone, raw)
 	}
+	unchanged("after the rejected turn")
+}
+
+// view5Outside is the hash listing of scratch without the project (repo) and the
+// worktree (tree): what no write of the session may change.
+func view5Outside(t *testing.T, scratch string) map[string]string {
+	t.Helper()
+	all := hashListing(t, scratch)
+	for k := range all {
+		if top, _, _ := strings.Cut(k, "/"); top == "repo" || top == "tree" {
+			delete(all, k)
+		}
+	}
+	return all
+}
+
+// view5WritesInside fails unless every successful write, edit and apply_patch
+// path of evs, relative ones resolved against dir, names a file inside dir (the
+// session's working directory of that run). A refused call wrote nothing.
+func view5WritesInside(t *testing.T, evs []protocol.Event, dir string) {
+	t.Helper()
+	for _, o := range toolOutcomes(t, evs) {
+		if o.IsError {
+			continue
+		}
+		var paths []string
+		switch o.Name {
+		case "write", "edit":
+			var a struct {
+				FilePath string `json:"file_path"`
+			}
+			if err := json.Unmarshal(o.Args, &a); err != nil {
+				t.Fatalf("%s arguments %s: %v", o.Name, o.Args, err)
+			}
+			paths = []string{a.FilePath}
+		case "apply_patch":
+			var a struct {
+				Input string `json:"input"`
+			}
+			if err := json.Unmarshal(o.Args, &a); err != nil {
+				t.Fatalf("apply_patch arguments %s: %v", o.Args, err)
+			}
+			for _, h := range fs2ParsePatch(t, a.Input) {
+				paths = append(paths, h.path)
+				if h.moveTo != "" {
+					paths = append(paths, h.moveTo)
+				}
+			}
+		default:
+			continue
+		}
+		for _, p := range paths {
+			if !view5Inside(dir, p) {
+				t.Fatalf("call %s (%s) wrote %s, outside the session's working directory %s", o.ID, o.Name, p, dir)
+			}
+		}
+	}
+}
+
+// view5Inside reports whether p, resolved against dir when relative, is dir or
+// below it; dir is compared as given and with its links resolved.
+func view5Inside(dir, p string) bool {
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(dir, p)
+	}
+	dirs := []string{filepath.Clean(dir)}
+	if real, err := filepath.EvalSymlinks(dir); err == nil {
+		dirs = append(dirs, filepath.Clean(real))
+	}
+	for _, d := range dirs {
+		if rel, err := filepath.Rel(d, filepath.Clean(p)); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 // view5Changes is the directory of every workspace-root/change of cause in evs.
