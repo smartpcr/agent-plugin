@@ -68,3 +68,73 @@ func TestParseAcceptsCRLF(t *testing.T) {
 		t.Fatalf("Guarded = %+v, %v", s, err)
 	}
 }
+
+// Scenario "Preflight refuses a wrong machine" (implementation-plan Stage 8.1;
+// e2e-scenarios.md Phase 9): each service's preflight passes only the recorded
+// report of its own machine. service:linux-landlock-only fails a "bwrap Full"
+// report and service:linux-unconfined a "landlock" one, each naming the expected
+// state.
+func TestPreflightRefusesAWrongMachine(t *testing.T) {
+	fixtures := map[string]string{}
+	for _, f := range []string{"bwrap-full.txt", "landlock-partial.txt", "unconfined.txt"} {
+		b, err := os.ReadFile(filepath.Join("testdata", f))
+		if err != nil {
+			t.Fatal(err)
+		}
+		fixtures[f] = string(b)
+	}
+	own := map[string]string{
+		"service:linux-sandbox-bwrap": "bwrap-full.txt",
+		"service:linux-landlock-only": "landlock-partial.txt",
+		"service:linux-unconfined":    "unconfined.txt",
+	}
+	want := map[string]string{
+		"service:linux-sandbox-bwrap": "want backend bwrap, state Full",
+		"service:linux-landlock-only": "want backend landlock, state Full or Partial",
+		"service:linux-unconfined":    "want state Unconfined, the missing effects named",
+	}
+	if len(own) != len(Expectations) {
+		t.Fatalf("%d expectations, %d covered here", len(Expectations), len(own))
+	}
+	for _, e := range Expectations {
+		for f, report := range fixtures {
+			t.Run(e.Service+"/"+f, func(t *testing.T) {
+				_, err := Preflight(e.Service, report)
+				if f == own[e.Service] {
+					if err != nil {
+						t.Fatalf("its own machine failed: %v", err)
+					}
+					return
+				}
+				if err == nil {
+					t.Fatalf("passed %s", f)
+				}
+				if !strings.Contains(err.Error(), want[e.Service]) || !strings.Contains(err.Error(), e.Service) {
+					t.Errorf("the failure does not name the service and expected state %q: %v", want[e.Service], err)
+				}
+			})
+		}
+	}
+}
+
+// The edges: an Unconfined report naming no missing effect, a landlock state
+// other than Full or Partial, an unknown service and a report that is not one.
+func TestPreflightEdges(t *testing.T) {
+	for name, tc := range map[string]struct{ service, report string }{
+		"unconfined, missing none":  {"service:linux-unconfined", "state:   Unconfined\nbackend: none\nmissing: none\n"},
+		"unconfined, no missing":    {"service:linux-unconfined", "state:   Unconfined\nbackend: none\n"},
+		"landlock Unconfined":       {"service:linux-landlock-only", "state:   Unconfined\nbackend: landlock\n"},
+		"unknown service":           {"service:windows-host", "state:   Full\nbackend: bwrap\n"},
+		"landlock, not a report":    {"service:linux-landlock-only", "dsh: no such command\n"},
+		"bwrap, landlock Full read": {"service:linux-sandbox-bwrap", "state:   Full\nbackend: landlock\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if s, err := Preflight(tc.service, tc.report); err == nil {
+				t.Errorf("passed with %s", s)
+			}
+		})
+	}
+	if _, err := Preflight("service:linux-landlock-only", "state:   Full\r\nbackend: landlock\r\n"); err != nil {
+		t.Errorf("landlock Full failed: %v", err)
+	}
+}

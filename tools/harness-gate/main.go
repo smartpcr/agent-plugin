@@ -32,8 +32,17 @@
 //	                       its credential names is not signed in on this host
 //	                       (DH-D-TOOLCHAIN-4, M1-G-TOOL-16); it reads no model key
 //	                       (models-signed-in-claude-copilot)
-//	require --stage DH-S-n prints the index entry of the stage being accepted, the
-//	                       value of DSH_REQUIRE_SCENARIOS
+//	require --stage DH-S-n [--variant label [--story s] [--inputs]]
+//	                       prints the index entry of the stage being accepted, the
+//	                       value of DSH_REQUIRE_SCENARIOS; with --variant only the
+//	                       IDs that S18 variant runs (variants package); with
+//	                       --inputs the DSH_SCENARIO_* inputs their tests read
+//	variants [--story s]   the S18 variant fleet of evidence/variants.md cross-
+//	                       referenced with the DH-S-18 index entry (M2-DOD-4):
+//	                       prints the coverage, exits 1 on any problem (variantscmd.go)
+//	ack-probe --listen addr --token t --log file [--send cmd]
+//	                       service:ack-recorder preflight: a test acknowledgment is
+//	                       recorded and read back (ackprobe.go)
 //	scenarios --stage DH-S-n --evidence file
 //	                       runs that stage's scenarios on the development host,
 //	                       where the user is signed in (M1-D-TOOL-6 (a)): the
@@ -70,12 +79,13 @@
 //	                       the clean checkout: commit, each text's SHA-256 and
 //	                       escalations, written to evidence/runs/<id>.txt; it
 //	                       runs no gate (sandbox7record.go)
-//	sandbox-preflight [--status file]
+//	sandbox-preflight [--status file] [--service s]
 //	                       the guarded preflight of the WSL lane (Stage 6.10,
 //	                       architecture.md I-8): a "dsh sandbox status" report
 //	                       (standard input by default) passes only as backend
 //	                       bwrap, state Full; anything else exits 1, never a
-//	                       skip (sandboxpreflight.go)
+//	                       skip; --service decides an S18 sandbox service's
+//	                       preflight instead (sandboxpreflight.go)
 package main
 
 import (
@@ -92,6 +102,8 @@ import (
 
 	"github.com/smartpcr/agent-plugin/tools/harness-gate/acceptance"
 	"github.com/smartpcr/agent-plugin/tools/harness-gate/analyzers"
+	"github.com/smartpcr/agent-plugin/tools/harness-gate/closure"
+	"github.com/smartpcr/agent-plugin/tools/harness-gate/variants"
 )
 
 func main() {
@@ -136,6 +148,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return runSandbox7Record(ctx, args[1:], stdout, stderr)
 		case "sandbox-preflight":
 			return runSandboxPreflight(args[1:], os.Stdin, stdout, stderr)
+		case "variants":
+			return runVariants(args[1:], stdout, stderr)
+		case "ack-probe":
+			return runAckProbe(args[1:], stdout, stderr)
 		}
 	}
 	flags := flag.NewFlagSet("harness-gate", flag.ContinueOnError)
@@ -273,11 +289,19 @@ func runPreflight(ctx context.Context, args []string, stdout, stderr io.Writer) 
 // runRequire is "harness-gate require [--root dir] --stage DH-S-n": it prints the
 // comma-separated scenario IDs of the index entry of the stage being accepted, the
 // value of DSH_REQUIRE_SCENARIOS for that run. An empty --stage prints an empty
-// line; a stage the index does not list fails.
+// line; a stage the index does not list fails. With --variant (an s18 job, Stage
+// 8.1) it prints only the IDs that variant of the story's evidence/variants.md
+// runs, after the variant list passes its cross-reference with the index. With
+// --inputs it prints instead the space-separated DSH_SCENARIO_* inputs the scenario
+// tests of those IDs read (variants.InputsFor), the inputs the job must set.
 func runRequire(args []string, stdout, stderr io.Writer) int {
-	var stage string
+	var stage, variant, story string
+	var inputs bool
 	root, ok := subcommandFlags("require", args, stderr, func(f *flag.FlagSet) {
 		f.StringVar(&stage, "stage", "", "the acceptance stage being run, e.g. DH-S-18")
+		f.StringVar(&variant, "variant", "", "an S18 variant label of evidence/variants.md, e.g. linux-e2:landlock")
+		f.StringVar(&story, "story", closure.DefaultStory, "the story whose evidence/variants.md --variant reads")
+		f.BoolVar(&inputs, "inputs", false, "print the run-time inputs the required scenarios read")
 	})
 	if !ok {
 		return 2
@@ -296,6 +320,34 @@ func runRequire(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		fmt.Fprintf(stderr, "harness-gate require: %v\n", err)
 		return 1
+	}
+	goos := ""
+	if variant != "" {
+		fleet, err := variants.Read(abs, story)
+		if err != nil {
+			fmt.Fprintf(stderr, "harness-gate require: %v\n", err)
+			return 2
+		}
+		if ids, err = fleet.Require(x, strings.TrimSpace(stage), variant); err != nil {
+			fmt.Fprintf(stderr, "harness-gate require: %v\n", err)
+			return 1
+		}
+		v, _ := fleet.Variant(variant)
+		goos = v.GOOS()
+	}
+	if inputs {
+		_, scenarios, err := readAcceptance(abs)
+		if err != nil {
+			fmt.Fprintf(stderr, "harness-gate require: %v\n", err)
+			return 2
+		}
+		names, err := variants.InputsFor(abs, scenarios, ids, goos)
+		if err != nil {
+			fmt.Fprintf(stderr, "harness-gate require: %v\n", err)
+			return 1
+		}
+		fmt.Fprintln(stdout, strings.Join(names, " "))
+		return 0
 	}
 	fmt.Fprintln(stdout, strings.Join(ids, ","))
 	return 0
