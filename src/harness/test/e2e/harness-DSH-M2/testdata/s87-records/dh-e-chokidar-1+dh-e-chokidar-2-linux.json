@@ -14,21 +14,21 @@
   "distro": "Ubuntu-24.04",
   "variant": "linux (WSL Ubuntu-24.04)",
   "lane": "ephemeral instance",
-  "sources": "135110317e564c04c924eceffba6af8d41934494ad88c90ce669425029af4b23",
-  "commit": "d70b47b86a39ca5a9f2a4943ed3725f5cf54364f",
-  "run": "1795869905113704600",
-  "at": "2026-11-28T12:52:51Z",
+  "sources": "b2aaacd84e83f46230dcdae671e726db4dc10edcd238a3027f205811770a0ea0",
+  "commit": "52989e6153a3c9f32b1ed72a58158c3f86b2c304",
+  "run": "1795871211310470700",
+  "at": "2026-11-28T13:14:41Z",
   "code": 0,
   "rows": {
     "DH-E-CHOKIDAR-1": {
-      "durationMs": 36060,
+      "durationMs": 36059,
       "id": "DH-E-CHOKIDAR-1",
       "kind": "scenario",
       "os": "linux",
       "result": "passed"
     },
     "DH-E-CHOKIDAR-2": {
-      "durationMs": 34897,
+      "durationMs": 34966,
       "id": "DH-E-CHOKIDAR-2",
       "kind": "scenario",
       "os": "linux",
@@ -36,14 +36,14 @@
     }
   },
   "volumes": [
-    "smb2 /tmp/dsh-s87-mnt-at6DJS/smb/linux-1795869905113704600 (smbd, from /tmp/dsh-s87-smb-0BA8Df/share/linux-1795869905113704600)",
-    "nfs /tmp/dsh-s87-mnt-at6DJS/nfs/linux-1795869905113704600 (NFSv3 export, from /tmp/dsh-s87-nfs-zXQ5fX/export/linux-1795869905113704600)",
-    "v9fs /mnt/c/Users/XIAODO~1.RED/AppData/Local/Temp/dsh-s87-crossed-868993832"
+    "smb2 /tmp/dsh-s87-mnt-6U9OBW/smb/linux-1795871211310470700 (smbd, from /tmp/dsh-s87-smb-p7Qg9j/share/linux-1795871211310470700)",
+    "nfs /tmp/dsh-s87-mnt-6U9OBW/nfs/linux-1795871211310470700 (NFSv3 export, from /tmp/dsh-s87-nfs-ZGDyQA/export/linux-1795871211310470700)",
+    "v9fs /mnt/c/Users/XIAODO~1.RED/AppData/Local/Temp/dsh-s87-crossed-782740634"
   ],
   "remote": [
     "smb",
     "nfs",
     "cross-os"
   ],
-  "log": "=== RUN   TestWatchRealEditorSaves\n    watch_scenario_test.go:182: credentials watch in notify mode\n    watch_scenario_test.go:182: workspace watch in notify mode\n    watch_scenario_test.go:216: workspace tree watch in notify mode\n    track.go:203: scenario report /tmp/dsh-s87-report-aYFzgs/report.jsonl: {\"kind\":\"scenario\",\"id\":\"DH-E-CHOKIDAR-1\",\"result\":\"passed\",\"os\":\"linux\",\"durationMs\":36060}\n--- PASS: TestWatchRealEditorSaves (36.06s)\n=== RUN   TestWatchRemoteFilesystemsPoll\n    track.go:203: scenario report /tmp/dsh-s87-report-aYFzgs/report.jsonl: {\"kind\":\"scenario\",\"id\":\"DH-E-CHOKIDAR-2\",\"result\":\"passed\",\"os\":\"linux\",\"durationMs\":34897}\n--- PASS: TestWatchRemoteFilesystemsPoll (34.90s)\nPASS\n"
+  "log": "=== RUN   TestWatchRealEditorSaves\n    watch_scenario_test.go:182: credentials watch in notify mode\n    watch_scenario_test.go:182: workspace watch in notify mode\n    watch_scenario_test.go:216: workspace tree watch in notify mode\n    track.go:203: scenario report /tmp/dsh-s87-report-g539c6/report.jsonl: {\"kind\":\"scenario\",\"id\":\"DH-E-CHOKIDAR-1\",\"result\":\"passed\",\"os\":\"linux\",\"durationMs\":36059}\n--- PASS: TestWatchRealEditorSaves (36.06s)\n=== RUN   TestWatchRemoteFilesystemsPoll\n    track.go:203: scenario report /tmp/dsh-s87-report-g539c6/report.jsonl: {\"kind\":\"scenario\",\"id\":\"DH-E-CHOKIDAR-2\",\"result\":\"passed\",\"os\":\"linux\",\"durationMs\":34966}\n--- PASS: TestWatchRemoteFilesystemsPoll (34.97s)\nPASS\n"
 }
