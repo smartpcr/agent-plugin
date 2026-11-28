@@ -517,6 +517,18 @@ func (l *s86Leg) ephemeralFS1() error {
 // ext4 and NTFS volumes on the Linux variant, NTFS on the Windows host.
 var s86FS1Need = map[string][]string{"linux": {"ext4", "NTFS"}, "windows": {"NTFS"}}
 
+// s86FS1Dirs lists the non-blank trimmed entries of a ';'-separated
+// DSH_SCENARIO_FS1_DIRS value, so every step counts the same directories.
+func s86FS1Dirs(v string) []string {
+	var dirs []string
+	for _, d := range strings.Split(v, ";") {
+		if d = strings.TrimSpace(d); d != "" {
+			dirs = append(dirs, d)
+		}
+	}
+	return dirs
+}
+
 // checkFS1 proves what the run will use, whoever supplied it: every directory
 // of DSH_SCENARIO_FS1_DIRS exists on the variant and is on a real filesystem,
 // together they cover the variant's filesystems, and DSH_SCENARIO_FS1_SHARE is
@@ -527,10 +539,7 @@ func (l *s86Leg) checkFS1() []error {
 	var why []error
 	seen := map[string]bool{}
 	var kinds []string
-	for _, d := range strings.Split(l.inputs["DSH_SCENARIO_FS1_DIRS"], ";") {
-		if d = strings.TrimSpace(d); d == "" {
-			continue
-		}
+	for _, d := range s86FS1Dirs(l.inputs["DSH_SCENARIO_FS1_DIRS"]) {
 		kind, err := l.v.volumeKind(d)
 		if err != nil {
 			why = append(why, fmt.Errorf("DSH_SCENARIO_FS1_DIRS entry %s: %v", d, err))
@@ -1234,7 +1243,7 @@ var s86Swaps = regexp.MustCompile(`the helper swapped W/sub (\d+) times using a 
 
 func (s *s86State) thenSwapped() error {
 	return s.logs(func(l *s86Leg) error {
-		dirs := len(strings.Split(l.inputs["DSH_SCENARIO_FS1_DIRS"], ";")) + 1
+		dirs := len(s86FS1Dirs(l.inputs["DSH_SCENARIO_FS1_DIRS"])) + 1
 		ms := s86Swaps.FindAllStringSubmatch(l.log, -1)
 		if len(ms) != dirs {
 			return fmt.Errorf("%d swap reports for %d filesystems", len(ms), dirs)
@@ -1250,7 +1259,7 @@ func (s *s86State) thenSwapped() error {
 
 func (s *s86State) thenOutsideUnchanged() error {
 	return s.logs(func(l *s86Leg) error {
-		dirs := len(strings.Split(l.inputs["DSH_SCENARIO_FS1_DIRS"], ";")) + 1
+		dirs := len(s86FS1Dirs(l.inputs["DSH_SCENARIO_FS1_DIRS"])) + 1
 		for i := 1; i <= dirs; i++ {
 			if !strings.Contains(l.log, fmt.Sprintf("--- PASS: %s/fs%d ", s.test, i)) {
 				return fmt.Errorf("the listing of O on filesystem %d was not proved unchanged (no passing fs%d leg)", i, i)
