@@ -108,7 +108,7 @@ GOWORK=off go -C tools/harness-gate run . close     --root ../.. --stage DH-S-16
 GOWORK=off go -C tools/harness-gate run . records   --root ../..
 GOWORK=off go -C tools/harness-gate run . entry     --root ../.. --story harness:DSH-M2
 GOWORK=off go -C tools/harness-gate run . policy-text --root ../..
-dsh sandbox status | GOWORK=off go -C tools/harness-gate run . sandbox-preflight [--status FILE] [--service service:linux-landlock-only]
+dsh sandbox status | GOWORK=off go -C tools/harness-gate run . sandbox-preflight [--status FILE] [--service service:linux-landlock-only --preflight "landlock ABI 1-4"]
 ```
 
 - `rehearse` (DH-D-TOOLCHAIN-5, DH-ADR-TOOLCHAIN-13; gap-closure step 19.1.1) runs
@@ -208,10 +208,14 @@ Copilot CLI 1.0.115 has no non-interactive status command; `none` runs no check.
   one with a missing or repeated line. It never skips. Exit 2 is a usage error.
   With `--service` it decides that S18 sandbox service's preflight instead
   (`sandboxstatus.Preflight`): `service:linux-sandbox-bwrap` backend `bwrap`,
-  state `Full`; `service:linux-landlock-only` backend `landlock`, state `Full` or
-  `Partial`; `service:linux-unconfined` state `Unconfined` with the missing
-  effects named. A wrong machine, or an unknown service, exits 1 naming the
-  service and the expected state.
+  state `Full`; `service:linux-landlock-only` backend `landlock`, with
+  `--preflight` naming the machine kind as variants.md's Preflight column does:
+  `landlock ABI >= 5` (state `Full` or `Partial`, `fs-write` and `harness-home`
+  not missing) or `landlock ABI 1-4` (state `Partial`, `fs-write` missing);
+  `service:linux-unconfined` state `Unconfined` with the missing
+  effects named. A wrong machine, or an unknown service or preflight, exits 1
+  naming the service and the expected state; a landlock check without
+  `--preflight` fails too, since the service has two.
 
 ## Story entry (`harness-gate entry`)
 
