@@ -17,10 +17,12 @@ backends:
   bwrap: available, canary refused, governs fs-write, network, harness-home, delegated-execution
   landlock: available, canary refused, governs fs-write, harness-home
 `
+	// landlockPartial is a Landlock-only machine on any ABI: status judges a
+	// network-denied start (sandbox.Expect) and Landlock governs no network.
 	landlockPartial = `state:   Partial
 backend: landlock
-missing: network
-exposed: network
+missing: network, delegated-execution
+exposed: none
 backends:
   bwrap: unavailable: bwrap not found on an absolute path
   landlock: available, canary refused, governs fs-write, harness-home
@@ -36,8 +38,11 @@ backends:
 
 func TestVerdictIsTheReportHead(t *testing.T) {
 	v := readVerdict(landlockPartial)
-	if got, want := v.String(), "Partial landlock, missing [network], exposed [network]"; got != want {
+	if got, want := v.String(), "Partial landlock, missing [network, delegated-execution], exposed [none]"; got != want {
 		t.Errorf("verdict %q, want %q", got, want)
+	}
+	if got := readVerdict("state:   Partial\nbackend: bwrap\nmissing: network\nexposed: network\nbackends:\n  exposed: x\n").Exposed; got != "network" {
+		t.Errorf("exposed %q, want the head's network", got)
 	}
 	cases := []struct {
 		name, report, backend string
@@ -48,7 +53,7 @@ func TestVerdictIsTheReportHead(t *testing.T) {
 		{"bwrap machine as landlock-only", bwrapFull, "landlock", []string{"Full", "Partial"}, true},
 		{"landlock machine as landlock", landlockPartial, "landlock", []string{"Full", "Partial"}, false},
 		{"landlock machine as bwrap", landlockPartial, "bwrap", []string{"Full"}, true},
-		{"landlock machine as ABI >= 5", landlockPartial, "landlock", []string{"Full"}, true},
+		{"landlock machine as the Partial NATIVESYSTEM machines", landlockPartial, "landlock", []string{"Partial"}, false},
 		{"partial naming nothing missing", partialUnnamed, "landlock", []string{"Full", "Partial"}, true},
 	}
 	for _, c := range cases {

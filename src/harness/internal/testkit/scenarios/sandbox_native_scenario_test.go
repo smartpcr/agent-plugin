@@ -25,7 +25,10 @@ const native1Planted = "ANTHROPIC_API_KEY=dsh-scenario-planted-key"
 func native1(t *testing.T, in sandboxInputs, r *remoteDsh) []string {
 	t.Helper()
 	setuid := need(t, "DSH_SCENARIO_NATIVESYSTEM1_SETUID", "a command template over {path} that runs a set-user-ID helper present on every Landlock machine and has it try to write {path}")
-	r.mustVerdict(t, "landlock", "Full")
+	// Status judges a network-denied start (sandbox.Expect); Landlock governs
+	// no network, so it reads Partial naming network on every ABI, while the
+	// starts below are judged by their own records.
+	r.mustVerdict(t, "landlock", "Partial")
 	m := startScriptedModel(t)
 	h := r.sdk(t, r.bin, r.layer(t, in, m, "any", "native1"), m, native1Planted)
 	d := r.outside + "/D"
@@ -217,6 +220,7 @@ func TestNativeSystemNoLandlockRefusesBeforeExec(t *testing.T) {
 				t.Logf("%s: enforcement %s", r.alias, readVerdict(st))
 				mustStatusUnconfined(t, st)
 			} else {
+				r.mustVerdict(t, "landlock", "Partial")
 				r.must(t, "remove the extra write root", "rmdir '"+r.extra+"'")
 			}
 			m := startScriptedModel(t)
