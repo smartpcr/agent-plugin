@@ -44,11 +44,12 @@ Feature: Instruction files and private storage on real systems
   # the runbook's (DSH_SCENARIO_STORAGE6_USER, _PUBLIC, _LIST, _READ, as the s18
   # two-account jobs of harness-scenarios.yml set them), or, where the run is root
   # or has passwordless sudo, one the scenario makes with useradd and deletes. On
-  # Windows without the runbook's account, the test also runs this scenario in the
-  # machine's WSL as root (subtest linux-wsl). Every list and read below is a real
-  # process run as that account. A machine with no second account skips it: the
-  # two-account machine is lab-only.
-  @lab-two-account
+  # Windows without the runbook's account, the test runs this scenario in the
+  # machine's WSL as root instead (subtest linux-wsl). Every list and read below is
+  # a real process run as that account, and a failure counts as denied only when
+  # the OS's refusal (EACCES / ERROR_ACCESS_DENIED) is what it printed. It never
+  # skips: a machine with no second account fails it, naming the missing inputs.
+  @second-account
   Scenario: DH-E-STORAGE-6 -- a second OS account is denied every read of the first user's harness home
     Given a second ordinary OS account on this machine
     And a harness home created private by the harness in a directory both accounts can traverse

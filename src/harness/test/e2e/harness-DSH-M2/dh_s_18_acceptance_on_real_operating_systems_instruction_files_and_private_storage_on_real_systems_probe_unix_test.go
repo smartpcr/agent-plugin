@@ -224,6 +224,5 @@ func ifpsEphemeralAccount() (*ifpsAccount, error) {
 		c.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: uint32(uid[0]), Gid: uint32(gids[0]), Groups: []uint32{}}}
 		return ifpsExec(c)
 	}
-	a.denied = func(out string) bool { return strings.Contains(out, "Permission denied") }
 	return a, nil
 }

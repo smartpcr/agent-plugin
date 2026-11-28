@@ -742,19 +742,26 @@ func InitializeScenario_dh_s_18_acceptance_on_real_operating_systems_instruction
 }
 
 func TestE2E_dh_s_18_acceptance_on_real_operating_systems_instruction_files_and_private_storage_on_real_systems(t *testing.T) {
+	tags := os.Getenv("IFPS_GODOG_TAGS")
+	// A Windows run without the runbook's Windows account has DH-E-STORAGE-6 run
+	// in WSL, with an account made there, instead of here.
+	inWSL := runtime.GOOS == "windows" && tags == "" && os.Getenv("DSH_SCENARIO_STORAGE6_USER") == ""
+	if inWSL {
+		tags = "~" + ifpsSecondAccountTag
+	}
 	suite := godog.TestSuite{
 		ScenarioInitializer: InitializeScenario_dh_s_18_acceptance_on_real_operating_systems_instruction_files_and_private_storage_on_real_systems,
 		Options: &godog.Options{
 			Format:   "pretty",
 			Paths:    []string{"dh_s_18_acceptance_on_real_operating_systems_instruction_files_and_private_storage_on_real_systems.feature"},
-			Tags:     os.Getenv("IFPS_GODOG_TAGS"),
+			Tags:     tags,
 			TestingT: t,
 		},
 	}
 	if suite.Run() != 0 {
 		t.Fatal("DH-S-18 Stage 8.8 scenarios failed")
 	}
-	if runtime.GOOS == "windows" {
+	if inWSL {
 		t.Run("linux-wsl", ifpsWSL)
 	}
 }

@@ -18,8 +18,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/cucumber/godog"
 )
 
 // ifpsAccount is a real second OS account: every list and read is a process run
@@ -31,10 +29,8 @@ type ifpsAccount struct {
 	base string
 	// as lists the directory or prints the file path as the account; it fails
 	// (non-zero exit) when the OS denies the access.
-	as func(dir bool, path string) (string, error)
-	// denied, when set, tells a refusal by the OS from a command that failed.
-	denied func(out string) bool
-	close  func()
+	as    func(dir bool, path string) (string, error)
+	close func()
 }
 
 var (
@@ -42,9 +38,9 @@ var (
 	errIfpsAllowed       = errors.New("the second account's access succeeded")
 )
 
-// ifpsSkipLab names the inputs a machine without a second account lacks: the
-// two-account machine is lab-only (runbook-two-account.md, M2-EN-5).
-const ifpsSkipLab = "not run (second-account preflight failed): set DSH_SCENARIO_STORAGE6_USER, _PUBLIC, _LIST and _READ " +
+// ifpsNoAccount names what a machine without a second account lacks; the
+// required scenario fails there rather than skip (runbook-two-account.md, M2-EN-5).
+const ifpsNoAccount = "no second OS account (second-account preflight failed): set DSH_SCENARIO_STORAGE6_USER, _PUBLIC, _LIST and _READ " +
 	"per docs/stories/harness-DSH-M2/evidence/runbook-two-account.md, or, on POSIX, run as root or with passwordless sudo"
 
 // ifpsNotRunner: name is an account other than the one this run is.
@@ -63,6 +59,26 @@ func ifpsNotRunner(name string) error {
 	return nil
 }
 
+// ifpsDenialText is how the OS's refusal reads: EACCES on POSIX
+// ("Permission denied"), ERROR_ACCESS_DENIED on Windows ("Access is denied").
+var ifpsDenialText = regexp.MustCompile(`(?i)permission denied|access is denied`)
+
+// ifpsOSDenied: a failed access is the OS's refusal only when the command ran to
+// its end and printed the refusal; a timeout, a missing tool, a wrapper that
+// could not switch accounts or any other failure is not.
+func ifpsOSDenied(out string, err error) error {
+	if err == nil {
+		return errIfpsAllowed
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("timed out, not a denial: %w", err)
+	}
+	if !ifpsDenialText.MatchString(out) {
+		return fmt.Errorf("failed without an OS denial (%v): %s", err, strings.TrimSpace(out))
+	}
+	return fmt.Errorf("%w: %v", errIfpsAccountDenied, err)
+}
+
 func ifpsExpand(template string, vars map[string]string) string {
 	for k, v := range vars {
 		template = strings.ReplaceAll(template, "{"+k+"}", v)
@@ -78,6 +94,9 @@ func ifpsExec(cmd *exec.Cmd) (string, error) {
 	var out bytes.Buffer
 	c.Stdout, c.Stderr = &out, &out
 	err := c.Run()
+	if ctx.Err() != nil {
+		err = fmt.Errorf("%w: %v", ctx.Err(), err)
+	}
 	return out.String(), err
 }
 
@@ -116,7 +135,8 @@ func ifpsRunbookAccount() (*ifpsAccount, error) {
 }
 
 // ifpsSecondAccount returns the runbook's account, else one made for this
-// scenario where the run may make accounts, else skips the lab-only scenario.
+// scenario where the run may make accounts, else fails: a required scenario
+// never skips.
 func ifpsSecondAccount() (*ifpsAccount, error) {
 	if a, err := ifpsRunbookAccount(); a != nil || err != nil {
 		return a, err
@@ -124,7 +144,7 @@ func ifpsSecondAccount() (*ifpsAccount, error) {
 	if a, err := ifpsEphemeralAccount(); a != nil || err != nil {
 		return a, err
 	}
-	return nil, fmt.Errorf("%w: %s", godog.ErrSkip, ifpsSkipLab)
+	return nil, errors.New(ifpsNoAccount)
 }
 
 func ifpsRandName() string {
@@ -136,9 +156,6 @@ func ifpsRandName() string {
 func (w *ifpsWorld) secondAccount() error {
 	a, err := ifpsSecondAccount()
 	if err != nil {
-		if runtime.GOOS == "windows" {
-			err = fmt.Errorf("%w; the Linux variant runs in WSL as the subtest linux-wsl", err)
-		}
 		fmt.Fprintf(os.Stderr, "DH-E-STORAGE-6: %v\n", err)
 		return err
 	}
@@ -195,14 +212,7 @@ func (w *ifpsWorld) accountReads() error {
 	w.denials, w.outputs = make([]error, len(ts)), make([]string, len(ts))
 	for i, t := range ts {
 		out, err := w.account.as(t.dir, t.path)
-		switch {
-		case err == nil:
-			err = fmt.Errorf("%w: %s read %s", errIfpsAllowed, w.account.name, t.path)
-		case w.account.denied != nil && !w.account.denied(out):
-			err = fmt.Errorf("%s failed on %s without an OS denial: %v", w.account.name, t.path, err)
-		default:
-			err = fmt.Errorf("%w: %v", errIfpsAccountDenied, err)
-		}
+		err = ifpsOSDenied(out, err)
 		// A refusal names the path asked for; only what else it printed can leak.
 		w.denials[i], w.outputs[i] = err, strings.ReplaceAll(out, t.path, "{path}")
 		fmt.Fprintf(os.Stderr, "DH-E-STORAGE-6: %s as %s -> %v: %s\n", t.path, w.account.name, err, strings.TrimSpace(out))
@@ -228,19 +238,20 @@ func (w *ifpsWorld) nothingLeaked() error {
 	return nil
 }
 
-// ifpsWSL runs the Linux variant of DH-E-STORAGE-6 in this Windows machine's WSL
-// as root, where the scenario makes and deletes its own second account: the
-// test binary is cross-built from this checkout and runs on the same tree.
+// ifpsSecondAccountTag marks the scenario that needs a second OS account.
+const ifpsSecondAccountTag = "@second-account"
+
+// ifpsWSL runs DH-E-STORAGE-6 in this Windows machine's WSL as root, where the
+// scenario makes and deletes its own second account, when the Windows run has
+// no second account of its own: the test binary is cross-built from this
+// checkout and runs on the same tree. No WSL, or no root in it, fails the run.
 func ifpsWSL(t *testing.T) {
-	if os.Getenv("DSH_SCENARIO_STORAGE6_USER") != "" {
-		t.Skip("the runbook's Windows account runs DH-E-STORAGE-6 on this lane")
-	}
 	wsl, err := exec.LookPath("wsl.exe")
 	if err != nil {
-		t.Skip("no WSL on this machine: " + err.Error())
+		t.Fatalf("DH-E-STORAGE-6 needs a second OS account: %s; and there is no WSL to make one in: %v", ifpsNoAccount, err)
 	}
 	if out, err := ifpsExec(exec.Command(wsl, "-u", "root", "-e", "id", "-u")); err != nil || strings.TrimSpace(out) != "0" {
-		t.Skipf("WSL cannot run as root here: %v %s", err, out)
+		t.Fatalf("DH-E-STORAGE-6 needs a second OS account: %s; and WSL cannot run as root to make one: %v %s", ifpsNoAccount, err, out)
 	}
 	pkg, err := filepath.Abs(".")
 	if err != nil {
@@ -260,7 +271,7 @@ func ifpsWSL(t *testing.T) {
 		}
 		return strings.TrimSpace(out)
 	}
-	run := exec.Command(wsl, "-u", "root", "--cd", lin(pkg), "-e", "env", "IFPS_GODOG_TAGS=@lab-two-account", "HOME=/root",
+	run := exec.Command(wsl, "-u", "root", "--cd", lin(pkg), "-e", "env", "IFPS_GODOG_TAGS="+ifpsSecondAccountTag, "HOME=/root",
 		lin(bin), "-test.run", "^TestE2E_dh_s_18_acceptance_on_real_operating_systems_instruction_files_and_private_storage_on_real_systems$", "-test.v")
 	out, err := ifpsExec(run)
 	t.Log(out)
@@ -270,5 +281,31 @@ func ifpsWSL(t *testing.T) {
 	out = regexp.MustCompile(`\x1b\[[0-9;]*m`).ReplaceAllString(out, "")
 	if !strings.Contains(out, "1 scenarios (1 passed)") || !strings.Contains(out, "(made for this scenario)") {
 		t.Fatalf("DH-E-STORAGE-6 did not pass with a real second account in WSL")
+	}
+}
+
+// A runbook command that fails for any reason but the OS's refusal must not pass
+// as a denial.
+func TestIfpsFailureWithoutOSRefusalIsNotADenial(t *testing.T) {
+	refused := ifpsShell("echo Permission denied && exit 1")
+	if runtime.GOOS == "windows" {
+		refused = ifpsShell("echo Access is denied.& exit /b 5")
+	}
+	out, err := ifpsExec(refused)
+	if got := ifpsOSDenied(out, err); !errors.Is(got, errIfpsAccountDenied) {
+		t.Errorf("a printed OS refusal was not a denial: %v", got)
+	}
+	for name, line := range map[string]string{"wrapper failed": "echo no such user& exit 3", "tool missing": "ifps-no-such-tool"} {
+		out, err := ifpsExec(ifpsShell(line))
+		if got := ifpsOSDenied(out, err); errors.Is(got, errIfpsAccountDenied) {
+			t.Errorf("%s counted as an OS denial: %q", name, out)
+		}
+	}
+	timedOut := fmt.Errorf("%w: signal: killed", context.DeadlineExceeded)
+	if got := ifpsOSDenied("Permission denied", timedOut); errors.Is(got, errIfpsAccountDenied) {
+		t.Errorf("a timeout counted as an OS denial")
+	}
+	if got := ifpsOSDenied("", nil); !errors.Is(got, errIfpsAllowed) {
+		t.Errorf("a successful read was not reported as allowed: %v", got)
 	}
 }
