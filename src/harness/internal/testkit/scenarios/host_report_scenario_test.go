@@ -3,7 +3,6 @@
 package scenarios
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -113,9 +112,9 @@ func TestDyingHostLeavesReadableReport(t *testing.T) {
 		first := startDsh(t, env, bin, append([]string{"--home", root}, args...)...)
 		answers(t, first, "answer from the first start")
 		pid := first.pid()
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-		defer cancel()
-		if err := first.Process.StopTree(ctx, 0); err != nil {
+		// Kill is the forced rung alone (SIGKILL, TerminateProcess): no SIGTERM or
+		// console close first, so the host gets no chance to remove its record.
+		if err := first.Process.Kill(); err != nil {
 			t.Fatalf("killing the host: %v", err)
 		}
 		if !first.await(time.Minute) {
