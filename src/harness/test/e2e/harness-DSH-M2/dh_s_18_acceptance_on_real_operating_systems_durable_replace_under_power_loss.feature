@@ -7,9 +7,11 @@ Feature: Durable replace under power loss (DH-S-18 Stage 8.9, impl.md 18.11, TC-
   recorder, which appends every acknowledged version to an append-only version
   log. The guest is powered off (not shut down) 100 times at a random moment
   and restarted, and the file it holds is judged after every restart.
-  The hypervisor (proof service:vm-power-cut) is team-kept infrastructure: a
-  guest's controller is the one named by DSH_E2E_NODEFS_LINUX_GUEST or
-  DSH_E2E_NODEFS_WINDOWS_GUEST. A guest OS with no controller fails its
+  The hypervisor (proof service:vm-power-cut) is team-kept infrastructure,
+  bound by the vm:* s18 jobs' inputs: DSH_S18_KVM_* for the Linux guest and
+  DSH_S18_HYPERV_* for the Windows guest (runbook-power-cut.md step 2). The
+  run's guest is made fresh from an overlay with PROBE_CREATE and deleted with
+  PROBE_DELETE once it passes. A guest OS whose inputs are not set fails its
   preflight and its scenario; it never skips.
 
   @TC-21s5 @DH-E-NODEFS-1 @proof:service:vm-power-cut @proof:service:ack-recorder

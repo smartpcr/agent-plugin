@@ -8,8 +8,8 @@ package e2e
 //
 // Each scenario runs the real TestDurableReplaceSurvivesPowerLoss
 // (internal/testkit/scenarios, -tags scenario) as its controller and ack
-// recorder on this host, the hypervisor host, against one guest OS, and then
-// judges the recorder's append-only version log (<report>.detail) itself:
+// recorder on this host, the hypervisor controller, against one guest OS, and
+// then judges the recorder's append-only version log (<report>.detail) itself:
 // 100 rounds, each cut after a new acknowledgement and read after its restart,
 // every read version complete, no older than the acknowledged bound recomputed
 // from the log's own ack lines, and no fail line anywhere in the run.
@@ -17,33 +17,39 @@ package e2e
 // The guests (proof service:vm-power-cut) are team-kept hypervisors (Linux on
 // KVM/libvirt, Windows on Hyper-V; architecture.md: named, pre-existing
 // infrastructure, reached only from acceptance rows behind their preflight).
-// A real power cut of a real guest cannot be stood up in-process, so each guest
-// OS is the provided instance: DSH_E2E_NODEFS_LINUX_GUEST and
-// DSH_E2E_NODEFS_WINDOWS_GUEST each name a KEY=VALUE file (runbook-power-cut.md
-// step 4) holding that guest's DSH_SCENARIO_VMS (one guest),
-// DSH_SCENARIO_NODEFS_LISTEN, _START, _POWEROFF, _POWERON and _READ, plus
-//
-//	DSH_E2E_NODEFS_PREFLIGHT  creates, cuts and deletes a throw-away guest
-//	DSH_E2E_NODEFS_OVERLAY    creates {vm} fresh from a disposable overlay
-//	DSH_E2E_NODEFS_CLEANUP    deletes {vm}'s overlay, definition and disk
-//
-// and optionally DSH_SCENARIO_REPORT (where the report and version log are
-// kept; a fresh temporary directory otherwise). A guest OS with no file fails
-// its preflight and its scenario (DH-O-15: a scenario that cannot run never
-// skips). A passing guest's overlay is deleted; a failing one's is kept and
-// named, with the version log, which is always kept.
+// A hard power cut of a real guest cannot be stood up in-process, so each guest
+// OS is the provided instance, bound by the same per-hypervisor inputs as the
+// vm:* s18 jobs of harness-scenarios.yml (runbook-power-cut.md step 2 and
+// "Through the Gherkin suite"): DSH_S18_KVM_* for the Linux guest and
+// DSH_S18_HYPERV_* for the Windows guest, each with NODEFS_LISTEN,
+// NODEFS_START, NODEFS_POWEROFF, NODEFS_POWERON, NODEFS_READ, BASE_IMAGES,
+// PROBE_CREATE, PROBE_SHOW, PROBE_ACK and PROBE_DELETE. The Given step runs the
+// job's power-cut preflight itself (base images checksummed, a throw-away guest
+// created from an overlay, shown by the hypervisor, cut, restarted, its test
+// acknowledgment recorded and read back by harness-gate ack-probe, deleted, the
+// base images unchanged), then creates the run's guest the same way: a fresh
+// overlay, cut and restarted so the writer is not running. A guest OS whose
+// inputs are not set fails its preflight and its scenario (DH-O-15: a scenario
+// that cannot run never skips). A passing guest is deleted with PROBE_DELETE; a
+// failing one is kept and named, with the version log, which is always kept
+// (under DSH_E2E_NODEFS_ARTIFACTS when set).
 
 import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -59,9 +65,9 @@ const (
 	drpScenarioPkg  = "./internal/testkit/scenarios/"
 	drpRounds       = 100
 
-	drpPreflightKey = "DSH_E2E_NODEFS_PREFLIGHT"
-	drpOverlayKey   = "DSH_E2E_NODEFS_OVERLAY"
-	drpCleanupKey   = "DSH_E2E_NODEFS_CLEANUP"
+	// drpArtifactsEnv optionally names where each guest's report, version log
+	// and run output are kept (a fresh temporary directory otherwise).
+	drpArtifactsEnv = "DSH_E2E_NODEFS_ARTIFACTS"
 
 	// drpMaxRun is the runbook's bound for one run (-timeout 175m).
 	drpMaxRun = 175 * time.Minute
@@ -69,38 +75,53 @@ const (
 	drpMinRun = 20 * time.Minute
 	// drpReserve is kept back from the outer go test deadline for the checks.
 	drpReserve = 2 * time.Minute
-	// drpCommandWithin bounds one preflight, overlay or cleanup command.
+	// drpCommandWithin bounds one hypervisor command or the scenario build.
 	drpCommandWithin = 15 * time.Minute
+	// drpAckWithin is the ack-probe timeout of the vm:* jobs.
+	drpAckWithin = 2 * time.Minute
 )
 
-// drpGuests maps the scenario's guest OS to the variable naming its controller.
-var drpGuests = map[string]struct{ env, hypervisor string }{
-	"linux":   {"DSH_E2E_NODEFS_LINUX_GUEST", "KVM/libvirt"},
-	"windows": {"DSH_E2E_NODEFS_WINDOWS_GUEST", "Hyper-V"},
+// drpGuests maps the scenario's guest OS to its hypervisor's inputs.
+var drpGuests = map[string]struct {
+	target, hypervisor string
+	images             []string // base image extensions the hypervisor takes
+}{
+	"linux":   {"KVM", "KVM/libvirt", []string{".qcow2", ".img", ".raw"}},
+	"windows": {"HYPERV", "Hyper-V", []string{".vhdx", ".vhd"}},
 }
 
-// drpRequired are the controller inputs TestDurableReplaceSurvivesPowerLoss
-// needs, besides DSH_SCENARIO_REPORT, which the suite sets.
-var drpRequired = []string{
-	"DSH_SCENARIO_VMS",
-	"DSH_SCENARIO_NODEFS_LISTEN",
-	"DSH_SCENARIO_NODEFS_START",
-	"DSH_SCENARIO_NODEFS_POWEROFF",
-	"DSH_SCENARIO_NODEFS_POWERON",
-	"DSH_SCENARIO_NODEFS_READ",
-	drpPreflightKey,
-	drpOverlayKey,
-	drpCleanupKey,
+// drpShown is the vm:* job's check that PROBE_SHOW shows guest on target.
+func drpShown(target, guest, shown string) bool {
+	q := regexp.QuoteMeta(guest)
+	var pats []string
+	switch target {
+	case "KVM": // virsh dominfo
+		pats = []string{`(?m)^Name: +` + q + `\s*$`, `(?m)^OS Type: +hvm`}
+	case "HYPERV": // Get-VM | Format-List Name,Generation,State
+		pats = []string{`(?m)^Name +: +` + q + `\s*$`, `(?m)^Generation +: +[12]`}
+	}
+	for _, p := range pats {
+		if !regexp.MustCompile(p).MatchString(shown) {
+			return false
+		}
+	}
+	return len(pats) > 0
+}
+
+// drpInputs are the per-hypervisor inputs, as DSH_S18_<TARGET>_<key>.
+var drpInputs = []string{
+	"NODEFS_LISTEN", "NODEFS_START", "NODEFS_POWEROFF", "NODEFS_POWERON", "NODEFS_READ",
+	"BASE_IMAGES", "PROBE_CREATE", "PROBE_SHOW", "PROBE_ACK", "PROBE_DELETE",
 }
 
 var drpOuterT *testing.T
 
 type drpState struct {
-	guest   string
-	cfgPath string
-	cfg     map[string]string
-	vm      string
-	overlay bool // the overlay was created and is the suite's to delete
+	guest  string
+	target string
+	in     map[string]string // drpInputs -> value
+	vm     string            // the run's guest, created from a fresh overlay
+	made   bool              // the run's guest exists and is the suite's to delete
 
 	report string // DSH_SCENARIO_REPORT given to the run
 	detail string // the recorder's version log: report + ".detail"
@@ -117,157 +138,54 @@ type drpEvent struct {
 	line string
 }
 
-// --- configuration ---
-
-func drpLoadConfig(path string) (map[string]string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	cfg := map[string]string{}
-	sc := bufio.NewScanner(bytes.NewReader(data))
-	for n := 1; sc.Scan(); n++ {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		k, v, ok := strings.Cut(line, "=")
-		if !ok || strings.TrimSpace(k) == "" {
-			return nil, fmt.Errorf("%s:%d: want KEY=VALUE, got %q", path, n, line)
-		}
-		cfg[strings.TrimSpace(k)] = strings.TrimSpace(v)
-	}
-	return cfg, sc.Err()
+func drpName(prefix string) string {
+	b := make([]byte, 4)
+	_, _ = rand.Read(b)
+	return fmt.Sprintf("%s-%d-%s", prefix, time.Now().Unix(), hex.EncodeToString(b))
 }
 
 // drpLocalProbe says what this host itself offers, for the preflight failure.
 func drpLocalProbe(guest string) string {
-	switch guest {
-	case "linux":
+	if guest == "linux" {
 		if p, err := exec.LookPath("virsh"); err == nil {
-			return "virsh is at " + p + ", but no controller file names a guest, its overlay and its preflight"
+			return "virsh is at " + p + ", but no KVM inputs are set"
 		}
-		return "no virsh on this host and no KVM/libvirt host is named"
-	default:
-		if runtime.GOOS == "windows" {
-			if _, err := os.Stat(filepath.Join(os.Getenv("SystemRoot"), "System32", "vmms.exe")); err == nil {
-				return "Hyper-V is installed here, but no controller file names a guest, its overlay and its preflight"
-			}
-		}
-		return "no Hyper-V on this host and no Hyper-V host is named"
+		return "no virsh on this host"
 	}
+	if runtime.GOOS == "windows" {
+		if _, err := os.Stat(filepath.Join(os.Getenv("SystemRoot"), "System32", "vmms.exe")); err == nil {
+			return "Hyper-V is installed here, but no Hyper-V inputs are set"
+		}
+	}
+	return "no Hyper-V on this host"
 }
 
 // --- shell ---
 
-// drpShellArgv mirrors the scenario package's platform shell: sh -c, or cmd
-// on a batch file on Windows.
-func drpShellArgv(line string) ([]string, func(), error) {
-	if runtime.GOOS != "windows" {
-		return []string{"sh", "-c", line}, func() {}, nil
-	}
-	f, err := os.CreateTemp("", "dsh-drp-*.cmd")
-	if err != nil {
-		return nil, nil, err
-	}
-	_, err = f.WriteString("@echo off\r\n" + line + "\r\n@exit /b %errorlevel%\r\n")
-	if err = errors.Join(err, f.Close()); err != nil {
-		_ = os.Remove(f.Name())
-		return nil, nil, err
-	}
-	return []string{"cmd", "/d", "/c", f.Name()}, func() { _ = os.Remove(f.Name()) }, nil
+// sub fills a command template as the vm:* job does.
+func (s *drpState) sub(template, guest, token string) string {
+	r := strings.NewReplacer("{vm}", guest, "{probe}", guest, "{addr}", s.in["NODEFS_LISTEN"], "{token}", token)
+	return r.Replace(template)
 }
 
-func (s *drpState) shell(key string) (string, error) {
-	line := strings.ReplaceAll(s.cfg[key], "{vm}", s.vm)
-	argv, done, err := drpShellArgv(line)
-	if err != nil {
-		return "", err
-	}
-	defer done()
+// run runs line through sh -c, as the vm:* job runs the same inputs.
+func drpRun(what, line string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), drpCommandWithin)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd := exec.CommandContext(ctx, "sh", "-c", line)
 	cmd.WaitDelay = 10 * time.Second
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return string(out), fmt.Errorf("%s (%s): %w\n%s", key, line, err, out)
+		return string(out), fmt.Errorf("%s (%s): %w\n%s", what, line, err, out)
 	}
 	return string(out), nil
 }
 
+func (s *drpState) do(key, guest string) (string, error) {
+	return drpRun(fmt.Sprintf("DSH_S18_%s_%s", s.target, key), s.sub(s.in[key], guest, ""))
+}
+
 // --- Given ---
-
-func (s *drpState) givenGuest(guest string) error {
-	s.guest = guest
-	g := drpGuests[guest]
-	s.cfgPath = os.Getenv(g.env)
-	if s.cfgPath == "" {
-		return fmt.Errorf("not run (vm-power-cut preflight failed): %s is not set, so no %s guest is reachable from this host (%s); "+
-			"name the %s controller file of runbook-power-cut.md step 4 (%s) in %s",
-			g.env, g.hypervisor, drpLocalProbe(guest), g.hypervisor, strings.Join(drpRequired, ", "), g.env)
-	}
-	cfg, err := drpLoadConfig(s.cfgPath)
-	if err != nil {
-		return fmt.Errorf("not run (vm-power-cut preflight failed): the controller file %s: %w", s.cfgPath, err)
-	}
-	var missing []string
-	for _, k := range drpRequired {
-		if cfg[k] == "" {
-			missing = append(missing, k)
-		}
-	}
-	if len(missing) > 0 {
-		return fmt.Errorf("not run (vm-power-cut preflight failed): %s lacks %s", s.cfgPath, strings.Join(missing, ", "))
-	}
-	if r := cfg["DSH_SCENARIO_NODEFS_ROUNDS"]; r != "" && r != "all" {
-		return fmt.Errorf("%s sets DSH_SCENARIO_NODEFS_ROUNDS=%s: this scenario runs all %d cuts in one run (a shard is the runbook's manual run)", s.cfgPath, r, drpRounds)
-	}
-	s.cfg = cfg
-	var vms []string
-	for _, vm := range strings.Split(cfg["DSH_SCENARIO_VMS"], ";") {
-		if vm = strings.TrimSpace(vm); vm != "" {
-			vms = append(vms, vm)
-		}
-	}
-	if len(vms) != 1 {
-		return fmt.Errorf("%s: DSH_SCENARIO_VMS lists %q, want exactly the one %s guest of this scenario", s.cfgPath, vms, g.hypervisor)
-	}
-	s.vm = vms[0]
-	off := cfg["DSH_SCENARIO_NODEFS_POWEROFF"]
-	switch guest {
-	case "linux":
-		if !strings.Contains(off, "virsh destroy") {
-			return fmt.Errorf("%s: DSH_SCENARIO_NODEFS_POWEROFF %q is not a libvirt hard power-off (virsh destroy)", s.cfgPath, off)
-		}
-	case "windows":
-		if !strings.Contains(off, "Stop-VM") || !strings.Contains(off, "-TurnOff") {
-			return fmt.Errorf("%s: DSH_SCENARIO_NODEFS_POWEROFF %q is not a Hyper-V hard power-off (Stop-VM -TurnOff)", s.cfgPath, off)
-		}
-	}
-	if _, err := s.shell(drpPreflightKey); err != nil {
-		return fmt.Errorf("not run (vm-power-cut preflight failed): %w", err)
-	}
-	if _, err := s.shell(drpOverlayKey); err != nil {
-		return fmt.Errorf("the disposable overlay of %s: %w", s.vm, err)
-	}
-	s.overlay = true
-	return nil
-}
-
-func (s *drpState) givenRecorder() error {
-	if s.cfg == nil {
-		return errors.New("no guest configuration")
-	}
-	addr := s.cfg["DSH_SCENARIO_NODEFS_LISTEN"]
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		return fmt.Errorf("not run (ack-recorder preflight failed): DSH_SCENARIO_NODEFS_LISTEN %s is not local and free on this host: %w", addr, err)
-	}
-	return ln.Close()
-}
-
-// --- When ---
 
 func drpModuleDir() (string, error) {
 	dir, err := filepath.Abs(filepath.Join("..", "..", ".."))
@@ -279,6 +197,175 @@ func drpModuleDir() (string, error) {
 	}
 	return dir, nil
 }
+
+func drpImageSums(images []string) (string, error) {
+	var b strings.Builder
+	for _, p := range images {
+		f, err := os.Open(p)
+		if err != nil {
+			return "", fmt.Errorf("base image %s is not readable: %w", p, err)
+		}
+		h := sha256.New()
+		_, err = io.Copy(h, f)
+		_ = f.Close()
+		if err != nil {
+			return "", fmt.Errorf("base image %s: %w", p, err)
+		}
+		fmt.Fprintf(&b, "%x  %s\n", h.Sum(nil), p)
+	}
+	return b.String(), nil
+}
+
+// create makes guest from an overlay and checks the hypervisor shows it.
+func (s *drpState) create(guest string) error {
+	if _, err := s.do("PROBE_CREATE", guest); err != nil {
+		return fmt.Errorf("the guest %s was not created from an overlay: %w", guest, err)
+	}
+	shown, err := s.do("PROBE_SHOW", guest)
+	if err != nil {
+		return fmt.Errorf("the guest %s is not shown by %s: %w", guest, drpGuests[s.guest].hypervisor, err)
+	}
+	if !drpShown(s.target, guest, shown) {
+		return fmt.Errorf("%s is not a %s guest:\n%s", guest, drpGuests[s.guest].hypervisor, shown)
+	}
+	return nil
+}
+
+// cycle cuts guest hard and restarts it, waiting until it is reachable.
+func (s *drpState) cycle(guest string) error {
+	if _, err := s.do("NODEFS_POWEROFF", guest); err != nil {
+		return fmt.Errorf("%s was not powered off: %w", guest, err)
+	}
+	if _, err := s.do("NODEFS_POWERON", guest); err != nil {
+		return fmt.Errorf("%s did not restart: %w", guest, err)
+	}
+	return nil
+}
+
+// preflight is the vm:* job's power-cut check (service:vm-power-cut and
+// service:ack-recorder; runbook-power-cut.md step 2).
+func (s *drpState) preflight() (err error) {
+	g := drpGuests[s.guest]
+	var images []string
+	for _, p := range strings.Split(s.in["BASE_IMAGES"], ";") {
+		if p = strings.TrimSpace(p); p == "" {
+			continue
+		}
+		ok := false
+		for _, ext := range g.images {
+			ok = ok || strings.HasSuffix(strings.ToLower(p), ext)
+		}
+		if !ok {
+			return fmt.Errorf("base image %s is not a %s disk image", p, g.hypervisor)
+		}
+		images = append(images, p)
+	}
+	if len(images) == 0 {
+		return fmt.Errorf("DSH_S18_%s_BASE_IMAGES lists no image", s.target)
+	}
+	before, err := drpImageSums(images)
+	if err != nil {
+		return err
+	}
+	probe := drpName("dsh-e2e-s18-probe")
+	deleted := false
+	defer func() {
+		if !deleted {
+			if _, derr := s.do("PROBE_DELETE", probe); derr != nil {
+				err = errors.Join(err, fmt.Errorf("delete %s by hand: %w", probe, derr))
+			}
+		}
+	}()
+	if err := s.create(probe); err != nil {
+		return err
+	}
+	if err := s.cycle(probe); err != nil {
+		return err
+	}
+	mod, err := drpModuleDir()
+	if err != nil {
+		return err
+	}
+	dir, err := os.MkdirTemp("", "dsh-e2e-ack-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+	token := probe + "-ack"
+	ctx, cancel := context.WithTimeout(context.Background(), drpCommandWithin)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "go", "-C", filepath.Join(mod, "..", "..", "tools", "harness-gate"), "run", ".", "ack-probe",
+		"--listen", s.in["NODEFS_LISTEN"], "--token", token, "--log", filepath.Join(dir, "s18-ack.log"),
+		"--timeout", drpAckWithin.String(), "--send", s.sub(s.in["PROBE_ACK"], probe, token))
+	cmd.Env = append(os.Environ(), "GOWORK=off")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("no acknowledgment from %s was recorded and read back (harness-gate ack-probe): %w\n%s", probe, err, out)
+	}
+	if _, err := s.do("PROBE_DELETE", probe); err != nil {
+		return fmt.Errorf("the probe guest %s was not deleted: %w", probe, err)
+	}
+	deleted = true
+	after, err := drpImageSums(images)
+	if err != nil {
+		return err
+	}
+	if after != before {
+		return fmt.Errorf("a base image changed:\n%s", after)
+	}
+	return nil
+}
+
+func (s *drpState) givenGuest(guest string) error {
+	g := drpGuests[guest]
+	s.guest, s.target, s.in = guest, g.target, map[string]string{}
+	var missing []string
+	for _, k := range drpInputs {
+		name := "DSH_S18_" + g.target + "_" + k
+		if s.in[k] = strings.TrimSpace(os.Getenv(name)); s.in[k] == "" {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("not run (power-cut preflight failed): no %s guest is reachable from this host (%s); not set: %s (runbook-power-cut.md step 2, environment dsh-m2-s18)",
+			g.hypervisor, drpLocalProbe(guest), strings.Join(missing, ", "))
+	}
+	off := s.in["NODEFS_POWEROFF"]
+	switch guest {
+	case "linux":
+		if !strings.Contains(off, "virsh destroy") {
+			return fmt.Errorf("DSH_S18_KVM_NODEFS_POWEROFF %q is not a libvirt hard power-off (virsh destroy)", off)
+		}
+	case "windows":
+		if !strings.Contains(off, "Stop-VM") || !strings.Contains(off, "-TurnOff") {
+			return fmt.Errorf("DSH_S18_HYPERV_NODEFS_POWEROFF %q is not a Hyper-V hard power-off (Stop-VM -TurnOff)", off)
+		}
+	}
+	if err := s.preflight(); err != nil {
+		return fmt.Errorf("not run (power-cut preflight failed): %w", err)
+	}
+	// The run's guest: a fresh overlay of the base image, cut once and restarted
+	// so it is reachable with no writer running (one must not start at boot).
+	s.vm = drpName("dsh-e2e-nodefs-" + guest)
+	s.made = true
+	if err := s.create(s.vm); err != nil {
+		return err
+	}
+	return s.cycle(s.vm)
+}
+
+func (s *drpState) givenRecorder() error {
+	if s.in == nil {
+		return errors.New("no guest inputs")
+	}
+	addr := s.in["NODEFS_LISTEN"]
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("not run (ack-recorder preflight failed): DSH_S18_%s_NODEFS_LISTEN %s is not local and free on this host: %w", s.target, addr, err)
+	}
+	return ln.Close()
+}
+
+// --- When ---
 
 func (s *drpState) budget() (time.Duration, error) {
 	budget := drpMaxRun
@@ -295,8 +382,8 @@ func (s *drpState) budget() (time.Duration, error) {
 }
 
 func (s *drpState) whenCuts() error {
-	if s.cfg == nil {
-		return errors.New("no guest configuration")
+	if s.vm == "" {
+		return errors.New("no guest")
 	}
 	mod, err := drpModuleDir()
 	if err != nil {
@@ -306,42 +393,54 @@ func (s *drpState) whenCuts() error {
 	if err != nil {
 		return err
 	}
-	if s.report = s.cfg["DSH_SCENARIO_REPORT"]; s.report == "" {
-		dir, err := os.MkdirTemp("", "dsh-nodefs-"+s.guest+"-")
-		if err != nil {
-			return err
-		}
-		s.report = filepath.Join(dir, "report.jsonl")
+	dir := os.Getenv(drpArtifactsEnv)
+	if dir != "" {
+		dir = filepath.Join(dir, s.guest)
+		err = os.MkdirAll(dir, 0o755)
+	} else {
+		dir, err = os.MkdirTemp("", "dsh-nodefs-"+s.guest+"-")
 	}
+	if err != nil {
+		return err
+	}
+	s.report = filepath.Join(dir, "report.jsonl")
 	s.detail = s.report + ".detail"
+
+	// A built test binary, run directly: its result is never a cached one.
+	bin := filepath.Join(dir, "scenarios.test")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
+	bctx, bcancel := context.WithTimeout(context.Background(), drpCommandWithin)
+	defer bcancel()
+	build := exec.CommandContext(bctx, "go", "test", "-c", "-tags", "scenario", "-o", bin, drpScenarioPkg)
+	build.Dir, build.Env = mod, append(os.Environ(), "GOWORK=off")
+	if out, err := build.CombinedOutput(); err != nil {
+		return fmt.Errorf("go test -c -tags scenario %s: %w\n%s", drpScenarioPkg, err, out)
+	}
 
 	env := []string{}
 	for _, kv := range os.Environ() {
-		if k, _, _ := strings.Cut(kv, "="); strings.HasPrefix(strings.ToUpper(k), "DSH_SCENARIO_") || strings.EqualFold(k, "DSH_REQUIRE_SCENARIOS") || strings.EqualFold(k, "GOWORK") {
+		if k, _, _ := strings.Cut(kv, "="); strings.HasPrefix(strings.ToUpper(k), "DSH_SCENARIO_") || strings.EqualFold(k, "DSH_REQUIRE_SCENARIOS") {
 			continue
 		}
 		env = append(env, kv)
 	}
-	for k, v := range s.cfg {
-		if strings.HasPrefix(k, "DSH_SCENARIO_") && k != "DSH_SCENARIO_REPORT" && k != "DSH_SCENARIO_NODEFS_ROUNDS" {
-			env = append(env, k+"="+v)
-		}
+	for _, k := range []string{"NODEFS_LISTEN", "NODEFS_START", "NODEFS_POWEROFF", "NODEFS_POWERON", "NODEFS_READ"} {
+		env = append(env, "DSH_SCENARIO_"+k+"="+s.in[k])
 	}
-	env = append(env, "DSH_SCENARIO_REPORT="+s.report, "DSH_REQUIRE_SCENARIOS="+drpScenarioID, "GOWORK=off")
+	env = append(env, "DSH_SCENARIO_VMS="+s.vm, "DSH_SCENARIO_REPORT="+s.report, "DSH_REQUIRE_SCENARIOS="+drpScenarioID)
 
-	// The child's own -timeout fires before the kill.
+	// The child's own -test.timeout fires before the kill.
 	child := budget - time.Minute
 	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "go", "test", "-tags", "scenario", "-p", "1", "-count=1",
-		"-timeout", child.Round(time.Second).String(), "-v", "-run", "^"+drpScenarioTest+"$", drpScenarioPkg)
-	cmd.Dir, cmd.Env, cmd.WaitDelay = mod, env, 30*time.Second
+	cmd := exec.CommandContext(ctx, bin, "-test.run", "^"+drpScenarioTest+"$", "-test.v", "-test.timeout", child.Round(time.Second).String())
+	cmd.Dir, cmd.Env, cmd.WaitDelay = filepath.Join(mod, filepath.FromSlash(drpScenarioPkg)), env, 30*time.Second
 	out, runErr := cmd.CombinedOutput()
 	s.runOut, s.runErr = string(out), runErr
-	if f, err := os.Create(s.report + ".log"); err == nil {
-		_, _ = f.Write(out)
-		_ = f.Close()
-	}
+	_ = os.WriteFile(s.report+".log", out, 0o644)
+	_ = os.Remove(bin)
 	if drpOuterT != nil {
 		drpOuterT.Logf("DH-E-NODEFS-1 %s guest %s: report %s, version log %s, output %s.log (exit %v)", s.guest, s.vm, s.report, s.detail, s.report, runErr)
 	}
@@ -349,7 +448,7 @@ func (s *drpState) whenCuts() error {
 	if err != nil {
 		return errors.Join(fmt.Errorf("the recorder's version log %s: %w", s.detail, err), s.runFailure())
 	}
-	s.log = drpRun(drpParse(data))
+	s.log = drpLastRun(drpParse(data))
 	return nil
 }
 
@@ -389,10 +488,10 @@ func drpParse(data []byte) []drpEvent {
 	return out
 }
 
-// drpRun keeps the events of the log's last run: from its last "start
+// drpLastRun keeps the events of the log's last run: from its last "start
 // rounds=1-..." line (a log kept under a provided DSH_SCENARIO_REPORT may hold
 // earlier runs).
-func drpRun(evs []drpEvent) []drpEvent {
+func drpLastRun(evs []drpEvent) []drpEvent {
 	for i := len(evs) - 1; i >= 0; i-- {
 		if evs[i].ev == "start" && strings.HasPrefix(evs[i].kv["rounds"], "1-") {
 			return evs[i:]
@@ -555,16 +654,16 @@ func InitializeScenario_dh_s_18_acceptance_on_real_operating_systems_durable_rep
 		return c, nil
 	})
 	ctx.After(func(c context.Context, _ *godog.Scenario, err error) (context.Context, error) {
-		if !s.overlay {
+		if !s.made {
 			return c, nil
 		}
 		if err != nil {
 			if drpOuterT != nil {
-				drpOuterT.Logf("DH-E-NODEFS-1 %s guest failed: keeping the overlay of %s and the version log %s", s.guest, s.vm, s.detail)
+				drpOuterT.Logf("DH-E-NODEFS-1 %s guest failed: keeping the guest %s and its overlay, and the version log %s", s.guest, s.vm, s.detail)
 			}
 			return c, nil
 		}
-		if _, cerr := s.shell(drpCleanupKey); cerr != nil {
+		if _, cerr := s.do("PROBE_DELETE", s.vm); cerr != nil {
 			return c, fmt.Errorf("deleting the passing overlay of %s: %w", s.vm, cerr)
 		}
 		return c, nil
