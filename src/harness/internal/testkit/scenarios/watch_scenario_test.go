@@ -3,6 +3,7 @@
 package scenarios
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -34,6 +35,103 @@ func offsets(times []time.Time, at time.Time) []time.Duration {
 	return out
 }
 
+// burstWrites is how many writes one burst makes: DH-T-CHOKIDAR-2's burst of 100
+// writes, which a watch reports once.
+const burstWrites = 100
+
+// checkTransitions watches the directory dir (created here, depth 0) through svc
+// in mode, then makes the transitions of a watched tree one after another: create
+// a file, a burst of burstWrites appends to it, rename it, delete it. Each
+// transition must be reported exactly once within bound of the moment it finished
+// (the last write of the burst), and nothing more within quiet after that. A watch
+// callback with an error fails the test. It returns the watch's mode.
+func checkTransitions(t *testing.T, svc *watch.Service, dir string, mode watch.Mode, bound time.Duration) watch.Mode {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var got arrivals
+	w, err := svc.Watch(t.Context(), watch.Target{Path: dir, Mode: mode}, func(err error) {
+		if err != nil {
+			t.Errorf("%s: directory watch failed: %v", dir, err)
+		}
+		got.record()
+	})
+	if err != nil {
+		t.Fatalf("%s: %v", dir, err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+
+	file, renamed := filepath.Join(dir, "transition.txt"), filepath.Join(dir, "renamed.txt")
+	steps := []struct {
+		name string
+		do   func() error
+	}{
+		// The file appears whole, renamed in from beside the watched directory:
+		// written in place (os.WriteFile creates it empty first, as does fsx's
+		// staging inside the directory), an on-access scanner holding the create
+		// past a settle window makes a genuinely settled empty or staged file, a
+		// second correct report.
+		{"create", func() error {
+			staged := dir + ".create"
+			if err := os.WriteFile(staged, []byte("created\n"), 0o600); err != nil {
+				return err
+			}
+			if err := os.Rename(staged, file); err != nil {
+				return errors.Join(err, os.Remove(staged))
+			}
+			return nil
+		}},
+		{"burst", func() error {
+			f, err := os.OpenFile(file, os.O_WRONLY|os.O_APPEND, 0)
+			if err != nil {
+				return err
+			}
+			for i := range burstWrites {
+				if _, err := fmt.Fprintf(f, "write %d\n", i); err != nil {
+					return errors.Join(err, f.Close())
+				}
+			}
+			return f.Close()
+		}},
+		{"rename", func() error { return os.Rename(file, renamed) }},
+		{"delete", func() error { return os.Remove(renamed) }},
+	}
+	for _, s := range steps {
+		started := time.Now()
+		if err := s.do(); err != nil {
+			t.Fatalf("%s: %s: %v", dir, s.name, err)
+		}
+		done := time.Now()
+		<-time.After(time.Until(done.Add(bound)) + quiet)
+		reports := got.since(started)
+		switch {
+		case len(reports) == 0:
+			t.Errorf("%s: %s: no report within %v", dir, s.name, bound)
+		case reports[0].Sub(done) > bound:
+			t.Errorf("%s: %s: reported %v after it finished, want within %v", dir, s.name, reports[0].Sub(done), bound)
+		case len(reports) > 1:
+			t.Errorf("%s: %s: reported %d times, at %v", dir, s.name, len(reports), offsets(reports, done))
+		}
+	}
+	return w.Mode()
+}
+
+// The transitions check holds on a local directory in both modes a real system
+// uses: notifications and polling (the assertions DH-T-CHOKIDAR-1 runs in both).
+func TestWatchTransitionsCheck(t *testing.T) {
+	const poll = 250 * time.Millisecond
+	for mode, bound := range map[watch.Mode]time.Duration{watch.Notify: saveWindow, watch.Poll: 2 * poll} {
+		t.Run(mode.String(), func(t *testing.T) {
+			svc := watch.New(watch.Options{FilePoll: poll, DirPoll: poll})
+			t.Cleanup(func() { _ = svc.Close() })
+			if got := checkTransitions(t, svc, filepath.Join(t.TempDir(), "tree"), mode, bound); got != mode {
+				t.Errorf("watch in %s mode, want %s", got, mode)
+			}
+		})
+	}
+}
+
 // TestWatchRealEditorSaves: each editor save of a watched file is reported once
 // (libs/chokidar.md DH-E-CHOKIDAR-1; DH-LIB-CHOKIDAR-R1; DH-D-UTIL-3). Executed in
 // DH-S-18 (step 18.8) on Linux, macOS and Windows.
@@ -45,7 +143,9 @@ func offsets(times []time.Time, at time.Time) []time.Duration {
 // exactly once within one second, and the content read back is the saved content.
 // The save is timed when the file first changes (polled while the editor runs) and
 // each report when its callback runs, so an editor that lingers after saving cannot
-// hide a late report.
+// hide a late report. Then, in a watched directory of the workspace, a file is
+// created, written in a burst of burstWrites appends, renamed and deleted, and
+// each of these transitions is reported exactly once within one second.
 // Inputs: DSH_SCENARIO_EDITORS is a ";"-separated list of shell command lines, each
 // saving {file} with the line {marker} appended and exiting when saved, e.g.
 // `vim -Es -c "normal Go{marker}" -c wq {file}`. Cleanup: the home and workspace
@@ -112,6 +212,8 @@ func TestWatchRealEditorSaves(t *testing.T) {
 			}
 		}
 	}
+	mode := checkTransitions(t, svc, filepath.Join(t.TempDir(), "workspace", "tree"), watch.Auto, saveWindow)
+	t.Logf("workspace tree watch in %s mode", mode)
 }
 
 // TestWatchRemoteFilesystemsPoll: a watch on a filesystem without notifications
@@ -126,7 +228,10 @@ func TestWatchRealEditorSaves(t *testing.T) {
 // shell command line that changes {name} in the directory {dir} from the other
 // machine or side (e.g. over ssh, or through wsl.exe), such as appending {marker}
 // so its size changes. The change is timed when this machine first sees the file
-// differ, and the report when its callback runs. Cleanup: the test files are
+// differ, and the report when its callback runs. Then, in a new directory on each
+// remote directory, a file is created, written in a burst, renamed and deleted from
+// this machine, and the watch, in Poll mode, reports each transition exactly once
+// within two poll intervals. Cleanup: the test files and directories are
 // removed; unmounting is the operator's. A wrong mode is logged with the directory.
 //
 //dsh:scenario DH-E-CHOKIDAR-2
@@ -134,7 +239,7 @@ func TestWatchRemoteFilesystemsPoll(t *testing.T) {
 	dirs := needList(t, "DSH_SCENARIO_REMOTE_DIRS", "directories on SMB, NFS and a WSL-crossed mount, ';'-separated")
 	change := need(t, "DSH_SCENARIO_REMOTE_CHANGE", "command changing {name} in {dir} from the other machine or side")
 	const poll = 250 * time.Millisecond
-	svc := watch.New(watch.Options{FilePoll: poll})
+	svc := watch.New(watch.Options{FilePoll: poll, DirPoll: poll})
 	t.Cleanup(func() { _ = svc.Close() })
 
 	for _, dir := range dirs {
@@ -170,6 +275,12 @@ func TestWatchRemoteFilesystemsPoll(t *testing.T) {
 			t.Errorf("%s: the remote change was not reported within %v", dir, 2*poll)
 		case reports[0].Sub(changed) > 2*poll:
 			t.Errorf("%s: reported %v after the change was visible, want within %v", dir, reports[0].Sub(changed), 2*poll)
+		}
+
+		tree := filepath.Join(dir, fmt.Sprintf("dsh-watch-tree-%d", time.Now().UnixNano()))
+		t.Cleanup(func() { _ = os.RemoveAll(tree) })
+		if mode := checkTransitions(t, svc, tree, watch.Auto, 2*poll); mode != watch.Poll {
+			t.Errorf("%s: directory watch is in %s mode, want poll", tree, mode)
 		}
 	}
 }
