@@ -3,9 +3,12 @@
 package scenarios
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/scenario"
 )
@@ -49,11 +53,28 @@ type exec10Machine struct {
 	alias, dir, home, log string
 }
 
+// exec10CleanupBound bounds one SSH command run by a cleanup.
+const exec10CleanupBound = 2 * time.Minute
+
+// exec10Context is the context of one SSH command: the test's, or, once the test
+// has ended and its context is canceled (testing cancels it just before the
+// cleanups run), a fresh one bounded by exec10CleanupBound, so a cleanup can still
+// stop the host and remove what it made.
+func exec10Context(t *testing.T) (context.Context, context.CancelFunc) {
+	ctx := t.Context()
+	if ctx.Err() == nil {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), exec10CleanupBound)
+}
+
 // ssh runs line on the target through "ssh -o BatchMode=yes", with stdin as its
 // standard input, and returns its combined output.
 func (m *exec10Machine) ssh(t *testing.T, line, stdin string) (string, error) {
 	t.Helper()
-	cmd := exec.CommandContext(t.Context(), "ssh", "-o", "BatchMode=yes", m.alias, line)
+	ctx, cancel := exec10Context(t)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "ssh", "-o", "BatchMode=yes", m.alias, line)
 	cmd.Stdin = strings.NewReader(stdin)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
@@ -179,13 +200,18 @@ func exec10Pick(bin, runnerOS, runnerArch, arch string) (path, sum string, same 
 	name := "dsh-linux-" + arch
 	dir := filepath.Dir(bin)
 	data, merr := os.ReadFile(filepath.Join(dir, rehearsalManifest))
-	if merr != nil {
+	if errors.Is(merr, fs.ErrNotExist) {
 		if runnerOS == "linux" && runnerArch == arch {
 			// DSH_BIN outside a rehearsal directory: a binary for this very
 			// platform, used as given (scenario.Bin records its SHA-256).
 			return bin, "", true, nil
 		}
 		return "", "", false, fmt.Errorf("DSH_BIN=%s is a %s/%s binary and no %s beside it names %s for the linux/%s target: %v", bin, runnerOS, runnerArch, rehearsalManifest, name, arch, merr)
+	}
+	if merr != nil {
+		// A manifest that exists but cannot be read is never a reason to skip
+		// the checksum.
+		return "", "", false, fmt.Errorf("reading the rehearsal manifest: %w", merr)
 	}
 	want := ""
 	for _, line := range strings.Split(string(data), "\n") {

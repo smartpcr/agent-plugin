@@ -88,6 +88,17 @@ func TestExec10PickRehearsalBinary(t *testing.T) {
 		})
 	}
 
+	t.Run("refused: a manifest that cannot be read, even on the same platform", func(t *testing.T) {
+		dir := exec10Rehearsal(t, files, nil)
+		if err := os.Mkdir(filepath.Join(dir, rehearsalManifest), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		bin := filepath.Join(dir, "dsh-linux-amd64")
+		if path, _, same, err := exec10Pick(bin, "linux", "amd64", "amd64"); err == nil || !strings.Contains(err.Error(), "reading the rehearsal manifest") {
+			t.Fatalf("exec10Pick = %q, %v, %v; want the unreadable manifest refused, not DSH_BIN used unchecked", path, same, err)
+		}
+	})
+
 	t.Run("no rehearsal, same platform: DSH_BIN as given", func(t *testing.T) {
 		dir := exec10Rehearsal(t, files, nil)
 		bin := filepath.Join(dir, "dsh-linux-amd64")
@@ -95,4 +106,22 @@ func TestExec10PickRehearsalBinary(t *testing.T) {
 			t.Fatalf("exec10Pick = %q, %v, %v; want DSH_BIN itself", path, same, err)
 		}
 	})
+}
+
+// A cleanup's SSH command gets a live, bounded context: testing cancels t.Context
+// just before the cleanups run, which would end every cleanup command at once
+// (stopping the host, checking the scope, removing the scratch directory).
+func TestExec10ContextLiveInCleanup(t *testing.T) {
+	var live, bounded bool
+	t.Run("cleanup", func(t *testing.T) {
+		t.Cleanup(func() {
+			ctx, cancel := exec10Context(t)
+			defer cancel()
+			_, bounded = ctx.Deadline()
+			live = ctx.Err() == nil
+		})
+	})
+	if !live || !bounded {
+		t.Fatalf("in a cleanup exec10Context is live=%v bounded=%v, want both", live, bounded)
+	}
 }
