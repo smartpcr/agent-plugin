@@ -277,16 +277,19 @@ func ClosureProblems(s Story, rec *Record) []string {
 
 // CheckRecords is "harness-gate records": every stage record of story exists and has
 // its shape; a record reading closed must also pass Close (so a legitimate close keeps
-// the check green and a premature one does not); the closure record has its rows.
+// the check green and a premature one does not); the closure record has its rows,
+// and its built and done states hold against the stage records (ProofProblems).
 // A build stage's close runs with --built.
 func CheckRecords(root string, s Story, x *acceptance.Index) []string {
 	var out []string
+	records := map[string]*Record{}
 	for _, stage := range s.Stages {
 		rec, err := ReadRecord(root, s.ID, stage)
 		if err != nil {
 			out = append(out, err.Error())
 			continue
 		}
+		records[stage] = rec
 		out = append(out, ShapeProblems(rec)...)
 		// An open record may have empty cells, but never fewer rows than it owes.
 		for _, m := range s.Obligations[stage].Missing(rec, true) {
@@ -310,5 +313,6 @@ func CheckRecords(root string, s Story, x *acceptance.Index) []string {
 	if err != nil {
 		return append(out, err.Error())
 	}
-	return append(out, ClosureProblems(s, rec)...)
+	out = append(out, ClosureProblems(s, rec)...)
+	return append(out, ProofProblems(s, x, rec, records)...)
 }

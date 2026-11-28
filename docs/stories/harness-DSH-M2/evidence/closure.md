@@ -28,11 +28,11 @@ The finishing stage of a done-candidate is the stage whose scenarios (or, where 
 
 | Deliverable | Priority | Built in | State | Finishing stage or held-open item | Proving scenarios |
 | --- | --- | --- | --- | --- | --- |
-| DH-D-VIEW-10 | P0 | DH-S-12 | not built | DH-S-18 (step 18.6) | DH-E-VIEW-5 |
-| DH-D-FS-4 | P0 | DH-S-12 | not built | DH-S-28 | DH-E-FS-1, DH-E-FS-3, DH-E-FS-5 |
-| DH-D-SANDBOX-1 | P0 | DH-S-12 | not built | DH-S-17 (step 17.9) | DH-E-SANDBOX-7 |
-| DH-D-HUMAN-4 | P1 | DH-S-12 | not built | DH-S-12 (local tests) | DH-T-HUMAN-7 (no DH-E scenario) |
-| DH-D-FS-6 | P0 | DH-S-12 | not built | DH-S-18 (step 18.5) | DH-E-FS-2 |
+| DH-D-VIEW-10 | P0 | DH-S-12 | built | DH-S-18 (step 18.6) | DH-E-VIEW-5 |
+| DH-D-FS-4 | P0 | DH-S-12 | built | DH-S-28 | DH-E-FS-1, DH-E-FS-3, DH-E-FS-5 |
+| DH-D-SANDBOX-1 | P0 | DH-S-12 | built | DH-S-17 (step 17.9) | DH-E-SANDBOX-7 |
+| DH-D-HUMAN-4 | P1 | DH-S-12 | built | DH-S-12 (local tests) | DH-T-HUMAN-7 (no DH-E scenario) |
+| DH-D-FS-6 | P0 | DH-S-12 | built | DH-S-18 (step 18.5) | DH-E-FS-2 |
 | DH-D-SANDBOX-2 | P0 | DH-S-13 | not built | DH-S-39 | DH-E-SANDBOX-1, DH-E-SANDBOX-2 |
 | DH-D-SANDBOX-3 | P0 | DH-S-13 | not built | DH-S-39 | DH-E-SANDBOX-2 |
 | DH-D-SANDBOX-4 | P0 | DH-S-13 | not built | DH-S-18 (step 18.4) | DH-E-SANDBOX-1 |
@@ -41,11 +41,11 @@ The finishing stage of a done-candidate is the stage whose scenarios (or, where 
 | DH-D-EXEC-8 | P0 | DH-S-13 | not built | DH-S-39 | DH-E-EXEC-7 |
 | DH-D-EXEC-9 | P0 | DH-S-13 | not built | DH-S-39 | DH-E-EXEC-8 |
 | DH-D-CONTEXT-2 | P0 | DH-S-13 | not built | DH-S-32 | DH-E-CONTEXT-1, DH-E-CONTEXT-2 |
-| DH-D-BUNDLE-1 | P0 | DH-S-14 | not built | DH-S-14 (local tests) | DH-T-BUNDLE-2, DH-T-BUNDLE-5 (no DH-E scenario) |
-| DH-D-BUNDLE-2 | P0 | DH-S-14 | not built | DH-S-22 | DH-E-BUNDLE-3 |
-| DH-D-BUNDLE-4 | P0 | DH-S-14 | not built | DH-S-48 | DH-E-BUNDLE-2 |
-| DH-D-BUNDLE-5 | P0 | DH-S-14 | not built | DH-S-48 | DH-E-BUNDLE-2 |
-| DH-D-BUNDLE-6 | P0 | DH-S-14 | not built | DH-S-22 | DH-E-BUNDLE-4 |
+| DH-D-BUNDLE-1 | P0 | DH-S-14 | built | DH-S-14 (local tests) | DH-T-BUNDLE-2, DH-T-BUNDLE-5 (no DH-E scenario) |
+| DH-D-BUNDLE-2 | P0 | DH-S-14 | built | DH-S-22 | DH-E-BUNDLE-3 |
+| DH-D-BUNDLE-4 | P0 | DH-S-14 | built | DH-S-48 | DH-E-BUNDLE-2 |
+| DH-D-BUNDLE-5 | P0 | DH-S-14 | built | DH-S-48 | DH-E-BUNDLE-2 |
+| DH-D-BUNDLE-6 | P0 | DH-S-14 | built | DH-S-22 | DH-E-BUNDLE-4 |
 | DH-D-HOST-1 | P0 | DH-S-15 | not built | DH-S-22 | DH-E-HOST-2 |
 | DH-D-HOST-2 | P0 | DH-S-15 | not built | DH-S-22 | DH-E-HOST-1, DH-E-HOST-2, DH-E-HOST-7, DH-E-HOST-8, DH-E-HOST-9 |
 | DH-D-HOST-3 | P0 | DH-S-15 | not built | DH-S-39 | DH-E-HOST-1 |
@@ -106,6 +106,47 @@ changes. When the S18 rows pass, these move:
   library requirements and decisions of TOOLCHAIN-2, NATIVESYSTEM-1 to -4, RIPGREP-1 and -2,
   CHOKIDAR-1 and -2 and NODEFS-1. They are recorded in [DH-S-18.md](DH-S-18.md) and marked in
   harness:DSH-M1's closure record when it is written (it does not exist yet).
+
+## Phase 9 (Stage 9.1)
+
+implementation-plan Stage 9.1, taken up on `4053b1b`. `harness-gate records` now checks every state
+above against the stage records (`closure/proof.go`, M2-C-3): a `built` or `done` row needs its
+Built-in stage to pass `harness-gate ready --stage <id> --built`; a `done` row also needs every
+proving DH-E scenario passed with its evidence in a stage record, every stage its finishing column
+names closed, and every H-item it names closed. A row may not read further than that evidence.
+
+| Built in | `ready --built` on `4053b1b` | Rows | State |
+| --- | --- | --- | --- |
+| DH-S-12 | exit 0 | VIEW-10, FS-4, SANDBOX-1, HUMAN-4, FS-6 | built |
+| DH-S-13 | exit 1, 1 blocker: owner default I2 Q4 not confirmed | SANDBOX-2, -3, -4, EXEC-3, -4, -8, -9, CONTEXT-2 | not built |
+| DH-S-14 | exit 0 | BUNDLE-1, -2, -4, -5, -6 | built |
+| DH-S-15 | exit 1, 10 blockers: steps 15.1 to 15.8 have no commit SHA; owner defaults I2 Q5 and U-K2-5 not confirmed | HOST-1, -2, -3, API-1, SDK-3 to SDK-6 | not built |
+| DH-S-16 | exit 1, 13 blockers: DH-E-STORE-1, -2, -6 and DH-E-FS-3 guarded rows `not run` (M1 not closed, M2-DEC-1); manual checks of steps 16.3 and 16.4 not recorded | BUNDLE-3, CLI-2, -4, -5, -9, SDK-8, UTIL-7, UTIL-8, VIEW-4 | not built |
+
+So 10 rows read `built`, 25 `not built` and none `done`. No done-candidate can be `done` at this
+commit: DH-S-17 and DH-S-18 are open (every acceptance row `not run`, M2-DEC-1), and the local-test
+candidates (HUMAN-4, EXEC-3, BUNDLE-1, CLI-9) are recorded only by their stage's closure, and DH-S-12,
+-13, -14 and -16 read `Closure status: open`. Every finishing stage and held-open item above is the
+one tech-spec sec. 3.2 names (24 stay built: S22, S27, S28, S32, S39, S48 and H-1 to H-4, H-10);
+H-21 is closed. M2-DOD-6 (every row `built` or `done`) is not met until DH-S-13, -15 and -16 pass
+`ready --built`.
+
+**Owner defaults (M2-C-4, Q `m2-unconfirmed-defaults`).** Each stage record's "Owner defaults
+(M2-C-4)" table, as committed:
+
+| Stage | Default | Raised in | Recorded |
+| --- | --- | --- | --- |
+| DH-S-12 | Full-access label | I2 Q3 | confirmed as written (operator) |
+| DH-S-12 | UTF-8-only text tools | core §6.3 | confirmed as written (operator) |
+| DH-S-13 | `partial` when delegated execution cannot be stopped | I2 Q4 | not confirmed (applied in step 13.4) |
+| DH-S-15 | No SDK session grant | I2 Q5 | not confirmed |
+| DH-S-15 | Client time zone | U-K2-5 | not confirmed |
+| DH-S-16 | Second `dsh web` reuses the host | I3 Q1 | confirmed as written (operator, `12c2be8`) |
+| DH-S-16 | Windows double-click | I3 Q8 | confirmed as written (operator, `12c2be8`) |
+| DH-S-16 | `dsh headless` progress | U-K2-4 | confirmed as written (operator, `12c2be8`) |
+
+DH-S-14, DH-S-17 and DH-S-18 have none. The three unconfirmed defaults wait on the owner's answer;
+they are recorded in the DH-S-13 and DH-S-15 records when it is given.
 
 ## Held-open items
 
