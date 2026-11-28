@@ -2,6 +2,9 @@ package profile
 
 import (
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -163,8 +166,11 @@ func TestOptionalListIsNotABundle(t *testing.T) {
 
 // TC-08a, NG-7: each default profile composed from its shipped bundles, with no
 // route and no home layer, has an empty egress set. A layer that turns a kind on
-// with an endpoint puts it in the set, so the empty result is meaningful.
+// with an endpoint puts it in the set, so the empty result is meaningful. The sets
+// are testdata/egress.golden, one line per profile, which "harness-gate release"
+// reads as the default egress set (implementation-plan Stage 9.2, M2-DOD-7).
 func TestDefaultProfilesSendNothing(t *testing.T) {
+	var golden strings.Builder
 	for _, def := range allDefinitions() {
 		layers, err := BundleLayers(def)
 		if err != nil {
@@ -178,6 +184,24 @@ func TestDefaultProfilesSendNothing(t *testing.T) {
 		if len(got) != 0 {
 			t.Errorf("%s: egress set %v, want empty (NG-7)", def.Name, got)
 		}
+		sends := make([]string, 0, len(got))
+		for _, st := range got {
+			sends = append(sends, strings.TrimSpace(string(st.Kind)+" "+st.Endpoint))
+		}
+		fmt.Fprintf(&golden, "%s: [%s]\n", def.Name, strings.Join(sends, ", "))
+	}
+	want, err := os.ReadFile(filepath.Join("testdata", "egress.golden"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wantSets []string
+	for _, l := range strings.Split(strings.ReplaceAll(string(want), "\r\n", "\n"), "\n") {
+		if l != "" && !strings.HasPrefix(l, "#") {
+			wantSets = append(wantSets, l)
+		}
+	}
+	if got := strings.TrimSuffix(golden.String(), "\n"); got != strings.Join(wantSets, "\n") {
+		t.Errorf("default egress sets:\n%s\nwant testdata/egress.golden:\n%s", got, strings.Join(wantSets, "\n"))
 	}
 
 	def, err := Lookup(Headless)

@@ -15,8 +15,9 @@ SANDBOX-1, HUMAN-4, FS-6, SANDBOX-4, EXEC-3, BUNDLE-1, SDK-6, CLI-9, SDK-8, VIEW
 at M2; the other 24 stay `built` with the finishing stage or held-open item named here.
 
 **Updated by.** Implementation-plan step 6.12 (S12..S16 states), Phase 7 (deliverables S17
-finishes), Phase 8 (deliverables S18 finishes) and the final M2 closure step, which declares M2
-reached only when DH-S-17 and DH-S-18 are closed.
+finishes), Phase 8 (deliverables S18 finishes) and the final M2 closure step (Stage 9.2), which
+declares M2 reached only when DH-S-17 and DH-S-18 are closed and the step 16.8 guarded scenarios
+have passed (`harness-gate milestone`).
 
 M2 reached: no.
 
@@ -147,6 +148,38 @@ H-21 is closed. M2-DOD-6 (every row `built` or `done`) is not met until DH-S-13,
 
 DH-S-14, DH-S-17 and DH-S-18 have none. The three unconfirmed defaults wait on the owner's answer;
 they are recorded in the DH-S-13 and DH-S-15 records when it is given.
+
+## Phase 9 (Stage 9.2)
+
+implementation-plan Stage 9.2. The checks below run the `harness-gate milestone` and `release`
+commands this stage adds. Those commands are first committed in `2571b03` (with
+`release_base.golden` and `egress.golden`) and amended by the commit that adds this text (the
+platform-row obligation of `closure/milestone.go`). Neither command exists in `c3fdce0`, the `main`
+commit the branch starts from. They judge inputs that are unchanged since `c3fdce0`: the stage
+records, `test/harness/acceptance-index.yaml`, `.github/workflows/` and `.goreleaser.yaml`. The
+results were taken on the branch's working tree and hold at its closing commit. The last two rows
+come from GitHub state queried on 2026-11-28, not from committed files. M2 is reached when two
+things hold (impl.md sec. 3.3, M2 row):
+- DH-S-17 and DH-S-18 are closed;
+- the Stage 6.12 guarded scenarios have passed: the step 16.8 rows DH-E-STORE-1, -2, -6 and
+  DH-E-FS-3 of the DH-S-16 record.
+
+`harness-gate milestone` judges this predicate (`closure/milestone.go`). Every scenario row the
+DH-S-16 record owes, one per platform (`closure/obligations.go`), must be present. `harness-gate records`
+refuses an `M2 reached: yes.` line unless the predicate passes and `built-through` has advanced to
+DH-S-18.
+
+| Check (branch working tree; inputs as at `c3fdce0`) | Result |
+| --- | --- |
+| `harness-gate milestone` | exit 1, 9 blockers. DH-S-17 is not closed (status `open`, 18 blockers). DH-S-18 is not closed (status `open`, 47 blockers). 7 DH-S-16 guarded rows read `not run` (M1 not closed, M2-DEC-1): DH-E-STORE-1 (Linux (WSL), Windows), DH-E-STORE-2 (Linux (WSL)), DH-E-STORE-6 (Linux (WSL), Windows) and DH-E-FS-3 (Linux (WSL), Windows). |
+| `built-through` (`test/harness/acceptance-index.yaml`) | stays `DH-S-11`: no stage of the story has closed, and a stage raises it only when it closes |
+| `harness-gate release` (M2-DOD-7, NG-7) | exit 0. `.github/workflows/release.yml` (blob `4ab2c44`) and `.goreleaser.yaml` (blob `e79e5cd`) equal their copies at the story's base commit `896c760` (`tools/harness-gate/testdata/release_base.golden`). Neither file names `dsh`, no other workflow runs on a tag push or uses goreleaser, and all 7 default profiles send nothing (`src/harness/internal/boot/profile/testdata/egress.golden`, kept honest by `TestDefaultProfilesSendNothing`). |
+| Release tags (`git tag --contains 896c760`, 2026-11-28) | only `evidence/m1-phase-18`, `evidence/m1-phase-19` and `evidence/m2-gate-repair`. No `v*` or `src/go/v*` tag contains the story's base. `v0.1.2`, `v0.1.3` and `v0.1.4` predate it. |
+| `release.yml` runs (`gh run list --workflow release.yml`, 2026-11-28) | the last is run 44078147586 (`v0.1.4`, 2026-11-17), before the story's base. No run since. |
+
+So M2 is not reached, and this record reads `M2 reached: no.` Nothing is enabled for users and no
+build is published. The line changes to `yes` only once three things hold: DH-S-17 and DH-S-18 are
+closed, the step 16.8 guarded rows have passed, and `built-through` reads DH-S-18.
 
 ## Held-open items
 

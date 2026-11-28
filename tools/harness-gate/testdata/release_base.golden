@@ -1,0 +1,182 @@
+# Base-commit copies of the release files (implementation-plan Stage 9.2; M2-DOD-7, NG-7),
+# read by "harness-gate release". Each file follows its "=== <path> <git blob ID at base>"
+# line, byte for byte; the check recomputes each blob ID, so the copy cannot drift.
+# base: 896c7604c220815b7633bb148b2e22e0b65cb85a
+#   the parent of 8ac8dc6 (#96), the first commit of story harness:DSH-M2's plan.
+# Captured with: git show <base>:<path>; git rev-parse <base>:<path>
+=== .github/workflows/release.yml 4ab2c446240404f351328d7dc09b4de76dccc8b7
+# Releases both ports from one tag. Push vX.Y.Z (or vX.Y.Z-suffix for a prerelease):
+#
+#   ci             the whole CI workflow (build, tests, e2e) on the tagged commit
+#   go-module-tag  creates src/go/vX.Y.Z on the same commit, so `go get .../src/go@vX.Y.Z`
+#                  resolves (a module in a subdirectory is versioned by prefixed tags)
+#   goreleaser     the GitHub release: changelog, the Go sample for each platform, checksums
+#   nuget          packs Smartpcr.AgentPlugin, .Timer and .Loader at X.Y.Z, pushes them to the
+#                  smartpcr GitHub Packages feed (https://nuget.pkg.github.com/smartpcr/index.json)
+#                  and attaches them, with their symbol packages, to the GitHub release
+#
+# Needs the repository secret NUGET_API_KEY: a GitHub personal access token with the
+# write:packages scope. Nothing is published unless ci passes.
+name: release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DOTNET_NOLOGO: "true"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "true"
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  go-module-tag:
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag the Go module
+        env:
+          TAG: src/go/${{ github.ref_name }}
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" > /dev/null; then
+            echo "$TAG already exists"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Go module ${GITHUB_REF_NAME}" "$GITHUB_SHA"
+          git push origin "refs/tags/$TAG"
+
+  goreleaser:
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the changelog needs the history and the previous tag
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: src/go/go.mod
+          cache: false
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The src/go/vX.Y.Z tag may already sit on this commit; the release tag is this one.
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
+
+  nuget:
+    needs: goreleaser # the GitHub release must exist to attach the packages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: src/net/global.json
+      - name: Check the token
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: |
+          if [ -z "$NUGET_API_KEY" ]; then
+            echo "::error::The repository secret NUGET_API_KEY (a GitHub PAT with write:packages) is not set."
+            exit 1
+          fi
+      - name: Pack
+        run: dotnet pack src/net/Cordis.slnx -c Release -p:Version="${GITHUB_REF_NAME#v}" -o out
+      - name: Push to the smartpcr GitHub Packages feed
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        # GitHub Packages takes no .snupkg symbol packages; they are attached to the release instead.
+        run: >-
+          dotnet nuget push "out/*.nupkg"
+          --source https://nuget.pkg.github.com/smartpcr/index.json
+          --api-key "$NUGET_API_KEY"
+          --skip-duplicate
+          --no-symbols
+      - name: Attach to the GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$GITHUB_REF_NAME" out/*.nupkg out/*.snupkg --clobber
+=== .goreleaser.yaml e79e5cd711b82a54679c64f8b49b01f50aa52f77
+# GoReleaser (free edition) for the Go port, run by .github/workflows/release.yml on a vX.Y.Z tag.
+#
+# src/go is a library, consumed with `go get github.com/smartpcr/agent-plugin/src/go@vX.Y.Z`
+# through the src/go/vX.Y.Z tag the release workflow creates. GoReleaser publishes the GitHub
+# release: the changelog, the sample program for each platform, and checksums. The NuGet
+# packages of the .NET port go to the smartpcr GitHub Packages feed and are attached to the
+# same release by the workflow.
+#
+# Try it locally without publishing:  goreleaser release --snapshot --clean
+version: 2
+
+project_name: agent-plugin
+
+builds:
+  - id: cordis-sample
+    dir: src/go
+    main: ./cmd/cordis-sample
+    binary: cordis-sample
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+
+archives:
+  - id: cordis-sample
+    ids: [cordis-sample]
+    name_template: "cordis-sample_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - LICENSE
+      - src/go/README.md
+
+checksum:
+  name_template: checksums.txt
+
+git:
+  # The module tags (src/go/vX.Y.Z) sit on the same commits as the release tags; only
+  # vX.Y.Z tags are releases, so the changelog compares one release with the previous.
+  ignore_tags:
+    - "src/*"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^Merge "
+
+release:
+  github:
+    owner: smartpcr
+    name: agent-plugin
+  footer: |
+    **Go:** `go get github.com/smartpcr/agent-plugin/src/go@{{ .Tag }}`
+
+    **.NET:** `dotnet add package Smartpcr.AgentPlugin --version {{ .Version }}` (also `Smartpcr.AgentPlugin.Timer`, `Smartpcr.AgentPlugin.Loader`), from the feed `https://nuget.pkg.github.com/smartpcr/index.json`; the packages are also attached below
