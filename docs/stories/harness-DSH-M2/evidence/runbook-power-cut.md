@@ -229,6 +229,40 @@ machine cannot cut its own power, so no `service:os-process` substitute exists.
    in the log, naming the guest and round) keep the failing overlay and name it in the
    record and in [DH-S-18.md](DH-S-18.md).
 
+### Through the Gherkin suite
+
+The Stage 8.9 E2E suite
+(`src/harness/test/e2e/harness-DSH-M2/dh_s_18_acceptance_on_real_operating_systems_durable_replace_under_power_loss.feature`)
+runs steps 2 to 6 for each guest OS in one go. It reads the step 2 inputs directly as
+`DSH_S18_KVM_*` (Linux guest) and `DSH_S18_HYPERV_*` (Windows guest): `NODEFS_LISTEN`,
+`NODEFS_START`, `NODEFS_POWEROFF`, `NODEFS_POWERON`, `NODEFS_READ`, `BASE_IMAGES`,
+`PROBE_CREATE`, `PROBE_SHOW`, `PROBE_ACK` and `PROBE_DELETE`. It does not read `VMS`. Then,
+for each guest OS, it:
+
+1. runs the step 2 preflight with a throw-away probe;
+2. creates the run's guest fresh with `PROBE_CREATE` (`{probe}` is the generated guest name);
+3. cuts the guest and powers it back on;
+4. runs a prebuilt `TestDurableReplaceSurvivesPowerLoss` binary against that guest (100 rounds,
+   never a cached result);
+5. judges the version log on its own: 100 cuts, every read complete, and the version read
+   never older than the last acknowledged version;
+6. deletes the guest with `PROBE_DELETE` if it passes, and keeps it if it fails.
+
+If a guest OS's inputs are unset, or its preflight fails, that scenario fails with
+`not run (power-cut preflight failed)`. It never skips. The report, the version log and the
+child output are written to `$DSH_E2E_NODEFS_ARTIFACTS/<linux|windows>/`; when that is
+unset, they go to a temp directory.
+
+```bash
+GOWORK=off go -C src/harness test -tags e2e -v -timeout 355m \
+  -run '^TestE2E_dh_s_18_acceptance_on_real_operating_systems_durable_replace_under_power_loss$' \
+  ./test/e2e/harness-DSH-M2/
+```
+
+`.github/workflows/e2e-dh-s-18-acceptance-on-real-operating-systems.yml` runs this command on
+the `dsh-hypervisor` runner. It runs in environment `dsh-m2-s18` and holds the
+`dsh-s18-lock-hypervisor` lock. Record its result here in the same way as for step 5.
+
 ## Record
 
 | Field | Value |
