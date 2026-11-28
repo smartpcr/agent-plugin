@@ -488,10 +488,12 @@ func (s *s74State) givenInstance(routes, list string) error {
 			return fmt.Errorf("%s is not a client route", name)
 		}
 		if s.provided {
-			if id == claudecode.RouteID {
-				if _, err := exec.LookPath(claudecode.Program); err != nil {
-					return fmt.Errorf("the provided claude-code client is not installed: %v", err)
-				}
+			program := claudecode.Program
+			if id == copilot.RouteID {
+				program = copilot.Program
+			}
+			if _, err := exec.LookPath(program); err != nil {
+				return fmt.Errorf("the provided %s client (%s) is not installed: %v", name, program, err)
 			}
 			continue
 		}
