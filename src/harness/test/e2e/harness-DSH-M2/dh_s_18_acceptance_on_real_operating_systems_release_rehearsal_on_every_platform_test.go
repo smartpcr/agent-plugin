@@ -162,7 +162,59 @@ func s18rRunRehearsal() (*s18rRehearsal, error) {
 	if r.sums, err = s18rReadChecksums(filepath.Join(out, "dist", s18rChecksumFile)); err != nil {
 		return nil, err
 	}
+	if err := r.checkSixTargets(); err != nil {
+		return nil, err
+	}
 	return r, nil
+}
+
+// s18rTargets are the six release targets of .goreleaser.dsh.yaml.
+var s18rTargets = [][2]string{
+	{"linux", "amd64"}, {"linux", "arm64"},
+	{"windows", "amd64"}, {"windows", "arm64"},
+	{"darwin", "amd64"}, {"darwin", "arm64"},
+}
+
+// checkSixTargets requires exactly six binary records and exactly six archives in
+// checksums.txt, one per target, each archive present under dist/, so a config that
+// drops a target (including the darwin ones, never executed here) fails.
+func (r *s18rRehearsal) checkSixTargets() error {
+	wantRecords := map[string]bool{}
+	wantArchives := map[string]bool{}
+	for _, t := range s18rTargets {
+		name := "dsh-" + t[0] + "-" + t[1]
+		if t[0] == "windows" {
+			name += ".exe"
+		}
+		wantRecords[name] = true
+		if _, ok := r.records[name]; !ok {
+			return fmt.Errorf("the rehearsal recorded no %s (want six records, one per target):\n%s", name, r.report)
+		}
+		a, err := r.archiveName(t[0], t[1])
+		if err != nil {
+			return err
+		}
+		wantArchives[a] = true
+		if fi, err := os.Stat(filepath.Join(r.out, "dist", a)); err != nil {
+			return fmt.Errorf("%s lists %s, which is not under dist/: %w", s18rChecksumFile, a, err)
+		} else if !fi.Mode().IsRegular() {
+			return fmt.Errorf("%s lists %s, which is not a regular file under dist/", s18rChecksumFile, a)
+		}
+	}
+	for name := range r.records {
+		if !wantRecords[name] {
+			return fmt.Errorf("the rehearsal recorded %s, not one of the six targets:\n%s", name, r.report)
+		}
+	}
+	for name := range r.sums {
+		if !wantArchives[name] {
+			return fmt.Errorf("%s lists %s, not one of the six dsh_* target archives", s18rChecksumFile, name)
+		}
+	}
+	if len(r.records) != len(s18rTargets) || len(r.sums) != len(s18rTargets) {
+		return fmt.Errorf("want %d records and %d archives in %s, got %d and %d", len(s18rTargets), len(s18rTargets), s18rChecksumFile, len(r.records), len(r.sums))
+	}
+	return nil
 }
 
 func s18rReadChecksums(path string) (map[string]string, error) {
