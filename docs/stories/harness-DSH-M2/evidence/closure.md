@@ -86,6 +86,27 @@ changes. When the S17 rows pass, these move:
   (`docs/stories/harness-DSH-M1/evidence/closure.md` does not exist), so they are marked there when
   that record is written.
 
+## Phase 8 (DH-S-18)
+
+implementation-plan Stage 8.10, taken up on `1eb8f67`: DH-S-18 is not closed (its record reads
+`Closure status: open`; `harness-gate ready --stage DH-S-18` exits 1 with 46 blockers, every in-scope
+scenario row `not run` because harness:DSH-M1 is not closed, M2-DEC-1; see
+[DH-S-18.md](DH-S-18.md#stage-810-closure-attempt)), so S18 finishes no deliverable and no row above
+changes. When the S18 rows pass, these move:
+
+- M2 done-candidates S18 finishes: DH-D-SANDBOX-4 (step 18.4, DH-E-SANDBOX-1 on every `linux-e2:*`
+  machine of its set), DH-D-FS-6 (step 18.5, DH-E-FS-2 on `linux-wsl`, `windows-host` and
+  `windows-host:smb`) and DH-D-VIEW-10 (step 18.6, DH-E-VIEW-5 on `linux-wsl`) read `done` only once
+  they are `built` and those rows in [DH-S-18.md](DH-S-18.md) read `passed`.
+- M2 deliverables S18 proves in part and does not finish: DH-D-FS-4 (DH-E-FS-1; stays to DH-S-28),
+  DH-D-SANDBOX-2 and DH-D-SANDBOX-3 (DH-E-SANDBOX-1; stay to DH-S-39) and DH-D-CONTEXT-2
+  (DH-E-CONTEXT-2; stays to DH-S-32). Their rows keep their finishing stage whatever S18 shows.
+- Deliverables of other stories S18 proves (`docs/harness/trace/ledger.jsonl`): DH-D-HOST-7
+  (DH-E-HOST-4), DH-D-EXEC-2 (DH-E-EXEC-1, DH-E-EXEC-10) and DH-D-STORAGE-2 (DH-E-STORAGE-6), and the
+  library requirements and decisions of TOOLCHAIN-2, NATIVESYSTEM-1 to -4, RIPGREP-1 and -2,
+  CHOKIDAR-1 and -2 and NODEFS-1. They are recorded in [DH-S-18.md](DH-S-18.md) and marked in
+  harness:DSH-M1's closure record when it is written (it does not exist yet).
+
 ## Held-open items
 
 Items impl.md holds open across M2 (M2-I-5). H-21 is the M1 item DH-S-16 step 16.10 closes: `dsh config show` and `dsh config validate` run in the admin tree, construct no component, and DH-T-BOOT-14's command tests (`cli`: `TestConfigShowConstructsNothing`, `TestConfigShowKeepsEveryValue`, `TestConfigValidateRejectsBadConfig`, `TestConfigValidateRejectsLayerFaults`, `TestConfigCommandsProcess`; `boot/config`: `TestDumpYAMLRoundTrips`, the loadable `--format yaml` dump against its golden and composed back to the same tree) pass.

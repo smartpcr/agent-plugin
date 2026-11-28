@@ -1,0 +1,22 @@
+== open_not_ready: ready --stage DH-S-18 (exit 1)
+harness-gate ready: DH-S-18 (docs/stories/harness-DSH-M2/evidence/DH-S-18.md, acceptance): NOT READY, 1 blocker:
+  - DH-E-EXEC-10 [linux-e2:no-user-manager]: result "not run (no-user-manager machine not provisioned)": not run counts as open (M2-C-2)
+== open_not_ready: close --stage DH-S-18 (exit 1)
+harness-gate close: DH-S-18 (docs/stories/harness-DSH-M2/evidence/DH-S-18.md, acceptance): REFUSED not-yet-closed, 2 blockers:
+  - the status line reads open; the closing PR changes it to closed only after ready exits 0
+  - DH-E-EXEC-10 [linux-e2:no-user-manager]: result "not run (no-user-manager machine not provisioned)": not run counts as open (M2-C-2)
+== open_ready: ready --stage DH-S-18 (exit 0)
+harness-gate ready: DH-S-18 (docs/stories/harness-DSH-M2/evidence/DH-S-18.md, acceptance): ready; the status line is not read (it reads open)
+== open_ready: close --stage DH-S-18 (exit 1)
+harness-gate close: DH-S-18 (docs/stories/harness-DSH-M2/evidence/DH-S-18.md, acceptance): REFUSED not-yet-closed, 1 blocker:
+  - the status line reads open; the closing PR changes it to closed only after ready exits 0
+== closed_ready: ready --stage DH-S-18 (exit 0)
+harness-gate ready: DH-S-18 (docs/stories/harness-DSH-M2/evidence/DH-S-18.md, acceptance): ready; the status line is not read (it reads closed)
+== closed_ready: close --stage DH-S-18 (exit 0)
+harness-gate close: DH-S-18 (docs/stories/harness-DSH-M2/evidence/DH-S-18.md, acceptance): closed; every ready condition holds and the status line reads "closed"
+== closed_not_ready: ready --stage DH-S-18 (exit 1)
+harness-gate ready: DH-S-18 (docs/stories/harness-DSH-M2/evidence/DH-S-18.md, acceptance): NOT READY, 1 blocker:
+  - DH-E-EXEC-10 [linux-e2:no-user-manager]: result "not run (no-user-manager machine not provisioned)": not run counts as open (M2-C-2)
+== closed_not_ready: close --stage DH-S-18 (exit 1)
+harness-gate close: DH-S-18 (docs/stories/harness-DSH-M2/evidence/DH-S-18.md, acceptance): REFUSED closed-but-not-ready, 1 blocker:
+  - DH-E-EXEC-10 [linux-e2:no-user-manager]: result "not run (no-user-manager machine not provisioned)": not run counts as open (M2-C-2)

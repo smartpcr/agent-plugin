@@ -176,6 +176,29 @@ func TestOutOfScopeNeedsDecision(t *testing.T) {
 	}
 }
 
+// Scenario: No partial closure (implementation-plan Stage 8.10, M2-DOD-4). One in-scope
+// machine of DH-E-EXEC-10 not run refuses S18 and names that variant, though the other
+// machine passed; a closed line on that record is refused closed-but-not-ready.
+func TestNoPartialClosureNamesTheVariantNotRun(t *testing.T) {
+	x := index(t, "built-through: DH-S-8\nstages:\n  DH-S-18:\n    - id: DH-E-EXEC-10\n      authored: DH-S-6\n      credential: none\n")
+	src := func(status, noManager string) string {
+		return stageRecord(status,
+			"| DH-E-EXEC-10 | linux-e2:systemd | acceptance | required | E2 runner:dsh-e2-controller | 0123abc | passed | run 42 |",
+			"| DH-E-EXEC-10 | linux-e2:no-user-manager | acceptance | required | E2 runner:dsh-e2-controller | | "+noManager+" | |")
+	}
+	b := Ready(x, "DH-S-18", record(t, src("open", "not run (systemctl --user preflight failed)")), false)
+	if len(b) != 1 || !containsAll(b[0], "DH-E-EXEC-10 [linux-e2:no-user-manager]", "not run") {
+		t.Errorf("one machine not run: blockers %q, want one naming DH-E-EXEC-10 [linux-e2:no-user-manager]", b)
+	}
+	if refusal, _ := Close(x, "DH-S-18", record(t, src("closed", "not run (systemctl --user preflight failed)")), false); refusal != ClosedButNotReady {
+		t.Errorf("closed with one machine not run: refusal %q, want %q", refusal, ClosedButNotReady)
+	}
+	passed := strings.Replace(src("closed", "passed"), "| | passed | |", "| 0123abc | passed | run 42 |", 1)
+	if refusal, blockers := Close(x, "DH-S-18", record(t, passed), false); refusal != "" {
+		t.Errorf("both machines passed: refusal %q (%q), want none", refusal, blockers)
+	}
+}
+
 func TestIndexedScenarioWithoutRowBlocks(t *testing.T) {
 	x := index(t, store1Index+"    - id: DH-E-STORE-2\n      authored: DH-S-7\n      credential: none\n")
 	for _, built := range []bool{false, true} {

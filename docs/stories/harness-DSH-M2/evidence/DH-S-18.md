@@ -32,42 +32,59 @@ An acceptance step is ticked only by its scenarios; the commit is the one the sc
 | Step | Deliverable | Commit | Notes |
 | --- | --- | --- | --- |
 | 18.1 | DH-E-TOOLCHAIN-2 | | not run; blocked, see [Stage 8.2 blockers](#stage-82-blockers) |
-| 18.2 | DH-E-HOST-4 | | |
-| 18.3 | DH-E-EXEC-1, DH-E-EXEC-10 | | |
-| 18.4 | DH-E-NATIVESYSTEM-1 to -4, DH-E-SANDBOX-1 | | |
-| 18.5 | DH-E-FS-1, DH-E-FS-2 | | |
-| 18.6 | DH-E-VIEW-5 | | |
+| 18.2 | DH-E-HOST-4 | | not run; blocked, see [Stage 8.3 blockers](#stage-83-blockers) |
+| 18.3 | DH-E-EXEC-1, DH-E-EXEC-10 | | not run; blocked, see [Stage 8.4 blockers](#stage-84-blockers) |
+| 18.4 | DH-E-NATIVESYSTEM-1 to -4, DH-E-SANDBOX-1 | | not run; blocked, see [Stage 8.5 confinement runs](#stage-85-confinement-runs-step-184) |
+| 18.5 | DH-E-FS-1, DH-E-FS-2 | | not run; blocked, see [Stage 8.6 blockers](#stage-86-blockers) |
+| 18.6 | DH-E-VIEW-5 | | not run; blocked, see [Stage 8.6 blockers](#stage-86-blockers) |
 | 18.7 | DH-E-RIPGREP-1, DH-E-RIPGREP-2 | | not run; blocked, see [Stage 8.7 blockers](#stage-87-blockers) |
 | 18.8 | DH-E-CHOKIDAR-1, DH-E-CHOKIDAR-2 | | not run; blocked, see [Stage 8.7 blockers](#stage-87-blockers) |
-| 18.9 | DH-E-CONTEXT-2 | | |
-| 18.10 | DH-E-STORAGE-6 | | |
+| 18.9 | DH-E-CONTEXT-2 | | not run; blocked, see [Stage 8.8 blockers](#stage-88-blockers) |
+| 18.10 | DH-E-STORAGE-6 | | not run; blocked, see [Stage 8.8 blockers](#stage-88-blockers) |
 | 18.11 | DH-E-NODEFS-1 | | run last; not run, see [Stage 8.9 blockers](#stage-89-blockers) |
 
 ## Scenarios
 
-The 19 scenarios of the steps, one row per operating-system variant (M2-DOD-4). A variant in scope but not run keeps the stage open; macOS rows read out of scope by decision `platforms-windows-wsl` (M2-EN-2). Linux variants of tech-spec sec. 4.3 (M2-EN-3) are refined into one row each when Phase 8 records them; reported enforcement (`full` or `partial`) is copied into Artifacts.
+The 19 scenarios of the steps, one row per operating-system variant (M2-DOD-4). A variant in scope but not run keeps the stage open; macOS rows read out of scope by decision `platforms-windows-wsl` (M2-EN-2). Each row's variant is a variant of [variants.md](variants.md); the first rows of a scenario keep the labels the record was created with (Stage 1.1), which the gate owes, and read as follows. `Linux (WSL)` is `linux-wsl` (`linux-wsl:smb` for CHOKIDAR-2, `linux-wsl:two-account` for STORAGE-6); `Windows` is `windows-hosted` (`windows-host` for FS-2, `windows-host:smb` for CHOKIDAR-2, `windows-host:two-account` for STORAGE-6); `Linux ext4` is `linux-wsl` and `Windows NTFS` is `windows-hosted`; `Linux guest` and `Windows guest` are `vm:linux-guest` and `vm:windows-guest`. A `Linux (E2)` row (`Linux (E2, over SSH)` for EXEC-10) stands for the shared machine set of its scenario: it reads `passed` only when every `linux-e2:*` row of that scenario below it passed in one workflow run (the variants.md recording rule). Every other variant of variants.md has its own row, labelled as there. Reported enforcement (`Full` or `Partial`, with each exposure) is copied from each run into [Stage 8.5 confinement runs](#stage-85-confinement-runs-step-184), which the confinement rows' Artifacts name.
 
 | Scenario | Variant | Venue | Leg | Environment | Commit | Result | Artifacts |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | DH-E-TOOLCHAIN-2 | Linux (WSL) | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
 | DH-E-TOOLCHAIN-2 | Windows | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
+| DH-E-TOOLCHAIN-2 | macOS | acceptance | required | | | out of scope (platforms-windows-wsl) | |
 | DH-E-HOST-4 | Linux (WSL) | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1; no crash component, see Stage 8.3 blockers) | |
 | DH-E-HOST-4 | Windows | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1; no crash component, see Stage 8.3 blockers) | |
 | DH-E-HOST-4 | macOS | acceptance | required | | | out of scope (platforms-windows-wsl) | |
-| DH-E-EXEC-1 | Linux (E2) | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
-| DH-E-EXEC-10 | Linux (E2, over SSH) | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
+| DH-E-EXEC-1 | Linux (E2) | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | per machine: the `linux-e2:systemd` and `linux-e2:no-user-manager` rows below |
+| DH-E-EXEC-1 | linux-e2:systemd | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1; see [Stage 8.4 blockers](#stage-84-blockers)) | |
+| DH-E-EXEC-1 | linux-e2:no-user-manager | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1; see [Stage 8.4 blockers](#stage-84-blockers)) | |
+| DH-E-EXEC-10 | Linux (E2, over SSH) | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | per machine: the `linux-e2:systemd` and `linux-e2:no-user-manager` rows below |
+| DH-E-EXEC-10 | linux-e2:systemd | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1; see [Stage 8.4 blockers](#stage-84-blockers)) | |
+| DH-E-EXEC-10 | linux-e2:no-user-manager | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1; see [Stage 8.4 blockers](#stage-84-blockers)) | |
 | DH-E-NATIVESYSTEM-1 | Linux (E2) | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | per machine: [Stage 8.5 confinement runs](#stage-85-confinement-runs-step-184) |
+| DH-E-NATIVESYSTEM-1 | linux-e2:landlock | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | per machine: [Stage 8.5 confinement runs](#stage-85-confinement-runs-step-184) |
 | DH-E-NATIVESYSTEM-2 | Linux (E2) | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | per machine: [Stage 8.5 confinement runs](#stage-85-confinement-runs-step-184) |
+| DH-E-NATIVESYSTEM-2 | linux-e2:landlock-abi1-4 | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | per machine: [Stage 8.5 confinement runs](#stage-85-confinement-runs-step-184) |
 | DH-E-NATIVESYSTEM-3 | Linux (E2) | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | per machine: [Stage 8.5 confinement runs](#stage-85-confinement-runs-step-184) |
+| DH-E-NATIVESYSTEM-3 | linux-e2:unconfined | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | per machine: [Stage 8.5 confinement runs](#stage-85-confinement-runs-step-184) |
+| DH-E-NATIVESYSTEM-3 | linux-e2:landlock | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | per machine: [Stage 8.5 confinement runs](#stage-85-confinement-runs-step-184) |
 | DH-E-NATIVESYSTEM-4 | Linux (E2) | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | per machine: [Stage 8.5 confinement runs](#stage-85-confinement-runs-step-184) |
+| DH-E-NATIVESYSTEM-4 | linux-e2:landlock | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | per machine: [Stage 8.5 confinement runs](#stage-85-confinement-runs-step-184) |
+| DH-E-NATIVESYSTEM-4 | linux-e2:musl | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | per machine: [Stage 8.5 confinement runs](#stage-85-confinement-runs-step-184) |
 | DH-E-SANDBOX-1 | Linux (E2) | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | per machine: [Stage 8.5 confinement runs](#stage-85-confinement-runs-step-184) |
+| DH-E-SANDBOX-1 | linux-e2:bwrap | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | per machine: [Stage 8.5 confinement runs](#stage-85-confinement-runs-step-184) |
+| DH-E-SANDBOX-1 | linux-e2:landlock | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | per machine: [Stage 8.5 confinement runs](#stage-85-confinement-runs-step-184) |
+| DH-E-SANDBOX-1 | linux-e2:unconfined | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | per machine: [Stage 8.5 confinement runs](#stage-85-confinement-runs-step-184) |
 | DH-E-FS-1 | Linux ext4 | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
 | DH-E-FS-1 | Windows NTFS | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
+| DH-E-FS-1 | linux-wsl:smb | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
+| DH-E-FS-1 | windows-host:smb | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
 | DH-E-FS-1 | macOS | acceptance | required | | | out of scope (platforms-windows-wsl) | |
 | DH-E-FS-2 | Linux (WSL) | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
 | DH-E-FS-2 | Windows | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
+| DH-E-FS-2 | windows-host:smb | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
 | DH-E-FS-2 | macOS | acceptance | required | | | out of scope (platforms-windows-wsl) | |
-| DH-E-VIEW-5 | Linux (WSL) | acceptance | required | E2 | | not run (stage not started) | |
+| DH-E-VIEW-5 | Linux (WSL) | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
 | DH-E-RIPGREP-1 | Linux (WSL) | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
 | DH-E-RIPGREP-1 | Windows | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
 | DH-E-RIPGREP-1 | macOS | acceptance | required | | | out of scope (platforms-windows-wsl) | |
@@ -82,11 +99,13 @@ The 19 scenarios of the steps, one row per operating-system variant (M2-DOD-4). 
 | DH-E-CHOKIDAR-2 | macOS | acceptance | required | | | out of scope (platforms-windows-wsl) | |
 | DH-E-CONTEXT-2 | Linux (WSL) | acceptance | required | E2 | | not run (blocked: harness-gate entry fails, M2-DEC-1; the release build has no instruction-file component and no route, see Stage 8.8 blockers) | |
 | DH-E-CONTEXT-2 | Windows | acceptance | required | E2 | | not run (blocked: harness-gate entry fails, M2-DEC-1; the release build has no instruction-file component and no route, see Stage 8.8 blockers) | |
+| DH-E-CONTEXT-2 | macOS | acceptance | required | | | out of scope (platforms-windows-wsl) | |
 | DH-E-STORAGE-6 | Linux (WSL) | acceptance | required | E2 | | not run (blocked: harness-gate entry fails, M2-DEC-1; dsh cannot seed an attachment or a spill file, see Stage 8.8 blockers) | |
 | DH-E-STORAGE-6 | Windows | acceptance | required | E2 | | not run (blocked: harness-gate entry fails, M2-DEC-1; dsh cannot seed an attachment or a spill file, see Stage 8.8 blockers) | |
 | DH-E-STORAGE-6 | macOS | acceptance | required | | | out of scope (platforms-windows-wsl) | |
 | DH-E-NODEFS-1 | Linux guest | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
 | DH-E-NODEFS-1 | Windows guest | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
+| DH-E-NODEFS-1 | vm:macos-guest | acceptance | required | | | out of scope (platforms-windows-wsl) | |
 
 ## Manual checks register
 
@@ -139,6 +158,148 @@ SHA-256 of the binary it executed and the run id. The six checksums go into
 [Rehearsal binaries](#rehearsal-binaries-step-181) below, and every later S18 row records the SHA-256 of
 the binary it ran, which must be one of them.
 
+## Stage 8.3 blockers
+
+implementation-plan Stage 8.3 (impl.md 18.2, `DH-E-HOST-4` on Linux and Windows; "reaches the UI" is
+the readiness probe answering until S22, M2-DEC-6) was taken up on `7b5133d` and could not run.
+Nothing below is evidence of a run: both HOST-4 rows stay `not run` and are owed. Each open blocker on
+its own stops the run:
+
+| Blocker | Seen | What clears it |
+| --- | --- | --- |
+| `harness-gate entry` exits 1: harness:DSH-M1 is not closed (M2-DEC-1), as for [Stage 8.2](#stage-82-blockers). | `GOWORK=off go -C tools/harness-gate run . entry --root ../..` on `7b5133d`: 12 blockers, exit 1 | M1 closure merges and `entry` exits 0 |
+| No rehearsed binary: every later S18 step runs on the binaries of `DH-E-TOOLCHAIN-2` (impl.md DH-S-18 Sequence), and `variant-run` runs nothing without a verified `--rehearsal` directory. | Stage 8.2's rows read `not run` | Stage 8.2's blockers clear and its rehearsal runs on the merged commit |
+| The crash component of the Given does not exist. impl.md DH-E-HOST-4 names "a test-only component, enabled by configuration, that can fail at load, panic in a goroutine, or trigger a runtime fault on request"; no such component is built, so `DSH_SCENARIO_HOST4_LAYER` has nothing to enable, and the `load`, `panic`, `fault` and twelve-failure legs fail on every variant. A goroutine panic or a runtime fault also never reaches the fatal path today: only `boot.Run`'s own goroutine recovers into `diag.Fatal`, and nothing uses `diag.Key`, so the Go runtime prints the panic (and `<home>/run/crash.txt`) and standard error names no report, which the legs require. | a search of `src/harness/internal` for a crash component and for `diag.Key` consumers: none outside `boot/steps.go`'s provider | operator answer to `s18-host4-crash-component`: a follow-up workstream builds the test-only component (its goroutine recovering into `diag.Fatal`, `debug.SetPanicOnFault` for the fault) behind a build tag or a configuration key that no shipped profile sets |
+| The run-time inputs are unset: the repository holds no `DSH_SCENARIO_HOST4_ARGS`, `_READY` or `_LAYER` variable, which the `s18` job passes from `vars`. | `gh variable list` on this repository: none of the three | set `DSH_SCENARIO_HOST4_ARGS=web;--no-open;--port;0` and `DSH_SCENARIO_HOST4_READY={bin} --home {home} status` (the values of the probes below; `sh -c` and `cmd /C` both run it), and `_LAYER` once the component exists |
+
+Cleared on this stage's branch (they would have failed the scenario on every variant or left the plan's
+Given unproved; the commit is this stage's merge):
+
+| Defect | Seen on `7b5133d` | Fix |
+| --- | --- | --- |
+| The scenario had no killed host. implementation-plan Stage 8.3's Given is "a killed host", and TC-11b's crash is SIGKILL / `TerminateProcess`; `TestDyingHostLeavesReadableReport` only ran the crash component's three failures, each of which the host survives long enough to report itself. | `host_report_scenario_test.go`: no leg kills the host | a `killed` leg runs first: the host answers the readiness probe, its tree is killed with the forced rung alone (`Process.Kill`: SIGKILL / `TerminateProcess`, no SIGTERM or console close first, so the host cannot remove its record), the wait for its exit is bounded at a minute, and the next start must print the unclean-exit line naming a report under `<home>/reports` with `--safe`; the report must be owner-only (`home.CheckPrivateFile`) and name the unclean exit of the killed pid |
+| A missing layer failed the whole scenario before any leg ran: `need(DSH_SCENARIO_HOST4_LAYER)` was the first line, so neither the safe-mode leg nor a killed host could be seen without the crash component. | a run without `_LAYER`: `DSH_SCENARIO_HOST4_LAYER is not set`, no subtest run | the layer is read by the legs that use it (`load`, `panic`, `fault`, twelve failures), which still fail without it; the scenario still fails, never skips (DH-O-15) |
+| On Windows the web host could not start on the scenario's home: `t.TempDir()` under the test's long name put `<home>/run/web-<id>.sock` past the Unix socket path bound (108 bytes), and `host.launch` failed `bind: invalid argument`, so no start ever answered. | Windows, `-run TestDyingHostLeavesReadableReport`: `listen unix C:\Users\...\TestDyingHostLeavesReadableReport45692014\001\home\run\web-919f83cf77ce.sock: bind: invalid argument`; `killed` and `safe mode` timed out after 30 s | the home lives under `os.MkdirTemp("", "dsh-h4-")` (`host4Dir`), as `internal/boot`'s `shortHome` does; removal is retried for ten seconds while a killed process lets go of its files |
+| The readiness probe could not name the binary under test, so an operator had to hard-code a path that `DSH_BIN` or the rehearsal hand-off changes. | `DSH_SCENARIO_HOST4_READY` expanded only `{home}` | `{bin}` expands to the binary the scenario runs |
+
+Probes, not evidence (M2-DEC-1; a modified tree): with `DSH_SCENARIO_HOST4_ARGS=web;--no-open;--port;0`,
+`DSH_SCENARIO_HOST4_READY={bin} --home {home} status` and no `_LAYER`, `go test -tags scenario -run
+TestDyingHostLeavesReadableReport ./internal/testkit/scenarios/` on this branch's edits over `7b5133d`
+passed `killed` and `safe mode reaches the UI` and failed the four crash-component legs on
+`DSH_SCENARIO_HOST4_LAYER is not set`, on Windows native (a Windows workstation, scenario build
+`3017edcf...`) and on Ubuntu 24.04 under WSL2 (kernel `6.18.58.1-microsoft-standard-WSL2`, `DSH_BIN` built
+with `-buildvcs=false` from the Windows checkout, scenario build `997f1512...`). By hand on Windows, the
+restart after `TerminateProcess` printed `dsh: the host of http://127.0.0.1:64675 (process 29296) did not
+stop cleanly; report: <home>\reports\report-20261128T063346.772282000Z-29296.txt; start with --safe (dsh
+--safe web) ...`, the report's ACL held only the user, SYSTEM and Administrators, and `dsh --safe web` was
+`live` in `dsh status`.
+
+When it runs, each HOST-4 row takes the run's commit, `E2 runner:<name>` (or `E2 wsl:<host>/<distro>`),
+`passed` only if every leg of `TestDyingHostLeavesReadableReport` passed, and in Artifacts the SHA-256 of
+the binary it ran (one of the [rehearsal binaries](#rehearsal-binaries-step-181)) and the run id.
+
+## Stage 8.4 blockers
+
+implementation-plan Stage 8.4 (impl.md 18.3, `DH-E-EXEC-1` and `DH-E-EXEC-10` on team-kept VMs over
+SSH, including the machine whose user manager is stopped) was taken up on `7b5133d` and could not run.
+Nothing below is evidence of a run: both rows stay `not run` and are owed. A WSL result would count
+only as the WSL variant (M2-R-05), so none is offered for the `Linux (E2)` rows. Each open blocker on
+its own stops the run:
+
+| Blocker | Seen | What clears it |
+| --- | --- | --- |
+| `harness-gate entry` exits 1: harness:DSH-M1 is not closed (M2-DEC-1), as in [Stage 8.2 blockers](#stage-82-blockers). | `GOWORK=off go -C tools/harness-gate run . entry --root ../..` on `7b5133d`: 12 blockers, exit 1 | M1 closure merges and `entry` exits 0 |
+| No rehearsed binary: the `linux-e2:*` jobs of `harness-scenarios.yml` run on the `s18-rehearsal` job's directory, which Stage 8.2 left unbuilt (its replay blocker is open). | [Stage 8.2 blockers](#stage-82-blockers) | Stage 8.2's blockers clear and `s18-rehearsal` uploads `dsh-s18-rehearsal-linux` |
+| No lab: the repository has no `dsh-m2-s18` environment, so the variables `DSH_SCENARIO_EXEC1_*` and `DSH_SCENARIO_EXEC10_*` (the VM hosts, including `DSH_SCENARIO_EXEC10_SSH_NOMANAGER`) and the secrets `DSH_LAB_SSH_KEY` and `DSH_LAB_KNOWN_HOSTS` are unset; no team-kept VM is reachable from the workstation that took the stage up (the two SSH hosts it knows are personal machines and time out). | `gh api repos/smartpcr/agent-plugin/environments/dsh-m2-s18/variables`: HTTP 404; `ssh -o ConnectTimeout=10 <host> true` for both hosts: timed out | operator answer to `s18-exec-lab-machines`: the environment, the delegated cgroup v2 VM, the VM with its user manager stopped, and a scratch account on each |
+| The product does not say what both scenarios read (docs/harness/areas/execution.md, DH-E-EXEC-1 and DH-E-EXEC-10). The bash tool's result (`shellexec/tools.Result`) has no owner, limits or survivors field, so "owner: cgroup" and "limits: enforced" cannot appear; the owner kinds are named `control-group`, `job-object`, `process-group` (`subprocess.ControlGroup` and siblings), not `cgroup`/`job`; no memory limit reaches a tree (`shellexec.Executor.Start` builds `subprocess.Spec` without `Limits`; neither the bash input nor `bash.Config` carries one; only `subprocess/limits.go` writes `memory.max`); the host announces its owner only on a fallback (`boot/steps.go`), never the delegated scope (`subprocess.DelegatedScope` is read only by tests), and that line has no `warn` word, which both scenarios' fallback pattern requires; no CLI path runs the bash tool without a model turn. These belong to build stage DH-S-6 and are past this step's boundary. | reading the code on `7b5133d` against the scenarios' assertions | operator answer to `s18-exec-product-gaps` |
+
+Cleared on this stage's branch (each would have failed its scenario on every variant; the commit is
+this stage's merge):
+
+| Defect | Seen on `7b5133d` | Fix |
+| --- | --- | --- |
+| `TestLinuxSSHLoginDelegatedScopeOwnsTree` (DH-E-EXEC-10) set `GOOS`/`GOARCH` before `scenario.Bin`, which then ignores `DSH_BIN` and cross-builds `./cmd/dsh`: the VM never ran the rehearsal's binary (impl.md 18.1), and the row could record no manifest SHA-256. | `scenario.Bin` returns `DSH_BIN` only when no build variable is set | the scenario copies `dsh-linux-<arch>` (the VM's `uname -m`) from the rehearsal directory beside `DSH_BIN`, checked against `rehearsal.sha256`, and logs its SHA-256; with no manifest (absent, not unreadable: an unreadable one fails) it uses `DSH_BIN` only when the runner is `linux/<arch>`, and fails otherwise; without `DSH_BIN` (development) it cross-builds as before (`exec10Binary`, `TestExec10PickRehearsalBinary`) |
+| `TestLinuxWholeProcessTreeIsKilled` (DH-E-EXEC-1) checked the runner itself (local `/proc`, cgroup directories, fixtures, the binary built on the runner) and ran its no-cgroup clause in a container, while impl.md 18.3 runs it on the team-kept VMs over SSH: on `linux-e2:*` it would have tested `dsh-e2-controller`, not the VM. | `exec_tree_scenario_test.go` on `7b5133d`: `os.ReadFile("/proc/<pid>/stat")`, `os.Stat` of each cgroup, `DSH_SCENARIO_EXEC1_NOCGROUP` | every clause runs on the VM over SSH, on the machine set variants.md gives EXEC-1 and EXEC-10 (`DSH_SCENARIO_EXEC10_SSH` for clauses 1 and 2, `DSH_SCENARIO_EXEC10_SSH_NOMANAGER`, no writable cgroup and no user manager, for clause 3): the VM's binary (`exec10Binary`), fixtures, pids, cgroups and log; `DSH_SCENARIO_EXEC1_START` runs detached from the SSH session; `DSH_SCENARIO_EXEC1_NOCGROUP` is no longer read (the s18 job still passes it; harmless) |
+| Every cleanup of both scenarios ran its SSH commands on `t.Context()`, which `testing` cancels just before the cleanups run: stopping the host, the leftover-scope check and the scratch removal would each have failed at once. | `exec10Machine.ssh` on `7b5133d` | a cleanup's command gets a fresh context bounded by two minutes (`exec10Context`, `TestExec10ContextLiveInCleanup`) |
+| EXEC-1's detached `nohup` start (the SIGKILL clause) entered the cleanup's kill list only after both fixture pids and `dsh.pid` were read: a launch that never became ready failed the clause and left dsh and its partial tree running on the VM. The synchronous clauses also dropped the pids they had found when one was missing. | `exec_tree_scenario_test.go` in this stage | `exec1Launch` starts the line under `setsid`, records the session leader in `start.pid`, and registers a sweep before any wait. The sweep kills the session's group plus every pid file of the step and `dsh.pid`, read on the target. `exec1Wait` records found pids before failing. Covered by `TestExec1LaunchSweepsHalfReadyLaunch` (portable) and `TestExec1SweepKillsHalfReadyLaunch` (Linux, real `sh`, passed under WSL). That test also caught dash's `kill` rejecting `--`. |
+
+When they run, the EXEC-1 row takes the run's commit, `E2 runner:<name>` and the variant's preflight
+(`systemctl --user` state, cgroup v2 and delegation), and the EXEC-10 row the same for each VM, the
+no-user-manager VM's row reporting the process-group fallback; Artifacts carry the SHA-256 of the
+binary the VM ran (one of the [Rehearsal binaries](#rehearsal-binaries-step-181)) and the run id.
+
+## Stage 8.5 confinement runs (step 18.4)
+
+implementation-plan Stage 8.5 (impl.md 18.4) refines the five `Linux (E2)` rows above into one row per
+machine of [variants.md](variants.md). A `Linux (E2)` row reads `passed` only when every machine row of
+its scenario below passed in one workflow run on the merged commit (the variants.md recording rule for
+shared machine sets); its Artifacts then take the run id. Each row copies the reported enforcement from
+the run's log, never from the preflight:
+
+- **Status**: the `<alias>: enforcement <State> <backend>, missing [..], exposed [..]` line, the head of
+  `dsh sandbox status` on that machine (`sandboxVerdict`).
+- **Denied write**: the `<alias>: enforcement ...` (SANDBOX-1) or `<alias>: denied write ...`
+  (NATIVESYSTEM-1, -2) line, `<state>, <backend>, exit <n>, missing [..], exposed [..]`, the result of
+  the confined write outside the roots, with its stderr; for a refused start, the `refused` line.
+
+| Scenario | Variant | Preflight | Commit | Result | Status | Denied write |
+| --- | --- | --- | --- | --- | --- | --- |
+| DH-E-SANDBOX-1 | `linux-e2:bwrap` | bwrap Full | | not run (blocked, below) | | |
+| DH-E-SANDBOX-1 | `linux-e2:landlock` | landlock ABI >= 5 | | not run (blocked, below) | | |
+| DH-E-SANDBOX-1 | `linux-e2:unconfined` | Unconfined | | not run (blocked, below) | | |
+| DH-E-NATIVESYSTEM-1 | `linux-e2:landlock` | landlock ABI >= 5 | | not run (blocked, below) | | |
+| DH-E-NATIVESYSTEM-2 | `linux-e2:landlock-abi1-4` | landlock ABI 1-4 | | not run (blocked, below) | | |
+| DH-E-NATIVESYSTEM-3 | `linux-e2:unconfined` (Landlock disabled) | Unconfined | | not run (blocked, below) | | |
+| DH-E-NATIVESYSTEM-3 | `linux-e2:landlock` (missing grant) | landlock ABI >= 5 | | not run (blocked, below) | | |
+| DH-E-NATIVESYSTEM-4 | `linux-e2:landlock` (pure Go) | landlock ABI >= 5 | | not run (blocked, below) | | |
+| DH-E-NATIVESYSTEM-4 | `linux-e2:landlock` (cgo `-race`) | landlock ABI >= 5 | | not run (blocked, below) | | |
+| DH-E-NATIVESYSTEM-4 | `linux-e2:musl` | landlock ABI >= 5 | | not run (blocked, below) | | |
+
+Taken up on `7b5133d`; nothing above is evidence of a run. Each open blocker on its own stops it:
+
+| Blocker | Seen | What clears it |
+| --- | --- | --- |
+| `harness-gate entry` exits 1: harness:DSH-M1 is not closed (M2-DEC-1), as for [Stage 8.2](#stage-82-blockers). | `GOWORK=off go -C tools/harness-gate run . entry --root ../..` on `7b5133d`: 12 blockers, exit 1 | M1 closure merges and `entry` exits 0 |
+| No rehearsed binary: step 18.1 has not run, so there is no `rehearsal.sha256` for `variant-run --rehearsal` to check the `linux-e2:*` jobs' binary against (impl.md DH-S-18 Sequence). | [Rehearsal binaries](#rehearsal-binaries-step-181): empty | the `s18-rehearsal` job passes on the merged commit |
+| The machines: SANDBOX-1 needs the `bwrap=`, `landlock=` and `unconfined=` machines of `DSH_SCENARIO_SANDBOX1_MACHINES` in one test, NATIVESYSTEM-2 and -4 add `landlock-abi1-4=` and `musl=`; each is a team-kept VM over SSH on `dsh-e2-controller` (Q `m2-e2-fleet`). | the workstation that took the stage up has no SSH alias for any `linux-e2:*` machine and `DSH_SCENARIO_SANDBOX1_MACHINES` is unset | the team's five VMs pass their preflights on the `s18` `linux-e2:*` jobs |
+
+Cleared on this stage's branch (it would have let a wrong machine pass):
+
+| Defect | Seen on `7b5133d` | Fix |
+| --- | --- | --- |
+| SANDBOX-1 took a machine's status as matching when the report text contained the backend's name anywhere; the report lists every backend of the chain, so the bwrap machine (`landlock: available`) passed as the landlock machine and any Linux machine (`bwrap: unavailable: ...`) passed as the bwrap machine. NATIVESYSTEM-1 and -2 did not read status at all, SANDBOX-1 (c) and NATIVESYSTEM-3 (a) checked only the word `Unconfined`, and no result line carried the exposures the step copies. | `dsh sandbox status` of the pure-Go build under WSL2 (a probe, not evidence: `linux-wsl`, not `linux-e2:bwrap`): `state: Full`, `backend: bwrap`, `missing: none`, `exposed: none`, then `bwrap: available ...` and `landlock: available ...` | the scenarios read the report's head (`readVerdict`): bwrap `Full`; landlock `Full` or `Partial` naming a missing effect in SANDBOX-1, and `Partial` in NATIVESYSTEM-1 to -4 (status judges a network-denied start, `sandbox.Expect`, and Landlock governs no network on any ABI, so `network` is named missing; the ABI is told apart by each start's own record), NATIVESYSTEM-3 (b) read before its grant is removed; the unconfined machine through `mustStatusUnconfined`; the verdict and each denied write are logged with missing and exposed effects (`TestVerdictIsTheReportHead`) |
+
+## Stage 8.6 blockers
+
+implementation-plan Stage 8.6 (impl.md 18.5 and 18.6: `DH-E-FS-1`, `DH-E-FS-2`, `DH-E-VIEW-5`) was taken
+up on `7b5133d` and could not run. Nothing below is evidence of a run: the FS-1, FS-2 and VIEW-5 rows stay
+`not run` and are owed, on `linux-wsl`, `linux-wsl:smb`, `windows-hosted`, `windows-host` and
+`windows-host:smb` of [variants.md](variants.md). Each open blocker on its own stops the run:
+
+| Blocker | Seen | What clears it |
+| --- | --- | --- |
+| `harness-gate entry` exits 1: harness:DSH-M1 is not closed (M2-DEC-1); every `s18` job runs `entry` first. | `GOWORK=off go -C tools/harness-gate run . entry --root ../..` on `7b5133d`: 12 blockers, exit 1 | M1 closure merges and `entry` exits 0 |
+| No rehearsed binary: step 18.1 has not run ([Stage 8.2 blockers](#stage-82-blockers)), and `variant-run` runs no later S18 scenario without a binary verified against `rehearsal.sha256`. | both TOOLCHAIN-2 rows `not run` | both TOOLCHAIN-2 rows read `passed` |
+| One value per input for every `s18` job. `harness-scenarios.yml` binds each `DSH_SCENARIO_*` once from environment `dsh-m2-s18` into the job env of every variant; only the `vm:*` jobs select their own (`DSH_S18_<TARGET>_*`). FS-1's `DSH_SCENARIO_FS1_DIRS` and `DSH_SCENARIO_FS1_SHARE` are paths (an ext4 directory on `linux-wsl`, an NTFS one on `windows-hosted`; `/mnt/dsh-smb/scratch` and `S:\scratch` per [runbook-smb-share.md](runbook-smb-share.md)) and `DSH_SCENARIO_FS2_CHILDREN` is a per-OS command, so one value cannot serve the Linux and the Windows jobs. | the `s18` job's `env` block and its "Select the hypervisor's inputs" step | operator answer to `s18-per-variant-inputs` |
+| FS-1 needs a share on every variant. `TestFenceHoldsUnderALinkSwap` always appends `need(DSH_SCENARIO_FS1_SHARE)` to the local directories, so `windows-hosted` (GitHub-hosted, no share; variants.md gives it FS-1) fails at that input (a missing input never skips, DH-O-15), and `linux-wsl` runs the share leg that `linux-wsl:smb` owns. | `harness-gate require --stage DH-S-18 --variant windows-hosted --inputs` on `7b5133d` lists `DSH_SCENARIO_FS1_SHARE`; so do `linux-wsl` and `linux-wsl:smb` | operator answer to `s18-per-variant-inputs` |
+| Refusal codes outside FS-1's allowed set on Windows. The DH-S-12 probes (1,000 calls) saw `fs/io` (2 to 5 per 1,000) and once `fs/permission-denied` while the link was swapped; FS-1 fails on any refusal other than `fs/sandbox-denied`, `fs/not-found`, `fs/not-directory` or a dependent call. Q `fs1-swap-io-codes` was never answered; accepting more codes changes the assertion, which this stage does not do on its own. | [DH-S-12.md](DH-S-12.md) Open items | operator answer to `fs1-swap-io-codes` |
+| Who, and the inputs. FS-2 and VIEW-5 run on the tester's Linux machine and the Windows host, each on its own signed-in Claude Code, by the owner or an operator, never an agent session (runbook-smb-share.md "Who"; the DH-S-17 precedent). No input of the three scenarios is committed (layers, the 20 tasks, the checkouts, the descendant command, the move text). | `require --variant linux-wsl --inputs` and `--variant windows-host --inputs` on `7b5133d` | the operator or the runner's environment supplies them; none is a credential |
+
+On an outside write the stage stops and both listings are kept (M2-R-03): FS-1 keeps its scratch
+directory, both listings of O and the session log; FS-2 both listings of each task's parent directory and
+the session logs; VIEW-5, since this branch, both listings of each phase's scratch directory outside the session's
+working directory of that phase. The listing paths are in the test log (`kept the before and after listings of ...`).
+
+Cleared on this stage's branch (it would have left VIEW-5's Then clause unproved on its variant; the commit
+is this stage's merge):
+
+| Defect | Seen on `7b5133d` | Fix |
+| --- | --- | --- |
+| VIEW-5 did not check "every model-chosen write lands inside the session's working directory" (Stage 8.6, TC-21s4) and listed nothing outside it, so a stray write elsewhere passed and M2-R-03 had no listing to keep. | `view_workdir_scenario_test.go`: only `view5-relative.txt` (in T) and `view5-original.txt` (not in R) were looked at | after each run, every path a `write`, `edit` or `apply_patch` call wrote must land inside that run's working directory (R before the move, T after it, R after the recovery), each link on the way followed, a dangling or last-component one included (`view5Written`, `view5Inside`, `view5Real`); a path whose links cannot be followed to the end (more than 40 links, a cycle, or a component or link that cannot be read) fails the scenario as unproved containment, never passes by its spelling; a failed `apply_patch` counts the mutations its part-way report lists as completed and a move destination written before its source could not be removed, not the paths it failed on or never ran (DH-ADR-FS-11). Each phase takes the hash listing of the scratch directory without only its working directory, so the inactive one of R and T is watched (after the move only T's git administration under `R/.git/worktrees` is left out), compared after each step and kept on failure (`view5Outside`). Tests: `TestView5InsideJudgesWritePaths`, `TestView5InsideFollowsLinks` (runs where symbolic links can be made: Linux, as VIEW-5), `TestView5OutsideWatchesTheInactiveDirectory`, `TestView5WrittenCountsPartialPatches` |
+
+Probes, not evidence: none. FS-2 and VIEW-5 are signed-in runs (see "Who" above), and FS-1 has no committed
+layer to probe with; `entry` forbids a recorded run either way.
+
 ## Stage 8.7 blockers
 
 implementation-plan Stage 8.7 (impl.md 18.7 and 18.8: `DH-E-RIPGREP-1`, `DH-E-RIPGREP-2`,
@@ -178,6 +339,47 @@ CHOKIDAR-1 passed in notify mode, CHOKIDAR-2 passed in poll mode on a `/mnt/e` d
 Windows, RIPGREP-2 passed, and RIPGREP-1 met the budget everywhere, failing only on the symbolic links
 above. CHOKIDAR-2 over SMB (`windows-host:smb`, `linux-wsl:smb`) was not probed.
 
+## Stage 8.8 blockers
+
+implementation-plan Stage 8.8 (impl.md 18.9 `DH-E-CONTEXT-2` and 18.10 `DH-E-STORAGE-6`) was taken up on
+`7b5133d` and could not run. Nothing below is evidence of a run: the two CONTEXT-2 rows and the two
+in-scope STORAGE-6 rows stay `not run` and are owed. Each open blocker on its own stops its scenario:
+
+| Blocker | Scenario | Seen on `7b5133d` | What clears it |
+| --- | --- | --- | --- |
+| `harness-gate entry` exits 1: harness:DSH-M1 is not closed (M2-DEC-1), as in [Stage 8.2 blockers](#stage-82-blockers). | both | `GOWORK=off go -C tools/harness-gate run . entry --root ../..`: 12 blockers, exit 1 | M1 closure merges and `entry` exits 0 |
+| No rehearsed binary: every S18 row runs the binary of the TOOLCHAIN-2 run (impl.md DH-S-18 Sequence), which has not run; `variant-run` without `--rehearsal` runs nothing. | both | [Rehearsal binaries](#rehearsal-binaries-step-181) is empty | TOOLCHAIN-2 passes on both lanes |
+| No component reads instruction files. `internal/context/instructions` is imported only by its own tests and one DH-S-13 e2e test; `context.instructions` is no item of the binary's catalogue (`builtin.Sets()`, `internal/boot/builtin/builtin.go:208`, locked by `internal/boot/catalog/testdata/catalog.golden`, DH-T-BOOT-3, 35 items) and the standard preset names it as a child still to come (`internal/boot/agentpreset/presets/standard.yml:6`). [closure.md](closure.md) has DH-D-CONTEXT-2 `not built`, finishing stage DH-S-32. | CONTEXT-2 | the catalogue golden; `grep -r 'internal/context/instructions"' src/harness`: three test files | the stage that mounts DH-D-CONTEXT-2 in the release build (DH-S-32 per closure.md), or an owner decision moving that wiring into M2 (open question [`s18-context2-storage6-unbuilt`](#open-questions-stage-88)) |
+| No route the layer can register. `DSH_SCENARIO_CONTEXT2_LAYER` must register `DSH_SCENARIO_CONTEXT2_ROUTE` on the scripted endpoint; the catalogue's one model item is `llm.runtime` "with no route" (`builtin.LLM`, `builtin.go:142`): no keyed or HTTP route item and no `llm.replay` item. The same gap blocks DH-S-16 checks 16.3 and 16.4 (answer to `dh-s-16-claude-route`). | CONTEXT-2 | the catalogue golden: `llm.runtime` is the only `llm.*` row | a stage puts a layer-registered route (keyed, or `llm.replay`) in the release catalogue |
+| No session working directory. The scenario creates its session in `repo/sub` under `workspace-write`; `session.workdir`, `fs.local`, `fs.ops` and `sandbox.policy` are on `internal/boot/profile/bundles/optional.yml` (lines 21 to 37), waiting on `session.views`, which no item provides (DH-S-14 record). | CONTEXT-2 | `optional.yml` on `7b5133d` | the `session.views` item lands and the four move to `core.yml` |
+| Nothing for the seed to run. `DSH_SCENARIO_STORAGE6_SEED` must store one attachment and one spill file through `{dsh}`; no command of `dsh --help` (help, version, catalog, completion, secret, sandbox, config, status, crash, five profiles) and no catalogue item writes either: `internal/storage/attachments` and `internal/storage/spill/...` have no item, and `core.yml` lists "attachments, spill store and policy" among the entries still to add. | STORAGE-6 | a fresh home of a `7b5133d` build after `sdk`: `blobs`, `config`, `reports`, `run`, `secrets`, `spill`, `dsh.db`, with `blobs/` and `spill/` empty | the attachment and spill stores join the release catalogue with a dsh path that stores each, or an owner decision moving that wiring into M2 (open question [`s18-context2-storage6-unbuilt`](#open-questions-stage-88)) |
+| No `cache` directory. The scenario lists and reads `blobs`, `spill` and `cache` (areas/storage.md DH-E-STORAGE-6 *When*; layout `<home>/cache/request-images`) and fails when the seeded home has no `cache/`; `home.Layout.Dirs()` (`internal/storage/home/home.go:76`) has none and nothing creates it (the request cache of DH-D-STORAGE-4, P1). | STORAGE-6 | the fresh home above | the request cache creates `cache/` private, or an owner decision on the directory list (open question [`s18-storage6-cache-dir`](#open-questions-stage-88)) |
+| POSIX step 2 contradicts the boot check. The scenario wants a group-writable `spill/` refused by the spill component "while the rest of the host runs"; `home.Check` (`home.go:158`) checks every layout directory at boot, so the whole home is refused `home/not-private` naming `spill/` (`TestHomeCreatedPrivate`, `private_unix_test.go`) and `DSH_SCENARIO_STORAGE6_STATUS` cannot exit 0. | STORAGE-6 (Linux) | `checkPrivate` (`private_unix.go`): any group or other bit on a layout directory is a problem | owner decision (open question [`s18-storage6-spill-refusal`](#open-questions-stage-88)) |
+| Who and where. The second account is created and kept by the tester (WSL) and the Windows host keeper, never by an agent session ([runbook-two-account.md](runbook-two-account.md)); CONTEXT-2 runs on `linux-wsl` and `windows-hosted`. | both | `require --stage DH-S-18 --variant` on `7b5133d`: `linux-wsl` and `windows-hosted` lists end `DH-E-CONTEXT-2`; `linux-wsl:two-account` and `windows-host:two-account` print `DH-E-STORAGE-6`; each exit 0 | the `s18` jobs of `harness-scenarios.yml` (or the lanes' `--acceptance DH-S-18`) run on the merged commit once the blockers above clear |
+
+Checked and consistent (no change): the CONTEXT-2 scenario's oracles match the package it will exercise,
+`frameOpen = "<instructions>\n"` (`internal/context/instructions/render.go:51`) and the record's
+`refused[].path` (`render.go:26`, `:40`); STORAGE-6's input contract matches
+`tools/harness-gate/variants/inputs_test.go` (the host commands on POSIX only).
+
+When they run, each CONTEXT-2 row takes the run's commit, the environment (`E2 wsl:<host>/<distro>` or
+`E2 runner:<name>`), the versions of `git` and the editor, `passed` only if
+`TestContextInstructionFileChangesReachModel` passed, and in Artifacts the SHA-256 of the binary it
+executed (one of the rehearsal binaries) and the run id; each STORAGE-6 row the same for
+`TestAnotherLocalUserCannotReadStoredData`, plus the filled record of the two-account runbook.
+
+### Open questions (Stage 8.8)
+
+Raised by the blockers above and owed an owner answer; tech-spec.md
+[sec. 10](../tech-spec.md#10-open-questions) holds the story-wide M2-Q-1 to M2-Q-7. Each default stands
+until answered, and none lets a row read anything but `not run`:
+
+| ID | Question | Default until answered | Blocks |
+| --- | --- | --- | --- |
+| `s18-context2-storage6-unbuilt` | CONTEXT-2 and STORAGE-6 exercise components the release build does not mount (DH-D-CONTEXT-2 `not built`, finishing DH-S-32 per [closure.md](closure.md); the attachment and spill stores have no catalogue item or dsh path). Does M2 take on that wiring, or do the two scenarios wait for the stages that build it? | They wait: no wiring moves into M2; the CONTEXT-2 and STORAGE-6 rows stay `not run` | DH-E-CONTEXT-2 and DH-E-STORAGE-6 rows; S18 closure (M2-Q-3 pattern: S18 stays *open*) |
+| `s18-storage6-cache-dir` | STORAGE-6 lists and reads `blobs`, `spill` and `cache`, but `home.Layout.Dirs()` has no `cache/` and only the P1 request cache (DH-D-STORAGE-4) would create it. Does the scenario drop `cache` until that cache lands, or must the layout create `cache/` private now? | The scenario text stands (areas/storage.md unchanged, DC-2): `cache/` is required, so the row waits for the request cache | DH-E-STORAGE-6 rows; S18 closure |
+| `s18-storage6-spill-refusal` | POSIX step 2 wants a group-writable `spill/` refused by the spill component while the rest of the host runs; `home.Check` refuses the whole home `home/not-private` at boot. Which behaviour is correct: a per-component refusal (change `home.Check`), or the boot refusal (change the scenario's expectation)? | The boot refusal stands (no code change); the Linux STORAGE-6 row cannot pass and stays `not run` | DH-E-STORAGE-6 (Linux) row; S18 closure |
+
 ## Stage 8.9 blockers
 
 implementation-plan Stage 8.9 (impl.md 18.11: `DH-E-NODEFS-1`, 100 hard power cuts per guest OS, run
@@ -203,6 +405,44 @@ Cleared on this stage's branch (each would have failed or misjudged the scenario
 | No sharding (M2-R-06). | 100 rounds per run | optional `DSH_SCENARIO_NODEFS_ROUNDS=i-j`; a shard continues the previous shard's log and refuses unless it ends with every guest's round i-1 read (`TestNodefsShardContinuesTheLog`, `TestNodefsRoundsOf`) |
 | READ's standard error was judged with the file; a CRLF header was refused; trailing bytes after the payload were not checked. | combined output, `\n` only | standard output only; the version must match byte for byte, one trailing line ending allowed (`TestNodefsJudge`) |
 | The writer replaced the file with `fsx.WriteFile`, not `fsx.Replace` as DH-E-NODEFS-1 names. | writer loop | `fsx.Replace` with `Durable: true`; a version is acknowledged only once it returned nil |
+
+## Stage 8.10 closure attempt
+
+implementation-plan Stage 8.10 (the two-step close of Stage 1.1) was taken up on `1eb8f67`. The record
+cannot close: the status line stays `Closure status: open` and no closing PR is opened.
+
+| Check | Seen on `1eb8f67` | What clears it |
+| --- | --- | --- |
+| `harness-gate ready --stage DH-S-18` | `GOWORK=off go -C tools/harness-gate run . ready --stage DH-S-18 --root ../..`: `NOT READY, 46 blockers`, exit 1; every blocker an in-scope row reading `not run` (the 38 owed rows less their 8 macOS rows, and the 16 machine rows added below), each named by scenario and variant | every in-scope row reads `passed` on one merged commit (the stage blockers above) |
+| `harness-gate entry` | 12 blockers, exit 1 (harness:DSH-M1 not closed, M2-DEC-1) | M1 closure merges |
+| `harness-gate records` and `harness-gate variants` | both exit 0: the record keeps its shape, and every scenario has an in-scope variant | (held) |
+
+Done on this stage's branch:
+
+- The Stage 8.3, 8.4, 8.5, 8.6 and 8.8 sections above, the step notes 18.2 to 18.6, 18.9 and 18.10, and
+  the reason of the VIEW-5 row were lost when the Stage 8.7 record merged (`4de9765` replaced them with
+  its own section); they are restored as merged on `7cc8b99`, unchanged.
+- The Scenarios table has one row per in-scope variant of [variants.md](variants.md) (M2-DOD-4): the
+  `linux-e2:*` machines of EXEC-1, EXEC-10, NATIVESYSTEM-1 to -4 and SANDBOX-1, `linux-wsl:smb` and
+  `windows-host:smb` for FS-1, and `windows-host:smb` for FS-2 had none; each reads `not run` with its
+  reason and keeps S18 open (M2-C-2). The macOS rows of TOOLCHAIN-2 and CONTEXT-2 and the `vm:macos-guest`
+  row of NODEFS-1 are added out of scope by decision `platforms-windows-wsl` (variants.md Scope).
+- `TestNoPartialClosureNamesTheVariantNotRun` (`tools/harness-gate/closure`): a record with
+  `linux-e2:systemd` passed and `linux-e2:no-user-manager` not run is refused naming
+  `DH-E-EXEC-10 [linux-e2:no-user-manager]`, and its `closed` line `closed-but-not-ready`.
+- `TestStageClosureS18Golden` and `TestStageClosureS18ExitCodes` (`tools/harness-gate`, golden
+  `testdata/closure/expected_s18.golden`): the command-level `ready` then `close --stage DH-S-18` over a
+  fixture of this record with all 19 scenarios passed on every in-scope variant, against the committed
+  acceptance index and variants.md. Open and ready, ready exits 0 and close is refused `not-yet-closed`;
+  closed and ready, both exit 0; with the `linux-e2:no-user-manager` row of EXEC-10 not run, both are
+  refused naming it. `TestS18EveryVariantHasARow` checks that the fixture passes, and this record has a row
+  of, every in-scope variant and scenario of variants.md. `TestRecordLiveS18` runs the protocol on this
+  record: while it reads open, close is refused `not-yet-closed`.
+
+When every in-scope row has passed: `ready --stage DH-S-18` exits 0 on the record reading `open`; the
+closing PR changes only the status line to `Closure status: closed`, and its gate runs
+`harness-gate close --stage DH-S-18`; [closure.md](closure.md) moves the rows of
+[Phase 8 (DH-S-18)](closure.md#phase-8-dh-s-18) in the same PR.
 
 ## Evidence record (impl.md sec. 7.3)
 
