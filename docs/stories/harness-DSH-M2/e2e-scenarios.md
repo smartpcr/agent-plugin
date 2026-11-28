@@ -132,7 +132,7 @@ fails the scenario naming the variable; it never skips).
 | `DSH_SCENARIO_SANDBOX7_TASKS`, `DSH_SCENARIO_SANDBOX7_PREVIOUS_SHARE` | task-set dir, previous escalation share (new) | DH-E-SANDBOX-7 | Task set: the committed `testdata/sandbox7/`; previous share: 10/18 floor |
 | `DSH_SCENARIO_SANDBOX1_MACHINES` | `;`-separated SSH aliases (new) | DH-E-SANDBOX-1, NATIVESYSTEM-1..4 | Required |
 | `DSH_SCENARIO_EXEC1_*`, `DSH_SCENARIO_EXEC10_SSH`, `DSH_SCENARIO_EXEC10_SSH_NOMANAGER`, `DSH_SCENARIO_EXEC10_*` | templates, SSH aliases (existing) | EXEC-1, EXEC-10 | Required |
-| `DSH_SCENARIO_HOST4_LAYER`, `_ARGS`, `_READY` | layer, args, readiness probe (existing) | DH-E-HOST-4 | Required |
+| `DSH_SCENARIO_HOST4_LAYER`, `_ARGS`, `_READY` | layer, args, readiness probe over `{home}` and `{bin}` (existing; `{bin}` added by Stage 8.3) | DH-E-HOST-4 | Required; the layer only by the load, panic, fault and twelve-failure legs |
 | `DSH_SCENARIO_STORAGE6_USER`, `_PUBLIC`, `_SEED`, `_LIST`, `_READ`, `_START`, `_STATUS`, `_STOP` | account name, templates (existing) | DH-E-STORAGE-6 | Required |
 | `DSH_SCENARIO_SEARCH_BUDGET` | Go duration (existing) | DH-E-RIPGREP-1 | Required; the agreed budget is recorded with the result |
 | `DSH_SCENARIO_FS_CHECKOUTS`, `DSH_SCENARIO_FS1_SHARE`, `DSH_SCENARIO_WATCH_SHARES` | checkout dirs, SMB/NFS mount points (new) | FS-1, FS-2, RIPGREP-*, CHOKIDAR-2 | Required on the variant that names them |
@@ -2085,6 +2085,9 @@ Each variant is recorded `passed`, `failed`, `not run (<reason>)` or `out of sco
 - **Scenario:** Crash reports and safe mode (HOST-4)
   ```gherkin
   @TC-21s3 @DH-E-HOST-4 @venue:acceptance @platform:linux-wsl @platform:windows @edge
+  Given a host started with DSH_SCENARIO_HOST4_ARGS on a fresh short home and answering DSH_SCENARIO_HOST4_READY
+  When it is killed with no grace (SIGKILL on Linux, TerminateProcess on Windows) and started again
+  Then the next start prints the unclean-exit line naming an owner-only report under <home>/reports and "--safe"
   Given DSH_SCENARIO_HOST4_LAYER with failure set to load, panic and fault in turn
   When the host starts each time
   Then each run exits non-zero and stderr names a report readable only by the owner

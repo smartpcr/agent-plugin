@@ -32,15 +32,15 @@ An acceptance step is ticked only by its scenarios; the commit is the one the sc
 | Step | Deliverable | Commit | Notes |
 | --- | --- | --- | --- |
 | 18.1 | DH-E-TOOLCHAIN-2 | | not run; blocked, see [Stage 8.2 blockers](#stage-82-blockers) |
-| 18.2 | DH-E-HOST-4 | | |
+| 18.2 | DH-E-HOST-4 | | not run; blocked, see [Stage 8.3 blockers](#stage-83-blockers) |
 | 18.3 | DH-E-EXEC-1, DH-E-EXEC-10 | | |
 | 18.4 | DH-E-NATIVESYSTEM-1 to -4, DH-E-SANDBOX-1 | | not run; blocked, see [Stage 8.5 confinement runs](#stage-85-confinement-runs-step-184) |
 | 18.5 | DH-E-FS-1, DH-E-FS-2 | | |
 | 18.6 | DH-E-VIEW-5 | | |
 | 18.7 | DH-E-RIPGREP-1, DH-E-RIPGREP-2 | | |
 | 18.8 | DH-E-CHOKIDAR-1, DH-E-CHOKIDAR-2 | | |
-| 18.9 | DH-E-CONTEXT-2 | | |
-| 18.10 | DH-E-STORAGE-6 | | |
+| 18.9 | DH-E-CONTEXT-2 | | not run; blocked, see [Stage 8.8 blockers](#stage-88-blockers) |
+| 18.10 | DH-E-STORAGE-6 | | not run; blocked, see [Stage 8.8 blockers](#stage-88-blockers) |
 | 18.11 | DH-E-NODEFS-1 | | run last |
 
 ## Scenarios
@@ -51,8 +51,8 @@ The 19 scenarios of the steps, one row per operating-system variant (M2-DOD-4). 
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | DH-E-TOOLCHAIN-2 | Linux (WSL) | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
 | DH-E-TOOLCHAIN-2 | Windows | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
-| DH-E-HOST-4 | Linux (WSL) | acceptance | required | E2 | | not run (stage not started) | |
-| DH-E-HOST-4 | Windows | acceptance | required | E2 | | not run (stage not started) | |
+| DH-E-HOST-4 | Linux (WSL) | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1; no crash component, see Stage 8.3 blockers) | |
+| DH-E-HOST-4 | Windows | acceptance | required | E2 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1; no crash component, see Stage 8.3 blockers) | |
 | DH-E-HOST-4 | macOS | acceptance | required | | | out of scope (platforms-windows-wsl) | |
 | DH-E-EXEC-1 | Linux (E2) | acceptance | required | E2 | | not run (stage not started) | |
 | DH-E-EXEC-10 | Linux (E2, over SSH) | acceptance | required | E2 | | not run (stage not started) | |
@@ -80,10 +80,10 @@ The 19 scenarios of the steps, one row per operating-system variant (M2-DOD-4). 
 | DH-E-CHOKIDAR-2 | Linux (WSL) | acceptance | required | E2 | | not run (stage not started) | |
 | DH-E-CHOKIDAR-2 | Windows | acceptance | required | E2 | | not run (stage not started) | |
 | DH-E-CHOKIDAR-2 | macOS | acceptance | required | | | out of scope (platforms-windows-wsl) | |
-| DH-E-CONTEXT-2 | Linux (WSL) | acceptance | required | E2 | | not run (stage not started) | |
-| DH-E-CONTEXT-2 | Windows | acceptance | required | E2 | | not run (stage not started) | |
-| DH-E-STORAGE-6 | Linux (WSL) | acceptance | required | E2 | | not run (stage not started) | |
-| DH-E-STORAGE-6 | Windows | acceptance | required | E2 | | not run (stage not started) | |
+| DH-E-CONTEXT-2 | Linux (WSL) | acceptance | required | E2 | | not run (blocked: harness-gate entry fails, M2-DEC-1; the release build has no instruction-file component and no route, see Stage 8.8 blockers) | |
+| DH-E-CONTEXT-2 | Windows | acceptance | required | E2 | | not run (blocked: harness-gate entry fails, M2-DEC-1; the release build has no instruction-file component and no route, see Stage 8.8 blockers) | |
+| DH-E-STORAGE-6 | Linux (WSL) | acceptance | required | E2 | | not run (blocked: harness-gate entry fails, M2-DEC-1; dsh cannot seed an attachment or a spill file, see Stage 8.8 blockers) | |
+| DH-E-STORAGE-6 | Windows | acceptance | required | E2 | | not run (blocked: harness-gate entry fails, M2-DEC-1; dsh cannot seed an attachment or a spill file, see Stage 8.8 blockers) | |
 | DH-E-STORAGE-6 | macOS | acceptance | required | | | out of scope (platforms-windows-wsl) | |
 | DH-E-NODEFS-1 | Linux guest | acceptance | required | E2 | | not run (stage not started) | |
 | DH-E-NODEFS-1 | Windows guest | acceptance | required | E2 | | not run (stage not started) | |
@@ -139,6 +139,46 @@ SHA-256 of the binary it executed and the run id. The six checksums go into
 [Rehearsal binaries](#rehearsal-binaries-step-181) below, and every later S18 row records the SHA-256 of
 the binary it ran, which must be one of them.
 
+## Stage 8.3 blockers
+
+implementation-plan Stage 8.3 (impl.md 18.2, `DH-E-HOST-4` on Linux and Windows; "reaches the UI" is
+the readiness probe answering until S22, M2-DEC-6) was taken up on `7b5133d` and could not run.
+Nothing below is evidence of a run: both HOST-4 rows stay `not run` and are owed. Each open blocker on
+its own stops the run:
+
+| Blocker | Seen | What clears it |
+| --- | --- | --- |
+| `harness-gate entry` exits 1: harness:DSH-M1 is not closed (M2-DEC-1), as for [Stage 8.2](#stage-82-blockers). | `GOWORK=off go -C tools/harness-gate run . entry --root ../..` on `7b5133d`: 12 blockers, exit 1 | M1 closure merges and `entry` exits 0 |
+| No rehearsed binary: every later S18 step runs on the binaries of `DH-E-TOOLCHAIN-2` (impl.md DH-S-18 Sequence), and `variant-run` runs nothing without a verified `--rehearsal` directory. | Stage 8.2's rows read `not run` | Stage 8.2's blockers clear and its rehearsal runs on the merged commit |
+| The crash component of the Given does not exist. impl.md DH-E-HOST-4 names "a test-only component, enabled by configuration, that can fail at load, panic in a goroutine, or trigger a runtime fault on request"; no such component is built, so `DSH_SCENARIO_HOST4_LAYER` has nothing to enable, and the `load`, `panic`, `fault` and twelve-failure legs fail on every variant. A goroutine panic or a runtime fault also never reaches the fatal path today: only `boot.Run`'s own goroutine recovers into `diag.Fatal`, and nothing uses `diag.Key`, so the Go runtime prints the panic (and `<home>/run/crash.txt`) and standard error names no report, which the legs require. | a search of `src/harness/internal` for a crash component and for `diag.Key` consumers: none outside `boot/steps.go`'s provider | operator answer to `s18-host4-crash-component`: a follow-up workstream builds the test-only component (its goroutine recovering into `diag.Fatal`, `debug.SetPanicOnFault` for the fault) behind a build tag or a configuration key that no shipped profile sets |
+| The run-time inputs are unset: the repository holds no `DSH_SCENARIO_HOST4_ARGS`, `_READY` or `_LAYER` variable, which the `s18` job passes from `vars`. | `gh variable list` on this repository: none of the three | set `DSH_SCENARIO_HOST4_ARGS=web;--no-open;--port;0` and `DSH_SCENARIO_HOST4_READY={bin} --home {home} status` (the values of the probes below; `sh -c` and `cmd /C` both run it), and `_LAYER` once the component exists |
+
+Cleared on this stage's branch (they would have failed the scenario on every variant or left the plan's
+Given unproved; the commit is this stage's merge):
+
+| Defect | Seen on `7b5133d` | Fix |
+| --- | --- | --- |
+| The scenario had no killed host. implementation-plan Stage 8.3's Given is "a killed host", and TC-11b's crash is SIGKILL / `TerminateProcess`; `TestDyingHostLeavesReadableReport` only ran the crash component's three failures, each of which the host survives long enough to report itself. | `host_report_scenario_test.go`: no leg kills the host | a `killed` leg runs first: the host answers the readiness probe, its tree is killed with the forced rung alone (`Process.Kill`: SIGKILL / `TerminateProcess`, no SIGTERM or console close first, so the host cannot remove its record), the wait for its exit is bounded at a minute, and the next start must print the unclean-exit line naming a report under `<home>/reports` with `--safe`; the report must be owner-only (`home.CheckPrivateFile`) and name the unclean exit of the killed pid |
+| A missing layer failed the whole scenario before any leg ran: `need(DSH_SCENARIO_HOST4_LAYER)` was the first line, so neither the safe-mode leg nor a killed host could be seen without the crash component. | a run without `_LAYER`: `DSH_SCENARIO_HOST4_LAYER is not set`, no subtest run | the layer is read by the legs that use it (`load`, `panic`, `fault`, twelve failures), which still fail without it; the scenario still fails, never skips (DH-O-15) |
+| On Windows the web host could not start on the scenario's home: `t.TempDir()` under the test's long name put `<home>/run/web-<id>.sock` past the Unix socket path bound (108 bytes), and `host.launch` failed `bind: invalid argument`, so no start ever answered. | Windows, `-run TestDyingHostLeavesReadableReport`: `listen unix C:\Users\...\TestDyingHostLeavesReadableReport45692014\001\home\run\web-919f83cf77ce.sock: bind: invalid argument`; `killed` and `safe mode` timed out after 30 s | the home lives under `os.MkdirTemp("", "dsh-h4-")` (`host4Dir`), as `internal/boot`'s `shortHome` does; removal is retried for ten seconds while a killed process lets go of its files |
+| The readiness probe could not name the binary under test, so an operator had to hard-code a path that `DSH_BIN` or the rehearsal hand-off changes. | `DSH_SCENARIO_HOST4_READY` expanded only `{home}` | `{bin}` expands to the binary the scenario runs |
+
+Probes, not evidence (M2-DEC-1; a modified tree): with `DSH_SCENARIO_HOST4_ARGS=web;--no-open;--port;0`,
+`DSH_SCENARIO_HOST4_READY={bin} --home {home} status` and no `_LAYER`, `go test -tags scenario -run
+TestDyingHostLeavesReadableReport ./internal/testkit/scenarios/` on this branch's edits over `7b5133d`
+passed `killed` and `safe mode reaches the UI` and failed the four crash-component legs on
+`DSH_SCENARIO_HOST4_LAYER is not set`, on Windows native (a Windows workstation, scenario build
+`3017edcf...`) and on Ubuntu 24.04 under WSL2 (kernel `6.18.58.1-microsoft-standard-WSL2`, `DSH_BIN` built
+with `-buildvcs=false` from the Windows checkout, scenario build `997f1512...`). By hand on Windows, the
+restart after `TerminateProcess` printed `dsh: the host of http://127.0.0.1:64675 (process 29296) did not
+stop cleanly; report: <home>\reports\report-20261128T063346.772282000Z-29296.txt; start with --safe (dsh
+--safe web) ...`, the report's ACL held only the user, SYSTEM and Administrators, and `dsh --safe web` was
+`live` in `dsh status`.
+
+When it runs, each HOST-4 row takes the run's commit, `E2 runner:<name>` (or `E2 wsl:<host>/<distro>`),
+`passed` only if every leg of `TestDyingHostLeavesReadableReport` passed, and in Artifacts the SHA-256 of
+the binary it ran (one of the [rehearsal binaries](#rehearsal-binaries-step-181)) and the run id.
+
 ## Stage 8.5 confinement runs (step 18.4)
 
 implementation-plan Stage 8.5 (impl.md 18.4) refines the five `Linux (E2)` rows above into one row per
@@ -179,6 +219,47 @@ Cleared on this stage's branch (it would have let a wrong machine pass):
 | Defect | Seen on `7b5133d` | Fix |
 | --- | --- | --- |
 | SANDBOX-1 took a machine's status as matching when the report text contained the backend's name anywhere; the report lists every backend of the chain, so the bwrap machine (`landlock: available`) passed as the landlock machine and any Linux machine (`bwrap: unavailable: ...`) passed as the bwrap machine. NATIVESYSTEM-1 and -2 did not read status at all, SANDBOX-1 (c) and NATIVESYSTEM-3 (a) checked only the word `Unconfined`, and no result line carried the exposures the step copies. | `dsh sandbox status` of the pure-Go build under WSL2 (a probe, not evidence: `linux-wsl`, not `linux-e2:bwrap`): `state: Full`, `backend: bwrap`, `missing: none`, `exposed: none`, then `bwrap: available ...` and `landlock: available ...` | the scenarios read the report's head (`readVerdict`): bwrap `Full`; landlock `Full` or `Partial` naming a missing effect in SANDBOX-1, and `Partial` in NATIVESYSTEM-1 to -4 (status judges a network-denied start, `sandbox.Expect`, and Landlock governs no network on any ABI, so `network` is named missing; the ABI is told apart by each start's own record), NATIVESYSTEM-3 (b) read before its grant is removed; the unconfined machine through `mustStatusUnconfined`; the verdict and each denied write are logged with missing and exposed effects (`TestVerdictIsTheReportHead`) |
+
+## Stage 8.8 blockers
+
+implementation-plan Stage 8.8 (impl.md 18.9 `DH-E-CONTEXT-2` and 18.10 `DH-E-STORAGE-6`) was taken up on
+`7b5133d` and could not run. Nothing below is evidence of a run: the two CONTEXT-2 rows and the two
+in-scope STORAGE-6 rows stay `not run` and are owed. Each open blocker on its own stops its scenario:
+
+| Blocker | Scenario | Seen on `7b5133d` | What clears it |
+| --- | --- | --- | --- |
+| `harness-gate entry` exits 1: harness:DSH-M1 is not closed (M2-DEC-1), as in [Stage 8.2 blockers](#stage-82-blockers). | both | `GOWORK=off go -C tools/harness-gate run . entry --root ../..`: 12 blockers, exit 1 | M1 closure merges and `entry` exits 0 |
+| No rehearsed binary: every S18 row runs the binary of the TOOLCHAIN-2 run (impl.md DH-S-18 Sequence), which has not run; `variant-run` without `--rehearsal` runs nothing. | both | [Rehearsal binaries](#rehearsal-binaries-step-181) is empty | TOOLCHAIN-2 passes on both lanes |
+| No component reads instruction files. `internal/context/instructions` is imported only by its own tests and one DH-S-13 e2e test; `context.instructions` is no item of the binary's catalogue (`builtin.Sets()`, `internal/boot/builtin/builtin.go:208`, locked by `internal/boot/catalog/testdata/catalog.golden`, DH-T-BOOT-3, 35 items) and the standard preset names it as a child still to come (`internal/boot/agentpreset/presets/standard.yml:6`). [closure.md](closure.md) has DH-D-CONTEXT-2 `not built`, finishing stage DH-S-32. | CONTEXT-2 | the catalogue golden; `grep -r 'internal/context/instructions"' src/harness`: three test files | the stage that mounts DH-D-CONTEXT-2 in the release build (DH-S-32 per closure.md), or an owner decision moving that wiring into M2 (open question [`s18-context2-storage6-unbuilt`](#open-questions-stage-88)) |
+| No route the layer can register. `DSH_SCENARIO_CONTEXT2_LAYER` must register `DSH_SCENARIO_CONTEXT2_ROUTE` on the scripted endpoint; the catalogue's one model item is `llm.runtime` "with no route" (`builtin.LLM`, `builtin.go:142`): no keyed or HTTP route item and no `llm.replay` item. The same gap blocks DH-S-16 checks 16.3 and 16.4 (answer to `dh-s-16-claude-route`). | CONTEXT-2 | the catalogue golden: `llm.runtime` is the only `llm.*` row | a stage puts a layer-registered route (keyed, or `llm.replay`) in the release catalogue |
+| No session working directory. The scenario creates its session in `repo/sub` under `workspace-write`; `session.workdir`, `fs.local`, `fs.ops` and `sandbox.policy` are on `internal/boot/profile/bundles/optional.yml` (lines 21 to 37), waiting on `session.views`, which no item provides (DH-S-14 record). | CONTEXT-2 | `optional.yml` on `7b5133d` | the `session.views` item lands and the four move to `core.yml` |
+| Nothing for the seed to run. `DSH_SCENARIO_STORAGE6_SEED` must store one attachment and one spill file through `{dsh}`; no command of `dsh --help` (help, version, catalog, completion, secret, sandbox, config, status, crash, five profiles) and no catalogue item writes either: `internal/storage/attachments` and `internal/storage/spill/...` have no item, and `core.yml` lists "attachments, spill store and policy" among the entries still to add. | STORAGE-6 | a fresh home of a `7b5133d` build after `sdk`: `blobs`, `config`, `reports`, `run`, `secrets`, `spill`, `dsh.db`, with `blobs/` and `spill/` empty | the attachment and spill stores join the release catalogue with a dsh path that stores each, or an owner decision moving that wiring into M2 (open question [`s18-context2-storage6-unbuilt`](#open-questions-stage-88)) |
+| No `cache` directory. The scenario lists and reads `blobs`, `spill` and `cache` (areas/storage.md DH-E-STORAGE-6 *When*; layout `<home>/cache/request-images`) and fails when the seeded home has no `cache/`; `home.Layout.Dirs()` (`internal/storage/home/home.go:76`) has none and nothing creates it (the request cache of DH-D-STORAGE-4, P1). | STORAGE-6 | the fresh home above | the request cache creates `cache/` private, or an owner decision on the directory list (open question [`s18-storage6-cache-dir`](#open-questions-stage-88)) |
+| POSIX step 2 contradicts the boot check. The scenario wants a group-writable `spill/` refused by the spill component "while the rest of the host runs"; `home.Check` (`home.go:158`) checks every layout directory at boot, so the whole home is refused `home/not-private` naming `spill/` (`TestHomeCreatedPrivate`, `private_unix_test.go`) and `DSH_SCENARIO_STORAGE6_STATUS` cannot exit 0. | STORAGE-6 (Linux) | `checkPrivate` (`private_unix.go`): any group or other bit on a layout directory is a problem | owner decision (open question [`s18-storage6-spill-refusal`](#open-questions-stage-88)) |
+| Who and where. The second account is created and kept by the tester (WSL) and the Windows host keeper, never by an agent session ([runbook-two-account.md](runbook-two-account.md)); CONTEXT-2 runs on `linux-wsl` and `windows-hosted`. | both | `require --stage DH-S-18 --variant` on `7b5133d`: `linux-wsl` and `windows-hosted` lists end `DH-E-CONTEXT-2`; `linux-wsl:two-account` and `windows-host:two-account` print `DH-E-STORAGE-6`; each exit 0 | the `s18` jobs of `harness-scenarios.yml` (or the lanes' `--acceptance DH-S-18`) run on the merged commit once the blockers above clear |
+
+Checked and consistent (no change): the CONTEXT-2 scenario's oracles match the package it will exercise,
+`frameOpen = "<instructions>\n"` (`internal/context/instructions/render.go:51`) and the record's
+`refused[].path` (`render.go:26`, `:40`); STORAGE-6's input contract matches
+`tools/harness-gate/variants/inputs_test.go` (the host commands on POSIX only).
+
+When they run, each CONTEXT-2 row takes the run's commit, the environment (`E2 wsl:<host>/<distro>` or
+`E2 runner:<name>`), the versions of `git` and the editor, `passed` only if
+`TestContextInstructionFileChangesReachModel` passed, and in Artifacts the SHA-256 of the binary it
+executed (one of the rehearsal binaries) and the run id; each STORAGE-6 row the same for
+`TestAnotherLocalUserCannotReadStoredData`, plus the filled record of the two-account runbook.
+
+### Open questions (Stage 8.8)
+
+Raised by the blockers above and owed an owner answer; tech-spec.md
+[sec. 10](../tech-spec.md#10-open-questions) holds the story-wide M2-Q-1 to M2-Q-7. Each default stands
+until answered, and none lets a row read anything but `not run`:
+
+| ID | Question | Default until answered | Blocks |
+| --- | --- | --- | --- |
+| `s18-context2-storage6-unbuilt` | CONTEXT-2 and STORAGE-6 exercise components the release build does not mount (DH-D-CONTEXT-2 `not built`, finishing DH-S-32 per [closure.md](closure.md); the attachment and spill stores have no catalogue item or dsh path). Does M2 take on that wiring, or do the two scenarios wait for the stages that build it? | They wait: no wiring moves into M2; the CONTEXT-2 and STORAGE-6 rows stay `not run` | DH-E-CONTEXT-2 and DH-E-STORAGE-6 rows; S18 closure (M2-Q-3 pattern: S18 stays *open*) |
+| `s18-storage6-cache-dir` | STORAGE-6 lists and reads `blobs`, `spill` and `cache`, but `home.Layout.Dirs()` has no `cache/` and only the P1 request cache (DH-D-STORAGE-4) would create it. Does the scenario drop `cache` until that cache lands, or must the layout create `cache/` private now? | The scenario text stands (areas/storage.md unchanged, DC-2): `cache/` is required, so the row waits for the request cache | DH-E-STORAGE-6 rows; S18 closure |
+| `s18-storage6-spill-refusal` | POSIX step 2 wants a group-writable `spill/` refused by the spill component while the rest of the host runs; `home.Check` refuses the whole home `home/not-private` at boot. Which behaviour is correct: a per-component refusal (change `home.Check`), or the boot refusal (change the scenario's expectation)? | The boot refusal stands (no code change); the Linux STORAGE-6 row cannot pass and stays `not run` | DH-E-STORAGE-6 (Linux) row; S18 closure |
 
 ## Evidence record (impl.md sec. 7.3)
 
@@ -231,3 +312,5 @@ Not yet recorded: the before-and-after comparison the stage names, or what was r
 ### Open items
 
 Manual checks: none count here (impl.md DH-S-18).
+
+Owner answers owed: the three [Stage 8.8 open questions](#open-questions-stage-88).
