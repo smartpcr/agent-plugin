@@ -936,13 +936,18 @@ func (s *s74State) thenRoutePassed(name string) error {
 
 func (s *s74State) thenRouteKept(name string) error {
 	n := 0
+	var unkept []string
 	for _, r := range s.results {
-		if r.Route == name && r.Leg != "" {
+		switch {
+		case r.Route != name:
+		case r.Leg != "":
 			n++
+		default:
+			unkept = append(unkept, r.Source+": "+r.Err)
 		}
 	}
-	if want := s.s74Want(s74Legs); n != want {
-		return fmt.Errorf("%s kept %d of %d leg results", name, n, want)
+	if want := s.s74Want(s74Legs); n != want || len(unkept) > 0 {
+		return fmt.Errorf("%s kept %d of %d executed leg results; not kept:\n%s", name, n, want, strings.Join(unkept, "\n"))
 	}
 	return nil
 }
@@ -995,9 +1000,12 @@ func (s *s74State) runLive() error {
 		}
 		keep("claude-code", claude, claude == "pass")
 		co := action[t+"/copilot-cli"]
-		if co == "" {
+		if co != "pass" && co != "fail" {
+			// A skipped or missing copilot-cli subtest did not execute, so it
+			// is no kept result; a failing one is kept as it is.
 			keep("copilot-cli", co, false)
 			s.results[len(s.results)-1].Leg = ""
+			s.results[len(s.results)-1].Err = fmt.Sprintf("%s copilot-cli subtest %q, want an executed pass or fail", t, co)
 		} else {
 			keep("copilot-cli", co, co == "pass")
 		}
@@ -1148,7 +1156,7 @@ func (s *s74State) whenGuardedTurn(a, b, c string) error {
 			return tools.Allow()
 		})
 		return err
-	})
+	}, answerer.Deny())
 	if err != nil {
 		return err
 	}
@@ -1168,8 +1176,10 @@ type s74Harness struct {
 	drv   *driver.Driver
 }
 
-// s74Compose builds the harness on root; register adds tools and policies.
-func s74Compose(root *cordis.Context, r *s74Rig, id string, register func(*cordis.Context, tools.Service) error) (*s74Harness, error) {
+// s74Compose builds the harness on root; register adds tools and policies, and
+// replies are the approvals the harness is expected to ask for, in order (an
+// unscripted or unasked one fails the test).
+func s74Compose(root *cordis.Context, r *s74Rig, id string, register func(*cordis.Context, tools.Service) error, replies ...answerer.Reply) (*s74Harness, error) {
 	rt, err := s74Runtime(r)
 	if err != nil {
 		return nil, err
@@ -1195,7 +1205,7 @@ func s74Compose(root *cordis.Context, r *s74Rig, id string, register func(*cordi
 	ref := agent.Ref{Session: session.ID(id), Incarnation: 1}
 	reg := human.New()
 	s74OuterT.Cleanup(reg.Close)
-	answerer.Register(s74OuterT, root, reg, ch, answerer.Deny())
+	answerer.Register(s74OuterT, root, reg, ch, replies...)
 	if _, err := reg.Bind(root, ref, human.Binding{Channel: ch}); err != nil {
 		return nil, err
 	}

@@ -15,6 +15,8 @@ Feature: Model, tools, titles and configuration acceptance (TC-20s)
   route's committed synthetic client lines. A partial set fails and names what is
   missing. Either way the in-process legs drive the real route packages
   (claudecode, copilot) and the agent loop, with sessions in a scratch SQLite store.
+  A stand-in run proves the harness side of each route only: acceptance of
+  service:model-route-claude-code itself is the provided run on the S17 machine.
 
   Scenario: DH-E-LLM-1, LLM-3 and VIEW-1 two-route legs
     Given the clients of "claude-code,copilot-cli" for "TestTurnWithReasoningAndToolCall,TestSignedOutIsAFact,TestModelTitlesSession": the provided signed-in clients when their S17 inputs are set, or else ephemeral stand-ins

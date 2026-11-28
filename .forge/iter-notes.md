@@ -1,33 +1,25 @@
-# Stage 7.4 e2e — iteration 2 reflection
+# Stage 7.4 e2e — iteration 3 reflection
 
-## State
-- Scenario 2 (TOOLS-1 + LOADER-1) passes with no S17 inputs set. Each LOADER-1 "next turn"
-  is now a real driver turn on the claude-code route. The probe component contributes a
-  prompt section ("Log level: X."). The turn asserts that level in the logged system message
-  and in the --system-prompt-file the stand-in client was started with.
-- A new instance-selection Given replaces the no-op `thenLive`:
-  - all S17 inputs set: provided signed-in clients; the live scenario tests run and are asserted
-  - none set: ephemeral stand-ins, readiness-probed once per route
-  - a partial set: fails and names the missing inputs
-- Scenario 1 is still red, only on the two VIEW-1 legs, with llm/unsupported-option and 0 client runs.
+## Done this iteration
+- s74Compose now takes the approval replies from its caller. The guarded-tools harness passes
+  answerer.Deny(), and the loader harness passes none. This removes the
+  "1 scripted repl(ies) never asked for" cleanup failure.
+- runLive: a copilot-cli subtest that skips or is missing is no longer a kept result. Only an
+  executed pass or fail is kept, and a fail is kept as it is. thenRouteKept lists each result
+  it did not keep.
+- The feature description now says a stand-in run proves the harness side only.
 
-## ESCALATION: operator pin needed (DH-E-VIEW-1 on client routes)
-This is a spec conflict, not a test bug:
-- session-views.md §6.2 (line 73, table line 302): the title request carries an output cap,
-  and the default is 4096 (title.go:121, service.go:473, events.go:130).
-- llm.md and DH-E-LLM-3: claude-code and copilot-cli refuse any output cap with
-  llm/unsupported-option (claudecode.go:164).
-- VIEW-1 needs a generated title on a client route under the default title config.
-  GeneratorConfig maps 0 or below to 4096, so no configuration avoids the cap.
+## Gate state
+- Scenario 2 passes, with a clean cleanup.
+- Scenario 1 is red only on the two VIEW-1 legs: llm/unsupported-option, 0 client runs.
 
-Fix options for the impl owner:
-- (a) send no title cap on routes that take none (needs a route capability flag in llm.Route);
-- (b) a 0/"none" sentinel in GeneratorConfig that the defaults keep;
-- (c) amend VIEW-1 to exclude client routes.
-
-The e2e assertions stay strict on purpose. They must not be loosened.
-
-## Other open gaps
-- The dsh catalogue registers no claude-code or copilot-cli route.
-- title.Attempt records no client invocation, so the live TestModelTitlesSession requireInvocation check cannot hold.
-- Step file is about 1,600 lines (one-file layout mandated by the brief).
+## Blocked outside QA scope (needs an operator pin)
+- VIEW-1 title output cap vs. client routes (spec conflict). Options:
+  - (a) a route capability flag, so no cap is sent;
+  - (b) a "no cap" sentinel in title.GeneratorConfig;
+  - (c) amend VIEW-1.
+- Signed-in service proof: only the S17 machine's provided clients (DSH_SCENARIO_* inputs)
+  can prove service:model-route-claude-code. The gate host has none. The test does not use a
+  claude binary found on PATH unless the operator has opted in.
+- Still open: no dsh catalogue entries for the client routes, and title.Attempt does not
+  record that the client was run.
