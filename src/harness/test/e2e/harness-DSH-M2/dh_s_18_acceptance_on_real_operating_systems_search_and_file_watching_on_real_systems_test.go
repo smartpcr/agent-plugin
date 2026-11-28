@@ -755,8 +755,8 @@ func (s *s87State) givenEditorVariants() error {
 	})
 }
 
-// editors are the save strategies of the ephemeral instance: vim (when the
-// variant has it), write a copy then rename it over the file, append in place,
+// editors are the save strategies of the ephemeral instance: vim (required;
+// a variant without it fails as service:filesystem), write a copy then rename it over the file, append in place,
 // and back up then rewrite in place. Each saves {file} with {marker} appended.
 func (l *s87Leg) editors() ([]string, error) {
 	if l.v.goos == "windows" {
@@ -767,9 +767,10 @@ func (l *s87Leg) editors() ([]string, error) {
 				vim = p
 			}
 		}
-		if vim != "" {
-			out = append(out, `"`+vim+`" -u NONE -i NONE -n -Es -c "normal Go{marker}" -c wq "{file}"`)
+		if vim == "" {
+			return nil, errors.New("service:filesystem: vim is not on the PATH of the variant nor under Git for Windows; DH-E-CHOKIDAR-1 saves with vim, so install it or set DSH_SCENARIO_EDITORS")
 		}
+		out = append(out, `"`+vim+`" -u NONE -i NONE -n -Es -c "normal Go{marker}" -c wq "{file}"`)
 		// The redirection comes first: a digit just before > would name a handle.
 		return append(out,
 			`copy /y "{file}" "{file}.dsh-tmp" >nul && >>"{file}.dsh-tmp" echo {marker}&& move /y "{file}.dsh-tmp" "{file}" >nul`,
@@ -786,11 +787,11 @@ func (l *s87Leg) editors() ([]string, error) {
 		"inplace": `printf '%s\n' "$2" >> "$1"`,
 		"backup":  `cp "$1" "$1~" && { cat "$1~"; printf '%s\n' "$2"; } > "$1"`,
 	}
-	order := []string{"rename", "inplace", "backup"}
-	if l.v.lookPath("vim") != "" {
-		scripts["vim"] = `exec vim -u NONE -i NONE -n -Es -c "normal Go$2" -c wq "$1"`
-		order = append([]string{"vim"}, order...)
+	if l.v.lookPath("vim") == "" {
+		return nil, errors.New("service:filesystem: vim is not on the PATH of the variant; DH-E-CHOKIDAR-1 saves with vim, so install it or set DSH_SCENARIO_EDITORS")
 	}
+	scripts["vim"] = `exec vim -u NONE -i NONE -n -Es -c "normal Go$2" -c wq "$1"`
+	order := []string{"vim", "rename", "inplace", "backup"}
 	var out []string
 	for _, name := range order {
 		p := l.v.join(dir, "save-"+name+".sh")
