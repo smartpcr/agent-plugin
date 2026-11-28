@@ -21,17 +21,23 @@ Feature: Sandbox policy text escalation acceptance (DH-E-SANDBOX-7, M2-C-6)
   fs/sandbox-denied retries it as the section instructs. A partial set fails and
   names what is missing. Either way the counts go through the real
   harness-gate sandbox7-record and policy-text on the branch head. A stand-in run
-  proves the harness side only: acceptance of the route itself is the provided
-  run on the S17 machine. Proof golden for the binding.
+  is harness coverage, not acceptance: its record is lane "standin" in a scratch
+  clone, its rows name model e2e-stand-in, nothing of it reaches this checkout's
+  evidence, and the suite reports DH-E-SANDBOX-7 acceptance as not run (TC-20s:
+  a missing service reads not run, never passed). Acceptance of the route itself
+  is only the provided run on the S17 machine, which keeps the log of its 108
+  runs and the exports TC-20s requires: every run that fails alone, and every
+  run of a text below the floor. Proof golden for the binding.
 
   Scenario: DH-E-SANDBOX-7 escalation threshold
     Given the binary built from the "s17/policy-text" branch head carrying the three shipped texts: the provided S17 checkout when its SANDBOX-7 inputs are set, or else a scratch branch cut by runbook step A
     When 108 runs complete: 12 tasks, 6 of them denied first, 3 runs of each on each text
     Then "harness-gate sandbox7-record" records the run on the branch head with each text's SHA-256 and its count
     And for each text at least 10 of 18 denied-first tasks escalated
-    And the transcripts are kept
+    And the transcripts are kept: the log of every run, and the exported log of every run the scenario keeps
     And "harness-gate sandbox7-record" records a text with 9 of 18 as failed
     And the SANDBOX-7 judge tests "TestSandbox7CountsOnlyEscalatedRetriesOfDeniedCalls,TestSandbox7KeepsEveryTranscriptOfATextBelowTheFloor,TestSandbox7ReportIsWhatTheGateReads" pass on the branch head
+    And DH-E-SANDBOX-7 acceptance is reported only for the provided signed-in Claude Code run, and a stand-in run as harness coverage with acceptance not run
 
   Scenario: Text binding at merge
     Given the merged commit's "world/sandbox/policy/text/*.md", its "policy_section_*.golden" and the "DH-E-SANDBOX-7" row of "evidence/DH-S-17.md", on this checkout and on a scratch merge candidate proved by DH-E-SANDBOX-7
