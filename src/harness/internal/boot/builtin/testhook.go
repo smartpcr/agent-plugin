@@ -23,7 +23,13 @@ import (
 	"github.com/smartpcr/agent-plugin/src/harness/internal/testkit/model"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/tools"
 	fstools "github.com/smartpcr/agent-plugin/src/harness/internal/world/fs/tools"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox"
 	"github.com/smartpcr/agent-plugin/src/harness/internal/world/sandbox/policy"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/shellexec"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/shellexec/bash"
+	shellenv "github.com/smartpcr/agent-plugin/src/harness/internal/world/shellexec/env"
+	"github.com/smartpcr/agent-plugin/src/harness/internal/world/shellexec/pwsh"
+	shelltools "github.com/smartpcr/agent-plugin/src/harness/internal/world/shellexec/tools"
 )
 
 // TestRouteName is the catalogue name of the keyless fake model route a testhook
@@ -216,8 +222,46 @@ var testWorkdir = cordis.Define(TestWorkdirName, func(ctx *cordis.Context, cfg T
 	return err
 })
 
+// TestShellsName is the catalogue name of the testhook shell-registry item: it
+// provides shellexec.Key with the PowerShell and bash executors this machine has,
+// each over the mounted sandbox seam (sandbox.local), standing in for the
+// executor items no profile mounts yet, so a built-binary test layer can mount
+// the real shellexec.tools and stop or kill a launch while a real shell child
+// runs (DH-E-AGENT-3).
+const TestShellsName = "shellexec.testkit-shells"
+
+var testShells = cordis.Define(TestShellsName, func(ctx *cordis.Context, _ struct{}) error {
+	seam, err := sandbox.ServiceKey.Get(ctx)
+	if err != nil {
+		return err
+	}
+	h := shellexec.LocalHost(os.Environ())
+	o := shellexec.Options{Sandbox: seam, Env: &shellenv.Builder{Registry: shellenv.NewRegistry(shellenv.Builtins{})}}
+	reg := shellexec.NewRegistry()
+	var found []error
+	if e, err := pwsh.New(pwsh.DefaultConfig(), h, o); err != nil {
+		found = append(found, err)
+	} else if _, err := reg.Register(e); err != nil {
+		return err
+	}
+	if e, err := bash.New(bash.Config{}, h, o); err != nil {
+		found = append(found, err)
+	} else if _, err := reg.Register(e); err != nil {
+		return err
+	}
+	if len(found) == 2 {
+		return fmt.Errorf("%s: no shell on this machine: %v; %v", TestShellsName, found[0], found[1])
+	}
+	_, err = shellexec.Key.Provide(ctx, reg)
+	return err
+}, cordis.WithInject(sandbox.ServiceKey.Name()))
+
 func init() {
 	extra = append(extra,
+		catalog.Item{Name: TestShellsName, Component: testShells, Provides: []string{shellexec.Key.Name()}},
+		// The model-facing shell tools (bash, pwsh), which no profile mounts
+		// yet, over the registry above (DH-E-AGENT-3).
+		shelltools.Item(),
 		catalog.Item{Name: TestWorkdirName, Component: testWorkdir, Config: reflect.TypeFor[TestWorkdirConfig](), Provides: []string{workdir.Key.Name()}},
 		// The model-facing file tools (read, write, edit, ...), which no
 		// profile mounts yet, so a built-binary test drives edit (DH-E-FS-3).
