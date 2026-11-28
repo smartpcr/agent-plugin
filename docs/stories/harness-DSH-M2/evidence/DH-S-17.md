@@ -38,7 +38,7 @@ An acceptance step is ticked only by its scenarios; the commit is the one the sc
 | 17.5 | DH-E-TOOLS-1 | | not run; blocked, see [Stage 7.4 blockers](#stage-74-blockers) |
 | 17.6 | DH-E-VIEW-1 | | not run; blocked, see [Stage 7.4 blockers](#stage-74-blockers) |
 | 17.7 | DH-E-LOADER-1 | | not run; blocked, see [Stage 7.4 blockers](#stage-74-blockers) |
-| 17.8 | DH-E-SDK-1 | | |
+| 17.8 | DH-E-SDK-1 | | not run; blocked, see [Stage 7.5 blockers](#stage-75-blockers) |
 | 17.9 | DH-E-SANDBOX-7 | | closes `UP-DEBT-found.Q3.2` |
 
 ## Scenarios
@@ -62,7 +62,7 @@ The 14 scenarios of the steps, on E1: Linux with the signed-in Claude Code route
 | DH-E-VIEW-1 | claude-code | acceptance | required | E1 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
 | DH-E-VIEW-1 | copilot-cli | acceptance | recorded | E1 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
 | DH-E-LOADER-1 | Linux (E1) | acceptance | required | E1 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
-| DH-E-SDK-1 | Linux (E1) | acceptance | required | E1 | | not run (stage not started) | |
+| DH-E-SDK-1 | Linux (E1) | acceptance | required | E1 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
 | DH-E-SANDBOX-7 | Linux (E1) | acceptance | required | E1 | | not run (stage not started) | |
 
 ## Manual checks register
@@ -118,6 +118,31 @@ LLM-3 and VIEW-1, and TOOLS-1 and LOADER-1, must read `passed`; the `copilot-cli
 the run's `scenarios: recorded leg: <Test>/copilot-cli ...` line gives, `failed (<reason>)` included
 (M2-DEC-4). The LOADER-1 artifacts quote the log line showing the edited configuration in force on the
 next turn.
+
+## Stage 7.5 blockers
+
+implementation-plan Stage 7.5 (impl.md 17.8, DH-E-SDK-1: `TestSDKDrivesBuiltBinaryOverStdio` in
+`src/harness/internal/testkit/scenarios/sdk_stdio_scenario_test.go`, authored in Stage 6.11) was taken
+up on `aa11dac` and could not run. Nothing below is evidence of a run; the SDK-1 row stays `not run`
+and is owed. Each blocker on its own stops the run:
+
+| Blocker | Seen | What clears it |
+| --- | --- | --- |
+| `harness-gate entry` exits 1: harness:DSH-M1 is not closed (DH-S-1 to DH-S-11 read `Closure status: open`; no `harness-DSH-M1/evidence/closure.md`). M2-DEC-1: no M2 scenario run before M1 closes. | `GOWORK=off go -C tools/harness-gate run . entry --root ../..` on `aa11dac`: 12 blockers, exit 1 | M1 closure merges and `entry` exits 0 |
+| DH-E-TOOLCHAIN-1 has not run. It runs first in S17 (architecture.md "Run order" rule 7; the runbook's step 7 runs it in the first phase), and its row reads `not run`, see [Stage 7.2 blockers](#stage-72-blockers). | the DH-E-TOOLCHAIN-1 row of the Scenarios table above | the TOOLCHAIN-1 row reads `passed` |
+| Who and where. [runbook-s17-wsl.md](runbook-s17-wsl.md): the signed-in run is by the owner or an operator, "never an agent session", on Linux (WSL 2) with `bwrap` installed; the scenario declares `OS: linux` and skips elsewhere. | runbook, "Who, where, and with what"; `scenario.Needs` of the test | the operator runs the runbook (or the `s17` job) on a merged commit once the two blockers above clear |
+
+Inputs the operator supplies (the runbook's "Route inputs"; none is a credential, none is committed):
+`DSH_SCENARIO_SDK1_LAYER`, the path of a profile layer template (`{workspace}` expanded) whose policy asks
+before writes; `DSH_SCENARIO_SDK1_LONG_PROMPT`, a prompt whose turn runs for minutes; and
+`DSH_SCENARIO_CLAUDE_CODE_MODEL`, `DSH_SCENARIO_CLAUDE_CODE_EFFORT`.
+
+When it runs, the SDK-1 row takes the commit of step 1 of the runbook, `E1 wsl:<host>/<distro>` (or
+`E1 runner:<name>`), and in Artifacts the `dsh` SHA-256, the claude-code model id, the session id and the
+run ids (`RunResult.MessageID`) of the allowed, rejected and answered runs (M2-DEC-5). Its pass covers
+both Stage 7.5 scenarios: the approval, question, cancel, kill and resume steps with stdout holding
+frames only (M2-C-10), and each run's result equal to the last assistant message of its turn in the
+history the second host reads back from the scratch home's SQLite store.
 
 ## Evidence record (impl.md sec. 7.3)
 
