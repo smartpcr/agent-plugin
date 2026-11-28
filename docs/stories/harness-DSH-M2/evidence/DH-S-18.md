@@ -39,8 +39,8 @@ An acceptance step is ticked only by its scenarios; the commit is the one the sc
 | 18.6 | DH-E-VIEW-5 | | |
 | 18.7 | DH-E-RIPGREP-1, DH-E-RIPGREP-2 | | |
 | 18.8 | DH-E-CHOKIDAR-1, DH-E-CHOKIDAR-2 | | |
-| 18.9 | DH-E-CONTEXT-2 | | |
-| 18.10 | DH-E-STORAGE-6 | | |
+| 18.9 | DH-E-CONTEXT-2 | | not run; blocked, see [Stage 8.8 blockers](#stage-88-blockers) |
+| 18.10 | DH-E-STORAGE-6 | | not run; blocked, see [Stage 8.8 blockers](#stage-88-blockers) |
 | 18.11 | DH-E-NODEFS-1 | | run last |
 
 ## Scenarios
@@ -80,10 +80,10 @@ The 19 scenarios of the steps, one row per operating-system variant (M2-DOD-4). 
 | DH-E-CHOKIDAR-2 | Linux (WSL) | acceptance | required | E2 | | not run (stage not started) | |
 | DH-E-CHOKIDAR-2 | Windows | acceptance | required | E2 | | not run (stage not started) | |
 | DH-E-CHOKIDAR-2 | macOS | acceptance | required | | | out of scope (platforms-windows-wsl) | |
-| DH-E-CONTEXT-2 | Linux (WSL) | acceptance | required | E2 | | not run (stage not started) | |
-| DH-E-CONTEXT-2 | Windows | acceptance | required | E2 | | not run (stage not started) | |
-| DH-E-STORAGE-6 | Linux (WSL) | acceptance | required | E2 | | not run (stage not started) | |
-| DH-E-STORAGE-6 | Windows | acceptance | required | E2 | | not run (stage not started) | |
+| DH-E-CONTEXT-2 | Linux (WSL) | acceptance | required | E2 | | not run (blocked: harness-gate entry fails, M2-DEC-1; the release build has no instruction-file component and no route, see Stage 8.8 blockers) | |
+| DH-E-CONTEXT-2 | Windows | acceptance | required | E2 | | not run (blocked: harness-gate entry fails, M2-DEC-1; the release build has no instruction-file component and no route, see Stage 8.8 blockers) | |
+| DH-E-STORAGE-6 | Linux (WSL) | acceptance | required | E2 | | not run (blocked: harness-gate entry fails, M2-DEC-1; dsh cannot seed an attachment or a spill file, see Stage 8.8 blockers) | |
+| DH-E-STORAGE-6 | Windows | acceptance | required | E2 | | not run (blocked: harness-gate entry fails, M2-DEC-1; dsh cannot seed an attachment or a spill file, see Stage 8.8 blockers) | |
 | DH-E-STORAGE-6 | macOS | acceptance | required | | | out of scope (platforms-windows-wsl) | |
 | DH-E-NODEFS-1 | Linux guest | acceptance | required | E2 | | not run (stage not started) | |
 | DH-E-NODEFS-1 | Windows guest | acceptance | required | E2 | | not run (stage not started) | |
@@ -138,6 +138,35 @@ When it runs, each TOOLCHAIN-2 row takes the run's commit, `E2 runner:<name>` (o
 SHA-256 of the binary it executed and the run id. The six checksums go into
 [Rehearsal binaries](#rehearsal-binaries-step-181) below, and every later S18 row records the SHA-256 of
 the binary it ran, which must be one of them.
+
+## Stage 8.8 blockers
+
+implementation-plan Stage 8.8 (impl.md 18.9 `DH-E-CONTEXT-2` and 18.10 `DH-E-STORAGE-6`) was taken up on
+`7b5133d` and could not run. Nothing below is evidence of a run: the two CONTEXT-2 rows and the two
+in-scope STORAGE-6 rows stay `not run` and are owed. Each open blocker on its own stops its scenario:
+
+| Blocker | Scenario | Seen on `7b5133d` | What clears it |
+| --- | --- | --- | --- |
+| `harness-gate entry` exits 1: harness:DSH-M1 is not closed (M2-DEC-1), as in [Stage 8.2 blockers](#stage-82-blockers). | both | `GOWORK=off go -C tools/harness-gate run . entry --root ../..`: 12 blockers, exit 1 | M1 closure merges and `entry` exits 0 |
+| No rehearsed binary: every S18 row runs the binary of the TOOLCHAIN-2 run (impl.md DH-S-18 Sequence), which has not run; `variant-run` without `--rehearsal` runs nothing. | both | [Rehearsal binaries](#rehearsal-binaries-step-181) is empty | TOOLCHAIN-2 passes on both lanes |
+| No component reads instruction files. `internal/context/instructions` is imported only by its own tests and one DH-S-13 e2e test; `context.instructions` is no item of the binary's catalogue (`builtin.Sets()`, `internal/boot/builtin/builtin.go:208`, locked by `internal/boot/catalog/testdata/catalog.golden`, DH-T-BOOT-3, 35 items) and the standard preset names it as a child still to come (`internal/boot/agentpreset/presets/standard.yml:6`). [closure.md](closure.md) has DH-D-CONTEXT-2 `not built`, finishing stage DH-S-32. | CONTEXT-2 | the catalogue golden; `grep -r 'internal/context/instructions"' src/harness`: three test files | the stage that mounts DH-D-CONTEXT-2 in the release build (DH-S-32 per closure.md), or an owner decision moving that wiring into M2 (open question `s18-context2-storage6-unbuilt`) |
+| No route the layer can register. `DSH_SCENARIO_CONTEXT2_LAYER` must register `DSH_SCENARIO_CONTEXT2_ROUTE` on the scripted endpoint; the catalogue's one model item is `llm.runtime` "with no route" (`builtin.LLM`, `builtin.go:142`): no keyed or HTTP route item and no `llm.replay` item. The same gap blocks DH-S-16 checks 16.3 and 16.4 (answer to `dh-s-16-claude-route`). | CONTEXT-2 | the catalogue golden: `llm.runtime` is the only `llm.*` row | a stage puts a layer-registered route (keyed, or `llm.replay`) in the release catalogue |
+| No session working directory. The scenario creates its session in `repo/sub` under `workspace-write`; `session.workdir`, `fs.local`, `fs.ops` and `sandbox.policy` are on `internal/boot/profile/bundles/optional.yml` (lines 21 to 37), waiting on `session.views`, which no item provides (DH-S-14 record). | CONTEXT-2 | `optional.yml` on `7b5133d` | the `session.views` item lands and the four move to `core.yml` |
+| Nothing for the seed to run. `DSH_SCENARIO_STORAGE6_SEED` must store one attachment and one spill file through `{dsh}`; no command of `dsh --help` (help, version, catalog, completion, secret, sandbox, config, status, crash, five profiles) and no catalogue item writes either: `internal/storage/attachments` and `internal/storage/spill/...` have no item, and `core.yml` lists "attachments, spill store and policy" among the entries still to add. | STORAGE-6 | a fresh home of a `7b5133d` build after `sdk`: `blobs`, `config`, `reports`, `run`, `secrets`, `spill`, `dsh.db`, with `blobs/` and `spill/` empty | the attachment and spill stores join the release catalogue with a dsh path that stores each |
+| No `cache` directory. The scenario lists and reads `blobs`, `spill` and `cache` (areas/storage.md DH-E-STORAGE-6 *When*; layout `<home>/cache/request-images`) and fails when the seeded home has no `cache/`; `home.Layout.Dirs()` (`internal/storage/home/home.go:76`) has none and nothing creates it (the request cache of DH-D-STORAGE-4, P1). | STORAGE-6 | the fresh home above | the request cache creates `cache/` private, or an owner decision on the directory list (open question `s18-storage6-cache-dir`) |
+| POSIX step 2 contradicts the boot check. The scenario wants a group-writable `spill/` refused by the spill component "while the rest of the host runs"; `home.Check` (`home.go:158`) checks every layout directory at boot, so the whole home is refused `home/not-private` naming `spill/` (`TestHomeCreatedPrivate`, `private_unix_test.go`) and `DSH_SCENARIO_STORAGE6_STATUS` cannot exit 0. | STORAGE-6 (Linux) | `checkPrivate` (`private_unix.go`): any group or other bit on a layout directory is a problem | owner decision (open question `s18-storage6-spill-refusal`) |
+| Who and where. The second account is created and kept by the tester (WSL) and the Windows host keeper, never by an agent session ([runbook-two-account.md](runbook-two-account.md)); CONTEXT-2 runs on `linux-wsl` and `windows-hosted`. | both | `require --stage DH-S-18 --variant` on `7b5133d`: `linux-wsl` and `windows-hosted` lists end `DH-E-CONTEXT-2`; `linux-wsl:two-account` and `windows-host:two-account` print `DH-E-STORAGE-6`; each exit 0 | the `s18` jobs of `harness-scenarios.yml` (or the lanes' `--acceptance DH-S-18`) run on the merged commit once the blockers above clear |
+
+Checked and consistent (no change): the CONTEXT-2 scenario's oracles match the package it will exercise,
+`frameOpen = "<instructions>\n"` (`internal/context/instructions/render.go:51`) and the record's
+`refused[].path` (`render.go:26`, `:40`); STORAGE-6's input contract matches
+`tools/harness-gate/variants/inputs_test.go` (the host commands on POSIX only).
+
+When they run, each CONTEXT-2 row takes the run's commit, the environment (`E2 wsl:<host>/<distro>` or
+`E2 runner:<name>`), the versions of `git` and the editor, `passed` only if
+`TestContextInstructionFileChangesReachModel` passed, and in Artifacts the SHA-256 of the binary it
+executed (one of the rehearsal binaries) and the run id; each STORAGE-6 row the same for
+`TestAnotherLocalUserCannotReadStoredData`, plus the filled record of the two-account runbook.
 
 ## Evidence record (impl.md sec. 7.3)
 
