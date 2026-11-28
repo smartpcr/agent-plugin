@@ -139,6 +139,47 @@ SHA-256 of the binary it executed and the run id. The six checksums go into
 [Rehearsal binaries](#rehearsal-binaries-step-181) below, and every later S18 row records the SHA-256 of
 the binary it ran, which must be one of them.
 
+## Stage 8.5 confinement runs (step 18.4)
+
+implementation-plan Stage 8.5 (impl.md 18.4) refines the five `Linux (E2)` rows above into one row per
+machine of [variants.md](variants.md). A `Linux (E2)` row reads `passed` only when every machine row of
+its scenario below passed in one workflow run on the merged commit (the variants.md recording rule for
+shared machine sets); its Artifacts then take the run id. Each row copies the reported enforcement from
+the run's log, never from the preflight:
+
+- **Status**: the `<alias>: enforcement <State> <backend>, missing [..], exposed [..]` line, the head of
+  `dsh sandbox status` on that machine (`sandboxVerdict`).
+- **Denied write**: the `<alias>: enforcement ...` (SANDBOX-1) or `<alias>: denied write ...`
+  (NATIVESYSTEM-1, -2) line, `<state>, <backend>, exit <n>, missing [..], exposed [..]`, the result of
+  the confined write outside the roots, with its stderr; for a refused start, the `refused` line.
+
+| Scenario | Variant | Preflight | Commit | Result | Status | Denied write |
+| --- | --- | --- | --- | --- | --- | --- |
+| DH-E-SANDBOX-1 | `linux-e2:bwrap` | bwrap Full | | not run (blocked, below) | | |
+| DH-E-SANDBOX-1 | `linux-e2:landlock` | landlock ABI >= 5 | | not run (blocked, below) | | |
+| DH-E-SANDBOX-1 | `linux-e2:unconfined` | Unconfined | | not run (blocked, below) | | |
+| DH-E-NATIVESYSTEM-1 | `linux-e2:landlock` | landlock ABI >= 5 | | not run (blocked, below) | | |
+| DH-E-NATIVESYSTEM-2 | `linux-e2:landlock-abi1-4` | landlock ABI 1-4 | | not run (blocked, below) | | |
+| DH-E-NATIVESYSTEM-3 | `linux-e2:unconfined` (Landlock disabled) | Unconfined | | not run (blocked, below) | | |
+| DH-E-NATIVESYSTEM-3 | `linux-e2:landlock` (missing grant) | landlock ABI >= 5 | | not run (blocked, below) | | |
+| DH-E-NATIVESYSTEM-4 | `linux-e2:landlock` (pure Go) | landlock ABI >= 5 | | not run (blocked, below) | | |
+| DH-E-NATIVESYSTEM-4 | `linux-e2:landlock` (cgo `-race`) | landlock ABI >= 5 | | not run (blocked, below) | | |
+| DH-E-NATIVESYSTEM-4 | `linux-e2:musl` | landlock ABI >= 5 | | not run (blocked, below) | | |
+
+Taken up on `7b5133d`; nothing above is evidence of a run. Each open blocker on its own stops it:
+
+| Blocker | Seen | What clears it |
+| --- | --- | --- |
+| `harness-gate entry` exits 1: harness:DSH-M1 is not closed (M2-DEC-1), as for [Stage 8.2](#stage-82-blockers). | `GOWORK=off go -C tools/harness-gate run . entry --root ../..` on `7b5133d`: 12 blockers, exit 1 | M1 closure merges and `entry` exits 0 |
+| No rehearsed binary: step 18.1 has not run, so there is no `rehearsal.sha256` for `variant-run --rehearsal` to check the `linux-e2:*` jobs' binary against (impl.md DH-S-18 Sequence). | [Rehearsal binaries](#rehearsal-binaries-step-181): empty | the `s18-rehearsal` job passes on the merged commit |
+| The machines: SANDBOX-1 needs the `bwrap=`, `landlock=` and `unconfined=` machines of `DSH_SCENARIO_SANDBOX1_MACHINES` in one test, NATIVESYSTEM-2 and -4 add `landlock-abi1-4=` and `musl=`; each is a team-kept VM over SSH on `dsh-e2-controller` (Q `m2-e2-fleet`). | the workstation that took the stage up has no SSH alias for any `linux-e2:*` machine and `DSH_SCENARIO_SANDBOX1_MACHINES` is unset | the team's five VMs pass their preflights on the `s18` `linux-e2:*` jobs |
+
+Cleared on this stage's branch (it would have let a wrong machine pass):
+
+| Defect | Seen on `7b5133d` | Fix |
+| --- | --- | --- |
+| SANDBOX-1 took a machine's status as matching when the report text contained the backend's name anywhere; the report lists every backend of the chain, so the bwrap machine (`landlock: available`) passed as the landlock machine and any Linux machine (`bwrap: unavailable: ...`) passed as the bwrap machine. NATIVESYSTEM-1 and -2 did not read status at all, SANDBOX-1 (c) and NATIVESYSTEM-3 (a) checked only the word `Unconfined`, and no result line carried the exposures the step copies. | `dsh sandbox status` of the pure-Go build under WSL2 (a probe, not evidence: `linux-wsl`, not `linux-e2:bwrap`): `state: Full`, `backend: bwrap`, `missing: none`, `exposed: none`, then `bwrap: available ...` and `landlock: available ...` | the scenarios read the report's head (`readVerdict`): bwrap `Full`; landlock `Full` or `Partial` naming a missing effect in SANDBOX-1, and `Partial` in NATIVESYSTEM-1 to -4 (status judges a network-denied start, `sandbox.Expect`, and Landlock governs no network on any ABI, so `network` is named missing; the ABI is told apart by each start's own record), NATIVESYSTEM-3 (b) read before its grant is removed; the unconfined machine through `mustStatusUnconfined`; the verdict and each denied write are logged with missing and exposed effects (`TestVerdictIsTheReportHead`) |
+
 ## Stage 8.8 blockers
 
 implementation-plan Stage 8.8 (impl.md 18.9 `DH-E-CONTEXT-2` and 18.10 `DH-E-STORAGE-6`) was taken up on
