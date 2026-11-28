@@ -211,7 +211,7 @@ test/e2e/harness-DSH-M3/      (new)  godog suites mirroring e2e-scenarios.md
 | C64 | `host.routes.workspaces` (`internal/host/routes/workspaces`) | API-6 (P1) | Workspace routes (`GET`/`POST /workspaces`, `POST /workspaces/default`, `PUT /workspaces/{wid}/title`, `DELETE /workspaces/{wid}`, `PUT /workspaces/order`, `PUT /workspaces/{wid}/sessions/order`); session archive and pin (`POST`/`DELETE /sessions/{sid}/archive` with 409 on running work or `stop=1` to stop it first; `PUT`/`DELETE /sessions/{sid}/pin`); `directory.browse/create`; `interaction.answer`; `grant.list/revoke` | C58, C59, C63, storage.workspace, human.Registry, approval.Grants | S19 |
 | C65 | `agent.StreamFrame` (`internal/agent`) | pulled-forward part of AGENT-1 (DH-D-AGENT-1) | Observe-only notice `StreamFrame{Session, Turn, Attempt, Kind(Start/Chunk/End), Seq, Text, Reasoning}` from the driver; never journaled; dropped when nobody listens | agent driver | S19 |
 | C66 | `ui.msg` (`internal/ui/msg`) | UICORE-7 | Message catalogue (en, zh); typed keys; `T(req, key, args)`; missing-key test | -- | S20 |
-| C67 | `ui`, `ui.shell` (`internal/ui`, `internal/ui/shell`) | UICORE-1, UICORE-2 | `ui.Req` resolved on the host; `SafeHTML` (constructors only from registered views and `FromSanitizer`); `View[T]` registry; buffered `Render`; shell layout with landmarks, regions, contributions, phases, keyed scope, `#ui-state` epoch, islands | C66, host.web, host.stream | S20 |
+| C67 | `ui`, `ui.shell` (`internal/ui`, `internal/ui/shell`) | UICORE-1, UICORE-2 | `ui.Req` resolved on the host; `SafeHTML` (constructors only from registered views and `FromSanitizer`); `View[T]` registry; buffered `Render`; shell layout with landmarks, regions, contributions, phases, keyed scope, `#ui-state` epoch, islands | `internal/ui` (root, a leaf toward the host; invariant 6): C66, host.web. `internal/ui/shell`: C66, host.web, host.stream | S20 |
 | C68 | `ui.assets` (`internal/ui/assets`) | UICORE-3, UICORE-4 | Embedded asset tree; manifest (source, version, licence, hash); htmx 2.0.11 vendored with eval off; the stream script on `EventSource` (seven connection states, park, resume, reset); island loader (custom elements, ES modules, import map hashed into CSP) | host.assets, C67 | S20 |
 | C69 | `host.inventory` (`internal/host/inventory`) | HOST-10 (P1; H-9) | Lists the composed components, routes, regions, sources; publishes `inventory.Changed` | boot, host.web, ui.shell | S20 |
 | C70 | `ui.prefs` (`internal/ui/prefs`) | UICORE-5 (P1) | Per-principal preference store; `Pref[T]` typed handles; change re-renders through `shell` source | storage.db, C67 | S20 |
@@ -223,7 +223,7 @@ test/e2e/harness-DSH-M3/      (new)  godog suites mirroring e2e-scenarios.md
 | C76 | `ui.render` (`internal/ui/render`) | UICONV-2 | The sole sanitizer: goldmark (+ passthrough for math) -> bluemonday allow-list -> `ui.FromSanitizer` (adds `hx-disable`); strips `id`, `style`, `hx-*`, `data-*`, `on*`, `script`, `form`, `iframe`, bad URL schemes | goldmark, bluemonday, C67 | S21 |
 | C77 | `ui.composer` (`internal/ui/composer`) | UICHAT-1 | Draft persistence with `Rev` (stale save -> 409); attachments; the request id minted per send | C67, C72, C62 | S21 |
 | C78 | `ui.chat` (`internal/ui/chat`) | UICHAT-6 | Row planner: turns, groups, hidden rows; stable positions for streamed inserts | C79 | S21 |
-| C79 | `ui.transcript`, `ui/transcript/live` | UICONV-1 (H-8), UICONV-3 | Node definitions and the `transcript` projection keyed by `(session, node key)`; `Page`/`Body` for first paint; implements `stream.Renderer` (`Events`, `Live`); the live tail from C65; page-vs-stream equivalence | C60, C65, C76, C67 | S21 |
+| C79 | `ui.transcript`, `ui/transcript/live` | UICONV-1 (H-8), UICONV-3 | Node definitions and the `transcript` projection keyed by `(session, node key)`; `Page`/`Body` for first paint; implements `stream.Renderer` (`Events`, `Live`); the live tail from C65, received as the host-owned `stream.LiveTail` (its own `live.TailPosition` stays private to `ui/transcript/live`); page-vs-stream equivalence | C60, C65, C76, C67 | S21 |
 | C80 | `ui.toolcard` (`internal/ui/toolcard`) | UICONV-4 | Tool call facts to one card per call; honest state machine (sec. 4.6) | C79 | S21 |
 | C81 | `ui.interaction` (`internal/ui/interaction`) | UICONV-6 | Inline approvals and questions from `Registry.Pending`; registers the `ui` answerer; "Allow once" default; "Allow for this session" for one directory, app or origin; grant strip; `grant/created`, `grant/ended` notices; late-question card and the `question.read`/`question.reply` routes delegating to `question.Service.Reply`; wires `question.Service.Restore` into session resume | human.Registry, human/question, approval.Grants, C64, C79 | S21 |
 | C82 | `ui.nav` (`internal/ui/nav`) | UISIDE-1 | Live session list in `#nav`; status precedence Pending > Running > Unread; `reading.Record` | session.query, C60, C67 | S21 |
@@ -248,8 +248,17 @@ Each rule is an `archtest` check or a named test; the test id is given.
    the zero `Rule` (DH-T-API-2); `Public` requires a class and a reason.
 5. **One writer per region.** A region has one owner component; a second `Contribute`
    with kind `One` fails at load (DH-T-UICORE).
-6. **The stream renders through the renderer only.** `host/stream` never imports
-   `ui/*` packages other than through `SetRenderer` (archtest).
+6. **The stream renders through the renderer only.** `host/stream` may import exactly
+   one UI package, the root contract package `internal/ui` (C67: `ui.SafeHTML`,
+   `ui.Req`), which api.md sec. 6.2 already uses in `Subscription.Replace` and
+   `SetRenderer`. That root package is a leaf toward the host: it imports neither
+   `host/stream` nor any `internal/ui/<feature>` package. `host/stream` never imports
+   a feature package (`ui/shell`, `ui/transcript`, `ui/transcript/live`, ...); those
+   reach it only by implementing `stream.Renderer` and calling `SetRenderer`. The
+   renderer's other parameter types (`stream.Event`, `stream.LiveTail`,
+   `agent.StreamFrame`) are host- or agent-owned. Archtest: the import graph of
+   `host/stream` contains `internal/ui` and no other `internal/ui/` path, and
+   `internal/ui` does not import `internal/host/stream`.
 7. **Feature packages import the host contracts, not each other.** `routes/sessions`
    and `routes/workspaces` do not import each other; `ui/*` feature packages do not
    import `host/routes/*` (archtest).
@@ -310,7 +319,8 @@ their M2 signatures; `Invalidate(p *Principal)` (raises `access.Changed`) is add
 | `stream.Connection` | `Tab`, `Peer`, `Started`, `Writer` (flusher), `Heartbeat` timer | Max `StreamsPerPeer` (4) session and shell streams per peer on plain HTTP (unlimited under TLS); one more sends `park` to the longest-open stream and closes it; the attention stream counts but is never parked |
 | `stream.Cursor` | `Session`, `Seq` | Event id on the wire is `<sid>:<seq>`; the page carries it in `#stream-cursor` |
 | `stream.Event` | `Name` (`session`, `live`, `interaction`, `shell`, `view`, `notice`, `reset`, `park`, `attention`), `ID`, `Data SafeHTML` (OOB fragments) | Named SSE events carrying HTML (DH-ADR-GOUISTACK-4) |
-| `stream.Renderer` | `Events(env, []Event) SafeHTML`, `Live(env, sid, live.TailPosition) SafeHTML` | Set once by C79 via `Hub.SetRenderer`; fallback placeholder on error never stalls the cursor |
+| `stream.LiveTail` (host-owned renderer input) | `Session`, `Turn`, `Attempt`, `Frames []agent.StreamFrame` (frames coalesced since the last flush, in `StreamFrame.Seq` order), `Baseline bool` (true when it is the state baseline sent at connect or after `reset`: the whole current attempt so far), `Ended bool` | Built by C60 from C65's notices; memory only; carries no journal cursor and is never put on the wire. Its field types come only from `host/stream` and `internal/agent` |
+| `stream.Renderer` | `Events(env ui.Req, []Event) ui.SafeHTML`, `Live(env ui.Req, sid, stream.LiveTail) ui.SafeHTML` | Set once by C79 via `Hub.SetRenderer`; fallback placeholder on error never stalls the cursor. Parameter types come from `host/stream`, `internal/agent` and the root `internal/ui` contract package only (invariant 6); no feature-package type such as `live.TailPosition` crosses this boundary |
 
 ### 4.4 Conversation (C61, C65)
 
@@ -344,7 +354,7 @@ their M2 signatures; `Invalidate(p *Principal)` (raises `access.Changed`) is add
 |---|---|---|
 | `transcript.NodeDef` | `Kind`, `Types` (event types folded), `Place`, `Match`, `Fold`, `View`, `Body` | Registered by C79, C80, C81 |
 | `transcript` projection row (persisted) | `Session`, `NodeKey`, `Kind`, `Seq`, `Turn`, `Body` (folded state) | Same rows serve the page and the stream (equivalence test) |
-| `live.TailPosition` (internal) | `Session`, `Turn`, `Attempt`, `FrameSeq` | **Not a wire cursor.** Orders `StreamFrame` chunks (C65) inside one model attempt so C60 can coalesce them and `Renderer.Live` can draw the tail; it lives in memory only and is reset when the attempt settles. It never appears in a URL, in `Last-Event-ID` or in `#stream-cursor`. The only cursor a client sends is `stream.Cursor` (journal `Seq`, see sec. 4.3): `?after=` on `/sessions/{sid}/live` and the `<sid>:<seq>` event id. On reconnect the tail is rebuilt from the current attempt's state baseline, never replayed by `FrameSeq` |
+| `live.TailPosition` (private to C79's `ui/transcript/live`) | `Session`, `Turn`, `Attempt`, `FrameSeq` | **Not a wire cursor and not part of any host contract.** C79's `Renderer.Live` implementation derives it from the `stream.LiveTail` it receives (the last frame's `Seq`) to drop an out-of-order or repeated flush; no host package names it. It lives in memory only and is reset when the attempt settles. It never appears in a URL, in `Last-Event-ID` or in `#stream-cursor`. The only cursor a client sends is `stream.Cursor` (journal `Seq`, see sec. 4.3): `?after=` on `/sessions/{sid}/live` and the `<sid>:<seq>` event id. On reconnect the tail is rebuilt from the current attempt's state baseline, never replayed by `FrameSeq` |
 | question item | `Call` (opaque in the URL), `ID` (question id from `question/asked`), `Session`, `Text`, `Choices`, `State` (`open` / `pending` (timed out, still answerable) / `answered`) | From the `questions` fold over `question/asked` and `question/answered`; `{call}` resolves to `ID` through `Asked.Call` |
 | `toolcard.Facts` | `Call`, `Parent`, `Name`, `Args`, `State`, `Result`, `Cwd`, `Home` | `Card{Call, Result, Body}` |
 | tool card state | `preparing` -> `waiting-approval` -> `running` -> `finished` / `failed` / `denied` / `cancelled`; `not-started`; `outcome-unknown` (host restarted while running) | No state is drawn that the journal has not recorded |
@@ -433,7 +443,7 @@ func Start(t testing.TB, o Options) *Instance
 | C61 | agent | `agent.Inbox.Send`, resume | Message; `agent/duplicate-message` |
 | C60 | session.query | `Service.Follow(ctx, sid, from)` -> `*Follower` | Journal records from the cursor |
 | agent driver | C60 | `agent.StreamFrame` notice (C65) | Live text chunks |
-| C60 | C79 | `stream.Renderer` | Events -> OOB HTML fragments |
+| C60 | C79 | `stream.Renderer` (`Events(env, []Event)`, `Live(env, sid, stream.LiveTail)`) | Journal events and the coalesced live tail -> OOB HTML fragments; C79 depends on `host/stream`, never the reverse |
 | C79, C80, C81 | C76 | `render.Markdown(env, text) SafeHTML` | Model text |
 | C81 | human | `Registry.RegisterAnswerer("ui")`, `Pending`, `Answer` | Live interaction answers (`interaction.answer`) |
 | C81 | human/question | `question.Service.Reply(ctx, id, by human.Actor, text) (agent.Receipt, error)`; `Open() []string` | Late answers (`question.reply`): one steering user message through the inbox; errors `question/reply-queued`, `question/unknown`, `question/invalid` |
@@ -576,8 +586,8 @@ Each flow names the stage that builds it and the scenario or test that proves it
    first).
 3. C62 calls `Commands.Prompt`; C61 sends with the request id as message id. A repeat
    (double click, retry after cut) returns the first receipt; the UI shows one message.
-4. The driver emits `StreamFrame` Start/Chunk/End (C65). C60 forwards to
-   `Renderer.Live` at most every `LiveMinInterval`; the `live` event replaces the
+4. The driver emits `StreamFrame` Start/Chunk/End (C65). C60 coalesces them into a
+   `stream.LiveTail` and calls `Renderer.Live` at most every `LiveMinInterval`; the `live` event replaces the
    tail region.
 5. The settled assistant message arrives as a journal record; **the settled message
    and the emptied tail ship in one `session` event** so the text never shows twice.
@@ -875,3 +885,4 @@ only when S22 is closed. M3 is therefore reported as "S22 steps 22.1 to 22.11 pa
 | I-4 | inconsistency | DH-ADR-39 asks for Safari; `platforms-windows-wsl` excludes macOS | Safari rows stay open (Q `m3-firefox-safari`) |
 | I-5 | inconsistency | Sibling docs did not exist when this document was written | Next iteration aligns component ids and TC rows with them |
 | I-6 | gap | api.md sec. 6.2 names no route for the workspace, archive, pin, home and stream routes, and does not name the tab header | Names marked `*` in sec. 5.3 and `X-Dsh-Tab` are proposed here; area spec to confirm |
+| I-7 | inconsistency | ui-conversation.md sec. 6 sketches `Live(env ui.Req, s session.ID, sent LiveCursor) (frame ui.SafeHTML, next LiveCursor)`, which puts a UI-package type on the host's `stream.Renderer`. api.md sec. 6.2 gives only `Live(env, frame) SafeHTML` | This document follows api.md: the host passes `stream.LiveTail` (host-owned, built from `agent.StreamFrame`) and C79 keeps its position type private, so the import direction of invariant 6 holds. ui-conversation.md's sketch to be aligned |
