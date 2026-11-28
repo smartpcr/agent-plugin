@@ -15,6 +15,9 @@ package e2e
 //     stdio and answers the host's approval/request; both directions are
 //     recorded, and after the close the persisted history is read back from the
 //     home's SQLite store.
+//   - While the cancelled turn is held, dsh's process tree (the stand-in client
+//     and the listing server it started) is read from the OS process table, so
+//     the close can assert the whole tree stopped and cleanup can kill leftovers.
 
 import (
 	"bytes"
@@ -28,6 +31,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -295,6 +299,104 @@ type scaState struct {
 	mark     int
 	closeErr error
 	log      []scaEvent
+	// tree is dsh's descendants seen while the cancelled turn was held.
+	tree []scaProc
+}
+
+// scaProc is one process table entry; name is the lower-case image base name
+// without ".exe", so a reused pid of another program does not match.
+type scaProc struct {
+	pid, ppid int
+	name      string
+}
+
+const scaStandinName = "claudestandin"
+
+func scaProcs() ([]scaProc, error) {
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command",
+			`Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.ParentProcessId) $($_.Name)" }`)
+	} else {
+		cmd = exec.Command("ps", "-A", "-o", "pid=", "-o", "ppid=", "-o", "comm=")
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("listing processes: %v", err)
+	}
+	var ps []scaProc
+	for _, line := range strings.Split(string(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 3 {
+			continue
+		}
+		pid, err1 := strconv.Atoi(f[0])
+		ppid, err2 := strconv.Atoi(f[1])
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		name := strings.TrimSuffix(strings.ToLower(filepath.Base(strings.Join(f[2:], " "))), ".exe")
+		ps = append(ps, scaProc{pid: pid, ppid: ppid, name: name})
+	}
+	return ps, nil
+}
+
+// scaTree is every live descendant of root.
+func scaTree(root int) ([]scaProc, error) {
+	ps, err := scaProcs()
+	if err != nil {
+		return nil, err
+	}
+	seen := map[int]bool{root: true}
+	var tree []scaProc
+	for grew := true; grew; {
+		grew = false
+		for _, p := range ps {
+			if !seen[p.pid] && seen[p.ppid] {
+				seen[p.pid], grew = true, true
+				tree = append(tree, p)
+			}
+		}
+	}
+	return tree, nil
+}
+
+// scaAlive is the recorded processes still running the same program.
+func scaAlive(recorded []scaProc) ([]scaProc, error) {
+	ps, err := scaProcs()
+	if err != nil {
+		return nil, err
+	}
+	var alive []scaProc
+	for _, r := range recorded {
+		for _, p := range ps {
+			if p.pid == r.pid && p.name == r.name {
+				alive = append(alive, r)
+			}
+		}
+	}
+	return alive, nil
+}
+
+// recordTree records dsh's descendants while the held turn runs: the stand-in
+// client and, under it, the listing server it started from --mcp-config.
+func (s *scaState) recordTree() error {
+	tree, err := scaTree(s.cmd.Process.Pid)
+	if err != nil {
+		return err
+	}
+	s.tree = tree
+	for _, c := range tree {
+		if c.name != scaStandinName {
+			continue
+		}
+		for _, l := range tree {
+			if l.ppid == c.pid {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("dsh (pid %d) has no running %s with a listing server under it while the turn is held: %+v", s.cmd.Process.Pid, scaStandinName, tree)
 }
 
 func (s *scaState) givenBin() error {
@@ -414,6 +516,9 @@ func (s *scaState) whenCancelsHeld() error {
 		return fmt.Errorf("dsh exited before the held turn reached the model:\n%s", s.stderr.String())
 	case <-time.After(scaWithin):
 		return fmt.Errorf("the held turn's request never reached the model:\n%s", s.stderr.String())
+	}
+	if err := s.recordTree(); err != nil {
+		return err
 	}
 	s.mark = len(s.inbound.frames())
 	if err := s.sess.Cancel(s.ctx, sdk.CancelOptions{Inbox: "discard"}); err != nil {
@@ -550,7 +655,24 @@ func (s *scaState) thenExited() error {
 	if st := s.cmd.ProcessState; st == nil || !st.Exited() || st.ExitCode() != 0 {
 		return fmt.Errorf("dsh ended %v, want exit status 0:\n%s", st, s.stderr.String())
 	}
-	return nil
+	if len(s.tree) == 0 {
+		return errors.New("no process tree of the held turn was recorded")
+	}
+	// A tree stop may take a moment to be reflected in the process table.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		alive, err := scaAlive(s.tree)
+		if err != nil {
+			return err
+		}
+		if len(alive) == 0 {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("after dsh exited, processes of the held turn's tree remain: %+v", alive)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 }
 
 func (s *scaState) thenFramesOnly() error {
@@ -691,8 +813,18 @@ func (s *scaState) cleanup() {
 		select {
 		case <-s.done:
 		default:
+			if tree, err := scaTree(s.cmd.Process.Pid); err == nil {
+				s.tree = append(s.tree, tree...)
+			}
 			_ = s.cmd.Process.Kill()
 			<-s.done
+		}
+	}
+	if alive, err := scaAlive(s.tree); err == nil {
+		for _, p := range alive {
+			if proc, err := os.FindProcess(p.pid); err == nil {
+				_ = proc.Kill()
+			}
 		}
 	}
 	if s.model != nil {
