@@ -18,6 +18,16 @@ Feature: SDK client acceptance (DH-E-SDK-1)
   # stream-json. tools.testkit-ask puts every write to approval. The signed-in
   # client itself (no stand-in) is TestSDKDrivesBuiltBinaryOverStdio, run on the
   # S17 machine per DH-S-17.md.
+  #
+  # Scope: this feature does NOT cover all of DH-E-SDK-1. The question round trip
+  # of impl.md 17.8 (the model asks via question/ask, a Handlers.Question answers
+  # "blue" on the same connection, the duplicate answer is refused with an sdk/*
+  # error) and the kill/resume steps are not exercised here: the stand-in route
+  # has no question tool. They are deferred to TestSDKDrivesBuiltBinaryOverStdio
+  # (src/harness/internal/testkit/scenarios/sdk_stdio_scenario_test.go), tracked
+  # by the DH-E-SDK-1 row and "Stage 7.5 blockers" of
+  # docs/stories/harness-DSH-M2/evidence/DH-S-17.md, which stays "not run" until
+  # that signed-in run passes. A pass of this feature never closes that row.
 
   Scenario: DH-E-SDK-1 -- create, prompt, approval, cancel and close on the built binary
     Given DSH_BIN set to dsh built from this checkout with the testhook tag
