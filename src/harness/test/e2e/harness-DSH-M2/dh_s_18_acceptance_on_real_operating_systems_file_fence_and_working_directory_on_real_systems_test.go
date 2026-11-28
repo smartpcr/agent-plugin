@@ -442,6 +442,9 @@ func (s *s86State) givenFS1Variants(fsLinux, fsWindows string) error {
 	for _, want := range [][2]string{{"linux", fsLinux}, {"windows", fsWindows}} {
 		l, err := s.leg(want[0], want[1])
 		if err == nil {
+			err = l.readStatus()
+		}
+		if err == nil {
 			err = l.provisionFS1()
 		}
 		errs = append(errs, err)
