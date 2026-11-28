@@ -118,6 +118,13 @@ func s18rRunRehearsal() (*s18rRehearsal, error) {
 	if err != nil {
 		return nil, err
 	}
+	status, err := s18rCommand(ctx, root, nil, "git", "status", "--porcelain")
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(status) != "" {
+		return nil, fmt.Errorf("the release rehearsal needs a clean checkout at the recorded commit; git status --porcelain reports:\n%s", status)
+	}
 	tagsBefore, err := s18rCommand(ctx, root, nil, "git", "tag", "--list")
 	if err != nil {
 		return nil, err
@@ -487,12 +494,14 @@ func (s *s18rState) namesRevisionAndPlatform() error {
 	if rec.revision != s.r.head {
 		return fmt.Errorf("the rehearsal recorded vcs.revision %s for %s, the checkout is at %s", rec.revision, s.binName, s.r.head)
 	}
-	want := rec.revision
-	if rec.modified == "true" {
-		want += "-modified"
+	if rec.modified != "false" {
+		return fmt.Errorf("the rehearsal recorded vcs.modified=%s for %s, want false (a clean checkout)", rec.modified, s.binName)
 	}
-	if m[2] != want {
-		return fmt.Errorf("%s --version names revision %s, the record says %s (vcs.modified=%s)", s.binName, m[2], want, rec.modified)
+	if strings.Contains(rec.version, "+dirty") {
+		return fmt.Errorf("the rehearsal recorded version %s for %s, which carries a +dirty marker", rec.version, s.binName)
+	}
+	if m[2] != rec.revision {
+		return fmt.Errorf("%s --version names revision %s, the record says %s with no modified marker", s.binName, m[2], rec.revision)
 	}
 	if platform := s.variant.goos + "/" + s.variant.goarch; m[3] != platform {
 		return fmt.Errorf("%s --version names platform %s, the variant is %s", s.binName, m[3], platform)
