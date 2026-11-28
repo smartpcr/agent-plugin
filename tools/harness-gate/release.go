@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -21,7 +22,9 @@ import (
 // It reads committed files only:
 //
 //   - each release file (ReleaseFiles) equals its copy in ReleaseBasePath, the story's
-//     base commit, whose git blob ID the golden records and the check recomputes;
+//     base commit, whose git blob ID the golden records, the check recomputes and,
+//     in a git checkout, compares with `git rev-parse <base>:<path>` (skipped, with
+//     the reason, only outside a checkout or in a shallow clone lacking the base);
 //   - no release file names dsh or src/harness, and no other workflow runs on a tag
 //     push or a release event or runs goreleaser, so no dsh release job exists;
 //   - every default profile's egress set in EgressGoldenPath (computed from the shipped
@@ -115,10 +118,49 @@ func readLF(root, rel string) ([]byte, error) {
 	return bytes.ReplaceAll(b, []byte("\r\n"), []byte("\n")), err
 }
 
+// anchorReleaseBase ties the golden to real history: for each copy, the blob git holds
+// for <base>:<path> must be the blob the golden records, so a golden rewritten together
+// with its release file is refused. It returns how the anchor was checked and the
+// problems found. A root that is not a git checkout's top level (a copied tree) and a
+// shallow clone that lacks the base commit skip the anchor with the reason; any other
+// clone lacking the base commit fails, so the anchor cannot be skipped silently.
+func anchorReleaseBase(root, base string, copies []releaseCopy) (anchor string, problems []string) {
+	git := func(args ...string) (string, error) {
+		out, err := exec.Command("git", append([]string{"-C", root}, args...)...).Output()
+		return strings.TrimSpace(string(out)), err
+	}
+	top, err := git("rev-parse", "--show-toplevel")
+	if err != nil || !sameDir(top, root) {
+		return "base commit not checked against git history: the root is not a git checkout's top level", nil
+	}
+	if _, err := git("cat-file", "-e", base+"^{commit}"); err != nil {
+		if shallow, _ := git("rev-parse", "--is-shallow-repository"); shallow == "true" {
+			return fmt.Sprintf("base commit not checked against git history: this shallow clone lacks %s (fetch it to check)", short(base)), nil
+		}
+		return "", []string{fmt.Sprintf("%s: base commit %s is not in this clone, so its copies cannot be tied to history (M2-DOD-7)", ReleaseBasePath, base)}
+	}
+	for _, c := range copies {
+		got, err := git("rev-parse", "--verify", "--quiet", base+":"+c.path)
+		if err != nil || got == "" {
+			problems = append(problems, fmt.Sprintf("%s: base commit %s holds no %s (M2-DOD-7)", ReleaseBasePath, short(base), c.path))
+		} else if got != c.blob {
+			problems = append(problems, fmt.Sprintf("%s: %s is blob %s at the base commit %s, not %s as the golden records (M2-DOD-7)", ReleaseBasePath, c.path, got, short(base), c.blob))
+		}
+	}
+	return "blob IDs checked against git history", problems
+}
+
 // CheckRelease is the release check over the tree at root; it returns the base commit
 // the release files were compared with, the number of default profiles read, and the
 // problems found.
 func CheckRelease(root string) (base string, profiles int, problems []string) {
+	base, profiles, _, problems = checkRelease(root)
+	return base, profiles, problems
+}
+
+// checkRelease is CheckRelease that also returns how the golden was anchored to git
+// history (anchorReleaseBase).
+func checkRelease(root string) (base string, profiles int, anchor string, problems []string) {
 	add := func(format string, args ...any) { problems = append(problems, fmt.Sprintf(format, args...)) }
 
 	golden, err := readLF(root, ReleaseBasePath)
@@ -141,6 +183,11 @@ func CheckRelease(root string) (base string, profiles int, problems []string) {
 		if got := gitBlobID(c.content); got != c.blob {
 			add("%s: the copy of %s hashes to blob %s, not %s, its blob at the base commit", ReleaseBasePath, c.path, got, c.blob)
 		}
+	}
+	if base != "" {
+		var anchorProblems []string
+		anchor, anchorProblems = anchorReleaseBase(root, base, copies)
+		problems = append(problems, anchorProblems...)
 	}
 	for _, rel := range ReleaseFiles {
 		cur, err := readLF(root, rel)
@@ -187,7 +234,7 @@ func CheckRelease(root string) (base string, profiles int, problems []string) {
 	egress, err := readLF(root, EgressGoldenPath)
 	if err != nil {
 		add("no default egress set: %v", err)
-		return base, 0, problems
+		return base, 0, anchor, problems
 	}
 	seen := map[string]bool{}
 	for i, l := range strings.Split(string(egress), "\n") {
@@ -209,7 +256,7 @@ func CheckRelease(root string) (base string, profiles int, problems []string) {
 			add("%s has no egress set for the default profile %s (NG-7)", EgressGoldenPath, p)
 		}
 	}
-	return base, len(seen), problems
+	return base, len(seen), anchor, problems
 }
 
 func short(sha string) string {
@@ -230,12 +277,12 @@ func runRelease(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "harness-gate release: %v\n", err)
 		return 2
 	}
-	base, profiles, problems := CheckRelease(abs)
+	base, profiles, anchor, problems := checkRelease(abs)
 	if len(problems) > 0 {
 		printBlockers(stdout, "harness-gate release: FAILED", problems)
 		return 1
 	}
-	fmt.Fprintf(stdout, "harness-gate release: %s equal their copies at the base commit %s; no dsh release job; the default egress set of %d profiles is empty\n",
-		strings.Join(ReleaseFiles, " and "), short(base), profiles)
+	fmt.Fprintf(stdout, "harness-gate release: %s equal their copies at the base commit %s (%s); no dsh release job; the default egress set of %d profiles is empty\n",
+		strings.Join(ReleaseFiles, " and "), short(base), anchor, profiles)
 	return 0
 }
