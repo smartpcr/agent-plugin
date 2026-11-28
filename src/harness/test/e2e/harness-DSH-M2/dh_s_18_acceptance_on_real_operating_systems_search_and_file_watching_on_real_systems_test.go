@@ -20,13 +20,16 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
+	"math/big"
 	"net/http"
 	"os"
 	"os/exec"
@@ -49,7 +52,14 @@ const (
 	// (searchSet in search_scenario_test.go): the timing report has one line per
 	// repository and search.
 	s87Searches = 10
+	// s87SmallBelow and s87VeryLargeMin bound the checkout sizes of
+	// DH-E-RIPGREP-1: the budget is agreed on a 100,000-file checkout.
+	s87SmallBelow   = 1000
+	s87VeryLargeMin = 100000
 )
+
+// s87SmallRepo is the pinned small public repository: URL, tag, commit.
+var s87SmallRepo = [3]string{"https://github.com/fsnotify/fsnotify", "v1.10.1", "76b01a6e8f502187fecedea8b025e79e5a86085c"}
 
 var s87OuterT *testing.T
 
@@ -148,6 +158,41 @@ func (v *s87Variant) must(argv ...string) (string, error) {
 		return out, fmt.Errorf("%v on %s: exit %d %v\n%s", argv, v, code, err, out)
 	}
 	return strings.TrimSpace(out), nil
+}
+
+// pipe runs argv on the variant with stdin and returns its trimmed output.
+func (v *s87Variant) pipe(stdin []byte, argv ...string) (string, error) {
+	return v.exec(stdin, false, argv...)
+}
+
+// asRoot runs argv as root on the Linux variant: wsl.exe -u root under WSL,
+// else directly when this process is root, else sudo -n (never a prompt).
+func (v *s87Variant) asRoot(stdin []byte, argv ...string) (string, error) {
+	if v.goos != "linux" {
+		return "", fmt.Errorf("asRoot on %s", v)
+	}
+	return v.exec(stdin, true, argv...)
+}
+
+func (v *s87Variant) exec(stdin []byte, root bool, argv ...string) (string, error) {
+	var cmd *exec.Cmd
+	switch {
+	case v.wsl && root:
+		cmd = exec.Command("wsl.exe", append([]string{"-u", "root", "-e"}, argv...)...)
+	case v.wsl:
+		cmd = exec.Command("wsl.exe", append([]string{"-e"}, argv...)...)
+	case root && os.Geteuid() != 0:
+		cmd = exec.Command("sudo", append([]string{"-n", "--"}, argv...)...)
+	default:
+		cmd = exec.Command(argv[0], argv[1:]...)
+	}
+	cmd.Env, cmd.Stdin = s87Env(), bytes.NewReader(stdin)
+	var out, errOut bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errOut
+	if err := cmd.Run(); err != nil {
+		return out.String(), fmt.Errorf("%v on %s (root %v): %v\n%s%s", argv, v, root, err, out.String(), errOut.String())
+	}
+	return strings.TrimSpace(out.String()), nil
 }
 
 // path is a host path as the variant names it.
@@ -299,6 +344,8 @@ type s87Leg struct {
 	path     string            // PATH of the run when the suite put an rg on it
 	rg       string            // the comparison rg, and where it came from
 	volumes  []string          // the filesystems the leg's directories are on
+	files    map[string]int    // the files of each checkout searched
+	remote   []string          // the kinds of remote directory the suite stood up
 	report   string
 	log      string
 	logPath  string
@@ -367,6 +414,22 @@ func (s *s87State) each(f func(l *s87Leg) error) error {
 	return errors.Join(errs...)
 }
 
+// eachParallel runs f on every leg at once: each leg works on its own
+// variant's volumes.
+func (s *s87State) eachParallel(f func(l *s87Leg) error) error {
+	errs := make([]error, len(s.legs))
+	var wg sync.WaitGroup
+	for i, l := range s.legs {
+		wg.Go(func() {
+			if err := f(l); err != nil {
+				errs[i] = fmt.Errorf("%s: %w", l.v, err)
+			}
+		})
+	}
+	wg.Wait()
+	return errors.Join(errs...)
+}
+
 // ---- search provisioning ----
 
 func (s *s87State) givenSearchVariants() error {
@@ -375,17 +438,18 @@ func (s *s87State) givenSearchVariants() error {
 	if err := s.legsFor("DSH_SCENARIO_REPOS", "DSH_SCENARIO_LISTING_EXPLAINED", "DSH_SCENARIO_WHOLE_SEARCH_TIMEOUT"); err != nil {
 		return err
 	}
-	return s.each(func(l *s87Leg) error {
+	return s.eachParallel(func(l *s87Leg) error {
 		if l.v.lookPath("git") == "" {
 			return errors.New("service:filesystem: git is not on the PATH of the variant; RIPGREP-2 compares with git ls-files")
 		}
 		if l.inputs["DSH_SCENARIO_REPOS"] == "" {
-			co, err := l.cloneThisRepo()
+			repos, err := l.checkouts()
 			if err != nil {
 				return err
 			}
-			l.set("DSH_SCENARIO_REPOS", co)
+			l.set("DSH_SCENARIO_REPOS", strings.Join(repos, ";"))
 		}
+		l.files = map[string]int{}
 		for _, repo := range strings.Split(l.inputs["DSH_SCENARIO_REPOS"], ";") {
 			if repo = strings.TrimSpace(repo); repo == "" {
 				continue
@@ -398,15 +462,130 @@ func (s *s87State) givenSearchVariants() error {
 			if err != nil {
 				return fmt.Errorf("checkout %s is not a Git work tree: %v", repo, err)
 			}
-			l.volumes = append(l.volumes, fmt.Sprintf("%s %s (%d files)", fs, repo, strings.Count(n, "\x00")))
+			l.files[repo] = strings.Count(n, "\x00")
+			l.volumes = append(l.volumes, fmt.Sprintf("%s %s (%d files)", fs, repo, l.files[repo]))
+		}
+		if err := s87Sizes(l.files, s87SmallBelow, s87VeryLargeMin); err != nil {
+			return fmt.Errorf("DSH_SCENARIO_REPOS %s: %w", l.inputs["DSH_SCENARIO_REPOS"], err)
 		}
 		return l.provideRG()
 	})
 }
 
-// cloneThisRepo clones this repository at HEAD onto the variant's own
+// s87Sizes requires the checkouts of DH-E-RIPGREP-1 (libs/vscode-ripgrep.md:
+// a small, a medium and a very large public repository; the budget is set on a
+// 100,000-file checkout): one under small files, one between, and one of at
+// least large files.
+func s87Sizes(files map[string]int, small, large int) error {
+	var have [3]bool
+	for _, n := range files {
+		switch {
+		case n < small:
+			have[0] = true
+		case n < large:
+			have[1] = true
+		default:
+			have[2] = true
+		}
+	}
+	var miss []string
+	for i, want := range []string{fmt.Sprintf("a small one (under %d files)", small), fmt.Sprintf("a medium one (%d to %d files)", small, large-1), fmt.Sprintf("a very large one (at least %d files)", large)} {
+		if !have[i] {
+			miss = append(miss, want)
+		}
+	}
+	if len(miss) > 0 {
+		return fmt.Errorf("the checkouts %v lack %s", files, strings.Join(miss, ", "))
+	}
+	return nil
+}
+
+// checkouts stands up the three checkouts on the variant's own filesystem: the
+// pinned small public repository, this repository at HEAD (medium), and a very
+// large one built from it.
+func (l *s87Leg) checkouts() ([]string, error) {
+	dir, err := l.v.tempDir("dsh-s87-repos-")
+	if err != nil {
+		return nil, err
+	}
+	small, err := l.cloneSmall(dir)
+	if err != nil {
+		return nil, err
+	}
+	medium, err := l.cloneThisRepo(dir)
+	if err != nil {
+		return nil, err
+	}
+	large, err := l.veryLarge(dir, medium)
+	if err != nil {
+		return nil, err
+	}
+	return []string{small, medium, large}, nil
+}
+
+// cloneSmall clones the pinned small public repository and checks its commit.
+func (l *s87Leg) cloneSmall(dir string) (string, error) {
+	co := l.v.join(dir, "fsnotify")
+	if _, err := l.v.must("git", "-c", "advice.detachedHead=false", "clone", "--quiet", "--depth", "1", "--branch", s87SmallRepo[1], s87SmallRepo[0], co); err != nil {
+		return "", fmt.Errorf("service:filesystem: the small public checkout %s %s: %w", s87SmallRepo[0], s87SmallRepo[1], err)
+	}
+	if head, err := l.v.must("git", "-C", co, "rev-parse", "HEAD"); err != nil || head != s87SmallRepo[2] {
+		return "", fmt.Errorf("%s %s is at %q, want the pinned %s (%v)", s87SmallRepo[0], s87SmallRepo[1], head, s87SmallRepo[2], err)
+	}
+	return co, l.warm(co)
+}
+
+// veryLarge builds a Git repository whose one commit holds enough copies of the
+// medium checkout's tree, side by side, to reach s87VeryLargeMin files: real
+// public content at the documented size, checked out like any clone.
+func (l *s87Leg) veryLarge(dir, medium string) (string, error) {
+	co := l.v.join(dir, "very-large")
+	if _, err := l.v.must("git", "-c", "safe.directory=*", "clone", "--quiet", "--no-checkout", medium, co); err != nil {
+		return "", err
+	}
+	tree, err := l.v.must("git", "-C", co, "rev-parse", "HEAD^{tree}")
+	if err != nil {
+		return "", err
+	}
+	names, err := l.v.must("git", "-C", co, "ls-tree", "-r", "-z", "--name-only", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	n := strings.Count(names, "\x00")
+	if n == 0 {
+		return "", fmt.Errorf("%s has no files", medium)
+	}
+	var entries strings.Builder
+	for i := range s87VeryLargeMin/n + 1 {
+		fmt.Fprintf(&entries, "040000 tree %s\tcopy%03d\x00", tree, i+1)
+	}
+	root, err := l.v.pipe([]byte(entries.String()), "git", "-C", co, "mktree", "-z")
+	if err != nil {
+		return "", err
+	}
+	commit, err := l.v.must("git", "-C", co, "-c", "user.name=dsh-s87", "-c", "user.email=dsh-s87@invalid", "commit-tree", root, "-m", "very large checkout")
+	if err != nil {
+		return "", err
+	}
+	if _, err := l.v.must("git", "-C", co, "-c", "advice.detachedHead=false", "checkout", "--quiet", commit); err != nil {
+		return "", err
+	}
+	return co, l.warm(co)
+}
+
+// warm reads a fresh checkout through once, as a checkout at rest on a working
+// machine has been, so an on-access scan of the files just written is not timed
+// as the search.
+func (l *s87Leg) warm(co string) error {
+	if _, err := l.v.must("git", "-C", co, "grep", "-q", "--no-index", "-I", "-e", "dsh-s87-warm-no-such-line"); err != nil && !strings.Contains(err.Error(), ": exit 1 ") {
+		return err
+	}
+	return nil
+}
+
+// cloneThisRepo clones this repository at HEAD into dir on the variant's own
 // filesystem: a real public checkout (github.com/smartpcr/agent-plugin).
-func (l *s87Leg) cloneThisRepo() (string, error) {
+func (l *s87Leg) cloneThisRepo(dir string) (string, error) {
 	mod, err := s87Module()
 	if err != nil {
 		return "", err
@@ -423,10 +602,6 @@ func (l *s87Leg) cloneThisRepo() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	dir, err := l.v.tempDir("dsh-s87-repos-")
-	if err != nil {
-		return "", err
-	}
 	co := l.v.join(dir, "agent-plugin")
 	if _, err := l.v.must("git", "-c", "safe.directory=*", "clone", "--quiet", "--no-checkout", "--no-hardlinks", src, co); err != nil {
 		return "", err
@@ -434,13 +609,7 @@ func (l *s87Leg) cloneThisRepo() (string, error) {
 	if _, err := l.v.must("git", "-C", co, "-c", "advice.detachedHead=false", "checkout", "--quiet", strings.TrimSpace(string(head))); err != nil {
 		return "", err
 	}
-	// The fresh clone is read through once, as a checkout at rest on a working
-	// machine has been, so an on-access scan of the files just written is not
-	// timed as the search.
-	if _, err := l.v.must("git", "-C", co, "grep", "-q", "--no-index", "-I", "-e", "dsh-s87-warm-no-such-line"); err != nil && !strings.Contains(err.Error(), "exit 1") {
-		return "", err
-	}
-	return co, nil
+	return co, l.warm(co)
 }
 
 // provideRG finds the variant's own rg, or fetches the pinned release, checks
@@ -596,16 +765,169 @@ func s87IsFile(p string) bool {
 	return err == nil && st.Mode().IsRegular()
 }
 
+// ---- remote directories: an NFS export and an SMB share stood up on the Linux variant ----
+
+// s87Shares is the suite's ephemeral NFS and SMB service, served by the Linux
+// variant's own kernel NFS server and a private smbd (its own configuration,
+// state, port and account password, none of the system's), torn down at the end.
+// The Linux variant mounts both over loopback; the Windows variant maps the SMB
+// share through its SMB client on the share's port. A change "from the other
+// side" is written to the exported directory itself, beside the client.
+type s87Shares struct {
+	v                   *s87Variant
+	base, user, ip      string
+	port                int
+	password            string
+	nfsExport, nfsMount string
+	smbShare, smbMount  string
+}
+
+var (
+	s87SharesMu  sync.Mutex
+	s87SharesUp  *s87Shares
+	s87SharesErr error
+)
+
+const s87SharesUpSh = `set -eu
+base=$1; user=$2; port=$3
+IFS= read -r pw
+uid=$(id -u "$user"); gid=$(id -g "$user")
+pkgs=""
+command -v exportfs >/dev/null 2>&1 && command -v mount.nfs >/dev/null 2>&1 || pkgs="$pkgs nfs-kernel-server"
+command -v smbd >/dev/null 2>&1 && command -v smbpasswd >/dev/null 2>&1 || pkgs="$pkgs samba"
+command -v mount.cifs >/dev/null 2>&1 || pkgs="$pkgs cifs-utils"
+if [ -n "$pkgs" ]; then
+  command -v apt-get >/dev/null 2>&1 || { echo "service:filesystem: missing$pkgs and no apt-get to install them" >&2; exit 3; }
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get -qq update >/dev/null
+  apt-get -qq install -y --no-install-recommends $pkgs >/dev/null
+  # The suite runs its own smbd and starts nfs-server when it needs it; the
+  # system services the packages just installed are not left running.
+  case "$pkgs" in *samba*) systemctl disable --now smbd nmbd >/dev/null 2>&1 || true ;; esac
+  case "$pkgs" in *nfs-kernel-server*) systemctl disable --now nfs-server >/dev/null 2>&1 || true ;; esac
+fi
+chmod 755 "$base"
+mkdir -p "$base/nfs-export" "$base/nfs" "$base/smb-share" "$base/smb" "$base/state"
+chown "$uid:$gid" "$base/nfs-export" "$base/smb-share"
+chmod 700 "$base/state"
+if ! systemctl is-active --quiet nfs-server; then
+  systemctl start nfs-server
+  : > "$base/state/started-nfs-server"
+fi
+exportfs -o rw,sync,no_subtree_check,insecure,all_squash,anonuid=$uid,anongid=$gid "127.0.0.1:$base/nfs-export"
+: > "$base/state/exported"
+# Mount options follow evidence/runbook-smb-share.md: NFS defaults, CIFS vers=3.1.1.
+mount -t nfs -o vers=4.2 "127.0.0.1:$base/nfs-export" "$base/nfs"
+gw=$(ip -4 route show default 2>/dev/null | awk '{print $3; exit}')
+s="$base/state"
+cat > "$s/smb.conf" <<EOF
+[global]
+smb ports = $port
+disable netbios = yes
+server role = standalone server
+passdb backend = tdbsam:$s/passdb.tdb
+private dir = $s
+lock directory = $s
+state directory = $s
+cache directory = $s
+pid directory = $s
+log file = $s/log.%m
+map to guest = never
+hosts allow = 127.0.0.1 $gw
+server min protocol = SMB2_10
+[dsh-s87]
+path = $base/smb-share
+read only = no
+valid users = $user
+EOF
+printf '%s\n%s\n' "$pw" "$pw" | smbpasswd -c "$s/smb.conf" -s -a "$user" >/dev/null
+smbd -D -s "$s/smb.conf"
+i=0
+until ss -ltn | grep -q ":$port "; do
+  i=$((i+1)); [ $i -lt 100 ] || { echo "smbd did not listen on $port" >&2; cat "$s"/log.* >&2 || true; exit 4; }
+  sleep 0.1
+done
+printf 'username=%s\npassword=%s\n' "$user" "$pw" > "$s/cifs.cred"
+chmod 600 "$s/cifs.cred"
+mount -t cifs -o "port=$port,credentials=$s/cifs.cred,uid=$uid,gid=$gid,vers=3.1.1" //127.0.0.1/dsh-s87 "$base/smb"
+echo "ip=$(hostname -I | awk '{print $1}')"
+`
+
+const s87SharesDownSh = `base=$1
+umount "$base/smb" 2>/dev/null || umount -l "$base/smb" 2>/dev/null
+umount "$base/nfs" 2>/dev/null || umount -l "$base/nfs" 2>/dev/null
+[ -f "$base/state/exported" ] && exportfs -u "127.0.0.1:$base/nfs-export"
+[ -f "$base/state/smbd.pid" ] && kill "$(cat "$base/state/smbd.pid")" 2>/dev/null
+[ -f "$base/state/started-nfs-server" ] && systemctl stop nfs-server
+rm -rf "$base"
+`
+
+// s87ProvideShares stands the shares up once per suite on the Linux variant.
+func s87ProvideShares() (*s87Shares, error) {
+	s87SharesMu.Lock()
+	defer s87SharesMu.Unlock()
+	if s87SharesUp != nil || s87SharesErr != nil {
+		return s87SharesUp, s87SharesErr
+	}
+	s87SharesUp, s87SharesErr = s87StartShares()
+	return s87SharesUp, s87SharesErr
+}
+
+func s87StartShares() (*s87Shares, error) {
+	v, err := s87Reach("linux")
+	if err != nil {
+		return nil, fmt.Errorf("service:filesystem: the NFS and SMB service runs on the Linux variant: %v", err)
+	}
+	user, err := v.must("id", "-un")
+	if err != nil {
+		return nil, err
+	}
+	pw := make([]byte, 18)
+	if _, err := rand.Read(pw); err != nil {
+		return nil, err
+	}
+	port, err := rand.Int(rand.Reader, big.NewInt(10000))
+	if err != nil {
+		return nil, err
+	}
+	sh := &s87Shares{v: v, user: user, port: 40000 + int(port.Int64()), password: base64.RawURLEncoding.EncodeToString(pw)}
+	scripts, err := v.tempDir("dsh-s87-shares-sh-")
+	if err != nil {
+		return nil, err
+	}
+	up, down := v.join(scripts, "up.sh"), v.join(scripts, "down.sh")
+	if err := errors.Join(v.writeFile(up, []byte(s87SharesUpSh)), v.writeFile(down, []byte(s87SharesDownSh))); err != nil {
+		return nil, err
+	}
+	if sh.base, err = v.asRoot(nil, "mktemp", "-d", "/tmp/dsh-s87-shares-XXXXXX"); err != nil {
+		return nil, fmt.Errorf("service:filesystem: root on the Linux variant for the NFS and SMB service: %w", err)
+	}
+	// Registered before the shares exist, so a half-made service is torn down too.
+	s87OuterT.Cleanup(func() {
+		if out, err := v.asRoot(nil, "sh", down, sh.base); err != nil {
+			s87OuterT.Logf("s87 tearing the shares down: %v %s", err, out)
+		}
+	})
+	out, err := v.asRoot([]byte(sh.password+"\n"), "sh", up, sh.base, user, fmt.Sprint(sh.port))
+	if err != nil {
+		return nil, fmt.Errorf("service:filesystem: standing up the NFS export and the SMB share: %w", err)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if ip, ok := strings.CutPrefix(strings.TrimSpace(line), "ip="); ok {
+			sh.ip = ip
+		}
+	}
+	sh.nfsExport, sh.nfsMount = v.join(sh.base, "nfs-export"), v.join(sh.base, "nfs")
+	sh.smbShare, sh.smbMount = v.join(sh.base, "smb-share"), v.join(sh.base, "smb")
+	return sh, nil
+}
+
 func (s *s87State) givenRemoteDirs() error {
 	return s.each(func(l *s87Leg) error {
 		if l.inputs["DSH_SCENARIO_REMOTE_DIRS"] != "" && l.inputs["DSH_SCENARIO_REMOTE_CHANGE"] != "" {
 			for _, d := range strings.Split(l.inputs["DSH_SCENARIO_REMOTE_DIRS"], ";") {
 				if d = strings.TrimSpace(d); d != "" {
-					fs, err := l.v.fsType(d)
-					if err != nil {
-						return fmt.Errorf("DSH_SCENARIO_REMOTE_DIRS entry %s: %v", d, err)
-					}
-					l.volumes = append(l.volumes, fs+" "+d)
+					l.volumes = append(l.volumes, "the operator's "+d)
 				}
 			}
 			return nil
@@ -613,59 +935,78 @@ func (s *s87State) givenRemoteDirs() error {
 		if len(l.op) > 0 && (l.op["DSH_SCENARIO_REMOTE_DIRS"] != "" || l.op["DSH_SCENARIO_REMOTE_CHANGE"] != "") {
 			return errors.New("DSH_SCENARIO_REMOTE_DIRS and DSH_SCENARIO_REMOTE_CHANGE go together: set both, or neither for the ephemeral instance")
 		}
-		if l.v.goos == "windows" {
-			return l.remoteWindows()
+		sh, err := s87ProvideShares()
+		if err != nil {
+			return err
 		}
-		return l.remoteLinux()
+		if l.v.goos == "windows" {
+			return l.remoteWindows(sh)
+		}
+		return l.remoteLinux(sh)
 	})
 }
 
 // s87ChangePS changes {name} in {dir} from the other side of the directory: the
-// local volume behind this host's loopback share, or the WSL distribution behind
-// \\wsl.localhost. The change appends the marker, so the size changes.
+// exported directory behind the SMB share, or the WSL distribution behind
+// \\wsl.localhost, both written by the Linux variant itself. The change appends
+// the marker, so the size changes.
 const s87ChangePS = `param([string]$Dir, [string]$Name, [string]$Marker)
 $ErrorActionPreference = 'Stop'
-if ($Dir -match '^\\\\localhost\\([A-Za-z])\$(\\.*)?$') {
-  [System.IO.File]::AppendAllText($Matches[1] + ':' + $Matches[2] + '\' + $Name, $Marker)
-  exit 0
+$distro = '@@DISTRO@@'
+$unc = '@@UNC@@'
+$p = $null
+if ($Dir.StartsWith($unc, [System.StringComparison]::OrdinalIgnoreCase)) {
+  $p = '@@SHARE@@' + ($Dir.Substring($unc.Length) -replace '\\', '/')
+} elseif ($Dir -match '^\\\\wsl(?:\.localhost|\$)\\([^\\]+)(\\.*)$') {
+  $distro = $Matches[1]
+  $p = $Matches[2] -replace '\\', '/'
 }
-if ($Dir -match '^\\\\wsl(?:\.localhost|\$)\\([^\\]+)(\\.*)$') {
-  $p = ($Matches[2] -replace '\\', '/') + '/' + $Name
-  & wsl.exe -d $Matches[1] -e sh -c 'printf %s $1 >> $2' sh $Marker $p
-  exit $LASTEXITCODE
+if ($p -eq $null) {
+  Write-Error "no other side is known for $Dir"
+  exit 3
 }
-Write-Error "no other side is known for $Dir"
-exit 3
+& wsl.exe -d $distro -e sh -c 'printf %s $1 >> $2' sh $Marker ($p + '/' + $Name)
+exit $LASTEXITCODE
 `
 
-// remoteWindows gives the Windows variant a directory on this host's loopback
-// SMB share and a directory of the WSL distribution seen from Windows.
-func (l *s87Leg) remoteWindows() error {
-	local, err := l.v.tempDir("dsh-s87-smb-")
-	if err != nil {
-		return err
+// remoteWindows gives the Windows variant a directory on the suite's SMB share,
+// mapped through Windows' SMB client, and a directory of the WSL distribution
+// seen from Windows.
+func (l *s87Leg) remoteWindows(sh *s87Shares) error {
+	if !sh.v.wsl {
+		return errors.New("service:filesystem: the Windows variant reaches the shares through WSL")
 	}
-	abs, err := filepath.Abs(local)
-	if err != nil || len(abs) < 3 || abs[1] != ':' {
-		return fmt.Errorf("the scratch directory %s is not on a lettered drive for the loopback share (%v)", abs, err)
+	unc := `\\` + sh.ip + `\dsh-s87`
+	env := []string{"S87_SMB_PATH=" + unc, "S87_SMB_PORT=" + fmt.Sprint(sh.port), "S87_SMB_USER=" + sh.user, "S87_SMB_PASSWORD=" + sh.password}
+	ps := func(script string) (string, error) {
+		out, code, err := l.v.run(context.Background(), "", env, "powershell", "-NoProfile", "-NonInteractive", "-Command", script)
+		if err == nil && code != 0 {
+			err = fmt.Errorf("exit %d", code)
+		}
+		return out, err
 	}
-	unc := `\\localhost\` + abs[:1] + `$` + abs[2:]
-	if st, err := os.Stat(unc); err != nil || !st.IsDir() {
-		return fmt.Errorf("service:filesystem: the loopback SMB share %s is not reachable: %v", unc, err)
+	if out, err := ps(`$ErrorActionPreference='Stop'; New-SmbMapping -RemotePath $env:S87_SMB_PATH -TcpPort ([int]$env:S87_SMB_PORT) -UserName $env:S87_SMB_USER -Password $env:S87_SMB_PASSWORD -Persistent $false | Out-Null`); err != nil {
+		return fmt.Errorf("service:filesystem: mapping the SMB share %s (port %d) on Windows: %v %s", unc, sh.port, err, out)
 	}
-	dirs := []string{unc}
-	l.volumes = append(l.volumes, "SMB "+unc)
-	wsl, err := s87Reach("linux")
-	if err != nil {
-		return fmt.Errorf("service:filesystem: a WSL directory seen from Windows: %v", err)
+	s87OuterT.Cleanup(func() {
+		_, _ = ps(`Remove-SmbMapping -RemotePath $env:S87_SMB_PATH -Force -ErrorAction SilentlyContinue`)
+	})
+	name := fmt.Sprintf("windows-%s", s87RunID)
+	smbDir := unc + `\` + name
+	if err := os.Mkdir(smbDir, 0o755); err != nil {
+		return fmt.Errorf("service:filesystem: the SMB share %s: %v", unc, err)
 	}
-	d, err := wsl.tempDir("dsh-s87-crossed-")
+	dirs := []string{smbDir}
+	l.volumes = append(l.volumes, fmt.Sprintf("SMB %s (smbd on %s port %d, exported %s)", smbDir, sh.v, sh.port, sh.v.join(sh.smbShare, name)))
+	l.remote = append(l.remote, "smb")
+
+	d, err := sh.v.tempDir("dsh-s87-crossed-")
 	if err != nil {
 		return err
 	}
 	var seen string
 	for _, root := range []string{`\\wsl.localhost\`, `\\wsl$\`} {
-		if p := root + wsl.distro + strings.ReplaceAll(d, "/", `\`); s87IsDir(p) {
+		if p := root + sh.v.distro + strings.ReplaceAll(d, "/", `\`); s87IsDir(p) {
 			seen = p
 			break
 		}
@@ -675,13 +1016,20 @@ func (l *s87Leg) remoteWindows() error {
 	}
 	dirs = append(dirs, seen)
 	l.volumes = append(l.volumes, "WSL "+seen)
-	script := filepath.Join(local, "..", filepath.Base(local)+"-change.ps1")
-	if err := os.WriteFile(script, []byte(s87ChangePS), 0o600); err != nil {
+	l.remote = append(l.remote, "cross-os")
+
+	scratch, err := l.v.tempDir("dsh-s87-change-")
+	if err != nil {
 		return err
 	}
-	s87OuterT.Cleanup(func() { _ = os.Remove(script) })
+	script := filepath.Join(scratch, "change.ps1")
+	q := func(s string) string { return strings.ReplaceAll(s, "'", "''") }
+	body := strings.NewReplacer("@@DISTRO@@", q(sh.v.distro), "@@UNC@@", q(unc), "@@SHARE@@", q(sh.smbShare)).Replace(s87ChangePS)
+	if err := os.WriteFile(script, []byte(body), 0o600); err != nil {
+		return err
+	}
 	l.set("DSH_SCENARIO_REMOTE_DIRS", strings.Join(dirs, ";"))
-	l.set("DSH_SCENARIO_REMOTE_CHANGE", `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "`+filepath.Clean(script)+`" "{dir}" "{name}" "{marker}"`)
+	l.set("DSH_SCENARIO_REMOTE_CHANGE", `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "`+script+`" "{dir}" "{name}" "{marker}"`)
 	return nil
 }
 
@@ -690,40 +1038,63 @@ func s87IsDir(p string) bool {
 	return err == nil && st.IsDir()
 }
 
-// remoteLinux gives the Linux variant a directory of this Windows host seen from
-// WSL (drvfs, 9p), changed from Windows through WSL interop.
-func (l *s87Leg) remoteLinux() error {
-	if !l.v.wsl {
-		return errors.New("service:filesystem: this Linux host has no network or cross-OS directory the suite can stand up; set DSH_SCENARIO_REMOTE_DIRS and DSH_SCENARIO_REMOTE_CHANGE to the SMB and NFS mounts and their change command")
-	}
-	host, err := os.MkdirTemp("", "dsh-s87-crossed-")
-	if err != nil {
-		return err
-	}
-	s87OuterT.Cleanup(func() { _ = os.RemoveAll(host) })
-	dir, err := l.v.path(host)
-	if err != nil {
-		return err
-	}
-	fs, err := l.v.fsType(dir)
-	if err != nil {
-		return err
-	}
-	l.volumes = append(l.volumes, fs+" "+dir)
-	ps, err := l.v.path(filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe"))
-	if err != nil {
-		return err
+// remoteLinux gives the Linux variant a directory on the NFS mount and one on
+// the SMB mount of the suite's shares, each changed in the exported directory
+// behind it, and under WSL a directory of this Windows host seen from WSL
+// (drvfs, 9p), changed from Windows through WSL interop.
+func (l *s87Leg) remoteLinux(sh *s87Shares) error {
+	name := "linux-" + s87RunID
+	var dirs []string
+	for _, m := range [][3]string{{"nfs", sh.nfsMount, sh.nfsExport}, {"smb", sh.smbMount, sh.smbShare}} {
+		dir := l.v.join(m[1], name)
+		if _, err := l.v.must("mkdir", dir); err != nil {
+			return fmt.Errorf("service:filesystem: the %s mount %s: %v", m[0], m[1], err)
+		}
+		fs, err := l.v.fsType(dir)
+		if err != nil {
+			return err
+		}
+		dirs = append(dirs, dir)
+		l.volumes = append(l.volumes, fmt.Sprintf("%s %s (exported %s)", fs, dir, l.v.join(m[2], name)))
+		l.remote = append(l.remote, m[0])
 	}
 	scratch, err := l.v.tempDir("dsh-s87-change-")
 	if err != nil {
 		return err
 	}
+	q := func(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
+	body := "#!/bin/sh\nset -e\nd=$1 n=$2 m=$3\ncase \"$d\" in\n" +
+		q(sh.nfsMount) + "/*) p=" + q(sh.nfsExport) + "\"${d#" + q(sh.nfsMount) + "}\" ;;\n" +
+		q(sh.smbMount) + "/*) p=" + q(sh.smbShare) + "\"${d#" + q(sh.smbMount) + "}\" ;;\n"
+	if l.v.wsl {
+		host, err := os.MkdirTemp("", "dsh-s87-crossed-")
+		if err != nil {
+			return err
+		}
+		s87OuterT.Cleanup(func() { _ = os.RemoveAll(host) })
+		dir, err := l.v.path(host)
+		if err != nil {
+			return err
+		}
+		fs, err := l.v.fsType(dir)
+		if err != nil {
+			return err
+		}
+		dirs = append(dirs, dir)
+		l.volumes = append(l.volumes, fs+" "+dir)
+		l.remote = append(l.remote, "cross-os")
+		ps, err := l.v.path(filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe"))
+		if err != nil {
+			return err
+		}
+		body += "/mnt/*) w=$(wslpath -w \"$d/$n\")\n  exec " + q(ps) + " -NoProfile -NonInteractive -Command \"[System.IO.File]::AppendAllText('$w', '$m')\" ;;\n"
+	}
+	body += "*) echo \"no other side is known for $d\" >&2; exit 3 ;;\nesac\nprintf %s \"$m\" >> \"$p/$n\"\n"
 	script := l.v.join(scratch, "change.sh")
-	body := "#!/bin/sh\nset -e\ncase \"$1\" in\n/mnt/*) p=$(wslpath -w \"$1/$2\")\n  exec '" + ps + "' -NoProfile -NonInteractive -Command \"[System.IO.File]::AppendAllText('$p', '$3')\" ;;\nesac\necho \"no other side is known for $1\" >&2\nexit 3\n"
 	if err := l.v.writeFile(script, []byte(body)); err != nil {
 		return err
 	}
-	l.set("DSH_SCENARIO_REMOTE_DIRS", dir)
+	l.set("DSH_SCENARIO_REMOTE_DIRS", strings.Join(dirs, ";"))
 	l.set("DSH_SCENARIO_REMOTE_CHANGE", "sh "+script+" {dir} {name} {marker}")
 	return nil
 }
@@ -745,9 +1116,10 @@ func (s *s87State) whenSearch(budget string) error {
 	return s.run()
 }
 
-// run builds each variant's binary, then runs the scenario tests on one leg
-// after another, so neither leg's load is timed in the other's budget or save
-// window; every leg runs even when one fails.
+// run builds each variant's binary, then runs the scenario tests on every leg at
+// once, each on its own variant's volumes, so the very large checkout's
+// searches on both variants fit within go test's default ten-minute deadline;
+// every leg runs even when one fails.
 func (s *s87State) run() error {
 	if len(s.legs) == 0 {
 		return errors.New("no variant was reached")
@@ -757,9 +1129,11 @@ func (s *s87State) run() error {
 			return err
 		}
 	}
+	var wg sync.WaitGroup
 	for _, l := range s.legs {
-		l.ran = s.runLeg(l)
+		wg.Go(func() { l.ran = s.runLeg(l) })
 	}
+	wg.Wait()
 	var errs []error
 	for _, l := range s.legs {
 		if l.ran != nil {
@@ -1041,6 +1415,45 @@ func (s *s87State) thenPoll() error {
 		if len(l.volumes) == 0 {
 			return errors.New("no network or cross-OS directory was watched")
 		}
+		if _, ok := l.op["DSH_SCENARIO_REMOTE_DIRS"]; ok {
+			return nil
+		}
+		want := []string{"smb", "cross-os"}
+		if l.v.goos == "linux" {
+			want = []string{"nfs", "smb"}
+			if l.v.wsl {
+				want = append(want, "cross-os")
+			}
+		}
+		for _, k := range want {
+			if !slices.Contains(l.remote, k) {
+				return fmt.Errorf("no %s directory was watched (watched %v)", k, l.volumes)
+			}
+		}
+		return nil
+	})
+}
+
+// thenSizes requires the searched checkouts to have been a small, a medium and
+// a very large one, each with its full search set in the timing report.
+func (s *s87State) thenSizes(small, large int) error {
+	return s.each(func(l *s87Leg) error {
+		if err := s87Sizes(l.files, small, large); err != nil {
+			return err
+		}
+		seen := map[string]int{}
+		sc := bufio.NewScanner(bytes.NewReader(l.detail))
+		for sc.Scan() {
+			var r s87Timing
+			if json.Unmarshal(sc.Bytes(), &r) == nil {
+				seen[r.Repo]++
+			}
+		}
+		for repo, n := range l.files {
+			if seen[repo] != s87Searches {
+				return fmt.Errorf("%s (%d files): %d of the %d searches in the timing report", repo, n, seen[repo], s87Searches)
+			}
+		}
 		return nil
 	})
 }
@@ -1053,19 +1466,20 @@ func InitializeScenario_dh_s_18_acceptance_on_real_operating_systems_search_and_
 		*s = s87State{}
 		return c, nil
 	})
-	ctx.Step(`^the Linux and Windows variants, each with real Git checkouts on its own filesystem and rg for comparison only$`, s.givenSearchVariants)
+	ctx.Step(`^the Linux and Windows variants, each with real Git checkouts of a small, a medium and a very large public repository on its own filesystem and rg for comparison only$`, s.givenSearchVariants)
 	ctx.Step(`^RIPGREP-1 and RIPGREP-2 run on each variant with the search budget "([^"]*)"$`, s.whenSearch)
 	ctx.Step(`^each variant's "([^"]*)" and "([^"]*)" rows read passed on its OS$`, s.thenRows)
+	ctx.Step(`^on each variant the searched checkouts were a small one under (\d+) files, a medium one and a very large one of at least (\d+) files$`, s.thenSizes)
 	ctx.Step(`^on each variant the timing report has every search of the set, its first matches within the budget and its files equal to rg's$`, s.thenTimings)
 	ctx.Step(`^on each variant the file listing equals Git's with no unexplained difference$`, s.thenListing)
 	ctx.Step(`^no external rg was spawned on any variant$`, s.thenNoRG)
 
 	ctx.Step(`^the same variants, each with editor saves by vim, rename, in place and backup-then-write$`, s.givenEditorVariants)
-	ctx.Step(`^on each variant network or cross-OS directories that are changed from their other side$`, s.givenRemoteDirs)
+	ctx.Step(`^on each variant an SMB share, on Linux also an NFS mount, and a cross-OS directory, each changed from its other side$`, s.givenRemoteDirs)
 	ctx.Step(`^CHOKIDAR-1 and CHOKIDAR-2 run on each variant$`, s.run)
 	ctx.Step(`^on each variant every save was reported exactly once within "([^"]*)"$`, s.thenSaves)
 	ctx.Step(`^on each variant the create, burst, rename and delete of a watched tree were each reported exactly once within the bound$`, s.thenTransitions)
-	ctx.Step(`^on each variant every network or cross-OS directory was watched in poll mode$`, s.thenPoll)
+	ctx.Step(`^on each variant every share and cross-OS directory was watched in poll mode$`, s.thenPoll)
 }
 
 func TestE2E_dh_s_18_acceptance_on_real_operating_systems_search_and_file_watching_on_real_systems(t *testing.T) {
