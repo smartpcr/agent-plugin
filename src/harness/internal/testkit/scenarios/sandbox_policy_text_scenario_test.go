@@ -79,8 +79,10 @@ func TestPolicyTextMakesTheModelEscalate(t *testing.T) {
 	bin := dshBinary(t)
 
 	escalated := map[string]int{}
+	ran := map[string]bool{}
 	for _, platform := range sandbox7Texts {
 		t.Run(platform, func(t *testing.T) {
+			ran[platform] = true
 			var mu sync.Mutex
 			var asked []protocol.ApprovalRequest
 			allow := sdkOptions{Approve: func(r protocol.ApprovalRequest) protocol.ApprovalResult {
@@ -127,9 +129,17 @@ func TestPolicyTextMakesTheModelEscalate(t *testing.T) {
 		})
 	}
 
+	// A shard runs one text (-run '.../^linux$', M2-R-06): only the texts that
+	// ran are reported and judged; harness-gate sandbox7-record needs the counts
+	// of all three on one commit, so the shards' report lines are joined there.
 	var parts []string
 	for _, p := range sandbox7Texts {
-		parts = append(parts, fmt.Sprintf("%s=%d", p, escalated[p]))
+		if ran[p] {
+			parts = append(parts, fmt.Sprintf("%s=%d", p, escalated[p]))
+		}
+	}
+	if len(parts) == 0 {
+		t.Fatal("no platform text ran")
 	}
 	line := strings.Join(parts, ",")
 	if err := os.WriteFile(report, []byte(line+"\n"), 0o600); err != nil {
@@ -137,6 +147,9 @@ func TestPolicyTextMakesTheModelEscalate(t *testing.T) {
 	}
 	t.Logf("escalated of %d: %s (previous %v)", sandbox7Escalating*sandbox7Runs, line, previous)
 	for _, p := range sandbox7Texts {
+		if !ran[p] {
+			continue
+		}
 		want := max(sandbox7Floor, previous[p])
 		if escalated[p] < want {
 			t.Errorf("the %s text: %d of %d escalating runs asked for escalation, want at least %d", p, escalated[p], sandbox7Escalating*sandbox7Runs, want)

@@ -39,7 +39,7 @@ An acceptance step is ticked only by its scenarios; the commit is the one the sc
 | 17.6 | DH-E-VIEW-1 | | not run; blocked, see [Stage 7.4 blockers](#stage-74-blockers) |
 | 17.7 | DH-E-LOADER-1 | | not run; blocked, see [Stage 7.4 blockers](#stage-74-blockers) |
 | 17.8 | DH-E-SDK-1 | | not run; blocked, see [Stage 7.5 blockers](#stage-75-blockers) |
-| 17.9 | DH-E-SANDBOX-7 | | closes `UP-DEBT-found.Q3.2` |
+| 17.9 | DH-E-SANDBOX-7 | | closes `UP-DEBT-found.Q3.2` (still open); not run, see [Stage 7.6 blockers](#stage-76-blockers) |
 
 ## Scenarios
 
@@ -63,7 +63,7 @@ The 14 scenarios of the steps, on E1: Linux with the signed-in Claude Code route
 | DH-E-VIEW-1 | copilot-cli | acceptance | recorded | E1 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
 | DH-E-LOADER-1 | Linux (E1) | acceptance | required | E1 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
 | DH-E-SDK-1 | Linux (E1) | acceptance | required | E1 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
-| DH-E-SANDBOX-7 | Linux (E1) | acceptance | required | E1 | | not run (stage not started) | |
+| DH-E-SANDBOX-7 | Linux (E1) | acceptance | required | E1 | | not run (harness-gate entry fails: harness:DSH-M1 not closed, M2-DEC-1) | |
 
 ## Manual checks register
 
@@ -172,6 +172,43 @@ run ids (`RunResult.MessageID`) of the allowed, rejected and answered runs (M2-D
 both Stage 7.5 scenarios: the approval, question, cancel, kill and resume steps with stdout holding
 frames only (M2-C-10), and each run's result equal to the last assistant message of its turn in the
 history the second host reads back from the scratch home's SQLite store.
+
+## Stage 7.6 blockers
+
+implementation-plan Stage 7.6 (impl.md 17.9, DH-E-SANDBOX-7 on the unmerged branch
+`s17/policy-text`) was taken up on `6edc2a3` and could not run. Nothing below is evidence of a run:
+the SANDBOX-7 row stays `not run`, no shipped text exists on `main`, and `UP-DEBT-found.Q3.2` stays
+open. Each blocker on its own stops the run:
+
+| Blocker | Seen | What clears it |
+| --- | --- | --- |
+| `harness-gate entry` exits 1: harness:DSH-M1 is not closed (M2-DEC-1). | the Stage 7.2 to 7.5 blockers above; unchanged on `6edc2a3` | M1 closure merges and `entry` exits 0 |
+| Order: SANDBOX-7 runs last in S17 (architecture.md R-03), after the 13 other scenarios; every one of them is `not run`. | Scenarios table above | the other 13 rows are run (the copilot-cli legs recorded) |
+| No `s17` job to dispatch. `.github/workflows/harness-scenarios.yml` has `preflight`, `scenarios` and `s18`, no `s17` job (Stage 7.1); a CI file is not changed by this stage. | `git grep -n s17 -- .github` on `6edc2a3`: no match | the `s17` job lands, or the operator runs [runbook-s17-wsl.md](runbook-s17-wsl.md) section "DH-E-SANDBOX-7 on s17/policy-text" by hand |
+| No committed scenario inputs: `DSH_SCENARIO_SANDBOX7_TASKS` (the twelve tasks), `DSH_SCENARIO_SANDBOX7_LAYER`, `DSH_SCENARIO_SANDBOX7_PREVIOUS`, `DSH_SCENARIO_CLAUDE_CODE_MODEL`. | `TestPolicyTextMakesTheModelEscalate` doc comment | the operator supplies them (none is a credential) |
+| Who, and where the text lives. The signed-in run is by the owner or an operator, never an agent session; the branch `s17/policy-text` is cut and pushed by that person (an agent session does not create branches). | runbook, "Who, where, and with what" | the operator follows the runbook section, steps A to C |
+
+What this stage did change on `main` (no shipped text, so `harness-gate policy-text` prints
+`ok: no sandbox policy text`):
+
+- The three drafts, `src/harness/internal/world/sandbox/policy/testdata/draft_text/{linux,darwin,windows}.md`:
+  test data only, embedded by no build. Their SHA-256 values are `dd4a974b87b958c84b6cf453ba8ffc0a1ea8cb64390579d83043b9485fc8857c`
+  (linux), `fd4649a3890a8687af8914e236994b2bacfba3ffbac5b004c5bb29a07e6441dd` (darwin) and
+  `26cd09e944ad13f796cc9886fa618c5793ebdd91c1ff9f033268f7db39c423d2` (windows); step A of the runbook
+  moves them byte for byte to `text/`, so these are the values the row will record unless a draft
+  is re-worded first. The wording asks the model to make the call and let the sandbox answer, and
+  on `fs/sandbox-denied` to retry the same call with `sandbox_permissions` and a `justification`
+  (the answer to upstream's five-in-twelve give-ups, `UP-DEBT-found.Q3.2`).
+- `loadTexts` (`shipped_text.go`): the branch's `text_embed.go` loads `text/*.md` through it; a stray
+  file or a text that does not render in every mode fails the package's tests.
+- `TestShippedTextGolden`: `testdata/policy_section_<platform>.golden` exists exactly when that
+  platform's text ships and equals its render in each mode (TC-01g), so a golden and its text
+  arrive in one commit; `harness-gate policy-text` binds the text's bytes to the run (M2-C-6).
+- `TestNoTextMeansNoSection` and `TestResolvePrecedence` now read the shipped set: on `main` they
+  still require no `text/` directory and no text version; on the branch they require `text/` to be
+  exactly the embedded texts.
+- `TestPolicyTextMakesTheModelEscalate` reports and judges only the texts that ran, so a shard
+  per text (M2-R-06) is not failed for the two texts it did not run; a full run is judged as before.
 
 ## Evidence record (impl.md sec. 7.3)
 
