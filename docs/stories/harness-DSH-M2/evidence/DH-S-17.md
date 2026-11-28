@@ -124,6 +124,54 @@ model id, the run id, the session export and the prompt count of the run (M2-C-5
 `DH-E-SESSION-2` row also records that the resumed session's log read from the scratch store runs
 `seq` 0 to n with no gap. The copilot-cli legs are recorded either way (M2-DEC-4).
 
+## Stage 7.4 blockers
+
+implementation-plan Stage 7.4 (impl.md 17.4 to 17.7: `DH-E-LLM-1`, `DH-E-LLM-3` and `DH-E-VIEW-1` with
+one subtest per route, then `DH-E-TOOLS-1` and `DH-E-LOADER-1`) was taken up on `aa11dac` and could not
+run. Nothing below is evidence of a run: the eight rows stay `not run`, and that includes the three
+`copilot-cli` legs, because a recorded leg must run before its result is kept (M2-DEC-4) and a
+recorded leg not run counts as open. Each blocker on its own stops the run:
+
+| Blocker | Seen | What clears it |
+| --- | --- | --- |
+| `harness-gate entry` exits 1: harness:DSH-M1 is not closed (DH-S-1 to DH-S-11 read `Closure status: open`; no `harness-DSH-M1/evidence/closure.md`). M2-DEC-1: no M2 scenario run before M1 closes. | `GOWORK=off go -C tools/harness-gate run . entry --root ../..` on `aa11dac`: 12 blockers, exit 1 | M1 closure merges and `entry` exits 0 |
+| Stage order: Stage 7.4 depends on Stage 7.2, and `DH-E-TOOLCHAIN-1` runs first in S17 (architecture.md rule 7). Its row is `not run`, see [Stage 7.2 blockers](#stage-72-blockers). | Steps table, row 17.1 | the TOOLCHAIN-1 row reads `passed` |
+| No committed scenario inputs. Each test stops at `need` without its inputs, none of which is committed (`git grep` on `aa11dac` finds them only in the tests and e2e-scenarios.md): `TestTurnWithReasoningAndToolCall` (LLM-1) `DSH_SCENARIO_LLM1_LAYER`, `_PROMPT`, `_PROMPT2`, `_USAGE`; `TestSignedOutIsAFact` (LLM-3) `DSH_SCENARIO_LLM3_LAYER`, `_PROMPT`, `_MAX_TOKENS`; `TestModelTitlesSession` (VIEW-1) `DSH_SCENARIO_VIEW1_LAYER`, `_BAD_LAYER`, `_PROMPT`; `TestGuardedPipelineRefusesTheWrite` (TOOLS-1) `DSH_SCENARIO_TOOLS1_LAYER`, `_PROMPT`, `_REPLAY`; `TestRunningHarnessFollowsProfilePatchEdit` (LOADER-1) `DSH_SCENARIO_LOADER_PROFILE`, `_START`, `_INSPECT`, `_DISABLE`, `_STOP`. | `src/harness/internal/testkit/scenarios/{llm_turn,llm_signed_out,view_title,tools_pipeline,loader_edit}_scenario_test.go` doc comments | the operator exports them per [runbook-s17-wsl.md](runbook-s17-wsl.md) "Route inputs", or the runner's environment carries them |
+| Who runs it. [runbook-s17-wsl.md](runbook-s17-wsl.md): the signed-in run is by the owner or an operator, "never an agent session"; both clients (`claude`, required; `copilot`, recorded) must be signed in on the S17 machine. | runbook, "Who, where, and with what" | the operator runs the runbook (or the `s17` job) on a merged commit once the blockers above clear |
+
+When they run (step 7 of the runbook, one `harness-gate scenarios --stage DH-S-17` run), each of the
+eight rows takes the run's commit and `E1 wsl:<host>/<distro>` (or `E1 runner:<name>`), and in Artifacts
+the `dsh` SHA-256, the route's model id and the scenario's report row. The `claude-code` legs of LLM-1,
+LLM-3 and VIEW-1, and TOOLS-1 and LOADER-1, must read `passed`; the `copilot-cli` legs keep the result
+the run's `scenarios: recorded leg: <Test>/copilot-cli ...` line gives, `failed (<reason>)` included
+(M2-DEC-4). The LOADER-1 artifacts quote the log line showing the edited configuration in force on the
+next turn.
+
+## Stage 7.5 blockers
+
+implementation-plan Stage 7.5 (impl.md 17.8, DH-E-SDK-1: `TestSDKDrivesBuiltBinaryOverStdio` in
+`src/harness/internal/testkit/scenarios/sdk_stdio_scenario_test.go`, authored in Stage 6.11) was taken
+up on `aa11dac` and could not run. Nothing below is evidence of a run; the SDK-1 row stays `not run`
+and is owed. Each blocker on its own stops the run:
+
+| Blocker | Seen | What clears it |
+| --- | --- | --- |
+| `harness-gate entry` exits 1: harness:DSH-M1 is not closed (DH-S-1 to DH-S-11 read `Closure status: open`; no `harness-DSH-M1/evidence/closure.md`). M2-DEC-1: no M2 scenario run before M1 closes. | `GOWORK=off go -C tools/harness-gate run . entry --root ../..` on `aa11dac`: 12 blockers, exit 1 | M1 closure merges and `entry` exits 0 |
+| DH-E-TOOLCHAIN-1 has not run. It runs first in S17 (architecture.md "Run order" rule 7; the runbook's step 7 runs it in the first phase), and its row reads `not run`, see [Stage 7.2 blockers](#stage-72-blockers). | the DH-E-TOOLCHAIN-1 row of the Scenarios table above | the TOOLCHAIN-1 row reads `passed` |
+| Who and where. [runbook-s17-wsl.md](runbook-s17-wsl.md): the signed-in run is by the owner or an operator, "never an agent session", on Linux (WSL 2) with `bwrap` installed; the scenario declares `OS: linux` and skips elsewhere. | runbook, "Who, where, and with what"; `scenario.Needs` of the test | the operator runs the runbook (or the `s17` job) on a merged commit once the two blockers above clear |
+
+Inputs the operator supplies (the runbook's "Route inputs"; none is a credential, none is committed):
+`DSH_SCENARIO_SDK1_LAYER`, the path of a profile layer template (`{workspace}` expanded) whose policy asks
+before writes; `DSH_SCENARIO_SDK1_LONG_PROMPT`, a prompt whose turn runs for minutes; and
+`DSH_SCENARIO_CLAUDE_CODE_MODEL`, `DSH_SCENARIO_CLAUDE_CODE_EFFORT`.
+
+When it runs, the SDK-1 row takes the commit of step 1 of the runbook, `E1 wsl:<host>/<distro>` (or
+`E1 runner:<name>`), and in Artifacts the `dsh` SHA-256, the claude-code model id, the session id and the
+run ids (`RunResult.MessageID`) of the allowed, rejected and answered runs (M2-DEC-5). Its pass covers
+both Stage 7.5 scenarios: the approval, question, cancel, kill and resume steps with stdout holding
+frames only (M2-C-10), and each run's result equal to the last assistant message of its turn in the
+history the second host reads back from the scratch home's SQLite store.
+
 ## Evidence record (impl.md sec. 7.3)
 
 ### Source and build identity
