@@ -32,8 +32,9 @@ Feature: Search and file watching on real systems (DH-E-RIPGREP-1, -2, DH-E-CHOK
   # NFSv3 export the suite serves on loopback; the Linux variant mounts both with
   # the kernel's CIFS and NFS clients, which mount only as root, so mount and
   # umount alone run as root (wsl.exe -u root, or sudo -n, so a sudoers grant
-  # of only mount and umount suffices), on the run's own
-  # mount points; and a cross-OS directory (a Windows one seen from WSL, a WSL
+  # of only mount and umount suffices), on the run's own mount points, CIFS with
+  # no attribute cache (actimeo=0) so a change is timed when it is visible;
+  # and a cross-OS directory (a Windows one seen from WSL, a WSL
   # one seen from Windows through \\wsl.localhost). Each change is written from
   # the other side: behind the server, on its own filesystem, or across WSL
   # interop. The verdict is the

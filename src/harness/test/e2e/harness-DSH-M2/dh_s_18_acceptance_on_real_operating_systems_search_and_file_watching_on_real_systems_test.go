@@ -1275,8 +1275,15 @@ func (l *s87Leg) remoteLinux() error {
 	uid, gid, _ := strings.Cut(ids, "\n")
 	// The runbook's CIFS options (vers=3.1.1, the user's uid and gid), else the
 	// kernel's defaults; ip, unc and the password are what mount.cifs would pass.
+	// actimeo=0: the scenario times the change when this machine first sees the
+	// file differ, and with the default one-second attribute cache the client
+	// refreshes the mtime of the file it just wrote a few milliseconds later (to
+	// the server's), which the test would take for the remote change, while the
+	// change itself shows only when the cache expires. With no attribute cache
+	// each stat is the server's, so the change is timed when it is visible and
+	// the two-interval bound is measured from there, unchanged.
 	smbFS, err := l.mount("cifs", "//127.0.0.1/"+s87Share,
-		fmt.Sprintf(`ip=127.0.0.1,unc=\\127.0.0.1\%s,port=%d,username=%s,password=%s,vers=3.1.1,uid=%s,gid=%s`,
+		fmt.Sprintf(`ip=127.0.0.1,unc=\\127.0.0.1\%s,port=%d,username=%s,password=%s,vers=3.1.1,uid=%s,gid=%s,actimeo=0`,
 			s87Share, smb.port, smb.user, smb.password, strings.TrimSpace(uid), strings.TrimSpace(gid)),
 		smb.password, smbAt, "smb2", "cifs")
 	if err != nil {
