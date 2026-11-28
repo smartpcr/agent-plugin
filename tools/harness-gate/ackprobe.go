@@ -58,6 +58,10 @@ func runAckProbe(args []string, stdout, stderr io.Writer) int {
 // ackShell runs the --send command; a test points it at a helper process.
 var ackShell = []string{"sh", "-c"}
 
+// ackGrace is how long an acknowledgment may still arrive after the --send
+// command has exited 0.
+var ackGrace = 10 * time.Second
+
 // recordAcks accepts connections on ln until a line holding token is appended to
 // logPath and the --send command has exited 0, or ctx ends; it then reads the log
 // back and returns the line it holds. Whatever the outcome, it closes ln and every
@@ -142,12 +146,35 @@ func recordAcks(ctx context.Context, ln net.Listener, logPath, token, send strin
 		go func() { sendDone <- cmd.Wait() }()
 	}
 	var errs []error
-	select {
-	case <-arrived:
-	case <-ctx.Done():
+	noAck := func() {
 		errs = append(errs, fmt.Errorf("no acknowledgment holding %q arrived at %s", token, ln.Addr()))
 	}
-	if sendDone != nil {
+	sendExited := false
+	// sendDone is nil without --send, so that case never fires.
+	select {
+	case <-arrived:
+	case serr := <-sendDone:
+		// A sender that exits first fails the probe at once with its own error
+		// when non-zero; after a zero exit the acknowledgment still in flight is
+		// waited for only for ackGrace.
+		sendExited = true
+		if serr != nil {
+			errs = append(errs, fmt.Errorf("the send command: %w", serr))
+			break
+		}
+		grace := time.NewTimer(ackGrace)
+		select {
+		case <-arrived:
+		case <-ctx.Done():
+			noAck()
+		case <-grace.C:
+			noAck()
+		}
+		grace.Stop()
+	case <-ctx.Done():
+		noAck()
+	}
+	if sendDone != nil && !sendExited {
 		// After the acknowledgment the sender is joined within what is left of
 		// the timeout; one still running then is killed and fails the probe.
 		var serr error
