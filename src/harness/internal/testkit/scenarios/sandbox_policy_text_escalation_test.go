@@ -127,7 +127,14 @@ func TestSandbox7ReportIsWhatTheGateReads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	texts, err := sandbox7ReadTexts(filepath.Join(root, "src", "harness", "internal", "world", "sandbox", "policy", "testdata", "draft_text"))
+	// On main the texts are the drafts; on s17/policy-text runbook step A has
+	// moved the same bytes to text/, which is what the scenario reads.
+	policy := filepath.Join(root, "src", "harness", "internal", "world", "sandbox", "policy")
+	dir := filepath.Join(policy, "text")
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		dir = filepath.Join(policy, "testdata", "draft_text")
+	}
+	texts, err := sandbox7ReadTexts(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
