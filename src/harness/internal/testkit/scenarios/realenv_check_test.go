@@ -101,41 +101,50 @@ func TestShellLineQuotesAPathWithASpace(t *testing.T) {
 
 // A modification time that moves, size unchanged, to a time before the change
 // started is this client's attribute cache catching up on its own earlier write
-// (CIFS does it a few milliseconds after a write), not the change: changedAt
-// waits on for the change itself.
-func TestChangedAtIgnoresTheClientsOwnRefresh(t *testing.T) {
+// (CIFS does it a few milliseconds after a write), not the change; the change
+// itself, and a time from its start on, are. Each case is a real stat of a file.
+func TestStatChangeTellsTheClientsOwnRefreshFromTheChange(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "watched.txt")
 	if err := os.WriteFile(path, []byte("start\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	before, err := os.Stat(path)
+	stat := func() os.FileInfo {
+		t.Helper()
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return info
+	}
+	setTime := func(at time.Time) os.FileInfo {
+		t.Helper()
+		if err := os.Chtimes(path, at, at); err != nil {
+			t.Fatal(err)
+		}
+		return stat()
+	}
+	before := stat()
+	started := before.ModTime().Add(time.Hour)
+	if got := statChange(before, stat(), started); got != unchanged {
+		t.Errorf("the same stat = %v, want unchanged", got)
+	}
+	refreshed := setTime(started.Add(-30 * time.Minute))
+	if got := statChange(before, refreshed, started); got != ownRefresh {
+		t.Errorf("a time-only move to before the change started = %v, want the client's own refresh (%v)", got, ownRefresh)
+	}
+	if got := statChange(refreshed, setTime(started.Add(time.Second)), started); got != changeSeen {
+		t.Errorf("a time-only move to after the change started = %v, want the change (%v)", got, changeSeen)
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := startShell(t, "echo ran")
-	appended := make(chan time.Time, 1)
-	go func() {
-		time.Sleep(50 * time.Millisecond)
-		refreshed := r.started.Add(-time.Second)
-		if err := os.Chtimes(path, refreshed, refreshed); err != nil {
-			t.Error(err)
-		}
-		time.Sleep(50 * time.Millisecond)
-		at := time.Now()
-		f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
-		if err == nil {
-			_, err = f.WriteString("changed\n")
-			err = errors.Join(err, f.Close())
-		}
-		if err != nil {
-			t.Error(err)
-		}
-		appended <- at
-	}()
-	changed := changedAt(t, path, before, r, 5*time.Second)
-	r.wait(t)
-	if at := <-appended; changed.Before(at) {
-		t.Errorf("changedAt = %v before the change at %v: the client's own refresh was taken for the change", changed.Format(time.RFC3339Nano), at.Format(time.RFC3339Nano))
+	_, err = f.WriteString("changed\n")
+	if err = errors.Join(err, f.Close()); err != nil {
+		t.Fatal(err)
+	}
+	if got := statChange(refreshed, setTime(started.Add(-30*time.Minute)), started); got != changeSeen {
+		t.Errorf("a size change with an earlier time = %v, want the change (%v)", got, changeSeen)
 	}
 }
 

@@ -224,6 +224,28 @@ func (r *running) wait(t *testing.T) {
 	}
 }
 
+type statDiff int
+
+const (
+	unchanged  statDiff = iota
+	changeSeen          // the change itself: size, identity, or a time from its start on
+	ownRefresh          // only the modification time, moved to before the change started
+)
+
+// statChange is how info, a later stat of the file, differs from before for a
+// change started at started (see changedAt).
+func statChange(before, info os.FileInfo, started time.Time) statDiff {
+	switch {
+	case info.Size() != before.Size() || !os.SameFile(info, before):
+		return changeSeen
+	case info.ModTime().Equal(before.ModTime()):
+		return unchanged
+	case info.ModTime().Before(started):
+		return ownRefresh
+	}
+	return changeSeen
+}
+
 // changedAt returns the moment this machine first sees path differ from before
 // (size, modification time or identity), polled every millisecond while r runs, so
 // a command that lingers after saving does not move the moment later. Once r has
@@ -244,13 +266,10 @@ func changedAt(t *testing.T, path string, before os.FileInfo, r *running, grace 
 	for {
 		exited := r.exited()
 		if info, err := os.Stat(path); err == nil {
-			switch {
-			case info.Size() != before.Size() || !os.SameFile(info, before):
+			switch statChange(before, info, r.started) {
+			case changeSeen:
 				return time.Now()
-			case !info.ModTime().Equal(before.ModTime()):
-				if !info.ModTime().Before(r.started) {
-					return time.Now()
-				}
+			case ownRefresh:
 				t.Logf("%s: modification time %v -> %v, before the change started: this client's own refresh, not the change",
 					path, before.ModTime().Format(time.RFC3339Nano), info.ModTime().Format(time.RFC3339Nano))
 				before = info
