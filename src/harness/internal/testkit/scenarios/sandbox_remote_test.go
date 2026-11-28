@@ -202,9 +202,75 @@ type shellOutcome struct {
 }
 
 // record is the outcome in the form the evidence record copies: "<state>,
-// <backend>, exit <n>, missing [..]".
+// <backend>, exit <n>, missing [..], exposed [..]".
 func (s shellOutcome) record() string {
-	return fmt.Sprintf("%s, %s, exit %d, missing [%s]", s.Confinement.State, s.Confinement.Backend, s.ExitCode, strings.Join(s.Confinement.Missing, ","))
+	return fmt.Sprintf("%s, %s, exit %d, missing [%s], exposed [%s]", s.Confinement.State, s.Confinement.Backend, s.ExitCode,
+		strings.Join(s.Confinement.Missing, ","), strings.Join(s.Confinement.Exposed, ","))
+}
+
+// sandboxVerdict is the head of the "dsh sandbox status" text report (cli
+// sandboxReport): the state (Full, Partial or Unconfined), the backend, and
+// the missing and exposed effects as listed ("none" when empty). The backend
+// lines after it name every backend of the chain, available or not, so only
+// this head says which one the machine has.
+type sandboxVerdict struct {
+	State, Backend, Missing, Exposed string
+}
+
+// readVerdict reads the head of the status report st; a field it lacks stays
+// empty.
+func readVerdict(st string) sandboxVerdict {
+	var v sandboxVerdict
+	for _, line := range strings.Split(st, "\n") {
+		key, val, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		val = strings.TrimSpace(val)
+		switch key {
+		case "state":
+			v.State = val
+		case "backend":
+			v.Backend = val
+		case "missing":
+			v.Missing = val
+		case "exposed":
+			v.Exposed = val
+		case "backends":
+			return v
+		}
+	}
+	return v
+}
+
+// String is the verdict in the form the evidence record copies: "<State>
+// <backend>, missing [..], exposed [..]".
+func (v sandboxVerdict) String() string {
+	return fmt.Sprintf("%s %s, missing [%s], exposed [%s]", v.State, v.Backend, v.Missing, v.Exposed)
+}
+
+// verdictProblem is why v is not backend in one of states (Full or Partial),
+// or "" when it is; a Partial verdict must name a missing effect.
+func verdictProblem(v sandboxVerdict, backend string, states ...string) string {
+	switch {
+	case v.Backend != backend || !slices.Contains(states, v.State):
+		return fmt.Sprintf("status reports %s; want backend %s in state %v", v, backend, states)
+	case v.State == "Partial" && (v.Missing == "" || v.Missing == "none"):
+		return fmt.Sprintf("status reports %s: Partial without naming a missing effect", v)
+	}
+	return ""
+}
+
+// mustVerdict is the status oracle of a confining machine: "dsh sandbox status"
+// on r reports backend in one of states. The verdict is logged as the line the
+// evidence record copies.
+func (r *remoteDsh) mustVerdict(t *testing.T, backend string, states ...string) {
+	t.Helper()
+	v := readVerdict(r.status(t))
+	t.Logf("%s: enforcement %s", r.alias, v)
+	if p := verdictProblem(v, backend, states...); p != "" {
+		t.Errorf("%s: %s", r.alias, p)
+	}
 }
 
 // shellResult finds the structured shell result in the tool result o: the JSON
