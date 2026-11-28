@@ -32,6 +32,11 @@ require (
 	// (DH-D-UTIL-1): chosen by docs/harness/libs/zod.md DH-ADR-SCHEMA-1; MIT, no
 	// non-test dependencies (RM-10).
 	github.com/google/jsonschema-go v0.4.3
+	// The unprivileged FUSE loopback the Stage 8.7 e2e suite serves as its network
+	// filesystem on Linux (test/e2e/harness-DSH-M2, DH-E-CHOKIDAR-2); BSD-3-Clause,
+	// requires golang.org/x/sys and moby/sys/mountinfo (Apache-2.0), no cgo. Test code
+	// only: no package of dsh imports it, so it is never linked into the binary.
+	github.com/hanwen/go-fuse/v2 v2.12.1
 	// Opt-in response gzip of host.listen, internal/host/listen (DH-D-HOST-1): chosen by
 	// docs/harness/libs/compression.md DH-ADR-COMPRESSION-1 (package gzhttp, zstd
 	// disabled); BSD-3-Clause and Apache-2.0, no requirements (RM-10), no cgo.

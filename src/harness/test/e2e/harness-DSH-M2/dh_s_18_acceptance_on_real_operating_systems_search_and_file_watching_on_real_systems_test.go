@@ -20,16 +20,13 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
-	"math/big"
 	"net/http"
 	"os"
 	"os/exec"
@@ -162,35 +159,17 @@ func (v *s87Variant) must(argv ...string) (string, error) {
 
 // pipe runs argv on the variant with stdin and returns its trimmed output.
 func (v *s87Variant) pipe(stdin []byte, argv ...string) (string, error) {
-	return v.exec(stdin, false, argv...)
-}
-
-// asRoot runs argv as root on the Linux variant: wsl.exe -u root under WSL,
-// else directly when this process is root, else sudo -n (never a prompt).
-func (v *s87Variant) asRoot(stdin []byte, argv ...string) (string, error) {
-	if v.goos != "linux" {
-		return "", fmt.Errorf("asRoot on %s", v)
-	}
-	return v.exec(stdin, true, argv...)
-}
-
-func (v *s87Variant) exec(stdin []byte, root bool, argv ...string) (string, error) {
 	var cmd *exec.Cmd
-	switch {
-	case v.wsl && root:
-		cmd = exec.Command("wsl.exe", append([]string{"-u", "root", "-e"}, argv...)...)
-	case v.wsl:
+	if v.wsl {
 		cmd = exec.Command("wsl.exe", append([]string{"-e"}, argv...)...)
-	case root && os.Geteuid() != 0:
-		cmd = exec.Command("sudo", append([]string{"-n", "--"}, argv...)...)
-	default:
+	} else {
 		cmd = exec.Command(argv[0], argv[1:]...)
 	}
 	cmd.Env, cmd.Stdin = s87Env(), bytes.NewReader(stdin)
 	var out, errOut bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errOut
 	if err := cmd.Run(); err != nil {
-		return out.String(), fmt.Errorf("%v on %s (root %v): %v\n%s%s", argv, v, root, err, out.String(), errOut.String())
+		return out.String(), fmt.Errorf("%v on %s: %v\n%s%s", argv, v, err, out.String(), errOut.String())
 	}
 	return strings.TrimSpace(out.String()), nil
 }
@@ -299,9 +278,14 @@ func s87Module() (string, error) {
 // build builds the scenario test binary for v once per suite and returns its
 // path as v names it.
 func (v *s87Variant) build() (string, error) {
+	return v.buildTest("scenario", s87Pkg)
+}
+
+// buildTest builds pkg's test binary with tags for v once per suite.
+func (v *s87Variant) buildTest(tags, pkg string) (string, error) {
 	s87BuildMu.Lock()
 	defer s87BuildMu.Unlock()
-	key := v.goos + "-" + v.goarch + "-scenarios"
+	key := v.goos + "-" + v.goarch + "-" + tags
 	if p, ok := s87Built[key]; ok {
 		return p, nil
 	}
@@ -313,10 +297,10 @@ func (v *s87Variant) build() (string, error) {
 	if v.goos == "windows" {
 		out += ".exe"
 	}
-	cmd := exec.Command("go", "test", "-c", "-trimpath", "-tags", "scenario", "-o", out, s87Pkg)
+	cmd := exec.Command("go", "test", "-c", "-trimpath", "-tags", tags, "-o", out, pkg)
 	cmd.Dir, cmd.Env = mod, append(s87Env(), "GOWORK=off", "GOOS="+v.goos, "GOARCH="+v.goarch, "CGO_ENABLED=0")
 	if b, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("go test -c -tags scenario for %s: %v\n%s", v, err, b)
+		return "", fmt.Errorf("go test -c -tags %s %s for %s: %v\n%s", tags, pkg, v, err, b)
 	}
 	p, err := v.path(out)
 	if err == nil {
@@ -354,6 +338,8 @@ type s87Leg struct {
 	detail   []byte
 	ran      error
 	evidence []string
+	// unreached is why this host could not reach the leg's variant.
+	unreached error
 }
 
 type s87State struct {
@@ -371,11 +357,12 @@ func s87Input(v *s87Variant, name string) string {
 
 func (s *s87State) legsFor(names ...string) error {
 	s.legs = nil
-	var errs []error
 	for _, goos := range []string{"linux", "windows"} {
 		v, err := s87Reach(goos)
 		if err != nil {
-			errs = append(errs, err)
+			// The reachable variants still run and are asserted; the last step
+			// fails the scenario for this one.
+			s.legs = append(s.legs, &s87Leg{v: &s87Variant{goos: goos}, unreached: err, ran: err})
 			continue
 		}
 		l := &s87Leg{v: v, op: map[string]string{}, inputs: map[string]string{}}
@@ -386,6 +373,26 @@ func (s *s87State) legsFor(names ...string) error {
 		}
 		maps.Copy(l.inputs, l.op)
 		s.legs = append(s.legs, l)
+	}
+	if len(s.reached()) == 0 {
+		return errors.New("neither the Linux nor the Windows variant is reachable from this host")
+	}
+	return nil
+}
+
+// reached is the legs whose variant this host reaches.
+func (s *s87State) reached() []*s87Leg {
+	return slices.DeleteFunc(slices.Clone(s.legs), func(l *s87Leg) bool { return l.unreached != nil })
+}
+
+// thenReached fails for each variant this host could not reach: the scenario
+// needs both.
+func (s *s87State) thenReached() error {
+	var errs []error
+	for _, l := range s.legs {
+		if l.unreached != nil {
+			errs = append(errs, fmt.Errorf("the %s variant did not run: %w", l.v.goos, l.unreached))
+		}
 	}
 	return errors.Join(errs...)
 }
@@ -403,10 +410,10 @@ func (l *s87Leg) lane() string {
 	return "ephemeral instance with the operator's " + strings.Join(slices.Sorted(maps.Keys(l.op)), ", ")
 }
 
-// each runs f on every leg, all of them even when one fails.
+// each runs f on every reached leg, all of them even when one fails.
 func (s *s87State) each(f func(l *s87Leg) error) error {
 	var errs []error
-	for _, l := range s.legs {
+	for _, l := range s.reached() {
 		if err := f(l); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", l.v, err))
 		}
@@ -414,12 +421,13 @@ func (s *s87State) each(f func(l *s87Leg) error) error {
 	return errors.Join(errs...)
 }
 
-// eachParallel runs f on every leg at once: each leg works on its own
+// eachParallel runs f on every reached leg at once: each leg works on its own
 // variant's volumes.
 func (s *s87State) eachParallel(f func(l *s87Leg) error) error {
-	errs := make([]error, len(s.legs))
+	legs := s.reached()
+	errs := make([]error, len(legs))
 	var wg sync.WaitGroup
-	for i, l := range s.legs {
+	for i, l := range legs {
 		wg.Go(func() {
 			if err := f(l); err != nil {
 				errs[i] = fmt.Errorf("%s: %w", l.v, err)
@@ -765,161 +773,123 @@ func s87IsFile(p string) bool {
 	return err == nil && st.Mode().IsRegular()
 }
 
-// ---- remote directories: an NFS export and an SMB share stood up on the Linux variant ----
+// ---- remote directories: a FUSE filesystem the suite serves, and cross-OS directories ----
 
-// s87Shares is the suite's ephemeral NFS and SMB service, served by the Linux
-// variant's own kernel NFS server and a private smbd (its own configuration,
-// state, port and account password, none of the system's), torn down at the end.
-// The Linux variant mounts both over loopback; the Windows variant maps the SMB
-// share through its SMB client on the share's port. A change "from the other
-// side" is written to the exported directory itself, beside the client.
-type s87Shares struct {
-	v                   *s87Variant
-	base, user, ip      string
-	port                int
-	password            string
-	nfsExport, nfsMount string
-	smbShare, smbMount  string
-}
-
-var (
-	s87SharesMu  sync.Mutex
-	s87SharesUp  *s87Shares
-	s87SharesErr error
+// The suite's network filesystem is a FUSE loopback it serves itself on the Linux
+// variant, unprivileged: this package's test binary, built for the variant, serves
+// a backing directory at a mount point through the system's setuid fusermount3
+// (s87ServeFUSE, in the _fuse_linux_test.go file beside this one). Nothing is
+// installed, no system service is started or stopped and nothing runs as root;
+// the mount, its server and both directories go at the end. Windows has no
+// network filesystem an unprivileged process can serve (its SMB server, share
+// creation and NFS client need administrators), so the Windows variant watches a
+// WSL directory through \\wsl.localhost, the Plan 9 redirector, a remote drive.
+// An operator's SMB share or NFS mount is the provided instance
+// (DSH_SCENARIO_REMOTE_DIRS with DSH_SCENARIO_REMOTE_CHANGE; see
+// evidence/runbook-smb-share.md).
+const (
+	s87FUSEBackingEnv = "S87_FUSE_BACKING"
+	s87FUSEMountEnv   = "S87_FUSE_MOUNT"
+	s87FUSEReady      = "s87-fuse-ready"
 )
 
-const s87SharesUpSh = `set -eu
-base=$1; user=$2; port=$3
-IFS= read -r pw
-uid=$(id -u "$user"); gid=$(id -g "$user")
-pkgs=""
-command -v exportfs >/dev/null 2>&1 && command -v mount.nfs >/dev/null 2>&1 || pkgs="$pkgs nfs-kernel-server"
-command -v smbd >/dev/null 2>&1 && command -v smbpasswd >/dev/null 2>&1 || pkgs="$pkgs samba"
-command -v mount.cifs >/dev/null 2>&1 || pkgs="$pkgs cifs-utils"
-if [ -n "$pkgs" ]; then
-  command -v apt-get >/dev/null 2>&1 || { echo "service:filesystem: missing$pkgs and no apt-get to install them" >&2; exit 3; }
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get -qq update >/dev/null
-  apt-get -qq install -y --no-install-recommends $pkgs >/dev/null
-  # The suite runs its own smbd and starts nfs-server when it needs it; the
-  # system services the packages just installed are not left running.
-  case "$pkgs" in *samba*) systemctl disable --now smbd nmbd >/dev/null 2>&1 || true ;; esac
-  case "$pkgs" in *nfs-kernel-server*) systemctl disable --now nfs-server >/dev/null 2>&1 || true ;; esac
-fi
-chmod 755 "$base"
-mkdir -p "$base/nfs-export" "$base/nfs" "$base/smb-share" "$base/smb" "$base/state"
-chown "$uid:$gid" "$base/nfs-export" "$base/smb-share"
-chmod 700 "$base/state"
-if ! systemctl is-active --quiet nfs-server; then
-  systemctl start nfs-server
-  : > "$base/state/started-nfs-server"
-fi
-exportfs -o rw,sync,no_subtree_check,insecure,all_squash,anonuid=$uid,anongid=$gid "127.0.0.1:$base/nfs-export"
-: > "$base/state/exported"
-# Mount options follow evidence/runbook-smb-share.md: NFS defaults, CIFS vers=3.1.1.
-mount -t nfs -o vers=4.2 "127.0.0.1:$base/nfs-export" "$base/nfs"
-gw=$(ip -4 route show default 2>/dev/null | awk '{print $3; exit}')
-s="$base/state"
-cat > "$s/smb.conf" <<EOF
-[global]
-smb ports = $port
-disable netbios = yes
-server role = standalone server
-passdb backend = tdbsam:$s/passdb.tdb
-private dir = $s
-lock directory = $s
-state directory = $s
-cache directory = $s
-pid directory = $s
-log file = $s/log.%m
-map to guest = never
-hosts allow = 127.0.0.1 $gw
-server min protocol = SMB2_10
-[dsh-s87]
-path = $base/smb-share
-read only = no
-valid users = $user
-EOF
-printf '%s\n%s\n' "$pw" "$pw" | smbpasswd -c "$s/smb.conf" -s -a "$user" >/dev/null
-smbd -D -s "$s/smb.conf"
-i=0
-until ss -ltn | grep -q ":$port "; do
-  i=$((i+1)); [ $i -lt 100 ] || { echo "smbd did not listen on $port" >&2; cat "$s"/log.* >&2 || true; exit 4; }
-  sleep 0.1
-done
-printf 'username=%s\npassword=%s\n' "$user" "$pw" > "$s/cifs.cred"
-chmod 600 "$s/cifs.cred"
-mount -t cifs -o "port=$port,credentials=$s/cifs.cred,uid=$uid,gid=$gid,vers=3.1.1" //127.0.0.1/dsh-s87 "$base/smb"
-echo "ip=$(hostname -I | awk '{print $1}')"
-`
-
-const s87SharesDownSh = `base=$1
-umount "$base/smb" 2>/dev/null || umount -l "$base/smb" 2>/dev/null
-umount "$base/nfs" 2>/dev/null || umount -l "$base/nfs" 2>/dev/null
-[ -f "$base/state/exported" ] && exportfs -u "127.0.0.1:$base/nfs-export"
-[ -f "$base/state/smbd.pid" ] && kill "$(cat "$base/state/smbd.pid")" 2>/dev/null
-[ -f "$base/state/started-nfs-server" ] && systemctl stop nfs-server
-rm -rf "$base"
-`
-
-// s87ProvideShares stands the shares up once per suite on the Linux variant.
-func s87ProvideShares() (*s87Shares, error) {
-	s87SharesMu.Lock()
-	defer s87SharesMu.Unlock()
-	if s87SharesUp != nil || s87SharesErr != nil {
-		return s87SharesUp, s87SharesErr
-	}
-	s87SharesUp, s87SharesErr = s87StartShares()
-	return s87SharesUp, s87SharesErr
+type s87FUSE struct {
+	backing, mount, fsType string
 }
 
-func s87StartShares() (*s87Shares, error) {
-	v, err := s87Reach("linux")
-	if err != nil {
-		return nil, fmt.Errorf("service:filesystem: the NFS and SMB service runs on the Linux variant: %v", err)
+// e2eBinary is this package's test binary for v, as v names it: this process's
+// own on a native variant, else built for v once per suite.
+func (v *s87Variant) e2eBinary() (string, error) {
+	if !v.wsl {
+		return os.Executable()
 	}
-	user, err := v.must("id", "-un")
-	if err != nil {
-		return nil, err
+	return v.buildTest("e2e", "./test/e2e/harness-DSH-M2")
+}
+
+// serveFUSE mounts a FUSE loopback of a fresh backing directory on the Linux
+// variant, served by this package's test binary as the variant's own user.
+func (l *s87Leg) serveFUSE() (*s87FUSE, error) {
+	v := l.v
+	if v.lookPath("fusermount3") == "" && v.lookPath("fusermount") == "" {
+		return nil, fmt.Errorf("service:filesystem: no fusermount3 on %s: the unprivileged FUSE mount needs the fuse3 package", v)
 	}
-	pw := make([]byte, 18)
-	if _, err := rand.Read(pw); err != nil {
-		return nil, err
-	}
-	port, err := rand.Int(rand.Reader, big.NewInt(10000))
-	if err != nil {
-		return nil, err
-	}
-	sh := &s87Shares{v: v, user: user, port: 40000 + int(port.Int64()), password: base64.RawURLEncoding.EncodeToString(pw)}
-	scripts, err := v.tempDir("dsh-s87-shares-sh-")
+	bin, err := v.e2eBinary()
 	if err != nil {
 		return nil, err
 	}
-	up, down := v.join(scripts, "up.sh"), v.join(scripts, "down.sh")
-	if err := errors.Join(v.writeFile(up, []byte(s87SharesUpSh)), v.writeFile(down, []byte(s87SharesDownSh))); err != nil {
+	base, err := v.tempDir("dsh-s87-fuse-")
+	if err != nil {
 		return nil, err
 	}
-	if sh.base, err = v.asRoot(nil, "mktemp", "-d", "/tmp/dsh-s87-shares-XXXXXX"); err != nil {
-		return nil, fmt.Errorf("service:filesystem: root on the Linux variant for the NFS and SMB service: %w", err)
+	f := &s87FUSE{backing: v.join(base, "backing"), mount: v.join(base, "mnt")}
+	if _, err := v.must("mkdir", f.backing, f.mount); err != nil {
+		return nil, err
 	}
-	// Registered before the shares exist, so a half-made service is torn down too.
+	env := []string{s87FUSEBackingEnv + "=" + f.backing, s87FUSEMountEnv + "=" + f.mount}
+	var cmd *exec.Cmd
+	if v.wsl {
+		cmd = exec.Command("wsl.exe", append(append([]string{"-e", "env"}, env...), bin)...)
+		cmd.Env = s87Env()
+	} else {
+		cmd = exec.Command(bin)
+		cmd.Env = s87Env(env...)
+	}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("service:filesystem: starting the FUSE server on %s: %v", v, err)
+	}
+	ready := make(chan bool, 1)
+	go func() {
+		sc := bufio.NewScanner(stdout)
+		for sc.Scan() {
+			if strings.TrimSpace(sc.Text()) == s87FUSEReady {
+				ready <- true
+				_, _ = io.Copy(io.Discard, stdout)
+				return
+			}
+		}
+		ready <- false
+	}()
+	// Registered after the temporary directory, so it runs first: the server
+	// unmounts when its stdin closes; fusermount3 -u is the fallback.
 	s87OuterT.Cleanup(func() {
-		if out, err := v.asRoot(nil, "sh", down, sh.base); err != nil {
-			s87OuterT.Logf("s87 tearing the shares down: %v %s", err, out)
+		_ = stdin.Close()
+		done := make(chan error, 1)
+		go func() { done <- cmd.Wait() }()
+		select {
+		case <-done:
+		case <-time.After(15 * time.Second):
+			_ = cmd.Process.Kill()
+			<-done
+		}
+		if out, err := v.must("sh", "-c", `! mountpoint -q "$1" || fusermount3 -u "$1" || fusermount -u "$1"`, "sh", f.mount); err != nil {
+			s87OuterT.Logf("s87 unmounting the FUSE loopback %s: %v %s", f.mount, err, out)
 		}
 	})
-	out, err := v.asRoot([]byte(sh.password+"\n"), "sh", up, sh.base, user, fmt.Sprint(sh.port))
-	if err != nil {
-		return nil, fmt.Errorf("service:filesystem: standing up the NFS export and the SMB share: %w", err)
-	}
-	for _, line := range strings.Split(out, "\n") {
-		if ip, ok := strings.CutPrefix(strings.TrimSpace(line), "ip="); ok {
-			sh.ip = ip
+	select {
+	case ok := <-ready:
+		if !ok {
+			return nil, fmt.Errorf("service:filesystem: the FUSE server on %s exited before mounting %s:\n%s", v, f.mount, stderr.String())
 		}
+	case <-time.After(60 * time.Second):
+		return nil, fmt.Errorf("service:filesystem: the FUSE server on %s did not mount %s within a minute:\n%s", v, f.mount, stderr.String())
 	}
-	sh.nfsExport, sh.nfsMount = v.join(sh.base, "nfs-export"), v.join(sh.base, "nfs")
-	sh.smbShare, sh.smbMount = v.join(sh.base, "smb-share"), v.join(sh.base, "smb")
-	return sh, nil
+	if f.fsType, err = v.fsType(f.mount); err != nil {
+		return nil, err
+	}
+	if !strings.HasPrefix(f.fsType, "fuse") {
+		return nil, fmt.Errorf("service:filesystem: %s is on %s after mounting, not FUSE", f.mount, f.fsType)
+	}
+	return f, nil
 }
 
 func (s *s87State) givenRemoteDirs() error {
@@ -935,78 +905,42 @@ func (s *s87State) givenRemoteDirs() error {
 		if len(l.op) > 0 && (l.op["DSH_SCENARIO_REMOTE_DIRS"] != "" || l.op["DSH_SCENARIO_REMOTE_CHANGE"] != "") {
 			return errors.New("DSH_SCENARIO_REMOTE_DIRS and DSH_SCENARIO_REMOTE_CHANGE go together: set both, or neither for the ephemeral instance")
 		}
-		sh, err := s87ProvideShares()
-		if err != nil {
-			return err
-		}
 		if l.v.goos == "windows" {
-			return l.remoteWindows(sh)
+			return l.remoteWindows()
 		}
-		return l.remoteLinux(sh)
+		return l.remoteLinux()
 	})
 }
 
-// s87ChangePS changes {name} in {dir} from the other side of the directory: the
-// exported directory behind the SMB share, or the WSL distribution behind
-// \\wsl.localhost, both written by the Linux variant itself. The change appends
-// the marker, so the size changes.
+// s87ChangePS changes {name} in {dir}, a WSL directory seen from Windows, from
+// the WSL side: the WSL distribution itself appends the marker, so the size
+// changes.
 const s87ChangePS = `param([string]$Dir, [string]$Name, [string]$Marker)
 $ErrorActionPreference = 'Stop'
-$distro = '@@DISTRO@@'
-$unc = '@@UNC@@'
-$p = $null
-if ($Dir.StartsWith($unc, [System.StringComparison]::OrdinalIgnoreCase)) {
-  $p = '@@SHARE@@' + ($Dir.Substring($unc.Length) -replace '\\', '/')
-} elseif ($Dir -match '^\\\\wsl(?:\.localhost|\$)\\([^\\]+)(\\.*)$') {
-  $distro = $Matches[1]
-  $p = $Matches[2] -replace '\\', '/'
-}
-if ($p -eq $null) {
+if ($Dir -notmatch '^\\\\wsl(?:\.localhost|\$)\\([^\\]+)(\\.*)$') {
   Write-Error "no other side is known for $Dir"
   exit 3
 }
+$distro = $Matches[1]
+$p = $Matches[2] -replace '\\', '/'
 & wsl.exe -d $distro -e sh -c 'printf %s $1 >> $2' sh $Marker ($p + '/' + $Name)
 exit $LASTEXITCODE
 `
 
-// remoteWindows gives the Windows variant a directory on the suite's SMB share,
-// mapped through Windows' SMB client, and a directory of the WSL distribution
-// seen from Windows.
-func (l *s87Leg) remoteWindows(sh *s87Shares) error {
-	if !sh.v.wsl {
-		return errors.New("service:filesystem: the Windows variant reaches the shares through WSL")
+// remoteWindows gives the Windows variant a directory of the WSL distribution
+// seen from Windows through \\wsl.localhost.
+func (l *s87Leg) remoteWindows() error {
+	wv, err := s87Reach("linux")
+	if err != nil || !wv.wsl {
+		return fmt.Errorf("service:filesystem: the Windows variant's cross-OS directory is a WSL one, and no WSL distribution answers: %v", err)
 	}
-	unc := `\\` + sh.ip + `\dsh-s87`
-	env := []string{"S87_SMB_PATH=" + unc, "S87_SMB_PORT=" + fmt.Sprint(sh.port), "S87_SMB_USER=" + sh.user, "S87_SMB_PASSWORD=" + sh.password}
-	ps := func(script string) (string, error) {
-		out, code, err := l.v.run(context.Background(), "", env, "powershell", "-NoProfile", "-NonInteractive", "-Command", script)
-		if err == nil && code != 0 {
-			err = fmt.Errorf("exit %d", code)
-		}
-		return out, err
-	}
-	if out, err := ps(`$ErrorActionPreference='Stop'; New-SmbMapping -RemotePath $env:S87_SMB_PATH -TcpPort ([int]$env:S87_SMB_PORT) -UserName $env:S87_SMB_USER -Password $env:S87_SMB_PASSWORD -Persistent $false | Out-Null`); err != nil {
-		return fmt.Errorf("service:filesystem: mapping the SMB share %s (port %d) on Windows: %v %s", unc, sh.port, err, out)
-	}
-	s87OuterT.Cleanup(func() {
-		_, _ = ps(`Remove-SmbMapping -RemotePath $env:S87_SMB_PATH -Force -ErrorAction SilentlyContinue`)
-	})
-	name := fmt.Sprintf("windows-%s", s87RunID)
-	smbDir := unc + `\` + name
-	if err := os.Mkdir(smbDir, 0o755); err != nil {
-		return fmt.Errorf("service:filesystem: the SMB share %s: %v", unc, err)
-	}
-	dirs := []string{smbDir}
-	l.volumes = append(l.volumes, fmt.Sprintf("SMB %s (smbd on %s port %d, exported %s)", smbDir, sh.v, sh.port, sh.v.join(sh.smbShare, name)))
-	l.remote = append(l.remote, "smb")
-
-	d, err := sh.v.tempDir("dsh-s87-crossed-")
+	d, err := wv.tempDir("dsh-s87-crossed-")
 	if err != nil {
 		return err
 	}
 	var seen string
 	for _, root := range []string{`\\wsl.localhost\`, `\\wsl$\`} {
-		if p := root + sh.v.distro + strings.ReplaceAll(d, "/", `\`); s87IsDir(p) {
+		if p := root + wv.distro + strings.ReplaceAll(d, "/", `\`); s87IsDir(p) {
 			seen = p
 			break
 		}
@@ -1014,21 +948,17 @@ func (l *s87Leg) remoteWindows(sh *s87Shares) error {
 	if seen == "" {
 		return fmt.Errorf("service:filesystem: the WSL directory %s is not reachable from Windows through \\\\wsl.localhost or \\\\wsl$", d)
 	}
-	dirs = append(dirs, seen)
 	l.volumes = append(l.volumes, "WSL "+seen)
 	l.remote = append(l.remote, "cross-os")
-
 	scratch, err := l.v.tempDir("dsh-s87-change-")
 	if err != nil {
 		return err
 	}
 	script := filepath.Join(scratch, "change.ps1")
-	q := func(s string) string { return strings.ReplaceAll(s, "'", "''") }
-	body := strings.NewReplacer("@@DISTRO@@", q(sh.v.distro), "@@UNC@@", q(unc), "@@SHARE@@", q(sh.smbShare)).Replace(s87ChangePS)
-	if err := os.WriteFile(script, []byte(body), 0o600); err != nil {
+	if err := os.WriteFile(script, []byte(s87ChangePS), 0o600); err != nil {
 		return err
 	}
-	l.set("DSH_SCENARIO_REMOTE_DIRS", strings.Join(dirs, ";"))
+	l.set("DSH_SCENARIO_REMOTE_DIRS", seen)
 	l.set("DSH_SCENARIO_REMOTE_CHANGE", `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "`+script+`" "{dir}" "{name}" "{marker}"`)
 	return nil
 }
@@ -1038,34 +968,29 @@ func s87IsDir(p string) bool {
 	return err == nil && st.IsDir()
 }
 
-// remoteLinux gives the Linux variant a directory on the NFS mount and one on
-// the SMB mount of the suite's shares, each changed in the exported directory
-// behind it, and under WSL a directory of this Windows host seen from WSL
-// (drvfs, 9p), changed from Windows through WSL interop.
-func (l *s87Leg) remoteLinux(sh *s87Shares) error {
-	name := "linux-" + s87RunID
-	var dirs []string
-	for _, m := range [][3]string{{"nfs", sh.nfsMount, sh.nfsExport}, {"smb", sh.smbMount, sh.smbShare}} {
-		dir := l.v.join(m[1], name)
-		if _, err := l.v.must("mkdir", dir); err != nil {
-			return fmt.Errorf("service:filesystem: the %s mount %s: %v", m[0], m[1], err)
-		}
-		fs, err := l.v.fsType(dir)
-		if err != nil {
-			return err
-		}
-		dirs = append(dirs, dir)
-		l.volumes = append(l.volumes, fmt.Sprintf("%s %s (exported %s)", fs, dir, l.v.join(m[2], name)))
-		l.remote = append(l.remote, m[0])
+// remoteLinux gives the Linux variant a directory on the suite's FUSE loopback,
+// changed in the backing directory behind it, and under WSL a directory of this
+// Windows host seen from WSL (drvfs, 9p), changed from Windows through WSL interop.
+func (l *s87Leg) remoteLinux() error {
+	f, err := l.serveFUSE()
+	if err != nil {
+		return err
 	}
+	name := "linux-" + s87RunID
+	dir := l.v.join(f.mount, name)
+	if _, err := l.v.must("mkdir", dir); err != nil {
+		return fmt.Errorf("service:filesystem: the FUSE mount %s: %v", f.mount, err)
+	}
+	dirs := []string{dir}
+	l.volumes = append(l.volumes, fmt.Sprintf("%s %s (served from %s)", f.fsType, dir, l.v.join(f.backing, name)))
+	l.remote = append(l.remote, "fuse")
 	scratch, err := l.v.tempDir("dsh-s87-change-")
 	if err != nil {
 		return err
 	}
 	q := func(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 	body := "#!/bin/sh\nset -e\nd=$1 n=$2 m=$3\ncase \"$d\" in\n" +
-		q(sh.nfsMount) + "/*) p=" + q(sh.nfsExport) + "\"${d#" + q(sh.nfsMount) + "}\" ;;\n" +
-		q(sh.smbMount) + "/*) p=" + q(sh.smbShare) + "\"${d#" + q(sh.smbMount) + "}\" ;;\n"
+		q(f.mount) + "/*) p=" + q(f.backing) + "\"${d#" + q(f.mount) + "}\" ;;\n"
 	if l.v.wsl {
 		host, err := os.MkdirTemp("", "dsh-s87-crossed-")
 		if err != nil {
@@ -1121,22 +1046,23 @@ func (s *s87State) whenSearch(budget string) error {
 // searches on both variants fit within go test's default ten-minute deadline;
 // every leg runs even when one fails.
 func (s *s87State) run() error {
-	if len(s.legs) == 0 {
+	legs := s.reached()
+	if len(legs) == 0 {
 		return errors.New("no variant was reached")
 	}
-	for _, l := range s.legs {
+	for _, l := range legs {
 		if _, err := l.v.build(); err != nil {
 			return err
 		}
 	}
 	var wg sync.WaitGroup
-	for _, l := range s.legs {
+	for _, l := range legs {
 		wg.Go(func() { l.ran = s.runLeg(l) })
 	}
 	wg.Wait()
 	var errs []error
 	for _, l := range s.legs {
-		if l.ran != nil {
+		if l.ran != nil && l.unreached == nil {
 			errs = append(errs, l.ran)
 		}
 		if err := s.persist(l); err != nil {
@@ -1418,9 +1344,9 @@ func (s *s87State) thenPoll() error {
 		if _, ok := l.op["DSH_SCENARIO_REMOTE_DIRS"]; ok {
 			return nil
 		}
-		want := []string{"smb", "cross-os"}
+		want := []string{"cross-os"}
 		if l.v.goos == "linux" {
-			want = []string{"nfs", "smb"}
+			want = []string{"fuse"}
 			if l.v.wsl {
 				want = append(want, "cross-os")
 			}
@@ -1473,13 +1399,14 @@ func InitializeScenario_dh_s_18_acceptance_on_real_operating_systems_search_and_
 	ctx.Step(`^on each variant the timing report has every search of the set, its first matches within the budget and its files equal to rg's$`, s.thenTimings)
 	ctx.Step(`^on each variant the file listing equals Git's with no unexplained difference$`, s.thenListing)
 	ctx.Step(`^no external rg was spawned on any variant$`, s.thenNoRG)
+	ctx.Step(`^both the Linux and the Windows variant were reached and ran$`, s.thenReached)
 
 	ctx.Step(`^the same variants, each with editor saves by vim, rename, in place and backup-then-write$`, s.givenEditorVariants)
-	ctx.Step(`^on each variant an SMB share, on Linux also an NFS mount, and a cross-OS directory, each changed from its other side$`, s.givenRemoteDirs)
+	ctx.Step(`^on Linux a FUSE network filesystem the suite serves unprivileged, and on each variant a cross-OS directory, each changed from its other side$`, s.givenRemoteDirs)
 	ctx.Step(`^CHOKIDAR-1 and CHOKIDAR-2 run on each variant$`, s.run)
 	ctx.Step(`^on each variant every save was reported exactly once within "([^"]*)"$`, s.thenSaves)
 	ctx.Step(`^on each variant the create, burst, rename and delete of a watched tree were each reported exactly once within the bound$`, s.thenTransitions)
-	ctx.Step(`^on each variant every share and cross-OS directory was watched in poll mode$`, s.thenPoll)
+	ctx.Step(`^on each variant every network and cross-OS directory was watched in poll mode$`, s.thenPoll)
 }
 
 func TestE2E_dh_s_18_acceptance_on_real_operating_systems_search_and_file_watching_on_real_systems(t *testing.T) {
