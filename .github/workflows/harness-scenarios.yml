@@ -181,8 +181,10 @@ jobs:
 
   s18:
     # Stage 8.1: one job per in-scope variant of evidence/variants.md (M2-EN-2..8).
-    # Stage 8.2: after s18-rehearsal, whose binaries the variants run on.
-    if: inputs.stage == 'DH-S-18'
+    # Stage 8.2: after s18-rehearsal, whose binaries the variants run on. A failed
+    # rehearsal lane does not skip the variants: each still runs, and variant-run
+    # fails one without a verified rehearsal ("not run: no verified rehearsal binary").
+    if: inputs.stage == 'DH-S-18' && !cancelled()
     needs: s18-rehearsal
     name: s18 (${{ matrix.variant }})
     environment: dsh-m2-s18
@@ -565,13 +567,17 @@ jobs:
       - name: Fetch the rehearsal (impl.md 18.1)
         # A variant without DH-E-TOOLCHAIN-2 runs on s18-rehearsal's binaries for its
         # OS; variant-run checks them against rehearsal.sha256 and never builds its own.
+        # A missing artifact (its lane failed) is left to variant-run, which records
+        # the variant's scenarios not run, so it is the scenario failure.
+        id: fetch
         if: ${{ !contains(steps.require.outputs.list, 'DH-E-TOOLCHAIN-2') }}
         uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           name: dsh-s18-rehearsal-${{ runner.os == 'Windows' && 'windows' || 'linux' }}
           path: ${{ runner.temp }}/s18-rehearsal-download
       - name: Unpack the rehearsal
-        if: ${{ !contains(steps.require.outputs.list, 'DH-E-TOOLCHAIN-2') }}
+        if: ${{ !contains(steps.require.outputs.list, 'DH-E-TOOLCHAIN-2') && steps.fetch.outcome == 'success' }}
         run: |
           set -euo pipefail
           dir="$RUNNER_TEMP/s18-rehearsal"
