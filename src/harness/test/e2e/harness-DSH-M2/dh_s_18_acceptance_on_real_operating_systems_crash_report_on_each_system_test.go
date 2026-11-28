@@ -6,15 +6,20 @@ package e2e
 // dh_s_18_acceptance_on_real_operating_systems_crash_report_on_each_system.feature
 // (DH-S-18 Stage 8.3, DH-E-HOST-4, TC-21s3).
 //
-// dsh (./cmd/dsh) and the driver (./test/e2e/harness-DSH-M2/testdata/host4drive)
-// are built from this checkout for the variant, once per suite and target. The
-// driver runs on the variant -- this host when its OS matches, else the other side
-// of WSL (wsl.exe from Windows, Windows interop from inside WSL) -- and performs
-// the whole sequence there: start "dsh web", wait for "dsh status" to name it live,
-// kill it with Process.Kill (SIGKILL / TerminateProcess), start dsh again, read the
-// unclean-exit line and the report it names, run "dsh crash", then start
-// "dsh --safe web" and wait for its listener to answer. It prints one JSON object,
-// which the Then steps assert on. An unreachable variant fails; it never skips.
+// dsh (./cmd/dsh) is built from this checkout for the variant, once per suite and
+// target. The sequence runs on the variant: start "dsh web", wait for "dsh status"
+// to name it live, kill it with Process.Kill (SIGKILL / TerminateProcess), start dsh
+// again, read the unclean-exit line and the report it names, run "dsh crash", then
+// start "dsh --safe web" and wait for its listener to answer.
+//
+// When the variant is this host ("native") the sequence runs in this test process
+// (s18cSequence), so no extra driver executable is built: on stock Windows hosts
+// Defender quarantines the small CGO-disabled driver exe that spawns and force-kills
+// children. Only for the cross-OS variants (wsl.exe from Windows, Windows interop
+// from inside WSL) is the driver (./test/e2e/harness-DSH-M2/testdata/host4drive)
+// built and run on the other side; it performs the same sequence and prints one
+// JSON object. A build blocked by antivirus is reported as an environment blocker
+// with its remediation. An unreachable variant fails; it never skips.
 
 import (
 	"bytes"
@@ -25,6 +30,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -33,6 +39,8 @@ import (
 	"time"
 
 	"github.com/cucumber/godog"
+
+	"github.com/smartpcr/agent-plugin/src/harness/internal/storage/home"
 )
 
 const (
@@ -43,7 +51,7 @@ const (
 
 var s18cOuterT *testing.T
 
-// s18cResult mirrors host4drive's host4Result.
+// s18cResult mirrors host4drive's host4Result; s18cSequence fills it in-process.
 type s18cResult struct {
 	GOOS       string `json:"goos"`
 	Kill       string `json:"kill"`
@@ -78,8 +86,22 @@ type s18cVariant struct {
 	how          string // "native", "wsl" (wsl.exe from Windows) or "interop" (a .exe from WSL)
 }
 
-// s18cBuilt is dsh and the driver for one target.
+// s18cBuilt is dsh and, for a cross-OS variant, the driver for one target.
 type s18cBuilt struct{ dsh, driver string }
+
+// s18cBuildError classifies a failed go build. Antivirus quarantine of the linked
+// executable (Defender's "contains a virus or potentially unwanted software") is an
+// environment blocker, not a product failure; it still fails the scenario.
+func s18cBuildError(what, key string, err error) error {
+	msg := err.Error()
+	if strings.Contains(msg, "virus or potentially unwanted software") || strings.Contains(msg, "Operation did not complete successfully because the file contains a virus") {
+		return fmt.Errorf("ENVIRONMENT BLOCKER: building %s for %s was blocked by antivirus (Windows Defender quarantined the linked executable). "+
+			"Remediation: add a Defender exclusion for the Go build temp and output directories "+
+			"(e.g. Add-MpPreference -ExclusionPath $env:TEMP\\go-build, $env:TEMP\\dsh-s18c-bin-, or set GOTMPDIR to an excluded directory), then rerun. "+
+			"The scenario stays open until it passes: %w", what, key, err)
+	}
+	return fmt.Errorf("building %s for %s: %w", what, key, err)
+}
 
 var (
 	s18cBuildMu sync.Mutex
@@ -120,9 +142,10 @@ func s18cModuleRoot() (string, error) {
 	}
 }
 
-// s18cBuild builds dsh and the driver for v's target, once per suite.
+// s18cBuild builds dsh for v's target, and the driver too unless v is native (the
+// native sequence runs in-process), once per suite.
 func s18cBuild(ctx context.Context, v s18cVariant) (s18cBuilt, error) {
-	key := v.goos + "/" + v.goarch
+	key := v.goos + "/" + v.goarch + "/" + v.how
 	s18cBuildMu.Lock()
 	defer s18cBuildMu.Unlock()
 	if b, ok := s18cBuilds[key]; ok {
@@ -141,15 +164,18 @@ func s18cBuild(ctx context.Context, v s18cVariant) (s18cBuilt, error) {
 	if v.goos == "windows" {
 		exe = ".exe"
 	}
-	b := s18cBuilt{dsh: filepath.Join(dir, "dsh"+exe), driver: filepath.Join(dir, "host4drive"+exe)}
+	b := s18cBuilt{dsh: filepath.Join(dir, "dsh"+exe)}
 	env := []string{"GOOS=" + v.goos, "GOARCH=" + v.goarch, "CGO_ENABLED=0"}
 	bctx, cancel := context.WithTimeout(ctx, s18cBuildWithin)
 	defer cancel()
 	if _, err := s18cCommand(bctx, root, env, "go", "build", "-o", b.dsh, "./cmd/dsh"); err != nil {
-		return s18cBuilt{}, fmt.Errorf("building dsh for %s: %w", key, err)
+		return s18cBuilt{}, s18cBuildError("dsh", key, err)
 	}
-	if _, err := s18cCommand(bctx, root, env, "go", "build", "-o", b.driver, s18cDriverPkg); err != nil {
-		return s18cBuilt{}, fmt.Errorf("building the driver for %s: %w", key, err)
+	if v.how != "native" {
+		b.driver = filepath.Join(dir, "host4drive"+exe)
+		if _, err := s18cCommand(bctx, root, env, "go", "build", "-o", b.driver, s18cDriverPkg); err != nil {
+			return s18cBuilt{}, s18cBuildError("the driver", key, err)
+		}
 	}
 	s18cBuilds[key] = b
 	return b, nil
@@ -194,10 +220,14 @@ func s18cWindowsVariant() (s18cVariant, error) {
 	return s18cVariant{}, fmt.Errorf("no Windows host reachable from %s/%s (neither Windows nor WSL interop)", runtime.GOOS, runtime.GOARCH)
 }
 
-// s18cDrive runs the driver on v with the built dsh and decodes its result.
+// s18cDrive runs the sequence on v with the built dsh: in this process when v is
+// native, else through the driver on the other side of WSL.
 func s18cDrive(ctx context.Context, v s18cVariant, b s18cBuilt) (*s18cResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, s18cDriveWithin)
 	defer cancel()
+	if v.how == "native" {
+		return s18cRunInProcess(ctx, b.dsh), nil
+	}
 	var cmd *exec.Cmd
 	switch v.how {
 	case "wsl":
@@ -218,7 +248,7 @@ func s18cDrive(ctx context.Context, v s18cVariant, b s18cBuilt) (*s18cResult, er
 		}
 		cmd = exec.CommandContext(ctx, b.driver, "-bin", strings.TrimSpace(dsh))
 	default:
-		cmd = exec.CommandContext(ctx, b.driver, "-bin", b.dsh)
+		return nil, fmt.Errorf("unknown variant transport %q", v.how)
 	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -231,6 +261,253 @@ func s18cDrive(ctx context.Context, v s18cVariant, b s18cBuilt) (*s18cResult, er
 		return nil, fmt.Errorf("the driver printed no result: %w\nstdout:\n%s\nstderr:\n%s", err, out, stderr.String())
 	}
 	return r, nil
+}
+
+// The in-process sequence below is the same as host4drive's (keep them in step);
+// it runs on this host, so the kill and the owner-only check are this OS's own.
+const (
+	s18cReadyWithin = time.Minute
+	s18cExitWithin  = time.Minute
+	s18cLineWithin  = time.Minute
+)
+
+var s18cUnclean = regexp.MustCompile(`did not stop cleanly; report: (\S+);.*--safe`)
+
+// s18cBuffer is a goroutine-safe output sink.
+type s18cBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (b *s18cBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.Write(p)
+}
+
+func (b *s18cBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.String()
+}
+
+type s18cHost struct {
+	cmd    *exec.Cmd
+	stderr *s18cBuffer
+	done   chan struct{}
+}
+
+func (h *s18cHost) exited(within time.Duration) bool {
+	select {
+	case <-h.done:
+		return true
+	case <-time.After(within):
+		return false
+	}
+}
+
+// kill is the forced rung alone: Process.Kill is SIGKILL on POSIX and
+// TerminateProcess on Windows, so the host cannot remove its runtime record.
+func (h *s18cHost) kill() { _ = h.cmd.Process.Kill() }
+
+type s18cDriver struct {
+	ctx       context.Context
+	bin, root string
+	env       []string
+	hosts     []*s18cHost
+}
+
+func (d *s18cDriver) start(args ...string) (*s18cHost, error) {
+	h := &s18cHost{stderr: &s18cBuffer{}, done: make(chan struct{})}
+	h.cmd = exec.Command(d.bin, append([]string{"--home", d.root}, args...)...)
+	h.cmd.Env, h.cmd.Dir, h.cmd.Stdout, h.cmd.Stderr = d.env, filepath.Dir(d.root), h.stderr, h.stderr
+	if err := h.cmd.Start(); err != nil {
+		return nil, err
+	}
+	go func() { defer close(h.done); _ = h.cmd.Wait() }()
+	d.hosts = append(d.hosts, h)
+	return h, nil
+}
+
+func (d *s18cDriver) run(args ...string) (int, string, string) {
+	cmd := exec.CommandContext(d.ctx, d.bin, append([]string{"--home", d.root}, args...)...)
+	var out, errb bytes.Buffer
+	cmd.Env, cmd.Dir, cmd.Stdout, cmd.Stderr = d.env, filepath.Dir(d.root), &out, &errb
+	err := cmd.Run()
+	var ee *exec.ExitError
+	switch {
+	case err == nil:
+		return 0, out.String(), errb.String()
+	case errors.As(err, &ee):
+		return ee.ExitCode(), out.String(), errb.String()
+	default:
+		return -1, out.String(), err.Error()
+	}
+}
+
+// answers waits until "dsh status" exits 0 naming h's process live, and returns
+// that status line.
+func (d *s18cDriver) answers(h *s18cHost) (string, error) {
+	pid := "process " + strconv.Itoa(h.cmd.Process.Pid)
+	deadline := time.Now().Add(s18cReadyWithin)
+	var last string
+	for time.Now().Before(deadline) {
+		select {
+		case <-h.done:
+			return "", fmt.Errorf("the host exited %d before its listener answered:\n%s", h.cmd.ProcessState.ExitCode(), h.stderr)
+		case <-d.ctx.Done():
+			return "", fmt.Errorf("waiting for %s: %w", pid, d.ctx.Err())
+		default:
+		}
+		code, out, errs := d.run("status")
+		last = fmt.Sprintf("exit %d\n%s%s", code, out, errs)
+		if code == 0 {
+			for _, line := range strings.Split(out, "\n") {
+				if strings.Contains(line, pid+"\t") && strings.Contains(line, "\tlive") {
+					return strings.TrimSpace(line), nil
+				}
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return "", fmt.Errorf("dsh status did not name %s live within %s; last:\n%s\nhost stderr:\n%s", pid, s18cReadyWithin, last, h.stderr)
+}
+
+// waitLine waits for h's unclean-exit line naming process pid and returns the
+// line and the report it names.
+func (d *s18cDriver) waitLine(h *s18cHost, pid int) (string, string, error) {
+	want := "(process " + strconv.Itoa(pid) + ")"
+	find := func() (string, string, bool) {
+		for _, line := range strings.Split(h.stderr.String(), "\n") {
+			if m := s18cUnclean.FindStringSubmatch(line); m != nil && strings.Contains(line, want) {
+				return strings.TrimSpace(line), m[1], true
+			}
+		}
+		return "", "", false
+	}
+	deadline := time.After(s18cLineWithin)
+	for {
+		if line, report, ok := find(); ok {
+			return line, report, nil
+		}
+		select {
+		case <-h.done:
+			if line, report, ok := find(); ok {
+				return line, report, nil
+			}
+			return "", "", fmt.Errorf("dsh exited %d with no unclean-exit line naming %s:\n%s", h.cmd.ProcessState.ExitCode(), want, h.stderr)
+		case <-deadline:
+			return "", "", fmt.Errorf("no unclean-exit line naming %s within %s:\n%s", want, s18cLineWithin, h.stderr)
+		case <-d.ctx.Done():
+			return "", "", fmt.Errorf("waiting for the unclean-exit line naming %s: %w", want, d.ctx.Err())
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
+func s18cInside(dir, path string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != "." && !filepath.IsAbs(rel) && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func (d *s18cDriver) sequence(r *s18cResult) error {
+	first, err := d.start("web", "--no-open", "--port", "0")
+	if err != nil {
+		return fmt.Errorf("starting the first host: %w", err)
+	}
+	r.FirstPID = first.cmd.Process.Pid
+	r.FirstReady, err = d.answers(first)
+	r.FirstStderr = first.stderr.String()
+	if err != nil {
+		return err
+	}
+	first.kill()
+	if r.KilledExit = first.exited(s18cExitWithin); !r.KilledExit {
+		return fmt.Errorf("the killed host %d did not exit within %s", r.FirstPID, s18cExitWithin)
+	}
+
+	next, err := d.start("web", "--no-open", "--port", "0")
+	if err != nil {
+		return fmt.Errorf("starting dsh again: %w", err)
+	}
+	r.UncleanLine, r.Report, err = d.waitLine(next, r.FirstPID)
+	r.NextStderr = next.stderr.String()
+	if err != nil {
+		return err
+	}
+	r.ReportUnder = s18cInside(r.ReportsDir, r.Report)
+	if f, err := os.Open(r.Report); err != nil {
+		r.ReportErr = err.Error()
+	} else {
+		if err := home.CheckPrivateFile(f); err != nil {
+			r.PrivateErr = err.Error()
+		}
+		_ = f.Close()
+		if b, err := os.ReadFile(r.Report); err != nil {
+			r.ReportErr = err.Error()
+		} else {
+			r.ReportText = string(b)
+		}
+	}
+	var crashErr string
+	r.CrashCode, r.CrashOut, crashErr = d.run("crash")
+	if r.CrashCode != 0 {
+		r.CrashOut += crashErr
+	}
+	if _, err := d.answers(next); err != nil {
+		return fmt.Errorf("the restarted host: %w", err)
+	}
+	next.kill()
+	if !next.exited(s18cExitWithin) {
+		return fmt.Errorf("the restarted host did not exit within %s of its kill", s18cExitWithin)
+	}
+
+	safe, err := d.start("--safe", "web", "--no-open", "--port", "0")
+	if err != nil {
+		return fmt.Errorf("starting dsh --safe web: %w", err)
+	}
+	r.SafePID = safe.cmd.Process.Pid
+	r.SafeReady, err = d.answers(safe)
+	r.SafeStderr = safe.stderr.String()
+	return err
+}
+
+// s18cRunInProcess runs the sequence on this host against bin on a fresh short
+// home, kills every host it started and removes the home. A failed step is
+// recorded in Fatal, as the driver does.
+func s18cRunInProcess(ctx context.Context, bin string) *s18cResult {
+	r := &s18cResult{GOOS: runtime.GOOS, Kill: "SIGKILL"}
+	if runtime.GOOS == "windows" {
+		r.Kill = "TerminateProcess"
+	}
+	// A short home: the web host's control socket lives in <home>/run and a Unix
+	// socket path is bounded (about 108 bytes).
+	dir, err := os.MkdirTemp("", "dsh-h4e-")
+	if err != nil {
+		r.Fatal = err.Error()
+		return r
+	}
+	root := filepath.Join(dir, "home")
+	r.Home, r.ReportsDir = root, home.New(root).Reports()
+	env := []string{"DSH_HOME=" + root}
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(strings.ToUpper(kv), "DSH_HOME=") {
+			env = append(env, kv)
+		}
+	}
+	d := &s18cDriver{ctx: ctx, bin: bin, root: root, env: env}
+	if err := d.sequence(r); err != nil {
+		r.Fatal = err.Error()
+	}
+	for _, h := range d.hosts {
+		h.kill()
+		h.exited(s18cExitWithin)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for os.RemoveAll(dir) != nil && time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+	}
+	return r
 }
 
 // s18cState is one scenario's state.
