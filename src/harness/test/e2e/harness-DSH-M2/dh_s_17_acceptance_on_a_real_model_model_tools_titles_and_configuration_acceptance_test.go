@@ -866,6 +866,10 @@ func s74TitleGenerated(id, _ vocab.RouteID) error {
 		}
 		return fmt.Errorf("title events %s%s after %d client runs, want request, attempt, title", got, detail, r.count("runs"))
 	}
+	// The production default sends no output cap, which the client routes refuse.
+	if rq, rerr := title.RequestType.As(evs[0]); rerr != nil || rq.MaxOutputTokens != 0 {
+		return fmt.Errorf("title request %+v (%v), want no output cap", rq, rerr)
+	}
 	if after.Source != title.SourceGenerated || after.Text == "" || after.Text == before.Text {
 		return fmt.Errorf("title after the turn = %+v, want a generated one", after)
 	}
