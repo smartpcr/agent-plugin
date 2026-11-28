@@ -582,11 +582,47 @@ func (v *s86Variant) volumeKind(dir string) (string, error) {
 	return kind, nil
 }
 
-// checkSMB requires share to be a directory on an SMB mount that takes a file.
+// s86SMBProbe asks Windows how S86_SMB_PATH is reached: the drive type of its
+// root (4 is DRIVE_REMOTE) and the network provider serving it
+// (WNetGetResourceInformation; SMB is "Microsoft Windows Network").
+const s86SMBProbe = `Add-Type -TypeDefinition @"
+using System; using System.Runtime.InteropServices;
+public static class S86Smb {
+  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] public class NR { public int Scope, Type, DisplayType, Usage; public string Local, Remote, Comment, Provider; }
+  [DllImport("mpr.dll", CharSet=CharSet.Unicode)] static extern int WNetGetResourceInformationW(NR r, IntPtr buf, ref int size, out IntPtr sys);
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode)] public static extern uint GetDriveTypeW(string root);
+  public static string Provider(string path) {
+    var r = new NR(); r.Remote = path; int size = 8192; IntPtr buf = Marshal.AllocHGlobal(size); IntPtr sys;
+    try { int rc = WNetGetResourceInformationW(r, buf, ref size, out sys); if (rc != 0) return "error " + rc; return ((NR)Marshal.PtrToStructure(buf, typeof(NR))).Provider; }
+    finally { Marshal.FreeHGlobal(buf); }
+  }
+}
+"@
+$p = $env:S86_SMB_PATH; $root = [System.IO.Path]::GetPathRoot($p); if (-not $root.EndsWith('\')) { $root += '\' }
+"drive=" + [S86Smb]::GetDriveTypeW($root)
+"provider=" + [S86Smb]::Provider($p)`
+
+// s86UNC matches \\server\share[\...], the only form an SMB path takes; the
+// device and object namespaces (\\?\, \\.\, \??\) are local paths in disguise.
+var s86UNC = regexp.MustCompile(`^\\\\([^\\/?.*:][^\\/?*:]*)\\([^\\/?*:]+)(\\.*)?$`)
+
+// checkSMB requires share to be a writable directory reached over SMB: on
+// Windows a \\server\share path that the SMB client (the "Microsoft Windows
+// Network" provider) serves from a remote drive; on Linux a cifs/smb mount.
 func (v *s86Variant) checkSMB(share string) error {
 	if v.goos == "windows" {
-		if !strings.HasPrefix(share, `\\`) {
-			return errors.New(`not a UNC path (\\server\share\...)`)
+		if !s86UNC.MatchString(share) {
+			return errors.New(`not a UNC path \\server\share\... (device and object namespaces such as \\?\ and \\.\ are local)`)
+		}
+		if st, err := os.Stat(share); err != nil || !st.IsDir() {
+			return fmt.Errorf("not a reachable directory (%v)", err)
+		}
+		out, code, err := v.run(context.Background(), "", []string{"S86_SMB_PATH=" + share}, nil, "powershell", "-NoProfile", "-NonInteractive", "-Command", s86SMBProbe)
+		if err != nil || code != 0 {
+			return fmt.Errorf("the SMB transport probe failed: exit %d %v\n%s", code, err, out)
+		}
+		if !strings.Contains(out, "drive=4") || !strings.Contains(out, "provider=Microsoft Windows Network") {
+			return fmt.Errorf("not served over SMB (want remote drive type 4 and provider Microsoft Windows Network): %s", strings.Join(strings.Fields(out), " "))
 		}
 		f, err := os.CreateTemp(share, "dsh-s86-smb-")
 		if err != nil {
@@ -1267,5 +1303,34 @@ func TestE2E_dh_s_18_acceptance_on_real_operating_systems_file_fence_and_working
 	}
 	if suite.Run() != 0 {
 		t.Fatal("the file fence and working directory scenarios failed")
+	}
+}
+
+// TestS86CheckSMBRejectsLocalPaths: a local directory, under any spelling, is
+// never accepted as the FS-1 share; the loopback SMB share, when reachable, is.
+func TestS86CheckSMBRejectsLocalPaths(t *testing.T) {
+	v := &s86Variant{goos: runtime.GOOS, goarch: runtime.GOARCH}
+	dir := t.TempDir()
+	local := []string{dir}
+	vol := filepath.VolumeName(dir)
+	if v.goos == "windows" {
+		rest := dir[len(vol):]
+		local = append(local, `\\?\`+dir, `\\.\`+dir, `\??\`+dir, `\\?\GLOBALROOT\??\`+dir,
+			`\\?\UNC\localhost\`+vol[:1]+`$`+rest, `\\.\UNC\localhost\`+vol[:1]+`$`+rest)
+	}
+	for _, p := range local {
+		if err := v.checkSMB(p); err == nil {
+			t.Errorf("checkSMB(%q) accepted a local directory as an SMB share", p)
+		}
+	}
+	if v.goos == "windows" {
+		unc := `\\localhost\` + vol[:1] + `$` + dir[len(vol):]
+		if _, err := os.Stat(unc); err == nil {
+			if err := v.checkSMB(unc); err != nil {
+				t.Errorf("checkSMB(%q), the loopback SMB share, was refused: %v", unc, err)
+			}
+		} else {
+			t.Logf("the loopback share %s is not reachable here (%v); only the refusals are checked", unc, err)
+		}
 	}
 }
