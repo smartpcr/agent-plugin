@@ -21,13 +21,20 @@ import (
 // With --service it decides that provided service's preflight instead
 // (sandboxstatus.Preflight; the s18 jobs of Stage 8.1): service:linux-sandbox-bwrap,
 // service:linux-landlock-only or service:linux-unconfined. An unknown service
-// fails with exit 1 like a wrong report.
+// fails with exit 1 like a wrong report. --preflight names the machine kind (the
+// variant's Preflight column, e.g. "landlock ABI 1-4"); it is required when the
+// service has more than one, and is a usage error without --service.
 func runSandboxPreflight(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	var status, service *string
+	var status, service, preflight *string
 	if _, ok := subcommandFlags("sandbox-preflight", args, stderr, func(f *flag.FlagSet) {
 		status = f.String("status", "-", `the "dsh sandbox status" report to check; "-" reads standard input`)
 		service = f.String("service", "", `the provided service whose preflight decides (default: the guarded bwrap Full check)`)
+		preflight = f.String("preflight", "", `the service's preflight text, as variants.md's Preflight column writes it`)
 	}); !ok {
+		return 2
+	}
+	if *preflight != "" && *service == "" {
+		fmt.Fprintln(stderr, "harness-gate sandbox-preflight: --preflight needs --service")
 		return 2
 	}
 	var b []byte
@@ -43,7 +50,9 @@ func runSandboxPreflight(args []string, stdin io.Reader, stdout, stderr io.Write
 	}
 	check := sandboxstatus.Guarded
 	if *service != "" {
-		check = func(report string) (sandboxstatus.Status, error) { return sandboxstatus.Preflight(*service, report) }
+		check = func(report string) (sandboxstatus.Status, error) {
+			return sandboxstatus.Preflight(*service, *preflight, report)
+		}
 	}
 	s, err := check(string(b))
 	if err != nil {

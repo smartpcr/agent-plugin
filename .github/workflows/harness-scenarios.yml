@@ -165,11 +165,13 @@ jobs:
             check: sandbox-ssh
             service: service:linux-landlock-only
             target: landlock
+            preflight: landlock ABI >= 5
           - variant: linux-e2:landlock-abi1-4
             runner: '["self-hosted","linux","dsh-e2-controller"]'
             check: sandbox-ssh
             service: service:linux-landlock-only
             target: landlock-abi1-4
+            preflight: landlock ABI 1-4
           - variant: linux-e2:unconfined
             runner: '["self-hosted","linux","dsh-e2-controller"]'
             check: sandbox-ssh
@@ -180,6 +182,7 @@ jobs:
             check: sandbox-ssh
             service: service:linux-landlock-only
             target: musl
+            preflight: landlock ABI >= 5
           - variant: linux-e2:systemd
             runner: '["self-hosted","linux","dsh-e2-controller"]'
             check: systemd-ssh
@@ -356,6 +359,7 @@ jobs:
         env:
           CHECK: ${{ matrix.check }}
           SERVICE: ${{ matrix.service }}
+          PREFLIGHT: ${{ matrix.preflight }}
           TARGET: ${{ matrix.target }}
           SCRATCH: ${{ matrix.scratch }}
         run: |
@@ -371,7 +375,7 @@ jobs:
               home="$(mktemp -d "$RUNNER_TEMP/s18-home.XXXXXX")"
               report="$("$dsh" --home "$home" sandbox status)" || true
               rm -rf "$home"
-              printf '%s\n' "$report" | gate sandbox-preflight --service "$SERVICE" || fail "the sandbox report is not $SERVICE"
+              printf '%s\n' "$report" | gate sandbox-preflight --service "$SERVICE" --preflight "$PREFLIGHT" || fail "the sandbox report is not $SERVICE"
               ;;
             sandbox-ssh)
               alias=$(tr ';' '\n' <<<"$DSH_SCENARIO_SANDBOX1_MACHINES" | sed -n "s/^ *$TARGET *= *//p" | head -n1)
@@ -381,7 +385,7 @@ jobs:
               scp -q -o BatchMode=yes "$dsh" "$alias:$dir/dsh" || fail "scp to $alias failed"
               report=$(ssh -o BatchMode=yes "$alias" "mkdir -m 700 $dir/home && $dir/dsh --home $dir/home sandbox status") || true
               ssh -o BatchMode=yes "$alias" "rm -rf $dir" || true
-              printf '%s\n' "$report" | gate sandbox-preflight --service "$SERVICE" || fail "$alias is not $SERVICE"
+              printf '%s\n' "$report" | gate sandbox-preflight --service "$SERVICE" --preflight "$PREFLIGHT" || fail "$alias is not $SERVICE"
               ;;
             systemd-ssh)
               alias="${!TARGET}"
