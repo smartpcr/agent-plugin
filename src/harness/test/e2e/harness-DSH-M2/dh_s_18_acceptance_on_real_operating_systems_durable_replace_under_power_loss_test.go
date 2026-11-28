@@ -580,8 +580,11 @@ func (s *drpState) rounds() (map[int]*drpRound, []string, error) {
 				continue
 			}
 			cur.cut, cur.cutAcked = true, n("acked")
-			if cur.cutAcked != acked {
-				bad = append(bad, fmt.Sprintf("round %d cut records acked=%d, the log's acks reach %d", cur.round, cur.cutAcked, acked))
+			// The cut line is written after rec.last releases its lock, so an
+			// ack already in flight may be logged first; only an ack the log
+			// never recorded is an error. thenRounds checks cutAcked > before.
+			if cur.cutAcked > acked {
+				bad = append(bad, fmt.Sprintf("round %d cut records acked=%d, beyond the log's acks at %d", cur.round, cur.cutAcked, acked))
 			}
 		case "read":
 			if cur == nil || cur.round != n("round") || !cur.cut || cur.read {
