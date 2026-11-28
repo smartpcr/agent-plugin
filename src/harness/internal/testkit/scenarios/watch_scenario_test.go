@@ -67,7 +67,21 @@ func checkTransitions(t *testing.T, svc *watch.Service, dir string, mode watch.M
 		name string
 		do   func() error
 	}{
-		{"create", func() error { return os.WriteFile(file, []byte("created\n"), 0o600) }},
+		// The file appears whole, renamed in from beside the watched directory:
+		// written in place (os.WriteFile creates it empty first, as does fsx's
+		// staging inside the directory), an on-access scanner holding the create
+		// past a settle window makes a genuinely settled empty or staged file, a
+		// second correct report.
+		{"create", func() error {
+			staged := dir + ".create"
+			if err := os.WriteFile(staged, []byte("created\n"), 0o600); err != nil {
+				return err
+			}
+			if err := os.Rename(staged, file); err != nil {
+				return errors.Join(err, os.Remove(staged))
+			}
+			return nil
+		}},
 		{"burst", func() error {
 			f, err := os.OpenFile(file, os.O_WRONLY|os.O_APPEND, 0)
 			if err != nil {
