@@ -677,7 +677,9 @@ func (l *s86Leg) smbShare() (string, error) {
 
 func s86Children(goos string) string {
 	if goos == "windows" {
-		return `powershell -NoProfile -Command "$all=Get-CimInstance Win32_Process; $k=@({pid}); while($k.Count){ $c=@($all | Where-Object { $k -contains $_.ParentProcessId }); $c | ForEach-Object { $_.Name }; $k=@($c | ForEach-Object { $_.ProcessId }) }"`
+		// No double quotes (Go escapes them as \" for "cmd /C", which cmd does not
+		// read) and no pipes (cmd would split the line): .Where/.ForEach instead.
+		return `powershell -NoProfile -Command $all=Get-CimInstance Win32_Process; $k=@({pid}); while($k.Count){ $c=@($all.Where({$k -contains $_.ParentProcessId})); $c.ForEach({$_.Name}); $k=@($c.ForEach({$_.ProcessId})) }`
 	}
 	return `ps -e -o pid= -o ppid= -o comm= | awk -v r={pid} 'BEGIN{k[r]=1} {p[NR]=$1; q[NR]=$2; c[NR]=$3} END{do{n=0; for(i=1;i<=NR;i++) if(k[q[i]] && !k[p[i]]){k[p[i]]=1; print c[i]; n=1}} while(n)}'`
 }
@@ -688,6 +690,46 @@ func s86Editor(goos string) string {
 		return `powershell -NoProfile -Command Set-Content -NoNewline -LiteralPath '{file}.dsh-save' -Value saved; Move-Item -Force -LiteralPath '{file}.dsh-save' -Destination '{file}'`
 	}
 	return `printf saved > '{file}.dsh-save' && mv -f '{file}.dsh-save' '{file}'`
+}
+
+// children checks the FS-2 descendant-process template on the variant: run over
+// a process with a known child, it must print that child's name, so the
+// scenario's "no rg child process" clause cannot pass on output that names nothing.
+func (l *s86Leg) children() error {
+	tmpl := l.inputs["DSH_SCENARIO_FS2_CHILDREN"]
+	if tmpl == "" {
+		tmpl = s86Children(l.v.goos)
+	}
+	var out, want string
+	var err error
+	if l.v.goos == "windows" {
+		want = "ping.exe"
+		parent := exec.Command("cmd", "/C", "ping -n 30 127.0.0.1")
+		if err := parent.Start(); err != nil {
+			return err
+		}
+		defer func() { _ = parent.Process.Kill(); _ = parent.Wait() }()
+		deadline := time.Now().Add(15 * time.Second)
+		for {
+			out, err = l.v.shell(strings.ReplaceAll(tmpl, "{pid}", strconv.Itoa(parent.Process.Pid)))
+			if err != nil || strings.Contains(strings.ToLower(out), want) || time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+	} else {
+		want = "sleep"
+		out, err = l.v.must("sh", "-c", "sleep 30 & sleep 1; "+strings.ReplaceAll(tmpl, "{pid}", "$$")+"; kill $! 2>/dev/null; wait")
+	}
+	if err != nil {
+		return fmt.Errorf("service:process-listing: the DSH_SCENARIO_FS2_CHILDREN template failed on the %s variant: %v %s", l.v, err, out)
+	}
+	for _, name := range strings.Fields(strings.ToLower(out)) {
+		if name == want {
+			return nil
+		}
+	}
+	return fmt.Errorf("service:process-listing: the DSH_SCENARIO_FS2_CHILDREN template on the %s variant did not name the known child %s: %q", l.v, want, out)
 }
 
 // gitAndEditor checks git (its version recorded) and the editor save script on
@@ -810,6 +852,9 @@ func (s *s86State) givenFS2(goos, fs string) error {
 	}
 	if err := l.gitAndEditor(dir); err != nil {
 		return l.preflight("git-and-editor", err)
+	}
+	if err := l.children(); err != nil {
+		return l.preflight("process-listing", err)
 	}
 	if err := l.signedIn(dir); err != nil || l.provided {
 		return err
