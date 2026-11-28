@@ -8,7 +8,8 @@
 # declares the DSH_S18_KVM_* and DSH_S18_HYPERV_* inputs of runbook-power-cut.md
 # step 2. Non-secret group variables reach the scripts as environment variables
 # with the same names. The job fails if any input is unset, if either scenario
-# skips, or if either scenario does not pass.
+# skips, or if either scenario does not pass. -count=1 bypasses the Go test
+# cache on the persistent pool so every run executes the power cuts afresh.
 trigger: none
 pr: none
 
@@ -47,7 +48,7 @@ jobs:
           mkdir -p "$DSH_E2E_NODEFS_ARTIFACTS"
           log="$(Build.ArtifactStagingDirectory)/nodefs.txt"
           { echo "commit $(Build.SourceVersion)"; uname -a; } | tee "$log"
-          go -C src/harness test -tags e2e -v -timeout 355m -run "$SUITE" ./test/e2e/harness-DSH-M2/ 2>&1 | tee -a "$log"
+          go -C src/harness test -tags e2e -count=1 -v -timeout 355m -run "$SUITE" ./test/e2e/harness-DSH-M2/ 2>&1 | tee -a "$log"
           if grep -q -- '--- SKIP' "$log"; then echo "a required scenario skipped"; exit 1; fi
           for s in DH-E-NODEFS-1_Linux_guest DH-E-NODEFS-1_Windows_guest; do
             grep -qF -- "--- PASS: TestE2E_dh_s_18_acceptance_on_real_operating_systems_durable_replace_under_power_loss/$s" "$log" \
