@@ -79,6 +79,9 @@ func (w *ifpsWorld) close() {
 	if w.rec != nil {
 		_ = w.rec.Close()
 	}
+	if w.watcher != nil {
+		_ = w.watcher.Close()
+	}
 	for i := len(w.cleanup) - 1; i >= 0; i-- {
 		w.cleanup[i]()
 	}
