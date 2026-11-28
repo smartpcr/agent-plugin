@@ -26,7 +26,8 @@ import (
 //     in a git checkout, compares with `git rev-parse <base>:<path>` (skipped, with
 //     the reason, only outside a checkout or in a shallow clone lacking the base);
 //   - no release file names dsh or src/harness, and no other workflow runs on a tag
-//     push or a release event or runs goreleaser, so no dsh release job exists;
+//     push or a release event (its on: key read in string, sequence or mapping form by
+//     tagTriggers) or runs goreleaser, so no dsh release job exists;
 //   - every default profile's egress set in EgressGoldenPath (computed from the shipped
 //     bundles by profile.Egress and held to it by TestDefaultProfilesSendNothing) is
 //     empty, the headless and sdk profiles included.
@@ -48,7 +49,7 @@ var sendNothingProfiles = []string{"headless", "sdk"}
 
 var (
 	dshPattern        = regexp.MustCompile(`(?i)\bdsh\b|src/harness|cmd/dsh`)
-	tagTriggerPattern = regexp.MustCompile(`^\s+(tags|release)\s*:`)
+	onKeyPattern      = regexp.MustCompile(`^(on|"on"|'on'|true)\s*:(.*)$`)
 	goreleaserPattern = regexp.MustCompile(`(?i)goreleaser`)
 	egressLinePattern = regexp.MustCompile(`^([a-z][a-z0-9-]*): \[(.*)\]$`)
 	baseHeaderPattern = regexp.MustCompile(`^# base: ([0-9a-f]{40})$`)
@@ -221,11 +222,14 @@ func checkRelease(root string) (base string, profiles int, anchor string, proble
 			add("%s: %v", rel, err)
 			continue
 		}
+		for _, t := range tagTriggers(string(cur)) {
+			add("%s:%d: only %s may run on a tag push or a release, or run goreleaser (M2-DOD-7): %s", rel, t.line, ReleaseFiles[0], t.why)
+		}
 		for i, l := range strings.Split(string(cur), "\n") {
 			if strings.HasPrefix(strings.TrimSpace(l), "#") {
 				continue
 			}
-			if tagTriggerPattern.MatchString(l) || goreleaserPattern.MatchString(l) {
+			if goreleaserPattern.MatchString(l) {
 				add("%s:%d: only %s may run on a tag push or a release, or run goreleaser (M2-DOD-7): %q", rel, i+1, ReleaseFiles[0], strings.TrimSpace(l))
 			}
 		}
@@ -257,6 +261,411 @@ func checkRelease(root string) (base string, profiles int, anchor string, proble
 		}
 	}
 	return base, len(seen), anchor, problems
+}
+
+// tagTrigger is one way a workflow's on: key starts it on a tag push or a release.
+type tagTrigger struct {
+	line int
+	why  string
+}
+
+// tagTriggers reads each top-level on: key of a workflow, in any of its forms (a
+// string, a sequence or a mapping, in block or flow style), and returns each trigger
+// that runs the workflow on a tag push or a release: the release event, the create
+// event (a tag created), and a push that filters on tags or tags-ignore or names no
+// branches or branches-ignore filter (GitHub then runs it for tag pushes too). An on:
+// key it cannot read is itself returned, so an unusual form fails closed.
+func tagTriggers(src string) (found []tagTrigger) {
+	lines := strings.Split(src, "\n")
+	for i := 0; i < len(lines); i++ {
+		m := onKeyPattern.FindStringSubmatch(stripYAMLComment(lines[i]))
+		if m == nil {
+			continue
+		}
+		onLine := i + 1
+		var block []yLine
+		for i+1 < len(lines) {
+			t := stripYAMLComment(lines[i+1])
+			if t != "" && t[0] != ' ' {
+				break
+			}
+			i++
+			if strings.TrimSpace(t) != "" {
+				block = append(block, yLine{indent: len(t) - len(strings.TrimLeft(t, " ")), text: strings.TrimSpace(t), line: i + 1})
+			}
+		}
+		n, err := parseOnValue(strings.TrimSpace(m[2]), onLine, block)
+		if err != nil {
+			found = append(found, tagTrigger{onLine, fmt.Sprintf("its on: key cannot be read, so its triggers cannot be checked: %v", err)})
+			continue
+		}
+		found = append(found, onTagTriggers(n, onLine)...)
+	}
+	return found
+}
+
+// onTagTriggers is tagTriggers for one parsed on: value.
+func onTagTriggers(n *yNode, onLine int) (found []tagTrigger) {
+	type event struct {
+		name string
+		line int
+		cfg  *yNode
+	}
+	var events []event
+	switch {
+	case n.isMap:
+		for k, key := range n.keys {
+			events = append(events, event{key, n.keyLines[k], n.items[k]})
+		}
+	case n.isSeq:
+		for _, it := range n.items {
+			if it.isSeq || it.isMap {
+				found = append(found, tagTrigger{it.line, "an on: sequence item is not an event name"})
+				continue
+			}
+			events = append(events, event{it.scalar, it.line, nil})
+		}
+	case n.scalar != "":
+		events = append(events, event{n.scalar, n.line, nil})
+	}
+	for _, ev := range events {
+		switch ev.name {
+		case "release":
+			found = append(found, tagTrigger{ev.line, "it runs on a release event"})
+		case "create":
+			found = append(found, tagTrigger{ev.line, "it runs on the create event, which a tag push raises"})
+		case "push":
+			if ev.cfg == nil || !ev.cfg.isMap {
+				found = append(found, tagTrigger{ev.line, "its push trigger has no branches filter, so it runs on every tag push"})
+				continue
+			}
+			filtered := false
+			for k, key := range ev.cfg.keys {
+				switch key {
+				case "tags", "tags-ignore":
+					found = append(found, tagTrigger{ev.cfg.keyLines[k], fmt.Sprintf("its push trigger filters on %s, so it runs on a tag push", key)})
+					filtered = true
+				case "branches", "branches-ignore":
+					filtered = true
+				}
+			}
+			if !filtered {
+				found = append(found, tagTrigger{ev.line, "its push trigger has no branches or tags filter, so it runs on every tag push"})
+			}
+		}
+	}
+	return found
+}
+
+// yLine is one non-blank, comment-free line of a block, with its indent and number.
+type yLine struct {
+	indent int
+	text   string
+	line   int
+}
+
+// yNode is a node of the YAML subset a workflow's on: key is written in: a scalar, a
+// sequence or a mapping (in block or flow style), with the line it starts on. A node
+// that is none of them is null.
+type yNode struct {
+	line         int
+	scalar       string
+	isSeq, isMap bool
+	items        []*yNode // the sequence's items, or the mapping's values
+	keys         []string
+	keyLines     []int
+}
+
+// stripYAMLComment drops a "#" comment (at the start or after a blank, outside quotes)
+// and trailing blanks.
+func stripYAMLComment(l string) string {
+	var quote byte
+	for i := 0; i < len(l); i++ {
+		c := l[i]
+		switch {
+		case quote != 0:
+			if c == '\\' && quote == '"' {
+				i++
+			} else if c == quote {
+				quote = 0
+			}
+		case c == '"' || c == '\'':
+			quote = c
+		case c == '#' && (i == 0 || l[i-1] == ' ' || l[i-1] == '\t'):
+			return strings.TrimRight(l[:i], " \t\r")
+		}
+	}
+	return strings.TrimRight(l, " \t\r")
+}
+
+// parseOnValue parses an on: key's value: its inline text after the colon and the more
+// indented lines under it.
+func parseOnValue(inline string, line int, block []yLine) (*yNode, error) {
+	if inline != "" {
+		if inline[0] == '[' || inline[0] == '{' {
+			for _, b := range block {
+				inline += " " + b.text
+			}
+			return parseYAMLFlow(inline, line)
+		}
+		if len(block) > 0 {
+			return nil, fmt.Errorf("line %d: unexpected %q after an inline value", block[0].line, block[0].text)
+		}
+		return parseYAMLFlow(inline, line)
+	}
+	if len(block) == 0 {
+		return &yNode{line: line}, nil
+	}
+	n, i, err := parseYAMLBlock(block, 0, block[0].indent)
+	if err == nil && i < len(block) {
+		err = fmt.Errorf("line %d: unexpected %q", block[i].line, block[i].text)
+	}
+	return n, err
+}
+
+func isDashItem(text string) bool { return text == "-" || strings.HasPrefix(text, "- ") }
+
+// parseYAMLBlock parses the block node starting at ls[i], whose lines are at indent; it
+// returns the node and the index of the first line after it.
+func parseYAMLBlock(ls []yLine, i, indent int) (*yNode, int, error) {
+	start := ls[i]
+	if isDashItem(start.text) {
+		n := &yNode{isSeq: true, line: start.line}
+		for i < len(ls) && ls[i].indent == indent && isDashItem(ls[i].text) {
+			var child *yNode
+			var err error
+			if rest := strings.TrimLeft(ls[i].text[1:], " "); rest == "" {
+				if i+1 < len(ls) && ls[i+1].indent > indent {
+					child, i, err = parseYAMLBlock(ls, i+1, ls[i+1].indent)
+				} else {
+					child, i = &yNode{line: ls[i].line}, i+1
+				}
+			} else {
+				// "- key: value" starts a node indented to the text after the dash.
+				off := indent + len(ls[i].text) - len(rest)
+				ls[i] = yLine{indent: off, text: rest, line: ls[i].line}
+				child, i, err = parseYAMLBlock(ls, i, off)
+			}
+			if err != nil {
+				return nil, i, err
+			}
+			n.items = append(n.items, child)
+		}
+		if i < len(ls) && ls[i].indent > indent {
+			return nil, i, fmt.Errorf("line %d: unexpected indentation of %q", ls[i].line, ls[i].text)
+		}
+		return n, i, nil
+	}
+	n := &yNode{isMap: true, line: start.line}
+	for i < len(ls) && ls[i].indent == indent && !isDashItem(ls[i].text) {
+		key, val, ok := splitYAMLKey(ls[i].text)
+		if !ok {
+			if len(n.keys) == 0 {
+				s, err := parseYAMLFlow(ls[i].text, ls[i].line)
+				return s, i + 1, err
+			}
+			return nil, i, fmt.Errorf("line %d: %q is not a key", ls[i].line, ls[i].text)
+		}
+		line := ls[i].line
+		i++
+		var child *yNode
+		var err error
+		switch {
+		case val == "":
+			if i < len(ls) && (ls[i].indent > indent || ls[i].indent == indent && isDashItem(ls[i].text)) {
+				child, i, err = parseYAMLBlock(ls, i, ls[i].indent)
+			} else {
+				child = &yNode{line: line}
+			}
+		case val[0] == '|' || val[0] == '>':
+			for i < len(ls) && ls[i].indent > indent {
+				i++
+			}
+			child = &yNode{line: line, scalar: val}
+		default:
+			if val[0] == '[' || val[0] == '{' {
+				for i < len(ls) && ls[i].indent > indent {
+					val += " " + ls[i].text
+					i++
+				}
+			}
+			child, err = parseYAMLFlow(val, line)
+		}
+		if err != nil {
+			return nil, i, err
+		}
+		n.keys, n.keyLines, n.items = append(n.keys, key), append(n.keyLines, line), append(n.items, child)
+	}
+	if i < len(ls) && ls[i].indent > indent {
+		return nil, i, fmt.Errorf("line %d: unexpected indentation of %q", ls[i].line, ls[i].text)
+	}
+	return n, i, nil
+}
+
+// splitYAMLKey splits a block mapping line "key: value" (the key plain or quoted).
+func splitYAMLKey(text string) (key, val string, ok bool) {
+	if text == "" || text[0] == '[' || text[0] == '{' {
+		return "", "", false
+	}
+	p := &yamlFlowParser{s: text}
+	if text[0] == '"' || text[0] == '\'' {
+		k, err := p.quoted()
+		if err != nil {
+			return "", "", false
+		}
+		p.skipSpace()
+		if p.pos >= len(text) || text[p.pos] != ':' || (p.pos+1 < len(text) && text[p.pos+1] != ' ') {
+			return "", "", false
+		}
+		return k, strings.TrimSpace(text[p.pos+1:]), true
+	}
+	for i := 0; i < len(text); i++ {
+		if text[i] == ':' && (i+1 == len(text) || text[i+1] == ' ') {
+			return strings.TrimSpace(text[:i]), strings.TrimSpace(text[i+1:]), true
+		}
+	}
+	return "", "", false
+}
+
+// parseYAMLFlow parses a scalar or a flow sequence or mapping that fills s.
+func parseYAMLFlow(s string, line int) (*yNode, error) {
+	p := &yamlFlowParser{s: s, line: line}
+	n, err := p.value()
+	if err != nil {
+		return nil, err
+	}
+	if p.skipSpace(); p.pos != len(s) {
+		return nil, fmt.Errorf("line %d: unexpected %q", line, s[p.pos:])
+	}
+	return n, nil
+}
+
+type yamlFlowParser struct {
+	s          string
+	pos, depth int
+	line       int
+}
+
+func (p *yamlFlowParser) skipSpace() {
+	for p.pos < len(p.s) && (p.s[p.pos] == ' ' || p.s[p.pos] == '\t') {
+		p.pos++
+	}
+}
+
+func (p *yamlFlowParser) fail(want string) error {
+	if p.pos >= len(p.s) {
+		return fmt.Errorf("line %d: %q ends where %s was expected", p.line, p.s, want)
+	}
+	return fmt.Errorf("line %d: %q has %q where %s was expected", p.line, p.s, p.s[p.pos:], want)
+}
+
+func (p *yamlFlowParser) value() (*yNode, error) {
+	p.skipSpace()
+	if p.pos >= len(p.s) {
+		return &yNode{line: p.line}, nil
+	}
+	switch p.s[p.pos] {
+	case '[':
+		p.pos++
+		p.depth++
+		n := &yNode{isSeq: true, line: p.line}
+		for {
+			if p.skipSpace(); p.pos < len(p.s) && p.s[p.pos] == ']' {
+				p.pos++
+				p.depth--
+				return n, nil
+			}
+			it, err := p.value()
+			if err != nil {
+				return nil, err
+			}
+			n.items = append(n.items, it)
+			if p.skipSpace(); p.pos < len(p.s) && p.s[p.pos] == ',' {
+				p.pos++
+			} else if p.pos >= len(p.s) || p.s[p.pos] != ']' {
+				return nil, p.fail(`"," or "]"`)
+			}
+		}
+	case '{':
+		p.pos++
+		p.depth++
+		n := &yNode{isMap: true, line: p.line}
+		for {
+			if p.skipSpace(); p.pos < len(p.s) && p.s[p.pos] == '}' {
+				p.pos++
+				p.depth--
+				return n, nil
+			}
+			k, err := p.value()
+			if err != nil {
+				return nil, err
+			}
+			if k.isSeq || k.isMap {
+				return nil, p.fail("a key")
+			}
+			v := &yNode{line: p.line}
+			if p.skipSpace(); p.pos < len(p.s) && p.s[p.pos] == ':' {
+				p.pos++
+				if p.skipSpace(); p.pos < len(p.s) && p.s[p.pos] != ',' && p.s[p.pos] != '}' {
+					if v, err = p.value(); err != nil {
+						return nil, err
+					}
+				}
+			}
+			n.keys, n.keyLines, n.items = append(n.keys, k.scalar), append(n.keyLines, p.line), append(n.items, v)
+			if p.skipSpace(); p.pos < len(p.s) && p.s[p.pos] == ',' {
+				p.pos++
+			} else if p.pos >= len(p.s) || p.s[p.pos] != '}' {
+				return nil, p.fail(`"," or "}"`)
+			}
+		}
+	case '"', '\'':
+		s, err := p.quoted()
+		return &yNode{line: p.line, scalar: s}, err
+	}
+	start := p.pos
+	for p.pos < len(p.s) {
+		c := p.s[p.pos]
+		if p.depth > 0 && (c == ',' || c == ']' || c == '}') {
+			break
+		}
+		if c == ':' && (p.pos+1 == len(p.s) || strings.IndexByte(" ,]}", p.s[p.pos+1]) >= 0) {
+			break
+		}
+		p.pos++
+	}
+	if p.pos == start {
+		return nil, p.fail("a value")
+	}
+	return &yNode{line: p.line, scalar: strings.TrimSpace(p.s[start:p.pos])}, nil
+}
+
+// quoted reads a single- or double-quoted scalar at p.pos.
+func (p *yamlFlowParser) quoted() (string, error) {
+	q := p.s[p.pos]
+	p.pos++
+	var b strings.Builder
+	for p.pos < len(p.s) {
+		c := p.s[p.pos]
+		p.pos++
+		switch {
+		case q == '\'' && c == '\'':
+			if p.pos < len(p.s) && p.s[p.pos] == '\'' {
+				b.WriteByte('\'')
+				p.pos++
+				continue
+			}
+			return b.String(), nil
+		case q == '"' && c == '\\' && p.pos < len(p.s):
+			b.WriteByte(p.s[p.pos])
+			p.pos++
+		case q == '"' && c == '"':
+			return b.String(), nil
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return "", p.fail("a closing quote")
 }
 
 func short(sha string) string {
