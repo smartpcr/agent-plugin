@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"runtime"
+	"syscall"
 	//lint:ignore typeassert CreateRestrictedToken takes its SID_AND_ATTRIBUTES array and out-token as uintptr made with unsafe.Pointer
 	"unsafe"
 
@@ -149,3 +151,19 @@ func ifpsGrantEveryone(path string) error {
 func ifpsOpenToOthers(path string) error { return ifpsGrantEveryone(path) }
 
 func ifpsLoosenDir(path string) error { return ifpsGrantEveryone(path) }
+
+// ifpsShell runs line through cmd /C, passed verbatim as the runbook's
+// templates are written for it.
+func ifpsShell(line string) *exec.Cmd {
+	comspec := os.Getenv("ComSpec")
+	if comspec == "" {
+		comspec = "cmd.exe"
+	}
+	c := exec.Command(comspec)
+	c.SysProcAttr = &syscall.SysProcAttr{CmdLine: `"` + comspec + `" /C ` + line}
+	return c
+}
+
+// ifpsEphemeralAccount: Windows makes no account of its own; the second account
+// is the runbook's, and the Linux variant runs in WSL (ifpsWSL).
+func ifpsEphemeralAccount() (*ifpsAccount, error) { return nil, nil }

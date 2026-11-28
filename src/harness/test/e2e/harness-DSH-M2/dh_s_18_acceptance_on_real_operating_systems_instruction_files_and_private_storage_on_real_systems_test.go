@@ -71,6 +71,8 @@ type ifpsWorld struct {
 	spillID    string
 	spillBody  string
 	denials    []error
+	account    *ifpsAccount
+	outputs    []string
 }
 
 func (w *ifpsWorld) close() {
@@ -433,13 +435,10 @@ func (w *ifpsWorld) carriesNone() error {
 // --- DH-E-STORAGE-6 -------------------------------------------------------
 
 func (w *ifpsWorld) privateHome() error {
-	dir, err := w.tempDir("ifps-home-")
-	if err != nil {
-		return err
-	}
 	// The parent is open to everyone, so only the home's own permissions can
 	// refuse a second account.
-	if err := ifpsOpenToOthers(dir); err != nil {
+	dir, err := w.sharedDir("ifps-home-")
+	if err != nil {
 		return err
 	}
 	w.layout = home.New(filepath.Join(dir, "home"))
@@ -554,7 +553,7 @@ func (w *ifpsWorld) allDenied() error {
 		return err
 	}
 	for i, t := range ts {
-		if !ifpsIsDenied(w.denials[i]) {
+		if !ifpsIsDenied(w.denials[i]) && !errors.Is(w.denials[i], errIfpsAccountDenied) {
 			return fmt.Errorf("a second account's read of %s was not denied by the OS: %v", t.path, w.denials[i])
 		}
 	}
@@ -726,12 +725,16 @@ func InitializeScenario_dh_s_18_acceptance_on_real_operating_systems_instruction
 	ctx.Step(`^the request carries no instructions message$`, func() error { return w.carriesNone() })
 	ctx.Step(`^the DH-S-18 evidence claims no "([^"]*)" lane row it has not run$`, func(id string) error { return w.evidenceHonest(id) })
 
-	ctx.Step(`^a harness home created private by the harness on this machine$`, func() error { return w.privateHome() })
+	ctx.Step(`^a second ordinary OS account on this machine$`, func() error { return w.secondAccount() })
+	ctx.Step(`^a harness home created private by the harness in a directory both accounts can traverse$`, func() error { return w.privateHome() })
+	ctx.Step(`^the second account can list the shared directory and read a file opened to everyone$`, func() error { return w.accountControl() })
+	ctx.Step(`^the second account lists every directory and reads every file of the home$`, func() error { return w.accountReads() })
+	ctx.Step(`^no denied read printed a stored name or stored bytes$`, func() error { return w.nothingLeaked() })
 	ctx.Step(`^the attachment store keeps one attachment in the home$`, func() error { return w.keepAttachment() })
 	ctx.Step(`^the spill store keeps one spill file in the home$`, func() error { return w.keepSpill() })
-	ctx.Step(`^a second OS account tries to read every directory and file of the home$`, func() error { return w.strangerReads() })
+	ctx.Step(`^a principal that is not the home's owner is checked against every directory and file of the home$`, func() error { return w.strangerReads() })
 	ctx.Step(`^the operating system denies every one of those reads$`, func() error { return w.allDenied() })
-	ctx.Step(`^the same account can read a control file the test opens to everyone$`, func() error { return w.controlReadable() })
+	ctx.Step(`^the same principal can read a control file the test opens to everyone$`, func() error { return w.controlReadable() })
 	ctx.Step(`^the home's owner can still read the attachment and the spill file$`, func() error { return w.ownerReads() })
 	ctx.Step(`^"([^"]*)" is opened to other accounts$`, func(d string) error { return w.loosen(d) })
 	ctx.Step(`^the spill store refuses to start with "([^"]*)" naming "([^"]*)"$`, func(r, n string) error { return w.spillRefuses(r, n) })
@@ -744,10 +747,14 @@ func TestE2E_dh_s_18_acceptance_on_real_operating_systems_instruction_files_and_
 		Options: &godog.Options{
 			Format:   "pretty",
 			Paths:    []string{"dh_s_18_acceptance_on_real_operating_systems_instruction_files_and_private_storage_on_real_systems.feature"},
+			Tags:     os.Getenv("IFPS_GODOG_TAGS"),
 			TestingT: t,
 		},
 	}
 	if suite.Run() != 0 {
 		t.Fatal("DH-S-18 Stage 8.8 scenarios failed")
+	}
+	if runtime.GOOS == "windows" {
+		t.Run("linux-wsl", ifpsWSL)
 	}
 }

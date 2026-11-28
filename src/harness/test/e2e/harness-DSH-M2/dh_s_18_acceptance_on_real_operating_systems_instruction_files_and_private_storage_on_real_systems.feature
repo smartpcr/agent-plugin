@@ -39,16 +39,40 @@ Feature: Instruction files and private storage on real systems
     Then the request carries no instructions message
     And the DH-S-18 evidence claims no "DH-E-CONTEXT-2" lane row it has not run
 
-  # TC-21s3 [proof: service:os-process; deps: filesystem, an OS principal that is not the home's owner (Windows: a restricted token with the owner, SYSTEM and Administrators disabled; POSIX: uid 65534 when root, else the owner and mode bits the kernel enforces)]
-  Scenario: DH-E-STORAGE-6 -- another OS account is denied every read of the harness home
-    Given a harness home created private by the harness on this machine
+  # TC-21s3 [proof: service:os-process; deps: two-account machine per runbook (M2-EN-5), filesystem]
+  # The second account is a real, ordinary local account other than the runner's:
+  # the runbook's (DSH_SCENARIO_STORAGE6_USER, _PUBLIC, _LIST, _READ, as the s18
+  # two-account jobs of harness-scenarios.yml set them), or, where the run is root
+  # or has passwordless sudo, one the scenario makes with useradd and deletes. On
+  # Windows without the runbook's account, the test also runs this scenario in the
+  # machine's WSL as root (subtest linux-wsl). Every list and read below is a real
+  # process run as that account. A machine with no second account skips it: the
+  # two-account machine is lab-only.
+  @lab-two-account
+  Scenario: DH-E-STORAGE-6 -- a second OS account is denied every read of the first user's harness home
+    Given a second ordinary OS account on this machine
+    And a harness home created private by the harness in a directory both accounts can traverse
     And the attachment store keeps one attachment in the home
     And the spill store keeps one spill file in the home
-    When a second OS account tries to read every directory and file of the home
+    And the second account can list the shared directory and read a file opened to everyone
+    When the second account lists every directory and reads every file of the home
     Then the operating system denies every one of those reads
-    And the same account can read a control file the test opens to everyone
+    And no denied read printed a stored name or stored bytes
     And the home's owner can still read the attachment and the spill file
+    And the DH-S-18 evidence claims no "DH-E-STORAGE-6" lane row it has not run
+
+  # TC-21s3 pre-check, not the DH-E-STORAGE-6 acceptance [proof: service:os-process; deps: filesystem]
+  # Runs on every machine. Windows: real opens under a restricted copy of the
+  # owner's token (owner, SYSTEM and Administrators deny-only). POSIX: real reads
+  # as uid 65534 when root, else the owner and mode bits the kernel checks.
+  Scenario: TC-21s3 pre-check -- no principal but the owner is granted a read of the home, and an opened spill/ is refused
+    Given a harness home created private by the harness in a directory both accounts can traverse
+    And the attachment store keeps one attachment in the home
+    And the spill store keeps one spill file in the home
+    When a principal that is not the home's owner is checked against every directory and file of the home
+    Then the operating system denies every one of those reads
+    And the same principal can read a control file the test opens to everyone
     When "spill" is opened to other accounts
     Then the spill store refuses to start with "home/not-private" naming "spill"
     And the harness refuses the home with "home/not-private" naming "spill"
-    And the DH-S-18 evidence claims no "DH-E-STORAGE-6" lane row it has not run
+

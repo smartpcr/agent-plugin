@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 )
@@ -118,3 +119,111 @@ func ifpsOpenToOthers(path string) error {
 
 // ifpsLoosenDir makes dir group-writable, as DH-E-STORAGE-6's POSIX step 2 does.
 func ifpsLoosenDir(dir string) error { return os.Chmod(dir, 0o770) }
+
+// ifpsShell runs line through sh -c.
+func ifpsShell(line string) *exec.Cmd { return exec.Command("sh", "-c", line) }
+
+func ifpsTool(name string) string {
+	if p, err := exec.LookPath(name); err == nil {
+		return p
+	}
+	for _, d := range []string{"/usr/sbin", "/sbin"} {
+		if _, err := os.Stat(filepath.Join(d, name)); err == nil {
+			return filepath.Join(d, name)
+		}
+	}
+	return ""
+}
+
+func ifpsIDs(args ...string) ([]int, error) {
+	out, err := ifpsExec(exec.Command("id", args...))
+	if err != nil {
+		return nil, fmt.Errorf("id %s: %v %s", strings.Join(args, " "), err, out)
+	}
+	var ids []int
+	for _, f := range strings.Fields(out) {
+		n, err := strconv.Atoi(f)
+		if err != nil {
+			return nil, fmt.Errorf("id %s printed %q", strings.Join(args, " "), out)
+		}
+		ids = append(ids, n)
+	}
+	return ids, nil
+}
+
+// ifpsEphemeralAccount makes an ordinary account with a group of its own when
+// the run is root or has passwordless sudo, and deletes it when the scenario
+// ends; else there is none.
+func ifpsEphemeralAccount() (*ifpsAccount, error) {
+	var pre []string
+	if os.Geteuid() != 0 {
+		if _, err := exec.LookPath("sudo"); err != nil {
+			return nil, nil
+		}
+		if _, err := ifpsExec(exec.Command("sudo", "-n", "true")); err != nil {
+			return nil, nil
+		}
+		pre = []string{"sudo", "-n"}
+	}
+	useradd, userdel := ifpsTool("useradd"), ifpsTool("userdel")
+	if useradd == "" || userdel == "" {
+		return nil, nil
+	}
+	priv := func(args ...string) *exec.Cmd {
+		a := append(append([]string{}, pre...), args...)
+		c := exec.Command(a[0], a[1:]...)
+		c.Dir = "/"
+		return c
+	}
+	shell := "/usr/sbin/nologin"
+	if _, err := os.Stat(shell); err != nil {
+		shell = "/bin/false"
+	}
+	name := ifpsRandName()
+	if out, err := ifpsExec(priv(useradd, "--no-create-home", "--user-group", "--shell", shell, name)); err != nil {
+		return nil, fmt.Errorf("useradd %s: %v %s", name, err, out)
+	}
+	a := &ifpsAccount{name: name, how: "made for this scenario", close: func() {
+		if out, err := ifpsExec(priv(userdel, name)); err != nil {
+			fmt.Fprintf(os.Stderr, "DH-E-STORAGE-6: userdel %s: %v %s\n", name, err, out)
+		}
+	}}
+	fail := func(err error) (*ifpsAccount, error) { a.close(); return nil, err }
+	uid, err := ifpsIDs("-u", name)
+	if err != nil {
+		return fail(err)
+	}
+	gids, err := ifpsIDs("-G", name)
+	if err != nil {
+		return fail(err)
+	}
+	if len(uid) != 1 || uid[0] == os.Getuid() || uid[0] == 0 {
+		return fail(fmt.Errorf("the account %s has uid %v, the runner's is %d", name, uid, os.Getuid()))
+	}
+	mine, err := os.Getgroups()
+	if err != nil {
+		return fail(err)
+	}
+	for _, g := range gids {
+		for _, m := range append(mine, os.Getgid()) {
+			if g == m {
+				return fail(fmt.Errorf("the account %s shares group %d with the runner", name, g))
+			}
+		}
+	}
+	a.as = func(dir bool, path string) (string, error) {
+		args := []string{"cat", "--", path}
+		if dir {
+			args = []string{"ls", "-a", "--", path}
+		}
+		if pre != nil {
+			return ifpsExec(priv(append([]string{"-u", name, "--"}, args...)...))
+		}
+		c := exec.Command(args[0], args[1:]...)
+		c.Dir = "/"
+		c.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: uint32(uid[0]), Gid: uint32(gids[0]), Groups: []uint32{}}}
+		return ifpsExec(c)
+	}
+	a.denied = func(out string) bool { return strings.Contains(out, "Permission denied") }
+	return a, nil
+}
