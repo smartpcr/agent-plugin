@@ -174,8 +174,9 @@ dsh sandbox status | GOWORK=off go -C tools/harness-gate run . sandbox-preflight
   to the phase's IDs, failing on any `--- SKIP`, a non-zero exit or a planned test
   without a `--- PASS` line. All runs of a plan share one 100-minute budget
   (`scenarioBudget`; the S17 job has 2 h): each gets the time left as its
-  `-timeout`, and a run the budget no longer covers is not started and fails. `DH-S-17` runs in three phases: `DH-E-TOOLCHAIN-1` first,
-  the other scenarios, then `DH-E-SANDBOX-7` (architecture.md rule 7, R-03). Of a
+  `-timeout`, and a run the budget no longer covers is not started and fails. `DH-S-17` runs in four phases: `DH-E-TOOLCHAIN-1` first,
+  the single-process scenarios, the host-killing `DH-E-SESSION-2` and `DH-E-AGENT-3`,
+  then `DH-E-SANDBOX-7` (architecture.md rule 7, R-03; impl.md DH-S-17 Sequence). Of a
   scenario with route subtests the `claude-code` leg must pass and the
   `copilot-cli` leg is recorded (`scenarios: recorded leg: ...`): the required run
   sets `DSH_SCENARIO_ROUTES=claude-code` and its verdict has no exception; the
