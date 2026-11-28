@@ -254,33 +254,124 @@ func readSandbox7Run(root, id string) (sandbox7Run, error) {
 	return run, nil
 }
 
-// runSandbox7Record is "harness-gate sandbox7-record [--root dir] --escalated
-// linux=<n>[,darwin=<n>,...] [--lane s17] [--ci-run id]": the s17 job's record of
-// a DH-E-SANDBOX-7 run on the checkout at root. Exit 0 when every text met the
-// bar, 1 when the run is recorded failed, 2 when nothing is recorded.
+// multiFlag is a flag that may be given more than once.
+type multiFlag []string
+
+func (m *multiFlag) String() string     { return strings.Join(*m, ",") }
+func (m *multiFlag) Set(v string) error { *m = append(*m, v); return nil }
+
+// addCounts adds the "<platform>=<n>[,...]" counts of s, read from src, to
+// escalated; a platform named twice, here or by an earlier source, is refused.
+func addCounts(escalated map[string]int, src, s string) error {
+	for _, kv := range strings.Split(s, ",") {
+		k, v, ok := strings.Cut(strings.TrimSpace(kv), "=")
+		n, err := strconv.Atoi(v)
+		if !ok || err != nil || k == "" {
+			return fmt.Errorf("%s %q: want <platform>=<n>[,...]", src, s)
+		}
+		if _, dup := escalated[k]; dup {
+			return fmt.Errorf("%s names %s twice", src, k)
+		}
+		escalated[k] = n
+	}
+	return nil
+}
+
+// readReport reads one DH-E-SANDBOX-7 report file (DSH_SCENARIO_REPORT of the
+// whole run or of one shard): a single line of counts.
+func readReport(path string) (string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	s := strings.TrimRight(strings.ReplaceAll(string(b), "\r\n", "\n"), "\n")
+	if s == "" || strings.Contains(s, "\n") {
+		return "", fmt.Errorf("--report %s: want one line <platform>=<n>[,...], got %q", path, s)
+	}
+	return s, nil
+}
+
+// goTestPassed reports why the go test -v log at path is not a passed run of
+// the DH-E-SANDBOX-7 test (TestPolicyTextMakesTheModelEscalate, or one shard of
+// it), or "" when it is: a "--- PASS:" line of the test, an "ok" package line
+// and no "--- FAIL:" or "FAIL" line. Counts written by a run whose local task
+// or other assertion failed are not evidence of a pass.
+func goTestPassed(path string) (string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	var pass, ok bool
+	for _, line := range strings.Split(strings.ReplaceAll(string(b), "\r\n", "\n"), "\n") {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(trimmed, "--- FAIL:"), trimmed == "FAIL", strings.HasPrefix(trimmed, "FAIL\t"), strings.HasPrefix(trimmed, "panic:"):
+			return fmt.Sprintf("%s: the scenario failed (%q)", path, trimmed), nil
+		case strings.HasPrefix(trimmed, "--- PASS: "+sandbox7Test+" "), strings.HasPrefix(trimmed, "--- PASS: "+sandbox7Test+"/"):
+			pass = true
+		case strings.HasPrefix(trimmed, "ok "), strings.HasPrefix(trimmed, "ok\t"):
+			ok = true
+		}
+	}
+	if !pass || !ok {
+		return fmt.Sprintf("%s: no passed %s run (want its --- PASS: line and the package ok line)", path, sandbox7Test), nil
+	}
+	return "", nil
+}
+
+// sandbox7Test is the Go test of DH-E-SANDBOX-7.
+const sandbox7Test = "TestPolicyTextMakesTheModelEscalate"
+
+// runSandbox7Record is "harness-gate sandbox7-record [--root dir] (--escalated
+// linux=<n>[,darwin=<n>,...] | --report file ...) [--go-test-log file ...]
+// [--lane s17] [--ci-run id]": the s17 job's record of a DH-E-SANDBOX-7 run on
+// the checkout at root. The counts come from --escalated or from the report
+// files named, one per run or shard, each platform once. Each --go-test-log
+// must show the scenario passed, or nothing is recorded. Exit 0 when every text
+// met the bar, 1 when the run is recorded failed, 2 when nothing is recorded.
 func runSandbox7Record(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	var lane, ciRun, counts *string
+	var reports, logs multiFlag
 	root, ok := subcommandFlags("sandbox7-record", args, stderr, func(f *flag.FlagSet) {
 		counts = f.String("escalated", "", "escalations of the 18 per platform text, e.g. linux=12,darwin=11,windows=13")
+		f.Var(&reports, "report", "a DH-E-SANDBOX-7 report file (DSH_SCENARIO_REPORT) of the run or of one shard; repeat per shard")
+		f.Var(&logs, "go-test-log", "the go test -v log of the run or of one shard, which must show the scenario passed; repeat per shard")
 		lane = f.String("lane", "s17", "the lane of the run id <lane>-<sha7>-<UTC>")
 		ciRun = f.String("ci-run", "", "the CI run id of the job, recorded as is")
 	})
 	if !ok {
 		return 2
 	}
+	fail := func(err error) int {
+		fmt.Fprintf(stderr, "harness-gate sandbox7-record: %v\n", err)
+		return 2
+	}
+	if (*counts == "") == (len(reports) == 0) {
+		return fail(fmt.Errorf("give the counts by --escalated or by --report, one of the two"))
+	}
 	escalated := map[string]int{}
-	for _, kv := range strings.Split(*counts, ",") {
-		k, v, ok := strings.Cut(strings.TrimSpace(kv), "=")
-		n, err := strconv.Atoi(v)
-		if !ok || err != nil || k == "" {
-			fmt.Fprintf(stderr, "harness-gate sandbox7-record: --escalated %q: want <platform>=<n>[,...]\n", *counts)
-			return 2
+	if *counts != "" {
+		if err := addCounts(escalated, "--escalated", *counts); err != nil {
+			return fail(err)
 		}
-		if _, dup := escalated[k]; dup {
-			fmt.Fprintf(stderr, "harness-gate sandbox7-record: --escalated names %s twice\n", k)
-			return 2
+	}
+	for _, r := range reports {
+		s, err := readReport(r)
+		if err != nil {
+			return fail(err)
 		}
-		escalated[k] = n
+		if err := addCounts(escalated, "--report "+r, s); err != nil {
+			return fail(err)
+		}
+	}
+	for _, l := range logs {
+		why, err := goTestPassed(l)
+		if err != nil {
+			return fail(err)
+		}
+		if why != "" {
+			return fail(fmt.Errorf("%s; nothing is recorded", why))
+		}
 	}
 	id, passed, err := WriteSandbox7Record(ctx, root, *lane, *ciRun, escalated, time.Now())
 	if err != nil {

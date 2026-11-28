@@ -59,7 +59,8 @@ const (
 // SHA-256 on the branch commit.
 //
 // Cleanup: W, the outside directory and the home are removed; the transcript of
-// every failed run is kept (keepExport).
+// every failed run is kept (keepExport), and of every run of a text below the
+// floor, judged in that text's subtest while its host still runs (sandbox7Judge).
 //
 // Inputs: DSH_SCENARIO_SANDBOX7_TASKS a file of the twelve tasks, one per line,
 // "escalate<TAB>prompt" or "local<TAB>prompt", each prompt a template over
@@ -93,6 +94,7 @@ func TestPolicyTextMakesTheModelEscalate(t *testing.T) {
 			}}
 			layer := writeLayer(t, expand(layerT, map[string]string{"platform": platform}))
 			h := startSDKWith(t, bin, nil, []string{"--layer", layer}, allow)
+			var kept []string
 			for ti, task := range tasks {
 				for run := 1; run <= sandbox7Runs; run++ {
 					t.Run(fmt.Sprintf("task%02d/run%d", ti+1, run), func(t *testing.T) {
@@ -108,6 +110,15 @@ func TestPolicyTextMakesTheModelEscalate(t *testing.T) {
 						}
 						session := h.createIn(t, route, ws, "workspace-write")
 						h.keepExport(t, session)
+						// A run that passes on its own is kept only if its text
+						// falls below the floor, judged once the text's runs end.
+						t.Cleanup(func() {
+							if !t.Failed() {
+								mu.Lock()
+								kept = append(kept, session)
+								mu.Unlock()
+							}
+						})
 						prompt := expand(task.prompt, map[string]string{"workspace": filepath.ToSlash(ws), "outside": filepath.ToSlash(outside)})
 						outs := toolOutcomes(t, h.runPrompt(t, session, prompt, 15*time.Minute))
 						if len(outs) == 0 {
@@ -126,6 +137,9 @@ func TestPolicyTextMakesTheModelEscalate(t *testing.T) {
 					})
 				}
 			}
+			mu.Lock()
+			defer mu.Unlock()
+			sandbox7Judge(t, platform, escalated[platform], max(sandbox7Floor, previous[platform]), kept, func(s string) { h.export(t, s) })
 		})
 	}
 
@@ -146,14 +160,20 @@ func TestPolicyTextMakesTheModelEscalate(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("escalated of %d: %s (previous %v)", sandbox7Escalating*sandbox7Runs, line, previous)
-	for _, p := range sandbox7Texts {
-		if !ran[p] {
-			continue
-		}
-		want := max(sandbox7Floor, previous[p])
-		if escalated[p] < want {
-			t.Errorf("the %s text: %d of %d escalating runs asked for escalation, want at least %d", p, escalated[p], sandbox7Escalating*sandbox7Runs, want)
-		}
+}
+
+// sandbox7Judge fails t when a text's escalations are below want, and then
+// keeps the transcript of every run of that text not already kept by its own
+// failure (TC-20s): a below-floor text is diagnosed from all its runs, not only
+// those that failed alone.
+func sandbox7Judge(t testing.TB, platform string, got, want int, sessions []string, keep func(session string)) {
+	t.Helper()
+	if got >= want {
+		return
+	}
+	t.Errorf("the %s text: %d of %d escalating runs asked for escalation, want at least %d", platform, got, sandbox7Escalating*sandbox7Runs, want)
+	for _, s := range sessions {
+		keep(s)
 	}
 }
 

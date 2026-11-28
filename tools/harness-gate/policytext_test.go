@@ -412,3 +412,71 @@ func TestSandbox7RecordFlows(t *testing.T) {
 	setSandbox7Row(t, root, weak[:7], id3, sha256Hex(t, text), 12)
 	gate(1, `is "failed", not passed`)
 }
+
+// The shards of one run are recorded from their own report files, each platform
+// once: the three files of one commit are joined, a stale or second report of
+// a platform and a report of more than one line are refused, and counts from a
+// go test log that does not show the scenario passed record nothing.
+func TestSandbox7RecordReadsShardReports(t *testing.T) {
+	root := closureTree(t, filepath.Join("testdata", "policytext", "text_without_sandbox7"))
+	textDir := filepath.Join(root, filepath.FromSlash(PolicyTextDir))
+	linux, err := os.ReadFile(filepath.Join(textDir, "linux.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(textDir, "darwin.md"), linux, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	policyGit(t, root, "init", "-q", "--object-format=sha1")
+	policyGit(t, root, "add", "-A")
+	policyGit(t, root, "commit", "-q", "--no-verify", "-m", "two shipped texts")
+
+	out := t.TempDir()
+	write := func(name, body string) string {
+		t.Helper()
+		p := filepath.Join(out, name)
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	linuxR := write("report-linux.txt", "linux=12\n")
+	darwinR := write("report-darwin.txt", "darwin=11\r\n")
+	staleR := write("report.txt", "linux=9,darwin=9\n")
+	pasted := write("pasted.txt", "linux=12\ndarwin=11\n")
+	passLog := write("pass.txt", "=== RUN   "+sandbox7Test+"\n--- PASS: "+sandbox7Test+" (1.00s)\nPASS\nok  \tscenarios\t1.0s\n")
+	shardLog := write("shard.txt", "--- PASS: "+sandbox7Test+" (1.00s)\n    --- PASS: "+sandbox7Test+"/darwin (1.00s)\nok  \tscenarios\t1.0s\n")
+	failLog := write("fail.txt", "--- FAIL: "+sandbox7Test+" (1.00s)\n    --- FAIL: "+sandbox7Test+"/linux/task07/run1 (1.00s)\nFAIL\nFAIL\tscenarios\t1.0s\n")
+	emptyLog := write("empty.txt", "no test ran\n")
+
+	for _, c := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"stale aggregate", []string{"--report", linuxR, "--report", darwinR, "--report", staleR}, "names linux twice"},
+		{"pasted lines", []string{"--report", pasted}, "want one line"},
+		{"both sources", []string{"--escalated", "linux=12", "--report", darwinR}, "one of the two"},
+		{"no source", nil, "one of the two"},
+		{"failed scenario", []string{"--report", linuxR, "--report", darwinR, "--go-test-log", passLog, "--go-test-log", failLog}, "the scenario failed"},
+		{"no passed run", []string{"--report", linuxR, "--report", darwinR, "--go-test-log", emptyLog}, "no passed " + sandbox7Test},
+	} {
+		if id, stderr := sandbox7RecordRun(t, root, 2, c.args...); id != "" || !strings.Contains(stderr, c.want) {
+			t.Errorf("%s: run %q, stderr %q, want %q", c.name, id, stderr, c.want)
+		}
+	}
+	if entries, _ := os.ReadDir(filepath.Join(root, filepath.FromSlash(PolicyRunsDir))); len(entries) != 0 {
+		t.Fatalf("a refused input wrote %d records", len(entries))
+	}
+
+	id, _ := sandbox7RecordRun(t, root, 0, "--report", linuxR, "--report", darwinR, "--go-test-log", passLog, "--go-test-log", shardLog)
+	rec, err := os.ReadFile(runRecordPath(root, id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"/linux.md sha256=", " escalated=12/18\n", "/darwin.md sha256=", " escalated=11/18\n", "result: passed\n"} {
+		if !strings.Contains(string(rec), want) {
+			t.Errorf("the record has no %q:\n%s", want, rec)
+		}
+	}
+}

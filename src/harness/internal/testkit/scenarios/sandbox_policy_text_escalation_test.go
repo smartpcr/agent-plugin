@@ -4,6 +4,9 @@ package scenarios
 
 import (
 	"encoding/json"
+	"fmt"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/smartpcr/agent-plugin/src/sdk/protocol"
@@ -66,5 +69,42 @@ func TestSandbox7CountsOnlyEscalatedRetriesOfDeniedCalls(t *testing.T) {
 				t.Fatalf("counted %v (%s), want %v", got, why, c.want)
 			}
 		})
+	}
+}
+
+// sandbox7FakeTB records the errors sandbox7Judge reports.
+type sandbox7FakeTB struct {
+	testing.TB
+	errors []string
+}
+
+func (f *sandbox7FakeTB) Helper() {}
+func (f *sandbox7FakeTB) Errorf(format string, args ...any) {
+	f.errors = append(f.errors, fmt.Sprintf(format, args...))
+}
+
+// TestSandbox7KeepsEveryTranscriptOfATextBelowTheFloor: runs that each pass
+// alone (a run that does not escalate only logs) still leave their transcripts
+// when the text's aggregate count fails the floor (TC-20s); a text at the floor
+// keeps none and does not fail.
+func TestSandbox7KeepsEveryTranscriptOfATextBelowTheFloor(t *testing.T) {
+	sessions := []string{"s1", "s2", "s3"}
+	for _, c := range []struct {
+		got, want int
+		fails     bool
+	}{{9, sandbox7Floor, true}, {sandbox7Floor, sandbox7Floor, false}, {11, 12, true}} {
+		var kept []string
+		tb := &sandbox7FakeTB{}
+		sandbox7Judge(tb, "linux", c.got, c.want, sessions, func(s string) { kept = append(kept, s) })
+		if c.fails {
+			if len(tb.errors) != 1 || !strings.Contains(tb.errors[0], fmt.Sprintf("the linux text: %d of 18", c.got)) {
+				t.Errorf("%d of want %d: errors %q", c.got, c.want, tb.errors)
+			}
+			if !slices.Equal(kept, sessions) {
+				t.Errorf("%d of want %d: kept %v, want every run %v", c.got, c.want, kept, sessions)
+			}
+		} else if len(tb.errors) != 0 || len(kept) != 0 {
+			t.Errorf("%d of want %d: errors %q, kept %v; want neither", c.got, c.want, tb.errors, kept)
+		}
 	}
 }

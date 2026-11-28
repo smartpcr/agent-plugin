@@ -312,7 +312,14 @@ first passing `policy-text`:
 
 ```
 harness-gate sandbox7-record --root . --escalated linux=12,darwin=11,windows=13 [--lane s17] [--ci-run <id>]
+harness-gate sandbox7-record --root . --report <file> [--report <file> ...] [--go-test-log <file> ...] [--lane s17] [--ci-run <id>]
 ```
+
+The counts come from `--escalated` or from `--report` files (the scenario's
+`DSH_SCENARIO_REPORT` of the run, or one per shard: one line each, a platform
+named once across them), never both. Each `--go-test-log` must show the scenario
+passed (its `--- PASS:` line, an `ok` package line, no `FAIL`), or nothing is
+recorded (`TestSandbox7RecordReadsShardReports`).
 
 It refuses (exit 2, nothing written) a dirty tree, a tree with no text, and a
 missing or extra count; it writes `runs/<lane>-<sha7>-<UTC>.txt` holding the

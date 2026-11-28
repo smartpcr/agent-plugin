@@ -186,7 +186,7 @@ open. Each blocker on its own stops the run:
 | Order: SANDBOX-7 runs last in S17 (architecture.md R-03), after the 13 other scenarios; every one of them is `not run`. | Scenarios table above | the other 13 rows are run (the copilot-cli legs recorded) |
 | No `s17` job to dispatch. `.github/workflows/harness-scenarios.yml` has `preflight`, `scenarios` and `s18`, no `s17` job (Stage 7.1); a CI file is not changed by this stage. | `git grep -n s17 -- .github` on `6edc2a3`: no match | the `s17` job lands, or the operator runs [runbook-s17-wsl.md](runbook-s17-wsl.md) section "DH-E-SANDBOX-7 on s17/policy-text" by hand |
 | No committed scenario inputs: `DSH_SCENARIO_SANDBOX7_TASKS` (the twelve tasks), `DSH_SCENARIO_SANDBOX7_LAYER`, `DSH_SCENARIO_SANDBOX7_PREVIOUS`, `DSH_SCENARIO_CLAUDE_CODE_MODEL`. | `TestPolicyTextMakesTheModelEscalate` doc comment | the operator supplies them (none is a credential) |
-| Who, and where the text lives. The signed-in run is by the owner or an operator, never an agent session; the branch `s17/policy-text` is cut and pushed by that person (an agent session does not create branches). | runbook, "Who, where, and with what" | the operator follows the runbook section, steps A to C |
+| Who, and where the text lives. The signed-in run is by the owner or an operator, never an agent session. The branch `s17/policy-text` is a git commit and push that the Forge engineer brief for this stage does not allow ("DO NOT run `git add`, `git commit`, `git push` ..."; Forge commits only the workstream branch, which merges to `main`, where M2-C-6 forbids the text). Every byte the branch ships is therefore on `main` already, outside `policy/text/`, and the branch is moves only. | runbook, "Who, where, and with what"; Forge engineer brief | the operator follows the runbook section, steps A to C (A is three `git mv` and one commit) |
 
 What this stage did change on `main` (no shipped text, so `harness-gate policy-text` prints
 `ok: no sandbox policy text`):
@@ -199,6 +199,13 @@ What this stage did change on `main` (no shipped text, so `harness-gate policy-t
   is re-worded first. The wording asks the model to make the call and let the sandbox answer, and
   on `fs/sandbox-denied` to retry the same call with `sandbox_permissions` and a `justification`
   (the answer to upstream's five-in-twelve give-ups, `UP-DEBT-found.Q3.2`).
+- The branch's other files, in `src/harness/internal/world/sandbox/policy/testdata/s17_branch/`:
+  `policy_section_{linux,darwin,windows}.golden`, the render of each draft (`TestDraftTextGolden`
+  checks them against the drafts on `main`), and `text_embed.go.txt`, the `//go:embed text/*.md`
+  loader (checked to parse as the `policy` package). Step A moves them to `testdata/` and
+  `text_embed.go` without re-recording, so the branch commit holds the texts and their goldens
+  together; the move was rehearsed on `6edc2a3` plus this change: the policy and prompt tests
+  pass, `dsh` builds, and `harness-gate policy-text` refuses the three texts for want of a row.
 - `loadTexts` (`shipped_text.go`): the branch's `text_embed.go` loads `text/*.md` through it; a stray
   file or a text that does not render in every mode fails the package's tests.
 - `TestShippedTextGolden`: `testdata/policy_section_<platform>.golden` exists exactly when that
@@ -208,7 +215,13 @@ What this stage did change on `main` (no shipped text, so `harness-gate policy-t
   still require no `text/` directory and no text version; on the branch they require `text/` to be
   exactly the embedded texts.
 - `TestPolicyTextMakesTheModelEscalate` reports and judges only the texts that ran, so a shard
-  per text (M2-R-06) is not failed for the two texts it did not run; a full run is judged as before.
+  per text (M2-R-06) is not failed for the two texts it did not run. Each text is judged in its own
+  subtest, and a text below the floor keeps the transcript of every one of its runs, not only of
+  runs that failed alone (TC-20s; `TestSandbox7KeepsEveryTranscriptOfATextBelowTheFloor`).
+- `harness-gate sandbox7-record` takes the counts from `--report` files (one per run or shard,
+  one line each, each platform once) and records nothing unless each `--go-test-log` shows the
+  scenario passed (`TestSandbox7RecordReadsShardReports`); the runbook runs S17 once on the
+  branch head, SANDBOX-7 last, and every block fails closed.
 
 ## Evidence record (impl.md sec. 7.3)
 

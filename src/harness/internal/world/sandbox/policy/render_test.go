@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go/parser"
+	"go/token"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -94,26 +97,71 @@ func TestShippedTextGolden(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			r := platformRoots[platform]
-			var b strings.Builder
-			for _, c := range []struct {
-				label string
-				res   policy.Resolved
-			}{
-				{"read-only", policy.Resolved{Mode: sandbox.ReadOnly}},
-				{"workspace-write", policy.Resolved{Mode: sandbox.WorkspaceWrite, Network: false, WriteRoots: []sandbox.WriteRoot{
-					{Path: r[0], Source: sandbox.SourceWorkspace}, {Path: r[1], Source: sandbox.SourceGrant}, {Path: r[2], Source: sandbox.SourceScratch}}}},
-				{"danger-full-access", policy.Resolved{Mode: sandbox.DangerFullAccess, Network: true}},
-			} {
-				out, err := policy.Render(platform, c.res, tmpl)
-				if err != nil {
-					t.Fatal(err)
-				}
-				fmt.Fprintf(&b, "== mode %s\n%s", c.label, out)
-			}
-			golden.Assert(t, name, strings.ReplaceAll(b.String(), policy.FullAccessLabel, fullAccessToken))
+			golden.Assert(t, name, sectionGolden(t, platform, tmpl))
 		})
 	}
+}
+
+// s17Branch holds, on main, the files the s17/policy-text branch moves into
+// place beside the drafts (implementation-plan Stage 7.6; runbook-s17-wsl.md
+// step A): the goldens of the drafts and the source of text_embed.go. They are
+// moved, never re-recorded, so the branch commit carries the reviewed bytes.
+const s17Branch = "s17_branch"
+
+// Each draft's golden, kept for the branch, is the render of that draft: moving
+// the drafts to text/ and the goldens to testdata/ is the shipped set and its
+// goldens in one commit, which TestShippedTextGolden then checks there.
+func TestDraftTextGolden(t *testing.T) {
+	drafts, err := policy.LoadTextDir(filepath.Join("testdata", "draft_text"))
+	if errors.Is(err, fs.ErrNotExist) {
+		if _, err := os.Stat(filepath.Join("testdata", s17Branch)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("testdata/%s exists without the drafts it was recorded from (%v)", s17Branch, err)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, platform := range policy.Platforms {
+		t.Run(platform, func(t *testing.T) {
+			golden.Assert(t, s17Branch+"/policy_section_"+platform, sectionGolden(t, platform, drafts[platform]))
+		})
+	}
+	src, err := os.ReadFile(filepath.Join("testdata", s17Branch, "text_embed.go.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := parser.ParseFile(token.NewFileSet(), "text_embed.go", src, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("text_embed.go.txt is not Go: %v", err)
+	}
+	if f.Name.Name != "policy" || !strings.Contains(string(src), "//go:embed text/*.md\n") || !strings.Contains(string(src), "texts, err = loadTexts(dir)") {
+		t.Errorf("text_embed.go.txt does not embed text/*.md into the policy package's texts:\n%s", src)
+	}
+}
+
+// sectionGolden is the golden form of a platform text: its render in the three
+// modes, the full-access label replaced by a token.
+func sectionGolden(t *testing.T, platform, tmpl string) string {
+	t.Helper()
+	r := platformRoots[platform]
+	var b strings.Builder
+	for _, c := range []struct {
+		label string
+		res   policy.Resolved
+	}{
+		{"read-only", policy.Resolved{Mode: sandbox.ReadOnly}},
+		{"workspace-write", policy.Resolved{Mode: sandbox.WorkspaceWrite, Network: false, WriteRoots: []sandbox.WriteRoot{
+			{Path: r[0], Source: sandbox.SourceWorkspace}, {Path: r[1], Source: sandbox.SourceGrant}, {Path: r[2], Source: sandbox.SourceScratch}}}},
+		{"danger-full-access", policy.Resolved{Mode: sandbox.DangerFullAccess, Network: true}},
+	} {
+		out, err := policy.Render(platform, c.res, tmpl)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fmt.Fprintf(&b, "== mode %s\n%s", c.label, out)
+	}
+	return strings.ReplaceAll(b.String(), policy.FullAccessLabel, fullAccessToken)
 }
 
 func TestRenderRefuses(t *testing.T) {
