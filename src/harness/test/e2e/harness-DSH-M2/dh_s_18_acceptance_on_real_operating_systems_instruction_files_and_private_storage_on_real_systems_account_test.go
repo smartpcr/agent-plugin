@@ -86,8 +86,19 @@ func ifpsExpand(template string, vars map[string]string) string {
 	return template
 }
 
+// ifpsProbeTimeout bounds a single list/read/id probe; ifpsLongTimeout bounds the
+// cold cross-build and the whole WSL scenario run.
+const (
+	ifpsProbeTimeout = 60 * time.Second
+	ifpsLongTimeout  = 10 * time.Minute
+)
+
 func ifpsExec(cmd *exec.Cmd) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	return ifpsExecTimeout(cmd, ifpsProbeTimeout)
+}
+
+func ifpsExecTimeout(cmd *exec.Cmd, timeout time.Duration) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	c := exec.CommandContext(ctx, cmd.Path, cmd.Args[1:]...)
 	c.Dir, c.Env, c.SysProcAttr = cmd.Dir, cmd.Env, cmd.SysProcAttr
@@ -261,7 +272,7 @@ func ifpsWSL(t *testing.T) {
 	build := exec.Command(filepath.Join(runtime.GOROOT(), "bin", "go"), "test", "-c", "-tags", "e2e", "-o", bin, ".")
 	build.Dir = pkg
 	build.Env = append(os.Environ(), "GOOS=linux", "GOARCH="+runtime.GOARCH, "CGO_ENABLED=0")
-	if out, err := ifpsExec(build); err != nil {
+	if out, err := ifpsExecTimeout(build, ifpsLongTimeout); err != nil {
 		t.Fatalf("cross-building the Linux test binary: %v\n%s", err, out)
 	}
 	lin := func(p string) string {
@@ -273,7 +284,7 @@ func ifpsWSL(t *testing.T) {
 	}
 	run := exec.Command(wsl, "-u", "root", "--cd", lin(pkg), "-e", "env", "IFPS_GODOG_TAGS="+ifpsSecondAccountTag, "HOME=/root",
 		lin(bin), "-test.run", "^TestE2E_dh_s_18_acceptance_on_real_operating_systems_instruction_files_and_private_storage_on_real_systems$", "-test.v")
-	out, err := ifpsExec(run)
+	out, err := ifpsExecTimeout(run, ifpsLongTimeout)
 	t.Log(out)
 	if err != nil {
 		t.Fatalf("DH-E-STORAGE-6 failed in WSL: %v", err)
